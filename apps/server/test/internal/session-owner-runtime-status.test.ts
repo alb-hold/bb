@@ -1,5 +1,9 @@
 import { changedMessageSchema, type ThreadChangedMessage } from "@bb/domain";
-import { getThread, markThreadDeleted } from "@bb/db";
+import {
+  createNativeTerminalThread,
+  getThread,
+  markThreadDeleted,
+} from "@bb/db";
 import { HOST_RECONNECT_GRACE_MS } from "../../src/constants.js";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -268,6 +272,30 @@ describe("host thread runtime status notifications", () => {
           status: "active",
         }),
       ];
+      const managedThreadId = seedThread(harness.deps, {
+        projectId: large.projectId,
+        environmentId: large.environmentId,
+        providerId: "pi",
+        status: "active",
+      }).id;
+      const nativeThreadIds = Array.from({ length: 2 }, () => {
+        const thread = seedThread(harness.deps, {
+          projectId: large.projectId,
+          environmentId: large.environmentId,
+          providerId: "claude-code",
+          status: "active",
+        });
+        createNativeTerminalThread(harness.db, {
+          threadId: thread.id,
+          providerId: thread.providerId,
+          nativeSessionId: `synthetic-session-${thread.id}`,
+          initialPrompt: null,
+          initialImages: [],
+          model: null,
+        });
+        return thread.id;
+      });
+      largeActiveThreadIds.push(managedThreadId, ...nativeThreadIds);
       const largeIdleThreadIds = seedHostThreads(harness, {
         count: 300,
         fixture: large,
@@ -306,6 +334,19 @@ describe("host thread runtime status notifications", () => {
           runtime: { displayStatus: "active" },
         });
       }
+      for (const threadId of nativeThreadIds) {
+        expect(
+          lastStatusChange(largeMessages, threadId).metadata?.statusChange
+            ?.runtime.nativeActivity,
+        ).toMatchObject({
+          lastEvidenceAt: null,
+          confirmation: "unconfirmed",
+        });
+      }
+      expect(
+        lastStatusChange(largeMessages, managedThreadId).metadata?.statusChange
+          ?.runtime.nativeActivity,
+      ).toBeUndefined();
       for (const threadId of [...largeIdleThreadIds, deletedActiveThread.id]) {
         expect(
           lastStatusChange(largeMessages, threadId).metadata?.statusChange,

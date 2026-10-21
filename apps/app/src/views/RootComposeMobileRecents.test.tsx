@@ -559,6 +559,39 @@ describe("RootComposeMobileRecents", () => {
     expect(screen.queryByLabelText("Goal active")).toBeNull();
   });
 
+  it("expires a native runtime indicator on the shared visible tick", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000_000);
+    const thread = makeIdleThread({
+      status: "active",
+      runtime: {
+        displayStatus: "active",
+        nativeActivity: {
+          lastEvidenceAt: Date.now(),
+          freshForMs: 90_000,
+          confirmation: "confirmed",
+        },
+      },
+    });
+    render(
+      <TestProviders>
+        <RootComposeMobileRecents
+          highlightedThreadId={null}
+          projectNamesById={new Map()}
+          providersById={new Map()}
+          showCreatingRow={false}
+          threads={[thread]}
+        />
+      </TestProviders>,
+    );
+
+    expect(screen.getByLabelText("Working")).not.toBeNull();
+    act(() => vi.advanceTimersByTime(90_000));
+    expect(screen.getByLabelText("Working")).not.toBeNull();
+    act(() => vi.advanceTimersByTime(1_000));
+    expect(screen.queryByLabelText("Working")).toBeNull();
+  });
+
   it("shows Working for a draft thread with runtime activity", () => {
     window.localStorage.setItem(
       "bb.promptbox.contents-proj_mobile-thr_mobile-3",
