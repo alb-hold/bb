@@ -229,6 +229,7 @@ import { getFileExtension } from "@/lib/plugin-slot-resolvers";
 import { Icon } from "@bb/shared-ui/icon";
 import { getBbDesktopInfo, isDesktopBrowserAvailable } from "@/lib/bb-desktop";
 import { UrlOpenRoutingProvider } from "@/lib/url-open-routing";
+import { isTerminalLinkForThreadBrowser } from "@/components/thread/terminal/terminal-link-routing";
 import {
   AppNavigationHostProvider,
   type AppFixedTabOpenIntent,
@@ -667,6 +668,11 @@ function ThreadDetailViewInternal(
     () => setShouldAutoFocusNewTab(false),
     [],
   );
+  const [splitTabToRightRequest, setSplitTabToRightRequest] = useState<{
+    requestId: number;
+    tabId: string;
+  } | null>(null);
+  const splitTabToRightRequestIdRef = useRef(0);
   const shouldLoadThreadStorageFiles = shouldLoadThreadStorageFileList({
     hasThread: thread !== undefined,
     isSecondaryPanelOpen,
@@ -2140,6 +2146,40 @@ function ThreadDetailViewInternal(
     ({ href }) => openBrowserUrl(href),
     [openBrowserUrl],
   );
+  const handleOpenTerminalLink = useCallback<ThreadTimelineLinkHandler>(
+    ({ href }) => {
+      if (
+        !isTerminalLinkForThreadBrowser(
+          href,
+          resolvedThreadEnvironmentHost === null
+            ? []
+            : [resolvedThreadEnvironmentHost.name],
+          isDesktopBrowserAvailable(),
+        )
+      ) {
+        return handleOpenTimelineLink({ href });
+      }
+      const tab = openTab({ kind: "browser", url: href });
+      if (tab?.kind !== "browser") return false;
+      if (renderSecondaryPanelAsDrawer) {
+        secondaryPanelDrawerVisibility.openDrawer();
+      } else {
+        splitTabToRightRequestIdRef.current += 1;
+        setSplitTabToRightRequest({
+          requestId: splitTabToRightRequestIdRef.current,
+          tabId: tab.id,
+        });
+      }
+      return true;
+    },
+    [
+      handleOpenTimelineLink,
+      openTab,
+      renderSecondaryPanelAsDrawer,
+      resolvedThreadEnvironmentHost,
+      secondaryPanelDrawerVisibility,
+    ],
+  );
   const handleTimelineTitleAction = useCallback<TimelineTitleActionResolver>(
     (action) => {
       switch (action.kind) {
@@ -2657,7 +2697,7 @@ function ThreadDetailViewInternal(
             isPanelOpen={isSecondaryPanelOpen}
             isPanelPersistedOpen={isPersistedSecondaryPanelOpen}
             onAutoFocusHandled={terminals.handleAutoFocusHandled}
-            onOpenLink={handleOpenTimelineLink}
+            onOpenLink={handleOpenTerminalLink}
             onSelectionAddToChat={handleSelectionAddToChat}
             target={{ kind: "thread", threadId: thread.id }}
             terminalId={tab.terminalId}
@@ -3020,6 +3060,7 @@ function ThreadDetailViewInternal(
               tabs: panelTabs,
               fixedTabs: secondaryPanelFixedTabs,
               splitPanelStateId: thread.id,
+              splitTabToRightRequest,
               onCreateTerminalInNewPane: canCreateTerminal
                 ? startTerminalSession
                 : undefined,

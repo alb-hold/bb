@@ -115,6 +115,7 @@ interface SidebarSplitContainerProps {
   onToggleFullScreen: () => void;
   panelStateId: string;
   renderPane: (args: SidebarSplitPaneRenderArgs) => ReactNode;
+  splitTabToRightRequest?: { requestId: number; tabId: string } | null;
   tabs: readonly SidebarSplitTabDescriptor[];
 }
 
@@ -140,6 +141,7 @@ export function SidebarSplitContainer({
   onToggleFullScreen,
   panelStateId,
   renderPane,
+  splitTabToRightRequest = null,
   tabs,
 }: SidebarSplitContainerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -171,6 +173,7 @@ export function SidebarSplitContainer({
   const previousTabs = useRef(tabs);
   const removedTabPlacements = useRef(new Map<string, SidebarTabPlacement>());
   const previousFullScreen = useRef(isFullScreen);
+  const handledSplitTabRequestId = useRef<number | null>(null);
   const dimsInactiveSplits = useAtomValue(dimInactiveSplitsAtom);
   const [resizeCursor, setResizeCursor] =
     useState<SidebarSplitResizeCursor | null>(null);
@@ -395,6 +398,35 @@ export function SidebarSplitContainer({
     },
     [commitState],
   );
+
+  useEffect(() => {
+    if (
+      splitTabToRightRequest === null ||
+      handledSplitTabRequestId.current === splitTabToRightRequest.requestId ||
+      !availableTabIds.includes(splitTabToRightRequest.tabId)
+    ) {
+      return;
+    }
+    const current = stateRef.current;
+    const sourcePane = listPanes(current.layout.root).find((pane) =>
+      getSidebarGroupForPane(current, pane.paneId)?.tabIds.includes(
+        splitTabToRightRequest.tabId,
+      ),
+    );
+    if (sourcePane === undefined) return;
+    const moved = moveSidebarTab(
+      current,
+      sourcePane.paneId,
+      splitTabToRightRequest.tabId,
+      { paneId: sourcePane.paneId, zone: "right" },
+      { groupId: nextSidebarSplitGroupId(current) },
+    );
+    handledSplitTabRequestId.current = splitTabToRightRequest.requestId;
+    if (moved !== current) {
+      stateRef.current = moved;
+      setState(moved);
+    }
+  }, [availableTabIds, splitTabToRightRequest]);
 
   const removeSplit = useCallback(
     (paneId: string) => {
