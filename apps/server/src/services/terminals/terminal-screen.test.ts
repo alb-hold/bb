@@ -63,7 +63,14 @@ describe("renderTerminalScreen", () => {
   it("reports an incomplete screen after the initial redraw falls out of retention", async () => {
     const stream = execFileSync(
       process.execPath,
-      [fileURLToPath(new URL("../../../test/fixtures/terminal-screen-stress.mjs", import.meta.url))],
+      [
+        fileURLToPath(
+          new URL(
+            "../../../test/fixtures/terminal-screen-stress.mjs",
+            import.meta.url,
+          ),
+        ),
+      ],
       { encoding: "utf8" },
     );
     expect(Buffer.byteLength(stream)).toBeGreaterThan(128 * 1024);
@@ -96,6 +103,34 @@ describe("renderTerminalScreen", () => {
     expect(retainedScreen.complete).toBe(true);
   });
 
+  it("recognizes truncated top-style full-screen redraws", async () => {
+    const stream = execFileSync(
+      process.execPath,
+      [
+        fileURLToPath(
+          new URL(
+            "../../../test/fixtures/terminal-screen-top-redraw.mjs",
+            import.meta.url,
+          ),
+        ),
+      ],
+      { encoding: "utf8" },
+    );
+    expect(Buffer.byteLength(stream)).toBeGreaterThan(64 * 1024);
+    const screenArgs = { cols: 80, rows: 24, lines: undefined };
+    const fullScreen = await renderTerminalScreen({
+      ...screenArgs,
+      output: output(stream),
+    });
+    const retainedScreen = await renderTerminalScreen({
+      ...screenArgs,
+      output: output(stream.slice(-64 * 1024), true),
+    });
+    expect(retainedScreen.rows).toEqual(fullScreen.rows);
+    expect(retainedScreen.cursor).toEqual(fullScreen.cursor);
+    expect(retainedScreen.complete).toBe(true);
+  });
+
   it("recognizes long color-only output as linear", async () => {
     const stream = "\u001b[31mred\u001b[0m\n".repeat(6_000);
     const screen = await renderTerminalScreen({
@@ -107,22 +142,60 @@ describe("renderTerminalScreen", () => {
     expect(screen.complete).toBe(true);
   });
 
-  it("marks a retained tail with a cursor move incomplete", async () => {
+  it("recognizes a retained tail that scrolls earlier rows off screen", async () => {
     const screen = await renderTerminalScreen({
       cols: 20,
       rows: 2,
       lines: undefined,
       output: output("partial\nline one\nline two\n\u001b[1;1Hupdate", true),
     });
-    expect(screen.complete).toBe(false);
+    expect(screen.complete).toBe(true);
   });
 
-  it("marks an alternate-screen tail incomplete", async () => {
+  it("recognizes an alternate-screen switch after earlier rows scroll off", async () => {
     const screen = await renderTerminalScreen({
       cols: 20,
       rows: 2,
       lines: undefined,
       output: output("partial\nline one\nline two\n\u001b[?1049h", true),
+    });
+    expect(screen.complete).toBe(true);
+  });
+
+  it("recognizes a fully drawn alternate screen after truncation", async () => {
+    const screen = await renderTerminalScreen({
+      cols: 20,
+      rows: 2,
+      lines: undefined,
+      output: output(
+        "partial\n\u001b[?1049h\u001b[Hfirst row\u001b[K\r\nsecond row\u001b[K",
+        true,
+      ),
+    });
+    expect(screen.rows).toEqual(["first row", "second row"]);
+    expect(screen.complete).toBe(true);
+  });
+
+  it("marks a partial alternate-screen draw incomplete after truncation", async () => {
+    const screen = await renderTerminalScreen({
+      cols: 20,
+      rows: 2,
+      lines: undefined,
+      output: output("partial\n\u001b[?1049hX", true),
+    });
+    expect(screen.complete).toBe(false);
+  });
+
+  it("marks a partial scroll-region update incomplete after truncation", async () => {
+    const firstRow = " ".repeat(20);
+    const screen = await renderTerminalScreen({
+      cols: 20,
+      rows: 2,
+      lines: undefined,
+      output: output(
+        `partial\n\u001b[1;2r\u001b[1;1H${firstRow}\u001b[2;1HX`,
+        true,
+      ),
     });
     expect(screen.complete).toBe(false);
   });

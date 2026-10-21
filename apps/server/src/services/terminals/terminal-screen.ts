@@ -14,13 +14,74 @@ const { Terminal } =
 export const TERMINAL_SCREEN_MAX_LINES = 500;
 export const TERMINAL_SCREEN_REPLAY_BYTES = 64 * 1024;
 
-function isLinearTerminalOutput(data: Buffer, rows: number): boolean {
-  const text = data.toString("utf8");
-  const switchesAlternateScreen = /\x1b\[\?(?:1049|47|1047)[hl]/.test(text);
-  const controlsScreenState =
-    /\x1b\[[0-?]*[ -/]*[HfdABCDGJKrST]/.test(text);
-  const lineFeeds = text.match(/\n/g)?.length ?? 0;
-  return !switchesAlternateScreen && !controlsScreenState && lineFeeds >= rows;
+type HeadlessTerminal = InstanceType<typeof Terminal>;
+
+function createTerminal(cols: number, rows: number): HeadlessTerminal {
+  const terminal = new Terminal({
+    allowProposedApi: true,
+    cols,
+    rows,
+    scrollback: TERMINAL_SCREEN_MAX_LINES,
+  });
+  terminal.loadAddon(new Unicode11Addon());
+  terminal.unicode.activeVersion = "11";
+  return terminal;
+}
+
+function writeTerminal(terminal: HeadlessTerminal, data: string | Buffer) {
+  return new Promise<void>((resolve) => {
+    terminal.write(data, resolve);
+  });
+}
+
+function readVisibleScreen(terminal: HeadlessTerminal) {
+  const buffer = terminal.buffer.active;
+  return {
+    rows: Array.from(
+      { length: terminal.rows },
+      (_, row) =>
+        buffer.getLine(buffer.baseY + row)?.translateToString(true) ?? "",
+    ),
+    cursor: { col: buffer.cursorX, row: buffer.cursorY },
+  };
+}
+
+function sameVisibleScreen(left: HeadlessTerminal, right: HeadlessTerminal) {
+  const leftScreen = readVisibleScreen(left);
+  const rightScreen = readVisibleScreen(right);
+  return (
+    leftScreen.cursor.col === rightScreen.cursor.col &&
+    leftScreen.cursor.row === rightScreen.cursor.row &&
+    leftScreen.rows.every((row, index) => row === rightScreen.rows[index])
+  );
+}
+
+function sentinelGrid(cols: number, rows: number) {
+  const line = "░".repeat(cols);
+  return `${Array.from(
+    { length: rows },
+    (_, row) => `\u001b[${row + 1};1H${line}`,
+  ).join("")}\u001b[${rows};1H`;
+}
+
+async function replayIsComplete(
+  data: Buffer,
+  cols: number,
+  rows: number,
+  blankTerminal: HeadlessTerminal,
+) {
+  const sentinelTerminal = createTerminal(cols, rows);
+  try {
+    const sentinel = sentinelGrid(cols, rows);
+    await writeTerminal(sentinelTerminal, sentinel);
+    await writeTerminal(sentinelTerminal, "\u001b[?1049h");
+    await writeTerminal(sentinelTerminal, sentinel);
+    await writeTerminal(sentinelTerminal, "\u001b[?1049l");
+    await writeTerminal(sentinelTerminal, data);
+    return sameVisibleScreen(blankTerminal, sentinelTerminal);
+  } finally {
+    sentinelTerminal.dispose();
+  }
 }
 
 export async function renderTerminalScreen(args: {
@@ -29,14 +90,7 @@ export async function renderTerminalScreen(args: {
   output: TerminalOutputResponse;
   rows: number;
 }): Promise<TerminalScreenResponse> {
-  const terminal = new Terminal({
-    allowProposedApi: true,
-    cols: args.cols,
-    rows: args.rows,
-    scrollback: TERMINAL_SCREEN_MAX_LINES,
-  });
-  terminal.loadAddon(new Unicode11Addon());
-  terminal.unicode.activeVersion = "11";
+  const terminal = createTerminal(args.cols, args.rows);
   try {
     let data = Buffer.concat(
       args.output.chunks.map((chunk) =>
@@ -50,9 +104,10 @@ export async function renderTerminalScreen(args: {
           ? Buffer.alloc(0)
           : data.subarray(firstLineBreak + 1);
     }
-    await new Promise<void>((resolve) => {
-      terminal.write(data, resolve);
-    });
+    await writeTerminal(terminal, data);
+    const complete =
+      !args.output.truncated ||
+      (await replayIsComplete(data, args.cols, args.rows, terminal));
     const buffer = terminal.buffer.active;
     let end = buffer.baseY + terminal.rows;
     if (args.lines !== undefined) {
@@ -73,10 +128,6 @@ export async function renderTerminalScreen(args: {
       const line = buffer.getLine(index);
       rows.push(line?.translateToString(true) ?? "");
     }
-    const complete =
-      !args.output.truncated ||
-      /\x1b\[2J/.test(data.toString("utf8")) ||
-      isLinearTerminalOutput(data, args.rows);
     return {
       rows,
       cursor: { col: buffer.cursorX, row: buffer.cursorY },
