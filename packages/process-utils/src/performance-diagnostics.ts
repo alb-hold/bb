@@ -100,6 +100,15 @@ export async function startPerformanceDiagnostics(options: {
   });
   worker.on("message", (value: unknown) => {
     if (
+      typeof value === "object" &&
+      value !== null &&
+      "failure" in value &&
+      value.failure instanceof Error
+    ) {
+      fail(value.failure);
+      return;
+    }
+    if (
       typeof value !== "object" ||
       value === null ||
       !("complete" in value) ||

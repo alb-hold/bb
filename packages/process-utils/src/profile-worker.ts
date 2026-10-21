@@ -184,7 +184,8 @@ async function runProfileWorker(): Promise<void> {
       await session.post("Profiler.disable").catch(() => {});
       session.disconnect();
       await rm(pendingPath, { force: true }).catch(() => {});
-      throw error;
+      port.postMessage({ failure: error });
+      port.close();
     }
   });
 }
