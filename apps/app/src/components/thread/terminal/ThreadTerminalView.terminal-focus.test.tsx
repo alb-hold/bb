@@ -306,11 +306,14 @@ describe("ThreadTerminalView terminal focus boundary", () => {
       type: "output",
       chunk: { seq: 0, dataBase64: btoa(output) },
     });
-    await waitFor(() => {
-      expect(document.querySelector(".xterm-rows")?.textContent).toContain(
-        "retained-48",
-      );
-    });
+    await waitForReadinessCondition(
+      () => {
+        expect(document.querySelector(".xterm-rows")?.textContent).toContain(
+          "retained-48",
+        );
+      },
+      "terminal scrollback did not render retained-48 within 5000 ms",
+    );
     const xterm = document.querySelector(".xterm");
     expect(xterm).not.toBeNull();
 
@@ -939,22 +942,18 @@ describe("ThreadTerminalView terminal focus boundary", () => {
       ),
     ]);
     vi.useFakeTimers({ shouldAdvanceTime: true });
-    await waitFor(
-      () => {
-        const resizes = testState.socketMessages
-          .map(
-            (message) =>
-              JSON.parse(message) as {
-                cols?: number;
-                rows?: number;
-                type?: string;
-              },
-          )
-          .filter((message) => message.type === "resize");
-        expect(resizes).toEqual([{ type: "resize", cols: 51, rows: 47 }]);
-      },
-      { timeout: 6_000 },
-    );
+    const resizeFrames = () =>
+      testState.socketMessages
+        .map(
+          (message) =>
+            JSON.parse(message) as {
+              cols?: number;
+              rows?: number;
+              type?: string;
+            },
+        )
+        .filter((message) => message.type === "resize");
+    expect(resizeFrames()).toEqual([{ type: "resize", cols: 51, rows: 47 }]);
     const session = makeTerminalSession({
       id: "term_first_attach_font_metrics",
       status: "running",
@@ -967,22 +966,7 @@ describe("ThreadTerminalView terminal focus boundary", () => {
       replayStartSeq: 0,
       nextSeq: 0,
     });
-    await waitFor(
-      () =>
-        expect(
-          testState.socketMessages
-            .map(
-              (message) =>
-                JSON.parse(message) as {
-                  cols?: number;
-                  rows?: number;
-                  type?: string;
-                },
-            )
-            .filter((message) => message.type === "resize"),
-        ).toEqual([{ type: "resize", cols: 51, rows: 47 }]),
-      { timeout: 6_000 },
-    );
+    expect(resizeFrames()).toEqual([{ type: "resize", cols: 51, rows: 47 }]);
     await vi.advanceTimersByTimeAsync(REPAINT_RESTORE_DELAY_MS + 1);
     expect(
       testState.socketMessages
@@ -998,32 +982,23 @@ describe("ThreadTerminalView terminal focus boundary", () => {
     ).toEqual([{ type: "resize", cols: 51, rows: 47 }]);
 
     testState.sockets[0]?.disconnect();
-    await waitFor(() => expect(testState.sockets).toHaveLength(2));
-    testState.sockets[1]?.receive({
+    await vi.advanceTimersByTimeAsync(100);
+    const reconnectedSocket = testState.sockets[1];
+    if (!reconnectedSocket) {
+      throw new Error("terminal socket was not recreated after disconnect");
+    }
+    await reconnectedSocket.opened;
+    reconnectedSocket.receive({
       type: "attached",
       session,
       replayStartSeq: 0,
       nextSeq: 0,
     });
-    await waitFor(
-      () => {
-        const resizes = testState.socketMessages
-          .map(
-            (message) =>
-              JSON.parse(message) as {
-                cols?: number;
-                rows?: number;
-                type?: string;
-              },
-          )
-          .filter((message) => message.type === "resize");
-        expect(resizes.slice(-2)).toEqual([
-          { type: "resize", cols: 50, rows: 47 },
-          { type: "resize", cols: 51, rows: 47 },
-        ]);
-      },
-      { timeout: 6_000 },
-    );
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(resizeFrames().slice(-2)).toEqual([
+      { type: "resize", cols: 50, rows: 47 },
+      { type: "resize", cols: 51, rows: 47 },
+    ]);
   }, 15_000);
 
   it("suppresses terminal-scoped shortcuts from the real xterm input", async () => {
