@@ -513,7 +513,9 @@ function terminalCredential(open: DaemonMessage<"terminal.open">): string {
     (candidate) => candidate.name === NATIVE_TOOL_CREDENTIAL_ENV,
   );
   if (typeof entry?.value !== "string") {
-    throw new Error("Expected terminal open to contribute its native credential");
+    throw new Error(
+      "Expected terminal open to contribute its native credential",
+    );
   }
   return entry.value;
 }
@@ -572,7 +574,11 @@ describe("native terminal activity", () => {
         `/threads/${thread.id}/native-terminal/open`,
         {},
       );
-      const reopened = await waitForDaemonMessage(fixture, "terminal.open", opens);
+      const reopened = await waitForDaemonMessage(
+        fixture,
+        "terminal.open",
+        opens,
+      );
       expect(reopened.terminalId).not.toBe(open.terminalId);
       const reopenedCredential = terminalCredential(reopened);
       expect(reopenedCredential).not.toBe(originalCredential);
