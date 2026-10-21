@@ -75,9 +75,10 @@ export function TerminalTextSelectSheet({
       }
       element.setSelectionRange(lineStart, lineStart);
       const beforeLine = element.value.slice(0, lineStart);
-      element.scrollTop =
-        (beforeLine.match(/\n/g)?.length ?? 0) *
-        (element.scrollHeight / Math.max(1, element.value.split("\n").length));
+      const lineCount = Math.max(1, element.value.split("\n").length);
+      const lineHeight = element.scrollHeight / lineCount;
+      const lineIndex = beforeLine.match(/\n/g)?.length ?? 0;
+      element.scrollTop = Math.max(0, lineIndex - 2) * lineHeight;
     });
     return () => window.cancelAnimationFrame(frame);
   }, [initialLine, isContentRealized, text]);

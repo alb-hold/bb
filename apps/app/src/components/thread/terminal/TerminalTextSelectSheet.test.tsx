@@ -190,6 +190,53 @@ describe("TerminalTextSelectSheet", () => {
     expect(document.activeElement).toBe(textarea);
   });
 
+  it("keeps the pressed line below the textarea's top padding", async () => {
+    const frames: FrameRequestCallback[] = [];
+    const requestFrame = vi
+      .spyOn(window, "requestAnimationFrame")
+      .mockImplementation((callback) => {
+        frames.push(callback);
+        return frames.length;
+      });
+    const lineCount = 10;
+    const initialLine = 6;
+    const lineHeight = 20;
+    const paddingTop = 4;
+    render(
+      <TerminalTextSelectSheet
+        open
+        initialLine={initialLine}
+        text={Array.from(
+          { length: lineCount },
+          (_, index) => `LINE${index}`,
+        ).join("\n")}
+        onOpenChange={vi.fn()}
+      />,
+    );
+    const textarea = await findSnapshotTextarea();
+    textarea.style.lineHeight = `${lineHeight}px`;
+    textarea.style.paddingTop = `${paddingTop}px`;
+    Object.defineProperty(textarea, "scrollHeight", {
+      configurable: true,
+      value: lineCount * lineHeight,
+    });
+    Object.defineProperty(textarea, "clientHeight", {
+      configurable: true,
+      value: 80,
+    });
+    while (frames.length > 0) {
+      frames.shift()?.(0);
+    }
+    requestFrame.mockRestore();
+
+    const caretLineTop =
+      paddingTop + initialLine * lineHeight - textarea.scrollTop;
+    expect(caretLineTop).toBeGreaterThanOrEqual(paddingTop + lineHeight);
+    expect(caretLineTop + lineHeight).toBeLessThanOrEqual(
+      paddingTop + textarea.clientHeight,
+    );
+  });
+
   it("disables Copy selection when the snapshot selection is empty", async () => {
     render(
       <TerminalTextSelectSheet open text="alpha beta" onOpenChange={vi.fn()} />,
