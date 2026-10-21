@@ -30,6 +30,9 @@ export const JSON_SHAPE_BY_COMMAND_PATH: Readonly<Record<string, string>> = {
     "{sessions: [{id, title, status, exitCode, closeReason, cols, rows}]}    (wrapped in .sessions)",
   "terminal surfaces":
     "{threadId, surfaces: [{threadId, terminalId, title, status, kind}]}    (thread-scoped terminal surfaces)",
+  "terminal split": "{terminalId, side, deliveredClients}",
+  "terminal move": "{terminalId, targetTerminalId, deliveredClients}",
+  "thread open": "{threadId, split, file, deliveredClients, inputPath}",
   "terminal output":
     '{chunks: [{seq, dataBase64}], nextSeq, truncated, status, exitCode, closeReason}    (chunk data is base64; status is "exited" once the command has finished)',
   "terminal wait": "{terminalId, matched, nextSeq, exitCode}",

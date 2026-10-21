@@ -102,6 +102,15 @@ the most-parsed commands ends with the same shape.
   bb terminal surfaces --thread <id> --json
     {threadId, surfaces: [{threadId, terminalId, title, status, kind}]}    (thread-scoped terminal surfaces)
 
+  bb terminal split <terminalId> --side <side> --json
+    {terminalId, side, deliveredClients}
+
+  bb terminal move <terminalId> --to-pane-of <terminalId> --json
+    {terminalId, targetTerminalId, deliveredClients}
+
+  bb thread open [id] [path] --json
+    {threadId, split, file, deliveredClients, inputPath}
+
   bb terminal output <terminalId> --json
     {chunks: [{seq, dataBase64}], nextSeq, truncated, status, exitCode, closeReason}    (chunk data is base64; status is "exited" once the command has finished)
 

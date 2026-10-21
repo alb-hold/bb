@@ -214,8 +214,9 @@ export function registerTerminalCommands(
     .command("split <terminalId>")
     .description("Place a terminal in a new side panel pane")
     .requiredOption("--side <side>", "Pane side: right, left, up, or down")
+    .option("--json", "Print machine-readable JSON output")
     .action(
-      action(async (terminalId: string, opts: { side: string }) => {
+      action(async (terminalId: string, opts: { side: string; json?: boolean }) => {
         if (!["right", "left", "up", "down"].includes(opts.side)) {
           throw new CliUsageError({
             code: "invalid_terminal_split_side",
@@ -229,6 +230,15 @@ export function registerTerminalCommands(
           terminalId,
           side: opts.side as "right" | "left" | "up" | "down",
         });
+        if (
+          outputJson(opts, {
+            terminalId,
+            side: opts.side,
+            deliveredClients: result.deliveredClients,
+          })
+        ) {
+          return;
+        }
         reportTerminalActionDelivery(result.deliveredClients);
       }),
     );
@@ -237,14 +247,24 @@ export function registerTerminalCommands(
     .command("move <terminalId>")
     .description("Move a terminal tab to the pane containing another terminal")
     .requiredOption("--to-pane-of <terminalId>", "Terminal whose pane receives this tab")
+    .option("--json", "Print machine-readable JSON output")
     .action(
-      action(async (terminalId: string, opts: { toPaneOf: string }) => {
+      action(async (terminalId: string, opts: { toPaneOf: string; json?: boolean }) => {
         const result = await createCliBbSdk(
           getUrl(),
         ).terminals.experimental_layout.move({
           terminalId,
           targetTerminalId: opts.toPaneOf,
         });
+        if (
+          outputJson(opts, {
+            terminalId,
+            targetTerminalId: opts.toPaneOf,
+            deliveredClients: result.deliveredClients,
+          })
+        ) {
+          return;
+        }
         reportTerminalActionDelivery(result.deliveredClients);
       }),
     );

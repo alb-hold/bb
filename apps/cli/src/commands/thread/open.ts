@@ -93,7 +93,7 @@ export function registerOpenCommand(
               threadId: target.threadId,
               split,
               file,
-              delivered: result.deliveredClients,
+              deliveredClients: result.deliveredClients,
               inputPath: target.inputPath,
             })
           ) {

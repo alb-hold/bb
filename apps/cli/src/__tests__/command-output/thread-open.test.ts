@@ -206,7 +206,7 @@ describe("bb thread open command output", () => {
     expect(payloads.join("\n")).toContain('"split": "replace"');
     expect(payloads.join("\n")).toContain('"source": "workspace"');
     expect(payloads.join("\n")).toContain('"path": "reports/status.md"');
-    expect(payloads.join("\n")).toContain('"delivered": 3');
+    expect(payloads.join("\n")).toContain('"deliveredClients": 3');
   });
 
   it("does not offer the removed flags in help", async () => {
