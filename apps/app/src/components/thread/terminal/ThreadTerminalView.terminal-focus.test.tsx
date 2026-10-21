@@ -195,12 +195,12 @@ function waitForReadiness<T>(
   });
 }
 
-async function waitForReadinessCondition(
-  callback: () => void,
+async function waitForReadinessCondition<T>(
+  callback: () => T,
   failureMessage: string,
-): Promise<void> {
+): Promise<T> {
   try {
-    await waitFor(callback, { timeout: 5_000 });
+    return await waitFor(callback, { timeout: 5_000 });
   } catch {
     throw new Error(failureMessage);
   }
@@ -291,7 +291,10 @@ describe("ThreadTerminalView terminal focus boundary", () => {
     testState.touchEnabled = false;
     const session = renderMobileTerminal();
 
-    await waitFor(() => expect(testState.sockets).toHaveLength(1));
+    await waitForReadinessCondition(
+      () => expect(testState.sockets).toHaveLength(1),
+      "terminal socket was not created within 5000 ms",
+    );
     const socket = testState.sockets[0];
     if (!socket) throw new Error("terminal socket was not created");
     socket.receive({
@@ -324,20 +327,26 @@ describe("ThreadTerminalView terminal focus boundary", () => {
       for (const notify of [...testState.mediaQueryListeners]) notify();
     });
 
-    await screen.findByRole("button", { name: "More terminal keys" });
-    await waitFor(() => expect(testState.sockets).toHaveLength(1));
+    await waitForReadinessCondition(
+      () => screen.getByRole("button", { name: "More terminal keys" }),
+      "mobile terminal controls were not rendered within 5000 ms",
+    );
+    await waitForReadinessCondition(
+      () => expect(testState.sockets).toHaveLength(1),
+      "terminal socket was not retained after pointer mode changed within 5000 ms",
+    );
     expect(document.querySelector(".xterm")).toBe(xterm);
     fireEvent.click(screen.getByRole("button", { name: "More terminal keys" }));
     fireEvent.click(
       screen.getByRole("button", { name: "Select terminal text" }),
     );
-    await waitFor(() => {
+    await waitForReadinessCondition(() => {
       const snapshot = screen.getByRole("textbox", {
         name: "Terminal text snapshot",
       }) as HTMLTextAreaElement;
       expect(snapshot.value).toContain("retained-01");
       expect(snapshot.value).toContain("retained-48");
-    });
+    }, "terminal text snapshot did not retain the visible output within 5000 ms");
   }, 30_000);
 
   it("sends clipboard text once through xterm paste input", async () => {
@@ -349,8 +358,11 @@ describe("ThreadTerminalView terminal focus boundary", () => {
     });
     const session = renderMobileTerminal();
 
-    await screen.findByRole("button", { name: "More terminal keys" });
-    await waitFor(() => {
+    await waitForReadinessCondition(
+      () => screen.getByRole("button", { name: "More terminal keys" }),
+      "mobile terminal controls were not rendered within 5000 ms",
+    );
+    await waitForReadinessCondition(() => {
       expect(
         (
           screen.getByRole("button", {
@@ -358,7 +370,7 @@ describe("ThreadTerminalView terminal focus boundary", () => {
           }) as HTMLButtonElement
         ).disabled,
       ).toBe(false);
-    });
+    }, "mobile terminal controls did not become enabled within 5000 ms");
     const socket = testState.sockets[0];
     if (!socket) throw new Error("terminal socket was not created");
     socket.receive({
@@ -374,7 +386,7 @@ describe("ThreadTerminalView terminal focus boundary", () => {
     fireEvent.click(screen.getByRole("button", { name: "More terminal keys" }));
     fireEvent.click(screen.getByRole("button", { name: "Paste" }));
 
-    await waitFor(() => {
+    await waitForReadinessCondition(() => {
       const inputMessages = testState.socketMessages
         .map(
           (message) =>
@@ -390,7 +402,7 @@ describe("ThreadTerminalView terminal focus boundary", () => {
           decodeBase64Bytes(inputMessages[0]!.dataBase64),
         ),
       ).toBe("paste-once");
-    });
+    }, "clipboard text was not sent through terminal input within 5000 ms");
     expect(readText).toHaveBeenCalledOnce();
     expect(testState.toastError).not.toHaveBeenCalled();
   });
@@ -404,8 +416,11 @@ describe("ThreadTerminalView terminal focus boundary", () => {
     });
     renderMobileTerminal();
 
-    await screen.findByRole("button", { name: "More terminal keys" });
-    await waitFor(() => {
+    await waitForReadinessCondition(
+      () => screen.getByRole("button", { name: "More terminal keys" }),
+      "mobile terminal controls were not rendered within 5000 ms",
+    );
+    await waitForReadinessCondition(() => {
       expect(
         (
           screen.getByRole("button", {
@@ -413,15 +428,15 @@ describe("ThreadTerminalView terminal focus boundary", () => {
           }) as HTMLButtonElement
         ).disabled,
       ).toBe(false);
-    });
+    }, "mobile terminal controls did not become enabled within 5000 ms");
     fireEvent.click(screen.getByRole("button", { name: "More terminal keys" }));
     fireEvent.click(screen.getByRole("button", { name: "Paste" }));
 
-    await waitFor(() => {
+    await waitForReadinessCondition(() => {
       expect(testState.toastError).toHaveBeenCalledWith(
         "This connection can’t read the clipboard. Long-press a message box and choose Paste.",
       );
-    });
+    }, "clipboard denial fallback was not shown within 5000 ms");
     expect(readText).toHaveBeenCalledOnce();
     expect(
       testState.socketMessages
@@ -474,7 +489,10 @@ describe("ThreadTerminalView terminal focus boundary", () => {
         </AppCommandProvider>
       </MemoryRouter>,
     );
-    await waitFor(() => expect(testState.socketUrls).toHaveLength(1));
+    await waitForReadinessCondition(
+      () => expect(testState.socketUrls).toHaveLength(1),
+      "initial terminal socket URL was not created within 5000 ms",
+    );
     const initialToken = new URL(
       testState.socketUrls[0] ?? "ws://localhost",
     ).searchParams.get("handoffOwnerToken");
@@ -490,7 +508,10 @@ describe("ThreadTerminalView terminal focus boundary", () => {
     expect(testState.socketUrls).toHaveLength(1);
 
     testState.sockets[0]?.disconnect();
-    await waitFor(() => expect(testState.socketUrls).toHaveLength(2));
+    await waitForReadinessCondition(
+      () => expect(testState.socketUrls).toHaveLength(2),
+      "terminal socket did not reconnect within 5000 ms",
+    );
     expect(
       new URL(testState.socketUrls[1] ?? "ws://localhost").searchParams.get(
         "handoffOwnerToken",
@@ -584,13 +605,16 @@ describe("ThreadTerminalView terminal focus boundary", () => {
       </MemoryRouter>,
     );
 
-    await waitFor(() => expect(testState.socketUrls).toHaveLength(1));
+    await waitForReadinessCondition(
+      () => expect(testState.socketUrls).toHaveLength(1),
+      "terminal socket URL was not created within 5000 ms",
+    );
     const url = new URL(testState.socketUrls[0] ?? "ws://localhost");
     expect(url.pathname).toBe(
       `/ws/terminals/term-${view.path.replaceAll(" ", "-")}`,
     );
     expect(url.searchParams.get("handoffOwnerToken")).toBe(token);
-    await waitFor(() => {
+    await waitForReadinessCondition(() => {
       expect(
         testState.socketMessages
           .map((message) => JSON.parse(message))
@@ -599,7 +623,7 @@ describe("ThreadTerminalView terminal focus boundary", () => {
               message.type === "visibility" && message.visible === true,
           ),
       ).toBe(true);
-    });
+    }, "terminal visibility was not reported within 5000 ms");
   });
 
   it("clears attention when its terminal panel becomes visible", async () => {
@@ -640,12 +664,12 @@ describe("ThreadTerminalView terminal focus boundary", () => {
       </MemoryRouter>,
     );
 
-    await waitFor(() => {
+    await waitForReadinessCondition(() => {
       expect(testState.clearAttention).toHaveBeenCalledWith({
         terminalId: session.id,
       });
       expect(onSessionChange).toHaveBeenCalledWith(updatedSession);
-    });
+    }, "terminal attention was not cleared within 5000 ms");
   });
 
   it("waits for fit dimensions before settling the initial main-pane layout", async () => {
@@ -788,16 +812,16 @@ describe("ThreadTerminalView terminal focus boundary", () => {
     const visibilityState = vi.spyOn(document, "visibilityState", "get");
     visibilityState.mockReturnValue("hidden");
     document.dispatchEvent(new Event("visibilitychange"));
-    await waitFor(() => {
+    await waitForReadinessCondition(() => {
       expect(
         testState.socketMessages.map((message) => JSON.parse(message)),
       ).toContainEqual({ type: "visibility", visible: false });
-    });
+    }, "terminal hidden visibility was not reported within 5000 ms");
 
     visibilityState.mockReturnValue("visible");
     document.dispatchEvent(new Event("visibilitychange"));
     window.dispatchEvent(new Event("focus"));
-    await waitFor(() => {
+    await waitForReadinessCondition(() => {
       const messages = testState.socketMessages.map(
         (message) =>
           JSON.parse(message) as {
@@ -832,7 +856,7 @@ describe("ThreadTerminalView terminal focus boundary", () => {
         cols: fittedSize.cols,
         rows: fittedSize.rows,
       });
-    });
+    }, "terminal visible visibility was not restored after focus within 5000 ms");
   });
 
   it("does not repaint-nudge the initial terminal replay", async () => {
@@ -989,7 +1013,10 @@ describe("ThreadTerminalView terminal focus boundary", () => {
     if (!reconnectedSocket) {
       throw new Error("terminal socket was not recreated after disconnect");
     }
-    await reconnectedSocket.opened;
+    await waitForReadiness(
+      reconnectedSocket.opened,
+      "reconnected socket did not open within 5000 ms",
+    );
     reconnectedSocket.receive({
       type: "attached",
       session,
@@ -1046,13 +1073,13 @@ describe("ThreadTerminalView terminal focus boundary", () => {
       </MemoryRouter>,
     );
 
-    const terminalInput = await waitFor(() => {
+    const terminalInput = await waitForReadinessCondition(() => {
       const textarea = document.querySelector<HTMLTextAreaElement>(
         ".xterm-helper-textarea",
       );
       if (textarea === null) throw new Error("xterm input is not mounted");
       return textarea;
-    });
+    }, "xterm input was not mounted within 5000 ms");
     const outside = screen.getByLabelText("Outside terminal");
     const dispatchSearch = (target: Element) => {
       const event = new KeyboardEvent("keydown", {
