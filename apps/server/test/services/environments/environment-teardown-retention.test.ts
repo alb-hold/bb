@@ -841,6 +841,51 @@ describe("what a failed attempt remembers about the earlier state", () => {
       });
     }));
 
+  it("drops the snapshot when the teardown-script row appears between the start of the attempt and the failure write", async () =>
+    withTestHarness(async (harness) => {
+      const state: { appear: () => void } = { appear: () => {} };
+      installProvider({
+        experimental_preflightRemove: async () => {
+          state.appear();
+          throw new Error("host unavailable");
+        },
+        policy: { retireGraceMs: 0 },
+      });
+      const { environment, thread } = seedRetiring(harness, {
+        providerOwnsPath: true,
+      });
+      state.appear = () => {
+        expect(row(harness, environment.id).teardownPriorStatus).toBe("ready");
+        harness.db
+          .insert(environmentHookOperations)
+          .values({
+            id: `environment:${environment.id}:retention-key:teardown`,
+            operationId: "hook-late",
+            hostId: environment.hostId,
+            path: "/tmp/retention",
+            kind: "teardown",
+            startedAt: Date.now(),
+          })
+          .run();
+      };
+      retireNow(harness, environment.id);
+
+      await sweepProviderEnvironment(harness.deps, environment.id);
+
+      expect(row(harness, environment.id)).toMatchObject({
+        status: "error",
+        teardownStatus: "failed",
+        teardownMessage: "host unavailable",
+        teardownPriorStatus: null,
+      });
+      unarchiveDirectly(harness, thread.id);
+      await sweepProviderEnvironment(harness.deps, environment.id);
+      expect(row(harness, environment.id)).toMatchObject({
+        status: "error",
+        teardownStatus: "failed",
+      });
+    }));
+
   it("does not trust a snapshot across a resumed attempt whose preflight threw", async () =>
     withTestHarness(async (harness) => {
       const preflight = vi

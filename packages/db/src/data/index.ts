@@ -348,6 +348,7 @@ export {
   reviveFailedEnvironmentTeardown,
   updateRunningEnvironmentTeardown,
   retainRunningEnvironmentTeardown,
+  failRunningEnvironmentTeardown,
   releaseFinishedEnvironmentPreparationOwners,
   claimEnvironmentPath,
   findEnvironmentPathClaim,

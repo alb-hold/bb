@@ -764,6 +764,27 @@ export function updateRunningEnvironmentTeardown(
   );
 }
 
+export function failRunningEnvironmentTeardown(
+  db: EnvironmentWriteConnection,
+  input: { environmentId: string; attempt: number; message: string; retireAt: number; keepSnapshot: boolean },
+): boolean {
+  return (
+    db
+      .update(environments)
+      .set({
+        teardownStatus: "failed",
+        teardownMessage: input.message,
+        teardownPriorStatus: input.keepSnapshot
+          ? sql`case when exists (select 1 from ${environmentHookOperations} where ${environmentHookOperations.id} = 'environment:' || ${environments.id} || ':' || coalesce(${environments.environmentProviderInstanceKey}, 'null') || ':teardown') then null else ${environments.teardownPriorStatus} end`
+          : null,
+        retireAt: input.retireAt,
+        updatedAt: Date.now(),
+      })
+      .where(and(eq(environments.id, input.environmentId), eq(environments.teardownStatus, "running"), eq(environments.teardownAttempt, input.attempt)))
+      .run().changes > 0
+  );
+}
+
 export function retainRunningEnvironmentTeardown(
   db: EnvironmentWriteConnection,
   input: { environmentId: string; attempt: number; message: string; retireAt: number },

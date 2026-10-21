@@ -34,6 +34,7 @@ import {
   getPreparingEnvironment,
   claimEnvironmentPath,
   claimEnvironmentTeardown,
+  failRunningEnvironmentTeardown,
   bindEnvironmentPath,
   listProviderLifecycleEnvironments,
   releaseUnstartedEnvironmentTeardown,
@@ -723,29 +724,21 @@ export function requestEnvironmentRemoval(
   return true;
 }
 
-function writeRunningTeardown(
-  deps: Pick<Deps, "db" | "hub">,
-  target: { environmentId: string; attempt: number },
-  change: Partial<EnvironmentRow>,
-): boolean {
-  const written = updateRunningEnvironmentTeardown(deps.db, target, change);
-  if (written)
-    deps.hub.notifyEnvironment(target.environmentId, ["metadata-changed"]);
-  return written;
-}
-
 function recordTeardownFailed(
   deps: Pick<Deps, "db" | "hub">,
   target: { environmentId: string; attempt: number },
   message: string,
   options: { keepSnapshot?: boolean } = {},
 ): boolean {
-  return writeRunningTeardown(deps, target, {
-    teardownStatus: "failed",
-    teardownMessage: message,
-    ...(options.keepSnapshot === true ? {} : { teardownPriorStatus: null }),
+  const written = failRunningEnvironmentTeardown(deps.db, {
+    ...target,
+    message,
     retireAt: Date.now() + teardownRetryDelayMs(target.attempt),
+    keepSnapshot: options.keepSnapshot === true,
   });
+  if (written)
+    deps.hub.notifyEnvironment(target.environmentId, ["metadata-changed"]);
+  return written;
 }
 
 function recordTeardownRetained(
@@ -943,15 +936,8 @@ async function runRemove(
         providerOwnedPath: row.providerOwnsPath,
       });
     } catch (error) {
-      const current = getEnvironment(deps.db, environmentId);
       recordTeardownFailed(deps, target, errorMessage(error), {
-        keepSnapshot:
-          !dispatched &&
-          current !== null &&
-          !environmentHookOperationExists(
-            deps.db,
-            environmentTeardownHookId(current),
-          ),
+        keepSnapshot: !dispatched,
       });
     }
   });

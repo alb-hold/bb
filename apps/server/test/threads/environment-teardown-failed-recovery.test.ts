@@ -3,6 +3,7 @@ import {
   environments,
   getEnvironment,
   getThread,
+  listEvents,
   threads,
 } from "@bb/db";
 import { makeHost } from "@bb/test-helpers/domain-fixtures";
@@ -259,6 +260,16 @@ describe("a thread unarchived onto a failed teardown that may have changed the w
         teardownPriorStatus: null,
       }),
     );
+    expect(
+      harness.db
+        .select({ id: environmentHookOperations.id })
+        .from(environmentHookOperations)
+        .all(),
+    ).toEqual([
+      {
+        id: `environment:${fixture.environment.id}:recovery-key:teardown`,
+      },
+    ]);
     return { ...fixture, record };
   }
 
@@ -321,6 +332,50 @@ describe("a thread unarchived onto a failed teardown that may have changed the w
         code: "environment_not_ready",
         message: expect.stringContaining(PARTIAL),
         details: { environmentStatus: "error", hasPath: true },
+      });
+    }));
+
+  it("fails the real re-provisioning of a live thread within one pass instead of waiting", async () =>
+    withTestHarness(async (harness) => {
+      const remove = vi
+        .fn<PluginEnvironmentProviderDeclaration["remove"]>()
+        .mockResolvedValueOnce({ status: "failed", message: PARTIAL })
+        .mockResolvedValue({ status: "removed" });
+      const fixture = await failAfterDispatch(harness, remove);
+      expect((await unarchive(harness, fixture.thread.id)).status).toBe(200);
+
+      const sent = await harness.app.request(
+        `/api/v1/threads/${fixture.thread.id}/send`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            mode: "auto",
+            input: [{ type: "text", text: "carry on" }],
+          }),
+        },
+      );
+      expect(sent.status, await sent.clone().text()).toBe(200);
+
+      await vi.waitFor(() =>
+        expect(getThread(harness.db, fixture.thread.id)?.status).toBe("error"),
+      );
+      const diagnostics = JSON.stringify(
+        listEvents(harness.db, { threadId: fixture.thread.id }),
+      );
+      expect(diagnostics).toContain(PARTIAL);
+      expect(diagnostics).toContain(PATH);
+      expect(diagnostics).toContain("Archive this thread");
+      expect(row(harness, fixture.environment.id)).toMatchObject({
+        status: "error",
+        teardownStatus: "failed",
+        teardownMessage: PARTIAL,
+      });
+      expect(remove).toHaveBeenCalledTimes(1);
+      const refused = await restore(harness, fixture.thread.id);
+      expect(refused.status).toBe(409);
+      expect(await readJson(refused)).toMatchObject({
+        code: "environment_not_ready",
       });
     }));
 
