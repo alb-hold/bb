@@ -54,7 +54,7 @@ routes share that server trust boundary.
 cross-client behavior of explicit clearing. The app shortcut uses Alt+Shift+N
 and remains active with terminal focus.
 
-## `sdk.terminals.experimental_surfaces`, `experimental_focus`, and `experimental_openBrowser`
+## `sdk.terminals.experimental_surfaces`, `experimental_focus`, `experimental_openBrowser`, and `experimental_layout`
 
 `experimental_surfaces.list({ threadId })` lists thread terminal surfaces with
 stable thread and terminal IDs, title, status, and kind. `experimental_focus({
@@ -65,13 +65,26 @@ and W4B browser panel placement used by terminal links. Clients without an
 in-app browser offer the URL through an Open action instead of creating an
 unavailable browser tab.
 The CLI surfaces are `bb terminal surfaces --thread`, `bb terminal focus`, and
-`bb terminal open-link`.
+`bb terminal open-link`. Focus and browser actions return `deliveredClients`,
+the number of open app sockets the request was sent to. Zero means no app was
+available; a positive count does not confirm receipt or application.
 
 Archived threads, unscoped terminals, unknown IDs, and terminals outside the
 target thread fail closed. The app client ignores unknown thread-open fields so
 older clients still navigate to the thread without attempting the new action.
 Audit cross-client broadcast behavior, split placement and compact drawer
 behavior, URL restrictions, and stale/foreign ID failures before stabilizing.
+`experimental_layout.split({ terminalId, side })` splits the terminal into a
+new sidebar pane; `experimental_layout.move({ terminalId, targetTerminalId })`
+moves its tab into the target terminal's pane. The CLI exposes these as
+`bb terminal split` and `bb terminal move`. Layout changes use the same
+sidebar split state as UI operations and persist in local storage. Requests
+return `deliveredClients`, the number of open app sockets the request was sent
+to. This does not confirm receipt or application; pane limits and compact
+layouts are client state.
+
+Audit each split side, pane limits, compact layouts, reload persistence,
+same-thread and stale terminal IDs, and old-client parsing before stabilizing.
 
 ## `sdk.terminals.experimental_surfaces`, `experimental_focus`, and `experimental_openBrowser`
 

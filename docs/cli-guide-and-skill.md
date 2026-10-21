@@ -1,15 +1,23 @@
 # CLI, Guide, And Skill
 
 Thread terminal actions are available through `bb terminal surfaces --thread
-<id> [--json]`, `bb terminal focus <terminalId>`, and `bb terminal open-link
-<terminalId> <url>`. The SDK exposes these as
+<id> [--json]`, `bb terminal focus <terminalId> [--json]`, `bb terminal open-link
+<terminalId> <url> [--json]`, `bb terminal split <terminalId> --side right|left|up|down
+[--json]`, and `bb terminal move <terminalId> --to-pane-of <otherTerminalId>
+[--json]`. The SDK exposes these as
 `terminals.experimental_surfaces.list({ threadId })`,
 `terminals.experimental_focus({ terminalId })`, and
-`terminals.experimental_openBrowser({ terminalId, url })`. The first lists
-server-known terminal surfaces; the latter two ask connected app clients to
-select and reveal the terminal tab or open the URL in the thread browser. A
-client without an in-app browser offers the URL through an Open action instead
-of creating an unavailable browser tab.
+`terminals.experimental_openBrowser({ terminalId, url })`,
+`terminals.experimental_layout.split({ terminalId, side })`, and
+`terminals.experimental_layout.move({ terminalId, targetTerminalId })`. The first lists
+server-known terminal surfaces; `deliveredClients` is the number of open app
+sockets the request was sent to. A zero-client response exits non-zero with a
+message to open bb and retry; a positive count does not confirm receipt or
+application. A client without an in-app browser offers the URL
+through an Open action instead of creating an unavailable browser tab. Pane
+limits and compact layouts are client state, so split and move can still be
+rejected by the app after the request is sent; the CLI cannot confirm whether
+the client received or applied them.
 
 `bb terminal output <id> --lines <n>` prints the latest lines, including from
 recently exited terminals. The server retains at most 64 KiB per terminal,

@@ -143,7 +143,8 @@ Opening threads and files in the app:
   panes, it replaces the focused pane.
   Pane actions broadcast to connected BB app windows and affect the matching
   already-open pane without changing its split tree, and report how many
-  clients received the action (SDK: `threads.paneAction({ threadId, action })`).
+  open app sockets the request was sent to; receipt and application are not
+  confirmed (SDK: `threads.paneAction({ threadId, action })`).
   Spotlight focuses that
   pane and dims the others; clear-spotlight focuses it and removes split dimming.
   The app command `pane.maximize.toggle` (default `Mod+Shift+E`) maximizes or

@@ -179,7 +179,7 @@ describe("@bb/sdk", () => {
   it("focuses a terminal through the thread-open action", async () => {
     const queue = createFetchQueue([
       { body: makeTerminalSession({ id: "term_focus" }) },
-      { body: { delivered: 1 } },
+      { body: { deliveredClients: 1 } },
     ]);
     const sdk = createBbSdk({
       transport: createHttpTransport({
@@ -189,7 +189,9 @@ describe("@bb/sdk", () => {
       }),
     });
 
-    await sdk.terminals.experimental_focus({ terminalId: "term_focus" });
+    await expect(
+      sdk.terminals.experimental_focus({ terminalId: "term_focus" }),
+    ).resolves.toEqual({ deliveredClients: 1 });
     expect(queue.requests[1]).toMatchObject({
       method: "POST",
       url: "http://bb.test/api/v1/threads/thr_test/open",
@@ -203,7 +205,7 @@ describe("@bb/sdk", () => {
   it("opens a URL through the thread-open browser action", async () => {
     const queue = createFetchQueue([
       { body: makeTerminalSession({ id: "term_browser" }) },
-      { body: { delivered: 1 } },
+      { body: { deliveredClients: 1 } },
     ]);
     const sdk = createBbSdk({
       transport: createHttpTransport({
@@ -213,10 +215,11 @@ describe("@bb/sdk", () => {
       }),
     });
 
-    await sdk.terminals.experimental_openBrowser({
+    const result = await sdk.terminals.experimental_openBrowser({
       terminalId: "term_browser",
       url: "http://localhost:3000",
     });
+    expect(result).toEqual({ deliveredClients: 1 });
     expect(queue.requests[1]?.bodyText).toBe(
       JSON.stringify({
         file: null,
@@ -227,6 +230,86 @@ describe("@bb/sdk", () => {
         },
       }),
     );
+  });
+
+  it("requests a persisted sidebar split through the thread-open signal", async () => {
+    const queue = createFetchQueue([
+      { body: makeTerminalSession({ id: "term_split" }) },
+      { body: { deliveredClients: 1 } },
+    ]);
+    const sdk = createBbSdk({
+      transport: createHttpTransport({
+        baseUrl: "http://bb.test",
+        fetch: queue.fetch,
+        runtime: "node",
+      }),
+    });
+
+    const result = await sdk.terminals.experimental_layout.split({
+      terminalId: "term_split",
+      side: "down",
+    });
+    expect(result).toEqual({ deliveredClients: 1 });
+    expect(queue.requests[1]?.bodyText).toBe(
+      JSON.stringify({
+        file: null,
+        terminalLayoutAction: {
+          action: "split",
+          terminalId: "term_split",
+          side: "down",
+        },
+      }),
+    );
+  });
+
+  it("moves a terminal only to another terminal in the same thread", async () => {
+    const queue = createFetchQueue([
+      { body: makeTerminalSession({ id: "term_move" }) },
+      { body: makeTerminalSession({ id: "term_target" }) },
+      { body: { deliveredClients: 1 } },
+    ]);
+    const sdk = createBbSdk({
+      transport: createHttpTransport({
+        baseUrl: "http://bb.test",
+        fetch: queue.fetch,
+        runtime: "node",
+      }),
+    });
+
+    const result = await sdk.terminals.experimental_layout.move({
+      terminalId: "term_move",
+      targetTerminalId: "term_target",
+    });
+    expect(result).toEqual({ deliveredClients: 1 });
+    expect(queue.requests[2]?.bodyText).toBe(
+      JSON.stringify({
+        file: null,
+        terminalLayoutAction: {
+          action: "move",
+          terminalId: "term_move",
+          targetTerminalId: "term_target",
+        },
+      }),
+    );
+
+    const foreignQueue = createFetchQueue([
+      { body: makeTerminalSession({ id: "term_move" }) },
+      { body: makeTerminalSession({ id: "term_foreign", threadId: "thr_other" }) },
+    ]);
+    const foreignSdk = createBbSdk({
+      transport: createHttpTransport({
+        baseUrl: "http://bb.test",
+        fetch: foreignQueue.fetch,
+        runtime: "node",
+      }),
+    });
+    await expect(
+      foreignSdk.terminals.experimental_layout.move({
+        terminalId: "term_move",
+        targetTerminalId: "term_foreign",
+      }),
+    ).rejects.toThrow("Terminal sessions must belong to the same thread");
+    expect(foreignQueue.requests).toHaveLength(2);
   });
 
   it("passes an optional native activity report credential as a header", async () => {

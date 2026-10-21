@@ -70,10 +70,14 @@ interface RepaintNudgeInFlight {
 
 interface PendingTerminalInput {
   bytes: number;
+  acceptedAt: number;
+  serializedAt: number;
+  tracksTiming: boolean;
   payload: string;
 }
 
 export interface TerminalWebSocketTransportOptions {
+  terminalId?: string;
   createSocket?: CreateTerminalBrowserSocket;
   drainPollMs?: number;
   heartbeatIntervalMs?: number;
@@ -82,6 +86,18 @@ export interface TerminalWebSocketTransportOptions {
   now?: () => number;
   onConnectionState?: (state: TerminalSocketConnectionState) => void;
   onInputOverflow?: (maxBytes: number) => void;
+  onInputAccepted?: (
+    terminalId: string,
+    timestamp: number,
+    inputEventAt?: number,
+    serializedAt?: number,
+  ) => void;
+  onInputSent?: (
+    terminalId: string,
+    acceptedAt: number,
+    sentAt: number,
+  ) => void;
+  onOutputFrameReceived?: (terminalId: string, timestamp: number) => void;
   onInvalidMessage?: () => void;
   onMessage: (message: TerminalServerMessage) => void;
   onRepaintNudgeSizeReleased?: (size: { cols: number; rows: number }) => void;
@@ -171,13 +187,22 @@ export class TerminalWebSocketTransport {
     this.options.onConnectionState?.("closed");
   }
 
-  sendInput(dataBase64: string): boolean {
+  sendInput(dataBase64: string, inputEventAt?: number): boolean {
+    const tracksInputTiming =
+      this.options.onInputAccepted !== undefined ||
+      this.options.onInputSent !== undefined;
+    const bytes = getTerminalBase64DecodedByteLength(dataBase64);
+    const payload = JSON.stringify({
+      type: "input",
+      dataBase64,
+    });
+    const serializedAt = tracksInputTiming ? this.now() : 0;
     const pending = {
-      bytes: getTerminalBase64DecodedByteLength(dataBase64),
-      payload: JSON.stringify({
-        type: "input",
-        dataBase64,
-      }),
+      bytes,
+      acceptedAt: 0,
+      serializedAt,
+      tracksTiming: tracksInputTiming,
+      payload,
     };
     const socket = this.socket;
     if (
@@ -186,11 +211,31 @@ export class TerminalWebSocketTransport {
       socketBufferedAmount(socket) <= this.socketHighWaterBytes &&
       this.pendingInputs.length === 0
     ) {
-      if (this.trySend(socket, pending.payload)) {
+      const onSent = (sentAt: number) => {
+        this.options.onInputAccepted?.(
+          this.options.terminalId ?? "",
+          sentAt,
+          inputEventAt,
+          serializedAt,
+        );
+        this.options.onInputSent?.(
+          this.options.terminalId ?? "",
+          sentAt,
+          sentAt,
+        );
+      };
+      if (
+        this.trySend(
+          socket,
+          pending.payload,
+          tracksInputTiming ? onSent : undefined,
+        )
+      ) {
         return true;
       }
+      return this.enqueueInput(pending, inputEventAt);
     }
-    return this.enqueueInput(pending);
+    return this.enqueueInput(pending, inputEventAt);
   }
 
   acknowledgeOutput(nextSeq: number): void {
@@ -502,6 +547,7 @@ export class TerminalWebSocketTransport {
     if (this.disposed || this.socket !== socket || typeof raw !== "string") {
       return;
     }
+    const receivedAt = this.options.onOutputFrameReceived ? this.now() : 0;
     let decoded: unknown;
     try {
       decoded = JSON.parse(raw);
@@ -545,6 +591,10 @@ export class TerminalWebSocketTransport {
         this.options.onSequenceGap?.(this.nextOutputSeq, message.chunk.seq);
       }
       this.nextOutputSeq = message.chunk.seq + 1;
+      this.options.onOutputFrameReceived?.(
+        this.options.terminalId ?? "",
+        receivedAt,
+      );
     }
     if (message.type === "exited") {
       this.terminalEnded = true;
@@ -606,13 +656,23 @@ export class TerminalWebSocketTransport {
     }, delay);
   }
 
-  private enqueueInput(pending: PendingTerminalInput): boolean {
+  private enqueueInput(
+    pending: PendingTerminalInput,
+    inputEventAt?: number,
+  ): boolean {
     if (this.pendingInputBytes + pending.bytes > this.inputQueueMaxBytes) {
       this.options.onInputOverflow?.(this.inputQueueMaxBytes);
       return false;
     }
     this.pendingInputs.push(pending);
     this.pendingInputBytes += pending.bytes;
+    pending.acceptedAt = pending.tracksTiming ? this.now() : 0;
+    this.options.onInputAccepted?.(
+      this.options.terminalId ?? "",
+      pending.acceptedAt,
+      inputEventAt,
+      pending.serializedAt,
+    );
     this.scheduleDrain();
     return true;
   }
@@ -628,7 +688,21 @@ export class TerminalWebSocketTransport {
       socketBufferedAmount(socket) <= this.socketHighWaterBytes
     ) {
       const pending = this.pendingInputs[0];
-      if (!pending || !this.trySend(socket, pending.payload)) {
+      if (
+        !pending ||
+        !this.trySend(
+          socket,
+          pending.payload,
+          this.options.onInputSent
+            ? (sentAt) =>
+                this.options.onInputSent?.(
+                  this.options.terminalId ?? "",
+                  pending.acceptedAt,
+                  sentAt,
+                )
+            : undefined,
+        )
+      ) {
         break;
       }
       this.pendingInputs.shift();
@@ -639,12 +713,17 @@ export class TerminalWebSocketTransport {
     }
   }
 
-  private trySend(socket: TerminalBrowserSocket, payload: string): boolean {
+  private trySend(
+    socket: TerminalBrowserSocket,
+    payload: string,
+    onSent?: (sentAt: number) => void,
+  ): boolean {
     if (socket.readyState !== SOCKET_OPEN) {
       return false;
     }
     try {
       socket.send(payload);
+      if (onSent !== undefined) onSent(this.now());
       return true;
     } catch {
       try {
