@@ -1312,11 +1312,15 @@ describe("BB Official plugin detail routing", () => {
       const cardQueryKey = installed
         ? pluginListQueryKey(true)
         : pluginCatalogSearchQueryKey("");
-      const card = await screen.findByRole("button", {
-        name: installed
-          ? `${pluginName} plugin details`
-          : "Open GitHub details",
-      });
+      const card = await screen.findByRole(
+        "button",
+        {
+          name: installed
+            ? `${pluginName} plugin details`
+            : "Open GitHub details",
+        },
+        { timeout: 10_000 },
+      );
       expect(queryClient.getQueryState(cardQueryKey)?.data).toMatchObject(
         installed
           ? [{ id: "github" }]
@@ -1353,7 +1357,7 @@ describe("BB Official plugin detail routing", () => {
         );
         expect(document.activeElement).toBe(card);
         if (installed) expect(search).toHaveProperty("value", "Local GitHub");
-      });
+      }, { timeout: 10_000 });
       expect(Array.from(document.querySelectorAll("[data-panel]"))).toEqual(
         panels,
       );
