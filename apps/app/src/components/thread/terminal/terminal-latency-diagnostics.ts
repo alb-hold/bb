@@ -101,6 +101,7 @@ type FormFactor = "desktop" | "phone";
 type PendingTerminalInput = {
   formFactor: FormFactor;
   terminalId: string;
+  inputEventAt?: number;
   sentAt?: number;
   timestamp: number;
 };
@@ -110,7 +111,8 @@ const pendingInputs: PendingTerminalInput[] = [];
 const pendingRenders: Array<{
   formFactor: FormFactor;
   terminalId: string;
-  inputTimestamp: number | null;
+  inputAcceptedAt: number | null;
+  inputEventAt: number | null;
   receivedAt: number;
 }> = [];
 
@@ -138,7 +140,12 @@ export function recordTerminalInputAccepted(
     acceptedAt - serializedTimestamp,
   );
   if (pendingInputs.length === RING_SIZE) pendingInputs.shift();
-  pendingInputs.push({ formFactor, terminalId, timestamp: acceptedAt });
+  pendingInputs.push({
+    formFactor,
+    terminalId,
+    inputEventAt,
+    timestamp: acceptedAt,
+  });
 }
 
 export function recordTerminalInputWebSocketSent(
@@ -197,7 +204,8 @@ export function recordTerminalOutputReceived(
   pendingRenders.push({
     formFactor: firstInput?.formFactor ?? currentFormFactor(),
     terminalId,
-    inputTimestamp: firstInput?.timestamp ?? null,
+    inputAcceptedAt: firstInput?.timestamp ?? null,
+    inputEventAt: firstInput?.inputEventAt ?? null,
     receivedAt: timestamp,
   });
 }
@@ -216,14 +224,16 @@ export function recordTerminalOutputRendered(
   const frameReceivedAt = pending?.receivedAt ?? receivedAt;
   metrics[formFactor].outputRenderMs.add(renderedAt - frameReceivedAt);
   if (
-    pending?.inputTimestamp !== null &&
-    pending?.inputTimestamp !== undefined
+    pending?.inputAcceptedAt !== null &&
+    pending?.inputAcceptedAt !== undefined
   ) {
     metrics[formFactor].inputFirstOutputReceivedToRenderMs.add(
       renderedAt - frameReceivedAt,
     );
+  }
+  if (pending?.inputEventAt !== null && pending?.inputEventAt !== undefined) {
     metrics[formFactor].inputToFirstOutputRenderMs.add(
-      renderedAt - pending.inputTimestamp,
+      renderedAt - pending.inputEventAt,
     );
   }
 }

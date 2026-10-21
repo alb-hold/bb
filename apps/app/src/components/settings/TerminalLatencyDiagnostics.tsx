@@ -95,7 +95,7 @@ export function TerminalLatencyDiagnostics() {
             )}
           </div>
           <div>
-            Accepted → first output rendered:{" "}
+            Keystroke → first output rendered:{" "}
             {metricText(
               snapshot[formFactor].inputToFirstOutputRenderMs.count,
               snapshot[formFactor].inputToFirstOutputRenderMs.totalCount,

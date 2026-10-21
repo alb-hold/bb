@@ -46,6 +46,7 @@ describe("terminal latency diagnostics", () => {
       400,
     );
     expect(snapshot.desktop.inputAcceptanceToWebSocketSendMs.p50Ms).toBe(0.25);
+    expect(snapshot.desktop.inputToFirstOutputRenderMs.p50Ms).toBe(3);
     expect(
       snapshot.desktop.inputWebSocketSendToFirstOutputReceivedMs.count,
     ).toBe(256);
@@ -97,9 +98,9 @@ describe("terminal latency diagnostics", () => {
     vi.stubGlobal("window", { innerWidth: 390 });
     const keystroke = "private-keystroke-7f31";
     const output = "private-terminal-output-93ad";
-    recordTerminalInputAccepted("term-a", 100);
-    recordTerminalInputAccepted("term-a", 108);
-    recordTerminalInputAccepted("term-a", 116);
+    recordTerminalInputAccepted("term-a", 100, 90);
+    recordTerminalInputAccepted("term-a", 108, 98);
+    recordTerminalInputAccepted("term-a", 116, 106);
     recordTerminalInputWebSocketSent("term-a", 100, 101);
     recordTerminalInputWebSocketSent("term-a", 108, 109);
     recordTerminalInputWebSocketSent("term-a", 116, 117);
@@ -118,7 +119,7 @@ describe("terminal latency diagnostics", () => {
     ).toBe(29);
     expect(
       getTerminalLatencyDiagnostics().phone.inputToFirstOutputRenderMs.p50Ms,
-    ).toBe(40);
+    ).toBe(50);
     expect(
       getTerminalLatencyDiagnostics().phone.inputFirstOutputReceivedToRenderMs
         .p50Ms,
@@ -213,5 +214,36 @@ describe("terminal latency diagnostics", () => {
       getTerminalLatencyDiagnostics().desktop.inputToFirstOutputReceivedMs
         .totalCount,
     ).toBe(before + 256);
+  });
+
+  it("measures the first rendered output from the keystroke timestamp", () => {
+    const before =
+      getTerminalLatencyDiagnostics().desktop.inputToFirstOutputRenderMs
+        .totalCount;
+    for (let index = 0; index < 32; index += 1) {
+      const inputEventAt = 1_000_000 + index * 100;
+      const acceptedAt = inputEventAt + 10;
+      const sentAt = inputEventAt + 20;
+      const receivedAt = inputEventAt + 30;
+      const terminalId = `term-keystroke-anchor-${index}`;
+      recordTerminalInputAccepted(
+        terminalId,
+        acceptedAt,
+        inputEventAt,
+        inputEventAt + 5,
+      );
+      recordTerminalInputWebSocketSent(terminalId, acceptedAt, sentAt);
+      recordTerminalOutputReceived(terminalId, receivedAt);
+      recordTerminalOutputRendered(
+        terminalId,
+        receivedAt,
+        inputEventAt + 5_000,
+      );
+    }
+
+    const metric =
+      getTerminalLatencyDiagnostics().desktop.inputToFirstOutputRenderMs;
+    expect(metric.totalCount).toBe(before + 32);
+    expect(metric.p95Ms).toBe(5_000);
   });
 });
