@@ -41,6 +41,8 @@ import {
   createTerminalViewportReplaySaveGate,
   createTerminalViewportPersistence,
   createTerminalTouchViewportSaveScheduler,
+  createTerminalOutputLineAnchorTracker,
+  findTerminalOutputLineAnchor,
   readTerminalViewportAnchor,
   resolveTerminalViewportRestore,
   terminalViewportStorageKey,
@@ -258,14 +260,14 @@ describe("terminal viewport restore", () => {
 
     writeTerminalViewportAnchor(storage, key, {
       distanceFromTail: 12,
-      lineOffset: -3,
+      lineOffset: 3,
       outputSequence: 42,
     });
 
     const anchor = readTerminalViewportAnchor(storage, key);
     expect(anchor).toEqual({
       distanceFromTail: 12,
-      lineOffset: -3,
+      lineOffset: 3,
       outputSequence: 42,
     });
     expect(
@@ -276,10 +278,110 @@ describe("terminal viewport restore", () => {
         replayNextSequence: 50,
         replayStartSequence: 20,
       }),
-    ).toBe(48);
+    ).toBe(54);
   });
 
   it("restores the same content line when 500 newer lines replay", () => {
+    expect(
+      resolveTerminalViewportRestore({
+        anchor: {
+          distanceFromTail: 18,
+          lineOffset: 2,
+          outputSequence: 64,
+        },
+        baseY: 600,
+        outputLineAnchors: [{ sequence: 64, line: 310 }],
+        replayNextSequence: 565,
+        replayStartSequence: 50,
+      }),
+    ).toBe(312);
+  });
+
+  it("restores the middle of one large output chunk at the same content line", () => {
+    let currentLine = 0;
+    const tracker = createTerminalOutputLineAnchorTracker({
+      getCurrentLine: () => currentLine,
+    });
+    currentLine = 3213;
+    const originalAnchor = tracker.recordParsedOutput(0);
+    const visibleLine = 1596;
+    const visibleOutput = findTerminalOutputLineAnchor(
+      [originalAnchor],
+      visibleLine,
+    );
+    const saved = {
+      distanceFromTail: 1617,
+      lineOffset: Math.max(0, visibleLine - (visibleOutput?.line ?? 0)),
+      outputSequence: visibleOutput?.sequence ?? 0,
+    };
+
+    currentLine = 0;
+    tracker.reset();
+    currentLine = 3213;
+    const replayAnchor = tracker.recordParsedOutput(0);
+
+    expect(originalAnchor).toEqual({ sequence: 0, line: 0 });
+    expect(saved.lineOffset).toBe(1596);
+    expect(
+      resolveTerminalViewportRestore({
+        anchor: saved,
+        baseY: 3213,
+        outputLineAnchors: [replayAnchor],
+        replayNextSequence: 1,
+        replayStartSequence: 0,
+      }),
+    ).toBe(visibleLine);
+  });
+
+  it("restores a content line inside its middle output chunk", () => {
+    let currentLine = 0;
+    const tracker = createTerminalOutputLineAnchorTracker({
+      getCurrentLine: () => currentLine,
+    });
+    const originalAnchors: ReturnType<typeof tracker.recordParsedOutput>[] = [];
+    for (const [sequence, endLine] of [[10, 10], [11, 20], [12, 30]] as const) {
+      currentLine = endLine;
+      originalAnchors.push(tracker.recordParsedOutput(sequence));
+    }
+    const visibleOutput = findTerminalOutputLineAnchor(originalAnchors, 15);
+    const saved = {
+      distanceFromTail: 5,
+      lineOffset: Math.max(0, 15 - (visibleOutput?.line ?? 0)),
+      outputSequence: visibleOutput?.sequence ?? 0,
+    };
+    tracker.reset();
+    const replayAnchors: ReturnType<typeof tracker.recordParsedOutput>[] = [];
+    for (const [sequence, endLine] of [[10, 10], [11, 20], [12, 30]] as const) {
+      currentLine = endLine;
+      replayAnchors.push(tracker.recordParsedOutput(sequence));
+    }
+
+    expect(visibleOutput).toEqual({ sequence: 11, line: 10 });
+    expect(
+      resolveTerminalViewportRestore({
+        anchor: saved,
+        baseY: 30,
+        outputLineAnchors: replayAnchors,
+        replayNextSequence: 13,
+        replayStartSequence: 10,
+      }),
+    ).toBe(15);
+  });
+
+  it("restores an old negative line offset to the chunk start", () => {
+    expect(() =>
+      resolveTerminalViewportRestore({
+        anchor: {
+          distanceFromTail: 18,
+          lineOffset: -2,
+          outputSequence: 64,
+        },
+        baseY: 600,
+        outputLineAnchors: [{ sequence: 64, line: 310 }],
+        replayNextSequence: 565,
+        replayStartSequence: 50,
+      }),
+    ).not.toThrow();
     expect(
       resolveTerminalViewportRestore({
         anchor: {
@@ -292,7 +394,7 @@ describe("terminal viewport restore", () => {
         replayNextSequence: 565,
         replayStartSequence: 50,
       }),
-    ).toBe(308);
+    ).toBe(310);
   });
 
   it("restores to the top of replay when the anchored chunk expired", () => {

@@ -4,6 +4,42 @@ export interface TerminalViewportAnchor {
   outputSequence: number;
 }
 
+export interface TerminalOutputLineAnchor {
+  sequence: number;
+  line: number;
+}
+
+export function createTerminalOutputLineAnchorTracker(args: {
+  getCurrentLine: () => number;
+}): {
+  reset: () => void;
+  recordParsedOutput: (sequence: number) => TerminalOutputLineAnchor;
+} {
+  const { getCurrentLine } = args;
+  let nextOutputStartLine = getCurrentLine();
+  return {
+    reset: () => {
+      nextOutputStartLine = getCurrentLine();
+    },
+    recordParsedOutput: (sequence) => {
+      const anchor = { sequence, line: nextOutputStartLine };
+      nextOutputStartLine = getCurrentLine();
+      return anchor;
+    },
+  };
+}
+
+export function findTerminalOutputLineAnchor(
+  anchors: readonly TerminalOutputLineAnchor[],
+  visibleLine: number,
+): TerminalOutputLineAnchor | undefined {
+  let visibleAnchor: TerminalOutputLineAnchor | undefined;
+  for (const anchor of anchors) {
+    if (anchor.line <= visibleLine) visibleAnchor = anchor;
+  }
+  return visibleAnchor ?? anchors[0];
+}
+
 export interface TerminalViewportStorage
   extends Pick<Storage, "getItem" | "setItem" | "removeItem" | "key" | "length"> {}
 
@@ -242,6 +278,6 @@ export function resolveTerminalViewportRestore(args: {
   }
   return Math.max(
     0,
-    Math.min(baseY, outputAnchor.line + (anchor.lineOffset ?? 0)),
+    Math.min(baseY, outputAnchor.line + Math.max(0, anchor.lineOffset ?? 0)),
   );
 }

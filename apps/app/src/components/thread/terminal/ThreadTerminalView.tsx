@@ -57,9 +57,11 @@ import { loadOptionalTerminalSearchAddon } from "./terminal-search-addon";
 import { TerminalTextSelectSheet } from "./TerminalTextSelectSheet";
 import { terminalTextSnapshot } from "./terminal-text-snapshot";
 import {
+  createTerminalOutputLineAnchorTracker,
   createTerminalViewportReplaySaveGate,
   createTerminalViewportPersistence,
   createTerminalTouchViewportSaveScheduler,
+  findTerminalOutputLineAnchor,
   readTerminalViewportAnchor,
   resolveTerminalViewportRestore,
   terminalViewportStorageKey,
@@ -1287,6 +1289,12 @@ export function ThreadTerminalView({
     let latestOutputSequence = 0;
     let anchoredOutputSequence = 0;
     const outputLineAnchors: { sequence: number; line: number }[] = [];
+    const outputLineAnchorTracker = createTerminalOutputLineAnchorTracker({
+      getCurrentLine: () => {
+        const buffer = terminal?.buffer.active;
+        return buffer ? buffer.baseY + buffer.cursorY : 0;
+      },
+    });
     let savedOutputLineAnchor: { sequence: number; line: number } | null = null;
     let hasRestoredViewport = false;
     let hasManualScrollIntent = false;
@@ -1564,12 +1572,14 @@ export function ThreadTerminalView({
         let lineOffset = savedViewportAnchor?.lineOffset ?? 0;
         if (hasManualScrollIntent) {
           const visibleLine = activeBuffer.viewportY;
-          const visibleOutput = outputLineAnchors.find(
-            (anchor) => anchor.line >= visibleLine,
+          const mappedOutput = findTerminalOutputLineAnchor(
+            outputLineAnchors,
+            visibleLine,
           );
-          const mappedOutput = visibleOutput ?? outputLineAnchors.at(-1);
           savedOutputLineAnchor = mappedOutput ?? null;
-          lineOffset = visibleOutput ? visibleLine - visibleOutput.line : 0;
+          lineOffset = mappedOutput
+            ? Math.max(0, visibleLine - mappedOutput.line)
+            : 0;
           anchoredOutputSequence =
             mappedOutput?.sequence ??
             latestOutputSequence;
@@ -1840,11 +1850,8 @@ export function ThreadTerminalView({
             },
             onSessionChange: onSessionChangeRef.current,
             onOutputParsed: (sequence) => {
-              const buffer = activeTerminal.buffer.active;
-              const outputAnchor = {
-                sequence,
-                line: buffer.baseY + buffer.cursorY,
-              };
+              const outputAnchor =
+                outputLineAnchorTracker.recordParsedOutput(sequence);
               outputLineAnchors.push(outputAnchor);
               if (sequence === savedViewportAnchor?.outputSequence) {
                 savedOutputLineAnchor = outputAnchor;
@@ -1887,6 +1894,7 @@ export function ThreadTerminalView({
             setReplayStartSequence: (sequence) => {
               replayStartSequence = sequence;
               latestOutputSequence = Math.max(latestOutputSequence, sequence);
+              outputLineAnchorTracker.reset();
             },
             terminal: activeTerminal,
             pipeline: outputPipeline ?? undefined,
@@ -1897,6 +1905,7 @@ export function ThreadTerminalView({
         onSequenceGap: () => {
           outputLineAnchors.length = 0;
           activeTerminal.reset();
+          outputLineAnchorTracker.reset();
           writeTerminalStatus({
             terminal: activeTerminal,
             text: "Some terminal output was unavailable after reconnect",
