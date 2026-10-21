@@ -128,6 +128,7 @@ function toPluginSidebarThreadCached(
     hostNamesById,
     titleResources,
     now,
+    nativeActivityUnconfirmed,
   );
   pluginSidebarThreadByEntry.set(entry, {
     hostNamesById,

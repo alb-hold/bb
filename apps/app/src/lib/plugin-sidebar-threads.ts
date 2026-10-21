@@ -20,8 +20,14 @@ export function toPluginSidebarThread(
   hostNamesById: ReadonlyMap<string, string> = new Map(),
   titleResources: ThreadTitleMentionResources = EMPTY_TITLE_MENTION_RESOURCES,
   now = Date.now(),
+  nativeActivityUnconfirmed = isNativeActivityUnconfirmed(entry.runtime, now),
 ): PluginSidebarThread {
-  const indicatorState = threadListIndicatorStateForThread(entry, false, now);
+  const indicatorState = threadListIndicatorStateForThread(
+    entry,
+    false,
+    now,
+    nativeActivityUnconfirmed,
+  );
   const indicator = resolveThreadListIndicator({
     ...indicatorState,
     isAutomationWoken:
@@ -52,7 +58,7 @@ export function toPluginSidebarThread(
       : {
           experimental_nativeActivity: {
             ...entry.runtime.nativeActivity,
-            confirmation: isNativeActivityUnconfirmed(entry.runtime, now)
+            confirmation: nativeActivityUnconfirmed
               ? "unconfirmed"
               : "confirmed",
           },

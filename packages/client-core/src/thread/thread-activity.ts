@@ -24,9 +24,10 @@ type ThreadActivityStateShape = Pick<ThreadListEntry, "activity">;
 function isRuntimeBusyThread(
   thread: ThreadRuntimeShape,
   now = Date.now(),
+  nativeActivityUnconfirmed = isNativeActivityUnconfirmed(thread.runtime, now),
 ): boolean {
   return (
-    !isNativeActivityUnconfirmed(thread.runtime, now) &&
+    !nativeActivityUnconfirmed &&
     isRunningThreadRuntimeDisplayStatus(thread.runtime.displayStatus)
   );
 }
@@ -152,6 +153,7 @@ export function threadListIndicatorStateForThread(
   thread: ThreadListEntry,
   hasUnsubmittedDraft: boolean,
   now = Date.now(),
+  nativeActivityUnconfirmed?: boolean,
 ): ThreadListIndicatorState {
   const unreadDone = isUnreadDoneThread(thread);
   return {
@@ -165,7 +167,11 @@ export function threadListIndicatorStateForThread(
     isGoalActive: hasActiveGoalActivity(thread),
     queuedWork: thread.queuedWork,
     isPlanModeActive: hasActivePlanModeActivity(thread),
-    isRuntimeActive: isRuntimeBusyThread(thread, now),
+    isRuntimeActive: isRuntimeBusyThread(
+      thread,
+      now,
+      nativeActivityUnconfirmed,
+    ),
     isWorkflowActive: hasActiveWorkflowActivity(thread),
   };
 }
