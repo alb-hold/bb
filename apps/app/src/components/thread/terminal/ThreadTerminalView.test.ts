@@ -369,19 +369,6 @@ describe("terminal viewport restore", () => {
   });
 
   it("restores an old negative line offset to the chunk start", () => {
-    expect(() =>
-      resolveTerminalViewportRestore({
-        anchor: {
-          distanceFromTail: 18,
-          lineOffset: -2,
-          outputSequence: 64,
-        },
-        baseY: 600,
-        outputLineAnchors: [{ sequence: 64, line: 310 }],
-        replayNextSequence: 565,
-        replayStartSequence: 50,
-      }),
-    ).not.toThrow();
     expect(
       resolveTerminalViewportRestore({
         anchor: {
