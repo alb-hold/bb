@@ -14,6 +14,7 @@ import {
 import { turnRequestEventDataSchema } from "@bb/domain";
 import type { PluginHookName } from "@get-bb/plugin-sdk";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { ApiError } from "../../src/errors.js";
 import {
   setPluginHookProvider,
   type PluginHookRegistration,
@@ -28,6 +29,7 @@ import {
   prepareThreadModelOverrideRecovery,
   recoverThreadModelOverride,
 } from "../../src/services/threads/thread-execution-override.js";
+import * as threadExecutionOverride from "../../src/services/threads/thread-execution-override.js";
 import { applyLoggedThreadLifecycleEvent } from "../../src/services/threads/lifecycle-outcome.js";
 import { acceptThreadSendRequest } from "../../src/services/threads/thread-send-request.js";
 import { buildExecutionOptions } from "../../src/services/threads/thread-commands.js";
@@ -39,6 +41,7 @@ import {
   registerHostRpcResponder,
 } from "../helpers/host-rpc.js";
 import {
+  listQueuedThreadCommands,
   reportQueuedCommandSuccess,
   waitForQueuedCommand,
 } from "../helpers/commands.js";
@@ -83,6 +86,7 @@ function installHooks(registry: HookRegistry): void {
 }
 
 afterEach(() => {
+  vi.restoreAllMocks();
   setPluginHookProvider(undefined);
   vi.useRealTimers();
 });
@@ -260,7 +264,7 @@ describe("the requested queue drain", () => {
         modelOverride: "claude-opus-5-5",
         reasoningLevelOverride: null,
       });
-      registerHostRpcResponder(harness, {
+      const offlineResponder = registerHostRpcResponder(harness, {
         hostId: host.id,
         sessionId: session.id,
         handle: ({ command }) => {
@@ -297,57 +301,103 @@ describe("the requested queue drain", () => {
       expect(listQueuedThreadMessages(harness.db, thread.id)).toMatchObject([
         { model: "claude-sonnet-5-5" },
       ]);
-    });
-  });
+      const [queued] = listQueuedThreadMessages(harness.db, thread.id);
 
-  it("propagates unexpected failures during queued override preparation", async () => {
-    await withTestHarness(async (harness) => {
-      const { thread } = seedRunnableThread(harness, {
-        child: true,
-        hostId: "host-queue-preparation-unexpected-error",
-        model: "claude-opus-5-5",
-        providerId: "claude-code",
-        status: "active",
-      });
-      setThreadExecutionOverride(harness.db, {
+      offlineResponder.unregister();
+      registerQueueModelCatalog(harness, host.id, session.id);
+      applyLoggedThreadLifecycleEvent(harness.deps, {
+        event: { type: "run.succeeded" },
         threadId: thread.id,
-        modelOverride: "claude-opus-5-5",
-        reasoningLevelOverride: null,
       });
-      const registry = harness.deps.providerRegistry;
-      const whenRegistrationsSettled =
-        registry.whenRegistrationsSettled.bind(registry);
-      let registrationWaits = 0;
-      vi.spyOn(registry, "whenRegistrationsSettled").mockImplementation(
-        async () => {
-          registrationWaits += 1;
-          if (registrationWaits === 3) {
-            throw new Error("Unexpected preparation failure");
-          }
-          await whenRegistrationsSettled();
-        },
-      );
+      expect(
+        await sendQueuedMessageNow(harness.deps, {
+          mode: "auto",
+          queuedMessageId: queued!.id,
+          threadId: thread.id,
+        }),
+      ).toEqual({ delivery: "sent" });
 
-      const response = await harness.app.request(
-        `/api/v1/threads/${thread.id}/queued-messages`,
-        {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            input: [{ type: "text", text: "do not hide unexpected failure" }],
-            model: "claude-sonnet-5-5",
-          }),
-        },
+      const dispatched = turnRequestEventDataSchema.parse(
+        JSON.parse(turnRequests(harness, thread.id).at(-1)!.data),
       );
-
-      expect(registrationWaits).toBe(3);
-      expect(response.status).toBe(500);
+      expect(dispatched.execution.model).toBe("claude-sonnet-5-5");
       expect(
         getThreadExecutionOverride(harness.db, thread.id)?.modelOverride,
       ).toBe("claude-opus-5-5");
       expect(listQueuedThreadMessages(harness.db, thread.id)).toEqual([]);
     });
   });
+
+  it.each([
+    { errorCode: "other_catalog_error", errorStatus: 503, name: "other code" },
+    {
+      errorCode: "model_catalog_unavailable",
+      errorStatus: 500,
+      name: "other status",
+    },
+  ] as const)(
+    "propagates $name from queued preparation without writes on both entry paths",
+    async ({ errorCode, errorStatus }) => {
+      for (const path of ["queue", "send"] as const) {
+        await withTestHarness(async (harness) => {
+          const { thread } = seedRunnableThread(harness, {
+            child: true,
+            hostId: `host-preparation-error-${path}-${errorStatus}`,
+            model: "claude-opus-5-5",
+            providerId: "claude-code",
+            status: "active",
+          });
+          setThreadExecutionOverride(harness.db, {
+            threadId: thread.id,
+            modelOverride: "claude-opus-5-5",
+            reasoningLevelOverride: null,
+          });
+          const eventCount = listEvents(harness.db, {
+            threadId: thread.id,
+          }).length;
+          const preparation = vi
+            .spyOn(
+              threadExecutionOverride,
+              "prepareThreadModelOverrideRecovery",
+            )
+            .mockRejectedValue(
+              new ApiError(
+                errorStatus,
+                errorCode,
+                "Injected model preparation failure",
+              ),
+            );
+
+          const response = await harness.app.request(
+            path === "queue"
+              ? `/api/v1/threads/${thread.id}/queued-messages`
+              : `/api/v1/threads/${thread.id}/send`,
+            {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({
+                input: [{ type: "text", text: `failure on ${path}` }],
+                model: "claude-sonnet-5-5",
+                ...(path === "send" ? { mode: "queue-if-active" } : {}),
+              }),
+            },
+          );
+
+          expect(preparation).toHaveBeenCalledOnce();
+          expect(response.status).toBe(errorStatus);
+          expect(await response.json()).toMatchObject({ code: errorCode });
+          expect(
+            getThreadExecutionOverride(harness.db, thread.id)?.modelOverride,
+          ).toBe("claude-opus-5-5");
+          expect(listQueuedThreadMessages(harness.db, thread.id)).toEqual([]);
+          expect(listEvents(harness.db, { threadId: thread.id })).toHaveLength(
+            eventCount,
+          );
+          preparation.mockRestore();
+        });
+      }
+    },
+  );
 
   it("recovers a compatible user model in a busy child send wait", async () => {
     await withTestHarness(async (harness) => {
@@ -386,6 +436,95 @@ describe("the requested queue drain", () => {
       expect(listQueuedThreadMessages(harness.db, thread.id)).toMatchObject([
         { model: "claude-sonnet-5-5", senderThreadId: null },
       ]);
+    });
+  });
+
+  it("queues a busy child send while its model catalogue is unavailable", async () => {
+    await withTestHarness(async (harness) => {
+      const { host, session, thread } = seedRunnableThread(harness, {
+        child: true,
+        hostId: "host-busy-child-send-catalogue-offline",
+        model: "claude-opus-5-5",
+        providerId: "claude-code",
+        status: "active",
+      });
+      const offlineResponder = registerHostRpcResponder(harness, {
+        hostId: host.id,
+        sessionId: session.id,
+        handle: ({ command }) => {
+          if (command.type === "host.read_workspace_agent_context") {
+            return { ok: true, result: EMPTY_WORKSPACE_AGENT_CONTEXT };
+          }
+          if (command.type === "provider.list_models") {
+            return {
+              ok: false,
+              errorCode: "host_unavailable",
+              errorMessage: "Host is offline",
+            };
+          }
+          throw new Error(`Unexpected host RPC command ${command.type}`);
+        },
+      });
+      setThreadExecutionOverride(harness.db, {
+        threadId: thread.id,
+        modelOverride: "claude-opus-5-5",
+        reasoningLevelOverride: null,
+      });
+
+      const response = await harness.app.request(
+        `/api/v1/threads/${thread.id}/send`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            input: [{ type: "text", text: "queue during host outage" }],
+            model: "claude-sonnet-5-5",
+            mode: "queue-if-active",
+          }),
+        },
+      );
+
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({ delivery: "queued" });
+      expect(
+        getThreadExecutionOverride(harness.db, thread.id)?.modelOverride,
+      ).toBe("claude-opus-5-5");
+      const [queued] = listQueuedThreadMessages(harness.db, thread.id);
+      expect(queued?.model).toBe("claude-sonnet-5-5");
+      expect(JSON.parse(queued!.content)).toEqual([
+        {
+          mentions: [],
+          text: "queue during host outage",
+          type: "text",
+        },
+      ]);
+      expect(JSON.parse(queued!.waitingOn!)).toEqual({ kind: "thread-busy" });
+      expect(
+        listQueuedThreadCommands(harness, "turn.submit", thread.id),
+      ).toEqual([]);
+
+      offlineResponder.unregister();
+      registerQueueModelCatalog(harness, host.id, session.id);
+      applyLoggedThreadLifecycleEvent(harness.deps, {
+        event: { type: "run.succeeded" },
+        threadId: thread.id,
+      });
+      expect(
+        await sendQueuedMessageNow(harness.deps, {
+          mode: "auto",
+          queuedMessageId: queued!.id,
+          threadId: thread.id,
+        }),
+      ).toEqual({ delivery: "sent" });
+
+      const dispatched = turnRequestEventDataSchema.parse(
+        JSON.parse(turnRequests(harness, thread.id).at(-1)!.data),
+      );
+      expect(dispatched.execution.model).toBe("claude-sonnet-5-5");
+      expect(
+        getThreadExecutionOverride(harness.db, thread.id)?.modelOverride,
+      ).toBe("claude-opus-5-5");
+      expect(listQueuedThreadMessages(harness.db, thread.id)).toEqual([]);
     });
   });
 
@@ -536,6 +675,106 @@ describe("the requested queue drain", () => {
       expect(JSON.parse(queuedRow!.waitingOn!)).toEqual({
         kind: "turn-starting",
       });
+    });
+  });
+
+  it("retries a POST send after the parent scope changes before turn-starting queue commit", async () => {
+    await withTestHarness(async (harness) => {
+      const { host, session, thread } = seedRunnableThread(harness, {
+        activeTurn: false,
+        child: true,
+        hostId: "host-send-turn-starting-parent-change",
+        model: "claude-opus-5-5",
+        providerId: "claude-code",
+        status: "active",
+      });
+      let changedScope = false;
+      registerHostRpcResponder(harness, {
+        hostId: host.id,
+        sessionId: session.id,
+        handle: ({ command }) => {
+          if (command.type === "host.read_workspace_agent_context") {
+            return { ok: true, result: EMPTY_WORKSPACE_AGENT_CONTEXT };
+          }
+          if (command.type === "provider.list_models") {
+            if (!changedScope) {
+              updateThread(harness.db, harness.deps.hub, thread.id, {
+                parentThreadId: null,
+              });
+              changedScope = true;
+            }
+            return {
+              ok: true,
+              result: {
+                models: [
+                  availableModelFixture({ model: "claude-opus-5-5" }),
+                  availableModelFixture({ model: "claude-sonnet-5-5" }),
+                ],
+                selectedOnlyModels: [],
+              },
+            };
+          }
+          throw new Error(`Unexpected host RPC command ${command.type}`);
+        },
+      });
+      setThreadExecutionOverride(harness.db, {
+        threadId: thread.id,
+        modelOverride: "claude-opus-5-5",
+        reasoningLevelOverride: null,
+      });
+
+      const response = await harness.app.request(
+        `/api/v1/threads/${thread.id}/send`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            input: [{ type: "text", text: "wait for the turn to start" }],
+            model: "claude-sonnet-5-5",
+            mode: "auto",
+          }),
+        },
+      );
+
+      expect(changedScope).toBe(true);
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({ delivery: "queued" });
+      expect(getThread(harness.db, thread.id)?.parentThreadId).toBeNull();
+      expect(
+        getThreadExecutionOverride(harness.db, thread.id)?.modelOverride,
+      ).toBe("claude-opus-5-5");
+      const queuedRows = listQueuedThreadMessages(harness.db, thread.id);
+      expect(queuedRows).toMatchObject([
+        { model: "claude-sonnet-5-5", waitingOn: expect.any(String) },
+      ]);
+      expect(JSON.parse(queuedRows[0]!.waitingOn!)).toEqual({
+        kind: "turn-starting",
+      });
+      expect(
+        getThreadExecutionOverride(harness.db, thread.id)?.modelOverride,
+      ).toBe("claude-opus-5-5");
+
+      registerQueueModelCatalog(harness, host.id, session.id);
+      applyLoggedThreadLifecycleEvent(harness.deps, {
+        event: { type: "run.succeeded" },
+        threadId: thread.id,
+      });
+      expect(
+        await sendQueuedMessageNow(harness.deps, {
+          mode: "auto",
+          queuedMessageId: queuedRows[0]!.id,
+          threadId: thread.id,
+        }),
+      ).toEqual({ delivery: "sent" });
+      expect(
+        turnRequestEventDataSchema.parse(
+          JSON.parse(turnRequests(harness, thread.id).at(-1)!.data),
+        ).execution.model,
+      ).toBe("claude-sonnet-5-5");
+      expect(
+        getThreadExecutionOverride(harness.db, thread.id)?.modelOverride,
+      ).toBe("claude-sonnet-5-5");
+      expect(listQueuedThreadMessages(harness.db, thread.id)).toEqual([]);
     });
   });
 
