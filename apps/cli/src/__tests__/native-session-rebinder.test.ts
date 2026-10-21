@@ -95,9 +95,11 @@ describe("native session rebinder", () => {
     ["a network failure", new TypeError("fetch failed")],
     ["a connection that was terminated", new TypeError("terminated")],
     [
-      "a transport error that carries a cause",
+      "a transport error whose cause carries a system code",
       new TypeError("other side closed", {
-        cause: new Error("connect ECONNREFUSED 127.0.0.1:1"),
+        cause: Object.assign(new Error("connect failed"), {
+          code: "ECONNREFUSED",
+        }),
       }),
     ],
     ["a client request timeout", new BbRequestTimeoutError(10_000)],
@@ -138,6 +140,10 @@ describe("native session rebinder", () => {
     ["a response that cannot be parsed", new SyntaxError("Unexpected token")],
     ["any other unexpected failure", new Error("boom")],
     ["a programming error", new TypeError("x is not a function")],
+    [
+      "a wrapped programming error without a system code",
+      new TypeError("x", { cause: new Error("y") }),
+    ],
   ])(
     "gives up for good on %s instead of retrying it silently",
     async (_name, failure) => {

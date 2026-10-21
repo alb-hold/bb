@@ -17,11 +17,21 @@ const RETRYABLE_CODES = new Set(["native_terminal_not_live"]);
 
 const UNDICI_TRANSPORT_MESSAGES = new Set(["fetch failed", "terminated"]);
 
+function hasSystemErrorCode(cause: unknown): boolean {
+  return (
+    typeof cause === "object" &&
+    cause !== null &&
+    "code" in cause &&
+    typeof cause.code === "string"
+  );
+}
+
 function isTransportFailure(error: unknown): boolean {
   if (error instanceof BbRequestTimeoutError) return true;
   return (
     error instanceof TypeError &&
-    (UNDICI_TRANSPORT_MESSAGES.has(error.message) || error.cause !== undefined)
+    (UNDICI_TRANSPORT_MESSAGES.has(error.message) ||
+      hasSystemErrorCode(error.cause))
   );
 }
 
