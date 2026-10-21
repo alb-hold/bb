@@ -85,6 +85,21 @@ interface PendingNativeTerminalOpen {
 
 const pendingOpens = new Map<string, PendingNativeTerminalOpen>();
 const pendingSends = new Map<string, Promise<void>>();
+const rebindsInFlight = new Map<string, number>();
+
+function beginNativeTerminalRebind(threadId: string): void {
+  rebindsInFlight.set(threadId, (rebindsInFlight.get(threadId) ?? 0) + 1);
+}
+
+function endNativeTerminalRebind(threadId: string): void {
+  const remaining = (rebindsInFlight.get(threadId) ?? 1) - 1;
+  if (remaining <= 0) rebindsInFlight.delete(threadId);
+  else rebindsInFlight.set(threadId, remaining);
+}
+
+export function isNativeTerminalRebindInFlight(threadId: string): boolean {
+  return rebindsInFlight.has(threadId);
+}
 const reattachEpochs = new Map<string, number>();
 
 function currentReattachEpoch(threadId: string): number {
@@ -439,43 +454,48 @@ async function openNativeTerminalOnce(
     }
   }
   const credential = issueNativeTerminalToolCredential(record.providerId);
-  clearNativeTerminalThreadEvidence(deps.db, thread.id);
-  const terminal = await deps.terminalSessions.createTerminal({
-    ...(args.repaintOnAttach
-      ? {
-          onTerminalStarted: (terminalId: string) =>
-            deps.terminalSessions.requestNativeTerminalRepaintOnNextAttach(
-              terminalId,
-            ),
-        }
-      : {}),
-    payload: {
-      cols: args.request.cols ?? NATIVE_TERMINAL_DEFAULT_COLS,
-      rows: args.request.rows ?? NATIVE_TERMINAL_DEFAULT_ROWS,
-      start: {
-        mode: "command",
-        command: nativeTerminalLaunchCommand({
-          executable: provider.cli.executable,
-          launchArgs: provider.cli.launchArgs,
-          reattachOnly: args.reattachOnly,
-          threadId: thread.id,
-        }),
+  beginNativeTerminalRebind(thread.id);
+  try {
+    clearNativeTerminalThreadEvidence(deps.db, thread.id);
+    const terminal = await deps.terminalSessions.createTerminal({
+      ...(args.repaintOnAttach
+        ? {
+            onTerminalStarted: (terminalId: string) =>
+              deps.terminalSessions.requestNativeTerminalRepaintOnNextAttach(
+                terminalId,
+              ),
+          }
+        : {}),
+      payload: {
+        cols: args.request.cols ?? NATIVE_TERMINAL_DEFAULT_COLS,
+        rows: args.request.rows ?? NATIVE_TERMINAL_DEFAULT_ROWS,
+        start: {
+          mode: "command",
+          command: nativeTerminalLaunchCommand({
+            executable: provider.cli.executable,
+            launchArgs: provider.cli.launchArgs,
+            reattachOnly: args.reattachOnly,
+            threadId: thread.id,
+          }),
+        },
+        target: { kind: "thread", threadId: thread.id },
+        title: provider.displayName,
       },
-      target: { kind: "thread", threadId: thread.id },
-      title: provider.displayName,
-    },
-    extraContributedEnv: [...providerEnv, credential.env],
-  });
-  setNativeTerminalToolCredential(deps.db, {
-    threadId: thread.id,
-    terminalSessionId: terminal.id,
-    credentialHash: credential.hash,
-  });
-  setNativeTerminalThreadTerminal(deps.db, {
-    threadId: thread.id,
-    terminalSessionId: terminal.id,
-  });
-  return toNativeTerminalThread(deps, record, terminal);
+      extraContributedEnv: [...providerEnv, credential.env],
+    });
+    setNativeTerminalToolCredential(deps.db, {
+      threadId: thread.id,
+      terminalSessionId: terminal.id,
+      credentialHash: credential.hash,
+    });
+    setNativeTerminalThreadTerminal(deps.db, {
+      threadId: thread.id,
+      terminalSessionId: terminal.id,
+    });
+    return toNativeTerminalThread(deps, record, terminal);
+  } finally {
+    endNativeTerminalRebind(thread.id);
+  }
 }
 
 export async function settlePendingNativeTerminalOpen(

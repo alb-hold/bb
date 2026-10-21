@@ -29,6 +29,7 @@ import type {
 import { requirePublicThread } from "../lib/entity-lookup.js";
 import { applyLoggedThreadLifecycleEvent } from "./lifecycle-outcome.js";
 import {
+  isNativeTerminalRebindInFlight,
   readRecordTerminal,
   requireLiveNativeTerminalToolThread,
   requireNativeTerminalToolCredential,
@@ -163,9 +164,10 @@ export function recordNativeTerminalActivity(
   });
   const currentTerminalIsLive =
     credentialIsCurrent && isCurrentTerminalLive(deps, args.threadId);
-  const currentNativeRecord = currentTerminalIsLive
-    ? getNativeTerminalThread(deps.db, args.threadId)
-    : null;
+  const currentNativeRecord =
+    currentTerminalIsLive && !isNativeTerminalRebindInFlight(args.threadId)
+      ? getNativeTerminalThread(deps.db, args.threadId)
+      : null;
   if (!credentialIsCurrent) {
     const binding = getNativeTerminalThread(deps.db, args.threadId);
     if (binding !== null && binding.lastEvidenceAt !== null) return;
@@ -252,6 +254,7 @@ export function recordNativeTerminalToolCallEvidence(
   args: { terminalSessionId: string; threadId: string },
 ): void {
   try {
+    if (isNativeTerminalRebindInFlight(args.threadId)) return;
     const now = Date.now();
     const stamp = stampNativeTerminalThreadToolCall(deps.db, {
       at: now,
