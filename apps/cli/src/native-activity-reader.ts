@@ -5,12 +5,13 @@ import {
   fileSize,
   JsonlTail,
   NativeActivityTracker,
+  readLastJsonlRecord,
   readRecordField,
+  recordMatches,
   type JsonlRecordLocation,
   type NativeActivityReport,
   type NativeActivitySignal,
 } from "./native-activity.js";
-import { statSync } from "node:fs";
 import { EvictedRecordIndex } from "./native-activity-index.js";
 import {
   findNativeSessionFile,
@@ -22,9 +23,10 @@ const MAX_RETAINED_TURNS = 128;
 const MAX_RECENT_EVICTED_IDS = 4096;
 const MAX_SESSION_ADOPTIONS = 16;
 const SESSION_ID_PATTERN = /^[0-9a-f-]{8,64}$/iu;
-const ADOPTION_CLOCK_SKEW_MS = 5_000;
 const ADOPTION_RETRY_AFTER_MS = 2_000;
 const MAX_ADOPTION_ATTEMPTS_TRACKED = 64;
+const MAX_HELD_FOREIGN_RECORDS = 64;
+const HELD_FOREIGN_RECORD_TTL_MS = 60_000;
 export type NativeActivityStart =
   | { kind: "discover" }
   | { kind: "start"; id: string }
@@ -74,6 +76,12 @@ export class NativeActivityReader {
   private transcriptTail: JsonlTail;
   private adoptedSessions = 0;
   private readonly adoptionAttempts = new Map<string, number>();
+  private readonly knownSessions = new Set<string>();
+  private heldForeign: Array<{
+    at: number;
+    record: unknown;
+    sessionId: string;
+  }> = [];
   private transcriptFile: string | null;
   private sessionId: string | null;
   private currentTurn: string | null = null;
@@ -103,9 +111,12 @@ export class NativeActivityReader {
       reason: "missing-session" | "foreign-session" | "unbound",
       total: number,
     ) => void,
-    private readonly onSessionAdopted?: (sessionId: string) => void,
-    private readonly launchedAtMs: number = Date.now(),
+    private readonly onSessionAdopted?: (
+      sessionId: string,
+      previousSessionId: string,
+    ) => void,
   ) {
+    if (start.kind !== "discover") this.knownSessions.add(start.id);
     if (start.kind === "resume") {
       this.sessionId = start.id;
       this.transcriptFile = start.transcriptFile;
@@ -137,7 +148,8 @@ export class NativeActivityReader {
       const unconfirmedHookReasons = new Set<
         "missing-session" | "foreign-session" | "unbound"
       >();
-      for (const record of this.hookTail.readRecords(this.eventsFile)) {
+      const incoming = this.hookTail.readRecords(this.eventsFile);
+      for (const record of [...this.takeAdoptableHeldRecords(), ...incoming]) {
         if (hooks.sessionIdField !== undefined) {
           const hookSession = this.stringField(record, hooks.sessionIdField);
           let reason: "missing-session" | "foreign-session" | "unbound" | null =
@@ -148,12 +160,9 @@ export class NativeActivityReader {
                 : hookSession !== this.sessionId
                   ? "foreign-session"
                   : null;
-          if (
-            reason === "foreign-session" &&
-            hookSession !== null &&
-            this.adoptSession(hookSession)
-          ) {
-            reason = null;
+          if (reason === "foreign-session" && hookSession !== null) {
+            if (this.adoptSession(hookSession)) reason = null;
+            else this.holdForeignRecord(record, hookSession);
           }
           if (reason !== null) {
             if (
@@ -260,9 +269,22 @@ export class NativeActivityReader {
     return fileSize(file) ?? Number.POSITIVE_INFINITY;
   }
 
+  private continuationNames(sessionId: string): boolean {
+    const rule = this.cli.activity?.transcript?.continuation;
+    if (rule === undefined || this.transcriptFile === null) return false;
+    const last = readLastJsonlRecord(this.transcriptFile);
+    return (
+      last !== null &&
+      recordMatches(rule.match, last) &&
+      readRecordField(last, rule.nextSessionId) === sessionId
+    );
+  }
+
   private adoptSession(sessionId: string): boolean {
     if (
       this.adoptedSessions >= MAX_SESSION_ADOPTIONS ||
+      this.knownSessions.has(sessionId) ||
+      this.sessionId === null ||
       !SESSION_ID_PATTERN.test(sessionId)
     ) {
       return false;
@@ -280,6 +302,7 @@ export class NativeActivityReader {
       const oldest = this.adoptionAttempts.keys().next().value;
       if (oldest !== undefined) this.adoptionAttempts.delete(oldest);
     }
+    if (!this.continuationNames(sessionId)) return false;
     let file: string | null;
     try {
       file = findNativeSessionFile(this.cli, this.env, sessionId);
@@ -287,14 +310,9 @@ export class NativeActivityReader {
       return false;
     }
     if (file === null) return false;
-    let modifiedAtMs: number;
-    try {
-      modifiedAtMs = statSync(file).mtimeMs;
-    } catch {
-      return false;
-    }
-    if (modifiedAtMs < this.launchedAtMs - ADOPTION_CLOCK_SKEW_MS) return false;
+    const previousSessionId = this.sessionId;
     this.adoptedSessions += 1;
+    this.knownSessions.add(sessionId);
     this.sessionId = sessionId;
     this.transcriptFile = file;
     this.transcriptTail = new JsonlTail(fileSize(file) ?? 0);
@@ -302,8 +320,38 @@ export class NativeActivityReader {
     this.unconfirmedHookBoundaryEstablished = false;
     this.currentTurn = null;
     this.workingRecord = null;
-    this.onSessionAdopted?.(sessionId);
+    this.onSessionAdopted?.(sessionId, previousSessionId);
     return true;
+  }
+
+  private holdForeignRecord(record: unknown, sessionId: string): void {
+    if (this.knownSessions.has(sessionId)) return;
+    const now = Date.now();
+    this.heldForeign = this.heldForeign.filter(
+      (held) => now - held.at < HELD_FOREIGN_RECORD_TTL_MS,
+    );
+    this.heldForeign.push({ at: now, record, sessionId });
+    if (this.heldForeign.length > MAX_HELD_FOREIGN_RECORDS) {
+      this.heldForeign.splice(
+        0,
+        this.heldForeign.length - MAX_HELD_FOREIGN_RECORDS,
+      );
+    }
+  }
+
+  private takeAdoptableHeldRecords(): unknown[] {
+    if (this.heldForeign.length === 0) return [];
+    for (const sessionId of new Set(this.heldForeign.map((h) => h.sessionId))) {
+      if (!this.adoptSession(sessionId)) continue;
+      const released = this.heldForeign
+        .filter((held) => held.sessionId === sessionId)
+        .map((held) => held.record);
+      this.heldForeign = this.heldForeign.filter(
+        (held) => held.sessionId !== sessionId,
+      );
+      return released;
+    }
+    return [];
   }
 
   private confirmHookIdentity(): void {

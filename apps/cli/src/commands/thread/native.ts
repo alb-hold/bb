@@ -330,10 +330,11 @@ async function holdNativeHarness(
             );
           }
         },
-        (adoptedSessionId) => {
+        (adoptedSessionId, previousSessionId) => {
           if (ownsSocket) {
             logNativeHolderEvent(socketPath, "activity-session-adopted", {
               sessionId: adoptedSessionId,
+              previousSessionId,
             });
           }
           const credential = currentCredential();
@@ -342,6 +343,7 @@ async function holdNativeHarness(
             .recordSession({
               authorization: `Bearer ${credential}`,
               nativeSessionId: adoptedSessionId,
+              replacesNativeSessionId: previousSessionId,
               threadId,
             })
             .then(
@@ -357,7 +359,6 @@ async function holdNativeHarness(
               },
             );
         },
-        Date.now(),
       );
       if (activity !== undefined) {
         activityTimers.push(

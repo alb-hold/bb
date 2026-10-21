@@ -107,6 +107,10 @@ export const recordNativeSessionRequestSchema = z
     nativeSessionId: z
       .string()
       .regex(/^[0-9a-f-]{8,64}$/iu, "expected a native session id"),
+    replacesNativeSessionId: z
+      .string()
+      .regex(/^[0-9a-f-]{8,64}$/iu, "expected a native session id")
+      .optional(),
   })
   .strict();
 export type RecordNativeSessionRequest = z.infer<

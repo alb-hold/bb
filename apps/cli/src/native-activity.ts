@@ -84,7 +84,10 @@ export function classifyHookRecord(
         return {
           state: null,
           prompt: null,
-          question: { id: `permission:${id}`, prompt: `${permission.label}: ${id}` },
+          question: {
+            id: `permission:${id}`,
+            prompt: `${permission.label}: ${id}`,
+          },
         };
       }
       if (permission.close.includes(event)) {
@@ -102,7 +105,7 @@ export function classifyHookRecord(
   return { state: null, prompt: null };
 }
 
-function recordMatches(
+export function recordMatches(
   match: ProviderNativeTerminalRecordMatch,
   record: unknown,
 ): boolean {
@@ -169,6 +172,31 @@ export function fileSize(filePath: string): number | null {
 export interface JsonlRecordLocation {
   offset: number;
   length: number;
+}
+
+const LAST_RECORD_WINDOW_BYTES = 64 * 1024;
+
+export function readLastJsonlRecord(filePath: string): unknown {
+  let descriptor: number | null = null;
+  try {
+    descriptor = openSync(filePath, "r");
+    const size = statSync(filePath).size;
+    const length = Math.min(size, LAST_RECORD_WINDOW_BYTES);
+    if (length === 0) return null;
+    const buffer = Buffer.alloc(length);
+    const read = readSync(descriptor, buffer, 0, length, size - length);
+    const lines = buffer
+      .subarray(0, read)
+      .toString("utf8")
+      .split("\n")
+      .filter((line) => line.trim().length > 0);
+    const last = lines.at(-1);
+    return last === undefined ? null : JSON.parse(last);
+  } catch {
+    return null;
+  } finally {
+    if (descriptor !== null) closeSync(descriptor);
+  }
 }
 
 export class JsonlTail {

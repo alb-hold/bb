@@ -2149,11 +2149,17 @@ describe("native terminal activity evidence across a swap", () => {
       threadId: string,
       nativeSessionId: string,
       authorization?: string,
+      replacesNativeSessionId: string | null = SESSION_ID,
     ) =>
       postJson(
         fixture,
         `/threads/${threadId}/native-terminal/session`,
-        { nativeSessionId },
+        {
+          nativeSessionId,
+          ...(replacesNativeSessionId === null
+            ? {}
+            : { replacesNativeSessionId }),
+        },
         authorization,
       );
     const boundSession = (fixture: Fixture, threadId: string) =>
@@ -2171,6 +2177,37 @@ describe("native terminal activity evidence across a swap", () => {
         `Bearer ${started.credential}`,
       );
       expect(response.status).toBe(200);
+      expect(boundSession(fixture, thread.id)).toBe(ROTATED);
+    });
+
+    it("is a compare-and-swap: it needs the id it replaces, and refuses a stale one", async () => {
+      const fixture = await createFixture();
+      const started = await startNativeThread(fixture);
+      const { thread } = started;
+      const authorization = `Bearer ${started.credential}`;
+      for (const replaces of [null, "0a0ffee0-1111-4222-8333-444455556666"]) {
+        const response = await recordSession(
+          fixture,
+          thread.id,
+          ROTATED,
+          authorization,
+          replaces,
+        );
+        expect(response.status).toBe(409);
+        expect(boundSession(fixture, thread.id)).toBe(SESSION_ID);
+      }
+      expect(
+        (await recordSession(fixture, thread.id, ROTATED, authorization))
+          .status,
+      ).toBe(200);
+      const replayed = await recordSession(
+        fixture,
+        thread.id,
+        "7d0ffee0-1111-4222-8333-444455556666",
+        authorization,
+        SESSION_ID,
+      );
+      expect(replayed.status).toBe(409);
       expect(boundSession(fixture, thread.id)).toBe(ROTATED);
     });
 

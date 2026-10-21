@@ -26,6 +26,7 @@ export interface NativeTerminalOpenArgs extends NativeTerminalThreadArgs {
 export interface NativeTerminalRecordSessionArgs extends NativeTerminalThreadArgs {
   authorization?: string;
   nativeSessionId: string;
+  replacesNativeSessionId?: string;
 }
 
 export interface NativeTerminalSwitchModeArgs extends NativeTerminalThreadArgs {
@@ -172,7 +173,12 @@ export function createNativeTerminalsArea(
         route().session.$post(
           {
             param: { id: input.threadId },
-            json: { nativeSessionId: input.nativeSessionId },
+            json: {
+              nativeSessionId: input.nativeSessionId,
+              ...(input.replacesNativeSessionId === undefined
+                ? {}
+                : { replacesNativeSessionId: input.replacesNativeSessionId }),
+            },
           },
           ...(Object.keys(init).length === 0 ? [] : [{ init }]),
         ),
