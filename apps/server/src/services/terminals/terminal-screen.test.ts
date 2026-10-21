@@ -79,6 +79,61 @@ async function replayWithSentinel(cols: number, rows: number, data: string) {
 }
 
 describe("renderTerminalScreen", () => {
+  it("only calls a retained RIS complete when every retained rendering matches the full stream", async () => {
+    const ris = "\u001bc";
+    const cases = [
+      { name: "RIS at the tail start", prefix: "prefix", tail: `${ris}#` },
+      { name: "RIS in the tail middle", prefix: "prefix", tail: `before${ris}#` },
+      { name: "RIS at the tail end", prefix: "prefix", tail: `#${ris}` },
+      { name: "RIS split at the retention boundary", prefix: "prefix\u001b", tail: `c#` },
+      ...[
+        ["OSC", "\u001b]0;unfinished"],
+        ["DCS", "\u001bP1;1qunfinished"],
+        ["APC", "\u001b_unfinished"],
+        ["PM", "\u001b^unfinished"],
+        ["SOS", "\u001bXunfinished"],
+        ["partial CSI", "\u001b[31"],
+      ].map(([name, prefix]) => ({
+        name: `RIS after an open ${name}`,
+        prefix,
+        tail: `${ris}#`,
+      })),
+      {
+        name: "RIS after inherited modes and a restored saved cursor",
+        prefix:
+          "\u001b(0\u001b)0\u001b*0\u001b+0\u001b[2;4r\u001b[?6h\u001b[3g\u001b[1;5H\u001bH\u001b[4h\u001b[?5h\u001b[?1049h\u001b[2;3H\u001b7",
+        tail: `${ris}\u001b8#`,
+      },
+    ] as const;
+
+    for (const testCase of cases) {
+      const fullStream = `${testCase.prefix}${testCase.tail}`;
+      const full = await renderTerminalScreen({
+        cols: 20,
+        rows: 4,
+        lines: undefined,
+        output: output(fullStream),
+      });
+      const retained = await renderTerminalScreen({
+        cols: 20,
+        rows: 4,
+        lines: undefined,
+        output: output(testCase.tail, true),
+      });
+      if (testCase.name === "RIS split at the retention boundary") {
+        expect(retained.complete, testCase.name).toBe(false);
+      } else {
+        expect(retained.complete, testCase.name).toBe(true);
+      }
+      if (retained.complete) {
+        expect(
+          { rows: retained.rows, cursor: retained.cursor },
+          testCase.name,
+        ).toEqual({ rows: full.rows, cursor: full.cursor });
+      }
+    }
+  });
+
   it("uses a retained full reset as proof that earlier modes cannot affect the screen", async () => {
     const data = `${"x".repeat(65_500)}\u001bc\u001b[H#`;
     const yieldSpy = vi.spyOn(globalThis, "setImmediate");
@@ -91,7 +146,7 @@ describe("renderTerminalScreen", () => {
       });
       expect(screen.complete).toBe(true);
       expect(screen.rows[0]).toBe("#");
-      expect(yieldSpy.mock.calls.length).toBeLessThan(20);
+      expect(yieldSpy.mock.calls.length).toBeLessThan(80);
     } finally {
       yieldSpy.mockRestore();
     }

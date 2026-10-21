@@ -120,6 +120,37 @@ function sentinelGrid(cols: number, rows: number) {
   ).join("")}\u001b[${rows};1H`;
 }
 
+const parserSetups = [
+  "\u001b[",
+  "\u001b]0;",
+  "\u001bP1;1q",
+  "\u001bX",
+  "\u001b^",
+  "\u001b_",
+  "\u001b",
+];
+
+async function resetIsParserIndependent(
+  data: Buffer,
+  cols: number,
+  rows: number,
+  blankTerminal: HeadlessTerminal,
+) {
+  for (const parserSetup of parserSetups) {
+    await yieldToEventLoop();
+    const parserStateTerminal = createTerminal(cols, rows);
+    try {
+      await writeTerminal(parserStateTerminal, sentinelGrid(cols, rows));
+      await writeTerminal(parserStateTerminal, parserSetup);
+      await writeTerminal(parserStateTerminal, data);
+      if (!sameVisibleScreen(blankTerminal, parserStateTerminal)) return false;
+    } finally {
+      parserStateTerminal.dispose();
+    }
+  }
+  return true;
+}
+
 async function replayIsComplete(
   data: Buffer,
   cols: number,
@@ -172,15 +203,6 @@ async function replayIsComplete(
   const savedCursorSetup = "\u001b(A\u001b[31m\u001b[2;5H\u001b7";
   const tabStopSetup = "\u001b[3g\u001b[1;5H\u001bH\u001b[1;1H";
   const protectedCellSetup = "\u001b[1\"qP";
-  const parserSetups = [
-    "\u001b[",
-    "\u001b]0;",
-    "\u001bP1;1q",
-    "\u001bX",
-    "\u001b^",
-    "\u001b_",
-    "\u001b",
-  ];
   const screenSentinel = `${sentinelGrid(cols, rows)}\u001b[1;1H`;
   const initialScreens = [screenSentinel];
   if (hasAlternateScreenSwitch) {
@@ -286,10 +308,11 @@ export async function renderTerminalScreen(args: {
       data = data.subarray(safeTailStart(data));
     }
     await writeTerminal(terminal, data);
-    const complete =
-      !args.output.truncated ||
-      sawFullReset ||
-      (await replayIsComplete(data, args.cols, args.rows, terminal));
+    const complete = !args.output.truncated
+      ? true
+      : sawFullReset
+        ? await resetIsParserIndependent(data, args.cols, args.rows, terminal)
+        : await replayIsComplete(data, args.cols, args.rows, terminal);
     const buffer = terminal.buffer.active;
     let end = buffer.baseY + terminal.rows;
     if (args.lines !== undefined) {
