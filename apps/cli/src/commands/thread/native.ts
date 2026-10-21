@@ -12,7 +12,6 @@ import { Command } from "commander";
 import type { NativeTerminalThread } from "@bb/server-contract";
 import { action, CliExitError } from "../../action.js";
 import { cliFetch, createCliBbSdk } from "../../client.js";
-import { BbHttpError } from "@bb/sdk";
 import { createNodeBbSdk } from "@bb/sdk/node";
 import {
   takeNativeToolCredentialFromEnv,
@@ -20,7 +19,7 @@ import {
 } from "../../native-tool-credential.js";
 import { requireThreadIdOrSelf } from "../../context-env.js";
 import { fillNativeTerminalTemplate } from "@bb/domain";
-import { createNativeSessionRebinder } from "../../native-session-rebinder.js";
+import { createNativeActivityWiring } from "../../native-activity-wiring.js";
 import { createNativeActivityReporter } from "../../native-activity-reporter.js";
 import { nativeActivityHookSettings } from "../../native-activity.js";
 import {
@@ -226,31 +225,15 @@ async function holdNativeHarness(
     threadId,
   });
   const report = reporter.report;
-  const rebinder = createNativeSessionRebinder({
+  const wiring = createNativeActivityWiring({
     currentCredential: () => currentCredential(),
-    onRefused: (move, code) => {
-      reader?.suspend();
-      if (ownsSocket) {
-        logNativeHolderEvent(socketPath, "activity-session-rebind-refused", {
-          code,
-          sessionId: move.sessionId,
-        });
-      }
+    log: (event, fields) => {
+      if (ownsSocket) logNativeHolderEvent(socketPath, event, fields);
     },
-    recordSession: async (args) => {
-      try {
-        return await sdk.nativeTerminals.recordSession({ ...args, threadId });
-      } catch (error) {
-        if (ownsSocket) {
-          logNativeHolderEvent(socketPath, "activity-session-rebind-deferred", {
-            code: error instanceof BbHttpError ? error.code : null,
-            sessionId: args.nativeSessionId,
-            status: error instanceof BbHttpError ? error.status : null,
-          });
-        }
-        throw error;
-      }
-    },
+    reader: () => reader,
+    recordSession: (args) =>
+      sdk.nativeTerminals.recordSession({ ...args, threadId }),
+    report,
   });
   const readActivity = (): void => {
     for (const next of reader?.read() ?? []) report(next);
@@ -266,10 +249,7 @@ async function holdNativeHarness(
     holderSid: process.pid,
     cwd,
     env: process.env,
-    onCredentialChanged: () => {
-      rebinder.retry();
-      report(reader?.heartbeat() ?? null);
-    },
+    onCredentialChanged: wiring.onCredentialChanged,
     prepare: async ({
       credential,
       credentialSocket,
@@ -359,26 +339,12 @@ async function holdNativeHarness(
             );
           }
         },
-        (adoptedSessionId, previousSessionId) => {
-          if (ownsSocket) {
-            logNativeHolderEvent(socketPath, "activity-session-adopted", {
-              sessionId: adoptedSessionId,
-              previousSessionId,
-            });
-          }
-          rebinder.enqueue({
-            previousSessionId,
-            sessionId: adoptedSessionId,
-          });
-        },
+        wiring.onSessionAdopted,
       );
       if (activity !== undefined) {
         activityTimers.push(
           setInterval(readActivity, ACTIVITY_POLL_INTERVAL_MS),
-          setInterval(() => {
-            rebinder.retry();
-            report(reader?.heartbeat() ?? null);
-          }, ACTIVITY_HEARTBEAT_INTERVAL_MS),
+          setInterval(wiring.onHeartbeatTick, ACTIVITY_HEARTBEAT_INTERVAL_MS),
         );
       }
       return { command: launch.command, args: launch.args };
@@ -408,7 +374,7 @@ async function holdNativeHarness(
   readActivity();
   finishActivity();
   await Promise.race([
-    Promise.all([reporter.settled(), rebinder.settled()]),
+    Promise.all([reporter.settled(), wiring.settled()]),
     new Promise((resolve) => setTimeout(resolve, ACTIVITY_FLUSH_TIMEOUT_MS)),
   ]);
   if (eventsFile !== null) rmSync(eventsFile, { force: true });
