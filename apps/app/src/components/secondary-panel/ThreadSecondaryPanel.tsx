@@ -228,6 +228,7 @@ export interface ThreadSecondaryPanelProps {
   ) => ReactNode;
   onCreateTerminalInNewPane?: () => Promise<string | null>;
   splitPanelStateId?: string;
+  splitTabToRightRequest?: { requestId: number; tabId: string } | null;
   isOpen: boolean;
   showConversationCollapseControl?: boolean;
   showFullScreenShortcut?: boolean;
@@ -270,6 +271,7 @@ function ThreadSecondaryPanelContent({
   renderBrowserDeck,
   onCreateTerminalInNewPane,
   splitPanelStateId,
+  splitTabToRightRequest,
   isOpen,
   showConversationCollapseControl = true,
   showFullScreenShortcut = false,
@@ -1099,6 +1101,7 @@ function ThreadSecondaryPanelContent({
       onToggleFullScreen={onToggleConversationCollapse}
       onCreateTerminalInNewPane={onCreateTerminalInNewPane}
       panelStateId={splitPanelStateId}
+      splitTabToRightRequest={splitTabToRightRequest}
       tabs={splitTabs}
       renderPane={(pane: SidebarSplitPaneRenderArgs) => {
         const activePaneTabId = pane.group.activeTabId;

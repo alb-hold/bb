@@ -648,7 +648,11 @@ function deliverDeletes(world: World): void {
       world.deliveries.push(
         pool.harness.behavior.emitThreadEvent("thread.deleted", {
           thread: toThreadResponseFromThread(
-            { db: world.base.db, hub: world.base.deps.hub },
+            {
+              db: world.base.db,
+              hub: world.base.deps.hub,
+              providerRegistry: world.base.deps.providerRegistry,
+            },
             { thread: deleted },
           ),
         }),

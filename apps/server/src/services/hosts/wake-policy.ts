@@ -65,6 +65,7 @@ const hostCommandWakePolicy = {
   "host.read_file_relative": "work",
   "host.write_file": "work",
   "provider.list_models": "work",
+  "provider.list_commands": "work",
   "provider.health": "work",
   "terminal-data-plane.probe": "never",
   "terminal-data-plane.connect": "never",
