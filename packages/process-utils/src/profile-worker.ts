@@ -36,6 +36,7 @@ async function runProfileWorker(): Promise<void> {
   let startedAt = "";
   let title = "";
   let finishedProfile: Profiler.Profile | undefined;
+  let acknowledgeFailure: (() => void) | undefined;
   session.on("Profiler.consoleProfileFinished", (event) => {
     if (event.params.title === title) finishedProfile = event.params.profile;
   });
@@ -159,6 +160,10 @@ async function runProfileWorker(): Promise<void> {
     );
   };
   port.on("message", async (command: unknown) => {
+    if (command === "failure-ack") {
+      acknowledgeFailure?.();
+      return;
+    }
     try {
       if (command === "start") await start();
       else if (
@@ -184,7 +189,11 @@ async function runProfileWorker(): Promise<void> {
       await session.post("Profiler.disable").catch(() => {});
       session.disconnect();
       await rm(pendingPath, { force: true }).catch(() => {});
-      port.postMessage({ failure: error });
+      await new Promise<void>((resolve) => {
+        acknowledgeFailure = resolve;
+        port.postMessage({ failure: error });
+      });
+      acknowledgeFailure = undefined;
       port.close();
     }
   });

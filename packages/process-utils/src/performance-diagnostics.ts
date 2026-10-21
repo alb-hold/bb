@@ -106,6 +106,7 @@ export async function startPerformanceDiagnostics(options: {
       value.failure instanceof Error
     ) {
       fail(value.failure);
+      worker.postMessage("failure-ack");
       return;
     }
     if (
