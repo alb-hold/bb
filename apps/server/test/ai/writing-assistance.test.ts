@@ -359,6 +359,24 @@ describe("writing assistance corrections", () => {
         expect(usage.corrections + usage.formattings).toBe(1);
       });
     });
+
+    it("skips a correction without calling Claude once dictation formatting has used the limit", async () => {
+      await withTestHarness({}, async (harness) => {
+        const { service } = claudeLike(harness, ["ok"]);
+        updateWritingAssistanceSettings(harness.deps.db, {
+          dailyCorrectionLimit: 1,
+        });
+        addWritingUsage(harness.deps.db, utcDay(), { formattings: 1 });
+        await expect(
+          (await postCorrection(harness, { target: "One." })).json(),
+        ).resolves.toMatchObject({ status: "skipped", reason: "budget" });
+        expect(service.completeCalls).toHaveLength(0);
+        expect(getWritingUsage(harness.deps.db, utcDay())).toMatchObject({
+          corrections: 0,
+          formattings: 1,
+        });
+      });
+    });
   });
 
   it("holds the last request for a correction still in flight", async () => {
