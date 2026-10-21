@@ -91,6 +91,7 @@ interface Fixture {
   closeSession(sessionId?: string): void;
   commands: string[];
   currentSessionId: { value: string | null };
+  sequenceBase: { value: number };
   daemonFrames: Array<Record<string, unknown>>;
   daemonSockets: WebSocket[];
   detached: ChildTerminalSocket[];
@@ -164,6 +165,7 @@ async function createFixture(mode: DaemonMode = "capable"): Promise<Fixture> {
   const attachedSockets = new Set<ChildTerminalSocket>();
   const nextSeqBySocket = new Map<ChildTerminalSocket, number>();
   const currentSessionId: { value: string | null } = { value: null };
+  const sequenceBase = { value: 0 };
   let listener: ((change: DaemonSessionChange) => void) | null = null;
   let port = 0;
   const plane = startTerminalDataPlane({
@@ -276,6 +278,7 @@ async function createFixture(mode: DaemonMode = "capable"): Promise<Fixture> {
       recordInputActivity: (terminalId) => {
         inputActivity.push(terminalId);
       },
+      stripHolderMarkersFromDataPlaneOutput: (_terminalId, chunk) => [chunk],
       recordOutputBatch: ({ chunks, daemonSessionId, terminalId }) =>
         outputBatches.push({ chunks, daemonSessionId, terminalId }),
     },
@@ -287,7 +290,11 @@ async function createFixture(mode: DaemonMode = "capable"): Promise<Fixture> {
     },
     resolveTerminal: (terminalId) =>
       terminalId === "term_1" && currentSessionId.value !== null
-        ? { terminalId, daemonSessionId: currentSessionId.value }
+        ? {
+            terminalId,
+            daemonSessionId: currentSessionId.value,
+            sequenceBase: sequenceBase.value,
+          }
         : null,
     server,
     spawn: () => {
@@ -329,6 +336,7 @@ async function createFixture(mode: DaemonMode = "capable"): Promise<Fixture> {
     },
     commands,
     currentSessionId,
+    sequenceBase,
     daemonFrames,
     daemonSockets,
     detached,
@@ -549,6 +557,43 @@ describe("terminal data plane", () => {
       expect(fixture.directOutput).toEqual([]);
       expect(fixture.fallbackUpgrades).toEqual(["/ws/terminals/term_1?sinceSeq=0"]);
       expect(fixture.plane.attachedSocketCount).toBe(0);
+    },
+    120_000,
+  );
+
+  it(
+    "delivers rebased output to a browser that reconnects after a daemon restart",
+    async () => {
+      const fixture = await attachedFixture();
+      const first = connectClient(fixture.port, "/ws/terminals/term_1?sinceSeq=5");
+      await until(() => first.frames.length >= 2, "the initial replay");
+      fixture.closeSession("session_1");
+      await until(() => first.closed(), "the old daemon socket to close");
+      fixture.sequenceBase.value = 6;
+      fixture.openSession("session_2");
+      await until(() => fixture.daemonSockets.length === 2, "the restarted daemon");
+      const reconnected = connectClient(
+        fixture.port,
+        "/ws/terminals/term_1?sinceSeq=6",
+      );
+      await until(() => reconnected.frames.length >= 2, "the reconnect replay");
+      fixture.daemonSockets[1]?.send(
+        JSON.stringify({
+          type: "terminal.output",
+          terminalId: "term_1",
+          chunk: { seq: 1, dataBase64: base64("after-restart") },
+        }),
+      );
+      await until(
+        () => reconnected.frames.some((frame) => frame.type === "output" &&
+          (frame.chunk as { dataBase64: string }).dataBase64 === base64("after-restart")),
+        "the post-restart output",
+      );
+
+      expect(reconnected.frames.filter((frame) => frame.type === "output")).toEqual([
+        { type: "output", chunk: { seq: 6, dataBase64: base64("replayed") } },
+        { type: "output", chunk: { seq: 7, dataBase64: base64("after-restart") } },
+      ]);
     },
     120_000,
   );

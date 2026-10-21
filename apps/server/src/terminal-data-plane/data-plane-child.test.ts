@@ -7,6 +7,7 @@ import {
   TerminalDataPlaneChild,
   type TerminalDataPlaneSocket,
 } from "./data-plane-child.js";
+import { HOLDER_MARKER_PENDING_TIMEOUT_MS } from "../services/terminals/holder-marker.js";
 import {
   TERMINAL_DATA_PLANE_CHILD_PENDING_IPC_BYTES,
   TERMINAL_DATA_PLANE_INPUT_COALESCE_MS,
@@ -48,8 +49,10 @@ function chunk(seq: number, text = `out-${seq}`) {
 
 class FakeSocket implements TerminalDataPlaneSocket {
   bufferedAmount = 0;
-  readonly closes: Array<{ code: number | undefined; reason: string | undefined }> =
-    [];
+  readonly closes: Array<{
+    code: number | undefined;
+    reason: string | undefined;
+  }> = [];
   readonly sent: string[] = [];
   terminated = false;
   private closeListeners: Array<() => void> = [];
@@ -60,7 +63,10 @@ class FakeSocket implements TerminalDataPlaneSocket {
   on(event: "message", listener: (data: unknown) => void): unknown;
   on(
     event: "close" | "error" | "message",
-    listener: (() => void) | ((error: Error) => void) | ((data: unknown) => void),
+    listener:
+      | (() => void)
+      | ((error: Error) => void)
+      | ((data: unknown) => void),
   ): unknown {
     if (event === "close") {
       this.closeListeners.push(listener as () => void);
@@ -83,7 +89,8 @@ class FakeSocket implements TerminalDataPlaneSocket {
   }
 
   receive(message: unknown): void {
-    const data = typeof message === "string" ? message : JSON.stringify(message);
+    const data =
+      typeof message === "string" ? message : JSON.stringify(message);
     for (const listener of this.messageListeners) {
       listener(data);
     }
@@ -122,7 +129,10 @@ class RecordingSocket implements TerminalDataPlaneSocket {
   on(event: "message", listener: (data: unknown) => void): unknown;
   on(
     event: "close" | "error" | "message",
-    listener: (() => void) | ((error: Error) => void) | ((data: unknown) => void),
+    listener:
+      | (() => void)
+      | ((error: Error) => void)
+      | ((data: unknown) => void),
   ): unknown {
     this.socket.on(event, listener as (...args: unknown[]) => void);
     return this;
@@ -216,7 +226,9 @@ function ofType<Type extends TerminalDataPlaneChildMessage["type"]>(
   type: Type,
 ): Array<Extract<TerminalDataPlaneChildMessage, { type: Type }>> {
   return harness.toMain.filter(
-    (message): message is Extract<TerminalDataPlaneChildMessage, { type: Type }> =>
+    (
+      message,
+    ): message is Extract<TerminalDataPlaneChildMessage, { type: Type }> =>
       message.type === type,
   );
 }
@@ -250,6 +262,7 @@ async function attachBrowser(
       terminalId: args.terminalId,
       daemonSessionId: args.daemonSessionId ?? "session_1",
       outputAcks: args.outputAcks ?? false,
+      sequenceBase: 0,
       sinceSeq: 0,
       request: {
         url: args.url ?? `/ws/terminals/${args.terminalId}`,
@@ -334,11 +347,27 @@ afterEach(() => {
 describe("terminal data plane child", () => {
   it("keeps two terminals on one daemon session apart in both directions", async () => {
     const harness = createHarness();
-    const a = await attachLive(harness, { attachId: "a1", terminalId: "term_a" });
-    const b = await attachLive(harness, { attachId: "b1", terminalId: "term_b" });
+    const a = await attachLive(harness, {
+      attachId: "a1",
+      terminalId: "term_a",
+    });
+    const b = await attachLive(harness, {
+      attachId: "b1",
+      terminalId: "term_b",
+    });
 
-    main(harness, { v, type: "terminal.output", terminalId: "term_a", chunk: chunk(0) });
-    main(harness, { v, type: "terminal.output", terminalId: "term_b", chunk: chunk(0, "for-b") });
+    main(harness, {
+      v,
+      type: "terminal.output",
+      terminalId: "term_a",
+      chunk: chunk(0),
+    });
+    main(harness, {
+      v,
+      type: "terminal.output",
+      terminalId: "term_b",
+      chunk: chunk(0, "for-b"),
+    });
     a.receive({ type: "input", dataBase64: base64("typed-in-a") });
 
     expect(a.outputSeqs()).toEqual([0]);
@@ -363,16 +392,26 @@ describe("terminal data plane child", () => {
       url: "/ws/terminals/term_b",
     });
 
-    main(harness, { v, type: "terminal.output", terminalId: "term_b", chunk: chunk(0) });
+    main(harness, {
+      v,
+      type: "terminal.output",
+      terminalId: "term_b",
+      chunk: chunk(0),
+    });
     expect(socket.outputSeqs()).toEqual([]);
 
-    main(harness, { v, type: "terminal.output", terminalId: "term_a", chunk: chunk(0) });
+    main(harness, {
+      v,
+      type: "terminal.output",
+      terminalId: "term_a",
+      chunk: chunk(0),
+    });
     socket.receive({ type: "input", dataBase64: base64("x") });
 
     expect(socket.outputSeqs()).toEqual([0]);
-    expect(ofType(harness, "terminal.input").map((message) => message.terminalId)).toEqual([
-      "term_a",
-    ]);
+    expect(
+      ofType(harness, "terminal.input").map((message) => message.terminalId),
+    ).toEqual(["term_a"]);
   });
 
   it("accepts a browser socket only as an IPC handle", async () => {
@@ -385,6 +424,7 @@ describe("terminal data plane child", () => {
       terminalId: "term_a",
       daemonSessionId: "session_1",
       outputAcks: false,
+      sequenceBase: 0,
       sinceSeq: 0,
       request: { url: "/ws/terminals/term_a", headers: [], headBase64: "" },
     });
@@ -408,7 +448,10 @@ describe("terminal data plane child", () => {
       stray,
     );
     harness.child.handleMainMessage({ v, type: "browser.attach" }, malformed);
-    harness.child.handleMainMessage({ v, type: "ready", pid: 1 }, wrongDirection);
+    harness.child.handleMainMessage(
+      { v, type: "ready", pid: 1 },
+      wrongDirection,
+    );
 
     expect(stray.destroyed).toBe(true);
     expect(malformed.destroyed).toBe(true);
@@ -430,6 +473,7 @@ describe("terminal data plane child", () => {
         terminalId: "term_a",
         daemonSessionId: "session_1",
         outputAcks: false,
+        sequenceBase: 0,
         sinceSeq: 0,
         request: { url: "/ws/terminals/term_a", headers: [], headBase64: "" },
       },
@@ -455,6 +499,7 @@ describe("terminal data plane child", () => {
         terminalId: "term_a",
         daemonSessionId: "session_1",
         outputAcks: false,
+        sequenceBase: 0,
         sinceSeq: 0,
         request: { url: "/ws/terminals/term_a", headers: [], headBase64: "" },
       },
@@ -478,10 +523,23 @@ describe("terminal data plane child", () => {
 
   it("writes the attached frame and the replay before live output that arrived first", async () => {
     const harness = createHarness();
-    const socket = await attachBrowser(harness, { attachId: "a1", terminalId: "term_a" });
+    const socket = await attachBrowser(harness, {
+      attachId: "a1",
+      terminalId: "term_a",
+    });
 
-    main(harness, { v, type: "terminal.output", terminalId: "term_a", chunk: chunk(2) });
-    main(harness, { v, type: "terminal.output", terminalId: "term_a", chunk: chunk(3) });
+    main(harness, {
+      v,
+      type: "terminal.output",
+      terminalId: "term_a",
+      chunk: chunk(2),
+    });
+    main(harness, {
+      v,
+      type: "terminal.output",
+      terminalId: "term_a",
+      chunk: chunk(3),
+    });
     expect(socket.sent).toEqual([]);
 
     replay(harness, {
@@ -490,7 +548,12 @@ describe("terminal data plane child", () => {
       chunks: [chunk(0), chunk(1), chunk(2)],
       nextSeq: 3,
     });
-    main(harness, { v, type: "terminal.output", terminalId: "term_a", chunk: chunk(4) });
+    main(harness, {
+      v,
+      type: "terminal.output",
+      terminalId: "term_a",
+      chunk: chunk(4),
+    });
 
     expect(socket.frames()[0]).toMatchObject({
       type: "attached",
@@ -510,7 +573,12 @@ describe("terminal data plane child", () => {
     });
 
     for (const seq of [3, 4, 5, 5, 6, 4, 6, 7]) {
-      main(harness, { v, type: "terminal.output", terminalId: "term_a", chunk: chunk(seq) });
+      main(harness, {
+        v,
+        type: "terminal.output",
+        terminalId: "term_a",
+        chunk: chunk(seq),
+      });
     }
 
     expect(socket.outputSeqs()).toEqual([5, 6, 7]);
@@ -524,13 +592,34 @@ describe("terminal data plane child", () => {
       nextSeq: 2,
     });
 
-    main(harness, { v, type: "terminal.output", terminalId: "term_a", chunk: chunk(2) });
-    main(harness, { v, type: "terminal.output", terminalId: "term_a", chunk: chunk(5) });
-    main(harness, { v, type: "terminal.output", terminalId: "term_a", chunk: chunk(6) });
+    main(harness, {
+      v,
+      type: "terminal.output",
+      terminalId: "term_a",
+      chunk: chunk(2),
+    });
+    main(harness, {
+      v,
+      type: "terminal.output",
+      terminalId: "term_a",
+      chunk: chunk(5),
+    });
+    main(harness, {
+      v,
+      type: "terminal.output",
+      terminalId: "term_a",
+      chunk: chunk(6),
+    });
 
     expect(socket.outputSeqs()).toEqual([2]);
     expect(ofType(harness, "browser.resync")).toEqual([
-      { v, type: "browser.resync", attachId: "a1", terminalId: "term_a", fromSeq: 3 },
+      {
+        v,
+        type: "browser.resync",
+        attachId: "a1",
+        terminalId: "term_a",
+        fromSeq: 3,
+      },
     ]);
 
     replay(harness, {
@@ -540,10 +629,17 @@ describe("terminal data plane child", () => {
       chunks: [chunk(1), chunk(2), chunk(3), chunk(4), chunk(5)],
       nextSeq: 6,
     });
-    main(harness, { v, type: "terminal.output", terminalId: "term_a", chunk: chunk(7) });
+    main(harness, {
+      v,
+      type: "terminal.output",
+      terminalId: "term_a",
+      chunk: chunk(7),
+    });
 
     expect(socket.outputSeqs()).toEqual([2, 3, 4, 5, 6, 7]);
-    expect(socket.frames().filter((frame) => frame.type === "attached")).toHaveLength(1);
+    expect(
+      socket.frames().filter((frame) => frame.type === "attached"),
+    ).toHaveLength(1);
     expect(ofType(harness, "browser.resync")).toHaveLength(1);
   });
 
@@ -555,7 +651,12 @@ describe("terminal data plane child", () => {
       nextSeq: 2,
     });
 
-    main(harness, { v, type: "terminal.output", terminalId: "term_a", chunk: chunk(9) });
+    main(harness, {
+      v,
+      type: "terminal.output",
+      terminalId: "term_a",
+      chunk: chunk(9),
+    });
     replay(harness, {
       attachId: "a1",
       terminalId: "term_a",
@@ -566,14 +667,22 @@ describe("terminal data plane child", () => {
 
     expect(socket.outputSeqs()).toEqual([]);
     expect(socket.closes).toEqual([{ code: 1013, reason: "replay-gap" }]);
-    expect(ofType(harness, "browser.detached")).toMatchObject([{ attachId: "a1" }]);
+    expect(ofType(harness, "browser.detached")).toMatchObject([
+      { attachId: "a1" },
+    ]);
   });
 
   it("closes a socket whose pending replay buffer passes the cap", async () => {
     const harness = createHarness();
-    const socket = await attachBrowser(harness, { attachId: "a1", terminalId: "term_a" });
+    const socket = await attachBrowser(harness, {
+      attachId: "a1",
+      terminalId: "term_a",
+    });
     const large = "A".repeat(64 * 1024);
-    const needed = Math.ceil(TERMINAL_DATA_PLANE_PENDING_REPLAY_BUFFER_BYTES / large.length) + 1;
+    const needed =
+      Math.ceil(
+        TERMINAL_DATA_PLANE_PENDING_REPLAY_BUFFER_BYTES / large.length,
+      ) + 1;
 
     for (let seq = 0; seq < needed; seq += 1) {
       main(harness, {
@@ -585,20 +694,41 @@ describe("terminal data plane child", () => {
     }
 
     expect(socket.sent).toEqual([]);
-    expect(socket.closes).toEqual([{ code: 1013, reason: "replay-buffer-overflow" }]);
+    expect(socket.closes).toEqual([
+      { code: 1013, reason: "replay-buffer-overflow" },
+    ]);
     expect(ofType(harness, "browser.detached")).toEqual([
-      { v, type: "browser.detached", attachId: "a1", terminalId: "term_a", lastAckedSeq: null },
+      {
+        v,
+        type: "browser.detached",
+        attachId: "a1",
+        terminalId: "term_a",
+        lastAckedSeq: null,
+      },
     ]);
     expect(harness.child.browserSocketCount).toBe(0);
   });
 
   it("closes a browser socket whose send backlog passes the hard cap", async () => {
     const harness = createHarness();
-    const socket = await attachLive(harness, { attachId: "a1", terminalId: "term_a" });
+    const socket = await attachLive(harness, {
+      attachId: "a1",
+      terminalId: "term_a",
+    });
     socket.bufferedAmount = TERMINAL_DATA_PLANE_RELAY_HARD_CAP_BYTES + 1;
 
-    main(harness, { v, type: "terminal.output", terminalId: "term_a", chunk: chunk(0) });
-    main(harness, { v, type: "terminal.output", terminalId: "term_a", chunk: chunk(1) });
+    main(harness, {
+      v,
+      type: "terminal.output",
+      terminalId: "term_a",
+      chunk: chunk(0),
+    });
+    main(harness, {
+      v,
+      type: "terminal.output",
+      terminalId: "term_a",
+      chunk: chunk(1),
+    });
 
     expect(socket.outputSeqs()).toEqual([0]);
     expect(socket.closes).toEqual([{ code: 1013, reason: "browser-backlog" }]);
@@ -606,7 +736,10 @@ describe("terminal data plane child", () => {
 
   it("holds control frames until the attached frame has been written", async () => {
     const harness = createHarness();
-    const socket = await attachBrowser(harness, { attachId: "a1", terminalId: "term_a" });
+    const socket = await attachBrowser(harness, {
+      attachId: "a1",
+      terminalId: "term_a",
+    });
 
     main(harness, {
       v,
@@ -633,8 +766,14 @@ describe("terminal data plane child", () => {
 
   it("sends a reply only to the attach it names, held until the attached frame is written", async () => {
     const harness = createHarness();
-    const named = await attachBrowser(harness, { attachId: "a1", terminalId: "term_a" });
-    const other = await attachBrowser(harness, { attachId: "a2", terminalId: "term_a" });
+    const named = await attachBrowser(harness, {
+      attachId: "a1",
+      terminalId: "term_a",
+    });
+    const other = await attachBrowser(harness, {
+      attachId: "a2",
+      terminalId: "term_a",
+    });
 
     main(harness, {
       v,
@@ -711,15 +850,36 @@ describe("terminal data plane child", () => {
         terminalId: "term_a",
         message: { type: "resize", cols: 120, rows: 40 },
       },
-      { v, type: "terminal.ack", attachId: "a1", terminalId: "term_a", nextSeq: 7 },
-      { v, type: "terminal.visibility", attachId: "a1", terminalId: "term_a", visible: false },
-      { v, type: "browser.detached", attachId: "a1", terminalId: "term_a", lastAckedSeq: 6 },
+      {
+        v,
+        type: "terminal.ack",
+        attachId: "a1",
+        terminalId: "term_a",
+        nextSeq: 7,
+      },
+      {
+        v,
+        type: "terminal.visibility",
+        attachId: "a1",
+        terminalId: "term_a",
+        visible: false,
+      },
+      {
+        v,
+        type: "browser.detached",
+        attachId: "a1",
+        terminalId: "term_a",
+        lastAckedSeq: 6,
+      },
     ]);
   });
 
   it("closes a socket that sends a frame outside the browser protocol", async () => {
     const harness = createHarness();
-    const socket = await attachLive(harness, { attachId: "a1", terminalId: "term_a" });
+    const socket = await attachLive(harness, {
+      attachId: "a1",
+      terminalId: "term_a",
+    });
 
     socket.receive({ type: "input", dataBase64: "not base64!" });
     socket.receive({ type: "input", dataBase64: base64("after-close") });
@@ -732,35 +892,41 @@ describe("terminal data plane child", () => {
   it("sends the first keystroke at once and coalesces the burst behind it", async () => {
     vi.useFakeTimers();
     const harness = createHarness();
-    const socket = await attachLive(harness, { attachId: "a1", terminalId: "term_a" });
+    const socket = await attachLive(harness, {
+      attachId: "a1",
+      terminalId: "term_a",
+    });
 
     for (const key of ["a", "b", "c", "d"]) {
       socket.receive({ type: "input", dataBase64: base64(key) });
     }
-    expect(ofType(harness, "terminal.input").map((message) => message.dataBase64)).toEqual([
-      base64("a"),
-    ]);
+    expect(
+      ofType(harness, "terminal.input").map((message) => message.dataBase64),
+    ).toEqual([base64("a")]);
 
     vi.advanceTimersByTime(TERMINAL_DATA_PLANE_INPUT_COALESCE_MS);
-    expect(ofType(harness, "terminal.input").map((message) => message.dataBase64)).toEqual([
-      base64("a"),
-      base64("bcd"),
-    ]);
+    expect(
+      ofType(harness, "terminal.input").map((message) => message.dataBase64),
+    ).toEqual([base64("a"), base64("bcd")]);
 
     vi.advanceTimersByTime(TERMINAL_DATA_PLANE_INPUT_COALESCE_MS * 2);
     socket.receive({ type: "input", dataBase64: base64("e") });
-    expect(ofType(harness, "terminal.input").map((message) => message.dataBase64)).toEqual([
-      base64("a"),
-      base64("bcd"),
-      base64("e"),
-    ]);
+    expect(
+      ofType(harness, "terminal.input").map((message) => message.dataBase64),
+    ).toEqual([base64("a"), base64("bcd"), base64("e")]);
   });
 
   it("never merges input from two browsers into one relay and names the browser that typed it", async () => {
     vi.useFakeTimers();
     const harness = createHarness();
-    const first = await attachLive(harness, { attachId: "a1", terminalId: "term_a" });
-    const second = await attachLive(harness, { attachId: "a2", terminalId: "term_a" });
+    const first = await attachLive(harness, {
+      attachId: "a1",
+      terminalId: "term_a",
+    });
+    const second = await attachLive(harness, {
+      attachId: "a2",
+      terminalId: "term_a",
+    });
 
     first.receive({ type: "input", dataBase64: base64("1") });
     first.receive({ type: "input", dataBase64: base64("2") });
@@ -784,7 +950,10 @@ describe("terminal data plane child", () => {
 
   it("reports input activity at most once a second per terminal", async () => {
     const harness = createHarness();
-    const socket = await attachLive(harness, { attachId: "a1", terminalId: "term_a" });
+    const socket = await attachLive(harness, {
+      attachId: "a1",
+      terminalId: "term_a",
+    });
 
     socket.receive({ type: "input", dataBase64: base64("a") });
     harness.clock.now += 999;
@@ -792,20 +961,26 @@ describe("terminal data plane child", () => {
     harness.clock.now += 1;
     socket.receive({ type: "input", dataBase64: base64("c") });
 
-    expect(ofType(harness, "terminal.input-activity").map((message) => message.at)).toEqual([
-      1_000_000,
-      1_001_000,
-    ]);
+    expect(
+      ofType(harness, "terminal.input-activity").map((message) => message.at),
+    ).toEqual([1_000_000, 1_001_000]);
   });
 
   it("closes the terminal's sockets when input waiting for main passes the cap", async () => {
     vi.useFakeTimers();
     const harness = createHarness();
-    const socket = await attachLive(harness, { attachId: "a1", terminalId: "term_a" });
-    const other = await attachLive(harness, { attachId: "b1", terminalId: "term_b" });
+    const socket = await attachLive(harness, {
+      attachId: "a1",
+      terminalId: "term_a",
+    });
+    const other = await attachLive(harness, {
+      attachId: "b1",
+      terminalId: "term_b",
+    });
     harness.holdSends = true;
     const block = Buffer.alloc(48 * 1024, 0x61).toString("base64");
-    const blocks = Math.ceil(TERMINAL_DATA_PLANE_CHILD_PENDING_IPC_BYTES / block.length) + 2;
+    const blocks =
+      Math.ceil(TERMINAL_DATA_PLANE_CHILD_PENDING_IPC_BYTES / block.length) + 2;
 
     for (let index = 0; index < blocks; index += 1) {
       socket.receive({ type: "input", dataBase64: block });
@@ -818,7 +993,9 @@ describe("terminal data plane child", () => {
       (total, message) => total + message.dataBase64.length,
       0,
     );
-    expect(relayed).toBeLessThanOrEqual(TERMINAL_DATA_PLANE_CHILD_PENDING_IPC_BYTES);
+    expect(relayed).toBeLessThanOrEqual(
+      TERMINAL_DATA_PLANE_CHILD_PENDING_IPC_BYTES,
+    );
 
     harness.releaseSends();
     harness.holdSends = false;
@@ -854,7 +1031,8 @@ describe("terminal data plane child", () => {
     const queued = () =>
       daemon.sent.reduce((total, frame) => total + Buffer.byteLength(frame), 0);
     const block = Buffer.alloc(48 * 1024, 0x61).toString("base64");
-    const blocks = Math.ceil(TERMINAL_DATA_PLANE_CHILD_PENDING_IPC_BYTES / block.length) + 5;
+    const blocks =
+      Math.ceil(TERMINAL_DATA_PLANE_CHILD_PENDING_IPC_BYTES / block.length) + 5;
 
     for (let index = 0; index < blocks; index += 1) {
       socket.receive({ type: "input", dataBase64: block });
@@ -863,7 +1041,9 @@ describe("terminal data plane child", () => {
 
     expect(socket.closes).toEqual([{ code: 1013, reason: "input-backlog" }]);
     expect(other.closes).toEqual([]);
-    expect(queued()).toBeLessThanOrEqual(TERMINAL_DATA_PLANE_CHILD_PENDING_IPC_BYTES);
+    expect(queued()).toBeLessThanOrEqual(
+      TERMINAL_DATA_PLANE_CHILD_PENDING_IPC_BYTES,
+    );
     expect(ofType(harness, "terminal.input")).toEqual([]);
     expect(daemon.terminated).toBe(false);
 
@@ -892,7 +1072,11 @@ describe("terminal data plane child", () => {
       outputAcks: true,
     });
     for (const seq of [0, 1, 2, 3]) {
-      daemon.receive({ type: "terminal.output", terminalId: "term_a", chunk: chunk(seq) });
+      daemon.receive({
+        type: "terminal.output",
+        terminalId: "term_a",
+        chunk: chunk(seq),
+      });
     }
     const ack = (nextSeq: number) =>
       JSON.stringify({ type: "terminal.ack", terminalId: "term_a", nextSeq });
@@ -938,7 +1122,11 @@ describe("terminal data plane child", () => {
       outputAcks: true,
     });
     for (const seq of [0, 1, 2]) {
-      daemon.receive({ type: "terminal.output", terminalId: "term_a", chunk: chunk(seq) });
+      daemon.receive({
+        type: "terminal.output",
+        terminalId: "term_a",
+        chunk: chunk(seq),
+      });
     }
     const written = daemon.sent.length;
     daemon.bufferedAmount = TERMINAL_DATA_PLANE_RELAY_HARD_CAP_BYTES;
@@ -975,7 +1163,11 @@ describe("terminal data plane child", () => {
           v,
           type: "daemon.attach",
           daemonSessionId: "session_1",
-          request: { url: "/internal/terminal-data", headers: [], headBase64: "" },
+          request: {
+            url: "/internal/terminal-data",
+            headers: [],
+            headBase64: "",
+          },
         },
         new Socket(),
       );
@@ -989,7 +1181,10 @@ describe("terminal data plane child", () => {
           mode: "data-socket",
         });
       }
-      const typing = await attachLive(harness, { attachId: "a1", terminalId: "term_a" });
+      const typing = await attachLive(harness, {
+        attachId: "a1",
+        terminalId: "term_a",
+      });
       const reader = await attachLive(harness, {
         attachId: "b1",
         terminalId: "term_b",
@@ -997,7 +1192,11 @@ describe("terminal data plane child", () => {
       });
       for (const seq of [0, 1, 2, 3]) {
         client.send(
-          JSON.stringify({ type: "terminal.output", terminalId: "term_b", chunk: chunk(seq) }),
+          JSON.stringify({
+            type: "terminal.output",
+            terminalId: "term_b",
+            chunk: chunk(seq),
+          }),
         );
       }
       await vi.waitFor(() => {
@@ -1006,7 +1205,11 @@ describe("terminal data plane child", () => {
       });
 
       const block = Buffer.alloc(48 * 1024, 0x61).toString("base64");
-      for (let index = 0; index < 2048 && typing.closes.length === 0; index += 1) {
+      for (
+        let index = 0;
+        index < 2048 && typing.closes.length === 0;
+        index += 1
+      ) {
         typing.receive({ type: "input", dataBase64: block });
       }
 
@@ -1023,7 +1226,8 @@ describe("terminal data plane child", () => {
       const ack = (nextSeq: number) =>
         JSON.stringify({ type: "terminal.ack", terminalId: "term_b", nextSeq });
       const ackBudget =
-        Buffer.byteLength(ack(2)) + TERMINAL_DATA_PLANE_SOCKET_FRAME_OVERHEAD_BYTES;
+        Buffer.byteLength(ack(2)) +
+        TERMINAL_DATA_PLANE_SOCKET_FRAME_OVERHEAD_BYTES;
       const largeFrameHeaderBytes = 10;
       real.send(
         Buffer.alloc(
@@ -1083,15 +1287,27 @@ describe("terminal data plane child", () => {
     });
     harness.toMain.length = 0;
 
-    daemon.receive({ type: "terminal.output", terminalId: "term_a", chunk: chunk(0) });
-    daemon.receive({ type: "terminal.output", terminalId: "term_a", chunk: chunk(1) });
+    daemon.receive({
+      type: "terminal.output",
+      terminalId: "term_a",
+      chunk: chunk(0),
+    });
+    daemon.receive({
+      type: "terminal.output",
+      terminalId: "term_a",
+      chunk: chunk(1),
+    });
     browser.receive({ type: "input", dataBase64: base64("ls\n") });
     browser.receive({ type: "ack", nextSeq: 2 });
 
     expect(browser.outputSeqs()).toEqual([0, 1]);
     expect(daemon.frames()).toEqual([
       { type: "terminal.flow-control", terminalId: "term_a", enabled: true },
-      { type: "terminal.input", terminalId: "term_a", dataBase64: base64("ls\n") },
+      {
+        type: "terminal.input",
+        terminalId: "term_a",
+        dataBase64: base64("ls\n"),
+      },
       { type: "terminal.ack", terminalId: "term_a", nextSeq: 2 },
     ]);
     expect(harness.toMain.map((message) => message.type)).toEqual([
@@ -1119,21 +1335,40 @@ describe("terminal data plane child", () => {
       daemonSessionId: "session_2",
       mode: "main-relay",
     });
-    const browser = await attachLive(harness, { attachId: "a1", terminalId: "term_a" });
+    const browser = await attachLive(harness, {
+      attachId: "a1",
+      terminalId: "term_a",
+    });
     const relayBrowser = await attachLive(harness, {
       attachId: "r1",
       terminalId: "term_relay",
       daemonSessionId: "session_2",
     });
 
-    intruder.receive({ type: "terminal.output", terminalId: "term_a", chunk: chunk(0, "forged") });
-    intruder.receive({ type: "terminal.output", terminalId: "term_relay", chunk: chunk(0, "forged") });
-    intruder.receive({ type: "terminal.output", terminalId: "term_unknown", chunk: chunk(0) });
-    owner.receive({ type: "terminal.output", terminalId: "term_a", chunk: chunk(0, "real") });
+    intruder.receive({
+      type: "terminal.output",
+      terminalId: "term_a",
+      chunk: chunk(0, "forged"),
+    });
+    intruder.receive({
+      type: "terminal.output",
+      terminalId: "term_relay",
+      chunk: chunk(0, "forged"),
+    });
+    intruder.receive({
+      type: "terminal.output",
+      terminalId: "term_unknown",
+      chunk: chunk(0),
+    });
+    owner.receive({
+      type: "terminal.output",
+      terminalId: "term_a",
+      chunk: chunk(0, "real"),
+    });
 
-    expect(browser.frames().filter((frame) => frame.type === "output")).toEqual([
-      { type: "output", chunk: chunk(0, "real") },
-    ]);
+    expect(browser.frames().filter((frame) => frame.type === "output")).toEqual(
+      [{ type: "output", chunk: chunk(0, "real") }],
+    );
     expect(relayBrowser.outputSeqs()).toEqual([]);
 
     vi.advanceTimersByTime(TERMINAL_DATA_PLANE_STATS_INTERVAL_MS);
@@ -1224,7 +1459,12 @@ describe("terminal data plane child", () => {
       outputAcks: true,
     });
 
-    main(harness, { v, type: "terminal.output", terminalId: "term_a", chunk: chunk(0) });
+    main(harness, {
+      v,
+      type: "terminal.output",
+      terminalId: "term_a",
+      chunk: chunk(0),
+    });
     browser.receive({ type: "input", dataBase64: base64("before") });
     browser.receive({ type: "ack", nextSeq: 1 });
 
@@ -1233,22 +1473,40 @@ describe("terminal data plane child", () => {
       { terminalId: "term_a", dataBase64: base64("before") },
     ]);
     expect(ofType(harness, "terminal.ack")).toEqual([
-      { v, type: "terminal.ack", attachId: "a1", terminalId: "term_a", nextSeq: 1 },
+      {
+        v,
+        type: "terminal.ack",
+        attachId: "a1",
+        terminalId: "term_a",
+        nextSeq: 1,
+      },
     ]);
 
     const daemon = await attachDaemon(harness, "session_1");
     expect(ofType(harness, "daemon.attached")).toEqual([
       { v, type: "daemon.attached", daemonSessionId: "session_1" },
     ]);
-    daemon.receive({ type: "terminal.output", terminalId: "term_a", chunk: chunk(1) });
-    daemon.receive({ type: "terminal.output", terminalId: "term_a", chunk: chunk(2) });
+    daemon.receive({
+      type: "terminal.output",
+      terminalId: "term_a",
+      chunk: chunk(1),
+    });
+    daemon.receive({
+      type: "terminal.output",
+      terminalId: "term_a",
+      chunk: chunk(2),
+    });
     browser.receive({ type: "input", dataBase64: base64("during") });
     browser.receive({ type: "ack", nextSeq: 3 });
 
     expect(browser.outputSeqs()).toEqual([0, 1, 2]);
     expect(daemon.frames()).toEqual([
       { type: "terminal.flow-control", terminalId: "term_a", enabled: true },
-      { type: "terminal.input", terminalId: "term_a", dataBase64: base64("during") },
+      {
+        type: "terminal.input",
+        terminalId: "term_a",
+        dataBase64: base64("during"),
+      },
       { type: "terminal.ack", terminalId: "term_a", nextSeq: 3 },
     ]);
     expect(ofType(harness, "terminal.ack")).toHaveLength(1);
@@ -1262,11 +1520,293 @@ describe("terminal data plane child", () => {
       { v, type: "daemon.detached", daemonSessionId: "session_1" },
     ]);
     expect(harness.child.daemonSocketCount).toBe(0);
-    expect(ofType(harness, "terminal.input").map((message) => message.dataBase64)).toEqual([
-      base64("before"),
-      base64("after"),
-    ]);
+    expect(
+      ofType(harness, "terminal.input").map((message) => message.dataBase64),
+    ).toEqual([base64("before"), base64("after")]);
     expect(ofType(harness, "terminal.ack")).toHaveLength(2);
+  });
+
+  it("strips holder markers from data-plane client output when whole, split, or bytewise", async () => {
+    const grid = Buffer.from("\u001b]7791;bb-grid;80;24\u0007");
+    const marker = Buffer.from("\u001b]7717;bb-holder;term_a\u0007");
+    const body = Buffer.from("beforeafter");
+    const bytes = Buffer.concat([grid, marker, body]);
+    const scenarios = [
+      [bytes],
+      ...Array.from({ length: bytes.length - 1 }, (_, index) => [
+        bytes.subarray(0, index + 1),
+        bytes.subarray(index + 1),
+      ]),
+      Array.from({ length: bytes.length }, (_, index) =>
+        bytes.subarray(index, index + 1),
+      ),
+    ];
+    for (const parts of scenarios) {
+      const harness = createHarness();
+      main(harness, {
+        v,
+        type: "terminal.route",
+        terminalId: "term_a",
+        daemonSessionId: "session_1",
+        mode: "data-socket",
+        holderMarkerPending: true,
+      });
+      const browser = await attachLive(harness, {
+        attachId: "a1",
+        terminalId: "term_a",
+        daemonSessionId: "session_1",
+      });
+      const daemon = await attachDaemon(harness, "session_1");
+      for (const [seq, part] of parts.entries()) {
+        daemon.receive({
+          type: "terminal.output",
+          terminalId: "term_a",
+          chunk: { seq, dataBase64: part.toString("base64") },
+        });
+      }
+      const output = browser
+        .frames()
+        .filter((frame) => frame.type === "output")
+        .map((frame) => frame.chunk as { seq: number; dataBase64: string });
+      const received = Buffer.concat(
+        output.map((chunk) => Buffer.from(chunk.dataBase64, "base64")),
+      );
+      expect(received.includes(Buffer.from("7717;bb-holder"))).toBe(false);
+      expect(received.toString()).toBe(Buffer.concat([grid, body]).toString());
+      expect(output.map((chunk) => chunk.seq)).toEqual(
+        parts.map((_, index) => index),
+      );
+      harness.child.shutdown();
+    }
+  });
+
+  it.each([
+    ...Array.from({ length: 17 }, (_, index) => index + 1),
+    Buffer.byteLength("\u001b]7717;bb-holder;") + 3,
+  ])(
+    "strips holder markers split at byte %i after a 2 s delay",
+    async (splitAt) => {
+      vi.useFakeTimers();
+      const harness = createHarness();
+      main(harness, {
+        v,
+        type: "terminal.route",
+        terminalId: "term_a",
+        daemonSessionId: "session_1",
+        mode: "data-socket",
+        holderMarkerPending: true,
+      });
+      const browser = await attachLive(harness, {
+        attachId: "a1",
+        terminalId: "term_a",
+        daemonSessionId: "session_1",
+      });
+      const daemon = await attachDaemon(harness, "session_1");
+      const grid = Buffer.from("\u001b]7791;bb-grid;80;24\u0007");
+      const marker = Buffer.from("\u001b]7717;bb-holder;term_a\u0007");
+      const first = Buffer.concat([grid, marker.subarray(0, splitAt)]);
+      daemon.receive({
+        type: "terminal.output",
+        terminalId: "term_a",
+        chunk: { seq: 0, dataBase64: first.toString("base64") },
+      });
+      await vi.advanceTimersByTimeAsync(HOLDER_MARKER_PENDING_TIMEOUT_MS);
+      const beforeRemainder = browser
+        .frames()
+        .filter((frame) => frame.type === "output")
+        .map((frame) => frame.chunk as { dataBase64: string });
+      expect(beforeRemainder).toHaveLength(splitAt <= 3 ? 1 : 0);
+      await vi.advanceTimersByTimeAsync(
+        2_000 - HOLDER_MARKER_PENDING_TIMEOUT_MS,
+      );
+      expect(
+        browser.frames().filter((frame) => frame.type === "output"),
+      ).toHaveLength(splitAt <= 3 ? 1 : 0);
+      daemon.receive({
+        type: "terminal.output",
+        terminalId: "term_a",
+        chunk: {
+          seq: 1,
+          dataBase64: Buffer.concat([
+            marker.subarray(splitAt),
+            Buffer.from("after"),
+          ]).toString("base64"),
+        },
+      });
+      const output = browser
+        .frames()
+        .filter((frame) => frame.type === "output")
+        .map((frame) => frame.chunk as { dataBase64: string });
+      const received = Buffer.concat(
+        output.map((chunk) => Buffer.from(chunk.dataBase64, "base64")),
+      );
+      expect(received.includes(Buffer.from("7717;bb-holder"))).toBe(false);
+      const ambiguousPrefix =
+        splitAt <= 3 ? marker.subarray(0, splitAt) : Buffer.alloc(0);
+      expect(received.toString()).toBe(
+        Buffer.concat([
+          grid,
+          ambiguousPrefix,
+          splitAt <= 3 ? Buffer.from("\u001b\\") : Buffer.alloc(0),
+          Buffer.from("after"),
+        ]).toString(),
+      );
+      harness.child.shutdown();
+    },
+  );
+
+  it.each([
+    [4, 300, "same-chunk"],
+    [8, 2_000, "later-chunk"],
+    [Buffer.byteLength("\u001b]7791;bb-grid;"), 300, "same-chunk"],
+    [Buffer.byteLength("\u001b]7791;bb-grid;80;"), 2_000, "later-chunk"],
+  ] as const)(
+    "keeps holder filtering pending across a delayed partial grid prefix at byte %i (%i ms, %s)",
+    async (splitAt, delayMs, markerPlacement) => {
+      vi.useFakeTimers();
+      const harness = createHarness();
+      main(harness, {
+        v,
+        type: "terminal.route",
+        terminalId: "term_a",
+        daemonSessionId: "session_1",
+        mode: "data-socket",
+        holderMarkerPending: true,
+      });
+      const browser = await attachLive(harness, {
+        attachId: "a1",
+        terminalId: "term_a",
+        daemonSessionId: "session_1",
+      });
+      const daemon = await attachDaemon(harness, "session_1");
+      const grid = Buffer.from("\u001b]7791;bb-grid;80;24\u0007");
+      const holder = Buffer.from("\u001b]7717;bb-holder;term_a\u0007");
+      const after = Buffer.from("AFTER\n");
+      daemon.receive({
+        type: "terminal.output",
+        terminalId: "term_a",
+        chunk: {
+          seq: 0,
+          dataBase64: grid.subarray(0, splitAt).toString("base64"),
+        },
+      });
+      await vi.advanceTimersByTimeAsync(delayMs);
+      expect(
+        browser.frames().filter((frame) => frame.type === "output"),
+      ).toEqual([]);
+      const sameChunk = markerPlacement === "same-chunk";
+      const rest = Buffer.concat([
+        grid.subarray(splitAt),
+        ...(sameChunk ? [holder, after] : []),
+      ]);
+      daemon.receive({
+        type: "terminal.output",
+        terminalId: "term_a",
+        chunk: { seq: 1, dataBase64: rest.toString("base64") },
+      });
+      if (!sameChunk) {
+        await vi.advanceTimersByTimeAsync(delayMs);
+        daemon.receive({
+          type: "terminal.output",
+          terminalId: "term_a",
+          chunk: {
+            seq: 2,
+            dataBase64: Buffer.concat([holder, after]).toString("base64"),
+          },
+        });
+      }
+      const output = browser
+        .frames()
+        .filter((frame) => frame.type === "output")
+        .map((frame) => frame.chunk as { seq: number; dataBase64: string });
+      const received = Buffer.concat(
+        output.map((part) => Buffer.from(part.dataBase64, "base64")),
+      );
+      expect(received.toString()).toBe(`${grid.toString()}AFTER\n`);
+      expect(received.toString()).not.toContain("7717;bb-holder");
+      expect(received.toString().match(/AFTER\n/gu)).toHaveLength(1);
+      expect(output.map((part) => part.seq)).toEqual(
+        markerPlacement === "same-chunk" ? [0, 1] : [0, 1, 2],
+      );
+      harness.child.shutdown();
+    },
+  );
+
+  it.each(["\u001b", "\u001b]", "\u001b]7"])(
+    "flushes short ambiguous prefix %j after the timeout",
+    async (text) => {
+      vi.useFakeTimers();
+      const harness = createHarness();
+      main(harness, {
+        v,
+        type: "terminal.route",
+        terminalId: "term_a",
+        daemonSessionId: "session_1",
+        mode: "data-socket",
+        holderMarkerPending: true,
+      });
+      const browser = await attachLive(harness, {
+        attachId: "a1",
+        terminalId: "term_a",
+        daemonSessionId: "session_1",
+      });
+      const daemon = await attachDaemon(harness, "session_1");
+      daemon.receive({
+        type: "terminal.output",
+        terminalId: "term_a",
+        chunk: { seq: 0, dataBase64: Buffer.from(text).toString("base64") },
+      });
+      await vi.advanceTimersByTimeAsync(HOLDER_MARKER_PENDING_TIMEOUT_MS);
+      const output = browser
+        .frames()
+        .filter((frame) => frame.type === "output")
+        .map((frame) => frame.chunk as { dataBase64: string });
+      expect(
+        Buffer.concat(
+          output.map((chunk) => Buffer.from(chunk.dataBase64, "base64")),
+        ).toString(),
+      ).toBe(text);
+      harness.child.shutdown();
+    },
+  );
+
+  it("releases ESC ]7; immediately because it cannot begin a holder marker", async () => {
+    vi.useFakeTimers();
+    const harness = createHarness();
+    main(harness, {
+      v,
+      type: "terminal.route",
+      terminalId: "term_a",
+      daemonSessionId: "session_1",
+      mode: "data-socket",
+      holderMarkerPending: true,
+    });
+    const browser = await attachLive(harness, {
+      attachId: "a1",
+      terminalId: "term_a",
+      daemonSessionId: "session_1",
+    });
+    const daemon = await attachDaemon(harness, "session_1");
+    const cwdStart = Buffer.from("\u001b]7;");
+    daemon.receive({
+      type: "terminal.output",
+      terminalId: "term_a",
+      chunk: { seq: 0, dataBase64: cwdStart.toString("base64") },
+    });
+    expect(
+      browser.frames().filter((frame) => frame.type === "output"),
+    ).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(HOLDER_MARKER_PENDING_TIMEOUT_MS * 2);
+    const output = browser
+      .frames()
+      .filter((frame) => frame.type === "output")
+      .map((frame) => frame.chunk as { dataBase64: string });
+    expect(
+      Buffer.concat(
+        output.map((chunk) => Buffer.from(chunk.dataBase64, "base64")),
+      ).toString(),
+    ).toBe(cwdStart.toString());
+    harness.child.shutdown();
   });
 
   it("drops a session's routes and closes its data socket on daemon.detach", async () => {
@@ -1279,10 +1819,17 @@ describe("terminal data plane child", () => {
       daemonSessionId: "session_1",
       mode: "data-socket",
     });
-    const browser = await attachLive(harness, { attachId: "a1", terminalId: "term_a" });
+    const browser = await attachLive(harness, {
+      attachId: "a1",
+      terminalId: "term_a",
+    });
 
     main(harness, { v, type: "daemon.detach", daemonSessionId: "session_1" });
-    daemon.receive({ type: "terminal.output", terminalId: "term_a", chunk: chunk(0) });
+    daemon.receive({
+      type: "terminal.output",
+      terminalId: "term_a",
+      chunk: chunk(0),
+    });
 
     expect(daemon.closes).toEqual([{ code: 1000, reason: "daemon-detached" }]);
     expect(browser.outputSeqs()).toEqual([]);
@@ -1291,9 +1838,18 @@ describe("terminal data plane child", () => {
 
   it("closes sockets on browser.close and terminal.resync and reports each once", async () => {
     const harness = createHarness();
-    const first = await attachLive(harness, { attachId: "a1", terminalId: "term_a" });
-    const second = await attachLive(harness, { attachId: "a2", terminalId: "term_a" });
-    const third = await attachLive(harness, { attachId: "b1", terminalId: "term_b" });
+    const first = await attachLive(harness, {
+      attachId: "a1",
+      terminalId: "term_a",
+    });
+    const second = await attachLive(harness, {
+      attachId: "a2",
+      terminalId: "term_a",
+    });
+    const third = await attachLive(harness, {
+      attachId: "b1",
+      terminalId: "term_b",
+    });
 
     main(harness, {
       v,
@@ -1304,23 +1860,30 @@ describe("terminal data plane child", () => {
     });
     first.emitClose();
     main(harness, { v, type: "terminal.resync", terminalId: "term_a" });
-    main(harness, { v, type: "terminal.output", terminalId: "term_a", chunk: chunk(0) });
+    main(harness, {
+      v,
+      type: "terminal.output",
+      terminalId: "term_a",
+      chunk: chunk(0),
+    });
 
     expect(first.closes).toEqual([{ code: 1000, reason: "done" }]);
     expect(second.closes).toEqual([{ code: 1013, reason: "terminal-resync" }]);
     expect(third.closes).toEqual([]);
     expect(second.outputSeqs()).toEqual([]);
-    expect(ofType(harness, "browser.detached").map((message) => message.attachId)).toEqual([
-      "a1",
-      "a2",
-    ]);
+    expect(
+      ofType(harness, "browser.detached").map((message) => message.attachId),
+    ).toEqual(["a1", "a2"]);
     expect(harness.child.browserSocketCount).toBe(1);
   });
 
   it("terminates every socket and exits on shutdown", async () => {
     const harness = createHarness();
     harness.child.start();
-    const browser = await attachLive(harness, { attachId: "a1", terminalId: "term_a" });
+    const browser = await attachLive(harness, {
+      attachId: "a1",
+      terminalId: "term_a",
+    });
     const daemon = await attachDaemon(harness, "session_1");
     const late = new Socket();
 
@@ -1333,6 +1896,7 @@ describe("terminal data plane child", () => {
         terminalId: "term_a",
         daemonSessionId: "session_1",
         outputAcks: false,
+        sequenceBase: 0,
         sinceSeq: 0,
         request: { url: "/ws/terminals/term_a", headers: [], headBase64: "" },
       },

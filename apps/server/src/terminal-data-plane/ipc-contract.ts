@@ -71,6 +71,7 @@ export const terminalDataPlaneMainMessageSchema = z.discriminatedUnion("type", [
       terminalId: idSchema,
       daemonSessionId: idSchema,
       outputAcks: z.boolean(),
+      sequenceBase: seqSchema,
       sinceSeq: seqSchema.nullable(),
       request: terminalDataPlaneHandoffRequestSchema,
     })
@@ -139,6 +140,7 @@ export const terminalDataPlaneMainMessageSchema = z.discriminatedUnion("type", [
       terminalId: idSchema,
       daemonSessionId: idSchema,
       mode: terminalDataPlaneRouteModeSchema,
+      holderMarkerPending: z.boolean().optional(),
     })
     .strict(),
   z
