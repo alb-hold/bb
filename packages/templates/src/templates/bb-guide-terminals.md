@@ -118,11 +118,12 @@ prints the target because it has no app window. The SDK exposes
     --lines <n>                          Print latest rendered rows, up to 500
     --json                                Include cursor position, grid size, and completeness
 
-  Screen reads replay at most 64 KiB of retained output into disposable
-  server-side terminal renderers. The default returns the visible grid. JSON
-  includes `complete`, true when the retained output fully determines the visible
-  screen. A false value means the retained output does not prove the screen is
-  complete.
+  A live server mirror keeps the current screen while a session runs. If no
+  valid mirror is available, screen reads replay at most 64 KiB of retained
+  output. The default returns the visible grid. JSON includes `complete`, true
+  when the live mirror has observed the session from its start or a full terminal
+  reset, or when replay fully determines the visible screen. A false value means
+  neither source proves the screen is complete.
   Selection
   is client-local and is not available through this command.
 

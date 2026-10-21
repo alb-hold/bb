@@ -67,10 +67,12 @@ import { ApiError } from "../../errors.js";
 import type { AppDeps, ServerLogger } from "../../types.js";
 import { assertUsableHostId } from "../hosts/primary-host.js";
 import {
+  renderTerminalMirrorSnapshot,
   renderTerminalScreen,
   TERMINAL_SCREEN_MAX_LINES,
   TERMINAL_SCREEN_REPLAY_BYTES,
 } from "./terminal-screen.js";
+import { TerminalScreenMirror } from "./terminal-screen-mirror.js";
 import {
   requireConnectedHostSession,
   requireEnvironment,
@@ -860,6 +862,7 @@ export class TerminalSessionLifecycle {
     Array<{ hostId: string; chunks: TerminalOutputChunk[] }>
   >();
   private retainedOutputFlushTimer: ReturnType<typeof setTimeout> | null = null;
+  private readonly screenMirror: TerminalScreenMirror;
 
   constructor(private readonly options: TerminalSessionLifecycleOptions) {
     clearPersistedDeviceHandoffAttention(options.db, Date.now());
@@ -878,6 +881,9 @@ export class TerminalSessionLifecycle {
         this.options.hub.sendDaemonSessionMessage(daemonSessionId, outgoing);
       },
     });
+    this.screenMirror = new TerminalScreenMirror((error, message) =>
+      this.options.logger.warn({ err: error }, message),
+    );
     const attachTimeoutMs =
       options.attachTimeoutMs ?? DEFAULT_TERMINAL_OPEN_TIMEOUT_MS;
     const closeTimeoutMs =
@@ -1403,6 +1409,11 @@ export class TerminalSessionLifecycle {
         "Terminal session was cancelled before it opened",
       );
     }
+    this.screenMirror.start(
+      runningSession.id,
+      runningSession.cols,
+      runningSession.rows,
+    );
     args.onTerminalStarted?.(runningSession.id);
     this.notifyTerminalSessionChanged(runningSession);
     return this.toTerminalSession(runningSession);
@@ -1734,6 +1745,7 @@ export class TerminalSessionLifecycle {
             rows: args.payload.rows,
           });
     const session = resized ?? current;
+    this.screenMirror.resize(session.id, args.payload.cols, args.payload.rows);
     if (resized && resized !== current) {
       this.notifyTerminalSessionChanged(resized);
       this.options.hub.sendTerminalClientMessage(resized.id, {
@@ -1825,6 +1837,14 @@ export class TerminalSessionLifecycle {
       terminalId: args.terminalId,
       query: { tailBytes: TERMINAL_SCREEN_REPLAY_BYTES },
     });
+    const mirror = await this.screenMirror.snapshot(args.terminalId);
+    if (mirror !== null) {
+      return renderTerminalMirrorSnapshot({
+        lines: args.query.lines,
+        snapshot: mirror,
+        truncated: output.truncated,
+      });
+    }
     return renderTerminalScreen({
       cols: session.cols,
       lines: args.query.lines,
@@ -1980,6 +2000,10 @@ export class TerminalSessionLifecycle {
         );
       }
     }
+  }
+
+  async shutdownScreenMirrors(): Promise<void> {
+    await this.screenMirror.shutdown();
   }
 
   private async readRunningTerminalOutput(
@@ -2432,6 +2456,7 @@ export class TerminalSessionLifecycle {
             args.daemonSessionId,
             chunk.seq,
           );
+          this.feedTerminalScreenMirror(args.terminalId, chunk);
         }
         this.retainTerminalOutput(current, chunk);
       }
@@ -2810,6 +2835,11 @@ export class TerminalSessionLifecycle {
             query: { sinceSeq: 0, tailBytes: TERMINAL_SCROLLBACK_MAX_BYTES },
             session: current,
           })
+            .then((output) => {
+              for (const chunk of output.chunks) {
+                this.feedTerminalScreenMirror(current.id, chunk);
+              }
+            })
             .catch((error: unknown) => {
               this.options.logger.warn(
                 { err: error, terminalId: current.id },
@@ -2949,6 +2979,7 @@ export class TerminalSessionLifecycle {
     this.forwardedNextSeqByTerminalId.delete(exited.id);
     this.outputFlow.forgetTerminal(exited.id);
     this.flushRetainedOutput(exited.id);
+    this.screenMirror.dispose(exited.id);
     markRetainedTerminalOutputExited(
       this.options.db,
       exited.id,
@@ -3201,6 +3232,7 @@ export class TerminalSessionLifecycle {
     current: RunningBrowserTerminalSession,
     size: { cols: number; rows: number },
   ): void {
+    this.screenMirror.resize(current.id, size.cols, size.rows);
     if (current.cols !== size.cols || current.rows !== size.rows) {
       const resized = updateTerminalById(this.options.db, current.id, {
         cols: size.cols,
@@ -3641,7 +3673,19 @@ export class TerminalSessionLifecycle {
       return;
     }
     this.retainTerminalOutput(current, toTerminalOutputChunk(outputChunk));
+    this.feedTerminalScreenMirror(current.id, outputChunk);
     this.forwardTerminalOutput(current.id, outputChunk);
+  }
+
+  private feedTerminalScreenMirror(
+    terminalId: string,
+    chunk: TerminalOutputChunk,
+  ): void {
+    this.screenMirror.write(
+      terminalId,
+      chunk.seq,
+      Buffer.from(chunk.dataBase64, "base64"),
+    );
   }
 
   private forwardTerminalOutput(

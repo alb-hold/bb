@@ -16,6 +16,48 @@ export const TERMINAL_SCREEN_REPLAY_BYTES = 64 * 1024;
 
 type HeadlessTerminal = InstanceType<typeof Terminal>;
 
+export type TerminalScreenMirrorSnapshot = {
+  baseY: number;
+  bufferRows: string[];
+  cols: number;
+  cursor: { col: number; row: number };
+  gridRows: number;
+};
+
+export function renderTerminalMirrorSnapshot(args: {
+  lines: number | undefined;
+  snapshot: TerminalScreenMirrorSnapshot;
+  truncated: boolean;
+}): TerminalScreenResponse {
+  const { snapshot } = args;
+  let end = snapshot.baseY + snapshot.gridRows;
+  if (args.lines !== undefined) {
+    while (
+      end > 0 &&
+      snapshot.bufferRows[end - 1] === ""
+    ) {
+      end -= 1;
+    }
+  }
+  const requestedLines = Math.min(
+    args.lines ?? snapshot.gridRows,
+    TERMINAL_SCREEN_MAX_LINES,
+  );
+  const start =
+    args.lines === undefined
+      ? snapshot.baseY
+      : Math.max(0, end - requestedLines);
+  const rows = snapshot.bufferRows.slice(start, end);
+  return {
+    rows,
+    cursor: snapshot.cursor,
+    cols: snapshot.cols,
+    gridRows: snapshot.gridRows,
+    truncated: args.truncated,
+    complete: true,
+  };
+}
+
 function createTerminal(cols: number, rows: number): HeadlessTerminal {
   const terminal = new Terminal({
     allowProposedApi: true,

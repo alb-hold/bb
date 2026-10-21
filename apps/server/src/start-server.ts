@@ -160,11 +160,11 @@ export async function shutdownHttpBeforePlugins(args: {
   server: ReturnType<typeof startHttpListener>;
   stopPeriodicUpdateChecks?: () => Promise<void>;
   stopPlugins: () => Promise<void>;
-  stopTerminalDataPlane: () => void;
+  stopTerminalDataPlane: () => void | Promise<void>;
 }): Promise<{ completedWithinBounds: boolean; pluginStopTimedOut: boolean }> {
   let completedWithinBounds = true;
   let pluginStopTimedOut = false;
-  args.stopTerminalDataPlane();
+  await args.stopTerminalDataPlane();
   const closed = new Promise<void>((resolve, reject) => {
     args.server.close((error) => {
       if (error) {
@@ -244,7 +244,7 @@ export async function shutdownServerRuntime(args: {
   stopPeriodicUpdateChecks: () => Promise<void>;
   stopPlugins: () => Promise<void>;
   server: ReturnType<typeof startHttpListener>;
-  stopTerminalDataPlane: () => void;
+  stopTerminalDataPlane: () => void | Promise<void>;
 }): Promise<{ completedWithinBounds: boolean; pluginStopTimedOut: boolean }> {
   const result = await shutdownHttpBeforePlugins({
     closeDatabase: () => args.db.$client.close(),
@@ -733,9 +733,10 @@ export async function runServer(serverConfig: ServerConfig): Promise<void> {
         stopPeriodicUpdateChecks: () =>
           pluginService.stopPeriodicUpdateChecks(),
         server,
-        stopTerminalDataPlane: () => {
+        stopTerminalDataPlane: async () => {
           terminalDataPlane?.stop();
           terminalSessions.flushRetainedOutputBeforeClose();
+          await terminalSessions.shutdownScreenMirrors();
         },
       });
     })();

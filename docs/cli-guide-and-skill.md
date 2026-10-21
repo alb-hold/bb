@@ -11,8 +11,11 @@ a local command until the terminal exits or Ctrl-C.
 `bb terminal screen <id> [--lines <n>] [--json]` prints rendered terminal rows,
 cursor position, and grid size. Without `--lines`, it prints the visible grid;
 `--lines` includes up to 500 latest scrollback rows. JSON includes `complete`;
-true when the retained output fully determines the visible screen. When false,
-the retained output does not prove the screen is complete.
+true when retained output fully determines the screen, or a live server mirror
+has observed this session from its start or a full terminal reset. A live mirror
+can prove the current screen even when retained output is truncated. When false,
+the available replay does not prove the screen is complete and no valid live
+mirror is available.
 The SDK equivalent is
 `sdk.terminals.experimental_screen({ terminalId, lines? })`.
 
