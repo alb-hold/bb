@@ -284,22 +284,32 @@ export async function createQueuedMessageForThread(
     senderThreadId: payload.senderThreadId,
     targetThread: thread,
   });
-  const overrideRecovery =
-    usesChildModelPolicy && senderThreadId === null
-      ? await prepareThreadModelOverrideRecovery(deps, {
-          model: payload.model,
-          modelSource:
-            payload.executionInputSources === undefined
-              ? "explicit"
-              : payload.executionInputSources.model,
-          reasoningLevel: execution.reasoningLevel,
-          reasoningLevelSource:
-            payload.executionInputSources === undefined
-              ? "explicit"
-              : payload.executionInputSources.reasoningLevel,
-          thread,
-        })
-      : null;
+  let overrideRecovery = null;
+  if (usesChildModelPolicy && senderThreadId === null) {
+    try {
+      overrideRecovery = await prepareThreadModelOverrideRecovery(deps, {
+        model: payload.model,
+        modelSource:
+          payload.executionInputSources === undefined
+            ? "explicit"
+            : payload.executionInputSources.model,
+        reasoningLevel: execution.reasoningLevel,
+        reasoningLevelSource:
+          payload.executionInputSources === undefined
+            ? "explicit"
+            : payload.executionInputSources.reasoningLevel,
+        thread,
+      });
+    } catch (error) {
+      if (
+        !(error instanceof ApiError) ||
+        error.status !== 503 ||
+        error.body.code !== "model_catalog_unavailable"
+      ) {
+        throw error;
+      }
+    }
+  }
   const { currentThread, hasProviderSession, queuedMessage } =
     deps.db.transaction(
       (tx) => {

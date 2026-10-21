@@ -391,9 +391,11 @@ async function runDispatchAttempt(
 
   const prepareQueueOverrideRecovery = async (): Promise<void> => {
     if ("overrideRecovery" in queuedMessage) return;
-    queuedMessage.overrideRecovery =
-      isExplicitInlineUserRequest && hasChildModelPolicy
-        ? await prepareThreadModelOverrideRecovery(deps, {
+    queuedMessage.overrideRecovery = null;
+    if (isExplicitInlineUserRequest && hasChildModelPolicy) {
+      try {
+        queuedMessage.overrideRecovery =
+          await prepareThreadModelOverrideRecovery(deps, {
             model: payload.model,
             modelSource:
               payload.executionInputSources === undefined
@@ -405,8 +407,17 @@ async function runDispatchAttempt(
                 ? "explicit"
                 : payload.executionInputSources.reasoningLevel,
             thread,
-          })
-        : null;
+          });
+      } catch (error) {
+        if (
+          !(error instanceof ApiError) ||
+          error.status !== 503 ||
+          error.body.code !== "model_catalog_unavailable"
+        ) {
+          throw error;
+        }
+      }
+    }
   };
 
   const waitOn = async (

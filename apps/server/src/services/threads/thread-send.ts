@@ -634,13 +634,17 @@ async function sendThreadMessageWithoutContextClear(
   const execution = await buildExecutionOptions(deps, payload, {
     threadId: thread.id,
   });
-  if (senderThreadId === null && args.retryOf === undefined) {
-    const isManagedChild =
-      thread.parentThreadId !== null ||
-      getThreadSpawner(deps.db, thread.id) !== null;
-    const usesChildModelPolicy =
-      isManagedChild &&
-      deps.providerRegistry.get(thread.providerId)?.childThreadModel != null;
+  const isManagedChild =
+    thread.parentThreadId !== null ||
+    getThreadSpawner(deps.db, thread.id) !== null;
+  const usesChildModelPolicy =
+    isManagedChild &&
+    deps.providerRegistry.get(thread.providerId)?.childThreadModel != null;
+  if (
+    senderThreadId === null &&
+    args.retryOf === undefined &&
+    (!usesChildModelPolicy || args.trigger === "user")
+  ) {
     await recoverThreadModelOverride(deps, {
       model: usesChildModelPolicy ? payload.model : execution.model,
       modelSource: usesChildModelPolicy

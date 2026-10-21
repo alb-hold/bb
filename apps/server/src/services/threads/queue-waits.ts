@@ -38,7 +38,7 @@ import { assertThreadHostAcceptsWork } from "./thread-host-admission.js";
 type QueueWaitDeps = {
   db: DbQueryConnection;
   hub: DbNotifier;
-  providerRegistry?: ProviderRegistryService;
+  providerRegistry: ProviderRegistryService;
 };
 
 export const QUEUED_MESSAGE_CLAIM_LOST_CODE = "queued_message_claim_lost";
@@ -112,14 +112,12 @@ export function recordQueuedMessageWait(
         ) {
           throw new ThreadQueueScopeChangedError();
         }
-        if (deps.providerRegistry) {
-          applyPreparedThreadModelOverrideRecovery(
-            tx,
-            deps.providerRegistry,
-            currentThread,
-            args.message.overrideRecovery ?? null,
-          );
-        }
+        applyPreparedThreadModelOverrideRecovery(
+          tx,
+          deps.providerRegistry,
+          currentThread,
+          args.message.overrideRecovery ?? null,
+        );
         return createQueuedThreadMessageInTransaction(tx, {
           threadId: args.thread.id,
           content: args.message.input,
