@@ -8,7 +8,6 @@ type TerminalWriter = {
 
 type Operation =
   | { type: "write"; bytes: Uint8Array }
-  | { type: "start"; callback: () => void }
   | {
       type: "grid";
       grid: TerminalGrid;
@@ -27,7 +26,6 @@ export function createTerminalOutputPipeline(
     bytes: Uint8Array,
     callback: () => void,
     applyMarkerGrids?: boolean,
-    onStart?: () => void,
   ): void;
   setGrid(cols: number, rows: number, callback?: () => void): void;
 } {
@@ -76,11 +74,6 @@ export function createTerminalOutputPipeline(
           });
           continue;
         }
-        if (operation.type === "start") {
-          await Promise.all(pendingWrites);
-          operation.callback();
-          continue;
-        }
         if (operation.type === "grid") {
           await Promise.all(pendingWrites);
           if (operation.resize) {
@@ -100,8 +93,7 @@ export function createTerminalOutputPipeline(
   };
 
   return {
-    push(bytes, callback, applyMarkerGrids = true, onStart) {
-      if (onStart) enqueue({ type: "start", callback: onStart });
+    push(bytes, callback, applyMarkerGrids = true) {
       const result = scanner.pushOperations(bytes);
       const applyScannedMarkerGrids =
         applyMarkerGrids && pendingMarkerGridsApply;

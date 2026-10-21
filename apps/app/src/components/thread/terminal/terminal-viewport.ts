@@ -1,5 +1,3 @@
-import type { IMarker } from "@xterm/xterm";
-
 export interface TerminalViewportAnchor {
   distanceFromTail: number;
   lineOffset?: number;
@@ -8,33 +6,128 @@ export interface TerminalViewportAnchor {
 
 export interface TerminalOutputLineAnchor {
   sequence: number;
-  marker: IMarker;
-}
-
-export function disposeTerminalOutputLineAnchors(
-  anchors: readonly TerminalOutputLineAnchor[],
-  except?: TerminalOutputLineAnchor | null,
-): void {
-  const disposed = new Set<IMarker>();
-  for (const anchor of anchors) {
-    if (anchor === except || disposed.has(anchor.marker)) continue;
-    disposed.add(anchor.marker);
-    anchor.marker.dispose();
-  }
+  readonly line: number;
+  expired: boolean;
 }
 
 export function createTerminalOutputLineAnchorTracker(args: {
-  registerMarker: () => IMarker | undefined;
+  registerMarker: () => {
+    line: number;
+    isDisposed: boolean;
+    onDispose: (listener: () => void) => { dispose: () => void };
+    dispose: () => void;
+  } | undefined;
+  getCurrentLine: () => number;
 }): {
   recordOutputStart: (sequence: number) => TerminalOutputLineAnchor | undefined;
+  forget: (anchors: readonly TerminalOutputLineAnchor[]) => void;
+  reset: () => void;
+  dispose: () => void;
 } {
-  const { registerMarker } = args;
-  return {
-    recordOutputStart: (sequence) => {
-      const marker = registerMarker();
-      return marker ? { sequence, marker } : undefined;
+  const { registerMarker, getCurrentLine } = args;
+  type MutableAnchor = {
+    sequence: number;
+    lineOffset: number;
+    line: number;
+    expired: boolean;
+  };
+  let reference: { marker: NonNullable<ReturnType<typeof registerMarker>> } | undefined;
+  let disposed = false;
+  const anchors = new Set<MutableAnchor>();
+
+  const expireAnchors = () => {
+    for (const anchor of anchors) {
+      anchor.expired = true;
+    }
+    anchors.clear();
+  };
+
+  const attachReference = () => {
+    const marker = registerMarker();
+    if (!marker) {
+      reference = undefined;
+      return;
+    }
+    const current = { marker };
+    reference = current;
+    marker.onDispose(() => {
+      if (disposed || reference !== current) return;
+      reference = undefined;
+      expireAnchors();
+    });
+  };
+
+  const clear = () => {
+    const previous = reference;
+    reference = undefined;
+    previous?.marker.dispose();
+    expireAnchors();
+  };
+
+  const reset = () => {
+    clear();
+    attachReference();
+  };
+
+  const tracker = {
+    recordOutputStart: (sequence: number) => {
+      if (!reference || reference.marker.isDisposed) {
+        if (reference?.marker.isDisposed) expireAnchors();
+        attachReference();
+      }
+      if (!reference) return undefined;
+      const currentLine = getCurrentLine();
+      if (currentLine - reference.marker.line >= 256) {
+        const previous = reference;
+        const marker = registerMarker();
+        if (marker) {
+          const next = { marker };
+          const shift = marker.line - previous.marker.line;
+          for (const anchor of anchors) {
+            anchor.lineOffset -= shift;
+            if (marker.line + anchor.lineOffset < 0) {
+              anchor.expired = true;
+              anchors.delete(anchor);
+            }
+          }
+          reference = next;
+          marker.onDispose(() => {
+            if (disposed || reference !== next) return;
+            reference = undefined;
+            expireAnchors();
+          });
+          previous.marker.dispose();
+        }
+      }
+      if (!reference) return undefined;
+      const line = getCurrentLine();
+      const anchor: MutableAnchor = {
+        sequence,
+        lineOffset: line - reference.marker.line,
+        line: 0,
+        expired: false,
+      };
+      Object.defineProperty(anchor, "line", {
+        enumerable: true,
+        get: () => anchor.expired ? -1 : (reference?.marker.line ?? -1) + anchor.lineOffset,
+      });
+      anchors.add(anchor);
+      return anchor;
+    },
+    forget: (dropped: readonly TerminalOutputLineAnchor[]) => {
+      for (const anchor of dropped) {
+        anchors.delete(anchor as MutableAnchor);
+        (anchor as MutableAnchor).expired = true;
+      }
+    },
+    reset,
+    dispose: () => {
+      if (disposed) return;
+      disposed = true;
+      clear();
     },
   };
+  return tracker;
 }
 
 export function findTerminalOutputLineAnchor(
@@ -44,16 +137,16 @@ export function findTerminalOutputLineAnchor(
   let visibleAnchor: TerminalOutputLineAnchor | undefined;
   for (const anchor of anchors) {
     if (
-      !anchor.marker.isDisposed &&
-      anchor.marker.line >= 0 &&
-      anchor.marker.line <= visibleLine
+      !anchor.expired &&
+      anchor.line >= 0 &&
+      anchor.line <= visibleLine
     ) {
       visibleAnchor = anchor;
     }
   }
   return (
     visibleAnchor ??
-    anchors.find((anchor) => !anchor.marker.isDisposed && anchor.marker.line >= 0)
+    anchors.find((anchor) => !anchor.expired && anchor.line >= 0)
   );
 }
 
@@ -289,8 +382,8 @@ export function resolveTerminalViewportRestore(args: {
   );
   if (
     outputAnchor === undefined ||
-    outputAnchor.marker.isDisposed ||
-    outputAnchor.marker.line < 0
+    outputAnchor.expired ||
+    outputAnchor.line < 0
   ) {
     return 0;
   }
@@ -298,7 +391,7 @@ export function resolveTerminalViewportRestore(args: {
     0,
     Math.min(
       baseY,
-      outputAnchor.marker.line + Math.max(0, anchor.lineOffset ?? 0),
+      outputAnchor.line + Math.max(0, anchor.lineOffset ?? 0),
     ),
   );
 }

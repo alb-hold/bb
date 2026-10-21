@@ -58,7 +58,6 @@ import { TerminalTextSelectSheet } from "./TerminalTextSelectSheet";
 import { terminalTextSnapshot } from "./terminal-text-snapshot";
 import {
   createTerminalOutputLineAnchorTracker,
-  disposeTerminalOutputLineAnchors,
   createTerminalViewportReplaySaveGate,
   createTerminalViewportPersistence,
   createTerminalTouchViewportSaveScheduler,
@@ -501,7 +500,6 @@ interface WriteTerminalSessionStatusNoticeArgs {
 interface TerminalOutputWriteArgs {
   data: string | Uint8Array;
   isReplay: boolean;
-  onStart?: () => void;
   onParsed: () => void;
   replayWriteState: TerminalReplayWriteState;
   terminal: XTermTerminal;
@@ -781,7 +779,6 @@ export function captureTerminalContextMenuState({
 export function writeTerminalOutput({
   data,
   isReplay,
-  onStart,
   onParsed,
   replayWriteState,
   terminal,
@@ -791,11 +788,8 @@ export function writeTerminalOutput({
   const bytes =
     typeof data === "string" ? new TextEncoder().encode(data) : data;
   const write = (callback: () => void, applyMarkerGrids: boolean) => {
-    if (pipeline) pipeline.push(bytes, callback, applyMarkerGrids, onStart);
-    else {
-      onStart?.();
-      terminal.write(data, callback);
-    }
+    if (pipeline) pipeline.push(bytes, callback, applyMarkerGrids);
+    else terminal.write(data, callback);
   };
   if (!isReplay) {
     write(onParsed, true);
@@ -861,9 +855,9 @@ export function handleTerminalServerMessage({
       writeTerminalOutput({
         data: decodeBase64Bytes(message.chunk.dataBase64),
         isReplay: replayNextSeq !== null && message.chunk.seq < replayNextSeq,
-        onStart: () => onOutputStart?.(message.chunk.seq),
         onParsed: () => {
           onOutputParsed?.(message.chunk.seq);
+          onOutputStart?.(nextSeq);
           acknowledgeOutput(nextSeq);
           if (
             replayNextSeq !== null &&
@@ -1301,7 +1295,23 @@ export function ThreadTerminalView({
     const outputLineAnchors: TerminalOutputLineAnchor[] = [];
     const outputLineAnchorTracker = createTerminalOutputLineAnchorTracker({
       registerMarker: () => terminal?.registerMarker(),
+      getCurrentLine: () => {
+        const buffer = terminal?.buffer.active;
+        return buffer ? buffer.baseY + buffer.cursorY : 0;
+      },
     });
+    const recordOutputStart = (sequence: number) => {
+      const outputAnchor = outputLineAnchorTracker.recordOutputStart(sequence);
+      if (!outputAnchor) return;
+      outputLineAnchors.push(outputAnchor);
+      if (outputLineAnchors.length > 4096) {
+        const removed = outputLineAnchors.splice(
+          0,
+          outputLineAnchors.length - 4096,
+        );
+        outputLineAnchorTracker.forget(removed);
+      }
+    };
     let savedOutputLineAnchor: TerminalOutputLineAnchor | null = null;
     let hasRestoredViewport = false;
     let hasManualScrollIntent = false;
@@ -1540,6 +1550,7 @@ export function ThreadTerminalView({
         ),
       );
       terminal.open(containerElement);
+      outputLineAnchorTracker.reset();
       const restoreViewport = () => {
         const activeBuffer = terminal?.buffer.active;
         if (!terminal || !activeBuffer) {
@@ -1585,7 +1596,7 @@ export function ThreadTerminalView({
           );
           savedOutputLineAnchor = mappedOutput ?? null;
           lineOffset = mappedOutput
-            ? Math.max(0, visibleLine - mappedOutput.marker.line)
+            ? Math.max(0, visibleLine - mappedOutput.line)
             : 0;
           anchoredOutputSequence =
             mappedOutput?.sequence ??
@@ -1856,27 +1867,12 @@ export function ThreadTerminalView({
               }
             },
             onSessionChange: onSessionChangeRef.current,
-            onOutputStart: (sequence) => {
-              const outputAnchor =
-                outputLineAnchorTracker.recordOutputStart(sequence);
-              if (!outputAnchor) return;
-              outputLineAnchors.push(outputAnchor);
-              if (outputLineAnchors.length > 4096) {
-                const removed = outputLineAnchors.splice(
-                  0,
-                  outputLineAnchors.length - 4096,
-                );
-                disposeTerminalOutputLineAnchors(removed);
-              }
-            },
+            onOutputStart: recordOutputStart,
             onOutputParsed: (sequence) => {
               const outputAnchor = outputLineAnchors.find(
                 (candidate) => candidate.sequence === sequence,
               );
               if (sequence === savedViewportAnchor?.outputSequence) {
-                if (savedOutputLineAnchor !== outputAnchor) {
-                  savedOutputLineAnchor?.marker.dispose();
-                }
                 savedOutputLineAnchor = outputAnchor ?? null;
               }
             },
@@ -1884,10 +1880,6 @@ export function ThreadTerminalView({
             replayWriteState,
             onReplayStart: () => {
               viewportReplaySaveGate.beginReplay();
-              disposeTerminalOutputLineAnchors(
-                outputLineAnchors,
-                savedOutputLineAnchor,
-              );
               outputLineAnchors.length = 0;
               replayPreview?.dispose();
               replayCompleted = false;
@@ -1917,6 +1909,8 @@ export function ThreadTerminalView({
             setReplayStartSequence: (sequence) => {
               replayStartSequence = sequence;
               latestOutputSequence = Math.max(latestOutputSequence, sequence);
+              outputLineAnchorTracker.reset();
+              recordOutputStart(sequence);
             },
             terminal: activeTerminal,
             pipeline: outputPipeline ?? undefined,
@@ -1925,11 +1919,11 @@ export function ThreadTerminalView({
           });
         },
         onSequenceGap: () => {
-          disposeTerminalOutputLineAnchors(outputLineAnchors, savedOutputLineAnchor);
+          outputLineAnchorTracker.reset();
           outputLineAnchors.length = 0;
-          savedOutputLineAnchor?.marker.dispose();
           savedOutputLineAnchor = null;
           activeTerminal.reset();
+          outputLineAnchorTracker.reset();
           writeTerminalStatus({
             terminal: activeTerminal,
             text: "Some terminal output was unavailable after reconnect",
@@ -2112,10 +2106,7 @@ export function ThreadTerminalView({
 
     return () => {
       disposed = true;
-      disposeTerminalOutputLineAnchors([
-        ...outputLineAnchors,
-        ...(savedOutputLineAnchor ? [savedOutputLineAnchor] : []),
-      ]);
+      outputLineAnchorTracker.dispose();
       controlActiveRef.current = false;
       setControlActive(false);
       setTerminalReady(false);
