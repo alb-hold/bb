@@ -48,10 +48,12 @@ import {
   watchTerminalLayoutSettled,
 } from "./terminal-layout-settle";
 import {
+  cancelTerminalOutputPaints,
   recordTerminalInputAccepted,
   recordTerminalInputWebSocketSent,
+  recordTerminalOutputPainted,
+  recordTerminalOutputParsed,
   recordTerminalOutputReceived,
-  recordTerminalOutputRendered,
 } from "./terminal-latency-diagnostics.js";
 import { TerminalLinkOpenDialog } from "./TerminalLinkOpenDialog";
 import { TerminalAttentionPane } from "./TerminalAttentionPane";
@@ -474,6 +476,7 @@ interface TerminalOutputWriteArgs {
   frameId?: number;
   isReplay: boolean;
   terminalId?: string;
+  onOutputParsed?: () => void;
   onParsed: () => void;
   replayWriteState: TerminalReplayWriteState;
   terminal: XTermTerminal;
@@ -527,6 +530,7 @@ interface HandleTerminalServerMessageArgs {
   replayNextSeq: number | null;
   replayWriteState: TerminalReplayWriteState;
   outputFrameId?: number;
+  onOutputParsed?: () => void;
   setReplayNextSeq: (nextSeq: number | null) => void;
   terminal: XTermTerminal;
   pipeline?: ReturnType<typeof createTerminalOutputPipeline>;
@@ -756,6 +760,7 @@ export function writeTerminalOutput({
   frameId,
   isReplay,
   terminalId = "",
+  onOutputParsed,
   onParsed,
   replayWriteState,
   terminal,
@@ -770,7 +775,8 @@ export function writeTerminalOutput({
   };
   if (!isReplay) {
     write(() => {
-      recordTerminalOutputRendered(terminalId, frameId, performance.now());
+      recordTerminalOutputParsed(terminalId, frameId, performance.now());
+      onOutputParsed?.();
       onParsed();
     }, true);
     return;
@@ -780,13 +786,15 @@ export function writeTerminalOutput({
   write(() => {
     if (!replayPipeline) {
       replayWriteState.suppressedWriteCount -= 1;
-      recordTerminalOutputRendered(terminalId, frameId, performance.now());
+      recordTerminalOutputParsed(terminalId, frameId, performance.now());
+      onOutputParsed?.();
       onParsed();
       return;
     }
     replayPipeline.push(bytes, () => {
       replayWriteState.suppressedWriteCount -= 1;
-      recordTerminalOutputRendered(terminalId, frameId, performance.now());
+      recordTerminalOutputParsed(terminalId, frameId, performance.now());
+      onOutputParsed?.();
       onParsed();
     });
   }, false);
@@ -801,6 +809,7 @@ export function handleTerminalServerMessage({
   replayNextSeq,
   replayWriteState,
   outputFrameId,
+  onOutputParsed,
   setReplayNextSeq,
   terminal,
   pipeline,
@@ -837,6 +846,7 @@ export function handleTerminalServerMessage({
         frameId: outputFrameId,
         isReplay: replayNextSeq !== null && message.chunk.seq < replayNextSeq,
         terminalId,
+        onOutputParsed,
         onParsed: () => {
           acknowledgeOutput(nextSeq);
           if (
@@ -1262,6 +1272,7 @@ export function ThreadTerminalView({
     > | null = null;
     let resizeObserver: ResizeObserver | null = null;
     let selectionChangeDisposable: { dispose: () => void } | null = null;
+    let terminalRenderSubscription: { dispose: () => void } | null = null;
     let terminalKeyDisposable: { dispose: () => void } | null = null;
     let terminalInputForwarding: { dispose: () => void } | null = null;
     let shellOscDisposable: { dispose: () => void } | null = null;
@@ -1292,6 +1303,13 @@ export function ThreadTerminalView({
       containerElement: container,
     });
     const reportDocumentVisibility = () => {
+      if (
+        document.visibilityState !== "visible" ||
+        !containerHasSize ||
+        !isPanelOpenRef.current
+      ) {
+        cancelTerminalOutputPaints(session.id);
+      }
       transport?.setVisible(
         document.visibilityState === "visible" && containerHasSize,
       );
@@ -1386,6 +1404,15 @@ export function ThreadTerminalView({
         linkHandler: osc8LinkHandler,
         scrollback: 10_000,
         theme: buildTerminalTheme(),
+      });
+      terminalRenderSubscription = terminal.onRender(() => {
+        if (
+          document.visibilityState === "visible" &&
+          containerHasSize &&
+          isPanelOpenRef.current
+        ) {
+          recordTerminalOutputPainted(session.id, performance.now());
+        }
       });
       setPromptTrackerState(EMPTY_TERMINAL_PROMPT_TRACKER);
       shellOscDisposable = attachTerminalPromptTracker({
@@ -1696,6 +1723,15 @@ export function ThreadTerminalView({
               activeTransport.acknowledgeOutput(nextSeq),
             message,
             terminalId: session.id,
+            onOutputParsed: () => {
+              if (
+                document.visibilityState !== "visible" ||
+                !containerHasSize ||
+                !isPanelOpenRef.current
+              ) {
+                cancelTerminalOutputPaints(session.id);
+              }
+            },
             onReplayComplete: () => {
               replayCompleted = true;
               outputPipeline?.setGrid(
@@ -1959,6 +1995,9 @@ export function ThreadTerminalView({
       shellOscDisposable?.dispose();
       osc52Disposable?.dispose();
       terminalInteractions?.dispose();
+      terminalRenderSubscription?.dispose();
+      terminalRenderSubscription = null;
+      cancelTerminalOutputPaints(session.id);
       handleFileDropRef.current = null;
       document.removeEventListener(
         "visibilitychange",
@@ -2005,6 +2044,9 @@ export function ThreadTerminalView({
   }, [isTouchDevice, terminalReady]);
 
   useEffect(() => {
+    if (!isPanelOpen) {
+      cancelTerminalOutputPaints(session.id);
+    }
     if (!isPanelOpen || !autoFocus) {
       return;
     }
@@ -2014,7 +2056,7 @@ export function ThreadTerminalView({
       onAutoFocusHandledRef.current?.();
     }
     scheduleFitRef.current?.();
-  }, [autoFocus, isPanelOpen]);
+  }, [autoFocus, isPanelOpen, session.id]);
 
   useEffect(() => {
     const terminal = terminalRef.current;

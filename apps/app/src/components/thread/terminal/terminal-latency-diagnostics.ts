@@ -6,9 +6,12 @@ type LatencyMetric =
   | "inputAcceptanceToWebSocketSendMs"
   | "inputWebSocketSendToFirstOutputReceivedMs"
   | "inputToFirstOutputReceivedMs"
-  | "inputFirstOutputReceivedToRenderMs"
-  | "inputToFirstOutputRenderMs"
-  | "outputRenderMs";
+  | "inputFirstOutputReceivedToParseMs"
+  | "inputToFirstOutputParseMs"
+  | "outputParseMs"
+  | "inputFirstOutputReceivedToPaintMs"
+  | "inputToFirstOutputPaintMs"
+  | "outputPaintMs";
 
 export interface TerminalLatencyMetricSnapshot {
   count: number;
@@ -23,9 +26,12 @@ export interface TerminalLatencySnapshot {
   inputAcceptanceToWebSocketSendMs: TerminalLatencyMetricSnapshot;
   inputWebSocketSendToFirstOutputReceivedMs: TerminalLatencyMetricSnapshot;
   inputToFirstOutputReceivedMs: TerminalLatencyMetricSnapshot;
-  inputFirstOutputReceivedToRenderMs: TerminalLatencyMetricSnapshot;
-  inputToFirstOutputRenderMs: TerminalLatencyMetricSnapshot;
-  outputRenderMs: TerminalLatencyMetricSnapshot;
+  inputFirstOutputReceivedToParseMs: TerminalLatencyMetricSnapshot;
+  inputToFirstOutputParseMs: TerminalLatencyMetricSnapshot;
+  outputParseMs: TerminalLatencyMetricSnapshot;
+  inputFirstOutputReceivedToPaintMs: TerminalLatencyMetricSnapshot;
+  inputToFirstOutputPaintMs: TerminalLatencyMetricSnapshot;
+  outputPaintMs: TerminalLatencyMetricSnapshot;
 }
 
 export interface TerminalLatencyDiagnosticsSnapshot {
@@ -81,9 +87,12 @@ const metrics: Record<
     inputAcceptanceToWebSocketSendMs: new LatencyRing(),
     inputWebSocketSendToFirstOutputReceivedMs: new LatencyRing(),
     inputToFirstOutputReceivedMs: new LatencyRing(),
-    inputFirstOutputReceivedToRenderMs: new LatencyRing(),
-    inputToFirstOutputRenderMs: new LatencyRing(),
-    outputRenderMs: new LatencyRing(),
+    inputFirstOutputReceivedToParseMs: new LatencyRing(),
+    inputToFirstOutputParseMs: new LatencyRing(),
+    outputParseMs: new LatencyRing(),
+    inputFirstOutputReceivedToPaintMs: new LatencyRing(),
+    inputToFirstOutputPaintMs: new LatencyRing(),
+    outputPaintMs: new LatencyRing(),
   },
   phone: {
     inputEventToSerializationMs: new LatencyRing(),
@@ -91,9 +100,12 @@ const metrics: Record<
     inputAcceptanceToWebSocketSendMs: new LatencyRing(),
     inputWebSocketSendToFirstOutputReceivedMs: new LatencyRing(),
     inputToFirstOutputReceivedMs: new LatencyRing(),
-    inputFirstOutputReceivedToRenderMs: new LatencyRing(),
-    inputToFirstOutputRenderMs: new LatencyRing(),
-    outputRenderMs: new LatencyRing(),
+    inputFirstOutputReceivedToParseMs: new LatencyRing(),
+    inputToFirstOutputParseMs: new LatencyRing(),
+    outputParseMs: new LatencyRing(),
+    inputFirstOutputReceivedToPaintMs: new LatencyRing(),
+    inputToFirstOutputPaintMs: new LatencyRing(),
+    outputPaintMs: new LatencyRing(),
   },
 };
 type FormFactor = "desktop" | "phone";
@@ -108,18 +120,21 @@ type PendingTerminalInput = {
 type SentTerminalInput = PendingTerminalInput & { sentAt: number };
 
 const pendingInputs: PendingTerminalInput[] = [];
-type PendingTerminalRender = {
+type PendingTerminalOutputFrame = {
   frameId: number;
   formFactor: FormFactor;
   terminalId: string;
   inputAcceptedAt: number | null;
   inputEventAt: number | null;
   receivedAt: number;
+  parsedAt?: number;
+  paintCancelled?: boolean;
 };
 
-const pendingRenders: Array<PendingTerminalRender | undefined> = Array.from({
-  length: RING_SIZE,
-});
+const pendingOutputFrames: Array<PendingTerminalOutputFrame | undefined> =
+  Array.from({
+    length: RING_SIZE,
+  });
 let nextOutputFrameId = 1;
 
 function currentFormFactor(): FormFactor {
@@ -207,7 +222,7 @@ export function recordTerminalOutputReceived(
     }
   }
   const frameId = nextOutputFrameId++;
-  pendingRenders[frameId % RING_SIZE] = {
+  pendingOutputFrames[frameId % RING_SIZE] = {
     frameId,
     formFactor: firstInput?.formFactor ?? currentFormFactor(),
     terminalId,
@@ -218,30 +233,72 @@ export function recordTerminalOutputReceived(
   return frameId;
 }
 
-export function recordTerminalOutputRendered(
+export function recordTerminalOutputParsed(
   terminalId: string,
   frameId: number | undefined,
-  renderedAt: number,
+  parsedAt: number,
 ): void {
-  if (frameId === undefined || !Number.isSafeInteger(frameId)) return;
-  const index = frameId % RING_SIZE;
-  const pending = pendingRenders[index];
-  if (pending?.frameId !== frameId || pending.terminalId !== terminalId) return;
-  pendingRenders[index] = undefined;
-  const formFactor = pending?.formFactor ?? currentFormFactor();
-  metrics[formFactor].outputRenderMs.add(renderedAt - pending.receivedAt);
   if (
-    pending?.inputAcceptedAt !== null &&
-    pending?.inputAcceptedAt !== undefined
-  ) {
-    metrics[formFactor].inputFirstOutputReceivedToRenderMs.add(
-      renderedAt - pending.receivedAt,
+    frameId === undefined ||
+    !Number.isSafeInteger(frameId) ||
+    !Number.isFinite(parsedAt)
+  )
+    return;
+  const index = frameId % RING_SIZE;
+  const pending = pendingOutputFrames[index];
+  if (pending?.frameId !== frameId || pending.terminalId !== terminalId) return;
+  if (pending.parsedAt !== undefined) return;
+  pending.parsedAt = parsedAt;
+  const formFactor = pending.formFactor;
+  metrics[formFactor].outputParseMs.add(parsedAt - pending.receivedAt);
+  if (pending.inputAcceptedAt !== null) {
+    metrics[formFactor].inputFirstOutputReceivedToParseMs.add(
+      parsedAt - pending.receivedAt,
     );
   }
-  if (pending?.inputEventAt !== null && pending?.inputEventAt !== undefined) {
-    metrics[formFactor].inputToFirstOutputRenderMs.add(
-      renderedAt - pending.inputEventAt,
+  if (pending.inputEventAt !== null) {
+    metrics[formFactor].inputToFirstOutputParseMs.add(
+      parsedAt - pending.inputEventAt,
     );
+  }
+}
+
+export function recordTerminalOutputPainted(
+  terminalId: string,
+  paintedAt: number,
+): void {
+  if (!Number.isFinite(paintedAt)) return;
+  for (let index = 0; index < pendingOutputFrames.length; index += 1) {
+    const pending = pendingOutputFrames[index];
+    if (
+      pending?.terminalId !== terminalId ||
+      pending.parsedAt === undefined ||
+      pending.paintCancelled === true ||
+      pending.parsedAt > paintedAt
+    ) {
+      continue;
+    }
+    pendingOutputFrames[index] = undefined;
+    const formFactor = pending.formFactor;
+    metrics[formFactor].outputPaintMs.add(paintedAt - pending.receivedAt);
+    if (pending.inputAcceptedAt !== null) {
+      metrics[formFactor].inputFirstOutputReceivedToPaintMs.add(
+        paintedAt - pending.receivedAt,
+      );
+    }
+    if (pending.inputEventAt !== null) {
+      metrics[formFactor].inputToFirstOutputPaintMs.add(
+        paintedAt - pending.inputEventAt,
+      );
+    }
+  }
+}
+
+export function cancelTerminalOutputPaints(terminalId: string): void {
+  for (const pending of pendingOutputFrames) {
+    if (pending?.terminalId === terminalId) {
+      pending.paintCancelled = true;
+    }
   }
 }
 
@@ -257,11 +314,16 @@ function snapshot(formFactor: "desktop" | "phone"): TerminalLatencySnapshot {
       metrics[formFactor].inputWebSocketSendToFirstOutputReceivedMs.snapshot(),
     inputToFirstOutputReceivedMs:
       metrics[formFactor].inputToFirstOutputReceivedMs.snapshot(),
-    inputFirstOutputReceivedToRenderMs:
-      metrics[formFactor].inputFirstOutputReceivedToRenderMs.snapshot(),
-    inputToFirstOutputRenderMs:
-      metrics[formFactor].inputToFirstOutputRenderMs.snapshot(),
-    outputRenderMs: metrics[formFactor].outputRenderMs.snapshot(),
+    inputFirstOutputReceivedToParseMs:
+      metrics[formFactor].inputFirstOutputReceivedToParseMs.snapshot(),
+    inputToFirstOutputParseMs:
+      metrics[formFactor].inputToFirstOutputParseMs.snapshot(),
+    outputParseMs: metrics[formFactor].outputParseMs.snapshot(),
+    inputFirstOutputReceivedToPaintMs:
+      metrics[formFactor].inputFirstOutputReceivedToPaintMs.snapshot(),
+    inputToFirstOutputPaintMs:
+      metrics[formFactor].inputToFirstOutputPaintMs.snapshot(),
+    outputPaintMs: metrics[formFactor].outputPaintMs.snapshot(),
   };
 }
 

@@ -85,31 +85,57 @@ export function TerminalLatencyDiagnostics() {
             )}
           </div>
           <div>
-            First output → rendered:{" "}
+            First output → parsed:{" "}
             {metricText(
-              snapshot[formFactor].inputFirstOutputReceivedToRenderMs.count,
-              snapshot[formFactor].inputFirstOutputReceivedToRenderMs
-                .totalCount,
-              snapshot[formFactor].inputFirstOutputReceivedToRenderMs.p50Ms,
-              snapshot[formFactor].inputFirstOutputReceivedToRenderMs.p95Ms,
+              snapshot[formFactor].inputFirstOutputReceivedToParseMs.count,
+              snapshot[formFactor].inputFirstOutputReceivedToParseMs.totalCount,
+              snapshot[formFactor].inputFirstOutputReceivedToParseMs.p50Ms,
+              snapshot[formFactor].inputFirstOutputReceivedToParseMs.p95Ms,
             )}
           </div>
           <div>
-            Keystroke → first output rendered:{" "}
+            Keystroke → first output parsed:{" "}
             {metricText(
-              snapshot[formFactor].inputToFirstOutputRenderMs.count,
-              snapshot[formFactor].inputToFirstOutputRenderMs.totalCount,
-              snapshot[formFactor].inputToFirstOutputRenderMs.p50Ms,
-              snapshot[formFactor].inputToFirstOutputRenderMs.p95Ms,
+              snapshot[formFactor].inputToFirstOutputParseMs.count,
+              snapshot[formFactor].inputToFirstOutputParseMs.totalCount,
+              snapshot[formFactor].inputToFirstOutputParseMs.p50Ms,
+              snapshot[formFactor].inputToFirstOutputParseMs.p95Ms,
             )}
           </div>
           <div>
-            Output receive to render:{" "}
+            Output receive → parsed:{" "}
             {metricText(
-              snapshot[formFactor].outputRenderMs.count,
-              snapshot[formFactor].outputRenderMs.totalCount,
-              snapshot[formFactor].outputRenderMs.p50Ms,
-              snapshot[formFactor].outputRenderMs.p95Ms,
+              snapshot[formFactor].outputParseMs.count,
+              snapshot[formFactor].outputParseMs.totalCount,
+              snapshot[formFactor].outputParseMs.p50Ms,
+              snapshot[formFactor].outputParseMs.p95Ms,
+            )}
+          </div>
+          <div>
+            First output → painted:{" "}
+            {metricText(
+              snapshot[formFactor].inputFirstOutputReceivedToPaintMs.count,
+              snapshot[formFactor].inputFirstOutputReceivedToPaintMs.totalCount,
+              snapshot[formFactor].inputFirstOutputReceivedToPaintMs.p50Ms,
+              snapshot[formFactor].inputFirstOutputReceivedToPaintMs.p95Ms,
+            )}
+          </div>
+          <div>
+            Keystroke → first output painted:{" "}
+            {metricText(
+              snapshot[formFactor].inputToFirstOutputPaintMs.count,
+              snapshot[formFactor].inputToFirstOutputPaintMs.totalCount,
+              snapshot[formFactor].inputToFirstOutputPaintMs.p50Ms,
+              snapshot[formFactor].inputToFirstOutputPaintMs.p95Ms,
+            )}
+          </div>
+          <div>
+            Output receive → painted:{" "}
+            {metricText(
+              snapshot[formFactor].outputPaintMs.count,
+              snapshot[formFactor].outputPaintMs.totalCount,
+              snapshot[formFactor].outputPaintMs.p50Ms,
+              snapshot[formFactor].outputPaintMs.p95Ms,
             )}
           </div>
         </div>
