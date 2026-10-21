@@ -265,6 +265,80 @@ function expectNoThreadOnlyEventSeek(details: string): void {
 }
 
 describe("slow query index plans", () => {
+  it("does not rehydrate lifecycle rows already inside the selected window", () => {
+    const { db, thread } = setup();
+    try {
+      insertEvents(db, noopNotifier, [
+        {
+          threadId: thread.id,
+          sequence: 1,
+          createdAt: 100,
+          type: "item/started",
+          scope: turnScope("turn-window"),
+          itemId: "item-window",
+          itemKind: "agentMessage",
+          parentToolCallId: null,
+          data: JSON.stringify({}),
+        },
+        {
+          threadId: thread.id,
+          sequence: 2,
+          createdAt: 200,
+          type: "item/completed",
+          scope: turnScope("turn-window"),
+          itemId: "item-window",
+          itemKind: "agentMessage",
+          parentToolCallId: null,
+          data: JSON.stringify({}),
+        },
+        {
+          threadId: thread.id,
+          sequence: 3,
+          createdAt: 300,
+          type: "item/started",
+          scope: turnScope("turn-window"),
+          itemId: "item-window",
+          itemKind: "agentMessage",
+          parentToolCallId: null,
+          data: JSON.stringify({}),
+        },
+        {
+          threadId: thread.id,
+          sequence: 4,
+          createdAt: 400,
+          type: "item/completed",
+          scope: turnScope("turn-window"),
+          itemId: "item-window",
+          itemKind: "agentMessage",
+          parentToolCallId: null,
+          data: JSON.stringify({}),
+        },
+      ]);
+
+      const captured = captureStatements(db, () => {
+        const rows = listStoredItemLifecycleRowsByItems(db, {
+          items: [
+            {
+              itemId: "item-window",
+              scopeKind: "turn",
+              turnId: "turn-window",
+            },
+          ],
+          maxInlineOutputChars: 32_000,
+          threadId: thread.id,
+          sequenceBounds: { beforeSequence: 4, sequenceStart: 2 },
+        });
+        expect(rows.map((row) => row.sequence)).toEqual([1, 4]);
+      });
+      expect(captured).toHaveLength(1);
+      expect(queryPlanDetails({ db, ...captured[0]! })).toContain(
+        "events_thread_turn_type_item_sequence_idx",
+      );
+    } finally {
+      db.$client.close();
+    }
+  });
+
   it("hydrates selected item lifecycles through turn-scoped index probes", () => {
     const { db, logger, thread } = setup();
     try {

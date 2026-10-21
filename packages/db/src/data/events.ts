@@ -2002,6 +2002,7 @@ export function getStoredItemLifecycleSequenceRange(
 export interface ListStoredItemLifecycleRowsByItemsArgs {
   items: readonly ScopedItemRef[];
   maxInlineOutputChars: InlineOutputCharLimit;
+  sequenceBounds?: { beforeSequence?: number; sequenceStart: number };
   threadId: string;
 }
 
@@ -2046,6 +2047,14 @@ export function listStoredItemLifecycleRowsByItems(
           AND ${events.scopeKind} = selected_items.scope_kind
           AND ${events.itemId} = selected_items.item_id
           AND ${events.type} IN ('item/started', 'item/completed')
+          ${args.sequenceBounds === undefined
+            ? sql``
+            : sql`AND (
+                ${events.sequence} < ${args.sequenceBounds.sequenceStart}
+                ${args.sequenceBounds.beforeSequence === undefined
+                  ? sql``
+                  : sql`OR ${events.sequence} >= ${args.sequenceBounds.beforeSequence}`}
+              )`}
         ORDER BY ${events.sequence}
       `),
   }).sort((left, right) => left.sequence - right.sequence);
