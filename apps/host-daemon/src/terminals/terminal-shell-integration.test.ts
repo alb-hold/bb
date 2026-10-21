@@ -28,13 +28,51 @@ interface ShellFixture {
   bashRc?: string;
   command?: string;
   cwdPath?: string;
+  exitCommand?: string;
   fishConfig?: string;
   fishSourceIntegrationTwice?: boolean;
+  outputAfterExit?: string;
   sourceIntegrationTwice?: boolean;
   xdgDataDirs?: string;
   userZdotdir?: "home" | null;
   zshEnv?: string;
   zshRc?: string;
+}
+
+function createShellOutputCompletionGate(requiredOutput: string | null) {
+  let output = "";
+  let exitCode: number | null = null;
+  let settled = false;
+  let resolve!: (result: { output: string; exitCode: number }) => void;
+  const promise = new Promise<{ output: string; exitCode: number }>(
+    (resolvePromise) => {
+      resolve = resolvePromise;
+    },
+  );
+  const finishIfReady = () => {
+    if (
+      !settled &&
+      exitCode !== null &&
+      (requiredOutput === null || output.includes(requiredOutput))
+    ) {
+      settled = true;
+      resolve({ output, exitCode });
+    }
+  };
+  return {
+    get output() {
+      return output;
+    },
+    onData(chunk: string) {
+      output += chunk;
+      finishIfReady();
+    },
+    onExit(code: number) {
+      exitCode = code;
+      finishIfReady();
+    },
+    promise,
+  };
 }
 
 async function runShell(
@@ -105,45 +143,21 @@ async function runShell(
     cwd: root,
     env: integration.env,
   });
-  let output = "";
   let outputAtCommandEnd: string | null = null;
+  const completion = createShellOutputCompletionGate(
+    fixture.outputAfterExit ?? null,
+  );
   let commandState = 0;
   return await new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       terminal.kill();
       reject(
-        new Error(`${shell} integration timed out: ${JSON.stringify(output)}`),
+        new Error(
+          `${shell} integration timed out: ${JSON.stringify(completion.output)}`,
+        ),
       );
     }, 8_000);
-    terminal.onData((chunk) => {
-      output += chunk;
-      if (
-        commandState === 0 &&
-        output.includes("BB_USER_RC_LOADED") &&
-        /\u001b\]133;A(?:;[^\u0007]*)?\u0007/.test(output)
-      ) {
-        commandState = 1;
-        const command =
-          fixture.command ?? `cd '${fixture.cwdPath ?? "/tmp"}'; false`;
-        const integrationSource = integration.args[1];
-        const sourceTwice =
-          shellName === "bash" && fixture.sourceIntegrationTwice
-            ? `source '${integrationSource?.replaceAll("'", "'\\''") ?? ""}'; `
-            : "";
-        terminal.write(`${sourceTwice}${command}\n`);
-      } else if (
-        commandState === 1 &&
-        output.includes("\u001b]133;D;1\u0007") &&
-        (shellName !== "fish" ||
-          (output.match(/\u001b\]133;A(?:;[^\u0007]*)?\u0007/g)?.length ?? 0) >=
-            2)
-      ) {
-        commandState = 2;
-        outputAtCommandEnd = output;
-        terminal.write("exit 1\n");
-      }
-    });
-    terminal.onExit(({ exitCode }) => {
+    void completion.promise.then(({ output, exitCode }) => {
       clearTimeout(timer);
       void integration.cleanup();
       const cwdMark = /\u001b\]7;file:\/\/[^\u0007]+\u0007/.test(output);
@@ -162,6 +176,39 @@ async function runShell(
         return;
       }
       resolve({ output, outputAtCommandEnd, exitCode });
+    });
+    terminal.onData((chunk) => {
+      completion.onData(chunk);
+      if (
+        commandState === 0 &&
+        completion.output.includes("BB_USER_RC_LOADED") &&
+        /\u001b\]133;A(?:;[^\u0007]*)?\u0007/.test(completion.output)
+      ) {
+        commandState = 1;
+        const command =
+          fixture.command ?? `cd '${fixture.cwdPath ?? "/tmp"}'; false`;
+        const integrationSource = integration.args[1];
+        const sourceTwice =
+          shellName === "bash" && fixture.sourceIntegrationTwice
+            ? `source '${integrationSource?.replaceAll("'", "'\\''") ?? ""}'; `
+            : "";
+        terminal.write(`${sourceTwice}${command}\n`);
+      } else if (
+        commandState === 1 &&
+        completion.output.includes("\u001b]133;D;1\u0007") &&
+        (shellName !== "fish" ||
+          (completion.output.match(
+            /\u001b\]133;A(?:;[^\u0007]*)?\u0007/g,
+          )?.length ?? 0) >=
+            2)
+      ) {
+        commandState = 2;
+        outputAtCommandEnd = completion.output;
+        terminal.write(`${fixture.exitCommand ?? "exit 1"}\n`);
+      }
+    });
+    terminal.onExit(({ exitCode }) => {
+      completion.onExit(exitCode);
     });
   });
 }
@@ -258,6 +305,8 @@ describe("terminal shell integration", () => {
   it("composes PS0 and installs its hooks once when the rc is sourced twice", async () => {
     const result = await runShell("bash", {
       bashRc: `PS0='USER_PS0>'\nprintf 'BB_USER_RC_LOADED\\n'\n`,
+      exitCommand: "printf 'BB_SHELL_OUTPUT_COMPLETE\\n'; exit 1",
+      outputAfterExit: "BB_SHELL_OUTPUT_COMPLETE",
       sourceIntegrationTwice: true,
     });
     expect(result.output).toContain("USER_PS0>");
@@ -268,6 +317,25 @@ describe("terminal shell integration", () => {
     expect(result.output.split("\u001b]133;C\u0007")).toHaveLength(3);
     expect(result.output.split("BB_USER_RC_LOADED")).toHaveLength(2);
     expect(result.exitCode).toBe(1);
+  });
+
+  it("waits for final PTY output when the process exit event arrives first", async () => {
+    const completion = createShellOutputCompletionGate("final-output");
+    let settled = false;
+    const result = completion.promise.then((value) => {
+      settled = true;
+      return value;
+    });
+
+    completion.onExit(1);
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    completion.onData("final-output");
+    await expect(result).resolves.toEqual({
+      output: "final-output",
+      exitCode: 1,
+    });
   });
 
   it.skipIf(!shellAvailable("zsh"))(

@@ -102,6 +102,10 @@ interface TerminalNotifyOptions {
 
 interface TerminalAttentionOptions extends TerminalJsonOptions {}
 
+interface TerminalSurfacesOptions extends TerminalJsonOptions {
+  thread: string;
+}
+
 type TerminalStartResolution =
   | { mode: "shell" }
   | { mode: "command"; command: string }
@@ -239,6 +243,49 @@ export function registerTerminalCommands(
             `${session.attention?.at ?? 0}\t${session.id}\t${session.title}\t${session.threadId ?? session.environmentId ?? session.hostId}`,
           );
         }
+      }),
+    );
+
+  terminal
+    .command("surfaces")
+    .description("List terminal surfaces attached to a thread")
+    .requiredOption("--thread <id>", "Thread ID")
+    .option("--json", "Print machine-readable JSON output")
+    .action(
+      action(async (opts: TerminalSurfacesOptions) => {
+        const surfaces = await createCliBbSdk(getUrl()).terminals
+          .experimental_surfaces.list({ threadId: opts.thread });
+        if (outputJson(opts, { threadId: opts.thread, surfaces })) return;
+        for (const surface of surfaces) {
+          console.log(
+            `${surface.terminalId}\t${surface.title}\t${surface.status}\t${surface.kind}`,
+          );
+        }
+      }),
+    );
+
+  terminal
+    .command("focus <terminalId>")
+    .description("Focus a terminal tab in the app")
+    .action(
+      action(async (terminalId: string) => {
+        await createCliBbSdk(getUrl()).terminals.experimental_focus({
+          terminalId,
+        });
+        console.log(`Focused terminal ${terminalId}`);
+      }),
+    );
+
+  terminal
+    .command("open-link <terminalId> <url>")
+    .description("Open a URL in the terminal thread's browser")
+    .action(
+      action(async (terminalId: string, url: string) => {
+        await createCliBbSdk(getUrl()).terminals.experimental_openBrowser({
+          terminalId,
+          url,
+        });
+        console.log(`Opened ${url} in terminal ${terminalId}'s thread browser`);
       }),
     );
 
