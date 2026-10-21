@@ -412,12 +412,17 @@ export function recordNativeTerminalThreadSessionId(
 }
 
 export type RebindNativeSessionIdResult =
-  | { kind: "rebound"; previousNativeSessionId: string | null }
+  | { kind: "rebound" }
+  | { kind: "stale"; nativeSessionId: string | null }
   | { kind: "claimed-by-other-thread"; threadId: string };
 
 export function rebindNativeTerminalThreadSessionId(
   db: DbConnection,
-  args: { nativeSessionId: string; threadId: string },
+  args: {
+    nativeSessionId: string;
+    replacesNativeSessionId: string;
+    threadId: string;
+  },
 ): RebindNativeSessionIdResult {
   return db.$client.transaction((): RebindNativeSessionIdResult => {
     const current = getNativeTerminalThread(db, args.threadId);
@@ -425,6 +430,9 @@ export function rebindNativeTerminalThreadSessionId(
       throw new Error(
         `Thread ${args.threadId} is not a native terminal thread`,
       );
+    }
+    if (current.nativeSessionId !== args.replacesNativeSessionId) {
+      return { kind: "stale", nativeSessionId: current.nativeSessionId };
     }
     const owner = db.$client
       .prepare(
@@ -437,15 +445,20 @@ export function rebindNativeTerminalThreadSessionId(
     if (owner !== undefined) {
       return { kind: "claimed-by-other-thread", threadId: owner.threadId };
     }
-    db.$client
+    const result = db.$client
       .prepare(
-        `UPDATE fork_native_terminal_threads SET native_session_id = ?, updated_at = ? WHERE thread_id = ?`,
+        `UPDATE fork_native_terminal_threads SET native_session_id = ?, updated_at = ?
+         WHERE thread_id = ? AND native_session_id = ?`,
       )
-      .run(args.nativeSessionId, Date.now(), args.threadId);
-    return {
-      kind: "rebound",
-      previousNativeSessionId: current.nativeSessionId,
-    };
+      .run(
+        args.nativeSessionId,
+        Date.now(),
+        args.threadId,
+        args.replacesNativeSessionId,
+      );
+    return result.changes === 1
+      ? { kind: "rebound" }
+      : { kind: "stale", nativeSessionId: null };
   })();
 }
 

@@ -107,6 +107,9 @@ export function registerNativeTerminalThreadRoutes(
         authorization: context.req.header("authorization"),
         threadId: context.req.param("id"),
         nativeSessionId: payload.nativeSessionId,
+        ...(payload.replacesNativeSessionId === undefined
+          ? {}
+          : { replacesNativeSessionId: payload.replacesNativeSessionId }),
       }),
     ),
   );

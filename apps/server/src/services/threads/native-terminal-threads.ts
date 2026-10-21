@@ -1134,6 +1134,7 @@ export function recordNativeTerminalSession(
     authorization?: string;
     threadId: string;
     nativeSessionId: string;
+    replacesNativeSessionId?: string;
   },
 ): NativeTerminalThread {
   requireNativeTerminalThreadRecord(deps, args.threadId);
@@ -1144,6 +1145,7 @@ export function recordNativeTerminalSession(
       break;
     case "already-bound": {
       if (
+        args.replacesNativeSessionId === undefined ||
         !holderHoldsCurrentLiveCredential(deps, {
           authorization: args.authorization,
           threadId: args.threadId,
@@ -1155,12 +1157,23 @@ export function recordNativeTerminalSession(
           `Thread is already bound to native session ${result.nativeSessionId}`,
         );
       }
-      const rebound = rebindNativeTerminalThreadSessionId(deps.db, args);
+      const rebound = rebindNativeTerminalThreadSessionId(deps.db, {
+        nativeSessionId: args.nativeSessionId,
+        replacesNativeSessionId: args.replacesNativeSessionId,
+        threadId: args.threadId,
+      });
       if (rebound.kind === "claimed-by-other-thread") {
         throw new ApiError(
           409,
           "native_session_claimed",
           `Native session belongs to thread ${rebound.threadId}`,
+        );
+      }
+      if (rebound.kind === "stale") {
+        throw new ApiError(
+          409,
+          "native_session_already_bound",
+          "The thread's native session changed since this move was requested",
         );
       }
       break;

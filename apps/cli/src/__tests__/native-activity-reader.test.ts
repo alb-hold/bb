@@ -6,7 +6,6 @@ import {
   openSync,
   rmSync,
   statSync,
-  utimesSync,
   writeFileSync,
   writeSync,
 } from "node:fs";
@@ -179,7 +178,7 @@ function claudeFixture(
     reason: "missing-session" | "foreign-session" | "unbound",
     total: number,
   ) => void,
-  onSessionAdopted?: (sessionId: string) => void,
+  onSessionAdopted?: (sessionId: string, previousSessionId: string) => void,
 ) {
   const host = createFakePluginHost({ pluginId: "provider-claude-code" });
   claudeCodePlugin(host.bb);
@@ -333,17 +332,24 @@ function retainedIdentitySizes(reader: NativeActivityReader) {
 
 describe("NativeActivityReader session rotation", () => {
   const ROTATED = "5c0ffee0-1111-4222-8333-444455556666";
+  type Fixture = ReturnType<typeof claudeFixture>;
 
-  function rotatedSession(
-    fixture: ReturnType<typeof claudeFixture>,
-    options: { ageMs?: number; sessionId?: string } = {},
+  const continuedIn = (nextSessionId: string) => ({
+    type: "continued-in",
+    continuedInSessionId: nextSessionId,
+    sessionId: SESSION_ID,
+    timestamp: new Date().toISOString(),
+  });
+
+  function startRotation(
+    fixture: Fixture,
+    options: { sessionId?: string; continuation?: boolean } = {},
   ): string {
     const sessionId = options.sessionId ?? ROTATED;
     const file = path.join(fixture.dir, `${sessionId}.jsonl`);
     writeFileSync(file, "");
-    if (options.ageMs !== undefined) {
-      const past = new Date(Date.now() - options.ageMs);
-      utimesSync(file, past, past);
+    if (options.continuation !== false) {
+      appendFileSync(fixture.transcript, jsonl([continuedIn(sessionId)]));
     }
     return file;
   }
@@ -355,19 +361,27 @@ describe("NativeActivityReader session rotation", () => {
     prompt: "second prompt",
   });
 
-  it("adopts a session the CLI rotated to in-process once its own transcript exists, and reads its questions", () => {
-    const adopted: string[] = [];
-    const fixture = claudeFixture(false, undefined, undefined, (id) =>
-      adopted.push(id),
+  const adoptions =
+    (list: Array<[string, string]>) => (id: string, previous: string) => {
+      list.push([id, previous]);
+    };
+
+  it("adopts the session the bound transcript continues into, and reads its questions", () => {
+    const adopted: Array<[string, string]> = [];
+    const fixture = claudeFixture(
+      false,
+      undefined,
+      undefined,
+      adoptions(adopted),
     );
     finalClaudeStop(fixture);
     fixture.reader.read();
-    const next = rotatedSession(fixture);
+    const next = startRotation(fixture);
     fixture.hook([rotatedPrompt()]);
     expect(fixture.reader.read()).toEqual([
       { state: "working", prompt: "second prompt" },
     ]);
-    expect(adopted).toEqual([ROTATED]);
+    expect(adopted).toEqual([[ROTATED, SESSION_ID]]);
 
     appendFileSync(
       next,
@@ -401,55 +415,162 @@ describe("NativeActivityReader session rotation", () => {
     ]);
   });
 
-  it("keeps ignoring a foreign session that has no transcript of its own", () => {
-    const adopted: string[] = [];
-    const fixture = claudeFixture(false, undefined, undefined, (id) =>
-      adopted.push(id),
+  it("negative control: a foreign session with no continuation record is ignored, even with a fresh transcript", () => {
+    const adopted: Array<[string, string]> = [];
+    const fixture = claudeFixture(
+      false,
+      undefined,
+      undefined,
+      adoptions(adopted),
+    );
+    startRotation(fixture, { continuation: false });
+    fixture.hook([rotatedPrompt()]);
+    expect(fixture.reader.read()).toEqual([]);
+    expect(adopted).toEqual([]);
+  });
+
+  it("negative control: a continuation naming a different session does not adopt this one", () => {
+    const adopted: Array<[string, string]> = [];
+    const fixture = claudeFixture(
+      false,
+      undefined,
+      undefined,
+      adoptions(adopted),
+    );
+    startRotation(fixture, { continuation: false });
+    appendFileSync(
+      fixture.transcript,
+      jsonl([continuedIn("9f0ffee0-1111-4222-8333-444455556666")]),
     );
     fixture.hook([rotatedPrompt()]);
     expect(fixture.reader.read()).toEqual([]);
     expect(adopted).toEqual([]);
   });
 
-  it("keeps ignoring a foreign session whose transcript predates the holder", () => {
-    const adopted: string[] = [];
-    const fixture = claudeFixture(false, undefined, undefined, (id) =>
-      adopted.push(id),
+  it("negative control: a continuation in some other transcript does not count", () => {
+    const adopted: Array<[string, string]> = [];
+    const fixture = claudeFixture(
+      false,
+      undefined,
+      undefined,
+      adoptions(adopted),
     );
-    rotatedSession(fixture, { ageMs: 3_600_000 });
+    startRotation(fixture, { continuation: false });
+    writeFileSync(
+      path.join(fixture.dir, "aaaaaaaa-1111-4222-8333-444455556666.jsonl"),
+      jsonl([continuedIn(ROTATED)]),
+    );
     fixture.hook([rotatedPrompt()]);
     expect(fixture.reader.read()).toEqual([]);
     expect(adopted).toEqual([]);
   });
 
-  it("does not adopt an id that is not a session id", () => {
-    const adopted: string[] = [];
-    const fixture = claudeFixture(false, undefined, undefined, (id) =>
-      adopted.push(id),
+  it("negative control: a continuation that is not the last record of the bound transcript does not count", () => {
+    const adopted: Array<[string, string]> = [];
+    const fixture = claudeFixture(
+      false,
+      undefined,
+      undefined,
+      adoptions(adopted),
     );
-    const odd = "../escape";
-    rotatedSession(fixture, { sessionId: "odd" });
+    startRotation(fixture);
+    appendFileSync(
+      fixture.transcript,
+      jsonl([{ type: "system", subtype: "turn_duration", isSidechain: false }]),
+    );
+    fixture.hook([rotatedPrompt()]);
+    expect(fixture.reader.read()).toEqual([]);
+    expect(adopted).toEqual([]);
+  });
+
+  it("negative control: a replay of the session already left is never adopted again", () => {
+    const adopted: Array<[string, string]> = [];
+    const fixture = claudeFixture(
+      false,
+      undefined,
+      undefined,
+      adoptions(adopted),
+    );
+    const next = startRotation(fixture);
+    fixture.hook([rotatedPrompt()]);
+    fixture.reader.read();
+    expect(adopted).toEqual([[ROTATED, SESSION_ID]]);
+
+    appendFileSync(next, jsonl([continuedIn(SESSION_ID)]));
+    fixture.hook([
+      {
+        hook_event_name: "UserPromptSubmit",
+        session_id: SESSION_ID,
+        prompt_id: "turn-1-replayed",
+        prompt: "replayed prompt",
+      },
+    ]);
+    expect(fixture.reader.read()).toEqual([]);
+    expect(adopted).toEqual([[ROTATED, SESSION_ID]]);
+  });
+
+  it("negative control: hooks that arrive before the continuation record are held, not applied, and applied once it exists", () => {
+    const adopted: Array<[string, string]> = [];
+    const fixture = claudeFixture(
+      false,
+      undefined,
+      undefined,
+      adoptions(adopted),
+    );
+    startRotation(fixture, { continuation: false });
+    fixture.hook([rotatedPrompt()]);
+    expect(fixture.reader.read()).toEqual([]);
+    expect(adopted).toEqual([]);
+
+    appendFileSync(fixture.transcript, jsonl([continuedIn(ROTATED)]));
+    vi.spyOn(Date, "now").mockReturnValue(Date.now() + 3_000);
+    expect(fixture.reader.read()).toEqual([
+      { state: "working", prompt: "second prompt" },
+    ]);
+    expect(adopted).toEqual([[ROTATED, SESSION_ID]]);
+  });
+
+  it("does not adopt an id that is not a session id, even with a continuation and a transcript", () => {
+    const adopted: Array<[string, string]> = [];
+    const fixture = claudeFixture(
+      false,
+      undefined,
+      undefined,
+      adoptions(adopted),
+    );
+    const odd = "NOT-a-hex-session";
+    writeFileSync(path.join(fixture.dir, `${odd}.jsonl`), "");
+    appendFileSync(fixture.transcript, jsonl([continuedIn(odd)]));
     fixture.hook([rotatedPrompt(odd)]);
     expect(fixture.reader.read()).toEqual([]);
     expect(adopted).toEqual([]);
   });
 
   it("stops adopting after a bounded number of rotations", () => {
-    const adopted: string[] = [];
-    const fixture = claudeFixture(false, undefined, undefined, (id) =>
-      adopted.push(id),
+    const adopted: Array<[string, string]> = [];
+    const fixture = claudeFixture(
+      false,
+      undefined,
+      undefined,
+      adoptions(adopted),
     );
+    let current = fixture.transcript;
+    let clock = Date.now();
+    vi.spyOn(Date, "now").mockImplementation(() => clock);
     for (let index = 0; index < 20; index += 1) {
       const sessionId = `00000000-0000-4000-8000-${String(index).padStart(12, "0")}`;
-      rotatedSession(fixture, { sessionId });
-      vi.spyOn(Date, "now").mockReturnValue(Date.now() + (index + 1) * 3_000);
+      const next = path.join(fixture.dir, `${sessionId}.jsonl`);
+      writeFileSync(next, "");
+      appendFileSync(current, jsonl([continuedIn(sessionId)]));
+      current = next;
+      clock += 3_000;
       fixture.hook([rotatedPrompt(sessionId)]);
       fixture.reader.read();
     }
     expect(adopted).toHaveLength(16);
   });
 
-  it("reports each identity drop with its reason", () => {
+  it("reports each identity drop with its reason and no event content", () => {
     const drops: Array<{ reason: string; total: number }> = [];
     const fixture = claudeFixture(false, undefined, (reason, total) =>
       drops.push({ reason, total }),
@@ -457,6 +578,7 @@ describe("NativeActivityReader session rotation", () => {
     fixture.hook([rotatedPrompt()]);
     fixture.reader.read();
     expect(drops).toEqual([{ reason: "foreign-session", total: 1 }]);
+    expect(JSON.stringify(drops)).not.toContain("second prompt");
   });
 });
 

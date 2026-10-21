@@ -186,6 +186,10 @@ export default function plugin(bb: BbPluginApi) {
             },
           ],
           prompt: [],
+          continuation: {
+            match: { equals: { type: "continued-in" } },
+            nextSessionId: "continuedInSessionId",
+          },
         },
       },
     },

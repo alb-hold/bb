@@ -368,6 +368,7 @@ describe("@bb/sdk", () => {
     await sdk.nativeTerminals.recordSession({
       threadId: "thr_test",
       nativeSessionId: "11111111-2222-3333-4444-555555555555",
+      replacesNativeSessionId: "22222222-2222-3333-4444-555555555555",
       authorization: "Bearer synthetic-sdk-test-credential",
     });
     expect(queue.requests).toEqual([
@@ -375,6 +376,7 @@ describe("@bb/sdk", () => {
         authorization: "Bearer synthetic-sdk-test-credential",
         bodyText: JSON.stringify({
           nativeSessionId: "11111111-2222-3333-4444-555555555555",
+          replacesNativeSessionId: "22222222-2222-3333-4444-555555555555",
         }),
         method: "POST",
         url: "http://bb.test/api/v1/threads/thr_test/native-terminal/session",
