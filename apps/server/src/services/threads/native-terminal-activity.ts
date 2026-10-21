@@ -3,6 +3,7 @@ import {
   getThread,
   clearThreadRowState,
   stampNativeTerminalThreadActivity,
+  stampNativeTerminalThreadToolCall,
   type TerminalSessionRow,
 } from "@bb/db";
 import {
@@ -231,18 +232,18 @@ export function recordNativeTerminalToolCallEvidence(
   const record = getNativeTerminalThread(deps.db, args.threadId);
   if (record === null || record.terminalSessionId === null) return;
   const now = Date.now();
-  const stamp = stampNativeTerminalThreadActivity(deps.db, {
+  const stamp = stampNativeTerminalThreadToolCall(deps.db, {
     at: now,
     terminalSessionId: record.terminalSessionId,
     threadId: args.threadId,
   });
   if (!stamp.updated) return;
-  const previous = stamp.previousLastEvidenceAt;
-  const wasConfirmed =
+  const previous = stamp.previousLastToolCallAt;
+  const wasFresh =
     previous !== null &&
     now >= previous &&
     now - previous <= NATIVE_TERMINAL_ACTIVITY_FRESH_FOR_MS;
-  if (wasConfirmed) return;
+  if (wasFresh) return;
   const thread = requirePublicThread(deps.db, args.threadId);
   deps.hub.notifyThread(
     args.threadId,

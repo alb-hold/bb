@@ -18,6 +18,7 @@ import {
   projectAttachmentThreads,
   queuedThreadMessages,
   setNativeTerminalThreadTerminal,
+  setQueuedThreadMessageFailureReason,
   terminalSessions,
   threads,
   unarchiveThread,
@@ -65,6 +66,7 @@ import {
   seedHostSession,
   seedPrimaryHost,
   seedProjectWithSource,
+  seedQueuedMessage,
   seedSession,
   seedThread,
 } from "../helpers/seed.js";
@@ -2282,6 +2284,49 @@ describe("native terminal threads", () => {
     expect(apiErrorSchema.parse(await readJson(fork)).code).toBe(
       "native_terminal_thread",
     );
+  });
+
+  it("rejects a queued message for a native thread at enqueue and leaves existing queue rows untouched", async () => {
+    const fixture = await createFixture();
+    const { thread } = await openRunningNativeThread(fixture, {
+      providerId: "claude-code",
+    });
+    const existing = seedQueuedMessage(fixture.harness.deps, {
+      content: textInput("queued before the guard"),
+      threadId: thread.id,
+    });
+    setQueuedThreadMessageFailureReason(fixture.harness.db, noopNotifier, {
+      id: existing.id,
+      threadId: thread.id,
+      failureReason: "This thread runs its agent in a native terminal",
+      now: Date.now(),
+      retryDelaysMs: [],
+    });
+    const rowsBefore = fixture.harness.db
+      .select()
+      .from(queuedThreadMessages)
+      .where(eq(queuedThreadMessages.threadId, thread.id))
+      .all();
+
+    const response = await postJson(
+      fixture,
+      `/threads/${thread.id}/queued-messages`,
+      { input: textInput("will never deliver") },
+    );
+    expect(response.status).toBe(409);
+    expect(apiErrorSchema.parse(await readJson(response))).toEqual({
+      code: "native_terminal_thread",
+      message:
+        "This thread runs its agent in a native terminal; send input through the terminal",
+    });
+
+    const rowsAfter = fixture.harness.db
+      .select()
+      .from(queuedThreadMessages)
+      .where(eq(queuedThreadMessages.threadId, thread.id))
+      .all();
+    expect(rowsAfter).toEqual(rowsBefore);
+    expect(rowsAfter).toHaveLength(1);
   });
 
   it("rejects providers without a native harness", async () => {

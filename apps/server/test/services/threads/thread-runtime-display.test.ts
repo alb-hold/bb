@@ -425,6 +425,7 @@ describe("thread runtime display", () => {
       lastEvidenceAt: 100_000,
       freshForMs: 90_000,
       confirmation: "confirmed",
+      evidenceKind: "holder-report",
     });
     expect(pluginFresh.runtime.nativeActivity).toEqual(
       detailFresh.runtime.nativeActivity,
@@ -433,6 +434,7 @@ describe("thread runtime display", () => {
       lastEvidenceAt: 100_000,
       freshForMs: 90_000,
       confirmation: "unconfirmed",
+      evidenceKind: "unknown",
     });
     expect(pluginExpired.runtime.nativeActivity).toEqual(
       detailExpired.runtime.nativeActivity,

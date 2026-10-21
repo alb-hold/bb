@@ -3,6 +3,7 @@ import {
   getCollapsedChildActivity,
   hasThreadListWorkingActivity,
   isUnreadDoneThread,
+  nativeActivityNoticeText,
   resolveThreadListIndicator,
   threadListIndicatorStateForThread,
   type ThreadListIndicatorState,
@@ -48,6 +49,8 @@ const unreadErrorChild = makeChild({
 
 const idleIndicatorState: ThreadListIndicatorState = {
   hasPendingInteraction: false,
+  isActivityUnreported: false,
+  queuedFailedCount: 0,
   hasUnsubmittedDraft: false,
   hasUnreadError: false,
   hasUnreadSuccess: false,
@@ -70,11 +73,12 @@ describe("thread-activity", () => {
         lastEvidenceAt: null,
         freshForMs: 90_000,
         confirmation: "unconfirmed",
+        evidenceKind: "unknown",
       },
     });
     const state = threadListIndicatorStateForThread(unconfirmed, false);
     expect(state.isRuntimeActive).toBe(false);
-    expect(resolveThreadListIndicator(state)).toBe("none");
+    expect(resolveThreadListIndicator(state)).toBe("activity-unreported");
 
     const background = makeEntry({
       ...unconfirmed,
@@ -91,6 +95,90 @@ describe("thread-activity", () => {
         threadListIndicatorStateForThread(waiting, false),
       ),
     ).toBe("needs-input");
+  });
+
+  describe("a live native thread whose activity is not reported", () => {
+    const base = {
+      status: "active" as const,
+      runtimeStatus: "active" as const,
+      experimental_nativeActivity: {
+        lastEvidenceAt: null,
+        freshForMs: 90_000,
+        confirmation: "unconfirmed" as const,
+        evidenceKind: "unknown" as const,
+      },
+    };
+
+    it("never reads as working from tool-call evidence or an unrecognised confirmation", () => {
+      for (const confirmation of ["unconfirmed", "tool-call", "unknown"]) {
+        const entry = makeEntry({
+          ...base,
+          experimental_nativeActivity: {
+            lastEvidenceAt: null,
+            lastToolCallAt: Date.now(),
+            freshForMs: 90_000,
+            confirmation: confirmation as "unconfirmed",
+            evidenceKind: "tool-call",
+          },
+        });
+        const state = threadListIndicatorStateForThread(entry, false);
+        expect(state.isRuntimeActive).toBe(false);
+        expect(resolveThreadListIndicator(state)).toBe("activity-unreported");
+      }
+      const confirmed = makeEntry({
+        ...base,
+        experimental_nativeActivity: {
+          lastEvidenceAt: Date.now(),
+          freshForMs: 90_000,
+          confirmation: "confirmed",
+          evidenceKind: "holder-report",
+        },
+      });
+      expect(
+        resolveThreadListIndicator(
+          threadListIndicatorStateForThread(confirmed, false),
+        ),
+      ).toBe("working");
+    });
+
+    it("says an agent tool call was seen, with its age", () => {
+      const now = 10 * 60_000;
+      const entry = makeEntry({
+        ...base,
+        experimental_nativeActivity: {
+          lastEvidenceAt: null,
+          lastToolCallAt: now - 3 * 60_000,
+          freshForMs: 90_000,
+          confirmation: "unconfirmed",
+          evidenceKind: "tool-call",
+        },
+      });
+      expect(nativeActivityNoticeText(entry, now)).toBe(
+        "Agent tool call seen 3m ago",
+      );
+      expect(nativeActivityNoticeText(makeEntry(base), now)).toBe(
+        "Activity not reported",
+      );
+    });
+
+    it("never masks failed or waiting queued messages", () => {
+      const failed = makeEntry({
+        ...base,
+        queuedWork: "failed",
+        experimental_queuedFailedCount: 4,
+      });
+      const state = threadListIndicatorStateForThread(failed, false);
+      expect(resolveThreadListIndicator(state)).toBe("queued-failed");
+      expect(state.queuedFailedCount).toBe(4);
+      expect(
+        resolveThreadListIndicator(
+          threadListIndicatorStateForThread(
+            makeEntry({ ...base, queuedWork: "waiting" }),
+            false,
+          ),
+        ),
+      ).toBe("queued-waiting");
+    });
   });
 
   describe("hasThreadListWorkingActivity", () => {
@@ -376,6 +464,8 @@ describe("thread-activity", () => {
 
       expect(threadListIndicatorStateForThread(thread, false)).toEqual({
         hasPendingInteraction: true,
+        isActivityUnreported: false,
+        queuedFailedCount: 0,
         hasUnsubmittedDraft: false,
         hasUnreadError: false,
         hasUnreadSuccess: false,

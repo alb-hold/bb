@@ -2850,7 +2850,20 @@ doc covers three September 2026 additions:
   it does not establish model or tool progress or task completion. Older holders
   cannot confirm this receipt and may display activity as unconfirmed. Older
   apps may still display Working, and new apps paired with older servers retain
-  their previous display because the diagnostic is absent.
+  their previous display because the diagnostic is absent. The diagnostic's
+  `evidenceKind` separates a holder report (`holder-report`, the only kind that
+  confirms activity) from an authenticated agent tool call bound to the
+  thread's current terminal and provider session (`tool-call`, carried with
+  `lastToolCallAt`) and from `unknown`. A tool call proves the credential holder
+  acted; it never enables a Working indicator.
+- `PluginSidebarThread.experimental_queuedFailedCount` and
+  `PluginThreadStatusGlyphProps.experimental_queuedFailedCount` carry how many
+  queued messages failed to send, so the `queued-failed` indicator reads "N
+  queued messages not delivered". The core callers are
+  `toPluginSidebarThread` and `ThreadStatusGlyph`. The `activity-unreported`
+  indicator is the neutral state of a running native thread that has no
+  confirmed holder report. Stabilization requires auditing the count against
+  the queue's live rows and the indicator's precedence below queued work.
 
 Docs: `frontend-registration.md`.
 

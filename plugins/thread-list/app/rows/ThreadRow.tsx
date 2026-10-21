@@ -30,6 +30,7 @@ import { cn } from "@/lib/utils";
 import { LIST_HOVER_TRANSITION } from "@/components/ui/motion";
 import {
   hasThreadListWorkingActivity,
+  nativeActivityNoticeText,
   resolveThreadListIndicator,
   resolveThreadStatus,
   threadListIndicatorStateForThread,
@@ -55,6 +56,7 @@ import {
   type PluginSidebarSplitPane,
   type PluginThreadActionsInlineItem,
   type PluginThreadActionsTriggerProps,
+  type PluginSidebarThread,
   type PluginSidebarThreadRowStatus,
   type PluginProvidersState,
 } from "@get-bb/plugin-sdk/app";
@@ -291,6 +293,8 @@ export function CollapsedThreadStatusGlyph({
     isBackgroundAgentActive: activity.backgroundAgent,
     isBackgroundCommandActive: activity.backgroundCommand,
     isGoalActive: activity.goal,
+    isActivityUnreported: false,
+    queuedFailedCount: 0,
     queuedWork: "none",
     isPlanModeActive: activity.planMode,
     isRuntimeActive: activity.runtimeWorking,
@@ -309,6 +313,7 @@ function ThreadTrailingIndicator({
   hideIdleDraftLabel,
   rowStatus,
   nativeActivityUnconfirmed,
+  nativeActivityNotice,
   automationStartedAt,
   elapsedMinutes,
 }: {
@@ -316,6 +321,7 @@ function ThreadTrailingIndicator({
   hideIdleDraftLabel: boolean;
   rowStatus: PluginSidebarThreadRowStatus | null;
   nativeActivityUnconfirmed: boolean;
+  nativeActivityNotice: string;
   automationStartedAt: number | null;
   elapsedMinutes: number | null;
 }) {
@@ -345,8 +351,8 @@ function ThreadTrailingIndicator({
           ? `Woke${elapsedMinutes === null ? "" : ` ${elapsedMinutes}m`}`
           : indicatorKind === "done-unread"
             ? "Done"
-            : nativeActivityUnconfirmed
-              ? "Activity unconfirmed"
+            : indicatorKind === "activity-unreported"
+              ? nativeActivityNotice
               : null;
 
   const indicator = (
@@ -371,19 +377,20 @@ function ThreadTrailingIndicator({
         rowStatus={rowStatus}
         hideIdleDraftLabel={hideIdleDraftLabel}
         hideAccessibleLabel={statusText !== null}
+        experimental_queuedFailedCount={state.queuedFailedCount}
       />
       {statusText === null ? null : (
         <span data-sidebar-status-full="" className="text-right">
           {statusText}
         </span>
       )}
-      {nativeActivityUnconfirmed && statusText !== "Activity unconfirmed" ? (
+      {nativeActivityUnconfirmed && indicatorKind !== "activity-unreported" ? (
         <span
           data-sidebar-native-activity-warning=""
           className="text-muted-foreground"
           role="status"
         >
-          Activity unconfirmed
+          {nativeActivityNotice}
         </span>
       ) : null}
     </span>
@@ -395,6 +402,13 @@ function ThreadTrailingIndicator({
       <TooltipContent side="top">{statusText}</TooltipContent>
     </Tooltip>
   );
+}
+
+function isNativeActivityNotConfirmed(
+  thread: Pick<PluginSidebarThread, "experimental_nativeActivity">,
+): boolean {
+  const activity = thread.experimental_nativeActivity;
+  return activity !== undefined && activity.confirmation !== "confirmed";
 }
 
 const ARCHIVED_ROW_ACTION_KEYS = ["bb--core/archive"];
@@ -649,6 +663,8 @@ function ThreadRowComponent({
     isGoalActive:
       threadStatus.isGoalActive || (hasHiddenChildren && childActivity.goal),
     queuedWork: threadStatus.queuedWork,
+    queuedFailedCount: threadStatus.queuedFailedCount,
+    isActivityUnreported: threadStatus.isActivityUnreported,
     isPlanModeActive:
       threadStatus.isPlanModeActive ||
       (hasHiddenChildren && childActivity.planMode),
@@ -674,7 +690,7 @@ function ThreadRowComponent({
   const hasVisibleStatus =
     trailingIndicatorKind !== "none" ||
     trailingIndicatorResolution.rowStatusIsVisible ||
-    thread.experimental_nativeActivity?.confirmation === "unconfirmed" ||
+    isNativeActivityNotConfirmed(thread) ||
     miniMap !== null ||
     automationStartedAt !== null;
   const splitIndicatorIsWorking = hasThreadListWorkingActivity(
@@ -953,10 +969,10 @@ function ThreadRowComponent({
               ) : (
                 <ThreadTrailingIndicator
                   state={trailingIndicatorState}
-                  nativeActivityUnconfirmed={
-                    thread.experimental_nativeActivity?.confirmation ===
-                    "unconfirmed"
-                  }
+                  nativeActivityUnconfirmed={isNativeActivityNotConfirmed(
+                    thread,
+                  )}
+                  nativeActivityNotice={nativeActivityNoticeText(thread)}
                   automationStartedAt={automationStartedAt}
                   elapsedMinutes={elapsedMinutes}
                   hideIdleDraftLabel={

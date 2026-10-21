@@ -1,7 +1,17 @@
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { getEnvironment, getNativeTerminalThread, threads } from "@bb/db";
+import { createHash } from "node:crypto";
+import {
+  createTerminalSession,
+  getEnvironment,
+  getNativeTerminalThread,
+  getThread,
+  setNativeTerminalThreadTerminal,
+  setNativeTerminalToolCredential,
+  threads,
+} from "@bb/db";
+import { buildThreadStatusChangeMetadata } from "../../src/services/threads/thread-runtime-display.js";
 import {
   nativeTerminalAgentToolsSchema,
   nativeTerminalLaunchSpecSchema,
@@ -364,10 +374,45 @@ describe("native terminal agent tools", () => {
     }
   });
 
-  it("stamps activity evidence only from an authenticated tool call on the current terminal", async () => {
-    const fixture = await createFixture();
-    const threadId = await createNativeThread(fixture);
-    const call = (headers: Record<string, string>) =>
+  describe("tool-call evidence", () => {
+    const SESSION = "0a1b2c3d-1111-2222-3333-444455556666";
+
+    const setSession = (
+      fixture: Fixture,
+      threadId: string,
+      sessionId: string | null,
+    ) =>
+      fixture.harness.db.$client
+        .prepare(
+          "UPDATE fork_native_terminal_threads SET native_session_id = ? WHERE thread_id = ?",
+        )
+        .run(sessionId, threadId);
+
+    const bindSession = async (
+      fixture: Fixture,
+      threadId: string,
+      sessionId = SESSION,
+    ) => {
+      setSession(fixture, threadId, sessionId);
+    };
+
+    async function markWorking(fixture: Fixture, threadId: string) {
+      const response = await fixture.harness.app.request(
+        `/api/v1/threads/${threadId}/native-terminal/activity`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ state: "working" }),
+        },
+      );
+      expect(response.status).toBe(200);
+    }
+
+    const callTool = (
+      fixture: Fixture,
+      threadId: string,
+      headers: Record<string, string>,
+    ) =>
       fixture.harness.app.request(
         `/api/v1/threads/${threadId}/native-terminal/agent-tools/echo_context/call`,
         {
@@ -376,22 +421,213 @@ describe("native terminal agent tools", () => {
           body: JSON.stringify({ callId: "c", arguments: {} }),
         },
       );
-    const evidence = () =>
-      getNativeTerminalThread(fixture.harness.db, threadId)?.lastEvidenceAt;
-    expect(evidence()).toBeNull();
 
-    expect((await call({})).status).toBe(401);
-    expect(
-      (await call({ authorization: "Bearer not-the-credential" })).status,
-    ).toBe(401);
-    await fixture.harness.app.request(
-      `/api/v1/threads/${threadId}/native-terminal/agent-tools`,
-      { headers: authHeaders(fixture, threadId) },
-    );
-    expect(evidence()).toBeNull();
+    const record = (fixture: Fixture, threadId: string) =>
+      getNativeTerminalThread(fixture.harness.db, threadId);
 
-    expect((await call(authHeaders(fixture, threadId))).status).toBe(200);
-    expect(evidence()).toBeGreaterThan(0);
+    const display = (fixture: Fixture, threadId: string) => {
+      const thread = getThread(fixture.harness.db, threadId);
+      if (thread === null) throw new Error("thread missing");
+      return buildThreadStatusChangeMetadata(fixture.harness.deps, thread)
+        .statusChange?.runtime.nativeActivity;
+    };
+
+    it("is recorded as its own evidence type, never as a holder report or working", async () => {
+      const fixture = await createFixture();
+      const threadId = await createNativeThread(fixture);
+      await bindSession(fixture, threadId);
+      await markWorking(fixture, threadId);
+      const clock = vi.spyOn(Date, "now").mockReturnValue(5_000_000);
+      try {
+        expect((await callTool(fixture, threadId, {})).status).toBe(401);
+        expect(
+          (
+            await callTool(fixture, threadId, {
+              authorization: "Bearer not-the-credential",
+            })
+          ).status,
+        ).toBe(401);
+        expect(record(fixture, threadId)?.lastToolCallAt).toBeNull();
+        expect(display(fixture, threadId)).toMatchObject({
+          confirmation: "unconfirmed",
+          evidenceKind: "unknown",
+        });
+
+        expect(
+          (await callTool(fixture, threadId, authHeaders(fixture, threadId)))
+            .status,
+        ).toBe(200);
+        expect(record(fixture, threadId)).toMatchObject({
+          lastEvidenceAt: null,
+          lastToolCallAt: 5_000_000,
+          lastToolCallSessionId: SESSION,
+        });
+        expect(display(fixture, threadId)).toMatchObject({
+          confirmation: "unconfirmed",
+          evidenceKind: "tool-call",
+          lastEvidenceAt: null,
+          lastToolCallAt: 5_000_000,
+        });
+      } finally {
+        clock.mockRestore();
+      }
+    });
+
+    it("expires with the freshness window", async () => {
+      const fixture = await createFixture();
+      const threadId = await createNativeThread(fixture);
+      await bindSession(fixture, threadId);
+      await markWorking(fixture, threadId);
+      const clock = vi.spyOn(Date, "now").mockReturnValue(5_000_000);
+      try {
+        await callTool(fixture, threadId, authHeaders(fixture, threadId));
+        clock.mockReturnValue(5_090_000);
+        expect(display(fixture, threadId)).toMatchObject({
+          evidenceKind: "tool-call",
+        });
+        clock.mockReturnValue(5_090_001);
+        expect(display(fixture, threadId)).toMatchObject({
+          confirmation: "unconfirmed",
+          evidenceKind: "unknown",
+        });
+      } finally {
+        clock.mockRestore();
+      }
+    });
+
+    it("does not cross threads", async () => {
+      const fixture = await createFixture();
+      const first = await createNativeThread(fixture);
+      const second = await createNativeThread(fixture);
+      await bindSession(fixture, first);
+      await bindSession(
+        fixture,
+        second,
+        "9f8e7d6c-1111-2222-3333-444455556666",
+      );
+      const foreign = authHeaders(fixture, second);
+      expect((await callTool(fixture, first, foreign)).status).toBe(401);
+      expect(record(fixture, first)?.lastToolCallAt).toBeNull();
+      expect(record(fixture, second)?.lastToolCallAt).toBeNull();
+      expect(
+        (await callTool(fixture, second, authHeaders(fixture, second))).status,
+      ).toBe(200);
+      expect(record(fixture, first)?.lastToolCallAt).toBeNull();
+      expect(record(fixture, second)?.lastToolCallAt).not.toBeNull();
+    });
+
+    it("is dropped on reattach, and neither the old credential nor a replay refreshes the new terminal", async () => {
+      const fixture = await createFixture();
+      const threadId = await createNativeThread(fixture);
+      await bindSession(fixture, threadId);
+      const oldHeaders = authHeaders(fixture, threadId);
+      expect((await callTool(fixture, threadId, oldHeaders)).status).toBe(200);
+      expect(record(fixture, threadId)?.lastToolCallAt).not.toBeNull();
+
+      const reattached = createTerminalSession(fixture.harness.db, {
+        cols: 80,
+        environmentId: fixture.environmentId,
+        hostId: fixture.hostId,
+        daemonSessionId: fixture.sessionId,
+        initialCwd: "/tmp",
+        rows: 24,
+        status: "running",
+        threadId,
+        title: "Native terminal",
+      });
+      const nextCredential = "reattached-credential-for-tool-call-evidence";
+      setNativeTerminalToolCredential(fixture.harness.db, {
+        threadId,
+        terminalSessionId: reattached.id,
+        credentialHash: createHash("sha256")
+          .update(nextCredential)
+          .digest("hex"),
+      });
+      setNativeTerminalThreadTerminal(fixture.harness.db, {
+        threadId,
+        terminalSessionId: reattached.id,
+      });
+      expect(record(fixture, threadId)).toMatchObject({
+        lastToolCallAt: null,
+        lastToolCallSessionId: null,
+      });
+
+      expect((await callTool(fixture, threadId, oldHeaders)).status).toBe(401);
+      expect(record(fixture, threadId)?.lastToolCallAt).toBeNull();
+
+      expect(
+        (
+          await callTool(fixture, threadId, {
+            authorization: `Bearer ${nextCredential}`,
+          })
+        ).status,
+      ).toBe(200);
+      expect(record(fixture, threadId)).toMatchObject({
+        lastToolCallSessionId: SESSION,
+      });
+      expect(record(fixture, threadId)?.lastToolCallAt).not.toBeNull();
+    });
+
+    it("binds to the provider session and records nothing while the session is unknown", async () => {
+      const fixture = await createFixture();
+      const threadId = await createNativeThread(fixture);
+      setSession(fixture, threadId, null);
+      expect(
+        (await callTool(fixture, threadId, authHeaders(fixture, threadId)))
+          .status,
+      ).toBe(200);
+      expect(record(fixture, threadId)?.lastToolCallAt).toBeNull();
+
+      await bindSession(fixture, threadId);
+      await markWorking(fixture, threadId);
+      const clock = vi.spyOn(Date, "now").mockReturnValue(6_000_000);
+      try {
+        await callTool(fixture, threadId, authHeaders(fixture, threadId));
+        expect(display(fixture, threadId)).toMatchObject({
+          evidenceKind: "tool-call",
+        });
+        fixture.harness.db.$client
+          .prepare(
+            "UPDATE fork_native_terminal_threads SET native_session_id = ? WHERE thread_id = ?",
+          )
+          .run("11111111-2222-3333-4444-555555555555", threadId);
+        expect(display(fixture, threadId)).toMatchObject({
+          evidenceKind: "unknown",
+        });
+        expect(display(fixture, threadId)?.lastToolCallAt).toBeUndefined();
+      } finally {
+        clock.mockRestore();
+      }
+    });
+
+    it("is not refreshed by a call after the terminal exited", async () => {
+      const fixture = await createFixture();
+      const threadId = await createNativeThread(fixture);
+      await bindSession(fixture, threadId);
+      const clock = vi.spyOn(Date, "now").mockReturnValue(7_000_000);
+      try {
+        await callTool(fixture, threadId, authHeaders(fixture, threadId));
+        expect(record(fixture, threadId)?.lastToolCallAt).toBe(7_000_000);
+        fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+          hostId: fixture.hostId,
+          sessionId: fixture.sessionId,
+          message: {
+            type: "terminal.exited",
+            terminalId: fixture.terminalOpens[0]?.terminalId ?? "",
+            exitCode: 0,
+            closeReason: "process-exit",
+          },
+        });
+        clock.mockReturnValue(7_050_000);
+        expect(
+          (await callTool(fixture, threadId, authHeaders(fixture, threadId)))
+            .status,
+        ).toBe(409);
+        expect(record(fixture, threadId)?.lastToolCallAt).toBe(7_000_000);
+      } finally {
+        clock.mockRestore();
+      }
+    });
   });
 
   it("binds the routes to the terminal's credential", async () => {
