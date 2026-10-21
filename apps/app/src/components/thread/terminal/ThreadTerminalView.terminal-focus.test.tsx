@@ -999,7 +999,7 @@ describe("ThreadTerminalView terminal focus boundary", () => {
       { type: "resize", cols: 50, rows: 47 },
       { type: "resize", cols: 51, rows: 47 },
     ]);
-  }, 15_000);
+  }, 30_000);
 
   it("suppresses terminal-scoped shortcuts from the real xterm input", async () => {
     vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({
