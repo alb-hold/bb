@@ -2,6 +2,7 @@ import {
   clearQueuedMessageDispatchRetry,
   clearQueuedThreadMessageWaitingOn,
   createQueuedThreadMessageInTransaction,
+  getThread,
   requeueClaimedQueuedThreadMessages,
   type ClaimedQueuedThreadMessageRow,
   type DbConnection,
@@ -33,6 +34,8 @@ type QueueWaitDeps = { db: DbQueryConnection; hub: DbNotifier };
 export const QUEUED_MESSAGE_CLAIM_LOST_CODE = "queued_message_claim_lost";
 export const QUEUED_MESSAGE_AUTO_SEND_PAUSED_CODE =
   "queued_message_auto_send_paused";
+
+export class ThreadQueueScopeChangedError extends Error {}
 
 export function createQueuedMessageClaimLostError(): ApiError {
   return new ApiError(
@@ -89,6 +92,13 @@ export function recordQueuedMessageWait(
     row = deps.db.transaction(
       (tx) => {
         assertThreadHostAcceptsWork(tx, args.thread);
+        const currentThread = getThread(tx, args.thread.id);
+        if (
+          !currentThread ||
+          currentThread.parentThreadId !== args.thread.parentThreadId
+        ) {
+          throw new ThreadQueueScopeChangedError();
+        }
         return createQueuedThreadMessageInTransaction(tx, {
           threadId: args.thread.id,
           content: args.message.input,

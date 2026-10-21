@@ -54,10 +54,12 @@ whose `--model` cannot run with them is refused with the name of one that can.
 
 Providers may declare a child-thread model. When spawning a child thread, an
 explicit `--model` must exactly match that model or bb refuses the request;
-omit `--model` to use it automatically. The same rule applies to explicit
-models on child-thread messages and sticky model updates. Stored overrides and
-queued work from before this rule remain readable and use the provider's child
-model when executed.
+omit `--model` to use it automatically. Spawning with `bb thread spawn` from
+inside a thread during its turn records an active spawner and also makes the
+new thread a child, even without `--parent-self`. The same rule applies to
+explicit models on child-thread messages and sticky model updates. Stored
+overrides and queued work from before this rule remain readable and use the
+provider's child model when executed.
 
 Service tiers are provider-defined ids. `bb provider list --json` reports each
 provider's `serviceTiers` ({id, label, description?}); `default` always means

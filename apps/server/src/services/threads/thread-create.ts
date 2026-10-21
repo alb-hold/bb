@@ -468,7 +468,7 @@ async function createPendingThreadAndAttemptFirstDispatch(
             : "spawner",
         model: args.request.model,
         providerId: thread.providerId,
-        source: args.request.executionInputSources?.model,
+        sources: args.request.executionInputSources,
       });
     }
     await configureThreadPlugins(
@@ -530,10 +530,10 @@ async function createPendingThreadAndAttemptFirstDispatch(
       payload: {
         input: args.request.input,
         mode: "start",
-        model: execution.model,
-        reasoningLevel: execution.reasoningLevel,
-        serviceTier: execution.serviceTier,
-        permissionMode: execution.permissionMode,
+        model: args.request.model,
+        reasoningLevel: args.request.reasoningLevel,
+        serviceTier: args.request.serviceTier,
+        permissionMode: args.request.permissionMode,
         ...(args.request.executionInputSources !== undefined
           ? { executionInputSources: args.request.executionInputSources }
           : {}),
@@ -893,7 +893,7 @@ export async function createThreadFromRequest(
           : "spawner",
       model: request.model,
       providerId: request.providerId,
-      source: request.executionInputSources?.model,
+      sources: request.executionInputSources,
     });
   }
 

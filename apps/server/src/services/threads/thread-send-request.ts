@@ -84,7 +84,7 @@ export async function acceptThreadSendRequest(
         : "spawner",
     model: args.payload.model,
     providerId: args.thread.providerId,
-    source: args.payload.executionInputSources?.model,
+    sources: args.payload.executionInputSources,
   });
   assertThreadHostAcceptsWork(deps.db, args.thread);
   const { compactFirst, ...request } = args.payload;

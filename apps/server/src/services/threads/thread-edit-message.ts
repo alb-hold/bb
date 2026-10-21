@@ -505,7 +505,7 @@ export async function editThreadMessage(
         : "spawner",
     model: args.payload.model,
     providerId: args.thread.providerId,
-    source: args.payload.executionInputSources?.model,
+    sources: args.payload.executionInputSources,
   });
   if (
     deps.pendingInteractions.hasTurnBoundPendingThreadInteraction(

@@ -49,7 +49,7 @@ describe("childThreadModel", () => {
         childScope: "parent",
         model: "claude-opus-5-5",
         providerId: "claude-code",
-        source: "explicit",
+        sources: { model: "explicit" },
       }).finally(() => {
         completed = true;
       });
@@ -85,10 +85,23 @@ describe("childThreadModel", () => {
             childScope,
             model: "claude-opus-5-5",
             providerId,
-            source: "explicit",
+            sources: { model: "explicit" },
           }),
         ).resolves.toBeUndefined();
       });
     },
   );
+
+  it("allows an implicit model when a present source object omits model", async () => {
+    await withTestHarness(async (harness) => {
+      await expect(
+        assertRequestedModelAllowed(harness.deps, {
+          childScope: "parent",
+          model: "claude-opus-5-5",
+          providerId: "claude-code",
+          sources: { reasoningLevel: "explicit" },
+        }),
+      ).resolves.toBeUndefined();
+    });
+  });
 });

@@ -7,10 +7,13 @@ import {
   archiveThread,
   createProjectSource,
   getProjectExecutionDefaults,
+  getThread,
   getThreadExecutionOverride,
   listEvents,
+  listQueuedThreadMessages,
   listThreadsWithPendingInteractionState,
   recordThreadSpawner,
+  setThreadExecutionOverride,
   setExperiments,
   upsertProjectExecutionDefaults,
   threads,
@@ -23,7 +26,11 @@ import {
   waitForQueuedCommand,
 } from "../helpers/commands.js";
 import { availableModelFixture } from "../helpers/available-models.js";
-import { registerProviderHostRpcResponder } from "../helpers/host-rpc.js";
+import {
+  registerHostRpcResponder,
+  registerProviderHostRpcResponder,
+  type HostRpcHandlerResult,
+} from "../helpers/host-rpc.js";
 import { readJson } from "../helpers/json.js";
 import {
   seedEnvironment,
@@ -595,6 +602,51 @@ describe("public thread default routes", () => {
     });
   });
 
+  it("treats a model with present sources but no model source as implicit on child create", async () => {
+    await withTestHarness(async (harness) => {
+      const { host } = seedHostSession(harness.deps);
+      const { project } = seedProjectWithSource(harness.deps, {
+        hostId: host.id,
+        path: "/tmp/thread-defaults-source-without-model-create",
+      });
+      const environment = seedEnvironment(harness.deps, {
+        hostId: host.id,
+        projectId: project.id,
+        path: "/tmp/thread-defaults-source-without-model-create",
+      });
+      const parent = seedThread(harness.deps, {
+        environmentId: environment.id,
+        projectId: project.id,
+      });
+
+      const response = await harness.app.request("/api/v1/threads", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          origin: "cli",
+          projectId: project.id,
+          providerId: "claude-code",
+          parentThreadId: parent.id,
+          model: "claude-opus-5-5",
+          executionInputSources: { providerId: "explicit" },
+          input: [{ type: "text", text: "Create child from untouched picker" }],
+          environment: { type: "reuse", environmentId: environment.id },
+        }),
+      });
+
+      expect(response.status).toBe(201);
+      const child = threadSchema.parse(await readJson(response));
+      const start = await waitForQueuedCommand(
+        harness,
+        ({ command }) =>
+          command.type === "thread.start" && command.threadId === child.id,
+      );
+      expect(start.command).toMatchObject({
+        options: { model: "claude-sonnet-5-5" },
+      });
+    });
+  });
+
   it("refuses an explicit model when an active thread spawner makes the new thread a child", async () => {
     await withTestHarness(async (harness) => {
       const { host } = seedHostSession(harness.deps);
@@ -774,6 +826,13 @@ describe("public thread default routes", () => {
           environmentId: environment.id,
           providerThreadId: "provider-claude-followup",
         });
+        if (parent || spawned) {
+          setThreadExecutionOverride(harness.db, {
+            threadId: thread.id,
+            modelOverride: "claude-sonnet-5-5",
+            reasoningLevelOverride: null,
+          });
+        }
         const eventsBefore = listEvents(harness.db, { threadId: thread.id });
 
         if (parent || spawned) {
@@ -807,7 +866,7 @@ describe("public thread default routes", () => {
             eventsBefore,
           );
           expect(getThreadExecutionOverride(harness.db, thread.id)).toEqual({
-            modelOverride: null,
+            modelOverride: "claude-sonnet-5-5",
             reasoningLevelOverride: null,
           });
           expect(
@@ -903,6 +962,388 @@ describe("public thread default routes", () => {
       expect(queuedStart.command).toMatchObject({
         options: { model: "claude-remembered", reasoningLevel: "low" },
       });
+    });
+  });
+
+  it("treats a model with present sources but no model source as implicit on child send", async () => {
+    await withTestHarness(async (harness) => {
+      const { host } = seedHostSession(harness.deps);
+      const { project } = seedProjectWithSource(harness.deps, {
+        hostId: host.id,
+        path: "/tmp/thread-defaults-source-without-model-send",
+      });
+      const environment = seedEnvironment(harness.deps, {
+        hostId: host.id,
+        projectId: project.id,
+        path: "/tmp/thread-defaults-source-without-model-send",
+      });
+      const parent = seedThread(harness.deps, {
+        environmentId: environment.id,
+        projectId: project.id,
+      });
+      const child = seedThread(harness.deps, {
+        environmentId: environment.id,
+        projectId: project.id,
+        providerId: "claude-code",
+        parentThreadId: parent.id,
+      });
+      seedThreadRuntimeState(harness.deps, {
+        environmentId: environment.id,
+        threadId: child.id,
+        providerThreadId: "provider-claude-source-without-model",
+      });
+
+      const response = await harness.app.request(
+        `/api/v1/threads/${child.id}/send`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            input: [{ type: "text", text: "Send from untouched picker" }],
+            model: "claude-opus-5-5",
+            executionInputSources: { reasoningLevel: "explicit" },
+            mode: "auto",
+          }),
+        },
+      );
+
+      expect(response.status).toBe(200);
+      const submit = await waitForQueuedCommand(
+        harness,
+        ({ command }) =>
+          command.type === "turn.submit" && command.threadId === child.id,
+      );
+      expect(submit.command).toMatchObject({
+        options: { model: "claude-sonnet-5-5" },
+      });
+    });
+  });
+
+  it("refuses an explicit inline model when parent scope changes during recovery", async () => {
+    await withTestHarness(async (harness) => {
+      const { host, session } = seedHostSession(harness.deps);
+      const { project } = seedProjectWithSource(harness.deps, {
+        hostId: host.id,
+        path: "/tmp/thread-defaults-send-parent-race",
+      });
+      const environment = seedEnvironment(harness.deps, {
+        hostId: host.id,
+        projectId: project.id,
+        path: "/tmp/thread-defaults-send-parent-race",
+      });
+      const thread = seedThread(harness.deps, {
+        environmentId: environment.id,
+        projectId: project.id,
+        providerId: "claude-code",
+      });
+      const parent = seedThread(harness.deps, {
+        environmentId: environment.id,
+        projectId: project.id,
+        providerId: "claude-code",
+      });
+      seedThreadRuntimeState(harness.deps, {
+        environmentId: environment.id,
+        threadId: thread.id,
+        providerThreadId: "provider-claude-send-parent-race",
+      });
+      setThreadExecutionOverride(harness.db, {
+        threadId: thread.id,
+        modelOverride: "claude-sonnet-5-5",
+        reasoningLevelOverride: null,
+      });
+      registerHostRpcResponder(harness, {
+        hostId: host.id,
+        sessionId: session.id,
+        handle: async () => {
+          enteredCatalog();
+          await catalogGate;
+          return {
+            ok: true,
+            result: {
+              models: [availableModelFixture({ model: "claude-opus-5-5" })],
+              selectedOnlyModels: [],
+            },
+          } satisfies HostRpcHandlerResult;
+        },
+      });
+      let enteredCatalog: () => void = () => undefined;
+      const catalogEntered = new Promise<void>((resolve) => {
+        enteredCatalog = resolve;
+      });
+      let releaseCatalog: () => void = () => undefined;
+      const catalogGate = new Promise<void>((resolve) => {
+        releaseCatalog = resolve;
+      });
+
+      const send = harness.app.request(`/api/v1/threads/${thread.id}/send`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          mode: "auto",
+          input: [
+            {
+              type: "text",
+              text: "Append only under the checked scope",
+              mentions: [],
+            },
+          ],
+          model: "claude-opus-5-5",
+        }),
+      });
+      let catalogTimeout: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([
+          catalogEntered,
+          new Promise<never>((_, reject) => {
+            catalogTimeout = setTimeout(
+              () =>
+                reject(new Error("Send did not load its stored model catalog")),
+              5_000,
+            );
+          }),
+        ]);
+      } catch (error) {
+        releaseCatalog();
+        throw error;
+      } finally {
+        if (catalogTimeout !== undefined) clearTimeout(catalogTimeout);
+      }
+      const parentPatch = await harness.app.request(
+        `/api/v1/threads/${thread.id}`,
+        {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ parentThreadId: parent.id }),
+        },
+      );
+      expect(parentPatch.status).toBe(200);
+      const eventsBeforeRelease = listEvents(harness.db, {
+        threadId: thread.id,
+      });
+      releaseCatalog();
+      const response = await send;
+
+      expect(response.status).toBe(400);
+      expect(await readJson(response)).toMatchObject({
+        code: "child_model_conflict",
+      });
+      expect(listEvents(harness.db, { threadId: thread.id })).toEqual(
+        eventsBeforeRelease,
+      );
+      expect(getThreadExecutionOverride(harness.db, thread.id)).toEqual({
+        modelOverride: "claude-sonnet-5-5",
+        reasoningLevelOverride: null,
+      });
+      expect(
+        listQueuedThreadCommands(harness, "turn.submit", thread.id),
+      ).toEqual([]);
+    });
+  });
+
+  it("refuses an explicit inline model when parent scope changes after resolution", async () => {
+    await withTestHarness(async (harness) => {
+      const { host } = seedHostSession(harness.deps);
+      const { project } = seedProjectWithSource(harness.deps, {
+        hostId: host.id,
+        path: "/tmp/thread-defaults-send-parent-append-race",
+      });
+      const environment = seedEnvironment(harness.deps, {
+        hostId: host.id,
+        projectId: project.id,
+        path: "/tmp/thread-defaults-send-parent-append-race",
+      });
+      const thread = seedThread(harness.deps, {
+        environmentId: environment.id,
+        projectId: project.id,
+        providerId: "claude-code",
+      });
+      const parent = seedThread(harness.deps, {
+        environmentId: environment.id,
+        projectId: project.id,
+        providerId: "claude-code",
+      });
+      seedThreadRuntimeState(harness.deps, {
+        environmentId: environment.id,
+        threadId: thread.id,
+        providerThreadId: "provider-claude-send-parent-append-race",
+      });
+
+      const registry = harness.deps.providerRegistry;
+      const originalWhenSettled =
+        registry.whenRegistrationsSettled.bind(registry);
+      let readinessCalls = 0;
+      let releasePreparation: () => void = () => undefined;
+      let reachedPreparation: () => void = () => undefined;
+      const preparationReached = new Promise<void>((resolve) => {
+        reachedPreparation = resolve;
+      });
+      const preparationGate = new Promise<void>((resolve) => {
+        releasePreparation = resolve;
+      });
+      registry.whenRegistrationsSettled = () => {
+        readinessCalls += 1;
+        if (readinessCalls === 4) {
+          reachedPreparation();
+          return preparationGate;
+        }
+        return originalWhenSettled();
+      };
+
+      const send = harness.app.request(`/api/v1/threads/${thread.id}/send`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          mode: "auto",
+          input: [
+            {
+              type: "text",
+              text: "Append only under the checked scope",
+              mentions: [],
+            },
+          ],
+          model: "claude-opus-5-5",
+        }),
+      });
+      let preparationTimeout: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([
+          preparationReached,
+          new Promise<never>((_, reject) => {
+            preparationTimeout = setTimeout(
+              () =>
+                reject(
+                  new Error(
+                    `Send did not reach final preparation (${readinessCalls} waits)`,
+                  ),
+                ),
+              5_000,
+            );
+          }),
+        ]);
+      } catch (error) {
+        releasePreparation();
+        throw error;
+      } finally {
+        if (preparationTimeout !== undefined) clearTimeout(preparationTimeout);
+      }
+
+      const parentPatch = await harness.app.request(
+        `/api/v1/threads/${thread.id}`,
+        {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ parentThreadId: parent.id }),
+        },
+      );
+      expect(parentPatch.status).toBe(200);
+      const eventsBeforeRelease = listEvents(harness.db, {
+        threadId: thread.id,
+      });
+      releasePreparation();
+      const response = await send;
+
+      expect(response.status).toBe(400);
+      expect(await readJson(response)).toMatchObject({
+        code: "child_model_conflict",
+      });
+      expect(listEvents(harness.db, { threadId: thread.id })).toEqual(
+        eventsBeforeRelease,
+      );
+      expect(listQueuedThreadMessages(harness.db, thread.id)).toEqual([]);
+      expect(
+        listQueuedThreadCommands(harness, "turn.submit", thread.id),
+      ).toEqual([]);
+    });
+  });
+
+  it("returns a retryable scope error when parent scope changes twice", async () => {
+    await withTestHarness(async (harness) => {
+      const { host } = seedHostSession(harness.deps);
+      const { project } = seedProjectWithSource(harness.deps, {
+        hostId: host.id,
+        path: "/tmp/thread-defaults-send-parent-repeat-race",
+      });
+      const environment = seedEnvironment(harness.deps, {
+        hostId: host.id,
+        projectId: project.id,
+        path: "/tmp/thread-defaults-send-parent-repeat-race",
+      });
+      const thread = seedThread(harness.deps, {
+        environmentId: environment.id,
+        projectId: project.id,
+        providerId: "claude-code",
+      });
+      const firstParent = seedThread(harness.deps, {
+        environmentId: environment.id,
+        projectId: project.id,
+        providerId: "claude-code",
+      });
+      const secondParent = seedThread(harness.deps, {
+        environmentId: environment.id,
+        projectId: project.id,
+        providerId: "claude-code",
+      });
+      seedThreadRuntimeState(harness.deps, {
+        environmentId: environment.id,
+        threadId: thread.id,
+        providerThreadId: "provider-claude-send-parent-repeat-race",
+      });
+
+      const registry = harness.deps.providerRegistry;
+      const originalWhenSettled =
+        registry.whenRegistrationsSettled.bind(registry);
+      let readinessCalls = 0;
+      registry.whenRegistrationsSettled = async () => {
+        readinessCalls += 1;
+        if (readinessCalls === 2 || readinessCalls === 5) {
+          harness.db
+            .update(threads)
+            .set({
+              parentThreadId:
+                readinessCalls === 2 ? firstParent.id : secondParent.id,
+            })
+            .where(eq(threads.id, thread.id))
+            .run();
+        }
+        await originalWhenSettled();
+      };
+      const eventsBeforeRequest = listEvents(harness.db, {
+        threadId: thread.id,
+      });
+
+      const send = harness.app.request(`/api/v1/threads/${thread.id}/send`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          mode: "auto",
+          input: [
+            {
+              type: "text",
+              text: "Retry under current policy",
+              mentions: [],
+            },
+          ],
+          model: "claude-opus-5-5",
+          executionInputSources: { model: "client-preference" },
+        }),
+      });
+      const response = await send;
+
+      expect(readinessCalls).toBeGreaterThanOrEqual(5);
+      expect(response.status).toBe(409);
+      expect(await readJson(response)).toMatchObject({
+        code: "thread_scope_changed",
+      });
+      expect(getThread(harness.db, thread.id)?.parentThreadId).toBe(
+        secondParent.id,
+      );
+      expect(listEvents(harness.db, { threadId: thread.id })).toEqual(
+        eventsBeforeRequest,
+      );
+      expect(listQueuedThreadMessages(harness.db, thread.id)).toEqual([]);
+      expect(
+        listQueuedThreadCommands(harness, "turn.submit", thread.id),
+      ).toEqual([]);
     });
   });
 

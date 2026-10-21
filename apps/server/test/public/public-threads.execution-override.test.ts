@@ -1,12 +1,19 @@
 import { describe, expect, it } from "vitest";
 import {
+  createNativeTerminalThread,
   getThread,
   getThreadExecutionOverride,
   listEvents,
   listQueuedThreadMessages,
   setThreadExecutionOverride,
 } from "@bb/db";
-import { registerProviderHostRpcResponder } from "../helpers/host-rpc.js";
+import { seedQueuedMessage } from "../helpers/seed.js";
+import {
+  registerHostRpcResponder,
+  registerProviderHostRpcResponder,
+  type HostRpcHandlerResult,
+} from "../helpers/host-rpc.js";
+import { availableModelFixture } from "../helpers/available-models.js";
 import { readJson } from "../helpers/json.js";
 import {
   seedEnvironment,
@@ -175,6 +182,182 @@ describe("PATCH /threads/:id execution override", () => {
     });
   });
 
+  it("rechecks a model PATCH after catalog loading before committing the override", async () => {
+    await withTestHarness(async (harness) => {
+      const { host, session, thread } = seedProviderThread(harness);
+      const parent = seedThread(harness.deps, {
+        projectId: thread.projectId,
+        environmentId: thread.environmentId,
+        providerId: thread.providerId,
+      });
+      let enteredCatalog: () => void = () => undefined;
+      const catalogEntered = new Promise<void>((resolve) => {
+        enteredCatalog = resolve;
+      });
+      let releaseCatalog: () => void = () => undefined;
+      const catalogGate = new Promise<void>((resolve) => {
+        releaseCatalog = resolve;
+      });
+      registerHostRpcResponder(harness, {
+        hostId: host.id,
+        sessionId: session.id,
+        handle: async () => {
+          enteredCatalog();
+          await catalogGate;
+          return {
+            ok: true,
+            result: {
+              models: [availableModelFixture({ model: "claude-opus-5-5" })],
+              selectedOnlyModels: [],
+            },
+          } satisfies HostRpcHandlerResult;
+        },
+      });
+
+      const modelPatch = patchThread(harness, thread.id, {
+        model: "claude-opus-5-5",
+      });
+      await Promise.race([
+        catalogEntered,
+        new Promise<never>((_, reject) => {
+          setTimeout(
+            () => reject(new Error("Provider catalog request did not arrive")),
+            5_000,
+          );
+        }),
+      ]);
+      const parentPatch = await patchThread(harness, thread.id, {
+        parentThreadId: parent.id,
+      });
+      expect(parentPatch.status).toBe(200);
+      releaseCatalog();
+      const response = await modelPatch;
+
+      expect(response.status).toBe(400);
+      expect(await readJson(response)).toMatchObject({
+        code: "child_model_conflict",
+      });
+      expect(getThread(harness.db, thread.id)?.parentThreadId).toBe(parent.id);
+      expect(getThreadExecutionOverride(harness.db, thread.id)).toEqual({
+        modelOverride: null,
+        reasoningLevelOverride: null,
+      });
+    });
+  });
+
+  it("rechecks a parent PATCH against the latest override after catalog loading", async () => {
+    await withTestHarness(async (harness) => {
+      const { host, session, thread } = seedProviderThread(harness);
+      const parent = seedThread(harness.deps, {
+        projectId: thread.projectId,
+        environmentId: thread.environmentId,
+        providerId: thread.providerId,
+      });
+      stubProviderCatalog(
+        harness,
+        host.id,
+        session.id,
+        "claude-code",
+        "claude-opus-5-5",
+      );
+      const registry = harness.deps.providerRegistry;
+      const originalWhenSettled =
+        registry.whenRegistrationsSettled.bind(registry);
+      let readinessCalls = 0;
+      let releaseRouteCommit: () => void = () => undefined;
+      let reachedRouteCommit: () => void = () => undefined;
+      const routeCommitReached = new Promise<void>((resolve) => {
+        reachedRouteCommit = resolve;
+      });
+      const routeCommitGate = new Promise<void>((resolve) => {
+        releaseRouteCommit = resolve;
+      });
+      registry.whenRegistrationsSettled = () => {
+        readinessCalls += 1;
+        if (readinessCalls === 2) {
+          reachedRouteCommit();
+          return routeCommitGate;
+        }
+        return originalWhenSettled();
+      };
+
+      const parentPatch = patchThread(harness, thread.id, {
+        parentThreadId: parent.id,
+        reasoningLevel: "high",
+      });
+      await Promise.race([
+        routeCommitReached,
+        new Promise<never>((_, reject) => {
+          setTimeout(
+            () =>
+              reject(
+                new Error("Parent PATCH did not reach its commit boundary"),
+              ),
+            5_000,
+          );
+        }),
+      ]);
+      const modelPatch = await patchThread(harness, thread.id, {
+        model: "claude-opus-5-5",
+      });
+      expect(modelPatch.status).toBe(200);
+      releaseRouteCommit();
+      const response = await parentPatch;
+
+      expect(response.status).toBe(400);
+      expect(await readJson(response)).toMatchObject({
+        code: "child_model_conflict",
+      });
+      expect(getThread(harness.db, thread.id)?.parentThreadId).toBeNull();
+      expect(getThreadExecutionOverride(harness.db, thread.id)).toEqual({
+        modelOverride: "claude-opus-5-5",
+        reasoningLevelOverride: null,
+      });
+    });
+  });
+
+  it("allows native terminal child model updates without managed child policy", async () => {
+    await withTestHarness(async (harness) => {
+      const { host, session, thread } = seedProviderThread(harness);
+      const parent = seedThread(harness.deps, {
+        projectId: thread.projectId,
+        environmentId: thread.environmentId,
+        providerId: thread.providerId,
+      });
+      const child = seedThread(harness.deps, {
+        projectId: thread.projectId,
+        environmentId: thread.environmentId,
+        providerId: thread.providerId,
+        parentThreadId: parent.id,
+      });
+      createNativeTerminalThread(harness.db, {
+        threadId: child.id,
+        providerId: "claude-code",
+        nativeSessionId: "native-child-patch-session",
+        initialPrompt: null,
+        initialImages: [],
+        model: "claude-opus-5-5",
+      });
+      stubProviderCatalog(
+        harness,
+        host.id,
+        session.id,
+        "claude-code",
+        "claude-opus-5-5",
+      );
+
+      const response = await patchThread(harness, child.id, {
+        model: "claude-opus-5-5",
+      });
+
+      expect(response.status).toBe(200);
+      expect(getThreadExecutionOverride(harness.db, child.id)).toEqual({
+        modelOverride: "claude-opus-5-5",
+        reasoningLevelOverride: null,
+      });
+    });
+  });
+
   it("refuses reparenting when the existing sticky model conflicts", async () => {
     await withTestHarness(async (harness) => {
       const { thread } = seedProviderThread(harness);
@@ -202,6 +385,81 @@ describe("PATCH /threads/:id execution override", () => {
         modelOverride: "claude-opus-5-5",
         reasoningLevelOverride: "high",
       });
+    });
+  });
+
+  it("refuses a new child policy that would substitute an accepted scheduled model", async () => {
+    await withTestHarness(async (harness) => {
+      const { thread } = seedProviderThread(harness);
+      const parent = seedThread(harness.deps, {
+        projectId: thread.projectId,
+        environmentId: thread.environmentId,
+        providerId: thread.providerId,
+      });
+      const queued = seedQueuedMessage(harness.deps, {
+        threadId: thread.id,
+        content: [
+          { type: "text", text: "scheduled accepted work", mentions: [] },
+        ],
+        model: "claude-opus-5-5",
+        waitingOn: { kind: "time" },
+        sendAt: Date.now() + 60_000,
+      });
+
+      const response = await patchThread(harness, thread.id, {
+        parentThreadId: parent.id,
+      });
+
+      expect(response.status).toBe(400);
+      expect(await readJson(response)).toMatchObject({
+        code: "child_model_conflict",
+        details: { reason: "parent", queuedMessageIds: [queued.id] },
+      });
+      expect(getThread(harness.db, thread.id)?.parentThreadId).toBeNull();
+      expect(listQueuedThreadMessages(harness.db, thread.id)).toMatchObject([
+        { id: queued.id, model: "claude-opus-5-5" },
+      ]);
+    });
+  });
+
+  it("allows a same-policy child reparent without rewriting accepted queue work", async () => {
+    await withTestHarness(async (harness) => {
+      const { thread } = seedProviderThread(harness);
+      const firstParent = seedThread(harness.deps, {
+        projectId: thread.projectId,
+        environmentId: thread.environmentId,
+        providerId: thread.providerId,
+      });
+      const secondParent = seedThread(harness.deps, {
+        projectId: thread.projectId,
+        environmentId: thread.environmentId,
+        providerId: thread.providerId,
+      });
+      const child = seedThread(harness.deps, {
+        projectId: thread.projectId,
+        environmentId: thread.environmentId,
+        providerId: thread.providerId,
+        parentThreadId: firstParent.id,
+      });
+      const queued = seedQueuedMessage(harness.deps, {
+        threadId: child.id,
+        content: [{ type: "text", text: "accepted child work", mentions: [] }],
+        model: "claude-sonnet-5-5",
+        waitingOn: { kind: "time" },
+        sendAt: Date.now() + 60_000,
+      });
+
+      const response = await patchThread(harness, child.id, {
+        parentThreadId: secondParent.id,
+      });
+
+      expect(response.status).toBe(200);
+      expect(getThread(harness.db, child.id)?.parentThreadId).toBe(
+        secondParent.id,
+      );
+      expect(listQueuedThreadMessages(harness.db, child.id)).toMatchObject([
+        { id: queued.id, model: "claude-sonnet-5-5" },
+      ]);
     });
   });
 

@@ -97,7 +97,10 @@ import { recordAcceptedPromptHistoryEntry } from "../prompt-history.js";
 import { requireThreadCommandEnvironment } from "./thread-command-environment.js";
 import { applyLoggedThreadLifecycleEventInTransaction } from "./lifecycle-outcome.js";
 import { buildThreadStatusChangeMetadata } from "./thread-runtime-display.js";
-import { assertRequestedModelAllowed } from "./child-thread-model.js";
+import {
+  assertRequestedModelAllowed,
+  assertRequestedModelAllowedForCurrentScope,
+} from "./child-thread-model.js";
 import {
   goneThreadEnvironmentDetails,
   threadEnvironmentUnavailableDetails,
@@ -255,7 +258,7 @@ export async function createQueuedMessageForThread(
         : "spawner",
     model: payload.model,
     providerId: thread.providerId,
-    source: payload.executionInputSources?.model,
+    sources: payload.executionInputSources,
   });
   ensureThreadQueueIsWritable(thread);
   const input = await resolvePromptAttachmentReferences({
@@ -278,6 +281,23 @@ export async function createQueuedMessageForThread(
         const currentThread = getThread(tx, thread.id);
         if (!currentThread) {
           throw new ApiError(404, "thread_not_found", "Thread not found");
+        }
+        if (currentThread.parentThreadId !== thread.parentThreadId) {
+          assertRequestedModelAllowedForCurrentScope(
+            { db: tx, providerRegistry: deps.providerRegistry },
+            {
+              threadId: thread.id,
+              model: payload.model,
+              providerId: thread.providerId,
+              sources: payload.executionInputSources,
+              spawnerThreadId: getThreadSpawner(deps.db, thread.id),
+            },
+          );
+          throw new ApiError(
+            409,
+            "thread_scope_changed",
+            "Thread scope changed while this queued request was being prepared. Retry the request.",
+          );
         }
         const { hasProviderSession } = admitQueuedMessage(tx, currentThread);
         const queuedMessage = createQueuedThreadMessageInTransaction(tx, {

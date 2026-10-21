@@ -21,6 +21,7 @@ import {
 } from "../../src/services/threads/queued-message-dispatch.js";
 import { runStartupRecoverySweep } from "../../src/services/system/periodic-sweeps.js";
 import { sendQueuedMessageNow } from "../../src/services/threads/queued-messages.js";
+import { recoverThreadModelOverride } from "../../src/services/threads/thread-execution-override.js";
 import { applyLoggedThreadLifecycleEvent } from "../../src/services/threads/lifecycle-outcome.js";
 import { acceptThreadSendRequest } from "../../src/services/threads/thread-send-request.js";
 import { textInput } from "../helpers/prompt-input.js";
@@ -182,6 +183,77 @@ describe("the requested queue drain", () => {
         getThreadExecutionOverride(harness.db, thread.id)?.modelOverride,
       ).toBe("claude-opus-5-5");
       expect(listQueuedThreadMessages(harness.db, thread.id)).toEqual([]);
+    });
+  });
+
+  it("waits for provider registration before recovering and draining legacy child work", async () => {
+    await withTestHarness(async (harness) => {
+      const { thread } = seedRunnableThread(harness, {
+        child: true,
+        hostId: "host-legacy-child-registration-wait",
+        model: "claude-opus-5-5",
+        providerId: "claude-code",
+        status: "idle",
+      });
+      setThreadExecutionOverride(harness.db, {
+        threadId: thread.id,
+        modelOverride: "claude-sonnet-5-5",
+        reasoningLevelOverride: null,
+      });
+
+      let releaseRegistrations!: () => void;
+      let registrationsReady = false;
+      const registrations = new Promise<void>((resolve) => {
+        releaseRegistrations = resolve;
+      });
+      const registry = harness.deps.providerRegistry;
+      const getRegistration = registry.get.bind(registry);
+      vi.spyOn(registry, "whenRegistrationsSettled").mockImplementation(
+        async () => {
+          await registrations;
+          registrationsReady = true;
+        },
+      );
+      vi.spyOn(registry, "get").mockImplementation((providerId) =>
+        registrationsReady ? getRegistration(providerId) : null,
+      );
+
+      const recovery = recoverThreadModelOverride(harness.deps, {
+        model: "claude-opus-5-5",
+        modelSource: "explicit",
+        reasoningLevel: undefined,
+        reasoningLevelSource: undefined,
+        thread,
+      });
+      await Promise.resolve();
+      expect(
+        getThreadExecutionOverride(harness.db, thread.id)?.modelOverride,
+      ).toBe("claude-sonnet-5-5");
+      releaseRegistrations();
+      await recovery;
+      expect(
+        getThreadExecutionOverride(harness.db, thread.id)?.modelOverride,
+      ).toBe("claude-sonnet-5-5");
+
+      const queued = seedQueuedMessage(harness.deps, {
+        content: textInput("legacy queued request after registration"),
+        model: "claude-opus-5-5",
+        threadId: thread.id,
+      });
+      const delivery = await sendQueuedMessageNow(harness.deps, {
+        mode: "auto",
+        queuedMessageId: queued.id,
+        threadId: thread.id,
+      });
+
+      expect(delivery).toEqual({ delivery: "sent" });
+      const dispatched = turnRequestEventDataSchema.parse(
+        JSON.parse(turnRequests(harness, thread.id).at(-1)!.data),
+      );
+      expect(dispatched.execution.model).toBe("claude-sonnet-5-5");
+      expect(
+        getThreadExecutionOverride(harness.db, thread.id)?.modelOverride,
+      ).toBe("claude-sonnet-5-5");
     });
   });
 

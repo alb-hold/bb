@@ -1,4 +1,4 @@
-import { createEventId, getThread } from "@bb/db";
+import { createEventId, getThread, type DbTransaction } from "@bb/db";
 import {
   THREAD_CONTEXT_CLEAR_OPERATION,
   THREAD_CONTEXT_CLEARED_DETAIL,
@@ -9,7 +9,7 @@ import {
 import { ApiError } from "../../errors.js";
 import type { LoggedPendingInteractionWorkSessionDeps } from "../../types.js";
 import { withThreadContextClearGuard } from "./thread-context-mutation-guard.js";
-import { appendThreadEvent } from "./thread-events.js";
+import { appendThreadEventWithPreflight } from "./thread-events.js";
 import { stopThreadForCurrentState } from "./thread-lifecycle.js";
 import { buildThreadStatusChangeMetadata } from "./thread-runtime-display.js";
 import { requestQueuedMessageDispatch } from "./queued-message-dispatch.js";
@@ -19,6 +19,7 @@ export async function clearThreadContext(
   args: {
     environment: Pick<Environment, "hostId" | "id">;
     thread: Thread;
+    beforeClearInTransaction?: (tx: DbTransaction) => void;
   },
 ): Promise<void> {
   await withThreadContextClearGuard(args.thread.id, async () => {
@@ -59,18 +60,22 @@ export async function clearThreadContext(
       );
     }
 
-    appendThreadEvent(deps, {
-      threadId: releasedThread.id,
-      environmentId: releasedThread.environmentId,
-      type: "system/operation",
-      scope: threadScope(),
-      data: {
-        operation: THREAD_CONTEXT_CLEAR_OPERATION,
-        operationId: createEventId(),
-        status: "completed",
-        message: THREAD_CONTEXT_CLEARED_DETAIL,
+    appendThreadEventWithPreflight(
+      deps,
+      {
+        threadId: releasedThread.id,
+        environmentId: releasedThread.environmentId,
+        type: "system/operation",
+        scope: threadScope(),
+        data: {
+          operation: THREAD_CONTEXT_CLEAR_OPERATION,
+          operationId: createEventId(),
+          status: "completed",
+          message: THREAD_CONTEXT_CLEARED_DETAIL,
+        },
       },
-    });
+      args.beforeClearInTransaction ?? (() => {}),
+    );
     deps.hub.notifyThread(
       releasedThread.id,
       ["history-rewritten", "status-changed"],

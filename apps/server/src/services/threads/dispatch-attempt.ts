@@ -7,6 +7,7 @@ import {
   deleteClaimedQueuedThreadMessageBatchInTransaction,
   getEnvironment,
   getThread,
+  getThreadSpawner,
   isThreadQueueAutoSendPaused,
   listRunningThreads,
   type ClaimedQueuedThreadMessageRow,
@@ -50,6 +51,7 @@ import {
   createQueuedMessageClaimLostError,
   recordQueuedMessageWait,
   settleQueueRowDispatched,
+  ThreadQueueScopeChangedError,
   type QueuedDispatchMessage,
 } from "./queue-waits.js";
 import { applyLoggedThreadLifecycleEventInTransaction } from "./lifecycle-outcome.js";
@@ -99,6 +101,10 @@ import { resolveDispatchAuthor } from "./dispatch-author.js";
 import type { TurnRequestRetryMarker } from "./thread-events.js";
 import { restoreInterruptedThreadStartupRequest } from "./thread-provisioning.js";
 import { markTurnTraceSpan } from "../system/turn-trace.js";
+import {
+  assertRequestedModelAllowed,
+  assertRequestedModelAllowedForCurrentScope,
+} from "./child-thread-model.js";
 
 export const pendingThreadStartContextSchema = z.object({
   environmentIntent: threadProvisionEnvironmentIntentSchema,
@@ -257,6 +263,38 @@ async function runDispatchAttempt(
   let { payload } = args;
   ensureThreadIsWritable(thread, true);
   assertThreadHostAcceptsWork(deps.db, thread);
+  const initialCurrentThread = getThread(deps.db, thread.id);
+  if (initialCurrentThread?.parentThreadId !== thread.parentThreadId) {
+    assertRequestedModelAllowedForCurrentScope(deps, {
+      threadId: thread.id,
+      model: payload.model,
+      providerId: thread.providerId,
+      sources: payload.executionInputSources,
+    });
+    return reattemptDispatchForThreadChange(
+      deps,
+      args,
+      initialCurrentThread,
+      reattempted,
+    );
+  }
+  if (
+    args.source.kind === "inline" &&
+    args.trigger === "user" &&
+    args.retryOf === undefined
+  ) {
+    const currentChildScope = thread.parentThreadId
+      ? "parent"
+      : getThreadSpawner(deps.db, thread.id) === null
+        ? null
+        : "spawner";
+    await assertRequestedModelAllowed(deps, {
+      childScope: currentChildScope,
+      model: payload.model,
+      providerId: thread.providerId,
+      sources: payload.executionInputSources,
+    });
+  }
   if (
     payload.mode === "queue-if-active" &&
     isActiveTurnMainRunIdle(deps, thread)
@@ -439,6 +477,7 @@ async function runDispatchAttempt(
         claimed,
         input: queuedMessage,
         threadId: thread.id,
+        expectedParentThreadId: thread.parentThreadId,
       });
       if (outcome.kind === "queued" || outcome.kind === "dispatched") {
         continued.outcome = outcome;
@@ -500,6 +539,7 @@ async function runDispatchAttempt(
     if (firstDispatch) {
       admitted.value = await admitPendingThread(deps, {
         claimed,
+        execution,
         payload: resolvedPayload,
         respectManualStopPause,
         startContext: args.startContext ?? retryStartContext,
@@ -511,54 +551,59 @@ async function runDispatchAttempt(
     }
   };
 
-  if (!sendNow && hasMessageDispatchHooks()) {
-    const outcome = await runMessageDispatchHookPass(deps, {
-      thread,
-      threadResponse: toThreadResponseFromThread(deps, { thread }),
-      project: requirePublicProject(deps.db, thread.projectId),
-      environmentId: thread.environmentId,
-      intendedHostId:
-        thread.environmentId !== null
-          ? null
-          : intendedThreadHostId(deps, thread.id),
-      environmentIntent: intendedThreadEnvironmentIntent(deps, thread),
-      input: resolvedPayload.input,
-      requestedExecution: {
-        providerId: thread.providerId,
-        model: execution.model,
-        reasoningLevel: execution.reasoningLevel,
-        serviceTier: execution.serviceTier,
-        permissionMode: execution.permissionMode,
-      },
-      executionSources: dispatchExecutionSources(
-        payload.executionInputSources ?? {},
-      ),
-      attempt,
-      initiator: author.initiator,
-      senderThreadId: author.senderThreadId,
-      origin: args.origin,
-      originPluginId: args.originPluginId,
-      startedOnBehalfOf: args.startedOnBehalfOf,
-      parentThreadId: thread.parentThreadId,
-      queuedMessages: claimed?.map(toThreadQueuedMessage) ?? [],
-      pluginSubmission: args.pluginSubmission,
-      continueAfterHooks: continueThroughCoreWaits,
-    });
-    if (outcome.kind === "wait") {
-      if (claimed !== null) {
-        noteDispatchRequeued(thread.id);
-      }
-      return waitOn(
-        {
-          kind: "plugin",
-          pluginId: outcome.waiter.pluginId,
-          reason: dispatchWaitReasonForPass(outcome),
+  try {
+    if (!sendNow && hasMessageDispatchHooks()) {
+      const outcome = await runMessageDispatchHookPass(deps, {
+        thread,
+        threadResponse: toThreadResponseFromThread(deps, { thread }),
+        project: requirePublicProject(deps.db, thread.projectId),
+        environmentId: thread.environmentId,
+        intendedHostId:
+          thread.environmentId !== null
+            ? null
+            : intendedThreadHostId(deps, thread.id),
+        environmentIntent: intendedThreadEnvironmentIntent(deps, thread),
+        input: resolvedPayload.input,
+        requestedExecution: {
+          providerId: thread.providerId,
+          model: execution.model,
+          reasoningLevel: execution.reasoningLevel,
+          serviceTier: execution.serviceTier,
+          permissionMode: execution.permissionMode,
         },
-        outcome.waiter.sendAt,
-      );
+        executionSources: dispatchExecutionSources(
+          payload.executionInputSources ?? {},
+        ),
+        attempt,
+        initiator: author.initiator,
+        senderThreadId: author.senderThreadId,
+        origin: args.origin,
+        originPluginId: args.originPluginId,
+        startedOnBehalfOf: args.startedOnBehalfOf,
+        parentThreadId: thread.parentThreadId,
+        queuedMessages: claimed?.map(toThreadQueuedMessage) ?? [],
+        pluginSubmission: args.pluginSubmission,
+        continueAfterHooks: continueThroughCoreWaits,
+      });
+      if (outcome.kind === "wait") {
+        if (claimed !== null) {
+          noteDispatchRequeued(thread.id);
+        }
+        return waitOn(
+          {
+            kind: "plugin",
+            pluginId: outcome.waiter.pluginId,
+            reason: dispatchWaitReasonForPass(outcome),
+          },
+          outcome.waiter.sendAt,
+        );
+      }
+    } else {
+      await continueThroughCoreWaits();
     }
-  } else {
-    await continueThroughCoreWaits();
+  } catch (error) {
+    if (!(error instanceof ThreadQueueScopeChangedError)) throw error;
+    continued.reattemptThread = getThread(deps.db, thread.id);
   }
 
   if (continued.outcome !== null) {
@@ -600,7 +645,18 @@ async function runDispatchAttempt(
       onTurnRequestCreated: args.onTurnRequestCreated,
       ...(args.retryOf !== undefined ? { retryOf: args.retryOf } : {}),
       beforeAppendInTransaction: ({ tx }) => {
-        if (getThread(tx, thread.id)?.status !== thread.status) {
+        const current = getThread(tx, thread.id);
+        if (current === null || current.status !== thread.status) {
+          throw new DispatchThreadStatusChangedError();
+        }
+        if (current.parentThreadId !== thread.parentThreadId) {
+          assertRequestedModelAllowedForCurrentScope(deps, {
+            threadId: thread.id,
+            model: payload.model,
+            providerId: thread.providerId,
+            sources: payload.executionInputSources,
+            spawnerThreadId: getThreadSpawner(deps.db, thread.id),
+          });
           throw new DispatchThreadStatusChangedError();
         }
         if (claimed !== null) {
@@ -649,9 +705,9 @@ function reattemptDispatchForThreadChange(
   }
   if (reattempted) {
     throw new ApiError(
-      500,
-      "internal_error",
-      `Thread ${thread.id} changed twice under one dispatch attempt`,
+      409,
+      "thread_scope_changed",
+      "Thread scope changed repeatedly while this request was being prepared. Retry the request.",
     );
   }
   return runDispatchAttempt(deps, { ...args, thread }, true);
@@ -677,6 +733,7 @@ function consumeClaimedRows(
 
 interface AdmitPendingThreadArgs {
   claimed: ClaimedQueuedThreadMessageRow[] | null;
+  execution: ResolvedThreadExecutionOptions;
   payload: SendMessageRequest & { inputGroups?: PromptInput[][] };
   respectManualStopPause: boolean;
   startContext: PendingThreadStartContext | null;
@@ -712,14 +769,24 @@ async function admitPendingThread(
       `Thread ${args.thread.id} is pending but has no start context to dispatch`,
     );
   }
-  const execution = await buildExecutionOptions(deps, args.payload, {
-    threadId: args.thread.id,
-  });
+  const execution = args.execution;
   const claimedRow = args.claimed?.[0] ?? null;
   let admission: { startingThread: Thread; turnRequestId: string };
   try {
     admission = deps.db.transaction(
       (tx) => {
+        const currentThread = getThread(tx, args.thread.id);
+        if (!currentThread) throw new PendingThreadAdmissionLost();
+        if (currentThread.parentThreadId !== args.thread.parentThreadId) {
+          assertRequestedModelAllowedForCurrentScope(deps, {
+            threadId: args.thread.id,
+            model: args.payload.model,
+            providerId: args.thread.providerId,
+            sources: args.payload.executionInputSources,
+            spawnerThreadId: getThreadSpawner(deps.db, args.thread.id),
+          });
+          throw new PendingThreadAdmissionLost();
+        }
         if (args.claimed !== null && args.claimed.length > 0) {
           consumeClaimedRows(
             args.claimed,
@@ -795,17 +862,11 @@ function resolveExecutionIntoPayload(
 ): SendMessageRequest & { inputGroups?: PromptInput[][] } {
   return {
     ...payload,
-    model: execution.model,
+    model: payload.model,
     reasoningLevel: execution.reasoningLevel,
     serviceTier: execution.serviceTier,
     permissionMode: execution.permissionMode,
-    executionInputSources: {
-      ...(payload.executionInputSources ?? {}),
-      model: "explicit",
-      reasoningLevel: "explicit",
-      serviceTier: "explicit",
-      permissionMode: "explicit",
-    },
+    executionInputSources: payload.executionInputSources,
   };
 }
 

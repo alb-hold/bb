@@ -21,6 +21,7 @@ export function queueInputForStartingTurn(
     claimed: readonly ClaimedQueuedThreadMessageRow[] | null;
     input: QueuedDispatchMessage;
     threadId: string;
+    expectedParentThreadId?: string | null;
   },
 ): QueueInputForStartingTurnResult {
   if (args.input.input.length === 0) return { kind: "dispatched" };
@@ -33,6 +34,12 @@ export function queueInputForStartingTurn(
         thread.archivedAt !== null ||
         thread.deletedAt !== null ||
         thread.status !== "active"
+      ) {
+        return { kind: "retry", thread };
+      }
+      if (
+        args.expectedParentThreadId !== undefined &&
+        thread.parentThreadId !== args.expectedParentThreadId
       ) {
         return { kind: "retry", thread };
       }
