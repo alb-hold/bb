@@ -55,6 +55,7 @@ import {
 import type { WorkspaceOpenTarget } from "@bb/host-daemon-contract";
 import { appToast } from "@/components/ui/app-toast";
 import { getThreadTerminalLayoutSessions } from "@/lib/terminal-session-visibility";
+import { useCompactTerminalLayoutRequest } from "@/lib/useCompactTerminalLayoutRequest";
 import { copyToClipboardWithToast } from "@/lib/clipboard";
 import type { ThreadSecondaryPanel as ThreadSecondaryPanelTab } from "@/lib/thread-secondary-panel";
 import {
@@ -1665,6 +1666,31 @@ function ThreadDetailViewInternal(
     },
     [selectTerminal, terminalsListQuery.data, terminalsListQuery.isPending, threadId],
   );
+  const handleCompactTerminalLayoutRequestHandled = useCallback(
+    (requestId: number) => {
+      setTerminalLayoutRequest((current) =>
+        current?.requestId === requestId ? null : current,
+      );
+    },
+    [],
+  );
+  const handleCompactTerminalLayoutRequestResolved = useCallback(
+    (terminalAvailable: boolean) => {
+      appToast.warning(
+        terminalAvailable
+          ? "Split panes aren't available at this window size."
+          : "The terminal is no longer available in this thread.",
+      );
+    },
+    [],
+  );
+  useCompactTerminalLayoutRequest({
+    enabled: renderSecondaryPanelAsDrawer && !isSecondaryPanelOpen,
+    ensureTerminalTabs,
+    onHandled: handleCompactTerminalLayoutRequestHandled,
+    onResolved: handleCompactTerminalLayoutRequestResolved,
+    request: terminalLayoutRequest,
+  });
   const startTerminalSession = useCallback(async (): Promise<string | null> => {
     if (!canStartTerminal || !threadId) return null;
     try {
@@ -3193,6 +3219,8 @@ function ThreadDetailViewInternal(
               splitPanelStateId: thread.id,
               splitTabToRightRequest,
               terminalLayoutRequest,
+              onCompactTerminalLayoutRequestHandled:
+                handleCompactTerminalLayoutRequestHandled,
               onEnsureTerminalTabs: ensureTerminalTabs,
               onCreateTerminalInNewPane: canCreateTerminal
                 ? startTerminalSession
