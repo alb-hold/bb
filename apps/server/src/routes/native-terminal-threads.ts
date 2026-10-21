@@ -89,6 +89,7 @@ export function registerNativeTerminalThreadRoutes(
 
   post(routes.reportActivity, (context, payload) => {
     recordNativeTerminalActivity(deps, {
+      authorization: context.req.header("authorization"),
       threadId: context.req.param("id"),
       ...payload,
     });
