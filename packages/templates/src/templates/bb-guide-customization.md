@@ -100,15 +100,15 @@ with . ! or ? (other case changes, such as turkey to Turkey, are suggestions), r
 function word typed twice with only spaces between when it can never stand twice
 (such as the, a, I, we, of, and, de and o; any other repeat, such as very very,
 had had, not not, her her or log in in, or a pair split by punctuation, is only
-suggested), swaps within
-is/are/am, isn't/aren't, hasn't/haven't, doesn't/don't or a/an (be, was/were,
-has/have and does/do, whose mood can change the meaning, are only suggested), and accents on nao, voce, tambem,
+suggested), a to an or an to a, and accents on nao, voce, tambem,
 entao and amanha apply by themselves, never inside code, paths, identifiers or
 vocabulary terms, nor on a line containing = ; { } ( ) < > [ ] $ ` | \ / # or --.
 Vocabulary terms are spelling hints for transcription and correction, not a
 guarantee. `vocabulary remove` changes nothing and fails when a term is
-not in the vocabulary. Everything else, including spelling, other punctuation and
-tense or plural changes such as deploy/deployed, is offered as a suggestion. `correct` and `transcribe` run the
+not in the vocabulary. Everything else, including spelling, other punctuation, verb agreement such as
+is/are or don't/doesn't (the subject can be singular or plural, as in The fish
+are nearby), and tense or plural changes such as deploy/deployed, is offered as
+a suggestion. `correct` and `transcribe` run the
 same pipeline as the composer. `transcribe` accepts WebM or Ogg with Opus,
 MP4 or M4A with AAC, MP3 and WAV; the server measures the clip, counting gaps
 between its timestamps as recorded time, and counts only that measured

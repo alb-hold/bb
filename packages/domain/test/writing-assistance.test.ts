@@ -82,7 +82,7 @@ describe("resolveWritingEdits", () => {
     complete: true,
   };
 
-  it("auto-applies the safe agreement fix from the spec", () => {
+  it("only suggests the agreement fix from the spec", () => {
     const target = "The user are authenticated before accessing the endpoint.";
     const edits = resolveWritingEdits({
       ...base,
@@ -94,6 +94,23 @@ describe("resolveWritingEdits", () => {
         original: "are",
         replacement: "is",
         start: target.indexOf("are"),
+        disposition: "suggest",
+      }),
+    ]);
+  });
+
+  it("auto-applies the article fix a to an", () => {
+    const target = "We saw a error in the deploy log.";
+    const edits = resolveWritingEdits({
+      ...base,
+      target,
+      proposals: [proposal("a error", "an error")],
+    });
+    expect(edits).toEqual([
+      expect.objectContaining({
+        original: "a",
+        replacement: "an",
+        start: target.indexOf("a error"),
         disposition: "apply",
       }),
     ]);
@@ -248,13 +265,26 @@ describe("resolveWritingEdits", () => {
   );
 
   it.each([
+    ["The fish are nearby.", "fish are", "fish is"],
+    ["The fish is nearby.", "fish is", "fish are"],
+    ["The sheep isn't hungry.", "sheep isn't", "sheep aren't"],
+    ["The data haven't changed.", "data haven't", "data hasn't"],
+    ["The staff don't agree.", "staff don't", "staff doesn't"],
     ["I is ready to deploy today.", "I is", "I am"],
     ["They doesn't deploy on Fridays.", "They doesn't", "They don't"],
-  ])("auto-applies the agreement fix in %s", (target, from, to) => {
-    expect(
-      resolveWritingEdits({ ...base, target, proposals: [proposal(from, to)] }),
-    ).toEqual([expect.objectContaining({ disposition: "apply" })]);
-  });
+    ["The ones who made it are here.", "it are", "it is"],
+  ])(
+    "only suggests the number agreement change in %s, since the subject can be singular or plural",
+    (target, from, to) => {
+      expect(
+        resolveWritingEdits({
+          ...base,
+          target,
+          proposals: [proposal(from, to)],
+        }),
+      ).toEqual([expect.objectContaining({ disposition: "suggest" })]);
+    },
+  );
 
   it("never auto-applies a content-word swap even at high confidence", () => {
     const edits = resolveWritingEdits({
@@ -305,8 +335,8 @@ describe("resolveWritingEdits", () => {
   });
 
   it("only suggests when the behavior is suggest or the sentence is unfinished", () => {
-    const proposals = [proposal("user are", "user is")];
-    const target = "The user are authenticated";
+    const proposals = [proposal("a error", "an error")];
+    const target = "We saw a error";
     expect(
       resolveWritingEdits({
         ...base,
@@ -349,7 +379,7 @@ describe("resolveWritingEdits", () => {
     },
   );
 
-  it("auto-applies agreement and accent fixes whose meaning cannot change", () => {
+  it("auto-applies article and accent fixes whose meaning cannot change and only suggests agreement", () => {
     const target =
       "Voce disse que nao the users is ready and a error happened.";
     const edits = resolveWritingEdits({
@@ -365,7 +395,7 @@ describe("resolveWritingEdits", () => {
     expect(edits.map((edit) => [edit.replacement, edit.disposition])).toEqual([
       ["Você", "apply"],
       ["não", "apply"],
-      ["are", "apply"],
+      ["are", "suggest"],
       ["an", "apply"],
     ]);
   });
@@ -395,81 +425,81 @@ describe("resolveWritingEdits", () => {
     ["let items = [a, b]", "items", "Items", "capitalization"],
     ["echo $HOME | grep user", "user", "User", "capitalization"],
     ["return return value;", "return return", "return", "grammar"],
-    ["if (users are ready)", "are", "is", "grammar"],
-    ["status: the user are ready", "are", "is", "grammar"],
-    ["  - status: the user are ready", "are", "is", "grammar"],
-    ['"status": the user are ready', "are", "is", "grammar"],
-    ["'status': the user are ready", "are", "is", "grammar"],
-    ['title "the user are ready"', "are", "is", "grammar"],
-    ["url http:example the user are ready", "are", "is", "grammar"],
-    ["    the user are ready", "are", "is", "grammar"],
-    ["\tthe user are ready", "are", "is", "grammar"],
-    ["~~~yaml\nthe user are ready", "are", "is", "grammar"],
-    ["~~~~\n~~~\nthe user are ready", "are", "is", "grammar"],
-    ["~~~\n~~~yaml\nthe user are ready", "are", "is", "grammar"],
-    ["````\n```\nthe user are ready", "are", "is", "grammar"],
-    ["```\n```js\nthe user are ready", "are", "is", "grammar"],
-    ["echo the user are ready.", "are", "is", "grammar"],
-    ["printf the user are ready.", "are", "is", "grammar"],
-    ["$ echo the user are ready.", "are", "is", "grammar"],
-    ["  sudo echo the user are ready.", "are", "is", "grammar"],
-    ["git commit -m the user are ready.", "are", "is", "grammar"],
-    ["Run it.\ngit tag the user are ready.", "are", "is", "grammar"],
-    ["ls -la the user are ready.", "are", "is", "grammar"],
-    ["next pass -rf so the user are ready.", "are", "is", "grammar"],
-    ["Write-Output the user are ready.", "are", "is", "grammar"],
-    ["Get-ChildItem the user are ready", "are", "is", "grammar"],
-    ["write-output the user are ready.", "are", "is", "grammar"],
-    ["$ Write-Host the user are ready.", "are", "is", "grammar"],
-    ["ConvertTo-Json the user are ready.", "are", "is", "grammar"],
-    ["ForEach-Object the user are ready.", "are", "is", "grammar"],
-    ["measure-object the user are ready.", "are", "is", "grammar"],
-    ["get-ChildItem the user are ready.", "are", "is", "grammar"],
-    ["Fetch-Data the user are ready.", "are", "is", "grammar"],
-    ["fetch-data the user are ready.", "are", "is", "grammar"],
-    ["Well-known teams say the user are ready.", "are", "is", "grammar"],
-    ["long-term the user are ready.", "are", "is", "grammar"],
-    ["& Fetch-Data the user are ready.", "are", "is", "grammar"],
-    ["& fetch-data the user are ready.", "are", "is", "grammar"],
-    ["& notepad the user are ready.", "are", "is", "grammar"],
-    [". setup the user are ready.", "are", "is", "grammar"],
-    ["fetch_data the user are ready.", "are", "is", "grammar"],
-    ["Fetch_Data the user are ready.", "are", "is", "grammar"],
-    ["_fetch the user are ready.", "are", "is", "grammar"],
-    ["$ fetch_data the user are ready.", "are", "is", "grammar"],
-    ["fetchData the user are ready.", "are", "is", "grammar"],
-    ["FetchData the user are ready.", "are", "is", "grammar"],
-    ["getUserName the user are ready.", "are", "is", "grammar"],
-    ["make sure the user are ready.", "are", "is", "grammar"],
-    ["find out if the user are ready.", "are", "is", "grammar"],
-    ["go check that the user are ready.", "are", "is", "grammar"],
-    ["test that the user are ready.", "are", "is", "grammar"],
-    ["open the page so the user are ready.", "are", "is", "grammar"],
-    ["export the users so the user are ready.", "are", "is", "grammar"],
-    ["tail the log so the user are ready.", "are", "is", "grammar"],
-    ["kill it so the user are ready.", "are", "is", "grammar"],
-    ["read the user are ready.", "are", "is", "grammar"],
-    ["typeset the user are ready.", "are", "is", "grammar"],
-    ["local the user are ready.", "are", "is", "grammar"],
-    ["print the user are ready.", "are", "is", "grammar"],
-    ["trap the user are ready.", "are", "is", "grammar"],
-    ["wait so the user are ready.", "are", "is", "grammar"],
-    ["stat the user are ready.", "are", "is", "grammar"],
-    ["basename the user are ready.", "are", "is", "grammar"],
-    ["for value in user are ready", "are", "is", "grammar"],
+    ["if (we saw a error)", "a error", "an error", "grammar"],
+    ["status: we saw a error", "a error", "an error", "grammar"],
+    ["  - status: we saw a error", "a error", "an error", "grammar"],
+    ['"status": we saw a error', "a error", "an error", "grammar"],
+    ["'status': we saw a error", "a error", "an error", "grammar"],
+    ['title "we saw a error"', "a error", "an error", "grammar"],
+    ["url http:example we saw a error", "a error", "an error", "grammar"],
+    ["    we saw a error", "a error", "an error", "grammar"],
+    ["\twe saw a error", "a error", "an error", "grammar"],
+    ["~~~yaml\nwe saw a error", "a error", "an error", "grammar"],
+    ["~~~~\n~~~\nwe saw a error", "a error", "an error", "grammar"],
+    ["~~~\n~~~yaml\nwe saw a error", "a error", "an error", "grammar"],
+    ["````\n```\nwe saw a error", "a error", "an error", "grammar"],
+    ["```\n```js\nwe saw a error", "a error", "an error", "grammar"],
+    ["echo we saw a error.", "a error", "an error", "grammar"],
+    ["printf we saw a error.", "a error", "an error", "grammar"],
+    ["$ echo we saw a error.", "a error", "an error", "grammar"],
+    ["  sudo echo we saw a error.", "a error", "an error", "grammar"],
+    ["git commit -m we saw a error.", "a error", "an error", "grammar"],
+    ["Run it.\ngit tag we saw a error.", "a error", "an error", "grammar"],
+    ["ls -la we saw a error.", "a error", "an error", "grammar"],
+    ["next pass -rf so we saw a error.", "a error", "an error", "grammar"],
+    ["Write-Output we saw a error.", "a error", "an error", "grammar"],
+    ["Get-ChildItem we saw a error", "a error", "an error", "grammar"],
+    ["write-output we saw a error.", "a error", "an error", "grammar"],
+    ["$ Write-Host we saw a error.", "a error", "an error", "grammar"],
+    ["ConvertTo-Json we saw a error.", "a error", "an error", "grammar"],
+    ["ForEach-Object we saw a error.", "a error", "an error", "grammar"],
+    ["measure-object we saw a error.", "a error", "an error", "grammar"],
+    ["get-ChildItem we saw a error.", "a error", "an error", "grammar"],
+    ["Fetch-Data we saw a error.", "a error", "an error", "grammar"],
+    ["fetch-data we saw a error.", "a error", "an error", "grammar"],
+    ["Well-known teams say we saw a error.", "a error", "an error", "grammar"],
+    ["long-term we saw a error.", "a error", "an error", "grammar"],
+    ["& Fetch-Data we saw a error.", "a error", "an error", "grammar"],
+    ["& fetch-data we saw a error.", "a error", "an error", "grammar"],
+    ["& notepad we saw a error.", "a error", "an error", "grammar"],
+    [". setup we saw a error.", "a error", "an error", "grammar"],
+    ["fetch_data we saw a error.", "a error", "an error", "grammar"],
+    ["Fetch_Data we saw a error.", "a error", "an error", "grammar"],
+    ["_fetch we saw a error.", "a error", "an error", "grammar"],
+    ["$ fetch_data we saw a error.", "a error", "an error", "grammar"],
+    ["fetchData we saw a error.", "a error", "an error", "grammar"],
+    ["FetchData we saw a error.", "a error", "an error", "grammar"],
+    ["getUserName we saw a error.", "a error", "an error", "grammar"],
+    ["make sure we saw a error.", "a error", "an error", "grammar"],
+    ["find out if we saw a error.", "a error", "an error", "grammar"],
+    ["go check that we saw a error.", "a error", "an error", "grammar"],
+    ["test that we saw a error.", "a error", "an error", "grammar"],
+    ["open the page so we saw a error.", "a error", "an error", "grammar"],
+    ["export the users so we saw a error.", "a error", "an error", "grammar"],
+    ["tail the log so we saw a error.", "a error", "an error", "grammar"],
+    ["kill it so we saw a error.", "a error", "an error", "grammar"],
+    ["read we saw a error.", "a error", "an error", "grammar"],
+    ["typeset we saw a error.", "a error", "an error", "grammar"],
+    ["local we saw a error.", "a error", "an error", "grammar"],
+    ["print we saw a error.", "a error", "an error", "grammar"],
+    ["trap we saw a error.", "a error", "an error", "grammar"],
+    ["wait so we saw a error.", "a error", "an error", "grammar"],
+    ["stat we saw a error.", "a error", "an error", "grammar"],
+    ["basename we saw a error.", "a error", "an error", "grammar"],
+    ["for value in we saw a error", "a error", "an error", "grammar"],
     [
-      "for value in user are ready\ndo\n  echo $value\ndone",
-      "are",
-      "is",
+      "for value in we saw a error\ndo\n  echo $value\ndone",
+      "a error",
+      "an error",
       "grammar",
     ],
-    ["while the user are ready", "are", "is", "grammar"],
-    ["until the user are ready", "are", "is", "grammar"],
-    ["if the user are ready", "are", "is", "grammar"],
-    ["case the user are ready", "are", "is", "grammar"],
-    ["select the user are ready", "are", "is", "grammar"],
-    ["function the user are ready", "are", "is", "grammar"],
-    ["time the user are ready", "are", "is", "grammar"],
+    ["while we saw a error", "a error", "an error", "grammar"],
+    ["until we saw a error", "a error", "an error", "grammar"],
+    ["if we saw a error", "a error", "an error", "grammar"],
+    ["case we saw a error", "a error", "an error", "grammar"],
+    ["select we saw a error", "a error", "an error", "grammar"],
+    ["function we saw a error", "a error", "an error", "grammar"],
+    ["time we saw a error", "a error", "an error", "grammar"],
   ])(
     "never auto-applies an edit on the code-like line %s",
     (target, original, replacement, category) => {
@@ -488,46 +518,46 @@ describe("resolveWritingEdits", () => {
   );
 
   it.each([
-    "the user are ready.",
-    "Echo said the user are ready.",
-    "Make sure the user are ready.",
-    "Find out if the user are ready.",
-    "Go check that the user are ready.",
-    "Test that the user are ready.",
-    "Read the user are ready.",
-    "Wait so the user are ready.",
-    "If the user are ready, ship it.",
-    "While the user are ready, wait.",
-    "For now the user are ready.",
-    "A well-known team says the user are ready.",
-    "The long-term plan says the user are ready.",
-    "Ask the team - the user are ready.",
-    "Tom & Jerry say the user are ready.",
-    "OK the user are ready.",
-    "AI teams say the user are ready.",
-    "Setup says the user are ready.",
-    "The fetch_data step says the user are ready.",
-    "notepad the user are ready.",
+    "we saw a error.",
+    "Echo said we saw a error.",
+    "Make sure we saw a error.",
+    "Find out if we saw a error.",
+    "Go check that we saw a error.",
+    "Test that we saw a error.",
+    "Read we saw a error.",
+    "Wait so we saw a error.",
+    "If we saw a error, ship it.",
+    "While we saw a error, wait.",
+    "For now we saw a error.",
+    "A well-known team says we saw a error.",
+    "The long-term plan says we saw a error.",
+    "Ask the team - we saw a error.",
+    "Tom & Jerry say we saw a error.",
+    "OK we saw a error.",
+    "AI teams say we saw a error.",
+    "Setup says we saw a error.",
+    "The fetch_data step says we saw a error.",
+    "notepad we saw a error.",
   ])("still auto-applies a safe fix on the prose line %s", (target) => {
     const edits = resolveWritingEdits({
       ...base,
       target,
-      proposals: [proposal("user are", "user is")],
+      proposals: [proposal("a error", "an error")],
     });
     expect(edits.map((edit) => edit.disposition)).toEqual(["apply"]);
   });
 
   it.each([
-    "```\nthe user are ready\n```",
-    "~~~\nthe user are ready\n~~~",
-    "````\nthe user are ready\n````",
-    "```yaml\n~~~\nthe user are ready",
-    "~~~\n```\nthe user are ready",
+    "```\nwe saw a error\n```",
+    "~~~\nwe saw a error\n~~~",
+    "````\nwe saw a error\n````",
+    "```yaml\n~~~\nwe saw a error",
+    "~~~\n```\nwe saw a error",
   ])("never auto-applies inside a fence: %s", (target) => {
     const edits = resolveWritingEdits({
       ...base,
       target,
-      proposals: [proposal("user are", "user is")],
+      proposals: [proposal("a error", "an error")],
     });
     expect(edits.map((edit) => edit.disposition)).not.toContain("apply");
   });
@@ -548,34 +578,34 @@ describe("resolveWritingEdits", () => {
   });
 
   it.each([
-    "```\nconst x = 1;\n```\nthe user are ready",
-    "~~~\nconst x = 1;\n~~~\nthe user are ready",
-    "````\nconst x = 1;\n`````\nthe user are ready",
-    "```\n~~~\n```\nthe user are ready",
-    "We met at noon: the user are ready",
-    "  the user are ready",
+    "```\nconst x = 1;\n```\nwe saw a error",
+    "~~~\nconst x = 1;\n~~~\nwe saw a error",
+    "````\nconst x = 1;\n`````\nwe saw a error",
+    "```\n~~~\n```\nwe saw a error",
+    "We met at noon: we saw a error",
+    "  we saw a error",
   ])("still auto-applies on a prose line: %s", (target) => {
     const edits = resolveWritingEdits({
       ...base,
       target,
-      proposals: [proposal("user are", "user is")],
+      proposals: [proposal("a error", "an error")],
     });
     expect(edits.map((edit) => edit.disposition)).toEqual(["apply"]);
   });
 
   it("still auto-applies on a prose line below a code line", () => {
-    const target = "const x = 1;\nthe user are ready";
+    const target = "const x = 1;\nwe saw a error";
     const edits = resolveWritingEdits({
       ...base,
       target,
       proposals: [
         proposal("const", "Const", { category: "capitalization" }),
-        proposal("user are", "user is"),
+        proposal("a error", "an error"),
       ],
     });
     expect(edits.map((edit) => [edit.replacement, edit.disposition])).toEqual([
       ["Const", "suggest"],
-      ["is", "apply"],
+      ["an", "apply"],
     ]);
   });
 
@@ -673,23 +703,23 @@ describe("resolveWritingEdits", () => {
     },
   );
 
-  it("still auto-applies agreement in an unfinished sentence", () => {
+  it("still auto-applies an article fix in an unfinished sentence", () => {
     const edits = resolveWritingEdits({
       ...base,
-      target: "the user are ready",
-      proposals: [proposal("user are", "user is")],
+      target: "we saw a error",
+      proposals: [proposal("a error", "an error")],
     });
     expect(edits.map((edit) => [edit.replacement, edit.disposition])).toEqual([
-      ["is", "apply"],
+      ["an", "apply"],
     ]);
   });
 
   it("only auto-applies when the model reports no semantic impact", () => {
     const edits = resolveWritingEdits({
       ...base,
-      target: "The users is here.",
+      target: "We saw a error here.",
       proposals: [
-        proposal("users is", "users are", { semanticImpact: "possible" }),
+        proposal("a error", "an error", { semanticImpact: "possible" }),
       ],
     });
     expect(edits[0]?.disposition).toBe("suggest");

@@ -304,21 +304,26 @@ it fails, titles fall back to the start of the prompt and commits to
 The Claude Code provider plugin registers a `claude` service for
 `thread-title`, `commit-message`, and `writing`. It runs the primary machine's
 `claude` CLI with its own login (`claude auth login`), no tools, no user or
-project settings, CLAUDE.md or hooks, no auto-memory (it passes only the
-setting `autoMemoryEnabled: false`), and no session history, trying Claude
-Haiku 5.5 and then Claude Sonnet 5.5.
+project settings, CLAUDE.md or hooks, also when `CLAUDE_CONFIG_DIR` points the
+CLI at another config directory, no auto-memory (bb sets
+`CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` for it and passes no `--settings`), and no
+session history, trying Claude Haiku 5.5 and then Claude Sonnet 5.5. Managed
+settings that an administrator installs for the CLI still apply, as the CLI
+documents for `--setting-sources`.
 It reports ready when that login is valid or has a refresh token the CLI can
 renew with, and not ready, asking for `claude auth login`, when the login is
 signed out, its renewal was rejected, or its access token expired with
 nothing to renew it.
 The CLI gets only an allowlisted environment (path, home, user, temp, locale,
-XDG, `DBUS_SESSION_BUS_ADDRESS`, `CLAUDE_CONFIG_DIR`,
-`CLAUDE_CODE_OAUTH_TOKEN`, and the Windows system variables).
+XDG, `DBUS_SESSION_BUS_ADDRESS`, `CLAUDE_CONFIG_DIR`, which selects the CLI's
+config directory and so its login, `CLAUDE_CODE_OAUTH_TOKEN`, and the Windows
+system variables), plus `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`.
 `DBUS_SESSION_BUS_ADDRESS` lets the CLI on a Linux desktop reach the user's
 session bus, where the keyring that can hold its login lives; anything else on
 that bus is reachable too, with the same rights as the user bb runs as.
 `ANTHROPIC_BASE_URL`, `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`,
-`NODE_OPTIONS`, other `CLAUDE_CODE_*` settings, and the proxy and CA
+`NODE_OPTIONS`, other `CLAUDE_CODE_*` settings (bb's own value of
+`CLAUDE_CODE_DISABLE_AUTO_MEMORY` is replaced by 1), and the proxy and CA
 variables (`HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`,
 `NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`, `SSL_CERT_DIR`) in bb's environment
 never reach it, and the prompt cannot be redirected or intercepted through
@@ -378,15 +383,14 @@ suggested), removing a word typed twice with only spaces between (not a tab or l
 when it is one of these words, which never stand twice in a row: the, a, an, I, we, they, he, she, our, your, their, of, and, or, but, if, and the Portuguese o, os, a, as, um, uma, de, da, dos, das, em, na, nas, e, ou, eu, ele, ela, nós, por, com (any
 other repeat can be meant and is only suggested: very very, had had, that that, not not, her her as in
 tell her her access, in in as in log in in five minutes, para para, and a pair split by punctuation
-such as so did I. I left), verb or article
-agreement from a fixed list (is/are/am, isn't/aren't, hasn't/haven't,
-doesn't/don't and a/an; changes to or from be, was/were, has/have and does/do
-are only suggested, since a verb's mood can change the meaning: "He be working",
-"If he were there", "I insist that she have the key"), and accents on a fixed list of Portuguese words that are
+such as so did I. I left), the article a to an or an to a, and accents on a fixed list of Portuguese words that are
 not words without them (nao, voce, tambem, entao, amanha). Spelling fixes, a
 missing final period, capitalization or spacing in text that does not end a
-sentence (such as a bare `return true`), other punctuation (commas, question marks), homophones such as its/it's, and tense or
-plural changes are offered as suggestions. Code, paths, identifiers and
+sentence (such as a bare `return true`), other punctuation (commas, question marks), homophones such as its/it's, verb
+agreement (is/are/am, was/were, has/have, does/do and their negations, since the
+subject can be singular or plural, as in "The fish are nearby", and a verb's mood
+can change the meaning, as in "If he were there"), and tense or plural changes
+are offered as suggestions. Code, paths, identifiers and
 vocabulary terms are never edited, and on a line containing any of
 = ; { } ( ) < > [ ] $ ` | \ / # " or --, a colon followed directly by text
 (10:30), a key: value line (status: ready, - name: x, "title": x), a line

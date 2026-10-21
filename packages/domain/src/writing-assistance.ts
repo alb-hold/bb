@@ -360,11 +360,7 @@ function isInflection(a: string, b: string): boolean {
 }
 
 const MEANING_INVARIANT_GROUPS: readonly (readonly string[])[] = [
-  ["is", "are", "am"],
   ["a", "an"],
-  ["isn't", "aren't"],
-  ["hasn't", "haven't"],
-  ["doesn't", "don't"],
 ];
 
 const NON_WORD_RESTORATIONS: ReadonlyMap<string, string> = new Map([

@@ -107,8 +107,6 @@ describe("completeClaudeInference", () => {
       "",
       "--strict-mcp-config",
       "--disable-slash-commands",
-      "--settings",
-      '{"autoMemoryEnabled":false}',
       "--system-prompt",
       "Follow the instructions in the user message exactly. Reply with only the requested text.",
     ]);
@@ -122,9 +120,16 @@ describe("completeClaudeInference", () => {
       (key) => !["PWD", "SHLVL", "_", "__CF_USER_TEXT_ENCODING"].includes(key),
     );
     expect(passed.sort()).toEqual(
-      ["CLAUDE_CODE_OAUTH_TOKEN", "HOME", "LC_ALL", "PATH"].sort(),
+      [
+        "CLAUDE_CODE_DISABLE_AUTO_MEMORY",
+        "CLAUDE_CODE_OAUTH_TOKEN",
+        "HOME",
+        "LC_ALL",
+        "PATH",
+      ].sort(),
     );
     expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBe("oauth-token");
+    expect(env.CLAUDE_CODE_DISABLE_AUTO_MEMORY).toBe("1");
     expect(
       claudeCompleteEnv({
         ANTHROPIC_BASE_URL: "https://attacker.example",
@@ -132,8 +137,13 @@ describe("completeClaudeInference", () => {
         CLAUDE_CODE_ENTRYPOINT: "cli",
         Path: "C:\\Windows",
         HOME: "/home/u",
+        CLAUDE_CODE_DISABLE_AUTO_MEMORY: "0",
       }),
-    ).toEqual({ HOME: "/home/u", Path: "C:\\Windows" });
+    ).toEqual({
+      HOME: "/home/u",
+      Path: "C:\\Windows",
+      CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
+    });
   });
 
   it.each([

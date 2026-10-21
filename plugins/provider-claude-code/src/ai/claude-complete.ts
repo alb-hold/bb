@@ -70,19 +70,20 @@ export function claudeCompleteArgs(model: string): string[] {
     "",
     "--strict-mcp-config",
     "--disable-slash-commands",
-    "--settings",
-    JSON.stringify({ autoMemoryEnabled: false }),
     "--system-prompt",
     SYSTEM_PROMPT,
   ];
 }
 
 export function claudeCompleteEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  return Object.fromEntries(
-    Object.entries(env).filter(
-      ([key]) => PASSED_ENV.has(key.toUpperCase()) || key.startsWith("LC_"),
+  return {
+    ...Object.fromEntries(
+      Object.entries(env).filter(
+        ([key]) => PASSED_ENV.has(key.toUpperCase()) || key.startsWith("LC_"),
+      ),
     ),
-  );
+    CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
+  };
 }
 
 function failure(

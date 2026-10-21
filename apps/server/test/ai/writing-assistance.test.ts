@@ -93,12 +93,12 @@ describe("writing assistance corrections", () => {
         complete: async () =>
           `<think>checking</think>${editsReply([
             {
-              original: "user are",
-              replacement: "user is",
+              original: "a error",
+              replacement: "an error",
               category: "grammar",
               confidence: "high",
               semanticImpact: "none",
-              explanation: "agreement",
+              explanation: "article",
             },
             {
               original: "talking",
@@ -119,7 +119,7 @@ describe("writing assistance corrections", () => {
           ])}`,
       });
       const target =
-        "The user are sure the talking expires.\nIt comes from refreshTokn().";
+        "We saw a error, sure the talking expires.\nIt comes from refreshTokn().";
       const response = await postCorrection(harness, { target });
       expect(response.status).toBe(200);
       const body = await response.json();
@@ -127,8 +127,8 @@ describe("writing assistance corrections", () => {
         status: "ok",
         edits: [
           expect.objectContaining({
-            original: "are",
-            replacement: "is",
+            original: "a",
+            replacement: "an",
             disposition: "apply",
           }),
           expect.objectContaining({
@@ -149,8 +149,8 @@ describe("writing assistance corrections", () => {
         complete: async () =>
           editsReply([
             {
-              original: "user are",
-              replacement: "user is",
+              original: "a error",
+              replacement: "an error",
               category: "grammar",
               confidence: "high",
               semanticImpact: "none",
@@ -159,14 +159,14 @@ describe("writing assistance corrections", () => {
           ]),
       });
       const response = await postCorrection(harness, {
-        target: "The user are sure refreshTokn() expires.",
+        target: "We saw a error, sure refreshTokn() expires.",
       });
       await expect(response.json()).resolves.toEqual({
         status: "ok",
         edits: [
           expect.objectContaining({
-            original: "are",
-            replacement: "is",
+            original: "a",
+            replacement: "an",
             disposition: "suggest",
           }),
         ],
@@ -177,8 +177,8 @@ describe("writing assistance corrections", () => {
   it("returns only the complete edits of a reply cut off by the output limit", async () => {
     await withTestHarness({}, async (harness) => {
       const complete = JSON.stringify({
-        original: "user are",
-        replacement: "user is",
+        original: "a error",
+        replacement: "an error",
         category: "grammar",
         confidence: "high",
         semanticImpact: "none",
@@ -186,20 +186,20 @@ describe("writing assistance corrections", () => {
       });
       const replies = [
         `{"edits":[${complete},{"original":"talking","replacement":"tok`,
-        '{"edits":[{"original":"user are","repla',
+        '{"edits":[{"original":"a error","repla',
       ];
       registerFakeAiService(harness.deps.aiServices, {
         complete: async () => replies.shift() ?? "",
       });
-      const target = "The user are sure the talking expires.";
+      const target = "We saw a error, sure the talking expires.";
       await expect(
         (await postCorrection(harness, { target })).json(),
       ).resolves.toEqual({
         status: "ok",
         edits: [
           expect.objectContaining({
-            original: "are",
-            replacement: "is",
+            original: "a",
+            replacement: "an",
             disposition: "apply",
           }),
         ],
