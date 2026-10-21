@@ -169,6 +169,21 @@ interface ScrollbackClient {
   staleCursorRecoveries: number;
 }
 
+function waitForTimelineSignal(
+  socket: ReturnType<typeof createMockHubSocket>,
+): Promise<void> {
+  return new Promise((resolve) => {
+    const send = socket.send;
+    socket.send = (data) => {
+      send.call(socket, data);
+      if (JSON.parse(data).type === "thread-timeline") {
+        socket.send = send;
+        resolve();
+      }
+    };
+  });
+}
+
 function surfaceKeyFor(
   threadId: string,
   latest: ThreadTimelineResponse,
@@ -241,8 +256,9 @@ async function refresh(
     await refetch(harness, client, threadId);
     return;
   }
+  const timelineSignal = waitForTimelineSignal(socket);
   harness.deps.hub.notifyThread(threadId, ["events-appended"]);
-  await new Promise((resolve) => setTimeout(resolve, 50));
+  await timelineSignal;
   const signals = socket.messages
     .splice(0)
     .map((message) => JSON.parse(message))
