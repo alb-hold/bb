@@ -237,7 +237,6 @@ import {
   UrlOpenRoutingProvider,
 } from "@/lib/url-open-routing";
 import { isTerminalLinkForThreadBrowser } from "@/components/thread/terminal/terminal-link-routing";
-import { threadOpenTerminalActionSchema } from "@bb/server-contract";
 import {
   AppNavigationHostProvider,
   type AppFixedTabOpenIntent,
