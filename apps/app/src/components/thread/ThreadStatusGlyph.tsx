@@ -229,6 +229,14 @@ export function ThreadStatusGlyph({
           aria-label={getThreadListIndicatorLabel(kind) ?? undefined}
         />
       );
+    case "activity-unreported":
+      return (
+        <Icon
+          name="Minus"
+          className={cn("text-muted-foreground/75", iconSizeClass)}
+          aria-label={getThreadListIndicatorLabel(kind) ?? undefined}
+        />
+      );
     case "working-draft":
       return <ThreadDraftIndicator isWorking size={size} />;
     case "workflow":

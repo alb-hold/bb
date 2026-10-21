@@ -471,6 +471,7 @@ export const threadListIndicatorSchema = z.enum([
   "runtime",
   "queued-failed",
   "queued-waiting",
+  "activity-unreported",
   "draft",
   "unread-success",
   "none",

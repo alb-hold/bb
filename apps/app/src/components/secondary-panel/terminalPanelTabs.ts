@@ -8,7 +8,10 @@ import {
   type SecondaryFixedPanelTab,
   type TerminalFixedPanelTab,
 } from "@/lib/fixed-panel-tabs-state";
-import { shouldShowRetainedTerminalSession } from "@/lib/terminal-session-visibility";
+import {
+  omitSupersededDisconnectedSessions,
+  shouldShowRetainedTerminalSession,
+} from "@/lib/terminal-session-visibility";
 
 interface BuildTerminalSyncedSecondaryFileTabsArgs {
   orderedTabs: readonly SecondaryFileFixedPanelTab[];
@@ -42,7 +45,7 @@ function getTerminalSessionTabIds({
   terminalSessions: readonly TerminalSession[];
 }): ReadonlySet<string> {
   return new Set(
-    terminalSessions
+    omitSupersededDisconnectedSessions(terminalSessions)
       .filter((session) =>
         shouldShowRetainedTerminalSession({ retainedTerminalIds, session }),
       )
@@ -116,7 +119,7 @@ function syncTerminalTabsWithSessions<T extends SecondaryFixedPanelTab>({
     syncedTabs.push(tab);
   }
 
-  for (const session of terminalSessions) {
+  for (const session of omitSupersededDisconnectedSessions(terminalSessions)) {
     if (!shouldShowRetainedTerminalSession({ retainedTerminalIds, session })) {
       continue;
     }

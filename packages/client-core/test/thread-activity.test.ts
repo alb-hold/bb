@@ -49,6 +49,7 @@ const unreadErrorChild = makeChild({
 
 const idleIndicatorState: ThreadListIndicatorState = {
   hasPendingInteraction: false,
+  isActivityUnreported: false,
   hasUnsubmittedDraft: false,
   hasUnreadError: false,
   hasUnreadSuccess: false,
@@ -399,6 +400,7 @@ describe("thread-activity", () => {
 
       expect(threadListIndicatorStateForThread(thread, false)).toEqual({
         hasPendingInteraction: true,
+        isActivityUnreported: false,
         hasUnsubmittedDraft: false,
         hasUnreadError: false,
         hasUnreadSuccess: false,
@@ -411,6 +413,74 @@ describe("thread-activity", () => {
         isRuntimeActive: true,
         isWorkflowActive: true,
       });
+    });
+  });
+
+  describe("a live native thread whose activity is not reported", () => {
+    const unconfirmedRuntime = {
+      displayStatus: "active" as const,
+      nativeActivity: {
+        lastEvidenceAt: null,
+        freshForMs: 90_000,
+        confirmation: "unconfirmed" as const,
+      },
+    };
+    const indicatorFor = (
+      overrides: Parameters<typeof makeThreadListEntry>[0],
+    ) =>
+      resolveThreadListIndicator(
+        threadListIndicatorStateForThread(
+          makeThreadListEntry({ status: "active", ...overrides }),
+          false,
+        ),
+      );
+
+    it("shows a neutral activity-not-reported state, never working", () => {
+      expect(indicatorFor({ runtime: unconfirmedRuntime })).toBe(
+        "activity-unreported",
+      );
+      expect(
+        indicatorFor({
+          runtime: {
+            ...unconfirmedRuntime,
+            nativeActivity: {
+              lastEvidenceAt: Date.now(),
+              freshForMs: 90_000,
+              confirmation: "confirmed",
+            },
+          },
+        }),
+      ).toBe("working");
+    });
+
+    it("never masks a failed queued message or a message waiting to send", () => {
+      expect(
+        indicatorFor({ runtime: unconfirmedRuntime, queuedWork: "failed" }),
+      ).toBe("queued-failed");
+      expect(
+        indicatorFor({ runtime: unconfirmedRuntime, queuedWork: "waiting" }),
+      ).toBe("queued-waiting");
+    });
+
+    it("yields to a thread that needs input", () => {
+      expect(
+        indicatorFor({
+          runtime: unconfirmedRuntime,
+          hasPendingInteraction: true,
+        }),
+      ).toBe("needs-input");
+    });
+
+    it("is not claimed by a thread without native activity or one that is idle", () => {
+      expect(indicatorFor({ runtime: { displayStatus: "active" } })).toBe(
+        "working",
+      );
+      expect(
+        indicatorFor({
+          status: "idle",
+          runtime: { ...unconfirmedRuntime, displayStatus: "idle" },
+        }),
+      ).toBe("none");
     });
   });
 

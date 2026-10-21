@@ -4,9 +4,12 @@ import {
   deleteThread,
   getNativeTerminalThread,
   getPendingInteractionByProviderRequest,
+  getTerminalSession,
   getThread,
+  getThreadRowState,
   isNativeTerminalThread,
   listPendingInteractionsByThread,
+  putThreadRowState,
   setNativeTerminalToolCredential,
   type DbConnection,
 } from "@bb/db";
@@ -27,9 +30,11 @@ import { applyLoggedThreadLifecycleEvent } from "../../src/services/threads/life
 import { stopThreadForCurrentState } from "../../src/services/threads/thread-lifecycle.js";
 import { NATIVE_TOOL_CREDENTIAL_ENV } from "../../src/services/threads/native-terminal-threads.js";
 import {
+  clearNativeTerminalStateOnExit,
   interruptNativeTerminalQuestions,
   recordNativeTerminalActivity,
 } from "../../src/services/threads/native-terminal-activity.js";
+import { buildThreadStatusChangeMetadata } from "../../src/services/threads/thread-runtime-display.js";
 import type { ProviderNativeTerminalActivity } from "@bb/domain";
 
 interface NativeActivitySignalForTest {
@@ -1661,5 +1666,264 @@ describe("native terminal questions", () => {
 
     expect(openInteractions(fixture, thread.id)).toHaveLength(1);
     expect(threadStatus(fixture, thread.id)).toBe("active");
+  });
+});
+
+describe("native terminal activity evidence across a swap", () => {
+  async function startNativeThread(fixture: Fixture) {
+    const thread = seedChatThread(fixture, {
+      providerId: "claude-code",
+      providerThreadId: SESSION_ID,
+    });
+    const { open } = await enterTerminal(fixture, thread.id);
+    return { open, credential: terminalCredential(open), thread };
+  }
+
+  async function reattachAfterDaemonDisconnect(
+    fixture: Fixture,
+    threadId: string,
+    previous: DaemonMessage<"terminal.open">,
+  ) {
+    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+      hostId: fixture.hostId,
+      sessionId: fixture.sessionId,
+      message: {
+        type: "terminal.exited",
+        terminalId: previous.terminalId,
+        exitCode: null,
+        closeReason: "daemon-disconnect",
+      },
+    });
+    const opens = countDaemonMessages(fixture, "terminal.open");
+    const reopening = postJson(
+      fixture,
+      `/threads/${threadId}/native-terminal/open`,
+      {},
+    );
+    const reopened = await waitForDaemonMessage(
+      fixture,
+      "terminal.open",
+      opens,
+    );
+    acknowledgeOpen(fixture, reopened);
+    expect((await reopening).status).toBe(200);
+    return { reopened, credential: terminalCredential(reopened) };
+  }
+
+  const evidenceOf = (fixture: Fixture, threadId: string) =>
+    getNativeTerminalThread(fixture.harness.db, threadId)?.lastEvidenceAt;
+
+  const displayOf = (fixture: Fixture, threadId: string) => {
+    const thread = getThread(fixture.harness.db, threadId);
+    if (thread === null) throw new Error("thread missing");
+    return buildThreadStatusChangeMetadata(fixture.harness.deps, thread)
+      .statusChange?.runtime.nativeActivity;
+  };
+
+  const report = (fixture: Fixture, threadId: string, authorization?: string) =>
+    postJson(
+      fixture,
+      `/threads/${threadId}/native-terminal/activity`,
+      { state: "working" },
+      authorization,
+    );
+
+  async function reattached(fixture: Fixture) {
+    const {
+      open,
+      credential: before,
+      thread,
+    } = await startNativeThread(fixture);
+    await report(fixture, thread.id, `Bearer ${before}`);
+    const { credential: after, reopened } = await reattachAfterDaemonDisconnect(
+      fixture,
+      thread.id,
+      open,
+    );
+    return { after, before, open, reopened, thread };
+  }
+
+  it("R1 rotation fencing: a pre-reattach credential is never stamped, even replayed after the current one reports", async () => {
+    const fixture = await createFixture();
+    const clock = vi.spyOn(Date, "now").mockReturnValue(2_000_000);
+    try {
+      const { after, before, open, reopened, thread } =
+        await reattached(fixture);
+      expect(reopened.terminalId).not.toBe(open.terminalId);
+      expect(after).not.toBe(before);
+      expect(evidenceOf(fixture, thread.id)).toBeNull();
+
+      clock.mockReturnValue(2_001_000);
+      expect(
+        (await report(fixture, thread.id, `Bearer ${before}`)).status,
+      ).toBe(200);
+      expect(evidenceOf(fixture, thread.id)).toBeNull();
+      expect(threadStatus(fixture, thread.id)).toBe("active");
+
+      await report(fixture, thread.id, `Bearer ${after}`);
+      expect(evidenceOf(fixture, thread.id)).toBe(2_001_000);
+
+      clock.mockReturnValue(2_002_000);
+      await report(fixture, thread.id, `Bearer ${before}`);
+      expect(evidenceOf(fixture, thread.id)).toBe(2_001_000);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it("R3 a credential that was never issued is never stamped", async () => {
+    const fixture = await createFixture();
+    const clock = vi.spyOn(Date, "now").mockReturnValue(2_000_000);
+    try {
+      const { after, thread } = await reattached(fixture);
+      for (const authorization of [
+        "Bearer not-the-credential",
+        `Bearer ${after}x`,
+        `Basic ${after}`,
+        after,
+      ]) {
+        await report(fixture, thread.id, authorization);
+        expect(evidenceOf(fixture, thread.id)).toBeNull();
+      }
+      await report(fixture, thread.id, `Bearer ${after}`);
+      expect(evidenceOf(fixture, thread.id)).toBe(2_000_000);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it("an old holder's report without a credential keeps the lifecycle but is never stamped", async () => {
+    const fixture = await createFixture();
+    const clock = vi.spyOn(Date, "now").mockReturnValue(2_000_000);
+    try {
+      const { thread } = await reattached(fixture);
+      expect((await report(fixture, thread.id)).status).toBe(200);
+      expect(threadStatus(fixture, thread.id)).toBe("active");
+      expect(evidenceOf(fixture, thread.id)).toBeNull();
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it("R2 documents current behavior, not protection: an earlier payload re-sent with the still-current credential is stamped again", async () => {
+    const fixture = await createFixture();
+    const clock = vi.spyOn(Date, "now").mockReturnValue(2_000_000);
+    try {
+      const { after, thread } = await reattached(fixture);
+      await report(fixture, thread.id, `Bearer ${after}`);
+      expect(evidenceOf(fixture, thread.id)).toBe(2_000_000);
+      clock.mockReturnValue(2_050_000);
+      await report(fixture, thread.id, `Bearer ${after}`);
+      expect(evidenceOf(fixture, thread.id)).toBe(2_050_000);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it("shows a live thread as unconfirmed until a current credential reports, then fresh, then stale", async () => {
+    const fixture = await createFixture();
+    const { credential, thread } = await startNativeThread(fixture);
+    const clock = vi.spyOn(Date, "now").mockReturnValue(3_000_000);
+    try {
+      await report(fixture, thread.id);
+      expect(threadStatus(fixture, thread.id)).toBe("active");
+      expect(displayOf(fixture, thread.id)).toMatchObject({
+        lastEvidenceAt: null,
+        confirmation: "unconfirmed",
+      });
+      await report(fixture, thread.id);
+      expect(displayOf(fixture, thread.id)).toMatchObject({
+        lastEvidenceAt: null,
+        confirmation: "unconfirmed",
+      });
+      await report(fixture, thread.id, `Bearer ${credential}`);
+      expect(displayOf(fixture, thread.id)).toMatchObject({
+        lastEvidenceAt: 3_000_000,
+        confirmation: "confirmed",
+      });
+      clock.mockReturnValue(3_000_000 + 91_000);
+      expect(displayOf(fixture, thread.id)).toMatchObject({
+        lastEvidenceAt: 3_000_000,
+        confirmation: "unconfirmed",
+      });
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it("stamps through a disconnected terminal but never from an exited one", async () => {
+    const fixture = await createFixture();
+    const { credential, open, thread } = await startNativeThread(fixture);
+    const clock = vi.spyOn(Date, "now").mockReturnValue(4_000_000);
+    try {
+      fixture.harness.deps.terminalSessions.handleDaemonSessionClosed({
+        sessionId: fixture.sessionId,
+      });
+      expect(
+        getTerminalSession(fixture.harness.db, {
+          kind: "terminal",
+          terminalId: open.terminalId,
+        })?.status,
+      ).toBe("disconnected");
+      await report(fixture, thread.id, `Bearer ${credential}`);
+      expect(evidenceOf(fixture, thread.id)).toBe(4_000_000);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it("does not stamp once the terminal has exited", async () => {
+    const fixture = await createFixture();
+    const { credential, open, thread } = await startNativeThread(fixture);
+    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+      hostId: fixture.hostId,
+      sessionId: fixture.sessionId,
+      message: {
+        type: "terminal.exited",
+        terminalId: open.terminalId,
+        exitCode: 0,
+        closeReason: "process-exit",
+      },
+    });
+    await report(fixture, thread.id, `Bearer ${credential}`);
+    expect(evidenceOf(fixture, thread.id)).toBeNull();
+  });
+
+  it("keeps the thread's state when a superseded terminal's exit arrives after the reattach", async () => {
+    const fixture = await createFixture();
+    const { open, thread } = await startNativeThread(fixture);
+    await report(fixture, thread.id);
+    const { reopened } = await reattachAfterDaemonDisconnect(
+      fixture,
+      thread.id,
+      open,
+    );
+    const rowState = {
+      statuses: { task: { value: "Working" } },
+      progress: { value: 0.4 },
+    };
+    putThreadRowState(fixture.harness.db, thread.id, rowState);
+
+    const view = nativeTerminalThreadSchema.parse(
+      await readJson(
+        await fixture.harness.app.request(
+          `/api/v1/threads/${thread.id}/native-terminal`,
+        ),
+      ),
+    );
+    expect(view.terminal?.id).toBe(reopened.terminalId);
+    expect(view.terminal?.status).toBe("running");
+
+    for (const closeReason of ["daemon-disconnect", "process-exit"] as const) {
+      clearNativeTerminalStateOnExit(fixture.harness.deps, {
+        closeReason,
+        id: open.terminalId,
+        threadId: thread.id,
+      });
+      expect(getThreadRowState(fixture.harness.db, thread.id)).toEqual(
+        rowState,
+      );
+      expect(threadStatus(fixture, thread.id)).toBe("active");
+    }
   });
 });

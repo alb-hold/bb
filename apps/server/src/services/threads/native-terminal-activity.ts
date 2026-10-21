@@ -7,6 +7,7 @@ import {
 } from "@bb/db";
 import {
   isNativeTerminalQuestion,
+  NATIVE_TERMINAL_ACTIVITY_FRESH_FOR_MS,
   NATIVE_TERMINAL_ACTIVITY_HEARTBEAT_INTERVAL_MS,
   NATIVE_TERMINAL_QUESTION_REQUEST_PREFIX,
   type Thread,
@@ -221,6 +222,33 @@ export function recordNativeTerminalActivity(
     titleNativeThreadFromPrompt(deps, thread.id, args.prompt);
   }
   if (args.state === "working" && working) active.add(thread.id);
+}
+
+export function recordNativeTerminalToolCallEvidence(
+  deps: AppDeps,
+  args: { threadId: string },
+): void {
+  const record = getNativeTerminalThread(deps.db, args.threadId);
+  if (record === null || record.terminalSessionId === null) return;
+  const now = Date.now();
+  const stamp = stampNativeTerminalThreadActivity(deps.db, {
+    at: now,
+    terminalSessionId: record.terminalSessionId,
+    threadId: args.threadId,
+  });
+  if (!stamp.updated) return;
+  const previous = stamp.previousLastEvidenceAt;
+  const wasConfirmed =
+    previous !== null &&
+    now >= previous &&
+    now - previous <= NATIVE_TERMINAL_ACTIVITY_FRESH_FOR_MS;
+  if (wasConfirmed) return;
+  const thread = requirePublicThread(deps.db, args.threadId);
+  deps.hub.notifyThread(
+    args.threadId,
+    ["status-changed"],
+    buildThreadStatusChangeMetadata(deps, thread),
+  );
 }
 
 export function interruptNativeTerminalQuestions(
