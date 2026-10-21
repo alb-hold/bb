@@ -94,12 +94,15 @@ const metrics: Record<
 };
 type FormFactor = "desktop" | "phone";
 
-const pendingInputs: Array<{
+type PendingTerminalInput = {
   formFactor: FormFactor;
   terminalId: string;
   sentAt?: number;
   timestamp: number;
-}> = [];
+};
+type SentTerminalInput = PendingTerminalInput & { sentAt: number };
+
+const pendingInputs: PendingTerminalInput[] = [];
 const pendingRenders: Array<{
   formFactor: FormFactor;
   terminalId: string;
@@ -151,8 +154,8 @@ export function recordTerminalOutputReceived(
   timestamp: number,
 ): void {
   if (!Number.isFinite(timestamp)) return;
-  const firstInput =
-    pendingInputs.find((pending) => {
+  const firstInput: SentTerminalInput | null =
+    pendingInputs.find((pending): pending is SentTerminalInput => {
       const sentAt = pending.sentAt;
       return (
         pending.terminalId === terminalId &&
@@ -160,8 +163,8 @@ export function recordTerminalOutputReceived(
         sentAt <= timestamp
       );
     }) ?? null;
-  const firstSentAt = firstInput?.sentAt;
-  if (firstInput !== null && firstSentAt !== undefined) {
+  if (firstInput !== null) {
+    const firstSentAt = firstInput.sentAt;
     metrics[firstInput.formFactor].inputToFirstOutputReceivedMs.add(
       timestamp - firstInput.timestamp,
     );
