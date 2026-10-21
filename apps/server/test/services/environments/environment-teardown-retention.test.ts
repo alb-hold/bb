@@ -1,6 +1,10 @@
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createDeferredPromise } from "@bb/test-helpers";
 import {
   claimEnvironmentTeardown,
+  createConnection,
   environmentHookOperations,
   environments,
   getEnvironment,
@@ -1099,6 +1103,101 @@ describe("a cancelled preparing owner's release", () => {
         teardownAttempt: 2,
         teardownPriorStatus: "ready",
       });
+    }));
+});
+
+describe("a crash between the removal call and its result", () => {
+  it("never restores an environment whose removal the crashed attempt may have run, even when the resumed preflight retains", async () =>
+    withTestHarness(async (harness) => {
+      const resourceDir = await mkdtemp(join(tmpdir(), "bb-retention-crash-"));
+      const resourceFile = join(resourceDir, "data.txt");
+      await writeFile(resourceFile, "recoverable\n");
+      const entered = createDeferredPromise<void>();
+      const interrupted = createDeferredPromise<void>();
+      const observed = { removeCalls: 0, hookRowsWhenRemoveStarted: -1 };
+      const preflight = vi
+        .fn<
+          NonNullable<
+            PluginEnvironmentProviderDeclaration["experimental_preflightRemove"]
+          >
+        >()
+        .mockResolvedValueOnce({ status: "removable" })
+        .mockResolvedValue({ status: "retained", message: KEPT });
+      installProvider({
+        experimental_preflightRemove: preflight,
+        remove: async () => {
+          observed.removeCalls += 1;
+          observed.hookRowsWhenRemoveStarted = harness.db
+            .select()
+            .from(environmentHookOperations)
+            .all().length;
+          await rm(resourceFile);
+          entered.resolve();
+          await interrupted.promise;
+          return { status: "removed" };
+        },
+        policy: { retireGraceMs: 0 },
+      });
+      const { environment, host, session } = seedRetiring(harness, {
+        providerOwnsPath: true,
+      });
+      registerTestHostRpcCapture(harness.deps, {
+        hostId: host.id,
+        sessionId: session.id,
+        onEnvironmentHook: async () => {},
+      });
+      retireNow(harness, environment.id);
+
+      const firstAttempt = sweepProviderEnvironment(
+        harness.deps,
+        environment.id,
+      );
+      let restarted: ReturnType<typeof createConnection> | null = null;
+      try {
+        await entered.promise;
+        expect(observed.hookRowsWhenRemoveStarted).toBe(1);
+        restarted = createConnection(harness.db.$client.serialize());
+        const resumedDeps = { ...harness.deps, db: restarted };
+        const readCrashed = () => {
+          const found = restarted!
+            .select()
+            .from(environments)
+            .where(eq(environments.id, environment.id))
+            .get();
+          if (found === undefined) throw new Error("Missing environment");
+          return found;
+        };
+        expect(readCrashed()).toMatchObject({
+          status: "error",
+          teardownStatus: "running",
+          teardownAttempt: 1,
+          teardownMessage: null,
+          teardownPriorStatus: "ready",
+        });
+        expect(
+          restarted.select().from(environmentHookOperations).all(),
+        ).toHaveLength(1);
+        await expect(stat(resourceFile)).rejects.toThrow();
+
+        await sweepProviderEnvironment(resumedDeps, environment.id);
+
+        expect(preflight).toHaveBeenCalledTimes(2);
+        expect(observed.removeCalls).toBe(1);
+        expect(readCrashed()).toMatchObject({
+          status: "error",
+          teardownStatus: "failed",
+          teardownPriorStatus: null,
+          teardownMessage: expect.stringContaining(
+            "teardown script had already started",
+          ),
+        });
+        await expect(readFile(resourceFile, "utf8")).rejects.toThrow();
+      } finally {
+        interrupted.resolve();
+        await firstAttempt.catch(() => undefined);
+        restarted?.$client.close();
+        await rm(resourceDir, { recursive: true, force: true });
+      }
     }));
 });
 
