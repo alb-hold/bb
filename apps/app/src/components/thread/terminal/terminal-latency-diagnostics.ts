@@ -151,24 +151,24 @@ export function recordTerminalOutputReceived(
   timestamp: number,
 ): void {
   if (!Number.isFinite(timestamp)) return;
-  const firstInputIndex = pendingInputs.findIndex(
-    (pending) =>
-      pending.terminalId === terminalId &&
-      pending.sentAt !== undefined &&
-      pending.sentAt <= timestamp,
-  );
   const firstInput =
-    firstInputIndex < 0 ? null : pendingInputs[firstInputIndex]!;
-  if (firstInput !== null) {
+    pendingInputs.find((pending) => {
+      const sentAt = pending.sentAt;
+      return (
+        pending.terminalId === terminalId &&
+        sentAt !== undefined &&
+        sentAt <= timestamp
+      );
+    }) ?? null;
+  const firstSentAt = firstInput?.sentAt;
+  if (firstInput !== null && firstSentAt !== undefined) {
     metrics[firstInput.formFactor].inputToFirstOutputReceivedMs.add(
       timestamp - firstInput.timestamp,
     );
     metrics[
       firstInput.formFactor
-    ].inputWebSocketSendToFirstOutputReceivedMs.add(
-      timestamp - firstInput.sentAt!,
-    );
-    for (let index = firstInputIndex; index >= 0; index -= 1) {
+    ].inputWebSocketSendToFirstOutputReceivedMs.add(timestamp - firstSentAt);
+    for (let index = pendingInputs.length - 1; index >= 0; index -= 1) {
       const pending = pendingInputs[index];
       if (
         pending?.terminalId === terminalId &&

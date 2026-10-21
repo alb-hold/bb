@@ -161,4 +161,50 @@ describe("terminal latency diagnostics", () => {
         .totalCount,
     ).toBe(before + 1);
   });
+
+  it("consumes every sent input coalesced into the first output frame", () => {
+    const before =
+      getTerminalLatencyDiagnostics().desktop.inputToFirstOutputReceivedMs
+        .totalCount;
+    for (let index = 0; index < 127; index += 1) {
+      const enqueuedAt = 40_000 + index * 100;
+      recordTerminalInputEnqueued("term-coalesce-fill", enqueuedAt);
+      recordTerminalInputWebSocketSent(
+        "term-coalesce-fill",
+        enqueuedAt,
+        enqueuedAt + 1,
+      );
+      recordTerminalOutputReceived("term-coalesce-fill", enqueuedAt + 12);
+    }
+    for (let index = 0; index < 128; index += 1) {
+      const enqueuedAt = 60_000 + index * 100;
+      recordTerminalInputEnqueued("term-coalesce-fill", enqueuedAt);
+      recordTerminalInputWebSocketSent(
+        "term-coalesce-fill",
+        enqueuedAt,
+        enqueuedAt + 1,
+      );
+      recordTerminalOutputReceived("term-coalesce-fill", enqueuedAt + 20);
+    }
+    recordTerminalInputEnqueued("term-coalesced", 30_000);
+    recordTerminalInputEnqueued("term-coalesced", 30_008);
+    recordTerminalInputWebSocketSent("term-coalesced", 30_000, 30_001);
+    recordTerminalInputWebSocketSent("term-coalesced", 30_008, 30_009);
+
+    recordTerminalOutputReceived("term-coalesced", 30_020);
+    expect(
+      getTerminalLatencyDiagnostics().desktop.inputToFirstOutputReceivedMs
+        .totalCount,
+    ).toBe(before + 256);
+    expect(
+      getTerminalLatencyDiagnostics().desktop.inputToFirstOutputReceivedMs
+        .p50Ms,
+    ).toBe(20);
+
+    recordTerminalOutputReceived("term-coalesced", 30_030);
+    expect(
+      getTerminalLatencyDiagnostics().desktop.inputToFirstOutputReceivedMs
+        .totalCount,
+    ).toBe(before + 256);
+  });
 });
