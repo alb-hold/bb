@@ -460,6 +460,7 @@ interface WriteTerminalSessionStatusNoticeArgs {
 interface TerminalOutputWriteArgs {
   data: string | Uint8Array;
   isReplay: boolean;
+  terminalId?: string;
   receivedAt?: number;
   onParsed: () => void;
   replayWriteState: TerminalReplayWriteState;
@@ -508,6 +509,7 @@ type TerminalSessionStatusNoticeRef = {
 interface HandleTerminalServerMessageArgs {
   acknowledgeOutput: (nextSeq: number) => void;
   message: TerminalServerMessage;
+  terminalId?: string;
   onReplayComplete: () => void;
   onSessionChange?: (session: TerminalSession) => void;
   replayNextSeq: number | null;
@@ -740,6 +742,7 @@ export function captureTerminalContextMenuState({
 export function writeTerminalOutput({
   data,
   isReplay,
+  terminalId = "",
   receivedAt,
   onParsed,
   replayWriteState,
@@ -756,7 +759,11 @@ export function writeTerminalOutput({
   };
   if (!isReplay) {
     write(() => {
-      recordTerminalOutputRendered(frameReceivedAt, performance.now());
+      recordTerminalOutputRendered(
+        terminalId,
+        frameReceivedAt,
+        performance.now(),
+      );
       onParsed();
     }, true);
     return;
@@ -766,13 +773,21 @@ export function writeTerminalOutput({
   write(() => {
     if (!replayPipeline) {
       replayWriteState.suppressedWriteCount -= 1;
-      recordTerminalOutputRendered(frameReceivedAt, performance.now());
+      recordTerminalOutputRendered(
+        terminalId,
+        frameReceivedAt,
+        performance.now(),
+      );
       onParsed();
       return;
     }
     replayPipeline.push(bytes, () => {
       replayWriteState.suppressedWriteCount -= 1;
-      recordTerminalOutputRendered(frameReceivedAt, performance.now());
+      recordTerminalOutputRendered(
+        terminalId,
+        frameReceivedAt,
+        performance.now(),
+      );
       onParsed();
     });
   }, false);
@@ -781,6 +796,7 @@ export function writeTerminalOutput({
 export function handleTerminalServerMessage({
   acknowledgeOutput,
   message,
+  terminalId = "",
   onReplayComplete,
   onSessionChange,
   replayNextSeq,
@@ -820,6 +836,7 @@ export function handleTerminalServerMessage({
       writeTerminalOutput({
         data: decodeBase64Bytes(message.chunk.dataBase64),
         isReplay: replayNextSeq !== null && message.chunk.seq < replayNextSeq,
+        terminalId,
         receivedAt: outputReceivedAt,
         onParsed: () => {
           acknowledgeOutput(nextSeq);
@@ -928,9 +945,9 @@ export function ThreadTerminalView({
     typeof observeTerminalWebglVisibility
   > | null>(null);
   const terminalRef = useRef<XTermTerminal | null>(null);
-  const compositionInputGuardRef = useRef<
-    ReturnType<typeof suppressDuplicateTerminalCompositionInput> | null
-  >(null);
+  const compositionInputGuardRef = useRef<ReturnType<
+    typeof suppressDuplicateTerminalCompositionInput
+  > | null>(null);
   const promptLinesRef = useRef<number[]>([]);
   const hoveredTerminalLinkRef = useRef<TerminalLinkTarget | null>(null);
   const pointerStartPointRef = useRef<SelectionAnchorPoint | null>(null);
@@ -1472,12 +1489,13 @@ export function ThreadTerminalView({
         }
       };
       const activeTransport = new TerminalWebSocketTransport({
+        terminalId: session.id,
         now: () => performance.now(),
         onInputEnqueued: recordTerminalInputEnqueued,
         onInputSent: recordTerminalInputWebSocketSent,
-        onOutputFrameReceived: (timestamp) => {
+        onOutputFrameReceived: (terminalId, timestamp) => {
           outputFrameReceivedAt = timestamp;
-          recordTerminalOutputReceived(timestamp);
+          recordTerminalOutputReceived(terminalId, timestamp);
         },
         onRepaintNudgeSizeReleased: (size) => {
           const nextSize = nextSharedTerminalSize(sharedSize, size, false);
@@ -1569,6 +1587,7 @@ export function ThreadTerminalView({
             acknowledgeOutput: (nextSeq) =>
               activeTransport.acknowledgeOutput(nextSeq),
             message,
+            terminalId: session.id,
             onReplayComplete: () => {
               replayCompleted = true;
               outputPipeline?.setGrid(

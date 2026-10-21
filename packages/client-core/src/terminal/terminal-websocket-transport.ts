@@ -75,6 +75,7 @@ interface PendingTerminalInput {
 }
 
 export interface TerminalWebSocketTransportOptions {
+  terminalId?: string;
   createSocket?: CreateTerminalBrowserSocket;
   drainPollMs?: number;
   heartbeatIntervalMs?: number;
@@ -83,9 +84,17 @@ export interface TerminalWebSocketTransportOptions {
   now?: () => number;
   onConnectionState?: (state: TerminalSocketConnectionState) => void;
   onInputOverflow?: (maxBytes: number) => void;
-  onInputEnqueued?: (timestamp: number, inputEventAt?: number) => void;
-  onInputSent?: (enqueuedAt: number, sentAt: number) => void;
-  onOutputFrameReceived?: (timestamp: number) => void;
+  onInputEnqueued?: (
+    terminalId: string,
+    timestamp: number,
+    inputEventAt?: number,
+  ) => void;
+  onInputSent?: (
+    terminalId: string,
+    enqueuedAt: number,
+    sentAt: number,
+  ) => void;
+  onOutputFrameReceived?: (terminalId: string, timestamp: number) => void;
   onInvalidMessage?: () => void;
   onMessage: (message: TerminalServerMessage) => void;
   onRepaintNudgeSizeReleased?: (size: { cols: number; rows: number }) => void;
@@ -195,9 +204,18 @@ export class TerminalWebSocketTransport {
       socketBufferedAmount(socket) <= this.socketHighWaterBytes &&
       this.pendingInputs.length === 0
     ) {
-      this.options.onInputEnqueued?.(enqueuedAt, inputEventAt);
+      this.options.onInputEnqueued?.(
+        this.options.terminalId ?? "",
+        enqueuedAt,
+        inputEventAt,
+      );
       const onSent = this.options.onInputSent
-        ? (sentAt: number) => this.options.onInputSent?.(enqueuedAt, sentAt)
+        ? (sentAt: number) =>
+            this.options.onInputSent?.(
+              this.options.terminalId ?? "",
+              enqueuedAt,
+              sentAt,
+            )
         : undefined;
       if (this.trySend(socket, pending.payload, onSent)) {
         return true;
@@ -560,7 +578,10 @@ export class TerminalWebSocketTransport {
         this.options.onSequenceGap?.(this.nextOutputSeq, message.chunk.seq);
       }
       this.nextOutputSeq = message.chunk.seq + 1;
-      this.options.onOutputFrameReceived?.(receivedAt);
+      this.options.onOutputFrameReceived?.(
+        this.options.terminalId ?? "",
+        receivedAt,
+      );
     }
     if (message.type === "exited") {
       this.terminalEnded = true;
@@ -634,7 +655,11 @@ export class TerminalWebSocketTransport {
     this.pendingInputs.push(pending);
     this.pendingInputBytes += pending.bytes;
     if (!alreadyRecorded) {
-      this.options.onInputEnqueued?.(pending.enqueuedAt, inputEventAt);
+      this.options.onInputEnqueued?.(
+        this.options.terminalId ?? "",
+        pending.enqueuedAt,
+        inputEventAt,
+      );
     }
     this.scheduleDrain();
     return true;
@@ -657,7 +682,12 @@ export class TerminalWebSocketTransport {
           socket,
           pending.payload,
           this.options.onInputSent
-            ? (sentAt) => this.options.onInputSent?.(pending.enqueuedAt, sentAt)
+            ? (sentAt) =>
+                this.options.onInputSent?.(
+                  this.options.terminalId ?? "",
+                  pending.enqueuedAt,
+                  sentAt,
+                )
             : undefined,
         )
       ) {

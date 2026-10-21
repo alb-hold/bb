@@ -54,7 +54,7 @@ export function TerminalLatencyDiagnostics() {
             )}
           </div>
           <div>
-            WebSocket send to first output received:{" "}
+            Key sent → first output:{" "}
             {metricText(
               snapshot[formFactor].inputWebSocketSendToFirstOutputReceivedMs
                 .count,
@@ -67,7 +67,7 @@ export function TerminalLatencyDiagnostics() {
             )}
           </div>
           <div>
-            Transport enqueue to first output received:{" "}
+            Transport enqueue → first output:{" "}
             {metricText(
               snapshot[formFactor].inputToFirstOutputReceivedMs.count,
               snapshot[formFactor].inputToFirstOutputReceivedMs.totalCount,
@@ -76,16 +76,17 @@ export function TerminalLatencyDiagnostics() {
             )}
           </div>
           <div>
-            Input echo received to rendered:{" "}
+            First output → rendered:{" "}
             {metricText(
-              snapshot[formFactor].inputEchoReceivedToRenderMs.count,
-              snapshot[formFactor].inputEchoReceivedToRenderMs.totalCount,
-              snapshot[formFactor].inputEchoReceivedToRenderMs.p50Ms,
-              snapshot[formFactor].inputEchoReceivedToRenderMs.p95Ms,
+              snapshot[formFactor].inputFirstOutputReceivedToRenderMs.count,
+              snapshot[formFactor].inputFirstOutputReceivedToRenderMs
+                .totalCount,
+              snapshot[formFactor].inputFirstOutputReceivedToRenderMs.p50Ms,
+              snapshot[formFactor].inputFirstOutputReceivedToRenderMs.p95Ms,
             )}
           </div>
           <div>
-            Input to first output render:{" "}
+            Key → first output rendered:{" "}
             {metricText(
               snapshot[formFactor].inputToFirstOutputRenderMs.count,
               snapshot[formFactor].inputToFirstOutputRenderMs.totalCount,
