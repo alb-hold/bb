@@ -37,6 +37,7 @@ import {
   failRunningEnvironmentTeardown,
   bindEnvironmentPath,
   listProviderLifecycleEnvironments,
+  releaseCancelledEnvironmentOwner,
   releaseUnstartedEnvironmentTeardown,
   retainRunningEnvironmentTeardown,
   reviveFailedEnvironmentTeardown,
@@ -765,6 +766,13 @@ function recordTeardownRetained(
     return failed(
       `${args.message} The state before removal began is unknown, so it was not restored.`,
     );
+  if (
+    args.resumedInFlight &&
+    (!current.providerOwnsPath || current.hostId === null)
+  )
+    return failed(
+      `${args.message} Removal resumed after an interruption and this provider does not own the path or record a teardown-script row, so the earlier state was not restored.`,
+    );
   if (args.resumedInFlight && current.path === null)
     return failed(
       `${args.message} Removal resumed after an interruption and no record shows which workspaces were already removed, so the earlier state was not restored.`,
@@ -1032,14 +1040,16 @@ async function sweepProviderEnvironmentInSlot(
     row.teardownStatus !== null &&
     (shared || (row.status === "ready" && row.path !== null))
   ) {
-    const released = {
+    if (!releaseCancelledEnvironmentOwner(deps.db, row)) return;
+    deps.hub.notifyEnvironment(environmentId, ["metadata-changed"]);
+    row = {
+      ...row,
       ownerThreadId: null,
       claimPath: null,
       retireAt: null,
       teardownStatus: null,
+      teardownPriorStatus: null,
     };
-    writeEnvironment(deps, environmentId, released);
-    row = { ...row, ...released };
   }
   const cancelled = row.ownerThreadId !== null && row.teardownStatus !== null;
   if (!cancelled && row.ownerThreadId !== null) return;

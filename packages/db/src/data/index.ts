@@ -346,6 +346,7 @@ export {
   claimEnvironmentTeardown,
   releaseUnstartedEnvironmentTeardown,
   reviveFailedEnvironmentTeardown,
+  releaseCancelledEnvironmentOwner,
   updateRunningEnvironmentTeardown,
   retainRunningEnvironmentTeardown,
   failRunningEnvironmentTeardown,

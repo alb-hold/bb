@@ -723,6 +723,24 @@ export function releaseUnstartedEnvironmentTeardown(db: EnvironmentWriteConnecti
   );
 }
 
+export function releaseCancelledEnvironmentOwner(db: EnvironmentWriteConnection, row: EnvironmentRow): boolean {
+  if (row.ownerThreadId === null || row.teardownStatus === null) return false;
+  return (
+    db
+      .update(environments)
+      .set({ ownerThreadId: null, claimPath: null, retireAt: null, teardownStatus: null, teardownPriorStatus: null, updatedAt: Date.now() })
+      .where(
+        and(
+          eq(environments.id, row.id),
+          eq(environments.ownerThreadId, row.ownerThreadId),
+          eq(environments.teardownStatus, row.teardownStatus),
+          eq(environments.teardownAttempt, row.teardownAttempt),
+        ),
+      )
+      .run().changes > 0
+  );
+}
+
 export function reviveFailedEnvironmentTeardown(db: EnvironmentWriteConnection, environmentId: string): boolean {
   const row = getEnvironment(db, environmentId);
   if (row === null || row.teardownStatus !== "failed" || row.teardownPriorStatus === null) return false;
