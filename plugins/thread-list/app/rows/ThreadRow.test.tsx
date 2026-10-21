@@ -840,6 +840,15 @@ describe("ThreadRow", () => {
         ?.textContent,
     ).toBe("Activity not reported");
     expect(container.querySelector('[aria-label="Working"]')).toBeNull();
+    const warning = container.querySelector(
+      "[data-sidebar-native-activity-warning]",
+    );
+    expect(warning?.classList.contains("sr-only")).toBe(true);
+    expect(
+      container
+        .querySelector("[data-sidebar-thread-trailing-indicator]")
+        ?.getAttribute("title"),
+    ).toBe("Activity not reported");
   });
 
   it("shows native activity uncertainty without a runtime Working label", () => {

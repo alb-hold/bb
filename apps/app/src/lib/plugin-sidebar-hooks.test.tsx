@@ -276,6 +276,39 @@ describe("useSidebarThreads", () => {
     queryClient.clear();
   });
 
+  it("drops tool-call evidence from the projection when it goes stale, without a new receipt", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000_000);
+    state.data = payload([
+      makeThreadListEntry({
+        id: "thr_tool_call",
+        status: "active",
+        runtime: {
+          displayStatus: "active",
+          nativeActivity: {
+            lastEvidenceAt: null,
+            lastToolCallAt: Date.now(),
+            freshForMs: 90_000,
+            confirmation: "unconfirmed",
+            evidenceKind: "tool-call",
+          },
+        },
+      }),
+    ]);
+    const { result } = renderHook(() => useSidebarThreads());
+    const thread = () => result.current.threads[0]!;
+    expect(thread().experimental_nativeActivity?.evidenceKind).toBe(
+      "tool-call",
+    );
+    expect(thread().indicator).toBe("activity-unreported");
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(91_000);
+    });
+    expect(thread().experimental_nativeActivity?.evidenceKind).toBe("unknown");
+    expect(thread().indicator).toBe("activity-unreported");
+  });
+
   it("keeps DTO identity for entries that did not change across a sidebar update", () => {
     const stable = makeThreadListEntry({ id: "thr_stable", title: "Stable" });
     const changing = makeThreadListEntry({ id: "thr_changing", title: "One" });

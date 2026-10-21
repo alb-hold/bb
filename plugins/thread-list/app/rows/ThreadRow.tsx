@@ -371,6 +371,11 @@ function ThreadTrailingIndicator({
       )}
       role={statusText === null ? undefined : "img"}
       aria-label={statusText ?? undefined}
+      title={
+        statusText === null && nativeActivityUnconfirmed
+          ? nativeActivityNotice
+          : undefined
+      }
     >
       <ThreadStatusGlyph
         indicator={indicatorKind}
@@ -387,7 +392,7 @@ function ThreadTrailingIndicator({
       {nativeActivityUnconfirmed && indicatorKind !== "activity-unreported" ? (
         <span
           data-sidebar-native-activity-warning=""
-          className="text-muted-foreground"
+          className={statusText === null ? "sr-only" : "text-muted-foreground"}
           role="status"
         >
           {nativeActivityNotice}

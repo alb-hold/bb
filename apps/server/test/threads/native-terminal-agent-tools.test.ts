@@ -474,6 +474,33 @@ describe("native terminal agent tools", () => {
       }
     });
 
+    it("notifies clients again once the previous call is older than a heartbeat, not on every call", async () => {
+      const fixture = await createFixture();
+      const threadId = await createNativeThread(fixture);
+      await bindSession(fixture, threadId);
+      await markWorking(fixture, threadId);
+      const notify = vi.spyOn(fixture.harness.hub, "notifyThread");
+      const clock = vi.spyOn(Date, "now").mockReturnValue(8_000_000);
+      const statusChanges = () =>
+        notify.mock.calls.filter(
+          (call) => call[0] === threadId && call[1].includes("status-changed"),
+        ).length;
+      try {
+        await callTool(fixture, threadId, authHeaders(fixture, threadId));
+        const afterFirst = statusChanges();
+        expect(afterFirst).toBeGreaterThan(0);
+        clock.mockReturnValue(8_010_000);
+        await callTool(fixture, threadId, authHeaders(fixture, threadId));
+        expect(statusChanges()).toBe(afterFirst);
+        clock.mockReturnValue(8_031_000);
+        await callTool(fixture, threadId, authHeaders(fixture, threadId));
+        expect(statusChanges()).toBeGreaterThan(afterFirst);
+      } finally {
+        clock.mockRestore();
+        notify.mockRestore();
+      }
+    });
+
     it("expires with the freshness window", async () => {
       const fixture = await createFixture();
       const threadId = await createNativeThread(fixture);

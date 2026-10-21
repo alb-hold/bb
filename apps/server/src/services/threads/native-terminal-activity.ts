@@ -8,7 +8,6 @@ import {
 } from "@bb/db";
 import {
   isNativeTerminalQuestion,
-  NATIVE_TERMINAL_ACTIVITY_FRESH_FOR_MS,
   NATIVE_TERMINAL_ACTIVITY_HEARTBEAT_INTERVAL_MS,
   NATIVE_TERMINAL_QUESTION_REQUEST_PREFIX,
   type Thread,
@@ -52,6 +51,20 @@ const nativeActivityReports = new WeakMap<
   AppDeps["hub"],
   Map<string, { signature: string; lastNotifiedAt: number }>
 >();
+
+const nativeToolCallNotifications = new WeakMap<
+  AppDeps["hub"],
+  Map<string, number>
+>();
+
+function toolCallNotifications(deps: Pick<AppDeps, "hub">) {
+  let notified = nativeToolCallNotifications.get(deps.hub);
+  if (notified === undefined) {
+    notified = new Map();
+    nativeToolCallNotifications.set(deps.hub, notified);
+  }
+  return notified;
+}
 
 function reportStates(deps: Pick<AppDeps, "hub">) {
   let states = nativeActivityReports.get(deps.hub);
@@ -262,12 +275,15 @@ export function recordNativeTerminalToolCallEvidence(
       threadId: args.threadId,
     });
     if (!stamp.updated) return;
-    const previous = stamp.previousLastToolCallAt;
-    const wasFresh =
-      previous !== null &&
-      now >= previous &&
-      now - previous <= NATIVE_TERMINAL_ACTIVITY_FRESH_FOR_MS;
-    if (wasFresh) return;
+    const notified = toolCallNotifications(deps);
+    const lastNotifiedAt = notified.get(args.threadId);
+    const notifiedRecently =
+      stamp.previousLastToolCallAt !== null &&
+      lastNotifiedAt !== undefined &&
+      now >= lastNotifiedAt &&
+      now - lastNotifiedAt < NATIVE_TERMINAL_ACTIVITY_HEARTBEAT_INTERVAL_MS;
+    if (notifiedRecently) return;
+    notified.set(args.threadId, now);
     const thread = requirePublicThread(deps.db, args.threadId);
     deps.hub.notifyThread(
       args.threadId,
