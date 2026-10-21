@@ -1790,6 +1790,7 @@ describe("migrate", () => {
         showKeyboardHints: false,
         showGitChanges: true,
         steerActiveThreadOnEnter: true,
+        terminalCopyOnSelect: true,
         confirmThreadArchive: true,
         showDiagnosticEvents: true,
         keepHistoryAfterContextClear: false,
