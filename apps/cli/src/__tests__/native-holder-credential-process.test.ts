@@ -217,7 +217,7 @@ describe("native holder credential cleanup, real processes", () => {
   }, 30_000);
 
   it("removes its directory when the holder reaps a detached CLI with SIGHUP", async () => {
-    const holder = await startRealHolder(300, 10_100);
+    const holder = await startRealHolder(300);
     const result = await holder.exited;
     expect(result.signal).toBeNull();
     expect(await until(() => credentialDirsIn(holder.dir).length === 0)).toBe(
@@ -226,5 +226,11 @@ describe("native holder credential cleanup, real processes", () => {
     expect(existsSync(holder.socket)).toBe(false);
     expect(alive(holder.cliPid)).toBe(false);
     expect(filesHolding(holder.dir, SECRET)).toEqual([]);
+  }, 30_000);
+
+  it("waits for the holder's ready signal when the holder starts late", async () => {
+    const holder = await startRealHolder(300, 10_100);
+    expect(existsSync(holder.socket)).toBe(true);
+    expect(alive(holder.cliPid)).toBe(true);
   }, 30_000);
 });
