@@ -27,6 +27,7 @@ import { withHarness } from "../../helpers/harness.js";
 import {
   createTestFile,
   createTestGitRepo,
+  publishTestGitRepo,
   runGit,
 } from "../../helpers/seed.js";
 import { scaleTimeoutMs } from "../../helpers/time.js";
@@ -46,6 +47,7 @@ describe.sequential("fake provider environment-isolation multi-thread integratio
       withHarness(
         { builtinPlugins: ["environment-git-worktree"] },
         async (harness) => {
+          await publishTestGitRepo({ repoDir: harness.repoDir });
           const project = await createProjectFixture(harness, {
             name: "Rebuild Managed Worktree",
           });
@@ -160,6 +162,120 @@ describe.sequential("fake provider environment-isolation multi-thread integratio
           expect(
             await getThreadOutput(harness.api, worktreeThread.thread.id),
           ).toContain("rebuild after archive");
+        },
+      ),
+    REBUILD_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "keeps an unpublished managed worktree and its commit when its environment retires, and lets the thread keep using it",
+    () =>
+      withHarness(
+        { builtinPlugins: ["environment-git-worktree"] },
+        async (harness) => {
+          const teardownMarker = path.join(
+            path.dirname(harness.repoDir),
+            "teardown-ran.marker",
+          );
+          await createTestFile({
+            filePath: path.join(harness.repoDir, ".bb-env-teardown.sh"),
+            content: `#!/usr/bin/env bash\ntouch ${teardownMarker}\n`,
+          });
+          await runGit({ cwd: harness.repoDir, args: ["add", "."] });
+          await runGit({
+            cwd: harness.repoDir,
+            args: ["commit", "-m", "Add teardown hook"],
+          });
+          const project = await createProjectFixture(harness, {
+            name: "Keep Unpublished Worktree",
+          });
+          const worktreeThread = await createReadyHostThread(harness, {
+            projectId: project.id,
+            timeoutMs: DEFAULT_TIMEOUT_MS,
+            workspace: { type: "managed-worktree" },
+          });
+          const worktreePath = worktreeThread.environment.path;
+          if (!worktreePath) {
+            throw new Error("Managed worktree path was not assigned");
+          }
+          await createTestFile({
+            filePath: path.join(worktreePath, "recoverable.txt"),
+            content: "work that exists nowhere else\n",
+          });
+          await runGit({ cwd: worktreePath, args: ["add", "."] });
+          await runGit({
+            cwd: worktreePath,
+            args: ["commit", "-m", "Recoverable work"],
+          });
+          const recoverableHead = (
+            await runGit({ cwd: worktreePath, args: ["rev-parse", "HEAD"] })
+          ).trim();
+
+          await archiveThread(harness.api, worktreeThread.thread.id);
+          await expect
+            .poll(
+              async () =>
+                (
+                  await getEnvironment(
+                    harness.api,
+                    worktreeThread.environment.id,
+                  )
+                ).lifecycle.phase,
+              { timeout: DEFAULT_TIMEOUT_MS },
+            )
+            .toBe("retiring");
+          harness.db
+            .update(environments)
+            .set({ retireAt: Date.now() - 1 })
+            .where(eq(environments.id, worktreeThread.environment.id))
+            .run();
+          await expect
+            .poll(
+              async () => {
+                await harness.server.sweepEnvironments();
+                return (
+                  (
+                    await getEnvironment(
+                      harness.api,
+                      worktreeThread.environment.id,
+                    )
+                  ).lifecycle.message ?? null
+                );
+              },
+              { timeout: REBUILD_TIMEOUT_MS },
+            )
+            .toContain("not reachable from any remote-tracking branch");
+
+          const kept = await getEnvironment(
+            harness.api,
+            worktreeThread.environment.id,
+          );
+          expect(kept.status).toBe("ready");
+          expect(kept.lifecycle.teardown).toBeNull();
+          expect(kept.lifecycle.message).toContain(worktreePath);
+          expect(kept.path).toBe(worktreePath);
+          await fs.access(path.join(worktreePath, "recoverable.txt"));
+          expect(
+            (
+              await runGit({ cwd: worktreePath, args: ["rev-parse", "HEAD"] })
+            ).trim(),
+          ).toBe(recoverableHead);
+          await expect(fs.access(teardownMarker)).rejects.toThrow();
+
+          await unarchiveThread(harness.api, worktreeThread.thread.id);
+          await sendTextMessage(harness.api, worktreeThread.thread.id, {
+            text: "still here after the kept retirement",
+          });
+          const resumed = await waitForThreadStatus(
+            harness.api,
+            worktreeThread.thread.id,
+            "idle",
+            TURN_TIMEOUT_MS,
+          );
+          expect(resumed.environmentId).toBe(worktreeThread.environment.id);
+          expect(
+            await getThreadOutput(harness.api, worktreeThread.thread.id),
+          ).toContain("still here after the kept retirement");
         },
       ),
     REBUILD_TEST_TIMEOUT_MS,
