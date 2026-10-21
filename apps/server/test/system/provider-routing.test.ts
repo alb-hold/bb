@@ -170,7 +170,13 @@ describe("system provider host routing", () => {
       ]);
       expect(
         remoteModelCommands.map(({ bridgeLaunch: _ignored, ...rest }) => rest),
-      ).toEqual([{ type: "provider.list_models", providerId: "codex" }]);
+      ).toEqual([
+        {
+          type: "provider.list_models",
+          providerId: "codex",
+          contributedEnv: [],
+        },
+      ]);
     });
   });
 

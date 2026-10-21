@@ -260,6 +260,7 @@ function CollapsibleMessageText({
     [body.mentions],
   );
   const isOverflowing = useIsOverflowing({
+    axis: "vertical",
     elementRef: bodyRef,
     enabled: !isExpanded,
     measurementKey: body.text,
@@ -280,8 +281,8 @@ function CollapsibleMessageText({
         ref={bodyRef}
         data-image-gallery-clipped={!isExpanded ? "" : undefined}
         className={cn(
-          "break-words",
-          !isExpanded && "max-h-[15lh] overflow-hidden",
+          "break-words overflow-x-auto",
+          !isExpanded && "max-h-[15lh] overflow-y-hidden",
         )}
         style={
           !isExpanded && showToggle ? COLLAPSED_MESSAGE_FADE_STYLE : undefined
@@ -291,7 +292,8 @@ function CollapsibleMessageText({
           <span>{body.text}</span>
         ) : (
           <MarkdownPreview
-            containerQuery={false}
+          containerQuery={false}
+          tableLayout="contained"
             content={
               collapsedPreview?.wasCapped === true
                 ? closeUnterminatedMarkdownCodeSpan(body.text)

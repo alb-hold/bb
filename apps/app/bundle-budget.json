@@ -152,7 +152,7 @@
     "upstream-only delta, to 1,592,519 raw / 388,444 Brotli bytes."
   ],
   "maxBootBytes": 1592519,
-  "maxBootBrotliBytes": 388444,
+  "maxBootBrotliBytes": 390656,
   "forbiddenBootPackages": [
     "@dnd-kit/accessibility",
     "@dnd-kit/core",

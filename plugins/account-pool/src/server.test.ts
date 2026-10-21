@@ -2324,6 +2324,137 @@ describe("Account Pool plugin", () => {
     expect(await resolveToken(fixture.host)).toBe(fixture.key);
   });
 
+  it("routes thread-less Codex model listing through the hub without recording a thread route", async () => {
+    const fixture = await createFixture({
+      upstreamUrl: "https://upstream.example",
+      provider: "codex",
+      source: "import",
+      options: {
+        codexUsageUrl: EMPTY_USAGE_URL,
+        importCodexCredentials: async () => ({
+          accessToken: "sk-codex",
+          refreshToken: "refresh",
+          idToken: null,
+          accountId: "model-list-codex-account",
+          email: null,
+          planType: null,
+          expiresAt: Date.now() + 24 * 60 * 60 * 1_000,
+        }),
+        fetch: async () => Response.json({}),
+      },
+    });
+    await fixture.host.bb.storage.kv.delete("retry-route:thread-codex");
+
+    const entries = await fixture.host.harness.behavior.resolveProviderEnv(
+      "codex",
+      { threadId: null, projectId: null, hostId: "host-one" },
+    );
+
+    expect(entries.filter((entry) => entry.name.startsWith("CODEX_"))).toEqual([
+      {
+        name: "CODEX_OPENAI_BASE_URL",
+        value: { serverPath: "/api/v1/plugins/account-pool/http/v1" },
+        reason: "Routed through the Account Pooler hub",
+      },
+      {
+        name: "CODEX_POOL_AUTH_TOKEN",
+        value: expect.any(String),
+        reason: "Account Pooler token scoped to this machine",
+      },
+    ]);
+    const token = entries.find(
+      (entry) => entry.name === "CODEX_POOL_AUTH_TOKEN",
+    )?.value;
+    expect(typeof token).toBe("string");
+    expect(token).not.toBe(fixture.key);
+    expect(await fixture.host.bb.storage.kv.list("retry-route:")).toEqual([]);
+    const response = await fixture.host.harness.behavior.fetchHttp(
+      "POST",
+      "/v1/responses",
+      {
+        headers: {
+          "x-bb-account-pool-token": String(token),
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ model: "gpt-5", input: [] }),
+      },
+    );
+    expect(response.status).toBe(200);
+    await response.arrayBuffer();
+  });
+
+  it("contributes a host-scoped catalog token without thread routing state", async () => {
+    const fixture = await createFixture({
+      upstreamUrl: "https://upstream.example",
+      options: { fetch: async () => Response.json({}) },
+    });
+    const getThread = vi.fn(async ({ threadId }: { threadId: string }) =>
+      bbThread(threadId),
+    );
+    fixture.host.harness.sdk.stub("threads.get", getThread);
+    const get = vi.spyOn(fixture.host.bb.storage.kv, "get");
+    const set = vi.spyOn(fixture.host.bb.storage.kv, "set");
+    const del = vi.spyOn(fixture.host.bb.storage.kv, "delete");
+
+    const entries = await fixture.host.harness.behavior.resolveProviderEnv(
+      "claude-code",
+      { threadId: null, projectId: null, hostId: "host-one" },
+    );
+
+    const token = entries.find(
+      (entry) => entry.name === "ANTHROPIC_AUTH_TOKEN",
+    )?.value;
+    expect(typeof token).toBe("string");
+    expect(token).not.toBe(fixture.key);
+    expect(getThread).not.toHaveBeenCalled();
+    expect(
+      get.mock.calls.some(([key]) => String(key).startsWith("bypass:")),
+    ).toBe(false);
+    expect(
+      get.mock.calls.some(([key]) => String(key).startsWith("selection:")),
+    ).toBe(false);
+    expect(
+      set.mock.calls.some(
+        ([key]) =>
+          String(key).startsWith("retry-route:") ||
+          String(key).startsWith("routed:"),
+      ),
+    ).toBe(false);
+    expect(
+      del.mock.calls.some(([key]) => String(key).startsWith("retry-route:")),
+    ).toBe(false);
+
+    const response = await fixture.host.harness.behavior.fetchHttp(
+      "POST",
+      "/v1/messages",
+      {
+        headers: authHeaders(String(token)),
+        body: JSON.stringify({
+          model: "claude-opus-4-1",
+          messages: [],
+          max_tokens: 1,
+        }),
+      },
+    );
+    expect(response.status).toBe(200);
+    await response.arrayBuffer();
+  });
+
+  it("does not contribute a catalog token when no pooled account can serve", async () => {
+    const fixture = await createFixture({ upstreamUrl: "https://upstream.example" });
+    await fixture.host.harness.behavior.callRpc("account.remove", {
+      id: fixture.account.id,
+    });
+
+    await expect(
+      fixture.host.harness.behavior.resolveProviderEnv("claude-code", {
+        threadId: null,
+        projectId: null,
+        hostId: "host-one",
+      }),
+    ).resolves.toEqual([]);
+  });
+
   it("restores the 1-hour prompt cache only while a subscription account can serve Claude", async () => {
     const upstream = await startUpstream(async (request, response) => {
       await readRequestBody(request);

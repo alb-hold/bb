@@ -1,3 +1,6 @@
+import { mkdir } from "node:fs/promises";
+import path from "node:path";
+import { withVcsProcessPriority } from "@bb/process-utils";
 import { operationEnvironment } from "./operation-environment.js";
 import {
   runEnvironmentHook,
@@ -675,8 +678,23 @@ const onlineRpcHandlers: OnlineRpcHandlerMap = {
   }),
   "provider.list_models": (command, options) =>
     withResolvedBridgeLaunch(command, options, (args) =>
-      options.listModels(args),
+      options.listModels({ ...args, contributedEnv: command.contributedEnv }),
     ),
+  "provider.list_commands": async (command, options) => {
+    const cwd =
+      command.cwd ?? path.join(options.dataDir, "provider-command-catalog");
+    if (command.cwd === null) {
+      await mkdir(cwd, { recursive: true });
+    }
+    return options.listCommands({
+      providerId: command.providerId,
+      bridgeLaunch: await resolveRuntimeBridgeLaunch(
+        command.bridgeLaunch,
+        options,
+      ),
+      cwd,
+    });
+  },
   "provider.health": (command, options) =>
     withResolvedBridgeLaunch(command, options, (args) =>
       options.providerHealth(args),
@@ -792,7 +810,9 @@ export async function dispatchCommand<
         "threadId" in command ? command.threadId : undefined,
       );
     }
-    return await commandHandlers[command.type](command, options);
+    return await withVcsProcessPriority("interactive", () =>
+      commandHandlers[command.type](command, options),
+    );
   } catch (error) {
     throwExpectedWorkspacePathNotFoundOrRethrow(error);
   }
@@ -806,7 +826,14 @@ export async function dispatchOnlineRpcCommand<
   signal: AbortSignal,
 ): Promise<HostDaemonOnlineRpcResult<TType>> {
   try {
-    return await onlineRpcHandlers[command.type](command, options, signal);
+    return await withVcsProcessPriority(
+      command.type === "workspace.pull_request"
+        ? "background"
+        : command.type === "workspace.status"
+          ? "status"
+          : "interactive",
+      () => onlineRpcHandlers[command.type](command, options, signal),
+    );
   } catch (error) {
     throwExpectedWorkspacePathNotFoundOrRethrow(error);
   }
