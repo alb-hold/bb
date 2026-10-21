@@ -286,6 +286,41 @@ describe("resolveWritingEdits", () => {
     },
   );
 
+  it.each([
+    [
+      "They doesn't deploy on Fridays.",
+      "They doesn't",
+      "They don't",
+      "doesn't",
+      "don't",
+    ],
+    [
+      "The data haven't changed.",
+      "data haven't",
+      "data hasn't",
+      "haven't",
+      "hasn't",
+    ],
+  ])(
+    "keeps the contraction whole in the edit for %s",
+    (target, from, to, original, replacement) => {
+      expect(
+        resolveWritingEdits({
+          ...base,
+          target,
+          proposals: [proposal(from, to)],
+        }),
+      ).toEqual([
+        expect.objectContaining({
+          original,
+          replacement,
+          start: target.indexOf(original),
+          end: target.indexOf(original) + original.length,
+        }),
+      ]);
+    },
+  );
+
   it("never auto-applies a content-word swap even at high confidence", () => {
     const edits = resolveWritingEdits({
       ...base,

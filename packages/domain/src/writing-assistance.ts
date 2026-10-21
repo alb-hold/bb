@@ -359,9 +359,7 @@ function isInflection(a: string, b: string): boolean {
   return INFLECTION_SUFFIXES.some((suffix) => long === `${short}${suffix}`);
 }
 
-const MEANING_INVARIANT_GROUPS: readonly (readonly string[])[] = [
-  ["a", "an"],
-];
+const MEANING_INVARIANT_GROUPS: readonly (readonly string[])[] = [["a", "an"]];
 
 const NON_WORD_RESTORATIONS: ReadonlyMap<string, string> = new Map([
   ["nao", "não"],
