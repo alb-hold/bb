@@ -4,6 +4,7 @@ import type {
   TerminalOutputResponse,
   TerminalScreenResponse,
 } from "@bb/server-contract";
+import { ApiError } from "../../errors.js";
 import { terminalScreenWorkerSource } from "../../generated/terminal-screen-worker.js";
 import type { ServerLogger } from "../../types.js";
 import type { renderTerminalScreenInline } from "./terminal-screen-render.js";
@@ -11,7 +12,7 @@ import type { renderTerminalScreenInline } from "./terminal-screen-render.js";
 export const TERMINAL_SCREEN_MAX_LINES = 500;
 export const TERMINAL_SCREEN_REPLAY_BYTES = 64 * 1024;
 const TERMINAL_SCREEN_WORKER_TIMEOUT_MS = 30_000;
-const TERMINAL_SCREEN_MAX_IN_FLIGHT_READS = 32;
+export const TERMINAL_SCREEN_MAX_IN_FLIGHT_READS = 32;
 type RenderArgs = Parameters<typeof renderTerminalScreenInline>[0];
 type ScreenReadArgs = {
   cols: number;
@@ -250,8 +251,11 @@ export function renderTerminalScreen(args: {
     TERMINAL_SCREEN_MAX_IN_FLIGHT_READS
   ) {
     return Promise.reject(
-      new Error(
+      new ApiError(
+        503,
+        "terminal_screen_queue_full",
         `Terminal screen read queue is full (maximum ${TERMINAL_SCREEN_MAX_IN_FLIGHT_READS} in flight)`,
+        { retryable: true },
       ),
     );
   }
