@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import { createConnection } from "../../src/connection.js";
 import { noopNotifier } from "../../src/notifier.js";
 import {
+  countTerminalSessions,
   createTerminalSession,
+  getTerminalSession,
   listTerminalSessions,
   updateTerminalSession,
   updateTerminalSessions,
@@ -13,6 +15,7 @@ import { createProject } from "../../src/data/projects.js";
 import { openSession } from "../../src/data/sessions.js";
 import { createThread } from "../../src/data/threads.js";
 import { createMigratedConnection } from "../../src/testing.js";
+import { migrate } from "../../src/migrate.js";
 
 type TestDb = ReturnType<typeof createConnection>;
 type TestHost = ReturnType<typeof upsertHost>;
@@ -212,6 +215,79 @@ function createStartingThreadlessTerminal(fixture: TerminalSessionFixture) {
 }
 
 describe("terminal sessions", () => {
+  it("creates the holder table when upgrading an ours-migrated database and is idempotent", () => {
+    const fixture = setup();
+    try {
+      fixture.db.$client.exec("DROP TABLE fork_terminal_holder_sessions");
+      const migrationCountBefore = fixture.db.$client
+        .prepare("SELECT COUNT(*) AS count FROM __drizzle_migrations")
+        .get() as { count: number };
+
+      migrate(fixture.db);
+
+      expect(
+        fixture.db.$client
+          .prepare("PRAGMA table_info(fork_terminal_holder_sessions)")
+          .all(),
+      ).toEqual([
+        expect.objectContaining({ name: "terminal_id", notnull: 1, pk: 1 }),
+        expect.objectContaining({ name: "confirmed_at", notnull: 1, pk: 0 }),
+      ]);
+      const migrationCountAfterFirstRun = fixture.db.$client
+        .prepare("SELECT COUNT(*) AS count FROM __drizzle_migrations")
+        .get() as { count: number };
+
+      migrate(fixture.db);
+
+      const migrationCountAfterSecondRun = fixture.db.$client
+        .prepare("SELECT COUNT(*) AS count FROM __drizzle_migrations")
+        .get() as { count: number };
+      expect(migrationCountAfterFirstRun).toEqual(migrationCountBefore);
+      expect(migrationCountAfterSecondRun).toEqual(migrationCountBefore);
+    } finally {
+      fixture.db.$client.close();
+    }
+  });
+
+  it("persists holder confirmation across a database reload and clears it on exit", () => {
+    const fixture = setup();
+    const terminal = createStartingTerminal(fixture);
+    expect(
+      updateTerminalSession(fixture.db, {
+        now: 10,
+        scope: { kind: "terminal", terminalId: terminal.id },
+        update: { kind: "holder-backed" },
+      }),
+    ).toMatchObject({ id: terminal.id, holderBacked: true });
+
+    const reloadedDb = createConnection(fixture.db.$client.serialize());
+    try {
+      migrate(reloadedDb);
+      expect(
+        getTerminalSession(reloadedDb, {
+          kind: "terminal",
+          terminalId: terminal.id,
+        }),
+      ).toMatchObject({ id: terminal.id, holderBacked: true });
+
+      expect(
+        updateTerminalSession(reloadedDb, {
+          now: 20,
+          scope: { kind: "terminal", terminalId: terminal.id },
+          update: { kind: "exit", closeReason: "process-exit" },
+        }),
+      ).toMatchObject({ id: terminal.id, holderBacked: false });
+      expect(
+        reloadedDb.$client
+          .prepare("SELECT terminal_id FROM fork_terminal_holder_sessions")
+          .all(),
+      ).toEqual([]);
+    } finally {
+      reloadedDb.$client.close();
+      fixture.db.$client.close();
+    }
+  });
+
   it("keeps threadless environment terminals out of thread terminal queries", () => {
     const fixture = setup();
     const threadTerminal = createStartingTerminal(fixture);
@@ -464,5 +540,118 @@ describe("terminal sessions", () => {
         }),
       ],
     );
+  });
+});
+
+describe("countTerminalSessions", () => {
+  it("preserves historical scoped counts and live standalone host/path counts", () => {
+    const { db, host, environment, thread } = setup();
+    try {
+      const otherHost = upsertHost(db, noopNotifier, { name: "other-host" });
+      const rows = [
+        {
+          hostId: host.id,
+          threadId: thread.id,
+          environmentId: environment.id,
+          status: "running",
+          initialCwd: "/a",
+        },
+        {
+          hostId: host.id,
+          threadId: null,
+          environmentId: environment.id,
+          status: "running",
+          initialCwd: "/a",
+        },
+        {
+          hostId: host.id,
+          threadId: thread.id,
+          environmentId: environment.id,
+          status: "exited",
+          initialCwd: "/a",
+        },
+        {
+          hostId: host.id,
+          threadId: null,
+          environmentId: environment.id,
+          status: "exited",
+          initialCwd: "/a",
+        },
+        {
+          hostId: host.id,
+          threadId: null,
+          environmentId: null,
+          status: "running",
+          initialCwd: "/a",
+        },
+        {
+          hostId: host.id,
+          threadId: null,
+          environmentId: null,
+          status: "starting",
+          initialCwd: "/b",
+        },
+        {
+          hostId: host.id,
+          threadId: null,
+          environmentId: null,
+          status: "disconnected",
+          initialCwd: "/a",
+        },
+        {
+          hostId: host.id,
+          threadId: null,
+          environmentId: null,
+          status: "exited",
+          initialCwd: "/a",
+        },
+        {
+          hostId: otherHost.id,
+          threadId: null,
+          environmentId: null,
+          status: "running",
+          initialCwd: "/a",
+        },
+      ] as const;
+      for (const row of rows) {
+        createTerminalSession(db, {
+          ...row,
+          cols: 80,
+          rows: 24,
+          daemonSessionId: null,
+          title: "Terminal",
+        });
+      }
+      expect(
+        countTerminalSessions(db, {
+          scope: { kind: "thread", threadId: thread.id },
+          visible: false,
+        }),
+      ).toBe(2);
+      expect(
+        countTerminalSessions(db, {
+          scope: {
+            kind: "threadless-environment",
+            environmentId: environment.id,
+          },
+          visible: false,
+        }),
+      ).toBe(2);
+      for (const [cwd, expected] of [
+        [null, 3],
+        ["/a", 2],
+        ["/b", 1],
+        ["/missing", 0],
+      ] as const) {
+        expect(
+          countTerminalSessions(db, {
+            scope: { kind: "host-path", hostId: host.id, cwd },
+            visible: true,
+          }),
+        ).toBe(expected);
+      }
+    } finally {
+      db.$client.close();
+    }
   });
 });

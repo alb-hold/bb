@@ -211,6 +211,7 @@ describe("terminal data plane child process", () => {
             terminalId: "term_authorized",
             daemonSessionId: "session_1",
             outputAcks: false,
+            sequenceBase: 0,
             sinceSeq: 0,
             request: {
               url: request.url ?? "/",
@@ -301,6 +302,7 @@ describe("terminal data plane child process", () => {
             terminalId: "term_authorized",
             daemonSessionId: "session_1",
             outputAcks: false,
+            sequenceBase: 0,
             sinceSeq: 0,
             request: {
               url: request.url ?? "/",
@@ -382,6 +384,7 @@ describe("terminal data plane child process", () => {
             terminalId: "term_authorized",
             daemonSessionId: "session_1",
             outputAcks: false,
+            sequenceBase: 0,
             sinceSeq: 0,
             request: {
               url: "/ws/terminals/term_authorized",
@@ -433,6 +436,7 @@ describe("terminal data plane child process", () => {
             terminalId: "term_authorized",
             daemonSessionId: "session_1",
             outputAcks: false,
+            sequenceBase: 0,
             sinceSeq: 0,
             request: {
               url: request.url ?? "/",

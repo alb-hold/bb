@@ -1832,9 +1832,13 @@ export interface PluginProviders {
   ): void;
 }
 
+/**
+ * `threadId` and `projectId` are `null` when bb resolves the environment for a
+ * provider process that serves no thread, such as model catalog listing.
+ */
 export interface ExperimentalPluginProviderEnvContext {
-  threadId: string;
-  projectId: string;
+  threadId: string | null;
+  projectId: string | null;
   hostId: string;
   /** Native CLI launch; omission retains session and turn behavior. */
   experimental_runtimeKind?: "native";

@@ -438,7 +438,7 @@ export const DEFAULT_APP_KEYBINDINGS: AppDefaultKeybindings = [
     },
   ),
   unassignedBinding("logs.openServerDaemon", {
-    all: ["mainSurface", "macPlatform"],
+    all: ["mainSurface"],
     desktopOnly: true,
     none: ["modalOpen"],
   }),

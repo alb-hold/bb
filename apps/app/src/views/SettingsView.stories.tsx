@@ -199,6 +199,7 @@ function GeneralSettingsStory({
   desktopBrowserAvailable?: boolean;
 }) {
   const state = useSettingsStoryState();
+  const [terminalCopyOnSelect, setTerminalCopyOnSelect] = useState(true);
 
   return (
     <>
@@ -215,6 +216,8 @@ function GeneralSettingsStory({
         onSummarizeShellCommandsChange={state.setSummarizeShellCommands}
         desktopBrowserAvailable={desktopBrowserAvailable}
         generalSettingsDisabled={false}
+        terminalCopyOnSelect={terminalCopyOnSelect}
+        onTerminalCopyOnSelectChange={setTerminalCopyOnSelect}
         managedBranchPrefix={state.managedBranchPrefix}
         onManagedBranchPrefixChange={state.setManagedBranchPrefix}
         navigateToThreadAfterCreate={state.navigateToThreadAfterCreate}

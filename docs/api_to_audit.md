@@ -275,14 +275,14 @@ Docs: `providers.md`.
 ## `bb.providers.experimental_contributeEnv`
 
 **What it does.** Registers one resolver per provider per plugin. The server
-calls it for each matching session and turn with the thread, project, and host
-ids, validates at most 32 environment entries, resolves registration conflicts
-in plugin load order, and sends the winning values to the host. A value may be
-a literal string or a server-relative path that the host expands against its
-authenticated `BB_SERVER_URL`. Contributions override the shell environment.
-Provider environment events report their names, sources, and reasons with
-values masked. The resolver
-receives `ExperimentalPluginProviderEnvContext` and returns
+calls it for matching sessions and turns, and for model catalog listing where
+the thread and project may be null. It validates at most 32 environment entries,
+resolves registration conflicts in plugin load order, and sends winning values
+to the host. An entry may be a literal string or a server-relative path that
+the host expands against its authenticated `BB_SERVER_URL`. Contributions
+override the shell environment. Provider environment events report names,
+sources, and reasons with values masked. The resolver receives
+`ExperimentalPluginProviderEnvContext` and returns
 `ExperimentalPluginProviderEnvEntry` values.
 
 The optional `ExperimentalPluginProviderEnvContext.experimental_runtimeKind`
@@ -747,61 +747,50 @@ policy at the server boundary.
 
 ## The ACP bridge kit (`@get-bb/plugin-sdk/provider-bridge/acp`)
 
-**Kept experimental (2026-08-22).** Four members remain, each with an open
+**Kept experimental (2026-08-22).** Five members remain, each with an open
 question below. The kit grows with a consumer, not ahead of one.
 
 `experimental_acpProviderBridge` is the generic Agent Client Protocol bridge a
-plugin re-exports. It launches the agent named by
-`providerOptions.acpLaunchSpec` with a dialect (`generic`, `cursor`, `grok`)
-from bridge options. `experimental_probeAcpAgent` asks an installed agent for
-its `agentCapabilities`, and `experimental_acpAgentProbeSchema` validates the
-answer across a host RPC boundary. `experimental_acpLaunchSpecSchema` /
-`AcpLaunchSpec` is the launch spec the bridge parses.
+plugin re-exports, backed by `packages/provider-bridge-acp` (the official
+`@agentclientprotocol/sdk` transport, turns for agent-started work, slash
+commands and session options as bb thread state, elicitation forms as
+question cards, sign-in guidance from advertised auth methods). It launches
+the agent named by `providerOptions.acpLaunchSpec` with the dialect named by
+`acpDialect` in bridge options. `experimental_probeAcpAgent` asks an installed
+agent for its `agentCapabilities`, and `experimental_acpAgentProbeSchema`
+validates the answer across a host RPC boundary.
+`experimental_acpLaunchSpecSchema` / `AcpLaunchSpec` is the launch spec the
+bridge parses.
 
-Docs: `providers.md` (ACP agents). No doc covers the probe or launch-spec
-contracts.
+`experimental_registerAcpDialect` adds a dialect. A plugin calls it at module
+load in its `bb.host` artifact with an `AcpDialect` and names the id as
+`acpDialect` in its registration. Empty and built-in ids (`acp`, `cursor`,
+`grok`, `omp`, `opencode`) throw, re-registering an id replaces it, and an
+unregistered id resolves to the generic dialect. bb's own dialects resolve
+through the same registry (`resolveAcpDialect`).
+
+`@get-bb/plugin-sdk/provider-bridge/acp-next`, the subpath the kit was
+previewed under (2026-10-09), re-exports this kit unchanged and is
+deprecated. Each subpath is bundled with its own dialect registry, so a
+plugin must import every member from one of them. Remove it at the next
+major.
+
+Docs: `providers.md` (ACP agents), `provider-bridge-api-index.md`. No doc
+covers the probe or launch-spec contracts.
 
 **Audit before stabilizing.** Decide what `probeAcpAgent` owes a caller.
 Today it spawns the agent with a 10 s timeout, advertises the bridge's own
 client capabilities, and answers `-32601` to anything the agent asks. Settle
 whether the timeout, the client capabilities and the refusal are the caller's
 to choose. Decide whether `AcpDialect` is the right shape for a third-party
-agent before a dialect registry becomes public again. It has four optional
-hooks (`toolIdentity`, `classifyToolCall`, `handleClientRequest`,
-`maintenance`) and no versioning, so a fifth is a silent capability change for
-every dialect. Decide whether a dialect should be named by value in the
-provider registration instead of by id. Settle whether the bridge should be a
-factory rather than a module singleton before a host artifact needs two
-configured differently. For `acpLaunchSpecSchema`, the shape is stored in the
-ACP plugin's `customAgents` setting and in registrations' bridge options. A
-change therefore migrates stored agents; decide what a plugin is owed when the
-spec grows a field.
-
-## The rebuilt ACP bridge kit (`@get-bb/plugin-sdk/provider-bridge/acp-next`)
-
-**Experimental preview (2026-10-09).** Published beside the original kit so
-the two can be compared. The built-in "ACP providers (new adapter)" plugin
-(`plugins/provider-acp-next`, off by default and mutually exclusive with the
-original ACP plugin) re-exports its `experimental_acpProviderBridge`.
-
-The same members as the original kit, backed by
-`packages/provider-bridge-acp-next` (the official `@agentclientprotocol/sdk`
-transport, turns for agent-started work, slash commands and session options
-as bb thread state, elicitation forms as question cards, sign-in guidance
-from advertised auth methods), plus `experimental_registerAcpDialect`. A
-plugin calls it at module load in its `bb.host` artifact with an `AcpDialect`
-and names the id as `acpDialect` in its registration. Empty and built-in ids
-(`acp`, `cursor`, `grok`, `omp`, `opencode`) throw, re-registering an id
-replaces it, and an unregistered id resolves to the generic dialect. bb's own
-dialects resolve through the same registry (`resolveAcpDialect`).
-
-Docs: `providers.md`, `provider-bridge-api-index.md`.
-
-**Audit before stabilizing.** Decide when this kit replaces the original;
-the subpath is then removed and its members move to `provider-bridge/acp`.
-The original kit's open questions apply unchanged (what `probeAcpAgent` owes
-a caller, hook versioning for `AcpDialect`, naming a dialect by value, a
-bridge factory instead of a module-level registry).
+agent: its hooks are optional and unversioned, so a new one is a silent
+capability change for every dialect. Decide whether a dialect should be named
+by value in the provider registration instead of by id. Settle whether the
+bridge and its dialect registry should be a factory rather than a module
+singleton before a host artifact needs two configured differently. For
+`acpLaunchSpecSchema`, the shape is stored in the ACP plugin's `customAgents`
+setting and in registrations' bridge options. A change therefore migrates
+stored agents; decide what a plugin is owed when the spec grows a field.
 
 ## `PluginProviderDeclaration.experimental_nativeSkillRoots`
 
@@ -1659,7 +1648,11 @@ their identity while unchanged. `actions` covers
 ids are dropped and omitted ids keep their relative order at the end),
 `openCustomize()` (bb's editor in a popover beside the navigation, after open
 menus close, returning focus to the opener), `openDetails`, and
-`disablePlugin`. Calls after the caller unmounts do nothing; outside the
+`disablePlugin`. `activate(id, { openInSplit: true })` opens Plugins and Skills
+in a browser tab synchronously from the user gesture; New thread and plugin
+panels retain their existing split, compact-screen and pane-limit rules.
+Search remains a command. Native shells retain their window-open policy.
+Calls after the caller unmounts do nothing; outside the
 sidebar the hook returns no items and inert actions.
 `experimental_useSidebarNavigationSplit(id, options?)` mirrors
 `experimental_useSidebarThreadSplit` and accepts `activation: "distance"` and
@@ -3571,3 +3564,53 @@ whether other policy layers should be supported rather than refused. Retain
 read-only, absent-config, malformed-config, missing-route and secret-free launch
 coverage for native and bridge callers. Rename the member and remove this entry
 after its declaration and host translator stabilize together.
+
+Stabilize after deciding whether depth, recency window, and limit should be
+caller options, and after exercising slow or network-mounted home directories
+and Windows hosts.
+
+## Shared VCS process admission (`@get-bb/plugin-sdk/host`)
+
+`experimental_runVcsProcess(command, args, operation, options)` admits a `git`
+or `gh` operation to the runtime's shared queue before invoking it. `args` are
+the command's arguments; they classify git network subcommands (`fetch`,
+`pull`, `push`, `clone`, `ls-remote`, `submodule update`, `remote update`).
+Arguments without a network subcommand, including an empty list for pipelines,
+admit to the local pool. The call holds the permit until the returned promise
+settles; callers must await child close and termination cleanup. Calls nested
+inside an admitted operation run under the outer permit without queueing again.
+`ExperimentalVcsProcessOptions` accepts `priority` (`interactive`, `status`,
+`background`), an optional cancellation signal, and `slots` for pipelines
+that start multiple git children. Queue cancellation prevents spawning; callers
+own cancellation of running children. Execution timeouts begin after admission.
+
+The runtime keeps two disjoint pools. The local pool admits
+`clamp(os.availableParallelism() - 2, 4, 6)` local git children, computed once
+per runtime: background work can fill two fewer slots and status work one
+fewer, so eight or more cores give six, five, and four. The
+network pool admits at most four network git or `gh` children, with at most two
+`gh`: background work can fill two slots and status work three. Waiters gain one
+priority level every 15 seconds. FIFO applies within effective priority in each
+pool: when the first waiter that is not held back by the GitHub lane needs more
+slots than its pool has free, later waiters in that pool wait behind it, so
+pipelines are not starved by single-slot work. A blocked GitHub waiter does not
+block eligible network git work, and neither pool blocks the other. The budget
+is shared across module copies in one Node runtime, including bundled plugins.
+Separate host daemons and server processes own separate budgets; arbitrary
+commands run by agents or terminals are outside this queue.
+
+Core buffered git/gh reads, streaming status/diff reads, blob reads, shell
+pipelines, watcher setup, environment provisioning, and the GitHub plugin use
+this path. The CLI and SDK's workspace reads and mutations reach the same host
+handlers. Host commands give explicit user mutations and diff panels interactive
+priority, status reads status priority, and PR polling/watcher setup/provisioning
+background priority.
+
+Before stabilization, audit cancellation and permit release on all supported
+platforms, mixed plugin bundles sharing the singleton, aging under sustained
+load, whether the CPU-scaled local capacity needs a host override and reflects
+container CPU quotas on supported hosts, whether argument
+classification should cover more network commands (for example `git lfs`), and
+whether work that escapes an admitted operation's async context should regain
+admission. Verify that every caller holds permits until its last admitted child
+exits, including pipelines.
