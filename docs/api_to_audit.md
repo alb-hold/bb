@@ -54,6 +54,44 @@ routes share that server trust boundary.
 cross-client behavior of explicit clearing. The app shortcut uses Alt+Shift+N
 and remains active with terminal focus.
 
+## `sdk.terminals.experimental_surfaces`, `experimental_focus`, and `experimental_openBrowser`
+
+`experimental_surfaces.list({ threadId })` lists thread terminal surfaces with
+stable thread and terminal IDs, title, status, and kind. `experimental_focus({
+terminalId })` opens the owning thread and activates its terminal tab in
+connected app clients, revealing the terminal panel on compact layouts.
+`experimental_openBrowser({ terminalId, url })` uses the same thread-open signal
+and W4B browser panel placement used by terminal links. Clients without an
+in-app browser offer the URL through an Open action instead of creating an
+unavailable browser tab.
+The CLI surfaces are `bb terminal surfaces --thread`, `bb terminal focus`, and
+`bb terminal open-link`.
+
+Archived threads, unscoped terminals, unknown IDs, and terminals outside the
+target thread fail closed. The app client ignores unknown thread-open fields so
+older clients still navigate to the thread without attempting the new action.
+Audit cross-client broadcast behavior, split placement and compact drawer
+behavior, URL restrictions, and stale/foreign ID failures before stabilizing.
+
+## `sdk.terminals.experimental_surfaces`, `experimental_focus`, and `experimental_openBrowser`
+
+`experimental_surfaces.list({ threadId })` lists thread terminal surfaces with
+stable thread and terminal IDs, title, status, and kind. `experimental_focus({
+terminalId })` opens the owning thread and activates its terminal tab in
+connected app clients, revealing the terminal panel on compact layouts.
+`experimental_openBrowser({ terminalId, url })` uses the same thread-open signal
+and W4B browser panel placement used by terminal links. Clients without an
+in-app browser offer the URL through an Open action instead of creating an
+unavailable browser tab.
+The CLI surfaces are `bb terminal surfaces --thread`, `bb terminal focus`, and
+`bb terminal open-link`.
+
+Archived threads, unscoped terminals, unknown IDs, and terminals outside the
+target thread fail closed. The app client ignores unknown thread-open fields so
+older clients still navigate to the thread without attempting the new action.
+Audit cross-client broadcast behavior, split placement and compact drawer
+behavior, URL restrictions, and stale/foreign ID failures before stabilizing.
+
 Plugin Guide surface: `The bb SDK` in
 `plugins/plugin-api-docs/src/surfaces.ts`.
 

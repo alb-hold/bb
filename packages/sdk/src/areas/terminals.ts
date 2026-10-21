@@ -131,8 +131,34 @@ export interface ExperimentalTerminalAttentionArea {
   next(): Promise<TerminalGetResult | null>;
 }
 
+export interface ExperimentalTerminalSurface {
+  kind: "native" | "terminal";
+  status: TerminalSession["status"];
+  terminalId: string;
+  threadId: string;
+  title: string;
+}
+
+export interface ExperimentalTerminalSurfacesArea {
+  list(args: { threadId: string }): Promise<ExperimentalTerminalSurface[]>;
+}
+
+export interface ExperimentalTerminalFocusArgs {
+  terminalId: string;
+}
+
+export interface ExperimentalTerminalOpenBrowserArgs {
+  terminalId: string;
+  url: string;
+}
+
 export interface TerminalsArea {
   experimental_attention: ExperimentalTerminalAttentionArea;
+  experimental_surfaces: ExperimentalTerminalSurfacesArea;
+  experimental_focus(args: ExperimentalTerminalFocusArgs): Promise<void>;
+  experimental_openBrowser(
+    args: ExperimentalTerminalOpenBrowserArgs,
+  ): Promise<void>;
   close(args: TerminalCloseArgs): Promise<TerminalCloseResult>;
   create(args: TerminalCreateArgs): Promise<TerminalCreateResult>;
   get(args: TerminalGetArgs): Promise<TerminalGetResult>;
@@ -267,6 +293,80 @@ export function createTerminalsArea(args: CreateSdkAreaArgs): TerminalsArea {
     );
 
   return {
+    experimental_surfaces: {
+      async list(input) {
+        const [thread, response, nativeThread] = await Promise.all([
+          transport.readJson(
+            transport.api.v1.threads[":id"].$get({
+              param: { id: input.threadId },
+            }),
+          ),
+          transport.readJson(
+          transport.api.v1.terminals.$get({
+            query: { threadId: input.threadId },
+          }),
+          ),
+          transport.readJson(
+            transport.api.v1.threads[":id"]["native-terminal"].$get({
+              param: { id: input.threadId },
+            }),
+          ),
+        ]);
+        if (thread.archivedAt !== null) {
+          throw new Error(`Thread ${input.threadId} is archived`);
+        }
+        return response.sessions.flatMap((session) =>
+          session.threadId === null
+            ? []
+            : [
+                {
+                  kind:
+                    nativeThread?.terminal?.id === session.id
+                      ? ("native" as const)
+                      : ("terminal" as const),
+                  status: session.status,
+                  terminalId: session.id,
+                  threadId: session.threadId,
+                  title: session.title,
+                },
+              ],
+        );
+      },
+    },
+    async experimental_focus(input) {
+      const session = await get({ terminalId: input.terminalId });
+      if (session.threadId === null) {
+        throw new Error("Terminal session is not attached to a thread");
+      }
+      await transport.readJson(
+        transport.api.v1.threads[":id"].open.$post({
+          param: { id: session.threadId },
+          json: {
+            file: null,
+            terminalAction: { action: "focus", terminalId: session.id },
+          },
+        }),
+      );
+    },
+    async experimental_openBrowser(input) {
+      const session = await get({ terminalId: input.terminalId });
+      if (session.threadId === null) {
+        throw new Error("Terminal session is not attached to a thread");
+      }
+      await transport.readJson(
+        transport.api.v1.threads[":id"].open.$post({
+          param: { id: session.threadId },
+          json: {
+            file: null,
+            terminalAction: {
+              action: "openBrowser",
+              terminalId: session.id,
+              url: input.url,
+            },
+          },
+        }),
+      );
+    },
     experimental_attention: {
       async clear(input) {
         return transport.readJson(
