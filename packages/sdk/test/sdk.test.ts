@@ -8,6 +8,7 @@ import { TERMINAL_ATTENTION_CONTRACT_CASES } from "../../test-helpers/src/termin
 import type { FetchImplementation } from "../src/response.js";
 
 interface CapturedRequest {
+  authorization?: string;
   bodyText: string | undefined;
   method: string;
   url: string;
@@ -93,7 +94,9 @@ function createFetchQueue(
   const requests: CapturedRequest[] = [];
   const remaining = [...responses];
   const fetchMock: FetchImplementation = async (input, init) => {
+    const authorization = new Headers(init?.headers).get("authorization");
     requests.push({
+      ...(authorization === null ? {} : { authorization }),
       bodyText: bodyText(init),
       method: init?.method ?? "GET",
       url: String(input),
@@ -307,6 +310,33 @@ describe("@bb/sdk", () => {
       }),
     ).rejects.toThrow("Terminal sessions must belong to the same thread");
     expect(foreignQueue.requests).toHaveLength(2);
+  });
+
+  it("passes an optional native activity report credential as a header", async () => {
+    const queue = createFetchQueue([{ body: { ok: true } }]);
+    const sdk = createBbSdk({
+      transport: createHttpTransport({
+        baseUrl: "http://bb.test",
+        fetch: queue.fetch,
+        runtime: "node",
+      }),
+    });
+
+    await expect(
+      sdk.nativeTerminals.reportActivity({
+        threadId: "thr_test",
+        state: "working",
+        authorization: "Bearer synthetic-sdk-test-credential",
+      }),
+    ).resolves.toEqual({ ok: true });
+    expect(queue.requests).toEqual([
+      {
+        authorization: "Bearer synthetic-sdk-test-credential",
+        bodyText: JSON.stringify({ state: "working" }),
+        method: "POST",
+        url: "http://bb.test/api/v1/threads/thr_test/native-terminal/activity",
+      },
+    ]);
   });
 
   it("pages prompt history with an opaque cursor", async () => {
@@ -1414,7 +1444,8 @@ describe("@bb/sdk", () => {
       const sessions = contract.sessions.map(makeSession);
       const afterClear = contract.unreadIdsAfterClear.map((id) => {
         const entry = contract.sessions.find((item) => item.id === id);
-        if (entry === undefined) throw new Error(`Unknown contract terminal ${id}`);
+        if (entry === undefined)
+          throw new Error(`Unknown contract terminal ${id}`);
         return makeSession(entry);
       });
       const responses: QueuedJsonResponse[] = [
@@ -1442,13 +1473,11 @@ describe("@bb/sdk", () => {
       });
 
       expect(
-        (await sdk.terminals.experimental_attention.list()).map(
-          ({ id }) => id,
-        ),
+        (await sdk.terminals.experimental_attention.list()).map(({ id }) => id),
       ).toEqual(contract.unreadIds);
-      expect((await sdk.terminals.experimental_attention.next())?.id ?? null).toBe(
-        contract.nextId,
-      );
+      expect(
+        (await sdk.terminals.experimental_attention.next())?.id ?? null,
+      ).toBe(contract.nextId);
       if (contract.clearId !== null) {
         await sdk.terminals.experimental_attention.clear({
           terminalId: contract.clearId,
