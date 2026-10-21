@@ -255,6 +255,163 @@ describe("renderTerminalScreen", () => {
     expect(screen.complete).toBe(false);
   });
 
+  it.each([
+    ["G0", "\u001b(A\u000f"],
+    ["G1 with SO", "\u001b)A\u000e"],
+    ["G2 with LS2", "\u001b*A\u001bn"],
+    ["G3 with LS3", "\u001b+A\u001bo"],
+  ])("detects a retained tail that depends on the %s character set", async (_, prefix) => {
+    const tail = "\u001b[2J\u001b[H#";
+    const actual = await replay(20, 2, `${prefix}${tail}`);
+    const screen = await renderTerminalScreen({
+      cols: 20,
+      rows: 2,
+      lines: undefined,
+      output: output(tail, true),
+    });
+    expect(actual.rows[0]).toContain("£");
+    expect(screen.rows[0]).toBe("#");
+    expect(screen.complete).toBe(false);
+  });
+
+  it("keeps the Hermes G1 UK designation and SO case incomplete", async () => {
+    const prefix = "\u001b)A\u000e";
+    const tail = "\u001b\\\u001b[?7h\u001b[4l\u001b(B\u000e\u001b[2J\u001b[H#";
+    const actual = await replay(20, 2, `${prefix}${tail}`);
+    const screen = await renderTerminalScreen({
+      cols: 20,
+      rows: 2,
+      lines: undefined,
+      output: output(tail, true),
+    });
+    expect(actual.rows[0]).toBe("£");
+    expect(screen.rows[0]).toBe("#");
+    expect(screen.complete).toBe(false);
+  });
+
+  it("detects a retained tail that restores a saved cursor", async () => {
+    const prefix = "\u001b[2;5H\u001b7";
+    const tail =
+      "\u001b\\\u001b(B\u001b)B\u001b*B\u001b+B\u000f\u001b[?6l\u001b[?7h\u001b[?45l\u001b[20l\u001b[4l\u001b[r\u001b[2J\u001b[H#\u001b8X";
+    const actual = await replay(20, 2, `${prefix}${tail}`);
+    const screen = await renderTerminalScreen({
+      cols: 20,
+      rows: 2,
+      lines: undefined,
+      output: output(tail, true),
+    });
+    expect(actual.rows).not.toEqual(screen.rows);
+    expect(actual.rows[1]).toContain("X");
+    expect(screen.complete).toBe(false);
+  });
+
+  it("detects a retained tail that restores a CSI-saved cursor", async () => {
+    const prefix = "\u001b[2;5H\u001b[s";
+    const tail = "\u001b[2J\u001b[H#\u001b[uX";
+    const actual = await replay(20, 2, `${prefix}${tail}`);
+    const screen = await renderTerminalScreen({
+      cols: 20,
+      rows: 2,
+      lines: undefined,
+      output: output(tail, true),
+    });
+    expect(actual.rows).not.toEqual(screen.rows);
+    expect(actual.rows[1]).toContain("X");
+    expect(screen.complete).toBe(false);
+  });
+
+  it("detects retained output that depends on prior tab stops", async () => {
+    const prefix = "\u001b[3g\u001b[1;5H\u001bH\u001b[1;1H";
+    const tail = "\u001b\\\u001b[2J\u001b[HA\tB";
+    const actual = await replay(20, 2, `${prefix}${tail}`);
+    const screen = await renderTerminalScreen({
+      cols: 20,
+      rows: 2,
+      lines: undefined,
+      output: output(tail, true),
+    });
+    expect(actual.rows[0]).toBe("A   B");
+    expect(screen.rows[0]).toBe("A       B");
+    expect(screen.complete).toBe(false);
+  });
+
+  it("detects line-feed mode changing the retained tail position", async () => {
+    const tail = "\u001b[2J\u001b[1;2HA\nB";
+    const screen = await renderTerminalScreen({
+      cols: 20,
+      rows: 2,
+      lines: undefined,
+      output: output(tail, true),
+    });
+    const lineFeedMode = await replay(20, 2, `\u001b[20h${tail}`);
+    expect(lineFeedMode.rows[1]).toBe("B");
+    expect(screen.rows[1]).toBe("  B");
+    expect(screen.complete).toBe(false);
+  });
+
+  it("detects reverse-wraparound changing retained cursor movement", async () => {
+    const tail = `\u001b[2J\u001b[H${"A".repeat(20)}B\b\bX`;
+    const screen = await renderTerminalScreen({
+      cols: 20,
+      rows: 2,
+      lines: undefined,
+      output: output(tail, true),
+    });
+    const reverseWrap = await replay(20, 2, `\u001b[?45h${tail}`);
+    expect(reverseWrap.rows[0]).toContain("X");
+    expect(screen.rows[1]).toContain("X");
+    expect(screen.complete).toBe(false);
+  });
+
+  it("detects retained output whose cells depend on insert mode", async () => {
+    const tail = "\u001b[2J\u001b[HABC\u001b[1;2HX";
+    const screen = await renderTerminalScreen({
+      cols: 20,
+      rows: 2,
+      lines: undefined,
+      output: output(tail, true),
+    });
+    const insertMode = await replay(20, 2, `\u001b[4h${tail}`);
+    expect(insertMode.rows[0]).toBe("AXBC");
+    expect(screen.rows[0]).toBe("AXC");
+    expect(screen.complete).toBe(false);
+  });
+
+  it("detects retained selective erase that depends on protected cells", async () => {
+    const prefix = "\u001b[1\"qP";
+    const tail = "\u001b[?2K";
+    const actual = await replay(20, 2, `${prefix}${tail}`);
+    const screen = await renderTerminalScreen({
+      cols: 20,
+      rows: 2,
+      lines: undefined,
+      output: output(tail, true),
+    });
+    expect(actual.rows[0]).toBe("P");
+    expect(screen.rows[0]).toBe("");
+    expect(screen.complete).toBe(false);
+  });
+
+  it.each([
+    ["CSI", "\u001b[", "2J#"],
+    ["OSC", "\u001b]0;", "discard\u001b\\#"],
+    ["DCS", "\u001bP1;1q", "discard\u001b\\#"],
+    ["SOS", "\u001bX", "discard\u001b\\#"],
+    ["PM", "\u001b^", "discard\u001b\\#"],
+    ["APC", "\u001b_", "discard\u001b\\#"],
+    ["ESC", "\u001b", "8"],
+  ])("detects a retained tail whose %s parser state predates the cut", async (_, prefix, tail) => {
+    const actual = await replay(20, 2, `${prefix}${tail}`);
+    const screen = await renderTerminalScreen({
+      cols: 20,
+      rows: 2,
+      lines: undefined,
+      output: output(tail, true),
+    });
+    expect(actual.rows).not.toEqual(screen.rows);
+    expect(screen.complete).toBe(false);
+  });
+
   it("recognizes truncated output that reestablishes terminal modes", async () => {
     const stream = "\u001bc\u001b[31mred\u001b[0m\r\n".repeat(6_000);
     const screen = await renderTerminalScreen({
@@ -285,7 +442,7 @@ describe("renderTerminalScreen", () => {
         lines: undefined,
         output: output("partial\n", true),
       });
-      expect(writeSpy).toHaveBeenCalledTimes(6);
+      expect(writeSpy).toHaveBeenCalledTimes(3);
       expect(screen.complete).toBe(false);
     } finally {
       writeSpy.mockRestore();

@@ -88,23 +88,51 @@ async function replayIsComplete(
   blankTerminal: HeadlessTerminal,
 ) {
   const sentinelTerminal = createTerminal(cols, rows);
+  const dataText = data.toString("latin1");
+  const hasAlternateScreenSwitch = [
+    "\u001b[?47",
+    "\u001b[?1047",
+    "\u001b[?1049",
+  ].some((mode) => dataText.includes(mode));
   const modeSetups = [
     `\u001b[2;${Math.max(2, rows - 1)}r\u001b[?6h`,
     "\u001b[?7l",
     "\u001b[4h",
     "\u001b(0",
+    "\u001b[?45h",
+    "\u001b[20h",
+  ];
+  const charsetSetups = [
+    "\u001b(A\u000f",
+    "\u001b)A\u000e",
+    "\u001b*A\u001bn",
+    "\u001b+A\u001bo",
+  ];
+  const savedCursorSetup = "\u001b(A\u001b[31m\u001b[2;5H\u001b7";
+  const tabStopSetup = "\u001b[3g\u001b[1;5H\u001bH\u001b[1;1H";
+  const protectedCellSetup = "\u001b[1\"qP";
+  const parserSetups = [
+    "\u001b[",
+    "\u001b]0;",
+    "\u001bP1;1q",
+    "\u001bX",
+    "\u001b^",
+    "\u001b_",
+    "\u001b",
   ];
   const screenSentinel = `${sentinelGrid(cols, rows)}\u001b[1;1H`;
-  const initialScreens = [
-    screenSentinel,
-    `\u001b[?1049h${screenSentinel}`,
-  ];
+  const initialScreens = [screenSentinel];
+  if (hasAlternateScreenSwitch) {
+    initialScreens.push(`\u001b[?1049h${screenSentinel}`);
+  }
   try {
     const sentinel = sentinelGrid(cols, rows);
     await writeTerminal(sentinelTerminal, sentinel);
-    await writeTerminal(sentinelTerminal, "\u001b[?1049h");
-    await writeTerminal(sentinelTerminal, sentinel);
-    await writeTerminal(sentinelTerminal, "\u001b[?1049l");
+    if (hasAlternateScreenSwitch) {
+      await writeTerminal(sentinelTerminal, "\u001b[?1049h");
+      await writeTerminal(sentinelTerminal, sentinel);
+      await writeTerminal(sentinelTerminal, "\u001b[?1049l");
+    }
     await writeTerminal(sentinelTerminal, data);
     if (!sameVisibleScreen(blankTerminal, sentinelTerminal)) return false;
     for (const initialScreen of initialScreens) {
@@ -121,6 +149,40 @@ async function replayIsComplete(
       const perturbedTerminal = createTerminal(cols, rows);
       try {
         await writeTerminal(perturbedTerminal, modeSetup);
+        await writeTerminal(perturbedTerminal, data);
+        if (!sameVisibleScreen(blankTerminal, perturbedTerminal)) return false;
+      } finally {
+        perturbedTerminal.dispose();
+      }
+    }
+    for (const charsetSetup of charsetSetups) {
+      const perturbedTerminal = createTerminal(cols, rows);
+      try {
+        await writeTerminal(perturbedTerminal, charsetSetup);
+        await writeTerminal(perturbedTerminal, data);
+        if (!sameVisibleScreen(blankTerminal, perturbedTerminal)) return false;
+      } finally {
+        perturbedTerminal.dispose();
+      }
+    }
+    for (const stateSetup of [
+      savedCursorSetup,
+      tabStopSetup,
+      protectedCellSetup,
+    ]) {
+      const perturbedTerminal = createTerminal(cols, rows);
+      try {
+        await writeTerminal(perturbedTerminal, stateSetup);
+        await writeTerminal(perturbedTerminal, data);
+        if (!sameVisibleScreen(blankTerminal, perturbedTerminal)) return false;
+      } finally {
+        perturbedTerminal.dispose();
+      }
+    }
+    for (const parserSetup of parserSetups) {
+      const perturbedTerminal = createTerminal(cols, rows);
+      try {
+        await writeTerminal(perturbedTerminal, parserSetup);
         await writeTerminal(perturbedTerminal, data);
         if (!sameVisibleScreen(blankTerminal, perturbedTerminal)) return false;
       } finally {
