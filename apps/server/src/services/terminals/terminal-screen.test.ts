@@ -624,7 +624,10 @@ describe("renderTerminalScreen", () => {
         cols: 20,
         rows: 2,
         lines: undefined,
-        output: output("partial\n", true),
+        output: {
+          data: Uint8Array.from(Buffer.from("partial\n")).buffer,
+          truncated: true,
+        },
       });
       expect(writeSpy).toHaveBeenCalledTimes(3);
       expect(screen.complete).toBe(false);

@@ -1,3 +1,4 @@
+import { Buffer } from "node:buffer";
 import { Worker } from "node:worker_threads";
 import type {
   TerminalOutputResponse,
@@ -141,7 +142,20 @@ export function renderTerminalScreen(args: {
   } catch (error) {
     return Promise.reject(error instanceof Error ? error : new Error(String(error)));
   }
-  const { logger, ...renderArgs } = args;
+  const { logger, output, ...renderArgs } = args;
+  const data = Buffer.concat(
+    output.chunks.map((chunk) => Buffer.from(chunk.dataBase64, "base64")),
+  );
+  const transferable =
+    data.buffer instanceof ArrayBuffer &&
+    data.byteOffset === 0 &&
+    data.byteLength === data.buffer.byteLength
+      ? data.buffer
+      : Uint8Array.from(data).buffer;
+  const workerArgs = {
+    ...renderArgs,
+    output: { data: transferable, truncated: output.truncated },
+  };
   const id = nextId++;
   return new Promise((resolve, reject) => {
     const timeout = setTimeout(() => {
@@ -156,7 +170,7 @@ export function renderTerminalScreen(args: {
     pending = { id, resolve, reject, timeout, logger };
     current.ref();
     try {
-      current.postMessage({ id, args: renderArgs satisfies RenderArgs });
+      current.postMessage({ id, args: workerArgs satisfies RenderArgs }, [transferable]);
     } catch (error) {
       pending = undefined;
       clearTimeout(timeout);

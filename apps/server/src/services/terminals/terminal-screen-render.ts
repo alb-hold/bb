@@ -1,8 +1,5 @@
 import { Buffer } from "node:buffer";
-import type {
-  TerminalOutputResponse,
-  TerminalScreenResponse,
-} from "@bb/server-contract";
+import type { TerminalScreenResponse } from "@bb/server-contract";
 
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { Terminal } from "@xterm/headless";
@@ -239,7 +236,7 @@ async function replayIsComplete(
 export async function renderTerminalScreenInline(args: {
   cols: number;
   lines: number | undefined;
-  output: TerminalOutputResponse;
+  output: { data: ArrayBuffer; truncated: boolean };
   rows: number;
 }): Promise<TerminalScreenResponse> {
   const terminal = createTerminal(args.cols, args.rows);
@@ -251,11 +248,7 @@ export async function renderTerminalScreenInline(args: {
       })
     : undefined;
   try {
-    let data = Buffer.concat(
-      args.output.chunks.map((chunk) =>
-        Buffer.from(chunk.dataBase64, "base64"),
-      ),
-    );
+    let data = Buffer.from(args.output.data);
     if (args.output.truncated) {
       data = data.subarray(safeTailStart(data));
     }
