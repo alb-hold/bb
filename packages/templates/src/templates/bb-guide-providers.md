@@ -52,6 +52,13 @@ carries them per model as `sessionOptions`. Choose values at creation with
 without `--model` starts on a model that fits the chosen options, and a spawn
 whose `--model` cannot run with them is refused with the name of one that can.
 
+Providers may declare a child-thread model. When spawning a child thread, an
+explicit `--model` must exactly match that model or bb refuses the request;
+omit `--model` to use it automatically. The same rule applies to explicit
+models on child-thread messages and sticky model updates. Stored overrides and
+queued work from before this rule remain readable and use the provider's child
+model when executed.
+
 Service tiers are provider-defined ids. `bb provider list --json` reports each
 provider's `serviceTiers` ({id, label, description?}); `default` always means
 the provider's standard tier. A model may narrow that list: `bb provider

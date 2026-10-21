@@ -11,6 +11,7 @@ import {
 import type { CommandRegistrar } from "../helpers/command-output-harness.js";
 import * as fixtures from "../helpers/command-output-fixtures.js";
 import { registerThreadCommands } from "../../commands/thread/index.js";
+import { printExecutionProfile } from "../../commands/thread/show.js";
 
 describe("bb thread show command output", () => {
   setupCommandOutputTestEnvironment();
@@ -45,6 +46,25 @@ describe("bb thread show command output", () => {
 
   const register: CommandRegistrar = (program) =>
     registerThreadCommands(program, () => "http://server");
+
+  it("prints stored and next-turn models when they differ", () => {
+    printExecutionProfile({
+      lastRequested: null,
+      overrides: { model: "claude-opus-5-5", reasoningLevel: null },
+      nextTurn: {
+        model: "claude-sonnet-5-5",
+        reasoningLevel: "medium",
+        permissionMode: "auto",
+        serviceTier: "default",
+        source: "client/turn/requested",
+      },
+      executed: null,
+    });
+
+    expect(collectLogLines(vi.mocked(console.log))).toContain(
+      "    Model comparison: stored override claude-opus-5-5; next turn claude-sonnet-5-5",
+    );
+  });
 
   function makePullRequest(
     overrides: Partial<domain.ThreadPullRequest> = {},

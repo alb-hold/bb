@@ -7,6 +7,7 @@ import {
 import {
   acquireProjectAttachmentOwnership,
   getEnvironment,
+  getThreadSpawner,
   isNativeTerminalThread,
 } from "@bb/db";
 import { ApiError } from "../../errors.js";
@@ -25,6 +26,7 @@ import { requireThreadCommandEnvironment } from "./thread-command-environment.js
 import { sendThreadMessage } from "./thread-send.js";
 import { assertThreadHostAcceptsWork } from "./thread-host-admission.js";
 import { runWithTurnTrace } from "../system/turn-trace.js";
+import { assertRequestedModelAllowed } from "./child-thread-model.js";
 
 interface AcceptThreadSendRequestArgs {
   payload: SendMessageRequest;
@@ -74,6 +76,16 @@ export async function acceptThreadSendRequest(
     });
     return { ok: true, delivery: "sent" };
   }
+  await assertRequestedModelAllowed(deps, {
+    childScope: args.thread.parentThreadId
+      ? "parent"
+      : getThreadSpawner(deps.db, args.thread.id) === null
+        ? null
+        : "spawner",
+    model: args.payload.model,
+    providerId: args.thread.providerId,
+    source: args.payload.executionInputSources?.model,
+  });
   assertThreadHostAcceptsWork(deps.db, args.thread);
   const { compactFirst, ...request } = args.payload;
   if (isStandaloneBuiltinClearCommand(request.input)) {

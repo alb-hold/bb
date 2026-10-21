@@ -10,6 +10,8 @@ import {
   getEnvironment,
   getHost,
   getThread,
+  getThreadExecutionOverride,
+  getThreadSpawner,
   getThreadSectionById,
   ensureSpendTables,
   listThreadMentionRowsByIds,
@@ -83,7 +85,11 @@ import {
 import { assertValidParentThread } from "../../services/threads/thread-parent.js";
 import { handleThreadOwnershipChange } from "../../services/threads/thread-ownership.js";
 import { applyThreadExecutionOverride } from "../../services/threads/thread-execution-override.js";
-import { applyThreadSessionOptionPatch } from "../../services/threads/thread-session-options.js";
+import {
+  applyThreadSessionOptionPatch,
+  resolveThreadSessionOptionPatch,
+} from "../../services/threads/thread-session-options.js";
+import { assertRequestedModelAllowed } from "../../services/threads/child-thread-model.js";
 import { emitPluginThreadDeleted } from "../../services/plugins/plugin-thread-events.js";
 import { NotificationBuffer } from "../../services/lib/notification-buffer.js";
 import { getActiveTurnId } from "../../services/threads/thread-events.js";
@@ -649,6 +655,42 @@ export function registerThreadBaseRoutes(app: Hono, deps: AppDeps): void {
       });
     }
 
+    const sectionId = payload.sectionId;
+    if (sectionId !== undefined && sectionId !== null) {
+      requireThreadSection(deps, sectionId);
+    }
+    if (payload.sessionOptions !== undefined) {
+      resolveThreadSessionOptionPatch(deps, {
+        thread,
+        patch: payload.sessionOptions,
+      });
+    }
+    const hasParentChange =
+      "parentThreadId" in payload &&
+      payload.parentThreadId !== thread.parentThreadId;
+    if (hasParentChange || typeof payload.model === "string") {
+      const requestedModel =
+        payload.model === null
+          ? null
+          : typeof payload.model === "string"
+            ? payload.model
+            : getThreadExecutionOverride(deps.db, thread.id)?.modelOverride;
+      const parentThreadId = hasParentChange
+        ? payload.parentThreadId
+        : thread.parentThreadId;
+      const childScope = parentThreadId
+        ? "parent"
+        : getThreadSpawner(deps.db, thread.id) === null
+          ? null
+          : "spawner";
+      await assertRequestedModelAllowed(deps, {
+        childScope,
+        model: requestedModel,
+        providerId: thread.providerId,
+        source: "explicit",
+      });
+    }
+
     if ("model" in payload || "reasoningLevel" in payload) {
       await applyThreadExecutionOverride(deps, {
         thread,
@@ -672,11 +714,7 @@ export function registerThreadBaseRoutes(app: Hono, deps: AppDeps): void {
     if ("title" in payload) {
       metadataUpdate.title = payload.title;
     }
-    const sectionId = payload.sectionId;
     if (sectionId !== undefined) {
-      if (sectionId !== null) {
-        requireThreadSection(deps, sectionId);
-      }
       metadataUpdate.sectionId = sectionId;
     } else if (
       payload.parentThreadId === null &&

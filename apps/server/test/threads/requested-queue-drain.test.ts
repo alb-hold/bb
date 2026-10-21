@@ -1,10 +1,12 @@
 import {
   claimNextQueuedThreadMessageGroup,
   createQueuedThreadMessage,
+  getThreadExecutionOverride,
   listEvents,
   listQueuedThreadMessages,
   setQueuedThreadMessageFailureReason,
   setQueuedThreadMessageGroupBoundary,
+  setThreadExecutionOverride,
 } from "@bb/db";
 import { turnRequestEventDataSchema } from "@bb/domain";
 import type { PluginHookName } from "@get-bb/plugin-sdk";
@@ -18,6 +20,7 @@ import {
   runQueuedMessageDispatch,
 } from "../../src/services/threads/queued-message-dispatch.js";
 import { runStartupRecoverySweep } from "../../src/services/system/periodic-sweeps.js";
+import { sendQueuedMessageNow } from "../../src/services/threads/queued-messages.js";
 import { applyLoggedThreadLifecycleEvent } from "../../src/services/threads/lifecycle-outcome.js";
 import { acceptThreadSendRequest } from "../../src/services/threads/thread-send-request.js";
 import { textInput } from "../helpers/prompt-input.js";
@@ -72,7 +75,13 @@ afterEach(() => {
 
 function seedRunnableThread(
   harness: TestAppHarness,
-  args: { hostId: string; status: "idle" | "active" },
+  args: {
+    child?: boolean;
+    hostId: string;
+    model?: string;
+    providerId?: string;
+    status: "idle" | "active";
+  },
 ) {
   const { host } = seedHostSession(harness.deps, { id: args.hostId });
   const { project } = seedProjectWithSource(harness.deps, {
@@ -84,13 +93,23 @@ function seedRunnableThread(
     projectId: project.id,
     path: WORKSPACE_PATH,
   });
+  const parent = args.child
+    ? seedThread(harness.deps, {
+        environmentId: environment.id,
+        projectId: project.id,
+        providerId: args.providerId ?? "claude-code",
+      })
+    : null;
   const thread = seedThread(harness.deps, {
     environmentId: environment.id,
     projectId: project.id,
+    providerId: args.providerId ?? "codex",
+    parentThreadId: parent?.id ?? null,
     status: args.status,
   });
   seedThreadRuntimeState(harness.deps, {
     environmentId: environment.id,
+    model: args.model,
     providerThreadId: `provider-${args.hostId}`,
     threadId: thread.id,
   });
@@ -127,6 +146,45 @@ async function stopThread(harness: TestAppHarness, threadId: string) {
 }
 
 describe("the requested queue drain", () => {
+  it("drains a legacy conflicting model on the child model and preserves the override", async () => {
+    await withTestHarness(async (harness) => {
+      const { thread } = seedRunnableThread(harness, {
+        child: true,
+        hostId: "host-legacy-child-queue",
+        model: "claude-opus-5-5",
+        providerId: "claude-code",
+        status: "idle",
+      });
+      setThreadExecutionOverride(harness.db, {
+        threadId: thread.id,
+        modelOverride: "claude-opus-5-5",
+        reasoningLevelOverride: null,
+      });
+      const queued = seedQueuedMessage(harness.deps, {
+        content: textInput("legacy queued request"),
+        model: "claude-opus-5-5",
+        threadId: thread.id,
+      });
+
+      const delivery = await sendQueuedMessageNow(harness.deps, {
+        mode: "auto",
+        queuedMessageId: queued.id,
+        threadId: thread.id,
+      });
+
+      expect(delivery).toEqual({ delivery: "sent" });
+      expect(turnRequests(harness, thread.id)).toHaveLength(2);
+      const dispatched = turnRequestEventDataSchema.parse(
+        JSON.parse(turnRequests(harness, thread.id)[1]!.data),
+      );
+      expect(dispatched.execution.model).toBe("claude-sonnet-5-5");
+      expect(
+        getThreadExecutionOverride(harness.db, thread.id)?.modelOverride,
+      ).toBe("claude-opus-5-5");
+      expect(listQueuedThreadMessages(harness.db, thread.id)).toEqual([]);
+    });
+  });
+
   it.each([
     { finish: "save", sentText: "SAVED EDIT" },
     { finish: "cancel", sentText: "ORIGINAL" },

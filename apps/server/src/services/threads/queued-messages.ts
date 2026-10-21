@@ -10,6 +10,7 @@ import {
   getQueuedThreadMessage,
   getStoredProviderSession,
   getThread,
+  getThreadSpawner,
   holdQueuedThreadMessageForEdit,
   isOrdinaryTurnEndQueuedMessage,
   isThreadQueueAutoSendPaused,
@@ -96,6 +97,7 @@ import { recordAcceptedPromptHistoryEntry } from "../prompt-history.js";
 import { requireThreadCommandEnvironment } from "./thread-command-environment.js";
 import { applyLoggedThreadLifecycleEventInTransaction } from "./lifecycle-outcome.js";
 import { buildThreadStatusChangeMetadata } from "./thread-runtime-display.js";
+import { assertRequestedModelAllowed } from "./child-thread-model.js";
 import {
   goneThreadEnvironmentDetails,
   threadEnvironmentUnavailableDetails,
@@ -245,6 +247,16 @@ export async function createQueuedMessageForThread(
   args: CreateQueuedMessageForThreadArgs,
 ): Promise<ThreadQueuedMessage> {
   const { payload, thread } = args;
+  await assertRequestedModelAllowed(deps, {
+    childScope: thread.parentThreadId
+      ? "parent"
+      : getThreadSpawner(deps.db, thread.id) === null
+        ? null
+        : "spawner",
+    model: payload.model,
+    providerId: thread.providerId,
+    source: payload.executionInputSources?.model,
+  });
   ensureThreadQueueIsWritable(thread);
   const input = await resolvePromptAttachmentReferences({
     db: deps.db,

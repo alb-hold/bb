@@ -7,14 +7,21 @@ import {
   archiveThread,
   createProjectSource,
   getProjectExecutionDefaults,
+  getThreadExecutionOverride,
+  listEvents,
   listThreadsWithPendingInteractionState,
   recordThreadSpawner,
   setExperiments,
   upsertProjectExecutionDefaults,
+  threads,
 } from "@bb/db";
+import { eq } from "drizzle-orm";
 import { defaultExperiments, threadSchema } from "@bb/domain";
 import { sidebarBootstrapResponseSchema } from "@bb/server-contract";
-import { waitForQueuedCommand } from "../helpers/commands.js";
+import {
+  listQueuedThreadCommands,
+  waitForQueuedCommand,
+} from "../helpers/commands.js";
 import { availableModelFixture } from "../helpers/available-models.js";
 import { registerProviderHostRpcResponder } from "../helpers/host-rpc.js";
 import { readJson } from "../helpers/json.js";
@@ -349,9 +356,16 @@ describe("public thread default routes", () => {
       expected: "claude-sonnet-5-5",
     },
     {
-      name: "child naming Opus",
+      name: "child explicitly naming the provider child model",
+      parent: true,
+      model: "claude-sonnet-5-5",
+      expected: "claude-sonnet-5-5",
+    },
+    {
+      name: "child with a client-preference model",
       parent: true,
       model: "claude-opus-5-5",
+      source: "client-preference",
       expected: "claude-sonnet-5-5",
     },
     {
@@ -365,13 +379,6 @@ describe("public thread default routes", () => {
       parent: false,
       model: undefined,
       expected: "claude-opus-5-5",
-    },
-    {
-      name: "top-level thread a mid-turn thread spawned, naming Opus",
-      parent: false,
-      spawnedBy: "active",
-      model: "claude-opus-5-5",
-      expected: "claude-sonnet-5-5",
     },
     ...(["missing", "idle", "other-project", "archived"] as const).map(
       (spawnedBy) => ({
@@ -387,10 +394,11 @@ describe("public thread default routes", () => {
     parent: boolean;
     spawnedBy?: "active" | "missing" | "idle" | "other-project" | "archived";
     model: string | undefined;
+    source?: "client-preference";
     expected: string;
   }>)(
     "starts a Claude $name on $expected",
-    async ({ parent, spawnedBy, model, expected }) => {
+    async ({ parent, spawnedBy, model, source, expected }) => {
       await withTestHarness(async (harness) => {
         const { host } = seedHostSession(harness.deps);
         const { project } = seedProjectWithSource(harness.deps, {
@@ -428,6 +436,9 @@ describe("public thread default routes", () => {
             projectId: project.id,
             providerId: "claude-code",
             ...(model !== undefined ? { model } : {}),
+            ...(source !== undefined
+              ? { executionInputSources: { model: source } }
+              : {}),
             input: [{ type: "text", text: "Review the change" }],
             environment: { type: "reuse", environmentId: environment.id },
             ...(parent ? { parentThreadId: parentThread.id } : {}),
@@ -449,6 +460,269 @@ describe("public thread default routes", () => {
       });
     },
   );
+
+  it("rejects a conflicting child model before handling the standalone clear command", async () => {
+    await withTestHarness(async (harness) => {
+      const { host } = seedHostSession(harness.deps);
+      const { project } = seedProjectWithSource(harness.deps, {
+        hostId: host.id,
+        path: "/tmp/thread-defaults-clear-conflict",
+      });
+      const environment = seedEnvironment(harness.deps, {
+        hostId: host.id,
+        projectId: project.id,
+        path: "/tmp/thread-defaults-clear-conflict",
+      });
+      const parent = seedThread(harness.deps, {
+        environmentId: environment.id,
+        projectId: project.id,
+      });
+      const child = seedThread(harness.deps, {
+        environmentId: environment.id,
+        projectId: project.id,
+        providerId: "claude-code",
+        parentThreadId: parent.id,
+        status: "idle",
+      });
+      const input = [
+        {
+          type: "text" as const,
+          text: "/clear",
+          mentions: [
+            {
+              start: 0,
+              end: 6,
+              resource: {
+                kind: "command" as const,
+                trigger: "/",
+                name: "clear",
+                source: "command" as const,
+                origin: "builtin" as const,
+                label: "clear",
+                argumentHint: null,
+              },
+            },
+          ],
+        },
+      ];
+
+      const response = await harness.app.request(
+        `/api/v1/threads/${child.id}/send`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            input,
+            model: "claude-opus-5-5",
+            mode: "auto",
+          }),
+        },
+      );
+
+      expect(response.status).toBe(400);
+      expect(await readJson(response)).toMatchObject({
+        code: "child_model_conflict",
+        details: {
+          providerId: "claude-code",
+          requestedModel: "claude-opus-5-5",
+          childThreadModel: "claude-sonnet-5-5",
+          reason: "parent",
+        },
+      });
+      expect(
+        listQueuedThreadCommands(harness, "thread.stop", child.id),
+      ).toEqual([]);
+      expect(
+        listQueuedThreadCommands(harness, "turn.submit", child.id),
+      ).toEqual([]);
+    });
+  });
+
+  it("refuses an explicit child model that conflicts with provider policy", async () => {
+    await withTestHarness(async (harness) => {
+      const { host } = seedHostSession(harness.deps);
+      const { project } = seedProjectWithSource(harness.deps, {
+        hostId: host.id,
+        path: "/tmp/thread-defaults-child-conflict-counterfactual",
+      });
+      const environment = seedEnvironment(harness.deps, {
+        hostId: host.id,
+        projectId: project.id,
+        path: "/tmp/thread-defaults-child-conflict-counterfactual",
+      });
+      const parentThread = seedThread(harness.deps, {
+        environmentId: environment.id,
+        projectId: project.id,
+      });
+      const threadCountBefore = harness.db
+        .select()
+        .from(threads)
+        .where(eq(threads.projectId, project.id))
+        .all().length;
+
+      const response = await harness.app.request("/api/v1/threads", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          origin: "cli",
+          projectId: project.id,
+          providerId: "claude-code",
+          parentThreadId: parentThread.id,
+          model: "claude-opus-5-5",
+          input: [{ type: "text", text: "Review the change" }],
+          environment: { type: "reuse", environmentId: environment.id },
+        }),
+      });
+
+      expect(response.status).toBe(400);
+      expect(await readJson(response)).toMatchObject({
+        code: "child_model_conflict",
+        details: {
+          providerId: "claude-code",
+          requestedModel: "claude-opus-5-5",
+          childThreadModel: "claude-sonnet-5-5",
+          reason: "parent",
+        },
+      });
+      expect(
+        harness.db
+          .select()
+          .from(threads)
+          .where(eq(threads.projectId, project.id))
+          .all(),
+      ).toHaveLength(threadCountBefore);
+      expect(listQueuedThreadCommands(harness, "thread.start")).toEqual([]);
+    });
+  });
+
+  it("refuses an explicit model when an active thread spawner makes the new thread a child", async () => {
+    await withTestHarness(async (harness) => {
+      const { host } = seedHostSession(harness.deps);
+      const { project } = seedProjectWithSource(harness.deps, {
+        hostId: host.id,
+        path: "/tmp/thread-defaults-spawner-conflict",
+      });
+      const environment = seedEnvironment(harness.deps, {
+        hostId: host.id,
+        projectId: project.id,
+        path: "/tmp/thread-defaults-spawner-conflict",
+      });
+      const spawnerThreadId = seedSpawner(harness, {
+        kind: "active",
+        projectId: project.id,
+        hostId: host.id,
+      });
+      const threadCountBefore = harness.db
+        .select()
+        .from(threads)
+        .where(eq(threads.projectId, project.id))
+        .all().length;
+
+      const response = await harness.app.request("/api/v1/threads", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          origin: "cli",
+          projectId: project.id,
+          providerId: "claude-code",
+          spawnedByThreadId: spawnerThreadId,
+          model: "claude-opus-5-5",
+          input: [{ type: "text", text: "Review the change" }],
+          environment: { type: "reuse", environmentId: environment.id },
+        }),
+      });
+
+      expect(response.status).toBe(400);
+      expect(await readJson(response)).toMatchObject({
+        code: "child_model_conflict",
+        details: {
+          providerId: "claude-code",
+          requestedModel: "claude-opus-5-5",
+          childThreadModel: "claude-sonnet-5-5",
+          reason: "spawner",
+        },
+      });
+      expect(
+        harness.db
+          .select()
+          .from(threads)
+          .where(eq(threads.projectId, project.id))
+          .all(),
+      ).toHaveLength(threadCountBefore);
+      expect(listQueuedThreadCommands(harness, "thread.start")).toEqual([]);
+    });
+  });
+
+  it("cleans up when a spawner becomes active between precheck and insert", async () => {
+    await withTestHarness(async (harness) => {
+      const { host } = seedHostSession(harness.deps);
+      const { project } = seedProjectWithSource(harness.deps, {
+        hostId: host.id,
+        path: "/tmp/thread-defaults-spawner-race",
+      });
+      const environment = seedEnvironment(harness.deps, {
+        hostId: host.id,
+        projectId: project.id,
+        path: "/tmp/thread-defaults-spawner-race",
+      });
+      const spawnerThreadId = seedSpawner(harness, {
+        kind: "idle",
+        projectId: project.id,
+        hostId: host.id,
+      });
+      if (spawnerThreadId === undefined) throw new Error("Spawner missing");
+      const registry = harness.deps.providerRegistry;
+      const whenRegistrationsSettled =
+        registry.whenRegistrationsSettled.bind(registry);
+      let settleCount = 0;
+      registry.whenRegistrationsSettled = async () => {
+        await whenRegistrationsSettled();
+        settleCount += 1;
+        if (settleCount === 2) {
+          harness.db
+            .update(threads)
+            .set({ status: "active" })
+            .where(eq(threads.id, spawnerThreadId))
+            .run();
+        }
+      };
+      const threadCountBefore = harness.db
+        .select()
+        .from(threads)
+        .where(eq(threads.projectId, project.id))
+        .all().length;
+
+      const response = await harness.app.request("/api/v1/threads", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          origin: "cli",
+          projectId: project.id,
+          providerId: "claude-code",
+          spawnedByThreadId: spawnerThreadId,
+          model: "claude-opus-5-5",
+          input: [{ type: "text", text: "Review the change" }],
+          environment: { type: "reuse", environmentId: environment.id },
+        }),
+      });
+
+      expect(response.status).toBe(400);
+      expect(await readJson(response)).toMatchObject({
+        code: "child_model_conflict",
+        details: { reason: "spawner" },
+      });
+      const threadsAfter = harness.db
+        .select()
+        .from(threads)
+        .where(eq(threads.projectId, project.id))
+        .all();
+      expect(threadsAfter).toHaveLength(threadCountBefore + 1);
+      expect(
+        threadsAfter.filter((thread) => thread.deletedAt !== null),
+      ).toHaveLength(1);
+      expect(listQueuedThreadCommands(harness, "thread.start")).toEqual([]);
+    });
+  });
 
   it.each([
     { name: "child", parent: true, expected: "claude-sonnet-5-5" },
@@ -500,6 +774,47 @@ describe("public thread default routes", () => {
           environmentId: environment.id,
           providerThreadId: "provider-claude-followup",
         });
+        const eventsBefore = listEvents(harness.db, { threadId: thread.id });
+
+        if (parent || spawned) {
+          for (const requestOptions of [
+            { mode: "auto" as const },
+            { mode: "auto" as const, senderThreadId: parentThread.id },
+            { mode: "steer" as const },
+          ]) {
+            const response = await harness.app.request(
+              `/api/v1/threads/${thread.id}/send`,
+              {
+                method: "POST",
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify({
+                  input: [{ type: "text", text: "Keep going", mentions: [] }],
+                  ...requestOptions,
+                  model: "claude-opus-5-5",
+                  permissionMode: "full",
+                  reasoningLevel: "high",
+                  serviceTier: "default",
+                }),
+              },
+            );
+
+            expect(response.status).toBe(400);
+            expect(await readJson(response)).toMatchObject({
+              code: "child_model_conflict",
+            });
+          }
+          expect(listEvents(harness.db, { threadId: thread.id })).toEqual(
+            eventsBefore,
+          );
+          expect(getThreadExecutionOverride(harness.db, thread.id)).toEqual({
+            modelOverride: null,
+            reasoningLevelOverride: null,
+          });
+          expect(
+            listQueuedThreadCommands(harness, "turn.submit", thread.id),
+          ).toEqual([]);
+          return;
+        }
 
         const response = await harness.app.request(
           `/api/v1/threads/${thread.id}/send`,
@@ -1083,7 +1398,13 @@ describe("public thread default routes", () => {
 function seedSpawner(
   harness: TestAppHarness,
   args: {
-    kind: "active" | "missing" | "idle" | "other-project" | "archived" | undefined;
+    kind:
+      | "active"
+      | "missing"
+      | "idle"
+      | "other-project"
+      | "archived"
+      | undefined;
     projectId: string;
     hostId: string;
   },

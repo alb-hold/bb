@@ -8,6 +8,7 @@ import {
   markThreadDeleted,
   getEnvironment,
   getThread,
+  getThreadSpawner,
 } from "@bb/db";
 import { randomUUID } from "node:crypto";
 import {
@@ -50,8 +51,10 @@ import { configureThreadPlugins } from "./dispatch-hooks.js";
 import {
   createThreadRecord,
   getThreadSafe,
+  resolveRecordableSpawner,
   requirePublicProjectForThreadCreate,
 } from "./thread-create-helpers.js";
+import { assertRequestedModelAllowed } from "./child-thread-model.js";
 import {
   resolveStableThreadRequestEnvironment,
   type ResolvedStableThreadRequestEnvironment,
@@ -456,6 +459,18 @@ async function createPendingThreadAndAttemptFirstDispatch(
   });
   let execution: Awaited<ReturnType<typeof buildExecutionOptions>>;
   try {
+    if (args.nativeTerminal === null) {
+      await assertRequestedModelAllowed(deps, {
+        childScope: thread.parentThreadId
+          ? "parent"
+          : getThreadSpawner(deps.db, thread.id) === null
+            ? null
+            : "spawner",
+        model: args.request.model,
+        providerId: thread.providerId,
+        source: args.request.executionInputSources?.model,
+      });
+    }
     await configureThreadPlugins(
       thread,
       args.request.experimental_pluginCreateData,
@@ -864,6 +879,23 @@ export async function createThreadFromRequest(
     request.nativeTerminal === true
       ? requireNativeTerminalProvider(deps, request.providerId)
       : null;
+
+  if (nativeTerminalProvider === null) {
+    const recordableSpawner = resolveRecordableSpawner(deps, {
+      projectId: request.projectId,
+      spawnedByThreadId: request.spawnedByThreadId,
+    });
+    await assertRequestedModelAllowed(deps, {
+      childScope: request.parentThreadId
+        ? "parent"
+        : recordableSpawner === null
+          ? null
+          : "spawner",
+      model: request.model,
+      providerId: request.providerId,
+      source: request.executionInputSources?.model,
+    });
+  }
 
   const { environmentId, environmentIntent } =
     await resolveThreadEnvironmentPlacement(deps, {

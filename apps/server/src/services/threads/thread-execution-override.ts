@@ -1,6 +1,7 @@
 import {
   getProjectExecutionDefaults,
   getThreadExecutionOverride,
+  getThreadSpawner,
   setThreadExecutionOverride,
   type ThreadExecutionOverride,
 } from "@bb/db";
@@ -17,6 +18,7 @@ import type { ProviderRegistryService } from "../providers/provider-registry.js"
 import { resolveSystemExecutionOptionsForValidation } from "../system/execution-options.js";
 import { getLastExecutionOptions } from "./thread-events.js";
 import { getSupportedReasoningLevelsForProvider } from "./thread-reasoning-policy.js";
+import { childThreadModel } from "./child-thread-model.js";
 
 interface ThreadExecutionOverridePatch {
   model?: string | null;
@@ -152,10 +154,17 @@ export async function recoverThreadModelOverride(
   args: RecoverThreadModelOverrideArgs,
 ): Promise<void> {
   const existing = getThreadExecutionOverride(deps.db, args.thread.id);
+  const requiredChildModel = childThreadModel({
+    parentThreadId:
+      args.thread.parentThreadId ?? getThreadSpawner(deps.db, args.thread.id),
+    declaredChildModel: deps.providerRegistry.get(args.thread.providerId)
+      ?.childThreadModel,
+  });
   const patch: ThreadExecutionOverridePatch = {};
   if (
     args.model !== undefined &&
     args.modelSource === "explicit" &&
+    (requiredChildModel === null || args.model === requiredChildModel) &&
     existing?.modelOverride != null &&
     existing.modelOverride !== args.model
   ) {

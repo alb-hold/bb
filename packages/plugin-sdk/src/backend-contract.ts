@@ -1596,9 +1596,11 @@ export interface PluginProviderDeclaration {
     scope?: PluginProviderModelCatalogScope;
     /**
      * The model every turn of a child thread runs on: a thread with a parent,
-     * or a top-level thread another thread spawned. It replaces whatever model
-     * the turn asked for or inherited. Omitted, children run like any other
-     * thread. 1–200 characters.
+     * or a top-level thread another thread spawned. An explicit request for a
+     * different model is rejected; omitted or client-preference models resolve
+     * to this model. Existing stored overrides and queued work remain readable
+     * and resolve to this model when executed. Omitted, children run like any
+     * other thread. 1–200 characters.
      */
     childThreadModel?: string;
   };

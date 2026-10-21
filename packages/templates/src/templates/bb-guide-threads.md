@@ -59,7 +59,8 @@ Spawning:
     --parent-self                  Parent to the current thread (BB_THREAD_ID)
     --lifecycle-owner-thread <id>  Archive/delete with this owner
     --provider <id>                Provider override
-    --model <model>                Model override
+    --model <model>                Model override; for a child thread, an explicit
+                                   model must match the provider's child model
     --reasoning-level <level>      Reasoning level id the model lists: low, medium, high, xhigh, max, or a provider-specific id
     --environment <id-or-path>     Attach to an existing environment (ID or workspace path)
     --new-environment <kind>       Create a fresh personal workspace or managed worktree
