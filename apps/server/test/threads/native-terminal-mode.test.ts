@@ -29,6 +29,7 @@ import * as interactiveRequests from "../../src/internal/interactive-requests.js
 import { applyLoggedThreadLifecycleEvent } from "../../src/services/threads/lifecycle-outcome.js";
 import { stopThreadForCurrentState } from "../../src/services/threads/thread-lifecycle.js";
 import {
+  isNativeTerminalRebindInFlight,
   NATIVE_TOOL_CREDENTIAL_ENV,
   reopenNativeTerminalsAfterDaemonReconnect,
 } from "../../src/services/threads/native-terminal-threads.js";
@@ -2083,6 +2084,7 @@ describe("native terminal activity evidence across a swap", () => {
     const started = await startNativeThread(fixture);
     const { thread } = started;
     const window = await startRebindWindow(fixture, started, "disconnected");
+    expect(isNativeTerminalRebindInFlight(thread.id)).toBe(true);
     expect(evidenceOf(fixture, thread.id)).toBeNull();
     expect(threadStatus(fixture, thread.id)).toBe("active");
 
@@ -2101,9 +2103,42 @@ describe("native terminal activity evidence across a swap", () => {
     expect(threadStatus(fixture, thread.id)).toBe("idle");
 
     await window.complete();
+    expect(isNativeTerminalRebindInFlight(thread.id)).toBe(false);
     expect(evidenceOf(fixture, thread.id)).toBeNull();
     await report(fixture, thread.id, `Bearer ${window.newCredential}`);
     expect(evidenceOf(fixture, thread.id)).not.toBeNull();
+  });
+
+  it("ends the rebind window when the reattach fails, so the binding can be stamped again", async () => {
+    const fixture = await createFixture();
+    const started = await startNativeThread(fixture);
+    const { thread } = started;
+    await report(fixture, thread.id, `Bearer ${started.credential}`);
+    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+      hostId: fixture.hostId,
+      sessionId: fixture.sessionId,
+      message: {
+        type: "terminal.exited",
+        terminalId: started.open.terminalId,
+        exitCode: null,
+        closeReason: "daemon-disconnect",
+      },
+    });
+    const create = vi
+      .spyOn(fixture.harness.deps.terminalSessions, "createTerminal")
+      .mockRejectedValue(new Error("the host never answered"));
+    try {
+      const response = await postJson(
+        fixture,
+        `/threads/${thread.id}/native-terminal/open`,
+        {},
+      );
+      expect(response.status).toBeGreaterThanOrEqual(500);
+      expect(create).toHaveBeenCalledTimes(1);
+      expect(isNativeTerminalRebindInFlight(thread.id)).toBe(false);
+    } finally {
+      create.mockRestore();
+    }
   });
 
   describe("lifecycle effects of a report", () => {
