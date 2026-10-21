@@ -1325,6 +1325,15 @@ export function ThreadTerminalView({
       }
     };
     let savedOutputLineAnchor: TerminalOutputLineAnchor | null = null;
+    const updateSavedOutputLineAnchor = (
+      anchor: TerminalOutputLineAnchor | null,
+    ) => {
+      savedOutputLineAnchor = outputLineAnchorTracker.updatePinnedAnchor(
+        savedOutputLineAnchor,
+        anchor,
+        outputLineAnchors,
+      );
+    };
     let hasRestoredViewport = false;
     let hasManualScrollIntent = false;
     let manualScrollTimeout: ReturnType<typeof setTimeout> | null = null;
@@ -1606,7 +1615,7 @@ export function ThreadTerminalView({
             outputLineAnchors,
             visibleLine,
           );
-          savedOutputLineAnchor = mappedOutput ?? null;
+          updateSavedOutputLineAnchor(mappedOutput ?? null);
           lineOffset = mappedOutput
             ? Math.max(0, visibleLine - mappedOutput.line)
             : 0;
@@ -1885,7 +1894,7 @@ export function ThreadTerminalView({
                 (candidate) => candidate.sequence === sequence,
               );
               if (sequence === savedViewportAnchor?.outputSequence) {
-                savedOutputLineAnchor = outputAnchor ?? null;
+                updateSavedOutputLineAnchor(outputAnchor ?? null);
               }
             },
             replayNextSeq,
@@ -1974,7 +1983,7 @@ export function ThreadTerminalView({
                 (candidate) => candidate.sequence === sequence,
               );
               if (sequence === savedViewportAnchor?.outputSequence) {
-                savedOutputLineAnchor = outputAnchor ?? null;
+                updateSavedOutputLineAnchor(outputAnchor ?? null);
               }
             },
           });

@@ -20,6 +20,11 @@ export function createTerminalOutputLineAnchorTracker(args: {
   getCurrentLine: () => number;
 }): {
   recordOutputStart: (sequence: number) => TerminalOutputLineAnchor | undefined;
+  updatePinnedAnchor: (
+    current: TerminalOutputLineAnchor | null,
+    next: TerminalOutputLineAnchor | null,
+    retainedAnchors: readonly TerminalOutputLineAnchor[],
+  ) => TerminalOutputLineAnchor | null;
   forget: (anchors: readonly TerminalOutputLineAnchor[]) => void;
   reset: () => void;
   dispose: () => void;
@@ -34,12 +39,14 @@ export function createTerminalOutputLineAnchorTracker(args: {
   let reference: { marker: NonNullable<ReturnType<typeof registerMarker>> } | undefined;
   let disposed = false;
   const anchors = new Set<MutableAnchor>();
+  const pinnedAnchors = new Set<MutableAnchor>();
 
   const expireAnchors = () => {
     for (const anchor of anchors) {
       anchor.expired = true;
     }
     anchors.clear();
+    pinnedAnchors.clear();
   };
 
   const attachReference = () => {
@@ -114,8 +121,25 @@ export function createTerminalOutputLineAnchorTracker(args: {
       anchors.add(anchor);
       return anchor;
     },
+    updatePinnedAnchor: (
+      current: TerminalOutputLineAnchor | null,
+      next: TerminalOutputLineAnchor | null,
+      retainedAnchors: readonly TerminalOutputLineAnchor[],
+    ) => {
+      if (current === next) return next;
+      if (current !== null) {
+        pinnedAnchors.delete(current as MutableAnchor);
+        if (!retainedAnchors.includes(current)) {
+          anchors.delete(current as MutableAnchor);
+          (current as MutableAnchor).expired = true;
+        }
+      }
+      if (next !== null) pinnedAnchors.add(next as MutableAnchor);
+      return next;
+    },
     forget: (dropped: readonly TerminalOutputLineAnchor[]) => {
       for (const anchor of dropped) {
+        if (pinnedAnchors.has(anchor as MutableAnchor)) continue;
         anchors.delete(anchor as MutableAnchor);
         (anchor as MutableAnchor).expired = true;
       }
