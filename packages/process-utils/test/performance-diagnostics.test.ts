@@ -15,12 +15,14 @@ import { performance } from "node:perf_hooks";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { console as inspectorConsole } from "node:inspector";
 import { setTimeout as delay } from "node:timers/promises";
-import type { WorkerOptions } from "node:worker_threads";
+import type { TransferListItem, WorkerOptions } from "node:worker_threads";
 import { startPerformanceDiagnostics } from "../src/performance-diagnostics.js";
 
 const workerOverrides = vi.hoisted(() => ({
   nonErrorFailure: false,
   uncoercibleFailure: false,
+  failureAckCount: 0,
+  workerExitCount: 0,
 }));
 
 vi.mock("node:worker_threads", async (importOriginal) => {
@@ -53,6 +55,19 @@ vi.mock("node:worker_threads", async (importOriginal) => {
           source = replaced;
         }
         super(source, options);
+        if (workerOverrides.uncoercibleFailure)
+          this.on("exit", () => {
+            workerOverrides.workerExitCount++;
+          });
+      }
+
+      override postMessage(
+        value: unknown,
+        transferList?: readonly TransferListItem[],
+      ): void {
+        if (workerOverrides.uncoercibleFailure && value === "failure-ack")
+          workerOverrides.failureAckCount++;
+        super.postMessage(value, transferList);
       }
     },
   };
@@ -62,6 +77,8 @@ describe("performance diagnostics", () => {
   afterEach(() => {
     workerOverrides.nonErrorFailure = false;
     workerOverrides.uncoercibleFailure = false;
+    workerOverrides.failureAckCount = 0;
+    workerOverrides.workerExitCount = 0;
     inspectorConsole.profileEnd("unrelated-user-capture");
   });
 
@@ -371,6 +388,8 @@ describe("performance diagnostics", () => {
     );
     const warnings: { error: unknown; message: string }[] = [];
     workerOverrides.uncoercibleFailure = true;
+    workerOverrides.failureAckCount = 0;
+    workerOverrides.workerExitCount = 0;
     const monitor = await startPerformanceDiagnostics({
       dataDir,
       logger: {
@@ -387,7 +406,7 @@ describe("performance diagnostics", () => {
       },
     });
     try {
-      await monitor.stop();
+      await expect(monitor.stop()).resolves.toBeUndefined();
       expect(warnings).toHaveLength(1);
       expect(warnings[0]?.message).toBe(
         "CPU profiling stopped; performance summaries remain enabled",
@@ -396,6 +415,8 @@ describe("performance diagnostics", () => {
       expect(error).toBeInstanceOf(Error);
       if (!(error instanceof Error)) throw new Error("Expected profiler error");
       expect(error.message).toBe("Non-Error profile failure");
+      expect(workerOverrides.failureAckCount).toBe(1);
+      expect(workerOverrides.workerExitCount).toBe(1);
     } finally {
       await monitor.stop();
       workerOverrides.uncoercibleFailure = false;
