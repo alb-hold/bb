@@ -12,7 +12,7 @@ import {
   utcDay,
 } from "../../src/services/ai/writing-assistance.js";
 import { registerFakeAiService } from "../helpers/ai-services.js";
-import { gappedWebm } from "../helpers/audio-fixtures.js";
+import { gappedWebm, nestedMp4 } from "../helpers/audio-fixtures.js";
 import { withTestHarness, type TestAppHarness } from "../helpers/test-app.js";
 
 function wav(seconds: number, sampleRate = 1_000, metadataBytes = 0): File {
@@ -1098,6 +1098,15 @@ describe("dictation segments", () => {
       });
       expect(unreadable.status).toBe(400);
       await expect(unreadable.json()).resolves.toMatchObject({
+        message: expect.stringContaining("Unsupported or unreadable audio"),
+      });
+      const nested = await postSegment(harness, {
+        file: new File([nestedMp4(3_000_000)], "dictation-1.m4a", {
+          type: "audio/mp4",
+        }),
+      });
+      expect(nested.status).toBe(400);
+      await expect(nested.json()).resolves.toMatchObject({
         message: expect.stringContaining("Unsupported or unreadable audio"),
       });
       const empty = await postSegment(harness, { file: wav(0) });

@@ -169,3 +169,18 @@ export function mp4WithTimeline(
   else view.setUint32(body + 4, seconds * scale);
   return bytes;
 }
+
+export function nestedMp4(depth: number): Uint8Array<ArrayBuffer> {
+  const code = (type: string) => [...type].map((char) => char.charCodeAt(0));
+  const ftyp = [0, 0, 0, 16, ...code("ftypM4A "), 0, 0, 0, 0];
+  const bytes = new Uint8Array(ftyp.length + depth * 8);
+  bytes.set(ftyp);
+  const view = new DataView(bytes.buffer);
+  const moov = code("moov");
+  for (let level = 0; level < depth; level += 1) {
+    const at = ftyp.length + level * 8;
+    view.setUint32(at, bytes.length - at);
+    bytes.set(moov, at + 4);
+  }
+  return bytes;
+}

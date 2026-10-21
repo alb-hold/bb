@@ -5,6 +5,7 @@ import {
   gappedWebm,
   liveWebm,
   mp4WithTimeline,
+  nestedMp4,
   oggWithLastGranule,
   opusBlock,
   wavWithMetadata,
@@ -83,5 +84,13 @@ describe("measureAudioSeconds", () => {
     const mp4 = fixture("tone-3s.m4a");
     expect(measureAudioSeconds(mp4.subarray(0, mp4.length - 3))).toBeNull();
     expect(measureAudioSeconds(new Uint8Array(64).fill(1))).toBeNull();
+  });
+
+  it("refuses an MP4 whose boxes nest deeper than any audio file, without exhausting the stack", () => {
+    const deep = nestedMp4(3_000_000);
+    expect(deep.length).toBeLessThan(25 * 1024 * 1024);
+    expect(() => measureAudioSeconds(deep)).not.toThrow();
+    expect(measureAudioSeconds(deep)).toBeNull();
+    expect(measureAudioSeconds(nestedMp4(17))).toBeNull();
   });
 });

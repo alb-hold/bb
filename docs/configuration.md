@@ -325,7 +325,8 @@ WAV): the longer of its summed audio frames and the playback timeline its
 timestamps describe, so a gap between timestamps counts as recorded time (for
 WAV, only the declared audio data counts, not metadata after it). Only that
 measured length counts against `dailyDictationMinutes`; the request carries no
-client-reported length. A clip it cannot measure, an empty one, or one longer
+client-reported length. A clip it cannot measure (including an MP4 whose boxes
+nest more than 16 levels deep), an empty one, or one longer
 than 120 seconds is refused before transcription. An upload over 25 MiB
 (26214400 bytes), whether it declares its length or is sent chunked, is
 refused with 413 while it streams in, before the form is parsed. A formatted phrase that

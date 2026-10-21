@@ -1148,6 +1148,22 @@ describe("validateFormattedTranscript", () => {
     },
   );
 
+  it.each([
+    ["set offset to 3 and limit to 5", "Set offset to 5 and limit to 3."],
+    ["the range is 1 to 10", "The range is 10 to 1."],
+    ["call 3 then 3 then 5", "Call 3 then 5 then 3."],
+    ["set x to 2.5 and y to 7", "Set x to 7 and y to 2.5."],
+    ["3 apples and 5 pears", "5 apples and 3 pears."],
+  ])(
+    "keeps the transcript when formatting swaps spoken numbers: %s -> %s",
+    (raw, formatted) => {
+      expect(validateFormattedTranscript(raw, formatted)).toEqual({
+        ok: false,
+        reason: "reordered",
+      });
+    },
+  );
+
   it("accepts equal numbers that keep their signs in order", () => {
     expect(
       validateFormattedTranscript(

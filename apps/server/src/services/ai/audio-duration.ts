@@ -30,6 +30,8 @@ const MP4_CONTAINERS = new Set([
   "mvex",
 ]);
 
+const MP4_MAX_DEPTH = 16;
+
 const AAC_SAMPLE_RATES = [
   96_000, 88_200, 64_000, 48_000, 44_100, 32_000, 24_000, 22_050, 16_000,
   12_000, 11_025, 8_000, 7_350,
@@ -282,7 +284,8 @@ function mp4Seconds(bytes: Uint8Array): number | null {
     version === 1
       ? readUint32(bytes, at) * 0x100000000 + readUint32(bytes, at + 4)
       : readUint32(bytes, at);
-  const walk = (start: number, end: number): boolean => {
+  const walk = (start: number, end: number, depth: number): boolean => {
+    if (depth > MP4_MAX_DEPTH) return false;
     let offset = start;
     while (offset < end) {
       if (offset + 8 > end) return false;
@@ -309,7 +312,7 @@ function mp4Seconds(bytes: Uint8Array): number | null {
           time.fragmentDefault = time.defaultDuration;
           time.fragmentTime = 0;
         }
-        if (!walk(body, boxEnd)) return false;
+        if (!walk(body, boxEnd, depth + 1)) return false;
       } else if (type === "mvhd" || type === "mdhd") {
         const scaleAt = body + (version === 1 ? 20 : 12);
         if (scaleAt + (version === 1 ? 12 : 8) > boxEnd) return false;
@@ -352,12 +355,13 @@ function mp4Seconds(bytes: Uint8Array): number | null {
         if (body + (version === 1 ? 12 : 8) > boxEnd) return false;
         time.fragmentTime = readTime(body + 4, version);
       } else if (type === "stsd") {
-        if (!walk(body + 8, boxEnd)) return false;
+        if (!walk(body + 8, boxEnd, depth + 1)) return false;
       } else if (type === "mp4a") {
         if (body + 28 > boxEnd) return false;
         const version = (bytes[body + 8]! << 8) | bytes[body + 9]!;
         const entry = [28, 44, 64][version];
-        if (entry === undefined || !walk(body + entry, boxEnd)) return false;
+        if (entry === undefined || !walk(body + entry, boxEnd, depth + 1))
+          return false;
       } else if (type === "esds") {
         found.sampleRate = aacSampleRate(bytes.subarray(body, boxEnd));
         if (found.sampleRate === null) return false;
@@ -383,7 +387,7 @@ function mp4Seconds(bytes: Uint8Array): number | null {
     }
     return true;
   };
-  if (!walk(0, bytes.length) || found.tracks !== 1) return null;
+  if (!walk(0, bytes.length, 0) || found.tracks !== 1) return null;
   if (found.sampleRate === null || found.samples === 0) return null;
   const movie =
     time.movieScale > 0
