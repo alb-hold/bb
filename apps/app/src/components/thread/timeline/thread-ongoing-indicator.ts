@@ -8,6 +8,7 @@ export function resolveThreadOngoingIndicator({
   displayStatus,
   isStopping,
   isTurnSubmitting,
+  nativeActivityUnconfirmed,
   timelineLoading,
 }: {
   activeBackgroundAgentCount: number;
@@ -16,6 +17,7 @@ export function resolveThreadOngoingIndicator({
   displayStatus: ThreadRuntimeDisplayStatus;
   isStopping: boolean;
   isTurnSubmitting: boolean;
+  nativeActivityUnconfirmed: boolean;
   timelineLoading: boolean;
 }): { label: string | undefined; show: boolean } {
   const isProvisioningDisplayStatus =
@@ -25,7 +27,8 @@ export function resolveThreadOngoingIndicator({
     activeBackgroundCommandCount > 0 ||
     activeBackgroundAgentCount > 0;
   const backgroundOnlyIndicatorLabel =
-    displayStatus === "idle" && hasActiveBackgroundWork
+    (displayStatus === "idle" || nativeActivityUnconfirmed) &&
+    hasActiveBackgroundWork
       ? "Background work running"
       : undefined;
   return {
@@ -37,7 +40,8 @@ export function resolveThreadOngoingIndicator({
       (isProvisioningDisplayStatus ||
         (!timelineLoading &&
           (isTurnSubmitting ||
-            isRunningThreadRuntimeDisplayStatus(displayStatus) ||
+            (isRunningThreadRuntimeDisplayStatus(displayStatus) &&
+              !nativeActivityUnconfirmed) ||
             backgroundOnlyIndicatorLabel !== undefined))),
   };
 }

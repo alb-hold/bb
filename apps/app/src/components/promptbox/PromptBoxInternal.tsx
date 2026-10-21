@@ -181,6 +181,7 @@ import {
   typeaheadSuggestionKey,
   type TypeaheadSuggestion,
 } from "./mentions/MentionMenu";
+import { useTypeaheadMenuMaxHeight } from "./useTypeaheadMenuMaxHeight";
 import { parsePromptMentionClipboardElement } from "./mentions/prompt-mention-clipboard";
 import {
   readMessageClipboardHtml,
@@ -2742,6 +2743,11 @@ export function PromptBoxInternal({
     activeTrigger !== null &&
     !isCommandTriggerLiteral &&
     !isBareNonDefaultMentionTrigger;
+
+  useTypeaheadMenuMaxHeight(
+    typeaheadMenuRef,
+    showTypeaheadMenu && mentionMenuPlacement === "top",
+  );
 
   const popups = useResolvedComposerPopups(
     suppressPluginComposerCustomizations ? null : composerView.scope.kind,

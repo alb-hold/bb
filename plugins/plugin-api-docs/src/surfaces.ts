@@ -52,7 +52,7 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
         bullets: [
           "Arrange New thread, Search, Plugins, Skills, and plugin pages in any layout",
           "Choose the rail or list placement, and get bb's layout around it",
-          "Keep the user's saved order, hidden items, badges, and split-view behavior",
+          "Keep saved order and badges; Cmd/Ctrl-click splits supported pages or opens Plugins/Skills in tabs",
           "Add controls to the header row beside the sidebar toggle",
         ],
         apiSymbols: [
@@ -144,6 +144,7 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
           "PluginSidebarThreadsState",
           "PluginSidebarThread",
           "PluginSidebarThread.experimental_rowState",
+          "PluginSidebarThread.experimental_nativeActivity",
           "PluginSidebarSection",
           "experimental_useArchiveEnvironmentThreads",
           "experimental_useSidebarProjectActions",
@@ -1187,6 +1188,7 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
           "Watch files, hold a wake lock, or run local commands on that machine",
           "Call the worker from server code over typed RPC",
           "Stop leftover processes before a workspace is deleted",
+          "Queue git and gh with priority, cancellation, and reserved foreground capacity",
         ],
         apiSymbols: [
           "PluginHosts",
@@ -1196,6 +1198,9 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
           "experimental_sanitizeInheritedChildProcessEnv",
           "ExperimentalSanitizeInheritedChildProcessEnvArgs",
           "experimental_spawnPortableOutputProcess",
+          "experimental_runVcsProcess",
+          "ExperimentalVcsProcessOptions",
+          "ExperimentalVcsProcessPriority",
           "experimental_defineHostEntry",
           "ExperimentalHostEntry",
           "ExperimentalHostClient",

@@ -44,6 +44,7 @@ import { getProviderIconInfo } from "@/lib/provider-icon";
 import { ProviderIconMark } from "@/components/settings/ProviderIconMark";
 import { cn } from "@bb/shared-ui/lib/utils";
 import { usePromptDraftInputThreadIds } from "@/hooks/usePromptDraftStorage";
+import { useSecondTick } from "@/hooks/useSecondTick";
 import { mobileRecentsCollapsedThreadIdsAtom } from "./mobile-recents-collapse";
 
 export const MOBILE_RECENT_ROW_HEIGHT_PX = 60;
@@ -60,6 +61,7 @@ interface GetMobileRecentThreadsArgs {
   collapsedThreadIds: ReadonlySet<string>;
   draftThreadIds: ReadonlySet<string>;
   threads: readonly ThreadListEntry[];
+  now?: number;
 }
 
 interface MobileRecentThreadRowProps {
@@ -68,6 +70,7 @@ interface MobileRecentThreadRowProps {
   projectName: string | null;
   provider: ProviderInfo | null;
   row: MobileRecentThreadRow;
+  now: number;
 }
 
 function repeatsProjectName(
@@ -210,6 +213,7 @@ export function getMobileRecentThreads({
   collapsedThreadIds,
   draftThreadIds,
   threads,
+  now,
 }: GetMobileRecentThreadsArgs): MobileRecentThreadRow[] {
   const rows: MobileRecentThreadRow[] = [];
   flattenMobileRecentNodes({
@@ -219,6 +223,7 @@ export function getMobileRecentThreads({
       threads,
       compareMobileRecentThreads,
       draftThreadIds,
+      now,
     ),
     rows,
   });
@@ -231,6 +236,7 @@ function MobileRecentThreadRow({
   projectName,
   provider,
   row,
+  now,
 }: MobileRecentThreadRowProps) {
   const {
     thread,
@@ -244,7 +250,7 @@ function MobileRecentThreadRow({
   const { providers: environmentProviders } = useSystemEnvironmentProviders();
   const threadTitle = useThreadTitleDisplayText(getThreadDisplayTitle(thread));
   const indicatorState: ThreadListIndicatorState =
-    threadListIndicatorStateForThread(thread, hasUnsubmittedDraft);
+    threadListIndicatorStateForThread(thread, hasUnsubmittedDraft, now);
   const hasHiddenChildren = hasChildren && isCollapsed;
   const trailingIndicatorState: ThreadListIndicatorState = hasHiddenChildren
     ? {
@@ -430,6 +436,9 @@ export function RootComposeMobileRecents({
     [collapsedThreadIdList],
   );
   const draftThreadIds = usePromptDraftInputThreadIds(threads);
+  const activityNow = useSecondTick(
+    threads.some((thread) => thread.runtime.nativeActivity !== undefined),
+  );
   const toggleCollapsed = useCallback(
     (threadId: string) => {
       setCollapsedThreadIdList((current) =>
@@ -457,9 +466,10 @@ export function RootComposeMobileRecents({
       getMobileRecentThreads({
         collapsedThreadIds,
         draftThreadIds,
+        now: activityNow,
         threads,
       }),
-    [collapsedThreadIds, draftThreadIds, threads],
+    [activityNow, collapsedThreadIds, draftThreadIds, threads],
   );
 
   if (!showCreatingRow && recentThreads.length === 0) {
@@ -517,6 +527,7 @@ export function RootComposeMobileRecents({
                   : (projectNamesById.get(row.thread.projectId) ?? null)
               }
               row={row}
+              now={activityNow}
             />
           ))}
         </ul>

@@ -62,9 +62,11 @@ import {
   type SidebarTabPlacement,
   type SidebarTabGroup,
 } from "./sidebarSplitLayout";
-import type { SecondaryPanelTabReorderRequest } from "./secondaryPanelTab";
+import {
+  PANEL_TAB_DRAG_DISTANCE_PX,
+  type SecondaryPanelTabReorderRequest,
+} from "./secondaryPanelTab";
 
-const PANE_DRAG_ENGAGE_DISTANCE_PX = 7;
 const PANE_EDGE_EPSILON = 1e-9;
 type SidebarSplitResizeCursor = "col-resize" | "row-resize";
 
@@ -115,6 +117,7 @@ interface SidebarSplitContainerProps {
   onToggleFullScreen: () => void;
   panelStateId: string;
   renderPane: (args: SidebarSplitPaneRenderArgs) => ReactNode;
+  splitTabToRightRequest?: { requestId: number; tabId: string } | null;
   tabs: readonly SidebarSplitTabDescriptor[];
 }
 
@@ -140,6 +143,7 @@ export function SidebarSplitContainer({
   onToggleFullScreen,
   panelStateId,
   renderPane,
+  splitTabToRightRequest = null,
   tabs,
 }: SidebarSplitContainerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -171,6 +175,7 @@ export function SidebarSplitContainer({
   const previousTabs = useRef(tabs);
   const removedTabPlacements = useRef(new Map<string, SidebarTabPlacement>());
   const previousFullScreen = useRef(isFullScreen);
+  const handledSplitTabRequestId = useRef<number | null>(null);
   const dimsInactiveSplits = useAtomValue(dimInactiveSplitsAtom);
   const [resizeCursor, setResizeCursor] =
     useState<SidebarSplitResizeCursor | null>(null);
@@ -396,6 +401,35 @@ export function SidebarSplitContainer({
     [commitState],
   );
 
+  useEffect(() => {
+    if (
+      splitTabToRightRequest === null ||
+      handledSplitTabRequestId.current === splitTabToRightRequest.requestId ||
+      !availableTabIds.includes(splitTabToRightRequest.tabId)
+    ) {
+      return;
+    }
+    const current = stateRef.current;
+    const sourcePane = listPanes(current.layout.root).find((pane) =>
+      getSidebarGroupForPane(current, pane.paneId)?.tabIds.includes(
+        splitTabToRightRequest.tabId,
+      ),
+    );
+    if (sourcePane === undefined) return;
+    const moved = moveSidebarTab(
+      current,
+      sourcePane.paneId,
+      splitTabToRightRequest.tabId,
+      { paneId: sourcePane.paneId, zone: "right" },
+      { groupId: nextSidebarSplitGroupId(current) },
+    );
+    handledSplitTabRequestId.current = splitTabToRightRequest.requestId;
+    if (moved !== current) {
+      stateRef.current = moved;
+      setState(moved);
+    }
+  }, [availableTabIds, splitTabToRightRequest]);
+
   const removeSplit = useCallback(
     (paneId: string) => {
       commitState((current) => removeSidebarSplit(current, paneId), true);
@@ -512,7 +546,7 @@ export function SidebarSplitContainer({
         shouldEngage: (x, y) => {
           const dx = x - startX;
           const dy = y - startY;
-          if (Math.hypot(dx, dy) <= PANE_DRAG_ENGAGE_DISTANCE_PX) return false;
+          if (Math.hypot(dx, dy) <= PANEL_TAB_DRAG_DISTANCE_PX) return false;
           return (
             Math.abs(dy) > Math.abs(dx) ||
             chromeRect === null ||

@@ -132,6 +132,7 @@ interface MarkdownPreviewProps {
   sourcePrefix?: string;
   imagePolicy?: MarkdownImagePolicy;
   incrementalBlocks?: boolean;
+  tableLayout?: "breakout" | "contained";
   linkRouting?: MarkdownLinkRouting;
   threadMentions?: MarkdownThreadMentions;
   promptMentions?: MarkdownPromptMentions;
@@ -157,6 +158,7 @@ interface IsMarkdownAppRouteHrefArgs {
 }
 
 interface BuildMarkdownComponentsArgs {
+  tableLayout: "breakout" | "contained";
   imagePolicy: MarkdownImagePolicy;
   imageSourceOffset: number;
   linkRouting?: MarkdownLinkRouting;
@@ -446,6 +448,7 @@ const areMarkdownPreviewPropsEqual: MarkdownPreviewPropsEqual = (
   (previous.imagePolicy ?? "render") === (next.imagePolicy ?? "render") &&
   (previous.incrementalBlocks ?? false) === (next.incrementalBlocks ?? false) &&
   previous.urlTransform === next.urlTransform &&
+  (previous.tableLayout ?? "breakout") === (next.tableLayout ?? "breakout") &&
   areMarkdownThreadMentionsEqual({
     next: next.threadMentions,
     previous: previous.threadMentions,
@@ -1037,6 +1040,14 @@ function MarkdownBlockquote({ children }: MarkdownBlockquoteProps) {
   );
 }
 
+function ContainedMarkdownTable({ children }: MarkdownTableProps) {
+  return (
+    <div className="my-2 max-w-full overflow-x-auto">
+      <table className="border border-border">{children}</table>
+    </div>
+  );
+}
+
 function MarkdownTable({ children }: MarkdownTableProps) {
   const breakoutRef = useMarkdownTableContentWidthVariable();
 
@@ -1152,6 +1163,7 @@ function resolveMarkdownSourceMedia({
 const EMPTY_THREAD_IDS: readonly string[] = [];
 
 function buildMarkdownComponents({
+  tableLayout,
   imagePolicy,
   imageSourceOffset,
   linkRouting,
@@ -1480,7 +1492,7 @@ function buildMarkdownComponents({
     pre: MarkdownPre,
     source: MarkdownSource,
     video: MarkdownVideo,
-    table: MarkdownTable,
+    table: tableLayout === "contained" ? ContainedMarkdownTable : MarkdownTable,
     td: MarkdownTableCell,
     th: MarkdownTableHeader,
     thead: MarkdownTableHead,
@@ -1791,6 +1803,7 @@ function MarkdownPreviewComponent({
   sourcePrefix = "",
   imagePolicy = "render",
   incrementalBlocks = false,
+  tableLayout = "breakout",
   linkRouting,
   threadMentions,
   promptMentions,
@@ -1870,6 +1883,7 @@ function MarkdownPreviewComponent({
   const markdownComponents = useMemo(
     () =>
       buildMarkdownComponents({
+        tableLayout,
         imagePolicy,
         imageSourceOffset,
         linkRouting,
@@ -1881,6 +1895,7 @@ function MarkdownPreviewComponent({
         hasMessageDirectives: messageDirectiveMounts !== null,
       }),
     [
+      tableLayout,
       linkRouting,
       imagePolicy,
       imageSourceOffset,
