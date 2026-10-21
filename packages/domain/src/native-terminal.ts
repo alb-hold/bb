@@ -1,6 +1,9 @@
 import { z } from "zod";
 
 export const PROVIDER_NATIVE_TERMINAL_MAX_ARGS = 16;
+export const NATIVE_TERMINAL_ACTIVITY_HEARTBEAT_INTERVAL_MS = 30_000;
+export const NATIVE_TERMINAL_ACTIVITY_FRESH_FOR_MS =
+  NATIVE_TERMINAL_ACTIVITY_HEARTBEAT_INTERVAL_MS * 3;
 
 const TEMPLATE_TOKEN = /\{([A-Za-z]+)\}/gu;
 
@@ -105,6 +108,7 @@ export const providerNativeTerminalActivitySchema = z
         idle: z.array(hookEventNameSchema).max(8),
         pending: z.array(hookEventNameSchema).min(1).max(8).optional(),
         promptField: recordFieldPathSchema,
+        sessionIdField: recordFieldPathSchema.optional(),
         permission: z
           .object({
             open: z.array(hookEventNameSchema).min(1).max(8),

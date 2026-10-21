@@ -28,6 +28,7 @@ import {
   createFlushOncePredicate,
   disposeTrailingActiveRefetches,
   executeRealtimeDirtyHandlers,
+  isNativeActivityReceiptOnlyStatusChange,
   REALTIME_ENVIRONMENT_CHANGE_REGISTRY,
   REALTIME_HOST_CHANGE_REGISTRY,
   REALTIME_PROJECT_CHANGE_REGISTRY,
@@ -96,6 +97,7 @@ interface ThreadChangeState {
   changedThreadKinds: Map<string, Set<ThreadChangeKind>>;
   globalChangeKinds: Set<ThreadChangeKind>;
   metadataByThreadId: Map<string, ThreadChangeMetadata>;
+  nativeActivityReceiptOnlyByThreadId: Map<string, boolean>;
 }
 
 interface MergeThreadChangesArg {
@@ -176,6 +178,7 @@ function createThreadChangeState(): ThreadChangeState {
     changedThreadKinds: new Map<string, Set<ThreadChangeKind>>(),
     globalChangeKinds: new Set<ThreadChangeKind>(),
     metadataByThreadId: new Map<string, ThreadChangeMetadata>(),
+    nativeActivityReceiptOnlyByThreadId: new Map<string, boolean>(),
   };
 }
 
@@ -183,6 +186,19 @@ function resetThreadChangeState(state: ThreadChangeState): void {
   state.changedThreadKinds.clear();
   state.globalChangeKinds.clear();
   state.metadataByThreadId.clear();
+  state.nativeActivityReceiptOnlyByThreadId.clear();
+}
+
+function recordNativeActivityReceiptOnly(
+  state: ThreadChangeState,
+  threadId: string,
+  receiptOnly: boolean,
+): void {
+  const previous = state.nativeActivityReceiptOnlyByThreadId.get(threadId);
+  state.nativeActivityReceiptOnlyByThreadId.set(
+    threadId,
+    previous === undefined ? receiptOnly : previous && receiptOnly,
+  );
 }
 
 function mergeThreadChanges({
@@ -213,6 +229,7 @@ function flushThreadInvalidations(
         timelineSequence: undefined,
         flushOnce,
         hasPendingInteraction: undefined,
+        nativeActivityReceiptOnly: undefined,
         projectId: undefined,
         queryClient,
         statusChange: undefined,
@@ -235,6 +252,8 @@ function flushThreadInvalidations(
           projectId: metadata?.projectId,
           queryClient,
           statusChange: metadata?.statusChange,
+          nativeActivityReceiptOnly:
+            state.nativeActivityReceiptOnlyByThreadId.get(threadId),
           threadId,
         },
         handlers: REALTIME_THREAD_CHANGE_REGISTRY[changeKind].dirty,
@@ -249,6 +268,7 @@ interface ApplyImmediateThreadChangesArgs {
   changes: readonly ThreadChangeKind[];
   id: string | undefined;
   metadata: ThreadChangeMetadata | undefined;
+  nativeActivityReceiptOnly: boolean;
   queryClient: QueryClient;
 }
 
@@ -256,6 +276,7 @@ function applyImmediateThreadChanges({
   changes,
   id,
   metadata,
+  nativeActivityReceiptOnly,
   queryClient,
 }: ApplyImmediateThreadChangesArgs): void {
   const merged = metadata
@@ -274,6 +295,7 @@ function applyImmediateThreadChanges({
         timelineSequence: merged?.timelineSequence,
         flushOnce,
         hasPendingInteraction: merged?.hasPendingInteraction,
+        nativeActivityReceiptOnly,
         projectId: merged?.projectId,
         queryClient,
         statusChange: merged?.statusChange,
@@ -502,6 +524,14 @@ export function createRealtimeCacheEffects({
       const documentVisible = visibility.isDocumentVisible();
       switch (message.entity) {
         case "thread": {
+          const nativeActivityReceiptOnly =
+            message.id !== undefined &&
+            message.changes.includes("status-changed") &&
+            isNativeActivityReceiptOnlyStatusChange(
+              queryClient,
+              message.id,
+              message.metadata?.statusChange,
+            );
           if (message.id) {
             applyRealtimeThreadPatches(message.changes, {
               hasPendingInteraction: message.metadata?.hasPendingInteraction,
@@ -512,11 +542,25 @@ export function createRealtimeCacheEffects({
           }
           if (!documentVisible) {
             recordThreadChange(threadChangeState, message);
+            if (message.id && message.changes.includes("status-changed")) {
+              recordNativeActivityReceiptOnly(
+                threadChangeState,
+                message.id,
+                nativeActivityReceiptOnly,
+              );
+            }
             hasDeferredThreadChanges = true;
             break;
           }
           if (message.metadata?.eventTypes?.includes("turn/completed")) {
             recordThreadChange(threadChangeState, message);
+            if (message.id && message.changes.includes("status-changed")) {
+              recordNativeActivityReceiptOnly(
+                threadChangeState,
+                message.id,
+                nativeActivityReceiptOnly,
+              );
+            }
             invalidationScheduler.flush();
             break;
           }
@@ -534,6 +578,7 @@ export function createRealtimeCacheEffects({
               changes: immediate,
               id: message.id,
               metadata: message.id ? message.metadata : undefined,
+              nativeActivityReceiptOnly,
               queryClient,
             });
           }

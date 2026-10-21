@@ -9,6 +9,7 @@ import { ThreadTitle } from "@/components/thread/ThreadTitleMentions";
 import { useChildThreads, useThreads } from "@/hooks/queries/thread-queries";
 import { getThreadRoutePath } from "@/lib/route-paths";
 import { getThreadDisplayTitle } from "@/lib/thread-title";
+import { useSecondTick } from "@/hooks/useSecondTick";
 import { InfoList, InfoListRow, InfoRowTime, InfoSection } from "./info-list";
 import { useInfoSectionCollapse } from "./useInfoSectionCollapse";
 
@@ -26,6 +27,9 @@ export function RelatedThreadsSection({
   idleIcon,
 }: RelatedThreadsSectionProps) {
   const collapse = useInfoSectionCollapse(sectionId);
+  const now = useSecondTick(
+    threads.some((thread) => thread.runtime.nativeActivity !== undefined),
+  );
   if (threads.length === 0) return null;
   return (
     <InfoSection label={label} count={threads.length} collapse={collapse}>
@@ -35,7 +39,7 @@ export function RelatedThreadsSection({
         renderItem={(relatedThread) => {
           const title = getThreadDisplayTitle(relatedThread);
           const indicator = resolveThreadListIndicator(
-            threadListIndicatorStateForThread(relatedThread, false),
+            threadListIndicatorStateForThread(relatedThread, false, now),
           );
           return (
             <InfoListRow

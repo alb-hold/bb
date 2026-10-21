@@ -1,19 +1,23 @@
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   appendStoredThreadEvent,
   closeSession,
   createEnvironment,
+  createNativeTerminalThread,
   createProject,
   createQueuedThreadMessage,
+  createTerminalSession,
   createThread,
   hostDaemonSessions,
   listQueuedThreadMessages,
   listThreadsWithPendingInteractionState,
   noopNotifier,
   openSession,
+  setNativeTerminalThreadTerminal,
   setQueuedThreadMessageFailureReason,
+  stampNativeTerminalThreadActivity,
   upsertHost,
   type DbConnection,
   type ThreadWithPendingInteractionState,
@@ -33,6 +37,8 @@ import type {
 import { HOST_RECONNECT_GRACE_MS } from "../../../src/constants.js";
 import {
   resolveThreadRuntimeState,
+  toPluginThreadDtoFromThread,
+  toThreadResponseFromThread,
   toThreadListEntryResponses,
 } from "../../../src/services/threads/thread-runtime-display.js";
 import { NotificationHub } from "../../../src/ws/hub.js";
@@ -44,6 +50,21 @@ interface SetupResult {
   db: DbConnection;
   hostId: string;
   hub: NotificationHub;
+}
+
+function countNativeActivityLookupStatements(
+  db: DbConnection,
+  work: () => void,
+): number {
+  const prepare = vi.spyOn(db.$client, "prepare");
+  try {
+    work();
+    return prepare.mock.calls.filter(([query]) =>
+      String(query).includes("last_evidence_at AS lastEvidenceAt"),
+    ).length;
+  } finally {
+    prepare.mockRestore();
+  }
 }
 
 interface OpenTestSessionArgs {
@@ -221,6 +242,48 @@ function createThreadWithEnvironment(args: CreateThreadWithEnvironmentArgs) {
   return { environment, project, thread };
 }
 
+function createLiveNativeReportingThread(args: {
+  db: DbConnection;
+  hostId: string;
+}) {
+  const { db, hostId } = args;
+  const { environment, thread } = createThreadWithEnvironment({
+    db,
+    hostId,
+    providerId: "claude-code",
+  });
+  createNativeTerminalThread(db, {
+    threadId: thread.id,
+    providerId: thread.providerId,
+    nativeSessionId: `native-session-${thread.id}`,
+    initialPrompt: null,
+    initialImages: [],
+    model: null,
+  });
+  const terminal = createTerminalSession(db, {
+    threadId: thread.id,
+    environmentId: environment.id,
+    hostId,
+    daemonSessionId: null,
+    title: "Claude Code",
+    initialCwd: environment.path ?? "/tmp",
+    cols: 120,
+    rows: 36,
+    status: "running",
+    now: 100_000,
+  });
+  setNativeTerminalThreadTerminal(db, {
+    threadId: thread.id,
+    terminalSessionId: terminal.id,
+  });
+  const receipt = stampNativeTerminalThreadActivity(db, {
+    at: 100_000,
+    terminalSessionId: terminal.id,
+    threadId: thread.id,
+  });
+  return { receipt, thread };
+}
+
 function createThreadListEntry(
   args: CreateThreadListEntryArgs,
 ): ThreadWithPendingInteractionState {
@@ -243,6 +306,160 @@ function createThreadListEntry(
 }
 
 describe("thread runtime display", () => {
+  it("applies one receipt freshness policy to native list and detail status", () => {
+    const { db, hostId, hub } = setup();
+    const session = openTestSession({ db, hostId });
+    registerTestDaemon(hub, { hostId, sessionId: session.id });
+    const native = createThreadWithEnvironment({
+      db,
+      hostId,
+      providerId: "claude-code",
+    });
+    const nativeTwo = createThreadWithEnvironment({
+      db,
+      hostId,
+      providerId: "claude-code",
+    });
+    const ordinary = createThreadWithEnvironment({ db, hostId });
+    for (const thread of [native.thread, nativeTwo.thread]) {
+      createNativeTerminalThread(db, {
+        threadId: thread.id,
+        providerId: thread.providerId,
+        nativeSessionId: `synthetic-session-${thread.id}`,
+        initialPrompt: null,
+        initialImages: [],
+        model: null,
+      });
+      db.$client
+        .prepare(
+          "UPDATE fork_native_terminal_threads SET last_evidence_at = ? WHERE thread_id = ?",
+        )
+        .run(100_000, thread.id);
+    }
+    const nativeEntry = createThreadListEntry({
+      environmentHostId: hostId,
+      thread: native.thread,
+    });
+    const ordinaryEntry = createThreadListEntry({
+      environmentHostId: hostId,
+      thread: ordinary.thread,
+    });
+    const nativeTwoEntry = createThreadListEntry({
+      environmentHostId: hostId,
+      thread: nativeTwo.thread,
+    });
+    const oneNativeLookupStatements = countNativeActivityLookupStatements(
+      db,
+      () =>
+        toThreadListEntryResponses(
+          { db, hub, providerRegistry },
+          { now: 190_000, threads: [nativeEntry, ordinaryEntry] },
+        ),
+    );
+    const twoNativeLookupStatements = countNativeActivityLookupStatements(
+      db,
+      () =>
+        toThreadListEntryResponses(
+          { db, hub, providerRegistry },
+          {
+            now: 190_000,
+            threads: [nativeEntry, nativeTwoEntry, ordinaryEntry],
+          },
+        ),
+    );
+
+    const fresh = toThreadListEntryResponses(
+      { db, hub, providerRegistry },
+      { now: 190_000, threads: [nativeEntry, nativeTwoEntry, ordinaryEntry] },
+    );
+    const stale = toThreadListEntryResponses(
+      { db, hub, providerRegistry },
+      { now: 190_001, threads: [nativeEntry, nativeTwoEntry, ordinaryEntry] },
+    );
+    const detail = toThreadResponseFromThread(
+      { db, hub, providerRegistry },
+      { now: 190_001, thread: native.thread },
+    );
+
+    expect(fresh[0]?.runtime.nativeActivity?.confirmation).toBe("confirmed");
+    expect(fresh[0]?.listIndicator).toBe("working");
+    expect(fresh[1]?.runtime.nativeActivity?.confirmation).toBe("confirmed");
+    expect(fresh[1]?.listIndicator).toBe("working");
+    expect(stale[0]?.runtime.nativeActivity?.confirmation).toBe("unconfirmed");
+    expect(stale[0]?.listIndicator).toBe("none");
+    expect(stale[1]?.runtime.nativeActivity?.confirmation).toBe("unconfirmed");
+    expect(stale[1]?.listIndicator).toBe("none");
+    expect(detail.runtime.nativeActivity?.confirmation).toBe("unconfirmed");
+    expect(stale[2]?.runtime.nativeActivity).toBeUndefined();
+    expect(stale[2]?.listIndicator).toBe("working");
+    expect(oneNativeLookupStatements).toBe(1);
+    expect(twoNativeLookupStatements).toBe(oneNativeLookupStatements);
+  });
+
+  it("projects native receipt freshness and edit policy through the plugin DTO", () => {
+    const { db, hostId, hub } = setup();
+    const { receipt, thread } = createLiveNativeReportingThread({ db, hostId });
+    expect(receipt).toEqual({ updated: true, previousLastEvidenceAt: null });
+
+    const pluginFresh = toPluginThreadDtoFromThread(
+      { db, hub, providerRegistry },
+      { now: 190_000, thread },
+    );
+    const detailFresh = toThreadResponseFromThread(
+      { db, hub, providerRegistry },
+      { now: 190_000, thread },
+    );
+    const pluginExpired = toPluginThreadDtoFromThread(
+      { db, hub, providerRegistry },
+      { now: 190_001, thread },
+    );
+    const detailExpired = toThreadResponseFromThread(
+      { db, hub, providerRegistry },
+      { now: 190_001, thread },
+    );
+
+    expect(pluginFresh.runtime.nativeActivity).toEqual({
+      lastEvidenceAt: 100_000,
+      freshForMs: 90_000,
+      confirmation: "confirmed",
+    });
+    expect(pluginFresh.runtime.nativeActivity).toEqual(
+      detailFresh.runtime.nativeActivity,
+    );
+    expect(pluginExpired.runtime.nativeActivity).toEqual({
+      lastEvidenceAt: 100_000,
+      freshForMs: 90_000,
+      confirmation: "unconfirmed",
+    });
+    expect(pluginExpired.runtime.nativeActivity).toEqual(
+      detailExpired.runtime.nativeActivity,
+    );
+    expect(providerRegistry.supportsSessionRewind("claude-code")).toBe(true);
+    expect(pluginFresh.canEditMessages).toBe(true);
+    expect(pluginFresh.canEditMessages).toBe(detailFresh.canEditMessages);
+  });
+
+  it("keeps the plugin DTO safe without a registry and preserves registered editability", () => {
+    const { db, hostId, hub } = setup();
+    const { receipt, thread } = createLiveNativeReportingThread({ db, hostId });
+    expect(receipt).toEqual({ updated: true, previousLastEvidenceAt: null });
+    const ordinary = createThreadWithEnvironment({ db, hostId });
+
+    const withoutRegistry = toPluginThreadDtoFromThread(
+      { db, hub },
+      { now: 190_000, thread },
+    );
+    const withRegistry = toPluginThreadDtoFromThread(
+      { db, hub, providerRegistry },
+      { now: 190_000, thread: ordinary.thread },
+    );
+
+    expect(withoutRegistry.runtime.nativeActivity).toBeUndefined();
+    expect(withoutRegistry.canEditMessages).toBe(false);
+    expect(providerRegistry.supportsSessionRewind("codex")).toBe(true);
+    expect(withRegistry.canEditMessages).toBe(true);
+  });
+
   it("keeps active threads active while the host daemon websocket is registered", () => {
     const { db, hostId, hub } = setup();
     const now = 1_000;
