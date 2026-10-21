@@ -1,4 +1,5 @@
 import { spawn as spawnProcess } from "node:child_process";
+import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
 import {
   chmodSync,
@@ -914,6 +915,57 @@ try {
     await expect(piped).resolves.toBe(3);
     await expect(held).resolves.toBe(3);
     expect(shown).toContain("got:hi");
+  });
+
+  it("delivers a 256 KiB final PTY burst before resolving the exit code", async () => {
+    const socketPath = socketIn();
+    const byteCount = 256 * 1024;
+    const payload = Buffer.allocUnsafe(byteCount);
+    for (let index = 0; index < payload.length; index += 1) {
+      payload[index] = 65 + (index % 26);
+    }
+    const expectedChecksum = createHash("sha256")
+      .update(payload)
+      .digest("hex");
+    const program = [
+      `const payload = Buffer.allocUnsafe(${byteCount});`,
+      "for (let index = 0; index < payload.length; index += 1) payload[index] = 65 + (index % 26);",
+      'process.stdout.write("BURST-BEGIN:");',
+      'process.stdout.write(payload, () => process.exit(7));',
+    ].join(" ");
+    const held = startHolder(socketPath, {
+      command: process.execPath,
+      args: ["-e", program],
+    });
+    const socket = await waitForNativeHolder(socketPath, 5_000);
+    if (socket === null) throw new Error("holder did not listen");
+    const input = new PassThrough();
+    const output = Object.assign(new PassThrough(), { columns: 90, rows: 30 });
+    let shown = "";
+    output.on("data", (chunk: Buffer) => {
+      shown += chunk.toString("utf8");
+    });
+    const piped = pipeNativeHolderClient(socket, {
+      input,
+      output,
+      fallbackSize: { cols: 120, rows: 40 },
+    });
+
+    await expect(piped).resolves.toBe(7);
+    await expect(held).resolves.toBe(7);
+    const marker = shown.lastIndexOf("BURST-BEGIN:");
+    expect(marker).toBeGreaterThanOrEqual(0);
+    const received = Buffer.from(
+      shown.slice(
+        marker + "BURST-BEGIN:".length,
+        marker + "BURST-BEGIN:".length + byteCount,
+      ),
+      "ascii",
+    );
+    expect(received).toHaveLength(byteCount);
+    expect(createHash("sha256").update(received).digest("hex")).toBe(
+      expectedChecksum,
+    );
   });
 
   it("delivers PTY output queued before exit before resolving the exit code", async () => {
