@@ -50,6 +50,7 @@ import { NON_TERMINAL_SESSION_STATUSES } from "./terminal-sessions.js";
 import { bumpThreadEventOwnershipEpoch } from "./event-rewrite-generation.js";
 import { createOrderKeyBetween } from "./order-keys.js";
 import { insertThreadPluginMetadata } from "./thread-plugin-metadata.js";
+import { reviveFailedEnvironmentTeardown } from "./environments.js";
 
 type ThreadWriteConnection = DbConnection | DbTransaction;
 
@@ -2288,8 +2289,11 @@ export function unarchiveThread(
         .where(and(eq(threads.id, id), isNotNull(threads.archivedAt)))
         .returning()
         .get();
-      if (unarchived)
+      if (unarchived) {
         markThreadPruningPolicyWork(tx, [unarchived.id], "rate-limits");
+        if (unarchived.environmentId !== null)
+          reviveFailedEnvironmentTeardown(tx, unarchived.environmentId);
+      }
       return unarchived;
     },
     { behavior: "immediate" },

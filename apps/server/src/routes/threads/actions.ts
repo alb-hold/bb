@@ -642,8 +642,12 @@ export function registerThreadActionRoutes(app: Hono, deps: AppDeps): void {
     }
     const unarchivedThread = getThread(deps.db, thread.id);
     if (unarchivedThread !== null) {
-      if (unarchivedThread.environmentId !== null)
+      if (unarchivedThread.environmentId !== null) {
+        deps.hub.notifyEnvironment(unarchivedThread.environmentId, [
+          "metadata-changed",
+        ]);
         refreshProviderRetirement(deps, unarchivedThread.environmentId);
+      }
       emitPluginThreadUnarchived(unarchivedThread);
     }
     void resumeNativeTerminalAfterUnarchive(deps, {
@@ -672,7 +676,11 @@ export function registerThreadActionRoutes(app: Hono, deps: AppDeps): void {
     ensureThreadIsWritable(thread);
     const resolution = resolveThreadEnvironmentRestore(deps, { thread });
     if (!resolution.restorable) {
-      throwThreadEnvironmentRestoreRefusal(resolution.refusal, thread);
+      throwThreadEnvironmentRestoreRefusal(
+        resolution.refusal,
+        thread,
+        resolution.environment,
+      );
     }
     const started = requestThreadEnvironmentRestore(deps, {
       environment: resolution.target.environment,

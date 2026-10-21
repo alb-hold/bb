@@ -6,16 +6,20 @@ import {
   getEnvironment,
   getHost,
   getThread,
-  releaseEnvironmentTeardownClaim,
   threads,
   updateHost,
 } from "@bb/db";
 import type { PluginEnvironmentProviderDeclaration } from "@get-bb/plugin-sdk";
+import type { PluginEnvironmentProviderRemoveResult } from "@get-bb/plugin-sdk/environment-provider";
 import { validatePluginEnvironmentProviderDeclaration } from "@get-bb/plugin-sdk/internal/host-policy";
 import { validatePluginMachineProviderDeclaration } from "@get-bb/plugin-sdk/internal/host-policy";
 import { eq } from "drizzle-orm";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { sweepProviderEnvironment } from "../../../src/services/environments/environment-engine.js";
+import {
+  cleanupEnvironment,
+  settleUnclaimedEnvironmentTeardown,
+  sweepProviderEnvironment,
+} from "../../../src/services/environments/environment-engine.js";
 import { toEnvironmentResponse } from "../../../src/services/environments/environment-response.js";
 import { sweepProviderMachine } from "../../../src/services/machines/provider-orchestration.js";
 import { invokePluginInline } from "../../../src/services/plugins/plugin-hook-registry.js";
@@ -158,7 +162,7 @@ describe("retained environment removal", () => {
         teardownPriorStatus: null,
       });
       expect(row(harness, environment.id).retireAt).toBeGreaterThan(
-        Date.now() + 60_000,
+        Date.now() + 30_000,
       );
       expect(
         toEnvironmentResponse(harness.db, row(harness, environment.id))
@@ -467,7 +471,7 @@ describe("retained environment removal", () => {
       expect(row(harness, environment.id).teardownStatus).toBe("removed");
     }));
 
-  it("does not claim an environment a live thread uses, and a released claim restores the snapshot", async () =>
+  it("does not claim an environment a live thread uses", async () =>
     withTestHarness(async (harness) => {
       const { environment, thread } = seedRetiring(harness);
       unarchiveDirectly(harness, thread.id);
@@ -481,6 +485,7 @@ describe("retained environment removal", () => {
         claimEnvironmentTeardown(harness.db, {
           row: queued,
           attempt: 1,
+          resumed: false,
           ignoreLiveThreads: false,
         }),
       ).toBe(false);
@@ -493,6 +498,7 @@ describe("retained environment removal", () => {
         claimEnvironmentTeardown(harness.db, {
           row: queued,
           attempt: 1,
+          resumed: false,
           ignoreLiveThreads: true,
         }),
       ).toBe(true);
@@ -501,18 +507,467 @@ describe("retained environment removal", () => {
         teardownAttempt: 1,
         teardownPriorStatus: "ready",
       });
-      expect(
-        releaseEnvironmentTeardownClaim(harness.db, {
-          ...queued,
-          teardownAttempt: 1,
-        }),
-      ).toBe(true);
+    }));
+});
+
+describe("a claim that matched no row because a thread went live", () => {
+  const INTERRUPTED = {
+    status: "error",
+    teardownStatus: "running",
+    teardownAttempt: 1,
+    teardownMessage: null,
+    teardownPriorStatus: "ready",
+    retireAt: Date.now() - 1,
+  } as const;
+
+  function settle(harness: TestAppHarness, environmentId: string): void {
+    settleUnclaimedEnvironmentTeardown(harness.deps, row(harness, environmentId));
+  }
+
+  it("fails closed for an interrupted attempt that ran the teardown script", async () =>
+    withTestHarness(async (harness) => {
+      installProvider({ policy: { retireGraceMs: 0 } });
+      const { environment, thread } = seedRetiring(harness, {
+        providerOwnsPath: true,
+      });
+      unarchiveDirectly(harness, thread.id);
+      patch(harness, environment.id, INTERRUPTED);
+      harness.db
+        .insert(environmentHookOperations)
+        .values({
+          id: `environment:${environment.id}:retention-key:teardown`,
+          operationId: "hook-1",
+          hostId: environment.hostId,
+          path: "/tmp/retention",
+          kind: "teardown",
+          startedAt: Date.now(),
+        })
+        .run();
+
+      settle(harness, environment.id);
+
+      expect(row(harness, environment.id)).toMatchObject({
+        status: "error",
+        teardownStatus: "failed",
+        teardownPriorStatus: null,
+      });
+    }));
+
+  it("fails closed for an interrupted path-less attempt", async () =>
+    withTestHarness(async (harness) => {
+      installProvider({ policy: { retireGraceMs: 0 } });
+      const { environment, thread } = seedRetiring(harness, { path: null });
+      unarchiveDirectly(harness, thread.id);
+      patch(harness, environment.id, INTERRUPTED);
+
+      settle(harness, environment.id);
+
+      expect(row(harness, environment.id)).toMatchObject({
+        status: "error",
+        teardownStatus: "failed",
+      });
+    }));
+
+  it("fails closed for an interrupted attempt that has no snapshot", async () =>
+    withTestHarness(async (harness) => {
+      installProvider({ policy: { retireGraceMs: 0 } });
+      const { environment, thread } = seedRetiring(harness);
+      unarchiveDirectly(harness, thread.id);
+      patch(harness, environment.id, {
+        ...INTERRUPTED,
+        teardownPriorStatus: null,
+      });
+
+      settle(harness, environment.id);
+
+      expect(row(harness, environment.id)).toMatchObject({
+        status: "error",
+        teardownStatus: "failed",
+      });
+    }));
+
+  it("fails closed for an interrupted preparing-owner row that never became ready", async () =>
+    withTestHarness(async (harness) => {
+      installProvider({ policy: { retireGraceMs: 0 } });
+      const { environment, thread } = seedRetiring(harness);
+      unarchiveDirectly(harness, thread.id);
+      patch(harness, environment.id, {
+        ...INTERRUPTED,
+        teardownPriorStatus: "creating",
+        ownerThreadId: thread.id,
+      });
+
+      settle(harness, environment.id);
+
+      expect(row(harness, environment.id)).toMatchObject({
+        status: "error",
+        teardownStatus: "failed",
+        ownerThreadId: thread.id,
+      });
+    }));
+
+  it("restores the snapshot for an interrupted attempt with complete no-side-effect evidence", async () =>
+    withTestHarness(async (harness) => {
+      installProvider({ policy: { retireGraceMs: 0 } });
+      const { environment, thread } = seedRetiring(harness);
+      unarchiveDirectly(harness, thread.id);
+      patch(harness, environment.id, INTERRUPTED);
+
+      settle(harness, environment.id);
+
       expect(row(harness, environment.id)).toMatchObject({
         status: "ready",
         teardownStatus: null,
         teardownPriorStatus: null,
+        teardownMessage: expect.stringContaining("thread"),
+      });
+    }));
+
+  it("releases a removal that was queued but never started, leaving the status alone", async () =>
+    withTestHarness(async (harness) => {
+      installProvider({ policy: { retireGraceMs: 0 } });
+      const { environment, thread } = seedRetiring(harness);
+      unarchiveDirectly(harness, thread.id);
+      patch(harness, environment.id, {
+        teardownStatus: "running",
+        retireAt: Date.now(),
+      });
+
+      settle(harness, environment.id);
+
+      expect(row(harness, environment.id)).toMatchObject({
+        status: "ready",
+        teardownStatus: null,
+        teardownAttempt: 0,
         retireAt: null,
       });
+    }));
+
+  it("releases a removal queued after an earlier retention instead of calling it interrupted", async () =>
+    withTestHarness(async (harness) => {
+      installProvider({ policy: { retireGraceMs: 0 } });
+      const { environment, thread } = seedRetiring(harness);
+      unarchiveDirectly(harness, thread.id);
+      patch(harness, environment.id, {
+        teardownStatus: "running",
+        teardownAttempt: 2,
+        teardownMessage: KEPT,
+        retireAt: Date.now(),
+      });
+
+      settle(harness, environment.id);
+
+      expect(row(harness, environment.id)).toMatchObject({
+        status: "ready",
+        teardownStatus: null,
+        teardownAttempt: 2,
+        retireAt: null,
+      });
+    }));
+
+  it("writes nothing when a newer attempt already owns the row", async () =>
+    withTestHarness(async (harness) => {
+      installProvider({ policy: { retireGraceMs: 0 } });
+      const { environment, thread } = seedRetiring(harness, { path: null });
+      unarchiveDirectly(harness, thread.id);
+      patch(harness, environment.id, INTERRUPTED);
+      const stale = row(harness, environment.id);
+      patch(harness, environment.id, { teardownAttempt: 2 });
+
+      settleUnclaimedEnvironmentTeardown(harness.deps, stale);
+
+      expect(row(harness, environment.id)).toMatchObject({
+        status: "error",
+        teardownStatus: "running",
+        teardownAttempt: 2,
+      });
+    }));
+});
+
+describe("what a failed attempt remembers about the earlier state", () => {
+  it("restores ready when a preflight that threw once later retains", async () =>
+    withTestHarness(async (harness) => {
+      const preflight = vi
+        .fn<
+          NonNullable<
+            PluginEnvironmentProviderDeclaration["experimental_preflightRemove"]
+          >
+        >()
+        .mockRejectedValueOnce(new Error("host unavailable"))
+        .mockResolvedValue({ status: "retained", message: KEPT });
+      const remove = vi.fn<PluginEnvironmentProviderDeclaration["remove"]>(
+        async () => ({ status: "removed" }),
+      );
+      installProvider({
+        remove,
+        experimental_preflightRemove: preflight,
+        policy: { retireGraceMs: 0 },
+      });
+      const { environment } = seedRetiring(harness);
+      retireNow(harness, environment.id);
+
+      await sweepProviderEnvironment(harness.deps, environment.id);
+      expect(row(harness, environment.id)).toMatchObject({
+        status: "error",
+        teardownStatus: "failed",
+        teardownMessage: "host unavailable",
+        teardownPriorStatus: "ready",
+      });
+
+      retireNow(harness, environment.id);
+      await sweepProviderEnvironment(harness.deps, environment.id);
+
+      expect(remove).not.toHaveBeenCalled();
+      expect(row(harness, environment.id)).toMatchObject({
+        status: "ready",
+        teardownStatus: null,
+        teardownMessage: KEPT,
+        teardownPriorStatus: null,
+      });
+    }));
+
+  it("keeps an environment that was already in error in error", async () =>
+    withTestHarness(async (harness) => {
+      const preflight = vi
+        .fn<
+          NonNullable<
+            PluginEnvironmentProviderDeclaration["experimental_preflightRemove"]
+          >
+        >()
+        .mockRejectedValueOnce(new Error("host unavailable"))
+        .mockResolvedValue({ status: "retained", message: KEPT });
+      installProvider({
+        experimental_preflightRemove: preflight,
+        policy: { retireGraceMs: 0 },
+      });
+      const { environment } = seedRetiring(harness);
+      patch(harness, environment.id, { status: "error" });
+      retireNow(harness, environment.id);
+
+      await sweepProviderEnvironment(harness.deps, environment.id);
+      retireNow(harness, environment.id);
+      await sweepProviderEnvironment(harness.deps, environment.id);
+
+      expect(row(harness, environment.id)).toMatchObject({
+        status: "error",
+        teardownStatus: null,
+        teardownMessage: KEPT,
+      });
+    }));
+
+  it("does not restore ready after a removal that was dispatched and failed", async () =>
+    withTestHarness(async (harness) => {
+      const remove = vi
+        .fn<PluginEnvironmentProviderDeclaration["remove"]>()
+        .mockResolvedValueOnce({ status: "failed", message: "rm: partial" })
+        .mockResolvedValue({ status: "retained", message: KEPT });
+      installProvider({ remove, policy: { retireGraceMs: 0 } });
+      const { environment } = seedRetiring(harness);
+      retireNow(harness, environment.id);
+
+      await sweepProviderEnvironment(harness.deps, environment.id);
+      expect(row(harness, environment.id).teardownPriorStatus).toBeNull();
+      retireNow(harness, environment.id);
+      await sweepProviderEnvironment(harness.deps, environment.id);
+
+      expect(row(harness, environment.id)).toMatchObject({
+        status: "error",
+        teardownStatus: null,
+      });
+    }));
+
+  it("does not restore ready after the teardown script started and the removal then threw", async () =>
+    withTestHarness(async (harness) => {
+      const remove = vi
+        .fn<PluginEnvironmentProviderDeclaration["remove"]>()
+        .mockRejectedValueOnce(new Error("connection lost"))
+        .mockResolvedValue({ status: "retained", message: KEPT });
+      installProvider({ remove, policy: { retireGraceMs: 0 } });
+      const { environment, host, session } = seedRetiring(harness, {
+        providerOwnsPath: true,
+      });
+      registerTestHostRpcCapture(harness.deps, {
+        hostId: host.id,
+        sessionId: session.id,
+        onEnvironmentHook: async () => {},
+      });
+      retireNow(harness, environment.id);
+
+      await sweepProviderEnvironment(harness.deps, environment.id);
+      expect(row(harness, environment.id)).toMatchObject({
+        teardownStatus: "failed",
+        teardownPriorStatus: null,
+      });
+      retireNow(harness, environment.id);
+      await sweepProviderEnvironment(harness.deps, environment.id);
+
+      expect(row(harness, environment.id)).toMatchObject({
+        status: "error",
+        teardownStatus: "failed",
+        teardownMessage: expect.stringContaining(
+          "teardown script had already started",
+        ),
+      });
+    }));
+
+  it("drops the snapshot when a preflight throws although an earlier attempt left a teardown-script row", async () =>
+    withTestHarness(async (harness) => {
+      installProvider({
+        experimental_preflightRemove: async () => {
+          throw new Error("host unavailable");
+        },
+        policy: { retireGraceMs: 0 },
+      });
+      const { environment } = seedRetiring(harness, { providerOwnsPath: true });
+      harness.db
+        .insert(environmentHookOperations)
+        .values({
+          id: `environment:${environment.id}:retention-key:teardown`,
+          operationId: "hook-1",
+          hostId: environment.hostId,
+          path: "/tmp/retention",
+          kind: "teardown",
+          startedAt: Date.now(),
+        })
+        .run();
+      retireNow(harness, environment.id);
+
+      await sweepProviderEnvironment(harness.deps, environment.id);
+
+      expect(row(harness, environment.id)).toMatchObject({
+        status: "error",
+        teardownStatus: "failed",
+        teardownPriorStatus: null,
+      });
+    }));
+
+  it("does not trust a snapshot across a resumed attempt whose preflight threw", async () =>
+    withTestHarness(async (harness) => {
+      const preflight = vi
+        .fn<
+          NonNullable<
+            PluginEnvironmentProviderDeclaration["experimental_preflightRemove"]
+          >
+        >()
+        .mockRejectedValueOnce(new Error("host unavailable"))
+        .mockResolvedValue({ status: "retained", message: KEPT });
+      installProvider({
+        experimental_preflightRemove: preflight,
+        policy: { retireGraceMs: 0 },
+      });
+      const { environment } = seedRetiring(harness);
+      patch(harness, environment.id, {
+        status: "error",
+        teardownStatus: "running",
+        teardownAttempt: 1,
+        teardownMessage: null,
+        teardownPriorStatus: "ready",
+        retireAt: Date.now() - 1,
+      });
+
+      await sweepProviderEnvironment(harness.deps, environment.id);
+      expect(row(harness, environment.id)).toMatchObject({
+        teardownStatus: "failed",
+        teardownPriorStatus: null,
+      });
+      retireNow(harness, environment.id);
+      await sweepProviderEnvironment(harness.deps, environment.id);
+
+      expect(row(harness, environment.id)).toMatchObject({
+        status: "error",
+        teardownStatus: null,
+      });
+    }));
+
+  it("snapshots a removal queued after an earlier retention instead of calling it resumed", async () =>
+    withTestHarness(async (harness) => {
+      const remove = vi
+        .fn<PluginEnvironmentProviderDeclaration["remove"]>()
+        .mockResolvedValue({ status: "retained", message: KEPT });
+      installProvider({ remove, policy: { retireGraceMs: 0 } });
+      const { environment } = seedRetiring(harness);
+      retireNow(harness, environment.id);
+      await sweepProviderEnvironment(harness.deps, environment.id);
+      expect(row(harness, environment.id)).toMatchObject({
+        status: "ready",
+        teardownStatus: null,
+        teardownAttempt: 1,
+      });
+
+      retireNow(harness, environment.id);
+      await sweepProviderEnvironment(harness.deps, environment.id);
+
+      expect(remove).toHaveBeenCalledTimes(2);
+      expect(row(harness, environment.id)).toMatchObject({
+        status: "ready",
+        teardownStatus: null,
+        teardownAttempt: 2,
+        teardownMessage: KEPT,
+      });
+    }));
+});
+
+describe("retry delays", () => {
+  const MINUTE = 60_000;
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("doubles the delay after each failed or retained attempt up to a ceiling", async () =>
+    withTestHarness(async (harness) => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      const now = new Date("2026-10-21T12:00:00Z").getTime();
+      vi.setSystemTime(now);
+      const outcomes: PluginEnvironmentProviderRemoveResult[] = [];
+      installProvider({
+        remove: async () => outcomes.shift() ?? { status: "removed" },
+        policy: { retireGraceMs: 0 },
+      });
+      const { environment } = seedRetiring(harness);
+      const delays: number[] = [];
+      for (let attempt = 1; attempt <= 9; attempt += 1) {
+        outcomes.push(
+          attempt % 2 === 0
+            ? { status: "failed", message: "rm: busy" }
+            : { status: "retained", message: KEPT },
+        );
+        patch(harness, environment.id, { retireAt: now - 1 });
+        await sweepProviderEnvironment(harness.deps, environment.id);
+        delays.push(row(harness, environment.id).retireAt! - now);
+      }
+      expect(delays.map((delay) => delay / MINUTE)).toEqual([
+        1, 2, 4, 8, 16, 32, 60, 60, 60,
+      ]);
+    }));
+
+  it("lets an explicit cleanup retry a backed-off failure at once", async () =>
+    withTestHarness(async (harness) => {
+      const remove = vi
+        .fn<PluginEnvironmentProviderDeclaration["remove"]>()
+        .mockResolvedValueOnce({ status: "failed", message: "rm: busy" })
+        .mockResolvedValue({ status: "removed" });
+      installProvider({ remove, policy: { retireGraceMs: 0 } });
+      const { environment, host, session } = seedRetiring(harness, {
+        providerOwnsPath: true,
+      });
+      registerTestHostRpcCapture(harness.deps, {
+        hostId: host.id,
+        sessionId: session.id,
+        onEnvironmentHook: async () => {},
+      });
+      retireNow(harness, environment.id);
+      await sweepProviderEnvironment(harness.deps, environment.id);
+      expect(row(harness, environment.id).teardownStatus).toBe("failed");
+      expect(row(harness, environment.id).retireAt).toBeGreaterThan(
+        Date.now(),
+      );
+
+      expect(cleanupEnvironment(harness.deps, environment.id)).toBe(true);
+
+      await vi.waitFor(() =>
+        expect(row(harness, environment.id).teardownStatus).toBe("removed"),
+      );
     }));
 });
 

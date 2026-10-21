@@ -668,9 +668,9 @@ path-reservation behavior.
 resource was deliberately kept and nothing in this call changed it. Core then
 restores the environment's status from the one-attempt snapshot it took when
 the claim began, clears teardown, records the message as
-`lifecycle.message` while the environment is retiring, and retries after ten
-minutes. A thread that becomes live on the environment before the retry stops
-the retirement as usual. Core refuses `retained` and records a failure instead
+`lifecycle.message` while the environment is retiring, and retries with a delay
+that doubles from one minute up to one hour. A thread that becomes live on the
+environment before the retry stops the retirement as usual. Core refuses `retained` and records a failure instead
 when the teardown script's durable operation row exists (the script may have
 changed the workspace), when no snapshot exists (a claim that predates the
 snapshot column), when a path-less attempt resumed after an interruption (no
@@ -692,7 +692,17 @@ Core's unarchive path refuses with `workspace_busy` while the thread's
 environment teardown is running, so a thread cannot start in a workspace that
 is being removed.
 
-Stabilization requires auditing the ten-minute retry, whether the snapshot
+A teardown that failed before the script started, before the provider's `remove`
+was called, and with no durable script row keeps its snapshot. Unarchiving a
+thread onto it (or a sweep that finds a live thread) restores that status and
+clears the failure, keeping the message. Any other failure keeps the
+environment in `error`: placement rejects with the teardown message and the
+workspace path instead of waiting, and the restore route answers 409
+`environment_not_ready`. Archiving the thread lets the next removal attempt
+finish or fail again; a removal that keeps failing needs manual recovery of the
+path.
+
+Stabilization requires auditing the one-minute-to-one-hour retry, whether the snapshot
 belongs in a durable column or a provider-owned record, whether a retained
 environment should keep blocking replacement creation for owner rows, and the
 preflight/remove window in which the workspace can change.

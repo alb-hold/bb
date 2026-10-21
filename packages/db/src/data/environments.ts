@@ -11,7 +11,7 @@ import type {
 import { areHostPathsEqual, evaluateEnvironmentLifecycleEvent } from "@bb/domain";
 import type { DbConnection, DbTransaction, DbQueryConnection } from "../connection.js";
 import type { DbNotifier } from "../notifier.js";
-import { environments, threads } from "../schema.js";
+import { environmentHookOperations, environments, threads } from "../schema.js";
 import { createEnvironmentId } from "../ids.js";
 import { hostPathContains, hostPathEquals } from "./host-path-sql.js";
 
@@ -675,12 +675,12 @@ const liveThreadsPredicate = (environmentId: string) =>
 export interface EnvironmentTeardownClaimInput {
   row: EnvironmentRow;
   attempt: number;
+  resumed: boolean;
   ignoreLiveThreads: boolean;
 }
 
 export function claimEnvironmentTeardown(db: EnvironmentWriteConnection, input: EnvironmentTeardownClaimInput): boolean {
-  const { row, attempt } = input;
-  const resumed = row.teardownStatus === "running" && row.teardownAttempt > 0 && attempt === row.teardownAttempt;
+  const { row, attempt, resumed } = input;
   return (
     db
       .update(environments)
@@ -689,7 +689,7 @@ export function claimEnvironmentTeardown(db: EnvironmentWriteConnection, input: 
         teardownStatus: "running",
         teardownAttempt: attempt,
         teardownMessage: null,
-        ...(resumed ? {} : { teardownPriorStatus: row.status }),
+        ...(resumed ? {} : { teardownPriorStatus: sql`coalesce(${environments.teardownPriorStatus}, ${environments.status})` }),
         updatedAt: Date.now(),
       })
       .where(
@@ -705,18 +705,47 @@ export function claimEnvironmentTeardown(db: EnvironmentWriteConnection, input: 
   );
 }
 
-export function releaseEnvironmentTeardownClaim(db: EnvironmentWriteConnection, row: EnvironmentRow): boolean {
+export function releaseUnstartedEnvironmentTeardown(db: EnvironmentWriteConnection, row: EnvironmentRow): boolean {
+  return (
+    db
+      .update(environments)
+      .set({ teardownStatus: null, retireAt: null, updatedAt: Date.now() })
+      .where(
+        and(
+          eq(environments.id, row.id),
+          eq(environments.teardownStatus, "running"),
+          eq(environments.teardownAttempt, row.teardownAttempt),
+          eq(environments.status, row.status),
+          isNull(environments.teardownPriorStatus),
+        ),
+      )
+      .run().changes > 0
+  );
+}
+
+export function reviveFailedEnvironmentTeardown(db: EnvironmentWriteConnection, environmentId: string): boolean {
+  const row = getEnvironment(db, environmentId);
+  if (row === null || row.teardownStatus !== "failed" || row.teardownPriorStatus === null) return false;
   return (
     db
       .update(environments)
       .set({
+        status: sql`${environments.teardownPriorStatus}`,
         teardownStatus: null,
-        retireAt: null,
-        status: sql`coalesce(${environments.teardownPriorStatus}, ${environments.status})`,
         teardownPriorStatus: null,
+        retireAt: null,
         updatedAt: Date.now(),
       })
-      .where(and(eq(environments.id, row.id), eq(environments.teardownAttempt, row.teardownAttempt), eq(environments.teardownStatus, "running")))
+      .where(
+        and(
+          eq(environments.id, environmentId),
+          eq(environments.teardownStatus, "failed"),
+          eq(environments.teardownAttempt, row.teardownAttempt),
+          isNotNull(environments.teardownPriorStatus),
+          isNull(environments.ownerThreadId),
+          sql`not exists (select 1 from ${environmentHookOperations} where ${environmentHookOperations.id} = 'environment:' || ${environments.id} || ':' || coalesce(${environments.environmentProviderInstanceKey}, 'null') || ':teardown')`,
+        ),
+      )
       .run().changes > 0
   );
 }

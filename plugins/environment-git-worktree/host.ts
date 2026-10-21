@@ -91,6 +91,7 @@ async function worktreePathsForPathKey(args: {
     const entries = await readdir(root, { withFileTypes: true });
     return entries
       .filter((entry) => entry.isDirectory())
+      .sort((left, right) => (left.name < right.name ? -1 : 1))
       .map((entry) =>
         resolveWorktreeChildPath({
           dataDir: args.dataDir,

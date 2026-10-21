@@ -134,8 +134,8 @@ Before it runs `.bb-env-teardown.sh` or stops anything, bb inspects every
 worktree it is about to remove and checks that nothing recoverable would be
 lost. If any one of them is protected, bb changes nothing, keeps the whole
 environment as it was, shows the reason as the environment's kept message, and
-retries after ten minutes. A thread that starts using the worktree in the
-meantime cancels the removal. A worktree is protected when it:
+retries with a delay that doubles from one minute up to one hour. A thread
+that starts using the worktree in the meantime cancels the removal. A worktree is protected when it:
 
 - contains a `.keep-worktree` file (create one to keep a worktree on purpose),
 - has modified tracked files or untracked files (ignored files such as
@@ -152,7 +152,11 @@ cannot be undone until the removal finishes: Unarchive answers that the
 workspace is busy. If something changes a worktree after the inspection and
 bb has already stopped its processes or removed a sibling, the environment is
 marked failed with the list of what was removed and what was kept, and it is
-never restored automatically.
+never restored automatically. A thread that is live on such an environment is
+told so and its message names the path; archive the thread so bb can finish the
+removal, then unarchive it to restore the workspace, or recover the path
+yourself. A removal that failed before bb touched anything is undone when the
+thread is unarchived.
 
 Otherwise bb stops every process whose working directory is inside the
 worktree — the agent's provider process, its background jobs (dev servers, MCP

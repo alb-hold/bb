@@ -13,7 +13,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { experimental_createHostEntryHarness } from "@get-bb/plugin-sdk/testing/host";
 import { afterEach, describe, expect, it } from "vitest";
@@ -1149,7 +1149,9 @@ describe.skipIf(process.platform === "win32")(
       const worktree = await createManagedWorktree();
       try {
         await commitFile(worktree.path, "work.txt");
-        expect(await removeFrom(worktree)).toMatchObject({ status: "retained" });
+        expect(await removeFrom(worktree)).toMatchObject({
+          status: "retained",
+        });
         expect(existsSync(worktree.completionPath)).toBe(true);
         const retried = await worktree.harness.experimental_call(
           "create",
@@ -1270,6 +1272,57 @@ setTimeout(() => {}, 300_000);`,
         });
         await expectWorktreeIntact(worktree);
         expect(existsSync(join(worktree.path, "notes.txt"))).toBe(true);
+      } finally {
+        await worktree.harness.experimental_dispose();
+      }
+    });
+
+    it("reports a Git refusal after the processes were stopped as a failure, with the worktree and marker intact", async () => {
+      const worktree = await createManagedWorktree({
+        pathKey: "thr_submodule",
+        prepareSource: async (sourcePath) => {
+          const submodule = join(dirname(sourcePath), "sub");
+          await mkdir(submodule);
+          await git(submodule, "init", "--initial-branch=main");
+          await writeFile(join(submodule, "s.txt"), "s\n");
+          await git(submodule, "add", ".");
+          await git(submodule, "commit", "-m", "sub");
+          await git(
+            sourcePath,
+            "-c",
+            "protocol.file.allow=always",
+            "submodule",
+            "add",
+            submodule,
+            "libs/sub",
+          );
+          await git(sourcePath, "commit", "-m", "add submodule");
+        },
+      });
+      try {
+        await git(
+          worktree.path,
+          "-c",
+          "protocol.file.allow=always",
+          "submodule",
+          "update",
+          "--init",
+        );
+        expect(await git(worktree.path, "status", "--porcelain")).toBe("");
+
+        const result = await removeFrom(worktree);
+
+        expect(result.status).toBe("failed");
+        const message = result.status === "failed" ? result.message : "";
+        expect(message).toContain(`Kept ${worktree.path}`);
+        expect(message).toContain("Git declined to remove it");
+        expect(message).toContain("submodules");
+        expect(existsSync(join(worktree.path, "README.md"))).toBe(true);
+        expect(existsSync(worktree.completionPath)).toBe(true);
+        expect(await registeredWorktrees(worktree.sourcePath)).toContain(
+          await realpath(worktree.path),
+        );
+        expect(isPidAlive(worktree.lingering.pid ?? 0)).toBe(false);
       } finally {
         await worktree.harness.experimental_dispose();
       }

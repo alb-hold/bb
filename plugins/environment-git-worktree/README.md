@@ -13,3 +13,10 @@ reuse the project's recorded environment on the selected machine before running
 provider creation. Its ownership and cleanup behavior stay intact. When the path
 has no environment, the plugin validates it against Git and adopts it without
 taking ownership; retiring that environment leaves the worktree on disk.
+
+Removal keeps a worktree that holds recoverable work and shows the reason
+instead: a `.keep-worktree` file in its root, modified or untracked files, a
+commit that no remote-tracking branch contains, a lock, or an unfinished merge,
+rebase, cherry-pick or revert. A kept worktree is retried with a growing delay;
+when removal fails after bb changed anything, the environment stays in error
+and is never reused.

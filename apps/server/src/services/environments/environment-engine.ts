@@ -36,8 +36,9 @@ import {
   claimEnvironmentTeardown,
   bindEnvironmentPath,
   listProviderLifecycleEnvironments,
-  releaseEnvironmentTeardownClaim,
+  releaseUnstartedEnvironmentTeardown,
   retainRunningEnvironmentTeardown,
+  reviveFailedEnvironmentTeardown,
   updatePreparingEnvironment,
   updateRunningEnvironmentTeardown,
   type DbConnection,
@@ -330,8 +331,15 @@ function runTrackedOperation(args: {
   return operation;
 }
 
-const REMOVE_RETRY_MS = 60_000;
-const RETAINED_RETRY_MS = 10 * 60_000;
+const TEARDOWN_RETRY_BASE_MS = 60_000;
+const TEARDOWN_RETRY_MAX_MS = 60 * 60_000;
+
+export function teardownRetryDelayMs(attempt: number): number {
+  return Math.min(
+    TEARDOWN_RETRY_MAX_MS,
+    TEARDOWN_RETRY_BASE_MS * 2 ** Math.max(0, Math.min(attempt - 1, 20)),
+  );
+}
 const PROVIDER_OWNER_MISMATCH_MESSAGE =
   "The environment provider belongs to a different plugin or has no recorded owner. Automatic removal is blocked.";
 const PROVIDER_LIFECYCLE_SWEEP_YIELD_INTERVAL = 25;
@@ -730,12 +738,13 @@ function recordTeardownFailed(
   deps: Pick<Deps, "db" | "hub">,
   target: { environmentId: string; attempt: number },
   message: string,
+  options: { keepSnapshot?: boolean } = {},
 ): boolean {
   return writeRunningTeardown(deps, target, {
     teardownStatus: "failed",
     teardownMessage: message,
-    teardownPriorStatus: null,
-    retireAt: Date.now() + REMOVE_RETRY_MS,
+    ...(options.keepSnapshot === true ? {} : { teardownPriorStatus: null }),
+    retireAt: Date.now() + teardownRetryDelayMs(target.attempt),
   });
 }
 
@@ -776,7 +785,7 @@ function recordTeardownRetained(
     retainRunningEnvironmentTeardown(deps.db, {
       ...target,
       message: args.message,
-      retireAt: Date.now() + RETAINED_RETRY_MS,
+      retireAt: Date.now() + teardownRetryDelayMs(target.attempt),
     })
   )
     deps.hub.notifyEnvironment(target.environmentId, ["metadata-changed"]);
@@ -786,7 +795,6 @@ async function runRemove(
   deps: Deps,
   environmentId: string,
   attempt: number,
-  resumeOnly: boolean,
   resumedInFlight: boolean,
   signal: AbortSignal,
 ): Promise<void> {
@@ -807,6 +815,7 @@ async function runRemove(
       `Environment provider "${row.environmentProviderId}" is unavailable or belongs to another plugin`,
     );
   const target = { environmentId, attempt };
+  let dispatched = resumedInFlight;
   await withHostCleanup(deps, row.hostId, async () => {
     try {
       const removeContext = () => ({
@@ -848,13 +857,14 @@ async function runRemove(
         }
       }
       if (row.providerOwnsPath && row.hostId !== null && row.path !== null) {
+        dispatched = true;
         await runEnvironmentHook(deps, {
           projectId: row.projectId,
           id: environmentTeardownHookId(row),
           hostId: row.hostId,
           path: row.path,
           kind: "teardown",
-          resumeOnly,
+          resumeOnly: false,
           report: {
             step: () => undefined,
             log: (text) =>
@@ -884,6 +894,7 @@ async function runRemove(
         });
         return;
       }
+      dispatched = true;
       const invocation = await invokeEnvironmentProvider(
         record,
         "environment remove",
@@ -932,7 +943,16 @@ async function runRemove(
         providerOwnedPath: row.providerOwnsPath,
       });
     } catch (error) {
-      recordTeardownFailed(deps, target, errorMessage(error));
+      const current = getEnvironment(deps.db, environmentId);
+      recordTeardownFailed(deps, target, errorMessage(error), {
+        keepSnapshot:
+          !dispatched &&
+          current !== null &&
+          !environmentHookOperationExists(
+            deps.db,
+            environmentTeardownHookId(current),
+          ),
+      });
     }
   });
 }
@@ -964,6 +984,44 @@ async function removeEnvironment(
     },
   });
   await operation.done;
+}
+
+export function settleUnclaimedEnvironmentTeardown(
+  deps: Pick<Deps, "db" | "hub">,
+  row: EnvironmentRow,
+): void {
+  if (row.teardownStatus !== "running") return;
+  const current = getEnvironment(deps.db, row.id);
+  if (
+    current === null ||
+    current.teardownAttempt !== row.teardownAttempt ||
+    current.teardownStatus !== "running" ||
+    current.status !== row.status ||
+    current.teardownMessage !== row.teardownMessage
+  )
+    return;
+  if (isResumedTeardown(row)) {
+    recordTeardownRetained(
+      deps,
+      { environmentId: row.id, attempt: row.teardownAttempt },
+      {
+        message:
+          "A thread is using this workspace, so its removal was cancelled.",
+        resumedInFlight: true,
+      },
+    );
+    return;
+  }
+  if (releaseUnstartedEnvironmentTeardown(deps.db, row))
+    deps.hub.notifyEnvironment(row.id, ["metadata-changed"]);
+}
+
+function isResumedTeardown(row: EnvironmentRow): boolean {
+  return (
+    row.teardownStatus === "running" &&
+    row.teardownAttempt > 0 &&
+    row.teardownMessage === null
+  );
 }
 
 async function sweepProviderEnvironmentInSlot(
@@ -1003,7 +1061,12 @@ async function sweepProviderEnvironmentInSlot(
   if (record === undefined) return;
   const now = Date.now();
   if (shared) {
-    if (row.retireAt !== null && row.teardownStatus === null)
+    if (
+      row.teardownStatus === "failed" &&
+      reviveFailedEnvironmentTeardown(deps.db, environmentId)
+    )
+      deps.hub.notifyEnvironment(environmentId, ["metadata-changed"]);
+    else if (row.retireAt !== null && row.teardownStatus === null)
       writeEnvironment(deps, environmentId, { retireAt: null });
     return;
   }
@@ -1045,27 +1108,18 @@ async function sweepProviderEnvironmentInSlot(
     row.retireAt > now
   )
     return;
-  const resumedInFlight =
-    row.teardownStatus === "running" && row.teardownAttempt > 0;
+  const resumedInFlight = isResumedTeardown(row);
   const attempt = resumedInFlight
     ? row.teardownAttempt
     : row.teardownAttempt + 1;
   const claimed = claimEnvironmentTeardown(deps.db, {
     row,
     attempt,
+    resumed: resumedInFlight,
     ignoreLiveThreads: machineRemovalBypassesLiveOwners(deps.db, row),
   });
   if (!claimed) {
-    const current = getEnvironment(deps.db, environmentId);
-    if (
-      current !== null &&
-      current.teardownAttempt === row.teardownAttempt &&
-      current.teardownStatus === row.teardownStatus &&
-      current.status === row.status &&
-      row.teardownStatus === "running" &&
-      releaseEnvironmentTeardownClaim(deps.db, row)
-    )
-      deps.hub.notifyEnvironment(environmentId, ["metadata-changed"]);
+    settleUnclaimedEnvironmentTeardown(deps, row);
     return;
   }
   deps.hub.notifyEnvironment(environmentId, ["metadata-changed"]);
@@ -1073,7 +1127,6 @@ async function sweepProviderEnvironmentInSlot(
     deps,
     environmentId,
     attempt,
-    row.teardownAttempt > 0,
     resumedInFlight,
     signal,
   );
