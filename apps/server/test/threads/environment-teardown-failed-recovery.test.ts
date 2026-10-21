@@ -135,9 +135,12 @@ function unarchive(harness: TestAppHarness, threadId: string) {
 }
 
 function restore(harness: TestAppHarness, threadId: string) {
-  return harness.app.request(`/api/v1/threads/${threadId}/restore-environment`, {
-    method: "POST",
-  });
+  return harness.app.request(
+    `/api/v1/threads/${threadId}/restore-environment`,
+    {
+      method: "POST",
+    },
+  );
 }
 
 function insertHookRow(harness: TestAppHarness, environmentId: string): void {

@@ -1119,13 +1119,7 @@ async function sweepProviderEnvironmentInSlot(
     return;
   }
   deps.hub.notifyEnvironment(environmentId, ["metadata-changed"]);
-  await runRemove(
-    deps,
-    environmentId,
-    attempt,
-    resumedInFlight,
-    signal,
-  );
+  await runRemove(deps, environmentId, attempt, resumedInFlight, signal);
 }
 
 export function cleanupEnvironment(deps: Deps, environmentId: string): boolean {

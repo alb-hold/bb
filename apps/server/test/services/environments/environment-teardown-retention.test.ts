@@ -33,7 +33,10 @@ import {
   seedProjectWithSource,
   seedThread,
 } from "../../helpers/seed.js";
-import { withTestHarness, type TestAppHarness } from "../../helpers/test-app.js";
+import {
+  withTestHarness,
+  type TestAppHarness,
+} from "../../helpers/test-app.js";
 
 const PLUGIN_ID = "retention";
 const PROVIDER_ID = "retention-provider";
@@ -563,7 +566,10 @@ describe("a claim that matched no row because a thread went live", () => {
   } as const;
 
   function settle(harness: TestAppHarness, environmentId: string): void {
-    settleUnclaimedEnvironmentTeardown(harness.deps, row(harness, environmentId));
+    settleUnclaimedEnvironmentTeardown(
+      harness.deps,
+      row(harness, environmentId),
+    );
   }
 
   it("fails closed for an interrupted attempt that ran the teardown script", async () =>
@@ -616,7 +622,9 @@ describe("a claim that matched no row because a thread went live", () => {
   it("fails closed for an interrupted attempt that has no snapshot", async () =>
     withTestHarness(async (harness) => {
       installProvider({ policy: { retireGraceMs: 0 } });
-      const { environment, thread } = seedRetiring(harness, { providerOwnsPath: true });
+      const { environment, thread } = seedRetiring(harness, {
+        providerOwnsPath: true,
+      });
       unarchiveDirectly(harness, thread.id);
       patch(harness, environment.id, {
         ...INTERRUPTED,
@@ -634,7 +642,9 @@ describe("a claim that matched no row because a thread went live", () => {
   it("fails closed for an interrupted preparing-owner row that never became ready", async () =>
     withTestHarness(async (harness) => {
       installProvider({ policy: { retireGraceMs: 0 } });
-      const { environment, thread } = seedRetiring(harness, { providerOwnsPath: true });
+      const { environment, thread } = seedRetiring(harness, {
+        providerOwnsPath: true,
+      });
       unarchiveDirectly(harness, thread.id);
       patch(harness, environment.id, {
         ...INTERRUPTED,
@@ -654,7 +664,9 @@ describe("a claim that matched no row because a thread went live", () => {
   it("restores the snapshot for an interrupted attempt with complete no-side-effect evidence", async () =>
     withTestHarness(async (harness) => {
       installProvider({ policy: { retireGraceMs: 0 } });
-      const { environment, thread } = seedRetiring(harness, { providerOwnsPath: true });
+      const { environment, thread } = seedRetiring(harness, {
+        providerOwnsPath: true,
+      });
       unarchiveDirectly(harness, thread.id);
       patch(harness, environment.id, INTERRUPTED);
 
@@ -689,7 +701,9 @@ describe("a claim that matched no row because a thread went live", () => {
   it("releases a removal that was queued but never started, leaving the status alone", async () =>
     withTestHarness(async (harness) => {
       installProvider({ policy: { retireGraceMs: 0 } });
-      const { environment, thread } = seedRetiring(harness, { providerOwnsPath: true });
+      const { environment, thread } = seedRetiring(harness, {
+        providerOwnsPath: true,
+      });
       unarchiveDirectly(harness, thread.id);
       patch(harness, environment.id, {
         teardownStatus: "running",
@@ -709,7 +723,9 @@ describe("a claim that matched no row because a thread went live", () => {
   it("releases a removal queued after an earlier retention instead of calling it interrupted", async () =>
     withTestHarness(async (harness) => {
       installProvider({ policy: { retireGraceMs: 0 } });
-      const { environment, thread } = seedRetiring(harness, { providerOwnsPath: true });
+      const { environment, thread } = seedRetiring(harness, {
+        providerOwnsPath: true,
+      });
       unarchiveDirectly(harness, thread.id);
       patch(harness, environment.id, {
         teardownStatus: "running",
@@ -1138,9 +1154,7 @@ describe("retry delays", () => {
       retireNow(harness, environment.id);
       await sweepProviderEnvironment(harness.deps, environment.id);
       expect(row(harness, environment.id).teardownStatus).toBe("failed");
-      expect(row(harness, environment.id).retireAt).toBeGreaterThan(
-        Date.now(),
-      );
+      expect(row(harness, environment.id).retireAt).toBeGreaterThan(Date.now());
 
       expect(cleanupEnvironment(harness.deps, environment.id)).toBe(true);
 

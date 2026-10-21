@@ -72,7 +72,9 @@ export function dropEnvironmentTeardownPriorStatusColumn(
     .prepare<[], { name: string }>("PRAGMA table_info(environments)")
     .all();
   if (columns.some((column) => column.name === "teardown_prior_status")) {
-    db.$client.exec("ALTER TABLE environments DROP COLUMN teardown_prior_status");
+    db.$client.exec(
+      "ALTER TABLE environments DROP COLUMN teardown_prior_status",
+    );
   }
 }
 
