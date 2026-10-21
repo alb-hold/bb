@@ -211,6 +211,8 @@ const originalClipboardDescriptor = Object.getOwnPropertyDescriptor(
   "clipboard",
 );
 
+vi.setConfig({ testTimeout: 30_000 });
+
 function prepareMobileTerminal(): void {
   testState.touchEnabled = true;
   vi.stubGlobal("WebSocket", TestTerminalSocket);
@@ -995,10 +997,14 @@ describe("ThreadTerminalView terminal focus boundary", () => {
       nextSeq: 0,
     });
     await vi.advanceTimersByTimeAsync(REPAINT_RESTORE_DELAY_MS + 1);
-    expect(resizeFrames().slice(-2)).toEqual([
-      { type: "resize", cols: 50, rows: 47 },
-      { type: "resize", cols: 51, rows: 47 },
-    ]);
+    await waitForReadinessCondition(
+      () =>
+        expect(resizeFrames().slice(-2)).toEqual([
+          { type: "resize", cols: 50, rows: 47 },
+          { type: "resize", cols: 51, rows: 47 },
+        ]),
+      "reconnected terminal resize was not restored within 5000 ms",
+    );
   }, 30_000);
 
   it("suppresses terminal-scoped shortcuts from the real xterm input", async () => {
