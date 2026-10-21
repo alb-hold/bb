@@ -62,10 +62,11 @@ regular or native terminal. Archived threads and terminal IDs outside the
 requested thread fail closed.
 `sdk.terminals.experimental_layout.split({ terminalId, side })` and
 `sdk.terminals.experimental_layout.move({ terminalId, targetTerminalId })`
-arrange terminal tabs in persisted sidebar panes and return the number of app
-clients that received each request. A zero-client response means no action was
-sent. A positive response confirms delivery, not application; pane limits and
-compact layouts can still cause the client to reject a split or move.
+arrange terminal tabs in persisted sidebar panes and return `deliveredClients`,
+the number of open app sockets the request was sent to. A zero-client response
+means no request was sent. A positive count does not confirm receipt or
+application; pane limits and compact layouts can still cause the client to
+reject a split or move.
 On clients without an in-app browser, `open-link` presents an Open action for
 the external browser instead of adding an unavailable browser tab.
 

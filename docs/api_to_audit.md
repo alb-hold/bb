@@ -65,9 +65,9 @@ and W4B browser panel placement used by terminal links. Clients without an
 in-app browser offer the URL through an Open action instead of creating an
 unavailable browser tab.
 The CLI surfaces are `bb terminal surfaces --thread`, `bb terminal focus`, and
-`bb terminal open-link`. Focus and browser actions return the count of app
-clients that received the request; zero means no app was available, while a
-positive count confirms delivery only.
+`bb terminal open-link`. Focus and browser actions return `deliveredClients`,
+the number of open app sockets the request was sent to. Zero means no app was
+available; a positive count does not confirm receipt or application.
 
 Archived threads, unscoped terminals, unknown IDs, and terminals outside the
 target thread fail closed. The app client ignores unknown thread-open fields so
@@ -79,8 +79,9 @@ new sidebar pane; `experimental_layout.move({ terminalId, targetTerminalId })`
 moves its tab into the target terminal's pane. The CLI exposes these as
 `bb terminal split` and `bb terminal move`. Layout changes use the same
 sidebar split state as UI operations and persist in local storage. Requests
-return the number of app clients that received them. This confirms delivery,
-not application, because pane limits and compact layouts are client state.
+return `deliveredClients`, the number of open app sockets the request was sent
+to. This does not confirm receipt or application; pane limits and compact
+layouts are client state.
 
 Audit each split side, pane limits, compact layouts, reload persistence,
 same-thread and stale terminal IDs, and old-client parsing before stabilizing.

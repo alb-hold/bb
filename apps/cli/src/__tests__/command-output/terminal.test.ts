@@ -108,11 +108,11 @@ describe("bb terminal command output", () => {
       },
     });
     expect(collectLogLines(vi.mocked(console.log))).toContain(
-      "Request sent to 1 open app client; delivery confirmed, application not confirmed.",
+      "Request sent to 1 open bb app client; receipt and application are not confirmed.",
     );
   });
 
-  it("fails terminal focus when no app client received the request", async () => {
+  it("fails terminal focus when no app client is open to apply the request", async () => {
     stubServerApi({
       "v1.terminals.:terminalId.$get": async () => makeTerminalSession(),
       "v1.threads.:id.open.$post": async () => ({ deliveredClients: 0 }),

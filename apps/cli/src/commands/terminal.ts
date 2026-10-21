@@ -43,7 +43,7 @@ function reportTerminalActionDelivery(deliveredClients: number): void {
     });
   }
   console.log(
-    `Request sent to ${deliveredClients} open app client${deliveredClients === 1 ? "" : "s"}; delivery confirmed, application not confirmed.`,
+    `Request sent to ${deliveredClients} open bb app client${deliveredClients === 1 ? "" : "s"}; receipt and application are not confirmed.`,
   );
 }
 

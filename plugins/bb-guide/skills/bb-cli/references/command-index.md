@@ -163,6 +163,9 @@ This index lists every command path that the core CLI registers, including alias
 - `bb terminal close`
 - `bb terminal stop`
 
+For `focus`, `open-link`, `split`, and `move`, `deliveredClients` counts open
+app sockets the request was sent to; it does not confirm receipt or application.
+
 ## thread
 
 - `bb thread`

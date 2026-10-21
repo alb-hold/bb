@@ -75,7 +75,7 @@ describe("bb thread open command output", () => {
       "Split: replace",
       "Source: workspace",
       "Path: reports/status.md",
-      "Delivered: 2",
+      "Request sent to 2 open bb app clients; receipt and application are not confirmed.",
     ]);
   });
 
@@ -132,7 +132,7 @@ describe("bb thread open command output", () => {
       "Source: workspace",
       "Path: reports/status.md",
       "Line: 7",
-      "Delivered: 1",
+      "Request sent to 1 open bb app client; receipt and application are not confirmed.",
     ]);
   });
 
@@ -169,7 +169,7 @@ describe("bb thread open command output", () => {
       "Split: replace",
       "Source: thread-storage",
       "Path: reports/preview.html",
-      "Delivered: 1",
+      "Request sent to 1 open bb app client; receipt and application are not confirmed.",
     ]);
   });
 
@@ -234,7 +234,7 @@ describe("bb thread open command output", () => {
     expect(collectLogLines(vi.mocked(console.log))).toEqual([
       "Thread: thread-split",
       "Split: right",
-      "Delivered: 2",
+      "Request sent to 2 open bb app clients; receipt and application are not confirmed.",
     ]);
   });
 

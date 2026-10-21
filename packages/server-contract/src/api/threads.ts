@@ -911,7 +911,13 @@ export const threadOpenRequestSchema = z
 export type ThreadOpenRequest = z.infer<typeof threadOpenRequestSchema>;
 
 export const threadOpenResponseSchema = z.object({
-  deliveredClients: z.number().int().nonnegative(),
+  deliveredClients: z
+    .number()
+    .int()
+    .nonnegative()
+    .describe(
+      "Number of open app sockets the request was sent to; this does not confirm receipt or application.",
+    ),
 });
 export type ThreadOpenResponse = z.infer<typeof threadOpenResponseSchema>;
 
@@ -951,7 +957,13 @@ export const threadPaneActionSignalLenientSchema = z.object({
 });
 
 export const threadPaneActionResponseSchema = z.object({
-  delivered: z.number().int().nonnegative(),
+  delivered: z
+    .number()
+    .int()
+    .nonnegative()
+    .describe(
+      "Number of open app sockets the request was sent to; this does not confirm receipt or application.",
+    ),
 });
 export type ThreadPaneActionResponse = z.infer<
   typeof threadPaneActionResponseSchema
