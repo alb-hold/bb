@@ -13,6 +13,7 @@ import {
   listEvents,
   noopNotifier,
   projectAttachmentThreads,
+  queuedThreadMessages,
   setNativeTerminalThreadTerminal,
   terminalSessions,
   threads,
@@ -1483,6 +1484,56 @@ describe("native terminal threads", () => {
       cli.stop();
     }
   });
+
+  it.each(["claude-code", "codex"])(
+    "rejects a scheduled %s native message before attachment or terminal side effects",
+    async (providerId) => {
+      const fixture = await createFixture();
+      seedPrimaryHost(fixture.harness.deps, fixture.hostId);
+      const attachmentPath = await storeImageAttachment(fixture);
+      const { open, thread } = await openRunningNativeThread(fixture, {
+        providerId,
+      });
+      const cli = startFakeCli(fixture, open.terminalId, composerScreen);
+      try {
+        const response = await postJson(fixture, `/threads/${thread.id}/send`, {
+          input: [
+            ...textInput("run the tests"),
+            { type: "localImage", path: attachmentPath },
+          ],
+          mode: "auto",
+          sendAt: Date.now() + 60_000,
+        });
+        expect(response.status).toBe(400);
+        expect(apiErrorSchema.parse(await readJson(response))).toMatchObject({
+          code: "invalid_request",
+          message: "sendAt is not supported for native terminal threads",
+        });
+        expect(cli.inputs()).toEqual([]);
+        expect(
+          fixture.harness.db
+            .select()
+            .from(queuedThreadMessages)
+            .where(eq(queuedThreadMessages.threadId, thread.id))
+            .all(),
+        ).toEqual([]);
+        expect(
+          listEvents(fixture.harness.db, { threadId: thread.id }).filter(
+            (event) => event.type === "client/turn/requested",
+          ),
+        ).toEqual([]);
+        expect(
+          fixture.harness.db
+            .select()
+            .from(projectAttachmentThreads)
+            .where(eq(projectAttachmentThreads.threadId, thread.id))
+            .all(),
+        ).toEqual([]);
+      } finally {
+        cli.stop();
+      }
+    },
+  );
 
   it("pastes an image on its own so Codex attaches it before the message", async () => {
     const fixture = await createFixture();
