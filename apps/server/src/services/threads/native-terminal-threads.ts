@@ -992,7 +992,7 @@ function issueNativeTerminalToolCredential(providerId: string) {
 export function requireNativeTerminalToolCredential(
   deps: Pick<AppDeps, "db" | "terminalSessions">,
   args: { authorization: string | undefined; threadId: string },
-): void {
+): { terminalSessionId: string } {
   const record = getNativeTerminalThread(deps.db, args.threadId);
   const match = /^Bearer ([A-Za-z0-9_-]+)$/u.exec(args.authorization ?? "");
   const stored = getNativeTerminalToolCredential(deps.db, args.threadId);
@@ -1012,6 +1012,7 @@ export function requireNativeTerminalToolCredential(
       "A valid credential for this thread's running native terminal is required",
     );
   }
+  return { terminalSessionId: stored.terminalSessionId };
 }
 
 export function requireLiveNativeTerminalToolThread(
@@ -1042,10 +1043,13 @@ export async function resolveNativeTerminalAgentTools(
   deps: AppDeps,
   args: { authorization: string | undefined; threadId: string },
 ): Promise<
-  ThreadEnvironmentLookupResult & { tools: NativeTerminalAgentTools["tools"] }
+  ThreadEnvironmentLookupResult & {
+    terminalSessionId: string;
+    tools: NativeTerminalAgentTools["tools"];
+  }
 > {
   const { threadId } = args;
-  requireNativeTerminalToolCredential(deps, args);
+  const { terminalSessionId } = requireNativeTerminalToolCredential(deps, args);
   const lookup = requireLiveNativeTerminalToolThread(deps, threadId);
   const record = requireNativeTerminalThreadRecord(deps, threadId);
   const tools = await resolveThreadDynamicTools(deps, {
@@ -1055,6 +1059,7 @@ export async function resolveNativeTerminalAgentTools(
   });
   return {
     ...lookup,
+    terminalSessionId,
     tools: tools.filter(
       (tool) => tool.name !== UPDATE_ENVIRONMENT_DIRECTORY_TOOL_NAME,
     ),
@@ -1072,11 +1077,9 @@ export async function listNativeTerminalAgentTools(
 export async function requireNativeTerminalAgentToolCall(
   deps: AppDeps,
   args: { authorization: string | undefined; threadId: string; tool: string },
-): Promise<ThreadEnvironmentLookupResult> {
-  const { environment, thread, tools } = await resolveNativeTerminalAgentTools(
-    deps,
-    args,
-  );
+): Promise<ThreadEnvironmentLookupResult & { terminalSessionId: string }> {
+  const { environment, terminalSessionId, thread, tools } =
+    await resolveNativeTerminalAgentTools(deps, args);
   if (!tools.some((tool) => tool.name === args.tool)) {
     throw new ApiError(
       404,
@@ -1084,7 +1087,7 @@ export async function requireNativeTerminalAgentToolCall(
       `Tool ${args.tool} is not available to this thread`,
     );
   }
-  return { environment, thread };
+  return { environment, terminalSessionId, thread };
 }
 
 export function recordNativeTerminalSession(

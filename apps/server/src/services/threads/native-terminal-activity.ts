@@ -148,6 +148,10 @@ export function recordNativeTerminalActivity(
   const currentNativeRecord = currentTerminalIsLive
     ? getNativeTerminalThread(deps.db, args.threadId)
     : null;
+  if (!currentTerminalIsLive) {
+    const binding = getNativeTerminalThread(deps.db, args.threadId);
+    if (binding !== null && binding.lastEvidenceAt !== null) return;
+  }
   if (
     currentNativeRecord !== null &&
     currentNativeRecord.terminalSessionId !== null
@@ -227,29 +231,34 @@ export function recordNativeTerminalActivity(
 
 export function recordNativeTerminalToolCallEvidence(
   deps: AppDeps,
-  args: { threadId: string },
+  args: { terminalSessionId: string; threadId: string },
 ): void {
-  const record = getNativeTerminalThread(deps.db, args.threadId);
-  if (record === null || record.terminalSessionId === null) return;
-  const now = Date.now();
-  const stamp = stampNativeTerminalThreadToolCall(deps.db, {
-    at: now,
-    terminalSessionId: record.terminalSessionId,
-    threadId: args.threadId,
-  });
-  if (!stamp.updated) return;
-  const previous = stamp.previousLastToolCallAt;
-  const wasFresh =
-    previous !== null &&
-    now >= previous &&
-    now - previous <= NATIVE_TERMINAL_ACTIVITY_FRESH_FOR_MS;
-  if (wasFresh) return;
-  const thread = requirePublicThread(deps.db, args.threadId);
-  deps.hub.notifyThread(
-    args.threadId,
-    ["status-changed"],
-    buildThreadStatusChangeMetadata(deps, thread),
-  );
+  try {
+    const now = Date.now();
+    const stamp = stampNativeTerminalThreadToolCall(deps.db, {
+      at: now,
+      terminalSessionId: args.terminalSessionId,
+      threadId: args.threadId,
+    });
+    if (!stamp.updated) return;
+    const previous = stamp.previousLastToolCallAt;
+    const wasFresh =
+      previous !== null &&
+      now >= previous &&
+      now - previous <= NATIVE_TERMINAL_ACTIVITY_FRESH_FOR_MS;
+    if (wasFresh) return;
+    const thread = requirePublicThread(deps.db, args.threadId);
+    deps.hub.notifyThread(
+      args.threadId,
+      ["status-changed"],
+      buildThreadStatusChangeMetadata(deps, thread),
+    );
+  } catch (error) {
+    deps.logger.warn(
+      { err: error, threadId: args.threadId },
+      "Native terminal tool-call evidence was not recorded",
+    );
+  }
 }
 
 export function interruptNativeTerminalQuestions(

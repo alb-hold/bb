@@ -12,6 +12,7 @@ import {
   threads,
 } from "@bb/db";
 import { buildThreadStatusChangeMetadata } from "../../src/services/threads/thread-runtime-display.js";
+import * as runtimeConfig from "../../src/services/threads/thread-runtime-config.js";
 import {
   nativeTerminalAgentToolsSchema,
   nativeTerminalLaunchSpecSchema,
@@ -516,7 +517,7 @@ describe("native terminal agent tools", () => {
       expect(record(fixture, second)?.lastToolCallAt).not.toBeNull();
     });
 
-    it("is dropped on reattach, and neither the old credential nor a replay refreshes the new terminal", async () => {
+    it("is dropped on reattach, and an old-credential replay does not refresh the new terminal", async () => {
       const fixture = await createFixture();
       const threadId = await createNativeThread(fixture);
       await bindSession(fixture, threadId);
@@ -566,6 +567,105 @@ describe("native terminal agent tools", () => {
         lastToolCallSessionId: SESSION,
       });
       expect(record(fixture, threadId)?.lastToolCallAt).not.toBeNull();
+    });
+
+    it("gives an old-credential call that reattach overtakes no evidence on the new terminal", async () => {
+      const fixture = await createFixture();
+      const threadId = await createNativeThread(fixture);
+      await bindSession(fixture, threadId);
+      const oldHeaders = authHeaders(fixture, threadId);
+      const resolveTools = runtimeConfig.resolveThreadDynamicTools;
+      let release: () => void = () => undefined;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      let entered: () => void = () => undefined;
+      const suspended = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      const spy = vi
+        .spyOn(runtimeConfig, "resolveThreadDynamicTools")
+        .mockImplementation(async (...args) => {
+          entered();
+          await gate;
+          return resolveTools(...args);
+        });
+      try {
+        const inFlight = callTool(fixture, threadId, oldHeaders);
+        await suspended;
+
+        const reattached = createTerminalSession(fixture.harness.db, {
+          cols: 80,
+          environmentId: fixture.environmentId,
+          hostId: fixture.hostId,
+          daemonSessionId: fixture.sessionId,
+          initialCwd: "/tmp",
+          rows: 24,
+          status: "running",
+          threadId,
+          title: "Native terminal",
+        });
+        setNativeTerminalToolCredential(fixture.harness.db, {
+          threadId,
+          terminalSessionId: reattached.id,
+          credentialHash: createHash("sha256")
+            .update("credential-of-the-reattached-terminal")
+            .digest("hex"),
+        });
+        setNativeTerminalThreadTerminal(fixture.harness.db, {
+          threadId,
+          terminalSessionId: reattached.id,
+        });
+        release();
+
+        expect((await inFlight).status).toBe(200);
+        expect(record(fixture, threadId)).toMatchObject({
+          terminalSessionId: reattached.id,
+          lastToolCallAt: null,
+          lastToolCallSessionId: null,
+        });
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    it("returns the tool's own result when recording the evidence fails, and logs the failure", async () => {
+      const fixture = await createFixture();
+      const threadId = await createNativeThread(fixture);
+      await bindSession(fixture, threadId);
+      await markWorking(fixture, threadId);
+      const baseline = await (
+        await callTool(fixture, threadId, authHeaders(fixture, threadId))
+      ).json();
+      fixture.harness.db.$client
+        .prepare(
+          "UPDATE fork_native_terminal_threads SET last_tool_call_at = NULL, last_tool_call_session_id = NULL WHERE thread_id = ?",
+        )
+        .run(threadId);
+      const warn = vi.spyOn(fixture.harness.deps.logger, "warn");
+      const notify = vi
+        .spyOn(fixture.harness.hub, "notifyThread")
+        .mockImplementation((_threadId, kinds) => {
+          if (kinds.includes("status-changed")) {
+            throw new Error("notify failed");
+          }
+        });
+      try {
+        const response = await callTool(
+          fixture,
+          threadId,
+          authHeaders(fixture, threadId),
+        );
+        expect(response.status).toBe(200);
+        expect(await response.json()).toEqual(baseline);
+        expect(warn).toHaveBeenCalledWith(
+          expect.objectContaining({ threadId }),
+          "Native terminal tool-call evidence was not recorded",
+        );
+      } finally {
+        notify.mockRestore();
+        warn.mockRestore();
+      }
     });
 
     it("binds to the provider session and records nothing while the session is unknown", async () => {
