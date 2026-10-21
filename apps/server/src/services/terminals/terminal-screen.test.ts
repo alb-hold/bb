@@ -38,6 +38,42 @@ async function replay(cols: number, rows: number, data: string) {
   return screen;
 }
 
+async function replayWithSentinel(cols: number, rows: number, data: string) {
+  const terminal = new Terminal({
+    allowProposedApi: true,
+    cols,
+    rows,
+    scrollback: 0,
+  });
+  terminal.loadAddon(new Unicode11Addon());
+  terminal.unicode.activeVersion = "11";
+  const line = "░".repeat(cols);
+  const sentinel = `${Array.from(
+    { length: rows },
+    (_, row) => `\u001b[${row + 1};1H${line}`,
+  ).join("")}\u001b[${rows};1H`;
+  await new Promise<void>((resolve) =>
+    terminal.write(sentinel, () => resolve()),
+  );
+  await new Promise<void>((resolve) =>
+    terminal.write("\u001b[?1049h", () => resolve()),
+  );
+  await new Promise<void>((resolve) => terminal.write(sentinel, resolve));
+  await new Promise<void>((resolve) =>
+    terminal.write("\u001b[?1049l", () => resolve()),
+  );
+  await new Promise<void>((resolve) => terminal.write(data, resolve));
+  const buffer = terminal.buffer.active;
+  const screen = {
+    rows: Array.from({ length: rows }, (_, row) =>
+      buffer.getLine(buffer.baseY + row)?.translateToString(true) ?? "",
+    ),
+    cursor: { col: buffer.cursorX, row: buffer.cursorY },
+  };
+  terminal.dispose();
+  return screen;
+}
+
 describe("renderTerminalScreen", () => {
   it("renders ANSI colors as plain text", async () => {
     const screen = await renderTerminalScreen({
@@ -162,7 +198,7 @@ describe("renderTerminalScreen", () => {
     ).join("")}`;
     const tail = `${" ".repeat(65_550)}\n${redraw}`;
     const blank = await replay(10, 5, tail);
-    const sentinel = await replay(10, 5, `${"░".repeat(10)}${tail}`);
+    const sentinel = await replayWithSentinel(10, 5, tail);
     const actual = await replay(10, 5, `${prefix}${redraw}`);
     expect(blank).toEqual(sentinel);
     expect(actual.rows).not.toEqual(blank.rows);
