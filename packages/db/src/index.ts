@@ -64,6 +64,7 @@ export {
   getNativeTerminalThread,
   isNativeTerminalThread,
   listNativeTerminalThreadIds,
+  listNativeTerminalThreadsByIds,
   listNativeTerminalThreadsWithDisconnectedTerminal,
   recordNativeTerminalThreadSessionId,
   stampNativeTerminalThreadActivity,

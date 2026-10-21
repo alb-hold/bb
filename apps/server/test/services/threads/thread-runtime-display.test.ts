@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   appendStoredThreadEvent,
   closeSession,
@@ -46,6 +46,21 @@ interface SetupResult {
   db: DbConnection;
   hostId: string;
   hub: NotificationHub;
+}
+
+function countNativeActivityLookupStatements(
+  db: DbConnection,
+  work: () => void,
+): number {
+  const prepare = vi.spyOn(db.$client, "prepare");
+  try {
+    work();
+    return prepare.mock.calls.filter(([query]) =>
+      String(query).includes("last_evidence_at AS lastEvidenceAt"),
+    ).length;
+  } finally {
+    prepare.mockRestore();
+  }
 }
 
 interface OpenTestSessionArgs {
@@ -254,20 +269,27 @@ describe("thread runtime display", () => {
       hostId,
       providerId: "claude-code",
     });
-    const ordinary = createThreadWithEnvironment({ db, hostId });
-    createNativeTerminalThread(db, {
-      threadId: native.thread.id,
-      providerId: native.thread.providerId,
-      nativeSessionId: "synthetic-session",
-      initialPrompt: null,
-      initialImages: [],
-      model: null,
+    const nativeTwo = createThreadWithEnvironment({
+      db,
+      hostId,
+      providerId: "claude-code",
     });
-    db.$client
-      .prepare(
-        "UPDATE fork_native_terminal_threads SET last_evidence_at = ? WHERE thread_id = ?",
-      )
-      .run(100_000, native.thread.id);
+    const ordinary = createThreadWithEnvironment({ db, hostId });
+    for (const thread of [native.thread, nativeTwo.thread]) {
+      createNativeTerminalThread(db, {
+        threadId: thread.id,
+        providerId: thread.providerId,
+        nativeSessionId: `synthetic-session-${thread.id}`,
+        initialPrompt: null,
+        initialImages: [],
+        model: null,
+      });
+      db.$client
+        .prepare(
+          "UPDATE fork_native_terminal_threads SET last_evidence_at = ? WHERE thread_id = ?",
+        )
+        .run(100_000, thread.id);
+    }
     const nativeEntry = createThreadListEntry({
       environmentHostId: hostId,
       thread: native.thread,
@@ -276,14 +298,34 @@ describe("thread runtime display", () => {
       environmentHostId: hostId,
       thread: ordinary.thread,
     });
+    const nativeTwoEntry = createThreadListEntry({
+      environmentHostId: hostId,
+      thread: nativeTwo.thread,
+    });
+    const oneNativeLookupStatements = countNativeActivityLookupStatements(
+      db,
+      () =>
+        toThreadListEntryResponses(
+          { db, hub, providerRegistry },
+          { now: 190_000, threads: [nativeEntry, ordinaryEntry] },
+        ),
+    );
+    const twoNativeLookupStatements = countNativeActivityLookupStatements(
+      db,
+      () =>
+        toThreadListEntryResponses(
+          { db, hub, providerRegistry },
+          { now: 190_000, threads: [nativeEntry, nativeTwoEntry, ordinaryEntry] },
+        ),
+    );
 
     const fresh = toThreadListEntryResponses(
       { db, hub, providerRegistry },
-      { now: 190_000, threads: [nativeEntry, ordinaryEntry] },
+      { now: 190_000, threads: [nativeEntry, nativeTwoEntry, ordinaryEntry] },
     );
     const stale = toThreadListEntryResponses(
       { db, hub, providerRegistry },
-      { now: 190_001, threads: [nativeEntry, ordinaryEntry] },
+      { now: 190_001, threads: [nativeEntry, nativeTwoEntry, ordinaryEntry] },
     );
     const detail = toThreadResponseFromThread(
       { db, hub, providerRegistry },
@@ -292,11 +334,17 @@ describe("thread runtime display", () => {
 
     expect(fresh[0]?.runtime.nativeActivity?.confirmation).toBe("confirmed");
     expect(fresh[0]?.listIndicator).toBe("working");
+    expect(fresh[1]?.runtime.nativeActivity?.confirmation).toBe("confirmed");
+    expect(fresh[1]?.listIndicator).toBe("working");
     expect(stale[0]?.runtime.nativeActivity?.confirmation).toBe("unconfirmed");
     expect(stale[0]?.listIndicator).toBe("none");
+    expect(stale[1]?.runtime.nativeActivity?.confirmation).toBe("unconfirmed");
+    expect(stale[1]?.listIndicator).toBe("none");
     expect(detail.runtime.nativeActivity?.confirmation).toBe("unconfirmed");
-    expect(stale[1]?.runtime.nativeActivity).toBeUndefined();
-    expect(stale[1]?.listIndicator).toBe("working");
+    expect(stale[2]?.runtime.nativeActivity).toBeUndefined();
+    expect(stale[2]?.listIndicator).toBe("working");
+    expect(oneNativeLookupStatements).toBe(1);
+    expect(twoNativeLookupStatements).toBe(oneNativeLookupStatements);
   });
 
   it("keeps active threads active while the host daemon websocket is registered", () => {

@@ -5,11 +5,13 @@ import {
   getSessionById,
   listActiveBackgroundTaskCountsByThreadIds,
   listLatestClosedSessionsForHosts,
+  listNativeTerminalThreadsByIds,
   listLatestThreadStateEventRowsByThreadIds,
   listOpenTurnInputAcceptedRowsByThreadIds,
   listStoredClientTurnRequestRowsByKeys,
   type DbConnection,
   type HostDaemonSessionRow,
+  type NativeTerminalThreadRecord,
   type StoredEventRow,
   type ThreadClientTurnRequestKey,
   type ThreadWithPendingInteractionState,
@@ -74,6 +76,10 @@ interface ThreadResponseDisplayDeps extends ThreadRuntimeDisplayDeps {
 }
 
 type ThreadPromptBannerDeps = NativeActivityDisplayDeps;
+type NativeActivityThreadRecord = Pick<
+  NativeTerminalThreadRecord,
+  "providerId" | "lastEvidenceAt"
+>;
 
 interface ResolveThreadRuntimeStateArgs {
   environmentHostId: string | null;
@@ -108,6 +114,7 @@ interface ToThreadListEntryResponseFromLatestSessionArgs {
   activity: ThreadActivityState;
   hostConnected: boolean;
   latestClosedSession: HostDaemonSessionRow | null;
+  nativeActivityThread: NativeActivityThreadRecord | null;
   now?: number;
   queuedWork: ThreadQueuedWork;
   rowState: ReturnType<typeof getThreadRowState>;
@@ -260,19 +267,50 @@ function resolveThreadEnvironmentHostId(
   return getEnvironment(deps.db, thread.environmentId)?.hostId ?? null;
 }
 
-function addNativeActivityDiagnostic(
+function supportsNativeActivity(
   deps: NativeActivityDisplayDeps,
   thread: Thread,
+): boolean {
+  return (
+    thread.status === "active" &&
+    deps.providerRegistry.get(thread.providerId)?.nativeTerminal?.activity !==
+      undefined
+  );
+}
+
+function getNativeActivityThread(
+  deps: NativeActivityDisplayDeps,
+  thread: Thread,
+): NativeTerminalThreadRecord | null {
+  return supportsNativeActivity(deps, thread)
+    ? getNativeTerminalThread(deps.db, thread.id)
+    : null;
+}
+
+function getNativeActivityThreadsById(
+  deps: NativeActivityDisplayDeps,
+  threads: readonly Thread[],
+): Map<string, NativeActivityThreadRecord> {
+  const threadIds = threads
+    .filter((thread) => supportsNativeActivity(deps, thread))
+    .map((thread) => thread.id);
+  return new Map<string, NativeActivityThreadRecord>(
+    listNativeTerminalThreadsByIds(deps.db, threadIds).map((thread) => [
+      thread.threadId,
+      thread,
+    ]),
+  );
+}
+
+function addNativeActivityDiagnostic(
+  thread: Thread,
   runtime: ThreadRuntimeState,
+  nativeThread: NativeActivityThreadRecord | null,
   now = Date.now(),
 ): ThreadRuntimeState {
-  if (thread.status !== "active") return runtime;
-  const nativeThread = getNativeTerminalThread(deps.db, thread.id);
   if (
-    nativeThread === null ||
-    nativeThread.providerId !== thread.providerId ||
-    deps.providerRegistry.get(thread.providerId)?.nativeTerminal?.activity ===
-      undefined
+    thread.status !== "active" ||
+    nativeThread?.providerId !== thread.providerId
   ) {
     return runtime;
   }
@@ -300,12 +338,12 @@ export function buildThreadStatusChangeMetadata(
       buildThreadActivityStateByThreadId(deps, [thread]).get(thread.id) ??
       EMPTY_THREAD_ACTIVITY,
     runtime: addNativeActivityDiagnostic(
-      deps,
       thread,
       resolveThreadRuntimeState(deps, {
         environmentHostId: resolveThreadEnvironmentHostId(deps, thread),
         status: thread.status,
       }),
+      getNativeActivityThread(deps, thread),
     ),
     thread,
   });
@@ -330,13 +368,16 @@ export function buildThreadStatusChangeMetadataByThreadId(
     hostConnected,
     hostId: args.environmentHostId,
   });
+  const nativeActivityThreadsById = getNativeActivityThreadsById(
+    deps,
+    args.threads,
+  );
   return new Map(
     args.threads.map((thread) => [
       thread.id,
       toThreadStatusChangeMetadata({
         activity: activityByThreadId.get(thread.id) ?? EMPTY_THREAD_ACTIVITY,
         runtime: addNativeActivityDiagnostic(
-          deps,
           thread,
           resolveThreadRuntimeStateFromLatestSession({
             environmentHostId: args.environmentHostId,
@@ -344,6 +385,7 @@ export function buildThreadStatusChangeMetadataByThreadId(
             latestClosedSession,
             status: thread.status,
           }),
+          nativeActivityThreadsById.get(thread.id) ?? null,
         ),
         thread,
       }),
@@ -380,13 +422,16 @@ function toThreadResponseWithHost(
     ...thread,
     runtime: deps.providerRegistry
       ? addNativeActivityDiagnostic(
-          {
-            db: deps.db,
-            hub: deps.hub,
-            providerRegistry: deps.providerRegistry,
-          },
           args.thread,
           runtime,
+          getNativeActivityThread(
+            {
+              db: deps.db,
+              hub: deps.hub,
+              providerRegistry: deps.providerRegistry,
+            },
+            args.thread,
+          ),
           args.now,
         )
       : runtime,
@@ -649,6 +694,10 @@ export function toThreadListEntryResponses(
     deps,
     args.threads,
   );
+  const nativeActivityThreadsById = getNativeActivityThreadsById(
+    deps,
+    args.threads,
+  );
   return args.threads.map((thread) => {
     const entry = toThreadListEntryResponseFromLatestSession({
       deps,
@@ -661,6 +710,8 @@ export function toThreadListEntryResponses(
         thread.environmentHostId === null
           ? null
           : (latestClosedSessionByHostId.get(thread.environmentHostId) ?? null),
+      nativeActivityThread:
+        nativeActivityThreadsById.get(thread.id) ?? null,
       now: args.now,
       rowState: getThreadRowState(deps.db, thread.id),
       thread,
@@ -705,7 +756,6 @@ function toThreadListEntryResponseFromLatestSession(
     listIndicator: "none",
     rowState: args.rowState,
     runtime: addNativeActivityDiagnostic(
-      args.deps,
       args.thread,
       resolveThreadRuntimeStateFromLatestSession({
         environmentHostId: args.thread.environmentHostId,
@@ -714,6 +764,7 @@ function toThreadListEntryResponseFromLatestSession(
         now: args.now,
         status: thread.status,
       }),
+      args.nativeActivityThread,
       args.now,
     ),
   };

@@ -159,6 +159,25 @@ export function listNativeTerminalThreadIds(
   return new Set(rows.map((row) => row.threadId));
 }
 
+export function listNativeTerminalThreadsByIds(
+  db: DbConnection,
+  threadIds: readonly string[],
+): Pick<NativeTerminalThreadRecord, "threadId" | "providerId" | "lastEvidenceAt">[] {
+  if (threadIds.length === 0) return [];
+  const rows = db.$client
+    .prepare(
+      `SELECT thread_id AS threadId, provider_id AS providerId,
+         last_evidence_at AS lastEvidenceAt
+       FROM fork_native_terminal_threads
+       WHERE thread_id IN (SELECT value FROM json_each(?))`,
+    )
+    .all(JSON.stringify(threadIds)) as Pick<
+    NativeTerminalThreadRecord,
+    "threadId" | "providerId" | "lastEvidenceAt"
+  >[];
+  return rows;
+}
+
 export function listNativeTerminalThreadsWithDisconnectedTerminal(
   db: DbConnection,
   hostId: string,
