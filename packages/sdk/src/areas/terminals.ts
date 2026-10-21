@@ -106,7 +106,6 @@ export interface TerminalOutputArgs extends TerminalTargetArgs {
 
 export interface TerminalScreenArgs extends TerminalTargetArgs {
   lines?: TerminalScreenQuery["lines"];
-  scope: TerminalListScope;
   signal?: AbortSignal;
 }
 
@@ -188,22 +187,6 @@ function terminalListQuery(scope: TerminalListScope): TerminalListQuery {
       return {
         hostId: scope.hostId,
         ...(scope.cwd === undefined ? {} : { cwd: scope.cwd }),
-      };
-  }
-}
-
-function terminalScreenQuery(args: TerminalScreenArgs): TerminalScreenQuery {
-  const lines = args.lines === undefined ? {} : { lines: args.lines };
-  switch (args.scope.kind) {
-    case "thread":
-      return { threadId: args.scope.threadId, ...lines };
-    case "environment":
-      return { environmentId: args.scope.environmentId, ...lines };
-    case "host_path":
-      return {
-        hostId: args.scope.hostId,
-        ...(args.scope.cwd === undefined ? {} : { cwd: args.scope.cwd }),
-        ...lines,
       };
   }
 }
@@ -341,7 +324,7 @@ export function createTerminalsArea(args: CreateSdkAreaArgs): TerminalsArea {
         transport.api.v1.terminals[":terminalId"].screen.$get(
           {
             param: { terminalId: input.terminalId },
-            query: terminalScreenQuery(input),
+            query: input.lines === undefined ? {} : { lines: input.lines },
           },
           ...signalRequestArgs(input.signal),
         ),

@@ -55,20 +55,8 @@ export type TerminalSessionScope = TerminalStatusScope &
     | { environmentId: string; kind: "environment" }
     | { hostId: string; kind: "host" }
     | { cwd: string | null; hostId: string; kind: "host-path" }
-    | {
-        cwd?: string;
-        hostId: string;
-        kind: "host-path-terminal";
-        terminalId: string;
-      }
     | { kind: "terminal"; terminalId: string }
     | { kind: "thread"; threadId: string }
-    | { kind: "thread-terminal"; terminalId: string; threadId: string }
-    | {
-        environmentId: string;
-        kind: "environment-terminal";
-        terminalId: string;
-      }
     | { environmentId: string; kind: "threadless-environment" }
   );
 
@@ -76,18 +64,6 @@ export type TerminalSessionSingleScope = TerminalStatusScope &
   (
     | { daemonSessionId: string; kind: "daemon"; terminalId: string }
     | { kind: "terminal"; terminalId: string }
-    | { kind: "thread-terminal"; terminalId: string; threadId: string }
-    | {
-        environmentId: string;
-        kind: "environment-terminal";
-        terminalId: string;
-      }
-    | {
-        cwd?: string;
-        hostId: string;
-        kind: "host-path-terminal";
-        terminalId: string;
-      }
   );
 
 export type TerminalSessionMutation =
@@ -166,35 +142,11 @@ function terminalScope(
           : eq(terminalSessions.initialCwd, scope.cwd),
       );
       break;
-    case "host-path-terminal":
-      scoped = and(
-        eq(terminalSessions.id, scope.terminalId),
-        eq(terminalSessions.hostId, scope.hostId),
-        isNull(terminalSessions.threadId),
-        isNull(terminalSessions.environmentId),
-        scope.cwd === undefined
-          ? undefined
-          : eq(terminalSessions.initialCwd, scope.cwd),
-      );
-      break;
     case "terminal":
       scoped = eq(terminalSessions.id, scope.terminalId);
       break;
     case "thread":
       scoped = eq(terminalSessions.threadId, scope.threadId);
-      break;
-    case "thread-terminal":
-      scoped = and(
-        eq(terminalSessions.id, scope.terminalId),
-        eq(terminalSessions.threadId, scope.threadId),
-      );
-      break;
-    case "environment-terminal":
-      scoped = and(
-        eq(terminalSessions.id, scope.terminalId),
-        eq(terminalSessions.environmentId, scope.environmentId),
-        isNull(terminalSessions.threadId),
-      );
       break;
     case "threadless-environment":
       scoped = and(

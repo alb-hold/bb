@@ -77,8 +77,7 @@ interface TerminalOutputOptions extends TerminalJsonOptions {
   tailBytes?: string;
 }
 
-interface TerminalScreenOptions
-  extends TerminalJsonOptions, TerminalScopeOptions {
+interface TerminalScreenOptions extends TerminalJsonOptions {
   lines?: string;
 }
 
@@ -431,24 +430,22 @@ export function registerTerminalCommands(
       }),
     );
 
-  addTerminalScopeOptions(
-    terminal
-      .command("screen <terminalId>")
-      .description("Print the rendered terminal screen")
-      .option(
-        "--lines <n>",
-        "Print the latest N rendered rows, including scrollback",
-      )
-      .option(
-        "--json",
-        "Print machine-readable JSON including cursor and grid size",
-      ),
-  ).action(
+  terminal
+    .command("screen <terminalId>")
+    .description("Print the rendered terminal screen")
+    .option(
+      "--lines <n>",
+      "Print the latest N rendered rows, including scrollback",
+    )
+    .option(
+      "--json",
+      "Print machine-readable JSON including cursor and grid size",
+    )
+    .action(
       action(async (terminalId: string, opts: TerminalScreenOptions) => {
         const sdk = createCliBbSdk(getUrl());
         const screen = await sdk.terminals.experimental_screen({
           terminalId,
-          scope: await resolveTerminalListScope(opts, getUrl()),
           ...(opts.lines === undefined ? {} : { lines: Number(opts.lines) }),
         });
         if (outputJson(opts, screen)) return;
