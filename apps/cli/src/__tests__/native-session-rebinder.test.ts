@@ -1,4 +1,4 @@
-import { BbHttpError } from "@bb/sdk";
+import { BbHttpError, BbRequestTimeoutError } from "@bb/sdk";
 import { describe, expect, it } from "vitest";
 import { createNativeSessionRebinder } from "../native-session-rebinder.js";
 
@@ -93,6 +93,7 @@ describe("native session rebinder", () => {
     ["a rate limit", refusal(429, "rate_limited")],
     ["a server error", refusal(503, "unavailable")],
     ["a network failure", new TypeError("fetch failed")],
+    ["a client request timeout", new BbRequestTimeoutError(10_000)],
   ])("treats %s as retryable", async (_name, failure) => {
     const { rebinder, refused } = setup("c", (_attempt, index) =>
       index === 0 ? failure : {},
@@ -120,6 +121,22 @@ describe("native session rebinder", () => {
       rebinder.enqueue({ previousSessionId: A, sessionId: B });
       await rebinder.settled();
       expect(refused).toEqual([{ code, sessionId: B }]);
+      rebinder.retry();
+      await rebinder.settled();
+      expect(attempts).toHaveLength(1);
+    },
+  );
+
+  it.each([
+    ["a response that cannot be parsed", new SyntaxError("Unexpected token")],
+    ["any other unexpected failure", new Error("boom")],
+  ])(
+    "gives up for good on %s instead of retrying it silently",
+    async (_name, failure) => {
+      const { attempts, rebinder, refused } = setup("c", () => failure);
+      rebinder.enqueue({ previousSessionId: A, sessionId: B });
+      await rebinder.settled();
+      expect(refused).toEqual([{ code: "unexpected_error", sessionId: B }]);
       rebinder.retry();
       await rebinder.settled();
       expect(attempts).toHaveLength(1);
