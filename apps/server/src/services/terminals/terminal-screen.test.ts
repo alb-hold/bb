@@ -3,6 +3,8 @@ import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { terminalScreenQuerySchema } from "@bb/server-contract";
 import { renderTerminalScreen } from "./terminal-screen.js";
+import { Terminal } from "@xterm/headless";
+import { Unicode11Addon } from "@xterm/addon-unicode11";
 
 function output(data: string, truncated = false) {
   return {
@@ -13,6 +15,27 @@ function output(data: string, truncated = false) {
     exitCode: 0,
     closeReason: null,
   };
+}
+
+async function replay(cols: number, rows: number, data: string) {
+  const terminal = new Terminal({
+    allowProposedApi: true,
+    cols,
+    rows,
+    scrollback: 0,
+  });
+  terminal.loadAddon(new Unicode11Addon());
+  terminal.unicode.activeVersion = "11";
+  await new Promise<void>((resolve) => terminal.write(data, resolve));
+  const buffer = terminal.buffer.active;
+  const screen = {
+    rows: Array.from({ length: rows }, (_, row) =>
+      buffer.getLine(buffer.baseY + row)?.translateToString(true) ?? "",
+    ),
+    cursor: { col: buffer.cursorX, row: buffer.cursorY },
+  };
+  terminal.dispose();
+  return screen;
 }
 
 describe("renderTerminalScreen", () => {
@@ -84,7 +107,7 @@ describe("renderTerminalScreen", () => {
     expect(screen.complete).toBe(false);
   });
 
-  it("recognizes a truncated linear output tail and preserves the visible rows", async () => {
+  it("renders a truncated linear tail but keeps completeness false without mode proof", async () => {
     const stream = Array.from(
       { length: 10_000 },
       (_, index) => `line ${String(index).padStart(5, "0")}\r\n`,
@@ -100,10 +123,10 @@ describe("renderTerminalScreen", () => {
       output: output(stream.slice(-64 * 1024), true),
     });
     expect(retainedScreen.rows).toEqual(fullScreen.rows);
-    expect(retainedScreen.complete).toBe(true);
+    expect(retainedScreen.complete).toBe(false);
   });
 
-  it("recognizes truncated top-style full-screen redraws", async () => {
+  it("renders truncated top-style rows but keeps completeness false without mode proof", async () => {
     const stream = execFileSync(
       process.execPath,
       [
@@ -128,7 +151,28 @@ describe("renderTerminalScreen", () => {
     });
     expect(retainedScreen.rows).toEqual(fullScreen.rows);
     expect(retainedScreen.cursor).toEqual(fullScreen.cursor);
-    expect(retainedScreen.complete).toBe(true);
+    expect(retainedScreen.complete).toBe(false);
+  });
+
+  it("rejects a mode-dependent redraw that fooled the blank and sentinel starts", async () => {
+    const prefix = `\u001b[2;4r\u001b[?6h${" ".repeat(65_550)}\n`;
+    const redraw = `\u001b[1;1H\u001b[2J${Array.from(
+      { length: 5 },
+      (_, row) => `\u001b[${row + 1};1H${String(row).repeat(10)}\u001b[K`,
+    ).join("")}`;
+    const tail = `${" ".repeat(65_550)}\n${redraw}`;
+    const blank = await replay(10, 5, tail);
+    const sentinel = await replay(10, 5, `${"░".repeat(10)}${tail}`);
+    const actual = await replay(10, 5, `${prefix}${redraw}`);
+    expect(blank).toEqual(sentinel);
+    expect(actual.rows).not.toEqual(blank.rows);
+    const screen = await renderTerminalScreen({
+      cols: 10,
+      rows: 5,
+      lines: undefined,
+      output: output(tail, true),
+    });
+    expect(screen.complete).toBe(false);
   });
 
   it("recognizes long color-only output as linear", async () => {
