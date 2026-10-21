@@ -65,7 +65,11 @@ export class DaemonDataSockets {
     return entry !== undefined && entry.attachedAt !== null;
   }
 
-  routeTerminal(args: { daemonSessionId: string; terminalId: string }): boolean {
+  routeTerminal(args: {
+    daemonSessionId: string;
+    holderMarkerPending?: boolean;
+    terminalId: string;
+  }): boolean {
     const entry = this.sessions.get(args.daemonSessionId);
     if (entry === undefined || entry.attachedAt === null) {
       return false;
@@ -75,6 +79,7 @@ export class DaemonDataSockets {
       type: "terminal.route",
       terminalId: args.terminalId,
       daemonSessionId: args.daemonSessionId,
+      holderMarkerPending: args.holderMarkerPending === true,
       mode: "data-socket",
     });
     if (sent) {
