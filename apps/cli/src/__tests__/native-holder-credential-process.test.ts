@@ -12,8 +12,8 @@ import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   NativeHolderFrame,
+  connectNativeHolder,
   encodeNativeHolderFrame,
-  waitForNativeHolder,
 } from "../native-holder.js";
 import { readNativeToolCredentialFromSocket } from "../native-tool-credential.js";
 
@@ -75,7 +75,10 @@ interface RealHolder {
   exited: Promise<{ code: number | null; signal: string | null }>;
 }
 
-async function startRealHolder(reapAfterMs: number): Promise<RealHolder> {
+async function startRealHolder(
+  reapAfterMs: number,
+  startupDelayMs = 0,
+): Promise<RealHolder> {
   const dir = mkdtempSync(path.join(os.tmpdir(), "bb-nc-proc-"));
   cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
   const socket = path.join(dir, "thr_proc-1.sock");
@@ -85,10 +88,12 @@ async function startRealHolder(reapAfterMs: number): Promise<RealHolder> {
   const script = `const { runNativeHolder, ignoreNativeHolderSignals } = await import(${JSON.stringify(holderModule)});
 const nodePty = await import("node-pty");
 ignoreNativeHolderSignals(process);
+await new Promise((resolve) => setTimeout(resolve, ${startupDelayMs}));
 const code = await runNativeHolder({
   socketPath: ${JSON.stringify(socket)},
   credentialRoot: ${JSON.stringify(dir)},
   reapAfterMs: ${reapAfterMs},
+  onSocketReady: () => process.stdout.write("holder-ready\\n"),
   cwd: ${JSON.stringify(dir)},
   env: { PATH: process.env.PATH },
   prepare: async () => ({ command: "sh", args: ["-c", "sleep 300"] }),
@@ -124,16 +129,44 @@ process.exit(code);`;
     child.kill("SIGKILL");
   });
   let output = "";
+  const outputWaiters: Array<{
+    pattern: RegExp;
+    resolve: (match: RegExpMatchArray) => void;
+    reject: (error: Error) => void;
+  }> = [];
   child.stdout?.on("data", (chunk: Buffer) => {
     output += chunk.toString();
+    for (const waiter of [...outputWaiters]) {
+      const match = output.match(waiter.pattern);
+      if (match !== null) {
+        outputWaiters.splice(outputWaiters.indexOf(waiter), 1);
+        waiter.resolve(match);
+      }
+    }
   });
+  const waitForOutput = (pattern: RegExp): Promise<RegExpMatchArray> => {
+    const match = output.match(pattern);
+    if (match !== null) return Promise.resolve(match);
+    return new Promise((resolve, reject) => {
+      outputWaiters.push({ pattern, resolve, reject });
+    });
+  };
   const exited = new Promise<{ code: number | null; signal: string | null }>(
     (resolve) => {
       child.once("exit", (code, signal) => resolve({ code, signal }));
     },
   );
-  const client = await waitForNativeHolder(socket, 10_000);
-  if (client === null) throw new Error("holder did not start");
+  child.once("exit", (code, signal) => {
+    for (const waiter of outputWaiters.splice(0)) {
+      waiter.reject(
+        new Error(`holder exited before ${waiter.pattern}: ${code}/${signal}`),
+      );
+    }
+  });
+  await waitForOutput(/holder-ready/u);
+  const client = await connectNativeHolder(socket);
+  if (client === null)
+    throw new Error(`holder did not accept connection: ${output}`);
   cleanups.push(() => client.destroy());
   client.write(
     encodeNativeHolderFrame(NativeHolderFrame.credential, Buffer.from(SECRET)),
@@ -144,9 +177,7 @@ process.exit(code);`;
       Buffer.from(JSON.stringify({ cols: 80, rows: 24 })),
     ),
   );
-  await until(() => /cli-pid:\d+/u.test(output));
-  const match = /cli-pid:(\d+)/u.exec(output);
-  if (match === null) throw new Error(`no CLI pid in: ${output}`);
+  const match = await waitForOutput(/cli-pid:(\d+)/u);
   if (reapAfterMs < 1_000) client.destroy();
   return { child, cliPid: Number(match[1]), dir, socket, exited };
 }
@@ -195,5 +226,11 @@ describe("native holder credential cleanup, real processes", () => {
     expect(existsSync(holder.socket)).toBe(false);
     expect(alive(holder.cliPid)).toBe(false);
     expect(filesHolding(holder.dir, SECRET)).toEqual([]);
+  }, 30_000);
+
+  it("waits for the holder's ready signal when the holder starts late", async () => {
+    const holder = await startRealHolder(300, 10_100);
+    expect(existsSync(holder.socket)).toBe(true);
+    expect(alive(holder.cliPid)).toBe(true);
   }, 30_000);
 });
