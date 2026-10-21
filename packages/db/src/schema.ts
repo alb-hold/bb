@@ -1196,6 +1196,16 @@ export const terminalSessions = sqliteTable(
   ],
 );
 
+export const forkTerminalHolderSessions = sqliteTable(
+  "fork_terminal_holder_sessions",
+  {
+    terminalSessionId: text("terminal_id")
+      .primaryKey()
+      .references(() => terminalSessions.id, { onDelete: "cascade" }),
+    confirmedAt: integer("confirmed_at").notNull(),
+  },
+);
+
 export const forkDeviceHandoffAttention = sqliteTable(
   "fork_device_handoff_attention",
   {

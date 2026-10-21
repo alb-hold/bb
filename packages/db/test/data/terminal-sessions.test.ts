@@ -4,6 +4,7 @@ import { noopNotifier } from "../../src/notifier.js";
 import {
   countTerminalSessions,
   createTerminalSession,
+  getTerminalSession,
   listTerminalSessions,
   updateTerminalSession,
   updateTerminalSessions,
@@ -14,6 +15,7 @@ import { createProject } from "../../src/data/projects.js";
 import { openSession } from "../../src/data/sessions.js";
 import { createThread } from "../../src/data/threads.js";
 import { createMigratedConnection } from "../../src/testing.js";
+import { migrate } from "../../src/migrate.js";
 
 type TestDb = ReturnType<typeof createConnection>;
 type TestHost = ReturnType<typeof upsertHost>;
@@ -213,6 +215,79 @@ function createStartingThreadlessTerminal(fixture: TerminalSessionFixture) {
 }
 
 describe("terminal sessions", () => {
+  it("creates the holder table when upgrading an ours-migrated database and is idempotent", () => {
+    const fixture = setup();
+    try {
+      fixture.db.$client.exec("DROP TABLE fork_terminal_holder_sessions");
+      const migrationCountBefore = fixture.db.$client
+        .prepare("SELECT COUNT(*) AS count FROM __drizzle_migrations")
+        .get() as { count: number };
+
+      migrate(fixture.db);
+
+      expect(
+        fixture.db.$client
+          .prepare("PRAGMA table_info(fork_terminal_holder_sessions)")
+          .all(),
+      ).toEqual([
+        expect.objectContaining({ name: "terminal_id", notnull: 1, pk: 1 }),
+        expect.objectContaining({ name: "confirmed_at", notnull: 1, pk: 0 }),
+      ]);
+      const migrationCountAfterFirstRun = fixture.db.$client
+        .prepare("SELECT COUNT(*) AS count FROM __drizzle_migrations")
+        .get() as { count: number };
+
+      migrate(fixture.db);
+
+      const migrationCountAfterSecondRun = fixture.db.$client
+        .prepare("SELECT COUNT(*) AS count FROM __drizzle_migrations")
+        .get() as { count: number };
+      expect(migrationCountAfterFirstRun).toEqual(migrationCountBefore);
+      expect(migrationCountAfterSecondRun).toEqual(migrationCountBefore);
+    } finally {
+      fixture.db.$client.close();
+    }
+  });
+
+  it("persists holder confirmation across a database reload and clears it on exit", () => {
+    const fixture = setup();
+    const terminal = createStartingTerminal(fixture);
+    expect(
+      updateTerminalSession(fixture.db, {
+        now: 10,
+        scope: { kind: "terminal", terminalId: terminal.id },
+        update: { kind: "holder-backed" },
+      }),
+    ).toMatchObject({ id: terminal.id, holderBacked: true });
+
+    const reloadedDb = createConnection(fixture.db.$client.serialize());
+    try {
+      migrate(reloadedDb);
+      expect(
+        getTerminalSession(reloadedDb, {
+          kind: "terminal",
+          terminalId: terminal.id,
+        }),
+      ).toMatchObject({ id: terminal.id, holderBacked: true });
+
+      expect(
+        updateTerminalSession(reloadedDb, {
+          now: 20,
+          scope: { kind: "terminal", terminalId: terminal.id },
+          update: { kind: "exit", closeReason: "process-exit" },
+        }),
+      ).toMatchObject({ id: terminal.id, holderBacked: false });
+      expect(
+        reloadedDb.$client
+          .prepare("SELECT terminal_id FROM fork_terminal_holder_sessions")
+          .all(),
+      ).toEqual([]);
+    } finally {
+      reloadedDb.$client.close();
+      fixture.db.$client.close();
+    }
+  });
+
   it("keeps threadless environment terminals out of thread terminal queries", () => {
     const fixture = setup();
     const threadTerminal = createStartingTerminal(fixture);
