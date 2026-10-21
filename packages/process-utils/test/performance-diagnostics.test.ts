@@ -15,10 +15,37 @@ import { performance } from "node:perf_hooks";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { console as inspectorConsole } from "node:inspector";
 import { setTimeout as delay } from "node:timers/promises";
+import type { WorkerOptions } from "node:worker_threads";
 import { startPerformanceDiagnostics } from "../src/performance-diagnostics.js";
+
+const workerOverrides = vi.hoisted(() => ({ nonErrorFailure: false }));
+
+vi.mock("node:worker_threads", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:worker_threads")>();
+  return {
+    ...actual,
+    Worker: class extends actual.Worker {
+      constructor(source: string | URL, options?: WorkerOptions) {
+        if (workerOverrides.nonErrorFailure) {
+          if (typeof source !== "string")
+            throw new Error("Expected profiling worker source");
+          const replaced = source.replace(
+            'if (command === "start") await start();',
+            'if (command === "start") throw "non-Error profile failure";',
+          );
+          if (replaced === source)
+            throw new Error("Expected profiling worker failure handler");
+          source = replaced;
+        }
+        super(source, options);
+      }
+    },
+  };
+});
 
 describe("performance diagnostics", () => {
   afterEach(() => {
+    workerOverrides.nonErrorFailure = false;
     inspectorConsole.profileEnd("unrelated-user-capture");
   });
 
@@ -278,6 +305,46 @@ describe("performance diagnostics", () => {
       expect(error.message).toContain("ENOENT");
     } finally {
       await monitor.stop();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("logs and settles a non-Error worker failure", async () => {
+    const dataDir = await mkdtemp(join(tmpdir(), "bb-perf-non-error-failure-"));
+    const warnings: { error: unknown; message: string }[] = [];
+    workerOverrides.nonErrorFailure = true;
+    const monitor = await startPerformanceDiagnostics({
+      dataDir,
+      logger: {
+        info: () => {},
+        warn: (fields, message) => {
+          warnings.push({
+            error:
+              typeof fields === "object" && fields !== null && "err" in fields
+                ? fields.err
+                : undefined,
+            message,
+          });
+        },
+      },
+    });
+    try {
+      await rm(join(dataDir, "logs", "performance"), {
+        recursive: true,
+        force: true,
+      });
+      await monitor.stop();
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]?.message).toBe(
+        "CPU profiling stopped; performance summaries remain enabled",
+      );
+      const error = warnings[0]?.error;
+      expect(error).toBeInstanceOf(Error);
+      if (!(error instanceof Error)) throw new Error("Expected profiler error");
+      expect(error.message).toBe("non-Error profile failure");
+    } finally {
+      await monitor.stop();
+      workerOverrides.nonErrorFailure = false;
       await rm(dataDir, { recursive: true, force: true });
     }
   });
