@@ -47,6 +47,23 @@ function reportTerminalActionDelivery(deliveredClients: number): void {
   );
 }
 
+function reportTerminalActionResult(
+  opts: TerminalJsonOptions,
+  result: Record<string, unknown> & { deliveredClients: number },
+): void {
+  if (opts.json) {
+    outputJson(opts, {
+      ...result,
+      ...(result.deliveredClients === 0
+        ? { error: { code: "no_app_clients", message: NO_APP_CLIENT_MESSAGE } }
+        : {}),
+    });
+    if (result.deliveredClients === 0) reportTerminalActionDelivery(0);
+    return;
+  }
+  reportTerminalActionDelivery(result.deliveredClients);
+}
+
 interface TerminalJsonOptions {
   json?: boolean;
 }
@@ -280,24 +297,26 @@ export function registerTerminalCommands(
   terminal
     .command("focus <terminalId>")
     .description("Focus a terminal tab in the app")
+    .option("--json", "Print machine-readable JSON output")
     .action(
-      action(async (terminalId: string) => {
+      action(async (terminalId: string, opts: TerminalJsonOptions) => {
         const result = await createCliBbSdk(
           getUrl(),
         ).terminals.experimental_focus({ terminalId });
-        reportTerminalActionDelivery(result.deliveredClients);
+        reportTerminalActionResult(opts, { terminalId, deliveredClients: result.deliveredClients });
       }),
     );
 
   terminal
     .command("open-link <terminalId> <url>")
     .description("Open a URL in the terminal thread's browser")
+    .option("--json", "Print machine-readable JSON output")
     .action(
-      action(async (terminalId: string, url: string) => {
+      action(async (terminalId: string, url: string, opts: TerminalJsonOptions) => {
         const result = await createCliBbSdk(
           getUrl(),
         ).terminals.experimental_openBrowser({ terminalId, url });
-        reportTerminalActionDelivery(result.deliveredClients);
+        reportTerminalActionResult(opts, { terminalId, url, deliveredClients: result.deliveredClients });
       }),
     );
 
@@ -321,16 +340,11 @@ export function registerTerminalCommands(
           terminalId,
           side: opts.side as "right" | "left" | "up" | "down",
         });
-        if (
-          outputJson(opts, {
+        reportTerminalActionResult(opts, {
             terminalId,
             side: opts.side,
             deliveredClients: result.deliveredClients,
-          })
-        ) {
-          return;
-        }
-        reportTerminalActionDelivery(result.deliveredClients);
+          });
       }),
     );
 
@@ -347,16 +361,11 @@ export function registerTerminalCommands(
           terminalId,
           targetTerminalId: opts.toPaneOf,
         });
-        if (
-          outputJson(opts, {
+        reportTerminalActionResult(opts, {
             terminalId,
             targetTerminalId: opts.toPaneOf,
             deliveredClients: result.deliveredClients,
-          })
-        ) {
-          return;
-        }
-        reportTerminalActionDelivery(result.deliveredClients);
+          });
       }),
     );
 

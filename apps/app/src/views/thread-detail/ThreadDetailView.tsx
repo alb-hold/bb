@@ -54,6 +54,7 @@ import {
 } from "@bb/server-contract";
 import type { WorkspaceOpenTarget } from "@bb/host-daemon-contract";
 import { appToast } from "@/components/ui/app-toast";
+import { getThreadTerminalLayoutSessions } from "@/lib/terminal-session-visibility";
 import { copyToClipboardWithToast } from "@/lib/clipboard";
 import type { ThreadSecondaryPanel as ThreadSecondaryPanelTab } from "@/lib/thread-secondary-panel";
 import {
@@ -713,7 +714,7 @@ function ThreadDetailViewInternal(
   const threadStorageRootPath =
     threadStorageLocationQuery.data?.storageRootPath ?? null;
   const terminalsListQuery = useThreadTerminals(threadId, {
-    enabled: isSecondaryPanelOpen,
+    enabled: isSecondaryPanelOpen || terminalLayoutRequest !== null,
   });
   const nativeTerminalThreadQuery = useNativeTerminalThread(threadId);
   const nativeTerminalThread = nativeTerminalThreadQuery.data ?? null;
@@ -1646,6 +1647,24 @@ function ThreadDetailViewInternal(
     onCloseLastTab: secondaryPanelDrawerVisibility.closeDrawer,
   });
   const { canStart: canStartTerminal, select: selectTerminal } = terminals;
+  const ensureTerminalTabs = useCallback(
+    (terminalIds: readonly string[]): boolean | null => {
+      if (terminalsListQuery.isPending) return null;
+      const sessions = terminalsListQuery.data?.sessions;
+      if (sessions === undefined) return false;
+      const selectedSessions = getThreadTerminalLayoutSessions(
+        sessions,
+        terminalIds,
+        threadId,
+      );
+      if (selectedSessions === null) return false;
+      for (const session of selectedSessions) {
+        selectTerminal(session.id, { kind: "thread", threadId });
+      }
+      return true;
+    },
+    [selectTerminal, terminalsListQuery.data, terminalsListQuery.isPending, threadId],
+  );
   const startTerminalSession = useCallback(async (): Promise<string | null> => {
     if (!canStartTerminal || !threadId) return null;
     try {
@@ -3174,6 +3193,7 @@ function ThreadDetailViewInternal(
               splitPanelStateId: thread.id,
               splitTabToRightRequest,
               terminalLayoutRequest,
+              onEnsureTerminalTabs: ensureTerminalTabs,
               onCreateTerminalInNewPane: canCreateTerminal
                 ? startTerminalSession
                 : undefined,

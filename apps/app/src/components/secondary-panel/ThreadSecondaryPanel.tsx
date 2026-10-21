@@ -234,6 +234,7 @@ export interface ThreadSecondaryPanelProps {
     pane: SecondaryPanelPaneRenderContext,
   ) => ReactNode;
   onCreateTerminalInNewPane?: () => Promise<string | null>;
+  onEnsureTerminalTabs?: (terminalIds: readonly string[]) => boolean | null;
   splitPanelStateId?: string;
   splitTabToRightRequest?: { requestId: number; tabId: string } | null;
   terminalLayoutRequest?: {
@@ -284,6 +285,7 @@ function ThreadSecondaryPanelContent({
   onTabReorder,
   renderBrowserDeck,
   onCreateTerminalInNewPane,
+  onEnsureTerminalTabs,
   splitPanelStateId,
   splitTabToRightRequest,
   terminalLayoutRequest,
@@ -1117,6 +1119,7 @@ function ThreadSecondaryPanelContent({
       onGlobalTabReorder={onTabReorder}
       onToggleFullScreen={onToggleConversationCollapse}
       onCreateTerminalInNewPane={onCreateTerminalInNewPane}
+      onEnsureTerminalTabs={onEnsureTerminalTabs}
       panelStateId={splitPanelStateId}
       splitTabToRightRequest={splitTabToRightRequest}
       terminalLayoutRequest={terminalLayoutRequest}

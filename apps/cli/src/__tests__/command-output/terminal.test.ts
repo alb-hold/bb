@@ -126,6 +126,22 @@ describe("bb terminal command output", () => {
     );
   });
 
+  it.each([
+    ["focus", ["terminal", "focus", "term-1", "--json"]],
+    ["open-link", ["terminal", "open-link", "term-1", "https://example.com", "--json"]],
+  ] as const)("reports zero delivery in %s JSON", async (_name, args) => {
+    stubServerApi({
+      "v1.terminals.:terminalId.$get": async () => makeTerminalSession(),
+      "v1.threads.:id.open.$post": async () => ({ deliveredClients: 0 }),
+    });
+
+    await expect(runCommand([...args], register)).rejects.toThrow("process.exit:1");
+    expect(JSON.parse(collectLogPayloads(vi.mocked(console.log))[0]!)).toMatchObject({
+      deliveredClients: 0,
+      error: { code: "no_app_clients" },
+    });
+  });
+
   it("opens a URL through the app thread-open browser request", async () => {
     const open = vi.fn(async () => ({ deliveredClients: 1 }));
     stubServerApi({
@@ -200,6 +216,41 @@ describe("bb terminal command output", () => {
         },
       },
     });
+  });
+
+  it.each([
+    ["split", ["terminal", "split", "term-1", "--side", "right", "--json"]],
+    ["move", ["terminal", "move", "term-1", "--to-pane-of", "term-2", "--json"]],
+  ] as const)("reports %s JSON delivery outcomes", async (_name, args) => {
+    for (const deliveredClients of [0, 1]) {
+      vi.mocked(console.log).mockClear();
+      const get = vi.fn(async ({ param }: { param: { terminalId: string } }) =>
+        makeTerminalSession({ id: param.terminalId }),
+      );
+      stubServerApi({
+        "v1.terminals.:terminalId.$get": get,
+        "v1.threads.:id.open.$post": async () => ({ deliveredClients }),
+      });
+      const result = runCommand([...args], register);
+      if (deliveredClients === 0) {
+        await expect(result).rejects.toThrow("process.exit:1");
+      } else {
+        await result;
+      }
+      const payload = JSON.parse(collectLogPayloads(vi.mocked(console.log))[0]!) as {
+        deliveredClients: number;
+        error?: { code: string; message: string };
+      };
+      expect(payload.deliveredClients).toBe(deliveredClients);
+      if (deliveredClients === 0) {
+        expect(payload.error).toEqual({
+          code: "no_app_clients",
+          message: "No bb app is open to apply this; open bb and retry",
+        });
+      } else {
+        expect(payload.error).toBeUndefined();
+      }
+    }
   });
 
   it("raises attention for the terminal identity injected into its shell", async () => {

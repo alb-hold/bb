@@ -32,6 +32,7 @@ import { IframeDragGuardOverlay } from "@/lib/iframe-drag-guard";
 import { MACOS_APP_REGION_NO_DRAG_CLASS } from "@/lib/bb-desktop";
 import { withLocalStorage } from "@/lib/browser-storage";
 import { notifyPaneLimit } from "@/lib/split-layout/notifyPaneLimit";
+import { appToast } from "@/components/ui/app-toast";
 import {
   PaneContext,
   type PaneContextValue,
@@ -116,6 +117,7 @@ interface SidebarSplitContainerProps {
   isFullScreen: boolean;
   onActivateTab: (tabId: string) => void;
   onCreateTerminalInNewPane?: () => Promise<string | null>;
+  onEnsureTerminalTabs?: (terminalIds: readonly string[]) => boolean | null;
   onGlobalTabReorder: (request: SecondaryPanelTabReorderRequest) => void;
   onToggleFullScreen: () => void;
   panelStateId: string;
@@ -149,6 +151,7 @@ export function SidebarSplitContainer({
   isFullScreen,
   onActivateTab,
   onCreateTerminalInNewPane,
+  onEnsureTerminalTabs,
   onGlobalTabReorder,
   onToggleFullScreen,
   panelStateId,
@@ -188,6 +191,7 @@ export function SidebarSplitContainer({
   const previousFullScreen = useRef(isFullScreen);
   const handledSplitTabRequestId = useRef<number | null>(null);
   const handledTerminalLayoutRequestId = useRef<number | null>(null);
+  const requestedTerminalLayoutAvailabilityId = useRef<number | null>(null);
   const dimsInactiveSplits = useAtomValue(dimInactiveSplitsAtom);
   const [resizeCursor, setResizeCursor] =
     useState<SidebarSplitResizeCursor | null>(null);
@@ -456,7 +460,25 @@ export function SidebarSplitContainer({
           terminalId: terminalLayoutRequest.targetTerminalId,
         }).id;
     const requiredTabIds = [sourceTabId, ...(targetTabId === undefined ? [] : [targetTabId])];
-    if (!requiredTabIds.every((tabId) => availableTabIds.includes(tabId))) return;
+    const missingTabIds = requiredTabIds.filter((tabId) => !availableTabIds.includes(tabId));
+    if (missingTabIds.length > 0) {
+      if (requestedTerminalLayoutAvailabilityId.current === terminalLayoutRequest.requestId) return;
+      requestedTerminalLayoutAvailabilityId.current = terminalLayoutRequest.requestId;
+      const terminalIds = missingTabIds.map((tabId) =>
+        tabId === sourceTabId
+          ? terminalLayoutRequest.terminalId
+          : terminalLayoutRequest.targetTerminalId!,
+      );
+      const ensured = onEnsureTerminalTabs?.(terminalIds) ?? false;
+      if (ensured === true) return;
+      if (ensured === null) {
+        requestedTerminalLayoutAvailabilityId.current = null;
+        return;
+      }
+      appToast.warning("The terminal is no longer available in this thread.");
+      handledTerminalLayoutRequestId.current = terminalLayoutRequest.requestId;
+      return;
+    }
     if (
       terminalLayoutRequest.action === "split" &&
       countPanes(stateRef.current.layout.root) >= MAX_PANES
@@ -477,7 +499,7 @@ export function SidebarSplitContainer({
       true,
     );
     handledTerminalLayoutRequestId.current = terminalLayoutRequest.requestId;
-  }, [availableTabIds, commitState, terminalLayoutRequest]);
+  }, [availableTabIds, commitState, onEnsureTerminalTabs, terminalLayoutRequest]);
 
   const removeSplit = useCallback(
     (paneId: string) => {

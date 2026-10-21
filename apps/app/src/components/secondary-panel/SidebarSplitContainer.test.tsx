@@ -31,6 +31,11 @@ import {
 } from "@/lib/fixed-panel-tabs-state";
 import { countPanes } from "@/lib/split-layout";
 
+const { toastWarning } = vi.hoisted(() => ({ toastWarning: vi.fn() }));
+vi.mock("@/components/ui/app-toast", () => ({
+  appToast: { warning: toastWarning },
+}));
+
 const TABS: readonly SidebarSplitTabDescriptor[] = [
   { id: "tab-a", label: "A", restoresPlacementAfterRemoval: true },
   { id: "tab-b", label: "B", restoresPlacementAfterRemoval: true },
@@ -80,13 +85,14 @@ function persistState(state: SidebarSplitState): void {
   );
 }
 
-function renderContainer({
+function containerElement({
   activeTabId = "tab-a",
   isFullScreen = false,
   onActivateTab = vi.fn(),
   onToggleFullScreen = vi.fn(),
   renderPane,
   tabs = TABS,
+  onEnsureTerminalTabs,
   terminalLayoutRequest,
 }: {
   activeTabId?: string;
@@ -95,6 +101,7 @@ function renderContainer({
   onToggleFullScreen?: () => void;
   renderPane: (args: SidebarSplitPaneRenderArgs) => ReactNode;
   tabs?: readonly SidebarSplitTabDescriptor[];
+  onEnsureTerminalTabs?: (terminalIds: readonly string[]) => boolean | null;
   terminalLayoutRequest?: {
     action: "split" | "move";
     requestId: number;
@@ -103,7 +110,7 @@ function renderContainer({
     terminalId: string;
   } | null;
 }) {
-  return render(
+  return (
     <SidebarProvider>
       <TooltipProvider>
         <SidebarSplitContainer
@@ -111,6 +118,7 @@ function renderContainer({
           isFullScreen={isFullScreen}
           onActivateTab={onActivateTab}
           onGlobalTabReorder={vi.fn()}
+          onEnsureTerminalTabs={onEnsureTerminalTabs}
           onToggleFullScreen={onToggleFullScreen}
           panelStateId={PANEL_STATE_ID}
           renderPane={renderPane}
@@ -118,8 +126,12 @@ function renderContainer({
           tabs={tabs}
         />
       </TooltipProvider>
-    </SidebarProvider>,
+    </SidebarProvider>
   );
+}
+
+function renderContainer(options: Parameters<typeof containerElement>[0]) {
+  return render(containerElement(options));
 }
 
 function StatefulPane({
@@ -169,6 +181,52 @@ function MultiTabStatefulPane({
 }
 
 describe("SidebarSplitContainer", () => {
+  it("opens a missing terminal tab before applying its split request", async () => {
+    const terminalId = "term-created-by-cli";
+    const terminalTab = createTerminalFixedPanelTab({ terminalId });
+    const otherTab = createTerminalFixedPanelTab({ terminalId: "term-other" });
+    const tabs = [
+      { id: terminalTab.id, label: "CLI terminal", restoresPlacementAfterRemoval: true },
+      { id: otherTab.id, label: "Other", restoresPlacementAfterRemoval: true },
+    ];
+    const onEnsureTerminalTabs = vi.fn(() => true);
+    const request = { action: "split" as const, requestId: 41, terminalId, side: "right" as const };
+    const renderPane = ({ group, paneId }: SidebarSplitPaneRenderArgs) => (
+      <div>{`${paneId}:${group.tabIds.join(",")}`}</div>
+    );
+    const view = renderContainer({
+      activeTabId: otherTab.id,
+      tabs: [tabs[1]!],
+      terminalLayoutRequest: request,
+      onEnsureTerminalTabs,
+      renderPane,
+    });
+
+    expect(onEnsureTerminalTabs).toHaveBeenCalledWith([terminalId]);
+    expect(listPaneIds()).toHaveLength(0);
+    view.rerender(containerElement({
+      activeTabId: otherTab.id,
+      tabs,
+      terminalLayoutRequest: request,
+      onEnsureTerminalTabs,
+      renderPane,
+    }));
+    await waitFor(() => expect(listPaneIds()).toHaveLength(2));
+    expect(toastWarning).not.toHaveBeenCalled();
+  });
+
+  it("notifies when a requested terminal cannot be made available and leaves layout unchanged", async () => {
+    const onEnsureTerminalTabs = vi.fn(() => false);
+    renderContainer({
+      terminalLayoutRequest: { action: "split", requestId: 42, terminalId: "term-foreign" },
+      onEnsureTerminalTabs,
+      renderPane: ({ paneId }) => <div>{paneId}</div>,
+    });
+
+    await waitFor(() => expect(toastWarning).toHaveBeenCalledWith("The terminal is no longer available in this thread."));
+    expect(window.localStorage.getItem(sidebarSplitStorageKey(PANEL_STATE_ID))).toBeNull();
+  });
+
   it("applies a terminal layout request through the persisted sidebar split state", async () => {
     const terminalId = "term-layout-source";
     const otherTerminalId = "term-layout-other";
@@ -217,6 +275,7 @@ describe("SidebarSplitContainer", () => {
   beforeEach(() => {
     window.localStorage.clear();
     nextPaneInstance = 0;
+    toastWarning.mockClear();
   });
 
   afterEach(() => {
