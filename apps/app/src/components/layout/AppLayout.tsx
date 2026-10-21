@@ -20,6 +20,7 @@ import {
 } from "react-router-dom";
 import type { ProjectResponse } from "@bb/server-contract";
 import { Icon } from "@bb/shared-ui/icon";
+import { useRedirectRetiredPluginPaths } from "@/lib/retired-plugin-redirect";
 import { TooltipProvider } from "@bb/shared-ui/tooltip";
 import { RESOURCE_ROUTE_LABEL_EVENT } from "@bb/shared-ui/resource-route-label";
 import {
@@ -473,6 +474,7 @@ export function AppLayout({ children }: AppLayoutProps) {
     restoreIOSViewportOnKeyboardDismissal,
   );
   const location = useLocation();
+  useRedirectRetiredPluginPaths();
   const { projectId, threadId, isThreadView, isArchivedView, isRootView } =
     useRouteState();
   const activeTerminalSessionId = useActiveDeviceHandoffTerminal();

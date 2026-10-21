@@ -155,11 +155,6 @@
     "icon": null
   },
   {
-    "id": "bb--provider-acp-next",
-    "name": "ACP providers [New adapter]",
-    "icon": null
-  },
-  {
     "id": "provider-claude-code",
     "name": "Claude Code provider",
     "icon": null
