@@ -182,6 +182,19 @@ afterEach(() => {
   testState.mediaQueryListeners.clear();
 });
 
+function waitForReadiness<T>(
+  promise: Promise<T>,
+  failureMessage: string,
+): Promise<T> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<T>((_, reject) => {
+    timeout = setTimeout(() => reject(new Error(failureMessage)), 5_000);
+  });
+  return Promise.race([promise, deadline]).finally(() => {
+    if (timeout !== undefined) clearTimeout(timeout);
+  });
+}
+
 const originalClipboardDescriptor = Object.getOwnPropertyDescriptor(
   navigator,
   "clipboard",
@@ -879,9 +892,21 @@ describe("ThreadTerminalView terminal focus boundary", () => {
       </MemoryRouter>,
     );
 
-    await socketCreated;
+    await waitForReadiness(
+      socketCreated,
+      "socket was not created within 5000 ms",
+    );
     const socket = testState.sockets[0]!;
-    await Promise.all([socket.opened, layoutSettled]);
+    await Promise.all([
+      waitForReadiness(
+        socket.opened,
+        "socket did not open within 5000 ms",
+      ),
+      waitForReadiness(
+        layoutSettled,
+        "layout did not settle within 5000 ms",
+      ),
+    ]);
     vi.useFakeTimers({ shouldAdvanceTime: true });
     await waitFor(
       () => {
