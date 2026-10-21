@@ -145,6 +145,17 @@ describe("native activity reporter", () => {
       ]);
     });
 
+    it("drops the retained report when a newer report is accepted, so a stale state is never resent after it", async () => {
+      const { reporter, sent } = rejecting(1);
+      reporter.report({ state: "idle", prompt: null });
+      await reporter.settled();
+      reporter.report({ state: "working", prompt: "next" });
+      await reporter.settled();
+      reporter.retry();
+      await reporter.settled();
+      expect(sent.map((entry) => entry.state)).toEqual(["idle", "working"]);
+    });
+
     it("does not keep a heartbeat", async () => {
       const { reporter, sent } = rejecting(1);
       reporter.report({ state: "working", prompt: null }, { transient: true });
