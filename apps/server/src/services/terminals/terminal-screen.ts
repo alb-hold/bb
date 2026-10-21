@@ -55,10 +55,7 @@ async function writeTerminal(
   terminal: HeadlessTerminal,
   data: string | Buffer,
 ) {
-  if (
-    typeof data === "string" ||
-    data.length <= TERMINAL_SCREEN_WRITE_CHUNK_BYTES
-  ) {
+  if (typeof data === "string") {
     await new Promise<void>((resolve) => terminal.write(data, resolve));
     return;
   }
@@ -78,14 +75,9 @@ async function writeTerminal(
       await new Promise<void>((resolve) =>
         terminal.write(data.subarray(offset, end), resolve),
       );
+      groupStart = end;
     } else {
       terminal.write(data.subarray(offset, end));
-    }
-    if (groupEnd) {
-      groupStart = end;
-    }
-    if (groupEnd && end < data.length) {
-      await yieldToEventLoop();
     }
   }
 }

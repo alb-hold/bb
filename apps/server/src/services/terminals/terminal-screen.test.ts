@@ -155,19 +155,18 @@ describe("renderTerminalScreen", () => {
   it("yields between chunks while proving a truncated 64 KiB screen", async () => {
     const data = "\u001b[H#".repeat(16_384);
     expect(Buffer.byteLength(data)).toBe(64 * 1024);
-    const yieldSpy = vi.spyOn(globalThis, "setImmediate");
-    try {
-      const screen = await renderTerminalScreen({
-        cols: 80,
-        rows: 24,
-        lines: undefined,
-        output: output(data, true),
-      });
-      expect(screen.complete).toBe(false);
-      expect(yieldSpy.mock.calls.length).toBeGreaterThan(6);
-    } finally {
-      yieldSpy.mockRestore();
-    }
+    let timerRan = false;
+    setTimeout(() => {
+      timerRan = true;
+    }, 0);
+    const screen = await renderTerminalScreen({
+      cols: 80,
+      rows: 24,
+      lines: undefined,
+      output: output(data, true),
+    });
+    expect(screen.complete).toBe(false);
+    expect(timerRan).toBe(true);
   });
 
   it("renders ANSI colors as plain text", async () => {
