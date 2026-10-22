@@ -20,6 +20,14 @@ import { threadParentNotificationsSchema } from "./thread-parent-notifications.j
 import { threadVisibilitySchema } from "./thread-visibility.js";
 import { threadRowStateSchema } from "./thread-row-state.js";
 import { NATIVE_TERMINAL_ACTIVITY_FRESH_FOR_MS } from "./native-terminal.js";
+import {
+  threadRuntimeDisplayStatusSchema,
+  threadRuntimeStateSchema as upstreamThreadRuntimeStateSchema,
+  threadActivityStateSchema,
+} from "./thread-runtime-state.js";
+export {
+  threadActivityStateSchema,
+} from "./thread-runtime-state.js";
 export { threadStatusSchema, threadStatusValues } from "./thread-status.js";
 export type { ThreadStatus } from "./thread-status.js";
 export { threadOriginKindSchema } from "./thread-origin-kind.js";
@@ -35,14 +43,7 @@ export type { ThreadOriginKind } from "./thread-origin-kind.js";
  * separate `held` display status, derived from an `idle` thread holding a live
  * dispatch hold; that derivation and the holds behind it are both gone.
  */
-const threadRuntimeDisplayStatusValues = [
-  ...threadStatusValues,
-  "provisioning",
-  "waiting-for-host",
-] as const;
-const threadRuntimeDisplayStatusSchema = z.enum(
-  threadRuntimeDisplayStatusValues,
-);
+
 export type ThreadRuntimeDisplayStatus = z.infer<
   typeof threadRuntimeDisplayStatusSchema
 >;
@@ -59,19 +60,11 @@ export const nativeActivityDiagnosticSchema = z.object({
 export type NativeActivityDiagnostic = z.infer<
   typeof nativeActivityDiagnosticSchema
 >;
-export const threadRuntimeStateSchema = z.object({
-  displayStatus: threadRuntimeDisplayStatusSchema,
+export const threadRuntimeStateSchema = upstreamThreadRuntimeStateSchema.extend({
   nativeActivity: nativeActivityDiagnosticSchema.optional(),
 });
 export type ThreadRuntimeState = z.infer<typeof threadRuntimeStateSchema>;
 
-export const threadActivityStateSchema = z.object({
-  activeWorkflowCount: z.number().int().nonnegative(),
-  activeBackgroundAgentCount: z.number().int().nonnegative(),
-  activeBackgroundCommandCount: z.number().int().nonnegative(),
-  activePlanModeCount: z.number().int().nonnegative(),
-  activeGoalCount: z.number().int().nonnegative(),
-});
 export type ThreadActivityState = z.infer<typeof threadActivityStateSchema>;
 
 const workspaceStateValues = [
@@ -141,6 +134,7 @@ const workspaceMergeBaseSchema = workspaceChangeStatsSchema.extend({
   baseRef: z.string().nullable(),
   aheadCount: z.number(),
   behindCount: z.number(),
+  squashMergeCheckComplete: z.boolean(),
   hasCommittedUnmergedChanges: z.boolean(),
   commits: z.array(workspaceCommitSummarySchema),
 });

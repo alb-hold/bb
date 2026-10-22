@@ -4,6 +4,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -107,7 +108,7 @@ import {
   isPluginRenderableWorkRow,
   usePluginTimelineRenderer,
 } from "./PluginTimelineRendererBody.js";
-import type { PromptMentionLinkResolver } from "@/components/promptbox/editor/prompt-mention-link";
+import type { PromptMentionLinkResolver } from "@bb/client-core";
 import {
   TimelineScrollRestoreRowIdContext,
   useBottomAnchoredScroll,
@@ -131,7 +132,7 @@ import {
 import { NESTED_TIMELINE_GROUP_LINE_CLASS_NAME } from "./timeline-nested-group-line.js";
 import { GeneratedConversationMessage } from "./GeneratedConversationMessage.js";
 import { copyToClipboardWithToast } from "@/lib/clipboard";
-import { useThreadTimelineTurnSummaryDetails } from "@/hooks/queries/thread-queries";
+import { useThreadTimelineTurnSummaryDetails } from "@/hooks/queries/thread-panel-queries";
 import { type ThreadTimelineTurnSummaryDetailsQueryIdentity } from "@/hooks/queries/query-keys";
 import {
   useSenderThreadMetadataById,
@@ -1227,15 +1228,21 @@ function TimelineUnreadDivider({ autoScroll }: { autoScroll: boolean }) {
   const dividerRef = useRef<HTMLDivElement>(null);
   const hasScrolledRef = useRef(false);
 
-  useEffect(() => {
-    if (!autoScroll || !bottomAnchor || hasScrolledRef.current) return;
-    const timeoutId = window.setTimeout(() => {
+  useLayoutEffect(() => {
+    if (!autoScroll || !bottomAnchor || hasScrolledRef.current) {
+      return;
+    }
+
+    const frameId = window.requestAnimationFrame(() => {
       const divider = dividerRef.current;
       if (!divider) return;
       hasScrolledRef.current = true;
-      bottomAnchor.scrollElementIntoView({ element: divider });
-    }, 0);
-    return () => window.clearTimeout(timeoutId);
+      bottomAnchor.scrollElementIntoViewClampedToMaxScroll({
+        element: divider,
+      });
+    });
+
+    return () => window.cancelAnimationFrame(frameId);
   }, [autoScroll, bottomAnchor]);
 
   return (
@@ -2353,6 +2360,11 @@ function TimelineRowsList({
             getScrollElement={getWindowingScrollElement}
             itemKeys={itemKeys}
             measurements={measurements}
+            positionKeeper={
+              detailScrollRoot?.positionKeeper ??
+              bottomAnchor?.positionKeeper ??
+              null
+            }
             pinnedToEnd={
               isTopLevelList &&
               detailScrollRoot === null &&

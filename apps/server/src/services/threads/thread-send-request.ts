@@ -127,8 +127,8 @@ export async function acceptThreadSendRequest(
         source: { kind: "inline" },
         queuePayload: { kind: "inline" },
         pluginSubmission: payload.pluginSubmission ?? null,
-        origin: null,
-        originPluginId: null,
+        origin: payload.originPluginId === undefined ? null : "plugin",
+        originPluginId: payload.originPluginId ?? null,
         startedOnBehalfOf: null,
         onTurnRequestCreated: (turnRequestId, turnId) =>
           deps.hub.recordDeviceHandoffTurnSubmitter(

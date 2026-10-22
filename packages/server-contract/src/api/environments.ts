@@ -17,6 +17,13 @@ import {
   pathListIncludeQueryValueSchema,
 } from "./shared.js";
 
+export const environmentCleanupQuerySchema = z.object({
+  recover: z.enum(["true", "false"]).default("false"),
+});
+export type EnvironmentCleanupQuery = z.input<
+  typeof environmentCleanupQuerySchema
+>;
+
 export const environmentNameSchema = z.string().trim().min(1).max(80);
 
 export const updateEnvironmentRequestSchema = z
@@ -94,6 +101,15 @@ export const environmentDiffQuerySchema = z.discriminatedUnion("target", [
   }),
 ]);
 export type EnvironmentDiffQuery = z.infer<typeof environmentDiffQuerySchema>;
+
+export const environmentDiffFilesQuerySchema = environmentDiffQuerySchema.and(
+  z.object({
+    ignoreWhitespace: z.enum(["true", "false"]).optional(),
+  }),
+);
+export type EnvironmentDiffFilesQuery = z.infer<
+  typeof environmentDiffFilesQuerySchema
+>;
 
 const diffFileSideSchema = z.enum(["old", "new"]);
 
@@ -361,6 +377,7 @@ export const diffFileEntrySchema = z.object({
   binary: z.boolean(),
   origin: z.enum(["tracked", "untracked"]),
   loadMode: z.enum(["auto", "on_demand", "too_large"]),
+  revision: z.string().min(1),
 });
 export type DiffFileEntry = z.infer<typeof diffFileEntrySchema>;
 
@@ -426,10 +443,57 @@ export const environmentDiffPatchRequestSchema = z
       .array(z.string().min(1))
       .min(1)
       .max(DIFF_PATCH_MAX_PATHS_PER_REQUEST),
+    ignoreWhitespace: z.boolean().optional(),
   })
   .strict();
 export type EnvironmentDiffPatchRequest = z.infer<
   typeof environmentDiffPatchRequestSchema
+>;
+
+export const diffViewedFileSchema = z
+  .object({
+    path: z.string().min(1),
+    revision: z.string().min(1),
+  })
+  .strict();
+export type DiffViewedFile = z.infer<typeof diffViewedFileSchema>;
+
+export const environmentDiffViewedResponseSchema = z
+  .object({
+    files: z.array(diffViewedFileSchema),
+  })
+  .strict();
+export type EnvironmentDiffViewedResponse = z.infer<
+  typeof environmentDiffViewedResponseSchema
+>;
+
+export const environmentDiffViewedQueryRequestSchema =
+  environmentDiffQuerySchema.and(
+    z.object({ paths: z.array(z.string().min(1).max(4096)).max(500) }),
+  );
+export type EnvironmentDiffViewedQueryRequest = z.infer<
+  typeof environmentDiffViewedQueryRequestSchema
+>;
+
+export const environmentDiffViewedMarkRequestSchema = z
+  .object({
+    target: workspaceDiffTargetSchema,
+    path: z.string().min(1).max(4096),
+    revision: z.string().min(1).max(1024),
+  })
+  .strict();
+export type EnvironmentDiffViewedMarkRequest = z.infer<
+  typeof environmentDiffViewedMarkRequestSchema
+>;
+
+export const environmentDiffViewedClearRequestSchema = z
+  .object({
+    target: workspaceDiffTargetSchema,
+    path: z.string().min(1).max(4096).optional(),
+  })
+  .strict();
+export type EnvironmentDiffViewedClearRequest = z.infer<
+  typeof environmentDiffViewedClearRequestSchema
 >;
 
 export type EnvironmentStatusResponse = z.infer<

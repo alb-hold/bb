@@ -38,6 +38,10 @@ import {
   useRealtime,
   useRealtimeConnectionState,
   useRpc,
+  experimental_useRpcQuery,
+  experimental_useRpcKeyedQuery,
+  experimental_useRpcMutation,
+  experimental_useRpcRefresh,
   useSdk,
   useSettings,
   experimental_useAppPanel,
@@ -59,7 +63,10 @@ import {
   useSidebarThreadSplit,
 } from "./plugin-sidebar-split";
 import { useAppNavigationHost } from "./app-navigation-host";
-import { experimental_THREAD_ACTION_GROUPS } from "@get-bb/plugin-sdk";
+import {
+  experimental_PluginRpcCallError,
+  experimental_THREAD_ACTION_GROUPS,
+} from "@get-bb/plugin-sdk";
 import {
   ThreadActionsContextMenu,
   ThreadActionsMenu,
@@ -100,6 +107,10 @@ export const pluginSdkAppImplementation = {
   useRealtime,
   useRealtimeConnectionState,
   useRpc,
+  experimental_useRpcQuery,
+  experimental_useRpcKeyedQuery,
+  experimental_useRpcMutation,
+  experimental_useRpcRefresh,
   useSettings,
   ThreadChat: LazyPluginThreadChat,
   Markdown: PluginMarkdown,
@@ -121,6 +132,7 @@ export const pluginSdkAppImplementation = {
   experimental_useThreadActionRegistrations: useThreadActionRegistrationInfos,
   experimental_ThreadActionsMenu: ThreadActionsMenu,
   experimental_ThreadActionsContextMenu: ThreadActionsContextMenu,
+  experimental_PluginRpcCallError,
   experimental_THREAD_ACTION_GROUPS,
   experimental_useSidebarThreadPullRequest: useSidebarThreadPullRequest,
   experimental_useSidebarThreadSplit: useSidebarThreadSplit,

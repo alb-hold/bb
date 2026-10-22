@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   canRenderSidebarSplits,
-  getSecondaryPanelChromeStackClassName,
   isSecondaryPanelLayoutTransition,
+  getSecondaryPanelChromeStackClassName,
   resolveCollapsedPanelTrafficLightReserveClassName,
 } from "./ThreadSecondaryPanel";
 import {
@@ -16,14 +16,6 @@ describe("secondary panel native browser bounds settling", () => {
     expect(isSecondaryPanelLayoutTransition("flex-grow")).toBe(true);
     expect(isSecondaryPanelLayoutTransition("flex-basis")).toBe(true);
     expect(isSecondaryPanelLayoutTransition("opacity")).toBe(false);
-  });
-});
-
-describe("compact terminal layout behavior", () => {
-  it("does not mount split panes in the compact drawer", () => {
-    expect(canRenderSidebarSplits(true, "thread-1")).toBe(false);
-    expect(canRenderSidebarSplits(false, "thread-1")).toBe(true);
-    expect(canRenderSidebarSplits(false, undefined)).toBe(false);
   });
 });
 

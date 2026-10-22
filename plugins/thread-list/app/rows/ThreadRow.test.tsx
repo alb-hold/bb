@@ -1677,7 +1677,7 @@ describe("ThreadRow", () => {
   });
 
   it.each([true, false])(
-    "gives a parent title the action space while actions are hidden (collapsed: %s)",
+    "reserves quick-action space after parent disclosure (collapsed: %s)",
     (isCollapsed) => {
       const onToggleCollapsed = vi.fn();
       renderThreadRow({
@@ -1709,6 +1709,21 @@ describe("ThreadRow", () => {
       expect(titleContainer?.classList.contains("min-w-0")).toBe(true);
       expect(navigationTarget?.classList.contains("flex-1")).toBe(true);
       expect(titleWrapper?.classList.contains("flex-1")).toBe(true);
+      expect(
+        link.parentElement?.classList.contains(
+          "pr-(--bb-sidebar-hover-actions-inset)",
+        ),
+      ).toBe(true);
+      const row = link.closest("[data-sidebar-rename-row]");
+      expect(
+        Array.from(row?.querySelectorAll("button") ?? [], (button) =>
+          button.getAttribute("aria-label"),
+        ),
+      ).toEqual([
+        toggle.getAttribute("aria-label"),
+        "Archive",
+        "Thread actions",
+      ]);
       fireEvent.click(toggle);
       expect(onToggleCollapsed).toHaveBeenCalledWith("thr_test");
     },

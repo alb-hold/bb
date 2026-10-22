@@ -13,7 +13,8 @@ import { useThreadActions } from "@/components/thread/ThreadActionsProvider";
 import { useRouteState } from "@/hooks/useRouteState";
 import { copyToClipboardWithToast } from "@/lib/clipboard";
 import { showMutationErrorToast } from "@/lib/mutation-errors";
-import { resolveThread, useSidebarThreads } from "@/lib/plugin-sidebar-hooks";
+import { resolveThread } from "@/lib/cached-thread";
+import { useSidebarNavigation } from "@/hooks/queries/sidebar-navigation-query";
 import { getThreadRoutePath } from "@/lib/route-paths";
 import {
   countPanes,
@@ -135,7 +136,11 @@ interface ProjectMoveData {
 }
 
 function useProjectMoveData(): ProjectMoveData {
-  const { projects } = useSidebarThreads();
+  const { data: navigation } = useSidebarNavigation();
+  const projects =
+    navigation === undefined
+      ? []
+      : [...navigation.projects, navigation.personalProject];
   const { threadId } = useRouteState();
   const navigate = useNavigate();
   const projectsKey = JSON.stringify(

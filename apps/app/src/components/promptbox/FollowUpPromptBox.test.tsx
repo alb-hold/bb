@@ -21,6 +21,7 @@ import {
   type FollowUpSubmitMode,
 } from "@/components/promptbox/FollowUpPromptBox";
 import { makePluginRegistrationSet } from "@/test/fixtures/plugins";
+import { createInertScrollPositionKeeper } from "@/test/scroll-position-keeper";
 
 const mocks = vi.hoisted(() => {
   const values = {
@@ -41,6 +42,8 @@ vi.mock("@/components/ui/bottom-anchored-scroll-body.js", () => ({
     scrollToBottom: mocks.scrollToBottom,
     scrollElementIntoView: vi.fn(),
     captureScrollAnchor: vi.fn(),
+scrollElementIntoViewClampedToMaxScroll: vi.fn(),
+    positionKeeper: createInertScrollPositionKeeper(),
     holdContentPosition: vi.fn(),
   }),
 }));
