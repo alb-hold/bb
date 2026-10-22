@@ -27,17 +27,19 @@ export function interruptNativeTerminalQuestions(
   return interrupted;
 }
 
-const closedNativeQuestions = new WeakMap<
+const rejectedNativeQuestions = new WeakMap<
   AppDeps["hub"],
   Map<string, Set<string>>
 >();
-export const MAX_CLOSED_NATIVE_QUESTIONS = 256;
 
-function closedQuestionsOf(deps: Pick<AppDeps, "hub">, threadId: string) {
-  let byThread = closedNativeQuestions.get(deps.hub);
+export function rejectedQuestions(
+  deps: Pick<AppDeps, "hub">,
+  threadId: string,
+): Set<string> {
+  let byThread = rejectedNativeQuestions.get(deps.hub);
   if (byThread === undefined) {
     byThread = new Map();
-    closedNativeQuestions.set(deps.hub, byThread);
+    rejectedNativeQuestions.set(deps.hub, byThread);
   }
   let questions = byThread.get(threadId);
   if (questions === undefined) {
@@ -47,34 +49,9 @@ function closedQuestionsOf(deps: Pick<AppDeps, "hub">, threadId: string) {
   return questions;
 }
 
-export function rememberClosedNativeQuestions(
-  deps: Pick<AppDeps, "hub">,
-  threadId: string,
-  providerRequestIds: Iterable<string>,
-): void {
-  const questions = closedQuestionsOf(deps, threadId);
-  for (const id of providerRequestIds) {
-    questions.delete(id);
-    questions.add(id);
-  }
-  while (questions.size > MAX_CLOSED_NATIVE_QUESTIONS) {
-    const oldest = questions.values().next().value;
-    if (oldest === undefined) break;
-    questions.delete(oldest);
-  }
-}
-
-export function isClosedNativeQuestion(
-  deps: Pick<AppDeps, "hub">,
-  threadId: string,
-  providerRequestId: string,
-): boolean {
-  return closedQuestionsOf(deps, threadId).has(providerRequestId);
-}
-
-export function forgetClosedNativeQuestions(
+export function forgetRejectedNativeQuestions(
   deps: Pick<AppDeps, "hub">,
   threadId: string,
 ): void {
-  closedQuestionsOf(deps, threadId).clear();
+  rejectedQuestions(deps, threadId).clear();
 }

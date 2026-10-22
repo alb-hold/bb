@@ -1058,13 +1058,13 @@ named questions that are still open; the optional `confirms: false` makes the
 server clear the activity evidence instead of stamping it when the report
 closed an open question, so the thread shows Activity not reported; the holder
 sends `closes` on every report, gives each permission prompt its own
-occurrence id, uses `confirms: false` only when an open question was dropped
+id (tool name, a per-process random nonce and an occurrence number), uses `confirms: false` only when an open question was dropped
 from its holding bound and then never restores Working from a close, and on a
 400 naming the fields retries the report once without exactly those fields;
 the server ends the questions of the previous binding when it binds a new
-terminal and refuses to re-register, per thread and up to 256 ids, a question
-that a report already closed by name (while the server runs and the binding
-holds; cleared only at a new binding, not persisted); open finding (not accepted), Claude Code only: the
+terminal and records a durable tombstone for every question a report closes by
+name that had no stored row (at most 8 per report), so the existing
+already-handled rule refuses a delayed registration of it; open finding (not accepted), Claude Code only: the
 holder cannot match a completion hook to its permission prompt exactly because
 `PermissionRequest` has no `tool_use_id`, so it closes the oldest open prompt of
 that tool, which can remove Needs input while the CLI is still waiting); a waiting report

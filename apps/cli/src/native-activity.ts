@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { closeSync, openSync, readSync, statSync } from "node:fs";
 import type {
   ProviderNativeTerminalActivity,
@@ -271,12 +272,22 @@ export class JsonlTail {
   }
 }
 
+const MAX_QUESTION_BASE_ID_LENGTH = 200;
+let holderNonce: string | null = null;
+
+function processHolderNonce(): string {
+  holderNonce ??= randomBytes(8).toString("hex");
+  return holderNonce;
+}
+
 export class NativeActivityTracker {
   private state: NativeActivityState = "idle";
   private reportedPrompt: string | null = null;
   private readonly questions = new Map<string, string>();
   private readonly occurrenceCounters = new Map<string, number>();
   private readonly openOccurrences = new Map<string, string[]>();
+
+  constructor(private readonly nonce: string = processHolderNonce()) {}
 
   apply(signal: NativeActivitySignal): NativeActivityReport | null {
     if (signal.question !== undefined) {
@@ -327,7 +338,8 @@ export class NativeActivityTracker {
   private startOccurrence(question: NativeQuestion): NativeQuestion {
     const serial = (this.occurrenceCounters.get(question.id) ?? 0) + 1;
     this.occurrenceCounters.set(question.id, serial);
-    const id = `${question.id}#${serial}`;
+    const base = question.id.slice(0, MAX_QUESTION_BASE_ID_LENGTH);
+    const id = `${base}#${this.nonce}.${serial}`;
     this.openOccurrences.set(question.id, [
       ...(this.openOccurrences.get(question.id) ?? []),
       id,

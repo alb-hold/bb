@@ -43,7 +43,7 @@ import {
 import { resolvePluginProviderEnv } from "../plugins/plugin-agent-contributions.js";
 import { applyLoggedThreadLifecycleEventInTransaction } from "./lifecycle-outcome.js";
 import {
-  forgetClosedNativeQuestions,
+  forgetRejectedNativeQuestions,
   interruptNativeTerminalQuestions,
 } from "./native-terminal-questions.js";
 import {
@@ -504,7 +504,7 @@ async function openNativeTerminalOnce(
       terminalSessionId: terminal.id,
     });
     interruptNativeTerminalQuestions(deps, thread.id);
-    forgetClosedNativeQuestions(deps, thread.id);
+    forgetRejectedNativeQuestions(deps, thread.id);
     return toNativeTerminalThread(deps, record, terminal);
   } finally {
     endNativeTerminalRebind(thread.id);

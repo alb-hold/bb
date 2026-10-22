@@ -30,6 +30,7 @@ import {
 } from "@bb/server-contract";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as interactiveRequests from "../../src/internal/interactive-requests.js";
+import { DAEMON_RESTARTED_PENDING_INTERACTION_REASON } from "../../src/services/interactions/pending-interactions.js";
 import { applyLoggedThreadLifecycleEvent } from "../../src/services/threads/lifecycle-outcome.js";
 import { stopThreadForCurrentState } from "../../src/services/threads/thread-lifecycle.js";
 import {
@@ -45,7 +46,10 @@ import {
 } from "../../src/services/threads/native-terminal-activity.js";
 import { buildThreadStatusChangeMetadata } from "../../src/services/threads/thread-runtime-display.js";
 import * as titleGeneration from "../../src/services/threads/title-generation.js";
-import type { ProviderNativeTerminalActivity } from "@bb/domain";
+import {
+  NATIVE_TERMINAL_QUESTION_REQUEST_PREFIX,
+  type ProviderNativeTerminalActivity,
+} from "@bb/domain";
 
 interface NativeActivitySignalForTest {
   state: "working" | "idle" | null;
@@ -3197,11 +3201,40 @@ describe("a native activity report that does not confirm activity", () => {
     }
   });
 
-  describe("a late waiting report after the question was closed by name", () => {
-    const bash1 = { id: "permission:Bash#1", prompt: "Allow Bash?" };
-    const bash2 = { id: "permission:Bash#2", prompt: "Allow Bash?" };
+  describe("a question closed by name leaves a durable tombstone", () => {
+    const bash1 = { id: "permission:Bash#aaaa.1", prompt: "Allow Bash?" };
+    const bash2 = { id: "permission:Bash#aaaa.2", prompt: "Allow Bash?" };
 
-    it("does not re-register the closed question, and its other fields still apply", async () => {
+    const reopen = async (
+      fixture: Fixture,
+      thread: { id: string; open: DaemonMessage<"terminal.open"> },
+    ) => {
+      fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+        hostId: fixture.hostId,
+        sessionId: fixture.sessionId,
+        message: {
+          type: "terminal.exited",
+          terminalId: thread.open.terminalId,
+          exitCode: null,
+          closeReason: "daemon-disconnect",
+        },
+      });
+      const opens = countDaemonMessages(fixture, "terminal.open");
+      const reopening = postJson(
+        fixture,
+        `/threads/${thread.id}/native-terminal/open`,
+        {},
+      );
+      const reopened = await waitForDaemonMessage(
+        fixture,
+        "terminal.open",
+        opens,
+      );
+      acknowledgeOpen(fixture, reopened);
+      expect((await reopening).status).toBe(200);
+    };
+
+    it("does not re-register the closed question when a delayed waiting report arrives, and its other fields still apply", async () => {
       const fixture = await createFixture();
       const clock = vi.spyOn(Date, "now").mockReturnValue(1_000_000);
       try {
@@ -3237,29 +3270,63 @@ describe("a native activity report that does not confirm activity", () => {
           state: "waiting",
         });
         expect(pendingIds(fixture, thread.id)).toEqual([
-          expect.stringContaining("permission:Bash#2"),
+          expect.stringContaining("permission:Bash#aaaa.2"),
         ]);
       } finally {
         clock.mockRestore();
       }
     });
 
-    it("is not forgotten when the terminal exits: a waiting report delivered after the exit still cannot revive the closed question", async () => {
+    it("holds past 256 other closes: the opener delivered last still registers nothing", async () => {
       const fixture = await createFixture();
       const clock = vi.spyOn(Date, "now").mockReturnValue(1_000_000);
       try {
         const thread = await startThread(fixture);
         await send(fixture, thread.id, { closes: [bash1.id], state: "working" });
-        fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
-          hostId: fixture.hostId,
-          sessionId: fixture.sessionId,
-          message: {
-            type: "terminal.exited",
-            terminalId: thread.open.terminalId,
-            exitCode: 0,
-            closeReason: "process-exit",
-          },
+        for (let batch = 0; batch < 33; batch += 1) {
+          await send(fixture, thread.id, {
+            closes: Array.from(
+              { length: 8 },
+              (_, index) => `permission:Other#aaaa.${batch * 8 + index}`,
+            ),
+            state: "working",
+          });
+        }
+        await send(fixture, thread.id, {
+          closes: [],
+          questions: [bash1],
+          state: "waiting",
         });
+        expect(openInteractions(fixture, thread.id)).toHaveLength(0);
+      } finally {
+        clock.mockRestore();
+      }
+    });
+
+    it("is stored in the database, so a copy of the database image taken after the close carries it", async () => {
+      const fixture = await createFixture();
+      const thread = await startThread(fixture);
+      await send(fixture, thread.id, { closes: [bash1.id], state: "working" });
+      const image = createConnection(fixture.harness.db.$client.serialize());
+      const row = getPendingInteractionByProviderRequest(image, {
+        providerId: "claude-code",
+        providerRequestId: `${NATIVE_TERMINAL_QUESTION_REQUEST_PREFIX}${bash1.id}`,
+        providerThreadId: SESSION_ID,
+      });
+      expect(row).toMatchObject({
+        status: "interrupted",
+        statusReason: "native-terminal-question-answered",
+        threadId: thread.id,
+      });
+    });
+
+    it("is not forgotten when the terminal exits or a new terminal is bound", async () => {
+      const fixture = await createFixture();
+      const clock = vi.spyOn(Date, "now").mockReturnValue(1_000_000);
+      try {
+        const thread = await startThread(fixture);
+        await send(fixture, thread.id, { closes: [bash1.id], state: "working" });
+        await reopen(fixture, thread);
         clock.mockReturnValue(1_020_000);
         await send(fixture, thread.id, {
           closes: [],
@@ -3272,12 +3339,71 @@ describe("a native activity report that does not confirm activity", () => {
       }
     });
 
-    it("is forgotten when a new terminal is bound, so the next holder starts clean", async () => {
+    it("keeps a question that the daemon restart interrupted from being revived once it was closed by name", async () => {
       const fixture = await createFixture();
       const clock = vi.spyOn(Date, "now").mockReturnValue(1_000_000);
       try {
         const thread = await startThread(fixture);
+        await send(fixture, thread.id, { questions: [bash1], state: "waiting" });
+        const [pending] = openInteractions(fixture, thread.id);
+        fixture.harness.deps.pendingInteractions.interruptPendingInteraction({
+          interactionId: pending!.id,
+          reason: DAEMON_RESTARTED_PENDING_INTERACTION_REASON,
+        });
+        expect(openInteractions(fixture, thread.id)).toHaveLength(0);
         await send(fixture, thread.id, { closes: [bash1.id], state: "working" });
+        await send(fixture, thread.id, {
+          closes: [],
+          questions: [bash1],
+          state: "waiting",
+        });
+        expect(openInteractions(fixture, thread.id)).toHaveLength(0);
+        expect(
+          getPendingInteractionByProviderRequest(fixture.harness.db, {
+            providerId: "claude-code",
+            providerRequestId: `${NATIVE_TERMINAL_QUESTION_REQUEST_PREFIX}${bash1.id}`,
+            providerThreadId: SESSION_ID,
+          }),
+        ).toMatchObject({
+          status: "interrupted",
+          statusReason: "native-terminal-question-answered",
+        });
+      } finally {
+        clock.mockRestore();
+      }
+    });
+
+    it("revives an unclosed question the daemon restart interrupted (control)", async () => {
+      const fixture = await createFixture();
+      const clock = vi.spyOn(Date, "now").mockReturnValue(1_000_000);
+      try {
+        const thread = await startThread(fixture);
+        await send(fixture, thread.id, { questions: [bash1], state: "waiting" });
+        const [pending] = openInteractions(fixture, thread.id);
+        fixture.harness.deps.pendingInteractions.interruptPendingInteraction({
+          interactionId: pending!.id,
+          reason: DAEMON_RESTARTED_PENDING_INTERACTION_REASON,
+        });
+        await send(fixture, thread.id, { questions: [bash1], state: "waiting" });
+        expect(openInteractions(fixture, thread.id)).toHaveLength(1);
+      } finally {
+        clock.mockRestore();
+      }
+    });
+  });
+
+  describe("a holder that resumes the same session", () => {
+    it("registers its first prompt of a tool again, because the ids carry the new holder's nonce", async () => {
+      const fixture = await createFixture();
+      const clock = vi.spyOn(Date, "now").mockReturnValue(1_000_000);
+      try {
+        const thread = await startThread(fixture);
+        const first = { id: "permission:Bash#aaaa.1", prompt: "Allow Bash?" };
+        await send(fixture, thread.id, { questions: [first], state: "waiting" });
+        await send(fixture, thread.id, {
+          closes: [first.id],
+          state: "working",
+        });
         fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
           hostId: fixture.hostId,
           sessionId: fixture.sessionId,
@@ -3303,13 +3429,68 @@ describe("a native activity report that does not confirm activity", () => {
         expect((await reopening).status).toBe(200);
         clock.mockReturnValue(1_020_000);
         await send(fixture, thread.id, {
-          closes: [],
-          questions: [bash1],
+          questions: [{ id: "permission:Bash#bbbb.1", prompt: "Allow Bash?" }],
           state: "waiting",
         });
         expect(pendingIds(fixture, thread.id)).toEqual([
-          expect.stringContaining("permission:Bash#1"),
+          expect.stringContaining("permission:Bash#bbbb.1"),
         ]);
+        await send(fixture, thread.id, {
+          closes: ["permission:Bash#bbbb.1"],
+          state: "working",
+        });
+        await send(fixture, thread.id, {
+          questions: [{ id: "permission:Bash#aaaa.1", prompt: "Allow Bash?" }],
+          state: "waiting",
+        });
+        expect(openInteractions(fixture, thread.id)).toHaveLength(0);
+      } finally {
+        clock.mockRestore();
+      }
+    });
+
+    it("forgets the cache of refused question ids at the new binding", async () => {
+      const fixture = await createFixture();
+      const clock = vi.spyOn(Date, "now").mockReturnValue(1_000_000);
+      const warn = vi.spyOn(fixture.harness.deps.logger, "warn");
+      try {
+        const thread = await startThread(fixture);
+        const old = { id: "permission:Bash#1", prompt: "Allow Bash?" };
+        await send(fixture, thread.id, { questions: [old], state: "waiting" });
+        await send(fixture, thread.id, { state: "working", prompt: "next" });
+        const refusals = () =>
+          warn.mock.calls.filter(
+            (call) => call[1] === "Native terminal question was not registered",
+          ).length;
+        await send(fixture, thread.id, { questions: [old], state: "waiting" });
+        expect(refusals()).toBe(1);
+        await send(fixture, thread.id, { questions: [old], state: "waiting" });
+        expect(refusals()).toBe(1);
+        fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+          hostId: fixture.hostId,
+          sessionId: fixture.sessionId,
+          message: {
+            type: "terminal.exited",
+            terminalId: thread.open.terminalId,
+            exitCode: null,
+            closeReason: "daemon-disconnect",
+          },
+        });
+        const opens = countDaemonMessages(fixture, "terminal.open");
+        const reopening = postJson(
+          fixture,
+          `/threads/${thread.id}/native-terminal/open`,
+          {},
+        );
+        const reopened = await waitForDaemonMessage(
+          fixture,
+          "terminal.open",
+          opens,
+        );
+        acknowledgeOpen(fixture, reopened);
+        expect((await reopening).status).toBe(200);
+        await send(fixture, thread.id, { questions: [old], state: "waiting" });
+        expect(refusals()).toBe(2);
       } finally {
         clock.mockRestore();
       }
