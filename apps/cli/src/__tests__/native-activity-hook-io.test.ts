@@ -631,9 +631,11 @@ describe.skipIf(process.platform === "win32")(
       );
       await new Promise((resolve) => setTimeout(resolve, 4_000));
       expect(statSync(file).size).toBe(0);
-      expect(readdirSync(directory).some((name) => name.startsWith(".lost."))).toBe(
-        false,
-      );
+      expect(
+        readdirSync(directory).some(
+          (name) => name.startsWith(".lost.") || name.startsWith(".late."),
+        ),
+      ).toBe(false);
       rmSync(lock);
       await waiting.exited;
       expect(new HookAppendReader(file).read().records.map(toolOf)).toEqual([
@@ -722,40 +724,151 @@ describe.skipIf(process.platform === "win32")(
       expect(reader.read(start + 11 * 60_000).unreadable).toBe(1);
     });
 
-    it("waits behind a mkdir lock held by a live process too", async () => {
-      const { commandFor, file, lock } = appendFixture();
+    it("waits behind a lock directory held by a live process: ln -s must not be taken for the lock when it only landed inside that directory", async () => {
+      const { commandFor, directory, file, lock } = appendFixture();
       mkdirSync(lock);
       writeFileSync(path.join(lock, "pid"), String(process.pid));
       const waiting = startHook(commandFor("PermissionRequest"));
       waiting.child.stdin.end(
         record("PermissionRequest", { tool_name: "Dir" }),
       );
-      await new Promise((resolve) => setTimeout(resolve, 300));
+      await until(() => markers(directory).length === 1, "the hook marker");
+      await new Promise((resolve) => setTimeout(resolve, 400));
       expect(statSync(file).size).toBe(0);
-      rmSync(lock, { recursive: true });
+      expect(lstatSync(lock).isDirectory()).toBe(true);
+      rmSync(lock, { force: true, maxRetries: 10, recursive: true });
       await waiting.exited;
       expect(new HookAppendReader(file).read().records.map(toolOf)).toEqual([
         "Dir",
       ]);
     }, 30_000);
 
-    it("renames its marker to .lost.<pid> when it finally gives up, and the reader counts it at once, once", async () => {
+    const forcedDeadline = async (
+      file: string,
+      payload: string,
+      wrapper = "",
+    ): Promise<void> => {
+      const child = spawn(
+        "sh",
+        ["-c", `${wrapper}${hookAppendCommand(file, 1)}`],
+        { stdio: ["pipe", "ignore", "ignore"] },
+      );
+      children.push(child);
+      const exited = new Promise<void>((resolve) => {
+        child.once("exit", () => resolve());
+      });
+      child.stdin.end(payload);
+      await exited;
+    };
+
+    const lateFiles = (directory: string): string[] =>
+      readdirSync(directory).filter((name) => /^\.late\.\d+\.\d+$/u.test(name));
+
+    it("at its wall-clock deadline publishes its in-memory record as .late.<pid>.<start> and removes its marker, instead of losing it", async () => {
       const { directory, file, lock } = appendFixture();
       symlinkSync(String(process.pid), lock);
-      await runWhole(
-        hookAppendCommand(file, 12),
-        record("PermissionRequest", { tool_name: "Never" }),
+      const began = Math.floor(Date.now() / 1000);
+      await forcedDeadline(
+        file,
+        record("PermissionRequest", { tool_name: "Late" }),
       );
       expect(statSync(file).size).toBe(0);
       expect(markers(directory)).toEqual([]);
       expect(
         readdirSync(directory).filter((name) => name.startsWith(".lost.")),
+      ).toEqual([]);
+      const [late] = lateFiles(directory);
+      expect(lateFiles(directory)).toHaveLength(1);
+      expect(Number(late?.split(".").at(-1))).toBeGreaterThanOrEqual(began);
+      const read = new HookAppendReader(file).read();
+      expect(read.unreadable).toBe(1);
+      expect(read.late?.map((entry) => toolOf(entry.record))).toEqual(["Late"]);
+      expect(new HookAppendReader(file).read(Date.now() + 3_000).late).toBeUndefined();
+    }, 30_000);
+
+    it("keeps .lost only for a hook that cannot even write its late file, and the reader counts it at once", async () => {
+      const { directory, file, lock } = appendFixture();
+      symlinkSync(String(process.pid), lock);
+      await forcedDeadline(
+        file,
+        record("PermissionRequest", { tool_name: "Nowhere" }),
+        "trap '' XFSZ; ulimit -f 0; ",
+      );
+      expect(lateFiles(directory)).toEqual([]);
+      expect(markers(directory)).toEqual([]);
+      expect(
+        readdirSync(directory).filter((name) => name.startsWith(".lost.")),
       ).toHaveLength(1);
       const reader = new HookAppendReader(file);
-      const start = Date.now();
-      expect(reader.read(start).unreadable).toBe(1);
-      expect(reader.read(start + 3_000).unreadable).toBe(0);
-    });
+      expect(reader.read().unreadable).toBe(1);
+      expect(reader.read(Date.now() + 3_000).unreadable).toBe(0);
+    }, 30_000);
+
+    it("delivers a late PermissionRequest as Needs input while still counting the loss, and refuses a late close or state change", async () => {
+      const { commandFor, directory, file, lock, reader, unconfirmed } =
+        appendFixture();
+      await runWhole(
+        commandFor("PermissionRequest"),
+        record("PermissionRequest", { tool_name: "Bash" }),
+      );
+      expect(reader.read().at(-1)).toMatchObject({
+        questions: [{ prompt: "Claude Code needs permission to use: Bash" }],
+        state: "waiting",
+      });
+      symlinkSync(String(process.pid), lock);
+      await forcedDeadline(
+        file,
+        record("PostToolUse", { tool_name: "Bash" }),
+      );
+      await forcedDeadline(
+        file,
+        record("UserPromptSubmit", { prompt: "late prompt" }),
+      );
+      expect(lateFiles(directory)).toHaveLength(2);
+      expect(reader.read()).toEqual([]);
+      expect(unconfirmed).toEqual([{ reason: "unreadable-record", total: 2 }]);
+      expect(reader.heartbeat()).toBeNull();
+
+      await forcedDeadline(
+        file,
+        record("PermissionRequest", { tool_name: "Edit" }),
+      );
+      const reports = reader.read();
+      expect(unconfirmed.at(-1)).toEqual({ reason: "unreadable-record", total: 3 });
+      expect(reports.some((report) => report.state === "working")).toBe(false);
+      const last = reports.at(-1);
+      expect(
+        last?.state === "waiting"
+          ? last.questions.map((question) => question.prompt).sort()
+          : [],
+      ).toEqual([
+        "Claude Code needs permission to use: Bash",
+        "Claude Code needs permission to use: Edit",
+      ]);
+      expect(reader.heartbeat()).toBeNull();
+    }, 30_000);
+
+    it("refuses a late opener whose close was already applied here", async () => {
+      const { directory, file, lock, reader } = appendFixture();
+      symlinkSync(String(process.pid), lock);
+      const late = spawn("sh", ["-c", hookAppendCommand(file, 2)], {
+        stdio: ["pipe", "ignore", "ignore"],
+      });
+      children.push(late);
+      const exited = new Promise<void>((resolve) => {
+        late.once("exit", () => resolve());
+      });
+      late.stdin.end(record("PermissionRequest", { tool_name: "Bash" }));
+      await until(() => markers(directory).length === 1, "the hook marker");
+      appendFileSync(
+        file,
+        `${record("PostToolUse", { tool_name: "Bash" })}\n`,
+      );
+      expect(reader.read()).toEqual([]);
+      await exited;
+      expect(lateFiles(directory)).toHaveLength(1);
+      expect(reader.read()).toEqual([]);
+    }, 30_000);
 
     it("counts a hook killed before it appended as lost evidence, and withholds Working until the next prompt", async () => {
       const { commandFor, directory, reader, unconfirmed } = appendFixture();
