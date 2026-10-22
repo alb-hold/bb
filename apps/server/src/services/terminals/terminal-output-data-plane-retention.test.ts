@@ -866,7 +866,7 @@ describe("terminal output retained from the data plane", () => {
       dataBase64: Buffer.from(`replay-${index}`).toString("base64"),
     }));
     const duringReplay = {
-      seq: 500,
+      seq: 5,
       dataBase64: Buffer.from("running-output-during-replay").toString("base64"),
     };
     try {
@@ -908,6 +908,7 @@ describe("terminal output retained from the data plane", () => {
       const expected = [...pending, ...chunks, duringReplay].sort(
         (left, right) => left.seq - right.seq,
       );
+      expect(retained).toHaveLength(expected.length);
       expect(retained).toEqual(expected);
       expect(new Set(retained?.map(({ seq }) => seq)).size).toBe(
         expected.length,
@@ -920,7 +921,7 @@ describe("terminal output retained from the data plane", () => {
     }
   }, 15_000);
 
-  it("preserves pending output when the terminal host changes at the replay yield", async () => {
+  it("preserves pending output when a synthetic host change occurs at the replay yield", async () => {
     const fixture = await setup();
     const replacementHost = seedHostSession(fixture.harness.deps).host;
     const pending = {
@@ -967,7 +968,7 @@ describe("terminal output retained from the data plane", () => {
     }
   }, 15_000);
 
-  it("does not append replay output after its sequence offset changes", async () => {
+  it("does not append replay output after a synthetic sequence offset change", async () => {
     const fixture = await setup();
     const sequenceRebase = (
       fixture.terminalSessions as unknown as {
@@ -1433,6 +1434,7 @@ describe("terminal output retained from the data plane", () => {
     let longestSynchronousSliceMs = 0;
     let longestEventLoopGapMs = 0;
     let timerProbe: ReturnType<typeof setTimeout> | undefined;
+    const replayStartedAt = performance.now();
     const probe = () => {
       if (!probeRunning) return;
       const now = performance.now();
@@ -1469,23 +1471,36 @@ describe("terminal output retained from the data plane", () => {
           chunks,
         },
       });
+      let replayFinishedAt: number | undefined;
+      const replayCompletion = replay.then(() => {
+        replayFinishedAt = performance.now();
+        return true;
+      });
       let timeout: ReturnType<typeof setTimeout> | undefined;
       const completedWithinBound = await Promise.race([
-        replay.then(() => true),
+        replayCompletion,
         new Promise<boolean>((resolve) => {
           timeout = setTimeout(() => resolve(false), 30_000);
         }),
       ]);
+      const totalCompletionMs =
+        replayFinishedAt === undefined
+          ? null
+          : replayFinishedAt - replayStartedAt;
       if (timeout !== undefined) clearTimeout(timeout);
       probeRunning = false;
       if (timerProbe !== undefined) clearTimeout(timerProbe);
-      expect(completedWithinBound).toBe(true);
       await new Promise<void>((resolve) => setImmediate(resolve));
       const replayWork = takeEventLoopWorkWindowSnapshot();
-      expect(longestSynchronousSliceMs).toBeLessThanOrEqual(500);
-      expect(replayWork.longestSynchronousWorkWallMs ?? 0).toBeLessThanOrEqual(
-        500,
+      const measuredSliceMs = Math.max(
+        longestSynchronousSliceMs,
+        replayWork.longestSynchronousWorkWallMs ?? 0,
       );
+      process.stdout.write(
+        `G4-MEASURE slice_ms=${measuredSliceMs.toFixed(1)} gap_ms=${longestEventLoopGapMs.toFixed(1)} total_ms=${totalCompletionMs?.toFixed(1) ?? "timeout"}\n`,
+      );
+      expect(completedWithinBound).toBe(true);
+      expect(measuredSliceMs).toBeLessThanOrEqual(500);
       expect(longestEventLoopGapMs).toBeLessThanOrEqual(1_000);
       const retained = getRetainedTerminalOutput(fixture.db, {
         hostId: fixture.host.id,
