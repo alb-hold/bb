@@ -505,7 +505,7 @@ describe("ThreadTerminalView terminal focus boundary", () => {
     );
   });
 
-  it("settles a reloaded bottom-following client back to the bottom", async () => {
+  it("restores a reloaded bottom-following client after a terminal resize", async () => {
     prepareMobileTerminal();
     let fitRows = 12;
     vi.spyOn(FitAddon.prototype, "proposeDimensions").mockImplementation(
@@ -563,6 +563,9 @@ describe("ThreadTerminalView terminal focus boundary", () => {
         expect(testState.socketMessages.map((message) => JSON.parse(message)))
           .toContainEqual({ type: "ack", nextSeq: 1 }),
       "bottom-follow replay was not acknowledged within 5000 ms",
+    );
+    expect(getTerminal().buffer.active.viewportY).toBeLessThan(
+      getTerminal().buffer.active.baseY,
     );
     fitRows = 11;
     act(() => getTerminal().resize(40, fitRows));
