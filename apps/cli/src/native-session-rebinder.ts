@@ -58,6 +58,7 @@ export function permanentRefusal(error: unknown): string | null {
 
 export function createNativeSessionRebinder(options: {
   currentCredential(): string | null;
+  onRecorded?(move: NativeSessionMove): void;
   onRefused(move: NativeSessionMove, code: string): void;
   recordSession(args: {
     authorization: string;
@@ -80,6 +81,7 @@ export function createNativeSessionRebinder(options: {
           replacesNativeSessionId: move.previousSessionId,
         });
         queue.shift();
+        options.onRecorded?.(move);
       } catch (error) {
         const code = permanentRefusal(error);
         if (code === null) return;

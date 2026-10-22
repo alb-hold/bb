@@ -14,6 +14,7 @@ export function createNativeActivityWiring(options: {
   log(event: string, fields: Record<string, number | string | null>): void;
   reader(): {
     heartbeat(): NativeActivityReport | null;
+    sessionRebound(sessionId: string): void;
     suspend(): void;
   } | null;
   recordSession(args: {
@@ -29,6 +30,9 @@ export function createNativeActivityWiring(options: {
 }): NativeActivityWiring {
   const rebinder = createNativeSessionRebinder({
     currentCredential: options.currentCredential,
+    onRecorded: (move) => {
+      options.reader()?.sessionRebound(move.sessionId);
+    },
     onRefused: (move, code) => {
       options.reader()?.suspend();
       options.log("activity-session-rebind-refused", {

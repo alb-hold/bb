@@ -141,6 +141,10 @@ export class NativeActivityReader {
     this.sessionId = sessionId;
   }
 
+  sessionRebound(sessionId: string): void {
+    if (this.sessionId === sessionId) this.awaitingBinding = false;
+  }
+
   suspend(): void {
     this.suspended = true;
     this.bindingHeld = [];
@@ -183,6 +187,10 @@ export class NativeActivityReader {
         })),
       ];
       for (const { record, fresh } of queue) {
+        if (this.awaitingBinding) {
+          this.holdUntilBound([record]);
+          continue;
+        }
         if (hooks.sessionIdField !== undefined) {
           const hookSession = this.stringField(record, hooks.sessionIdField);
           let reason: "missing-session" | "foreign-session" | null =
@@ -192,8 +200,13 @@ export class NativeActivityReader {
                 ? "foreign-session"
                 : null;
           if (reason === "foreign-session" && hookSession !== null) {
-            if (this.adoptSession(hookSession)) reason = null;
-            else this.holdForeignRecord(record, hookSession);
+            if (this.adoptSession(hookSession)) {
+              if (this.awaitingBinding) {
+                this.holdUntilBound([record]);
+                continue;
+              }
+              reason = null;
+            } else this.holdForeignRecord(record, hookSession);
           }
           if (reason !== null) {
             if (
@@ -248,7 +261,7 @@ export class NativeActivityReader {
       }
     }
     const transcript = activity.transcript;
-    if (transcript === undefined) return reports;
+    if (transcript === undefined || this.awaitingBinding) return reports;
     this.transcriptFile ??= this.findTranscript();
     if (this.transcriptFile === null) return reports;
     if (
@@ -328,6 +341,7 @@ export class NativeActivityReader {
 
   private adoptSession(sessionId: string): boolean {
     if (
+      this.awaitingBinding ||
       this.adoptedSessions >= MAX_SESSION_ADOPTIONS ||
       this.knownSessions.has(sessionId) ||
       this.sessionId === null ||
@@ -366,6 +380,7 @@ export class NativeActivityReader {
     this.unconfirmedHookBoundaryEstablished = false;
     this.currentTurn = null;
     this.workingRecord = null;
+    this.awaitingBinding = this.onSessionAdopted !== undefined;
     this.onSessionAdopted?.(sessionId, previousSessionId);
     return true;
   }

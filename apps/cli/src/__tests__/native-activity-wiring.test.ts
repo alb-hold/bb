@@ -16,6 +16,7 @@ function setup(answers: unknown[]) {
   const transient: boolean[] = [];
   const reports: Array<NativeActivityReport | null> = [];
   const logged: Array<{ event: string; fields: unknown }> = [];
+  const rebound: string[] = [];
   let suspended = 0;
   let credential: string | null = "old";
   const wiring = createNativeActivityWiring({
@@ -23,6 +24,9 @@ function setup(answers: unknown[]) {
     log: (event, fields) => logged.push({ event, fields }),
     reader: () => ({
       heartbeat: () => ({ state: "working", prompt: null }),
+      sessionRebound: (sessionId) => {
+        rebound.push(sessionId);
+      },
       suspend: () => {
         suspended += 1;
       },
@@ -47,6 +51,7 @@ function setup(answers: unknown[]) {
     order,
     transient,
     logged,
+    rebound,
     reports,
     setCredential: (next: string | null) => {
       credential = next;
