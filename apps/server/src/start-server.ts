@@ -15,6 +15,7 @@ import {
   SERVER_HTTP_CLOSE_WAIT_TIMEOUT_MS,
   SERVER_HTTP_DRAIN_TIMEOUT_MS,
   SERVER_PLUGIN_SHUTDOWN_TIMEOUT_MS,
+  SERVER_TERMINAL_OUTPUT_FLUSH_TIMEOUT_MS,
   SERVER_WEBSOCKET_SHUTDOWN_WAIT_TIMEOUT_MS,
 } from "@bb/config/full-stack-shutdown";
 import { superviseTcpServerSockets } from "@bb/process-utils";
@@ -161,9 +162,10 @@ export async function shutdownHttpBeforePlugins(args: {
   stopPeriodicUpdateChecks?: () => Promise<void>;
   stopPlugins: () => Promise<void>;
   stopTerminalDataPlane: () => void;
-  flushTerminalOutputBeforeClose?: () => Promise<void>;
+  flushTerminalOutputBeforeClose?: (signal: AbortSignal) => Promise<void>;
 }): Promise<{ completedWithinBounds: boolean; pluginStopTimedOut: boolean }> {
   let completedWithinBounds = true;
+  let databaseCanClose = true;
   let pluginStopTimedOut = false;
   args.stopTerminalDataPlane();
   const closed = new Promise<void>((resolve, reject) => {
@@ -200,19 +202,34 @@ export async function shutdownHttpBeforePlugins(args: {
   if (!drained) {
     args.server.closeAllConnections();
   }
-  completedWithinBounds =
-    (await waitAtMost(
-      webSocketsClosed,
-      SERVER_WEBSOCKET_SHUTDOWN_WAIT_TIMEOUT_MS,
-    )) && completedWithinBounds;
-  await args.flushTerminalOutputBeforeClose?.();
-  completedWithinBounds =
-    (await waitAtMost(closed, SERVER_HTTP_CLOSE_WAIT_TIMEOUT_MS)) &&
-    completedWithinBounds;
+  const webSocketsClosedWithinBound = await waitAtMost(
+    webSocketsClosed,
+    SERVER_WEBSOCKET_SHUTDOWN_WAIT_TIMEOUT_MS,
+  );
+  completedWithinBounds = webSocketsClosedWithinBound && completedWithinBounds;
+  databaseCanClose = webSocketsClosedWithinBound;
+  if (args.flushTerminalOutputBeforeClose !== undefined) {
+    const flushController = new AbortController();
+    const flushed = await waitAtMost(
+      Promise.resolve().then(() =>
+        args.flushTerminalOutputBeforeClose!(flushController.signal),
+      ),
+      SERVER_TERMINAL_OUTPUT_FLUSH_TIMEOUT_MS,
+    );
+    if (!flushed) flushController.abort();
+    completedWithinBounds = flushed && completedWithinBounds;
+  }
+  const httpClosed = await waitAtMost(closed, SERVER_HTTP_CLOSE_WAIT_TIMEOUT_MS);
+  completedWithinBounds = httpClosed && completedWithinBounds;
+  databaseCanClose = databaseCanClose && httpClosed;
   for (const socket of shutdownSockets.get(args.server) ?? []) socket.destroy();
-  completedWithinBounds =
-    (await waitAtMost(closed, SERVER_HTTP_CLOSE_WAIT_TIMEOUT_MS)) &&
-    completedWithinBounds;
+  const httpClosedAfterSocketDestroy = await waitAtMost(
+    closed,
+    SERVER_HTTP_CLOSE_WAIT_TIMEOUT_MS,
+  );
+  completedWithinBounds = httpClosedAfterSocketDestroy && completedWithinBounds;
+  databaseCanClose =
+    databaseCanClose && (httpClosed || httpClosedAfterSocketDestroy);
   let pluginStopTimer: ReturnType<typeof setTimeout> | undefined;
   try {
     const stopped = await Promise.race([
@@ -229,13 +246,14 @@ export async function shutdownHttpBeforePlugins(args: {
     ]);
     if (!stopped) {
       pluginStopTimedOut = true;
+      databaseCanClose = false;
       args.onPluginStopTimeout?.();
     }
     completedWithinBounds = stopped && completedWithinBounds;
   } finally {
     if (pluginStopTimer !== undefined) clearTimeout(pluginStopTimer);
   }
-  if (completedWithinBounds) args.closeDatabase?.();
+  if (databaseCanClose && !pluginStopTimedOut) args.closeDatabase?.();
   return { completedWithinBounds, pluginStopTimedOut };
 }
 
@@ -247,7 +265,7 @@ export async function shutdownServerRuntime(args: {
   stopPlugins: () => Promise<void>;
   server: ReturnType<typeof startHttpListener>;
   stopTerminalDataPlane: () => void;
-  flushTerminalOutputBeforeClose?: () => Promise<void>;
+  flushTerminalOutputBeforeClose?: (signal: AbortSignal) => Promise<void>;
 }): Promise<{ completedWithinBounds: boolean; pluginStopTimedOut: boolean }> {
   const result = await shutdownHttpBeforePlugins({
     closeDatabase: () => args.db.$client.close(),
@@ -740,8 +758,8 @@ export async function runServer(serverConfig: ServerConfig): Promise<void> {
         stopTerminalDataPlane: () => {
           terminalDataPlane?.stop();
         },
-        flushTerminalOutputBeforeClose: async () => {
-          await terminalSessions.flushRetainedOutputBeforeClose();
+        flushTerminalOutputBeforeClose: async (signal) => {
+          await terminalSessions.flushRetainedOutputBeforeClose(signal);
         },
       });
     })();

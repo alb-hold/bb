@@ -865,6 +865,7 @@ export class TerminalSessionLifecycle {
   >();
   private readonly activeTerminalReplays = new Map<string, number>();
   private readonly terminalReplayWaiters = new Map<string, Set<() => void>>();
+  private terminalOutputWritesStopped = false;
   private retainedOutputFlushTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(private readonly options: TerminalSessionLifecycleOptions) {
@@ -1896,6 +1897,7 @@ export class TerminalSessionLifecycle {
   }
 
   private scheduleRetainedOutputFlush(): void {
+    if (this.terminalOutputWritesStopped) return;
     if (this.retainedOutputFlushTimer !== null) return;
     this.retainedOutputFlushTimer = setTimeout(() => {
       this.retainedOutputFlushTimer = null;
@@ -1953,6 +1955,7 @@ export class TerminalSessionLifecycle {
   }
 
   private flushRetainedOutput(terminalSessionId: string): void {
+    if (this.terminalOutputWritesStopped) return;
     const batches = this.pendingRetainedOutput.get(terminalSessionId);
     if (batches === undefined) return;
     this.pendingRetainedOutput.delete(terminalSessionId);
@@ -1998,11 +2001,39 @@ export class TerminalSessionLifecycle {
     }
   }
 
-  flushRetainedOutputBeforeClose(): void | Promise<void> {
+  flushRetainedOutputBeforeClose(signal?: AbortSignal): void | Promise<void> {
+    if (signal?.aborted) {
+      this.stopTerminalOutputWritesForShutdown();
+      return;
+    }
     if (this.activeTerminalReplays.size > 0) {
-      return this.waitForAllTerminalReplays().then(() =>
-        this.flushRetainedOutputBeforeClose(),
-      );
+      return new Promise<void>((resolve, reject) => {
+        let settled = false;
+        const finish = (error?: unknown): void => {
+          if (settled) return;
+          settled = true;
+          signal?.removeEventListener("abort", onAbort);
+          if (error !== undefined) reject(error);
+          else resolve();
+        };
+        const onAbort = (): void => {
+          this.stopTerminalOutputWritesForShutdown();
+          finish();
+        };
+        signal?.addEventListener("abort", onAbort, { once: true });
+        void this.waitForAllTerminalReplays().then(
+          async () => {
+            try {
+              if (signal?.aborted) this.stopTerminalOutputWritesForShutdown();
+              else await this.flushRetainedOutputBeforeClose();
+              finish();
+            } catch (error) {
+              finish(error);
+            }
+          },
+          (error: unknown) => finish(error),
+        );
+      });
     }
     for (
       let attempt = 0;
@@ -2028,6 +2059,32 @@ export class TerminalSessionLifecycle {
         "Lost retained terminal output at shutdown",
       );
     }
+    this.pendingRetainedOutput.clear();
+  }
+
+  private stopTerminalOutputWritesForShutdown(): void {
+    if (this.terminalOutputWritesStopped) return;
+    this.terminalOutputWritesStopped = true;
+    if (this.retainedOutputFlushTimer !== null) {
+      clearTimeout(this.retainedOutputFlushTimer);
+      this.retainedOutputFlushTimer = null;
+    }
+    const terminalIds = new Set([
+      ...this.pendingRetainedOutput.keys(),
+      ...this.activeTerminalReplays.keys(),
+    ]);
+    const terminals = [...terminalIds].map((terminalId) => ({
+      terminalId,
+      chunks: (this.pendingRetainedOutput.get(terminalId) ?? []).reduce(
+        (total, batch) => total + batch.chunks.length,
+        0,
+      ),
+      replayActive: this.activeTerminalReplays.has(terminalId),
+    }));
+    this.options.logger.warn(
+      { terminals },
+      "Terminal output shutdown flush timed out; pending output was not written",
+    );
     this.pendingRetainedOutput.clear();
   }
 
@@ -2483,6 +2540,7 @@ export class TerminalSessionLifecycle {
     daemonSessionId: string;
     terminalId: string;
   }): void {
+    if (this.terminalOutputWritesStopped) return;
     const current = getTerminalById(this.options.db, args.terminalId);
     if (
       !current ||
@@ -2797,6 +2855,7 @@ export class TerminalSessionLifecycle {
   handleDaemonTerminalMessage(
     args: HandleDaemonTerminalMessageArgs,
   ): void | Promise<void> {
+    if (this.terminalOutputWritesStopped) return;
     switch (args.message.type) {
       case "heartbeat":
         return;
@@ -3003,6 +3062,7 @@ export class TerminalSessionLifecycle {
       ]),
     );
     const stillOwned = (): boolean => {
+      if (this.terminalOutputWritesStopped) return false;
       if (
         this.outputSequenceRebase.baseFor(sourceMessage.terminalId) !==
         replayOffset

@@ -20,6 +20,7 @@ type ShutdownHttpBeforePlugins = (args: {
   server: ReturnType<typeof startHttpListener>;
   stopPlugins: () => Promise<void>;
   stopTerminalDataPlane: () => void;
+  flushTerminalOutputBeforeClose?: (signal: AbortSignal) => Promise<void>;
 }) => Promise<{ completedWithinBounds: boolean; pluginStopTimedOut: boolean }>;
 
 describe("server shutdown ordering", () => {
@@ -234,6 +235,77 @@ describe("server shutdown ordering", () => {
     await rm(pluginRoot, { recursive: true, force: true });
     await rm(harness.config.dataDir, { recursive: true, force: true });
   }, 4_500);
+
+  it("bounds a stuck terminal flush and closes the database after abort", async () => {
+    server = startHttpListener({
+      fetch: async () => new Response("ready"),
+      logger: { warn: () => {} },
+      serverConfig: {
+        BB_SERVER_BIND_HOST: "127.0.0.1",
+        BB_SERVER_PORT: 0,
+      },
+    });
+    await once(server, "listening");
+    let flushAborted = false;
+    const startedAt = Date.now();
+    const result = await Promise.race([
+      shutdownServerRuntime({
+        closeWebSockets: async () => {},
+        db: db!,
+        logger: { warn: () => {} },
+        stopPeriodicUpdateChecks: async () => {},
+        stopPlugins: async () => {},
+        server,
+        stopTerminalDataPlane: () => {},
+        flushTerminalOutputBeforeClose: (signal) => {
+          signal?.addEventListener("abort", () => {
+            flushAborted = true;
+          });
+          return new Promise<void>(() => {});
+        },
+      }),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 1_000)),
+    ]);
+
+    expect(result).not.toBeNull();
+    if (result === null) return;
+    expect(result.completedWithinBounds).toBe(false);
+    expect(flushAborted).toBe(true);
+    expect(Date.now() - startedAt).toBeLessThan(1_000);
+    expect(() => db!.$client.prepare("SELECT 1").get()).toThrow();
+    db = undefined;
+  }, 4_000);
+
+  it("closes the database after the terminal shutdown flush completes", async () => {
+    server = startHttpListener({
+      fetch: async () => new Response("ready"),
+      logger: { warn: () => {} },
+      serverConfig: {
+        BB_SERVER_BIND_HOST: "127.0.0.1",
+        BB_SERVER_PORT: 0,
+      },
+    });
+    await once(server, "listening");
+    let flushFinished = false;
+    const result = await shutdownServerRuntime({
+      closeWebSockets: async () => {},
+      db: db!,
+      logger: { warn: () => {} },
+      stopPeriodicUpdateChecks: async () => {},
+      stopPlugins: async () => {},
+      server,
+      stopTerminalDataPlane: () => {},
+      flushTerminalOutputBeforeClose: async () => {
+        expect(db!.$client.prepare("SELECT 1").get()).toBeDefined();
+        flushFinished = true;
+      },
+    });
+
+    expect(result.completedWithinBounds).toBe(true);
+    expect(flushFinished).toBe(true);
+    expect(() => db!.$client.prepare("SELECT 1").get()).toThrow();
+    db = undefined;
+  });
 
   it("stops accepting before a stalled plugin update check and bounds shutdown", async () => {
     server = startHttpListener({

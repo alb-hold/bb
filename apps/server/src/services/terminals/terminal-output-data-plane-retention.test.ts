@@ -251,6 +251,49 @@ describe("terminal output retained from the data plane", () => {
     }
   }, 15_000);
 
+  it("prevents replay writes after a timed-out shutdown flush", async () => {
+    const fixture = await setup();
+    const warn = vi.spyOn(fixture.harness.deps.logger, "warn");
+    const chunks = Array.from({ length: 20_000 }, (_, seq) => ({
+      seq,
+      dataBase64: Buffer.from("replay").toString("base64"),
+    }));
+    const replay = fixture.terminalSessions.handleDaemonTerminalMessage({
+      hostId: fixture.host.id,
+      sessionId: fixture.session.id,
+      message: {
+        type: "terminal.replay",
+        requestId: "shutdown-timeout-replay",
+        terminalId: fixture.terminal.id,
+        replayStartSeq: 0,
+        nextSeq: chunks.length,
+        chunks,
+      },
+    });
+    let replaySettled = false;
+    void Promise.resolve(replay).then(() => {
+      replaySettled = true;
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const controller = new AbortController();
+    const flush = fixture.terminalSessions.flushRetainedOutputBeforeClose(
+      controller.signal,
+    );
+    controller.abort();
+    await flush;
+    expect(replaySettled).toBe(false);
+    fixture.db.$client.close();
+
+    await expect(replay).resolves.toBeUndefined();
+    expect(warn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        terminals: [expect.objectContaining({ terminalId: fixture.terminal.id })],
+      }),
+      "Terminal output shutdown flush timed out; pending output was not written",
+    );
+    fixture.child.shutdown();
+  }, 15_000);
+
   it("keeps exit expiry when replay aborts after the exit flush", async () => {
     const fixture = await setup();
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
