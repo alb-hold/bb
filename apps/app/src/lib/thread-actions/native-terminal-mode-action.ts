@@ -15,10 +15,8 @@ import { nativeTerminalThreadQueryKey } from "@/hooks/queries/query-keys";
 import { REALTIME_OWNED_STATIC_CACHE_QUERY_POLICY } from "@/hooks/queries/query-policies";
 import { useSystemProviders } from "@/hooks/queries/system-queries";
 import { showMutationErrorToast } from "@/lib/mutation-errors";
-import {
-  lookupCachedThread,
-  useThreadEntryMap,
-} from "@/lib/plugin-sidebar-hooks";
+import { lookupCachedThread } from "@/lib/cached-thread";
+import { useSidebarThreadEntries } from "@/lib/sidebar-thread-entries";
 import { sdk } from "@/lib/sdk";
 
 type NativeTerminalModeState = "chat" | "terminal" | "terminalOnly" | "unknown";
@@ -34,7 +32,7 @@ export function useNativeTerminalModeData({
   threadIds,
 }: PluginThreadActionDataInput): NativeTerminalModeData {
   const queryClient = useQueryClient();
-  const entries = useThreadEntryMap();
+  const entries = useSidebarThreadEntries();
   const providers = useSystemProviders().data;
   const nativeProvidersKey = (providers ?? [])
     .filter((provider) => provider.capabilities.supportsNativeTerminal === true)
