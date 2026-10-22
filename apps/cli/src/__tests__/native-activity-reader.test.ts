@@ -183,6 +183,7 @@ function claudeFixture(
     total: number,
   ) => void,
   onSessionAdopted?: (sessionId: string, previousSessionId: string) => void,
+  acceptRotationAtOnce: boolean = true,
 ) {
   const host = createFakePluginHost({ pluginId: "provider-claude-code" });
   claudeCodePlugin(host.bb);
@@ -260,6 +261,7 @@ function claudeFixture(
       },
     ]),
   );
+  let created: NativeActivityReader | undefined;
   const reader = new NativeActivityReader(
     native,
     { HOME: home },
@@ -270,8 +272,14 @@ function claudeFixture(
     },
     onUnconfirmed,
     onUnconfirmedHookIdentity,
-    onSessionAdopted,
+    onSessionAdopted === undefined
+      ? undefined
+      : (sessionId, previousSessionId) => {
+          onSessionAdopted(sessionId, previousSessionId);
+          if (acceptRotationAtOnce) created?.sessionRebound(sessionId);
+        },
   );
+  created = reader;
   expect(reader.read()).toEqual([{ state: "working", prompt: "first prompt" }]);
   return {
     reader,
@@ -2596,5 +2604,198 @@ describe("idle delivery through the real reader, reporter and wiring", () => {
     expect(h.sent.filter((state) => state === "idle")).toHaveLength(1);
     expect(h.accepted).not.toContain("idle");
     h.stop();
+  });
+});
+
+describe("a rotated session is followed only after its binding is accepted", () => {
+  const ROTATED = "5c0ffee0-1111-4222-8333-444455556666";
+  const releases: Array<() => void> = [];
+
+  afterEach(() => {
+    for (const release of releases.splice(0)) release();
+  });
+
+  function holdOpen(): {
+    promise: Promise<unknown>;
+    reject(error: unknown): void;
+    resolve(): void;
+  } {
+    let resolve: () => void = () => undefined;
+    let reject: (error: unknown) => void = () => undefined;
+    const promise = new Promise<unknown>((res, rej) => {
+      resolve = () => res({});
+      reject = rej;
+    });
+    releases.push(resolve);
+    return { promise, reject, resolve };
+  }
+
+  function holder(answers: Array<() => Promise<unknown>>) {
+    const attempts: Array<{ replaces: string; session: string }> = [];
+    const sent: string[] = [];
+    const logged: string[] = [];
+    let wiring: ReturnType<typeof createNativeActivityWiring> | undefined;
+    const fixture = claudeFixture(
+      false,
+      undefined,
+      undefined,
+      (sessionId, previousSessionId) =>
+        wiring?.onSessionAdopted(sessionId, previousSessionId),
+      false,
+    );
+    const reporter = createNativeActivityReporter({
+      currentCredential: () => "current",
+      send: async (args) => {
+        sent.push(args.state);
+      },
+      threadId: "thr_rotation",
+    });
+    wiring = createNativeActivityWiring({
+      currentCredential: () => "current",
+      log: (event) => logged.push(event),
+      reader: () => fixture.reader,
+      recordSession: async (args) => {
+        attempts.push({
+          replaces: args.replacesNativeSessionId,
+          session: args.nativeSessionId,
+        });
+        const answer = answers[attempts.length - 1];
+        return answer === undefined ? {} : answer();
+      },
+      report: reporter.report,
+      retryReport: reporter.retry,
+    });
+    const active = wiring;
+    fixture.hook([
+      { hook_event_name: "Stop", prompt_id: "turn-1", stop_hook_active: false },
+    ]);
+    fixture.append([
+      {
+        type: "system",
+        subtype: "stop_hook_summary",
+        isSidechain: false,
+        hasOutput: false,
+        uuid: "end-1",
+        parentUuid: "answer-1",
+      },
+    ]);
+    expect(fixture.reader.read()).toEqual([{ state: "idle", prompt: null }]);
+    const file = path.join(fixture.dir, `${ROTATED}.jsonl`);
+    writeFileSync(file, "");
+    appendFileSync(
+      fixture.transcript,
+      jsonl([
+        {
+          type: "continued-in",
+          continuedInSessionId: ROTATED,
+          sessionId: SESSION_ID,
+          timestamp: new Date().toISOString(),
+        },
+      ]),
+    );
+    const rotated = (record: Record<string, unknown>) =>
+      fixture.hook([{ session_id: ROTATED, ...record }]);
+    const forward = async (): Promise<string[]> => {
+      for (const next of fixture.reader.read()) reporter.report(next);
+      await reporter.settled();
+      return [...sent];
+    };
+    return {
+      attempts,
+      fixture,
+      forward,
+      heartbeat: async () => {
+        active.onHeartbeatTick();
+        await reporter.settled();
+        return [...sent];
+      },
+      logged,
+      rotated,
+      settled: () => active.settled(),
+    };
+  }
+
+  const opening = {
+    hook_event_name: "UserPromptSubmit",
+    prompt: "second prompt",
+    prompt_id: "turn-rotated",
+  };
+  const ask = { hook_event_name: "PermissionRequest", tool_name: "Bash" };
+  const answered = { hook_event_name: "PostToolUse", tool_name: "Bash" };
+
+  it("publishes nothing for the new session while the rebind is pending, then replays once after it is recorded", async () => {
+    const binding = holdOpen();
+    const h = holder([() => binding.promise]);
+    try {
+      h.rotated(opening);
+      h.rotated(ask);
+      expect(await h.forward()).toEqual([]);
+      expect(h.attempts).toEqual([{ replaces: SESSION_ID, session: ROTATED }]);
+      h.rotated(answered);
+      expect(await h.forward()).toEqual([]);
+      expect(await h.heartbeat()).toEqual([]);
+
+      binding.resolve();
+      await h.settled();
+      expect(await h.forward()).toEqual(["working", "waiting", "working"]);
+      expect(await h.forward()).toEqual(["working", "waiting", "working"]);
+      expect(h.attempts).toHaveLength(1);
+    } finally {
+      binding.resolve();
+    }
+  });
+
+  it("publishes nothing, drops the held records and shows unconfirmed activity after a permanent refusal", async () => {
+    const binding = holdOpen();
+    const h = holder([() => binding.promise]);
+    try {
+      h.rotated(opening);
+      h.rotated(ask);
+      expect(await h.forward()).toEqual([]);
+
+      binding.reject(
+        new BbHttpError({
+          body: null,
+          code: "native_session_claimed",
+          message: "claimed",
+          status: 409,
+        }),
+      );
+      await h.settled();
+      expect(h.logged).toContain("activity-session-rebind-refused");
+      expect(await h.forward()).toEqual([]);
+      h.rotated(answered);
+      expect(await h.forward()).toEqual([]);
+      expect(await h.heartbeat()).toEqual([]);
+      expect(h.fixture.reader.heartbeat()).toBeNull();
+    } finally {
+      binding.resolve();
+    }
+  });
+
+  it("keeps holding through a retryable failure and replays once when the retry is recorded", async () => {
+    const h = holder([
+      async () => {
+        throw new BbHttpError({
+          body: null,
+          code: "unavailable",
+          message: "unavailable",
+          status: 503,
+        });
+      },
+    ]);
+    h.rotated(opening);
+    h.rotated(ask);
+    expect(await h.forward()).toEqual([]);
+    await h.settled();
+    expect(h.attempts).toHaveLength(1);
+    expect(await h.forward()).toEqual([]);
+
+    expect(await h.heartbeat()).toEqual([]);
+    await h.settled();
+    expect(h.attempts).toHaveLength(2);
+    expect(await h.forward()).toEqual(["working", "waiting"]);
+    expect(await h.forward()).toEqual(["working", "waiting"]);
+    expect(h.logged).not.toContain("activity-session-rebind-refused");
   });
 });
