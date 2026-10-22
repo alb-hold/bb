@@ -870,6 +870,68 @@ describe.skipIf(process.platform === "win32")(
       expect(reader.read()).toEqual([]);
     }, 30_000);
 
+    it("does not take a lock that is a symlink naming something other than its own pid: ln -s lands inside the target, so the hook keeps waiting until the lock is released", async () => {
+      const { commandFor, directory, file, lock } = appendFixture();
+      const elsewhere = path.join(directory, "elsewhere");
+      mkdirSync(elsewhere);
+      symlinkSync(elsewhere, lock);
+      const waiting = startHook(commandFor("PermissionRequest"));
+      waiting.child.stdin.end(
+        record("PermissionRequest", { tool_name: "Foreign" }),
+      );
+      await until(() => markers(directory).length === 1, "the hook marker");
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      expect(statSync(file).size).toBe(0);
+      expect(readlinkSync(lock)).toBe(elsewhere);
+      rmSync(lock);
+      await waiting.exited;
+      expect(new HookAppendReader(file).read().records.map(toolOf)).toEqual([
+        "Foreign",
+      ]);
+    }, 30_000);
+
+    it("evaluates a late opener before the same-tool close that follows it: main-file lines past the scan's snapshot wait for the next scan", () => {
+      const { directory, file, reader } = appendFixture();
+      const began = Math.floor(Date.now() / 1000);
+      const blocking = path.join(directory, `.late.1.${began}`);
+      const published = path.join(directory, `.late.99999.${began}`);
+      spawnSync("mkfifo", [blocking]);
+      const quote = (value: string): string =>
+        `'${value.replace(/'/gu, `'\\''`)}'`;
+      const helper = spawn(
+        "sh",
+        [
+          "-c",
+          [
+            "sleep 0.3",
+            `printf '%s\\n' ${quote(record("PostToolUse", { tool_name: "Bash" }))} >> ${quote(file)}`,
+            `printf '%s\\n' ${quote(record("PermissionRequest", { tool_name: "Bash" }))} > ${quote(published)}`,
+            `printf '%s\\n' ${quote(record("PermissionRequest", { tool_name: "Fifo" }))} > ${quote(blocking)}`,
+          ].join("; "),
+        ],
+        { stdio: "ignore" },
+      );
+      children.push(helper);
+
+      const first = reader.read();
+      expect(first.at(-1)).toMatchObject({
+        questions: [{ prompt: "Claude Code needs permission to use: Fifo" }],
+        state: "waiting",
+      });
+
+      const second = reader.read();
+      expect(
+        second.some(
+          (report) =>
+            report.state === "waiting" &&
+            report.questions.some(
+              (question) =>
+                question.prompt === "Claude Code needs permission to use: Bash",
+            ),
+        ),
+      ).toBe(true);
+    }, 30_000);
+
     it("counts a hook killed before it appended as lost evidence, and withholds Working until the next prompt", async () => {
       const { commandFor, directory, reader, unconfirmed } = appendFixture();
       const dying = startHook(commandFor("PermissionRequest"));

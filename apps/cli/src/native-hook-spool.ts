@@ -224,7 +224,7 @@ export function hookAppendCommand(
     "w=0",
     "while :; do " +
       'if ln -s "$$" "$l"; then ' +
-      'if [ -L "$l" ] && [ ! -e "$l/$$" ] && [ ! -L "$l/$$" ]; then break; fi; ' +
+      'if [ -L "$l" ] && [ "$(readlink "$l")" = "$$" ]; then break; fi; ' +
       'rm -f "$l/$$"; ' +
       'elif [ ! -e "$l" ] && [ ! -L "$l" ]; then ' +
       "mkdir \"$l\" && { printf '%s' \"$$\" >\"$l/pid\"; break; }; fi; " +
@@ -449,8 +449,9 @@ export class HookAppendReader {
   constructor(private readonly file: string) {}
 
   read(now: number = Date.now()): HookSpoolRead {
+    const snapshot = this.mainSize();
     const late = this.readLate();
-    const result = this.readLines(now);
+    const result = this.readLines(now, snapshot);
     result.unreadable += late.lost;
     if (late.records.length > 0) result.late = late.records;
     if (now - this.lastScanAt >= SCAN_INTERVAL_MS) {
@@ -458,6 +459,14 @@ export class HookAppendReader {
       result.unreadable += this.breakStaleLock(now) + this.scanMarkers(now);
     }
     return result;
+  }
+
+  private mainSize(): number {
+    try {
+      return statSync(this.file).size;
+    } catch {
+      return 0;
+    }
   }
 
   private readLate(): {
@@ -492,7 +501,7 @@ export class HookAppendReader {
     return { lost, records };
   }
 
-  private readLines(now: number): HookSpoolRead {
+  private readLines(now: number, snapshot: number): HookSpoolRead {
     const records: unknown[] = [];
     let unreadable = 0;
     let descriptor: number;
@@ -502,7 +511,8 @@ export class HookAppendReader {
       return { records, unreadable };
     }
     try {
-      const size = fstatSync(descriptor).size;
+      const actual = fstatSync(descriptor).size;
+      const size = Math.min(actual, snapshot);
       const length = Math.min(size - this.offset, MAX_APPEND_READ_BYTES);
       if (length <= 0) {
         this.incompleteSince = null;
@@ -530,7 +540,7 @@ export class HookAppendReader {
         }
       }
       unreadable += this.trackIncompleteLine(
-        filled > consumed && this.offset + filled - consumed >= size,
+        filled > consumed && this.offset + filled - consumed >= actual,
         now,
       );
     } catch {
