@@ -14,6 +14,7 @@ import {
   attachTerminalManualScrollIntentListeners,
   applyTerminalGridBeforeViewportRestore,
   applyTerminalGridAndKeepViewport,
+  restoreTerminalViewportOnResize,
   applyTerminalFontFamily,
   attachTerminalInputForwarding,
   captureTerminalContextMenuState,
@@ -891,6 +892,57 @@ describe("terminal viewport restore", () => {
         .getLine(terminal.buffer.active.viewportY)
         ?.translateToString(true),
     ).toBe("line 05397");
+    tracker.dispose();
+    terminal.dispose();
+  });
+
+  it("keeps the saved line when another client resizes the terminal grid", async () => {
+    const terminal = new Terminal({ cols: 80, rows: 56, scrollback: 10_000 });
+    const tracker = createTerminalOutputLineAnchorTracker({
+      registerMarker: () => terminal.registerMarker(),
+      getCurrentLine: () =>
+        terminal.buffer.active.baseY + terminal.buffer.active.cursorY,
+    });
+    tracker.reset();
+    const outputAnchor = tracker.recordOutputStart(0)!;
+    await writeTerminal(
+      terminal,
+      Array.from(
+        { length: 3_000 },
+        (_, index) => `line ${String(index + 1).padStart(5, "0")}\r\n`,
+      ).join(""),
+    );
+    const savedAnchor = {
+      distanceFromTail: terminal.buffer.active.baseY - 1_100,
+      lineOffset: 1_100,
+      outputSequence: 0,
+    };
+    const restoreViewport = () => {
+      terminal.scrollToLine(
+        resolveTerminalViewportRestore({
+          anchor: savedAnchor,
+          baseY: terminal.buffer.active.baseY,
+          outputLineAnchors: [outputAnchor],
+          replayStartSequence: 0,
+          replayNextSequence: 1,
+        }),
+      );
+    };
+    terminal.scrollToLine(1_100);
+    const resizeSubscription = restoreTerminalViewportOnResize({
+      terminal,
+      canRestore: () => true,
+      restoreViewport,
+    });
+
+    terminal.resize(80, 33);
+
+    expect(
+      terminal.buffer.active
+        .getLine(terminal.buffer.active.viewportY)
+        ?.translateToString(true),
+    ).toBe("line 01101");
+    resizeSubscription.dispose();
     tracker.dispose();
     terminal.dispose();
   });

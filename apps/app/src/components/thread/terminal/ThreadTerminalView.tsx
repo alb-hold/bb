@@ -856,6 +856,22 @@ export function applyTerminalGridAndKeepViewport({
   });
 }
 
+export function restoreTerminalViewportOnResize({
+  terminal,
+  canRestore,
+  restoreViewport,
+}: {
+  terminal: Pick<XTermTerminal, "onResize">;
+  canRestore: () => boolean;
+  restoreViewport: () => void;
+}): { dispose: () => void } {
+  return terminal.onResize(() => {
+    if (canRestore()) {
+      restoreViewport();
+    }
+  });
+}
+
 function openTerminalWebLink({
   onOpenLink,
   uri,
@@ -1427,6 +1443,7 @@ export function ThreadTerminalView({
     let resizeObserver: ResizeObserver | null = null;
     let selectionChangeDisposable: { dispose: () => void } | null = null;
     let terminalRenderSubscription: { dispose: () => void } | null = null;
+    let terminalResizeSubscription: { dispose: () => void } | null = null;
     let terminalKeyDisposable: { dispose: () => void } | null = null;
     let terminalInputForwarding: { dispose: () => void } | null = null;
     let shellOscDisposable: { dispose: () => void } | null = null;
@@ -1758,6 +1775,11 @@ export function ThreadTerminalView({
         hasRestoredViewport = true;
         viewportReplaySaveGate.finishRestore();
       };
+      terminalResizeSubscription = restoreTerminalViewportOnResize({
+        terminal,
+        canRestore: () => hasRestoredViewport && !hasManualScrollIntent,
+        restoreViewport,
+      });
       const flushViewportOnPageHide = () => viewportPersistence.flush();
       window.addEventListener("pagehide", flushViewportOnPageHide);
       const saveViewportAnchor = () => {
@@ -2393,6 +2415,8 @@ export function ThreadTerminalView({
       terminalInteractions?.dispose();
       terminalRenderSubscription?.dispose();
       terminalRenderSubscription = null;
+      terminalResizeSubscription?.dispose();
+      terminalResizeSubscription = null;
       cancelTerminalOutputNextRenders(session.id);
       handleFileDropRef.current = null;
       document.removeEventListener(
