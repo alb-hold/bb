@@ -6,11 +6,13 @@ import {
 import {
   appendFileSync,
   existsSync,
+  linkSync,
   lstatSync,
   mkdirSync,
   readdirSync,
   readFileSync,
   readlinkSync,
+  renameSync,
   rmSync,
   statSync,
   symlinkSync,
@@ -424,6 +426,43 @@ describe.skipIf(process.platform === "win32")(
           : [],
       ).toEqual(["Claude Code needs permission to use: Bash"]);
       expect(reader.heartbeat()).toBeNull();
+    });
+
+    it("does not truncate a regular file that replaced a consumed spool file between the read and the truncation, counts it once, and reads its record on the next step", () => {
+      const { spool } = fixture();
+      const reader = new HookSpoolReader(spool);
+      const first = path.join(spool, "000000000001");
+      writeFileSync(first, record("PermissionRequest", { tool_name: "First" }));
+      const step = reader.readNext();
+      if (step.kind !== "consumed") throw new Error("expected a record");
+      expect(step.records.map(toolOf)).toEqual(["First"]);
+      const replacement = path.join(spool, "replacement");
+      writeFileSync(
+        replacement,
+        record("PermissionRequest", { tool_name: "Second" }),
+      );
+      renameSync(replacement, first);
+      expect(step.settle()).toBe(1);
+      expect(readFileSync(first, "utf8")).toBe(
+        record("PermissionRequest", { tool_name: "Second" }),
+      );
+      const next = reader.readNext();
+      if (next.kind !== "consumed") throw new Error("expected the replacement");
+      expect(next.records.map(toolOf)).toEqual(["Second"]);
+      expect(next.settle()).toBe(0);
+      expect(statSync(first).size).toBe(0);
+    });
+
+    it("truncates a consumed spool file that the publishing hook still has a temp link to: the link count is not required in the spool", () => {
+      const { spool } = fixture();
+      const reader = new HookSpoolReader(spool);
+      const first = path.join(spool, "000000000001");
+      writeFileSync(first, record("PermissionRequest", { tool_name: "First" }));
+      linkSync(first, path.join(spool, ".tmp.1.link"));
+      const step = reader.readNext();
+      if (step.kind !== "consumed") throw new Error("expected a record");
+      expect(step.settle()).toBe(0);
+      expect(statSync(first).size).toBe(0);
     });
 
     it("does not deliver a record twice when it is read repeatedly", async () => {
@@ -928,12 +967,18 @@ describe.skipIf(process.platform === "win32")(
       const shimDir = path.join(directory, "shim");
       const gate = path.join(directory, "gate-open");
       const blocked = path.join(directory, "gate-reached");
+      const calls = path.join(directory, "ln-calls");
+      const callCount = (): number =>
+        existsSync(calls)
+          ? readFileSync(calls, "utf8").split("\n").filter(Boolean).length
+          : 0;
       mkdirSync(shimDir);
       const shim = path.join(shimDir, "ln");
       writeFileSync(
         shim,
         [
           "#!/bin/sh",
+          `printf '%s\\n' "$PPID" >> '${calls}'`,
           `${realLn} "$@"`,
           "status=$?",
           `if [ ! -e '${blocked}' ]; then`,
@@ -963,14 +1008,20 @@ describe.skipIf(process.platform === "win32")(
       });
       hook.stdin.end(record("PermissionRequest", { tool_name: "Interleave" }));
       await until(() => existsSync(blocked), "the hook's ln -s to land");
+      expect(callCount()).toBe(1);
+      expect(readFileSync(calls, "utf8").trim()).toBe(String(hook.pid));
       expect(lstatSync(lock).isDirectory()).toBe(true);
       expect(readdirSync(lock)).toContain(String(hook.pid));
 
       rmSync(lock, { recursive: true });
       symlinkSync(String(process.pid), lock);
       writeFileSync(gate, "");
-      await new Promise((resolve) => setTimeout(resolve, 500));
+      await until(
+        () => callCount() >= 2 || statSync(file).size > 0,
+        "the hook's next state: another ln -s attempt or an append",
+      );
       expect(statSync(file).size).toBe(0);
+      expect(callCount()).toBeGreaterThanOrEqual(2);
       expect(readlinkSync(lock)).toBe(String(process.pid));
 
       rmSync(lock);
@@ -979,6 +1030,125 @@ describe.skipIf(process.platform === "win32")(
         "Interleave",
       ]);
     }, 40_000);
+
+    it("does not truncate a regular file that replaced a late file between the read and the truncation, and reads its record on the next poll", () => {
+      const { directory, file } = appendFixture();
+      const name = `.late.1.${Math.floor(Date.now() / 1000)}`;
+      const late = path.join(directory, name);
+      writeFileSync(late, record("PermissionRequest", { tool_name: "First" }));
+      const reader = new HookAppendReader(file);
+      const [entry] = reader.listLate();
+      if (entry === undefined) throw new Error("no late file listed");
+      const step = reader.readLateFile(entry);
+      expect(toolOf(step.record?.record)).toBe("First");
+      const replacement = path.join(directory, "replacement");
+      writeFileSync(
+        replacement,
+        record("PermissionRequest", { tool_name: "Second" }),
+      );
+      renameSync(replacement, late);
+      expect(step.settle()).toBe(0);
+      expect(readFileSync(late, "utf8")).toBe(
+        record("PermissionRequest", { tool_name: "Second" }),
+      );
+      const next = reader.readLate();
+      expect(next.records.map((entry) => toolOf(entry.record))).toEqual([
+        "Second",
+      ]);
+      expect(next.lost).toBe(1);
+      expect(statSync(late).size).toBe(0);
+    });
+
+    it("does not truncate a late file that has another hard link, and counts it once", () => {
+      const { directory, file } = appendFixture();
+      const late = path.join(
+        directory,
+        `.late.1.${Math.floor(Date.now() / 1000)}`,
+      );
+      writeFileSync(late, record("PermissionRequest", { tool_name: "Linked" }));
+      linkSync(late, path.join(directory, "elsewhere-link"));
+      const reader = new HookAppendReader(file);
+      const [entry] = reader.listLate();
+      if (entry === undefined) throw new Error("no late file listed");
+      const step = reader.readLateFile(entry);
+      expect(toolOf(step.record?.record)).toBe("Linked");
+      expect(step.settle()).toBe(1);
+      expect(statSync(late).size).toBeGreaterThan(0);
+    });
+
+    it("truncates a late file that does not parse, after counting it", () => {
+      const { directory, file } = appendFixture();
+      const late = path.join(
+        directory,
+        `.late.1.${Math.floor(Date.now() / 1000)}`,
+      );
+      writeFileSync(late, "{not json");
+      const read = new HookAppendReader(file).read();
+      expect(read.unreadable).toBe(1);
+      expect(read.late).toBeUndefined();
+      expect(statSync(late).size).toBe(0);
+    });
+
+    it("counts each episode of a main file that is not a regular file, and reads the new regular file from its start", () => {
+      const { file } = appendFixture();
+      const reader = new HookAppendReader(file);
+      const started = Date.now();
+      writeFileSync(file, `${record("PermissionRequest", { tool_name: "Aaa" })}\n`);
+      expect(reader.read(started).records.map(toolOf)).toEqual(["Aaa"]);
+
+      rmSync(file);
+      spawnSync("mkfifo", [file]);
+      expect(reader.read(started + 1).unreadable).toBe(1);
+      expect(reader.read(started + 2).unreadable).toBe(0);
+
+      rmSync(file);
+      writeFileSync(file, `${record("PermissionRequest", { tool_name: "Bbb" })}\n`);
+      const back = reader.read(started + 3);
+      expect(back.records.map(toolOf)).toEqual(["Bbb"]);
+      expect(back.unreadable).toBe(0);
+
+      rmSync(file);
+      spawnSync("mkfifo", [file]);
+      expect(reader.read(started + 4).unreadable).toBe(1);
+    });
+
+    it("resets the offset and counts it when the main file is replaced by another regular file", () => {
+      const { directory, file } = appendFixture();
+      const reader = new HookAppendReader(file);
+      const started = Date.now();
+      writeFileSync(file, `${record("PermissionRequest", { tool_name: "Aaa" })}\n`);
+      expect(reader.read(started).records.map(toolOf)).toEqual(["Aaa"]);
+      const replacement = path.join(directory, "replacement");
+      writeFileSync(
+        replacement,
+        `${record("PermissionRequest", { tool_name: "Bbb" })}\n`,
+      );
+      renameSync(replacement, file);
+      const replaced = reader.read(started + 1);
+      expect(replaced.records.map(toolOf)).toEqual(["Bbb"]);
+      expect(replaced.unreadable).toBe(1);
+      expect(reader.read(started + 2)).toEqual({ records: [], unreadable: 0 });
+    });
+
+    it("takes the snapshot before it reads the late files: a same-tool close appended while the late files are read waits for the next poll", () => {
+      const { directory, file } = appendFixture();
+      const reader = new HookAppendReader(file);
+      writeFileSync(
+        path.join(directory, `.late.1.${Math.floor(Date.now() / 1000)}`),
+        record("PermissionRequest", { tool_name: "Bash" }),
+      );
+      const closeRecord = record("PostToolUse", { tool_name: "Bash" });
+      const original = reader.readLate.bind(reader);
+      vi.spyOn(reader, "readLate").mockImplementation(() => {
+        appendFileSync(file, `${closeRecord}\n`);
+        return original();
+      });
+      const now = Date.now();
+      const first = reader.read(now);
+      expect(first.late?.map((entry) => toolOf(entry.record))).toEqual(["Bash"]);
+      expect(first.records).toEqual([]);
+      expect(reader.read(now + 1).records).toEqual([JSON.parse(closeRecord)]);
+    });
 
     it("counts a hook killed before it appended as lost evidence, and withholds Working until the next prompt", async () => {
       const { commandFor, directory, reader, unconfirmed } = appendFixture();
