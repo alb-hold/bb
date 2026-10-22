@@ -16,6 +16,7 @@ export interface NativeActivitySignal {
   prompt: string | null;
   question?: NativeQuestion;
   answered?: string;
+  occurrence?: true;
 }
 
 export type NativeActivityReport =
@@ -88,10 +89,16 @@ export function classifyHookRecord(
             id: `permission:${id}`,
             prompt: `${permission.label}: ${id}`,
           },
+          occurrence: true,
         };
       }
       if (permission.close.includes(event)) {
-        return { state: null, prompt: null, answered: `permission:${id}` };
+        return {
+          state: null,
+          prompt: null,
+          answered: `permission:${id}`,
+          occurrence: true,
+        };
       }
     }
   }
@@ -268,16 +275,24 @@ export class NativeActivityTracker {
   private state: NativeActivityState = "idle";
   private reportedPrompt: string | null = null;
   private readonly questions = new Map<string, string>();
+  private readonly occurrenceCounters = new Map<string, number>();
+  private readonly openOccurrences = new Map<string, string[]>();
 
   apply(signal: NativeActivitySignal): NativeActivityReport | null {
     if (signal.question !== undefined) {
-      return this.openQuestion(signal.question);
+      return this.openQuestion(
+        signal.occurrence === true
+          ? this.startOccurrence(signal.question)
+          : signal.question,
+      );
     }
     if (signal.answered !== undefined) {
-      return this.closeQuestion(signal.answered);
+      if (signal.occurrence !== true) return this.closeQuestion(signal.answered);
+      const occurrence = this.endOldestOccurrence(signal.answered);
+      return occurrence === null ? null : this.closeQuestion(occurrence);
     }
     if (signal.state === "idle") {
-      this.questions.clear();
+      this.clearQuestions();
       if (this.state === "idle") return null;
       this.state = "idle";
       this.reportedPrompt = null;
@@ -288,15 +303,11 @@ export class NativeActivityTracker {
       signal.prompt !== null && signal.prompt !== this.reportedPrompt
         ? signal.prompt
         : null;
-    if (newPrompt !== null) this.questions.clear();
+    if (newPrompt !== null) this.clearQuestions();
     if (this.state === "working" && newPrompt === null) return null;
     this.state = "working";
     if (newPrompt !== null) this.reportedPrompt = newPrompt;
     return { state: "working", prompt: newPrompt };
-  }
-
-  hasOpenQuestions(): boolean {
-    return this.questions.size > 0;
   }
 
   heartbeat(): NativeActivityReport | null {
@@ -306,6 +317,31 @@ export class NativeActivityTracker {
 
   finish(): NativeActivityReport | null {
     return this.apply({ state: "idle", prompt: null });
+  }
+
+  private clearQuestions(): void {
+    this.questions.clear();
+    this.openOccurrences.clear();
+  }
+
+  private startOccurrence(question: NativeQuestion): NativeQuestion {
+    const serial = (this.occurrenceCounters.get(question.id) ?? 0) + 1;
+    this.occurrenceCounters.set(question.id, serial);
+    const id = `${question.id}#${serial}`;
+    this.openOccurrences.set(question.id, [
+      ...(this.openOccurrences.get(question.id) ?? []),
+      id,
+    ]);
+    return { id, prompt: question.prompt };
+  }
+
+  private endOldestOccurrence(baseId: string): string | null {
+    const open = this.openOccurrences.get(baseId);
+    const oldest = open?.[0];
+    if (open === undefined || oldest === undefined) return null;
+    if (open.length === 1) this.openOccurrences.delete(baseId);
+    else this.openOccurrences.set(baseId, open.slice(1));
+    return oldest;
   }
 
   private openQuestion(question: NativeQuestion): NativeActivityReport | null {

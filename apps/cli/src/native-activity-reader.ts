@@ -27,7 +27,6 @@ const ADOPTION_RETRY_AFTER_MS = 2_000;
 const MAX_ADOPTION_ATTEMPTS_TRACKED = 64;
 const MAX_HELD_FOREIGN_RECORDS = 64;
 const HELD_FOREIGN_RECORD_TTL_MS = 60_000;
-const MAX_DROPPED_QUESTION_IDS = 32;
 export type NativeActivityStart =
   | { kind: "discover" }
   | { kind: "start"; id: string }
@@ -82,10 +81,8 @@ export class NativeActivityReader {
   private bindingHeld: unknown[] = [];
   private bindingHeldDropped = 0;
   private historyIncomplete = false;
-  private droppedQuestionIds = new Set<string>();
-  private droppedQuestionIdsOverflowed = false;
-  private trimmedQuestionIds = new Set<string>();
-  private trimmedQuestionIdsOverflowed = false;
+  private droppedOpenQuestion = false;
+  private trimmedOpenQuestion = false;
   private heldForeign: Array<{
     at: number;
     record: unknown;
@@ -160,11 +157,11 @@ export class NativeActivityReader {
     const reports: NativeActivityReport[] = [];
     const push = (
       report: NativeActivityReport | null,
-      origin: { answered: string | null; transcript: boolean },
+      origin: { answered: boolean; transcript: boolean },
     ): void => {
       if (report === null) return;
-      if (this.hasDroppedQuestion() && report.state === "working") {
-        if (origin.answered !== null) {
+      if (this.droppedOpenQuestion && report.state === "working") {
+        if (origin.answered) {
           reports.push({ ...report, confirms: false });
           return;
         }
@@ -229,7 +226,7 @@ export class NativeActivityReader {
           signal.state === "idle" ||
           (signal.state === "working" && signal.prompt !== null)
         ) {
-          this.clearDroppedQuestions();
+          this.droppedOpenQuestion = false;
         }
         const turn =
           hooks.turnId === undefined
@@ -242,21 +239,7 @@ export class NativeActivityReader {
           this.rememberTurn(turn);
         }
         const report = this.tracker.apply(signal);
-        if (
-          fresh &&
-          signal.answered !== undefined &&
-          report === null &&
-          this.droppedQuestionIds.delete(signal.answered) &&
-          !this.hasDroppedQuestion() &&
-          !this.tracker.hasOpenQuestions()
-        ) {
-          this.historyIncomplete = false;
-          push(
-            { prompt: null, state: "working" },
-            { answered: null, transcript: false },
-          );
-        }
-        if (fresh && signal.state !== null && !this.hasDroppedQuestion()) {
+        if (fresh && signal.state !== null && !this.droppedOpenQuestion) {
           this.historyIncomplete = false;
         }
         if (
@@ -268,7 +251,7 @@ export class NativeActivityReader {
           this.confirmHookIdentity();
         }
         push(report, {
-          answered: signal.answered ?? null,
+          answered: signal.answered !== undefined,
           transcript: false,
         });
       }
@@ -308,7 +291,7 @@ export class NativeActivityReader {
         this.confirmHookIdentity();
       }
       push(report, {
-        answered: identified.answered ?? null,
+        answered: identified.answered !== undefined,
         transcript: true,
       });
     });
@@ -403,32 +386,17 @@ export class NativeActivityReader {
     return true;
   }
 
-  private hasDroppedQuestion(): boolean {
-    return (
-      this.droppedQuestionIds.size > 0 || this.droppedQuestionIdsOverflowed
-    );
-  }
-
-  private clearDroppedQuestions(): void {
-    this.droppedQuestionIds.clear();
-    this.droppedQuestionIdsOverflowed = false;
-  }
-
   private holdUntilBound(records: unknown[]): void {
     this.bindingHeld.push(...records);
     const excess = this.bindingHeld.length - MAX_HELD_FOREIGN_RECORDS;
     if (excess > 0) {
       const hooks = this.cli.activity?.hooks;
       for (const record of this.bindingHeld.splice(0, excess)) {
-        const opened =
-          hooks === undefined
-            ? undefined
-            : classifyHookRecord(hooks, record).question;
-        if (opened === undefined) continue;
-        if (this.trimmedQuestionIds.size >= MAX_DROPPED_QUESTION_IDS) {
-          this.trimmedQuestionIdsOverflowed = true;
-        } else {
-          this.trimmedQuestionIds.add(opened.id);
+        if (
+          hooks !== undefined &&
+          classifyHookRecord(hooks, record).question !== undefined
+        ) {
+          this.trimmedOpenQuestion = true;
         }
       }
       this.bindingHeldDropped += excess;
@@ -445,26 +413,8 @@ export class NativeActivityReader {
     this.bindingHeldDropped = 0;
     if (dropped > 0) {
       this.historyIncomplete = true;
-      const hooks = this.cli.activity?.hooks;
-      for (const record of released) {
-        const closed =
-          hooks === undefined
-            ? undefined
-            : classifyHookRecord(hooks, record).answered;
-        if (closed !== undefined) this.trimmedQuestionIds.delete(closed);
-      }
-      for (const id of this.trimmedQuestionIds) {
-        if (this.droppedQuestionIds.size >= MAX_DROPPED_QUESTION_IDS) {
-          this.droppedQuestionIdsOverflowed = true;
-        } else {
-          this.droppedQuestionIds.add(id);
-        }
-      }
-      if (this.trimmedQuestionIdsOverflowed) {
-        this.droppedQuestionIdsOverflowed = true;
-      }
-      this.trimmedQuestionIds.clear();
-      this.trimmedQuestionIdsOverflowed = false;
+      if (this.trimmedOpenQuestion) this.droppedOpenQuestion = true;
+      this.trimmedOpenQuestion = false;
       this.onUnconfirmedHookIdentity?.("held-overflow", dropped);
     }
     return released;

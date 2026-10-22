@@ -1057,11 +1057,12 @@ does not list, an empty list closes none, a populated list closes exactly the
 named questions that are still open; the optional `confirms: false` makes the
 server clear the activity evidence instead of stamping it when the report
 closed an open question, so the thread shows Activity not reported; the holder
-sends the fields from its second report on, uses `confirms: false` only when
-an open question was dropped from its holding bound, drops a report that
-closes a question when an older server rejects the fields rather than
-resending it close-all, and restores Working only on a close for the id of a
-dropped opener);a waiting report
+sends `closes` on every report, gives each permission prompt its own
+occurrence id, uses `confirms: false` only when an open question was dropped
+from its holding bound and then never restores Working from a close, and on a
+400 naming the fields retries the report once without exactly those fields;
+the server ends the questions of the previous binding when it binds a new
+terminal);a waiting report
 registers one pending interaction per open question (so the sidebar and
 favicon show needs-input exactly as for a chat thread, and the thread view
 shows a banner above the terminal), a later report clears the ones no longer

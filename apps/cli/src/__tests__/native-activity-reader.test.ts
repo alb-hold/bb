@@ -746,7 +746,7 @@ describe("NativeActivityReader", () => {
         prompt: null,
         questions: [
           {
-            id: "permission:Bash",
+            id: "permission:Bash#1",
             prompt: "Claude Code needs permission to use: Bash",
           },
         ],
@@ -947,7 +947,7 @@ describe("NativeActivityReader", () => {
       typeof tracker === "object" && tracker !== null
         ? Reflect.get(tracker, "questions")
         : undefined;
-    expect(questions instanceof Map && questions.has("permission:Bash")).toBe(
+    expect(questions instanceof Map && questions.has("permission:Bash#1")).toBe(
       true,
     );
     appendFileSync(
