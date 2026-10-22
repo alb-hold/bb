@@ -275,6 +275,10 @@ export class JsonlTail {
 const MAX_QUESTION_BASE_ID_LENGTH = 200;
 let holderNonce: string | null = null;
 
+function occurrenceBase(questionId: string): string {
+  return questionId.slice(0, MAX_QUESTION_BASE_ID_LENGTH);
+}
+
 function processHolderNonce(): string {
   holderNonce ??= randomBytes(8).toString("hex");
   return holderNonce;
@@ -336,23 +340,24 @@ export class NativeActivityTracker {
   }
 
   private startOccurrence(question: NativeQuestion): NativeQuestion {
-    const serial = (this.occurrenceCounters.get(question.id) ?? 0) + 1;
-    this.occurrenceCounters.set(question.id, serial);
-    const base = question.id.slice(0, MAX_QUESTION_BASE_ID_LENGTH);
+    const base = occurrenceBase(question.id);
+    const serial = (this.occurrenceCounters.get(base) ?? 0) + 1;
+    this.occurrenceCounters.set(base, serial);
     const id = `${base}#${this.nonce}.${serial}`;
-    this.openOccurrences.set(question.id, [
-      ...(this.openOccurrences.get(question.id) ?? []),
+    this.openOccurrences.set(base, [
+      ...(this.openOccurrences.get(base) ?? []),
       id,
     ]);
     return { id, prompt: question.prompt };
   }
 
-  private endOldestOccurrence(baseId: string): string | null {
-    const open = this.openOccurrences.get(baseId);
+  private endOldestOccurrence(questionId: string): string | null {
+    const base = occurrenceBase(questionId);
+    const open = this.openOccurrences.get(base);
     const oldest = open?.[0];
     if (open === undefined || oldest === undefined) return null;
-    if (open.length === 1) this.openOccurrences.delete(baseId);
-    else this.openOccurrences.set(baseId, open.slice(1));
+    if (open.length === 1) this.openOccurrences.delete(base);
+    else this.openOccurrences.set(base, open.slice(1));
     return oldest;
   }
 

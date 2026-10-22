@@ -197,7 +197,12 @@ export function createInterruptedProviderPendingInteraction(
 
 export function retagInterruptedPendingInteraction(
   db: PendingInteractionWriteConnection,
-  args: { fromStatusReason: string; id: string; toStatusReason: string },
+  args: {
+    fromStatusReason: string;
+    id: string;
+    threadId: string;
+    toStatusReason: string;
+  },
 ): PendingInteractionRow | null {
   return (
     db
@@ -206,6 +211,7 @@ export function retagInterruptedPendingInteraction(
       .where(
         and(
           eq(pendingInteractions.id, args.id),
+          eq(pendingInteractions.threadId, args.threadId),
           eq(pendingInteractions.status, "interrupted"),
           eq(pendingInteractions.statusReason, args.fromStatusReason),
         ),
