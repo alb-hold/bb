@@ -2630,7 +2630,10 @@ describe("a rotated session is followed only after its binding is accepted", () 
     return { promise, reject, resolve };
   }
 
-  function holder(answers: Array<() => Promise<unknown>>) {
+  function holder(
+    answers: Array<() => Promise<unknown>>,
+    oldSession: "idle" | "working" | "asking" = "idle",
+  ) {
     const attempts: Array<{ replaces: string; session: string }> = [];
     const sent: string[] = [];
     const logged: string[] = [];
@@ -2666,20 +2669,38 @@ describe("a rotated session is followed only after its binding is accepted", () 
       retryReport: reporter.retry,
     });
     const active = wiring;
-    fixture.hook([
-      { hook_event_name: "Stop", prompt_id: "turn-1", stop_hook_active: false },
-    ]);
-    fixture.append([
-      {
-        type: "system",
-        subtype: "stop_hook_summary",
-        isSidechain: false,
-        hasOutput: false,
-        uuid: "end-1",
-        parentUuid: "answer-1",
-      },
-    ]);
-    expect(fixture.reader.read()).toEqual([{ state: "idle", prompt: null }]);
+    if (oldSession === "idle") {
+      fixture.hook([
+        {
+          hook_event_name: "Stop",
+          prompt_id: "turn-1",
+          stop_hook_active: false,
+        },
+      ]);
+      fixture.append([
+        {
+          type: "system",
+          subtype: "stop_hook_summary",
+          isSidechain: false,
+          hasOutput: false,
+          uuid: "end-1",
+          parentUuid: "answer-1",
+        },
+      ]);
+      expect(fixture.reader.read()).toEqual([{ state: "idle", prompt: null }]);
+    }
+    if (oldSession === "asking") {
+      fixture.hook([
+        {
+          hook_event_name: "PermissionRequest",
+          prompt_id: "turn-1",
+          tool_name: "Edit",
+        },
+      ]);
+      expect(fixture.reader.read().map((report) => report.state)).toEqual([
+        "waiting",
+      ]);
+    }
     const file = path.join(fixture.dir, `${ROTATED}.jsonl`);
     writeFileSync(file, "");
     appendFileSync(
@@ -2798,4 +2819,32 @@ describe("a rotated session is followed only after its binding is accepted", () 
     expect(await h.forward()).toEqual(["working", "waiting"]);
     expect(h.logged).not.toContain("activity-session-rebind-refused");
   });
+
+  it.each([
+    ["working", "working"],
+    ["asking", "waiting"],
+  ] as const)(
+    "does not heartbeat the old session while the rebind is pending when it was %s mid-turn, and replays once after it is recorded",
+    async (oldSession, oldState) => {
+      const binding = holdOpen();
+      const h = holder([() => binding.promise], oldSession);
+      try {
+        expect(h.fixture.reader.heartbeat()?.state).toBe(oldState);
+        h.rotated(opening);
+        h.rotated(ask);
+        expect(await h.forward()).toEqual([]);
+        expect(h.fixture.reader.heartbeat()).toBeNull();
+        expect(await h.heartbeat()).toEqual([]);
+        expect(await h.heartbeat()).toEqual([]);
+
+        binding.resolve();
+        await h.settled();
+        expect(await h.forward()).toEqual(["working", "waiting"]);
+        expect(await h.forward()).toEqual(["working", "waiting"]);
+        expect(h.attempts).toHaveLength(1);
+      } finally {
+        binding.resolve();
+      }
+    },
+  );
 });

@@ -1068,7 +1068,7 @@ replaced id is still the stored one. A move the server cannot take yet (401,
 408, 429, 5xx, a terminal that is not live, a network failure) is retried on each
 heartbeat tick and credential refresh; any other refusal or unexpected failure
 (an unparsable response, an unexpected throw, a TypeError that is not a fetch transport failure) is permanent and stops
-the wrapper from confirming activity, so the thread shows Activity not reported. The server moves
+the wrapper from confirming activity, so the thread shows Activity not reported. Until the move is recorded the wrapper holds the new session's records (at most 64), sends no heartbeat and publishes nothing for it; it replays them once after the move is recorded and drops them after a permanent refusal. The server moves
 the thread between idle and active and titles an untitled thread from the
 prompt. Validated at registration by
 `providerNativeTerminalSchema` in `@bb/domain`: bare executable name, at most
