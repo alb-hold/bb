@@ -6,6 +6,7 @@ import {
   createEnvironment,
   environments,
   getHost,
+  getNonDestroyedHostByLaunchKey,
   threads,
   getThread,
   updateHost,
@@ -14,7 +15,10 @@ import { createDeferredPromise } from "@bb/test-helpers";
 import { eq } from "drizzle-orm";
 import type { PluginMachineProviderDeclaration } from "@get-bb/plugin-sdk";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { sweepProviderMachine } from "../../../src/services/machines/provider-orchestration.js";
+import {
+  askMachineLaunch,
+  sweepProviderMachine,
+} from "../../../src/services/machines/provider-orchestration.js";
 import { setPluginMachineProviderBridge } from "../../../src/services/plugins/plugin-machine-provider-registry.js";
 import { readJson } from "../../helpers/json.js";
 import { installMachineProvider } from "../../helpers/machine-provider.js";
@@ -225,6 +229,7 @@ describe("an ephemeral machine being removed", () => {
 type LauncherShape =
   | "bare"
   | "creating-environment"
+  | "failed"
   | "active"
   | "stopping"
   | "ready-environment"
@@ -245,12 +250,16 @@ async function seedCreateFailedMachine(
           projectId: project.id,
           hostId: host.id,
           path:
-            args.launcher === "creating-environment" ? null : args.directory,
+            args.launcher === "creating-environment" ||
+            args.launcher === "failed"
+              ? null
+              : args.directory,
           providerOwnsPath: false,
           status:
             args.launcher === "ready-environment"
               ? "ready"
-              : args.launcher === "pathful-environment"
+              : args.launcher === "pathful-environment" ||
+                  args.launcher === "failed"
                 ? "error"
                 : "creating",
           environmentProvider: null,
@@ -260,7 +269,9 @@ async function seedCreateFailedMachine(
     status:
       args.launcher === "active" || args.launcher === "stopping"
         ? args.launcher
-        : "idle",
+        : args.launcher === "failed"
+          ? "error"
+          : "idle",
     environmentId:
       args.launcher === "ready-environment"
         ? (launcherEnvironment?.id ?? null)
@@ -316,12 +327,12 @@ function destroyingProvider(directory: string, failFirst: boolean) {
     await rm(directory, { recursive: true, force: true });
     return { status: "removed" as const };
   });
-  installMachineProvider({
+  const record = installMachineProvider({
     ephemeral: true,
     remove: destroy,
     reconcileCleanup: destroy,
   });
-  return destroy;
+  return Object.assign(destroy, { record });
 }
 
 function retryNow(harness: TestAppHarness, hostId: string): void {
@@ -353,6 +364,8 @@ describe("an ephemeral machine whose creation failed", () => {
         const message = getHost(harness.db, host.id)?.statusMessage ?? "";
         expect(message).toContain(second.id);
         expect(message).not.toContain(launcher.id);
+        expect(message).toContain("; machine creation failed:");
+        expect(message).toContain("Cloud quota exceeded");
         expect(getHost(harness.db, host.id)).toMatchObject({
           phase: "removing",
           teardownStatus: "failed",
@@ -400,7 +413,7 @@ describe("an ephemeral machine whose creation failed", () => {
       }),
   );
 
-  it.each(["bare", "creating-environment"] as const)(
+  it.each(["bare", "creating-environment", "failed"] as const)(
     "retries after a failed removal without the %s launcher blocking itself",
     async (launcherShape) =>
       withTestHarness(async (harness) => {
@@ -431,34 +444,57 @@ describe("an ephemeral machine whose creation failed", () => {
           expect(destroy).toHaveBeenCalledTimes(2);
           expect(await exists(file)).toBe(false);
           expect(getHost(harness.db, host.id)?.phase).toBe("destroyed");
+
+          const next = askMachineLaunch(harness.deps, {
+            key: launcher.id,
+            lifetime: "thread",
+            record: destroy.record,
+            inputs: null,
+          });
+          expect(next.action).not.toBe("reject");
+          const relaunched = getNonDestroyedHostByLaunchKey(
+            harness.db,
+            launcher.id,
+          );
+          expect(relaunched).not.toBeNull();
+          expect(relaunched?.id).not.toBe(host.id);
+          await expect
+            .poll(() => getHost(harness.db, relaunched?.id ?? "")?.phase)
+            .toBe("active");
         } finally {
           await rm(directory, { recursive: true, force: true });
         }
       }),
   );
 
-  it("completes an explicit delete when only the safely exempt launcher exists", async () =>
-    withTestHarness(async (harness) => {
-      const { directory, file } = await seedDisposableWorkspace();
-      try {
-        const destroy = destroyingProvider(directory, false);
-        const { host } = await seedCreateFailedMachine(harness, {
-          directory,
-          launcher: "creating-environment",
-        });
+  it.each(["bare", "creating-environment", "failed"] as const)(
+    "completes an explicit delete when only the safely exempt %s launcher exists",
+    async (launcherShape) =>
+      withTestHarness(async (harness) => {
+        const { directory, file } = await seedDisposableWorkspace();
+        try {
+          const destroy = destroyingProvider(directory, false);
+          const { host } = await seedCreateFailedMachine(harness, {
+            directory,
+            launcher: launcherShape,
+          });
 
-        const response = await harness.app.request(`/api/v1/hosts/${host.id}`, {
-          method: "DELETE",
-        });
+          const response = await harness.app.request(
+            `/api/v1/hosts/${host.id}`,
+            {
+              method: "DELETE",
+            },
+          );
 
-        expect(response.status).toBe(200);
-        expect(destroy).toHaveBeenCalledTimes(1);
-        expect(await exists(file)).toBe(false);
-        expect(getHost(harness.db, host.id)?.phase).toBe("destroyed");
-      } finally {
-        await rm(directory, { recursive: true, force: true });
-      }
-    }));
+          expect(response.status).toBe(200);
+          expect(destroy).toHaveBeenCalledTimes(1);
+          expect(await exists(file)).toBe(false);
+          expect(getHost(harness.db, host.id)?.phase).toBe("destroyed");
+        } finally {
+          await rm(directory, { recursive: true, force: true });
+        }
+      }),
+  );
 
   it.each([
     "active",

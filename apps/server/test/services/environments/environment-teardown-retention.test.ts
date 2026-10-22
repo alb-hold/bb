@@ -1437,14 +1437,16 @@ describe("removal while the machine is being removed", () => {
         const remove = vi.fn<PluginEnvironmentProviderDeclaration["remove"]>(
           async () => ({ status: "removed" }),
         );
-        installProvider({
-          remove,
-          experimental_preflightRemove: async () => {
-            entered.resolve();
-            await release.promise;
-            return { status: "retained", message: KEPT };
-          },
+        const preflight = vi.fn<
+          NonNullable<
+            PluginEnvironmentProviderDeclaration["experimental_preflightRemove"]
+          >
+        >(async () => {
+          entered.resolve();
+          await release.promise;
+          return { status: "retained", message: KEPT };
         });
+        installProvider({ remove, experimental_preflightRemove: preflight });
         installMachine();
         const seeded = seedRetiring(harness, {
           providerOwnsPath: true,
@@ -1463,6 +1465,7 @@ describe("removal while the machine is being removed", () => {
           await sweeping;
         }
 
+        expect(preflight).toHaveBeenCalledTimes(1);
         expect(hooks).not.toHaveBeenCalled();
         expect(remove).not.toHaveBeenCalled();
         expect(hookRows(harness)).toBe(0);
@@ -1479,6 +1482,7 @@ describe("removal while the machine is being removed", () => {
         retireNow(harness, environment.id);
         await sweepProviderMachine(harness.deps, host.id);
 
+        expect(preflight).toHaveBeenCalledTimes(1);
         expect(remove).not.toHaveBeenCalled();
         expect(hooks).not.toHaveBeenCalled();
         expect(hookRows(harness)).toBe(0);
