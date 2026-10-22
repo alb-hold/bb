@@ -713,18 +713,25 @@ describe("terminal viewport restore", () => {
         terminal.buffer.active.baseY + terminal.buffer.active.cursorY,
     });
     tracker.reset();
-    const anchor = tracker.recordOutputStart(1)!;
     await writeTerminal(
       terminal,
       Array.from(
-        { length: 3_000 },
+        { length: 1_023 },
         (_, index) => `line ${String(index + 1).padStart(5, "0")}\r\n`,
+      ).join(""),
+    );
+    const anchor = tracker.recordOutputStart(3)!;
+    await writeTerminal(
+      terminal,
+      Array.from(
+        { length: 1_977 },
+        (_, index) => `line ${String(index + 1_024).padStart(5, "0")}\r\n`,
       ).join(""),
     );
     const savedAnchor = {
       distanceFromTail: terminal.buffer.active.baseY - 1_100,
-      lineOffset: 1_100,
-      outputSequence: 1,
+      lineOffset: 77,
+      outputSequence: 3,
     };
     await new Promise<void>((resolve) => {
       applyTerminalGridBeforeViewportRestore({
@@ -787,8 +794,8 @@ describe("terminal viewport restore", () => {
         anchor: savedAnchor,
         baseY: terminal.buffer.active.baseY,
         outputLineAnchors: [anchor],
-        replayStartSequence: 1,
-        replayNextSequence: 2,
+        replayStartSequence: 0,
+        replayNextSequence: 8,
       }),
     );
     await new Promise<void>((resolve) => {
@@ -796,18 +803,17 @@ describe("terminal viewport restore", () => {
         pipeline,
         cols: 80,
         rows: 56,
-        onGridApplied: () => {},
+        onGridApplied: resolve,
         restoreViewport: () => {
           terminal.scrollToLine(
             resolveTerminalViewportRestore({
               anchor: savedAnchor,
               baseY: terminal.buffer.active.baseY,
               outputLineAnchors: [anchor],
-              replayStartSequence: 1,
-              replayNextSequence: 2,
+              replayStartSequence: 0,
+              replayNextSequence: 8,
             }),
           );
-          resolve();
         },
       });
     });
