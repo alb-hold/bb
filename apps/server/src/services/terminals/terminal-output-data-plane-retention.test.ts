@@ -806,6 +806,60 @@ describe("terminal output retained from the data plane", () => {
     }
   }, 15_000);
 
+  it("attributes an empty catch-up replay without retained writes", async () => {
+    const fixture = await setup();
+    const replayInfo = vi.spyOn(fixture.harness.deps.logger, "info");
+    const pendingCatchUps = Reflect.get(fixture.terminalSessions, "pendingCatchUps");
+    if (
+      typeof pendingCatchUps !== "object" ||
+      pendingCatchUps === null ||
+      !("claim" in pendingCatchUps) ||
+      typeof pendingCatchUps.claim !== "function"
+    ) {
+      throw new Error("Terminal pending catch-up registry is unavailable");
+    }
+    const pendingCatchUpRegistry = pendingCatchUps as {
+      claim(key: Record<string, unknown>): { promise: Promise<unknown> };
+    };
+    const requestId = "empty-catch-up-replay";
+    const rpcKey = `${fixture.session.id}\0${fixture.terminal.id}\0${requestId}`;
+    const pendingCatchUp = pendingCatchUpRegistry.claim({
+      daemonSessionId: fixture.session.id,
+      requestId,
+      rpcKey,
+      terminalId: fixture.terminal.id,
+    }).promise;
+    try {
+      await fixture.terminalSessions.handleDaemonTerminalMessage({
+        hostId: fixture.host.id,
+        sessionId: fixture.session.id,
+        message: {
+          type: "terminal.replay",
+          requestId,
+          terminalId: fixture.terminal.id,
+          replayStartSeq: 0,
+          nextSeq: 0,
+          chunks: [],
+        },
+      });
+      await expect(pendingCatchUp).resolves.toMatchObject({ chunks: [] });
+
+      const attribution = replayInfo.mock.calls.find(
+        ([, message]) => message === "Terminal replay attributed",
+      );
+      expect(attribution).toBeDefined();
+      expect(attribution?.[0]).toMatchObject({
+        callers: ["catch-up"],
+        retainedWriteBytes: 0,
+        retainedWriteChunks: 0,
+        maxRetainedWriteBatchBytes: 0,
+        maxRetainedWriteBatchChunks: 0,
+      });
+    } finally {
+      fixture.child.shutdown();
+    }
+  });
+
   it("restores expiry when the deferred timer flush appends output after exit", async () => {
     const fixture = await setup();
     const replacement = seedSession(fixture.harness.deps, fixture.host.id, {

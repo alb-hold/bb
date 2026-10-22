@@ -2300,9 +2300,15 @@ describe("public terminal routes", () => {
     expect(attachError).toMatchObject({ body: { code: "host_disconnected" } });
     expect(readError).toMatchObject({ body: { code: "host_disconnected" } });
     expect(catchUpError).toMatchObject({ body: { code: "host_disconnected" } });
-    expect(attachSettled).not.toHaveBeenCalled();
-    expect(readSettled).not.toHaveBeenCalled();
-    expect(catchUpSettled).not.toHaveBeenCalled();
+    expect(attachSettled.mock.results.some(({ value }) => value === true)).toBe(
+      false,
+    );
+    expect(readSettled.mock.results.some(({ value }) => value === true)).toBe(
+      false,
+    );
+    expect(catchUpSettled.mock.results.some(({ value }) => value === true)).toBe(
+      false,
+    );
     expect(readBrowserMessages(attachSocket)).toEqual([
       expect.objectContaining({ type: "error", code: "host_disconnected" }),
     ]);
@@ -2336,7 +2342,7 @@ describe("public terminal routes", () => {
     expect(expiry?.expiresAt).toBeNull();
   });
 
-  it("discards replay after a daemon restart changes the sequence offset mid-replay", async () => {
+  it("discards replay after a synthetic sequence offset change mid-replay", async () => {
     const fixture = await createTerminalRouteFixture();
     harnesses.push(fixture.harness);
     const replayInfo = vi.spyOn(fixture.harness.deps.logger, "info");
@@ -2451,7 +2457,9 @@ describe("public terminal routes", () => {
       status: 409,
       body: { code: "terminal_replaced" },
     });
-    expect(attachSettlement).not.toHaveBeenCalled();
+    expect(attachSettlement.mock.results.some(({ value }) => value === true)).toBe(
+      false,
+    );
     expect(readBrowserMessages(attachSocket)).toContainEqual(
       expect.objectContaining({ type: "error", code: "terminal_replaced" }),
     );

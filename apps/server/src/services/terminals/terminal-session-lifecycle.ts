@@ -3263,15 +3263,9 @@ export class TerminalSessionLifecycle {
       );
       return;
     }
-    const sameOwner =
-      current === null ||
-      (latest !== null &&
-        latest.hostId === current.hostId &&
-        (latest.daemonSessionId === null ||
-          latest.daemonSessionId === args.sessionId) &&
-        this.outputSequenceRebase.baseFor(sourceMessage.terminalId) ===
-          replayOffset);
-    if (current && sameOwner && retainedTail.length > 0) {
+    const retainedAppendPerformed =
+      current !== null && retainedTail.length > 0;
+    if (retainedAppendPerformed && current) {
       runEventLoopWorkSync("ws:daemon terminal.replay append-retained", () => {
         appendRetainedTerminalOutputChunks(this.options.db, {
           hostId: current.hostId,
@@ -3295,7 +3289,6 @@ export class TerminalSessionLifecycle {
 
     if (
       current &&
-      sameOwner &&
       (current.status === "exited" || replayOwnershipChanged)
     ) {
       if (latest?.status === "exited") {
@@ -3313,25 +3306,27 @@ export class TerminalSessionLifecycle {
       this.pendingOutputReads.settle(rpcKey, message) ? "output-read" : null,
       this.pendingCatchUps.settle(rpcKey, message) ? "catch-up" : null,
     ].filter((caller): caller is string => caller !== null);
-    if (current && sameOwner && retainedTail.length > 0) {
-      this.options.logger.info(
-        {
-          callers: callers.length > 0 ? callers : ["unmatched"],
-          daemonSessionId: args.sessionId,
-          hostId: args.hostId,
-          processId: process.pid,
-          replayBytes,
-          replayChunks: sourceChunks.length,
-          retainedWriteBytes: retainedTailBytes,
-          retainedWriteChunks: retainedTail.length,
-          maxRetainedWriteBatchBytes: retainedTailBytes,
-          maxRetainedWriteBatchChunks: retainedTail.length,
-          requestId: sourceMessage.requestId,
-          terminalId: sourceMessage.terminalId,
-        },
-        "Terminal replay attributed",
-      );
-    }
+    this.options.logger.info(
+      {
+        callers: callers.length > 0 ? callers : ["unmatched"],
+        daemonSessionId: args.sessionId,
+        hostId: args.hostId,
+        processId: process.pid,
+        replayBytes,
+        replayChunks: sourceChunks.length,
+        retainedWriteBytes: retainedAppendPerformed ? retainedTailBytes : 0,
+        retainedWriteChunks: retainedAppendPerformed ? retainedTail.length : 0,
+        maxRetainedWriteBatchBytes: retainedAppendPerformed
+          ? retainedTailBytes
+          : 0,
+        maxRetainedWriteBatchChunks: retainedAppendPerformed
+          ? retainedTail.length
+          : 0,
+        requestId: sourceMessage.requestId,
+        terminalId: sourceMessage.terminalId,
+      },
+      "Terminal replay attributed",
+    );
   }
 
   private finalizeTerminalExit(args: HandleDaemonTerminalMessageArgs): void {
