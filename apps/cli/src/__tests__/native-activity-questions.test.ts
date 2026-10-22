@@ -333,6 +333,34 @@ describe("native terminal questions", () => {
     },
   );
 
+  it("KNOWN LIMITATION (exact matching pending a real hook capture): a Bash completion closes the oldest open Bash prompt, whichever tool call it belongs to", () => {
+    const hooks = CLAUDE.hooks!;
+    const tracker = new NativeActivityTracker();
+    tracker.apply({ state: "working", prompt: "go" });
+    const prompt = () =>
+      tracker.apply(
+        classifyHookRecord(hooks, {
+          hook_event_name: "PermissionRequest",
+          tool_name: "Bash",
+        }),
+      );
+    prompt();
+    prompt();
+    const afterCompletion = tracker.apply(
+      classifyHookRecord(hooks, {
+        hook_event_name: "PostToolUse",
+        tool_name: "Bash",
+        tool_use_id: "toolu_of_the_second_prompt",
+      }),
+    );
+    expect(waiting(afterCompletion)).toEqual([
+      {
+        id: "permission:Bash#2",
+        prompt: "Claude Code needs permission to use: Bash",
+      },
+    ]);
+  });
+
   it("does not add a permission entry for plan approval, which the transcript already reports", () => {
     const hooks = CLAUDE.hooks!;
     const tracker = new NativeActivityTracker();

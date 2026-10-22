@@ -42,7 +42,10 @@ import {
 } from "../lib/entity-lookup.js";
 import { resolvePluginProviderEnv } from "../plugins/plugin-agent-contributions.js";
 import { applyLoggedThreadLifecycleEventInTransaction } from "./lifecycle-outcome.js";
-import { interruptNativeTerminalQuestions } from "./native-terminal-questions.js";
+import {
+  forgetClosedNativeQuestions,
+  interruptNativeTerminalQuestions,
+} from "./native-terminal-questions.js";
 import {
   decodeTerminalOutputChunks,
   terminalOutputAlreadyShowsText,
@@ -71,6 +74,7 @@ type NativeTerminalDeps = Pick<
   AppDeps,
   | "config"
   | "db"
+  | "hub"
   | "logger"
   | "pendingInteractions"
   | "providerRegistry"
@@ -500,6 +504,7 @@ async function openNativeTerminalOnce(
       terminalSessionId: terminal.id,
     });
     interruptNativeTerminalQuestions(deps, thread.id);
+    forgetClosedNativeQuestions(deps, thread.id);
     return toNativeTerminalThread(deps, record, terminal);
   } finally {
     endNativeTerminalRebind(thread.id);
