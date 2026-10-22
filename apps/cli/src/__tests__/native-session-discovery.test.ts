@@ -120,6 +120,7 @@ describe("the holder's session discovery", () => {
     await h.discoverer.discover();
     expect(h.sent).toHaveLength(2);
     expect(h.suspended()).toBe(0);
+    expect(h.followed).toEqual([ID]);
     expect(h.logged).toEqual([]);
   });
 
@@ -142,6 +143,7 @@ describe("the holder's session discovery", () => {
     await h.discoverer.discover();
     expect(h.sent).toHaveLength(1);
     expect(h.suspended()).toBe(1);
+    expect(h.followed).toEqual([]);
     expect(h.logged).toEqual([
       {
         event: "session-discovery-stopped",

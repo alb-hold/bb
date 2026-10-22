@@ -73,3 +73,12 @@ export function createNativeActivityWiring(options: {
     settled: () => rebinder.settled(),
   };
 }
+
+export function createNativeActivityPump(options: {
+  reader(): { read(): NativeActivityReport[] } | null;
+  report(next: NativeActivityReport): void;
+}): () => void {
+  return () => {
+    for (const next of options.reader()?.read() ?? []) options.report(next);
+  };
+}
