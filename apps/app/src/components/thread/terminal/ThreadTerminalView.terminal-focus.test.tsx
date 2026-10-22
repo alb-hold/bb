@@ -287,6 +287,13 @@ function renderMobileTerminal(): ReturnType<typeof makeTerminalSession> {
   return session;
 }
 
+function scrollTerminalAsUser(terminal: Terminal, line: number): void {
+  const screen = document.querySelector(".xterm-screen");
+  if (!screen) throw new Error("terminal screen was not mounted");
+  fireEvent.wheel(screen, { deltaY: -1 });
+  terminal.scrollToLine(line);
+}
+
 describe("ThreadTerminalView terminal focus boundary", () => {
   it("keeps a bottom-following client at the bottom after output and a shared resize", async () => {
     prepareMobileTerminal();
@@ -408,7 +415,7 @@ describe("ThreadTerminalView terminal focus boundary", () => {
       this: Terminal,
       element: HTMLElement,
     ) {
-      mountedTerminal = this;
+      mountedTerminal ??= this;
       openTerminal.call(this, element);
     });
     const getTerminal = () => {
@@ -446,7 +453,10 @@ describe("ThreadTerminalView terminal focus boundary", () => {
     expect(getTerminal().buffer.active.viewportY).toBe(
       getTerminal().buffer.active.baseY,
     );
-    getTerminal().scrollLines(-1);
+    scrollTerminalAsUser(
+      getTerminal(),
+      getTerminal().buffer.active.baseY - 1,
+    );
     expect(
       getTerminal().buffer.active.viewportY,
       "terminal scrollLines did not move above the bottom",
@@ -506,7 +516,7 @@ describe("ThreadTerminalView terminal focus boundary", () => {
       this: Terminal,
       element: HTMLElement,
     ) {
-      mountedTerminal = this;
+      mountedTerminal ??= this;
       openTerminal.call(this, element);
     });
     const getTerminal = () => {
@@ -544,7 +554,7 @@ describe("ThreadTerminalView terminal focus boundary", () => {
       "replay output was not acknowledged within 5000 ms",
     );
     const terminal = getTerminal();
-    terminal.scrollLines(-1);
+    terminal.scrollToLine(terminal.buffer.active.baseY - 1);
     expect(
       terminal.buffer.active.viewportY,
       "terminal did not scroll above the bottom before shared resize",
@@ -599,7 +609,7 @@ describe("ThreadTerminalView terminal focus boundary", () => {
       this: Terminal,
       element: HTMLElement,
     ) {
-      mountedTerminal = this;
+      mountedTerminal ??= this;
       openTerminal.call(this, element);
     });
     const getTerminal = () => {
@@ -677,7 +687,7 @@ describe("ThreadTerminalView terminal focus boundary", () => {
       this: Terminal,
       element: HTMLElement,
     ) {
-      mountedTerminal = this;
+      mountedTerminal ??= this;
       openTerminal.call(this, element);
     });
     const getTerminal = () => {
@@ -712,7 +722,10 @@ describe("ThreadTerminalView terminal focus boundary", () => {
           .toContainEqual({ type: "ack", nextSeq: 1 }),
       "replay output was not acknowledged within 5000 ms",
     );
-    getTerminal().scrollLines(-1);
+    scrollTerminalAsUser(
+      getTerminal(),
+      getTerminal().buffer.active.baseY - 1,
+    );
     expect(
       getTerminal().buffer.active.viewportY,
       "terminal scrollLines did not move above the bottom before typed output",
@@ -787,7 +800,7 @@ describe("ThreadTerminalView terminal focus boundary", () => {
       this: Terminal,
       element: HTMLElement,
     ) {
-      mountedTerminal = this;
+      mountedTerminal ??= this;
       openTerminal.call(this, element);
     });
     const getTerminal = () => {
@@ -1009,7 +1022,7 @@ describe("ThreadTerminalView terminal focus boundary", () => {
       type: "attached",
       session,
       replayStartSeq: 0,
-      nextSeq: 0,
+      nextSeq: 1,
     });
     const output = Array.from(
       { length: 48 },
@@ -1019,6 +1032,12 @@ describe("ThreadTerminalView terminal focus boundary", () => {
       type: "output",
       chunk: { seq: 0, dataBase64: btoa(output) },
     });
+    await waitForReadinessCondition(
+      () =>
+        expect(testState.socketMessages.map((message) => JSON.parse(message)))
+          .toContainEqual({ type: "ack", nextSeq: 1 }),
+      "retained output was not acknowledged within 5000 ms",
+    );
     await waitForReadinessCondition(
       () => {
         expect(document.querySelector(".xterm-rows")?.textContent).toContain(
