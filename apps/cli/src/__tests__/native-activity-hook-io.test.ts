@@ -1,15 +1,24 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { readdirSync, statSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { ProviderNativeTerminal } from "@bb/domain";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { nativeActivityHookSettings } from "../native-activity.js";
 import { NativeActivityReader } from "../native-activity-reader.js";
 import {
   createHookSpool,
+  HookAppendReader,
   HookSpoolReader,
   removeHookSpool,
+  reserveSequence,
 } from "../native-hook-spool.js";
 
 interface ClaudePluginTestHost {
@@ -47,6 +56,7 @@ const spools: string[] = [];
 const children: ChildProcessWithoutNullStreams[] = [];
 
 afterEach(() => {
+  vi.restoreAllMocks();
   for (const child of children.splice(0)) child.kill("SIGKILL");
   for (const spool of spools.splice(0)) removeHookSpool(spool);
 });
@@ -292,6 +302,7 @@ describe.skipIf(process.platform === "win32")(
       const skipped = reader.read(start + 11_000);
       expect(skipped.records.map(toolOf)).toEqual(["Three"]);
       expect(skipped.unreadable).toBe(1);
+      expect(statSync(path.join(spool, "000000000002")).size).toBe(0);
       putRecord(spool, 4, "Four");
       expect(reader.read(start + 13_000)).toEqual({
         records: [{ hook_event_name: "PermissionRequest", session_id: SESSION_ID, tool_name: "Four" }],
@@ -299,7 +310,7 @@ describe.skipIf(process.platform === "win32")(
       });
     });
 
-    it("counts a record that appears in a skipped number as late or lost, once, and never applies it out of order", () => {
+    it("counts content that an external writer puts into a reserved number as lost evidence, once, and never applies it", () => {
       const { spool } = fixture();
       const reader = new HookSpoolReader(spool);
       const start = Date.now();
@@ -316,6 +327,92 @@ describe.skipIf(process.platform === "win32")(
         records: [],
         unreadable: 0,
       });
+    });
+
+    it("reserves a skipped number exclusively, so a publisher with a stale hint moves on to the next free number and its record is read in order", async () => {
+      const { commandFor, spool } = fixture();
+      const command = commandFor("PermissionRequest");
+      await runWhole(command, record("PermissionRequest", { tool_name: "One" }));
+      putRecord(spool, 3, "Three");
+      expect(readFileSync(path.join(spool, ".hint"), "utf8")).toBe("1");
+
+      const reader = new HookSpoolReader(spool);
+      const start = Date.now();
+      expect(reader.read(start).records.map(toolOf)).toEqual(["One"]);
+      expect(reader.read(start + 3_000).records).toEqual([]);
+      const skipped = reader.read(start + 11_000);
+      expect(skipped.records.map(toolOf)).toEqual(["Three"]);
+      expect(skipped.unreadable).toBe(1);
+      expect(statSync(path.join(spool, "000000000002")).size).toBe(0);
+
+      await runWhole(command, record("PermissionRequest", { tool_name: "Four" }));
+      expect(published(spool)).toEqual([
+        "000000000001",
+        "000000000002",
+        "000000000003",
+        "000000000004",
+      ]);
+      expect(reader.read(start + 12_000)).toEqual({
+        records: [
+          {
+            hook_event_name: "PermissionRequest",
+            session_id: SESSION_ID,
+            tool_name: "Four",
+          },
+        ],
+        unreadable: 0,
+      });
+    });
+
+    it("reserves with an exclusive create: a free number is taken, a published record is left intact, an unreachable directory is reported", () => {
+      const { spool } = fixture();
+      putRecord(spool, 5, "Five");
+      const before = readFileSync(path.join(spool, "000000000005"), "utf8");
+      expect(reserveSequence(spool, 5)).toBe("present");
+      expect(readFileSync(path.join(spool, "000000000005"), "utf8")).toBe(before);
+      expect(reserveSequence(spool, 6)).toBe("reserved");
+      expect(reserveSequence(spool, 6)).toBe("present");
+      expect(reserveSequence(path.join(spool, "missing"), 7)).toBe("failed");
+    });
+
+    it("keeps Needs input alive behind a lost record, and an ordinary Working record after it does not erase the loss", async () => {
+      const { commandFor, reader, spool, unconfirmed } = fixture();
+      const t0 = Date.now();
+      const clock = vi.spyOn(Date, "now").mockImplementation(() => t0);
+      await runWhole(
+        commandFor("UserPromptSubmit"),
+        record("UserPromptSubmit", { prompt: "go" }),
+      );
+      await runWhole(
+        commandFor("PreToolUse"),
+        record("PreToolUse", { tool_name: "Lost" }),
+      );
+      await runWhole(
+        commandFor("PermissionRequest"),
+        record("PermissionRequest", { tool_name: "Bash" }),
+      );
+      await runWhole(
+        commandFor("PreToolUse"),
+        record("PreToolUse", { tool_name: "Read" }),
+      );
+      rmSync(path.join(spool, "000000000002"));
+
+      expect(reader.read()).toEqual([{ prompt: "go", state: "working" }]);
+      clock.mockImplementation(() => t0 + 3_000);
+      expect(reader.read()).toEqual([]);
+      expect(unconfirmed).toEqual([]);
+
+      clock.mockImplementation(() => t0 + 12_000);
+      const reports = reader.read();
+      expect(unconfirmed).toEqual([{ reason: "unreadable-record", total: 1 }]);
+      expect(reports.some((report) => report.state === "working")).toBe(false);
+      const last = reports.at(-1);
+      expect(
+        last?.state === "waiting"
+          ? last.questions.map((question) => question.prompt)
+          : [],
+      ).toEqual(["Claude Code needs permission to use: Bash"]);
+      expect(reader.heartbeat()).toBeNull();
     });
 
     it("does not deliver a record twice when it is read repeatedly", async () => {
@@ -396,6 +493,102 @@ describe.skipIf(process.platform === "win32")(
           (tool) => `Claude Code needs permission to use: ${tool}`,
         ),
       );
+    });
+  },
+);
+
+describe.skipIf(process.platform === "win32")(
+  `the append fallback, used only when no candidate directory supports links ${platformNote}`,
+  () => {
+    function appendFixture() {
+      const cli = claudeDeclaration();
+      const hooks = cli.activity?.hooks;
+      if (hooks === undefined) throw new Error("Claude hooks missing");
+      const directory = createHookSpool(os.tmpdir(), "append-test");
+      spools.push(directory);
+      const file = path.join(directory, "hooks.jsonl");
+      writeFileSync(file, "", { mode: 0o600 });
+      const settings: {
+        hooks: Record<string, { hooks: { command: string }[] }[]>;
+      } = JSON.parse(nativeActivityHookSettings(hooks, { appendFile: file }));
+      const commandFor = (event: string): string => {
+        const command = settings.hooks[event]?.[0]?.hooks[0]?.command;
+        if (command === undefined) throw new Error(`no hook command for ${event}`);
+        return command;
+      };
+      const unconfirmed: Array<{ reason: string; total: number }> = [];
+      const reader = new NativeActivityReader(
+        cli,
+        { HOME: os.tmpdir() },
+        { appendFile: file },
+        { kind: "start", id: SESSION_ID },
+        undefined,
+        (reason, total) => unconfirmed.push({ reason, total }),
+      );
+      return { commandFor, file, reader, unconfirmed };
+    }
+
+    it("delivers Needs input through the append file: the opener reaches the reader as a waiting question", async () => {
+      const { commandFor, reader } = appendFixture();
+      await runWhole(
+        commandFor("PermissionRequest"),
+        record("PermissionRequest", {
+          permission_suggestions: [],
+          tool_name: "Bash",
+        }),
+      );
+      const last = reader.read().at(-1);
+      expect(
+        last?.state === "waiting"
+          ? last.questions.map((question) => question.prompt)
+          : [],
+      ).toEqual(["Claude Code needs permission to use: Bash"]);
+    });
+
+    it("waits for the end of a line and reads records in order", async () => {
+      const { commandFor, file } = appendFixture();
+      const reader = new HookAppendReader(file);
+      appendFileSync(file, `{"tool_name":"Half"`);
+      expect(reader.read()).toEqual({ records: [], unreadable: 0 });
+      appendFileSync(file, "}\n");
+      expect(reader.read()).toEqual({
+        records: [{ tool_name: "Half" }],
+        unreadable: 0,
+      });
+      await runWhole(
+        commandFor("PermissionRequest"),
+        record("PermissionRequest", { tool_name: "A" }),
+      );
+      await runWhole(
+        commandFor("PermissionRequest"),
+        record("PermissionRequest", { tool_name: "B" }),
+      );
+      expect(reader.read().records.map(toolOf)).toEqual(["A", "B"]);
+      expect(reader.read()).toEqual({ records: [], unreadable: 0 });
+    });
+
+    it("counts an unreadable line as lost evidence: a killed hook leaves a torn line, no Working or heartbeat until the next prompt", async () => {
+      const { commandFor, file, reader, unconfirmed } = appendFixture();
+      const dying = startHook(commandFor("PermissionRequest"));
+      dying.child.stdin.write(`{"hook_event_name":"PermissionRequest"`);
+      await until(() => statSync(file).size > 0, "the torn bytes");
+      dying.child.kill("SIGKILL");
+      await dying.exited;
+      await runWhole(
+        commandFor("PreToolUse"),
+        record("PreToolUse", { tool_name: "Read" }),
+      );
+
+      expect(reader.read()).toEqual([]);
+      expect(unconfirmed).toEqual([{ reason: "unreadable-record", total: 1 }]);
+      expect(reader.heartbeat()).toBeNull();
+
+      await runWhole(
+        commandFor("UserPromptSubmit"),
+        record("UserPromptSubmit", { prompt: "next" }),
+      );
+      expect(reader.read()).toEqual([{ prompt: "next", state: "working" }]);
+      expect(reader.heartbeat()).toEqual({ prompt: null, state: "working" });
     });
   },
 );

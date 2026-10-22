@@ -1,12 +1,15 @@
 import {
   closeSync,
+  fstatSync,
   linkSync,
   mkdirSync,
   mkdtempSync,
   openSync,
   readdirSync,
   readFileSync,
+  readSync,
   rmSync,
+  statfsSync,
   statSync,
   truncateSync,
   unlinkSync,
@@ -21,6 +24,12 @@ const MAX_RECORDS_PER_READ = 2_000;
 const SCAN_INTERVAL_MS = 2_000;
 const GAP_REPORT_AFTER_MS = 10_000;
 const ABANDONED_TEMP_AGE_MS = 10 * 60_000;
+const MAX_RESERVATIONS_PER_SCAN = 64;
+const MAX_APPEND_READ_BYTES = 4 * 1024 * 1024;
+const NETWORK_FILESYSTEM_TYPES: ReadonlySet<number> = new Set([
+  0x6969, 0x517b, 0xff534d42, 0xfe534d42, 0x01021997, 0x65735546, 0x5346414f,
+  0x00c36400, 0x73757245,
+]);
 
 function shellQuote(value: string): string {
   return `'${value.replace(/'/gu, `'\\''`)}'`;
@@ -38,8 +47,23 @@ export function removeHookSpool(directory: string): void {
   rmSync(directory, { force: true, recursive: true });
 }
 
+export function filesystemTypeOf(directory: string): number | null {
+  if (process.platform !== "linux") return null;
+  let current = directory;
+  for (;;) {
+    try {
+      return Number(statfsSync(current).type);
+    } catch {
+      const parent = path.dirname(current);
+      if (parent === current) return null;
+      current = parent;
+    }
+  }
+}
+
 export function hookSpoolCandidates(args: {
   env: NodeJS.ProcessEnv;
+  filesystemType?: (directory: string) => number | null;
   home: string;
   tmpDir: string;
 }): string[] {
@@ -53,13 +77,21 @@ export function hookSpoolCandidates(args: {
     candidates.push(runtimeDir);
   }
   candidates.push(path.join(args.home, ".bb", "native-terminals", "hooks"));
-  return [...new Set(candidates)];
+  const unique = [...new Set(candidates)];
+  const typeOf = args.filesystemType ?? filesystemTypeOf;
+  const isNetwork = (directory: string): boolean => {
+    const type = typeOf(directory);
+    return type !== null && NETWORK_FILESYSTEM_TYPES.has(type);
+  };
+  return [
+    ...unique.filter((directory) => !isNetwork(directory)),
+    ...unique.filter(isNetwork),
+  ];
 }
 
 export function openHookSpool(
   candidates: readonly string[],
   label: string,
-  onUnsupported: () => void,
   supportsLinks: (directory: string) => boolean = hookSpoolSupportsLinks,
 ): string | null {
   for (const parent of candidates) {
@@ -73,8 +105,58 @@ export function openHookSpool(
     if (supportsLinks(directory)) return directory;
     removeHookSpool(directory);
   }
-  onUnsupported();
   return null;
+}
+
+export function openHookAppendFile(
+  candidates: readonly string[],
+  label: string,
+): { directory: string; file: string } | null {
+  for (const parent of candidates) {
+    let directory: string;
+    try {
+      mkdirSync(parent, { mode: 0o700, recursive: true });
+      directory = createHookSpool(parent, label);
+    } catch {
+      continue;
+    }
+    const file = path.join(directory, "hooks.jsonl");
+    try {
+      closeSync(openSync(file, "wx", 0o600));
+      return { directory, file };
+    } catch {
+      removeHookSpool(directory);
+    }
+  }
+  return null;
+}
+
+export type HookSource =
+  | string
+  | { appendFile: string }
+  | { unavailable: true }
+  | null;
+
+export interface HookCapture {
+  directory: string | null;
+  source: Exclude<HookSource, null>;
+}
+
+export function openHookCapture(
+  candidates: readonly string[],
+  label: string,
+  events: { appendFallback(): void; unsupported(): void },
+  supportsLinks: (directory: string) => boolean = hookSpoolSupportsLinks,
+): HookCapture {
+  const spool = openHookSpool(candidates, label, supportsLinks);
+  if (spool !== null) return { directory: spool, source: spool };
+  const append = openHookAppendFile(candidates, label);
+  if (append !== null) {
+    events.appendFallback();
+    return { directory: append.directory, source: { appendFile: append.file } };
+  }
+  events.unsupported();
+  return { directory: null, source: { unavailable: true } };
 }
 
 export function hookSpoolSupportsLinks(directory: string): boolean {
@@ -115,6 +197,16 @@ export function hookSpoolCommand(directory: string): string {
   ].join("; ");
 }
 
+export function hookAppendCommand(file: string): string {
+  return `{ cat; echo; } >> ${shellQuote(file)} 2>/dev/null; exit 0`;
+}
+
+export function hookCommandFor(target: string | { appendFile: string }): string {
+  return typeof target === "string"
+    ? hookSpoolCommand(target)
+    : hookAppendCommand(target.appendFile);
+}
+
 export interface HookSpoolRead {
   records: unknown[];
   unreadable: number;
@@ -124,6 +216,7 @@ export class HookSpoolReader {
   private next = 1;
   private lastScanAt = 0;
   private gapSince: number | null = null;
+  private gapCounted = false;
   private readonly skipped: Array<{ from: number; to: number }> = [];
   private readonly reportedLate = new Set<string>();
   private readonly reportedTemps = new Set<string>();
@@ -198,14 +291,30 @@ export class HookSpoolReader {
     }
     if (firstBeyondGap === null) {
       this.gapSince = null;
+      this.gapCounted = false;
       return lost;
     }
     this.gapSince ??= now;
     if (now - this.gapSince >= GAP_REPORT_AFTER_MS) {
-      this.skipped.push({ from: this.next, to: firstBeyondGap });
-      this.next = firstBeyondGap;
-      this.gapSince = null;
-      lost += 1;
+      const from = this.next;
+      let outcome: ReturnType<typeof reserveSequence> = "reserved";
+      while (
+        this.next < firstBeyondGap &&
+        this.next - from < MAX_RESERVATIONS_PER_SCAN
+      ) {
+        outcome = reserveSequence(this.directory, this.next);
+        if (outcome !== "reserved") break;
+        this.next += 1;
+      }
+      if (this.next > from) this.skipped.push({ from, to: this.next });
+      if ((this.next > from || outcome === "failed") && !this.gapCounted) {
+        this.gapCounted = true;
+        lost += 1;
+      }
+      if (this.next >= firstBeyondGap) {
+        this.gapSince = null;
+        this.gapCounted = false;
+      }
     }
     return lost;
   }
@@ -245,6 +354,22 @@ export class HookSpoolReader {
   }
 }
 
+export function reserveSequence(
+  directory: string,
+  sequence: number,
+): "reserved" | "present" | "failed" {
+  try {
+    closeSync(
+      openSync(path.join(directory, sequenceName(sequence)), "wx", 0o600),
+    );
+    return "reserved";
+  } catch (error) {
+    return error instanceof Error && "code" in error && error.code === "EEXIST"
+      ? "present"
+      : "failed";
+  }
+}
+
 function isOwnedDirectory(directory: string): boolean {
   try {
     const stats = statSync(directory);
@@ -255,6 +380,70 @@ function isOwnedDirectory(directory: string): boolean {
   } catch {
     return false;
   }
+}
+
+export class HookAppendReader {
+  private offset = 0;
+
+  constructor(private readonly file: string) {}
+
+  read(): HookSpoolRead {
+    const records: unknown[] = [];
+    let unreadable = 0;
+    let descriptor: number;
+    try {
+      descriptor = openSync(this.file, "r");
+    } catch {
+      return { records, unreadable };
+    }
+    try {
+      const length = Math.min(
+        fstatSync(descriptor).size - this.offset,
+        MAX_APPEND_READ_BYTES,
+      );
+      if (length <= 0) return { records, unreadable };
+      const buffer = Buffer.alloc(length);
+      const filled = readSync(descriptor, buffer, 0, length, this.offset);
+      const text = buffer.subarray(0, filled);
+      const end = text.lastIndexOf(0x0a);
+      if (end < 0) {
+        if (filled >= MAX_APPEND_READ_BYTES) {
+          this.offset += filled;
+          unreadable += 1;
+        }
+        return { records, unreadable };
+      }
+      this.offset += end + 1;
+      for (const line of text.subarray(0, end).toString("utf8").split("\n")) {
+        if (line.trim().length === 0) continue;
+        try {
+          records.push(JSON.parse(line));
+        } catch {
+          unreadable += 1;
+        }
+      }
+    } catch {
+      return { records, unreadable };
+    } finally {
+      closeSync(descriptor);
+    }
+    return { records, unreadable };
+  }
+}
+
+export interface HookRecordSource {
+  read(now?: number): HookSpoolRead;
+}
+
+export function hookRecordSource(source: HookSource): HookRecordSource | null {
+  if (source === null) return null;
+  if (typeof source === "string") return new HookSpoolReader(source);
+  if ("appendFile" in source) return new HookAppendReader(source.appendFile);
+  return null;
+}
+
+export function hookSourceIsUnavailable(source: HookSource): boolean {
+  return source !== null && typeof source === "object" && "unavailable" in source;
 }
 
 function isMissing(error: unknown): boolean {

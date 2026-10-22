@@ -2845,3 +2845,65 @@ describe("a rotated session is followed only after its binding is accepted", () 
     },
   );
 });
+
+describe("NativeActivityReader without any hook capture", () => {
+  function transcriptOnlyReader(source: string | { unavailable: true }) {
+    const host = createFakePluginHost({ pluginId: "provider-claude-code" });
+    claudeCodePlugin(host.bb);
+    const cli = host.harness.registrations.providerRegistrations.find(
+      (entry) => entry.id === "claude-code",
+    )?.experimental_nativeTerminal;
+    if (cli === undefined) throw new Error("Claude native declaration missing");
+    const home = tempHome();
+    const dir = path.join(home, ".claude", "projects", "work");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      path.join(dir, `${SESSION_ID}.jsonl`),
+      jsonl([
+        {
+          type: "user",
+          uuid: "user-1",
+          parentUuid: null,
+          promptId: "turn-1",
+          origin: { kind: "human" },
+          message: { content: "first prompt" },
+          timestamp: "2026-10-11T10:00:01.000Z",
+        },
+        {
+          type: "assistant",
+          isSidechain: false,
+          uuid: "answer-1",
+          parentUuid: "user-1",
+          message: {
+            id: "message-1",
+            content: [{ type: "text", text: "first answer" }],
+          },
+          timestamp: "2026-10-11T10:00:02.000Z",
+        },
+      ]),
+    );
+    if (typeof source === "string") mkdirSync(source, { recursive: true });
+    return new NativeActivityReader(cli, { HOME: home }, source, {
+      kind: "start",
+      id: SESSION_ID,
+    });
+  }
+
+  it("control: with a working capture the same transcript shows Working", () => {
+    const reader = transcriptOnlyReader(path.join(tempHome(), "spool"));
+    expect(
+      reader.read().some((report) => report.state === "working"),
+    ).toBe(true);
+  });
+
+  it("never shows Working or heartbeats when hook history is permanently unavailable, so the thread shows Activity not reported", () => {
+    const reader = transcriptOnlyReader({ unavailable: true });
+    expect(
+      reader.read().some((report) => report.state === "working"),
+    ).toBe(false);
+    expect(reader.heartbeat()).toBeNull();
+    expect(reader.read().some((report) => report.state === "working")).toBe(
+      false,
+    );
+  });
+});
