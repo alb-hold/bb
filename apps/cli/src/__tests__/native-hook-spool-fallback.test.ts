@@ -36,11 +36,11 @@ function groupAndOtherBits(directory: string): number {
   return process.platform === "win32" ? 0 : statSync(directory).mode & 0o077;
 }
 
-function refuseLinksUnder(
-  refused: string,
-): (directory: string) => boolean {
+function refuseLinksUnder(refused: string): (directory: string) => boolean {
   return (directory) =>
-    path.dirname(directory) === refused ? false : hookSpoolSupportsLinks(directory);
+    path.dirname(directory) === refused
+      ? false
+      : hookSpoolSupportsLinks(directory);
 }
 
 describe("choosing where the hook spool lives", () => {
@@ -109,9 +109,9 @@ describe("choosing where the hook spool lives", () => {
       homeHooks,
       "/tmp",
     ]);
-    expect(rank({ "/tmp": SMB2, [runtime]: NINE_P, [homeHooks]: ext4 })).toEqual(
-      [homeHooks, "/tmp", runtime],
-    );
+    expect(
+      rank({ "/tmp": SMB2, [runtime]: NINE_P, [homeHooks]: ext4 }),
+    ).toEqual([homeHooks, "/tmp", runtime]);
     expect(rank({ "/tmp": ext4, [runtime]: ext4, [homeHooks]: NFS })).toEqual([
       "/tmp",
       runtime,
@@ -161,7 +161,10 @@ describe("choosing where the hook spool lives", () => {
     const blocker = path.join(base, "blocker");
     writeFileSync(blocker, "");
     const created = path.join(base, ".bb", "native-terminals", "hooks");
-    const spool = openHookSpool([path.join(blocker, "child"), created], "thread");
+    const spool = openHookSpool(
+      [path.join(blocker, "child"), created],
+      "thread",
+    );
     expect(path.dirname(spool ?? "")).toBe(created);
     expect(groupAndOtherBits(created)).toBe(0);
   });
@@ -214,8 +217,16 @@ describe("choosing how hook events are captured", () => {
   it("uses a private append file as the last resort when every link probe fails, and logs the fallback once", () => {
     const [first, second] = [root(), root()];
     const { calls, events } = record();
-    const capture = openHookCapture([first, second], "thread", events, () => false);
-    if (typeof capture.source !== "object" || !("appendFile" in capture.source)) {
+    const capture = openHookCapture(
+      [first, second],
+      "thread",
+      events,
+      () => false,
+    );
+    if (
+      typeof capture.source !== "object" ||
+      !("appendFile" in capture.source)
+    ) {
       throw new Error("expected the append fallback");
     }
     expect(path.dirname(path.dirname(capture.source.appendFile))).toBe(first);

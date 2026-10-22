@@ -731,7 +731,9 @@ describe("overflow, answer, then no resumed activity through the real reader, re
       ?.runtime.nativeActivity;
   };
 
-  async function overflowedAndAsked(options: { holdFirstClose?: boolean } = {}) {
+  async function overflowedAndAsked(
+    options: { holdFirstClose?: boolean } = {},
+  ) {
     const { harness, thread } = await nativeThread();
     const h = discoveredHolder(harness, thread.id, options);
     h.hook([
@@ -821,8 +823,10 @@ describe("overflow, answer, then no resumed activity through the real reader, re
       ).toHaveLength(1);
       h.hook([permission("Write")]);
       await h.forward();
-      const evidenceAfterB = getNativeTerminalThread(harness.db, thread.id)
-        ?.lastEvidenceAt;
+      const evidenceAfterB = getNativeTerminalThread(
+        harness.db,
+        thread.id,
+      )?.lastEvidenceAt;
       return { evidenceAfterB, h, harness, thread };
     }
 
@@ -1061,7 +1065,9 @@ describe.skipIf(process.platform === "win32")(
       const spool = spoolModule.createHookSpool(os.tmpdir(), "delivery-test");
       roots.push(spool);
       const capture =
-        mode === "spool" ? spool : { appendFile: path.join(spool, "hooks.jsonl") };
+        mode === "spool"
+          ? spool
+          : { appendFile: path.join(spool, "hooks.jsonl") };
       if (typeof capture !== "string") writeFileSync(capture.appendFile, "");
       const settings: {
         hooks: Record<string, { hooks: { command: string }[] }[]>;
@@ -1114,9 +1120,7 @@ describe.skipIf(process.platform === "win32")(
       const { deliver, harness, runHook, thread } = await prepared();
       const big = "z".repeat(512 * 1024);
       const tools = Array.from({ length: count }, (_, index) => `Tool${index}`);
-      await Promise.all(
-        tools.map((tool, index) => runHook(tool, index, big)),
-      );
+      await Promise.all(tools.map((tool, index) => runHook(tool, index, big)));
       await deliver();
       return { harness, thread, tools };
     }
@@ -1189,4 +1193,3 @@ describe.skipIf(process.platform === "win32")(
     });
   },
 );
-

@@ -291,7 +291,8 @@ function claudeFixture(
     dir,
     transcript,
     hook: (records: unknown[]) =>
-      publishHooks(events,
+      publishHooks(
+        events,
         jsonl(
           records.map((record) => ({
             session_id: SESSION_ID,
@@ -824,7 +825,8 @@ describe("NativeActivityReader", () => {
       undefined,
       (reason) => diagnostics.push(reason),
     );
-    publishHooks(events,
+    publishHooks(
+      events,
       jsonl([
         {
           hook_event_name: "UserPromptSubmit",
@@ -851,7 +853,8 @@ describe("NativeActivityReader", () => {
         },
       ]),
     );
-    publishHooks(events,
+    publishHooks(
+      events,
       jsonl([
         {
           hook_event_name: "UserPromptSubmit",
@@ -880,7 +883,8 @@ describe("NativeActivityReader", () => {
         },
       ]),
     );
-    publishHooks(events,
+    publishHooks(
+      events,
       jsonl([
         {
           hook_event_name: "UserPromptSubmit",
@@ -892,7 +896,8 @@ describe("NativeActivityReader", () => {
     expect(reader.read()).toEqual([{ state: "working", prompt: null }]);
     expect(Reflect.get(reader, "currentTurn")).toBe("fresh-bound-turn");
     expect(Reflect.get(reader, "unconfirmedTranscriptOffset")).toBeNull();
-    publishHooks(events,
+    publishHooks(
+      events,
       jsonl([
         {
           hook_event_name: "PermissionRequest",
@@ -902,7 +907,8 @@ describe("NativeActivityReader", () => {
       ]),
     );
     expect(reader.read()).toEqual([]);
-    publishHooks(events,
+    publishHooks(
+      events,
       jsonl([
         {
           hook_event_name: "UserPromptSubmit",
@@ -916,7 +922,8 @@ describe("NativeActivityReader", () => {
       { state: "working", prompt: "bound prompt" },
     ]);
     expect(Reflect.get(reader, "currentTurn")).toBe("bound-turn");
-    publishHooks(events,
+    publishHooks(
+      events,
       jsonl([
         {
           hook_event_name: "PermissionRequest",
@@ -928,7 +935,8 @@ describe("NativeActivityReader", () => {
     expect(reader.read()).toEqual([
       { state: "waiting", prompt: null, questions: expect.any(Array) },
     ]);
-    publishHooks(events,
+    publishHooks(
+      events,
       jsonl([
         {
           hook_event_name: "PostToolUse",
@@ -952,7 +960,8 @@ describe("NativeActivityReader", () => {
             /^permission:Bash#[0-9a-f]{16}\.1$/u.test(id),
         ),
     ).toBe(true);
-    publishHooks(events,
+    publishHooks(
+      events,
       jsonl([
         {
           hook_event_name: "UserPromptSubmit",
@@ -969,7 +978,8 @@ describe("NativeActivityReader", () => {
       state: "working",
       prompt: null,
     });
-    publishHooks(events,
+    publishHooks(
+      events,
       jsonl([
         {
           hook_event_name: "Stop",
@@ -2418,7 +2428,8 @@ describe("NativeActivityReader", () => {
       events,
       { kind: "start", id: SESSION_ID },
     );
-    publishHooks(events,
+    publishHooks(
+      events,
       jsonl([
         { hook_event_name: "UserPromptSubmit", prompt: "fix the build" },
         { hook_event_name: "Stop" },
@@ -2431,13 +2442,15 @@ describe("NativeActivityReader", () => {
     ]);
     publishHooks(events, jsonl([{ hook_event_name: "PreToolUse" }]));
     expect(reader.read()).toEqual([{ state: "working", prompt: null }]);
-    publishHooks(events,
+    publishHooks(
+      events,
       jsonl(
         Array.from({ length: 100 }, () => ({ hook_event_name: "PreToolUse" })),
       ),
     );
     expect(reader.read()).toEqual([]);
-    publishHooks(events,
+    publishHooks(
+      events,
       jsonl([{ hook_event_name: "Stop", stop_hook_active: true }]),
     );
     expect(reader.read()).toEqual([{ state: "idle", prompt: null }]);
@@ -2891,16 +2904,16 @@ describe("NativeActivityReader without any hook capture", () => {
 
   it("control: with a working capture the same transcript shows Working", () => {
     const reader = transcriptOnlyReader(path.join(tempHome(), "spool"));
-    expect(
-      reader.read().some((report) => report.state === "working"),
-    ).toBe(true);
+    expect(reader.read().some((report) => report.state === "working")).toBe(
+      true,
+    );
   });
 
   it("never shows Working or heartbeats when hook history is permanently unavailable, so the thread shows Activity not reported", () => {
     const reader = transcriptOnlyReader({ unavailable: true });
-    expect(
-      reader.read().some((report) => report.state === "working"),
-    ).toBe(false);
+    expect(reader.read().some((report) => report.state === "working")).toBe(
+      false,
+    );
     expect(reader.heartbeat()).toBeNull();
     expect(reader.read().some((report) => report.state === "working")).toBe(
       false,
