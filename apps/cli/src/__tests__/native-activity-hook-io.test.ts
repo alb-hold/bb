@@ -1,6 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import {
   appendFileSync,
+  mkdirSync,
   readdirSync,
   readFileSync,
   rmSync,
@@ -16,6 +17,7 @@ import { NativeActivityReader } from "../native-activity-reader.js";
 import {
   createHookSpool,
   HookAppendReader,
+  hookAppendCommand,
   HookSpoolReader,
   removeHookSpool,
   reserveSequence,
@@ -525,8 +527,18 @@ describe.skipIf(process.platform === "win32")(
         undefined,
         (reason, total) => unconfirmed.push({ reason, total }),
       );
-      return { commandFor, file, reader, unconfirmed };
+      return {
+        commandFor,
+        directory,
+        file,
+        lock: path.join(directory, "hooks.lock"),
+        reader,
+        unconfirmed,
+      };
     }
+
+    const markers = (directory: string): string[] =>
+      readdirSync(directory).filter((name) => name.startsWith(".tmp."));
 
     it("delivers Needs input through the append file: the opener reaches the reader as a waiting question", async () => {
       const { commandFor, reader } = appendFixture();
@@ -543,6 +555,116 @@ describe.skipIf(process.platform === "win32")(
           ? last.questions.map((question) => question.prompt)
           : [],
       ).toEqual(["Claude Code needs permission to use: Bash"]);
+    });
+
+    it("serializes concurrent appenders: 1 MiB records and the empty-array shape arrive whole and in file order, with no marker left behind", async () => {
+      const { commandFor, directory, file } = appendFixture();
+      const command = commandFor("PermissionRequest");
+      const big = "z".repeat(1024 * 1024);
+      const tools = Array.from({ length: 8 }, (_, index) => `Tool${index}`);
+      await Promise.all(
+        tools.map((tool, index) =>
+          runWhole(
+            command,
+            record("PermissionRequest", {
+              permission_suggestions: [],
+              tool_input: { content: index % 2 === 0 ? big : "small" },
+              tool_name: tool,
+            }),
+          ),
+        ),
+      );
+      const lines = readFileSync(file, "utf8").split("\n").filter(Boolean);
+      expect(lines).toHaveLength(tools.length);
+      const read = new HookAppendReader(file).read();
+      expect(read.unreadable).toBe(0);
+      expect(read.records.map(toolOf)).toEqual(
+        lines.map((line) => toolOf(JSON.parse(line))),
+      );
+      expect([...read.records.map(toolOf)].sort()).toEqual([...tools].sort());
+      expect(markers(directory)).toEqual([]);
+      expect(readdirSync(directory).includes("hooks.lock")).toBe(false);
+    });
+
+    it("makes a hook wait for a held lock, and appends once the lock is released", async () => {
+      const { commandFor, directory, file, lock } = appendFixture();
+      mkdirSync(lock);
+      const waiting = startHook(commandFor("PermissionRequest"));
+      waiting.child.stdin.end(
+        record("PermissionRequest", { tool_name: "Held" }),
+      );
+      await until(() => markers(directory).length === 1, "the hook marker");
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      expect(statSync(file).size).toBe(0);
+      rmSync(lock, { recursive: true });
+      await waiting.exited;
+      expect(new HookAppendReader(file).read().records.map(toolOf)).toEqual([
+        "Held",
+      ]);
+      expect(markers(directory)).toEqual([]);
+    });
+
+    it("breaks a stale lock by rename-then-remove, counts it once, leaves a fresh lock alone, and lets the next hook append", async () => {
+      const { commandFor, directory, file, lock } = appendFixture();
+      mkdirSync(lock);
+      const reader = new HookAppendReader(file);
+      const start = Date.now();
+      expect(reader.read(start)).toEqual({ records: [], unreadable: 0 });
+      expect(readdirSync(directory)).toContain("hooks.lock");
+      expect(reader.read(start + 11_000)).toEqual({
+        records: [],
+        unreadable: 1,
+      });
+      expect(readdirSync(directory).filter((name) => name.startsWith("hooks.lock")))
+        .toEqual([]);
+      expect(reader.read(start + 14_000).unreadable).toBe(0);
+      await runWhole(
+        commandFor("PermissionRequest"),
+        record("PermissionRequest", { tool_name: "After" }),
+      );
+      expect(reader.read(start + 16_000).records.map(toolOf)).toEqual(["After"]);
+    });
+
+    it("gives up after a bounded spin on a lock that stays held, leaving a marker that is counted once as lost evidence", async () => {
+      const { directory, file, lock } = appendFixture();
+      mkdirSync(lock);
+      await runWhole(
+        hookAppendCommand(file, 20),
+        record("PermissionRequest", { tool_name: "Never" }),
+      );
+      expect(statSync(file).size).toBe(0);
+      expect(markers(directory)).toHaveLength(1);
+      const reader = new HookAppendReader(file);
+      const start = Date.now();
+      expect(reader.read(start).unreadable).toBe(1);
+      expect(reader.read(start + 3_000).unreadable).toBe(0);
+    });
+
+    it("counts a hook killed before it appended as lost evidence, and withholds Working until the next prompt", async () => {
+      const { commandFor, directory, reader, unconfirmed } = appendFixture();
+      const dying = startHook(commandFor("PermissionRequest"));
+      dying.child.stdin.write(`{"hook_event_name":"PermissionRequest"`);
+      await until(() => markers(directory).length === 1, "the hook marker");
+      dying.child.kill("SIGKILL");
+      await dying.exited;
+
+      expect(reader.read()).toEqual([]);
+      expect(unconfirmed).toEqual([{ reason: "unreadable-record", total: 1 }]);
+      expect(reader.heartbeat()).toBeNull();
+
+      await runWhole(
+        commandFor("PreToolUse"),
+        record("PreToolUse", { tool_name: "Read" }),
+      );
+      expect(reader.read()).toEqual([]);
+      expect(reader.heartbeat()).toBeNull();
+
+      await runWhole(
+        commandFor("UserPromptSubmit"),
+        record("UserPromptSubmit", { prompt: "next" }),
+      );
+      expect(reader.read()).toEqual([{ prompt: "next", state: "working" }]);
+      expect(reader.heartbeat()).toEqual({ prompt: null, state: "working" });
     });
 
     it("waits for the end of a line and reads records in order", async () => {
@@ -567,28 +689,33 @@ describe.skipIf(process.platform === "win32")(
       expect(reader.read()).toEqual({ records: [], unreadable: 0 });
     });
 
-    it("counts an unreadable line as lost evidence: a killed hook leaves a torn line, no Working or heartbeat until the next prompt", async () => {
-      const { commandFor, file, reader, unconfirmed } = appendFixture();
-      const dying = startHook(commandFor("PermissionRequest"));
-      dying.child.stdin.write(`{"hook_event_name":"PermissionRequest"`);
-      await until(() => statSync(file).size > 0, "the torn bytes");
-      dying.child.kill("SIGKILL");
-      await dying.exited;
-      await runWhole(
-        commandFor("PreToolUse"),
-        record("PreToolUse", { tool_name: "Read" }),
-      );
+    it("counts a line that stays incomplete past the threshold once, and still applies it if it completes later", () => {
+      const { file } = appendFixture();
+      const reader = new HookAppendReader(file);
+      const start = Date.now();
+      appendFileSync(file, `{"tool_name":"Slow"`);
+      expect(reader.read(start)).toEqual({ records: [], unreadable: 0 });
+      expect(reader.read(start + 5_000)).toEqual({ records: [], unreadable: 0 });
+      expect(reader.read(start + 11_000)).toEqual({ records: [], unreadable: 1 });
+      expect(reader.read(start + 13_000)).toEqual({ records: [], unreadable: 0 });
+      appendFileSync(file, "}\n");
+      expect(reader.read(start + 14_000)).toEqual({
+        records: [{ tool_name: "Slow" }],
+        unreadable: 0,
+      });
+    });
 
-      expect(reader.read()).toEqual([]);
-      expect(unconfirmed).toEqual([{ reason: "unreadable-record", total: 1 }]);
-      expect(reader.heartbeat()).toBeNull();
-
+    it("counts a dead writer's torn bytes joined by the next record as lost evidence and does not apply either", async () => {
+      const { commandFor, file } = appendFixture();
+      const reader = new HookAppendReader(file);
+      appendFileSync(file, `{"hook_event_name":"PermissionRequest"`);
       await runWhole(
-        commandFor("UserPromptSubmit"),
-        record("UserPromptSubmit", { prompt: "next" }),
+        commandFor("PermissionRequest"),
+        record("PermissionRequest", { tool_name: "Joined" }),
       );
-      expect(reader.read()).toEqual([{ prompt: "next", state: "working" }]);
-      expect(reader.heartbeat()).toEqual({ prompt: null, state: "working" });
+      const read = reader.read();
+      expect(read.records).toEqual([]);
+      expect(read.unreadable).toBe(1);
     });
   },
 );
