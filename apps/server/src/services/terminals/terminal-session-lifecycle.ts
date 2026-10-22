@@ -863,6 +863,7 @@ export class TerminalSessionLifecycle {
     string,
     Array<{ hostId: string; chunks: TerminalOutputChunk[] }>
   >();
+  private readonly activeTerminalReplays = new Map<string, number>();
   private retainedOutputFlushTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(private readonly options: TerminalSessionLifecycleOptions) {
@@ -1900,7 +1901,27 @@ export class TerminalSessionLifecycle {
     this.retainedOutputFlushTimer.unref?.();
   }
 
+  private beginTerminalReplay(terminalSessionId: string): void {
+    this.activeTerminalReplays.set(
+      terminalSessionId,
+      (this.activeTerminalReplays.get(terminalSessionId) ?? 0) + 1,
+    );
+  }
+
+  private finishTerminalReplay(terminalSessionId: string): void {
+    const active = this.activeTerminalReplays.get(terminalSessionId);
+    if (active === undefined || active <= 1) {
+      this.activeTerminalReplays.delete(terminalSessionId);
+      if (this.pendingRetainedOutput.has(terminalSessionId)) {
+        this.scheduleRetainedOutputFlush();
+      }
+      return;
+    }
+    this.activeTerminalReplays.set(terminalSessionId, active - 1);
+  }
+
   private flushRetainedOutput(terminalSessionId: string): void {
+    if (this.activeTerminalReplays.has(terminalSessionId)) return;
     const batches = this.pendingRetainedOutput.get(terminalSessionId);
     if (batches === undefined) return;
     this.pendingRetainedOutput.delete(terminalSessionId);
@@ -2901,6 +2922,24 @@ export class TerminalSessionLifecycle {
     };
     if (!isOwned(replaySession)) return;
     const current = replaySession;
+    if (current) {
+      this.beginTerminalReplay(current.id);
+      return this.handleTerminalReplayWork(
+        args,
+        replaySession,
+        replayOffset,
+      ).finally(() => this.finishTerminalReplay(current.id));
+    }
+    return this.handleTerminalReplayWork(args, replaySession, replayOffset);
+  }
+
+  private async handleTerminalReplayWork(
+    args: HandleDaemonTerminalMessageArgs & { message: TerminalReplayMessage },
+    replaySession: TerminalSessionRow | null,
+    replayOffset: number,
+  ): Promise<void> {
+    const sourceMessage = args.message;
+    const current = replaySession;
     const pendingBatches = current
       ? (this.pendingRetainedOutput.get(current.id) ?? []).map((batch) => ({
           batch,
@@ -3013,42 +3052,6 @@ export class TerminalSessionLifecycle {
       }
     }
 
-    if (current) {
-      let hasUnpersistedPendingChunks: boolean;
-      do {
-        hasUnpersistedPendingChunks = false;
-        for (const batch of this.pendingRetainedOutput.get(current.id) ?? []) {
-          if (batch.hostId !== current.hostId) continue;
-          const persisted = persistedPendingChunks.get(batch) ?? new Set();
-          if (!persistedPendingChunks.has(batch)) {
-            persistedPendingChunks.set(batch, persisted);
-          }
-          for (const chunk of [...batch.chunks]) {
-            if (persisted.has(chunk)) continue;
-            prepareChunk(chunk);
-            persisted.add(chunk);
-            hasUnpersistedPendingChunks = true;
-            if (
-              preparedBytes >= TERMINAL_REPLAY_PREPARE_BYTES_PER_TICK ||
-              preparedChunks >= 256
-            ) {
-              await yieldToEventLoop();
-              if (!stillOwned()) return;
-              preparedBytes = 0;
-              preparedChunks = 0;
-            }
-          }
-        }
-      } while (
-        hasUnpersistedPendingChunks &&
-        [...(this.pendingRetainedOutput.get(current.id) ?? [])].some((batch) =>
-          batch.chunks.some(
-            (chunk) => !persistedPendingChunks.get(batch)?.has(chunk),
-          ),
-        )
-      );
-    }
-
     const retainedTail = retainedChunks.slice(retainedTailStart);
     if (current && retainedTail.length > 0) {
       runEventLoopWorkSync("ws:daemon terminal.replay append-retained", () => {
@@ -3059,13 +3062,16 @@ export class TerminalSessionLifecycle {
           clock: Date.now,
         });
       });
-      const remaining = this.pendingRetainedOutput.get(current.id)?.flatMap((batch) => {
-        const persisted = persistedPendingChunks.get(batch);
-        if (!persisted) return [batch];
-        batch.chunks = batch.chunks.filter((chunk) => !persisted.has(chunk));
-        return batch.chunks.length > 0 ? [batch] : [];
-      });
-      if (remaining?.length) this.pendingRetainedOutput.set(current.id, remaining);
+      const remaining = this.pendingRetainedOutput
+        .get(current.id)
+        ?.flatMap((batch) => {
+          const persisted = persistedPendingChunks.get(batch);
+          if (!persisted) return [batch];
+          batch.chunks = batch.chunks.filter((chunk) => !persisted.has(chunk));
+          return batch.chunks.length > 0 ? [batch] : [];
+        });
+      if (remaining?.length)
+        this.pendingRetainedOutput.set(current.id, remaining);
       else this.pendingRetainedOutput.delete(current.id);
     }
 

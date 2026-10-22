@@ -1,4 +1,5 @@
 import { Socket } from "node:net";
+import { setTimeout as delay } from "node:timers/promises";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   appendRetainedTerminalOutputChunks,
@@ -8,6 +9,7 @@ import {
   listTerminalSessions,
   pruneRetainedTerminalOutput,
 } from "@bb/db";
+import { createDaemonSocketMessageQueue } from "../../ws/daemon-protocol.js";
 import { createTerminalGridMarker } from "@bb/domain";
 import { createMigratedConnection } from "@bb/db/testing";
 import { takeEventLoopWorkWindowSnapshot } from "../system/event-loop-work.js";
@@ -182,17 +184,139 @@ async function setup(args: { holdOutputBatches?: boolean } = {}) {
 }
 
 describe("terminal output retained from the data plane", () => {
-  it("keeps data-plane output recorded during a replay yield without waiting for the flush timer", async () => {
+  it("bounds replay catch-up while preserving output arriving at every yield and a queued daemon message", async () => {
     const fixture = await setup();
-    fixture.terminalSessions.recordDirectTerminalOutputBatch({
-      daemonSessionId: fixture.session.id,
-      terminalId: fixture.terminal.id,
-      chunks: [
-        { seq: 0, dataBase64: Buffer.from("before replay").toString("base64") },
-      ],
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const queue = createDaemonSocketMessageQueue<() => void | Promise<void>>({
+      handle: (message) => message(),
+      onError: (error) => {
+        throw error;
+      },
     });
+    queue.release();
+    let replayFinished = false;
+    let producerActive = true;
+    try {
+      let producerRounds = 0;
+      let queuedMessageProcessed = false;
+      let resolveQueuedMessage!: () => void;
+      const queuedMessage = new Promise<void>((resolve) => {
+        resolveQueuedMessage = resolve;
+      });
+      const replayChunks = Array.from({ length: 2_048 }, (_, seq) => ({
+        seq,
+        dataBase64: Buffer.from("r").toString("base64"),
+      }));
+      queue.enqueue(() =>
+        Promise.resolve(
+          fixture.terminalSessions.handleDaemonTerminalMessage({
+            hostId: fixture.host.id,
+            sessionId: fixture.session.id,
+            message: {
+              type: "terminal.replay",
+              requestId: "bounded-concurrent-replay",
+              terminalId: fixture.terminal.id,
+              replayStartSeq: 0,
+              nextSeq: replayChunks.length,
+              chunks: replayChunks,
+            },
+          }),
+        ).then(() => {
+          replayFinished = true;
+        }),
+      );
+      queue.enqueue(() => {
+        return Promise.resolve(
+          fixture.terminalSessions.handleDaemonTerminalMessage({
+            hostId: fixture.host.id,
+            sessionId: fixture.session.id,
+            message: {
+              type: "terminal.output",
+              terminalId: fixture.terminal.id,
+              chunk: {
+                seq: 1_000_000,
+                dataBase64: Buffer.from("q").toString("base64"),
+              },
+            },
+          }),
+        ).then(() => {
+          queuedMessageProcessed = true;
+          resolveQueuedMessage();
+        });
+      });
+
+      const produceAtReplayYields = () => {
+        if (!producerActive || replayFinished) return;
+        producerRounds += 1;
+        const firstSeq = 100_000 + (producerRounds - 1) * 257;
+        fixture.terminalSessions.recordDirectTerminalOutputBatch({
+          daemonSessionId: fixture.session.id,
+          terminalId: fixture.terminal.id,
+          chunks: Array.from({ length: 257 }, (_, offset) => ({
+            seq: firstSeq + offset,
+            dataBase64: Buffer.from(offset === 256 ? "x" : "").toString(
+              "base64",
+            ),
+          })),
+        });
+        setImmediate(produceAtReplayYields);
+      };
+      setImmediate(produceAtReplayYields);
+
+      const completedWithinBound = await Promise.race([
+        queuedMessage.then(() => true),
+        delay(1_000).then(() => false),
+      ]);
+      producerActive = false;
+      if (!completedWithinBound) {
+        await Promise.race([queuedMessage, delay(5_000)]);
+      }
+
+      expect(completedWithinBound).toBe(true);
+      expect(queuedMessageProcessed).toBe(true);
+      expect(producerRounds).toBeGreaterThan(1);
+      await vi.advanceTimersByTimeAsync(1_000);
+      const retained = getRetainedTerminalOutput(fixture.db, {
+        hostId: fixture.host.id,
+        terminalSessionId: fixture.terminal.id,
+        now: Date.now(),
+      });
+      const retainedSeqs = retained?.map(({ seq }) => seq) ?? [];
+      const expectedSeqs = [
+        ...replayChunks.map(({ seq }) => seq),
+        ...Array.from(
+          { length: producerRounds * 257 },
+          (_, index) => 100_000 + index,
+        ),
+        1_000_000,
+      ];
+      expect(retainedSeqs).toEqual(expectedSeqs);
+      expect(new Set(retainedSeqs).size).toBe(retainedSeqs.length);
+      expect(
+        retained?.filter(({ dataBase64 }) => dataBase64 === "eA==").length,
+      ).toBe(producerRounds);
+    } finally {
+      producerActive = false;
+      queue.close();
+      vi.useRealTimers();
+      fixture.child.shutdown();
+    }
+  }, 10_000);
+
+  it("persists data-plane output recorded during replay on the post-replay flush", async () => {
+    const fixture = await setup();
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     try {
+      fixture.terminalSessions.recordDirectTerminalOutputBatch({
+        daemonSessionId: fixture.session.id,
+        terminalId: fixture.terminal.id,
+        chunks: [
+          {
+            seq: 0,
+            dataBase64: Buffer.from("before replay").toString("base64"),
+          },
+        ],
+      });
       const chunks = Array.from({ length: 2_048 }, (_, index) => ({
         seq: index + 1,
         dataBase64: Buffer.from(`replay-${index}`).toString("base64"),
@@ -235,6 +359,7 @@ describe("terminal output retained from the data plane", () => {
       await Promise.resolve(replay).finally(() => {
         replayFinished = true;
       });
+      await vi.advanceTimersByTimeAsync(1_000);
       const retained = getRetainedTerminalOutput(fixture.db, {
         hostId: fixture.host.id,
         terminalSessionId: fixture.terminal.id,
@@ -320,7 +445,9 @@ describe("terminal output retained from the data plane", () => {
         now: Date.now(),
       });
       expect(writesAfterTimer).toBe(writesAfterReplay);
-      expect(retainedAfterTimer?.map(({ seq }) => seq)).toEqual(seqsAfterReplay);
+      expect(retainedAfterTimer?.map(({ seq }) => seq)).toEqual(
+        seqsAfterReplay,
+      );
     } finally {
       vi.useRealTimers();
       fixture.child.shutdown();
