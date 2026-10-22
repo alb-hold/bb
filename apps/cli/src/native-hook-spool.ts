@@ -1,12 +1,14 @@
 import {
   closeSync,
   constants,
+  existsSync,
   fstatSync,
   ftruncateSync,
   linkSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
+  opendirSync,
   openSync,
   readdirSync,
   readFileSync,
@@ -26,6 +28,9 @@ const SEQUENCE_NAME = /^\d{12}$/u;
 const TEMP_NAME = /^\.tmp\.(\d+)\./u;
 const MAX_RECORDS_PER_READ = 2_000;
 const SCAN_INTERVAL_MS = 2_000;
+export const SPOOL_SCAN_BATCH = 4_096;
+const MAX_LATE_PROBES_PER_SCAN = 256;
+const FORWARD_PROBE_SPAN = 64;
 const GAP_REPORT_AFTER_MS = 10_000;
 const ABANDONED_TEMP_AGE_MS = 10 * 60_000;
 const MAX_RESERVATIONS_PER_SCAN = 64;
@@ -254,16 +259,68 @@ export interface HookSpoolRead {
   unreadable: number;
 }
 
+export interface DirectoryBatch {
+  done: boolean;
+  names: string[];
+}
+
+export interface DirectoryCursor {
+  close(): void;
+  readBatch(max: number): DirectoryBatch;
+}
+
+export type OpenDirectoryCursor = (directory: string) => DirectoryCursor;
+
+type PathState = "present" | "missing" | "unknown";
+
+type StatPath = (file: string) => PathState;
+
+function openDirectoryCursor(directory: string): DirectoryCursor {
+  const handle = opendirSync(directory);
+  return {
+    close: () => {
+      try {
+        handle.closeSync();
+      } catch {
+        return;
+      }
+    },
+    readBatch: (max) => {
+      const names: string[] = [];
+      while (names.length < max) {
+        const entry = handle.readSync();
+        if (entry === null) return { done: true, names };
+        names.push(entry.name);
+      }
+      return { done: false, names };
+    },
+  };
+}
+
+interface ScanPass {
+  cursor: DirectoryCursor;
+  highest: number;
+}
+
 export class HookSpoolReader {
   private next = 1;
   private lastScanAt = 0;
+  private pass: ScanPass | null = null;
+  private lateAfter = 0;
+  private completedHighest = 0;
+  private gapTarget = 0;
+  private readonly missingCounted = new Set<number>();
   private gapSince: number | null = null;
   private gapCounted = false;
   private readonly skipped: Array<{ from: number; to: number }> = [];
   private readonly reportedLate = new Set<string>();
   private readonly reportedTemps = new Set<string>();
 
-  constructor(private readonly directory: string) {}
+  constructor(
+    private readonly directory: string,
+    private readonly openCursor: OpenDirectoryCursor = openDirectoryCursor,
+    private readonly statPath: StatPath = pathState,
+  ) {}
 
   read(now: number = Date.now()): HookSpoolRead {
     const records: unknown[] = [];
@@ -325,47 +382,129 @@ export class HookSpoolReader {
     return outcome === "irregular" ? 1 : 0;
   }
 
-  private scan(now: number): number {
-    let names: string[];
-    try {
-      names = readdirSync(this.directory);
-    } catch {
-      return 0;
-    }
+  private readHint(): number {
+    const content = readRegularFile(path.join(this.directory, ".hint"));
+    if (content.kind !== "text") return 0;
+    const text = content.text.trim();
+    return /^\d+$/u.test(text) ? Number(text) : 0;
+  }
+
+  private confirmedHint(): number {
+    const hint = this.readHint();
+    if (hint <= this.next) return 0;
+    return existsSync(path.join(this.directory, sequenceName(hint))) ? hint : 0;
+  }
+
+  private probeLate(): number {
+    const origin = this.lateAfter;
     let lost = 0;
-    let firstBeyondGap: number | null = null;
-    const expectedMissing = !names.includes(sequenceName(this.next));
-    for (const name of names) {
-      if (SEQUENCE_NAME.test(name)) {
-        const sequence = Number(name);
-        if (expectedMissing && sequence > this.next) {
-          firstBeyondGap =
-            firstBeyondGap === null
-              ? sequence
-              : Math.min(firstBeyondGap, sequence);
+    let probes = 0;
+    for (const wrapped of [false, true]) {
+      for (const range of this.skipped) {
+        const from = wrapped ? range.from : Math.max(range.from, origin + 1);
+        const to = wrapped ? Math.min(range.to, origin + 1) : range.to;
+        for (let sequence = from; sequence < to; sequence += 1) {
+          if (probes >= MAX_LATE_PROBES_PER_SCAN) return lost;
+          probes += 1;
+          this.lateAfter = sequence;
+          lost += this.settleLate(sequenceName(sequence));
         }
-        lost += this.settleLate(name, sequence);
-        continue;
       }
-      const temp = TEMP_NAME.exec(name);
-      if (temp === null || this.reportedTemps.has(name)) continue;
-      if (isInFlightOrPublished(this.directory, name, Number(temp[1]), now)) {
-        continue;
-      }
-      this.reportedTemps.add(name);
-      lost += 1;
     }
-    if (firstBeyondGap === null) {
+    return lost;
+  }
+
+  private probeForward(): number {
+    for (let offset = 1; offset <= FORWARD_PROBE_SPAN; offset += 1) {
+      const sequence = this.next + offset;
+      if (existsSync(path.join(this.directory, sequenceName(sequence)))) {
+        return sequence;
+      }
+    }
+    return 0;
+  }
+
+  private advancePass(now: number): number {
+    let lost = 0;
+    try {
+      this.pass ??= {
+        cursor: this.openCursor(this.directory),
+        highest: 0,
+      };
+      const batch = this.pass.cursor.readBatch(SPOOL_SCAN_BATCH);
+      for (const name of batch.names) {
+        if (SEQUENCE_NAME.test(name)) {
+          const sequence = Number(name);
+          if (sequence > this.pass.highest) this.pass.highest = sequence;
+          continue;
+        }
+        const temp = TEMP_NAME.exec(name);
+        if (temp === null || this.reportedTemps.has(name)) continue;
+        const state = tempState(this.directory, name, Number(temp[1]), now);
+        if (state !== "dead") continue;
+        this.reportedTemps.add(name);
+        lost += 1;
+      }
+      if (batch.done) {
+        this.pass.cursor.close();
+        this.completedHighest = Math.max(
+          this.completedHighest,
+          this.pass.highest,
+        );
+        this.pass = null;
+      }
+    } catch {
+      this.pass?.cursor.close();
+      this.pass = null;
+    }
+    return lost;
+  }
+
+  private scan(now: number): number {
+    let lost = this.probeLate();
+    lost += this.advancePass(now);
+    let countedMissing = 0;
+    if (this.gapTarget !== 0 && this.next >= this.gapTarget) {
+      this.gapTarget = 0;
+    }
+    for (const counted of this.missingCounted) {
+      if (counted <= this.next) this.missingCounted.delete(counted);
+    }
+    if (this.gapTarget !== 0) {
+      const target = this.gapTarget;
+      const file = path.join(this.directory, sequenceName(target));
+      if (this.statPath(file) === "missing") {
+        this.gapTarget = 0;
+        if (!this.missingCounted.has(target)) {
+          this.missingCounted.add(target);
+          countedMissing = target;
+          lost += 1;
+        }
+      }
+    }
+    const next = path.join(this.directory, sequenceName(this.next));
+    const highest = existsSync(next)
+      ? 0
+      : Math.max(
+          this.gapTarget,
+          this.confirmedHint(),
+          this.completedHighest,
+          this.pass?.highest ?? 0,
+          this.probeForward(),
+        );
+    if (highest <= this.next) {
       this.gapSince = null;
       this.gapCounted = false;
       return lost;
     }
+    if (highest === countedMissing) this.gapCounted = true;
+    this.gapTarget = highest;
     this.gapSince ??= now;
     if (now - this.gapSince >= GAP_REPORT_AFTER_MS) {
       const from = this.next;
       let outcome: ReturnType<typeof reserveSequence> = "reserved";
       while (
-        this.next < firstBeyondGap &&
+        this.next < highest &&
         this.next - from < MAX_RESERVATIONS_PER_SCAN
       ) {
         outcome = reserveSequence(this.directory, this.next);
@@ -377,7 +516,7 @@ export class HookSpoolReader {
         this.gapCounted = true;
         lost += 1;
       }
-      if (this.next >= firstBeyondGap) {
+      if (outcome === "present" || this.next >= highest) {
         this.gapSince = null;
         this.gapCounted = false;
       }
@@ -385,15 +524,8 @@ export class HookSpoolReader {
     return lost;
   }
 
-  private settleLate(name: string, sequence: number): number {
-    if (
-      this.reportedLate.has(name) ||
-      !this.skipped.some(
-        (range) => sequence >= range.from && sequence < range.to,
-      )
-    ) {
-      return 0;
-    }
+  private settleLate(name: string): number {
+    if (this.reportedLate.has(name)) return 0;
     const outcome = truncateRegularFile(
       path.join(this.directory, name),
       null,
@@ -404,6 +536,17 @@ export class HookSpoolReader {
     }
     this.reportedLate.add(name);
     return 1;
+  }
+}
+
+function pathState(file: string): PathState {
+  try {
+    lstatSync(file);
+    return "present";
+  } catch (error) {
+    return error instanceof Error && "code" in error && error.code === "ENOENT"
+      ? "missing"
+      : "unknown";
   }
 }
 
@@ -537,21 +680,30 @@ function lockHolderPid(lock: string, stats: Stats): number | null {
   return /^\d+$/u.test(text.trim()) && Number(text) > 0 ? Number(text) : null;
 }
 
+function tempState(
+  directory: string,
+  name: string,
+  pid: number,
+  now: number,
+): "alive" | "dead" | "published" {
+  let stats: Stats;
+  try {
+    stats = statSync(path.join(directory, name));
+  } catch {
+    return "published";
+  }
+  if (stats.nlink > 1) return "published";
+  if (now - stats.mtimeMs > ABANDONED_TEMP_AGE_MS) return "dead";
+  return processIsAlive(pid) ? "alive" : "dead";
+}
+
 function isInFlightOrPublished(
   directory: string,
   name: string,
   pid: number,
   now: number,
 ): boolean {
-  let stats: Stats;
-  try {
-    stats = statSync(path.join(directory, name));
-  } catch {
-    return true;
-  }
-  if (stats.nlink > 1) return true;
-  if (now - stats.mtimeMs > ABANDONED_TEMP_AGE_MS) return false;
-  return processIsAlive(pid);
+  return tempState(directory, name, pid, now) !== "dead";
 }
 
 function isOwnedDirectory(directory: string): boolean {
