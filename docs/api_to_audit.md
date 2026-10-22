@@ -54,6 +54,57 @@ routes share that server trust boundary.
 cross-client behavior of explicit clearing. The app shortcut uses Alt+Shift+N
 and remains active with terminal focus.
 
+## `sdk.terminals.experimental_surfaces`, `experimental_focus`, `experimental_openBrowser`, and `experimental_layout`
+
+`experimental_surfaces.list({ threadId })` lists thread terminal surfaces with
+stable thread and terminal IDs, title, status, and kind. `experimental_focus({
+terminalId })` opens the owning thread and activates its terminal tab in
+connected app clients, revealing the terminal panel on compact layouts.
+`experimental_openBrowser({ terminalId, url })` uses the same thread-open signal
+and W4B browser panel placement used by terminal links. Clients without an
+in-app browser offer the URL through an Open action instead of creating an
+unavailable browser tab.
+The CLI surfaces are `bb terminal surfaces --thread`, `bb terminal focus`, and
+`bb terminal open-link`. Focus and browser actions return `deliveredClients`,
+the number of open app sockets the request was sent to. Zero means no app was
+available; a positive count does not confirm receipt or application.
+
+Archived threads, unscoped terminals, unknown IDs, and terminals outside the
+target thread fail closed. The app client ignores unknown thread-open fields so
+older clients still navigate to the thread without attempting the new action.
+Audit cross-client broadcast behavior, split placement and compact drawer
+behavior, URL restrictions, and stale/foreign ID failures before stabilizing.
+`experimental_layout.split({ terminalId, side })` splits the terminal into a
+new sidebar pane; `experimental_layout.move({ terminalId, targetTerminalId })`
+moves its tab into the target terminal's pane. The CLI exposes these as
+`bb terminal split` and `bb terminal move`. Layout changes use the same
+sidebar split state as UI operations and persist in local storage. Requests
+return `deliveredClients`, the number of open app sockets the request was sent
+to. This does not confirm receipt or application; pane limits and compact
+layouts are client state.
+
+Audit each split side, pane limits, compact layouts, reload persistence,
+same-thread and stale terminal IDs, and old-client parsing before stabilizing.
+
+## `sdk.terminals.experimental_surfaces`, `experimental_focus`, and `experimental_openBrowser`
+
+`experimental_surfaces.list({ threadId })` lists thread terminal surfaces with
+stable thread and terminal IDs, title, status, and kind. `experimental_focus({
+terminalId })` opens the owning thread and activates its terminal tab in
+connected app clients, revealing the terminal panel on compact layouts.
+`experimental_openBrowser({ terminalId, url })` uses the same thread-open signal
+and W4B browser panel placement used by terminal links. Clients without an
+in-app browser offer the URL through an Open action instead of creating an
+unavailable browser tab.
+The CLI surfaces are `bb terminal surfaces --thread`, `bb terminal focus`, and
+`bb terminal open-link`.
+
+Archived threads, unscoped terminals, unknown IDs, and terminals outside the
+target thread fail closed. The app client ignores unknown thread-open fields so
+older clients still navigate to the thread without attempting the new action.
+Audit cross-client broadcast behavior, split placement and compact drawer
+behavior, URL restrictions, and stale/foreign ID failures before stabilizing.
+
 Plugin Guide surface: `The bb SDK` in
 `plugins/plugin-api-docs/src/surfaces.ts`.
 
@@ -104,6 +155,14 @@ It is experimental because polling interval and backpressure behavior remain
 subject to review. Stabilization requires audit of cancellation, sequence gaps,
 polling load, output retention expiry, and behavior when a terminal or host
 disconnects during iteration.
+
+## `sdk.terminals.experimental_screen`
+
+Reads rendered plain-text rows, cursor position, grid dimensions, and a `complete` boolean by replaying bounded retained terminal output in disposable server-side headless terminals. `complete` is true when the retained output fully determines the visible screen. Without `lines`, it returns the visible grid; with `lines`, it returns up to the last 500 scrollback rows. Selection is client-local and is not included.
+
+Docs: `bb terminal screen` in the terminal guide.
+
+Stabilization requires auditing ANSI parser behavior, replay truncation boundaries, Unicode width parity, and the replay cap under representative output.
 
 ## `app.commands.register`
 

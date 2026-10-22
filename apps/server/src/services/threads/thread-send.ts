@@ -1,6 +1,7 @@
 import {
   getEnvironment,
   getThread,
+  getThreadSpawner,
   requireThreadLifecycleEventApplied,
 } from "@bb/db";
 import { assertNotNativeTerminalThread } from "./native-terminal-guard.js";
@@ -519,6 +520,13 @@ export async function sendThreadMessage(
     await clearThreadContext(deps, {
       environment: args.environment,
       thread: args.thread,
+      beforeClearInTransaction: (tx) => {
+        const current = getThread(tx, args.thread.id);
+        if (!current) {
+          throw new ApiError(404, "thread_not_found", "Thread not found");
+        }
+        args.beforeAppendInTransaction?.({ tx });
+      },
     });
     return { refusal: null };
   }
@@ -623,24 +631,36 @@ async function sendThreadMessageWithoutContextClear(
     mode === "auto" || mode === "steer"
       ? getActiveTurnId(deps, thread.id)
       : null;
-  if (senderThreadId === null && args.retryOf === undefined) {
-    await recoverThreadModelOverride(deps, {
-      model: payload.model,
-      modelSource:
-        payload.executionInputSources === undefined
-          ? "explicit"
-          : payload.executionInputSources.model,
-      reasoningLevel: payload.reasoningLevel,
-      reasoningLevelSource:
-        payload.executionInputSources === undefined
-          ? "explicit"
-          : payload.executionInputSources.reasoningLevel,
-      thread,
-    });
-  }
   const execution = await buildExecutionOptions(deps, payload, {
     threadId: thread.id,
   });
+  const isManagedChild =
+    thread.parentThreadId !== null ||
+    getThreadSpawner(deps.db, thread.id) !== null;
+  const usesChildModelPolicy =
+    isManagedChild &&
+    deps.providerRegistry.get(thread.providerId)?.childThreadModel != null;
+  if (
+    senderThreadId === null &&
+    args.retryOf === undefined &&
+    (!usesChildModelPolicy || args.trigger === "user")
+  ) {
+    await recoverThreadModelOverride(deps, {
+      model: usesChildModelPolicy ? payload.model : execution.model,
+      modelSource: usesChildModelPolicy
+        ? payload.executionInputSources === undefined
+          ? "explicit"
+          : payload.executionInputSources.model
+        : "explicit",
+      reasoningLevel: execution.reasoningLevel,
+      reasoningLevelSource: usesChildModelPolicy
+        ? payload.executionInputSources === undefined
+          ? "explicit"
+          : payload.executionInputSources.reasoningLevel
+        : "explicit",
+      thread,
+    });
+  }
   const permissionEscalation = resolvePermissionEscalation({
     initiator,
   });

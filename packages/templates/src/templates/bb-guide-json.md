@@ -99,6 +99,29 @@ the most-parsed commands ends with the same shape.
   bb terminal list --thread <id> --json
     {sessions: [{id, title, status, exitCode, closeReason, cols, rows}]}    (wrapped in .sessions)
 
+  bb terminal surfaces --thread <id> --json
+    {threadId, surfaces: [{threadId, terminalId, title, status, kind}]}    (thread-scoped terminal surfaces)
+
+  bb terminal focus <terminalId> --json
+    {terminalId, deliveredClients, error?: {code, message} when deliveredClients is 0}
+    deliveredClients counts open app sockets the request was sent to; it does not confirm receipt or application.
+
+  bb terminal open-link <terminalId> <url> --json
+    {terminalId, url, deliveredClients, error?: {code, message} when deliveredClients is 0}
+    deliveredClients counts open app sockets the request was sent to; it does not confirm receipt or application.
+
+  bb terminal split <terminalId> --side <side> --json
+    {terminalId, side, deliveredClients, error?: {code, message} when deliveredClients is 0}
+    deliveredClients counts open app sockets the request was sent to; it does not confirm receipt or application.
+
+  bb terminal move <terminalId> --to-pane-of <terminalId> --json
+    {terminalId, targetTerminalId, deliveredClients, error?: {code, message} when deliveredClients is 0}
+    deliveredClients counts open app sockets the request was sent to; it does not confirm receipt or application.
+
+  bb thread open [id] [path] --json
+    {threadId, split, file, deliveredClients, inputPath}
+    deliveredClients counts open app sockets the request was sent to; it does not confirm receipt or application.
+
   bb terminal output <terminalId> --json
     {chunks: [{seq, dataBase64}], nextSeq, truncated, status, exitCode, closeReason}    (chunk data is base64; status is "exited" once the command has finished)
 

@@ -29,9 +29,12 @@ import {
   terminalListResponseSchema,
   terminalServerMessageSchema,
   terminalOutputResponseSchema,
+  terminalScreenResponseSchema,
   type TerminalServerMessage,
   terminalSessionSchema,
 } from "@bb/server-contract";
+import { createBbSdk } from "@bb/sdk/core";
+import { createHttpTransport } from "@bb/sdk/node";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readJson } from "../helpers/json.js";
 import {
@@ -64,6 +67,7 @@ import {
   onTerminalSocketOpen,
 } from "../../src/ws/terminal-protocol.js";
 import { TERMINAL_CLIENT_STALE_MS } from "../../src/ws/hub.js";
+import { TERMINAL_SCREEN_MAX_IN_FLIGHT_READS } from "../../src/services/terminals/terminal-screen.js";
 
 interface FakeDaemonSocket {
   close(code?: number, reason?: string): void;
@@ -1755,6 +1759,239 @@ describe("public terminal routes", () => {
         dataBase64: Buffer.from("build failed\n", "utf8").toString("base64"),
       },
     ]);
+    const screenResponse = await fixture.harness.app.request(
+      `/api/v1/terminals/${session.id}/screen?lines=2`,
+    );
+    expect(screenResponse.status).toBe(200);
+    expect(
+      terminalScreenResponseSchema.parse(await readJson(screenResponse)),
+    ).toMatchObject({
+      rows: ["setup failed", "            build failed"],
+      cols: 120,
+      gridRows: 32,
+      truncated: false,
+    });
+  });
+
+  it("returns 404 without rows for an unknown terminal screen ID", async () => {
+    const fixture = await createTerminalRouteFixture();
+    harnesses.push(fixture.harness);
+
+    const response = await fixture.harness.app.request(
+      "/api/v1/terminals/unknown-terminal/screen",
+    );
+
+    expect(response.status).toBe(404);
+    const body = await response.text();
+    expect(body).not.toContain("rows");
+    expect(apiErrorSchema.parse(JSON.parse(body)).code).toBe(
+      "terminal_not_found",
+    );
+  });
+
+  it("returns a retryable queue-full response while in-flight screens complete", async () => {
+    const fixture = await createTerminalRouteFixture();
+    harnesses.push(fixture.harness);
+    const session = createTerminalSession(fixture.harness.db, {
+      cols: 120,
+      daemonSessionId: fixture.session.id,
+      environmentId: fixture.environment.id,
+      hostId: fixture.host.id,
+      initialCwd: fixture.environment.path ?? "/tmp/terminal-workspace",
+      rows: 32,
+      status: "running",
+      threadId: fixture.thread.id,
+      title: "Queue capacity",
+    });
+    const retainedOutput = `${"screen line for queue capacity\n".repeat(300)}`;
+    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+      hostId: fixture.host.id,
+      sessionId: fixture.session.id,
+      message: {
+        type: "terminal.output",
+        terminalId: session.id,
+        chunk: {
+          seq: 0,
+          dataBase64: Buffer.from(retainedOutput).toString("base64"),
+        },
+      },
+    });
+    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+      hostId: fixture.host.id,
+      sessionId: fixture.session.id,
+      message: {
+        type: "terminal.exited",
+        terminalId: session.id,
+        exitCode: 0,
+        closeReason: "process-exit",
+      },
+    });
+
+    const reads = Array.from(
+      { length: TERMINAL_SCREEN_MAX_IN_FLIGHT_READS },
+      () =>
+        fixture.harness.app.request(`/api/v1/terminals/${session.id}/screen`),
+    );
+    const overflow = await fixture.harness.app.request(
+      `/api/v1/terminals/${session.id}/screen`,
+    );
+    const overflowBody = apiErrorSchema.parse(await readJson(overflow));
+    const responses = await Promise.all(reads);
+
+    expect(overflow.status).toBe(503);
+    expect(overflowBody).toMatchObject({
+      code: "terminal_screen_queue_full",
+      message: `Terminal screen read queue is full (maximum ${TERMINAL_SCREEN_MAX_IN_FLIGHT_READS} in flight)`,
+      retryable: true,
+    });
+    expect(responses).toHaveLength(TERMINAL_SCREEN_MAX_IN_FLIGHT_READS);
+    for (const response of responses) {
+      expect(response.status).toBe(200);
+      expect(
+        terminalScreenResponseSchema
+          .parse(await readJson(response))
+          .rows.join("\n"),
+      ).toContain("queue capacity");
+    }
+  });
+
+  it("retries screen reads rejected by the bounded queue through the SDK", async () => {
+    const fixture = await createTerminalRouteFixture();
+    harnesses.push(fixture.harness);
+    const session = createTerminalSession(fixture.harness.db, {
+      cols: 120,
+      daemonSessionId: fixture.session.id,
+      environmentId: fixture.environment.id,
+      hostId: fixture.host.id,
+      initialCwd: fixture.environment.path ?? "/tmp/terminal-workspace",
+      rows: 32,
+      status: "running",
+      threadId: fixture.thread.id,
+      title: "SDK queue capacity",
+    });
+    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+      hostId: fixture.host.id,
+      sessionId: fixture.session.id,
+      message: {
+        type: "terminal.output",
+        terminalId: session.id,
+        chunk: {
+          seq: 0,
+          dataBase64: Buffer.from(
+            `${"screen line for SDK queue capacity\n".repeat(300)}`,
+          ).toString("base64"),
+        },
+      },
+    });
+    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+      hostId: fixture.host.id,
+      sessionId: fixture.session.id,
+      message: {
+        type: "terminal.exited",
+        terminalId: session.id,
+        exitCode: 0,
+        closeReason: "process-exit",
+      },
+    });
+    const sdk = createBbSdk({
+      transport: createHttpTransport({
+        baseUrl: "http://localhost",
+        runtime: "node",
+        fetch: async (input, init) =>
+          fixture.harness.app.fetch(new Request(input, init)),
+      }),
+    });
+
+    const screens = await Promise.all(
+      Array.from({ length: TERMINAL_SCREEN_MAX_IN_FLIGHT_READS + 1 }, () =>
+        sdk.terminals.experimental_screen({ terminalId: session.id }),
+      ),
+    );
+
+    expect(screens).toHaveLength(TERMINAL_SCREEN_MAX_IN_FLIGHT_READS + 1);
+    for (const screen of screens) {
+      expect(screen.rows.join("\n")).toContain("queue capacity");
+    }
+  });
+
+  it("reads a foreign-project terminal screen with the same access as output", async () => {
+    const fixture = await createTerminalRouteFixture();
+    harnesses.push(fixture.harness);
+    const { project: foreignProject } = seedProjectWithSource(
+      fixture.harness.deps,
+      {
+        hostId: fixture.host.id,
+        path: "/tmp/foreign-terminal-project",
+      },
+    );
+    const foreignEnvironment = seedEnvironment(fixture.harness.deps, {
+      hostId: fixture.host.id,
+      path: "/tmp/foreign-terminal-workspace",
+      projectId: foreignProject.id,
+    });
+    const foreignThread = seedThread(fixture.harness.deps, {
+      environmentId: foreignEnvironment.id,
+      projectId: foreignProject.id,
+      status: "idle",
+    });
+    const secretScreenRow = "foreign-project-terminal-secret";
+    const foreignTerminal = createTerminalSession(fixture.harness.db, {
+      cols: 120,
+      daemonSessionId: fixture.session.id,
+      environmentId: foreignEnvironment.id,
+      hostId: fixture.host.id,
+      initialCwd: foreignEnvironment.path ?? "/tmp/foreign-terminal-workspace",
+      rows: 32,
+      status: "running",
+      threadId: foreignThread.id,
+      title: "Foreign project terminal",
+    });
+    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+      hostId: fixture.host.id,
+      sessionId: fixture.session.id,
+      message: {
+        type: "terminal.output",
+        terminalId: foreignTerminal.id,
+        chunk: {
+          seq: 0,
+          dataBase64: Buffer.from(`${secretScreenRow}\n`).toString("base64"),
+        },
+      },
+    });
+    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+      hostId: fixture.host.id,
+      sessionId: fixture.session.id,
+      message: {
+        type: "terminal.exited",
+        terminalId: foreignTerminal.id,
+        exitCode: 0,
+        closeReason: "process-exit",
+      },
+    });
+
+    const screenResponse = await fixture.harness.app.request(
+      `/api/v1/terminals/${foreignTerminal.id}/screen`,
+    );
+    const screen = await screenResponse.json();
+    const outputResponse = await fixture.harness.app.request(
+      `/api/v1/terminals/${foreignTerminal.id}/output`,
+    );
+
+    expect(screenResponse.status).toBe(200);
+    expect(screenResponse.status).toBe(outputResponse.status);
+    expect(terminalScreenResponseSchema.parse(screen).rows).toContain(
+      secretScreenRow,
+    );
+    expect(
+      terminalOutputResponseSchema.parse(await outputResponse.json()).chunks,
+    ).toEqual([
+      {
+        seq: 0,
+        dataBase64: Buffer.from(`${secretScreenRow}\n`, "utf8").toString(
+          "base64",
+        ),
+      },
+    ]);
   });
 
   it("reads exited terminal output after reopening the database", async () => {
@@ -1857,11 +2094,15 @@ describe("public terminal routes", () => {
       `terminal.replay of ${chunks.length} chunks handled in ${elapsedMs.toFixed(1)}ms\n`,
     );
 
-    const retained = retainedAfterFlush(fixture.harness.deps.terminalSessions, fixture.harness.db, {
-      hostId: fixture.host.id,
-      terminalSessionId: terminal.id,
-      now: Date.now(),
-    });
+    const retained = retainedAfterFlush(
+      fixture.harness.deps.terminalSessions,
+      fixture.harness.db,
+      {
+        hostId: fixture.host.id,
+        terminalSessionId: terminal.id,
+        now: Date.now(),
+      },
+    );
     expect(retained?.at(-1)).toEqual(chunks.at(-1));
     expect(retained?.map((chunk) => chunk.seq)).toEqual(
       chunks
@@ -1926,11 +2167,15 @@ describe("public terminal routes", () => {
       },
     });
     expect(
-      retainedAfterFlush(fixture.harness.deps.terminalSessions, fixture.harness.db, {
-        hostId: fixture.host.id,
-        terminalSessionId: trustedTerminal.id,
-        now: Date.now(),
-      }),
+      retainedAfterFlush(
+        fixture.harness.deps.terminalSessions,
+        fixture.harness.db,
+        {
+          hostId: fixture.host.id,
+          terminalSessionId: trustedTerminal.id,
+          now: Date.now(),
+        },
+      ),
     ).toEqual([trustedChunk]);
     expect(
       fixture.harness.deps.terminalSessions.getTerminal({
@@ -1971,11 +2216,15 @@ describe("public terminal routes", () => {
       closeReason: null,
     });
     expect(
-      retainedAfterFlush(fixture.harness.deps.terminalSessions, fixture.harness.db, {
-        hostId: fixture.host.id,
-        terminalSessionId: exitedTerminal.id,
-        now: Date.now(),
-      }),
+      retainedAfterFlush(
+        fixture.harness.deps.terminalSessions,
+        fixture.harness.db,
+        {
+          hostId: fixture.host.id,
+          terminalSessionId: exitedTerminal.id,
+          now: Date.now(),
+        },
+      ),
     ).toEqual([trustedChunk]);
     expect(
       fixture.harness.db.$client
@@ -1998,11 +2247,15 @@ describe("public terminal routes", () => {
       },
     });
     expect(
-      retainedAfterFlush(fixture.harness.deps.terminalSessions, fixture.harness.db, {
-        hostId: fixture.host.id,
-        terminalSessionId: trustedTerminal.id,
-        now: Date.now(),
-      }),
+      retainedAfterFlush(
+        fixture.harness.deps.terminalSessions,
+        fixture.harness.db,
+        {
+          hostId: fixture.host.id,
+          terminalSessionId: trustedTerminal.id,
+          now: Date.now(),
+        },
+      ),
     ).toEqual([trustedChunk]);
     fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
       hostId: fixture.host.id,
@@ -2035,11 +2288,15 @@ describe("public terminal routes", () => {
       },
     });
     expect(
-      retainedAfterFlush(fixture.harness.deps.terminalSessions, fixture.harness.db, {
-        hostId: fixture.host.id,
-        terminalSessionId: replayTerminal.id,
-        now: Date.now(),
-      }),
+      retainedAfterFlush(
+        fixture.harness.deps.terminalSessions,
+        fixture.harness.db,
+        {
+          hostId: fixture.host.id,
+          terminalSessionId: replayTerminal.id,
+          now: Date.now(),
+        },
+      ),
     ).toBeNull();
 
     fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
@@ -2055,11 +2312,15 @@ describe("public terminal routes", () => {
       },
     });
     expect(
-      retainedAfterFlush(fixture.harness.deps.terminalSessions, fixture.harness.db, {
-        hostId: fixture.host.id,
-        terminalSessionId: replayTerminal.id,
-        now: Date.now(),
-      }),
+      retainedAfterFlush(
+        fixture.harness.deps.terminalSessions,
+        fixture.harness.db,
+        {
+          hostId: fixture.host.id,
+          terminalSessionId: replayTerminal.id,
+          now: Date.now(),
+        },
+      ),
     ).toEqual([replayChunk]);
     expect(warn).toHaveBeenCalledWith(
       expect.objectContaining({

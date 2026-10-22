@@ -48,6 +48,8 @@ import { SecondaryPanelHostLayoutContext } from "./SecondaryPanelHostLayoutConte
 import { MobilePanelTabPager } from "./MobilePanelTabPager";
 import { SecondaryPanelTabStrip } from "./SecondaryPanelTabStrip";
 import { ImageTabLightboxProvider } from "./ImageTabLightboxContext";
+import { appToast } from "@/components/ui/app-toast";
+import { useCompactTerminalLayoutRequest } from "@/lib/useCompactTerminalLayoutRequest";
 import { FilePreviewScrollPositionContext } from "./filePreviewScrollPositionContext";
 import type {
   MarketplacePluginDetailPanelTab,
@@ -126,6 +128,13 @@ export function isSecondaryPanelLayoutTransition(
   propertyName: string,
 ): boolean {
   return propertyName === "flex-grow" || propertyName === "flex-basis";
+}
+
+export function canRenderSidebarSplits(
+  renderAsDrawer: boolean,
+  splitPanelStateId: string | undefined,
+): splitPanelStateId is string {
+  return !renderAsDrawer && splitPanelStateId !== undefined;
 }
 const SECONDARY_RESIZABLE_PANEL_STYLE: CSSProperties = {
   pointerEvents: "auto",
@@ -227,8 +236,17 @@ export interface ThreadSecondaryPanelProps {
     pane: SecondaryPanelPaneRenderContext,
   ) => ReactNode;
   onCreateTerminalInNewPane?: () => Promise<string | null>;
+  onEnsureTerminalTabs?: (terminalIds: readonly string[]) => boolean | null;
   splitPanelStateId?: string;
   splitTabToRightRequest?: { requestId: number; tabId: string } | null;
+  terminalLayoutRequest?: {
+    action: "split" | "move";
+    requestId: number;
+    side?: "right" | "left" | "up" | "down";
+    targetTerminalId?: string;
+    terminalId: string;
+  } | null;
+  onCompactTerminalLayoutRequestHandled?: (requestId: number) => void;
   isOpen: boolean;
   showConversationCollapseControl?: boolean;
   showFullScreenShortcut?: boolean;
@@ -270,8 +288,11 @@ function ThreadSecondaryPanelContent({
   onTabReorder,
   renderBrowserDeck,
   onCreateTerminalInNewPane,
+  onEnsureTerminalTabs,
   splitPanelStateId,
   splitTabToRightRequest,
+  terminalLayoutRequest,
+  onCompactTerminalLayoutRequestHandled,
   isOpen,
   showConversationCollapseControl = true,
   showFullScreenShortcut = false,
@@ -1041,8 +1062,22 @@ function ThreadSecondaryPanelContent({
     );
   };
 
-  const shouldEnableSidebarSplits =
-    !renderAsDrawer && splitPanelStateId !== undefined;
+  const shouldEnableSidebarSplits = canRenderSidebarSplits(
+    renderAsDrawer,
+    splitPanelStateId,
+  );
+  useCompactTerminalLayoutRequest({
+    enabled: !shouldEnableSidebarSplits && isOpen,
+    ensureTerminalTabs: (terminalIds) => onEnsureTerminalTabs?.(terminalIds) ?? false,
+    onHandled: onCompactTerminalLayoutRequestHandled,
+    onResolved: (terminalAvailable) =>
+      appToast.warning(
+        terminalAvailable
+          ? "Split panes aren't available at this window size."
+          : "The terminal is no longer available in this thread.",
+      ),
+    request: terminalLayoutRequest,
+  });
   const splitTabs = shouldEnableSidebarSplits
     ? ([
         ...fixedTabs.map((fixedTab) => ({
@@ -1100,8 +1135,10 @@ function ThreadSecondaryPanelContent({
       onGlobalTabReorder={onTabReorder}
       onToggleFullScreen={onToggleConversationCollapse}
       onCreateTerminalInNewPane={onCreateTerminalInNewPane}
+      onEnsureTerminalTabs={onEnsureTerminalTabs}
       panelStateId={splitPanelStateId}
       splitTabToRightRequest={splitTabToRightRequest}
+      terminalLayoutRequest={terminalLayoutRequest}
       tabs={splitTabs}
       renderPane={(pane: SidebarSplitPaneRenderArgs) => {
         const activePaneTabId = pane.group.activeTabId;

@@ -48,8 +48,14 @@ import type {
   TerminalSession,
   TimelineRow,
 } from "@bb/server-contract";
+import {
+  threadOpenTerminalActionSchema,
+  threadOpenTerminalLayoutActionSchema,
+} from "@bb/server-contract";
 import type { WorkspaceOpenTarget } from "@bb/host-daemon-contract";
 import { appToast } from "@/components/ui/app-toast";
+import { getThreadTerminalLayoutSessions } from "@/lib/terminal-session-visibility";
+import { useCompactTerminalLayoutRequest } from "@/lib/useCompactTerminalLayoutRequest";
 import { copyToClipboardWithToast } from "@/lib/clipboard";
 import type { ThreadSecondaryPanel as ThreadSecondaryPanelTab } from "@/lib/thread-secondary-panel";
 import {
@@ -232,7 +238,10 @@ import { usePluginSlots } from "@/lib/plugin-slots";
 import { getFileExtension } from "@/lib/plugin-slot-resolvers";
 import { Icon } from "@bb/shared-ui/icon";
 import { getBbDesktopInfo, isDesktopBrowserAvailable } from "@/lib/bb-desktop";
-import { UrlOpenRoutingProvider } from "@/lib/url-open-routing";
+import {
+  openUrlInExternalBrowser,
+  UrlOpenRoutingProvider,
+} from "@/lib/url-open-routing";
 import { isTerminalLinkForThreadBrowser } from "@/components/thread/terminal/terminal-link-routing";
 import {
   AppNavigationHostProvider,
@@ -677,6 +686,16 @@ function ThreadDetailViewInternal(
     tabId: string;
   } | null>(null);
   const splitTabToRightRequestIdRef = useRef(0);
+  const [terminalLayoutRequest, setTerminalLayoutRequest] = useState<{
+    action: "split" | "move";
+    requestId: number;
+    side?: "right" | "left" | "up" | "down";
+    targetTerminalId?: string;
+    terminalId: string;
+  } | null>(null);
+  const terminalLayoutRequestIdRef = useRef(0);
+  const terminalLayoutRequestRefreshRef = useRef<number | null>(null);
+  const consumedTerminalActionLocationRef = useRef<string | null>(null);
   const shouldLoadThreadStorageFiles = shouldLoadThreadStorageFileList({
     hasThread: thread !== undefined,
     isSecondaryPanelOpen,
@@ -697,8 +716,9 @@ function ThreadDetailViewInternal(
   const threadStorageRootPath =
     threadStorageLocationQuery.data?.storageRootPath ?? null;
   const terminalsListQuery = useThreadTerminals(threadId, {
-    enabled: isSecondaryPanelOpen,
+    enabled: isSecondaryPanelOpen || terminalLayoutRequest !== null,
   });
+  const refetchTerminalList = terminalsListQuery.refetch;
   const nativeTerminalThreadQuery = useNativeTerminalThread(threadId);
   const nativeTerminalThread = nativeTerminalThreadQuery.data ?? null;
   const nativeTerminalId = nativeTerminalThread?.terminal?.id ?? null;
@@ -1630,6 +1650,69 @@ function ThreadDetailViewInternal(
     onCloseLastTab: secondaryPanelDrawerVisibility.closeDrawer,
   });
   const { canStart: canStartTerminal, select: selectTerminal } = terminals;
+  const ensureTerminalTabs = useCallback(
+    (terminalIds: readonly string[]): boolean | null => {
+      if (terminalsListQuery.isPending) return null;
+      const sessions = terminalsListQuery.data?.sessions;
+      if (sessions === undefined) return false;
+      const selectedSessions = getThreadTerminalLayoutSessions(
+        sessions,
+        terminalIds,
+        threadId,
+      );
+      if (selectedSessions === null) {
+        if (
+          terminalLayoutRequest !== null &&
+          terminalLayoutRequestRefreshRef.current !== terminalLayoutRequest.requestId
+        ) {
+          terminalLayoutRequestRefreshRef.current = terminalLayoutRequest.requestId;
+          void refetchTerminalList();
+          return null;
+        }
+        return false;
+      }
+      if (renderSecondaryPanelAsDrawer && !isSecondaryPanelOpen) {
+        appToast.warning("Split panes aren't available at this window size.");
+      }
+      for (const session of selectedSessions) {
+        selectTerminal(session.id, { kind: "thread", threadId });
+      }
+      return true;
+    },
+    [
+      selectTerminal,
+      terminalLayoutRequest,
+      terminalsListQuery.data,
+      terminalsListQuery.isPending,
+      refetchTerminalList,
+      renderSecondaryPanelAsDrawer,
+      isSecondaryPanelOpen,
+      threadId,
+    ],
+  );
+  const handleCompactTerminalLayoutRequestHandled = useCallback(
+    (requestId: number) => {
+      setTerminalLayoutRequest((current) =>
+        current?.requestId === requestId ? null : current,
+      );
+    },
+    [],
+  );
+  const handleCompactTerminalLayoutRequestResolved = useCallback(
+    (terminalAvailable: boolean) => {
+      if (!terminalAvailable) {
+        appToast.warning("The terminal is no longer available in this thread.");
+      }
+    },
+    [],
+  );
+  useCompactTerminalLayoutRequest({
+    enabled: renderSecondaryPanelAsDrawer && !isSecondaryPanelOpen,
+    ensureTerminalTabs,
+    onHandled: handleCompactTerminalLayoutRequestHandled,
+    onResolved: handleCompactTerminalLayoutRequestResolved,
+    request: terminalLayoutRequest,
+  });
   const startTerminalSession = useCallback(async (): Promise<string | null> => {
     if (!canStartTerminal || !threadId) return null;
     try {
@@ -2189,6 +2272,93 @@ function ThreadDetailViewInternal(
       secondaryPanelDrawerVisibility,
     ],
   );
+  useEffect(() => {
+    const locationState = location.state;
+    if (
+      location.key === consumedTerminalActionLocationRef.current ||
+      locationState === null ||
+      typeof locationState !== "object" ||
+      !("terminalAction" in locationState)
+    ) {
+      return;
+    }
+    const parsedAction = threadOpenTerminalActionSchema.safeParse(
+      locationState.terminalAction,
+    );
+    if (!parsedAction.success) return;
+    consumedTerminalActionLocationRef.current = location.key;
+    navigate(location.pathname, { replace: true, state: null });
+    selectTerminal(parsedAction.data.terminalId, {
+      kind: "thread",
+      threadId,
+    });
+    if (parsedAction.data.action === "openBrowser" && parsedAction.data.url) {
+      const url = parsedAction.data.url;
+      const canOpenInAppBrowser = isDesktopBrowserAvailable();
+      if (!canOpenInAppBrowser) {
+        appToast.message("Open this link in your browser?", {
+          action: {
+            label: "Open",
+            onClick: () => openUrlInExternalBrowser(url),
+          },
+          description: url,
+          duration: 10_000,
+        });
+      } else if (
+        isTerminalLinkForThreadBrowser(
+          url,
+          resolvedThreadEnvironmentHost === null
+            ? []
+            : [resolvedThreadEnvironmentHost.name],
+          true,
+        )
+      ) {
+        const tab = openTab({ kind: "browser", url });
+        if (tab?.kind === "browser") {
+          if (renderSecondaryPanelAsDrawer) {
+            secondaryPanelDrawerVisibility.openDrawer();
+          } else {
+            splitTabToRightRequestIdRef.current += 1;
+            setSplitTabToRightRequest({
+              requestId: splitTabToRightRequestIdRef.current,
+              tabId: tab.id,
+            });
+          }
+        }
+      } else {
+        openBrowserUrl(url);
+      }
+    }
+  }, [
+    location.key,
+    location.pathname,
+    location.state,
+    navigate,
+    selectTerminal,
+    threadId,
+    resolvedThreadEnvironmentHost,
+    renderSecondaryPanelAsDrawer,
+    secondaryPanelDrawerVisibility,
+    openTab,
+    openBrowserUrl,
+  ]);
+  useEffect(() => {
+    const locationState = location.state;
+    if (
+      location.key === consumedTerminalActionLocationRef.current ||
+      locationState === null ||
+      typeof locationState !== "object" ||
+      !("terminalLayoutAction" in locationState)
+    ) return;
+    const parsed = threadOpenTerminalLayoutActionSchema.safeParse(
+      locationState.terminalLayoutAction,
+    );
+    if (!parsed.success) return;
+    consumedTerminalActionLocationRef.current = location.key;
+    navigate(location.pathname, { replace: true, state: null });
+    terminalLayoutRequestIdRef.current += 1;
+    setTerminalLayoutRequest({ ...parsed.data, requestId: terminalLayoutRequestIdRef.current });
+  }, [location.key, location.pathname, location.state, navigate]);
   const handleTimelineTitleAction = useCallback<TimelineTitleActionResolver>(
     (action) => {
       switch (action.kind) {
@@ -3070,6 +3240,10 @@ function ThreadDetailViewInternal(
               fixedTabs: secondaryPanelFixedTabs,
               splitPanelStateId: thread.id,
               splitTabToRightRequest,
+              terminalLayoutRequest,
+              onCompactTerminalLayoutRequestHandled:
+                handleCompactTerminalLayoutRequestHandled,
+              onEnsureTerminalTabs: ensureTerminalTabs,
               onCreateTerminalInNewPane: canCreateTerminal
                 ? startTerminalSession
                 : undefined,

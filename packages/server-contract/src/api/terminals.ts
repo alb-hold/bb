@@ -207,6 +207,32 @@ export const terminalOutputQuerySchema = z
   .strict();
 export type TerminalOutputQuery = z.infer<typeof terminalOutputQuerySchema>;
 
+export const terminalScreenQuerySchema = z
+  .object({
+    lines: z.coerce.number().int().positive().max(500).optional(),
+  })
+  .strict();
+export type TerminalScreenQuery = z.infer<typeof terminalScreenQuerySchema>;
+
+export const terminalScreenResponseSchema = z
+  .object({
+    rows: z.array(z.string()),
+    cursor: z
+      .object({
+        col: z.number().int().nonnegative(),
+        row: z.number().int().nonnegative(),
+      })
+      .strict(),
+    cols: terminalColsSchema,
+    gridRows: terminalRowsSchema,
+    truncated: z.boolean(),
+    complete: z.boolean(),
+  })
+  .strict();
+export type TerminalScreenResponse = z.infer<
+  typeof terminalScreenResponseSchema
+>;
+
 export const terminalWebSocketQuerySchema = z
   .object({
     sinceSeq: z.coerce.number().int().nonnegative().default(0),

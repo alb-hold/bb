@@ -59,6 +59,19 @@ function familyFiles(logDir: string, logName: string): string[] {
     .map((name) => join(logDir, name));
 }
 
+async function waitForFileContents(
+  path: string,
+  contents: string,
+): Promise<void> {
+  await expect
+    .poll(
+      () =>
+        existsSync(path) && readFileSync(path, "utf8") === contents,
+      { timeout: 5_000, interval: 10 },
+    )
+    .toBe(true);
+}
+
 async function waitForPaths(paths: string[], timeout: number): Promise<void> {
   const allExist = () =>
     paths.every((path) => existsSync(path) && statSync(path).size > 0);
@@ -755,6 +768,22 @@ describe("spawnLoggedProcess", () => {
     }
   });
 
+  it("waits for marker contents after its path appears", async () => {
+    const markerPath = join(scratchDir(), "marker");
+    const contents = "complete";
+    writeFileSync(markerPath, "");
+    const delayedWrite = setTimeout(
+      () => writeFileSync(markerPath, contents),
+      100,
+    );
+    try {
+      await waitForFileContents(markerPath, contents);
+      expect(readFileSync(markerPath, "utf8")).toBe(contents);
+    } finally {
+      clearTimeout(delayedWrite);
+    }
+  });
+
   it("recovers a killed writer's completed output when a later writer starts", async () => {
     const logDir = scratchDir();
     const enteredPath = join(logDir, "killed-writer-finalizing");
@@ -773,9 +802,7 @@ describe("spawnLoggedProcess", () => {
     let survivor: ReturnType<typeof spawnLoggedProcess> | undefined;
     try {
       expect(await waitForExit(first)).toBe(0);
-      await expect
-        .poll(() => existsSync(enteredPath), { timeout: 5_000, interval: 10 })
-        .toBe(true);
+      await waitForFileContents(enteredPath, String(first.writerProcess.pid));
       const activeSegment = familyFiles(logDir, "server").find(
         (file) =>
           file.includes(".active-") &&

@@ -241,6 +241,8 @@ import type {
   TerminalNotifyRequest,
   TerminalOutputQuery,
   TerminalOutputResponse,
+  TerminalScreenQuery,
+  TerminalScreenResponse,
   TerminalResizeRequest,
   ThreadArchiveAllResponse,
   ThreadChildSummaryResponse,
@@ -449,6 +451,7 @@ import {
   terminalListQuerySchema,
   terminalNotifyRequestSchema,
   terminalOutputQuerySchema,
+  terminalScreenQuerySchema,
   terminalResizeRequestSchema,
   threadTimelineQuerySchema,
   systemCliSkillsStatusQuerySchema,
@@ -1201,6 +1204,14 @@ export const publicApiRoutes = {
         terminalOutputQuerySchema,
       ),
       response: jsonResponse<TerminalOutputResponse>(),
+    }),
+    screen: defineRoute({
+      path: "/terminals/:terminalId/screen",
+      method: "get",
+      request: optionalQueryRequest<PathTerminal, TerminalScreenQuery>(
+        terminalScreenQuerySchema,
+      ),
+      response: jsonResponse<TerminalScreenResponse>(),
     }),
   },
 

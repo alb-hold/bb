@@ -480,7 +480,18 @@
       "dependsOn": ["^topo", "@bb/server#generate:bb-official-marketplace"]
     },
     "@bb/server#topo": {
-      "dependsOn": ["^topo", "@bb/server#generate:bb-official-marketplace"]
+      "dependsOn": ["^topo", "@bb/server#generate:bb-official-marketplace", "@bb/server#generate:terminal-screen-worker"]
+    },
+    "@bb/server#generate:terminal-screen-worker": {
+      "dependsOn": [],
+      "inputs": [
+        "src/services/terminals/terminal-screen-worker.ts",
+        "src/services/terminals/terminal-screen-render.ts",
+        "scripts/generate-terminal-screen-worker.mjs",
+        "$TURBO_ROOT$/package.json",
+        "$TURBO_ROOT$/pnpm-lock.yaml"
+      ],
+      "outputs": ["src/generated/terminal-screen-worker.ts"]
     },
     "@bb/server#generate:bb-official-marketplace": {
       "dependsOn": [],

@@ -37,6 +37,8 @@ import {
   type ThreadPaneAction,
   type ThreadOpenFile,
   type ThreadOpenSplit,
+  type ThreadOpenTerminalAction,
+  type ThreadOpenTerminalLayoutAction,
   type TerminalServerMessage,
 } from "@bb/server-contract";
 
@@ -272,6 +274,7 @@ export class HostOnlineRpcUnavailableError extends Error {
 
 export class NotificationHub implements DbNotifier {
   private readonly clientKeysBySocket = new Map<HubSocket, Set<string>>();
+  private readonly appClientSockets = new Set<HubSocket>();
   private readonly clientSocketsByKey = new Map<string, Set<HubSocket>>();
   private readonly threadTimelineTargetsByKey = new Map<
     string,
@@ -413,9 +416,10 @@ export class NotificationHub implements DbNotifier {
     Set<HubSocket>
   >();
 
-  registerClient(socket: HubSocket): void {
+  registerClient(socket: HubSocket, isAppClient = false): void {
     if (this.clientKeysBySocket.has(socket)) return;
     this.clientKeysBySocket.set(socket, new Set());
+    if (isAppClient) this.appClientSockets.add(socket);
   }
 
   issueDeviceHandoffClientToken(
@@ -635,6 +639,7 @@ export class NotificationHub implements DbNotifier {
     }
 
     this.clientKeysBySocket.delete(socket);
+    this.appClientSockets.delete(socket);
   }
 
   onChangedMessage(listener: ChangedMessageListener): () => void {
@@ -1472,9 +1477,14 @@ export class NotificationHub implements DbNotifier {
 
   notifyThreadOpen(
     thread: { projectId: string; threadId: string },
-    request: { split: ThreadOpenSplit; file: ThreadOpenFile | null },
+    request: {
+      split: ThreadOpenSplit;
+      file: ThreadOpenFile | null;
+      terminalAction?: ThreadOpenTerminalAction;
+      terminalLayoutAction?: ThreadOpenTerminalLayoutAction;
+    },
   ): number {
-    return this.broadcastToAllClients(
+    return this.broadcastToAppClients(
       JSON.stringify(
         threadOpenSignalSchema.parse({
           type: "thread-open",
@@ -1482,6 +1492,12 @@ export class NotificationHub implements DbNotifier {
           threadId: thread.threadId,
           split: request.split,
           file: request.file,
+          ...(request.terminalAction
+            ? { terminalAction: request.terminalAction }
+            : {}),
+          ...(request.terminalLayoutAction
+            ? { terminalLayoutAction: request.terminalLayoutAction }
+            : {}),
         }),
       ),
     );
@@ -1892,6 +1908,15 @@ export class NotificationHub implements DbNotifier {
     for (const socket of this.clientKeysBySocket.keys()) {
       socket.send(payload);
       delivered += 1;
+    }
+    return delivered;
+  }
+
+  private broadcastToAppClients(payload: string): number {
+    let delivered = 0;
+    for (const socket of this.clientKeysBySocket.keys()) {
+      socket.send(payload);
+      if (this.appClientSockets.has(socket)) delivered += 1;
     }
     return delivered;
   }

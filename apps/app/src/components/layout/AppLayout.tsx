@@ -535,7 +535,27 @@ export function AppLayout({ children }: AppLayoutProps) {
         if (next !== current) {
           store.set(splitLayoutAtom, next);
         }
-        void navigate(route, alreadyOpen ? { replace: true } : undefined);
+        const terminalAction = signal.terminalAction;
+        if (terminalAction !== undefined) {
+          void import("./terminal-open-navigation.js").then(
+            ({ navigateThreadWithTerminalAction }) =>
+              navigateThreadWithTerminalAction(
+                navigate,
+                route,
+                alreadyOpen,
+                terminalAction,
+                signal.terminalLayoutAction,
+              ),
+          );
+          return;
+        }
+        const navigationState = signal.terminalLayoutAction
+          ? { terminalLayoutAction: signal.terminalLayoutAction }
+          : undefined;
+        void navigate(route, {
+          ...(alreadyOpen ? { replace: true } : {}),
+          ...(navigationState === undefined ? {} : { state: navigationState }),
+        });
       }),
     [isCompactViewport, navigate, store],
   );

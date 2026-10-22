@@ -44,6 +44,32 @@ All other operations need only the terminal ID. They also accept the scope
 flags above and ignore them, so a command built for `list` or `create` still
 runs:
 
+Thread terminal surfaces can also be listed and controlled from the CLI. Focus
+and browser requests open the terminal's thread in connected bb app clients.
+The browser action uses the same thread panel placement as terminal links.
+
+  bb terminal surfaces --thread <thread-id> [--json]
+  bb terminal focus <terminal-id>
+  bb terminal open-link <terminal-id> <http-or-https-url>
+  bb terminal split <terminal-id> --side right|left|up|down
+  bb terminal move <terminal-id> --to-pane-of <other-terminal-id>
+
+The SDK exposes `sdk.terminals.experimental_surfaces.list({ threadId })`,
+`sdk.terminals.experimental_focus({ terminalId })`, and
+`sdk.terminals.experimental_openBrowser({ terminalId, url })`. A surface
+includes its thread and terminal IDs, title, status, and whether it is a
+regular or native terminal. Archived threads and terminal IDs outside the
+requested thread fail closed.
+`sdk.terminals.experimental_layout.split({ terminalId, side })` and
+`sdk.terminals.experimental_layout.move({ terminalId, targetTerminalId })`
+arrange terminal tabs in persisted sidebar panes and return `deliveredClients`,
+the number of open app sockets the request was sent to. A zero-client response
+means no request was sent. A positive count does not confirm receipt or
+application; pane limits and compact layouts can still cause the client to
+reject a split or move.
+On clients without an in-app browser, `open-link` presents an Open action for
+the external browser instead of adding an unavailable browser tab.
+
 From inside a bb terminal, `bb terminal notify --title "Build" --body "Finished"`
 raises attention on its terminal. The SDK exposes the same operation as
 `sdk.terminals.notify({ terminalId, title, body })`.
@@ -113,6 +139,18 @@ prints the target because it has no app window. The SDK exposes
   output until exit or Ctrl-C. For an exited terminal the output is followed by
   `Terminal <id> exited with code N` on stderr. Once the scrollback is gone,
   output fails with `terminal_output_unavailable` and says why.
+
+  bb terminal screen <terminal-id>
+    --lines <n>                          Print latest rendered rows, up to 500
+    --json                                Include cursor position, grid size, and completeness
+
+  Screen reads replay at most 64 KiB of retained output into disposable
+  server-side terminal renderers. The default returns the visible grid. JSON
+  includes `complete`, true when the retained output fully determines the visible
+  screen. A false value means the retained output does not prove the screen is
+  complete.
+  Selection
+  is client-local and is not available through this command.
 
   bb terminal wait <terminal-id>
     --contains <text>                     Wait for new output containing text
