@@ -14,6 +14,8 @@ import {
   attachTerminalManualScrollIntentListeners,
   applyTerminalGridBeforeViewportRestore,
   applyTerminalGridAndKeepViewport,
+  createTerminalViewportLineAnchor,
+  restoreTerminalViewportToRetainedLine,
   restoreTerminalViewportOnResize,
   applyTerminalFontFamily,
   attachTerminalInputForwarding,
@@ -929,13 +931,35 @@ describe("terminal viewport restore", () => {
       );
     };
     terminal.scrollToLine(1_100);
+    const viewportLineAnchor = createTerminalViewportLineAnchor(terminal);
+    viewportLineAnchor.setLine(1_100);
+    const pendingResizeFrame: { current: FrameRequestCallback | null } = {
+      current: null,
+    };
     const resizeSubscription = restoreTerminalViewportOnResize({
       terminal,
       canRestore: () => true,
-      restoreViewport,
+      restoreViewport: () => {
+        if (
+          !restoreTerminalViewportToRetainedLine({
+            terminal,
+            lineAnchor: viewportLineAnchor,
+          })
+        ) {
+          restoreViewport();
+        }
+      },
+      requestFrame: (callback) => {
+        pendingResizeFrame.current = callback;
+        return 1;
+      },
+      cancelFrame: () => {
+        pendingResizeFrame.current = null;
+      },
     });
 
     terminal.resize(80, 33);
+    pendingResizeFrame.current?.(0);
 
     expect(
       terminal.buffer.active
@@ -943,6 +967,90 @@ describe("terminal viewport restore", () => {
         ?.translateToString(true),
     ).toBe("line 01101");
     resizeSubscription.dispose();
+    viewportLineAnchor.dispose();
+    tracker.dispose();
+    terminal.dispose();
+  });
+
+  it("keeps the same output line when a companion size owner changes the shared grid", async () => {
+    const terminal = new Terminal({ cols: 80, rows: 56, scrollback: 10_000 });
+    const pipeline = createTerminalOutputPipeline(terminal);
+    const tracker = createTerminalOutputLineAnchorTracker({
+      registerMarker: () => terminal.registerMarker(),
+      getCurrentLine: () =>
+        terminal.buffer.active.baseY + terminal.buffer.active.cursorY,
+    });
+    tracker.reset();
+    const outputAnchor = tracker.recordOutputStart(2)!;
+    await writeTerminal(
+      terminal,
+      Array.from(
+        { length: 3_000 },
+        (_, index) =>
+          `line ${String(index + 1).padStart(5, "0")} ${"x".repeat(54)}\r\n`,
+      ).join(""),
+    );
+    const savedAnchor = {
+      distanceFromTail: terminal.buffer.active.baseY - 2_396,
+      lineOffset: 2_396,
+      outputSequence: 2,
+    };
+    const viewportLineAnchor = createTerminalViewportLineAnchor(terminal);
+    const restoreViewport = (afterGridResize = false) => {
+      if (
+        afterGridResize &&
+        restoreTerminalViewportToRetainedLine({
+          terminal,
+          lineAnchor: viewportLineAnchor,
+        })
+      ) {
+        return;
+      }
+      const line = resolveTerminalViewportRestore({
+        anchor: savedAnchor,
+        baseY: terminal.buffer.active.baseY,
+        outputLineAnchors: [outputAnchor],
+        replayStartSequence: 0,
+        replayNextSequence: 16,
+      });
+      terminal.scrollToLine(line);
+      viewportLineAnchor.setLine(line);
+    };
+    restoreViewport();
+    const pendingResizeFrame: { current: FrameRequestCallback | null } = {
+      current: null,
+    };
+    const resizeSubscription = restoreTerminalViewportOnResize({
+      terminal,
+      canRestore: () => true,
+      restoreViewport: () => restoreViewport(true),
+      requestFrame: (callback) => {
+        pendingResizeFrame.current = callback;
+        return 1;
+      },
+      cancelFrame: () => {
+        pendingResizeFrame.current = null;
+      },
+    });
+
+    await new Promise<void>((resolve) => {
+      applyTerminalGridAndKeepViewport({
+        pipeline,
+        cols: 40,
+        rows: 33,
+        onGridApplied: resolve,
+        restoreViewport: () => restoreViewport(true),
+      });
+    });
+    pendingResizeFrame.current?.(0);
+
+    expect(
+      terminal.buffer.active
+        .getLine(terminal.buffer.active.viewportY)
+        ?.translateToString(true),
+    ).toMatch(/^line 02397 /);
+    resizeSubscription.dispose();
+    viewportLineAnchor.dispose();
     tracker.dispose();
     terminal.dispose();
   });

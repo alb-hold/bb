@@ -6,7 +6,11 @@ import {
   type TouchEvent as ReactTouchEvent,
 } from "react";
 import "@xterm/xterm/css/xterm.css";
-import type { ITheme, Terminal as XTermTerminal } from "@xterm/xterm";
+import type {
+  IMarker,
+  ITheme,
+  Terminal as XTermTerminal,
+} from "@xterm/xterm";
 import type { FitAddon } from "@xterm/addon-fit";
 import {
   ContextMenu,
@@ -860,16 +864,76 @@ export function restoreTerminalViewportOnResize({
   terminal,
   canRestore,
   restoreViewport,
+  requestFrame = requestAnimationFrame,
+  cancelFrame = cancelAnimationFrame,
 }: {
   terminal: Pick<XTermTerminal, "onResize">;
   canRestore: () => boolean;
   restoreViewport: () => void;
+  requestFrame?: (callback: FrameRequestCallback) => number;
+  cancelFrame?: (frame: number) => void;
 }): { dispose: () => void } {
-  return terminal.onResize(() => {
-    if (canRestore()) {
-      restoreViewport();
-    }
+  let frame: number | null = null;
+  const subscription = terminal.onResize(() => {
+    if (frame !== null) cancelFrame(frame);
+    frame = requestFrame(() => {
+      frame = null;
+      if (canRestore()) restoreViewport();
+    });
   });
+  return {
+    dispose: () => {
+      subscription.dispose();
+      if (frame !== null) cancelFrame(frame);
+      frame = null;
+    },
+  };
+}
+
+export function createTerminalViewportLineAnchor(
+  terminal: Pick<XTermTerminal, "buffer" | "registerMarker">,
+): {
+  clear: () => void;
+  dispose: () => void;
+  getLine: () => number | null;
+  setLine: (line: number) => void;
+} {
+  let marker: IMarker | null = null;
+  const clear = () => {
+    if (marker !== null && !marker.isDisposed) marker.dispose();
+    marker = null;
+  };
+  return {
+    clear,
+    dispose: clear,
+    getLine: () =>
+      marker === null || marker.isDisposed || marker.line < 0
+        ? null
+        : marker.line,
+    setLine: (line) => {
+      clear();
+      const buffer = terminal.buffer.active;
+      marker = terminal.registerMarker(
+        line - (buffer.baseY + buffer.cursorY),
+      );
+    },
+  };
+}
+
+export function restoreTerminalViewportToRetainedLine({
+  terminal,
+  lineAnchor,
+}: {
+  terminal: Pick<XTermTerminal, "scrollToLine">;
+  lineAnchor: Pick<
+    ReturnType<typeof createTerminalViewportLineAnchor>,
+    "getLine"
+  >;
+}): boolean {
+  const line = lineAnchor.getLine();
+  if (line === null) return false;
+  terminal.scrollToLine(line);
+  return true;
 }
 
 function openTerminalWebLink({
@@ -1444,6 +1508,9 @@ export function ThreadTerminalView({
     let selectionChangeDisposable: { dispose: () => void } | null = null;
     let terminalRenderSubscription: { dispose: () => void } | null = null;
     let terminalResizeSubscription: { dispose: () => void } | null = null;
+    let viewportLineAnchor: ReturnType<
+      typeof createTerminalViewportLineAnchor
+    > | null = null;
     let terminalKeyDisposable: { dispose: () => void } | null = null;
     let terminalInputForwarding: { dispose: () => void } | null = null;
     let shellOscDisposable: { dispose: () => void } | null = null;
@@ -1501,6 +1568,7 @@ export function ThreadTerminalView({
     anchoredOutputSequence = savedViewportAnchor?.outputSequence ?? 0;
     const noteManualScrollIntent = () => {
       hasManualScrollIntent = true;
+      viewportLineAnchor?.clear();
       if (manualScrollTimeout !== null) {
         clearTimeout(manualScrollTimeout);
       }
@@ -1736,6 +1804,7 @@ export function ThreadTerminalView({
         ),
       );
       terminal.open(containerElement);
+      viewportLineAnchor = createTerminalViewportLineAnchor(terminal);
       outputLineAnchorTracker.reset();
       const outputBoundaryToken = crypto.randomUUID();
       outputBoundaryDisposable = registerTerminalOutputBoundaryHandler(
@@ -1743,42 +1812,60 @@ export function ThreadTerminalView({
         outputBoundaryToken,
         recordOutputStart,
       );
-      const restoreViewport = () => {
+      const restoreViewport = (afterGridResize = false) => {
         const activeBuffer = terminal?.buffer.active;
         if (!terminal || !activeBuffer) {
+          return;
+        }
+        if (
+          afterGridResize &&
+          viewportLineAnchor !== null &&
+          restoreTerminalViewportToRetainedLine({
+            terminal,
+            lineAnchor: viewportLineAnchor,
+          })
+        ) {
+          console.debug("Terminal viewport restore", {
+            terminalId: session.id,
+            branch: "retained-line-marker",
+            anchor: savedViewportAnchor,
+            line: viewportLineAnchor.getLine(),
+          });
+          hasRestoredViewport = true;
+          viewportReplaySaveGate.finishRestore();
           return;
         }
         const restoreOutputLineAnchors =
           savedOutputLineAnchor === null
             ? outputLineAnchors
             : [...outputLineAnchors, savedOutputLineAnchor];
-        terminal.scrollToLine(
-          resolveTerminalViewportRestore(
-            {
+        const line = resolveTerminalViewportRestore(
+          {
+            anchor: savedViewportAnchor,
+            baseY: activeBuffer.baseY,
+            outputLineAnchors: restoreOutputLineAnchors,
+            replayNextSequence,
+            replayStartSequence,
+          },
+          (branch) => {
+            console.debug("Terminal viewport restore", {
+              terminalId: session.id,
+              branch,
               anchor: savedViewportAnchor,
-              baseY: activeBuffer.baseY,
-              outputLineAnchors: restoreOutputLineAnchors,
-              replayNextSequence,
               replayStartSequence,
-            },
-            (branch) => {
-              console.debug("Terminal viewport restore", {
-                terminalId: session.id,
-                branch,
-                anchor: savedViewportAnchor,
-                replayStartSequence,
-                replayNextSequence,
-              });
-            },
-          ),
+              replayNextSequence,
+            });
+          },
         );
+        terminal.scrollToLine(line);
+        viewportLineAnchor?.setLine(line);
         hasRestoredViewport = true;
         viewportReplaySaveGate.finishRestore();
       };
       terminalResizeSubscription = restoreTerminalViewportOnResize({
         terminal,
         canRestore: () => hasRestoredViewport && !hasManualScrollIntent,
-        restoreViewport,
+        restoreViewport: () => restoreViewport(true),
       });
       const flushViewportOnPageHide = () => viewportPersistence.flush();
       window.addEventListener("pagehide", flushViewportOnPageHide);
@@ -1808,6 +1895,7 @@ export function ThreadTerminalView({
             : 0;
           anchoredOutputSequence =
             mappedOutput?.sequence ?? latestOutputSequence;
+          viewportLineAnchor?.setLine(visibleLine);
         }
         viewportPersistence.schedule({
           distanceFromTail,
@@ -1982,7 +2070,7 @@ export function ThreadTerminalView({
                   onGridApplied: updateGridVisibility,
                   restoreViewport: () => {
                     if (hasRestoredViewport && !hasManualScrollIntent) {
-                      restoreViewport();
+                      restoreViewport(true);
                     }
                   },
                 });
@@ -2076,7 +2164,7 @@ export function ThreadTerminalView({
                   onGridApplied: updateGridVisibility,
                   restoreViewport: () => {
                     if (hasRestoredViewport && !hasManualScrollIntent) {
-                      restoreViewport();
+                      restoreViewport(true);
                     }
                   },
                 });
@@ -2262,7 +2350,7 @@ export function ThreadTerminalView({
           fitTerminal();
           activeTransport.markLayoutSettled();
           if (hasRestoredViewport && !hasManualScrollIntent) {
-            restoreViewport();
+            restoreViewport(true);
           }
         },
         ready: document.fonts?.ready,
@@ -2382,6 +2470,8 @@ export function ThreadTerminalView({
     return () => {
       disposed = true;
       outputLineAnchorTracker.dispose();
+      viewportLineAnchor?.dispose();
+      viewportLineAnchor = null;
       controlActiveRef.current = false;
       setControlActive(false);
       setTerminalReady(false);
