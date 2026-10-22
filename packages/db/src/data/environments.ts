@@ -11,7 +11,7 @@ import type {
 import { areHostPathsEqual, evaluateEnvironmentLifecycleEvent } from "@bb/domain";
 import type { DbConnection, DbTransaction, DbQueryConnection } from "../connection.js";
 import type { DbNotifier } from "../notifier.js";
-import { environmentHookOperations, environments, threads } from "../schema.js";
+import { environmentHookOperations, environments, queuedThreadMessages, threads } from "../schema.js";
 import { createEnvironmentId } from "../ids.js";
 import { hostPathContains, hostPathEquals } from "./host-path-sql.js";
 
@@ -669,6 +669,7 @@ const liveThreadStates = or(
   and(isNull(threads.archivedAt), isNull(threads.deletedAt)),
   eq(threads.status, "stopping"),
   eq(threads.status, "active"),
+  sql`exists (select 1 from ${queuedThreadMessages} where ${queuedThreadMessages.threadId} = ${threads.id})`,
 );
 
 export function environmentHasLiveThreads(db: EnvironmentWriteConnection, environmentId: string): boolean {
@@ -723,7 +724,7 @@ export function listEnvironmentLiveThreadIds(db: EnvironmentWriteConnection, env
 }
 
 const liveThreadsPredicate = (environmentId: string) =>
-  sql`exists (select 1 from ${threads} where ${threads.environmentId} = ${environmentId} and ((${threads.archivedAt} is null and ${threads.deletedAt} is null) or ${threads.status} = 'stopping' or ${threads.status} = 'active'))`;
+  sql`exists (select 1 from ${threads} where ${threads.environmentId} = ${environmentId} and ((${threads.archivedAt} is null and ${threads.deletedAt} is null) or ${threads.status} = 'stopping' or ${threads.status} = 'active' or exists (select 1 from ${queuedThreadMessages} where ${queuedThreadMessages.threadId} = ${threads.id})))`;
 
 export interface EnvironmentTeardownClaimInput {
   row: EnvironmentRow;

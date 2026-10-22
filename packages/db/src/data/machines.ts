@@ -10,7 +10,12 @@ import {
   type SQL,
 } from "drizzle-orm";
 import type { DbConnection, DbTransaction } from "../connection.js";
-import { environments, hosts, threads } from "../schema.js";
+import {
+  environments,
+  hosts,
+  queuedThreadMessages,
+  threads,
+} from "../schema.js";
 
 type Connection = DbConnection | DbTransaction;
 
@@ -18,6 +23,7 @@ const liveThreadCondition = or(
   and(isNull(threads.archivedAt), isNull(threads.deletedAt)),
   eq(threads.status, "stopping"),
   eq(threads.status, "active"),
+  sql`exists (select 1 from ${queuedThreadMessages} where ${queuedThreadMessages.threadId} = ${threads.id})`,
 );
 
 export function listProviderMachines(db: Connection, providerId: string) {
