@@ -996,7 +996,7 @@ reach a native CLI through this declaration; and check that a host-specific
 session root (a moved config directory) is the env override's job rather
 than the declaration's. For `activity`, confirm that hook events plus
 transcript record matches describe a third CLI's turns, and decide whether a
-CLI that offers neither should report activity from screen state instead.
+CLI that offers neither should report activity from screen state instead. For `transcript.continuation`, audit the 64 KiB tail window, the 256-move cap and the compare-and-swap move against a provider whose continuation record is written outside that tail or whose next session id is not the id its hooks report, and confirm that holding the new session's records (at most 64) until the move is recorded still covers a provider whose hooks carry no session id field.
 
 ## `PluginProviderDeclaration.experimental_nativeCommandRoots`
 
