@@ -651,8 +651,12 @@ describe("ThreadTerminalView terminal focus boundary", () => {
           .toContainEqual({ type: "ack", nextSeq: 1 }),
       "bottom-follow replay was not acknowledged within 5000 ms",
     );
-    expect(getTerminal().buffer.active.viewportY).toBeLessThan(
-      getTerminal().buffer.active.baseY,
+    await waitForReadinessCondition(
+      () =>
+        expect(getTerminal().buffer.active.viewportY).toBe(
+          getTerminal().buffer.active.baseY,
+        ),
+      "reloaded bottom-following client was not at the bottom after replay",
     );
     fitRows = 11;
     act(() => getTerminal().resize(40, fitRows));
