@@ -27,6 +27,9 @@ import {
   releaseFinishedEnvironmentPreparationOwners,
   environmentHasLiveThreads,
   environments,
+  listBranchHolderEnvironments,
+  listEnvironmentLiveThreadIds,
+  listEnvironmentReferencingThreadIds,
   getEnvironment,
   getThread,
   findProjectEnvironmentByHostPath,
@@ -385,6 +388,93 @@ async function invokeRestore(
   return createResultSchema.parse(invocation.value);
 }
 
+function branchHolderBlockers(
+  deps: Deps,
+  holder: EnvironmentRow,
+  requesterThreadId: string,
+): { blockers: string[]; requesterOwns: boolean } {
+  const live = listEnvironmentLiveThreadIds(deps.db, holder.id);
+  const blockers = live.filter((threadId) => threadId !== requesterThreadId);
+  if (
+    holder.ownerThreadId !== null &&
+    holder.ownerThreadId !== requesterThreadId
+  ) {
+    const owner = getThread(deps.db, holder.ownerThreadId);
+    if (
+      owner !== null &&
+      owner.deletedAt === null &&
+      (owner.archivedAt === null ||
+        owner.status === "active" ||
+        owner.status === "stopping")
+    )
+      blockers.push(owner.id);
+  }
+  const requesterOwns =
+    holder.ownerThreadId === requesterThreadId ||
+    live.includes(requesterThreadId);
+  if (requesterOwns) {
+    blockers.push(
+      ...listEnvironmentReferencingThreadIds(deps.db, holder.id).filter(
+        (threadId) => threadId !== requesterThreadId,
+      ),
+    );
+  }
+  return { blockers: [...new Set(blockers)], requesterOwns };
+}
+
+function branchHolderInUseMessage(
+  holder: EnvironmentRow,
+  branchName: string,
+  threadIds: string[],
+): string {
+  const plural = threadIds.length > 1;
+  return `Branch ${branchName} is still checked out at ${holder.path} for ${plural ? "threads" : "thread"} ${threadIds.join(", ")}; ${plural ? "they" : "it"} must archive first (stop ${plural ? "them" : "it"} first if running), so that work is not deleted`;
+}
+
+async function clearBranchHolders(
+  deps: Deps,
+  record: PluginEnvironmentProviderRecord,
+  args: {
+    hostId: string;
+    branchName: string | null;
+    requesterThreadId: string;
+    excludeEnvironmentIds: readonly string[];
+  },
+): Promise<string | null> {
+  if (args.branchName === null) return null;
+  const holders = listBranchHolderEnvironments(deps.db, {
+    hostId: args.hostId,
+    branchName: args.branchName,
+    environmentProviderId: record.provider.id,
+    excludeEnvironmentIds: args.excludeEnvironmentIds,
+  });
+  for (const holder of holders) {
+    const { blockers, requesterOwns } = branchHolderBlockers(
+      deps,
+      holder,
+      args.requesterThreadId,
+    );
+    if (blockers.length > 0)
+      return branchHolderInUseMessage(holder, args.branchName, blockers);
+    if (requesterOwns) continue;
+    if (!requestEnvironmentRemoval(deps, holder.id)) {
+      const retry = branchHolderBlockers(deps, holder, args.requesterThreadId);
+      return retry.blockers.length > 0
+        ? branchHolderInUseMessage(holder, args.branchName, retry.blockers)
+        : `Branch ${args.branchName} is still checked out at ${holder.path} by another workspace that is being used, so it was left alone`;
+    }
+    await sweepProviderEnvironment(deps, holder.id);
+    const after = getEnvironment(deps.db, holder.id);
+    if (
+      after !== null &&
+      after.status !== "destroyed" &&
+      after.teardownStatus !== "removed"
+    )
+      return `Branch ${args.branchName} is still checked out at ${holder.path} by another workspace that could not be removed: ${after.teardownMessage ?? "its cleanup did not finish"}`;
+  }
+  return null;
+}
+
 async function runCreate(
   deps: Deps,
   record: PluginEnvironmentProviderRecord,
@@ -433,30 +523,50 @@ async function runCreate(
       report: provisioningReporter(deps, provisioning),
       signal: signal,
     };
-    let result =
+    const providerCall = !(
       provisioning.providerOwnsPath && provisioning.path !== null
-        ? {
-            status: "created" as const,
-            path: provisioning.path,
-            ownsPath: true,
-            mergeBaseBranch: provisioning.mergeBaseBranch ?? undefined,
-            resource: provisioning.resource ?? undefined,
-          }
-        : previous?.status === "destroyed"
-          ? await invokeRestore(record, {
-              ...operation,
-              previous: {
-                environment: toEnvironmentResponse(deps.db, previous),
-                resource:
-                  previous.teardownStatus === "removed"
-                    ? null
-                    : previous.resource,
-              },
-            })
-          : await invokeCreate(record, {
-              ...operation,
-              suggestedBranchName: context.suggestedBranchName,
-            });
+    );
+    const branchRefusal = providerCall
+      ? await clearBranchHolders(deps, record, {
+          hostId: context.host.id,
+          branchName:
+            previous?.status === "destroyed"
+              ? previous.branchName
+              : context.suggestedBranchName,
+          requesterThreadId: context.thread.id,
+          excludeEnvironmentIds:
+            previous === null
+              ? [provisioning.id]
+              : [provisioning.id, previous.id],
+        })
+      : null;
+    signal.throwIfAborted();
+    let result: PluginEnvironmentProviderCreateResult =
+      branchRefusal !== null
+        ? { status: "failed", message: branchRefusal }
+        : provisioning.providerOwnsPath && provisioning.path !== null
+          ? {
+              status: "created" as const,
+              path: provisioning.path,
+              ownsPath: true,
+              mergeBaseBranch: provisioning.mergeBaseBranch ?? undefined,
+              resource: provisioning.resource ?? undefined,
+            }
+          : previous?.status === "destroyed"
+            ? await invokeRestore(record, {
+                ...operation,
+                previous: {
+                  environment: toEnvironmentResponse(deps.db, previous),
+                  resource:
+                    previous.teardownStatus === "removed"
+                      ? null
+                      : previous.resource,
+                },
+              })
+            : await invokeCreate(record, {
+                ...operation,
+                suggestedBranchName: context.suggestedBranchName,
+              });
     if (result.status === "created") {
       let adoptedExistingEnvironment = false;
       let existingProviderOwnsLifecycle = false;

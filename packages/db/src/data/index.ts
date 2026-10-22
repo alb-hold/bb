@@ -345,6 +345,8 @@ export {
   listProviderLifecycleEnvironments,
   environmentHasLiveThreads,
   listEnvironmentLiveThreadIds,
+  listBranchHolderEnvironments,
+  listEnvironmentReferencingThreadIds,
   claimEnvironmentTeardown,
   releaseUnstartedEnvironmentTeardown,
   reviveFailedEnvironmentTeardown,

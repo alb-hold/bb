@@ -1,5 +1,5 @@
 import { prepareCachedQuery } from "../connection.js";
-import { and, asc, count, desc, eq, inArray, isNotNull, isNull, ne, or, placeholder, sql } from "drizzle-orm";
+import { and, asc, count, desc, eq, inArray, isNotNull, isNull, ne, notInArray, or, placeholder, sql } from "drizzle-orm";
 import type {
   DiscoveredWorkspaceProperties,
   EnvironmentChangeKind,
@@ -673,6 +673,43 @@ const liveThreadStates = or(
 
 export function environmentHasLiveThreads(db: EnvironmentWriteConnection, environmentId: string): boolean {
   return db.select({ id: threads.id }).from(threads).where(and(eq(threads.environmentId, environmentId), liveThreadStates)).limit(1).get() !== undefined;
+}
+
+export function listEnvironmentReferencingThreadIds(db: EnvironmentWriteConnection, environmentId: string): string[] {
+  return db
+    .select({ id: threads.id })
+    .from(threads)
+    .where(and(eq(threads.environmentId, environmentId), isNull(threads.deletedAt)))
+    .all()
+    .map((thread) => thread.id);
+}
+
+export function listBranchHolderEnvironments(
+  db: EnvironmentWriteConnection,
+  args: {
+    hostId: string;
+    branchName: string;
+    environmentProviderId: string;
+    excludeEnvironmentIds: readonly string[];
+  },
+): EnvironmentRow[] {
+  return db
+    .select()
+    .from(environments)
+    .where(
+      and(
+        eq(environments.hostId, args.hostId),
+        eq(environments.branchName, args.branchName),
+        eq(environments.environmentProviderId, args.environmentProviderId),
+        eq(environments.providerOwnsPath, true),
+        isNotNull(environments.path),
+        ne(environments.status, "destroyed"),
+        or(isNull(environments.teardownStatus), ne(environments.teardownStatus, "removed")),
+        args.excludeEnvironmentIds.length === 0 ? undefined : notInArray(environments.id, [...args.excludeEnvironmentIds]),
+      ),
+    )
+    .orderBy(asc(environments.createdAt))
+    .all();
 }
 
 export function listEnvironmentLiveThreadIds(db: EnvironmentWriteConnection, environmentId: string): string[] {
