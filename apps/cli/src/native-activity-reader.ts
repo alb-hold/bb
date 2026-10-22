@@ -151,12 +151,16 @@ export class NativeActivityReader {
     const activity = this.cli.activity;
     if (activity === undefined || this.suspended) return [];
     const reports: NativeActivityReport[] = [];
-    const push = (report: NativeActivityReport | null): void => {
+    const push = (
+      report: NativeActivityReport | null,
+      origin: { answered: boolean; transcript: boolean },
+    ): void => {
       if (report === null) return;
       if (
         this.droppedOpenQuestion &&
         report.state === "working" &&
-        report.prompt === null
+        !origin.answered &&
+        (report.prompt === null || origin.transcript)
       ) {
         return;
       }
@@ -234,7 +238,10 @@ export class NativeActivityReader {
         ) {
           this.confirmHookIdentity();
         }
-        push(report);
+        push(report, {
+          answered: signal.answered !== undefined,
+          transcript: false,
+        });
       }
       for (const reason of unconfirmedHookReasons) {
         this.onUnconfirmedHookIdentity?.(reason, this.unconfirmedHookCount);
@@ -271,7 +278,10 @@ export class NativeActivityReader {
       ) {
         this.confirmHookIdentity();
       }
-      push(report);
+      push(report, {
+        answered: identified.answered !== undefined,
+        transcript: true,
+      });
     });
     return reports;
   }
