@@ -6,16 +6,18 @@ import { formatRelativeTime } from "@/lib/relative-time";
 interface NativeActivityNoticeProps {
   hostId: string | null;
   notice: NativeActivityNoticeState;
+  pendingPromptCount: number;
   threadId: string;
 }
 
 export function NativeActivityNotice({
   hostId,
   notice,
+  pendingPromptCount,
   threadId,
 }: NativeActivityNoticeProps) {
   const hostsQuery = useHosts();
-  if (!notice.unconfirmed) return null;
+  if (!notice.unconfirmed || pendingPromptCount > 0) return null;
   const hostName =
     hostId === null
       ? null

@@ -3,6 +3,7 @@ import {
   getCollapsedChildActivity,
   hasThreadListWorkingActivity,
   isUnreadDoneThread,
+  nativeActivityGuidanceText,
   nativeActivityNoticeText,
   resolveThreadListIndicator,
   threadListIndicatorStateForThread,
@@ -705,5 +706,55 @@ describe("thread-activity", () => {
         unreadError: false,
       });
     });
+  });
+});
+
+describe("nativeActivityGuidanceText", () => {
+  const unconfirmed = {
+    lastEvidenceAt: null,
+    freshForMs: 90_000,
+    confirmation: "unconfirmed" as const,
+    evidenceKind: "unknown" as const,
+  };
+
+  it("is null for confirmed activity and when no activity diagnostic exists", () => {
+    expect(
+      nativeActivityGuidanceText(
+        makeSidebarThread({
+          experimental_nativeActivity: {
+            ...unconfirmed,
+            confirmation: "confirmed",
+            evidenceKind: "holder-report",
+            lastEvidenceAt: 1,
+          },
+        }),
+      ),
+    ).toBeNull();
+    expect(nativeActivityGuidanceText(makeSidebarThread())).toBeNull();
+  });
+
+  it("names the host and the thread when the activity is unconfirmed", () => {
+    expect(
+      nativeActivityGuidanceText(
+        makeSidebarThread({
+          id: "thr_x",
+          host: { id: "host_1", name: "Build box" },
+          experimental_nativeActivity: unconfirmed,
+        }),
+      ),
+    ).toBe(
+      "If this session started before bb was updated, update bb on Build box, save your work, type /exit in the terminal, then reopen with bb thread native thr_x. A pending question will need to be asked again.",
+    );
+  });
+
+  it("falls back to this thread's machine when the host is unknown", () => {
+    expect(
+      nativeActivityGuidanceText(
+        makeSidebarThread({
+          host: null,
+          experimental_nativeActivity: unconfirmed,
+        }),
+      ),
+    ).toContain("update bb on this thread's machine, save your work");
   });
 });
