@@ -534,4 +534,62 @@ describe("following a discovered session only after the server accepted it", () 
       });
     },
   );
+
+  describe.each([
+    ["with a session id field", true],
+    ["without a session id field", false],
+  ])(
+    "an open question trimmed from the holding bound, hooks %s",
+    (_shape, withSessionIdField) => {
+      const tool = { hook_event_name: "PreToolUse", session_id: SESSION_ID };
+      const startTrimmed = async () => {
+        const unconfirmed: string[] = [];
+        const h = holder(hookShape(withSessionIdField), unconfirmed);
+        h.appendHooks([
+          {
+            hook_event_name: "PermissionRequest",
+            session_id: SESSION_ID,
+            tool_name: "Bash",
+          },
+          ...Array.from({ length: 70 }, () => tool),
+        ]);
+        const discoverer = h.makeDiscoverer(async () => ({}));
+        expect(await h.tick()).toEqual([]);
+        await discoverer.discover();
+        return { h, unconfirmed };
+      };
+
+      it("is never replaced by Working: it stays unconfirmed through a fresh unrelated hook", async () => {
+        const { h, unconfirmed } = await startTrimmed();
+        expect(await h.readOnly()).toEqual([]);
+        expect(unconfirmed).toEqual(["held-overflow:7"]);
+        h.appendHooks([tool]);
+        expect(await h.tick()).toEqual([]);
+        expect(await h.tick()).toEqual([]);
+      });
+
+      it("is cleared by a fresh idle", async () => {
+        const { h } = await startTrimmed();
+        expect(await h.readOnly()).toEqual([]);
+        h.appendHooks([{ hook_event_name: "Stop", session_id: SESSION_ID }]);
+        expect(await h.readOnly()).toEqual(["idle"]);
+        h.appendHooks([tool]);
+        expect(await h.readOnly()).toEqual(["idle", "working"]);
+      });
+
+      it("is cleared by a fresh prompt, after which heartbeats resume", async () => {
+        const { h } = await startTrimmed();
+        expect(await h.readOnly()).toEqual([]);
+        h.appendHooks([
+          {
+            hook_event_name: "UserPromptSubmit",
+            prompt: "next",
+            session_id: SESSION_ID,
+          },
+        ]);
+        expect(await h.readOnly()).toEqual(["working:next"]);
+        expect(await h.tick()).toEqual(["working:next", "working"]);
+      });
+    },
+  );
 });
