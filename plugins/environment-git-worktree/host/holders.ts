@@ -8,7 +8,7 @@ const LINUX_SCAN_CONCURRENCY = 32;
 export interface WorktreeHolder {
   pid: number;
   command: string | null;
-  through: "working folder" | "open file";
+  through: "working folder" | "open file" | "mapped file";
 }
 
 export type WorktreeHolderScan =
@@ -35,9 +35,9 @@ function isUnder(candidate: string, directory: string): boolean {
 
 const GONE_CODES = new Set(["ENOENT", "ESRCH", "ENOTDIR"]);
 
-async function readOptional<T>(
-  read: () => Promise<T>,
-): Promise<{ value: T } | { gone: true } | { failed: string }> {
+type Read<T> = { value: T } | { gone: true } | { failed: string };
+
+async function readOptional<T>(read: () => Promise<T>): Promise<Read<T>> {
   try {
     return { value: await read() };
   } catch (error) {
@@ -48,41 +48,121 @@ async function readOptional<T>(
   }
 }
 
+type ProcessResult = WorktreeHolder | { unknown: string } | null;
+
+async function checkLink(
+  pid: number,
+  name: string,
+  link: string,
+  directory: string,
+  through: WorktreeHolder["through"],
+  command: string | null,
+): Promise<ProcessResult> {
+  const target = await readOptional(() => fs.readlink(link));
+  if ("failed" in target)
+    return { unknown: `process ${pid} ${name} (${target.failed})` };
+  if ("value" in target && isUnder(target.value, directory)) {
+    return { pid, command, through };
+  }
+  return null;
+}
+
 async function scanLinuxProcess(
   pid: number,
   directory: string,
-): Promise<WorktreeHolder | { unknown: string } | null> {
-  const command = await readOptional(() =>
-    fs.readFile(`/proc/${pid}/comm`, "utf8"),
-  );
-  const name = "value" in command ? command.value.trim() || null : null;
+): Promise<ProcessResult> {
+  const base = `/proc/${pid}`;
+  const comm = await readOptional(() => fs.readFile(`${base}/comm`, "utf8"));
+  const command = "value" in comm ? comm.value.trim() || null : null;
 
-  const cwd = await readOptional(() => fs.readlink(`/proc/${pid}/cwd`));
-  if ("failed" in cwd) return { unknown: `process ${pid} (${cwd.failed})` };
-  if ("value" in cwd && isUnder(cwd.value, directory)) {
-    return { pid, command: name, through: "working folder" };
-  }
-
-  const descriptors = await readOptional(() => fs.readdir(`/proc/${pid}/fd`));
-  if ("failed" in descriptors) {
-    return { unknown: `process ${pid} (${descriptors.failed})` };
-  }
-  if ("gone" in descriptors) return null;
-  for (const descriptor of descriptors.value) {
-    const target = await readOptional(() =>
-      fs.readlink(`/proc/${pid}/fd/${descriptor}`),
+  const tasks = await readOptional(() => fs.readdir(`${base}/task`));
+  if ("gone" in tasks) return null;
+  if ("failed" in tasks)
+    return { unknown: `process ${pid} tasks (${tasks.failed})` };
+  for (const task of tasks.value) {
+    const found = await checkLink(
+      pid,
+      "working folder",
+      `${base}/task/${task}/cwd`,
+      directory,
+      "working folder",
+      command,
     );
-    if ("failed" in target) {
-      return { unknown: `process ${pid} (${target.failed})` };
+    if (found !== null) return found;
+  }
+
+  const exe = await checkLink(
+    pid,
+    "program",
+    `${base}/exe`,
+    directory,
+    "open file",
+    command,
+  );
+  if (exe !== null) return exe;
+
+  const descriptors = await readOptional(() => fs.readdir(`${base}/fd`));
+  if ("gone" in descriptors) return null;
+  if ("failed" in descriptors) {
+    return { unknown: `process ${pid} open files (${descriptors.failed})` };
+  }
+  for (const descriptor of descriptors.value) {
+    const found = await checkLink(
+      pid,
+      "open file",
+      `${base}/fd/${descriptor}`,
+      directory,
+      "open file",
+      command,
+    );
+    if (found !== null) return found;
+  }
+
+  const maps = await readOptional(() => fs.readFile(`${base}/maps`, "utf8"));
+  if ("gone" in maps) return null;
+  if ("failed" in maps)
+    return { unknown: `process ${pid} memory maps (${maps.failed})` };
+  for (const line of maps.value.split("\n")) {
+    const fields = line.split(/\s+/u);
+    const permissions = fields[1] ?? "";
+    const mapped = fields.slice(5).join(" ");
+    if (
+      permissions[1] === "w" &&
+      permissions[3] === "s" &&
+      mapped !== "" &&
+      isUnder(mapped, directory)
+    ) {
+      return { pid, command, through: "mapped file" };
     }
-    if ("value" in target && isUnder(target.value, directory)) {
-      return { pid, command: name, through: "open file" };
+  }
+  return null;
+}
+
+async function linuxVisibilityProblem(): Promise<string | null> {
+  const own = await readOptional(() => fs.readlink("/proc/self/ns/pid"));
+  const init = await readOptional(() => fs.readlink("/proc/1/ns/pid"));
+  if (!("value" in own) || !("value" in init) || own.value !== init.value) {
+    return "this process may not see every process (it runs in a separate process namespace)";
+  }
+  const mounts = await readOptional(() =>
+    fs.readFile("/proc/self/mountinfo", "utf8"),
+  );
+  if (!("value" in mounts)) return "the process list settings are unreadable";
+  for (const line of mounts.value.split("\n")) {
+    const fields = line.split(" ");
+    if (fields[4] !== "/proc") continue;
+    const options = line.slice(line.indexOf(" - ") + 3);
+    const hidepid = /hidepid=([^,\s]+)/u.exec(options);
+    if (hidepid !== null && hidepid[1] !== "0" && hidepid[1] !== "off") {
+      return "the process list is hidden from this user";
     }
   }
   return null;
 }
 
 async function scanLinux(directory: string): Promise<WorktreeHolderScan> {
+  const problem = await linuxVisibilityProblem();
+  if (problem !== null) return { status: "unknown", reason: problem };
   const listing = await readOptional(() => fs.readdir("/proc"));
   if (!("value" in listing)) {
     return { status: "unknown", reason: "the process list is unreadable" };
@@ -112,10 +192,6 @@ async function scanLinux(directory: string): Promise<WorktreeHolderScan> {
     };
   }
   return { status: "clear" };
-}
-
-function isPrivileged(): boolean {
-  return typeof process.getuid === "function" && process.getuid() === 0;
 }
 
 function runLsof(directory: string): Promise<{
@@ -151,18 +227,6 @@ async function scanWithLsof(directory: string): Promise<WorktreeHolderScan> {
   if (result.spawnFailed) {
     return { status: "unknown", reason: "lsof could not be run" };
   }
-  if (result.code === 1 && result.stdout === "" && result.stderr === "") {
-    return isPrivileged()
-      ? { status: "clear" }
-      : {
-          status: "unknown",
-          reason:
-            "lsof lists only your own processes without administrator rights",
-        };
-  }
-  if (result.code !== 0 || result.stderr !== "") {
-    return { status: "unknown", reason: "lsof did not finish cleanly" };
-  }
   const holders = new Map<number, WorktreeHolder>();
   let pid: number | null = null;
   let command: string | null = null;
@@ -186,13 +250,10 @@ async function scanWithLsof(directory: string): Promise<WorktreeHolderScan> {
   }
   if (holders.size > 0)
     return { status: "held", holders: [...holders.values()] };
-  return isPrivileged()
-    ? { status: "clear" }
-    : {
-        status: "unknown",
-        reason:
-          "lsof lists only your own processes without administrator rights",
-      };
+  return {
+    status: "unknown",
+    reason: "lsof cannot prove it sees every process",
+  };
 }
 
 export async function scanWorktreeHolders(

@@ -35,15 +35,11 @@ function hold(script: string, cwd: string, args: string[] = []) {
 }
 
 describe("scanWorktreeHolders", () => {
-  it("is conclusive about an unused folder only with rights to inspect every process", async () => {
+  it("never reports an unused folder as held, and is clear only when every process could be inspected", async () => {
     const directory = await makeDirectory();
     const scan = await scanWorktreeHolders(directory);
-    if (process.platform !== "win32" && process.getuid?.() === 0) {
-      expect(scan).toEqual({ status: "clear" });
-    } else {
-      expect(scan.status).not.toBe("held");
-      expect(["clear", "unknown"]).toContain(scan.status);
-    }
+    expect(["clear", "unknown"]).toContain(scan.status);
+    if (process.platform !== "linux") expect(scan.status).toBe("unknown");
   });
 
   it("reports a program whose working folder is inside, without signalling it", async ({
