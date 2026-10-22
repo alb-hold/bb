@@ -1551,6 +1551,14 @@ export function ThreadTerminalView({
         outputLineAnchors,
       );
     };
+    const updateViewportLineAnchor = (line: number) => {
+      const activeBuffer = terminal?.buffer.active;
+      if (activeBuffer && line < activeBuffer.baseY) {
+        viewportLineAnchor?.setLine(line);
+      } else {
+        viewportLineAnchor?.clear();
+      }
+    };
     let hasRestoredViewport = false;
     let hasManualScrollIntent = false;
     let manualScrollTimeout: ReturnType<typeof setTimeout> | null = null;
@@ -1858,7 +1866,7 @@ export function ThreadTerminalView({
           },
         );
         terminal.scrollToLine(line);
-        viewportLineAnchor?.setLine(line);
+        updateViewportLineAnchor(line);
         hasRestoredViewport = true;
         viewportReplaySaveGate.finishRestore();
       };
@@ -1895,7 +1903,7 @@ export function ThreadTerminalView({
             : 0;
           anchoredOutputSequence =
             mappedOutput?.sequence ?? latestOutputSequence;
-          viewportLineAnchor?.setLine(visibleLine);
+          updateViewportLineAnchor(visibleLine);
         }
         viewportPersistence.schedule({
           distanceFromTail,

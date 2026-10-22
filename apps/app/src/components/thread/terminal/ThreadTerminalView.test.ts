@@ -931,6 +931,11 @@ describe("terminal viewport restore", () => {
       );
     };
     terminal.scrollToLine(1_100);
+    expect(
+      terminal.buffer.active
+        .getLine(terminal.buffer.active.viewportY)
+        ?.translateToString(true),
+    ).toBe("line 01101");
     const viewportLineAnchor = createTerminalViewportLineAnchor(terminal);
     viewportLineAnchor.setLine(1_100);
     const pendingResizeFrame: { current: FrameRequestCallback | null } = {
