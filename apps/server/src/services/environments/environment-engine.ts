@@ -456,19 +456,16 @@ async function clearBranchHolders(
     );
     if (blockers.length > 0)
       return branchHolderInUseMessage(holder, args.branchName, blockers);
-    if (requesterOwns) {
-      if (holder.ownerThreadId !== args.requesterThreadId) continue;
-      if (holder.teardownStatus === null) {
-        updatePreparingEnvironment(deps.db, {
-          ...holder,
-          teardownStatus: "running",
-          retireAt: Date.now(),
-        });
-      }
-    } else if (!requestEnvironmentRemoval(deps, holder.id)) {
+    if (!requestEnvironmentRemoval(deps, holder.id)) {
       const retry = branchHolderBlockers(deps, holder, args.requesterThreadId);
-      return retry.blockers.length > 0
-        ? branchHolderInUseMessage(holder, args.branchName, retry.blockers)
+      if (retry.blockers.length > 0)
+        return branchHolderInUseMessage(
+          holder,
+          args.branchName,
+          retry.blockers,
+        );
+      return requesterOwns
+        ? `Branch ${args.branchName} is still checked out at ${holder.path} by an earlier attempt of this same workspace request. bb keeps it until its release can be verified, and a new attempt cannot reuse its branch or path yet`
         : `Branch ${args.branchName} is still checked out at ${holder.path} by another workspace that is being used, so it was left alone`;
     }
     await sweepProviderEnvironment(deps, holder.id);

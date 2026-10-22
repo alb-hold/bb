@@ -301,7 +301,7 @@ describe("a create or restore on a branch another workspace still holds", () => 
       }
     }));
 
-  it("supersedes the requester's own earlier attempt through the engine removal before it creates", async () =>
+  it("keeps the requester's own earlier attempt and refuses the create instead of bypassing the starting-owner check", async () =>
     withTestHarness(async (harness) => {
       const { create, removeSpy: remove, record } = installProvider({});
       const fixture = seedFixture(harness);
@@ -337,14 +337,18 @@ describe("a create or restore on a branch another workspace still holds", () => 
         suggestedBranchName: BRANCH,
       });
       try {
-        await expect.poll(() => create.mock.calls.length).toBe(1);
-        expect(remove).toHaveBeenCalledTimes(1);
-        expect(remove.mock.invocationCallOrder[0]).toBeLessThan(
-          create.mock.invocationCallOrder[0] ?? 0,
-        );
+        const row = await settled(harness, requester.id);
+
+        expect(row).toMatchObject({
+          status: "error",
+          statusMessage: expect.stringContaining("earlier attempt"),
+        });
+        expect(row?.statusMessage).toContain(BRANCH);
+        expect(create).not.toHaveBeenCalled();
+        expect(remove).not.toHaveBeenCalled();
         expect(getEnvironment(harness.db, holder.id)).toMatchObject({
-          status: "destroyed",
-          teardownStatus: "removed",
+          status: "error",
+          teardownStatus: null,
         });
       } finally {
         await cancelProviderEnvironmentCreation(harness.deps, requester.id);
