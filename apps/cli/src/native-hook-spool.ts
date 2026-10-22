@@ -8,6 +8,7 @@ import {
   readdirSync,
   readFileSync,
   readSync,
+  renameSync,
   rmSync,
   statfsSync,
   statSync,
@@ -25,6 +26,10 @@ const SCAN_INTERVAL_MS = 2_000;
 const GAP_REPORT_AFTER_MS = 10_000;
 const ABANDONED_TEMP_AGE_MS = 10 * 60_000;
 const MAX_RESERVATIONS_PER_SCAN = 64;
+const MAX_LOCK_SPINS = 2_000;
+const APPEND_LOCK_NAME = "hooks.lock";
+const STALE_LOCK_AFTER_MS = 10_000;
+const INCOMPLETE_LINE_AFTER_MS = 10_000;
 const MAX_APPEND_READ_BYTES = 4 * 1024 * 1024;
 const NETWORK_FILESYSTEM_TYPES: ReadonlySet<number> = new Set([
   0x6969, 0x517b, 0xff534d42, 0xfe534d42, 0x01021997, 0x65735546, 0x5346414f,
@@ -197,8 +202,23 @@ export function hookSpoolCommand(directory: string): string {
   ].join("; ");
 }
 
-export function hookAppendCommand(file: string): string {
-  return `{ cat; echo; } >> ${shellQuote(file)} 2>/dev/null; exit 0`;
+export function hookAppendCommand(
+  file: string,
+  spins: number = MAX_LOCK_SPINS,
+): string {
+  return [
+    "exec 2>/dev/null",
+    `d=${shellQuote(path.dirname(file))}`,
+    `f=${shellQuote(file)}`,
+    'm="$d/.tmp.$$.mark"',
+    ': >"$m" || exit 0',
+    "r=$(cat) || exit 0",
+    "i=0",
+    `until mkdir "$d/${APPEND_LOCK_NAME}"; do i=$((i+1)); [ "$i" -lt ${spins} ] || exit 0; done`,
+    'printf \'%s\\n\' "$r" >>"$f" && rm -f "$m"',
+    `rm -rf "$d/${APPEND_LOCK_NAME}"`,
+    "exit 0",
+  ].join("; ");
 }
 
 export function hookCommandFor(target: string | { appendFile: string }): string {
@@ -285,7 +305,9 @@ export class HookSpoolReader {
       }
       const temp = TEMP_NAME.exec(name);
       if (temp === null || this.reportedTemps.has(name)) continue;
-      if (this.isInFlightOrPublished(name, Number(temp[1]), now)) continue;
+      if (isInFlightOrPublished(this.directory, name, Number(temp[1]), now)) {
+        continue;
+      }
       this.reportedTemps.add(name);
       lost += 1;
     }
@@ -336,22 +358,6 @@ export class HookSpoolReader {
     this.reportedLate.add(name);
     return 1;
   }
-
-  private isInFlightOrPublished(
-    name: string,
-    pid: number,
-    now: number,
-  ): boolean {
-    let stats: Stats;
-    try {
-      stats = statSync(path.join(this.directory, name));
-    } catch {
-      return true;
-    }
-    if (stats.nlink > 1) return true;
-    if (now - stats.mtimeMs > ABANDONED_TEMP_AGE_MS) return false;
-    return processIsAlive(pid);
-  }
 }
 
 export function reserveSequence(
@@ -370,6 +376,23 @@ export function reserveSequence(
   }
 }
 
+function isInFlightOrPublished(
+  directory: string,
+  name: string,
+  pid: number,
+  now: number,
+): boolean {
+  let stats: Stats;
+  try {
+    stats = statSync(path.join(directory, name));
+  } catch {
+    return true;
+  }
+  if (stats.nlink > 1) return true;
+  if (now - stats.mtimeMs > ABANDONED_TEMP_AGE_MS) return false;
+  return processIsAlive(pid);
+}
+
 function isOwnedDirectory(directory: string): boolean {
   try {
     const stats = statSync(directory);
@@ -384,10 +407,25 @@ function isOwnedDirectory(directory: string): boolean {
 
 export class HookAppendReader {
   private offset = 0;
+  private lastScanAt = 0;
+  private incompleteSince: number | null = null;
+  private incompleteOffset = -1;
+  private incompleteCounted = false;
+  private brokenLocks = 0;
+  private readonly reportedMarkers = new Set<string>();
 
   constructor(private readonly file: string) {}
 
-  read(): HookSpoolRead {
+  read(now: number = Date.now()): HookSpoolRead {
+    const result = this.readLines(now);
+    if (now - this.lastScanAt >= SCAN_INTERVAL_MS) {
+      this.lastScanAt = now;
+      result.unreadable += this.breakStaleLock(now) + this.scanMarkers(now);
+    }
+    return result;
+  }
+
+  private readLines(now: number): HookSpoolRead {
     const records: unknown[] = [];
     let unreadable = 0;
     let descriptor: number;
@@ -397,24 +435,26 @@ export class HookAppendReader {
       return { records, unreadable };
     }
     try {
-      const length = Math.min(
-        fstatSync(descriptor).size - this.offset,
-        MAX_APPEND_READ_BYTES,
-      );
-      if (length <= 0) return { records, unreadable };
+      const size = fstatSync(descriptor).size;
+      const length = Math.min(size - this.offset, MAX_APPEND_READ_BYTES);
+      if (length <= 0) {
+        this.incompleteSince = null;
+        return { records, unreadable };
+      }
       const buffer = Buffer.alloc(length);
       const filled = readSync(descriptor, buffer, 0, length, this.offset);
       const text = buffer.subarray(0, filled);
       const end = text.lastIndexOf(0x0a);
-      if (end < 0) {
-        if (filled >= MAX_APPEND_READ_BYTES) {
-          this.offset += filled;
-          unreadable += 1;
-        }
-        return { records, unreadable };
+      if (end < 0 && filled >= MAX_APPEND_READ_BYTES) {
+        this.offset += filled;
+        return { records, unreadable: 1 };
       }
-      this.offset += end + 1;
-      for (const line of text.subarray(0, end).toString("utf8").split("\n")) {
+      const consumed = end + 1;
+      this.offset += consumed;
+      for (const line of text
+        .subarray(0, consumed)
+        .toString("utf8")
+        .split("\n")) {
         if (line.trim().length === 0) continue;
         try {
           records.push(JSON.parse(line));
@@ -422,12 +462,71 @@ export class HookAppendReader {
           unreadable += 1;
         }
       }
+      unreadable += this.trackIncompleteLine(
+        filled > consumed && this.offset + filled - consumed >= size,
+        now,
+      );
     } catch {
       return { records, unreadable };
     } finally {
       closeSync(descriptor);
     }
     return { records, unreadable };
+  }
+
+  private trackIncompleteLine(incomplete: boolean, now: number): number {
+    if (!incomplete) {
+      this.incompleteSince = null;
+      return 0;
+    }
+    if (this.incompleteSince === null || this.incompleteOffset !== this.offset) {
+      this.incompleteSince = now;
+      this.incompleteOffset = this.offset;
+      this.incompleteCounted = false;
+    }
+    if (
+      !this.incompleteCounted &&
+      now - this.incompleteSince >= INCOMPLETE_LINE_AFTER_MS
+    ) {
+      this.incompleteCounted = true;
+      return 1;
+    }
+    return 0;
+  }
+
+  private breakStaleLock(now: number): number {
+    const lock = path.join(path.dirname(this.file), APPEND_LOCK_NAME);
+    try {
+      if (now - statSync(lock).mtimeMs < STALE_LOCK_AFTER_MS) return 0;
+      this.brokenLocks += 1;
+      const moved = `${lock}.stale.${process.pid}.${this.brokenLocks}`;
+      renameSync(lock, moved);
+      rmSync(moved, { force: true, recursive: true });
+      return 1;
+    } catch {
+      return 0;
+    }
+  }
+
+  private scanMarkers(now: number): number {
+    const directory = path.dirname(this.file);
+    let names: string[];
+    try {
+      names = readdirSync(directory);
+    } catch {
+      return 0;
+    }
+    let lost = 0;
+    for (const name of names) {
+      const marker = TEMP_NAME.exec(name);
+      if (marker === null || this.reportedMarkers.has(name)) continue;
+      if (isInFlightOrPublished(directory, name, Number(marker[1]), now)) {
+        continue;
+      }
+      this.reportedMarkers.add(name);
+      lost += 1;
+    }
+    return lost;
   }
 }
 
