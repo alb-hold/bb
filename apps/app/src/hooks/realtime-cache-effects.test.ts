@@ -1164,7 +1164,10 @@ describe("createRealtimeCacheEffects", () => {
 
     resolveFetches[0]?.(idleResponse);
     await vi.advanceTimersByTimeAsync(0);
-    expect(queryClient.getQueryData(threadSearchKey)).toEqual(idleResponse);
+    expect(
+      queryClient.getQueryData<typeof idleResponse>(threadSearchKey)?.active
+        .results[0]?.thread,
+    ).toMatchObject({ status: "active", updatedAt: 200 });
     await vi.advanceTimersByTimeAsync(1_000);
     expect(searchQueryFn).toHaveBeenCalledTimes(2);
     expect(signals[0]?.aborted).toBe(false);
