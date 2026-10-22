@@ -21,8 +21,8 @@ import {
 import { createNativeActivityReporter } from "../../native-activity-reporter.js";
 import { nativeActivityHookSettings } from "../../native-activity.js";
 import {
-  createHookSpool,
-  hookSpoolSupportsLinks,
+  hookSpoolCandidates,
+  openHookSpool,
   removeHookSpool,
 } from "../../native-hook-spool.js";
 import {
@@ -270,13 +270,26 @@ async function holdNativeHarness(
       const activity = spec.cli.activity;
       const hooks = activity?.hooks;
       const spool =
-        hooks === undefined ? null : createHookSpool(os.tmpdir(), threadId);
+        hooks === undefined
+          ? null
+          : openHookSpool(
+              hookSpoolCandidates({
+                env: process.env,
+                home: os.homedir(),
+                tmpDir: os.tmpdir(),
+              }),
+              threadId,
+              () => {
+                if (ownsSocket) {
+                  logNativeHolderEvent(
+                    socketPath,
+                    "activity-hook-spool-unsupported",
+                    {},
+                  );
+                }
+              },
+            );
       hookSpoolDirectory = spool;
-      if (spool !== null && !hookSpoolSupportsLinks(spool)) {
-        if (ownsSocket) {
-          logNativeHolderEvent(socketPath, "activity-hook-spool-unsupported", {});
-        }
-      }
       const activityArgs =
         hooks === undefined || spool === null
           ? []

@@ -1,5 +1,5 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { readdirSync, writeFileSync } from "node:fs";
+import { readdirSync, statSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { ProviderNativeTerminal } from "@bb/domain";
@@ -259,25 +259,63 @@ describe.skipIf(process.platform === "win32")(
       });
     });
 
-    it("waits for a gap in the sequence, never skips it, and delivers in order once it is filled", () => {
+    const putRecord = (spool: string, sequence: number, tool: string) =>
+      writeFileSync(
+        path.join(spool, String(sequence).padStart(12, "0")),
+        record("PermissionRequest", { tool_name: tool }),
+      );
+
+    it("waits for a gap in the sequence and delivers in order once it is filled before the threshold", () => {
       const { spool } = fixture();
-      const put = (sequence: number, tool: string) =>
-        writeFileSync(
-          path.join(spool, String(sequence).padStart(12, "0")),
-          record("PermissionRequest", { tool_name: tool }),
-        );
       const reader = new HookSpoolReader(spool);
-      put(1, "One");
-      put(3, "Three");
-      expect(reader.read().records.map(toolOf)).toEqual(["One"]);
-      expect(reader.read(Date.now() + 3_000).records).toEqual([]);
-      const long = reader.read(Date.now() + 20_000);
-      expect(long.records).toEqual([]);
-      put(2, "Two");
-      expect(reader.read(Date.now() + 25_000).records.map(toolOf)).toEqual([
+      const start = Date.now();
+      putRecord(spool, 1, "One");
+      putRecord(spool, 3, "Three");
+      expect(reader.read(start).records.map(toolOf)).toEqual(["One"]);
+      expect(reader.read(start + 3_000)).toEqual({ records: [], unreadable: 0 });
+      expect(reader.read(start + 8_000)).toEqual({ records: [], unreadable: 0 });
+      putRecord(spool, 2, "Two");
+      expect(reader.read(start + 9_000).records.map(toolOf)).toEqual([
         "Two",
         "Three",
       ]);
+    });
+
+    it("skips a gap that persisted past the threshold, reports it once as lost evidence, and keeps reading", () => {
+      const { spool } = fixture();
+      const reader = new HookSpoolReader(spool);
+      const start = Date.now();
+      putRecord(spool, 1, "One");
+      putRecord(spool, 3, "Three");
+      expect(reader.read(start).records.map(toolOf)).toEqual(["One"]);
+      expect(reader.read(start + 3_000)).toEqual({ records: [], unreadable: 0 });
+      const skipped = reader.read(start + 11_000);
+      expect(skipped.records.map(toolOf)).toEqual(["Three"]);
+      expect(skipped.unreadable).toBe(1);
+      putRecord(spool, 4, "Four");
+      expect(reader.read(start + 13_000)).toEqual({
+        records: [{ hook_event_name: "PermissionRequest", session_id: SESSION_ID, tool_name: "Four" }],
+        unreadable: 0,
+      });
+    });
+
+    it("counts a record that appears in a skipped number as late or lost, once, and never applies it out of order", () => {
+      const { spool } = fixture();
+      const reader = new HookSpoolReader(spool);
+      const start = Date.now();
+      putRecord(spool, 1, "One");
+      putRecord(spool, 3, "Three");
+      reader.read(start);
+      reader.read(start + 3_000);
+      reader.read(start + 11_000);
+      putRecord(spool, 2, "Two");
+      const late = reader.read(start + 14_000);
+      expect(late).toEqual({ records: [], unreadable: 1 });
+      expect(statSync(path.join(spool, "000000000002")).size).toBe(0);
+      expect(reader.read(start + 17_000)).toEqual({
+        records: [],
+        unreadable: 0,
+      });
     });
 
     it("does not deliver a record twice when it is read repeatedly", async () => {
