@@ -1820,12 +1820,28 @@ export function ThreadTerminalView({
         outputBoundaryToken,
         recordOutputStart,
       );
+      let liveBottomBeforeGridResize = false;
+      const captureLiveViewportBeforeGridResize = () => {
+        const activeBuffer = terminal?.buffer.active;
+        liveBottomBeforeGridResize =
+          activeBuffer !== undefined &&
+          activeBuffer.viewportY === activeBuffer.baseY;
+      };
+      const clearLiveViewportBeforeGridResize = () => {
+        window.requestAnimationFrame(() => {
+          liveBottomBeforeGridResize = false;
+        });
+      };
       const restoreViewport = (afterGridResize = false) => {
         const activeBuffer = terminal?.buffer.active;
         if (!terminal || !activeBuffer) {
           return;
         }
-        if (afterGridResize && savedViewportAnchor?.distanceFromTail === 0) {
+        if (
+          afterGridResize &&
+          (liveBottomBeforeGridResize ||
+            savedViewportAnchor?.distanceFromTail === 0)
+        ) {
           terminal.scrollToBottom();
           viewportLineAnchor?.clear();
           hasRestoredViewport = true;
@@ -2078,6 +2094,7 @@ export function ThreadTerminalView({
             if (!markerGridActive) {
               latestPtyGrid = nextSize;
               if (outputPipeline) {
+                captureLiveViewportBeforeGridResize();
                 applyTerminalGridAndKeepViewport({
                   pipeline: outputPipeline,
                   cols: nextSize.cols,
@@ -2087,6 +2104,7 @@ export function ThreadTerminalView({
                     if (hasRestoredViewport && !hasManualScrollIntent) {
                       restoreViewport(true);
                     }
+                    clearLiveViewportBeforeGridResize();
                   },
                 });
               }
@@ -2172,6 +2190,7 @@ export function ThreadTerminalView({
             }
             if (message.type === "session-updated" && !markerGridActive) {
               if (outputPipeline) {
+                captureLiveViewportBeforeGridResize();
                 applyTerminalGridAndKeepViewport({
                   pipeline: outputPipeline,
                   cols,
@@ -2181,6 +2200,7 @@ export function ThreadTerminalView({
                     if (hasRestoredViewport && !hasManualScrollIntent) {
                       restoreViewport(true);
                     }
+                    clearLiveViewportBeforeGridResize();
                   },
                 });
               }
@@ -2362,11 +2382,13 @@ export function ThreadTerminalView({
           if (disposed) {
             return;
           }
+          captureLiveViewportBeforeGridResize();
           fitTerminal();
           activeTransport.markLayoutSettled();
           if (hasRestoredViewport && !hasManualScrollIntent) {
             restoreViewport(true);
           }
+          clearLiveViewportBeforeGridResize();
         },
         ready: document.fonts?.ready,
         subscribe: (onSignal) =>

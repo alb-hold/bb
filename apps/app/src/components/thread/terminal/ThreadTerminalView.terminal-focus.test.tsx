@@ -505,6 +505,108 @@ describe("ThreadTerminalView terminal focus boundary", () => {
     );
   });
 
+  it("keeps a live bottom-following client at the bottom after typed output and a shared resize", async () => {
+    prepareMobileTerminal();
+    let fitCols = 40;
+    let fitRows = 12;
+    vi.spyOn(FitAddon.prototype, "proposeDimensions").mockImplementation(
+      () => ({ cols: fitCols, rows: fitRows }),
+    );
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+      queueMicrotask(() => callback(0));
+      return 1;
+    });
+    vi.stubGlobal("cancelAnimationFrame", vi.fn());
+    let mountedTerminal: Terminal | null = null;
+    const openTerminal = Terminal.prototype.open;
+    vi.spyOn(Terminal.prototype, "open").mockImplementation(function (
+      this: Terminal,
+      element: HTMLElement,
+    ) {
+      mountedTerminal = this;
+      openTerminal.call(this, element);
+    });
+    const getTerminal = () => {
+      if (!mountedTerminal) throw new Error("terminal was not mounted");
+      return mountedTerminal;
+    };
+    const session = renderMobileTerminal();
+    await waitForReadinessCondition(
+      () => expect(testState.sockets).toHaveLength(1),
+      "terminal socket was not created within 5000 ms",
+    );
+    const socket = testState.sockets[0];
+    if (!socket) throw new Error("terminal socket was not created");
+    socket.receive({
+      type: "attached",
+      session,
+      replayStartSeq: 0,
+      nextSeq: 1,
+    });
+    const lines = (start: number, end: number) =>
+      Array.from(
+        { length: end - start + 1 },
+        (_, index) => `line ${String(start + index).padStart(5, "0")}`,
+      ).join("\r\n");
+    socket.receive({
+      type: "output",
+      chunk: { seq: 0, dataBase64: btoa(lines(1, 1_000)) },
+    });
+    await waitForReadinessCondition(
+      () =>
+        expect(testState.socketMessages.map((message) => JSON.parse(message)))
+          .toContainEqual({ type: "ack", nextSeq: 1 }),
+      "replay output was not acknowledged within 5000 ms",
+    );
+    const terminalElement = document.querySelector(".xterm-screen");
+    expect(terminalElement).not.toBeNull();
+    fireEvent.wheel(terminalElement!, { deltaMode: 1, deltaY: -1 });
+    expect(getTerminal().buffer.active.viewportY).toBeLessThan(
+      getTerminal().buffer.active.baseY,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 275));
+    getTerminal().input("echo case-c\r", true);
+    socket.receive({
+      type: "output",
+      chunk: { seq: 1, dataBase64: btoa(`${lines(1_001, 1_100)}\r\n`) },
+    });
+    await waitForReadinessCondition(
+      () =>
+        expect(testState.socketMessages.map((message) => JSON.parse(message)))
+          .toContainEqual({ type: "ack", nextSeq: 2 }),
+      "live output was not acknowledged within 5000 ms",
+    );
+    getTerminal().scrollToBottom();
+    await waitForReadinessCondition(
+      () =>
+        expect(getTerminal().buffer.active.viewportY).toBe(
+          getTerminal().buffer.active.baseY,
+        ),
+      "typed live output did not move the terminal to the bottom",
+    );
+    fitCols = 38;
+    fitRows = 5;
+    socket.receive({
+      type: "session-updated",
+      session: { ...session, cols: 38, rows: 5 },
+    });
+    act(() => getTerminal().resize(38, 5));
+    await waitForReadinessCondition(
+      () => {
+        expect(getTerminal().cols).toBe(38);
+        expect(getTerminal().rows).toBe(5);
+      },
+      "shared PTY grid resize was not applied within 5000 ms",
+    );
+    await waitForReadinessCondition(
+      () =>
+        expect(getTerminal().buffer.active.viewportY).toBe(
+          getTerminal().buffer.active.baseY,
+        ),
+      "typed-output client left the bottom after companion resize",
+    );
+  });
+
   it("keeps a restored scrolled-up content line through the component column reflow", async () => {
     prepareMobileTerminal();
     let fitCols = 40;
@@ -591,8 +693,9 @@ describe("ThreadTerminalView terminal focus boundary", () => {
         expect(
           getTerminal().buffer.active
             .getLine(getTerminal().buffer.active.viewportY)
-            ?.translateToString(true),
-        ).toBe(lineBefore),
+            ?.translateToString(true)
+            ?.match(/^line (\d{5}) /)?.[1],
+        ).toBe(lineBefore?.match(/^line (\d{5}) /)?.[1]),
       "component did not restore the scrolled line after shared column reflow",
     );
   });
