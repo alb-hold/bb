@@ -31,6 +31,11 @@ import {
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as interactiveRequests from "../../src/internal/interactive-requests.js";
 import { applyLoggedThreadLifecycleEvent } from "../../src/services/threads/lifecycle-outcome.js";
+import {
+  isClosedNativeQuestion,
+  MAX_CLOSED_NATIVE_QUESTIONS,
+  rememberClosedNativeQuestions,
+} from "../../src/services/threads/native-terminal-questions.js";
 import { stopThreadForCurrentState } from "../../src/services/threads/thread-lifecycle.js";
 import {
   isNativeTerminalRebindInFlight,
@@ -3195,6 +3200,126 @@ describe("a native activity report that does not confirm activity", () => {
     } finally {
       clock.mockRestore();
     }
+  });
+
+  describe("a late waiting report after the question was closed by name", () => {
+    const bash1 = { id: "permission:Bash#1", prompt: "Allow Bash?" };
+    const bash2 = { id: "permission:Bash#2", prompt: "Allow Bash?" };
+
+    it("does not re-register the closed question, and its other fields still apply", async () => {
+      const fixture = await createFixture();
+      const clock = vi.spyOn(Date, "now").mockReturnValue(1_000_000);
+      try {
+        const thread = await startThread(fixture);
+        await send(fixture, thread.id, { closes: [bash1.id], state: "working" });
+        clock.mockReturnValue(1_010_000);
+        expect(
+          (
+            await send(fixture, thread.id, {
+              closes: [],
+              questions: [bash1],
+              state: "waiting",
+            })
+          ).status,
+        ).toBe(200);
+        expect(openInteractions(fixture, thread.id)).toHaveLength(0);
+        expect(threadStatus(fixture, thread.id)).toBe("active");
+        expect(evidence(fixture, thread.id)).toBe(1_010_000);
+      } finally {
+        clock.mockRestore();
+      }
+    });
+
+    it("still registers a different, new question carried by the same late report", async () => {
+      const fixture = await createFixture();
+      const clock = vi.spyOn(Date, "now").mockReturnValue(1_000_000);
+      try {
+        const thread = await startThread(fixture);
+        await send(fixture, thread.id, { closes: [bash1.id], state: "working" });
+        await send(fixture, thread.id, {
+          closes: [],
+          questions: [bash1, bash2],
+          state: "waiting",
+        });
+        expect(pendingIds(fixture, thread.id)).toEqual([
+          expect.stringContaining("permission:Bash#2"),
+        ]);
+      } finally {
+        clock.mockRestore();
+      }
+    });
+
+    it("remembers a bounded number of closed questions and forgets the oldest first", async () => {
+      const fixture = await createFixture();
+      const deps = fixture.harness.deps;
+      rememberClosedNativeQuestions(
+        deps,
+        "thr_bound",
+        Array.from(
+          { length: MAX_CLOSED_NATIVE_QUESTIONS + 1 },
+          (_, index) => `question-${index}`,
+        ),
+      );
+      expect(isClosedNativeQuestion(deps, "thr_bound", "question-0")).toBe(
+        false,
+      );
+      expect(isClosedNativeQuestion(deps, "thr_bound", "question-1")).toBe(
+        true,
+      );
+      expect(
+        isClosedNativeQuestion(
+          deps,
+          "thr_bound",
+          `question-${MAX_CLOSED_NATIVE_QUESTIONS}`,
+        ),
+      ).toBe(true);
+      expect(isClosedNativeQuestion(deps, "thr_other", "question-1")).toBe(
+        false,
+      );
+    });
+
+    it("is forgotten when a new terminal is bound, so the next holder starts clean", async () => {
+      const fixture = await createFixture();
+      const clock = vi.spyOn(Date, "now").mockReturnValue(1_000_000);
+      try {
+        const thread = await startThread(fixture);
+        await send(fixture, thread.id, { closes: [bash1.id], state: "working" });
+        fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+          hostId: fixture.hostId,
+          sessionId: fixture.sessionId,
+          message: {
+            type: "terminal.exited",
+            terminalId: thread.open.terminalId,
+            exitCode: null,
+            closeReason: "daemon-disconnect",
+          },
+        });
+        const opens = countDaemonMessages(fixture, "terminal.open");
+        const reopening = postJson(
+          fixture,
+          `/threads/${thread.id}/native-terminal/open`,
+          {},
+        );
+        const reopened = await waitForDaemonMessage(
+          fixture,
+          "terminal.open",
+          opens,
+        );
+        acknowledgeOpen(fixture, reopened);
+        expect((await reopening).status).toBe(200);
+        clock.mockReturnValue(1_020_000);
+        await send(fixture, thread.id, {
+          closes: [],
+          questions: [bash1],
+          state: "waiting",
+        });
+        expect(pendingIds(fixture, thread.id)).toEqual([
+          expect.stringContaining("permission:Bash#1"),
+        ]);
+      } finally {
+        clock.mockRestore();
+      }
+    });
   });
 
   it("ends the questions of the previous binding when a new terminal is bound, so a holder that names what it closes leaves no orphan", async () => {

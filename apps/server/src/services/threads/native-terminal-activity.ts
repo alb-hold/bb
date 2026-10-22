@@ -35,8 +35,11 @@ import {
   requireNativeTerminalToolCredential,
 } from "./native-terminal-threads.js";
 import {
+  forgetClosedNativeQuestions,
   interruptNativeTerminalQuestions,
+  isClosedNativeQuestion,
   NATIVE_QUESTION_ANSWERED_REASON,
+  rememberClosedNativeQuestions,
 } from "./native-terminal-questions.js";
 import { buildThreadStatusChangeMetadata } from "./thread-runtime-display.js";
 
@@ -337,13 +340,14 @@ export function recordNativeTerminalToolCallEvidence(
 }
 
 function closeNamedNativeQuestions(
-  deps: Pick<AppDeps, "pendingInteractions">,
+  deps: Pick<AppDeps, "hub" | "pendingInteractions">,
   threadId: string,
   questionIds: readonly string[],
 ): number {
   const named = new Set(
     questionIds.map((id) => `${NATIVE_QUESTION_REQUEST_PREFIX}${id}`),
   );
+  rememberClosedNativeQuestions(deps, threadId, named);
   let closed = 0;
   for (const interaction of deps.pendingInteractions.listPendingThreadInteractions(
     threadId,
@@ -383,7 +387,8 @@ function reconcileNativeQuestions(
       )
       .filter(
         ([providerRequestId]) =>
-          !rejectedQuestions(deps, args.thread.id).has(providerRequestId),
+          !rejectedQuestions(deps, args.thread.id).has(providerRequestId) &&
+          !isClosedNativeQuestion(deps, args.thread.id, providerRequestId),
       ),
   );
   const interrupted =
@@ -455,6 +460,7 @@ export function clearNativeTerminalStateOnExit(
   const record = getNativeTerminalThread(deps.db, session.threadId);
   if (record === null || record.terminalSessionId !== session.id) return;
   interruptNativeTerminalQuestions(deps, session.threadId);
+  forgetClosedNativeQuestions(deps, session.threadId);
   clearThreadRowState(deps.db, session.threadId);
   deps.hub.notifyThread(session.threadId, ["status-changed"]);
   if (session.closeReason === "process-exit") {

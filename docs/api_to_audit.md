@@ -935,7 +935,11 @@ occurrence id, uses `confirms: false` only when an open question was dropped
 from its holding bound and then never restores Working from a close, and on a
 400 naming the fields retries the report once without exactly those fields;
 the server ends the questions of the previous binding when it binds a new
-terminal);a waiting report
+terminal and refuses to re-register, per thread and up to 256 ids, a question
+that a report already closed by name; known limitation, Claude Code only: the
+holder cannot match a completion hook to its permission prompt exactly because
+`PermissionRequest` has no `tool_use_id`, so it closes the oldest open prompt of
+that tool, exact matching pending a real hook capture);a waiting report
 registers one pending interaction per open question (so the sidebar and
 favicon show needs-input exactly as for a chat thread, and the thread view
 shows a banner above the terminal), a later report clears the ones no longer
