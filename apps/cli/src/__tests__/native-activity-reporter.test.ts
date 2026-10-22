@@ -208,7 +208,7 @@ describe("native activity reporter", () => {
     });
   });
 
-  describe("the non-confirming marker", () => {
+  describe("the non-confirming marker (INJECTED responses: the rejections below are hand-built; the wording against the real pre-change schema is pinned in apps/server/test/threads/native-activity-delivery.test.ts)", () => {
     const rejection = () =>
       new BbHttpError({
         body: null,
@@ -219,18 +219,30 @@ describe("native activity reporter", () => {
 
     function markerSetup(answers: Array<() => Promise<unknown>>) {
       const sent: Array<boolean | undefined> = [];
+      const calls: Array<{
+        authorization: string | undefined;
+        prompt: string | undefined;
+        state: string;
+      }> = [];
       const logged: string[] = [];
+      let credential = "c";
       const reporter = createNativeActivityReporter({
-        currentCredential: () => "c",
+        currentCredential: () => credential,
         log: (event) => logged.push(event),
         send: async (args) => {
           sent.push(args.confirms);
+          calls.push({
+            authorization: args.authorization,
+            prompt: args.prompt,
+            state: args.state,
+          });
+          credential = "rotated-after-first-attempt";
           const answer = answers[sent.length - 1];
           return answer === undefined ? { ok: true } : answer();
         },
         threadId: "thr_1",
       });
-      return { logged, reporter, sent };
+      return { calls, logged, reporter, sent };
     }
 
     it("sends confirms false only on a report that carries the marker", async () => {
@@ -269,6 +281,46 @@ describe("native activity reporter", () => {
           }),
       ],
       [
+        "an unrelated validation error",
+        () =>
+          new BbHttpError({
+            body: null,
+            code: "invalid_request",
+            message: "Too big: expected string to have <=4000 characters",
+            status: 400,
+          }),
+      ],
+      [
+        "a 400 that names the field but is not a request validation error",
+        () =>
+          new BbHttpError({
+            body: null,
+            code: "native_terminal_question_refused",
+            message: 'Unrecognized key: "confirms"',
+            status: 400,
+          }),
+      ],
+      [
+        "a credential refusal",
+        () =>
+          new BbHttpError({
+            body: null,
+            code: "native_terminal_credential_invalid",
+            message: "A valid credential is required",
+            status: 401,
+          }),
+      ],
+      [
+        "a refusal that names the field",
+        () =>
+          new BbHttpError({
+            body: null,
+            code: "invalid_request",
+            message: 'Unrecognized key: "confirms"',
+            status: 409,
+          }),
+      ],
+      [
         "a 5xx",
         () =>
           new BbHttpError({
@@ -278,6 +330,7 @@ describe("native activity reporter", () => {
             status: 503,
           }),
       ],
+      ["a transport failure", () => new TypeError("fetch failed")],
     ])("does not fall back on %s", async (_name, failure) => {
       const { logged, reporter, sent } = markerSetup([
         async () => {
@@ -288,6 +341,25 @@ describe("native activity reporter", () => {
       await reporter.settled();
       expect(sent).toEqual([false]);
       expect(logged).toEqual([]);
+    });
+
+    it("falls back at most once per report, with the same credential and payload", async () => {
+      const { calls, logged, reporter, sent } = markerSetup([
+        async () => {
+          throw rejection();
+        },
+        async () => {
+          throw rejection();
+        },
+      ]);
+      reporter.report({ confirms: false, state: "working", prompt: "kept" });
+      await reporter.settled();
+      expect(sent).toEqual([false, undefined]);
+      expect(calls).toEqual([
+        { authorization: "Bearer c", prompt: "kept", state: "working" },
+        { authorization: "Bearer c", prompt: "kept", state: "working" },
+      ]);
+      expect(logged).toEqual(["activity-confirms-field-rejected"]);
     });
 
     it("keeps the report for a later resend when the fallback attempt fails for a transient reason", async () => {

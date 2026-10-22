@@ -194,20 +194,7 @@ export function recordNativeTerminalActivity(
       ? getNativeTerminalThread(deps.db, args.threadId)
       : null;
   if (
-    currentNativeRecord !== null &&
-    currentNativeRecord.terminalSessionId !== null &&
-    !args.confirms
-  ) {
-    const cleared = clearNativeTerminalThreadActivityEvidence(deps.db, {
-      at: now,
-      terminalSessionId: currentNativeRecord.terminalSessionId,
-      threadId: args.threadId,
-    });
-    if (cleared.cleared) {
-      reportStates(deps).delete(args.threadId);
-      notifyReceipt = true;
-    }
-  } else if (
+    args.confirms &&
     currentNativeRecord !== null &&
     currentNativeRecord.terminalSessionId !== null
   ) {
@@ -273,11 +260,34 @@ export function recordNativeTerminalActivity(
     working = outcome.applied && outcome.thread.status === "active";
   }
   if (args.state === "idle") settleNativeTerminalTurn(deps, thread.id);
-  reconcileNativeQuestions(deps, {
+  const resolvedQuestions = reconcileNativeQuestions(deps, {
     nativeSessionId: record.nativeSessionId,
     questions: args.questions ?? [],
     thread,
   });
+  if (
+    !args.confirms &&
+    resolvedQuestions > 0 &&
+    currentNativeRecord !== null &&
+    currentNativeRecord.terminalSessionId !== null
+  ) {
+    const cleared = clearNativeTerminalThreadActivityEvidence(deps.db, {
+      at: now,
+      terminalSessionId: currentNativeRecord.terminalSessionId,
+      threadId: args.threadId,
+    });
+    if (cleared.cleared) {
+      reportStates(deps).delete(args.threadId);
+      deps.hub.notifyThread(
+        args.threadId,
+        ["status-changed"],
+        buildThreadStatusChangeMetadata(
+          deps,
+          requirePublicThread(deps.db, args.threadId),
+        ),
+      );
+    }
+  }
   if (args.prompt !== undefined) {
     titleNativeThreadFromPrompt(deps, thread.id, args.prompt);
   }
@@ -324,7 +334,8 @@ export function interruptNativeTerminalQuestions(
   deps: Pick<AppDeps, "pendingInteractions">,
   threadId: string,
   keep: ReadonlySet<string> = new Set(),
-): void {
+): number {
+  let interrupted = 0;
   for (const interaction of deps.pendingInteractions.listPendingThreadInteractions(
     threadId,
   )) {
@@ -338,7 +349,9 @@ export function interruptNativeTerminalQuestions(
       interactionId: interaction.id,
       reason: NATIVE_QUESTION_ANSWERED_REASON,
     });
+    interrupted += 1;
   }
+  return interrupted;
 }
 
 function reconcileNativeQuestions(
@@ -348,7 +361,7 @@ function reconcileNativeQuestions(
     questions: readonly NativeTerminalOpenQuestion[];
     thread: Thread;
   },
-): void {
+): number {
   const wanted = new Map(
     args.questions
       .map(
@@ -363,7 +376,7 @@ function reconcileNativeQuestions(
           !rejectedQuestions(deps, args.thread.id).has(providerRequestId),
       ),
   );
-  interruptNativeTerminalQuestions(
+  const interrupted = interruptNativeTerminalQuestions(
     deps,
     args.thread.id,
     new Set(wanted.keys()),
@@ -404,6 +417,7 @@ function reconcileNativeQuestions(
       });
     }
   }
+  return interrupted;
 }
 
 export function clearNativeTerminalStateOnExit(

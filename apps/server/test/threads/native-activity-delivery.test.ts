@@ -18,10 +18,20 @@ import {
   setNativeTerminalToolCredential,
 } from "@bb/db";
 import type { ProviderNativeTerminal } from "@bb/domain";
+import {
+  publicApiRoutes,
+  reportNativeTerminalActivityRequestSchema,
+  typedRoutes,
+  type PublicApiSchema,
+} from "@bb/server-contract";
 import type { NativeTerminalReportActivityArgs } from "@bb/sdk";
 import { createNodeBbSdk } from "@bb/sdk/node";
+import { Hono } from "hono";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { z } from "zod";
+import { ApiError, createServerErrorHandler } from "../../src/errors.js";
 import * as lifecycleOutcome from "../../src/services/threads/lifecycle-outcome.js";
+import { buildThreadStatusChangeMetadata } from "../../src/services/threads/thread-runtime-display.js";
 import * as titleGeneration from "../../src/services/threads/title-generation.js";
 import {
   seedEnvironment,
@@ -36,6 +46,7 @@ import {
 } from "../helpers/test-app.js";
 
 interface NativeReport {
+  confirms?: false;
   prompt: string | null;
   state: "idle" | "waiting" | "working";
 }
@@ -43,6 +54,7 @@ interface NativeReport {
 interface ReaderLike {
   heartbeat(): NativeReport | null;
   read(): NativeReport[];
+  sessionDiscovered(sessionId: string): void;
   suspend(): void;
 }
 
@@ -61,6 +73,7 @@ interface WiringLike {
 interface CliModules {
   createNativeActivityReporter(options: {
     currentCredential(): string | null;
+    log?(event: string, fields: Record<string, number | string | null>): void;
     send(args: NativeTerminalReportActivityArgs): Promise<unknown>;
     threadId: string;
   }): ReporterLike;
@@ -80,7 +93,7 @@ interface CliModules {
     cli: ProviderNativeTerminal,
     env: { HOME: string },
     eventsFile: string | null,
-    start: { kind: "start"; id: string },
+    start: { kind: "discover" } | { kind: "start"; id: string },
   ) => ReaderLike;
 }
 
@@ -576,3 +589,206 @@ describe("a lost idle report through the real reader, reporter, wiring and SDK c
     expect(h.idleRequests).toEqual(["pass"]);
   });
 });
+
+describe("overflow, answer, then no resumed activity through the real reader, reporter, SDK client and server", () => {
+  const tool = { hook_event_name: "PreToolUse" };
+  const permission = (name: string) => ({
+    hook_event_name: "PermissionRequest",
+    tool_name: name,
+  });
+
+  function discoveredHolder(harness: TestAppHarness, threadId: string) {
+    const cli =
+      harness.deps.providerRegistry.get("claude-code")?.nativeTerminal;
+    if (cli === undefined || cli === null)
+      throw new Error("claude-code declaration missing");
+    const home = mkdtempSync(path.join(os.tmpdir(), "bb-overflow-"));
+    roots.push(home);
+    const events = path.join(home, "hooks.jsonl");
+    writeFileSync(events, "");
+    const hook = (records: Record<string, unknown>[]) =>
+      appendFileSync(
+        events,
+        records
+          .map((record) =>
+            JSON.stringify({ session_id: SESSION_ID, ...record }),
+          )
+          .join("\n") + "\n",
+      );
+    const reader = new readerModule.NativeActivityReader(
+      cli,
+      { HOME: home },
+      events,
+      { kind: "discover" },
+    );
+    const sdk = createNodeBbSdk({
+      baseUrl: "http://127.0.0.1:3000",
+      fetch: (input, init) => harness.app.fetch(new Request(input, init)),
+    });
+    const reporter = reporterModule.createNativeActivityReporter({
+      currentCredential: () => SECRET,
+      send: (args) => sdk.nativeTerminals.reportActivity(args),
+      threadId,
+    });
+    const wiring = wiringModule.createNativeActivityWiring({
+      currentCredential: () => SECRET,
+      log: () => undefined,
+      reader: () => reader,
+      recordSession: async () => ({}),
+      report: reporter.report,
+      retryReport: reporter.retry,
+    });
+    const forward = async () => {
+      for (const next of reader.read()) reporter.report(next);
+      await reporter.settled();
+    };
+    const heartbeat = async () => {
+      wiring.onHeartbeatTick();
+      await reporter.settled();
+    };
+    return { forward, heartbeat, hook, reader };
+  }
+
+  const displayOf = (harness: TestAppHarness, threadId: string) => {
+    const thread = getThread(harness.db, threadId);
+    if (thread === null) throw new Error("thread missing");
+    return buildThreadStatusChangeMetadata(harness.deps, thread).statusChange
+      ?.runtime.nativeActivity;
+  };
+
+  async function overflowedAndAsked() {
+    const { harness, thread } = await nativeThread();
+    const h = discoveredHolder(harness, thread.id);
+    h.hook([
+      permission("Bash"),
+      ...Array.from({ length: 70 }, () => tool),
+      permission("Edit"),
+    ]);
+    expect(h.reader.read()).toEqual([]);
+    h.reader.sessionDiscovered(SESSION_ID);
+    await h.forward();
+    return { h, harness, thread };
+  }
+
+  it("publishes the retained question as Needs input and keeps the dropped one out of the display", async () => {
+    const { harness, thread } = await overflowedAndAsked();
+    expect(
+      listPendingInteractionsByThread(harness.db, { threadId: thread.id }),
+    ).toHaveLength(1);
+    expect(getThread(harness.db, thread.id)?.status).toBe("active");
+    expect(displayOf(harness, thread.id)).toMatchObject({
+      confirmation: "confirmed",
+    });
+  });
+
+  it("closes the answered question and shows Activity not reported at once, with no heartbeat after it", async () => {
+    const { h, harness, thread } = await overflowedAndAsked();
+    h.hook([{ hook_event_name: "PostToolUse", tool_name: "Edit" }]);
+    await h.forward();
+    expect(
+      listPendingInteractionsByThread(harness.db, { threadId: thread.id }),
+    ).toHaveLength(0);
+    expect(getThread(harness.db, thread.id)?.status).toBe("active");
+    expect(getNativeTerminalThread(harness.db, thread.id)).toMatchObject({
+      lastEvidenceAt: null,
+    });
+    expect(displayOf(harness, thread.id)).toMatchObject({
+      confirmation: "unconfirmed",
+      lastEvidenceAt: null,
+    });
+    await h.heartbeat();
+    await h.heartbeat();
+    expect(displayOf(harness, thread.id)).toMatchObject({
+      confirmation: "unconfirmed",
+      lastEvidenceAt: null,
+    });
+  });
+
+  it("shows Working again only after a completed tool record from the session", async () => {
+    const { h, harness, thread } = await overflowedAndAsked();
+    h.hook([{ hook_event_name: "PostToolUse", tool_name: "Edit" }]);
+    await h.forward();
+    h.hook([tool]);
+    await h.forward();
+    expect(displayOf(harness, thread.id)).toMatchObject({
+      confirmation: "unconfirmed",
+    });
+    h.hook([{ hook_event_name: "PostToolUse", tool_name: "Write" }]);
+    await h.forward();
+    expect(displayOf(harness, thread.id)).toMatchObject({
+      confirmation: "confirmed",
+    });
+  });
+});
+
+describe("an older server that does not know the confirms field (INJECTED-SERVER evidence: the 400 is produced by the pre-change strict schema through the real typedRoutes validation and error handler, but the old server's other behaviour is not exercised; no old server build was run)", () => {
+  const routes = publicApiRoutes.nativeTerminalThreads;
+  const fields = reportNativeTerminalActivityRequestSchema.shape;
+  const preChangeSchema = z
+    .object({
+      prompt: fields.prompt,
+      questions: fields.questions,
+      state: fields.state,
+    })
+    .strict();
+
+  function oldServer() {
+    const app = new Hono();
+    app.onError(
+      createServerErrorHandler({
+        debug: () => undefined,
+        error: () => undefined,
+        info: () => undefined,
+        warn: () => undefined,
+      }),
+    );
+    const { post } = typedRoutes<PublicApiSchema>(app, {
+      onValidationError: (msg) => new ApiError(400, "invalid_request", msg),
+    });
+    const accepted: unknown[] = [];
+    const rejected: Array<{ body: string; status: number }> = [];
+    post(
+      {
+        ...routes.reportActivity,
+        request: { ...routes.reportActivity.request, schema: preChangeSchema },
+      } as typeof routes.reportActivity,
+      (context, payload) => {
+        accepted.push(payload);
+        return context.json({ ok: true as const });
+      },
+    );
+    const sdk = createNodeBbSdk({
+      baseUrl: "http://127.0.0.1:3000",
+      fetch: async (input, init) => {
+        const response = await app.fetch(new Request(input, init));
+        if (response.status >= 400) {
+          rejected.push({
+            body: await response.clone().text(),
+            status: response.status,
+          });
+        }
+        return response;
+      },
+    });
+    return { accepted, rejected, sdk };
+  }
+
+  it("rejects the marked report with zod's own wording and the holder resends it once without the field", async () => {
+    const { accepted, rejected, sdk } = oldServer();
+    const logged: string[] = [];
+    const reporter = reporterModule.createNativeActivityReporter({
+      currentCredential: () => SECRET,
+      log: (event) => logged.push(event),
+      send: (args) => sdk.nativeTerminals.reportActivity(args),
+      threadId: "thr_old_server",
+    });
+    reporter.report({ confirms: false, prompt: null, state: "working" });
+    await reporter.settled();
+    expect(rejected).toHaveLength(1);
+    expect(rejected[0]?.status).toBe(400);
+    expect(rejected[0]?.body).toContain('Unrecognized key: \\"confirms\\"');
+    expect(accepted).toEqual([{ state: "working" }]);
+    expect(logged).toEqual(["activity-confirms-field-rejected"]);
+  });
+});
+
