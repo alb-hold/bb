@@ -7,7 +7,10 @@ import {
 } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type { ProviderNativeTerminal } from "@bb/domain";
+import {
+  providerNativeTerminalActivitySchema,
+  type ProviderNativeTerminal,
+} from "@bb/domain";
 import { BbHttpError } from "@bb/sdk";
 import { afterEach, describe, expect, it } from "vitest";
 import { NativeActivityReader } from "../native-activity-reader.js";
@@ -108,8 +111,34 @@ function holdOpen<T>(): {
   return { promise, reject, resolve };
 }
 
-function holder() {
-  const cli = codexCli();
+const HOOKS = {
+  args: ["--settings", "{settings}"],
+  idle: ["Stop"],
+  permission: {
+    close: ["PostToolUse"],
+    idField: "tool_name",
+    label: "needs permission to use",
+    open: ["PermissionRequest"],
+  },
+  promptField: "prompt",
+  working: ["UserPromptSubmit", "PreToolUse"],
+};
+
+function hookShape(withSessionIdField: boolean): ProviderNativeTerminal {
+  return {
+    ...codexCli(),
+    activity: providerNativeTerminalActivitySchema.parse({
+      hooks: withSessionIdField
+        ? { ...HOOKS, sessionIdField: "session_id" }
+        : HOOKS,
+    }),
+  };
+}
+
+function holder(
+  cli: ProviderNativeTerminal = codexCli(),
+  unconfirmed: string[] = [],
+) {
   const home = mkdtempSync(path.join(os.tmpdir(), "bb-native-follow-"));
   roots.push(home);
   const dir = path.join(home, ".codex", "sessions", "2026", "10", "11");
@@ -129,7 +158,16 @@ function holder() {
     ]),
   );
   const env = { HOME: home };
-  const reader = new NativeActivityReader(cli, env, null, { kind: "discover" });
+  const events = path.join(home, "hooks.jsonl");
+  writeFileSync(events, "");
+  const reader = new NativeActivityReader(
+    cli,
+    env,
+    cli.activity?.hooks === undefined ? null : events,
+    { kind: "discover" },
+    undefined,
+    (reason, total) => unconfirmed.push(`${reason}:${total}`),
+  );
   const sentReports: string[] = [];
   const recorded: string[] = [];
   const logged: string[] = [];
@@ -198,6 +236,7 @@ function holder() {
   };
   return {
     append: (records: unknown[]) => appendFileSync(rollout, jsonl(records)),
+    appendHooks: (records: unknown[]) => appendFileSync(events, jsonl(records)),
     logged,
     makeDiscoverer,
     readOnly,
@@ -298,5 +337,98 @@ describe("following a discovered session only after the server accepted it", () 
     await discoverer.discover();
     expect(h.recorded).toEqual(["Bearer current"]);
     expect(await h.readOnly()).toEqual(["working", "working:hello"]);
+  });
+
+  describe.each([
+    ["discovered + hooks with a session id field", true],
+    ["discovered + hooks without a session id field", false],
+  ])("%s", (_shape, withSessionIdField) => {
+    const prompt = (text: string, session: string = SESSION_ID) => ({
+      hook_event_name: "UserPromptSubmit",
+      prompt: text,
+      session_id: session,
+    });
+    const permission = {
+      hook_event_name: "PermissionRequest",
+      session_id: SESSION_ID,
+      tool_name: "Bash",
+    };
+
+    it("stays silent while the binding is pending and reports the held hook records once after acceptance", async () => {
+      const h = holder(hookShape(withSessionIdField));
+      h.appendHooks([prompt("held one"), permission]);
+      const binding = holdOpen<unknown>();
+      const discoverer = h.makeDiscoverer(() => binding.promise);
+      const discovering = discoverer.discover();
+      try {
+        expect(await h.tick()).toEqual([]);
+        h.appendHooks([prompt("held two")]);
+        expect(await h.tick()).toEqual([]);
+        binding.resolve({});
+        await discovering;
+        const replayed = await h.readOnly();
+        expect(replayed).toEqual([
+          "working:held one",
+          "waiting",
+          "working:held two",
+        ]);
+        expect(await h.readOnly()).toEqual(replayed);
+      } finally {
+        binding.resolve(undefined);
+        await discovering;
+      }
+    });
+
+    it("drops the held hook records unreported after a permanent refusal", async () => {
+      const h = holder(hookShape(withSessionIdField));
+      h.appendHooks([prompt("held"), permission]);
+      const binding = holdOpen<unknown>();
+      const discoverer = h.makeDiscoverer(() => binding.promise);
+      const discovering = discoverer.discover();
+      try {
+        expect(await h.tick()).toEqual([]);
+        binding.reject(refusal(409, "native_session_claimed"));
+        await discovering;
+        h.appendHooks([prompt("later")]);
+        expect(await h.tick()).toEqual([]);
+        expect(await h.tick()).toEqual([]);
+        expect(h.logged).toEqual(["session-discovery-stopped"]);
+      } finally {
+        binding.resolve(undefined);
+        await discovering;
+      }
+    });
+
+    it("shows activity as unconfirmed after the holding bound overflowed, and does not claim a complete replay", async () => {
+      const unconfirmed: string[] = [];
+      const h = holder(hookShape(withSessionIdField), unconfirmed);
+      h.appendHooks([
+        prompt("lost first"),
+        ...Array.from({ length: 70 }, () => ({
+          hook_event_name: "PreToolUse",
+          session_id: SESSION_ID,
+        })),
+      ]);
+      const discoverer = h.makeDiscoverer(async () => ({}));
+      expect(await h.tick()).toEqual([]);
+      await discoverer.discover();
+      const replayed = await h.readOnly();
+      expect(replayed).toEqual(["working"]);
+      expect(unconfirmed).toEqual(["held-overflow:7"]);
+      expect(await h.tick()).toEqual(replayed);
+      h.appendHooks([prompt("fresh", SESSION_ID)]);
+      expect((await h.tick()).slice(1)).toEqual(["working:fresh", "working"]);
+    });
+
+    it("heartbeats after acceptance when nothing was dropped", async () => {
+      const unconfirmed: string[] = [];
+      const h = holder(hookShape(withSessionIdField), unconfirmed);
+      h.appendHooks([prompt("kept")]);
+      const discoverer = h.makeDiscoverer(async () => ({}));
+      await discoverer.discover();
+      expect(await h.readOnly()).toEqual(["working:kept"]);
+      expect(await h.tick()).toEqual(["working:kept", "working"]);
+      expect(unconfirmed).toEqual([]);
+    });
   });
 });

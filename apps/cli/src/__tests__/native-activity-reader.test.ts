@@ -179,7 +179,7 @@ function claudeFixture(
   extraWorking: boolean = false,
   onUnconfirmed?: (total: number) => void,
   onUnconfirmedHookIdentity?: (
-    reason: "missing-session" | "foreign-session" | "unbound",
+    reason: "missing-session" | "foreign-session" | "held-overflow",
     total: number,
   ) => void,
   onSessionAdopted?: (sessionId: string, previousSessionId: string) => void,
@@ -784,7 +784,7 @@ describe("NativeActivityReader", () => {
     ]);
   });
 
-  it("rejects hooks before discovery, rejects stale transcript replay, then recovers on bound evidence", () => {
+  it("holds hooks before discovery and rejects those of another session, rejects stale transcript replay, then recovers on bound evidence", () => {
     const diagnostics: string[] = [];
     const host = createFakePluginHost({ pluginId: "provider-claude-code" });
     claudeCodePlugin(host.bb);
@@ -817,7 +817,7 @@ describe("NativeActivityReader", () => {
       jsonl([
         {
           hook_event_name: "UserPromptSubmit",
-          session_id: SESSION_ID,
+          session_id: "other-session",
           prompt_id: "unbound-turn",
           prompt: "private",
         },
@@ -973,7 +973,6 @@ describe("NativeActivityReader", () => {
     expect(reader.read()).toEqual([]);
     expect(reader.heartbeat()).toBeNull();
     expect(diagnostics).toEqual([
-      "unbound",
       "foreign-session",
       "foreign-session",
       "foreign-session",
