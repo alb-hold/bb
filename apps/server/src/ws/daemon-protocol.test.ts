@@ -30,11 +30,7 @@ describe("daemon socket message queue", () => {
     await afterOpen;
     await new Promise((resolve) => setImmediate(resolve));
 
-    expect(handled).toEqual([
-      "terminal.output",
-      "terminal.exited",
-      "sessions",
-    ]);
+    expect(handled).toEqual(["terminal.output", "terminal.exited", "sessions"]);
     expect(onError).not.toHaveBeenCalled();
   });
 

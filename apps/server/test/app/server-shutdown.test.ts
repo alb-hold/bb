@@ -183,7 +183,9 @@ describe("server shutdown ordering", () => {
   }, 4_500);
 
   it("keeps the real migrated database open when a plugin never disposes", async () => {
-    const pluginRoot = await mkdtemp(join(tmpdir(), "bb-server-shutdown-plugin-"));
+    const pluginRoot = await mkdtemp(
+      join(tmpdir(), "bb-server-shutdown-plugin-"),
+    );
     const pluginDir = join(pluginRoot, "bb-plugin-stuck-dispose");
     await mkdir(pluginDir, { recursive: true });
     await writeFile(
@@ -231,7 +233,9 @@ describe("server shutdown ordering", () => {
     expect(db?.$client.prepare("SELECT 1").get()).toBeDefined();
     expect(result.pluginStopTimedOut).toBe(true);
     expect(result.completedWithinBounds).toBe(false);
-    expect(warnings).toContain("Database close skipped because plugin stop timed out");
+    expect(warnings).toContain(
+      "Database close skipped because plugin stop timed out",
+    );
     await rm(pluginRoot, { recursive: true, force: true });
     await rm(harness.config.dataDir, { recursive: true, force: true });
   }, 4_500);
@@ -342,7 +346,9 @@ describe("server shutdown ordering", () => {
       stopTerminalDataPlane: () => {},
     });
     await updateCheckEntered;
-    await expect(fetch(`http://127.0.0.1:${address.port}/new`)).rejects.toThrow();
+    await expect(
+      fetch(`http://127.0.0.1:${address.port}/new`),
+    ).rejects.toThrow();
     expect(pluginStopCalled).toBe(true);
     expect(pluginStopStartedAt - startedAt).toBeLessThan(1_000);
     await shutdown;
@@ -452,13 +458,16 @@ describe("server shutdown ordering", () => {
       stopPlugins: async () => {
         pluginStopCalled = true;
         acceptedAfterPluginStop = server!.listening;
-        upgradedSocketDestroyedAtPluginStop = upgradedSocket?.destroyed ?? false;
+        upgradedSocketDestroyedAtPluginStop =
+          upgradedSocket?.destroyed ?? false;
         pluginSocket.terminate();
         await new Promise<void>(() => {});
       },
       stopTerminalDataPlane: () => {},
     });
-    await expect(fetch(`http://127.0.0.1:${address.port}/new`)).rejects.toThrow();
+    await expect(
+      fetch(`http://127.0.0.1:${address.port}/new`),
+    ).rejects.toThrow();
     expect(pluginStopCalled).toBe(false);
     await shutdown;
     expect(pluginStopCalled).toBe(true);

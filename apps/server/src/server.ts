@@ -1100,7 +1100,10 @@ export function createApp(
       >({
         handle: (message) => message(),
         onError: (error) => {
-          deps.logger.error({ err: error }, "Daemon socket message queue failed");
+          deps.logger.error(
+            { err: error },
+            "Daemon socket message queue failed",
+          );
         },
       });
       return {
@@ -1142,10 +1145,7 @@ export function createApp(
                     }),
                     "Daemon heartbeat for inactive session, closing socket",
                   );
-                } else if (
-                  error instanceof ApiError &&
-                  error.status === 403
-                ) {
+                } else if (error instanceof ApiError && error.status === 403) {
                   deps.logger.warn(
                     {
                       sessionId: websocketContext.sessionId,

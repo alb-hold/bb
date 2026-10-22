@@ -210,31 +210,36 @@ export async function shutdownHttpBeforePlugins(args: {
   databaseCanClose = webSocketsClosedWithinBound;
   if (args.flushTerminalOutputBeforeClose !== undefined) {
     const flushController = new AbortController();
-    const flushOutcome = await new Promise<"completed" | "failed" | "timed-out">(
-      (resolve) => {
-        const timer = setTimeout(
-          () => resolve("timed-out"),
-          SERVER_TERMINAL_OUTPUT_FLUSH_TIMEOUT_MS,
+    const flushOutcome = await new Promise<
+      "completed" | "failed" | "timed-out"
+    >((resolve) => {
+      const timer = setTimeout(
+        () => resolve("timed-out"),
+        SERVER_TERMINAL_OUTPUT_FLUSH_TIMEOUT_MS,
+      );
+      void Promise.resolve()
+        .then(() =>
+          args.flushTerminalOutputBeforeClose!(flushController.signal),
+        )
+        .then(
+          () => {
+            clearTimeout(timer);
+            resolve("completed");
+          },
+          () => {
+            clearTimeout(timer);
+            resolve("failed");
+          },
         );
-        void Promise.resolve()
-          .then(() => args.flushTerminalOutputBeforeClose!(flushController.signal))
-          .then(
-            () => {
-              clearTimeout(timer);
-              resolve("completed");
-            },
-            () => {
-              clearTimeout(timer);
-              resolve("failed");
-            },
-          );
-      },
-    );
+    });
     if (flushOutcome !== "completed") flushController.abort(flushOutcome);
     completedWithinBounds =
       flushOutcome === "completed" && completedWithinBounds;
   }
-  const httpClosed = await waitAtMost(closed, SERVER_HTTP_CLOSE_WAIT_TIMEOUT_MS);
+  const httpClosed = await waitAtMost(
+    closed,
+    SERVER_HTTP_CLOSE_WAIT_TIMEOUT_MS,
+  );
   completedWithinBounds = httpClosed && completedWithinBounds;
   databaseCanClose = databaseCanClose && httpClosed;
   for (const socket of shutdownSockets.get(args.server) ?? []) socket.destroy();
@@ -248,10 +253,9 @@ export async function shutdownHttpBeforePlugins(args: {
   let pluginStopTimer: ReturnType<typeof setTimeout> | undefined;
   try {
     const stopped = await Promise.race([
-      Promise.all([
-        args.stopPeriodicUpdateChecks?.(),
-        args.stopPlugins(),
-      ]).then(() => true),
+      Promise.all([args.stopPeriodicUpdateChecks?.(), args.stopPlugins()]).then(
+        () => true,
+      ),
       new Promise<false>((resolve) => {
         pluginStopTimer = setTimeout(
           () => resolve(false),
@@ -298,7 +302,9 @@ export async function shutdownServerRuntime(args: {
   if (result.pluginStopTimedOut) {
     args.logger.warn("Database close skipped because plugin stop timed out");
   } else if (!result.completedWithinBounds) {
-    args.logger.warn("Database close skipped because a shutdown step exceeded its bound");
+    args.logger.warn(
+      "Database close skipped because a shutdown step exceeded its bound",
+    );
   }
   return result;
 }
