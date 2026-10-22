@@ -856,15 +856,6 @@ describe("terminal viewport restore", () => {
       lineOffset: 2_396,
       outputSequence: 2,
     };
-    terminal.scrollToLine(
-      resolveTerminalViewportRestore({
-        anchor: savedAnchor,
-        baseY: terminal.buffer.active.baseY,
-        outputLineAnchors: [anchor],
-        replayStartSequence: 0,
-        replayNextSequence: 16,
-      }),
-    );
     await new Promise<void>((resolve) => {
       applyTerminalGridBeforeViewportRestore({
         pipeline,
