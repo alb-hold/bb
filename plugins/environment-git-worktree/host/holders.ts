@@ -75,6 +75,14 @@ async function scanLinuxProcess(
   const comm = await readOptional(() => fs.readFile(`${base}/comm`, "utf8"));
   const command = "value" in comm ? comm.value.trim() || null : null;
 
+  const root = await readOptional(() => fs.readlink(`${base}/root`));
+  if ("failed" in root) {
+    return { unknown: `process ${pid} root folder (${root.failed})` };
+  }
+  if ("value" in root && root.value !== "/") {
+    return { unknown: `process ${pid} runs under a different root folder` };
+  }
+
   const tasks = await readOptional(() => fs.readdir(`${base}/task`));
   if ("gone" in tasks) return null;
   if ("failed" in tasks)
@@ -143,6 +151,19 @@ async function linuxVisibilityProblem(): Promise<string | null> {
   const init = await readOptional(() => fs.readlink("/proc/1/ns/pid"));
   if (!("value" in own) || !("value" in init) || own.value !== init.value) {
     return "this process may not see every process (it runs in a separate process namespace)";
+  }
+  const ownMount = await readOptional(() => fs.readlink("/proc/self/ns/mnt"));
+  const initMount = await readOptional(() => fs.readlink("/proc/1/ns/mnt"));
+  if (
+    !("value" in ownMount) ||
+    !("value" in initMount) ||
+    ownMount.value !== initMount.value
+  ) {
+    return "this process may not see every mount (it runs in a separate mount namespace)";
+  }
+  const ownRoot = await readOptional(() => fs.readlink("/proc/self/root"));
+  if (!("value" in ownRoot) || ownRoot.value !== "/") {
+    return "this process runs under a different root folder";
   }
   const mounts = await readOptional(() =>
     fs.readFile("/proc/self/mountinfo", "utf8"),
