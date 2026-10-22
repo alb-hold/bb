@@ -37,7 +37,10 @@ import {
   createTestAppHarness,
   type TestAppHarness,
 } from "../../../test/helpers/test-app.js";
-import { shutdownServerRuntime, startHttpListener } from "../../start-server.js";
+import {
+  shutdownServerRuntime,
+  startHttpListener,
+} from "../../start-server.js";
 
 const V = TERMINAL_DATA_PLANE_IPC_VERSION;
 const harnesses: TestAppHarness[] = [];
@@ -212,16 +215,19 @@ async function setup(
 }
 
 async function retainReplayAcrossLifecycleTransition(args: {
-  setup: { terminalStatus?: "running" | "starting"; environmentBacked?: boolean };
+  setup: {
+    terminalStatus?: "running" | "starting";
+    environmentBacked?: boolean;
+  };
   transition: (fixture: Awaited<ReturnType<typeof setup>>) => void;
   expectedStatus: "disconnected" | "exited";
 }) {
   const fixture = await setup(args.setup);
   const chunks = Array.from({ length: 1_024 }, (_, seq) => ({
     seq: seq + 10,
-    dataBase64: Buffer.from(`replay-${seq.toString().padStart(4, "0")}\n`).toString(
-      "base64",
-    ),
+    dataBase64: Buffer.from(
+      `replay-${seq.toString().padStart(4, "0")}\n`,
+    ).toString("base64"),
   }));
   const pending = Array.from({ length: 3 }, (_, seq) => ({
     seq,
@@ -308,7 +314,11 @@ async function retainReplayAcrossLifecycleTransition(args: {
       terminalSessionId: fixture.terminal.id,
       now: Date.now(),
     });
-    expect(retained).toEqual([...initialPending, ...chunks, ...outputDuringReplay]);
+    expect(retained).toEqual([
+      ...initialPending,
+      ...chunks,
+      ...outputDuringReplay,
+    ]);
     expect(new Set(retained?.map(({ seq }) => seq)).size).toBe(
       retained?.length,
     );
@@ -474,9 +484,7 @@ describe("terminal output retained from the data plane", () => {
     await expect(replay).resolves.toBeUndefined();
     expect(warn).toHaveBeenCalledWith(
       expect.objectContaining({
-        terminals: [
-          expect.objectContaining({ terminalId: markerTerminal.id }),
-        ],
+        terminals: [expect.objectContaining({ terminalId: markerTerminal.id })],
       }),
       "Terminal output shutdown flush timed out; pending output was not written",
     );
@@ -719,7 +727,10 @@ describe("terminal output retained from the data plane", () => {
       instanceId: "replacement-instance",
     });
     const chunks = replayChunks();
-    const pendingAttaches = Reflect.get(fixture.terminalSessions, "pendingAttaches");
+    const pendingAttaches = Reflect.get(
+      fixture.terminalSessions,
+      "pendingAttaches",
+    );
     if (
       typeof pendingAttaches !== "object" ||
       pendingAttaches === null ||
@@ -738,13 +749,15 @@ describe("terminal output retained from the data plane", () => {
     const rpcKey = `${fixture.session.id}\0${fixture.terminal.id}\0${requestId}`;
     const attachSocket = new FakeSocket();
     const attachSettlement = vi.spyOn(pendingAttachRegistry, "settle");
-    const pendingAttach = pendingAttachRegistry.claim({
-      daemonSessionId: fixture.session.id,
-      requestId,
-      rpcKey,
-      socket: attachSocket,
-      terminalId: fixture.terminal.id,
-    }).promise.catch((error: unknown) => error);
+    const pendingAttach = pendingAttachRegistry
+      .claim({
+        daemonSessionId: fixture.session.id,
+        requestId,
+        rpcKey,
+        socket: attachSocket,
+        terminalId: fixture.terminal.id,
+      })
+      .promise.catch((error: unknown) => error);
     try {
       const replay = fixture.terminalSessions.handleDaemonTerminalMessage({
         hostId: fixture.host.id,
@@ -786,17 +799,20 @@ describe("terminal output retained from the data plane", () => {
           now: Date.now(),
         }) ?? [],
       ).toEqual([]);
-      expect(getTerminalSession(fixture.db, fixture.terminal.id)).toMatchObject({
-        status: "running",
-        daemonSessionId: replacement.id,
-      });
+      expect(getTerminalSession(fixture.db, fixture.terminal.id)).toMatchObject(
+        {
+          status: "running",
+          daemonSessionId: replacement.id,
+        },
+      );
       expect(
         replayInfo.mock.calls.some(
           ([, message]) => message === "Terminal replay attributed",
         ),
       ).toBe(false);
       const discard = replayInfo.mock.calls.find(
-        ([, message]) => message === "Terminal replay discarded after ownership change",
+        ([, message]) =>
+          message === "Terminal replay discarded after ownership change",
       );
       expect(discard).toBeDefined();
       expect(discard?.[0]).not.toHaveProperty("retainedWriteBytes");
@@ -809,7 +825,10 @@ describe("terminal output retained from the data plane", () => {
   it("attributes an empty catch-up replay without retained writes", async () => {
     const fixture = await setup();
     const replayInfo = vi.spyOn(fixture.harness.deps.logger, "info");
-    const pendingCatchUps = Reflect.get(fixture.terminalSessions, "pendingCatchUps");
+    const pendingCatchUps = Reflect.get(
+      fixture.terminalSessions,
+      "pendingCatchUps",
+    );
     if (
       typeof pendingCatchUps !== "object" ||
       pendingCatchUps === null ||
@@ -907,7 +926,9 @@ describe("terminal output retained from the data plane", () => {
         hostId: fixture.host.id,
       });
       fixture.db.$client
-        .prepare("UPDATE terminal_sessions SET daemon_session_id = ? WHERE id = ?")
+        .prepare(
+          "UPDATE terminal_sessions SET daemon_session_id = ? WHERE id = ?",
+        )
         .run(replacement.id, fixture.terminal.id);
       await replay;
       await vi.advanceTimersByTimeAsync(1_000);
@@ -937,7 +958,8 @@ describe("terminal output retained from the data plane", () => {
     await retainReplayAcrossLifecycleTransition({
       setup: { environmentBacked: true },
       transition: (fixture) => {
-        if (!fixture.environment) throw new Error("environment fixture missing");
+        if (!fixture.environment)
+          throw new Error("environment fixture missing");
         fixture.terminalSessions.closeDestroyedEnvironmentTerminals({
           environmentId: fixture.environment.id,
         });
@@ -970,7 +992,9 @@ describe("terminal output retained from the data plane", () => {
     }));
     const duringReplay = {
       seq: 5,
-      dataBase64: Buffer.from("running-output-during-replay").toString("base64"),
+      dataBase64: Buffer.from("running-output-during-replay").toString(
+        "base64",
+      ),
     };
     try {
       fixture.terminalSessions.recordDirectTerminalOutputBatch({
@@ -1075,7 +1099,9 @@ describe("terminal output retained from the data plane", () => {
     const fixture = await setup();
     const sequenceRebase = (
       fixture.terminalSessions as unknown as {
-        outputSequenceRebase: { setBase(terminalId: string, base: number): void };
+        outputSequenceRebase: {
+          setBase(terminalId: string, base: number): void;
+        };
       }
     ).outputSequenceRebase;
     const chunks = replayChunks();

@@ -107,11 +107,7 @@ export function decodeDaemonSocketMessage(
   socket: DaemonSocket,
   raw: unknown,
 ): HostDaemonDaemonWsMessage | null {
-  return parseSocketMessage(
-    socket,
-    raw,
-    hostDaemonDaemonWsMessageSchema,
-  );
+  return parseSocketMessage(socket, raw, hostDaemonDaemonWsMessageSchema);
 }
 
 export function prepareDaemonSocketFrame(
@@ -136,11 +132,7 @@ export function enqueueDaemonSocketFrame(args: {
   recordActivity: () => void;
   socket: DaemonSocket;
 }): void {
-  const prepared = prepareDaemonSocketFrame(
-    args.socket,
-    args.raw,
-    args.decode,
-  );
+  const prepared = prepareDaemonSocketFrame(args.socket, args.raw, args.decode);
   if (prepared === null) return;
   if (!args.authorize(prepared.message.type)) return;
   args.recordActivity();
@@ -279,9 +271,9 @@ export function onDaemonSocketMessage(
       if (
         session.status === "active" &&
         (message.type === "heartbeat" ||
-        now < session.updatedAt ||
-        now - session.updatedAt >= session.heartbeatIntervalMs ||
-        session.leaseExpiresAt <= now + session.heartbeatIntervalMs)
+          now < session.updatedAt ||
+          now - session.updatedAt >= session.heartbeatIntervalMs ||
+          session.leaseExpiresAt <= now + session.heartbeatIntervalMs)
       ) {
         heartbeatSession(
           deps.db,
@@ -513,9 +505,9 @@ export function createDaemonSocketMessageQueue<T>(args: {
   };
 }
 
-export function isDaemonSocketMessageQueuePriority(
-  message: { type: string },
-): boolean {
+export function isDaemonSocketMessageQueuePriority(message: {
+  type: string;
+}): boolean {
   return message.type === "heartbeat";
 }
 

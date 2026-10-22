@@ -2108,8 +2108,7 @@ describe("public terminal routes", () => {
     );
     const replayMetrics = replayLog?.[0] as Record<string, number> | undefined;
     const expectedReplayBytes = chunks.reduce(
-      (total, chunk) =>
-        total + Buffer.byteLength(chunk.dataBase64, "base64"),
+      (total, chunk) => total + Buffer.byteLength(chunk.dataBase64, "base64"),
       0,
     );
     expect(replayMetrics).toMatchObject({
@@ -2306,9 +2305,9 @@ describe("public terminal routes", () => {
     expect(readSettled.mock.results.some(({ value }) => value === true)).toBe(
       false,
     );
-    expect(catchUpSettled.mock.results.some(({ value }) => value === true)).toBe(
-      false,
-    );
+    expect(
+      catchUpSettled.mock.results.some(({ value }) => value === true),
+    ).toBe(false);
     expect(readBrowserMessages(attachSocket)).toEqual([
       expect.objectContaining({ type: "error", code: "host_disconnected" }),
     ]);
@@ -2324,7 +2323,9 @@ describe("public terminal routes", () => {
         dataBase64: Buffer.alloc(64 * 1024, "x").toString("base64"),
       },
     ]);
-    expect(new Set(retained?.map(({ seq }) => seq)).size).toBe(retained?.length);
+    expect(new Set(retained?.map(({ seq }) => seq)).size).toBe(
+      retained?.length,
+    );
     expect(
       getTerminalSession(fixture.harness.db, {
         kind: "terminal",
@@ -2385,10 +2386,12 @@ describe("public terminal routes", () => {
     const nextSession = seedSession(fixture.harness.deps, fixture.host.id, {
       instanceId: "replay-instance-2",
     });
-    await fixture.harness.deps.terminalSessions.reconcileDisconnectedHostTerminals({
-      daemonSessionId: nextSession.id,
-      hostId: fixture.host.id,
-    });
+    await fixture.harness.deps.terminalSessions.reconcileDisconnectedHostTerminals(
+      {
+        daemonSessionId: nextSession.id,
+        hostId: fixture.host.id,
+      },
+    );
     const attachSocket = createFakeBrowserSocket();
     const pendingAttaches = Reflect.get(
       fixture.harness.deps.terminalSessions,
@@ -2410,32 +2413,36 @@ describe("public terminal routes", () => {
     };
     const attachRpcKey = `${nextSession.id}\0${terminal.id}\0offset-reset-replay`;
     const attachSettlement = vi.spyOn(pendingAttachRegistry, "settle");
-    const pendingAttach = pendingAttachRegistry.claim({
-      daemonSessionId: nextSession.id,
-      requestId: "offset-reset-replay",
-      rpcKey: attachRpcKey,
-      socket: attachSocket,
-      terminalId: terminal.id,
-    }).promise.catch((error: unknown) => error);
+    const pendingAttach = pendingAttachRegistry
+      .claim({
+        daemonSessionId: nextSession.id,
+        requestId: "offset-reset-replay",
+        rpcKey: attachRpcKey,
+        socket: attachSocket,
+        terminalId: terminal.id,
+      })
+      .promise.catch((error: unknown) => error);
     const chunks = Array.from({ length: 2_000 }, (_, seq) => ({
       seq: 200 + seq,
       dataBase64: Buffer.alloc(400, "x").toString("base64"),
     }));
     let replaySettled = false;
-    const replay = fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
-      hostId: fixture.host.id,
-      sessionId: nextSession.id,
-      message: {
-        type: "terminal.replay",
-        requestId: "offset-reset-replay",
-        terminalId: terminal.id,
-        replayStartSeq: 0,
-        nextSeq: 2_200,
-        chunks,
-      },
-    }).finally(() => {
-      replaySettled = true;
-    });
+    const replay = fixture.harness.deps.terminalSessions
+      .handleDaemonTerminalMessage({
+        hostId: fixture.host.id,
+        sessionId: nextSession.id,
+        message: {
+          type: "terminal.replay",
+          requestId: "offset-reset-replay",
+          terminalId: terminal.id,
+          replayStartSeq: 0,
+          nextSeq: 2_200,
+          chunks,
+        },
+      })
+      .finally(() => {
+        replaySettled = true;
+      });
     await new Promise<void>((resolve) => setImmediate(resolve));
     expect(replaySettled).toBe(false);
     appendRetainedTerminalOutputChunks(fixture.harness.db, {
@@ -2467,7 +2474,8 @@ describe("public terminal routes", () => {
       ),
     ).toBe(false);
     const discard = replayInfo.mock.calls.find(
-      ([, message]) => message === "Terminal replay discarded after ownership change",
+      ([, message]) =>
+        message === "Terminal replay discarded after ownership change",
     );
     expect(discard).toBeDefined();
     expect(discard?.[0]).not.toHaveProperty("retainedWriteBytes");

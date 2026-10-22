@@ -205,17 +205,14 @@ describe("daemon liveness checks", () => {
             enqueue: (message, priority, acceptedAtArrival) =>
               queue.enqueue(
                 () =>
-                  onDaemonSocketMessage(
-                    harness.deps,
-                    {
-                      acceptedAtArrival,
-                      hostId: daemon.hostId,
-                      message,
-                      raw: JSON.stringify({ type: "heartbeat" }),
-                      sessionId: daemon.sessionId,
-                      socket: daemon.socket,
-                    },
-                  ),
+                  onDaemonSocketMessage(harness.deps, {
+                    acceptedAtArrival,
+                    hostId: daemon.hostId,
+                    message,
+                    raw: JSON.stringify({ type: "heartbeat" }),
+                    sessionId: daemon.sessionId,
+                    socket: daemon.socket,
+                  }),
                 priority,
               ),
             raw: JSON.stringify({ type: "heartbeat" }),
@@ -230,7 +227,9 @@ describe("daemon liveness checks", () => {
             .leaseExpiresAt,
         ).toBeGreaterThan(Date.now());
         expect(harness.hub.hasDaemonForHost(daemon.hostId)).toBe(true);
-        expect(daemon.socket.messages.map((message) => JSON.parse(message))).toContainEqual({
+        expect(
+          daemon.socket.messages.map((message) => JSON.parse(message)),
+        ).toContainEqual({
           type: "heartbeat-ack",
         });
       } finally {

@@ -1,11 +1,13 @@
 import { eq } from "drizzle-orm";
-import {
-  buildHostDaemonWebSocketProtocols,
-} from "@bb/host-daemon-contract";
+import { buildHostDaemonWebSocketProtocols } from "@bb/host-daemon-contract";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
 import { getSessionById, hostDaemonSessions } from "@bb/db";
-import { createTestDaemonHostKey, startTestServer, type RunningTestServer } from "../helpers/test-app.js";
+import {
+  createTestDaemonHostKey,
+  startTestServer,
+  type RunningTestServer,
+} from "../helpers/test-app.js";
 import {
   seedEnvironment,
   seedHostSession,
@@ -16,7 +18,10 @@ import {
 let server: RunningTestServer | null = null;
 const sockets = new Set<WebSocket>();
 
-async function connectDaemon(sessionId: string, hostId: string): Promise<WebSocket> {
+async function connectDaemon(
+  sessionId: string,
+  hostId: string,
+): Promise<WebSocket> {
   if (!server) throw new Error("test server is not running");
   const url = new URL("/internal/ws", server.baseUrl);
   url.protocol = "ws:";
@@ -33,9 +38,14 @@ async function connectDaemon(sessionId: string, hostId: string): Promise<WebSock
   return socket;
 }
 
-async function waitForClose(socket: WebSocket): Promise<{ code: number; reason: string }> {
+async function waitForClose(
+  socket: WebSocket,
+): Promise<{ code: number; reason: string }> {
   return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => reject(new Error("socket did not close")), 1_000);
+    const timeout = setTimeout(
+      () => reject(new Error("socket did not close")),
+      1_000,
+    );
     socket.once("close", (code, reason) => {
       clearTimeout(timeout);
       resolve({ code, reason: reason.toString() });
@@ -123,7 +133,11 @@ describe("daemon websocket session authorization", () => {
       const recordActivity = vi.spyOn(server.hub, "recordDaemonActivity");
       server.db
         .update(hostDaemonSessions)
-        .set({ status: "closed", closeReason: "replaced", closedAt: Date.now() })
+        .set({
+          status: "closed",
+          closeReason: "replaced",
+          closedAt: Date.now(),
+        })
         .where(eq(hostDaemonSessions.id, session.id))
         .run();
       const closed = waitForClose(socket);
@@ -194,14 +208,16 @@ describe("daemon websocket session authorization", () => {
     });
 
     const closed = waitForClose(socket);
-    socket.send(JSON.stringify({
-      type: "terminal.output",
-      terminalId: "terminal-output-after-close",
-      chunk: {
-        seq: 0,
-        dataBase64: Buffer.from("must not be retained").toString("base64"),
-      },
-    }));
+    socket.send(
+      JSON.stringify({
+        type: "terminal.output",
+        terminalId: "terminal-output-after-close",
+        chunk: {
+          seq: 0,
+          dataBase64: Buffer.from("must not be retained").toString("base64"),
+        },
+      }),
+    );
     const outcome = await Promise.race([
       closed.then(() => "closed" as const),
       activityRecorded.then(() => "activity" as const),
@@ -274,14 +290,17 @@ describe("daemon websocket session authorization", () => {
   it("applies frames accepted while active even when close happens before draining", async () => {
     server = await startTestServer();
     const { host, session } = seedHostSession(server.deps);
-    const original = server.deps.terminalSessions.reconcileDisconnectedHostTerminals.bind(
-      server.deps.terminalSessions,
-    );
+    const original =
+      server.deps.terminalSessions.reconcileDisconnectedHostTerminals.bind(
+        server.deps.terminalSessions,
+      );
     let resumeOpen!: () => void;
     const waitForOpen = new Promise<void>((resolve) => {
       resumeOpen = resolve;
     });
-    server.deps.terminalSessions.reconcileDisconnectedHostTerminals = async (args) => {
+    server.deps.terminalSessions.reconcileDisconnectedHostTerminals = async (
+      args,
+    ) => {
       await waitForOpen;
       await original(args);
     };
@@ -297,14 +316,18 @@ describe("daemon websocket session authorization", () => {
       markHostRestarting(hostId);
       if (hostId === host.id) resolveRestart();
     });
-    socket.send(JSON.stringify({
-      type: "terminal.output",
-      terminalId: "terminal-without-clients",
-      chunk: { seq: 0, dataBase64: Buffer.from("queued").toString("base64") },
-    }));
+    socket.send(
+      JSON.stringify({
+        type: "terminal.output",
+        terminalId: "terminal-without-clients",
+        chunk: { seq: 0, dataBase64: Buffer.from("queued").toString("base64") },
+      }),
+    );
     socket.send(JSON.stringify({ type: "daemon.restarting" }));
     await new Promise<void>((resolve) => setImmediate(resolve));
-    const closed = new Promise<void>((resolve) => socket.once("close", () => resolve()));
+    const closed = new Promise<void>((resolve) =>
+      socket.once("close", () => resolve()),
+    );
     socket.close();
     await closed;
     resumeOpen();

@@ -1569,7 +1569,8 @@ export class TerminalSessionLifecycle {
     if (current.status === "exited") {
       if (args.payload.reason === "user") {
         await this.waitForTerminalReplay(current.id);
-        if (this.terminalOutputWritesStopped) return this.toTerminalSession(current);
+        if (this.terminalOutputWritesStopped)
+          return this.toTerminalSession(current);
         this.flushRetainedOutput(current.id);
         dismissRetainedTerminalOutput(
           this.options.db,
@@ -2096,10 +2097,11 @@ export class TerminalSessionLifecycle {
     ]);
     const terminals = [...terminalIds].map((terminalId) => ({
       terminalId,
-      chunks: (this.pendingRetainedOutput.get(terminalId) ?? []).reduce(
-        (total, batch) => total + batch.chunks.length,
-        0,
-      ) + (this.pendingHolderOutput.get(terminalId)?.chunks.length ?? 0),
+      chunks:
+        (this.pendingRetainedOutput.get(terminalId) ?? []).reduce(
+          (total, batch) => total + batch.chunks.length,
+          0,
+        ) + (this.pendingHolderOutput.get(terminalId)?.chunks.length ?? 0),
       replayActive: this.activeTerminalReplays.has(terminalId),
     }));
     this.options.logger.warn(
@@ -3111,7 +3113,8 @@ export class TerminalSessionLifecycle {
     let replayOwnershipChanged = false;
     const checkReplayAfterYield = (): boolean => {
       if (this.terminalOutputWritesStopped) return false;
-      if (!replayOwnershipChanged && !stillOwned()) replayOwnershipChanged = true;
+      if (!replayOwnershipChanged && !stillOwned())
+        replayOwnershipChanged = true;
       return true;
     };
     let sourceChunks = sourceMessage.chunks;
@@ -3142,7 +3145,9 @@ export class TerminalSessionLifecycle {
       let high = retainedChunks.length;
       while (low < high) {
         const middle = (low + high) >>> 1;
-        if ((retainedChunks[middle]?.seq ?? Number.POSITIVE_INFINITY) < chunk.seq)
+        if (
+          (retainedChunks[middle]?.seq ?? Number.POSITIVE_INFINITY) < chunk.seq
+        )
           low = middle + 1;
         else high = middle;
       }
@@ -3263,8 +3268,7 @@ export class TerminalSessionLifecycle {
       );
       return;
     }
-    const retainedAppendPerformed =
-      current !== null && retainedTail.length > 0;
+    const retainedAppendPerformed = current !== null && retainedTail.length > 0;
     if (retainedAppendPerformed && current) {
       runEventLoopWorkSync("ws:daemon terminal.replay append-retained", () => {
         appendRetainedTerminalOutputChunks(this.options.db, {
@@ -3287,10 +3291,7 @@ export class TerminalSessionLifecycle {
       else this.pendingRetainedOutput.delete(current.id);
     }
 
-    if (
-      current &&
-      (current.status === "exited" || replayOwnershipChanged)
-    ) {
+    if (current && (current.status === "exited" || replayOwnershipChanged)) {
       if (latest?.status === "exited") {
         markRetainedTerminalOutputExited(
           this.options.db,
