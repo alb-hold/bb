@@ -1825,6 +1825,13 @@ export function ThreadTerminalView({
         if (!terminal || !activeBuffer) {
           return;
         }
+        if (afterGridResize && savedViewportAnchor?.distanceFromTail === 0) {
+          terminal.scrollToBottom();
+          viewportLineAnchor?.clear();
+          hasRestoredViewport = true;
+          viewportReplaySaveGate.finishRestore();
+          return;
+        }
         if (
           afterGridResize &&
           viewportLineAnchor !== null &&
