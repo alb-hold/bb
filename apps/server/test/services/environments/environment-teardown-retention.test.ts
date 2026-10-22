@@ -1659,6 +1659,70 @@ describe("removal while the machine is being removed", () => {
       expect(remove).not.toHaveBeenCalled();
     }));
 
+  it("revives a failed teardown whose owner is live when the sweep finds it, instead of leaving it failed", async () =>
+    withTestHarness(async (harness) => {
+      const remove = vi.fn<PluginEnvironmentProviderDeclaration["remove"]>(
+        async () => ({ status: "removed" }),
+      );
+      installProvider({ remove });
+      installMachine();
+      const { environment, host, thread } = seedRetiring(harness, {
+        archivedThread: false,
+      });
+      patch(harness, environment.id, {
+        status: "error",
+        teardownStatus: "failed",
+        teardownPriorStatus: "ready",
+        teardownAttempt: 1,
+        teardownMessage: "Workspace cleanup temporarily failed",
+        retireAt: Date.now() - 1,
+      });
+      markRemoving(harness, host.id);
+
+      await sweepProviderMachine(harness.deps, host.id);
+
+      expect(remove).not.toHaveBeenCalled();
+      expect(row(harness, environment.id)).toMatchObject({
+        status: "ready",
+        teardownStatus: null,
+      });
+      expect(getHost(harness.db, host.id)).toMatchObject({
+        phase: "removing",
+        statusMessage: expect.stringContaining(thread.id),
+      });
+    }));
+
+  it("does not tear down an environment a starting owner is still preparing on a machine being removed", async () =>
+    withTestHarness(async (harness) => {
+      const remove = vi.fn<PluginEnvironmentProviderDeclaration["remove"]>(
+        async () => ({ status: "removed" }),
+      );
+      installProvider({ remove });
+      installMachine();
+      const { environment, host, thread } = seedRetiring(harness, {
+        archivedThread: false,
+      });
+      harness.db
+        .update(threads)
+        .set({ status: "starting", environmentId: null })
+        .where(eq(threads.id, thread.id))
+        .run();
+      patch(harness, environment.id, {
+        ownerThreadId: thread.id,
+        status: "provisioning",
+      });
+      markRemoving(harness, host.id);
+
+      await sweepProviderMachine(harness.deps, host.id);
+
+      expect(remove).not.toHaveBeenCalled();
+      expect(row(harness, environment.id)).toMatchObject({
+        ownerThreadId: thread.id,
+        teardownStatus: null,
+      });
+      expect(row(harness, environment.id).status).not.toBe("destroyed");
+    }));
+
   it("reports a retained environment's own message on the machine", async () =>
     withTestHarness(async (harness) => {
       installProvider({

@@ -9,6 +9,7 @@ import {
 } from "./host/base-branch.js";
 import {
   resolveWorktreeChildPath,
+  resolveRetainedRoot,
   resolveWorktreesRoot,
   resolveWorktreeAttemptRoot,
   resolveWorktreeTargetPath,
@@ -159,6 +160,9 @@ export function createWorktreeHostEntry() {
             targetPath,
             completionPath: completionPathForWorktree(targetPath),
             ownWorktreesRoot: resolveWorktreesRoot(
+              context.experimental_paths.dataDir,
+            ),
+            retainedRoot: resolveRetainedRoot(
               context.experimental_paths.dataDir,
             ),
             branchName: input.branchName,

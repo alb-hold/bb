@@ -21,7 +21,6 @@ export interface CreatedBy {
 
 export interface CreatedByInspection {
   reasons: string[];
-  deletable: string[];
 }
 
 export function beginCopy(createdBy: CreatedBy, relativePath: string): void {
@@ -116,28 +115,6 @@ async function verifyCopy(
   }
 }
 
-export async function unlinkContainedCopy(
-  worktreePath: string,
-  relativePath: string,
-): Promise<"removed" | "missing" | "refused"> {
-  const file = path.join(worktreePath, relativePath);
-  try {
-    const parentReal = await fs.realpath(path.dirname(file));
-    if (!isInsideWorktree(worktreePath, parentReal)) return "refused";
-    const target = path.join(parentReal, path.basename(file));
-    const info = await fs.lstat(target);
-    if (!info.isFile()) return "refused";
-    await fs.unlink(target);
-    return "removed";
-  } catch (error) {
-    return error instanceof Error &&
-      "code" in error &&
-      (error as NodeJS.ErrnoException).code === "ENOENT"
-      ? "missing"
-      : "refused";
-  }
-}
-
 function parseStatusEntries(stdout: string): {
   tracked: boolean;
   paths: string[];
@@ -201,7 +178,6 @@ export async function inspectCreatedBy(
     ],
     gitOptions,
   );
-  const deletable: string[] = [];
   if (status.exitCode !== 0) {
     reasons.push("could not read its Git status");
   } else {
@@ -231,30 +207,128 @@ export async function inspectCreatedBy(
       if (record.state === "recorded") {
         reasons.push("holds a copy that changed after bb made it");
       }
-    } else if (outcome === "unchanged") {
-      deletable.push(relativePath);
     }
   }
-  return { reasons, deletable };
+  return { reasons };
 }
 
-export async function removeVerifiedCopies(
+export interface RetainedCopies {
+  directory: string;
+  count: number;
+}
+
+export interface RetainCopiesResult {
+  retained: RetainedCopies | null;
+  reasons: string[];
+}
+
+function errorCode(error: unknown): string | null {
+  return error instanceof Error &&
+    "code" in error &&
+    typeof (error as NodeJS.ErrnoException).code === "string"
+    ? (error as NodeJS.ErrnoException).code!
+    : null;
+}
+
+export function describeRetainedCopies(retained: RetainedCopies): string {
+  return `Kept ${retained.count} file(s) bb copied from .worktreeinclude at ${retained.directory} (each under its path in the worktree). They may hold secrets such as .env files and use disk until you delete that folder yourself; bb never deletes it.`;
+}
+
+export async function retainCreatedCopies(
   identity: WorktreeIdentity,
   createdBy: CreatedBy,
-): Promise<string[]> {
-  const reasons: string[] = [];
-  for (const [relativePath, record] of createdBy.copies) {
-    const outcome = await verifyCopy(identity.path, relativePath, record);
-    if (outcome === "changed") {
-      reasons.push("holds a copy that changed after bb made it");
-      continue;
-    }
-    if (outcome === "missing") continue;
-    if (
-      (await unlinkContainedCopy(identity.path, relativePath)) === "refused"
-    ) {
-      reasons.push("could not remove a copy it made");
+  retainedRoot: string | undefined,
+): Promise<RetainCopiesResult> {
+  const present: string[] = [];
+  for (const relativePath of [...createdBy.copies.keys()].sort()) {
+    try {
+      await fs.lstat(path.join(identity.path, relativePath));
+      present.push(relativePath);
+    } catch (error) {
+      if (errorCode(error) !== "ENOENT") {
+        return {
+          retained: null,
+          reasons: ["could not check a copy it made before keeping it"],
+        };
+      }
     }
   }
-  return reasons;
+  if (present.length === 0) return { retained: null, reasons: [] };
+  if (retainedRoot === undefined) {
+    return {
+      retained: null,
+      reasons: ["has no private folder to keep the copies it made in"],
+    };
+  }
+
+  let directory: string;
+  let directoryDevice: number;
+  try {
+    await fs.mkdir(retainedRoot, { recursive: true, mode: 0o700 });
+    const rootInfo = await fs.lstat(retainedRoot);
+    if (!rootInfo.isDirectory() || rootInfo.isSymbolicLink()) {
+      return {
+        retained: null,
+        reasons: ["its private folder for kept copies is not a plain folder"],
+      };
+    }
+    directory = await fs.mkdtemp(path.join(retainedRoot, "failed-create-"));
+    await fs.chmod(directory, 0o700);
+    directoryDevice = (await fs.stat(directory)).dev;
+  } catch {
+    return {
+      retained: null,
+      reasons: [
+        "could not prepare a private folder to keep the copies it made",
+      ],
+    };
+  }
+
+  let count = 0;
+  const finish = (reason: string): RetainCopiesResult => ({
+    retained: count > 0 ? { directory, count } : null,
+    reasons: [reason],
+  });
+  for (const relativePath of present) {
+    const file = path.join(identity.path, relativePath);
+    let source: string;
+    try {
+      const parentReal = await fs.realpath(path.dirname(file));
+      if (!isInsideWorktree(identity.path, parentReal)) {
+        return finish("has a copy whose folder now resolves outside it");
+      }
+      source = path.join(parentReal, path.basename(file));
+      const info = await fs.lstat(source);
+      if (!info.isFile()) {
+        return finish("has a copy that is no longer a plain file");
+      }
+      if (info.dev !== directoryDevice) {
+        return finish(
+          "has a copy on a different filesystem than the private folder",
+        );
+      }
+      const destination = path.join(directory, relativePath);
+      await fs.mkdir(path.dirname(destination), {
+        recursive: true,
+        mode: 0o700,
+      });
+      try {
+        await fs.lstat(destination);
+        return finish("found its private folder already occupied");
+      } catch (error) {
+        if (errorCode(error) !== "ENOENT") {
+          return finish("could not check its private folder");
+        }
+      }
+      await fs.rename(source, destination);
+      count += 1;
+    } catch (error) {
+      return finish(
+        errorCode(error) === "EXDEV"
+          ? "has a copy on a different filesystem than the private folder"
+          : "could not move a copy it made to its private folder",
+      );
+    }
+  }
+  return { retained: { directory, count }, reasons: [] };
 }

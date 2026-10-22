@@ -3,7 +3,9 @@ import { existsSync, statSync, utimesSync } from "node:fs";
 import {
   mkdir,
   mkdtemp,
+  open,
   readFile,
+  readdir,
   rm,
   symlink,
   writeFile,
@@ -12,9 +14,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { experimental_createHostEntryHarness } from "@get-bb/plugin-sdk/testing/host";
-import { afterEach, describe, expect, it } from "vitest";
+import fsp from "node:fs/promises";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createWorktreeHostEntry } from "./host.js";
-import { unlinkContainedCopy } from "./host/created-by.js";
 
 const execFileAsync = promisify(execFile);
 const temporaryRoots: string[] = [];
@@ -32,6 +34,7 @@ function isAlive(pid: number): boolean {
 }
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   await Promise.all(
     temporaryRoots
       .splice(0)
@@ -126,7 +129,7 @@ describe("a failed create keeps recoverable work in the worktree it just made", 
     await fixture.harness.experimental_dispose();
   });
 
-  it("still removes a worktree whose only extra files are untouched copies bb made", async () => {
+  it("moves untouched copies to a private folder outside the worktrees and removes the worktree", async () => {
     const fixture = await createFixture({
       hookLines: [],
       includedFiles: [
@@ -139,6 +142,41 @@ describe("a failed create keeps recoverable work in the worktree it just made", 
     expect(existsSync(fixture.targetPath)).toBe(false);
     expect(existsSync(join(fixture.dataDir, "worktrees", PATH_KEY))).toBe(
       false,
+    );
+    const directory = retainedDirectory(result);
+    expect(directory.startsWith(join(fixture.dataDir, "retained") + "/")).toBe(
+      true,
+    );
+    expect(statSync(directory).mode & 0o777).toBe(0o700);
+    expect(await readFile(join(directory, "inc", "a.env"), "utf8")).toBe(
+      "A=1\n",
+    );
+    expect(await readFile(join(directory, "inc", "b.env"), "utf8")).toBe(
+      "B=2\n",
+    );
+    expect(JSON.stringify(result)).toContain("ENOENT");
+    expect(JSON.stringify(result)).toContain("never deletes it");
+    await fixture.harness.experimental_dispose();
+  });
+
+  it("lets a retry run after a failed create kept its copies, leaving the first folder alone", async () => {
+    const fixture = await createFixture({
+      hookLines: [],
+      includedFiles: [{ name: "a.env", content: "A=1\n" }],
+    });
+    const first = await fixture.create();
+    const firstDirectory = retainedDirectory(first);
+    const second = await fixture.create();
+    const secondDirectory = retainedDirectory(second);
+
+    expect(second.status).toBe("failed");
+    expect(secondDirectory).not.toBe(firstDirectory);
+    expect(existsSync(fixture.targetPath)).toBe(false);
+    expect(await readFile(join(firstDirectory, "inc", "a.env"), "utf8")).toBe(
+      "A=1\n",
+    );
+    expect(await readFile(join(secondDirectory, "inc", "a.env"), "utf8")).toBe(
+      "A=1\n",
     );
     await fixture.harness.experimental_dispose();
   });
@@ -252,30 +290,181 @@ describe("a failed create keeps recoverable work in the worktree it just made", 
   });
 });
 
-describe("the last step before a copy is deleted", () => {
-  it("refuses to delete through a folder that now resolves outside the worktree", async () => {
-    const root = await mkdtemp(join(tmpdir(), "bb-worktree-unlink-"));
-    temporaryRoots.push(root);
-    const worktree = join(root, "worktree");
-    const outside = join(root, "outside");
-    await mkdir(worktree, { recursive: true });
-    await mkdir(outside);
-    await writeFile(join(outside, "a.env"), "A=outside\n");
-    await symlink(outside, join(worktree, "inc"));
+type Seam = "edit" | "replace-file" | "replace-symlink" | "late-fd-write";
 
-    expect(await unlinkContainedCopy(worktree, "inc/a.env")).toBe("refused");
-    expect(await readFile(join(outside, "a.env"), "utf8")).toBe("A=outside\n");
+function retainedDirectory(result: object): string {
+  const message =
+    "message" in result && typeof result.message === "string"
+      ? result.message
+      : "";
+  const found = /at (\S+failed-create-\S+) \(each under/u.exec(message);
+  if (found === null) throw new Error(`no retained path in ${message}`);
+  return found[1]!;
+}
+
+function installSeam(seam: Seam, copy: string, outside: string) {
+  const original = fsp.realpath.bind(fsp);
+  let handle: Awaited<ReturnType<typeof open>> | null = null;
+  let fired = false;
+  vi.spyOn(fsp, "realpath").mockImplementation(((
+    ...args: Parameters<typeof fsp.realpath>
+  ) => {
+    const stack = new Error().stack ?? "";
+    if (
+      seam === "late-fd-write" &&
+      handle === null &&
+      stack.includes("inspectCreatedBy")
+    ) {
+      return (async () => {
+        handle = await open(copy, "r+");
+        return original(...args);
+      })();
+    }
+    if (!fired && stack.includes("retainCreatedCopies")) {
+      fired = true;
+      return (async () => {
+        if (seam === "edit") {
+          await writeFile(copy, "USER EDIT AFTER VERIFY\n");
+        } else if (seam === "replace-file") {
+          await rm(copy);
+          await writeFile(copy, "USER FILE THAT ARRIVED LATER\n");
+        } else if (seam === "replace-symlink") {
+          await rm(copy);
+          await symlink(outside, copy);
+        } else if (handle !== null) {
+          await handle.write("LATE BYTES\n", 0);
+        }
+        return original(...args);
+      })();
+    }
+    return original(...args);
+  }) as typeof fsp.realpath);
+  return {
+    fired: () => fired,
+    close: async () => {
+      await handle?.close();
+    },
+  };
+}
+
+describe("a failed create never destroys a copy that changed after it was checked", () => {
+  it.each([
+    ["edit", "USER EDIT AFTER VERIFY\n"],
+    ["replace-file", "USER FILE THAT ARRIVED LATER\n"],
+  ] as const)(
+    "keeps the bytes of a %s that lands after the check",
+    async (seam, expected) => {
+      const fixture = await createFixture({
+        hookLines: [],
+        includedFiles: [{ name: "a.env", content: "A=1\n" }],
+      });
+      const copy = join(fixture.targetPath, "inc", "a.env");
+      const hook = installSeam(
+        seam,
+        copy,
+        join(fixture.dataDir, "outside.txt"),
+      );
+      const result = await fixture.create();
+      await hook.close();
+      expect(hook.fired()).toBe(true);
+      expect(result.status).toBe("failed");
+      const directory = retainedDirectory(result);
+      expect(await readFile(join(directory, "inc", "a.env"), "utf8")).toBe(
+        expected,
+      );
+      await fixture.harness.experimental_dispose();
+    },
+  );
+
+  it("keeps bytes written through a descriptor opened before the check", async () => {
+    const fixture = await createFixture({
+      hookLines: [],
+      includedFiles: [{ name: "a.env", content: "A=1\n" }],
+    });
+    const copy = join(fixture.targetPath, "inc", "a.env");
+    const hook = installSeam("late-fd-write", copy, "");
+    const result = await fixture.create();
+    await hook.close();
+    expect(hook.fired()).toBe(true);
+    const directory = retainedDirectory(result);
+    expect(
+      (await readFile(join(directory, "inc", "a.env"), "utf8")).startsWith(
+        "LATE BYTES\n",
+      ),
+    ).toBe(true);
+    await fixture.harness.experimental_dispose();
   });
 
-  it("deletes a plain file inside the worktree and reports a missing one", async () => {
-    const root = await mkdtemp(join(tmpdir(), "bb-worktree-unlink-"));
-    temporaryRoots.push(root);
-    const worktree = join(root, "worktree");
-    await mkdir(join(worktree, "inc"), { recursive: true });
-    await writeFile(join(worktree, "inc", "a.env"), "A=1\n");
+  it("keeps the worktree and the outside file when the copy became a symlink", async () => {
+    const fixture = await createFixture({
+      hookLines: [],
+      includedFiles: [{ name: "a.env", content: "A=1\n" }],
+    });
+    const copy = join(fixture.targetPath, "inc", "a.env");
+    const outside = join(fixture.dataDir, "outside.txt");
+    await writeFile(outside, "OUTSIDE\n");
+    const hook = installSeam("replace-symlink", copy, outside);
+    const result = await fixture.create();
+    expect(hook.fired()).toBe(true);
+    expect(result.status).toBe("failed");
+    expect(existsSync(fixture.targetPath)).toBe(true);
+    expect(await readFile(outside, "utf8")).toBe("OUTSIDE\n");
+    expect(JSON.stringify(result)).toContain("no longer a plain file");
+    await fixture.harness.experimental_dispose();
+  });
+});
 
-    expect(await unlinkContainedCopy(worktree, "inc/a.env")).toBe("removed");
-    expect(existsSync(join(worktree, "inc", "a.env"))).toBe(false);
-    expect(await unlinkContainedCopy(worktree, "inc/a.env")).toBe("missing");
+describe("what a failed create leaves behind when keeping the copies goes wrong", () => {
+  it("keeps a sentinel in the retained folder and a file that reappears at the original path", async () => {
+    const fixture = await createFixture({
+      hookLines: [],
+      includedFiles: [{ name: "a.env", content: "A=1\n" }],
+    });
+    const sentinelDirectory = join(fixture.dataDir, "retained", "sentinel");
+    await mkdir(sentinelDirectory, { recursive: true });
+    await writeFile(join(sentinelDirectory, "keep.txt"), "SENTINEL\n");
+    const copy = join(fixture.targetPath, "inc", "a.env");
+    const originalRename = fsp.rename.bind(fsp);
+    vi.spyOn(fsp, "rename").mockImplementation((async (
+      ...args: Parameters<typeof fsp.rename>
+    ) => {
+      await originalRename(...args);
+      await writeFile(copy, "ARRIVED AFTER THE MOVE\n");
+    }) as typeof fsp.rename);
+    const result = await fixture.create();
+    expect(result.status).toBe("failed");
+    expect(await readFile(copy, "utf8")).toBe("ARRIVED AFTER THE MOVE\n");
+    expect(await readFile(join(sentinelDirectory, "keep.txt"), "utf8")).toBe(
+      "SENTINEL\n",
+    );
+    const directory = retainedDirectory(result);
+    expect(await readFile(join(directory, "inc", "a.env"), "utf8")).toBe(
+      "A=1\n",
+    );
+    expect(JSON.stringify(result)).toContain("changed after bb made it");
+    await fixture.harness.experimental_dispose();
+  });
+
+  it("leaves the copy and the worktree alone when the move crosses filesystems", async () => {
+    const fixture = await createFixture({
+      hookLines: [],
+      includedFiles: [{ name: "a.env", content: "A=1\n" }],
+    });
+    vi.spyOn(fsp, "rename").mockImplementation((async () => {
+      throw Object.assign(new Error("cross-device link not permitted"), {
+        code: "EXDEV",
+      });
+    }) as typeof fsp.rename);
+    const result = await fixture.create();
+    expect(result.status).toBe("failed");
+    expect(
+      await readFile(join(fixture.targetPath, "inc", "a.env"), "utf8"),
+    ).toBe("A=1\n");
+    expect(JSON.stringify(result)).toContain("different filesystem");
+    const retainedRoot = join(fixture.dataDir, "retained");
+    for (const entry of await readdir(retainedRoot)) {
+      expect(await readdir(join(retainedRoot, entry, "inc"))).toEqual([]);
+    }
+    await fixture.harness.experimental_dispose();
   });
 });

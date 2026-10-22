@@ -11,9 +11,11 @@ import {
   beginCopy,
   fingerprintSource,
   inspectCreatedBy,
+  describeRetainedCopies,
   recordCopy,
-  removeVerifiedCopies,
+  retainCreatedCopies,
   type CreatedBy,
+  type RetainedCopies,
   type SourceFingerprint,
 } from "./created-by.js";
 import {
@@ -66,6 +68,7 @@ interface CreateWorktreeArgs {
   targetPath: string;
   completionPath: string;
   ownWorktreesRoot: string;
+  retainedRoot: string;
   branchName: string;
   baseBranch: string | null;
   branchMode: BranchMode;
@@ -78,8 +81,13 @@ interface RemoveWorktreeArgs {
   rootPath: string;
   completionPath?: string | undefined;
   createdBy?: CreatedBy | undefined;
+  retainedRoot?: string | undefined;
   onProgress?: ProgressCallback | undefined;
   signal?: AbortSignal | undefined;
+}
+
+export interface RemoveWorktreeResult {
+  retained: RetainedCopies | null;
 }
 
 const REMOTE_BASE_FETCH_TIMEOUT_MS = 60_000;
@@ -525,12 +533,13 @@ async function readCreatedBy(
 async function removeCreateTarget(
   args: CreateWorktreeArgs,
   createdBy?: CreatedBy,
-): Promise<void> {
-  await removeWorktree({
+): Promise<RemoveWorktreeResult> {
+  return await removeWorktree({
     path: args.targetPath,
     rootPath: args.ownWorktreesRoot,
     completionPath: args.completionPath,
     createdBy,
+    retainedRoot: args.retainedRoot,
     ...(args.signal !== undefined ? { signal: args.signal } : {}),
   });
 }
@@ -540,8 +549,9 @@ async function removeCreateTargetAfterFailure(
   failure: unknown,
   createdBy?: CreatedBy,
 ): Promise<never> {
+  let retained: RetainedCopies | null = null;
   try {
-    await removeCreateTarget(args, createdBy);
+    retained = (await removeCreateTarget(args, createdBy)).retained;
   } catch (cleanupError) {
     if (isWorktreePreservedError(cleanupError)) {
       throw new WorkspaceError(
@@ -551,6 +561,13 @@ async function removeCreateTargetAfterFailure(
       );
     }
     throw cleanupError;
+  }
+  if (retained !== null) {
+    throw new WorkspaceError(
+      WORKTREE_PRESERVED_CODE,
+      `${failure instanceof Error ? failure.message : String(failure)}. ${describeRetainedCopies(retained)}`,
+      { cause: failure },
+    );
   }
   throw failure;
 }
@@ -719,11 +736,33 @@ async function assertWorktreeRemovable(
 async function removeRegisteredWorktree(
   identity: WorktreeIdentity,
   args: RemoveWorktreeArgs,
-): Promise<void> {
+): Promise<RemoveWorktreeResult> {
+  let retained: RetainedCopies | null = null;
   if (args.createdBy !== undefined) {
-    const copyReasons = await removeVerifiedCopies(identity, args.createdBy);
-    if (copyReasons.length > 0) {
-      throw worktreePreservedError(identity.path, copyReasons);
+    const kept = await retainCreatedCopies(
+      identity,
+      args.createdBy,
+      args.retainedRoot,
+    );
+    retained = kept.retained;
+    if (kept.reasons.length > 0) {
+      throw worktreePreservedError(identity.path, [
+        ...kept.reasons,
+        ...(retained !== null ? [describeRetainedCopies(retained)] : []),
+      ]);
+    }
+    if (retained !== null) {
+      try {
+        await assertWorktreeRemovable(identity, args);
+      } catch (error) {
+        throw isWorktreePreservedError(error)
+          ? new WorkspaceError(
+              WORKTREE_PRESERVED_CODE,
+              `${error.message} ${describeRetainedCopies(retained)}`,
+              { cause: error },
+            )
+          : error;
+      }
     }
   }
   const parentPath = path.dirname(identity.path);
@@ -737,19 +776,22 @@ async function removeRegisteredWorktree(
       },
     ),
   );
+  const keptNote = retained !== null ? [describeRetainedCopies(retained)] : [];
   if (removal.exitCode !== 0) {
     throw worktreePreservedError(identity.path, [
       `Git declined to remove it${removal.stderr.trim() ? ` (${removal.stderr.trim()})` : ""}`,
+      ...keptNote,
     ]);
   }
   await removeDirectoryIfEmpty(identity.path);
   try {
     await fs.lstat(identity.path);
   } catch {
-    return;
+    return { retained };
   }
   throw worktreePreservedError(identity.path, [
     "still has files after Git removed the worktree",
+    ...keptNote,
   ]);
 }
 
@@ -781,7 +823,9 @@ export async function inspectWorktreeRemoval(args: {
       };
 }
 
-export async function removeWorktree(args: RemoveWorktreeArgs): Promise<void> {
+export async function removeWorktree(
+  args: RemoveWorktreeArgs,
+): Promise<RemoveWorktreeResult> {
   throwIfProvisionAborted(args.signal);
   const workspacePath = path.resolve(args.path);
   const parentPath = path.dirname(workspacePath);
@@ -793,6 +837,7 @@ export async function removeWorktree(args: RemoveWorktreeArgs): Promise<void> {
   if (identified.status === "preserve") {
     throw worktreePreservedError(workspacePath, identified.reasons);
   }
+  let retained: RetainedCopies | null = null;
   if (identified.status === "identified") {
     const { identity } = identified;
     const removed = await tryWithCheckoutMutationLock(
@@ -805,7 +850,7 @@ export async function removeWorktree(args: RemoveWorktreeArgs): Promise<void> {
         });
         throwIfProvisionAborted(args.signal);
         await assertWorktreeRemovable(identity, args);
-        await removeRegisteredWorktree(identity, args);
+        retained = (await removeRegisteredWorktree(identity, args)).retained;
         return true;
       },
       args.signal,
@@ -821,6 +866,7 @@ export async function removeWorktree(args: RemoveWorktreeArgs): Promise<void> {
     await fs.rm(args.completionPath, { force: true });
   }
   await removeDirectoryIfEmpty(parentPath);
+  return { retained };
 }
 
 export async function listGitWorktrees(args: {

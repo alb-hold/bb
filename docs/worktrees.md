@@ -169,7 +169,14 @@ removes it only while it holds nothing but what bb put there: HEAD is still the
 commit bb created, no tracked file changed, no `.keep-worktree`, lock or
 unfinished operation exists, and every other file is a `.worktreeinclude` copy
 whose contents still match what bb wrote. Anything else is kept and the create
-reports why. The branch is left behind, so work you committed to it survives the
+reports why. Before it removes such a worktree, bb moves each of those copies
+into a new private folder named `failed-create-*` under `retained/` in the
+Worktree plugin's data directory, outside the worktrees folder, and the failure
+message names that folder. bb never deletes or restores those files. They can
+hold secrets such as `.env` files and take up disk until you delete the folder
+yourself. A move needs the same filesystem; if the copy changed, is not a plain
+file, or cannot be moved, bb keeps the worktree and the copies already moved.
+The move itself is not a guarantee that the files survive a power loss. The branch is left behind, so work you committed to it survives the
 worktree. Push (or open a PR) from inside the worktree to let bb remove it, and
 move your own shells out of the worktree first if you want to keep them.
 
