@@ -557,11 +557,9 @@ describe("ThreadTerminalView terminal focus boundary", () => {
           .toContainEqual({ type: "ack", nextSeq: 1 }),
       "bottom-follow replay was not acknowledged within 5000 ms",
     );
-    getTerminal().scrollToLine(getTerminal().buffer.active.baseY - 1);
-    expect(
-      getTerminal().buffer.active.viewportY,
-      "reloaded terminal did not start above the bottom",
-    ).toBeLessThan(getTerminal().buffer.active.baseY);
+    expect(getTerminal().buffer.active.viewportY).toBeLessThan(
+      getTerminal().buffer.active.baseY,
+    );
     fitRows = 11;
     act(() => getTerminal().resize(40, fitRows));
     await waitForReadinessCondition(
@@ -754,11 +752,6 @@ describe("ThreadTerminalView terminal focus boundary", () => {
           .toContainEqual({ type: "ack", nextSeq: 1 }),
       "saved viewport replay was not acknowledged within 5000 ms",
     );
-    getTerminal().scrollToLine(getTerminal().buffer.active.baseY - 388);
-    expect(
-      getTerminal().buffer.active.viewportY,
-      "terminal did not scroll to the saved line before column reflow",
-    ).toBeLessThan(getTerminal().buffer.active.baseY);
     const lineBefore = getTerminal().buffer.active
       .getLine(getTerminal().buffer.active.viewportY)
       ?.translateToString(true);
