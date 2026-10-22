@@ -206,6 +206,7 @@ describe("createServerClient", () => {
           {
             sessionId: "session-1",
             machineEnvironment: { revision: 0, entries: [] },
+            idleProviderSessionTimeoutMinutes: 30,
             heartbeatIntervalMs: 5_000,
             leaseTimeoutMs: 30_000,
           },
@@ -245,6 +246,7 @@ describe("createServerClient", () => {
           sessionId: "session-1",
           heartbeatIntervalMs: 30_000,
           leaseTimeoutMs: 90_000,
+          idleProviderSessionTimeoutMinutes: 30,
           machineEnvironment: { revision: 0, entries: [] },
         },
         { status: 201 },

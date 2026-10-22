@@ -27,8 +27,10 @@ vi.mock("@/hooks/queries/system-queries", () => ({
     ],
   }),
 }));
-vi.mock("@/lib/plugin-sidebar-hooks", () => ({
-  useThreadEntryMap: () => new Map(),
+vi.mock("@/lib/sidebar-thread-entries", () => ({
+  useSidebarThreadEntries: () => new Map(),
+}));
+vi.mock("@/lib/cached-thread", () => ({
   lookupCachedThread: (_client: unknown, threadId: string) => {
     const providerId = providerOf.get(threadId);
     return providerId === undefined ? null : { providerId };

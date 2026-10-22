@@ -1,4 +1,5 @@
 import {
+  getThread,
   applyThreadLifecycleEvent,
   applyThreadLifecycleEventInTransaction,
   clearThreadRowState,
@@ -8,6 +9,7 @@ import {
   type DbConnection,
   type DbTransaction,
 } from "@bb/db";
+import { recordFinishedTurn } from "../system/turn-telemetry.js";
 import type { ServerLogger } from "../../types.js";
 import type { NotificationHub } from "../../ws/hub.js";
 import {
@@ -66,7 +68,11 @@ export function applyLoggedThreadLifecycleEvent(
   deps: ApplyLoggedThreadLifecycleEventDeps,
   args: ApplyThreadLifecycleEventArgs,
 ): ApplyThreadLifecycleEventOutcome {
+  const previousStatus = getThread(deps.db, args.threadId)?.status;
   const outcome = applyThreadLifecycleEvent(deps.db, args);
+  if (outcome.applied && previousStatus !== undefined) {
+    recordFinishedTurn(deps.db, args.threadId, args.event, previousStatus);
+  }
   if (outcome.applied) {
     if (outcome.thread.status === "idle" || outcome.thread.status === "error") {
       deps.hub.clearDeviceHandoffTurnSubmitterForThread(args.threadId);
@@ -94,7 +100,11 @@ export function applyLoggedThreadLifecycleEventInTransaction(
   deps: ApplyLoggedThreadLifecycleEventTransactionDeps,
   args: ApplyThreadLifecycleEventArgs,
 ): ApplyThreadLifecycleEventOutcome {
+  const previousStatus = getThread(deps.db, args.threadId)?.status;
   const outcome = applyThreadLifecycleEventInTransaction(deps.db, args);
+  if (outcome.applied && previousStatus !== undefined) {
+    recordFinishedTurn(deps.db, args.threadId, args.event, previousStatus);
+  }
   if (
     outcome.applied &&
     (outcome.thread.status === "idle" || outcome.thread.status === "error") &&
@@ -102,6 +112,7 @@ export function applyLoggedThreadLifecycleEventInTransaction(
   ) {
     clearThreadRowState(deps.db, args.threadId);
     releaseWorkspaceForThread(deps, outcome.thread);
+
   }
   logUnappliedThreadLifecycleEvent(deps.logger, args, outcome);
   emitPluginThreadLifecycleOutcome(outcome);

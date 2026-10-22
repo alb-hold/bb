@@ -7,7 +7,13 @@ import {
   useNavigate,
   useParams,
 } from "react-router-dom";
-import { useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+  startTransition,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   act,
   cleanup,
@@ -427,6 +433,64 @@ describe("useComposer", () => {
     fireEvent.click(screen.getByText("quiet-update"));
     expect(draft.getCurrent().text).toBe("abcde!");
     expect(screen.getByTestId("reading-text").textContent).toBe("abcde!");
+  });
+
+  it("mounts a plugin that reads the text during a navigation without re-rendering the rest of the page", () => {
+    const pageRenders = vi.fn();
+    function ReadingProbe() {
+      const composer = useComposer();
+      return <div data-testid="navigated-text">{composer.text}</div>;
+    }
+    function PageContent() {
+      pageRenders();
+      return null;
+    }
+    setPluginSlotRegistrations(
+      "demo",
+      registrationSet({
+        composerCustomizations: [
+          {
+            id: "probe",
+            actions: [{ id: "reading", component: ReadingProbe }],
+          },
+        ],
+      }),
+    );
+    const staticView: ComposerView = {
+      scope: { kind: "thread", threadId: "thr_navigated" },
+      layout: "expanded",
+      draft: { text: "", isEmpty: true, attachmentCount: 0 },
+      run: { isRunning: false, isSubmitting: false },
+    };
+    getPromptDraftAccessor({
+      kind: "thread",
+      projectId: PERSONAL_PROJECT_ID,
+      threadId: "thr_navigated",
+    }).setDraft({ text: "saved draft", mentions: [], attachments: [] });
+    function Page({ isOpen }: { isOpen: boolean }) {
+      return (
+        <MemoryRouter initialEntries={["/threads/thr_navigated"]}>
+          {isOpen ? (
+            <>
+              <PageContent />
+              <ComposerActionsSlot view={staticView} />
+            </>
+          ) : null}
+        </MemoryRouter>
+      );
+    }
+    const { rerender } = render(<Page isOpen={false} />);
+
+    act(() => {
+      startTransition(() => {
+        rerender(<Page isOpen />);
+      });
+    });
+
+    expect(screen.getByTestId("navigated-text").textContent).toBe(
+      "saved draft",
+    );
+    expect(pageRenders).toHaveBeenCalledTimes(1);
   });
 
   it("keeps following the draft once a plugin starts reading it after mount", () => {
@@ -1265,8 +1329,8 @@ describe("useComposer", () => {
     );
   });
 
-  it("routes experimental_submit to the composer that owns the submission, and refuses where none does", async () => {
-    const submit = vi.fn(async () => {});
+  it("routes experimental_submit to the on-screen composer, and refuses off screen", async () => {
+    const submit = vi.fn<ComposerEditorBridge["submit"]>(async () => {});
     let captured: PluginComposerApi | null = null;
     registerComposerProbe("submit", (composer) => {
       captured = composer;
@@ -1277,7 +1341,7 @@ describe("useComposer", () => {
       attachments: [],
     };
 
-    function Harness({ withSubmit }: { withSubmit: boolean }) {
+    function Harness() {
       const host = useMemo<PluginComposerHost>(
         () => ({
           scope: { kind: "thread", threadId: "thr_submit" },
@@ -1286,9 +1350,8 @@ describe("useComposer", () => {
           subscribeDraft: () => () => {},
           setDraft: () => {},
           focus: () => {},
-          ...(withSubmit ? { submit } : {}),
         }),
-        [withSubmit],
+        [],
       );
       return (
         <PluginComposerHostProvider value={host}>
@@ -1320,44 +1383,39 @@ describe("useComposer", () => {
         attachmentError: null,
       },
       insertAtCursor: () => true,
+      submit,
     };
     publishComposerEditorBridge("thread:thr_submit", readyEditor);
-    const view = render(
+    render(
       <MemoryRouter initialEntries={["/threads/thr_submit"]}>
-        <Harness withSubmit />
+        <Harness />
       </MemoryRouter>,
     );
     const sendAt = Date.now() + 3_600_000;
     await act(async () => {
       await captured!.experimental_submit({ sendAt });
     });
-    expect(submit).toHaveBeenCalledWith({ sendAt }, undefined);
+    expect(submit).toHaveBeenCalledWith({ mode: "enter", sendAt });
 
     const experimental_data = { kind: "draft" };
     await act(async () => {
       await captured!.experimental_submit({ experimental_data });
     });
-    expect(submit).toHaveBeenLastCalledWith(
-      { experimental_data },
-      { pluginId: "demo", data: experimental_data },
-    );
+    expect(submit).toHaveBeenLastCalledWith({
+      mode: "enter",
+      pluginSubmission: { pluginId: "demo", data: experimental_data },
+    });
 
     await expect(
       captured!.experimental_submit({ sendAt: Date.now() - 1 }),
     ).rejects.toThrow(/future/);
     expect(submit).toHaveBeenCalledTimes(2);
 
-    view.unmount();
-    render(
-      <MemoryRouter initialEntries={["/threads/thr_submit"]}>
-        <Harness withSubmit={false} />
-      </MemoryRouter>,
-    );
+    clearComposerEditorBridge("thread:thr_submit", readyEditor);
     await expect(captured!.experimental_submit({ sendAt })).rejects.toThrow(
-      /cannot submit/,
+      /isn't on screen/,
     );
     expect(submit).toHaveBeenCalledTimes(2);
-    clearComposerEditorBridge("thread:thr_submit", readyEditor);
   });
 });
 
@@ -1474,6 +1532,7 @@ describe("useComposer().experimental_setSelection", () => {
         attachmentError: null,
       },
       insertAtCursor: () => true,
+      submit: async () => {},
     };
     publishComposerEditorBridge("thread:thr_selection", editor);
     const view = render(

@@ -81,6 +81,7 @@ export interface TerminalListArgs {
 export interface TerminalCreateArgs {
   cols: number;
   cwd?: string;
+  id?: CreateTerminalRequest["id"];
   rows: number;
   scope: TerminalCreateScope;
   start?: CreateTerminalRequest["start"];
@@ -314,6 +315,7 @@ export function createTerminalsArea(args: CreateSdkAreaArgs): TerminalsArea {
         json: {
           cols: input.cols,
           ...(input.cwd === undefined ? {} : { cwd: input.cwd }),
+          id: input.id,
           rows: input.rows,
           start: input.start,
           target: terminalCreateTarget(input.scope),

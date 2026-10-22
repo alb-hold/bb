@@ -63,7 +63,7 @@ function SidebarNavigationItemMenuItems({
         <>
           {canOpenInSplit ? (
             <Item
-              onSelect={() => actions.activate(item.id, { openInSplit: true })}
+              onSelect={() => actions.activate(item.id, { target: "split" })}
             >
               <Icon name="Columns2" aria-hidden="true" />
               Open in split
@@ -221,8 +221,10 @@ export function SidebarNavigationMoreMenu({
               const terminalTarget = terminalTargetRef.current;
               terminalTargetRef.current = null;
               actions.activate(item.id, {
-                openInSplit: false,
-                target: terminalTarget?.isConnected ? terminalTarget : null,
+                target: "current",
+                experimental_focusTarget: terminalTarget?.isConnected
+                  ? terminalTarget
+                  : null,
               });
             }}
           >
