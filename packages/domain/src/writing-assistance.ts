@@ -692,7 +692,7 @@ const QUOTE_CLOSERS: Readonly<Record<string, string>> = {
   '"': '"',
   "“": "”",
   "”": "”",
-  "„": "“”",
+  "„": "“",
   "«": "»",
   "»": "«",
   "‹": "›",
@@ -702,21 +702,11 @@ const QUOTE_CLOSERS: Readonly<Record<string, string>> = {
   "‘": "’",
 };
 const WORD_CHARACTER = /[\p{L}\p{N}]/u;
-const BLANK_LINE = /\r?\n[ \t]*\r?\n/gu;
-
-function paragraphStart(target: string, at: number): number {
-  let start = 0;
-  for (const match of target.slice(0, at).matchAll(BLANK_LINE)) {
-    start = match.index + match[0].length;
-  }
-  return start;
-}
 
 function inQuotedText(target: string, start: number, end: number): boolean {
-  const scanFrom = paragraphStart(target, start);
   const open: string[] = [];
-  for (const match of target.slice(scanFrom, end).matchAll(QUOTE_MARKS)) {
-    const at = scanFrom + match.index;
+  for (const match of target.slice(0, end).matchAll(QUOTE_MARKS)) {
+    const at = match.index;
     const mark = match[0];
     const single = SINGLE_QUOTES.has(mark);
     const wordBefore = WORD_CHARACTER.test(target[at - 1] ?? "");
