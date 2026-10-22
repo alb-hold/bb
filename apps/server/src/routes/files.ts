@@ -1,4 +1,5 @@
 import path from "node:path";
+import { getHostPathBasename, getHostPathDirname } from "@bb/domain";
 import { randomUUID } from "node:crypto";
 import type { Hono } from "hono";
 import {
@@ -20,7 +21,10 @@ import {
   requireDaemonFileContentResult,
   remapDaemonFileRouteError,
 } from "../services/hosts/daemon-file-response.js";
-import { assertPathAvoidsProtectedWorkspaces } from "../services/environments/protected-paths.js";
+import {
+  assertPathAvoidsProtectedWorkspaces,
+  refuseUnprovenMutation,
+} from "../services/environments/protected-paths.js";
 import { serveDaemonFileStream } from "../services/hosts/daemon-file-stream.js";
 import { createRawFileHeaders } from "../services/hosts/raw-file-headers.js";
 import {
@@ -239,6 +243,35 @@ export function registerFileRoutes(app: Hono, deps: AppDeps): void {
     }
   };
 
+  const requireMoveSourceIsPlainFile = async (
+    hostId: string,
+    sourcePath: string,
+  ): Promise<void> => {
+    const parent = getHostPathDirname(sourcePath);
+    const name = getHostPathBasename(sourcePath);
+    if (parent === null || name === null || name === "") {
+      refuseUnprovenMutation({
+        action: "move",
+        path: sourcePath,
+        reason: "its parent folder cannot be determined",
+      });
+    }
+    const listing = await callHostRetryableOnlineRpc(deps, {
+      hostId,
+      timeoutMs: COMMAND_TIMEOUT_MS,
+      command: { type: "host.browse_directory", path: parent },
+    });
+    const entry = listing.entries.find((candidate) => candidate.name === name);
+    if (entry?.kind !== "file") {
+      refuseUnprovenMutation({
+        action: "move",
+        path: sourcePath,
+        reason:
+          "it is not confirmed to be a single file, and moving a folder could carry a workspace with it",
+      });
+    }
+  };
+
   post(fileRoutes.read, (context, payload) =>
     withHostFileRoute(payload.hostId, async (hostId) => {
       const result = await callHostRetryableOnlineRpc(deps, {
@@ -346,6 +379,12 @@ export function registerFileRoutes(app: Hono, deps: AppDeps): void {
         path: payload.sourcePath,
         action: "move",
       });
+      assertPathAvoidsProtectedWorkspaces(deps, {
+        hostId,
+        path: payload.destinationPath,
+        action: "move",
+      });
+      await requireMoveSourceIsPlainFile(hostId, payload.sourcePath);
       const result = await runHostFileMutationCommand(hostId, {
         type: "host.move_path",
         sourcePath: payload.sourcePath,
@@ -365,6 +404,13 @@ export function registerFileRoutes(app: Hono, deps: AppDeps): void {
         path: payload.path,
         action: "remove",
       });
+      if (payload.recursive === true) {
+        refuseUnprovenMutation({
+          action: "remove",
+          path: payload.path,
+          reason: "a recursive removal could reach a directory it was not checked against",
+        });
+      }
       const result = await runHostFileMutationCommand(hostId, {
         type: "host.remove_path",
         path: payload.path,

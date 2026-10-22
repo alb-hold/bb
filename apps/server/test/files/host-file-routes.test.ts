@@ -130,23 +130,10 @@ describe("host file routes", () => {
     });
   });
 
-  it("still removes a folder inside a workspace and a folder beside it", async () => {
+  it("refuses every recursive removal, whatever the path, and never asks the host", async () => {
     await withTestHarness(async (harness) => {
       const { host, session } = seedHostSession(harness.deps);
       seedPrimaryHost(harness.deps, host.id);
-      const { project } = seedProjectWithSource(harness.deps, {
-        hostId: host.id,
-      });
-      const environment = seedEnvironment(harness.deps, {
-        hostId: host.id,
-        projectId: project.id,
-        path: "/work/trees/thr_a/repo",
-      });
-      seedThread(harness.deps, {
-        projectId: project.id,
-        environmentId: environment.id,
-        status: "idle",
-      });
       const commands: HostDaemonOnlineRpcRequestMessage["command"][] = [];
       registerHostRpcResponder(harness, {
         hostId: host.id,
@@ -157,20 +144,93 @@ describe("host file routes", () => {
         },
       });
 
-      for (const target of [
-        "/work/trees/thr_a/repo/node_modules",
-        "/work/trees/thr_b",
-      ]) {
+      for (const target of ["/work/trees/thr_b", "/work/scratch/node_modules"]) {
         const response = await harness.app.request(
           ...postJson("/api/v1/files/remove", {
             path: target,
             recursive: true,
           }),
         );
-        expect(response.status, target).toBe(200);
+        expect(response.status, target).toBe(409);
+        expect(await readJson(response)).toMatchObject({
+          code: "workspace_busy",
+          message: expect.stringContaining("cannot prove"),
+        });
       }
 
-      expect(commands).toHaveLength(2);
+      expect(commands).toEqual([]);
+    });
+  });
+
+  it("still removes a single path that is not recursive, and rejects a relative one locally", async () => {
+    await withTestHarness(async (harness) => {
+      const { host, session } = seedHostSession(harness.deps);
+      seedPrimaryHost(harness.deps, host.id);
+      const commands: HostDaemonOnlineRpcRequestMessage["command"][] = [];
+      registerHostRpcResponder(harness, {
+        hostId: host.id,
+        sessionId: session.id,
+        handle: (request) => {
+          commands.push(request.command);
+          return { ok: true, result: { ok: true } };
+        },
+      });
+
+      const removed = await harness.app.request(
+        ...postJson("/api/v1/files/remove", { path: "/work/scratch/a.txt" }),
+      );
+      const relative = await harness.app.request(
+        ...postJson("/api/v1/files/remove", { path: "scratch/a.txt" }),
+      );
+
+      expect(removed.status).toBe(200);
+      expect(relative.status).toBe(400);
+      expect(commands).toHaveLength(1);
+    });
+  });
+
+  it("moves a confirmed single file, but refuses a folder or an unlisted path before moving", async () => {
+    await withTestHarness(async (harness) => {
+      const { host, session } = seedHostSession(harness.deps);
+      seedPrimaryHost(harness.deps, host.id);
+      const commands: HostDaemonOnlineRpcRequestMessage["command"][] = [];
+      registerHostRpcResponder(harness, {
+        hostId: host.id,
+        sessionId: session.id,
+        handle: (request) => {
+          commands.push(request.command);
+          if (request.command.type === "host.browse_directory") {
+            return {
+              ok: true,
+              result: {
+                directory: "/work/scratch",
+                parent: "/work",
+                roots: ["/"],
+                entries: [
+                  { kind: "file", name: "a.txt", path: "/work/scratch/a.txt" },
+                  { kind: "directory", name: "dir", path: "/work/scratch/dir" },
+                ],
+              },
+            };
+          }
+          return { ok: true, result: { ok: true } };
+        },
+      });
+      const move = (sourcePath: string) =>
+        harness.app.request(
+          ...postJson("/api/v1/files/move", {
+            sourcePath,
+            destinationPath: "/work/other/moved",
+          }),
+        );
+
+      expect((await move("/work/scratch/a.txt")).status).toBe(200);
+      expect((await move("/work/scratch/dir")).status).toBe(409);
+      expect((await move("/work/scratch/missing")).status).toBe(409);
+
+      expect(
+        commands.filter((command) => command.type === "host.move_path"),
+      ).toHaveLength(1);
     });
   });
 
