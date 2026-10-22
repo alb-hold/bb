@@ -5256,7 +5256,7 @@ describe("acp bridge: live session state", () => {
 
     const discoveryProcessId = await waitFor(() => {
       const launch = existsSync(discoveryLaunchLog)
-        ? readFileSync(discoveryLaunchLog, "utf8").match(/^launch (\d+)$/mu)
+        ? readFileSync(discoveryLaunchLog, "utf8").match(/^launch (\d+)\n/mu)
         : undefined;
       return launch?.[1];
     }, "opencode discovery agent launch");
