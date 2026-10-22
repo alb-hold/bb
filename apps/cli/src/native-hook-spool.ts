@@ -2,11 +2,13 @@ import {
   closeSync,
   fstatSync,
   linkSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   openSync,
   readdirSync,
   readFileSync,
+  readlinkSync,
   readSync,
   renameSync,
   rmSync,
@@ -26,9 +28,10 @@ const SCAN_INTERVAL_MS = 2_000;
 const GAP_REPORT_AFTER_MS = 10_000;
 const ABANDONED_TEMP_AGE_MS = 10 * 60_000;
 const MAX_RESERVATIONS_PER_SCAN = 64;
-const MAX_LOCK_SPINS = 2_000;
+const LOCK_WAIT_TICKS = 400;
 const APPEND_LOCK_NAME = "hooks.lock";
-const STALE_LOCK_AFTER_MS = 10_000;
+const LOCK_PID_REUSE_BOUND_MS = 10 * 60_000;
+const LOST_MARKER_NAME = /^\.lost\./u;
 const INCOMPLETE_LINE_AFTER_MS = 10_000;
 const MAX_APPEND_READ_BYTES = 4 * 1024 * 1024;
 const NETWORK_FILESYSTEM_TYPES: ReadonlySet<number> = new Set([
@@ -204,19 +207,27 @@ export function hookSpoolCommand(directory: string): string {
 
 export function hookAppendCommand(
   file: string,
-  spins: number = MAX_LOCK_SPINS,
+  ticks: number = LOCK_WAIT_TICKS,
 ): string {
   return [
     "exec 2>/dev/null",
     `d=${shellQuote(path.dirname(file))}`,
     `f=${shellQuote(file)}`,
+    `l="$d/${APPEND_LOCK_NAME}"`,
     'm="$d/.tmp.$$.mark"',
     ': >"$m" || exit 0',
     "r=$(cat) || exit 0",
-    "i=0",
-    `until mkdir "$d/${APPEND_LOCK_NAME}"; do i=$((i+1)); [ "$i" -lt ${spins} ] || exit 0; done`,
+    "w=0",
+    "while :; do " +
+      'if [ ! -e "$l" ] && [ ! -L "$l" ]; then ' +
+      'if ln -s "$$" "$l"; then break; fi; ' +
+      'if [ ! -e "$l" ] && [ ! -L "$l" ]; then ' +
+      "mkdir \"$l\" && { printf '%s' \"$$\" >\"$l/pid\"; break; }; fi; fi; " +
+      `[ "$w" -lt ${ticks} ] || { mv -f "$m" "$d/.lost.$$"; exit 0; }; ` +
+      'if [ "$w" -lt 10 ]; then w=$((w+1)); ' +
+      "elif sleep 0.05; then w=$((w+1)); else sleep 1; w=$((w+20)); fi; done",
     'printf \'%s\\n\' "$r" >>"$f" && rm -f "$m"',
-    `rm -rf "$d/${APPEND_LOCK_NAME}"`,
+    'rm -rf "$l"',
     "exit 0",
   ].join("; ");
 }
@@ -376,6 +387,18 @@ export function reserveSequence(
   }
 }
 
+function lockHolderPid(lock: string, stats: Stats): number | null {
+  let text: string;
+  try {
+    text = stats.isSymbolicLink()
+      ? readlinkSync(lock)
+      : readFileSync(path.join(lock, "pid"), "utf8");
+  } catch {
+    return null;
+  }
+  return /^\d+$/u.test(text.trim()) && Number(text) > 0 ? Number(text) : null;
+}
+
 function isInFlightOrPublished(
   directory: string,
   name: string,
@@ -497,7 +520,11 @@ export class HookAppendReader {
   private breakStaleLock(now: number): number {
     const lock = path.join(path.dirname(this.file), APPEND_LOCK_NAME);
     try {
-      if (now - statSync(lock).mtimeMs < STALE_LOCK_AFTER_MS) return 0;
+      const stats = lstatSync(lock);
+      const holder = lockHolderPid(lock, stats);
+      const dead = holder !== null && !processIsAlive(holder);
+      const ancient = now - stats.mtimeMs >= LOCK_PID_REUSE_BOUND_MS;
+      if (!dead && !ancient) return 0;
       this.brokenLocks += 1;
       const moved = `${lock}.stale.${process.pid}.${this.brokenLocks}`;
       renameSync(lock, moved);
@@ -518,9 +545,14 @@ export class HookAppendReader {
     }
     let lost = 0;
     for (const name of names) {
+      if (this.reportedMarkers.has(name)) continue;
+      const gaveUp = LOST_MARKER_NAME.test(name);
       const marker = TEMP_NAME.exec(name);
-      if (marker === null || this.reportedMarkers.has(name)) continue;
-      if (isInFlightOrPublished(directory, name, Number(marker[1]), now)) {
+      if (
+        !gaveUp &&
+        (marker === null ||
+          isInFlightOrPublished(directory, name, Number(marker[1]), now))
+      ) {
         continue;
       }
       this.reportedMarkers.add(name);
