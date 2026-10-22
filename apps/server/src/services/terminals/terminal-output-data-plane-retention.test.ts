@@ -9,6 +9,7 @@ import {
   getTerminalSession,
   listTerminalSessions,
   pruneRetainedTerminalOutput,
+  TERMINAL_RETAINED_OUTPUT_BYTES,
 } from "@bb/db";
 import { createDaemonSocketMessageQueue } from "../../ws/daemon-protocol.js";
 import { createTerminalGridMarker } from "@bb/domain";
@@ -26,6 +27,7 @@ import {
 import {
   seedHostSession,
   seedEnvironment,
+  seedSession,
   seedProjectWithSource,
   seedThread,
 } from "../../../test/helpers/seed.js";
@@ -113,7 +115,6 @@ function textFrom(chunks: Array<{ dataBase64: string }>): string {
 async function setup(
   args: {
     holdOutputBatches?: boolean;
-    terminalStatus?: "running" | "starting";
     environmentBacked?: boolean;
   } = {},
 ) {
@@ -134,7 +135,7 @@ async function setup(
     daemonSessionId: session.id,
     initialCwd: "/tmp",
     rows: 24,
-    status: args.terminalStatus ?? "running",
+    status: "running",
     threadId: thread.id,
     title: "Unwatched output",
   });
@@ -208,7 +209,7 @@ async function setup(
 }
 
 async function retainReplayAcrossLifecycleTransition(args: {
-  setup: { terminalStatus?: "running" | "starting"; environmentBacked?: boolean };
+  setup: { environmentBacked?: boolean };
   transition: (fixture: Awaited<ReturnType<typeof setup>>) => void;
   expectedStatus: "disconnected" | "exited";
 }) {
@@ -227,10 +228,6 @@ async function retainReplayAcrossLifecycleTransition(args: {
     seq: 2_000,
     dataBase64: Buffer.from("output-during-replay\n").toString("base64"),
   };
-  const initialPending =
-    args.setup.terminalStatus === "starting" ? [] : pending;
-  const outputDuringReplay =
-    args.setup.terminalStatus === "starting" ? [] : [duringReplay];
   const queue = createDaemonSocketMessageQueue<() => void | Promise<void>>({
     handle: (message) => message(),
     onError: (error) => {
@@ -247,7 +244,7 @@ async function retainReplayAcrossLifecycleTransition(args: {
   fixture.terminalSessions.recordDirectTerminalOutputBatch({
     daemonSessionId: fixture.session.id,
     terminalId: fixture.terminal.id,
-    chunks: initialPending,
+    chunks: pending,
   });
   queue.enqueue(() => {
     replay = Promise.resolve(
@@ -277,13 +274,11 @@ async function retainReplayAcrossLifecycleTransition(args: {
     await new Promise<void>((resolve) => setImmediate(resolve));
     expect(replaySettled).toBe(false);
     expect(queueProgressed).toBe(false);
-    if (outputDuringReplay.length > 0) {
-      fixture.terminalSessions.recordDirectTerminalOutputBatch({
-        daemonSessionId: fixture.session.id,
-        terminalId: fixture.terminal.id,
-        chunks: outputDuringReplay,
-      });
-    }
+    fixture.terminalSessions.recordDirectTerminalOutputBatch({
+      daemonSessionId: fixture.session.id,
+      terminalId: fixture.terminal.id,
+      chunks: [duringReplay],
+    });
     args.transition(fixture);
     await Promise.race([
       queueProgress,
@@ -304,7 +299,7 @@ async function retainReplayAcrossLifecycleTransition(args: {
       terminalSessionId: fixture.terminal.id,
       now: Date.now(),
     });
-    expect(retained).toEqual([...initialPending, ...chunks, ...outputDuringReplay]);
+    expect(retained).toEqual([...pending, ...chunks, duringReplay]);
     expect(new Set(retained?.map(({ seq }) => seq)).size).toBe(
       retained?.length,
     );
@@ -708,6 +703,122 @@ describe("terminal output retained from the data plane", () => {
     }
   }, 15_000);
 
+  it("does not retain replay chunks after a replacement daemon session takes ownership", async () => {
+    const fixture = await setup();
+    const replacement = seedSession(fixture.harness.deps, fixture.host.id, {
+      instanceId: "replacement-instance",
+    });
+    const chunks = replayChunks();
+    try {
+      const replay = fixture.terminalSessions.handleDaemonTerminalMessage({
+        hostId: fixture.host.id,
+        sessionId: fixture.session.id,
+        message: {
+          type: "terminal.replay",
+          requestId: "replaced-owner-replay",
+          terminalId: fixture.terminal.id,
+          replayStartSeq: 0,
+          nextSeq: chunks.length,
+          chunks,
+        },
+      });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      fixture.db.$client
+        .prepare("UPDATE terminal_sessions SET daemon_session_id = ? WHERE id = ?")
+        .run(replacement.id, fixture.terminal.id);
+      await Promise.race([
+        replay,
+        delay(5_000).then(() => {
+          throw new Error("replacement-owner replay did not settle");
+        }),
+      ]);
+
+      expect(
+        getRetainedTerminalOutput(fixture.db, {
+          hostId: fixture.host.id,
+          terminalSessionId: fixture.terminal.id,
+          now: Date.now(),
+        }) ?? [],
+      ).toEqual([]);
+      expect(getTerminalSession(fixture.db, fixture.terminal.id)).toMatchObject({
+        status: "running",
+        daemonSessionId: replacement.id,
+      });
+    } finally {
+      fixture.child.shutdown();
+    }
+  }, 15_000);
+
+  it("restores expiry when the deferred timer flush appends output after exit", async () => {
+    const fixture = await setup();
+    const replacement = seedSession(fixture.harness.deps, fixture.host.id, {
+      instanceId: "replacement-instance",
+    });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const original = {
+      seq: 0,
+      dataBase64: Buffer.from("old").toString("base64"),
+    };
+    const pending = {
+      seq: 1,
+      dataBase64: Buffer.from("pending").toString("base64"),
+    };
+    const replayForExpiry = replayChunks(1_024);
+    try {
+      appendRetainedTerminalOutputChunks(fixture.db, {
+        hostId: fixture.host.id,
+        terminalSessionId: fixture.terminal.id,
+        chunks: [original],
+        clock: Date.now,
+      });
+      fixture.terminalSessions.recordDirectTerminalOutputBatch({
+        daemonSessionId: fixture.session.id,
+        terminalId: fixture.terminal.id,
+        chunks: [pending],
+      });
+      const replay = fixture.terminalSessions.handleDaemonTerminalMessage({
+        hostId: fixture.host.id,
+        sessionId: fixture.session.id,
+        message: {
+          type: "terminal.replay",
+          requestId: "deferred-expiry-replay",
+          terminalId: fixture.terminal.id,
+          replayStartSeq: 2,
+          nextSeq: replayForExpiry.length + 2,
+          chunks: replayForExpiry,
+        },
+      });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      fixture.terminalSessions.closeRemovedHostTerminals({
+        hostId: fixture.host.id,
+      });
+      fixture.db.$client
+        .prepare("UPDATE terminal_sessions SET daemon_session_id = ? WHERE id = ?")
+        .run(replacement.id, fixture.terminal.id);
+      await replay;
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      const retained = getRetainedTerminalOutput(fixture.db, {
+        hostId: fixture.host.id,
+        terminalSessionId: fixture.terminal.id,
+        now: Date.now(),
+      });
+      expect(retained?.map(({ seq }) => seq)).toEqual([
+        original.seq,
+        pending.seq,
+      ]);
+      const row = fixture.db.$client
+        .prepare(
+          "SELECT expires_at AS expiresAt FROM fork_terminal_output WHERE terminal_session_id = ?",
+        )
+        .get(fixture.terminal.id) as { expiresAt: number | null } | undefined;
+      expect(row?.expiresAt).toBeGreaterThan(Date.now());
+    } finally {
+      vi.useRealTimers();
+      fixture.child.shutdown();
+    }
+  }, 15_000);
+
   it("retains replay output when the environment is destroyed during a replay yield", async () => {
     await retainReplayAcrossLifecycleTransition({
       setup: { environmentBacked: true },
@@ -722,15 +833,108 @@ describe("terminal output retained from the data plane", () => {
   }, 15_000);
 
   it("retains replay output when a starting terminal disconnects during a yield", async () => {
-    await retainReplayAcrossLifecycleTransition({
-      setup: { terminalStatus: "starting" },
-      transition: (fixture) => {
-        fixture.terminalSessions.handleDaemonSessionClosed({
-          sessionId: fixture.session.id,
-        });
+    const fixture = await setup();
+    const initialPending = [
+      { seq: 0, dataBase64: Buffer.from("pending").toString("base64") },
+    ];
+    const replayChunks = Array.from({ length: 1_024 }, (_, seq) => ({
+      seq: seq + 10,
+      dataBase64: Buffer.from(`replay-${seq}\n`).toString("base64"),
+    }));
+    const outputDuringReplay = {
+      seq: 2_000,
+      dataBase64: Buffer.from("during replay").toString("base64"),
+    };
+    const queue = createDaemonSocketMessageQueue<() => void | Promise<void>>({
+      handle: (message) => message(),
+      onError: (error) => {
+        throw error;
       },
-      expectedStatus: "disconnected",
     });
+    let replay: Promise<void> | undefined;
+    let replaySettled = false;
+    let queueProgressed = false;
+    let resolveQueueProgress!: () => void;
+    const queueProgress = new Promise<void>((resolve) => {
+      resolveQueueProgress = resolve;
+    });
+    fixture.terminalSessions.recordDirectTerminalOutputBatch({
+      daemonSessionId: fixture.session.id,
+      terminalId: fixture.terminal.id,
+      chunks: initialPending,
+    });
+    queue.enqueue(() => {
+      replay = Promise.resolve(
+        fixture.terminalSessions.handleDaemonTerminalMessage({
+          hostId: fixture.host.id,
+          sessionId: fixture.session.id,
+          message: {
+            type: "terminal.replay",
+            requestId: "starting-terminal-replay",
+            terminalId: fixture.terminal.id,
+            replayStartSeq: 10,
+            nextSeq: replayChunks.at(-1)!.seq + 1,
+            chunks: replayChunks,
+          },
+        }),
+      ).finally(() => {
+        replaySettled = true;
+      });
+      return replay;
+    });
+    queue.enqueue(() => {
+      queueProgressed = true;
+      resolveQueueProgress();
+    });
+    queue.release();
+    try {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(replaySettled).toBe(false);
+      fixture.terminalSessions.recordDirectTerminalOutputBatch({
+        daemonSessionId: fixture.session.id,
+        terminalId: fixture.terminal.id,
+        chunks: [outputDuringReplay],
+      });
+      fixture.db.$client
+        .prepare("UPDATE terminal_sessions SET status = 'starting' WHERE id = ?")
+        .run(fixture.terminal.id);
+      fixture.terminalSessions.handleDaemonSessionClosed({
+        sessionId: fixture.session.id,
+      });
+      await Promise.race([
+        queueProgress,
+        delay(5_000).then(() => {
+          throw new Error("serialized daemon queue did not progress");
+        }),
+      ]);
+      await Promise.race([
+        replay,
+        delay(5_000).then(() => {
+          throw new Error("starting terminal replay did not settle");
+        }),
+      ]);
+      const retained = getRetainedTerminalOutput(fixture.db, {
+        hostId: fixture.host.id,
+        terminalSessionId: fixture.terminal.id,
+        now: Date.now(),
+      });
+      expect(retained).toEqual([
+        ...initialPending,
+        ...replayChunks,
+        outputDuringReplay,
+      ]);
+      expect(new Set(retained?.map(({ seq }) => seq)).size).toBe(
+        retained?.length,
+      );
+      expect(getTerminalSession(fixture.db, fixture.terminal.id)).toMatchObject({
+        status: "disconnected",
+        daemonSessionId: null,
+      });
+      expect(queueProgressed).toBe(true);
+    } finally {
+      queue.close();
+      fixture.child.shutdown();
+    }
   }, 15_000);
 
   it("does not resurrect dismissed output when replay finishes", async () => {
@@ -1147,6 +1351,48 @@ describe("terminal output retained from the data plane", () => {
     ).toBe(1_572_864);
     fixture.child.shutdown();
   });
+
+  it("bounds trimming above 64 Ki one-byte replay chunks", async () => {
+    const fixture = await setup();
+    const chunkCount = TERMINAL_RETAINED_OUTPUT_BYTES + 1;
+    const chunks = Array.from({ length: chunkCount }, (_, seq) => ({
+      seq,
+      dataBase64: "eA==",
+    }));
+    try {
+      const replay = fixture.terminalSessions.handleDaemonTerminalMessage({
+        hostId: fixture.host.id,
+        sessionId: fixture.session.id,
+        message: {
+          type: "terminal.replay",
+          requestId: "linear-tail-trim-bound",
+          terminalId: fixture.terminal.id,
+          replayStartSeq: 0,
+          nextSeq: chunkCount,
+          chunks,
+        },
+      });
+      let timeout: ReturnType<typeof setTimeout> | undefined;
+      const completedWithinBound = await Promise.race([
+        replay.then(() => true),
+        new Promise<boolean>((resolve) => {
+          timeout = setTimeout(() => resolve(false), 10_000);
+        }),
+      ]);
+      if (timeout !== undefined) clearTimeout(timeout);
+      expect(completedWithinBound).toBe(true);
+      const retained = getRetainedTerminalOutput(fixture.db, {
+        hostId: fixture.host.id,
+        terminalSessionId: fixture.terminal.id,
+        now: Date.now(),
+      });
+      expect(
+        retained?.map(({ seq, dataBase64 }) => ({ seq, dataBase64 })),
+      ).toEqual(chunks.slice(-TERMINAL_RETAINED_OUTPUT_BYTES));
+    } finally {
+      fixture.child.shutdown();
+    }
+  }, 20_000);
 
   it("keeps a 1.5 MB pending replay flush below 100 ms per synchronous slice", async () => {
     const fixture = await setup();
