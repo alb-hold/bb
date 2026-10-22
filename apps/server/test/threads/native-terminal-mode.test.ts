@@ -31,11 +31,6 @@ import {
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as interactiveRequests from "../../src/internal/interactive-requests.js";
 import { applyLoggedThreadLifecycleEvent } from "../../src/services/threads/lifecycle-outcome.js";
-import {
-  isClosedNativeQuestion,
-  MAX_CLOSED_NATIVE_QUESTIONS,
-  rememberClosedNativeQuestions,
-} from "../../src/services/threads/native-terminal-questions.js";
 import { stopThreadForCurrentState } from "../../src/services/threads/thread-lifecycle.js";
 import {
   isNativeTerminalRebindInFlight,
@@ -3249,33 +3244,32 @@ describe("a native activity report that does not confirm activity", () => {
       }
     });
 
-    it("remembers a bounded number of closed questions and forgets the oldest first", async () => {
+    it("is not forgotten when the terminal exits: a waiting report delivered after the exit still cannot revive the closed question", async () => {
       const fixture = await createFixture();
-      const deps = fixture.harness.deps;
-      rememberClosedNativeQuestions(
-        deps,
-        "thr_bound",
-        Array.from(
-          { length: MAX_CLOSED_NATIVE_QUESTIONS + 1 },
-          (_, index) => `question-${index}`,
-        ),
-      );
-      expect(isClosedNativeQuestion(deps, "thr_bound", "question-0")).toBe(
-        false,
-      );
-      expect(isClosedNativeQuestion(deps, "thr_bound", "question-1")).toBe(
-        true,
-      );
-      expect(
-        isClosedNativeQuestion(
-          deps,
-          "thr_bound",
-          `question-${MAX_CLOSED_NATIVE_QUESTIONS}`,
-        ),
-      ).toBe(true);
-      expect(isClosedNativeQuestion(deps, "thr_other", "question-1")).toBe(
-        false,
-      );
+      const clock = vi.spyOn(Date, "now").mockReturnValue(1_000_000);
+      try {
+        const thread = await startThread(fixture);
+        await send(fixture, thread.id, { closes: [bash1.id], state: "working" });
+        fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+          hostId: fixture.hostId,
+          sessionId: fixture.sessionId,
+          message: {
+            type: "terminal.exited",
+            terminalId: thread.open.terminalId,
+            exitCode: 0,
+            closeReason: "process-exit",
+          },
+        });
+        clock.mockReturnValue(1_020_000);
+        await send(fixture, thread.id, {
+          closes: [],
+          questions: [bash1],
+          state: "waiting",
+        });
+        expect(openInteractions(fixture, thread.id)).toHaveLength(0);
+      } finally {
+        clock.mockRestore();
+      }
     });
 
     it("is forgotten when a new terminal is bound, so the next holder starts clean", async () => {
