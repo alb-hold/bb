@@ -506,6 +506,7 @@ describe("resolveWritingEdits", () => {
     ['"status": we saw a error', "a error", "an error", "grammar"],
     ["'status': we saw a error", "a error", "an error", "grammar"],
     ['title "we saw a error"', "a error", "an error", "grammar"],
+    ['title "draft" we saw a error', "a error", "an error", "grammar"],
     ["url http:example we saw a error", "a error", "an error", "grammar"],
     ["    we saw a error", "a error", "an error", "grammar"],
     ["\twe saw a error", "a error", "an error", "grammar"],
