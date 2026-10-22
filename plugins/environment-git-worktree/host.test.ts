@@ -152,7 +152,6 @@ describe("worktree host entry", () => {
     { existingBranch: false, branchMode: "reset" },
     { existingBranch: false, branchMode: "reuse-existing" },
     { existingBranch: true, branchMode: "reuse-existing" },
-    { existingBranch: true, branchMode: "reset" },
   ] as const)(
     "creates with a locked config (existing=$existingBranch, mode=$branchMode)",
     async ({ existingBranch, branchMode }) => {
@@ -221,6 +220,69 @@ describe("worktree host entry", () => {
       }
     },
   );
+
+  it("refuses to reset an existing branch and leaves its commits alone", async () => {
+    const { sourcePath, dataDir } = await createSourceRepository();
+    const branchName = "bb/earlier-attempt";
+    await git(sourcePath, "branch", branchName);
+    await git(sourcePath, "checkout", branchName);
+    const sha = await commitFile(sourcePath, "earlier.txt");
+    await git(sourcePath, "checkout", "-");
+    const harness = createHarness(dataDir);
+    try {
+      const result = await harness.experimental_call(
+        "create",
+        createInput({
+          operationId: "reset-refused",
+          sourcePath,
+          pathKey: "reset-refused",
+          branchName,
+        }),
+      );
+
+      expect(result).toMatchObject({
+        status: "failed",
+        message: expect.stringContaining("already exists"),
+      });
+      expect(
+        (await git(sourcePath, "rev-parse", `refs/heads/${branchName}`)).trim(),
+      ).toBe(sha);
+      expect(existsSync(join(dataDir, "worktrees", "reset-refused"))).toBe(
+        false,
+      );
+    } finally {
+      await harness.experimental_dispose();
+    }
+  });
+
+  it("refuses to replace a target path that already exists", async () => {
+    const { sourcePath, dataDir } = await createSourceRepository();
+    const target = join(dataDir, "worktrees", "occupied", basename(sourcePath));
+    await mkdir(target, { recursive: true });
+    await writeFile(join(target, "mine.txt"), "keep me\n");
+    const harness = createHarness(dataDir);
+    try {
+      const result = await harness.experimental_call(
+        "create",
+        createInput({
+          operationId: "occupied",
+          sourcePath,
+          pathKey: "occupied",
+          branchName: "bb/occupied",
+        }),
+      );
+
+      expect(result).toMatchObject({
+        status: "failed",
+        message: expect.stringContaining("left alone"),
+      });
+      expect(await readFile(join(target, "mine.txt"), "utf8")).toBe(
+        "keep me\n",
+      );
+    } finally {
+      await harness.experimental_dispose();
+    }
+  });
 
   it("resolves adoption paths with trailing slashes and symlink aliases", async () => {
     const { root, sourcePath, dataDir } = await createSourceRepository();

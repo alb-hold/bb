@@ -550,6 +550,28 @@ async function removeCreateTarget(
   });
 }
 
+async function refuseExistingCreateTarget(
+  args: CreateWorktreeArgs,
+): Promise<void> {
+  try {
+    await fs.lstat(args.targetPath);
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      "code" in error &&
+      (error as NodeJS.ErrnoException).code === "ENOENT"
+    ) {
+      await fs.rm(args.completionPath, { force: true });
+      return;
+    }
+    throw error;
+  }
+  throw new WorkspaceError(
+    "target_exists_preserved",
+    `${args.targetPath} already exists and is not a workspace on branch ${args.branchName} that this create can reuse, so it was left alone. bb does not replace an existing workspace; finish or remove it yourself, then retry.`,
+  );
+}
+
 async function removeCreateTargetAfterFailure(
   args: CreateWorktreeArgs,
   failure: unknown,
@@ -604,7 +626,7 @@ export async function createWorktree(
     return { path: args.targetPath };
   }
 
-  await removeCreateTarget(args);
+  await refuseExistingCreateTarget(args);
 
   throwIfProvisionAborted(args.signal);
   switch (
@@ -643,6 +665,12 @@ export async function createWorktree(
   if (reuseExistingBranch) {
     gitArgs = ["worktree", "add", args.targetPath, args.branchName];
   } else {
+    if (await hasRef(args.sourcePath, `refs/heads/${args.branchName}`)) {
+      throw new WorkspaceError(
+        "branch_exists_preserved",
+        `Branch ${args.branchName} already exists from an earlier attempt, so it was not reset to the base branch. bb keeps that work; a new attempt needs its own branch and path, which is not available yet.`,
+      );
+    }
     const baseBranch =
       args.baseBranch ?? (await readDefaultBranch(args.sourcePath));
     if (!baseBranch) {
@@ -662,7 +690,7 @@ export async function createWorktree(
       "worktree",
       "add",
       "--no-track",
-      "-B",
+      "-b",
       args.branchName,
       args.targetPath,
       baseBranch,
