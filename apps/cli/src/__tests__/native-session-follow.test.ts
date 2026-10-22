@@ -568,6 +568,41 @@ describe("following a discovered session only after the server accepted it", () 
         expect(await h.tick()).toEqual([]);
       });
 
+      const edit = (event: string) => ({
+        hook_event_name: event,
+        session_id: SESSION_ID,
+        tool_name: "Edit",
+      });
+
+      it("still lets a fresh question open and its answer close, without a heartbeat afterwards", async () => {
+        const { h } = await startTrimmed();
+        expect(await h.readOnly()).toEqual([]);
+        h.appendHooks([edit("PermissionRequest")]);
+        expect(await h.readOnly()).toEqual(["waiting"]);
+        h.appendHooks([edit("PostToolUse")]);
+        expect(await h.readOnly()).toEqual(["waiting", "working"]);
+        expect(await h.tick()).toEqual(["waiting", "working"]);
+      });
+
+      it("lets an open-then-close pair in the retained suffix resolve the question on the server", async () => {
+        const h = holder(hookShape(withSessionIdField));
+        h.appendHooks([
+          {
+            hook_event_name: "PermissionRequest",
+            session_id: SESSION_ID,
+            tool_name: "Bash",
+          },
+          ...Array.from({ length: 68 }, () => tool),
+          edit("PermissionRequest"),
+          edit("PostToolUse"),
+        ]);
+        const discoverer = h.makeDiscoverer(async () => ({}));
+        expect(await h.tick()).toEqual([]);
+        await discoverer.discover();
+        expect(await h.readOnly()).toEqual(["waiting", "working"]);
+        expect(await h.tick()).toEqual(["waiting", "working"]);
+      });
+
       it("is cleared by a fresh idle", async () => {
         const { h } = await startTrimmed();
         expect(await h.readOnly()).toEqual([]);
@@ -592,4 +627,27 @@ describe("following a discovered session only after the server accepted it", () 
       });
     },
   );
+
+  it("does not replay an old transcript prompt as Working while a trimmed question is unresolved (hooks + transcript)", async () => {
+    const unconfirmed: string[] = [];
+    const h = holder(hooksAndTranscriptShape(), unconfirmed);
+    h.append(codexTurn("old prompt"));
+    h.appendHooks([
+      {
+        hook_event_name: "PermissionRequest",
+        session_id: SESSION_ID,
+        tool_name: "Bash",
+      },
+      ...Array.from({ length: 70 }, () => ({
+        hook_event_name: "PreToolUse",
+        session_id: SESSION_ID,
+      })),
+    ]);
+    const discoverer = h.makeDiscoverer(async () => ({}));
+    expect(await h.tick()).toEqual([]);
+    await discoverer.discover();
+    expect(await h.readOnly()).toEqual([]);
+    expect(unconfirmed).toEqual(["held-overflow:7"]);
+    expect(await h.tick()).toEqual([]);
+  });
 });
