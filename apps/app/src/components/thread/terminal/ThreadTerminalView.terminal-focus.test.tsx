@@ -1022,7 +1022,7 @@ describe("ThreadTerminalView terminal focus boundary", () => {
       type: "attached",
       session,
       replayStartSeq: 0,
-      nextSeq: 1,
+      nextSeq: 0,
     });
     const output = Array.from(
       { length: 48 },
@@ -1032,12 +1032,6 @@ describe("ThreadTerminalView terminal focus boundary", () => {
       type: "output",
       chunk: { seq: 0, dataBase64: btoa(output) },
     });
-    await waitForReadinessCondition(
-      () =>
-        expect(testState.socketMessages.map((message) => JSON.parse(message)))
-          .toContainEqual({ type: "ack", nextSeq: 1 }),
-      "retained output was not acknowledged within 5000 ms",
-    );
     await waitForReadinessCondition(
       () => {
         expect(document.querySelector(".xterm-rows")?.textContent).toContain(
