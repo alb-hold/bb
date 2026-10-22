@@ -59,7 +59,10 @@ import {
 } from "./sidebarNavigationProvider";
 import { SidebarVisibilityCustomize } from "./SidebarVisibilityControls";
 
-const mocks = vi.hoisted(() => ({ toastError: vi.fn() }));
+const mocks = vi.hoisted(() => ({
+  toastError: vi.fn(),
+  toastWarning: vi.fn(),
+}));
 
 vi.mock("@/components/commands/AppCommandProvider", () => ({
   useAppCommandRunner: () => ({
@@ -71,7 +74,11 @@ vi.mock("@/components/commands/AppCommandProvider", () => ({
 }));
 
 vi.mock("@/components/ui/app-toast", () => ({
-  appToast: { error: mocks.toastError, success: () => {} },
+  appToast: {
+    error: mocks.toastError,
+    success: () => {},
+    warning: mocks.toastWarning,
+  },
 }));
 
 const useNavigation =
@@ -191,6 +198,7 @@ beforeAll(async () => {
 });
 
 beforeEach(async () => {
+  mocks.toastWarning.mockClear();
   vi.clearAllMocks();
   window.localStorage.clear();
   resetPluginFrontendBootStateForTest();
@@ -349,7 +357,7 @@ describe("sidebar navigation providers", () => {
         compact: false,
         panes: MAX_PANES,
         label: "Docs",
-        result: "replace",
+        result: "refuse",
       },
       {
         reason: "unsupported destination",
@@ -455,10 +463,16 @@ describe("sidebar navigation providers", () => {
         expect(open).not.toHaveBeenCalled();
         const next = store.get(splitLayoutAtom)!;
         expect(countPanes(next.root)).toBe(result === "split" ? 2 : panes);
+        if (result === "refuse") {
+          expect(next).toEqual(layout);
+          expect(findPaneByContent(next.root, docs)).toBeNull();
+          expect(mocks.toastWarning).toHaveBeenCalledTimes(1);
+          expect(screen.getByTestId("pathname").textContent).toBe(THREAD_PATH);
+          return;
+        }
         expect(findPaneByContent(next.root, docs)?.paneId).toBe(
           next.focusedPaneId,
         );
-        if (result === "replace") expect(next.focusedPaneId).toBe("pane-0");
         if (result === "focus") {
           expect(next.root).toEqual(layout?.root);
           expect(next.focusedPaneId).toBe("pane-1");

@@ -1311,10 +1311,7 @@ describe("PluginNewThreadComposer seeding", () => {
       if (mode === "ordinary") await submit();
       else
         await act(async () => {
-          await latestPromptBoxProps().pluginComposerHost.submit(
-            { sendAt: Date.now() },
-            undefined,
-          );
+          await latestPromptBoxProps().onSubmit({ sendAt: Date.now() });
         });
       await waitFor(() => expect(submitted).toHaveLength(1));
       expect(submitted[0]).toMatchObject({
