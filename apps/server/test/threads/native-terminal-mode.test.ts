@@ -2688,6 +2688,7 @@ describe("a native activity report that does not confirm activity", () => {
     fixture: Fixture,
     threadId: string,
     body: {
+      closes?: string[];
       confirms?: boolean | string;
       prompt?: string;
       questions?: { id: string; prompt: string }[];
@@ -2845,6 +2846,197 @@ describe("a native activity report that does not confirm activity", () => {
       ).toBe(200);
       expect(openInteractions(fixture, thread.id)).toHaveLength(0);
       expect(evidence(fixture, thread.id)).toBe(2_000_000);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it("still clears when other genuine reports kept the question open in between (several questions answered in turn)", async () => {
+    const fixture = await createFixture();
+    const clock = vi.spyOn(Date, "now").mockReturnValue(1_000_000);
+    try {
+      const thread = await answeredQuestion(fixture, clock);
+      clock.mockReturnValue(1_012_000);
+      await send(fixture, thread.id, {
+        questions: [
+          { id: "q1", prompt: "Which layout?" },
+          { id: "q2", prompt: "Which colour?" },
+        ],
+        state: "waiting",
+      });
+      clock.mockReturnValue(1_014_000);
+      await send(fixture, thread.id, {
+        questions: [{ id: "q1", prompt: "Which layout?" }],
+        state: "waiting",
+      });
+      expect(openInteractions(fixture, thread.id)).toHaveLength(1);
+      expect(evidence(fixture, thread.id)).toBe(1_014_000);
+      clock.mockReturnValue(1_020_000);
+      expect(
+        (await send(fixture, thread.id, { confirms: false, state: "working" }))
+          .status,
+      ).toBe(200);
+      expect(openInteractions(fixture, thread.id)).toHaveLength(0);
+      expect(evidence(fixture, thread.id)).toBeNull();
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  const pendingIds = (fixture: Fixture, threadId: string) =>
+    openInteractions(fixture, threadId).map(
+      (interaction) => interaction.providerRequestId,
+    );
+
+  it("a close that names its question resolves only that question and clears the evidence", async () => {
+    const fixture = await createFixture();
+    const clock = vi.spyOn(Date, "now").mockReturnValue(1_000_000);
+    try {
+      const thread = await answeredQuestion(fixture, clock);
+      clock.mockReturnValue(1_012_000);
+      await send(fixture, thread.id, {
+        questions: [
+          { id: "q1", prompt: "Which layout?" },
+          { id: "q2", prompt: "Which colour?" },
+        ],
+        state: "waiting",
+      });
+      expect(openInteractions(fixture, thread.id)).toHaveLength(2);
+      clock.mockReturnValue(1_020_000);
+      expect(
+        (
+          await send(fixture, thread.id, {
+            closes: ["q1"],
+            confirms: false,
+            state: "working",
+          })
+        ).status,
+      ).toBe(200);
+      expect(pendingIds(fixture, thread.id)).toEqual([
+        expect.stringContaining("q2"),
+      ]);
+      expect(evidence(fixture, thread.id)).toBeNull();
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it("a late close that names an already resolved question cannot end a newer question or clear its evidence, and repeating it is a no-op", async () => {
+    const fixture = await createFixture();
+    const clock = vi.spyOn(Date, "now").mockReturnValue(1_000_000);
+    const notify = vi.spyOn(fixture.harness.hub, "notifyThread");
+    try {
+      const thread = await answeredQuestion(fixture, clock);
+      clock.mockReturnValue(1_030_000);
+      expect(
+        (
+          await send(fixture, thread.id, {
+            closes: ["q1"],
+            questions: [{ id: "q2", prompt: "Which colour?" }],
+            state: "waiting",
+          })
+        ).status,
+      ).toBe(200);
+      expect(pendingIds(fixture, thread.id)).toEqual([
+        expect.stringContaining("q2"),
+      ]);
+      expect(evidence(fixture, thread.id)).toBe(1_030_000);
+      notify.mockClear();
+      for (const at of [1_040_000, 1_041_000]) {
+        clock.mockReturnValue(at);
+        expect(
+          (
+            await send(fixture, thread.id, {
+              closes: ["q1"],
+              confirms: false,
+              state: "working",
+            })
+          ).status,
+        ).toBe(200);
+        expect(pendingIds(fixture, thread.id)).toEqual([
+          expect.stringContaining("q2"),
+        ]);
+        expect(evidence(fixture, thread.id)).toBe(1_030_000);
+      }
+      expect(notify).not.toHaveBeenCalled();
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it("an empty list closes nothing, an omitted one keeps closing everything the report does not list", async () => {
+    const fixture = await createFixture();
+    const clock = vi.spyOn(Date, "now").mockReturnValue(1_000_000);
+    try {
+      const thread = await answeredQuestion(fixture, clock);
+      clock.mockReturnValue(1_020_000);
+      expect(
+        (await send(fixture, thread.id, { closes: [], state: "working" }))
+          .status,
+      ).toBe(200);
+      expect(openInteractions(fixture, thread.id)).toHaveLength(1);
+      expect(evidence(fixture, thread.id)).toBe(1_020_000);
+      clock.mockReturnValue(1_030_000);
+      expect(
+        (
+          await send(fixture, thread.id, {
+            closes: [],
+            questions: [{ id: "q2", prompt: "Which colour?" }],
+            state: "waiting",
+          })
+        ).status,
+      ).toBe(200);
+      expect(openInteractions(fixture, thread.id)).toHaveLength(2);
+      clock.mockReturnValue(1_040_000);
+      await send(fixture, thread.id, { state: "working", prompt: "next" });
+      expect(openInteractions(fixture, thread.id)).toHaveLength(0);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it("a close that names an unknown question resolves nothing and clears nothing", async () => {
+    const fixture = await createFixture();
+    const clock = vi.spyOn(Date, "now").mockReturnValue(1_000_000);
+    try {
+      const thread = await answeredQuestion(fixture, clock);
+      clock.mockReturnValue(1_020_000);
+      await send(fixture, thread.id, {
+        closes: ["nope"],
+        confirms: false,
+        state: "working",
+      });
+      expect(openInteractions(fixture, thread.id)).toHaveLength(1);
+      expect(evidence(fixture, thread.id)).toBe(1_010_000);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it("closes only the named questions of its own thread", async () => {
+    const fixture = await createFixture();
+    const clock = vi.spyOn(Date, "now").mockReturnValue(1_000_000);
+    try {
+      const first = await answeredQuestion(fixture, clock);
+      const second = seedChatThread(fixture, {
+        providerId: "claude-code",
+        providerThreadId: "6b5f1f7c-2d0f-4a6e-9a43-0c1d2e3f4a5b",
+      });
+      await enterTerminal(fixture, second.id);
+      clock.mockReturnValue(1_015_000);
+      await send(fixture, second.id, {
+        questions: [{ id: "q1", prompt: "Which layout?" }],
+        state: "waiting",
+      });
+      clock.mockReturnValue(1_020_000);
+      await send(fixture, first.id, {
+        closes: ["q1"],
+        confirms: false,
+        state: "working",
+      });
+      expect(openInteractions(fixture, first.id)).toHaveLength(0);
+      expect(openInteractions(fixture, second.id)).toHaveLength(1);
+      expect(evidence(fixture, second.id)).toBe(1_015_000);
     } finally {
       clock.mockRestore();
     }

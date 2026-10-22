@@ -295,6 +295,10 @@ export class NativeActivityTracker {
     return { state: "working", prompt: newPrompt };
   }
 
+  hasOpenQuestions(): boolean {
+    return this.questions.size > 0;
+  }
+
   heartbeat(): NativeActivityReport | null {
     if (this.questions.size > 0) return this.waitingReport();
     return this.state === "working" ? { state: "working", prompt: null } : null;

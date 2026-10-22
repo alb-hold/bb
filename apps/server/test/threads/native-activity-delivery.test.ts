@@ -25,6 +25,7 @@ import {
   type PublicApiSchema,
 } from "@bb/server-contract";
 import type { NativeTerminalReportActivityArgs } from "@bb/sdk";
+import { BbRequestTimeoutError } from "@bb/sdk";
 import { createNodeBbSdk } from "@bb/sdk/node";
 import { Hono } from "hono";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -597,7 +598,17 @@ describe("overflow, answer, then no resumed activity through the real reader, re
     tool_name: name,
   });
 
-  function discoveredHolder(harness: TestAppHarness, threadId: string) {
+  interface HeldRequest {
+    body: string;
+    headers: Record<string, string>;
+    url: string;
+  }
+
+  function discoveredHolder(
+    harness: TestAppHarness,
+    threadId: string,
+    options: { holdFirstClose?: boolean } = {},
+  ) {
     const cli =
       harness.deps.providerRegistry.get("claude-code")?.nativeTerminal;
     if (cli === undefined || cli === null)
@@ -621,9 +632,24 @@ describe("overflow, answer, then no resumed activity through the real reader, re
       events,
       { kind: "discover" },
     );
+    let held: HeldRequest | null = null;
     const sdk = createNodeBbSdk({
       baseUrl: "http://127.0.0.1:3000",
-      fetch: (input, init) => harness.app.fetch(new Request(input, init)),
+      fetch: async (input, init) => {
+        const request = new Request(input, init);
+        if (options.holdFirstClose === true && held === null) {
+          const body = await request.clone().text();
+          if (body.includes('"confirms":false')) {
+            held = {
+              body,
+              headers: Object.fromEntries(request.headers.entries()),
+              url: request.url,
+            };
+            throw new BbRequestTimeoutError(75_000);
+          }
+        }
+        return harness.app.fetch(request);
+      },
     });
     const reporter = reporterModule.createNativeActivityReporter({
       currentCredential: () => SECRET,
@@ -646,7 +672,17 @@ describe("overflow, answer, then no resumed activity through the real reader, re
       wiring.onHeartbeatTick();
       await reporter.settled();
     };
-    return { forward, heartbeat, hook, reader };
+    const deliverHeld = (headers: Record<string, string> = {}) => {
+      if (held === null) throw new Error("no close was held");
+      return harness.app.fetch(
+        new Request(held.url, {
+          body: held.body,
+          headers: { ...held.headers, ...headers },
+          method: "POST",
+        }),
+      );
+    };
+    return { deliverHeld, forward, heartbeat, hook, reader };
   }
 
   const displayOf = (harness: TestAppHarness, threadId: string) => {
@@ -656,9 +692,9 @@ describe("overflow, answer, then no resumed activity through the real reader, re
       ?.runtime.nativeActivity;
   };
 
-  async function overflowedAndAsked() {
+  async function overflowedAndAsked(options: { holdFirstClose?: boolean } = {}) {
     const { harness, thread } = await nativeThread();
-    const h = discoveredHolder(harness, thread.id);
+    const h = discoveredHolder(harness, thread.id, options);
     h.hook([
       permission("Bash"),
       ...Array.from({ length: 70 }, () => tool),
@@ -704,19 +740,88 @@ describe("overflow, answer, then no resumed activity through the real reader, re
     });
   });
 
-  it("shows Working again only after a completed tool record from the session", async () => {
+  it("stays unconfirmed for a pre-tool record and for an unrelated completed tool, and shows Working again once the dropped question's own close arrives", async () => {
     const { h, harness, thread } = await overflowedAndAsked();
     h.hook([{ hook_event_name: "PostToolUse", tool_name: "Edit" }]);
     await h.forward();
     h.hook([tool]);
     await h.forward();
-    expect(displayOf(harness, thread.id)).toMatchObject({
-      confirmation: "unconfirmed",
-    });
     h.hook([{ hook_event_name: "PostToolUse", tool_name: "Write" }]);
     await h.forward();
     expect(displayOf(harness, thread.id)).toMatchObject({
+      confirmation: "unconfirmed",
+      lastEvidenceAt: null,
+    });
+    h.hook([{ hook_event_name: "PostToolUse", tool_name: "Bash" }]);
+    await h.forward();
+    expect(displayOf(harness, thread.id)).toMatchObject({
       confirmation: "confirmed",
+    });
+  });
+
+  it("shows later real work as confirmed after the unconfirmed answer", async () => {
+    const { h, harness, thread } = await overflowedAndAsked();
+    h.hook([{ hook_event_name: "PostToolUse", tool_name: "Edit" }]);
+    await h.forward();
+    expect(displayOf(harness, thread.id)).toMatchObject({
+      confirmation: "unconfirmed",
+    });
+    h.hook([{ hook_event_name: "UserPromptSubmit", prompt: "next task" }]);
+    await h.forward();
+    expect(displayOf(harness, thread.id)).toMatchObject({
+      confirmation: "confirmed",
+    });
+  });
+
+  describe("a close that times out on the client and is delivered after a newer question", () => {
+    async function lateClose() {
+      const { h, harness, thread } = await overflowedAndAsked({
+        holdFirstClose: true,
+      });
+      h.hook([{ hook_event_name: "PostToolUse", tool_name: "Edit" }]);
+      await h.forward();
+      expect(
+        listPendingInteractionsByThread(harness.db, { threadId: thread.id }),
+      ).toHaveLength(1);
+      h.hook([permission("Write")]);
+      await h.forward();
+      const evidenceAfterB = getNativeTerminalThread(harness.db, thread.id)
+        ?.lastEvidenceAt;
+      return { evidenceAfterB, h, harness, thread };
+    }
+
+    const pending = (harness: TestAppHarness, threadId: string) =>
+      listPendingInteractionsByThread(harness.db, { threadId }).map(
+        (interaction) => interaction.providerRequestId,
+      );
+
+    it("cannot end the newer question or clear its evidence, and repeating it is a no-op", async () => {
+      const { evidenceAfterB, h, harness, thread } = await lateClose();
+      expect(pending(harness, thread.id)).toEqual([
+        expect.stringContaining("permission:Write"),
+      ]);
+      expect(evidenceAfterB).not.toBeNull();
+      expect((await h.deliverHeld()).status).toBe(200);
+      expect((await h.deliverHeld()).status).toBe(200);
+      expect(pending(harness, thread.id)).toEqual([
+        expect.stringContaining("permission:Write"),
+      ]);
+      expect(
+        getNativeTerminalThread(harness.db, thread.id)?.lastEvidenceAt,
+      ).toBe(evidenceAfterB);
+      expect(displayOf(harness, thread.id)).toMatchObject({
+        confirmation: "confirmed",
+      });
+    });
+
+    it("is refused without the current credential and changes nothing", async () => {
+      const { evidenceAfterB, h, harness, thread } = await lateClose();
+      const refused = await h.deliverHeld({ authorization: "Bearer stale" });
+      expect(refused.status).toBe(401);
+      expect(pending(harness, thread.id)).toHaveLength(1);
+      expect(
+        getNativeTerminalThread(harness.db, thread.id)?.lastEvidenceAt,
+      ).toBe(evidenceAfterB);
     });
   });
 });
@@ -773,7 +878,7 @@ describe("an older server that does not know the confirms field (INJECTED-SERVER
     return { accepted, rejected, sdk };
   }
 
-  it("rejects the marked report with zod's own wording and the holder resends it once without the field", async () => {
+  it("rejects a report that closes nothing with zod's own wording and the holder resends it once without the fields", async () => {
     const { accepted, rejected, sdk } = oldServer();
     const logged: string[] = [];
     const reporter = reporterModule.createNativeActivityReporter({
@@ -782,13 +887,41 @@ describe("an older server that does not know the confirms field (INJECTED-SERVER
       send: (args) => sdk.nativeTerminals.reportActivity(args),
       threadId: "thr_old_server",
     });
+    reporter.report({ prompt: null, state: "working" });
     reporter.report({ confirms: false, prompt: null, state: "working" });
     await reporter.settled();
     expect(rejected).toHaveLength(1);
     expect(rejected[0]?.status).toBe(400);
-    expect(rejected[0]?.body).toContain('Unrecognized key: \\"confirms\\"');
-    expect(accepted).toEqual([{ state: "working" }]);
-    expect(logged).toEqual(["activity-confirms-field-rejected"]);
+    expect(rejected[0]?.body).toMatch(
+      /Unrecognized keys: .*confirms.*closes|Unrecognized keys: .*closes.*confirms/u,
+    );
+    expect(accepted).toEqual([{ state: "working" }, { state: "working" }]);
+    expect(logged).toEqual(["activity-closure-field-rejected"]);
+  });
+
+  it("never resends a report that closes a question: the old contract cannot express the targeted close, so it is dropped and later reports go out as before (compatibility gap, no old-server pass claimed)", async () => {
+    const { accepted, rejected, sdk } = oldServer();
+    const logged: string[] = [];
+    const reporter = reporterModule.createNativeActivityReporter({
+      currentCredential: () => SECRET,
+      log: (event) => logged.push(event),
+      send: (args) => sdk.nativeTerminals.reportActivity(args),
+      threadId: "thr_old_server",
+    });
+    reporter.report({
+      prompt: null,
+      questions: [{ id: "q1", prompt: "Which layout?" }],
+      state: "waiting",
+    });
+    reporter.report({ prompt: null, state: "working" });
+    await reporter.settled();
+    expect(rejected).toHaveLength(1);
+    expect(accepted).toEqual([
+      { questions: [{ id: "q1", prompt: "Which layout?" }], state: "waiting" },
+    ]);
+    reporter.report({ prompt: null, state: "working" });
+    await reporter.settled();
+    expect(accepted).toHaveLength(2);
+    expect(logged).toEqual(["activity-closure-field-rejected"]);
   });
 });
-

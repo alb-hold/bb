@@ -1,4 +1,4 @@
-import { BbHttpError } from "@bb/sdk";
+import { BbHttpError, BbRequestTimeoutError } from "@bb/sdk";
 import { describe, expect, it } from "vitest";
 import { createNativeActivityReporter } from "../native-activity-reporter.js";
 
@@ -208,19 +208,35 @@ describe("native activity reporter", () => {
     });
   });
 
-  describe("the non-confirming marker (INJECTED responses: the rejections below are hand-built; the wording against the real pre-change schema is pinned in apps/server/test/threads/native-activity-delivery.test.ts)", () => {
-    const rejection = () =>
+  describe("question closure and the non-confirming marker (INJECTED responses: the rejections below are hand-built; the wording against the real pre-change schema is pinned in apps/server/test/threads/native-activity-delivery.test.ts)", () => {
+    const rejection = (fields: string = '"confirms"') =>
       new BbHttpError({
         body: null,
         code: "invalid_request",
-        message: 'Unrecognized key: "confirms"',
+        message: `Unrecognized key: ${fields}`,
         status: 400,
       });
+    const unavailable = () =>
+      new BbHttpError({
+        body: null,
+        code: "unavailable",
+        message: "unavailable",
+        status: 503,
+      });
+    const working = { prompt: null, state: "working" } as const;
+    const marked = { confirms: false, prompt: null, state: "working" } as const;
+    const asking = (...ids: string[]) =>
+      ({
+        prompt: null,
+        questions: ids.map((id) => ({ id, prompt: `Question ${id}?` })),
+        state: "waiting",
+      }) as const;
 
-    function markerSetup(answers: Array<() => Promise<unknown>>) {
-      const sent: Array<boolean | undefined> = [];
+    function closureSetup(answers: Array<() => Promise<unknown>>) {
       const calls: Array<{
         authorization: string | undefined;
+        closes: string[] | undefined;
+        confirms: boolean | undefined;
         prompt: string | undefined;
         state: string;
       }> = [];
@@ -230,48 +246,127 @@ describe("native activity reporter", () => {
         currentCredential: () => credential,
         log: (event) => logged.push(event),
         send: async (args) => {
-          sent.push(args.confirms);
           calls.push({
             authorization: args.authorization,
+            closes: args.closes,
+            confirms: args.confirms,
             prompt: args.prompt,
             state: args.state,
           });
-          credential = "rotated-after-first-attempt";
-          const answer = answers[sent.length - 1];
+          credential = "rotated-after-an-attempt";
+          const answer = answers[calls.length - 1];
           return answer === undefined ? { ok: true } : answer();
         },
         threadId: "thr_1",
       });
-      return { calls, logged, reporter, sent };
+      return { calls, logged, reporter };
     }
 
-    it("sends confirms false only on a report that carries the marker", async () => {
-      const { reporter, sent } = markerSetup([]);
-      reporter.report({ state: "working", prompt: null });
-      reporter.report({ confirms: false, state: "working", prompt: null });
+    const closesOf = (calls: Array<{ closes: string[] | undefined }>) =>
+      calls.map((call) => call.closes);
+
+    it("sends the first report as it always did and names what each later report closes", async () => {
+      const { calls, reporter } = closureSetup([]);
+      reporter.report(asking("q1"));
+      reporter.report(working);
+      reporter.report(working);
       await reporter.settled();
-      expect(sent).toEqual([undefined, false]);
+      expect(closesOf(calls)).toEqual([undefined, ["q1"], []]);
     });
 
-    it("retries the one report without the field when an old server rejects it, logs it, and stops sending the field", async () => {
-      const { logged, reporter, sent } = markerSetup([
+    it("lets an opening report replace the questions it does not list, and never names the ones it opens", async () => {
+      const { calls, reporter } = closureSetup([]);
+      reporter.report(asking("q1"));
+      reporter.report(asking("q2"));
+      reporter.report(asking("q2", "q3"));
+      await reporter.settled();
+      expect(closesOf(calls)).toEqual([undefined, ["q1"], []]);
+    });
+
+    it("carries a close whose delivery timed out in the next report, so a late delivery of the first one has nothing left to take", async () => {
+      const { calls, reporter } = closureSetup([
+        async () => ({ ok: true }),
         async () => {
-          throw rejection();
+          throw new BbRequestTimeoutError(75_000);
         },
       ]);
-      reporter.report({ confirms: false, state: "working", prompt: null });
+      reporter.report(asking("q1"));
+      reporter.report(working);
       await reporter.settled();
-      expect(sent).toEqual([false, undefined]);
-      expect(logged).toEqual(["activity-confirms-field-rejected"]);
-      reporter.report({ confirms: false, state: "working", prompt: null });
+      reporter.report(asking("q2"));
       await reporter.settled();
-      expect(sent).toEqual([false, undefined, undefined]);
+      expect(closesOf(calls)).toEqual([undefined, ["q1"], ["q1"]]);
+    });
+
+    it("treats a question as possibly open from the moment its report is attempted", async () => {
+      const { calls, reporter } = closureSetup([
+        async () => ({ ok: true }),
+        async () => {
+          throw new BbRequestTimeoutError(75_000);
+        },
+      ]);
+      reporter.report(working);
+      reporter.report(asking("q1"));
+      await reporter.settled();
+      reporter.report(working);
+      await reporter.settled();
+      expect(closesOf(calls)).toEqual([undefined, [], ["q1"]]);
+    });
+
+    it("sends confirms false only on a report that carries the marker", async () => {
+      const { calls, reporter } = closureSetup([]);
+      reporter.report(working);
+      reporter.report(marked);
+      await reporter.settled();
+      expect(calls.map((call) => call.confirms)).toEqual([undefined, false]);
+    });
+
+    it("never resends a report that closes a question to an older server, and stops sending the fields", async () => {
+      const { calls, logged, reporter } = closureSetup([
+        async () => ({ ok: true }),
+        async () => {
+          throw rejection('"closes"');
+        },
+      ]);
+      reporter.report(asking("q1"));
+      reporter.report(working);
+      await reporter.settled();
+      expect(closesOf(calls)).toEqual([undefined, ["q1"]]);
+      expect(logged).toEqual(["activity-closure-field-rejected"]);
+      reporter.report(working);
+      await reporter.settled();
+      expect(calls).toHaveLength(3);
+      expect(closesOf(calls)).toEqual([undefined, ["q1"], undefined]);
+      expect(calls[2]?.confirms).toBeUndefined();
       expect(logged).toHaveLength(1);
+    });
+
+    it("resends a report that closes nothing without the fields when an older server rejects it, with the same credential and payload, at most once", async () => {
+      const { calls, logged, reporter } = closureSetup([
+        async () => ({ ok: true }),
+        async () => {
+          throw rejection('"confirms", "closes"');
+        },
+        async () => {
+          throw rejection('"confirms", "closes"');
+        },
+      ]);
+      reporter.report(working);
+      reporter.report({ confirms: false, prompt: "kept", state: "working" });
+      await reporter.settled();
+      expect(calls).toHaveLength(3);
+      expect(closesOf(calls)).toEqual([undefined, [], undefined]);
+      expect(calls[1]?.confirms).toBe(false);
+      expect(calls[2]?.confirms).toBeUndefined();
+      expect(calls[2]?.authorization).toBe(calls[1]?.authorization);
+      expect(calls[1]?.authorization).toBe("Bearer rotated-after-an-attempt");
+      expect(calls[2]?.prompt).toBe("kept");
+      expect(logged).toEqual(["activity-closure-field-rejected"]);
     });
 
     it.each([
       [
-        "a 400 that does not name the field",
+        "a 400 that does not name the fields",
         () =>
           new BbHttpError({
             body: null,
@@ -291,12 +386,12 @@ describe("native activity reporter", () => {
           }),
       ],
       [
-        "a 400 that names the field but is not a request validation error",
+        "a 400 that names a field but is not a request validation error",
         () =>
           new BbHttpError({
             body: null,
             code: "native_terminal_question_refused",
-            message: 'Unrecognized key: "confirms"',
+            message: 'Unrecognized key: "closes"',
             status: 400,
           }),
       ],
@@ -311,78 +406,50 @@ describe("native activity reporter", () => {
           }),
       ],
       [
-        "a refusal that names the field",
+        "a refusal that names a field",
         () =>
           new BbHttpError({
             body: null,
             code: "invalid_request",
-            message: 'Unrecognized key: "confirms"',
+            message: 'Unrecognized key: "closes"',
             status: 409,
           }),
       ],
-      [
-        "a 5xx",
-        () =>
-          new BbHttpError({
-            body: null,
-            code: "unavailable",
-            message: "unavailable",
-            status: 503,
-          }),
-      ],
+      ["a 5xx", unavailable],
       ["a transport failure", () => new TypeError("fetch failed")],
     ])("does not fall back on %s", async (_name, failure) => {
-      const { logged, reporter, sent } = markerSetup([
+      const { calls, logged, reporter } = closureSetup([
+        async () => ({ ok: true }),
         async () => {
           throw failure();
         },
       ]);
-      reporter.report({ confirms: false, state: "working", prompt: null });
+      reporter.report(working);
+      reporter.report(marked);
       await reporter.settled();
-      expect(sent).toEqual([false]);
+      expect(calls).toHaveLength(2);
+      expect(calls[1]?.confirms).toBe(false);
       expect(logged).toEqual([]);
     });
 
-    it("falls back at most once per report, with the same credential and payload", async () => {
-      const { calls, logged, reporter, sent } = markerSetup([
-        async () => {
-          throw rejection();
-        },
-        async () => {
-          throw rejection();
-        },
-      ]);
-      reporter.report({ confirms: false, state: "working", prompt: "kept" });
-      await reporter.settled();
-      expect(sent).toEqual([false, undefined]);
-      expect(calls).toEqual([
-        { authorization: "Bearer c", prompt: "kept", state: "working" },
-        { authorization: "Bearer c", prompt: "kept", state: "working" },
-      ]);
-      expect(logged).toEqual(["activity-confirms-field-rejected"]);
-    });
-
     it("keeps the report for a later resend when the fallback attempt fails for a transient reason", async () => {
-      const { reporter, sent } = markerSetup([
+      const { calls, reporter } = closureSetup([
+        async () => ({ ok: true }),
         async () => {
-          throw rejection();
+          throw rejection('"confirms", "closes"');
         },
         async () => {
-          throw new BbHttpError({
-            body: null,
-            code: "unavailable",
-            message: "unavailable",
-            status: 503,
-          });
+          throw unavailable();
         },
       ]);
-      reporter.report({ confirms: false, state: "working", prompt: null });
+      reporter.report(working);
+      reporter.report(marked);
       await reporter.settled();
-      expect(sent).toEqual([false, undefined]);
+      expect(calls).toHaveLength(3);
       reporter.retry();
       await reporter.settled();
-      expect(sent).toEqual([false, undefined, undefined]);
+      expect(calls).toHaveLength(4);
+      expect(closesOf(calls)).toEqual([undefined, [], undefined, undefined]);
     });
   });
 });
-

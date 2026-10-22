@@ -924,15 +924,17 @@ tool-identifying field, and tool ids to skip because the transcript already
 reports them) mark a CLI blocked on a question or permission prompt; the
 question fields require host daemon protocol 238. The wrapper reports
 working, waiting (with the open question ids and texts), idle and the first
-new prompt through `sdk.nativeTerminals.reportActivity` (an optional
-`confirms: false` makes the server resolve the question without confirming
-activity: when it resolves an open question it clears the evidence time unless
-a newer one was stamped, so the thread shows Activity not reported, and a
-duplicate or delayed one clears nothing; the holder sends it only when an open
-question was dropped from its holding bound, falls back to a resend without
-the field when an older server rejects it by name, and treats a completed tool
-record from the declared `hooks.permission.close` events, for a tool it is not
-tracking, as proof that the CLI is not blocked); a waiting report
+new prompt through `sdk.nativeTerminals.reportActivity` (the optional `closes` lists
+the question ids a report closes: omitted keeps closing everything the report
+does not list, an empty list closes none, a populated list closes exactly the
+named questions that are still open; the optional `confirms: false` makes the
+server clear the activity evidence instead of stamping it when the report
+closed an open question, so the thread shows Activity not reported; the holder
+sends the fields from its second report on, uses `confirms: false` only when
+an open question was dropped from its holding bound, drops a report that
+closes a question when an older server rejects the fields rather than
+resending it close-all, and restores Working only on a close for the id of a
+dropped opener);a waiting report
 registers one pending interaction per open question (so the sidebar and
 favicon show needs-input exactly as for a chat thread, and the thread view
 shows a banner above the terminal), a later report clears the ones no longer
