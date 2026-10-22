@@ -61,7 +61,7 @@ it.skipIf(process.platform === "win32")(
       "const pauser = createDescendantPauser();",
       "await pauser.stop();",
       "const stopped = await waitForState((value) => value.startsWith('T'));",
-      "const parentExited = new Promise((resolve) => parent.once('exit', resolve));",
+      "const parentExited = new Promise((resolve, reject) => { const timeout = setTimeout(() => reject(new Error('Timed out waiting for parent exit')), 5000); parent.once('exit', () => { clearTimeout(timeout); resolve(); }); });",
       "parent.kill('SIGKILL');",
       "await parentExited;",
       "const orphaned = await waitForState((value) => value.startsWith('T') && Number(value.split(/\\s+/u)[1]) !== process.pid);",
