@@ -323,7 +323,7 @@ describe("native terminal questions", () => {
     },
   );
 
-  it("KNOWN LIMITATION (exact matching pending a real hook capture): a Bash completion closes the oldest open Bash prompt, whichever tool call it belongs to", () => {
+  it("OPEN FINDING (not fixed): a Bash completion closes the oldest open Bash prompt, whichever tool call it belongs to", () => {
     const hooks = CLAUDE.hooks!;
     const tracker = new NativeActivityTracker();
     tracker.apply({ state: "working", prompt: "go" });

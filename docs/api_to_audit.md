@@ -937,10 +937,10 @@ from its holding bound and then never restores Working from a close, and on a
 the server ends the questions of the previous binding when it binds a new
 terminal and refuses to re-register, per thread and up to 256 ids, a question
 that a report already closed by name (while the server runs and the binding
-holds; cleared only at a new binding, not persisted); known limitation, Claude Code only: the
+holds; cleared only at a new binding, not persisted); open finding (not accepted), Claude Code only: the
 holder cannot match a completion hook to its permission prompt exactly because
 `PermissionRequest` has no `tool_use_id`, so it closes the oldest open prompt of
-that tool, exact matching pending a real hook capture);a waiting report
+that tool, which can remove Needs input while the CLI is still waiting); a waiting report
 registers one pending interaction per open question (so the sidebar and
 favicon show needs-input exactly as for a chat thread, and the thread view
 shows a banner above the terminal), a later report clears the ones no longer
