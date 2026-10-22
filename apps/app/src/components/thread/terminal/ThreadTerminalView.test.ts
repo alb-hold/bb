@@ -827,7 +827,7 @@ describe("terminal viewport restore", () => {
     terminal.dispose();
   });
 
-  it("keeps the saved line when the phone fit shrinks the replay grid", async () => {
+  it("keeps the saved line when the replay grid grows by 23 rows", async () => {
     const terminal = new Terminal({ cols: 80, rows: 33, scrollback: 10_000 });
     const pipeline = createTerminalOutputPipeline(terminal);
     const tracker = createTerminalOutputLineAnchorTracker({
@@ -856,12 +856,20 @@ describe("terminal viewport restore", () => {
       lineOffset: 2_396,
       outputSequence: 2,
     };
+    terminal.scrollToLine(
+      resolveTerminalViewportRestore({
+        anchor: savedAnchor,
+        baseY: terminal.buffer.active.baseY,
+        outputLineAnchors: [anchor],
+        replayStartSequence: 0,
+        replayNextSequence: 16,
+      }),
+    );
     await new Promise<void>((resolve) => {
-      applyTerminalGridBeforeViewportRestore({
+      applyTerminalGridAndKeepViewport({
         pipeline,
         cols: 80,
         rows: 56,
-        fitGrid: { cols: 80, rows: 33 },
         onGridApplied: () => {},
         restoreViewport: () => {
           terminal.scrollToLine(
@@ -873,8 +881,8 @@ describe("terminal viewport restore", () => {
               replayNextSequence: 16,
             }),
           );
+          resolve();
         },
-        afterRestore: resolve,
       });
     });
 

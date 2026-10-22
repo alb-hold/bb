@@ -2239,6 +2239,9 @@ export function ThreadTerminalView({
           }
           fitTerminal();
           activeTransport.markLayoutSettled();
+          if (hasRestoredViewport && !hasManualScrollIntent) {
+            restoreViewport();
+          }
         },
         ready: document.fonts?.ready,
         subscribe: (onSignal) =>
