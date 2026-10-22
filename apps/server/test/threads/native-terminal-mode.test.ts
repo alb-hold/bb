@@ -3,6 +3,7 @@ import {
   createConnection,
   createNativeTerminalThread,
   deleteThread,
+  clearNativeTerminalThreadActivityEvidence,
   clearNativeTerminalThreadEvidence,
   getNativeTerminalThread,
   getPendingInteractionByProviderRequest,
@@ -13,6 +14,7 @@ import {
   listPendingInteractionsByThread,
   putThreadRowState,
   setNativeTerminalToolCredential,
+  stampNativeTerminalThreadActivity,
   type DbConnection,
 } from "@bb/db";
 import {
@@ -2678,8 +2680,8 @@ describe("a native activity report that does not confirm activity", () => {
       providerId: "claude-code",
       providerThreadId: SESSION_ID,
     });
-    await enterTerminal(fixture, thread.id);
-    return thread;
+    const { open } = await enterTerminal(fixture, thread.id);
+    return Object.assign(thread, { open });
   }
 
   const send = (
@@ -2792,20 +2794,210 @@ describe("a native activity report that does not confirm activity", () => {
     }
   });
 
-  it("never wipes a newer stamp left by a concurrent real report", async () => {
+  it("a delayed or retried close that arrives after a newer real confirmation resolves nothing and keeps that confirmation", async () => {
     const fixture = await createFixture();
     const clock = vi.spyOn(Date, "now").mockReturnValue(1_000_000);
     try {
       const thread = await answeredQuestion(fixture, clock);
       clock.mockReturnValue(2_000_000);
-      await send(fixture, thread.id, { state: "working" });
+      expect(
+        (await send(fixture, thread.id, { prompt: "next", state: "working" }))
+          .status,
+      ).toBe(200);
+      expect(openInteractions(fixture, thread.id)).toHaveLength(0);
       expect(evidence(fixture, thread.id)).toBe(2_000_000);
-      clock.mockReturnValue(1_990_000);
+      clock.mockReturnValue(2_010_000);
       expect(
         (await send(fixture, thread.id, { confirms: false, state: "working" }))
           .status,
       ).toBe(200);
       expect(evidence(fixture, thread.id)).toBe(2_000_000);
+      expect(display(fixture, thread.id)).toMatchObject({
+        confirmation: "confirmed",
+        lastEvidenceAt: 2_000_000,
+      });
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it("keeps a stored stamp that is newer than the receipt time even though the close resolves the question", async () => {
+    const fixture = await createFixture();
+    const clock = vi.spyOn(Date, "now").mockReturnValue(1_000_000);
+    try {
+      const thread = await answeredQuestion(fixture, clock);
+      const terminalSessionId = getNativeTerminalThread(
+        fixture.harness.db,
+        thread.id,
+      )?.terminalSessionId;
+      if (terminalSessionId === null || terminalSessionId === undefined) {
+        throw new Error("terminal session missing");
+      }
+      stampNativeTerminalThreadActivity(fixture.harness.db, {
+        at: 2_000_000,
+        terminalSessionId,
+        threadId: thread.id,
+      });
+      clock.mockReturnValue(1_990_000);
+      expect(
+        (await send(fixture, thread.id, { confirms: false, state: "working" }))
+          .status,
+      ).toBe(200);
+      expect(openInteractions(fixture, thread.id)).toHaveLength(0);
+      expect(evidence(fixture, thread.id)).toBe(2_000_000);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it("is idempotent for a duplicate close: the second one changes and notifies nothing", async () => {
+    const fixture = await createFixture();
+    const clock = vi.spyOn(Date, "now").mockReturnValue(1_000_000);
+    const notify = vi.spyOn(fixture.harness.hub, "notifyThread");
+    try {
+      const thread = await answeredQuestion(fixture, clock);
+      clock.mockReturnValue(1_020_000);
+      await send(fixture, thread.id, { confirms: false, state: "working" });
+      expect(evidence(fixture, thread.id)).toBeNull();
+      notify.mockClear();
+      clock.mockReturnValue(1_021_000);
+      expect(
+        (await send(fixture, thread.id, { confirms: false, state: "working" }))
+          .status,
+      ).toBe(200);
+      expect(evidence(fixture, thread.id)).toBeNull();
+      expect(notify).not.toHaveBeenCalled();
+      expect(threadStatus(fixture, thread.id)).toBe("active");
+      expect(openInteractions(fixture, thread.id)).toHaveLength(0);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it.each([
+    ["no credential", null],
+    ["a stale credential", "Bearer stale-credential"],
+  ])(
+    "with %s a non-confirming close is a 401 that resolves, clears and notifies nothing",
+    async (_name, authorization) => {
+      const fixture = await createFixture();
+      const clock = vi.spyOn(Date, "now").mockReturnValue(1_000_000);
+      try {
+        const thread = await answeredQuestion(fixture, clock);
+        const before = evidence(fixture, thread.id);
+        expect(before).toBe(1_010_000);
+        const notify = vi.spyOn(fixture.harness.hub, "notifyThread");
+        notify.mockClear();
+        clock.mockReturnValue(1_020_000);
+        const response = await postJson(
+          fixture,
+          `/threads/${thread.id}/native-terminal/activity`,
+          { confirms: false, state: "working" },
+          authorization,
+        );
+        expect(response.status).toBe(401);
+        expect(await readApiErrorCode(response)).toBe(
+          "native_terminal_credential_invalid",
+        );
+        expect(openInteractions(fixture, thread.id)).toHaveLength(1);
+        expect(evidence(fixture, thread.id)).toBe(before);
+        expect(notify).not.toHaveBeenCalled();
+      } finally {
+        clock.mockRestore();
+      }
+    },
+  );
+
+  it("cannot be used with the credential of an earlier terminal session to clear the new binding's evidence", async () => {
+    const fixture = await createFixture();
+    const clock = vi.spyOn(Date, "now").mockReturnValue(1_000_000);
+    try {
+      const thread = await answeredQuestion(fixture, clock);
+      const oldCredential = terminalCredential(thread.open);
+      fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+        hostId: fixture.hostId,
+        sessionId: fixture.sessionId,
+        message: {
+          type: "terminal.exited",
+          terminalId: thread.open.terminalId,
+          exitCode: null,
+          closeReason: "daemon-disconnect",
+        },
+      });
+      const opens = countDaemonMessages(fixture, "terminal.open");
+      const reopening = postJson(
+        fixture,
+        `/threads/${thread.id}/native-terminal/open`,
+        {},
+      );
+      const reopened = await waitForDaemonMessage(
+        fixture,
+        "terminal.open",
+        opens,
+      );
+      acknowledgeOpen(fixture, reopened);
+      expect((await reopening).status).toBe(200);
+      clock.mockReturnValue(1_030_000);
+      expect(
+        (
+          await postJson(
+            fixture,
+            `/threads/${thread.id}/native-terminal/activity`,
+            { state: "working" },
+            `Bearer ${terminalCredential(reopened)}`,
+          )
+        ).status,
+      ).toBe(200);
+      expect(evidence(fixture, thread.id)).toBe(1_030_000);
+      clock.mockReturnValue(1_040_000);
+      const stale = await postJson(
+        fixture,
+        `/threads/${thread.id}/native-terminal/activity`,
+        { confirms: false, state: "working" },
+        `Bearer ${oldCredential}`,
+      );
+      expect(stale.status).toBe(401);
+      expect(evidence(fixture, thread.id)).toBe(1_030_000);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it("clears only the evidence of its own thread and terminal session", async () => {
+    const fixture = await createFixture();
+    const clock = vi.spyOn(Date, "now").mockReturnValue(1_000_000);
+    try {
+      const thread = await answeredQuestion(fixture, clock);
+      const terminalSessionId = getNativeTerminalThread(
+        fixture.harness.db,
+        thread.id,
+      )?.terminalSessionId;
+      if (terminalSessionId === null || terminalSessionId === undefined) {
+        throw new Error("terminal session missing");
+      }
+      expect(
+        clearNativeTerminalThreadActivityEvidence(fixture.harness.db, {
+          at: 9_999_999,
+          terminalSessionId: "term_of_an_earlier_binding",
+          threadId: thread.id,
+        }),
+      ).toEqual({ cleared: false });
+      expect(
+        clearNativeTerminalThreadActivityEvidence(fixture.harness.db, {
+          at: 9_999_999,
+          terminalSessionId,
+          threadId: "thr_another_thread",
+        }),
+      ).toEqual({ cleared: false });
+      expect(evidence(fixture, thread.id)).toBe(1_010_000);
+      expect(
+        clearNativeTerminalThreadActivityEvidence(fixture.harness.db, {
+          at: 9_999_999,
+          terminalSessionId,
+          threadId: thread.id,
+        }),
+      ).toEqual({ cleared: true });
+      expect(evidence(fixture, thread.id)).toBeNull();
     } finally {
       clock.mockRestore();
     }

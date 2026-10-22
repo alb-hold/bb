@@ -239,6 +239,19 @@ export class NativeActivityReader {
           this.rememberTurn(turn);
         }
         const report = this.tracker.apply(signal);
+        if (
+          fresh &&
+          this.droppedOpenQuestion &&
+          signal.answered !== undefined &&
+          report === null
+        ) {
+          this.droppedOpenQuestion = false;
+          this.historyIncomplete = false;
+          push(
+            { prompt: null, state: "working" },
+            { answered: false, transcript: false },
+          );
+        }
         if (fresh && signal.state !== null && !this.droppedOpenQuestion) {
           this.historyIncomplete = false;
         }

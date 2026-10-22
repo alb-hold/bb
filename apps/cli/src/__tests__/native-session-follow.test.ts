@@ -638,6 +638,54 @@ describe("following a discovered session only after the server accepted it", () 
         expect(h.sentMarkers).toEqual([undefined, false, undefined]);
       });
 
+      it("restores Working when a completed tool record follows the answer, and the heartbeat resumes", async () => {
+        const { h } = await startTrimmed();
+        expect(await h.readOnly()).toEqual([]);
+        h.appendHooks([edit("PermissionRequest"), edit("PostToolUse")]);
+        expect(await h.readOnly()).toEqual(["waiting", "working"]);
+        h.appendHooks([
+          {
+            hook_event_name: "PostToolUse",
+            session_id: SESSION_ID,
+            tool_name: "Write",
+          },
+        ]);
+        expect(await h.readOnly()).toEqual(["waiting", "working", "working"]);
+        expect(h.sentMarkers).toEqual([undefined, false, undefined]);
+        expect(await h.tick()).toEqual([
+          "waiting",
+          "working",
+          "working",
+          "working",
+        ]);
+      });
+
+      it("stays unconfirmed when only a pre-tool hook follows the answer", async () => {
+        const { h } = await startTrimmed();
+        expect(await h.readOnly()).toEqual([]);
+        h.appendHooks([edit("PermissionRequest"), edit("PostToolUse")]);
+        expect(await h.readOnly()).toEqual(["waiting", "working"]);
+        h.appendHooks([tool, tool]);
+        expect(await h.readOnly()).toEqual(["waiting", "working"]);
+        expect(await h.tick()).toEqual(["waiting", "working"]);
+      });
+
+      it("shows Needs input, not Working, when a permission hook follows the answer", async () => {
+        const { h } = await startTrimmed();
+        expect(await h.readOnly()).toEqual([]);
+        h.appendHooks([edit("PermissionRequest"), edit("PostToolUse")]);
+        expect(await h.readOnly()).toEqual(["waiting", "working"]);
+        h.appendHooks([
+          {
+            hook_event_name: "PermissionRequest",
+            session_id: SESSION_ID,
+            tool_name: "Write",
+          },
+        ]);
+        expect(await h.readOnly()).toEqual(["waiting", "working", "waiting"]);
+        expect(await h.tick()).toEqual(["waiting", "working", "waiting"]);
+      });
+
       it("sets no marker when no open question was dropped", async () => {
         const h = holder(hookShape(withSessionIdField));
         h.appendHooks([edit("PermissionRequest"), edit("PostToolUse")]);
