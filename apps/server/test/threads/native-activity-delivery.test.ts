@@ -98,6 +98,8 @@ interface CliModules {
     env: { HOME: string },
     hookSource: HookSourceLike,
     start: { kind: "discover" } | { kind: "start"; id: string },
+    onUnconfirmedIdentity?: (total: number) => void,
+    onUnconfirmedHookIdentity?: (reason: string, total: number) => void,
   ) => ReaderLike;
 }
 
@@ -1093,7 +1095,8 @@ describe.skipIf(process.platform === "win32")(
       );
       const sdk = createNodeBbSdk({
         baseUrl: "http://127.0.0.1:3000",
-        fetch: (input, init) => harness.app.fetch(new Request(input, init)),
+        fetch: async (input, init) =>
+          harness.app.fetch(new Request(input, init)),
       });
       const reporter = reporterModule.createNativeActivityReporter({
         currentCredential: () => SECRET,
