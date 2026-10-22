@@ -924,7 +924,11 @@ tool-identifying field, and tool ids to skip because the transcript already
 reports them) mark a CLI blocked on a question or permission prompt; the
 question fields require host daemon protocol 238. The wrapper reports
 working, waiting (with the open question ids and texts), idle and the first
-new prompt through `sdk.nativeTerminals.reportActivity`; a waiting report
+new prompt through `sdk.nativeTerminals.reportActivity` (an optional
+`confirms: false` makes the server resolve the question without confirming
+activity: it clears the evidence time unless a newer one was stamped, so the
+thread shows Activity not reported; the holder sends it only when an open
+question was dropped from its holding bound); a waiting report
 registers one pending interaction per open question (so the sidebar and
 favicon show needs-input exactly as for a chat thread, and the thread view
 shows a banner above the terminal), a later report clears the ones no longer

@@ -38,6 +38,7 @@ export interface NativeTerminalReportActivityArgs extends NativeTerminalThreadAr
   state: NativeTerminalActivityState;
   prompt?: string;
   questions?: NativeTerminalOpenQuestion[];
+  confirms?: boolean;
 }
 
 export interface NativeTerminalCallAgentToolArgs extends NativeTerminalThreadArgs {
@@ -155,6 +156,9 @@ export function createNativeTerminalsArea(
               ...(input.questions === undefined
                 ? {}
                 : { questions: input.questions }),
+              ...(input.confirms === undefined
+                ? {}
+                : { confirms: input.confirms }),
             },
           },
           ...(Object.keys(init).length === 0 ? [] : [{ init }]),

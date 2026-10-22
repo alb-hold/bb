@@ -181,11 +181,13 @@ function holder(
     (reason, total) => unconfirmed.push(`${reason}:${total}`),
   );
   const sentReports: string[] = [];
+  const sentMarkers: Array<boolean | undefined> = [];
   const recorded: string[] = [];
   const logged: string[] = [];
   const reporter = createNativeActivityReporter({
     currentCredential: () => "current",
     send: async (args) => {
+      sentMarkers.push(args.confirms);
       sentReports.push(
         args.prompt === undefined || args.prompt === null
           ? args.state
@@ -253,6 +255,7 @@ function holder(
     makeDiscoverer,
     readOnly,
     recorded,
+    sentMarkers,
     sentReports,
     tick,
   };
@@ -601,6 +604,48 @@ describe("following a discovered session only after the server accepted it", () 
         await discoverer.discover();
         expect(await h.readOnly()).toEqual(["waiting", "working"]);
         expect(await h.tick()).toEqual(["waiting", "working"]);
+      });
+
+      it("marks only the answer of a retained question with confirms false, and nothing else", async () => {
+        const { h } = await startTrimmed();
+        expect(await h.readOnly()).toEqual([]);
+        h.appendHooks([edit("PermissionRequest")]);
+        await h.readOnly();
+        h.appendHooks([edit("PostToolUse")]);
+        expect(await h.readOnly()).toEqual(["waiting", "working"]);
+        expect(h.sentMarkers).toEqual([undefined, false]);
+      });
+
+      it("leaves a non-confirming answer unconfirmed: no report follows it, and a fresh prompt confirms again", async () => {
+        const { h } = await startTrimmed();
+        expect(await h.readOnly()).toEqual([]);
+        h.appendHooks([edit("PermissionRequest"), edit("PostToolUse")]);
+        expect(await h.readOnly()).toEqual(["waiting", "working"]);
+        expect(await h.tick()).toEqual(["waiting", "working"]);
+        expect(await h.tick()).toEqual(["waiting", "working"]);
+        h.appendHooks([
+          {
+            hook_event_name: "UserPromptSubmit",
+            prompt: "next",
+            session_id: SESSION_ID,
+          },
+        ]);
+        expect(await h.readOnly()).toEqual([
+          "waiting",
+          "working",
+          "working:next",
+        ]);
+        expect(h.sentMarkers).toEqual([undefined, false, undefined]);
+      });
+
+      it("sets no marker when no open question was dropped", async () => {
+        const h = holder(hookShape(withSessionIdField));
+        h.appendHooks([edit("PermissionRequest"), edit("PostToolUse")]);
+        const discoverer = h.makeDiscoverer(async () => ({}));
+        expect(await h.tick()).toEqual([]);
+        await discoverer.discover();
+        expect(await h.readOnly()).toEqual(["waiting", "working"]);
+        expect(h.sentMarkers).toEqual([undefined, undefined]);
       });
 
       it("is cleared by a fresh idle", async () => {

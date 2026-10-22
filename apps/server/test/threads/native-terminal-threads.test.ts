@@ -3721,6 +3721,7 @@ describe("native terminal threads", () => {
         (entry) => entry.name === NATIVE_TOOL_CREDENTIAL_ENV,
       )?.value;
       recordNativeTerminalActivity(fixture.harness.deps, {
+        confirms: true,
         authorization: `Bearer ${reopenedCredential}`,
         threadId: running.thread.id,
         state: "working",

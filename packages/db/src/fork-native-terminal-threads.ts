@@ -284,6 +284,21 @@ export function stampNativeTerminalThreadActivity(
   })();
 }
 
+export function clearNativeTerminalThreadActivityEvidence(
+  db: DbConnection,
+  args: { at: number; terminalSessionId: string; threadId: string },
+): { cleared: boolean } {
+  const result = db.$client
+    .prepare(
+      `UPDATE fork_native_terminal_threads
+       SET last_evidence_at = NULL
+       WHERE thread_id = ? AND terminal_session_id = ?
+         AND last_evidence_at IS NOT NULL AND last_evidence_at <= ?`,
+    )
+    .run(args.threadId, args.terminalSessionId, args.at);
+  return { cleared: result.changes === 1 };
+}
+
 export type StampNativeTerminalToolCallResult =
   | { updated: false }
   | { updated: true; previousLastToolCallAt: number | null };

@@ -717,6 +717,7 @@ describe("native terminal activity", () => {
     vi.setSystemTime(1_000_000);
     try {
       recordNativeTerminalActivity(fixture.harness.deps, {
+        confirms: true,
         authorization,
         threadId: thread.id,
         state: "working",
@@ -726,12 +727,14 @@ describe("native terminal activity", () => {
       ).toBe(1_000_000);
       await vi.advanceTimersByTimeAsync(15_000);
       recordNativeTerminalActivity(fixture.harness.deps, {
+        confirms: true,
         authorization,
         threadId: thread.id,
         state: "working",
       });
       await vi.advanceTimersByTimeAsync(15_000);
       recordNativeTerminalActivity(fixture.harness.deps, {
+        confirms: true,
         authorization,
         threadId: thread.id,
         state: "working",
@@ -756,6 +759,7 @@ describe("native terminal activity", () => {
       for (let period = 2; period <= 4; period += 1) {
         await vi.advanceTimersByTimeAsync(30_000);
         recordNativeTerminalActivity(fixture.harness.deps, {
+          confirms: true,
           authorization,
           threadId: thread.id,
           state: "working",
@@ -770,6 +774,7 @@ describe("native terminal activity", () => {
 
       await vi.advanceTimersByTimeAsync(91_000);
       recordNativeTerminalActivity(fixture.harness.deps, {
+        confirms: true,
         authorization,
         threadId: thread.id,
         state: "working",
@@ -782,6 +787,7 @@ describe("native terminal activity", () => {
 
       const beforeTransition = notify.mock.calls.length;
       recordNativeTerminalActivity(fixture.harness.deps, {
+        confirms: true,
         authorization,
         threadId: thread.id,
         state: "waiting",
@@ -855,6 +861,7 @@ describe("native terminal activity", () => {
 
     expect(() =>
       recordNativeTerminalActivity(fixture.harness.deps, {
+        confirms: true,
         authorization: `Bearer ${credential}`,
         threadId: thread.id,
         state: "working",
@@ -1262,6 +1269,7 @@ describe("native terminal activity", () => {
     await enterTerminal(fixture, thread.id);
     expect(() =>
       recordNativeTerminalActivity(fixture.harness.deps, {
+        confirms: true,
         threadId: thread.id,
         state: "working",
       }),
@@ -1279,6 +1287,7 @@ describe("native terminal activity", () => {
       for (let i = 0; i < 100; i += 1) {
         expect(() =>
           recordNativeTerminalActivity(fixture.harness.deps, {
+            confirms: true,
             threadId: thread.id,
             state: "working",
           }),
@@ -2660,5 +2669,183 @@ describe("native terminal activity evidence across a swap", () => {
         await completeRebind?.();
       }
     });
+  });
+});
+
+describe("a native activity report that does not confirm activity", () => {
+  async function startThread(fixture: Fixture) {
+    const thread = seedChatThread(fixture, {
+      providerId: "claude-code",
+      providerThreadId: SESSION_ID,
+    });
+    await enterTerminal(fixture, thread.id);
+    return thread;
+  }
+
+  const send = (
+    fixture: Fixture,
+    threadId: string,
+    body: {
+      confirms?: boolean | string;
+      prompt?: string;
+      questions?: { id: string; prompt: string }[];
+      state: "idle" | "waiting" | "working";
+    },
+  ) => postJson(fixture, `/threads/${threadId}/native-terminal/activity`, body);
+
+  const evidence = (fixture: Fixture, threadId: string) =>
+    getNativeTerminalThread(fixture.harness.db, threadId)?.lastEvidenceAt;
+
+  const display = (fixture: Fixture, threadId: string) => {
+    const thread = getThread(fixture.harness.db, threadId);
+    if (thread === null) throw new Error("thread missing");
+    return buildThreadStatusChangeMetadata(fixture.harness.deps, thread)
+      .statusChange?.runtime.nativeActivity;
+  };
+
+  async function answeredQuestion(
+    fixture: Fixture,
+    clock: { mockReturnValue(value: number): unknown },
+  ) {
+    const thread = await startThread(fixture);
+    clock.mockReturnValue(1_000_000);
+    expect((await send(fixture, thread.id, { state: "working" })).status).toBe(
+      200,
+    );
+    clock.mockReturnValue(1_010_000);
+    expect(
+      (
+        await send(fixture, thread.id, {
+          questions: [{ id: "q1", prompt: "Which layout?" }],
+          state: "waiting",
+        })
+      ).status,
+    ).toBe(200);
+    expect(openInteractions(fixture, thread.id)).toHaveLength(1);
+    return thread;
+  }
+
+  it("resolves the answered question and shows Activity not reported at once, not Working", async () => {
+    const fixture = await createFixture();
+    const clock = vi.spyOn(Date, "now").mockReturnValue(1_000_000);
+    try {
+      const thread = await answeredQuestion(fixture, clock);
+      clock.mockReturnValue(1_020_000);
+      expect(
+        (await send(fixture, thread.id, { confirms: false, state: "working" }))
+          .status,
+      ).toBe(200);
+      expect(openInteractions(fixture, thread.id)).toHaveLength(0);
+      expect(threadStatus(fixture, thread.id)).toBe("active");
+      expect(evidence(fixture, thread.id)).toBeNull();
+      expect(display(fixture, thread.id)).toMatchObject({
+        confirmation: "unconfirmed",
+        lastEvidenceAt: null,
+      });
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it("notifies the thread when it clears the evidence, so a connected client drops Working", async () => {
+    const fixture = await createFixture();
+    const clock = vi.spyOn(Date, "now").mockReturnValue(1_000_000);
+    const notify = vi.spyOn(fixture.harness.hub, "notifyThread");
+    try {
+      const thread = await answeredQuestion(fixture, clock);
+      notify.mockClear();
+      clock.mockReturnValue(1_020_000);
+      await send(fixture, thread.id, { confirms: false, state: "working" });
+      expect(
+        notify.mock.calls.some(
+          (call) =>
+            call[2]?.statusChange?.runtime.nativeActivity?.confirmation ===
+              "unconfirmed" &&
+            call[2]?.statusChange?.runtime.nativeActivity?.lastEvidenceAt ===
+              null,
+        ),
+      ).toBe(true);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it("is re-confirmed as Working by the next real report", async () => {
+    const fixture = await createFixture();
+    const clock = vi.spyOn(Date, "now").mockReturnValue(1_000_000);
+    try {
+      const thread = await answeredQuestion(fixture, clock);
+      clock.mockReturnValue(1_020_000);
+      await send(fixture, thread.id, { confirms: false, state: "working" });
+      clock.mockReturnValue(1_030_000);
+      expect(
+        (await send(fixture, thread.id, { prompt: "next", state: "working" }))
+          .status,
+      ).toBe(200);
+      expect(evidence(fixture, thread.id)).toBe(1_030_000);
+      expect(display(fixture, thread.id)).toMatchObject({
+        confirmation: "confirmed",
+        lastEvidenceAt: 1_030_000,
+      });
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it("never wipes a newer stamp left by a concurrent real report", async () => {
+    const fixture = await createFixture();
+    const clock = vi.spyOn(Date, "now").mockReturnValue(1_000_000);
+    try {
+      const thread = await answeredQuestion(fixture, clock);
+      clock.mockReturnValue(2_000_000);
+      await send(fixture, thread.id, { state: "working" });
+      expect(evidence(fixture, thread.id)).toBe(2_000_000);
+      clock.mockReturnValue(1_990_000);
+      expect(
+        (await send(fixture, thread.id, { confirms: false, state: "working" }))
+          .status,
+      ).toBe(200);
+      expect(evidence(fixture, thread.id)).toBe(2_000_000);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it.each([
+    ["without the field", undefined],
+    ["with confirms true", true],
+  ])("stamps as before for a report %s", async (_name, confirms) => {
+    const fixture = await createFixture();
+    const clock = vi.spyOn(Date, "now").mockReturnValue(1_000_000);
+    try {
+      const thread = await answeredQuestion(fixture, clock);
+      clock.mockReturnValue(1_020_000);
+      expect(
+        (
+          await send(fixture, thread.id, {
+            ...(confirms === undefined ? {} : { confirms }),
+            state: "working",
+          })
+        ).status,
+      ).toBe(200);
+      expect(openInteractions(fixture, thread.id)).toHaveLength(0);
+      expect(evidence(fixture, thread.id)).toBe(1_020_000);
+      expect(display(fixture, thread.id)).toMatchObject({
+        confirmation: "confirmed",
+      });
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it("rejects a confirms value that is not a boolean", async () => {
+    const fixture = await createFixture();
+    const thread = await startThread(fixture);
+    const response = await send(fixture, thread.id, {
+      confirms: "no",
+      state: "working",
+    });
+    expect(response.status).toBe(400);
+    expect(await readApiErrorCode(response)).toBe("invalid_request");
   });
 });
