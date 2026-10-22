@@ -8,6 +8,7 @@ export interface NativeActivityReporter {
     options?: { transient?: boolean },
   ): void;
   retry(): void;
+  discardRetained(): void;
   settled(): Promise<void>;
 }
 
@@ -61,6 +62,10 @@ export function createNativeActivityReporter(options: {
         retained = null;
       }
       pending = pending.then(() => deliver(next, sequence));
+    },
+    discardRetained() {
+      latestSequence += 1;
+      retained = null;
     },
     retry() {
       const resend = retained;
