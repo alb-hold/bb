@@ -49,6 +49,7 @@ import {
   promptInputToDraft,
   type PromptDraftState,
 } from "@bb/client-core";
+import type { ComposerSubmitOptions } from "@get-bb/plugin-sdk/app";
 import { createCoreComposerActions } from "@/lib/plugin-composer-handle";
 import {
   getComposerInputLock,
@@ -93,9 +94,10 @@ import {
 import {
   promptMentionClipboardDataAttributes,
   serializedTextForPromptMentionResource,
-} from "./mentions/prompt-mention-clipboard";
+} from "@bb/client-core";
 import { orderPromptMentionSuggestions } from "@/hooks/promptMentionCandidates";
 import type {
+  ComposerMentionShape,
   PromptDraftAttachment,
   PromptMentionSuggestion,
   ProviderCommandSuggestion,
@@ -1090,35 +1092,27 @@ describe("PromptBoxInternal composer popups", () => {
 
 describe("PromptBoxInternal controlled value sync", () => {
   it("compares cloned mention values without serializing the prompt text", () => {
-    const resource = {
-      kind: "path" as const,
-      source: "workspace" as const,
-      entryKind: "file" as const,
+    const mention: ComposerMentionShape = {
+      from: 4,
+      to: 10,
+      kind: "path",
+      source: "workspace",
+      entryKind: "file",
       path: "src/a.ts",
       label: "a.ts",
-    };
-    const mention: PromptTextMention = {
-      start: 4,
-      end: 10,
-      resource,
     };
     const left = { text: "see @a.ts", mentions: [mention] };
 
     expect(
       arePromptEditorValuesEqual(left, {
         text: left.text,
-        mentions: [{ ...mention, resource: { ...resource } }],
+        mentions: [{ ...mention }],
       }),
     ).toBe(true);
     expect(
       arePromptEditorValuesEqual(left, {
         text: left.text,
-        mentions: [
-          {
-            ...mention,
-            resource: { ...resource, path: "src/b.ts" },
-          },
-        ],
+        mentions: [{ ...mention, path: "src/b.ts" }],
       }),
     ).toBe(false);
   });
@@ -1892,7 +1886,8 @@ describe("PromptBoxInternal controlled value sync", () => {
       ),
     );
     await act(
-      () => new Promise((resolve) => requestAnimationFrame(() => resolve(null))),
+      () =>
+        new Promise((resolve) => requestAnimationFrame(() => resolve(null))),
     );
 
     fireEvent.keyDown(getPromptEditorElement(), { key: "ArrowUp" });
@@ -1937,6 +1932,218 @@ describe("PromptBoxInternal controlled value sync", () => {
     });
 
     expect(onChange).toHaveBeenLastCalledWith("> selected text\n\nreply", []);
+  });
+});
+
+describe("PromptBoxInternal programmatic submit", () => {
+  const COMBINED_SEND_AT = Date.now() + 60 * 60 * 1000;
+
+  function renderThreadComposerWithSubmitter({
+    swapSubmitActions,
+    send = vi.fn(),
+    running = true,
+    text = "Ship it",
+    sendsOnEnter = true,
+  }: {
+    swapSubmitActions: boolean;
+    send?: () => void | Promise<void>;
+    running?: boolean;
+    text?: string;
+    sendsOnEnter?: boolean;
+  }) {
+    const steer = vi.fn();
+    const submitted: string[] = [];
+    const rejected: string[] = [];
+    function Submitter() {
+      const composer = useComposer();
+      const submitButton = (
+        label: string,
+        result: string,
+        options?: ComposerSubmitOptions,
+      ) => (
+        <button
+          type="button"
+          onClick={() => {
+            void composer.submit(options).then(
+              () => submitted.push(result),
+              (error: Error) => rejected.push(error.message),
+            );
+          }}
+        >
+          {label}
+        </button>
+      );
+      return (
+        <>
+          {submitButton("Plugin submit", "enter")}
+          {submitButton("Plugin queue", "queue", {
+            experimental_mode: "queue-if-active",
+          })}
+          {submitButton("Plugin steer", "steer", {
+            experimental_mode: "steer-if-active",
+          })}
+          {submitButton("Plugin scheduled steer", "scheduled steer", {
+            experimental_mode: "steer-if-active",
+            sendAt: COMBINED_SEND_AT,
+            experimental_data: { kind: "note" },
+          })}
+        </>
+      );
+    }
+    setPluginSlotRegistrations(
+      "submitter",
+      pluginRegistrationSet([
+        {
+          id: "tools",
+          actions: [{ id: "submit", component: Submitter }],
+        },
+      ]),
+    );
+    const draft = { ...emptyPromptDraftState(), text };
+    const host: PluginComposerHost = {
+      scope: { kind: "thread", threadId: "thread-1" },
+      textEffectKey: "promptbox-submit-test",
+      getCurrent: () => draft,
+      subscribeDraft: () => () => {},
+      setDraft: vi.fn(),
+      focus: vi.fn(),
+      sendsOnEnter,
+    };
+    render(
+      <MemoryRouter>
+        <PluginComposerHostProvider value={host}>
+          <PromptBoxInternal
+            {...createPromptBoxProps({
+              value: text,
+              onSubmit: send,
+              submission: running
+                ? {
+                    isRunning: true,
+                    onModifierSubmit: steer,
+                    swapSubmitActions,
+                    showModifierSubmitAction: true,
+                  }
+                : {},
+            })}
+          />
+        </PluginComposerHostProvider>
+      </MemoryRouter>,
+    );
+    return { send, steer, submitted, rejected };
+  }
+
+  it("runs Enter's action without an action and the chosen one with it", async () => {
+    const { send, steer, submitted } = renderThreadComposerWithSubmitter({
+      swapSubmitActions: true,
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Plugin submit" }));
+    await waitFor(() => expect(submitted).toEqual(["enter"]));
+    expect(steer).toHaveBeenCalledTimes(1);
+    expect(send).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Plugin queue" }));
+    await waitFor(() => expect(submitted).toEqual(["enter", "queue"]));
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(steer).toHaveBeenCalledTimes(1);
+  });
+
+  it("steers on request when Enter queues", async () => {
+    const { send, steer, submitted } = renderThreadComposerWithSubmitter({
+      swapSubmitActions: false,
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Plugin submit" }));
+    await waitFor(() => expect(submitted).toEqual(["enter"]));
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(steer).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Plugin steer" }));
+    await waitFor(() => expect(submitted).toEqual(["enter", "steer"]));
+    expect(steer).toHaveBeenCalledTimes(1);
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it("passes sendAt and plugin data to the chosen action", async () => {
+    const { send, steer, submitted } = renderThreadComposerWithSubmitter({
+      swapSubmitActions: false,
+    });
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Plugin scheduled steer" }),
+    );
+    await waitFor(() => expect(submitted).toEqual(["scheduled steer"]));
+    expect(send).not.toHaveBeenCalled();
+    expect(steer).toHaveBeenCalledWith({
+      sendAt: COMBINED_SEND_AT,
+      pluginSubmission: { pluginId: "submitter", data: { kind: "note" } },
+    });
+  });
+
+  it("rejects on a composer whose Enter does not send", async () => {
+    const { send, steer, rejected } = renderThreadComposerWithSubmitter({
+      swapSubmitActions: false,
+      sendsOnEnter: false,
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Plugin submit" }));
+    await waitFor(() =>
+      expect(rejected).toEqual([
+        "This composer cannot submit programmatically.",
+      ]),
+    );
+    expect(send).not.toHaveBeenCalled();
+    expect(steer).not.toHaveBeenCalled();
+  });
+
+  it("rejects an empty draft where Enter would steer the next queued message", async () => {
+    const { send, steer, rejected } = renderThreadComposerWithSubmitter({
+      swapSubmitActions: true,
+      text: "",
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Plugin submit" }));
+    await waitFor(() => expect(rejected).toEqual(["Type a message first."]));
+
+    fireEvent.keyDown(getPromptEditorElement(), { key: "Enter" });
+    await waitFor(() => expect(steer).toHaveBeenCalledTimes(1));
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("starts a turn for a steer when there is nothing to steer", async () => {
+    const { send, submitted } = renderThreadComposerWithSubmitter({
+      swapSubmitActions: false,
+      running: false,
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Plugin steer" }));
+    await waitFor(() => expect(submitted).toEqual(["steer"]));
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects with Enter's failure while Enter itself ignores it", async () => {
+    const unhandled = vi.fn();
+    process.on("unhandledRejection", unhandled);
+    try {
+      let sendCalls = 0;
+      const { rejected } = renderThreadComposerWithSubmitter({
+        swapSubmitActions: false,
+        send: async () => {
+          sendCalls += 1;
+          throw new Error("Failed to send message");
+        },
+      });
+
+      fireEvent.click(screen.getByRole("button", { name: "Plugin submit" }));
+      await waitFor(() => expect(rejected).toEqual(["Failed to send message"]));
+
+      fireEvent.keyDown(getPromptEditorElement(), { key: "Enter" });
+      await waitFor(() => expect(sendCalls).toBe(2));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(unhandled).not.toHaveBeenCalled();
+    } finally {
+      process.off("unhandledRejection", unhandled);
+    }
   });
 });
 
@@ -5546,36 +5753,56 @@ describe("PromptBoxInternal prompt actions", () => {
     },
   );
 
-  it("inserts a dropped sidebar thread as a serialized mention pill", async () => {
-    const { changes, promptBoxRef } = renderPromptBox("Review ");
-    await focusPromptEnd(promptBoxRef);
-    const editorElement = getPromptEditorElement();
-    const previous = document.elementsFromPoint;
-    document.elementsFromPoint = () => [editorElement];
-    const position = vi
-      .spyOn(EditorView.prototype, "posAtCoords")
-      .mockReturnValue(null);
-    try {
-      const target = resolveThreadMentionDropTarget(100, 100, {
-        threadId: "thr_dropped",
-        label: "Dropped thread",
-      });
-      expect(target).not.toBeNull();
-      act(() => target?.drop());
-      await waitFor(() =>
-        expect(latestValue(changes)).toBe("Review @thread:thr_dropped "),
+  it.each(["editor", "footer"])(
+    "inserts a sidebar thread dropped on the %s as a serialized mention pill",
+    async (dropArea) => {
+      const changes: PromptChange[] = [];
+      const promptBoxRef = createRef<PromptBoxHandle>();
+      const { container } = render(
+        <div data-promptbox-shell="">
+          <PromptBoxInternal
+            {...createPromptBoxProps({
+              value: "Review ",
+              onChange: (value, mentions) => changes.push({ value, mentions }),
+            })}
+            promptBoxRef={promptBoxRef}
+          />
+          <div data-new-thread-footer="">Composer footer</div>
+        </div>,
       );
-      expect(latestChange(changes)?.mentions[0]?.resource).toEqual({
-        kind: "thread",
-        threadId: "thr_dropped",
-        label: "Dropped thread",
-      });
-      expect(editorElement.textContent).toContain("Dropped thread");
-    } finally {
-      document.elementsFromPoint = previous;
-      position.mockRestore();
-    }
-  });
+      await focusPromptEnd(promptBoxRef);
+      const editorElement = getPromptEditorElement();
+      const previous = document.elementsFromPoint;
+      const hit =
+        dropArea === "editor"
+          ? editorElement
+          : container.querySelector<HTMLElement>("[data-new-thread-footer]")!;
+      document.elementsFromPoint = () => [hit];
+      const position = vi
+        .spyOn(EditorView.prototype, "posAtCoords")
+        .mockReturnValue(null);
+      try {
+        const target = resolveThreadMentionDropTarget(100, 100, {
+          threadId: "thr_dropped",
+          label: "Dropped thread",
+        });
+        expect(target).not.toBeNull();
+        act(() => target?.drop());
+        await waitFor(() =>
+          expect(latestValue(changes)).toBe("Review @thread:thr_dropped "),
+        );
+        expect(latestChange(changes)?.mentions[0]?.resource).toEqual({
+          kind: "thread",
+          threadId: "thr_dropped",
+          label: "Dropped thread",
+        });
+        expect(editorElement.textContent).toContain("Dropped thread");
+      } finally {
+        document.elementsFromPoint = previous;
+        position.mockRestore();
+      }
+    },
+  );
 
   it("keeps list markers attached to their item text when pasting mentioned list html", async () => {
     const { changes, promptBoxRef } = renderPromptBox("");

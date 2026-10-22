@@ -23,6 +23,7 @@ List and create require exactly one explicit scope:
     --working-directory <path>       Initial shell working directory
     --host <id-or-name>                   Alias for --machine
     --title <title>                       Display title
+    --id <terminal-id>                    Use this ID (term_ plus 10 characters); fails if it exists
     --cols <n>                            Initial terminal columns
     --rows <n>                            Initial terminal rows
     --attach                              Attach after creating

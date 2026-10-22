@@ -13,7 +13,8 @@ import { useThreadActions } from "@/components/thread/ThreadActionsProvider";
 import { useRouteState } from "@/hooks/useRouteState";
 import { copyToClipboardWithToast } from "@/lib/clipboard";
 import { showMutationErrorToast } from "@/lib/mutation-errors";
-import { resolveThread, useSidebarThreads } from "@/lib/plugin-sidebar-hooks";
+import { resolveThread } from "@/lib/cached-thread";
+import { useSidebarThreads } from "@/lib/plugin-sidebar-hooks";
 import { getThreadRoutePath } from "@/lib/route-paths";
 import {
   countPanes,

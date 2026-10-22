@@ -84,6 +84,7 @@ interface TerminalStartOptions
   attach?: boolean;
   command?: string;
   cols?: string;
+  id?: string;
   rows?: string;
   title?: string;
   workingDirectory?: string;
@@ -440,6 +441,10 @@ export function registerTerminalCommands(
       .description("Create a terminal session in exactly one scope")
       .option("--title <title>", "Terminal title")
       .option(
+        "--id <terminal-id>",
+        "Create the terminal with this ID (term_ plus 10 characters); fails if the ID exists",
+      )
+      .option(
         "--command <command>",
         "Command to run instead of an interactive shell",
       )
@@ -460,6 +465,7 @@ export function registerTerminalCommands(
         ...(opts.workingDirectory === undefined
           ? {}
           : { cwd: opts.workingDirectory }),
+        id: opts.id,
         rows: parsePositiveInteger(opts.rows, DEFAULT_ROWS, "--rows"),
         scope: await resolveTerminalCreateScope(opts, getUrl()),
         title: opts.title,

@@ -24,6 +24,10 @@ Read the installed SDK declarations for the exact current signatures.
 - `experimental_SourceCode`
 - `experimental_Diff`
 - `useRpc`
+- `experimental_useRpcQuery`
+- `experimental_useRpcKeyedQuery`
+- `experimental_useRpcMutation`
+- `experimental_useRpcRefresh`
 - `useRealtime`
 - `useRealtimeConnectionState`
 - `useSettings`
@@ -70,6 +74,12 @@ Read the installed SDK declarations for the exact current signatures.
 - `experimental_saveFile`
 
 ## Type exports
+
+- `ExperimentalRpcQueryState`
+- `ExperimentalRpcKeyedQueryState`
+- `ExperimentalRpcQueryOptions`
+- `ExperimentalRpcMutationOptions`, `ExperimentalRpcOptimisticCache`
+- `ExperimentalRpcMutationState`
 
 - `ExperimentalAppIcons`
 - `ExperimentalIconRegistration`
@@ -128,6 +138,8 @@ Read the installed SDK declarations for the exact current signatures.
 - `PluginFixedTabRegistration`
 - `PluginFixedTabDeclaration`
 - `PluginNavPanelRegistration`
+- `ExperimentalPageTitle`
+- `ExperimentalPageBreadcrumb`
 - `ExperimentalBadge`
 - `ExperimentalBadgeTone`
 - `PluginPanelActionOpenOptions`
@@ -197,6 +209,7 @@ Read the installed SDK declarations for the exact current signatures.
 - `ExperimentalSidebarNavigationIcon`
 - `ExperimentalSidebarNavigationItem`
 - `ExperimentalSidebarNavigationActivationOptions`
+- `ExperimentalSidebarNavigationTarget`
 - `ExperimentalSidebarNavigationActions`
 - `ExperimentalSidebarNavigationState`
 - `ExperimentalSidebarNavigationSplit`
@@ -299,3 +312,11 @@ Read the installed SDK declarations for the exact current signatures.
 - `StandardSchemaV1InferOutput`
 - `StandardSchemaV1Issue`
 - `StandardSchemaV1Result`
+
+## Live RPC client types
+
+- `ExperimentalRpcKeyedMethod`, `ExperimentalRpcKeyedValue`
+- `experimental_PluginRpcCallError`
+
+The keyed method and row types are inferred from the `contract` option.
+Read-state and error behavior is documented in [Frontend hooks and UI](frontend-hooks-and-ui.md).

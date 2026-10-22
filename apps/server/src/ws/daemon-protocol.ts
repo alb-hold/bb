@@ -114,6 +114,7 @@ export async function onDaemonSocketOpen(
   handleDaemonSocketOpened(deps, { hostId: args.hostId });
   deps.sharedPorts.pushCurrentSharedPortsForHost(args.hostId);
   let nativeThreadIds: string[] = [];
+  deps.sharedPorts.pushCurrentNextTunnelForHost(args.hostId);
   if (!isServerMoveSnapshotFenced(deps.db)) {
     nativeThreadIds = listNativeTerminalThreadsAwaitingDaemon(
       deps,
@@ -264,6 +265,14 @@ export function onDaemonSocketMessage(
       }
       if (message.type === "connect-tunnel.identity") {
         deps.sharedPorts.recordTunnelIdentity(args.hostId, message.identity);
+        return;
+      }
+      if (message.type === "connect-next.status") {
+        deps.sharedPorts.recordNextTunnelStatus({
+          hostId: args.hostId,
+          sessionId: args.sessionId,
+          status: message.status,
+        });
         return;
       }
       if (message.type === "desktop-browser.changed") {

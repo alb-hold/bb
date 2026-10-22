@@ -1,4 +1,6 @@
 import {
+  desktopBrowserBrokerChallengeSchema,
+  desktopBrowserBrokerProofSchema,
   desktopBrowserCommandSchemas,
   desktopBrowserResultSchemas,
 } from "./desktop-browser.js";
@@ -64,7 +66,15 @@ import {
 
 export {
   HOST_ARTIFACT_MAX_BYTES,
+  HOST_DAEMON_COMPATIBLE_PROTOCOL_VERSIONS,
+  HOST_DAEMON_CONNECT_NEXT_PROTOCOL_VERSION,
+  HOST_DAEMON_DESKTOP_BROKER_PROOF_PROTOCOL_VERSION,
+  HOST_DAEMON_ENVIRONMENT_CLEANUP_INSPECTION_PROTOCOL_VERSION,
   HOST_DAEMON_PROTOCOL_VERSION,
+  hostDaemonSupportsConnectNext,
+  hostDaemonSupportsDesktopBrokerProof,
+  hostDaemonSupportsEnvironmentCleanupInspection,
+  isCompatibleHostDaemonProtocolVersion,
 } from "./protocol.js";
 export {
   workspaceResolutionFailureCodeSchema,
@@ -1014,6 +1024,7 @@ const workspaceDiffFilesCommandSchema = hostDaemonWorkspaceTargetSchema.extend({
   type: z.literal("workspace.diffFiles"),
   target: workspaceDiffTargetSchema,
   maxFiles: z.number().int().positive(),
+  ignoreWhitespace: z.boolean(),
 });
 
 const workspaceDiffPatchCommandSchema = hostDaemonWorkspaceTargetSchema.extend({
@@ -1021,6 +1032,7 @@ const workspaceDiffPatchCommandSchema = hostDaemonWorkspaceTargetSchema.extend({
   target: workspaceDiffTargetSchema,
   paths: z.array(z.string()),
   maxBytesPerFile: z.number().int().positive(),
+  ignoreWhitespace: z.boolean(),
 });
 
 const workspacePullRequestCommandSchema =
@@ -1103,11 +1115,18 @@ const fileWriteResultSchema = z.discriminatedUnion("outcome", [
     .strict(),
 ]);
 
+const hostWorkspaceStatusSchema = workspaceStatusSchema.extend({
+  mergeBase: workspaceStatusSchema.shape.mergeBase
+    .unwrap()
+    .extend({ squashMergeCheckComplete: z.boolean().default(true) })
+    .nullable(),
+});
+
 const workspaceStatusResultSchema = z.discriminatedUnion("outcome", [
   z
     .object({
       outcome: z.literal("available"),
-      workspaceStatus: workspaceStatusSchema,
+      workspaceStatus: hostWorkspaceStatusSchema,
     })
     .strict(),
   z
@@ -1439,6 +1458,20 @@ function defineHostDaemonCommandDescriptor<
 }
 
 export const hostDaemonCommandRegistry = {
+  "desktop.broker.prove": defineHostDaemonCommandDescriptor({
+    type: "desktop.broker.prove",
+    schema: z
+      .object({
+        type: z.literal("desktop.broker.prove"),
+        challenge: desktopBrowserBrokerChallengeSchema,
+      })
+      .strict(),
+    resultSchema: desktopBrowserBrokerProofSchema,
+    transport: "onlineRpc",
+    retryable: false,
+    flushEventsBeforeResult: false,
+    envLane: null,
+  }),
   "desktop.browser.list_instances": defineHostDaemonCommandDescriptor({
     type: "desktop.browser.list_instances",
     schema: desktopBrowserCommandSchemas["desktop.browser.list_instances"],
@@ -1791,6 +1824,28 @@ export const hostDaemonCommandRegistry = {
     resultSchema: emptyCommandResultSchema,
     transport: "onlineRpc",
     retryable: false,
+    flushEventsBeforeResult: false,
+    envLane: null,
+  }),
+  "environment.inspect_cleanup": defineHostDaemonCommandDescriptor({
+    type: "environment.inspect_cleanup",
+    schema: z
+      .object({
+        type: z.literal("environment.inspect_cleanup"),
+        environmentId: z.string().min(1),
+        path: z.string().min(1),
+      })
+      .strict(),
+    resultSchema: z
+      .object({
+        supported: z.boolean(),
+        active: z.boolean(),
+        pids: z.array(z.number().int().positive()),
+        unreadablePids: z.array(z.number().int().positive()),
+      })
+      .strict(),
+    transport: "onlineRpc",
+    retryable: true,
     flushEventsBeforeResult: false,
     envLane: null,
   }),

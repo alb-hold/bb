@@ -1,3 +1,8 @@
+import {
+  DEFAULT_DIFF_FILE_FILTERS,
+  filterDiffFiles,
+  diffExtensionCounts,
+} from "./git-diff/diff-file-filters";
 import { usePluginDetailPanelProps } from "@/components/plugin/plugin-detail-navigation";
 import {
   type CSSProperties,
@@ -5,7 +10,6 @@ import {
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
   type RefObject,
-  type TransitionEvent,
   useCallback,
   useContext,
   useLayoutEffect,
@@ -42,6 +46,7 @@ import {
 } from "./secondaryPanelSizing";
 import {
   RIGHT_PANEL_TOGGLE_ICON_NAME,
+  RIGHT_PANEL_TOGGLE_SHORTCUT_HINT_CLASS,
   resolveConversationCollapseControl,
 } from "./panelToggleControlState";
 import { SecondaryPanelHostLayoutContext } from "./SecondaryPanelHostLayoutContext";
@@ -57,8 +62,14 @@ import type {
   SecondaryPanelRenderableTab,
   SecondaryPanelTabReorderHandler,
 } from "./secondaryPanelTab";
-import { useEnvironmentDiffFiles } from "@/hooks/queries/environment-queries";
-import { useGitDiffLineOverflowModePreference } from "@/lib/git-diff-view-preferences";
+import {
+  useEnvironmentDiffFiles,
+  useEnvironmentDiffViewed,
+} from "@/hooks/queries/environment-queries";
+import {
+  useGitDiffIgnoreWhitespacePreference,
+  useGitDiffLineOverflowModePreference,
+} from "@/lib/git-diff-view-preferences";
 import type { DiffPresentation } from "@/components/code/code-rendering";
 import { useGitDiffPanelState } from "./git-diff/useGitDiffPanelState";
 import { useResponsiveGitDiffPanelDisplay } from "./git-diff/useResponsiveGitDiffPanelDisplay";
@@ -66,10 +77,7 @@ import {
   summarizeDiffFileEntries,
   useDiffFilesCollapseControls,
 } from "./git-diff/diffFilesStore";
-import {
-  buildGitDiffIdentity,
-  filterDiffFilesByPath,
-} from "./git-diff/gitDiffPanelHelpers";
+import { buildGitDiffIdentity } from "./git-diff/gitDiffPanelHelpers";
 import { useSecondaryPanelResize } from "./useSecondaryPanelResize";
 import { threadSecondaryPanelResizingAtom } from "./threadSecondaryPanelAtoms";
 import { GitDiffToolbar } from "./GitDiffToolbar";
@@ -109,7 +117,6 @@ import { AppCommandShortcutHint } from "@/components/commands/AppCommandShortcut
 import type { AppShortcutPresentation } from "@/lib/app-keybindings";
 import { TabPill } from "@/components/ui/tab-pill";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@bb/shared-ui/tooltip";
-import { dispatchBrowserViewBoundsSync } from "@/lib/browser-view-bounds-sync";
 import type { SplitSide } from "@/lib/split-layout";
 import { PaneArrangementButton } from "@/views/thread-detail/PaneMaximizeButton";
 import {
@@ -397,19 +404,6 @@ function ThreadSecondaryPanelContent({
     hasPanelExpandedRef.current = false;
     onCollapse();
   }, [hostLayout?.isSuppressed, isOpen, onCollapse]);
-  const handlePanelTransitionEnd = useCallback(
-    (event: TransitionEvent<HTMLElement>) => {
-      if (
-        event.target !== event.currentTarget ||
-        !isSecondaryPanelLayoutTransition(event.propertyName)
-      ) {
-        return;
-      }
-
-      dispatchBrowserViewBoundsSync();
-    },
-    [],
-  );
   const isLayoutOpen =
     (hostLayout?.isOpen ?? isOpen) && !hostLayout?.isSuppressed;
   const activeFixedTab =
@@ -440,6 +434,8 @@ function ThreadSecondaryPanelContent({
     pendingGitDiffCommitSha,
     pendingGitDiffScrollPath,
   });
+  const [gitDiffIgnoreWhitespace, setGitDiffIgnoreWhitespace] =
+    useGitDiffIgnoreWhitespacePreference();
   const { data: diffFilesResponse, isLoading: isDiffFilesLoading } =
     useEnvironmentDiffFiles(environmentId ?? "", {
       enabled:
@@ -447,6 +443,7 @@ function ThreadSecondaryPanelContent({
         Boolean(environmentId) &&
         gitDiffTarget !== undefined,
       target: gitDiffTarget,
+      ignoreWhitespace: gitDiffIgnoreWhitespace,
     });
   const diffFiles = useMemo(
     () =>
@@ -470,9 +467,40 @@ function ThreadSecondaryPanelContent({
       }),
     [diffMergeBaseRef, environmentId, gitDiffTarget],
   );
+  const [gitDiffFilters, setGitDiffFilters] = useState(
+    DEFAULT_DIFF_FILE_FILTERS,
+  );
+  const { data: diffViewedResponse } = useEnvironmentDiffViewed(
+    environmentId ?? "",
+    {
+      target: gitDiffTarget,
+      enabled: isDiffPanelLive,
+      paths: diffFiles.map((file) => file.path),
+    },
+  );
+  const viewedRevisionByPath = useMemo(
+    () =>
+      new Map(
+        (diffViewedResponse?.files ?? []).map((file) => [
+          file.path,
+          file.revision,
+        ]),
+      ),
+    [diffViewedResponse],
+  );
+  const extensionCounts = useMemo(
+    () => diffExtensionCounts(diffFiles),
+    [diffFiles],
+  );
   const filteredDiffFiles = useMemo(
-    () => filterDiffFilesByPath(diffFiles, gitDiffFileFilter ?? ""),
-    [diffFiles, gitDiffFileFilter],
+    () =>
+      filterDiffFiles(
+        diffFiles,
+        gitDiffFileFilter ?? "",
+        gitDiffFilters,
+        viewedRevisionByPath,
+      ),
+    [diffFiles, gitDiffFileFilter, gitDiffFilters, viewedRevisionByPath],
   );
   const gitDiffStats = useMemo(
     () => summarizeDiffFileEntries(filteredDiffFiles),
@@ -594,7 +622,7 @@ function ThreadSecondaryPanelContent({
       <Icon name={RIGHT_PANEL_TOGGLE_ICON_NAME} />
       <AppCommandShortcutHint
         shortcut={togglePanelShortcut}
-        className="absolute right-full mr-1"
+        className={RIGHT_PANEL_TOGGLE_SHORTCUT_HINT_CLASS}
       />
     </Button>
   );
@@ -962,14 +990,28 @@ function ThreadSecondaryPanelContent({
               totalFilesCount={diffFiles.length}
               isTruncated={isGitDiffTruncated}
               fileFilter={gitDiffFileFilter}
+              filters={gitDiffFilters}
+              onFiltersChange={setGitDiffFilters}
+              extensionCounts={extensionCounts}
               onFileFilterChange={setGitDiffFileFilter}
               areAllFilesCollapsed={areAllCollapsed}
               isCollapseAllDisabled={!hasFiles || isDiffFilesLoading}
+              collapseAllDisabledReason={
+                isDiffFilesLoading
+                  ? null
+                  : diffFiles.length === 0
+                    ? "No changes"
+                    : !hasFiles
+                      ? "No files match filter"
+                      : null
+              }
               onToggleAllCollapsed={toggleAllCollapsed}
               displayMode={gitDiffDisplayMode}
               onDisplayModeChange={handleGitDiffDisplayModeChange}
               lineOverflowMode={gitDiffLineOverflowMode}
               onLineOverflowModeChange={setGitDiffLineOverflowMode}
+              ignoreWhitespace={gitDiffIgnoreWhitespace}
+              onIgnoreWhitespaceChange={setGitDiffIgnoreWhitespace}
             />
           ) : null}
         </div>
@@ -1040,7 +1082,9 @@ function ThreadSecondaryPanelContent({
               target={gitDiffTarget}
               isPanelOpen={isLayoutOpen}
               gitDiffPresentation={gitDiffPresentation}
+              ignoreWhitespace={gitDiffIgnoreWhitespace}
               fileFilter={gitDiffFileFilter ?? ""}
+              filters={gitDiffFilters}
               onClearPendingGitDiffIntent={onClearPendingGitDiffIntent}
               onOpenFileInEditor={onOpenFileInEditor}
               onOpenFilePreview={onOpenFilePreview}
@@ -1271,7 +1315,6 @@ function ThreadSecondaryPanelContent({
         maxSize={isConversationCollapsed ? 100 : (1 - minimumSize.min) * 100}
         onCollapse={handlePanelCollapse}
         onResize={handlePanelResize}
-        onTransitionEnd={handlePanelTransitionEnd}
         order={2}
         style={SECONDARY_RESIZABLE_PANEL_STYLE}
         className={cn(

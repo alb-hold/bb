@@ -64,6 +64,7 @@ function noopSessionChange(_session: TerminalSession): void {}
 function noopTitleChange(_title: string): void {}
 
 function noopTerminalIdAction(_terminalId: string): void {}
+function noop(): void {}
 
 function makeController({
   activeSession,
@@ -84,6 +85,7 @@ function makeController({
     isPanelOpen,
     shouldMountTerminalView: isPanelOpen,
     shouldRetainActiveTerminalView: false,
+    start: null,
     terminalBodyMessage,
   };
 }
@@ -118,6 +120,18 @@ const loadingController = makeController({
   terminalBodyMessage: "Starting terminal...",
 });
 
+const failedStartController: ThreadTerminalController = {
+  ...emptyController,
+  start: {
+    error: "Host Studio is offline. Reconnect it and try again.",
+    request: {
+      cols: 100,
+      rows: 30,
+      target: { kind: "thread", threadId: "thr_story" },
+    },
+  },
+};
+
 const queryErrorController = makeController({
   activeSession: null,
   hasTerminalQueryError: true,
@@ -135,7 +149,13 @@ function TerminalContentStage({
         aria-label="Thread terminal"
         className="flex h-full min-h-0 min-w-0 flex-col bg-background"
       >
-        {children ?? <ThreadTerminalContent controller={controller} />}
+        {children ?? (
+          <ThreadTerminalContent
+            controller={controller}
+            onCloseStart={noop}
+            onRetryStart={noop}
+          />
+        )}
       </section>
     </div>
   );
@@ -180,6 +200,12 @@ export function Overview() {
       </StoryRow>
       <StoryRow label="loading" hint="Initial terminal list query is loading.">
         <TerminalContentStage controller={loadingController} />
+      </StoryRow>
+      <StoryRow
+        label="start failed"
+        hint="This client's create request failed; the tab stays open."
+      >
+        <TerminalContentStage controller={failedStartController} />
       </StoryRow>
       <StoryRow label="query error" hint="Terminal list query failed.">
         <TerminalContentStage controller={queryErrorController} />
