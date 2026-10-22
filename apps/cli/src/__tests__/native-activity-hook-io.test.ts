@@ -932,17 +932,17 @@ describe.skipIf(process.platform === "win32")(
       });
       hook.stdin.end(record("PermissionRequest", { tool_name: "NoSymlinks" }));
       await exited;
+      expect(
+        readdirSync(directory).filter(
+          (name) => name.startsWith("hooks.lock") || name.startsWith(".late."),
+        ),
+      ).toEqual([]);
       expect(readFileSync(mkdirCalls, "utf8").trim().split("\n")).toEqual([
         `${lock}.${hook.pid}`,
       ]);
       expect(new HookAppendReader(file).read().records.map(toolOf)).toEqual([
         "NoSymlinks",
       ]);
-      expect(
-        readdirSync(directory).filter(
-          (name) => name.startsWith("hooks.lock") || name.startsWith(".late."),
-        ),
-      ).toEqual([]);
     }, 30_000);
 
     it("does not reclaim a lock directory whose pid names a live process, and publishes its record late after the deadline", async () => {
