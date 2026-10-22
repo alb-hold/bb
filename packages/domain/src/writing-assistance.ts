@@ -702,7 +702,7 @@ const QUOTE_CLOSERS: Readonly<Record<string, string>> = {
   "‘": "’",
 };
 const WORD_CHARACTER = /[\p{L}\p{N}]/u;
-const BLANK_LINE = /\n[ \t]*\n/gu;
+const BLANK_LINE = /\r?\n[ \t]*\r?\n/gu;
 
 function paragraphStart(target: string, at: number): number {
   let start = 0;

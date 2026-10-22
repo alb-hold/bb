@@ -402,7 +402,7 @@ can change the meaning, as in "If he were there"), and tense or plural changes
 are offered as suggestions, as is any edit between quotation marks within one
 paragraph, even when the quotation spans lines ('the the', ‘the the’, “the the”,
 «o o», including quotes inside quotes such as “They said ‘the the’”). A blank
-line ends any quotation left open. A closing mark must match the opening one:
+line, with Unix or Windows line endings, ends any quotation left open. A closing mark must match the opening one:
 ‘quoted' and 'quoted’ stay open. An apostrophe inside a word (don't) or after
 one (users', 5') is not a quotation mark unless it closes an open single
 quote. Code, paths, identifiers and

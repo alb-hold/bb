@@ -191,6 +191,7 @@ describe("resolveWritingEdits", () => {
     ["'We don't keep the the cache,' she said.", "the the", "the"],
     ['She said "we said\nthe the cache."', "the the", "the"],
     ["She said “we said\nthe the cache.”", "the the", "the"],
+    ["She said “we said\r\nthe the cache.”", "the the", "the"],
     ["She said ‘we said\n\tthe the cache’ twice.", "the the", "the"],
     ["‘quoted' then the the cache.", "the the", "the"],
     ["'quoted’ then the the cache.", "the the", "the"],
@@ -216,6 +217,8 @@ describe("resolveWritingEdits", () => {
     ["The users' cache needs the the fix.", "the the", "the"],
     ["She said “we were\ndone.” Then check the the cache.", "the the", "the"],
     ['Note "unfinished.\n\nThen check the the cache.', "the the", "the"],
+    ['Note "unfinished.\r\n\r\nThen check the the cache.', "the the", "the"],
+    ["Note “unfinished.\r\n \r\nThen check the the cache.", "the the", "the"],
     ["The log says a error occurred twice.", "a error", "an error"],
   ])(
     "still applies outside quoted text: %s",
