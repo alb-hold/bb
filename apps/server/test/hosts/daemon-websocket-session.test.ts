@@ -209,6 +209,10 @@ describe("daemon websocket session authorization", () => {
 
     expect(outcome).toBe("closed");
     expect(recordActivity).not.toHaveBeenCalled();
+    await expect(closed).resolves.toEqual({
+      code: 1008,
+      reason: "inactive-session",
+    });
   });
 
   it("rejects the old socket after a real replacement session opens", async () => {

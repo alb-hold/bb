@@ -250,6 +250,83 @@ describe("terminal output retained from the data plane", () => {
     }
   });
 
+  it("does not flush pending chunks again after a replay replaces them with its retained tail", async () => {
+    const fixture = await setup();
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const pendingChunks = Array.from({ length: 2 }, (_, seq) => ({
+        seq,
+        dataBase64: Buffer.alloc(16 * 1024, seq + 1).toString("base64"),
+      }));
+      fixture.terminalSessions.recordDirectTerminalOutputBatch({
+        daemonSessionId: fixture.session.id,
+        terminalId: fixture.terminal.id,
+        chunks: pendingChunks,
+      });
+      fixture.db.$client.exec(`
+        CREATE TABLE replay_cleanup_writes (n INTEGER NOT NULL);
+        INSERT INTO replay_cleanup_writes (n) VALUES (0);
+        CREATE TRIGGER replay_cleanup_insert AFTER INSERT ON fork_terminal_output
+          BEGIN UPDATE replay_cleanup_writes SET n = n + 1; END;
+        CREATE TRIGGER replay_cleanup_update AFTER UPDATE ON fork_terminal_output
+          BEGIN UPDATE replay_cleanup_writes SET n = n + 1; END;
+      `);
+
+      const replayChunks = Array.from({ length: 128 }, (_, index) => ({
+        seq: index + pendingChunks.length,
+        dataBase64: Buffer.alloc(1024, index + 3).toString("base64"),
+      }));
+      await fixture.terminalSessions.handleDaemonTerminalMessage({
+        hostId: fixture.host.id,
+        sessionId: fixture.session.id,
+        message: {
+          type: "terminal.replay",
+          requestId: "replay-cleans-pending-output",
+          terminalId: fixture.terminal.id,
+          replayStartSeq: 0,
+          nextSeq: replayChunks.length + pendingChunks.length,
+          chunks: replayChunks,
+        },
+      });
+
+      const writesAfterReplay = (
+        fixture.db.$client
+          .prepare("SELECT n FROM replay_cleanup_writes")
+          .get() as { n: number }
+      ).n;
+      const retainedAfterReplay = getRetainedTerminalOutput(fixture.db, {
+        hostId: fixture.host.id,
+        terminalSessionId: fixture.terminal.id,
+        now: Date.now(),
+      });
+      const seqsAfterReplay = retainedAfterReplay?.map(({ seq }) => seq);
+      expect(
+        Buffer.byteLength(replayChunks[0]!.dataBase64, "base64") *
+          replayChunks.length,
+      ).toBeGreaterThan(64 * 1024);
+      expect(seqsAfterReplay).not.toContain(pendingChunks[0]!.seq);
+      expect(seqsAfterReplay).not.toContain(pendingChunks[1]!.seq);
+
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      const writesAfterTimer = (
+        fixture.db.$client
+          .prepare("SELECT n FROM replay_cleanup_writes")
+          .get() as { n: number }
+      ).n;
+      const retainedAfterTimer = getRetainedTerminalOutput(fixture.db, {
+        hostId: fixture.host.id,
+        terminalSessionId: fixture.terminal.id,
+        now: Date.now(),
+      });
+      expect(writesAfterTimer).toBe(writesAfterReplay);
+      expect(retainedAfterTimer?.map(({ seq }) => seq)).toEqual(seqsAfterReplay);
+    } finally {
+      vi.useRealTimers();
+      fixture.child.shutdown();
+    }
+  }, 60_000);
+
   it("does not write retained output when replaying already-retained 1.5 MB scrollback", async () => {
     const fixture = await setup();
     const chunks = Array.from({ length: 32 }, (_, seq) => ({
