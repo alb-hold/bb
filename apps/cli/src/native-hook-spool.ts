@@ -1,6 +1,7 @@
 import {
   closeSync,
   linkSync,
+  mkdirSync,
   mkdtempSync,
   openSync,
   readdirSync,
@@ -35,6 +36,45 @@ export function createHookSpool(parent: string, label: string): string {
 
 export function removeHookSpool(directory: string): void {
   rmSync(directory, { force: true, recursive: true });
+}
+
+export function hookSpoolCandidates(args: {
+  env: NodeJS.ProcessEnv;
+  home: string;
+  tmpDir: string;
+}): string[] {
+  const candidates = [args.tmpDir];
+  const runtimeDir = args.env.XDG_RUNTIME_DIR;
+  if (
+    runtimeDir !== undefined &&
+    path.isAbsolute(runtimeDir) &&
+    isOwnedDirectory(runtimeDir)
+  ) {
+    candidates.push(runtimeDir);
+  }
+  candidates.push(path.join(args.home, ".bb", "native-terminals", "hooks"));
+  return [...new Set(candidates)];
+}
+
+export function openHookSpool(
+  candidates: readonly string[],
+  label: string,
+  onUnsupported: () => void,
+  supportsLinks: (directory: string) => boolean = hookSpoolSupportsLinks,
+): string | null {
+  for (const parent of candidates) {
+    let directory: string;
+    try {
+      mkdirSync(parent, { mode: 0o700, recursive: true });
+      directory = createHookSpool(parent, label);
+    } catch {
+      continue;
+    }
+    if (supportsLinks(directory)) return directory;
+    removeHookSpool(directory);
+  }
+  onUnsupported();
+  return null;
 }
 
 export function hookSpoolSupportsLinks(directory: string): boolean {
@@ -84,13 +124,24 @@ export class HookSpoolReader {
   private next = 1;
   private lastScanAt = 0;
   private gapSince: number | null = null;
-  private gapReported = false;
+  private readonly skipped: Array<{ from: number; to: number }> = [];
+  private readonly reportedLate = new Set<string>();
   private readonly reportedTemps = new Set<string>();
 
   constructor(private readonly directory: string) {}
 
   read(now: number = Date.now()): HookSpoolRead {
     const records: unknown[] = [];
+    let unreadable = this.drain(records);
+    if (now - this.lastScanAt >= SCAN_INTERVAL_MS) {
+      this.lastScanAt = now;
+      unreadable += this.scan(now);
+      unreadable += this.drain(records);
+    }
+    return { records, unreadable };
+  }
+
+  private drain(records: unknown[]): number {
     let unreadable = 0;
     for (let count = 0; count < MAX_RECORDS_PER_READ; count += 1) {
       const file = path.join(this.directory, sequenceName(this.next));
@@ -105,7 +156,6 @@ export class HookSpoolReader {
       }
       this.next += 1;
       this.gapSince = null;
-      this.gapReported = false;
       try {
         records.push(JSON.parse(content));
       } catch {
@@ -117,11 +167,7 @@ export class HookSpoolReader {
         continue;
       }
     }
-    if (now - this.lastScanAt >= SCAN_INTERVAL_MS) {
-      this.lastScanAt = now;
-      unreadable += this.scan(now);
-    }
-    return { records, unreadable };
+    return unreadable;
   }
 
   private scan(now: number): number {
@@ -132,11 +178,16 @@ export class HookSpoolReader {
       return 0;
     }
     let lost = 0;
-    let beyondGap = false;
+    let firstBeyondGap: number | null = null;
     const expectedMissing = !names.includes(sequenceName(this.next));
     for (const name of names) {
       if (SEQUENCE_NAME.test(name)) {
-        if (expectedMissing && Number(name) > this.next) beyondGap = true;
+        const sequence = Number(name);
+        if (expectedMissing && sequence > this.next) {
+          firstBeyondGap =
+            firstBeyondGap === null ? sequence : Math.min(firstBeyondGap, sequence);
+        }
+        lost += this.settleLate(name, sequence);
         continue;
       }
       const temp = TEMP_NAME.exec(name);
@@ -145,16 +196,36 @@ export class HookSpoolReader {
       this.reportedTemps.add(name);
       lost += 1;
     }
-    if (beyondGap) {
-      this.gapSince ??= now;
-      if (!this.gapReported && now - this.gapSince >= GAP_REPORT_AFTER_MS) {
-        this.gapReported = true;
-        lost += 1;
-      }
-    } else {
+    if (firstBeyondGap === null) {
       this.gapSince = null;
+      return lost;
+    }
+    this.gapSince ??= now;
+    if (now - this.gapSince >= GAP_REPORT_AFTER_MS) {
+      this.skipped.push({ from: this.next, to: firstBeyondGap });
+      this.next = firstBeyondGap;
+      this.gapSince = null;
+      lost += 1;
     }
     return lost;
+  }
+
+  private settleLate(name: string, sequence: number): number {
+    if (
+      this.reportedLate.has(name) ||
+      !this.skipped.some((range) => sequence >= range.from && sequence < range.to)
+    ) {
+      return 0;
+    }
+    const file = path.join(this.directory, name);
+    try {
+      if (statSync(file).size === 0) return 0;
+      truncateSync(file, 0);
+    } catch {
+      return 0;
+    }
+    this.reportedLate.add(name);
+    return 1;
   }
 
   private isInFlightOrPublished(
@@ -171,6 +242,18 @@ export class HookSpoolReader {
     if (stats.nlink > 1) return true;
     if (now - stats.mtimeMs > ABANDONED_TEMP_AGE_MS) return false;
     return processIsAlive(pid);
+  }
+}
+
+function isOwnedDirectory(directory: string): boolean {
+  try {
+    const stats = statSync(directory);
+    return (
+      stats.isDirectory() &&
+      (process.getuid === undefined || stats.uid === process.getuid())
+    );
+  } catch {
+    return false;
   }
 }
 

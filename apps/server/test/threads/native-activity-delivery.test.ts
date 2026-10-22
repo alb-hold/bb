@@ -1039,7 +1039,7 @@ describe("an older server that does not know the closure fields (INJECTED-SERVER
 describe.skipIf(process.platform === "win32")(
   `Needs input from concurrent hooks, through the generated hook command, the real reader, reporter, SDK client and server ${process.platform === "win32" ? "(NOT EXERCISED on native Windows: the hook command needs a POSIX shell and native-terminal mode cannot start there today)" : ""}`,
   () => {
-    async function openers(count: number) {
+    async function prepared() {
       const { harness, thread } = await nativeThread();
       const cli =
         harness.deps.providerRegistry.get("claude-code")?.nativeTerminal;
@@ -1054,33 +1054,30 @@ describe.skipIf(process.platform === "win32")(
       } = JSON.parse(settingsModule.nativeActivityHookSettings(hooks, spool));
       const command = settings.hooks.PermissionRequest?.[0]?.hooks[0]?.command;
       if (command === undefined) throw new Error("no PermissionRequest hook");
-      const big = "z".repeat(512 * 1024);
-      const tools = Array.from({ length: count }, (_, index) => `Tool${index}`);
-      await Promise.all(
-        tools.map(
-          (tool, index) =>
-            new Promise<void>((resolve) => {
-              const child = spawn("sh", ["-c", command], {
-                stdio: ["pipe", "ignore", "ignore"],
-              });
-              child.once("exit", () => resolve());
-              child.stdin.end(
-                JSON.stringify({
-                  hook_event_name: "PermissionRequest",
-                  permission_suggestions: [],
-                  session_id: SESSION_ID,
-                  tool_input: { content: index % 2 === 0 ? big : "small" },
-                  tool_name: tool,
-                }),
-              );
+      const runHook = (tool: string, index: number, size: string) =>
+        new Promise<void>((resolve) => {
+          const child = spawn("sh", ["-c", command], {
+            stdio: ["pipe", "ignore", "ignore"],
+          });
+          child.once("exit", () => resolve());
+          child.stdin.end(
+            JSON.stringify({
+              hook_event_name: "PermissionRequest",
+              permission_suggestions: [],
+              session_id: SESSION_ID,
+              tool_input: { content: index % 2 === 0 ? size : "small" },
+              tool_name: tool,
             }),
-        ),
-      );
+          );
+        });
+      const unconfirmed: Array<{ reason: string; total: number }> = [];
       const reader = new readerModule.NativeActivityReader(
         cli,
         { HOME: os.tmpdir() },
         spool,
         { kind: "start", id: SESSION_ID },
+        undefined,
+        (reason: string, total: number) => unconfirmed.push({ reason, total }),
       );
       const sdk = createNodeBbSdk({
         baseUrl: "http://127.0.0.1:3000",
@@ -1091,8 +1088,21 @@ describe.skipIf(process.platform === "win32")(
         send: (args) => sdk.nativeTerminals.reportActivity(args),
         threadId: thread.id,
       });
-      for (const next of reader.read()) reporter.report(next);
-      await reporter.settled();
+      const deliver = async (): Promise<void> => {
+        for (const next of reader.read()) reporter.report(next);
+        await reporter.settled();
+      };
+      return { deliver, harness, reader, runHook, spool, thread, unconfirmed };
+    }
+
+    async function openers(count: number) {
+      const { deliver, harness, runHook, thread } = await prepared();
+      const big = "z".repeat(512 * 1024);
+      const tools = Array.from({ length: count }, (_, index) => `Tool${index}`);
+      await Promise.all(
+        tools.map((tool, index) => runHook(tool, index, big)),
+      );
+      await deliver();
       return { harness, thread, tools };
     }
 
@@ -1108,6 +1118,42 @@ describe.skipIf(process.platform === "win32")(
         );
       }
       expect(getThread(harness.db, thread.id)?.status).toBe("active");
+    });
+
+    it("keeps Needs input alive behind a lost record: waits for the gap, then, past the threshold, delivers the later question and reports lost evidence", async () => {
+      const { deliver, harness, reader, runHook, spool, thread, unconfirmed } =
+        await prepared();
+      for (const [index, tool] of ["Tool0", "Tool1", "Tool2"].entries()) {
+        await runHook(tool, index, "small");
+      }
+      rmSync(path.join(spool, "000000000002"));
+      const pendingTools = (): string =>
+        JSON.stringify(
+          listPendingInteractionsByThread(harness.db, {
+            threadId: thread.id,
+          }).map((row) => row.payload),
+        );
+      const realNow = Date.now.bind(Date);
+      const clock = vi.spyOn(Date, "now");
+      try {
+        await deliver();
+        expect(pendingTools()).toContain("use: Tool0");
+        expect(pendingTools()).not.toContain("use: Tool2");
+
+        clock.mockImplementation(() => realNow() + 3_000);
+        await deliver();
+        expect(pendingTools()).not.toContain("use: Tool2");
+        expect(unconfirmed).toEqual([]);
+
+        clock.mockImplementation(() => realNow() + 12_000);
+        await deliver();
+      } finally {
+        clock.mockRestore();
+      }
+      expect(pendingTools()).toContain("use: Tool0");
+      expect(pendingTools()).toContain("use: Tool2");
+      expect(unconfirmed).toEqual([{ reason: "unreadable-record", total: 1 }]);
+      expect(reader.heartbeat()).toBeNull();
     });
   },
 );
