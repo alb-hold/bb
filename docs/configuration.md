@@ -400,7 +400,10 @@ agreement (is/are/am, was/were, has/have, does/do and their negations, since the
 subject can be singular or plural, as in "The fish are nearby", and a verb's mood
 can change the meaning, as in "If he were there"), and tense or plural changes
 are offered as suggestions, as is any edit between quotation marks on one line
-('the the', ‘the the’, “the the”, «o o»). Code, paths, identifiers and
+('the the', ‘the the’, “the the”, «o o», including quotes inside quotes
+such as “They said ‘the the’”). An apostrophe inside a word (don't) or after
+one (users', 5') is not a quotation mark unless it closes an open single
+quote. Code, paths, identifiers and
 vocabulary terms are never edited, and on a line containing any of
 = ; { } ( ) < > [ ] $ ` | \ / # " or --, a colon followed directly by text
 (10:30), a key: value line (status: ready, - name: x, "title": x), a line

@@ -686,22 +686,46 @@ function inCodeLikeLine(target: string, start: number, end: number): boolean {
   );
 }
 
-const QUOTE_MARKS =
-  /["“”„«»‹›「」『』]|(?<![\p{L}\p{N}])['‘’]|['‘’](?![\p{L}\p{N}])/gu;
+const QUOTE_MARKS = /["'“”„«»‹›「」『』‘’]/gu;
+const SINGLE_QUOTES: ReadonlySet<string> = new Set(["'", "‘", "’"]);
+const QUOTE_CLOSERS: Readonly<Record<string, string>> = {
+  '"': '"',
+  "“": "”",
+  "”": "”",
+  "„": "“”",
+  "«": "»",
+  "»": "«",
+  "‹": "›",
+  "「": "」",
+  "『": "』",
+  "'": "'’",
+  "‘": "’'",
+};
+const WORD_CHARACTER = /[\p{L}\p{N}]/u;
 
 function inQuotedText(target: string, start: number, end: number): boolean {
   const lineStart = target.lastIndexOf("\n", start - 1) + 1;
   const lineEndAt = target.indexOf("\n", end);
   const lineEnd = lineEndAt === -1 ? target.length : lineEndAt;
-  const marks = [...target.slice(lineStart, lineEnd).matchAll(QUOTE_MARKS)].map(
-    (match) => lineStart + match.index,
-  );
-  for (let index = 0; index < marks.length; index += 2) {
-    const open = marks[index]!;
-    const close = marks[index + 1] ?? lineEnd;
-    if (start > open && end <= close) return true;
+  const open: string[] = [];
+  for (const match of target.slice(lineStart, lineEnd).matchAll(QUOTE_MARKS)) {
+    const at = lineStart + match.index;
+    if (at >= end) break;
+    const mark = match[0];
+    const single = SINGLE_QUOTES.has(mark);
+    const wordBefore = WORD_CHARACTER.test(target[at - 1] ?? "");
+    const wordAfter = WORD_CHARACTER.test(target[at + 1] ?? "");
+    if (single && wordBefore && wordAfter) continue;
+    if (at >= start) return true;
+    const top = open.at(-1);
+    const opensWord = single && wordAfter && !wordBefore;
+    if (top !== undefined && QUOTE_CLOSERS[top]!.includes(mark) && !opensWord) {
+      open.pop();
+    } else if (single ? mark !== "’" && !wordBefore : mark in QUOTE_CLOSERS) {
+      open.push(mark);
+    }
   }
-  return false;
+  return open.length > 0;
 }
 
 function inFinishedSentence(target: string, end: number): boolean {
