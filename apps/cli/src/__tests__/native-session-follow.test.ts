@@ -12,7 +12,7 @@ import {
   type ProviderNativeTerminal,
 } from "@bb/domain";
 import { BbHttpError } from "@bb/sdk";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { NativeActivityReader } from "../native-activity-reader.js";
 import { createNativeActivityReporter } from "../native-activity-reporter.js";
 import {
@@ -56,6 +56,7 @@ const roots: string[] = [];
 const releases: Array<() => void> = [];
 
 afterEach(() => {
+  vi.useRealTimers();
   for (const release of releases.splice(0)) release();
   for (const root of roots.splice(0)) {
     rmSync(root, { recursive: true, force: true });
@@ -131,6 +132,17 @@ function hookShape(withSessionIdField: boolean): ProviderNativeTerminal {
       hooks: withSessionIdField
         ? { ...HOOKS, sessionIdField: "session_id" }
         : HOOKS,
+    }),
+  };
+}
+
+function hooksAndTranscriptShape(): ProviderNativeTerminal {
+  const codex = codexCli();
+  return {
+    ...codex,
+    activity: providerNativeTerminalActivitySchema.parse({
+      hooks: { ...HOOKS, sessionIdField: "session_id" },
+      transcript: codex.activity?.transcript,
     }),
   };
 }
@@ -431,4 +443,95 @@ describe("following a discovered session only after the server accepted it", () 
       expect(unconfirmed).toEqual([]);
     });
   });
+
+  describe("discovered + hooks with a session id field + transcript", () => {
+    const prompt = (text: string) => ({
+      hook_event_name: "UserPromptSubmit",
+      prompt: text,
+      session_id: SESSION_ID,
+    });
+
+    it("reports the transcript written while the binding was pending once after acceptance when no hook was held", async () => {
+      const h = holder(hooksAndTranscriptShape());
+      h.append(codexTurn("pending transcript"));
+      const binding = holdOpen<unknown>();
+      const discoverer = h.makeDiscoverer(() => binding.promise);
+      const discovering = discoverer.discover();
+      try {
+        expect(await h.tick()).toEqual([]);
+        binding.resolve({});
+        await discovering;
+        const replayed = await h.readOnly();
+        expect(replayed).toEqual(["working", "working:pending transcript"]);
+        expect(await h.readOnly()).toEqual(replayed);
+      } finally {
+        binding.resolve(undefined);
+        await discovering;
+      }
+    });
+
+    it("reports both the held hook and the pending transcript exactly once", async () => {
+      const h = holder(hooksAndTranscriptShape());
+      h.append(codexTurn("pending transcript"));
+      h.appendHooks([prompt("held hook")]);
+      const binding = holdOpen<unknown>();
+      const discoverer = h.makeDiscoverer(() => binding.promise);
+      const discovering = discoverer.discover();
+      try {
+        expect(await h.tick()).toEqual([]);
+        binding.resolve({});
+        await discovering;
+        const replayed = await h.readOnly();
+        expect(replayed.filter((r) => r === "working:held hook")).toHaveLength(
+          1,
+        );
+        expect(
+          replayed.filter((r) => r === "working:pending transcript"),
+        ).toHaveLength(1);
+        expect(await h.readOnly()).toEqual(replayed);
+      } finally {
+        binding.resolve(undefined);
+        await discovering;
+      }
+    });
+  });
+
+  describe.each([
+    ["with a session id field", true],
+    ["without a session id field", false],
+  ])(
+    "a question opened while pending, hooks %s",
+    (_shape, withSessionIdField) => {
+      it("is still reported after a binding outage longer than a minute, and a fresh unrelated hook does not mask it", async () => {
+        vi.useFakeTimers({ toFake: ["Date"] });
+        vi.setSystemTime(Date.parse("2026-10-11T12:05:00Z"));
+        const h = holder(hookShape(withSessionIdField));
+        h.appendHooks([
+          {
+            hook_event_name: "PermissionRequest",
+            session_id: SESSION_ID,
+            tool_name: "Bash",
+          },
+        ]);
+        const binding = holdOpen<unknown>();
+        const discoverer = h.makeDiscoverer(() => binding.promise);
+        const discovering = discoverer.discover();
+        try {
+          expect(await h.tick()).toEqual([]);
+          vi.setSystemTime(Date.parse("2026-10-11T12:08:00Z"));
+          expect(await h.tick()).toEqual([]);
+          binding.resolve({});
+          await discovering;
+          h.appendHooks([
+            { hook_event_name: "PreToolUse", session_id: SESSION_ID },
+          ]);
+          const reported = await h.readOnly();
+          expect(reported[0]).toBe("waiting");
+        } finally {
+          binding.resolve(undefined);
+          await discovering;
+        }
+      });
+    },
+  );
 });
