@@ -352,8 +352,9 @@ describe("ThreadTerminalView terminal focus boundary", () => {
     );
     await waitForReadinessCondition(
       () =>
-        expect(testState.socketMessages.map((message) => JSON.parse(message)))
-          .toContainEqual({ type: "ack", nextSeq: 1 }),
+        expect(
+          testState.socketMessages.map((message) => JSON.parse(message)),
+        ).toContainEqual({ type: "ack", nextSeq: 1 }),
       "replay output was not acknowledged within 5000 ms",
     );
     expect(getTerminal().buffer.active.viewportY).toBe(
@@ -365,8 +366,9 @@ describe("ThreadTerminalView terminal focus boundary", () => {
     });
     await waitForReadinessCondition(
       () =>
-        expect(testState.socketMessages.map((message) => JSON.parse(message)))
-          .toContainEqual({ type: "ack", nextSeq: 2 }),
+        expect(
+          testState.socketMessages.map((message) => JSON.parse(message)),
+        ).toContainEqual({ type: "ack", nextSeq: 2 }),
       "live output was not acknowledged within 5000 ms",
     );
     expect(getTerminal().buffer.active.viewportY).toBe(
@@ -381,13 +383,10 @@ describe("ThreadTerminalView terminal focus boundary", () => {
       });
       await Promise.resolve();
     });
-    await waitForReadinessCondition(
-      () => {
-        expect(getTerminal().cols).toBe(38);
-        expect(getTerminal().rows).toBe(5);
-      },
-      "shared PTY grid resize was not applied within 5000 ms",
-    );
+    await waitForReadinessCondition(() => {
+      expect(getTerminal().cols).toBe(38);
+      expect(getTerminal().rows).toBe(5);
+    }, "shared PTY grid resize was not applied within 5000 ms");
     await waitForReadinessCondition(
       () =>
         expect(getTerminal().buffer.active.viewportY).toBe(
@@ -446,17 +445,15 @@ describe("ThreadTerminalView terminal focus boundary", () => {
     });
     await waitForReadinessCondition(
       () =>
-        expect(testState.socketMessages.map((message) => JSON.parse(message)))
-          .toContainEqual({ type: "ack", nextSeq: 1 }),
+        expect(
+          testState.socketMessages.map((message) => JSON.parse(message)),
+        ).toContainEqual({ type: "ack", nextSeq: 1 }),
       "replay output was not acknowledged within 5000 ms",
     );
     expect(getTerminal().buffer.active.viewportY).toBe(
       getTerminal().buffer.active.baseY,
     );
-    scrollTerminalAsUser(
-      getTerminal(),
-      getTerminal().buffer.active.baseY - 1,
-    );
+    scrollTerminalAsUser(getTerminal(), getTerminal().buffer.active.baseY - 1);
     expect(
       getTerminal().buffer.active.viewportY,
       "terminal scrollLines did not move above the bottom",
@@ -478,8 +475,9 @@ describe("ThreadTerminalView terminal focus boundary", () => {
     });
     await waitForReadinessCondition(
       () =>
-        expect(testState.socketMessages.map((message) => JSON.parse(message)))
-          .toContainEqual({ type: "ack", nextSeq: 2 }),
+        expect(
+          testState.socketMessages.map((message) => JSON.parse(message)),
+        ).toContainEqual({ type: "ack", nextSeq: 2 }),
       "live output was not acknowledged within 5000 ms",
     );
     expect(getTerminal().buffer.active.viewportY).toBe(
@@ -492,13 +490,10 @@ describe("ThreadTerminalView terminal focus boundary", () => {
       session: { ...session, cols: 38, rows: 5 },
     });
     act(() => getTerminal().resize(38, 5));
-    await waitForReadinessCondition(
-      () => {
-        expect(getTerminal().cols).toBe(38);
-        expect(getTerminal().rows).toBe(5);
-      },
-      "shared PTY grid resize was not applied within 5000 ms",
-    );
+    await waitForReadinessCondition(() => {
+      expect(getTerminal().cols).toBe(38);
+      expect(getTerminal().rows).toBe(5);
+    }, "shared PTY grid resize was not applied within 5000 ms");
     await waitForReadinessCondition(
       () =>
         expect(getTerminal().buffer.active.viewportY).toBe(
@@ -549,8 +544,9 @@ describe("ThreadTerminalView terminal focus boundary", () => {
     });
     await waitForReadinessCondition(
       () =>
-        expect(testState.socketMessages.map((message) => JSON.parse(message)))
-          .toContainEqual({ type: "ack", nextSeq: 1 }),
+        expect(
+          testState.socketMessages.map((message) => JSON.parse(message)),
+        ).toContainEqual({ type: "ack", nextSeq: 1 }),
       "replay output was not acknowledged within 5000 ms",
     );
     const terminal = getTerminal();
@@ -570,26 +566,20 @@ describe("ThreadTerminalView terminal focus boundary", () => {
       type: "session-updated",
       session: { ...session, cols: 38, rows: 5 },
     });
-    await waitForReadinessCondition(
-      () => {
-        expect(terminal.cols).toBe(38);
-        expect(terminal.rows).toBe(5);
-      },
-      "shared PTY grid resize was not applied within 5000 ms",
-    );
-    await waitForReadinessCondition(
-      () => {
-        expect(terminal.buffer.active.viewportY).toBeLessThan(
-          terminal.buffer.active.baseY,
-        );
-        expect(
-          terminal.buffer.active
-            .getLine(terminal.buffer.active.viewportY)
-            ?.translateToString(true),
-        ).toBe(topLine);
-      },
-      "shared resize moved the live scrolled-up line",
-    );
+    await waitForReadinessCondition(() => {
+      expect(terminal.cols).toBe(38);
+      expect(terminal.rows).toBe(5);
+    }, "shared PTY grid resize was not applied within 5000 ms");
+    await waitForReadinessCondition(() => {
+      expect(terminal.buffer.active.viewportY).toBeLessThan(
+        terminal.buffer.active.baseY,
+      );
+      expect(
+        terminal.buffer.active
+          .getLine(terminal.buffer.active.viewportY)
+          ?.translateToString(true),
+      ).toBe(topLine);
+    }, "shared resize moved the live scrolled-up line");
   });
 
   it("restores a reloaded bottom-following client after a terminal resize", async () => {
@@ -647,8 +637,9 @@ describe("ThreadTerminalView terminal focus boundary", () => {
     });
     await waitForReadinessCondition(
       () =>
-        expect(testState.socketMessages.map((message) => JSON.parse(message)))
-          .toContainEqual({ type: "ack", nextSeq: 1 }),
+        expect(
+          testState.socketMessages.map((message) => JSON.parse(message)),
+        ).toContainEqual({ type: "ack", nextSeq: 1 }),
       "bottom-follow replay was not acknowledged within 5000 ms",
     );
     await waitForReadinessCondition(
@@ -722,14 +713,12 @@ describe("ThreadTerminalView terminal focus boundary", () => {
     });
     await waitForReadinessCondition(
       () =>
-        expect(testState.socketMessages.map((message) => JSON.parse(message)))
-          .toContainEqual({ type: "ack", nextSeq: 1 }),
+        expect(
+          testState.socketMessages.map((message) => JSON.parse(message)),
+        ).toContainEqual({ type: "ack", nextSeq: 1 }),
       "replay output was not acknowledged within 5000 ms",
     );
-    scrollTerminalAsUser(
-      getTerminal(),
-      getTerminal().buffer.active.baseY - 1,
-    );
+    scrollTerminalAsUser(getTerminal(), getTerminal().buffer.active.baseY - 1);
     expect(
       getTerminal().buffer.active.viewportY,
       "terminal scrollLines did not move above the bottom before typed output",
@@ -742,8 +731,9 @@ describe("ThreadTerminalView terminal focus boundary", () => {
     });
     await waitForReadinessCondition(
       () =>
-        expect(testState.socketMessages.map((message) => JSON.parse(message)))
-          .toContainEqual({ type: "ack", nextSeq: 2 }),
+        expect(
+          testState.socketMessages.map((message) => JSON.parse(message)),
+        ).toContainEqual({ type: "ack", nextSeq: 2 }),
       "live output was not acknowledged within 5000 ms",
     );
     getTerminal().scrollToBottom();
@@ -765,17 +755,15 @@ describe("ThreadTerminalView terminal focus boundary", () => {
         ),
       },
     });
-    await waitForReadinessCondition(
-      () => {
-        expect(getTerminal().cols).toBe(38);
-        expect(getTerminal().rows).toBe(5);
-      },
-      "in-band shared PTY grid marker was not applied within 5000 ms",
-    );
+    await waitForReadinessCondition(() => {
+      expect(getTerminal().cols).toBe(38);
+      expect(getTerminal().rows).toBe(5);
+    }, "in-band shared PTY grid marker was not applied within 5000 ms");
     await waitForReadinessCondition(
       () =>
-        expect(testState.socketMessages.map((message) => JSON.parse(message)))
-          .toContainEqual({ type: "ack", nextSeq: 3 }),
+        expect(
+          testState.socketMessages.map((message) => JSON.parse(message)),
+        ).toContainEqual({ type: "ack", nextSeq: 3 }),
       "in-band resize output was not acknowledged within 5000 ms",
     );
     await waitForReadinessCondition(
@@ -832,13 +820,10 @@ describe("ThreadTerminalView terminal focus boundary", () => {
       replayStartSeq: 0,
       nextSeq: 1,
     });
-    const output = Array.from(
-      { length: 500 },
-      (_, index) => {
-        const number = String(index + 1).padStart(5, "0");
-        return `line ${number} ${"0123456789".repeat(2)}01234567`;
-      },
-    ).join("\r\n");
+    const output = Array.from({ length: 500 }, (_, index) => {
+      const number = String(index + 1).padStart(5, "0");
+      return `line ${number} ${"0123456789".repeat(2)}01234567`;
+    }).join("\r\n");
     socket.receive({
       type: "output",
       chunk: { seq: 0, dataBase64: btoa(output) },
@@ -849,12 +834,13 @@ describe("ThreadTerminalView terminal focus boundary", () => {
     );
     await waitForReadinessCondition(
       () =>
-        expect(testState.socketMessages.map((message) => JSON.parse(message)))
-          .toContainEqual({ type: "ack", nextSeq: 1 }),
+        expect(
+          testState.socketMessages.map((message) => JSON.parse(message)),
+        ).toContainEqual({ type: "ack", nextSeq: 1 }),
       "saved viewport replay was not acknowledged within 5000 ms",
     );
-    const lineBefore = getTerminal().buffer.active
-      .getLine(getTerminal().buffer.active.viewportY)
+    const lineBefore = getTerminal()
+      .buffer.active.getLine(getTerminal().buffer.active.viewportY)
       ?.translateToString(true);
     expect(lineBefore).toMatch(/^line \d{5} /);
     expect(lineBefore?.length).toBeGreaterThan(20);
@@ -871,8 +857,8 @@ describe("ThreadTerminalView terminal focus boundary", () => {
     await waitForReadinessCondition(
       () =>
         expect(
-          getTerminal().buffer.active
-            .getLine(getTerminal().buffer.active.viewportY)
+          getTerminal()
+            .buffer.active.getLine(getTerminal().buffer.active.viewportY)
             ?.translateToString(true)
             ?.match(/^line (\d{5}) /)?.[1],
         ).toBe(lineBefore?.match(/^line (\d{5}) /)?.[1]),
@@ -889,7 +875,12 @@ describe("ThreadTerminalView terminal focus boundary", () => {
         disconnect(): void {}
         observe(target: Element): void {
           this.callback(
-            [{ target, contentRect: { width: 354, height: 504 } } as ResizeObserverEntry],
+            [
+              {
+                target,
+                contentRect: { width: 354, height: 504 },
+              } as ResizeObserverEntry,
+            ],
             this as unknown as ResizeObserver,
           );
         }
@@ -937,7 +928,9 @@ describe("ThreadTerminalView terminal focus boundary", () => {
     vi.spyOn(FitAddon.prototype, "proposeDimensions").mockImplementation(
       function proposeDimensions() {
         const fontSize = Number(
-          document.querySelector("[data-terminal-renderer]")?.getAttribute("data-terminal-font-size") ?? 12,
+          document
+            .querySelector("[data-terminal-renderer]")
+            ?.getAttribute("data-terminal-font-size") ?? 12,
         );
         return {
           cols: Math.round(612 / fontSize),
@@ -980,33 +973,56 @@ describe("ThreadTerminalView terminal focus boundary", () => {
       ];
       const touchList = (items: typeof points) =>
         Object.assign(items, { item: (index: number) => items[index] ?? null });
-      Object.defineProperty(event, "touches", { value: touchList(ending ? [] : points) });
-      Object.defineProperty(event, "targetTouches", { value: touchList(ending ? [] : points) });
-      Object.defineProperty(event, "changedTouches", { value: touchList(points) });
+      Object.defineProperty(event, "touches", {
+        value: touchList(ending ? [] : points),
+      });
+      Object.defineProperty(event, "targetTouches", {
+        value: touchList(ending ? [] : points),
+      });
+      Object.defineProperty(event, "changedTouches", {
+        value: touchList(points),
+      });
       fireEvent(pane as HTMLElement, event);
     };
     const resizeMessages = () =>
       testState.socketMessages
-        .map((message) => JSON.parse(message) as { cols?: number; rows?: number; type?: string })
+        .map(
+          (message) =>
+            JSON.parse(message) as {
+              cols?: number;
+              rows?: number;
+              type?: string;
+            },
+        )
         .filter((message) => message.type === "resize");
 
     await waitFor(() => expect(resizeMessages()).toHaveLength(1));
     const originalGrid = resizeMessages().at(-1);
     dispatchTouches("touchstart", 100);
-    for (const ratio of [1.05, 1.1, 1.15, 1.2, 1.25, 1.3, 1.35, 1.4, 1.45, 1.5]) {
+    for (const ratio of [
+      1.05, 1.1, 1.15, 1.2, 1.25, 1.3, 1.35, 1.4, 1.45, 1.5,
+    ]) {
       dispatchTouches("touchmove", 100 * ratio);
     }
     dispatchTouches("touchend", 150, true);
-    await waitFor(() => expect(fontSizeNode?.getAttribute("data-terminal-font-size")).toBe("18"));
+    await waitFor(() =>
+      expect(fontSizeNode?.getAttribute("data-terminal-font-size")).toBe("18"),
+    );
     await waitFor(() => expect(resizeMessages()).toHaveLength(2));
-    expect(resizeMessages().at(-1)).toEqual({ type: "resize", cols: 34, rows: 31 });
+    expect(resizeMessages().at(-1)).toEqual({
+      type: "resize",
+      cols: 34,
+      rows: 31,
+    });
 
     dispatchTouches("touchstart", 150);
     for (const ratio of [1.45, 1.4, 1.35, 1.3, 1.25, 1.2, 1.15, 1.1, 1.05, 1]) {
       dispatchTouches("touchmove", 150 * (ratio / 1.5));
     }
     dispatchTouches("touchend", 100, true);
-    await waitFor(() => expect(fontSizeNode?.getAttribute("data-terminal-font-size")).toBe("12"));
+    await waitFor(() =>
+      expect(fontSizeNode?.getAttribute("data-terminal-font-size")).toBe("12"),
+    );
     await waitFor(() => expect(resizeMessages()).toHaveLength(3));
     expect(resizeMessages().at(-1)).toEqual(originalGrid);
   });
@@ -1036,14 +1052,11 @@ describe("ThreadTerminalView terminal focus boundary", () => {
       type: "output",
       chunk: { seq: 0, dataBase64: btoa(output) },
     });
-    await waitForReadinessCondition(
-      () => {
-        expect(document.querySelector(".xterm-rows")?.textContent).toContain(
-          "retained-48",
-        );
-      },
-      "terminal scrollback did not render retained-48 within 5000 ms",
-    );
+    await waitForReadinessCondition(() => {
+      expect(document.querySelector(".xterm-rows")?.textContent).toContain(
+        "retained-48",
+      );
+    }, "terminal scrollback did not render retained-48 within 5000 ms");
     const xterm = document.querySelector(".xterm");
     expect(xterm).not.toBeNull();
 
@@ -1486,14 +1499,11 @@ describe("ThreadTerminalView terminal focus boundary", () => {
       </MemoryRouter>,
     );
 
-    await waitForReadinessCondition(
-      () => {
-        expect(
-          testState.socketMessages.map((message) => JSON.parse(message)),
-        ).toContainEqual({ type: "visibility", visible: true });
-      },
-      "terminal visibility was not reported within 5000 ms",
-    );
+    await waitForReadinessCondition(() => {
+      expect(
+        testState.socketMessages.map((message) => JSON.parse(message)),
+      ).toContainEqual({ type: "visibility", visible: true });
+    }, "terminal visibility was not reported within 5000 ms");
     await waitForReadiness(
       unavailableFitMeasurementsReady,
       "initial fit dimensions were not measured while unavailable within 5000 ms",
@@ -1505,19 +1515,15 @@ describe("ThreadTerminalView terminal focus boundary", () => {
     ).toBe(false);
     fitDimensionsAvailable = true;
 
-    await waitForReadinessCondition(
-      () => {
-        const resize = testState.socketMessages
-          .map(
-            (message) =>
-              JSON.parse(message) as { cols?: number; type?: string },
-          )
-          .find((message) => message.type === "resize");
-        expect(resize).toBeDefined();
-        expect(resize?.cols).toBeLessThan(120);
-      },
-      "initial fitted resize was not sent within 5000 ms",
-    );
+    await waitForReadinessCondition(() => {
+      const resize = testState.socketMessages
+        .map(
+          (message) => JSON.parse(message) as { cols?: number; type?: string },
+        )
+        .find((message) => message.type === "resize");
+      expect(resize).toBeDefined();
+      expect(resize?.cols).toBeLessThan(120);
+    }, "initial fitted resize was not sent within 5000 ms");
 
     const resizeFrames = () =>
       testState.socketMessages
@@ -1683,14 +1689,8 @@ describe("ThreadTerminalView terminal focus boundary", () => {
     );
     const socket = testState.sockets[0]!;
     await Promise.all([
-      waitForReadiness(
-        socket.opened,
-        "socket did not open within 5000 ms",
-      ),
-      waitForReadiness(
-        layoutSettled,
-        "layout did not settle within 5000 ms",
-      ),
+      waitForReadiness(socket.opened, "socket did not open within 5000 ms"),
+      waitForReadiness(layoutSettled, "layout did not settle within 5000 ms"),
     ]);
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const resizeFrames = () =>

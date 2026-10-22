@@ -6,11 +6,7 @@ import {
   type TouchEvent as ReactTouchEvent,
 } from "react";
 import "@xterm/xterm/css/xterm.css";
-import type {
-  IMarker,
-  ITheme,
-  Terminal as XTermTerminal,
-} from "@xterm/xterm";
+import type { IMarker, ITheme, Terminal as XTermTerminal } from "@xterm/xterm";
 import type { FitAddon } from "@xterm/addon-fit";
 import {
   ContextMenu,
@@ -913,9 +909,7 @@ export function createTerminalViewportLineAnchor(
     setLine: (line) => {
       clear();
       const buffer = terminal.buffer.active;
-      marker = terminal.registerMarker(
-        line - (buffer.baseY + buffer.cursorY),
-      );
+      marker = terminal.registerMarker(line - (buffer.baseY + buffer.cursorY));
     },
   };
 }

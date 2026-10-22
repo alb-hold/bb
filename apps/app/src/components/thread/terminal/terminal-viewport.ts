@@ -48,12 +48,14 @@ export function terminalOutputBoundaryPrefix(
 }
 
 export function createTerminalOutputLineAnchorTracker(args: {
-  registerMarker: () => {
-    line: number;
-    isDisposed: boolean;
-    onDispose: (listener: () => void) => { dispose: () => void };
-    dispose: () => void;
-  } | undefined;
+  registerMarker: () =>
+    | {
+        line: number;
+        isDisposed: boolean;
+        onDispose: (listener: () => void) => { dispose: () => void };
+        dispose: () => void;
+      }
+    | undefined;
   getCurrentLine: () => number;
 }): {
   recordOutputStart: (sequence: number) => TerminalOutputLineAnchor | undefined;
@@ -73,7 +75,9 @@ export function createTerminalOutputLineAnchorTracker(args: {
     line: number;
     expired: boolean;
   };
-  let reference: { marker: NonNullable<ReturnType<typeof registerMarker>> } | undefined;
+  let reference:
+    | { marker: NonNullable<ReturnType<typeof registerMarker>> }
+    | undefined;
   let disposed = false;
   const anchors = new Set<MutableAnchor>();
   const pinnedAnchors = new Set<MutableAnchor>();
@@ -153,7 +157,10 @@ export function createTerminalOutputLineAnchorTracker(args: {
       };
       Object.defineProperty(anchor, "line", {
         enumerable: true,
-        get: () => anchor.expired ? -1 : (reference?.marker.line ?? -1) + anchor.lineOffset,
+        get: () =>
+          anchor.expired
+            ? -1
+            : (reference?.marker.line ?? -1) + anchor.lineOffset,
       });
       anchors.add(anchor);
       return anchor;
@@ -217,11 +224,7 @@ export function findTerminalOutputLineAnchor(
 ): TerminalOutputLineAnchor | undefined {
   let visibleAnchor: TerminalOutputLineAnchor | undefined;
   for (const anchor of anchors) {
-    if (
-      !anchor.expired &&
-      anchor.line >= 0 &&
-      anchor.line <= visibleLine
-    ) {
+    if (!anchor.expired && anchor.line >= 0 && anchor.line <= visibleLine) {
       visibleAnchor = anchor;
     }
   }
@@ -231,8 +234,10 @@ export function findTerminalOutputLineAnchor(
   );
 }
 
-export interface TerminalViewportStorage
-  extends Pick<Storage, "getItem" | "setItem" | "removeItem" | "key" | "length"> {}
+export interface TerminalViewportStorage extends Pick<
+  Storage,
+  "getItem" | "setItem" | "removeItem" | "key" | "length"
+> {}
 
 export function terminalViewportStorageForClient(
   clientWindow: Pick<Window, "sessionStorage">,
@@ -248,7 +253,9 @@ const terminalViewportStoragePrefix = "bb:terminal-viewport:";
 const terminalViewportIndexKey = `${terminalViewportStoragePrefix}index`;
 const terminalViewportLimit = 200;
 
-function isTerminalViewportAnchor(value: unknown): value is TerminalViewportAnchor {
+function isTerminalViewportAnchor(
+  value: unknown,
+): value is TerminalViewportAnchor {
   return (
     typeof value === "object" &&
     value !== null &&
@@ -257,7 +264,8 @@ function isTerminalViewportAnchor(value: unknown): value is TerminalViewportAnch
     typeof value.distanceFromTail === "number" &&
     value.distanceFromTail >= 0 &&
     (!("lineOffset" in value) ||
-      (typeof value.lineOffset === "number" && Number.isInteger(value.lineOffset))) &&
+      (typeof value.lineOffset === "number" &&
+        Number.isInteger(value.lineOffset))) &&
     "outputSequence" in value &&
     Number.isInteger(value.outputSequence) &&
     typeof value.outputSequence === "number" &&
@@ -446,21 +454,29 @@ export function createTerminalTouchViewportSaveScheduler(args: {
   };
 }
 
-export function resolveTerminalViewportRestore(args: {
-  anchor: TerminalViewportAnchor | null;
-  baseY: number;
-  outputLineAnchors: readonly TerminalOutputLineAnchor[];
-  replayNextSequence: number;
-  replayStartSequence: number;
-}, onBranch?: (
-  branch:
-    | "no-anchor"
-    | "sequence-reset-tail"
-    | "expired-to-top"
-    | "retained-anchor",
-) => void): number {
-  const { anchor, baseY, outputLineAnchors, replayNextSequence, replayStartSequence } =
-    args;
+export function resolveTerminalViewportRestore(
+  args: {
+    anchor: TerminalViewportAnchor | null;
+    baseY: number;
+    outputLineAnchors: readonly TerminalOutputLineAnchor[];
+    replayNextSequence: number;
+    replayStartSequence: number;
+  },
+  onBranch?: (
+    branch:
+      | "no-anchor"
+      | "sequence-reset-tail"
+      | "expired-to-top"
+      | "retained-anchor",
+  ) => void,
+): number {
+  const {
+    anchor,
+    baseY,
+    outputLineAnchors,
+    replayNextSequence,
+    replayStartSequence,
+  } = args;
   if (anchor === null) {
     onBranch?.("no-anchor");
     return baseY;
@@ -486,9 +502,6 @@ export function resolveTerminalViewportRestore(args: {
   onBranch?.("retained-anchor");
   return Math.max(
     0,
-    Math.min(
-      baseY,
-      outputAnchor.line + Math.max(0, anchor.lineOffset ?? 0),
-    ),
+    Math.min(baseY, outputAnchor.line + Math.max(0, anchor.lineOffset ?? 0)),
   );
 }
