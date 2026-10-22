@@ -21,6 +21,7 @@ import {
 } from "../native-activity-wiring.js";
 import { findNativeSession } from "../native-harness.js";
 import { createSessionDiscoverer } from "../native-session-discovery.js";
+import { publishHooks } from "./helpers/hook-spool.js";
 
 interface CodexPluginTestHost {
   bb: unknown;
@@ -175,7 +176,7 @@ function holder(
   );
   const env = { HOME: home };
   const events = path.join(home, "hooks.jsonl");
-  writeFileSync(events, "");
+  mkdirSync(events, { recursive: true });
   const reader = new NativeActivityReader(
     cli,
     env,
@@ -260,7 +261,7 @@ function holder(
   };
   return {
     append: (records: unknown[]) => appendFileSync(rollout, jsonl(records)),
-    appendHooks: (records: unknown[]) => appendFileSync(events, jsonl(records)),
+    appendHooks: (records: unknown[]) => publishHooks(events, jsonl(records)),
     logged,
     makeDiscoverer,
     readOnly,

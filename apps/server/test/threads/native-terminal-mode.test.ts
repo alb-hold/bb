@@ -31,10 +31,7 @@ import {
 } from "@bb/server-contract";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as interactiveRequests from "../../src/internal/interactive-requests.js";
-import {
-  DAEMON_RESTARTED_PENDING_INTERACTION_REASON,
-  PendingInteractionLifecycle,
-} from "../../src/services/interactions/pending-interactions.js";
+import { DAEMON_RESTARTED_PENDING_INTERACTION_REASON } from "../../src/services/interactions/pending-interactions.js";
 import { applyLoggedThreadLifecycleEvent } from "../../src/services/threads/lifecycle-outcome.js";
 import { stopThreadForCurrentState } from "../../src/services/threads/thread-lifecycle.js";
 import {
@@ -3307,62 +3304,45 @@ describe("a native activity report that does not confirm activity", () => {
       }
     });
 
-    it("is stored in the database, so a copy of the database image taken after the close carries it", async () => {
+    it("survives a server restart: a new app on a copy of the database refuses the delayed opener, and still registers a question that was never closed", async () => {
       const fixture = await createFixture();
       const thread = await startThread(fixture);
+      const credential = currentHolderCredential(fixture, thread.id);
       await send(fixture, thread.id, { closes: [bash1.id], state: "working" });
-      const image = createConnection(fixture.harness.db.$client.serialize());
-      try {
-        const providerRequestId = `${NATIVE_TERMINAL_QUESTION_REQUEST_PREFIX}${bash1.id}`;
-        const row = getPendingInteractionByProviderRequest(image, {
-          providerId: "claude-code",
-          providerRequestId,
-          providerThreadId: SESSION_ID,
-        });
-        expect(row).toMatchObject({
-          status: "interrupted",
-          statusReason: "native-terminal-question-answered",
-          threadId: thread.id,
-        });
-        const deps = fixture.harness.deps;
-        const restored = new PendingInteractionLifecycle({
-          aiServices: deps.aiServices,
-          config: deps.config,
-          db: image,
-          hub: deps.hub,
-          lifecycleDedupers: deps.lifecycleDedupers,
-          logger: deps.logger,
-          machineAuth: deps.machineAuth,
-          pluginHostArtifacts: deps.pluginHostArtifacts,
-          providerRegistry: deps.providerRegistry,
-          skillTreeRegistry: deps.skillTreeRegistry,
-          telemetry: deps.telemetry,
-          terminalSessions: deps.terminalSessions,
-        });
-        const late = restored.registerPendingInteraction({
-          interaction: {
-            payload: {
-              kind: "user_question",
-              questions: [
-                {
-                  allowFreeText: true,
-                  id: providerRequestId,
-                  multiSelect: false,
-                  prompt: bash1.prompt,
-                },
-              ],
+      const restarted = await createTestAppHarness({
+        db: createConnection(fixture.harness.db.$client.serialize()),
+      });
+      harnesses.push(restarted);
+      const post = (body: unknown) =>
+        restarted.app.request(
+          `/api/v1/threads/${thread.id}/native-terminal/activity`,
+          {
+            body: JSON.stringify(body),
+            headers: {
+              authorization: `Bearer ${credential}`,
+              "content-type": "application/json",
             },
-            providerId: "claude-code",
-            providerRequestId,
-            providerThreadId: SESSION_ID,
-            threadId: thread.id,
-            turnId: "native-terminal-turn",
+            method: "POST",
           },
-        });
-        expect(late.outcome).toBe("rejected");
-      } finally {
-        image.$client.close();
-      }
+        );
+      const pending = () =>
+        restarted.deps.pendingInteractions
+          .listPendingThreadInteractions(thread.id)
+          .map((interaction) => interaction.providerRequestId);
+
+      expect(
+        (await post({ closes: [], questions: [bash1], state: "waiting" }))
+          .status,
+      ).toBe(200);
+      expect(pending()).toHaveLength(0);
+
+      expect(
+        (await post({ closes: [], questions: [bash2], state: "waiting" }))
+          .status,
+      ).toBe(200);
+      expect(pending()).toEqual([
+        expect.stringContaining("permission:Bash#aaaa.2"),
+      ]);
     });
 
     it("does not touch another thread's daemon-restart row that has the same identity", async () => {

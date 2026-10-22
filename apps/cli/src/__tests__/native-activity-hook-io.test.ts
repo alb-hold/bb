@@ -1,11 +1,16 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { readdirSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { ProviderNativeTerminal } from "@bb/domain";
 import { afterEach, describe, expect, it } from "vitest";
 import { nativeActivityHookSettings } from "../native-activity.js";
 import { NativeActivityReader } from "../native-activity-reader.js";
+import {
+  createHookSpool,
+  HookSpoolReader,
+  removeHookSpool,
+} from "../native-hook-spool.js";
 
 interface ClaudePluginTestHost {
   bb: unknown;
@@ -38,14 +43,12 @@ const { default: claudeCodePlugin }: { default(bb: unknown): void } =
   );
 
 const SESSION_ID = "2e624c50-68af-4689-9410-06caa371eb8a";
-const roots: string[] = [];
+const spools: string[] = [];
 const children: ChildProcessWithoutNullStreams[] = [];
 
 afterEach(() => {
   for (const child of children.splice(0)) child.kill("SIGKILL");
-  for (const root of roots.splice(0)) {
-    rmSync(root, { force: true, recursive: true });
-  }
+  for (const spool of spools.splice(0)) removeHookSpool(spool);
 });
 
 function claudeDeclaration(): ProviderNativeTerminal {
@@ -62,13 +65,11 @@ function fixture() {
   const cli = claudeDeclaration();
   const hooks = cli.activity?.hooks;
   if (hooks === undefined) throw new Error("Claude hooks missing");
-  const home = mkdtempSync(path.join(os.tmpdir(), "bb-hook-io-"));
-  roots.push(home);
-  const events = path.join(home, "hooks.jsonl");
-  writeFileSync(events, "", { mode: 0o600 });
+  const spool = createHookSpool(os.tmpdir(), "hook-io-test");
+  spools.push(spool);
   const settings: {
     hooks: Record<string, { hooks: { command: string }[] }[]>;
-  } = JSON.parse(nativeActivityHookSettings(hooks, events));
+  } = JSON.parse(nativeActivityHookSettings(hooks, spool));
   const commandFor = (event: string): string => {
     const command = settings.hooks[event]?.[0]?.hooks[0]?.command;
     if (command === undefined) throw new Error(`no hook command for ${event}`);
@@ -77,13 +78,13 @@ function fixture() {
   const unconfirmed: Array<{ reason: string; total: number }> = [];
   const reader = new NativeActivityReader(
     cli,
-    { HOME: home },
-    events,
+    { HOME: os.tmpdir() },
+    spool,
     { kind: "start", id: SESSION_ID },
     undefined,
     (reason, total) => unconfirmed.push({ reason, total }),
   );
-  return { commandFor, events, reader, unconfirmed };
+  return { commandFor, reader, spool, unconfirmed };
 }
 
 function record(event: string, extra: Record<string, unknown> = {}): string {
@@ -108,68 +109,208 @@ function startHook(command: string): {
   return { child, exited };
 }
 
-async function waitForSize(file: string, size: number): Promise<void> {
-  const deadline = Date.now() + 10_000;
-  while (statSync(file).size < size) {
-    if (Date.now() > deadline) {
-      throw new Error(`file never reached ${size} bytes`);
-    }
-    await new Promise((resolve) => setTimeout(resolve, 5));
-  }
-}
-
 async function runWhole(command: string, payload: string): Promise<void> {
   const { child, exited } = startHook(command);
   child.stdin.end(payload);
   await exited;
 }
 
-describe.skipIf(process.platform === "win32")(
-  "the hook command and the reader, end to end on one file",
-  () => {
-    it("delivers every record of N concurrent PermissionRequest hooks, in order, even when their newlines all come last", async () => {
-      const { commandFor, events, reader, unconfirmed } = fixture();
-      const command = commandFor("PermissionRequest");
-      const tools = Array.from({ length: 8 }, (_, index) => `Tool${index}`);
-      const running = tools.map(() => startHook(command));
-      let written = 0;
-      for (const [index, tool] of tools.entries()) {
-        const payload = record("PermissionRequest", { tool_name: tool });
-        running[index]!.child.stdin.write(payload);
-        written += Buffer.byteLength(payload);
-        await waitForSize(events, written);
-      }
-      for (const { child } of running) child.stdin.end();
-      await Promise.all(running.map(({ exited }) => exited));
-      await runWhole(command, record("PermissionRequest", { tool_name: "Last" }));
+async function until(condition: () => boolean, what: string): Promise<void> {
+  const deadline = Date.now() + 10_000;
+  while (!condition()) {
+    if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
 
-      const reports = reader.read();
-      const last = reports.at(-1);
-      expect(last?.state).toBe("waiting");
-      expect(
-        last?.state === "waiting" ? last.questions.map((q) => q.prompt) : [],
-      ).toEqual(
-        [...tools, "Last"].map(
-          (tool) => `Claude Code needs permission to use: ${tool}`,
-        ),
+const published = (spool: string): string[] =>
+  readdirSync(spool)
+    .filter((name) => /^\d{12}$/u.test(name))
+    .sort();
+
+const leftovers = (spool: string): string[] =>
+  readdirSync(spool).filter((name) => name.startsWith(".tmp."));
+
+const toolOf = (value: unknown): string =>
+  typeof value === "object" && value !== null && "tool_name" in value
+    ? String(value.tool_name)
+    : "";
+
+const platformNote =
+  process.platform === "win32"
+    ? "NOT EXERCISED on native Windows: the hook command needs a POSIX shell with mktemp, cat, ln, mv and rm, and native-terminal mode cannot start there today (docs/debugging-and-qa.md)"
+    : "";
+
+describe.skipIf(process.platform === "win32")(
+  `the generated hook command and the reader, end to end on one spool ${platformNote}`,
+  () => {
+    it("publishes concurrent records whole and in sequence order, including 1 MiB records and an empty permission_suggestions array", async () => {
+      const { commandFor, spool } = fixture();
+      const command = commandFor("PermissionRequest");
+      const big = "x".repeat(1024 * 1024);
+      const tools = Array.from({ length: 10 }, (_, index) => `Tool${index}`);
+      const payloads = tools.map((tool, index) =>
+        record("PermissionRequest", {
+          permission_suggestions: [],
+          tool_input: { content: index % 2 === 0 ? big : "small" },
+          tool_name: tool,
+        }),
       );
-      expect(unconfirmed).toEqual([]);
+      const running = payloads.map(() => startHook(command));
+      for (const [index, { child }] of running.entries()) {
+        child.stdin.end(payloads[index]);
+      }
+      await Promise.all(running.map(({ exited }) => exited));
+
+      const names = published(spool);
+      expect(names).toEqual(
+        tools.map((_, index) => String(index + 1).padStart(12, "0")),
+      );
+      expect(leftovers(spool)).toEqual([]);
+      const read = new HookSpoolReader(spool).read();
+      expect(read.unreadable).toBe(0);
+      expect(read.records.map(toolOf).sort()).toEqual([...tools].sort());
+      for (const entry of read.records) {
+        expect(entry).toMatchObject({
+          hook_event_name: "PermissionRequest",
+          permission_suggestions: [],
+          session_id: SESSION_ID,
+        });
+      }
     });
 
-    it("detects a record torn by another hook, and neither reads it as 'nothing is pending' nor lets later tool activity show Working", async () => {
-      const { commandFor, events, reader, unconfirmed } = fixture();
-      const open = commandFor("PermissionRequest");
-      const torn = record("PermissionRequest", { tool_name: "Bash" });
-      const half = Math.floor(torn.length / 2);
-      const first = startHook(open);
-      first.child.stdin.write(torn.slice(0, half));
-      await waitForSize(events, half);
-      await runWhole(open, record("PermissionRequest", { tool_name: "Edit" }));
-      first.child.stdin.end(torn.slice(half));
+    it("publishes sequential records in the order they were written", async () => {
+      const { commandFor, spool } = fixture();
+      const command = commandFor("PermissionRequest");
+      for (const tool of ["A", "B", "C", "D"]) {
+        await runWhole(command, record("PermissionRequest", { tool_name: tool }));
+      }
+      expect(new HookSpoolReader(spool).read().records.map(toolOf)).toEqual([
+        "A",
+        "B",
+        "C",
+        "D",
+      ]);
+    });
+
+    it("never reads a record that is still being written, and delivers it whole once it is published, behind the records published meanwhile", async () => {
+      const { commandFor, spool } = fixture();
+      const command = commandFor("PermissionRequest");
+      const reader = new HookSpoolReader(spool);
+      const slow = record("PermissionRequest", {
+        tool_input: { content: "y".repeat(200_000) },
+        tool_name: "Slow",
+      });
+      const first = startHook(command);
+      first.child.stdin.write(slow.slice(0, 1000));
+      await until(() => leftovers(spool).length === 1, "the first temp file");
+
+      await runWhole(command, record("PermissionRequest", { tool_name: "Fast" }));
+      expect(reader.read()).toEqual({
+        records: [expect.objectContaining({ tool_name: "Fast" })],
+        unreadable: 0,
+      });
+
+      first.child.stdin.end(slow.slice(1000));
       await first.exited;
+      const later = reader.read(Date.now() + 5_000);
+      expect(later.unreadable).toBe(0);
+      expect(later.records.map(toolOf)).toEqual(["Slow"]);
+      expect(later.records[0]).toMatchObject({
+        tool_input: { content: "y".repeat(200_000) },
+      });
+      expect(reader.read(Date.now() + 10_000)).toEqual({
+        records: [],
+        unreadable: 0,
+      });
+    });
+
+    it("detects a hook killed mid-write once, never publishes it, and keeps delivering the others", async () => {
+      const { commandFor, spool } = fixture();
+      const command = commandFor("PermissionRequest");
+      const reader = new HookSpoolReader(spool);
+      const dying = startHook(command);
+      dying.child.stdin.write(`{"hook_event_name":"PermissionRequest","tool_`);
+      await until(() => leftovers(spool).length === 1, "the temp file");
+      dying.child.kill("SIGKILL");
+      await dying.exited;
+
+      await runWhole(command, record("PermissionRequest", { tool_name: "Next" }));
+      const first = reader.read(Date.now() + 5_000);
+      expect(first.records.map(toolOf)).toEqual(["Next"]);
+      expect(first.unreadable).toBe(1);
+      expect(published(spool)).toHaveLength(1);
+      expect(reader.read(Date.now() + 20_000)).toEqual({
+        records: [],
+        unreadable: 0,
+      });
+    });
+
+    it("detects an abandoned temp file that no process owns", async () => {
+      const { spool } = fixture();
+      const finished = startHook("exit 0");
+      await finished.exited;
+      writeFileSync(path.join(spool, `.tmp.${finished.child.pid}.abc123`), "{");
+      const reader = new HookSpoolReader(spool);
+      expect(reader.read()).toEqual({ records: [], unreadable: 1 });
+      expect(reader.read(Date.now() + 10_000)).toEqual({
+        records: [],
+        unreadable: 0,
+      });
+    });
+
+    it("waits for a gap in the sequence, never skips it, and delivers in order once it is filled", () => {
+      const { spool } = fixture();
+      const put = (sequence: number, tool: string) =>
+        writeFileSync(
+          path.join(spool, String(sequence).padStart(12, "0")),
+          record("PermissionRequest", { tool_name: tool }),
+        );
+      const reader = new HookSpoolReader(spool);
+      put(1, "One");
+      put(3, "Three");
+      expect(reader.read().records.map(toolOf)).toEqual(["One"]);
+      expect(reader.read(Date.now() + 3_000).records).toEqual([]);
+      const long = reader.read(Date.now() + 20_000);
+      expect(long.records).toEqual([]);
+      put(2, "Two");
+      expect(reader.read(Date.now() + 25_000).records.map(toolOf)).toEqual([
+        "Two",
+        "Three",
+      ]);
+    });
+
+    it("does not deliver a record twice when it is read repeatedly", async () => {
+      const { commandFor, spool } = fixture();
+      await runWhole(
+        commandFor("PermissionRequest"),
+        record("PermissionRequest", { tool_name: "Once" }),
+      );
+      const reader = new HookSpoolReader(spool);
+      expect(reader.read().records.map(toolOf)).toEqual(["Once"]);
+      expect(reader.read()).toEqual({ records: [], unreadable: 0 });
+      expect(reader.read()).toEqual({ records: [], unreadable: 0 });
+    });
+
+    it("truncates consumed records instead of deleting them, so a number is never reused", async () => {
+      const { commandFor, spool } = fixture();
+      const command = commandFor("PermissionRequest");
+      await runWhole(command, record("PermissionRequest", { tool_name: "A" }));
+      new HookSpoolReader(spool).read();
+      await runWhole(command, record("PermissionRequest", { tool_name: "B" }));
+      expect(published(spool)).toEqual(["000000000001", "000000000002"]);
+    });
+
+    it("lets the reader treat a killed hook as lost evidence: no Working, no heartbeat, until the next prompt", async () => {
+      const { commandFor, reader, spool, unconfirmed } = fixture();
+      const dying = startHook(commandFor("PermissionRequest"));
+      dying.child.stdin.write(`{"hook_event_name":"PermissionRequest"`);
+      await until(() => leftovers(spool).length === 1, "the temp file");
+      dying.child.kill("SIGKILL");
+      await dying.exited;
 
       expect(reader.read()).toEqual([]);
-      expect(unconfirmed).toEqual([{ reason: "unreadable-record", total: 2 }]);
+      expect(unconfirmed).toEqual([{ reason: "unreadable-record", total: 1 }]);
       expect(reader.heartbeat()).toBeNull();
 
       await runWhole(
@@ -187,7 +328,7 @@ describe.skipIf(process.platform === "win32")(
       expect(reader.heartbeat()).toEqual({ prompt: null, state: "working" });
     });
 
-    it("control: the same tool activity without a damaged record shows Working", async () => {
+    it("control: the same tool activity without a lost record shows Working", async () => {
       const { commandFor, reader, unconfirmed } = fixture();
       await runWhole(
         commandFor("PreToolUse"),
@@ -195,6 +336,28 @@ describe.skipIf(process.platform === "win32")(
       );
       expect(reader.read()).toEqual([{ prompt: null, state: "working" }]);
       expect(unconfirmed).toEqual([]);
+    });
+
+    it("control: concurrent openers reach the reader as questions in order", async () => {
+      const { commandFor, reader } = fixture();
+      const command = commandFor("PermissionRequest");
+      for (const tool of ["Alpha", "Beta", "Gamma"]) {
+        await runWhole(
+          command,
+          record("PermissionRequest", {
+            permission_suggestions: [],
+            tool_name: tool,
+          }),
+        );
+      }
+      const last = reader.read().at(-1);
+      expect(
+        last?.state === "waiting" ? last.questions.map((q) => q.prompt) : [],
+      ).toEqual(
+        ["Alpha", "Beta", "Gamma"].map(
+          (tool) => `Claude Code needs permission to use: ${tool}`,
+        ),
+      );
     });
   },
 );

@@ -13,6 +13,7 @@ import {
   type NativeActivitySignal,
 } from "./native-activity.js";
 import { EvictedRecordIndex } from "./native-activity-index.js";
+import { HookSpoolReader } from "./native-hook-spool.js";
 import {
   findNativeSessionFile,
   type NativeHarnessEnv,
@@ -72,7 +73,7 @@ export async function measureResumedTranscript(
 
 export class NativeActivityReader {
   private readonly tracker = new NativeActivityTracker();
-  private readonly hookTail = new JsonlTail(0, { recoverConcatenated: true });
+  private readonly hookSpool: HookSpoolReader | null;
   private unreadableHookRecords = 0;
   private transcriptTail: JsonlTail;
   private adoptedSessions = 0;
@@ -112,7 +113,7 @@ export class NativeActivityReader {
   constructor(
     private readonly cli: ProviderNativeTerminal,
     private readonly env: NativeHarnessEnv,
-    private readonly eventsFile: string | null,
+    hookSpoolDirectory: string | null,
     start: NativeActivityStart,
     private readonly onUnconfirmedIdentity?: (total: number) => void,
     private readonly onUnconfirmedHookIdentity?: (
@@ -128,6 +129,8 @@ export class NativeActivityReader {
       previousSessionId: string,
     ) => void,
   ) {
+    this.hookSpool =
+      hookSpoolDirectory === null ? null : new HookSpoolReader(hookSpoolDirectory);
     this.awaitingBinding = start.kind === "discover";
     if (start.kind !== "discover") this.knownSessions.add(start.id);
     if (start.kind === "resume") {
@@ -175,12 +178,13 @@ export class NativeActivityReader {
       reports.push(report);
     };
     const hooks = activity.hooks;
-    if (hooks !== undefined && this.eventsFile !== null) {
+    if (hooks !== undefined && this.hookSpool !== null) {
       const unconfirmedHookReasons = new Set<
         "missing-session" | "foreign-session"
       >();
-      const arrived = this.hookTail.readRecords(this.eventsFile);
-      const unreadable = this.hookTail.takeUnreadable();
+      const spooled = this.hookSpool.read();
+      const arrived = spooled.records;
+      const unreadable = spooled.unreadable;
       if (unreadable > 0) {
         this.unreadableHookRecords += unreadable;
         this.droppedOpenQuestion = true;
