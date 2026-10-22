@@ -2268,7 +2268,7 @@ export function isThreadEnvironmentRemovalRunning(
   );
 }
 
-export function isThreadMachineRemoving(
+export function isThreadEphemeralMachineRemoving(
   db: DbConnection | DbTransaction,
   id: string,
 ): boolean {
@@ -2278,7 +2278,13 @@ export function isThreadMachineRemoving(
       .from(threads)
       .innerJoin(environments, eq(environments.id, threads.environmentId))
       .innerJoin(hosts, eq(hosts.id, environments.hostId))
-      .where(and(eq(threads.id, id), eq(hosts.phase, "removing")))
+      .where(
+        and(
+          eq(threads.id, id),
+          eq(hosts.type, "ephemeral"),
+          eq(hosts.phase, "removing"),
+        ),
+      )
       .limit(1)
       .get() !== undefined
   );
@@ -2293,7 +2299,7 @@ export function unarchiveThread(
     (tx) => {
       const current = getThread(tx, id);
       if (current?.deletedAt !== null) return null;
-      if (isThreadMachineRemoving(tx, id)) return null;
+      if (isThreadEphemeralMachineRemoving(tx, id)) return null;
       if (isThreadEnvironmentRemovalRunning(tx, id)) return null;
       if (current.lifecycleOwnerThreadId) {
         const owner = getThread(tx, current.lifecycleOwnerThreadId);

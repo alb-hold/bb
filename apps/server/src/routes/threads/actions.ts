@@ -12,7 +12,7 @@ import {
   setQueuedThreadMessageGroupBoundary,
   unarchiveThread,
   isThreadEnvironmentRemovalRunning,
-  isThreadMachineRemoving,
+  isThreadEphemeralMachineRemoving,
   unpinThread,
   updateQueuedThreadMessage,
   updateThread,
@@ -629,7 +629,7 @@ export function registerThreadActionRoutes(app: Hono, deps: AppDeps): void {
     if (!unarchiveThread(deps.db, deps.hub, thread.id)) {
       if (getThread(deps.db, thread.id)?.archivedAt === null)
         return context.json({ ok: true });
-      if (isThreadMachineRemoving(deps.db, thread.id))
+      if (isThreadEphemeralMachineRemoving(deps.db, thread.id))
         throw new ApiError(
           409,
           "machine_removing",

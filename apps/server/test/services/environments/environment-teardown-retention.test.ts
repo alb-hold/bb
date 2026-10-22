@@ -1393,6 +1393,268 @@ describe("removal while the machine is being removed", () => {
       });
     }));
 
+  function unarchiveRequest(harness: TestAppHarness, threadId: string) {
+    return harness.app.request(`/api/v1/threads/${threadId}/unarchive`, {
+      method: "POST",
+    });
+  }
+
+  function hookRows(harness: TestAppHarness): number {
+    return harness.db.select().from(environmentHookOperations).all().length;
+  }
+
+  function captureHooks(
+    harness: TestAppHarness,
+    seeded: ReturnType<typeof seedRetiring>,
+  ) {
+    const hooks = vi.fn(async () => {});
+    registerTestHostRpcCapture(harness.deps, {
+      hostId: seeded.host.id,
+      sessionId: seeded.session.id,
+      onEnvironmentHook: hooks,
+    });
+    return hooks;
+  }
+
+  async function expectUnarchiveBusy(
+    harness: TestAppHarness,
+    threadId: string,
+    file: string,
+  ): Promise<void> {
+    const refused = await unarchiveRequest(harness, threadId);
+    expect(refused.status).toBe(409);
+    expect(await refused.json()).toMatchObject({ code: "workspace_busy" });
+    expect(getThread(harness.db, threadId)?.archivedAt).not.toBeNull();
+    expect(await exists(file)).toBe(true);
+  }
+
+  it("keeps an owned worktree a preflight retained, lets its owner unarchive it afterwards, and then holds the machine for that owner", async () =>
+    withTestHarness(async (harness) => {
+      const { directory, file } = await seedDisposableFile();
+      try {
+        const entered = createDeferredPromise<void>();
+        const release = createDeferredPromise<void>();
+        const remove = vi.fn<PluginEnvironmentProviderDeclaration["remove"]>(
+          async () => ({ status: "removed" }),
+        );
+        installProvider({
+          remove,
+          experimental_preflightRemove: async () => {
+            entered.resolve();
+            await release.promise;
+            return { status: "retained", message: KEPT };
+          },
+        });
+        installMachine();
+        const seeded = seedRetiring(harness, {
+          providerOwnsPath: true,
+          path: directory,
+        });
+        const { environment, host, thread } = seeded;
+        const hooks = captureHooks(harness, seeded);
+        markRemoving(harness, host.id);
+
+        const sweeping = sweepProviderMachine(harness.deps, host.id);
+        try {
+          await entered.promise;
+          await expectUnarchiveBusy(harness, thread.id, file);
+        } finally {
+          release.resolve();
+          await sweeping;
+        }
+
+        expect(hooks).not.toHaveBeenCalled();
+        expect(remove).not.toHaveBeenCalled();
+        expect(hookRows(harness)).toBe(0);
+        expect(row(harness, environment.id)).toMatchObject({
+          status: "ready",
+          teardownStatus: null,
+          teardownMessage: KEPT,
+        });
+        const accepted = await unarchiveRequest(harness, thread.id);
+        expect(accepted.status).toBe(200);
+        expect(getThread(harness.db, thread.id)?.archivedAt).toBeNull();
+
+        markRemoving(harness, host.id);
+        retireNow(harness, environment.id);
+        await sweepProviderMachine(harness.deps, host.id);
+
+        expect(remove).not.toHaveBeenCalled();
+        expect(hooks).not.toHaveBeenCalled();
+        expect(hookRows(harness)).toBe(0);
+        expect(await exists(file)).toBe(true);
+        expect(row(harness, environment.id)).toMatchObject({
+          status: "ready",
+          teardownStatus: null,
+        });
+        expect(getHost(harness.db, host.id)).toMatchObject({
+          phase: "removing",
+          teardownStatus: "failed",
+          statusMessage: expect.stringContaining(thread.id),
+        });
+      } finally {
+        await rm(directory, { recursive: true, force: true });
+      }
+    }));
+
+  it("fails closed when an owned worktree retains only after its teardown hook ran, and refuses to unarchive while the removal is pending", async () =>
+    withTestHarness(async (harness) => {
+      const { directory, file } = await seedDisposableFile();
+      try {
+        const entered = createDeferredPromise<void>();
+        const release = createDeferredPromise<void>();
+        const observed = { hookRowsWhenRemoveStarted: -1 };
+        const remove = vi.fn<PluginEnvironmentProviderDeclaration["remove"]>(
+          async () => {
+            observed.hookRowsWhenRemoveStarted = hookRows(harness);
+            entered.resolve();
+            await release.promise;
+            return { status: "retained", message: KEPT };
+          },
+        );
+        installProvider({ remove });
+        installMachine();
+        const seeded = seedRetiring(harness, {
+          providerOwnsPath: true,
+          path: directory,
+        });
+        const { environment, host, thread } = seeded;
+        captureHooks(harness, seeded);
+        markRemoving(harness, host.id);
+
+        const sweeping = sweepProviderMachine(harness.deps, host.id);
+        try {
+          await entered.promise;
+          expect(observed.hookRowsWhenRemoveStarted).toBe(1);
+          await expectUnarchiveBusy(harness, thread.id, file);
+        } finally {
+          release.resolve();
+          await sweeping;
+        }
+
+        expect(remove).toHaveBeenCalledTimes(1);
+        expect(hookRows(harness)).toBe(1);
+        expect(await exists(file)).toBe(true);
+        expect(row(harness, environment.id)).toMatchObject({
+          status: "error",
+          teardownStatus: "failed",
+        });
+        expect(getThread(harness.db, thread.id)?.archivedAt).not.toBeNull();
+      } finally {
+        await rm(directory, { recursive: true, force: true });
+      }
+    }));
+
+  it("destroys an owned worktree only after a pending removal finishes for a still archived owner", async () =>
+    withTestHarness(async (harness) => {
+      const { directory, file } = await seedDisposableFile();
+      try {
+        const entered = createDeferredPromise<void>();
+        const release = createDeferredPromise<void>();
+        const remove = vi.fn<PluginEnvironmentProviderDeclaration["remove"]>(
+          async () => {
+            entered.resolve();
+            await release.promise;
+            await rm(directory, { recursive: true });
+            return { status: "removed" };
+          },
+        );
+        installProvider({ remove });
+        installMachine();
+        const seeded = seedRetiring(harness, {
+          providerOwnsPath: true,
+          path: directory,
+        });
+        const { environment, host, thread } = seeded;
+        captureHooks(harness, seeded);
+        markRemoving(harness, host.id);
+
+        const sweeping = sweepProviderMachine(harness.deps, host.id);
+        try {
+          await entered.promise;
+          await expectUnarchiveBusy(harness, thread.id, file);
+        } finally {
+          release.resolve();
+          await sweeping;
+        }
+
+        expect(remove).toHaveBeenCalledTimes(1);
+        expect(await exists(file)).toBe(false);
+        expect(row(harness, environment.id)).toMatchObject({
+          status: "destroyed",
+          teardownStatus: "removed",
+        });
+        expect(getHost(harness.db, host.id)?.phase).toBe("destroyed");
+        expect(getThread(harness.db, thread.id)?.archivedAt).not.toBeNull();
+      } finally {
+        await rm(directory, { recursive: true, force: true });
+      }
+    }));
+
+  it("non-owned control: lets the owner unarchive a worktree whose removal retained after the pending window", async () =>
+    withTestHarness(async (harness) => {
+      const { directory, file } = await seedDisposableFile();
+      try {
+        const entered = createDeferredPromise<void>();
+        const release = createDeferredPromise<void>();
+        const remove = vi.fn<PluginEnvironmentProviderDeclaration["remove"]>(
+          async () => {
+            entered.resolve();
+            await release.promise;
+            return { status: "retained", message: KEPT };
+          },
+        );
+        installProvider({ remove });
+        installMachine();
+        const { environment, host, thread } = seedRetiring(harness, {
+          path: directory,
+        });
+        markRemoving(harness, host.id);
+
+        const sweeping = sweepProviderMachine(harness.deps, host.id);
+        try {
+          await entered.promise;
+          await expectUnarchiveBusy(harness, thread.id, file);
+        } finally {
+          release.resolve();
+          await sweeping;
+        }
+
+        expect(row(harness, environment.id)).toMatchObject({
+          status: "ready",
+          teardownStatus: null,
+        });
+        const accepted = await unarchiveRequest(harness, thread.id);
+        expect(accepted.status).toBe(200);
+        expect(remove).toHaveBeenCalledTimes(1);
+        expect(await exists(file)).toBe(true);
+      } finally {
+        await rm(directory, { recursive: true, force: true });
+      }
+    }));
+
+  it("refuses to unarchive between the teardown-running write and the claim of a persistent machine", async () =>
+    withTestHarness(async (harness) => {
+      const remove = vi.fn<PluginEnvironmentProviderDeclaration["remove"]>(
+        async () => ({ status: "removed" }),
+      );
+      installProvider({ remove });
+      installMachine();
+      const { environment, host, thread } = seedRetiring(harness);
+      markRemoving(harness, host.id);
+      patch(harness, environment.id, {
+        teardownStatus: "running",
+        retireAt: Date.now(),
+      });
+
+      const refused = await unarchiveRequest(harness, thread.id);
+
+      expect(refused.status).toBe(409);
+      expect(await refused.json()).toMatchObject({ code: "workspace_busy" });
+      expect(getThread(harness.db, thread.id)?.archivedAt).not.toBeNull();
+      expect(remove).not.toHaveBeenCalled();
+    }));
+
   it("reports a retained environment's own message on the machine", async () =>
     withTestHarness(async (harness) => {
       installProvider({

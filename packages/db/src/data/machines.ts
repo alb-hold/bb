@@ -1,4 +1,14 @@
-import { and, eq, inArray, isNull, ne, or, sql, type SQL } from "drizzle-orm";
+import {
+  and,
+  eq,
+  inArray,
+  isNotNull,
+  isNull,
+  ne,
+  or,
+  sql,
+  type SQL,
+} from "drizzle-orm";
 import type { DbConnection, DbTransaction } from "../connection.js";
 import { environments, hosts, threads } from "../schema.js";
 
@@ -108,6 +118,39 @@ export function machineHasPendingThreads(
   return selectMachinePendingThreads(db, hostId).limit(1).get() !== undefined;
 }
 
+function selectExemptLauncherId(db: Connection, hostId: string): string | null {
+  const launcher = db
+    .select({ id: threads.id, status: threads.status })
+    .from(hosts)
+    .innerJoin(threads, eq(hosts.launchKey, threads.id))
+    .where(eq(hosts.id, hostId))
+    .get();
+  if (
+    launcher === undefined ||
+    launcher.status === "active" ||
+    launcher.status === "stopping"
+  ) {
+    return null;
+  }
+  const workspace = db
+    .select({ id: environments.id })
+    .from(environments)
+    .leftJoin(threads, eq(threads.environmentId, environments.id))
+    .where(
+      and(
+        eq(environments.hostId, hostId),
+        or(
+          eq(environments.ownerThreadId, launcher.id),
+          eq(threads.id, launcher.id),
+        ),
+        or(eq(environments.status, "ready"), isNotNull(environments.path)),
+      ),
+    )
+    .limit(1)
+    .get();
+  return workspace === undefined ? launcher.id : null;
+}
+
 export function listMachineBlockingThreadIds(
   db: Connection,
   hostId: string,
@@ -127,11 +170,12 @@ export function listMachineBlockingThreadIds(
     )
     .all();
   const pending = selectMachinePendingThreads(db, hostId).all();
+  const exempt = selectExemptLauncherId(db, hostId);
   return [
     ...new Set(
       [...owning, ...launching, ...pending].map((thread) => thread.id),
     ),
-  ];
+  ].filter((id) => id !== exempt);
 }
 
 export function machineHasProvisioningEnvironment(

@@ -4,11 +4,14 @@ import { join } from "node:path";
 import {
   archiveThread,
   createEnvironment,
+  environments,
   getHost,
+  threads,
   getThread,
   updateHost,
 } from "@bb/db";
 import { createDeferredPromise } from "@bb/test-helpers";
+import { eq } from "drizzle-orm";
 import type { PluginMachineProviderDeclaration } from "@get-bb/plugin-sdk";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { sweepProviderMachine } from "../../../src/services/machines/provider-orchestration.js";
@@ -101,16 +104,19 @@ describe("an ephemeral machine being removed", () => {
         });
 
         const sweeping = sweepProviderMachine(harness.deps, host.id);
-        await entered.promise;
-        const response = await unarchive(harness, thread.id);
+        try {
+          await entered.promise;
+          const response = await unarchive(harness, thread.id);
 
-        expect(response.status).toBe(409);
-        expect(await readJson(response)).toMatchObject({
-          code: "machine_removing",
-        });
-        expect(getThread(harness.db, thread.id)?.archivedAt).not.toBeNull();
-        release.resolve();
-        await sweeping;
+          expect(response.status).toBe(409);
+          expect(await readJson(response)).toMatchObject({
+            code: "machine_removing",
+          });
+          expect(getThread(harness.db, thread.id)?.archivedAt).not.toBeNull();
+        } finally {
+          release.resolve();
+          await sweeping;
+        }
 
         expect(remove).toHaveBeenCalledTimes(1);
         expect(await exists(file)).toBe(false);
@@ -210,6 +216,357 @@ describe("an ephemeral machine being removed", () => {
           phase: "destroyed",
           statusMessage: null,
         });
+      } finally {
+        await rm(directory, { recursive: true, force: true });
+      }
+    }));
+});
+
+type LauncherShape =
+  | "bare"
+  | "creating-environment"
+  | "active"
+  | "stopping"
+  | "ready-environment"
+  | "pathful-environment";
+
+async function seedCreateFailedMachine(
+  harness: TestAppHarness,
+  args: { directory: string; launcher: LauncherShape },
+) {
+  const { host } = seedHostSession(harness.deps);
+  const { project } = seedProjectWithSource(harness.deps, { hostId: host.id });
+  const launcherEnvironment =
+    args.launcher === "bare" ||
+    args.launcher === "active" ||
+    args.launcher === "stopping"
+      ? null
+      : createEnvironment(harness.db, harness.hub, {
+          projectId: project.id,
+          hostId: host.id,
+          path:
+            args.launcher === "creating-environment" ? null : args.directory,
+          providerOwnsPath: false,
+          status:
+            args.launcher === "ready-environment"
+              ? "ready"
+              : args.launcher === "pathful-environment"
+                ? "error"
+                : "creating",
+          environmentProvider: null,
+        });
+  const launcher = seedThread(harness.deps, {
+    projectId: project.id,
+    status:
+      args.launcher === "active" || args.launcher === "stopping"
+        ? args.launcher
+        : "idle",
+    environmentId:
+      args.launcher === "ready-environment"
+        ? (launcherEnvironment?.id ?? null)
+        : null,
+  });
+  if (launcherEnvironment !== null && args.launcher !== "ready-environment") {
+    harness.db
+      .update(environments)
+      .set({ ownerThreadId: launcher.id })
+      .where(eq(environments.id, launcherEnvironment.id))
+      .run();
+  }
+  updateHost(harness.db, harness.hub, host.id, {
+    type: "ephemeral",
+    machineProviderId: "test-machine",
+    phase: "removing",
+    resource: null,
+    launchKey: launcher.id,
+    teardownAttempt: 0,
+    teardownStatus: "failed",
+    statusMessage: "Cloud quota exceeded",
+    removeRetryAt: Date.now() - 1,
+  });
+  return { host, project, launcher };
+}
+
+function seedSecondOwner(
+  harness: TestAppHarness,
+  args: { hostId: string; projectId: string; directory: string },
+  shape: "ready" | "creating",
+) {
+  const environment = createEnvironment(harness.db, harness.hub, {
+    projectId: args.projectId,
+    hostId: args.hostId,
+    path: shape === "ready" ? args.directory : null,
+    providerOwnsPath: false,
+    status: shape === "ready" ? "ready" : "creating",
+    environmentProvider: null,
+  });
+  return seedThread(harness.deps, {
+    projectId: args.projectId,
+    environmentId: environment.id,
+    status: "idle",
+  });
+}
+
+function destroyingProvider(directory: string, failFirst: boolean) {
+  let calls = 0;
+  const destroy = vi.fn(async () => {
+    calls += 1;
+    if (failFirst && calls === 1)
+      return { status: "failed" as const, message: "provider unavailable" };
+    await rm(directory, { recursive: true, force: true });
+    return { status: "removed" as const };
+  });
+  installMachineProvider({
+    ephemeral: true,
+    remove: destroy,
+    reconcileCleanup: destroy,
+  });
+  return destroy;
+}
+
+function retryNow(harness: TestAppHarness, hostId: string): void {
+  updateHost(harness.db, harness.hub, hostId, {
+    removeRetryAt: Date.now() - 1,
+  });
+}
+
+describe("an ephemeral machine whose creation failed", () => {
+  it("never destroys a machine a second live owner with a ready environment uses, and names that owner", async () =>
+    withTestHarness(async (harness) => {
+      const { directory, file } = await seedDisposableWorkspace();
+      try {
+        const destroy = destroyingProvider(directory, false);
+        const { host, project, launcher } = await seedCreateFailedMachine(
+          harness,
+          { directory, launcher: "bare" },
+        );
+        const second = seedSecondOwner(
+          harness,
+          { hostId: host.id, projectId: project.id, directory },
+          "ready",
+        );
+
+        await sweepProviderMachine(harness.deps, host.id);
+
+        expect(destroy).not.toHaveBeenCalled();
+        expect(await exists(file)).toBe(true);
+        const message = getHost(harness.db, host.id)?.statusMessage ?? "";
+        expect(message).toContain(second.id);
+        expect(message).not.toContain(launcher.id);
+        expect(getHost(harness.db, host.id)).toMatchObject({
+          phase: "removing",
+          teardownStatus: "failed",
+        });
+
+        archiveThread(harness.db, harness.hub, second.id);
+        retryNow(harness, host.id);
+        await sweepProviderMachine(harness.deps, host.id);
+
+        expect(destroy).toHaveBeenCalledTimes(1);
+        expect(await exists(file)).toBe(false);
+        expect(getHost(harness.db, host.id)?.phase).toBe("destroyed");
+      } finally {
+        await rm(directory, { recursive: true, force: true });
+      }
+    }));
+
+  it.each(["ready", "creating"] as const)(
+    "never exempts a second owner whose environment is %s",
+    async (shape) =>
+      withTestHarness(async (harness) => {
+        const { directory, file } = await seedDisposableWorkspace();
+        try {
+          const destroy = destroyingProvider(directory, false);
+          const { host, project } = await seedCreateFailedMachine(harness, {
+            directory,
+            launcher: "bare",
+          });
+          const second = seedSecondOwner(
+            harness,
+            { hostId: host.id, projectId: project.id, directory },
+            shape,
+          );
+
+          await sweepProviderMachine(harness.deps, host.id);
+
+          expect(destroy).not.toHaveBeenCalled();
+          expect(await exists(file)).toBe(true);
+          expect(getHost(harness.db, host.id)?.statusMessage).toContain(
+            second.id,
+          );
+        } finally {
+          await rm(directory, { recursive: true, force: true });
+        }
+      }),
+  );
+
+  it.each(["bare", "creating-environment"] as const)(
+    "retries after a failed removal without the %s launcher blocking itself",
+    async (launcherShape) =>
+      withTestHarness(async (harness) => {
+        const { directory, file } = await seedDisposableWorkspace();
+        try {
+          const destroy = destroyingProvider(directory, true);
+          const { host, launcher } = await seedCreateFailedMachine(harness, {
+            directory,
+            launcher: launcherShape,
+          });
+
+          await sweepProviderMachine(harness.deps, host.id);
+
+          expect(destroy).toHaveBeenCalledTimes(1);
+          expect(await exists(file)).toBe(true);
+          expect(getHost(harness.db, host.id)).toMatchObject({
+            phase: "removing",
+            teardownStatus: "failed",
+            statusMessage: "provider unavailable",
+          });
+          expect(getHost(harness.db, host.id)?.statusMessage).not.toContain(
+            launcher.id,
+          );
+
+          retryNow(harness, host.id);
+          await sweepProviderMachine(harness.deps, host.id);
+
+          expect(destroy).toHaveBeenCalledTimes(2);
+          expect(await exists(file)).toBe(false);
+          expect(getHost(harness.db, host.id)?.phase).toBe("destroyed");
+        } finally {
+          await rm(directory, { recursive: true, force: true });
+        }
+      }),
+  );
+
+  it("completes an explicit delete when only the safely exempt launcher exists", async () =>
+    withTestHarness(async (harness) => {
+      const { directory, file } = await seedDisposableWorkspace();
+      try {
+        const destroy = destroyingProvider(directory, false);
+        const { host } = await seedCreateFailedMachine(harness, {
+          directory,
+          launcher: "creating-environment",
+        });
+
+        const response = await harness.app.request(`/api/v1/hosts/${host.id}`, {
+          method: "DELETE",
+        });
+
+        expect(response.status).toBe(200);
+        expect(destroy).toHaveBeenCalledTimes(1);
+        expect(await exists(file)).toBe(false);
+        expect(getHost(harness.db, host.id)?.phase).toBe("destroyed");
+      } finally {
+        await rm(directory, { recursive: true, force: true });
+      }
+    }));
+
+  it.each([
+    "active",
+    "stopping",
+    "ready-environment",
+    "pathful-environment",
+  ] as const)(
+    "keeps the machine while the launching thread is %s",
+    async (launcherShape) =>
+      withTestHarness(async (harness) => {
+        const { directory, file } = await seedDisposableWorkspace();
+        try {
+          const destroy = destroyingProvider(directory, false);
+          const { host, launcher } = await seedCreateFailedMachine(harness, {
+            directory,
+            launcher: launcherShape,
+          });
+
+          await sweepProviderMachine(harness.deps, host.id);
+
+          expect(destroy).not.toHaveBeenCalled();
+          expect(await exists(file)).toBe(true);
+          expect(getHost(harness.db, host.id)?.statusMessage).toContain(
+            launcher.id,
+          );
+        } finally {
+          await rm(directory, { recursive: true, force: true });
+        }
+      }),
+  );
+});
+
+describe("an ephemeral machine an ordinary owner keeps using", () => {
+  it("stays intact across repeated sweeps and is destroyed once the owner is archived", async () =>
+    withTestHarness(async (harness) => {
+      const { directory, file } = await seedDisposableWorkspace();
+      try {
+        const destroy = destroyingProvider(directory, false);
+        const { host, thread } = seedEphemeralMachine(harness, {
+          directory,
+          archived: false,
+        });
+
+        const deleted = await harness.app.request(`/api/v1/hosts/${host.id}`, {
+          method: "DELETE",
+        });
+        expect(deleted.status).toBe(200);
+        const first = getHost(harness.db, host.id);
+        retryNow(harness, host.id);
+        await sweepProviderMachine(harness.deps, host.id);
+        const second = getHost(harness.db, host.id);
+
+        expect(destroy).not.toHaveBeenCalled();
+        expect(await exists(file)).toBe(true);
+        expect(first).toMatchObject({
+          phase: "removing",
+          teardownStatus: "failed",
+          teardownAttempt: 1,
+          statusMessage: expect.stringContaining(thread.id),
+        });
+        expect(second).toMatchObject({
+          phase: "removing",
+          teardownStatus: "failed",
+          teardownAttempt: 2,
+          statusMessage: first?.statusMessage ?? "",
+        });
+
+        archiveThread(harness.db, harness.hub, thread.id);
+        retryNow(harness, host.id);
+        await sweepProviderMachine(harness.deps, host.id);
+
+        expect(destroy).toHaveBeenCalledTimes(1);
+        expect(await exists(file)).toBe(false);
+        expect(getHost(harness.db, host.id)).toMatchObject({
+          phase: "destroyed",
+          statusMessage: null,
+        });
+      } finally {
+        await rm(directory, { recursive: true, force: true });
+      }
+    }));
+
+  it("keeps the machine of an archived thread that is still active", async () =>
+    withTestHarness(async (harness) => {
+      const { directory, file } = await seedDisposableWorkspace();
+      try {
+        const destroy = destroyingProvider(directory, false);
+        const { host, thread } = seedEphemeralMachine(harness, {
+          directory,
+          archived: true,
+        });
+        harness.db
+          .update(threads)
+          .set({ status: "active" })
+          .where(eq(threads.id, thread.id))
+          .run();
+        updateHost(harness.db, harness.hub, host.id, {
+          phase: "removing",
+          removeRetryAt: Date.now() - 1,
+        });
+
+        await sweepProviderMachine(harness.deps, host.id);
+
+        expect(destroy).not.toHaveBeenCalled();
+        expect(await exists(file)).toBe(true);
+        expect(getHost(harness.db, host.id)?.statusMessage).toContain(
+          thread.id,
+        );
       } finally {
         await rm(directory, { recursive: true, force: true });
       }

@@ -197,7 +197,7 @@ export {
   unpinThread,
   unarchiveThread,
   isThreadEnvironmentRemovalRunning,
-  isThreadMachineRemoving,
+  isThreadEphemeralMachineRemoving,
   applyThreadLifecycleEvent,
   applyThreadLifecycleEventInTransaction,
   requireThreadLifecycleEventApplied,

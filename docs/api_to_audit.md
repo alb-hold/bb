@@ -685,13 +685,30 @@ skips the script and the removal; a throw records a failure. The host answers
 the same question again inside `remove`.
 
 Core keeps an environment that a live thread uses for every provider, also
-while its persistent machine is being removed. A live thread is unarchived, or
-active or stopping. The machine then stays in `removing` with a status message
-naming the thread, and removal completes once the thread is archived and idle.
-An ephemeral machine is destroyed under the same rule: a delete still enters
-`removing` at once, and the destroy waits, retrying about every minute, until no
-live thread uses the machine. Core refuses to unarchive a thread whose machine
-is in `removing` with `machine_removing`. No provider opts in or out.
+while its machine is being removed. A live thread is unarchived, or active or
+stopping. The machine then stays in `removing`, with a status message naming the
+thread, and removal completes once the thread is archived and idle. An ephemeral
+machine follows the same rule when it is destroyed: a delete still enters
+`removing` at once, and the destroy waits, retrying about every minute, until
+no live thread uses the machine. The only thread exempt from that wait is the
+one that launched the machine, and only when it is neither active nor stopping
+and owns no ready or pathful environment on that machine. No provider opts in
+or out.
+
+Unarchiving while a machine is being removed:
+- On an ephemeral machine in `removing`, core refuses with `machine_removing`
+  for the whole phase, including the retry window after a failed destroy.
+- On a persistent machine, core refuses with `workspace_busy` only while that
+  environment's teardown is running. Once a teardown is retained or has failed,
+  the unarchive succeeds.
+- A successful unarchive shows the thread and the retained environment's details
+  and path, and adds a live-owner hold, so the machine's removal waits. It does
+  not reactivate the host, and it does not permit sends, retries, queued work,
+  work sessions, terminals, forks, new threads or environment restore while the
+  machine is removing. Transcript, environment and host details stay readable.
+  Committing, pushing or copying files out is manual on that machine. Archiving
+  the thread again lets the removal proceed. Core does not recover the files
+  itself and the workspace is not runnable.
 
 Core's unarchive path refuses with `workspace_busy` while the thread's
 environment teardown is running, so a thread cannot start in a workspace that

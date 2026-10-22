@@ -1205,13 +1205,17 @@ async function removeMachine(deps: Deps, hostId: string): Promise<void> {
     row.teardownAttempt === 0 && row.teardownStatus === "failed"
       ? row.statusMessage
       : null;
-  if (row.type === "ephemeral" && creationFailureMessage === null) {
+  if (row.type === "ephemeral") {
     const owners = listMachineBlockingThreadIds(deps.db, hostId);
     if (owners.length > 0) {
       updateHost(deps.db, deps.hub, hostId, {
         teardownAttempt: attempt,
         teardownStatus: "failed",
-        statusMessage: machineInUseMessage(row.name, owners),
+        statusMessage:
+          machineInUseMessage(row.name, owners) +
+          (creationFailureMessage === null
+            ? ""
+            : `; machine creation failed: ${creationFailureMessage}`),
         removeRetryAt: Date.now() + MACHINE_IN_USE_RETRY_MS,
       });
       deps.hub.notifyHost(hostId, ["host-disconnected"]);
@@ -1418,10 +1422,9 @@ export async function sweepProviderMachine(
           teardownAttempt: row.teardownAttempt + 1,
           teardownStatus: "failed",
           statusMessage:
-            blocking.teardownMessage ??
-            (liveThreadIds.length > 0
+            liveThreadIds.length > 0
               ? machineInUseMessage(blocking.path ?? blocking.id, liveThreadIds)
-              : "Environment cleanup failed"),
+              : (blocking.teardownMessage ?? "Environment cleanup failed"),
           removeRetryAt: blocking.retireAt ?? Date.now() + 60_000,
         });
         deps.hub.notifyHost(hostId, ["host-disconnected"]);
