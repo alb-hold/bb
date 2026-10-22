@@ -28,7 +28,8 @@ const SCAN_INTERVAL_MS = 2_000;
 const GAP_REPORT_AFTER_MS = 10_000;
 const ABANDONED_TEMP_AGE_MS = 10 * 60_000;
 const MAX_RESERVATIONS_PER_SCAN = 64;
-const LOCK_WAIT_TICKS = 400;
+const LOCK_WAIT_SECONDS = 20;
+const LATE_FILE_NAME = /^\.late\.\d+\.(\d+)$/u;
 const APPEND_LOCK_NAME = "hooks.lock";
 const LOCK_PID_REUSE_BOUND_MS = 10 * 60_000;
 const LOST_MARKER_NAME = /^\.lost\./u;
@@ -207,7 +208,7 @@ export function hookSpoolCommand(directory: string): string {
 
 export function hookAppendCommand(
   file: string,
-  ticks: number = LOCK_WAIT_TICKS,
+  waitSeconds: number = LOCK_WAIT_SECONDS,
 ): string {
   return [
     "exec 2>/dev/null",
@@ -217,15 +218,21 @@ export function hookAppendCommand(
     'm="$d/.tmp.$$.mark"',
     ': >"$m" || exit 0',
     "r=$(cat) || exit 0",
+    "s=$(date +%s)",
+    "case \"$s\" in ''|*[!0-9]*) s=0;; esac",
+    `e=$((s+${waitSeconds}))`,
     "w=0",
     "while :; do " +
-      'if [ ! -e "$l" ] && [ ! -L "$l" ]; then ' +
-      'if ln -s "$$" "$l"; then break; fi; ' +
-      'if [ ! -e "$l" ] && [ ! -L "$l" ]; then ' +
-      "mkdir \"$l\" && { printf '%s' \"$$\" >\"$l/pid\"; break; }; fi; fi; " +
-      `[ "$w" -lt ${ticks} ] || { mv -f "$m" "$d/.lost.$$"; exit 0; }; ` +
-      'if [ "$w" -lt 10 ]; then w=$((w+1)); ' +
-      "elif sleep 0.05; then w=$((w+1)); else sleep 1; w=$((w+20)); fi; done",
+      'if ln -s "$$" "$l"; then ' +
+      'if [ -L "$l" ] && [ ! -e "$l/$$" ] && [ ! -L "$l/$$" ]; then break; fi; ' +
+      'rm -f "$l/$$"; ' +
+      'elif [ ! -e "$l" ] && [ ! -L "$l" ]; then ' +
+      "mkdir \"$l\" && { printf '%s' \"$$\" >\"$l/pid\"; break; }; fi; " +
+      'if ! [ "$(date +%s)" -lt "$e" ]; then ' +
+      "printf '%s\\n' \"$r\" >\"$d/.late.$$.tmp\" " +
+      '&& mv -f "$d/.late.$$.tmp" "$d/.late.$$.$s" && rm -f "$m" ' +
+      '|| mv -f "$m" "$d/.lost.$$"; exit 0; fi; ' +
+      'if [ "$w" -lt 10 ]; then w=$((w+1)); else sleep 0.05 || sleep 1; fi; done',
     'printf \'%s\\n\' "$r" >>"$f" && rm -f "$m"',
     'rm -rf "$l"',
     "exit 0",
@@ -239,6 +246,7 @@ export function hookCommandFor(target: string | { appendFile: string }): string 
 }
 
 export interface HookSpoolRead {
+  late?: Array<{ record: unknown; startedAt: number }>;
   records: unknown[];
   unreadable: number;
 }
@@ -435,17 +443,53 @@ export class HookAppendReader {
   private incompleteOffset = -1;
   private incompleteCounted = false;
   private brokenLocks = 0;
+  private readonly seenLate = new Set<string>();
   private readonly reportedMarkers = new Set<string>();
 
   constructor(private readonly file: string) {}
 
   read(now: number = Date.now()): HookSpoolRead {
+    const late = this.readLate();
     const result = this.readLines(now);
+    result.unreadable += late.lost;
+    if (late.records.length > 0) result.late = late.records;
     if (now - this.lastScanAt >= SCAN_INTERVAL_MS) {
       this.lastScanAt = now;
       result.unreadable += this.breakStaleLock(now) + this.scanMarkers(now);
     }
     return result;
+  }
+
+  private readLate(): {
+    lost: number;
+    records: Array<{ record: unknown; startedAt: number }>;
+  } {
+    const directory = path.dirname(this.file);
+    let names: string[];
+    try {
+      names = readdirSync(directory);
+    } catch {
+      return { lost: 0, records: [] };
+    }
+    const records: Array<{ record: unknown; startedAt: number }> = [];
+    let lost = 0;
+    for (const name of names.sort()) {
+      const match = LATE_FILE_NAME.exec(name);
+      if (match === null || this.seenLate.has(name)) continue;
+      this.seenLate.add(name);
+      lost += 1;
+      const file = path.join(directory, name);
+      try {
+        records.push({
+          record: JSON.parse(readFileSync(file, "utf8")),
+          startedAt: Number(match[1]),
+        });
+        truncateSync(file, 0);
+      } catch {
+        continue;
+      }
+    }
+    return { lost, records };
   }
 
   private readLines(now: number): HookSpoolRead {

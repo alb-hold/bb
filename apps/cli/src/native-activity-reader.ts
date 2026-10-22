@@ -190,7 +190,12 @@ export class NativeActivityReader {
         "missing-session" | "foreign-session"
       >();
       const spooled = this.hookSource.read();
-      const arrived = spooled.records;
+      const lateOpeners = (spooled.late ?? [])
+        .filter(({ record, startedAt }) =>
+          this.tracker.acceptsLate(classifyHookRecord(hooks, record), startedAt),
+        )
+        .map(({ record }) => record);
+      const arrived = [...lateOpeners, ...spooled.records];
       const unreadable = spooled.unreadable;
       if (unreadable > 0) {
         this.unreadableHookRecords += unreadable;

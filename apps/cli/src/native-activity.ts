@@ -31,6 +31,11 @@ type ActivityTranscript = NonNullable<
 >;
 
 const MAX_PROMPT_LENGTH = 4_000;
+const MAX_ORPHAN_BASES = 256;
+
+function nowSeconds(): number {
+  return Math.floor(Date.now() / 1000);
+}
 const MAX_READ_BYTES = 4 * 1024 * 1024;
 
 export function readRecordField(value: unknown, fieldPath: string): unknown {
@@ -286,6 +291,8 @@ export class NativeActivityTracker {
   private readonly questions = new Map<string, string>();
   private readonly occurrenceCounters = new Map<string, number>();
   private readonly openOccurrences = new Map<string, string[]>();
+  private readonly lastOrphanCloseSec = new Map<string, number>();
+  private lastClearSec = 0;
 
   constructor(private readonly nonce: string = processHolderNonce()) {}
 
@@ -321,6 +328,17 @@ export class NativeActivityTracker {
     return { state: "working", prompt: newPrompt };
   }
 
+  acceptsLate(signal: NativeActivitySignal, startedAtSec: number): boolean {
+    if (signal.question === undefined || signal.occurrence !== true) {
+      return false;
+    }
+    if (this.lastClearSec > startedAtSec) return false;
+    const closedAt = this.lastOrphanCloseSec.get(
+      occurrenceBase(signal.question.id),
+    );
+    return closedAt === undefined || closedAt < startedAtSec;
+  }
+
   heartbeat(): NativeActivityReport | null {
     if (this.questions.size > 0) return this.waitingReport();
     return this.state === "working" ? { state: "working", prompt: null } : null;
@@ -333,6 +351,7 @@ export class NativeActivityTracker {
   private clearQuestions(): void {
     this.questions.clear();
     this.openOccurrences.clear();
+    this.lastClearSec = nowSeconds();
   }
 
   private startOccurrence(question: NativeQuestion): NativeQuestion {
@@ -351,7 +370,14 @@ export class NativeActivityTracker {
     const base = occurrenceBase(questionId);
     const open = this.openOccurrences.get(base);
     const oldest = open?.[0];
-    if (open === undefined || oldest === undefined) return null;
+    if (open === undefined || oldest === undefined) {
+      this.lastOrphanCloseSec.set(base, nowSeconds());
+      if (this.lastOrphanCloseSec.size > MAX_ORPHAN_BASES) {
+        const first = this.lastOrphanCloseSec.keys().next().value;
+        if (first !== undefined) this.lastOrphanCloseSec.delete(first);
+      }
+      return null;
+    }
     if (open.length === 1) this.openOccurrences.delete(base);
     else this.openOccurrences.set(base, open.slice(1));
     return oldest;
