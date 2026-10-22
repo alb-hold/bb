@@ -54,13 +54,15 @@ export function createSessionDiscoverer(options: {
       if (sessionId === null) return;
       if (options.currentCredential() === null) return;
       pending = false;
-      options.reader()?.sessionDiscovered(sessionId);
       const outcome = await recordDiscoveredSession({
         currentCredential: options.currentCredential,
         nativeSessionId: sessionId,
         recordSession: options.recordSession,
       });
       pending = outcome.kind === "retry";
+      if (outcome.kind === "recorded") {
+        options.reader()?.sessionDiscovered(sessionId);
+      }
       if (outcome.kind === "refused") {
         options.reader()?.suspend();
         options.discardUnsentReports();

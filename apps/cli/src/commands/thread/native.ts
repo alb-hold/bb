@@ -20,7 +20,10 @@ import {
 import { requireThreadIdOrSelf } from "../../context-env.js";
 import { fillNativeTerminalTemplate } from "@bb/domain";
 import { createSessionDiscoverer } from "../../native-session-discovery.js";
-import { createNativeActivityWiring } from "../../native-activity-wiring.js";
+import {
+  createNativeActivityPump,
+  createNativeActivityWiring,
+} from "../../native-activity-wiring.js";
 import { createNativeActivityReporter } from "../../native-activity-reporter.js";
 import { nativeActivityHookSettings } from "../../native-activity.js";
 import {
@@ -236,9 +239,10 @@ async function holdNativeHarness(
     report,
     retryReport: reporter.retry,
   });
-  const readActivity = (): void => {
-    for (const next of reader?.read() ?? []) report(next);
-  };
+  const readActivity = createNativeActivityPump({
+    reader: () => reader,
+    report,
+  });
   const finishActivity = (): void => {
     report(reader?.finish() ?? null);
   };
