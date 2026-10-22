@@ -1,6 +1,8 @@
 import {
   closeSync,
+  constants,
   fstatSync,
+  ftruncateSync,
   linkSync,
   lstatSync,
   mkdirSync,
@@ -14,7 +16,6 @@ import {
   rmSync,
   statfsSync,
   statSync,
-  truncateSync,
   unlinkSync,
   type Stats,
 } from "node:fs";
@@ -277,27 +278,20 @@ export class HookSpoolReader {
     let unreadable = 0;
     for (let count = 0; count < MAX_RECORDS_PER_READ; count += 1) {
       const file = path.join(this.directory, sequenceName(this.next));
-      let content: string;
-      try {
-        content = readFileSync(file, "utf8");
-      } catch (error) {
-        if (isMissing(error)) break;
-        unreadable += 1;
-        this.next += 1;
-        continue;
-      }
+      const content = readRegularFile(file);
+      if (content.kind === "missing") break;
       this.next += 1;
       this.gapSince = null;
+      if (content.kind !== "text") {
+        unreadable += 1;
+        continue;
+      }
       try {
-        records.push(JSON.parse(content));
+        records.push(JSON.parse(content.text));
       } catch {
         unreadable += 1;
       }
-      try {
-        truncateSync(file, 0);
-      } catch {
-        continue;
-      }
+      truncateRegularFile(file);
     }
     return unreadable;
   }
@@ -367,11 +361,8 @@ export class HookSpoolReader {
     ) {
       return 0;
     }
-    const file = path.join(this.directory, name);
-    try {
-      if (statSync(file).size === 0) return 0;
-      truncateSync(file, 0);
-    } catch {
+    const outcome = truncateRegularFile(path.join(this.directory, name));
+    if (outcome === "missing" || outcome === "empty" || outcome === "error") {
       return 0;
     }
     this.reportedLate.add(name);
@@ -393,6 +384,67 @@ export function reserveSequence(
       ? "present"
       : "failed";
   }
+}
+
+type RegularRead =
+  | { kind: "text"; text: string }
+  | { kind: "missing" }
+  | { kind: "irregular" }
+  | { kind: "error" };
+
+const NO_FOLLOW_NO_BLOCK = constants.O_NONBLOCK | constants.O_NOFOLLOW;
+
+function readRegularFile(file: string): RegularRead {
+  let descriptor: number;
+  try {
+    descriptor = openSync(file, constants.O_RDONLY | NO_FOLLOW_NO_BLOCK);
+  } catch (error) {
+    if (isMissing(error)) return { kind: "missing" };
+    return isSymlinkRefusal(error) ? { kind: "irregular" } : { kind: "error" };
+  }
+  try {
+    if (!fstatSync(descriptor).isFile()) return { kind: "irregular" };
+    return { kind: "text", text: readFileSync(descriptor, "utf8") };
+  } catch {
+    return { kind: "error" };
+  } finally {
+    closeSync(descriptor);
+  }
+}
+
+type TruncateOutcome = "empty" | "error" | "irregular" | "missing" | "truncated";
+
+function truncateRegularFile(file: string): TruncateOutcome {
+  let descriptor: number;
+  try {
+    descriptor = openSync(file, constants.O_WRONLY | NO_FOLLOW_NO_BLOCK);
+  } catch (error) {
+    if (isMissing(error)) return "missing";
+    return isSymlinkRefusal(error) || isNoDevice(error) ? "irregular" : "error";
+  }
+  try {
+    const stats = fstatSync(descriptor);
+    if (!stats.isFile()) return "irregular";
+    if (stats.size === 0) return "empty";
+    ftruncateSync(descriptor, 0);
+    return "truncated";
+  } catch {
+    return "error";
+  } finally {
+    closeSync(descriptor);
+  }
+}
+
+function isNoDevice(error: unknown): boolean {
+  return error instanceof Error && "code" in error && error.code === "ENXIO";
+}
+
+function isSymlinkRefusal(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    "code" in error &&
+    (error.code === "ELOOP" || error.code === "EMLINK")
+  );
 }
 
 function lockHolderPid(lock: string, stats: Stats): number | null {
@@ -444,12 +496,13 @@ export class HookAppendReader {
   private incompleteCounted = false;
   private brokenLocks = 0;
   private readonly seenLate = new Set<string>();
+  private mainIrregularCounted = false;
   private readonly reportedMarkers = new Set<string>();
 
   constructor(private readonly file: string) {}
 
   read(now: number = Date.now()): HookSpoolRead {
-    const snapshot = this.mainSize();
+    const snapshot = this.takeSnapshot();
     const late = this.readLate();
     const result = this.readLines(now, snapshot);
     result.unreadable += late.lost;
@@ -461,7 +514,13 @@ export class HookAppendReader {
     return result;
   }
 
-  private mainSize(): number {
+  private countIrregularMain(): number {
+    if (this.mainIrregularCounted) return 0;
+    this.mainIrregularCounted = true;
+    return 1;
+  }
+
+  takeSnapshot(): number {
     try {
       return statSync(this.file).size;
     } catch {
@@ -469,7 +528,7 @@ export class HookAppendReader {
     }
   }
 
-  private readLate(): {
+  readLate(): {
     lost: number;
     records: Array<{ record: unknown; startedAt: number }>;
   } {
@@ -488,30 +547,39 @@ export class HookAppendReader {
       this.seenLate.add(name);
       lost += 1;
       const file = path.join(directory, name);
+      const content = readRegularFile(file);
+      if (content.kind !== "text") continue;
       try {
         records.push({
-          record: JSON.parse(readFileSync(file, "utf8")),
+          record: JSON.parse(content.text),
           startedAt: Number(match[1]),
         });
-        truncateSync(file, 0);
       } catch {
         continue;
+      } finally {
+        truncateRegularFile(file);
       }
     }
     return { lost, records };
   }
 
-  private readLines(now: number, snapshot: number): HookSpoolRead {
+  readLines(now: number, snapshot: number): HookSpoolRead {
     const records: unknown[] = [];
     let unreadable = 0;
     let descriptor: number;
     try {
-      descriptor = openSync(this.file, "r");
-    } catch {
-      return { records, unreadable };
+      descriptor = openSync(this.file, constants.O_RDONLY | NO_FOLLOW_NO_BLOCK);
+    } catch (error) {
+      return isMissing(error)
+        ? { records, unreadable }
+        : { records, unreadable: this.countIrregularMain() };
     }
     try {
-      const actual = fstatSync(descriptor).size;
+      const stats = fstatSync(descriptor);
+      if (!stats.isFile()) {
+        return { records, unreadable: this.countIrregularMain() };
+      }
+      const actual = stats.size;
       const size = Math.min(actual, snapshot);
       const length = Math.min(size - this.offset, MAX_APPEND_READ_BYTES);
       if (length <= 0) {
