@@ -19,7 +19,7 @@ import {
 } from "../../native-tool-credential.js";
 import { requireThreadIdOrSelf } from "../../context-env.js";
 import { fillNativeTerminalTemplate } from "@bb/domain";
-import { recordDiscoveredSession } from "../../native-session-discovery.js";
+import { createSessionDiscoverer } from "../../native-session-discovery.js";
 import { createNativeActivityWiring } from "../../native-activity-wiring.js";
 import { createNativeActivityReporter } from "../../native-activity-reporter.js";
 import { nativeActivityHookSettings } from "../../native-activity.js";
@@ -189,39 +189,31 @@ async function holdNativeHarness(
     cli: Parameters<typeof findNativeSession>[0]["cli"];
     launchedAtMs: number;
   } | null = null;
-  let recorded = true;
-  const discover = async (): Promise<void> => {
-    if (recorded || discovery === null) return;
-    let match: ReturnType<typeof findNativeSession>;
-    try {
-      match = findNativeSession({
-        cli: discovery.cli,
-        cwd,
-        env: process.env,
-        launchedAtMs: discovery.launchedAtMs,
-        nowMs: Date.now(),
-      });
-    } catch {
-      return;
-    }
-    if (match.kind !== "unique") return;
-    if (currentCredential() === null) return;
-    recorded = true;
-    reader?.sessionDiscovered(match.sessionId);
-    const outcome = await recordDiscoveredSession({
-      currentCredential: () => currentCredential(),
-      nativeSessionId: match.sessionId,
-      recordSession: (args) =>
-        sdk.nativeTerminals.recordSession({ ...args, threadId }),
-    });
-    recorded = outcome.kind !== "retry";
-    if (outcome.kind === "refused" && ownsSocket) {
-      logNativeHolderEvent(socketPath, "session-discovery-stopped", {
-        code: outcome.code,
-        sessionId: match.sessionId,
-      });
-    }
-  };
+  const discoverer = createSessionDiscoverer({
+    currentCredential: () => currentCredential(),
+    find: () => {
+      if (discovery === null) return null;
+      try {
+        const match = findNativeSession({
+          cli: discovery.cli,
+          cwd,
+          env: process.env,
+          launchedAtMs: discovery.launchedAtMs,
+          nowMs: Date.now(),
+        });
+        return match.kind === "unique" ? match.sessionId : null;
+      } catch {
+        return null;
+      }
+    },
+    log: (event, fields) => {
+      if (ownsSocket) logNativeHolderEvent(socketPath, event, fields);
+    },
+    reader: () => reader,
+    recordSession: (args) =>
+      sdk.nativeTerminals.recordSession({ ...args, threadId }),
+  });
+  const discover = discoverer.discover;
   let reader: NativeActivityReader | null = null;
   let eventsFile: string | null = null;
   const activityTimers: NodeJS.Timeout[] = [];
@@ -313,7 +305,7 @@ async function holdNativeHarness(
         cwd,
       );
       discovery = { cli: spec.cli, launchedAtMs: Date.now() };
-      recorded = launch.session.kind !== "discover";
+      discoverer.arm(launch.session.kind === "discover");
       reader = new NativeActivityReader(
         spec.cli,
         process.env,

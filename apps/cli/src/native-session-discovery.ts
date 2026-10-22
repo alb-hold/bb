@@ -26,3 +26,47 @@ export async function recordDiscoveredSession(options: {
     return code === null ? { kind: "retry" } : { code, kind: "refused" };
   }
 }
+
+export interface SessionDiscovererReader {
+  sessionDiscovered(sessionId: string): void;
+  suspend(): void;
+}
+
+export function createSessionDiscoverer(options: {
+  currentCredential(): string | null;
+  find(): string | null;
+  log(event: string, fields: Record<string, number | string | null>): void;
+  reader(): SessionDiscovererReader | null;
+  recordSession(args: {
+    authorization: string;
+    nativeSessionId: string;
+  }): Promise<unknown>;
+}): { arm(needed: boolean): void; discover(): Promise<void> } {
+  let pending = false;
+  return {
+    arm(needed) {
+      pending = needed;
+    },
+    async discover() {
+      if (!pending) return;
+      const sessionId = options.find();
+      if (sessionId === null) return;
+      if (options.currentCredential() === null) return;
+      pending = false;
+      options.reader()?.sessionDiscovered(sessionId);
+      const outcome = await recordDiscoveredSession({
+        currentCredential: options.currentCredential,
+        nativeSessionId: sessionId,
+        recordSession: options.recordSession,
+      });
+      pending = outcome.kind === "retry";
+      if (outcome.kind === "refused") {
+        options.reader()?.suspend();
+        options.log("session-discovery-stopped", {
+          code: outcome.code,
+          sessionId,
+        });
+      }
+    },
+  };
+}
