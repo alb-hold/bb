@@ -96,10 +96,16 @@ interface CliModules {
   NativeActivityReader: new (
     cli: ProviderNativeTerminal,
     env: { HOME: string },
-    eventsFile: string | null,
+    hookSource: HookSourceLike,
     start: { kind: "discover" } | { kind: "start"; id: string },
   ) => ReaderLike;
 }
+
+type HookSourceLike =
+  | string
+  | { appendFile: string }
+  | { unavailable: true }
+  | null;
 
 const cliUrl = (file: string) =>
   new URL(`../../../cli/src/${file}`, import.meta.url).href;
@@ -113,7 +119,10 @@ const readerModule: Pick<CliModules, "NativeActivityReader"> = await import(
 
 interface SpoolModules {
   createHookSpool(parent: string, label: string): string;
-  nativeActivityHookSettings(hooks: unknown, spoolDirectory: string): string;
+  nativeActivityHookSettings(
+    hooks: unknown,
+    capture: string | { appendFile: string },
+  ): string;
   removeHookSpool(directory: string): void;
 }
 
@@ -1039,7 +1048,7 @@ describe("an older server that does not know the closure fields (INJECTED-SERVER
 describe.skipIf(process.platform === "win32")(
   `Needs input from concurrent hooks, through the generated hook command, the real reader, reporter, SDK client and server ${process.platform === "win32" ? "(NOT EXERCISED on native Windows: the hook command needs a POSIX shell and native-terminal mode cannot start there today)" : ""}`,
   () => {
-    async function prepared() {
+    async function prepared(mode: "spool" | "append" = "spool") {
       const { harness, thread } = await nativeThread();
       const cli =
         harness.deps.providerRegistry.get("claude-code")?.nativeTerminal;
@@ -1049,9 +1058,12 @@ describe.skipIf(process.platform === "win32")(
       }
       const spool = spoolModule.createHookSpool(os.tmpdir(), "delivery-test");
       roots.push(spool);
+      const capture =
+        mode === "spool" ? spool : { appendFile: path.join(spool, "hooks.jsonl") };
+      if (typeof capture !== "string") writeFileSync(capture.appendFile, "");
       const settings: {
         hooks: Record<string, { hooks: { command: string }[] }[]>;
-      } = JSON.parse(settingsModule.nativeActivityHookSettings(hooks, spool));
+      } = JSON.parse(settingsModule.nativeActivityHookSettings(hooks, capture));
       const command = settings.hooks.PermissionRequest?.[0]?.hooks[0]?.command;
       if (command === undefined) throw new Error("no PermissionRequest hook");
       const runHook = (tool: string, index: number, size: string) =>
@@ -1074,7 +1086,7 @@ describe.skipIf(process.platform === "win32")(
       const reader = new readerModule.NativeActivityReader(
         cli,
         { HOME: os.tmpdir() },
-        spool,
+        capture,
         { kind: "start", id: SESSION_ID },
         undefined,
         (reason: string, total: number) => unconfirmed.push({ reason, total }),
@@ -1120,6 +1132,23 @@ describe.skipIf(process.platform === "win32")(
       expect(getThread(harness.db, thread.id)?.status).toBe("active");
     });
 
+    it("registers Needs input through the append fallback when no candidate supports links", async () => {
+      const { deliver, harness, runHook, thread } = await prepared("append");
+      for (const [index, tool] of ["Alpha", "Beta", "Gamma"].entries()) {
+        await runHook(tool, index, "small");
+      }
+      await deliver();
+      const pending = JSON.stringify(
+        listPendingInteractionsByThread(harness.db, {
+          threadId: thread.id,
+        }).map((row) => row.payload),
+      );
+      for (const tool of ["Alpha", "Beta", "Gamma"]) {
+        expect(pending).toContain(`use: ${tool}`);
+      }
+      expect(getThread(harness.db, thread.id)?.status).toBe("active");
+    });
+
     it("keeps Needs input alive behind a lost record: waits for the gap, then, past the threshold, delivers the later question and reports lost evidence", async () => {
       const { deliver, harness, reader, runHook, spool, thread, unconfirmed } =
         await prepared();
@@ -1133,19 +1162,19 @@ describe.skipIf(process.platform === "win32")(
             threadId: thread.id,
           }).map((row) => row.payload),
         );
-      const realNow = Date.now.bind(Date);
-      const clock = vi.spyOn(Date, "now");
+      const t0 = Date.now();
+      const clock = vi.spyOn(Date, "now").mockImplementation(() => t0);
       try {
         await deliver();
         expect(pendingTools()).toContain("use: Tool0");
         expect(pendingTools()).not.toContain("use: Tool2");
 
-        clock.mockImplementation(() => realNow() + 3_000);
+        clock.mockImplementation(() => t0 + 3_000);
         await deliver();
         expect(pendingTools()).not.toContain("use: Tool2");
         expect(unconfirmed).toEqual([]);
 
-        clock.mockImplementation(() => realNow() + 12_000);
+        clock.mockImplementation(() => t0 + 12_000);
         await deliver();
       } finally {
         clock.mockRestore();

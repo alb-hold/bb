@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { closeSync, openSync, readSync, statSync } from "node:fs";
-import { hookSpoolCommand } from "./native-hook-spool.js";
+import { hookCommandFor } from "./native-hook-spool.js";
 import type {
   ProviderNativeTerminalActivity,
   ProviderNativeTerminalRecordMatch,
@@ -44,9 +44,9 @@ export function readRecordField(value: unknown, fieldPath: string): unknown {
 
 export function nativeActivityHookSettings(
   hooks: ActivityHooks,
-  spoolDirectory: string,
+  capture: string | { appendFile: string },
 ): string {
-  const command = hookSpoolCommand(spoolDirectory);
+  const command = hookCommandFor(capture);
   const entries = [
     ...new Set([
       ...hooks.working,

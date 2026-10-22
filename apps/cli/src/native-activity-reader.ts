@@ -13,7 +13,12 @@ import {
   type NativeActivitySignal,
 } from "./native-activity.js";
 import { EvictedRecordIndex } from "./native-activity-index.js";
-import { HookSpoolReader } from "./native-hook-spool.js";
+import {
+  hookRecordSource,
+  hookSourceIsUnavailable,
+  type HookRecordSource,
+  type HookSource,
+} from "./native-hook-spool.js";
 import {
   findNativeSessionFile,
   type NativeHarnessEnv,
@@ -73,7 +78,8 @@ export async function measureResumedTranscript(
 
 export class NativeActivityReader {
   private readonly tracker = new NativeActivityTracker();
-  private readonly hookSpool: HookSpoolReader | null;
+  private readonly hookSource: HookRecordSource | null;
+  private readonly hooksUnavailable: boolean;
   private unreadableHookRecords = 0;
   private transcriptTail: JsonlTail;
   private adoptedSessions = 0;
@@ -113,7 +119,7 @@ export class NativeActivityReader {
   constructor(
     private readonly cli: ProviderNativeTerminal,
     private readonly env: NativeHarnessEnv,
-    hookSpoolDirectory: string | null,
+    hookSource: HookSource,
     start: NativeActivityStart,
     private readonly onUnconfirmedIdentity?: (total: number) => void,
     private readonly onUnconfirmedHookIdentity?: (
@@ -129,8 +135,8 @@ export class NativeActivityReader {
       previousSessionId: string,
     ) => void,
   ) {
-    this.hookSpool =
-      hookSpoolDirectory === null ? null : new HookSpoolReader(hookSpoolDirectory);
+    this.hookSource = hookRecordSource(hookSource);
+    this.hooksUnavailable = hookSourceIsUnavailable(hookSource);
     this.awaitingBinding = start.kind === "discover";
     if (start.kind !== "discover") this.knownSessions.add(start.id);
     if (start.kind === "resume") {
@@ -168,6 +174,7 @@ export class NativeActivityReader {
       origin: { answered: boolean; transcript: boolean },
     ): void => {
       if (report === null) return;
+      if (this.hooksUnavailable && report.state === "working") return;
       if (this.droppedOpenQuestion && report.state === "working") {
         if (origin.answered) {
           reports.push({ ...report, confirms: false });
@@ -178,11 +185,11 @@ export class NativeActivityReader {
       reports.push(report);
     };
     const hooks = activity.hooks;
-    if (hooks !== undefined && this.hookSpool !== null) {
+    if (hooks !== undefined && this.hookSource !== null) {
       const unconfirmedHookReasons = new Set<
         "missing-session" | "foreign-session"
       >();
-      const spooled = this.hookSpool.read();
+      const spooled = this.hookSource.read();
       const arrived = spooled.records;
       const unreadable = spooled.unreadable;
       if (unreadable > 0) {
@@ -318,7 +325,12 @@ export class NativeActivityReader {
   }
 
   heartbeat(): NativeActivityReport | null {
-    if (this.suspended || this.historyIncomplete || this.awaitingBinding) {
+    if (
+      this.suspended ||
+      this.historyIncomplete ||
+      this.hooksUnavailable ||
+      this.awaitingBinding
+    ) {
       return null;
     }
     if (

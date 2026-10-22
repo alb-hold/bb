@@ -22,8 +22,9 @@ import { createNativeActivityReporter } from "../../native-activity-reporter.js"
 import { nativeActivityHookSettings } from "../../native-activity.js";
 import {
   hookSpoolCandidates,
-  openHookSpool,
+  openHookCapture,
   removeHookSpool,
+  type HookCapture,
 } from "../../native-hook-spool.js";
 import {
   measureResumedTranscript,
@@ -269,33 +270,50 @@ async function holdNativeHarness(
       });
       const activity = spec.cli.activity;
       const hooks = activity?.hooks;
-      const spool =
+      const capture: HookCapture | null =
         hooks === undefined
           ? null
-          : openHookSpool(
+          : openHookCapture(
               hookSpoolCandidates({
                 env: process.env,
                 home: os.homedir(),
                 tmpDir: os.tmpdir(),
               }),
               threadId,
-              () => {
-                if (ownsSocket) {
-                  logNativeHolderEvent(
-                    socketPath,
-                    "activity-hook-spool-unsupported",
-                    {},
-                  );
-                }
+              {
+                appendFallback: () => {
+                  if (ownsSocket) {
+                    logNativeHolderEvent(
+                      socketPath,
+                      "activity-hook-spool-append-fallback",
+                      {},
+                    );
+                  }
+                },
+                unsupported: () => {
+                  if (ownsSocket) {
+                    logNativeHolderEvent(
+                      socketPath,
+                      "activity-hook-spool-unsupported",
+                      {},
+                    );
+                  }
+                },
               },
             );
-      hookSpoolDirectory = spool;
+      hookSpoolDirectory = capture?.directory ?? null;
+      const source = capture?.source;
+      const hookTarget =
+        source === undefined ||
+        (typeof source === "object" && "unavailable" in source)
+          ? null
+          : source;
       const activityArgs =
-        hooks === undefined || spool === null
+        hooks === undefined || hookTarget === null
           ? []
           : hooks.args.map((arg) =>
               fillNativeTerminalTemplate(arg, {
-                settings: nativeActivityHookSettings(hooks, spool),
+                settings: nativeActivityHookSettings(hooks, hookTarget),
               }),
             );
       const script = process.argv[1];
@@ -328,7 +346,7 @@ async function holdNativeHarness(
       reader = new NativeActivityReader(
         spec.cli,
         process.env,
-        spool,
+        capture?.source ?? null,
         launch.session.kind === "resume"
           ? {
               ...launch.session,
