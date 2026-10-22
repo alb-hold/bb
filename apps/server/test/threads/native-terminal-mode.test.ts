@@ -48,7 +48,9 @@ import {
 import { buildThreadStatusChangeMetadata } from "../../src/services/threads/thread-runtime-display.js";
 import * as titleGeneration from "../../src/services/threads/title-generation.js";
 import {
+  isNativeTerminalQuestion,
   NATIVE_TERMINAL_QUESTION_REQUEST_PREFIX,
+  type PendingInteraction,
   type ProviderNativeTerminalActivity,
 } from "@bb/domain";
 
@@ -1524,6 +1526,24 @@ function openInteractions(fixture: Fixture, threadId: string) {
   );
 }
 
+function nativeRequestIds(interactions: PendingInteraction[]): string[] {
+  const ids = interactions.map((interaction) => {
+    if (!isNativeTerminalQuestion(interaction)) {
+      throw new Error(
+        `expected a native terminal question, got ${interaction.id}`,
+      );
+    }
+    expect(interaction.providerRequestId).toEqual(
+      expect.stringMatching(
+        new RegExp(`^${NATIVE_TERMINAL_QUESTION_REQUEST_PREFIX}.+`, "u"),
+      ),
+    );
+    return interaction.providerRequestId;
+  });
+  expect(new Set(ids).size).toBe(ids.length);
+  return ids;
+}
+
 describe("native terminal questions", () => {
   async function waitingThread() {
     const fixture = await createFixture();
@@ -2889,9 +2909,7 @@ describe("a native activity report that does not confirm activity", () => {
   });
 
   const pendingIds = (fixture: Fixture, threadId: string) =>
-    openInteractions(fixture, threadId).map(
-      (interaction) => interaction.providerRequestId,
-    );
+    nativeRequestIds(openInteractions(fixture, threadId));
 
   it("a close that names its question resolves only that question and clears the evidence", async () => {
     const fixture = await createFixture();
@@ -3326,9 +3344,11 @@ describe("a native activity report that does not confirm activity", () => {
           },
         );
       const pending = () =>
-        restarted.deps.pendingInteractions
-          .listPendingThreadInteractions(thread.id)
-          .map((interaction) => interaction.providerRequestId);
+        nativeRequestIds(
+          restarted.deps.pendingInteractions.listPendingThreadInteractions(
+            thread.id,
+          ),
+        );
 
       expect(
         (await post({ closes: [], questions: [bash1], state: "waiting" }))
