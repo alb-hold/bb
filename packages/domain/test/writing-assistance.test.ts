@@ -189,6 +189,11 @@ describe("resolveWritingEdits", () => {
     ["“They said ‘the the’ yesterday.”", "the the", "the"],
     ["«Ele disse “verifique o o cache” ontem.»", "o o", "o"],
     ["'We don't keep the the cache,' she said.", "the the", "the"],
+    ['She said "we said\nthe the cache."', "the the", "the"],
+    ["She said “we said\nthe the cache.”", "the the", "the"],
+    ["She said ‘we said\n\tthe the cache’ twice.", "the the", "the"],
+    ["‘quoted' then the the cache.", "the the", "the"],
+    ["'quoted’ then the the cache.", "the the", "the"],
   ])(
     "only suggests an edit inside quoted text: %s",
     (target, original, replacement) => {
@@ -209,6 +214,8 @@ describe("resolveWritingEdits", () => {
     ["She said ‘hi’ and then checked the the cache.", "the the", "the"],
     ["The sign at 5' reads the the sign.", "the the", "the"],
     ["The users' cache needs the the fix.", "the the", "the"],
+    ["She said “we were\ndone.” Then check the the cache.", "the the", "the"],
+    ['Note "unfinished.\n\nThen check the the cache.', "the the", "the"],
     ["The log says a error occurred twice.", "a error", "an error"],
   ])(
     "still applies outside quoted text: %s",
