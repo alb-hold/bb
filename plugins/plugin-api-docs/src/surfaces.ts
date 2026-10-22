@@ -614,6 +614,7 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
           "experimental_spawnPortableProcess",
           "experimental_nativeTerminalEnvArgs",
           "experimental_nativeTerminal.experimental_launchEnvArgs.experimental_filterConfig",
+          "experimental_nativeTerminal.activity.transcript.continuation",
           "experimental_killPortableProcess",
           "PluginProviders",
         ],

@@ -300,7 +300,9 @@ export class NativeActivityReader {
   }
 
   heartbeat(): NativeActivityReport | null {
-    if (this.suspended || this.historyIncomplete) return null;
+    if (this.suspended || this.historyIncomplete || this.awaitingBinding) {
+      return null;
+    }
     if (
       this.cli.activity?.hooks?.sessionIdField !== undefined &&
       !this.hookIdentityConfirmed
