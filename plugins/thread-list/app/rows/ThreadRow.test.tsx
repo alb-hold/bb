@@ -846,6 +846,30 @@ describe("ThreadRow", () => {
     expect(slot?.classList.contains("px-1.5")).toBe(false);
   });
 
+  it("keeps the activity warning screen-reader only beside a queued clock, which has no status text", () => {
+    const { container } = renderThreadRow({
+      thread: createThread({
+        lastReadAt: 1,
+        latestAttentionAt: 1,
+        queuedWork: "waiting",
+        experimental_nativeActivity: {
+          lastEvidenceAt: null,
+          freshForMs: 90_000,
+          confirmation: "unconfirmed",
+          evidenceKind: "unknown",
+        },
+      }),
+    });
+
+    expect(renderedIndicators()).toEqual(["queued-waiting"]);
+    const warning = container.querySelector(
+      "[data-sidebar-native-activity-warning]",
+    );
+    expect(warning?.textContent).toBe("Activity not reported");
+    expect(warning?.classList.contains("sr-only")).toBe(true);
+    expect(warning?.classList.contains("text-muted-foreground")).toBe(false);
+  });
+
   describe("recovery guidance for an activity that is not reported", () => {
     const unconfirmed = (
       evidenceKind: "tool-call" | "unknown" = "unknown",
