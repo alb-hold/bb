@@ -179,7 +179,11 @@ function claudeFixture(
   extraWorking: boolean = false,
   onUnconfirmed?: (total: number) => void,
   onUnconfirmedHookIdentity?: (
-    reason: "missing-session" | "foreign-session" | "held-overflow",
+    reason:
+      | "missing-session"
+      | "foreign-session"
+      | "held-overflow"
+      | "unreadable-record",
     total: number,
   ) => void,
   onSessionAdopted?: (sessionId: string, previousSessionId: string) => void,

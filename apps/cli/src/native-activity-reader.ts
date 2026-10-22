@@ -72,7 +72,8 @@ export async function measureResumedTranscript(
 
 export class NativeActivityReader {
   private readonly tracker = new NativeActivityTracker();
-  private readonly hookTail = new JsonlTail(0);
+  private readonly hookTail = new JsonlTail(0, { recoverConcatenated: true });
+  private unreadableHookRecords = 0;
   private transcriptTail: JsonlTail;
   private adoptedSessions = 0;
   private readonly adoptionAttempts = new Map<string, number>();
@@ -115,7 +116,11 @@ export class NativeActivityReader {
     start: NativeActivityStart,
     private readonly onUnconfirmedIdentity?: (total: number) => void,
     private readonly onUnconfirmedHookIdentity?: (
-      reason: "missing-session" | "foreign-session" | "held-overflow",
+      reason:
+        | "missing-session"
+        | "foreign-session"
+        | "held-overflow"
+        | "unreadable-record",
       total: number,
     ) => void,
     private readonly onSessionAdopted?: (
@@ -175,6 +180,16 @@ export class NativeActivityReader {
         "missing-session" | "foreign-session"
       >();
       const arrived = this.hookTail.readRecords(this.eventsFile);
+      const unreadable = this.hookTail.takeUnreadable();
+      if (unreadable > 0) {
+        this.unreadableHookRecords += unreadable;
+        this.droppedOpenQuestion = true;
+        this.historyIncomplete = true;
+        this.onUnconfirmedHookIdentity?.(
+          "unreadable-record",
+          this.unreadableHookRecords,
+        );
+      }
       if (this.awaitingBinding) this.holdUntilBound(arrived);
       const incoming = this.awaitingBinding ? [] : arrived;
       const replayed = this.awaitingBinding ? [] : this.releaseBoundRecords();

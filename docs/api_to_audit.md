@@ -934,7 +934,7 @@ sends `closes` on every report, gives each permission prompt its own
 id (tool name, a per-process random nonce and an occurrence number), uses `confirms: false` only when an open question was dropped
 from its holding bound and then never restores Working from a close, and on a
 400 naming the fields retries the report once without exactly those fields;
-the server ends the questions of the previous binding when it binds a new
+the reader splits hook-file lines that hold several whole records and counts unreadable ones as lost evidence (it withholds Working and heartbeats rather than assume no question is pending); the server ends the questions of the previous binding when it binds a new
 terminal and records a durable tombstone for every question a report closes by
 name that had no stored row (at most 8 per report), so the existing
 already-handled rule refuses a delayed registration of it; open finding (not accepted), Claude Code only: the

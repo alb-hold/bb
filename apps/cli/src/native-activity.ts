@@ -212,10 +212,59 @@ export function readTailJsonlRecords(filePath: string): unknown[] {
   }
 }
 
+function splitConcatenatedObjects(line: string): unknown[] | null {
+  const parts: unknown[] = [];
+  let depth = 0;
+  let start = 0;
+  let inString = false;
+  let escaped = false;
+  for (let index = 0; index < line.length; index += 1) {
+    const char = line.charAt(index);
+    if (depth === 0) {
+      if (char === " " || char === "\t" || char === "\r") continue;
+      if (char !== "{") return null;
+      start = index;
+      depth = 1;
+      inString = false;
+      escaped = false;
+      continue;
+    }
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (char === "\\") escaped = true;
+      else if (char === '"') inString = false;
+      continue;
+    }
+    if (char === '"') inString = true;
+    else if (char === "{") depth += 1;
+    else if (char === "}") {
+      depth -= 1;
+      if (depth === 0) {
+        try {
+          parts.push(JSON.parse(line.slice(start, index + 1)));
+        } catch {
+          return null;
+        }
+      }
+    }
+  }
+  return depth === 0 && parts.length > 0 ? parts : null;
+}
+
 export class JsonlTail {
   private partial: Buffer = Buffer.alloc(0);
+  private unreadable = 0;
 
-  constructor(private offset: number) {}
+  constructor(
+    private offset: number,
+    private readonly options: { recoverConcatenated?: boolean } = {},
+  ) {}
+
+  takeUnreadable(): number {
+    const count = this.unreadable;
+    this.unreadable = 0;
+    return count;
+  }
 
   readRecords(
     filePath: string,
@@ -258,14 +307,24 @@ export class JsonlTail {
       const location = { offset: startOffset + start, length: end - start };
       start = end + 1;
       if (line.trim().length === 0) continue;
-      let record: unknown;
+      let parsed: unknown[];
       try {
-        record = JSON.parse(line);
+        parsed = [JSON.parse(line)];
       } catch {
-        continue;
+        const recovered =
+          this.options.recoverConcatenated === true
+            ? splitConcatenatedObjects(line)
+            : null;
+        if (recovered === null) {
+          this.unreadable += 1;
+          continue;
+        }
+        parsed = recovered;
       }
-      if (accept === undefined) records.push(record);
-      else accept(record, location);
+      for (const record of parsed) {
+        if (accept === undefined) records.push(record);
+        else accept(record, location);
+      }
     }
     this.partial = Buffer.from(contents.subarray(start));
     return records;
