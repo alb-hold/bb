@@ -837,6 +837,25 @@ export function applyTerminalGridBeforeViewportRestore({
   });
 }
 
+export function applyTerminalGridAndKeepViewport({
+  pipeline,
+  cols,
+  rows,
+  onGridApplied,
+  restoreViewport,
+}: {
+  pipeline: ReturnType<typeof createTerminalOutputPipeline>;
+  cols: number;
+  rows: number;
+  onGridApplied: () => void;
+  restoreViewport: () => void;
+}): void {
+  pipeline.setGrid(cols, rows, () => {
+    onGridApplied();
+    restoreViewport();
+  });
+}
+
 function openTerminalWebLink({
   onOpenLink,
   uri,
@@ -1451,9 +1470,7 @@ export function ThreadTerminalView({
     let hasRestoredViewport = false;
     let hasManualScrollIntent = false;
     let manualScrollTimeout: ReturnType<typeof setTimeout> | null = null;
-    const viewportStorageKey = terminalViewportStorageKey(
-      session.id,
-    );
+    const viewportStorageKey = terminalViewportStorageKey(session.id);
     const viewportStorage = terminalViewportStorageForClient(window);
     let savedViewportAnchor = readTerminalViewportAnchor(
       viewportStorage,
@@ -1768,8 +1785,7 @@ export function ThreadTerminalView({
             ? Math.max(0, visibleLine - mappedOutput.line)
             : 0;
           anchoredOutputSequence =
-            mappedOutput?.sequence ??
-            latestOutputSequence;
+            mappedOutput?.sequence ?? latestOutputSequence;
         }
         viewportPersistence.schedule({
           distanceFromTail,
@@ -1936,11 +1952,19 @@ export function ThreadTerminalView({
             sharedSize = nextSize;
             if (!markerGridActive) {
               latestPtyGrid = nextSize;
-              outputPipeline?.setGrid(
-                nextSize.cols,
-                nextSize.rows,
-                updateGridVisibility,
-              );
+              if (outputPipeline) {
+                applyTerminalGridAndKeepViewport({
+                  pipeline: outputPipeline,
+                  cols: nextSize.cols,
+                  rows: nextSize.rows,
+                  onGridApplied: updateGridVisibility,
+                  restoreViewport: () => {
+                    if (hasRestoredViewport && !hasManualScrollIntent) {
+                      restoreViewport();
+                    }
+                  },
+                });
+              }
             }
             scheduleFit();
           }
@@ -2022,7 +2046,19 @@ export function ThreadTerminalView({
               replayPreview?.resize(cols, rows);
             }
             if (message.type === "session-updated" && !markerGridActive) {
-              outputPipeline?.setGrid(cols, rows, updateGridVisibility);
+              if (outputPipeline) {
+                applyTerminalGridAndKeepViewport({
+                  pipeline: outputPipeline,
+                  cols,
+                  rows,
+                  onGridApplied: updateGridVisibility,
+                  restoreViewport: () => {
+                    if (hasRestoredViewport && !hasManualScrollIntent) {
+                      restoreViewport();
+                    }
+                  },
+                });
+              }
             }
           }
           handleTerminalServerMessage({
