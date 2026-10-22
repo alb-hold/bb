@@ -1123,6 +1123,10 @@ export function recordNativeTerminalSession(
   },
 ): NativeTerminalThread {
   requireNativeTerminalThreadRecord(deps, args.threadId);
+  requireNativeTerminalToolCredential(deps, {
+    authorization: args.authorization,
+    threadId: args.threadId,
+  });
   const result = recordNativeTerminalThreadSessionId(deps.db, args);
   switch (result.kind) {
     case "recorded":
@@ -1136,10 +1140,6 @@ export function recordNativeTerminalSession(
           `Thread is already bound to native session ${result.nativeSessionId}`,
         );
       }
-      requireNativeTerminalToolCredential(deps, {
-        authorization: args.authorization,
-        threadId: args.threadId,
-      });
       requireLiveNativeTerminalToolThread(deps, args.threadId);
       const rebound = rebindNativeTerminalThreadSessionId(deps.db, {
         nativeSessionId: args.nativeSessionId,

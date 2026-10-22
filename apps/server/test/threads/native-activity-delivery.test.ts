@@ -108,7 +108,7 @@ afterEach(async () => {
   }
 });
 
-async function nativeThread() {
+async function nativeThread(options: { nativeSessionId?: string | null } = {}) {
   const harness = await createTestAppHarness();
   harnesses.push(harness);
   const { host, session } = seedHostSession(harness.deps);
@@ -134,7 +134,10 @@ async function nativeThread() {
     initialImages: [],
     initialPrompt: null,
     model: null,
-    nativeSessionId: SESSION_ID,
+    nativeSessionId:
+      options.nativeSessionId === undefined
+        ? SESSION_ID
+        : options.nativeSessionId,
     providerId: "claude-code",
     threadId: thread.id,
   });
@@ -158,7 +161,43 @@ async function nativeThread() {
     terminalSessionId: terminal.id,
     threadId: thread.id,
   });
-  return { harness, thread };
+  const another = (secret: string) => {
+    const other = seedThread(harness.deps, {
+      environmentId: environment.id,
+      projectId: project.id,
+      providerId: "claude-code",
+    });
+    createNativeTerminalThread(harness.db, {
+      initialImages: [],
+      initialPrompt: null,
+      model: null,
+      nativeSessionId: null,
+      providerId: "claude-code",
+      threadId: other.id,
+    });
+    const otherTerminal = createTerminalSession(harness.db, {
+      cols: 80,
+      daemonSessionId: session.id,
+      environmentId: environment.id,
+      hostId: host.id,
+      initialCwd: "/tmp/native-delivery",
+      rows: 24,
+      status: "running",
+      threadId: other.id,
+      title: "Claude Code",
+    });
+    setNativeTerminalThreadTerminal(harness.db, {
+      terminalSessionId: otherTerminal.id,
+      threadId: other.id,
+    });
+    setNativeTerminalToolCredential(harness.db, {
+      credentialHash: createHash("sha256").update(secret).digest("hex"),
+      terminalSessionId: otherTerminal.id,
+      threadId: other.id,
+    });
+    return other;
+  };
+  return { another, harness, thread };
 }
 
 const activityPath = (threadId: string) =>
@@ -251,6 +290,73 @@ describe("the request shape a pre-#277 holder sends", () => {
     );
     expect(current.status).toBe(200);
     expect(getThread(harness.db, thread.id)?.status).toBe("idle");
+  });
+});
+
+describe("recording a native session needs the current holder credential", () => {
+  const NEW_ID = "7d0ffee0-1111-4222-8333-444455556666";
+  const sessionPath = (threadId: string) =>
+    `/api/v1/threads/${threadId}/native-terminal/session`;
+  const record = (
+    harness: TestAppHarness,
+    threadId: string,
+    nativeSessionId: string,
+    authorization?: string,
+  ) =>
+    harness.app.request(sessionPath(threadId), {
+      body: JSON.stringify({ nativeSessionId }),
+      headers: {
+        "content-type": "application/json",
+        ...(authorization === undefined ? {} : { authorization }),
+      },
+      method: "POST",
+    });
+  const bound = (harness: TestAppHarness, threadId: string) =>
+    getNativeTerminalThread(harness.db, threadId)?.nativeSessionId;
+
+  it("rejects an unauthenticated first bind and leaves the binding empty", async () => {
+    const { harness, thread } = await nativeThread({ nativeSessionId: null });
+    const response = await record(harness, thread.id, NEW_ID);
+    expect(response.status).toBe(401);
+    expect(await response.json()).toMatchObject({
+      code: "native_terminal_credential_invalid",
+    });
+    expect(bound(harness, thread.id)).toBeNull();
+  });
+
+  it("rejects an unauthenticated request that repeats the bound id", async () => {
+    const { harness, thread } = await nativeThread();
+    const response = await record(harness, thread.id, SESSION_ID);
+    expect(response.status).toBe(401);
+    expect(bound(harness, thread.id)).toBe(SESSION_ID);
+  });
+
+  it("rejects a stale credential and another thread's credential, and changes nothing", async () => {
+    const { another, harness, thread } = await nativeThread({
+      nativeSessionId: null,
+    });
+    const otherSecret = "synthetic-other-thread-credential";
+    another(otherSecret);
+    for (const authorization of [
+      "Bearer not-the-credential",
+      `Bearer ${otherSecret}`,
+    ]) {
+      const response = await record(harness, thread.id, NEW_ID, authorization);
+      expect(response.status).toBe(401);
+      expect(bound(harness, thread.id)).toBeNull();
+    }
+  });
+
+  it("lets the current credential bind the first session", async () => {
+    const { harness, thread } = await nativeThread({ nativeSessionId: null });
+    const response = await record(
+      harness,
+      thread.id,
+      NEW_ID,
+      `Bearer ${SECRET}`,
+    );
+    expect(response.status).toBe(200);
+    expect(bound(harness, thread.id)).toBe(NEW_ID);
   });
 });
 

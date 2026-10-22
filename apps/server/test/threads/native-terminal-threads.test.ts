@@ -173,10 +173,14 @@ async function postJson(
   fixture: Fixture,
   path: string,
   body: unknown,
+  authorization?: string,
 ): Promise<Response> {
   return fixture.harness.app.request(`/api/v1${path}`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: {
+      "content-type": "application/json",
+      ...(authorization === undefined ? {} : { authorization }),
+    },
     body: JSON.stringify(body),
   });
 }
@@ -2423,13 +2427,37 @@ describe("native terminal threads", () => {
     const first = await openRunningNativeThread(fixture, {
       providerId: "codex",
     });
-    const second = await createNativeThread(fixture, { providerId: "codex" });
+    const secondThread = await createNativeThread(fixture, {
+      providerId: "codex",
+    });
+    const secondOpen = await waitForTerminalOpen(fixture.socket, 1);
+    acknowledgeOpen(fixture, secondOpen);
+    for (let attempt = 0; attempt < 600; attempt += 1) {
+      const record = getNativeTerminalThread(
+        fixture.harness.db,
+        secondThread.id,
+      );
+      if (record?.terminalSessionId === secondOpen.terminalId) break;
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    const second = { thread: secondThread };
+    const credentialOf = (threadId: string) => {
+      const open = daemonMessages(fixture.socket).find(
+        (message): message is TerminalOpenMessage =>
+          message.type === "terminal.open" && message.threadId === threadId,
+      );
+      const entry = open?.contributedEnv.find(
+        (candidate) => candidate.name === NATIVE_TOOL_CREDENTIAL_ENV,
+      );
+      return `Bearer ${entry?.value}`;
+    };
     const sessionId = "01a1246a-b896-7b71-9895-ce5345f5f623";
 
     const recorded = await postJson(
       fixture,
       `/threads/${first.thread.id}/native-terminal/session`,
       { nativeSessionId: sessionId },
+      credentialOf(first.thread.id),
     );
     expect(recorded.status).toBe(200);
     expect(
@@ -2439,8 +2467,9 @@ describe("native terminal threads", () => {
 
     const stolen = await postJson(
       fixture,
-      `/threads/${second.id}/native-terminal/session`,
+      `/threads/${second.thread.id}/native-terminal/session`,
       { nativeSessionId: sessionId },
+      credentialOf(second.thread.id),
     );
     expect(stolen.status).toBe(409);
 
@@ -2448,6 +2477,7 @@ describe("native terminal threads", () => {
       fixture,
       `/threads/${first.thread.id}/native-terminal/session`,
       { nativeSessionId: "11111111-2222-3333-4444-555555555555" },
+      credentialOf(first.thread.id),
     );
     expect(rebound.status).toBe(409);
   });

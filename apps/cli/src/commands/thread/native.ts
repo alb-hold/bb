@@ -19,6 +19,7 @@ import {
 } from "../../native-tool-credential.js";
 import { requireThreadIdOrSelf } from "../../context-env.js";
 import { fillNativeTerminalTemplate } from "@bb/domain";
+import { recordDiscoveredSession } from "../../native-session-discovery.js";
 import { createNativeActivityWiring } from "../../native-activity-wiring.js";
 import { createNativeActivityReporter } from "../../native-activity-reporter.js";
 import { nativeActivityHookSettings } from "../../native-activity.js";
@@ -204,16 +205,15 @@ async function holdNativeHarness(
       return;
     }
     if (match.kind !== "unique") return;
+    if (currentCredential() === null) return;
     recorded = true;
     reader?.sessionDiscovered(match.sessionId);
-    try {
-      await sdk.nativeTerminals.recordSession({
-        threadId,
-        nativeSessionId: match.sessionId,
-      });
-    } catch {
-      recorded = false;
-    }
+    recorded = await recordDiscoveredSession({
+      currentCredential: () => currentCredential(),
+      nativeSessionId: match.sessionId,
+      recordSession: (args) =>
+        sdk.nativeTerminals.recordSession({ ...args, threadId }),
+    });
   };
   let reader: NativeActivityReader | null = null;
   let eventsFile: string | null = null;
