@@ -19,7 +19,10 @@ import {
   setNativeTerminalThreadTerminal,
   setNativeTerminalToolCredential,
 } from "@bb/db";
-import type { ProviderNativeTerminal } from "@bb/domain";
+import {
+  isNativeTerminalQuestion,
+  type ProviderNativeTerminal,
+} from "@bb/domain";
 import {
   publicApiRoutes,
   reportNativeTerminalActivityRequestSchema,
@@ -253,6 +256,41 @@ function publishHookLines(directory: string, lines: string): void {
   }
 }
 
+const ANSWERED = "native-terminal-question-answered";
+
+const openQuestions = (harness: TestAppHarness, threadId: string) =>
+  harness.deps.pendingInteractions.listPendingThreadInteractions(threadId);
+
+const openRequestIds = (harness: TestAppHarness, threadId: string): string[] =>
+  openQuestions(harness, threadId).map((interaction) => {
+    if (!isNativeTerminalQuestion(interaction)) {
+      throw new Error("an open interaction is not a native question");
+    }
+    return interaction.providerRequestId;
+  });
+
+const openPayloads = (harness: TestAppHarness, threadId: string) =>
+  openQuestions(harness, threadId).map((interaction) => interaction.payload);
+
+function expectClosedAsAnswered(
+  harness: TestAppHarness,
+  threadId: string,
+  tool: string,
+): void {
+  const closed = listPendingInteractionsByThread(harness.db, {
+    statuses: ["interrupted"],
+    threadId,
+  }).filter(
+    (row) =>
+      row.providerRequestId?.startsWith(`native:permission:${tool}#`) === true,
+  );
+  expect(closed).toHaveLength(1);
+  expect(closed[0]).toMatchObject({
+    status: "interrupted",
+    statusReason: ANSWERED,
+  });
+}
+
 const activityPath = (threadId: string) =>
   `/api/v1/threads/${threadId}/native-terminal/activity`;
 
@@ -314,6 +352,7 @@ describe("the request shape a pre-#277 holder sends", () => {
     expect(
       (await post(harness, thread.id, reports[1], authorization)).status,
     ).toBe(200);
+    expect(openQuestions(harness, thread.id)).toHaveLength(1);
     expect(
       listPendingInteractionsByThread(harness.db, { threadId: thread.id }),
     ).toHaveLength(1);
@@ -749,6 +788,7 @@ describe("overflow, answer, then no resumed activity through the real reader, re
 
   it("publishes the retained question as Needs input and keeps the dropped one out of the display", async () => {
     const { harness, thread } = await overflowedAndAsked();
+    expect(openQuestions(harness, thread.id)).toHaveLength(1);
     expect(
       listPendingInteractionsByThread(harness.db, { threadId: thread.id }),
     ).toHaveLength(1);
@@ -762,9 +802,8 @@ describe("overflow, answer, then no resumed activity through the real reader, re
     const { h, harness, thread } = await overflowedAndAsked();
     h.hook([{ hook_event_name: "PostToolUse", tool_name: "Edit" }]);
     await h.forward();
-    expect(
-      listPendingInteractionsByThread(harness.db, { threadId: thread.id }),
-    ).toHaveLength(0);
+    expect(openQuestions(harness, thread.id)).toHaveLength(0);
+    expectClosedAsAnswered(harness, thread.id, "Edit");
     expect(getThread(harness.db, thread.id)?.status).toBe("active");
     expect(getNativeTerminalThread(harness.db, thread.id)).toMatchObject({
       lastEvidenceAt: null,
@@ -818,9 +857,13 @@ describe("overflow, answer, then no resumed activity through the real reader, re
       });
       h.hook([{ hook_event_name: "PostToolUse", tool_name: "Edit" }]);
       await h.forward();
+      expect(openQuestions(harness, thread.id)).toHaveLength(1);
       expect(
-        listPendingInteractionsByThread(harness.db, { threadId: thread.id }),
-      ).toHaveLength(1);
+        listPendingInteractionsByThread(harness.db, {
+          statuses: ["interrupted"],
+          threadId: thread.id,
+        }),
+      ).toHaveLength(0);
       h.hook([permission("Write")]);
       await h.forward();
       const evidenceAfterB = getNativeTerminalThread(
@@ -831,21 +874,21 @@ describe("overflow, answer, then no resumed activity through the real reader, re
     }
 
     const pending = (harness: TestAppHarness, threadId: string) =>
-      listPendingInteractionsByThread(harness.db, { threadId }).map(
-        (interaction) => interaction.providerRequestId,
-      );
+      openRequestIds(harness, threadId);
 
     it("cannot end the newer question or clear its evidence, and repeating it is a no-op", async () => {
       const { evidenceAfterB, h, harness, thread } = await lateClose();
       expect(pending(harness, thread.id)).toEqual([
         expect.stringContaining("permission:Write"),
       ]);
+      expectClosedAsAnswered(harness, thread.id, "Edit");
       expect(evidenceAfterB).not.toBeNull();
       expect((await h.deliverHeld()).status).toBe(200);
       expect((await h.deliverHeld()).status).toBe(200);
       expect(pending(harness, thread.id)).toEqual([
         expect.stringContaining("permission:Write"),
       ]);
+      expectClosedAsAnswered(harness, thread.id, "Edit");
       expect(
         getNativeTerminalThread(harness.db, thread.id)?.lastEvidenceAt,
       ).toBe(evidenceAfterB);
@@ -859,6 +902,7 @@ describe("overflow, answer, then no resumed activity through the real reader, re
       const refused = await h.deliverHeld({ authorization: "Bearer stale" });
       expect(refused.status).toBe(401);
       expect(pending(harness, thread.id)).toHaveLength(1);
+      expectClosedAsAnswered(harness, thread.id, "Edit");
       expect(
         getNativeTerminalThread(harness.db, thread.id)?.lastEvidenceAt,
       ).toBe(evidenceAfterB);
@@ -893,7 +937,7 @@ describe("an older server that does not know the closure fields (INJECTED-SERVER
         warn: () => undefined,
       }),
     );
-    const { post } = typedRoutes<PublicApiSchema>(app, {
+    const { post } = typedRoutes<PublicApiSchema>(app.basePath("/api/v1"), {
       onValidationError: (msg) => new ApiError(400, "invalid_request", msg),
     });
     post(
@@ -957,9 +1001,7 @@ describe("an older server that does not know the closure fields (INJECTED-SERVER
   }
 
   const pendingOf = (harness: TestAppHarness, threadId: string) =>
-    listPendingInteractionsByThread(harness.db, { threadId }).map(
-      (interaction) => interaction.payload,
-    );
+    openPayloads(harness, threadId);
 
   it("rejects the initial request with zero writes and zod's own wording, then settles an answered question as before", async () => {
     const h = await oldServerOnTheRealStore();
@@ -973,11 +1015,8 @@ describe("an older server that does not know the closure fields (INJECTED-SERVER
       pending: 0,
       status: "idle",
     });
-    expect(
-      listPendingInteractionsByThread(h.harness.db, {
-        threadId: h.thread.id,
-      }),
-    ).toHaveLength(0);
+    expect(openQuestions(h.harness, h.thread.id)).toHaveLength(0);
+    expectClosedAsAnswered(h.harness, h.thread.id, "Bash");
     expect(getThread(h.harness.db, h.thread.id)?.status).toBe("active");
   });
 
@@ -988,12 +1027,13 @@ describe("an older server that does not know the closure fields (INJECTED-SERVER
     expect(pendingOf(h.harness, h.thread.id)).toHaveLength(1);
     h.reporter.report(asking("permission:Edit#1", "Allow Edit?"));
     await h.reporter.settled();
-    const open = listPendingInteractionsByThread(h.harness.db, {
-      threadId: h.thread.id,
-    });
-    expect(open).toHaveLength(1);
-    expect(open[0]?.providerRequestId).toContain("permission:Edit#1");
-    expect(JSON.stringify(open[0]?.payload)).toContain("Allow Edit?");
+    expect(openRequestIds(h.harness, h.thread.id)).toEqual([
+      expect.stringContaining("permission:Edit#1"),
+    ]);
+    expect(JSON.stringify(pendingOf(h.harness, h.thread.id))).toContain(
+      "Allow Edit?",
+    );
+    expectClosedAsAnswered(h.harness, h.thread.id, "Bash");
     expect(h.rejectedBodies).toHaveLength(2);
   });
 
@@ -1014,12 +1054,10 @@ describe("an older server that does not know the closure fields (INJECTED-SERVER
     h.reporter.report(asking("permission:Edit#1", "Allow Edit?"));
     await h.reporter.settled();
     expect(h.rejectedBodies).toHaveLength(1);
-    const open = listPendingInteractionsByThread(h.harness.db, {
-      threadId: h.thread.id,
-    });
-    expect(open.map((interaction) => interaction.providerRequestId)).toEqual([
+    expect(openRequestIds(h.harness, h.thread.id)).toEqual([
       expect.stringContaining("permission:Edit#1"),
     ]);
+    expectClosedAsAnswered(h.harness, h.thread.id, "Bash");
   });
 
   it("OPEN FINDING (characterisation, not a pass): a report that was already stripped for an old server and reaches an upgraded server late still closes every question it does not list", async () => {
@@ -1045,9 +1083,8 @@ describe("an older server that does not know the closure fields (INJECTED-SERVER
       ).status,
     ).toBe(200);
     expect((await send({ state: "working" })).status).toBe(200);
-    expect(
-      listPendingInteractionsByThread(h.harness.db, { threadId: h.thread.id }),
-    ).toHaveLength(0);
+    expect(openQuestions(h.harness, h.thread.id)).toHaveLength(0);
+    expectClosedAsAnswered(h.harness, h.thread.id, "Edit");
   });
 });
 
@@ -1127,9 +1164,7 @@ describe.skipIf(process.platform === "win32")(
 
     it("registers every concurrent opener as a pending question and shows Needs input", async () => {
       const { harness, thread, tools } = await openers(6);
-      const pending = listPendingInteractionsByThread(harness.db, {
-        threadId: thread.id,
-      });
+      const pending = openQuestions(harness, thread.id);
       expect(pending).toHaveLength(tools.length);
       for (const tool of tools) {
         expect(JSON.stringify(pending.map((row) => row.payload))).toContain(
@@ -1145,11 +1180,7 @@ describe.skipIf(process.platform === "win32")(
         await runHook(tool, index, "small");
       }
       await deliver();
-      const pending = JSON.stringify(
-        listPendingInteractionsByThread(harness.db, {
-          threadId: thread.id,
-        }).map((row) => row.payload),
-      );
+      const pending = JSON.stringify(openPayloads(harness, thread.id));
       for (const tool of ["Alpha", "Beta", "Gamma"]) {
         expect(pending).toContain(`use: ${tool}`);
       }
@@ -1164,6 +1195,8 @@ describe.skipIf(process.platform === "win32")(
       }
       rmSync(path.join(spool, "000000000002"));
       const pendingTools = (): string =>
+        JSON.stringify(openPayloads(harness, thread.id));
+      const everyTool = (): string =>
         JSON.stringify(
           listPendingInteractionsByThread(harness.db, {
             threadId: thread.id,
@@ -1174,11 +1207,11 @@ describe.skipIf(process.platform === "win32")(
       try {
         await deliver();
         expect(pendingTools()).toContain("use: Tool0");
-        expect(pendingTools()).not.toContain("use: Tool2");
+        expect(everyTool()).not.toContain("use: Tool2");
 
         clock.mockImplementation(() => t0 + 3_000);
         await deliver();
-        expect(pendingTools()).not.toContain("use: Tool2");
+        expect(everyTool()).not.toContain("use: Tool2");
         expect(unconfirmed).toEqual([]);
 
         clock.mockImplementation(() => t0 + 12_000);
