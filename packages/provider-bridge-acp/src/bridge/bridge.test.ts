@@ -5247,8 +5247,12 @@ describe("acp bridge: live session state", () => {
     await discover(opencodeLog, { dialectId: "opencode", agent: acpAgent });
 
     const deleted = await waitFor(
-      () =>
-        existsSync(opencodeLog) ? readFileSync(opencodeLog, "utf8") : undefined,
+      () => {
+        const contents = existsSync(opencodeLog)
+          ? readFileSync(opencodeLog, "utf8")
+          : undefined;
+        return contents ? contents : undefined;
+      },
       "opencode session delete",
     );
     expect(deleted).toMatch(/^fake-sess-\d+\n$/u);
