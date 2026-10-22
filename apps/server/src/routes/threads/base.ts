@@ -1,4 +1,5 @@
 import { countUnarchivedThreadDescendants } from "../../services/threads/thread-archive.js";
+import { eq } from "drizzle-orm";
 import { cancelAbandonedProviderCreations } from "../../services/threads/thread-environment-providers.js";
 import {
   THREAD_SEARCH_LIMIT_PER_GROUP_DEFAULT,
@@ -10,6 +11,10 @@ import {
   getEnvironment,
   getHost,
   getThread,
+  getThreadExecutionOverride,
+  getThreadSpawner,
+  isNativeTerminalThread,
+  setThreadExecutionOverride,
   getThreadSectionById,
   ensureSpendTables,
   listThreadMentionRowsByIds,
@@ -19,6 +24,7 @@ import {
   markThreadDeleted,
   listLifecycleThreadTree,
   listPluginThreadMetadata,
+  queuedThreadMessages,
   listThreadAncestors,
   listThreadDescendants,
   searchThreadsWithPendingInteractionState,
@@ -82,8 +88,20 @@ import {
 } from "../../services/threads/thread-runtime-display.js";
 import { assertValidParentThread } from "../../services/threads/thread-parent.js";
 import { handleThreadOwnershipChange } from "../../services/threads/thread-ownership.js";
-import { applyThreadExecutionOverride } from "../../services/threads/thread-execution-override.js";
-import { applyThreadSessionOptionPatch } from "../../services/threads/thread-session-options.js";
+import {
+  applyThreadExecutionOverride,
+  loadThreadProviderModels,
+  resolveFallbackModel,
+  resolveThreadExecutionOverrideUpdate,
+} from "../../services/threads/thread-execution-override.js";
+import {
+  applyThreadSessionOptionPatch,
+  resolveThreadSessionOptionPatch,
+} from "../../services/threads/thread-session-options.js";
+import {
+  assertRequestedModelAllowed,
+  childThreadModel,
+} from "../../services/threads/child-thread-model.js";
 import { emitPluginThreadDeleted } from "../../services/plugins/plugin-thread-events.js";
 import { NotificationBuffer } from "../../services/lib/notification-buffer.js";
 import { getActiveTurnId } from "../../services/threads/thread-events.js";
@@ -649,34 +667,55 @@ export function registerThreadBaseRoutes(app: Hono, deps: AppDeps): void {
       });
     }
 
-    if ("model" in payload || "reasoningLevel" in payload) {
-      await applyThreadExecutionOverride(deps, {
-        thread,
-        patch: {
-          ...("model" in payload ? { model: payload.model } : {}),
-          ...("reasoningLevel" in payload
-            ? { reasoningLevel: payload.reasoningLevel }
-            : {}),
-        },
-      });
+    const sectionId = payload.sectionId;
+    if (sectionId !== undefined && sectionId !== null) {
+      requireThreadSection(deps, sectionId);
     }
-
     if (payload.sessionOptions !== undefined) {
-      applyThreadSessionOptionPatch(deps, {
+      resolveThreadSessionOptionPatch(deps, {
         thread,
         patch: payload.sessionOptions,
       });
     }
+    const hasParentChange =
+      "parentThreadId" in payload &&
+      payload.parentThreadId !== thread.parentThreadId;
+    const nativeTerminal = isNativeTerminalThread(deps.db, thread.id);
+    const executionPatch = {
+      ...("model" in payload ? { model: payload.model } : {}),
+      ...("reasoningLevel" in payload
+        ? { reasoningLevel: payload.reasoningLevel }
+        : {}),
+    };
+    if (
+      !nativeTerminal &&
+      (hasParentChange || typeof payload.model === "string")
+    ) {
+      const requestedModel =
+        payload.model === null
+          ? null
+          : typeof payload.model === "string"
+            ? payload.model
+            : getThreadExecutionOverride(deps.db, thread.id)?.modelOverride;
+      const parentThreadId = hasParentChange
+        ? payload.parentThreadId
+        : thread.parentThreadId;
+      const childScope = parentThreadId
+        ? "parent"
+        : getThreadSpawner(deps.db, thread.id) === null
+          ? null
+          : "spawner";
+      await assertRequestedModelAllowed(deps, {
+        childScope,
+        model: requestedModel,
+        providerId: thread.providerId,
+        sources: undefined,
+      });
+    }
 
     const metadataUpdate: UpdateThreadInput = {};
-    if ("title" in payload) {
-      metadataUpdate.title = payload.title;
-    }
-    const sectionId = payload.sectionId;
+    if ("title" in payload) metadataUpdate.title = payload.title;
     if (sectionId !== undefined) {
-      if (sectionId !== null) {
-        requireThreadSection(deps, sectionId);
-      }
       metadataUpdate.sectionId = sectionId;
     } else if (
       payload.parentThreadId === null &&
@@ -688,16 +727,151 @@ export function registerThreadBaseRoutes(app: Hono, deps: AppDeps): void {
     if ("parentThreadId" in payload) {
       metadataUpdate.parentThreadId = payload.parentThreadId;
     }
-    if ("visibility" in payload) {
-      metadataUpdate.visibility = payload.visibility;
-    }
+    if ("visibility" in payload) metadataUpdate.visibility = payload.visibility;
     if ("parentNotifications" in payload) {
       metadataUpdate.parentNotifications = payload.parentNotifications;
     }
-    const updated =
-      Object.keys(metadataUpdate).length > 0
-        ? updateThread(deps.db, deps.hub, thread.id, metadataUpdate)
-        : requirePublicThread(deps.db, thread.id);
+
+    let updated: Thread | null;
+    if (hasParentChange && !nativeTerminal) {
+      await deps.providerRegistry.whenRegistrationsSettled();
+      const spawnerThreadId = getThreadSpawner(deps.db, thread.id);
+      const models =
+        "model" in payload || "reasoningLevel" in payload
+          ? await loadThreadProviderModels(
+              deps,
+              thread,
+              typeof payload.model === "string" ? payload.model : null,
+            )
+          : null;
+      const notifications = new NotificationBuffer();
+      updated = deps.db.transaction(
+        (tx) => {
+          const current = getThread(tx, thread.id);
+          if (!current) {
+            throw new ApiError(404, "thread_not_found", "Thread not found");
+          }
+          if (current.parentThreadId !== thread.parentThreadId) {
+            throw new ApiError(
+              409,
+              "thread_scope_changed",
+              "Thread scope changed while this update was being prepared. Retry the update.",
+            );
+          }
+          if (typeof payload.parentThreadId === "string") {
+            assertValidParentThread(
+              { db: tx },
+              {
+                childThreadId: current.id,
+                parentThreadId: payload.parentThreadId,
+              },
+            );
+          }
+          const existing = getThreadExecutionOverride(tx, thread.id) ?? {
+            modelOverride: null,
+            reasoningLevelOverride: null,
+          };
+          const next = models
+            ? resolveThreadExecutionOverrideUpdate(deps.providerRegistry, {
+                existing,
+                patch: executionPatch,
+                models,
+                providerId: current.providerId,
+                fallbackModel: resolveFallbackModel(deps, current),
+              })
+            : existing;
+          const declaredChildModel = deps.providerRegistry.get(
+            current.providerId,
+          )?.childThreadModel;
+          const beforePolicy = childThreadModel({
+            parentThreadId: current.parentThreadId ?? spawnerThreadId,
+            declaredChildModel,
+          });
+          const afterPolicy = childThreadModel({
+            parentThreadId: payload.parentThreadId ?? spawnerThreadId,
+            declaredChildModel,
+          });
+          if (
+            afterPolicy !== null &&
+            next.modelOverride !== null &&
+            next.modelOverride !== afterPolicy
+          ) {
+            throw new ApiError(
+              400,
+              "child_model_conflict",
+              `Child threads for ${current.providerId} must use ${afterPolicy}; clear or choose the compatible model before changing the parent.`,
+              {
+                details: {
+                  providerId: current.providerId,
+                  requestedModel: next.modelOverride,
+                  childThreadModel: afterPolicy,
+                  reason: "parent",
+                },
+              },
+            );
+          }
+          if (afterPolicy !== null && afterPolicy !== beforePolicy) {
+            const conflictingQueuedRows = tx
+              .select({
+                id: queuedThreadMessages.id,
+                model: queuedThreadMessages.model,
+              })
+              .from(queuedThreadMessages)
+              .where(eq(queuedThreadMessages.threadId, current.id))
+              .all()
+              .filter((row) => row.model !== afterPolicy);
+            const conflictingQueuedMessageIds = conflictingQueuedRows.map(
+              (row) => row.id,
+            );
+            if (conflictingQueuedMessageIds.length > 0) {
+              throw new ApiError(
+                400,
+                "child_model_conflict",
+                "Changing the parent would change the model for accepted queued work.",
+                {
+                  details: {
+                    providerId: current.providerId,
+                    requestedModel: conflictingQueuedRows[0]!.model,
+                    childThreadModel: afterPolicy,
+                    reason: "parent",
+                    queuedMessageIds: conflictingQueuedMessageIds,
+                  },
+                },
+              );
+            }
+          }
+          if (models) {
+            setThreadExecutionOverride(tx, {
+              threadId: current.id,
+              modelOverride: next.modelOverride,
+              reasoningLevelOverride: next.reasoningLevelOverride,
+            });
+          }
+          return updateThread(tx, notifications, current.id, metadataUpdate);
+        },
+        { behavior: "immediate" },
+      );
+      notifications.flushInto(deps.hub);
+    } else {
+      if ("model" in payload || "reasoningLevel" in payload) {
+        await applyThreadExecutionOverride(deps, {
+          thread,
+          patch: executionPatch,
+        });
+      }
+      updated =
+        Object.keys(metadataUpdate).length > 0
+          ? updateThread(deps.db, deps.hub, thread.id, metadataUpdate)
+          : requirePublicThread(deps.db, thread.id);
+    }
+
+    if (payload.sessionOptions !== undefined) {
+      applyThreadSessionOptionPatch(deps, {
+        thread,
+        patch: payload.sessionOptions,
+      });
+    }
+
     if (!updated) {
       throw new ApiError(404, "thread_not_found", "Thread not found");
     }
