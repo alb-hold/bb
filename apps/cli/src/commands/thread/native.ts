@@ -208,12 +208,19 @@ async function holdNativeHarness(
     if (currentCredential() === null) return;
     recorded = true;
     reader?.sessionDiscovered(match.sessionId);
-    recorded = await recordDiscoveredSession({
+    const outcome = await recordDiscoveredSession({
       currentCredential: () => currentCredential(),
       nativeSessionId: match.sessionId,
       recordSession: (args) =>
         sdk.nativeTerminals.recordSession({ ...args, threadId }),
     });
+    recorded = outcome.kind !== "retry";
+    if (outcome.kind === "refused" && ownsSocket) {
+      logNativeHolderEvent(socketPath, "session-discovery-stopped", {
+        code: outcome.code,
+        sessionId: match.sessionId,
+      });
+    }
   };
   let reader: NativeActivityReader | null = null;
   let eventsFile: string | null = null;
