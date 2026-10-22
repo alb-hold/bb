@@ -230,9 +230,31 @@ describe("the request shape a pre-#277 holder sends", () => {
     ).toBe(200);
     expect(getThread(harness.db, thread.id)?.status).toBe("idle");
   });
+
+  it("a legacy idle report sent while the thread is ACTIVE is rejected with 401 and leaves it active, while the credentialed idle settles it", async () => {
+    const { harness, thread } = await nativeThread();
+    lifecycleOutcome.applyLoggedThreadLifecycleEvent(harness.deps, {
+      event: { type: "run.started" },
+      threadId: thread.id,
+    });
+    expect(getThread(harness.db, thread.id)?.status).toBe("active");
+
+    const legacy = await post(harness, thread.id, { state: "idle" });
+    expect(legacy.status).toBe(401);
+    expect(getThread(harness.db, thread.id)?.status).toBe("active");
+
+    const current = await post(
+      harness,
+      thread.id,
+      { state: "idle" },
+      `Bearer ${SECRET}`,
+    );
+    expect(current.status).toBe(200);
+    expect(getThread(harness.db, thread.id)?.status).toBe("idle");
+  });
 });
 
-describe("a lost idle report through the real reader, reporter, wiring and SDK client", () => {
+describe("a lost idle report through the real reader, reporter, wiring and SDK client (the 401 in these cases comes from the fault-injecting fetch, not from the real gate; the real gate is covered by the request-shape tests above)", () => {
   function holderHome() {
     const home = mkdtempSync(path.join(os.tmpdir(), "bb-delivery-"));
     roots.push(home);
