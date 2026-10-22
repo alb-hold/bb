@@ -2,7 +2,13 @@ import type { HostDaemonOnlineRpcRequestMessage } from "@bb/host-daemon-contract
 import { describe, expect, it } from "vitest";
 import { registerHostRpcResponder } from "../helpers/host-rpc.js";
 import { readJson } from "../helpers/json.js";
-import { seedHostSession, seedPrimaryHost } from "../helpers/seed.js";
+import {
+  seedEnvironment,
+  seedHostSession,
+  seedPrimaryHost,
+  seedProjectWithSource,
+  seedThread,
+} from "../helpers/seed.js";
 import { withTestHarness } from "../helpers/test-app.js";
 import { DEFAULT_PATH_LIST_EXCLUDE_NAMES } from "../../src/routes/path-list-policy.js";
 
@@ -36,6 +42,100 @@ function postJson(path: string, body: unknown): [string, RequestInit] {
 }
 
 describe("host file routes", () => {
+  it.each([
+    ["the workspace itself", "/work/trees/thr_a/repo"],
+    ["a folder that contains the workspace", "/work/trees"],
+    ["the root folder", "/"],
+  ])(
+    "refuses to remove %s while a thread's workspace is inside, without asking the host",
+    async (_label, target) => {
+      await withTestHarness(async (harness) => {
+        const { host, session } = seedHostSession(harness.deps);
+        seedPrimaryHost(harness.deps, host.id);
+        const { project } = seedProjectWithSource(harness.deps, {
+          hostId: host.id,
+        });
+        const environment = seedEnvironment(harness.deps, {
+          hostId: host.id,
+          projectId: project.id,
+          path: "/work/trees/thr_a/repo",
+        });
+        const thread = seedThread(harness.deps, {
+          projectId: project.id,
+          environmentId: environment.id,
+          status: "idle",
+        });
+        const commands: HostDaemonOnlineRpcRequestMessage["command"][] = [];
+        registerHostRpcResponder(harness, {
+          hostId: host.id,
+          sessionId: session.id,
+          handle: (request) => {
+            commands.push(request.command);
+            return { ok: true, result: { ok: true } };
+          },
+        });
+
+        const response = await harness.app.request(
+          ...postJson("/api/v1/files/remove", {
+            path: target,
+            recursive: true,
+          }),
+        );
+
+        expect(response.status).toBe(409);
+        expect(await readJson(response)).toMatchObject({
+          code: "workspace_busy",
+          message: expect.stringContaining(thread.id),
+        });
+        expect(commands).toEqual([]);
+      });
+    },
+  );
+
+  it("still removes a folder inside a workspace and a folder beside it", async () => {
+    await withTestHarness(async (harness) => {
+      const { host, session } = seedHostSession(harness.deps);
+      seedPrimaryHost(harness.deps, host.id);
+      const { project } = seedProjectWithSource(harness.deps, {
+        hostId: host.id,
+      });
+      const environment = seedEnvironment(harness.deps, {
+        hostId: host.id,
+        projectId: project.id,
+        path: "/work/trees/thr_a/repo",
+      });
+      seedThread(harness.deps, {
+        projectId: project.id,
+        environmentId: environment.id,
+        status: "idle",
+      });
+      const commands: HostDaemonOnlineRpcRequestMessage["command"][] = [];
+      registerHostRpcResponder(harness, {
+        hostId: host.id,
+        sessionId: session.id,
+        handle: (request) => {
+          commands.push(request.command);
+          return { ok: true, result: { ok: true } };
+        },
+      });
+
+      for (const target of [
+        "/work/trees/thr_a/repo/node_modules",
+        "/work/trees/thr_b",
+      ]) {
+        const response = await harness.app.request(
+          ...postJson("/api/v1/files/remove", {
+            path: target,
+            recursive: true,
+          }),
+        );
+        expect(response.status, target).toBe(200);
+      }
+
+      expect(commands).toHaveLength(2);
+    });
+  });
+
   it("rejects hostile-origin and text/plain privileged mutations before host RPC", async () => {
     await withTestHarness(async (harness) => {
       const { host, session } = seedHostSession(harness.deps);
