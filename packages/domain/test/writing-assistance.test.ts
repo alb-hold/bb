@@ -178,6 +178,46 @@ describe("resolveWritingEdits", () => {
   });
 
   it.each([
+    ["The words 'the the' must remain unchanged.", "the the", "the"],
+    ['The words "the the" must remain unchanged.', "the the", "the"],
+    ["The words “the the” must remain unchanged.", "the the", "the"],
+    ["The words ‘the the’ must remain unchanged.", "the the", "the"],
+    ["Type 'check the the cache' exactly.", "the the", "the"],
+    ["Ele disse «verifique o o cache» duas vezes.", "o o", "o"],
+    ['The log says "a error occurred" twice.', "a error", "an error"],
+  ])(
+    "only suggests an edit inside quoted text: %s",
+    (target, original, replacement) => {
+      const edits = resolveWritingEdits({
+        ...base,
+        target,
+        proposals: [proposal(original, replacement)],
+      });
+      expect(edits).toEqual([
+        expect.objectContaining({ disposition: "suggest" }),
+      ]);
+    },
+  );
+
+  it.each([
+    ["We don't check the the cache.", "the the", "the"],
+    ["She said 'hi' and then checked the the cache.", "the the", "the"],
+    ["The log says a error occurred twice.", "a error", "an error"],
+  ])(
+    "still applies outside quoted text: %s",
+    (target, original, replacement) => {
+      const edits = resolveWritingEdits({
+        ...base,
+        target,
+        proposals: [proposal(original, replacement)],
+      });
+      expect(edits).toEqual([
+        expect.objectContaining({ disposition: "apply" }),
+      ]);
+    },
+  );
+
+  it.each([
     ["I had had enough of the flaky test.", "had had", "had"],
     ["I know that that test is flaky.", "that that", "that"],
     ["What it is is a flaky test.", "is is", "is"],

@@ -356,8 +356,11 @@ than 120 seconds is refused before transcription. An upload over 25 MiB
 refused with 413 while it streams in, before the form is parsed. A formatted phrase that
 adds words the speaker did not say, changes a number, or drops a protected
 term is discarded in favor of the plain transcript. Typing assistance sends
-only finished sentences that changed, with up to 500 characters of preceding
-text, after about a second of idle time. A long draft or dictation is checked a
+finished sentences that changed, with up to 500 characters of preceding
+text, after about a second of idle time. After about four seconds of idle
+time it also sends the unfinished last sentence, if it has at least five words
+and is outside a code fence, marked incomplete; fixes to an unfinished sentence
+are only suggested, never applied automatically. A long draft or dictation is checked a
 few sentences at a time, up to 500 characters per request, with the next part
 sent about a second after each reply; a single sentence is sent alone up to
 2,000 characters, and a longer one is not checked.
@@ -396,7 +399,8 @@ sentence (such as a bare `return true`), other punctuation (commas, question mar
 agreement (is/are/am, was/were, has/have, does/do and their negations, since the
 subject can be singular or plural, as in "The fish are nearby", and a verb's mood
 can change the meaning, as in "If he were there"), and tense or plural changes
-are offered as suggestions. Code, paths, identifiers and
+are offered as suggestions, as is any edit between quotation marks on one line
+('the the', ‘the the’, “the the”, «o o»). Code, paths, identifiers and
 vocabulary terms are never edited, and on a line containing any of
 = ; { } ( ) < > [ ] $ ` | \ / # " or --, a colon followed directly by text
 (10:30), a key: value line (status: ready, - name: x, "title": x), a line

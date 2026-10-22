@@ -686,6 +686,24 @@ function inCodeLikeLine(target: string, start: number, end: number): boolean {
   );
 }
 
+const QUOTE_MARKS =
+  /["“”„«»‹›「」『』]|(?<![\p{L}\p{N}])['‘’]|['‘’](?![\p{L}\p{N}])/gu;
+
+function inQuotedText(target: string, start: number, end: number): boolean {
+  const lineStart = target.lastIndexOf("\n", start - 1) + 1;
+  const lineEndAt = target.indexOf("\n", end);
+  const lineEnd = lineEndAt === -1 ? target.length : lineEndAt;
+  const marks = [...target.slice(lineStart, lineEnd).matchAll(QUOTE_MARKS)].map(
+    (match) => lineStart + match.index,
+  );
+  for (let index = 0; index < marks.length; index += 2) {
+    const open = marks[index]!;
+    const close = marks[index + 1] ?? lineEnd;
+    if (start > open && end <= close) return true;
+  }
+  return false;
+}
+
 function inFinishedSentence(target: string, end: number): boolean {
   const rest = target.slice(end).match(/^[^\n]*?[.!?](?=\s|$)|^[^\n]*/u)![0];
   return /[.!?]$/u.test(rest);
@@ -757,6 +775,7 @@ export function resolveWritingEdits(
     const surfaceOnly = !repeated && kind === "surface";
     const deterministicSafe =
       !inCodeLikeLine(args.target, change.start, change.end) &&
+      !inQuotedText(args.target, change.start, change.end) &&
       (!surfaceOnly || inFinishedSentence(args.target, change.end)) &&
       caseChangeIsSafe(args.target, change) &&
       (repeated ||

@@ -908,6 +908,33 @@ describe(
       expect(input.selectionStart).toBe(typed.length);
     });
 
+    it("sends an unfinished last sentence of five words as incomplete after about four seconds idle", async () => {
+      correct.mockResolvedValue({ status: "ok", edits: [] });
+      const { input } = await renderWithAssistance();
+      fireEvent.change(input, {
+        target: { value: "We should check the deploy" },
+      });
+      await new Promise((resolve) => setTimeout(resolve, 2_500));
+      expect(correct).not.toHaveBeenCalled();
+      await waitFor(() => expect(correct).toHaveBeenCalledTimes(1), {
+        timeout: 4_000,
+      });
+      expect(correct).toHaveBeenCalledWith(
+        expect.objectContaining({
+          target: "We should check the deploy",
+          complete: false,
+        }),
+      );
+    });
+
+    it("never sends an unfinished last sentence shorter than five words", async () => {
+      correct.mockResolvedValue({ status: "ok", edits: [] });
+      const { input } = await renderWithAssistance();
+      fireEvent.change(input, { target: { value: "We check the deploy" } });
+      await new Promise((resolve) => setTimeout(resolve, 5_500));
+      expect(correct).not.toHaveBeenCalled();
+    });
+
     it("sends one sentence longer than 500 characters on its own", async () => {
       correct.mockResolvedValue({ status: "ok", edits: [] });
       const { input } = await renderWithAssistance();
