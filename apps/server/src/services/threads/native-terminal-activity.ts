@@ -1,8 +1,11 @@
 import {
   clearNativeTerminalThreadActivityEvidence,
+  createInterruptedProviderPendingInteraction,
   getNativeTerminalThread,
+  getPendingInteractionByProviderRequest,
   getThread,
   clearThreadRowState,
+  retagInterruptedPendingInteraction,
   stampNativeTerminalThreadActivity,
   stampNativeTerminalThreadToolCall,
   type TerminalSessionRow,
@@ -18,6 +21,7 @@ import type {
   ReportNativeTerminalActivityRequest,
 } from "@bb/server-contract";
 import { ApiError } from "../../errors.js";
+import { DAEMON_RESTARTED_PENDING_INTERACTION_REASON } from "../interactions/pending-interactions.js";
 import {
   buildChildThreadBlockerSummary,
   requestChildThreadNeedsAttentionNotification,
@@ -36,9 +40,8 @@ import {
 } from "./native-terminal-threads.js";
 import {
   interruptNativeTerminalQuestions,
-  isClosedNativeQuestion,
   NATIVE_QUESTION_ANSWERED_REASON,
-  rememberClosedNativeQuestions,
+  rejectedQuestions,
 } from "./native-terminal-questions.js";
 import { buildThreadStatusChangeMetadata } from "./thread-runtime-display.js";
 
@@ -52,10 +55,6 @@ type NativeTerminalActivityDeps = LoggedPendingInteractionWorkSessionDeps &
   >;
 
 const activeNativeThreads = new WeakMap<AppDeps["hub"], Set<string>>();
-const rejectedNativeQuestions = new WeakMap<
-  AppDeps["hub"],
-  Map<string, Set<string>>
->();
 const nativeActivityReports = new WeakMap<
   AppDeps["hub"],
   Map<string, { signature: string; lastNotifiedAt: number }>
@@ -121,20 +120,6 @@ function isCurrentTerminalLive(
     }
     throw error;
   }
-}
-
-function rejectedQuestions(deps: Pick<AppDeps, "hub">, threadId: string) {
-  let byThread = rejectedNativeQuestions.get(deps.hub);
-  if (byThread === undefined) {
-    byThread = new Map();
-    rejectedNativeQuestions.set(deps.hub, byThread);
-  }
-  let questions = byThread.get(threadId);
-  if (questions === undefined) {
-    questions = new Set();
-    byThread.set(threadId, questions);
-  }
-  return questions;
 }
 
 function activeThreads(deps: Pick<AppDeps, "hub">): Set<string> {
@@ -339,21 +324,23 @@ export function recordNativeTerminalToolCallEvidence(
 }
 
 function closeNamedNativeQuestions(
-  deps: Pick<AppDeps, "hub" | "pendingInteractions">,
-  threadId: string,
-  questionIds: readonly string[],
+  deps: Pick<AppDeps, "db" | "pendingInteractions">,
+  args: {
+    nativeSessionId: string | null;
+    questionIds: readonly string[];
+    thread: Thread;
+  },
 ): number {
-  const named = new Set(
-    questionIds.map((id) => `${NATIVE_QUESTION_REQUEST_PREFIX}${id}`),
+  const remaining = new Set(
+    args.questionIds.map((id) => `${NATIVE_QUESTION_REQUEST_PREFIX}${id}`),
   );
-  rememberClosedNativeQuestions(deps, threadId, named);
   let closed = 0;
   for (const interaction of deps.pendingInteractions.listPendingThreadInteractions(
-    threadId,
+    args.thread.id,
   )) {
     if (
       !isNativeTerminalQuestion(interaction) ||
-      !named.has(interaction.providerRequestId)
+      !remaining.has(interaction.providerRequestId)
     ) {
       continue;
     }
@@ -361,7 +348,45 @@ function closeNamedNativeQuestions(
       interactionId: interaction.id,
       reason: NATIVE_QUESTION_ANSWERED_REASON,
     });
+    remaining.delete(interaction.providerRequestId);
     closed += 1;
+  }
+  const providerThreadId = args.nativeSessionId ?? args.thread.id;
+  for (const providerRequestId of remaining) {
+    const identity = {
+      providerId: args.thread.providerId,
+      providerRequestId,
+      providerThreadId,
+    };
+    const existing = getPendingInteractionByProviderRequest(deps.db, identity);
+    if (existing === null) {
+      createInterruptedProviderPendingInteraction(deps.db, {
+        ...identity,
+        payload: JSON.stringify({
+          kind: "user_question",
+          questions: [
+            {
+              id: providerRequestId,
+              prompt: "Closed before it was reported",
+              multiSelect: false,
+              allowFreeText: true,
+            },
+          ],
+        }),
+        statusReason: NATIVE_QUESTION_ANSWERED_REASON,
+        threadId: args.thread.id,
+        turnId: NATIVE_QUESTION_TURN_ID,
+      });
+    } else if (
+      existing.status === "interrupted" &&
+      existing.statusReason === DAEMON_RESTARTED_PENDING_INTERACTION_REASON
+    ) {
+      retagInterruptedPendingInteraction(deps.db, {
+        fromStatusReason: DAEMON_RESTARTED_PENDING_INTERACTION_REASON,
+        id: existing.id,
+        toStatusReason: NATIVE_QUESTION_ANSWERED_REASON,
+      });
+    }
   }
   return closed;
 }
@@ -386,8 +411,7 @@ function reconcileNativeQuestions(
       )
       .filter(
         ([providerRequestId]) =>
-          !rejectedQuestions(deps, args.thread.id).has(providerRequestId) &&
-          !isClosedNativeQuestion(deps, args.thread.id, providerRequestId),
+          !rejectedQuestions(deps, args.thread.id).has(providerRequestId),
       ),
   );
   const interrupted =
@@ -397,13 +421,13 @@ function reconcileNativeQuestions(
           args.thread.id,
           new Set(wanted.keys()),
         )
-      : closeNamedNativeQuestions(
-          deps,
-          args.thread.id,
-          args.closes.filter(
+      : closeNamedNativeQuestions(deps, {
+          nativeSessionId: args.nativeSessionId,
+          questionIds: args.closes.filter(
             (id) => !wanted.has(`${NATIVE_QUESTION_REQUEST_PREFIX}${id}`),
           ),
-        );
+          thread: args.thread,
+        });
   for (const [providerRequestId, question] of wanted) {
     const registered = deps.pendingInteractions.registerPendingInteraction({
       interaction: {

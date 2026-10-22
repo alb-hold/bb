@@ -63,6 +63,10 @@ afterEach(() => {
   }
 });
 
+function withoutNonce(id: string): string {
+  return id.replace(/#[0-9a-f]{16}\./u, "#");
+}
+
 function refusal(status: number, code: string): BbHttpError {
   return new BbHttpError({ body: null, code, message: code, status });
 }
@@ -190,8 +194,10 @@ function holder(
     currentCredential: () => "current",
     send: async (args) => {
       sentMarkers.push(args.confirms);
-      sentCloses.push(args.closes);
-      sentQuestions.push(args.questions?.map((question) => question.id));
+      sentCloses.push(args.closes?.map(withoutNonce));
+      sentQuestions.push(
+        args.questions?.map((question) => withoutNonce(question.id)),
+      );
       sentReports.push(
         args.prompt === undefined || args.prompt === null
           ? args.state

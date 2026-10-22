@@ -224,7 +224,7 @@ describe("native terminal questions", () => {
         "PermissionDenied",
       ]),
     );
-    const tracker = new NativeActivityTracker();
+    const tracker = new NativeActivityTracker("n0");
     tracker.apply({ state: "working", prompt: "go" });
     const open = tracker.apply(
       classifyHookRecord(hooks, {
@@ -235,7 +235,7 @@ describe("native terminal questions", () => {
     );
     expect(waiting(open)).toEqual([
       {
-        id: "permission:Bash#1",
+        id: "permission:Bash#n0.1",
         prompt: "Claude Code needs permission to use: Bash",
       },
     ]);
@@ -323,9 +323,75 @@ describe("native terminal questions", () => {
     },
   );
 
+  it("gives the first prompt of a new holder a different id than the previous holder used, so a reopened session cannot collide", () => {
+    const hooks = CLAUDE.hooks!;
+    const ask = (tracker: NativeActivityTracker) =>
+      waiting(
+        tracker.apply(
+          classifyHookRecord(hooks, {
+            hook_event_name: "PermissionRequest",
+            tool_name: "Bash",
+          }),
+        ),
+      );
+    const first = ask(new NativeActivityTracker("aaaaaaaaaaaaaaaa"));
+    const second = ask(new NativeActivityTracker("bbbbbbbbbbbbbbbb"));
+    expect(first?.map((question) => question.id)).toEqual([
+      "permission:Bash#aaaaaaaaaaaaaaaa.1",
+    ]);
+    expect(second?.map((question) => question.id)).toEqual([
+      "permission:Bash#bbbbbbbbbbbbbbbb.1",
+    ]);
+  });
+
+  it("keeps a prompt's id stable within one holder, in the report and in the heartbeat", () => {
+    const hooks = CLAUDE.hooks!;
+    const tracker = new NativeActivityTracker("cccccccccccccccc");
+    const opened = waiting(
+      tracker.apply(
+        classifyHookRecord(hooks, {
+          hook_event_name: "PermissionRequest",
+          tool_name: "Bash",
+        }),
+      ),
+    );
+    expect(waiting(tracker.heartbeat())).toEqual(opened);
+    expect(waiting(tracker.heartbeat())).toEqual(opened);
+  });
+
+  it("draws one random nonce per holder process and keeps ids within the opaque id limit for a very long tool name", () => {
+    const hooks = CLAUDE.hooks!;
+    const longTool = `mcp__${"x".repeat(400)}`;
+    const ask = (tracker: NativeActivityTracker) =>
+      waiting(
+        tracker.apply(
+          classifyHookRecord(hooks, {
+            hook_event_name: "PermissionRequest",
+            tool_name: longTool,
+          }),
+        ),
+      );
+    const one = ask(new NativeActivityTracker());
+    const two = ask(new NativeActivityTracker());
+    const idOne = one?.[0]?.id ?? "";
+    expect(idOne.length).toBeLessThanOrEqual(256);
+    expect(idOne).toMatch(/#[0-9a-f]{16}\.1$/u);
+    expect(two?.[0]?.id).toBe(idOne);
+    const tracker = new NativeActivityTracker();
+    ask(tracker);
+    expect(
+      tracker.apply(
+        classifyHookRecord(hooks, {
+          hook_event_name: "PostToolUse",
+          tool_name: longTool,
+        }),
+      ),
+    ).toEqual({ state: "working", prompt: null });
+  });
+
   it("OPEN FINDING (not fixed): a Bash completion closes the oldest open Bash prompt, whichever tool call it belongs to", () => {
     const hooks = CLAUDE.hooks!;
-    const tracker = new NativeActivityTracker();
+    const tracker = new NativeActivityTracker("n0");
     tracker.apply({ state: "working", prompt: "go" });
     const prompt = () =>
       tracker.apply(
@@ -345,7 +411,7 @@ describe("native terminal questions", () => {
     );
     expect(waiting(afterCompletion)).toEqual([
       {
-        id: "permission:Bash#2",
+        id: "permission:Bash#n0.2",
         prompt: "Claude Code needs permission to use: Bash",
       },
     ]);
