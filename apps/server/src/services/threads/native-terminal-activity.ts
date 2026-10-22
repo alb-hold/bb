@@ -378,12 +378,14 @@ function closeNamedNativeQuestions(
         turnId: NATIVE_QUESTION_TURN_ID,
       });
     } else if (
+      existing.threadId === args.thread.id &&
       existing.status === "interrupted" &&
       existing.statusReason === DAEMON_RESTARTED_PENDING_INTERACTION_REASON
     ) {
       retagInterruptedPendingInteraction(deps.db, {
         fromStatusReason: DAEMON_RESTARTED_PENDING_INTERACTION_REASON,
         id: existing.id,
+        threadId: args.thread.id,
         toStatusReason: NATIVE_QUESTION_ANSWERED_REASON,
       });
     }

@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import {
   createConnection,
+  createInterruptedProviderPendingInteraction,
   createNativeTerminalThread,
   deleteThread,
   clearNativeTerminalThreadActivityEvidence,
@@ -30,7 +31,10 @@ import {
 } from "@bb/server-contract";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as interactiveRequests from "../../src/internal/interactive-requests.js";
-import { DAEMON_RESTARTED_PENDING_INTERACTION_REASON } from "../../src/services/interactions/pending-interactions.js";
+import {
+  DAEMON_RESTARTED_PENDING_INTERACTION_REASON,
+  PendingInteractionLifecycle,
+} from "../../src/services/interactions/pending-interactions.js";
 import { applyLoggedThreadLifecycleEvent } from "../../src/services/threads/lifecycle-outcome.js";
 import { stopThreadForCurrentState } from "../../src/services/threads/thread-lifecycle.js";
 import {
@@ -3308,15 +3312,97 @@ describe("a native activity report that does not confirm activity", () => {
       const thread = await startThread(fixture);
       await send(fixture, thread.id, { closes: [bash1.id], state: "working" });
       const image = createConnection(fixture.harness.db.$client.serialize());
-      const row = getPendingInteractionByProviderRequest(image, {
+      try {
+        const providerRequestId = `${NATIVE_TERMINAL_QUESTION_REQUEST_PREFIX}${bash1.id}`;
+        const row = getPendingInteractionByProviderRequest(image, {
+          providerId: "claude-code",
+          providerRequestId,
+          providerThreadId: SESSION_ID,
+        });
+        expect(row).toMatchObject({
+          status: "interrupted",
+          statusReason: "native-terminal-question-answered",
+          threadId: thread.id,
+        });
+        const deps = fixture.harness.deps;
+        const restored = new PendingInteractionLifecycle({
+          aiServices: deps.aiServices,
+          config: deps.config,
+          db: image,
+          hub: deps.hub,
+          lifecycleDedupers: deps.lifecycleDedupers,
+          logger: deps.logger,
+          machineAuth: deps.machineAuth,
+          pluginHostArtifacts: deps.pluginHostArtifacts,
+          providerRegistry: deps.providerRegistry,
+          skillTreeRegistry: deps.skillTreeRegistry,
+          telemetry: deps.telemetry,
+          terminalSessions: deps.terminalSessions,
+        });
+        const late = restored.registerPendingInteraction({
+          interaction: {
+            payload: {
+              kind: "user_question",
+              questions: [
+                {
+                  allowFreeText: true,
+                  id: providerRequestId,
+                  multiSelect: false,
+                  prompt: bash1.prompt,
+                },
+              ],
+            },
+            providerId: "claude-code",
+            providerRequestId,
+            providerThreadId: SESSION_ID,
+            threadId: thread.id,
+            turnId: "native-terminal-turn",
+          },
+        });
+        expect(late.outcome).toBe("rejected");
+      } finally {
+        image.$client.close();
+      }
+    });
+
+    it("does not touch another thread's daemon-restart row that has the same identity", async () => {
+      const fixture = await createFixture();
+      const thread = await startThread(fixture);
+      const other = seedChatThread(fixture, {
         providerId: "claude-code",
-        providerRequestId: `${NATIVE_TERMINAL_QUESTION_REQUEST_PREFIX}${bash1.id}`,
-        providerThreadId: SESSION_ID,
+        providerThreadId: null,
       });
-      expect(row).toMatchObject({
+      const providerRequestId = `${NATIVE_TERMINAL_QUESTION_REQUEST_PREFIX}${bash1.id}`;
+      createInterruptedProviderPendingInteraction(fixture.harness.db, {
+        payload: JSON.stringify({
+          kind: "user_question",
+          questions: [
+            {
+              allowFreeText: true,
+              id: providerRequestId,
+              multiSelect: false,
+              prompt: bash1.prompt,
+            },
+          ],
+        }),
+        providerId: "claude-code",
+        providerRequestId,
+        providerThreadId: SESSION_ID,
+        statusReason: DAEMON_RESTARTED_PENDING_INTERACTION_REASON,
+        threadId: other.id,
+        turnId: "native-terminal-turn",
+      });
+      await send(fixture, thread.id, { closes: [bash1.id], state: "working" });
+      expect(
+        getPendingInteractionByProviderRequest(fixture.harness.db, {
+          providerId: "claude-code",
+          providerRequestId,
+          providerThreadId: SESSION_ID,
+        }),
+      ).toMatchObject({
         status: "interrupted",
-        statusReason: "native-terminal-question-answered",
-        threadId: thread.id,
+        statusReason: DAEMON_RESTARTED_PENDING_INTERACTION_REASON,
+        threadId: other.id,
       });
     });
 

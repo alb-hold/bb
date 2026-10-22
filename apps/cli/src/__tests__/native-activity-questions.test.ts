@@ -399,6 +399,29 @@ describe("native terminal questions", () => {
     ).toEqual({ state: "working", prompt: null });
   });
 
+  it("gives two tool names that share their first 200 characters distinct ids, so the second prompt is not suppressed", () => {
+    const hooks = CLAUDE.hooks!;
+    const shared = `mcp__${"y".repeat(250)}`;
+    const tracker = new NativeActivityTracker("dddddddddddddddd");
+    tracker.apply(
+      classifyHookRecord(hooks, {
+        hook_event_name: "PermissionRequest",
+        tool_name: `${shared}_one`,
+      }),
+    );
+    const both = waiting(
+      tracker.apply(
+        classifyHookRecord(hooks, {
+          hook_event_name: "PermissionRequest",
+          tool_name: `${shared}_two`,
+        }),
+      ),
+    );
+    expect(both).toHaveLength(2);
+    expect(new Set(both.map((question) => question.id)).size).toBe(2);
+    expect(both.every((question) => question.id.length <= 256)).toBe(true);
+  });
+
   it("OPEN FINDING (not fixed): a Bash completion closes the oldest open Bash prompt, whichever tool call it belongs to", () => {
     const hooks = CLAUDE.hooks!;
     const tracker = new NativeActivityTracker("n0");
