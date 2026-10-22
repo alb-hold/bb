@@ -587,16 +587,26 @@ describe("ThreadTerminalView terminal focus boundary", () => {
     fitCols = 38;
     fitRows = 5;
     socket.receive({
-      type: "session-updated",
-      session: { ...session, cols: 38, rows: 5 },
+      type: "output",
+      chunk: {
+        seq: 2,
+        dataBase64: btoa(
+          `\u001b]7791;bb-grid;38;5\u0007${lines(1_101, 1_120)}\r\n`,
+        ),
+      },
     });
-    act(() => getTerminal().resize(38, 5));
     await waitForReadinessCondition(
       () => {
         expect(getTerminal().cols).toBe(38);
         expect(getTerminal().rows).toBe(5);
       },
-      "shared PTY grid resize was not applied within 5000 ms",
+      "in-band shared PTY grid marker was not applied within 5000 ms",
+    );
+    await waitForReadinessCondition(
+      () =>
+        expect(testState.socketMessages.map((message) => JSON.parse(message)))
+          .toContainEqual({ type: "ack", nextSeq: 3 }),
+      "in-band resize output was not acknowledged within 5000 ms",
     );
     await waitForReadinessCondition(
       () =>

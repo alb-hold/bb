@@ -1622,6 +1622,24 @@ export function ThreadTerminalView({
       );
     };
 
+    let liveBottomBeforeGridResize = false;
+    let liveBottomResizeClearFrame: number | null = null;
+    const captureLiveViewportBeforeGridResize = () => {
+      const activeBuffer = terminal?.buffer.active;
+      liveBottomBeforeGridResize =
+        activeBuffer !== undefined &&
+        activeBuffer.viewportY === activeBuffer.baseY;
+    };
+    const clearLiveViewportBeforeGridResize = () => {
+      if (liveBottomResizeClearFrame !== null) {
+        window.cancelAnimationFrame(liveBottomResizeClearFrame);
+      }
+      liveBottomResizeClearFrame = window.requestAnimationFrame(() => {
+        liveBottomResizeClearFrame = null;
+        liveBottomBeforeGridResize = false;
+      });
+    };
+
     async function mountTerminal(
       containerElement: HTMLDivElement,
     ): Promise<void> {
@@ -1788,6 +1806,10 @@ export function ThreadTerminalView({
           containerElement.dataset.renderGridRows = String(rows);
           updateGridVisibility();
         },
+        {
+          beforeResize: () => captureLiveViewportBeforeGridResize(),
+          afterResize: () => clearLiveViewportBeforeGridResize(),
+        },
       );
       fitAddon = new LoadedFitAddon();
       terminal.loadAddon(fitAddon);
@@ -1820,18 +1842,6 @@ export function ThreadTerminalView({
         outputBoundaryToken,
         recordOutputStart,
       );
-      let liveBottomBeforeGridResize = false;
-      const captureLiveViewportBeforeGridResize = () => {
-        const activeBuffer = terminal?.buffer.active;
-        liveBottomBeforeGridResize =
-          activeBuffer !== undefined &&
-          activeBuffer.viewportY === activeBuffer.baseY;
-      };
-      const clearLiveViewportBeforeGridResize = () => {
-        window.requestAnimationFrame(() => {
-          liveBottomBeforeGridResize = false;
-        });
-      };
       const restoreViewport = (afterGridResize = false) => {
         const activeBuffer = terminal?.buffer.active;
         if (!terminal || !activeBuffer) {
@@ -2094,7 +2104,6 @@ export function ThreadTerminalView({
             if (!markerGridActive) {
               latestPtyGrid = nextSize;
               if (outputPipeline) {
-                captureLiveViewportBeforeGridResize();
                 applyTerminalGridAndKeepViewport({
                   pipeline: outputPipeline,
                   cols: nextSize.cols,
@@ -2104,7 +2113,6 @@ export function ThreadTerminalView({
                     if (hasRestoredViewport && !hasManualScrollIntent) {
                       restoreViewport(true);
                     }
-                    clearLiveViewportBeforeGridResize();
                   },
                 });
               }
@@ -2190,7 +2198,6 @@ export function ThreadTerminalView({
             }
             if (message.type === "session-updated" && !markerGridActive) {
               if (outputPipeline) {
-                captureLiveViewportBeforeGridResize();
                 applyTerminalGridAndKeepViewport({
                   pipeline: outputPipeline,
                   cols,
@@ -2200,7 +2207,6 @@ export function ThreadTerminalView({
                     if (hasRestoredViewport && !hasManualScrollIntent) {
                       restoreViewport(true);
                     }
-                    clearLiveViewportBeforeGridResize();
                   },
                 });
               }
@@ -2519,6 +2525,9 @@ export function ThreadTerminalView({
       detachViewportListeners?.();
       if (resizeAnimationFrame !== null) {
         window.cancelAnimationFrame(resizeAnimationFrame);
+      }
+      if (liveBottomResizeClearFrame !== null) {
+        window.cancelAnimationFrame(liveBottomResizeClearFrame);
       }
       if (connectionNoticeTimeout !== null) {
         clearTimeout(connectionNoticeTimeout);
