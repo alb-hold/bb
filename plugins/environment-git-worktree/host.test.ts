@@ -1366,7 +1366,7 @@ setTimeout(() => {}, 300_000);`,
         }
       });
 
-      it("keeps an abandoned earlier attempt that is clean but unpushed, and removes a published one", async () => {
+      it("keeps an abandoned earlier attempt whether or not it is published, leaving its removal to its owner", async () => {
         const worktree = await createManagedWorktree({
           pathKey: "thr_7",
           branchName: "bb/abandoned",
@@ -1399,8 +1399,14 @@ setTimeout(() => {}, 300_000);`,
             "create",
             retry,
           );
-          expect(second).toMatchObject({ status: "created" });
-          expect(existsSync(worktree.path)).toBe(false);
+          expect(second).toMatchObject({
+            status: "failed",
+            message: expect.stringContaining("left alone"),
+          });
+          expect(existsSync(worktree.path)).toBe(true);
+          expect((await git(worktree.path, "rev-parse", "HEAD")).trim()).toBe(
+            sha,
+          );
         } finally {
           await worktree.harness.experimental_dispose();
         }

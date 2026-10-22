@@ -213,50 +213,19 @@ async function isPathInside(root: string, target: string): Promise<boolean> {
   );
 }
 
-async function removeAbandonedAttemptWorktree(args: {
+async function refuseAbandonedAttemptWorktree(args: {
   sourcePath: string;
   ownWorktreesRoot: string;
   branchName: string;
-  onProgress: ProgressCallback | undefined;
-  signal: AbortSignal | undefined;
 }): Promise<void> {
   const holder = await findWorktreeForBranch(args.sourcePath, args.branchName);
   if (holder === null || !(await isPathInside(args.ownWorktreesRoot, holder))) {
     return;
   }
-  throwIfProvisionAborted(args.signal);
-  const startedAt = Date.now();
-  emitStep({
-    onProgress: args.onProgress,
-    key: "abandoned-worktree-started",
-    text: "Removing the worktree an earlier attempt left behind",
-    status: "started",
-    startedAt,
-  });
-  try {
-    await removeWorktree({
-      path: holder,
-      rootPath: args.ownWorktreesRoot,
-      ...(args.signal !== undefined ? { signal: args.signal } : {}),
-    });
-  } catch (error) {
-    if (isWorktreePreservedError(error)) {
-      throw new WorkspaceError(
-        "abandoned_worktree_preserved",
-        `Branch ${args.branchName} is still checked out at ${holder} by an earlier attempt, so it was left alone. ${error.message}`,
-        { cause: error },
-      );
-    }
-    throw error;
-  }
-  emitStep({
-    onProgress: args.onProgress,
-    key: "abandoned-worktree-completed",
-    text: "Removed the worktree an earlier attempt left behind",
-    status: "completed",
-    startedAt,
-    metadata: { durationMs: Date.now() - startedAt },
-  });
+  throw new WorkspaceError(
+    "abandoned_worktree_preserved",
+    `Branch ${args.branchName} is still checked out at ${holder} by an earlier workspace, so it was left alone. bb removes a workspace only through its owner's cleanup; finish or remove ${holder} yourself, then retry.`,
+  );
 }
 
 async function ensureWorkspaceParentDirectory(
@@ -627,12 +596,8 @@ export async function createWorktree(
     if ((await readCompletedBranch(args.completionPath)) === args.branchName) {
       return { path: args.targetPath };
     }
-    try {
-      await finishWorktreeSetup(args);
-      return { path: args.targetPath };
-    } catch (error) {
-      return await removeCreateTargetAfterFailure(args, error);
-    }
+    await finishWorktreeSetup(args);
+    return { path: args.targetPath };
   }
 
   await removeCreateTarget(args);
@@ -656,12 +621,10 @@ export async function createWorktree(
   }
 
   throwIfProvisionAborted(args.signal);
-  await removeAbandonedAttemptWorktree({
+  await refuseAbandonedAttemptWorktree({
     sourcePath: args.sourcePath,
     ownWorktreesRoot: args.ownWorktreesRoot,
     branchName: args.branchName,
-    onProgress: args.onProgress,
-    signal: args.signal,
   });
 
   throwIfProvisionAborted(args.signal);

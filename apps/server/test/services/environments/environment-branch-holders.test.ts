@@ -55,11 +55,10 @@ function installProvider(overrides: {
     path: "/tmp/branch-holders-restored",
     ownsPath: true,
   }));
-  const remove =
-    overrides.remove ??
-    vi.fn<PluginEnvironmentProviderDeclaration["remove"]>(async () => ({
-      status: "removed",
-    }));
+  const removeSpy = vi.fn<PluginEnvironmentProviderDeclaration["remove"]>(
+    async () => ({ status: "removed" }),
+  );
+  const remove = overrides.remove ?? removeSpy;
   const record = {
     pluginId: PLUGIN_ID,
     provider: validatePluginEnvironmentProviderDeclaration({
@@ -79,7 +78,7 @@ function installProvider(overrides: {
     invokeProvider: (_pluginId, _label, run) => invokePluginInline(run),
     decisionTimeoutMs: 10_000,
   });
-  return { record, create, restore, remove };
+  return { record, create, restore, remove, removeSpy };
 }
 
 function seedFixture(harness: TestAppHarness) {
@@ -302,9 +301,9 @@ describe("a create or restore on a branch another workspace still holds", () => 
       }
     }));
 
-  it("leaves the requester's own earlier attempt to the host and does not retire it", async () =>
+  it("supersedes the requester's own earlier attempt through the engine removal before it creates", async () =>
     withTestHarness(async (harness) => {
-      const { create, remove, record } = installProvider({});
+      const { create, removeSpy: remove, record } = installProvider({});
       const fixture = seedFixture(harness);
       const holder = seedHolder(harness, {
         hostId: fixture.host.id,
@@ -339,10 +338,14 @@ describe("a create or restore on a branch another workspace still holds", () => 
       });
       try {
         await expect.poll(() => create.mock.calls.length).toBe(1);
-        expect(remove).not.toHaveBeenCalled();
-        expect(
-          getEnvironment(harness.db, holder.id)?.teardownStatus,
-        ).toBeNull();
+        expect(remove).toHaveBeenCalledTimes(1);
+        expect(remove.mock.invocationCallOrder[0]).toBeLessThan(
+          create.mock.invocationCallOrder[0] ?? 0,
+        );
+        expect(getEnvironment(harness.db, holder.id)).toMatchObject({
+          status: "destroyed",
+          teardownStatus: "removed",
+        });
       } finally {
         await cancelProviderEnvironmentCreation(harness.deps, requester.id);
       }

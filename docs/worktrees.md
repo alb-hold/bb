@@ -164,7 +164,9 @@ servers, `nohup` jobs), and any process you started there yourself, such as a
 shell you `cd`'d into the worktree or an editor terminal. Each process gets
 `SIGTERM`, then `SIGKILL` after a short grace period. It checks again, then
 `git worktree remove` runs without `--force`. If Git declines, the worktree is
-kept. bb never uses `--force`. A create that fails after bb made the worktree
+kept. bb never uses `--force`. A create that finds a branch still checked out by
+an earlier workspace leaves it alone and says where it is; the owning cleanup
+removes such a workspace, never the new create. A create that fails after bb made the worktree
 removes it only while it holds nothing but what bb put there: HEAD is still the
 commit bb created, no tracked file changed, no `.keep-worktree`, lock or
 unfinished operation exists, and every other file is a `.worktreeinclude` copy

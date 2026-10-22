@@ -428,7 +428,7 @@ function branchHolderInUseMessage(
   threadIds: string[],
 ): string {
   const plural = threadIds.length > 1;
-  return `Branch ${branchName} is still checked out at ${holder.path} for ${plural ? "threads" : "thread"} ${threadIds.join(", ")}; ${plural ? "they" : "it"} must archive first (stop ${plural ? "them" : "it"} first if running), so that work is not deleted`;
+  return `Branch ${branchName} is still checked out at ${holder.path} for ${plural ? "threads" : "thread"} ${threadIds.join(", ")}; the ${plural ? "owners have" : "owner has"} to release that workspace before this can continue, so that work is not deleted`;
 }
 
 async function clearBranchHolders(
@@ -456,8 +456,16 @@ async function clearBranchHolders(
     );
     if (blockers.length > 0)
       return branchHolderInUseMessage(holder, args.branchName, blockers);
-    if (requesterOwns) continue;
-    if (!requestEnvironmentRemoval(deps, holder.id)) {
+    if (requesterOwns) {
+      if (holder.ownerThreadId !== args.requesterThreadId) continue;
+      if (holder.teardownStatus === null) {
+        updatePreparingEnvironment(deps.db, {
+          ...holder,
+          teardownStatus: "running",
+          retireAt: Date.now(),
+        });
+      }
+    } else if (!requestEnvironmentRemoval(deps, holder.id)) {
       const retry = branchHolderBlockers(deps, holder, args.requesterThreadId);
       return retry.blockers.length > 0
         ? branchHolderInUseMessage(holder, args.branchName, retry.blockers)
