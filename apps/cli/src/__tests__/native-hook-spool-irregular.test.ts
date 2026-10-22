@@ -84,8 +84,16 @@ describe.skipIf(process.platform === "win32")(
 
       expect(timedOut).toBe(false);
       expect(reads[0]?.records).toEqual([
-        { hook_event_name: "PermissionRequest", session_id: "s", tool_name: "Two" },
-        { hook_event_name: "PermissionRequest", session_id: "s", tool_name: "Four" },
+        {
+          hook_event_name: "PermissionRequest",
+          session_id: "s",
+          tool_name: "Two",
+        },
+        {
+          hook_event_name: "PermissionRequest",
+          session_id: "s",
+          tool_name: "Four",
+        },
       ]);
       expect(reads[0]?.unreadable).toBe(2);
       expect(reads[1]).toEqual({ records: [], unreadable: 0 });

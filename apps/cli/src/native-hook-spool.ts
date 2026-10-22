@@ -228,9 +228,9 @@ export function hookAppendCommand(
       'if [ -L "$l" ] && [ "$(readlink "$l")" = "$$" ]; then break; fi; ' +
       'rm -f "$l/$$"; ' +
       'elif [ ! -e "$l" ] && [ ! -L "$l" ]; then ' +
-      "mkdir \"$l\" && { printf '%s' \"$$\" >\"$l/pid\"; break; }; fi; " +
+      'mkdir "$l" && { printf \'%s\' "$$" >"$l/pid"; break; }; fi; ' +
       'if ! [ "$(date +%s)" -lt "$e" ]; then ' +
-      "printf '%s\\n' \"$r\" >\"$d/.late.$$.tmp\" " +
+      'printf \'%s\\n\' "$r" >"$d/.late.$$.tmp" ' +
       '&& mv -f "$d/.late.$$.tmp" "$d/.late.$$.$s" && rm -f "$m" ' +
       '|| mv -f "$m" "$d/.lost.$$"; exit 0; fi; ' +
       'if [ "$w" -lt 10 ]; then w=$((w+1)); else sleep 0.05 || sleep 1; fi; done',
@@ -240,7 +240,9 @@ export function hookAppendCommand(
   ].join("; ");
 }
 
-export function hookCommandFor(target: string | { appendFile: string }): string {
+export function hookCommandFor(
+  target: string | { appendFile: string },
+): string {
   return typeof target === "string"
     ? hookSpoolCommand(target)
     : hookAppendCommand(target.appendFile);
@@ -338,7 +340,9 @@ export class HookSpoolReader {
         const sequence = Number(name);
         if (expectedMissing && sequence > this.next) {
           firstBeyondGap =
-            firstBeyondGap === null ? sequence : Math.min(firstBeyondGap, sequence);
+            firstBeyondGap === null
+              ? sequence
+              : Math.min(firstBeyondGap, sequence);
         }
         lost += this.settleLate(name, sequence);
         continue;
@@ -384,7 +388,9 @@ export class HookSpoolReader {
   private settleLate(name: string, sequence: number): number {
     if (
       this.reportedLate.has(name) ||
-      !this.skipped.some((range) => sequence >= range.from && sequence < range.to)
+      !this.skipped.some(
+        (range) => sequence >= range.from && sequence < range.to,
+      )
     ) {
       return 0;
     }
@@ -622,7 +628,12 @@ export class HookAppendReader {
       };
     } catch {
       closeSync(descriptor);
-      return { descriptor: null, key: "open-error", kind: "irregular", size: 0 };
+      return {
+        descriptor: null,
+        key: "open-error",
+        kind: "irregular",
+        size: 0,
+      };
     }
   }
 
@@ -758,7 +769,10 @@ export class HookAppendReader {
       this.incompleteSince = null;
       return 0;
     }
-    if (this.incompleteSince === null || this.incompleteOffset !== this.offset) {
+    if (
+      this.incompleteSince === null ||
+      this.incompleteOffset !== this.offset
+    ) {
       this.incompleteSince = now;
       this.incompleteOffset = this.offset;
       this.incompleteCounted = false;
@@ -830,7 +844,9 @@ export function hookRecordSource(source: HookSource): HookRecordSource | null {
 }
 
 export function hookSourceIsUnavailable(source: HookSource): boolean {
-  return source !== null && typeof source === "object" && "unavailable" in source;
+  return (
+    source !== null && typeof source === "object" && "unavailable" in source
+  );
 }
 
 function isMissing(error: unknown): boolean {
@@ -846,8 +862,6 @@ function processIsAlive(pid: number): boolean {
     process.kill(pid, 0);
     return true;
   } catch (error) {
-    return (
-      error instanceof Error && "code" in error && error.code === "EPERM"
-    );
+    return error instanceof Error && "code" in error && error.code === "EPERM";
   }
 }

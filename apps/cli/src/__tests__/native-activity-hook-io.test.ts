@@ -210,7 +210,10 @@ describe.skipIf(process.platform === "win32")(
       const { commandFor, spool } = fixture();
       const command = commandFor("PermissionRequest");
       for (const tool of ["A", "B", "C", "D"]) {
-        await runWhole(command, record("PermissionRequest", { tool_name: tool }));
+        await runWhole(
+          command,
+          record("PermissionRequest", { tool_name: tool }),
+        );
       }
       expect(new HookSpoolReader(spool).read().records.map(toolOf)).toEqual([
         "A",
@@ -232,7 +235,10 @@ describe.skipIf(process.platform === "win32")(
       first.child.stdin.write(slow.slice(0, 1000));
       await until(() => leftovers(spool).length === 1, "the first temp file");
 
-      await runWhole(command, record("PermissionRequest", { tool_name: "Fast" }));
+      await runWhole(
+        command,
+        record("PermissionRequest", { tool_name: "Fast" }),
+      );
       expect(reader.read()).toEqual({
         records: [expect.objectContaining({ tool_name: "Fast" })],
         unreadable: 0,
@@ -262,7 +268,10 @@ describe.skipIf(process.platform === "win32")(
       dying.child.kill("SIGKILL");
       await dying.exited;
 
-      await runWhole(command, record("PermissionRequest", { tool_name: "Next" }));
+      await runWhole(
+        command,
+        record("PermissionRequest", { tool_name: "Next" }),
+      );
       const first = reader.read(Date.now() + 5_000);
       expect(first.records.map(toolOf)).toEqual(["Next"]);
       expect(first.unreadable).toBe(1);
@@ -299,8 +308,14 @@ describe.skipIf(process.platform === "win32")(
       putRecord(spool, 1, "One");
       putRecord(spool, 3, "Three");
       expect(reader.read(start).records.map(toolOf)).toEqual(["One"]);
-      expect(reader.read(start + 3_000)).toEqual({ records: [], unreadable: 0 });
-      expect(reader.read(start + 8_000)).toEqual({ records: [], unreadable: 0 });
+      expect(reader.read(start + 3_000)).toEqual({
+        records: [],
+        unreadable: 0,
+      });
+      expect(reader.read(start + 8_000)).toEqual({
+        records: [],
+        unreadable: 0,
+      });
       putRecord(spool, 2, "Two");
       expect(reader.read(start + 9_000).records.map(toolOf)).toEqual([
         "Two",
@@ -315,14 +330,23 @@ describe.skipIf(process.platform === "win32")(
       putRecord(spool, 1, "One");
       putRecord(spool, 3, "Three");
       expect(reader.read(start).records.map(toolOf)).toEqual(["One"]);
-      expect(reader.read(start + 3_000)).toEqual({ records: [], unreadable: 0 });
+      expect(reader.read(start + 3_000)).toEqual({
+        records: [],
+        unreadable: 0,
+      });
       const skipped = reader.read(start + 11_000);
       expect(skipped.records.map(toolOf)).toEqual(["Three"]);
       expect(skipped.unreadable).toBe(1);
       expect(statSync(path.join(spool, "000000000002")).size).toBe(0);
       putRecord(spool, 4, "Four");
       expect(reader.read(start + 13_000)).toEqual({
-        records: [{ hook_event_name: "PermissionRequest", session_id: SESSION_ID, tool_name: "Four" }],
+        records: [
+          {
+            hook_event_name: "PermissionRequest",
+            session_id: SESSION_ID,
+            tool_name: "Four",
+          },
+        ],
         unreadable: 0,
       });
     });
@@ -349,7 +373,10 @@ describe.skipIf(process.platform === "win32")(
     it("reserves a skipped number exclusively, so a publisher with a stale hint moves on to the next free number and its record is read in order", async () => {
       const { commandFor, spool } = fixture();
       const command = commandFor("PermissionRequest");
-      await runWhole(command, record("PermissionRequest", { tool_name: "One" }));
+      await runWhole(
+        command,
+        record("PermissionRequest", { tool_name: "One" }),
+      );
       putRecord(spool, 3, "Three");
       expect(readFileSync(path.join(spool, ".hint"), "utf8")).toBe("1");
 
@@ -362,7 +389,10 @@ describe.skipIf(process.platform === "win32")(
       expect(skipped.unreadable).toBe(1);
       expect(statSync(path.join(spool, "000000000002")).size).toBe(0);
 
-      await runWhole(command, record("PermissionRequest", { tool_name: "Four" }));
+      await runWhole(
+        command,
+        record("PermissionRequest", { tool_name: "Four" }),
+      );
       expect(published(spool)).toEqual([
         "000000000001",
         "000000000002",
@@ -386,7 +416,9 @@ describe.skipIf(process.platform === "win32")(
       putRecord(spool, 5, "Five");
       const before = readFileSync(path.join(spool, "000000000005"), "utf8");
       expect(reserveSequence(spool, 5)).toBe("present");
-      expect(readFileSync(path.join(spool, "000000000005"), "utf8")).toBe(before);
+      expect(readFileSync(path.join(spool, "000000000005"), "utf8")).toBe(
+        before,
+      );
       expect(reserveSequence(spool, 6)).toBe("reserved");
       expect(reserveSequence(spool, 6)).toBe("present");
       expect(reserveSequence(path.join(spool, "missing"), 7)).toBe("failed");
@@ -567,7 +599,8 @@ describe.skipIf(process.platform === "win32")(
       } = JSON.parse(nativeActivityHookSettings(hooks, { appendFile: file }));
       const commandFor = (event: string): string => {
         const command = settings.hooks[event]?.[0]?.hooks[0]?.command;
-        if (command === undefined) throw new Error(`no hook command for ${event}`);
+        if (command === undefined)
+          throw new Error(`no hook command for ${event}`);
         return command;
       };
       const unconfirmed: Array<{ reason: string; total: number }> = [];
@@ -827,7 +860,9 @@ describe.skipIf(process.platform === "win32")(
       const read = new HookAppendReader(file).read();
       expect(read.unreadable).toBe(1);
       expect(read.late?.map((entry) => toolOf(entry.record))).toEqual(["Late"]);
-      expect(new HookAppendReader(file).read(Date.now() + 3_000).late).toBeUndefined();
+      expect(
+        new HookAppendReader(file).read(Date.now() + 3_000).late,
+      ).toBeUndefined();
     }, 30_000);
 
     it("keeps .lost only for a hook that cannot even write its late file, and the reader counts it at once", async () => {
@@ -860,10 +895,7 @@ describe.skipIf(process.platform === "win32")(
         state: "waiting",
       });
       symlinkSync(String(process.pid), lock);
-      await forcedDeadline(
-        file,
-        record("PostToolUse", { tool_name: "Bash" }),
-      );
+      await forcedDeadline(file, record("PostToolUse", { tool_name: "Bash" }));
       await forcedDeadline(
         file,
         record("UserPromptSubmit", { prompt: "late prompt" }),
@@ -878,7 +910,10 @@ describe.skipIf(process.platform === "win32")(
         record("PermissionRequest", { tool_name: "Edit" }),
       );
       const reports = reader.read();
-      expect(unconfirmed.at(-1)).toEqual({ reason: "unreadable-record", total: 3 });
+      expect(unconfirmed.at(-1)).toEqual({
+        reason: "unreadable-record",
+        total: 3,
+      });
       expect(reports.some((report) => report.state === "working")).toBe(false);
       const last = reports.at(-1);
       expect(
@@ -904,10 +939,7 @@ describe.skipIf(process.platform === "win32")(
       });
       late.stdin.end(record("PermissionRequest", { tool_name: "Bash" }));
       await until(() => markers(directory).length === 1, "the hook marker");
-      appendFileSync(
-        file,
-        `${record("PostToolUse", { tool_name: "Bash" })}\n`,
-      );
+      appendFileSync(file, `${record("PostToolUse", { tool_name: "Bash" })}\n`);
       expect(reader.read()).toEqual([]);
       await exited;
       expect(lateFiles(directory)).toHaveLength(1);
@@ -1097,7 +1129,10 @@ describe.skipIf(process.platform === "win32")(
       const { file } = appendFixture();
       const reader = new HookAppendReader(file);
       const started = Date.now();
-      writeFileSync(file, `${record("PermissionRequest", { tool_name: "Aaa" })}\n`);
+      writeFileSync(
+        file,
+        `${record("PermissionRequest", { tool_name: "Aaa" })}\n`,
+      );
       expect(reader.read(started).records.map(toolOf)).toEqual(["Aaa"]);
 
       renameSync(file, `${file}.kept`);
@@ -1106,7 +1141,10 @@ describe.skipIf(process.platform === "win32")(
       expect(reader.read(started + 2).unreadable).toBe(0);
 
       rmSync(file);
-      writeFileSync(file, `${record("PermissionRequest", { tool_name: "Bbb" })}\n`);
+      writeFileSync(
+        file,
+        `${record("PermissionRequest", { tool_name: "Bbb" })}\n`,
+      );
       const back = reader.read(started + 3);
       expect(back.records.map(toolOf)).toEqual(["Bbb"]);
       expect(back.unreadable).toBe(0);
@@ -1145,7 +1183,10 @@ describe.skipIf(process.platform === "win32")(
       const { file } = appendFixture();
       const reader = new HookAppendReader(file);
       const started = Date.now();
-      writeFileSync(file, `${record("PermissionRequest", { tool_name: "Aaa" })}\n`);
+      writeFileSync(
+        file,
+        `${record("PermissionRequest", { tool_name: "Aaa" })}\n`,
+      );
       expect(reader.read(started).records.map(toolOf)).toEqual(["Aaa"]);
       renameSync(file, `${file}.original`);
       spawnSync("mkfifo", [file]);
@@ -1186,7 +1227,10 @@ describe.skipIf(process.platform === "win32")(
       const { directory, file } = appendFixture();
       const reader = new HookAppendReader(file);
       const started = Date.now();
-      writeFileSync(file, `${record("PermissionRequest", { tool_name: "Aaa" })}\n`);
+      writeFileSync(
+        file,
+        `${record("PermissionRequest", { tool_name: "Aaa" })}\n`,
+      );
       expect(reader.read(started).records.map(toolOf)).toEqual(["Aaa"]);
       const replacement = path.join(directory, "replacement");
       writeFileSync(
@@ -1215,7 +1259,9 @@ describe.skipIf(process.platform === "win32")(
       });
       const now = Date.now();
       const first = reader.read(now);
-      expect(first.late?.map((entry) => toolOf(entry.record))).toEqual(["Bash"]);
+      expect(first.late?.map((entry) => toolOf(entry.record))).toEqual([
+        "Bash",
+      ]);
       expect(first.records).toEqual([]);
       expect(reader.read(now + 1).records).toEqual([JSON.parse(closeRecord)]);
     });
@@ -1275,9 +1321,18 @@ describe.skipIf(process.platform === "win32")(
       const start = Date.now();
       appendFileSync(file, `{"tool_name":"Slow"`);
       expect(reader.read(start)).toEqual({ records: [], unreadable: 0 });
-      expect(reader.read(start + 5_000)).toEqual({ records: [], unreadable: 0 });
-      expect(reader.read(start + 11_000)).toEqual({ records: [], unreadable: 1 });
-      expect(reader.read(start + 13_000)).toEqual({ records: [], unreadable: 0 });
+      expect(reader.read(start + 5_000)).toEqual({
+        records: [],
+        unreadable: 0,
+      });
+      expect(reader.read(start + 11_000)).toEqual({
+        records: [],
+        unreadable: 1,
+      });
+      expect(reader.read(start + 13_000)).toEqual({
+        records: [],
+        unreadable: 0,
+      });
       appendFileSync(file, "}\n");
       expect(reader.read(start + 14_000)).toEqual({
         records: [{ tool_name: "Slow" }],

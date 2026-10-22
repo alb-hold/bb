@@ -192,7 +192,10 @@ export class NativeActivityReader {
       const spooled = this.hookSource.read();
       const lateOpeners = (spooled.late ?? [])
         .filter(({ record, startedAt }) =>
-          this.tracker.acceptsLate(classifyHookRecord(hooks, record), startedAt),
+          this.tracker.acceptsLate(
+            classifyHookRecord(hooks, record),
+            startedAt,
+          ),
         )
         .map(({ record }) => record);
       const arrived = [...lateOpeners, ...spooled.records];

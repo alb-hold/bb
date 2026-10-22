@@ -1,7 +1,8 @@
 import { isNativeTerminalQuestion } from "@bb/domain";
 import type { AppDeps } from "../../types.js";
 
-export const NATIVE_QUESTION_ANSWERED_REASON = "native-terminal-question-answered";
+export const NATIVE_QUESTION_ANSWERED_REASON =
+  "native-terminal-question-answered";
 
 export function interruptNativeTerminalQuestions(
   deps: Pick<AppDeps, "pendingInteractions">,

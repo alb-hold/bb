@@ -305,7 +305,8 @@ export class NativeActivityTracker {
       );
     }
     if (signal.answered !== undefined) {
-      if (signal.occurrence !== true) return this.closeQuestion(signal.answered);
+      if (signal.occurrence !== true)
+        return this.closeQuestion(signal.answered);
       const occurrence = this.endOldestOccurrence(signal.answered);
       return occurrence === null ? null : this.closeQuestion(occurrence);
     }

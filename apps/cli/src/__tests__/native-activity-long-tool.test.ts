@@ -75,7 +75,9 @@ function claudeDeclaration(): ProviderNativeTerminal {
 
 describe("native activity over a blocked Stop followed by a long foreground tool call", () => {
   it("keeps the thread working from the Stop hook error through the unanswered foreground tool call", () => {
-    const transcript = readFixture("long-tool-after-blocked-stop.transcript.jsonl");
+    const transcript = readFixture(
+      "long-tool-after-blocked-stop.transcript.jsonl",
+    );
     const hooks = readFixture("long-tool-after-blocked-stop.hooks.jsonl");
     const feedback = transcript.findIndex((record) => {
       const message = record.message;

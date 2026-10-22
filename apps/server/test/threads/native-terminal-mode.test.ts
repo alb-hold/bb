@@ -3258,7 +3258,10 @@ describe("a native activity report that does not confirm activity", () => {
       const clock = vi.spyOn(Date, "now").mockReturnValue(1_000_000);
       try {
         const thread = await startThread(fixture);
-        await send(fixture, thread.id, { closes: [bash1.id], state: "working" });
+        await send(fixture, thread.id, {
+          closes: [bash1.id],
+          state: "working",
+        });
         clock.mockReturnValue(1_010_000);
         expect(
           (
@@ -3282,7 +3285,10 @@ describe("a native activity report that does not confirm activity", () => {
       const clock = vi.spyOn(Date, "now").mockReturnValue(1_000_000);
       try {
         const thread = await startThread(fixture);
-        await send(fixture, thread.id, { closes: [bash1.id], state: "working" });
+        await send(fixture, thread.id, {
+          closes: [bash1.id],
+          state: "working",
+        });
         await send(fixture, thread.id, {
           closes: [],
           questions: [bash1, bash2],
@@ -3301,7 +3307,10 @@ describe("a native activity report that does not confirm activity", () => {
       const clock = vi.spyOn(Date, "now").mockReturnValue(1_000_000);
       try {
         const thread = await startThread(fixture);
-        await send(fixture, thread.id, { closes: [bash1.id], state: "working" });
+        await send(fixture, thread.id, {
+          closes: [bash1.id],
+          state: "working",
+        });
         for (let batch = 0; batch < 33; batch += 1) {
           await send(fixture, thread.id, {
             closes: Array.from(
@@ -3411,7 +3420,10 @@ describe("a native activity report that does not confirm activity", () => {
       const clock = vi.spyOn(Date, "now").mockReturnValue(1_000_000);
       try {
         const thread = await startThread(fixture);
-        await send(fixture, thread.id, { closes: [bash1.id], state: "working" });
+        await send(fixture, thread.id, {
+          closes: [bash1.id],
+          state: "working",
+        });
         await reopen(fixture, thread);
         clock.mockReturnValue(1_020_000);
         await send(fixture, thread.id, {
@@ -3430,14 +3442,20 @@ describe("a native activity report that does not confirm activity", () => {
       const clock = vi.spyOn(Date, "now").mockReturnValue(1_000_000);
       try {
         const thread = await startThread(fixture);
-        await send(fixture, thread.id, { questions: [bash1], state: "waiting" });
+        await send(fixture, thread.id, {
+          questions: [bash1],
+          state: "waiting",
+        });
         const [pending] = openInteractions(fixture, thread.id);
         fixture.harness.deps.pendingInteractions.interruptPendingInteraction({
           interactionId: pending!.id,
           reason: DAEMON_RESTARTED_PENDING_INTERACTION_REASON,
         });
         expect(openInteractions(fixture, thread.id)).toHaveLength(0);
-        await send(fixture, thread.id, { closes: [bash1.id], state: "working" });
+        await send(fixture, thread.id, {
+          closes: [bash1.id],
+          state: "working",
+        });
         await send(fixture, thread.id, {
           closes: [],
           questions: [bash1],
@@ -3464,13 +3482,19 @@ describe("a native activity report that does not confirm activity", () => {
       const clock = vi.spyOn(Date, "now").mockReturnValue(1_000_000);
       try {
         const thread = await startThread(fixture);
-        await send(fixture, thread.id, { questions: [bash1], state: "waiting" });
+        await send(fixture, thread.id, {
+          questions: [bash1],
+          state: "waiting",
+        });
         const [pending] = openInteractions(fixture, thread.id);
         fixture.harness.deps.pendingInteractions.interruptPendingInteraction({
           interactionId: pending!.id,
           reason: DAEMON_RESTARTED_PENDING_INTERACTION_REASON,
         });
-        await send(fixture, thread.id, { questions: [bash1], state: "waiting" });
+        await send(fixture, thread.id, {
+          questions: [bash1],
+          state: "waiting",
+        });
         expect(openInteractions(fixture, thread.id)).toHaveLength(1);
       } finally {
         clock.mockRestore();
@@ -3485,7 +3509,10 @@ describe("a native activity report that does not confirm activity", () => {
       try {
         const thread = await startThread(fixture);
         const first = { id: "permission:Bash#aaaa.1", prompt: "Allow Bash?" };
-        await send(fixture, thread.id, { questions: [first], state: "waiting" });
+        await send(fixture, thread.id, {
+          questions: [first],
+          state: "waiting",
+        });
         await send(fixture, thread.id, {
           closes: [first.id],
           state: "working",
