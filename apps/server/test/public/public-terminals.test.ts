@@ -2457,9 +2457,7 @@ describe("public terminal routes", () => {
       status: 409,
       body: { code: "terminal_replaced" },
     });
-    expect(attachSettlement.mock.results.some(({ value }) => value === true)).toBe(
-      false,
-    );
+    expect(attachSettlement).not.toHaveBeenCalled();
     expect(readBrowserMessages(attachSocket)).toContainEqual(
       expect.objectContaining({ type: "error", code: "terminal_replaced" }),
     );
