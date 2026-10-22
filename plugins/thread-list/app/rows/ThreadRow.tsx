@@ -4,6 +4,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
@@ -30,6 +31,7 @@ import { cn } from "@/lib/utils";
 import { LIST_HOVER_TRANSITION } from "@/components/ui/motion";
 import {
   hasThreadListWorkingActivity,
+  nativeActivityGuidanceText,
   nativeActivityNoticeText,
   resolveThreadListIndicator,
   resolveThreadStatus,
@@ -314,6 +316,7 @@ function ThreadTrailingIndicator({
   rowStatus,
   nativeActivityUnconfirmed,
   nativeActivityNotice,
+  nativeActivityGuidance,
   automationStartedAt,
   elapsedMinutes,
 }: {
@@ -322,9 +325,11 @@ function ThreadTrailingIndicator({
   rowStatus: PluginSidebarThreadRowStatus | null;
   nativeActivityUnconfirmed: boolean;
   nativeActivityNotice: string;
+  nativeActivityGuidance: string | null;
   automationStartedAt: number | null;
   elapsedMinutes: number | null;
 }) {
+  const guidanceId = useId();
   const resolvedState = {
     ...state,
     isAutomationWoken: automationStartedAt !== null,
@@ -355,8 +360,11 @@ function ThreadTrailingIndicator({
               ? nativeActivityNotice
               : null;
 
+  const hasGuidance =
+    nativeActivityUnconfirmed && nativeActivityGuidance !== null;
   const indicator = (
     <span
+      aria-describedby={hasGuidance ? guidanceId : undefined}
       data-sidebar-thread-trailing-indicator=""
       data-sidebar-status-slot={statusText === null ? undefined : ""}
       className={cn(
@@ -373,7 +381,7 @@ function ThreadTrailingIndicator({
       role={statusText === null ? undefined : "img"}
       aria-label={statusText ?? undefined}
       title={
-        statusText === null && nativeActivityUnconfirmed
+        statusText === null && nativeActivityUnconfirmed && !hasGuidance
           ? nativeActivityNotice
           : undefined
       }
@@ -399,13 +407,29 @@ function ThreadTrailingIndicator({
           {nativeActivityNotice}
         </span>
       ) : null}
+      {hasGuidance ? (
+        <span
+          data-sidebar-native-activity-guidance=""
+          id={guidanceId}
+          className="sr-only"
+        >
+          {nativeActivityGuidance}
+        </span>
+      ) : null}
     </span>
   );
-  if (statusText === null) return indicator;
+  if (statusText === null && !hasGuidance) return indicator;
   return (
     <Tooltip>
       <TooltipTrigger asChild>{indicator}</TooltipTrigger>
-      <TooltipContent side="top">{statusText}</TooltipContent>
+      <TooltipContent side="top">
+        {[
+          statusText ?? nativeActivityNotice,
+          hasGuidance ? nativeActivityGuidance : null,
+        ]
+          .filter((text) => text !== null)
+          .join(". ")}
+      </TooltipContent>
     </Tooltip>
   );
 }
@@ -979,6 +1003,7 @@ function ThreadRowComponent({
                     thread,
                   )}
                   nativeActivityNotice={nativeActivityNoticeText(thread)}
+                  nativeActivityGuidance={nativeActivityGuidanceText(thread)}
                   automationStartedAt={automationStartedAt}
                   elapsedMinutes={elapsedMinutes}
                   hideIdleDraftLabel={

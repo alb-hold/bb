@@ -126,6 +126,21 @@ export function nativeActivityNoticeText(
     : `Agent tool call seen ${minutes}m ago`;
 }
 
+export function nativeActivityGuidanceText(
+  thread: Pick<
+    PluginSidebarThread,
+    "experimental_nativeActivity" | "host" | "id"
+  >,
+): string | null {
+  const activity = thread.experimental_nativeActivity;
+  if (activity === undefined || activity.confirmation === "confirmed") {
+    return null;
+  }
+  return `If this session started before bb was updated, update bb on ${
+    thread.host?.name ?? "this thread's machine"
+  }, save your work, type /exit in the terminal, then reopen with bb thread native ${thread.id}. A pending question will need to be asked again.`;
+}
+
 function isActivityUnreportedThread(thread: ThreadRuntimeShape): boolean {
   return (
     thread.experimental_nativeActivity !== undefined &&
