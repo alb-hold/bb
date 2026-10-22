@@ -183,6 +183,7 @@ function holder(
   const sentReports: string[] = [];
   const sentMarkers: Array<boolean | undefined> = [];
   const sentCloses: Array<string[] | undefined> = [];
+  const sentQuestions: Array<string[] | undefined> = [];
   const recorded: string[] = [];
   const logged: string[] = [];
   const reporter = createNativeActivityReporter({
@@ -190,6 +191,7 @@ function holder(
     send: async (args) => {
       sentMarkers.push(args.confirms);
       sentCloses.push(args.closes);
+      sentQuestions.push(args.questions?.map((question) => question.id));
       sentReports.push(
         args.prompt === undefined || args.prompt === null
           ? args.state
@@ -258,6 +260,7 @@ function holder(
     readOnly,
     recorded,
     sentCloses,
+    sentQuestions,
     sentMarkers,
     sentReports,
     tick,
@@ -650,30 +653,37 @@ describe("following a discovered session only after the server accepted it", () 
         tool_name: name,
       });
 
-      it("names the question the non-confirming answer closes", async () => {
+      it("names the exact prompt occurrence the non-confirming answer closes", async () => {
         const { h } = await startTrimmed();
         expect(await h.readOnly()).toEqual([]);
         h.appendHooks([edit("PermissionRequest"), edit("PostToolUse")]);
         expect(await h.readOnly()).toEqual(["waiting", "working"]);
         expect(h.sentMarkers).toEqual([undefined, false]);
-        expect(h.sentCloses).toEqual([undefined, ["permission:Edit"]]);
+        expect(h.sentQuestions[0]).toEqual(["permission:Edit#1"]);
+        expect(h.sentCloses).toEqual([[], ["permission:Edit#1"]]);
       });
 
-      it("restores Working only when the close of the dropped question's own id empties the dropped set, and the heartbeat resumes", async () => {
+      it("never restores Working from a close while the dropped question may exist: even a close of the dropped opener's tool stays unconfirmed until a prompt or idle", async () => {
         const { h } = await startTrimmed();
         expect(await h.readOnly()).toEqual([]);
         h.appendHooks([edit("PermissionRequest"), edit("PostToolUse")]);
         expect(await h.readOnly()).toEqual(["waiting", "working"]);
         h.appendHooks([toolDone("Bash")]);
-        expect(await h.readOnly()).toEqual(["waiting", "working", "working"]);
-        expect(h.sentMarkers).toEqual([undefined, false, undefined]);
-        expect(h.sentCloses).toEqual([undefined, ["permission:Edit"], []]);
-        expect(await h.tick()).toEqual([
+        expect(await h.readOnly()).toEqual(["waiting", "working"]);
+        expect(await h.tick()).toEqual(["waiting", "working"]);
+        h.appendHooks([
+          {
+            hook_event_name: "UserPromptSubmit",
+            prompt: "next",
+            session_id: SESSION_ID,
+          },
+        ]);
+        expect(await h.readOnly()).toEqual([
           "waiting",
           "working",
-          "working",
-          "working",
+          "working:next",
         ]);
+        expect(h.sentMarkers).toEqual([undefined, false, undefined]);
       });
 
       it("stays unconfirmed when a parallel tool of another name completes after the answer", async () => {
@@ -714,10 +724,41 @@ describe("following a discovered session only after the server accepted it", () 
         expect(await h.tick()).toEqual(["waiting", "working", "waiting"]);
       });
 
-      it("does not treat a trimmed opener as dropped when its close is among the retained records", async () => {
+      it("keeps the dropped opener unresolved even when a close of the same tool is among the retained records", async () => {
         const { h } = await startTrimmed([toolDone("Bash")]);
-        expect(await h.readOnly()).toEqual(["working"]);
-        expect(h.sentMarkers).toEqual([undefined]);
+        expect(await h.readOnly()).toEqual([]);
+        expect(await h.tick()).toEqual([]);
+      });
+
+      it("closes two prompts of the same tool independently, by occurrence", async () => {
+        const h = holder(hookShape(withSessionIdField));
+        h.appendHooks([
+          edit("PermissionRequest"),
+          edit("PermissionRequest"),
+          edit("PostToolUse"),
+          edit("PostToolUse"),
+        ]);
+        const discoverer = h.makeDiscoverer(async () => ({}));
+        expect(await h.tick()).toEqual([]);
+        await discoverer.discover();
+        expect(await h.readOnly()).toEqual([
+          "waiting",
+          "waiting",
+          "waiting",
+          "working",
+        ]);
+        expect(h.sentQuestions).toEqual([
+          ["permission:Edit#1"],
+          ["permission:Edit#1", "permission:Edit#2"],
+          ["permission:Edit#2"],
+          undefined,
+        ]);
+        expect(h.sentCloses).toEqual([
+          [],
+          [],
+          ["permission:Edit#1"],
+          ["permission:Edit#2"],
+        ]);
       });
 
       it("stays unconfirmed when only a pre-tool hook follows the answer", async () => {

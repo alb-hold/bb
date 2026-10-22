@@ -34,7 +34,13 @@ import {
   requireLiveNativeTerminalToolThread,
   requireNativeTerminalToolCredential,
 } from "./native-terminal-threads.js";
+import {
+  interruptNativeTerminalQuestions,
+  NATIVE_QUESTION_ANSWERED_REASON,
+} from "./native-terminal-questions.js";
 import { buildThreadStatusChangeMetadata } from "./thread-runtime-display.js";
+
+export { interruptNativeTerminalQuestions };
 import { generateAndApplyThreadTitle } from "./title-generation.js";
 
 type NativeTerminalActivityDeps = LoggedPendingInteractionWorkSessionDeps &
@@ -155,7 +161,6 @@ function requireNativeRecord(deps: Pick<AppDeps, "db">, threadId: string) {
 
 const NATIVE_QUESTION_REQUEST_PREFIX = NATIVE_TERMINAL_QUESTION_REQUEST_PREFIX;
 const NATIVE_QUESTION_TURN_ID = "native-terminal-turn";
-const NATIVE_QUESTION_ANSWERED_REASON = "native-terminal-question-answered";
 
 export function recordNativeTerminalActivity(
   deps: NativeTerminalActivityDeps,
@@ -329,30 +334,6 @@ export function recordNativeTerminalToolCallEvidence(
       "Native terminal tool-call evidence was not recorded",
     );
   }
-}
-
-export function interruptNativeTerminalQuestions(
-  deps: Pick<AppDeps, "pendingInteractions">,
-  threadId: string,
-  keep: ReadonlySet<string> = new Set(),
-): number {
-  let interrupted = 0;
-  for (const interaction of deps.pendingInteractions.listPendingThreadInteractions(
-    threadId,
-  )) {
-    if (
-      !isNativeTerminalQuestion(interaction) ||
-      keep.has(interaction.providerRequestId)
-    ) {
-      continue;
-    }
-    deps.pendingInteractions.interruptPendingInteraction({
-      interactionId: interaction.id,
-      reason: NATIVE_QUESTION_ANSWERED_REASON,
-    });
-    interrupted += 1;
-  }
-  return interrupted;
 }
 
 function closeNamedNativeQuestions(

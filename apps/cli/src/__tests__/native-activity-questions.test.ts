@@ -235,7 +235,7 @@ describe("native terminal questions", () => {
     );
     expect(waiting(open)).toEqual([
       {
-        id: "permission:Bash",
+        id: "permission:Bash#1",
         prompt: "Claude Code needs permission to use: Bash",
       },
     ]);

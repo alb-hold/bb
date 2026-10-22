@@ -17,15 +17,14 @@ interface RetainedReport {
   sequence: number;
 }
 
-const UNRECOGNIZED_CLOSURE_FIELD =
-  /Unrecognized keys?: .*"(?:closes|confirms)"/u;
+type ClosureField = "closes" | "confirms";
 
-function rejectsClosureFields(error: unknown): boolean {
+function unrecognizedField(error: unknown, field: ClosureField): boolean {
   return (
     error instanceof BbHttpError &&
     error.status === 400 &&
     error.code === "invalid_request" &&
-    UNRECOGNIZED_CLOSURE_FIELD.test(error.message)
+    new RegExp(`Unrecognized keys?: [^\\n]*"${field}"`, "u").test(error.message)
   );
 }
 
@@ -38,8 +37,7 @@ export function createNativeActivityReporter(options: {
   let pending: Promise<void> = Promise.resolve();
   let latestSequence = 0;
   let retained: RetainedReport | null = null;
-  let closureSupported = true;
-  let possiblyOpen: Set<string> | null = null;
+  let possiblyOpen = new Set<string>();
 
   const deliver = async (
     next: NativeActivityReport,
@@ -48,25 +46,22 @@ export function createNativeActivityReporter(options: {
     const credential = options.currentCredential();
     const opened =
       next.state === "waiting" ? next.questions.map((q) => q.id) : [];
-    const closes =
-      possiblyOpen === null
-        ? undefined
-        : [...possiblyOpen].filter((id) => !opened.includes(id));
-    if (possiblyOpen !== null) {
-      for (const id of opened) possiblyOpen.add(id);
-    }
+    const closes = [...possiblyOpen].filter((id) => !opened.includes(id));
+    for (const id of opened) possiblyOpen.add(id);
+    const sends = {
+      closes: true,
+      confirms: next.state !== "waiting" && next.confirms === false,
+    };
     const request = (
-      withClosure: boolean,
+      include: Record<ClosureField, boolean>,
     ): NativeTerminalReportActivityArgs => ({
       threadId: options.threadId,
       ...(credential === null ? {} : { authorization: `Bearer ${credential}` }),
       state: next.state,
       ...(next.prompt === null ? {} : { prompt: next.prompt }),
       ...(next.state === "waiting" ? { questions: next.questions } : {}),
-      ...(withClosure && closes !== undefined ? { closes } : {}),
-      ...(withClosure && next.state !== "waiting" && next.confirms === false
-        ? { confirms: false }
-        : {}),
+      ...(include.closes ? { closes } : {}),
+      ...(include.confirms ? { confirms: false } : {}),
     });
     const acknowledge = (): void => {
       possiblyOpen = new Set(opened);
@@ -80,23 +75,29 @@ export function createNativeActivityReporter(options: {
         retained = { report: next, sequence };
       }
     };
-    const withClosure = closureSupported;
     try {
-      await options.send(request(withClosure));
+      await options.send(request(sends));
       acknowledge();
     } catch (error) {
-      if (!withClosure || !rejectsClosureFields(error)) {
+      const unsupported: Record<ClosureField, boolean> = {
+        closes: sends.closes && unrecognizedField(error, "closes"),
+        confirms: sends.confirms && unrecognizedField(error, "confirms"),
+      };
+      if (!unsupported.closes && !unsupported.confirms) {
         keep(error);
         return;
       }
-      closureSupported = false;
       options.log?.("activity-closure-field-rejected", {
-        closing: closes?.length ?? 0,
-        status: error instanceof BbHttpError ? error.status : null,
+        closes: unsupported.closes ? 1 : 0,
+        confirms: unsupported.confirms ? 1 : 0,
       });
-      if (closes !== undefined && closes.length > 0) return;
       try {
-        await options.send(request(false));
+        await options.send(
+          request({
+            closes: sends.closes && !unsupported.closes,
+            confirms: sends.confirms && !unsupported.confirms,
+          }),
+        );
         acknowledge();
       } catch (retryError) {
         keep(retryError);

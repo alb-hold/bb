@@ -3042,6 +3042,48 @@ describe("a native activity report that does not confirm activity", () => {
     }
   });
 
+  it("a late close of prompt occurrence 1 does not end occurrence 2 of the same tool", async () => {
+    const fixture = await createFixture();
+    const clock = vi.spyOn(Date, "now").mockReturnValue(1_000_000);
+    try {
+      const thread = await startThread(fixture);
+      const first = { id: "permission:Bash#1", prompt: "Allow Bash?" };
+      const second = { id: "permission:Bash#2", prompt: "Allow Bash?" };
+      await send(fixture, thread.id, {
+        closes: [],
+        questions: [first],
+        state: "waiting",
+      });
+      clock.mockReturnValue(1_010_000);
+      await send(fixture, thread.id, {
+        closes: [],
+        questions: [first, second],
+        state: "waiting",
+      });
+      clock.mockReturnValue(1_020_000);
+      await send(fixture, thread.id, {
+        closes: ["permission:Bash#1"],
+        questions: [second],
+        state: "waiting",
+      });
+      expect(pendingIds(fixture, thread.id)).toEqual([
+        expect.stringContaining("permission:Bash#2"),
+      ]);
+      clock.mockReturnValue(1_030_000);
+      await send(fixture, thread.id, {
+        closes: ["permission:Bash#1"],
+        confirms: false,
+        state: "working",
+      });
+      expect(pendingIds(fixture, thread.id)).toEqual([
+        expect.stringContaining("permission:Bash#2"),
+      ]);
+      expect(evidence(fixture, thread.id)).toBe(1_020_000);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
   it("is idempotent for a duplicate close: the second one changes and notifies nothing", async () => {
     const fixture = await createFixture();
     const clock = vi.spyOn(Date, "now").mockReturnValue(1_000_000);
@@ -3150,6 +3192,41 @@ describe("a native activity report that does not confirm activity", () => {
       );
       expect(stale.status).toBe(401);
       expect(evidence(fixture, thread.id)).toBe(1_030_000);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it("ends the questions of the previous binding when a new terminal is bound, so a holder that names what it closes leaves no orphan", async () => {
+    const fixture = await createFixture();
+    const clock = vi.spyOn(Date, "now").mockReturnValue(1_000_000);
+    try {
+      const thread = await answeredQuestion(fixture, clock);
+      fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+        hostId: fixture.hostId,
+        sessionId: fixture.sessionId,
+        message: {
+          type: "terminal.exited",
+          terminalId: thread.open.terminalId,
+          exitCode: null,
+          closeReason: "daemon-disconnect",
+        },
+      });
+      expect(openInteractions(fixture, thread.id)).toHaveLength(1);
+      const opens = countDaemonMessages(fixture, "terminal.open");
+      const reopening = postJson(
+        fixture,
+        `/threads/${thread.id}/native-terminal/open`,
+        {},
+      );
+      const reopened = await waitForDaemonMessage(
+        fixture,
+        "terminal.open",
+        opens,
+      );
+      acknowledgeOpen(fixture, reopened);
+      expect((await reopening).status).toBe(200);
+      expect(openInteractions(fixture, thread.id)).toHaveLength(0);
     } finally {
       clock.mockRestore();
     }

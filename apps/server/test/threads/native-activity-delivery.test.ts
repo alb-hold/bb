@@ -31,6 +31,7 @@ import { Hono } from "hono";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { ApiError, createServerErrorHandler } from "../../src/errors.js";
+import { recordNativeTerminalActivity } from "../../src/services/threads/native-terminal-activity.js";
 import * as lifecycleOutcome from "../../src/services/threads/lifecycle-outcome.js";
 import { buildThreadStatusChangeMetadata } from "../../src/services/threads/thread-runtime-display.js";
 import * as titleGeneration from "../../src/services/threads/title-generation.js";
@@ -740,7 +741,7 @@ describe("overflow, answer, then no resumed activity through the real reader, re
     });
   });
 
-  it("stays unconfirmed for a pre-tool record and for an unrelated completed tool, and shows Working again once the dropped question's own close arrives", async () => {
+  it("stays unconfirmed for a pre-tool record, an unrelated completed tool and a parallel completion of the dropped opener's own tool name", async () => {
     const { h, harness, thread } = await overflowedAndAsked();
     h.hook([{ hook_event_name: "PostToolUse", tool_name: "Edit" }]);
     await h.forward();
@@ -748,14 +749,11 @@ describe("overflow, answer, then no resumed activity through the real reader, re
     await h.forward();
     h.hook([{ hook_event_name: "PostToolUse", tool_name: "Write" }]);
     await h.forward();
-    expect(displayOf(harness, thread.id)).toMatchObject({
-      confirmation: "unconfirmed",
-      lastEvidenceAt: null,
-    });
     h.hook([{ hook_event_name: "PostToolUse", tool_name: "Bash" }]);
     await h.forward();
     expect(displayOf(harness, thread.id)).toMatchObject({
-      confirmation: "confirmed",
+      confirmation: "unconfirmed",
+      lastEvidenceAt: null,
     });
   });
 
@@ -826,7 +824,7 @@ describe("overflow, answer, then no resumed activity through the real reader, re
   });
 });
 
-describe("an older server that does not know the confirms field (INJECTED-SERVER evidence: the 400 is produced by the pre-change strict schema through the real typedRoutes validation and error handler, but the old server's other behaviour is not exercised; no old server build was run)", () => {
+describe("an older server that does not know the closure fields (INJECTED-SERVER evidence: the 400 comes from the pre-change strict schema through the real typedRoutes validation and error handler, and the accepted report goes through the real service and database; no old server build was run, and old-server late-close protection is NOT FIXED and its execution NOT RUN)", () => {
   const routes = publicApiRoutes.nativeTerminalThreads;
   const fields = reportNativeTerminalActivityRequestSchema.shape;
   const preChangeSchema = z
@@ -836,8 +834,14 @@ describe("an older server that does not know the confirms field (INJECTED-SERVER
       state: fields.state,
     })
     .strict();
+  const asking = (id: string, prompt: string) => ({
+    prompt: null,
+    questions: [{ id, prompt }],
+    state: "waiting" as const,
+  });
 
-  function oldServer() {
+  async function oldServerOnTheRealStore() {
+    const { harness, thread } = await nativeThread();
     const app = new Hono();
     app.onError(
       createServerErrorHandler({
@@ -850,78 +854,157 @@ describe("an older server that does not know the confirms field (INJECTED-SERVER
     const { post } = typedRoutes<PublicApiSchema>(app, {
       onValidationError: (msg) => new ApiError(400, "invalid_request", msg),
     });
-    const accepted: unknown[] = [];
-    const rejected: Array<{ body: string; status: number }> = [];
     post(
       {
         ...routes.reportActivity,
         request: { ...routes.reportActivity.request, schema: preChangeSchema },
       } as typeof routes.reportActivity,
       (context, payload) => {
-        accepted.push(payload);
+        recordNativeTerminalActivity(harness.deps, {
+          authorization: context.req.header("authorization"),
+          threadId: context.req.param("id"),
+          ...payload,
+          confirms: true,
+        });
         return context.json({ ok: true as const });
       },
     );
+    const writesAtRejection: Array<{
+      evidence: number | null | undefined;
+      pending: number;
+      status: string | undefined;
+    }> = [];
+    const rejectedBodies: string[] = [];
+    let target: { fetch(request: Request): Response | Promise<Response> } = app;
     const sdk = createNodeBbSdk({
       baseUrl: "http://127.0.0.1:3000",
       fetch: async (input, init) => {
-        const response = await app.fetch(new Request(input, init));
-        if (response.status >= 400) {
-          rejected.push({
-            body: await response.clone().text(),
-            status: response.status,
+        const response = await target.fetch(new Request(input, init));
+        if (response.status === 400) {
+          rejectedBodies.push(await response.clone().text());
+          writesAtRejection.push({
+            evidence: getNativeTerminalThread(harness.db, thread.id)
+              ?.lastEvidenceAt,
+            pending: listPendingInteractionsByThread(harness.db, {
+              threadId: thread.id,
+            }).length,
+            status: getThread(harness.db, thread.id)?.status,
           });
         }
         return response;
       },
     });
-    return { accepted, rejected, sdk };
+    const logged: string[] = [];
+    const reporter = reporterModule.createNativeActivityReporter({
+      currentCredential: () => SECRET,
+      log: (event) => logged.push(event),
+      send: (args) => sdk.nativeTerminals.reportActivity(args),
+      threadId: thread.id,
+    });
+    return {
+      harness,
+      logged,
+      rejectedBodies,
+      reporter,
+      thread,
+      upgrade: () => {
+        target = harness.app;
+      },
+      writesAtRejection,
+    };
   }
 
-  it("rejects a report that closes nothing with zod's own wording and the holder resends it once without the fields", async () => {
-    const { accepted, rejected, sdk } = oldServer();
-    const logged: string[] = [];
-    const reporter = reporterModule.createNativeActivityReporter({
-      currentCredential: () => SECRET,
-      log: (event) => logged.push(event),
-      send: (args) => sdk.nativeTerminals.reportActivity(args),
-      threadId: "thr_old_server",
-    });
-    reporter.report({ prompt: null, state: "working" });
-    reporter.report({ confirms: false, prompt: null, state: "working" });
-    await reporter.settled();
-    expect(rejected).toHaveLength(1);
-    expect(rejected[0]?.status).toBe(400);
-    expect(rejected[0]?.body).toMatch(
-      /Unrecognized keys: .*confirms.*closes|Unrecognized keys: .*closes.*confirms/u,
+  const pendingOf = (harness: TestAppHarness, threadId: string) =>
+    listPendingInteractionsByThread(harness.db, { threadId }).map(
+      (interaction) => interaction.payload,
     );
-    expect(accepted).toEqual([{ state: "working" }, { state: "working" }]);
-    expect(logged).toEqual(["activity-closure-field-rejected"]);
+
+  it("rejects the initial request with zero writes and zod's own wording, then settles an answered question as before", async () => {
+    const h = await oldServerOnTheRealStore();
+    h.reporter.report(asking("permission:Bash#1", "Allow Bash?"));
+    h.reporter.report({ prompt: null, state: "working" });
+    await h.reporter.settled();
+    expect(h.rejectedBodies).toHaveLength(2);
+    expect(h.rejectedBodies[0]).toMatch(/Unrecognized key: .*closes/u);
+    expect(h.writesAtRejection[0]).toEqual({
+      evidence: null,
+      pending: 0,
+      status: "idle",
+    });
+    expect(
+      listPendingInteractionsByThread(h.harness.db, {
+        threadId: h.thread.id,
+      }),
+    ).toHaveLength(0);
+    expect(getThread(h.harness.db, h.thread.id)?.status).toBe("active");
   });
 
-  it("never resends a report that closes a question: the old contract cannot express the targeted close, so it is dropped and later reports go out as before (compatibility gap, no old-server pass claimed)", async () => {
-    const { accepted, rejected, sdk } = oldServer();
-    const logged: string[] = [];
-    const reporter = reporterModule.createNativeActivityReporter({
-      currentCredential: () => SECRET,
-      log: (event) => logged.push(event),
-      send: (args) => sdk.nativeTerminals.reportActivity(args),
-      threadId: "thr_old_server",
+  it("registers Y with its original payload when a report closes X and opens Y, and ends X as the old contract does", async () => {
+    const h = await oldServerOnTheRealStore();
+    h.reporter.report(asking("permission:Bash#1", "Allow Bash?"));
+    await h.reporter.settled();
+    expect(pendingOf(h.harness, h.thread.id)).toHaveLength(1);
+    h.reporter.report(asking("permission:Edit#1", "Allow Edit?"));
+    await h.reporter.settled();
+    const open = listPendingInteractionsByThread(h.harness.db, {
+      threadId: h.thread.id,
     });
-    reporter.report({
-      prompt: null,
-      questions: [{ id: "q1", prompt: "Which layout?" }],
-      state: "waiting",
+    expect(open).toHaveLength(1);
+    expect(open[0]?.providerRequestId).toContain("permission:Edit#1");
+    expect(JSON.stringify(open[0]?.payload)).toContain("Allow Edit?");
+    expect(h.rejectedBodies).toHaveLength(2);
+  });
+
+  it("goes out with the fields again after a rejection: nothing is remembered about the server", async () => {
+    const h = await oldServerOnTheRealStore();
+    h.reporter.report({ prompt: null, state: "working" });
+    h.reporter.report({ prompt: null, state: "working" });
+    h.reporter.report({ prompt: null, state: "working" });
+    await h.reporter.settled();
+    expect(h.rejectedBodies).toHaveLength(3);
+  });
+
+  it("sends the next normal report with targeted closure once the server has been upgraded", async () => {
+    const h = await oldServerOnTheRealStore();
+    h.reporter.report(asking("permission:Bash#1", "Allow Bash?"));
+    await h.reporter.settled();
+    h.upgrade();
+    h.reporter.report(asking("permission:Edit#1", "Allow Edit?"));
+    await h.reporter.settled();
+    expect(h.rejectedBodies).toHaveLength(1);
+    const open = listPendingInteractionsByThread(h.harness.db, {
+      threadId: h.thread.id,
     });
-    reporter.report({ prompt: null, state: "working" });
-    await reporter.settled();
-    expect(rejected).toHaveLength(1);
-    expect(accepted).toEqual([
-      { questions: [{ id: "q1", prompt: "Which layout?" }], state: "waiting" },
+    expect(open.map((interaction) => interaction.providerRequestId)).toEqual([
+      expect.stringContaining("permission:Edit#1"),
     ]);
-    reporter.report({ prompt: null, state: "working" });
-    await reporter.settled();
-    expect(accepted).toHaveLength(2);
-    expect(logged).toEqual(["activity-closure-field-rejected"]);
+  });
+
+  it("OPEN FINDING (characterisation, not a pass): a report that was already stripped for an old server and reaches an upgraded server late still closes every question it does not list", async () => {
+    const h = await oldServerOnTheRealStore();
+    h.upgrade();
+    const key = `/api/v1/threads/${h.thread.id}/native-terminal/activity`;
+    const send = (body: unknown) =>
+      h.harness.app.request(key, {
+        body: JSON.stringify(body),
+        headers: {
+          authorization: `Bearer ${SECRET}`,
+          "content-type": "application/json",
+        },
+        method: "POST",
+      });
+    expect(
+      (
+        await send({
+          closes: [],
+          questions: [{ id: "permission:Edit#2", prompt: "Allow Edit?" }],
+          state: "waiting",
+        })
+      ).status,
+    ).toBe(200);
+    expect((await send({ state: "working" })).status).toBe(200);
+    expect(
+      listPendingInteractionsByThread(h.harness.db, { threadId: h.thread.id }),
+    ).toHaveLength(0);
   });
 });
