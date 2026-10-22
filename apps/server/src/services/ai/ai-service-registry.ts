@@ -125,19 +125,26 @@ export function createAiServiceRegistry(
     return request;
   }
 
-  function answerWithin(
+  function freshStatus(
     service: AiServiceRegistration,
+  ): AiServiceStatus | undefined {
+    const cached = statuses.get(service);
+    if (cached === undefined || now() - cached.checkedAt > STATUS_TTL_MS) {
+      return undefined;
+    }
+    return cached.status;
+  }
+
+  function answerWithin(
     probe: Promise<AiServiceStatus>,
     waitMs: number,
+    fallback: () => AiServiceStatus,
   ): Promise<AiServiceStatus> {
     let timer: ReturnType<typeof setTimeout> | undefined;
     return Promise.race([
       probe,
       new Promise<AiServiceStatus>((resolve) => {
-        timer = setTimeout(
-          () => resolve(statuses.get(service)?.status ?? CHECKING),
-          waitMs,
-        );
+        timer = setTimeout(() => resolve(fallback()), waitMs);
         timer.unref();
       }),
     ]).finally(() => {
@@ -186,24 +193,26 @@ export function createAiServiceRegistry(
       if (service === undefined) {
         return { ready: false, message: "Plugin not loaded" };
       }
-      const cached = statuses.get(service);
-      if (cached !== undefined && now() - cached.checkedAt <= STATUS_TTL_MS) {
-        return cached.status;
-      }
-      return answerWithin(service, refresh(service), STATUS_ANSWER_MS);
+      const fresh = freshStatus(service);
+      if (fresh !== undefined) return fresh;
+      return answerWithin(
+        refresh(service),
+        STATUS_ANSWER_MS,
+        () => statuses.get(service)?.status ?? CHECKING,
+      );
     },
     async settledStatus(key, maxWaitMs) {
       const service = services.get(mapKey(key));
       if (service === undefined) {
         return { ready: false, message: "Plugin not loaded" };
       }
-      const cached = statuses.get(service);
-      if (cached !== undefined && now() - cached.checkedAt <= STATUS_TTL_MS) {
-        return cached.status;
-      }
-      const probe = refresh(service);
-      if (cached?.status.ready === true) return cached.status;
-      return answerWithin(service, probe, maxWaitMs);
+      const fresh = freshStatus(service);
+      if (fresh !== undefined) return fresh;
+      return answerWithin(
+        refresh(service),
+        maxWaitMs,
+        () => freshStatus(service) ?? CHECKING,
+      );
     },
   };
 }

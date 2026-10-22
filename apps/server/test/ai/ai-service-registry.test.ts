@@ -202,7 +202,7 @@ describe("AI service registry", () => {
       }
     });
 
-    it("lets a task start at once on an expired ready status and refreshes it behind the task", async () => {
+    it("never answers a task with an expired ready status while the fresh check runs", async () => {
       vi.useFakeTimers();
       try {
         let clock = 1_000;
@@ -215,17 +215,58 @@ describe("AI service registry", () => {
 
         clock += 10_001;
         let result: unknown = null;
-        void registry.settledStatus(ACME, 9_000).then((status) => {
+        const later = registry.settledStatus(ACME, 9_000);
+        void later.then((status) => {
           result = status;
         });
-        await vi.advanceTimersByTimeAsync(0);
-        expect(result).toEqual({ ready: true });
+        await vi.advanceTimersByTimeAsync(1_000);
+        expect(result).toBeNull();
         expect(slow.status).toHaveBeenCalledTimes(2);
-        slow.answer();
-        await vi.advanceTimersByTimeAsync(0);
-        clock += 1;
-        expect(registry.peekStatus(ACME)).toEqual({ ready: true });
-        expect(slow.status).toHaveBeenCalledTimes(2);
+
+        await vi.advanceTimersByTimeAsync(8_001);
+        await expect(later).resolves.toEqual({
+          ready: false,
+          message: "Checking",
+        });
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("answers a task with the fresh check when an expired ready status turns not ready", async () => {
+      vi.useFakeTimers();
+      try {
+        let clock = 1_000;
+        let ready = true;
+        const answers: (() => void)[] = [];
+        const registry = createAiServiceRegistry({ now: () => clock });
+        registry.register(
+          service(
+            () =>
+              new Promise((resolve) => {
+                answers.push(() =>
+                  resolve(
+                    ready
+                      ? { ready: true }
+                      : { ready: false, message: "Signed out" },
+                  ),
+                );
+              }),
+          ),
+        );
+        const first = registry.settledStatus(ACME, 9_000);
+        answers.shift()?.();
+        await expect(first).resolves.toEqual({ ready: true });
+
+        ready = false;
+        clock += 10_001;
+        const later = registry.settledStatus(ACME, 9_000);
+        await vi.advanceTimersByTimeAsync(1_000);
+        answers.shift()?.();
+        await expect(later).resolves.toEqual({
+          ready: false,
+          message: "Signed out",
+        });
       } finally {
         vi.useRealTimers();
       }
