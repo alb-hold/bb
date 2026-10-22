@@ -772,7 +772,7 @@ describe("ThreadRow", () => {
     expect(actionSlot?.classList.contains("absolute")).toBe(false);
   });
 
-  it("keeps undelivered queued messages visible beside the native activity state", () => {
+  it("keeps undelivered queued messages visible and does not repeat the native activity state beside them", () => {
     const { container } = renderThreadRow({
       thread: createThread({
         status: "active",
@@ -793,27 +793,14 @@ describe("ThreadRow", () => {
     );
     expect(queued?.getAttribute("data-queued-failed-count")).toBe("4");
     expect(
-      container.querySelector("[data-sidebar-native-activity-warning]")
-        ?.textContent,
-    ).toBe("Activity not reported");
+      container.querySelector("[data-sidebar-native-activity-warning]"),
+    ).toBeNull();
     expect(container.querySelector('[aria-label="Working"]')).toBeNull();
-    const warning = container.querySelector(
-      "[data-sidebar-native-activity-warning]",
-    );
-    expect(warning?.classList.contains("sr-only")).toBe(true);
     const slot = container.querySelector(
       "[data-sidebar-thread-trailing-indicator]",
     );
     expect(slot?.classList.contains("px-0")).toBe(true);
     expect(slot?.classList.contains("px-1.5")).toBe(false);
-    const indicator = container.querySelector(
-      "[data-sidebar-thread-trailing-indicator]",
-    );
-    const description = container.querySelector(
-      "[data-sidebar-native-activity-guidance]",
-    );
-    expect(indicator?.getAttribute("aria-describedby")).toBe(description?.id);
-    expect(description?.textContent).toContain("bb thread native thr_test");
   });
 
   describe("recovery guidance for an activity that is not reported", () => {
@@ -913,6 +900,53 @@ describe("ThreadRow", () => {
       expect(
         guidanceOf(container)?.querySelectorAll("button, a, input"),
       ).toHaveLength(0);
+    });
+
+    it("shows no guidance, no lead and no description next to a pending question", async () => {
+      const { container } = renderThreadRow({
+        thread: createThread({
+          status: "active",
+          runtimeStatus: "active",
+          hasPendingInteraction: true,
+          experimental_nativeActivity: unconfirmed(),
+        }),
+      });
+      const indicator = screen.getByRole("img", { name: "Needs input" });
+      expect(indicator.getAttribute("aria-describedby")).toBeNull();
+      expect(guidanceOf(container)).toBeNull();
+      expect(
+        container.querySelector("[data-sidebar-native-activity-warning]"),
+      ).toBeNull();
+      expect(container.textContent).not.toContain("Activity not reported");
+      fireEvent.pointerMove(indicator);
+      expect((await screen.findByRole("tooltip")).textContent).toBe(
+        "Needs input",
+      );
+    });
+
+    it("shows no guidance, no lead and no description next to undelivered queued messages", async () => {
+      const { container } = renderThreadRow({
+        thread: createThread({
+          status: "active",
+          runtimeStatus: "active",
+          queuedWork: "failed",
+          experimental_queuedFailedCount: 2,
+          experimental_nativeActivity: unconfirmed(),
+        }),
+      });
+      const indicator = container.querySelector(
+        "[data-sidebar-thread-trailing-indicator]",
+      );
+      expect(
+        container.querySelector('[data-thread-status-glyph="queued-failed"]'),
+      ).not.toBeNull();
+      expect(indicator?.getAttribute("aria-describedby")).toBeNull();
+      expect(indicator?.getAttribute("title")).toBeNull();
+      expect(guidanceOf(container)).toBeNull();
+      expect(
+        container.querySelector("[data-sidebar-native-activity-warning]"),
+      ).toBeNull();
+      expect(container.textContent).not.toContain("Activity not reported");
     });
 
     it("leaves a pending question as Needs input", () => {

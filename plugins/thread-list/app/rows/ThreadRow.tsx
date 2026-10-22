@@ -350,8 +350,12 @@ function ThreadTrailingIndicator({
               ? nativeActivityNotice
               : null;
 
+  const activityNoticeApplies =
+    nativeActivityUnconfirmed &&
+    indicatorKind !== "needs-input" &&
+    indicatorKind !== "queued-failed";
   const hasGuidance =
-    nativeActivityUnconfirmed && nativeActivityGuidance !== null;
+    indicatorKind === "activity-unreported" && nativeActivityGuidance !== null;
   const indicator = (
     <span
       aria-describedby={hasGuidance ? guidanceId : undefined}
@@ -371,7 +375,7 @@ function ThreadTrailingIndicator({
       role={statusText === null ? undefined : "img"}
       aria-label={statusText ?? undefined}
       title={
-        statusText === null && nativeActivityUnconfirmed && !hasGuidance
+        statusText === null && activityNoticeApplies && !hasGuidance
           ? nativeActivityNotice
           : undefined
       }
@@ -388,7 +392,7 @@ function ThreadTrailingIndicator({
           {statusText}
         </span>
       )}
-      {nativeActivityUnconfirmed && indicatorKind !== "activity-unreported" ? (
+      {activityNoticeApplies && indicatorKind !== "activity-unreported" ? (
         <span
           data-sidebar-native-activity-warning=""
           className={statusText === null ? "sr-only" : "text-muted-foreground"}

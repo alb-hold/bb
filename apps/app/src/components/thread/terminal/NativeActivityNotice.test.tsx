@@ -60,6 +60,7 @@ describe("native activity notice in the thread header", () => {
   it("shows the host-aware guidance for an activity that was never reported", () => {
     render(
       <NativeActivityNotice
+        pendingPromptCount={0}
         hostId="host_1"
         notice={notice()}
         threadId="thr_n"
@@ -76,6 +77,7 @@ describe("native activity notice in the thread header", () => {
   it("shows the guidance next to tool-call evidence, which stays an unconfirmed notice", () => {
     render(
       <NativeActivityNotice
+        pendingPromptCount={0}
         hostId="host_1"
         notice={notice({
           evidenceKind: "tool-call",
@@ -94,6 +96,7 @@ describe("native activity notice in the thread header", () => {
   it("shows nothing for confirmed activity", () => {
     const { container } = render(
       <NativeActivityNotice
+        pendingPromptCount={0}
         hostId="host_1"
         notice={notice({ evidenceKind: "holder-report", unconfirmed: false })}
         threadId="thr_n"
@@ -106,6 +109,7 @@ describe("native activity notice in the thread header", () => {
   it("falls back to this thread's machine for an unknown host", () => {
     render(
       <NativeActivityNotice
+        pendingPromptCount={0}
         hostId="host_gone"
         notice={notice()}
         threadId="thr_n"
@@ -118,16 +122,35 @@ describe("native activity notice in the thread header", () => {
 
   it("falls back the same way when the thread has no host", () => {
     render(
-      <NativeActivityNotice hostId={null} notice={notice()} threadId="thr_n" />,
+      <NativeActivityNotice
+        pendingPromptCount={0}
+        hostId={null}
+        notice={notice()}
+        threadId="thr_n"
+      />,
     );
     expect(screen.getByRole("status").textContent).toContain(
       "update bb on this thread's machine",
     );
   });
 
+  it("renders no notice while a question is waiting, even when activity is unconfirmed", () => {
+    const { container } = render(
+      <NativeActivityNotice
+        hostId="host_1"
+        notice={notice()}
+        pendingPromptCount={1}
+        threadId="thr_n"
+      />,
+    );
+    expect(container.textContent).toBe("");
+    expect(screen.queryByRole("status")).toBeNull();
+  });
+
   it("offers no action and calls no open, reopen, exit or input operation", () => {
     render(
       <NativeActivityNotice
+        pendingPromptCount={0}
         hostId="host_1"
         notice={notice()}
         threadId="thr_n"

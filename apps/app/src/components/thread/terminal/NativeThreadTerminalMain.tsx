@@ -59,6 +59,9 @@ export function NativeThreadTerminalMain({
     threadIsRunning: isRunningThreadRuntimeDisplayStatus(runtime.displayStatus),
   });
   const providerLabel = view.displayName;
+  const waitingPrompts = nativeTerminalWaitingPrompts(
+    interactionsQuery.data ?? [],
+  );
   const paneIsFocused = useOptionalPaneContext()?.isFocused ?? true;
   const isTouchDevice = useMediaQuery("(pointer: coarse)");
   const { refetch } = nativeQuery;
@@ -77,12 +80,13 @@ export function NativeThreadTerminalMain({
         data-no-sidebar-swipe=""
       >
         <NativeTerminalWaitingBanner
-          prompts={nativeTerminalWaitingPrompts(interactionsQuery.data ?? [])}
+          prompts={waitingPrompts}
           providerLabel={providerLabel}
         />
         <NativeActivityNotice
           hostId={view.terminal?.hostId ?? null}
           notice={activityNotice}
+          pendingPromptCount={waitingPrompts.length}
           threadId={threadId}
         />
         <LazyThreadTerminalPanel
