@@ -1692,7 +1692,7 @@ describe("removal while the machine is being removed", () => {
       });
     }));
 
-  it("does not tear down an environment a starting owner is still preparing on a machine being removed", async () =>
+  it("keeps an environment its starting owner is still preparing on a machine being removed, through the starting-owner arm of the request boundary", async () =>
     withTestHarness(async (harness) => {
       const remove = vi.fn<PluginEnvironmentProviderDeclaration["remove"]>(
         async () => ({ status: "removed" }),

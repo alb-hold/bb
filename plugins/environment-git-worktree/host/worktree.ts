@@ -82,8 +82,39 @@ interface RemoveWorktreeArgs {
   completionPath?: string | undefined;
   createdBy?: CreatedBy | undefined;
   retainedRoot?: string | undefined;
+  retention?: RetentionState | undefined;
   onProgress?: ProgressCallback | undefined;
   signal?: AbortSignal | undefined;
+}
+
+interface RetentionState {
+  retained: RetainedCopies | null;
+}
+
+function appendToError(error: unknown, text: string): unknown {
+  const message = error instanceof Error ? error.message : String(error);
+  const combined = `${message}. ${text}`;
+  if (!(error instanceof Error)) return new Error(combined, { cause: error });
+  try {
+    Object.defineProperty(error, "message", {
+      value: combined,
+      configurable: true,
+      writable: true,
+    });
+    return error;
+  } catch {
+    return new Error(combined, { cause: error });
+  }
+}
+
+function annotateRetained(
+  error: unknown,
+  retained: RetainedCopies | null,
+): unknown {
+  if (retained === null) return error;
+  const message = error instanceof Error ? error.message : String(error);
+  if (message.includes(retained.directory)) return error;
+  return appendToError(error, describeRetainedCopies(retained));
 }
 
 export interface RemoveWorktreeResult {
@@ -532,6 +563,7 @@ async function readCreatedBy(
 
 async function removeCreateTarget(
   args: CreateWorktreeArgs,
+  retention: RetentionState = { retained: null },
   createdBy?: CreatedBy,
 ): Promise<RemoveWorktreeResult> {
   return await removeWorktree({
@@ -540,6 +572,7 @@ async function removeCreateTarget(
     completionPath: args.completionPath,
     createdBy,
     retainedRoot: args.retainedRoot,
+    retention,
     ...(args.signal !== undefined ? { signal: args.signal } : {}),
   });
 }
@@ -549,10 +582,19 @@ async function removeCreateTargetAfterFailure(
   failure: unknown,
   createdBy?: CreatedBy,
 ): Promise<never> {
-  let retained: RetainedCopies | null = null;
+  const retention: RetentionState = { retained: null };
   try {
-    retained = (await removeCreateTarget(args, createdBy)).retained;
+    await removeCreateTarget(args, retention, createdBy);
   } catch (cleanupError) {
+    if (
+      retention.retained !== null &&
+      !isWorktreePreservedError(cleanupError)
+    ) {
+      throw appendToError(
+        cleanupError,
+        `Create failed earlier: ${failure instanceof Error ? failure.message : String(failure)}`,
+      );
+    }
     if (isWorktreePreservedError(cleanupError)) {
       throw new WorkspaceError(
         WORKTREE_PRESERVED_CODE,
@@ -562,10 +604,10 @@ async function removeCreateTargetAfterFailure(
     }
     throw cleanupError;
   }
-  if (retained !== null) {
+  if (retention.retained !== null) {
     throw new WorkspaceError(
       WORKTREE_PRESERVED_CODE,
-      `${failure instanceof Error ? failure.message : String(failure)}. ${describeRetainedCopies(retained)}`,
+      `${failure instanceof Error ? failure.message : String(failure)}. ${describeRetainedCopies(retention.retained)}`,
       { cause: failure },
     );
   }
@@ -736,15 +778,16 @@ async function assertWorktreeRemovable(
 async function removeRegisteredWorktree(
   identity: WorktreeIdentity,
   args: RemoveWorktreeArgs,
+  retention: RetentionState,
 ): Promise<RemoveWorktreeResult> {
-  let retained: RetainedCopies | null = null;
   if (args.createdBy !== undefined) {
     const kept = await retainCreatedCopies(
       identity,
       args.createdBy,
       args.retainedRoot,
     );
-    retained = kept.retained;
+    retention.retained = kept.retained;
+    const retained = retention.retained;
     if (kept.reasons.length > 0) {
       throw worktreePreservedError(identity.path, [
         ...kept.reasons,
@@ -776,6 +819,7 @@ async function removeRegisteredWorktree(
       },
     ),
   );
+  const retained = retention.retained;
   const keptNote = retained !== null ? [describeRetainedCopies(retained)] : [];
   if (removal.exitCode !== 0) {
     throw worktreePreservedError(identity.path, [
@@ -826,47 +870,51 @@ export async function inspectWorktreeRemoval(args: {
 export async function removeWorktree(
   args: RemoveWorktreeArgs,
 ): Promise<RemoveWorktreeResult> {
-  throwIfProvisionAborted(args.signal);
-  const workspacePath = path.resolve(args.path);
-  const parentPath = path.dirname(workspacePath);
-  const identified = await identifyWorktree({
-    path: workspacePath,
-    rootPath: args.rootPath,
-    signal: args.signal,
-  });
-  if (identified.status === "preserve") {
-    throw worktreePreservedError(workspacePath, identified.reasons);
-  }
-  let retained: RetainedCopies | null = null;
-  if (identified.status === "identified") {
-    const { identity } = identified;
-    const removed = await tryWithCheckoutMutationLock(
-      identity.path,
-      async () => {
-        await assertWorktreeRemovable(identity, args);
-        throwIfProvisionAborted(args.signal);
-        await experimental_killProcessesWithCwdUnder({
-          directories: [identity.path],
-        });
-        throwIfProvisionAborted(args.signal);
-        await assertWorktreeRemovable(identity, args);
-        retained = (await removeRegisteredWorktree(identity, args)).retained;
-        return true;
-      },
-      args.signal,
-      signalOptions(args.signal),
-    );
-    if (removed === null) {
-      throw worktreePreservedError(workspacePath, [
-        "its checkout lock could not be resolved",
-      ]);
+  const retention = args.retention ?? { retained: null };
+  try {
+    throwIfProvisionAborted(args.signal);
+    const workspacePath = path.resolve(args.path);
+    const parentPath = path.dirname(workspacePath);
+    const identified = await identifyWorktree({
+      path: workspacePath,
+      rootPath: args.rootPath,
+      signal: args.signal,
+    });
+    if (identified.status === "preserve") {
+      throw worktreePreservedError(workspacePath, identified.reasons);
     }
+    if (identified.status === "identified") {
+      const { identity } = identified;
+      const removed = await tryWithCheckoutMutationLock(
+        identity.path,
+        async () => {
+          await assertWorktreeRemovable(identity, args);
+          throwIfProvisionAborted(args.signal);
+          await experimental_killProcessesWithCwdUnder({
+            directories: [identity.path],
+          });
+          throwIfProvisionAborted(args.signal);
+          await assertWorktreeRemovable(identity, args);
+          await removeRegisteredWorktree(identity, args, retention);
+          return true;
+        },
+        args.signal,
+        signalOptions(args.signal),
+      );
+      if (removed === null) {
+        throw worktreePreservedError(workspacePath, [
+          "its checkout lock could not be resolved",
+        ]);
+      }
+    }
+    if (args.completionPath !== undefined) {
+      await fs.rm(args.completionPath, { force: true });
+    }
+    await removeDirectoryIfEmpty(parentPath);
+    return { retained: retention.retained };
+  } catch (error) {
+    throw annotateRetained(error, retention.retained);
   }
-  if (args.completionPath !== undefined) {
-    await fs.rm(args.completionPath, { force: true });
-  }
-  await removeDirectoryIfEmpty(parentPath);
-  return { retained };
 }
 
 export async function listGitWorktrees(args: {
