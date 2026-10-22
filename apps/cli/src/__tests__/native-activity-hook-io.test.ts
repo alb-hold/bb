@@ -1,7 +1,8 @@
 import {
   spawn,
   spawnSync,
-  type ChildProcessWithoutNullStreams,
+  type ChildProcess,
+  type ChildProcessByStdio,
 } from "node:child_process";
 import {
   appendFileSync,
@@ -23,6 +24,7 @@ import {
 import { readFile as readFilePromise } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import type { Writable } from "node:stream";
 import type { ProviderNativeTerminal } from "@bb/domain";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { nativeActivityHookSettings } from "../native-activity.js";
@@ -68,7 +70,7 @@ const { default: claudeCodePlugin }: { default(bb: unknown): void } =
 
 const SESSION_ID = "2e624c50-68af-4689-9410-06caa371eb8a";
 const spools: string[] = [];
-const children: ChildProcessWithoutNullStreams[] = [];
+const children: ChildProcess[] = [];
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -121,7 +123,7 @@ function record(event: string, extra: Record<string, unknown> = {}): string {
 }
 
 function startHook(command: string): {
-  child: ChildProcessWithoutNullStreams;
+  child: ChildProcessByStdio<Writable, null, null>;
   exited: Promise<void>;
 } {
   const child = spawn("sh", ["-c", command], {
