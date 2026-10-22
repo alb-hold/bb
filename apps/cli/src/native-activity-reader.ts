@@ -160,13 +160,12 @@ export class NativeActivityReader {
       origin: { answered: boolean; transcript: boolean },
     ): void => {
       if (report === null) return;
-      if (
-        this.droppedOpenQuestion &&
-        report.state === "working" &&
-        !origin.answered &&
-        (report.prompt === null || origin.transcript)
-      ) {
-        return;
+      if (this.droppedOpenQuestion && report.state === "working") {
+        if (origin.answered) {
+          reports.push({ ...report, confirms: false });
+          return;
+        }
+        if (report.prompt === null || origin.transcript) return;
       }
       reports.push(report);
     };

@@ -224,6 +224,9 @@ async function holdNativeHarness(
   let currentCredential: () => string | null = () => null;
   const reporter = createNativeActivityReporter({
     currentCredential: () => currentCredential(),
+    log: (event, fields) => {
+      if (ownsSocket) logNativeHolderEvent(socketPath, event, fields);
+    },
     send: (args) => sdk.nativeTerminals.reportActivity(args),
     threadId,
   });

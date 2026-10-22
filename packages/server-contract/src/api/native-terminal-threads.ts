@@ -87,6 +87,7 @@ export const reportNativeTerminalActivityRequestSchema = z
       .min(1)
       .max(NATIVE_TERMINAL_MAX_OPEN_QUESTIONS)
       .optional(),
+    confirms: z.boolean().optional(),
   })
   .strict()
   .superRefine((request, context) => {

@@ -97,6 +97,7 @@ export function registerNativeTerminalThreadRoutes(
       authorization: context.req.header("authorization"),
       threadId: context.req.param("id"),
       ...payload,
+      confirms: payload.confirms ?? true,
     });
     return context.json({ ok: true as const });
   });

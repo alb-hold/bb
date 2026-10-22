@@ -19,7 +19,7 @@ export interface NativeActivitySignal {
 }
 
 export type NativeActivityReport =
-  | { state: NativeActivityState; prompt: string | null }
+  | { state: NativeActivityState; prompt: string | null; confirms?: false }
   | { state: "waiting"; prompt: null; questions: NativeQuestion[] };
 
 type ActivityHooks = NonNullable<ProviderNativeTerminalActivity["hooks"]>;

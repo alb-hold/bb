@@ -1,4 +1,5 @@
 import {
+  clearNativeTerminalThreadActivityEvidence,
   getNativeTerminalThread,
   getThread,
   clearThreadRowState,
@@ -160,8 +161,9 @@ export function recordNativeTerminalActivity(
   deps: NativeTerminalActivityDeps,
   args: {
     authorization?: string;
+    confirms: boolean;
     threadId: string;
-  } & ReportNativeTerminalActivityRequest,
+  } & Omit<ReportNativeTerminalActivityRequest, "confirms">,
 ): void {
   requireNativeRecord(deps, args.threadId);
   const credentialIsCurrent = hasCurrentTerminalCredential(deps, {
@@ -192,6 +194,20 @@ export function recordNativeTerminalActivity(
       ? getNativeTerminalThread(deps.db, args.threadId)
       : null;
   if (
+    currentNativeRecord !== null &&
+    currentNativeRecord.terminalSessionId !== null &&
+    !args.confirms
+  ) {
+    const cleared = clearNativeTerminalThreadActivityEvidence(deps.db, {
+      at: now,
+      terminalSessionId: currentNativeRecord.terminalSessionId,
+      threadId: args.threadId,
+    });
+    if (cleared.cleared) {
+      reportStates(deps).delete(args.threadId);
+      notifyReceipt = true;
+    }
+  } else if (
     currentNativeRecord !== null &&
     currentNativeRecord.terminalSessionId !== null
   ) {

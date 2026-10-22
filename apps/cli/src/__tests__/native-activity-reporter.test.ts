@@ -207,4 +207,110 @@ describe("native activity reporter", () => {
       expect(sent).toEqual(["idle"]);
     });
   });
+
+  describe("the non-confirming marker", () => {
+    const rejection = () =>
+      new BbHttpError({
+        body: null,
+        code: "invalid_request",
+        message: 'Unrecognized key: "confirms"',
+        status: 400,
+      });
+
+    function markerSetup(answers: Array<() => Promise<unknown>>) {
+      const sent: Array<boolean | undefined> = [];
+      const logged: string[] = [];
+      const reporter = createNativeActivityReporter({
+        currentCredential: () => "c",
+        log: (event) => logged.push(event),
+        send: async (args) => {
+          sent.push(args.confirms);
+          const answer = answers[sent.length - 1];
+          return answer === undefined ? { ok: true } : answer();
+        },
+        threadId: "thr_1",
+      });
+      return { logged, reporter, sent };
+    }
+
+    it("sends confirms false only on a report that carries the marker", async () => {
+      const { reporter, sent } = markerSetup([]);
+      reporter.report({ state: "working", prompt: null });
+      reporter.report({ confirms: false, state: "working", prompt: null });
+      await reporter.settled();
+      expect(sent).toEqual([undefined, false]);
+    });
+
+    it("retries the one report without the field when an old server rejects it, logs it, and stops sending the field", async () => {
+      const { logged, reporter, sent } = markerSetup([
+        async () => {
+          throw rejection();
+        },
+      ]);
+      reporter.report({ confirms: false, state: "working", prompt: null });
+      await reporter.settled();
+      expect(sent).toEqual([false, undefined]);
+      expect(logged).toEqual(["activity-confirms-field-rejected"]);
+      reporter.report({ confirms: false, state: "working", prompt: null });
+      await reporter.settled();
+      expect(sent).toEqual([false, undefined, undefined]);
+      expect(logged).toHaveLength(1);
+    });
+
+    it.each([
+      [
+        "a 400 that does not name the field",
+        () =>
+          new BbHttpError({
+            body: null,
+            code: "invalid_request",
+            message: "Required",
+            status: 400,
+          }),
+      ],
+      [
+        "a 5xx",
+        () =>
+          new BbHttpError({
+            body: null,
+            code: "unavailable",
+            message: "unavailable",
+            status: 503,
+          }),
+      ],
+    ])("does not fall back on %s", async (_name, failure) => {
+      const { logged, reporter, sent } = markerSetup([
+        async () => {
+          throw failure();
+        },
+      ]);
+      reporter.report({ confirms: false, state: "working", prompt: null });
+      await reporter.settled();
+      expect(sent).toEqual([false]);
+      expect(logged).toEqual([]);
+    });
+
+    it("keeps the report for a later resend when the fallback attempt fails for a transient reason", async () => {
+      const { reporter, sent } = markerSetup([
+        async () => {
+          throw rejection();
+        },
+        async () => {
+          throw new BbHttpError({
+            body: null,
+            code: "unavailable",
+            message: "unavailable",
+            status: 503,
+          });
+        },
+      ]);
+      reporter.report({ confirms: false, state: "working", prompt: null });
+      await reporter.settled();
+      expect(sent).toEqual([false, undefined]);
+      reporter.retry();
+      await reporter.settled();
+      expect(sent).toEqual([false, undefined, undefined]);
+    });
+  });
 });
+

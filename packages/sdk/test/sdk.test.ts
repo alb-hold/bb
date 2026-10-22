@@ -344,6 +344,34 @@ describe("@bb/sdk", () => {
     ]);
   });
 
+  it("sends confirms only when the caller sets it", async () => {
+    const queue = createFetchQueue([
+      { body: { ok: true } },
+      { body: { ok: true } },
+    ]);
+    const sdk = createBbSdk({
+      transport: createHttpTransport({
+        baseUrl: "http://bb.test",
+        fetch: queue.fetch,
+        runtime: "node",
+      }),
+    });
+
+    await sdk.nativeTerminals.reportActivity({
+      threadId: "thr_test",
+      state: "working",
+    });
+    await sdk.nativeTerminals.reportActivity({
+      confirms: false,
+      threadId: "thr_test",
+      state: "working",
+    });
+    expect(queue.requests.map((request) => request.bodyText)).toEqual([
+      JSON.stringify({ state: "working" }),
+      JSON.stringify({ state: "working", confirms: false }),
+    ]);
+  });
+
   it("passes an optional credential when recording a native session", async () => {
     const queue = createFetchQueue([
       {
