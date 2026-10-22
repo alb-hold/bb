@@ -2427,8 +2427,8 @@ describe("public terminal routes", () => {
       dataBase64: Buffer.alloc(400, "x").toString("base64"),
     }));
     let replaySettled = false;
-    const replay = fixture.harness.deps.terminalSessions
-      .handleDaemonTerminalMessage({
+    const replayResult =
+      fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
         hostId: fixture.host.id,
         sessionId: nextSession.id,
         message: {
@@ -2439,10 +2439,13 @@ describe("public terminal routes", () => {
           nextSeq: 2_200,
           chunks,
         },
-      })
-      .finally(() => {
-        replaySettled = true;
       });
+    if (!(replayResult instanceof Promise)) {
+      throw new Error("terminal.replay handler must return a promise");
+    }
+    const replay = replayResult.finally(() => {
+      replaySettled = true;
+    });
     await new Promise<void>((resolve) => setImmediate(resolve));
     expect(replaySettled).toBe(false);
     appendRetainedTerminalOutputChunks(fixture.harness.db, {

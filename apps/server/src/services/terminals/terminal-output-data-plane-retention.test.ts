@@ -322,7 +322,10 @@ async function retainReplayAcrossLifecycleTransition(args: {
     expect(new Set(retained?.map(({ seq }) => seq)).size).toBe(
       retained?.length,
     );
-    const terminal = getTerminalSession(fixture.db, fixture.terminal.id);
+    const terminal = getTerminalSession(fixture.db, {
+      kind: "terminal",
+      terminalId: fixture.terminal.id,
+    });
     expect(terminal?.status).toBe(args.expectedStatus);
     expect(terminal?.daemonSessionId).toBeNull();
     if (args.expectedStatus === "exited") {
@@ -706,7 +709,10 @@ describe("terminal output retained from the data plane", () => {
         ...chunks,
         outputDuringReplay,
       ]);
-      const terminal = getTerminalSession(fixture.db, fixture.terminal.id);
+      const terminal = getTerminalSession(fixture.db, {
+        kind: "terminal",
+        terminalId: fixture.terminal.id,
+      });
       expect(terminal?.status).toBe("exited");
       expect(terminal?.daemonSessionId).toBeNull();
       const row = fixture.db.$client
@@ -799,12 +805,15 @@ describe("terminal output retained from the data plane", () => {
           now: Date.now(),
         }) ?? [],
       ).toEqual([]);
-      expect(getTerminalSession(fixture.db, fixture.terminal.id)).toMatchObject(
-        {
-          status: "running",
-          daemonSessionId: replacement.id,
-        },
-      );
+      expect(
+        getTerminalSession(fixture.db, {
+          kind: "terminal",
+          terminalId: fixture.terminal.id,
+        }),
+      ).toMatchObject({
+        status: "running",
+        daemonSessionId: replacement.id,
+      });
       expect(
         replayInfo.mock.calls.some(
           ([, message]) => message === "Terminal replay attributed",
@@ -1040,9 +1049,12 @@ describe("terminal output retained from the data plane", () => {
       expect(new Set(retained?.map(({ seq }) => seq)).size).toBe(
         expected.length,
       );
-      expect(getTerminalSession(fixture.db, fixture.terminal.id)?.status).toBe(
-        "running",
-      );
+      expect(
+        getTerminalSession(fixture.db, {
+          kind: "terminal",
+          terminalId: fixture.terminal.id,
+        })?.status,
+      ).toBe("running");
     } finally {
       fixture.child.shutdown();
     }
@@ -1601,6 +1613,9 @@ describe("terminal output retained from the data plane", () => {
         },
       });
       let replayFinishedAt: number | undefined;
+      if (!(replay instanceof Promise)) {
+        throw new Error("terminal.replay handler must return a promise");
+      }
       const replayCompletion = replay.then(() => {
         replayFinishedAt = performance.now();
         return true;
