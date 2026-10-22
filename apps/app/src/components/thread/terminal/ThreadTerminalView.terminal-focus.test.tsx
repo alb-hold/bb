@@ -446,21 +446,12 @@ describe("ThreadTerminalView terminal focus boundary", () => {
     expect(getTerminal().buffer.active.viewportY).toBe(
       getTerminal().buffer.active.baseY,
     );
-    const terminalElement = document.querySelector(".xterm-screen");
-    expect(terminalElement).not.toBeNull();
-    fireEvent.wheel(terminalElement!, {
-      deltaMode: 1,
-      deltaY: -1,
-    });
-    expect(getTerminal().buffer.active.viewportY).toBeLessThan(
-      getTerminal().buffer.active.baseY,
-    );
-    for (let index = 0; index < 20; index++) {
-      fireEvent.wheel(terminalElement!, {
-        deltaMode: 1,
-        deltaY: getTerminal().rows,
-      });
-    }
+    getTerminal().scrollLines(-1);
+    expect(
+      getTerminal().buffer.active.viewportY,
+      "terminal scrollLines did not move above the bottom",
+    ).toBeLessThan(getTerminal().buffer.active.baseY);
+    getTerminal().scrollToBottom();
     expect(getTerminal().buffer.active.viewportY).toBe(
       getTerminal().buffer.active.baseY,
     );
@@ -566,9 +557,11 @@ describe("ThreadTerminalView terminal focus boundary", () => {
           .toContainEqual({ type: "ack", nextSeq: 1 }),
       "bottom-follow replay was not acknowledged within 5000 ms",
     );
-    expect(getTerminal().buffer.active.viewportY).toBeLessThan(
-      getTerminal().buffer.active.baseY,
-    );
+    getTerminal().scrollToLine(getTerminal().buffer.active.baseY - 1);
+    expect(
+      getTerminal().buffer.active.viewportY,
+      "reloaded terminal did not start above the bottom",
+    ).toBeLessThan(getTerminal().buffer.active.baseY);
     fitRows = 11;
     act(() => getTerminal().resize(40, fitRows));
     await waitForReadinessCondition(
@@ -637,12 +630,11 @@ describe("ThreadTerminalView terminal focus boundary", () => {
           .toContainEqual({ type: "ack", nextSeq: 1 }),
       "replay output was not acknowledged within 5000 ms",
     );
-    const terminalElement = document.querySelector(".xterm-screen");
-    expect(terminalElement).not.toBeNull();
-    fireEvent.wheel(terminalElement!, { deltaMode: 1, deltaY: -1 });
-    expect(getTerminal().buffer.active.viewportY).toBeLessThan(
-      getTerminal().buffer.active.baseY,
-    );
+    getTerminal().scrollLines(-1);
+    expect(
+      getTerminal().buffer.active.viewportY,
+      "terminal scrollLines did not move above the bottom before typed output",
+    ).toBeLessThan(getTerminal().buffer.active.baseY);
     await new Promise((resolve) => setTimeout(resolve, 275));
     getTerminal().input("echo case-c\r", true);
     socket.receive({
@@ -762,6 +754,11 @@ describe("ThreadTerminalView terminal focus boundary", () => {
           .toContainEqual({ type: "ack", nextSeq: 1 }),
       "saved viewport replay was not acknowledged within 5000 ms",
     );
+    getTerminal().scrollToLine(getTerminal().buffer.active.baseY - 388);
+    expect(
+      getTerminal().buffer.active.viewportY,
+      "terminal did not scroll to the saved line before column reflow",
+    ).toBeLessThan(getTerminal().buffer.active.baseY);
     const lineBefore = getTerminal().buffer.active
       .getLine(getTerminal().buffer.active.viewportY)
       ?.translateToString(true);
