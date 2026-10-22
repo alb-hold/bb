@@ -1,11 +1,5 @@
 import { spawn } from "node:child_process";
-import {
-  mkdirSync,
-  rmSync,
-  statSync,
-  unlinkSync,
-  writeFileSync,
-} from "node:fs";
+import { mkdirSync, statSync, unlinkSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { Command } from "commander";
@@ -26,6 +20,11 @@ import {
 } from "../../native-activity-wiring.js";
 import { createNativeActivityReporter } from "../../native-activity-reporter.js";
 import { nativeActivityHookSettings } from "../../native-activity.js";
+import {
+  createHookSpool,
+  hookSpoolSupportsLinks,
+  removeHookSpool,
+} from "../../native-hook-spool.js";
 import {
   measureResumedTranscript,
   NativeActivityReader,
@@ -219,7 +218,7 @@ async function holdNativeHarness(
   });
   const discover = discoverer.discover;
   let reader: NativeActivityReader | null = null;
-  let eventsFile: string | null = null;
+  let hookSpoolDirectory: string | null = null;
   const activityTimers: NodeJS.Timeout[] = [];
   let currentCredential: () => string | null = () => null;
   const reporter = createNativeActivityReporter({
@@ -270,21 +269,20 @@ async function holdNativeHarness(
       });
       const activity = spec.cli.activity;
       const hooks = activity?.hooks;
-      const file =
-        hooks === undefined
-          ? null
-          : path.join(
-              os.tmpdir(),
-              `bb-native-activity-${threadId}-${process.pid}.jsonl`,
-            );
-      if (file !== null) writeFileSync(file, "", { mode: 0o600 });
-      eventsFile = file;
+      const spool =
+        hooks === undefined ? null : createHookSpool(os.tmpdir(), threadId);
+      hookSpoolDirectory = spool;
+      if (spool !== null && !hookSpoolSupportsLinks(spool)) {
+        if (ownsSocket) {
+          logNativeHolderEvent(socketPath, "activity-hook-spool-unsupported", {});
+        }
+      }
       const activityArgs =
-        hooks === undefined || file === null
+        hooks === undefined || spool === null
           ? []
           : hooks.args.map((arg) =>
               fillNativeTerminalTemplate(arg, {
-                settings: nativeActivityHookSettings(hooks, file),
+                settings: nativeActivityHookSettings(hooks, spool),
               }),
             );
       const script = process.argv[1];
@@ -317,7 +315,7 @@ async function holdNativeHarness(
       reader = new NativeActivityReader(
         spec.cli,
         process.env,
-        file,
+        spool,
         launch.session.kind === "resume"
           ? {
               ...launch.session,
@@ -385,7 +383,7 @@ async function holdNativeHarness(
     Promise.all([reporter.settled(), wiring.settled()]),
     new Promise((resolve) => setTimeout(resolve, ACTIVITY_FLUSH_TIMEOUT_MS)),
   ]);
-  if (eventsFile !== null) rmSync(eventsFile, { force: true });
+  if (hookSpoolDirectory !== null) removeHookSpool(hookSpoolDirectory);
   return exitCode;
 }
 

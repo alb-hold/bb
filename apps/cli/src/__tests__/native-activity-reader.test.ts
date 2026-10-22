@@ -18,6 +18,7 @@ import {
 import { BbHttpError, BbRequestTimeoutError } from "@bb/sdk";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { JsonlTail } from "../native-activity.js";
+import { publishHooks } from "./helpers/hook-spool.js";
 import { createNativeActivityReporter } from "../native-activity-reporter.js";
 import { createNativeActivityWiring } from "../native-activity-wiring.js";
 import { EvictedRecordIndex } from "../native-activity-index.js";
@@ -254,7 +255,7 @@ function claudeFixture(
       ]),
     ),
   );
-  writeFileSync(
+  publishHooks(
     events,
     jsonl([
       {
@@ -290,8 +291,7 @@ function claudeFixture(
     dir,
     transcript,
     hook: (records: unknown[]) =>
-      appendFileSync(
-        events,
+      publishHooks(events,
         jsonl(
           records.map((record) => ({
             session_id: SESSION_ID,
@@ -815,7 +815,7 @@ describe("NativeActivityReader", () => {
     );
     mkdirSync(path.dirname(transcript), { recursive: true });
     writeFileSync(transcript, "");
-    writeFileSync(events, "");
+    mkdirSync(events, { recursive: true });
     const reader = new NativeActivityReader(
       cli,
       { HOME: home },
@@ -824,8 +824,7 @@ describe("NativeActivityReader", () => {
       undefined,
       (reason) => diagnostics.push(reason),
     );
-    appendFileSync(
-      events,
+    publishHooks(events,
       jsonl([
         {
           hook_event_name: "UserPromptSubmit",
@@ -852,8 +851,7 @@ describe("NativeActivityReader", () => {
         },
       ]),
     );
-    appendFileSync(
-      events,
+    publishHooks(events,
       jsonl([
         {
           hook_event_name: "UserPromptSubmit",
@@ -882,8 +880,7 @@ describe("NativeActivityReader", () => {
         },
       ]),
     );
-    appendFileSync(
-      events,
+    publishHooks(events,
       jsonl([
         {
           hook_event_name: "UserPromptSubmit",
@@ -895,8 +892,7 @@ describe("NativeActivityReader", () => {
     expect(reader.read()).toEqual([{ state: "working", prompt: null }]);
     expect(Reflect.get(reader, "currentTurn")).toBe("fresh-bound-turn");
     expect(Reflect.get(reader, "unconfirmedTranscriptOffset")).toBeNull();
-    appendFileSync(
-      events,
+    publishHooks(events,
       jsonl([
         {
           hook_event_name: "PermissionRequest",
@@ -906,8 +902,7 @@ describe("NativeActivityReader", () => {
       ]),
     );
     expect(reader.read()).toEqual([]);
-    appendFileSync(
-      events,
+    publishHooks(events,
       jsonl([
         {
           hook_event_name: "UserPromptSubmit",
@@ -921,8 +916,7 @@ describe("NativeActivityReader", () => {
       { state: "working", prompt: "bound prompt" },
     ]);
     expect(Reflect.get(reader, "currentTurn")).toBe("bound-turn");
-    appendFileSync(
-      events,
+    publishHooks(events,
       jsonl([
         {
           hook_event_name: "PermissionRequest",
@@ -934,8 +928,7 @@ describe("NativeActivityReader", () => {
     expect(reader.read()).toEqual([
       { state: "waiting", prompt: null, questions: expect.any(Array) },
     ]);
-    appendFileSync(
-      events,
+    publishHooks(events,
       jsonl([
         {
           hook_event_name: "PostToolUse",
@@ -959,8 +952,7 @@ describe("NativeActivityReader", () => {
             /^permission:Bash#[0-9a-f]{16}\.1$/u.test(id),
         ),
     ).toBe(true);
-    appendFileSync(
-      events,
+    publishHooks(events,
       jsonl([
         {
           hook_event_name: "UserPromptSubmit",
@@ -977,8 +969,7 @@ describe("NativeActivityReader", () => {
       state: "working",
       prompt: null,
     });
-    appendFileSync(
-      events,
+    publishHooks(events,
       jsonl([
         {
           hook_event_name: "Stop",
@@ -2420,15 +2411,14 @@ describe("NativeActivityReader", () => {
   it("reads hook events while the assigned transcript does not exist yet", () => {
     const home = tempHome();
     const events = path.join(home, "events.jsonl");
-    writeFileSync(events, "");
+    mkdirSync(events, { recursive: true });
     const reader = new NativeActivityReader(
       CLAUDE_CLI,
       { HOME: home },
       events,
       { kind: "start", id: SESSION_ID },
     );
-    appendFileSync(
-      events,
+    publishHooks(events,
       jsonl([
         { hook_event_name: "UserPromptSubmit", prompt: "fix the build" },
         { hook_event_name: "Stop" },
@@ -2439,17 +2429,15 @@ describe("NativeActivityReader", () => {
       { state: "working", prompt: "fix the build" },
       { state: "idle", prompt: null },
     ]);
-    appendFileSync(events, jsonl([{ hook_event_name: "PreToolUse" }]));
+    publishHooks(events, jsonl([{ hook_event_name: "PreToolUse" }]));
     expect(reader.read()).toEqual([{ state: "working", prompt: null }]);
-    appendFileSync(
-      events,
+    publishHooks(events,
       jsonl(
         Array.from({ length: 100 }, () => ({ hook_event_name: "PreToolUse" })),
       ),
     );
     expect(reader.read()).toEqual([]);
-    appendFileSync(
-      events,
+    publishHooks(events,
       jsonl([{ hook_event_name: "Stop", stop_hook_active: true }]),
     );
     expect(reader.read()).toEqual([{ state: "idle", prompt: null }]);

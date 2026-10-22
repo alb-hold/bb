@@ -10,6 +10,7 @@ import os from "node:os";
 import path from "node:path";
 import type { ProviderNativeTerminal } from "@bb/domain";
 import { afterEach, describe, expect, it } from "vitest";
+import { publishHooks } from "./helpers/hook-spool.js";
 import { NativeActivityReader } from "../native-activity-reader.js";
 
 interface ClaudePluginTestHost {
@@ -108,7 +109,7 @@ describe("native activity over a blocked Stop followed by a long foreground tool
     );
     const stops = hooks.filter((hook) => hook.hook_event_name === "Stop");
     expect(stops).toHaveLength(1);
-    writeFileSync(eventsFile, jsonl(prompts));
+    publishHooks(eventsFile, jsonl(prompts));
 
     const reader = new NativeActivityReader(
       claudeDeclaration(),
@@ -119,7 +120,7 @@ describe("native activity over a blocked Stop followed by a long foreground tool
     reader.read();
     expect(reader.heartbeat()).toEqual({ state: "working", prompt: null });
 
-    appendFileSync(eventsFile, jsonl(stops));
+    publishHooks(eventsFile, jsonl(stops));
     reader.read();
 
     appendFileSync(transcriptFile, jsonl(transcript.slice(feedback)));

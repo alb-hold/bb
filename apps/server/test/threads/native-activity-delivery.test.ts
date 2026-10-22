@@ -1,8 +1,10 @@
+import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   appendFileSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -109,6 +111,17 @@ const readerModule: Pick<CliModules, "NativeActivityReader"> = await import(
   cliUrl("native-activity-reader.ts")
 );
 
+interface SpoolModules {
+  createHookSpool(parent: string, label: string): string;
+  nativeActivityHookSettings(hooks: unknown, spoolDirectory: string): string;
+  removeHookSpool(directory: string): void;
+}
+
+const spoolModule: Pick<SpoolModules, "createHookSpool" | "removeHookSpool"> =
+  await import(cliUrl("native-hook-spool.ts"));
+const settingsModule: Pick<SpoolModules, "nativeActivityHookSettings"> =
+  await import(cliUrl("native-activity.ts"));
+
 const SESSION_ID = "2e624c50-68af-4689-9410-06caa371eb8a";
 const SECRET = "synthetic-delivery-test-credential";
 const harnesses: TestAppHarness[] = [];
@@ -213,6 +226,20 @@ async function nativeThread(options: { nativeSessionId?: string | null } = {}) {
     return other;
   };
   return { another, harness, thread };
+}
+
+function publishHookLines(directory: string, lines: string): void {
+  mkdirSync(directory, { recursive: true });
+  for (const line of lines.split("\n")) {
+    if (line.trim().length === 0) continue;
+    const numbers = readdirSync(directory)
+      .filter((name) => /^\d{12}$/u.test(name))
+      .map(Number);
+    const next = numbers.length === 0 ? 1 : Math.max(...numbers) + 1;
+    writeFileSync(path.join(directory, String(next).padStart(12, "0")), line, {
+      flag: "wx",
+    });
+  }
 }
 
 const activityPath = (threadId: string) =>
@@ -405,7 +432,7 @@ describe("a lost idle report through the real reader, reporter, wiring and SDK c
         }),
     );
     const hook = (record: Record<string, unknown>) =>
-      appendFileSync(
+      publishHookLines(
         events,
         `${JSON.stringify({ session_id: SESSION_ID, ...record })}\n`,
       );
@@ -617,9 +644,9 @@ describe("overflow, answer, then no resumed activity through the real reader, re
     const home = mkdtempSync(path.join(os.tmpdir(), "bb-overflow-"));
     roots.push(home);
     const events = path.join(home, "hooks.jsonl");
-    writeFileSync(events, "");
+    mkdirSync(events, { recursive: true });
     const hook = (records: Record<string, unknown>[]) =>
-      appendFileSync(
+      publishHookLines(
         events,
         records
           .map((record) =>
@@ -1008,3 +1035,80 @@ describe("an older server that does not know the closure fields (INJECTED-SERVER
     ).toHaveLength(0);
   });
 });
+
+describe.skipIf(process.platform === "win32")(
+  `Needs input from concurrent hooks, through the generated hook command, the real reader, reporter, SDK client and server ${process.platform === "win32" ? "(NOT EXERCISED on native Windows: the hook command needs a POSIX shell and native-terminal mode cannot start there today)" : ""}`,
+  () => {
+    async function openers(count: number) {
+      const { harness, thread } = await nativeThread();
+      const cli =
+        harness.deps.providerRegistry.get("claude-code")?.nativeTerminal;
+      const hooks = cli?.activity?.hooks;
+      if (cli === undefined || cli === null || hooks === undefined) {
+        throw new Error("claude-code hooks missing");
+      }
+      const spool = spoolModule.createHookSpool(os.tmpdir(), "delivery-test");
+      roots.push(spool);
+      const settings: {
+        hooks: Record<string, { hooks: { command: string }[] }[]>;
+      } = JSON.parse(settingsModule.nativeActivityHookSettings(hooks, spool));
+      const command = settings.hooks.PermissionRequest?.[0]?.hooks[0]?.command;
+      if (command === undefined) throw new Error("no PermissionRequest hook");
+      const big = "z".repeat(512 * 1024);
+      const tools = Array.from({ length: count }, (_, index) => `Tool${index}`);
+      await Promise.all(
+        tools.map(
+          (tool, index) =>
+            new Promise<void>((resolve) => {
+              const child = spawn("sh", ["-c", command], {
+                stdio: ["pipe", "ignore", "ignore"],
+              });
+              child.once("exit", () => resolve());
+              child.stdin.end(
+                JSON.stringify({
+                  hook_event_name: "PermissionRequest",
+                  permission_suggestions: [],
+                  session_id: SESSION_ID,
+                  tool_input: { content: index % 2 === 0 ? big : "small" },
+                  tool_name: tool,
+                }),
+              );
+            }),
+        ),
+      );
+      const reader = new readerModule.NativeActivityReader(
+        cli,
+        { HOME: os.tmpdir() },
+        spool,
+        { kind: "start", id: SESSION_ID },
+      );
+      const sdk = createNodeBbSdk({
+        baseUrl: "http://127.0.0.1:3000",
+        fetch: (input, init) => harness.app.fetch(new Request(input, init)),
+      });
+      const reporter = reporterModule.createNativeActivityReporter({
+        currentCredential: () => SECRET,
+        send: (args) => sdk.nativeTerminals.reportActivity(args),
+        threadId: thread.id,
+      });
+      for (const next of reader.read()) reporter.report(next);
+      await reporter.settled();
+      return { harness, thread, tools };
+    }
+
+    it("registers every concurrent opener as a pending question and shows Needs input", async () => {
+      const { harness, thread, tools } = await openers(6);
+      const pending = listPendingInteractionsByThread(harness.db, {
+        threadId: thread.id,
+      });
+      expect(pending).toHaveLength(tools.length);
+      for (const tool of tools) {
+        expect(JSON.stringify(pending.map((row) => row.payload))).toContain(
+          `Claude Code needs permission to use: ${tool}`,
+        );
+      }
+      expect(getThread(harness.db, thread.id)?.status).toBe("active");
+    });
+  },
+);
+
