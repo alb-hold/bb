@@ -504,7 +504,8 @@ export function BottomAnchoredScrollBody({
   const hasRecentUserScrollIntent = useCallback(() => {
     return (
       pointerScrollIntentRef.current ||
-      window.performance.now() <= userScrollIntentUntilRef.current
+      (userScrollIntentUntilRef.current > 0 &&
+        window.performance.now() <= userScrollIntentUntilRef.current)
     );
   }, []);
 
@@ -864,6 +865,11 @@ export function BottomAnchoredScrollBody({
       return;
     }
 
+    if (shouldStickToBottomRef.current && !hasRecentUserScrollIntent()) {
+      queueBottomRestore();
+      return;
+    }
+
     if (!hasRecentUserScrollIntent() && !hasDirectUserScrollInput) return;
 
     userDetachedFromBottomRef.current = true;
@@ -875,6 +881,7 @@ export function BottomAnchoredScrollBody({
     attachToBottom,
     cancelQueuedRestore,
     hasRecentUserScrollIntent,
+    queueBottomRestore,
     readMaxScrollOffset,
     refreshMaxScrollOffset,
   ]);
