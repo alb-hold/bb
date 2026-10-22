@@ -1,5 +1,6 @@
 import { BbHttpError } from "@bb/sdk";
 import { describe, expect, it } from "vitest";
+import { createNativeActivityReporter } from "../native-activity-reporter.js";
 import {
   createSessionDiscoverer,
   recordDiscoveredSession,
@@ -17,8 +18,19 @@ function discovererFor(answers: unknown[], found: string | null = ID) {
   const logged: Array<{ event: string; fields: unknown }> = [];
   let suspended = 0;
   let credential: string | null = "current";
+  const reports: string[] = [];
+  let reportOutcome: () => Promise<unknown> = async () => ({ ok: true });
+  const reporter = createNativeActivityReporter({
+    currentCredential: () => credential,
+    send: async (args) => {
+      reports.push(args.state);
+      return reportOutcome();
+    },
+    threadId: "thr_discovery",
+  });
   const discoverer = createSessionDiscoverer({
     currentCredential: () => credential,
+    discardUnsentReports: () => reporter.discardRetained(),
     find: () => found,
     log: (event, fields) => logged.push({ event, fields }),
     reader: () => ({
@@ -41,6 +53,11 @@ function discovererFor(answers: unknown[], found: string | null = ID) {
     discoverer,
     followed,
     logged,
+    reporter,
+    reports,
+    setReportOutcome: (next: () => Promise<unknown>) => {
+      reportOutcome = next;
+    },
     sent,
     setCredential: (next: string | null) => {
       credential = next;
@@ -161,5 +178,56 @@ describe("the holder's session discovery", () => {
     idle.discoverer.arm(false);
     await idle.discoverer.discover();
     expect(idle.sent).toEqual([]);
+  });
+
+  describe("reports of a session the server refused", () => {
+    it("control: a report whose delivery failed is resent when nothing was refused", async () => {
+      const h = discovererFor([]);
+      h.setReportOutcome(async () => {
+        throw refusal(503, "unavailable");
+      });
+      h.reporter.report({ prompt: null, state: "working" });
+      await h.reporter.settled();
+      h.reporter.retry();
+      await h.reporter.settled();
+      expect(h.reports).toEqual(["working", "working"]);
+    });
+
+    it("never resends a report that was retained from the refused session", async () => {
+      const h = discovererFor([refusal(409, "native_session_claimed")]);
+      h.setReportOutcome(async () => {
+        throw refusal(503, "unavailable");
+      });
+      h.reporter.report({ prompt: null, state: "working" });
+      await h.reporter.settled();
+      expect(h.reports).toEqual(["working"]);
+
+      await h.discoverer.discover();
+      h.reporter.retry();
+      await h.reporter.settled();
+      h.reporter.retry();
+      await h.reporter.settled();
+      expect(h.reports).toEqual(["working"]);
+      expect(h.suspended()).toBe(1);
+    });
+
+    it("does not retain a report that was in flight when the session was refused", async () => {
+      const h = discovererFor([refusal(409, "native_session_claimed")]);
+      let fail: () => void = () => undefined;
+      h.setReportOutcome(
+        () =>
+          new Promise((_resolve, reject) => {
+            fail = () => reject(refusal(503, "unavailable"));
+          }),
+      );
+      h.reporter.report({ prompt: null, state: "working" });
+      await Promise.resolve();
+      await h.discoverer.discover();
+      fail();
+      await h.reporter.settled();
+      h.reporter.retry();
+      await h.reporter.settled();
+      expect(h.reports).toEqual(["working"]);
+    });
   });
 });

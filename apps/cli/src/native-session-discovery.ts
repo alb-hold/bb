@@ -34,6 +34,7 @@ export interface SessionDiscovererReader {
 
 export function createSessionDiscoverer(options: {
   currentCredential(): string | null;
+  discardUnsentReports(): void;
   find(): string | null;
   log(event: string, fields: Record<string, number | string | null>): void;
   reader(): SessionDiscovererReader | null;
@@ -62,6 +63,7 @@ export function createSessionDiscoverer(options: {
       pending = outcome.kind === "retry";
       if (outcome.kind === "refused") {
         options.reader()?.suspend();
+        options.discardUnsentReports();
         options.log("session-discovery-stopped", {
           code: outcome.code,
           sessionId,

@@ -191,6 +191,7 @@ async function holdNativeHarness(
   } | null = null;
   const discoverer = createSessionDiscoverer({
     currentCredential: () => currentCredential(),
+    discardUnsentReports: () => reporter.discardRetained(),
     find: () => {
       if (discovery === null) return null;
       try {
