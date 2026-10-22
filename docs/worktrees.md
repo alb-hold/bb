@@ -158,12 +158,15 @@ removal, then unarchive it to restore the workspace, or recover the path
 yourself. A removal that failed before bb touched anything is undone when the
 thread is unarchived.
 
-Otherwise bb stops every process whose working directory is inside the
-worktree — the agent's provider process, its background jobs (dev servers, MCP
-servers, `nohup` jobs), and any process you started there yourself, such as a
-shell you `cd`'d into the worktree or an editor terminal. Each process gets
-`SIGTERM`, then `SIGKILL` after a short grace period. It checks again, then
-`git worktree remove` runs without `--force`. If Git declines, the worktree is
+Otherwise bb looks for programs that use the worktree: any process of yours
+whose working directory is inside it or that holds a file open inside it.
+bb never signals those programs, except that a create that failed stops the
+processes its own setup left in the worktree it just made. While one is running, or when bb cannot tell
+(for example on Windows, or when a process cannot be inspected), the removal is
+kept and retried later, and the message names the program so its owner can
+finish and close it. A scan is a snapshot: a program that opens a file after
+the last check and before Git deletes the folder is not prevented from losing
+that write. bb checks again, then `git worktree remove` runs without `--force`. If Git declines, the worktree is
 kept. bb never uses `--force`. A create that finds a branch still checked out by
 an earlier workspace leaves it alone and says where it is; the owning cleanup
 removes such a workspace, never the new create. A create that fails after bb made the worktree

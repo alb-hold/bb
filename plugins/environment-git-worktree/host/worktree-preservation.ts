@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { runGit, WorkspaceError } from "bb-environment-provider-host/git";
+import { describeHolderScan, scanWorktreeHolders } from "./holders.js";
 import { parseWorktreeListPorcelain } from "./worktree-list.js";
 
 export const KEEP_WORKTREE_MARKER = ".keep-worktree";
@@ -313,5 +314,9 @@ export async function findPreservationReasons(
       "has commits that are not reachable from any remote-tracking branch",
     );
   }
+  const holderReason = describeHolderScan(
+    await scanWorktreeHolders(identity.path),
+  );
+  if (holderReason !== null) reasons.push(holderReason);
   return reasons;
 }

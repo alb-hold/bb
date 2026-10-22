@@ -1,4 +1,8 @@
-import { experimental_killProcessesWithCwdUnder } from "@get-bb/plugin-sdk/host";
+import {
+  describeHolderScan,
+  scanWorktreeHolders,
+  stopOwnSetupProcesses,
+} from "./holders.js";
 import {
   findWorktreeEntry,
   parseWorktreeListPorcelain,
@@ -853,11 +857,19 @@ export async function removeWorktree(
         async () => {
           await assertWorktreeRemovable(identity, args);
           throwIfProvisionAborted(args.signal);
-          await experimental_killProcessesWithCwdUnder({
-            directories: [identity.path],
-          });
+          if (args.createdBy !== undefined) {
+            await stopOwnSetupProcesses(identity.path);
+          }
           throwIfProvisionAborted(args.signal);
           await assertWorktreeRemovable(identity, args);
+          if (args.createdBy !== undefined) {
+            const holderReason = describeHolderScan(
+              await scanWorktreeHolders(identity.path),
+            );
+            if (holderReason !== null) {
+              throw worktreePreservedError(identity.path, [holderReason]);
+            }
+          }
           await removeRegisteredWorktree(identity, args, retention);
           return true;
         },

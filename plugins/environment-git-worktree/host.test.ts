@@ -660,12 +660,12 @@ describe("worktree host entry", () => {
     await harness.experimental_dispose();
   });
 
-  it("leaves teardown to core, kills workspace processes, and prunes the path-key parent", async ({
+  it("leaves teardown to core, defers while a program runs in the workspace without signalling it, and prunes the path-key parent", async ({
     skip,
   }) => {
     skip(
       process.platform === "win32",
-      "killProcessesWithCwdUnder does not enumerate process working directories on Windows",
+      "the holder scan cannot inspect processes on Windows, so the removal always retains",
     );
     const { root, sourcePath, dataDir } = await createSourceRepository();
     await writeFile(
@@ -696,15 +696,27 @@ describe("worktree host entry", () => {
       },
     );
     lingering.unref();
+    const deferred = await harness.experimental_call("remove", {
+      operationId: "remove-deferred",
+      pathKey: "thr_6",
+      path: created.path,
+    });
+    const stillRunning = isPidAlive(lingering.pid ?? 0);
+    lingering.kill("SIGKILL");
+    await expect
+      .poll(() => isPidAlive(lingering.pid ?? 0), { timeout: 10_000 })
+      .toBe(false);
     const removed = await harness.experimental_call("remove", {
       operationId: "remove",
       pathKey: "thr_6",
       path: created.path,
     });
-    const lingeringAlive = isPidAlive(lingering.pid ?? 0);
-    lingering.kill("SIGKILL");
+    expect(deferred).toMatchObject({
+      status: "retained",
+      message: expect.stringContaining("in use by"),
+    });
+    expect(stillRunning).toBe(true);
     expect(removed).toEqual({ status: "removed" });
-    expect(lingeringAlive).toBe(false);
     expect(progressText(harness)).not.toContain("tearing-down");
     expect(existsSync(join(root, "teardown.marker"))).toBe(false);
     expect(existsSync(created.path)).toBe(false);
@@ -780,6 +792,13 @@ async function createManagedWorktree(
     completionPath: `${created.path}.completed`,
     lingering: spawnLingeringProcess(created.path),
   };
+}
+
+async function stopLingering(worktree: ManagedWorktree): Promise<void> {
+  worktree.lingering.kill("SIGKILL");
+  await expect
+    .poll(() => isPidAlive(worktree.lingering.pid ?? 0), { timeout: 10_000 })
+    .toBe(false);
 }
 
 async function commitFile(cwd: string, name: string): Promise<string> {
@@ -1016,6 +1035,7 @@ describe.skipIf(process.platform === "win32")(
           recursive: true,
         });
         await writeFile(join(worktree.path, "node_modules", "pkg", "i.js"), "");
+        await stopLingering(worktree);
         expect(await removeFrom(worktree)).toEqual({ status: "removed" });
         await expectWorktreeRemoved(worktree);
       } finally {
@@ -1038,6 +1058,7 @@ describe.skipIf(process.platform === "win32")(
             )
           ).trim(),
         ).toBe("");
+        await stopLingering(worktree);
         expect(await removeFrom(worktree)).toEqual({ status: "removed" });
         await expectWorktreeRemoved(worktree);
       } finally {
@@ -1049,6 +1070,7 @@ describe.skipIf(process.platform === "win32")(
       const worktree = await createManagedWorktree();
       try {
         await git(worktree.path, "checkout", "--detach", "origin/main");
+        await stopLingering(worktree);
         expect(await removeFrom(worktree)).toEqual({ status: "removed" });
         await expectWorktreeRemoved(worktree);
       } finally {
@@ -1223,7 +1245,7 @@ describe.skipIf(process.platform === "win32")(
       }
     });
 
-    it("fails, never retains, when a target turns protected after another was removed", async () => {
+    it("defers a path-key removal and signals nothing while a program still runs in a sibling worktree", async () => {
       const worktree = await createManagedWorktree({ pathKey: "thr_race" });
       try {
         const sibling = await addSiblingWorktree(worktree, "late-writer");
@@ -1243,17 +1265,17 @@ setTimeout(() => {}, 300_000);`,
         writer.unref();
         lingeringProcesses.push(writer);
         await new Promise((resolve) => setTimeout(resolve, 300));
+        await stopLingering(worktree);
+
         const result = await removeFrom(worktree, null);
-        expect(result.status).toBe("failed");
-        const message = result.status === "failed" ? result.message : "";
-        expect(message).toContain("Removed:");
-        expect(message).toContain(worktree.path);
-        expect(message).toContain(`Kept ${sibling.path}`);
-        expect(existsSync(worktree.path)).toBe(false);
-        expect(existsSync(worktree.completionPath)).toBe(false);
-        expect(await readFile(join(sibling.path, "late.txt"), "utf8")).toBe(
-          "written while stopping\n",
-        );
+
+        expect(result.status).toBe("retained");
+        const message = result.status === "retained" ? result.message : "";
+        expect(message).toContain(sibling.path);
+        expect(message).toContain("in use by");
+        expect(isPidAlive(writer.pid ?? 0)).toBe(true);
+        expect(existsSync(join(sibling.path, "late.txt"))).toBe(false);
+        expect(existsSync(worktree.path)).toBe(true);
         expect(existsSync(sibling.completionPath)).toBe(true);
         expect(await registeredWorktrees(worktree.sourcePath)).toContain(
           await realpath(sibling.path),
@@ -1271,8 +1293,14 @@ setTimeout(() => {}, 300_000);`,
             pathKey: worktree.pathKey,
             path: worktree.path,
           });
+        expect(await inspect()).toMatchObject({
+          status: "retained",
+          message: expect.stringContaining("in use by"),
+        });
+        expect(isPidAlive(worktree.lingering.pid ?? 0)).toBe(true);
+        await stopLingering(worktree);
         expect(await inspect()).toEqual({ status: "removable" });
-        await expectWorktreeIntact(worktree);
+        expect(existsSync(worktree.path)).toBe(true);
         await writeFile(join(worktree.path, "notes.txt"), "draft\n");
         expect(await inspect()).toMatchObject({
           status: "retained",
@@ -1285,7 +1313,7 @@ setTimeout(() => {}, 300_000);`,
       }
     });
 
-    it("reports a Git refusal after the processes were stopped as a failure, with the worktree and marker intact", async () => {
+    it("reports a Git refusal as a failure, with the worktree and marker intact", async () => {
       const worktree = await createManagedWorktree({
         pathKey: "thr_submodule",
         prepareSource: async (sourcePath) => {
@@ -1317,6 +1345,7 @@ setTimeout(() => {}, 300_000);`,
           "--init",
         );
         expect(await git(worktree.path, "status", "--porcelain")).toBe("");
+        await stopLingering(worktree);
 
         const result = await removeFrom(worktree);
 
