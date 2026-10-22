@@ -155,6 +155,7 @@ This index lists every command path that the core CLI registers, including alias
 - `bb terminal send`
 - `bb terminal resize`
 - `bb terminal output`
+- `bb terminal screen`
 - `bb terminal pipe`
 - `bb terminal read`
 - `bb terminal wait`
@@ -260,6 +261,14 @@ app sockets the request was sent to; it does not confirm receipt or application.
 - `bb environment diff-files`
 - `bb environment diff-file`
 - `bb environment diff-patch`
+- `bb environment diff-viewed`
+- `bb environment diff-viewed list`
+
+  Repeat `--path` for a bounded lookup.
+
+- `bb environment diff-viewed mark`
+- `bb environment diff-viewed unmark`
+- `bb environment diff-viewed clear`
 - `bb environment update`
 - `bb environment commit`
 - `bb environment archive-threads`

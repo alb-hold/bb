@@ -36,6 +36,7 @@ async function runProfileWorker(): Promise<void> {
   let startedAt = "";
   let title = "";
   let finishedProfile: Profiler.Profile | undefined;
+  let acknowledgeFailure: (() => void) | undefined;
   session.on("Profiler.consoleProfileFinished", (event) => {
     if (event.params.title === title) finishedProfile = event.params.profile;
   });
@@ -100,7 +101,11 @@ async function runProfileWorker(): Promise<void> {
       "Server performance diagnostics enabled",
     );
   };
-  const capture = async (restart: boolean, stalls: StallWindowBatch) => {
+  const capture = async (
+    restart: boolean,
+    stalls: StallWindowBatch,
+    beforeComplete?: () => Promise<void>,
+  ) => {
     const beginning = startedAt;
     const nextTitle = `bb-performance-${randomUUID()}`;
     if (restart) {
@@ -123,6 +128,7 @@ async function runProfileWorker(): Promise<void> {
     const bytes = Buffer.byteLength(contents);
     await prune(bytes > maxProfileBytes ? 0 : bytes);
     if (bytes > maxProfileBytes) {
+      await beforeComplete?.();
       respond(
         { bytes, startedAt: beginning, endedAt },
         "CPU profile exceeded size limit; discarded",
@@ -139,6 +145,7 @@ async function runProfileWorker(): Promise<void> {
     await rename(pendingPath, path);
     profiles.push({ path, bytes, savedAt });
     retainedBytes += bytes;
+    await beforeComplete?.();
     respond(
       {
         path,
@@ -153,6 +160,10 @@ async function runProfileWorker(): Promise<void> {
     );
   };
   port.on("message", async (command: unknown) => {
+    if (command === "failure-ack") {
+      acknowledgeFailure?.();
+      return;
+    }
     try {
       if (command === "start") await start();
       else if (
@@ -162,16 +173,34 @@ async function runProfileWorker(): Promise<void> {
         (command.command === "capture" || command.command === "stop") &&
         "stalls" in command
       ) {
+        const stopping = command.command === "stop";
         await capture(
-          command.command === "capture",
+          !stopping,
           parseStallWindowBatch(command.stalls),
+          stopping
+            ? async () => {
+                await session.post("Profiler.disable");
+                session.disconnect();
+              }
+            : undefined,
         );
-        if (command.command === "stop") session.disconnect();
       } else throw new Error("Invalid profiling command");
     } catch (error) {
+      await session.post("Profiler.disable").catch(() => {});
       session.disconnect();
       await rm(pendingPath, { force: true }).catch(() => {});
-      throw error;
+      let failure: Error;
+      try {
+        failure = error instanceof Error ? error : new Error(String(error));
+      } catch {
+        failure = new Error("Non-Error profile failure");
+      }
+      await new Promise<void>((resolve) => {
+        acknowledgeFailure = resolve;
+        port.postMessage({ failure });
+      });
+      acknowledgeFailure = undefined;
+      port.close();
     }
   });
 }

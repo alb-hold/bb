@@ -9,10 +9,27 @@ import type {
   TerminalNotifyRequest,
   TerminalResizeRequest,
   TerminalSession,
+  TerminalScreenQuery,
+  TerminalScreenResponse,
   ThreadOpenResponse,
   UpdateTerminalRequest,
 } from "@bb/server-contract";
+import { BbHttpError } from "../response.js";
 import { signalRequestArgs, type CreateSdkAreaArgs } from "./common.js";
+
+const TERMINAL_SCREEN_READ_DEADLINE_MS = 30_000;
+
+function isRetryableScreenQueueError(error: unknown): error is BbHttpError {
+  return (
+    error instanceof BbHttpError &&
+    error.status === 503 &&
+    error.code === "terminal_screen_queue_full" &&
+    typeof error.body === "object" &&
+    error.body !== null &&
+    "retryable" in error.body &&
+    error.body.retryable === true
+  );
+}
 
 export interface TerminalThreadScope {
   cwd?: never;
@@ -64,6 +81,7 @@ export interface TerminalListArgs {
 export interface TerminalCreateArgs {
   cols: number;
   cwd?: string;
+  id?: CreateTerminalRequest["id"];
   rows: number;
   scope: TerminalCreateScope;
   start?: CreateTerminalRequest["start"];
@@ -103,6 +121,11 @@ export interface TerminalOutputArgs extends TerminalTargetArgs {
   tailBytes?: TerminalOutputQuery["tailBytes"];
 }
 
+export interface TerminalScreenArgs extends TerminalTargetArgs {
+  lines?: TerminalScreenQuery["lines"];
+  signal?: AbortSignal;
+}
+
 export interface TerminalNotifyArgs
   extends TerminalTargetArgs, TerminalNotifyRequest {}
 
@@ -116,6 +139,7 @@ export type TerminalCloseResult = TerminalSession;
 export type TerminalInputResult = TerminalSession;
 export type TerminalResizeResult = TerminalSession;
 export type TerminalOutputResult = TerminalOutputResponse;
+export type TerminalScreenResult = TerminalScreenResponse;
 export type TerminalRestartResult = TerminalSession;
 
 export interface ExperimentalTerminalAttentionArea {
@@ -172,6 +196,7 @@ export interface TerminalsArea {
   input(args: TerminalInputArgs): Promise<TerminalInputResult>;
   list(args: TerminalListArgs): Promise<TerminalListResult>;
   output(args: TerminalOutputArgs): Promise<TerminalOutputResult>;
+  experimental_screen(args: TerminalScreenArgs): Promise<TerminalScreenResult>;
   notify(args: TerminalNotifyArgs): Promise<TerminalGetResult>;
   experimental_follow(
     args: TerminalOutputArgs & { pollIntervalMs?: number },
@@ -290,6 +315,7 @@ export function createTerminalsArea(args: CreateSdkAreaArgs): TerminalsArea {
         json: {
           cols: input.cols,
           ...(input.cwd === undefined ? {} : { cwd: input.cwd }),
+          id: input.id,
           rows: input.rows,
           start: input.start,
           target: terminalCreateTarget(input.scope),
@@ -308,9 +334,9 @@ export function createTerminalsArea(args: CreateSdkAreaArgs): TerminalsArea {
             }),
           ),
           transport.readJson(
-          transport.api.v1.terminals.$get({
-            query: { threadId: input.threadId },
-          }),
+            transport.api.v1.terminals.$get({
+              query: { threadId: input.threadId },
+            }),
           ),
           transport.readJson(
             transport.api.v1.threads[":id"]["native-terminal"].$get({
@@ -425,6 +451,38 @@ export function createTerminalsArea(args: CreateSdkAreaArgs): TerminalsArea {
         ),
       );
     },
+    async experimental_screen(input) {
+      const deadline = Date.now() + TERMINAL_SCREEN_READ_DEADLINE_MS;
+      let backoffMs = 25;
+      while (true) {
+        const timeoutSignal = AbortSignal.timeout(
+          Math.max(1, deadline - Date.now()),
+        );
+        const signal =
+          input.signal === undefined
+            ? timeoutSignal
+            : AbortSignal.any([input.signal, timeoutSignal]);
+        try {
+          return await transport.readJson(
+            transport.api.v1.terminals[":terminalId"].screen.$get(
+              {
+                param: { terminalId: input.terminalId },
+                query: input.lines === undefined ? {} : { lines: input.lines },
+              },
+              ...signalRequestArgs(signal),
+            ),
+          );
+        } catch (error) {
+          if (!isRetryableScreenQueueError(error) || Date.now() >= deadline) {
+            throw error;
+          }
+          await new Promise<void>((resolve) =>
+            setTimeout(resolve, Math.min(backoffMs, deadline - Date.now())),
+          );
+          backoffMs = Math.min(backoffMs * 2, 500);
+        }
+      }
+    },
     async notify(input) {
       return transport.readJson(
         transport.api.v1.terminals[":terminalId"].notify.$post({
@@ -514,10 +572,7 @@ export function createTerminalsArea(args: CreateSdkAreaArgs): TerminalsArea {
           get({ terminalId: input.terminalId }),
           get({ terminalId: input.targetTerminalId }),
         ]);
-        if (
-          session.threadId === null ||
-          target.threadId !== session.threadId
-        ) {
+        if (session.threadId === null || target.threadId !== session.threadId) {
           throw new Error("Terminal sessions must belong to the same thread");
         }
         return transport.readJson(

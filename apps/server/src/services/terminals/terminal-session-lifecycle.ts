@@ -56,6 +56,8 @@ import type {
   TerminalOutputChunk,
   TerminalOutputQuery,
   TerminalOutputResponse,
+  TerminalScreenQuery,
+  TerminalScreenResponse,
   TerminalResizeRequest,
   TerminalSession,
   TerminalNotifyRequest,
@@ -64,6 +66,11 @@ import type {
 import { ApiError } from "../../errors.js";
 import type { AppDeps, ServerLogger } from "../../types.js";
 import { assertUsableHostId } from "../hosts/primary-host.js";
+import {
+  renderTerminalScreen,
+  TERMINAL_SCREEN_MAX_LINES,
+  TERMINAL_SCREEN_REPLAY_BYTES,
+} from "./terminal-screen.js";
 import {
   requireConnectedHostSession,
   requireEnvironment,
@@ -346,6 +353,7 @@ interface GetTerminalArgs {
 
 interface TerminalCreatePayload {
   cols: number;
+  id?: string;
   rows: number;
   cwd?: string;
   start?: NonNullable<CreateTerminalRequest["start"]>;
@@ -1197,7 +1205,14 @@ export class TerminalSessionLifecycle {
   }
 
   async createTerminal(args: CreateTerminalArgs): Promise<TerminalSession> {
-    const { target } = args.payload;
+    const { id, target } = args.payload;
+    if (id !== undefined && getTerminalById(this.options.db, id)) {
+      throw new ApiError(
+        409,
+        "terminal_id_conflict",
+        `Terminal session ${id} already exists`,
+      );
+    }
     const existingSessionCount = this.countExistingSessionsForTarget(target);
     const launchTarget =
       target.kind === "thread"
@@ -1266,6 +1281,7 @@ export class TerminalSessionLifecycle {
       daemonSessionId: daemonSession.id,
       environmentId: launchTarget.environmentId,
       hostId: launchTarget.hostId,
+      id: args.payload.id,
       initialCwd: launchTarget.initialCwd,
       rows: args.payload.rows,
       status: "starting",
@@ -1789,6 +1805,41 @@ export class TerminalSessionLifecycle {
       query: args.query,
       session: current,
       chunks: retained,
+    });
+  }
+
+  async readTerminalScreen(args: {
+    terminalId: string;
+    query: TerminalScreenQuery;
+  }): Promise<TerminalScreenResponse> {
+    const session = getTerminalById(this.options.db, args.terminalId);
+    if (!session) {
+      throw new ApiError(
+        404,
+        "terminal_not_found",
+        "Terminal session not found",
+      );
+    }
+    if (
+      args.query.lines !== undefined &&
+      args.query.lines > TERMINAL_SCREEN_MAX_LINES
+    ) {
+      throw new ApiError(
+        400,
+        "invalid_request",
+        `lines must be at most ${TERMINAL_SCREEN_MAX_LINES}`,
+      );
+    }
+    const output = await this.readTerminalOutput({
+      terminalId: args.terminalId,
+      query: { tailBytes: TERMINAL_SCREEN_REPLAY_BYTES },
+    });
+    return renderTerminalScreen({
+      cols: session.cols,
+      lines: args.query.lines,
+      output,
+      rows: session.rows,
+      logger: this.options.logger,
     });
   }
 

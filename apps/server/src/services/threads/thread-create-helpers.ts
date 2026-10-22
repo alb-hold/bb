@@ -92,7 +92,7 @@ export function buildEnvironmentProvisionCommand(
 // only believed when it could be the agent making this call: a live thread in
 // the same project that is mid-turn right now. Anything else is ignored and
 // the new thread keeps its own model.
-function resolveRecordableSpawner(
+export function resolveRecordableSpawner(
   deps: Pick<AppDeps, "db">,
   args: { projectId: string; spawnedByThreadId: string | undefined },
 ) {

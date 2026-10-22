@@ -93,9 +93,9 @@ import {
   useThread,
   useThreadDetailBootstrap,
   useThreadPendingInteractions,
-  useThreadStorageLocation,
   type ProjectThreadSubsetFilters,
 } from "../../hooks/queries/thread-queries";
+import { useThreadStorageLocation } from "../../hooks/queries/thread-panel-queries";
 import { isTransientReadError } from "@/hooks/queries/query-helpers";
 import { useSecondTick } from "@/hooks/useSecondTick";
 import { getPromptDraftAccessor } from "@/hooks/usePromptDraftStorage";
@@ -261,7 +261,7 @@ import {
 } from "@/components/secondary-panel/useThreadFileTabs";
 import { isSecondaryFileTab } from "@bb/client-core";
 import { useThreadOpenFileSignal } from "@/components/secondary-panel/useThreadOpenFileSignal";
-import type { PromptMentionLinkResolver } from "@/components/promptbox/editor/prompt-mention-link";
+import type { PromptMentionLinkResolver } from "@bb/client-core";
 import type {
   SecondaryPanelFixedTab,
   SecondaryPanelRenderableTab,
@@ -275,6 +275,7 @@ import {
   syncTerminalTabsInFixedPanelState,
 } from "@/components/secondary-panel/terminalPanelTabs";
 import { useMountedTerminalIds } from "@/components/thread/terminal/mounted-terminals";
+import { usePendingTerminalIds } from "@/components/thread/terminal/pending-terminals";
 import {
   buildOpenInEditorHandler,
   resolveEnvironmentOpenContext,
@@ -936,6 +937,7 @@ function ThreadDetailViewInternal(
     () => new Map(terminalSessions.map((session) => [session.id, session])),
     [terminalSessions],
   );
+  const pendingTerminalIds = usePendingTerminalIds();
   const syncedOrderedSecondaryFileTabs = useMemo(
     () =>
       loadedTerminalSessions === undefined
@@ -943,9 +945,15 @@ function ThreadDetailViewInternal(
         : buildTerminalSyncedSecondaryFileTabs({
             orderedTabs: orderedSecondaryFileTabs,
             retainedTerminalIds,
+            pendingTerminalIds,
             terminalSessions: loadedTerminalSessions,
           }),
-    [loadedTerminalSessions, orderedSecondaryFileTabs, retainedTerminalIds],
+    [
+      loadedTerminalSessions,
+      orderedSecondaryFileTabs,
+      pendingTerminalIds,
+      retainedTerminalIds,
+    ],
   );
   useEffect(() => {
     if (terminalsListQuery.data === undefined) {
@@ -954,12 +962,14 @@ function ThreadDetailViewInternal(
     updateFixedPanelTabsState((state) =>
       syncTerminalTabsInFixedPanelState({
         retainedTerminalIds,
+        pendingTerminalIds,
         state,
         terminalSessions,
       }),
     );
   }, [
     retainedTerminalIds,
+    pendingTerminalIds,
     terminalSessions,
     terminalsListQuery.data,
     updateFixedPanelTabsState,
@@ -1841,9 +1851,7 @@ function ThreadDetailViewInternal(
     },
   );
   const workspaceStatusError = workStatusQuery.error;
-  const workStatusResponse = workspaceStatusError
-    ? undefined
-    : workStatusQuery.data;
+  const workStatusResponse = workStatusQuery.data;
   const workspaceStatus =
     workStatusResponse?.outcome === "available"
       ? workStatusResponse.workspace
@@ -2875,7 +2883,9 @@ function ThreadDetailViewInternal(
             isPanelOpen={isSecondaryPanelOpen}
             isPanelPersistedOpen={isPersistedSecondaryPanelOpen}
             onAutoFocusHandled={terminals.handleAutoFocusHandled}
+            onCloseStart={() => terminals.close(tab.terminalId)}
             onOpenLink={handleOpenTerminalLink}
+            onRetryStart={() => terminals.retryStart(tab.terminalId)}
             onSelectionAddToChat={handleSelectionAddToChat}
             target={{ kind: "thread", threadId: thread.id }}
             terminalId={tab.terminalId}

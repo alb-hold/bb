@@ -1,4 +1,8 @@
-import { getThread, listNonDeletedChildThreads } from "@bb/db";
+import {
+  getThread,
+  listNonDeletedChildThreads,
+  type DbQueryConnection,
+} from "@bb/db";
 import type { Thread, ThreadEventTurnStatus } from "@bb/domain";
 import type { AppDeps } from "../../types.js";
 import { throwParentThreadInvalid } from "../lib/lifecycle-api-errors.js";
@@ -70,7 +74,7 @@ export function isLiveParentThread(args: IsLiveParentThreadArgs): boolean {
 }
 
 function resolveParentDepth(
-  deps: Pick<AppDeps, "db">,
+  deps: { db: DbQueryConnection },
   args: ResolveParentDepthArgs,
 ): number {
   let depth = 0;
@@ -100,7 +104,7 @@ function resolveParentDepth(
 }
 
 function resolveThreadSubtreeDepth(
-  deps: Pick<AppDeps, "db">,
+  deps: { db: DbQueryConnection },
   args: ResolveThreadSubtreeDepthArgs,
 ): number {
   if (args.visitedThreadIds.has(args.threadId)) {
@@ -139,7 +143,7 @@ export function canThreadSpawnChild(
 }
 
 export function assertValidParentThread(
-  deps: Pick<AppDeps, "db">,
+  deps: { db: DbQueryConnection },
   args: AssertValidParentThreadArgs,
 ): Thread {
   const parentThread = getThread(deps.db, args.parentThreadId);

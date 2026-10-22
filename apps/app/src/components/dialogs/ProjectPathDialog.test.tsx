@@ -64,10 +64,13 @@ describe("ProjectPathDialog machine selection", () => {
 
     const trigger = screen.getByRole("button", { name: "Machine" });
     expect(trigger.textContent).toContain("atum");
-    const folderButton = await screen.findByRole("button", {
-      name: "Choose folder on host_atum",
-    });
-    expect(folderButton.getAttribute("data-allow-create-folder")).toBe("true");
+    expect(
+      (
+        await screen.findByRole("button", {
+          name: "Choose folder on host_atum",
+        })
+      ).getAttribute("data-allow-create-folder"),
+    ).toBe("true");
 
     fireEvent.pointerDown(trigger, { button: 0 });
     expect(

@@ -84,6 +84,7 @@ interface TerminalStartOptions
   attach?: boolean;
   command?: string;
   cols?: string;
+  id?: string;
   rows?: string;
   title?: string;
   workingDirectory?: string;
@@ -105,6 +106,10 @@ interface TerminalOutputOptions extends TerminalJsonOptions {
   lines?: string;
   sinceSeq?: string;
   tailBytes?: string;
+}
+
+interface TerminalScreenOptions extends TerminalJsonOptions {
+  lines?: string;
 }
 
 interface TerminalPipeOptions {
@@ -436,6 +441,10 @@ export function registerTerminalCommands(
       .description("Create a terminal session in exactly one scope")
       .option("--title <title>", "Terminal title")
       .option(
+        "--id <terminal-id>",
+        "Create the terminal with this ID (term_ plus 10 characters); fails if the ID exists",
+      )
+      .option(
         "--command <command>",
         "Command to run instead of an interactive shell",
       )
@@ -456,6 +465,7 @@ export function registerTerminalCommands(
         ...(opts.workingDirectory === undefined
           ? {}
           : { cwd: opts.workingDirectory }),
+        id: opts.id,
         rows: parsePositiveInteger(opts.rows, DEFAULT_ROWS, "--rows"),
         scope: await resolveTerminalCreateScope(opts, getUrl()),
         title: opts.title,
@@ -550,6 +560,32 @@ export function registerTerminalCommands(
         console.log(
           `Resized terminal ${terminalId} to ${session.cols}x${session.rows}`,
         );
+      }),
+    );
+
+  terminal
+    .command("screen <terminalId>")
+    .description("Print the rendered terminal screen")
+    .option(
+      "--lines <n>",
+      "Print the latest N rendered rows, including scrollback",
+    )
+    .option(
+      "--json",
+      "Print machine-readable JSON including cursor and grid size",
+    )
+    .action(
+      action(async (terminalId: string, opts: TerminalScreenOptions) => {
+        const sdk = createCliBbSdk(getUrl());
+        const screen = await sdk.terminals.experimental_screen({
+          terminalId,
+          ...(opts.lines === undefined ? {} : { lines: Number(opts.lines) }),
+        });
+        if (outputJson(opts, screen)) return;
+        process.stdout.write(`${screen.rows.join("\n")}\n`);
+        if (!screen.complete) {
+          process.stdout.write("Screen may be incomplete because earlier terminal output was discarded.\n");
+        }
       }),
     );
 

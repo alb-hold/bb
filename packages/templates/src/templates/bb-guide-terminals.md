@@ -23,6 +23,7 @@ List and create require exactly one explicit scope:
     --working-directory <path>       Initial shell working directory
     --host <id-or-name>                   Alias for --machine
     --title <title>                       Display title
+    --id <terminal-id>                    Use this ID (term_ plus 10 characters); fails if it exists
     --cols <n>                            Initial terminal columns
     --rows <n>                            Initial terminal rows
     --attach                              Attach after creating
@@ -139,6 +140,18 @@ prints the target because it has no app window. The SDK exposes
   output until exit or Ctrl-C. For an exited terminal the output is followed by
   `Terminal <id> exited with code N` on stderr. Once the scrollback is gone,
   output fails with `terminal_output_unavailable` and says why.
+
+  bb terminal screen <terminal-id>
+    --lines <n>                          Print latest rendered rows, up to 500
+    --json                                Include cursor position, grid size, and completeness
+
+  Screen reads replay at most 64 KiB of retained output into disposable
+  server-side terminal renderers. The default returns the visible grid. JSON
+  includes `complete`, true when the retained output fully determines the visible
+  screen. A false value means the retained output does not prove the screen is
+  complete.
+  Selection
+  is client-local and is not available through this command.
 
   bb terminal wait <terminal-id>
     --contains <text>                     Wait for new output containing text

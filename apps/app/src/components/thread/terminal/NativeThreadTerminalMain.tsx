@@ -84,6 +84,8 @@ export function NativeThreadTerminalMain({
           isPanelOpen
           isPanelPersistedOpen
           onOpenLink={onOpenLink}
+          onCloseStart={() => {}}
+          onRetryStart={() => {}}
           target={{ kind: "thread", threadId }}
           terminalId={state.terminalId}
         />

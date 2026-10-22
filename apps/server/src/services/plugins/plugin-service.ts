@@ -1,3 +1,4 @@
+import { rpcResponseTags } from "@get-bb/plugin-sdk/internal/rpc-tags";
 import type {
   PluginRpcDiscoveryQuery,
   PublishedPluginRpcMethod,
@@ -34,18 +35,16 @@ import {
   enforcePluginCliOutputLimit,
   normalizePluginAgentConfiguration,
   normalizeRpcJsonResult,
+  readPluginRpcRefusal,
   RESERVED_AGENT_TOOL_NAMES,
   adoptHttpRouteResponse,
   validatePluginProviderEnvEntries,
   validateRpcValue,
   validateSettingsUpdate,
 } from "@get-bb/plugin-sdk/internal/host-policy";
-import {
-  buildPluginApp,
-  buildPluginHost,
-  createPluginDevLoop,
-} from "@bb/plugin-build";
+import { buildPluginApp, createPluginDevLoop } from "@bb/plugin-build";
 import { getPluginBuildToolchain } from "./build-toolchain.js";
+import { buildMutablePluginHost } from "./mutable-plugin-artifacts.js";
 import {
   marketplacePublisherLabel,
   pluginPublisherLabel,
@@ -408,7 +407,8 @@ export interface PluginService {
     input: unknown,
     caller: ExperimentalPluginRpcCaller,
   ): Promise<
-    { ok: true; result: JsonValue } | { ok: false; error: PluginRpcError }
+    | { ok: true; result: JsonValue }
+    | { ok: false; error: PluginRpcError }
   >;
   httpToken(
     id: string,
@@ -1550,11 +1550,13 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
             },
             buildHost: async () => {
               try {
-                await buildPluginHost(
-                  bundled.rootDir,
-                  deps.appVersion,
-                  await getPluginBuildToolchain(deps),
-                );
+                await buildMutablePluginHost({
+                  dataDir: deps.dataDir,
+                  pluginId: row.id,
+                  rootDir: bundled.rootDir,
+                  bbVersion: deps.appVersion,
+                  toolchain: await getPluginBuildToolchain(deps),
+                });
                 setDevBuildProblem(row.id, "host", null);
                 notifyPluginsChanged();
               } catch (error) {
@@ -2141,18 +2143,36 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
           "input",
           throwRpcBoundaryError,
         );
-        const result = await handler.handler(parsedInput, {
-          experimental_caller: caller,
-        });
+        let result: unknown;
+        try {
+          result = await handler.handler(parsedInput, {
+            experimental_caller: caller,
+          });
+        } catch (error) {
+          const refusal = readPluginRpcRefusal(error);
+          if (refusal === null) throw error;
+          return { ok: false as const, error: refusal };
+        }
         const parsedOutput = await validateRpcValue(
           handler.outputSchema,
           result,
           "output",
           throwRpcBoundaryError,
         );
-        return normalizeRpcJsonResult(parsedOutput, throwRpcBoundaryError);
+        const resultValue = normalizeRpcJsonResult(
+          parsedOutput,
+          throwRpcBoundaryError,
+        );
+        const { invalidated } = rpcResponseTags(
+          handler.declarations,
+          parsedInput,
+          parsedOutput,
+        );
+        if (invalidated.length > 0)
+          deps.hub.notifyPluginChanged(id, invalidated);
+        return { ok: true as const, result: resultValue };
       });
-      if (outcome.ok) return { ok: true, result: outcome.value };
+      if (outcome.ok) return outcome.value;
       if (outcome.cause instanceof PluginRpcBoundaryError) {
         return { ok: false, error: outcome.cause.rpcError };
       }
