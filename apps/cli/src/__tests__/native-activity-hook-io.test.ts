@@ -837,6 +837,132 @@ describe.skipIf(process.platform === "win32")(
       ]);
     }, 30_000);
 
+    it("reclaims a leaked lock directory that holds no pid, instead of waiting for the deadline", async () => {
+      const { commandFor, directory, file, lock } = appendFixture();
+      mkdirSync(lock);
+      await runWhole(
+        commandFor("PermissionRequest"),
+        record("PermissionRequest", { tool_name: "Leaked" }),
+      );
+      expect(new HookAppendReader(file).read().records.map(toolOf)).toEqual([
+        "Leaked",
+      ]);
+      expect(
+        readdirSync(directory).filter(
+          (name) => name.startsWith("hooks.lock") || name.startsWith(".late."),
+        ),
+      ).toEqual([]);
+    }, 30_000);
+
+    it("does not fall back to a directory lock when one ln -s fails while the lock is absent", async () => {
+      const { directory, file } = appendFixture();
+      const shimDir = path.join(directory, "shim");
+      const failedOnce = path.join(directory, "ln-failed-once");
+      const mkdirCalls = path.join(directory, "mkdir-calls");
+      const realOf = (tool: string): string =>
+        spawnSync("sh", ["-c", `command -v ${tool}`])
+          .stdout.toString()
+          .trim();
+      mkdirSync(shimDir);
+      writeFileSync(
+        path.join(shimDir, "ln"),
+        [
+          "#!/bin/sh",
+          `if [ ! -e '${failedOnce}' ]; then : > '${failedOnce}'; exit 1; fi`,
+          `exec ${realOf("ln")} "$@"`,
+          "",
+        ].join("\n"),
+        { mode: 0o755 },
+      );
+      writeFileSync(
+        path.join(shimDir, "mkdir"),
+        [
+          "#!/bin/sh",
+          `printf '%s\\n' "$@" >> '${mkdirCalls}'`,
+          `exec ${realOf("mkdir")} "$@"`,
+          "",
+        ].join("\n"),
+        { mode: 0o755 },
+      );
+      const hook = spawn("sh", ["-c", hookAppendCommand(file)], {
+        env: { ...process.env, PATH: `${shimDir}:${process.env.PATH ?? ""}` },
+        stdio: ["pipe", "ignore", "ignore"],
+      });
+      children.push(hook);
+      const exited = new Promise<void>((resolve) => {
+        hook.once("exit", () => resolve());
+      });
+      hook.stdin.end(record("PermissionRequest", { tool_name: "Raced" }));
+      await exited;
+      expect(existsSync(failedOnce)).toBe(true);
+      expect(existsSync(mkdirCalls)).toBe(false);
+      expect(new HookAppendReader(file).read().records.map(toolOf)).toEqual([
+        "Raced",
+      ]);
+    }, 30_000);
+
+    it("takes and releases the directory lock where symlinks cannot be created, creating it under a private name and renaming it into place", async () => {
+      const { directory, file, lock } = appendFixture();
+      const shimDir = path.join(directory, "shim");
+      const mkdirCalls = path.join(directory, "mkdir-calls");
+      const realMkdir = spawnSync("sh", ["-c", "command -v mkdir"])
+        .stdout.toString()
+        .trim();
+      mkdirSync(shimDir);
+      writeFileSync(path.join(shimDir, "ln"), "#!/bin/sh\nexit 1\n", {
+        mode: 0o755,
+      });
+      writeFileSync(
+        path.join(shimDir, "mkdir"),
+        [
+          "#!/bin/sh",
+          `printf '%s\\n' "$@" >> '${mkdirCalls}'`,
+          `exec ${realMkdir} "$@"`,
+          "",
+        ].join("\n"),
+        { mode: 0o755 },
+      );
+      const hook = spawn("sh", ["-c", hookAppendCommand(file)], {
+        env: { ...process.env, PATH: `${shimDir}:${process.env.PATH ?? ""}` },
+        stdio: ["pipe", "ignore", "ignore"],
+      });
+      children.push(hook);
+      const exited = new Promise<void>((resolve) => {
+        hook.once("exit", () => resolve());
+      });
+      hook.stdin.end(record("PermissionRequest", { tool_name: "NoSymlinks" }));
+      await exited;
+      expect(readFileSync(mkdirCalls, "utf8").trim().split("\n")).toEqual([
+        `${lock}.${hook.pid}`,
+      ]);
+      expect(new HookAppendReader(file).read().records.map(toolOf)).toEqual([
+        "NoSymlinks",
+      ]);
+      expect(
+        readdirSync(directory).filter(
+          (name) => name.startsWith("hooks.lock") || name.startsWith(".late."),
+        ),
+      ).toEqual([]);
+    }, 30_000);
+
+    it("does not reclaim a lock directory whose pid names a live process, and publishes its record late after the deadline", async () => {
+      const { directory, file, lock } = appendFixture();
+      const holder = spawn("sleep", ["30"], { stdio: "ignore" });
+      children.push(holder);
+      mkdirSync(lock);
+      writeFileSync(path.join(lock, "pid"), String(holder.pid));
+      await forcedDeadline(
+        file,
+        record("PermissionRequest", { tool_name: "Held" }),
+      );
+      expect(statSync(file).size).toBe(0);
+      expect(lstatSync(lock).isDirectory()).toBe(true);
+      expect(readFileSync(path.join(lock, "pid"), "utf8")).toBe(
+        String(holder.pid),
+      );
+      expect(lateFiles(directory)).toHaveLength(1);
+    }, 30_000);
+
     const forcedDeadline = async (
       file: string,
       payload: string,
