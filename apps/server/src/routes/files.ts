@@ -20,7 +20,7 @@ import {
   requireDaemonFileContentResult,
   remapDaemonFileRouteError,
 } from "../services/hosts/daemon-file-response.js";
-import { assertRemovalAvoidsProtectedWorkspaces } from "../services/environments/protected-paths.js";
+import { assertPathAvoidsProtectedWorkspaces } from "../services/environments/protected-paths.js";
 import { serveDaemonFileStream } from "../services/hosts/daemon-file-stream.js";
 import { createRawFileHeaders } from "../services/hosts/raw-file-headers.js";
 import {
@@ -341,6 +341,11 @@ export function registerFileRoutes(app: Hono, deps: AppDeps): void {
 
   post(fileRoutes.move, (context, payload) =>
     withHostFileRoute(payload.hostId, async (hostId) => {
+      assertPathAvoidsProtectedWorkspaces(deps, {
+        hostId,
+        path: payload.sourcePath,
+        action: "move",
+      });
       const result = await runHostFileMutationCommand(hostId, {
         type: "host.move_path",
         sourcePath: payload.sourcePath,
@@ -355,9 +360,10 @@ export function registerFileRoutes(app: Hono, deps: AppDeps): void {
 
   post(fileRoutes.remove, (context, payload) =>
     withHostFileRoute(payload.hostId, async (hostId) => {
-      assertRemovalAvoidsProtectedWorkspaces(deps, {
+      assertPathAvoidsProtectedWorkspaces(deps, {
         hostId,
         path: payload.path,
+        action: "remove",
       });
       const result = await runHostFileMutationCommand(hostId, {
         type: "host.remove_path",

@@ -11,16 +11,13 @@ import {
 import { ApiError } from "../../errors.js";
 import type { WorkSessionDeps } from "../../types.js";
 
-export function assertRemovalAvoidsProtectedWorkspaces(
+export function assertPathAvoidsProtectedWorkspaces(
   deps: Pick<WorkSessionDeps, "db">,
-  args: { hostId: string; path: string },
+  args: { hostId: string; path: string; action: "remove" | "move" },
 ): void {
   if (!isAbsoluteHostPath(args.path)) return;
   const target = canonicalizeHostPath(args.path);
-  const environments = listEnvironments(deps.db, {
-    hostId: args.hostId,
-    statuses: ["creating", "provisioning", "ready", "error"],
-  });
+  const environments = listEnvironments(deps.db, { hostId: args.hostId });
   for (const environment of environments) {
     if (environment.path === null || environment.teardownStatus === "removed")
       continue;
@@ -34,12 +31,11 @@ export function assertRemovalAvoidsProtectedWorkspaces(
       const owner = getThread(deps.db, environment.ownerThreadId);
       if (owner !== null && owner.deletedAt === null) threadIds.add(owner.id);
     }
-    if (threadIds.size === 0) continue;
     const ids = [...threadIds];
     throw new ApiError(
       409,
       "workspace_busy",
-      `Refusing to remove ${args.path}: it is or contains the workspace ${workspace} of ${ids.length === 1 ? "thread" : "threads"} ${ids.join(", ")}. bb removes a workspace only through its owner's release.`,
+      `Refusing to ${args.action} ${args.path}: it is or contains the workspace ${workspace}${ids.length === 0 ? " that no thread references any more" : ` of ${ids.length === 1 ? "thread" : "threads"} ${ids.join(", ")}`}. bb removes a workspace only through its owner's release.`,
     );
   }
 }

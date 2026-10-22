@@ -92,6 +92,44 @@ describe("host file routes", () => {
     },
   );
 
+  it("refuses to move a workspace, and one that no thread references any more", async () => {
+    await withTestHarness(async (harness) => {
+      const { host, session } = seedHostSession(harness.deps);
+      seedPrimaryHost(harness.deps, host.id);
+      const { project } = seedProjectWithSource(harness.deps, {
+        hostId: host.id,
+      });
+      seedEnvironment(harness.deps, {
+        hostId: host.id,
+        projectId: project.id,
+        path: "/work/trees/orphan/repo",
+      });
+      const commands: HostDaemonOnlineRpcRequestMessage["command"][] = [];
+      registerHostRpcResponder(harness, {
+        hostId: host.id,
+        sessionId: session.id,
+        handle: (request) => {
+          commands.push(request.command);
+          return { ok: true, result: { ok: true } };
+        },
+      });
+
+      const response = await harness.app.request(
+        ...postJson("/api/v1/files/move", {
+          sourcePath: "/work/trees/orphan/repo",
+          destinationPath: "/elsewhere/repo",
+        }),
+      );
+
+      expect(response.status).toBe(409);
+      expect(await readJson(response)).toMatchObject({
+        code: "workspace_busy",
+        message: expect.stringContaining("no thread references"),
+      });
+      expect(commands).toEqual([]);
+    });
+  });
+
   it("still removes a folder inside a workspace and a folder beside it", async () => {
     await withTestHarness(async (harness) => {
       const { host, session } = seedHostSession(harness.deps);
