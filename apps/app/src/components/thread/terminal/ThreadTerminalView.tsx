@@ -1629,6 +1629,9 @@ export function ThreadTerminalView({
       liveBottomBeforeGridResize =
         activeBuffer !== undefined &&
         activeBuffer.viewportY === activeBuffer.baseY;
+      if (activeBuffer && !liveBottomBeforeGridResize) {
+        viewportLineAnchor?.setLine(activeBuffer.viewportY);
+      }
     };
     const clearLiveViewportBeforeGridResize = () => {
       if (liveBottomResizeClearFrame !== null) {
@@ -1848,9 +1851,8 @@ export function ThreadTerminalView({
           return;
         }
         if (
-          afterGridResize &&
-          (liveBottomBeforeGridResize ||
-            savedViewportAnchor?.distanceFromTail === 0)
+          (afterGridResize && liveBottomBeforeGridResize) ||
+          savedViewportAnchor?.distanceFromTail === 0
         ) {
           terminal.scrollToBottom();
           viewportLineAnchor?.clear();
@@ -2233,7 +2235,7 @@ export function ThreadTerminalView({
                 pipeline: outputPipeline,
                 cols: latestPtyGrid.cols,
                 rows: latestPtyGrid.rows,
-                ...(fitGrid === undefined
+                ...(fitGrid === undefined || savedViewportAnchor === null
                   ? {}
                   : { fitGrid: { cols: fitGrid.cols, rows: fitGrid.rows } }),
                 onGridApplied: updateGridVisibility,
