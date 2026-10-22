@@ -277,23 +277,50 @@ export class HookSpoolReader {
   private drain(records: unknown[]): number {
     let unreadable = 0;
     for (let count = 0; count < MAX_RECORDS_PER_READ; count += 1) {
-      const file = path.join(this.directory, sequenceName(this.next));
-      const content = readRegularFile(file);
-      if (content.kind === "missing") break;
-      this.next += 1;
-      this.gapSince = null;
-      if (content.kind !== "text") {
-        unreadable += 1;
-        continue;
-      }
-      try {
-        records.push(JSON.parse(content.text));
-      } catch {
-        unreadable += 1;
-      }
-      truncateRegularFile(file);
+      const step = this.readNext();
+      if (step.kind === "missing") break;
+      records.push(...step.records);
+      unreadable += step.unreadable + step.settle();
     }
     return unreadable;
+  }
+
+  readNext(): SpoolStep {
+    const sequence = this.next;
+    const file = path.join(this.directory, sequenceName(sequence));
+    const content = readRegularFile(file);
+    if (content.kind === "missing") return { kind: "missing" };
+    this.next += 1;
+    this.gapSince = null;
+    if (content.kind !== "text") {
+      return { kind: "consumed", records: [], settle: () => 0, unreadable: 1 };
+    }
+    const records: unknown[] = [];
+    let unreadable = 0;
+    try {
+      records.push(JSON.parse(content.text));
+    } catch {
+      unreadable = 1;
+    }
+    return {
+      kind: "consumed",
+      records,
+      settle: () => this.settleConsumed(file, sequence, content.identity),
+      unreadable,
+    };
+  }
+
+  private settleConsumed(
+    file: string,
+    sequence: number,
+    identity: FileIdentity,
+  ): number {
+    const outcome = truncateRegularFile(file, identity, false);
+    if (outcome === "replaced") {
+      if (this.next === sequence + 1) this.next = sequence;
+      return 1;
+    }
+    return outcome === "irregular" ? 1 : 0;
   }
 
   private scan(now: number): number {
@@ -361,7 +388,11 @@ export class HookSpoolReader {
     ) {
       return 0;
     }
-    const outcome = truncateRegularFile(path.join(this.directory, name));
+    const outcome = truncateRegularFile(
+      path.join(this.directory, name),
+      null,
+      false,
+    );
     if (outcome === "missing" || outcome === "empty" || outcome === "error") {
       return 0;
     }
@@ -387,10 +418,24 @@ export function reserveSequence(
 }
 
 type RegularRead =
-  | { kind: "text"; text: string }
+  | { kind: "text"; text: string; identity: FileIdentity }
   | { kind: "missing" }
   | { kind: "irregular" }
   | { kind: "error" };
+
+interface FileIdentity {
+  dev: bigint;
+  ino: bigint;
+}
+
+export type SpoolStep =
+  | { kind: "missing" }
+  | {
+      kind: "consumed";
+      records: unknown[];
+      settle(): number;
+      unreadable: number;
+    };
 
 const NO_FOLLOW_NO_BLOCK = constants.O_NONBLOCK | constants.O_NOFOLLOW;
 
@@ -403,8 +448,13 @@ function readRegularFile(file: string): RegularRead {
     return isSymlinkRefusal(error) ? { kind: "irregular" } : { kind: "error" };
   }
   try {
-    if (!fstatSync(descriptor).isFile()) return { kind: "irregular" };
-    return { kind: "text", text: readFileSync(descriptor, "utf8") };
+    const stats = fstatSync(descriptor, { bigint: true });
+    if (!stats.isFile()) return { kind: "irregular" };
+    return {
+      identity: { dev: stats.dev, ino: stats.ino },
+      kind: "text",
+      text: readFileSync(descriptor, "utf8"),
+    };
   } catch {
     return { kind: "error" };
   } finally {
@@ -412,9 +462,20 @@ function readRegularFile(file: string): RegularRead {
   }
 }
 
-type TruncateOutcome = "empty" | "error" | "irregular" | "missing" | "truncated";
+type TruncateOutcome =
+  | "empty"
+  | "error"
+  | "irregular"
+  | "linked"
+  | "missing"
+  | "replaced"
+  | "truncated";
 
-function truncateRegularFile(file: string): TruncateOutcome {
+function truncateRegularFile(
+  file: string,
+  identity: FileIdentity | null,
+  requireSingleLink: boolean,
+): TruncateOutcome {
   let descriptor: number;
   try {
     descriptor = openSync(file, constants.O_WRONLY | NO_FOLLOW_NO_BLOCK);
@@ -423,9 +484,16 @@ function truncateRegularFile(file: string): TruncateOutcome {
     return isSymlinkRefusal(error) || isNoDevice(error) ? "irregular" : "error";
   }
   try {
-    const stats = fstatSync(descriptor);
+    const stats = fstatSync(descriptor, { bigint: true });
     if (!stats.isFile()) return "irregular";
-    if (stats.size === 0) return "empty";
+    if (
+      identity !== null &&
+      (stats.dev !== identity.dev || stats.ino !== identity.ino)
+    ) {
+      return "replaced";
+    }
+    if (requireSingleLink && stats.nlink !== 1n) return "linked";
+    if (stats.size === 0n) return "empty";
     ftruncateSync(descriptor, 0);
     return "truncated";
   } catch {
@@ -449,12 +517,16 @@ function isSymlinkRefusal(error: unknown): boolean {
 
 function lockHolderPid(lock: string, stats: Stats): number | null {
   let text: string;
-  try {
-    text = stats.isSymbolicLink()
-      ? readlinkSync(lock)
-      : readFileSync(path.join(lock, "pid"), "utf8");
-  } catch {
-    return null;
+  if (stats.isSymbolicLink()) {
+    try {
+      text = readlinkSync(lock);
+    } catch {
+      return null;
+    }
+  } else {
+    const content = readRegularFile(path.join(lock, "pid"));
+    if (content.kind !== "text") return null;
+    text = content.text;
   }
   return /^\d+$/u.test(text.trim()) && Number(text) > 0 ? Number(text) : null;
 }
@@ -488,6 +560,13 @@ function isOwnedDirectory(directory: string): boolean {
   }
 }
 
+export interface MainSnapshot {
+  descriptor: number | null;
+  key: string | null;
+  kind: "irregular" | "missing" | "regular";
+  size: number;
+}
+
 export class HookAppendReader {
   private offset = 0;
   private lastScanAt = 0;
@@ -496,7 +575,7 @@ export class HookAppendReader {
   private incompleteCounted = false;
   private brokenLocks = 0;
   private readonly seenLate = new Set<string>();
-  private mainIrregularCounted = false;
+  private mainKey: string | null = null;
   private readonly reportedMarkers = new Set<string>();
 
   constructor(private readonly file: string) {}
@@ -514,73 +593,121 @@ export class HookAppendReader {
     return result;
   }
 
-  private countIrregularMain(): number {
-    if (this.mainIrregularCounted) return 0;
-    this.mainIrregularCounted = true;
-    return 1;
+  takeSnapshot(): MainSnapshot {
+    let descriptor: number;
+    try {
+      descriptor = openSync(this.file, constants.O_RDONLY | NO_FOLLOW_NO_BLOCK);
+    } catch (error) {
+      return isMissing(error)
+        ? { descriptor: null, key: null, kind: "missing", size: 0 }
+        : { descriptor: null, key: "open-error", kind: "irregular", size: 0 };
+    }
+    try {
+      const stats = fstatSync(descriptor, { bigint: true });
+      if (!stats.isFile()) {
+        closeSync(descriptor);
+        return {
+          descriptor: null,
+          key: `irregular:${stats.dev}:${stats.ino}`,
+          kind: "irregular",
+          size: 0,
+        };
+      }
+      return {
+        descriptor,
+        key: `file:${stats.dev}:${stats.ino}:${stats.birthtimeNs}`,
+        kind: "regular",
+        size: Number(stats.size),
+      };
+    } catch {
+      closeSync(descriptor);
+      return { descriptor: null, key: "open-error", kind: "irregular", size: 0 };
+    }
   }
 
-  takeSnapshot(): number {
+  private observeMain(snapshot: MainSnapshot): number {
+    if (snapshot.kind === "missing") return 0;
+    const previous = this.mainKey;
+    this.mainKey = snapshot.key;
+    if (previous === snapshot.key) return 0;
+    if (snapshot.kind === "irregular") return 1;
+    this.offset = 0;
+    this.incompleteSince = null;
+    return previous === null || previous.startsWith("irregular:") || previous === "open-error"
+      ? 0
+      : 1;
+  }
+
+  listLate(): Array<{ name: string; startedAt: number }> {
+    let names: string[];
     try {
-      return statSync(this.file).size;
+      names = readdirSync(path.dirname(this.file));
     } catch {
-      return 0;
+      return [];
     }
+    const fresh: Array<{ name: string; startedAt: number }> = [];
+    for (const name of names.sort()) {
+      const match = LATE_FILE_NAME.exec(name);
+      if (match === null || this.seenLate.has(name)) continue;
+      fresh.push({ name, startedAt: Number(match[1]) });
+    }
+    return fresh;
+  }
+
+  readLateFile(entry: { name: string; startedAt: number }): {
+    lost: number;
+    record: { record: unknown; startedAt: number } | null;
+    settle(): number;
+  } {
+    this.seenLate.add(entry.name);
+    const file = path.join(path.dirname(this.file), entry.name);
+    const content = readRegularFile(file);
+    if (content.kind !== "text") {
+      return { lost: 1, record: null, settle: () => 0 };
+    }
+    let record: { record: unknown; startedAt: number } | null = null;
+    try {
+      record = { record: JSON.parse(content.text), startedAt: entry.startedAt };
+    } catch {
+      record = null;
+    }
+    return {
+      lost: 1,
+      record,
+      settle: () => {
+        const outcome = truncateRegularFile(file, content.identity, true);
+        if (outcome === "replaced") {
+          this.seenLate.delete(entry.name);
+          return 0;
+        }
+        return outcome === "linked" || outcome === "irregular" ? 1 : 0;
+      },
+    };
   }
 
   readLate(): {
     lost: number;
     records: Array<{ record: unknown; startedAt: number }>;
   } {
-    const directory = path.dirname(this.file);
-    let names: string[];
-    try {
-      names = readdirSync(directory);
-    } catch {
-      return { lost: 0, records: [] };
-    }
     const records: Array<{ record: unknown; startedAt: number }> = [];
     let lost = 0;
-    for (const name of names.sort()) {
-      const match = LATE_FILE_NAME.exec(name);
-      if (match === null || this.seenLate.has(name)) continue;
-      this.seenLate.add(name);
-      lost += 1;
-      const file = path.join(directory, name);
-      const content = readRegularFile(file);
-      if (content.kind !== "text") continue;
-      try {
-        records.push({
-          record: JSON.parse(content.text),
-          startedAt: Number(match[1]),
-        });
-      } catch {
-        continue;
-      } finally {
-        truncateRegularFile(file);
-      }
+    for (const entry of this.listLate()) {
+      const step = this.readLateFile(entry);
+      lost += step.lost;
+      if (step.record !== null) records.push(step.record);
+      lost += step.settle();
     }
     return { lost, records };
   }
 
-  readLines(now: number, snapshot: number): HookSpoolRead {
+  readLines(now: number, snapshot: MainSnapshot): HookSpoolRead {
     const records: unknown[] = [];
-    let unreadable = 0;
-    let descriptor: number;
+    let unreadable = this.observeMain(snapshot);
+    const descriptor = snapshot.descriptor;
+    if (descriptor === null) return { records, unreadable };
     try {
-      descriptor = openSync(this.file, constants.O_RDONLY | NO_FOLLOW_NO_BLOCK);
-    } catch (error) {
-      return isMissing(error)
-        ? { records, unreadable }
-        : { records, unreadable: this.countIrregularMain() };
-    }
-    try {
-      const stats = fstatSync(descriptor);
-      if (!stats.isFile()) {
-        return { records, unreadable: this.countIrregularMain() };
-      }
-      const actual = stats.size;
-      const size = Math.min(actual, snapshot);
+      const actual = fstatSync(descriptor).size;
+      const size = Math.min(actual, snapshot.size);
       const length = Math.min(size - this.offset, MAX_APPEND_READ_BYTES);
       if (length <= 0) {
         this.incompleteSince = null;
@@ -592,7 +719,7 @@ export class HookAppendReader {
       const end = text.lastIndexOf(0x0a);
       if (end < 0 && filled >= MAX_APPEND_READ_BYTES) {
         this.offset += filled;
-        return { records, unreadable: 1 };
+        return { records, unreadable: unreadable + 1 };
       }
       const consumed = end + 1;
       this.offset += consumed;
