@@ -5,6 +5,7 @@ import {
 } from "node:child_process";
 import {
   appendFileSync,
+  chmodSync,
   existsSync,
   linkSync,
   lstatSync,
@@ -16,6 +17,7 @@ import {
   rmSync,
   statSync,
   symlinkSync,
+  truncateSync,
   writeFileSync,
 } from "node:fs";
 import { readFile as readFilePromise } from "node:fs/promises";
@@ -1096,7 +1098,7 @@ describe.skipIf(process.platform === "win32")(
       writeFileSync(file, `${record("PermissionRequest", { tool_name: "Aaa" })}\n`);
       expect(reader.read(started).records.map(toolOf)).toEqual(["Aaa"]);
 
-      rmSync(file);
+      renameSync(file, `${file}.kept`);
       spawnSync("mkfifo", [file]);
       expect(reader.read(started + 1).unreadable).toBe(1);
       expect(reader.read(started + 2).unreadable).toBe(0);
@@ -1110,6 +1112,72 @@ describe.skipIf(process.platform === "win32")(
       rmSync(file);
       spawnSync("mkfifo", [file]);
       expect(reader.read(started + 4).unreadable).toBe(1);
+    });
+
+    it.skipIf(process.getuid?.() === 0)(
+      "does not replay the main file when it comes back after a transient open error: the error episode is counted, the original file is not re-read (skipped when running as root, which ignores file modes)",
+      () => {
+        const { file } = appendFixture();
+        const reader = new HookAppendReader(file);
+        const started = Date.now();
+        writeFileSync(
+          file,
+          `${record("PermissionRequest", { tool_name: "Aaa" })}\n`,
+        );
+        expect(reader.read(started).records.map(toolOf)).toEqual(["Aaa"]);
+        chmodSync(file, 0o000);
+        expect(reader.read(started + 1).unreadable).toBe(1);
+        expect(reader.read(started + 2).unreadable).toBe(0);
+        chmodSync(file, 0o600);
+        appendFileSync(
+          file,
+          `${record("PermissionRequest", { tool_name: "Bbb" })}\n`,
+        );
+        const back = reader.read(started + 3);
+        expect(back.records.map(toolOf)).toEqual(["Bbb"]);
+        expect(back.unreadable).toBe(0);
+      },
+    );
+
+    it("does not replay the main file when the original comes back after a FIFO episode: the episode is counted, the original is not re-read", () => {
+      const { file } = appendFixture();
+      const reader = new HookAppendReader(file);
+      const started = Date.now();
+      writeFileSync(file, `${record("PermissionRequest", { tool_name: "Aaa" })}\n`);
+      expect(reader.read(started).records.map(toolOf)).toEqual(["Aaa"]);
+      renameSync(file, `${file}.original`);
+      spawnSync("mkfifo", [file]);
+      expect(reader.read(started + 1).unreadable).toBe(1);
+      expect(reader.read(started + 2).unreadable).toBe(0);
+      rmSync(file);
+      renameSync(`${file}.original`, file);
+      appendFileSync(
+        file,
+        `${record("PermissionRequest", { tool_name: "Bbb" })}\n`,
+      );
+      const back = reader.read(started + 3);
+      expect(back.records.map(toolOf)).toEqual(["Bbb"]);
+      expect(back.unreadable).toBe(0);
+    });
+
+    it("detects a main file that was truncated below the read offset, restarts from 0 and counts it once", () => {
+      const { file } = appendFixture();
+      const reader = new HookAppendReader(file);
+      const started = Date.now();
+      writeFileSync(
+        file,
+        `${record("PermissionRequest", { tool_name: "Aaa" })}\n${record("PermissionRequest", { tool_name: "Bbb" })}\n`,
+      );
+      expect(reader.read(started).records.map(toolOf)).toEqual(["Aaa", "Bbb"]);
+      truncateSync(file, 0);
+      appendFileSync(
+        file,
+        `${record("PermissionRequest", { tool_name: "Ccc" })}\n`,
+      );
+      const shrunk = reader.read(started + 1);
+      expect(shrunk.records.map(toolOf)).toEqual(["Ccc"]);
+      expect(shrunk.unreadable).toBe(1);
+      expect(reader.read(started + 2)).toEqual({ records: [], unreadable: 0 });
     });
 
     it("resets the offset and counts it when the main file is replaced by another regular file", () => {

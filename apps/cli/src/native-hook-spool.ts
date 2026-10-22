@@ -575,7 +575,8 @@ export class HookAppendReader {
   private incompleteCounted = false;
   private brokenLocks = 0;
   private readonly seenLate = new Set<string>();
-  private mainKey: string | null = null;
+  private regularKey: string | null = null;
+  private irregularKey: string | null = null;
   private readonly reportedMarkers = new Set<string>();
 
   constructor(private readonly file: string) {}
@@ -615,7 +616,7 @@ export class HookAppendReader {
       }
       return {
         descriptor,
-        key: `file:${stats.dev}:${stats.ino}:${stats.birthtimeNs}`,
+        key: `file:${stats.dev}:${stats.ino}`,
         kind: "regular",
         size: Number(stats.size),
       };
@@ -627,15 +628,21 @@ export class HookAppendReader {
 
   private observeMain(snapshot: MainSnapshot): number {
     if (snapshot.kind === "missing") return 0;
-    const previous = this.mainKey;
-    this.mainKey = snapshot.key;
-    if (previous === snapshot.key) return 0;
-    if (snapshot.kind === "irregular") return 1;
+    if (snapshot.kind === "irregular") {
+      const sameEpisode = this.irregularKey === snapshot.key;
+      this.irregularKey = snapshot.key;
+      return sameEpisode ? 0 : 1;
+    }
+    const comingFromIrregular = this.irregularKey !== null;
+    this.irregularKey = null;
+    const changedKey =
+      this.regularKey !== null && this.regularKey !== snapshot.key;
+    const shrunk = snapshot.size < this.offset;
+    this.regularKey = snapshot.key;
+    if (!changedKey && !shrunk) return 0;
     this.offset = 0;
     this.incompleteSince = null;
-    return previous === null || previous.startsWith("irregular:") || previous === "open-error"
-      ? 0
-      : 1;
+    return shrunk || !comingFromIrregular ? 1 : 0;
   }
 
   listLate(): Array<{ name: string; startedAt: number }> {
