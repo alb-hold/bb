@@ -3,11 +3,7 @@ import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import {
-  describeHolderScan,
-  scanWorktreeHolders,
-  stopOwnSetupProcesses,
-} from "./holders.js";
+import { describeHolderScan, scanWorktreeHolders } from "./holders.js";
 
 const children: ReturnType<typeof spawn>[] = [];
 const roots: string[] = [];
@@ -94,35 +90,6 @@ describe("scanWorktreeHolders", () => {
       status: "held",
       holders: [{ pid: child.pid, through: "open file" }],
     });
-  });
-
-  it("stops only the programs this process started, and leaves them signalled and the folder usable", async ({
-    skip,
-  }) => {
-    skip(process.platform === "win32", "no holder scan on Windows");
-    const directory = await makeDirectory();
-    const child = hold("setTimeout(() => {}, 300_000)", directory);
-    await expect
-      .poll(async () => (await scanWorktreeHolders(directory)).status, {
-        timeout: 10_000,
-      })
-      .toBe("held");
-
-    await stopOwnSetupProcesses(directory, 500);
-
-    await expect
-      .poll(
-        () => {
-          try {
-            process.kill(child.pid ?? 0, 0);
-            return true;
-          } catch {
-            return false;
-          }
-        },
-        { timeout: 10_000 },
-      )
-      .toBe(false);
   });
 
   it("is inconclusive, not clear, where the platform cannot be inspected", async () => {

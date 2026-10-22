@@ -1,8 +1,4 @@
-import {
-  describeHolderScan,
-  scanWorktreeHolders,
-  stopOwnSetupProcesses,
-} from "./holders.js";
+import { describeHolderScan, scanWorktreeHolders } from "./holders.js";
 import {
   findWorktreeEntry,
   parseWorktreeListPorcelain,
@@ -885,9 +881,6 @@ export async function removeWorktree(
         async () => {
           await assertWorktreeRemovable(identity, args);
           throwIfProvisionAborted(args.signal);
-          if (args.createdBy !== undefined) {
-            await stopOwnSetupProcesses(identity.path);
-          }
           throwIfProvisionAborted(args.signal);
           await assertWorktreeRemovable(identity, args);
           if (args.createdBy !== undefined) {

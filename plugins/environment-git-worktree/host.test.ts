@@ -722,7 +722,7 @@ describe("worktree host entry", () => {
     await harness.experimental_dispose();
   });
 
-  it("leaves teardown to core, defers while a program runs in the workspace without signalling it, and prunes the path-key parent", async ({
+  it("leaves teardown to core, defers while a program runs in the workspace without signalling it, and keeps the workspace for its owner", async ({
     skip,
   }) => {
     skip(
@@ -778,11 +778,13 @@ describe("worktree host entry", () => {
       message: expect.stringContaining("in use by"),
     });
     expect(stillRunning).toBe(true);
-    expect(removed).toEqual({ status: "removed" });
+    expect(removed).toMatchObject({
+      status: "retained",
+      message: expect.stringContaining("owner's release"),
+    });
     expect(progressText(harness)).not.toContain("tearing-down");
     expect(existsSync(join(root, "teardown.marker"))).toBe(false);
-    expect(existsSync(created.path)).toBe(false);
-    expect(await readdir(join(dataDir, "worktrees"))).toEqual([]);
+    expect(existsSync(created.path)).toBe(true);
     await harness.experimental_dispose();
   });
 });
@@ -889,29 +891,19 @@ async function expectWorktreeIntact(worktree: ManagedWorktree): Promise<void> {
   expect(isPidAlive(worktree.lingering.pid ?? 0)).toBe(true);
 }
 
-async function expectWorktreeRemoved(worktree: ManagedWorktree): Promise<void> {
-  expect(existsSync(worktree.path)).toBe(false);
-  expect(existsSync(worktree.completionPath)).toBe(false);
-  expect(
-    existsSync(join(worktree.dataDir, "worktrees", worktree.pathKey)),
-  ).toBe(false);
-  expect(await registeredWorktrees(worktree.sourcePath)).not.toContain(
-    join(
-      await realpath(worktree.dataDir),
-      "worktrees",
-      worktree.pathKey,
-      basename(worktree.path),
-    ),
+async function expectKeptForRelease(
+  worktree: ManagedWorktree,
+  result: Awaited<ReturnType<typeof removeFrom>>,
+): Promise<void> {
+  expect(result).toMatchObject({
+    status: "retained",
+    message: expect.stringContaining("owner's release"),
+  });
+  expect(existsSync(worktree.path)).toBe(true);
+  expect(existsSync(worktree.completionPath)).toBe(true);
+  expect(await registeredWorktrees(worktree.sourcePath)).toContain(
+    await realpath(worktree.path),
   );
-  expect(
-    await git(
-      worktree.sourcePath,
-      "show-ref",
-      "--verify",
-      `refs/heads/${worktree.branchName}`,
-    ),
-  ).not.toBe("");
-  expect(isPidAlive(worktree.lingering.pid ?? 0)).toBe(false);
 }
 
 function removeFrom(
@@ -1084,7 +1076,7 @@ describe.skipIf(process.platform === "win32")(
       },
     );
 
-    it("removes a clean published worktree with ignored dependency files", async () => {
+    it("keeps a clean published worktree with ignored dependency files for its owner", async () => {
       const worktree = await createManagedWorktree({
         prepareSource: async (sourcePath) => {
           await writeFile(join(sourcePath, ".gitignore"), "node_modules/\n");
@@ -1098,14 +1090,13 @@ describe.skipIf(process.platform === "win32")(
         });
         await writeFile(join(worktree.path, "node_modules", "pkg", "i.js"), "");
         await stopLingering(worktree);
-        expect(await removeFrom(worktree)).toEqual({ status: "removed" });
-        await expectWorktreeRemoved(worktree);
+        await expectKeptForRelease(worktree, await removeFrom(worktree));
       } finally {
         await worktree.harness.experimental_dispose();
       }
     });
 
-    it("removes a worktree with no upstream whose HEAD is reachable from another remote branch", async () => {
+    it("keeps a worktree with no upstream whose HEAD is reachable from another remote branch for its owner", async () => {
       const worktree = await createManagedWorktree();
       try {
         await commitFile(worktree.path, "shared.txt");
@@ -1121,20 +1112,18 @@ describe.skipIf(process.platform === "win32")(
           ).trim(),
         ).toBe("");
         await stopLingering(worktree);
-        expect(await removeFrom(worktree)).toEqual({ status: "removed" });
-        await expectWorktreeRemoved(worktree);
+        await expectKeptForRelease(worktree, await removeFrom(worktree));
       } finally {
         await worktree.harness.experimental_dispose();
       }
     });
 
-    it("removes a worktree detached at a published commit", async () => {
+    it("keeps a worktree detached at a published commit for its owner", async () => {
       const worktree = await createManagedWorktree();
       try {
         await git(worktree.path, "checkout", "--detach", "origin/main");
         await stopLingering(worktree);
-        expect(await removeFrom(worktree)).toEqual({ status: "removed" });
-        await expectWorktreeRemoved(worktree);
+        await expectKeptForRelease(worktree, await removeFrom(worktree));
       } finally {
         await worktree.harness.experimental_dispose();
       }
@@ -1361,7 +1350,10 @@ setTimeout(() => {}, 300_000);`,
         });
         expect(isPidAlive(worktree.lingering.pid ?? 0)).toBe(true);
         await stopLingering(worktree);
-        expect(await inspect()).toEqual({ status: "removable" });
+        expect(await inspect()).toMatchObject({
+          status: "retained",
+          message: expect.stringContaining("owner's release"),
+        });
         expect(existsSync(worktree.path)).toBe(true);
         await writeFile(join(worktree.path, "notes.txt"), "draft\n");
         expect(await inspect()).toMatchObject({
@@ -1375,7 +1367,7 @@ setTimeout(() => {}, 300_000);`,
       }
     });
 
-    it("reports a Git refusal as a failure, with the worktree and marker intact", async () => {
+    it("keeps a worktree with submodules for its owner, with the worktree and marker intact", async () => {
       const worktree = await createManagedWorktree({
         pathKey: "thr_submodule",
         prepareSource: async (sourcePath) => {
@@ -1409,19 +1401,8 @@ setTimeout(() => {}, 300_000);`,
         expect(await git(worktree.path, "status", "--porcelain")).toBe("");
         await stopLingering(worktree);
 
-        const result = await removeFrom(worktree);
-
-        expect(result.status).toBe("failed");
-        const message = result.status === "failed" ? result.message : "";
-        expect(message).toContain(`Kept ${worktree.path}`);
-        expect(message).toContain("Git declined to remove it");
-        expect(message).toContain("submodules");
+        await expectKeptForRelease(worktree, await removeFrom(worktree));
         expect(existsSync(join(worktree.path, "README.md"))).toBe(true);
-        expect(existsSync(worktree.completionPath)).toBe(true);
-        expect(await registeredWorktrees(worktree.sourcePath)).toContain(
-          await realpath(worktree.path),
-        );
-        expect(isPidAlive(worktree.lingering.pid ?? 0)).toBe(false);
       } finally {
         await worktree.harness.experimental_dispose();
       }

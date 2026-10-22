@@ -158,16 +158,17 @@ removal, then unarchive it to restore the workspace, or recover the path
 yourself. A removal that failed before bb touched anything is undone when the
 thread is unarchived.
 
-Otherwise bb looks for programs that use the worktree: any process of yours
-whose working directory is inside it or that holds a file open inside it.
-bb never signals those programs, except that a create that failed stops the
-processes its own setup left in the worktree it just made. While one is running, or when bb cannot tell
-(for example on Windows, or when a process cannot be inspected), the removal is
-kept and retried later, and the message names the program so its owner can
-finish and close it. A scan is a snapshot: a program that opens a file after
-the last check and before Git deletes the folder is not prevented from losing
-that write. bb checks again, then `git worktree remove` runs without `--force`. If Git declines, the worktree is
-kept. bb never uses `--force`. A create that finds a branch still checked out by
+Otherwise bb keeps the worktree. It removes a worktree only after the owner of
+the work has released it, and bb cannot yet verify a release, so for now it does
+not delete a worktree because a check came back clean. It also looks for programs
+that use the worktree: any process of yours whose working directory is inside it,
+or that holds a file open inside it. bb never signals those programs. While one
+is running, or when bb cannot tell (for example on Windows, or when a process
+cannot be inspected), the worktree is kept and the message names the program so
+its owner can finish and close it. A scan is a snapshot: a program that opens a
+file after the last check is not excluded. When bb does remove the worktree
+of a create that failed, it runs `git worktree remove` without `--force`, and bb
+never uses `--force`. A create that finds a branch still checked out by
 an earlier workspace leaves it alone and says where it is; the owning cleanup
 removes such a workspace, never the new create. A create that fails after bb made the worktree
 removes it only while it holds nothing but what bb put there: HEAD is still the

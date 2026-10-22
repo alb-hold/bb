@@ -314,6 +314,9 @@ export async function findPreservationReasons(
       "has commits that are not reachable from any remote-tracking branch",
     );
   }
+  reasons.push(
+    "needs its owner's release before bb removes it, and bb cannot verify a release yet",
+  );
   const holderReason = describeHolderScan(
     await scanWorktreeHolders(identity.path),
   );
