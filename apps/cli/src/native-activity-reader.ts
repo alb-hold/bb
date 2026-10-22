@@ -78,7 +78,7 @@ export class NativeActivityReader {
   private readonly adoptionAttempts = new Map<string, number>();
   private readonly knownSessions = new Set<string>();
   private awaitingBinding: boolean;
-  private bindingHeld: Array<{ at: number; record: unknown }> = [];
+  private bindingHeld: unknown[] = [];
   private bindingHeldDropped = 0;
   private historyIncomplete = false;
   private heldForeign: Array<{
@@ -137,10 +137,6 @@ export class NativeActivityReader {
   sessionDiscovered(sessionId: string): void {
     this.awaitingBinding = false;
     this.sessionId = sessionId;
-    if (this.cli.activity?.hooks?.sessionIdField !== undefined) {
-      this.unconfirmedTranscriptOffset = this.currentTranscriptSize();
-      this.unconfirmedHookBoundaryEstablished = false;
-    }
   }
 
   suspend(): void {
@@ -347,8 +343,7 @@ export class NativeActivityReader {
   }
 
   private holdUntilBound(records: unknown[]): void {
-    const now = Date.now();
-    for (const record of records) this.bindingHeld.push({ at: now, record });
+    this.bindingHeld.push(...records);
     const excess = this.bindingHeld.length - MAX_HELD_FOREIGN_RECORDS;
     if (excess > 0) {
       this.bindingHeld.splice(0, excess);
@@ -360,19 +355,15 @@ export class NativeActivityReader {
     if (this.bindingHeld.length === 0 && this.bindingHeldDropped === 0) {
       return [];
     }
-    const now = Date.now();
-    const fresh = this.bindingHeld.filter(
-      (held) => now - held.at < HELD_FOREIGN_RECORD_TTL_MS,
-    );
-    const dropped =
-      this.bindingHeldDropped + (this.bindingHeld.length - fresh.length);
+    const released = this.bindingHeld;
+    const dropped = this.bindingHeldDropped;
     this.bindingHeld = [];
     this.bindingHeldDropped = 0;
     if (dropped > 0) {
       this.historyIncomplete = true;
       this.onUnconfirmedHookIdentity?.("held-overflow", dropped);
     }
-    return fresh.map((held) => held.record);
+    return released;
   }
 
   private holdForeignRecord(record: unknown, sessionId: string): void {
