@@ -11,6 +11,7 @@ import {
   listTerminalSessions,
   pruneRetainedTerminalOutput,
   TERMINAL_RETAINED_OUTPUT_BYTES,
+  updateTerminalSession,
 } from "@bb/db";
 import { createDaemonSocketMessageQueue } from "../../ws/daemon-protocol.js";
 import { createTerminalGridMarker } from "@bb/domain";
@@ -530,7 +531,7 @@ describe("terminal output retained from the data plane", () => {
     fixture.child.shutdown();
   }, 15_000);
 
-  it("keeps exit expiry when replay aborts after the exit flush", async () => {
+  it("keeps exit expiry when replay yields across the exit flush", async () => {
     const fixture = await setup();
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     const chunks = replayChunks();
@@ -711,19 +712,46 @@ describe("terminal output retained from the data plane", () => {
     }
   }, 15_000);
 
-  it("does not retain replay chunks after a replacement daemon session takes ownership", async () => {
+  it("fails the pending attach and discards replay output after owner replacement", async () => {
     const fixture = await setup();
+    const replayInfo = vi.spyOn(fixture.harness.deps.logger, "info");
     const replacement = seedSession(fixture.harness.deps, fixture.host.id, {
       instanceId: "replacement-instance",
     });
     const chunks = replayChunks();
+    const pendingAttaches = Reflect.get(fixture.terminalSessions, "pendingAttaches");
+    if (
+      typeof pendingAttaches !== "object" ||
+      pendingAttaches === null ||
+      !("claim" in pendingAttaches) ||
+      typeof pendingAttaches.claim !== "function" ||
+      !("settle" in pendingAttaches) ||
+      typeof pendingAttaches.settle !== "function"
+    ) {
+      throw new Error("Terminal pending attach registry is unavailable");
+    }
+    const pendingAttachRegistry = pendingAttaches as {
+      claim(key: Record<string, unknown>): { promise: Promise<unknown> };
+      settle(key: string, result: unknown): boolean;
+    };
+    const requestId = "replaced-owner-replay";
+    const rpcKey = `${fixture.session.id}\0${fixture.terminal.id}\0${requestId}`;
+    const attachSocket = new FakeSocket();
+    const attachSettlement = vi.spyOn(pendingAttachRegistry, "settle");
+    const pendingAttach = pendingAttachRegistry.claim({
+      daemonSessionId: fixture.session.id,
+      requestId,
+      rpcKey,
+      socket: attachSocket,
+      terminalId: fixture.terminal.id,
+    }).promise.catch((error: unknown) => error);
     try {
       const replay = fixture.terminalSessions.handleDaemonTerminalMessage({
         hostId: fixture.host.id,
         sessionId: fixture.session.id,
         message: {
           type: "terminal.replay",
-          requestId: "replaced-owner-replay",
+          requestId,
           terminalId: fixture.terminal.id,
           replayStartSeq: 0,
           nextSeq: chunks.length,
@@ -731,14 +759,24 @@ describe("terminal output retained from the data plane", () => {
         },
       });
       await new Promise<void>((resolve) => setImmediate(resolve));
-      fixture.db.$client
-        .prepare("UPDATE terminal_sessions SET daemon_session_id = ? WHERE id = ?")
-        .run(replacement.id, fixture.terminal.id);
-      await Promise.race([
-        replay,
+      updateTerminalSession(fixture.db, {
+        scope: { kind: "terminal", terminalId: fixture.terminal.id },
+        update: { kind: "reconnect", daemonSessionId: replacement.id },
+      });
+      const [attachError] = await Promise.race([
+        Promise.all([pendingAttach, replay]),
         delay(5_000).then(() => {
           throw new Error("replacement-owner replay did not settle");
         }),
+      ]);
+
+      expect(attachError).toMatchObject({
+        status: 409,
+        body: { code: "terminal_replaced" },
+      });
+      expect(attachSettlement).not.toHaveBeenCalled();
+      expect(attachSocket.sent).toEqual([
+        expect.stringContaining('"code":"terminal_replaced"'),
       ]);
 
       expect(
@@ -752,6 +790,17 @@ describe("terminal output retained from the data plane", () => {
         status: "running",
         daemonSessionId: replacement.id,
       });
+      expect(
+        replayInfo.mock.calls.some(
+          ([, message]) => message === "Terminal replay attributed",
+        ),
+      ).toBe(false);
+      const discard = replayInfo.mock.calls.find(
+        ([, message]) => message === "Terminal replay discarded after ownership change",
+      );
+      expect(discard).toBeDefined();
+      expect(discard?.[0]).not.toHaveProperty("retainedWriteBytes");
+      expect(discard?.[0]).not.toHaveProperty("retainedWriteChunks");
     } finally {
       fixture.child.shutdown();
     }

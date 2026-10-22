@@ -3233,6 +3233,36 @@ export class TerminalSessionLifecycle {
     const latest = current
       ? getTerminalById(this.options.db, current.id)
       : null;
+    const replacement =
+      current !== null &&
+      (latest === null ||
+        latest.hostId !== current.hostId ||
+        (latest.daemonSessionId !== null &&
+          latest.daemonSessionId !== args.sessionId) ||
+        this.outputSequenceRebase.baseFor(sourceMessage.terminalId) !==
+          replayOffset);
+    const rpcKey = terminalResponseRpcKey(args.sessionId, sourceMessage);
+    if (replacement) {
+      const error = new ApiError(
+        409,
+        "terminal_replaced",
+        "Terminal session was replaced while replaying output",
+      );
+      this.pendingAttaches.fail(rpcKey, error);
+      this.pendingOutputReads.fail(rpcKey, error);
+      this.pendingCatchUps.fail(rpcKey, error);
+      this.options.logger.info(
+        {
+          daemonSessionId: args.sessionId,
+          hostId: args.hostId,
+          processId: process.pid,
+          requestId: sourceMessage.requestId,
+          terminalId: sourceMessage.terminalId,
+        },
+        "Terminal replay discarded after ownership change",
+      );
+      return;
+    }
     const sameOwner =
       current === null ||
       (latest !== null &&
@@ -3278,29 +3308,30 @@ export class TerminalSessionLifecycle {
       }
     }
     const message = { ...replayHeader, chunks: rebasedChunks };
-    const rpcKey = terminalResponseRpcKey(args.sessionId, sourceMessage);
     const callers = [
       this.pendingAttaches.settle(rpcKey, message) ? "terminal-attach" : null,
       this.pendingOutputReads.settle(rpcKey, message) ? "output-read" : null,
       this.pendingCatchUps.settle(rpcKey, message) ? "catch-up" : null,
     ].filter((caller): caller is string => caller !== null);
-    this.options.logger.info(
-      {
-        callers: callers.length > 0 ? callers : ["unmatched"],
-        daemonSessionId: args.sessionId,
-        hostId: args.hostId,
-        processId: process.pid,
-        replayBytes,
-        replayChunks: sourceChunks.length,
-        retainedWriteBytes: retainedTailBytes,
-        retainedWriteChunks: retainedTail.length,
-        maxRetainedWriteBatchBytes: retainedTailBytes,
-        maxRetainedWriteBatchChunks: retainedTail.length,
-        requestId: sourceMessage.requestId,
-        terminalId: sourceMessage.terminalId,
-      },
-      "Terminal replay attributed",
-    );
+    if (current && sameOwner && retainedTail.length > 0) {
+      this.options.logger.info(
+        {
+          callers: callers.length > 0 ? callers : ["unmatched"],
+          daemonSessionId: args.sessionId,
+          hostId: args.hostId,
+          processId: process.pid,
+          replayBytes,
+          replayChunks: sourceChunks.length,
+          retainedWriteBytes: retainedTailBytes,
+          retainedWriteChunks: retainedTail.length,
+          maxRetainedWriteBatchBytes: retainedTailBytes,
+          maxRetainedWriteBatchChunks: retainedTail.length,
+          requestId: sourceMessage.requestId,
+          terminalId: sourceMessage.terminalId,
+        },
+        "Terminal replay attributed",
+      );
+    }
   }
 
   private finalizeTerminalExit(args: HandleDaemonTerminalMessageArgs): void {
