@@ -498,6 +498,90 @@ describe("ThreadTerminalView terminal focus boundary", () => {
     );
   });
 
+  it("keeps a live scrolled-up line through a shared resize without stored viewport state", async () => {
+    prepareMobileTerminal();
+    const openTerminal = Terminal.prototype.open;
+    let mountedTerminal: Terminal | null = null;
+    vi.spyOn(Terminal.prototype, "open").mockImplementation(function (
+      this: Terminal,
+      element: HTMLElement,
+    ) {
+      mountedTerminal = this;
+      openTerminal.call(this, element);
+    });
+    const getTerminal = () => {
+      if (!mountedTerminal) throw new Error("terminal was not mounted");
+      return mountedTerminal;
+    };
+    expect(
+      sessionStorage.getItem("bb:terminal-viewport:term_mobile_paste"),
+    ).toBeNull();
+    const session = renderMobileTerminal();
+    await waitForReadinessCondition(
+      () => expect(testState.sockets).toHaveLength(1),
+      "terminal socket was not created within 5000 ms",
+    );
+    const socket = testState.sockets[0];
+    if (!socket) throw new Error("terminal socket was not created");
+    socket.receive({
+      type: "attached",
+      session,
+      replayStartSeq: 0,
+      nextSeq: 1,
+    });
+    const output = Array.from(
+      { length: 300 },
+      (_, index) => `line ${String(index + 1).padStart(5, "0")}`,
+    ).join("\r\n");
+    socket.receive({
+      type: "output",
+      chunk: { seq: 0, dataBase64: btoa(output) },
+    });
+    await waitForReadinessCondition(
+      () =>
+        expect(testState.socketMessages.map((message) => JSON.parse(message)))
+          .toContainEqual({ type: "ack", nextSeq: 1 }),
+      "replay output was not acknowledged within 5000 ms",
+    );
+    const terminal = getTerminal();
+    terminal.scrollLines(-1);
+    expect(
+      terminal.buffer.active.viewportY,
+      "terminal did not scroll above the bottom before shared resize",
+    ).toBeLessThan(terminal.buffer.active.baseY);
+    const topLine = terminal.buffer.active
+      .getLine(terminal.buffer.active.viewportY)
+      ?.translateToString(true);
+    expect(topLine).toMatch(/^line \d{5}$/);
+    expect(
+      sessionStorage.getItem("bb:terminal-viewport:term_mobile_paste"),
+    ).toBeNull();
+    socket.receive({
+      type: "session-updated",
+      session: { ...session, cols: 38, rows: 5 },
+    });
+    await waitForReadinessCondition(
+      () => {
+        expect(terminal.cols).toBe(38);
+        expect(terminal.rows).toBe(5);
+      },
+      "shared PTY grid resize was not applied within 5000 ms",
+    );
+    await waitForReadinessCondition(
+      () => {
+        expect(terminal.buffer.active.viewportY).toBeLessThan(
+          terminal.buffer.active.baseY,
+        );
+        expect(
+          terminal.buffer.active
+            .getLine(terminal.buffer.active.viewportY)
+            ?.translateToString(true),
+        ).toBe(topLine);
+      },
+      "shared resize moved the live scrolled-up line",
+    );
+  });
+
   it("restores a reloaded bottom-following client after a terminal resize", async () => {
     prepareMobileTerminal();
     let fitRows = 12;
