@@ -505,6 +505,80 @@ describe("ThreadTerminalView terminal focus boundary", () => {
     );
   });
 
+  it("settles a reloaded bottom-following client back to the bottom", async () => {
+    prepareMobileTerminal();
+    let fitRows = 12;
+    vi.spyOn(FitAddon.prototype, "proposeDimensions").mockImplementation(
+      () => ({ cols: 40, rows: fitRows }),
+    );
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+      queueMicrotask(() => callback(0));
+      return 1;
+    });
+    vi.stubGlobal("cancelAnimationFrame", vi.fn());
+    let mountedTerminal: Terminal | null = null;
+    const openTerminal = Terminal.prototype.open;
+    vi.spyOn(Terminal.prototype, "open").mockImplementation(function (
+      this: Terminal,
+      element: HTMLElement,
+    ) {
+      mountedTerminal = this;
+      openTerminal.call(this, element);
+    });
+    const getTerminal = () => {
+      if (!mountedTerminal) throw new Error("terminal was not mounted");
+      return mountedTerminal;
+    };
+    sessionStorage.setItem(
+      "bb:terminal-viewport:term_mobile_paste",
+      JSON.stringify({
+        distanceFromTail: 0,
+        lineOffset: 100,
+        outputSequence: 0,
+      }),
+    );
+    const session = renderMobileTerminal();
+    await waitForReadinessCondition(
+      () => expect(testState.sockets).toHaveLength(1),
+      "terminal socket was not created within 5000 ms",
+    );
+    const socket = testState.sockets[0];
+    if (!socket) throw new Error("terminal socket was not created");
+    socket.receive({
+      type: "attached",
+      session,
+      replayStartSeq: 0,
+      nextSeq: 1,
+    });
+    const output = Array.from(
+      { length: 500 },
+      (_, index) => `line ${String(index + 1).padStart(5, "0")}`,
+    ).join("\r\n");
+    socket.receive({
+      type: "output",
+      chunk: { seq: 0, dataBase64: btoa(output) },
+    });
+    await waitForReadinessCondition(
+      () =>
+        expect(testState.socketMessages.map((message) => JSON.parse(message)))
+          .toContainEqual({ type: "ack", nextSeq: 1 }),
+      "bottom-follow replay was not acknowledged within 5000 ms",
+    );
+    fitRows = 11;
+    act(() => getTerminal().resize(40, fitRows));
+    await waitForReadinessCondition(
+      () => expect(getTerminal().rows).toBe(11),
+      "settled terminal grid resize was not applied within 5000 ms",
+    );
+    await waitForReadinessCondition(
+      () =>
+        expect(getTerminal().buffer.active.viewportY).toBe(
+          getTerminal().buffer.active.baseY,
+        ),
+      "reloaded bottom-following client did not settle at the bottom",
+    );
+  });
+
   it("keeps a live bottom-following client at the bottom after typed output and a shared resize", async () => {
     prepareMobileTerminal();
     let fitCols = 40;
