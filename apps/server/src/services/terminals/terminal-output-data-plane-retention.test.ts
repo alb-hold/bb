@@ -91,6 +91,13 @@ function outputChunks(): Array<{ seq: number; dataBase64: string }> {
   }));
 }
 
+function replayChunks(
+  count = 1_024,
+): Array<{ seq: number; dataBase64: string }> {
+  const dataBase64 = Buffer.alloc(1_024, "r").toString("base64");
+  return Array.from({ length: count }, (_, seq) => ({ seq, dataBase64 }));
+}
+
 function textFrom(chunks: Array<{ dataBase64: string }>): string {
   return Buffer.concat(
     chunks.map((chunk) => Buffer.from(chunk.dataBase64, "base64")),
@@ -172,6 +179,7 @@ async function setup(args: { holdOutputBatches?: boolean } = {}) {
     hub: harness.hub,
     sendMain,
     session,
+    thread,
     terminal,
     terminalSessions: harness.deps.terminalSessions,
     releaseOutputBatches() {
@@ -184,6 +192,205 @@ async function setup(args: { holdOutputBatches?: boolean } = {}) {
 }
 
 describe("terminal output retained from the data plane", () => {
+  it("flushes output and waits for replay before shutdown without logging it as lost", async () => {
+    const fixture = await setup();
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const errorLog = vi.spyOn(fixture.harness.deps.logger, "error");
+    let replaySettled = false;
+    const chunks = replayChunks();
+    try {
+      const replay = Promise.resolve(
+        fixture.terminalSessions.handleDaemonTerminalMessage({
+          hostId: fixture.host.id,
+          sessionId: fixture.session.id,
+          message: {
+            type: "terminal.replay",
+            requestId: "shutdown-during-replay",
+            terminalId: fixture.terminal.id,
+            replayStartSeq: 0,
+            nextSeq: chunks.length,
+            chunks,
+          },
+        }),
+      ).finally(() => {
+        replaySettled = true;
+      });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(replaySettled).toBe(false);
+      fixture.terminalSessions.recordDirectTerminalOutputBatch({
+        daemonSessionId: fixture.session.id,
+        terminalId: fixture.terminal.id,
+        chunks: [
+          {
+            seq: 5_000,
+            dataBase64: Buffer.from("during shutdown").toString("base64"),
+          },
+        ],
+      });
+
+      await fixture.terminalSessions.flushRetainedOutputBeforeClose();
+      expect(replaySettled).toBe(true);
+      await replay;
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      expect(
+        getRetainedTerminalOutput(fixture.db, {
+          hostId: fixture.host.id,
+          terminalSessionId: fixture.terminal.id,
+          now: Date.now(),
+        })?.map(({ seq }) => seq),
+      ).toContain(5_000);
+      expect(
+        errorLog.mock.calls.some(([, message]) =>
+          String(message).includes("Lost retained terminal output at shutdown"),
+        ),
+      ).toBe(false);
+    } finally {
+      vi.useRealTimers();
+      fixture.child.shutdown();
+    }
+  }, 15_000);
+
+  it("keeps exit expiry when replay aborts after the exit flush", async () => {
+    const fixture = await setup();
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const chunks = replayChunks();
+    try {
+      const replay = fixture.terminalSessions.handleDaemonTerminalMessage({
+        hostId: fixture.host.id,
+        sessionId: fixture.session.id,
+        message: {
+          type: "terminal.replay",
+          requestId: "exit-during-replay",
+          terminalId: fixture.terminal.id,
+          replayStartSeq: 0,
+          nextSeq: chunks.length,
+          chunks,
+        },
+      });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      fixture.terminalSessions.recordDirectTerminalOutputBatch({
+        daemonSessionId: fixture.session.id,
+        terminalId: fixture.terminal.id,
+        chunks: [
+          {
+            seq: 5_000,
+            dataBase64: Buffer.from("before exit").toString("base64"),
+          },
+        ],
+      });
+      fixture.terminalSessions.closeRemovedHostTerminals({
+        hostId: fixture.host.id,
+      });
+      await replay;
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      const retained = getRetainedTerminalOutput(fixture.db, {
+        hostId: fixture.host.id,
+        terminalSessionId: fixture.terminal.id,
+        now: Date.now(),
+      });
+      const row = fixture.db.$client
+        .prepare(
+          "SELECT expires_at AS expiresAt FROM fork_terminal_output WHERE terminal_session_id = ?",
+        )
+        .get(fixture.terminal.id) as { expiresAt: number | null } | undefined;
+      expect(retained?.map(({ seq }) => seq)).toContain(5_000);
+      expect(row?.expiresAt).toEqual(expect.any(Number));
+    } finally {
+      vi.useRealTimers();
+      fixture.child.shutdown();
+    }
+  }, 15_000);
+
+  it("does not resurrect dismissed output when replay finishes", async () => {
+    const fixture = await setup();
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const chunks = replayChunks();
+    try {
+      fixture.db.$client
+        .prepare(
+          "UPDATE terminal_sessions SET status = 'exited', close_reason = 'process-exit' WHERE id = ?",
+        )
+        .run(fixture.terminal.id);
+      const replay = fixture.terminalSessions.handleDaemonTerminalMessage({
+        hostId: fixture.host.id,
+        sessionId: fixture.session.id,
+        message: {
+          type: "terminal.replay",
+          requestId: "dismiss-during-replay",
+          terminalId: fixture.terminal.id,
+          replayStartSeq: 0,
+          nextSeq: chunks.length,
+          chunks,
+        },
+      });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      const dismiss = fixture.terminalSessions.closeTerminal({
+        terminalId: fixture.terminal.id,
+        payload: { mode: "force", reason: "user" },
+      });
+      await replay;
+      await dismiss;
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      expect(
+        listTerminalSessions(fixture.db, {
+          scope: { kind: "thread", threadId: fixture.thread.id },
+          visible: true,
+        }).map(({ id }) => id),
+      ).not.toContain(fixture.terminal.id);
+    } finally {
+      vi.useRealTimers();
+      fixture.child.shutdown();
+    }
+  }, 15_000);
+
+  it("reads the completed retained output when a read overlaps replay", async () => {
+    const fixture = await setup();
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const chunks = replayChunks();
+    try {
+      fixture.db.$client
+        .prepare(
+          "UPDATE terminal_sessions SET status = 'exited', close_reason = 'process-exit' WHERE id = ?",
+        )
+        .run(fixture.terminal.id);
+      const replay = fixture.terminalSessions.handleDaemonTerminalMessage({
+        hostId: fixture.host.id,
+        sessionId: fixture.session.id,
+        message: {
+          type: "terminal.replay",
+          requestId: "read-during-replay",
+          terminalId: fixture.terminal.id,
+          replayStartSeq: 0,
+          nextSeq: chunks.length,
+          chunks,
+        },
+      });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      const read = fixture.terminalSessions
+        .readTerminalOutput({
+          terminalId: fixture.terminal.id,
+          query: {},
+        })
+        .then(
+          (output) => ({ output }),
+          (error: unknown) => ({ error }),
+        );
+      await replay;
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      const result = await read;
+      expect(result).toHaveProperty("output");
+      if (!("output" in result)) throw result.error;
+      expect(result.output.chunks.at(-1)?.seq).toBe(chunks.length - 1);
+    } finally {
+      vi.useRealTimers();
+      fixture.child.shutdown();
+    }
+  }, 15_000);
+
   it("bounds replay catch-up while preserving output arriving at every yield and a queued daemon message", async () => {
     const fixture = await setup();
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });

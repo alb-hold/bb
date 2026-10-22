@@ -161,6 +161,7 @@ export async function shutdownHttpBeforePlugins(args: {
   stopPeriodicUpdateChecks?: () => Promise<void>;
   stopPlugins: () => Promise<void>;
   stopTerminalDataPlane: () => void;
+  flushTerminalOutputBeforeClose?: () => Promise<void>;
 }): Promise<{ completedWithinBounds: boolean; pluginStopTimedOut: boolean }> {
   let completedWithinBounds = true;
   let pluginStopTimedOut = false;
@@ -204,6 +205,7 @@ export async function shutdownHttpBeforePlugins(args: {
       webSocketsClosed,
       SERVER_WEBSOCKET_SHUTDOWN_WAIT_TIMEOUT_MS,
     )) && completedWithinBounds;
+  await args.flushTerminalOutputBeforeClose?.();
   completedWithinBounds =
     (await waitAtMost(closed, SERVER_HTTP_CLOSE_WAIT_TIMEOUT_MS)) &&
     completedWithinBounds;
@@ -245,6 +247,7 @@ export async function shutdownServerRuntime(args: {
   stopPlugins: () => Promise<void>;
   server: ReturnType<typeof startHttpListener>;
   stopTerminalDataPlane: () => void;
+  flushTerminalOutputBeforeClose?: () => Promise<void>;
 }): Promise<{ completedWithinBounds: boolean; pluginStopTimedOut: boolean }> {
   const result = await shutdownHttpBeforePlugins({
     closeDatabase: () => args.db.$client.close(),
@@ -257,6 +260,7 @@ export async function shutdownServerRuntime(args: {
     stopPeriodicUpdateChecks: args.stopPeriodicUpdateChecks,
     stopPlugins: args.stopPlugins,
     stopTerminalDataPlane: args.stopTerminalDataPlane,
+    flushTerminalOutputBeforeClose: args.flushTerminalOutputBeforeClose,
   });
   if (result.pluginStopTimedOut) {
     args.logger.warn("Database close skipped because plugin stop timed out");
@@ -735,7 +739,9 @@ export async function runServer(serverConfig: ServerConfig): Promise<void> {
         server,
         stopTerminalDataPlane: () => {
           terminalDataPlane?.stop();
-          terminalSessions.flushRetainedOutputBeforeClose();
+        },
+        flushTerminalOutputBeforeClose: async () => {
+          await terminalSessions.flushRetainedOutputBeforeClose();
         },
       });
     })();

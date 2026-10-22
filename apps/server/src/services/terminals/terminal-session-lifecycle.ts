@@ -864,6 +864,7 @@ export class TerminalSessionLifecycle {
     Array<{ hostId: string; chunks: TerminalOutputChunk[] }>
   >();
   private readonly activeTerminalReplays = new Map<string, number>();
+  private readonly terminalReplayWaiters = new Map<string, Set<() => void>>();
   private retainedOutputFlushTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(private readonly options: TerminalSessionLifecycleOptions) {
@@ -1566,6 +1567,7 @@ export class TerminalSessionLifecycle {
     const current = args.current;
     if (current.status === "exited") {
       if (args.payload.reason === "user") {
+        await this.waitForTerminalReplay(current.id);
         this.flushRetainedOutput(current.id);
         dismissRetainedTerminalOutput(
           this.options.db,
@@ -1789,7 +1791,7 @@ export class TerminalSessionLifecycle {
         TERMINAL_OUTPUT_NOT_RUNNING_MESSAGE,
       );
     }
-    const retained = this.getRetainedOutput(current);
+    const retained = await this.getRetainedOutput(current);
     if (retained === null) {
       throw new ApiError(
         409,
@@ -1839,9 +1841,10 @@ export class TerminalSessionLifecycle {
     });
   }
 
-  private getRetainedOutput(
+  private async getRetainedOutput(
     session: TerminalSessionRow,
-  ): TerminalOutputChunk[] | null {
+  ): Promise<TerminalOutputChunk[] | null> {
+    await this.waitForTerminalReplay(session.id);
     this.flushRetainedOutput(session.id);
     return getRetainedTerminalOutput(this.options.db, {
       hostId: session.hostId,
@@ -1896,7 +1899,7 @@ export class TerminalSessionLifecycle {
     if (this.retainedOutputFlushTimer !== null) return;
     this.retainedOutputFlushTimer = setTimeout(() => {
       this.retainedOutputFlushTimer = null;
-      this.flushAllRetainedOutput();
+      this.flushAllRetainedOutputForTimer();
     }, RETAINED_OUTPUT_FLUSH_MS);
     this.retainedOutputFlushTimer.unref?.();
   }
@@ -1915,13 +1918,41 @@ export class TerminalSessionLifecycle {
       if (this.pendingRetainedOutput.has(terminalSessionId)) {
         this.scheduleRetainedOutputFlush();
       }
+      const waiters = this.terminalReplayWaiters.get(terminalSessionId);
+      this.terminalReplayWaiters.delete(terminalSessionId);
+      if (waiters && waiters.size > 0) {
+        setImmediate(() => {
+          for (const resolve of waiters) resolve();
+        });
+      }
       return;
     }
     this.activeTerminalReplays.set(terminalSessionId, active - 1);
   }
 
+  private waitForTerminalReplay(terminalSessionId: string): Promise<void> {
+    if (!this.activeTerminalReplays.has(terminalSessionId)) {
+      return Promise.resolve();
+    }
+    return new Promise((resolve) => {
+      const waiters =
+        this.terminalReplayWaiters.get(terminalSessionId) ?? new Set();
+      waiters.add(resolve);
+      this.terminalReplayWaiters.set(terminalSessionId, waiters);
+    });
+  }
+
+  private async waitForAllTerminalReplays(): Promise<void> {
+    while (this.activeTerminalReplays.size > 0) {
+      await Promise.all(
+        [...this.activeTerminalReplays.keys()].map((terminalSessionId) =>
+          this.waitForTerminalReplay(terminalSessionId),
+        ),
+      );
+    }
+  }
+
   private flushRetainedOutput(terminalSessionId: string): void {
-    if (this.activeTerminalReplays.has(terminalSessionId)) return;
     const batches = this.pendingRetainedOutput.get(terminalSessionId);
     if (batches === undefined) return;
     this.pendingRetainedOutput.delete(terminalSessionId);
@@ -1967,7 +1998,12 @@ export class TerminalSessionLifecycle {
     }
   }
 
-  flushRetainedOutputBeforeClose(): void {
+  flushRetainedOutputBeforeClose(): void | Promise<void> {
+    if (this.activeTerminalReplays.size > 0) {
+      return this.waitForAllTerminalReplays().then(() =>
+        this.flushRetainedOutputBeforeClose(),
+      );
+    }
     for (
       let attempt = 0;
       attempt < RETAINED_OUTPUT_CLOSE_ATTEMPTS &&
@@ -1996,7 +2032,20 @@ export class TerminalSessionLifecycle {
   }
 
   flushAllRetainedOutput(): void {
-    for (const terminalSessionId of [...this.pendingRetainedOutput.keys()]) {
+    this.flushRetainedOutputBatches([...this.pendingRetainedOutput.keys()]);
+  }
+
+  private flushAllRetainedOutputForTimer(): void {
+    this.flushRetainedOutputBatches(
+      [...this.pendingRetainedOutput.keys()].filter(
+        (terminalSessionId) =>
+          !this.activeTerminalReplays.has(terminalSessionId),
+      ),
+    );
+  }
+
+  private flushRetainedOutputBatches(terminalSessionIds: string[]): void {
+    for (const terminalSessionId of terminalSessionIds) {
       try {
         this.flushRetainedOutput(terminalSessionId);
       } catch (error) {
@@ -2017,7 +2066,7 @@ export class TerminalSessionLifecycle {
         query: args.query,
         session: args.session,
       });
-      const retained = this.getRetainedOutput(args.session) ?? [];
+      const retained = (await this.getRetainedOutput(args.session)) ?? [];
       const chunksBySequence = new Map<number, TerminalOutputChunk>();
       for (const chunk of retained) chunksBySequence.set(chunk.seq, chunk);
       for (const chunk of replay.chunks) chunksBySequence.set(chunk.seq, chunk);
@@ -2067,7 +2116,7 @@ export class TerminalSessionLifecycle {
   private async readExitedTerminalOutput(
     args: ReadExitedTerminalOutputArgs,
   ): Promise<TerminalOutputResponse> {
-    const retained = this.getRetainedOutput(args.session);
+    const retained = await this.getRetainedOutput(args.session);
     if (retained === null) {
       throw new ApiError(
         409,
@@ -2229,7 +2278,7 @@ export class TerminalSessionLifecycle {
       }
       const wasHolderBacked = session.holderBacked;
       if (daemonRestarted) {
-        const retained = this.getRetainedOutput(session);
+        const retained = await this.getRetainedOutput(session);
         this.outputSequenceRebase.setBase(
           session.id,
           (retained?.at(-1)?.seq ?? -1) + 1,
