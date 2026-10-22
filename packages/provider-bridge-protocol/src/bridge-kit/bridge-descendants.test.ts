@@ -75,8 +75,11 @@ it.skipIf(process.platform === "win32")(
       "  try {",
       "    if (!resumed) await pauser.resume();",
       "  } finally {",
-      "    try { process.kill(grandchild, 'SIGKILL'); } catch (error) { if (error.code !== 'ESRCH') throw error; }",
-      "    try { parent.kill('SIGKILL'); } catch (error) { if (error.code !== 'ESRCH') throw error; }",
+      "    const killErrors = [];",
+      "    try { process.kill(grandchild, 'SIGKILL'); } catch (error) { if (error.code !== 'ESRCH') killErrors.push(error); }",
+      "    try { parent.kill('SIGKILL'); } catch (error) { if (error.code !== 'ESRCH') killErrors.push(error); }",
+      "    if (killErrors.length === 1) throw killErrors[0];",
+      "    if (killErrors.length === 2) throw new AggregateError(killErrors);",
       "  }",
       "}",
     ].join("\n");
