@@ -72,12 +72,14 @@ export function updateWritingAssistanceSettings(
   db: DbConnection,
   update: WritingAssistanceSettingsUpdate,
 ): WritingAssistanceSettings {
-  const next = writingAssistanceSettingsSchema.parse({
-    ...getWritingAssistanceSettings(db),
-    ...update,
+  return db.transaction((transaction): WritingAssistanceSettings => {
+    const next = writingAssistanceSettingsSchema.parse({
+      ...getWritingAssistanceSettings(transaction),
+      ...update,
+    });
+    writeValue(transaction, WRITING_SETTINGS_KEY, next);
+    return next;
   });
-  writeValue(db, WRITING_SETTINGS_KEY, next);
-  return next;
 }
 
 export type WritingVocabularyEditResult =

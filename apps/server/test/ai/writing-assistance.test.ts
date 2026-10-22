@@ -3,6 +3,7 @@ import {
   addWritingUsage,
   getWritingUsage,
   setAiServiceSelection,
+  editWritingAssistanceVocabulary,
   updateWritingAssistanceSettings,
 } from "@bb/db";
 import { describe, expect, it, vi } from "vitest";
@@ -579,8 +580,10 @@ describe("dictation segment upload limit", () => {
 describe("dictation segments", () => {
   it("transcribes, formats, validates and records usage", async () => {
     await withTestHarness({}, async (harness) => {
-      updateWritingAssistanceSettings(harness.deps.db, {
-        vocabulary: ["Hermes"],
+      editWritingAssistanceVocabulary(harness.deps.db, {
+        add: ["Hermes"],
+        remove: [],
+        ifMissing: "fail",
       });
       const service = registerFakeAiService(harness.deps.aiServices, {
         transcribe: async () =>
@@ -980,10 +983,66 @@ describe("dictation segments", () => {
     });
   });
 
+  it("sends a clip only to the voice service, once, gives formatting only the transcript, and stores no audio", async () => {
+    await withTestHarness({}, async (harness) => {
+      const marker = "AUDIO-MARKER-7Q";
+      const bytes = Buffer.from(await wav(0.5).arrayBuffer());
+      bytes.write(marker, 44, "ascii");
+      const encodings = [
+        marker,
+        bytes.toString("base64"),
+        bytes.toString("hex"),
+      ];
+      const service = registerFakeAiService(harness.deps.aiServices, {
+        transcribe: async () => "check the cache",
+        complete: async () => "Check the cache.",
+      });
+
+      const response = await postSegment(harness, {
+        file: new File([bytes], "dictation-1.wav", { type: "audio/wav" }),
+      });
+      const body = await response.text();
+
+      expect(response.status).toBe(200);
+      expect(service.transcribeCalls).toHaveLength(1);
+      const sent = Buffer.from(
+        await service.transcribeCalls[0]!.audio.arrayBuffer(),
+      );
+      expect(sent.equals(bytes)).toBe(true);
+      expect(service.completeCalls).toHaveLength(1);
+      for (const text of [service.completeCalls[0]!.prompt, body]) {
+        for (const encoded of encodings) expect(text).not.toContain(encoded);
+      }
+      const client = harness.deps.db.$client;
+      const tables = client
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
+        .all() as { name: string }[];
+      expect(tables.length).toBeGreaterThan(0);
+      for (const { name } of tables) {
+        const rows = client.prepare(`SELECT * FROM "${name}"`).all() as Record<
+          string,
+          unknown
+        >[];
+        for (const row of rows) {
+          for (const value of Object.values(row)) {
+            if (value instanceof Uint8Array) {
+              expect(Buffer.from(value).includes(marker)).toBe(false);
+            } else if (typeof value === "string") {
+              for (const encoded of encodings)
+                expect(value).not.toContain(encoded);
+            }
+          }
+        }
+      }
+    });
+  });
+
   it("keeps the transcript when formatting inserts an unspoken vocabulary term", async () => {
     await withTestHarness({}, async (harness) => {
-      updateWritingAssistanceSettings(harness.deps.db, {
-        vocabulary: ["not"],
+      editWritingAssistanceVocabulary(harness.deps.db, {
+        add: ["not"],
+        remove: [],
+        ifMissing: "fail",
       });
       registerFakeAiService(harness.deps.aiServices, {
         transcribe: async () => "run the migration",
@@ -998,8 +1057,10 @@ describe("dictation segments", () => {
 
   it("keeps the transcript when formatting swaps a spoken word for a similar vocabulary term", async () => {
     await withTestHarness({}, async (harness) => {
-      updateWritingAssistanceSettings(harness.deps.db, {
-        vocabulary: ["pubic"],
+      editWritingAssistanceVocabulary(harness.deps.db, {
+        add: ["pubic"],
+        remove: [],
+        ifMissing: "fail",
       });
       registerFakeAiService(harness.deps.aiServices, {
         transcribe: async () => "make the endpoint public",
@@ -1326,15 +1387,12 @@ describe("writing assistance settings route", () => {
         {
           method: "PUT",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            mode: "developer",
-            vocabulary: ["bb", "Hermes"],
-          }),
+          body: JSON.stringify({ mode: "developer" }),
         },
       );
       expect(put.status).toBe(200);
       await expect(put.json()).resolves.toMatchObject({
-        settings: { mode: "developer", vocabulary: ["bb", "Hermes"] },
+        settings: { mode: "developer", vocabulary: [] },
       });
       const bad = await harness.app.request(
         "/api/v1/writing-assistance/settings",
@@ -1373,12 +1431,68 @@ describe("writing vocabulary edits", () => {
   }
 
   async function seed(harness: TestAppHarness, terms: string[]) {
-    await harness.app.request("/api/v1/writing-assistance/settings", {
+    const response = await editVocabulary(harness, {
+      add: terms,
+      remove: [],
+      ifMissing: "fail",
+    });
+    expect(response.status).toBe(200);
+  }
+
+  async function putSettings(
+    harness: TestAppHarness,
+    body: Record<string, unknown>,
+  ): Promise<Response> {
+    return harness.app.request("/api/v1/writing-assistance/settings", {
       method: "PUT",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ vocabulary: terms }),
+      body: JSON.stringify(body),
     });
   }
+
+  it("keeps a vocabulary edit made while a settings update runs, and the update's own change", async () => {
+    await withTestHarness({}, async (harness) => {
+      await seed(harness, ["bb"]);
+      const [put, post] = await Promise.all([
+        putSettings(harness, { mode: "developer" }),
+        editVocabulary(harness, {
+          add: ["Hermes"],
+          remove: [],
+          ifMissing: "fail",
+        }),
+      ]);
+      expect([put.status, post.status]).toEqual([200, 200]);
+      const view = await (
+        await harness.app.request("/api/v1/writing-assistance")
+      ).json();
+      expect(view.settings).toMatchObject({
+        mode: "developer",
+        vocabulary: ["bb", "Hermes"],
+      });
+    });
+  });
+
+  it("refuses a settings update that carries a stale vocabulary and keeps the term added since", async () => {
+    await withTestHarness({}, async (harness) => {
+      await seed(harness, ["bb"]);
+      const stale = (
+        await (await harness.app.request("/api/v1/writing-assistance")).json()
+      ).settings;
+      await seed(harness, ["Hermes"]);
+      const response = await putSettings(harness, {
+        ...stale,
+        mode: "developer",
+      });
+      expect(response.status).toBe(400);
+      const view = await (
+        await harness.app.request("/api/v1/writing-assistance")
+      ).json();
+      expect(view.settings).toMatchObject({
+        mode: "prompt",
+        vocabulary: ["bb", "Hermes"],
+      });
+    });
+  });
 
   it("keeps both changes when two clients edit a list they read at the same time", async () => {
     await withTestHarness({}, async (harness) => {

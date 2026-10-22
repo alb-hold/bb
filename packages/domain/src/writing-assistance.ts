@@ -51,7 +51,7 @@ export const defaultWritingAssistanceSettings: WritingAssistanceSettings = {
 };
 
 export const writingAssistanceSettingsUpdateSchema =
-  writingAssistanceSettingsSchema.partial().strict();
+  writingAssistanceSettingsSchema.omit({ vocabulary: true }).partial().strict();
 export type WritingAssistanceSettingsUpdate = z.infer<
   typeof writingAssistanceSettingsUpdateSchema
 >;
