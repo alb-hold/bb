@@ -77,6 +77,10 @@ export class NativeActivityReader {
   private adoptedSessions = 0;
   private readonly adoptionAttempts = new Map<string, number>();
   private readonly knownSessions = new Set<string>();
+  private awaitingBinding: boolean;
+  private bindingHeld: Array<{ at: number; record: unknown }> = [];
+  private bindingHeldDropped = 0;
+  private historyIncomplete = false;
   private heldForeign: Array<{
     at: number;
     record: unknown;
@@ -109,7 +113,7 @@ export class NativeActivityReader {
     start: NativeActivityStart,
     private readonly onUnconfirmedIdentity?: (total: number) => void,
     private readonly onUnconfirmedHookIdentity?: (
-      reason: "missing-session" | "foreign-session" | "unbound",
+      reason: "missing-session" | "foreign-session" | "held-overflow",
       total: number,
     ) => void,
     private readonly onSessionAdopted?: (
@@ -117,6 +121,7 @@ export class NativeActivityReader {
       previousSessionId: string,
     ) => void,
   ) {
+    this.awaitingBinding = start.kind === "discover";
     if (start.kind !== "discover") this.knownSessions.add(start.id);
     if (start.kind === "resume") {
       this.sessionId = start.id;
@@ -130,6 +135,7 @@ export class NativeActivityReader {
   }
 
   sessionDiscovered(sessionId: string): void {
+    this.awaitingBinding = false;
     this.sessionId = sessionId;
     if (this.cli.activity?.hooks?.sessionIdField !== undefined) {
       this.unconfirmedTranscriptOffset = this.currentTranscriptSize();
@@ -139,6 +145,7 @@ export class NativeActivityReader {
 
   suspend(): void {
     this.suspended = true;
+    this.bindingHeld = [];
     this.hookIdentityConfirmed = false;
   }
 
@@ -152,20 +159,28 @@ export class NativeActivityReader {
     const hooks = activity.hooks;
     if (hooks !== undefined && this.eventsFile !== null) {
       const unconfirmedHookReasons = new Set<
-        "missing-session" | "foreign-session" | "unbound"
+        "missing-session" | "foreign-session"
       >();
-      const incoming = this.hookTail.readRecords(this.eventsFile);
-      for (const record of [...this.takeAdoptableHeldRecords(), ...incoming]) {
+      const arrived = this.hookTail.readRecords(this.eventsFile);
+      if (this.awaitingBinding) this.holdUntilBound(arrived);
+      const incoming = this.awaitingBinding ? [] : arrived;
+      const replayed = this.awaitingBinding ? [] : this.releaseBoundRecords();
+      const queue = [
+        ...replayed.map((record) => ({ record, fresh: false })),
+        ...[...this.takeAdoptableHeldRecords(), ...incoming].map((record) => ({
+          record,
+          fresh: true,
+        })),
+      ];
+      for (const { record, fresh } of queue) {
         if (hooks.sessionIdField !== undefined) {
           const hookSession = this.stringField(record, hooks.sessionIdField);
-          let reason: "missing-session" | "foreign-session" | "unbound" | null =
-            this.sessionId === null
-              ? "unbound"
-              : hookSession === null
-                ? "missing-session"
-                : hookSession !== this.sessionId
-                  ? "foreign-session"
-                  : null;
+          let reason: "missing-session" | "foreign-session" | null =
+            hookSession === null
+              ? "missing-session"
+              : hookSession !== this.sessionId
+                ? "foreign-session"
+                : null;
           if (reason === "foreign-session" && hookSession !== null) {
             if (this.adoptSession(hookSession)) reason = null;
             else this.holdForeignRecord(record, hookSession);
@@ -196,6 +211,7 @@ export class NativeActivityReader {
           this.rememberTurn(turn);
         }
         const report = this.tracker.apply(signal);
+        if (fresh && signal.state !== null) this.historyIncomplete = false;
         if (
           hooks.sessionIdField !== undefined &&
           (signal.state !== null ||
@@ -247,7 +263,7 @@ export class NativeActivityReader {
   }
 
   heartbeat(): NativeActivityReport | null {
-    if (this.suspended) return null;
+    if (this.suspended || this.historyIncomplete) return null;
     if (
       this.cli.activity?.hooks?.sessionIdField !== undefined &&
       !this.hookIdentityConfirmed
@@ -328,6 +344,35 @@ export class NativeActivityReader {
     this.workingRecord = null;
     this.onSessionAdopted?.(sessionId, previousSessionId);
     return true;
+  }
+
+  private holdUntilBound(records: unknown[]): void {
+    const now = Date.now();
+    for (const record of records) this.bindingHeld.push({ at: now, record });
+    const excess = this.bindingHeld.length - MAX_HELD_FOREIGN_RECORDS;
+    if (excess > 0) {
+      this.bindingHeld.splice(0, excess);
+      this.bindingHeldDropped += excess;
+    }
+  }
+
+  private releaseBoundRecords(): unknown[] {
+    if (this.bindingHeld.length === 0 && this.bindingHeldDropped === 0) {
+      return [];
+    }
+    const now = Date.now();
+    const fresh = this.bindingHeld.filter(
+      (held) => now - held.at < HELD_FOREIGN_RECORD_TTL_MS,
+    );
+    const dropped =
+      this.bindingHeldDropped + (this.bindingHeld.length - fresh.length);
+    this.bindingHeld = [];
+    this.bindingHeldDropped = 0;
+    if (dropped > 0) {
+      this.historyIncomplete = true;
+      this.onUnconfirmedHookIdentity?.("held-overflow", dropped);
+    }
+    return fresh.map((held) => held.record);
   }
 
   private holdForeignRecord(record: unknown, sessionId: string): void {
