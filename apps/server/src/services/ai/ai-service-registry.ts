@@ -211,7 +211,7 @@ export function createAiServiceRegistry(
       return answerWithin(
         refresh(service),
         maxWaitMs,
-        () => freshStatus(service) ?? CHECKING,
+        () => freshStatus(service) ?? NOT_RESPONDING,
       );
     },
   };

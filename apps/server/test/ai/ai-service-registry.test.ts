@@ -226,7 +226,7 @@ describe("AI service registry", () => {
         await vi.advanceTimersByTimeAsync(8_001);
         await expect(later).resolves.toEqual({
           ready: false,
-          message: "Checking",
+          message: "Not responding",
         });
       } finally {
         vi.useRealTimers();

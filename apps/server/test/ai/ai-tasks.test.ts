@@ -39,7 +39,47 @@ describe("AI task routing", () => {
     });
   });
 
-  it("runs a task on a service whose first status check is slower than the quick answer", async () => {
+  it.each(["thread-title", "commit-message"] as const)(
+    "skips a service whose status check takes longer than 2 s for %s, as before writing assistance, and uses its late answer next time",
+    async (task) => {
+      await withTestHarness({}, async (harness) => {
+        const claude = registerFakeAiService(harness.deps.aiServices, {
+          id: "claude",
+          pluginId: "provider-claude-code",
+          builtin: true,
+          status: () =>
+            new Promise((resolve) =>
+              setTimeout(() => resolve({ ready: true }), 2_500),
+            ),
+          complete: async () => "Claude title",
+        });
+
+        const startedAt = Date.now();
+        const first = await runTextAiTask(harness.deps, {
+          task,
+          label: "test",
+          prompt: PROMPT,
+        });
+        const elapsed = Date.now() - startedAt;
+
+        expect(first).toMatchObject({
+          ok: false,
+          reason: "unavailable",
+          message: "Fake AI: Not responding",
+        });
+        expect(elapsed).toBeGreaterThanOrEqual(1_900);
+        expect(elapsed).toBeLessThan(2_400);
+        expect(claude.completeCalls).toEqual([]);
+
+        await new Promise((resolve) => setTimeout(resolve, 700));
+        await expect(
+          runTextAiTask(harness.deps, { task, label: "test", prompt: PROMPT }),
+        ).resolves.toMatchObject({ ok: true, value: "Claude title" });
+      });
+    },
+  );
+
+  it("lets a writing task wait for a status check slower than 2 s", async () => {
     await withTestHarness({}, async (harness) => {
       const claude = registerFakeAiService(harness.deps.aiServices, {
         id: "claude",
@@ -49,21 +89,62 @@ describe("AI task routing", () => {
           new Promise((resolve) =>
             setTimeout(() => resolve({ ready: true }), 2_500),
           ),
-        complete: async () => "Claude title",
+        complete: async () => "Claude reply",
       });
 
       const outcome = await runTextAiTask(harness.deps, {
-        task: "thread-title",
+        task: "writing",
         label: "test",
         prompt: PROMPT,
       });
 
-      expect(outcome).toMatchObject({ ok: true, value: "Claude title" });
+      expect(outcome).toMatchObject({ ok: true, value: "Claude reply" });
       expect(claude.completeCalls.map((call) => call.prompt)).toEqual([PROMPT]);
     });
   });
 
-  it("bounds a status check that outlasts the task deadline, falls back, and keeps the late answer", async () => {
+  it("bounds a writing status check that outlasts the task deadline, falls back, and keeps the late answer", async () => {
+    await withTestHarness({}, async (harness) => {
+      const cloud = registerFakeAiService(harness.deps.aiServices, {
+        id: "bb",
+        pluginId: "bb-ai",
+        builtin: true,
+        status: () =>
+          new Promise((resolve) =>
+            setTimeout(() => resolve({ ready: true }), 600),
+          ),
+        complete: async () => "Cloud reply",
+      });
+      const codex = registerFakeAiService(harness.deps.aiServices, {
+        id: "codex",
+        pluginId: "provider-codex",
+        builtin: true,
+        complete: async () => "Codex reply",
+      });
+
+      const startedAt = Date.now();
+      const outcome = await runTextAiTask(harness.deps, {
+        task: "writing",
+        label: "test",
+        prompt: PROMPT,
+        timeoutMs: 300,
+      });
+
+      expect(Date.now() - startedAt).toBeLessThan(5_000);
+      expect(outcome).toMatchObject({ ok: true, value: "Codex reply" });
+      expect(cloud.completeCalls).toEqual([]);
+      expect(codex.completeCalls.map((call) => call.prompt)).toEqual([PROMPT]);
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      expect(
+        harness.deps.aiServices.peekStatus({
+          pluginId: "bb-ai",
+          serviceId: "bb",
+        }),
+      ).toEqual({ ready: true });
+    });
+  });
+
+  it("waits up to 2 s for a thread-title status check even past a shorter task timeout, as before writing assistance", async () => {
     await withTestHarness({}, async (harness) => {
       const cloud = registerFakeAiService(harness.deps.aiServices, {
         id: "bb",
@@ -82,7 +163,6 @@ describe("AI task routing", () => {
         complete: async () => "Codex title",
       });
 
-      const startedAt = Date.now();
       const outcome = await runTextAiTask(harness.deps, {
         task: "thread-title",
         label: "test",
@@ -90,17 +170,9 @@ describe("AI task routing", () => {
         timeoutMs: 300,
       });
 
-      expect(Date.now() - startedAt).toBeLessThan(5_000);
-      expect(outcome).toMatchObject({ ok: true, value: "Codex title" });
-      expect(cloud.completeCalls).toEqual([]);
-      expect(codex.completeCalls.map((call) => call.prompt)).toEqual([PROMPT]);
-      await new Promise((resolve) => setTimeout(resolve, 400));
-      expect(
-        harness.deps.aiServices.peekStatus({
-          pluginId: "bb-ai",
-          serviceId: "bb",
-        }),
-      ).toEqual({ ready: true });
+      expect(outcome).toMatchObject({ ok: true, value: "Cloud title" });
+      expect(cloud.completeCalls.map((call) => call.prompt)).toEqual([PROMPT]);
+      expect(codex.completeCalls).toEqual([]);
     });
   });
 
@@ -146,59 +218,75 @@ describe("AI task routing", () => {
     });
   });
 
-  it("counts the status check against the task deadline, so a slow check leaves the call only the rest", async () => {
-    await withTestHarness({}, async (harness) => {
-      registerFakeAiService(harness.deps.aiServices, {
-        id: "claude",
-        pluginId: "provider-claude-code",
-        builtin: true,
-        status: () =>
-          new Promise((resolve) =>
-            setTimeout(() => resolve({ ready: true }), 1_600),
-          ),
-        complete: () => new Promise(() => {}),
-      });
+  it.each([
+    ["writing", 1_900, 2_600],
+    ["thread-title", 3_400, 4_400],
+  ] as const)(
+    "after a 1.6 s status check, a %s call that never answers times out at the expected time (writing counts the check against its 2 s deadline; existing tasks give the call its full timeout)",
+    async (task, atLeast, below) => {
+      await withTestHarness({}, async (harness) => {
+        registerFakeAiService(harness.deps.aiServices, {
+          id: "claude",
+          pluginId: "provider-claude-code",
+          builtin: true,
+          status: () =>
+            new Promise((resolve) =>
+              setTimeout(() => resolve({ ready: true }), 1_600),
+            ),
+          complete: () => new Promise(() => {}),
+        });
 
-      const startedAt = Date.now();
-      const outcome = await runTextAiTask(harness.deps, {
-        task: "thread-title",
-        label: "test",
-        prompt: PROMPT,
-        timeoutMs: 2_000,
-      });
+        const startedAt = Date.now();
+        const outcome = await runTextAiTask(harness.deps, {
+          task,
+          label: "test",
+          prompt: PROMPT,
+          timeoutMs: 2_000,
+        });
+        const elapsed = Date.now() - startedAt;
 
-      expect(outcome).toMatchObject({ ok: false, reason: "timeout" });
-      expect(Date.now() - startedAt).toBeLessThan(3_000);
-    });
-  });
-
-  it("fails within the task deadline when the only service never answers its status check", async () => {
-    await withTestHarness({}, async (harness) => {
-      const claude = registerFakeAiService(harness.deps.aiServices, {
-        id: "claude",
-        pluginId: "provider-claude-code",
-        builtin: true,
-        status: () => new Promise(() => {}),
-        complete: async () => "Claude title",
+        expect(outcome).toMatchObject({ ok: false, reason: "timeout" });
+        expect(elapsed).toBeGreaterThanOrEqual(atLeast);
+        expect(elapsed).toBeLessThan(below);
       });
+    },
+  );
 
-      const startedAt = Date.now();
-      const outcome = await runTextAiTask(harness.deps, {
-        task: "thread-title",
-        label: "test",
-        prompt: PROMPT,
-        timeoutMs: 300,
-      });
+  it.each([
+    ["writing", 0, 1_500],
+    ["thread-title", 1_900, 2_600],
+  ] as const)(
+    "reports Not responding for %s when the only service never answers its status check, within its status wait",
+    async (task, atLeast, below) => {
+      await withTestHarness({}, async (harness) => {
+        const claude = registerFakeAiService(harness.deps.aiServices, {
+          id: "claude",
+          pluginId: "provider-claude-code",
+          builtin: true,
+          status: () => new Promise(() => {}),
+          complete: async () => "Claude title",
+        });
 
-      expect(Date.now() - startedAt).toBeLessThan(5_000);
-      expect(outcome).toMatchObject({
-        ok: false,
-        reason: "unavailable",
-        message: "Fake AI: Checking",
+        const startedAt = Date.now();
+        const outcome = await runTextAiTask(harness.deps, {
+          task,
+          label: "test",
+          prompt: PROMPT,
+          timeoutMs: 300,
+        });
+        const elapsed = Date.now() - startedAt;
+
+        expect(elapsed).toBeGreaterThanOrEqual(atLeast);
+        expect(elapsed).toBeLessThan(below);
+        expect(outcome).toMatchObject({
+          ok: false,
+          reason: "unavailable",
+          message: "Fake AI: Not responding",
+        });
+        expect(claude.completeCalls).toEqual([]);
       });
-      expect(claude.completeCalls).toEqual([]);
-    });
-  });
+    },
+  );
 
   it("moves to the next Automatic service when one rejects or is not ready", async () => {
     await withTestHarness({}, async (harness) => {

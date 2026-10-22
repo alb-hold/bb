@@ -212,10 +212,12 @@ export async function runAiTask<T>(
     reason: "unavailable",
     message: "No AI service is ready",
   };
+  const waitsForStatus = args.task === "writing";
   for (const [index, service] of services.entries()) {
     const attemptDeadline = Date.now() + timeoutMs;
-    const statusWaitMs =
-      index < services.length - 1
+    const statusWaitMs = !waitsForStatus
+      ? AI_STATUS_FALLBACK_WAIT_MS
+      : index < services.length - 1
         ? Math.min(AI_STATUS_FALLBACK_WAIT_MS, timeoutMs)
         : timeoutMs;
     const skipped = skipMessage(
@@ -231,7 +233,7 @@ export async function runAiTask<T>(
       break;
     }
     const link = linkedSignal(
-      Math.max(0, attemptDeadline - Date.now()),
+      waitsForStatus ? Math.max(0, attemptDeadline - Date.now()) : timeoutMs,
       args.signal,
     );
     const fields = {
