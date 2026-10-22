@@ -61,6 +61,7 @@ function Fixture({
               ]}
               threadRuntimeDisplayStatus="idle"
               workspaceRootPath={undefined}
+              threadIsActive={false}
             />
           )}
         </TimelineReasoningExpansionProvider>
@@ -156,6 +157,7 @@ it("reveals interleaved reasoning inside an exploration group", () => {
             ]}
             threadRuntimeDisplayStatus="idle"
             workspaceRootPath={undefined}
+            threadIsActive={false}
           />
         </TimelineReasoningExpansionProvider>
       </MemoryRouter>

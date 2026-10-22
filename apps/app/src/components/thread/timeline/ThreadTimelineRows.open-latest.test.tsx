@@ -128,6 +128,7 @@ function OpenThread({
     });
   return (
     <ThreadTimelinePane
+      threadIsActive={true}
       footer={<div>Composer</div>}
       canSpawnChild={false}
       hasOlderTimelineRows={false}
@@ -216,7 +217,8 @@ function renderThread(
       rerender(element(false, 400, false, false, false)),
     blurThread: () => rerender(element(false, 300, false, false, false)),
     focusThread: () => rerender(element(false, 400, false, false, true)),
-    focusWithoutNewAttention: () => rerender(element(false, 300, false, false, true)),
+    focusWithoutNewAttention: () =>
+      rerender(element(false, 300, false, false, true)),
     receiveFreshThread: (latestAttentionAt: number) => {
       currentIsPlaceholderData = false;
       rerender(element(false, latestAttentionAt));
@@ -506,7 +508,11 @@ describe("opening an unseen timeline", () => {
       offsetWithinRow: 0,
       atBottom: false,
     });
-    const { area, changeOpening, receiveNewEvent } = renderThread(350, false, true);
+    const { area, changeOpening, receiveNewEvent } = renderThread(
+      350,
+      false,
+      true,
+    );
     resize();
     act(() => vi.advanceTimersByTime(1));
     flushFrames();
@@ -544,7 +550,11 @@ describe("opening an unseen timeline", () => {
   });
 
   it("opens at newest when new attention arrives while a read cache is opening", () => {
-    const { area, catchUp, receiveOpeningAttention } = renderThread(350, false, true);
+    const { area, catchUp, receiveOpeningAttention } = renderThread(
+      350,
+      false,
+      true,
+    );
     resize();
     receiveOpeningAttention();
     act(() => vi.advanceTimersByTime(25_000));

@@ -14,6 +14,10 @@ import type { ComponentProps, CSSProperties, ReactNode } from "react";
 import { useComposedRefs } from "@radix-ui/react-compose-refs";
 import { TimelineImageGallery } from "./TimelineImageGallery";
 import type { PromptInput, ThreadRuntimeDisplayStatus } from "@bb/domain";
+import {
+  THREAD_INTERRUPTION_RETRY_DETAIL,
+  THREAD_INTERRUPTION_TITLE_PREFIX,
+} from "@bb/domain";
 import type {
   TimelineParentChange,
   TimelineRow,
@@ -191,7 +195,7 @@ export interface ThreadTimelineRowsProps {
   timelineRows: TimelineRow[];
   timelineNavigationTargetRowId?: string | null;
   threadId?: string;
-  threadIsActive?: boolean;
+  threadIsActive: boolean;
   threadRuntimeDisplayStatus: ThreadRuntimeDisplayStatus;
   unreadDividerPlacement?: ThreadTimelineUnreadDividerPlacement | null;
   unreadDividerAutoScroll?: boolean;
@@ -246,7 +250,7 @@ interface TimelineRowsListProps {
   scopeActive: boolean;
   showAssistantMessageActions: boolean;
   spacing: TimelineRowsListSpacing;
-  threadIsActive?: boolean;
+  threadIsActive: boolean;
   className?: string;
   unreadDividerPlacement: ThreadTimelineUnreadDividerPlacement | null;
   unreadDividerAutoScroll?: boolean;
@@ -294,8 +298,8 @@ interface TimelineSystemDetailBlockProps {
 
 interface BuildTimelineRowsListItemsArgs {
   rows: readonly ThreadTimelineViewRow[];
-  threadIsActive?: boolean;
-  excludedInterruptionRowIds?: ReadonlySet<string>;
+  threadIsActive: boolean;
+  excludedInterruptionRowIds: ReadonlySet<string>;
   unreadDividerPlacement: ThreadTimelineUnreadDividerPlacement | null;
 }
 
@@ -1355,6 +1359,7 @@ function TimelineExpandableBodyContent({
           showAssistantMessageActions={showAssistantMessageActions}
           compactActivityIntents={true}
           spacing="bundle"
+          threadIsActive={false}
           unreadDividerPlacement={null}
         />
       );
@@ -1468,6 +1473,7 @@ function TurnRowBody({
       showAssistantMessageActions={showAssistantMessageActions}
       compactActivityIntents={compactActivityIntents}
       spacing="nested"
+      threadIsActive={false}
       className={NESTED_TIMELINE_GROUP_LINE_CLASS_NAME}
       unreadDividerPlacement={null}
     />
@@ -1591,6 +1597,7 @@ function LazyTurnRowBody({
             showAssistantMessageActions={showAssistantMessageActions}
             compactActivityIntents={compactActivityIntents}
             spacing="nested"
+            threadIsActive={false}
             unreadDividerPlacement={null}
           />
         </>
@@ -1680,6 +1687,7 @@ function DeferredDelegationChildRows({
           showAssistantMessageActions={false}
           compactActivityIntents={false}
           spacing="nested"
+          threadIsActive={false}
           unreadDividerPlacement={null}
         />
       ) : null}
@@ -1721,6 +1729,7 @@ function DelegationRowBody({ row }: { row: TimelineViewDelegationWorkRow }) {
             showAssistantMessageActions={false}
             compactActivityIntents={false}
             spacing="nested"
+            threadIsActive={false}
             unreadDividerPlacement={null}
           />
         ) : null}
@@ -2160,8 +2169,8 @@ function isUnreadDividerCandidateAfterCutoff({
 
 export function buildTimelineRowsListItems({
   rows,
-  threadIsActive = false,
-  excludedInterruptionRowIds = EMPTY_ROW_ID_SET,
+  threadIsActive,
+  excludedInterruptionRowIds,
   unreadDividerPlacement,
 }: BuildTimelineRowsListItemsArgs): TimelineRowsListItem[] {
   const items: TimelineRowsListItem[] = [];
@@ -2221,15 +2230,13 @@ type TimelineInterruptionErrorRow = Extract<
   { kind: "system" }
 > & { systemKind: "error" };
 
-const THREAD_INTERRUPTION_RETRY_DETAIL = "Please retry the thread to continue.";
-
 function isThreadInterruptionErrorRow(
   row: ThreadTimelineViewRow,
 ): row is TimelineInterruptionErrorRow {
   return (
     row.kind === "system" &&
     row.systemKind === "error" &&
-    row.title.startsWith("Thread interrupted because ") &&
+    row.title.startsWith(THREAD_INTERRUPTION_TITLE_PREFIX) &&
     row.detail === THREAD_INTERRUPTION_RETRY_DETAIL
   );
 }
@@ -2401,7 +2408,7 @@ function TimelineRowsList({
   flatTurnTokenSummaryThreadId,
   flatTurnTokenSummaryExcludedTurnId,
   scopeActive,
-  threadIsActive = false,
+  threadIsActive,
   showAssistantMessageActions,
   spacing,
   className,

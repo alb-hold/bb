@@ -77,6 +77,7 @@ function renderDelegation() {
           ]}
           threadRuntimeDisplayStatus="idle"
           workspaceRootPath={undefined}
+          threadIsActive={false}
         />
       </QueryClientProvider>
     </MemoryRouter>,
@@ -206,6 +207,7 @@ describe("ThreadTimelineRows windowing", () => {
                   timelineRows={rows}
                   threadRuntimeDisplayStatus="idle"
                   workspaceRootPath={undefined}
+                  threadIsActive={false}
                 />
               </CompactViewportOverrideProvider>
             </BottomAnchorContext.Provider>
@@ -271,6 +273,7 @@ describe("ThreadTimelineRows windowing", () => {
                 timelineRows={rows}
                 threadRuntimeDisplayStatus="idle"
                 workspaceRootPath={undefined}
+                threadIsActive={false}
               />
             </CompactViewportOverrideProvider>
           </BottomAnchorContext.Provider>
@@ -345,6 +348,7 @@ describe("ThreadTimelineRows windowing", () => {
                 timelineNavigationTargetRowId="search-message-40"
                 threadRuntimeDisplayStatus="idle"
                 workspaceRootPath={undefined}
+                threadIsActive={false}
               />
             </CompactViewportOverrideProvider>
           </BottomAnchorContext.Provider>

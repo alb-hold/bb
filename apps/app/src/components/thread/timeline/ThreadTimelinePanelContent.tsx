@@ -122,6 +122,7 @@ export function ThreadTimelinePanelContent({
       threadId={threadId}
       threadRuntimeDisplayStatus={displayStatus}
       workspaceRootPath={workspaceRootPath}
+      threadIsActive={threadQuery.data?.status === "active"}
     />
   );
 }

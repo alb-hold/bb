@@ -5,6 +5,11 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TimelineRow } from "@bb/server-contract";
+import {
+  threadCommandFailureCopyForInterruption,
+  threadScope,
+} from "@bb/domain";
+import { buildThreadTimelineFromEvents } from "@bb/thread-view";
 import { ThreadTitleMentionResourcesProvider } from "@/components/thread/ThreadTitleMentions";
 import { systemRow } from "@/test/fixtures/thread-timeline-rows";
 import { makeThreadListEntry } from "@bb/test-helpers/domain-fixtures";
@@ -18,6 +23,7 @@ function renderRow(row: TimelineRow) {
     <QueryClientProvider client={new QueryClient()}>
       <MemoryRouter>
         <ThreadTimelineRows
+          threadIsActive={false}
           timelineRows={[row]}
           threadRuntimeDisplayStatus="idle"
           workspaceRootPath={undefined}
@@ -53,6 +59,45 @@ function measureSummary(height: number) {
 const summary =
   "This session was recorded with model `gpt-6-astra` but is resuming with `gpt-5.6-luna`. Consider switching back to `gpt-6-astra` as it may affect Codex performance.";
 
+function serverProducedInterruptionRows(count: number): TimelineRow[] {
+  const events = Array.from({ length: count }, (_, index) => {
+    const copy = threadCommandFailureCopyForInterruption(
+      index % 2 === 0 ? "host-connection-lost" : "host-daemon-restarted",
+    );
+    if (copy === null) throw new Error("Expected an interruption error");
+    const seq = index + 1;
+    return {
+      event: {
+        type: "system/error" as const,
+        threadId: "thr_main",
+        scope: threadScope(),
+        code: "thread_command_failed",
+        message: copy.message,
+        detail: copy.detail,
+      },
+      meta: { id: `event-${seq}`, seq, createdAt: seq },
+    };
+  });
+  return buildThreadTimelineFromEvents({
+    acceptedClientRequestContext: {
+      acceptedClientRequestEvents: [],
+      rejectedClientRequestEvents: [],
+    },
+    contextWindowEvents: [],
+    events,
+    options: {
+      completedTurnDisplay: "collapse",
+      includeNestedRows: true,
+      includeDiagnosticOperations: false,
+      isLatestPage: true,
+      summarizeShellCommands: true,
+      threadStatus: "idle",
+      threadName: "",
+      workspaceRoot: null,
+    },
+  }).rows;
+}
+
 function preview() {
   const title = screen.getByTitle((title) => title.startsWith(summary));
   expect(title.classList.contains("whitespace-pre-wrap")).toBe(true);
@@ -61,30 +106,14 @@ function preview() {
 
 describe("system summary overflow", () => {
   it("groups consecutive thread interruptions and expands their individual entries", () => {
-    const interruptionRows = Array.from({ length: 12 }, (_, index) =>
-      systemRow({
-        id: `interruption-${index + 1}`,
-        threadId: "thr_main",
-        systemKind: "error",
-        title:
-          index % 2 === 0
-            ? "Thread interrupted because the connection to the host was lost"
-            : "Thread interrupted because the host daemon disconnected",
-        detail: "Please retry the thread to continue.",
-        status: "error",
-        seq: index + 1,
-        sourceSeqStart: index + 1,
-        sourceSeqEnd: index + 1,
-        startedAt: index + 1,
-        createdAt: index + 1,
-      }),
-    );
+    const interruptionRows = serverProducedInterruptionRows(12);
     render(
       <QueryClientProvider client={new QueryClient()}>
         <MemoryRouter>
           <ThreadTimelineRows
             threadId="thr_main"
             timelineRows={interruptionRows}
+            threadIsActive={false}
             threadRuntimeDisplayStatus="idle"
             workspaceRootPath={undefined}
           />
@@ -169,6 +198,7 @@ describe("system summary overflow", () => {
           >
             <ThreadTimelineRows
               projectId="proj_current"
+              threadIsActive={false}
               timelineRows={[
                 systemRow({
                   threadId: "thr_current",
