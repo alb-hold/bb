@@ -25,6 +25,7 @@ import {
 } from "../../terminal-data-plane/ipc-contract.js";
 import {
   seedHostSession,
+  seedEnvironment,
   seedProjectWithSource,
   seedThread,
 } from "../../../test/helpers/seed.js";
@@ -45,6 +46,7 @@ afterEach(async () => {
 
 class FakeSocket implements TerminalDataPlaneSocket {
   bufferedAmount = 0;
+  readonly sent: string[] = [];
   private messageListeners: Array<(data: unknown) => void> = [];
 
   on(event: "close", listener: () => void): unknown;
@@ -65,7 +67,9 @@ class FakeSocket implements TerminalDataPlaneSocket {
 
   close(): void {}
 
-  send(): void {}
+  send(data?: string): void {
+    if (data !== undefined) this.sent.push(data);
+  }
 
   terminate(): void {}
 
@@ -106,22 +110,31 @@ function textFrom(chunks: Array<{ dataBase64: string }>): string {
   ).toString("utf8");
 }
 
-async function setup(args: { holdOutputBatches?: boolean } = {}) {
+async function setup(
+  args: {
+    holdOutputBatches?: boolean;
+    terminalStatus?: "running" | "starting";
+    environmentBacked?: boolean;
+  } = {},
+) {
   const harness = await createTestAppHarness({
     db: createMigratedConnection(),
   });
   harnesses.push(harness);
   const { host, session } = seedHostSession(harness.deps);
   const { project } = seedProjectWithSource(harness.deps, { hostId: host.id });
+  const environment = args.environmentBacked
+    ? seedEnvironment(harness.deps, { hostId: host.id, projectId: project.id })
+    : null;
   const thread = seedThread(harness.deps, { projectId: project.id });
   const terminal = createTerminalSession(harness.db, {
     cols: 80,
-    environmentId: null,
+    environmentId: environment?.id ?? null,
     hostId: host.id,
     daemonSessionId: session.id,
     initialCwd: "/tmp",
     rows: 24,
-    status: "running",
+    status: args.terminalStatus ?? "running",
     threadId: thread.id,
     title: "Unwatched output",
   });
@@ -175,6 +188,7 @@ async function setup(args: { holdOutputBatches?: boolean } = {}) {
     childMessages,
     daemonSocket,
     db: harness.db,
+    environment,
     harness,
     heldOutputBatches,
     host,
@@ -191,6 +205,124 @@ async function setup(args: { holdOutputBatches?: boolean } = {}) {
       }
     },
   };
+}
+
+async function retainReplayAcrossLifecycleTransition(args: {
+  setup: { terminalStatus?: "running" | "starting"; environmentBacked?: boolean };
+  transition: (fixture: Awaited<ReturnType<typeof setup>>) => void;
+  expectedStatus: "disconnected" | "exited";
+}) {
+  const fixture = await setup(args.setup);
+  const chunks = Array.from({ length: 1_024 }, (_, seq) => ({
+    seq: seq + 10,
+    dataBase64: Buffer.from(`replay-${seq.toString().padStart(4, "0")}\n`).toString(
+      "base64",
+    ),
+  }));
+  const pending = Array.from({ length: 3 }, (_, seq) => ({
+    seq,
+    dataBase64: Buffer.from(`pending-${seq}\n`).toString("base64"),
+  }));
+  const duringReplay = {
+    seq: 2_000,
+    dataBase64: Buffer.from("output-during-replay\n").toString("base64"),
+  };
+  const initialPending =
+    args.setup.terminalStatus === "starting" ? [] : pending;
+  const outputDuringReplay =
+    args.setup.terminalStatus === "starting" ? [] : [duringReplay];
+  const queue = createDaemonSocketMessageQueue<() => void | Promise<void>>({
+    handle: (message) => message(),
+    onError: (error) => {
+      throw error;
+    },
+  });
+  let replay: Promise<void> | undefined;
+  let replaySettled = false;
+  let queueProgressed = false;
+  let resolveQueueProgress!: () => void;
+  const queueProgress = new Promise<void>((resolve) => {
+    resolveQueueProgress = resolve;
+  });
+  fixture.terminalSessions.recordDirectTerminalOutputBatch({
+    daemonSessionId: fixture.session.id,
+    terminalId: fixture.terminal.id,
+    chunks: initialPending,
+  });
+  queue.enqueue(() => {
+    replay = Promise.resolve(
+      fixture.terminalSessions.handleDaemonTerminalMessage({
+        hostId: fixture.host.id,
+        sessionId: fixture.session.id,
+        message: {
+          type: "terminal.replay",
+          requestId: "lifecycle-transition-replay",
+          terminalId: fixture.terminal.id,
+          replayStartSeq: 10,
+          nextSeq: chunks.at(-1)!.seq + 1,
+          chunks,
+        },
+      }),
+    ).finally(() => {
+      replaySettled = true;
+    });
+    return replay;
+  });
+  queue.enqueue(() => {
+    queueProgressed = true;
+    resolveQueueProgress();
+  });
+  queue.release();
+  try {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(replaySettled).toBe(false);
+    expect(queueProgressed).toBe(false);
+    if (outputDuringReplay.length > 0) {
+      fixture.terminalSessions.recordDirectTerminalOutputBatch({
+        daemonSessionId: fixture.session.id,
+        terminalId: fixture.terminal.id,
+        chunks: outputDuringReplay,
+      });
+    }
+    args.transition(fixture);
+    await Promise.race([
+      queueProgress,
+      delay(5_000).then(() => {
+        throw new Error("serialized daemon queue did not progress");
+      }),
+    ]);
+    await Promise.race([
+      replay,
+      delay(5_000).then(() => {
+        throw new Error("terminal replay caller did not settle");
+      }),
+    ]);
+    expect(replaySettled).toBe(true);
+    expect(queueProgressed).toBe(true);
+    const retained = getRetainedTerminalOutput(fixture.db, {
+      hostId: fixture.host.id,
+      terminalSessionId: fixture.terminal.id,
+      now: Date.now(),
+    });
+    expect(retained).toEqual([...initialPending, ...chunks, ...outputDuringReplay]);
+    expect(new Set(retained?.map(({ seq }) => seq)).size).toBe(
+      retained?.length,
+    );
+    const terminal = getTerminalSession(fixture.db, fixture.terminal.id);
+    expect(terminal?.status).toBe(args.expectedStatus);
+    expect(terminal?.daemonSessionId).toBeNull();
+    if (args.expectedStatus === "exited") {
+      const row = fixture.db.$client
+        .prepare(
+          "SELECT expires_at AS expiresAt FROM fork_terminal_output WHERE terminal_session_id = ?",
+        )
+        .get(fixture.terminal.id) as { expiresAt: number | null } | undefined;
+      expect(row?.expiresAt).toBeGreaterThan(Date.now());
+    }
+  } finally {
+    queue.close();
+    fixture.child.shutdown();
+  }
 }
 
 describe("terminal output retained from the data plane", () => {
@@ -445,6 +577,160 @@ describe("terminal output retained from the data plane", () => {
       vi.useRealTimers();
       fixture.child.shutdown();
     }
+  }, 15_000);
+
+  it("retains every replay chunk once when the terminal exits at a replay yield", async () => {
+    const fixture = await setup();
+    const attachSocket = new FakeSocket();
+    const chunks = Array.from({ length: 1_024 }, (_, seq) => ({
+      seq: seq + 10,
+      dataBase64: Buffer.from(
+        `replay-${seq.toString().padStart(4, "0")}\n`,
+      ).toString("base64"),
+    }));
+    const initialPending = Array.from({ length: 3 }, (_, seq) => ({
+      seq,
+      dataBase64: Buffer.from(`pending-${seq}\n`).toString("base64"),
+    }));
+    const outputDuringReplay = {
+      seq: 2_000,
+      dataBase64: Buffer.from("output-during-replay\n").toString("base64"),
+    };
+    try {
+      let replaySettled = false;
+      let replay: Promise<void> | undefined;
+      let queueProgressed = false;
+      let resolveQueueProgress!: () => void;
+      const queueProgress = new Promise<void>((resolve) => {
+        resolveQueueProgress = resolve;
+      });
+      const queue = createDaemonSocketMessageQueue({
+        handle: async (message: () => void | Promise<void>) => message(),
+        onError: (error) => {
+          throw error;
+        },
+      });
+      fixture.hub.registerDaemon(fixture.session.id, fixture.host.id, {
+        close() {},
+        send() {},
+      });
+      fixture.terminalSessions.attachBrowserTerminal({
+        outputAcks: false,
+        resizeAcks: false,
+        socket: attachSocket,
+        sinceSeq: 0,
+        terminalId: fixture.terminal.id,
+      });
+      fixture.terminalSessions.recordDirectTerminalOutputBatch({
+        daemonSessionId: fixture.session.id,
+        terminalId: fixture.terminal.id,
+        chunks: initialPending,
+      });
+      queue.enqueue(() => {
+        replay = Promise.resolve(
+          fixture.terminalSessions.handleDaemonTerminalMessage({
+            hostId: fixture.host.id,
+            sessionId: fixture.session.id,
+            message: {
+              type: "terminal.replay",
+              requestId: "exit-chunks-during-replay",
+              terminalId: fixture.terminal.id,
+              replayStartSeq: 10,
+              nextSeq: chunks.at(-1)!.seq + 1,
+              chunks,
+            },
+          }),
+        ).finally(() => {
+          replaySettled = true;
+        });
+        return replay;
+      });
+      queue.enqueue(() => {
+        queueProgressed = true;
+        resolveQueueProgress();
+      });
+      queue.release();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(replaySettled).toBe(false);
+      expect(queueProgressed).toBe(false);
+      fixture.terminalSessions.recordDirectTerminalOutputBatch({
+        daemonSessionId: fixture.session.id,
+        terminalId: fixture.terminal.id,
+        chunks: [outputDuringReplay],
+      });
+      fixture.terminalSessions.closeRemovedHostTerminals({
+        hostId: fixture.host.id,
+      });
+      await Promise.race([
+        queueProgress,
+        delay(5_000).then(() => {
+          throw new Error("serialized daemon queue did not progress");
+        }),
+      ]);
+      await replay;
+      expect(replaySettled).toBe(true);
+      expect(queueProgressed).toBe(true);
+      await Promise.race([
+        (async () => {
+          while (attachSocket.sent.length === 0) {
+            await new Promise<void>((resolve) => setImmediate(resolve));
+          }
+        })(),
+        delay(5_000).then(() => {
+          throw new Error("pending attach caller did not settle");
+        }),
+      ]);
+      expect(attachSocket.sent.map((data) => JSON.parse(data))).toContainEqual(
+        expect.objectContaining({ type: "error", code: "terminal_closed" }),
+      );
+
+      const retained = getRetainedTerminalOutput(fixture.db, {
+        hostId: fixture.host.id,
+        terminalSessionId: fixture.terminal.id,
+        now: Date.now(),
+      });
+      expect(retained).toEqual([
+        ...initialPending,
+        ...chunks,
+        outputDuringReplay,
+      ]);
+      const terminal = getTerminalSession(fixture.db, fixture.terminal.id);
+      expect(terminal?.status).toBe("exited");
+      expect(terminal?.daemonSessionId).toBeNull();
+      const row = fixture.db.$client
+        .prepare(
+          "SELECT expires_at AS expiresAt FROM fork_terminal_output WHERE terminal_session_id = ?",
+        )
+        .get(fixture.terminal.id) as { expiresAt: number | null } | undefined;
+      expect(row?.expiresAt).toBeGreaterThan(Date.now());
+    } finally {
+      fixture.child.shutdown();
+    }
+  }, 15_000);
+
+  it("retains replay output when the environment is destroyed during a replay yield", async () => {
+    await retainReplayAcrossLifecycleTransition({
+      setup: { environmentBacked: true },
+      transition: (fixture) => {
+        if (!fixture.environment) throw new Error("environment fixture missing");
+        fixture.terminalSessions.closeDestroyedEnvironmentTerminals({
+          environmentId: fixture.environment.id,
+        });
+      },
+      expectedStatus: "exited",
+    });
+  }, 15_000);
+
+  it("retains replay output when a starting terminal disconnects during a yield", async () => {
+    await retainReplayAcrossLifecycleTransition({
+      setup: { terminalStatus: "starting" },
+      transition: (fixture) => {
+        fixture.terminalSessions.handleDaemonSessionClosed({
+          sessionId: fixture.session.id,
+        });
+      },
+      expectedStatus: "disconnected",
+    });
   }, 15_000);
 
   it("does not resurrect dismissed output when replay finishes", async () => {
