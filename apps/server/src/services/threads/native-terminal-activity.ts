@@ -35,7 +35,6 @@ import {
   requireNativeTerminalToolCredential,
 } from "./native-terminal-threads.js";
 import {
-  forgetClosedNativeQuestions,
   interruptNativeTerminalQuestions,
   isClosedNativeQuestion,
   NATIVE_QUESTION_ANSWERED_REASON,
@@ -460,7 +459,6 @@ export function clearNativeTerminalStateOnExit(
   const record = getNativeTerminalThread(deps.db, session.threadId);
   if (record === null || record.terminalSessionId !== session.id) return;
   interruptNativeTerminalQuestions(deps, session.threadId);
-  forgetClosedNativeQuestions(deps, session.threadId);
   clearThreadRowState(deps.db, session.threadId);
   deps.hub.notifyThread(session.threadId, ["status-changed"]);
   if (session.closeReason === "process-exit") {
