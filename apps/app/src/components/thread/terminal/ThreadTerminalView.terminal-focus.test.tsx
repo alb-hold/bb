@@ -306,7 +306,7 @@ describe("ThreadTerminalView terminal focus boundary", () => {
       this: Terminal,
       element: HTMLElement,
     ) {
-      mountedTerminal = this;
+      mountedTerminal ??= this;
       openTerminal.call(this, element);
     });
     const getTerminal = () => {
@@ -367,11 +367,13 @@ describe("ThreadTerminalView terminal focus boundary", () => {
     );
     fitCols = 38;
     fitRows = 5;
-    socket.receive({
-      type: "session-updated",
-      session: { ...session, cols: 38, rows: 5 },
+    await act(async () => {
+      socket.receive({
+        type: "session-updated",
+        session: { ...session, cols: 38, rows: 5 },
+      });
+      await Promise.resolve();
     });
-    act(() => getTerminal().resize(38, 5));
     await waitForReadinessCondition(
       () => {
         expect(getTerminal().cols).toBe(38);
