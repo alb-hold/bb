@@ -1,13 +1,21 @@
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import {
+  spawn,
+  spawnSync,
+  type ChildProcessWithoutNullStreams,
+} from "node:child_process";
 import {
   appendFileSync,
+  lstatSync,
   mkdirSync,
   readdirSync,
   readFileSync,
+  readlinkSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
+import { readFile as readFilePromise } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { ProviderNativeTerminal } from "@bb/domain";
@@ -584,11 +592,21 @@ describe.skipIf(process.platform === "win32")(
       expect([...read.records.map(toolOf)].sort()).toEqual([...tools].sort());
       expect(markers(directory)).toEqual([]);
       expect(readdirSync(directory).includes("hooks.lock")).toBe(false);
-    });
+    }, 30_000);
 
-    it("makes a hook wait for a held lock, and appends once the lock is released", async () => {
+    const deadPid = async (): Promise<number> => {
+      const child = spawn("sh", ["-c", "exit 0"]);
+      const exited = new Promise<void>((resolve) => {
+        child.once("exit", () => resolve());
+      });
+      await exited;
+      if (child.pid === undefined) throw new Error("no pid");
+      return child.pid;
+    };
+
+    it("makes a hook wait for a lock held by a live process, and appends once it is released", async () => {
       const { commandFor, directory, file, lock } = appendFixture();
-      mkdirSync(lock);
+      symlinkSync(String(process.pid), lock);
       const waiting = startHook(commandFor("PermissionRequest"));
       waiting.child.stdin.end(
         record("PermissionRequest", { tool_name: "Held" }),
@@ -596,44 +614,143 @@ describe.skipIf(process.platform === "win32")(
       await until(() => markers(directory).length === 1, "the hook marker");
       await new Promise((resolve) => setTimeout(resolve, 300));
       expect(statSync(file).size).toBe(0);
-      rmSync(lock, { recursive: true });
+      rmSync(lock);
       await waiting.exited;
       expect(new HookAppendReader(file).read().records.map(toolOf)).toEqual([
         "Held",
       ]);
       expect(markers(directory)).toEqual([]);
+    }, 30_000);
+
+    it("does not give up on a slow live holder: a waiter that waits several seconds still appends its record", async () => {
+      const { commandFor, directory, file, lock } = appendFixture();
+      symlinkSync(String(process.pid), lock);
+      const waiting = startHook(commandFor("PermissionRequest"));
+      waiting.child.stdin.end(
+        record("PermissionRequest", { tool_name: "Patient" }),
+      );
+      await new Promise((resolve) => setTimeout(resolve, 4_000));
+      expect(statSync(file).size).toBe(0);
+      expect(readdirSync(directory).some((name) => name.startsWith(".lost."))).toBe(
+        false,
+      );
+      rmSync(lock);
+      await waiting.exited;
+      expect(new HookAppendReader(file).read().records.map(toolOf)).toEqual([
+        "Patient",
+      ]);
+    }, 30_000);
+
+    it("leaves neither a lock nor a marker behind after a normal append", async () => {
+      const { commandFor, directory, file } = appendFixture();
+      await runWhole(
+        commandFor("PermissionRequest"),
+        record("PermissionRequest", { tool_name: "Once" }),
+      );
+      expect(readdirSync(directory)).toEqual(["hooks.jsonl"]);
+      expect(new HookAppendReader(file).read().records.map(toolOf)).toEqual([
+        "Once",
+      ]);
     });
 
-    it("breaks a stale lock by rename-then-remove, counts it once, leaves a fresh lock alone, and lets the next hook append", async () => {
-      const { commandFor, directory, file, lock } = appendFixture();
-      mkdirSync(lock);
+    it("holds the lock for the whole append, as a symlink naming its own pid, and releases it afterwards", async () => {
+      const { commandFor, file, lock } = appendFixture();
+      rmSync(file);
+      spawnSync("mkfifo", [file]);
+      const writer = startHook(commandFor("PermissionRequest"));
+      const payload = record("PermissionRequest", { tool_name: "Fifo" });
+      writer.child.stdin.end(payload);
+      await until(() => {
+        try {
+          return lstatSync(lock).isSymbolicLink();
+        } catch {
+          return false;
+        }
+      }, "the lock");
+      expect(readlinkSync(lock)).toBe(String(writer.child.pid));
+      expect(await readFilePromise(file, "utf8")).toBe(`${payload}\n`);
+      await writer.exited;
+      expect(() => lstatSync(lock)).toThrow();
+    }, 30_000);
+
+    it("never breaks a lock whose holder is alive, however old, until the pid-reuse bound; then breaks it and counts it", () => {
+      const { directory, file, lock } = appendFixture();
+      symlinkSync(String(process.pid), lock);
       const reader = new HookAppendReader(file);
       const start = Date.now();
       expect(reader.read(start)).toEqual({ records: [], unreadable: 0 });
+      expect(reader.read(start + 11_000).unreadable).toBe(0);
+      expect(reader.read(start + 5 * 60_000).unreadable).toBe(0);
       expect(readdirSync(directory)).toContain("hooks.lock");
-      expect(reader.read(start + 11_000)).toEqual({
-        records: [],
-        unreadable: 1,
-      });
-      expect(readdirSync(directory).filter((name) => name.startsWith("hooks.lock")))
-        .toEqual([]);
-      expect(reader.read(start + 14_000).unreadable).toBe(0);
+      expect(reader.read(start + 11 * 60_000).unreadable).toBe(1);
+      expect(
+        readdirSync(directory).filter((name) => name.startsWith("hooks.lock")),
+      ).toEqual([]);
+    });
+
+    it("breaks the lock of a dead holder at once, counts it once, and lets the next hook append", async () => {
+      const { commandFor, directory, file, lock } = appendFixture();
+      symlinkSync(String(await deadPid()), lock);
+      const reader = new HookAppendReader(file);
+      const start = Date.now();
+      expect(reader.read(start)).toEqual({ records: [], unreadable: 1 });
+      expect(
+        readdirSync(directory).filter((name) => name.startsWith("hooks.lock")),
+      ).toEqual([]);
+      expect(reader.read(start + 3_000).unreadable).toBe(0);
       await runWhole(
         commandFor("PermissionRequest"),
         record("PermissionRequest", { tool_name: "After" }),
       );
-      expect(reader.read(start + 16_000).records.map(toolOf)).toEqual(["After"]);
+      expect(reader.read(start + 6_000).records.map(toolOf)).toEqual(["After"]);
     });
 
-    it("gives up after a bounded spin on a lock that stays held, leaving a marker that is counted once as lost evidence", async () => {
+    it("handles the mkdir lock used where symlinks are unsupported: a dead pid inside is broken, a lock with no pid is live until the bound", async () => {
       const { directory, file, lock } = appendFixture();
       mkdirSync(lock);
+      const reader = new HookAppendReader(file);
+      const start = Date.now();
+      expect(reader.read(start).unreadable).toBe(0);
+      expect(reader.read(start + 11_000).unreadable).toBe(0);
+      writeFileSync(path.join(lock, "pid"), String(await deadPid()));
+      expect(reader.read(start + 14_000).unreadable).toBe(1);
+      expect(
+        readdirSync(directory).filter((name) => name.startsWith("hooks.lock")),
+      ).toEqual([]);
+      mkdirSync(lock);
+      expect(reader.read(start + 17_000).unreadable).toBe(0);
+      expect(reader.read(start + 11 * 60_000).unreadable).toBe(1);
+    });
+
+    it("waits behind a mkdir lock held by a live process too", async () => {
+      const { commandFor, file, lock } = appendFixture();
+      mkdirSync(lock);
+      writeFileSync(path.join(lock, "pid"), String(process.pid));
+      const waiting = startHook(commandFor("PermissionRequest"));
+      waiting.child.stdin.end(
+        record("PermissionRequest", { tool_name: "Dir" }),
+      );
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      expect(statSync(file).size).toBe(0);
+      rmSync(lock, { recursive: true });
+      await waiting.exited;
+      expect(new HookAppendReader(file).read().records.map(toolOf)).toEqual([
+        "Dir",
+      ]);
+    }, 30_000);
+
+    it("renames its marker to .lost.<pid> when it finally gives up, and the reader counts it at once, once", async () => {
+      const { directory, file, lock } = appendFixture();
+      symlinkSync(String(process.pid), lock);
       await runWhole(
-        hookAppendCommand(file, 20),
+        hookAppendCommand(file, 12),
         record("PermissionRequest", { tool_name: "Never" }),
       );
       expect(statSync(file).size).toBe(0);
-      expect(markers(directory)).toHaveLength(1);
+      expect(markers(directory)).toEqual([]);
+      expect(
+        readdirSync(directory).filter((name) => name.startsWith(".lost.")),
+      ).toHaveLength(1);
       const reader = new HookAppendReader(file);
       const start = Date.now();
       expect(reader.read(start).unreadable).toBe(1);
