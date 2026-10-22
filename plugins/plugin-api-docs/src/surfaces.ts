@@ -1353,7 +1353,7 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
         bullets: [
           "Create threads, send messages, manage projects and machines, and attribute threads to the plugin.",
           "Read thread, context, prompt history, host and environment state; manage Viewed file marks.",
-          "Clean up environments, retrying failures with recover: true; control safe mode and attention rings.",
+          "Retry cleanup with recover: true after inspecting workspace processes; control safe mode, rings.",
           "Use app and CLI operations with ownership controls; start updates and track progress or rollback.",
         ],
         apiSymbols: [
