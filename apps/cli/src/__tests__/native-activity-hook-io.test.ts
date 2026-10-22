@@ -661,12 +661,29 @@ describe.skipIf(process.platform === "win32")(
       );
       const lines = readFileSync(file, "utf8").split("\n").filter(Boolean);
       expect(lines).toHaveLength(tools.length);
-      const read = new HookAppendReader(file).read();
-      expect(read.unreadable).toBe(0);
-      expect(read.records.map(toolOf)).toEqual(
-        lines.map((line) => toolOf(JSON.parse(line))),
-      );
-      expect([...read.records.map(toolOf)].sort()).toEqual([...tools].sort());
+      const reader = new HookAppendReader(file);
+      const delivered: string[] = [];
+      let unreadable = 0;
+      let polls = 0;
+      let firstPollBytes = 0;
+      while (delivered.length < tools.length && polls < 10) {
+        const read = reader.read();
+        const names = read.records.map(toolOf);
+        expect(names.length).toBeGreaterThan(0);
+        if (polls === 0) {
+          firstPollBytes = lines
+            .slice(0, names.length)
+            .reduce((sum, line) => sum + Buffer.byteLength(line) + 1, 0);
+        }
+        delivered.push(...names);
+        unreadable += read.unreadable;
+        polls += 1;
+      }
+      expect(delivered).toEqual(lines.map((line) => toolOf(JSON.parse(line))));
+      expect([...delivered].sort()).toEqual([...tools].sort());
+      expect(unreadable).toBe(0);
+      expect(firstPollBytes).toBeLessThanOrEqual(4 * 1024 * 1024);
+      expect(reader.read()).toEqual({ records: [], unreadable: 0 });
       expect(markers(directory)).toEqual([]);
       expect(readdirSync(directory).includes("hooks.lock")).toBe(false);
     }, 30_000);
