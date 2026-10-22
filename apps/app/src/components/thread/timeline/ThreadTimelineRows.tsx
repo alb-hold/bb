@@ -246,6 +246,7 @@ interface TimelineRowsListProps {
   scopeActive: boolean;
   showAssistantMessageActions: boolean;
   spacing: TimelineRowsListSpacing;
+  threadIsActive?: boolean;
   className?: string;
   unreadDividerPlacement: ThreadTimelineUnreadDividerPlacement | null;
   unreadDividerAutoScroll?: boolean;
@@ -293,6 +294,8 @@ interface TimelineSystemDetailBlockProps {
 
 interface BuildTimelineRowsListItemsArgs {
   rows: readonly ThreadTimelineViewRow[];
+  threadIsActive?: boolean;
+  excludedInterruptionRowIds?: ReadonlySet<string>;
   unreadDividerPlacement: ThreadTimelineUnreadDividerPlacement | null;
 }
 
@@ -346,6 +349,11 @@ type TimelineRowsListItem =
   | {
       kind: "row";
       row: ThreadTimelineViewRow;
+    }
+  | {
+      kind: "interruption-group";
+      id: string;
+      rows: readonly ThreadTimelineViewRow[];
     }
   | {
       kind: "unread-divider";
@@ -2152,6 +2160,8 @@ function isUnreadDividerCandidateAfterCutoff({
 
 export function buildTimelineRowsListItems({
   rows,
+  threadIsActive = false,
+  excludedInterruptionRowIds = EMPTY_ROW_ID_SET,
   unreadDividerPlacement,
 }: BuildTimelineRowsListItemsArgs): TimelineRowsListItem[] {
   const items: TimelineRowsListItem[] = [];
@@ -2160,14 +2170,124 @@ export function buildTimelineRowsListItems({
     unreadDividerPlacement,
   });
 
-  for (const [index, row] of rows.entries()) {
+  for (let index = 0; index < rows.length;) {
     if (index === dividerIndex) {
       items.push({ kind: "unread-divider", id: "thread-unread-divider" });
     }
-    items.push({ kind: "row", row });
+    const row = rows[index];
+    if (row === undefined) break;
+    if (
+      !isThreadInterruptionErrorRow(row) ||
+      excludedInterruptionRowIds.has(row.id)
+    ) {
+      items.push({
+        kind: "row",
+        row: presentInterruptionRow({ rows, row, threadIsActive }),
+      });
+      index += 1;
+      continue;
+    }
+
+    const groupEndIndex = findInterruptionGroupEndIndex({
+      rows,
+      startIndex: index,
+      dividerIndex,
+      excludedInterruptionRowIds,
+    });
+    const groupRows = rows.slice(index, groupEndIndex).map((interruptionRow) =>
+      presentInterruptionRow({
+        rows,
+        row: interruptionRow,
+        threadIsActive,
+      }),
+    );
+    if (groupRows.length > 1) {
+      items.push({
+        kind: "interruption-group",
+        id: `interruption-group:${row.id}`,
+        rows: groupRows,
+      });
+    } else {
+      items.push({ kind: "row", row: groupRows[0] ?? row });
+    }
+    index = groupEndIndex;
   }
 
   return items;
+}
+
+type TimelineInterruptionErrorRow = Extract<
+  ThreadTimelineViewRow,
+  { kind: "system" }
+> & { systemKind: "error" };
+
+const THREAD_INTERRUPTION_RETRY_DETAIL = "Please retry the thread to continue.";
+
+function isThreadInterruptionErrorRow(
+  row: ThreadTimelineViewRow,
+): row is TimelineInterruptionErrorRow {
+  return (
+    row.kind === "system" &&
+    row.systemKind === "error" &&
+    row.title.startsWith("Thread interrupted because ") &&
+    row.detail === THREAD_INTERRUPTION_RETRY_DETAIL
+  );
+}
+
+function hasLaterTurn(
+  rows: readonly ThreadTimelineViewRow[],
+  row: ThreadTimelineViewRow,
+): boolean {
+  return rows.some(
+    (candidate) =>
+      candidate.sourceSeqStart > row.sourceSeqEnd &&
+      (candidate.kind === "turn" ||
+        (candidate.turnId !== null && candidate.turnId !== row.turnId)),
+  );
+}
+
+function presentInterruptionRow({
+  rows,
+  row,
+  threadIsActive,
+}: {
+  rows: readonly ThreadTimelineViewRow[];
+  row: ThreadTimelineViewRow;
+  threadIsActive: boolean;
+}): ThreadTimelineViewRow {
+  if (
+    isThreadInterruptionErrorRow(row) &&
+    (threadIsActive || hasLaterTurn(rows, row))
+  ) {
+    return { ...row, detail: null };
+  }
+  return row;
+}
+
+function findInterruptionGroupEndIndex({
+  rows,
+  startIndex,
+  dividerIndex,
+  excludedInterruptionRowIds,
+}: {
+  rows: readonly ThreadTimelineViewRow[];
+  startIndex: number;
+  dividerIndex: number;
+  excludedInterruptionRowIds: ReadonlySet<string>;
+}): number {
+  let endIndex = startIndex + 1;
+  while (endIndex < rows.length && endIndex !== dividerIndex) {
+    const candidate = rows[endIndex];
+    if (
+      candidate === undefined ||
+      !isThreadInterruptionErrorRow(candidate) ||
+      excludedInterruptionRowIds.has(candidate.id)
+    ) {
+      break;
+    }
+    endIndex += 1;
+  }
+  return endIndex;
 }
 
 function TimelineRowItemWrapper({
@@ -2211,6 +2331,48 @@ function TimelineRowItemWrapper({
   );
 }
 
+function TimelineInterruptionGroupView({
+  activeLatestBundleId,
+  compactActivityIntents,
+  rows,
+  scopeActive,
+  showAssistantMessageActions,
+}: {
+  activeLatestBundleId: string | null;
+  compactActivityIntents: boolean;
+  rows: readonly ThreadTimelineViewRow[];
+  scopeActive: boolean;
+  showAssistantMessageActions: boolean;
+}) {
+  return (
+    <details className="min-w-0 rounded-md text-muted-foreground">
+      <summary className="group flex min-w-0 cursor-pointer list-none items-center gap-1.5 rounded-md px-2 py-0.5 text-left text-sm hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+        <Icon
+          name="ChevronRight"
+          className="size-3.5 shrink-0 transition-transform group-open:rotate-90"
+          aria-hidden
+        />
+        <span className="font-medium">{rows.length} interruptions</span>
+        <span className="font-mono text-xs text-destructive-text">error</span>
+      </summary>
+      <div className="ml-3 flex min-w-0 flex-col gap-2 border-l border-border/60 pl-2 pt-1">
+        {rows.map((row) => (
+          <div key={row.id} data-timeline-row-id={row.id}>
+            <MemoizedTimelineRowView
+              activeLatestBundleId={activeLatestBundleId}
+              compactActivityIntents={compactActivityIntents}
+              row={row}
+              scopeActive={scopeActive}
+              showAssistantMessageActions={showAssistantMessageActions}
+              spacing="nested"
+            />
+          </div>
+        ))}
+      </div>
+    </details>
+  );
+}
+
 function estimateTimelineWindowedRowHeight(
   row: ThreadTimelineViewRow,
   spacing: TimelineRowsListSpacing,
@@ -2239,6 +2401,7 @@ function TimelineRowsList({
   flatTurnTokenSummaryThreadId,
   flatTurnTokenSummaryExcludedTurnId,
   scopeActive,
+  threadIsActive = false,
   showAssistantMessageActions,
   spacing,
   className,
@@ -2281,22 +2444,44 @@ function TimelineRowsList({
         : undefined,
     [flatTurnTokenSummaryExcludedTurnId, flatTurnTokenSummaryThreadId, rows],
   );
+  const excludedInterruptionRowIds = useMemo(
+    () =>
+      new Set([
+        ...stableSearchExpandedRowIds,
+        ...(navigationTargetRowId === undefined ||
+        navigationTargetRowId === null
+          ? []
+          : [navigationTargetRowId]),
+      ]),
+    [navigationTargetRowId, stableSearchExpandedRowIds],
+  );
   const items = useMemo(
-    () => buildTimelineRowsListItems({ rows, unreadDividerPlacement }),
-    [rows, unreadDividerPlacement],
+    () =>
+      buildTimelineRowsListItems({
+        rows,
+        threadIsActive,
+        excludedInterruptionRowIds,
+        unreadDividerPlacement,
+      }),
+    [excludedInterruptionRowIds, rows, threadIsActive, unreadDividerPlacement],
   );
   const itemKeys = useMemo(
     () =>
-      items.map((item) =>
-        item.kind === "row" ? item.row.id : `divider:${item.id}`,
-      ),
+      items.map((item) => {
+        if (item.kind === "row") return item.row.id;
+        return item.kind === "interruption-group"
+          ? item.id
+          : `divider:${item.id}`;
+      }),
     [items],
   );
   const alwaysMountedKeys = useMemo(() => {
     const keys = new Set<string>();
-    const lastRow = rows.at(-1);
-    if (lastRow !== undefined) {
-      keys.add(lastRow.id);
+    const lastItem = items.at(-1);
+    if (lastItem !== undefined) {
+      if (lastItem.kind === "row") keys.add(lastItem.row.id);
+      else if (lastItem.kind === "interruption-group") keys.add(lastItem.id);
+      else keys.add(`divider:${lastItem.id}`);
     }
     for (const item of items) {
       if (item.kind === "unread-divider") {
@@ -2315,7 +2500,6 @@ function TimelineRowsList({
     return keys;
   }, [
     items,
-    rows,
     scrollRestoreRowId,
     spacing,
     stableSearchExpandedRowIds,
@@ -2352,9 +2536,10 @@ function TimelineRowsList({
             alwaysMountedKeys={alwaysMountedKeys}
             estimateItemHeight={(index) => {
               const item = items[index];
-              return item?.kind === "row"
-                ? estimateTimelineWindowedRowHeight(item.row, spacing)
-                : 28;
+              if (item?.kind === "row") {
+                return estimateTimelineWindowedRowHeight(item.row, spacing);
+              }
+              return 28;
             }}
             gap={spacing === "bundle" ? 0 : 8}
             getScrollElement={getWindowingScrollElement}
@@ -2384,7 +2569,30 @@ function TimelineRowsList({
                     data-timeline-window-key={`divider:${item.id}`}
                     style={windowedState.itemStyle}
                   >
-                    <TimelineUnreadDivider autoScroll={unreadDividerAutoScroll} />
+                    <TimelineUnreadDivider
+                      autoScroll={unreadDividerAutoScroll}
+                    />
+                  </div>
+                );
+              }
+              if (item.kind === "interruption-group") {
+                return (
+                  <div
+                    key={item.id}
+                    ref={windowedState.itemRef}
+                    data-index={windowedState.itemIndex}
+                    data-timeline-row-id={item.id}
+                    data-timeline-window-key={item.id}
+                    className="max-md:[contain-intrinsic-block-size:auto_1.25rem]"
+                    style={windowedState.itemStyle}
+                  >
+                    <TimelineInterruptionGroupView
+                      activeLatestBundleId={activeLatestBundleId}
+                      compactActivityIntents={compactActivityIntents}
+                      rows={item.rows}
+                      scopeActive={scopeActive}
+                      showAssistantMessageActions={showAssistantMessageActions}
+                    />
                   </div>
                 );
               }
@@ -2711,6 +2919,9 @@ function ThreadTimelineRowsForTimelineView(props: ThreadTimelineRowsProps) {
                                   : undefined
                               }
                               scopeActive={scopeActive}
+                              threadIsActive={
+                                shouldExcludeActiveTurnTokenSummary
+                              }
                               showAssistantMessageActions={true}
                               compactActivityIntents={false}
                               spacing="top-level"

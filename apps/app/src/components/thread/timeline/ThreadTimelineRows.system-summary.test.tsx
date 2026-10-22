@@ -8,7 +8,10 @@ import type { TimelineRow } from "@bb/server-contract";
 import { ThreadTitleMentionResourcesProvider } from "@/components/thread/ThreadTitleMentions";
 import { systemRow } from "@/test/fixtures/thread-timeline-rows";
 import { makeThreadListEntry } from "@bb/test-helpers/domain-fixtures";
-import { ThreadTimelineRows } from "./ThreadTimelineRows";
+import {
+  buildTimelineRowsListItems,
+  ThreadTimelineRows,
+} from "./ThreadTimelineRows";
 
 function renderRow(row: TimelineRow) {
   return render(
@@ -57,6 +60,98 @@ function preview() {
 }
 
 describe("system summary overflow", () => {
+  it("groups consecutive thread interruptions and expands their individual entries", () => {
+    const interruptionRows = Array.from({ length: 12 }, (_, index) =>
+      systemRow({
+        id: `interruption-${index + 1}`,
+        threadId: "thr_main",
+        systemKind: "error",
+        title:
+          index % 2 === 0
+            ? "Thread interrupted because the connection to the host was lost"
+            : "Thread interrupted because the host daemon disconnected",
+        detail: "Please retry the thread to continue.",
+        status: "error",
+        seq: index + 1,
+        sourceSeqStart: index + 1,
+        sourceSeqEnd: index + 1,
+        startedAt: index + 1,
+        createdAt: index + 1,
+      }),
+    );
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <MemoryRouter>
+          <ThreadTimelineRows
+            threadId="thr_main"
+            timelineRows={interruptionRows}
+            threadRuntimeDisplayStatus="idle"
+            workspaceRootPath={undefined}
+          />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    const groupDetails = screen
+      .getByText("12 interruptions")
+      .closest("details");
+    expect(groupDetails?.open).toBe(false);
+    expect(interruptionRows).toHaveLength(12);
+    expect(screen.getAllByText(/Thread interrupted because/)).toHaveLength(12);
+    fireEvent.click(screen.getByText("12 interruptions"));
+    expect(groupDetails?.open).toBe(true);
+    const expandedReasons = screen.getAllByText(/Thread interrupted because/);
+    expect(expandedReasons).toHaveLength(12);
+  });
+
+  it("hides retry instructions after a later turn or while the thread is active", () => {
+    const interruption = systemRow({
+      id: "interruption",
+      threadId: "thr_main",
+      systemKind: "error",
+      title: "Thread interrupted because the host daemon disconnected",
+      detail: "Please retry the thread to continue.",
+      status: "error",
+      seq: 1,
+      sourceSeqStart: 1,
+      sourceSeqEnd: 1,
+      startedAt: 1,
+      createdAt: 1,
+    });
+    const laterTurn = systemRow({
+      id: "later-turn",
+      threadId: "thr_main",
+      systemKind: "error",
+      title: "Later turn event",
+      detail: null,
+      status: "error",
+      seq: 2,
+      sourceSeqStart: 2,
+      sourceSeqEnd: 2,
+      startedAt: 2,
+      createdAt: 2,
+      turnId: "turn-later",
+    });
+    const displayedDetail = (rows: TimelineRow[], threadIsActive = false) => {
+      const firstItem = buildTimelineRowsListItems({
+        rows,
+        threadIsActive,
+        excludedInterruptionRowIds: new Set(),
+        unreadDividerPlacement: null,
+      })[0];
+      return firstItem?.kind === "row" && firstItem.row.kind === "system"
+        ? firstItem.row.detail
+        : null;
+    };
+
+    expect(displayedDetail([interruption])).toBe(
+      "Please retry the thread to continue.",
+    );
+    expect(displayedDetail([interruption, laterTurn])).toBeNull();
+    expect(displayedDetail([interruption], true)).toBeNull();
+    expect(interruption.detail).toBe("Please retry the thread to continue.");
+  });
+
   it("links a thread title through the target thread's project", () => {
     const targetThread = makeThreadListEntry({
       id: "thr_target",

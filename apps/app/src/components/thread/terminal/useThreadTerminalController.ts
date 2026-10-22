@@ -687,7 +687,9 @@ export function useThreadTerminalController({
 
   const terminalBodyMessage = terminalIsStarting
     ? inactiveTerminalBodyMessage
-    : "No terminals";
+    : terminalsQuery.isLoading
+      ? "Loading terminals..."
+      : "No terminals";
 
   return {
     activeSession,
