@@ -28,12 +28,21 @@ function hasSystemErrorCode(cause: unknown): boolean {
   );
 }
 
-function isTransportFailure(error: unknown): boolean {
+const MAX_TRANSPORT_CAUSE_DEPTH = 3;
+
+function isTransportFailure(error: unknown, depth = 0): boolean {
   if (error instanceof BbRequestTimeoutError) return true;
-  return (
+  if (
     error instanceof TypeError &&
     (UNDICI_TRANSPORT_MESSAGES.has(error.message) ||
       hasSystemErrorCode(error.cause))
+  ) {
+    return true;
+  }
+  return (
+    error instanceof Error &&
+    depth < MAX_TRANSPORT_CAUSE_DEPTH &&
+    isTransportFailure(error.cause, depth + 1)
   );
 }
 

@@ -179,6 +179,67 @@ describe("native session rebinder", () => {
     },
   );
 
+  describe("unit cases with hand-built errors wrapping a cause", () => {
+    const wrap = (cause: unknown) => new Error("wrapped", { cause });
+    const deep = (levels: number, bottom: unknown) => {
+      let error: unknown = bottom;
+      for (let index = 0; index < levels; index += 1) error = wrap(error);
+      return error;
+    };
+
+    it.each([
+      ["a wrapped fetch failure", wrap(new TypeError("fetch failed"))],
+      [
+        "a doubly wrapped fetch failure",
+        wrap(wrap(new TypeError("fetch failed"))),
+      ],
+      [
+        "three wrappers above a fetch failure",
+        deep(3, new TypeError("fetch failed")),
+      ],
+      ["a wrapped client timeout", wrap(new BbRequestTimeoutError(10_000))],
+    ])("retries %s", async (_name, failure) => {
+      const { rebinder, refused } = setup("c", (_attempt, index) =>
+        index === 0 ? failure : {},
+      );
+      rebinder.enqueue({ previousSessionId: A, sessionId: B });
+      await rebinder.settled();
+      expect(rebinder.pending()).toBe(1);
+      expect(refused).toEqual([]);
+    });
+
+    it.each([
+      ["a plain error with a plain cause", wrap(new Error("boom"))],
+      ["a plain error with no cause", new Error("boom")],
+      [
+        "a transport failure below the depth bound",
+        deep(4, new TypeError("fetch failed")),
+      ],
+      [
+        "a wrapped programming TypeError",
+        wrap(new TypeError("x is not a function")),
+      ],
+    ])("gives up for good on %s", async (_name, failure) => {
+      const { attempts, rebinder, refused } = setup("c", () => failure);
+      rebinder.enqueue({ previousSessionId: A, sessionId: B });
+      await rebinder.settled();
+      expect(refused).toEqual([{ code: "unexpected_error", sessionId: B }]);
+      rebinder.retry();
+      await rebinder.settled();
+      expect(attempts).toHaveLength(1);
+    });
+
+    it("terminates on a cyclic cause chain and treats it as unexpected_error", async () => {
+      const a = new Error("a");
+      const b = new Error("b", { cause: a });
+      Object.defineProperty(a, "cause", { value: b });
+      const { rebinder, refused } = setup("c", () => a);
+      rebinder.enqueue({ previousSessionId: A, sessionId: B });
+      await rebinder.settled();
+      expect(refused).toEqual([{ code: "unexpected_error", sessionId: B }]);
+    });
+  });
+
   it("names an unexpected answer without a code by its status", async () => {
     const { rebinder, refused } = setup(
       "c",
