@@ -341,8 +341,13 @@ refuses them.
 
 Writing assistance: the native terminal composer has a microphone and typing assistance. Dictation
 records phrase by phrase: each pause ends a short clip that is transcribed by the
-`voice` service and then punctuated and formatted by the `writing` service, so
-no recording is re-uploaded and raw audio is not kept. The server measures each
+`voice` service and then punctuated and formatted by the `writing` service. Each
+clip is uploaded once and the server passes it only to the `voice` service;
+formatting gets the transcript text, never audio. A clip whose upload fails is
+sent once more automatically, and again only if you choose Retry. bb keeps no
+audio: the server holds a clip in memory for its request and writes it to
+neither disk nor the database (what the voice service's provider keeps is up to
+that provider). The server measures each
 clip from its encoded audio (WebM or Ogg with Opus, MP4 or M4A with AAC, MP3, or
 WAV): the longer of its summed audio frames and the playback timeline its
 timestamps describe, so a gap between timestamps counts as recorded time (for
@@ -382,7 +387,11 @@ terms. Each edit says what to do with a term to remove that is not in the
 vocabulary (`ifMissing`). `bb settings writing vocabulary remove` sends
 `fail`: it changes nothing and fails, naming the missing term. The Settings
 page sends `ignore`: a term that is already gone is skipped and the rest of the
-edit applies. SDK callers choose either one.
+edit applies. SDK callers choose either one. The vocabulary changes only
+through these edits (`writingAssistance.editVocabulary`):
+`writingAssistance.updateSettings` and `PUT /api/v1/writing-assistance/settings`
+reject a `vocabulary` field, and a settings update never rewrites the
+vocabulary.
 
 Automatic typing correction applies an edit by itself only when its meaning cannot
 change, whatever the AI service reports: capitalizing the first word of a
