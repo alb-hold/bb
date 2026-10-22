@@ -210,14 +210,29 @@ export async function shutdownHttpBeforePlugins(args: {
   databaseCanClose = webSocketsClosedWithinBound;
   if (args.flushTerminalOutputBeforeClose !== undefined) {
     const flushController = new AbortController();
-    const flushed = await waitAtMost(
-      Promise.resolve().then(() =>
-        args.flushTerminalOutputBeforeClose!(flushController.signal),
-      ),
-      SERVER_TERMINAL_OUTPUT_FLUSH_TIMEOUT_MS,
+    const flushOutcome = await new Promise<"completed" | "failed" | "timed-out">(
+      (resolve) => {
+        const timer = setTimeout(
+          () => resolve("timed-out"),
+          SERVER_TERMINAL_OUTPUT_FLUSH_TIMEOUT_MS,
+        );
+        void Promise.resolve()
+          .then(() => args.flushTerminalOutputBeforeClose!(flushController.signal))
+          .then(
+            () => {
+              clearTimeout(timer);
+              resolve("completed");
+            },
+            () => {
+              clearTimeout(timer);
+              resolve("failed");
+            },
+          );
+      },
     );
-    if (!flushed) flushController.abort();
-    completedWithinBounds = flushed && completedWithinBounds;
+    if (flushOutcome !== "completed") flushController.abort(flushOutcome);
+    completedWithinBounds =
+      flushOutcome === "completed" && completedWithinBounds;
   }
   const httpClosed = await waitAtMost(closed, SERVER_HTTP_CLOSE_WAIT_TIMEOUT_MS);
   completedWithinBounds = httpClosed && completedWithinBounds;

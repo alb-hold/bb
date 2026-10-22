@@ -1,4 +1,5 @@
 import { Socket } from "node:net";
+import { once } from "node:events";
 import { setTimeout as delay } from "node:timers/promises";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -31,6 +32,7 @@ import {
   createTestAppHarness,
   type TestAppHarness,
 } from "../../../test/helpers/test-app.js";
+import { shutdownServerRuntime, startHttpListener } from "../../start-server.js";
 
 const V = TERMINAL_DATA_PLANE_IPC_VERSION;
 const harnesses: TestAppHarness[] = [];
@@ -251,44 +253,143 @@ describe("terminal output retained from the data plane", () => {
     }
   }, 15_000);
 
-  it("prevents replay writes after a timed-out shutdown flush", async () => {
+  it("stops a marker replay before the database closes during bounded shutdown", async () => {
     const fixture = await setup();
     const warn = vi.spyOn(fixture.harness.deps.logger, "warn");
-    const chunks = Array.from({ length: 20_000 }, (_, seq) => ({
+    const send = vi
+      .spyOn(fixture.hub, "sendDaemonSessionMessage")
+      .mockImplementation((sessionId, message) => {
+        if (message.type === "terminal.open") {
+          fixture.terminalSessions.handleDaemonTerminalMessage({
+            hostId: fixture.host.id,
+            sessionId,
+            message: {
+              type: "terminal.opened",
+              requestId: message.requestId,
+              terminalId: message.terminalId,
+              shell: "/bin/sh",
+              title: "Marker replay",
+              initialCwd: "/tmp",
+              cols: message.cols,
+              rows: message.rows,
+            },
+          });
+        }
+        return true;
+      });
+    const markerTerminal = await fixture.terminalSessions.createTerminal({
+      payload: {
+        cols: 80,
+        rows: 24,
+        target: { kind: "host_path", hostId: fixture.host.id, cwd: "/tmp" },
+        title: "Marker replay",
+      },
+    });
+    send.mockRestore();
+    const marker = `\u001b]7717;bb-holder;${markerTerminal.id}\u0007`;
+    const replayData = Buffer.alloc(384, "r").toString("base64");
+    const chunks = Array.from({ length: 200_000 }, (_, seq) => ({
       seq,
-      dataBase64: Buffer.from("replay").toString("base64"),
+      dataBase64:
+        seq === 199_999
+          ? Buffer.from(`${"r".repeat(280)}${marker}`).toString("base64")
+          : replayData,
     }));
+    const replay = Promise.resolve(
+      fixture.terminalSessions.handleDaemonTerminalMessage({
+        hostId: fixture.host.id,
+        sessionId: fixture.session.id,
+        message: {
+          type: "terminal.replay",
+          requestId: "shutdown-marker-replay",
+          terminalId: markerTerminal.id,
+          replayStartSeq: 0,
+          nextSeq: chunks.length,
+          chunks,
+        },
+      }),
+    );
+    let replaySettled = false;
+    void replay.then(() => {
+      replaySettled = true;
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(replaySettled).toBe(false);
+    const server = startHttpListener({
+      fetch: async () => new Response("ok"),
+      logger: fixture.harness.deps.logger,
+      serverConfig: { BB_SERVER_BIND_HOST: "127.0.0.1", BB_SERVER_PORT: 0 },
+    });
+    await once(server, "listening");
+    const result = await shutdownServerRuntime({
+      closeWebSockets: async () => undefined,
+      db: fixture.db,
+      logger: fixture.harness.deps.logger,
+      stopPeriodicUpdateChecks: async () => undefined,
+      stopPlugins: async () => undefined,
+      server,
+      stopTerminalDataPlane: () => fixture.child.shutdown(),
+      flushTerminalOutputBeforeClose: async (signal) => {
+        await fixture.terminalSessions.flushRetainedOutputBeforeClose(signal);
+      },
+    });
+    expect(result.completedWithinBounds).toBe(false);
+    expect(replaySettled).toBe(false);
+    await expect(replay).resolves.toBeUndefined();
+    expect(warn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        terminals: [
+          expect.objectContaining({ terminalId: markerTerminal.id }),
+        ],
+      }),
+      "Terminal output shutdown flush timed out; pending output was not written",
+    );
+  }, 15_000);
+
+  it("logs a failed shutdown flush as failed rather than timed out", async () => {
+    const fixture = await setup();
+    const warn = vi.spyOn(fixture.harness.deps.logger, "warn");
+    const chunks = replayChunks(20_000);
     const replay = fixture.terminalSessions.handleDaemonTerminalMessage({
       hostId: fixture.host.id,
       sessionId: fixture.session.id,
       message: {
         type: "terminal.replay",
-        requestId: "shutdown-timeout-replay",
+        requestId: "shutdown-failed-flush-replay",
         terminalId: fixture.terminal.id,
         replayStartSeq: 0,
         nextSeq: chunks.length,
         chunks,
       },
     });
-    let replaySettled = false;
-    void Promise.resolve(replay).then(() => {
-      replaySettled = true;
-    });
     await new Promise<void>((resolve) => setImmediate(resolve));
-    const controller = new AbortController();
-    const flush = fixture.terminalSessions.flushRetainedOutputBeforeClose(
-      controller.signal,
-    );
-    controller.abort();
-    await flush;
-    expect(replaySettled).toBe(false);
-    fixture.db.$client.close();
-
-    await expect(replay).resolves.toBeUndefined();
+    const server = startHttpListener({
+      fetch: async () => new Response("ok"),
+      logger: fixture.harness.deps.logger,
+      serverConfig: { BB_SERVER_BIND_HOST: "127.0.0.1", BB_SERVER_PORT: 0 },
+    });
+    await once(server, "listening");
+    const result = await shutdownServerRuntime({
+      closeWebSockets: async () => undefined,
+      db: fixture.db,
+      logger: fixture.harness.deps.logger,
+      stopPeriodicUpdateChecks: async () => undefined,
+      stopPlugins: async () => undefined,
+      server,
+      stopTerminalDataPlane: () => fixture.child.shutdown(),
+      flushTerminalOutputBeforeClose: async (signal) => {
+        void fixture.terminalSessions.flushRetainedOutputBeforeClose(signal);
+        throw new Error("flush failed");
+      },
+    });
+    expect(result.completedWithinBounds).toBe(false);
+    await replay;
     expect(warn).toHaveBeenCalledWith(
-      expect.objectContaining({
-        terminals: [expect.objectContaining({ terminalId: fixture.terminal.id })],
-      }),
+      expect.objectContaining({ terminals: expect.any(Array) }),
+      "Terminal output shutdown flush failed; pending output was not written",
+    );
+    expect(warn).not.toHaveBeenCalledWith(
+      expect.anything(),
       "Terminal output shutdown flush timed out; pending output was not written",
     );
     fixture.child.shutdown();

@@ -1569,6 +1569,7 @@ export class TerminalSessionLifecycle {
     if (current.status === "exited") {
       if (args.payload.reason === "user") {
         await this.waitForTerminalReplay(current.id);
+        if (this.terminalOutputWritesStopped) return this.toTerminalSession(current);
         this.flushRetainedOutput(current.id);
         dismissRetainedTerminalOutput(
           this.options.db,
@@ -2003,7 +2004,9 @@ export class TerminalSessionLifecycle {
 
   flushRetainedOutputBeforeClose(signal?: AbortSignal): void | Promise<void> {
     if (signal?.aborted) {
-      this.stopTerminalOutputWritesForShutdown();
+      this.stopTerminalOutputWritesForShutdown(
+        signal.reason === "failed" ? "failed" : "timed-out",
+      );
       return;
     }
     if (this.activeTerminalReplays.size > 0) {
@@ -2017,14 +2020,19 @@ export class TerminalSessionLifecycle {
           else resolve();
         };
         const onAbort = (): void => {
-          this.stopTerminalOutputWritesForShutdown();
+          this.stopTerminalOutputWritesForShutdown(
+            signal?.reason === "failed" ? "failed" : "timed-out",
+          );
           finish();
         };
         signal?.addEventListener("abort", onAbort, { once: true });
         void this.waitForAllTerminalReplays().then(
           async () => {
             try {
-              if (signal?.aborted) this.stopTerminalOutputWritesForShutdown();
+              if (signal?.aborted)
+                this.stopTerminalOutputWritesForShutdown(
+                  signal.reason === "failed" ? "failed" : "timed-out",
+                );
               else await this.flushRetainedOutputBeforeClose();
               finish();
             } catch (error) {
@@ -2062,7 +2070,9 @@ export class TerminalSessionLifecycle {
     this.pendingRetainedOutput.clear();
   }
 
-  private stopTerminalOutputWritesForShutdown(): void {
+  private stopTerminalOutputWritesForShutdown(
+    reason: "failed" | "timed-out" = "timed-out",
+  ): void {
     if (this.terminalOutputWritesStopped) return;
     this.terminalOutputWritesStopped = true;
     if (this.retainedOutputFlushTimer !== null) {
@@ -2072,20 +2082,27 @@ export class TerminalSessionLifecycle {
     const terminalIds = new Set([
       ...this.pendingRetainedOutput.keys(),
       ...this.activeTerminalReplays.keys(),
+      ...this.pendingHolderOutput.keys(),
     ]);
     const terminals = [...terminalIds].map((terminalId) => ({
       terminalId,
       chunks: (this.pendingRetainedOutput.get(terminalId) ?? []).reduce(
         (total, batch) => total + batch.chunks.length,
         0,
-      ),
+      ) + (this.pendingHolderOutput.get(terminalId)?.chunks.length ?? 0),
       replayActive: this.activeTerminalReplays.has(terminalId),
     }));
     this.options.logger.warn(
       { terminals },
-      "Terminal output shutdown flush timed out; pending output was not written",
+      reason === "failed"
+        ? "Terminal output shutdown flush failed; pending output was not written"
+        : "Terminal output shutdown flush timed out; pending output was not written",
     );
     this.pendingRetainedOutput.clear();
+    for (const pending of this.pendingHolderOutput.values()) {
+      clearTimeout(pending.timer);
+    }
+    this.pendingHolderOutput.clear();
   }
 
   flushAllRetainedOutput(): void {
@@ -2314,6 +2331,7 @@ export class TerminalSessionLifecycle {
   async reconcileDisconnectedHostTerminals(
     args: ReconcileDisconnectedHostTerminalsArgs,
   ): Promise<void> {
+    if (this.terminalOutputWritesStopped) return;
     const openedInstanceId =
       getSessionById(this.options.db, { sessionId: args.daemonSessionId })
         ?.instanceId ?? null;
@@ -2336,6 +2354,7 @@ export class TerminalSessionLifecycle {
       const wasHolderBacked = session.holderBacked;
       if (daemonRestarted) {
         const retained = await this.getRetainedOutput(session);
+        if (this.terminalOutputWritesStopped) return;
         this.outputSequenceRebase.setBase(
           session.id,
           (retained?.at(-1)?.seq ?? -1) + 1,
@@ -2434,6 +2453,7 @@ export class TerminalSessionLifecycle {
           this.pendingOpens.cancel(rpcKey);
         } else {
           void pendingOpen.catch(() => {
+            if (this.terminalOutputWritesStopped) return;
             const current = getTerminalById(this.options.db, reconnected.id);
             if (
               !current ||
@@ -3219,6 +3239,7 @@ export class TerminalSessionLifecycle {
   }
 
   private finalizeTerminalExit(args: HandleDaemonTerminalMessageArgs): void {
+    if (this.terminalOutputWritesStopped) return;
     if (args.message.type !== "terminal.exited") {
       return;
     }
@@ -3366,6 +3387,7 @@ export class TerminalSessionLifecycle {
   private notifyExitedTerminalSession(
     args: NotifyExitedTerminalSessionArgs,
   ): void {
+    if (this.terminalOutputWritesStopped) return;
     this.clearDeviceHandoffAttention(args.session.id);
     this.flushRetainedOutput(args.session.id);
     markRetainedTerminalOutputExited(
@@ -3636,6 +3658,7 @@ export class TerminalSessionLifecycle {
     pending: PendingTerminalCloseKey,
     error: Error,
   ): void {
+    if (this.terminalOutputWritesStopped) return;
     if (
       !(error instanceof ApiError) ||
       error.body.code !== "terminal_close_timeout"
@@ -3734,6 +3757,7 @@ export class TerminalSessionLifecycle {
     message: TerminalOutputMessage,
     current: TerminalSessionRow,
   ): boolean {
+    if (this.terminalOutputWritesStopped) return true;
     if (!this.pendingHolderMarkers.has(current.id)) return false;
     const chunk = message.chunk;
     const data = Buffer.from(chunk.dataBase64, "base64");
@@ -3892,6 +3916,7 @@ export class TerminalSessionLifecycle {
         await yieldToEventLoop();
       }
     }
+    if (this.terminalOutputWritesStopped) return chunks;
     if (!markerFound && !current.holderBacked) {
       runEventLoopWorkSync(
         "ws:daemon terminal.replay holder-output-flush",
@@ -3952,6 +3977,7 @@ export class TerminalSessionLifecycle {
     terminalId: string,
     releasedPrefix: Buffer | null = null,
   ): void {
+    if (this.terminalOutputWritesStopped) return;
     const pending = this.pendingHolderOutput.get(terminalId);
     if (pending === undefined) {
       if (releasedPrefix === null) this.pendingHolderMarkers.delete(terminalId);
