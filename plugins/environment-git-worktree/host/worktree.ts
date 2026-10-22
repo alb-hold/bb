@@ -874,6 +874,11 @@ export async function removeWorktree(
     if (identified.status === "preserve") {
       throw worktreePreservedError(workspacePath, identified.reasons);
     }
+    if (identified.status === "identified" && args.createdBy !== undefined) {
+      throw worktreePreservedError(workspacePath, [
+        "a failed create's workspace stays in place until its owner releases it and a durable retention record exists, and neither is available yet",
+      ]);
+    }
     if (identified.status === "identified") {
       const { identity } = identified;
       const removed = await tryWithCheckoutMutationLock(

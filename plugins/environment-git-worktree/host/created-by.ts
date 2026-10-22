@@ -231,7 +231,7 @@ function errorCode(error: unknown): string | null {
 }
 
 export function describeRetainedCopies(retained: RetainedCopies): string {
-  return `Kept ${retained.count} file(s) bb copied from .worktreeinclude at ${retained.directory} (each under its path in the worktree). They may hold secrets such as .env files and use disk until you delete that folder yourself; bb never deletes it.`;
+  return `Kept ${retained.count} file(s) bb copied from .worktreeinclude at ${retained.directory} (each under its path in the worktree). They may hold secrets such as .env files and use disk. bb does not delete them automatically, but the folder exists only on this machine, so destroying the machine would lose it.`;
 }
 
 export async function retainCreatedCopies(

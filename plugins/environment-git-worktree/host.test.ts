@@ -1484,7 +1484,7 @@ setTimeout(() => {}, 300_000);`,
         }
       });
 
-      it("still removes a just-created target whose setup failed, even with no remote", async () => {
+      it("keeps a just-created target whose setup failed in place until a retention record exists", async () => {
         const { sourcePath, dataDir } = await createSourceRepository();
         const hookPath = join(sourcePath, ".git", "hooks", "post-checkout");
         await writeFile(
@@ -1503,10 +1503,8 @@ setTimeout(() => {}, 300_000);`,
           }),
         );
         expect(result.status).toBe("failed");
-        expect(existsSync(join(dataDir, "worktrees", "thr_fail"))).toBe(false);
-        expect(await registeredWorktrees(sourcePath)).toEqual([
-          await realpath(sourcePath),
-        ]);
+        expect(existsSync(join(dataDir, "worktrees", "thr_fail"))).toBe(true);
+        expect(JSON.stringify(result)).toContain("stays in place");
         await harness.experimental_dispose();
       });
 
