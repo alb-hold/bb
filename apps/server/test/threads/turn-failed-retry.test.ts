@@ -8,6 +8,7 @@ import {
   claimQueuedThreadMessageGroup,
   getLatestThreadSequence,
   getThread,
+  getThreadExecutionOverride,
   listEvents,
   listQueuedThreadMessages,
   setThreadExecutionOverride,
@@ -105,7 +106,11 @@ function recordTurnFailedAnnouncements(): string[] {
  * does not add another: the retry tests are about how many `client/turn/
  * requested` events exist, and a second seeded one would hide a duplicate.
  */
-function seedFailableThread(harness: TestAppHarness, hostId: string) {
+function seedFailableThread(
+  harness: TestAppHarness,
+  hostId: string,
+  options: { child?: boolean; model?: string; providerId?: string } = {},
+) {
   const { host } = seedHostSession(harness.deps, { id: hostId });
   const { project } = seedProjectWithSource(harness.deps, {
     hostId: host.id,
@@ -116,14 +121,24 @@ function seedFailableThread(harness: TestAppHarness, hostId: string) {
     projectId: project.id,
     path: WORKSPACE_PATH,
   });
+  const parentThread = options.child
+    ? seedThread(harness.deps, {
+        environmentId: environment.id,
+        projectId: project.id,
+        providerId: options.providerId ?? "claude-code",
+      })
+    : null;
   const thread = seedThread(harness.deps, {
     environmentId: environment.id,
     projectId: project.id,
+    providerId: options.providerId ?? "codex",
+    parentThreadId: parentThread?.id ?? null,
     status: "active",
   });
   seedThreadRuntimeState(harness.deps, {
     environmentId: environment.id,
     inputText: "Do the thing",
+    model: options.model,
     providerThreadId: `provider-${hostId}`,
     threadId: thread.id,
   });
@@ -583,6 +598,40 @@ describe("retrying a failed turn", () => {
       expect(requireThread(harness, thread.id).reasoningLevelOverride).toBe(
         "max",
       );
+    });
+  });
+
+  it("retries a legacy child turn on the child model and keeps its stored override", async () => {
+    await withTestHarness(async (harness) => {
+      const { requestId, thread } = seedFailableThread(
+        harness,
+        "host-child-retry",
+        {
+          child: true,
+          model: "claude-opus-5-5",
+          providerId: "claude-code",
+        },
+      );
+      setThreadExecutionOverride(harness.db, {
+        threadId: thread.id,
+        modelOverride: "claude-opus-5-5",
+        reasoningLevelOverride: null,
+      });
+      failThread(harness, thread.id);
+
+      await retryFailedTurn(harness.deps, {
+        thread: requireThread(harness, thread.id),
+        request: { turnRequestId: requestId, sendAt: null, reason: "Retry" },
+      });
+
+      const retryRequest = turnRequests(harness, thread.id)[1];
+      if (retryRequest === undefined) throw new Error("expected a retry turn");
+      expect(turnRequestData(retryRequest).execution.model).toBe(
+        "claude-sonnet-5-5",
+      );
+      expect(
+        getThreadExecutionOverride(harness.db, thread.id)?.modelOverride,
+      ).toBe("claude-opus-5-5");
     });
   });
 

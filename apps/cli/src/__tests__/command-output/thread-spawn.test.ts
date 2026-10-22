@@ -705,6 +705,7 @@ describe("bb thread spawn command output", () => {
         input: [{ type: "text", text: "hello", mentions: [] }],
         environment: { type: "project-default" },
         spawnedByThreadId: "thread-context-parent",
+        senderThreadId: "thread-context-parent",
       },
     });
   });

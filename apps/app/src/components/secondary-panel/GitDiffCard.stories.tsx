@@ -11,7 +11,9 @@ import {
   type GitDiffDisplayMode,
   type GitDiffSelectionOption,
 } from "./GitDiffToolbar";
-import { filterDiffFilesByPath } from "./git-diff/gitDiffPanelHelpers";
+import { filterDiffFilesByPath } from "./git-diff/filter-diff-files";
+import { DEFAULT_DIFF_FILE_FILTERS } from "./git-diff/diff-file-filters";
+import type { DiffFileFilters } from "./git-diff/diff-file-filters";
 import {
   parseGitDiffFiles,
   summarizeGitDiffFile,
@@ -640,6 +642,8 @@ function InteractiveDiffPanel({
     [diffs],
   );
   const [fileFilter, setFileFilter] = useState<string | null>(null);
+  const [filters, setFilters] = useState<DiffFileFilters>(DEFAULT_DIFF_FILE_FILTERS);
+  const [ignoreWhitespace, setIgnoreWhitespace] = useState(false);
   const visibleFiles = useMemo(
     () =>
       filterDiffFilesByPath(
@@ -701,14 +705,20 @@ function InteractiveDiffPanel({
         totalFilesCount={parsed.length}
         isTruncated={false}
         fileFilter={fileFilter}
+        filters={filters}
+        onFiltersChange={setFilters}
+        extensionCounts={[]}
         onFileFilterChange={setFileFilter}
         areAllFilesCollapsed={allCollapsed}
         isCollapseAllDisabled={parsed.length === 0}
+        collapseAllDisabledReason={parsed.length === 0 ? "No changes" : null}
         onToggleAllCollapsed={toggleAllCollapsed}
         displayMode={displayMode}
         onDisplayModeChange={setDisplayMode}
         lineOverflowMode={lineOverflowMode}
         onLineOverflowModeChange={setLineOverflowMode}
+        ignoreWhitespace={ignoreWhitespace}
+        onIgnoreWhitespaceChange={setIgnoreWhitespace}
       />
       <div className="min-h-0 flex-1 overflow-auto px-4 pb-3">
         <div className="space-y-2">

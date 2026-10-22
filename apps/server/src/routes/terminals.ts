@@ -95,4 +95,12 @@ export function registerTerminalRoutes(app: Hono, deps: AppDeps): void {
     });
     return context.json(output);
   });
+
+  get(routes.screen, async (context, query) => {
+    const screen = await deps.terminalSessions.readTerminalScreen({
+      query,
+      terminalId: context.req.param("terminalId"),
+    });
+    return context.json(screen);
+  });
 }

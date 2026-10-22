@@ -652,6 +652,8 @@ function ThreadRowComponent({
   const childActivity =
     parentOptions?.childActivity ?? NO_COLLAPSED_CHILD_ACTIVITY;
   const hasChildren = childCount > 0;
+  const reserveActionSpace =
+    crossProjectLabel !== null || (isParentRow && hasChildren);
   const hasHiddenChildren = isParentRow && isParentCollapsed && hasChildren;
   const hiddenChildrenHaveDraft = useThreadsHaveDraft(
     hasHiddenChildren ? childActivity.threadIds : NO_THREAD_IDS,
@@ -808,7 +810,9 @@ function ThreadRowComponent({
             "group-data-[sidebar-touch-armed=true]/thread-row:hidden",
           !isEditing &&
             !isCustomizingActions &&
-            SIDEBAR_HOVER_ACTIONS_INSET_CLASS,
+            (reserveActionSpace
+              ? "pr-(--bb-sidebar-hover-actions-inset) [@media(hover:none)]:pr-0"
+              : SIDEBAR_HOVER_ACTIONS_INSET_CLASS),
         )}
         style={getHoverActionsInsetStyle(quickActions.length + 1)}
       >

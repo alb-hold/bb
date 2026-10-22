@@ -1880,6 +1880,7 @@ describe("@bb/sdk", () => {
       input: [{ type: "text", text: "Accept edits", mentions: [] }],
       mode: "start",
       permissionMode: "accept-edits",
+      originPluginId: "automations",
       pluginSubmission: {
         pluginId: "example-plugin",
         data: { action: "hold" },
@@ -1897,6 +1898,7 @@ describe("@bb/sdk", () => {
       expect.objectContaining({ permissionMode: "auto" }),
       expect.objectContaining({
         permissionMode: "accept-edits",
+        originPluginId: "automations",
         pluginSubmission: {
           pluginId: "example-plugin",
           data: { action: "hold" },

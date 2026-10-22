@@ -10,6 +10,7 @@ import {
   getQueuedThreadMessage,
   getStoredProviderSession,
   getThread,
+  getThreadSpawner,
   holdQueuedThreadMessageForEdit,
   isOrdinaryTurnEndQueuedMessage,
   isThreadQueueAutoSendPaused,
@@ -72,7 +73,11 @@ import {
   isManualCompactionActive,
   requireDispatchableProviderThreadId,
 } from "./thread-events.js";
-import { recoverThreadModelOverride } from "./thread-execution-override.js";
+import {
+  applyPreparedThreadModelOverrideRecovery,
+  prepareThreadModelOverrideRecovery,
+  recoverThreadModelOverride,
+} from "./thread-execution-override.js";
 import { requireReadyThreadEnvironment } from "./thread-turn-dispatch.js";
 import { resolvePermissionEscalation } from "./thread-runtime-config.js";
 import { hasMessageDispatchHooks } from "./dispatch-hooks.js";
@@ -97,6 +102,10 @@ import { recordAcceptedPromptHistoryEntry } from "../prompt-history.js";
 import { requireThreadCommandEnvironment } from "./thread-command-environment.js";
 import { applyLoggedThreadLifecycleEventInTransaction } from "./lifecycle-outcome.js";
 import { buildThreadStatusChangeMetadata } from "./thread-runtime-display.js";
+import {
+  assertRequestedModelAllowed,
+  assertRequestedModelAllowedForCurrentScope,
+} from "./child-thread-model.js";
 import {
   goneThreadEnvironmentDetails,
   threadEnvironmentUnavailableDetails,
@@ -246,6 +255,16 @@ export async function createQueuedMessageForThread(
   args: CreateQueuedMessageForThreadArgs,
 ): Promise<ThreadQueuedMessage> {
   const { payload, thread } = args;
+  await assertRequestedModelAllowed(deps, {
+    childScope: thread.parentThreadId
+      ? "parent"
+      : getThreadSpawner(deps.db, thread.id) === null
+        ? null
+        : "spawner",
+    model: payload.model,
+    providerId: thread.providerId,
+    sources: payload.executionInputSources,
+  });
   ensureThreadQueueIsWritable(thread);
   assertNotNativeTerminalThread(deps.db, thread.id);
   const input = await resolvePromptAttachmentReferences({
@@ -258,10 +277,41 @@ export async function createQueuedMessageForThread(
   const execution = await buildExecutionOptions(deps, payload, {
     threadId: thread.id,
   });
+  await deps.providerRegistry.whenRegistrationsSettled();
+  const usesChildModelPolicy =
+    (thread.parentThreadId !== null ||
+      getThreadSpawner(deps.db, thread.id) !== null) &&
+    deps.providerRegistry.get(thread.providerId)?.childThreadModel != null;
   const senderThreadId = resolveMessageSenderThreadId(deps, {
     senderThreadId: payload.senderThreadId,
     targetThread: thread,
   });
+  let overrideRecovery = null;
+  if (usesChildModelPolicy && senderThreadId === null) {
+    try {
+      overrideRecovery = await prepareThreadModelOverrideRecovery(deps, {
+        model: payload.model,
+        modelSource:
+          payload.executionInputSources === undefined
+            ? "explicit"
+            : payload.executionInputSources.model,
+        reasoningLevel: execution.reasoningLevel,
+        reasoningLevelSource:
+          payload.executionInputSources === undefined
+            ? "explicit"
+            : payload.executionInputSources.reasoningLevel,
+        thread,
+      });
+    } catch (error) {
+      if (
+        !(error instanceof ApiError) ||
+        error.status !== 503 ||
+        error.body.code !== "model_catalog_unavailable"
+      ) {
+        throw error;
+      }
+    }
+  }
   const { currentThread, hasProviderSession, queuedMessage } =
     deps.db.transaction(
       (tx) => {
@@ -269,6 +319,29 @@ export async function createQueuedMessageForThread(
         if (!currentThread) {
           throw new ApiError(404, "thread_not_found", "Thread not found");
         }
+        if (currentThread.parentThreadId !== thread.parentThreadId) {
+          assertRequestedModelAllowedForCurrentScope(
+            { db: tx, providerRegistry: deps.providerRegistry },
+            {
+              threadId: thread.id,
+              model: payload.model,
+              providerId: thread.providerId,
+              sources: payload.executionInputSources,
+              spawnerThreadId: getThreadSpawner(deps.db, thread.id),
+            },
+          );
+          throw new ApiError(
+            409,
+            "thread_scope_changed",
+            "Thread scope changed while this queued request was being prepared. Retry the request.",
+          );
+        }
+        applyPreparedThreadModelOverrideRecovery(
+          tx,
+          deps.providerRegistry,
+          currentThread,
+          overrideRecovery,
+        );
         const { hasProviderSession } = admitQueuedMessage(tx, currentThread);
         const queuedMessage = createQueuedThreadMessageInTransaction(tx, {
           threadId: thread.id,
@@ -296,6 +369,7 @@ export async function createQueuedMessageForThread(
       isChildThread: thread.parentThreadId !== null,
       messageSource: "queued_message",
       providerId: thread.providerId,
+      initiator: "user",
     });
   }
   if (
@@ -518,7 +592,16 @@ async function sendClaimedQueuedMessageForIdleProviderThread(
   );
   const initiator: ThreadTurnInitiator =
     senderThreadId === null ? "user" : "agent";
-  if (initiator === "user" && queuedMessage.payload.kind !== "retry") {
+  await deps.providerRegistry.whenRegistrationsSettled();
+  const usesChildModelPolicy =
+    (thread.parentThreadId !== null ||
+      getThreadSpawner(deps.db, thread.id) !== null) &&
+    deps.providerRegistry.get(thread.providerId)?.childThreadModel != null;
+  if (
+    !usesChildModelPolicy &&
+    initiator === "user" &&
+    queuedMessage.payload.kind !== "retry"
+  ) {
     await recoverThreadModelOverride(deps, {
       model: payload.model,
       modelSource: "explicit",
@@ -554,6 +637,13 @@ async function sendClaimedQueuedMessageForIdleProviderThread(
         isThreadQueueAutoSendPaused(tx, thread.id)
       ) {
         throw createQueuedMessageAutoSendPausedError();
+      }
+      const currentThread = getThread(tx, thread.id);
+      if (
+        !currentThread ||
+        currentThread.parentThreadId !== thread.parentThreadId
+      ) {
+        throw createQueuedMessageClaimLostError();
       }
       if (deferredFirstTurnContext) {
         requireDeferredFirstTurnContextCurrent(tx, {

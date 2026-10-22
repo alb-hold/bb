@@ -3,6 +3,7 @@ import { isAtPaneLimit, type SplitOpenResult } from "./paneLimit";
 import {
   findPaneByContent,
   findReusablePaneByContent,
+  replacePaneContent,
   setFocus,
   splitPane,
   type PaneContent,
@@ -48,7 +49,10 @@ export function openPaneContentInSplit({
     return "focused-existing";
   }
   if (isAtPaneLimit(layout)) {
-    return "at-pane-limit";
+    const next = replacePaneContent(layout, layout.focusedPaneId, content);
+    if (next !== layout) store.set(splitLayoutAtom, next);
+    void navigate(route);
+    return next === layout ? "at-pane-limit" : "opened";
   }
   const next = splitPane(layout, layout.focusedPaneId, side, content);
   if (next !== layout) store.set(splitLayoutAtom, next);

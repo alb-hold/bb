@@ -384,6 +384,9 @@ export async function runNativeHolder(
   let credential: string | null = null;
   let starting = false;
   let finished = false;
+  let ptyExited = false;
+  let pausedFor: string | null = null;
+  let terminalCheckSettledSinceDetach = false;
   let mainSocketIdentity: { dev: number; ino: number } | null = null;
   let statusSocketIdentity: { dev: number; ino: number } | null = null;
   let resolveExit: (code: number) => void = () => undefined;
@@ -435,15 +438,32 @@ export async function runNativeHolder(
   };
 
   const applySize = (next: TerminalSize): void => {
-    if (pty === null) {
+    if (ptyExited) return;
+    const activePty = pty;
+    if (activePty === null) {
       pendingSize = next;
       return;
     }
+    const resize = (cols: number, rows: number): void => {
+      try {
+        activePty.resize(cols, rows);
+      } catch (error) {
+        if (
+          ptyExited ||
+          (error instanceof Error &&
+            (("code" in error && error.code === "EBADF") ||
+              error.message.endsWith(", EBADF")))
+        ) {
+          return;
+        }
+        throw error;
+      }
+    };
     if (redrawOnResize) {
       redrawOnResize = false;
-      pty.resize(next.cols, next.rows > 1 ? next.rows - 1 : next.rows + 1);
+      resize(next.cols, next.rows > 1 ? next.rows - 1 : next.rows + 1);
     }
-    pty.resize(next.cols, next.rows);
+    resize(next.cols, next.rows);
   };
 
   const sendOutput = (data: Buffer): void => {
@@ -515,6 +535,7 @@ export async function runNativeHolder(
       sendOutput(Buffer.from(data, "utf8"));
     });
     pty.onExit(({ exitCode, signal }) => {
+      ptyExited = true;
       logNativeHolderEvent(options.socketPath, "pty-child-exit", {
         exitCode,
         signal: signal ?? null,
@@ -567,6 +588,7 @@ export async function runNativeHolder(
       if (client !== socket) return;
       client = null;
       detachedSince = Date.now();
+      terminalCheckSettledSinceDetach = false;
     };
     socket.on("close", detach);
     socket.on("error", detach);
@@ -639,6 +661,12 @@ export async function runNativeHolder(
     setInterval(
       () => {
         if (pty === null || client !== null) return;
+        if (
+          options.checkTerminal !== undefined &&
+          (pausedFor !== null || !terminalCheckSettledSinceDetach)
+        ) {
+          return;
+        }
         if (Date.now() - detachedSince >= reapAfterMs) {
           finishReason = "reap after detach";
           pty.kill("SIGHUP");
@@ -650,7 +678,6 @@ export async function runNativeHolder(
   if (options.checkTerminal !== undefined) {
     const checkTerminal = options.checkTerminal;
     let checking = false;
-    let pausedFor: string | null = null;
     const pauseReap = (reason: string): void => {
       if (client !== null) return;
       detachedSince = Date.now();
@@ -679,6 +706,7 @@ export async function runNativeHolder(
           })
           .finally(() => {
             checking = false;
+            terminalCheckSettledSinceDetach = true;
           });
       }, options.detachedCheckIntervalMs ?? 2_000),
     );

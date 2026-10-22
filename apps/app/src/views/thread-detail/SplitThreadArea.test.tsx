@@ -35,7 +35,6 @@ import {
 import type { LayoutNode, PaneContent, SplitLayout } from "@/lib/split-layout";
 import { usePromptDraftStorage } from "@/hooks/usePromptDraftStorage";
 import { createBbDesktopApi } from "@/test/bb-desktop-test-utils";
-import { resourceRouteLabelAtom } from "@/components/layout/resourceRouteLabelAtom";
 import {
   PluginComposerHostProvider,
   usePluginComposerHost,
@@ -2881,7 +2880,7 @@ describe("SplitThreadArea", () => {
     );
   });
 
-  it("uses automation breadcrumbs in the split-owned plugin header", async () => {
+  it("uses page-owned breadcrumbs in the split-owned plugin header", async () => {
     setPluginSlotRegistrations(
       "automations",
       makePluginRegistrationSet({
@@ -2892,6 +2891,12 @@ describe("SplitThreadArea", () => {
             icon: "Clock",
             path: "automations",
             component: () => <div>Automation detail</div>,
+            experimental_usePageTitle: () => ({
+              breadcrumbs: [
+                { label: "Installed", to: "/plugins/automations/automations" },
+                { label: "Weekly review" },
+              ],
+            }),
           },
         ],
         threadPanelActions: [],
@@ -2906,7 +2911,7 @@ describe("SplitThreadArea", () => {
       panelPath: "automations",
       subPath: "proj_personal/weekly-review",
     };
-    const store = renderSplitArea({
+    renderSplitArea({
       path: "/plugins/automations/automations/proj_personal/weekly-review",
       layout: {
         root: { type: "pane", paneId: "pane-automation", content },
@@ -2918,14 +2923,9 @@ describe("SplitThreadArea", () => {
     const breadcrumb = await screen.findByRole("navigation", {
       name: "Breadcrumb",
     });
-    expect(breadcrumb.textContent).toContain("Automations");
     expect(breadcrumb.textContent).toContain("Installed");
-    expect(breadcrumb.textContent).toContain("weekly-review");
-
-    store.set(resourceRouteLabelAtom, "Weekly review");
-    await waitFor(() =>
-      expect(breadcrumb.textContent).toContain("Weekly review"),
-    );
+    expect(breadcrumb.textContent).toContain("Weekly review");
+    expect(screen.getByText("Automations")).toBeTruthy();
 
     fireEvent.click(screen.getByRole("link", { name: "Installed" }));
     expect(screen.getByTestId("location").textContent).toBe(

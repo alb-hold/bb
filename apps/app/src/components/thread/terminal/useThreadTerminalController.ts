@@ -31,6 +31,7 @@ import {
   type ThreadTerminalTarget,
 } from "./terminal-scope";
 import { normalizeTerminalTitle } from "./thread-terminal-title";
+import { useTerminalStart, type TerminalStart } from "./pending-terminals";
 import {
   clearTerminalCurrentCwd,
   setTerminalCurrentCwd,
@@ -72,6 +73,7 @@ export interface ThreadTerminalController {
   isPanelOpen: boolean;
   shouldMountTerminalView: boolean;
   shouldRetainActiveTerminalView: boolean;
+  start: TerminalStart | null;
   terminalBodyMessage: string;
 }
 
@@ -247,6 +249,7 @@ export function useThreadTerminalController({
   const createTerminal = useCreateTerminal();
   const closeTerminalMutation = useCloseTerminal();
   const renameTerminal = useRenameTerminal();
+  const start = useTerminalStart(terminalId ?? "");
   const isCreateTerminalPending = createTerminal.isPending;
   const isCloseTerminalPending = closeTerminalMutation.isPending;
   const closingTerminalVariables = closeTerminalMutation.variables;
@@ -701,6 +704,7 @@ export function useThreadTerminalController({
     isPanelOpen,
     shouldMountTerminalView,
     shouldRetainActiveTerminalView,
+    start,
     terminalBodyMessage,
   };
 }

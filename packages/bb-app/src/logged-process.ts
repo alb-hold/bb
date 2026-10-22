@@ -662,11 +662,27 @@ const pruneBackups = () => {
 };
 const migrateLegacyFiles = () => {
   const baseName = path.basename(logPath);
-  const numberedBackups = paths().filter((file) => {
+  const legacyRotatedBase = baseName.endsWith(".log")
+    ? baseName.slice(0, -4)
+    : baseName;
+  const numberedBackups = paths().flatMap((file) => {
     const name = path.basename(file);
-    const suffix = name.slice(baseName.length + 1);
-    return name.startsWith(baseName + ".") && /^[1-9][0-9]*$/.test(suffix);
-  }).sort((left, right) => Number(path.basename(right).slice(baseName.length + 1)) - Number(path.basename(left).slice(baseName.length + 1)));
+    const currentSuffix = name.startsWith(baseName + ".")
+      ? name.slice(baseName.length + 1)
+      : "";
+    const legacyPrefix = legacyRotatedBase + ".";
+    const legacySuffix = ".log";
+    const legacyIndex =
+      name.startsWith(legacyPrefix) && name.endsWith(legacySuffix)
+        ? name.slice(legacyPrefix.length, -legacySuffix.length)
+        : "";
+    const index = /^[1-9][0-9]*$/.test(currentSuffix)
+      ? Number(currentSuffix)
+      : !/^[1-9][0-9]*$/.test(legacyIndex)
+        ? null
+        : Number(legacyIndex);
+    return index === null ? [] : [{ file, index }];
+  }).sort((left, right) => right.index - left.index).map(({ file }) => file);
   const candidates = [...numberedBackups, logPath];
   for (const sourcePath of candidates) {
     if (!fs.existsSync(sourcePath)) continue;
