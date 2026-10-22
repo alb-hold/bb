@@ -5,6 +5,7 @@ import {
 } from "node:child_process";
 import {
   appendFileSync,
+  existsSync,
   lstatSync,
   mkdirSync,
   readdirSync,
@@ -890,47 +891,94 @@ describe.skipIf(process.platform === "win32")(
       ]);
     }, 30_000);
 
-    it("evaluates a late opener before the same-tool close that follows it: main-file lines past the scan's snapshot wait for the next scan", () => {
-      const { directory, file, reader } = appendFixture();
+    it("evaluates a late opener before the same-tool close that follows it: the steps of a poll are separately callable, and main-file lines past the snapshot wait", () => {
+      const { directory, file } = appendFixture();
+      const reader = new HookAppendReader(file);
       const began = Math.floor(Date.now() / 1000);
-      const blocking = path.join(directory, `.late.1.${began}`);
-      const published = path.join(directory, `.late.99999.${began}`);
-      spawnSync("mkfifo", [blocking]);
-      const quote = (value: string): string =>
-        `'${value.replace(/'/gu, `'\\''`)}'`;
-      const helper = spawn(
-        "sh",
-        [
-          "-c",
-          [
-            "sleep 0.3",
-            `printf '%s\\n' ${quote(record("PostToolUse", { tool_name: "Bash" }))} >> ${quote(file)}`,
-            `printf '%s\\n' ${quote(record("PermissionRequest", { tool_name: "Bash" }))} > ${quote(published)}`,
-            `printf '%s\\n' ${quote(record("PermissionRequest", { tool_name: "Fifo" }))} > ${quote(blocking)}`,
-          ].join("; "),
-        ],
-        { stdio: "ignore" },
+      const now = Date.now();
+      const snapshot = reader.takeSnapshot();
+      appendFileSync(file, `${record("PostToolUse", { tool_name: "Bash" })}\n`);
+      writeFileSync(
+        path.join(directory, `.late.99999.${began}`),
+        record("PermissionRequest", { tool_name: "Bash" }),
       );
-      children.push(helper);
-
-      const first = reader.read();
-      expect(first.at(-1)).toMatchObject({
-        questions: [{ prompt: "Claude Code needs permission to use: Fifo" }],
-        state: "waiting",
-      });
-
-      const second = reader.read();
+      const late = reader.readLate();
+      expect(late.lost).toBe(1);
       expect(
-        second.some(
-          (report) =>
-            report.state === "waiting" &&
-            report.questions.some(
-              (question) =>
-                question.prompt === "Claude Code needs permission to use: Bash",
-            ),
-        ),
-      ).toBe(true);
-    }, 30_000);
+        late.records.map((entry) => [toolOf(entry.record), entry.startedAt]),
+      ).toEqual([["Bash", began]]);
+      expect(reader.readLines(now, snapshot)).toEqual({
+        records: [],
+        unreadable: 0,
+      });
+      expect(reader.readLines(now, reader.takeSnapshot()).records).toEqual([
+        {
+          hook_event_name: "PostToolUse",
+          session_id: SESSION_ID,
+          tool_name: "Bash",
+        },
+      ]);
+    });
+
+    it("does not take the lock of a hook that released in between: B's ln -s lands inside A's lock directory, A releases, Y takes a symlink lock, and B must not append while Y holds it", async () => {
+      const { directory, file, lock } = appendFixture();
+      const realLn = spawnSync("sh", ["-c", "command -v ln"])
+        .stdout.toString()
+        .trim();
+      const shimDir = path.join(directory, "shim");
+      const gate = path.join(directory, "gate-open");
+      const blocked = path.join(directory, "gate-reached");
+      mkdirSync(shimDir);
+      const shim = path.join(shimDir, "ln");
+      writeFileSync(
+        shim,
+        [
+          "#!/bin/sh",
+          `${realLn} "$@"`,
+          "status=$?",
+          `if [ ! -e '${blocked}' ]; then`,
+          `  : > '${blocked}'`,
+          "  i=0",
+          `  while [ ! -e '${gate}' ] && [ "$i" -lt 400 ]; do sleep 0.05; i=$((i+1)); done`,
+          "fi",
+          "exit $status",
+          "",
+        ].join("\n"),
+        { mode: 0o755 },
+      );
+      mkdirSync(lock);
+      writeFileSync(path.join(lock, "pid"), String(process.pid));
+      const command = hookAppendCommand(file);
+      const hook = spawn("sh", ["-c", command], {
+        env: { ...process.env, PATH: `${shimDir}:${process.env.PATH ?? ""}` },
+        stdio: ["pipe", "ignore", "ignore"],
+      });
+      children.push(hook);
+      const killer = setTimeout(() => hook.kill("SIGKILL"), 20_000);
+      const exited = new Promise<void>((resolve) => {
+        hook.once("exit", () => {
+          clearTimeout(killer);
+          resolve();
+        });
+      });
+      hook.stdin.end(record("PermissionRequest", { tool_name: "Interleave" }));
+      await until(() => existsSync(blocked), "the hook's ln -s to land");
+      expect(lstatSync(lock).isDirectory()).toBe(true);
+      expect(readdirSync(lock)).toContain(String(hook.pid));
+
+      rmSync(lock, { recursive: true });
+      symlinkSync(String(process.pid), lock);
+      writeFileSync(gate, "");
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      expect(statSync(file).size).toBe(0);
+      expect(readlinkSync(lock)).toBe(String(process.pid));
+
+      rmSync(lock);
+      await exited;
+      expect(new HookAppendReader(file).read().records.map(toolOf)).toEqual([
+        "Interleave",
+      ]);
+    }, 40_000);
 
     it("counts a hook killed before it appended as lost evidence, and withholds Working until the next prompt", async () => {
       const { commandFor, directory, reader, unconfirmed } = appendFixture();
