@@ -1075,7 +1075,8 @@ prompt. Validated at registration by
 16 arguments per list, only the documented tokens (none in `launchArgs`), relative patterns without
 dot segments. Core callers: `apps/server/src/services/threads/native-terminal-threads.ts`
 (provider lookup, terminal command, launch spec), `apps/cli/src/native-harness.ts`
-(argv and session discovery) and the new-thread composer's native terminal
+(argv and session discovery), `apps/cli/src/native-activity-reader.ts`
+(`transcript.continuation` session rotation and the follow-after-bind holding) and the new-thread composer's native terminal
 toggle. First-party declarations: `provider-claude-code` (`assigned`) and
 `provider-codex` (`discovered`).
 
@@ -2868,14 +2869,23 @@ doc covers three September 2026 additions:
   thread's current terminal and provider session (`tool-call`, carried with
   `lastToolCallAt`) and from `unknown`. A tool call proves the credential holder
   acted; it never enables a Working indicator. Activity reports always require the current credential of the native terminal the thread is bound to; that terminal need not still be running (a current-credential report from an exited or disconnected terminal before reattach still has its lifecycle effect), and only a report from a terminal that has not exited (running or disconnected) is stamped as confirmation; a missing, stale or other-thread credential gets 401 and changes nothing. Holders that predate this report without a credential and show Activity not reported until the thread is reopened. A holder keeps its last non-heartbeat report that the server did not accept for a transient reason (401, 408, 429, 5xx, a client timeout or a transport failure; one report, replaced by any newer one) and resends it on the next credential refresh or heartbeat tick; any other refusal is dropped.
-- `PluginSidebarThread.experimental_queuedFailedCount` and
-  `PluginThreadStatusGlyphProps.experimental_queuedFailedCount` carry how many
-  queued messages failed to send, so the `queued-failed` indicator reads "N
-  queued messages not delivered". The core callers are
-  `toPluginSidebarThread` and `ThreadStatusGlyph`. The `activity-unreported`
-  indicator is the neutral state of a running native thread that has no
-  confirmed holder report. Stabilization requires auditing the count against
-  the queue's live rows and the indicator's precedence below queued work.
+- `PluginSidebarThread.experimental_queuedFailedCount` is how many queued
+  messages failed to send (0 unless `queuedWork` is "failed"), so a sidebar
+  row can say "N queued messages not delivered". It is `ThreadListEntry.queuedFailedCount`
+  projected by `toPluginSidebarThread` in `apps/app/src/lib/plugin-sidebar-threads.ts`,
+  the same value core's rows read (`ThreadSearchPaletteMode`,
+  `RootComposeMobileRecents`, `RelatedThreadsSection`). Stabilization requires
+  auditing the count against the queue's live rows.
+- `PluginThreadStatusGlyphProps.experimental_queuedFailedCount` is the same
+  number passed to `experimental_ThreadStatusGlyph`, so the `queued-failed`
+  indicator reads "N queued messages not delivered". `experimental_ThreadStatusGlyph`
+  is core's own `ThreadStatusGlyph` (`apps/app/src/lib/plugin-sdk-app-impl.tsx`),
+  and core passes the prop itself (`RelatedThreadsSection`). The test host mirrors
+  it as `data-queued-failed-count` (`packages/plugin-sdk/src/testing/app.tsx`).
+  Stabilization requires auditing the indicator's precedence below queued work.
+- The `activity-unreported` sidebar indicator is the neutral state of a running
+  native thread that has no confirmed holder report; it ranks below the queued
+  indicators. It is a new value of `PluginSidebarThreadIndicator`, not a new member.
 
 Docs: `frontend-registration.md`.
 
