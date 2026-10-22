@@ -17,14 +17,15 @@ interface RetainedReport {
   sequence: number;
 }
 
-const UNRECOGNIZED_CONFIRMS = /Unrecognized keys?: .*"confirms"/u;
+const UNRECOGNIZED_CLOSURE_FIELD =
+  /Unrecognized keys?: .*"(?:closes|confirms)"/u;
 
-function rejectsConfirmsField(error: unknown): boolean {
+function rejectsClosureFields(error: unknown): boolean {
   return (
     error instanceof BbHttpError &&
     error.status === 400 &&
     error.code === "invalid_request" &&
-    UNRECOGNIZED_CONFIRMS.test(error.message)
+    UNRECOGNIZED_CLOSURE_FIELD.test(error.message)
   );
 }
 
@@ -37,23 +38,39 @@ export function createNativeActivityReporter(options: {
   let pending: Promise<void> = Promise.resolve();
   let latestSequence = 0;
   let retained: RetainedReport | null = null;
-  let confirmsRejected = false;
+  let closureSupported = true;
+  let possiblyOpen: Set<string> | null = null;
 
   const deliver = async (
     next: NativeActivityReport,
     sequence: number | null,
   ): Promise<void> => {
     const credential = options.currentCredential();
+    const opened =
+      next.state === "waiting" ? next.questions.map((q) => q.id) : [];
+    const closes =
+      possiblyOpen === null
+        ? undefined
+        : [...possiblyOpen].filter((id) => !opened.includes(id));
+    if (possiblyOpen !== null) {
+      for (const id of opened) possiblyOpen.add(id);
+    }
     const request = (
-      withMarker: boolean,
+      withClosure: boolean,
     ): NativeTerminalReportActivityArgs => ({
       threadId: options.threadId,
       ...(credential === null ? {} : { authorization: `Bearer ${credential}` }),
       state: next.state,
       ...(next.prompt === null ? {} : { prompt: next.prompt }),
       ...(next.state === "waiting" ? { questions: next.questions } : {}),
-      ...(withMarker ? { confirms: false } : {}),
+      ...(withClosure && closes !== undefined ? { closes } : {}),
+      ...(withClosure && next.state !== "waiting" && next.confirms === false
+        ? { confirms: false }
+        : {}),
     });
+    const acknowledge = (): void => {
+      possiblyOpen = new Set(opened);
+    };
     const keep = (error: unknown): void => {
       if (
         sequence !== null &&
@@ -63,21 +80,24 @@ export function createNativeActivityReporter(options: {
         retained = { report: next, sequence };
       }
     };
-    const marked =
-      next.state !== "waiting" && next.confirms === false && !confirmsRejected;
+    const withClosure = closureSupported;
     try {
-      await options.send(request(marked));
+      await options.send(request(withClosure));
+      acknowledge();
     } catch (error) {
-      if (!marked || !rejectsConfirmsField(error)) {
+      if (!withClosure || !rejectsClosureFields(error)) {
         keep(error);
         return;
       }
-      confirmsRejected = true;
-      options.log?.("activity-confirms-field-rejected", {
+      closureSupported = false;
+      options.log?.("activity-closure-field-rejected", {
+        closing: closes?.length ?? 0,
         status: error instanceof BbHttpError ? error.status : null,
       });
+      if (closes !== undefined && closes.length > 0) return;
       try {
         await options.send(request(false));
+        acknowledge();
       } catch (retryError) {
         keep(retryError);
       }

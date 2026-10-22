@@ -39,6 +39,7 @@ export interface NativeTerminalReportActivityArgs extends NativeTerminalThreadAr
   prompt?: string;
   questions?: NativeTerminalOpenQuestion[];
   confirms?: boolean;
+  closes?: string[];
 }
 
 export interface NativeTerminalCallAgentToolArgs extends NativeTerminalThreadArgs {
@@ -159,6 +160,7 @@ export function createNativeTerminalsArea(
               ...(input.confirms === undefined
                 ? {}
                 : { confirms: input.confirms }),
+              ...(input.closes === undefined ? {} : { closes: input.closes }),
             },
           },
           ...(Object.keys(init).length === 0 ? [] : [{ init }]),

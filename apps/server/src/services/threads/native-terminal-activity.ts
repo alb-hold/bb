@@ -261,6 +261,7 @@ export function recordNativeTerminalActivity(
   }
   if (args.state === "idle") settleNativeTerminalTurn(deps, thread.id);
   const resolvedQuestions = reconcileNativeQuestions(deps, {
+    closes: args.closes,
     nativeSessionId: record.nativeSessionId,
     questions: args.questions ?? [],
     thread,
@@ -354,9 +355,37 @@ export function interruptNativeTerminalQuestions(
   return interrupted;
 }
 
+function closeNamedNativeQuestions(
+  deps: Pick<AppDeps, "pendingInteractions">,
+  threadId: string,
+  questionIds: readonly string[],
+): number {
+  const named = new Set(
+    questionIds.map((id) => `${NATIVE_QUESTION_REQUEST_PREFIX}${id}`),
+  );
+  let closed = 0;
+  for (const interaction of deps.pendingInteractions.listPendingThreadInteractions(
+    threadId,
+  )) {
+    if (
+      !isNativeTerminalQuestion(interaction) ||
+      !named.has(interaction.providerRequestId)
+    ) {
+      continue;
+    }
+    deps.pendingInteractions.interruptPendingInteraction({
+      interactionId: interaction.id,
+      reason: NATIVE_QUESTION_ANSWERED_REASON,
+    });
+    closed += 1;
+  }
+  return closed;
+}
+
 function reconcileNativeQuestions(
   deps: NativeTerminalActivityDeps,
   args: {
+    closes: readonly string[] | undefined;
     nativeSessionId: string | null;
     questions: readonly NativeTerminalOpenQuestion[];
     thread: Thread;
@@ -376,11 +405,20 @@ function reconcileNativeQuestions(
           !rejectedQuestions(deps, args.thread.id).has(providerRequestId),
       ),
   );
-  const interrupted = interruptNativeTerminalQuestions(
-    deps,
-    args.thread.id,
-    new Set(wanted.keys()),
-  );
+  const interrupted =
+    args.closes === undefined
+      ? interruptNativeTerminalQuestions(
+          deps,
+          args.thread.id,
+          new Set(wanted.keys()),
+        )
+      : closeNamedNativeQuestions(
+          deps,
+          args.thread.id,
+          args.closes.filter(
+            (id) => !wanted.has(`${NATIVE_QUESTION_REQUEST_PREFIX}${id}`),
+          ),
+        );
   for (const [providerRequestId, question] of wanted) {
     const registered = deps.pendingInteractions.registerPendingInteraction({
       interaction: {

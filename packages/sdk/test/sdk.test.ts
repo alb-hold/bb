@@ -344,8 +344,9 @@ describe("@bb/sdk", () => {
     ]);
   });
 
-  it("sends confirms only when the caller sets it", async () => {
+  it("sends confirms and closes only when the caller sets them, and keeps an empty list", async () => {
     const queue = createFetchQueue([
+      { body: { ok: true } },
       { body: { ok: true } },
       { body: { ok: true } },
     ]);
@@ -362,13 +363,20 @@ describe("@bb/sdk", () => {
       state: "working",
     });
     await sdk.nativeTerminals.reportActivity({
+      closes: [],
+      threadId: "thr_test",
+      state: "working",
+    });
+    await sdk.nativeTerminals.reportActivity({
+      closes: ["q1"],
       confirms: false,
       threadId: "thr_test",
       state: "working",
     });
     expect(queue.requests.map((request) => request.bodyText)).toEqual([
       JSON.stringify({ state: "working" }),
-      JSON.stringify({ state: "working", confirms: false }),
+      JSON.stringify({ state: "working", closes: [] }),
+      JSON.stringify({ state: "working", confirms: false, closes: ["q1"] }),
     ]);
   });
 

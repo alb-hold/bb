@@ -182,12 +182,14 @@ function holder(
   );
   const sentReports: string[] = [];
   const sentMarkers: Array<boolean | undefined> = [];
+  const sentCloses: Array<string[] | undefined> = [];
   const recorded: string[] = [];
   const logged: string[] = [];
   const reporter = createNativeActivityReporter({
     currentCredential: () => "current",
     send: async (args) => {
       sentMarkers.push(args.confirms);
+      sentCloses.push(args.closes);
       sentReports.push(
         args.prompt === undefined || args.prompt === null
           ? args.state
@@ -255,6 +257,7 @@ function holder(
     makeDiscoverer,
     readOnly,
     recorded,
+    sentCloses,
     sentMarkers,
     sentReports,
     tick,
@@ -545,7 +548,9 @@ describe("following a discovered session only after the server accepted it", () 
     "an open question trimmed from the holding bound, hooks %s",
     (_shape, withSessionIdField) => {
       const tool = { hook_event_name: "PreToolUse", session_id: SESSION_ID };
-      const startTrimmed = async () => {
+      const startTrimmed = async (
+        extra: Array<Record<string, unknown>> = [],
+      ) => {
         const unconfirmed: string[] = [];
         const h = holder(hookShape(withSessionIdField), unconfirmed);
         h.appendHooks([
@@ -555,6 +560,7 @@ describe("following a discovered session only after the server accepted it", () 
             tool_name: "Bash",
           },
           ...Array.from({ length: 70 }, () => tool),
+          ...extra,
         ]);
         const discoverer = h.makeDiscoverer(async () => ({}));
         expect(await h.tick()).toEqual([]);
@@ -638,26 +644,80 @@ describe("following a discovered session only after the server accepted it", () 
         expect(h.sentMarkers).toEqual([undefined, false, undefined]);
       });
 
-      it("restores Working when a completed tool record follows the answer, and the heartbeat resumes", async () => {
+      const toolDone = (name: string) => ({
+        hook_event_name: "PostToolUse",
+        session_id: SESSION_ID,
+        tool_name: name,
+      });
+
+      it("names the question the non-confirming answer closes", async () => {
         const { h } = await startTrimmed();
         expect(await h.readOnly()).toEqual([]);
         h.appendHooks([edit("PermissionRequest"), edit("PostToolUse")]);
         expect(await h.readOnly()).toEqual(["waiting", "working"]);
-        h.appendHooks([
-          {
-            hook_event_name: "PostToolUse",
-            session_id: SESSION_ID,
-            tool_name: "Write",
-          },
-        ]);
+        expect(h.sentMarkers).toEqual([undefined, false]);
+        expect(h.sentCloses).toEqual([undefined, ["permission:Edit"]]);
+      });
+
+      it("restores Working only when the close of the dropped question's own id empties the dropped set, and the heartbeat resumes", async () => {
+        const { h } = await startTrimmed();
+        expect(await h.readOnly()).toEqual([]);
+        h.appendHooks([edit("PermissionRequest"), edit("PostToolUse")]);
+        expect(await h.readOnly()).toEqual(["waiting", "working"]);
+        h.appendHooks([toolDone("Bash")]);
         expect(await h.readOnly()).toEqual(["waiting", "working", "working"]);
         expect(h.sentMarkers).toEqual([undefined, false, undefined]);
+        expect(h.sentCloses).toEqual([undefined, ["permission:Edit"], []]);
         expect(await h.tick()).toEqual([
           "waiting",
           "working",
           "working",
           "working",
         ]);
+      });
+
+      it("stays unconfirmed when a parallel tool of another name completes after the answer", async () => {
+        const { h } = await startTrimmed();
+        expect(await h.readOnly()).toEqual([]);
+        h.appendHooks([edit("PermissionRequest"), edit("PostToolUse")]);
+        expect(await h.readOnly()).toEqual(["waiting", "working"]);
+        h.appendHooks([toolDone("Write"), toolDone("Read")]);
+        expect(await h.readOnly()).toEqual(["waiting", "working"]);
+        expect(await h.tick()).toEqual(["waiting", "working"]);
+      });
+
+      it("keeps an open reported question open when an unrelated tool completes", async () => {
+        const { h } = await startTrimmed();
+        expect(await h.readOnly()).toEqual([]);
+        h.appendHooks([edit("PermissionRequest")]);
+        expect(await h.readOnly()).toEqual(["waiting"]);
+        h.appendHooks([toolDone("Write")]);
+        expect(await h.readOnly()).toEqual(["waiting"]);
+        expect(await h.tick()).toEqual(["waiting"]);
+      });
+
+      it("does not restore Working from the dropped question's close while another question is open", async () => {
+        const { h } = await startTrimmed();
+        expect(await h.readOnly()).toEqual([]);
+        h.appendHooks([edit("PermissionRequest"), edit("PostToolUse")]);
+        expect(await h.readOnly()).toEqual(["waiting", "working"]);
+        h.appendHooks([
+          {
+            hook_event_name: "PermissionRequest",
+            session_id: SESSION_ID,
+            tool_name: "Write",
+          },
+        ]);
+        expect(await h.readOnly()).toEqual(["waiting", "working", "waiting"]);
+        h.appendHooks([toolDone("Bash")]);
+        expect(await h.readOnly()).toEqual(["waiting", "working", "waiting"]);
+        expect(await h.tick()).toEqual(["waiting", "working", "waiting"]);
+      });
+
+      it("does not treat a trimmed opener as dropped when its close is among the retained records", async () => {
+        const { h } = await startTrimmed([toolDone("Bash")]);
+        expect(await h.readOnly()).toEqual(["working"]);
+        expect(h.sentMarkers).toEqual([undefined]);
       });
 
       it("stays unconfirmed when only a pre-tool hook follows the answer", async () => {
