@@ -144,6 +144,38 @@ describe("AI task routing", () => {
     });
   });
 
+  it("falls back from a writing service that never answers its status check after 2 s, not the task timeout", async () => {
+    await withTestHarness({}, async (harness) => {
+      const cloud = registerFakeAiService(harness.deps.aiServices, {
+        id: "bb",
+        pluginId: "bb-ai",
+        builtin: true,
+        status: () => new Promise(() => {}),
+        complete: async () => "Cloud reply",
+      });
+      const codex = registerFakeAiService(harness.deps.aiServices, {
+        id: "codex",
+        pluginId: "provider-codex",
+        builtin: true,
+        complete: async () => "Codex reply",
+      });
+
+      const startedAt = Date.now();
+      const outcome = await runTextAiTask(harness.deps, {
+        task: "writing",
+        label: "test",
+        prompt: PROMPT,
+      });
+      const elapsed = Date.now() - startedAt;
+
+      expect(outcome).toMatchObject({ ok: true, value: "Codex reply" });
+      expect(elapsed).toBeGreaterThanOrEqual(1_900);
+      expect(elapsed).toBeLessThan(2_600);
+      expect(cloud.completeCalls).toEqual([]);
+      expect(codex.completeCalls.map((call) => call.prompt)).toEqual([PROMPT]);
+    });
+  });
+
   it("waits up to 2 s for a thread-title status check even past a shorter task timeout, as before writing assistance", async () => {
     await withTestHarness({}, async (harness) => {
       const cloud = registerFakeAiService(harness.deps.aiServices, {
