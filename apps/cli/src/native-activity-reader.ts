@@ -81,6 +81,8 @@ export class NativeActivityReader {
   private bindingHeld: unknown[] = [];
   private bindingHeldDropped = 0;
   private historyIncomplete = false;
+  private droppedOpenQuestion = false;
+  private trimmedOpenQuestion = false;
   private heldForeign: Array<{
     at: number;
     record: unknown;
@@ -150,7 +152,15 @@ export class NativeActivityReader {
     if (activity === undefined || this.suspended) return [];
     const reports: NativeActivityReport[] = [];
     const push = (report: NativeActivityReport | null): void => {
-      if (report !== null) reports.push(report);
+      if (report === null) return;
+      if (
+        this.droppedOpenQuestion &&
+        report.state === "working" &&
+        report.prompt === null
+      ) {
+        return;
+      }
+      reports.push(report);
     };
     const hooks = activity.hooks;
     if (hooks !== undefined && this.eventsFile !== null) {
@@ -196,6 +206,12 @@ export class NativeActivityReader {
           }
         }
         const signal = classifyHookRecord(hooks, record);
+        if (
+          signal.state === "idle" ||
+          (signal.state === "working" && signal.prompt !== null)
+        ) {
+          this.droppedOpenQuestion = false;
+        }
         const turn =
           hooks.turnId === undefined
             ? null
@@ -207,7 +223,9 @@ export class NativeActivityReader {
           this.rememberTurn(turn);
         }
         const report = this.tracker.apply(signal);
-        if (fresh && signal.state !== null) this.historyIncomplete = false;
+        if (fresh && signal.state !== null && !this.droppedOpenQuestion) {
+          this.historyIncomplete = false;
+        }
         if (
           hooks.sessionIdField !== undefined &&
           (signal.state !== null ||
@@ -346,7 +364,15 @@ export class NativeActivityReader {
     this.bindingHeld.push(...records);
     const excess = this.bindingHeld.length - MAX_HELD_FOREIGN_RECORDS;
     if (excess > 0) {
-      this.bindingHeld.splice(0, excess);
+      const hooks = this.cli.activity?.hooks;
+      for (const record of this.bindingHeld.splice(0, excess)) {
+        if (
+          hooks !== undefined &&
+          classifyHookRecord(hooks, record).question !== undefined
+        ) {
+          this.trimmedOpenQuestion = true;
+        }
+      }
       this.bindingHeldDropped += excess;
     }
   }
@@ -361,6 +387,8 @@ export class NativeActivityReader {
     this.bindingHeldDropped = 0;
     if (dropped > 0) {
       this.historyIncomplete = true;
+      this.droppedOpenQuestion = this.trimmedOpenQuestion;
+      this.trimmedOpenQuestion = false;
       this.onUnconfirmedHookIdentity?.("held-overflow", dropped);
     }
     return released;
