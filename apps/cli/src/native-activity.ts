@@ -535,21 +535,21 @@ export class NativeActivityTracker {
             (candidateId) => candidateId !== callId,
           );
         }
-        const unresolvedCandidates = new Set(
-          candidates.flatMap((occurrence) => occurrence.candidateCallIds),
+        const resolved = candidates.filter(
+          (occurrence) => occurrence.candidateCallIds.length === 0,
         );
-        if (unresolvedCandidates.size > 0) {
+        if (resolved.length === 0) {
           if (open.length === 0) this.openOccurrences.delete(base);
           else this.openOccurrences.set(base, open);
           return [];
         }
-        const resolvedOccurrences = new Set(candidates.map(({ id }) => id));
+        const resolvedOccurrences = new Set(resolved.map(({ id }) => id));
         const remaining = open.filter(
           (occurrence) => !resolvedOccurrences.has(occurrence.id),
         );
         if (remaining.length === 0) this.openOccurrences.delete(base);
         else this.openOccurrences.set(base, remaining);
-        return candidates.map((occurrence) => occurrence.id);
+        return resolved.map((occurrence) => occurrence.id);
       }
     }
     if (
