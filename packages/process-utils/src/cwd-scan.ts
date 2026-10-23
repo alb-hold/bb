@@ -166,10 +166,10 @@ export async function scanProcessesWithCwdUnder(
       reason: `lsof exited with ${output.code === null ? "a signal" : `code ${output.code}`}`,
     };
   }
-  if (output.code === 1 && output.stderr.trim() !== "") {
+  if (output.stderr.trim() !== "") {
     return {
       status: "unknown",
-      reason: `lsof exited with code 1 and reported: ${output.stderr.trim().split("\n")[0]}`,
+      reason: `lsof exited with code ${output.code} and reported: ${output.stderr.trim().split("\n")[0]}`,
     };
   }
   let pid: number | null = null;

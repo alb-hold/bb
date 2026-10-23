@@ -108,6 +108,14 @@ describe("scanProcessesWithCwdUnder", () => {
     ["a timeout", async () => { throw new Error("lsof timed out"); }],
     ["an exit code above 1", async () => ({ code: 2, stdout: "", stderr: "" })],
     [
+      "exit 0 together with a warning on stderr",
+      async () => ({
+        code: 0,
+        stdout: "",
+        stderr: "lsof: WARNING: can't stat() nfs file system /mnt/x",
+      }),
+    ],
+    [
       "exit 1 together with a warning on stderr",
       async () => ({
         code: 1,
