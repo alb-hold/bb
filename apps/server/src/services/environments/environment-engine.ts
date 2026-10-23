@@ -36,7 +36,6 @@ import {
   environments,
   listBranchHolderEnvironments,
   listEnvironmentLiveThreadIds,
-  listEnvironmentReferencingThreadIds,
   environmentHookOperations,
   getEnvironment,
   getThread,
@@ -416,7 +415,7 @@ function branchHolderBlockers(
   deps: Deps,
   holder: EnvironmentRow,
   requesterThreadId: string,
-): { blockers: string[]; requesterOwns: boolean } {
+): string[] {
   const live = listEnvironmentLiveThreadIds(deps.db, holder.id);
   const blockers = live.filter((threadId) => threadId !== requesterThreadId);
   if (
@@ -433,17 +432,7 @@ function branchHolderBlockers(
     )
       blockers.push(owner.id);
   }
-  const requesterOwns =
-    holder.ownerThreadId === requesterThreadId ||
-    live.includes(requesterThreadId);
-  if (requesterOwns) {
-    blockers.push(
-      ...listEnvironmentReferencingThreadIds(deps.db, holder.id).filter(
-        (threadId) => threadId !== requesterThreadId,
-      ),
-    );
-  }
-  return { blockers: [...new Set(blockers)], requesterOwns };
+  return [...new Set(blockers)];
 }
 
 function branchHolderInUseMessage(
@@ -473,24 +462,14 @@ async function clearBranchHolders(
     excludeEnvironmentIds: args.excludeEnvironmentIds,
   });
   for (const holder of holders) {
-    const { blockers, requesterOwns } = branchHolderBlockers(
-      deps,
-      holder,
-      args.requesterThreadId,
-    );
+    const blockers = branchHolderBlockers(deps, holder, args.requesterThreadId);
     if (blockers.length > 0)
       return branchHolderInUseMessage(holder, args.branchName, blockers);
     if (!requestEnvironmentRemoval(deps, holder.id)) {
       const retry = branchHolderBlockers(deps, holder, args.requesterThreadId);
-      if (retry.blockers.length > 0)
-        return branchHolderInUseMessage(
-          holder,
-          args.branchName,
-          retry.blockers,
-        );
-      return requesterOwns
-        ? `Branch ${args.branchName} is still checked out at ${holder.path} by an earlier attempt of this same workspace request. bb keeps it until its release can be verified, and a new attempt cannot reuse its branch or path yet`
-        : `Branch ${args.branchName} is still checked out at ${holder.path} by another workspace that is being used, so it was left alone`;
+      if (retry.length > 0)
+        return branchHolderInUseMessage(holder, args.branchName, retry);
+      return `Branch ${args.branchName} is still checked out at ${holder.path} by another workspace that is being used, so it was left alone`;
     }
     await sweepProviderEnvironment(deps, holder.id);
     const after = getEnvironment(deps.db, holder.id);
