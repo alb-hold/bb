@@ -44,6 +44,9 @@ import { TimelineSelectionMenu } from "@/components/thread/timeline/TimelineSele
 import { buildTerminalWebSocketUrl } from "./terminal-websocket-url";
 import {
   importTerminalModules,
+  importTerminalSearchAddon,
+  importTerminalUnicodeAddon,
+  importTerminalWebLinksAddon,
   importTerminalWebglAddon,
 } from "./terminal-modules";
 import { TerminalWebSocketTransport } from "@bb/client-core";
@@ -1690,20 +1693,8 @@ export function ThreadTerminalView({
         }
       };
       const requiredModulesPromise = importTerminalModules();
-      const webglAddonModulePromise = loadOptionalTerminalWebglAddon(
-        importTerminalWebglAddon,
-      );
-      const searchAddonModulePromise = loadOptionalTerminalSearchAddon(
-        () => import("@xterm/addon-search"),
-      );
-      const [
-        { Terminal },
-        { FitAddon: LoadedFitAddon },
-        { WebLinksAddon },
-        { Unicode11Addon },
-      ] = await requiredModulesPromise;
-      const webglAddonModule = await webglAddonModulePromise;
-      const searchAddonModule = await searchAddonModulePromise;
+      const [{ Terminal }, { FitAddon: LoadedFitAddon }] =
+        await requiredModulesPromise;
       if (disposed) {
         return;
       }
@@ -1810,27 +1801,72 @@ export function ThreadTerminalView({
       );
       fitAddon = new LoadedFitAddon();
       terminal.loadAddon(fitAddon);
-      terminal.loadAddon(new Unicode11Addon());
-      terminal.unicode.activeVersion = TERMINAL_UNICODE_VERSION;
-      terminal.loadAddon(
-        new WebLinksAddon(
-          (event, uri) => {
-            if (event.button !== 0) {
-              return;
-            }
-            requestOpenTerminalLink({ source: "detected-url", uri });
-          },
-          {
-            hover: (_event, uri) => {
-              updateHoveredTerminalLink({ source: "detected-url", uri });
-            },
-            leave: () => {
-              updateHoveredTerminalLink(null);
-            },
-          },
-        ),
-      );
       terminal.open(containerElement);
+      void loadOptionalTerminalSearchAddon(importTerminalSearchAddon)
+        .then((searchAddonModule) => {
+          if (disposed || searchAddonModule === null || terminal === null) {
+            return;
+          }
+          try {
+            const searchAddon = new searchAddonModule.SearchAddon();
+            terminal.loadAddon(searchAddon);
+            setTerminalSearchAddon(searchAddon);
+          } catch {
+            setTerminalSearchAddon(null);
+          }
+        })
+        .catch(() => undefined);
+      void importTerminalWebLinksAddon()
+        .then(({ WebLinksAddon }) => {
+          if (disposed || terminal === null) return;
+          try {
+            terminal.loadAddon(
+              new WebLinksAddon(
+                (event, uri) => {
+                  if (event.button !== 0) return;
+                  requestOpenTerminalLink({ source: "detected-url", uri });
+                },
+                {
+                  hover: (_event, uri) => {
+                    updateHoveredTerminalLink({ source: "detected-url", uri });
+                  },
+                  leave: () => updateHoveredTerminalLink(null),
+                },
+              ),
+            );
+          } catch {
+            return;
+          }
+        })
+        .catch(() => undefined);
+      void importTerminalUnicodeAddon()
+        .then(({ Unicode11Addon }) => {
+          if (disposed || terminal === null) return;
+          try {
+            terminal.loadAddon(new Unicode11Addon());
+            terminal.unicode.activeVersion = TERMINAL_UNICODE_VERSION;
+          } catch {
+            return;
+          }
+        })
+        .catch(() => undefined);
+      void loadOptionalTerminalWebglAddon(importTerminalWebglAddon)
+        .then((webglAddonModule) => {
+          if (disposed || webglAddonModule === null || terminal === null) {
+            return;
+          }
+          webglRenderer = loadTerminalWebglRenderer(
+            terminal,
+            () => new webglAddonModule.WebglAddon(),
+            { root: containerElement, visible: false },
+          );
+          webglVisibilityRef.current = observeTerminalWebglVisibility({
+            root: containerElement,
+            renderer: webglRenderer,
+            isPanelOpen: () => isPanelOpenRef.current,
+          });
+        })
+        .catch(() => undefined);
       viewportLineAnchor = createTerminalViewportLineAnchor(terminal);
       outputLineAnchorTracker.reset();
       const outputBoundaryToken = randomUuid();
@@ -1990,24 +2026,7 @@ export function ThreadTerminalView({
       }
       containerElement.dataset.renderGridCols = String(terminal.cols);
       containerElement.dataset.renderGridRows = String(terminal.rows);
-      if (searchAddonModule !== null) {
-        const searchAddon = new searchAddonModule.SearchAddon();
-        terminal.loadAddon(searchAddon);
-        setTerminalSearchAddon(searchAddon);
-      }
       attachTerminalWheelLines(terminal);
-      if (webglAddonModule !== null) {
-        webglRenderer = loadTerminalWebglRenderer(
-          terminal,
-          () => new webglAddonModule.WebglAddon(),
-          { root: containerElement, visible: false },
-        );
-        webglVisibilityRef.current = observeTerminalWebglVisibility({
-          root: containerElement,
-          renderer: webglRenderer,
-          isPanelOpen: () => isPanelOpenRef.current,
-        });
-      }
       if (sessionRef.current.status !== "exited") {
         writeTerminalSessionStatusNotice({
           lastNotice: lastStatusNoticeRef,
