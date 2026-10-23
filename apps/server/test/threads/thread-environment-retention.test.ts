@@ -160,10 +160,13 @@ describe("a failed create records what it kept", () => {
 
   it("leaves an unresolved row when the provider claimed a path and then threw", async () => {
     await withTestHarness(async (harness) => {
-      registerProvider(async (context) => {
-        await context.experimental_claimPath(KEPT_PATH);
-        throw new Error("connection lost");
-      });
+      registerProvider(
+        async (context) => {
+          await context.experimental_claimPath(KEPT_PATH);
+          throw new Error("connection lost");
+        },
+        async () => ({ absent: false, reason: "present" }),
+      );
       const { host, thread } = await destroyedThread(harness);
       await restoreAndWait(harness, thread.id);
 
@@ -192,7 +195,22 @@ describe("a failed create records what it kept", () => {
     });
   });
 
-  it("treats a failed create that does not say what it kept as unresolved, even for a provider that never claims a path", async () => {
+  it("treats a failed create that does not say what it kept as unresolved, even for a provider that never claims a path, when the provider can prove absence", async () => {
+    await withTestHarness(async (harness) => {
+      registerProvider(
+        async () => ({ status: "failed", message: "git unavailable" }),
+        async () => ({ absent: false, reason: "present" }),
+      );
+      const { host, thread } = await destroyedThread(harness);
+      await restoreAndWait(harness, thread.id);
+
+      const rows = listOpenEnvironmentRetentionsForHost(harness.db, host.id);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({ state: "unresolved", keptPath: null });
+    });
+  });
+
+  it("keeps the base behavior for a provider that cannot prove absence: a failed create that says nothing, and a create that throws, leave no retention", async () => {
     await withTestHarness(async (harness) => {
       registerProvider(async () => ({
         status: "failed",
@@ -200,10 +218,19 @@ describe("a failed create records what it kept", () => {
       }));
       const { host, thread } = await destroyedThread(harness);
       await restoreAndWait(harness, thread.id);
-
-      const rows = listOpenEnvironmentRetentionsForHost(harness.db, host.id);
-      expect(rows).toHaveLength(1);
-      expect(rows[0]).toMatchObject({ state: "unresolved", keptPath: null });
+      expect(listOpenEnvironmentRetentionsForHost(harness.db, host.id)).toEqual(
+        [],
+      );
+    });
+    await withTestHarness(async (harness) => {
+      registerProvider(async () => {
+        throw new Error("connection lost");
+      });
+      const { host, thread } = await destroyedThread(harness);
+      await restoreAndWait(harness, thread.id);
+      expect(listOpenEnvironmentRetentionsForHost(harness.db, host.id)).toEqual(
+        [],
+      );
     });
   });
 
@@ -570,10 +597,13 @@ describe("a failed create records what it kept", () => {
 
   it("merges the path-less dispatch intent into the row that has a path when the create throws after claiming one", async () => {
     await withTestHarness(async (harness) => {
-      registerProvider(async (context) => {
-        await context.experimental_claimPath(KEPT_PATH);
-        throw new Error("connection lost");
-      });
+      registerProvider(
+        async (context) => {
+          await context.experimental_claimPath(KEPT_PATH);
+          throw new Error("connection lost");
+        },
+        async () => ({ absent: false, reason: "present" }),
+      );
       const { host, thread } = await destroyedThread(harness);
       await restoreAndWait(harness, thread.id);
 

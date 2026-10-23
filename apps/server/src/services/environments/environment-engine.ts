@@ -654,11 +654,23 @@ async function runCreate(
     if (result.status === "failed") {
       const kept = result.experimental_retained;
       if (kept === undefined) {
-        markEnvironmentRetentionsUnresolved(
-          deps.db,
-          provisioning.id,
-          `${result.message} The provider did not say whether anything was kept, so the workspace may still hold work.`,
-        );
+        if (record.provider.experimental_proveRetentionAbsent === null) {
+          deps.logger.warn(
+            {
+              environmentId: provisioning.id,
+              providerId: record.provider.id,
+              pluginId: record.pluginId,
+            },
+            "A failed create did not say what it kept and the provider cannot prove absence, so it is treated as having kept nothing",
+          );
+          deleteEnvironmentRetentionIntents(deps.db, provisioning.id);
+        } else {
+          markEnvironmentRetentionsUnresolved(
+            deps.db,
+            provisioning.id,
+            `${result.message} The provider did not say whether anything was kept, so the workspace may still hold work.`,
+          );
+        }
       } else if (kept === null) {
         deleteEnvironmentRetentionIntents(deps.db, provisioning.id);
       } else {
@@ -808,11 +820,23 @@ async function runCreate(
       current.teardownStatus === "running"
     )
       return;
-    markEnvironmentRetentionsUnresolved(
-      deps.db,
-      provisioning.id,
-      `The create did not report a result (${errorMessage(error)}), so the workspace may still hold work.`,
-    );
+    if (record.provider.experimental_proveRetentionAbsent === null) {
+      deps.logger.warn(
+        {
+          environmentId: provisioning.id,
+          providerId: record.provider.id,
+          pluginId: record.pluginId,
+        },
+        "A create threw and the provider cannot prove absence, so it is treated as having kept nothing",
+      );
+      deleteEnvironmentRetentionIntents(deps.db, provisioning.id);
+    } else {
+      markEnvironmentRetentionsUnresolved(
+        deps.db,
+        provisioning.id,
+        `The create did not report a result (${errorMessage(error)}), so the workspace may still hold work.`,
+      );
+    }
     changed = mutateProvisioning(deps, provisioning, ["creating"], (row) => {
       row.status = "error";
       row.statusMessage = `The "${record.provider.id}" environment provider (plugin "${record.pluginId}") failed: ${errorMessage(error)}`;
