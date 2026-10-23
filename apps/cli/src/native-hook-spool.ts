@@ -40,6 +40,16 @@ const LATE_FILE_NAME = /^\.late\.\d+\.(\d+)$/u;
 const APPEND_LOCK_NAME = "hooks.lock";
 const ORPHANED_LOCK_AGE_MS = 10 * 60_000;
 const LOST_MARKER_NAME = /^\.lost\./u;
+const LOSS_MARK_NAME = ".loss";
+const WRITE_BLOCKED_CODES: ReadonlySet<string> = new Set([
+  "EACCES",
+  "EDQUOT",
+  "EMFILE",
+  "ENFILE",
+  "ENOSPC",
+  "EPERM",
+  "EROFS",
+]);
 const INCOMPLETE_LINE_AFTER_MS = 10_000;
 const MAX_APPEND_READ_BYTES = 4 * 1024 * 1024;
 const NETWORK_FILESYSTEM_TYPES: ReadonlySet<number> = new Set([
@@ -200,7 +210,7 @@ export function hookSpoolCommand(directory: string): string {
   return [
     "exec 2>/dev/null",
     `d=${spool}`,
-    't=$(mktemp "$d/.tmp.$$.XXXXXX") || exit 0',
+    't=$(mktemp "$d/.tmp.$$.XXXXXX") || { printf x >>"$d/.loss"; exit 0; }',
     'cat >"$t" || exit 0',
     'n=$(cat "$d/.hint" 2>/dev/null)',
     "case \"$n\" in ''|*[!0-9]*) n=0;; esac",
@@ -296,6 +306,28 @@ export type OpenDirectoryCursor = (directory: string) => DirectoryCursor;
 
 type PathState = "present" | "missing" | "unknown";
 
+export type SpoolWriteState = "writable" | "blocked";
+
+export type ProbeSpoolWritable = (directory: string) => SpoolWriteState;
+
+function probeSpoolWritable(directory: string): SpoolWriteState {
+  const probe = path.join(directory, `.probe.${process.pid}`);
+  try {
+    closeSync(openSync(probe, "wx", 0o600));
+  } catch (error) {
+    const code = error instanceof Error && "code" in error ? error.code : "";
+    return typeof code === "string" && WRITE_BLOCKED_CODES.has(code)
+      ? "blocked"
+      : "writable";
+  }
+  try {
+    unlinkSync(probe);
+  } catch {
+    return "writable";
+  }
+  return "writable";
+}
+
 type StatPath = (file: string) => PathState;
 
 function openDirectoryCursor(directory: string): DirectoryCursor {
@@ -339,11 +371,14 @@ export class HookSpoolReader {
   private readonly skipped: Array<{ from: number; to: number }> = [];
   private readonly reportedLate = new Set<string>();
   private readonly reportedTemps = new Set<string>();
+  private lossMarksSeen = 0;
+  private writeBlocked = false;
 
   constructor(
     private readonly directory: string,
     private readonly openCursor: OpenDirectoryCursor = openDirectoryCursor,
     private readonly statPath: StatPath = pathState,
+    private readonly probeWritable: ProbeSpoolWritable = probeSpoolWritable,
   ) {}
 
   read(now: number = Date.now()): HookSpoolRead {
@@ -491,8 +526,29 @@ export class HookSpoolReader {
     return lost;
   }
 
+  private countLossMarks(): number {
+    let size: number;
+    try {
+      size = statSync(path.join(this.directory, LOSS_MARK_NAME)).size;
+    } catch {
+      return 0;
+    }
+    const fresh = Math.max(0, size - this.lossMarksSeen);
+    this.lossMarksSeen = size;
+    return fresh;
+  }
+
+  private countWriteBlock(): number {
+    const blocked = this.probeWritable(this.directory) === "blocked";
+    const started = blocked && !this.writeBlocked;
+    this.writeBlocked = blocked;
+    return started ? 1 : 0;
+  }
+
   private scan(now: number): number {
     let lost = this.probeLate();
+    lost += this.countLossMarks();
+    lost += this.countWriteBlock();
     lost += this.advancePass(now);
     let countedMissing = 0;
     if (this.gapTarget !== 0 && this.next >= this.gapTarget) {
