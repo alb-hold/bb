@@ -209,7 +209,7 @@ describe("confined host path mutations", () => {
     await expect(fs.readFile(target, "utf8")).resolves.toBe("real");
   });
 
-  it("moves a regular file by renaming it, keeping its inode and leaving nothing at the source", async () => {
+  it("moves a regular file, keeping its inode, leaving nothing at the source and no holding file behind", async () => {
     const root = await makeRoot();
     const source = path.join(root, "a.txt");
     const destination = path.join(root, "b.txt");
@@ -226,20 +226,13 @@ describe("confined host path mutations", () => {
     ).resolves.toEqual({ ok: true });
 
     await expect(fs.lstat(source)).rejects.toMatchObject({ code: "ENOENT" });
-    expect((await fs.stat(destination)).ino).toBe(before.ino);
+    const after = await fs.stat(destination);
+    expect(after.ino).toBe(before.ino);
+    expect(after.nlink).toBe(1);
+    expect(await fs.readdir(root)).toEqual(["b.txt"]);
   });
 
-  it.each([
-    ["a folder", async (source: string) => {
-      await fs.rename(source, `${source}.orig`);
-      await fs.mkdir(source);
-      await fs.writeFile(path.join(source, "inside.txt"), "workspace");
-    }],
-    ["another regular file", async (source: string) => {
-      await fs.rename(source, `${source}.orig`);
-      await fs.writeFile(source, "swapped in");
-    }],
-  ])("refuses and puts back a source swapped for %s between the open and the rename", async (_label, swap) => {
+  it("refuses a source swapped for a folder after the open and never moves the folder", async () => {
     const root = await makeRoot();
     const source = path.join(root, "a.txt");
     const destination = path.join(root, "b.txt");
@@ -253,17 +246,64 @@ describe("confined host path mutations", () => {
           destinationPath: destination,
           rootPath: root,
         },
-        { afterOpen: () => swap(source) },
+        {
+          afterOpen: async () => {
+            await fs.rename(source, `${source}.orig`);
+            await fs.mkdir(source);
+            await fs.writeFile(path.join(source, "inside.txt"), "workspace");
+          },
+        },
       ),
     ).rejects.toMatchObject({ code: "invalid_path" });
 
     await expect(fs.lstat(destination)).rejects.toMatchObject({
       code: "ENOENT",
     });
-    expect((await fs.lstat(source)).isSymbolicLink()).toBe(false);
-    await expect(fs.readFile(`${source}.orig`, "utf8")).resolves.toBe(
-      "original",
-    );
+    await expect(
+      fs.readFile(path.join(source, "inside.txt"), "utf8"),
+    ).resolves.toBe("workspace");
+  });
+
+  it.each([
+    ["a folder", async (source: string) => {
+      await fs.rename(source, `${source}.orig`);
+      await fs.mkdir(source);
+      await fs.writeFile(path.join(source, "inside.txt"), "workspace");
+    }, async (source: string) => {
+      await expect(
+        fs.readFile(path.join(source, "inside.txt"), "utf8"),
+      ).resolves.toBe("workspace");
+    }],
+    ["another regular file", async (source: string) => {
+      await fs.rename(source, `${source}.orig`);
+      await fs.writeFile(source, "swapped in");
+    }, async (source: string) => {
+      await expect(fs.readFile(source, "utf8")).resolves.toBe("swapped in");
+    }],
+  ])("keeps %s swapped in after the link where it was, and the destination holds the original", async (_label, swap, check) => {
+    const root = await makeRoot();
+    const source = path.join(root, "a.txt");
+    const destination = path.join(root, "b.txt");
+    await fs.writeFile(source, "original");
+    const before = await fs.stat(source);
+
+    await expect(
+      moveHostFile(
+        {
+          type: "host.move_file",
+          sourcePath: source,
+          destinationPath: destination,
+          rootPath: root,
+        },
+        { afterLink: () => swap(source) },
+      ),
+    ).resolves.toEqual({ ok: true });
+
+    expect((await fs.stat(destination)).ino).toBe(before.ino);
+    await check(source);
+    expect(
+      (await fs.readdir(root)).filter((name) => name.startsWith(".bb-moving-")),
+    ).toEqual([]);
   });
 
   it("refuses a source and a destination reached through a symlinked folder, and a removal through one", async () => {

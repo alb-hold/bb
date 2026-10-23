@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -115,6 +116,14 @@ function refuseMove(sourcePath: string, reason: string): never {
 
 export interface MoveHostFileHooks {
   afterOpen?: () => Promise<void>;
+  afterLink?: () => Promise<void>;
+}
+
+function isSameFile(
+  info: { dev: number | bigint; ino: number | bigint; isFile(): boolean },
+  opened: { dev: number | bigint; ino: number | bigint },
+): boolean {
+  return info.isFile() && info.dev === opened.dev && info.ino === opened.ino;
 }
 
 export async function moveHostFile(
@@ -148,22 +157,23 @@ export async function moveHostFile(
       refuseMove(command.sourcePath, "it is not a single regular file");
     }
     await hooks.afterOpen?.();
-    const existing = await fs.lstat(destination).catch((error: unknown) => {
-      if (error instanceof Error && "code" in error && error.code === "ENOENT")
-        return null;
-      throw error;
-    });
-    if (existing !== null) {
-      throw new CommandDispatchError(
-        "path_exists",
-        `Destination already exists: ${command.destinationPath}`,
-      );
-    }
     try {
-      await fs.rename(source, destination);
+      await fs.link(source, destination);
     } catch (error) {
       const code =
         error instanceof Error && "code" in error ? String(error.code) : "";
+      if (code === "EEXIST") {
+        throw new CommandDispatchError(
+          "path_exists",
+          `Destination already exists: ${command.destinationPath}`,
+        );
+      }
+      if (code === "EPERM" || code === "EISDIR" || code === "ENOENT") {
+        refuseMove(
+          command.sourcePath,
+          "it is not a regular file that can be moved within one filesystem",
+        );
+      }
       if (code === "EXDEV") {
         refuseMove(
           command.sourcePath,
@@ -172,21 +182,40 @@ export async function moveHostFile(
       }
       throw error;
     }
-    const moved = await fs.lstat(destination);
-    if (!moved.isFile() || moved.dev !== opened.dev || moved.ino !== opened.ino) {
-      const sourceFree = await fs.lstat(source).then(
-        () => false,
-        () => true,
-      );
-      if (sourceFree) await fs.rename(destination, source);
-      refuseMove(
-        command.sourcePath,
-        sourceFree
-          ? "it changed while it was being moved, and it was put back"
-          : "it changed while it was being moved, and it could not be put back because something new now occupies its place",
-      );
+    const linked = await fs.lstat(destination);
+    if (!isSameFile(linked, opened)) {
+      await fs.unlink(destination);
+      refuseMove(command.sourcePath, "it changed while it was being moved");
     }
-    return { ok: true };
+    await hooks.afterLink?.();
+    const holding = path.join(
+      path.dirname(source),
+      `.bb-moving-${randomUUID()}`,
+    );
+    try {
+      await fs.rename(source, holding);
+    } catch (error) {
+      if (error instanceof Error && "code" in error && error.code === "ENOENT")
+        return { ok: true };
+      throw error;
+    }
+    const held = await fs.lstat(holding);
+    if (isSameFile(held, opened)) {
+      await fs.unlink(holding);
+      return { ok: true };
+    }
+    const sourceFree = await fs.lstat(source).then(
+      () => false,
+      () => true,
+    );
+    if (sourceFree) {
+      await fs.rename(holding, source);
+      return { ok: true };
+    }
+    throw new CommandDispatchError(
+      "invalid_path",
+      `The file was moved to ${command.destinationPath}, but something else replaced ${command.sourcePath} while it was moving and then something new took its place, so the replacement was left at ${holding}.`,
+    );
   } finally {
     await handle.close();
   }
