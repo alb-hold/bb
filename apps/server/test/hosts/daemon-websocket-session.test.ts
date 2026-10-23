@@ -2,7 +2,12 @@ import { eq } from "drizzle-orm";
 import { buildHostDaemonWebSocketProtocols } from "@bb/host-daemon-contract";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
-import { getSessionById, hostDaemonSessions } from "@bb/db";
+import {
+  createTerminalSession,
+  getRetainedTerminalOutput,
+  getSessionById,
+  hostDaemonSessions,
+} from "@bb/db";
 import {
   createTestDaemonHostKey,
   startTestServer,
@@ -13,6 +18,7 @@ import {
   seedHostSession,
   seedProjectWithSource,
   seedSession,
+  seedThread,
 } from "../helpers/seed.js";
 
 let server: RunningTestServer | null = null;
@@ -238,6 +244,10 @@ describe("daemon websocket session authorization", () => {
     const replacement = seedSession(server.deps, first.host.id, {
       instanceId: "replacement-instance",
     });
+    const replacementSocket = await connectDaemon(
+      replacement.id,
+      first.host.id,
+    );
     expect(
       getSessionById(server.db, { sessionId: first.session.id }),
     ).toMatchObject({ status: "closed", closeReason: "replaced" });
@@ -253,6 +263,7 @@ describe("daemon websocket session authorization", () => {
     });
     expect(server.hub.isHostRestarting(first.host.id)).toBe(false);
     expect(recordActivity).not.toHaveBeenCalled();
+    expect(replacementSocket.readyState).toBe(WebSocket.OPEN);
   });
 
   it("preserves the unauthorized-session close code for a host mismatch", async () => {
@@ -287,56 +298,139 @@ describe("daemon websocket session authorization", () => {
     );
   });
 
-  it("applies frames accepted while active even when close happens before draining", async () => {
+  it("drains replay and its accepted follow-up exactly once after socket close", async () => {
     server = await startTestServer();
     const { host, session } = seedHostSession(server.deps);
-    const original =
-      server.deps.terminalSessions.reconcileDisconnectedHostTerminals.bind(
+    const { project } = seedProjectWithSource(server.deps, {
+      hostId: host.id,
+    });
+    const environment = seedEnvironment(server.deps, {
+      hostId: host.id,
+      projectId: project.id,
+    });
+    const thread = seedThread(server.deps, {
+      environmentId: environment.id,
+      projectId: project.id,
+    });
+    const terminal = createTerminalSession(server.db, {
+      cols: 120,
+      daemonSessionId: session.id,
+      environmentId: environment.id,
+      hostId: host.id,
+      initialCwd: environment.path ?? "/tmp/terminal-workspace",
+      rows: 32,
+      status: "running",
+      threadId: thread.id,
+      title: "Terminal 1",
+    });
+    const socket = await connectDaemon(session.id, host.id);
+    let acceptSecondFrame!: () => void;
+    const secondFrameAccepted = new Promise<void>((resolve) => {
+      acceptSecondFrame = resolve;
+    });
+    const recordActivity = server.hub.recordDaemonActivity.bind(server.hub);
+    let activityCount = 0;
+    vi.spyOn(server.hub, "recordDaemonActivity").mockImplementation(
+      (sessionId) => {
+        recordActivity(sessionId);
+        activityCount += 1;
+        if (activityCount === 2) acceptSecondFrame();
+      },
+    );
+    let replayStarted!: () => void;
+    let replayFinished!: () => void;
+    const started = new Promise<void>((resolve) => {
+      replayStarted = resolve;
+    });
+    const finished = new Promise<void>((resolve) => {
+      replayFinished = resolve;
+    });
+    const handleTerminalMessage =
+      server.deps.terminalSessions.handleDaemonTerminalMessage.bind(
         server.deps.terminalSessions,
       );
-    let resumeOpen!: () => void;
-    const waitForOpen = new Promise<void>((resolve) => {
-      resumeOpen = resolve;
+    vi.spyOn(
+      server.deps.terminalSessions,
+      "handleDaemonTerminalMessage",
+    ).mockImplementation((args) => {
+      const result = handleTerminalMessage(args);
+      if (args.message.type !== "terminal.replay") return result;
+      replayStarted();
+      return result instanceof Promise
+        ? result.finally(replayFinished)
+        : result;
     });
-    server.deps.terminalSessions.reconcileDisconnectedHostTerminals = async (
-      args,
-    ) => {
-      await waitForOpen;
-      await original(args);
-    };
-    const socket = await connectDaemon(session.id, host.id);
-
-    const rejectedLog = vi.spyOn(server.deps.logger, "warn");
-    const markHostRestarting = server.hub.markHostRestarting.bind(server.hub);
-    let resolveRestart!: () => void;
-    const hostRestarted = new Promise<void>((resolve) => {
-      resolveRestart = resolve;
-    });
-    vi.spyOn(server.hub, "markHostRestarting").mockImplementation((hostId) => {
-      markHostRestarting(hostId);
-      if (hostId === host.id) resolveRestart();
-    });
-    socket.send(
-      JSON.stringify({
-        type: "terminal.output",
-        terminalId: "terminal-without-clients",
-        chunk: { seq: 0, dataBase64: Buffer.from("queued").toString("base64") },
-      }),
+    const notifyEnvironmentOriginal = server.hub.notifyEnvironment.bind(
+      server.hub,
     );
-    socket.send(JSON.stringify({ type: "daemon.restarting" }));
-    await new Promise<void>((resolve) => setImmediate(resolve));
+    const notifyEnvironment = vi.spyOn(server.hub, "notifyEnvironment");
+    let environmentNotified!: () => void;
+    const notified = new Promise<void>((resolve) => {
+      environmentNotified = resolve;
+    });
+    notifyEnvironment.mockImplementation((...args) => {
+      environmentNotified();
+      return notifyEnvironmentOriginal(...args);
+    });
+    const chunks = Array.from({ length: 1_024 }, (_, seq) => ({
+      seq,
+      dataBase64: Buffer.from(`replay-${seq}`).toString("base64"),
+    }));
     const closed = new Promise<void>((resolve) =>
       socket.once("close", () => resolve()),
     );
+    socket.send(
+      JSON.stringify({
+        type: "terminal.replay",
+        requestId: "queued-replay-before-close",
+        terminalId: terminal.id,
+        replayStartSeq: 0,
+        nextSeq: chunks.length,
+        chunks,
+      }),
+    );
+    await started;
+    socket.send(
+      JSON.stringify({
+        type: "environment-change",
+        environmentId: environment.id,
+        change: "work-status-changed",
+      }),
+    );
+    await secondFrameAccepted;
     socket.close();
     await closed;
-    resumeOpen();
-    await hostRestarted;
+    expect(notifyEnvironment).not.toHaveBeenCalled();
+    await Promise.race([
+      notified,
+      new Promise<never>((_, reject) =>
+        setTimeout(
+          () => reject(new Error("accepted frame did not drain")),
+          5_000,
+        ),
+      ),
+    ]);
+    await finished;
 
-    expect(server.hub.isHostRestarting(host.id)).toBe(true);
-    expect(rejectedLog).not.toHaveBeenCalledWith(
-      expect.anything(),
-      "Daemon message rejected, closing socket",
-    );
+    expect(notifyEnvironment).toHaveBeenCalledTimes(1);
+    expect(notifyEnvironment).toHaveBeenCalledWith(environment.id, [
+      "work-status-changed",
+    ]);
+    expect(
+      getRetainedTerminalOutput(server.db, {
+        hostId: host.id,
+        terminalSessionId: terminal.id,
+        now: Date.now(),
+      })?.map(({ seq }) => seq),
+    ).toEqual(chunks.map(({ seq }) => seq));
+    expect(
+      new Set(
+        getRetainedTerminalOutput(server.db, {
+          hostId: host.id,
+          terminalSessionId: terminal.id,
+          now: Date.now(),
+        })?.map(({ seq }) => seq),
+      ).size,
+    ).toBe(chunks.length);
   });
 });

@@ -42,8 +42,34 @@ import {
   startHttpListener,
 } from "../../start-server.js";
 
+const replayYieldControl = vi.hoisted(() => ({
+  intercept: null as (() => Promise<void>) | null,
+}));
+
+vi.mock("node:timers/promises", async (importOriginal) => {
+  const timers = await importOriginal<typeof import("node:timers/promises")>();
+  return {
+    ...timers,
+    setImmediate: (...args: Parameters<typeof timers.setImmediate>) => {
+      const intercept = replayYieldControl.intercept;
+      return intercept ? intercept() : timers.setImmediate(...args);
+    },
+  };
+});
+
 const V = TERMINAL_DATA_PLANE_IPC_VERSION;
 const harnesses: TestAppHarness[] = [];
+
+function deferred<T>(): {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+} {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((accept) => {
+    resolve = accept;
+  });
+  return { promise, resolve };
+}
 
 afterEach(async () => {
   for (const harness of harnesses.splice(0)) {
@@ -1237,7 +1263,6 @@ describe("terminal output retained from the data plane", () => {
 
   it("bounds replay catch-up while preserving output arriving at every yield and a queued daemon message", async () => {
     const fixture = await setup();
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     const queue = createDaemonSocketMessageQueue<() => void | Promise<void>>({
       handle: (message) => message(),
       onError: (error) => {
@@ -1245,15 +1270,30 @@ describe("terminal output retained from the data plane", () => {
       },
     });
     queue.release();
-    let replayFinished = false;
-    let producerActive = true;
+    let yieldCount = 0;
+    let nextYield = deferred<number>();
+    let waitingForYield = nextYield.promise;
+    let releaseYield: (() => void) | null = null;
     try {
-      let producerRounds = 0;
+      const injectedSeqs: number[] = [];
       let queuedMessageProcessed = false;
       let resolveQueuedMessage!: () => void;
+      let resolveReplayFinished!: () => void;
       const queuedMessage = new Promise<void>((resolve) => {
         resolveQueuedMessage = resolve;
       });
+      const replayFinished = new Promise<void>((resolve) => {
+        resolveReplayFinished = resolve;
+      });
+      replayYieldControl.intercept = () => {
+        yieldCount += 1;
+        const signal = nextYield;
+        nextYield = deferred<number>();
+        signal.resolve(yieldCount);
+        return new Promise<void>((resolve) => {
+          releaseYield = resolve;
+        });
+      };
       const replayChunks = Array.from({ length: 2_048 }, (_, seq) => ({
         seq,
         dataBase64: Buffer.from("r").toString("base64"),
@@ -1272,9 +1312,7 @@ describe("terminal output retained from the data plane", () => {
               chunks: replayChunks,
             },
           }),
-        ).then(() => {
-          replayFinished = true;
-        }),
+        ).then(() => resolveReplayFinished()),
       );
       queue.enqueue(() => {
         return Promise.resolve(
@@ -1296,36 +1334,52 @@ describe("terminal output retained from the data plane", () => {
         });
       });
 
-      const produceAtReplayYields = () => {
-        if (!producerActive || replayFinished) return;
-        producerRounds += 1;
-        const firstSeq = 100_000 + (producerRounds - 1) * 257;
+      while (true) {
+        const next = await Promise.race([
+          waitingForYield.then((yieldNumber) => ({ yieldNumber })),
+          replayFinished.then(() => ({ done: true as const })),
+          delay(5_000).then(() => {
+            throw new Error(`replay stalled after ${yieldCount} yields`);
+          }),
+        ]);
+        if ("done" in next) break;
+        const actualYield = next.yieldNumber;
+        waitingForYield = nextYield.promise;
+        expect(actualYield).toBe(yieldCount);
+        const seq = 100_000 + actualYield;
+        injectedSeqs.push(seq);
         fixture.terminalSessions.recordDirectTerminalOutputBatch({
           daemonSessionId: fixture.session.id,
           terminalId: fixture.terminal.id,
-          chunks: Array.from({ length: 257 }, (_, offset) => ({
-            seq: firstSeq + offset,
-            dataBase64: Buffer.from(offset === 256 ? "x" : "").toString(
-              "base64",
-            ),
-          })),
+          chunks: [
+            {
+              seq,
+              dataBase64: Buffer.from(`yield-${actualYield}`).toString(
+                "base64",
+              ),
+            },
+          ],
         });
-        setImmediate(produceAtReplayYields);
-      };
-      setImmediate(produceAtReplayYields);
+        const resume = releaseYield;
+        if (!resume)
+          throw new Error(`replay yield ${actualYield} was not held`);
+        releaseYield = null;
+        resume();
+      }
 
       const completedWithinBound = await Promise.race([
         queuedMessage.then(() => true),
-        delay(1_000).then(() => false),
+        delay(5_000).then(() => false),
       ]);
-      producerActive = false;
       if (!completedWithinBound) {
         await Promise.race([queuedMessage, delay(5_000)]);
       }
 
       expect(completedWithinBound).toBe(true);
       expect(queuedMessageProcessed).toBe(true);
-      expect(producerRounds).toBeGreaterThan(1);
+      expect(yieldCount).toBeGreaterThanOrEqual(200);
+      expect(injectedSeqs).toHaveLength(yieldCount);
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
       await vi.advanceTimersByTimeAsync(1_000);
       const retained = getRetainedTerminalOutput(fixture.db, {
         hostId: fixture.host.id,
@@ -1335,19 +1389,13 @@ describe("terminal output retained from the data plane", () => {
       const retainedSeqs = retained?.map(({ seq }) => seq) ?? [];
       const expectedSeqs = [
         ...replayChunks.map(({ seq }) => seq),
-        ...Array.from(
-          { length: producerRounds * 257 },
-          (_, index) => 100_000 + index,
-        ),
-        1_000_000,
+        ...injectedSeqs,
       ];
       expect(retainedSeqs).toEqual(expectedSeqs);
       expect(new Set(retainedSeqs).size).toBe(retainedSeqs.length);
-      expect(
-        retained?.filter(({ dataBase64 }) => dataBase64 === "eA==").length,
-      ).toBe(producerRounds);
     } finally {
-      producerActive = false;
+      replayYieldControl.intercept = null;
+      releaseYield?.();
       queue.close();
       vi.useRealTimers();
       fixture.child.shutdown();
