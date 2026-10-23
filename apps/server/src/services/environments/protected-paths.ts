@@ -26,31 +26,6 @@ export function assertPathAvoidsProtectedWorkspaces(
     );
   }
   const target = canonicalizeHostPath(args.path);
-  const sessionId = deps.hub.getDaemonSessionIdForHost(args.hostId);
-  const dataDir =
-    sessionId === null
-      ? null
-      : (getSessionById(deps.db, { sessionId })?.dataDir ?? null);
-  if (dataDir === null) {
-    throw new ApiError(
-      409,
-      "workspace_busy",
-      `Refusing to ${args.action} ${args.path}: bb cannot tell where this machine keeps its plugin data (no connected daemon session), so it cannot rule out that the path holds a worktree or a folder bb kept. Reconnect the machine and retry.`,
-    );
-  }
-  const pluginData = canonicalizeHostPath(
-    joinHostPathSegments(dataDir, "plugins"),
-  );
-  if (
-    isHostPathWithin({ rootPath: target, candidatePath: pluginData }) ||
-    isHostPathWithin({ rootPath: pluginData, candidatePath: target })
-  ) {
-    throw new ApiError(
-      409,
-      "workspace_busy",
-      `Refusing to ${args.action} ${args.path}: it is or is inside bb's plugin data on this machine, which holds worktrees and any folder bb kept for later. bb removes those only through their own cleanup.`,
-    );
-  }
   const retention = findOpenEnvironmentRetentionOverlapping(deps.db, {
     hostId: args.hostId,
     path: target,
@@ -83,6 +58,31 @@ export function assertPathAvoidsProtectedWorkspaces(
       409,
       "workspace_busy",
       `Refusing to ${args.action} ${args.path}: it is, contains or is inside the workspace ${workspace}${ids.length === 0 ? " that no thread references any more" : ` of ${ids.length === 1 ? "thread" : "threads"} ${ids.join(", ")}`}. bb removes or moves a workspace only through its owner's release.`,
+    );
+  }
+  const sessionId = deps.hub.getDaemonSessionIdForHost(args.hostId);
+  const dataDir =
+    sessionId === null
+      ? null
+      : (getSessionById(deps.db, { sessionId })?.dataDir ?? null);
+  if (dataDir === null) {
+    throw new ApiError(
+      409,
+      "workspace_busy",
+      `Refusing to ${args.action} ${args.path}: bb cannot tell where this machine keeps its plugin data (no connected daemon session), so it cannot rule out that the path holds a worktree or a folder bb kept. Reconnect the machine and retry.`,
+    );
+  }
+  const pluginData = canonicalizeHostPath(
+    joinHostPathSegments(dataDir, "plugins"),
+  );
+  if (
+    isHostPathWithin({ rootPath: target, candidatePath: pluginData }) ||
+    isHostPathWithin({ rootPath: pluginData, candidatePath: target })
+  ) {
+    throw new ApiError(
+      409,
+      "workspace_busy",
+      `Refusing to ${args.action} ${args.path}: it is or is inside bb's plugin data on this machine, which holds worktrees and any folder bb kept for later. bb removes those only through their own cleanup.`,
     );
   }
 }

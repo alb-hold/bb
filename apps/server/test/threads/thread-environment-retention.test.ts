@@ -3,6 +3,7 @@ import {
   environmentRetentions,
   environments,
   getEnvironment,
+  getPreparingEnvironment,
   getThread,
   listEnvironmentRetentionTransitionsForEnvironment,
   listOpenEnvironmentRetentionsForHost,
@@ -125,11 +126,7 @@ async function restoreAndWait(harness: TestAppHarness, threadId: string) {
   );
   expect(response.status, await response.clone().text()).toBe(200);
   await expect
-    .poll(() => {
-      const current = getThread(harness.db, threadId);
-      const row = getEnvironment(harness.db, current?.environmentId ?? "");
-      return row?.status;
-    })
+    .poll(() => getPreparingEnvironment(harness.db, threadId)?.status)
     .toBe("error");
 }
 

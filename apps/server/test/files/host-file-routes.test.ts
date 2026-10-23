@@ -6,6 +6,7 @@ import { registerHostRpcResponder } from "../helpers/host-rpc.js";
 import { readJson } from "../helpers/json.js";
 import {
   seedEnvironment,
+  seedHost,
   seedHostSession,
   seedPrimaryHost,
   seedProjectWithSource,
@@ -186,7 +187,7 @@ describe("host file routes", () => {
 
   it("refuses a removal it cannot place relative to plugin data when the machine has no daemon session", async () => {
     await withTestHarness(async (harness) => {
-      const { host } = seedHostSession(harness.deps);
+      const host = seedHost(harness.deps);
       seedPrimaryHost(harness.deps, host.id);
 
       const response = await harness.app.request(
