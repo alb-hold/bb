@@ -1492,6 +1492,81 @@ describe.skipIf(process.platform === "win32")(
       expect(existsSync(lock)).toBe(false);
     }, 30_000);
 
+    it("keeps the lock of a live holder whose start field is not one of the two forms the writer produces, and still breaks a reused pid's lock whose start is a valid, different one", async () => {
+      const { dead, file, live, lock } = readerKit();
+      const holder = live();
+      const gone = await dead();
+      const longAgo = new Date(Date.now() - 11 * 60_000);
+      const malformed = [
+        ":pgarbage",
+        ":p12x",
+        ":p",
+        ":p-1",
+        ":s",
+        ":sgarbage",
+        ":sFri_Oct_23_02:58:52",
+        ":sFri_Oct_23_02:58:52_2026_x",
+        ":sFri__Oct_23_02:58:52_2026",
+        ":pa:b",
+      ];
+      for (const suffix of malformed) {
+        const text = `${holder}${suffix}`;
+        const readers = [
+          new HookAppendReader(file),
+          new HookAppendReader(file, undefined, () => "p999"),
+          new HookAppendReader(
+            file,
+            undefined,
+            () => "sMon_Jan_1_00:00:00_2030",
+          ),
+        ];
+        for (const reader of readers) {
+          mkdirSync(lock);
+          writeFileSync(path.join(lock, "pid"), text);
+          utimesSync(lock, longAgo, longAgo);
+          expect(reader.read().unreadable).toBe(0);
+          expect(readFileSync(path.join(lock, "pid"), "utf8")).toBe(text);
+          rmSync(lock, { force: true, recursive: true });
+        }
+        symlinkSync(text, lock);
+        lutimesSync(lock, longAgo, longAgo);
+        expect(new HookAppendReader(file).read().unreadable).toBe(0);
+        expect(readlinkSync(lock)).toBe(text);
+        rmSync(lock, { force: true });
+      }
+      mkdirSync(lock);
+      writeFileSync(path.join(lock, "pid"), `${gone}:pgarbage`);
+      expect(new HookAppendReader(file).read().unreadable).toBe(1);
+      expect(existsSync(lock)).toBe(false);
+      const valid: Array<[string, string]> = [
+        [`${holder}:p1`, "p999"],
+        [`${holder}:sFri_Oct_23_02:58:52_2026`, "sMon_Jan_1_00:00:00_2030"],
+        [`${holder}:sSex_Out_3_02:58:52_2026`, "sSeg_Jan_1_00:00:00_2030"],
+      ];
+      for (const [text, current] of valid) {
+        mkdirSync(lock);
+        writeFileSync(path.join(lock, "pid"), text);
+        expect(
+          new HookAppendReader(file, undefined, () => current).read()
+            .unreadable,
+        ).toBe(1);
+        expect(existsSync(lock)).toBe(false);
+      }
+      mkdirSync(lock);
+      writeFileSync(
+        path.join(lock, "pid"),
+        `${holder}:sFri_Oct_23_02:58:52_2026`,
+      );
+      expect(
+        new HookAppendReader(
+          file,
+          undefined,
+          () => "sFri_Oct_23_02:58:52_2026",
+        ).read().unreadable,
+      ).toBe(0);
+      expect(existsSync(lock)).toBe(true);
+    }, 30_000);
+
     it("judges a lock whose text starts with digits by that pid alone, never by age, whatever follows the digits", async () => {
       const { dead, directory, file, live, lock } = readerKit();
       const holder = live();

@@ -711,6 +711,9 @@ function lockHolderText(lock: string, stats: Stats): string | null {
   return content.kind === "text" ? content.text : null;
 }
 
+const LOCK_START_FORMS =
+  /^(?:p\d+|s[^\s_]+_[^\s_]+_\d{1,2}_\d{2}:\d{2}:\d{2}_\d{4})$/u;
+
 interface LockHolder {
   pid: number;
   start: string | null;
@@ -723,7 +726,7 @@ function parseLockHolder(text: string | null): LockHolder | null {
   if (!Number.isSafeInteger(pid) || pid <= 0) return null;
   const rest = match?.[2] ?? "";
   const start = rest.startsWith(":") ? rest.slice(1) : "";
-  return { pid, start: /^[ps]\S+$/u.test(start) ? start : null };
+  return { pid, start: LOCK_START_FORMS.test(start) ? start : null };
 }
 
 function procStartTime(pid: number): string | null {
