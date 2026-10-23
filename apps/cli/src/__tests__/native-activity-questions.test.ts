@@ -501,7 +501,7 @@ describe("native terminal questions", () => {
       hook(call("toolu_2", input));
       const opened = hook(ask(input));
       expect(waiting(opened)).toHaveLength(1);
-      expect(waiting(hook(done("toolu_1", input)))).toHaveLength(1);
+      expect(hook(done("toolu_1", input))).toBeNull();
       expect(waiting(tracker.heartbeat())).toHaveLength(1);
       expect(hook(done("toolu_2", input))).toEqual({
         state: "working",

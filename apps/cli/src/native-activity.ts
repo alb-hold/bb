@@ -139,6 +139,9 @@ export function classifyHookRecord(
             prompt: `${permission.label}: ${id}`,
           },
           occurrence: true,
+          ...(toolCallId(record) === undefined
+            ? {}
+            : { callId: toolCallId(record) }),
           ...(inputKey === undefined ? {} : { inputKey }),
         };
       }
@@ -349,6 +352,7 @@ interface OpenOccurrence {
   id: string;
   key: string | null;
   callId: string | null;
+  candidateCallIds: string[];
 }
 
 interface AnnouncedCall {
@@ -374,7 +378,11 @@ export class NativeActivityTracker {
     if (signal.question !== undefined) {
       return this.openQuestion(
         signal.occurrence === true
-          ? this.startOccurrence(signal.question, signal.inputKey)
+          ? this.startOccurrence(
+              signal.question,
+              signal.inputKey,
+              signal.callId,
+            )
           : signal.question,
       );
     }
@@ -450,27 +458,50 @@ export class NativeActivityTracker {
   private bindAnnouncedCall(
     base: string,
     key: string | undefined,
-  ): string | null {
-    if (key === undefined) return null;
+    callId: string | undefined,
+  ): { callId: string | null; candidateCallIds: string[] } {
+    if (callId !== undefined) {
+      const announced = this.announcedCalls.get(callId);
+      if (announced !== undefined) announced.bound = true;
+      return { callId, candidateCallIds: [] };
+    }
+    if (key === undefined) return { callId: null, candidateCallIds: [] };
+    const candidates: string[] = [];
     for (const [id, call] of this.announcedCalls) {
       if (call.bound || call.base !== base || call.key !== key) continue;
       call.bound = true;
-      return id;
+      candidates.push(id);
     }
-    return null;
+    const freshCandidateCount = candidates.length;
+    if (freshCandidateCount === 0) {
+      for (const occurrence of this.openOccurrences.get(base) ?? []) {
+        if (occurrence.key === key) {
+          candidates.push(...occurrence.candidateCallIds);
+        }
+      }
+    }
+    const uniqueCandidates = [...new Set(candidates)];
+    if (freshCandidateCount === 0) {
+      return { callId: null, candidateCallIds: uniqueCandidates };
+    }
+    return uniqueCandidates.length === 1
+      ? { callId: uniqueCandidates[0]!, candidateCallIds: [] }
+      : { callId: null, candidateCallIds: uniqueCandidates };
   }
 
   private startOccurrence(
     question: NativeQuestion,
     key: string | undefined,
+    callId: string | undefined,
   ): NativeQuestion {
     const base = occurrenceBase(question.id);
     const serial = (this.occurrenceCounters.get(base) ?? 0) + 1;
     this.occurrenceCounters.set(base, serial);
     const id = `${base}#${this.nonce}.${serial}`;
+    const binding = this.bindAnnouncedCall(base, key, callId);
     this.openOccurrences.set(base, [
       ...(this.openOccurrences.get(base) ?? []),
-      { id, key: key ?? null, callId: this.bindAnnouncedCall(base, key) },
+      { id, key: key ?? null, ...binding },
     ]);
     return { id, prompt: question.prompt };
   }
@@ -489,6 +520,29 @@ export class NativeActivityTracker {
     let index = -1;
     if (callId !== null) {
       index = open.findIndex((occurrence) => occurrence.callId === callId);
+    }
+    if (index === -1 && callId !== null) {
+      const candidates = open.filter((occurrence) =>
+        occurrence.candidateCallIds.includes(callId),
+      );
+      if (candidates.length > 0) {
+        const candidateIds = new Set(
+          candidates.flatMap((occurrence) => occurrence.candidateCallIds),
+        );
+        if (candidates.length >= candidateIds.size) {
+          index = open.indexOf(candidates[0]!);
+        }
+        for (const occurrence of open) {
+          occurrence.candidateCallIds = occurrence.candidateCallIds.filter(
+            (candidateId) => candidateId !== callId,
+          );
+        }
+        if (index === -1) {
+          if (open.length === 0) this.openOccurrences.delete(base);
+          else this.openOccurrences.set(base, open);
+          return null;
+        }
+      }
     }
     if (
       index === -1 &&
