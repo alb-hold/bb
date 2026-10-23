@@ -132,7 +132,7 @@ async function addWorktree(
     process.execPath,
     ["-e", "setTimeout(() => {}, 300_000)"],
     {
-      cwd: path,
+      cwd: fixture.dataDir,
       detached: true,
       stdio: "ignore",
     },

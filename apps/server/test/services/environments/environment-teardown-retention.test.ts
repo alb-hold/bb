@@ -10,7 +10,9 @@ import {
   getEnvironment,
   getHost,
   getThread,
+  recordThreadEnvironmentReleases,
   releaseCancelledEnvironmentOwner,
+  revokeThreadEnvironmentReleases,
   threads,
   updateHost,
 } from "@bb/db";
@@ -117,6 +119,10 @@ function archive(harness: TestAppHarness, threadId: string): void {
     .set({ archivedAt: Date.now() })
     .where(eq(threads.id, threadId))
     .run();
+  recordThreadEnvironmentReleases(harness.db, [threadId], {
+    kind: "system",
+    threadId: null,
+  });
 }
 
 function unarchiveDirectly(harness: TestAppHarness, threadId: string): void {
@@ -125,6 +131,7 @@ function unarchiveDirectly(harness: TestAppHarness, threadId: string): void {
     .set({ archivedAt: null })
     .where(eq(threads.id, threadId))
     .run();
+  revokeThreadEnvironmentReleases(harness.db, threadId);
 }
 
 function patch(

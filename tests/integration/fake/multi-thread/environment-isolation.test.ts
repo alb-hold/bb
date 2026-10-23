@@ -317,7 +317,7 @@ describe.sequential("fake provider environment-isolation multi-thread integratio
           }
           harness.db
             .update(threads)
-            .set({ archivedAt: Date.now() })
+            .set({ archivedAt: Date.now() - 60_000 })
             .where(eq(threads.id, worktreeThread.thread.id))
             .run();
           harness.db

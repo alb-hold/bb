@@ -40,6 +40,7 @@ import {
   getThread,
   getProject,
   recordEnvironmentRetention,
+  recordThreadEnvironmentReleases,
   reserveEnvironment,
   updatePreparingEnvironment,
   threads,
@@ -1483,6 +1484,10 @@ describe("core environment orchestration", () => {
             .set({ archivedAt: Date.now() })
             .where(eq(threads.id, fixture.thread.id))
             .run();
+          recordThreadEnvironmentReleases(harness.db, [fixture.thread.id], {
+            kind: "system",
+            threadId: null,
+          });
           const sdk = createBbSdk({
             transport: createHttpTransport({
               baseUrl: "http://localhost",
@@ -1586,6 +1591,10 @@ describe("core environment orchestration", () => {
         .set({ archivedAt: Date.now() })
         .where(eq(threads.id, thread.id))
         .run();
+      recordThreadEnvironmentReleases(harness.db, [thread.id], {
+        kind: "system",
+        threadId: null,
+      });
       expect(toEnvironmentResponse(harness.db, environment)).toMatchObject({
         managed: false,
         workspaceProvisionType: "unmanaged",
@@ -1677,6 +1686,10 @@ describe("core environment orchestration", () => {
         })
         .where(eq(threads.id, fixture.thread.id))
         .run();
+      recordThreadEnvironmentReleases(harness.db, [fixture.thread.id], {
+        kind: "system",
+        threadId: null,
+      });
       await sweepProviderEnvironment(harness.deps, environmentId);
       expect(removes).toBe(0);
       harness.db
@@ -2041,6 +2054,10 @@ it.each([false, true])(
         .set({ status: "idle", archivedAt: Date.now() })
         .where(eq(threads.id, fixture.thread.id))
         .run();
+      recordThreadEnvironmentReleases(harness.db, [fixture.thread.id], {
+        kind: "system",
+        threadId: null,
+      });
       const response = await harness.app.request(
         `/api/v1/environments/${failed.id}/cleanup?recover=true`,
         { method: "POST" },
@@ -2848,6 +2865,10 @@ it.each([
           .set({ status: "error", archivedAt: Date.now() })
           .where(eq(threads.id, fixture.thread.id))
           .run();
+        recordThreadEnvironmentReleases(harness.db, [fixture.thread.id], {
+          kind: "system",
+          threadId: null,
+        });
         await sweepProviderEnvironment(harness.deps, row.id);
       } else {
         await expect(
@@ -2930,6 +2951,10 @@ it.each([false, true])(
         .set({ status: "idle", archivedAt: Date.now() })
         .where(eq(threads.id, fixture.thread.id))
         .run();
+      recordThreadEnvironmentReleases(harness.db, [fixture.thread.id], {
+        kind: "system",
+        threadId: null,
+      });
       const unsupported = registerHostRpcResponder(harness, {
         hostId: fixture.host.id,
         sessionId: fixture.session.id,
