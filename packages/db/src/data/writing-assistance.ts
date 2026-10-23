@@ -139,6 +139,30 @@ export function addWritingUsage(
   return reserveWritingUsage(db, day, delta, () => true)!;
 }
 
+export interface WritingUsageReservation {
+  usage: WritingUsage;
+  settle(delta: Partial<Omit<WritingUsage, "day">>): WritingUsage | null;
+}
+
+export function openWritingReservation(
+  db: DbConnection,
+  day: string,
+  delta: Partial<Omit<WritingUsage, "day">>,
+  allowed: (current: WritingUsage) => boolean,
+): WritingUsageReservation | null {
+  const usage = reserveWritingUsage(db, day, delta, allowed);
+  if (usage === null) return null;
+  let settled = false;
+  return {
+    usage,
+    settle(settlement) {
+      if (settled) return null;
+      settled = true;
+      return addWritingUsage(db, day, settlement);
+    },
+  };
+}
+
 export function reserveWritingUsage(
   db: DbConnection,
   day: string,

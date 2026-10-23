@@ -1,9 +1,8 @@
 import {
-  addWritingUsage,
   editWritingAssistanceVocabulary,
   getWritingAssistanceSettings,
   getWritingUsage,
-  reserveWritingUsage,
+  openWritingReservation,
   updateWritingAssistanceSettings,
 } from "@bb/db";
 import {
@@ -239,7 +238,7 @@ export async function correctWriting(
     return skipped("off", "Typing assistance is off");
   }
   const day = utcDay();
-  const reserved = reserveWritingUsage(
+  const reserved = openWritingReservation(
     deps.db,
     day,
     { corrections: 1 },
@@ -265,7 +264,7 @@ export async function correctWriting(
     accept: (raw) => (typeof raw === "string" ? raw : null),
   });
   if (!outcome.ok) {
-    addWritingUsage(deps.db, day, { corrections: -1 });
+    reserved.settle({ corrections: -1 });
     if (outcome.reason === "cancelled") {
       throw new ApiError(400, "cancelled", "Writing correction was cancelled");
     }
@@ -281,7 +280,7 @@ export async function correctWriting(
     );
   }
   const proposals = parseCorrectionReply(outcome.value);
-  addWritingUsage(deps.db, day, {
+  reserved.settle({
     corrections: proposals === null ? -1 : 0,
     inputChars: prompt.length,
     outputChars: outcome.value.length,
@@ -322,7 +321,7 @@ async function formatDictation(
     return unformatted;
   }
   const day = utcDay();
-  const reserved = reserveWritingUsage(
+  const reserved = openWritingReservation(
     deps.db,
     day,
     { formattings: 1 },
@@ -344,7 +343,7 @@ async function formatDictation(
       typeof reply === "string" ? cleanFormattedReply(reply) : null,
   });
   if (!outcome.ok) {
-    addWritingUsage(deps.db, day, { formattings: -1 });
+    reserved.settle({ formattings: -1 });
     return unformatted;
   }
   const verdict = validateFormattedTranscript(
@@ -353,7 +352,7 @@ async function formatDictation(
     settings.vocabulary,
     { literalCode: settings.mode === "literal-code" },
   );
-  addWritingUsage(deps.db, day, {
+  reserved.settle({
     formattings: verdict.ok ? 0 : -1,
     inputChars: prompt.length,
     outputChars: outcome.value.length,
@@ -415,7 +414,7 @@ export async function transcribeDictationSegment(
   const settings = getWritingAssistanceSettings(deps.db);
   const day = utcDay();
   const seconds = Math.ceil(measured * 10) / 10;
-  const reserved = reserveWritingUsage(
+  const reserved = openWritingReservation(
     deps.db,
     day,
     { audioSeconds: seconds },
@@ -438,10 +437,10 @@ export async function transcribeDictationSegment(
       signal: args.signal,
     });
   } catch (error) {
-    addWritingUsage(deps.db, day, { audioSeconds: -seconds });
+    reserved.settle({ audioSeconds: -seconds });
     throw error;
   }
-  addWritingUsage(deps.db, day, {
+  reserved.settle({
     dictationSegments: 1,
     estimatedCostMicros: Math.ceil(seconds * TRANSCRIPTION_MICROS_PER_SECOND),
   });

@@ -142,6 +142,18 @@ export function createAiServiceRegistry(
     return probe.request;
   }
 
+  function supersededNegative(
+    service: AiServiceRegistration,
+    cached: CachedStatus,
+  ): boolean {
+    const pending = inFlight.get(service);
+    return (
+      !cached.status.ready &&
+      pending !== undefined &&
+      pending.startedAt > cached.startedAt
+    );
+  }
+
   function freshStatus(
     service: AiServiceRegistration,
   ): AiServiceStatus | undefined {
@@ -149,14 +161,14 @@ export function createAiServiceRegistry(
     if (cached === undefined || now() - cached.checkedAt > STATUS_TTL_MS) {
       return undefined;
     }
-    const pending = inFlight.get(service);
-    if (
-      !cached.status.ready &&
-      pending !== undefined &&
-      pending.startedAt > cached.startedAt
-    ) {
-      return undefined;
-    }
+    if (supersededNegative(service, cached)) return undefined;
+    return cached.status;
+  }
+
+  function statusAfterWait(service: AiServiceRegistration): AiServiceStatus {
+    const cached = statuses.get(service);
+    if (cached === undefined) return CHECKING;
+    if (supersededNegative(service, cached)) return NOT_RESPONDING;
     return cached.status;
   }
 
@@ -220,10 +232,8 @@ export function createAiServiceRegistry(
       }
       const fresh = freshStatus(service);
       if (fresh !== undefined) return fresh;
-      return answerWithin(
-        refresh(service),
-        STATUS_ANSWER_MS,
-        () => statuses.get(service)?.status ?? CHECKING,
+      return answerWithin(refresh(service), STATUS_ANSWER_MS, () =>
+        statusAfterWait(service),
       );
     },
     async settledStatus(key, maxWaitMs) {

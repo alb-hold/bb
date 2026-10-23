@@ -238,7 +238,9 @@ export {
   emptyWritingUsage,
   getWritingAssistanceSettings,
   getWritingUsage,
+  openWritingReservation,
   updateWritingAssistanceSettings,
+  type WritingUsageReservation,
   type WritingVocabularyEditResult,
 } from "./writing-assistance.js";
 export { getStoredThreadTabs, replaceStoredThreadTabs } from "./thread-tabs.js";

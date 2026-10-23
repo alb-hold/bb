@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   addWritingUsage,
   getWritingUsage,
+  openWritingReservation,
   reserveWritingUsage,
   type DbConnection,
 } from "../../src/index.js";
@@ -71,6 +72,38 @@ describe("writing assistance usage", () => {
       corrections: 4,
       audioSeconds: 6.5,
     });
+  });
+
+  it("settles each reservation once, so a repeated late refund cannot take another request's reservation", () => {
+    const first = openWritingReservation(db, "2026-10-17", { corrections: 1 }, () => true);
+    const second = openWritingReservation(db, "2026-10-17", { corrections: 1 }, () => true);
+    expect(first?.usage.corrections).toBe(1);
+    expect(second?.usage.corrections).toBe(2);
+    addWritingUsage(db, "2026-10-18", { corrections: 3, audioSeconds: 6.5 });
+    expect(first?.settle({ corrections: -1 })).toMatchObject({ corrections: 1 });
+    expect(first?.settle({ corrections: -1 })).toBeNull();
+    expect(
+      second?.settle({ corrections: 0, inputChars: 120, outputChars: 30 }),
+    ).toMatchObject({ corrections: 1, inputChars: 120, outputChars: 30 });
+    expect(first?.settle({ corrections: -1 })).toBeNull();
+    expect(second?.settle({ corrections: -1 })).toBeNull();
+    expect(getWritingUsage(db, "2026-10-17")).toMatchObject({
+      corrections: 1,
+      inputChars: 120,
+      outputChars: 30,
+    });
+    expect(getWritingUsage(db, "2026-10-18")).toMatchObject({
+      corrections: 3,
+      audioSeconds: 6.5,
+    });
+  });
+
+  it("does not open a reservation the limit refuses, and changes nothing", () => {
+    addWritingUsage(db, "2026-10-17", { corrections: 2 });
+    expect(
+      openWritingReservation(db, "2026-10-17", { corrections: 1 }, (usage) => usage.corrections < 2),
+    ).toBeNull();
+    expect(getWritingUsage(db, "2026-10-17").corrections).toBe(2);
   });
 
   it("does not recreate a pruned day when a late refund arrives for it", () => {

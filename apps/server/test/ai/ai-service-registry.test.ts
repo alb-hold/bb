@@ -7,6 +7,10 @@ import { AI_STATUS_FALLBACK_WAIT_MS } from "../../src/services/ai/ai-tasks.js";
 
 const ACME = { pluginId: "acme-plugin", serviceId: "acme" };
 
+type StatusAnswer = Awaited<
+  ReturnType<NonNullable<AiServiceRegistration["status"]>>
+>;
+
 function service(
   status: AiServiceRegistration["status"],
   id = "acme",
@@ -391,6 +395,80 @@ describe("AI service registry", () => {
         answers.shift()?.({ ready: true });
         await vi.advanceTimersByTimeAsync(wait + 1);
         await expect(third).resolves.toEqual({ ready: true });
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("never shows an older check's negative status while a newer check is pending, and shows the newer check's answer", async () => {
+      vi.useFakeTimers();
+      try {
+        const answers: ((status: StatusAnswer) => void)[] = [];
+        const registry = createAiServiceRegistry();
+        registry.register(
+          service(() => new Promise((resolve) => answers.push(resolve))),
+        );
+        const checking = { ready: false, message: "Checking" };
+        const notResponding = { ready: false, message: "Not responding" };
+        const signedOut: StatusAnswer = {
+          ready: false,
+          message: "Run claude auth login",
+        };
+
+        const first = registry.status(ACME);
+        await vi.advanceTimersByTimeAsync(AI_STATUS_FALLBACK_WAIT_MS + 1);
+        await expect(first).resolves.toEqual(checking);
+        const second = registry.status(ACME);
+        await vi.advanceTimersByTimeAsync(AI_STATUS_FALLBACK_WAIT_MS + 1);
+        await expect(second).resolves.toEqual(checking);
+        expect(answers).toHaveLength(2);
+
+        answers[0]?.(signedOut);
+        await vi.advanceTimersByTimeAsync(0);
+        const shown = registry.status(ACME);
+        await vi.advanceTimersByTimeAsync(AI_STATUS_FALLBACK_WAIT_MS + 1);
+        await expect(shown).resolves.toEqual(notResponding);
+
+        answers[1]?.({ ready: true });
+        await vi.advanceTimersByTimeAsync(0);
+        await expect(registry.status(ACME)).resolves.toEqual({ ready: true });
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("shows the newer check's answer through status after an older check times out while it is pending", async () => {
+      vi.useFakeTimers();
+      try {
+        const answers: ((status: { ready: true }) => void)[] = [];
+        let calls = 0;
+        const registry = createAiServiceRegistry();
+        registry.register(
+          service(() => {
+            calls += 1;
+            if (calls === 1) return new Promise(() => {});
+            return new Promise((resolve) => answers.push(resolve));
+          }),
+        );
+        const notResponding = { ready: false, message: "Not responding" };
+
+        void registry.status(ACME);
+        await vi.advanceTimersByTimeAsync(3_000);
+        void registry.status(ACME);
+        await vi.advanceTimersByTimeAsync(27_500);
+        expect(calls).toBe(2);
+        expect(registry.peekStatus(ACME)).toEqual(notResponding);
+
+        let result: unknown = null;
+        const shown = registry.status(ACME);
+        void shown.then((status) => {
+          result = status;
+        });
+        await vi.advanceTimersByTimeAsync(0);
+        expect(result).toBeNull();
+        answers.shift()?.({ ready: true });
+        await vi.advanceTimersByTimeAsync(AI_STATUS_FALLBACK_WAIT_MS + 1);
+        await expect(shown).resolves.toEqual({ ready: true });
       } finally {
         vi.useRealTimers();
       }

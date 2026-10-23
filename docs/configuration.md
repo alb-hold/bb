@@ -1515,8 +1515,15 @@ the provider's page in Settings → Providers (see `bb guide providers`).
 Two host-daemon environment variables reach the Claude Code bridge:
 `BB_CLAUDE_CODE_EXECUTABLE` picks the `claude` binary (otherwise bb uses
 `claude` from the host's PATH) for Claude threads and the Claude writing
-service alike, so writing-assistance text reaches the same binary; a request
-cannot choose it. The other, `CLAUDE_CODE_OAUTH_TOKEN`, authenticates a
+service alike; a request cannot choose it. Before the writing service sends
+text, it resolves that binary to its real file and refuses it unless the file,
+every link on the way to it and every directory above them belong to the
+daemon's own account or root and no other account can change them (a directory
+any account can write counts only with the sticky bit, as `/tmp` has; a
+group-writable directory such as Homebrew's `/opt/homebrew/bin` is accepted).
+For the writing service the variable must be an absolute path. A refused
+binary shows the service as not ready with the reason, and no text is sent.
+Windows has no such ownership check. The other, `CLAUDE_CODE_OAUTH_TOKEN`, authenticates a
 machine with no interactive login, such as a CI runner (mint it with `claude setup-token`). See the
 `claude-code-provider` skill.
 
