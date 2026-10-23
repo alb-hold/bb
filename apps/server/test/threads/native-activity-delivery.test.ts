@@ -31,7 +31,7 @@ import {
   type PublicApiSchema,
 } from "@bb/server-contract";
 import type { NativeTerminalReportActivityArgs } from "@bb/sdk";
-import { BbRequestTimeoutError } from "@bb/sdk";
+import { BbHttpError, BbRequestTimeoutError } from "@bb/sdk";
 import { createNodeBbSdk } from "@bb/sdk/node";
 import { Hono } from "hono";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -56,6 +56,7 @@ import {
 interface NativeReport {
   confirms?: false;
   prompt: string | null;
+  questions?: Array<{ id: string; prompt: string }>;
   state: "idle" | "waiting" | "working";
 }
 
@@ -496,6 +497,163 @@ describe("recording a native session needs the current holder credential", () =>
     );
     expect(response.status).toBe(200);
     expect(bound(harness, thread.id)).toBe(NEW_ID);
+  });
+});
+
+describe("a waiting report whose response is lost, then a newer report, through the real reporter and the real server route", () => {
+  const asking: NativeReport = {
+    prompt: null,
+    questions: [{ id: "q1", prompt: "Which layout?" }],
+    state: "waiting",
+  };
+  const faults: Array<[string, () => Error]> = [
+    ["a client timeout", () => new BbRequestTimeoutError(75_000)],
+    [
+      "a 503",
+      () =>
+        new BbHttpError({
+          body: null,
+          code: "unavailable",
+          message: "unavailable",
+          status: 503,
+        }),
+    ],
+  ];
+  const newer: Array<[string, NativeReport]> = [
+    ["an idle report", { prompt: null, state: "idle" }],
+    ["a working report", { prompt: null, state: "working" }],
+  ];
+
+  async function drive(options: { applyFirst: boolean; fault: () => Error }) {
+    const { harness, thread } = await nativeThread();
+    const sent: Array<{ closes: string[] | undefined; state: string }> = [];
+    const statuses: number[] = [];
+    const reporter = reporterModule.createNativeActivityReporter({
+      currentCredential: () => SECRET,
+      send: async (args) => {
+        sent.push({ closes: args.closes, state: args.state });
+        const first = sent.length === 1;
+        if (first && !options.applyFirst) throw options.fault();
+        const response = await harness.app.request(activityPath(thread.id), {
+          body: JSON.stringify({
+            ...(args.closes === undefined ? {} : { closes: args.closes }),
+            ...(args.prompt === undefined ? {} : { prompt: args.prompt }),
+            ...(args.questions === undefined
+              ? {}
+              : { questions: args.questions }),
+            state: args.state,
+          }),
+          headers: {
+            authorization: args.authorization ?? "",
+            "content-type": "application/json",
+          },
+          method: "POST",
+        });
+        statuses.push(response.status);
+        if (first) throw options.fault();
+        return { ok: true };
+      },
+      threadId: thread.id,
+    });
+    return { harness, reporter, sent, statuses, thread };
+  }
+
+  describe.each(faults)("with %s", (_, fault) => {
+    it.each(newer)(
+      "closes the question the server applied when %s supersedes the lost response",
+      async (_label, next) => {
+        const { harness, reporter, sent, statuses, thread } = await drive({
+          applyFirst: true,
+          fault,
+        });
+        reporter.report(asking);
+        await reporter.settled();
+        expect(statuses).toEqual([200]);
+        expect(openRequestIds(harness, thread.id)).toHaveLength(1);
+        reporter.report(next);
+        await reporter.settled();
+        expect(sent.map((call) => call.closes)).toEqual([[], ["q1"]]);
+        expect(statuses).toEqual([200, 200]);
+        expect(openRequestIds(harness, thread.id)).toEqual([]);
+        expect(
+          listPendingInteractionsByThread(harness.db, {
+            statuses: ["interrupted"],
+            threadId: thread.id,
+          }),
+        ).toHaveLength(1);
+      },
+    );
+
+    it.each(newer)(
+      "lists the question when it was refused before it committed and %s supersedes it, and the server accepts closing an id it never stored, leaving only an interrupted tombstone",
+      async (_label, next) => {
+        const { harness, reporter, sent, statuses, thread } = await drive({
+          applyFirst: false,
+          fault,
+        });
+        reporter.report(asking);
+        await reporter.settled();
+        expect(statuses).toEqual([]);
+        expect(openRequestIds(harness, thread.id)).toEqual([]);
+        reporter.report(next);
+        await reporter.settled();
+        expect(sent.map((call) => call.closes)).toEqual([[], ["q1"]]);
+        expect(statuses).toEqual([200]);
+        expect(openRequestIds(harness, thread.id)).toEqual([]);
+        expect(
+          listPendingInteractionsByThread(harness.db, {
+            statuses: ["interrupted"],
+            threadId: thread.id,
+          }).map((row) => [row.providerRequestId, row.statusReason]),
+        ).toEqual([["native:q1", ANSWERED]]);
+      },
+    );
+
+    it("closes the question the server applied when a successful waiting report opens another question, and keeps only the new one open", async () => {
+      const { harness, reporter, sent, statuses, thread } = await drive({
+        applyFirst: true,
+        fault,
+      });
+      reporter.report(asking);
+      await reporter.settled();
+      expect(openRequestIds(harness, thread.id)).toHaveLength(1);
+      reporter.report({
+        prompt: null,
+        questions: [{ id: "q2", prompt: "Which colour?" }],
+        state: "waiting",
+      });
+      await reporter.settled();
+      expect(sent.map((call) => call.closes)).toEqual([[], ["q1"]]);
+      expect(statuses).toEqual([200, 200]);
+      expect(openRequestIds(harness, thread.id)).toEqual([
+        expect.stringContaining("q2"),
+      ]);
+      expect(
+        listPendingInteractionsByThread(harness.db, {
+          statuses: ["interrupted"],
+          threadId: thread.id,
+        }).map((row) => row.statusReason),
+      ).toEqual([ANSWERED]);
+    });
+
+    it("lists the question of a retained report that a newer report replaces before it was resent", async () => {
+      const { harness, reporter, sent, statuses, thread } = await drive({
+        applyFirst: false,
+        fault,
+      });
+      reporter.report(asking);
+      await reporter.settled();
+      reporter.report({ prompt: null, state: "idle" });
+      await reporter.settled();
+      reporter.retry();
+      await reporter.settled();
+      expect(sent.map((call) => [call.state, call.closes])).toEqual([
+        ["waiting", []],
+        ["idle", ["q1"]],
+      ]);
+      expect(statuses).toEqual([200]);
+      expect(openRequestIds(harness, thread.id)).toEqual([]);
+    });
   });
 });
 

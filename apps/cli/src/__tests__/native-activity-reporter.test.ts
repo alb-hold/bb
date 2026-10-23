@@ -340,6 +340,116 @@ describe("native activity reporter", () => {
       expect(closesOf(calls)).toEqual([[], [], ["q1"]]);
     });
 
+    const faults: Array<[string, () => Error]> = [
+      ["a client timeout", () => new BbRequestTimeoutError(75_000)],
+      ["a 503", unavailable],
+    ];
+    const newer: Array<
+      [string, typeof working | { prompt: null; state: "idle" }]
+    > = [
+      ["an idle report", { prompt: null, state: "idle" }],
+      ["a working report", working],
+    ];
+
+    describe.each(faults)(
+      "a waiting report whose response is %s",
+      (_, fault) => {
+        it.each(newer)(
+          "is still listed as open by %s that supersedes it, whether or not the server applied it",
+          async (_label, next) => {
+            const { calls, reporter } = closureSetup([
+              async () => {
+                throw fault();
+              },
+            ]);
+            reporter.report(asking("q1"));
+            reporter.report(next);
+            await reporter.settled();
+            expect(closesOf(calls)).toEqual([[], ["q1"]]);
+            reporter.report(next);
+            await reporter.settled();
+            expect(closesOf(calls)).toEqual([[], ["q1"], []]);
+          },
+        );
+
+        it("is closed by a successful waiting report that opens another question, which names the lost one and never its own", async () => {
+          const { calls, reporter } = closureSetup([
+            async () => {
+              throw fault();
+            },
+          ]);
+          reporter.report(asking("q1"));
+          reporter.report(asking("q2"));
+          await reporter.settled();
+          expect(calls.map((call) => call.questions)).toEqual([["q1"], ["q2"]]);
+          expect(closesOf(calls)).toEqual([[], ["q1"]]);
+          reporter.report(working);
+          await reporter.settled();
+          expect(closesOf(calls)).toEqual([[], ["q1"], ["q2"]]);
+        });
+
+        it("is listed as open by a report that supersedes it while it is retained, and the retained copy is not resent afterwards", async () => {
+          const { calls, reporter } = closureSetup([
+            async () => {
+              throw fault();
+            },
+          ]);
+          reporter.report(asking("q1"));
+          await reporter.settled();
+          reporter.report(working);
+          await reporter.settled();
+          reporter.retry();
+          await reporter.settled();
+          expect(calls.map((call) => call.state)).toEqual([
+            "waiting",
+            "working",
+          ]);
+          expect(closesOf(calls)).toEqual([[], ["q1"]]);
+        });
+
+        it("is not listed twice when the retained copy is resent, and the next report still closes it", async () => {
+          const { calls, reporter } = closureSetup([
+            async () => {
+              throw fault();
+            },
+          ]);
+          reporter.report(asking("q1"));
+          await reporter.settled();
+          reporter.retry();
+          await reporter.settled();
+          reporter.report(working);
+          await reporter.settled();
+          expect(calls.map((call) => call.state)).toEqual([
+            "waiting",
+            "waiting",
+            "working",
+          ]);
+          expect(closesOf(calls)).toEqual([[], [], ["q1"]]);
+        });
+      },
+    );
+
+    it("still lists a question opened by a report the server refused before it committed anything, so the next report closes it", async () => {
+      const { calls, reporter } = closureSetup([
+        async () => {
+          throw new BbHttpError({
+            body: null,
+            code: "rate_limited",
+            message: "slow down",
+            status: 429,
+          });
+        },
+        async () => {
+          throw unavailable();
+        },
+      ]);
+      reporter.report(asking("q1"));
+      reporter.report(asking("q2"));
+      reporter.report({ prompt: null, state: "idle" });
+      await reporter.settled();
+      expect(closesOf(calls)).toEqual([[], ["q1"], ["q1", "q2"]]);
+    });
+
     it("sends confirms false only on a report that carries the marker", async () => {
       const { calls, reporter } = closureSetup([]);
       reporter.report(working);
