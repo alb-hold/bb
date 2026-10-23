@@ -1,6 +1,6 @@
 import { scanProcessesWithCwdUnder } from "@bb/process-utils";
 
-export type InternalCwdHolderScan = Awaited<
+export type InternalDoNotUseCwdHolderScan = Awaited<
   ReturnType<typeof scanProcessesWithCwdUnder>
 >;
 
@@ -17,6 +17,6 @@ export type InternalCwdHolderScan = Awaited<
  */
 export function internal_DO_NOT_USE_scanProcessesWithCwdUnder(args: {
   directories: readonly string[];
-}): Promise<InternalCwdHolderScan> {
+}): Promise<InternalDoNotUseCwdHolderScan> {
   return scanProcessesWithCwdUnder({ directories: args.directories });
 }
