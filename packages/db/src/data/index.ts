@@ -194,6 +194,7 @@ export {
   archiveThread,
   markThreadDeleted,
   markThreadStorageDeleted,
+  setThreadStorageDeleteRefusal,
   unpinThread,
   unarchiveThread,
   isThreadEnvironmentRemovalRunning,

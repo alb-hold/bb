@@ -767,6 +767,14 @@ export type ThreadChildSummaryResponse = z.infer<
   typeof threadChildSummaryResponseSchema
 >;
 
+export const threadStorageDeletionResponseSchema = z.object({
+  deletedAt: z.number().int().nonnegative().nullable(),
+  keptReason: z.string().nullable(),
+});
+export type ThreadStorageDeletionResponse = z.infer<
+  typeof threadStorageDeletionResponseSchema
+>;
+
 export const threadSpendBreakdownSchema = z.object({
   inputTokens: z.number().nullable(),
   cachedInputTokens: z.number().nullable(),
@@ -869,9 +877,13 @@ export const threadOpenTerminalLayoutActionSchema = z
     terminalId: z.string().min(1),
   })
   .refine((value) => value.action !== "split" || value.side !== undefined)
-  .refine((value) => value.action !== "move" || value.targetTerminalId !== undefined)
+  .refine(
+    (value) => value.action !== "move" || value.targetTerminalId !== undefined,
+  )
   .refine((value) => value.action === "split" || value.side === undefined)
-  .refine((value) => value.action === "move" || value.targetTerminalId === undefined)
+  .refine(
+    (value) => value.action === "move" || value.targetTerminalId === undefined,
+  )
   .strict();
 export type ThreadOpenTerminalLayoutAction = z.infer<
   typeof threadOpenTerminalLayoutActionSchema
@@ -927,7 +939,6 @@ export const threadOpenSignalLenientSchema = z.object({
     })
     .optional(),
 });
-
 
 export const threadOpenRequestSchema = z
   .object({

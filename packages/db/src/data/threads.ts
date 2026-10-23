@@ -2219,6 +2219,20 @@ export function markThreadDeleted(
   );
 }
 
+export function setThreadStorageDeleteRefusal(
+  db: ThreadWriteConnection,
+  args: { refusal: string | null; threadId: string },
+) {
+  return (
+    db
+      .update(threads)
+      .set({ storageDeleteRefusal: args.refusal })
+      .where(and(eq(threads.id, args.threadId), isNotNull(threads.deletedAt)))
+      .returning()
+      .get() ?? null
+  );
+}
+
 export function markThreadStorageDeleted(
   db: ThreadWriteConnection,
   args: { threadId: string },
@@ -2226,7 +2240,7 @@ export function markThreadStorageDeleted(
   return (
     db
       .update(threads)
-      .set({ storageDeletedAt: Date.now() })
+      .set({ storageDeletedAt: Date.now(), storageDeleteRefusal: null })
       .where(eq(threads.id, args.threadId))
       .returning()
       .get() ?? null

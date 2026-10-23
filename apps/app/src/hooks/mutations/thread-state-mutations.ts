@@ -12,7 +12,6 @@ import type {
   UpdateThreadRequest,
 } from "@bb/server-contract";
 import { sdk } from "@/lib/sdk";
-import { showMutationErrorToast } from "@/lib/mutation-errors";
 import type { LifecycleErrorOperation } from "@/lib/lifecycle-errors";
 import {
   applyThreadReadStateResult,
@@ -268,15 +267,7 @@ export function useDeleteThread() {
       childThreadsConfirmed,
       id,
     }: DeleteThreadMutationRequest) => {
-      const result = await sdk.threads.delete({
-        childThreadsConfirmed,
-        threadId: id,
-      });
-      if (result.kept !== undefined)
-        showMutationErrorToast({
-          error: new Error(`kept: ${result.kept}`),
-          fallbackMessage: "Thread files were kept.",
-        });
+      await sdk.threads.delete({ childThreadsConfirmed, threadId: id });
     },
     onMutate: async ({ id }): Promise<DeleteThreadTransaction> =>
       beginDeleteThreadTransaction({ queryClient, threadId: id }),

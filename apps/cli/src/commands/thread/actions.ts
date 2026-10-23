@@ -42,6 +42,10 @@ import {
   uploadClientAttachmentInputs,
 } from "./helpers.js";
 import { SEND_AT_HELP, parseSendAt } from "./send-time.js";
+import {
+  describeThreadStorageDeletion,
+  waitForThreadStorageDeletion,
+} from "./storage-deletion.js";
 
 interface ThreadUpdateCommandOptions {
   self?: boolean;
@@ -80,6 +84,7 @@ interface ThreadPinCommandOptions {
 
 interface ThreadDeleteCommandOptions {
   confirmChildThreads?: boolean;
+  wait?: boolean;
   yes?: boolean;
   json?: boolean;
 }
@@ -442,11 +447,14 @@ export function registerActionsCommands(
       "--confirm-child-threads",
       "Confirm deleting a thread with child threads",
     )
+    .option(
+      "--wait",
+      "Wait up to 30 seconds for the thread's files to be removed, and print why they are kept if something is using them",
+    )
     .option("--json", "Print machine-readable JSON output")
     .action(
       action(async (id: string, opts: ThreadDeleteCommandOptions) => {
         const sdk = createCliBbSdk(getUrl());
-        let deleted: Awaited<ReturnType<typeof sdk.threads.delete>> | undefined;
         try {
           const thread = await sdk.threads.get({ threadId: id });
 
@@ -460,23 +468,28 @@ export function registerActionsCommands(
             }
           }
 
-          deleted = await sdk.threads.delete({
+          await sdk.threads.delete({
             threadId: id,
             childThreadsConfirmed: opts.confirmChildThreads === true,
           });
         } catch (err: unknown) {
           throw prependErrorContext(`Failed to delete thread ${id}`, err);
         }
+        const storage =
+          opts.wait === true
+            ? await waitForThreadStorageDeletion(sdk, id)
+            : null;
         if (
           outputJson(opts, {
             ok: true,
             threadId: id,
-            ...(deleted?.kept === undefined ? {} : { kept: deleted.kept }),
+            ...(storage === null ? {} : { storage }),
           })
         )
           return;
         console.log(`Thread ${id} deleted`);
-        if (deleted?.kept !== undefined) console.log(`kept: ${deleted.kept}`);
+        if (storage !== null)
+          console.log(describeThreadStorageDeletion(id, storage));
       }),
     );
 

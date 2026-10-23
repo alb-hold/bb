@@ -7,6 +7,7 @@ import {
   insertEvents,
   noopNotifier,
   getEnvironment,
+  getThread,
   hostDaemonSessions,
   listQueuedThreadMessages,
   RETAINED_EVENT_OUTPUT_TARGETS,
@@ -44,7 +45,9 @@ import {
 } from "../helpers/seed.js";
 import {
   listQueuedThreadCommands,
+  registerTestHostRpcCapture,
   reportQueuedCommandError,
+  reportQueuedCommandSuccess,
   waitForQueuedCommand,
   waitForQueuedCommandAfter,
 } from "../helpers/commands.js";
@@ -564,15 +567,12 @@ describe("runPeriodicSweeps", () => {
     });
   });
 
-  describe("a refused thread-storage delete", () => {
+  describe("a thread-storage delete the host answers after the delete returned", () => {
     const refusal =
       "Refusing to delete thread storage /storage/thr_x: a process is still working inside it (pid 4242 in /storage/thr_x/app). Nothing was stopped and nothing was removed.";
 
-    async function deleteWithRefusal(
-      harness: TestAppHarness,
-      args: { parent: boolean },
-    ) {
-      const { host } = seedHostSession(harness.deps);
+    function seedFixture(harness: TestAppHarness, args: { parent: boolean }) {
+      const { host, session } = seedHostSession(harness.deps);
       const { project } = seedProjectWithSource(harness.deps, {
         hostId: host.id,
       });
@@ -589,28 +589,60 @@ describe("runPeriodicSweeps", () => {
         status: "idle",
         ...(parent === null ? {} : { parentThreadId: parent.id }),
       });
-      const pending = harness.app.request(`/api/v1/threads/${thread.id}`, {
-        method: "DELETE",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ childThreadsConfirmed: false }),
-      });
-      const queued = await waitForQueuedCommand(
+      return { host, session, thread, parent };
+    }
+
+    async function remove(harness: TestAppHarness, threadId: string) {
+      const startedAt = Date.now();
+      const response = await harness.app.request(
+        `/api/v1/threads/${threadId}`,
+        {
+          method: "DELETE",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ childThreadsConfirmed: false }),
+        },
+      );
+      expect(response.status).toBe(200);
+      return { ms: Date.now() - startedAt, body: await response.json() };
+    }
+
+    function storageDeleteOf(harness: TestAppHarness, threadId: string) {
+      return waitForQueuedCommand(
         harness,
         (candidate) =>
           candidate.command.type === "thread.storage.delete" &&
-          candidate.command.threadId === thread.id,
+          candidate.command.threadId === threadId,
       );
+    }
+
+    async function storageDeletion(harness: TestAppHarness, threadId: string) {
+      const response = await harness.app.request(
+        `/api/v1/threads/${threadId}/storage-deletion`,
+      );
+      return {
+        status: response.status,
+        body: (await response.json()) as {
+          deletedAt?: number | null;
+          keptReason?: string | null;
+        },
+      };
+    }
+
+    async function deleteAndRefuse(
+      harness: TestAppHarness,
+      args: { parent: boolean },
+    ) {
+      const fixture = seedFixture(harness, args);
+      const deleted = await remove(harness, fixture.thread.id);
+      const queued = await storageDeleteOf(harness, fixture.thread.id);
       await reportQueuedCommandError(harness, queued, {
         errorCode: "path_in_use",
         errorMessage: refusal,
       });
-      return { response: await pending, thread, parent, queued };
+      return { ...fixture, deleted, queued };
     }
 
-    async function readBack(
-      harness: TestAppHarness,
-      threadId: string,
-    ) {
+    async function readBack(harness: TestAppHarness, threadId: string) {
       const response = await harness.app.request(
         `/api/v1/threads/${threadId}/events?types=system/error`,
       );
@@ -618,23 +650,47 @@ describe("runPeriodicSweeps", () => {
       return JSON.stringify(await response.json());
     }
 
-    it("is carried by the delete's own response, naming the holder and the retry", async () => {
+    it("returns at once, before the host has answered, and still sends the deletion", async () => {
       await withTestHarness(async (harness) => {
-        const { response } = await deleteWithRefusal(harness, { parent: false });
+        const { thread } = seedFixture(harness, { parent: false });
 
-        expect(response.status).toBe(200);
-        const body: unknown = await response.json();
-        expect(body).toMatchObject({
-          ok: true,
-          kept: expect.stringContaining("pid 4242"),
+        const deleted = await remove(harness, thread.id);
+
+        expect(deleted.ms).toBeLessThan(1_000);
+        expect(deleted.body).toEqual({ ok: true });
+        await storageDeleteOf(harness, thread.id);
+        expect(
+          (await harness.app.request(`/api/v1/threads/${thread.id}`)).status,
+        ).toBe(404);
+        expect(await storageDeletion(harness, thread.id)).toEqual({
+          status: 200,
+          body: { deletedAt: expect.any(Number), keptReason: null },
         });
-        expect(JSON.stringify(body)).toContain("about every ten seconds");
+      });
+    });
+
+    it("records the refusal the host answers with, naming the holder and the retry, and serves it", async () => {
+      await withTestHarness(async (harness) => {
+        const { deleted, thread } = await deleteAndRefuse(harness, {
+          parent: false,
+        });
+
+        expect(deleted.body).toEqual({ ok: true });
+        const recorded = await storageDeletion(harness, thread.id);
+        expect(recorded.status).toBe(200);
+        expect(recorded.body.deletedAt).toEqual(expect.any(Number));
+        expect(recorded.body.keptReason).toContain("pid 4242");
+        expect(recorded.body.keptReason).toContain("about every ten seconds");
+        expect(getThread(harness.db, thread.id)).toMatchObject({
+          storageDeletedAt: null,
+          storageDeleteRefusal: recorded.body.keptReason,
+        });
       });
     });
 
     it("is posted, when a sweep retries it, to the nearest live parent thread's log, which the events route serves, once", async () => {
       await withTestHarness(async (harness) => {
-        const { thread, parent, queued } = await deleteWithRefusal(harness, {
+        const { thread, parent, queued } = await deleteAndRefuse(harness, {
           parent: true,
         });
         if (parent === null) throw new Error("missing parent");
@@ -664,23 +720,72 @@ describe("runPeriodicSweeps", () => {
       });
     });
 
-    it("has no reachable thread log when the deleted thread has no live ancestor: only the server log and the response carry it", async () => {
+    it("has no reachable thread log when the deleted thread has no live ancestor: only the server log and the recorded state carry it", async () => {
       await withTestHarness(async (harness) => {
-        const { response, thread } = await deleteWithRefusal(harness, {
-          parent: false,
-        });
+        const { thread } = await deleteAndRefuse(harness, { parent: false });
 
-        expect(((await response.json()) as { kept?: string }).kept).toContain(
-          "pid 4242",
-        );
+        expect(
+          (await storageDeletion(harness, thread.id)).body.keptReason,
+        ).toContain("pid 4242");
         expect(
           harness.db
             .select({ data: events.data })
             .from(events)
             .where(eq(events.threadId, thread.id))
             .all()
-            .filter((row) => row.data.includes("thread_storage_delete_refused")),
+            .filter((row) =>
+              row.data.includes("thread_storage_delete_refused"),
+            ),
         ).toEqual([]);
+      });
+    });
+
+    it("drops the record, and the thread, when a retry removes the files", async () => {
+      await withTestHarness(async (harness) => {
+        const { thread, queued } = await deleteAndRefuse(harness, {
+          parent: false,
+        });
+
+        await runThreadLifecycleSweep(harness.deps);
+        const retried = await waitForQueuedCommandAfter(
+          harness,
+          queued.row.cursor,
+          (candidate) =>
+            candidate.command.type === "thread.storage.delete" &&
+            candidate.command.threadId === thread.id,
+        );
+        await reportQueuedCommandSuccess(harness, retried, {
+          providerCheckpointId: null,
+        });
+
+        expect(getThread(harness.db, thread.id)).toBeNull();
+        expect((await storageDeletion(harness, thread.id)).status).toBe(404);
+      });
+    });
+
+    it("sends the deletion when the host's daemon returns, and does not hold the delete while it is away", async () => {
+      await withTestHarness(async (harness) => {
+        const { host, session, thread } = seedFixture(harness, {
+          parent: false,
+        });
+        harness.hub.unregisterDaemon(session.id);
+
+        const deleted = await remove(harness, thread.id);
+
+        expect(deleted.ms).toBeLessThan(1_000);
+        expect(deleted.body).toEqual({ ok: true });
+        expect(getThread(harness.db, thread.id)).toMatchObject({
+          deletedAt: expect.any(Number),
+          storageDeletedAt: null,
+          storageDeleteRefusal: null,
+        });
+
+        registerTestHostRpcCapture(harness, {
+          hostId: host.id,
+          sessionId: session.id,
+        });
+        await runThreadLifecycleSweep(harness.deps);
+        await storageDeleteOf(harness, thread.id);
       });
     });
   });

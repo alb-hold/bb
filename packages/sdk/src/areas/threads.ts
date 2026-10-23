@@ -32,6 +32,7 @@ import type {
   SendQueuedMessageResponse,
   ThreadArchiveAllResponse,
   ThreadChildSummaryResponse,
+  ThreadStorageDeletionResponse,
   ThreadSpendSummaryResponse,
   ThreadConversationOutlineResponse,
   ThreadCountGroupBy,
@@ -172,7 +173,7 @@ export type ThreadTimelineResult = ThreadTimelineResponse;
 export type ThreadArchiveResult = ThreadArchiveAllResponse;
 export type ThreadOpenResult = ThreadOpenResponse;
 export type ThreadPaneActionResult = ThreadPaneActionResponse;
-export type ThreadDeleteResult = { ok: true; kept?: string };
+export type ThreadDeleteResult = { ok: true };
 export type ThreadSendResult = SendMessageResponse;
 export type ThreadRetryResult = RetryTurnResponse;
 export type ThreadEditMessageResult = EditMessageResponse;
@@ -203,6 +204,7 @@ export type ThreadStorageFilesResult = ThreadStorageFileListResponse;
 export type ThreadStorageLocationResult = ThreadStorageLocationResponse;
 export type ThreadStoragePathsResult = ThreadStoragePathListResponse;
 export type ThreadChildSummaryResult = ThreadChildSummaryResponse;
+export type ThreadStorageDeletionResult = ThreadStorageDeletionResponse;
 export type ThreadSpendSummaryResult = ThreadSpendSummaryResponse;
 export type ThreadDefaultExecutionOptionsResult = ResolvedThreadExecutionOptions | null;
 export type ThreadExecutionProfileResult = ThreadExecutionProfileResponse;
@@ -558,6 +560,7 @@ export interface ThreadsArea {
   archive(args: ThreadActionArgs): Promise<ThreadArchiveResult>;
   archiveAll(args: ThreadActionArgs): Promise<ThreadArchiveAllResult>;
   childSummary(args: ThreadStatusArgs): Promise<ThreadChildSummaryResult>;
+  storageDeletion(args: ThreadStatusArgs): Promise<ThreadStorageDeletionResult>;
   spendSummary(args: ThreadStatusArgs): Promise<ThreadSpendSummaryResult>;
   compact(args: ThreadActionArgs): Promise<ThreadCompactResult>;
   cancelPlan(args: ThreadActionArgs): Promise<ThreadBannerActionResult>;
@@ -1201,6 +1204,14 @@ export function createThreadsArea(args: CreateSdkAreaArgs): ThreadsArea {
     async childSummary(input) {
       return transport.readJson(
         transport.api.v1.threads[":id"]["child-summary"].$get(
+          { param: { id: input.threadId } },
+          ...signalRequestArgs(input.signal),
+        ),
+      );
+    },
+    async storageDeletion(input) {
+      return transport.readJson(
+        transport.api.v1.threads[":id"]["storage-deletion"].$get(
           { param: { id: input.threadId } },
           ...signalRequestArgs(input.signal),
         ),

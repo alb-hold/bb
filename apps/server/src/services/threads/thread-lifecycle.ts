@@ -32,6 +32,7 @@ import {
   listThreadIdsWithLatestHostDaemonRestartInterruption,
   listThreadTurnInterruptionEventStates,
   markThreadStorageDeleted,
+  setThreadStorageDeleteRefusal,
   threads,
   type DbNotifier,
   type DbQueryConnection,
@@ -67,7 +68,6 @@ import {
   type HostDaemonCommandForType,
 } from "../../internal/command-result-side-effects.js";
 import {
-  appendSystemErrorEvent,
   appendSystemErrorEventInTransaction,
   appendThreadEventInTransaction,
   appendThreadEventsInTransaction,
@@ -1092,11 +1092,15 @@ export function settleThreadStorageDeleteCommandResult(
   args: SettleThreadStorageDeleteCommandResultArgs,
 ): CommandResultSideEffectsResult {
   if (!args.report.ok) {
-    const { target, notice } = refusedThreadStorageDeletionNotices(
+    const { kept, target, notice } = refusedThreadStorageDeletionNotices(
       args.deps.db,
       args.command.threadId,
       args.report.errorMessage,
     );
+    setThreadStorageDeleteRefusal(args.deps.db, {
+      refusal: kept,
+      threadId: args.command.threadId,
+    });
     if (target !== null && notice !== null)
       appendSystemErrorEventInTransaction(args.deps, {
         threadId: target.id,
@@ -1124,10 +1128,6 @@ export function settleThreadStorageDeleteCommandResult(
 
 const STORAGE_DELETE_REFUSED_CODE = "thread_storage_delete_refused";
 const ANCESTOR_WALK_LIMIT = 32;
-
-export interface ThreadStorageDeletionOutcome {
-  kept: string | null;
-}
 
 function liveAncestorThread(
   db: DbQueryConnection,
@@ -1181,32 +1181,11 @@ function refusedThreadStorageDeletionNotices(
   return { kept, target, notice };
 }
 
-function noteRefusedThreadStorageDeletion(
-  deps: Pick<CommandResultSideEffectsDeps, "db" | "hub">,
-  thread: Pick<Thread, "environmentId" | "id">,
-  error: unknown,
-): ThreadStorageDeletionOutcome {
-  const { kept, target, notice } = refusedThreadStorageDeletionNotices(
-    deps.db,
-    thread.id,
-    error instanceof Error ? error.message : String(error),
-  );
-  if (target !== null && notice !== null)
-    appendSystemErrorEvent(deps, {
-      threadId: target.id,
-      environmentId: target.environmentId,
-      scope: threadScope(),
-      code: STORAGE_DELETE_REFUSED_CODE,
-      message: notice,
-    });
-  return { kept };
-}
-
 export function requestThreadStorageDeletion(
   deps: CommandResultSideEffectsDeps,
   thread: Pick<Thread, "environmentId" | "id">,
   environment: { hostId: string; id: string } | null,
-): Promise<ThreadStorageDeletionOutcome> {
+): void {
   deps.pendingInteractions.interruptPendingInteractionsForThreadIds({
     threadIds: [thread.id],
     reason: "thread-deleted",
@@ -1220,19 +1199,19 @@ export function requestThreadStorageDeletion(
   ) {
     markThreadStorageDeleted(deps.db, { threadId: thread.id });
     finalizeStoppedThread(deps, { threadId: thread.id });
-    return Promise.resolve({ kept: null });
+    return;
   }
   if (environment === null) {
     deps.logger.warn(
       { environmentId: thread.environmentId, threadId: thread.id },
       "Thread storage deletion environment is unavailable",
     );
-    return Promise.resolve({ kept: null });
+    return;
   }
   if (!inFlightThreadRpcGuard.claim(thread.id, "thread.storage.delete")) {
-    return Promise.resolve({ kept: null });
+    return;
   }
-  return runLiveHostCommand(deps, {
+  void runLiveHostCommand(deps, {
     command: buildThreadStorageDeleteCommand({
       environmentId: environment.id,
       threadId: thread.id,
@@ -1240,16 +1219,12 @@ export function requestThreadStorageDeletion(
     hostId: environment.hostId,
     timeoutMs: LIVE_DAEMON_COMMAND_TIMEOUT_MS,
   })
-    .then(
-      (): ThreadStorageDeletionOutcome => ({ kept: null }),
-      (error: unknown): ThreadStorageDeletionOutcome => {
-        deps.logger.warn(
-          { err: error, threadId: thread.id },
-          "Thread storage deletion command failed",
-        );
-        return noteRefusedThreadStorageDeletion(deps, thread, error);
-      },
-    )
+    .catch((error) => {
+      deps.logger.warn(
+        { err: error, threadId: thread.id },
+        "Thread storage deletion command failed",
+      );
+    })
     .finally(() => {
       inFlightThreadRpcGuard.release(thread.id, "thread.storage.delete");
     });

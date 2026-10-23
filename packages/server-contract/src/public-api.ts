@@ -261,6 +261,7 @@ import type {
   TerminalResizeRequest,
   ThreadArchiveAllResponse,
   ThreadChildSummaryResponse,
+  ThreadStorageDeletionResponse,
   ThreadSpendSummaryResponse,
   ThreadEventWaitQuery,
   ThreadEventsQuery,
@@ -1591,7 +1592,13 @@ export const publicApiRoutes = {
       request: jsonRequest<PathId, DeleteThreadRequest>(
         deleteThreadRequestSchema,
       ),
-      response: jsonResponse<{ ok: true; kept?: string }>(),
+      response: jsonResponse<{ ok: true }>(),
+    }),
+    storageDeletion: defineRoute({
+      path: "/threads/:id/storage-deletion",
+      method: "get",
+      request: noRequest<PathId>(),
+      response: jsonResponse<ThreadStorageDeletionResponse>(),
     }),
     childSummary: defineRoute({
       path: "/threads/:id/child-summary",

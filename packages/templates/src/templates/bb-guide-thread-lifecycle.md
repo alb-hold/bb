@@ -91,16 +91,20 @@ Lifecycle:
 
   bb thread delete <id>                    Delete permanently
     --yes                                  Skip confirmation
+    --wait                                 Wait up to 30 seconds for the thread's files
+                                           to be removed, and print why they are kept
 
   Deleting a thread removes its record immediately, but provider-owned
   environment cleanup is asynchronous. Use `bb environment show <id>` to
   inspect teardown until the lifecycle reaches destroyed. Deleting thread
-  storage never stops a process. If a process is working inside it, or bb cannot
-  tell, the files are kept: `bb thread delete` prints `kept: <reason>` naming the
-  process (the app shows the same text in its error toast), the nearest live
-  parent thread's log gets the same notice, and bb retries on its periodic sweep
-  (about every ten seconds) until nothing is working there. A deleted thread
-  with no live parent has only the server log.
+  storage never stops a process, and the delete returns at once, before the host
+  has answered. If a process is working inside the storage, or bb cannot tell,
+  the files are kept: bb records why on the deleted thread, retries on its
+  periodic sweep (about every ten seconds) until nothing is working there, and
+  the nearest live parent thread's log gets a notice. `bb thread show <id>` on a
+  deleted thread whose files are not removed yet prints the reason (`--json`
+  gives `storage.state` removing or kept, and `storage.reason`); once the files
+  are removed the thread is gone and `show` says it is not found.
 
 Native terminal threads:
 

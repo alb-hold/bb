@@ -65,7 +65,17 @@ export function dropThreadParentNotificationsColumn(db: DbConnection): void {
   }
 }
 
+export function dropThreadStorageDeleteRefusalColumn(db: DbConnection): void {
+  const columns = db.$client
+    .prepare<[], { name: string }>("PRAGMA table_info(threads)")
+    .all();
+  if (columns.some((column) => column.name === "storage_delete_refusal")) {
+    db.$client.exec("ALTER TABLE threads DROP COLUMN storage_delete_refusal");
+  }
+}
+
 export function dropEnvironmentRetentionSchema(db: DbConnection): void {
+  dropThreadStorageDeleteRefusalColumn(db);
   const columns = db.$client
     .prepare<[], { name: string }>("PRAGMA table_info(environments)")
     .all();
