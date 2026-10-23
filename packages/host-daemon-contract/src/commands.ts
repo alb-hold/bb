@@ -563,9 +563,9 @@ const hostMkdirCommandSchema = z
   })
   .strict();
 
-const hostMovePathCommandSchema = z
+const hostMoveFileCommandSchema = z
   .object({
-    type: z.literal("host.move_path"),
+    type: z.literal("host.move_file"),
     sourcePath: z.string().min(1),
     destinationPath: z.string().min(1),
     rootPath: z.string().min(1).optional(),
@@ -1722,9 +1722,9 @@ export const hostDaemonCommandRegistry = {
     flushEventsBeforeResult: false,
     envLane: null,
   }),
-  "host.move_path": defineHostDaemonCommandDescriptor({
-    type: "host.move_path",
-    schema: hostMovePathCommandSchema,
+  "host.move_file": defineHostDaemonCommandDescriptor({
+    type: "host.move_file",
+    schema: hostMoveFileCommandSchema,
     resultSchema: hostPathMutationResultSchema,
     transport: "onlineRpc",
     retryable: false,

@@ -1,3 +1,4 @@
+import { constants as fsConstants } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { HostDaemonOnlineRpcResult } from "@bb/host-daemon-contract";
@@ -85,9 +86,16 @@ export async function mkdirHostPath(
   return { ok: true };
 }
 
-export async function moveHostPath(
-  command: CommandOf<"host.move_path">,
-): Promise<HostDaemonOnlineRpcResult<"host.move_path">> {
+function refuseMove(sourcePath: string, reason: string): never {
+  throw new CommandDispatchError(
+    "invalid_path",
+    `Refusing to move ${sourcePath}: ${reason}. Nothing was moved.`,
+  );
+}
+
+export async function moveHostFile(
+  command: CommandOf<"host.move_file">,
+): Promise<HostDaemonOnlineRpcResult<"host.move_file">> {
   const { target: source } = await requireExistingWithin(
     command.sourcePath,
     command.rootPath,
@@ -96,23 +104,65 @@ export async function moveHostPath(
     command.destinationPath,
     command.rootPath,
   );
+  const noFollow = fsConstants.O_NOFOLLOW ?? 0;
+  let handle;
   try {
-    await fs.lstat(destination);
-    throw new CommandDispatchError(
-      "path_exists",
-      `Destination already exists: ${command.destinationPath}`,
+    handle = await fs.open(
+      source,
+      fsConstants.O_RDONLY | noFollow | fsConstants.O_NONBLOCK,
     );
   } catch (error) {
-    if (
-      !(error instanceof Error) ||
-      !("code" in error) ||
-      error.code !== "ENOENT"
-    ) {
+    if (error instanceof Error && "code" in error && error.code === "ELOOP") {
+      refuseMove(command.sourcePath, "it is a symbolic link or alias");
+    }
+    throw error;
+  }
+  try {
+    const opened = await handle.stat();
+    if (!opened.isFile()) {
+      refuseMove(command.sourcePath, "it is not a single regular file");
+    }
+    try {
+      await fs.link(source, destination);
+    } catch (error) {
+      const code =
+        error instanceof Error && "code" in error ? String(error.code) : "";
+      if (code === "EEXIST") {
+        throw new CommandDispatchError(
+          "path_exists",
+          `Destination already exists: ${command.destinationPath}`,
+        );
+      }
+      if (code === "EPERM" || code === "EISDIR" || code === "EXDEV") {
+        refuseMove(
+          command.sourcePath,
+          "it is not a regular file that can be moved within one filesystem",
+        );
+      }
       throw error;
     }
+    const linked = await fs.lstat(destination);
+    if (
+      !linked.isFile() ||
+      linked.dev !== opened.dev ||
+      linked.ino !== opened.ino
+    ) {
+      await fs.unlink(destination);
+      refuseMove(command.sourcePath, "it changed while it was being moved");
+    }
+    const current = await fs.lstat(source).catch(() => null);
+    if (
+      current !== null &&
+      current.isFile() &&
+      current.dev === opened.dev &&
+      current.ino === opened.ino
+    ) {
+      await fs.unlink(source);
+    }
+    return { ok: true };
+  } finally {
+    await handle.close();
   }
-  await fs.rename(source, destination);
-  return { ok: true };
 }
 
 export async function removeHostPath(

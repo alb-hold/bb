@@ -852,6 +852,8 @@ reconnects. Auto-update-enabled daemons install the server's matching `bb-app`
 artifact; disabled or failed updates leave the machine disconnected until a
 manual update succeeds. The commit that bumps the version records what changed.
 
+File moves (`/files/move`) use the single `host.move_file` call introduced at protocol 245. The server has no fallback to a browse-then-rename sequence: a daemon that does not know the command is on another protocol version and is rejected as above. The daemon guarantees that only a regular file it opened without following links is linked to the destination and later unlinked from the source, and that a folder, link, cross-device move or existing destination is refused with nothing moved. It cannot guarantee anything about a path that another process renames in the instant between its source check and the link; that swap is detected afterwards (the destination is unlinked again when it is not the opened file) rather than prevented.
+
 ## Opt-in server performance diagnostics
 
 Collection needs both startup permission and the **Server performance

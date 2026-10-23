@@ -260,7 +260,7 @@ describe("host file routes", () => {
     });
   });
 
-  it("moves a confirmed single file, but refuses a folder or an unlisted path before moving", async () => {
+  it("moves through one host.move_file call, never browses or uses a separate move, and surfaces the daemon's refusal of a non-file", async () => {
     await withTestHarness(async (harness) => {
       const { host, session } = seedHostSession(harness.deps);
       seedPrimaryHost(harness.deps, host.id);
@@ -270,18 +270,14 @@ describe("host file routes", () => {
         sessionId: session.id,
         handle: (request) => {
           commands.push(request.command);
-          if (request.command.type === "host.browse_directory") {
+          if (
+            request.command.type === "host.move_file" &&
+            request.command.sourcePath !== "/work/scratch/a.txt"
+          ) {
             return {
-              ok: true,
-              result: {
-                directory: "/work/scratch",
-                parent: "/work",
-                roots: ["/"],
-                entries: [
-                  { kind: "file", name: "a.txt", path: "/work/scratch/a.txt" },
-                  { kind: "directory", name: "dir", path: "/work/scratch/dir" },
-                ],
-              },
+              ok: false,
+              errorCode: "invalid_path",
+              errorMessage: "Refusing to move: it is not a single regular file",
             };
           }
           return { ok: true, result: { ok: true } };
@@ -296,12 +292,14 @@ describe("host file routes", () => {
         );
 
       expect((await move("/work/scratch/a.txt")).status).toBe(200);
-      expect((await move("/work/scratch/dir")).status).toBe(409);
-      expect((await move("/work/scratch/missing")).status).toBe(409);
+      expect((await move("/work/scratch/dir")).status).toBe(400);
+      expect((await move("/work/scratch/link")).status).toBe(400);
 
-      expect(
-        commands.filter((command) => command.type === "host.move_path"),
-      ).toHaveLength(1);
+      expect(commands.map((command) => command.type)).toEqual([
+        "host.move_file",
+        "host.move_file",
+        "host.move_file",
+      ]);
     });
   });
 
@@ -554,7 +552,7 @@ describe("host file routes", () => {
           recursive: false,
         },
         {
-          type: "host.move_path",
+          type: "host.move_file",
           sourcePath: "/notes/a.md",
           destinationPath: "/notes/b.md",
           rootPath: "/notes",

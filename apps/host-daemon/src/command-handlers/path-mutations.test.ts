@@ -4,7 +4,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   mkdirHostPath,
-  moveHostPath,
+  moveHostFile,
   removeHostPath,
 } from "./path-mutations.js";
 
@@ -40,8 +40,8 @@ describe("confined host path mutations", () => {
     const destination = path.join(folder, "plan.md");
     await fs.writeFile(source, "# Plan");
     await expect(
-      moveHostPath({
-        type: "host.move_path",
+      moveHostFile({
+        type: "host.move_file",
         sourcePath: source,
         destinationPath: destination,
         rootPath: root,
@@ -146,13 +146,86 @@ describe("confined host path mutations", () => {
     await fs.writeFile(destination, "destination");
 
     await expect(
-      moveHostPath({
-        type: "host.move_path",
+      moveHostFile({
+        type: "host.move_file",
         sourcePath: source,
         destinationPath: destination,
         rootPath: root,
       }),
     ).rejects.toMatchObject({ code: "path_exists" });
     await expect(fs.readFile(destination, "utf8")).resolves.toBe("destination");
+  });
+
+  it("refuses to move a folder and leaves it and its contents in place", async () => {
+    const root = await makeRoot();
+    const source = path.join(root, "workspace");
+    await fs.mkdir(source);
+    await fs.writeFile(path.join(source, "work.txt"), "keep");
+    const destination = path.join(root, "moved");
+
+    await expect(
+      moveHostFile({
+        type: "host.move_file",
+        sourcePath: source,
+        destinationPath: destination,
+        rootPath: root,
+      }),
+    ).rejects.toMatchObject({ code: "invalid_path" });
+    await expect(
+      fs.readFile(path.join(source, "work.txt"), "utf8"),
+    ).resolves.toBe("keep");
+    await expect(fs.lstat(destination)).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  });
+
+  it("refuses to follow a symbolic link, whether it points at a file or a folder", async () => {
+    const root = await makeRoot();
+    const target = path.join(root, "real.txt");
+    await fs.writeFile(target, "real");
+    const folder = path.join(root, "folder");
+    await fs.mkdir(folder);
+    for (const [name, pointsTo] of [
+      ["file-link", target],
+      ["folder-link", folder],
+    ] as const) {
+      const link = path.join(root, name);
+      await fs.symlink(pointsTo, link);
+      await expect(
+        moveHostFile({
+          type: "host.move_file",
+          sourcePath: link,
+          destinationPath: path.join(root, `${name}-moved`),
+          rootPath: root,
+        }),
+      ).rejects.toMatchObject({ code: "invalid_path" });
+      expect((await fs.lstat(link)).isSymbolicLink()).toBe(true);
+      await expect(fs.lstat(path.join(root, `${name}-moved`))).rejects.toMatchObject(
+        { code: "ENOENT" },
+      );
+    }
+    await expect(fs.readFile(target, "utf8")).resolves.toBe("real");
+  });
+
+  it("moves a regular file by linking it, leaving no second copy at the source", async () => {
+    const root = await makeRoot();
+    const source = path.join(root, "a.txt");
+    const destination = path.join(root, "b.txt");
+    await fs.writeFile(source, "content");
+    const before = await fs.stat(source);
+
+    await expect(
+      moveHostFile({
+        type: "host.move_file",
+        sourcePath: source,
+        destinationPath: destination,
+        rootPath: root,
+      }),
+    ).resolves.toEqual({ ok: true });
+
+    await expect(fs.lstat(source)).rejects.toMatchObject({ code: "ENOENT" });
+    const after = await fs.stat(destination);
+    expect(after.ino).toBe(before.ino);
+    expect(after.nlink).toBe(1);
   });
 });

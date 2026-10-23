@@ -1,5 +1,4 @@
 import path from "node:path";
-import { getHostPathBasename, getHostPathDirname } from "@bb/domain";
 import { randomUUID } from "node:crypto";
 import type { Hono } from "hono";
 import {
@@ -243,35 +242,6 @@ export function registerFileRoutes(app: Hono, deps: AppDeps): void {
     }
   };
 
-  const requireMoveSourceIsPlainFile = async (
-    hostId: string,
-    sourcePath: string,
-  ): Promise<void> => {
-    const parent = getHostPathDirname(sourcePath);
-    const name = getHostPathBasename(sourcePath);
-    if (parent === null || name === null || name === "") {
-      refuseUnprovenMutation({
-        action: "move",
-        path: sourcePath,
-        reason: "its parent folder cannot be determined",
-      });
-    }
-    const listing = await callHostRetryableOnlineRpc(deps, {
-      hostId,
-      timeoutMs: COMMAND_TIMEOUT_MS,
-      command: { type: "host.browse_directory", path: parent },
-    });
-    const entry = listing.entries.find((candidate) => candidate.name === name);
-    if (entry?.kind !== "file") {
-      refuseUnprovenMutation({
-        action: "move",
-        path: sourcePath,
-        reason:
-          "it is not confirmed to be a single file, and moving a folder could carry a workspace with it",
-      });
-    }
-  };
-
   post(fileRoutes.read, (context, payload) =>
     withHostFileRoute(payload.hostId, async (hostId) => {
       const result = await callHostRetryableOnlineRpc(deps, {
@@ -384,9 +354,8 @@ export function registerFileRoutes(app: Hono, deps: AppDeps): void {
         path: payload.destinationPath,
         action: "move",
       });
-      await requireMoveSourceIsPlainFile(hostId, payload.sourcePath);
       const result = await runHostFileMutationCommand(hostId, {
-        type: "host.move_path",
+        type: "host.move_file",
         sourcePath: payload.sourcePath,
         destinationPath: payload.destinationPath,
         ...(payload.rootPath !== undefined

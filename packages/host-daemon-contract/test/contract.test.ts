@@ -270,7 +270,7 @@ const ONLINE_RPC_RESPONSE_RESULT_FIXTURES: OnlineRpcResponseResultFixtures = {
     truncated: false,
   },
   "host.mkdir": { ok: true },
-  "host.move_path": { ok: true },
+  "host.move_file": { ok: true },
   "host.remove_path": { ok: true },
   "host.browse_directory": {
     directory: "/home/me/project",
@@ -1271,7 +1271,7 @@ describe("host-daemon command schemas", () => {
   });
 
   it("uses the current host-daemon protocol version", () => {
-    expect(HOST_DAEMON_PROTOCOL_VERSION).toBe(244);
+    expect(HOST_DAEMON_PROTOCOL_VERSION).toBe(245);
     expect(HOST_ARTIFACT_MAX_BYTES).toBe(256 * 1024 * 1024);
   });
 
