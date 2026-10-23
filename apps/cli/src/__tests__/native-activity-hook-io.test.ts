@@ -19,6 +19,7 @@ import {
   statSync,
   symlinkSync,
   truncateSync,
+  utimesSync,
   writeFileSync,
 } from "node:fs";
 import { readFile as readFilePromise } from "node:fs/promises";
@@ -34,6 +35,7 @@ import {
   HookAppendReader,
   hookAppendCommand,
   HookSpoolReader,
+  processStartTime,
   removeHookSpool,
   reserveSequence,
 } from "../native-hook-spool.js";
@@ -77,6 +79,11 @@ afterEach(() => {
   for (const child of children.splice(0)) child.kill("SIGKILL");
   for (const spool of spools.splice(0)) removeHookSpool(spool);
 });
+
+function recordOf(pid: number): string {
+  const start = processStartTime(pid);
+  return start === null ? String(pid) : `${pid}:${start}`;
+}
 
 function claudeDeclaration(): ProviderNativeTerminal {
   const host = createFakePluginHost({ pluginId: "provider-claude-code" });
@@ -763,13 +770,13 @@ describe.skipIf(process.platform === "win32")(
           return false;
         }
       }, "the lock");
-      expect(readlinkSync(lock)).toBe(String(writer.child.pid));
+      expect(readlinkSync(lock)).toBe(recordOf(writer.child.pid ?? -1));
       expect(await readFilePromise(file, "utf8")).toBe(`${payload}\n`);
       await writer.exited;
       expect(() => lstatSync(lock)).toThrow();
     }, 30_000);
 
-    it("never breaks a lock whose holder is alive, however old, until the pid-reuse bound; then breaks it and counts it", () => {
+    it("never breaks a lock whose holder is alive, however old, and does not count it", () => {
       const { directory, file, lock } = appendFixture();
       symlinkSync(String(process.pid), lock);
       const reader = new HookAppendReader(file);
@@ -777,11 +784,9 @@ describe.skipIf(process.platform === "win32")(
       expect(reader.read(start)).toEqual({ records: [], unreadable: 0 });
       expect(reader.read(start + 11_000).unreadable).toBe(0);
       expect(reader.read(start + 5 * 60_000).unreadable).toBe(0);
+      expect(reader.read(start + 11 * 60_000).unreadable).toBe(0);
+      expect(reader.read(start + 24 * 60 * 60_000).unreadable).toBe(0);
       expect(readdirSync(directory)).toContain("hooks.lock");
-      expect(reader.read(start + 11 * 60_000).unreadable).toBe(1);
-      expect(
-        readdirSync(directory).filter((name) => name.startsWith("hooks.lock")),
-      ).toEqual([]);
     });
 
     it("breaks the lock of a dead holder at once, counts it once, and lets the next hook append", async () => {
@@ -1064,6 +1069,7 @@ describe.skipIf(process.platform === "win32")(
       shim("cat", [
         `if [ "$last" = '${lock}/pid' ]; then`,
         `  read -r owner < '${lock}/pid'`,
+        "  owner=${owner%%:*}",
         `  : > "${state}/at-readback-$owner"`,
         `  n=0; while [ ! -e "${state}/go-$owner" ] && [ "$n" -lt 400 ]; do sleep 0.05; n=$((n+1)); done`,
         "fi",
@@ -1108,7 +1114,7 @@ describe.skipIf(process.platform === "win32")(
         ),
       ).toBe(true);
       expect(readFileSync(path.join(lock, "pid"), "utf8")).toBe(
-        String(taker.pid),
+        recordOf(taker.pid),
       );
       writeFileSync(path.join(state, "go-w"), "");
       expect(
@@ -1118,7 +1124,7 @@ describe.skipIf(process.platform === "win32")(
         ),
       ).toBe(false);
       expect(readFileSync(path.join(lock, "pid"), "utf8")).toBe(
-        String(taker.pid),
+        recordOf(taker.pid),
       );
       writeFileSync(path.join(state, `go-${taker.pid}`), "");
       writeFileSync(path.join(state, `go-${stalled.pid}`), "");
@@ -1197,6 +1203,7 @@ describe.skipIf(process.platform === "win32")(
       shim("cat", [
         `if [ "$last" = '${lock}/pid' ]; then`,
         `  read -r owner < '${lock}/pid'`,
+        "  owner=${owner%%:*}",
         `  : > "${state}/at-readback-$owner"`,
         `  n=0; while [ ! -e "${state}/go-$owner" ] && [ "$n" -lt 400 ]; do sleep 0.05; n=$((n+1)); done`,
         "fi",
@@ -1219,13 +1226,13 @@ describe.skipIf(process.platform === "win32")(
         ),
       ).toBe(true);
       expect(readFileSync(path.join(lock, "pid"), "utf8")).toBe(
-        String(taker.pid),
+        recordOf(taker.pid),
       );
       writeFileSync(path.join(state, "go-old"), "");
       await until(() => false, 800);
       expect(lstatSync(lock).isDirectory()).toBe(true);
       expect(readFileSync(path.join(lock, "pid"), "utf8")).toBe(
-        String(taker.pid),
+        recordOf(taker.pid),
       );
       writeFileSync(path.join(state, `go-${taker.pid}`), "");
       await Promise.all([old.exited, taker.exited]);
@@ -1438,17 +1445,113 @@ describe.skipIf(process.platform === "win32")(
       expect(staleNames()).toEqual([]);
     }, 30_000);
 
-    it("removes only the pid file and the directory of a lock older than the pid reuse bound, without moving it", async () => {
-      const { file, live, lock, staleNames } = readerKit();
+    it("never breaks a lock whose holder is alive, however old it is, and breaks a dead holder's and a reused pid's in the same scenario", async () => {
+      const { dead, directory, file, live, lock } = readerKit();
+      const holder = live();
+      const recorded = recordOf(holder);
+      const gone = await dead();
+      const aged = Date.now() + 11 * 60_000;
       mkdirSync(lock);
-      writeFileSync(path.join(lock, "pid"), String(live()));
+      writeFileSync(path.join(lock, "pid"), recorded);
+      expect(new HookAppendReader(file).read(aged).unreadable).toBe(0);
+      expect(readFileSync(path.join(lock, "pid"), "utf8")).toBe(recorded);
+      writeFileSync(path.join(lock, "pid"), String(holder));
+      expect(new HookAppendReader(file).read(aged).unreadable).toBe(0);
+      expect(readFileSync(path.join(lock, "pid"), "utf8")).toBe(String(holder));
+      writeFileSync(path.join(lock, "pid"), `${holder}:p1`);
+      expect(new HookAppendReader(file).read().unreadable).toBe(1);
+      expect(existsSync(lock)).toBe(false);
+      mkdirSync(lock);
+      writeFileSync(path.join(lock, "pid"), `${gone}:p1`);
+      expect(new HookAppendReader(file).read().unreadable).toBe(1);
+      expect(existsSync(lock)).toBe(false);
+      symlinkSync(recorded, lock);
+      expect(new HookAppendReader(file).read(aged).unreadable).toBe(0);
+      expect(readlinkSync(lock)).toBe(recorded);
+      expect(
+        readdirSync(directory).filter((n) => n.includes(".stale.")),
+      ).toEqual([]);
+    }, 30_000);
+
+    it("breaks a lock whose pid was reused by a process with a different start time, and keeps it when the start time cannot be read", async () => {
+      const { file, live, lock } = readerKit();
+      const holder = live();
+      const reused = `${holder}:p1`;
+      mkdirSync(lock);
+      writeFileSync(path.join(lock, "pid"), reused);
+      expect(
+        new HookAppendReader(file, undefined, () => null).read().unreadable,
+      ).toBe(0);
+      expect(readFileSync(path.join(lock, "pid"), "utf8")).toBe(reused);
+      expect(
+        new HookAppendReader(file, undefined, () => "s1").read().unreadable,
+      ).toBe(0);
+      expect(readFileSync(path.join(lock, "pid"), "utf8")).toBe(reused);
+      expect(new HookAppendReader(file).read().unreadable).toBe(1);
+      expect(existsSync(lock)).toBe(false);
+    }, 30_000);
+
+    it("removes a lock directory that has no pid after it is older than the orphan bound", () => {
+      const { file, lock } = readerKit();
+      mkdirSync(lock);
       expect(new HookAppendReader(file).read().unreadable).toBe(0);
       expect(
         new HookAppendReader(file).read(Date.now() + 11 * 60_000).unreadable,
       ).toBe(1);
       expect(existsSync(lock)).toBe(false);
-      expect(staleNames()).toEqual([]);
     }, 30_000);
+
+    it("keeps one holder at a time, and every record exactly once and in order, when the holder is paused past the old reclaim bound and the reader runs", async () => {
+      const { directory, file, lock } = appendFixture();
+      const { realOf, shim, start, state, until } = releaseKit(file, directory);
+      shim("ln", ["exit 1"]);
+      shim("cat", [
+        `if [ "$last" = '${lock}/pid' ]; then`,
+        `  read -r owner < '${lock}/pid'`,
+        "  owner=${owner%%:*}",
+        `  : > "${state}/at-readback-$owner"`,
+        `  n=0; while [ ! -e "${state}/go-$owner" ] && [ "$n" -lt 400 ]; do sleep 0.05; n=$((n+1)); done`,
+        "fi",
+        `exec ${realOf("cat")} "$@"`,
+      ]);
+      const first = start("First");
+      expect(
+        await until(
+          () => existsSync(path.join(state, `at-readback-${first.pid}`)),
+          10_000,
+        ),
+      ).toBe(true);
+      const recorded = readFileSync(path.join(lock, "pid"), "utf8");
+      expect(recorded).toBe(recordOf(first.pid));
+      const second = start("Second");
+      const longAgo = new Date(Date.now() - 11 * 60_000);
+      utimesSync(lock, longAgo, longAgo);
+      const reader = new HookAppendReader(file);
+      expect(reader.read().unreadable).toBe(0);
+      expect(
+        await Promise.race([
+          second.exited.then(() => "second finished"),
+          until(() => false, 1_500).then(() => "second waiting"),
+        ]),
+      ).toBe("second waiting");
+      expect(readFileSync(path.join(lock, "pid"), "utf8")).toBe(recorded);
+      writeFileSync(path.join(state, `go-${first.pid}`), "");
+      writeFileSync(path.join(state, `go-${second.pid}`), "");
+      await Promise.all([first.exited, second.exited]);
+      expect(
+        readdirSync(directory).filter(
+          (name) =>
+            name.startsWith("hooks.lock") ||
+            name.startsWith(".late.") ||
+            name.startsWith(".tmp.") ||
+            name.startsWith(".lost."),
+        ),
+      ).toEqual([]);
+      expect(new HookAppendReader(file).read().records.map(toolOf)).toEqual([
+        "First",
+        "Second",
+      ]);
+    }, 60_000);
 
     it("does not reclaim a lock directory whose pid names a live process, and publishes its record late after the deadline", async () => {
       const { directory, file, lock } = appendFixture();
@@ -1695,7 +1798,7 @@ describe.skipIf(process.platform === "win32")(
       expect(callCount()).toBe(1);
       expect(readFileSync(calls, "utf8").trim()).toBe(String(hook.pid));
       expect(lstatSync(lock).isDirectory()).toBe(true);
-      expect(readdirSync(lock)).toContain(String(hook.pid));
+      expect(readdirSync(lock)).toContain(recordOf(hook.pid ?? -1));
 
       rmSync(lock, { recursive: true });
       symlinkSync(String(process.pid), lock);
