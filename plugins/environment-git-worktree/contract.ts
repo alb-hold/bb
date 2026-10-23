@@ -77,7 +77,11 @@ export const worktreeHostContract = defineRpcContract({
         .object({
           status: z.literal("failed"),
           message: z.string().min(1),
-          retainedPath: z.string().min(1).optional(),
+          kept: z.discriminatedUnion("kind", [
+            z.object({ kind: z.literal("kept"), path: z.string().min(1) }).strict(),
+            z.object({ kind: z.literal("nothing") }).strict(),
+            z.object({ kind: z.literal("unknown") }).strict(),
+          ]),
         })
         .strict(),
     ]),
@@ -85,7 +89,9 @@ export const worktreeHostContract = defineRpcContract({
   proveRetentionAbsent: {
     input: z
       .object({
-        path: z.string().min(1),
+        path: z.string().min(1).nullable(),
+        pathKey: z.string().min(1).nullable(),
+        branchName: z.string().min(1).nullable(),
         sourcePath: z.string().min(1).nullable(),
         threadId: z.string().min(1).nullable(),
       })

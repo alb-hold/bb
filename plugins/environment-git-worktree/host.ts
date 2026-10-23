@@ -24,6 +24,7 @@ import {
   removeWorktree,
   resolveAdoptableWorktree,
 } from "./host/worktree.js";
+import { classifyCreateFailure } from "./host/create-failure.js";
 import { proveRetentionAbsent } from "./host/retention-proof.js";
 import { isWorktreePreservedError } from "./host/worktree-preservation.js";
 
@@ -206,17 +207,17 @@ export function createWorktreeHostEntry() {
           return {
             status: "failed",
             message: error instanceof Error ? error.message : String(error),
-            ...(isWorktreePreservedError(error)
-              ? { retainedPath: targetPath }
-              : error instanceof WorkspaceError && error.keptPath !== null
-                ? { retainedPath: error.keptPath }
-                : {}),
+            kept: classifyCreateFailure(error, targetPath),
           } as const;
         }
       },
 
       async proveRetentionAbsent(input, context) {
-        return proveRetentionAbsent({ ...input, signal: context.signal });
+        return proveRetentionAbsent({
+          ...input,
+          dataDir: context.experimental_paths.dataDir,
+          signal: context.signal,
+        });
       },
 
       async inspect(input, context) {

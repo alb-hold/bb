@@ -101,7 +101,10 @@ export type PluginEnvironmentProviderCreateResult =
 
 export interface PluginEnvironmentProviderRetentionProofContext {
   hostId: string;
-  path: string;
+  /** The path the attempt kept, or null when the provider never reported one: then `pathKey` and `branchName` identify the attempt. */
+  path: string | null;
+  pathKey: string | null;
+  branchName: string | null;
   sourcePath: string | null;
   threadId: string | null;
   signal: AbortSignal;
@@ -182,7 +185,7 @@ export interface PluginEnvironmentProviderDefinition<
   ):
     | PluginEnvironmentProviderPreflightRemoveResult
     | Promise<PluginEnvironmentProviderPreflightRemoveResult>;
-  /** Experimental: prove, without mutating, that a path an attempt kept is gone from the machine: not on disk, not registered as a workspace of its repository, and not held by a branch of the thread. Core closes the retention only on `absent: true`, and records the proof: see docs/api_to_audit.md. */
+  /** Experimental: prove, without mutating, that what an attempt kept is gone from the machine: not on disk (at the path, or at the place the provider would have put it for `pathKey`), not registered as a workspace of its repository, and not held by a branch of the thread. Core closes the retention only on `absent: true`, never on an error or a timeout, and records the proof: see docs/api_to_audit.md. */
   experimental_proveRetentionAbsent?(
     context: PluginEnvironmentProviderRetentionProofContext,
   ):

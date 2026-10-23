@@ -398,7 +398,7 @@ describe("worktree host entry", () => {
       expect(second).toMatchObject({
         status: "failed",
         message: expect.stringContaining("detached"),
-        retainedPath: first.path,
+        kept: { kind: "kept", path: first.path },
       });
       expect(
         (await git(sourcePath, "branch", "--list", "bb/work-thr_dt.r2")).trim(),
@@ -477,6 +477,8 @@ describe("worktree host entry", () => {
         const gone = join(dataDir, "worktrees", "never-existed", "repo");
         const proof = await harness.experimental_call("proveRetentionAbsent", {
           path: gone,
+          pathKey: null,
+          branchName: null,
           sourcePath,
           threadId: "thr_proof",
         });
@@ -498,6 +500,8 @@ describe("worktree host entry", () => {
         expect(
           await harness.experimental_call("proveRetentionAbsent", {
             path: kept,
+            pathKey: null,
+            branchName: null,
             sourcePath,
             threadId: null,
           }),
@@ -526,6 +530,8 @@ describe("worktree host entry", () => {
         expect(
           await harness.experimental_call("proveRetentionAbsent", {
             path: created.path,
+            pathKey: null,
+            branchName: null,
             sourcePath,
             threadId: null,
           }),
@@ -556,6 +562,8 @@ describe("worktree host entry", () => {
         expect(
           await harness.experimental_call("proveRetentionAbsent", {
             path: join(dataDir, "worktrees", "somewhere-else", "repo"),
+            pathKey: null,
+            branchName: null,
             sourcePath,
             threadId: "thr_hold",
           }),
@@ -568,6 +576,92 @@ describe("worktree host entry", () => {
       }
     });
 
+    describe("for an attempt that never reported a path", () => {
+      const pathless = (
+        sourcePath: string | null,
+        extra: { pathKey?: string | null; branchName?: string | null; threadId?: string | null } = {},
+      ) => ({
+        path: null,
+        pathKey: extra.pathKey === undefined ? "thr_pl-2" : extra.pathKey,
+        branchName: extra.branchName ?? null,
+        sourcePath,
+        threadId: extra.threadId ?? null,
+      });
+
+      it("proves absent when no workspace folder for the path key exists, nothing is registered under it, and no workspace holds the branch", async () => {
+        const { sourcePath, dataDir } = await createSourceRepository();
+        const harness = createHarness(dataDir);
+        try {
+          expect(
+            await harness.experimental_call(
+              "proveRetentionAbsent",
+              pathless(sourcePath, { branchName: "bb/work-thr_pl.r2", threadId: "thr_pl" }),
+            ),
+          ).toMatchObject({ absent: true, proof: expect.stringContaining("lstat ENOENT") });
+        } finally {
+          await harness.experimental_dispose();
+        }
+      });
+
+      it("does not close while a directory exists at the would-be path", async () => {
+        const { sourcePath, dataDir } = await createSourceRepository();
+        await mkdir(join(dataDir, "worktrees", "thr_pl-2", "repo"), { recursive: true });
+        const harness = createHarness(dataDir);
+        try {
+          expect(
+            await harness.experimental_call("proveRetentionAbsent", pathless(sourcePath)),
+          ).toMatchObject({ absent: false, reason: expect.stringContaining("still exists") });
+        } finally {
+          await harness.experimental_dispose();
+        }
+      });
+
+      it("does not close while a workspace is registered under the path key or holds the branch", async () => {
+        const { sourcePath, dataDir } = await createSourceRepository();
+        const harness = createHarness(dataDir);
+        try {
+          const created = await harness.experimental_call(
+            "create",
+            createInput({
+              operationId: "pl",
+              sourcePath,
+              pathKey: "thr_pl-2",
+              branchName: "bb/work-thr_pl.r2",
+            }),
+          );
+          if (created.status !== "created") throw new Error(created.message);
+          await rm(join(dataDir, "worktrees", "thr_pl-2"), { recursive: true, force: true });
+
+          expect(
+            await harness.experimental_call("proveRetentionAbsent", pathless(sourcePath)),
+          ).toMatchObject({ absent: false, reason: expect.stringContaining("still registered") });
+          expect(
+            await harness.experimental_call(
+              "proveRetentionAbsent",
+              pathless(sourcePath, { pathKey: "thr_other-9", branchName: "bb/work-thr_pl.r2" }),
+            ),
+          ).toMatchObject({ absent: false, reason: expect.stringContaining("still holds branch") });
+        } finally {
+          await harness.experimental_dispose();
+        }
+      });
+
+      it("does not close when neither a path nor a path key is known", async () => {
+        const { sourcePath, dataDir } = await createSourceRepository();
+        const harness = createHarness(dataDir);
+        try {
+          expect(
+            await harness.experimental_call(
+              "proveRetentionAbsent",
+              pathless(sourcePath, { pathKey: null }),
+            ),
+          ).toMatchObject({ absent: false });
+        } finally {
+          await harness.experimental_dispose();
+        }
+      });
+    });
+
     it("does not close when the repository's workspaces cannot be listed", async () => {
       const { dataDir } = await createSourceRepository();
       const harness = createHarness(dataDir);
@@ -575,6 +669,8 @@ describe("worktree host entry", () => {
         expect(
           await harness.experimental_call("proveRetentionAbsent", {
             path: join(dataDir, "worktrees", "x", "repo"),
+            pathKey: null,
+            branchName: null,
             sourcePath: join(dataDir, "not-a-repo"),
             threadId: null,
           }),
@@ -605,7 +701,7 @@ describe("worktree host entry", () => {
       expect(result).toMatchObject({
         status: "failed",
         message: expect.stringContaining("left alone"),
-        retainedPath: target,
+        kept: { kind: "kept", path: target },
       });
       expect(await readFile(join(target, "mine.txt"), "utf8")).toBe(
         "keep me\n",

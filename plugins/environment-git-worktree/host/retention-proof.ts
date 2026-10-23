@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { runGit } from "bb-environment-provider-host/git";
 import { branchBelongsToThread } from "../attempt-branch.js";
+import { resolveWorktreeAttemptRoot } from "./paths.js";
 import { parseWorktreeListPorcelain } from "./worktree-list.js";
 
 export type RetentionProof =
@@ -18,23 +19,54 @@ async function realOrSelf(target: string): Promise<string> {
   return fs.realpath(target).catch(() => path.resolve(target));
 }
 
-export async function proveRetentionAbsent(args: {
-  path: string;
-  sourcePath: string | null;
-  threadId: string | null;
-  signal: AbortSignal | undefined;
-}): Promise<RetentionProof> {
+async function lstatAbsent(target: string): Promise<string | null> {
   try {
-    await fs.lstat(args.path);
-    return { absent: false, reason: `${args.path} still exists on this machine` };
+    await fs.lstat(target);
+    return `${target} still exists on this machine`;
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
-    if (code !== "ENOENT" && code !== "ENOTDIR") {
+    return code === "ENOENT" || code === "ENOTDIR"
+      ? null
+      : `${target} could not be checked (${code ?? "error"})`;
+  }
+}
+
+export async function proveRetentionAbsent(args: {
+  path: string | null;
+  pathKey: string | null;
+  branchName: string | null;
+  sourcePath: string | null;
+  threadId: string | null;
+  dataDir: string;
+  signal: AbortSignal | undefined;
+}): Promise<RetentionProof> {
+  const watched: string[] = [];
+  if (args.path !== null) watched.push(path.resolve(args.path));
+  if (args.path === null) {
+    if (args.pathKey === null) {
       return {
         absent: false,
-        reason: `${args.path} could not be checked (${code ?? "error"})`,
+        reason:
+          "neither a path nor a path key was recorded, so where the attempt would have put its workspace is unknown",
       };
     }
+    let attemptRoot: string;
+    try {
+      attemptRoot = resolveWorktreeAttemptRoot({
+        dataDir: args.dataDir,
+        pathKey: args.pathKey,
+      });
+    } catch {
+      return {
+        absent: false,
+        reason: `the path key ${args.pathKey} does not name a workspace folder`,
+      };
+    }
+    watched.push(attemptRoot);
+  }
+  for (const target of watched) {
+    const present = await lstatAbsent(target);
+    if (present !== null) return { absent: false, reason: present };
   }
   if (args.sourcePath === null) {
     return {
@@ -54,34 +86,43 @@ export async function proveRetentionAbsent(args: {
       reason: "the registered workspaces of the repository could not be listed",
     };
   }
-  const target = path.resolve(args.path);
   const entries = parseWorktreeListPorcelain(listing.stdout);
   for (const entry of entries) {
-    const entryPath = await realOrSelf(entry.path);
-    if (
-      isUnderOrEqual(entryPath, target) ||
-      isUnderOrEqual(target, entryPath) ||
-      isUnderOrEqual(path.resolve(entry.path), target) ||
-      isUnderOrEqual(target, path.resolve(entry.path))
-    ) {
-      return {
-        absent: false,
-        reason: `a workspace at ${entry.path} is still registered at or around ${args.path}`,
-      };
+    const entryPaths = [path.resolve(entry.path), await realOrSelf(entry.path)];
+    for (const target of watched) {
+      if (
+        entryPaths.some(
+          (entryPath) =>
+            isUnderOrEqual(entryPath, target) ||
+            isUnderOrEqual(target, entryPath),
+        )
+      ) {
+        return {
+          absent: false,
+          reason: `a workspace at ${entry.path} is still registered at or around ${target}`,
+        };
+      }
     }
-    if (
-      args.threadId !== null &&
-      entry.branch !== null &&
-      branchBelongsToThread(entry.branch, args.threadId)
-    ) {
-      return {
-        absent: false,
-        reason: `the workspace at ${entry.path} still holds branch ${entry.branch} of this thread`,
-      };
+    if (entry.branch !== null) {
+      if (args.branchName !== null && entry.branch === args.branchName) {
+        return {
+          absent: false,
+          reason: `the workspace at ${entry.path} still holds branch ${entry.branch}`,
+        };
+      }
+      if (
+        args.threadId !== null &&
+        branchBelongsToThread(entry.branch, args.threadId)
+      ) {
+        return {
+          absent: false,
+          reason: `the workspace at ${entry.path} still holds branch ${entry.branch} of this thread`,
+        };
+      }
     }
   }
   return {
     absent: true,
-    proof: `lstat ENOENT on ${args.path}; no registered workspace at or around it; no workspace holds a branch of ${args.threadId ?? "this thread"}`,
+    proof: `lstat ENOENT on ${watched.join(", ")}; no registered workspace at or around it; no workspace holds a branch of ${args.threadId ?? "this thread"}${args.branchName === null ? "" : ` or ${args.branchName}`}`,
   };
 }

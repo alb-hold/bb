@@ -135,7 +135,9 @@ describe("a failed create keeps recoverable work in the worktree it just made", 
     });
     const result = await fixture.create();
     expect(result.status).toBe("failed");
-    expect(result).toMatchObject({ retainedPath: fixture.targetPath });
+    expect(result).toMatchObject({
+      kept: { kind: "kept", path: fixture.targetPath },
+    });
     expect(JSON.stringify(result)).toContain("stays in place");
     expect(JSON.stringify(result)).toContain("ENOENT");
     expect(await readFile(join(fixture.targetPath, "inc", "a.env"), "utf8")).toBe(

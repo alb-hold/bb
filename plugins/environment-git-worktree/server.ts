@@ -169,10 +169,11 @@ export default async function worktreePlugin(bb: BbPluginApi): Promise<void> {
         return {
           status: "failed",
           message: result.message,
-          experimental_retained:
-            result.retainedPath === undefined
-              ? null
-              : { path: result.retainedPath },
+          ...(result.kept.kind === "kept"
+            ? { experimental_retained: { path: result.kept.path } }
+            : result.kept.kind === "nothing"
+              ? { experimental_retained: null }
+              : {}),
         };
       }
       return {
@@ -254,6 +255,8 @@ export default async function worktreePlugin(bb: BbPluginApi): Promise<void> {
           "proveRetentionAbsent",
           {
             path: context.path,
+            pathKey: context.pathKey,
+            branchName: context.branchName,
             sourcePath: context.sourcePath,
             threadId: context.threadId,
           },

@@ -30,6 +30,10 @@ export function createEnvironmentRetentionId(): string {
   return createId("ret");
 }
 
+export function createEnvironmentRetentionTransitionId(): string {
+  return createId("rtr");
+}
+
 export function createThreadId(): string {
   return createId("thr");
 }

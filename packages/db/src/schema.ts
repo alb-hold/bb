@@ -1369,6 +1369,29 @@ export const environmentRetentions = sqliteTable(
   ],
 );
 
+export const environmentRetentionTransitions = sqliteTable(
+  "environment_retention_transitions",
+  {
+    id: text("id").primaryKey(),
+    retentionId: text("retention_id").notNull(),
+    environmentId: text("environment_id").notNull(),
+    hostId: text("host_id").notNull(),
+    fromState: text("from_state"),
+    toState: text("to_state").notNull(),
+    path: text("path"),
+    detail: text("detail").notNull(),
+    at: integer("at").notNull(),
+  },
+  (table) => [
+    index("environment_retention_transitions_retention_idx").on(
+      table.retentionId,
+    ),
+    index("environment_retention_transitions_environment_idx").on(
+      table.environmentId,
+    ),
+  ],
+);
+
 export const environmentHookOperations = sqliteTable(
   "environment_hook_operations",
   {

@@ -377,17 +377,20 @@ export {
   closeEnvironmentRetention,
   deleteEnvironmentRetentionIntents,
   findOpenEnvironmentRetentionOverlapping,
+  listEnvironmentRetentionTransitions,
+  listEnvironmentRetentionTransitionsForEnvironment,
   listOpenEnvironmentRetentionsForEnvironment,
   listOpenEnvironmentRetentionsForHost,
   listOpenEnvironmentRetentionsForProject,
+  listOpenEnvironmentRetentionsForProvider,
   listOpenEnvironmentRetentionsForThread,
-  listOpenEnvironmentRetentionsWithPath,
   markEnvironmentRetentionsUnresolved,
   recordEnvironmentRetention,
 } from "./environment-retentions.js";
 export type {
   EnvironmentRetentionRow,
   EnvironmentRetentionState,
+  EnvironmentRetentionTransitionRow,
   RecordEnvironmentRetentionInput,
 } from "./environment-retentions.js";
 

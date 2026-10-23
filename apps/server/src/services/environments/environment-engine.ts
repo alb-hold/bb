@@ -28,7 +28,7 @@ import {
   deleteEnvironmentRetentionIntents,
   getProjectSourceByHost,
   listOpenEnvironmentRetentionsForThread,
-  listOpenEnvironmentRetentionsWithPath,
+  listOpenEnvironmentRetentionsForProvider,
   markEnvironmentRetentionsUnresolved,
   recordEnvironmentRetention,
   releaseFinishedEnvironmentPreparationOwners,
@@ -1619,24 +1619,33 @@ export async function sweepProviderLifecycles(deps: Deps): Promise<void> {
   releaseFinishedEnvironmentPreparationOwners(deps.db);
 }
 
+const INTENT_RECONCILE_MIN_AGE_MS = 5 * 60_000;
+
 export async function reconcileEnvironmentRetentions(
   deps: Pick<Deps, "db" | "logger">,
 ): Promise<void> {
+  const operations = perDbRegistry(environmentOperations, deps.db);
   for (const record of listEnvironmentProviders()) {
     const prove = record.provider.experimental_proveRetentionAbsent;
     if (prove === null) continue;
-    for (const row of listOpenEnvironmentRetentionsWithPath(
+    for (const row of listOpenEnvironmentRetentionsForProvider(
       deps.db,
       record.provider.id,
     )) {
-      if (row.keptPath === null) continue;
-      const keptPath = row.keptPath;
+      if (operations.has(row.environmentId)) continue;
+      if (
+        row.state === "intent" &&
+        Date.now() - row.updatedAt < INTENT_RECONCILE_MIN_AGE_MS
+      )
+        continue;
       try {
         const source = getProjectSourceByHost(
           deps.db,
           row.projectId,
           row.hostId,
         );
+        const environment =
+          row.keptPath === null ? getEnvironment(deps.db, row.environmentId) : null;
         const invocation = await invokeEnvironmentProvider(
           record,
           "retention proof",
@@ -1644,7 +1653,9 @@ export async function reconcileEnvironmentRetentions(
             Promise.resolve(
               prove({
                 hostId: row.hostId,
-                path: keptPath,
+                path: row.keptPath,
+                pathKey: environment?.environmentProviderInstanceKey ?? null,
+                branchName: environment?.branchName ?? null,
                 sourcePath:
                   source !== null && source.type === "local_path"
                     ? source.path

@@ -4,6 +4,8 @@ import {
   closeEnvironmentRetention,
   deleteEnvironmentRetentionIntents,
   findOpenEnvironmentRetentionOverlapping,
+  listEnvironmentRetentionTransitions,
+  listEnvironmentRetentionTransitionsForEnvironment,
   listOpenEnvironmentRetentionsForHost,
   listOpenEnvironmentRetentionsForProject,
   markEnvironmentRetentionsUnresolved,
@@ -158,5 +160,80 @@ describe("environment retentions", () => {
     expect(closeEnvironmentRetention(db, { id: row.id, proof: "again" })).toBe(
       false,
     );
+  });
+
+  it("appends a transition for every change and keeps the closure after the row is reopened", () => {
+    const db = createMigratedConnection();
+    const row = recordEnvironmentRetention(db, { ...base, state: "intent" });
+    recordEnvironmentRetention(db, { ...base, state: "retained", message: "kept" });
+    closeEnvironmentRetention(db, { id: row.id, proof: "lstat ENOENT on host_a" });
+    recordEnvironmentRetention(db, { ...base, state: "intent", message: "again" });
+
+    expect(
+      listEnvironmentRetentionTransitions(db, row.id).map((entry) => [
+        entry.fromState,
+        entry.toState,
+      ]),
+    ).toEqual([
+      [null, "intent"],
+      ["intent", "retained"],
+      ["retained", "closed"],
+      ["closed", "intent"],
+    ]);
+    const closing = listEnvironmentRetentionTransitions(db, row.id)[2];
+    expect(closing).toMatchObject({
+      detail: "lstat ENOENT on host_a",
+      hostId: "host_a",
+      path: "/work/a",
+    });
+    expect(closing?.at).toBeGreaterThan(0);
+  });
+
+  it("logs a deleted intent and a merged path-less intent instead of dropping them silently", () => {
+    const db = createMigratedConnection();
+    recordEnvironmentRetention(db, {
+      ...base,
+      originalPath: null,
+      keptPath: null,
+      state: "intent",
+    });
+    recordEnvironmentRetention(db, { ...base, state: "intent" });
+    expect(db.select().from(environmentRetentions).all()).toHaveLength(1);
+    deleteEnvironmentRetentionIntents(db, "env_a", "nothing kept");
+
+    expect(
+      listEnvironmentRetentionTransitionsForEnvironment(db, "env_a").map(
+        (entry) => entry.toState,
+      ),
+    ).toEqual(["intent", "intent", "merged", "deleted"]);
+  });
+
+  it("merges a path-less intent into a path row when a create throws, and leaves a path-less unresolved row alone otherwise", () => {
+    const db = createMigratedConnection();
+    recordEnvironmentRetention(db, {
+      ...base,
+      originalPath: null,
+      keptPath: null,
+      state: "unresolved",
+    });
+    recordEnvironmentRetention(db, {
+      ...base,
+      environmentId: "env_b",
+      originalPath: null,
+      keptPath: null,
+      state: "intent",
+    });
+    markEnvironmentRetentionsUnresolved(db, "env_b", "threw");
+    expect(
+      db
+        .select()
+        .from(environmentRetentions)
+        .all()
+        .map((row) => [row.environmentId, row.keptPath, row.state])
+        .sort(),
+    ).toEqual([
+      ["env_a", null, "unresolved"],
+      ["env_b", null, "unresolved"],
+    ]);
   });
 });

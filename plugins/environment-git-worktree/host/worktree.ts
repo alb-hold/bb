@@ -33,6 +33,7 @@ import {
   worktreePreservedError,
   type WorktreeIdentity,
 } from "./worktree-preservation.js";
+import { markCreateFailure } from "./create-failure.js";
 import { setTimeout as delay } from "node:timers/promises";
 import {
   findWorktreeForBranch,
@@ -593,9 +594,12 @@ async function removeCreateTargetAfterFailure(
       retention.retained !== null &&
       !isWorktreePreservedError(cleanupError)
     ) {
-      throw appendToError(
-        cleanupError,
-        `Create failed earlier: ${failure instanceof Error ? failure.message : String(failure)}`,
+      throw markCreateFailure(
+        appendToError(
+          cleanupError,
+          `Create failed earlier: ${failure instanceof Error ? failure.message : String(failure)}`,
+        ),
+        "unknown",
       );
     }
     if (isWorktreePreservedError(cleanupError)) {
@@ -605,7 +609,7 @@ async function removeCreateTargetAfterFailure(
         { cause: failure },
       );
     }
-    throw cleanupError;
+    throw markCreateFailure(cleanupError, "unknown");
   }
   if (retention.retained !== null) {
     throw new WorkspaceError(
@@ -614,7 +618,7 @@ async function removeCreateTargetAfterFailure(
       { cause: failure },
     );
   }
-  throw failure;
+  throw markCreateFailure(failure, "nothing");
 }
 
 export async function createWorktree(

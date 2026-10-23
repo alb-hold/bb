@@ -4,6 +4,7 @@ import {
   environments,
   getEnvironment,
   getThread,
+  listEnvironmentRetentionTransitionsForEnvironment,
   listOpenEnvironmentRetentionsForHost,
   recordEnvironmentRetention,
 } from "@bb/db";
@@ -368,6 +369,134 @@ describe("a failed create records what it kept", () => {
           listOpenEnvironmentRetentionsForHost(harness.db, host.id),
         ).toHaveLength(1);
       });
+    });
+  });
+
+  describe("closing a retention with no recorded path", () => {
+    const bare = async () => ({
+      status: "failed" as const,
+      message: "git unavailable",
+    });
+
+    it("closes it only when the provider proves the attempt's would-be path and branch absent, recording who checked, what and when", async () => {
+      await withTestHarness(async (harness) => {
+        const asked: PluginEnvironmentProviderRetentionProofContext[] = [];
+        registerProvider(bare, async (context) => {
+          asked.push(context);
+          return { absent: true, proof: "no folder, nothing registered" };
+        });
+        const { host, thread } = await destroyedThread(harness);
+        await restoreAndWait(harness, thread.id);
+
+        await reconcileEnvironmentRetentions(harness.deps);
+
+        expect(asked).toHaveLength(1);
+        expect(asked[0]).toMatchObject({ path: null, hostId: host.id });
+        expect(asked[0]?.pathKey).not.toBeNull();
+        expect(
+          listOpenEnvironmentRetentionsForHost(harness.db, host.id),
+        ).toEqual([]);
+        const [closed] = harness.db.select().from(environmentRetentions).all();
+        expect(closed).toMatchObject({
+          state: "closed",
+          keptPath: null,
+          closedProof: expect.stringContaining(`host ${host.id}`),
+        });
+        const history = listEnvironmentRetentionTransitionsForEnvironment(
+          harness.db,
+          closed!.environmentId,
+        ).map((entry) => entry.toState);
+        expect(history.at(-1)).toBe("closed");
+      });
+    });
+
+    it.each([
+      [
+        "a directory is present",
+        async (): Promise<PluginEnvironmentProviderRetentionProof> => ({
+          absent: false,
+          reason: "the folder exists",
+        }),
+      ],
+      [
+        "a worktree is registered",
+        async (): Promise<PluginEnvironmentProviderRetentionProof> => ({
+          absent: false,
+          reason: "a workspace is registered",
+        }),
+      ],
+      [
+        "the host is unreachable",
+        async (): Promise<PluginEnvironmentProviderRetentionProof> => {
+          throw new Error("host unreachable");
+        },
+      ],
+      [
+        "the host times out",
+        async (): Promise<PluginEnvironmentProviderRetentionProof> => {
+          throw new DOMException("The operation timed out", "TimeoutError");
+        },
+      ],
+    ])("keeps it open when %s", async (_label, prove) => {
+      await withTestHarness(async (harness) => {
+        registerProvider(bare, prove);
+        const { host, thread } = await destroyedThread(harness);
+        await restoreAndWait(harness, thread.id);
+
+        await reconcileEnvironmentRetentions(harness.deps);
+
+        expect(
+          listOpenEnvironmentRetentionsForHost(harness.db, host.id).map(
+            (row) => row.state,
+          ),
+        ).toEqual(["unresolved"]);
+      });
+    });
+
+    it("does not ask about an intent that is still fresh", async () => {
+      await withTestHarness(async (harness) => {
+        const asked: unknown[] = [];
+        registerProvider(bare, async (context) => {
+          asked.push(context);
+          return { absent: true, proof: "gone" };
+        });
+        const { host, thread, environment } = await destroyedThread(harness);
+        recordEnvironmentRetention(harness.db, {
+          environmentId: environment.id,
+          projectId: environment.projectId,
+          hostId: host.id,
+          ownerThreadId: thread.id,
+          providerId: PROVIDER_ID,
+          originalPath: null,
+          keptPath: null,
+          state: "intent",
+          message: "a create is in flight",
+        });
+
+        await reconcileEnvironmentRetentions(harness.deps);
+
+        expect(asked).toEqual([]);
+        expect(
+          listOpenEnvironmentRetentionsForHost(harness.db, host.id),
+        ).toHaveLength(1);
+      });
+    });
+  });
+
+  it("merges the path-less dispatch intent into the row that has a path when the create throws after claiming one", async () => {
+    await withTestHarness(async (harness) => {
+      registerProvider(async (context) => {
+        await context.experimental_claimPath(KEPT_PATH);
+        throw new Error("connection lost");
+      });
+      const { host, thread } = await destroyedThread(harness);
+      await restoreAndWait(harness, thread.id);
+
+      expect(
+        listOpenEnvironmentRetentionsForHost(harness.db, host.id).map(
+          (row) => [row.keptPath, row.state],
+        ),
+      ).toEqual([[KEPT_PATH, "unresolved"]]);
     });
   });
 });

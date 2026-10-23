@@ -211,7 +211,11 @@ describe("worktree resource operations", () => {
   });
 
   it("returns terminal creation failures for host and transport errors", async () => {
-    const failed = await setup(() => ({ status: "failed", message: "dirty" }));
+    const failed = await setup(() => ({
+      status: "failed",
+      message: "dirty",
+      kept: { kind: "nothing" },
+    }));
     await expect(failed.provider.create(failed.context)).resolves.toEqual({
       status: "failed",
       message: "dirty",
@@ -251,12 +255,24 @@ describe("worktree resource operations", () => {
     const kept = await setup(() => ({
       status: "failed",
       message: "setup failed; the workspace stays in place",
-      retainedPath: WORKTREE_PATH,
+      kept: { kind: "kept", path: WORKTREE_PATH },
     }));
     await expect(kept.provider.create(kept.context)).resolves.toEqual({
       status: "failed",
       message: "setup failed; the workspace stays in place",
       experimental_retained: { path: WORKTREE_PATH },
+    });
+  });
+
+  it("leaves the retention field out when the host cannot say what a failed create kept", async () => {
+    const unsure = await setup(() => ({
+      status: "failed",
+      message: "cleanup did not finish",
+      kept: { kind: "unknown" },
+    }));
+    expect(await unsure.provider.create(unsure.context)).toEqual({
+      status: "failed",
+      message: "cleanup did not finish",
     });
   });
 

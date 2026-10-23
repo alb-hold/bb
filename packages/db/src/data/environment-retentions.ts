@@ -1,12 +1,20 @@
-import { and, eq, inArray, isNull } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull } from "drizzle-orm";
 import { areHostPathsEqual, isHostPathWithin } from "@bb/domain";
 import type { DbConnection, DbTransaction } from "../connection.js";
-import { createEnvironmentRetentionId } from "../ids.js";
-import { environmentRetentions } from "../schema.js";
+import {
+  createEnvironmentRetentionId,
+  createEnvironmentRetentionTransitionId,
+} from "../ids.js";
+import {
+  environmentRetentions,
+  environmentRetentionTransitions,
+} from "../schema.js";
 
 type RetentionConnection = DbConnection | DbTransaction;
 export type EnvironmentRetentionRow = typeof environmentRetentions.$inferSelect;
 export type EnvironmentRetentionState = EnvironmentRetentionRow["state"];
+export type EnvironmentRetentionTransitionRow =
+  typeof environmentRetentionTransitions.$inferSelect;
 
 const BLOCKING_STATES: EnvironmentRetentionState[] = [
   "intent",
@@ -26,6 +34,55 @@ export interface RecordEnvironmentRetentionInput {
   message: string;
 }
 
+function logTransition(
+  db: RetentionConnection,
+  row: Pick<
+    EnvironmentRetentionRow,
+    "id" | "environmentId" | "hostId" | "keptPath"
+  >,
+  fromState: string | null,
+  toState: string,
+  detail: string,
+): void {
+  db.insert(environmentRetentionTransitions)
+    .values({
+      id: createEnvironmentRetentionTransitionId(),
+      retentionId: row.id,
+      environmentId: row.environmentId,
+      hostId: row.hostId,
+      fromState,
+      toState,
+      path: row.keptPath,
+      detail,
+      at: Date.now(),
+    })
+    .run();
+}
+
+function removePathlessRows(
+  db: RetentionConnection,
+  environmentId: string,
+  reason: string,
+): void {
+  const pathless = db
+    .select()
+    .from(environmentRetentions)
+    .where(
+      and(
+        eq(environmentRetentions.environmentId, environmentId),
+        isNull(environmentRetentions.keptPath),
+        eq(environmentRetentions.state, "intent"),
+      ),
+    )
+    .all();
+  for (const row of pathless) {
+    logTransition(db, row, row.state, "merged", reason);
+    db.delete(environmentRetentions)
+      .where(eq(environmentRetentions.id, row.id))
+      .run();
+  }
+}
+
 export function recordEnvironmentRetention(
   db: RetentionConnection,
   input: RecordEnvironmentRetentionInput,
@@ -43,6 +100,7 @@ export function recordEnvironmentRetention(
       ),
     )
     .get();
+  let result: EnvironmentRetentionRow;
   if (existing !== undefined) {
     if (existing.state === "released_by_owner") return existing;
     if (existing.state !== "closed" && existing.state !== "intent") {
@@ -50,7 +108,9 @@ export function recordEnvironmentRetention(
       if (existing.state === "unresolved" && input.state === "retained")
         return existing;
     }
-    return db
+    if (existing.state === input.state && existing.state !== "closed")
+      return existing;
+    result = db
       .update(environmentRetentions)
       .set({
         state: input.state,
@@ -62,25 +122,35 @@ export function recordEnvironmentRetention(
       .where(eq(environmentRetentions.id, existing.id))
       .returning()
       .get();
+    logTransition(db, result, existing.state, input.state, input.message);
+  } else {
+    result = db
+      .insert(environmentRetentions)
+      .values({
+        id: createEnvironmentRetentionId(),
+        environmentId: input.environmentId,
+        projectId: input.projectId,
+        hostId: input.hostId,
+        ownerThreadId: input.ownerThreadId,
+        providerId: input.providerId,
+        originalPath: input.originalPath,
+        keptPath: input.keptPath,
+        state: input.state,
+        message: input.message,
+        createdAt: now,
+        updatedAt: now,
+      })
+      .returning()
+      .get();
+    logTransition(db, result, null, input.state, input.message);
   }
-  return db
-    .insert(environmentRetentions)
-    .values({
-      id: createEnvironmentRetentionId(),
-      environmentId: input.environmentId,
-      projectId: input.projectId,
-      hostId: input.hostId,
-      ownerThreadId: input.ownerThreadId,
-      providerId: input.providerId,
-      originalPath: input.originalPath,
-      keptPath: input.keptPath,
-      state: input.state,
-      message: input.message,
-      createdAt: now,
-      updatedAt: now,
-    })
-    .returning()
-    .get();
+  if (input.keptPath !== null)
+    removePathlessRows(
+      db,
+      input.environmentId,
+      `merged into the row for ${input.keptPath}`,
+    );
+  return result;
 }
 
 export function markEnvironmentRetentionsUnresolved(
@@ -88,29 +158,71 @@ export function markEnvironmentRetentionsUnresolved(
   environmentId: string,
   message: string,
 ): void {
-  db.update(environmentRetentions)
-    .set({ state: "unresolved", message, updatedAt: Date.now() })
+  const intents = db
+    .select()
+    .from(environmentRetentions)
     .where(
       and(
         eq(environmentRetentions.environmentId, environmentId),
         eq(environmentRetentions.state, "intent"),
       ),
     )
-    .run();
+    .all();
+  for (const row of intents) {
+    db.update(environmentRetentions)
+      .set({ state: "unresolved", message, updatedAt: Date.now() })
+      .where(eq(environmentRetentions.id, row.id))
+      .run();
+    logTransition(db, row, "intent", "unresolved", message);
+  }
+  const hasPathRow = db
+    .select({ keptPath: environmentRetentions.keptPath })
+    .from(environmentRetentions)
+    .where(
+      and(
+        eq(environmentRetentions.environmentId, environmentId),
+        inArray(environmentRetentions.state, BLOCKING_STATES),
+      ),
+    )
+    .all()
+    .some((row) => row.keptPath !== null);
+  if (hasPathRow)
+    for (const row of intents) {
+      if (row.keptPath !== null) continue;
+      logTransition(
+        db,
+        row,
+        "unresolved",
+        "merged",
+        "merged into the row that has a path",
+      );
+      db.delete(environmentRetentions)
+        .where(eq(environmentRetentions.id, row.id))
+        .run();
+    }
 }
 
 export function deleteEnvironmentRetentionIntents(
   db: RetentionConnection,
   environmentId: string,
+  reason = "the create reported that nothing was kept",
 ): void {
-  db.delete(environmentRetentions)
+  const intents = db
+    .select()
+    .from(environmentRetentions)
     .where(
       and(
         eq(environmentRetentions.environmentId, environmentId),
         eq(environmentRetentions.state, "intent"),
       ),
     )
-    .run();
+    .all();
+  for (const row of intents) {
+    logTransition(db, row, "intent", "deleted", reason);
+    db.delete(environmentRetentions)
+      .where(eq(environmentRetentions.id, row.id))
+      .run();
+  }
 }
 
 export function closeEnvironmentRetention(
@@ -118,23 +230,52 @@ export function closeEnvironmentRetention(
   args: { id: string; proof: string },
 ): boolean {
   const now = Date.now();
-  const updated = db
-    .update(environmentRetentions)
-    .set({
-      state: "closed",
-      closedAt: now,
-      closedProof: args.proof,
-      updatedAt: now,
-    })
+  const before = db
+    .select()
+    .from(environmentRetentions)
     .where(
       and(
         eq(environmentRetentions.id, args.id),
         inArray(environmentRetentions.state, BLOCKING_STATES),
       ),
     )
-    .returning({ id: environmentRetentions.id })
+    .get();
+  if (before === undefined) return false;
+  db.update(environmentRetentions)
+    .set({
+      state: "closed",
+      closedAt: now,
+      closedProof: args.proof,
+      updatedAt: now,
+    })
+    .where(eq(environmentRetentions.id, args.id))
+    .run();
+  logTransition(db, before, before.state, "closed", args.proof);
+  return true;
+}
+
+export function listEnvironmentRetentionTransitions(
+  db: RetentionConnection,
+  retentionId: string,
+): EnvironmentRetentionTransitionRow[] {
+  return db
+    .select()
+    .from(environmentRetentionTransitions)
+    .where(eq(environmentRetentionTransitions.retentionId, retentionId))
+    .orderBy(asc(environmentRetentionTransitions.at))
     .all();
-  return updated.length > 0;
+}
+
+export function listEnvironmentRetentionTransitionsForEnvironment(
+  db: RetentionConnection,
+  environmentId: string,
+): EnvironmentRetentionTransitionRow[] {
+  return db
+    .select()
+    .from(environmentRetentionTransitions)
+    .where(eq(environmentRetentionTransitions.environmentId, environmentId))
+    .orderBy(asc(environmentRetentionTransitions.at))
+    .all();
 }
 
 export function listOpenEnvironmentRetentionsForHost(
@@ -201,9 +342,9 @@ export function listOpenEnvironmentRetentionsForEnvironment(
     .all();
 }
 
-export function listOpenEnvironmentRetentionsWithPath(
+export function listOpenEnvironmentRetentionsForProvider(
   db: RetentionConnection,
-  providerId?: string,
+  providerId: string,
 ): EnvironmentRetentionRow[] {
   return db
     .select()
@@ -211,13 +352,10 @@ export function listOpenEnvironmentRetentionsWithPath(
     .where(
       and(
         inArray(environmentRetentions.state, BLOCKING_STATES),
-        providerId === undefined
-          ? undefined
-          : eq(environmentRetentions.providerId, providerId),
+        eq(environmentRetentions.providerId, providerId),
       ),
     )
-    .all()
-    .filter((row) => row.keptPath !== null);
+    .all();
 }
 
 export function findOpenEnvironmentRetentionOverlapping(
