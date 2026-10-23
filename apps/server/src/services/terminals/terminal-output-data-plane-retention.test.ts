@@ -1562,7 +1562,7 @@ describe("terminal output retained from the data plane", () => {
     fixture.child.shutdown();
   });
 
-  it("trims 256 Ki one-byte chunks within 500 ms slices and 1,000 ms event-loop gaps", async () => {
+  it("trims 256 Ki one-byte chunks within 500 ms slices, 1,000 ms event-loop gaps, and 10,100 ms total", async () => {
     const fixture = await setup();
     const chunkCount = TERMINAL_RETAINED_OUTPUT_BYTES * 4;
     const chunks = Array.from({ length: chunkCount }, (_, seq) => ({
@@ -1620,18 +1620,11 @@ describe("terminal output retained from the data plane", () => {
         replayFinishedAt = performance.now();
         return true;
       });
-      let timeout: ReturnType<typeof setTimeout> | undefined;
-      const completedWithinBound = await Promise.race([
-        replayCompletion,
-        new Promise<boolean>((resolve) => {
-          timeout = setTimeout(() => resolve(false), 30_000);
-        }),
-      ]);
+      await replayCompletion;
       const totalCompletionMs =
         replayFinishedAt === undefined
           ? null
           : replayFinishedAt - replayStartedAt;
-      if (timeout !== undefined) clearTimeout(timeout);
       probeRunning = false;
       if (timerProbe !== undefined) clearTimeout(timerProbe);
       await new Promise<void>((resolve) => setImmediate(resolve));
@@ -1641,9 +1634,10 @@ describe("terminal output retained from the data plane", () => {
         replayWork.longestSynchronousWorkWallMs ?? 0,
       );
       process.stdout.write(
-        `G4-MEASURE slice_ms=${measuredSliceMs.toFixed(1)} gap_ms=${longestEventLoopGapMs.toFixed(1)} total_ms=${totalCompletionMs?.toFixed(1) ?? "timeout"}\n`,
+        `G4-MEASURE slice_ms=${measuredSliceMs.toFixed(1)} gap_ms=${longestEventLoopGapMs.toFixed(1)} total_ms=${totalCompletionMs?.toFixed(1) ?? "missing"} total_bound_ms=10100 fixed_worst_ms=2504.8 bound_factor=4 bound_rounding_ms=100\n`,
       );
-      expect(completedWithinBound).toBe(true);
+      expect(totalCompletionMs).not.toBeNull();
+      expect(totalCompletionMs).toBeLessThanOrEqual(10_100);
       expect(measuredSliceMs).toBeLessThanOrEqual(500);
       expect(longestEventLoopGapMs).toBeLessThanOrEqual(1_000);
       const retained = getRetainedTerminalOutput(fixture.db, {
