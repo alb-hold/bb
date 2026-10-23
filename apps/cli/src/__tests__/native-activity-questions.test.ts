@@ -689,6 +689,26 @@ describe("native terminal questions", () => {
       expect(waiting(second)).toHaveLength(2);
     });
 
+    it("settles a third prompt after three calls spanning dynamic candidate groups all complete", () => {
+      const { hook, call, ask, done, tracker } = holder();
+      const input = bash("make build");
+      hook(ask(input));
+      hook(call("toolu_1", input));
+      hook(call("toolu_2", input));
+      hook(ask(input));
+      hook(call("toolu_3", input));
+      const third = hook(ask(input));
+      expect(waiting(third)).toHaveLength(3);
+
+      expect(hook(done("toolu_1", input))).toBeNull();
+      expect(hook(done("toolu_2", input))).toBeNull();
+      expect(hook(done("toolu_3", input))).toEqual({
+        state: "working",
+        prompt: null,
+      });
+      expect(tracker.heartbeat()).toEqual({ state: "working", prompt: null });
+    });
+
     it("removes a directly bound call from earlier ambiguous candidates", () => {
       const { hook, call, ask, done } = holder();
       const input = bash("make build");
