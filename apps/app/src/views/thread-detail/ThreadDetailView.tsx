@@ -1673,9 +1673,11 @@ function ThreadDetailViewInternal(
       if (selectedSessions === null) {
         if (
           terminalLayoutRequest !== null &&
-          terminalLayoutRequestRefreshRef.current !== terminalLayoutRequest.requestId
+          terminalLayoutRequestRefreshRef.current !==
+            terminalLayoutRequest.requestId
         ) {
-          terminalLayoutRequestRefreshRef.current = terminalLayoutRequest.requestId;
+          terminalLayoutRequestRefreshRef.current =
+            terminalLayoutRequest.requestId;
           void refetchTerminalList();
           return null;
         }
@@ -2357,7 +2359,8 @@ function ThreadDetailViewInternal(
       locationState === null ||
       typeof locationState !== "object" ||
       !("terminalLayoutAction" in locationState)
-    ) return;
+    )
+      return;
     const parsed = threadOpenTerminalLayoutActionSchema.safeParse(
       locationState.terminalLayoutAction,
     );
@@ -2365,7 +2368,10 @@ function ThreadDetailViewInternal(
     consumedTerminalActionLocationRef.current = location.key;
     navigate(location.pathname, { replace: true, state: null });
     terminalLayoutRequestIdRef.current += 1;
-    setTerminalLayoutRequest({ ...parsed.data, requestId: terminalLayoutRequestIdRef.current });
+    setTerminalLayoutRequest({
+      ...parsed.data,
+      requestId: terminalLayoutRequestIdRef.current,
+    });
   }, [location.key, location.pathname, location.state, navigate]);
   const handleTimelineTitleAction = useCallback<TimelineTitleActionResolver>(
     (action) => {
@@ -3162,6 +3168,9 @@ function ThreadDetailViewInternal(
         <AppNavigationHostProvider capabilities={appNavigationCapabilities}>
           <ThreadDetailSecondaryContent
             footer={composerFooter}
+            isNativeTerminalLoading={
+              thread.nativeTerminal && nativeTerminalThreadQuery.isPending
+            }
             nativeTerminalMain={
               nativeTerminalThread === null ? null : (
                 <NativeThreadTerminalMain
@@ -3309,6 +3318,7 @@ function ThreadDetailViewInternal(
                 isRunningThreadRuntimeDisplayStatus(
                   thread.runtime.displayStatus,
                 ) &&
+                thread.status !== "idle" &&
                 !nativeActivityUnconfirmed &&
                 !isThreadTimelinePending,
               timelineRows,

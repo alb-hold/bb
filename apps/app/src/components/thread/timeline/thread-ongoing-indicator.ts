@@ -1,5 +1,5 @@
 import { isRunningThreadRuntimeDisplayStatus } from "@bb/client-core";
-import type { ThreadRuntimeDisplayStatus } from "@bb/domain";
+import type { ThreadRuntimeDisplayStatus, ThreadStatus } from "@bb/domain";
 
 export function resolveThreadOngoingIndicator({
   activeBackgroundAgentCount,
@@ -10,6 +10,7 @@ export function resolveThreadOngoingIndicator({
   isTurnSubmitting,
   nativeActivityUnconfirmed,
   timelineLoading,
+  threadStatus,
 }: {
   activeBackgroundAgentCount: number;
   activeBackgroundCommandCount: number;
@@ -19,6 +20,7 @@ export function resolveThreadOngoingIndicator({
   isTurnSubmitting: boolean;
   nativeActivityUnconfirmed: boolean;
   timelineLoading: boolean;
+  threadStatus: ThreadStatus | undefined;
 }): { label: string | undefined; show: boolean } {
   const isProvisioningDisplayStatus =
     displayStatus === "provisioning" || displayStatus === "starting";
@@ -40,7 +42,8 @@ export function resolveThreadOngoingIndicator({
       (isProvisioningDisplayStatus ||
         (!timelineLoading &&
           (isTurnSubmitting ||
-            (isRunningThreadRuntimeDisplayStatus(displayStatus) &&
+            (threadStatus !== "idle" &&
+              isRunningThreadRuntimeDisplayStatus(displayStatus) &&
               !nativeActivityUnconfirmed) ||
             backgroundOnlyIndicatorLabel !== undefined))),
   };

@@ -43,6 +43,7 @@ interface ThreadDetailSecondaryContentProps {
   footer: ReactNode;
   header: ReactNode;
   nativeTerminalMain: ReactNode | null;
+  isNativeTerminalLoading: boolean;
   isMetadataLoading: boolean;
   isSecondaryPanelOpen: boolean;
   isConversationCollapsed: boolean;
@@ -69,6 +70,7 @@ function ThreadDetailSecondaryContentBody({
   footer,
   header,
   nativeTerminalMain,
+  isNativeTerminalLoading,
   isMetadataLoading,
   isSecondaryPanelOpen,
   isConversationCollapsed,
@@ -130,9 +132,14 @@ function ThreadDetailSecondaryContentBody({
         mainPanelId="thread-detail-timeline-panel"
         mainHeader={header}
         main={
-          nativeTerminalMain ?? (
+          nativeTerminalMain ??
+          (isNativeTerminalLoading ? (
+            <div aria-busy="true" role="status">
+              Loading terminals...
+            </div>
+          ) : (
             <ThreadTimelinePane {...timeline} footer={footer} />
-          )
+          ))
         }
         collapse={{
           active: isConversationCollapsed,

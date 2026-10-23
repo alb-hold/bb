@@ -2372,9 +2372,16 @@ function TimelineInterruptionGroupView({
   scopeActive: boolean;
   showAssistantMessageActions: boolean;
 }) {
+  const [isExpanded, setIsExpanded] = useState(false);
   return (
-    <details className="min-w-0 rounded-md text-muted-foreground">
-      <summary className="group flex min-w-0 cursor-pointer list-none items-center gap-1.5 rounded-md px-2 py-0.5 text-left text-sm hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+    <div className="min-w-0 rounded-md text-muted-foreground">
+      <button
+        type="button"
+        aria-expanded={isExpanded}
+        aria-label={`${interruptionCount} interruptions, ${isExpanded ? "hide" : "show"} details`}
+        className="group flex min-w-0 cursor-pointer items-center gap-1.5 rounded-md px-2 py-0.5 text-left text-sm hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        onClick={() => setIsExpanded((expanded) => !expanded)}
+      >
         <Icon
           name="ChevronRight"
           className="size-3.5 shrink-0 transition-transform group-open:rotate-90"
@@ -2382,22 +2389,24 @@ function TimelineInterruptionGroupView({
         />
         <span className="font-medium">{interruptionCount} interruptions</span>
         <span className="font-mono text-xs text-destructive-text">error</span>
-      </summary>
-      <div className="ml-3 flex min-w-0 flex-col gap-2 border-l border-border/60 pl-2 pt-1">
-        {rows.map((row) => (
-          <div key={row.id} data-timeline-row-id={row.id}>
-            <MemoizedTimelineRowView
-              activeLatestBundleId={activeLatestBundleId}
-              compactActivityIntents={compactActivityIntents}
-              row={row}
-              scopeActive={scopeActive}
-              showAssistantMessageActions={showAssistantMessageActions}
-              spacing="nested"
-            />
-          </div>
-        ))}
-      </div>
-    </details>
+      </button>
+      {isExpanded ? (
+        <div className="ml-3 flex min-w-0 flex-col gap-2 border-l border-border/60 pl-2 pt-1">
+          {rows.map((row) => (
+            <div key={row.id} data-timeline-row-id={row.id}>
+              <MemoizedTimelineRowView
+                activeLatestBundleId={activeLatestBundleId}
+                compactActivityIntents={compactActivityIntents}
+                row={row}
+                scopeActive={scopeActive}
+                showAssistantMessageActions={showAssistantMessageActions}
+                spacing="nested"
+              />
+            </div>
+          ))}
+        </div>
+      ) : null}
+    </div>
   );
 }
 

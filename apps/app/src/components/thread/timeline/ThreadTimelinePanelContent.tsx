@@ -71,6 +71,7 @@ export function ThreadTimelinePanelContent({
     isTurnSubmitting,
     nativeActivityUnconfirmed,
     timelineLoading: resolvedTimeline.timelineLoading,
+    threadStatus: threadQuery.data?.status,
   });
   const showOngoingIndicator = ongoingIndicator.show;
   const timelineRows = resolvedTimeline.timelineRows;

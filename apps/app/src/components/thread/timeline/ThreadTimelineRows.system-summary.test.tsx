@@ -121,14 +121,14 @@ describe("system summary overflow", () => {
       </QueryClientProvider>,
     );
 
-    const groupDetails = screen
-      .getByText("12 interruptions")
-      .closest("details");
-    expect(groupDetails?.open).toBe(false);
+    const groupButton = screen.getByRole("button", {
+      name: "12 interruptions, show details",
+    });
+    expect(groupButton.getAttribute("aria-expanded")).toBe("false");
     expect(interruptionRows).toHaveLength(12);
-    expect(screen.getAllByText(/Thread interrupted because/)).toHaveLength(12);
-    fireEvent.click(screen.getByText("12 interruptions"));
-    expect(groupDetails?.open).toBe(true);
+    expect(screen.queryByText(/Thread interrupted because/)).toBeNull();
+    fireEvent.click(groupButton);
+    expect(groupButton.getAttribute("aria-expanded")).toBe("true");
     const expandedReasons = screen.getAllByText(/Thread interrupted because/);
     expect(expandedReasons).toHaveLength(12);
   });

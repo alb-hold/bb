@@ -244,6 +244,7 @@ function createProps(
     footer: <div data-testid="footer" />,
     header: <div data-testid="header" />,
     nativeTerminalMain: null,
+    isNativeTerminalLoading: false,
     isBoundedPane: false,
     isConversationCollapsed,
     isMetadataLoading,
@@ -314,12 +315,14 @@ function renderThreadDetail(
   isMetadataLoading = false,
   isConversationCollapsed = false,
   nativeTerminalMain: ReactNode | null = null,
+  isNativeTerminalLoading = false,
 ) {
   const content = (
     <CompactViewportOverrideProvider isCompactViewport={false}>
       <ThreadDetailSecondaryContent
         {...createProps(isMetadataLoading, isConversationCollapsed)}
         nativeTerminalMain={nativeTerminalMain}
+        isNativeTerminalLoading={isNativeTerminalLoading}
       />
     </CompactViewportOverrideProvider>
   );
@@ -443,6 +446,18 @@ describe("ThreadDetailSecondaryContent", () => {
       timelinePanel.contains(screen.getByTestId("native-terminal-main")),
     ).toBe(true);
     expect(timelinePanel.contains(screen.getByTestId("header"))).toBe(true);
+    expect(screen.queryByTestId("footer")).toBeNull();
+    expect(timelinePaneRenders).not.toHaveBeenCalled();
+  });
+
+  it("shows a neutral loading pane while a native terminal thread is pending", async () => {
+    renderThreadDetail(false, false, false, null, true);
+
+    const status = await screen.findByRole("status");
+    expect(status.textContent).toBe("Loading terminals...");
+    expect(status.getAttribute("aria-busy")).toBe("true");
+    expect(screen.queryByText("Working...")).toBeNull();
+    expect(screen.queryByRole("textbox", { name: /message/i })).toBeNull();
     expect(screen.queryByTestId("footer")).toBeNull();
     expect(timelinePaneRenders).not.toHaveBeenCalled();
   });

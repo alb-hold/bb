@@ -553,6 +553,7 @@ export const threadSearchResponseSchema = z
 export type ThreadSearchResponse = z.infer<typeof threadSearchResponseSchema>;
 
 export const threadResponseSchema = threadWithRuntimeSchema.extend({
+  nativeTerminal: z.boolean(),
   activeBackgroundAgentCount: z.number().int().nonnegative(),
   /**
    * Whether `POST /threads/:id/restore-environment` would build this thread a
@@ -869,9 +870,13 @@ export const threadOpenTerminalLayoutActionSchema = z
     terminalId: z.string().min(1),
   })
   .refine((value) => value.action !== "split" || value.side !== undefined)
-  .refine((value) => value.action !== "move" || value.targetTerminalId !== undefined)
+  .refine(
+    (value) => value.action !== "move" || value.targetTerminalId !== undefined,
+  )
   .refine((value) => value.action === "split" || value.side === undefined)
-  .refine((value) => value.action === "move" || value.targetTerminalId === undefined)
+  .refine(
+    (value) => value.action === "move" || value.targetTerminalId === undefined,
+  )
   .strict();
 export type ThreadOpenTerminalLayoutAction = z.infer<
   typeof threadOpenTerminalLayoutActionSchema
@@ -927,7 +932,6 @@ export const threadOpenSignalLenientSchema = z.object({
     })
     .optional(),
 });
-
 
 export const threadOpenRequestSchema = z
   .object({
