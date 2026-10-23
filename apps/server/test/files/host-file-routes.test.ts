@@ -1,4 +1,6 @@
+import { environments } from "@bb/db";
 import type { HostDaemonOnlineRpcRequestMessage } from "@bb/host-daemon-contract";
+import { eq } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
 import { registerHostRpcResponder } from "../helpers/host-rpc.js";
 import { readJson } from "../helpers/json.js";
@@ -126,6 +128,58 @@ describe("host file routes", () => {
         code: "workspace_busy",
         message: expect.stringContaining("no thread references"),
       });
+      expect(commands).toEqual([]);
+    });
+  });
+
+  it("refuses a path inside a workspace, a workspace known only by its claimed path, and plugin data", async () => {
+    await withTestHarness(async (harness) => {
+      const { host, session } = seedHostSession(harness.deps);
+      seedPrimaryHost(harness.deps, host.id);
+      const { project } = seedProjectWithSource(harness.deps, {
+        hostId: host.id,
+      });
+      const live = seedEnvironment(harness.deps, {
+        hostId: host.id,
+        projectId: project.id,
+        path: "/work/trees/thr_a/repo",
+      });
+      seedThread(harness.deps, {
+        projectId: project.id,
+        environmentId: live.id,
+        status: "idle",
+      });
+      const failed = seedEnvironment(harness.deps, {
+        hostId: host.id,
+        projectId: project.id,
+        path: null,
+      });
+      harness.db
+        .update(environments)
+        .set({ claimPath: "/work/trees/thr_failed/repo" })
+        .where(eq(environments.id, failed.id))
+        .run();
+      const commands: HostDaemonOnlineRpcRequestMessage["command"][] = [];
+      registerHostRpcResponder(harness, {
+        hostId: host.id,
+        sessionId: session.id,
+        handle: (request) => {
+          commands.push(request.command);
+          return { ok: true, result: { ok: true } };
+        },
+      });
+
+      for (const target of [
+        "/work/trees/thr_a/repo/src/a.ts",
+        "/work/trees/thr_failed/repo",
+        `${session.dataDir}/plugins/environment-git-worktree/host-data/retained/failed-create-x`,
+      ]) {
+        const response = await harness.app.request(
+          ...postJson("/api/v1/files/remove", { path: target }),
+        );
+        expect(response.status, target).toBe(409);
+      }
+
       expect(commands).toEqual([]);
     });
   });

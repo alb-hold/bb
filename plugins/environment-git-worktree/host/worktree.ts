@@ -1,4 +1,3 @@
-import { describeHolderScan, scanWorktreeHolders } from "./holders.js";
 import {
   createBranchAtPinnedTip,
   deleteCreatedBranch,
@@ -90,6 +89,7 @@ interface RemoveWorktreeArgs {
   rootPath: string;
   completionPath?: string | undefined;
   createdBy?: CreatedBy | undefined;
+  branchName?: string | undefined;
   retainedRoot?: string | undefined;
   retention?: RetentionState | undefined;
   onProgress?: ProgressCallback | undefined;
@@ -549,6 +549,7 @@ async function removeCreateTarget(
     rootPath: args.ownWorktreesRoot,
     completionPath: args.completionPath,
     createdBy,
+    branchName: args.branchName,
     retainedRoot: args.retainedRoot,
     retention,
     ...(args.signal !== undefined ? { signal: args.signal } : {}),
@@ -917,7 +918,7 @@ export async function removeWorktree(
     }
     if (identified.status === "identified" && args.createdBy !== undefined) {
       throw worktreePreservedError(workspacePath, [
-        "a failed create's workspace stays in place until its owner releases it and a durable retention record exists, and neither is available yet",
+        `a failed create's workspace stays in place until its owner releases it and a durable retention record exists, and neither is available yet. ${args.branchName === undefined ? "Its branch is" : `Branch ${args.branchName} is`} left behind with it, and a retry on that branch is refused until the workspace is released`,
       ]);
     }
     if (identified.status === "identified") {
@@ -929,14 +930,6 @@ export async function removeWorktree(
           throwIfProvisionAborted(args.signal);
           throwIfProvisionAborted(args.signal);
           await assertWorktreeRemovable(identity, args);
-          if (args.createdBy !== undefined) {
-            const holderReason = describeHolderScan(
-              await scanWorktreeHolders(identity.path),
-            );
-            if (holderReason !== null) {
-              throw worktreePreservedError(identity.path, [holderReason]);
-            }
-          }
           await removeRegisteredWorktree(identity, args, retention);
           return true;
         },
