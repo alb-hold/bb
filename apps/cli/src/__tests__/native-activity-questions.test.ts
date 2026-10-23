@@ -480,18 +480,32 @@ describe("native terminal questions", () => {
       });
     });
 
-    it("ends exactly one of two Bash prompts with the same command and input, because they are indistinguishable to the user and closing either is correct", () => {
-      const { hook, call, ask, done } = holder();
-      hook(call("toolu_1", bash("make build")));
-      hook(ask(bash("make build")));
-      hook(call("toolu_2", bash("make build")));
-      hook(ask(bash("make build")));
-      const afterOne = hook(done("toolu_2", bash("make build")));
-      expect(waiting(afterOne)).toHaveLength(1);
-      expect(hook(done("toolu_1", bash("make build")))).toEqual({
-        state: "working",
-        prompt: null,
-      });
+    it("keeps two identical prompts open until both indistinguishable calls complete", () => {
+      for (const completionOrder of [
+        ["toolu_1", "toolu_2"],
+        ["toolu_2", "toolu_1"],
+      ]) {
+        const {
+          hook: orderedHook,
+          call: orderedCall,
+          ask: orderedAsk,
+          done: orderedDone,
+          tracker,
+        } = holder();
+        orderedHook(orderedCall("toolu_1", bash("make build")));
+        orderedHook(orderedCall("toolu_2", bash("make build")));
+        const first = orderedHook(orderedAsk(bash("make build")));
+        const second = orderedHook(orderedAsk(bash("make build")));
+        expect(waiting(first)).toHaveLength(1);
+        expect(waiting(second)).toHaveLength(2);
+        expect(
+          orderedHook(orderedDone(completionOrder[0]!, bash("make build"))),
+        ).toBeNull();
+        expect(waiting(tracker.heartbeat())).toHaveLength(2);
+        expect(
+          orderedHook(orderedDone(completionOrder[1]!, bash("make build"))),
+        ).toEqual({ state: "working", prompt: null });
+      }
     });
 
     it("keeps the second identical call's prompt open when the first auto-allowed call completes", () => {
