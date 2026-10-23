@@ -563,6 +563,29 @@ describe("native terminal questions", () => {
       expect(waiting(second)).toHaveLength(2);
     });
 
+    it("removes a directly bound call from earlier ambiguous candidates", () => {
+      const { hook, call, ask, done } = holder();
+      const input = bash("make build");
+      hook(call("toolu_1", input));
+      hook(call("toolu_2", input));
+      const ambiguous = hook(ask(input));
+      const direct = hook({ ...ask(input), tool_use_id: "toolu_1" });
+      const ambiguousId = waiting(ambiguous)[0]!.id;
+      const directId = waiting(direct)[1]!.id;
+
+      expect(waiting(hook(done("toolu_1", input)))).toEqual([
+        {
+          id: ambiguousId,
+          prompt: "Claude Code needs permission to use: Bash",
+        },
+      ]);
+      expect(hook(done("toolu_2", input))).toEqual({
+        state: "working",
+        prompt: null,
+      });
+      expect(directId).not.toBe(ambiguousId);
+    });
+
     it("keeps the second identical call's prompt open when the first auto-allowed call completes", () => {
       const { hook, call, ask, done, tracker } = holder();
       const input = bash("make build");
