@@ -510,6 +510,25 @@ describe("native terminal questions", () => {
       expect(waiting(tracker.heartbeat())).toHaveLength(1);
     });
 
+    it("closes the prompt by the rewritten input when another hook rewrote the input before the prompt, and still closes nothing for an auto-allowed call with the announced input", () => {
+      const { hook, call, ask, done, tracker } = holder();
+      hook(call("toolu_1", bash("make build")));
+      hook(ask(bash("make build")));
+      hook(call("toolu_2", bash("npm test")));
+      hook(ask(bash("npm run lint")));
+      expect(hook(done("toolu_auto", bash("npm test")))).toBeNull();
+      hook(call("toolu_3", bash("npm test")));
+      expect(hook(done("toolu_3", bash("npm test")))).toBeNull();
+      expect(waiting(tracker.heartbeat())).toHaveLength(2);
+      const afterRewritten = hook(done("toolu_2", bash("npm run lint")));
+      expect(waiting(afterRewritten)).toEqual([
+        {
+          id: "permission:Bash#n0.1",
+          prompt: "Claude Code needs permission to use: Bash",
+        },
+      ]);
+    });
+
     it("closes nothing for a completion that has no key or matches no prompt, and keeps the question until a report names it or the turn ends", () => {
       const { hook, call, ask, done, tracker } = holder();
       hook(call("toolu_1", bash("make build")));

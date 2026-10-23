@@ -490,7 +490,11 @@ export class NativeActivityTracker {
     if (callId !== null) {
       index = open.findIndex((occurrence) => occurrence.callId === callId);
     }
-    if (index === -1 && key !== null && announced === undefined) {
+    if (
+      index === -1 &&
+      key !== null &&
+      (announced === undefined || announced.key !== key)
+    ) {
       index = open.findIndex(
         (occurrence) =>
           occurrence.key === key &&
