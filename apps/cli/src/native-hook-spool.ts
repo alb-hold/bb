@@ -19,6 +19,7 @@ import {
   statfsSync,
   statSync,
   unlinkSync,
+  type BigIntStats,
   type Stats,
 } from "node:fs";
 import path from "node:path";
@@ -255,9 +256,9 @@ export function hookAppendCommand(
       '|| mv -f "$m" "$d/.lost.$$"; exit 0; fi; ' +
       'if [ "$w" -lt 10 ]; then w=$((w+1)); else sleep 0.05 || sleep 1; fi; done',
     'printf \'%s\\n\' "$r" >>"$f" && rm -f "$m"',
-    'if [ -L "$l" ]; then rm -f "$l"; else n=0; ' +
-      'while [ -d "$l" ] && [ "$n" -lt 20 ]; do ' +
-      'rm -f "$l"/*; rmdir "$l" || sleep 0.05 || sleep 1; n=$((n+1)); done; fi',
+    'if [ -L "$l" ]; then [ "$(readlink "$l")" = "$$" ] && rm -f "$l"; ' +
+      'elif [ -d "$l" ] && [ "$(cat "$l/pid")" = "$$" ]; then ' +
+      'rm -f "$l/pid"; rmdir "$l"; fi',
     "exit 0",
   ].join("; ");
 }
@@ -681,7 +682,10 @@ function isSymlinkRefusal(error: unknown): boolean {
   );
 }
 
-function lockHolderPid(lock: string, stats: Stats): number | null {
+function lockHolderPid(
+  lock: string,
+  stats: Pick<Stats | BigIntStats, "isSymbolicLink">,
+): number | null {
   let text: string;
   if (stats.isSymbolicLink()) {
     try {
@@ -754,7 +758,10 @@ export class HookAppendReader {
   private irregularKey: string | null = null;
   private readonly reportedMarkers = new Set<string>();
 
-  constructor(private readonly file: string) {}
+  constructor(
+    private readonly file: string,
+    private readonly beforeLockMove: () => void = () => undefined,
+  ) {}
 
   read(now: number = Date.now()): HookSpoolRead {
     const snapshot = this.takeSnapshot();
@@ -959,14 +966,24 @@ export class HookAppendReader {
   private breakStaleLock(now: number): number {
     const lock = path.join(path.dirname(this.file), APPEND_LOCK_NAME);
     try {
-      const stats = lstatSync(lock);
+      const stats = lstatSync(lock, { bigint: true });
       const holder = lockHolderPid(lock, stats);
       const dead = holder !== null && !processIsAlive(holder);
-      const ancient = now - stats.mtimeMs >= LOCK_PID_REUSE_BOUND_MS;
+      const ancient = now - Number(stats.mtimeMs) >= LOCK_PID_REUSE_BOUND_MS;
       if (!dead && !ancient) return 0;
-      this.brokenLocks += 1;
-      const moved = `${lock}.stale.${process.pid}.${this.brokenLocks}`;
+      const moved = `${lock}.stale.${process.pid}.${this.brokenLocks + 1}`;
+      this.beforeLockMove();
       renameSync(lock, moved);
+      const taken = lstatSync(moved, { bigint: true });
+      if (
+        taken.ino !== stats.ino ||
+        taken.dev !== stats.dev ||
+        taken.mtimeNs !== stats.mtimeNs
+      ) {
+        renameSync(moved, lock);
+        return 0;
+      }
+      this.brokenLocks += 1;
       rmSync(moved, { force: true, recursive: true });
       return 1;
     } catch {
