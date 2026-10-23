@@ -11,7 +11,9 @@ import {
 const roots: string[] = [];
 
 async function makeRoot(): Promise<string> {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "bb-path-mutations-"));
+  const root = await fs.realpath(
+    await fs.mkdtemp(path.join(os.tmpdir(), "bb-path-mutations-")),
+  );
   roots.push(root);
   return root;
 }
@@ -207,7 +209,7 @@ describe("confined host path mutations", () => {
     await expect(fs.readFile(target, "utf8")).resolves.toBe("real");
   });
 
-  it("moves a regular file by linking it, leaving no second copy at the source", async () => {
+  it("moves a regular file by renaming it, keeping its inode and leaving nothing at the source", async () => {
     const root = await makeRoot();
     const source = path.join(root, "a.txt");
     const destination = path.join(root, "b.txt");
@@ -224,8 +226,79 @@ describe("confined host path mutations", () => {
     ).resolves.toEqual({ ok: true });
 
     await expect(fs.lstat(source)).rejects.toMatchObject({ code: "ENOENT" });
-    const after = await fs.stat(destination);
-    expect(after.ino).toBe(before.ino);
-    expect(after.nlink).toBe(1);
+    expect((await fs.stat(destination)).ino).toBe(before.ino);
+  });
+
+  it.each([
+    ["a folder", async (source: string) => {
+      await fs.rename(source, `${source}.orig`);
+      await fs.mkdir(source);
+      await fs.writeFile(path.join(source, "inside.txt"), "workspace");
+    }],
+    ["another regular file", async (source: string) => {
+      await fs.rename(source, `${source}.orig`);
+      await fs.writeFile(source, "swapped in");
+    }],
+  ])("refuses and puts back a source swapped for %s between the open and the rename", async (_label, swap) => {
+    const root = await makeRoot();
+    const source = path.join(root, "a.txt");
+    const destination = path.join(root, "b.txt");
+    await fs.writeFile(source, "original");
+
+    await expect(
+      moveHostFile(
+        {
+          type: "host.move_file",
+          sourcePath: source,
+          destinationPath: destination,
+          rootPath: root,
+        },
+        { afterOpen: () => swap(source) },
+      ),
+    ).rejects.toMatchObject({ code: "invalid_path" });
+
+    await expect(fs.lstat(destination)).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+    expect((await fs.lstat(source)).isSymbolicLink()).toBe(false);
+    await expect(fs.readFile(`${source}.orig`, "utf8")).resolves.toBe(
+      "original",
+    );
+  });
+
+  it("refuses a source and a destination reached through a symlinked folder, and a removal through one", async () => {
+    const root = await makeRoot();
+    const real = path.join(root, "real");
+    await fs.mkdir(real);
+    await fs.writeFile(path.join(real, "a.txt"), "keep");
+    await fs.symlink(real, path.join(root, "alias"));
+
+    await expect(
+      moveHostFile({
+        type: "host.move_file",
+        sourcePath: path.join(root, "alias", "a.txt"),
+        destinationPath: path.join(root, "b.txt"),
+        rootPath: root,
+      }),
+    ).rejects.toMatchObject({ code: "invalid_path" });
+    await expect(
+      moveHostFile({
+        type: "host.move_file",
+        sourcePath: path.join(real, "a.txt"),
+        destinationPath: path.join(root, "alias", "b.txt"),
+        rootPath: root,
+      }),
+    ).rejects.toMatchObject({ code: "invalid_path" });
+    await expect(
+      removeHostPath({
+        type: "host.remove_path",
+        path: path.join(root, "alias", "a.txt"),
+        rootPath: root,
+        recursive: false,
+      }),
+    ).rejects.toMatchObject({ code: "invalid_path" });
+    await expect(
+      fs.readFile(path.join(real, "a.txt"), "utf8"),
+    ).resolves.toBe("keep");
   });
 });

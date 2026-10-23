@@ -18,7 +18,9 @@ it.for(["thread deletion", "orphan removal"] as const)(
       process.platform === "win32",
       "process working directories are not enumerated on Windows",
     );
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "bb-storage-delete-"));
+    const root = await fs.realpath(
+      await fs.mkdtemp(path.join(os.tmpdir(), "bb-storage-delete-")),
+    );
     const storageRoot = path.join(root, "thread-storage");
     const storagePath = path.join(storageRoot, "thr_busy");
     const checkout = path.join(storagePath, "checkout", "app");

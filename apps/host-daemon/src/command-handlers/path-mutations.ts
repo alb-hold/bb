@@ -26,6 +26,24 @@ async function requireRoot(
   });
 }
 
+function refuseOnWindows(action: string): void {
+  if (process.platform === "win32") {
+    throw new CommandDispatchError(
+      "invalid_path",
+      `Refusing to ${action}: this host cannot refuse links and aliases reliably on Windows, so the path cannot be proven to be what it names. Nothing was changed.`,
+    );
+  }
+}
+
+function refuseAlias(given: string, resolved: string): void {
+  if (path.resolve(given) !== resolved) {
+    throw new CommandDispatchError(
+      "invalid_path",
+      `Path "${given}" reaches ${resolved} through a symbolic link or alias; pass the real path. Nothing was changed.`,
+    );
+  }
+}
+
 async function requireExistingWithin(
   targetPath: string,
   rootPath: string | undefined,
@@ -42,6 +60,7 @@ async function requireExistingWithin(
     fs.realpath(targetPath),
     requireRoot(rootPath),
   ]);
+  refuseAlias(targetPath, target);
   if (root !== null && !isPathWithinDirectory(root, target)) {
     throw new CommandDispatchError(
       "invalid_path",
@@ -60,6 +79,7 @@ async function requireDestinationWithin(
     fs.realpath(path.dirname(destinationPath)),
     requireRoot(rootPath),
   ]);
+  refuseAlias(path.dirname(destinationPath), parent);
   const target = path.join(parent, path.basename(destinationPath));
   if (root !== null && !isPathWithinDirectory(root, target)) {
     throw new CommandDispatchError(
@@ -93,9 +113,15 @@ function refuseMove(sourcePath: string, reason: string): never {
   );
 }
 
+export interface MoveHostFileHooks {
+  afterOpen?: () => Promise<void>;
+}
+
 export async function moveHostFile(
   command: CommandOf<"host.move_file">,
+  hooks: MoveHostFileHooks = {},
 ): Promise<HostDaemonOnlineRpcResult<"host.move_file">> {
+  refuseOnWindows(`move ${command.sourcePath}`);
   const { target: source } = await requireExistingWithin(
     command.sourcePath,
     command.rootPath,
@@ -104,12 +130,11 @@ export async function moveHostFile(
     command.destinationPath,
     command.rootPath,
   );
-  const noFollow = fsConstants.O_NOFOLLOW ?? 0;
   let handle;
   try {
     handle = await fs.open(
       source,
-      fsConstants.O_RDONLY | noFollow | fsConstants.O_NONBLOCK,
+      fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK,
     );
   } catch (error) {
     if (error instanceof Error && "code" in error && error.code === "ELOOP") {
@@ -122,42 +147,44 @@ export async function moveHostFile(
     if (!opened.isFile()) {
       refuseMove(command.sourcePath, "it is not a single regular file");
     }
+    await hooks.afterOpen?.();
+    const existing = await fs.lstat(destination).catch((error: unknown) => {
+      if (error instanceof Error && "code" in error && error.code === "ENOENT")
+        return null;
+      throw error;
+    });
+    if (existing !== null) {
+      throw new CommandDispatchError(
+        "path_exists",
+        `Destination already exists: ${command.destinationPath}`,
+      );
+    }
     try {
-      await fs.link(source, destination);
+      await fs.rename(source, destination);
     } catch (error) {
       const code =
         error instanceof Error && "code" in error ? String(error.code) : "";
-      if (code === "EEXIST") {
-        throw new CommandDispatchError(
-          "path_exists",
-          `Destination already exists: ${command.destinationPath}`,
-        );
-      }
-      if (code === "EPERM" || code === "EISDIR" || code === "EXDEV") {
+      if (code === "EXDEV") {
         refuseMove(
           command.sourcePath,
-          "it is not a regular file that can be moved within one filesystem",
+          "the destination is on another filesystem, and bb does not copy and delete",
         );
       }
       throw error;
     }
-    const linked = await fs.lstat(destination);
-    if (
-      !linked.isFile() ||
-      linked.dev !== opened.dev ||
-      linked.ino !== opened.ino
-    ) {
-      await fs.unlink(destination);
-      refuseMove(command.sourcePath, "it changed while it was being moved");
-    }
-    const current = await fs.lstat(source).catch(() => null);
-    if (
-      current !== null &&
-      current.isFile() &&
-      current.dev === opened.dev &&
-      current.ino === opened.ino
-    ) {
-      await fs.unlink(source);
+    const moved = await fs.lstat(destination);
+    if (!moved.isFile() || moved.dev !== opened.dev || moved.ino !== opened.ino) {
+      const sourceFree = await fs.lstat(source).then(
+        () => false,
+        () => true,
+      );
+      if (sourceFree) await fs.rename(destination, source);
+      refuseMove(
+        command.sourcePath,
+        sourceFree
+          ? "it changed while it was being moved, and it was put back"
+          : "it changed while it was being moved, and it could not be put back because something new now occupies its place",
+      );
     }
     return { ok: true };
   } finally {
@@ -168,6 +195,7 @@ export async function moveHostFile(
 export async function removeHostPath(
   command: CommandOf<"host.remove_path">,
 ): Promise<HostDaemonOnlineRpcResult<"host.remove_path">> {
+  refuseOnWindows(`remove ${command.path}`);
   const { target, root } = await requireExistingWithin(
     command.path,
     command.rootPath,
