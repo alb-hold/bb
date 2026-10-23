@@ -25,7 +25,9 @@ export const personalWorkspaceHostContract = defineRpcContract({
         ),
         unknown: z.string().nullable(),
         excludedOtherUsers: z.number().int().nullable(),
-        unreadableSameUser: z.number().int().nullable(),
+        unvouchedHelpers: z
+          .array(z.object({ pid: z.number().int(), comm: z.string() }).strict())
+          .nullable(),
       })
       .strict(),
   },

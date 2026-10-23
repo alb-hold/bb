@@ -105,10 +105,11 @@ export default async function personalWorkspacePlugin(
               .join("; ")}). Nothing was removed and nothing was stopped; it is checked again later.`,
           };
         }
+        const helpers = removal.unvouchedHelpers ?? [];
         report.log(
           removal.excludedOtherUsers === null
             ? "Only the current user's processes were checked before removing the workspace; other users' processes were not."
-            : `Checked the current user's processes before removing the workspace; ${removal.excludedOtherUsers} process(es) of other users and ${removal.unreadableSameUser ?? 0} unreadable helper process(es) of the same user could not be read and were not counted.`,
+            : `Checked the current user's processes before removing the workspace; ${removal.excludedOtherUsers} process(es) of other users could not be read and were excluded${helpers.length === 0 ? "" : `, and ${helpers.length} session helper(s) of the same user could not be read and were not counted (${helpers.map((helper) => `${helper.comm} ${helper.pid}`).join(", ")})`}.`,
         );
         return { status: "removed" };
       } catch (error) {

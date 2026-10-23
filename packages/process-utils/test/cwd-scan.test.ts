@@ -16,6 +16,7 @@ afterEach(async () => {
 function fakeLinux(
   cwds: Record<number, string | NodeJS.ErrnoException>,
   owners: Record<number, number> = {},
+  comms: Record<number, string> = {},
 ): CwdScanIo {
   return {
     platform: "linux",
@@ -29,6 +30,7 @@ function fakeLinux(
       return value;
     },
     ownerUid: async (pid) => owners[pid] ?? 1000,
+    readComm: async (pid) => comms[pid] ?? "node",
     runLsof: async () => {
       throw new Error("unused");
     },
@@ -53,28 +55,55 @@ describe("scanProcessesWithCwdUnder", () => {
       status: "held",
       holders: [{ pid: 10, cwd: `${base}/sub` }],
       excludedOtherUsers: 0,
-      unreadableSameUser: 0,
+      unvouchedHelpers: [],
     });
   });
 
-  it("counts a same-user process whose working directory cannot be read as unvouched, and says so, because privilege-dropped helpers such as sshd-session are unreadable on ordinary hosts", async () => {
+  it.each([
+    "systemd",
+    "(sd-pam)",
+    "ssh-agent",
+    "sshd",
+    "sshd-session",
+    "gpg-agent",
+    "dbus-daemon",
+  ])("is clear, and reports it by name and pid, when the unreadable same-user process is the allow-listed helper %s", async (comm) => {
     const base = await dir();
     const scan = await scanProcessesWithCwdUnder(
       { directories: [base] },
-      fakeLinux({ 10: denied() }),
+      fakeLinux({ 10: denied() }, {}, { 10: comm }),
     );
     expect(scan).toEqual({
       status: "clear",
       excludedOtherUsers: 0,
-      unreadableSameUser: 1,
+      unvouchedHelpers: [{ pid: 10, comm }],
     });
   });
 
-  it("is unknown for that process when the caller asks for the strict rule", async () => {
+  it.each(["node", "bash", "ssh-agent-fake", "sshd-sessionx", "SSHD"])(
+    "is unknown when the unreadable same-user process is %s, which is not an allow-listed helper",
+    async (comm) => {
+      const base = await dir();
+      const scan = await scanProcessesWithCwdUnder(
+        { directories: [base] },
+        fakeLinux({ 10: denied() }, {}, { 10: comm }),
+      );
+      expect(scan.status).toBe("unknown");
+      expect(scan.status === "unknown" ? scan.reason : "").toContain("10");
+    },
+  );
+
+  it("is unknown when the name of an unreadable same-user process cannot be read", async () => {
     const base = await dir();
+    const io = fakeLinux({ 10: denied() });
     const scan = await scanProcessesWithCwdUnder(
-      { directories: [base], strictSameUser: true },
-      fakeLinux({ 10: denied() }),
+      { directories: [base] },
+      {
+        ...io,
+        readComm: async () => {
+          throw denied();
+        },
+      },
     );
     expect(scan.status).toBe("unknown");
   });
@@ -88,7 +117,7 @@ describe("scanProcessesWithCwdUnder", () => {
     expect(scan).toEqual({
       status: "clear",
       excludedOtherUsers: 1,
-      unreadableSameUser: 0,
+      unvouchedHelpers: [],
     });
   });
 
@@ -162,7 +191,7 @@ describe("scanProcessesWithCwdUnder", () => {
     ).toEqual({
       status: "clear",
       excludedOtherUsers: null,
-      unreadableSameUser: null,
+      unvouchedHelpers: null,
     });
     expect(
       await scanProcessesWithCwdUnder(

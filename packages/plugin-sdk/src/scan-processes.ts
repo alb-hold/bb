@@ -11,9 +11,11 @@ export type InternalDoNotUseCwdHolderScan = Awaited<
  * (with the processes) or `unknown` (with why), and only `clear` permits a
  * delete: Windows, a symlinked target, a process list that cannot be read, and
  * an `lsof` failure or warning are `unknown`. `clear` vouches for the current
- * user's readable processes only; other users' processes and the same user's
- * privilege-dropped helpers (sshd-session, systemd --user), whose working
- * directory no unprivileged process can read, are excluded and counted. It checks working
+ * user's readable processes only; other users' processes are excluded and
+ * counted, and a same-user process whose working directory cannot be read is
+ * `unknown` unless its exact `comm` is a known session helper (systemd,
+ * (sd-pam), ssh-agent, sshd, sshd-session, gpg-agent, dbus-daemon), which is
+ * reported by name and pid. `comm` is settable by the process itself. It checks working
  * directories only, not open files. See docs/api_to_audit.md.
  */
 export function internal_DO_NOT_USE_scanProcessesWithCwdUnder(args: {

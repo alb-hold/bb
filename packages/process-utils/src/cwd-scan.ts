@@ -1,4 +1,4 @@
-import { readdir, readlink, stat } from "node:fs/promises";
+import { readdir, readFile, readlink, stat } from "node:fs/promises";
 import { resolveSweepDirectory } from "./cwd-processes.js";
 import { spawnPortableOutputProcess } from "./spawn.js";
 
@@ -7,10 +7,25 @@ export interface CwdHolder {
   cwd: string;
 }
 
+export interface CwdUnvouchedHelper {
+  pid: number;
+  comm: string;
+}
+
 export interface CwdScanCoverage {
   excludedOtherUsers: number | null;
-  unreadableSameUser: number | null;
+  unvouchedHelpers: CwdUnvouchedHelper[] | null;
 }
+
+export const UNREADABLE_SAME_USER_HELPER_COMMS: ReadonlySet<string> = new Set([
+  "systemd",
+  "(sd-pam)",
+  "ssh-agent",
+  "sshd",
+  "sshd-session",
+  "gpg-agent",
+  "dbus-daemon",
+]);
 
 export type CwdHolderScan =
   | ({ status: "clear" } & CwdScanCoverage)
@@ -24,6 +39,7 @@ export interface CwdScanIo {
   listProcessIds(): Promise<string[]>;
   readCwd(pid: number): Promise<string>;
   ownerUid(pid: number): Promise<number>;
+  readComm(pid: number): Promise<string>;
   runLsof(
     timeoutMs: number,
   ): Promise<{ code: number | null; stdout: string; stderr: string }>;
@@ -56,6 +72,14 @@ const defaultIo: CwdScanIo = {
   listProcessIds: () => readdir("/proc"),
   readCwd: (pid) => readlink(`/proc/${pid}/cwd`),
   ownerUid: async (pid) => (await stat(`/proc/${pid}`)).uid,
+  readComm: async (pid) => {
+    const text = await readFile(`/proc/${pid}/stat`, "utf8");
+    const open = text.indexOf("(");
+    const close = text.lastIndexOf(")");
+    if (open === -1 || close <= open)
+      throw Object.assign(new Error("unparsable stat"), { code: "EINVAL" });
+    return text.slice(open + 1, close);
+  },
   runLsof: (timeoutMs) =>
     new Promise((resolve, reject) => {
       const child = spawnPortableOutputProcess({
@@ -86,11 +110,7 @@ const defaultIo: CwdScanIo = {
 };
 
 export async function scanProcessesWithCwdUnder(
-  args: {
-    directories: readonly string[];
-    timeoutMs?: number;
-    strictSameUser?: boolean;
-  },
+  args: { directories: readonly string[]; timeoutMs?: number },
   io: CwdScanIo = defaultIo,
 ): Promise<CwdHolderScan> {
   if (io.platform === "win32") {
@@ -122,7 +142,7 @@ export async function scanProcessesWithCwdUnder(
       };
     }
     let excluded = 0;
-    let unreadableSameUser = 0;
+    const unvouchedHelpers: CwdUnvouchedHelper[] = [];
     for (const entry of entries) {
       if (!/^\d+$/u.test(entry)) continue;
       const pid = Number(entry);
@@ -148,9 +168,25 @@ export async function scanProcessesWithCwdUnder(
             excluded += 1;
             continue;
           }
-          if (io.uid !== null && args.strictSameUser !== true) {
-            unreadableSameUser += 1;
-            continue;
+          if (io.uid !== null) {
+            let comm: string;
+            try {
+              comm = await io.readComm(pid);
+            } catch (commError) {
+              if (GONE.has(codeOf(commError))) continue;
+              return {
+                status: "unknown",
+                reason: `the working directory of process ${pid} could not be read and its name could not be read either`,
+              };
+            }
+            if (UNREADABLE_SAME_USER_HELPER_COMMS.has(comm)) {
+              unvouchedHelpers.push({ pid, comm });
+              continue;
+            }
+            return {
+              status: "unknown",
+              reason: `the working directory of process ${pid} (${comm}) could not be read and it is not a known session helper`,
+            };
           }
         }
         return {
@@ -161,7 +197,7 @@ export async function scanProcessesWithCwdUnder(
       if (directories.some((directory) => isUnder(cwd, directory)))
         holders.push({ pid, cwd });
     }
-    const coverage = { excludedOtherUsers: excluded, unreadableSameUser };
+    const coverage = { excludedOtherUsers: excluded, unvouchedHelpers };
     return holders.length > 0
       ? { status: "held", holders, ...coverage }
       : { status: "clear", ...coverage };
@@ -196,7 +232,7 @@ export async function scanProcessesWithCwdUnder(
         holders.push({ pid, cwd });
     }
   }
-  const coverage = { excludedOtherUsers: null, unreadableSameUser: null };
+  const coverage = { excludedOtherUsers: null, unvouchedHelpers: null };
   return holders.length > 0
     ? { status: "held", holders, ...coverage }
     : { status: "clear", ...coverage };
