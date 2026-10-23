@@ -2,7 +2,10 @@ import { experimental_defineHostEntry } from "@get-bb/plugin-sdk/host";
 import { readdir } from "node:fs/promises";
 import { createHostProgress } from "bb-environment-provider-host/progress";
 import { worktreeHostContract, worktreeHostSignals } from "./contract.js";
-import { readDefaultBranchRefs } from "bb-environment-provider-host/git";
+import {
+  readDefaultBranchRefs,
+  WorkspaceError,
+} from "bb-environment-provider-host/git";
 import {
   resolveDefaultWorktreeBaseBranch,
   resolveWorktreeBaseBranch,
@@ -204,7 +207,9 @@ export function createWorktreeHostEntry() {
             message: error instanceof Error ? error.message : String(error),
             ...(isWorktreePreservedError(error)
               ? { retainedPath: targetPath }
-              : {}),
+              : error instanceof WorkspaceError && error.keptPath !== null
+                ? { retainedPath: error.keptPath }
+                : {}),
           } as const;
         }
       },

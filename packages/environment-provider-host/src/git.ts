@@ -10,9 +10,15 @@ const USES_PROCESS_GROUPS = process.platform !== "win32";
 
 export class WorkspaceError extends Error {
   readonly code: string;
-  constructor(code: string, message: string, options?: { cause?: unknown }) {
+  readonly keptPath: string | null;
+  constructor(
+    code: string,
+    message: string,
+    options?: { cause?: unknown; keptPath?: string },
+  ) {
     super(message, options);
     this.code = code;
+    this.keptPath = options?.keptPath ?? null;
     this.name = "WorkspaceError";
   }
 }

@@ -234,6 +234,7 @@ async function refuseAbandonedAttemptWorktree(args: {
   throw new WorkspaceError(
     "abandoned_worktree_preserved",
     `Branch ${args.branchName} is still checked out at ${holder} by an earlier workspace, so it was left alone. bb removes a workspace only through its owner's cleanup; finish or remove ${holder} yourself, then retry.`,
+    { keptPath: holder },
   );
 }
 
@@ -575,6 +576,7 @@ async function refuseExistingCreateTarget(
   throw new WorkspaceError(
     "target_exists_preserved",
     `${args.targetPath} already exists and is not a workspace on branch ${args.branchName} that this create can reuse, so it was left alone. bb does not replace an existing workspace; finish or remove it yourself, then retry.`,
+    { keptPath: args.targetPath },
   );
 }
 
@@ -673,7 +675,6 @@ export async function createWorktree(
     pinned = await pinPreviousAttempt({
       sourcePath: args.sourcePath,
       request: args.previousAttempt,
-      retainedRoot: args.retainedRoot,
       signal: args.signal,
     });
   }
@@ -692,7 +693,7 @@ export async function createWorktree(
       emitOutput(
         args.onProgress,
         "worktree-continuity",
-        "No earlier attempt of this thread left a branch, a workspace or a kept folder, so this attempt starts from the base branch; nothing from an earlier attempt could be lost.",
+        "No earlier attempt of this thread left a branch or a workspace folder, so this attempt starts from the base branch; nothing from an earlier attempt could be lost.",
       );
     }
     if (await hasRef(args.sourcePath, `refs/heads/${args.branchName}`)) {

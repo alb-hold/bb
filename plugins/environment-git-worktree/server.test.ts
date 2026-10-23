@@ -214,8 +214,8 @@ describe("worktree resource operations", () => {
     const failed = await setup(() => ({ status: "failed", message: "dirty" }));
     await expect(failed.provider.create(failed.context)).resolves.toEqual({
       status: "failed",
-
       message: "dirty",
+      experimental_retained: null,
     });
     const offline = await setup(() => {
       throw new Error("offline");
@@ -225,6 +225,26 @@ describe("worktree resource operations", () => {
 
       message: "offline",
     });
+  });
+
+  it("refuses a retry whose branch cannot be named instead of starting from the base", async () => {
+    const calls: string[] = [];
+    const fixture = await setup((call) => {
+      calls.push(call.method);
+      throw new Error(`unexpected host method ${call.method}`);
+    });
+    const result = await fixture.provider.create({
+      ...fixture.context,
+      pathKey: `${THREAD_ID}-2`,
+      attempt: 2,
+      suggestedBranchName: "bb_other",
+    });
+    expect(result).toMatchObject({
+      status: "failed",
+      message: expect.stringContaining("Cannot name this retry's branch"),
+      experimental_retained: null,
+    });
+    expect(calls).toEqual([]);
   });
 
   it("reports the path a failed create kept so core can record a retention", async () => {

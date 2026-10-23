@@ -169,9 +169,10 @@ export default async function worktreePlugin(bb: BbPluginApi): Promise<void> {
         return {
           status: "failed",
           message: result.message,
-          ...(result.retainedPath === undefined
-            ? {}
-            : { experimental_retained: { path: result.retainedPath } }),
+          experimental_retained:
+            result.retainedPath === undefined
+              ? null
+              : { path: result.retainedPath },
         };
       }
       return {
@@ -213,6 +214,13 @@ export default async function worktreePlugin(bb: BbPluginApi): Promise<void> {
               previousAttempt.threadId,
               previousAttempt.attempt,
             );
+      if (previousAttempt !== null && retryBranch === null) {
+        return {
+          status: "failed",
+          message: `Cannot name this retry's branch: the suggested branch ${context.suggestedBranchName} does not end with the thread id ${previousAttempt.threadId} after a "/" or "-", so an earlier attempt's branch cannot be found. Nothing was created, and any earlier work was left alone. Set the managed branch prefix to end with "/" or "-".`,
+          experimental_retained: null,
+        };
+      }
       return createManagedWorktree(context, {
         branchName: retryBranch ?? context.suggestedBranchName,
         baseBranch: context.inputs.branch,

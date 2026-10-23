@@ -46,10 +46,9 @@ async function describeWorkingState(
 
 async function findLeftovers(args: {
   request: PreviousAttemptRequest;
-  retainedRoot: string;
   registered: readonly { path: string }[];
-}): Promise<string[]> {
-  const leftovers: string[] = [];
+}): Promise<{ path: string; text: string }[]> {
+  const leftovers: { path: string; text: string }[] = [];
   for (let attempt = 1; attempt < args.request.attempt; attempt += 1) {
     for (const earlierPath of args.request.pathsForAttempt(attempt)) {
       const exists = await fs
@@ -64,17 +63,12 @@ async function findLeftovers(args: {
         const entryReal = await fs.realpath(entry.path).catch(() => entry.path);
         if (entryReal === earlierReal) registered = true;
       }
-      if (exists || registered) leftovers.push(`the workspace at ${earlierPath}`);
+      if (exists || registered)
+        leftovers.push({
+          path: earlierPath,
+          text: `the workspace at ${earlierPath}`,
+        });
     }
-  }
-  try {
-    for (const name of await fs.readdir(args.retainedRoot)) {
-      if (name.includes(args.request.threadId))
-        leftovers.push(`the kept folder ${args.retainedRoot}/${name}`);
-    }
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT")
-      leftovers.push(`the kept-folder area ${args.retainedRoot}, which could not be read`);
   }
   return leftovers;
 }
@@ -82,7 +76,6 @@ async function findLeftovers(args: {
 export async function pinPreviousAttempt(args: {
   sourcePath: string;
   request: PreviousAttemptRequest;
-  retainedRoot: string;
   signal: AbortSignal | undefined;
 }): Promise<PinnedPreviousAttempt | null> {
   const options = {
@@ -131,14 +124,21 @@ export async function pinPreviousAttempt(args: {
       listing.exitCode === 0
         ? await findLeftovers({
             request: args.request,
-            retainedRoot: args.retainedRoot,
             registered: parseWorktreeListPorcelain(listing.stdout),
           })
-        : ["a workspace that could not be ruled out because the registered workspaces could not be listed"];
+        : [
+            {
+              path: "",
+              text: "a workspace that could not be ruled out because the registered workspaces could not be listed",
+            },
+          ];
     if (leftovers.length > 0) {
       throw new WorkspaceError(
         "previous_attempt_unresolved",
-        `Cannot start this retry: no branch of this thread's earlier attempts exists, but ${leftovers.join(", ")} remains, so work could be lost. Nothing was created, and it was left alone. Release or recover it yourself, then retry.`,
+        `Cannot start this retry: no branch of this thread's earlier attempts exists, but ${leftovers.map((leftover) => leftover.text).join(", ")} remains, so work could be lost. Nothing was created, and it was left alone. Release or recover it yourself, then retry.`,
+        leftovers[0]!.path === ""
+          ? undefined
+          : { keptPath: leftovers[0]!.path },
       );
     }
     return null;
@@ -176,6 +176,7 @@ export async function pinPreviousAttempt(args: {
           throw new WorkspaceError(
             "previous_attempt_unresolved",
             `Cannot continue from ${branch}: the earlier workspace at ${earlierPath} is ${entry.branch === null ? "detached" : `on ${entry.branch}`}, not on that branch, so its latest work is not at the branch tip. Nothing was created, and that workspace was left alone.`,
+            { keptPath: earlierPath },
           );
         }
       }

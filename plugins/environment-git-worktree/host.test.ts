@@ -398,6 +398,7 @@ describe("worktree host entry", () => {
       expect(second).toMatchObject({
         status: "failed",
         message: expect.stringContaining("detached"),
+        retainedPath: first.path,
       });
       expect(
         (await git(sourcePath, "branch", "--list", "bb/work-thr_dt.r2")).trim(),
@@ -410,7 +411,7 @@ describe("worktree host entry", () => {
     }
   });
 
-  it("starts a retry from the base branch and says nothing could be lost when no earlier attempt left a branch, a workspace or a kept folder", async () => {
+  it("starts a retry from the base branch and says nothing could be lost when no earlier attempt left a branch or a workspace folder", async () => {
     const { sourcePath, dataDir } = await createSourceRepository();
     const harness = createHarness(dataDir);
     try {
@@ -439,15 +440,6 @@ describe("worktree host entry", () => {
           recursive: true,
         });
         return "the workspace at";
-      },
-    ],
-    [
-      "a kept folder",
-      async (_sourcePath: string, dataDir: string) => {
-        await mkdir(join(dataDir, "retained", "failed-create-thr_left-1"), {
-          recursive: true,
-        });
-        return "the kept folder";
       },
     ],
   ] as const)("refuses a branchless retry and names the blocker when %s remains", async (_label, leave) => {
@@ -497,6 +489,7 @@ describe("worktree host entry", () => {
       expect(result).toMatchObject({
         status: "failed",
         message: expect.stringContaining("left alone"),
+        retainedPath: target,
       });
       expect(await readFile(join(target, "mine.txt"), "utf8")).toBe(
         "keep me\n",
