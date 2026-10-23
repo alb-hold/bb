@@ -180,6 +180,42 @@ describe("createConnection", () => {
     }
   });
 
+  it("does not split lock wait for a multi-statement exec", () => {
+    const directory = mkdtempSync(join(tmpdir(), "bb-db-multi-exec-lock-"));
+    const logger = new CapturingSlowQueryLogger();
+    const db = createConnection(join(directory, "bb.db"), {
+      slowQueryLogger: logger,
+      slowQueryThresholdMs: 0,
+    });
+    try {
+      db.$client.exec("CREATE TABLE multi_exec_values (value INTEGER)");
+      logger.clear();
+      db.$client
+        .transaction(() => {
+          db.$client.exec(`
+            SELECT 1;
+            INSERT INTO multi_exec_values VALUES (1);
+            SELECT sum(value) FROM (
+              WITH RECURSIVE numbers(value) AS (
+                SELECT 1 UNION ALL SELECT value + 1 FROM numbers WHERE value < 100000
+              ) SELECT value FROM numbers
+            );
+          `);
+        })
+        .default();
+      const transactionLog = logger.infoLogs.find(
+        (log) => log.fields.operation === "transaction",
+      );
+      expect(logger.infoLogs.map((log) => log.fields.operation)).toContain("exec");
+      expect(transactionLog?.fields.lockWaitSource).toBe("exec");
+      expect(transactionLog?.fields).not.toHaveProperty("lockWaitMs");
+      expect(transactionLog?.fields).not.toHaveProperty("bodyMs");
+    } finally {
+      db.$client.close();
+      rmSync(directory, { force: true, recursive: true });
+    }
+  });
+
   it("reports near-zero BEGIN wait and preserves the slow-log threshold", () => {
     const logger = new CapturingSlowQueryLogger();
     const db = createConnection(":memory:", {
