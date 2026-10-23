@@ -17,6 +17,7 @@ import {
   worktreeHostSignals,
   type WorktreeBaseBranch,
 } from "./contract.js";
+import { attemptBranchName } from "./attempt-branch.js";
 import { GIT_WORKTREE_ENVIRONMENT_PROVIDER_ID } from "./provider-id.js";
 
 const CREATE_TIMEOUT_MS = 15 * 60 * 1000;
@@ -198,11 +199,21 @@ export default async function worktreePlugin(bb: BbPluginApi): Promise<void> {
         return adoptExistingWorktree(context, context.inputs.path);
       }
       const previousAttempt = previousAttemptOf(context);
+      const retryBranch =
+        previousAttempt === null
+          ? null
+          : attemptBranchName(
+              context.suggestedBranchName,
+              previousAttempt.threadId,
+              previousAttempt.attempt,
+            );
       return createManagedWorktree(context, {
-        branchName: context.suggestedBranchName,
+        branchName: retryBranch ?? context.suggestedBranchName,
         baseBranch: context.inputs.branch,
         branchMode: "reset",
-        ...(previousAttempt === null ? {} : { previousAttempt }),
+        ...(previousAttempt === null || retryBranch === null
+          ? {}
+          : { previousAttempt }),
       });
     },
     async restore(context) {

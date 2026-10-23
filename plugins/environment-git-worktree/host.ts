@@ -169,7 +169,25 @@ export function createWorktreeHostEntry() {
             baseBranch,
             branchMode: input.branchMode,
             ...(input.previousAttempt !== undefined
-              ? { previousAttempt: input.previousAttempt }
+              ? {
+                  previousAttempt: {
+                    ...input.previousAttempt,
+                    pathsForAttempt: (attempt: number) =>
+                      (attempt <= 1
+                        ? [
+                            input.previousAttempt!.threadId,
+                            `${input.previousAttempt!.threadId}-1`,
+                          ]
+                        : [`${input.previousAttempt!.threadId}-${attempt}`]
+                      ).map((pathKey) =>
+                        resolveWorktreeTargetPath({
+                          dataDir: context.experimental_paths.dataDir,
+                          pathKey,
+                          sourcePath: input.sourcePath,
+                        }),
+                      ),
+                  },
+                }
               : {}),
             onProgress: createHostProgress({
               operationId: input.operationId,

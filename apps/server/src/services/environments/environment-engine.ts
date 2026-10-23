@@ -1,9 +1,5 @@
 import { emitPluginEnvironmentRemoved } from "../plugins/plugin-thread-events.js";
 import { withHostCleanup } from "../hosts/cleanup-context.js";
-import {
-  attemptBranchName,
-  attemptNumberFromPathKey,
-} from "./attempt-branch.js";
 import { findHostDataDir } from "../lib/entity-lookup.js";
 import { getLatestThreadSequence, updateThread } from "@bb/db";
 import {
@@ -532,11 +528,6 @@ async function runCreate(
       report: provisioningReporter(deps, provisioning),
       signal: signal,
     };
-    const attemptBranch = attemptBranchName(
-      context.suggestedBranchName,
-      context.thread.id,
-      attemptNumberFromPathKey(operation.pathKey, context.thread.id),
-    );
     const providerCall = !(
       provisioning.providerOwnsPath && provisioning.path !== null
     );
@@ -546,7 +537,7 @@ async function runCreate(
           branchName:
             previous?.status === "destroyed"
               ? previous.branchName
-              : attemptBranch,
+              : context.suggestedBranchName,
           requesterThreadId: context.thread.id,
           excludeEnvironmentIds:
             previous === null
@@ -579,7 +570,7 @@ async function runCreate(
               })
             : await invokeCreate(record, {
                 ...operation,
-                suggestedBranchName: attemptBranch,
+                suggestedBranchName: context.suggestedBranchName,
               });
     if (result.status === "created") {
       let adoptedExistingEnvironment = false;

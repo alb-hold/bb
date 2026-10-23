@@ -277,7 +277,7 @@ describe("worktree host entry", () => {
           operationId: "second",
           sourcePath,
           pathKey: "thr_ret-2",
-          branchName: "bb/work-r2-thr_ret",
+          branchName: "bb/work-thr_ret.r2",
         }),
         previousAttempt: { threadId: "thr_ret", attempt: 2 },
       });
@@ -287,13 +287,13 @@ describe("worktree host entry", () => {
       expect((await git(second.path, "rev-parse", "HEAD")).trim()).toBe(tip);
       expect(
         (await git(second.path, "rev-parse", "--abbrev-ref", "HEAD")).trim(),
-      ).toBe("bb/work-r2-thr_ret");
+      ).toBe("bb/work-thr_ret.r2");
       expect(existsSync(join(second.path, "scratch.txt"))).toBe(false);
       expect(await readFile(join(first.path, "scratch.txt"), "utf8")).toBe(
         "uncommitted\n",
       );
       expect((await git(first.path, "rev-parse", "HEAD")).trim()).toBe(tip);
-      expect(progressText(harness)).toContain("Continuing on bb/work-r2-thr_ret");
+      expect(progressText(harness)).toContain("Continuing on bb/work-thr_ret.r2");
       expect(progressText(harness)).not.toContain("uncommitted\n");
     } finally {
       await harness.experimental_dispose();
@@ -313,19 +313,99 @@ describe("worktree host entry", () => {
           operationId: "retry",
           sourcePath,
           pathKey: "thr_amb-2",
-          branchName: "bb/work-r2-thr_amb",
+          branchName: "bb/work-thr_amb.r2",
         }),
         previousAttempt: { threadId: "thr_amb", attempt: 2 },
       });
 
       expect(result).toMatchObject({
         status: "failed",
-        message: expect.stringContaining("Cannot continue from the earlier attempt"),
+        message: expect.stringMatching(/Cannot continue from (the|an) earlier attempt/),
       });
       expect(
-        (await git(sourcePath, "branch", "--list", "bb/work-r2-thr_amb")).trim(),
+        (await git(sourcePath, "branch", "--list", "bb/work-thr_amb.r2")).trim(),
       ).toBe("");
       expect(existsSync(join(dataDir, "worktrees", "thr_amb-2"))).toBe(false);
+    } finally {
+      await harness.experimental_dispose();
+    }
+  });
+
+  it("walks back to the latest earlier attempt branch that exists and does not mistake a slug ending in r2 for an attempt branch", async () => {
+    const { sourcePath, dataDir } = await createSourceRepository();
+    const harness = createHarness(dataDir);
+    try {
+      const first = await harness.experimental_call(
+        "create",
+        createInput({
+          operationId: "first",
+          sourcePath,
+          pathKey: "thr_wb-1",
+          branchName: "bb/fix-r2-thr_wb",
+        }),
+      );
+      if (first.status !== "created") throw new Error(first.message);
+      const tip = await commitFile(first.path, "work.txt");
+
+      const third = await harness.experimental_call("create", {
+        ...createInput({
+          operationId: "third",
+          sourcePath,
+          pathKey: "thr_wb-3",
+          branchName: "bb/fix-r2-thr_wb.r3",
+        }),
+        previousAttempt: { threadId: "thr_wb", attempt: 3 },
+      });
+
+      expect(third.status).toBe("created");
+      if (third.status !== "created") throw new Error(third.message);
+      expect((await git(third.path, "rev-parse", "HEAD")).trim()).toBe(tip);
+      expect(progressText(harness)).toContain(
+        "from bb/fix-r2-thr_wb at",
+      );
+    } finally {
+      await harness.experimental_dispose();
+    }
+  });
+
+  it("refuses a retry when the earlier workspace is detached from its branch, naming it and leaving it alone", async () => {
+    const { sourcePath, dataDir } = await createSourceRepository();
+    const harness = createHarness(dataDir);
+    try {
+      const first = await harness.experimental_call(
+        "create",
+        createInput({
+          operationId: "first",
+          sourcePath,
+          pathKey: "thr_dt-1",
+          branchName: "bb/work-thr_dt",
+        }),
+      );
+      if (first.status !== "created") throw new Error(first.message);
+      await commitFile(first.path, "work.txt");
+      await git(first.path, "checkout", "--detach");
+      const detachedWork = await commitFile(first.path, "later.txt");
+
+      const second = await harness.experimental_call("create", {
+        ...createInput({
+          operationId: "second",
+          sourcePath,
+          pathKey: "thr_dt-2",
+          branchName: "bb/work-thr_dt.r2",
+        }),
+        previousAttempt: { threadId: "thr_dt", attempt: 2 },
+      });
+
+      expect(second).toMatchObject({
+        status: "failed",
+        message: expect.stringContaining("detached"),
+      });
+      expect(
+        (await git(sourcePath, "branch", "--list", "bb/work-thr_dt.r2")).trim(),
+      ).toBe("");
+      expect((await git(first.path, "rev-parse", "HEAD")).trim()).toBe(
+        detachedWork,
+      );
     } finally {
       await harness.experimental_dispose();
     }

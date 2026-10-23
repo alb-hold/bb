@@ -1,10 +1,13 @@
 import { spawn } from "node:child_process";
+import fs from "node:fs/promises";
 import { runGit, WorkspaceError } from "bb-environment-provider-host/git";
+import { branchBelongsToAttempt } from "../attempt-branch.js";
 import { parseWorktreeListPorcelain } from "./worktree-list.js";
 
 export interface PreviousAttemptRequest {
   threadId: string;
   attempt: number;
+  pathsForAttempt: (attempt: number) => string[];
 }
 
 export interface PinnedPreviousAttempt {
@@ -12,22 +15,6 @@ export interface PinnedPreviousAttempt {
   sha: string;
   worktreePath: string | null;
   workingState: string;
-}
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
-}
-
-export function branchBelongsToAttempt(
-  branch: string,
-  threadId: string,
-  attempt: number,
-): boolean {
-  if (attempt >= 2) return branch.endsWith(`r${attempt}-${threadId}`);
-  return (
-    branch.endsWith(threadId) &&
-    !new RegExp(`r\\d+-${escapeRegExp(threadId)}$`, "u").test(branch)
-  );
 }
 
 async function describeWorkingState(
@@ -77,23 +64,34 @@ export async function pinPreviousAttempt(args: {
       "Cannot continue from the earlier attempt because its branches could not be listed; nothing was created.",
     );
   }
-  const candidates = refs.stdout
-    .split("\n")
-    .filter((branch) => branch !== "")
-    .filter((branch) =>
-      branchBelongsToAttempt(
-        branch,
-        args.request.threadId,
-        args.request.attempt - 1,
-      ),
+  const branches = refs.stdout.split("\n").filter((branch) => branch !== "");
+  let branch: string | null = null;
+  let found = 0;
+  for (
+    let attempt = args.request.attempt - 1;
+    attempt >= 1 && branch === null;
+    attempt -= 1
+  ) {
+    const candidates = branches.filter((candidate) =>
+      branchBelongsToAttempt(candidate, args.request.threadId, attempt),
     );
-  if (candidates.length !== 1) {
+    if (candidates.length > 1) {
+      throw new WorkspaceError(
+        "previous_attempt_unresolved",
+        `Cannot continue from the earlier attempt: ${candidates.length} branches could belong to attempt ${attempt}. Nothing was created, and the earlier work was left alone.`,
+      );
+    }
+    if (candidates.length === 1) {
+      branch = candidates[0]!;
+      found = attempt;
+    }
+  }
+  if (branch === null) {
     throw new WorkspaceError(
       "previous_attempt_unresolved",
-      `Cannot continue from the earlier attempt: ${candidates.length === 0 ? "its branch was not found" : `${candidates.length} branches could belong to it`}. Nothing was created, and the earlier work was left alone.`,
+      "Cannot continue from an earlier attempt: no branch of this thread's earlier attempts exists, so there is no tip to continue from. bb does not start a retry from the base branch on its own. Nothing was created, and any earlier workspace was left alone.",
     );
   }
-  const branch = candidates[0]!;
   const resolved = await runGit(
     ["rev-parse", "--verify", `refs/heads/${branch}^{commit}`],
     options,
@@ -109,12 +107,30 @@ export async function pinPreviousAttempt(args: {
     ["worktree", "list", "--porcelain", "-z"],
     options,
   );
-  const holder =
-    listing.exitCode === 0
-      ? parseWorktreeListPorcelain(listing.stdout).find(
-          (entry) => entry.branch === branch,
-        )
-      : undefined;
+  if (listing.exitCode !== 0) {
+    throw new WorkspaceError(
+      "previous_attempt_unresolved",
+      `Cannot continue from ${branch}: the registered workspaces could not be listed, so an earlier workspace that is not on this branch could not be ruled out. Nothing was created.`,
+    );
+  }
+  const entries = parseWorktreeListPorcelain(listing.stdout);
+  for (let attempt = args.request.attempt - 1; attempt >= found; attempt -= 1) {
+    for (const earlierPath of args.request.pathsForAttempt(attempt)) {
+      const earlierReal = await fs
+        .realpath(earlierPath)
+        .catch(() => earlierPath);
+      for (const entry of entries) {
+        const entryReal = await fs.realpath(entry.path).catch(() => entry.path);
+        if (entryReal === earlierReal && entry.branch !== branch) {
+          throw new WorkspaceError(
+            "previous_attempt_unresolved",
+            `Cannot continue from ${branch}: the earlier workspace at ${earlierPath} is ${entry.branch === null ? "detached" : `on ${entry.branch}`}, not on that branch, so its latest work is not at the branch tip. Nothing was created, and that workspace was left alone.`,
+          );
+        }
+      }
+    }
+  }
+  const holder = entries.find((entry) => entry.branch === branch);
   const worktreePath = holder?.path ?? null;
   return {
     branch,
