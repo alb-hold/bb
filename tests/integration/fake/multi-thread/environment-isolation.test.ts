@@ -1,5 +1,5 @@
 import { eq } from "drizzle-orm";
-import { environments } from "@bb/db";
+import { environments, threads } from "@bb/db";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -291,6 +291,79 @@ describe.sequential("fake provider environment-isolation multi-thread integratio
           expect(
             await getThreadOutput(harness.api, worktreeThread.thread.id),
           ).toContain("still here after the kept retirement");
+        },
+      ),
+    REBUILD_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "keeps a clean published worktree whose thread was archived without a recorded release, until an archive through bb records one",
+    () =>
+      withHarness(
+        { builtinPlugins: ["environment-git-worktree"] },
+        async (harness) => {
+          await publishTestGitRepo({ repoDir: harness.repoDir });
+          const project = await createProjectFixture(harness, {
+            name: "Unreleased Worktree",
+          });
+          const worktreeThread = await createReadyHostThread(harness, {
+            projectId: project.id,
+            timeoutMs: DEFAULT_TIMEOUT_MS,
+            workspace: { type: "managed-worktree" },
+          });
+          const worktreePath = worktreeThread.environment.path;
+          if (!worktreePath) {
+            throw new Error("Managed worktree path was not assigned");
+          }
+          harness.db
+            .update(threads)
+            .set({ archivedAt: Date.now() })
+            .where(eq(threads.id, worktreeThread.thread.id))
+            .run();
+          harness.db
+            .update(environments)
+            .set({ retireAt: Date.now() - 1 })
+            .where(eq(environments.id, worktreeThread.environment.id))
+            .run();
+          await expect
+            .poll(
+              async () => {
+                await harness.server.sweepEnvironments();
+                return (
+                  (
+                    await getEnvironment(
+                      harness.api,
+                      worktreeThread.environment.id,
+                    )
+                  ).lifecycle.message ?? ""
+                );
+              },
+              { timeout: REBUILD_TIMEOUT_MS },
+            )
+            .toContain("no archive or delete through bb");
+          await fs.access(worktreePath);
+
+          await archiveThread(harness.api, worktreeThread.thread.id);
+          harness.db
+            .update(environments)
+            .set({ retireAt: Date.now() - 1 })
+            .where(eq(environments.id, worktreeThread.environment.id))
+            .run();
+          await expect
+            .poll(
+              async () => {
+                await harness.server.sweepEnvironments();
+                return (
+                  await getEnvironment(
+                    harness.api,
+                    worktreeThread.environment.id,
+                  )
+                ).lifecycle.teardown?.status;
+              },
+              { timeout: REBUILD_TIMEOUT_MS },
+            )
+            .toBe("removed");
+          await waitForPathRemoval(worktreePath, DEFAULT_TIMEOUT_MS);
         },
       ),
     REBUILD_TEST_TIMEOUT_MS,
