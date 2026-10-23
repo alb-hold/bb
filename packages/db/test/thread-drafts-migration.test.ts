@@ -14,7 +14,7 @@ import {
   dropIdleLifecycleIndexes,
   rewindThreadPruningWork,
   dropMarketplaceSourceGitSubdirectoryColumn,
-  dropEnvironmentTeardownPriorStatusColumn,
+  dropEnvironmentRetentionSchema,
   dropThreadParentNotificationsColumn,
   dropQueuedMessageEditHeldUntilColumn,
 } from "./helpers/rewind.js";
@@ -119,7 +119,7 @@ it.each([false, true])(
       dropQueuedMessageEditHeldUntilColumn(db);
       dropMarketplaceSourceGitSubdirectoryColumn(db);
       dropThreadParentNotificationsColumn(db);
-      dropEnvironmentTeardownPriorStatusColumn(db);
+      dropEnvironmentRetentionSchema(db);
       migrate(db);
       migrate(db);
 

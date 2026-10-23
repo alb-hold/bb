@@ -225,7 +225,7 @@ it("refuses to skip cleanup, and forgets nothing, while the machine holds work a
     });
 
     expect(getEnvironment(harness.db, environment.id)).toMatchObject({
-      status: "ready",
+      status: "error",
       path: "/tmp/gone-worktree",
     });
     expect(getHost(harness.db, target.host.id)).toMatchObject({

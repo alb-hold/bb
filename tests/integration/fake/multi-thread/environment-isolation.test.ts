@@ -110,6 +110,29 @@ describe.sequential("fake provider environment-isolation multi-thread integratio
               async () => {
                 await harness.server.sweepEnvironments();
                 return (
+                  (
+                    await getEnvironment(
+                      harness.api,
+                      worktreeThread.environment.id,
+                    )
+                  ).lifecycle.message ?? ""
+                );
+              },
+              { timeout: REBUILD_TIMEOUT_MS },
+            )
+            .toContain("needs its owner's release");
+          await fs.access(originalWorkspacePath);
+          await expect(fs.access(teardownMarker)).rejects.toThrow();
+
+          await runGit({
+            cwd: harness.repoDir,
+            args: ["worktree", "remove", originalWorkspacePath],
+          });
+          await expect
+            .poll(
+              async () => {
+                await harness.server.sweepEnvironments();
+                return (
                   await getEnvironment(
                     harness.api,
                     worktreeThread.environment.id,
@@ -120,7 +143,6 @@ describe.sequential("fake provider environment-isolation multi-thread integratio
             )
             .toBe("removed");
           await waitForPathRemoval(originalWorkspacePath, DEFAULT_TIMEOUT_MS);
-          await fs.access(teardownMarker);
           await deleteThread(harness.api, unrelatedThread.thread.id);
           await waitForEnvironmentStatus(
             harness.api,

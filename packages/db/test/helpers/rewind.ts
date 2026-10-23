@@ -65,17 +65,17 @@ export function dropThreadParentNotificationsColumn(db: DbConnection): void {
   }
 }
 
-export function dropEnvironmentTeardownPriorStatusColumn(
-  db: DbConnection,
-): void {
+export function dropEnvironmentRetentionSchema(db: DbConnection): void {
   const columns = db.$client
     .prepare<[], { name: string }>("PRAGMA table_info(environments)")
     .all();
-  if (columns.some((column) => column.name === "teardown_prior_status")) {
-    db.$client.exec(
-      "ALTER TABLE environments DROP COLUMN teardown_prior_status",
-    );
+  for (const column of ["teardown_prior_status", "teardown_failures"]) {
+    if (columns.some((existing) => existing.name === column)) {
+      db.$client.exec(`ALTER TABLE environments DROP COLUMN ${column}`);
+    }
   }
+  db.$client.exec("DROP TABLE IF EXISTS environment_retention_transitions");
+  db.$client.exec("DROP TABLE IF EXISTS environment_retentions");
 }
 
 export const QUEUED_MESSAGE_STATE_MIGRATION_WHEN = 1792010323040;

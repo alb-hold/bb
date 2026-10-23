@@ -116,8 +116,7 @@ export function recordEnvironmentRetention(
         if (existing.state === "unresolved" && input.state === "retained")
           return touch(existing);
       }
-      if (existing.state === input.state && existing.state !== "closed")
-        return touch(existing);
+      if (existing.state === input.state) return touch(existing);
       result = db
         .update(environmentRetentions)
         .set({
