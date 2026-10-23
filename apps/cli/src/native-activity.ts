@@ -355,6 +355,7 @@ interface OpenOccurrence {
   candidateCallIds: string[];
   candidateGroupId: number | null;
   candidateGroupSize: number;
+  candidateGroupDynamic: boolean;
 }
 
 interface AnnouncedCall {
@@ -460,6 +461,33 @@ export class NativeActivityTracker {
       key: call.key,
       bound: false,
     });
+    const groups = new Map<number, OpenOccurrence[]>();
+    for (const [base, occurrences] of this.openOccurrences) {
+      if (base !== occurrenceBase(call.base)) continue;
+      for (const occurrence of occurrences) {
+        if (
+          occurrence.callId !== null ||
+          occurrence.key !== call.key ||
+          occurrence.candidateGroupId === null ||
+          !occurrence.candidateGroupDynamic
+        )
+          continue;
+        const group = groups.get(occurrence.candidateGroupId) ?? [];
+        group.push(occurrence);
+        groups.set(occurrence.candidateGroupId, group);
+      }
+    }
+    for (const occurrences of groups.values()) {
+      if (occurrences[0]?.candidateCallIds.includes(call.id)) continue;
+      const candidateGroupSize =
+        (occurrences[0]?.candidateGroupSize ?? 0) + 1;
+      for (const occurrence of occurrences) {
+        occurrence.candidateCallIds.push(call.id);
+        occurrence.candidateGroupSize = candidateGroupSize;
+      }
+      const announced = this.announcedCalls.get(call.id);
+      if (announced !== undefined) announced.bound = true;
+    }
   }
 
   private bindAnnouncedCall(
@@ -471,6 +499,7 @@ export class NativeActivityTracker {
     candidateCallIds: string[];
     candidateGroupId: number | null;
     candidateGroupSize: number;
+    candidateGroupDynamic: boolean;
   } {
     if (callId !== undefined) {
       const announced = this.announcedCalls.get(callId);
@@ -480,6 +509,7 @@ export class NativeActivityTracker {
         candidateCallIds: [],
         candidateGroupId: null,
         candidateGroupSize: 0,
+        candidateGroupDynamic: false,
       };
     }
     if (key === undefined) {
@@ -488,6 +518,7 @@ export class NativeActivityTracker {
         candidateCallIds: [],
         candidateGroupId: null,
         candidateGroupSize: 0,
+        candidateGroupDynamic: false,
       };
     }
     const candidates: string[] = [];
@@ -516,15 +547,18 @@ export class NativeActivityTracker {
               candidateCallIds: [...occurrence.candidateCallIds],
               candidateGroupId: occurrence.candidateGroupId,
               candidateGroupSize: occurrence.candidateGroupSize,
+              candidateGroupDynamic: occurrence.candidateGroupDynamic,
             };
           }
         }
       }
+      const candidateGroupId = ++this.candidateGroupCounter;
       return {
         callId: null,
         candidateCallIds: [],
-        candidateGroupId: null,
+        candidateGroupId,
         candidateGroupSize: 0,
+        candidateGroupDynamic: true,
       };
     }
     const uniqueCandidates = [...new Set(candidates)];
@@ -534,6 +568,7 @@ export class NativeActivityTracker {
         candidateCallIds: [],
         candidateGroupId: null,
         candidateGroupSize: 0,
+        candidateGroupDynamic: false,
       };
     }
     const candidateGroupId = ++this.candidateGroupCounter;
@@ -542,6 +577,7 @@ export class NativeActivityTracker {
       candidateCallIds: uniqueCandidates,
       candidateGroupId,
       candidateGroupSize: uniqueCandidates.length,
+      candidateGroupDynamic: false,
     };
   }
 
