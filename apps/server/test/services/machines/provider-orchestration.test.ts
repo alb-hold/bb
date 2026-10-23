@@ -8,6 +8,7 @@ import {
   getStoredProviderModelCatalog,
   hosts,
   archiveThread,
+  recordEnvironmentRetention,
   replaceStoredProviderModelCatalog,
   setThreadStartupContext,
   updateHost,
@@ -428,6 +429,42 @@ describe("machine retirement", () => {
         expect(remove).toHaveBeenCalledTimes(machineCount);
       }),
   );
+
+  it("does not destroy an ephemeral machine while a failed create's kept work is unreleased", async () =>
+    withTestHarness(async (harness) => {
+      const remove = vi.fn(async () => ({ status: "removed" as const }));
+      installMachineProvider({ ephemeral: true, remove });
+      const { host } = seedHostSession(harness.deps);
+      const { project } = seedProjectWithSource(harness.deps, {
+        hostId: host.id,
+      });
+      updateHost(harness.db, harness.hub, host.id, {
+        type: "ephemeral",
+        machineProviderId: "test-machine",
+        resource: {},
+      });
+      recordEnvironmentRetention(harness.db, {
+        environmentId: "env_kept",
+        projectId: project.id,
+        hostId: host.id,
+        ownerThreadId: null,
+        providerId: "test-provider",
+        originalPath: "/work/kept-attempt",
+        keptPath: "/work/kept-attempt",
+        state: "retained",
+        message: "setup failed; the workspace stays in place",
+      });
+
+      expect(requestMachineRemoval(harness.deps, host.id)).toBe(true);
+      await sweepProviderMachine(harness.deps, host.id);
+
+      expect(remove).not.toHaveBeenCalled();
+      expect(getHost(harness.db, host.id)).toMatchObject({
+        phase: "removing",
+        teardownStatus: "failed",
+        statusMessage: expect.stringContaining("/work/kept-attempt"),
+      });
+    }));
 
   it("waits to remove a machine with an unattached pending start until the thread is archived", async () =>
     withTestHarness(async (harness) => {

@@ -36,6 +36,7 @@ import {
   getPreparingEnvironment,
   getThread,
   getProject,
+  recordEnvironmentRetention,
   reserveEnvironment,
   updatePreparingEnvironment,
   threads,
@@ -1880,6 +1881,31 @@ describe("core environment orchestration", () => {
         expect(getProject(harness.db, fixture.context.project.id)).toBeNull();
       }),
   );
+});
+
+it("does not delete a project while a failed create's kept work is unreleased", async () => {
+  await withTestHarness(async (harness) => {
+    const fixture = setup(harness);
+    recordEnvironmentRetention(harness.db, {
+      environmentId: "env_kept",
+      projectId: fixture.context.project.id,
+      hostId: fixture.host.id,
+      ownerThreadId: null,
+      providerId: "test-provider",
+      originalPath: "/work/kept-attempt",
+      keptPath: "/work/kept-attempt",
+      state: "unresolved",
+      message: "the create did not report a result",
+    });
+    beginProjectDeletion(harness.deps, { projectId: fixture.context.project.id });
+
+    expect(
+      await advanceProjectDeletion(harness.deps, {
+        projectId: fixture.context.project.id,
+      }),
+    ).toBe(false);
+    expect(getProject(harness.db, fixture.context.project.id)).not.toBeNull();
+  });
 });
 
 it("keeps one environment identity from provider creation through removal", async () => {

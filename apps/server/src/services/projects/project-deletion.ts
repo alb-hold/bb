@@ -10,6 +10,7 @@ import {
   getEnvironment,
   lifecycleThreadTreeIdsForProject,
   listEnvironments,
+  listOpenEnvironmentRetentionsForProject,
   markProjectDeleted,
   markThreadDeleted,
   projects,
@@ -202,6 +203,8 @@ export async function advanceProjectDeletion(
     const current = getEnvironment(deps.db, environment.id);
     if (current !== null && current.teardownStatus !== "removed") return false;
   }
+  if (listOpenEnvironmentRetentionsForProject(deps.db, args.projectId).length > 0)
+    return false;
   deleteProject(deps.db, deps.hub, args.projectId);
   await deleteProjectAttachments(deps.config.dataDir, args.projectId);
   return true;

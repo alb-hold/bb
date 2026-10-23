@@ -1,4 +1,4 @@
-import { environments } from "@bb/db";
+import { environments, recordEnvironmentRetention } from "@bb/db";
 import type { HostDaemonOnlineRpcRequestMessage } from "@bb/host-daemon-contract";
 import { eq } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
@@ -200,6 +200,54 @@ describe("host file routes", () => {
       });
     });
   });
+
+  it.each([
+    ["the kept path itself", "/work/kept/thr_x/repo"],
+    ["a file inside it", "/work/kept/thr_x/repo/notes.md"],
+    ["a folder that contains it", "/work/kept"],
+  ])(
+    "refuses to remove %s while a failed create's kept work is unreleased",
+    async (_label, target) => {
+      await withTestHarness(async (harness) => {
+        const { host, session } = seedHostSession(harness.deps);
+        seedPrimaryHost(harness.deps, host.id);
+        const { project } = seedProjectWithSource(harness.deps, {
+          hostId: host.id,
+        });
+        recordEnvironmentRetention(harness.db, {
+          environmentId: "env_kept",
+          projectId: project.id,
+          hostId: host.id,
+          ownerThreadId: null,
+          providerId: "test-provider",
+          originalPath: "/work/kept/thr_x/repo",
+          keptPath: "/work/kept/thr_x/repo",
+          state: "retained",
+          message: "setup failed",
+        });
+        const commands: HostDaemonOnlineRpcRequestMessage["command"][] = [];
+        registerHostRpcResponder(harness, {
+          hostId: host.id,
+          sessionId: session.id,
+          handle: (request) => {
+            commands.push(request.command);
+            return { ok: true, result: { ok: true } };
+          },
+        });
+
+        const response = await harness.app.request(
+          ...postJson("/api/v1/files/remove", { path: target }),
+        );
+
+        expect(response.status).toBe(409);
+        expect(await readJson(response)).toMatchObject({
+          code: "workspace_busy",
+          message: expect.stringContaining("failed create kept"),
+        });
+        expect(commands).toEqual([]);
+      });
+    },
+  );
 
   it("refuses every recursive removal, whatever the path, and never asks the host", async () => {
     await withTestHarness(async (harness) => {

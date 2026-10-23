@@ -1,4 +1,5 @@
 import {
+  findOpenEnvironmentRetentionOverlapping,
   getSessionById,
   getThread,
   listEnvironmentReferencingThreadIds,
@@ -48,6 +49,17 @@ export function assertPathAvoidsProtectedWorkspaces(
       409,
       "workspace_busy",
       `Refusing to ${args.action} ${args.path}: it is or is inside bb's plugin data on this machine, which holds worktrees and any folder bb kept for later. bb removes those only through their own cleanup.`,
+    );
+  }
+  const retention = findOpenEnvironmentRetentionOverlapping(deps.db, {
+    hostId: args.hostId,
+    path: target,
+  });
+  if (retention !== null) {
+    throw new ApiError(
+      409,
+      "workspace_busy",
+      `Refusing to ${args.action} ${args.path}: it is or is inside ${retention.keptPath}, which a failed create kept until its owner releases it.`,
     );
   }
   const environments = listEnvironments(deps.db, { hostId: args.hostId });
