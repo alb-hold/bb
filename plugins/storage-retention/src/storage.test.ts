@@ -1813,13 +1813,16 @@ it("keeps a missing-checkout development instance while an environment still cov
       hostId: "host_test",
       names: null,
     });
-    expect(result).toMatchObject({ removedCount: 1, running: [] });
-    expect(result.held).toEqual([
-      {
-        name: "covered",
-        reason: `environment env_covering still covers ${covered}`,
-      },
-    ]);
+    expect(result).toMatchObject({
+      removedCount: 1,
+      running: [],
+      held: [
+        {
+          name: "covered",
+          reason: `environment env_covering still covers ${covered}`,
+        },
+      ],
+    });
     await expect
       .poll(async () => (await fs.readdir(rootPath)).sort())
       .toEqual(["covered"]);
