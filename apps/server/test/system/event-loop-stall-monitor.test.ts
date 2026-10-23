@@ -605,7 +605,7 @@ describe("event loop stall monitor", () => {
         longestSynchronousWorkCpuMs: 300,
         synchronousWorkCpuMs: 1_200,
         stallAttribution: "unattributed",
-        stallCauseCandidate: "test:short-1",
+        stallCauseCandidate: null,
       }),
       "Event loop stalled",
     );
@@ -737,7 +737,7 @@ describe("event loop stall monitor", () => {
           longestSynchronousWork: "ws:daemon heartbeat",
           longestSynchronousWorkWallMs: 1,
           stallAttribution: "unattributed",
-          stallCauseCandidate: "ws:daemon heartbeat",
+          stallCauseCandidate: null,
         }),
         "Event loop stalled",
       );

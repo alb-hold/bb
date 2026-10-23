@@ -962,10 +962,11 @@ applied chunk.
    larger of GC pause time and measured synchronous work, when the selected
    duration is long enough (within one 20 ms sample) to explain the maximum
    delay.
-   `unattributed` means neither rule explains it. Candidates are not confirmed
-   causes: both measurements fall somewhere in the five-second window. Profile
-   processing runs in a worker and no longer emits the historical
-   `cpu-profile:*` synchronous-work labels.
+   `unattributed` means neither rule explains it and `stallCauseCandidate` is
+   null. `longestSynchronousWork` and `lastCompletedWork` remain available as
+   context. Candidates are not confirmed causes: both measurements fall
+   somewhere in the five-second window. Profile processing runs in a worker and
+   no longer emits the historical `cpu-profile:*` synchronous-work labels.
 2. With performance diagnostics enabled, look for `Event loop stall attribution`
    records for the same PID and UTC window. They are emitted at the next CPU
    profile rotation (normally within 30 seconds), or on diagnostics shutdown,

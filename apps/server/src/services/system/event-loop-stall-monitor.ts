@@ -166,7 +166,7 @@ export function startEventLoopStallMonitor(
             },
             gcPauses: gcPausesInWindow,
             stallAttribution: hasCandidate ? "candidate" : "unattributed",
-            stallCauseCandidate: candidate,
+            stallCauseCandidate: hasCandidate ? candidate : null,
           },
           "Event loop stalled",
         );
