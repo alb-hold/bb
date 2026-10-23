@@ -578,6 +578,34 @@ describe("native terminal questions", () => {
       });
     });
 
+    it("does not key-match an id-less completion to an ambiguous prompt", () => {
+      const { hook, call, ask, done, tracker } = holder();
+      const input = bash("make build");
+      hook(call("toolu_1", input));
+      hook(call("toolu_2", input));
+      const opened = hook(ask(input));
+      const promptId = waiting(opened)[0]!.id;
+
+      expect(
+        hook({
+          hook_event_name: "PostToolUse",
+          tool_name: "Bash",
+          tool_input: input,
+        }),
+      ).toBeNull();
+      expect(waiting(tracker.heartbeat())).toEqual([
+        {
+          id: promptId,
+          prompt: "Claude Code needs permission to use: Bash",
+        },
+      ]);
+      expect(hook(done("toolu_1", input))).toBeNull();
+      expect(hook(done("toolu_2", input))).toEqual({
+        state: "working",
+        prompt: null,
+      });
+    });
+
     it("does not key-match an ambiguous prompt to a different call ID", () => {
       const { hook, call, ask, done, tracker } = holder();
       const input = bash("make build");

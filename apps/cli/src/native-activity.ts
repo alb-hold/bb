@@ -657,9 +657,9 @@ export class NativeActivityTracker {
       index = open.findIndex(
         (occurrence) =>
           occurrence.key === key &&
+          occurrence.candidateCallIds.length === 0 &&
           (callId === null ||
-            (occurrence.callId === null &&
-              occurrence.candidateCallIds.length === 0)),
+            occurrence.callId === null),
       );
     }
     const matched = open[index];
