@@ -53,13 +53,27 @@ describe("scanProcessesWithCwdUnder", () => {
       status: "held",
       holders: [{ pid: 10, cwd: `${base}/sub` }],
       excludedOtherUsers: 0,
+      unreadableSameUser: 0,
     });
   });
 
-  it("is unknown when a same-user process's working directory cannot be read", async () => {
+  it("counts a same-user process whose working directory cannot be read as unvouched, and says so, because privilege-dropped helpers such as sshd-session are unreadable on ordinary hosts", async () => {
     const base = await dir();
     const scan = await scanProcessesWithCwdUnder(
       { directories: [base] },
+      fakeLinux({ 10: denied() }),
+    );
+    expect(scan).toEqual({
+      status: "clear",
+      excludedOtherUsers: 0,
+      unreadableSameUser: 1,
+    });
+  });
+
+  it("is unknown for that process when the caller asks for the strict rule", async () => {
+    const base = await dir();
+    const scan = await scanProcessesWithCwdUnder(
+      { directories: [base], strictSameUser: true },
       fakeLinux({ 10: denied() }),
     );
     expect(scan.status).toBe("unknown");
@@ -71,7 +85,11 @@ describe("scanProcessesWithCwdUnder", () => {
       { directories: [base] },
       fakeLinux({ 10: denied(), 11: "/elsewhere" }, { 10: 0 }),
     );
-    expect(scan).toEqual({ status: "clear", excludedOtherUsers: 1 });
+    expect(scan).toEqual({
+      status: "clear",
+      excludedOtherUsers: 1,
+      unreadableSameUser: 0,
+    });
   });
 
   it("is unknown when the process list cannot be read, on Windows, and for a symlinked target", async () => {
@@ -141,7 +159,11 @@ describe("scanProcessesWithCwdUnder", () => {
     });
     expect(
       await scanProcessesWithCwdUnder({ directories: [base] }, darwin("", 1)),
-    ).toEqual({ status: "clear", excludedOtherUsers: null });
+    ).toEqual({
+      status: "clear",
+      excludedOtherUsers: null,
+      unreadableSameUser: null,
+    });
     expect(
       await scanProcessesWithCwdUnder(
         { directories: [base] },

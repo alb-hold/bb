@@ -45,6 +45,7 @@ export function createPersonalWorkspaceHostEntry() {
               });
         const existed = await pathExists(target);
         let excludedOtherUsers: number | null = null;
+        let unreadableSameUser: number | null = null;
         if (existed) {
           const scan = await internal_DO_NOT_USE_scanProcessesWithCwdUnder({
             directories: [target],
@@ -55,6 +56,7 @@ export function createPersonalWorkspaceHostEntry() {
               holders: scan.holders,
               unknown: null,
               excludedOtherUsers: scan.excludedOtherUsers,
+              unreadableSameUser: scan.unreadableSameUser,
             };
           if (scan.status === "unknown")
             return {
@@ -62,11 +64,19 @@ export function createPersonalWorkspaceHostEntry() {
               holders: [],
               unknown: scan.reason,
               excludedOtherUsers: null,
+              unreadableSameUser: null,
             };
           excludedOtherUsers = scan.excludedOtherUsers;
+          unreadableSameUser = scan.unreadableSameUser;
         }
         await removeDirectoryTree(target);
-        return { removed: existed, holders: [], unknown: null, excludedOtherUsers };
+        return {
+          removed: existed,
+          holders: [],
+          unknown: null,
+          excludedOtherUsers,
+          unreadableSameUser,
+        };
       },
     },
   });

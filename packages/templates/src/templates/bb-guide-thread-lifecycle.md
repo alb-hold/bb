@@ -95,8 +95,9 @@ Lifecycle:
   Deleting a thread removes its record immediately, but provider-owned
   environment cleanup is asynchronous. Use `bb environment show <id>` to
   inspect teardown until the lifecycle reaches destroyed. Deleting thread
-  storage first stops processes whose working directory is inside it,
-  including dev servers in nested checkouts (macOS and Linux only).
+  storage never stops a process. If a process is working inside it, or bb cannot
+  tell, the files are kept and the thread's log gets a notice naming the process;
+  bb retries on its periodic sweep until nothing is working there.
 
 Native terminal threads:
 

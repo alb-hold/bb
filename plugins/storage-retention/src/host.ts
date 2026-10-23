@@ -149,7 +149,7 @@ export default experimental_defineHostEntry({
       const releasable: string[] = [];
       for (const name of names) {
         const scan = name.startsWith(".bb-trash-")
-          ? ({ status: "clear", excludedOtherUsers: 0 } as const)
+          ? ({ status: "clear" } as const)
           : await internal_DO_NOT_USE_scanProcessesWithCwdUnder({
               directories: [path.join(root, name)],
             });

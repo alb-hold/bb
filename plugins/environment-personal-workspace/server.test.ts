@@ -68,6 +68,7 @@ function createFakeWorkspaceHost() {
               holders: [{ pid: 4242, cwd: `${target}/sub` }],
               unknown: null,
               excludedOtherUsers: 0,
+              unreadableSameUser: 0,
             };
           }
           if (unknownHolders.has(target)) {
@@ -76,6 +77,7 @@ function createFakeWorkspaceHost() {
               holders: [],
               unknown: "a process's working directory could not be read",
               excludedOtherUsers: null,
+              unreadableSameUser: null,
             };
           }
           return {
@@ -83,6 +85,7 @@ function createFakeWorkspaceHost() {
             holders: [],
             unknown: null,
             excludedOtherUsers: 0,
+              unreadableSameUser: 0,
           };
         }
         default:
@@ -253,6 +256,7 @@ describe("personal workspace resource operations", () => {
       signal: new AbortController().signal,
     });
     expect(f.logs.join("\n")).toContain("Checked the current user's processes");
+    expect(f.logs.join("\n")).toContain("unreadable helper process");
   });
   it("keeps the directory and names the process working inside it", async () => {
     const f = await setup();

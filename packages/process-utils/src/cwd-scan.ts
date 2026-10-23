@@ -7,9 +7,14 @@ export interface CwdHolder {
   cwd: string;
 }
 
+export interface CwdScanCoverage {
+  excludedOtherUsers: number | null;
+  unreadableSameUser: number | null;
+}
+
 export type CwdHolderScan =
-  | { status: "clear"; excludedOtherUsers: number | null }
-  | { status: "held"; holders: CwdHolder[]; excludedOtherUsers: number | null }
+  | ({ status: "clear" } & CwdScanCoverage)
+  | ({ status: "held"; holders: CwdHolder[] } & CwdScanCoverage)
   | { status: "unknown"; reason: string };
 
 export interface CwdScanIo {
@@ -81,7 +86,11 @@ const defaultIo: CwdScanIo = {
 };
 
 export async function scanProcessesWithCwdUnder(
-  args: { directories: readonly string[]; timeoutMs?: number },
+  args: {
+    directories: readonly string[];
+    timeoutMs?: number;
+    strictSameUser?: boolean;
+  },
   io: CwdScanIo = defaultIo,
 ): Promise<CwdHolderScan> {
   if (io.platform === "win32") {
@@ -113,6 +122,7 @@ export async function scanProcessesWithCwdUnder(
       };
     }
     let excluded = 0;
+    let unreadableSameUser = 0;
     for (const entry of entries) {
       if (!/^\d+$/u.test(entry)) continue;
       const pid = Number(entry);
@@ -138,6 +148,10 @@ export async function scanProcessesWithCwdUnder(
             excluded += 1;
             continue;
           }
+          if (io.uid !== null && args.strictSameUser !== true) {
+            unreadableSameUser += 1;
+            continue;
+          }
         }
         return {
           status: "unknown",
@@ -147,9 +161,10 @@ export async function scanProcessesWithCwdUnder(
       if (directories.some((directory) => isUnder(cwd, directory)))
         holders.push({ pid, cwd });
     }
+    const coverage = { excludedOtherUsers: excluded, unreadableSameUser };
     return holders.length > 0
-      ? { status: "held", holders, excludedOtherUsers: excluded }
-      : { status: "clear", excludedOtherUsers: excluded };
+      ? { status: "held", holders, ...coverage }
+      : { status: "clear", ...coverage };
   }
   let output: { code: number | null; stdout: string; stderr: string };
   try {
@@ -181,7 +196,8 @@ export async function scanProcessesWithCwdUnder(
         holders.push({ pid, cwd });
     }
   }
+  const coverage = { excludedOtherUsers: null, unreadableSameUser: null };
   return holders.length > 0
-    ? { status: "held", holders, excludedOtherUsers: null }
-    : { status: "clear", excludedOtherUsers: null };
+    ? { status: "held", holders, ...coverage }
+    : { status: "clear", ...coverage };
 }

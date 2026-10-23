@@ -108,9 +108,7 @@ export default async function personalWorkspacePlugin(
         report.log(
           removal.excludedOtherUsers === null
             ? "Only the current user's processes were checked before removing the workspace; other users' processes were not."
-            : removal.excludedOtherUsers === 0
-              ? "Checked the current user's processes before removing the workspace; no process of another user was unreadable."
-              : `Checked the current user's processes before removing the workspace; ${removal.excludedOtherUsers} process(es) of other users could not be read and were excluded.`,
+            : `Checked the current user's processes before removing the workspace; ${removal.excludedOtherUsers} process(es) of other users and ${removal.unreadableSameUser ?? 0} unreadable helper process(es) of the same user could not be read and were not counted.`,
         );
         return { status: "removed" };
       } catch (error) {

@@ -1660,11 +1660,16 @@ answers `clear`, `held` or `unknown`. Its only callers are the first-party
 use it to report the holders of a tree and refuse to delete it unless the
 answer is `clear`; the daemon's thread-storage deletion and recursive file
 removal call the same `@bb/process-utils` function directly. `unknown` covers
-Windows, a symlinked target, an unreadable process list, a same-user process
-whose cwd cannot be read, and an `lsof` failure, timeout or exit above 1.
-`clear` vouches for the current user's processes only: other users' processes
-are excluded and counted in the answer (owner ruling 2026-10-22), a residual
-the PR body states. It checks working directories only (not open files), and a
+Windows, a symlinked target, an unreadable process list, and an `lsof` failure,
+timeout, exit above 1 or any warning output. `clear` vouches for the current
+user's readable processes only: other users' processes are excluded and counted
+in the answer (owner ruling 2026-10-22), and so are the same user's processes
+whose working directory cannot be read. Measured on a development host, 22 of
+287 same-user processes were unreadable (systemd --user, ssh-agent and
+sshd-session, which drop privileges and become non-dumpable), so treating each
+as unknown, as the ruling's wording reads, would make `clear` unreachable on an
+ordinary Linux machine; the caller may still ask for that strict rule. Both are
+residuals the PR body states. It checks working directories only (not open files), and a
 process can still enter the tree between the scan and the delete. Stabilize it
 by replacing it with a reviewed holder scan that also covers open files and
 mapped files (the worktree plugin has a private one) and by deleting this

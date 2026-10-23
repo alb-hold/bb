@@ -198,16 +198,16 @@ Making your repo work with bb:
 
   After the last live thread is archived, the environment provider's policy
   sets a retirement deadline; checkout environments never retire. A worktree
-  waits five minutes and then tears down: it runs .bb-env-teardown.sh, stops
-  every process whose working directory is inside the worktree (the agent
-  process, background jobs it left behind, and also shells, editors, or
-  servers you started there yourself), removes the worktree, and records the
+  waits five minutes and then tears down: it runs .bb-env-teardown.sh, removes
+  the worktree, and records the
   environment as destroyed. The branch is kept. Before any of that, a worktree
   is kept, not removed, when it holds recoverable work: a `.keep-worktree`
   file in its root (create one to keep a worktree on purpose), modified or
   untracked files, a commit not reachable from any remote-tracking branch
   (this includes repositories with no remote), a lock, or an unfinished merge,
-  rebase, cherry-pick or revert. `bb environment show <id>` then prints the
+  rebase, cherry-pick or revert, or a process working inside it (bb never stops a
+  process to remove a worktree; shells, editors, servers and background jobs left
+  there keep it). `bb environment show <id>` then prints the
   reason as "Kept" and bb retries with a growing delay. Unarchiving a thread
   inside the grace window cancels the teardown. Move your own shells out of
   the worktree first if you want to keep them. Deleting the last thread, or an
