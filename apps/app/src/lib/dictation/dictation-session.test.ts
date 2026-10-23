@@ -320,6 +320,32 @@ describe("DictationSession", () => {
     expect(h.texts).toEqual([]);
   });
 
+  it("never resends a clip whose upload fails after dictation was cancelled", async () => {
+    const h = harness();
+    h.session.start();
+    h.speak(1_500);
+    h.advance(DICTATION_PAUSE_MS + DICTATION_TICK_MS);
+    await h.flush();
+    expect(h.calls).toHaveLength(1);
+    h.session.cancel();
+    h.calls[0]?.reject(
+      new BbHttpError({
+        body: null,
+        code: "provider_rpc_error",
+        message: "failed",
+        status: 502,
+      }),
+    );
+    await h.flush();
+    h.advance(10_000);
+    await h.flush();
+    h.session.retryFailed();
+    await h.flush();
+    expect(h.calls).toHaveLength(1);
+    expect(h.texts).toEqual([]);
+    expect(h.last()?.failure ?? null).toBeNull();
+  });
+
   it("sends the whole recording when no level meter is available", async () => {
     const h = harness({ vad: false });
     h.session.start();

@@ -162,6 +162,9 @@ export function reserveWritingUsage(
       estimatedCostMicros:
         current.estimatedCostMicros + (delta.estimatedCostMicros ?? 0),
     };
+    if (Object.values(next).some((value) => typeof value === "number" && value < 0)) {
+      return current;
+    }
     writeValue(tx, usageKey(day), next);
     tx.delete(appSettingsValues)
       .where(

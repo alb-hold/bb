@@ -52,6 +52,38 @@ describe("writing assistance usage", () => {
     });
   });
 
+  it("ignores a duplicate refund across midnight without resetting either day's other totals", () => {
+    reserveWritingUsage(db, "2026-10-17", { corrections: 1 }, () => true);
+    addWritingUsage(db, "2026-10-17", { formattings: 2, inputChars: 40 });
+    reserveWritingUsage(db, "2026-10-18", { corrections: 4 }, () => true);
+    addWritingUsage(db, "2026-10-18", { audioSeconds: 6.5 });
+    addWritingUsage(db, "2026-10-17", { corrections: -1 });
+    expect(addWritingUsage(db, "2026-10-17", { corrections: -1 })).toMatchObject({
+      corrections: 0,
+      formattings: 2,
+    });
+    expect(getWritingUsage(db, "2026-10-17")).toMatchObject({
+      corrections: 0,
+      formattings: 2,
+      inputChars: 40,
+    });
+    expect(getWritingUsage(db, "2026-10-18")).toMatchObject({
+      corrections: 4,
+      audioSeconds: 6.5,
+    });
+  });
+
+  it("does not recreate a pruned day when a late refund arrives for it", () => {
+    for (const day of ["2026-10-15", "2026-10-16", "2026-10-17"]) {
+      addWritingUsage(db, day, { corrections: 1 });
+    }
+    addWritingUsage(db, "2026-10-15", { corrections: -1 });
+    expect(storedUsageKeys(db)).toEqual([
+      "writingAssistanceUsage:2026-10-16",
+      "writingAssistanceUsage:2026-10-17",
+    ]);
+  });
+
   it("keeps the previous day and drops older days when usage is recorded", () => {
     for (const day of ["2026-10-14", "2026-10-15", "2026-10-16", "2026-10-17"]) {
       addWritingUsage(db, day, { corrections: 1 });

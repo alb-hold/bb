@@ -149,6 +149,14 @@ export function createAiServiceRegistry(
     if (cached === undefined || now() - cached.checkedAt > STATUS_TTL_MS) {
       return undefined;
     }
+    const pending = inFlight.get(service);
+    if (
+      !cached.status.ready &&
+      pending !== undefined &&
+      pending.startedAt > cached.startedAt
+    ) {
+      return undefined;
+    }
     return cached.status;
   }
 

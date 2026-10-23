@@ -350,7 +350,8 @@ other than the daily limit, whether the upload failed or the server or the
 `voice` service failed after the clip arrived, the app sends the same clip once
 more automatically, so the `voice` service can receive it twice; after that the
 clip is sent again only if you choose Retry. A clip refused by the daily limit
-stops dictation and is not resent automatically. bb keeps no
+stops dictation and is not resent automatically. Cancelling dictation drops
+every clip still uploading or waiting; none of them is sent again. bb keeps no
 audio: the server holds a clip in memory for its request and writes it to
 neither disk nor the database (what the voice service's provider keeps is up to
 that provider). The server measures each
@@ -1512,9 +1513,11 @@ conversation. Memory, native subagents, and the Workflow tool are toggled on
 the provider's page in Settings → Providers (see `bb guide providers`).
 
 Two host-daemon environment variables reach the Claude Code bridge:
-`BB_CLAUDE_CODE_EXECUTABLE` picks the `claude` binary, and
-`CLAUDE_CODE_OAUTH_TOKEN` authenticates a machine with no interactive login,
-such as a CI runner (mint it with `claude setup-token`). See the
+`BB_CLAUDE_CODE_EXECUTABLE` picks the `claude` binary (otherwise bb uses
+`claude` from the host's PATH) for Claude threads and the Claude writing
+service alike, so writing-assistance text reaches the same binary; a request
+cannot choose it. The other, `CLAUDE_CODE_OAUTH_TOKEN`, authenticates a
+machine with no interactive login, such as a CI runner (mint it with `claude setup-token`). See the
 `claude-code-provider` skill.
 
 ### Account Pooler [Experimental]

@@ -355,6 +355,83 @@ describe("AI service registry", () => {
       }
     });
 
+    it("does not answer from an older check's timeout while a newer check is pending, and uses the service once the newer check reports Ready", async () => {
+      vi.useFakeTimers();
+      try {
+        const answers: ((status: { ready: true }) => void)[] = [];
+        let calls = 0;
+        const registry = createAiServiceRegistry();
+        registry.register(
+          service(() => {
+            calls += 1;
+            if (calls === 1) return new Promise(() => {});
+            return new Promise((resolve) => answers.push(resolve));
+          }),
+        );
+        const wait = AI_STATUS_FALLBACK_WAIT_MS;
+        const notResponding = { ready: false, message: "Not responding" };
+
+        const first = registry.settledStatus(ACME, wait);
+        await vi.advanceTimersByTimeAsync(wait + 1);
+        await expect(first).resolves.toEqual(notResponding);
+        const second = registry.settledStatus(ACME, wait);
+        await vi.advanceTimersByTimeAsync(wait + 1);
+        await expect(second).resolves.toEqual(notResponding);
+        expect(calls).toBe(2);
+
+        await vi.advanceTimersByTimeAsync(26_000);
+        expect(registry.peekStatus(ACME)).toEqual(notResponding);
+        let result: unknown = null;
+        const third = registry.settledStatus(ACME, wait);
+        void third.then((status) => {
+          result = status;
+        });
+        await vi.advanceTimersByTimeAsync(0);
+        expect(result).toBeNull();
+        answers.shift()?.({ ready: true });
+        await vi.advanceTimersByTimeAsync(wait + 1);
+        await expect(third).resolves.toEqual({ ready: true });
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("still reports a service that never answers as Not responding while requests keep starting new checks", async () => {
+      vi.useFakeTimers();
+      try {
+        let calls = 0;
+        const registry = createAiServiceRegistry();
+        registry.register(
+          service(() => {
+            calls += 1;
+            return new Promise(() => {});
+          }),
+        );
+        const notResponding = { ready: false, message: "Not responding" };
+        for (let poll = 0; poll < 12; poll += 1) {
+          void registry.status(ACME);
+          await vi.advanceTimersByTimeAsync(3_000);
+        }
+        expect(calls).toBe(12);
+        for (let poll = 0; poll < 4; poll += 1) {
+          void registry.status(ACME);
+          await vi.advanceTimersByTimeAsync(400);
+        }
+        expect(calls).toBe(13);
+        expect(registry.peekStatus(ACME)).toEqual(notResponding);
+        const shown = registry.status(ACME);
+        const settled = registry.settledStatus(
+          ACME,
+          AI_STATUS_FALLBACK_WAIT_MS,
+        );
+        await vi.advanceTimersByTimeAsync(AI_STATUS_FALLBACK_WAIT_MS + 1);
+        await expect(shown).resolves.toEqual(notResponding);
+        await expect(settled).resolves.toEqual(notResponding);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it("reports Not responding only when a check never answers", async () => {
       vi.useFakeTimers();
       try {

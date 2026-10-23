@@ -6,6 +6,8 @@ import {
   claudeCompleteEnv,
   completeClaudeInference,
 } from "./claude-complete.js";
+import { claudeExecutable } from "../bridge/provider-maintenance.js";
+import { claudeAiCompleteInputSchema } from "./host-contract.js";
 
 const tempDirs: string[] = [];
 
@@ -207,5 +209,32 @@ describe("completeClaudeInference", () => {
     });
     expect(result).toMatchObject({ ok: false, code: "request_failed" });
     expect(result.ok ? "" : result.message).toContain("Install Claude Code");
+  });
+});
+
+describe("the Claude CLI that writing assistance runs", () => {
+  it("is chosen only by the host process environment, never by the request", async () => {
+    const request = { model: "haiku", prompt: "Fix this.", timeoutMs: 1_000 };
+    expect(claudeAiCompleteInputSchema.safeParse(request).success).toBe(true);
+    for (const extra of [
+      { executable: "/tmp/other-cli" },
+      { env: { BB_CLAUDE_CODE_EXECUTABLE: "/tmp/other-cli" } },
+    ]) {
+      expect(
+        claudeAiCompleteInputSchema.safeParse({ ...request, ...extra }).success,
+      ).toBe(false);
+    }
+    const previous = process.env.BB_CLAUDE_CODE_EXECUTABLE;
+    try {
+      process.env.BB_CLAUDE_CODE_EXECUTABLE = "  /opt/claude/bin/claude  ";
+      expect(await claudeExecutable()).toBe("/opt/claude/bin/claude");
+      delete process.env.BB_CLAUDE_CODE_EXECUTABLE;
+      if (process.platform !== "win32") {
+        expect(await claudeExecutable()).toBe("claude");
+      }
+    } finally {
+      if (previous === undefined) delete process.env.BB_CLAUDE_CODE_EXECUTABLE;
+      else process.env.BB_CLAUDE_CODE_EXECUTABLE = previous;
+    }
   });
 });
