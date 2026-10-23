@@ -32,6 +32,11 @@ import { compress } from "hono/compress";
 import { cors } from "hono/cors";
 import type { ServerAppDeps } from "./types.js";
 import { ApiError, createServerErrorHandler } from "./errors.js";
+import {
+  getInactiveSessionLogFields,
+  requireAuthorizedOpenSession,
+} from "./internal/session-state.js";
+import { runtimeErrorLogFields } from "./services/lib/error-log-fields.js";
 import { registerEnvironmentRoutes } from "./routes/environments.js";
 import { registerFileRoutes } from "./routes/files.js";
 import { registerHostRoutes } from "./routes/hosts.js";
@@ -96,6 +101,7 @@ import {
 } from "./ws/client-protocol.js";
 import {
   createDaemonSocketMessageQueue,
+  enqueueDaemonSocketFrame,
   onDaemonSocketClose,
   onDaemonSocketMessage,
   onDaemonSocketOpen,
@@ -1089,10 +1095,15 @@ export function createApp(
         protocolHeader: context.req.header("sec-websocket-protocol"),
         sessionId: context.req.query("sessionId") ?? null,
       });
-      const daemonMessageQueue = createDaemonSocketMessageQueue<() => void>({
+      const daemonMessageQueue = createDaemonSocketMessageQueue<
+        () => void | Promise<void>
+      >({
         handle: (message) => message(),
         onError: (error) => {
-          deps.logger.error({ err: error }, "Daemon socket message queue failed");
+          deps.logger.error(
+            { err: error },
+            "Daemon socket message queue failed",
+          );
         },
       });
       return {
@@ -1113,20 +1124,81 @@ export function createApp(
           );
         },
         onMessage: (event, socket) =>
-          daemonMessageQueue.enqueue(() =>
-            onDaemonSocketMessage(
-              deps,
-              {
-                hostId: websocketContext.hostId,
-                raw: event.data,
-                sessionId: websocketContext.sessionId,
-                socket,
-              },
-              pluginService,
-              serverMove,
-            ),
-          ),
-        onClose: () => onDaemonSocketClose(deps, websocketContext.sessionId),
+          enqueueDaemonSocketFrame({
+            authorize: (messageType) => {
+              try {
+                requireAuthorizedOpenSession(deps.db, {
+                  hostId: websocketContext.hostId,
+                  sessionId: websocketContext.sessionId,
+                });
+                return true;
+              } catch (error) {
+                if (
+                  error instanceof ApiError &&
+                  error.body.code === "inactive_session"
+                ) {
+                  deps.logger.info(
+                    getInactiveSessionLogFields(deps.db, {
+                      authenticatedHostId: websocketContext.hostId,
+                      now: Date.now(),
+                      sessionId: websocketContext.sessionId,
+                    }),
+                    "Daemon heartbeat for inactive session, closing socket",
+                  );
+                } else if (error instanceof ApiError && error.status === 403) {
+                  deps.logger.warn(
+                    {
+                      sessionId: websocketContext.sessionId,
+                      ...runtimeErrorLogFields(deps.config, error),
+                    },
+                    "Daemon heartbeat for unauthorized session, closing socket",
+                  );
+                } else {
+                  deps.logger.warn(
+                    {
+                      sessionId: websocketContext.sessionId,
+                      messageType,
+                      ...runtimeErrorLogFields(deps.config, error),
+                    },
+                    "Daemon message rejected, closing socket",
+                  );
+                }
+                socket.close(
+                  1008,
+                  error instanceof ApiError && error.status === 403
+                    ? "unauthorized-session"
+                    : "inactive-session",
+                );
+                return false;
+              }
+            },
+            enqueue: (message, priority, acceptedAtArrival) =>
+              daemonMessageQueue.enqueue(
+                () =>
+                  onDaemonSocketMessage(
+                    deps,
+                    {
+                      acceptedAtArrival,
+                      hostId: websocketContext.hostId,
+                      message,
+                      raw: event.data,
+                      sessionId: websocketContext.sessionId,
+                      socket,
+                    },
+                    pluginService,
+                    serverMove,
+                  ),
+                priority,
+              ),
+            raw: event.data,
+            recordActivity: () =>
+              deps.hub.recordDaemonActivity(websocketContext.sessionId),
+            socket,
+          }),
+        onClose: () => {
+          daemonMessageQueue.close();
+          onDaemonSocketClose(deps, websocketContext.sessionId);
+        },
       };
     }),
   );

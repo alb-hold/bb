@@ -169,18 +169,25 @@ function runTimedStatementOperation<TValue>(
     if (durationMs >= thresholdMs) {
       const cpu = threadCpuUsage(startedCpu);
       const finishedUsage = startedUsage ? resourceUsage() : null;
+      const callers =
+        args.callerStackBoundary === null
+          ? undefined
+          : captureCallers(args.callerStackBoundary);
+      const eventLoopWork = args.config.workLabel();
       args.config.logger.info(
         {
           bindingArgumentCount: args.bindingArgumentCount,
           durationMs: roundDurationMs(durationMs),
           cpuDurationMs: roundDurationMs((cpu.user + cpu.system) / 1_000),
-          eventLoopWork: args.config.workLabel(),
+          eventLoopWork:
+            eventLoopWork ??
+            (args.operation === "transaction"
+              ? `db transaction: ${callers?.[0] ?? "unknown caller"}`
+              : null),
           operation: args.operation,
           sql: formatSqlForLog(args.source),
           thresholdMs,
-          ...(args.callerStackBoundary === null
-            ? {}
-            : { callers: captureCallers(args.callerStackBoundary) }),
+          ...(callers === undefined ? {} : { callers }),
           ...(startedUsage && finishedUsage
             ? {
                 diagnostics: finishQueryDiagnostics(
