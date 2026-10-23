@@ -24,6 +24,22 @@ export interface SlowDbQueryLogFields {
   sql: string;
   thresholdMs: number;
   diagnostics?: QueryDiagnosticsLogFields;
+  requestShape?: ThreadListRequestShape;
+  clientKind?: ThreadListClientKind;
+}
+
+export interface ThreadListRequestShape {
+  includeHidden: boolean;
+  archived: "true" | "false" | "absent";
+  filters: string[];
+  limit: number | null;
+  offset: number | null;
+}
+
+export interface ThreadListClientKind {
+  appSurface: "api" | "desktop" | "mobile" | "web";
+  userAgentKind: "node" | "browser" | "other" | "missing";
+  pluginId?: string;
 }
 
 export interface SlowDbQueryLogger {

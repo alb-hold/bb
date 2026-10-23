@@ -5,6 +5,8 @@ export type {
   DbTransaction,
   SlowDbQueryLogger,
   SlowDbQueryLogFields,
+  ThreadListClientKind,
+  ThreadListRequestShape,
 } from "./connection.js";
 
 export * from "./schema.js";
