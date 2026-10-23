@@ -679,21 +679,33 @@ is still owned by a preparing thread that never reached `ready`. A provider that
 already changed anything must return `failed` with a message naming what was
 removed and what was kept.
 
-A failed `create` or `restore` result may carry `experimental_retained:
-{ path }` to say the attempt left that path behind on purpose. Core writes a
-row to `environment_retentions` (no foreign keys, so it outlives the
-environment row) for each path a create claimed: an `intent` row when the claim
-is made, `retained` when the failed result names the path, `unresolved` when
-the create threw or core could not bind a path the provider produced, and no
-row once the create succeeds or fails without keeping anything. An intent that
-never gets an outcome (a crash, a lost reply) stays blocking. While any
-`intent`, `retained` or `unresolved` row exists for a machine, core refuses to
-destroy an ephemeral machine, refuses to hard-delete its project, and refuses
-file removal and moves at or around the path. No state leaves `retained` yet:
-the owner-release transition (`released_by_owner`) is deliberately unreachable
-until the consent protocol is accepted. Stabilization needs that transition,
-the consumers listed in the PR's B2 map that are still unbuilt (archive
-cascades, the placement start condition), and a rename project-wide.
+A failed `create` or `restore` result says what the attempt kept in
+`experimental_retained`: `{ path }` means it kept that path on purpose, `null`
+means it kept nothing, and leaving the field out means the provider does not
+know, which core treats as unresolved. Core writes a row to
+`environment_retentions` (no foreign keys, so it outlives the environment row):
+an `intent` row with no path before every provider create or restore is
+dispatched, a second `intent` row when the create claims a path, `retained`
+when the failed result names the path, `unresolved` when the create threw, did
+not say what it kept, or core could not bind a path the provider produced, and
+no row once the create succeeds or says it kept nothing. An intent that never
+gets an outcome (a crash, a lost reply) stays blocking, and a retained or
+unresolved row is never turned back into an intent or deleted by a later retry.
+While any `intent`, `retained` or `unresolved` row exists for a machine, core
+refuses to destroy or remove that machine, refuses to hard-delete its project,
+refuses file removal and moves at or around a recorded path, and refuses a new
+create for the same thread. `released_by_owner` stays unreachable until the
+consent protocol is accepted. A row closes only through the optional
+`experimental_proveRetentionAbsent(context)` hook, which must not mutate and
+must answer `{ absent: true, proof }` only when the path is gone from the
+machine, no workspace of the project's repository is registered at or around
+it, and no workspace holds a branch of the thread; core runs it in the provider
+lifecycle sweep and writes the proof, the host and the time on the row itself
+(`state: "closed"`, `closed_at`, `closed_proof`), adding no event type. A row
+with no path, or whose provider has no hook, never closes. Stabilization needs
+the owner-release transition, the consumers in the PR's map that are still
+unbuilt (archive cascades, the placement start condition), and a rename
+project-wide.
 
 `experimental_preflightRemove(context)` is optional and runs after the claim and
 before the teardown script. It must not mutate. `{ status: "retained", message }`
