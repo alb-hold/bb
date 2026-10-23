@@ -566,6 +566,52 @@ describe("event loop stall monitor", () => {
     monitor.stop();
   });
 
+  it("does not attribute a stall to the sum of multiple short operations", () => {
+    installHistogram({ maxDelayMs: 1_000, meanDelayMs: 25, p99DelayMs: 450 });
+    const logger = { info: vi.fn() };
+    const nowSpy = vi.spyOn(nodePerformance, "now");
+    const cpuValues = [
+      0,
+      300_000,
+      0,
+      300_000,
+      0,
+      300_000,
+      0,
+      300_000,
+      0,
+      1_200_000,
+    ];
+    vi.spyOn(process, "threadCpuUsage").mockImplementation(() => ({
+      user: cpuValues.shift() ?? 1_200_000,
+      system: 0,
+    }));
+    [0, 10, 20, 30, 40, 50, 60, 70].forEach((time) => {
+      nowSpy.mockReturnValueOnce(time);
+    });
+    for (let operation = 1; operation <= 4; operation += 1) {
+      runEventLoopWorkSync(`test:short-${operation}`, () => undefined);
+    }
+    nowSpy.mockRestore();
+
+    const monitor = startEventLoopStallMonitor({ logger });
+    vi.advanceTimersByTime(EVENT_LOOP_STALL_MONITOR_INTERVAL_MS);
+
+    expect(logger.info).toHaveBeenCalledWith(
+      expect.objectContaining({
+        mainThreadCpuWallRatio: 0.24,
+        longestSynchronousWork: "test:short-1",
+        longestSynchronousWorkWallMs: 10,
+        longestSynchronousWorkCpuMs: 300,
+        synchronousWorkCpuMs: 1_200,
+        stallAttribution: "unattributed",
+        stallCauseCandidate: "test:short-1",
+      }),
+      "Event loop stalled",
+    );
+    monitor.stop();
+  });
+
   it("attributes a GC pause as the strongest stall candidate", () => {
     installHistogram({ maxDelayMs: 500, meanDelayMs: 25, p99DelayMs: 450 });
     type SyntheticEntryList = {

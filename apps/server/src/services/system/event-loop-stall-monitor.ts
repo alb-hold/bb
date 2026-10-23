@@ -124,14 +124,15 @@ export function startEventLoopStallMonitor(
           (total, pause) => total + pause.durationMs,
           0,
         );
-        const synchronousWorkDurationMs = Math.max(
-          work.synchronousWorkCpuMs,
+        const longestSynchronousWorkDurationMs = Math.max(
+          work.longestSynchronousWorkCpuMs ?? 0,
           work.longestSynchronousWorkWallMs ?? 0,
         );
-        const gcIsStrongest = totalGcPauseMs > synchronousWorkDurationMs;
+        const gcIsStrongest =
+          totalGcPauseMs > longestSynchronousWorkDurationMs;
         const candidateDurationMs = gcIsStrongest
           ? totalGcPauseMs
-          : synchronousWorkDurationMs;
+          : longestSynchronousWorkDurationMs;
         const measuredWorkCandidate = gcIsStrongest
           ? totalGcPauseMs > 0
             ? "gc"
