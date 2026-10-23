@@ -666,9 +666,6 @@ export async function createWorktree(
   });
 
   throwIfProvisionAborted(args.signal);
-  await ensureWorkspaceParentDirectory(args.targetPath);
-
-  throwIfProvisionAborted(args.signal);
   const reuseExistingBranch =
     args.branchMode === "reuse-existing" &&
     (await hasRef(args.sourcePath, `refs/heads/${args.branchName}`));
@@ -743,6 +740,8 @@ export async function createWorktree(
   let worktreeCreated = false;
   let createdBy: CreatedBy | undefined;
   try {
+    throwIfProvisionAborted(args.signal);
+    await ensureWorkspaceParentDirectory(args.targetPath);
     const result = await runGitWithWorktreeMetadataLock(gitArgs, {
       cwd: args.sourcePath,
       ...(args.signal !== undefined ? { signal: args.signal } : {}),

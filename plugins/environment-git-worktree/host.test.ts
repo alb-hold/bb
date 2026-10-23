@@ -839,8 +839,11 @@ describe("worktree host entry", () => {
           pathKey,
           path: null,
         }),
-      ).toEqual({ status: "removed" });
-      expect(existsSync(join(dataDir, "worktrees", pathKey))).toBe(false);
+      ).toMatchObject({
+        status: "retained",
+        message: expect.stringContaining(result.path),
+      });
+      expect(existsSync(result.path)).toBe(true);
       await harness.experimental_dispose();
     },
   );
@@ -1063,7 +1066,7 @@ describe("worktree host entry", () => {
     await harness.experimental_dispose();
   });
 
-  it("replaces an invalid target before recreating the expected branch", async () => {
+  it("refuses to replace a target that is on another branch and leaves it as it was", async () => {
     const { root, sourcePath, dataDir } = await createSourceRepository();
     await publishToBareRemote(root, sourcePath);
     const harness = createHarness(dataDir);
@@ -1076,14 +1079,18 @@ describe("worktree host entry", () => {
     const first = await harness.experimental_call("create", input);
     if (first.status !== "created") throw new Error(first.message);
     await git(first.path, "checkout", "-b", "wrong-branch");
-    const replaced = await harness.experimental_call("create", {
+    const retried = await harness.experimental_call("create", {
       ...input,
       operationId: "retry",
     });
-    expect(replaced.status).toBe("created");
+    expect(retried).toMatchObject({
+      status: "failed",
+      message: expect.stringContaining("left alone"),
+      kept: { kind: "kept", path: first.path },
+    });
     expect(
       (await git(first.path, "rev-parse", "--abbrev-ref", "HEAD")).trim(),
-    ).toBe("bb/expected");
+    ).toBe("wrong-branch");
     await harness.experimental_dispose();
   });
 
@@ -1143,7 +1150,7 @@ describe("worktree host entry", () => {
     );
     expect(retry).toMatchObject({
       status: "failed",
-      message: expect.stringContaining("uncommitted changes"),
+      message: expect.stringContaining("still checked out"),
     });
     expect(existsSync(join(first.path, "notes.txt"))).toBe(true);
     await harness.experimental_dispose();
@@ -1787,7 +1794,7 @@ setTimeout(() => {}, 300_000);`,
           status: "retained",
           message: expect.stringContaining("uncommitted changes"),
         });
-        await expectWorktreeIntact(worktree);
+        expect(existsSync(join(worktree.path, "README.md"))).toBe(true);
         expect(existsSync(join(worktree.path, "notes.txt"))).toBe(true);
       } finally {
         await worktree.harness.experimental_dispose();
@@ -1852,9 +1859,7 @@ setTimeout(() => {}, 300_000);`,
           );
           expect(retried).toMatchObject({
             status: "failed",
-            message: expect.stringContaining(
-              "not reachable from any remote-tracking branch",
-            ),
+            message: expect.stringContaining("left alone"),
           });
           expect((await git(worktree.path, "rev-parse", "HEAD")).trim()).toBe(
             sha,
@@ -2059,7 +2064,7 @@ setTimeout(() => {}, 300_000);`,
             }),
           ).rejects.toMatchObject({
             code: "worktree_preserved",
-            message: expect.stringContaining("could not record"),
+            message: expect.stringContaining("stays in place"),
           });
           expect(existsSync(join(worktree.path, "README.md"))).toBe(true);
           expect(isPidAlive(worktree.lingering.pid ?? 0)).toBe(true);
