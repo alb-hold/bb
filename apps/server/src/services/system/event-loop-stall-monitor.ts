@@ -18,6 +18,8 @@ interface GcPause {
   kind: number;
 }
 
+const DESCHEDULED_PROCESS_CPU_WALL_RATIO_THRESHOLD = 0.1;
+
 interface GcEntryList {
   getEntries: () => Array<PerformanceEntry & { kind?: number }>;
 }
@@ -40,6 +42,9 @@ export function startEventLoopStallMonitor(
 ): EventLoopStallMonitor {
   let gcPauses: GcPause[] = [];
   let previousUtilization = performance.eventLoopUtilization();
+  let previousCpuUsage = process.cpuUsage();
+  const now = options.now ?? Date.now;
+  let previousSampleAt = now();
   const Observer = (options.performanceObserver ??
     PerformanceObserver) as GcObserverConstructor;
   const gcObserver = new Observer((list) => {
@@ -58,6 +63,16 @@ export function startEventLoopStallMonitor(
     thresholdMs: options.thresholdMs,
     onSample: ({ stall }) => {
       const work = takeEventLoopWorkWindowSnapshot();
+      const sampledAt = now();
+      const windowWallMs = sampledAt - previousSampleAt;
+      previousSampleAt = sampledAt;
+      const cpuUsage = process.cpuUsage(previousCpuUsage);
+      previousCpuUsage = process.cpuUsage();
+      const processCpuMs = (cpuUsage.user + cpuUsage.system) / 1_000;
+      const processCpuWallRatio =
+        windowWallMs <= 0 ? 0 : processCpuMs / windowWallMs;
+      const descheduled =
+        processCpuWallRatio < DESCHEDULED_PROCESS_CPU_WALL_RATIO_THRESHOLD;
       const utilization = performance.eventLoopUtilization(previousUtilization);
       previousUtilization = performance.eventLoopUtilization();
       const gcPausesInWindow = gcPauses;
@@ -75,18 +90,24 @@ export function startEventLoopStallMonitor(
         const candidateDurationMs = gcIsStrongest
           ? totalGcPauseMs
           : synchronousWorkDurationMs;
-        const candidate = gcIsStrongest
+        const measuredWorkCandidate = gcIsStrongest
           ? totalGcPauseMs > 0
             ? "gc"
             : null
           : work.longestSynchronousWork;
+        const candidate = descheduled ? "descheduled" : measuredWorkCandidate;
         const hasCandidate =
-          candidate !== null &&
-          candidateDurationMs + stall.resolutionMs >= stall.maxDelayMs;
+          descheduled ||
+          (candidate !== null &&
+            candidateDurationMs + stall.resolutionMs >= stall.maxDelayMs);
         options.logger.info(
           {
             ...stall,
             ...work,
+            processCpuMs: roundDurationMs(processCpuMs),
+            processCpuWallRatio:
+              Math.round(processCpuWallRatio * 1_000) / 1_000,
+            windowWallMs: roundDurationMs(windowWallMs),
             eventLoopUtilization: {
               activeMs: roundDurationMs(utilization.active),
               idleMs: roundDurationMs(utilization.idle),

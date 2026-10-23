@@ -89,7 +89,21 @@ const EMPTY_WORK_SNAPSHOT = {
 
 describe("event loop stall monitor", () => {
   beforeEach(() => {
-    vi.useFakeTimers();
+    vi.useFakeTimers({
+      toFake: [
+        "setTimeout",
+        "setInterval",
+        "clearTimeout",
+        "clearInterval",
+        "Date",
+        "performance",
+      ],
+    });
+    vi.spyOn(process, "cpuUsage").mockImplementation((previous) =>
+      previous === undefined
+        ? { user: 0, system: 0 }
+        : { user: 5_000_000, system: 0 },
+    );
     perfHooksMock.monitorEventLoopDelay.mockClear();
     perfHooksMock.state.histogram = null;
     resetEventLoopWorkForTests();
@@ -97,6 +111,7 @@ describe("event loop stall monitor", () => {
 
   afterEach(() => {
     vi.clearAllTimers();
+    vi.restoreAllMocks();
     vi.useRealTimers();
   });
 
@@ -130,6 +145,9 @@ describe("event loop stall monitor", () => {
           thresholdMs: expectedThreshold,
           stallAttribution: "unattributed",
           stallCauseCandidate: null,
+          processCpuMs: 5_000,
+          processCpuWallRatio: 1,
+          windowWallMs: 5_000,
           eventLoopUtilization: expect.objectContaining({
             activeMs: expect.any(Number),
             idleMs: expect.any(Number),
@@ -158,6 +176,29 @@ describe("event loop stall monitor", () => {
     enabled = false;
     vi.advanceTimersByTime(EVENT_LOOP_STALL_MONITOR_INTERVAL_MS);
     expect(logger.info).toHaveBeenCalledTimes(1);
+    monitor.stop();
+  });
+
+  it("attributes a low process CPU to descheduled work", () => {
+    installHistogram({ maxDelayMs: 1_000, meanDelayMs: 25, p99DelayMs: 450 });
+    vi.spyOn(process, "cpuUsage").mockImplementation((previous) =>
+      previous === undefined
+        ? { user: 0, system: 0 }
+        : { user: 100_000, system: 0 },
+    );
+    const logger = { info: vi.fn() };
+    const monitor = startEventLoopStallMonitor({ logger });
+    vi.advanceTimersByTime(EVENT_LOOP_STALL_MONITOR_INTERVAL_MS);
+    expect(logger.info).toHaveBeenCalledWith(
+      expect.objectContaining({
+        processCpuMs: 100,
+        processCpuWallRatio: 0.02,
+        windowWallMs: 5_000,
+        stallAttribution: "candidate",
+        stallCauseCandidate: "descheduled",
+      }),
+      "Event loop stalled",
+    );
     monitor.stop();
   });
 
