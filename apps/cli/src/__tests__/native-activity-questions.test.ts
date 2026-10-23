@@ -606,6 +606,35 @@ describe("native terminal questions", () => {
       });
     });
 
+    it("keeps a later unmatched prompt open after earlier dynamic candidates complete", () => {
+      const { hook, call, ask, done, tracker } = holder();
+      const input = bash("make build");
+      hook(ask(input));
+      hook(call("toolu_1", input));
+      hook(ask(input));
+      hook(call("toolu_2", input));
+      const later = hook(ask(input));
+      const laterId = waiting(later)[2]!.id;
+
+      expect(hook(done("toolu_1", input))).toBeNull();
+      expect(waiting(hook(done("toolu_2", input)))).toEqual([
+        {
+          id: laterId,
+          prompt: "Claude Code needs permission to use: Bash",
+        },
+      ]);
+      expect(waiting(tracker.heartbeat())).toEqual([
+        {
+          id: laterId,
+          prompt: "Claude Code needs permission to use: Bash",
+        },
+      ]);
+      expect(hook(done("toolu_3", input))).toEqual({
+        state: "working",
+        prompt: null,
+      });
+    });
+
     it("does not key-match an ambiguous prompt to a different call ID", () => {
       const { hook, call, ask, done, tracker } = holder();
       const input = bash("make build");
