@@ -40,6 +40,27 @@ import {
 const REBUILD_TIMEOUT_MS = scaleTimeoutMs(30_000);
 const REBUILD_TEST_TIMEOUT_MS = scaleTimeoutMs(120_000);
 
+async function waitForTeardownRemoved(
+  harness: {
+    api: Parameters<typeof getEnvironment>[0];
+    server: { sweepEnvironments(): Promise<void> };
+  },
+  environmentId: string,
+): Promise<void> {
+  const deadline = Date.now() + REBUILD_TIMEOUT_MS;
+  let lifecycle = (await getEnvironment(harness.api, environmentId)).lifecycle;
+  while (lifecycle.teardown?.status !== "removed") {
+    if (Date.now() > deadline) {
+      throw new Error(
+        `Expected the teardown of environment ${environmentId} to be removed within ${REBUILD_TIMEOUT_MS} ms. phase=${lifecycle.phase} teardown=${JSON.stringify(lifecycle.teardown)} message=${JSON.stringify(lifecycle.message ?? null)}`,
+      );
+    }
+    await harness.server.sweepEnvironments();
+    lifecycle = (await getEnvironment(harness.api, environmentId)).lifecycle;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+}
+
 describe.sequential("fake provider environment-isolation multi-thread integration", () => {
   it(
     "refuses sends to a destroyed worktree until the thread restores it",
@@ -105,20 +126,7 @@ describe.sequential("fake provider environment-isolation multi-thread integratio
             .set({ retireAt: Date.now() - 1 })
             .where(eq(environments.id, worktreeThread.environment.id))
             .run();
-          await expect
-            .poll(
-              async () => {
-                await harness.server.sweepEnvironments();
-                return (
-                  await getEnvironment(
-                    harness.api,
-                    worktreeThread.environment.id,
-                  )
-                ).lifecycle.teardown?.status;
-              },
-              { timeout: REBUILD_TIMEOUT_MS },
-            )
-            .toBe("removed");
+          await waitForTeardownRemoved(harness, worktreeThread.environment.id);
           await waitForPathRemoval(originalWorkspacePath, DEFAULT_TIMEOUT_MS);
           await fs.access(teardownMarker);
           await deleteThread(harness.api, unrelatedThread.thread.id);
@@ -351,20 +359,7 @@ describe.sequential("fake provider environment-isolation multi-thread integratio
             .set({ retireAt: Date.now() - 1 })
             .where(eq(environments.id, worktreeThread.environment.id))
             .run();
-          await expect
-            .poll(
-              async () => {
-                await harness.server.sweepEnvironments();
-                return (
-                  await getEnvironment(
-                    harness.api,
-                    worktreeThread.environment.id,
-                  )
-                ).lifecycle.teardown?.status;
-              },
-              { timeout: REBUILD_TIMEOUT_MS },
-            )
-            .toBe("removed");
+          await waitForTeardownRemoved(harness, worktreeThread.environment.id);
           await waitForPathRemoval(worktreePath, DEFAULT_TIMEOUT_MS);
         },
       ),
