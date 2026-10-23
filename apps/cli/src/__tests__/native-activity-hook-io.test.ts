@@ -1137,6 +1137,194 @@ describe.skipIf(process.platform === "win32")(
       ).toEqual(["Stalled", "Taker"]);
     }, 60_000);
 
+    const releaseKit = (file: string, directory: string) => {
+      const shimDir = path.join(directory, "shim");
+      const state = path.join(directory, "state");
+      mkdirSync(shimDir);
+      mkdirSync(state);
+      const realOf = (tool: string): string =>
+        spawnSync("sh", ["-c", `command -v ${tool}`])
+          .stdout.toString()
+          .trim();
+      const shim = (name: string, lines: string[]): void =>
+        writeFileSync(
+          path.join(shimDir, name),
+          ["#!/bin/sh", "for last; do :; done", ...lines, ""].join("\n"),
+          { mode: 0o755 },
+        );
+      const until = async (
+        condition: () => boolean,
+        milliseconds: number,
+      ): Promise<boolean> => {
+        const end = Date.now() + milliseconds;
+        while (Date.now() < end) {
+          if (condition()) return true;
+          await new Promise((resolve) => setTimeout(resolve, 20));
+        }
+        return condition();
+      };
+      const start = (tool: string) => {
+        const hook = spawn("sh", ["-c", hookAppendCommand(file)], {
+          env: {
+            ...process.env,
+            PATH: `${shimDir}:${process.env.PATH ?? ""}`,
+          },
+          stdio: ["pipe", "ignore", "ignore"],
+        });
+        children.push(hook);
+        const exited = new Promise<void>((resolve) => {
+          hook.once("exit", () => resolve());
+        });
+        hook.stdin.end(record("PermissionRequest", { tool_name: tool }));
+        return { exited, pid: hook.pid ?? -1 };
+      };
+      return { realOf, shim, start, state, until };
+    };
+
+    it("leaves the lock of a hook that took it while the old holder was paused after removing its pid, and delivers both records exactly once and in order", async () => {
+      const { directory, file, lock } = appendFixture();
+      const { realOf, shim, start, state, until } = releaseKit(file, directory);
+      shim("ln", ["exit 1"]);
+      shim("rm", [
+        `if [ "$last" = '${lock}/pid' ] && ${realOf("mkdir")} '${state}/rm-claimed' 2>/dev/null; then`,
+        `  ${realOf("rm")} "$@"; rc=$?`,
+        `  : > '${state}/old-holder-paused'`,
+        `  n=0; while [ ! -e '${state}/go-old' ] && [ "$n" -lt 400 ]; do sleep 0.05; n=$((n+1)); done`,
+        "  exit $rc",
+        "fi",
+        `exec ${realOf("rm")} "$@"`,
+      ]);
+      shim("cat", [
+        `if [ "$last" = '${lock}/pid' ]; then`,
+        `  read -r owner < '${lock}/pid'`,
+        `  : > "${state}/at-readback-$owner"`,
+        `  n=0; while [ ! -e "${state}/go-$owner" ] && [ "$n" -lt 400 ]; do sleep 0.05; n=$((n+1)); done`,
+        "fi",
+        `exec ${realOf("cat")} "$@"`,
+      ]);
+      const old = start("Old");
+      writeFileSync(path.join(state, `go-${old.pid}`), "");
+      expect(
+        await until(
+          () => existsSync(path.join(state, "old-holder-paused")),
+          10_000,
+        ),
+      ).toBe(true);
+      expect(readdirSync(lock)).toEqual([]);
+      const taker = start("Taker");
+      expect(
+        await until(
+          () => existsSync(path.join(state, `at-readback-${taker.pid}`)),
+          15_000,
+        ),
+      ).toBe(true);
+      expect(readFileSync(path.join(lock, "pid"), "utf8")).toBe(
+        String(taker.pid),
+      );
+      writeFileSync(path.join(state, "go-old"), "");
+      await until(() => false, 800);
+      expect(lstatSync(lock).isDirectory()).toBe(true);
+      expect(readFileSync(path.join(lock, "pid"), "utf8")).toBe(
+        String(taker.pid),
+      );
+      writeFileSync(path.join(state, `go-${taker.pid}`), "");
+      await Promise.all([old.exited, taker.exited]);
+      expect(
+        readdirSync(directory).filter(
+          (name) =>
+            name.startsWith("hooks.lock") ||
+            name.startsWith(".late.") ||
+            name.startsWith(".tmp.") ||
+            name.startsWith(".lost."),
+        ),
+      ).toEqual([]);
+      expect(new HookAppendReader(file).read().records.map(toolOf)).toEqual([
+        "Old",
+        "Taker",
+      ]);
+    }, 60_000);
+
+    it("does not remove a lock directory that another hook holds after this hook's own was moved away, when it releases", async () => {
+      const { directory, file, lock } = appendFixture();
+      const { realOf, shim, start, state } = releaseKit(file, directory);
+      const other = spawn("sleep", ["30"], { stdio: "ignore" });
+      children.push(other);
+      writeFileSync(path.join(state, "other.pid"), `${other.pid}\n`);
+      const swap = [
+        `${realOf("mv")} '${lock}' '${lock}.kept' && ${realOf("mkdir")} '${lock}' && read -r op < '${state}/other.pid' && printf '%s' "$op" > '${lock}/pid' && : > '${state}/swapped'`,
+      ];
+      shim("ln", ["exit 1"]);
+      shim("cat", [
+        `if [ "$last" = '${lock}/pid' ]; then`,
+        `  if [ -e '${state}/readback-done' ] && [ ! -e '${state}/swapped' ]; then ${swap.join("")}; fi`,
+        `  : > '${state}/readback-done'`,
+        "fi",
+        `exec ${realOf("cat")} "$@"`,
+      ]);
+      shim("rm", [
+        `if [ "$last" = '${lock}/pid' ] && [ -e '${state}/readback-done' ] && [ ! -e '${state}/swapped' ]; then ${swap.join("")}; fi`,
+        `exec ${realOf("rm")} "$@"`,
+      ]);
+      await start("Holder").exited;
+      expect(existsSync(path.join(state, "swapped"))).toBe(true);
+      expect(lstatSync(lock).isDirectory()).toBe(true);
+      expect(readFileSync(path.join(lock, "pid"), "utf8")).toBe(
+        String(other.pid),
+      );
+      expect(new HookAppendReader(file).read().records.map(toolOf)).toEqual([
+        "Holder",
+      ]);
+    }, 60_000);
+
+    it("does not remove a symlink lock that another hook holds after this hook's own was broken, when it releases", async () => {
+      const { directory, file, lock } = appendFixture();
+      const { realOf, shim, start, state } = releaseKit(file, directory);
+      const other = spawn("sleep", ["30"], { stdio: "ignore" });
+      children.push(other);
+      writeFileSync(path.join(state, "other.pid"), `${other.pid}\n`);
+      const swap = `${realOf("rm")} -f '${lock}' && read -r op < '${state}/other.pid' && ${realOf("ln")} -s "$op" '${lock}' && : > '${state}/swapped'`;
+      shim("readlink", [
+        `if [ "$last" = '${lock}' ]; then`,
+        `  if [ -e '${state}/acquired' ] && [ ! -e '${state}/swapped' ]; then ${swap}; fi`,
+        `  : > '${state}/acquired'`,
+        "fi",
+        `exec ${realOf("readlink")} "$@"`,
+      ]);
+      shim("rm", [
+        `if [ "$last" = '${lock}' ] && [ -e '${state}/acquired' ] && [ ! -e '${state}/swapped' ]; then ${swap}; fi`,
+        `exec ${realOf("rm")} "$@"`,
+      ]);
+      await start("Holder").exited;
+      expect(existsSync(path.join(state, "swapped"))).toBe(true);
+      expect(lstatSync(lock).isSymbolicLink()).toBe(true);
+      expect(readlinkSync(lock)).toBe(String(other.pid));
+      expect(new HookAppendReader(file).read().records.map(toolOf)).toEqual([
+        "Holder",
+      ]);
+    }, 60_000);
+
+    it("puts back a lock that was released and taken again between the reader's inspection and its move", async () => {
+      const { directory, file, lock } = appendFixture();
+      const gone = spawn("true", [], { stdio: "ignore" });
+      await new Promise<void>((resolve) => gone.once("exit", () => resolve()));
+      const live = spawn("sleep", ["30"], { stdio: "ignore" });
+      children.push(live);
+      mkdirSync(lock);
+      writeFileSync(path.join(lock, "pid"), String(gone.pid));
+      const reader = new HookAppendReader(file, () => {
+        renameSync(lock, `${lock}.kept`);
+        mkdirSync(lock);
+        writeFileSync(path.join(lock, "pid"), String(live.pid));
+      });
+      expect(reader.read().unreadable).toBe(0);
+      expect(readFileSync(path.join(lock, "pid"), "utf8")).toBe(
+        String(live.pid),
+      );
+      expect(
+        readdirSync(directory).filter((name) => name.includes(".stale.")),
+      ).toEqual([]);
+    }, 30_000);
+
     it("does not reclaim a lock directory whose pid names a live process, and publishes its record late after the deadline", async () => {
       const { directory, file, lock } = appendFixture();
       const holder = spawn("sleep", ["30"], { stdio: "ignore" });
