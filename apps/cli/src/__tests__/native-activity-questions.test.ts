@@ -534,6 +534,52 @@ describe("native terminal questions", () => {
       expect(firstId).not.toBe(secondId);
     });
 
+    it("does not let a later same-input call close a prompt bound to earlier candidates", () => {
+      const { hook, call, ask, done, tracker } = holder();
+      const input = bash("make build");
+      hook(call("toolu_1", input));
+      hook(call("toolu_2", input));
+      const opened = hook(ask(input));
+      const promptId = waiting(opened)[0]!.id;
+      hook(call("toolu_3", input));
+
+      expect(hook(done("toolu_3", input))).toBeNull();
+      expect(waiting(tracker.heartbeat())).toEqual([
+        {
+          id: promptId,
+          prompt: "Claude Code needs permission to use: Bash",
+        },
+      ]);
+      expect(hook(done("toolu_1", input))).toBeNull();
+      expect(hook(done("toolu_2", input))).toEqual({
+        state: "working",
+        prompt: null,
+      });
+    });
+
+    it("does not key-match an ambiguous prompt to a different call ID", () => {
+      const { hook, call, ask, done, tracker } = holder();
+      const input = bash("make build");
+      hook(call("toolu_1", input));
+      hook(call("toolu_2", input));
+      const opened = hook(ask(input));
+      const promptId = waiting(opened)[0]!.id;
+      hook(call("toolu_3", bash("other command")));
+
+      expect(hook(done("toolu_3", input))).toBeNull();
+      expect(waiting(tracker.heartbeat())).toEqual([
+        {
+          id: promptId,
+          prompt: "Claude Code needs permission to use: Bash",
+        },
+      ]);
+      expect(hook(done("toolu_1", input))).toBeNull();
+      expect(hook(done("toolu_2", input))).toEqual({
+        state: "working",
+        prompt: null,
+      });
+    });
+
     it("keeps a third unannounced prompt open after its only candidates complete", () => {
       const { hook, call, ask, done, tracker } = holder();
       const input = bash("make build");
