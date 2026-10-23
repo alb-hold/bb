@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray, isNull } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { areHostPathsEqual, isHostPathWithin } from "@bb/domain";
 import type { DbConnection, DbTransaction } from "../connection.js";
 import {
@@ -262,7 +262,7 @@ export function listEnvironmentRetentionTransitions(
     .select()
     .from(environmentRetentionTransitions)
     .where(eq(environmentRetentionTransitions.retentionId, retentionId))
-    .orderBy(asc(environmentRetentionTransitions.at))
+    .orderBy(asc(environmentRetentionTransitions.at), sql`rowid`)
     .all();
 }
 
@@ -274,7 +274,7 @@ export function listEnvironmentRetentionTransitionsForEnvironment(
     .select()
     .from(environmentRetentionTransitions)
     .where(eq(environmentRetentionTransitions.environmentId, environmentId))
-    .orderBy(asc(environmentRetentionTransitions.at))
+    .orderBy(asc(environmentRetentionTransitions.at), sql`rowid`)
     .all();
 }
 
