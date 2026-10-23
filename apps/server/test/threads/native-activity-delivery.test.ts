@@ -151,7 +151,12 @@ afterEach(async () => {
   }
 });
 
-async function nativeThread(options: { nativeSessionId?: string | null } = {}) {
+async function nativeThread(
+  options: {
+    nativeSessionId?: string | null;
+    terminalStatus?: "running" | "exited";
+  } = {},
+) {
   const harness = await createTestAppHarness();
   harnesses.push(harness);
   const { host, session } = seedHostSession(harness.deps);
@@ -191,7 +196,7 @@ async function nativeThread(options: { nativeSessionId?: string | null } = {}) {
     hostId: host.id,
     initialCwd: "/tmp/native-delivery",
     rows: 24,
-    status: "running",
+    status: options.terminalStatus ?? "running",
     threadId: thread.id,
     title: "Claude Code",
   });
@@ -438,6 +443,47 @@ describe("recording a native session needs the current holder credential", () =>
       expect(response.status).toBe(401);
       expect(bound(harness, thread.id)).toBeNull();
     }
+  });
+
+  it("rejects a first bind with the stored credential of an exited terminal and leaves the binding empty, while a live current holder binds", async () => {
+    const exited = await nativeThread({
+      nativeSessionId: null,
+      terminalStatus: "exited",
+    });
+    const rejected = await record(
+      exited.harness,
+      exited.thread.id,
+      NEW_ID,
+      `Bearer ${SECRET}`,
+    );
+    expect(rejected.status).toBe(409);
+    expect(await rejected.json()).toMatchObject({
+      code: "native_terminal_not_live",
+    });
+    expect(bound(exited.harness, exited.thread.id)).toBeNull();
+    const live = await nativeThread({ nativeSessionId: null });
+    const accepted = await record(
+      live.harness,
+      live.thread.id,
+      NEW_ID,
+      `Bearer ${SECRET}`,
+    );
+    expect(accepted.status).toBe(200);
+    expect(bound(live.harness, live.thread.id)).toBe(NEW_ID);
+  });
+
+  it("rejects a repeat of the bound id from an exited terminal, and changes nothing", async () => {
+    const { harness, thread } = await nativeThread({
+      terminalStatus: "exited",
+    });
+    const response = await record(
+      harness,
+      thread.id,
+      SESSION_ID,
+      `Bearer ${SECRET}`,
+    );
+    expect(response.status).toBe(409);
+    expect(bound(harness, thread.id)).toBe(SESSION_ID);
   });
 
   it("lets the current credential bind the first session", async () => {
