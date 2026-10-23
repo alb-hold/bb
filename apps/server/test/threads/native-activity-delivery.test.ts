@@ -656,7 +656,7 @@ describe("a waiting report whose response is lost, then a newer report, through 
     });
   });
 
-  it("keeps an old question tracked when unknown closes is rejected and the accepted fallback cannot close it", async () => {
+  it("keeps every rejected close tracked through an accepted legacy fallback, then closes both on retry", async () => {
     const { harness, thread } = await nativeThread();
     const sent: Array<string[] | undefined> = [];
     let rejectClose = true;
@@ -694,19 +694,32 @@ describe("a waiting report whose response is lost, then a newer report, through 
       threadId: thread.id,
     });
 
-    reporter.report(asking);
+    reporter.report({
+      ...asking,
+      questions: [
+        { id: "q1", prompt: "Which layout?" },
+        { id: "q2", prompt: "Which colour?" },
+      ],
+    });
     await reporter.settled();
     reporter.report({ prompt: null, state: "working" });
     await reporter.settled();
-    expect(sent).toEqual([[], ["q1"], undefined]);
-    expect(openRequestIds(harness, thread.id)).toEqual([
-      expect.stringContaining("q1"),
-    ]);
+    expect(sent).toEqual([[], ["q1", "q2"], undefined]);
+    expect(openRequestIds(harness, thread.id)).toHaveLength(2);
 
     reporter.report({ prompt: null, state: "working" });
     await reporter.settled();
-    expect(sent).toEqual([[], ["q1"], undefined, ["q1"]]);
+    expect(sent).toEqual([[], ["q1", "q2"], undefined, ["q1", "q2"]]);
     expect(openRequestIds(harness, thread.id)).toEqual([]);
+    expect(
+      listPendingInteractionsByThread(harness.db, {
+        statuses: ["interrupted"],
+        threadId: thread.id,
+      })
+        .filter((row) => row.statusReason === ANSWERED)
+        .map((row) => row.providerRequestId)
+        .sort(),
+    ).toEqual(["native:q1", "native:q2"]);
   });
 });
 
