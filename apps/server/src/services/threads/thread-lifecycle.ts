@@ -111,6 +111,7 @@ import { requestQueuedMessageDispatch } from "./queued-message-dispatch.js";
 import { throwThreadNotWritable } from "../lib/lifecycle-api-errors.js";
 import { NotificationBuffer } from "../lib/notification-buffer.js";
 import { queueChildThreadTurnNotificationBestEffort } from "./child-thread-notifications.js";
+import { describeThreadStorageRefusal } from "./thread-storage-refusal.js";
 import { isParentNotifiableChildThread } from "./thread-parent.js";
 import {
   clearThreadProvisionSchedule,
@@ -1122,7 +1123,7 @@ function refusedThreadStorageDeletionNotices(
 } {
   if (!daemonMessage.includes("Refusing to delete thread storage"))
     return { kept: null, target: null, notice: null };
-  const kept = `${daemonMessage} bb tries again about every ten seconds and deletes the files once nothing is working inside them.`;
+  const kept = describeThreadStorageRefusal(daemonMessage);
   const target = liveAncestorThread(db, threadId);
   if (target === null) return { kept, target: null, notice: null };
   const notice = `The files of deleted thread ${threadId} were not deleted. ${kept}`;
