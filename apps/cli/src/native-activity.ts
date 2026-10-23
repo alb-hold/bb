@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { closeSync, openSync, readSync, statSync } from "node:fs";
 import { hookCommandFor } from "./native-hook-spool.js";
 import type {
@@ -13,12 +13,21 @@ export interface NativeQuestion {
   prompt: string;
 }
 
+export interface NativeToolCall {
+  id: string;
+  base: string;
+  key: string;
+}
+
 export interface NativeActivitySignal {
   state: NativeActivityState | null;
   prompt: string | null;
   question?: NativeQuestion;
   answered?: string;
   occurrence?: true;
+  call?: NativeToolCall;
+  callId?: string;
+  inputKey?: string;
 }
 
 export type NativeActivityReport =
@@ -32,6 +41,9 @@ type ActivityTranscript = NonNullable<
 
 const MAX_PROMPT_LENGTH = 4_000;
 const MAX_ORPHAN_BASES = 256;
+const MAX_ANNOUNCED_CALLS = 256;
+const TOOL_CALL_ID_FIELD = "tool_use_id";
+const TOOL_INPUT_FIELD = "tool_input";
 
 function nowSeconds(): number {
   return Math.floor(Date.now() / 1000);
@@ -66,6 +78,40 @@ export function nativeActivityHookSettings(
   return JSON.stringify({ hooks: Object.fromEntries(entries) });
 }
 
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (typeof value === "object" && value !== null) {
+    return `{${Object.entries(value)
+      .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+      .map(([key, entry]) => `${JSON.stringify(key)}:${canonicalJson(entry)}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "null";
+}
+
+function toolInputKey(record: unknown): string | undefined {
+  const input = readRecordField(record, TOOL_INPUT_FIELD);
+  if (typeof input !== "object" || input === null) return undefined;
+  return createHash("sha256").update(canonicalJson(input)).digest("hex");
+}
+
+function toolCallId(record: unknown): string | undefined {
+  const id = readRecordField(record, TOOL_CALL_ID_FIELD);
+  return typeof id === "string" && id.length > 0 ? id : undefined;
+}
+
+function announcedToolCall(
+  permission: NonNullable<ActivityHooks["permission"]>,
+  record: unknown,
+): NativeToolCall | undefined {
+  const tool = readRecordField(record, permission.idField);
+  const id = toolCallId(record);
+  const key = toolInputKey(record);
+  if (typeof tool !== "string" || tool.length === 0) return undefined;
+  if (id === undefined || key === undefined) return undefined;
+  return { id, base: `permission:${tool}`, key };
+}
+
 function promptText(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const text = value.trim();
@@ -79,6 +125,7 @@ export function classifyHookRecord(
   const event = readRecordField(record, "hook_event_name");
   if (typeof event !== "string") return { state: null, prompt: null };
   const permission = hooks.permission;
+  const inputKey = toolInputKey(record);
   if (permission !== undefined) {
     const id = readRecordField(record, permission.idField);
     if (typeof id === "string" && id.length > 0) {
@@ -92,22 +139,31 @@ export function classifyHookRecord(
             prompt: `${permission.label}: ${id}`,
           },
           occurrence: true,
+          ...(inputKey === undefined ? {} : { inputKey }),
         };
       }
       if (permission.close.includes(event)) {
+        const callId = toolCallId(record);
         return {
           state: null,
           prompt: null,
           answered: `permission:${id}`,
           occurrence: true,
+          ...(callId === undefined ? {} : { callId }),
+          ...(inputKey === undefined ? {} : { inputKey }),
         };
       }
     }
   }
   if (hooks.working.includes(event)) {
+    const call =
+      permission === undefined
+        ? undefined
+        : announcedToolCall(permission, record);
     return {
       state: "working",
       prompt: promptText(readRecordField(record, hooks.promptField)),
+      ...(call === undefined ? {} : { call }),
     };
   }
   if (hooks.idle.includes(event)) return { state: "idle", prompt: null };
@@ -276,6 +332,10 @@ export class JsonlTail {
 const MAX_QUESTION_BASE_ID_LENGTH = 200;
 let holderNonce: string | null = null;
 
+function orphanKey(base: string, key: string): string {
+  return `${base}\u0000${key}`;
+}
+
 function occurrenceBase(questionId: string): string {
   return questionId.slice(0, MAX_QUESTION_BASE_ID_LENGTH);
 }
@@ -285,29 +345,43 @@ function processHolderNonce(): string {
   return holderNonce;
 }
 
+interface OpenOccurrence {
+  id: string;
+  key: string | null;
+  callId: string | null;
+}
+
+interface AnnouncedCall {
+  base: string;
+  key: string;
+  bound: boolean;
+}
+
 export class NativeActivityTracker {
   private state: NativeActivityState = "idle";
   private reportedPrompt: string | null = null;
   private readonly questions = new Map<string, string>();
   private readonly occurrenceCounters = new Map<string, number>();
-  private readonly openOccurrences = new Map<string, string[]>();
+  private readonly openOccurrences = new Map<string, OpenOccurrence[]>();
+  private readonly announcedCalls = new Map<string, AnnouncedCall>();
   private readonly lastOrphanCloseSec = new Map<string, number>();
   private lastClearSec = 0;
 
   constructor(private readonly nonce: string = processHolderNonce()) {}
 
   apply(signal: NativeActivitySignal): NativeActivityReport | null {
+    if (signal.call !== undefined) this.announceCall(signal.call);
     if (signal.question !== undefined) {
       return this.openQuestion(
         signal.occurrence === true
-          ? this.startOccurrence(signal.question)
+          ? this.startOccurrence(signal.question, signal.inputKey)
           : signal.question,
       );
     }
     if (signal.answered !== undefined) {
       if (signal.occurrence !== true)
         return this.closeQuestion(signal.answered);
-      const occurrence = this.endOldestOccurrence(signal.answered);
+      const occurrence = this.endMatchingOccurrence(signal.answered, signal);
       return occurrence === null ? null : this.closeQuestion(occurrence);
     }
     if (signal.state === "idle") {
@@ -334,10 +408,14 @@ export class NativeActivityTracker {
       return false;
     }
     if (this.lastClearSec > startedAtSec) return false;
-    const closedAt = this.lastOrphanCloseSec.get(
-      occurrenceBase(signal.question.id),
+    const base = occurrenceBase(signal.question.id);
+    const closedAt = Math.max(
+      this.lastOrphanCloseSec.get(base) ?? 0,
+      signal.inputKey === undefined
+        ? 0
+        : (this.lastOrphanCloseSec.get(orphanKey(base, signal.inputKey)) ?? 0),
     );
-    return closedAt === undefined || closedAt < startedAtSec;
+    return closedAt === 0 || closedAt < startedAtSec;
   }
 
   heartbeat(): NativeActivityReport | null {
@@ -352,36 +430,107 @@ export class NativeActivityTracker {
   private clearQuestions(): void {
     this.questions.clear();
     this.openOccurrences.clear();
+    this.announcedCalls.clear();
     this.lastClearSec = nowSeconds();
   }
 
-  private startOccurrence(question: NativeQuestion): NativeQuestion {
+  private announceCall(call: NativeToolCall): void {
+    if (this.announcedCalls.has(call.id)) return;
+    if (this.announcedCalls.size >= MAX_ANNOUNCED_CALLS) {
+      const oldest = this.announcedCalls.keys().next().value;
+      if (oldest !== undefined) this.announcedCalls.delete(oldest);
+    }
+    this.announcedCalls.set(call.id, {
+      base: occurrenceBase(call.base),
+      key: call.key,
+      bound: false,
+    });
+  }
+
+  private bindAnnouncedCall(
+    base: string,
+    key: string | undefined,
+  ): string | null {
+    if (key === undefined) return null;
+    for (const [id, call] of this.announcedCalls) {
+      if (call.bound || call.base !== base || call.key !== key) continue;
+      call.bound = true;
+      return id;
+    }
+    return null;
+  }
+
+  private startOccurrence(
+    question: NativeQuestion,
+    key: string | undefined,
+  ): NativeQuestion {
     const base = occurrenceBase(question.id);
     const serial = (this.occurrenceCounters.get(base) ?? 0) + 1;
     this.occurrenceCounters.set(base, serial);
     const id = `${base}#${this.nonce}.${serial}`;
     this.openOccurrences.set(base, [
       ...(this.openOccurrences.get(base) ?? []),
-      id,
+      { id, key: key ?? null, callId: this.bindAnnouncedCall(base, key) },
     ]);
     return { id, prompt: question.prompt };
   }
 
-  private endOldestOccurrence(questionId: string): string | null {
+  private endMatchingOccurrence(
+    questionId: string,
+    signal: NativeActivitySignal,
+  ): string | null {
     const base = occurrenceBase(questionId);
-    const open = this.openOccurrences.get(base);
-    const oldest = open?.[0];
-    if (open === undefined || oldest === undefined) {
-      this.lastOrphanCloseSec.set(base, nowSeconds());
-      if (this.lastOrphanCloseSec.size > MAX_ORPHAN_BASES) {
-        const first = this.lastOrphanCloseSec.keys().next().value;
-        if (first !== undefined) this.lastOrphanCloseSec.delete(first);
-      }
+    const open = this.openOccurrences.get(base) ?? [];
+    const callId = signal.callId ?? null;
+    const key = signal.inputKey ?? null;
+    const announced =
+      callId === null ? undefined : this.announcedCalls.get(callId);
+    if (callId !== null) this.announcedCalls.delete(callId);
+    let index = -1;
+    if (callId !== null) {
+      index = open.findIndex((occurrence) => occurrence.callId === callId);
+    }
+    if (index === -1 && key !== null && announced === undefined) {
+      index = open.findIndex(
+        (occurrence) =>
+          occurrence.key === key &&
+          (callId === null || occurrence.callId === null),
+      );
+    }
+    const matched = open[index];
+    if (matched === undefined) {
+      this.recordOrphanClose(
+        base,
+        [announced?.key, key ?? undefined],
+        announced === undefined && open.length === 0,
+      );
       return null;
     }
     if (open.length === 1) this.openOccurrences.delete(base);
-    else this.openOccurrences.set(base, open.slice(1));
-    return oldest;
+    else
+      this.openOccurrences.set(
+        base,
+        open.filter((_, i) => i !== index),
+      );
+    return matched.id;
+  }
+
+  private recordOrphanClose(
+    base: string,
+    keys: ReadonlyArray<string | undefined>,
+    wholeBase: boolean,
+  ): void {
+    const at = nowSeconds();
+    if (wholeBase) this.lastOrphanCloseSec.set(base, at);
+    for (const key of keys) {
+      if (key !== undefined)
+        this.lastOrphanCloseSec.set(orphanKey(base, key), at);
+    }
+    while (this.lastOrphanCloseSec.size > MAX_ORPHAN_BASES) {
+      const first = this.lastOrphanCloseSec.keys().next().value;
+      if (first === undefined) break;
+      this.lastOrphanCloseSec.delete(first);
+    }
   }
 
   private openQuestion(question: NativeQuestion): NativeActivityReport | null {

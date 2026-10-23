@@ -278,6 +278,29 @@ describe("native activity reporter", () => {
       expect(closesOf(calls)).toEqual([[], ["q1"], []]);
     });
 
+    it("sends a closes list on every report of every kind, so that a server which closes nothing without one still settles the question", async () => {
+      const { calls, reporter } = closureSetup([]);
+      reporter.report(asking("q1", "q2"));
+      reporter.report(asking("q2"));
+      reporter.report(working);
+      reporter.report(marked);
+      reporter.report({ prompt: null, state: "idle" });
+      reporter.report(asking("q3"));
+      reporter.report({ prompt: null, state: "idle" });
+      await reporter.settled();
+      expect(calls.map((call) => call.state)).toEqual([
+        "waiting",
+        "waiting",
+        "working",
+        "working",
+        "idle",
+        "waiting",
+        "idle",
+      ]);
+      expect(closesOf(calls)).toEqual([[], ["q1"], ["q2"], [], [], [], ["q3"]]);
+      expect(calls.every((call) => Array.isArray(call.closes))).toBe(true);
+    });
+
     it("lets an opening report replace the questions it does not list, and never names the ones it opens", async () => {
       const { calls, reporter } = closureSetup([]);
       reporter.report(asking("q1"));

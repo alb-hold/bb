@@ -264,6 +264,7 @@ describe("native terminal questions", () => {
           hook_event_name: "PostToolUse",
           tool_name: "Bash",
           tool_use_id: "toolu_bash",
+          tool_input: { command: "rm -rf build" },
         }),
       ),
     ).toEqual({ state: "working", prompt: null });
@@ -271,6 +272,7 @@ describe("native terminal questions", () => {
       classifyHookRecord(hooks, {
         hook_event_name: "PermissionRequest",
         tool_name: "Edit",
+        tool_input: { file_path: "/tmp/a.ts" },
       }),
     );
     expect(
@@ -278,6 +280,7 @@ describe("native terminal questions", () => {
         classifyHookRecord(hooks, {
           hook_event_name: "PermissionDenied",
           tool_name: "Edit",
+          tool_input: { file_path: "/tmp/a.ts" },
         }),
       ),
     ).toEqual({ state: "working", prompt: null });
@@ -378,6 +381,7 @@ describe("native terminal questions", () => {
           classifyHookRecord(hooks, {
             hook_event_name: "PermissionRequest",
             tool_name: longTool,
+            tool_input: { value: 1 },
           }),
         ),
       );
@@ -394,6 +398,7 @@ describe("native terminal questions", () => {
         classifyHookRecord(hooks, {
           hook_event_name: "PostToolUse",
           tool_name: longTool,
+          tool_input: { value: 1 },
         }),
       ),
     ).toEqual({ state: "working", prompt: null });
@@ -422,32 +427,116 @@ describe("native terminal questions", () => {
     expect(both.every((question) => question.id.length <= 256)).toBe(true);
   });
 
-  it("OPEN FINDING (not fixed): a Bash completion closes the oldest open Bash prompt, whichever tool call it belongs to", () => {
+  describe("completions closing the prompt of their own tool call", () => {
     const hooks = CLAUDE.hooks!;
-    const tracker = new NativeActivityTracker("n0");
-    tracker.apply({ state: "working", prompt: "go" });
-    const prompt = () =>
-      tracker.apply(
-        classifyHookRecord(hooks, {
-          hook_event_name: "PermissionRequest",
-          tool_name: "Bash",
-        }),
-      );
-    prompt();
-    prompt();
-    const afterCompletion = tracker.apply(
-      classifyHookRecord(hooks, {
-        hook_event_name: "PostToolUse",
+    const bash = (command: string) => ({ command, description: "run" });
+    function holder() {
+      const tracker = new NativeActivityTracker("n0");
+      tracker.apply({ state: "working", prompt: "go" });
+      const hook = (record: Record<string, unknown>) =>
+        tracker.apply(classifyHookRecord(hooks, record));
+      const call = (id: string, input: unknown) => ({
+        hook_event_name: "PreToolUse",
         tool_name: "Bash",
-        tool_use_id: "toolu_of_the_second_prompt",
-      }),
-    );
-    expect(waiting(afterCompletion)).toEqual([
-      {
-        id: "permission:Bash#n0.2",
-        prompt: "Claude Code needs permission to use: Bash",
-      },
-    ]);
+        tool_use_id: id,
+        tool_input: input,
+      });
+      const ask = (input: unknown) => ({
+        hook_event_name: "PermissionRequest",
+        tool_name: "Bash",
+        tool_input: input,
+      });
+      const done = (id: string, input?: unknown, event = "PostToolUse") => ({
+        hook_event_name: event,
+        tool_name: "Bash",
+        tool_use_id: id,
+        ...(input === undefined ? {} : { tool_input: input }),
+      });
+      return { tracker, hook, call, ask, done };
+    }
+
+    it("closes only the prompt its completion belongs to when two Bash prompts are completed out of order, and the other stays Needs input", () => {
+      const { hook, call, ask, done, tracker } = holder();
+      hook(call("toolu_1", bash("make build")));
+      hook(ask(bash("make build")));
+      hook(call("toolu_2", bash("rm -rf dist")));
+      hook(ask(bash("rm -rf dist")));
+      const afterSecond = hook(done("toolu_2", bash("rm -rf dist")));
+      expect(waiting(afterSecond)).toEqual([
+        {
+          id: "permission:Bash#n0.1",
+          prompt: "Claude Code needs permission to use: Bash",
+        },
+      ]);
+      expect(waiting(tracker.heartbeat())).toEqual([
+        {
+          id: "permission:Bash#n0.1",
+          prompt: "Claude Code needs permission to use: Bash",
+        },
+      ]);
+      expect(hook(done("toolu_1", bash("make build")))).toEqual({
+        state: "working",
+        prompt: null,
+      });
+    });
+
+    it("ends exactly one of two Bash prompts with the same command and input, because they are indistinguishable to the user and closing either is correct", () => {
+      const { hook, call, ask, done } = holder();
+      hook(call("toolu_1", bash("make build")));
+      hook(ask(bash("make build")));
+      hook(call("toolu_2", bash("make build")));
+      hook(ask(bash("make build")));
+      const afterOne = hook(done("toolu_2", bash("make build")));
+      expect(waiting(afterOne)).toHaveLength(1);
+      expect(hook(done("toolu_1", bash("make build")))).toEqual({
+        state: "working",
+        prompt: null,
+      });
+    });
+
+    it("closes its own prompt by tool call id when the input was rewritten after the prompt", () => {
+      const { hook, call, ask, done, tracker } = holder();
+      hook(call("toolu_1", bash("npm test")));
+      hook(ask(bash("npm test")));
+      hook(call("toolu_2", bash("make build")));
+      hook(ask(bash("make build")));
+      const afterRewritten = hook(done("toolu_2", bash("make build --fast")));
+      expect(waiting(afterRewritten)).toEqual([
+        {
+          id: "permission:Bash#n0.1",
+          prompt: "Claude Code needs permission to use: Bash",
+        },
+      ]);
+      expect(waiting(tracker.heartbeat())).toHaveLength(1);
+    });
+
+    it("closes nothing for a completion that has no key or matches no prompt, and keeps the question until a report names it or the turn ends", () => {
+      const { hook, call, ask, done, tracker } = holder();
+      hook(call("toolu_1", bash("make build")));
+      hook(ask(bash("make build")));
+      expect(
+        hook({ hook_event_name: "PostToolUse", tool_name: "Bash" }),
+      ).toBeNull();
+      expect(hook(done("toolu_other", bash("ls")))).toBeNull();
+      hook(call("toolu_auto", bash("pwd")));
+      expect(hook(done("toolu_auto", bash("pwd")))).toBeNull();
+      expect(hook(done("toolu_auto2"))).toBeNull();
+      expect(waiting(tracker.heartbeat())).toHaveLength(1);
+      expect(tracker.apply({ state: "idle", prompt: null })).toEqual({
+        state: "idle",
+        prompt: null,
+      });
+      expect(tracker.heartbeat()).toBeNull();
+    });
+
+    it("falls back to the input match for a prompt whose tool call was never announced", () => {
+      const { hook, ask, done } = holder();
+      hook(ask(bash("make build")));
+      expect(hook(done("toolu_1", bash("make build")))).toEqual({
+        state: "working",
+        prompt: null,
+      });
+    });
   });
 
   it("does not add a permission entry for plan approval, which the transcript already reports", () => {

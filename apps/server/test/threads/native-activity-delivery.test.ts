@@ -21,6 +21,7 @@ import {
 } from "@bb/db";
 import {
   isNativeTerminalQuestion,
+  NATIVE_TERMINAL_QUESTION_REQUEST_PREFIX,
   type ProviderNativeTerminal,
 } from "@bb/domain";
 import {
@@ -674,6 +675,13 @@ describe("overflow, answer, then no resumed activity through the real reader, re
   const permission = (name: string) => ({
     hook_event_name: "PermissionRequest",
     tool_name: name,
+    tool_input: { target: name },
+  });
+  const completion = (name: string) => ({
+    hook_event_name: "PostToolUse",
+    tool_name: name,
+    tool_use_id: `toolu_${name}`,
+    tool_input: { target: name },
   });
 
   interface HeldRequest {
@@ -800,7 +808,7 @@ describe("overflow, answer, then no resumed activity through the real reader, re
 
   it("closes the answered question and shows Activity not reported at once, with no heartbeat after it", async () => {
     const { h, harness, thread } = await overflowedAndAsked();
-    h.hook([{ hook_event_name: "PostToolUse", tool_name: "Edit" }]);
+    h.hook([completion("Edit")]);
     await h.forward();
     expect(openQuestions(harness, thread.id)).toHaveLength(0);
     expectClosedAsAnswered(harness, thread.id, "Edit");
@@ -822,13 +830,13 @@ describe("overflow, answer, then no resumed activity through the real reader, re
 
   it("stays unconfirmed for a pre-tool record, an unrelated completed tool and a parallel completion of the dropped opener's own tool name", async () => {
     const { h, harness, thread } = await overflowedAndAsked();
-    h.hook([{ hook_event_name: "PostToolUse", tool_name: "Edit" }]);
+    h.hook([completion("Edit")]);
     await h.forward();
     h.hook([tool]);
     await h.forward();
-    h.hook([{ hook_event_name: "PostToolUse", tool_name: "Write" }]);
+    h.hook([completion("Write")]);
     await h.forward();
-    h.hook([{ hook_event_name: "PostToolUse", tool_name: "Bash" }]);
+    h.hook([completion("Bash")]);
     await h.forward();
     expect(displayOf(harness, thread.id)).toMatchObject({
       confirmation: "unconfirmed",
@@ -838,7 +846,7 @@ describe("overflow, answer, then no resumed activity through the real reader, re
 
   it("shows later real work as confirmed after the unconfirmed answer", async () => {
     const { h, harness, thread } = await overflowedAndAsked();
-    h.hook([{ hook_event_name: "PostToolUse", tool_name: "Edit" }]);
+    h.hook([completion("Edit")]);
     await h.forward();
     expect(displayOf(harness, thread.id)).toMatchObject({
       confirmation: "unconfirmed",
@@ -855,7 +863,7 @@ describe("overflow, answer, then no resumed activity through the real reader, re
       const { h, harness, thread } = await overflowedAndAsked({
         holdFirstClose: true,
       });
-      h.hook([{ hook_event_name: "PostToolUse", tool_name: "Edit" }]);
+      h.hook([completion("Edit")]);
       await h.forward();
       expect(openQuestions(harness, thread.id)).toHaveLength(1);
       expect(
@@ -946,10 +954,18 @@ describe("an older server that does not know the closure fields (INJECTED-SERVER
         request: { ...routes.reportActivity.request, schema: preChangeSchema },
       } as typeof routes.reportActivity,
       (context, payload) => {
+        const listed = new Set(
+          (payload.questions ?? []).map((question) => question.id),
+        );
         recordNativeTerminalActivity(harness.deps, {
           authorization: context.req.header("authorization"),
           threadId: context.req.param("id"),
           ...payload,
+          closes: openRequestIds(harness, context.req.param("id"))
+            .map((id) =>
+              id.slice(NATIVE_TERMINAL_QUESTION_REQUEST_PREFIX.length),
+            )
+            .filter((id) => !listed.has(id)),
           confirms: true,
         });
         return context.json({ ok: true as const });
@@ -1060,7 +1076,7 @@ describe("an older server that does not know the closure fields (INJECTED-SERVER
     expectClosedAsAnswered(h.harness, h.thread.id, "Bash");
   });
 
-  it("OPEN FINDING (characterisation, not a pass): a report that was already stripped for an old server and reaches an upgraded server late still closes every question it does not list", async () => {
+  it("closes no question for a report that was stripped for an old server and reaches an upgraded server late, including a question opened after it", async () => {
     const h = await oldServerOnTheRealStore();
     h.upgrade();
     const key = `/api/v1/threads/${h.thread.id}/native-terminal/activity`;
@@ -1083,8 +1099,41 @@ describe("an older server that does not know the closure fields (INJECTED-SERVER
       ).status,
     ).toBe(200);
     expect((await send({ state: "working" })).status).toBe(200);
-    expect(openQuestions(h.harness, h.thread.id)).toHaveLength(0);
-    expectClosedAsAnswered(h.harness, h.thread.id, "Edit");
+    expect(openRequestIds(h.harness, h.thread.id)).toEqual([
+      "native:permission:Edit#2",
+    ]);
+    expect(
+      (
+        await send({
+          closes: [],
+          questions: [
+            { id: "permission:Edit#2", prompt: "Allow Edit?" },
+            { id: "permission:Bash#3", prompt: "Allow Bash?" },
+          ],
+          state: "waiting",
+        })
+      ).status,
+    ).toBe(200);
+    expect(
+      (
+        await send({
+          questions: [{ id: "permission:Write#4", prompt: "Allow Write?" }],
+          state: "waiting",
+        })
+      ).status,
+    ).toBe(200);
+    expect((await send({ state: "idle" })).status).toBe(200);
+    expect(openRequestIds(h.harness, h.thread.id).sort()).toEqual([
+      "native:permission:Bash#3",
+      "native:permission:Edit#2",
+      "native:permission:Write#4",
+    ]);
+    expect(
+      listPendingInteractionsByThread(h.harness.db, {
+        statuses: ["interrupted"],
+        threadId: h.thread.id,
+      }),
+    ).toHaveLength(0);
   });
 });
 
