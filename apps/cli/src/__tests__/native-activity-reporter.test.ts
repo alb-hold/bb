@@ -490,24 +490,48 @@ describe("native activity reporter", () => {
       ]);
     });
 
-    it("keeps a rejected close tracked when the fallback is accepted, then closes it on a later report", async () => {
+    it("keeps every close tracked through a legacy fallback and a later rejected ID", async () => {
+      const rejectedId = new BbHttpError({
+        body: null,
+        code: "invalid_request",
+        message: "Question q1 could not be closed",
+        status: 400,
+      });
       const { calls, reporter } = closureSetup([
         async () => ({ ok: true }),
         async () => {
           throw rejection('"closes"');
         },
         async () => ({ ok: true }),
+        async () => {
+          throw rejectedId;
+        },
         async () => ({ ok: true }),
       ]);
-      reporter.report(asking("q1"));
+      reporter.report(asking("q1", "q2"));
       await reporter.settled();
       reporter.report(working);
       await reporter.settled();
-      expect(closesOf(calls)).toEqual([[], ["q1"], undefined]);
+      expect(closesOf(calls)).toEqual([[], ["q1", "q2"], undefined]);
 
       reporter.report(working);
       await reporter.settled();
-      expect(closesOf(calls)).toEqual([[], ["q1"], undefined, ["q1"]]);
+      expect(closesOf(calls)).toEqual([
+        [],
+        ["q1", "q2"],
+        undefined,
+        ["q1", "q2"],
+      ]);
+
+      reporter.report(working);
+      await reporter.settled();
+      expect(closesOf(calls)).toEqual([
+        [],
+        ["q1", "q2"],
+        undefined,
+        ["q1", "q2"],
+        ["q1", "q2"],
+      ]);
     });
 
     it("removes only the field the server names", async () => {
