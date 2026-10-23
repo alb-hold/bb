@@ -418,11 +418,7 @@ function reconcileNativeQuestions(
   );
   const interrupted =
     args.closes === undefined
-      ? interruptNativeTerminalQuestions(
-          deps,
-          args.thread.id,
-          new Set(wanted.keys()),
-        )
+      ? 0
       : closeNamedNativeQuestions(deps, {
           nativeSessionId: args.nativeSessionId,
           questionIds: args.closes.filter(

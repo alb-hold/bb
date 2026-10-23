@@ -591,6 +591,7 @@ describe("following a discovered session only after the server accepted it", () 
         hook_event_name: event,
         session_id: SESSION_ID,
         tool_name: "Edit",
+        tool_input: { file_path: "/tmp/a.ts" },
       });
 
       it("still lets a fresh question open and its answer close, without a heartbeat afterwards", async () => {

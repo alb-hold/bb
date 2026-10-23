@@ -542,6 +542,26 @@ describe("switching a chat thread to its native terminal", () => {
   });
 });
 
+function withHolderCloses<
+  T extends { closes?: string[]; questions?: { id: string }[] },
+>(fixture: Fixture, threadId: string, body: T): T {
+  if (body.closes !== undefined) return body;
+  const listed = new Set((body.questions ?? []).map((question) => question.id));
+  const closes = fixture.harness.deps.pendingInteractions
+    .listPendingThreadInteractions(threadId)
+    .flatMap((interaction) =>
+      isNativeTerminalQuestion(interaction)
+        ? [
+            interaction.providerRequestId.slice(
+              NATIVE_TERMINAL_QUESTION_REQUEST_PREFIX.length,
+            ),
+          ]
+        : [],
+    )
+    .filter((id) => !listed.has(id));
+  return { ...body, closes };
+}
+
 function reportActivity(
   fixture: Fixture,
   threadId: string,
@@ -554,7 +574,7 @@ function reportActivity(
   return postJson(
     fixture,
     `/threads/${threadId}/native-terminal/activity`,
-    body,
+    withHolderCloses(fixture, threadId, body),
   );
 }
 
@@ -2719,7 +2739,12 @@ describe("a native activity report that does not confirm activity", () => {
       questions?: { id: string; prompt: string }[];
       state: "idle" | "waiting" | "working";
     },
-  ) => postJson(fixture, `/threads/${threadId}/native-terminal/activity`, body);
+  ) =>
+    postJson(
+      fixture,
+      `/threads/${threadId}/native-terminal/activity`,
+      withHolderCloses(fixture, threadId, body),
+    );
 
   const evidence = (fixture: Fixture, threadId: string) =>
     getNativeTerminalThread(fixture.harness.db, threadId)?.lastEvidenceAt;
@@ -2987,7 +3012,7 @@ describe("a native activity report that does not confirm activity", () => {
     }
   });
 
-  it("an empty list closes nothing, an omitted one keeps closing everything the report does not list", async () => {
+  it("an empty list closes nothing, a holder's computed list closes exactly what the report does not list, and an omitted list closes nothing", async () => {
     const fixture = await createFixture();
     const clock = vi.spyOn(Date, "now").mockReturnValue(1_000_000);
     try {
@@ -3011,6 +3036,17 @@ describe("a native activity report that does not confirm activity", () => {
       ).toBe(200);
       expect(openInteractions(fixture, thread.id)).toHaveLength(2);
       clock.mockReturnValue(1_040_000);
+      expect(
+        (
+          await postJson(
+            fixture,
+            `/threads/${thread.id}/native-terminal/activity`,
+            { state: "working", prompt: "omitted" },
+          )
+        ).status,
+      ).toBe(200);
+      expect(openInteractions(fixture, thread.id)).toHaveLength(2);
+      clock.mockReturnValue(1_050_000);
       await send(fixture, thread.id, { state: "working", prompt: "next" });
       expect(openInteractions(fixture, thread.id)).toHaveLength(0);
     } finally {

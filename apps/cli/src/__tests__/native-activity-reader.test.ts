@@ -744,7 +744,13 @@ describe("NativeActivityReader", () => {
 
   it("recovers on a bound permission close only when that permission is open", () => {
     const fixture = claudeFixture();
-    fixture.hook([{ hook_event_name: "PermissionRequest", tool_name: "Bash" }]);
+    fixture.hook([
+      {
+        hook_event_name: "PermissionRequest",
+        tool_name: "Bash",
+        tool_input: { command: "make" },
+      },
+    ]);
     expect(fixture.reader.read()).toEqual([
       {
         state: "waiting",
@@ -767,7 +773,14 @@ describe("NativeActivityReader", () => {
     ]);
     expect(fixture.reader.read()).toEqual([]);
     expect(fixture.reader.heartbeat()).toBeNull();
-    fixture.hook([{ hook_event_name: "PostToolUse", tool_name: "Bash" }]);
+    fixture.hook([
+      {
+        hook_event_name: "PostToolUse",
+        tool_name: "Bash",
+        tool_use_id: "toolu_make",
+        tool_input: { command: "make" },
+      },
+    ]);
     expect(fixture.reader.read()).toEqual([{ state: "working", prompt: null }]);
     expect(fixture.reader.heartbeat()).toEqual({
       state: "working",
@@ -2751,8 +2764,17 @@ describe("a rotated session is followed only after its binding is accepted", () 
     prompt: "second prompt",
     prompt_id: "turn-rotated",
   };
-  const ask = { hook_event_name: "PermissionRequest", tool_name: "Bash" };
-  const answered = { hook_event_name: "PostToolUse", tool_name: "Bash" };
+  const ask = {
+    hook_event_name: "PermissionRequest",
+    tool_name: "Bash",
+    tool_input: { command: "make" },
+  };
+  const answered = {
+    hook_event_name: "PostToolUse",
+    tool_name: "Bash",
+    tool_use_id: "toolu_make",
+    tool_input: { command: "make" },
+  };
 
   it("publishes nothing for the new session while the rebind is pending, then replays once after it is recorded", async () => {
     const binding = holdOpen();
