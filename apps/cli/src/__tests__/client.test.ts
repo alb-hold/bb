@@ -1,9 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import { ACTOR_THREAD_HEADER, withActorThread } from "../client.js";
 
+type Send = Parameters<typeof withActorThread>[0];
+
 describe("withActorThread", () => {
   it("claims the thread in BB_THREAD_ID on every request", async () => {
-    const send = vi.fn(async () => new Response("{}"));
+    const send = vi.fn<Send>(async () => new Response("{}"));
 
     await withActorThread(send, { BB_THREAD_ID: "thr_caller" })(
       "http://bb.test/api/v1/threads/thr_x/archive-all",
@@ -18,14 +20,13 @@ describe("withActorThread", () => {
   });
 
   it("claims nothing outside a thread", async () => {
-    const send = vi.fn(async () => new Response("{}"));
+    const send = vi.fn<Send>(async () => new Response("{}"));
 
     await withActorThread(send, {})("http://bb.test/api/v1/threads/thr_x", {
       method: "DELETE",
     });
 
-    expect(
-      new Headers(send.mock.calls[0]?.[1]?.headers).has(ACTOR_THREAD_HEADER),
-    ).toBe(false);
+    const headers = new Headers(send.mock.calls[0]?.[1]?.headers);
+    expect(headers.has(ACTOR_THREAD_HEADER)).toBe(false);
   });
 });

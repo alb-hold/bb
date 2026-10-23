@@ -48,6 +48,7 @@ type WorktreeOperation = Pick<
   | "projectCheckout"
   | "report"
   | "signal"
+  | "thread"
 >;
 
 export const worktreeRpcContract = defineRpcContract({
