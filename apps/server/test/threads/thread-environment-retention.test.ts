@@ -2,9 +2,7 @@ import {
   deleteEnvironmentRetentionIntents,
   environmentRetentions,
   environments,
-  getEnvironment,
   getPreparingEnvironment,
-  getThread,
   listEnvironmentRetentionTransitionsForEnvironment,
   listOpenEnvironmentRetentionsForHost,
   recordEnvironmentRetention,
@@ -276,9 +274,8 @@ describe("a failed create records what it kept", () => {
       await restoreAndWait(harness, thread.id);
 
       expect(calls).toBe(0);
-      const current = getThread(harness.db, thread.id);
       expect(
-        getEnvironment(harness.db, current?.environmentId ?? "")?.statusMessage,
+        getPreparingEnvironment(harness.db, thread.id)?.statusMessage,
       ).toContain(KEPT_PATH);
     });
   });
