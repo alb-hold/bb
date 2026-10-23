@@ -122,6 +122,10 @@ interface FakeProcess {
   denied?: boolean;
   fdTargets?: string[];
   mapFiles?: string[];
+  exe?: string;
+  magic?: Record<string, string>;
+  mapDevice?: string;
+  containerIds?: Record<string, string>;
 }
 
 const TREE_DIRECTORIES: Record<string, string> = {
@@ -154,6 +158,7 @@ const CONTAINER_IDS: Record<string, string> = {
 function fakeProc(options: {
   self?: { uid?: number; groups?: number[]; nspid?: string };
   mountinfo?: string;
+  ourView?: Record<string, string>;
   ownMount?: string;
   denyInit?: boolean;
   processes?: Record<number, FakeProcess>;
@@ -163,7 +168,9 @@ function fakeProc(options: {
   const links = new Map<string, string>();
   const denied = new Set<string>();
   const dirs = new Map<string, string[]>();
-  const ids = new Map<string, string>(Object.entries(TREE_DIRECTORIES));
+  const ids = new Map<string, string>(
+    Object.entries({ ...TREE_DIRECTORIES, ...(options.ourView ?? {}) }),
+  );
   files.set(
     "/proc/self/status",
     `Name:\tnode\nState:\tR (running)\nNSpid:\t${self.nspid ?? "4242"}\nUid:\t${self.uid ?? 1000}\t${self.uid ?? 1000}\t${self.uid ?? 1000}\t${self.uid ?? 1000}\nGid:\t1000\t1000\t1000\t1000\nGroups:\t${(self.groups ?? [1000]).join(" ")}\n`,
@@ -199,7 +206,13 @@ function fakeProc(options: {
       process.mount ?? options.ownMount ?? "mnt:[1]",
     );
     links.set(`${base}/task/${key}/cwd`, process.cwd ?? "/home/other");
-    links.set(`${base}/exe`, "/usr/bin/node");
+    links.set(`${base}/exe`, process.exe ?? "/usr/bin/node");
+    for (const [magicPath, id] of Object.entries(process.magic ?? {}))
+      ids.set(magicPath, id);
+    for (const [containerPath, id] of Object.entries(
+      process.containerIds ?? {},
+    ))
+      ids.set(`${base}/root${containerPath}`, id);
     const fdTargets = process.fdTargets ?? [];
     for (const [containerPath, id] of Object.entries(CONTAINER_IDS))
       ids.set(`${base}/root${containerPath === "/" ? "/" : containerPath}`, id);
@@ -207,7 +220,8 @@ function fakeProc(options: {
       `${base}/maps`,
       (process.mapFiles ?? [])
         .map(
-          (file) => `7f0000000000-7f0000001000 r--p 00000000 08:01 12 ${file}`,
+          (file) =>
+            `7f0000000000-7f0000001000 r--p 00000000 ${process.mapDevice ?? "08:01 12"} ${file}`,
         )
         .join("\n"),
     );
@@ -229,6 +243,7 @@ function fakeProc(options: {
     readFile: async (path) => files.get(path) ?? fail(path),
     readdir: async (path) => dirs.get(path) ?? fail(path),
     lstatId: async (path) => ids.get(path) ?? fail(path),
+    statId: async (path) => ids.get(path) ?? fail(path),
     subdirectories: async (path) => {
       if (!(path in TREE_DIRECTORIES)) return fail(path);
       return Object.keys(TREE_DIRECTORIES)
@@ -459,6 +474,195 @@ describe("the Linux process-list visibility rule", () => {
         status: "unknown",
       });
     }
+  });
+
+  describe("a path that cannot be found from the process's own root", () => {
+    const view = {
+      "/opt/tool/runner": "2:77",
+      "/opt/tool": "2:76",
+      "/opt": "2:75",
+      "/opt/lib/x.so": "2049:12",
+      "/opt/lib": "2:78",
+      "/": "2:1",
+      "/work/tree/sub/tool": "1:300",
+    };
+    const exeProcess = (
+      magic: string,
+      ours: string,
+      exe = "/opt/tool/runner",
+    ) =>
+      fakeProc({
+        ourView: { ...view, [exe]: ours },
+        processes: {
+          300: {
+            uid: 1000,
+            mount: "mnt:[2]",
+            comm: "node",
+            exe,
+            magic: { "/proc/300/exe": magic },
+          },
+        },
+      });
+
+    it("leaves the process out when the same path in this view is the same file and lies outside the worktree, and records why", async () => {
+      expect(
+        await scanLinux("/work/tree", exeProcess("2:77", "2:77"), 4242),
+      ).toEqual({
+        status: "clear",
+        clearances: [
+          {
+            pid: 300,
+            link: "/proc/300/exe",
+            path: "/opt/tool/runner",
+            identity: "2:77",
+          },
+        ],
+      });
+    });
+
+    it("reports the process when the same file lies in a directory of the worktree", async () => {
+      expect(
+        await scanLinux(
+          "/work/tree",
+          exeProcess("1:300", "1:300", "/work/tree/sub/tool"),
+          4242,
+        ),
+      ).toMatchObject({
+        status: "held",
+        holders: [{ pid: 300, command: "node", through: "open file" }],
+      });
+    });
+
+    it("reports a working folder that cannot be found from its root when its identity is a directory of the worktree", async () => {
+      const proc = fakeProc({
+        ourView: { "/work/tree/sub/x": "1:104" },
+        processes: {
+          300: {
+            uid: 1000,
+            mount: "mnt:[2]",
+            comm: "node",
+            cwd: "/work/tree/sub/x",
+            magic: { "/proc/300/task/300/cwd": "1:104" },
+          },
+        },
+      });
+      expect(await scanLinux("/work/tree", proc, 4242)).toMatchObject({
+        status: "held",
+        holders: [{ pid: 300, command: "node", through: "working folder" }],
+      });
+    });
+
+    it("keeps the worktree when the same path in this view is a different file, or is not there", async () => {
+      expect(
+        await scanLinux("/work/tree", exeProcess("2:99", "2:77"), 4242),
+      ).toMatchObject({
+        status: "unknown",
+        reason: expect.stringContaining("different file"),
+      });
+      const absent = fakeProc({
+        processes: {
+          300: {
+            uid: 1000,
+            mount: "mnt:[2]",
+            exe: "/opt/tool/runner",
+            magic: { "/proc/300/exe": "2:77" },
+          },
+        },
+      });
+      expect(await scanLinux("/work/tree", absent, 4242)).toMatchObject({
+        status: "unknown",
+        reason: expect.stringContaining("not in this view"),
+      });
+    });
+
+    it("identifies a mapped file by the device and inode of its maps line", async () => {
+      const proc = fakeProc({
+        ourView: view,
+        processes: {
+          300: { uid: 1000, mount: "mnt:[2]", mapFiles: ["/opt/lib/x.so"] },
+        },
+      });
+      expect(await scanLinux("/work/tree", proc, 4242)).toMatchObject({
+        status: "clear",
+        clearances: [
+          {
+            pid: 300,
+            link: "/proc/300/maps:7f0000000000-7f0000001000",
+            path: "/opt/lib/x.so",
+            identity: "2049:12",
+          },
+        ],
+      });
+      const other = fakeProc({
+        ourView: { ...view, "/opt/lib/x.so": "2049:13" },
+        processes: {
+          300: { uid: 1000, mount: "mnt:[2]", mapFiles: ["/opt/lib/x.so"] },
+        },
+      });
+      expect(await scanLinux("/work/tree", other, 4242)).toMatchObject({
+        status: "unknown",
+        reason: expect.stringContaining("different file"),
+      });
+    });
+
+    it("keeps the worktree when the maps line of a mapped file has no usable identity", async () => {
+      const proc = fakeProc({
+        ourView: view,
+        processes: {
+          300: {
+            uid: 1000,
+            mount: "mnt:[2]",
+            mapFiles: ["/opt/lib/x.so"],
+            mapDevice: "00:00 0",
+          },
+        },
+      });
+      expect(await scanLinux("/work/tree", proc, 4242)).toMatchObject({
+        status: "unknown",
+        reason: expect.stringContaining("cannot be identified"),
+      });
+    });
+
+    it("keeps the worktree when the program's link cannot be read", async () => {
+      const proc = exeProcess("2:77", "2:77");
+      const denied: ProcReader = {
+        ...proc,
+        statId: async (path) => {
+          if (path === "/proc/300/exe")
+            throw Object.assign(new Error(path), { code: "EACCES" });
+          return proc.statId(path);
+        },
+      };
+      expect(await scanLinux("/work/tree", denied, 4242)).toMatchObject({
+        status: "unknown",
+      });
+    });
+
+    it("never overrides a path that resolves inside the process's own root", async () => {
+      const proc = fakeProc({
+        ourView: {
+          "/work/tree/sub/tool": "1:300",
+        },
+        processes: {
+          300: {
+            uid: 1000,
+            mount: "mnt:[2]",
+            comm: "node",
+            exe: "/work/tree/sub/tool",
+            magic: { "/proc/300/exe": "1:300" },
+            containerIds: {
+              "/work": "9:20",
+              "/work/tree": "9:21",
+              "/work/tree/sub": "9:22",
+              "/work/tree/sub/tool": "9:23",
+            },
+          },
+        },
+      });
+      expect(await scanLinux("/work/tree", proc, 4242)).toEqual({
+        status: "clear",
+      });
+    });
   });
 
   it("keeps the worktree when the path of a process in another mount namespace has too many parts to follow", async () => {

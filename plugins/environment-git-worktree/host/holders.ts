@@ -13,8 +13,15 @@ export interface WorktreeHolder {
   through: "working folder" | "open file" | "mapped file";
 }
 
+export interface FallbackClearance {
+  pid: number;
+  link: string;
+  path: string;
+  identity: string;
+}
+
 export type WorktreeHolderScan =
-  | { status: "clear" }
+  | { status: "clear"; clearances?: FallbackClearance[] }
   | { status: "held"; holders: WorktreeHolder[] }
   | { status: "unknown"; reason: string };
 
@@ -65,6 +72,7 @@ export interface ProcReader {
   readFile(path: string): Promise<string>;
   readdir(path: string): Promise<string[]>;
   lstatId(path: string): Promise<string>;
+  statId(path: string): Promise<string>;
   subdirectories(path: string): Promise<string[]>;
 }
 
@@ -74,6 +82,10 @@ export const hostProc: ProcReader = {
   readdir: (path) => fs.readdir(path),
   lstatId: async (path) => {
     const info = await fs.lstat(path, { bigint: true });
+    return `${info.dev}:${info.ino}`;
+  },
+  statId: async (path) => {
+    const info = await fs.stat(path, { bigint: true });
     return `${info.dev}:${info.ino}`;
   },
   subdirectories: async (path) =>
@@ -120,6 +132,7 @@ type ProcessResult =
   | ProcessResultUnknown
   | { otherUser: true }
   | { helper: string }
+  | { cleared: FallbackClearance[] }
   | null;
 
 function unreadable(what: string, failed: string): ProcessResultUnknown {
@@ -234,6 +247,8 @@ interface ForeignTarget {
   what: string;
   through: WorktreeHolder["through"];
   path: string;
+  magic: string | null;
+  identity?: string;
 }
 
 async function foreignTargets(
@@ -242,7 +257,7 @@ async function foreignTargets(
   base: string,
 ): Promise<{ targets: ForeignTarget[] } | { stop: ProcessResult }> {
   const targets: ForeignTarget[] = [
-    { what: "root folder", through: "working folder", path: "/" },
+    { what: "root folder", through: "working folder", path: "/", magic: null },
   ];
   const link = async (
     what: string,
@@ -253,7 +268,7 @@ async function foreignTargets(
     if ("gone" in target) return null;
     if ("failed" in target)
       return unreadable(`process ${pid} ${what}`, target.failed);
-    targets.push({ what, through, path: target.value });
+    targets.push({ what, through, path: target.value, magic: path });
     return null;
   };
   const tasks = await readOptional(() => proc.readdir(`${base}/task`));
@@ -290,13 +305,103 @@ async function foreignTargets(
     return { stop: unreadable(`process ${pid} memory maps`, maps.failed) };
   const mapped = new Set<string>();
   for (const line of maps.value.split("\n")) {
-    const file = line.split(/\s+/u).slice(5).join(" ");
+    const fields = line.split(/\s+/u);
+    const file = fields.slice(5).join(" ");
     if (file !== "" && !file.startsWith("[") && !mapped.has(file)) {
       mapped.add(file);
-      targets.push({ what: "memory maps", through: "mapped file", path: file });
+      targets.push({
+        what: "memory maps",
+        through: "mapped file",
+        path: file,
+        magic: `${base}/maps:${fields[0] ?? ""}`,
+        ...identityOfMapsLine(fields[3] ?? "", fields[4] ?? ""),
+      });
     }
   }
   return { targets };
+}
+
+function identityOfMapsLine(
+  device: string,
+  inode: string,
+): { identity?: string } {
+  const parts = device.split(":");
+  const major = Number.parseInt(parts[0] ?? "", 16);
+  const minor = Number.parseInt(parts[1] ?? "", 16);
+  if (
+    parts.length !== 2 ||
+    !Number.isInteger(major) ||
+    !Number.isInteger(minor)
+  )
+    return {};
+  if (!/^[1-9]\d*$/u.test(inode)) return {};
+  const encoded =
+    ((BigInt(major) & 0xfffn) << 8n) |
+    (BigInt(minor) & 0xffn) |
+    ((BigInt(minor) & ~0xffn) << 12n) |
+    ((BigInt(major) & ~0xfffn) << 32n);
+  return { identity: `${encoded}:${inode}` };
+}
+
+async function placeByIdentity(
+  proc: ProcReader,
+  pid: number,
+  target: ForeignTarget,
+  worktreeIds: Set<string>,
+  command: string | null,
+): Promise<ProcessResult> {
+  const where = `process ${pid} runs in another mount namespace and its ${target.what} ${target.path} cannot be found from its root`;
+  if (target.magic === null) return notVouchable(where);
+  const actual =
+    target.identity !== undefined
+      ? { value: target.identity }
+      : await readOptional(() => proc.statId(target.magic ?? ""));
+  if ("gone" in actual)
+    return notVouchable(`${where}, and its file cannot be identified`);
+  if ("failed" in actual)
+    return unreadable(
+      `${where}, and its file cannot be identified`,
+      actual.failed,
+    );
+  const ours = await readOptional(() => proc.statId(target.path));
+  if ("gone" in ours)
+    return notVouchable(
+      `${where}, and the same path is not in this view either`,
+    );
+  if ("failed" in ours)
+    return unreadable(`${where}, and the same path in this view`, ours.failed);
+  if (ours.value !== actual.value)
+    return notVouchable(
+      `${where}, and the same path in this view is a different file`,
+    );
+  let current = target.path;
+  for (let steps = 0; ; steps += 1) {
+    if (steps > MAX_WALK_STEPS)
+      return notVouchable(
+        `${where}, and its path has too many parts to follow`,
+      );
+    const id = await readOptional(() => proc.lstatId(current));
+    if ("gone" in id)
+      return notVouchable(
+        `${where}, and ${current} cannot be found in this view`,
+      );
+    if ("failed" in id)
+      return unreadable(`${where}, ${current} in this view`, id.failed);
+    if (worktreeIds.has(id.value))
+      return { pid, command, through: target.through };
+    if (current === "/")
+      return {
+        cleared: [
+          {
+            pid,
+            link: target.magic,
+            path: target.path,
+            identity: actual.value,
+          },
+        ],
+      };
+    current = path.posix.dirname(current);
+  }
 }
 
 async function reachesWorktree(
@@ -319,6 +424,7 @@ async function reachesWorktree(
   const found = await foreignTargets(proc, pid, base);
   if ("stop" in found) return found.stop;
   const outside = new Set<string>();
+  const clearances: FallbackClearance[] = [];
   for (const target of found.targets) {
     if (!target.path.startsWith("/")) continue;
     if (target.path.endsWith(" (deleted)"))
@@ -336,10 +442,22 @@ async function reachesWorktree(
       const id = await readOptional(() =>
         proc.lstatId(`/proc/${pid}/root${current}`),
       );
-      if ("gone" in id)
-        return notVouchable(
-          `${where} and its ${target.what} ${current} cannot be found from its root`,
+      if ("gone" in id) {
+        if (steps !== 0 || target.magic === null)
+          return notVouchable(
+            `${where} and its ${target.what} ${current} cannot be found from its root`,
+          );
+        const placed = await placeByIdentity(
+          proc,
+          pid,
+          target,
+          ids.ids,
+          command,
         );
+        if (placed === null || !("cleared" in placed)) return placed;
+        clearances.push(...placed.cleared);
+        break;
+      }
       if ("failed" in id)
         return unreadable(`${where}, its ${target.what} ${current}`, id.failed);
       if (ids.ids.has(id.value))
@@ -350,7 +468,7 @@ async function reachesWorktree(
     }
     for (const done of walked) outside.add(done);
   }
-  return null;
+  return clearances.length > 0 ? { cleared: clearances } : null;
 }
 
 async function scanOwnProcess(
@@ -556,6 +674,7 @@ export async function scanLinux(
     .filter((pid) => pid !== ownPid);
   const holders: WorktreeHolder[] = [];
   const unknown: string[] = [];
+  const clearances: FallbackClearance[] = [];
   let listed: Promise<TreeIds> | null = null;
   const tree: TreeIdsReader = () => {
     listed ??= listTreeIds(proc, directory, limits.maxDirectories);
@@ -577,6 +696,10 @@ export async function scanLinux(
     );
     for (const result of results) {
       if (result === null) continue;
+      if ("cleared" in result) {
+        clearances.push(...result.cleared);
+        continue;
+      }
       if ("otherUser" in result || "helper" in result) continue;
       if ("unknown" in result) unknown.push(result.unknown);
       else holders.push(result);
@@ -589,7 +712,9 @@ export async function scanLinux(
       reason: `${unknown.length} processes could not be inspected, such as ${unknown[0]}`,
     };
   }
-  return { status: "clear" };
+  return clearances.length > 0
+    ? { status: "clear", clearances }
+    : { status: "clear" };
 }
 
 function runLsof(directory: string): Promise<{
