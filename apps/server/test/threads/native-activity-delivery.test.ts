@@ -655,6 +655,59 @@ describe("a waiting report whose response is lost, then a newer report, through 
       expect(openRequestIds(harness, thread.id)).toEqual([]);
     });
   });
+
+  it("keeps an old question tracked when unknown closes is rejected and the accepted fallback cannot close it", async () => {
+    const { harness, thread } = await nativeThread();
+    const sent: Array<string[] | undefined> = [];
+    let rejectClose = true;
+    const reporter = reporterModule.createNativeActivityReporter({
+      currentCredential: () => SECRET,
+      send: async (args) => {
+        sent.push(args.closes);
+        if (args.closes?.includes("q1") && rejectClose) {
+          rejectClose = false;
+          throw new BbHttpError({
+            body: null,
+            code: "invalid_request",
+            message: 'Unrecognized key: "closes"',
+            status: 400,
+          });
+        }
+        const response = await harness.app.request(activityPath(thread.id), {
+          body: JSON.stringify({
+            ...(args.closes === undefined ? {} : { closes: args.closes }),
+            ...(args.prompt === undefined ? {} : { prompt: args.prompt }),
+            ...(args.questions === undefined
+              ? {}
+              : { questions: args.questions }),
+            state: args.state,
+          }),
+          headers: {
+            authorization: args.authorization ?? "",
+            "content-type": "application/json",
+          },
+          method: "POST",
+        });
+        expect(response.status).toBe(200);
+        return response.json();
+      },
+      threadId: thread.id,
+    });
+
+    reporter.report(asking);
+    await reporter.settled();
+    reporter.report({ prompt: null, state: "working" });
+    await reporter.settled();
+    expect(sent).toEqual([[], ["q1"], undefined]);
+    expect(openRequestIds(harness, thread.id)).toEqual([
+      expect.stringContaining("q1"),
+    ]);
+
+    reporter.report({ prompt: null, state: "working" });
+    await reporter.settled();
+    expect(sent).toEqual([[], ["q1"], undefined, ["q1"]]);
+    expect(openRequestIds(harness, thread.id)).toEqual([]);
+  });
 });
 
 describe("a lost idle report through the real reader, reporter, wiring and SDK client (the 401 in these cases comes from the fault-injecting fetch, not from the real gate; the real gate is covered by the request-shape tests above)", () => {

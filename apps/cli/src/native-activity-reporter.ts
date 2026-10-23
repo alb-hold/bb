@@ -63,8 +63,10 @@ export function createNativeActivityReporter(options: {
       ...(include.closes ? { closes } : {}),
       ...(include.confirms ? { confirms: false } : {}),
     });
-    const acknowledge = (): void => {
-      possiblyOpen = new Set(opened);
+    const acknowledge = (preserveUnclosed = false): void => {
+      possiblyOpen = preserveUnclosed
+        ? new Set([...possiblyOpen, ...opened])
+        : new Set(opened);
     };
     const keep = (error: unknown): void => {
       if (
@@ -98,7 +100,7 @@ export function createNativeActivityReporter(options: {
             confirms: sends.confirms && !unsupported.confirms,
           }),
         );
-        acknowledge();
+        acknowledge(unsupported.closes);
       } catch (retryError) {
         keep(retryError);
       }
