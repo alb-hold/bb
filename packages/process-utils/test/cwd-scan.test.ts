@@ -106,7 +106,15 @@ describe("scanProcessesWithCwdUnder", () => {
   it.each([
     ["a spawn error", async () => { throw new Error("spawn lsof ENOENT"); }],
     ["a timeout", async () => { throw new Error("lsof timed out"); }],
-    ["an exit code above 1", async () => ({ code: 2, stdout: "" })],
+    ["an exit code above 1", async () => ({ code: 2, stdout: "", stderr: "" })],
+    [
+      "exit 1 together with a warning on stderr",
+      async () => ({
+        code: 1,
+        stdout: "",
+        stderr: "lsof: WARNING: can't stat() fuse file system /Volumes/x",
+      }),
+    ],
   ])("is unknown on macOS when lsof has %s", async (_label, runLsof) => {
     const base = await dir();
     const scan = await scanProcessesWithCwdUnder(
@@ -121,7 +129,7 @@ describe("scanProcessesWithCwdUnder", () => {
     const darwin = (stdout: string, code: number) => ({
       ...fakeLinux({}),
       platform: "darwin" as const,
-      runLsof: async () => ({ code, stdout }),
+      runLsof: async () => ({ code, stdout, stderr: "" }),
     });
     expect(
       await scanProcessesWithCwdUnder({ directories: [base] }, darwin("", 1)),

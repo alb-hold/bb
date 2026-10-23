@@ -239,6 +239,21 @@ describe("personal workspace resource operations", () => {
     });
     expect(released.host.directories.size).toBe(0);
   });
+  it("says in the removal log which users' processes were checked", async () => {
+    const f = await setup();
+    await f.provider.create(f.context);
+    await f.provider.remove({
+      environment: null,
+      hostId: HOST_ID,
+      path: WORKSPACE_PATH,
+      pathKey: THREAD_ID,
+      resource: null,
+      attempt: 1,
+      report: f.context.report,
+      signal: new AbortController().signal,
+    });
+    expect(f.logs.join("\n")).toContain("Checked the current user's processes");
+  });
   it("keeps the directory and names the process working inside it", async () => {
     const f = await setup();
     await f.provider.create(f.context);

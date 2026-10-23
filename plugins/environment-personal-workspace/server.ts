@@ -45,7 +45,7 @@ export default async function personalWorkspacePlugin(
         };
       }
     },
-    async remove({ environment, hostId, path, pathKey, signal }) {
+    async remove({ environment, hostId, path, pathKey, report, signal }) {
       if (hostId === null) {
         return {
           status: "failed",
@@ -105,6 +105,13 @@ export default async function personalWorkspacePlugin(
               .join("; ")}). Nothing was removed and nothing was stopped; it is checked again later.`,
           };
         }
+        report.log(
+          removal.excludedOtherUsers === null
+            ? "Only the current user's processes were checked before removing the workspace; other users' processes were not."
+            : removal.excludedOtherUsers === 0
+              ? "Checked the current user's processes before removing the workspace; no process of another user was unreadable."
+              : `Checked the current user's processes before removing the workspace; ${removal.excludedOtherUsers} process(es) of other users could not be read and were excluded.`,
+        );
         return { status: "removed" };
       } catch (error) {
         if (signal.aborted) throw error;

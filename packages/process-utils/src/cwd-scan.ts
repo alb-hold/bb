@@ -19,7 +19,9 @@ export interface CwdScanIo {
   listProcessIds(): Promise<string[]>;
   readCwd(pid: number): Promise<string>;
   ownerUid(pid: number): Promise<number>;
-  runLsof(timeoutMs: number): Promise<{ code: number | null; stdout: string }>;
+  runLsof(
+    timeoutMs: number,
+  ): Promise<{ code: number | null; stdout: string; stderr: string }>;
 }
 
 const GONE = new Set(["ENOENT", "ESRCH", "ENOTDIR"]);
@@ -53,11 +55,12 @@ const defaultIo: CwdScanIo = {
     new Promise((resolve, reject) => {
       const child = spawnPortableOutputProcess({
         command: "lsof",
-        args: ["-a", "-d", "cwd", "-F", "pn", "-w", "-n"],
+        args: ["-a", "-d", "cwd", "-F", "pn", "-n"],
       });
       const chunks: Buffer[] = [];
       child.stdout.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
-      child.stderr.resume();
+      const errChunks: Buffer[] = [];
+      child.stderr.on("data", (chunk) => errChunks.push(Buffer.from(chunk)));
       const timer = setTimeout(() => {
         child.kill("SIGKILL");
         reject(new Error("lsof timed out"));
@@ -68,7 +71,11 @@ const defaultIo: CwdScanIo = {
       });
       child.once("exit", (code) => {
         clearTimeout(timer);
-        resolve({ code, stdout: Buffer.concat(chunks).toString("utf8") });
+        resolve({
+          code,
+          stdout: Buffer.concat(chunks).toString("utf8"),
+          stderr: Buffer.concat(errChunks).toString("utf8"),
+        });
       });
     }),
 };
@@ -144,7 +151,7 @@ export async function scanProcessesWithCwdUnder(
       ? { status: "held", holders, excludedOtherUsers: excluded }
       : { status: "clear", excludedOtherUsers: excluded };
   }
-  let output: { code: number | null; stdout: string };
+  let output: { code: number | null; stdout: string; stderr: string };
   try {
     output = await io.runLsof(args.timeoutMs ?? 30_000);
   } catch (error) {
@@ -157,6 +164,12 @@ export async function scanProcessesWithCwdUnder(
     return {
       status: "unknown",
       reason: `lsof exited with ${output.code === null ? "a signal" : `code ${output.code}`}`,
+    };
+  }
+  if (output.code === 1 && output.stderr.trim() !== "") {
+    return {
+      status: "unknown",
+      reason: `lsof exited with code 1 and reported: ${output.stderr.trim().split("\n")[0]}`,
     };
   }
   let pid: number | null = null;
