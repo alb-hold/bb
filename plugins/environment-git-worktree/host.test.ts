@@ -1259,6 +1259,7 @@ async function createManagedWorktree(
     pathKey?: string;
     branchName?: string;
     prepareSource?: (sourcePath: string) => Promise<void>;
+    afterPublish?: (sourcePath: string) => Promise<void>;
   } = {},
 ): Promise<ManagedWorktree> {
   const { root, sourcePath, dataDir } = await createSourceRepository();
@@ -1266,6 +1267,7 @@ async function createManagedWorktree(
   if (options.publish !== false) {
     await publishToBareRemote(root, sourcePath);
   }
+  await options.afterPublish?.(sourcePath);
   const harness = createHarness(dataDir);
   const pathKey = options.pathKey ?? "thr_keep";
   const branchName = options.branchName ?? `bb/${pathKey}`;
@@ -1580,6 +1582,54 @@ describe.skipIf(process.platform === "win32")(
         const message = result.status === "retained" ? result.message : "";
         expect(message).toContain("not reachable from any remote-tracking");
         expect(message).not.toContain("no upstream");
+      } finally {
+        await worktree.harness.experimental_dispose();
+      }
+    });
+
+    it("removes a clean zero-commit worktree whose base commit is published", async () => {
+      const worktree = await createManagedWorktree();
+      try {
+        const base = (await git(worktree.path, "rev-parse", "HEAD")).trim();
+        expect(
+          (await git(worktree.path, "branch", "-r", "--contains", base)).trim(),
+        ).not.toBe("");
+        expect(
+          (
+            await git(worktree.path, "rev-list", "--count", `${base}..HEAD`)
+          ).trim(),
+        ).toBe("0");
+        await stopLingering(worktree);
+        expect(await removeFrom(worktree)).toEqual({ status: "removed" });
+        await expectWorktreeRemoved(worktree);
+      } finally {
+        await worktree.harness.experimental_dispose();
+      }
+    });
+
+    it("keeps a clean zero-commit worktree whose base commit exists only locally, and names the base", async () => {
+      let localBase = "";
+      const worktree = await createManagedWorktree({
+        afterPublish: async (sourcePath) => {
+          await commitFile(sourcePath, "local-only-base.txt");
+          localBase = (await git(sourcePath, "rev-parse", "HEAD")).trim();
+        },
+      });
+      try {
+        expect((await git(worktree.path, "rev-parse", "HEAD")).trim()).toBe(
+          localBase,
+        );
+        expect(
+          await git(worktree.path, "branch", "-r", "--contains", localBase),
+        ).toBe("");
+        expect(await git(worktree.path, "status", "--porcelain")).toBe("");
+        await stopLingering(worktree);
+        const result = await removeFrom(worktree);
+        const message = result.status === "retained" ? result.message : "";
+        expect(result.status).toBe("retained");
+        expect(message).toContain(`base commit ${localBase}`);
+        expect(message).toContain("not reachable from any remote-tracking");
+        expect(existsSync(worktree.path)).toBe(true);
       } finally {
         await worktree.harness.experimental_dispose();
       }
