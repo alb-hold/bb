@@ -148,6 +148,17 @@ export default experimental_defineHostEntry({
       }[] = [];
       const releasable: string[] = [];
       for (const name of names) {
+        try {
+          const stat = await fs.lstat(path.join(root, name));
+          if (stat.isSymbolicLink() || !stat.isDirectory())
+            throw new Error(
+              "Storage entry must be a directory, not a symbolic link",
+            );
+        } catch (error) {
+          if (!isFsErrorWithCode(error, "ENOENT")) throw error;
+        }
+      }
+      for (const name of names) {
         const scan = name.startsWith(".bb-trash-")
           ? ({ status: "clear" } as const)
           : await internal_DO_NOT_USE_scanProcessesWithCwdUnder({
