@@ -301,4 +301,25 @@ describe("the Linux process-list visibility rule", () => {
       status: "unknown",
     });
   });
+
+  it("looks again at a same-user process that is unreadable for a moment, such as one in the middle of exec", async () => {
+    const proc = fakeProc({
+      processes: { 300: { uid: 1000, cwd: "/elsewhere" } },
+    });
+    let denied = 2;
+    const flaky: ProcReader = {
+      ...proc,
+      readdir: async (path) => {
+        if (path === "/proc/300/fd" && denied > 0) {
+          denied -= 1;
+          throw Object.assign(new Error(path), { code: "EACCES" });
+        }
+        return proc.readdir(path);
+      },
+    };
+    expect(await scanLinux("/work/tree", flaky, 4242)).toEqual({
+      status: "clear",
+    });
+    expect(denied).toBe(0);
+  });
 });

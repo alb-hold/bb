@@ -4,6 +4,8 @@ import path from "node:path";
 
 const LSOF_TIMEOUT_MS = 30_000;
 const LINUX_SCAN_CONCURRENCY = 32;
+const PERMISSION_RETRIES = 3;
+const PERMISSION_RETRY_MS = 40;
 
 export interface WorktreeHolder {
   pid: number;
@@ -149,7 +151,7 @@ async function scanLinuxProcess(
 
   const comm = await readOptional(() => proc.readFile(`${base}/comm`));
   const command = "value" in comm ? comm.value.trim() || null : null;
-  const result = await scanOwnProcess(
+  let result = await scanOwnProcess(
     proc,
     pid,
     base,
@@ -157,6 +159,24 @@ async function scanLinuxProcess(
     mountNamespace,
     command,
   );
+  for (
+    let attempt = 0;
+    attempt < PERMISSION_RETRIES &&
+    result !== null &&
+    "unknown" in result &&
+    result.vouchable;
+    attempt += 1
+  ) {
+    await new Promise((resolve) => setTimeout(resolve, PERMISSION_RETRY_MS));
+    result = await scanOwnProcess(
+      proc,
+      pid,
+      base,
+      directory,
+      mountNamespace,
+      command,
+    );
+  }
   if (
     result !== null &&
     "unknown" in result &&
