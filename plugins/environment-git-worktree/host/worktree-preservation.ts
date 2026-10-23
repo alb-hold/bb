@@ -270,6 +270,37 @@ function stashBranch(subject: string): string | null {
   return STASH_SUBJECT.exec(subject)?.[1] ?? null;
 }
 
+const BRANCH_CREATED = "branch: Created from";
+
+async function findZeroCommitBase(
+  branchName: string,
+  gitOptions: Parameters<typeof runGit>[1],
+): Promise<string | null> {
+  const head = await runGit(
+    ["--no-optional-locks", "rev-parse", "HEAD"],
+    gitOptions,
+  );
+  if (head.exitCode !== 0) return null;
+  const reflog = await runGit(
+    [
+      "--no-optional-locks",
+      "reflog",
+      "show",
+      "--format=%H%x09%gs",
+      `refs/heads/${branchName}`,
+    ],
+    gitOptions,
+  );
+  if (reflog.exitCode !== 0) return null;
+  const entries = reflog.stdout.split("\n").filter((line) => line !== "");
+  const oldest = entries[entries.length - 1];
+  if (oldest === undefined) return null;
+  const [sha, subject] = oldest.split("\t");
+  if (sha === undefined || subject === undefined) return null;
+  if (!subject.startsWith(BRANCH_CREATED)) return null;
+  return sha === head.stdout.trim() ? sha : null;
+}
+
 export async function findPreservationReasons(
   identity: WorktreeIdentity,
   signal: AbortSignal | undefined,
@@ -347,40 +378,67 @@ export async function findPreservationReasons(
     }
   }
 
-  const unpublished = await runGit(
-    [
-      "--no-optional-locks",
-      "rev-list",
-      "--max-count=1",
-      "HEAD",
-      "--not",
-      "--remotes",
-    ],
-    gitOptions,
-  );
-  if (unpublished.exitCode !== 0) {
-    reasons.push(
-      `could not verify its commits are published${unpublished.stderr.trim() ? ` (${unpublished.stderr.trim()})` : ""}`,
+  const zeroCommitBase =
+    branchName === null
+      ? null
+      : await findZeroCommitBase(branchName, gitOptions);
+  if (zeroCommitBase !== null) {
+    const baseUnpublished = await runGit(
+      [
+        "--no-optional-locks",
+        "rev-list",
+        "--max-count=1",
+        zeroCommitBase,
+        "--not",
+        "--remotes",
+      ],
+      gitOptions,
     );
-  } else if (unpublished.stdout.trim() !== "") {
-    const upstream =
-      branchName === null
-        ? null
-        : await runGit(
-            [
-              "--no-optional-locks",
-              "rev-parse",
-              "--abbrev-ref",
-              "--symbolic-full-name",
-              `${branchName}@{upstream}`,
-            ],
-            gitOptions,
-          );
-    reasons.push(
-      branchName !== null && upstream !== null && upstream.exitCode !== 0
-        ? `its branch ${branchName} has no upstream and has commits that are not reachable from any remote-tracking branch`
-        : "has commits that are not reachable from any remote-tracking branch",
+    if (baseUnpublished.exitCode !== 0) {
+      reasons.push(
+        `could not verify its base commit ${zeroCommitBase} is published${baseUnpublished.stderr.trim() ? ` (${baseUnpublished.stderr.trim()})` : ""}`,
+      );
+    } else if (baseUnpublished.stdout.trim() !== "") {
+      reasons.push(
+        `its base commit ${zeroCommitBase} is not reachable from any remote-tracking branch, so the branch holds no commit of its own but starts from work that was never published`,
+      );
+    }
+  } else {
+    const unpublished = await runGit(
+      [
+        "--no-optional-locks",
+        "rev-list",
+        "--max-count=1",
+        "HEAD",
+        "--not",
+        "--remotes",
+      ],
+      gitOptions,
     );
+    if (unpublished.exitCode !== 0) {
+      reasons.push(
+        `could not verify its commits are published${unpublished.stderr.trim() ? ` (${unpublished.stderr.trim()})` : ""}`,
+      );
+    } else if (unpublished.stdout.trim() !== "") {
+      const upstream =
+        branchName === null
+          ? null
+          : await runGit(
+              [
+                "--no-optional-locks",
+                "rev-parse",
+                "--abbrev-ref",
+                "--symbolic-full-name",
+                `${branchName}@{upstream}`,
+              ],
+              gitOptions,
+            );
+      reasons.push(
+        branchName !== null && upstream !== null && upstream.exitCode !== 0
+          ? `its branch ${branchName} has no upstream and has commits that are not reachable from any remote-tracking branch`
+          : "has commits that are not reachable from any remote-tracking branch",
+      );
+    }
   }
   const holderReason = describeHolderScan(
     await scanWorktreeHolders(identity.path),
