@@ -116,6 +116,24 @@ describe("resolveWritingEdits", () => {
     ]);
   });
 
+  it.each([
+    ["Set mode A error budget to low.", "A error", "An error"],
+    ["A error occurred in the deploy log.", "A error", "An error"],
+    ["Pick column An apple from the list.", "An apple", "A apple"],
+  ])(
+    "only suggests an article fix on a capital A, which can be a label: %s",
+    (target, original, replacement) => {
+      const edits = resolveWritingEdits({
+        ...base,
+        target,
+        proposals: [proposal(original, replacement)],
+      });
+      expect(edits).toEqual([
+        expect.objectContaining({ disposition: "suggest" }),
+      ]);
+    },
+  );
+
   it("splits a bundled multi-word fix into safe per-word edits", () => {
     const target = "Voce pode verificar a configuracao do servidor?";
     const edits = resolveWritingEdits({

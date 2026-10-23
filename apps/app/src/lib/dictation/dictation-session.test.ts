@@ -1,3 +1,4 @@
+import { BbHttpError } from "@bb/sdk/browser";
 import { describe, expect, it } from "vitest";
 import {
   DICTATION_HARD_MAX_SEGMENT_MS,
@@ -253,6 +254,38 @@ describe("DictationSession", () => {
     await h.flush();
     expect(h.texts).toEqual(["before", "after"]);
   });
+
+  it.each([
+    [502, "provider_rpc_error", "The voice service failed"],
+    [504, "transcription_timeout", "Voice transcription timed out"],
+  ])(
+    "resends the same clip once when the server fails with %i after receiving it, then only on Retry",
+    async (status, code, message) => {
+      const h = harness();
+      h.session.start();
+      h.speak(1_500);
+      h.advance(DICTATION_PAUSE_MS + DICTATION_TICK_MS);
+      await h.flush();
+      const failure = () =>
+        new BbHttpError({ body: null, code, message, status });
+      h.calls[0]?.reject(failure());
+      await h.flush();
+      h.runTimeouts();
+      await h.flush();
+      expect(h.calls).toHaveLength(2);
+      expect(h.calls[1]?.segment.file).toBe(h.calls[0]?.segment.file);
+      h.calls[1]?.reject(failure());
+      await h.flush();
+      h.runTimeouts();
+      await h.flush();
+      expect(h.calls).toHaveLength(2);
+      expect(h.last()?.failure).toBe(`HTTP ${status}: ${message}`);
+      h.session.retryFailed();
+      await h.flush();
+      expect(h.calls).toHaveLength(3);
+      expect(h.calls[2]?.segment.file).toBe(h.calls[0]?.segment.file);
+    },
+  );
 
   it("stops recording when the daily budget is exhausted", async () => {
     const h = harness();

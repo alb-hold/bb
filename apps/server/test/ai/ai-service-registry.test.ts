@@ -3,6 +3,7 @@ import {
   createAiServiceRegistry,
   type AiServiceRegistration,
 } from "../../src/services/ai/ai-service-registry.js";
+import { AI_STATUS_FALLBACK_WAIT_MS } from "../../src/services/ai/ai-tasks.js";
 
 const ACME = { pluginId: "acme-plugin", serviceId: "acme" };
 
@@ -311,6 +312,51 @@ describe("AI service registry", () => {
         expect(result).toBeNull();
         answers.shift()?.();
         await expect(later).resolves.toEqual({ ready: true });
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("rechecks a service whose check hangs once the check is older than the status cache, for repeated quick task waits, and ignores the hung check's late result", async () => {
+      vi.useFakeTimers();
+      try {
+        const answers: ((status: { ready: true }) => void)[] = [];
+        let calls = 0;
+        const registry = createAiServiceRegistry();
+        registry.register(
+          service(() => {
+            calls += 1;
+            if (calls === 1) return new Promise(() => {});
+            return new Promise((resolve) => answers.push(resolve));
+          }),
+        );
+        const wait = AI_STATUS_FALLBACK_WAIT_MS;
+        const quickWaitAnswer = async () => {
+          const status = registry.settledStatus(ACME, wait);
+          await vi.advanceTimersByTimeAsync(wait + 1);
+          return status;
+        };
+
+        await expect(quickWaitAnswer()).resolves.toEqual({
+          ready: false,
+          message: "Not responding",
+        });
+        await vi.advanceTimersByTimeAsync(3_000);
+        await expect(quickWaitAnswer()).resolves.toEqual({
+          ready: false,
+          message: "Not responding",
+        });
+        expect(calls).toBe(1);
+
+        await vi.advanceTimersByTimeAsync(4_000);
+        const recovered = registry.settledStatus(ACME, wait);
+        await vi.advanceTimersByTimeAsync(0);
+        expect(calls).toBe(2);
+        answers.shift()?.({ ready: true });
+        await expect(recovered).resolves.toEqual({ ready: true });
+
+        await vi.advanceTimersByTimeAsync(30_000);
+        expect(registry.peekStatus(ACME)).toEqual({ ready: true });
       } finally {
         vi.useRealTimers();
       }

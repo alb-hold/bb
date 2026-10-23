@@ -384,8 +384,18 @@ function isMeaningInvariantChange(
   const before = wordTokens(original.replaceAll("’", "'"));
   const after = wordTokens(replacement.replaceAll("’", "'"));
   if (before.length !== after.length) return false;
+  const casedBefore = original.match(/[\p{L}\p{N}'’]+/gu) ?? [];
+  const casedAfter = replacement.match(/[\p{L}\p{N}'’]+/gu) ?? [];
   const changed = before.flatMap((word, index) =>
-    word === after[index] ? [] : [[word, after[index]!] as const],
+    word === after[index]
+      ? []
+      : [
+          [
+            word,
+            after[index]!,
+            casedBefore[index] === word && casedAfter[index] === after[index],
+          ] as const,
+        ],
   );
   const shapeBefore = punctuationShape(original);
   const shapeAfter = punctuationShape(replacement);
@@ -398,12 +408,13 @@ function isMeaningInvariantChange(
   }
   if (changed.length === 0) return true;
   if (changed.length !== 1) return false;
-  const [from, to] = changed[0]!;
+  const [from, to, lowercase] = changed[0]!;
   return (
     NON_WORD_RESTORATIONS.get(from) === to ||
-    MEANING_INVARIANT_GROUPS.some(
-      (group) => group.includes(from) && group.includes(to),
-    )
+    (lowercase &&
+      MEANING_INVARIANT_GROUPS.some(
+        (group) => group.includes(from) && group.includes(to),
+      ))
   );
 }
 

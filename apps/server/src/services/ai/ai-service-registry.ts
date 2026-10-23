@@ -29,6 +29,12 @@ export interface AiServiceKey {
 interface CachedStatus {
   status: AiServiceStatus;
   checkedAt: number;
+  startedAt: number;
+}
+
+interface StatusProbe {
+  startedAt: number;
+  request: Promise<AiServiceStatus>;
 }
 
 export interface AiServiceRegistry {
@@ -104,25 +110,36 @@ export function createAiServiceRegistry(
   const now = args.now ?? Date.now;
   const services = new Map<string, AiServiceRegistration>();
   const statuses = new Map<AiServiceRegistration, CachedStatus>();
-  const inFlight = new Map<AiServiceRegistration, Promise<AiServiceStatus>>();
+  const inFlight = new Map<AiServiceRegistration, StatusProbe>();
 
   function refresh(service: AiServiceRegistration): Promise<AiServiceStatus> {
     const pending = inFlight.get(service);
-    if (pending !== undefined) return pending;
-    const request = readStatus(service)
-      .then((status) => {
-        const previous = statuses.get(service)?.status;
-        if (services.get(mapKey(aiServiceKey(service))) === service) {
-          statuses.set(service, { status, checkedAt: now() });
-        }
-        if (previous === undefined || previous.ready !== status.ready) {
-          args.onStatusChange?.();
-        }
-        return status;
-      })
-      .finally(() => inFlight.delete(service));
-    inFlight.set(service, request);
-    return request;
+    if (pending !== undefined && now() - pending.startedAt <= STATUS_TTL_MS) {
+      return pending.request;
+    }
+    const startedAt = now();
+    const probe: StatusProbe = {
+      startedAt,
+      request: readStatus(service)
+        .then((status) => {
+          const cached = statuses.get(service);
+          if (cached !== undefined && cached.startedAt > startedAt) {
+            return status;
+          }
+          if (services.get(mapKey(aiServiceKey(service))) === service) {
+            statuses.set(service, { status, checkedAt: now(), startedAt });
+          }
+          if (cached === undefined || cached.status.ready !== status.ready) {
+            args.onStatusChange?.();
+          }
+          return status;
+        })
+        .finally(() => {
+          if (inFlight.get(service) === probe) inFlight.delete(service);
+        }),
+    };
+    inFlight.set(service, probe);
+    return probe.request;
   }
 
   function freshStatus(
