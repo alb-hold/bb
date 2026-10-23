@@ -1553,6 +1553,77 @@ describe.skipIf(process.platform === "win32")(
       ]);
     }, 60_000);
 
+    const agedLiveHolder = async (
+      kind: "ps" | "none",
+      expected: (pid: number) => string,
+    ): Promise<void> => {
+      const { directory, file, lock } = appendFixture();
+      const { realOf, shim, start, state, until } = releaseKit(file, directory);
+      shim("ln", ["exit 1"]);
+      shim("sed", [
+        'case "$*" in */proc/*) exit 1;; esac',
+        `exec ${realOf("sed")} "$@"`,
+      ]);
+      shim(
+        "ps",
+        kind === "ps" ? ["echo 'Fri Oct 23 02:58:52 2026'"] : ["exit 1"],
+      );
+      shim("cat", [
+        `if [ "$last" = '${lock}/pid' ]; then`,
+        `  read -r owner < '${lock}/pid'`,
+        "  owner=${owner%%:*}",
+        `  : > "${state}/at-readback-$owner"`,
+        `  n=0; while [ ! -e "${state}/go-$owner" ] && [ "$n" -lt 400 ]; do sleep 0.05; n=$((n+1)); done`,
+        "fi",
+        `exec ${realOf("cat")} "$@"`,
+      ]);
+      const first = start("First");
+      expect(
+        await until(
+          () => existsSync(path.join(state, `at-readback-${first.pid}`)),
+          10_000,
+        ),
+      ).toBe(true);
+      const recorded = readFileSync(path.join(lock, "pid"), "utf8");
+      expect(recorded).toBe(expected(first.pid));
+      const longAgo = new Date(Date.now() - 11 * 60_000);
+      utimesSync(lock, longAgo, longAgo);
+      const second = start("Second");
+      const reader = new HookAppendReader(file);
+      expect(reader.read().unreadable).toBe(0);
+      expect(
+        await Promise.race([
+          second.exited.then(() => "second finished"),
+          until(() => false, 1_500).then(() => "second waiting"),
+        ]),
+      ).toBe("second waiting");
+      expect(readFileSync(path.join(lock, "pid"), "utf8")).toBe(recorded);
+      writeFileSync(path.join(state, `go-${first.pid}`), "");
+      writeFileSync(path.join(state, `go-${second.pid}`), "");
+      await Promise.all([first.exited, second.exited]);
+      expect(
+        readdirSync(directory).filter(
+          (name) =>
+            name.startsWith("hooks.lock") ||
+            name.startsWith(".late.") ||
+            name.startsWith(".tmp.") ||
+            name.startsWith(".lost."),
+        ),
+      ).toEqual([]);
+      expect(new HookAppendReader(file).read().records.map(toolOf)).toEqual([
+        "First",
+        "Second",
+      ]);
+    };
+
+    it("keeps a live lock held past ten minutes when /proc cannot be read and the start time is the colon-bearing ps lstart text, and delivers the records in order", async () => {
+      await agedLiveHolder("ps", (pid) => `${pid}:sFri_Oct_23_02:58:52_2026`);
+    }, 60_000);
+
+    it("keeps a live lock held past ten minutes when neither /proc nor ps can be read and the record is the bare pid, and delivers the records in order", async () => {
+      await agedLiveHolder("none", (pid) => String(pid));
+    }, 60_000);
+
     it("does not reclaim a lock directory whose pid names a live process, and publishes its record late after the deadline", async () => {
       const { directory, file, lock } = appendFixture();
       const holder = spawn("sleep", ["30"], { stdio: "ignore" });

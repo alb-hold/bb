@@ -30,7 +30,7 @@ const TEMP_NAME = /^\.tmp\.(\d+)\./u;
 const MAX_RECORDS_PER_READ = 2_000;
 const SCAN_INTERVAL_MS = 2_000;
 export const SPOOL_SCAN_BATCH = 4_096;
-const MAX_LATE_PROBES_PER_SCAN = 256;
+export const MAX_LATE_PROBES_PER_SCAN = 256;
 const FORWARD_PROBE_SPAN = 64;
 const GAP_REPORT_AFTER_MS = 10_000;
 const ABANDONED_TEMP_AGE_MS = 10 * 60_000;
@@ -329,7 +329,8 @@ export class HookSpoolReader {
   private next = 1;
   private lastScanAt = 0;
   private pass: ScanPass | null = null;
-  private lateAfter = 0;
+  private lateRange = 0;
+  private lateSequence = 0;
   private completedHighest = 0;
   private gapTarget = 0;
   private readonly missingCounted = new Set<number>();
@@ -419,20 +420,27 @@ export class HookSpoolReader {
   }
 
   private probeLate(): number {
-    const origin = this.lateAfter;
     let lost = 0;
-    let probes = 0;
-    for (const wrapped of [false, true]) {
-      for (const range of this.skipped) {
-        const from = wrapped ? range.from : Math.max(range.from, origin + 1);
-        const to = wrapped ? Math.min(range.to, origin + 1) : range.to;
-        for (let sequence = from; sequence < to; sequence += 1) {
-          if (probes >= MAX_LATE_PROBES_PER_SCAN) return lost;
-          probes += 1;
-          this.lateAfter = sequence;
-          lost += this.settleLate(sequenceName(sequence));
-        }
+    let work = 0;
+    let wraps = 0;
+    while (work < MAX_LATE_PROBES_PER_SCAN && this.skipped.length > 0) {
+      const range = this.skipped[this.lateRange];
+      if (range === undefined) {
+        wraps += 1;
+        if (wraps > 1) break;
+        this.lateRange = 0;
+        this.lateSequence = 0;
+        continue;
       }
+      work += 1;
+      if (this.lateSequence < range.from) this.lateSequence = range.from;
+      if (this.lateSequence >= range.to) {
+        this.lateRange += 1;
+        this.lateSequence = 0;
+        continue;
+      }
+      lost += this.settleLate(sequenceName(this.lateSequence));
+      this.lateSequence += 1;
     }
     return lost;
   }
@@ -534,7 +542,11 @@ export class HookSpoolReader {
         if (outcome !== "reserved") break;
         this.next += 1;
       }
-      if (this.next > from) this.skipped.push({ from, to: this.next });
+      if (this.next > from) {
+        const last = this.skipped[this.skipped.length - 1];
+        if (last !== undefined && last.to === from) last.to = this.next;
+        else this.skipped.push({ from, to: this.next });
+      }
       if ((this.next > from || outcome === "failed") && !this.gapCounted) {
         this.gapCounted = true;
         lost += 1;
@@ -706,10 +718,14 @@ interface LockHolder {
 
 function parseLockHolder(text: string | null): LockHolder | null {
   if (text === null) return null;
-  const match = /^(\d+)(?::([ps][^\s:/]+))?$/u.exec(text.trim());
+  const match = /^(\d+)(?::(.*))?$/su.exec(text.trim());
   const pid = match === null ? Number.NaN : Number(match[1]);
   if (!Number.isSafeInteger(pid) || pid <= 0) return null;
-  return { pid, start: match?.[2] ?? null };
+  const rest = match?.[2];
+  return {
+    pid,
+    start: rest !== undefined && /^[ps]\S+$/u.test(rest) ? rest : null,
+  };
 }
 
 function procStartTime(pid: number): string | null {

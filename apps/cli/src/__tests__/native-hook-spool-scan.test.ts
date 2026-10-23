@@ -11,6 +11,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   HookSpoolReader,
+  MAX_LATE_PROBES_PER_SCAN,
   SPOOL_SCAN_BATCH,
   type OpenDirectoryCursor,
 } from "../native-hook-spool.js";
@@ -428,6 +429,39 @@ describe("the spool reader maintains its directory in bounded steps", () => {
     }
     expect(late).toBe(2);
     expect(reader.read(START + 38_000)).toEqual(nothing);
+  });
+
+  it("bounds the work of the late-range traversal per poll however many historical ranges there are, and still finds a late record inside an old range", () => {
+    const spool = newSpool();
+    const reader = new HookSpoolReader(spool);
+    const ranges = Array.from({ length: 5_000 }, (_, index) => ({
+      from: 2 * index + 10,
+      to: 2 * index + 11,
+    }));
+    let reads = 0;
+    const counted = new Proxy(ranges, {
+      get(target, key, receiver) {
+        if (typeof key === "string" && /^\d+$/u.test(key)) reads += 1;
+        return Reflect.get(target, key, receiver);
+      },
+    });
+    Reflect.set(reader, "skipped", counted);
+    Reflect.set(reader, "next", 20_000);
+    writeFileSync(
+      path.join(spool, String(2 * 4_000 + 10).padStart(12, "0")),
+      "{}",
+    );
+    let busiest = 0;
+    let found = -1;
+    for (let poll = 0; poll < 80; poll += 1) {
+      reads = 0;
+      const read = reader.read(START + poll * 2_000);
+      busiest = Math.max(busiest, reads);
+      if (found < 0 && read.unreadable > 0) found = poll;
+    }
+    expect(busiest).toBeLessThanOrEqual(MAX_LATE_PROBES_PER_SCAN + 2);
+    expect(found).toBeGreaterThanOrEqual(0);
+    expect(found).toBeLessThan(80);
   });
 
   it("closes the directory handle when a pass finishes", () => {

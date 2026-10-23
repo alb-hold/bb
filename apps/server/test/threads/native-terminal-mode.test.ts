@@ -2305,7 +2305,7 @@ describe("native terminal activity evidence across a swap", () => {
     return { authorization: `Bearer ${started.credential}`, thread };
   }
 
-  it("a heartbeat of the old binding inside the reattach window neither re-stamps it nor lets the not-yet-stored new credential act, and the new credential's idle works once the rebind completes", async () => {
+  it("a heartbeat of the old binding inside the reattach window is rejected and neither stamps it nor lets the not-yet-stored new credential act, and the new credential's idle works once the rebind completes", async () => {
     const fixture = await createFixture();
     const started = await startNativeThread(fixture);
     const { thread } = started;
@@ -2316,7 +2316,7 @@ describe("native terminal activity evidence across a swap", () => {
 
     expect(
       (await report(fixture, thread.id, `Bearer ${started.credential}`)).status,
-    ).toBe(200);
+    ).toBe(401);
     expect(evidenceOf(fixture, thread.id)).toBeNull();
 
     const early = await postJson(
@@ -2340,6 +2340,117 @@ describe("native terminal activity evidence across a swap", () => {
     expect(idle.status).toBe(200);
     expect(threadStatus(fixture, thread.id)).toBe("idle");
     expect(evidenceOf(fixture, thread.id)).not.toBeNull();
+  });
+
+  it("rejects every report of the old holder's credential from the moment the rebind starts, with no state change, and accepts the new holder's report once its credential is stored", async () => {
+    const fixture = await createFixture();
+    const started = await startNativeThread(fixture);
+    const { thread } = started;
+    const activity = `/threads/${thread.id}/native-terminal/activity`;
+    expect(
+      (
+        await postJson(
+          fixture,
+          activity,
+          {
+            closes: [],
+            questions: [{ id: "q1", prompt: "Which layout?" }],
+            state: "waiting",
+          },
+          `Bearer ${started.credential}`,
+        )
+      ).status,
+    ).toBe(200);
+    const window = await startRebindWindow(fixture, started, "disconnected");
+    const title = vi
+      .spyOn(titleGeneration, "generateAndApplyThreadTitle")
+      .mockResolvedValue(undefined as never);
+    try {
+      const statusBefore = threadStatus(fixture, thread.id);
+      const pendingBefore = openInteractions(fixture, thread.id).length;
+      expect(pendingBefore).toBe(1);
+      for (const body of [
+        { state: "idle" },
+        { state: "working", prompt: "Name this thread" },
+        { closes: ["q1"], state: "working" },
+        {
+          closes: [],
+          questions: [{ id: "q2", prompt: "Another layout?" }],
+          state: "waiting",
+        },
+      ]) {
+        expect(
+          (
+            await postJson(
+              fixture,
+              activity,
+              body,
+              `Bearer ${started.credential}`,
+            )
+          ).status,
+        ).toBe(401);
+      }
+      expect(threadStatus(fixture, thread.id)).toBe(statusBefore);
+      expect(openInteractions(fixture, thread.id)).toHaveLength(pendingBefore);
+      expect(title).not.toHaveBeenCalled();
+      expect(evidenceOf(fixture, thread.id)).toBeNull();
+    } finally {
+      title.mockRestore();
+    }
+    await window.complete();
+    expect(
+      (
+        await postJson(
+          fixture,
+          activity,
+          { state: "idle" },
+          `Bearer ${window.newCredential}`,
+        )
+      ).status,
+    ).toBe(200);
+    expect(threadStatus(fixture, thread.id)).toBe("idle");
+  });
+
+  it("gives the old holder its credential back when the replacement terminal cannot be created, so it can report again", async () => {
+    const fixture = await createFixture();
+    const started = await startNativeThread(fixture);
+    const { thread } = started;
+    await report(fixture, thread.id, `Bearer ${started.credential}`);
+    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+      hostId: fixture.hostId,
+      sessionId: fixture.sessionId,
+      message: {
+        type: "terminal.exited",
+        terminalId: started.open.terminalId,
+        exitCode: null,
+        closeReason: "daemon-disconnect",
+      },
+    });
+    const create = vi
+      .spyOn(fixture.harness.deps.terminalSessions, "createTerminal")
+      .mockRejectedValue(new Error("the host never answered"));
+    try {
+      const response = await postJson(
+        fixture,
+        `/threads/${thread.id}/native-terminal/open`,
+        {},
+      );
+      expect(response.status).toBeGreaterThanOrEqual(500);
+    } finally {
+      create.mockRestore();
+    }
+    expect(isNativeTerminalRebindInFlight(thread.id)).toBe(false);
+    expect(
+      (
+        await postJson(
+          fixture,
+          `/threads/${thread.id}/native-terminal/activity`,
+          { state: "idle" },
+          `Bearer ${started.credential}`,
+        )
+      ).status,
+    ).toBe(200);
+    expect(threadStatus(fixture, thread.id)).toBe("idle");
   });
 
   it("a report sent before the server stored the new credential is dropped with 401 and, resent once the credential is stored, has its lifecycle effect exactly once", async () => {
