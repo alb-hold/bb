@@ -669,14 +669,17 @@ export async function createWorktree(
 
   let gitArgs: string[];
   let pinned: PinnedPreviousAttempt | null = null;
-  if (reuseExistingBranch) {
-    gitArgs = ["worktree", "add", args.targetPath, args.branchName];
-  } else if (args.previousAttempt !== undefined) {
+  if (!reuseExistingBranch && args.previousAttempt !== undefined) {
     pinned = await pinPreviousAttempt({
       sourcePath: args.sourcePath,
       request: args.previousAttempt,
+      retainedRoot: args.retainedRoot,
       signal: args.signal,
     });
+  }
+  if (reuseExistingBranch) {
+    gitArgs = ["worktree", "add", args.targetPath, args.branchName];
+  } else if (pinned !== null) {
     throwIfProvisionAborted(args.signal);
     await createBranchAtPinnedTip({
       sourcePath: args.sourcePath,
@@ -685,6 +688,13 @@ export async function createWorktree(
     });
     gitArgs = ["worktree", "add", args.targetPath, args.branchName];
   } else {
+    if (args.previousAttempt !== undefined) {
+      emitOutput(
+        args.onProgress,
+        "worktree-continuity",
+        "No earlier attempt of this thread left a branch, a workspace or a kept folder, so this attempt starts from the base branch; nothing from an earlier attempt could be lost.",
+      );
+    }
     if (await hasRef(args.sourcePath, `refs/heads/${args.branchName}`)) {
       throw new WorkspaceError(
         "branch_exists_preserved",

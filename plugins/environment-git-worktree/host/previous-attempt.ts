@@ -44,11 +44,47 @@ async function describeWorkingState(
     : `has ${entries.length} uncommitted, staged, untracked or ignored entries that were not copied`;
 }
 
+async function findLeftovers(args: {
+  request: PreviousAttemptRequest;
+  retainedRoot: string;
+  registered: readonly { path: string }[];
+}): Promise<string[]> {
+  const leftovers: string[] = [];
+  for (let attempt = 1; attempt < args.request.attempt; attempt += 1) {
+    for (const earlierPath of args.request.pathsForAttempt(attempt)) {
+      const exists = await fs
+        .lstat(earlierPath)
+        .then(() => true)
+        .catch((error: NodeJS.ErrnoException) => error.code !== "ENOENT");
+      const earlierReal = await fs
+        .realpath(earlierPath)
+        .catch(() => earlierPath);
+      let registered = false;
+      for (const entry of args.registered) {
+        const entryReal = await fs.realpath(entry.path).catch(() => entry.path);
+        if (entryReal === earlierReal) registered = true;
+      }
+      if (exists || registered) leftovers.push(`the workspace at ${earlierPath}`);
+    }
+  }
+  try {
+    for (const name of await fs.readdir(args.retainedRoot)) {
+      if (name.includes(args.request.threadId))
+        leftovers.push(`the kept folder ${args.retainedRoot}/${name}`);
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT")
+      leftovers.push(`the kept-folder area ${args.retainedRoot}, which could not be read`);
+  }
+  return leftovers;
+}
+
 export async function pinPreviousAttempt(args: {
   sourcePath: string;
   request: PreviousAttemptRequest;
+  retainedRoot: string;
   signal: AbortSignal | undefined;
-}): Promise<PinnedPreviousAttempt> {
+}): Promise<PinnedPreviousAttempt | null> {
   const options = {
     cwd: args.sourcePath,
     allowFailure: true,
@@ -87,10 +123,25 @@ export async function pinPreviousAttempt(args: {
     }
   }
   if (branch === null) {
-    throw new WorkspaceError(
-      "previous_attempt_unresolved",
-      "Cannot continue from an earlier attempt: no branch of this thread's earlier attempts exists, so there is no tip to continue from. bb does not start a retry from the base branch on its own. Nothing was created, and any earlier workspace was left alone.",
+    const listing = await runGit(
+      ["worktree", "list", "--porcelain", "-z"],
+      options,
     );
+    const leftovers =
+      listing.exitCode === 0
+        ? await findLeftovers({
+            request: args.request,
+            retainedRoot: args.retainedRoot,
+            registered: parseWorktreeListPorcelain(listing.stdout),
+          })
+        : ["a workspace that could not be ruled out because the registered workspaces could not be listed"];
+    if (leftovers.length > 0) {
+      throw new WorkspaceError(
+        "previous_attempt_unresolved",
+        `Cannot start this retry: no branch of this thread's earlier attempts exists, but ${leftovers.join(", ")} remains, so work could be lost. Nothing was created, and it was left alone. Release or recover it yourself, then retry.`,
+      );
+    }
+    return null;
   }
   const resolved = await runGit(
     ["rev-parse", "--verify", `refs/heads/${branch}^{commit}`],

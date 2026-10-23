@@ -301,7 +301,6 @@ describe("worktree host entry", () => {
   });
 
   it.each([
-    ["no earlier branch exists", []],
     ["two branches could belong to the earlier attempt", ["bb/a-thr_amb", "bb/b-thr_amb"]],
   ] as const)("refuses a retry and creates nothing when %s", async (_label, branches) => {
     const { sourcePath, dataDir } = await createSourceRepository();
@@ -406,6 +405,73 @@ describe("worktree host entry", () => {
       expect((await git(first.path, "rev-parse", "HEAD")).trim()).toBe(
         detachedWork,
       );
+    } finally {
+      await harness.experimental_dispose();
+    }
+  });
+
+  it("starts a retry from the base branch and says nothing could be lost when no earlier attempt left a branch, a workspace or a kept folder", async () => {
+    const { sourcePath, dataDir } = await createSourceRepository();
+    const harness = createHarness(dataDir);
+    try {
+      const result = await harness.experimental_call("create", {
+        ...createInput({
+          operationId: "fresh-retry",
+          sourcePath,
+          pathKey: "thr_none-2",
+          branchName: "bb/work-thr_none.r2",
+        }),
+        previousAttempt: { threadId: "thr_none", attempt: 2 },
+      });
+
+      expect(result.status).toBe("created");
+      expect(progressText(harness)).toContain("nothing from an earlier attempt could be lost");
+    } finally {
+      await harness.experimental_dispose();
+    }
+  });
+
+  it.each([
+    [
+      "a workspace folder without a branch",
+      async (_sourcePath: string, dataDir: string) => {
+        await mkdir(join(dataDir, "worktrees", "thr_left-1", "repo"), {
+          recursive: true,
+        });
+        return "the workspace at";
+      },
+    ],
+    [
+      "a kept folder",
+      async (_sourcePath: string, dataDir: string) => {
+        await mkdir(join(dataDir, "retained", "failed-create-thr_left-1"), {
+          recursive: true,
+        });
+        return "the kept folder";
+      },
+    ],
+  ] as const)("refuses a branchless retry and names the blocker when %s remains", async (_label, leave) => {
+    const { sourcePath, dataDir } = await createSourceRepository();
+    const blocker = await leave(sourcePath, dataDir);
+    const harness = createHarness(dataDir);
+    try {
+      const result = await harness.experimental_call("create", {
+        ...createInput({
+          operationId: "blocked-retry",
+          sourcePath,
+          pathKey: "thr_left-2",
+          branchName: "bb/work-thr_left.r2",
+        }),
+        previousAttempt: { threadId: "thr_left", attempt: 2 },
+      });
+
+      expect(result).toMatchObject({
+        status: "failed",
+        message: expect.stringContaining(blocker),
+      });
+      expect(
+        (await git(sourcePath, "branch", "--list", "bb/work-thr_left.r2")).trim(),
+      ).toBe("");
     } finally {
       await harness.experimental_dispose();
     }
