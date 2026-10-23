@@ -91,7 +91,12 @@ export type PluginEnvironmentProviderCreateResult =
       mergeBaseBranch?: string;
       resource?: JsonValue;
     }
-  | { status: "failed"; message: string };
+  | {
+      status: "failed";
+      message: string;
+      /** Experimental: the failed create left this path behind on purpose. Core records a retention so the machine cannot be destroyed and the path cannot be removed or moved through core until the owner releases it: see docs/api_to_audit.md. */
+      experimental_retained?: { path: string };
+    };
 
 export interface PluginEnvironmentProviderRemoveContext {
   environment: Environment | null;

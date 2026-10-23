@@ -26,6 +26,10 @@ export function createEnvironmentId(): string {
   return createId("env");
 }
 
+export function createEnvironmentRetentionId(): string {
+  return createId("ret");
+}
+
 export function createThreadId(): string {
   return createId("thr");
 }

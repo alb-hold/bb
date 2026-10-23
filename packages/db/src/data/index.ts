@@ -372,6 +372,21 @@ export {
   updateEnvironmentMetadata,
 } from "./environments.js";
 export type { EnvironmentRow } from "./environments.js";
+export {
+  countOpenEnvironmentRetentionsExcept,
+  deleteEnvironmentRetentionIntents,
+  findOpenEnvironmentRetentionOverlapping,
+  listOpenEnvironmentRetentionsForEnvironment,
+  listOpenEnvironmentRetentionsForHost,
+  listOpenEnvironmentRetentionsForProject,
+  markEnvironmentRetentionsUnresolved,
+  recordEnvironmentRetention,
+} from "./environment-retentions.js";
+export type {
+  EnvironmentRetentionRow,
+  EnvironmentRetentionState,
+  RecordEnvironmentRetentionInput,
+} from "./environment-retentions.js";
 
 export {
   upsertHost,

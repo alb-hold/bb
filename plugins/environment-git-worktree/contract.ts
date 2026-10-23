@@ -74,7 +74,11 @@ export const worktreeHostContract = defineRpcContract({
         })
         .strict(),
       z
-        .object({ status: z.literal("failed"), message: z.string().min(1) })
+        .object({
+          status: z.literal("failed"),
+          message: z.string().min(1),
+          retainedPath: z.string().min(1).optional(),
+        })
         .strict(),
     ]),
   },

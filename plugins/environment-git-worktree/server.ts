@@ -166,7 +166,13 @@ export default async function worktreePlugin(bb: BbPluginApi): Promise<void> {
         },
       );
       if (result.status === "failed") {
-        return { status: "failed", message: result.message };
+        return {
+          status: "failed",
+          message: result.message,
+          ...(result.retainedPath === undefined
+            ? {}
+            : { experimental_retained: { path: result.retainedPath } }),
+        };
       }
       return {
         status: "created",

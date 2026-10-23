@@ -24,6 +24,9 @@ import {
 import { eq, and, isNull, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import {
+  deleteEnvironmentRetentionIntents,
+  markEnvironmentRetentionsUnresolved,
+  recordEnvironmentRetention,
   releaseFinishedEnvironmentPreparationOwners,
   environmentHasLiveThreads,
   environments,
@@ -181,6 +184,10 @@ const createResultSchema = z.discriminatedUnion("status", [
   z.object({
     status: z.literal("failed"),
     message: z.string().min(1),
+    experimental_retained: z
+      .object({ path: z.string().min(1) })
+      .strict()
+      .optional(),
   }),
 ]);
 const removeResultSchema = z.discriminatedUnion("status", [
@@ -523,7 +530,25 @@ async function runCreate(
           }) !== null
         )
           return false;
-        return claimEnvironmentPath(deps.db, provisioning, normalizedPath);
+        const claimed = claimEnvironmentPath(
+          deps.db,
+          provisioning,
+          normalizedPath,
+        );
+        if (claimed)
+          recordEnvironmentRetention(deps.db, {
+            environmentId: provisioning.id,
+            projectId: provisioning.projectId,
+            hostId: context.host.id,
+            ownerThreadId: context.thread.id,
+            providerId: record.provider.id,
+            originalPath: normalizedPath,
+            keptPath: normalizedPath,
+            state: "intent",
+            message:
+              "A create started at this path and has not reported a result.",
+          });
+        return claimed;
       },
       report: provisioningReporter(deps, provisioning),
       signal: signal,
@@ -572,7 +597,27 @@ async function runCreate(
                 ...operation,
                 suggestedBranchName: context.suggestedBranchName,
               });
+    if (result.status === "failed") {
+      const kept = result.experimental_retained;
+      if (kept !== undefined) {
+        const keptPath = canonicalizeHostPath(kept.path);
+        recordEnvironmentRetention(deps.db, {
+          environmentId: provisioning.id,
+          projectId: provisioning.projectId,
+          hostId: context.host.id,
+          ownerThreadId: context.thread.id,
+          providerId: record.provider.id,
+          originalPath:
+            getEnvironment(deps.db, provisioning.id)?.claimPath ?? keptPath,
+          keptPath,
+          state: "retained",
+          message: result.message,
+        });
+      }
+      deleteEnvironmentRetentionIntents(deps.db, provisioning.id);
+    }
     if (result.status === "created") {
+      const bytesAt = result.path;
       let adoptedExistingEnvironment = false;
       let existingProviderOwnsLifecycle = false;
       try {
@@ -633,6 +678,18 @@ async function runCreate(
         );
         result = { ...result, path: producedPath };
       } catch (error) {
+        recordEnvironmentRetention(deps.db, {
+          environmentId: provisioning.id,
+          projectId: provisioning.projectId,
+          hostId: context.host.id,
+          ownerThreadId: context.thread.id,
+          providerId: record.provider.id,
+          originalPath:
+            getEnvironment(deps.db, provisioning.id)?.claimPath ?? bytesAt,
+          keptPath: canonicalizeHostPath(bytesAt),
+          state: "unresolved",
+          message: `The provider created ${bytesAt} but core could not bind it: ${errorMessage(error)}`,
+        });
         mutateProvisioning(
           deps,
           provisioning,
@@ -663,6 +720,7 @@ async function runCreate(
           }
         },
       );
+      deleteEnvironmentRetentionIntents(deps.db, provisioning.id);
       signal.throwIfAborted();
     }
     changed = mutateProvisioning(
@@ -686,6 +744,11 @@ async function runCreate(
       current.teardownStatus === "running"
     )
       return;
+    markEnvironmentRetentionsUnresolved(
+      deps.db,
+      provisioning.id,
+      `The create did not report a result (${errorMessage(error)}), so the workspace may still hold work.`,
+    );
     changed = mutateProvisioning(deps, provisioning, ["creating"], (row) => {
       row.status = "error";
       row.statusMessage = `The "${record.provider.id}" environment provider (plugin "${record.pluginId}") failed: ${errorMessage(error)}`;

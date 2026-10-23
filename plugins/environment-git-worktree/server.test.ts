@@ -227,6 +227,19 @@ describe("worktree resource operations", () => {
     });
   });
 
+  it("reports the path a failed create kept so core can record a retention", async () => {
+    const kept = await setup(() => ({
+      status: "failed",
+      message: "setup failed; the workspace stays in place",
+      retainedPath: WORKTREE_PATH,
+    }));
+    await expect(kept.provider.create(kept.context)).resolves.toEqual({
+      status: "failed",
+      message: "setup failed; the workspace stays in place",
+      experimental_retained: { path: WORKTREE_PATH },
+    });
+  });
+
   it("removes by path key even when create never returned a path", async () => {
     const fixture = await setup();
     expect(

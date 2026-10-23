@@ -202,6 +202,9 @@ export function createWorktreeHostEntry() {
           return {
             status: "failed",
             message: error instanceof Error ? error.message : String(error),
+            ...(isWorktreePreservedError(error)
+              ? { retainedPath: targetPath }
+              : {}),
           } as const;
         }
       },

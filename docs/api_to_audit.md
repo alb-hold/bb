@@ -679,6 +679,22 @@ is still owned by a preparing thread that never reached `ready`. A provider that
 already changed anything must return `failed` with a message naming what was
 removed and what was kept.
 
+A failed `create` or `restore` result may carry `experimental_retained:
+{ path }` to say the attempt left that path behind on purpose. Core writes a
+row to `environment_retentions` (no foreign keys, so it outlives the
+environment row) for each path a create claimed: an `intent` row when the claim
+is made, `retained` when the failed result names the path, `unresolved` when
+the create threw or core could not bind a path the provider produced, and no
+row once the create succeeds or fails without keeping anything. An intent that
+never gets an outcome (a crash, a lost reply) stays blocking. While any
+`intent`, `retained` or `unresolved` row exists for a machine, core refuses to
+destroy an ephemeral machine, refuses to hard-delete its project, and refuses
+file removal and moves at or around the path. No state leaves `retained` yet:
+the owner-release transition (`released_by_owner`) is deliberately unreachable
+until the consent protocol is accepted. Stabilization needs that transition,
+the consumers listed in the PR's B2 map that are still unbuilt (archive
+cascades, the placement start condition), and a rename project-wide.
+
 `experimental_preflightRemove(context)` is optional and runs after the claim and
 before the teardown script. It must not mutate. `{ status: "retained", message }`
 skips the script and the removal; a throw records a failure. The host answers

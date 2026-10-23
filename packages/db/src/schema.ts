@@ -1314,6 +1314,38 @@ export const pendingInteractions = sqliteTable(
   ],
 );
 
+export const environmentRetentions = sqliteTable(
+  "environment_retentions",
+  {
+    id: text("id").primaryKey(),
+    environmentId: text("environment_id").notNull(),
+    projectId: text("project_id").notNull(),
+    hostId: text("host_id").notNull(),
+    ownerThreadId: text("owner_thread_id"),
+    providerId: text("provider_id").notNull(),
+    originalPath: text("original_path").notNull(),
+    keptPath: text("kept_path").notNull(),
+    state: text("state")
+      .$type<"intent" | "retained" | "unresolved" | "released_by_owner">()
+      .notNull(),
+    message: text("message").notNull(),
+    createdAt: integer("created_at").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+  },
+  (table) => [
+    index("environment_retentions_host_state_idx").on(
+      table.hostId,
+      table.state,
+    ),
+    index("environment_retentions_environment_idx").on(table.environmentId),
+    index("environment_retentions_project_idx").on(table.projectId),
+    uniqueIndex("environment_retentions_environment_kept_idx").on(
+      table.environmentId,
+      table.keptPath,
+    ),
+  ],
+);
+
 export const environmentHookOperations = sqliteTable(
   "environment_hook_operations",
   {
