@@ -1,10 +1,19 @@
-import { spawn } from "node:child_process";
-import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { spawn, spawnSync } from "node:child_process";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  readlink as fsReadlink,
+  realpath,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   describeHolderScan,
+  hostProc,
   linuxVisibilityProblem,
   scanLinux,
   scanWorktreeHolders,
@@ -126,6 +135,9 @@ interface FakeProcess {
   magic?: Record<string, string>;
   mapDevice?: string;
   containerIds?: Record<string, string>;
+  name?: string;
+  argv0?: string | null;
+  startTicks?: number;
 }
 
 const TREE_DIRECTORIES: Record<string, string> = {
@@ -162,6 +174,8 @@ function fakeProc(options: {
   ownMount?: string;
   denyInit?: boolean;
   processes?: Record<number, FakeProcess>;
+  createdMs?: number | null;
+  noBoot?: boolean;
 }): ProcReader {
   const self = options.self ?? {};
   const files = new Map<string, string>();
@@ -177,6 +191,8 @@ function fakeProc(options: {
   );
   links.set("/proc/self/ns/mnt", options.ownMount ?? "mnt:[1]");
   links.set("/proc/self/root", "/");
+  if (options.noBoot !== true)
+    files.set("/proc/stat", "cpu  1 2 3\nbtime 1000000\n");
   files.set(
     "/proc/self/mountinfo",
     options.mountinfo ??
@@ -190,9 +206,15 @@ function fakeProc(options: {
     const base = `/proc/${key}`;
     files.set(
       `${base}/status`,
-      `Name:\tx\nState:\t${process.state ?? "S (sleeping)"}\nUid:\t${process.uid ?? 1000}\t${process.uid ?? 1000}\t${process.uid ?? 1000}\t${process.uid ?? 1000}\n`,
+      `Name:\t${process.name ?? "x"}\nState:\t${process.state ?? "S (sleeping)"}\nUid:\t${process.uid ?? 1000}\t${process.uid ?? 1000}\t${process.uid ?? 1000}\t${process.uid ?? 1000}\n`,
     );
     files.set(`${base}/comm`, `${process.comm ?? "node"}\n`);
+    files.set(
+      `${base}/stat`,
+      `${key} (${process.name ?? "x"}) S 1 1 1 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 ${process.startTicks ?? 0} 0 0\n`,
+    );
+    if (process.argv0 === null) denied.add(`${base}/cmdline`);
+    else files.set(`${base}/cmdline`, `${process.argv0 ?? "node"}\0--x\0`);
     if (process.denied === true) {
       for (const leaf of ["ns/mnt", "root", "task", "fd", "maps"])
         denied.add(`${base}/${leaf}`);
@@ -244,6 +266,10 @@ function fakeProc(options: {
     readdir: async (path) => dirs.get(path) ?? fail(path),
     lstatId: async (path) => ids.get(path) ?? fail(path),
     statId: async (path) => ids.get(path) ?? fail(path),
+    creationMs: async () => {
+      if (options.createdMs === null) return null;
+      return options.createdMs ?? 1_000_060_000;
+    },
     subdirectories: async (path) => {
       if (!(path in TREE_DIRECTORIES)) return fail(path);
       return Object.keys(TREE_DIRECTORIES)
@@ -863,4 +889,261 @@ describe("the Linux process-list visibility rule", () => {
       });
     },
   );
+});
+
+describe("a same-user process that cannot be read because it is non-dumpable", () => {
+  const agent = (
+    process: FakeProcess,
+    options: { createdMs?: number | null } = {},
+  ) =>
+    fakeProc({
+      createdMs: options.createdMs,
+      processes: { 300: { uid: 1000, denied: true, ...process } },
+    });
+
+  it.each([
+    ["ssh-agent", "/usr/bin/ssh-agent"],
+    ["gpg-agent", "gpg-agent"],
+    ["gnome-keyring-d", "/usr/bin/gnome-keyring-daemon"],
+    ["keepassxc-proxy", "/usr/bin/keepassxc-proxy"],
+  ])(
+    "clears a credential agent named %s that started before the worktree, and records it",
+    async (name, argv0) => {
+      const proc = agent({ name, comm: name, argv0, startTicks: 100 });
+      expect(await scanLinux("/work/tree", proc, 4242)).toEqual({
+        status: "clear",
+        agentClearances: [
+          {
+            pid: 300,
+            name,
+            startedMs: 1_000_001_000,
+            worktreeCreatedMs: 1_000_060_000,
+          },
+        ],
+      });
+    },
+  );
+
+  it("keeps the worktree, naming the process, when the agent started after the worktree or within the margin before it", async () => {
+    for (const startTicks of [6001, 5950]) {
+      const proc = agent({
+        name: "ssh-agent",
+        comm: "ssh-agent",
+        argv0: "ssh-agent",
+        startTicks,
+      });
+      expect(await scanLinux("/work/tree", proc, 4242)).toMatchObject({
+        status: "unknown",
+        reason: expect.stringContaining(
+          'process 300 mount namespace (EACCES), named "ssh-agent" (it started after the worktree was created)',
+        ),
+      });
+    }
+  });
+
+  it("keeps the worktree for any other name, even with an agent's command line", async () => {
+    const proc = agent({
+      name: "node",
+      comm: "node",
+      argv0: "ssh-agent",
+      startTicks: 100,
+    });
+    expect(await scanLinux("/work/tree", proc, 4242)).toMatchObject({
+      status: "unknown",
+      reason: expect.stringContaining(
+        'named "node" (not a known credential agent)',
+      ),
+    });
+  });
+
+  it("requires the exact kernel name, which is cut to 15 characters, and the agent's own command line", async () => {
+    for (const process of [
+      { name: "gnome-keyring-daemon", argv0: "gnome-keyring-daemon" },
+      { name: "ssh-agent2", argv0: "ssh-agent" },
+      { name: "ssh-agent", argv0: "/usr/bin/python3" },
+      { name: "ssh-agent", argv0: "" },
+    ]) {
+      const proc = agent({ ...process, comm: process.name, startTicks: 100 });
+      expect(await scanLinux("/work/tree", proc, 4242)).toMatchObject({
+        status: "unknown",
+      });
+    }
+  });
+
+  it("accepts an agent whose command line cannot be read", async () => {
+    const proc = agent({
+      name: "ssh-agent",
+      comm: "ssh-agent",
+      argv0: null,
+      startTicks: 100,
+    });
+    expect(await scanLinux("/work/tree", proc, 4242)).toMatchObject({
+      status: "clear",
+      agentClearances: [{ pid: 300, name: "ssh-agent" }],
+    });
+  });
+
+  it("keeps the worktree when the creation time of the worktree or the boot time is unknown or the start time does not parse", async () => {
+    const base = {
+      name: "ssh-agent",
+      comm: "ssh-agent",
+      argv0: "ssh-agent",
+      startTicks: 100,
+    };
+    expect(
+      await scanLinux("/work/tree", agent(base, { createdMs: null }), 4242),
+    ).toMatchObject({
+      status: "unknown",
+      reason: expect.stringContaining("creation time of the worktree"),
+    });
+    expect(
+      await scanLinux(
+        "/work/tree",
+        fakeProc({
+          noBoot: true,
+          processes: { 300: { uid: 1000, denied: true, ...base } },
+        }),
+        4242,
+      ),
+    ).toMatchObject({
+      status: "unknown",
+      reason: expect.stringContaining("boot time"),
+    });
+    expect(
+      await scanLinux(
+        "/work/tree",
+        agent({ ...base, startTicks: "x" as unknown as number }),
+        4242,
+      ),
+    ).toMatchObject({
+      status: "unknown",
+      reason: expect.stringContaining("start time cannot be read"),
+    });
+  });
+
+  it("no longer clears ssh-agent or gpg-agent by name alone", async () => {
+    for (const name of ["ssh-agent", "gpg-agent"]) {
+      const proc = agent({ name, comm: name, argv0: name, startTicks: 9000 });
+      expect(await scanLinux("/work/tree", proc, 4242)).toMatchObject({
+        status: "unknown",
+      });
+    }
+  });
+});
+
+describe.skipIf(
+  process.platform !== "linux" ||
+    (typeof process.getuid === "function" && process.getuid() === 0),
+)("a real non-dumpable process", () => {
+  const children: ReturnType<typeof spawn>[] = [];
+  afterEach(() => {
+    for (const child of children.splice(0)) child.kill("SIGKILL");
+  });
+  const python = spawnSync("python3", ["--version"]);
+
+  async function start(name: string, argv0: string) {
+    const child = spawn(
+      "python3",
+      [
+        "-c",
+        `import ctypes, sys, time
+libc = ctypes.CDLL(None)
+libc.prctl(4, 0, 0, 0, 0)
+libc.prctl(15, ${JSON.stringify(name)}.encode(), 0, 0, 0)
+print("ready", flush=True)
+time.sleep(120)`,
+      ],
+      { argv0, stdio: ["ignore", "pipe", "ignore"] },
+    );
+    children.push(child);
+    await new Promise<void>((resolve) =>
+      child.stdout?.once("data", () => resolve()),
+    );
+    return child;
+  }
+
+  async function worktree() {
+    const root = await mkdtemp(join(tmpdir(), "bb-nondump-"));
+    roots.push(root);
+    const dir = join(root, "wt");
+    await mkdir(dir);
+    await writeFile(join(dir, ".git"), "gitdir: nowhere\n");
+    return dir;
+  }
+
+  async function scanOnly(directory: string, pid: number) {
+    const only: ProcReader = {
+      ...hostProc,
+      readdir: async (path) =>
+        path === "/proc" ? ["self", String(pid)] : hostProc.readdir(path),
+    };
+    return scanLinux(directory, only);
+  }
+
+  async function nonDumpable(pid: number): Promise<boolean> {
+    try {
+      await fsReadlink(`/proc/${pid}/ns/mnt`);
+      return false;
+    } catch (error) {
+      return (error as NodeJS.ErrnoException).code === "EACCES";
+    }
+  }
+
+  const sleepMs = (ms: number) =>
+    new Promise((resolve) => setTimeout(resolve, ms));
+
+  it("named ssh-agent and started before the worktree: the worktree is not held", async ({
+    skip,
+  }) => {
+    skip(python.status !== 0, "python3 is not available");
+    const child = await start("ssh-agent", "ssh-agent");
+    skip(
+      !(await nonDumpable(child.pid ?? 0)),
+      "the kernel lets this user read it",
+    );
+    await sleepMs(1500);
+    const dir = await worktree();
+    const scan = await scanOnly(dir, child.pid ?? 0);
+    expect(scan).toMatchObject({
+      status: "clear",
+      agentClearances: [{ pid: child.pid, name: "ssh-agent" }],
+    });
+  });
+
+  it("named ssh-agent and started after the worktree: the worktree is kept", async ({
+    skip,
+  }) => {
+    skip(python.status !== 0, "python3 is not available");
+    const dir = await worktree();
+    const child = await start("ssh-agent", "ssh-agent");
+    skip(
+      !(await nonDumpable(child.pid ?? 0)),
+      "the kernel lets this user read it",
+    );
+    const scan = await scanOnly(dir, child.pid ?? 0);
+    expect(scan).toMatchObject({
+      status: "unknown",
+      reason: expect.stringContaining("started after the worktree was created"),
+    });
+  });
+
+  it("with any other name, even started before the worktree: the worktree is kept, naming the process", async ({
+    skip,
+  }) => {
+    skip(python.status !== 0, "python3 is not available");
+    const child = await start("renamed-helper", "ssh-agent");
+    skip(
+      !(await nonDumpable(child.pid ?? 0)),
+      "the kernel lets this user read it",
+    );
+    await sleepMs(1500);
+    const dir = await worktree();
+    const scan = await scanOnly(dir, child.pid ?? 0);
+    expect(scan).toMatchObject({
+      status: "unknown",
+      reason: expect.stringContaining(
+        `process ${child.pid} mount namespace (EACCES), named "renamed-helper"`,
+      ),
+    });
+  });
 });
