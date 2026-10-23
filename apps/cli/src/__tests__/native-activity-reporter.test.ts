@@ -506,6 +506,11 @@ describe("native activity reporter", () => {
         async () => {
           throw rejectedId;
         },
+        async () => {
+          throw rejectedId;
+        },
+        async () => ({ ok: true }),
+        async () => ({ ok: true }),
         async () => ({ ok: true }),
       ]);
       reporter.report(asking("q1", "q2"));
@@ -521,6 +526,9 @@ describe("native activity reporter", () => {
         ["q1", "q2"],
         undefined,
         ["q1", "q2"],
+        ["q1"],
+        [],
+        ["q2"],
       ]);
 
       reporter.report(working);
@@ -530,8 +538,14 @@ describe("native activity reporter", () => {
         ["q1", "q2"],
         undefined,
         ["q1", "q2"],
-        ["q1", "q2"],
+        ["q1"],
+        [],
+        ["q2"],
+        ["q1"],
       ]);
+      expect(calls.slice(1).every((call) => call.state === "working")).toBe(
+        true,
+      );
     });
 
     it("removes only the field the server names", async () => {

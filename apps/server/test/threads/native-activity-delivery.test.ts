@@ -26,6 +26,7 @@ import {
 } from "@bb/domain";
 import {
   publicApiRoutes,
+  NATIVE_TERMINAL_MAX_OPEN_QUESTIONS,
   reportNativeTerminalActivityRequestSchema,
   typedRoutes,
   type PublicApiSchema,
@@ -1311,11 +1312,16 @@ describe("an older server that does not know the closure fields (INJECTED-SERVER
       status: string | undefined;
     }> = [];
     const rejectedBodies: string[] = [];
+    const requests: Array<{ body: Record<string, unknown>; status: number }> =
+      [];
     let target: { fetch(request: Request): Response | Promise<Response> } = app;
     const sdk = createNodeBbSdk({
       baseUrl: "http://127.0.0.1:3000",
       fetch: async (input, init) => {
-        const response = await target.fetch(new Request(input, init));
+        const request = new Request(input, init);
+        const body = (await request.clone().json()) as Record<string, unknown>;
+        const response = await target.fetch(request);
+        requests.push({ body, status: response.status });
         if (response.status === 400) {
           rejectedBodies.push(await response.clone().text());
           writesAtRejection.push({
@@ -1342,6 +1348,7 @@ describe("an older server that does not know the closure fields (INJECTED-SERVER
       logged,
       rejectedBodies,
       reporter,
+      requests,
       thread,
       upgrade: () => {
         target = harness.app;
@@ -1408,6 +1415,75 @@ describe("an older server that does not know the closure fields (INJECTED-SERVER
       expect.stringContaining("permission:Edit#1"),
     ]);
     expectClosedAsAnswered(h.harness, h.thread.id, "Bash");
+  });
+
+  it("drains more legacy-fallback question IDs than the schema limit in bounded batches while applying the latest activity", async () => {
+    const h = await oldServerOnTheRealStore();
+    const questionIds = Array.from(
+      { length: NATIVE_TERMINAL_MAX_OPEN_QUESTIONS * 2 + 3 },
+      (_, index) => `r17-question-${index}`,
+    );
+    for (const [index, id] of questionIds.entries()) {
+      h.reporter.report(asking(id, `Question ${index}?`));
+      await h.reporter.settled();
+    }
+    expect(h.rejectedBodies.length).toBe(questionIds.length);
+
+    h.upgrade();
+    const beforeDrain = h.requests.length;
+    h.reporter.report({ prompt: null, state: "working" });
+    await h.reporter.settled();
+    const drainRequests = h.requests.slice(beforeDrain);
+    expect(drainRequests.every((request) => request.status === 200)).toBe(true);
+    expect(drainRequests.map((request) => request.body.state)).toEqual([
+      "working",
+      "working",
+      "working",
+    ]);
+    const closeBatches = drainRequests.map((request) =>
+      request.body.closes as string[],
+    );
+    expect(closeBatches.map((batch) => batch.length)).toEqual([
+      NATIVE_TERMINAL_MAX_OPEN_QUESTIONS,
+      NATIVE_TERMINAL_MAX_OPEN_QUESTIONS,
+      3,
+    ]);
+    expect(
+      closeBatches.every(
+        (batch) => batch.length <= NATIVE_TERMINAL_MAX_OPEN_QUESTIONS,
+      ),
+    ).toBe(true);
+    expect(closeBatches.flat().sort()).toEqual([...questionIds].sort());
+    expect(openRequestIds(h.harness, h.thread.id)).toEqual([]);
+    const answeredIds = listPendingInteractionsByThread(h.harness.db, {
+      statuses: ["interrupted"],
+      threadId: h.thread.id,
+    })
+      .filter((row) =>
+        questionIds.some(
+          (id) =>
+            row.providerRequestId ===
+            `${NATIVE_TERMINAL_QUESTION_REQUEST_PREFIX}${id}`,
+        ),
+      )
+      .filter((row) => row.statusReason === ANSWERED)
+      .map((row) => row.providerRequestId)
+      .sort();
+    expect(answeredIds).toEqual(
+      questionIds
+        .map((id) => `${NATIVE_TERMINAL_QUESTION_REQUEST_PREFIX}${id}`)
+        .sort(),
+    );
+    expect(getThread(h.harness.db, h.thread.id)?.status).toBe("active");
+
+    const beforeIdle = h.requests.length;
+    h.reporter.report({ prompt: null, state: "idle" });
+    await h.reporter.settled();
+    const idleRequests = h.requests.slice(beforeIdle);
+    expect(idleRequests).toEqual([
+      { body: { closes: [], state: "idle" }, status: 200 },
+    ]);
+    expect(getThread(h.harness.db, h.thread.id)?.status).toBe("idle");
   });
 
   it("closes no question for a report that was stripped for an old server and reaches an upgraded server late, including a question opened after it", async () => {
