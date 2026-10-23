@@ -7,6 +7,7 @@ import path from "node:path";
 
 const MAX_OUTPUT_BYTES = 16 * 1024 * 1024;
 const USES_PROCESS_GROUPS = process.platform !== "win32";
+const KILL_GRACE_MS = 2_000;
 
 export class WorkspaceError extends Error {
   readonly code: string;
@@ -160,6 +161,7 @@ function runGitAdmitted(
     let timedOut = false;
     let overflowed = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let killTimer: ReturnType<typeof setTimeout> | undefined;
 
     const child = spawnPortableOutputProcess({
       command: "git",
@@ -179,14 +181,23 @@ function runGitAdmitted(
       child.kill(signal);
     };
 
-    const onAbort = (): void => {
+    const terminate = (): void => {
       signalGit("SIGTERM");
+      killTimer ??= setTimeout(() => signalGit("SIGKILL"), KILL_GRACE_MS);
+    };
+
+    const onAbort = (): void => {
+      terminate();
     };
 
     const release = (): void => {
       if (timer !== undefined) {
         clearTimeout(timer);
         timer = undefined;
+      }
+      if (killTimer !== undefined) {
+        clearTimeout(killTimer);
+        killTimer = undefined;
       }
       options.signal?.removeEventListener("abort", onAbort);
     };
@@ -234,6 +245,7 @@ function runGitAdmitted(
     });
 
     child.on("close", (code) => {
+      if (timedOut || options.signal?.aborted) signalGit("SIGKILL");
       if (options.signal?.aborted) {
         fail(createGitCommandCancelledError(args, options.signal.reason));
         return;
@@ -271,7 +283,7 @@ function runGitAdmitted(
     if (options.timeoutMs !== undefined) {
       timer = setTimeout(() => {
         timedOut = true;
-        signalGit("SIGTERM");
+        terminate();
       }, options.timeoutMs);
     }
     options.signal?.addEventListener("abort", onAbort, { once: true });

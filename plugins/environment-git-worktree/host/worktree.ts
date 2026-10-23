@@ -95,6 +95,7 @@ interface RemoveWorktreeArgs {
   retention?: RetentionState | undefined;
   onProgress?: ProgressCallback | undefined;
   signal?: AbortSignal | undefined;
+  fetchTimeoutMs?: number | undefined;
 }
 
 interface RetentionState {
@@ -812,7 +813,7 @@ async function removeDirectoryIfEmpty(pathToRemove: string): Promise<void> {
 async function assertWorktreeRemovable(
   identity: WorktreeIdentity,
   args: RemoveWorktreeArgs,
-  options: { fetchRemotes?: boolean } = {},
+  options: { fetchRemotes?: boolean; fetchTimeoutMs?: number } = {},
 ): Promise<void> {
   const reasons =
     args.createdBy !== undefined
@@ -941,7 +942,13 @@ export async function removeWorktree(
       const removed = await tryWithCheckoutMutationLock(
         identity.path,
         async () => {
-          await assertWorktreeRemovable(identity, args);
+          await assertWorktreeRemovable(
+            identity,
+            args,
+            args.fetchTimeoutMs === undefined
+              ? {}
+              : { fetchTimeoutMs: args.fetchTimeoutMs },
+          );
           throwIfProvisionAborted(args.signal);
           throwIfProvisionAborted(args.signal);
           await assertWorktreeRemovable(identity, args, {

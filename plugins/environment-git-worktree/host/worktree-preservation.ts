@@ -264,6 +264,36 @@ export async function findStructuralReasons(
 }
 
 const FETCH_TIMEOUT_MS = 60_000;
+const BATCH_MODE_OPTION = "-o BatchMode=yes";
+const NON_INTERACTIVE_FETCH_ENVIRONMENT: NodeJS.ProcessEnv = {
+  GIT_TERMINAL_PROMPT: "0",
+  GIT_ASKPASS: "true",
+  SSH_ASKPASS: "true",
+  SSH_ASKPASS_REQUIRE: "never",
+  GCM_INTERACTIVE: "never",
+};
+
+function shellQuote(value: string): string {
+  return "'" + value.replaceAll("'", "'\\''") + "'";
+}
+
+export function nonInteractiveFetchEnvironment(
+  environment: NodeJS.ProcessEnv,
+  inherited: NodeJS.ProcessEnv,
+  configuredSshCommand: string | null,
+): NodeJS.ProcessEnv {
+  const sshCommand =
+    inherited.GIT_SSH_COMMAND ??
+    configuredSshCommand ??
+    (inherited.GIT_SSH !== undefined && inherited.GIT_SSH !== ""
+      ? shellQuote(inherited.GIT_SSH)
+      : "ssh");
+  return {
+    ...environment,
+    ...NON_INTERACTIVE_FETCH_ENVIRONMENT,
+    GIT_SSH_COMMAND: `${sshCommand} ${BATCH_MODE_OPTION}`,
+  };
+}
 const STASH_SUBJECT = /^(?:WIP on|On) ([^:]+): /;
 
 function stashBranch(subject: string): string | null {
@@ -304,7 +334,7 @@ async function findZeroCommitBase(
 export async function findPreservationReasons(
   identity: WorktreeIdentity,
   signal: AbortSignal | undefined,
-  options: { fetchRemotes?: boolean } = {},
+  options: { fetchRemotes?: boolean; fetchTimeoutMs?: number } = {},
 ): Promise<string[]> {
   const reasons = await findStructuralReasons(identity);
   const gitOptions = {
@@ -361,11 +391,24 @@ export async function findPreservationReasons(
 
   if (options.fetchRemotes !== false) {
     try {
-      const fetched = await runGit(["fetch", "--all", "--quiet", "--no-tags"], {
-        ...gitOptions,
-        env: { ...gitOptions.env, GIT_TERMINAL_PROMPT: "0" },
-        timeoutMs: FETCH_TIMEOUT_MS,
-      });
+      const configured = await runGit(
+        ["--no-optional-locks", "config", "--get", "core.sshCommand"],
+        gitOptions,
+      );
+      const fetched = await runGit(
+        ["-c", "credential.helper=", "fetch", "--all", "--quiet", "--no-tags"],
+        {
+          ...gitOptions,
+          env: nonInteractiveFetchEnvironment(
+            gitOptions.env,
+            process.env,
+            configured.exitCode === 0 && configured.stdout.trim() !== ""
+              ? configured.stdout.trim()
+              : null,
+          ),
+          timeoutMs: options.fetchTimeoutMs ?? FETCH_TIMEOUT_MS,
+        },
+      );
       if (fetched.exitCode !== 0) {
         reasons.push(
           `could not fetch its remotes to verify its commits are published${fetched.stderr.trim() ? ` (${fetched.stderr.trim()})` : ""}`,
