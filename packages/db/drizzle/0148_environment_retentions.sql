@@ -34,4 +34,5 @@ CREATE INDEX `environment_retentions_environment_idx` ON `environment_retentions
 CREATE INDEX `environment_retentions_project_idx` ON `environment_retentions` (`project_id`);--> statement-breakpoint
 CREATE INDEX `environment_retentions_thread_idx` ON `environment_retentions` (`owner_thread_id`);--> statement-breakpoint
 CREATE UNIQUE INDEX `environment_retentions_environment_kept_idx` ON `environment_retentions` (`environment_id`,`kept_path`);--> statement-breakpoint
+ALTER TABLE `environments` ADD `teardown_failures` integer DEFAULT 0 NOT NULL;--> statement-breakpoint
 ALTER TABLE `environments` ADD `teardown_prior_status` text;

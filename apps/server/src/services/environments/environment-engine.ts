@@ -954,7 +954,10 @@ function recordTeardownFailed(
   message: string,
   options: { keepSnapshot?: boolean } = {},
 ): boolean {
-  const exhausted = target.attempt >= MAX_REMOVE_ATTEMPTS;
+  const exhausted =
+    (getEnvironment(deps.db, target.environmentId)?.teardownFailures ?? 0) +
+      1 >=
+    MAX_REMOVE_ATTEMPTS;
   const written = failRunningEnvironmentTeardown(deps.db, {
     ...target,
     message: exhausted
@@ -1183,7 +1186,7 @@ function writeEnvironmentTeardownFailure(
 ): void {
   const row = getEnvironment(deps.db, environmentId);
   if (row === null) return;
-  const exhausted = row.teardownAttempt >= MAX_REMOVE_ATTEMPTS;
+  const exhausted = row.teardownFailures >= MAX_REMOVE_ATTEMPTS;
   const written = deps.db
     .update(environments)
     .set({
@@ -1334,7 +1337,7 @@ async function sweepProviderEnvironmentInSlot(
   }
   if (
     row.teardownStatus === "failed" &&
-    row.teardownAttempt >= MAX_REMOVE_ATTEMPTS
+    row.teardownFailures >= MAX_REMOVE_ATTEMPTS
   ) {
     if (
       row.retireAt !== null ||
@@ -1439,7 +1442,7 @@ export function cleanupEnvironment(deps: Deps, environmentId: string): boolean {
   if (row.teardownStatus === "removed") return true;
   if (
     row.teardownStatus === "failed" &&
-    row.teardownAttempt >= MAX_REMOVE_ATTEMPTS
+    row.teardownFailures >= MAX_REMOVE_ATTEMPTS
   )
     throw new ApiError(
       409,
@@ -1562,6 +1565,7 @@ export async function recoverEnvironmentCleanup(
             }
           writeEnvironment(deps, environmentId, {
             teardownAttempt: 0,
+            teardownFailures: 0,
             retireAt: Date.now(),
             teardownMessage: null,
           });

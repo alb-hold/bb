@@ -626,7 +626,7 @@ export function reserveEnvironment(db: EnvironmentWriteConnection, input: Omit<t
     const now = Date.now();
     if (existing !== null) {
       if (existing.teardownStatus !== "removed") throw new Error("Previous environment cleanup is incomplete");
-      return tx.update(environments).set({ ...input, path: null, resource: null, claimPath: null, teardownStatus: null, teardownMessage: null, teardownAttempt: 0, retireAt: null, pendingLog: "", updatedAt: now }).where(eq(environments.id, existing.id)).returning().get()!;
+      return tx.update(environments).set({ ...input, path: null, resource: null, claimPath: null, teardownStatus: null, teardownMessage: null, teardownAttempt: 0, teardownFailures: 0, retireAt: null, pendingLog: "", updatedAt: now }).where(eq(environments.id, existing.id)).returning().get()!;
     }
     return tx.insert(environments).values({ ...input, id: createEnvironmentId(), createdAt: now, updatedAt: now }).returning().get();
   });
@@ -845,6 +845,7 @@ export function failRunningEnvironmentTeardown(
       .set({
         teardownStatus: "failed",
         teardownMessage: input.message,
+        teardownFailures: sql`${environments.teardownFailures} + 1`,
         teardownPriorStatus: input.keepSnapshot
           ? sql`case when exists (select 1 from ${environmentHookOperations} where ${environmentHookOperations.id} = 'environment:' || ${environments.id} || ':' || coalesce(${environments.environmentProviderInstanceKey}, 'null') || ':teardown') then null else ${environments.teardownPriorStatus} end`
           : null,

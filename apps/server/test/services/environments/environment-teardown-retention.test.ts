@@ -203,6 +203,56 @@ describe("retained environment removal", () => {
       });
     }));
 
+  it("does not count kept attempts toward the five failures that need recovery", async () =>
+    withTestHarness(async (harness) => {
+      const remove = vi
+        .fn<PluginEnvironmentProviderDeclaration["remove"]>()
+        .mockResolvedValueOnce({ status: "retained", message: KEPT })
+        .mockResolvedValueOnce({ status: "retained", message: KEPT })
+        .mockResolvedValueOnce({ status: "retained", message: KEPT })
+        .mockResolvedValueOnce({ status: "retained", message: KEPT })
+        .mockResolvedValue({ status: "failed", message: "rm: busy" });
+      installProvider({ remove, policy: { retireGraceMs: 0 } });
+      const { environment } = seedRetiring(harness);
+
+      for (let attempt = 1; attempt <= 5; attempt += 1) {
+        retireNow(harness, environment.id);
+        await sweepProviderEnvironment(harness.deps, environment.id);
+      }
+
+      expect(remove).toHaveBeenCalledTimes(5);
+      const current = row(harness, environment.id);
+      expect(current.teardownAttempt).toBe(5);
+      expect(current.teardownFailures).toBe(1);
+      expect(current).toMatchObject({
+        teardownStatus: "failed",
+        teardownMessage: "rm: busy",
+      });
+      expect(current.retireAt).not.toBeNull();
+    }));
+
+  it("needs recovery after five failures, with no more retries scheduled", async () =>
+    withTestHarness(async (harness) => {
+      const remove = vi
+        .fn<PluginEnvironmentProviderDeclaration["remove"]>()
+        .mockResolvedValue({ status: "failed", message: "rm: busy" });
+      installProvider({ remove, policy: { retireGraceMs: 0 } });
+      const { environment } = seedRetiring(harness);
+
+      for (let attempt = 1; attempt <= 5; attempt += 1) {
+        retireNow(harness, environment.id);
+        await sweepProviderEnvironment(harness.deps, environment.id);
+      }
+
+      const current = row(harness, environment.id);
+      expect(current.teardownFailures).toBe(5);
+      expect(current.retireAt).toBeNull();
+      expect(current.teardownMessage).toContain("Needs recovery");
+      retireNow(harness, environment.id);
+      await sweepProviderEnvironment(harness.deps, environment.id);
+      expect(remove).toHaveBeenCalledTimes(5);
+    }));
+
   it("keeps an ordinary failure failed with the environment in error", async () =>
     withTestHarness(async (harness) => {
       installProvider({

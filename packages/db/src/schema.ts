@@ -550,6 +550,7 @@ export const environments = sqliteTable(
     environmentProviderInstanceKey: text("environment_provider_instance_key"),
     retireAt: integer("retire_at"),
     teardownAttempt: integer("teardown_attempt").notNull().default(0),
+    teardownFailures: integer("teardown_failures").notNull().default(0),
     teardownStatus: text("teardown_status").$type<
       "running" | "failed" | "removed"
     >(),

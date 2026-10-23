@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "943a755a-4832-47b9-be47-73496452db05",
+  "id": "1a53b001-bb45-47d5-bdbc-c3ac3df9d551",
   "prevId": "1b798ff1-72c2-4134-b4bc-b5b8e736f871",
   "tables": {
     "app_settings": {
@@ -1038,6 +1038,14 @@
         },
         "teardown_attempt": {
           "name": "teardown_attempt",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 0
+        },
+        "teardown_failures": {
+          "name": "teardown_failures",
           "type": "integer",
           "primaryKey": false,
           "notNull": true,
