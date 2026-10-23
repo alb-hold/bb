@@ -184,6 +184,23 @@ describe("host file routes", () => {
     });
   });
 
+  it("refuses a removal it cannot place relative to plugin data when the machine has no daemon session", async () => {
+    await withTestHarness(async (harness) => {
+      const { host } = seedHostSession(harness.deps);
+      seedPrimaryHost(harness.deps, host.id);
+
+      const response = await harness.app.request(
+        ...postJson("/api/v1/files/remove", { path: "/work/scratch/a.txt" }),
+      );
+
+      expect(response.status).toBe(409);
+      expect(await readJson(response)).toMatchObject({
+        code: "workspace_busy",
+        message: expect.stringContaining("cannot tell where this machine keeps"),
+      });
+    });
+  });
+
   it("refuses every recursive removal, whatever the path, and never asks the host", async () => {
     await withTestHarness(async (harness) => {
       const { host, session } = seedHostSession(harness.deps);

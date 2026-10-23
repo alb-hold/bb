@@ -918,7 +918,7 @@ export async function removeWorktree(
     }
     if (identified.status === "identified" && args.createdBy !== undefined) {
       throw worktreePreservedError(workspacePath, [
-        `a failed create's workspace stays in place until its owner releases it and a durable retention record exists, and neither is available yet. ${args.branchName === undefined ? "Its branch is" : `Branch ${args.branchName} is`} left behind with it, and a retry on that branch is refused until the workspace is released`,
+        `a failed create's workspace stays in place until its owner releases it and a durable retention record exists, and neither is available yet. ${args.branchName === undefined ? "Its branch is" : `Branch ${args.branchName} is`} left behind with it. Retrying this same create reuses the workspace where it is when it is still on that branch; bb does not start a second workspace or delete this one in the meantime`,
       ]);
     }
     if (identified.status === "identified") {
