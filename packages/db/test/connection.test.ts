@@ -312,6 +312,20 @@ describe("createConnection", () => {
       logger.clear();
       db.$client.prepare("SELECT 1").get();
       expect(getOnlyInfoLog(logger).fields.eventLoopWork).toBeNull();
+
+      function pruneWithoutWorkLabelForTest(): void {
+        transaction.default();
+      }
+      logger.clear();
+      pruneWithoutWorkLabelForTest();
+      const unlabeledTransaction = logger.infoLogs.find(
+        (log) => log.fields.operation === "transaction",
+      );
+      expect(unlabeledTransaction?.fields.eventLoopWork).toEqual(
+        expect.stringMatching(
+          /^db transaction: pruneWithoutWorkLabelForTest /u,
+        ),
+      );
     } finally {
       db.$client.close();
     }

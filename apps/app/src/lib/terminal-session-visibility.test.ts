@@ -6,6 +6,7 @@ import {
 } from "./terminal-session-visibility";
 import { makeTerminalSession } from "@/test/fixtures/terminal-sessions";
 
+
 function session(overrides: Partial<TerminalSession> = {}): TerminalSession {
   return {
     id: "term-1",
@@ -29,20 +30,17 @@ function session(overrides: Partial<TerminalSession> = {}): TerminalSession {
 describe("getThreadTerminalLayoutSessions", () => {
   it("accepts live terminals in the requested thread", () => {
     const terminal = session();
-    expect(
-      getThreadTerminalLayoutSessions([terminal], [terminal.id], "thread-1"),
-    ).toEqual([terminal]);
+    expect(getThreadTerminalLayoutSessions([terminal], [terminal.id], "thread-1")).toEqual([terminal]);
   });
 
   it.each([
     ["another thread", session({ threadId: "thread-2" })],
     ["an exited session", session({ status: "exited", exitCode: 0 })],
   ])("rejects %s", (_case, terminal) => {
-    expect(
-      getThreadTerminalLayoutSessions([terminal], [terminal.id], "thread-1"),
-    ).toBeNull();
+    expect(getThreadTerminalLayoutSessions([terminal], [terminal.id], "thread-1")).toBeNull();
   });
 });
+
 
 describe("omitSupersededDisconnectedSessions", () => {
   const disconnected = makeTerminalSession({

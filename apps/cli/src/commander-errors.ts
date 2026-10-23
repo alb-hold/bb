@@ -106,7 +106,7 @@ function missingArgumentHint(
   if (argumentName === "id" && group === "thread") {
     const threadId = contextThreadId();
     return threadId === null
-      ? "List thread IDs with `bb thread list`."
+      ? "List thread IDs with `bb thread list --all` to include archived threads."
       : `The current thread is ${threadId}.`;
   }
   if (argumentName === "terminalId") {

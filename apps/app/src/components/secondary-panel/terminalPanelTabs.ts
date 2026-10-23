@@ -125,7 +125,7 @@ function syncTerminalTabsWithSessions<T extends SecondaryFixedPanelTab>({
     syncedTabs.push(tab);
   }
 
-  for (const session of terminalSessions) {
+  for (const session of omitSupersededDisconnectedSessions(terminalSessions)) {
     if (!terminalSessionIds.has(session.id)) {
       continue;
     }
