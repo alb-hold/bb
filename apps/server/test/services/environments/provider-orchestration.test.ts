@@ -2675,6 +2675,7 @@ describe("existing-path provider selection", () => {
         environmentProviderPluginId: "test",
         environmentProviderInstanceKey: "original-key",
         mergeBaseBranch: "release",
+        branchName: null,
       });
       harness.db
         .update(environments)

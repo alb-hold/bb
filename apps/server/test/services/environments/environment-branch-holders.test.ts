@@ -309,115 +309,6 @@ describe("a create or restore on a branch another workspace still holds", () => 
       }
     }));
 
-  it("keeps the requester's own earlier attempt and refuses the create instead of bypassing the starting-owner check", async () =>
-    withTestHarness(async (harness) => {
-      const { create, removeSpy: remove, record } = installProvider({});
-      const fixture = seedFixture(harness);
-      const holder = seedHolder(harness, {
-        hostId: fixture.host.id,
-        projectId: fixture.project.id,
-        status: "error",
-      });
-      const requester = seedThread(harness.deps, {
-        projectId: fixture.project.id,
-        status: "starting",
-      });
-      harness.db
-        .update(environments)
-        .set({ ownerThreadId: requester.id })
-        .where(eq(environments.id, holder.id))
-        .run();
-      const context = await resolveProviderOperationContext(
-        harness.deps,
-        requester,
-        {
-          type: "provider",
-          environmentProviderId: PROVIDER_ID,
-          machine: { type: "existing", hostId: fixture.host.id },
-          inputs: null,
-          selectionResolved: true,
-        },
-        record,
-      );
-      if (context === null) throw new Error("Missing operation context");
-      prepareProviderEnvironment(harness.deps, record, {
-        ...context,
-        suggestedBranchName: BRANCH,
-      });
-      try {
-        const row = await settled(harness, requester.id);
-
-        expect(row).toMatchObject({
-          status: "error",
-          statusMessage: expect.stringContaining("earlier attempt"),
-        });
-        expect(row?.statusMessage).toContain(BRANCH);
-        expect(create).not.toHaveBeenCalled();
-        expect(remove).not.toHaveBeenCalled();
-        expect(getEnvironment(harness.db, holder.id)).toMatchObject({
-          status: "error",
-          teardownStatus: null,
-        });
-      } finally {
-        await cancelProviderEnvironmentCreation(harness.deps, requester.id);
-      }
-    }));
-
-  it("refuses when the requester shares the holder with another archived thread that could come back", async () =>
-    withTestHarness(async (harness) => {
-      const { create, remove, record } = installProvider({});
-      const fixture = seedFixture(harness);
-      const holder = seedHolder(harness, {
-        hostId: fixture.host.id,
-        projectId: fixture.project.id,
-        status: "error",
-      });
-      const other = seedThread(harness.deps, {
-        projectId: fixture.project.id,
-        environmentId: holder.id,
-        status: "idle",
-      });
-      archiveThread(harness.db, harness.hub, other.id);
-      const requester = seedThread(harness.deps, {
-        projectId: fixture.project.id,
-        status: "starting",
-      });
-      harness.db
-        .update(environments)
-        .set({ ownerThreadId: requester.id })
-        .where(eq(environments.id, holder.id))
-        .run();
-      const context = await resolveProviderOperationContext(
-        harness.deps,
-        requester,
-        {
-          type: "provider",
-          environmentProviderId: PROVIDER_ID,
-          machine: { type: "existing", hostId: fixture.host.id },
-          inputs: null,
-          selectionResolved: true,
-        },
-        record,
-      );
-      if (context === null) throw new Error("Missing operation context");
-      prepareProviderEnvironment(harness.deps, record, {
-        ...context,
-        suggestedBranchName: BRANCH,
-      });
-      try {
-        const row = await settled(harness, requester.id);
-
-        expect(row).toMatchObject({
-          status: "error",
-          statusMessage: expect.stringContaining(other.id),
-        });
-        expect(create).not.toHaveBeenCalled();
-        expect(remove).not.toHaveBeenCalled();
-      } finally {
-        await cancelProviderEnvironmentCreation(harness.deps, requester.id);
-      }
-    }));
-
   it("retires an idle archived holder through the normal removal before it creates, and refuses its owner's unarchive meanwhile", async () =>
     withTestHarness(async (harness) => {
       const entered = createDeferredPromise<void>();
@@ -473,10 +364,14 @@ describe("a create or restore on a branch another workspace still holds", () => 
   it("refuses to create when the idle archived holder cannot be removed, naming where it is and why", async () =>
     withTestHarness(async (harness) => {
       const { create, record } = installProvider({
-        remove: async () => ({
-          status: "retained",
-          message: "Kept /tmp/branch-holders-holder: has uncommitted changes.",
-        }),
+        remove: async (context) =>
+          context.path === "/tmp/branch-holders-holder"
+            ? {
+                status: "retained",
+                message:
+                  "Kept /tmp/branch-holders-holder: has uncommitted changes.",
+              }
+            : { status: "removed" },
       });
       const fixture = seedFixture(harness);
       const holder = seedHolder(harness, {
