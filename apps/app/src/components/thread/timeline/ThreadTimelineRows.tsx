@@ -357,6 +357,7 @@ type TimelineRowsListItem =
   | {
       kind: "interruption-group";
       id: string;
+      interruptionCount: number;
       rows: readonly ThreadTimelineViewRow[];
     }
   | {
@@ -2203,17 +2204,22 @@ export function buildTimelineRowsListItems({
       dividerIndex,
       excludedInterruptionRowIds,
     });
-    const groupRows = rows.slice(index, groupEndIndex).map((interruptionRow) =>
+    const unpresentedGroupRows = rows.slice(index, groupEndIndex);
+    const interruptionCount = unpresentedGroupRows.filter(
+      isThreadInterruptionErrorRow,
+    ).length;
+    const groupRows = unpresentedGroupRows.map((interruptionRow) =>
       presentInterruptionRow({
         rows,
         row: interruptionRow,
         threadIsActive,
       }),
     );
-    if (groupRows.length > 1) {
+    if (interruptionCount > 1) {
       items.push({
         kind: "interruption-group",
         id: `interruption-group:${row.id}`,
+        interruptionCount,
         rows: groupRows,
       });
     } else {
@@ -2285,14 +2291,27 @@ function findInterruptionGroupEndIndex({
   let endIndex = startIndex + 1;
   while (endIndex < rows.length && endIndex !== dividerIndex) {
     const candidate = rows[endIndex];
+    if (candidate === undefined) break;
     if (
-      candidate === undefined ||
-      !isThreadInterruptionErrorRow(candidate) ||
-      excludedInterruptionRowIds.has(candidate.id)
+      isThreadInterruptionErrorRow(candidate) &&
+      !excludedInterruptionRowIds.has(candidate.id)
     ) {
-      break;
+      endIndex += 1;
+      continue;
     }
-    endIndex += 1;
+    const next = rows[endIndex + 1];
+    if (
+      candidate.kind === "turn" &&
+      candidate.status === "interrupted" &&
+      next !== undefined &&
+      isThreadInterruptionErrorRow(next) &&
+      next.turnId === candidate.turnId &&
+      !excludedInterruptionRowIds.has(next.id)
+    ) {
+      endIndex += 1;
+      continue;
+    }
+    break;
   }
   return endIndex;
 }
@@ -2341,12 +2360,14 @@ function TimelineRowItemWrapper({
 function TimelineInterruptionGroupView({
   activeLatestBundleId,
   compactActivityIntents,
+  interruptionCount,
   rows,
   scopeActive,
   showAssistantMessageActions,
 }: {
   activeLatestBundleId: string | null;
   compactActivityIntents: boolean;
+  interruptionCount: number;
   rows: readonly ThreadTimelineViewRow[];
   scopeActive: boolean;
   showAssistantMessageActions: boolean;
@@ -2359,7 +2380,7 @@ function TimelineInterruptionGroupView({
           className="size-3.5 shrink-0 transition-transform group-open:rotate-90"
           aria-hidden
         />
-        <span className="font-medium">{rows.length} interruptions</span>
+        <span className="font-medium">{interruptionCount} interruptions</span>
         <span className="font-mono text-xs text-destructive-text">error</span>
       </summary>
       <div className="ml-3 flex min-w-0 flex-col gap-2 border-l border-border/60 pl-2 pt-1">
@@ -2596,6 +2617,7 @@ function TimelineRowsList({
                     <TimelineInterruptionGroupView
                       activeLatestBundleId={activeLatestBundleId}
                       compactActivityIntents={compactActivityIntents}
+                      interruptionCount={item.interruptionCount}
                       rows={item.rows}
                       scopeActive={scopeActive}
                       showAssistantMessageActions={showAssistantMessageActions}

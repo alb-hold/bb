@@ -11,7 +11,7 @@ import {
 } from "@bb/domain";
 import { buildThreadTimelineFromEvents } from "@bb/thread-view";
 import { ThreadTitleMentionResourcesProvider } from "@/components/thread/ThreadTitleMentions";
-import { systemRow } from "@/test/fixtures/thread-timeline-rows";
+import { systemRow, turnRow } from "@/test/fixtures/thread-timeline-rows";
 import { makeThreadListEntry } from "@bb/test-helpers/domain-fixtures";
 import {
   buildTimelineRowsListItems,
@@ -131,6 +131,76 @@ describe("system summary overflow", () => {
     expect(groupDetails?.open).toBe(true);
     const expandedReasons = screen.getAllByText(/Thread interrupted because/);
     expect(expandedReasons).toHaveLength(12);
+  });
+
+  it("groups interruptions separated by their own interrupted turn summaries", () => {
+    const [first, second, third] = serverProducedInterruptionRows(3);
+    if (first === undefined || second === undefined || third === undefined) {
+      throw new Error("Expected three server-produced interruption rows");
+    }
+    const rows: TimelineRow[] = [
+      { ...first, sourceSeqStart: 1, sourceSeqEnd: 1 },
+      turnRow({
+        id: "interrupted-turn-two",
+        threadId: "thr_main",
+        turnId: "turn-two",
+        status: "interrupted",
+        seq: 2,
+        sourceSeqStart: 2,
+        sourceSeqEnd: 2,
+        startedAt: 2,
+        createdAt: 2,
+      }),
+      {
+        ...second,
+        turnId: "turn-two",
+        sourceSeqStart: 3,
+        sourceSeqEnd: 3,
+      },
+      turnRow({
+        id: "interrupted-turn-three",
+        threadId: "thr_main",
+        turnId: "turn-three",
+        status: "interrupted",
+        seq: 4,
+        sourceSeqStart: 4,
+        sourceSeqEnd: 4,
+        startedAt: 4,
+        createdAt: 4,
+      }),
+      {
+        ...third,
+        turnId: "turn-three",
+        sourceSeqStart: 5,
+        sourceSeqEnd: 5,
+      },
+    ];
+    const [item] = buildTimelineRowsListItems({
+      rows,
+      threadIsActive: false,
+      excludedInterruptionRowIds: new Set(),
+      unreadDividerPlacement: null,
+    });
+
+    expect(item?.kind).toBe("interruption-group");
+    if (item?.kind !== "interruption-group") return;
+    expect(item.interruptionCount).toBe(3);
+    expect(item.rows.filter((row) => row.kind === "turn")).toHaveLength(2);
+
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <MemoryRouter>
+          <ThreadTimelineRows
+            threadId="thr_main"
+            timelineRows={rows}
+            threadIsActive={false}
+            threadRuntimeDisplayStatus="idle"
+            workspaceRootPath={undefined}
+          />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+    expect(screen.getByText("3 interruptions")).toBeTruthy();
   });
 
   it("hides retry instructions after a later turn or while the thread is active", () => {
