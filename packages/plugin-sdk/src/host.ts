@@ -39,9 +39,9 @@ export {
 export { experimental_killProcessesWithCwdUnder } from "./kill-processes.js";
 
 export {
-  internal_DO_NOT_USE_listProcessesWithCwdUnder,
-  type InternalProcessHolder,
-} from "./list-processes.js";
+  internal_DO_NOT_USE_scanProcessesWithCwdUnder,
+  type InternalCwdHolderScan,
+} from "./scan-processes.js";
 
 export { experimental_nativeTerminalEnvArgs } from "./native-terminal-env-args.js";
 

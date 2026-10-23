@@ -23,6 +23,8 @@ export const personalWorkspaceHostContract = defineRpcContract({
         holders: z.array(
           z.object({ pid: z.number().int(), cwd: z.string() }).strict(),
         ),
+        unknown: z.string().nullable(),
+        excludedOtherUsers: z.number().int().nullable(),
       })
       .strict(),
   },

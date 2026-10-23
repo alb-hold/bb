@@ -90,6 +90,12 @@ export default async function personalWorkspacePlugin(
           { pathKey, path },
           { hostId, signal },
         );
+        if (removal.unknown !== null) {
+          return {
+            status: "retained",
+            message: `Kept the personal workspace because whether a process is still working inside it could not be established (${removal.unknown}). Nothing was removed and nothing was stopped; it is checked again later.`,
+          };
+        }
         if (removal.holders.length > 0) {
           return {
             status: "retained",

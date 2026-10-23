@@ -40,9 +40,11 @@ const PERSONAL_PROJECT: Project = {
 function createFakeWorkspaceHost() {
   const directories = new Set<string>();
   const busy = new Set<string>();
+  const unknownHolders = new Set<string>();
   return {
     directories,
     busy,
+    unknownHolders,
     async call(request: HostRpcCall): Promise<unknown> {
       switch (request.method) {
         case "createWorkspace": {
@@ -64,9 +66,24 @@ function createFakeWorkspaceHost() {
             return {
               removed: false,
               holders: [{ pid: 4242, cwd: `${target}/sub` }],
+              unknown: null,
+              excludedOtherUsers: 0,
             };
           }
-          return { removed: directories.delete(target), holders: [] };
+          if (unknownHolders.has(target)) {
+            return {
+              removed: false,
+              holders: [],
+              unknown: "a process's working directory could not be read",
+              excludedOtherUsers: null,
+            };
+          }
+          return {
+            removed: directories.delete(target),
+            holders: [],
+            unknown: null,
+            excludedOtherUsers: 0,
+          };
         }
         default:
           throw new Error(`unexpected host method ${request.method}`);
@@ -239,6 +256,26 @@ describe("personal workspace resource operations", () => {
     expect(result).toMatchObject({
       status: "retained",
       message: expect.stringContaining("pid 4242"),
+    });
+    expect(f.host.directories.size).toBe(1);
+  });
+  it("keeps the directory when holders cannot be established", async () => {
+    const f = await setup();
+    await f.provider.create(f.context);
+    f.host.unknownHolders.add(WORKSPACE_PATH);
+    const result = await f.provider.remove({
+      environment: null,
+      hostId: HOST_ID,
+      path: WORKSPACE_PATH,
+      pathKey: THREAD_ID,
+      resource: null,
+      attempt: 1,
+      report: f.context.report,
+      signal: new AbortController().signal,
+    });
+    expect(result).toMatchObject({
+      status: "retained",
+      message: expect.stringContaining("could not be established"),
     });
     expect(f.host.directories.size).toBe(1);
   });

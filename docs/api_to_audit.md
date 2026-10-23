@@ -1549,14 +1549,20 @@ runtime), and `experimental_readProcessIdentity(pid)` returns
 `{ command, startedAt }` so a caller can confirm a recorded PID before
 signalling it.
 
-`internal_DO_NOT_USE_listProcessesWithCwdUnder` (not part of the public
-surface and not documented in the Plugin Guide) lists, without signalling,
-processes whose working directory is at or under the given directories. Its
-only callers are the first-party `environment-personal-workspace` and
-`storage-retention` host entries, which use it to report the holders of a tree
-and refuse to delete it; the daemon's thread-storage deletion and file
-removal use the same `@bb/process-utils` function directly. It checks working
-directories only (not open files) and returns nothing on Windows. Stabilize it
+`internal_DO_NOT_USE_scanProcessesWithCwdUnder` (not part of the public
+surface and not documented in the Plugin Guide) looks, without signalling, for
+processes whose working directory is at or under the given directories and
+answers `clear`, `held` or `unknown`. Its only callers are the first-party
+`environment-personal-workspace` and `storage-retention` host entries, which
+use it to report the holders of a tree and refuse to delete it unless the
+answer is `clear`; the daemon's thread-storage deletion and recursive file
+removal call the same `@bb/process-utils` function directly. `unknown` covers
+Windows, a symlinked target, an unreadable process list, a same-user process
+whose cwd cannot be read, and an `lsof` failure, timeout or exit above 1.
+`clear` vouches for the current user's processes only: other users' processes
+are excluded and counted in the answer (owner ruling 2026-10-22), a residual
+the PR body states. It checks working directories only (not open files), and a
+process can still enter the tree between the scan and the delete. Stabilize it
 by replacing it with a reviewed holder scan that also covers open files and
 mapped files (the worktree plugin has a private one) and by deleting this
 entry.

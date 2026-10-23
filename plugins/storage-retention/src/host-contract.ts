@@ -123,6 +123,7 @@ export const hostStorageContract = defineRpcContract({
         z.object({
           name: z.string(),
           holders: z.array(z.object({ pid: z.number().int(), cwd: z.string() })),
+          unknown: z.string().nullable(),
         }),
       ),
     }),

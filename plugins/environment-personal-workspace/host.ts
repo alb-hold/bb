@@ -1,7 +1,7 @@
 import { mkdir, stat } from "node:fs/promises";
 import {
   experimental_defineHostEntry,
-  internal_DO_NOT_USE_listProcessesWithCwdUnder,
+  internal_DO_NOT_USE_scanProcessesWithCwdUnder,
 } from "@get-bb/plugin-sdk/host";
 import { personalWorkspaceHostContract } from "./contract.js";
 import {
@@ -44,15 +44,29 @@ export function createPersonalWorkspaceHostEntry() {
                 path: input.path,
               });
         const existed = await pathExists(target);
+        let excludedOtherUsers: number | null = null;
         if (existed) {
-          const holders =
-            await internal_DO_NOT_USE_listProcessesWithCwdUnder({
-              directories: [target],
-            });
-          if (holders.length > 0) return { removed: false, holders };
+          const scan = await internal_DO_NOT_USE_scanProcessesWithCwdUnder({
+            directories: [target],
+          });
+          if (scan.status === "held")
+            return {
+              removed: false,
+              holders: scan.holders,
+              unknown: null,
+              excludedOtherUsers: scan.excludedOtherUsers,
+            };
+          if (scan.status === "unknown")
+            return {
+              removed: false,
+              holders: [],
+              unknown: scan.reason,
+              excludedOtherUsers: null,
+            };
+          excludedOtherUsers = scan.excludedOtherUsers;
         }
         await removeDirectoryTree(target);
-        return { removed: existed, holders: [] };
+        return { removed: existed, holders: [], unknown: null, excludedOtherUsers };
       },
     },
   });

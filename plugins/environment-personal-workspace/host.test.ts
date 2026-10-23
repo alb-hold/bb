@@ -101,14 +101,14 @@ describe("personal workspace host entry", () => {
         pathKey: "thr_a",
         path: created.path,
       }),
-    ).toEqual({ removed: true, holders: [] });
+    ).toMatchObject({ removed: true, holders: [], unknown: null });
     expect(existsSync(created.path)).toBe(false);
     expect(
       await harness.experimental_call("removeWorkspace", {
         pathKey: "thr_a",
         path: created.path,
       }),
-    ).toEqual({ removed: false, holders: [] });
+    ).toMatchObject({ removed: false, holders: [], unknown: null });
   });
 
   it("removes a workspace core made, so a migrated environment can retire", async () => {
@@ -128,7 +128,7 @@ describe("personal workspace host entry", () => {
         pathKey: "env_migrated",
         path: legacyPath,
       }),
-    ).toEqual({ removed: true, holders: [] });
+    ).toMatchObject({ removed: true, holders: [], unknown: null });
     expect(existsSync(legacyPath)).toBe(false);
   });
 
@@ -144,7 +144,7 @@ describe("personal workspace host entry", () => {
         pathKey: "thr_interrupted",
         path: null,
       }),
-    ).toEqual({ removed: true, holders: [] });
+    ).toMatchObject({ removed: true, holders: [], unknown: null });
     expect(existsSync(created.path)).toBe(false);
   });
 

@@ -1261,10 +1261,12 @@ export function createStorage(
       const held = result.held[0];
       if (held !== undefined)
         throw new Error(
-          `Kept this thread’s storage because ${held.holders.length === 1 ? "a process is" : `${held.holders.length} processes are`} still working inside it (${held.holders
-            .slice(0, 5)
-            .map((holder) => `pid ${holder.pid} in ${holder.cwd}`)
-            .join("; ")}). Nothing was stopped. Stop it yourself, then clear again.`,
+          held.unknown !== null
+            ? `Kept this thread’s storage because whether a process is still working inside it could not be established (${held.unknown}). Nothing was stopped. Try again later.`
+            : `Kept this thread’s storage because ${held.holders.length === 1 ? "a process is" : `${held.holders.length} processes are`} still working inside it (${held.holders
+                .slice(0, 5)
+                .map((holder) => `pid ${holder.pid} in ${holder.cwd}`)
+                .join("; ")}). Nothing was stopped. Stop it yourself, then clear again.`,
         );
       forget(hostId, { entries: new Set([threadId]) });
       return { ok: true as const };

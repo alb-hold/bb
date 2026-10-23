@@ -866,6 +866,7 @@ it.skipIf(process.platform === "win32")(
       expect(result.removed).toEqual(["thr_neighbor"]);
       expect(result.held).toHaveLength(1);
       expect(result.held[0]?.name).toBe("thr_busy");
+      expect(result.held[0]?.unknown).toBeNull();
       expect(result.held[0]?.holders.map((holder) => holder.pid)).toContain(
         busy.pid,
       );

@@ -1,6 +1,6 @@
 import {
   experimental_defineHostEntry,
-  internal_DO_NOT_USE_listProcessesWithCwdUnder,
+  internal_DO_NOT_USE_scanProcessesWithCwdUnder,
 } from "@get-bb/plugin-sdk/host";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -141,16 +141,22 @@ export default experimental_defineHostEntry({
         if (isFsErrorWithCode(error, "ENOENT")) return { removed: [], held: [] };
         throw error;
       }
-      const held: { name: string; holders: { pid: number; cwd: string }[] }[] =
-        [];
+      const held: {
+        name: string;
+        holders: { pid: number; cwd: string }[];
+        unknown: string | null;
+      }[] = [];
       const releasable: string[] = [];
       for (const name of names) {
-        const holders = name.startsWith(".bb-trash-")
-          ? []
-          : await internal_DO_NOT_USE_listProcessesWithCwdUnder({
+        const scan = name.startsWith(".bb-trash-")
+          ? ({ status: "clear", excludedOtherUsers: 0 } as const)
+          : await internal_DO_NOT_USE_scanProcessesWithCwdUnder({
               directories: [path.join(root, name)],
             });
-        if (holders.length > 0) held.push({ name, holders });
+        if (scan.status === "held")
+          held.push({ name, holders: scan.holders, unknown: null });
+        else if (scan.status === "unknown")
+          held.push({ name, holders: [], unknown: scan.reason });
         else releasable.push(name);
       }
       const removed: string[] = [];

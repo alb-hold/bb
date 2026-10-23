@@ -3,7 +3,7 @@ import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { internal_DO_NOT_USE_listProcessesWithCwdUnder } from "../host.js";
+import { internal_DO_NOT_USE_scanProcessesWithCwdUnder } from "../host.js";
 
 const posixOnly = process.platform === "win32" ? describe.skip : describe;
 const cleanupDirs: string[] = [];
@@ -19,7 +19,7 @@ afterEach(() => {
     rmSync(dir, { recursive: true, force: true });
 });
 
-posixOnly("internal_DO_NOT_USE_listProcessesWithCwdUnder", () => {
+posixOnly("internal_DO_NOT_USE_scanProcessesWithCwdUnder", () => {
   it("lists a process working under the directory and leaves it running", async () => {
     const dir = realpathSync(mkdtempSync(join(tmpdir(), "bb-sdk-cwd-list-")));
     cleanupDirs.push(dir);
@@ -31,11 +31,13 @@ posixOnly("internal_DO_NOT_USE_listProcessesWithCwdUnder", () => {
     cleanupPids.push(child.pid ?? 0);
     await new Promise((resolve) => setTimeout(resolve, 200));
 
-    const holders = await internal_DO_NOT_USE_listProcessesWithCwdUnder({
+    const scan = await internal_DO_NOT_USE_scanProcessesWithCwdUnder({
       directories: [dir],
     });
 
-    expect(holders.map((holder) => holder.pid)).toContain(child.pid);
+    expect(scan.status).toBe("held");
+    if (scan.status !== "held") return;
+    expect(scan.holders.map((holder) => holder.pid)).toContain(child.pid);
     expect(child.exitCode).toBeNull();
     expect(child.signalCode).toBeNull();
     expect(() => process.kill(child.pid ?? 0, 0)).not.toThrow();
@@ -45,7 +47,8 @@ posixOnly("internal_DO_NOT_USE_listProcessesWithCwdUnder", () => {
     const dir = realpathSync(mkdtempSync(join(tmpdir(), "bb-sdk-cwd-list-")));
     cleanupDirs.push(dir);
     expect(
-      await internal_DO_NOT_USE_listProcessesWithCwdUnder({ directories: [dir] }),
-    ).toEqual([]);
+      (await internal_DO_NOT_USE_scanProcessesWithCwdUnder({ directories: [dir] }))
+        .status,
+    ).toBe("clear");
   });
 });
