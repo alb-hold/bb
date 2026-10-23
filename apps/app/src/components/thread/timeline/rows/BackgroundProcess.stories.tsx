@@ -105,6 +105,7 @@ export function Overview() {
             {...baseProps}
             threadRuntimeDisplayStatus="active"
             timelineRows={[running]}
+            threadIsActive={false}
           />
         </TimelineStage>
       </StoryRow>
@@ -114,6 +115,7 @@ export function Overview() {
             {...baseProps}
             initialExpanded={new Set([completed.id])}
             timelineRows={[completed]}
+            threadIsActive={false}
           />
         </TimelineStage>
       </StoryRow>
@@ -123,6 +125,7 @@ export function Overview() {
             {...baseProps}
             initialExpanded={new Set([failed.id])}
             timelineRows={[failed]}
+            threadIsActive={false}
           />
         </TimelineStage>
       </StoryRow>
@@ -131,7 +134,11 @@ export function Overview() {
         hint="session ended while the command was still running"
       >
         <TimelineStage>
-          <ThreadTimelineRows {...baseProps} timelineRows={[interrupted]} />
+          <ThreadTimelineRows
+            {...baseProps}
+            timelineRows={[interrupted]}
+            threadIsActive={false}
+          />
         </TimelineStage>
       </StoryRow>
       <StoryRow
@@ -144,6 +151,7 @@ export function Overview() {
             threadRuntimeDisplayStatus="active"
             initialExpanded={new Set(["thr_fixture:bg:build:completed"])}
             timelineRows={concurrent}
+            threadIsActive={false}
           />
         </TimelineStage>
       </StoryRow>

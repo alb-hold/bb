@@ -48,9 +48,14 @@ import {
   type ThreadEventType,
   type ThreadLifecycleEvent,
   type ThreadStatus,
+  threadCommandFailureCopyForInterruption,
   threadScope,
   turnScope,
 } from "@bb/domain";
+
+type RuntimeThreadInterruptionReason =
+  | SystemThreadInterruptedReason
+  | "host-connection-lost";
 import type {
   AppDeps,
   LoggedPendingInteractionWorkSessionDeps,
@@ -383,10 +388,6 @@ interface SettleThreadPlanCancelCommandResultArgs {
   report: ThreadPlanCancelCommandResultReport;
 }
 
-type RuntimeThreadInterruptionReason =
-  | SystemThreadInterruptedReason
-  | "host-connection-lost";
-
 function lifecycleEventForInterruptedThread(
   reason: RuntimeThreadInterruptionReason,
 ): ThreadLifecycleEvent {
@@ -417,42 +418,6 @@ function pendingInteractionStopReason(
       return "Connection to host was lost while awaiting user interaction";
     case "provider-turn-idle":
       return "Thread stopped after the provider stopped sending progress";
-    default:
-      return assertNever(reason);
-  }
-}
-
-function threadCommandFailureMessageForInterruption(
-  reason: RuntimeThreadInterruptionReason,
-): string | null {
-  switch (reason) {
-    case "host-removed":
-    case "manual-stop":
-      return null;
-    case "host-daemon-restarted":
-      return "Thread interrupted because the host daemon disconnected";
-    case "host-connection-lost":
-      return "Thread interrupted because the connection to the host was lost";
-    case "provider-turn-idle":
-      return "Live runtime work failed because the provider stopped sending progress";
-    default:
-      return assertNever(reason);
-  }
-}
-
-function threadCommandFailureDetailForInterruption(
-  reason: RuntimeThreadInterruptionReason,
-): string {
-  switch (reason) {
-    case "host-removed":
-      return "Thread stopped because the machine was removed";
-    case "manual-stop":
-      return "Thread stopped by user request";
-    case "host-daemon-restarted":
-    case "host-connection-lost":
-      return "Please retry the thread to continue.";
-    case "provider-turn-idle":
-      return "Provider stopped sending progress while the thread was running";
     default:
       return assertNever(reason);
   }
@@ -1853,8 +1818,8 @@ function interruptActiveThreads(
         const state = stateByThreadId.get(thread.threadId);
         const activeTurnId = state?.activeTurnId ?? null;
         const providerThreadId = state?.latestProviderThreadId ?? null;
-        const failureMessage =
-          threadCommandFailureMessageForInterruption(effectiveReason);
+        const failureCopy =
+          threadCommandFailureCopyForInterruption(effectiveReason);
 
         if (activeTurnId !== null) {
           eventArgs.push({
@@ -1870,7 +1835,7 @@ function interruptActiveThreads(
           });
         }
 
-        if (failureMessage !== null) {
+        if (failureCopy !== null) {
           eventArgs.push({
             threadId: thread.threadId,
             environmentId: thread.environmentId,
@@ -1880,9 +1845,8 @@ function interruptActiveThreads(
               activeTurnId !== null ? turnScope(activeTurnId) : threadScope(),
             data: buildSystemErrorEventData({
               code: "thread_command_failed",
-              message: failureMessage,
-              detail:
-                threadCommandFailureDetailForInterruption(effectiveReason),
+              message: failureCopy.message,
+              detail: failureCopy.detail,
             }),
           });
         }
@@ -1897,7 +1861,7 @@ function interruptActiveThreads(
           },
         });
         results.push({
-          failureEventAppended: failureMessage !== null,
+          failureEventAppended: failureCopy !== null,
           threadId: thread.threadId,
           interruptedTurnId: activeTurnId,
         });

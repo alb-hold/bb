@@ -73,6 +73,7 @@ export interface ThreadTerminalController {
   shouldMountTerminalView: boolean;
   shouldRetainActiveTerminalView: boolean;
   start: TerminalStart | null;
+  terminalsLoading: boolean;
   terminalBodyMessage: string;
 }
 
@@ -685,9 +686,12 @@ export function useThreadTerminalController({
     ? "Starting terminal..."
     : "Terminals unavailable.";
 
+  const terminalsLoading = terminalsQuery.isLoading;
   const terminalBodyMessage = terminalIsStarting
     ? inactiveTerminalBodyMessage
-    : "No terminals";
+    : terminalsLoading
+      ? "Loading terminals..."
+      : "No terminals";
 
   return {
     activeSession,
@@ -704,6 +708,7 @@ export function useThreadTerminalController({
     shouldMountTerminalView,
     shouldRetainActiveTerminalView,
     start,
+    terminalsLoading,
     terminalBodyMessage,
   };
 }

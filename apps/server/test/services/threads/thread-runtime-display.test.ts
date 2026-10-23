@@ -383,6 +383,7 @@ describe("thread runtime display", () => {
     );
 
     expect(fresh[0]?.runtime.nativeActivity?.confirmation).toBe("confirmed");
+    expect(fresh[0]?.nativeTerminal).toBe(true);
     expect(fresh[0]?.listIndicator).toBe("working");
     expect(fresh[1]?.runtime.nativeActivity?.confirmation).toBe("confirmed");
     expect(fresh[1]?.listIndicator).toBe("working");
@@ -391,7 +392,9 @@ describe("thread runtime display", () => {
     expect(stale[1]?.runtime.nativeActivity?.confirmation).toBe("unconfirmed");
     expect(stale[1]?.listIndicator).toBe("none");
     expect(detail.runtime.nativeActivity?.confirmation).toBe("unconfirmed");
+    expect(detail.nativeTerminal).toBe(true);
     expect(stale[2]?.runtime.nativeActivity).toBeUndefined();
+    expect(stale[2]?.nativeTerminal).toBe(false);
     expect(stale[2]?.listIndicator).toBe("working");
     expect(oneNativeLookupStatements).toBe(1);
     expect(twoNativeLookupStatements).toBe(oneNativeLookupStatements);

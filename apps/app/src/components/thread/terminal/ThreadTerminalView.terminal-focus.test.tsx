@@ -9,6 +9,7 @@ import {
   waitFor,
 } from "@testing-library/react";
 import { FitAddon } from "@xterm/addon-fit";
+import { Terminal } from "@xterm/xterm";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -163,6 +164,7 @@ function Handler() {
 afterEach(() => {
   vi.useRealTimers();
   cleanup();
+  sessionStorage.removeItem("bb:terminal-viewport:term_mobile_paste");
   Reflect.set(wsManager, "deviceHandoffClientToken", null);
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
@@ -285,7 +287,651 @@ function renderMobileTerminal(): ReturnType<typeof makeTerminalSession> {
   return session;
 }
 
+function scrollTerminalAsUser(terminal: Terminal, line: number): void {
+  const screen = document.querySelector(".xterm-screen");
+  if (!screen) throw new Error("terminal screen was not mounted");
+  fireEvent.wheel(screen, { deltaY: -1 });
+  terminal.scrollToLine(line);
+}
+
 describe("ThreadTerminalView terminal focus boundary", () => {
+  it("mounts and records output boundaries without crypto.randomUUID", async () => {
+    prepareMobileTerminal();
+    const originalRandomUUID = crypto.randomUUID;
+    Object.defineProperty(crypto, "randomUUID", {
+      configurable: true,
+      value: undefined,
+    });
+    let uuidBytes: Uint8Array | undefined;
+    const originalGetRandomValues = crypto.getRandomValues.bind(crypto);
+    vi.spyOn(crypto, "getRandomValues").mockImplementation((array) => {
+      const result = originalGetRandomValues(array);
+      if (result.byteLength === 16) {
+        uuidBytes = new Uint8Array(
+          result.buffer,
+          result.byteOffset,
+          result.byteLength,
+        ).slice();
+      }
+      return result;
+    });
+    let outputBoundaryHandler:
+      | ((payload: string) => boolean | Promise<boolean>)
+      | undefined;
+    const open = Terminal.prototype.open;
+    vi.spyOn(Terminal.prototype, "open").mockImplementation(function (
+      this: Terminal,
+      parent: HTMLElement,
+    ) {
+      open.call(this, parent);
+      const registerOscHandler = this.parser.registerOscHandler.bind(
+        this.parser,
+      );
+      vi.spyOn(this.parser, "registerOscHandler").mockImplementation(
+        (identifier, callback) => {
+          if (identifier === 7778) outputBoundaryHandler = callback;
+          return registerOscHandler(identifier, callback);
+        },
+      );
+    });
+    try {
+      renderMobileTerminal();
+      await waitForReadinessCondition(
+        () => expect(document.querySelector(".xterm")).not.toBeNull(),
+        "terminal did not mount within 5000 ms",
+      );
+      expect(document.querySelector(".xterm")).not.toBeNull();
+      const generatedBytes = uuidBytes;
+      if (!generatedBytes) throw new Error("UUID bytes were not generated");
+      generatedBytes[6] = (generatedBytes[6]! & 0x0f) | 0x40;
+      generatedBytes[8] = (generatedBytes[8]! & 0x3f) | 0x80;
+      const hex = Array.from(generatedBytes, (byte) =>
+        byte.toString(16).padStart(2, "0"),
+      );
+      const token = `${hex.slice(0, 4).join("")}-${hex.slice(4, 6).join("")}-${hex.slice(6, 8).join("")}-${hex.slice(8, 10).join("")}-${hex.slice(10).join("")}`;
+      if (!outputBoundaryHandler) {
+        throw new Error("terminal output boundary handler was not registered");
+      }
+      expect(await outputBoundaryHandler(`${token}:0`)).toBe(true);
+    } finally {
+      Object.defineProperty(crypto, "randomUUID", {
+        configurable: true,
+        value: originalRandomUUID,
+      });
+    }
+  });
+
+  it("keeps a bottom-following client at the bottom after output and a shared resize", async () => {
+    prepareMobileTerminal();
+    let fitCols = 40;
+    let fitRows = 12;
+    vi.spyOn(FitAddon.prototype, "proposeDimensions").mockImplementation(
+      () => ({ cols: fitCols, rows: fitRows }),
+    );
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+      queueMicrotask(() => callback(0));
+      return 1;
+    });
+    vi.stubGlobal("cancelAnimationFrame", vi.fn());
+    let mountedTerminal: Terminal | null = null;
+    const openTerminal = Terminal.prototype.open;
+    vi.spyOn(Terminal.prototype, "open").mockImplementation(function (
+      this: Terminal,
+      element: HTMLElement,
+    ) {
+      mountedTerminal ??= this;
+      openTerminal.call(this, element);
+    });
+    const getTerminal = () => {
+      if (!mountedTerminal) throw new Error("terminal was not mounted");
+      return mountedTerminal;
+    };
+    const session = renderMobileTerminal();
+    await waitForReadinessCondition(
+      () => expect(testState.sockets).toHaveLength(1),
+      "terminal socket was not created within 5000 ms",
+    );
+    const socket = testState.sockets[0];
+    if (!socket) throw new Error("terminal socket was not created");
+    socket.receive({
+      type: "attached",
+      session,
+      replayStartSeq: 0,
+      nextSeq: 1,
+    });
+    const lines = (start: number, end: number) =>
+      Array.from(
+        { length: end - start + 1 },
+        (_, index) => `line ${String(start + index).padStart(5, "0")}`,
+      ).join("\r\n");
+    const baseYBeforeOutput = getTerminal().buffer.active.baseY;
+    socket.receive({
+      type: "output",
+      chunk: { seq: 0, dataBase64: btoa(lines(1, 1_000)) },
+    });
+    await waitForReadinessCondition(
+      () =>
+        expect(getTerminal().buffer.active.baseY).toBeGreaterThan(
+          baseYBeforeOutput + 100,
+        ),
+      "terminal output was not parsed within 5000 ms",
+    );
+    await waitForReadinessCondition(
+      () =>
+        expect(
+          testState.socketMessages.map((message) => JSON.parse(message)),
+        ).toContainEqual({ type: "ack", nextSeq: 1 }),
+      "replay output was not acknowledged within 5000 ms",
+    );
+    expect(getTerminal().buffer.active.viewportY).toBe(
+      getTerminal().buffer.active.baseY,
+    );
+    socket.receive({
+      type: "output",
+      chunk: { seq: 1, dataBase64: btoa(lines(1_001, 1_100)) },
+    });
+    await waitForReadinessCondition(
+      () =>
+        expect(
+          testState.socketMessages.map((message) => JSON.parse(message)),
+        ).toContainEqual({ type: "ack", nextSeq: 2 }),
+      "live output was not acknowledged within 5000 ms",
+    );
+    expect(getTerminal().buffer.active.viewportY).toBe(
+      getTerminal().buffer.active.baseY,
+    );
+    fitCols = 38;
+    fitRows = 5;
+    await act(async () => {
+      socket.receive({
+        type: "session-updated",
+        session: { ...session, cols: 38, rows: 5 },
+      });
+      await Promise.resolve();
+    });
+    await waitForReadinessCondition(() => {
+      expect(getTerminal().cols).toBe(38);
+      expect(getTerminal().rows).toBe(5);
+    }, "shared PTY grid resize was not applied within 5000 ms");
+    await waitForReadinessCondition(
+      () =>
+        expect(getTerminal().buffer.active.viewportY).toBe(
+          getTerminal().buffer.active.baseY,
+        ),
+      "bottom-following client did not remain at the bottom after companion resize",
+    );
+  });
+
+  it("keeps a saved bottom-follow position after live output and a shared resize", async () => {
+    prepareMobileTerminal();
+    let fitCols = 40;
+    let fitRows = 12;
+    vi.spyOn(FitAddon.prototype, "proposeDimensions").mockImplementation(
+      () => ({ cols: fitCols, rows: fitRows }),
+    );
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+      queueMicrotask(() => callback(0));
+      return 1;
+    });
+    vi.stubGlobal("cancelAnimationFrame", vi.fn());
+    let mountedTerminal: Terminal | null = null;
+    const openTerminal = Terminal.prototype.open;
+    vi.spyOn(Terminal.prototype, "open").mockImplementation(function (
+      this: Terminal,
+      element: HTMLElement,
+    ) {
+      mountedTerminal ??= this;
+      openTerminal.call(this, element);
+    });
+    const getTerminal = () => {
+      if (!mountedTerminal) throw new Error("terminal was not mounted");
+      return mountedTerminal;
+    };
+    const session = renderMobileTerminal();
+    await waitForReadinessCondition(
+      () => expect(testState.sockets).toHaveLength(1),
+      "terminal socket was not created within 5000 ms",
+    );
+    const socket = testState.sockets[0];
+    if (!socket) throw new Error("terminal socket was not created");
+    socket.receive({
+      type: "attached",
+      session,
+      replayStartSeq: 0,
+      nextSeq: 1,
+    });
+    const lines = (start: number, end: number) =>
+      Array.from(
+        { length: end - start + 1 },
+        (_, index) => `line ${String(start + index).padStart(5, "0")}`,
+      ).join("\r\n");
+    socket.receive({
+      type: "output",
+      chunk: { seq: 0, dataBase64: btoa(lines(1, 300)) },
+    });
+    await waitForReadinessCondition(
+      () =>
+        expect(
+          testState.socketMessages.map((message) => JSON.parse(message)),
+        ).toContainEqual({ type: "ack", nextSeq: 1 }),
+      "replay output was not acknowledged within 5000 ms",
+    );
+    expect(getTerminal().buffer.active.viewportY).toBe(
+      getTerminal().buffer.active.baseY,
+    );
+    scrollTerminalAsUser(getTerminal(), getTerminal().buffer.active.baseY - 1);
+    expect(
+      getTerminal().buffer.active.viewportY,
+      "terminal scrollLines did not move above the bottom",
+    ).toBeLessThan(getTerminal().buffer.active.baseY);
+    getTerminal().scrollToBottom();
+    expect(getTerminal().buffer.active.viewportY).toBe(
+      getTerminal().buffer.active.baseY,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 275));
+    expect(
+      JSON.parse(
+        sessionStorage.getItem("bb:terminal-viewport:term_mobile_paste") ??
+          "null",
+      ),
+    ).toMatchObject({ distanceFromTail: 0, outputSequence: 0 });
+    socket.receive({
+      type: "output",
+      chunk: { seq: 1, dataBase64: btoa(lines(301, 500)) },
+    });
+    await waitForReadinessCondition(
+      () =>
+        expect(
+          testState.socketMessages.map((message) => JSON.parse(message)),
+        ).toContainEqual({ type: "ack", nextSeq: 2 }),
+      "live output was not acknowledged within 5000 ms",
+    );
+    expect(getTerminal().buffer.active.viewportY).toBe(
+      getTerminal().buffer.active.baseY,
+    );
+    fitCols = 38;
+    fitRows = 5;
+    socket.receive({
+      type: "session-updated",
+      session: { ...session, cols: 38, rows: 5 },
+    });
+    act(() => getTerminal().resize(38, 5));
+    await waitForReadinessCondition(() => {
+      expect(getTerminal().cols).toBe(38);
+      expect(getTerminal().rows).toBe(5);
+    }, "shared PTY grid resize was not applied within 5000 ms");
+    await waitForReadinessCondition(
+      () =>
+        expect(getTerminal().buffer.active.viewportY).toBe(
+          getTerminal().buffer.active.baseY,
+        ),
+      "bottom-following client did not remain at the bottom after companion resize",
+    );
+  });
+
+  it("keeps a live scrolled-up line through a shared resize without stored viewport state", async () => {
+    prepareMobileTerminal();
+    const openTerminal = Terminal.prototype.open;
+    let mountedTerminal: Terminal | null = null;
+    vi.spyOn(Terminal.prototype, "open").mockImplementation(function (
+      this: Terminal,
+      element: HTMLElement,
+    ) {
+      mountedTerminal ??= this;
+      openTerminal.call(this, element);
+    });
+    const getTerminal = () => {
+      if (!mountedTerminal) throw new Error("terminal was not mounted");
+      return mountedTerminal;
+    };
+    expect(
+      sessionStorage.getItem("bb:terminal-viewport:term_mobile_paste"),
+    ).toBeNull();
+    const session = renderMobileTerminal();
+    await waitForReadinessCondition(
+      () => expect(testState.sockets).toHaveLength(1),
+      "terminal socket was not created within 5000 ms",
+    );
+    const socket = testState.sockets[0];
+    if (!socket) throw new Error("terminal socket was not created");
+    socket.receive({
+      type: "attached",
+      session,
+      replayStartSeq: 0,
+      nextSeq: 1,
+    });
+    const output = Array.from(
+      { length: 300 },
+      (_, index) => `line ${String(index + 1).padStart(5, "0")}`,
+    ).join("\r\n");
+    socket.receive({
+      type: "output",
+      chunk: { seq: 0, dataBase64: btoa(output) },
+    });
+    await waitForReadinessCondition(
+      () =>
+        expect(
+          testState.socketMessages.map((message) => JSON.parse(message)),
+        ).toContainEqual({ type: "ack", nextSeq: 1 }),
+      "replay output was not acknowledged within 5000 ms",
+    );
+    const terminal = getTerminal();
+    terminal.scrollToLine(terminal.buffer.active.baseY - 1);
+    expect(
+      terminal.buffer.active.viewportY,
+      "terminal did not scroll above the bottom before shared resize",
+    ).toBeLessThan(terminal.buffer.active.baseY);
+    const topLine = terminal.buffer.active
+      .getLine(terminal.buffer.active.viewportY)
+      ?.translateToString(true);
+    expect(topLine).toMatch(/^line \d{5}$/);
+    expect(
+      sessionStorage.getItem("bb:terminal-viewport:term_mobile_paste"),
+    ).toBeNull();
+    socket.receive({
+      type: "session-updated",
+      session: { ...session, cols: 38, rows: 5 },
+    });
+    await waitForReadinessCondition(() => {
+      expect(terminal.cols).toBe(38);
+      expect(terminal.rows).toBe(5);
+    }, "shared PTY grid resize was not applied within 5000 ms");
+    await waitForReadinessCondition(() => {
+      expect(terminal.buffer.active.viewportY).toBeLessThan(
+        terminal.buffer.active.baseY,
+      );
+      expect(
+        terminal.buffer.active
+          .getLine(terminal.buffer.active.viewportY)
+          ?.translateToString(true),
+      ).toBe(topLine);
+    }, "shared resize moved the live scrolled-up line");
+  });
+
+  it("restores a reloaded bottom-following client after a terminal resize", async () => {
+    prepareMobileTerminal();
+    let fitRows = 12;
+    vi.spyOn(FitAddon.prototype, "proposeDimensions").mockImplementation(
+      () => ({ cols: 40, rows: fitRows }),
+    );
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+      queueMicrotask(() => callback(0));
+      return 1;
+    });
+    vi.stubGlobal("cancelAnimationFrame", vi.fn());
+    let mountedTerminal: Terminal | null = null;
+    const openTerminal = Terminal.prototype.open;
+    vi.spyOn(Terminal.prototype, "open").mockImplementation(function (
+      this: Terminal,
+      element: HTMLElement,
+    ) {
+      mountedTerminal ??= this;
+      openTerminal.call(this, element);
+    });
+    const getTerminal = () => {
+      if (!mountedTerminal) throw new Error("terminal was not mounted");
+      return mountedTerminal;
+    };
+    sessionStorage.setItem(
+      "bb:terminal-viewport:term_mobile_paste",
+      JSON.stringify({
+        distanceFromTail: 0,
+        lineOffset: 100,
+        outputSequence: 0,
+      }),
+    );
+    const session = renderMobileTerminal();
+    await waitForReadinessCondition(
+      () => expect(testState.sockets).toHaveLength(1),
+      "terminal socket was not created within 5000 ms",
+    );
+    const socket = testState.sockets[0];
+    if (!socket) throw new Error("terminal socket was not created");
+    socket.receive({
+      type: "attached",
+      session,
+      replayStartSeq: 0,
+      nextSeq: 1,
+    });
+    const output = Array.from(
+      { length: 500 },
+      (_, index) => `line ${String(index + 1).padStart(5, "0")}`,
+    ).join("\r\n");
+    socket.receive({
+      type: "output",
+      chunk: { seq: 0, dataBase64: btoa(output) },
+    });
+    await waitForReadinessCondition(
+      () =>
+        expect(
+          testState.socketMessages.map((message) => JSON.parse(message)),
+        ).toContainEqual({ type: "ack", nextSeq: 1 }),
+      "bottom-follow replay was not acknowledged within 5000 ms",
+    );
+    await waitForReadinessCondition(
+      () =>
+        expect(getTerminal().buffer.active.viewportY).toBe(
+          getTerminal().buffer.active.baseY,
+        ),
+      "reloaded bottom-following client was not at the bottom after replay",
+    );
+    fitRows = 11;
+    act(() => getTerminal().resize(40, fitRows));
+    await waitForReadinessCondition(
+      () => expect(getTerminal().rows).toBe(11),
+      "settled terminal grid resize was not applied within 5000 ms",
+    );
+    await waitForReadinessCondition(
+      () =>
+        expect(getTerminal().buffer.active.viewportY).toBe(
+          getTerminal().buffer.active.baseY,
+        ),
+      "reloaded bottom-following client did not settle at the bottom",
+    );
+  });
+
+  it("keeps a live bottom-following client at the bottom after typed output and a shared resize", async () => {
+    prepareMobileTerminal();
+    let fitCols = 40;
+    let fitRows = 12;
+    vi.spyOn(FitAddon.prototype, "proposeDimensions").mockImplementation(
+      () => ({ cols: fitCols, rows: fitRows }),
+    );
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+      queueMicrotask(() => callback(0));
+      return 1;
+    });
+    vi.stubGlobal("cancelAnimationFrame", vi.fn());
+    let mountedTerminal: Terminal | null = null;
+    const openTerminal = Terminal.prototype.open;
+    vi.spyOn(Terminal.prototype, "open").mockImplementation(function (
+      this: Terminal,
+      element: HTMLElement,
+    ) {
+      mountedTerminal ??= this;
+      openTerminal.call(this, element);
+    });
+    const getTerminal = () => {
+      if (!mountedTerminal) throw new Error("terminal was not mounted");
+      return mountedTerminal;
+    };
+    const session = renderMobileTerminal();
+    await waitForReadinessCondition(
+      () => expect(testState.sockets).toHaveLength(1),
+      "terminal socket was not created within 5000 ms",
+    );
+    const socket = testState.sockets[0];
+    if (!socket) throw new Error("terminal socket was not created");
+    socket.receive({
+      type: "attached",
+      session,
+      replayStartSeq: 0,
+      nextSeq: 1,
+    });
+    const lines = (start: number, end: number) =>
+      Array.from(
+        { length: end - start + 1 },
+        (_, index) => `line ${String(start + index).padStart(5, "0")}`,
+      ).join("\r\n");
+    socket.receive({
+      type: "output",
+      chunk: { seq: 0, dataBase64: btoa(lines(1, 1_000)) },
+    });
+    await waitForReadinessCondition(
+      () =>
+        expect(
+          testState.socketMessages.map((message) => JSON.parse(message)),
+        ).toContainEqual({ type: "ack", nextSeq: 1 }),
+      "replay output was not acknowledged within 5000 ms",
+    );
+    scrollTerminalAsUser(getTerminal(), getTerminal().buffer.active.baseY - 1);
+    expect(
+      getTerminal().buffer.active.viewportY,
+      "terminal scrollLines did not move above the bottom before typed output",
+    ).toBeLessThan(getTerminal().buffer.active.baseY);
+    await new Promise((resolve) => setTimeout(resolve, 275));
+    getTerminal().input("echo case-c\r", true);
+    socket.receive({
+      type: "output",
+      chunk: { seq: 1, dataBase64: btoa(`${lines(1_001, 1_100)}\r\n`) },
+    });
+    await waitForReadinessCondition(
+      () =>
+        expect(
+          testState.socketMessages.map((message) => JSON.parse(message)),
+        ).toContainEqual({ type: "ack", nextSeq: 2 }),
+      "live output was not acknowledged within 5000 ms",
+    );
+    getTerminal().scrollToBottom();
+    await waitForReadinessCondition(
+      () =>
+        expect(getTerminal().buffer.active.viewportY).toBe(
+          getTerminal().buffer.active.baseY,
+        ),
+      "typed live output did not move the terminal to the bottom",
+    );
+    fitCols = 38;
+    fitRows = 5;
+    socket.receive({
+      type: "output",
+      chunk: {
+        seq: 2,
+        dataBase64: btoa(
+          `\u001b]7791;bb-grid;38;5\u0007${lines(1_101, 1_120)}\r\n`,
+        ),
+      },
+    });
+    await waitForReadinessCondition(() => {
+      expect(getTerminal().cols).toBe(38);
+      expect(getTerminal().rows).toBe(5);
+    }, "in-band shared PTY grid marker was not applied within 5000 ms");
+    await waitForReadinessCondition(
+      () =>
+        expect(
+          testState.socketMessages.map((message) => JSON.parse(message)),
+        ).toContainEqual({ type: "ack", nextSeq: 3 }),
+      "in-band resize output was not acknowledged within 5000 ms",
+    );
+    await waitForReadinessCondition(
+      () =>
+        expect(getTerminal().buffer.active.viewportY).toBe(
+          getTerminal().buffer.active.baseY,
+        ),
+      "typed-output client left the bottom after companion resize",
+    );
+  });
+
+  it("keeps a restored scrolled-up content line through the component column reflow", async () => {
+    prepareMobileTerminal();
+    let fitCols = 40;
+    vi.spyOn(FitAddon.prototype, "proposeDimensions").mockImplementation(
+      () => ({ cols: fitCols, rows: 12 }),
+    );
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+      queueMicrotask(() => callback(0));
+      return 1;
+    });
+    vi.stubGlobal("cancelAnimationFrame", vi.fn());
+    let mountedTerminal: Terminal | null = null;
+    const openTerminal = Terminal.prototype.open;
+    vi.spyOn(Terminal.prototype, "open").mockImplementation(function (
+      this: Terminal,
+      element: HTMLElement,
+    ) {
+      mountedTerminal ??= this;
+      openTerminal.call(this, element);
+    });
+    const getTerminal = () => {
+      if (!mountedTerminal) throw new Error("terminal was not mounted");
+      return mountedTerminal;
+    };
+    sessionStorage.setItem(
+      "bb:terminal-viewport:term_mobile_paste",
+      JSON.stringify({
+        distanceFromTail: 388,
+        lineOffset: 100,
+        outputSequence: 0,
+      }),
+    );
+    const session = renderMobileTerminal();
+    await waitForReadinessCondition(
+      () => expect(testState.sockets).toHaveLength(1),
+      "terminal socket was not created within 5000 ms",
+    );
+    const socket = testState.sockets[0];
+    if (!socket) throw new Error("terminal socket was not created");
+    socket.receive({
+      type: "attached",
+      session,
+      replayStartSeq: 0,
+      nextSeq: 1,
+    });
+    const output = Array.from({ length: 500 }, (_, index) => {
+      const number = String(index + 1).padStart(5, "0");
+      return `line ${number} ${"0123456789".repeat(2)}01234567`;
+    }).join("\r\n");
+    socket.receive({
+      type: "output",
+      chunk: { seq: 0, dataBase64: btoa(output) },
+    });
+    await waitForReadinessCondition(
+      () => expect(getTerminal().buffer.active.baseY).toBeGreaterThan(0),
+      "terminal output was not parsed within 5000 ms",
+    );
+    await waitForReadinessCondition(
+      () =>
+        expect(
+          testState.socketMessages.map((message) => JSON.parse(message)),
+        ).toContainEqual({ type: "ack", nextSeq: 1 }),
+      "saved viewport replay was not acknowledged within 5000 ms",
+    );
+    const lineBefore = getTerminal()
+      .buffer.active.getLine(getTerminal().buffer.active.viewportY)
+      ?.translateToString(true);
+    expect(lineBefore).toMatch(/^line \d{5} /);
+    expect(lineBefore?.length).toBeGreaterThan(20);
+    expect(getTerminal().buffer.active.viewportY).toBeLessThan(
+      getTerminal().buffer.active.baseY,
+    );
+    fitCols = 20;
+    act(() => getTerminal().resize(20, 12));
+    await waitForReadinessCondition(
+      () => expect(getTerminal().cols).toBe(20),
+      "component column reflow was not applied within 5000 ms",
+    );
+
+    await waitForReadinessCondition(
+      () =>
+        expect(
+          getTerminal()
+            .buffer.active.getLine(getTerminal().buffer.active.viewportY)
+            ?.translateToString(true)
+            ?.match(/^line (\d{5}) /)?.[1],
+        ).toBe(lineBefore?.match(/^line (\d{5}) /)?.[1]),
+      "component did not restore the scrolled line after shared column reflow",
+    );
+  });
+
   it("uses gesture-start scale for uneven multi-frame pinch gestures", async () => {
     vi.stubGlobal("WebSocket", TestTerminalSocket);
     vi.stubGlobal(
@@ -295,7 +941,12 @@ describe("ThreadTerminalView terminal focus boundary", () => {
         disconnect(): void {}
         observe(target: Element): void {
           this.callback(
-            [{ target, contentRect: { width: 354, height: 504 } } as ResizeObserverEntry],
+            [
+              {
+                target,
+                contentRect: { width: 354, height: 504 },
+              } as ResizeObserverEntry,
+            ],
             this as unknown as ResizeObserver,
           );
         }
@@ -343,7 +994,9 @@ describe("ThreadTerminalView terminal focus boundary", () => {
     vi.spyOn(FitAddon.prototype, "proposeDimensions").mockImplementation(
       function proposeDimensions() {
         const fontSize = Number(
-          document.querySelector("[data-terminal-renderer]")?.getAttribute("data-terminal-font-size") ?? 12,
+          document
+            .querySelector("[data-terminal-renderer]")
+            ?.getAttribute("data-terminal-font-size") ?? 12,
         );
         return {
           cols: Math.round(612 / fontSize),
@@ -386,33 +1039,56 @@ describe("ThreadTerminalView terminal focus boundary", () => {
       ];
       const touchList = (items: typeof points) =>
         Object.assign(items, { item: (index: number) => items[index] ?? null });
-      Object.defineProperty(event, "touches", { value: touchList(ending ? [] : points) });
-      Object.defineProperty(event, "targetTouches", { value: touchList(ending ? [] : points) });
-      Object.defineProperty(event, "changedTouches", { value: touchList(points) });
+      Object.defineProperty(event, "touches", {
+        value: touchList(ending ? [] : points),
+      });
+      Object.defineProperty(event, "targetTouches", {
+        value: touchList(ending ? [] : points),
+      });
+      Object.defineProperty(event, "changedTouches", {
+        value: touchList(points),
+      });
       fireEvent(pane as HTMLElement, event);
     };
     const resizeMessages = () =>
       testState.socketMessages
-        .map((message) => JSON.parse(message) as { cols?: number; rows?: number; type?: string })
+        .map(
+          (message) =>
+            JSON.parse(message) as {
+              cols?: number;
+              rows?: number;
+              type?: string;
+            },
+        )
         .filter((message) => message.type === "resize");
 
     await waitFor(() => expect(resizeMessages()).toHaveLength(1));
     const originalGrid = resizeMessages().at(-1);
     dispatchTouches("touchstart", 100);
-    for (const ratio of [1.05, 1.1, 1.15, 1.2, 1.25, 1.3, 1.35, 1.4, 1.45, 1.5]) {
+    for (const ratio of [
+      1.05, 1.1, 1.15, 1.2, 1.25, 1.3, 1.35, 1.4, 1.45, 1.5,
+    ]) {
       dispatchTouches("touchmove", 100 * ratio);
     }
     dispatchTouches("touchend", 150, true);
-    await waitFor(() => expect(fontSizeNode?.getAttribute("data-terminal-font-size")).toBe("18"));
+    await waitFor(() =>
+      expect(fontSizeNode?.getAttribute("data-terminal-font-size")).toBe("18"),
+    );
     await waitFor(() => expect(resizeMessages()).toHaveLength(2));
-    expect(resizeMessages().at(-1)).toEqual({ type: "resize", cols: 34, rows: 31 });
+    expect(resizeMessages().at(-1)).toEqual({
+      type: "resize",
+      cols: 34,
+      rows: 31,
+    });
 
     dispatchTouches("touchstart", 150);
     for (const ratio of [1.45, 1.4, 1.35, 1.3, 1.25, 1.2, 1.15, 1.1, 1.05, 1]) {
       dispatchTouches("touchmove", 150 * (ratio / 1.5));
     }
     dispatchTouches("touchend", 100, true);
-    await waitFor(() => expect(fontSizeNode?.getAttribute("data-terminal-font-size")).toBe("12"));
+    await waitFor(() =>
+      expect(fontSizeNode?.getAttribute("data-terminal-font-size")).toBe("12"),
+    );
     await waitFor(() => expect(resizeMessages()).toHaveLength(3));
     expect(resizeMessages().at(-1)).toEqual(originalGrid);
   });
@@ -432,7 +1108,7 @@ describe("ThreadTerminalView terminal focus boundary", () => {
       type: "attached",
       session,
       replayStartSeq: 0,
-      nextSeq: 0,
+      nextSeq: 1,
     });
     const output = Array.from(
       { length: 48 },
@@ -442,13 +1118,17 @@ describe("ThreadTerminalView terminal focus boundary", () => {
       type: "output",
       chunk: { seq: 0, dataBase64: btoa(output) },
     });
+    await waitForReadinessCondition(() => {
+      expect(document.querySelector(".xterm-rows")?.textContent).toContain(
+        "retained-48",
+      );
+    }, "retained-48 rendered BEFORE pointer toggle");
     await waitForReadinessCondition(
-      () => {
-        expect(document.querySelector(".xterm-rows")?.textContent).toContain(
-          "retained-48",
-        );
-      },
-      "terminal scrollback did not render retained-48 within 5000 ms",
+      () =>
+        expect(
+          testState.socketMessages.map((message) => JSON.parse(message)),
+        ).toContainEqual({ type: "ack", nextSeq: 1 }),
+      "retained-48 replay was not acknowledged BEFORE pointer toggle",
     );
     const xterm = document.querySelector(".xterm");
     expect(xterm).not.toBeNull();
@@ -467,6 +1147,17 @@ describe("ThreadTerminalView terminal focus boundary", () => {
       "terminal socket was not retained after pointer mode changed within 5000 ms",
     );
     expect(document.querySelector(".xterm")).toBe(xterm);
+    socket.receive({
+      type: "output",
+      chunk: { seq: 1, dataBase64: btoa("after-toggle-output") },
+    });
+    await waitForReadinessCondition(
+      () =>
+        expect(
+          testState.socketMessages.map((message) => JSON.parse(message)),
+        ).toContainEqual({ type: "ack", nextSeq: 2 }),
+      "new output was not acknowledged AFTER pointer toggle",
+    );
     fireEvent.click(screen.getByRole("button", { name: "More terminal keys" }));
     fireEvent.click(
       screen.getByRole("button", { name: "Select terminal text" }),
@@ -477,7 +1168,8 @@ describe("ThreadTerminalView terminal focus boundary", () => {
       }) as HTMLTextAreaElement;
       expect(snapshot.value).toContain("retained-01");
       expect(snapshot.value).toContain("retained-48");
-    }, "terminal text snapshot did not retain the visible output within 5000 ms");
+      expect(snapshot.value).toContain("after-toggle-output");
+    }, "scrollback survives pointer toggle: retained and new output must render");
   }, 30_000);
 
   it("sends clipboard text once through xterm paste input", async () => {
@@ -892,14 +1584,11 @@ describe("ThreadTerminalView terminal focus boundary", () => {
       </MemoryRouter>,
     );
 
-    await waitForReadinessCondition(
-      () => {
-        expect(
-          testState.socketMessages.map((message) => JSON.parse(message)),
-        ).toContainEqual({ type: "visibility", visible: true });
-      },
-      "terminal visibility was not reported within 5000 ms",
-    );
+    await waitForReadinessCondition(() => {
+      expect(
+        testState.socketMessages.map((message) => JSON.parse(message)),
+      ).toContainEqual({ type: "visibility", visible: true });
+    }, "terminal visibility was not reported within 5000 ms");
     await waitForReadiness(
       unavailableFitMeasurementsReady,
       "initial fit dimensions were not measured while unavailable within 5000 ms",
@@ -911,19 +1600,15 @@ describe("ThreadTerminalView terminal focus boundary", () => {
     ).toBe(false);
     fitDimensionsAvailable = true;
 
-    await waitForReadinessCondition(
-      () => {
-        const resize = testState.socketMessages
-          .map(
-            (message) =>
-              JSON.parse(message) as { cols?: number; type?: string },
-          )
-          .find((message) => message.type === "resize");
-        expect(resize).toBeDefined();
-        expect(resize?.cols).toBeLessThan(120);
-      },
-      "initial fitted resize was not sent within 5000 ms",
-    );
+    await waitForReadinessCondition(() => {
+      const resize = testState.socketMessages
+        .map(
+          (message) => JSON.parse(message) as { cols?: number; type?: string },
+        )
+        .find((message) => message.type === "resize");
+      expect(resize).toBeDefined();
+      expect(resize?.cols).toBeLessThan(120);
+    }, "initial fitted resize was not sent within 5000 ms");
 
     const resizeFrames = () =>
       testState.socketMessages
@@ -1089,14 +1774,8 @@ describe("ThreadTerminalView terminal focus boundary", () => {
     );
     const socket = testState.sockets[0]!;
     await Promise.all([
-      waitForReadiness(
-        socket.opened,
-        "socket did not open within 5000 ms",
-      ),
-      waitForReadiness(
-        layoutSettled,
-        "layout did not settle within 5000 ms",
-      ),
+      waitForReadiness(socket.opened, "socket did not open within 5000 ms"),
+      waitForReadiness(layoutSettled, "layout did not settle within 5000 ms"),
     ]);
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const resizeFrames = () =>

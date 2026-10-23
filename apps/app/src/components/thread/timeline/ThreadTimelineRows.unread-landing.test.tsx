@@ -1,12 +1,21 @@
 // @vitest-environment jsdom
 
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+} from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { getDefaultStore } from "jotai";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { threadTimelineScrollAnchorAtomFamily } from "@/lib/thread-timeline-scroll-anchor";
-import { commandRow, conversationRow } from "@/test/fixtures/thread-timeline-rows";
+import {
+  commandRow,
+  conversationRow,
+} from "@/test/fixtures/thread-timeline-rows";
 import { useThreadUnreadDividerState } from "@/views/thread-detail/useThreadUnreadDividerState";
 import { ThreadTimelinePane } from "@/views/thread-detail/ThreadTimelinePane";
 import { ThreadProviderContext } from "../thread-provider-context";
@@ -119,6 +128,7 @@ function UnseenThread() {
   });
   return (
     <ThreadTimelinePane
+      threadIsActive={false}
       footer={<div>Composer</div>}
       canSpawnChild={false}
       hasOlderTimelineRows={false}

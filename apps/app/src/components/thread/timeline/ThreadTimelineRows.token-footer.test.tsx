@@ -95,6 +95,7 @@ describe("ThreadTimelineRows token footer", () => {
           timelineRows={[assistant]}
           threadRuntimeDisplayStatus="idle"
           workspaceRootPath={undefined}
+          threadIsActive={false}
         />
       </Providers>,
     );
@@ -173,6 +174,7 @@ describe("ThreadTimelineRows token footer", () => {
           ]}
           threadRuntimeDisplayStatus="idle"
           workspaceRootPath={undefined}
+          threadIsActive={false}
         />
       </Providers>,
     );
@@ -225,6 +227,7 @@ describe("ThreadTimelineRows token footer", () => {
           timelineRows={[assistant]}
           threadRuntimeDisplayStatus="idle"
           workspaceRootPath={undefined}
+          threadIsActive={false}
         />
       </Providers>,
     );
@@ -266,6 +269,7 @@ describe("ThreadTimelineRows token footer", () => {
           timelineRows={[assistant]}
           threadRuntimeDisplayStatus="idle"
           workspaceRootPath={undefined}
+          threadIsActive={false}
         />
       </Providers>,
     );
@@ -330,6 +334,7 @@ describe("ThreadTimelineRows token footer", () => {
             timelineRows={[assistant]}
             threadRuntimeDisplayStatus="idle"
             workspaceRootPath={undefined}
+            threadIsActive={false}
           />
         </div>
       </Providers>,
@@ -373,6 +378,7 @@ describe("ThreadTimelineRows token footer", () => {
           timelineRows={[earlierAssistant, latestAssistant]}
           threadRuntimeDisplayStatus="idle"
           workspaceRootPath={undefined}
+          threadIsActive={false}
         />
       </Providers>,
     );
@@ -394,6 +400,7 @@ describe("ThreadTimelineRows token footer", () => {
           timelineRows={[earlierAssistant, latestAssistant]}
           threadRuntimeDisplayStatus="active"
           workspaceRootPath={undefined}
+          threadIsActive={false}
         />
       </Providers>,
     );
@@ -431,6 +438,7 @@ describe("ThreadTimelineRows token footer", () => {
           timelineRows={[completedAssistant, streamingAssistant]}
           threadRuntimeDisplayStatus="active"
           workspaceRootPath={undefined}
+          threadIsActive={false}
         />
       </Providers>,
     );
@@ -447,6 +455,7 @@ describe("ThreadTimelineRows token footer", () => {
           timelineRows={rows}
           threadRuntimeDisplayStatus="active"
           workspaceRootPath={undefined}
+          threadIsActive={false}
         />
       </Providers>,
     );
@@ -469,6 +478,7 @@ describe("ThreadTimelineRows token footer", () => {
           timelineRows={rows}
           threadRuntimeDisplayStatus="active"
           workspaceRootPath={undefined}
+          threadIsActive={false}
         />
       </Providers>,
     );
@@ -491,6 +501,7 @@ describe("ThreadTimelineRows token footer", () => {
           timelineRows={rows}
           threadRuntimeDisplayStatus="active"
           workspaceRootPath={undefined}
+          threadIsActive={false}
         />
       </Providers>,
     );
@@ -506,6 +517,7 @@ describe("ThreadTimelineRows token footer", () => {
           timelineRows={rows}
           threadRuntimeDisplayStatus="idle"
           workspaceRootPath={undefined}
+          threadIsActive={false}
         />
       </Providers>,
     );
@@ -540,6 +552,7 @@ describe("ThreadTimelineRows token footer", () => {
           timelineRows={assistantRows}
           threadRuntimeDisplayStatus="idle"
           workspaceRootPath={undefined}
+          threadIsActive={false}
         />
       </Providers>,
     );
@@ -594,6 +607,7 @@ describe("ThreadTimelineRows token footer", () => {
             timelineRows={[assistant]}
             threadRuntimeDisplayStatus="idle"
             workspaceRootPath={undefined}
+            threadIsActive={false}
           />
         </Providers>,
       );
@@ -619,6 +633,7 @@ describe("ThreadTimelineRows token footer", () => {
             ]}
             threadRuntimeDisplayStatus="idle"
             workspaceRootPath={undefined}
+            threadIsActive={false}
           />
         </Providers>,
       );
@@ -662,6 +677,7 @@ describe("ThreadTimelineRows token footer", () => {
             ]}
             threadRuntimeDisplayStatus="idle"
             workspaceRootPath={undefined}
+            threadIsActive={false}
           />
         </Providers>,
       );
@@ -728,6 +744,7 @@ describe("ThreadTimelineRows token footer", () => {
           timelineRows={activeRows}
           threadRuntimeDisplayStatus="active"
           workspaceRootPath={undefined}
+          threadIsActive={false}
         />
       </Providers>,
     );
@@ -760,6 +777,7 @@ describe("ThreadTimelineRows token footer", () => {
           timelineRows={idleRows}
           threadRuntimeDisplayStatus="idle"
           workspaceRootPath={undefined}
+          threadIsActive={false}
         />
       </Providers>,
     );

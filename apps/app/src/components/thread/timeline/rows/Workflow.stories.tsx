@@ -195,6 +195,7 @@ export function Overview() {
             threadRuntimeDisplayStatus="active"
             initialExpanded={new Set([runningWorkflow.id])}
             timelineRows={[runningWorkflow]}
+            threadIsActive={false}
           />
         </TimelineStage>
       </StoryRow>
@@ -207,6 +208,7 @@ export function Overview() {
             {...baseProps}
             initialExpanded={new Set([completedWorkflow.id])}
             timelineRows={[completedWorkflow]}
+            threadIsActive={false}
           />
         </TimelineStage>
       </StoryRow>
@@ -219,6 +221,7 @@ export function Overview() {
             {...baseProps}
             initialExpanded={new Set([failedWorkflow.id])}
             timelineRows={[failedWorkflow]}
+            threadIsActive={false}
           />
         </TimelineStage>
       </StoryRow>
@@ -231,6 +234,7 @@ export function Overview() {
             {...baseProps}
             initialExpanded={new Set([interruptedWorkflow.id])}
             timelineRows={[interruptedWorkflow]}
+            threadIsActive={false}
           />
         </TimelineStage>
       </StoryRow>
@@ -243,6 +247,7 @@ export function Overview() {
             {...baseProps}
             initialExpanded={new Set([degradedWorkflow.id])}
             timelineRows={[degradedWorkflow]}
+            threadIsActive={false}
           />
         </TimelineStage>
       </StoryRow>
@@ -256,6 +261,7 @@ export function Overview() {
             threadRuntimeDisplayStatus="active"
             initialExpanded={new Set([noPhasesWorkflow.id])}
             timelineRows={[noPhasesWorkflow]}
+            threadIsActive={false}
           />
         </TimelineStage>
       </StoryRow>

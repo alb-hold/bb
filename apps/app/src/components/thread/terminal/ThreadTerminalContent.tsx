@@ -75,7 +75,11 @@ export function ThreadTerminalContent({
 
   if (!controller.activeSession) {
     return (
-      <div className="flex h-full items-center justify-center px-4 text-center text-sm text-muted-foreground">
+      <div
+        role="status"
+        aria-busy={controller.terminalsLoading}
+        className="flex h-full items-center justify-center px-4 text-center text-sm text-muted-foreground"
+      >
         {controller.terminalBodyMessage}
       </div>
     );

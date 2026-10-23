@@ -322,6 +322,7 @@ function makeThread(
     projectId: "project-1",
     environmentId: null,
     providerId: "codex",
+    nativeTerminal: false,
     title: `Title ${id}`,
     titleFallback: `Title ${id}`,
     sectionId: null,

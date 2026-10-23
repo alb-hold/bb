@@ -51,8 +51,8 @@ describe("ThreadTimelineSurface load-older control", () => {
       getScrollElement: () => scrollElement,
       isAtBottom: false,
       scrollElementIntoView: vi.fn(),
-    scrollElementIntoViewClampedToMaxScroll: vi.fn(),
-    captureScrollAnchor: vi.fn(),
+      scrollElementIntoViewClampedToMaxScroll: vi.fn(),
+      captureScrollAnchor: vi.fn(),
       scrollToBottom: vi.fn(),
     };
     const onLoadOlderRows = vi
@@ -73,6 +73,7 @@ describe("ThreadTimelineSurface load-older control", () => {
           timelineError={false}
           timelineRows={[]}
           workspaceRootPath={undefined}
+          threadIsActive={false}
         />
       </BottomAnchorContext.Provider>
     );
@@ -109,7 +110,11 @@ describe("ThreadTimelineSurface catch-up indicator", () => {
   it("never shows loading for a catch-up that finishes within one second", async () => {
     vi.useFakeTimers();
     const view = render(
-      <ThreadTimelineSurface {...props} isCatchingUpTimeline />,
+      <ThreadTimelineSurface
+        {...props}
+        isCatchingUpTimeline
+        threadIsActive={false}
+      />,
     );
     expect(screen.queryByRole("status")).toBeNull();
     await act(async () => {
@@ -117,7 +122,11 @@ describe("ThreadTimelineSurface catch-up indicator", () => {
     });
     expect(screen.queryByRole("status")).toBeNull();
     view.rerender(
-      <ThreadTimelineSurface {...props} isCatchingUpTimeline={false} />,
+      <ThreadTimelineSurface
+        {...props}
+        isCatchingUpTimeline={false}
+        threadIsActive={false}
+      />,
     );
     await act(async () => {
       await vi.advanceTimersByTimeAsync(300);
@@ -128,7 +137,11 @@ describe("ThreadTimelineSurface catch-up indicator", () => {
   it("delays each thread's indicator and hides immediately when caught up", async () => {
     vi.useFakeTimers();
     const view = render(
-      <ThreadTimelineSurface {...props} isCatchingUpTimeline />,
+      <ThreadTimelineSurface
+        {...props}
+        isCatchingUpTimeline
+        threadIsActive={false}
+      />,
     );
     await act(async () => {
       await vi.advanceTimersByTimeAsync(999);
@@ -145,6 +158,7 @@ describe("ThreadTimelineSurface catch-up indicator", () => {
         {...props}
         threadId="another-thread"
         isCatchingUpTimeline
+        threadIsActive={false}
       />,
     );
     expect(screen.queryByRole("status")).toBeNull();
@@ -159,6 +173,7 @@ describe("ThreadTimelineSurface catch-up indicator", () => {
         {...props}
         threadId="another-thread"
         isCatchingUpTimeline={false}
+        threadIsActive={false}
       />,
     );
     expect(screen.queryByRole("status")).toBeNull();
@@ -167,6 +182,7 @@ describe("ThreadTimelineSurface catch-up indicator", () => {
         {...props}
         threadId="another-thread"
         isCatchingUpTimeline
+        threadIsActive={false}
       />,
     );
     expect(screen.queryByRole("status")).toBeNull();
@@ -208,7 +224,11 @@ describe("ThreadTimelineSurface working indicator", () => {
     ) => (
       <MemoryRouter>
         <QueryClientProvider client={queryClient}>
-          <ThreadTimelineSurface {...runningProps} {...props} />
+          <ThreadTimelineSurface
+            {...runningProps}
+            {...props}
+            threadIsActive={false}
+          />
         </QueryClientProvider>
       </MemoryRouter>
     );
