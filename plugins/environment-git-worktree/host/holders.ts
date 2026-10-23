@@ -64,13 +64,52 @@ export interface ProcReader {
   readlink(path: string): Promise<string>;
   readFile(path: string): Promise<string>;
   readdir(path: string): Promise<string[]>;
+  lstatId(path: string): Promise<string>;
+  subdirectories(path: string): Promise<string[]>;
 }
 
 export const hostProc: ProcReader = {
   readlink: (path) => fs.readlink(path),
   readFile: (path) => fs.readFile(path, "utf8"),
   readdir: (path) => fs.readdir(path),
+  lstatId: async (path) => {
+    const info = await fs.lstat(path, { bigint: true });
+    return `${info.dev}:${info.ino}`;
+  },
+  subdirectories: async (path) =>
+    (await fs.readdir(path, { withFileTypes: true }))
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name),
 };
+
+export const MAX_TREE_DIRECTORIES = 500_000;
+export const MAX_WALK_STEPS = 4096;
+
+type TreeIds = { ids: Set<string> } | { tooLarge: number } | { failed: string };
+type TreeIdsReader = () => Promise<TreeIds>;
+
+async function listTreeIds(
+  proc: ProcReader,
+  directory: string,
+  limit: number,
+): Promise<TreeIds> {
+  const ids = new Set<string>();
+  const pending = [directory];
+  while (pending.length > 0) {
+    const current = pending.pop() ?? directory;
+    const id = await readOptional(() => proc.lstatId(current));
+    if ("gone" in id) continue;
+    if ("failed" in id) return { failed: `${current} (${id.failed})` };
+    ids.add(id.value);
+    if (ids.size > limit) return { tooLarge: ids.size };
+    const children = await readOptional(() => proc.subdirectories(current));
+    if ("gone" in children) continue;
+    if ("failed" in children)
+      return { failed: `${current} (${children.failed})` };
+    for (const child of children.value) pending.push(path.join(current, child));
+  }
+  return { ids };
+}
 
 interface ProcessResultUnknown {
   unknown: string;
@@ -137,6 +176,7 @@ async function scanLinuxProcess(
   directory: string,
   mountNamespace: string,
   self: ProcessIdentity,
+  tree: TreeIdsReader,
 ): Promise<ProcessResult> {
   const base = `/proc/${pid}`;
   const status = await readOptional(() => proc.readFile(`${base}/status`));
@@ -158,6 +198,7 @@ async function scanLinuxProcess(
     directory,
     mountNamespace,
     command,
+    tree,
   );
   for (
     let attempt = 0;
@@ -175,6 +216,7 @@ async function scanLinuxProcess(
       directory,
       mountNamespace,
       command,
+      tree,
     );
   }
   if (
@@ -188,6 +230,129 @@ async function scanLinuxProcess(
   return result;
 }
 
+interface ForeignTarget {
+  what: string;
+  through: WorktreeHolder["through"];
+  path: string;
+}
+
+async function foreignTargets(
+  proc: ProcReader,
+  pid: number,
+  base: string,
+): Promise<{ targets: ForeignTarget[] } | { stop: ProcessResult }> {
+  const targets: ForeignTarget[] = [
+    { what: "root folder", through: "working folder", path: "/" },
+  ];
+  const link = async (
+    what: string,
+    through: WorktreeHolder["through"],
+    path: string,
+  ): Promise<ProcessResult> => {
+    const target = await readOptional(() => proc.readlink(path));
+    if ("gone" in target) return null;
+    if ("failed" in target)
+      return unreadable(`process ${pid} ${what}`, target.failed);
+    targets.push({ what, through, path: target.value });
+    return null;
+  };
+  const tasks = await readOptional(() => proc.readdir(`${base}/task`));
+  if ("gone" in tasks) return { stop: null };
+  if ("failed" in tasks)
+    return { stop: unreadable(`process ${pid} tasks`, tasks.failed) };
+  for (const task of tasks.value) {
+    const failed = await link(
+      "working folder",
+      "working folder",
+      `${base}/task/${task}/cwd`,
+    );
+    if (failed !== null) return { stop: failed };
+  }
+  const exe = await link("program", "open file", `${base}/exe`);
+  if (exe !== null) return { stop: exe };
+  const descriptors = await readOptional(() => proc.readdir(`${base}/fd`));
+  if ("gone" in descriptors) return { stop: null };
+  if ("failed" in descriptors)
+    return {
+      stop: unreadable(`process ${pid} open files`, descriptors.failed),
+    };
+  for (const descriptor of descriptors.value) {
+    const failed = await link(
+      "open file",
+      "open file",
+      `${base}/fd/${descriptor}`,
+    );
+    if (failed !== null) return { stop: failed };
+  }
+  const maps = await readOptional(() => proc.readFile(`${base}/maps`));
+  if ("gone" in maps) return { stop: null };
+  if ("failed" in maps)
+    return { stop: unreadable(`process ${pid} memory maps`, maps.failed) };
+  const mapped = new Set<string>();
+  for (const line of maps.value.split("\n")) {
+    const file = line.split(/\s+/u).slice(5).join(" ");
+    if (file !== "" && !file.startsWith("[") && !mapped.has(file)) {
+      mapped.add(file);
+      targets.push({ what: "memory maps", through: "mapped file", path: file });
+    }
+  }
+  return { targets };
+}
+
+async function reachesWorktree(
+  proc: ProcReader,
+  pid: number,
+  base: string,
+  command: string | null,
+  tree: TreeIdsReader,
+): Promise<ProcessResult> {
+  const where = `process ${pid} runs in another mount namespace`;
+  const ids = await tree();
+  if ("tooLarge" in ids)
+    return notVouchable(
+      `${where} and the folder is too large to scan (more than ${MAX_TREE_DIRECTORIES} directories)`,
+    );
+  if ("failed" in ids)
+    return notVouchable(
+      `${where} and the folder could not be listed (${ids.failed})`,
+    );
+  const found = await foreignTargets(proc, pid, base);
+  if ("stop" in found) return found.stop;
+  const outside = new Set<string>();
+  for (const target of found.targets) {
+    if (!target.path.startsWith("/")) continue;
+    if (target.path.endsWith(" (deleted)"))
+      return notVouchable(
+        `${where} and its ${target.what} ${target.path} was deleted, so it cannot be placed`,
+      );
+    const walked: string[] = [];
+    let current = target.path;
+    for (let steps = 0; ; steps += 1) {
+      if (steps > MAX_WALK_STEPS)
+        return notVouchable(
+          `${where} and the path of its ${target.what} has too many parts to follow`,
+        );
+      if (outside.has(current)) break;
+      const id = await readOptional(() =>
+        proc.lstatId(`/proc/${pid}/root${current}`),
+      );
+      if ("gone" in id)
+        return notVouchable(
+          `${where} and its ${target.what} ${current} cannot be found from its root`,
+        );
+      if ("failed" in id)
+        return unreadable(`${where}, its ${target.what} ${current}`, id.failed);
+      if (ids.ids.has(id.value))
+        return { pid, command, through: target.through };
+      walked.push(current);
+      if (current === "/") break;
+      current = path.posix.dirname(current);
+    }
+    for (const done of walked) outside.add(done);
+  }
+  return null;
+}
+
 async function scanOwnProcess(
   proc: ProcReader,
   pid: number,
@@ -195,13 +360,14 @@ async function scanOwnProcess(
   directory: string,
   mountNamespace: string,
   command: string | null,
+  tree: TreeIdsReader,
 ): Promise<ProcessResult> {
   const mount = await readOptional(() => proc.readlink(`${base}/ns/mnt`));
   if ("gone" in mount) return null;
   if ("failed" in mount)
     return unreadable(`process ${pid} mount namespace`, mount.failed);
   if (mount.value !== mountNamespace)
-    return notVouchable(`process ${pid} runs in a different mount namespace`);
+    return reachesWorktree(proc, pid, base, command, tree);
   const root = await readOptional(() => proc.readlink(`${base}/root`));
   if ("gone" in root) return null;
   if ("failed" in root)
@@ -223,9 +389,7 @@ async function scanOwnProcess(
         taskMount.failed,
       );
     if ("value" in taskMount && taskMount.value !== mountNamespace)
-      return notVouchable(
-        `process ${pid} thread ${task} runs in a different mount namespace`,
-      );
+      return reachesWorktree(proc, pid, base, command, tree);
     const found = await checkLink(
       proc,
       pid,
@@ -376,6 +540,7 @@ export async function scanLinux(
   directory: string,
   proc: ProcReader = hostProc,
   ownPid: number = process.pid,
+  limits: { maxDirectories: number } = { maxDirectories: MAX_TREE_DIRECTORIES },
 ): Promise<WorktreeHolderScan> {
   const visibility = await linuxVisibilityProblem(proc);
   if (visibility.problem !== null) {
@@ -391,6 +556,11 @@ export async function scanLinux(
     .filter((pid) => pid !== ownPid);
   const holders: WorktreeHolder[] = [];
   const unknown: string[] = [];
+  let listed: Promise<TreeIds> | null = null;
+  const tree: TreeIdsReader = () => {
+    listed ??= listTreeIds(proc, directory, limits.maxDirectories);
+    return listed;
+  };
   for (let offset = 0; offset < pids.length; offset += LINUX_SCAN_CONCURRENCY) {
     const batch = pids.slice(offset, offset + LINUX_SCAN_CONCURRENCY);
     const results = await Promise.all(
@@ -401,6 +571,7 @@ export async function scanLinux(
           directory,
           visibility.mountNamespace,
           visibility.self,
+          tree,
         ),
       ),
     );

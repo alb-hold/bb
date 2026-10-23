@@ -120,7 +120,36 @@ interface FakeProcess {
   root?: string;
   cwd?: string;
   denied?: boolean;
+  fdTargets?: string[];
+  mapFiles?: string[];
 }
+
+const TREE_DIRECTORIES: Record<string, string> = {
+  "/work/tree": "1:100",
+  "/work/tree/sub": "1:101",
+  "/work/tree/sub/x": "1:104",
+  "/work/tree/sub/deep": "1:102",
+  "/work/tree/other": "1:103",
+};
+const CONTAINER_IDS: Record<string, string> = {
+  "/": "9:1",
+  "/data": "1:101",
+  "/data/x": "1:104",
+  "/data/x/file.txt": "9:50",
+  "/data/x/lib.so": "9:51",
+  "/mnt": "1:100",
+  "/mnt/other": "1:103",
+  "/home": "9:2",
+  "/home/other": "1:900",
+  "/usr": "9:3",
+  "/usr/bin": "9:4",
+  "/usr/bin/node": "9:5",
+  "/var": "9:6",
+  "/var/log": "9:7",
+  "/var/log/a": "9:8",
+  "/lib": "9:9",
+  "/lib/x.so": "9:10",
+};
 
 function fakeProc(options: {
   self?: { uid?: number; groups?: number[]; nspid?: string };
@@ -134,6 +163,7 @@ function fakeProc(options: {
   const links = new Map<string, string>();
   const denied = new Set<string>();
   const dirs = new Map<string, string[]>();
+  const ids = new Map<string, string>(Object.entries(TREE_DIRECTORIES));
   files.set(
     "/proc/self/status",
     `Name:\tnode\nState:\tR (running)\nNSpid:\t${self.nspid ?? "4242"}\nUid:\t${self.uid ?? 1000}\t${self.uid ?? 1000}\t${self.uid ?? 1000}\t${self.uid ?? 1000}\nGid:\t1000\t1000\t1000\t1000\nGroups:\t${(self.groups ?? [1000]).join(" ")}\n`,
@@ -170,8 +200,24 @@ function fakeProc(options: {
     );
     links.set(`${base}/task/${key}/cwd`, process.cwd ?? "/home/other");
     links.set(`${base}/exe`, "/usr/bin/node");
-    dirs.set(`${base}/fd`, []);
-    files.set(`${base}/maps`, "");
+    const fdTargets = process.fdTargets ?? [];
+    for (const [containerPath, id] of Object.entries(CONTAINER_IDS))
+      ids.set(`${base}/root${containerPath === "/" ? "/" : containerPath}`, id);
+    files.set(
+      `${base}/maps`,
+      (process.mapFiles ?? [])
+        .map(
+          (file) => `7f0000000000-7f0000001000 r--p 00000000 08:01 12 ${file}`,
+        )
+        .join("\n"),
+    );
+    dirs.set(
+      `${base}/fd`,
+      fdTargets.map((_, index) => String(index + 3)),
+    );
+    fdTargets.forEach((target, index) =>
+      links.set(`${base}/fd/${index + 3}`, target),
+    );
   }
   const fail = (path: string): never => {
     throw Object.assign(new Error(path), {
@@ -182,6 +228,17 @@ function fakeProc(options: {
     readlink: async (path) => links.get(path) ?? fail(path),
     readFile: async (path) => files.get(path) ?? fail(path),
     readdir: async (path) => dirs.get(path) ?? fail(path),
+    lstatId: async (path) => ids.get(path) ?? fail(path),
+    subdirectories: async (path) => {
+      if (!(path in TREE_DIRECTORIES)) return fail(path);
+      return Object.keys(TREE_DIRECTORIES)
+        .filter(
+          (candidate) =>
+            candidate.startsWith(`${path}/`) &&
+            !candidate.slice(path.length + 1).includes("/"),
+        )
+        .map((candidate) => candidate.slice(path.length + 1));
+    },
   };
 }
 
@@ -282,14 +339,161 @@ describe("the Linux process-list visibility rule", () => {
     });
   });
 
-  it("is unknown when a same-user process runs in another mount namespace", async () => {
+  it("leaves out a same-user process in another mount namespace when nothing it holds is in the worktree, even on the worktree's device", async () => {
     const proc = fakeProc({
+      processes: {
+        300: {
+          uid: 1000,
+          mount: "mnt:[2]",
+          cwd: "/home/other",
+          fdTargets: ["/var/log/a", "socket:[1]", "pipe:[2]"],
+          mapFiles: ["/lib/x.so"],
+        },
+      },
+    });
+    expect(await scanLinux("/work/tree", proc, 4242)).toEqual({
+      status: "clear",
+    });
+  });
+
+  it.each([
+    ["working folder", { cwd: "/data/x" }, "working folder"],
+    [
+      "working folder at the bind mount itself",
+      { cwd: "/data" },
+      "working folder",
+    ],
+    [
+      "open file",
+      { cwd: "/home/other", fdTargets: ["/data/x/file.txt"] },
+      "open file",
+    ],
+    [
+      "mapped file",
+      { cwd: "/home/other", mapFiles: ["/data/x/lib.so"] },
+      "mapped file",
+    ],
+    [
+      "bind mount of the worktree root",
+      { cwd: "/mnt/other" },
+      "working folder",
+    ],
+  ])(
+    "reports a process in another mount namespace that holds the worktree through a bind mount of a subfolder: %s",
+    async (_name, process, through) => {
+      const proc = fakeProc({
+        processes: {
+          300: { uid: 1000, mount: "mnt:[2]", comm: "node", ...process },
+        },
+      });
+      expect(await scanLinux("/work/tree", proc, 4242)).toMatchObject({
+        status: "held",
+        holders: [{ pid: 300, command: "node", through }],
+      });
+    },
+  );
+
+  it("keeps the worktree when a path of a process in another mount namespace cannot be placed", async () => {
+    const lost = fakeProc({
+      processes: { 300: { uid: 1000, mount: "mnt:[2]", cwd: "/gone/away" } },
+    });
+    expect(await scanLinux("/work/tree", lost, 4242)).toMatchObject({
+      status: "unknown",
+      reason: expect.stringContaining("cannot be found"),
+    });
+    const deleted = fakeProc({
+      processes: {
+        300: { uid: 1000, mount: "mnt:[2]", cwd: "/data/x (deleted)" },
+      },
+    });
+    expect(await scanLinux("/work/tree", deleted, 4242)).toMatchObject({
+      status: "unknown",
+      reason: expect.stringContaining("was deleted"),
+    });
+  });
+
+  it("keeps the worktree when a link of a process in another mount namespace cannot be read", async () => {
+    for (const failing of [
+      "/proc/300/task/300/cwd",
+      "/proc/300/exe",
+      "/proc/300/fd/3",
+      "/proc/300/fd",
+      "/proc/300/maps",
+      "/proc/300/root/home/other",
+    ]) {
+      const proc = fakeProc({
+        processes: {
+          300: {
+            uid: 1000,
+            mount: "mnt:[2]",
+            comm: "node",
+            cwd: "/home/other",
+            fdTargets: ["/var/log/a"],
+          },
+        },
+      });
+      const broken: ProcReader = {
+        ...proc,
+        readlink: async (path) => {
+          if (path === failing)
+            throw Object.assign(new Error(path), { code: "EACCES" });
+          return proc.readlink(path);
+        },
+        readFile: async (path) => {
+          if (path === failing)
+            throw Object.assign(new Error(path), { code: "EACCES" });
+          return proc.readFile(path);
+        },
+        readdir: async (path) => {
+          if (path === failing)
+            throw Object.assign(new Error(path), { code: "EACCES" });
+          return proc.readdir(path);
+        },
+        lstatId: async (path) => {
+          if (path === failing)
+            throw Object.assign(new Error(path), { code: "EACCES" });
+          return proc.lstatId(path);
+        },
+      };
+      expect(await scanLinux("/work/tree", broken, 4242)).toMatchObject({
+        status: "unknown",
+      });
+    }
+  });
+
+  it("keeps the worktree when the path of a process in another mount namespace has too many parts to follow", async () => {
+    const proc = fakeProc({
+      processes: {
+        300: { uid: 1000, mount: "mnt:[2]", cwd: `/${"a/".repeat(4100)}z` },
+      },
+    });
+    const deep: ProcReader = {
+      ...proc,
+      lstatId: async (path) =>
+        path.startsWith("/proc/300/root/a")
+          ? `7:${path.length}`
+          : proc.lstatId(path),
+    };
+    expect(await scanLinux("/work/tree", deep, 4242)).toMatchObject({
+      status: "unknown",
+      reason: expect.stringContaining("too many parts"),
+    });
+  });
+
+  it("keeps the worktree, saying it is too large to scan, when it has more directories than the limit and a process runs in another mount namespace", async () => {
+    const foreign = fakeProc({
       processes: { 300: { uid: 1000, mount: "mnt:[2]" } },
     });
-    expect(await scanLinux("/work/tree", proc, 4242)).toMatchObject({
+    expect(
+      await scanLinux("/work/tree", foreign, 4242, { maxDirectories: 3 }),
+    ).toMatchObject({
       status: "unknown",
-      reason: expect.stringContaining("different mount namespace"),
+      reason: expect.stringContaining("too large to scan"),
     });
+    const none = fakeProc({ processes: { 300: { uid: 1000 } } });
+    expect(
+      await scanLinux("/work/tree", none, 4242, { maxDirectories: 3 }),
+    ).toEqual({ status: "clear" });
   });
 
   it("inspects every user's processes when it runs as root", async () => {
@@ -322,4 +526,53 @@ describe("the Linux process-list visibility rule", () => {
     });
     expect(denied).toBe(0);
   });
+
+  it.each([
+    ["its mount namespace link", "/proc/300/ns/mnt"],
+    ["its root link", "/proc/300/root"],
+    ["its list of threads", "/proc/300/task"],
+    ["a thread's mount namespace link", "/proc/300/task/300/ns/mnt"],
+    ["a thread's working folder link", "/proc/300/task/300/cwd"],
+    ["its program link", "/proc/300/exe"],
+    ["its list of open files", "/proc/300/fd"],
+    ["the link of one open file", "/proc/300/fd/3"],
+    ["its memory maps", "/proc/300/maps"],
+    ["its status", "/proc/300/status"],
+  ])(
+    "keeps the worktree when a read of %s fails for a same-user process",
+    async (_what, failing) => {
+      const proc = fakeProc({
+        processes: {
+          300: {
+            uid: 1000,
+            comm: "node",
+            fdTargets: ["/data/one", "/data/two"],
+          },
+        },
+      });
+      expect(await scanLinux("/work/tree", proc, 4242)).toEqual({
+        status: "clear",
+      });
+      const broken: ProcReader = {
+        readlink: async (path) => {
+          if (path === failing)
+            throw Object.assign(new Error(path), { code: "EACCES" });
+          return proc.readlink(path);
+        },
+        readFile: async (path) => {
+          if (path === failing)
+            throw Object.assign(new Error(path), { code: "EACCES" });
+          return proc.readFile(path);
+        },
+        readdir: async (path) => {
+          if (path === failing)
+            throw Object.assign(new Error(path), { code: "EACCES" });
+          return proc.readdir(path);
+        },
+      };
+      expect(await scanLinux("/work/tree", broken, 4242)).toMatchObject({
+        status: "unknown",
+      });
+    },
+  );
 });
