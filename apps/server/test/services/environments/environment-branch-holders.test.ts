@@ -153,8 +153,16 @@ async function startCreate(
 
 async function settled(harness: TestAppHarness, threadId: string) {
   await expect
-    .poll(() => getPreparingEnvironment(harness.db, threadId)?.status)
-    .not.toBe("creating");
+    .poll(() => {
+      const row = getPreparingEnvironment(harness.db, threadId);
+      if (row === null) return "missing";
+      if (row.status === "creating" || row.status === "provisioning")
+        return "pending";
+      if (row.status === "error" && row.statusMessage === null)
+        return "pending";
+      return "settled";
+    })
+    .toBe("settled");
   return getPreparingEnvironment(harness.db, threadId);
 }
 
