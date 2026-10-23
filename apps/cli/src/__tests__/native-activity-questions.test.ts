@@ -588,6 +588,21 @@ describe("native terminal questions", () => {
       expect(directId).not.toBe(ambiguousId);
     });
 
+    it("closes duplicate permission occurrences bound to the same call ID", () => {
+      const { hook, call, ask, done } = holder();
+      const input = bash("make build");
+      hook(call("toolu_1", input));
+      const first = hook({ ...ask(input), tool_use_id: "toolu_1" });
+      const second = hook({ ...ask(input), tool_use_id: "toolu_1" });
+
+      expect(waiting(first)).toHaveLength(1);
+      expect(waiting(second)).toHaveLength(2);
+      expect(hook(done("toolu_1", input))).toEqual({
+        state: "working",
+        prompt: null,
+      });
+    });
+
     it("keeps the second identical call's prompt open when the first auto-allowed call completes", () => {
       const { hook, call, ask, done, tracker } = holder();
       const input = bash("make build");
