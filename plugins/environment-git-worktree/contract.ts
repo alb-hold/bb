@@ -56,6 +56,13 @@ export const worktreeHostContract = defineRpcContract({
         branchName: z.string().min(1),
         baseBranch: worktreeBaseBranchSchema,
         branchMode: z.enum(["reset", "reuse-existing"]),
+        previousAttempt: z
+          .object({
+            threadId: z.string().min(1),
+            attempt: z.number().int().min(2),
+          })
+          .strict()
+          .optional(),
       })
       .strict(),
     output: z.discriminatedUnion("status", [

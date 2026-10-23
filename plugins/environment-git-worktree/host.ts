@@ -168,6 +168,9 @@ export function createWorktreeHostEntry() {
             branchName: input.branchName,
             baseBranch,
             branchMode: input.branchMode,
+            ...(input.previousAttempt !== undefined
+              ? { previousAttempt: input.previousAttempt }
+              : {}),
             onProgress: createHostProgress({
               operationId: input.operationId,
               emit: (payload) =>

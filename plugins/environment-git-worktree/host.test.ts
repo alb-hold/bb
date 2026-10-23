@@ -255,6 +255,82 @@ describe("worktree host entry", () => {
     }
   });
 
+  it("continues a retry from the earlier attempt's exact tip and leaves that workspace alone", async () => {
+    const { sourcePath, dataDir } = await createSourceRepository();
+    const harness = createHarness(dataDir);
+    try {
+      const first = await harness.experimental_call(
+        "create",
+        createInput({
+          operationId: "first",
+          sourcePath,
+          pathKey: "thr_ret-1",
+          branchName: "bb/work-thr_ret",
+        }),
+      );
+      if (first.status !== "created") throw new Error(first.message);
+      const tip = await commitFile(first.path, "earlier.txt");
+      await writeFile(join(first.path, "scratch.txt"), "uncommitted\n");
+
+      const second = await harness.experimental_call("create", {
+        ...createInput({
+          operationId: "second",
+          sourcePath,
+          pathKey: "thr_ret-2",
+          branchName: "bb/work-r2-thr_ret",
+        }),
+        previousAttempt: { threadId: "thr_ret", attempt: 2 },
+      });
+
+      expect(second.status).toBe("created");
+      if (second.status !== "created") throw new Error(second.message);
+      expect((await git(second.path, "rev-parse", "HEAD")).trim()).toBe(tip);
+      expect(
+        (await git(second.path, "rev-parse", "--abbrev-ref", "HEAD")).trim(),
+      ).toBe("bb/work-r2-thr_ret");
+      expect(existsSync(join(second.path, "scratch.txt"))).toBe(false);
+      expect(await readFile(join(first.path, "scratch.txt"), "utf8")).toBe(
+        "uncommitted\n",
+      );
+      expect((await git(first.path, "rev-parse", "HEAD")).trim()).toBe(tip);
+      expect(progressText(harness)).toContain("Continuing on bb/work-r2-thr_ret");
+      expect(progressText(harness)).not.toContain("uncommitted\n");
+    } finally {
+      await harness.experimental_dispose();
+    }
+  });
+
+  it.each([
+    ["no earlier branch exists", []],
+    ["two branches could belong to the earlier attempt", ["bb/a-thr_amb", "bb/b-thr_amb"]],
+  ] as const)("refuses a retry and creates nothing when %s", async (_label, branches) => {
+    const { sourcePath, dataDir } = await createSourceRepository();
+    for (const branch of branches) await git(sourcePath, "branch", branch);
+    const harness = createHarness(dataDir);
+    try {
+      const result = await harness.experimental_call("create", {
+        ...createInput({
+          operationId: "retry",
+          sourcePath,
+          pathKey: "thr_amb-2",
+          branchName: "bb/work-r2-thr_amb",
+        }),
+        previousAttempt: { threadId: "thr_amb", attempt: 2 },
+      });
+
+      expect(result).toMatchObject({
+        status: "failed",
+        message: expect.stringContaining("Cannot continue from the earlier attempt"),
+      });
+      expect(
+        (await git(sourcePath, "branch", "--list", "bb/work-r2-thr_amb")).trim(),
+      ).toBe("");
+      expect(existsSync(join(dataDir, "worktrees", "thr_amb-2"))).toBe(false);
+    } finally {
+      await harness.experimental_dispose();
+    }
+  });
+
   it("refuses to replace a target path that already exists", async () => {
     const { sourcePath, dataDir } = await createSourceRepository();
     const target = join(dataDir, "worktrees", "occupied", basename(sourcePath));

@@ -97,6 +97,17 @@ export default async function worktreePlugin(bb: BbPluginApi): Promise<void> {
     if (report !== undefined) reportHostProgress(report, event.payload);
   });
 
+  function previousAttemptOf(
+    context: WorktreeOperation,
+  ): { threadId: string; attempt: number } | null {
+    const prefix = `${context.thread.id}-`;
+    if (!context.pathKey.startsWith(prefix)) return null;
+    const tail = context.pathKey.slice(prefix.length);
+    if (!/^\d+$/u.test(tail)) return null;
+    const attempt = Number(tail);
+    return attempt >= 2 ? { threadId: context.thread.id, attempt } : null;
+  }
+
   async function adoptExistingWorktree(
     context: WorktreeOperation,
     path: string,
@@ -133,6 +144,7 @@ export default async function worktreePlugin(bb: BbPluginApi): Promise<void> {
       branchName: string;
       baseBranch: WorktreeBaseBranch;
       branchMode: "reset" | "reuse-existing";
+      previousAttempt?: { threadId: string; attempt: number };
     },
   ): Promise<PluginEnvironmentProviderCreateResult> {
     const operationId = `create#${context.pathKey}#${context.attempt}`;
@@ -185,10 +197,12 @@ export default async function worktreePlugin(bb: BbPluginApi): Promise<void> {
       if ("kind" in context.inputs) {
         return adoptExistingWorktree(context, context.inputs.path);
       }
+      const previousAttempt = previousAttemptOf(context);
       return createManagedWorktree(context, {
         branchName: context.suggestedBranchName,
         baseBranch: context.inputs.branch,
         branchMode: "reset",
+        ...(previousAttempt === null ? {} : { previousAttempt }),
       });
     },
     async restore(context) {

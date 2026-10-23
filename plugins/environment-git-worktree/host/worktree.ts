@@ -1,5 +1,13 @@
 import { describeHolderScan, scanWorktreeHolders } from "./holders.js";
 import {
+  createBranchAtPinnedTip,
+  deleteCreatedBranch,
+  describeContinuity,
+  pinPreviousAttempt,
+  type PinnedPreviousAttempt,
+  type PreviousAttemptRequest,
+} from "./previous-attempt.js";
+import {
   findWorktreeEntry,
   parseWorktreeListPorcelain,
   selectAdoptableWorktrees,
@@ -70,6 +78,7 @@ interface CreateWorktreeArgs {
   ownWorktreesRoot: string;
   retainedRoot: string;
   branchName: string;
+  previousAttempt?: PreviousAttemptRequest | undefined;
   baseBranch: string | null;
   branchMode: BranchMode;
   onProgress?: ProgressCallback | undefined;
@@ -658,13 +667,27 @@ export async function createWorktree(
     (await hasRef(args.sourcePath, `refs/heads/${args.branchName}`));
 
   let gitArgs: string[];
+  let pinned: PinnedPreviousAttempt | null = null;
   if (reuseExistingBranch) {
+    gitArgs = ["worktree", "add", args.targetPath, args.branchName];
+  } else if (args.previousAttempt !== undefined) {
+    pinned = await pinPreviousAttempt({
+      sourcePath: args.sourcePath,
+      request: args.previousAttempt,
+      signal: args.signal,
+    });
+    throwIfProvisionAborted(args.signal);
+    await createBranchAtPinnedTip({
+      sourcePath: args.sourcePath,
+      pinned,
+      newBranch: args.branchName,
+    });
     gitArgs = ["worktree", "add", args.targetPath, args.branchName];
   } else {
     if (await hasRef(args.sourcePath, `refs/heads/${args.branchName}`)) {
       throw new WorkspaceError(
         "branch_exists_preserved",
-        `Branch ${args.branchName} already exists from an earlier attempt, so it was not reset to the base branch. bb keeps that work; a new attempt needs its own branch and path, which is not available yet.`,
+        `Branch ${args.branchName} already exists, so it was not reset to the base branch and its work is kept. Remove or rename that branch yourself, or retry so the create continues on its own attempt branch.`,
       );
     }
     const baseBranch =
@@ -718,10 +741,28 @@ export async function createWorktree(
       metadata: { durationMs: Date.now() - worktreeStartedAt },
     });
     worktreeCreated = true;
+    if (pinned !== null) {
+      emitOutput(
+        args.onProgress,
+        "worktree-continuity",
+        await describeContinuity({
+          sourcePath: args.sourcePath,
+          pinned,
+          newBranch: args.branchName,
+        }),
+      );
+    }
     createdBy = await readCreatedBy(args);
     await finishWorktreeSetup(args, createdBy);
     return { path: args.targetPath };
   } catch (error) {
+    if (!worktreeCreated && pinned !== null) {
+      await deleteCreatedBranch({
+        sourcePath: args.sourcePath,
+        newBranch: args.branchName,
+        sha: pinned.sha,
+      });
+    }
     if (!worktreeCreated) {
       emitStep({
         onProgress: args.onProgress,
