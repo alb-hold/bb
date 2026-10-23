@@ -9,6 +9,7 @@ import {
 } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createQueryClientTestHarness } from "@/test/queryClientTestHarness";
+import { getPromptDraftAccessor } from "@/hooks/usePromptDraftStorage";
 import { NativeTerminalPromptBar } from "./NativeTerminalPromptBar";
 
 const send = vi.hoisted(() => vi.fn());
@@ -74,6 +75,27 @@ describe("NativeTerminalPromptBar", () => {
       input: [{ type: "text", text: "fix the build", mentions: [] }],
       mode: "auto",
     });
+  });
+
+  it("clears the thread's saved composer draft after a native send succeeds", async () => {
+    const draft = getPromptDraftAccessor({
+      kind: "thread",
+      projectId: "proj-n",
+      threadId: "thr-n",
+    });
+    draft.setDraft({
+      text: "saved composer draft",
+      mentions: [],
+      attachments: [],
+    });
+    expect(window.localStorage.getItem(draft.storageKey)).not.toBeNull();
+    const { input, sendButton } = renderBar();
+    fireEvent.change(input, { target: { value: "native message" } });
+    fireEvent.click(sendButton);
+
+    await waitFor(() => expect(draft.getCurrent().text).toBe(""));
+    expect(window.localStorage.getItem(draft.storageKey)).toBeNull();
+    expect(input.value).toBe("");
   });
 
   it("keeps Shift+Enter and IME composition as editing keys", () => {
