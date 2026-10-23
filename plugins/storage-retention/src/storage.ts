@@ -97,6 +97,11 @@ const clearableArchived = (
   !["starting", "active", "stopping"].includes(thread.status);
 const hostPath = (value: string) =>
   value.replaceAll("\\", "/").replace(/\/$/, "");
+function pathsOverlap(left: string, right: string) {
+  const a = `${hostPath(left)}/`;
+  const b = `${hostPath(right)}/`;
+  return a.startsWith(b) || b.startsWith(a);
+}
 function entriesHoldingWorkspaces(
   rootPath: string,
   environments: Environment[],
@@ -914,7 +919,7 @@ export function createStorage(
   async function removeDevInstances(
     input:
       | { hostId: string; names: null }
-      | { hostId: string; names: string[]; stopRunning: boolean },
+      | { hostId: string; names: string[] },
     reserved: (() => void) | null = null,
   ) {
     const { hostId, names } = input;
@@ -956,23 +961,42 @@ export function createStorage(
           `Not a development instance in the last scan: ${unknown.join(", ")}`,
         );
       const running: string[] = [];
+      const held: { name: string; reason: string }[] = [];
+      const coveredTargets = targets.filter((entry) => {
+        const covering =
+          entry.sourcePath === null
+            ? undefined
+            : environments.find(
+                (env) =>
+                  env.lifecycle.teardown?.status !== "removed" &&
+                  env.status !== "destroyed" &&
+                  env.path !== null &&
+                  pathsOverlap(env.path, entry.sourcePath!),
+              );
+        if (covering === undefined) return false;
+        held.push({
+          name: entry.name,
+          reason: `environment ${covering.id} still covers ${entry.sourcePath}`,
+        });
+        return true;
+      });
+      const removable = targets.filter((entry) => !coveredTargets.includes(entry));
       let removedCount = 0;
       let removedBytes = 0;
-      let stoppedProcessCount = 0;
-      for (let offset = 0; offset < targets.length; offset += 100) {
+      for (let offset = 0; offset < removable.length; offset += 100) {
         lifecycle.signal.throwIfAborted();
         const result = await worker.call(
           "removeDeveloperEntries",
           {
             rootPath: developer.path,
-            names: targets
+            names: removable
               .slice(offset, offset + 100)
               .map((entry) => entry.name),
             candidatePaths,
             mode:
               input.names === null
                 ? { condition: "checkoutMissing" }
-                : { condition: "any", stopRunning: input.stopRunning },
+                : { condition: "any" },
           },
           { hostId, timeoutMs: 30 * 60_000, signal: lifecycle.signal },
         );
@@ -983,14 +1007,15 @@ export function createStorage(
         forget(hostId, { developer: removed });
         removedCount += removed.size;
         removedBytes += bytes;
-        stoppedProcessCount += result.stoppedProcessCount;
         running.push(...result.running);
+        held.push(...result.held);
       }
       return {
         removedCount,
         removedBytes,
-        skippedCount: targets.length - removedCount - running.length,
-        stoppedProcessCount,
+        skippedCount:
+          targets.length - removedCount - running.length - held.length,
+        held,
         running,
       };
     } finally {

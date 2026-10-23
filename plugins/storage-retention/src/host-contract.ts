@@ -89,16 +89,14 @@ export const hostStorageContract = defineRpcContract({
         candidatePaths: z.array(z.string().min(1)),
         mode: z.discriminatedUnion("condition", [
           z.object({ condition: z.literal("checkoutMissing") }).strict(),
-          z
-            .object({ condition: z.literal("any"), stopRunning: z.boolean() })
-            .strict(),
+          z.object({ condition: z.literal("any") }).strict(),
         ]),
       })
       .strict(),
     output: z.object({
       removed: z.array(z.string()),
       running: z.array(z.string()),
-      stoppedProcessCount: z.number().int().nonnegative(),
+      held: z.array(z.object({ name: z.string(), reason: z.string() })),
     }),
   },
   homeDirectory: { input: z.null(), output: z.string().min(1) },

@@ -1330,7 +1330,7 @@ it("recovers developer checkout paths from launch records, old runtime records, 
 });
 
 it.skipIf(process.platform === "win32")(
-  "does not signal a recorded launcher PID that now belongs to another process",
+  "never signals the recorded launcher process and keeps a running instance in place",
   async () => {
     const fakeHome = await directory();
     const rootPath = path.join(fakeHome, ".bb-dev");
@@ -1363,11 +1363,14 @@ it.skipIf(process.platform === "win32")(
           rootPath,
           names: ["reused"],
           candidatePaths: [],
-          mode: { condition: "any", stopRunning: true },
+          mode: { condition: "any" },
         }),
-      ).toMatchObject({ removed: ["reused"], stoppedProcessCount: 0 });
+      ).toEqual({ removed: [], running: ["reused"], held: [] });
       expect(unrelated.exitCode).toBeNull();
       expect(unrelated.signalCode).toBeNull();
+      expect(
+        (await fs.readdir(rootPath)).filter((name) => name === "reused"),
+      ).toEqual(["reused"]);
     } finally {
       unrelated.kill("SIGKILL");
       await worker.experimental_dispose();
@@ -1376,7 +1379,7 @@ it.skipIf(process.platform === "win32")(
 );
 
 it.skipIf(process.platform === "win32")(
-  "removes development instances whose checkout is gone, stopping their servers and keeping revived or existing checkouts",
+  "removes development instances whose checkout is gone without stopping any server, and keeps running, revived or existing ones",
   async () => {
     const fakeHome = await directory();
     const rootPath = path.join(fakeHome, ".bb-dev");
@@ -1500,44 +1503,28 @@ it.skipIf(process.platform === "win32")(
         host.harness.callRpc("removeDevInstances", {
           hostId: "host_test",
           names: ["unscanned"],
-          stopRunning: false,
         }),
       ).rejects.toThrow("Not a development instance in the last scan");
-      expect(
-        await host.harness.callRpc("removeDevInstances", {
-          hostId: "host_test",
-          names: ["busy"],
-          stopRunning: false,
-        }),
-      ).toEqual({
+      const keptRunning = {
         removedCount: 0,
         removedBytes: 0,
         skippedCount: 0,
-        stoppedProcessCount: 0,
+        held: [],
         running: ["busy"],
-      });
-      expect(busyServer.child.exitCode).toBeNull();
+      };
       expect(
         await host.harness.callRpc("removeDevInstances", {
           hostId: "host_test",
           names: ["busy"],
-          stopRunning: true,
         }),
-      ).toEqual({
-        removedCount: 1,
-        removedBytes: scanned.entries.find((entry) => entry.name === "busy")!
-          .sizeBytes,
-        skippedCount: 0,
-        stoppedProcessCount: 1,
-        running: [],
-      });
-      await busyServer.exited;
+      ).toEqual(keptRunning);
+      expect(busyServer.child.exitCode).toBeNull();
       const single = (name: string) => ({
         removedCount: 1,
         removedBytes: scanned.entries.find((entry) => entry.name === name)!
           .sizeBytes,
         skippedCount: 0,
-        stoppedProcessCount: 0,
+        held: [],
         running: [],
       });
       expect(
@@ -1546,7 +1533,6 @@ it.skipIf(process.platform === "win32")(
             host.harness.callRpc("removeDevInstances", {
               hostId: "host_test",
               names: [name],
-              stopRunning: false,
             }),
           ),
         ),
@@ -1556,11 +1542,11 @@ it.skipIf(process.platform === "win32")(
           .parse(await host.harness.callRpc("host", { hostId: "host_test" }))
           .report!.developerStorage!.entries.map((entry) => entry.name)
           .sort(),
-      ).toEqual(["gone", "kept", "revived"]);
+      ).toEqual(["busy", "gone", "kept", "revived"]);
       expect(goneServer.child.exitCode).toBeNull();
       await expect
         .poll(async () => (await fs.readdir(rootPath)).sort())
-        .toEqual(["gone", "kept", "revived"]);
+        .toEqual(["busy", "gone", "kept", "revived"]);
       await fs.mkdir(checkouts.revived, { recursive: true });
       expect(
         await host.harness.callRpc("removeDevInstances", {
@@ -1572,20 +1558,21 @@ it.skipIf(process.platform === "win32")(
         removedBytes: scanned.entries.find((entry) => entry.name === "gone")!
           .sizeBytes,
         skippedCount: 1,
-        stoppedProcessCount: 1,
+        held: [],
         running: [],
       });
-      await goneServer.exited;
+      expect(goneServer.child.exitCode).toBeNull();
       expect(keptServer.child.exitCode).toBeNull();
+      expect(busyServer.child.exitCode).toBeNull();
       await expect
         .poll(async () => (await fs.readdir(rootPath)).sort())
-        .toEqual(["kept", "revived"]);
+        .toEqual(["busy", "kept", "revived"]);
       expect(
         hostStorageResponseSchema
           .parse(await host.harness.callRpc("host", { hostId: "host_test" }))
           .report!.developerStorage!.entries.map((entry) => entry.name)
           .sort(),
-      ).toEqual(["kept", "revived"]);
+      ).toEqual(["busy", "kept", "revived"]);
       await expect
         .poll(() => worker.experimental_getRetainedWorkerLeaseCount())
         .toBe(0);
@@ -1598,6 +1585,187 @@ it.skipIf(process.platform === "win32")(
     }
   },
 );
+
+it.skipIf(process.platform === "win32")(
+  "removes a named development entry without a git worktree, keeps one that contains a worktree and names why, and stops no process",
+  async () => {
+    const fakeHome = await directory();
+    const rootPath = path.join(fakeHome, ".bb-dev");
+    for (const name of ["plain", "withWorktree"]) {
+      await fs.mkdir(path.join(rootPath, name), { recursive: true });
+      await fs.writeFile(
+        path.join(rootPath, name, "bb-dev-instance.json"),
+        JSON.stringify({ repoRoot: path.join(fakeHome, name, "bb") }),
+      );
+    }
+    await fs.mkdir(path.join(rootPath, "withWorktree", "data", "checkout"), {
+      recursive: true,
+    });
+    await fs.writeFile(
+      path.join(rootPath, "withWorktree", "data", "checkout", ".git"),
+      "gitdir: /elsewhere/.git/worktrees/checkout\n",
+    );
+    const bystander = spawn(
+      process.execPath,
+      ["-e", "setInterval(() => {}, 1000)"],
+      { cwd: path.join(rootPath, "withWorktree", "data", "checkout"), stdio: "ignore" },
+    );
+    const worker = experimental_createHostEntryHarness(hostEntry);
+    try {
+      const any = await worker.experimental_call("removeDeveloperEntries", {
+        rootPath,
+        names: ["plain", "withWorktree"],
+        candidatePaths: [],
+        mode: { condition: "any" },
+      });
+      expect(any.removed).toEqual(["plain"]);
+      expect(any.running).toEqual([]);
+      expect(any.held).toEqual([
+        {
+          name: "withWorktree",
+          reason: expect.stringContaining("git checkout or worktree"),
+        },
+      ]);
+      const missing = await worker.experimental_call(
+        "removeDeveloperEntries",
+        {
+          rootPath,
+          names: ["withWorktree"],
+          candidatePaths: [],
+          mode: { condition: "checkoutMissing" },
+        },
+      );
+      expect(missing.removed).toEqual([]);
+      expect(missing.held.map((held) => held.name)).toEqual(["withWorktree"]);
+      await expect
+        .poll(async () => (await fs.readdir(rootPath)).sort())
+        .toEqual(["withWorktree"]);
+      expect(
+        await fs.readFile(
+          path.join(rootPath, "withWorktree", "data", "checkout", ".git"),
+          "utf8",
+        ),
+      ).toContain("gitdir:");
+      expect(bystander.exitCode).toBeNull();
+      expect(bystander.signalCode).toBeNull();
+    } finally {
+      bystander.kill("SIGKILL");
+      await worker.experimental_dispose();
+    }
+  },
+);
+
+it("keeps a missing-checkout development instance while an environment still covers its checkout path", async () => {
+  type Environment = Awaited<
+    ReturnType<
+      import("@get-bb/plugin-sdk").BbPluginApi["sdk"]["environments"]["list"]
+    >
+  >[number];
+  const fakeHome = await directory();
+  const rootPath = path.join(fakeHome, ".bb-dev");
+  const covered = path.join(fakeHome, "covered", "bb");
+  const free = path.join(fakeHome, "free", "bb");
+  for (const [name, repoRoot] of [
+    ["covered", covered],
+    ["free", free],
+  ] as const) {
+    await fs.mkdir(path.join(rootPath, name), { recursive: true });
+    await fs.writeFile(
+      path.join(rootPath, name, "bb-dev-instance.json"),
+      JSON.stringify({ repoRoot }),
+    );
+    await fs.writeFile(path.join(rootPath, name, "bb.db"), Buffer.alloc(4096));
+  }
+  const environment: Environment = {
+    id: "env_covering",
+    name: null,
+    projectId: "proj_work",
+    hostId: "host_test",
+    path: covered,
+    isGitRepo: true,
+    isWorktree: true,
+    branchName: "feature",
+    baseBranch: "main",
+    defaultBranch: "main",
+    mergeBaseBranch: "main",
+    status: "ready",
+    environmentProviderId: "bb--environment-git-worktree",
+    environmentProviderSelection: null,
+    environmentProviderInstanceKey: null,
+    lifecycle: { phase: "active", retireAt: null, teardown: null },
+    hostLifecycle: "active",
+    managed: true,
+    workspaceProvisionType: "managed-worktree",
+    createdAt: 0,
+    updatedAt: 0,
+  };
+  const worker = experimental_createHostEntryHarness(hostEntry);
+  const host = createFakePluginHost({
+    pluginId: "storage-retention",
+    experimental_hostEntry: true,
+    experimental_callHostRpc: async (call) => {
+      if (call.method === "homeDirectory") return fakeHome;
+      if (call.method === "capacity")
+        return { totalBytes: 10000, freeBytes: 5000 };
+      if (call.method === "inspectDeveloperEntries")
+        return worker.experimental_call(
+          "inspectDeveloperEntries",
+          hostStorageContract.inspectDeveloperEntries.input.parse(call.input),
+        );
+      if (call.method === "removeDeveloperEntries")
+        return worker.experimental_call(
+          "removeDeveloperEntries",
+          hostStorageContract.removeDeveloperEntries.input.parse(call.input),
+        );
+      if (call.method === "measure")
+        return worker.experimental_call(
+          "measure",
+          hostStorageContract.measure.input.parse(call.input),
+        );
+      throw new Error("Unexpected host method");
+    },
+    sdk: {
+      projects: { list: async () => [] },
+      hosts: {
+        get: async () => ({
+          ...makeHostResponse({ id: "host_test", status: "connected" }),
+          threadStorageRootPath: path.join(fakeHome, "storage"),
+        }),
+      },
+      environments: { list: async () => [environment] },
+      threads: { list: async () => [] },
+    },
+  });
+  try {
+    plugin(host.bb);
+    await host.harness.callRpc("scanHost", { hostId: "host_test" });
+    await expect
+      .poll(
+        async () =>
+          hostStorageResponseSchema.parse(
+            await host.harness.callRpc("host", { hostId: "host_test" }),
+          ).scan.state,
+      )
+      .toBe("idle");
+    const result = await host.harness.callRpc("removeDevInstances", {
+      hostId: "host_test",
+      names: null,
+    });
+    expect(result).toMatchObject({ removedCount: 1, running: [] });
+    expect(result.held).toEqual([
+      {
+        name: "covered",
+        reason: `environment env_covering still covers ${covered}`,
+      },
+    ]);
+    await expect
+      .poll(async () => (await fs.readdir(rootPath)).sort())
+      .toEqual(["covered"]);
+  } finally {
+    await host.harness.dispose();
+    await worker.experimental_dispose();
+  }
+});
 
 it.skipIf(process.platform === "win32")(
   "removes a symlinked development instance as a link and keeps its target",
@@ -1625,11 +1793,7 @@ it.skipIf(process.platform === "win32")(
           candidatePaths: [],
           mode: { condition: "checkoutMissing" },
         }),
-      ).toEqual({
-        removed: ["linked", "plain"],
-        running: [],
-        stoppedProcessCount: 0,
-      });
+      ).toEqual({ removed: ["linked", "plain"], running: [], held: [] });
       await expect
         .poll(async () => (await fs.readdir(rootPath)).sort())
         .toEqual([]);
