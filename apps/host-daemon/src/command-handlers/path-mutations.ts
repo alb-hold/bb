@@ -1,12 +1,10 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { HostDaemonOnlineRpcResult } from "@bb/host-daemon-contract";
-import {
-  isPathWithinDirectory,
-  killProcessesWithCwdUnder,
-} from "@bb/process-utils";
+import { isPathWithinDirectory } from "@bb/process-utils";
 import { CommandDispatchError } from "../command-dispatch-support.js";
 import type { CommandOf } from "../command-dispatch-support.js";
+import { refuseWhileHeld } from "./refuse-while-held.js";
 import { resolveNonSymlinkDirectoryPath } from "./root-path.js";
 import { resolveWriteTarget } from "./file-write.js";
 
@@ -132,7 +130,7 @@ export async function removeHostPath(
   }
   const targetInfo = await fs.lstat(target);
   if (targetInfo.isDirectory() && command.recursive) {
-    await killProcessesWithCwdUnder({ directories: [target] });
+    await refuseWhileHeld({ directory: target, action: "remove" });
   }
   if (targetInfo.isDirectory() && !command.recursive) {
     await fs.rmdir(target);

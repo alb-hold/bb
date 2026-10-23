@@ -117,6 +117,14 @@ export const hostStorageContract = defineRpcContract({
   },
   discard: {
     input: storageEntriesSchema,
-    output: z.object({ removed: z.array(z.string()) }),
+    output: z.object({
+      removed: z.array(z.string()),
+      held: z.array(
+        z.object({
+          name: z.string(),
+          holders: z.array(z.object({ pid: z.number().int(), cwd: z.string() })),
+        }),
+      ),
+    }),
   },
 });

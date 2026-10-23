@@ -84,7 +84,7 @@ Conversation history is never affected. The Storage page suggests it once archiv
 or more of large files.
 Clear-archived-files removes whole storage folders, including small files, from archived, stopped, unpinned threads found in the last scan on the selected machine. Conversations and uploaded attachments are kept.
 The page starts this with `startClearArchivedFiles({hostId})`, which returns immediately. Read `archivedFileCleanup` in usage/host reports for running, completed, or failed status with cleared thread and byte totals. Progress is reported after each batch; failed jobs can be retried for the remaining files. The CLI and `clearArchivedFiles` RPC still wait for completion. Cleanup is exclusive per machine; opening a confirmation does not block other actions.
-Clear-thread, clear-archived-files and remove-orphans first stop processes whose working directory is inside each removed thread folder, matching worktree removal, so dev servers started there don't outlive their files.
+Clear-thread, clear-archived-files and remove-orphans never stop a process. A thread folder with a process working inside it is kept, and clear-thread fails naming the process ids; stop the process yourself and clear again.
 Clear-thread requires a stopped thread and an online machine. When the thread no longer has an environment, a completed scan must identify its storage on exactly one machine. Different threads can clear concurrently; duplicate clears for one thread are rejected. Bulk cleanup stays exclusive per machine. Every cleanup action stays available during a scan, and a finished scan leaves out entries cleared while it ran. Reports are cached
 snapshots; rescan to see external filesystem changes.
 

@@ -754,7 +754,7 @@ export function createStorage(
           : thread !== undefined && clearableArchived(thread);
       });
       if (batch.length === 0) continue;
-      await worker.call(
+      const result = await worker.call(
         "discard",
         {
           rootPath,
@@ -763,11 +763,11 @@ export function createStorage(
         },
         { hostId, timeoutMs: 30 * 60_000, signal: lifecycle.signal },
       );
-      forget(hostId, {
-        entries: new Set(batch.map((entry) => entry.name)),
-      });
-      count += batch.length;
-      bytes += batch.reduce((total, entry) => total + entry.sizeBytes, 0);
+      const discarded = new Set(result.removed);
+      forget(hostId, { entries: discarded });
+      const cleared = batch.filter((entry) => discarded.has(entry.name));
+      count += cleared.length;
+      bytes += cleared.reduce((total, entry) => total + entry.sizeBytes, 0);
       progress?.(count, bytes);
     }
     return { count, bytes };
@@ -1253,11 +1253,19 @@ export function createStorage(
           `This thread’s storage contains the workspace ${workspace}, which an environment still uses`,
         );
       }
-      await worker.call(
+      const result = await worker.call(
         "discard",
         { rootPath, names: [threadId], recreate: true },
         { hostId, signal: lifecycle.signal },
       );
+      const held = result.held[0];
+      if (held !== undefined)
+        throw new Error(
+          `Kept this thread’s storage because ${held.holders.length === 1 ? "a process is" : `${held.holders.length} processes are`} still working inside it (${held.holders
+            .slice(0, 5)
+            .map((holder) => `pid ${holder.pid} in ${holder.cwd}`)
+            .join("; ")}). Nothing was stopped. Stop it yourself, then clear again.`,
+        );
       forget(hostId, { entries: new Set([threadId]) });
       return { ok: true as const };
     } finally {

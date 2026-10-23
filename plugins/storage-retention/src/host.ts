@@ -1,6 +1,6 @@
 import {
   experimental_defineHostEntry,
-  experimental_killProcessesWithCwdUnder,
+  internal_DO_NOT_USE_listProcessesWithCwdUnder,
 } from "@get-bb/plugin-sdk/host";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -138,18 +138,25 @@ export default experimental_defineHostEntry({
       try {
         root = await fs.realpath(rootPath);
       } catch (error) {
-        if (isFsErrorWithCode(error, "ENOENT")) return { removed: [] };
+        if (isFsErrorWithCode(error, "ENOENT")) return { removed: [], held: [] };
         throw error;
       }
-      await experimental_killProcessesWithCwdUnder({
-        directories: names
-          .filter((name) => !name.startsWith(".bb-trash-"))
-          .map((name) => path.join(root, name)),
-      });
+      const held: { name: string; holders: { pid: number; cwd: string }[] }[] =
+        [];
+      const releasable: string[] = [];
+      for (const name of names) {
+        const holders = name.startsWith(".bb-trash-")
+          ? []
+          : await internal_DO_NOT_USE_listProcessesWithCwdUnder({
+              directories: [path.join(root, name)],
+            });
+        if (holders.length > 0) held.push({ name, holders });
+        else releasable.push(name);
+      }
       const removed: string[] = [];
       const trashes: string[] = [];
       try {
-        for (const name of names) {
+        for (const name of releasable) {
           context.signal.throwIfAborted();
           const source = path.join(root, name);
           try {
@@ -182,7 +189,7 @@ export default experimental_defineHostEntry({
           })().finally(() => lease.dispose());
         }
       }
-      return { removed };
+      return { removed, held };
     },
   },
 });

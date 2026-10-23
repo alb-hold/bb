@@ -81,7 +81,7 @@ it("clears different threads concurrently, excludes overlapping maintenance and 
               reject: () => reject(new Error("host disconnected")),
             }),
           );
-        return { removed: names };
+        return { removed: names, held: [] };
       }
       throw new Error("Unexpected host method");
     },
@@ -209,7 +209,7 @@ it.each([
                 reject: () => reject(new Error("host disconnected")),
               };
             });
-          return { removed: names };
+          return { removed: names, held: [] };
         }
         throw new Error("Unexpected host method");
       },
@@ -832,53 +832,50 @@ it.runIf(process.platform !== "win32")(
 );
 
 it.skipIf(process.platform === "win32")(
-  "stops processes working inside thread storage before discarding it and leaves neighbors running",
+  "keeps thread storage with a process working inside it, names the process, stops nothing and still discards a neighbor",
   async () => {
     const root = await directory();
     await fs.mkdir(path.join(root, "thr_busy", "checkout"), {
       recursive: true,
     });
     await fs.mkdir(path.join(root, "thr_neighbor"));
-    const run = (cwd: string) => {
-      const child = spawn(
-        process.execPath,
-        ["-e", "setInterval(() => {}, 1000)"],
-        { cwd, stdio: "ignore" },
-      );
-      return {
-        child,
-        exited: new Promise<void>((resolve) =>
-          child.once("exit", () => resolve()),
-        ),
-      };
-    };
+    const run = (cwd: string) =>
+      spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+        cwd,
+        stdio: "ignore",
+      });
     const busy = run(path.join(root, "thr_busy", "checkout"));
-    const neighbor = run(path.join(root, "thr_neighbor"));
     const worker = experimental_createHostEntryHarness(hostEntry);
     try {
       await expect
         .poll(async () => {
           try {
-            process.kill(busy.child.pid!, 0);
+            process.kill(busy.pid!, 0);
             return true;
           } catch {
             return false;
           }
         })
         .toBe(true);
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      const result = await worker.experimental_call("discard", {
+        rootPath: root,
+        names: ["thr_busy", "thr_neighbor"],
+        recreate: false,
+      });
+      expect(result.removed).toEqual(["thr_neighbor"]);
+      expect(result.held).toHaveLength(1);
+      expect(result.held[0]?.name).toBe("thr_busy");
+      expect(result.held[0]?.holders.map((holder) => holder.pid)).toContain(
+        busy.pid,
+      );
+      expect(busy.exitCode).toBeNull();
+      expect(busy.signalCode).toBeNull();
       expect(
-        await worker.experimental_call("discard", {
-          rootPath: root,
-          names: ["thr_busy"],
-          recreate: true,
-        }),
-      ).toEqual({ removed: ["thr_busy"] });
-      await busy.exited;
-      expect(neighbor.child.exitCode).toBeNull();
-      expect(await fs.readdir(path.join(root, "thr_busy"))).toEqual([]);
+        await fs.stat(path.join(root, "thr_busy", "checkout")),
+      ).toBeTruthy();
     } finally {
-      busy.child.kill("SIGKILL");
-      neighbor.child.kill("SIGKILL");
+      busy.kill("SIGKILL");
       await worker.experimental_dispose();
     }
   },
@@ -912,7 +909,7 @@ it("rejects traversal and symlinks without deleting their targets", async () => 
         names: ["thr_gone"],
         recreate: false,
       }),
-    ).toEqual({ removed: [] });
+    ).toEqual({ removed: [], held: [] });
   } finally {
     await worker.experimental_dispose();
   }
@@ -954,6 +951,7 @@ it("keeps cleanup available during a scan and leaves cleared storage out of its 
       if (call.method === "discard")
         return {
           removed: hostStorageContract.discard.input.parse(call.input).names,
+          held: [],
         };
       throw new Error("Unexpected host method");
     },
@@ -2024,7 +2022,7 @@ it("waits for storage inventory for detached archives and persists backoff for f
   let failing = true;
   const discard = vi.fn(async () => {
     if (failing) throw new Error("host unavailable");
-    return { removed: [thread.id] };
+    return { removed: [thread.id], held: [] };
   });
   let host = createFakePluginHost({
     pluginId: "storage-retention",
