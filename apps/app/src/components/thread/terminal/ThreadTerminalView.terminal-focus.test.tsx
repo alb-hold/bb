@@ -295,6 +295,72 @@ function scrollTerminalAsUser(terminal: Terminal, line: number): void {
 }
 
 describe("ThreadTerminalView terminal focus boundary", () => {
+  it("mounts and records output boundaries without crypto.randomUUID", async () => {
+    prepareMobileTerminal();
+    const originalRandomUUID = crypto.randomUUID;
+    Object.defineProperty(crypto, "randomUUID", {
+      configurable: true,
+      value: undefined,
+    });
+    let uuidBytes: Uint8Array | undefined;
+    const originalGetRandomValues = crypto.getRandomValues.bind(crypto);
+    vi.spyOn(crypto, "getRandomValues").mockImplementation((array) => {
+      const result = originalGetRandomValues(array);
+      if (result.byteLength === 16) {
+        uuidBytes = new Uint8Array(
+          result.buffer,
+          result.byteOffset,
+          result.byteLength,
+        ).slice();
+      }
+      return result;
+    });
+    let outputBoundaryHandler:
+      | ((payload: string) => boolean | Promise<boolean>)
+      | undefined;
+    const open = Terminal.prototype.open;
+    vi.spyOn(Terminal.prototype, "open").mockImplementation(function (
+      this: Terminal,
+      parent: HTMLElement,
+    ) {
+      open.call(this, parent);
+      const registerOscHandler = this.parser.registerOscHandler.bind(
+        this.parser,
+      );
+      vi.spyOn(this.parser, "registerOscHandler").mockImplementation(
+        (identifier, callback) => {
+          if (identifier === 7778) outputBoundaryHandler = callback;
+          return registerOscHandler(identifier, callback);
+        },
+      );
+    });
+    try {
+      renderMobileTerminal();
+      await waitForReadinessCondition(
+        () => expect(document.querySelector(".xterm")).not.toBeNull(),
+        "terminal did not mount within 5000 ms",
+      );
+      expect(document.querySelector(".xterm")).not.toBeNull();
+      const generatedBytes = uuidBytes;
+      if (!generatedBytes) throw new Error("UUID bytes were not generated");
+      generatedBytes[6] = (generatedBytes[6]! & 0x0f) | 0x40;
+      generatedBytes[8] = (generatedBytes[8]! & 0x3f) | 0x80;
+      const hex = Array.from(generatedBytes, (byte) =>
+        byte.toString(16).padStart(2, "0"),
+      );
+      const token = `${hex.slice(0, 4).join("")}-${hex.slice(4, 6).join("")}-${hex.slice(6, 8).join("")}-${hex.slice(8, 10).join("")}-${hex.slice(10).join("")}`;
+      if (!outputBoundaryHandler) {
+        throw new Error("terminal output boundary handler was not registered");
+      }
+      expect(await outputBoundaryHandler(`${token}:0`)).toBe(true);
+    } finally {
+      Object.defineProperty(crypto, "randomUUID", {
+        configurable: true,
+        value: originalRandomUUID,
+      });
+    }
+  });
+
   it("keeps a bottom-following client at the bottom after output and a shared resize", async () => {
     prepareMobileTerminal();
     let fitCols = 40;

@@ -18,6 +18,7 @@ import {
 import { TERMINAL_DATA_MAX_BYTES } from "@bb/domain";
 import { useMediaQuery } from "@bb/shared-ui/hooks/use-media-query";
 import { appToast } from "@/components/ui/app-toast";
+import { randomUuid } from "@/lib/random-uuid";
 import type {
   TerminalServerMessage,
   TerminalSession,
@@ -1832,7 +1833,7 @@ export function ThreadTerminalView({
       terminal.open(containerElement);
       viewportLineAnchor = createTerminalViewportLineAnchor(terminal);
       outputLineAnchorTracker.reset();
-      const outputBoundaryToken = crypto.randomUUID();
+      const outputBoundaryToken = randomUuid();
       outputBoundaryDisposable = registerTerminalOutputBoundaryHandler(
         terminal.parser,
         outputBoundaryToken,
