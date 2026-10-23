@@ -2519,6 +2519,9 @@ describe("acp bridge", () => {
     await expect(
       frame({ callId: "forged-token", token: "not-the-token" }),
     ).resolves.toEqual({ ok: false, error: "Invalid dynamic tool request" });
+    expect(
+      output.messages.filter((message) => message.method === "item/tool/call"),
+    ).toEqual([]);
 
     const first = frame({ callId: "same-call" });
     const forwarded = await waitFor(
@@ -2544,6 +2547,9 @@ describe("acp bridge", () => {
       ok: false,
       error: "Duplicate tool call id",
     });
+    expect(
+      output.messages.filter((message) => message.method === "item/tool/call"),
+    ).toHaveLength(1);
   });
 
   it.each(["socket-close", "provider-exit", "turn-end"])(
