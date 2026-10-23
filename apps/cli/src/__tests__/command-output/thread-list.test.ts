@@ -50,6 +50,20 @@ describe("bb thread list command output", () => {
     });
   });
 
+  it("bb thread list includes archived children with --all", async () => {
+    const list = vi.fn(async () => []);
+    stubServerApi({ "v1.threads.$get": list });
+
+    await runCommand(
+      ["thread", "list", "--parent-thread", "thread-manager-1", "--all"],
+      register,
+    );
+
+    expect(list).toHaveBeenCalledWith({
+      query: { parentThreadId: "thread-manager-1" },
+    });
+  });
+
   it("bb thread list defaults to active threads", async () => {
     const list = vi.fn(async () => []);
     stubServerApi({ "v1.threads.$get": list });
