@@ -221,7 +221,6 @@ export function hookAppendCommand(
     `d=${shellQuote(path.dirname(file))}`,
     `f=${shellQuote(file)}`,
     `l="$d/${APPEND_LOCK_NAME}"`,
-    'p="$l.$$"',
     'm="$d/.tmp.$$.mark"',
     ': >"$m" || exit 0',
     "r=$(cat) || exit 0",
@@ -231,21 +230,25 @@ export function hookAppendCommand(
     "w=0",
     "y=0",
     "z=0",
+    "oi=",
+    "os=0",
     "while :; do " +
+      'if [ -d "$l" ] && [ ! -L "$l" ] && [ ! -e "$l/pid" ]; then ' +
+      'i=$(ls -di "$l" 2>/dev/null); ' +
+      'if [ "$i" != "$oi" ]; then oi=$i; os=$(date +%s); fi; ' +
+      'if [ -n "$i" ] && [ "$(date +%s)" -ge "$((os+3))" ]; then rmdir "$l"; fi; ' +
+      "else oi=; fi; " +
       'if ln -s "$$" "$l"; then ' +
       'if [ -L "$l" ] && [ "$(readlink "$l")" = "$$" ]; then break; fi; ' +
       'rm -f "$l/$$"; ' +
-      'if [ -d "$l" ] && [ ! -L "$l" ] && [ ! -e "$l/pid" ]; then ' +
-      'rm -f "$l"/*; rmdir "$l"; fi; ' +
       'elif [ -L "$l" ]; then y=1; z=0; ' +
       'elif [ -e "$l" ]; then z=0; ' +
       "else z=$((z+1)); " +
       'if [ "$y" = 0 ] && [ "$z" -ge 3 ]; then ' +
-      'rm -rf "$p"; ' +
-      'if mkdir "$p" && printf \'%s\' "$$" >"$p/pid" ' +
-      '&& [ ! -e "$l" ] && [ ! -L "$l" ] && mv "$p" "$l" ' +
+      'if mkdir "$l"; then ' +
+      'if ( set -C; printf \'%s\' "$$" >"$l/pid" ) ' +
       '&& [ "$(cat "$l/pid")" = "$$" ]; then break; fi; ' +
-      'rm -rf "$p" "$l/hooks.lock.$$"; fi; fi; ' +
+      'rmdir "$l"; fi; fi; fi; ' +
       'if ! [ "$(date +%s)" -lt "$e" ]; then ' +
       'printf \'%s\\n\' "$r" >"$d/.late.$$.tmp" ' +
       '&& mv -f "$d/.late.$$.tmp" "$d/.late.$$.$s" && rm -f "$m" ' +

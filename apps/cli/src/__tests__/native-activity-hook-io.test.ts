@@ -901,7 +901,7 @@ describe.skipIf(process.platform === "win32")(
       ]);
     }, 30_000);
 
-    it("takes and releases the directory lock where symlinks cannot be created, creating it under a private name and renaming it into place", async () => {
+    it("takes and releases the directory lock where symlinks cannot be created, with one mkdir of the lock itself", async () => {
       const { directory, file, lock } = appendFixture();
       const shimDir = path.join(directory, "shim");
       const mkdirCalls = path.join(directory, "mkdir-calls");
@@ -938,12 +938,204 @@ describe.skipIf(process.platform === "win32")(
         ),
       ).toEqual([]);
       expect(readFileSync(mkdirCalls, "utf8").trim().split("\n")).toEqual([
-        `${lock}.${hook.pid}`,
+        lock,
       ]);
       expect(new HookAppendReader(file).read().records.map(toolOf)).toEqual([
         "NoSymlinks",
       ]);
     }, 30_000);
+
+    it("does not reclaim a lock directory without a pid before its grace period has passed, and publishes its record late", async () => {
+      const { directory, file, lock } = appendFixture();
+      mkdirSync(lock);
+      await forcedDeadline(
+        file,
+        record("PermissionRequest", { tool_name: "Young" }),
+      );
+      expect(statSync(file).size).toBe(0);
+      expect(lstatSync(lock).isDirectory()).toBe(true);
+      expect(lateFiles(directory)).toHaveLength(1);
+    }, 30_000);
+
+    it("waits without nesting anything when another hook takes the lock between this hook's attempt and its acquire, then delivers both records exactly once", async () => {
+      const { directory, file, lock } = appendFixture();
+      const shimDir = path.join(directory, "shim");
+      const state = path.join(directory, "state");
+      const realOf = (tool: string): string =>
+        spawnSync("sh", ["-c", `command -v ${tool}`])
+          .stdout.toString()
+          .trim();
+      mkdirSync(shimDir);
+      mkdirSync(state);
+      const winner = spawn("sleep", ["30"], { stdio: "ignore" });
+      children.push(winner);
+      writeFileSync(path.join(state, "winner.pid"), `${winner.pid}\n`);
+      const winnerArrives = [
+        `if [ "$last" = '${lock}' ] && [ ! -e '${state}/injected' ]; then`,
+        `  ${realOf("mkdir")} '${lock}' && read -r wp < '${state}/winner.pid' && printf '%s' "$wp" > '${lock}/pid' && : > '${state}/injected'`,
+        "fi",
+      ];
+      const shim = (name: string, lines: string[]): void =>
+        writeFileSync(
+          path.join(shimDir, name),
+          ["#!/bin/sh", "for last; do :; done", ...lines, ""].join("\n"),
+          { mode: 0o755 },
+        );
+      shim("ln", ["exit 1"]);
+      shim("mkdir", [...winnerArrives, `exec ${realOf("mkdir")} "$@"`]);
+      shim("mv", [...winnerArrives, `exec ${realOf("mv")} "$@"`]);
+      shim("cat", [
+        `if [ "$last" = '${lock}/pid' ]; then : > '${state}/at-check'; n=0; while [ ! -e '${state}/go' ] && [ "$n" -lt 100 ]; do sleep 0.05; n=$((n+1)); done; fi`,
+        `exec ${realOf("cat")} "$@"`,
+      ]);
+      const until = async (
+        condition: () => boolean,
+        milliseconds: number,
+      ): Promise<boolean> => {
+        const end = Date.now() + milliseconds;
+        while (Date.now() < end) {
+          if (condition()) return true;
+          await new Promise((resolve) => setTimeout(resolve, 20));
+        }
+        return condition();
+      };
+      const hook = spawn("sh", ["-c", hookAppendCommand(file)], {
+        env: { ...process.env, PATH: `${shimDir}:${process.env.PATH ?? ""}` },
+        stdio: ["pipe", "ignore", "ignore"],
+      });
+      children.push(hook);
+      const exited = new Promise<void>((resolve) => {
+        hook.once("exit", () => resolve());
+      });
+      hook.stdin.end(record("PermissionRequest", { tool_name: "Loser" }));
+      expect(
+        await until(() => existsSync(path.join(state, "injected")), 10_000),
+      ).toBe(true);
+      await until(() => existsSync(path.join(state, "at-check")), 1_500);
+      expect(readdirSync(lock).sort()).toEqual(["pid"]);
+      writeFileSync(path.join(state, "go"), "");
+      appendFileSync(
+        file,
+        `${record("PermissionRequest", { tool_name: "Winner" })}\n`,
+      );
+      rmSync(lock, { force: true, recursive: true });
+      await exited;
+      expect(
+        readdirSync(directory).filter(
+          (name) =>
+            name.startsWith("hooks.lock") ||
+            name.startsWith(".late.") ||
+            name.startsWith(".tmp.") ||
+            name.startsWith(".lost."),
+        ),
+      ).toEqual([]);
+      expect(new HookAppendReader(file).read().records.map(toolOf)).toEqual([
+        "Winner",
+        "Loser",
+      ]);
+    }, 30_000);
+
+    it("keeps one holder when a stalled hook wakes in a lock directory that another hook reclaimed and took, and delivers both records exactly once", async () => {
+      const { directory, file, lock } = appendFixture();
+      const shimDir = path.join(directory, "shim");
+      const state = path.join(directory, "state");
+      const realOf = (tool: string): string =>
+        spawnSync("sh", ["-c", `command -v ${tool}`])
+          .stdout.toString()
+          .trim();
+      mkdirSync(shimDir);
+      mkdirSync(state);
+      const shim = (name: string, lines: string[]): void =>
+        writeFileSync(
+          path.join(shimDir, name),
+          ["#!/bin/sh", "for last; do :; done", ...lines, ""].join("\n"),
+          { mode: 0o755 },
+        );
+      shim("ln", ["exit 1"]);
+      shim("mkdir", [
+        `if [ "$last" = '${lock}' ] && ${realOf("mkdir")} '${state}/w-claimed' 2>/dev/null; then`,
+        `  ${realOf("mkdir")} "$@"; rc=$?`,
+        `  : > '${state}/w-stalled'`,
+        `  n=0; while [ ! -e '${state}/go-w' ] && [ "$n" -lt 400 ]; do sleep 0.05; n=$((n+1)); done`,
+        "  exit $rc",
+        "fi",
+        `exec ${realOf("mkdir")} "$@"`,
+      ]);
+      shim("cat", [
+        `if [ "$last" = '${lock}/pid' ]; then`,
+        `  read -r owner < '${lock}/pid'`,
+        `  : > "${state}/at-readback-$owner"`,
+        `  n=0; while [ ! -e "${state}/go-$owner" ] && [ "$n" -lt 400 ]; do sleep 0.05; n=$((n+1)); done`,
+        "fi",
+        `exec ${realOf("cat")} "$@"`,
+      ]);
+      const until = async (
+        condition: () => boolean,
+        milliseconds: number,
+      ): Promise<boolean> => {
+        const end = Date.now() + milliseconds;
+        while (Date.now() < end) {
+          if (condition()) return true;
+          await new Promise((resolve) => setTimeout(resolve, 20));
+        }
+        return condition();
+      };
+      const start = (tool: string) => {
+        const hook = spawn("sh", ["-c", hookAppendCommand(file)], {
+          env: {
+            ...process.env,
+            PATH: `${shimDir}:${process.env.PATH ?? ""}`,
+          },
+          stdio: ["pipe", "ignore", "ignore"],
+        });
+        children.push(hook);
+        const exited = new Promise<void>((resolve) => {
+          hook.once("exit", () => resolve());
+        });
+        hook.stdin.end(record("PermissionRequest", { tool_name: tool }));
+        return { exited, pid: hook.pid ?? -1 };
+      };
+      const stalled = start("Stalled");
+      expect(
+        await until(() => existsSync(path.join(state, "w-stalled")), 10_000),
+      ).toBe(true);
+      expect(readdirSync(lock)).toEqual([]);
+      const taker = start("Taker");
+      expect(
+        await until(
+          () => existsSync(path.join(state, `at-readback-${taker.pid}`)),
+          15_000,
+        ),
+      ).toBe(true);
+      expect(readFileSync(path.join(lock, "pid"), "utf8")).toBe(
+        String(taker.pid),
+      );
+      writeFileSync(path.join(state, "go-w"), "");
+      expect(
+        await until(
+          () => existsSync(path.join(state, `at-readback-${stalled.pid}`)),
+          1_000,
+        ),
+      ).toBe(false);
+      expect(readFileSync(path.join(lock, "pid"), "utf8")).toBe(
+        String(taker.pid),
+      );
+      writeFileSync(path.join(state, `go-${taker.pid}`), "");
+      writeFileSync(path.join(state, `go-${stalled.pid}`), "");
+      await Promise.all([taker.exited, stalled.exited]);
+      expect(
+        readdirSync(directory).filter(
+          (name) =>
+            name.startsWith("hooks.lock") ||
+            name.startsWith(".late.") ||
+            name.startsWith(".tmp.") ||
+            name.startsWith(".lost."),
+        ),
+      ).toEqual([]);
+      expect(
+        new HookAppendReader(file).read().records.map(toolOf).sort(),
+      ).toEqual(["Stalled", "Taker"]);
+    }, 60_000);
 
     it("does not reclaim a lock directory whose pid names a live process, and publishes its record late after the deadline", async () => {
       const { directory, file, lock } = appendFixture();
