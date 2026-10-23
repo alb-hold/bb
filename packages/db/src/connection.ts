@@ -16,6 +16,7 @@ export interface SlowDbQueryLogFields {
   callers?: string[];
   durationMs: number;
   lockWaitMs?: number;
+  lockWaitSource?: "begin" | "first-write" | "none";
   bodyMs?: number;
   cpuDurationMs: number;
   eventLoopWork: string | null;
@@ -77,6 +78,7 @@ interface SlowDbQueryConfig {
   diagnosticsEnabled: () => boolean;
   transactionDepth: number;
   transactionLockWaitMs: number;
+  transactionLockWaitSource: "begin" | "first-write" | null;
   transactionStartNs: bigint | null;
 }
 
@@ -117,6 +119,7 @@ interface TimedStatementOperationArgs<TValue> {
   config: SlowDbQueryConfig;
   operation: SlowDbQueryOperation;
   source: string;
+  trackFirstWrite: boolean;
   work: () => TValue;
 }
 
@@ -129,6 +132,7 @@ const MAX_LOGGED_CALLER_FRAMES = 8;
 const SQL_TRUNCATION_SUFFIX = "...";
 const SQL_STRING_LITERAL_PATTERN = /'(?:''|[^'])*'/gu;
 const SQL_WHITESPACE_PATTERN = /\s+/gu;
+const WRITE_SQL_PATTERN = /(?:^|;)\s*(?:(?:WITH\b[\s\S]*?\b)?(?:INSERT|UPDATE|DELETE|REPLACE)\b|(?:CREATE|DROP|ALTER|REINDEX|ANALYZE|VACUUM|ATTACH|DETACH)\b|PRAGMA\s+[\w.]+\s*=)/iu;
 
 function roundDurationMs(durationMs: number): number {
   return Math.round(durationMs * 10) / 10;
@@ -163,9 +167,20 @@ function runTimedStatementOperation<TValue>(
     : null;
   const startedCpu = threadCpuUsage();
   const startedAt = performance.now();
+  const firstWriteStartedAt =
+    args.trackFirstWrite &&
+    args.config.transactionDepth > 0 &&
+    args.config.transactionLockWaitSource === null
+      ? hrtime.bigint()
+      : null;
   try {
     return args.work();
   } finally {
+    if (firstWriteStartedAt !== null) {
+      args.config.transactionLockWaitMs =
+        Number(hrtime.bigint() - firstWriteStartedAt) / 1_000_000;
+      args.config.transactionLockWaitSource = "first-write";
+    }
     const durationMs = performance.now() - startedAt;
     const thresholdMs =
       typeof args.config.thresholdMs === "function"
@@ -186,9 +201,23 @@ function runTimedStatementOperation<TValue>(
           cpuDurationMs: roundDurationMs((cpu.user + cpu.system) / 1_000),
           ...(args.operation === "transaction"
             ? {
-                lockWaitMs: roundDurationMs(args.config.transactionLockWaitMs),
+                lockWaitMs: roundDurationMs(
+                  args.config.transactionDepth === 1
+                    ? args.config.transactionLockWaitMs
+                    : 0,
+                ),
+                lockWaitSource:
+                  args.config.transactionDepth === 1
+                    ? (args.config.transactionLockWaitSource ?? "none")
+                    : "none",
                 bodyMs: roundDurationMs(
-                  Math.max(0, durationMs - args.config.transactionLockWaitMs),
+                  Math.max(
+                    0,
+                    durationMs -
+                      (args.config.transactionDepth === 1
+                        ? args.config.transactionLockWaitMs
+                        : 0),
+                  ),
                 ),
               }
             : {}),
@@ -233,6 +262,7 @@ function instrumentStatement(
       config,
       operation: "all",
       source,
+      trackFirstWrite: !statement.reader,
       work: () => originalAll(...params),
     });
   statement.get = (...params) =>
@@ -242,6 +272,7 @@ function instrumentStatement(
       config,
       operation: "get",
       source,
+      trackFirstWrite: !statement.reader,
       work: () => originalGet(...params),
     });
   statement.run = (...params) =>
@@ -251,6 +282,7 @@ function instrumentStatement(
       config,
       operation: "run",
       source,
+      trackFirstWrite: !statement.reader,
       work: () => originalRun(...params),
     });
 
@@ -277,6 +309,7 @@ function instrumentSqliteClient(
     diagnosticsEnabled: options.slowQueryDiagnosticsEnabled ?? (() => false),
     transactionDepth: 0,
     transactionLockWaitMs: 0,
+    transactionLockWaitSource: null,
     transactionStartNs: null,
   };
   const originalExec = sqlite.exec.bind(sqlite);
@@ -287,6 +320,7 @@ function instrumentSqliteClient(
       config,
       operation: "exec",
       source,
+      trackFirstWrite: WRITE_SQL_PATTERN.test(source),
       work: () => originalExec(source),
     });
   const originalTransaction = sqlite.transaction.bind(sqlite);
@@ -301,6 +335,7 @@ function instrumentSqliteClient(
       ) {
         config.transactionLockWaitMs =
           Number(hrtime.bigint() - config.transactionStartNs) / 1_000_000;
+        config.transactionStartNs = null;
       }
       return fn.apply(this, params) as ReturnType<typeof fn>;
     } as typeof fn;
@@ -311,8 +346,11 @@ function instrumentSqliteClient(
         ...params: Parameters<typeof original>
       ) {
         const outermost = config.transactionDepth === 0;
-        const previousLockWaitMs = config.transactionLockWaitMs;
-        config.transactionLockWaitMs = 0;
+        if (outermost) {
+          config.transactionLockWaitMs = 0;
+          config.transactionLockWaitSource =
+            mode === "immediate" || mode === "exclusive" ? "begin" : null;
+        }
         config.transactionDepth++;
         try {
           return runTimedStatementOperation({
@@ -321,20 +359,25 @@ function instrumentSqliteClient(
             config,
             operation: "transaction",
             source: `TRANSACTION ${mode.toUpperCase()}`,
+            trackFirstWrite: false,
             work: () => {
-              if (outermost) config.transactionStartNs = hrtime.bigint();
+              if (outermost && config.transactionLockWaitSource === "begin") {
+                config.transactionStartNs = hrtime.bigint();
+              }
               try {
                 return original[mode].apply(this, params);
               } finally {
-                if (outermost) config.transactionStartNs = null;
+                if (outermost && config.transactionStartNs !== null) {
+                  config.transactionLockWaitMs =
+                    Number(hrtime.bigint() - config.transactionStartNs) /
+                    1_000_000;
+                  config.transactionStartNs = null;
+                }
               }
             },
           });
         } finally {
           config.transactionDepth--;
-          if (!outermost) {
-            config.transactionLockWaitMs = previousLockWaitMs;
-          }
         }
       };
     }
