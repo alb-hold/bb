@@ -8,8 +8,13 @@ import type {
 } from "@bb/db";
 import type { Logger } from "@bb/logger";
 import { describe, expect, it } from "vitest";
+import { createPluginRpcCallerRegistry } from "../../src/services/plugins/plugin-rpc-caller.js";
 import { initDb } from "../../src/db.js";
-import { createTestAppHarness, testLogger } from "../helpers/test-app.js";
+import {
+  createTestAppHarness,
+  installTestBuiltinPlugin,
+  testLogger,
+} from "../helpers/test-app.js";
 
 interface CapturedSlowQuery {
   fields: SlowDbQueryLogFields & {
@@ -83,6 +88,30 @@ describe("thread list slow query attribution", () => {
           },
         });
       }
+
+      await installTestBuiltinPlugin(harness, "keep-awake");
+      const pluginCallers = createPluginRpcCallerRegistry();
+      const callerCredential = pluginCallers.issue("keep-awake");
+      const callerToken = callerCredential.token;
+      harness.pluginService.resolveRpcCaller = pluginCallers.resolve;
+      for (const [token, expectedPluginId] of [
+        [callerToken, "keep-awake"],
+        ["not-a-real-plugin-caller-token", undefined],
+      ] as const) {
+        records.length = 0;
+        const response = await harness.app.request(
+          "/api/v1/threads?includeHidden=true",
+          { headers: { "x-bb-plugin-caller": token, "user-agent": "node" } },
+        );
+        expect(response.status).toBe(200);
+        const record = records.find(
+          (entry) => entry.fields.eventLoopWork === "GET /api/v1/threads",
+        );
+        expect(record).toBeDefined();
+        expect(record?.fields.clientKind?.pluginId).toBe(expectedPluginId);
+        expect(JSON.stringify(record)).not.toContain(callerToken);
+      }
+      callerCredential.revoke();
 
       records.length = 0;
       const privateId = "thr_private_value_must_not_be_logged";

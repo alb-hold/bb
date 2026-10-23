@@ -16,7 +16,7 @@ export interface SlowDbQueryLogFields {
   callers?: string[];
   durationMs: number;
   lockWaitMs?: number;
-  lockWaitSource?: "begin" | "first-write" | "none";
+  lockWaitSource?: "begin" | "first-write" | "exec" | "none";
   bodyMs?: number;
   cpuDurationMs: number;
   eventLoopWork: string | null;
@@ -94,7 +94,7 @@ interface SlowDbQueryConfig {
   diagnosticsEnabled: () => boolean;
   transactionDepth: number;
   transactionLockWaitMs: number;
-  transactionLockWaitSource: "begin" | "first-write" | null;
+  transactionLockWaitSource: "begin" | "first-write" | "exec" | null;
   transactionStartNs: bigint | null;
 }
 
@@ -216,26 +216,29 @@ function runTimedStatementOperation<TValue>(
           durationMs: roundDurationMs(durationMs),
           cpuDurationMs: roundDurationMs((cpu.user + cpu.system) / 1_000),
           ...(args.operation === "transaction"
-            ? {
-                lockWaitMs: roundDurationMs(
-                  args.config.transactionDepth === 1
-                    ? args.config.transactionLockWaitMs
-                    : 0,
-                ),
-                lockWaitSource:
-                  args.config.transactionDepth === 1
-                    ? (args.config.transactionLockWaitSource ?? "none")
-                    : "none",
-                bodyMs: roundDurationMs(
-                  Math.max(
-                    0,
-                    durationMs -
-                      (args.config.transactionDepth === 1
-                        ? args.config.transactionLockWaitMs
-                        : 0),
+            ? args.config.transactionDepth === 1 &&
+              args.config.transactionLockWaitSource === "exec"
+              ? { lockWaitSource: "exec" }
+              : {
+                  lockWaitMs: roundDurationMs(
+                    args.config.transactionDepth === 1
+                      ? args.config.transactionLockWaitMs
+                      : 0,
                   ),
-                ),
-              }
+                  lockWaitSource:
+                    args.config.transactionDepth === 1
+                      ? (args.config.transactionLockWaitSource ?? "none")
+                      : "none",
+                  bodyMs: roundDurationMs(
+                    Math.max(
+                      0,
+                      durationMs -
+                        (args.config.transactionDepth === 1
+                          ? args.config.transactionLockWaitMs
+                          : 0),
+                    ),
+                  ),
+                }
             : {}),
           eventLoopWork:
             eventLoopWork ??
@@ -329,16 +332,28 @@ function instrumentSqliteClient(
     transactionStartNs: null,
   };
   const originalExec = sqlite.exec.bind(sqlite);
-  sqlite.exec = (source) =>
-    runTimedStatementOperation({
+  sqlite.exec = (source) => {
+    const isWrite = source.split(";").some((statement) =>
+      WRITE_SQL_PATTERN.test(statement),
+    );
+    const hasMultipleStatements = source.includes(";");
+    if (
+      isWrite &&
+      hasMultipleStatements &&
+      config.transactionLockWaitSource === null
+    ) {
+      config.transactionLockWaitSource = "exec";
+    }
+    return runTimedStatementOperation({
       bindingArgumentCount: 0,
       callerStackBoundary: null,
       config,
       operation: "exec",
       source,
-      trackFirstWrite: WRITE_SQL_PATTERN.test(source),
+      trackFirstWrite: isWrite && !hasMultipleStatements,
       work: () => originalExec(source),
     });
+  };
   const originalTransaction = sqlite.transaction.bind(sqlite);
   sqlite.transaction = (fn) => {
     const wrappedFn = function (
