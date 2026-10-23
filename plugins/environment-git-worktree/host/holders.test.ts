@@ -554,6 +554,7 @@ describe("the Linux process-list visibility rule", () => {
         status: "clear",
       });
       const broken: ProcReader = {
+        ...proc,
         readlink: async (path) => {
           if (path === failing)
             throw Object.assign(new Error(path), { code: "EACCES" });
