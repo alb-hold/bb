@@ -44,6 +44,7 @@ export function startEventLoopStallMonitor(
   let previousUtilization = performance.eventLoopUtilization();
   let previousCpuUsage = process.cpuUsage();
   let previousMainThreadCpuUsage = process.threadCpuUsage();
+  let previousResourceUsage = process.resourceUsage();
   const now = options.now ?? Date.now;
   let previousSampleAt = now();
   const Observer = (options.performanceObserver ??
@@ -85,6 +86,12 @@ export function startEventLoopStallMonitor(
       previousMainThreadCpuUsage = mainThreadCpuUsage;
       const mainThreadCpuWallRatio =
         windowWallMs <= 0 ? 0 : mainThreadCpuMs / windowWallMs;
+      const resourceUsage = process.resourceUsage();
+      const minorPageFaults =
+        resourceUsage.minorPageFault - previousResourceUsage.minorPageFault;
+      const majorPageFaults =
+        resourceUsage.majorPageFault - previousResourceUsage.majorPageFault;
+      previousResourceUsage = resourceUsage;
       const descheduled =
         processCpuWallRatio < DESCHEDULED_PROCESS_CPU_WALL_RATIO_THRESHOLD;
       const utilization = performance.eventLoopUtilization(previousUtilization);
@@ -124,6 +131,8 @@ export function startEventLoopStallMonitor(
             mainThreadCpuMs: roundDurationMs(mainThreadCpuMs),
             mainThreadCpuWallRatio:
               Math.round(mainThreadCpuWallRatio * 1_000) / 1_000,
+            minorPageFaults,
+            majorPageFaults,
             windowWallMs: roundDurationMs(windowWallMs),
             eventLoopUtilization: {
               activeMs: roundDurationMs(utilization.active),

@@ -111,6 +111,31 @@ describe("event loop stall monitor", () => {
       mainThreadCpuUser += 5_000_000;
       return current;
     });
+    let minorPageFault = 0;
+    let majorPageFault = 0;
+    vi.spyOn(process, "resourceUsage").mockImplementation(() => {
+      const current = {
+        userCPUTime: 0,
+        systemCPUTime: 0,
+        maxRSS: 0,
+        sharedMemorySize: 0,
+        unsharedDataSize: 0,
+        unsharedStackSize: 0,
+        minorPageFault,
+        majorPageFault,
+        swappedOut: 0,
+        fsRead: 0,
+        fsWrite: 0,
+        ipcSent: 0,
+        ipcReceived: 0,
+        signalsCount: 0,
+        voluntaryContextSwitches: 0,
+        involuntaryContextSwitches: 0,
+      } satisfies NodeJS.ResourceUsage;
+      minorPageFault += 7;
+      majorPageFault += 1;
+      return current;
+    });
     perfHooksMock.monitorEventLoopDelay.mockClear();
     perfHooksMock.state.histogram = null;
     resetEventLoopWorkForTests();
@@ -156,6 +181,8 @@ describe("event loop stall monitor", () => {
           processCpuWallRatio: 1,
           mainThreadCpuMs: 5_000,
           mainThreadCpuWallRatio: 1,
+          minorPageFaults: 7,
+          majorPageFaults: 1,
           windowWallMs: 5_000,
           eventLoopUtilization: expect.objectContaining({
             activeMs: expect.any(Number),
