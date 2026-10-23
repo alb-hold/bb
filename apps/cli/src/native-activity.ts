@@ -532,27 +532,26 @@ export class NativeActivityTracker {
     const freshCandidateCount = candidates.length;
     if (freshCandidateCount === 0) {
       const open = this.openOccurrences.get(base) ?? [];
-      for (let index = open.length - 1; index >= 0; index -= 1) {
-        const occurrence = open[index]!;
-        if (
-          occurrence.key === key &&
-          occurrence.candidateGroupId !== null &&
-          occurrence.candidateCallIds.length > 0
-        ) {
-          const allocated = open.filter(
-            (candidate) =>
-              candidate.candidateGroupId === occurrence.candidateGroupId,
-          ).length;
-          if (allocated < occurrence.candidateGroupSize) {
-            return {
-              callId: null,
-              candidateCallIds: [...occurrence.candidateCallIds],
-              candidateGroupId: occurrence.candidateGroupId,
-              candidateGroupSize: occurrence.candidateGroupSize,
-              candidateGroupDynamic: occurrence.candidateGroupDynamic,
-            };
-          }
-        }
+      const candidateOccurrences = open.filter(
+        (occurrence) =>
+          occurrence.key === key && occurrence.candidateCallIds.length > 0,
+      );
+      const candidateCallIds = [
+        ...new Set(
+          candidateOccurrences.flatMap(({ candidateCallIds: ids }) => ids),
+        ),
+      ];
+      if (candidateOccurrences.length < candidateCallIds.length) {
+        const candidateGroupId = ++this.candidateGroupCounter;
+        return {
+          callId: null,
+          candidateCallIds,
+          candidateGroupId,
+          candidateGroupSize: candidateCallIds.length,
+          candidateGroupDynamic: candidateOccurrences.some(
+            ({ candidateGroupDynamic }) => candidateGroupDynamic,
+          ),
+        };
       }
       const candidateGroupId = ++this.candidateGroupCounter;
       return {
