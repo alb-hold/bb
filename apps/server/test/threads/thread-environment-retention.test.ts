@@ -1,8 +1,10 @@
 import {
+  deleteEnvironmentRetentionIntents,
   environments,
   getEnvironment,
   getThread,
   listOpenEnvironmentRetentionsForHost,
+  recordEnvironmentRetention,
 } from "@bb/db";
 import type { PluginEnvironmentProviderCreateResult } from "@get-bb/plugin-sdk/environment-provider";
 import type { PluginEnvironmentProviderRestoreContext } from "@get-bb/plugin-sdk/environment-provider";
@@ -161,11 +163,15 @@ describe("a failed create records what it kept", () => {
     });
   });
 
-  it("leaves no row when a failed create reports nothing kept", async () => {
+  it("leaves no row when a failed create says it kept nothing", async () => {
     await withTestHarness(async (harness) => {
       registerProvider(async (context) => {
         await context.experimental_claimPath(KEPT_PATH);
-        return { status: "failed", message: "git unavailable" };
+        return {
+          status: "failed",
+          message: "git unavailable",
+          experimental_retained: null,
+        };
       });
       const { host, thread } = await destroyedThread(harness);
       await restoreAndWait(harness, thread.id);
@@ -173,6 +179,95 @@ describe("a failed create records what it kept", () => {
       expect(listOpenEnvironmentRetentionsForHost(harness.db, host.id)).toEqual(
         [],
       );
+    });
+  });
+
+  it("treats a failed create that does not say what it kept as unresolved, even for a provider that never claims a path", async () => {
+    await withTestHarness(async (harness) => {
+      registerProvider(async () => ({
+        status: "failed",
+        message: "git unavailable",
+      }));
+      const { host, thread } = await destroyedThread(harness);
+      await restoreAndWait(harness, thread.id);
+
+      const rows = listOpenEnvironmentRetentionsForHost(harness.db, host.id);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({ state: "unresolved", keptPath: null });
+    });
+  });
+
+  it("never downgrades or deletes a retained row when the same environment is retried and fails without a kept path", async () => {
+    await withTestHarness(async (harness) => {
+      let calls = 0;
+      registerProvider(async (context) => {
+        calls += 1;
+        await context.experimental_claimPath(KEPT_PATH);
+        return calls === 1
+          ? {
+              status: "failed",
+              message: "setup failed; the workspace stays in place",
+              experimental_retained: { path: KEPT_PATH },
+            }
+          : {
+              status: "failed",
+              message: "target exists",
+              experimental_retained: null,
+            };
+      });
+      const { host, thread } = await destroyedThread(harness);
+      await restoreAndWait(harness, thread.id);
+      const [first] = listOpenEnvironmentRetentionsForHost(harness.db, host.id);
+      expect(first?.state).toBe("retained");
+      if (first === undefined) return;
+
+      recordEnvironmentRetention(harness.db, {
+        environmentId: first.environmentId,
+        projectId: first.projectId,
+        hostId: first.hostId,
+        ownerThreadId: first.ownerThreadId,
+        providerId: first.providerId,
+        originalPath: KEPT_PATH,
+        keptPath: KEPT_PATH,
+        state: "intent",
+        message: "a retry claimed the same path",
+      });
+      deleteEnvironmentRetentionIntents(harness.db, first.environmentId);
+
+      expect(
+        listOpenEnvironmentRetentionsForHost(harness.db, host.id).map(
+          (row) => [row.keptPath, row.state],
+        ),
+      ).toEqual([[KEPT_PATH, "retained"]]);
+    });
+  });
+
+  it("refuses to start another create for a thread while an earlier attempt's kept work is open, and calls the provider only once", async () => {
+    await withTestHarness(async (harness) => {
+      let calls = 0;
+      registerProvider(async () => {
+        calls += 1;
+        return { status: "failed", message: "never reached" };
+      });
+      const { host, thread, environment } = await destroyedThread(harness);
+      recordEnvironmentRetention(harness.db, {
+        environmentId: "env_earlier_attempt",
+        projectId: environment.projectId,
+        hostId: host.id,
+        ownerThreadId: thread.id,
+        providerId: PROVIDER_ID,
+        originalPath: KEPT_PATH,
+        keptPath: KEPT_PATH,
+        state: "retained",
+        message: "setup failed",
+      });
+      await restoreAndWait(harness, thread.id);
+
+      expect(calls).toBe(0);
+      const current = getThread(harness.db, thread.id);
+      expect(
+        getEnvironment(harness.db, current?.environmentId ?? "")?.statusMessage,
+      ).toContain(KEPT_PATH);
     });
   });
 });

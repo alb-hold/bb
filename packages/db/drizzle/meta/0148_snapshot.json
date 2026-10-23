@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "4a944cef-94d9-4e69-a65a-da762fd41620",
+  "id": "3c9c8480-8bc0-4990-8c7c-e9a3456eade6",
   "prevId": "370a824b-565d-4827-a3ac-89875f717728",
   "tables": {
     "app_settings": {
@@ -567,14 +567,14 @@
           "name": "original_path",
           "type": "text",
           "primaryKey": false,
-          "notNull": true,
+          "notNull": false,
           "autoincrement": false
         },
         "kept_path": {
           "name": "kept_path",
           "type": "text",
           "primaryKey": false,
-          "notNull": true,
+          "notNull": false,
           "autoincrement": false
         },
         "state": {
@@ -589,6 +589,20 @@
           "type": "text",
           "primaryKey": false,
           "notNull": true,
+          "autoincrement": false
+        },
+        "closed_at": {
+          "name": "closed_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "closed_proof": {
+          "name": "closed_proof",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
           "autoincrement": false
         },
         "created_at": {
@@ -626,6 +640,13 @@
           "name": "environment_retentions_project_idx",
           "columns": [
             "project_id"
+          ],
+          "isUnique": false
+        },
+        "environment_retentions_thread_idx": {
+          "name": "environment_retentions_thread_idx",
+          "columns": [
+            "owner_thread_id"
           ],
           "isUnique": false
         },

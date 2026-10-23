@@ -1323,12 +1323,16 @@ export const environmentRetentions = sqliteTable(
     hostId: text("host_id").notNull(),
     ownerThreadId: text("owner_thread_id"),
     providerId: text("provider_id").notNull(),
-    originalPath: text("original_path").notNull(),
-    keptPath: text("kept_path").notNull(),
+    originalPath: text("original_path"),
+    keptPath: text("kept_path"),
     state: text("state")
-      .$type<"intent" | "retained" | "unresolved" | "released_by_owner">()
+      .$type<
+        "intent" | "retained" | "unresolved" | "released_by_owner" | "closed"
+      >()
       .notNull(),
     message: text("message").notNull(),
+    closedAt: integer("closed_at"),
+    closedProof: text("closed_proof"),
     createdAt: integer("created_at").notNull(),
     updatedAt: integer("updated_at").notNull(),
   },
@@ -1339,6 +1343,7 @@ export const environmentRetentions = sqliteTable(
     ),
     index("environment_retentions_environment_idx").on(table.environmentId),
     index("environment_retentions_project_idx").on(table.projectId),
+    index("environment_retentions_thread_idx").on(table.ownerThreadId),
     uniqueIndex("environment_retentions_environment_kept_idx").on(
       table.environmentId,
       table.keptPath,

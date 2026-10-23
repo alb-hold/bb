@@ -1,4 +1,4 @@
-import { and, eq, inArray, ne, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull } from "drizzle-orm";
 import { areHostPathsEqual, isHostPathWithin } from "@bb/domain";
 import type { DbConnection, DbTransaction } from "../connection.js";
 import { createEnvironmentRetentionId } from "../ids.js";
@@ -20,9 +20,9 @@ export interface RecordEnvironmentRetentionInput {
   hostId: string;
   ownerThreadId: string | null;
   providerId: string;
-  originalPath: string;
-  keptPath: string;
-  state: Exclude<EnvironmentRetentionState, "released_by_owner">;
+  originalPath: string | null;
+  keptPath: string | null;
+  state: "intent" | "retained" | "unresolved";
   message: string;
 }
 
@@ -37,15 +37,28 @@ export function recordEnvironmentRetention(
     .where(
       and(
         eq(environmentRetentions.environmentId, input.environmentId),
-        eq(environmentRetentions.keptPath, input.keptPath),
+        input.keptPath === null
+          ? isNull(environmentRetentions.keptPath)
+          : eq(environmentRetentions.keptPath, input.keptPath),
       ),
     )
     .get();
   if (existing !== undefined) {
     if (existing.state === "released_by_owner") return existing;
+    if (existing.state !== "closed" && existing.state !== "intent") {
+      if (input.state === "intent") return existing;
+      if (existing.state === "unresolved" && input.state === "retained")
+        return existing;
+    }
     return db
       .update(environmentRetentions)
-      .set({ state: input.state, message: input.message, updatedAt: now })
+      .set({
+        state: input.state,
+        message: input.message,
+        closedAt: null,
+        closedProof: null,
+        updatedAt: now,
+      })
       .where(eq(environmentRetentions.id, existing.id))
       .returning()
       .get();
@@ -100,6 +113,30 @@ export function deleteEnvironmentRetentionIntents(
     .run();
 }
 
+export function closeEnvironmentRetention(
+  db: RetentionConnection,
+  args: { id: string; proof: string },
+): boolean {
+  const now = Date.now();
+  const updated = db
+    .update(environmentRetentions)
+    .set({
+      state: "closed",
+      closedAt: now,
+      closedProof: args.proof,
+      updatedAt: now,
+    })
+    .where(
+      and(
+        eq(environmentRetentions.id, args.id),
+        inArray(environmentRetentions.state, BLOCKING_STATES),
+      ),
+    )
+    .returning({ id: environmentRetentions.id })
+    .all();
+  return updated.length > 0;
+}
+
 export function listOpenEnvironmentRetentionsForHost(
   db: RetentionConnection,
   hostId: string,
@@ -132,6 +169,22 @@ export function listOpenEnvironmentRetentionsForProject(
     .all();
 }
 
+export function listOpenEnvironmentRetentionsForThread(
+  db: RetentionConnection,
+  threadId: string,
+): EnvironmentRetentionRow[] {
+  return db
+    .select()
+    .from(environmentRetentions)
+    .where(
+      and(
+        eq(environmentRetentions.ownerThreadId, threadId),
+        inArray(environmentRetentions.state, BLOCKING_STATES),
+      ),
+    )
+    .all();
+}
+
 export function listOpenEnvironmentRetentionsForEnvironment(
   db: RetentionConnection,
   environmentId: string,
@@ -148,12 +201,32 @@ export function listOpenEnvironmentRetentionsForEnvironment(
     .all();
 }
 
+export function listOpenEnvironmentRetentionsWithPath(
+  db: RetentionConnection,
+  providerId?: string,
+): EnvironmentRetentionRow[] {
+  return db
+    .select()
+    .from(environmentRetentions)
+    .where(
+      and(
+        inArray(environmentRetentions.state, BLOCKING_STATES),
+        providerId === undefined
+          ? undefined
+          : eq(environmentRetentions.providerId, providerId),
+      ),
+    )
+    .all()
+    .filter((row) => row.keptPath !== null);
+}
+
 export function findOpenEnvironmentRetentionOverlapping(
   db: RetentionConnection,
   args: { hostId: string; path: string },
 ): EnvironmentRetentionRow | null {
   for (const row of listOpenEnvironmentRetentionsForHost(db, args.hostId)) {
     for (const recorded of [row.keptPath, row.originalPath]) {
+      if (recorded === null) continue;
       if (
         areHostPathsEqual(recorded, args.path) ||
         isHostPathWithin({ rootPath: args.path, candidatePath: recorded }) ||
@@ -163,22 +236,4 @@ export function findOpenEnvironmentRetentionOverlapping(
     }
   }
   return null;
-}
-
-export function countOpenEnvironmentRetentionsExcept(
-  db: RetentionConnection,
-  args: { hostId: string; environmentId: string },
-): number {
-  const row = db
-    .select({ total: sql<number>`count(*)` })
-    .from(environmentRetentions)
-    .where(
-      and(
-        eq(environmentRetentions.hostId, args.hostId),
-        ne(environmentRetentions.environmentId, args.environmentId),
-        inArray(environmentRetentions.state, BLOCKING_STATES),
-      ),
-    )
-    .get();
-  return row?.total ?? 0;
 }

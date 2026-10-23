@@ -373,12 +373,14 @@ export {
 } from "./environments.js";
 export type { EnvironmentRow } from "./environments.js";
 export {
-  countOpenEnvironmentRetentionsExcept,
+  closeEnvironmentRetention,
   deleteEnvironmentRetentionIntents,
   findOpenEnvironmentRetentionOverlapping,
   listOpenEnvironmentRetentionsForEnvironment,
   listOpenEnvironmentRetentionsForHost,
   listOpenEnvironmentRetentionsForProject,
+  listOpenEnvironmentRetentionsForThread,
+  listOpenEnvironmentRetentionsWithPath,
   markEnvironmentRetentionsUnresolved,
   recordEnvironmentRetention,
 } from "./environment-retentions.js";

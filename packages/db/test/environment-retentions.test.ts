@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createMigratedConnection } from "../src/testing.js";
 import {
+  closeEnvironmentRetention,
   deleteEnvironmentRetentionIntents,
   findOpenEnvironmentRetentionOverlapping,
   listOpenEnvironmentRetentionsForHost,
@@ -91,5 +92,71 @@ describe("environment retentions", () => {
         path: "/work/a",
       }),
     ).toBeNull();
+  });
+
+  it("never downgrades a retained or unresolved row to an intent, and reopens a closed one", () => {
+    const db = createMigratedConnection();
+    const retained = recordEnvironmentRetention(db, {
+      ...base,
+      state: "retained",
+    });
+    expect(
+      recordEnvironmentRetention(db, { ...base, state: "intent" }).state,
+    ).toBe("retained");
+    recordEnvironmentRetention(db, { ...base, state: "unresolved" });
+    expect(
+      recordEnvironmentRetention(db, { ...base, state: "retained" }).state,
+    ).toBe("unresolved");
+    expect(
+      closeEnvironmentRetention(db, { id: retained.id, proof: "absent" }),
+    ).toBe(true);
+    expect(listOpenEnvironmentRetentionsForHost(db, "host_a")).toEqual([]);
+    expect(
+      recordEnvironmentRetention(db, { ...base, state: "intent" }).state,
+    ).toBe("intent");
+  });
+
+  it("keeps one pathless intent per environment and lets it be resolved or deleted", () => {
+    const db = createMigratedConnection();
+    recordEnvironmentRetention(db, {
+      ...base,
+      originalPath: null,
+      keptPath: null,
+      state: "intent",
+    });
+    recordEnvironmentRetention(db, {
+      ...base,
+      originalPath: null,
+      keptPath: null,
+      state: "intent",
+    });
+    expect(db.select().from(environmentRetentions).all()).toHaveLength(1);
+    markEnvironmentRetentionsUnresolved(db, "env_a", "no answer");
+    expect(db.select().from(environmentRetentions).all()[0]?.state).toBe(
+      "unresolved",
+    );
+    expect(
+      findOpenEnvironmentRetentionOverlapping(db, {
+        hostId: "host_a",
+        path: "/work/a",
+      }),
+    ).toBeNull();
+  });
+
+  it("records the closure proof and time on the row and stops blocking", () => {
+    const db = createMigratedConnection();
+    const row = recordEnvironmentRetention(db, { ...base, state: "retained" });
+    expect(
+      closeEnvironmentRetention(db, { id: row.id, proof: "lstat ENOENT on host_a" }),
+    ).toBe(true);
+    const closed = db.select().from(environmentRetentions).all()[0];
+    expect(closed).toMatchObject({
+      state: "closed",
+      closedProof: "lstat ENOENT on host_a",
+    });
+    expect(closed?.closedAt).toBeGreaterThan(0);
+    expect(closeEnvironmentRetention(db, { id: row.id, proof: "again" })).toBe(
+      false,
+    );
   });
 });

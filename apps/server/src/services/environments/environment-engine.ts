@@ -25,6 +25,7 @@ import { eq, and, isNull, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import {
   deleteEnvironmentRetentionIntents,
+  listOpenEnvironmentRetentionsForThread,
   markEnvironmentRetentionsUnresolved,
   recordEnvironmentRetention,
   releaseFinishedEnvironmentPreparationOwners,
@@ -187,6 +188,7 @@ const createResultSchema = z.discriminatedUnion("status", [
     experimental_retained: z
       .object({ path: z.string().min(1) })
       .strict()
+      .nullable()
       .optional(),
   }),
 ]);
@@ -556,7 +558,21 @@ async function runCreate(
     const providerCall = !(
       provisioning.providerOwnsPath && provisioning.path !== null
     );
-    const branchRefusal = providerCall
+    const earlierKept = providerCall
+      ? listOpenEnvironmentRetentionsForThread(deps.db, context.thread.id)
+          .filter(
+            (retention) =>
+              retention.environmentId !== provisioning.id &&
+              retention.keptPath !== null,
+          )
+      : [];
+    const keptRefusal =
+      earlierKept.length > 0
+        ? `An earlier attempt of this thread kept work at ${earlierKept
+            .map((retention) => retention.keptPath)
+            .join(", ")} that has not been released, so another attempt cannot start yet and nothing was created. Release or recover that work first.`
+        : null;
+    const branchRefusal = providerCall && keptRefusal === null
       ? await clearBranchHolders(deps, record, {
           hostId: context.host.id,
           branchName:
@@ -571,9 +587,32 @@ async function runCreate(
         })
       : null;
     signal.throwIfAborted();
+    if (providerCall && branchRefusal === null && keptRefusal === null)
+      recordEnvironmentRetention(deps.db, {
+        environmentId: provisioning.id,
+        projectId: provisioning.projectId,
+        hostId: context.host.id,
+        ownerThreadId: context.thread.id,
+        providerId: record.provider.id,
+        originalPath: null,
+        keptPath: null,
+        state: "intent",
+        message:
+          "A create was dispatched to the provider and has not reported a result.",
+      });
     let result: PluginEnvironmentProviderCreateResult =
-      branchRefusal !== null
-        ? { status: "failed", message: branchRefusal }
+      keptRefusal !== null
+        ? {
+            status: "failed",
+            message: keptRefusal,
+            experimental_retained: null,
+          }
+        : branchRefusal !== null
+          ? {
+              status: "failed",
+              message: branchRefusal,
+              experimental_retained: null,
+            }
         : provisioning.providerOwnsPath && provisioning.path !== null
           ? {
               status: "created" as const,
@@ -599,7 +638,15 @@ async function runCreate(
               });
     if (result.status === "failed") {
       const kept = result.experimental_retained;
-      if (kept !== undefined) {
+      if (kept === undefined) {
+        markEnvironmentRetentionsUnresolved(
+          deps.db,
+          provisioning.id,
+          `${result.message} The provider did not say whether anything was kept, so the workspace may still hold work.`,
+        );
+      } else if (kept === null) {
+        deleteEnvironmentRetentionIntents(deps.db, provisioning.id);
+      } else {
         const keptPath = canonicalizeHostPath(kept.path);
         recordEnvironmentRetention(deps.db, {
           environmentId: provisioning.id,
@@ -613,8 +660,8 @@ async function runCreate(
           state: "retained",
           message: result.message,
         });
+        deleteEnvironmentRetentionIntents(deps.db, provisioning.id);
       }
-      deleteEnvironmentRetentionIntents(deps.db, provisioning.id);
     }
     if (result.status === "created") {
       const bytesAt = result.path;

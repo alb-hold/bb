@@ -94,8 +94,8 @@ export type PluginEnvironmentProviderCreateResult =
   | {
       status: "failed";
       message: string;
-      /** Experimental: the failed create left this path behind on purpose. Core records a retention so the machine cannot be destroyed and the path cannot be removed or moved through core until the owner releases it: see docs/api_to_audit.md. */
-      experimental_retained?: { path: string };
+      /** Experimental: what the failed attempt left behind. `{ path }` means it kept that path on purpose; `null` means it kept nothing. Leaving the field out means the provider does not know, and core treats the attempt as unresolved. Core records a retention so the machine cannot be destroyed and the path cannot be removed or moved through core until the retention is closed: see docs/api_to_audit.md. */
+      experimental_retained?: { path: string } | null;
     };
 
 export interface PluginEnvironmentProviderRemoveContext {

@@ -1214,7 +1214,7 @@ async function removeMachine(deps: Deps, hostId: string): Promise<void> {
         teardownStatus: "failed",
         statusMessage: `${row.name} still holds work a failed create kept (${kept
           .slice(0, 3)
-          .map((retention) => retention.keptPath)
+          .map((retention) => retention.keptPath ?? "(a path the provider did not report)")
           .join(", ")}${kept.length > 3 ? ", …" : ""}); its owner has to release it before this machine can be destroyed, so that work is not erased.`,
         removeRetryAt: Date.now() + MACHINE_IN_USE_RETRY_MS,
       });
