@@ -573,37 +573,46 @@ export class NativeActivityTracker {
     const announced =
       callId === null ? undefined : this.announcedCalls.get(callId);
     if (callId !== null) this.announcedCalls.delete(callId);
-    let index = -1;
-    if (callId !== null) {
-      index = open.findIndex((occurrence) => occurrence.callId === callId);
-    }
-    if (index === -1 && callId !== null) {
-      const candidates = open.filter((occurrence) =>
-        occurrence.candidateCallIds.includes(callId),
-      );
-      if (candidates.length > 0) {
-        for (const occurrence of open) {
-          occurrence.candidateCallIds = occurrence.candidateCallIds.filter(
-            (candidateId) => candidateId !== callId,
+    const direct =
+      callId === null
+        ? undefined
+        : open.find((occurrence) => occurrence.callId === callId);
+    const candidates =
+      callId === null
+        ? []
+        : open.filter((occurrence) =>
+            occurrence.candidateCallIds.includes(callId),
           );
-        }
-        const resolved = candidates.filter(
-          (occurrence) => occurrence.candidateCallIds.length === 0,
+    if (callId !== null && candidates.length > 0) {
+      for (const occurrence of open) {
+        occurrence.candidateCallIds = occurrence.candidateCallIds.filter(
+          (candidateId) => candidateId !== callId,
         );
-        if (resolved.length === 0) {
-          if (open.length === 0) this.openOccurrences.delete(base);
-          else this.openOccurrences.set(base, open);
-          return [];
-        }
-        const resolvedOccurrences = new Set(resolved.map(({ id }) => id));
-        const remaining = open.filter(
-          (occurrence) => !resolvedOccurrences.has(occurrence.id),
-        );
-        if (remaining.length === 0) this.openOccurrences.delete(base);
-        else this.openOccurrences.set(base, remaining);
-        return resolved.map((occurrence) => occurrence.id);
       }
     }
+    const resolved = candidates.filter(
+      (occurrence) => occurrence.candidateCallIds.length === 0,
+    );
+    if (direct !== undefined || resolved.length > 0) {
+      const resolvedOccurrences = new Set([
+        ...(direct === undefined ? [] : [direct.id]),
+        ...resolved.map(({ id }) => id),
+      ]);
+      const remaining = open.filter(
+        (occurrence) => !resolvedOccurrences.has(occurrence.id),
+      );
+      if (remaining.length === 0) this.openOccurrences.delete(base);
+      else this.openOccurrences.set(base, remaining);
+      return [
+        ...(direct === undefined ? [] : [direct.id]),
+        ...resolved.map((occurrence) => occurrence.id),
+      ];
+    }
+    if (candidates.length > 0) {
+      this.openOccurrences.set(base, open);
+      return [];
+    }
+    let index = -1;
     if (
       index === -1 &&
       key !== null &&

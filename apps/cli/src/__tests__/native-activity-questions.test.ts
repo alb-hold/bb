@@ -523,10 +523,9 @@ describe("native terminal questions", () => {
       const thirdId = waiting(third)[2]!.id;
 
       expect(hook(done("toolu_1", input))).toBeNull();
-      expect(waiting(hook(done("toolu_2", input))).map(({ id }) => id)).toEqual([
-        secondId,
-        thirdId,
-      ]);
+      expect(waiting(hook(done("toolu_2", input))).map(({ id }) => id)).toEqual(
+        [secondId, thirdId],
+      );
       expect(waiting(tracker.heartbeat()).map(({ id }) => id)).toEqual([
         secondId,
         thirdId,
@@ -536,7 +535,10 @@ describe("native terminal questions", () => {
         state: "working",
         prompt: null,
       });
-      expect(tracker.heartbeat()).toMatchObject({ state: "working", prompt: null });
+      expect(tracker.heartbeat()).toMatchObject({
+        state: "working",
+        prompt: null,
+      });
       expect(firstId).not.toBe(secondId);
     });
 
@@ -607,7 +609,10 @@ describe("native terminal questions", () => {
         state: "working",
         prompt: null,
       });
-      expect(tracker.heartbeat()).toMatchObject({ state: "working", prompt: null });
+      expect(tracker.heartbeat()).toMatchObject({
+        state: "working",
+        prompt: null,
+      });
     });
 
     it("keeps the first identical call's prompt open when the second auto-allowed call completes", () => {
@@ -623,7 +628,10 @@ describe("native terminal questions", () => {
         state: "working",
         prompt: null,
       });
-      expect(tracker.heartbeat()).toMatchObject({ state: "working", prompt: null });
+      expect(tracker.heartbeat()).toMatchObject({
+        state: "working",
+        prompt: null,
+      });
     });
 
     it("closes its own prompt by tool call id when the input was rewritten after the prompt", () => {
