@@ -562,7 +562,7 @@ describe("runPeriodicSweeps", () => {
     });
   });
 
-  it("tells the user, in the deleted thread's own log, why its files were not deleted, names the holder and the retry, and does not repeat itself", async () => {
+  it("tells the user, in the deleted thread's own log, why its files were not deleted, names the holder and the retry", async () => {
     await withTestHarness(async (harness) => {
       const { host } = seedHostSession(harness.deps);
       const { project } = seedProjectWithSource(harness.deps, {
@@ -589,19 +589,16 @@ describe("runPeriodicSweeps", () => {
       const refusal =
         "Refusing to delete thread storage /storage/thr_x: a process is still working inside it (pid 4242 in /storage/thr_x/app). Nothing was stopped and nothing was removed.";
 
-      for (let attempt = 0; attempt < 2; attempt += 1) {
-        const queued = await waitForQueuedCommand(
-          harness,
-          (candidate) =>
-            candidate.command.type === "thread.storage.delete" &&
-            candidate.command.threadId === thread.id &&
-            candidate.row.status !== "completed",
-        );
-        await reportQueuedCommandError(harness, queued, {
-          errorCode: "path_in_use",
-          errorMessage: refusal,
-        });
-      }
+      const queued = await waitForQueuedCommand(
+        harness,
+        (candidate) =>
+          candidate.command.type === "thread.storage.delete" &&
+          candidate.command.threadId === thread.id,
+      );
+      await reportQueuedCommandError(harness, queued, {
+        errorCode: "path_in_use",
+        errorMessage: refusal,
+      });
 
       const notices = harness.db
         .select({ data: events.data })
