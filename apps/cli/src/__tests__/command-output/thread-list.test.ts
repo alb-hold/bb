@@ -101,7 +101,51 @@ describe("bb thread list command output", () => {
     );
 
     expect(list).toHaveBeenCalledWith({
-      query: { threadIds: "thr_a,thr_b", archived: "false" },
+      query: { threadIds: "thr_a,thr_b" },
+    });
+  });
+
+  it("bb thread list returns an archived thread requested by ID", async () => {
+    const list = vi.fn(async () => [
+      makeThreadListFixture({
+        id: "thread-archived-by-id",
+        projectId: "proj-1",
+        providerId: "codex",
+        status: "idle",
+        archivedAt: 1,
+        createdAt: 1,
+        updatedAt: 1,
+      }),
+    ]);
+    stubServerApi({
+      "v1.threads.$get": list,
+      "v1.projects.$get": async () => [{ id: "proj-1", name: "Alpha" }],
+    });
+
+    await runCommand(
+      ["thread", "list", "--thread", "thread-archived-by-id"],
+      register,
+    );
+
+    expect(list).toHaveBeenCalledWith({
+      query: { threadIds: "thread-archived-by-id" },
+    });
+    expect(collectLogPayloads(vi.mocked(console.log)).join("\n")).toContain(
+      "thread-archived-by-id",
+    );
+  });
+
+  it("bb thread list combines --thread with --archived", async () => {
+    const list = vi.fn(async () => []);
+    stubServerApi({ "v1.threads.$get": list });
+
+    await runCommand(
+      ["thread", "list", "--thread", "thread-1", "--archived"],
+      register,
+    );
+
+    expect(list).toHaveBeenCalledWith({
+      query: { threadIds: "thread-1", archived: "true" },
     });
   });
 

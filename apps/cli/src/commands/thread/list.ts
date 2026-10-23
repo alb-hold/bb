@@ -41,7 +41,9 @@ export function registerListCommand(
 ): void {
   parent
     .command("list")
-    .description("List active threads; use --archived or --all for history")
+    .description(
+      "List active threads; --thread IDs can include archived threads; use --archived or --all for history",
+    )
     .option("--project <id>", "Filter by project ID (defaults to all projects)")
     .option("--environment <id>", "Filter by environment ID")
     .option(
@@ -52,7 +54,7 @@ export function registerListCommand(
     .option("--parent-thread <id>", "Filter by parent thread ID")
     .option(
       "--thread <id>",
-      "Show only this thread ID, leaving out unknown or deleted IDs (repeatable, up to 200)",
+      "Show only this thread ID, including archived threads; leave out unknown or deleted IDs (repeatable, up to 200)",
       collectOption,
       [],
     )
@@ -112,7 +114,7 @@ export function registerListCommand(
           ...(threadIds.length > 0 ? { threadIds } : {}),
           ...(opts.archived
             ? { archived: true }
-            : opts.all
+            : opts.all || threadIds.length > 0
               ? {}
               : { archived: false }),
           ...(sectionId ? { sectionId } : {}),
