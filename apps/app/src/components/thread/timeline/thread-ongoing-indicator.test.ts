@@ -8,6 +8,7 @@ const idle = {
   displayStatus: "idle",
   isStopping: false,
   isTurnSubmitting: false,
+  nativeTerminal: false,
   nativeActivityUnconfirmed: false,
   timelineLoading: false,
   threadStatus: "idle",
@@ -31,8 +32,8 @@ describe("resolveThreadOngoingIndicator", () => {
       expected: { show: true, label: undefined },
     },
     {
-      name: "no stale runtime indicator for an idle thread",
-      input: { ...idle, displayStatus: "active" },
+      name: "no stale runtime indicator for an idle native thread",
+      input: { ...idle, displayStatus: "active", nativeTerminal: true },
       expected: { show: false, label: undefined },
     },
     {

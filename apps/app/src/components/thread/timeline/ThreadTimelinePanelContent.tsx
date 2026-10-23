@@ -64,6 +64,7 @@ export function ThreadTimelinePanelContent({
     displayStatus,
     activeBackgroundAgentCount:
       threadQuery.data?.activeBackgroundAgentCount ?? 0,
+    nativeTerminal: threadQuery.data?.nativeTerminal === true,
     activeBackgroundCommandCount:
       resolvedTimeline.activeBackgroundCommands.length,
     activeWorkflowCount: resolvedTimeline.activeWorkflows.length,

@@ -8,6 +8,7 @@ export function resolveThreadOngoingIndicator({
   displayStatus,
   isStopping,
   isTurnSubmitting,
+  nativeTerminal,
   nativeActivityUnconfirmed,
   timelineLoading,
   threadStatus,
@@ -18,6 +19,7 @@ export function resolveThreadOngoingIndicator({
   displayStatus: ThreadRuntimeDisplayStatus;
   isStopping: boolean;
   isTurnSubmitting: boolean;
+  nativeTerminal: boolean;
   nativeActivityUnconfirmed: boolean;
   timelineLoading: boolean;
   threadStatus: ThreadStatus | undefined;
@@ -42,7 +44,7 @@ export function resolveThreadOngoingIndicator({
       (isProvisioningDisplayStatus ||
         (!timelineLoading &&
           (isTurnSubmitting ||
-            (threadStatus !== "idle" &&
+            ((threadStatus !== "idle" || !nativeTerminal) &&
               isRunningThreadRuntimeDisplayStatus(displayStatus) &&
               !nativeActivityUnconfirmed) ||
             backgroundOnlyIndicatorLabel !== undefined))),

@@ -146,7 +146,6 @@ describe("ThreadTimelinePanelContent", () => {
 
   it("keeps the normal working label while runtime is active", () => {
     mocks.displayStatus = "active";
-    mocks.threadStatus = "active";
 
     render(
       <ThreadTimelinePanelContent
