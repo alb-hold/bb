@@ -21,6 +21,7 @@ import {
   unlinkSync,
   type Stats,
 } from "node:fs";
+import { execFileSync } from "node:child_process";
 import path from "node:path";
 
 const SEQUENCE_WIDTH = 12;
@@ -37,7 +38,7 @@ const MAX_RESERVATIONS_PER_SCAN = 64;
 const LOCK_WAIT_SECONDS = 20;
 const LATE_FILE_NAME = /^\.late\.\d+\.(\d+)$/u;
 const APPEND_LOCK_NAME = "hooks.lock";
-const LOCK_PID_REUSE_BOUND_MS = 10 * 60_000;
+const ORPHANED_LOCK_AGE_MS = 10 * 60_000;
 const LOST_MARKER_NAME = /^\.lost\./u;
 const INCOMPLETE_LINE_AFTER_MS = 10_000;
 const MAX_APPEND_READ_BYTES = 4 * 1024 * 1024;
@@ -232,22 +233,27 @@ export function hookAppendCommand(
     "z=0",
     "oi=",
     "os=0",
+    "t=$(sed 's/^.*) //' \"/proc/$$/stat\" | cut -d' ' -f20)",
+    "c=$$",
+    'if [ -n "$t" ]; then c="$$:p$t"; else ' +
+      't=$(ps -o lstart= -p "$$" | sed \'s/^ *//;s/ *$//\' | tr -s " " "_"); ' +
+      'if [ -n "$t" ]; then c="$$:s$t"; fi; fi',
     "while :; do " +
       'if [ -d "$l" ] && [ ! -L "$l" ] && [ ! -e "$l/pid" ]; then ' +
       'i=$(ls -di "$l" 2>/dev/null); ' +
       'if [ "$i" != "$oi" ]; then oi=$i; os=$(date +%s); fi; ' +
       'if [ -n "$i" ] && [ "$(date +%s)" -ge "$((os+3))" ]; then rmdir "$l"; fi; ' +
       "else oi=; fi; " +
-      'if ln -s "$$" "$l"; then ' +
-      'if [ -L "$l" ] && [ "$(readlink "$l")" = "$$" ]; then break; fi; ' +
-      'rm -f "$l/$$"; ' +
+      'if ln -s "$c" "$l"; then ' +
+      'if [ -L "$l" ] && [ "$(readlink "$l")" = "$c" ]; then break; fi; ' +
+      'rm -f "$l/$c"; ' +
       'elif [ -L "$l" ]; then y=1; z=0; ' +
       'elif [ -e "$l" ]; then z=0; ' +
       "else z=$((z+1)); " +
       'if [ "$y" = 0 ] && [ "$z" -ge 3 ]; then ' +
       'if mkdir "$l"; then ' +
-      'if ( set -C; printf \'%s\' "$$" >"$l/pid" ) ' +
-      '&& [ "$(cat "$l/pid")" = "$$" ]; then break; fi; ' +
+      'if ( set -C; printf \'%s\' "$c" >"$l/pid" ) ' +
+      '&& [ "$(cat "$l/pid")" = "$c" ]; then break; fi; ' +
       'rmdir "$l"; fi; fi; fi; ' +
       'if ! [ "$(date +%s)" -lt "$e" ]; then ' +
       'printf \'%s\\n\' "$r" >"$d/.late.$$.tmp" ' +
@@ -255,8 +261,8 @@ export function hookAppendCommand(
       '|| mv -f "$m" "$d/.lost.$$"; exit 0; fi; ' +
       'if [ "$w" -lt 10 ]; then w=$((w+1)); else sleep 0.05 || sleep 1; fi; done',
     'printf \'%s\\n\' "$r" >>"$f" && rm -f "$m"',
-    'if [ -L "$l" ]; then [ "$(readlink "$l")" = "$$" ] && rm -f "$l"; ' +
-      'elif [ -d "$l" ] && [ "$(cat "$l/pid")" = "$$" ]; then ' +
+    'if [ -L "$l" ]; then [ "$(readlink "$l")" = "$c" ] && rm -f "$l"; ' +
+      'elif [ -d "$l" ] && [ "$(cat "$l/pid")" = "$c" ]; then ' +
       'rm -f "$l/pid"; rmdir "$l"; fi',
     "exit 0",
   ].join("; ");
@@ -693,9 +699,58 @@ function lockHolderText(lock: string, stats: Stats): string | null {
   return content.kind === "text" ? content.text : null;
 }
 
-function lockHolderPid(text: string | null): number | null {
+interface LockHolder {
+  pid: number;
+  start: string | null;
+}
+
+function parseLockHolder(text: string | null): LockHolder | null {
   if (text === null) return null;
-  return /^\d+$/u.test(text.trim()) && Number(text) > 0 ? Number(text) : null;
+  const match = /^(\d+)(?::([ps][^\s:/]+))?$/u.exec(text.trim());
+  const pid = match === null ? Number.NaN : Number(match[1]);
+  if (!Number.isSafeInteger(pid) || pid <= 0) return null;
+  return { pid, start: match?.[2] ?? null };
+}
+
+function procStartTime(pid: number): string | null {
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    const field = stat.slice(stat.lastIndexOf(") ") + 2).split(" ")[19];
+    return field !== undefined && /^\d+$/u.test(field) ? `p${field}` : null;
+  } catch {
+    return null;
+  }
+}
+
+function psStartTime(pid: number): string | null {
+  try {
+    const output = execFileSync("ps", ["-o", "lstart=", "-p", String(pid)], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: 2_000,
+    }).trim();
+    return output === "" ? null : `s${output.replace(/\s+/gu, "_")}`;
+  } catch {
+    return null;
+  }
+}
+
+export function processStartTime(pid: number): string | null {
+  return procStartTime(pid) ?? psStartTime(pid);
+}
+
+function lockHolderIsGone(
+  holder: LockHolder,
+  startTimeOf: (pid: number) => string | null,
+): boolean {
+  if (!processIsAlive(holder.pid)) return true;
+  if (holder.start === null) return false;
+  const current = startTimeOf(holder.pid);
+  return (
+    current !== null &&
+    current.charAt(0) === holder.start.charAt(0) &&
+    current !== holder.start
+  );
 }
 
 function tempState(
@@ -757,6 +812,9 @@ export class HookAppendReader {
   constructor(
     private readonly file: string,
     private readonly beforeLockRemoval: () => void = () => undefined,
+    private readonly startTimeOf: (
+      pid: number,
+    ) => string | null = processStartTime,
   ) {}
 
   read(now: number = Date.now()): HookSpoolRead {
@@ -964,10 +1022,12 @@ export class HookAppendReader {
     try {
       const stats = lstatSync(lock);
       const text = lockHolderText(lock, stats);
-      const holder = lockHolderPid(text);
-      const dead = holder !== null && !processIsAlive(holder);
-      const ancient = now - stats.mtimeMs >= LOCK_PID_REUSE_BOUND_MS;
-      if (!dead && !ancient) return 0;
+      const holder = parseLockHolder(text);
+      const stale =
+        holder === null
+          ? now - stats.mtimeMs >= ORPHANED_LOCK_AGE_MS
+          : lockHolderIsGone(holder, this.startTimeOf);
+      if (!stale) return 0;
       this.beforeLockRemoval();
       if (stats.isSymbolicLink()) {
         if (readlinkSync(lock) !== text) return 0;
