@@ -446,6 +446,7 @@ export function registerActionsCommands(
     .action(
       action(async (id: string, opts: ThreadDeleteCommandOptions) => {
         const sdk = createCliBbSdk(getUrl());
+        let deleted: Awaited<ReturnType<typeof sdk.threads.delete>> | undefined;
         try {
           const thread = await sdk.threads.get({ threadId: id });
 
@@ -459,15 +460,23 @@ export function registerActionsCommands(
             }
           }
 
-          await sdk.threads.delete({
+          deleted = await sdk.threads.delete({
             threadId: id,
             childThreadsConfirmed: opts.confirmChildThreads === true,
           });
         } catch (err: unknown) {
           throw prependErrorContext(`Failed to delete thread ${id}`, err);
         }
-        if (outputJson(opts, { ok: true, threadId: id })) return;
+        if (
+          outputJson(opts, {
+            ok: true,
+            threadId: id,
+            ...(deleted?.kept === undefined ? {} : { kept: deleted.kept }),
+          })
+        )
+          return;
         console.log(`Thread ${id} deleted`);
+        if (deleted?.kept !== undefined) console.log(`kept: ${deleted.kept}`);
       }),
     );
 

@@ -133,7 +133,7 @@ export function beginProjectDeletion(
       ? (environmentsById.get(thread.environmentId) ??
         getEnvironment(deps.db, thread.environmentId))
       : null;
-    requestThreadStorageDeletion(deps, thread, environment);
+    void requestThreadStorageDeletion(deps, thread, environment);
   }
 }
 
@@ -189,7 +189,7 @@ export async function advanceProjectDeletion(
     }
     cancelAbandonedProviderCreations(deps, thread.id);
     deps.terminalSessions.closeDeletedThreadTerminals({ threadId: thread.id });
-    requestThreadStorageDeletion(deps, thread, environment);
+    void requestThreadStorageDeletion(deps, thread, environment);
   }
 
   if (hasRemainingProjectThreads(deps, args.projectId)) {

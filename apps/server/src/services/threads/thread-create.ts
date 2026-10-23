@@ -574,7 +574,7 @@ async function createPendingThreadAndAttemptFirstDispatch(
       threadId: thread.id,
     });
     if (deleted)
-      requestThreadStorageDeletion(
+      void requestThreadStorageDeletion(
         deps,
         deleted,
         deleted.environmentId

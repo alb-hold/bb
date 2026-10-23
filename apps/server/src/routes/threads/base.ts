@@ -78,7 +78,12 @@ import {
 } from "../../services/lib/entity-lookup.js";
 import { listRunningThreadsWithIntendedHosts } from "../../services/threads/dispatch-attempt.js";
 import { dispatchThreadRenameCommand } from "../../services/threads/thread-commands.js";
-import { requestThreadStorageDeletion } from "../../services/threads/thread-lifecycle.js";
+import {
+  requestThreadStorageDeletion,
+  type ThreadStorageDeletionOutcome,
+} from "../../services/threads/thread-lifecycle.js";
+
+const THREAD_STORAGE_DELETE_WAIT_MS = 1_500;
 import { createThreadFromRequest } from "../../services/threads/thread-create.js";
 import { createThreadForkFromRequest } from "../../services/threads/thread-fork.js";
 import { requireChildThreadsConfirmation } from "../../services/threads/child-thread-confirmation.js";
@@ -917,6 +922,7 @@ export function registerThreadBaseRoutes(app: Hono, deps: AppDeps): void {
       thread,
     });
     const dependents = listLifecycleThreadTree(deps.db, thread.id);
+    const storageDeletions: Promise<ThreadStorageDeletionOutcome>[] = [];
     markThreadDeleted(deps.db, deps.hub, { threadId: thread.id });
     for (const dependent of dependents) {
       const deleted = getThread(deps.db, dependent.id);
@@ -926,14 +932,24 @@ export function registerThreadBaseRoutes(app: Hono, deps: AppDeps): void {
       deps.terminalSessions.closeDeletedThreadTerminals({
         threadId: deleted.id,
       });
-      requestThreadStorageDeletion(
-        deps,
-        deleted,
-        deleted.environmentId === null
-          ? null
-          : getEnvironment(deps.db, deleted.environmentId),
+      storageDeletions.push(
+        requestThreadStorageDeletion(
+          deps,
+          deleted,
+          deleted.environmentId === null
+            ? null
+            : getEnvironment(deps.db, deleted.environmentId),
+        ),
       );
     }
-    return context.json({ ok: true });
+    const outcomes = await Promise.race([
+      Promise.all(storageDeletions),
+      new Promise<null>((resolve) => {
+        setTimeout(() => resolve(null), THREAD_STORAGE_DELETE_WAIT_MS).unref();
+      }),
+    ]);
+    const kept =
+      outcomes?.find((outcome) => outcome.kept !== null)?.kept ?? null;
+    return context.json(kept === null ? { ok: true } : { ok: true, kept });
   });
 }

@@ -1591,7 +1591,7 @@ export const publicApiRoutes = {
       request: jsonRequest<PathId, DeleteThreadRequest>(
         deleteThreadRequestSchema,
       ),
-      response: jsonResponse<{ ok: true }>(),
+      response: jsonResponse<{ ok: true; kept?: string }>(),
     }),
     childSummary: defineRoute({
       path: "/threads/:id/child-summary",

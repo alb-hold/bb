@@ -172,7 +172,7 @@ export type ThreadTimelineResult = ThreadTimelineResponse;
 export type ThreadArchiveResult = ThreadArchiveAllResponse;
 export type ThreadOpenResult = ThreadOpenResponse;
 export type ThreadPaneActionResult = ThreadPaneActionResponse;
-export type ThreadDeleteResult = { ok: true };
+export type ThreadDeleteResult = { ok: true; kept?: string };
 export type ThreadSendResult = SendMessageResponse;
 export type ThreadRetryResult = RetryTurnResponse;
 export type ThreadEditMessageResult = EditMessageResponse;
@@ -1258,7 +1258,7 @@ export function createThreadsArea(args: CreateSdkAreaArgs): ThreadsArea {
       );
     },
     async delete(input) {
-      await transport.readVoid(
+      return transport.readJson(
         transport.api.v1.threads[":id"].$delete({
           param: { id: input.threadId },
           json: {
@@ -1266,7 +1266,6 @@ export function createThreadsArea(args: CreateSdkAreaArgs): ThreadsArea {
           },
         }),
       );
-      return { ok: true };
     },
     async editMessage(input) {
       const { threadId, ...json } = input;

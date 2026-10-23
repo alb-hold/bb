@@ -564,8 +564,14 @@ describe("runPeriodicSweeps", () => {
     });
   });
 
-  it("tells the user, in the deleted thread's own log, why its files were not deleted, names the holder and the retry, and does not repeat itself when the sweep retries and is refused again", async () => {
-    await withTestHarness(async (harness) => {
+  describe("a refused thread-storage delete", () => {
+    const refusal =
+      "Refusing to delete thread storage /storage/thr_x: a process is still working inside it (pid 4242 in /storage/thr_x/app). Nothing was stopped and nothing was removed.";
+
+    async function deleteWithRefusal(
+      harness: TestAppHarness,
+      args: { parent: boolean },
+    ) {
       const { host } = seedHostSession(harness.deps);
       const { project } = seedProjectWithSource(harness.deps, {
         hostId: host.id,
@@ -574,23 +580,20 @@ describe("runPeriodicSweeps", () => {
         hostId: host.id,
         projectId: project.id,
       });
+      const parent = args.parent
+        ? seedThread(harness.deps, { projectId: project.id, status: "idle" })
+        : null;
       const thread = seedThread(harness.deps, {
         environmentId: environment.id,
         projectId: project.id,
         status: "idle",
+        ...(parent === null ? {} : { parentThreadId: parent.id }),
       });
-      const response = await harness.app.request(
-        `/api/v1/threads/${thread.id}`,
-        {
-          method: "DELETE",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ childThreadsConfirmed: false }),
-        },
-      );
-      expect(response.status).toBe(200);
-      const refusal =
-        "Refusing to delete thread storage /storage/thr_x: a process is still working inside it (pid 4242 in /storage/thr_x/app). Nothing was stopped and nothing was removed.";
-
+      const pending = harness.app.request(`/api/v1/threads/${thread.id}`, {
+        method: "DELETE",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ childThreadsConfirmed: false }),
+      });
       const queued = await waitForQueuedCommand(
         harness,
         (candidate) =>
@@ -601,30 +604,84 @@ describe("runPeriodicSweeps", () => {
         errorCode: "path_in_use",
         errorMessage: refusal,
       });
+      return { response: await pending, thread, parent, queued };
+    }
 
-      await runThreadLifecycleSweep(harness.deps);
-      const retried = await waitForQueuedCommandAfter(
-        harness,
-        queued.row.cursor,
-        (candidate) =>
-          candidate.command.type === "thread.storage.delete" &&
-          candidate.command.threadId === thread.id,
+    async function readBack(
+      harness: TestAppHarness,
+      threadId: string,
+    ) {
+      const response = await harness.app.request(
+        `/api/v1/threads/${threadId}/events?types=system/error`,
       );
-      await reportQueuedCommandError(harness, retried, {
-        errorCode: "path_in_use",
-        errorMessage: refusal,
-      });
+      expect(response.status).toBe(200);
+      return JSON.stringify(await response.json());
+    }
 
-      const notices = harness.db
-        .select({ data: events.data })
-        .from(events)
-        .where(eq(events.threadId, thread.id))
-        .all()
-        .map((row) => row.data)
-        .filter((data) => data.includes("thread_storage_delete_refused"));
-      expect(notices).toHaveLength(1);
-      expect(notices[0]).toContain("pid 4242");
-      expect(notices[0]).toContain("about every ten seconds");
+    it("is carried by the delete's own response, naming the holder and the retry", async () => {
+      await withTestHarness(async (harness) => {
+        const { response } = await deleteWithRefusal(harness, { parent: false });
+
+        expect(response.status).toBe(200);
+        const body: unknown = await response.json();
+        expect(body).toMatchObject({
+          ok: true,
+          kept: expect.stringContaining("pid 4242"),
+        });
+        expect(JSON.stringify(body)).toContain("about every ten seconds");
+      });
+    });
+
+    it("is posted, when a sweep retries it, to the nearest live parent thread's log, which the events route serves, once", async () => {
+      await withTestHarness(async (harness) => {
+        const { thread, parent, queued } = await deleteWithRefusal(harness, {
+          parent: true,
+        });
+        if (parent === null) throw new Error("missing parent");
+
+        await runThreadLifecycleSweep(harness.deps);
+        const retried = await waitForQueuedCommandAfter(
+          harness,
+          queued.row.cursor,
+          (candidate) =>
+            candidate.command.type === "thread.storage.delete" &&
+            candidate.command.threadId === thread.id,
+        );
+        await reportQueuedCommandError(harness, retried, {
+          errorCode: "path_in_use",
+          errorMessage: refusal,
+        });
+
+        const events = await readBack(harness, parent.id);
+        expect(events.split("thread_storage_delete_refused")).toHaveLength(2);
+        expect(events).toContain(thread.id);
+        expect(events).toContain("pid 4242");
+        expect(events).toContain("about every ten seconds");
+        expect(
+          (await harness.app.request(`/api/v1/threads/${thread.id}/events`))
+            .status,
+        ).toBe(404);
+      });
+    });
+
+    it("has no reachable thread log when the deleted thread has no live ancestor: only the server log and the response carry it", async () => {
+      await withTestHarness(async (harness) => {
+        const { response, thread } = await deleteWithRefusal(harness, {
+          parent: false,
+        });
+
+        expect(((await response.json()) as { kept?: string }).kept).toContain(
+          "pid 4242",
+        );
+        expect(
+          harness.db
+            .select({ data: events.data })
+            .from(events)
+            .where(eq(events.threadId, thread.id))
+            .all()
+            .filter((row) => row.data.includes("thread_storage_delete_refused")),
+        ).toEqual([]);
+      });
     });
   });
 
