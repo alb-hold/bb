@@ -453,6 +453,97 @@ describe("a failed create records what it kept", () => {
       });
     });
 
+    it("does not close a row when a create for its environment starts while the proof is running", async () => {
+      await withTestHarness(async (harness) => {
+        registerProvider(bare, async () => ({ absent: true, proof: "gone" }));
+        const { host, thread } = await destroyedThread(harness);
+        await restoreAndWait(harness, thread.id);
+        let running = false;
+
+        await reconcileEnvironmentRetentions(harness.deps, {
+          isOperationRunning: () => {
+            const answer = running;
+            running = true;
+            return answer;
+          },
+        });
+
+        expect(
+          listOpenEnvironmentRetentionsForHost(harness.db, host.id).map(
+            (row) => row.state,
+          ),
+        ).toEqual(["unresolved"]);
+      });
+    });
+
+    it("does not close a row that was written again while the proof was running", async () => {
+      await withTestHarness(async (harness) => {
+        registerProvider(bare, async () => {
+          const [row] = listOpenEnvironmentRetentionsForHost(
+            harness.db,
+            "host_retention_rec",
+          );
+          if (row === undefined) throw new Error("missing row");
+          recordEnvironmentRetention(harness.db, {
+            environmentId: row.environmentId,
+            projectId: row.projectId,
+            hostId: row.hostId,
+            ownerThreadId: row.ownerThreadId,
+            providerId: row.providerId,
+            originalPath: null,
+            keptPath: null,
+            state: "unresolved",
+            message: "another create finished",
+          });
+          return { absent: true, proof: "gone" };
+        });
+        const { host, thread } = await destroyedThread(harness);
+        await restoreAndWait(harness, thread.id);
+
+        await reconcileEnvironmentRetentions(harness.deps);
+
+        expect(
+          listOpenEnvironmentRetentionsForHost(harness.db, host.id),
+        ).toHaveLength(1);
+      });
+    });
+
+    it("asks with the environment id as the path key when the environment has no instance key, so the row can close", async () => {
+      await withTestHarness(async (harness) => {
+        const asked: PluginEnvironmentProviderRetentionProofContext[] = [];
+        registerProvider(bare, async (context) => {
+          asked.push(context);
+          return { absent: true, proof: "gone" };
+        });
+        const { host, thread, environment } = await destroyedThread(harness);
+        harness.db
+          .update(environments)
+          .set({ environmentProviderInstanceKey: null })
+          .where(eq(environments.id, environment.id))
+          .run();
+        recordEnvironmentRetention(harness.db, {
+          environmentId: environment.id,
+          projectId: environment.projectId,
+          hostId: host.id,
+          ownerThreadId: thread.id,
+          providerId: PROVIDER_ID,
+          originalPath: null,
+          keptPath: null,
+          state: "unresolved",
+          message: "no answer",
+        });
+
+        await reconcileEnvironmentRetentions(harness.deps);
+
+        expect(asked.map((context) => context.pathKey)).toEqual([
+          environment.id,
+        ]);
+        expect(
+          listOpenEnvironmentRetentionsForHost(harness.db, host.id),
+        ).toEqual([]);
+      });
+    });
+
     it("does not ask about an intent that is still fresh", async () => {
       await withTestHarness(async (harness) => {
         const asked: unknown[] = [];

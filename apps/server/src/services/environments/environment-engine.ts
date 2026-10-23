@@ -1623,8 +1623,12 @@ const INTENT_RECONCILE_MIN_AGE_MS = 5 * 60_000;
 
 export async function reconcileEnvironmentRetentions(
   deps: Pick<Deps, "db" | "logger">,
+  options: { isOperationRunning?: (environmentId: string) => boolean } = {},
 ): Promise<void> {
   const operations = perDbRegistry(environmentOperations, deps.db);
+  const isOperationRunning =
+    options.isOperationRunning ??
+    ((environmentId: string) => operations.has(environmentId));
   for (const record of listEnvironmentProviders()) {
     const prove = record.provider.experimental_proveRetentionAbsent;
     if (prove === null) continue;
@@ -1632,7 +1636,7 @@ export async function reconcileEnvironmentRetentions(
       deps.db,
       record.provider.id,
     )) {
-      if (operations.has(row.environmentId)) continue;
+      if (isOperationRunning(row.environmentId)) continue;
       if (
         row.state === "intent" &&
         Date.now() - row.updatedAt < INTENT_RECONCILE_MIN_AGE_MS
@@ -1654,7 +1658,9 @@ export async function reconcileEnvironmentRetentions(
               prove({
                 hostId: row.hostId,
                 path: row.keptPath,
-                pathKey: environment?.environmentProviderInstanceKey ?? null,
+                pathKey:
+                  environment?.environmentProviderInstanceKey ??
+                  (row.keptPath === null ? row.environmentId : null),
                 branchName: environment?.branchName ?? null,
                 sourcePath:
                   source !== null && source.type === "local_path"
@@ -1668,9 +1674,11 @@ export async function reconcileEnvironmentRetentions(
         if (!invocation.ok || invocation.value === null) continue;
         const proof = retentionProofSchema.parse(invocation.value);
         if (!proof.absent) continue;
+        if (isOperationRunning(row.environmentId)) continue;
         closeEnvironmentRetention(deps.db, {
           id: row.id,
           proof: `${proof.proof} (host ${row.hostId}, checked ${new Date().toISOString()})`,
+          expectedUpdatedAt: row.updatedAt,
         });
       } catch (error) {
         deps.logger.warn(

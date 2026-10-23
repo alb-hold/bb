@@ -1,3 +1,4 @@
+import { eq } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
 import { createMigratedConnection } from "../src/testing.js";
 import {
@@ -235,5 +236,115 @@ describe("environment retentions", () => {
       ["env_a", null, "unresolved"],
       ["env_b", null, "unresolved"],
     ]);
+  });
+
+  describe("atomicity", () => {
+    const failTransitions = (db: ReturnType<typeof createMigratedConnection>) =>
+      db.$client.exec(
+        "CREATE TRIGGER fail_transition BEFORE INSERT ON environment_retention_transitions BEGIN SELECT RAISE(ABORT, 'transition insert failed'); END;",
+      );
+
+    it("rolls a new row back when its transition cannot be written", () => {
+      const db = createMigratedConnection();
+      failTransitions(db);
+      expect(() =>
+        recordEnvironmentRetention(db, { ...base, state: "retained" }),
+      ).toThrow("transition insert failed");
+      expect(db.select().from(environmentRetentions).all()).toEqual([]);
+    });
+
+    it("leaves a row open and unchanged when its closure transition cannot be written", () => {
+      const db = createMigratedConnection();
+      const row = recordEnvironmentRetention(db, { ...base, state: "retained" });
+      failTransitions(db);
+      expect(() =>
+        closeEnvironmentRetention(db, { id: row.id, proof: "absent" }),
+      ).toThrow("transition insert failed");
+      expect(db.select().from(environmentRetentions).all()[0]).toMatchObject({
+        state: "retained",
+        closedProof: null,
+      });
+    });
+
+    it("keeps an intent when the transition for deleting it cannot be written", () => {
+      const db = createMigratedConnection();
+      recordEnvironmentRetention(db, { ...base, state: "intent" });
+      failTransitions(db);
+      expect(() => deleteEnvironmentRetentionIntents(db, "env_a")).toThrow(
+        "transition insert failed",
+      );
+      expect(db.select().from(environmentRetentions).all()).toHaveLength(1);
+    });
+
+    it("keeps an intent as it was when the transition for marking it unresolved cannot be written", () => {
+      const db = createMigratedConnection();
+      recordEnvironmentRetention(db, { ...base, state: "intent" });
+      failTransitions(db);
+      expect(() =>
+        markEnvironmentRetentionsUnresolved(db, "env_a", "threw"),
+      ).toThrow("transition insert failed");
+      expect(db.select().from(environmentRetentions).all()[0]?.state).toBe(
+        "intent",
+      );
+    });
+  });
+
+  describe("freshness of a re-recorded row", () => {
+    it("refreshes the time of an intent that is recorded again, so it is not judged by its old age", () => {
+      const db = createMigratedConnection();
+      const first = recordEnvironmentRetention(db, {
+        ...base,
+        originalPath: null,
+        keptPath: null,
+        state: "intent",
+      });
+      db.update(environmentRetentions)
+        .set({ updatedAt: 1000 })
+        .where(eq(environmentRetentions.id, first.id))
+        .run();
+
+      const again = recordEnvironmentRetention(db, {
+        ...base,
+        originalPath: null,
+        keptPath: null,
+        state: "intent",
+      });
+
+      expect(again.id).toBe(first.id);
+      expect(again.updatedAt).toBeGreaterThan(1000);
+      expect(Date.now() - again.updatedAt).toBeLessThan(5_000);
+    });
+
+    it("refuses to close a row that changed after it was read, and closes it when it did not", () => {
+      const db = createMigratedConnection();
+      const read = recordEnvironmentRetention(db, { ...base, state: "retained" });
+      db.update(environmentRetentions)
+        .set({ updatedAt: read.updatedAt })
+        .where(eq(environmentRetentions.id, read.id))
+        .run();
+      const reRecorded = recordEnvironmentRetention(db, {
+        ...base,
+        state: "retained",
+      });
+      expect(reRecorded.updatedAt).toBeGreaterThan(read.updatedAt);
+
+      expect(
+        closeEnvironmentRetention(db, {
+          id: read.id,
+          proof: "stale",
+          expectedUpdatedAt: read.updatedAt,
+        }),
+      ).toBe(false);
+      expect(db.select().from(environmentRetentions).all()[0]?.state).toBe(
+        "retained",
+      );
+      expect(
+        closeEnvironmentRetention(db, {
+          id: read.id,
+          proof: "fresh",
+          expectedUpdatedAt: reRecorded.updatedAt,
+        }),
+      ).toBe(true);
+    });
   });
 });
