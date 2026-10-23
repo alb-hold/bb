@@ -669,7 +669,7 @@ const liveThreadStates = or(
   and(isNull(threads.archivedAt), isNull(threads.deletedAt)),
   eq(threads.status, "stopping"),
   eq(threads.status, "active"),
-  sql`exists (select 1 from ${queuedThreadMessages} where ${queuedThreadMessages.threadId} = ${threads.id})`,
+  sql`exists (select 1 from ${queuedThreadMessages} where ${queuedThreadMessages.threadId} = ${threads.id} and ${queuedThreadMessages.state} = 'claimed')`,
 );
 
 export function environmentHasLiveThreads(db: EnvironmentWriteConnection, environmentId: string): boolean {
@@ -724,7 +724,7 @@ export function listEnvironmentLiveThreadIds(db: EnvironmentWriteConnection, env
 }
 
 const liveThreadsPredicate = (environmentId: string) =>
-  sql`exists (select 1 from ${threads} where ${threads.environmentId} = ${environmentId} and ((${threads.archivedAt} is null and ${threads.deletedAt} is null) or ${threads.status} = 'stopping' or ${threads.status} = 'active' or exists (select 1 from ${queuedThreadMessages} where ${queuedThreadMessages.threadId} = ${threads.id})))`;
+  sql`exists (select 1 from ${threads} where ${threads.environmentId} = ${environmentId} and ((${threads.archivedAt} is null and ${threads.deletedAt} is null) or ${threads.status} = 'stopping' or ${threads.status} = 'active' or exists (select 1 from ${queuedThreadMessages} where ${queuedThreadMessages.threadId} = ${threads.id} and ${queuedThreadMessages.state} = 'claimed')))`;
 
 export interface EnvironmentTeardownClaimInput {
   row: EnvironmentRow;

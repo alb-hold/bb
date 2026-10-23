@@ -23,7 +23,7 @@ const liveThreadCondition = or(
   and(isNull(threads.archivedAt), isNull(threads.deletedAt)),
   eq(threads.status, "stopping"),
   eq(threads.status, "active"),
-  sql`exists (select 1 from ${queuedThreadMessages} where ${queuedThreadMessages.threadId} = ${threads.id})`,
+  sql`exists (select 1 from ${queuedThreadMessages} where ${queuedThreadMessages.threadId} = ${threads.id} and ${queuedThreadMessages.state} = 'claimed')`,
 );
 
 export function listProviderMachines(db: Connection, providerId: string) {
