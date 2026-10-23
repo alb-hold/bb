@@ -1,6 +1,8 @@
+import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { promisify } from "node:util";
 import type { ExperimentalHostRpcContext } from "@get-bb/plugin-sdk/host";
 import { afterEach, describe, expect, it } from "vitest";
 import hostEntry from "../host.js";
@@ -9,6 +11,7 @@ import {
   trustedClaudeExecutable,
 } from "./claude-executable.js";
 
+const execFileAsync = promisify(execFile);
 const tempDirs: string[] = [];
 
 afterEach(async () => {
@@ -42,6 +45,8 @@ function deps(
     uid: process.getuid?.() ?? null,
     defaultExecutable: async () => "claude",
     resolve: async () => null,
+    listAcl: async (entry) =>
+      `drwxr-xr-x  2 owner  staff  64 Oct 23 12:00 ${entry}\n`,
     ...overrides,
   };
 }
@@ -102,6 +107,95 @@ posix("the Claude CLI that writing assistance trusts", () => {
       await trustedClaudeExecutable(deps({ resolve: async () => file })),
     ).toEqual({ ok: true, path: file });
   });
+
+  it("refuses a CLI file or directory that other accounts in its group can change, unless the directory is sticky", async () => {
+    const dir = await scratch();
+    const file = await cli(dir, 0o775);
+    expect(
+      await trustedClaudeExecutable(deps({ resolve: async () => file })),
+    ).toEqual({
+      ok: false,
+      message: `Writing assistance will not run ${file}: other accounts in its group can change ${file}`,
+    });
+    await fs.chmod(file, 0o755);
+    await fs.chmod(dir, 0o775);
+    expect(
+      await trustedClaudeExecutable(deps({ resolve: async () => file })),
+    ).toEqual({
+      ok: false,
+      message: `Writing assistance will not run ${file}: other accounts in its group can change ${dir}`,
+    });
+    await fs.chmod(dir, 0o1775);
+    expect(
+      await trustedClaudeExecutable(deps({ resolve: async () => file })),
+    ).toEqual({ ok: true, path: file });
+  });
+
+  it("on macOS refuses a CLI whose file or directory has an access control list allowing writes, and ignores deny entries", async () => {
+    const dir = await scratch();
+    const file = await cli(dir);
+    const acl =
+      (allowed: string, rule: string) =>
+      async (entry: string): Promise<string> =>
+        `-rwxr-xr-x+ 1 owner  staff  17 Oct 23 12:00 ${entry}\n` +
+        (entry === allowed
+          ? ` 0: ${rule}\n`
+          : " 0: group:everyone deny delete\n");
+    expect(
+      await trustedClaudeExecutable(
+        deps({
+          platform: "darwin",
+          resolve: async () => file,
+          listAcl: acl(dir, "group:staff allow add_file,delete_child"),
+        }),
+      ),
+    ).toEqual({
+      ok: false,
+      message: `Writing assistance will not run ${file}: an access control list lets other accounts change ${dir}`,
+    });
+    expect(
+      await trustedClaudeExecutable(
+        deps({
+          platform: "darwin",
+          resolve: async () => file,
+          listAcl: acl(file, "user:someone allow write,append"),
+        }),
+      ),
+    ).toMatchObject({ ok: false });
+    expect(
+      await trustedClaudeExecutable(
+        deps({
+          platform: "darwin",
+          resolve: async () => file,
+          listAcl: acl(file, "group:everyone deny write"),
+        }),
+      ),
+    ).toEqual({ ok: true, path: file });
+  });
+
+  (process.platform === "darwin" ? it : it.skip)(
+    "on macOS reads a real access control list that lets everyone write the CLI",
+    async () => {
+      const file = await cli(await scratch());
+      const saved = process.env.BB_CLAUDE_CODE_EXECUTABLE;
+      process.env.BB_CLAUDE_CODE_EXECUTABLE = file;
+      try {
+        await expect(trustedClaudeExecutable()).resolves.toEqual({
+          ok: true,
+          path: file,
+        });
+        await execFileAsync("/bin/chmod", ["+a", "everyone allow write", file]);
+        await expect(trustedClaudeExecutable()).resolves.toEqual({
+          ok: false,
+          message: `Writing assistance will not run ${file}: an access control list lets other accounts change ${file}`,
+        });
+      } finally {
+        await execFileAsync("/bin/chmod", ["-N", file]);
+        if (saved === undefined) delete process.env.BB_CLAUDE_CODE_EXECUTABLE;
+        else process.env.BB_CLAUDE_CODE_EXECUTABLE = saved;
+      }
+    },
+  );
 
   it("refuses a link whose target sits where any account can change it", async () => {
     const good = await scratch();

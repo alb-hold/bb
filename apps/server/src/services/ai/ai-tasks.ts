@@ -215,14 +215,18 @@ export async function runAiTask<T>(
   const waitsForStatus = args.task === "writing";
   for (const [index, service] of services.entries()) {
     const attemptDeadline = Date.now() + timeoutMs;
-    const statusWaitMs = !waitsForStatus
-      ? AI_STATUS_FALLBACK_WAIT_MS
-      : index < services.length - 1
+    const statusWaitMs =
+      index < services.length - 1
         ? Math.min(AI_STATUS_FALLBACK_WAIT_MS, timeoutMs)
         : timeoutMs;
     const skipped = skipMessage(
       service,
-      await deps.aiServices.settledStatus(aiServiceKey(service), statusWaitMs),
+      waitsForStatus
+        ? await deps.aiServices.settledStatus(
+            aiServiceKey(service),
+            statusWaitMs,
+          )
+        : await deps.aiServices.taskStatus(aiServiceKey(service)),
     );
     if (skipped !== null) {
       last = { reason: "unavailable", message: skipped };

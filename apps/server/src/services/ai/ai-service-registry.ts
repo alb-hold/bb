@@ -43,6 +43,7 @@ export interface AiServiceRegistry {
   list(): AiServiceRegistration[];
   peekStatus(key: AiServiceKey): AiServiceStatus | null;
   status(key: AiServiceKey): Promise<AiServiceStatus>;
+  taskStatus(key: AiServiceKey): Promise<AiServiceStatus>;
   settledStatus(key: AiServiceKey, maxWaitMs: number): Promise<AiServiceStatus>;
 }
 
@@ -111,6 +112,7 @@ export function createAiServiceRegistry(
   const services = new Map<string, AiServiceRegistration>();
   const statuses = new Map<AiServiceRegistration, CachedStatus>();
   const inFlight = new Map<AiServiceRegistration, StatusProbe>();
+  const taskTimeouts = new Map<AiServiceRegistration, number>();
 
   function refresh(service: AiServiceRegistration): Promise<AiServiceStatus> {
     const pending = inFlight.get(service);
@@ -205,6 +207,7 @@ export function createAiServiceRegistry(
           if (services.get(key) === registration) {
             services.delete(key);
             statuses.delete(registration);
+            taskTimeouts.delete(registration);
             args.onStatusChange?.();
           }
         },
@@ -235,6 +238,26 @@ export function createAiServiceRegistry(
       return answerWithin(refresh(service), STATUS_ANSWER_MS, () =>
         statusAfterWait(service),
       );
+    },
+    async taskStatus(key) {
+      const service = services.get(mapKey(key));
+      if (service === undefined) {
+        return { ready: false, message: "Plugin not loaded" };
+      }
+      const timedOutAt = taskTimeouts.get(service);
+      if (timedOutAt !== undefined && now() - timedOutAt <= STATUS_TTL_MS) {
+        return NOT_RESPONDING;
+      }
+      const fresh = freshStatus(service);
+      if (fresh !== undefined) return fresh;
+      const timedOut: AiServiceStatus = { ...NOT_RESPONDING };
+      const answer = await answerWithin(
+        refresh(service),
+        STATUS_ANSWER_MS,
+        () => timedOut,
+      );
+      if (answer === timedOut) taskTimeouts.set(service, now());
+      return answer;
     },
     async settledStatus(key, maxWaitMs) {
       const service = services.get(mapKey(key));

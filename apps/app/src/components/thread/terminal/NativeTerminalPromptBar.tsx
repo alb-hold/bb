@@ -30,6 +30,7 @@ import { useOptionalPaneContext } from "@/views/thread-detail/PaneContext";
 import {
   diffText,
   joinDictation,
+  mapCaret,
   mapOffset,
   type TextChange,
 } from "./composer-text-ops";
@@ -176,8 +177,8 @@ export function NativeTerminalPromptBar({
           const change = lastChangeRef.current;
           if (change !== null) {
             element.setSelectionRange(
-              mapOffset(change, selectionStart, "after"),
-              mapOffset(change, selectionEnd, "after"),
+              mapCaret(change, selectionStart),
+              mapCaret(change, selectionEnd),
             );
           }
           return;
@@ -195,8 +196,8 @@ export function NativeTerminalPromptBar({
       const change = lastChangeRef.current;
       if (selection !== null && change !== null) {
         pendingSelectionRef.current = [
-          mapOffset(change, selection[0], "after"),
-          mapOffset(change, selection[1], "after"),
+          mapCaret(change, selection[0]),
+          mapCaret(change, selection[1]),
         ];
       }
     },

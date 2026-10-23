@@ -38,6 +38,13 @@ export function mapOffset(
   return assoc === "before" ? change.start : change.insertedEnd;
 }
 
+export function mapCaret(change: TextChange, offset: number): number {
+  if (offset === change.start && change.removedEnd > change.start) {
+    return offset;
+  }
+  return mapOffset(change, offset, "after");
+}
+
 export function touchesRange(
   change: TextChange,
   start: number,

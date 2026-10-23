@@ -659,6 +659,51 @@ describe(
       expect(input.selectionStart).toBe(typed.length);
     });
 
+    it.each([
+      { at: "start", caret: 9, fixed: 9 },
+      { at: "end", caret: 12, fixed: 11 },
+    ])(
+      "keeps a caret moved to the $at of a fix while it was checked at that edge of the fix and back on Undo",
+      async ({ caret, fixed }) => {
+        let answer: (value: unknown) => void = () => undefined;
+        correct.mockImplementation(
+          () =>
+            new Promise((resolve) => {
+              answer = resolve;
+            }),
+        );
+        const { input } = await renderWithAssistance();
+        const typed = "The user are here. ";
+        input.focus();
+        fireEvent.change(input, { target: { value: typed } });
+        input.setSelectionRange(typed.length, typed.length);
+        await waitFor(() => expect(correct).toHaveBeenCalled(), {
+          timeout: 8_000,
+        });
+        input.setSelectionRange(caret, caret);
+        answer({
+          status: "ok",
+          edits: [
+            edit({ start: 9, end: 12, original: "are", replacement: "is" }),
+          ],
+        });
+        await waitFor(() => expect(input.value).toBe("The user is here. "), {
+          timeout: 8_000,
+        });
+        expect([input.selectionStart, input.selectionEnd]).toEqual([
+          fixed,
+          fixed,
+        ]);
+        expect(document.activeElement).toBe(input);
+        fireEvent.click(screen.getByRole("button", { name: /Undo/ }));
+        expect(input.value).toBe(typed);
+        expect([input.selectionStart, input.selectionEnd]).toEqual([
+          caret,
+          caret,
+        ]);
+      },
+    );
+
     it("does not send a corrected sentence back for another correction", async () => {
       correct.mockImplementation(async (request: { target: string }) => ({
         status: "ok",

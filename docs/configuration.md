@@ -1518,9 +1518,13 @@ Two host-daemon environment variables reach the Claude Code bridge:
 service alike; a request cannot choose it. Before the writing service sends
 text, it resolves that binary to its real file and refuses it unless the file,
 every link on the way to it and every directory above them belong to the
-daemon's own account or root and no other account can change them (a directory
-any account can write counts only with the sticky bit, as `/tmp` has; a
-group-writable directory such as Homebrew's `/opt/homebrew/bin` is accepted).
+daemon's own account or root and no other account can change them. Group write
+counts as another account: a group-writable file is refused, and a directory
+that its group or any account can write counts only with the sticky bit, as
+`/tmp` has, so a binary under Homebrew's group-writable `/opt/homebrew/bin` is
+refused. On macOS an access control list entry that allows writing to any of
+them is refused too; on Linux an ACL that grants write shows in the group bits
+and is refused the same way.
 For the writing service the variable must be an absolute path. A refused
 binary shows the service as not ready with the reason, and no text is sent.
 Windows has no such ownership check. The other, `CLAUDE_CODE_OAUTH_TOKEN`, authenticates a

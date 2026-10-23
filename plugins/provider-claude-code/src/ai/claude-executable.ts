@@ -1,11 +1,15 @@
+import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { promisify } from "node:util";
 import { experimental_resolveExecutablePath as resolveExecutablePath } from "@get-bb/plugin-sdk/provider-bridge";
 import { claudeExecutable } from "../bridge/provider-maintenance.js";
 
 const OTHERS_WRITE = 0o002;
+const GROUP_WRITE = 0o020;
 const STICKY = 0o1000;
 const MAX_LINK_HOPS = 40;
+const execFileAsync = promisify(execFile);
 
 export type ClaudeExecutableCheck =
   | { ok: true; path: string }
@@ -17,6 +21,15 @@ export interface ClaudeExecutableCheckDeps {
   uid: number | null;
   defaultExecutable: () => Promise<string>;
   resolve: (command: string) => Promise<string | null>;
+  listAcl: (entry: string) => Promise<string>;
+}
+
+const ACL_WRITE =
+  /\ballow\b.*\b(write|append|add_file|add_subdirectory|delete|delete_child|writeattr|writeextattr|writesecurity|chown)\b/u;
+
+async function listAcl(entry: string): Promise<string> {
+  const { stdout } = await execFileAsync("/bin/ls", ["-lde", entry]);
+  return stdout;
 }
 
 function defaultDeps(): ClaudeExecutableCheckDeps {
@@ -26,6 +39,7 @@ function defaultDeps(): ClaudeExecutableCheckDeps {
     uid: typeof process.getuid === "function" ? process.getuid() : null,
     defaultExecutable: claudeExecutable,
     resolve: resolveExecutablePath,
+    listAcl,
   };
 }
 
@@ -38,7 +52,7 @@ function withParents(dir: string, into: Set<string>): void {
 
 async function untrustedReason(
   file: string,
-  uid: number | null,
+  deps: ClaudeExecutableCheckDeps,
 ): Promise<string | null> {
   const checked = new Set<string>();
   let current = file;
@@ -54,13 +68,24 @@ async function untrustedReason(
   withParents(path.dirname(real), checked);
   for (const entry of checked) {
     const stat = await fs.stat(entry);
-    if (uid !== null && stat.uid !== uid && stat.uid !== 0) {
+    if (deps.uid !== null && stat.uid !== deps.uid && stat.uid !== 0) {
       return `${entry} belongs to another account`;
     }
-    const othersWrite = (stat.mode & OTHERS_WRITE) !== 0;
     const sticky = stat.isDirectory() && (stat.mode & STICKY) !== 0;
-    if (othersWrite && !sticky) {
+    if (sticky) continue;
+    if ((stat.mode & OTHERS_WRITE) !== 0) {
       return `any account can change ${entry}`;
+    }
+    if ((stat.mode & GROUP_WRITE) !== 0) {
+      return `other accounts in its group can change ${entry}`;
+    }
+  }
+  if (deps.platform === "darwin") {
+    for (const entry of checked) {
+      const listing = (await deps.listAcl(entry)).split("\n").slice(1);
+      if (listing.some((line) => ACL_WRITE.test(line))) {
+        return `an access control list lets other accounts change ${entry}`;
+      }
     }
   }
   if (!(await fs.stat(real)).isFile()) return `${real} is not a file`;
@@ -95,7 +120,7 @@ export async function trustedClaudeExecutable(
   }
   if (deps.platform === "win32") return { ok: true, path: candidate };
   try {
-    const reason = await untrustedReason(candidate, deps.uid);
+    const reason = await untrustedReason(candidate, deps);
     if (reason !== null) {
       return {
         ok: false,
