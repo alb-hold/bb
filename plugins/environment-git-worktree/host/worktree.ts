@@ -812,11 +812,12 @@ async function removeDirectoryIfEmpty(pathToRemove: string): Promise<void> {
 async function assertWorktreeRemovable(
   identity: WorktreeIdentity,
   args: RemoveWorktreeArgs,
+  options: { fetchRemotes?: boolean } = {},
 ): Promise<void> {
   const reasons =
     args.createdBy !== undefined
       ? (await inspectCreatedBy(identity, args.createdBy, args.signal)).reasons
-      : await findPreservationReasons(identity, args.signal);
+      : await findPreservationReasons(identity, args.signal, options);
   if (reasons.length > 0) {
     throw worktreePreservedError(identity.path, reasons);
   }
@@ -943,7 +944,9 @@ export async function removeWorktree(
           await assertWorktreeRemovable(identity, args);
           throwIfProvisionAborted(args.signal);
           throwIfProvisionAborted(args.signal);
-          await assertWorktreeRemovable(identity, args);
+          await assertWorktreeRemovable(identity, args, {
+            fetchRemotes: false,
+          });
           await removeRegisteredWorktree(identity, args, retention);
           return true;
         },

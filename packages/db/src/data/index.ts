@@ -694,3 +694,15 @@ export type {
   DiffViewedFileRecord,
   DiffViewedFileScope,
 } from "./diff-viewed-files.js";
+export {
+  listEnvironmentReleaseConsents,
+  listUnreleasedEnvironmentThreadIds,
+  recordThreadEnvironmentReleases,
+  revokeThreadEnvironmentReleases,
+  SYSTEM_RELEASE_ACTOR,
+} from "./environment-release-consents.js";
+export type {
+  EnvironmentReleaseActor,
+  EnvironmentReleaseActorKind,
+  EnvironmentReleaseConsentRow,
+} from "./environment-release-consents.js";

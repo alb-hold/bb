@@ -839,11 +839,8 @@ describe("worktree host entry", () => {
           pathKey,
           path: null,
         }),
-      ).toMatchObject({
-        status: "retained",
-        message: expect.stringContaining(result.path),
-      });
-      expect(existsSync(result.path)).toBe(true);
+      ).toEqual({ status: "removed" });
+      expect(existsSync(join(dataDir, "worktrees", pathKey))).toBe(false);
       await harness.experimental_dispose();
     },
   );
@@ -1494,6 +1491,46 @@ describe.skipIf(process.platform === "win32")(
           };
         },
       },
+      {
+        name: "a staged new file",
+        reason: "uncommitted changes",
+        prepare: async (worktree) => {
+          await writeFile(join(worktree.path, "staged.txt"), "staged\n");
+          await git(worktree.path, "add", "staged.txt");
+          return async () => {
+            expect(
+              await git(worktree.path, "diff", "--cached", "--name-only"),
+            ).toContain("staged.txt");
+          };
+        },
+      },
+      {
+        name: "a stash made on its branch",
+        reason: "stashed change",
+        prepare: async (worktree) => {
+          await writeFile(join(worktree.path, "README.md"), "stashed\n");
+          await git(worktree.path, "stash", "push");
+          expect(await git(worktree.path, "status", "--porcelain")).toBe("");
+          return async () => {
+            expect(await git(worktree.path, "stash", "list")).toContain(
+              worktree.branchName,
+            );
+          };
+        },
+      },
+      {
+        name: "a commit on a branch that is ahead of its upstream",
+        reason: "not reachable from any remote-tracking branch",
+        prepare: async (worktree) => {
+          await git(worktree.path, "push", "--set-upstream", "origin", "HEAD");
+          const sha = await commitFile(worktree.path, "ahead.txt");
+          return async () => {
+            expect((await git(worktree.path, "rev-parse", "HEAD")).trim()).toBe(
+              sha,
+            );
+          };
+        },
+      },
     ];
 
     it.each(preservationCases)(
@@ -1517,6 +1554,94 @@ describe.skipIf(process.platform === "win32")(
         }
       },
     );
+
+    it("says the branch has no upstream when it keeps unpublished commits on it", async () => {
+      const worktree = await createManagedWorktree();
+      try {
+        await commitFile(worktree.path, "local.txt");
+        await stopLingering(worktree);
+        const result = await removeFrom(worktree);
+        expect(result.status === "retained" ? result.message : "").toContain(
+          `${worktree.branchName} has no upstream`,
+        );
+        expect(existsSync(worktree.path)).toBe(true);
+      } finally {
+        await worktree.harness.experimental_dispose();
+      }
+    });
+
+    it("does not blame a missing upstream when the branch has one", async () => {
+      const worktree = await createManagedWorktree();
+      try {
+        await git(worktree.path, "push", "--set-upstream", "origin", "HEAD");
+        await commitFile(worktree.path, "ahead.txt");
+        await stopLingering(worktree);
+        const result = await removeFrom(worktree);
+        const message = result.status === "retained" ? result.message : "";
+        expect(message).toContain("not reachable from any remote-tracking");
+        expect(message).not.toContain("no upstream");
+      } finally {
+        await worktree.harness.experimental_dispose();
+      }
+    });
+
+    it("removes a worktree whose commits were published from elsewhere, once it has fetched", async () => {
+      const worktree = await createManagedWorktree();
+      try {
+        const sha = await commitFile(worktree.path, "elsewhere.txt");
+        const remoteUrl = (
+          await git(worktree.path, "remote", "get-url", "origin")
+        ).trim();
+        await git(
+          worktree.path,
+          "push",
+          remoteUrl,
+          "HEAD:refs/heads/published-elsewhere",
+        );
+        expect(
+          await git(worktree.path, "branch", "-r", "--contains", sha),
+        ).toBe("");
+        await stopLingering(worktree);
+        expect(await removeFrom(worktree)).toEqual({ status: "removed" });
+        await expectWorktreeRemoved(worktree);
+      } finally {
+        await worktree.harness.experimental_dispose();
+      }
+    });
+
+    it("keeps a worktree it could not fetch to check", async () => {
+      const worktree = await createManagedWorktree();
+      try {
+        await git(
+          worktree.path,
+          "remote",
+          "set-url",
+          "origin",
+          join(worktree.root, "no-such-remote.git"),
+        );
+        await stopLingering(worktree);
+        const result = await removeFrom(worktree);
+        expect(result.status === "retained" ? result.message : "").toContain(
+          "could not fetch its remotes",
+        );
+        expect(existsSync(worktree.path)).toBe(true);
+      } finally {
+        await worktree.harness.experimental_dispose();
+      }
+    });
+
+    it("removes a worktree whose stash belongs to another branch", async () => {
+      const worktree = await createManagedWorktree();
+      try {
+        await writeFile(join(worktree.sourcePath, "README.md"), "other\n");
+        await git(worktree.sourcePath, "stash", "push");
+        await stopLingering(worktree);
+        expect(await removeFrom(worktree)).toEqual({ status: "removed" });
+        await expectWorktreeRemoved(worktree);
+      } finally {
+        await worktree.harness.experimental_dispose();
+      }
+    });
 
     it("removes a clean published worktree with ignored dependency files", async () => {
       const worktree = await createManagedWorktree({

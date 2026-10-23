@@ -59,6 +59,10 @@ import {
 import { generateCommitMessage } from "../services/ai/commit-message.js";
 import { archiveEnvironmentThreads } from "../services/threads/thread-archive.js";
 import {
+  parseReleaseActorThreadId,
+  RELEASE_ACTOR_THREAD_HEADER,
+} from "../services/threads/release-actor.js";
+import {
   normalizeBranchQuery,
   parseBranchListLimit,
 } from "./branch-list-query.js";
@@ -424,7 +428,12 @@ export function registerEnvironmentRoutes(app: Hono, deps: AppDeps): void {
 
   post(routes.archiveThreads, (context) => {
     const environment = requireEnvironment(deps.db, context.req.param("id"));
-    const archivedThreadIds = archiveEnvironmentThreads(deps, { environment });
+    const archivedThreadIds = archiveEnvironmentThreads(deps, {
+      actorThreadId: parseReleaseActorThreadId(
+        context.req.header(RELEASE_ACTOR_THREAD_HEADER),
+      ),
+      environment,
+    });
     return context.json({
       ok: true,
       archivedThreadIds,

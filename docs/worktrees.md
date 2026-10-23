@@ -141,9 +141,13 @@ that starts using the worktree in the meantime cancels the removal. A worktree i
 - has modified tracked files or untracked files (ignored files such as
   `node_modules` do not count),
 - is locked, or is in the middle of a merge, rebase, cherry-pick or revert,
-- has a HEAD that is not reachable from any remote-tracking branch, which
-  includes repositories with no remote and detached commits that were never
-  pushed. A branch needs no upstream, only a pushed commit that contains HEAD,
+- has a stash entry made on its branch (`git stash`),
+- has a HEAD that is not reachable from any remote-tracking branch, checked
+  after bb fetches every remote of the repository, which includes repositories
+  with no remote and detached commits that were never pushed. When the branch
+  has no upstream, the message says so. A branch needs no upstream when it holds
+  no commit that is not already on a remote-tracking branch,
+- is held by a program (see below), or cannot be fetched to check,
 - is not a linked worktree of the expected repository inside bb's worktree
   directory, or is a symbolic link.
 
@@ -158,15 +162,21 @@ removal, then unarchive it to restore the workspace, or recover the path
 yourself. A removal that failed before bb touched anything is undone when the
 thread is unarchived.
 
-Otherwise bb keeps the worktree. It removes a worktree only after the owner of
-the work has released it, and bb cannot yet verify a release, so for now it does
-not delete a worktree because a check came back clean. It also looks for programs
-that use the worktree: any process of yours whose working directory is inside it,
-or that holds a file open inside it. bb never signals those programs. While one
-is running, or when bb cannot tell (for example on Windows, or when a process
-cannot be inspected), the worktree is kept and the message names the program so
-its owner can finish and close it. A scan is a snapshot: a program that opens a
-file after the last check is not excluded. When bb does remove the worktree
+A worktree is removed only after the threads that use it were released: an
+archive or a delete of each of them through bb (the app, `bb thread archive`,
+`bb thread delete` or the SDK) records the release, and unarchiving a thread
+withdraws it. Whoever archives or deletes counts: you, the thread itself, or a
+coordinator that archives its child; bb records which of them it was, as the
+caller claims it (the CLI claims the thread in `BB_THREAD_ID`). The release is
+not what keeps your work safe: the checks above are. A thread that was archived
+or deleted before bb recorded releases is treated as released by an
+upgrade-time record. bb also looks for programs that use the worktree: any
+process of yours whose working directory is inside it, or that holds a file open
+inside it. bb never signals those programs. While one is running, or when bb
+cannot tell (for example on Windows, or when a process cannot be inspected), the
+worktree is kept and the message names the program so its owner can finish and
+close it. A scan is a snapshot: a program that opens a file after the last check
+is not excluded. When bb does remove the worktree
 of a create that failed, it runs `git worktree remove` without `--force`, and bb
 never uses `--force`. A create that finds a branch still checked out by
 an earlier workspace leaves it alone and says where it is; the owning cleanup

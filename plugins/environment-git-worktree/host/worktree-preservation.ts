@@ -263,9 +263,17 @@ export async function findStructuralReasons(
   return reasons;
 }
 
+const FETCH_TIMEOUT_MS = 60_000;
+const STASH_SUBJECT = /^(?:WIP on|On) ([^:]+): /;
+
+function stashBranch(subject: string): string | null {
+  return STASH_SUBJECT.exec(subject)?.[1] ?? null;
+}
+
 export async function findPreservationReasons(
   identity: WorktreeIdentity,
   signal: AbortSignal | undefined,
+  options: { fetchRemotes?: boolean } = {},
 ): Promise<string[]> {
   const reasons = await findStructuralReasons(identity);
   const gitOptions = {
@@ -294,6 +302,51 @@ export async function findPreservationReasons(
     reasons.push("has uncommitted changes or untracked files");
   }
 
+  const head = await runGit(
+    ["--no-optional-locks", "symbolic-ref", "--short", "-q", "HEAD"],
+    gitOptions,
+  );
+  const branchName = head.exitCode === 0 ? head.stdout.trim() : null;
+  const stashes = await runGit(
+    ["--no-optional-locks", "stash", "list", "--format=%gs"],
+    gitOptions,
+  );
+  if (stashes.exitCode !== 0) {
+    reasons.push(
+      `could not list its stashes${stashes.stderr.trim() ? ` (${stashes.stderr.trim()})` : ""}`,
+    );
+  } else {
+    const own = stashes.stdout
+      .split("\n")
+      .filter(
+        (subject) => stashBranch(subject) === (branchName ?? "(no branch)"),
+      );
+    if (own.length > 0) {
+      reasons.push(
+        `has ${own.length} stashed change${own.length === 1 ? "" : "s"} (git stash)`,
+      );
+    }
+  }
+
+  if (options.fetchRemotes !== false) {
+    try {
+      const fetched = await runGit(["fetch", "--all", "--quiet", "--no-tags"], {
+        ...gitOptions,
+        env: { ...gitOptions.env, GIT_TERMINAL_PROMPT: "0" },
+        timeoutMs: FETCH_TIMEOUT_MS,
+      });
+      if (fetched.exitCode !== 0) {
+        reasons.push(
+          `could not fetch its remotes to verify its commits are published${fetched.stderr.trim() ? ` (${fetched.stderr.trim()})` : ""}`,
+        );
+      }
+    } catch (error) {
+      reasons.push(
+        `could not fetch its remotes to verify its commits are published (${describeError(error)})`,
+      );
+    }
+  }
+
   const unpublished = await runGit(
     [
       "--no-optional-locks",
@@ -310,13 +363,25 @@ export async function findPreservationReasons(
       `could not verify its commits are published${unpublished.stderr.trim() ? ` (${unpublished.stderr.trim()})` : ""}`,
     );
   } else if (unpublished.stdout.trim() !== "") {
+    const upstream =
+      branchName === null
+        ? null
+        : await runGit(
+            [
+              "--no-optional-locks",
+              "rev-parse",
+              "--abbrev-ref",
+              "--symbolic-full-name",
+              `${branchName}@{upstream}`,
+            ],
+            gitOptions,
+          );
     reasons.push(
-      "has commits that are not reachable from any remote-tracking branch",
+      branchName !== null && upstream !== null && upstream.exitCode !== 0
+        ? `its branch ${branchName} has no upstream and has commits that are not reachable from any remote-tracking branch`
+        : "has commits that are not reachable from any remote-tracking branch",
     );
   }
-  reasons.push(
-    "needs its owner's release before bb removes it, and bb cannot verify a release yet",
-  );
   const holderReason = describeHolderScan(
     await scanWorktreeHolders(identity.path),
   );

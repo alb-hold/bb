@@ -33,6 +33,7 @@ import {
   recordEnvironmentRetention,
   releaseFinishedEnvironmentPreparationOwners,
   environmentHasLiveThreads,
+  listUnreleasedEnvironmentThreadIds,
   environments,
   listBranchHolderEnvironments,
   listEnvironmentLiveThreadIds,
@@ -1066,6 +1067,19 @@ async function runRemove(
         report: emptyReporter(),
         signal,
       });
+      if (row.providerOwnsPath && row.path !== null) {
+        const unreleased = listUnreleasedEnvironmentThreadIds(
+          deps.db,
+          environmentId,
+        );
+        if (unreleased.length > 0) {
+          recordTeardownRetained(deps, target, {
+            message: `Kept ${row.path}: no archive or delete through bb has released it for ${unreleased.length === 1 ? "thread" : "threads"} ${unreleased.join(", ")}. Archive or delete ${unreleased.length === 1 ? "that thread" : "those threads"}, or remove the workspace yourself.`,
+            resumedInFlight,
+          });
+          return;
+        }
+      }
       if (record.provider.experimental_preflightRemove !== null) {
         const inspection = await invokeEnvironmentProvider(
           record,

@@ -74,6 +74,7 @@ export function dropEnvironmentRetentionSchema(db: DbConnection): void {
       db.$client.exec(`ALTER TABLE environments DROP COLUMN ${column}`);
     }
   }
+  db.$client.exec("DROP TABLE IF EXISTS environment_release_consents");
   db.$client.exec("DROP TABLE IF EXISTS environment_retention_transitions");
   db.$client.exec("DROP TABLE IF EXISTS environment_retentions");
 }

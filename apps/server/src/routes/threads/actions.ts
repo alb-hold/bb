@@ -87,6 +87,10 @@ import {
 } from "../../services/threads/thread-provisioning.js";
 import { archiveThreadAndChildren } from "../../services/threads/thread-archive.js";
 import {
+  parseReleaseActorThreadId,
+  RELEASE_ACTOR_THREAD_HEADER,
+} from "../../services/threads/release-actor.js";
+import {
   requireThreadCommandEnvironment,
   requireThreadHostCommandEnvironment,
   resolveThreadHostCommandEnvironment,
@@ -620,6 +624,9 @@ export function registerThreadActionRoutes(app: Hono, deps: AppDeps): void {
   post(routes.archiveAll, (context) => {
     const thread = requirePublicThread(deps.db, context.req.param("id"));
     const archivedThreadIds = archiveThreadAndChildren(deps, {
+      actorThreadId: parseReleaseActorThreadId(
+        context.req.header(RELEASE_ACTOR_THREAD_HEADER),
+      ),
       parentThread: thread,
     });
     return context.json({

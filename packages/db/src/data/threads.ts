@@ -52,6 +52,12 @@ import { bumpThreadEventOwnershipEpoch } from "./event-rewrite-generation.js";
 import { createOrderKeyBetween } from "./order-keys.js";
 import { insertThreadPluginMetadata } from "./thread-plugin-metadata.js";
 import { reviveFailedEnvironmentTeardown } from "./environments.js";
+import {
+  recordThreadEnvironmentReleases,
+  revokeThreadEnvironmentReleases,
+  SYSTEM_RELEASE_ACTOR,
+  type EnvironmentReleaseActor,
+} from "./environment-release-consents.js";
 
 type ThreadWriteConnection = DbConnection | DbTransaction;
 
@@ -668,6 +674,7 @@ export interface ListNonDeletedChildThreadsArgs {
 
 export interface MarkThreadDeletedArgs {
   deletedAt?: number;
+  release?: EnvironmentReleaseActor;
   threadId: string;
 }
 
@@ -2178,20 +2185,28 @@ export function markThreadDeleted(
   notifier: DbNotifier,
   args: MarkThreadDeletedArgs,
 ) {
-  const updated = db
-    .update(threads)
-    .set({
-      deletedAt: args.deletedAt ?? Date.now(),
-      updatedAt: Date.now(),
-    })
-    .where(
-      and(
-        inArray(threads.id, lifecycleThreadTreeIdsForThread(args.threadId)),
-        isNull(threads.deletedAt),
-      ),
-    )
-    .returning()
-    .all();
+  const updated = db.transaction((tx) => {
+    const deleted = tx
+      .update(threads)
+      .set({
+        deletedAt: args.deletedAt ?? Date.now(),
+        updatedAt: Date.now(),
+      })
+      .where(
+        and(
+          inArray(threads.id, lifecycleThreadTreeIdsForThread(args.threadId)),
+          isNull(threads.deletedAt),
+        ),
+      )
+      .returning()
+      .all();
+    recordThreadEnvironmentReleases(
+      tx,
+      deleted.map((thread) => thread.id),
+      args.release ?? SYSTEM_RELEASE_ACTOR,
+    );
+    return deleted;
+  });
   for (const thread of updated) {
     notifier.notifyThread(thread.id, ["thread-deleted"], {
       projectId: thread.projectId,
@@ -2222,6 +2237,7 @@ export function archiveThread(
   db: ThreadWriteConnection,
   notifier: DbNotifier,
   id: string,
+  release: EnvironmentReleaseActor = SYSTEM_RELEASE_ACTOR,
 ) {
   const now = Date.now();
   const updated = db.transaction((tx) => {
@@ -2241,6 +2257,11 @@ export function archiveThread(
       tx,
       archived.map((thread) => thread.id),
       "rate-limits",
+    );
+    recordThreadEnvironmentReleases(
+      tx,
+      archived.map((thread) => thread.id),
+      release,
     );
     return archived;
   });
@@ -2315,6 +2336,7 @@ export function unarchiveThread(
         .get();
       if (unarchived) {
         markThreadPruningPolicyWork(tx, [unarchived.id], "rate-limits");
+        revokeThreadEnvironmentReleases(tx, unarchived.id);
         if (unarchived.environmentId !== null)
           reviveFailedEnvironmentTeardown(tx, unarchived.environmentId);
       }

@@ -203,11 +203,16 @@ Making your repo work with bb:
   environment as destroyed. The branch is kept. Before any of that, a worktree
   is kept, not removed, when it holds recoverable work: a `.keep-worktree`
   file in its root (create one to keep a worktree on purpose), modified or
-  untracked files, a commit not reachable from any remote-tracking branch
-  (this includes repositories with no remote), a lock, or an unfinished merge,
-  rebase, cherry-pick or revert, or a process working inside it (bb never stops a
+  untracked files, a stash made on its branch, a commit not reachable from any
+  remote-tracking branch after bb fetches the repository's remotes (this
+  includes repositories with no remote, and the message says when the branch has
+  no upstream), a lock, or an unfinished merge, rebase, cherry-pick or revert, or
+  a process working inside it (bb never stops a
   process to remove a worktree; shells, editors, servers and background jobs left
-  there keep it). `bb environment show <id>` then prints the
+  there keep it). A worktree is also kept until each thread that uses it was
+  released by an archive or a delete through bb, by you, by the thread itself
+  (`bb thread archive --self`) or by a coordinator thread; unarchiving withdraws
+  the release. `bb environment show <id>` then prints the
   reason as "Kept" and bb retries with a growing delay. Unarchiving a thread
   inside the grace window cancels the teardown. Move your own shells out of
   the worktree first if you want to keep them. Deleting the last thread, or an

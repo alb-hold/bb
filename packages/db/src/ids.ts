@@ -34,6 +34,10 @@ export function createEnvironmentRetentionTransitionId(): string {
   return createId("rtr");
 }
 
+export function createEnvironmentReleaseConsentId(): string {
+  return createId("rel");
+}
+
 export function createThreadId(): string {
   return createId("thr");
 }

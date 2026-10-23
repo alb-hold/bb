@@ -88,6 +88,11 @@ import { createThreadFromRequest } from "../../services/threads/thread-create.js
 import { createThreadForkFromRequest } from "../../services/threads/thread-fork.js";
 import { requireChildThreadsConfirmation } from "../../services/threads/child-thread-confirmation.js";
 import {
+  parseReleaseActorThreadId,
+  RELEASE_ACTOR_THREAD_HEADER,
+  releaseActorFor,
+} from "../../services/threads/release-actor.js";
+import {
   toThreadListEntryResponses,
   toThreadResponseFromThread,
 } from "../../services/threads/thread-runtime-display.js";
@@ -923,7 +928,13 @@ export function registerThreadBaseRoutes(app: Hono, deps: AppDeps): void {
     });
     const dependents = listLifecycleThreadTree(deps.db, thread.id);
     const storageDeletions: Promise<ThreadStorageDeletionOutcome>[] = [];
-    markThreadDeleted(deps.db, deps.hub, { threadId: thread.id });
+    const actorThreadId = parseReleaseActorThreadId(
+      context.req.header(RELEASE_ACTOR_THREAD_HEADER),
+    );
+    markThreadDeleted(deps.db, deps.hub, {
+      release: releaseActorFor(actorThreadId, thread.id),
+      threadId: thread.id,
+    });
     for (const dependent of dependents) {
       const deleted = getThread(deps.db, dependent.id);
       if (!deleted) continue;

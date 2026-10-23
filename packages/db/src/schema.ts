@@ -1370,6 +1370,27 @@ export const environmentRetentions = sqliteTable(
   ],
 );
 
+export const environmentReleaseConsents = sqliteTable(
+  "environment_release_consents",
+  {
+    id: text("id").primaryKey(),
+    environmentId: text("environment_id").notNull(),
+    threadId: text("thread_id").notNull(),
+    actorKind: text("actor_kind")
+      .$type<"user" | "self" | "coordinator" | "system" | "migrated">()
+      .notNull(),
+    actorThreadId: text("actor_thread_id"),
+    grantedAt: integer("granted_at").notNull(),
+  },
+  (table) => [
+    uniqueIndex("environment_release_consents_environment_thread_idx").on(
+      table.environmentId,
+      table.threadId,
+    ),
+    index("environment_release_consents_thread_idx").on(table.threadId),
+  ],
+);
+
 export const environmentRetentionTransitions = sqliteTable(
   "environment_retention_transitions",
   {
