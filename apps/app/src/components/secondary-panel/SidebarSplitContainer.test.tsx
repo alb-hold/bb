@@ -17,6 +17,7 @@ import {
   type SidebarSplitTabDescriptor,
 } from "./SidebarSplitContainer";
 import {
+  applyTerminalSidebarLayoutAction,
   createSidebarSplitState,
   focusSidebarPane,
   moveSidebarTab,
@@ -25,7 +26,17 @@ import {
   sidebarSplitStorageKey,
   type SidebarSplitState,
 } from "./sidebarSplitLayout";
-import { getFixedPanelTabsStateStorageKey } from "@/lib/fixed-panel-tabs-state";
+import {
+  createTerminalFixedPanelTab,
+  getFixedPanelTabsStateStorageKey,
+} from "@/lib/fixed-panel-tabs-state";
+import { countPanes, MAX_PANES } from "@/lib/split-layout";
+import { PANE_LIMIT_TITLE } from "@/lib/split-layout/paneLimit";
+
+const { toastWarning } = vi.hoisted(() => ({ toastWarning: vi.fn() }));
+vi.mock("@/components/ui/app-toast", () => ({
+  appToast: { warning: toastWarning },
+}));
 
 const TABS: readonly SidebarSplitTabDescriptor[] = [
   { id: "tab-a", label: "A", restoresPlacementAfterRemoval: true },
@@ -69,6 +80,20 @@ function createStackedPaneState(): SidebarSplitState {
   );
 }
 
+function createPaneLimitState(tabIds: readonly string[]): SidebarSplitState {
+  let state = createSidebarSplitState(tabIds, tabIds[0]!);
+  for (let index = 1; index < MAX_PANES; index += 1) {
+    state = applyTerminalSidebarLayoutAction(
+      state,
+      tabIds[index]!,
+      "split",
+      `pane-limit-group-${index}`,
+      "right",
+    );
+  }
+  return state;
+}
+
 function persistState(state: SidebarSplitState): void {
   window.localStorage.setItem(
     sidebarSplitStorageKey(PANEL_STATE_ID),
@@ -76,13 +101,15 @@ function persistState(state: SidebarSplitState): void {
   );
 }
 
-function renderContainer({
+function containerElement({
   activeTabId = "tab-a",
   isFullScreen = false,
   onActivateTab = vi.fn(),
   onToggleFullScreen = vi.fn(),
   renderPane,
   tabs = TABS,
+  onEnsureTerminalTabs,
+  terminalLayoutRequest,
 }: {
   activeTabId?: string;
   isFullScreen?: boolean;
@@ -90,8 +117,16 @@ function renderContainer({
   onToggleFullScreen?: () => void;
   renderPane: (args: SidebarSplitPaneRenderArgs) => ReactNode;
   tabs?: readonly SidebarSplitTabDescriptor[];
+  onEnsureTerminalTabs?: (terminalIds: readonly string[]) => boolean | null;
+  terminalLayoutRequest?: {
+    action: "split" | "move";
+    requestId: number;
+    side?: "right" | "left" | "up" | "down";
+    targetTerminalId?: string;
+    terminalId: string;
+  } | null;
 }) {
-  return render(
+  return (
     <SidebarProvider>
       <TooltipProvider>
         <SidebarSplitContainer
@@ -99,14 +134,20 @@ function renderContainer({
           isFullScreen={isFullScreen}
           onActivateTab={onActivateTab}
           onGlobalTabReorder={vi.fn()}
+          onEnsureTerminalTabs={onEnsureTerminalTabs}
           onToggleFullScreen={onToggleFullScreen}
           panelStateId={PANEL_STATE_ID}
           renderPane={renderPane}
+          terminalLayoutRequest={terminalLayoutRequest}
           tabs={tabs}
         />
       </TooltipProvider>
-    </SidebarProvider>,
+    </SidebarProvider>
   );
+}
+
+function renderContainer(options: Parameters<typeof containerElement>[0]) {
+  return render(containerElement(options));
 }
 
 function StatefulPane({
@@ -156,9 +197,206 @@ function MultiTabStatefulPane({
 }
 
 describe("SidebarSplitContainer", () => {
+  it("opens a missing terminal tab before applying its split request", async () => {
+    const terminalId = "term-created-by-cli";
+    const terminalTab = createTerminalFixedPanelTab({ terminalId });
+    const otherTab = createTerminalFixedPanelTab({ terminalId: "term-other" });
+    const tabs = [
+      { id: terminalTab.id, label: "CLI terminal", restoresPlacementAfterRemoval: true },
+      { id: otherTab.id, label: "Other", restoresPlacementAfterRemoval: true },
+    ];
+    const onEnsureTerminalTabs = vi.fn(() => true);
+    const request = { action: "split" as const, requestId: 41, terminalId, side: "right" as const };
+    const renderPane = ({ group, paneId }: SidebarSplitPaneRenderArgs) => (
+      <div>{`${paneId}:${group.tabIds.join(",")}`}</div>
+    );
+    const view = renderContainer({
+      activeTabId: otherTab.id,
+      tabs: [tabs[1]!],
+      terminalLayoutRequest: request,
+      onEnsureTerminalTabs,
+      renderPane,
+    });
+
+    expect(onEnsureTerminalTabs).toHaveBeenCalledWith([terminalId]);
+    expect(listPaneIds()).toHaveLength(0);
+    view.rerender(containerElement({
+      activeTabId: otherTab.id,
+      tabs,
+      terminalLayoutRequest: request,
+      onEnsureTerminalTabs,
+      renderPane,
+    }));
+    await waitFor(() => expect(listPaneIds()).toHaveLength(2));
+    expect(toastWarning).not.toHaveBeenCalled();
+  });
+
+  it("notifies when a requested terminal cannot be made available and leaves layout unchanged", async () => {
+    const onEnsureTerminalTabs = vi.fn(() => false);
+    renderContainer({
+      terminalLayoutRequest: { action: "split", requestId: 42, terminalId: "term-foreign" },
+      onEnsureTerminalTabs,
+      renderPane: ({ paneId }) => <div>{paneId}</div>,
+    });
+
+    await waitFor(() => expect(toastWarning).toHaveBeenCalledWith("The terminal is no longer available in this thread."));
+    expect(window.localStorage.getItem(sidebarSplitStorageKey(PANEL_STATE_ID))).toBeNull();
+  });
+
+  it("rejects an exited terminal whose tab is already available without changing layout", async () => {
+    const terminalId = "term-exited-present";
+    const terminalTab = createTerminalFixedPanelTab({ terminalId });
+    const tabs = [
+      { id: terminalTab.id, label: "Exited", restoresPlacementAfterRemoval: true },
+      { id: "tab-b", label: "Other", restoresPlacementAfterRemoval: true },
+    ];
+    const initial = createSidebarSplitState(tabs.map((tab) => tab.id), terminalTab.id);
+    const split = moveSidebarTab(
+      initial,
+      initial.layout.focusedPaneId,
+      "tab-b",
+      { paneId: initial.layout.focusedPaneId, zone: "right" },
+      { groupId: "group-exited" },
+    );
+    persistState(split);
+    const storageKey = sidebarSplitStorageKey(PANEL_STATE_ID);
+    const savedState = window.localStorage.getItem(storageKey);
+    const onEnsureTerminalTabs = vi.fn(() => false);
+    renderContainer({
+      activeTabId: terminalTab.id,
+      tabs,
+      terminalLayoutRequest: {
+        action: "split",
+        requestId: 43,
+        side: "right",
+        terminalId,
+      },
+      onEnsureTerminalTabs,
+      renderPane: ({ group }) => <div>{group.tabIds.join(",")}</div>,
+    });
+
+    await waitFor(() =>
+      expect(toastWarning).toHaveBeenCalledWith("The terminal is no longer available in this thread."),
+    );
+    expect(onEnsureTerminalTabs).toHaveBeenCalledWith([terminalId]);
+    expect(window.localStorage.getItem(storageKey)).toBe(savedState);
+    expect(listPaneIds()).toHaveLength(2);
+  });
+
+  it.each(["already available", "not yet available"] as const)(
+    "rejects a split at the pane limit before selecting a terminal that is %s",
+    async (availability) => {
+      const terminalIds = Array.from(
+        { length: MAX_PANES },
+        (_, index) => `term-pane-limit-${index}`,
+      );
+      const tabs = terminalIds.map((terminalId) => ({
+        id: createTerminalFixedPanelTab({ terminalId }).id,
+        label: terminalId,
+        restoresPlacementAfterRemoval: true,
+      }));
+      const terminalId =
+        availability === "already available"
+          ? terminalIds[0]!
+          : "term-pane-limit-cli-only";
+      const request = {
+        action: "split" as const,
+        requestId: availability === "already available" ? 44 : 45,
+        side: "right" as const,
+        terminalId,
+      };
+      const onEnsureTerminalTabs = vi.fn(() => true);
+      const state = createPaneLimitState(tabs.map((tab) => tab.id));
+      expect(countPanes(state.layout.root)).toBe(MAX_PANES);
+      persistState(state);
+      const storageKey = sidebarSplitStorageKey(PANEL_STATE_ID);
+      const savedState = window.localStorage.getItem(storageKey);
+      const renderPane = ({ group, paneId }: SidebarSplitPaneRenderArgs) => (
+        <div data-testid={`pane-state-${paneId}`}>
+          {`${group.id}:${group.activeTabId}:${group.tabIds.join(",")}`}
+        </div>
+      );
+
+      renderContainer({
+        activeTabId: tabs[0]!.id,
+        tabs,
+        terminalLayoutRequest: request,
+        onEnsureTerminalTabs,
+        renderPane,
+      });
+      const paneIdsBefore = listPaneIds();
+      const paneStateBefore = Array.from(
+        document.querySelectorAll<HTMLElement>("[data-testid^='pane-state-']"),
+        (pane) => pane.textContent,
+      );
+
+      await waitFor(() =>
+        expect(toastWarning).toHaveBeenCalledWith(
+          PANE_LIMIT_TITLE,
+          expect.objectContaining({ id: "split-layout-pane-limit" }),
+        ),
+      );
+      expect(onEnsureTerminalTabs).not.toHaveBeenCalled();
+      expect(listPaneIds()).toEqual(paneIdsBefore);
+      expect(
+        Array.from(
+          document.querySelectorAll<HTMLElement>("[data-testid^='pane-state-']"),
+          (pane) => pane.textContent,
+        ),
+      ).toEqual(paneStateBefore);
+      expect(window.localStorage.getItem(storageKey)).toBe(savedState);
+    },
+  );
+
+  it("applies a terminal layout request through the persisted sidebar split state", async () => {
+    const terminalId = "term-layout-source";
+    const otherTerminalId = "term-layout-other";
+    const terminalTabId = createTerminalFixedPanelTab({ terminalId }).id;
+    const otherTabId = createTerminalFixedPanelTab({
+      terminalId: otherTerminalId,
+    }).id;
+    const tabs = [
+      { id: terminalTabId, label: "Source", restoresPlacementAfterRemoval: true },
+      { id: otherTabId, label: "Other", restoresPlacementAfterRemoval: true },
+    ];
+    const terminalLayoutRequest = {
+      action: "split" as const,
+      requestId: 1,
+      side: "down" as const,
+      terminalId,
+    };
+
+    renderContainer({
+      activeTabId: terminalTabId,
+      tabs,
+      terminalLayoutRequest,
+      renderPane: ({ group, paneId }) => (
+        <div data-testid={`layout-pane-${paneId}`}>{group.tabIds.join(",")}</div>
+      ),
+    });
+
+    await waitFor(() => expect(listPaneIds()).toHaveLength(2));
+    const stored = window.localStorage.getItem(
+      sidebarSplitStorageKey(PANEL_STATE_ID),
+    );
+    expect(stored).not.toBeNull();
+    expect(countPanes(parseSidebarSplitState(stored, tabs.map((tab) => tab.id), terminalTabId).layout.root)).toBe(2);
+
+    cleanup();
+    renderContainer({
+      activeTabId: terminalTabId,
+      tabs,
+      renderPane: ({ group, paneId }) => (
+        <div data-testid={`layout-pane-${paneId}`}>{group.tabIds.join(",")}</div>
+      ),
+    });
+    await waitFor(() => expect(listPaneIds()).toHaveLength(2));
+  });
+
   beforeEach(() => {
     window.localStorage.clear();
     nextPaneInstance = 0;
+    toastWarning.mockClear();
   });
 
   afterEach(() => {
@@ -273,6 +511,23 @@ describe("SidebarSplitContainer", () => {
         `[data-split-pane-id="${secondPaneId}"][data-focused="true"]`,
       ),
     ).not.toBeNull();
+  });
+
+  it("re-activates the active tab when it is selected again", () => {
+    const activate = vi.fn();
+
+    renderContainer({
+      activeTabId: "tab-a",
+      onActivateTab: activate,
+      renderPane: ({ group, onSelectTab }) => (
+        <button type="button" onClick={() => onSelectTab(group.activeTabId)}>
+          Select {group.activeTabId}
+        </button>
+      ),
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Select tab-a" }));
+
+    expect(activate).toHaveBeenCalledExactlyOnceWith("tab-a");
   });
 
   it("assigns focus and outer controls to the appropriate panes", () => {

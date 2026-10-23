@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { z } from "zod";
 import { clientMessageSchema, type ClientMessage } from "@bb/domain";
 import type { RealtimeSubscriptionTarget } from "@bb/server-contract";
 
@@ -76,6 +77,40 @@ const THREAD_TARGET = {
 const PROJECT_TARGET = {
   kind: "project-list",
 } satisfies RealtimeSubscriptionTarget;
+
+const legacyThreadOpenSignalSchema = z.object({
+  type: z.literal("thread-open"),
+  projectId: z.string(),
+  threadId: z.string(),
+  split: z.enum(["right", "down", "left", "top", "replace"]),
+  file: z.unknown().nullable(),
+  terminalAction: z
+    .object({
+      action: z.enum(["focus", "openBrowser"]),
+      terminalId: z.string(),
+      url: z.string().optional(),
+    })
+    .optional(),
+});
+
+describe("thread-open compatibility", () => {
+  it("lets an older app parse the thread-open signal while dropping layout fields", () => {
+    const parsed = legacyThreadOpenSignalSchema.parse({
+      type: "thread-open",
+      projectId: "proj_1",
+      threadId: "thr_1",
+      split: "replace",
+      file: null,
+      terminalLayoutAction: {
+        action: "split",
+        terminalId: "term_1",
+        side: "right",
+      },
+    });
+    expect(parsed.threadId).toBe("thr_1");
+    expect(parsed).not.toHaveProperty("terminalLayoutAction");
+  });
+});
 
 interface ConnectedManager {
   manager: WebSocketManager;
@@ -188,11 +223,7 @@ describe("WebSocketManager subscriptions", () => {
     expect(readClientMessages(socket)).toEqual([
       {
         type: "subscribe",
-        target: THREAD_TARGET,
-      },
-      {
-        type: "subscribe",
-        target: PROJECT_TARGET,
+        targets: [THREAD_TARGET, PROJECT_TARGET],
       },
     ]);
   });
@@ -447,7 +478,7 @@ describe("WebSocketManager thread-open signals", () => {
     expect(threadOpen).not.toHaveBeenCalled();
   });
 
-  it("ignores unknown fields on thread-open signals", () => {
+  it("delivers known layout actions and ignores unrelated future fields", () => {
     const { manager } = createConnectedManager();
     const threadOpen = vi.fn();
     manager.onThreadOpen(threadOpen);
@@ -459,6 +490,11 @@ describe("WebSocketManager thread-open signals", () => {
       split: "replace",
       file: null,
       futureAction: { value: "ignored" },
+      terminalLayoutAction: {
+        action: "split",
+        terminalId: "term_1",
+        side: "right",
+      },
     });
 
     expect(threadOpen).toHaveBeenCalledWith({
@@ -467,6 +503,11 @@ describe("WebSocketManager thread-open signals", () => {
       threadId: "thr_1",
       split: "replace",
       file: null,
+      terminalLayoutAction: {
+        action: "split",
+        terminalId: "term_1",
+        side: "right",
+      },
     });
   });
 
@@ -789,6 +830,39 @@ describe("WebSocketManager liveness", () => {
     expect(onResumed).not.toHaveBeenCalled();
   });
 
+  it("stops watching after a long hide, across reconnects, until visible again", () => {
+    const { browserEvents, manager, socket } = createLiveManager();
+    const onResumed = vi.fn();
+    manager.onResumed(onResumed);
+    manager.subscribe(THREAD_TARGET);
+    const nonPingMessages = () =>
+      readClientMessages(socket).filter((message) => message.type !== "ping");
+
+    browserEvents.setVisible(false);
+    vi.advanceTimersByTime(REALTIME_RESUME_HIDDEN_THRESHOLD_MS - 1);
+    browserEvents.setVisible(true);
+    browserEvents.setVisible(false);
+    vi.advanceTimersByTime(REALTIME_RESUME_HIDDEN_THRESHOLD_MS);
+    socket.close();
+    socket.open();
+    manager.subscribe(PROJECT_TARGET);
+    browserEvents.setVisible(true);
+
+    expect(nonPingMessages()).toEqual([
+      { type: "subscribe", target: THREAD_TARGET },
+      { type: "visibility", visible: false },
+      { type: "visibility", visible: false },
+      { type: "subscribe", targets: [THREAD_TARGET] },
+      { type: "subscribe", target: PROJECT_TARGET },
+      { type: "visibility", visible: true },
+    ]);
+    expect(onResumed).toHaveBeenCalledTimes(1);
+    expect(onResumed).toHaveBeenCalledWith([THREAD_TARGET, PROJECT_TARGET]);
+
+    browserEvents.goOnline();
+    expect(onResumed).toHaveBeenLastCalledWith([]);
+  });
+
   it("schedules the first automatic reconnect within 500 ms of a close", () => {
     createLiveManager();
     const options = fakeSocketState.instances[0]?.options;
@@ -853,7 +927,7 @@ describe("WebSocketManager liveness", () => {
     replacement.open();
 
     expect(readClientMessages(replacement)).toEqual([
-      { type: "subscribe", target: THREAD_TARGET },
+      { type: "subscribe", targets: [THREAD_TARGET] },
     ]);
     expect(manager.getConnectionState()).toBe("connected");
   });

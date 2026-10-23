@@ -1,4 +1,9 @@
 import type {
+  ExperimentalRpcKeyedMethod,
+  ExperimentalRpcKeyedValue,
+} from "./rpc-contract.js";
+import type { experimental_PluginRpcCallError } from "./rpc-contract.js";
+import type {
   ComponentPropsWithRef,
   ComponentPropsWithoutRef,
   ComponentType,
@@ -37,6 +42,8 @@ import type { JsonValue } from "./json-value.js";
 import type {
   PluginRpcCallArgs,
   PluginRpcContract,
+  PluginRpcMethodContract,
+  StandardSchemaV1InferInput,
   PluginRpcResult,
 } from "./rpc-contract.js";
 
@@ -73,6 +80,17 @@ export interface PluginSettingsSectionProps {}
  * hooks; versioned additive like the other slot props.
  */
 export interface ExperimentalAppOverlayProps {}
+
+export type ExperimentalPageTitle = (
+  | { title: string; breadcrumbs?: never }
+  | { title?: never; breadcrumbs: readonly ExperimentalPageBreadcrumb[] }
+) & { windowTitle?: string };
+
+export interface ExperimentalPageBreadcrumb {
+  label: string;
+  /** Absolute app route, starting with a single slash. */
+  to?: string;
+}
 
 /** Props passed to a `navPanel` component (it owns its whole route). */
 export interface PluginNavPanelProps {
@@ -258,10 +276,16 @@ export interface ExperimentalSidebarNavigationItem {
   badge: ExperimentalBadge | null;
 }
 
+/**
+ * Where the host opens a sidebar navigation destination: `current` in the
+ * current view, `split` in a pane with browser-tab fallback, `tab` in a new browser tab.
+ */
+export type ExperimentalSidebarNavigationTarget = "current" | "split" | "tab";
+
 /** How the host should activate a sidebar navigation item. */
 export interface ExperimentalSidebarNavigationActivationOptions {
-  openInSplit: boolean;
-  target?: EventTarget | null;
+  target: ExperimentalSidebarNavigationTarget;
+  experimental_focusTarget?: EventTarget | null;
 }
 
 /**
@@ -271,14 +295,16 @@ export interface ExperimentalSidebarNavigationActivationOptions {
  */
 export interface ExperimentalSidebarNavigationActions {
   /**
-   * Run the item's host behavior. Plugin panels close the mobile sidebar
-   * drawer; Plugins and Skills swap the list beside the navigation.
-   * `openInSplit` opens Plugins and Skills in a browser tab because those
-   * destinations do not support splits. New thread and plugin panels retain
-   * their split placement rules, including in-place navigation on compact
-   * screens. Search remains a command. Disabled or loading items do nothing.
-   * Browser-tab activation must run synchronously from a user gesture;
-   * native shells handle the new-window request using their existing policy.
+   * Run the item's host behavior at `target`. Plugin panels close the
+   * mobile sidebar drawer; Plugins and Skills swap the list beside the
+   * navigation. `split` opens a pane, or focuses the destination's existing
+   * pane. At the pane limit it replaces the focused pane. If the destination
+   * cannot be a pane, splitting is disabled, the viewport is compact, or no
+   * split layout exists, it opens a browser tab instead. Callers do not need
+   * to check availability. Search remains a
+   * command at every target. Disabled or loading items do nothing. `split` and `tab`
+   * must run synchronously from a user gesture; native shells handle the
+   * new-window request using their existing policy.
    */
   activate(
     itemId: string,
@@ -287,9 +313,13 @@ export interface ExperimentalSidebarNavigationActions {
   /**
    * Return to the thread list and the last thread or new thread screen the
    * user had open before visiting Settings, Plugins, Skills, or a plugin
-   * panel.
+   * panel. Target `tab` instead opens the new thread screen in a browser
+   * tab, with the same user-gesture requirement as `activate`. Omitting
+   * `options` navigates in place.
    */
-  goHome(): void;
+  goHome(options?: {
+    target: Exclude<ExperimentalSidebarNavigationTarget, "split">;
+  }): void;
   /** Hide or show one item. Persists to `sidebar.visiblePluginPanels`. */
   setVisible(itemId: string, isVisible: boolean): void;
   /**
@@ -917,6 +947,27 @@ export interface PluginNavPanelRegistration {
   /** URL segment under `/plugins/<pluginId>/`; letters, digits, `-`, `_`. */
   path: string;
   component: ComponentType<PluginNavPanelProps>;
+  /**
+   * Sidebar shown instead of the thread list while this panel's route is
+   * active, in the same section sidebar as Settings, Plugins and Skills. BB
+   * keeps the navigation rail, top chrome and resize handle; in the top-list
+   * layout it adds a "Back to app" row and the panel title, and Back to app
+   * (Escape) returns to the last app page. Receives the page's current
+   * subPath. Other routes keep their usual sidebar. A crash shows a crash
+   * notice until the subPath or plugin generation changes.
+   * Experimental: see docs/api_to_audit.md.
+   */
+  experimental_sidebar?: ComponentType<PluginNavPanelProps>;
+  /**
+   * React hook evaluated in each pane's plugin scope with its current subPath.
+   * Returns text after the panel icon/name and the focused pane's window title.
+   * Null restores the default panel title. May use SDK hooks to load data.
+   * A crash or invalid result clears the title without crashing the page;
+   * navigation or plugin reload retries the hook. Experimental.
+   */
+  experimental_usePageTitle?: (
+    props: PluginNavPanelProps,
+  ) => ExperimentalPageTitle | null;
   /**
    * Ordered, non-closable tabs shown in this page's host-owned right panel.
    * BB owns selection and persistence and always includes its native Browser
@@ -2095,8 +2146,8 @@ export interface PluginThreadListRegistration {
  *
  * - `rail`: a fixed-width column on the sidebar's left edge that stays when
  *   the sidebar collapses. bb draws Settings at the bottom of the column;
- *   draw Home with `actions.goHome()`. On macOS, wide windows frame the
- *   sidebar and page below a title bar.
+ *   draw Home with `actions.goHome({ target })`. On macOS, wide windows
+ *   frame the sidebar and page below a title bar.
  * - `list` (the default): the area above the thread list. Settings is a
  *   footer action, the Settings, Plugins, and Skills lists start with a Back
  *   to app row, and collapsing hides the whole sidebar.
@@ -2139,7 +2190,7 @@ export interface PluginFileOpenerRegistration {
   id: string;
   /** Label in the "Open with" menu (e.g. "Notes editor"). */
   title: string;
-  /** Lowercase extensions without the dot (e.g. ["md", "mdx"]). */
+  /** Lowercase alphanumeric extensions without the dot; single underscores or hyphens may separate segments. */
   extensions: readonly string[];
   component: ComponentType<PluginFileOpenerProps>;
 }
@@ -3272,29 +3323,41 @@ export interface PluginComposerApi {
   /** Focus the composer caret at the end of the draft. */
   focus(): void;
   /**
-   * Submit this composer's draft exactly as pressing Enter would: the same
-   * checks and the same action (send, or queue while the thread is busy; a
-   * provider handoff creates a new thread). The draft's attachments and
+   * Submit this composer's draft through the composer's own send and steer
+   * handlers, the ones Enter and modifier+Enter run, including a
+   * provider handoff that creates a new thread. The draft's attachments and
    * @-mentions, and — in the new-thread composer — the provider, model,
    * reasoning level, service tier, permission mode and environment the user
    * has selected on screen, all travel with it.
    *
-   * While attachments are uploading it waits for them, then checks again; it
-   * rejects if an upload fails. Otherwise, when submitting is blocked it
-   * rejects with `submittingBlockedReason`, a message safe to show to the
-   * user. The queued-message and sent-message editors save edits and reject.
+   * It submits only the draft, so it rejects an empty one, even where the
+   * shortcut would steer the next queued message instead. Otherwise it runs
+   * only when the matching shortcut would. While attachments are uploading it
+   * waits for them, then checks again; it rejects if an upload fails. When
+   * the shortcut could not submit, it rejects with the reason, a message safe
+   * to show to the user. The composer must be on screen. The queued-message
+   * and sent-message editors reject.
    *
-   * `sendAt` queues the submission until that time. `experimental_data` is
-   * opaque JSON delivered to dispatch hooks together with the calling plugin's
-   * id on this initial attempt. Hooks run before operational core waits. If a
-   * hook queues the message, its existing plugin wait identifies the owner on
-   * later attempts; core does not persist or interpret the opaque data.
+   * Every option combines with the others. `experimental_mode` uses the
+   * names `bb.sdk.threads.send` uses. Without it, submit does what Enter
+   * does for this user, which may be to queue or to steer.
+   * `"queue-if-active"` queues behind the running turn, or starts a turn.
+   * `"steer-if-active"` adds the message to the running turn. Where nothing
+   * can be steered, such as on an idle thread, it starts a turn.
+   * `sendAt` makes the chosen action wait until the given time; a scheduled
+   * steer steers whatever turn is running then. `experimental_data` is
+   * opaque JSON delivered to dispatch hooks together with the calling
+   * plugin's id on this initial attempt. Hooks run before operational core
+   * waits. If a hook queues the message, its existing plugin wait identifies
+   * the owner on later attempts; core does not persist or interpret the
+   * opaque data.
    *
-   * Resolves once the host has accepted the submission and cleared the draft.
-   * Failures of the underlying request are reported by bb's own submit error
-   * handling and restore the draft, exactly as an interactive failure does.
+   * Resolves once the composer has accepted the submission and cleared the
+   * draft. Failures of the underlying request show bb's usual error toast
+   * and restore the draft, exactly as an interactive failure does, and then
+   * reject with the toast's message.
    */
-  submit(options: ComposerSubmitOptions): Promise<void>;
+  submit(options?: ComposerSubmitOptions): Promise<void>;
   /** This plugin's creation data for this new-thread draft, or null. It survives menu unmounts and failed sends. */
   readonly experimental_createData: JsonValue | null;
   /** Set this plugin's creation data for ordinary and programmatic new-thread sends. Null clears it; existing-thread composers reject this operation. */
@@ -3389,16 +3452,22 @@ export interface ComposerSelection {
   permissionMode?: PermissionMode;
 }
 
-/**
- * What `submit` does differently from pressing Enter.
- *
- * `experimental_data` is opaque JSON delivered to dispatch hooks. The runtime
- * associates it with the calling plugin automatically for the initial
- * dispatch attempt.
- */
-export type ComposerSubmitOptions =
-  | { sendAt: number; experimental_data?: JsonValue }
-  | { experimental_data: JsonValue; sendAt?: never };
+/** What `submit` adds to pressing Enter. Every field combines with the others. */
+export interface ComposerSubmitOptions {
+  /**
+   * `"queue-if-active"` queues behind the running turn and
+   * `"steer-if-active"` adds to it; both start a turn when none is running.
+   * Omitted, it does what Enter does for this user.
+   */
+  experimental_mode?: "queue-if-active" | "steer-if-active";
+  /** Epoch ms in the future; the action waits until then. */
+  sendAt?: number;
+  /**
+   * Opaque JSON delivered to dispatch hooks with the calling plugin's id on
+   * the initial dispatch attempt.
+   */
+  experimental_data?: JsonValue;
+}
 
 /** @internal Old name of {@link ComposerSelection}. */
 export type ExperimentalComposerSelection = ComposerSelection;
@@ -3991,11 +4060,152 @@ export interface BbNavigate {
 // ---------------------------------------------------------------------------
 
 /**
+ * BB live reads are fresh for two seconds, with no polling when freshness expires.
+ * Focus does not refetch while BB's realtime connection is healthy. While
+ * disconnected, focus/browser-online events recheck stale active reads; BB
+ * reconnect invalidates all plugin reads regardless of freshness. Page hiding
+ * cancels active attempts; resuming restarts those cancelled reads.
+ * Invalidations refresh immediately. Network/abort failures retry twice at
+ * 250 ms; HTTP failures, including refusals, do not retry. Writes never retry
+ * automatically.
+ */
+export interface ExperimentalRpcQueryState<T> {
+  /** Latest successful value plus shared predictions; retained during refresh and refresh errors. Plain reads are undefined before first success; keyed reads expose loaded rows (initially an empty record) through select. */
+  data: T | undefined;
+  /** Last completed read failure, or null. Success clears it; retrying a first load clears the old error while loading. Refresh errors preserve data. */
+  error: experimental_PluginRpcCallError | null;
+  /** An enabled read is fetching data it has never loaded. For keyed reads this includes missing requested rows; empty/disabled keyed reads are not loading. */
+  isLoading: boolean;
+  /** A read attempt is active, including background refreshes. Keyed consumers share this activity for their method; offline-paused reads are not fetching. */
+  isFetching: boolean;
+  /** Force a read regardless of freshness and wait for its attempt/retries. Keyed reads refresh the method's subscribed keys. Failures update error and retain data; this promise resolves rather than rejecting. */
+  refetch(): Promise<void>;
+}
+
+export interface ExperimentalRpcKeyedQueryState<
+  T,
+  Selection = Record<string, T>,
+> extends ExperimentalRpcQueryState<Selection> {}
+
+export interface ExperimentalRpcQueryOptions<
+  Contract extends PluginRpcContract,
+  Method extends keyof Contract & string,
+> {
+  contract: Contract;
+  pluginId?: string;
+  method: Method;
+  input: StandardSchemaV1InferInput<Contract[Method]["input"]>;
+  enabled?: boolean;
+}
+
+/**
+ * Predict loaded reads with pure, synchronous update callbacks. Callbacks passed
+ * to `update` and `updateKey` may run many times as pending predictions replay
+ * over a new confirmed base or another prediction rolls back. Return a new
+ * value without mutating `current` or captured inputs, performing side effects,
+ * or generating IDs, timestamps, or random values. Generate any such values
+ * once before calling `mutate` and include them in the mutation input.
+ */
+export interface ExperimentalRpcOptimisticCache<
+  Contract extends PluginRpcContract,
+> {
+  update<Method extends keyof Contract & string>(
+    method: Method,
+    input: StandardSchemaV1InferInput<Contract[Method]["input"]>,
+    update: (
+      current: PluginRpcResult<Contract[Method]>,
+    ) => PluginRpcResult<Contract[Method]>,
+  ): void;
+  updateKey<Method extends ExperimentalRpcKeyedMethod<Contract>>(
+    method: Method,
+    key: string,
+    update: (
+      current: PluginRpcResult<Contract[Method]> extends Record<
+        string,
+        infer Value
+      >
+        ? Value
+        : never,
+    ) => PluginRpcResult<Contract[Method]> extends Record<string, infer Value>
+      ? Value
+      : never,
+  ): void;
+}
+
+export interface ExperimentalRpcMutationOptions<
+  Contract extends PluginRpcContract,
+  Method extends keyof Contract & string,
+> {
+  contract: Contract;
+  pluginId?: string;
+  method: Method;
+  /** Predict loaded reads synchronously; shared predictions survive accepted writes whose refresh fails. */
+  optimistic?(
+    input: StandardSchemaV1InferInput<Contract[Method]["input"]>,
+    cache: ExperimentalRpcOptimisticCache<Contract>,
+  ): void;
+}
+
+/**
+ * One mutation hook's state. `mutate` calls the RPC, invalidates the
+ * response's `invalidated` tags on this client immediately, and resolves when
+ * the server acknowledges the write. Matched reads refresh in the background. `error` holds the last failure
+ * until the next `mutate` or `reset`.
+ */
+export interface ExperimentalRpcMutationState<
+  Method extends PluginRpcMethodContract,
+> {
+  /** Resolves at write acknowledgement; rejects with experimental_PluginRpcCallError. Refreshes continue in the background without releasing predictions before confirmed reads. */
+  mutate(...args: PluginRpcCallArgs<Method>): Promise<PluginRpcResult<Method>>;
+  isPending: boolean;
+  /** Inputs of every pending call made by this hook, until server acknowledgement. Refreshes are excluded; other hook instances are excluded. */
+  pendingInputs: readonly StandardSchemaV1InferInput<Method["input"]>[];
+  error: experimental_PluginRpcCallError | null;
+  reset(): void;
+}
+
+/**
  * Everything `@get-bb/plugin-sdk/app` resolves to at runtime. The BB app builds
  * the real implementation and `satisfies` this interface; `bb plugin build`
  * shims the specifier to that object on `globalThis.__bbPluginRuntime`.
  */
 export interface PluginSdkApp {
+  experimental_PluginRpcCallError: typeof experimental_PluginRpcCallError;
+  experimental_useRpcRefresh(): { refresh(): void; isRefreshing: boolean };
+  /** Read tagged plugin data through BB's shared query cache and realtime lifecycle. */
+  experimental_useRpcQuery<
+    Contract extends PluginRpcContract,
+    Method extends keyof Contract & string,
+  >(
+    options: ExperimentalRpcQueryOptions<Contract, Method>,
+  ): ExperimentalRpcQueryState<PluginRpcResult<Contract[Method]>>;
+  /** Call a mutating RPC through BB's query client; pending until the server acknowledges the write; matched reads refresh in the background. */
+  experimental_useRpcMutation<
+    Contract extends PluginRpcContract,
+    Method extends keyof Contract & string,
+  >(
+    options: ExperimentalRpcMutationOptions<Contract, Method>,
+  ): ExperimentalRpcMutationState<Contract[Method]>;
+  /** Cache each key independently and batch missing or invalidated keys in the same render. */
+  experimental_useRpcKeyedQuery<
+    Contract extends PluginRpcContract,
+    Method extends ExperimentalRpcKeyedMethod<Contract>,
+    Selection = Record<string, ExperimentalRpcKeyedValue<Contract[Method]>>,
+  >(options: {
+    contract: Contract;
+    pluginId?: string;
+    method: Method;
+    keys: readonly string[];
+    enabled?: boolean;
+    /** Pure projection; the selection type is inferred from its return value. */
+    select?(
+      data: Record<string, ExperimentalRpcKeyedValue<Contract[Method]>>,
+    ): Selection;
+  }): ExperimentalRpcKeyedQueryState<
+    ExperimentalRpcKeyedValue<Contract[Method]>,
+    Selection
+  >;
+
   experimental_Icon: ComponentType<ExperimentalIconProps>;
   /**
    * Render provider slot override, then its logo, then its glyph, then fallback.

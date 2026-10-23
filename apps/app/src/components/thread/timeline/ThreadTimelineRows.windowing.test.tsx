@@ -16,6 +16,7 @@ import {
 } from "@/test/fixtures/thread-timeline-rows";
 import { ThreadTimelineRows } from "./ThreadTimelineRows";
 import { collectSearchedMessageAncestorRowIds } from "./useScrollToSearchedMessage";
+import { createInertScrollPositionKeeper } from "@/test/scroll-position-keeper";
 
 function rect(top: number, height: number): DOMRect {
   return {
@@ -179,11 +180,13 @@ describe("ThreadTimelineRows windowing", () => {
       const scrollElement = document.createElement("div");
       scrollElement.setAttribute("data-test-main-scroll", "");
       const bottomAnchor: BottomAnchorContextValue = {
-        captureScrollAnchor: vi.fn(),
+        positionKeeper: createInertScrollPositionKeeper(),
         holdContentPosition: vi.fn(),
         getScrollElement: () => scrollElement,
         isAtBottom: false,
         scrollElementIntoView: vi.fn(),
+        scrollElementIntoViewClampedToMaxScroll: vi.fn(),
+        captureScrollAnchor: vi.fn(),
         scrollToBottom: vi.fn(),
       };
       const rows = Array.from({ length: count }, (_, index) =>
@@ -238,11 +241,13 @@ describe("ThreadTimelineRows windowing", () => {
     Object.defineProperty(scrollElement, "scrollHeight", { value: 8_000 });
     const scrollElementIntoView = vi.fn();
     const bottomAnchor: BottomAnchorContextValue = {
-      captureScrollAnchor: vi.fn(),
+      positionKeeper: createInertScrollPositionKeeper(),
       holdContentPosition: vi.fn(),
       getScrollElement: () => scrollElement,
       isAtBottom: false,
       scrollElementIntoView,
+      scrollElementIntoViewClampedToMaxScroll: vi.fn(),
+      captureScrollAnchor: vi.fn(),
       scrollToBottom: vi.fn(),
     };
     const rows = Array.from({ length: 80 }, (_, index) => {
@@ -292,11 +297,13 @@ describe("ThreadTimelineRows windowing", () => {
     Object.defineProperty(scrollElement, "scrollHeight", { value: 8_000 });
     const scrollElementIntoView = vi.fn();
     const bottomAnchor: BottomAnchorContextValue = {
-      captureScrollAnchor: vi.fn(),
+      positionKeeper: createInertScrollPositionKeeper(),
       holdContentPosition: vi.fn(),
       getScrollElement: () => scrollElement,
       isAtBottom: false,
       scrollElementIntoView,
+      scrollElementIntoViewClampedToMaxScroll: vi.fn(),
+      captureScrollAnchor: vi.fn(),
       scrollToBottom: vi.fn(),
     };
     const rows = Array.from({ length: 80 }, (_, index) =>

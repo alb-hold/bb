@@ -530,30 +530,33 @@ export function registerThreadActionRoutes(app: Hono, deps: AppDeps): void {
 
   post(routes.open, (context, payload) => {
     const publicThread = requirePublicThread(deps.db, context.req.param("id"));
-    if (payload.terminalAction !== undefined) {
-      const terminal = deps.terminalSessions.getTerminal({
-        terminalId: payload.terminalAction.terminalId,
-      });
+    const terminalActions = [payload.terminalAction, payload.terminalLayoutAction].filter(
+      (value) => value !== undefined,
+    );
+    for (const terminalAction of terminalActions) {
+      const terminal = deps.terminalSessions.getTerminal({ terminalId: terminalAction.terminalId });
       if (terminal.threadId !== publicThread.id || publicThread.archivedAt !== null) {
         throw new ApiError(404, "terminal_not_found", "Terminal session not found");
       }
-      if (
-        payload.terminalAction.action === "openBrowser" &&
-        payload.terminalAction.url === undefined
-      ) {
+      if ("targetTerminalId" in terminalAction && terminalAction.targetTerminalId !== undefined) {
+        const target = deps.terminalSessions.getTerminal({
+          terminalId: terminalAction.targetTerminalId,
+        });
+        if (target.threadId !== publicThread.id) {
+          throw new ApiError(404, "terminal_not_found", "Terminal session not found");
+        }
+      }
+      if ("url" in terminalAction && terminalAction.action === "openBrowser" && terminalAction.url === undefined) {
         throw new ApiError(400, "invalid_request", "A URL is required to open a browser tab");
       }
-      if (
-        payload.terminalAction.action === "focus" &&
-        payload.terminalAction.url !== undefined
-      ) {
+      if ("url" in terminalAction && terminalAction.action === "focus" && terminalAction.url !== undefined) {
         throw new ApiError(400, "invalid_request", "A URL is only valid for the openBrowser action");
       }
     }
     if (payload.file !== null) {
       parseSafeRelativeRoutePath(payload.file.path);
     }
-    const delivered = deps.hub.notifyThreadOpen(
+    const deliveredClients = deps.hub.notifyThreadOpen(
       { projectId: publicThread.projectId, threadId: publicThread.id },
       {
         split: payload.split ?? "replace",
@@ -561,9 +564,12 @@ export function registerThreadActionRoutes(app: Hono, deps: AppDeps): void {
         ...(payload.terminalAction === undefined
           ? {}
           : { terminalAction: payload.terminalAction }),
+        ...(payload.terminalLayoutAction === undefined
+          ? {}
+          : { terminalLayoutAction: payload.terminalLayoutAction }),
       },
     );
-    return context.json({ delivered });
+    return context.json({ deliveredClients });
   });
 
   post(routes.paneAction, (context, payload) => {

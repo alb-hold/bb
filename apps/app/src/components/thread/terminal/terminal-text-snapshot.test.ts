@@ -1,6 +1,9 @@
 import { Terminal } from "@xterm/xterm";
 import { afterEach, describe, expect, it } from "vitest";
-import { terminalTextSnapshot } from "./terminal-text-snapshot";
+import {
+  terminalTextSnapshot,
+  terminalTextSnapshotLineIndex,
+} from "./terminal-text-snapshot";
 
 describe("terminalTextSnapshot", () => {
   let terminal: Terminal | null = null;
@@ -38,6 +41,14 @@ describe("terminalTextSnapshot", () => {
       Array.from({ length: 10 }, (_, index) => `line ${index}`).join("\r\n"),
     );
     expect(terminalTextSnapshot(terminal, 3)).toBe("line 7\nline 8\nline 9");
+  });
+
+  it("maps a pressed buffer line to its snapshot line across wrapped rows", async () => {
+    terminal = new Terminal({ cols: 8, rows: 4, scrollback: 100 });
+    await write(terminal, "first\r\nabcdefghijk\r\nlast");
+
+    expect(terminalTextSnapshot(terminal)).toBe("first\nabcdefghijk\nlast");
+    expect(terminalTextSnapshotLineIndex(terminal, 2)).toBe(1);
   });
 
   it("returns the alternate screen a full-screen app is drawing", async () => {

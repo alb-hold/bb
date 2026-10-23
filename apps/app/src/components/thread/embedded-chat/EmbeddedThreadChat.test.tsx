@@ -100,7 +100,7 @@ vi.mock("@/components/promptbox/FollowUpPromptBox", async () => {
           value={composer.message}
           onChange={(event) => composer.onChangeMessage(event.target.value, [])}
         />
-        <button type="button" onClick={composer.onSubmit}>
+        <button type="button" onClick={() => composer.onSubmit()}>
           Send
         </button>
         <BottomHostDraftProbe host={pluginComposerHost ?? null} />
@@ -238,6 +238,10 @@ vi.mock("@/hooks/useCommandSuggestions", () => ({
   }),
 }));
 
+vi.mock("@/hooks/queries/thread-panel-queries", () => ({
+  useThreadQueuedMessages: () => ({ data: mocks.queuedMessages }),
+}));
+
 vi.mock("@/hooks/queries/thread-queries", () => ({
   useThread: (threadId: string) => ({
     data:
@@ -251,7 +255,6 @@ vi.mock("@/hooks/queries/thread-queries", () => ({
           }
         : undefined,
   }),
-  useThreadQueuedMessages: () => ({ data: mocks.queuedMessages }),
   useThreadPendingInteractions: () => ({
     data: mocks.pendingInteractions,
     isError: mocks.pendingInteractionsIsError,

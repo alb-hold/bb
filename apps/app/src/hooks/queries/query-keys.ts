@@ -52,6 +52,7 @@ export const ENVIRONMENT_MERGE_BASE_BRANCHES_QUERY_KEY =
 export const ENVIRONMENT_DIFF_FILES_QUERY_KEY = "environmentDiffFiles";
 const ENVIRONMENT_DIFF_PATCH_QUERY_KEY = "environmentDiffPatch";
 const ENVIRONMENT_DIFF_FILE_QUERY_KEY = "environmentDiffFile";
+const ENVIRONMENT_DIFF_VIEWED_QUERY_KEY = "environmentDiffViewed";
 const ENVIRONMENT_FILE_PREVIEW_QUERY_KEY = "environmentFilePreview";
 const ENVIRONMENT_PATHS_QUERY_KEY = "environmentPaths";
 export const THREAD_TIMELINE_QUERY_KEY = "threadTimeline";
@@ -412,6 +413,7 @@ type EnvironmentDiffFilesQueryKey = readonly [
   string,
   string | null,
   string | null,
+  boolean,
 ];
 type EnvironmentDiffFilesQueryKeyRootPrefix = readonly [
   typeof ENVIRONMENT_DIFF_FILES_QUERY_KEY,
@@ -425,6 +427,7 @@ type EnvironmentDiffPatchQueryKey = readonly [
   string,
   string | null,
   string | null,
+  boolean,
   string,
 ];
 type EnvironmentDiffPatchQueryKeyRootPrefix = readonly [
@@ -432,6 +435,17 @@ type EnvironmentDiffPatchQueryKeyRootPrefix = readonly [
 ];
 type EnvironmentDiffPatchQueryKeyPrefix = readonly [
   typeof ENVIRONMENT_DIFF_PATCH_QUERY_KEY,
+  string,
+];
+type EnvironmentDiffViewedQueryKey = readonly [
+  typeof ENVIRONMENT_DIFF_VIEWED_QUERY_KEY,
+  string,
+  string | null,
+  string | null,
+  (readonly string[])?,
+];
+type EnvironmentDiffViewedQueryKeyPrefix = readonly [
+  typeof ENVIRONMENT_DIFF_VIEWED_QUERY_KEY,
   string,
 ];
 type EnvironmentDiffFileQueryKey = readonly [
@@ -1076,12 +1090,14 @@ export function environmentDiffFilesQueryKey(
   environmentId: string,
   targetType: string | null,
   targetKey: string | null,
+  ignoreWhitespace: boolean,
 ): EnvironmentDiffFilesQueryKey {
   return [
     ENVIRONMENT_DIFF_FILES_QUERY_KEY,
     environmentId,
     targetType,
     targetKey,
+    ignoreWhitespace,
   ];
 }
 
@@ -1099,6 +1115,7 @@ export function environmentDiffPatchQueryKey(
   environmentId: string,
   targetType: string | null,
   targetKey: string | null,
+  ignoreWhitespace: boolean,
   path: string,
 ): EnvironmentDiffPatchQueryKey {
   return [
@@ -1106,6 +1123,7 @@ export function environmentDiffPatchQueryKey(
     environmentId,
     targetType,
     targetKey,
+    ignoreWhitespace,
     path,
   ];
 }
@@ -1118,6 +1136,27 @@ export function environmentDiffPatchQueryKeyPrefix(
   environmentId: string,
 ): EnvironmentDiffPatchQueryKeyPrefix {
   return [ENVIRONMENT_DIFF_PATCH_QUERY_KEY, environmentId];
+}
+
+export function environmentDiffViewedQueryKey(
+  environmentId: string,
+  targetType: string | null,
+  targetKey: string | null,
+  paths?: readonly string[],
+): EnvironmentDiffViewedQueryKey {
+  const prefix = [
+    ENVIRONMENT_DIFF_VIEWED_QUERY_KEY,
+    environmentId,
+    targetType,
+    targetKey,
+  ] as const;
+  return paths === undefined ? prefix : [...prefix, paths];
+}
+
+export function environmentDiffViewedQueryKeyPrefix(
+  environmentId: string,
+): EnvironmentDiffViewedQueryKeyPrefix {
+  return [ENVIRONMENT_DIFF_VIEWED_QUERY_KEY, environmentId];
 }
 
 export function environmentDiffFileQueryKey(

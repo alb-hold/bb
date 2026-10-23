@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { ClaudeContextUsageCollector } from "./context-usage.js";
+import { readIsolatedClaudeContextUsage } from "./context-usage-probe.js";
 
 import {
   type PendingInteractionGrantedPermissionProfile,
@@ -98,6 +99,7 @@ import {
 } from "./provider-maintenance.js";
 import {
   buildChromeExtraArgs,
+  buildClaudeFeatureEnv,
   buildReadonlyDenialMessage,
   buildMutableFlagSettings,
   buildSessionOptions,
@@ -558,6 +560,7 @@ function resolvePendingSessionWork(
   threadSession: ThreadSession,
   message: string,
 ): void {
+  threadSession.contextUsageCollector.cancel();
   toolCallTracker.resolvePendingToolCalls(threadSession, message);
   resolvePendingInteractiveRequests(threadSession, message);
 }
@@ -594,16 +597,42 @@ function applyContextWindowSetting(
     return;
   }
   sessionOptions.disable1MContext = disabled;
-  attachment.sessionOptions.env = {
-    ...attachment.sessionOptions.env,
-    CLAUDE_CODE_DISABLE_1M_CONTEXT: disabled ? "1" : "0",
-  };
+  refreshSessionEnv(attachment);
   if (attachment.residentSession) {
     attachment.residentSession.restartBeforeNextTurn = {
       reason: "Claude Code 1M context setting changed",
       showRuntimeNote: false,
     };
   }
+}
+
+function applyArtifactSetting(
+  attachment: ThreadAttachment,
+  enabled: boolean | undefined,
+): void {
+  const sessionOptions = attachment.sessionConstructionConfig.sessionOptions;
+  if (enabled === undefined || sessionOptions.artifactsEnabled === enabled) {
+    return;
+  }
+  sessionOptions.artifactsEnabled = enabled;
+  refreshSessionEnv(attachment);
+  if (attachment.residentSession) {
+    attachment.residentSession.restartBeforeNextTurn = {
+      reason: "Claude Artifacts setting changed",
+      showRuntimeNote: false,
+    };
+  }
+}
+
+function refreshSessionEnv(attachment: ThreadAttachment): void {
+  attachment.sessionOptions.env = {
+    ...buildSessionEnv(
+      readConfigEnvOverrides(attachment.sessionConstructionConfig.config),
+    ),
+    ...buildClaudeFeatureEnv(
+      attachment.sessionConstructionConfig.sessionOptions,
+    ),
+  };
 }
 
 async function applyPermissionSettings(
@@ -1138,6 +1167,7 @@ function toSessionConstructionConfig(
       baseInstructions: params.baseInstructions,
       chromeEnabled: params.chromeEnabled,
       disable1MContext: params.disable1MContext,
+      artifactsEnabled: params.artifactsEnabled,
       cwd: params.cwd,
       instructionMode: params.instructionMode,
       permissionMode: params.permissionMode,
@@ -1747,7 +1777,15 @@ function createOnSdkMessage(
       }
       if (providerThreadId) {
         void threadSession.contextUsageCollector.capture({
-          read: () => threadSession.session.getContextUsage(),
+          read: (signal) =>
+            readIsolatedClaudeContextUsage({
+              sessionOptions: threadSession.attachment.sessionOptions,
+              providerSessionId: providerThreadId,
+              dynamicTools:
+                threadSession.attachment.sessionConstructionConfig
+                  .dynamicTools ?? [],
+              signal,
+            }),
           providerSessionId: providerThreadId,
           isCurrent: () =>
             getCurrentThreadSession({
@@ -1896,13 +1934,7 @@ function applyTurnEnvironment(
     ...attachment.sessionConstructionConfig,
     config,
   };
-  attachment.sessionOptions.env = {
-    ...buildSessionEnv(envOverrides),
-    CLAUDE_CODE_DISABLE_1M_CONTEXT: attachment.sessionConstructionConfig
-      .sessionOptions.disable1MContext
-      ? "1"
-      : "0",
-  };
+  refreshSessionEnv(attachment);
   if (attachment.residentSession) {
     attachment.residentSession.restartBeforeNextTurn = {
       reason:
@@ -2650,6 +2682,7 @@ async function runTurnInput(
     }
     applyChromeSetting(attachment, params.chromeEnabled);
     applyContextWindowSetting(attachment, params.disable1MContext);
+    applyArtifactSetting(attachment, params.artifactsEnabled);
   }
 
   let permissionRestartRequired = false;

@@ -15,12 +15,13 @@ import {
   symlinkSync,
   unlinkSync,
   utimesSync,
+  truncateSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { createConnection } from "node:net";
 import { join, resolve } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { spawnLoggedProcess } from "../src/logged-process.js";
 
 const scratchDirs: string[] = [];
@@ -453,6 +454,35 @@ describe("spawnLoggedProcess", () => {
         { timeout: 5_000 },
       )
       .toBe(true);
+  });
+
+  it("moves an oversized capture aside at spawn, keeping one previous file", async () => {
+    const logDir = scratchDir();
+    const logPath = join(logDir, "host-daemon-stdio.log");
+    const previousPath = join(logDir, "host-daemon-stdio.1.log");
+    writeFileSync(previousPath, "older capture");
+    writeFileSync(logPath, "oversized capture");
+    truncateSync(logPath, 10 * 1024 * 1024 + 1);
+
+    const child = spawnLoggedProcess({
+      command: process.execPath,
+      args: ["-e", `console.error("fresh startup"); process.exit(1);`],
+      env: process.env,
+      logDir,
+      logName: "host-daemon",
+    });
+
+    expect(await waitForExit(child)).toBe(1);
+    await vi.waitFor(
+      () => expect(readFileSync(logPath, "utf8")).toBe("fresh startup\n"),
+      { timeout: 5_000 },
+    );
+    const captures = uniqueFamilyFiles(logDir, "host-daemon")
+      .filter((path) => path !== logPath)
+      .map((path) => readFileSync(path, "utf8"))
+      .join("");
+    expect(captures).toContain("older capture");
+    expect(captures).toContain("oversized capture");
   });
 
   it("keeps a paused writer within its own segment while another writer rotates", async () => {

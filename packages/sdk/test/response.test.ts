@@ -225,6 +225,11 @@ describe("readJsonResponse()", () => {
     expect(error.message).toBe("HTTP 404: Thread thread-1 not found");
     expect(error.status).toBe(404);
     expect(error.code).toBe("thread_not_found");
+    expect(error.body).toEqual({
+      code: "thread_not_found",
+      message: "Thread thread-1 not found",
+      error: "Thread thread-1 not found",
+    });
   });
 
   it("reports a null code when the error body has none", async () => {

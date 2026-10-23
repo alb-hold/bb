@@ -74,19 +74,13 @@ interface BranchRefsWithDefaults {
   remoteBranches: string[];
 }
 
-interface RunShellPipelineOptions extends GitTimeoutOptions {
-  cwd: string;
-  allowFailure?: boolean;
-  signal?: AbortSignal;
-}
-
 export interface GitCommandResult {
   stdout: string;
   stderr: string;
   exitCode: number;
 }
 
-export type GitNullRecordFormat = "single" | "name-status" | "numstat";
+export type GitNullRecordFormat = "single" | "name-status" | "numstat" | "raw";
 
 export interface GitNullRecordLimitResult extends GitCommandResult {
   recordCount: number;
@@ -247,27 +241,6 @@ function createGitCommandCancelledError(
     "provision_cancelled",
     `git ${args.join(" ")} was cancelled`,
     { cause },
-  );
-}
-
-function createShellPipelineTimedOutError(
-  timeoutMs: number,
-  cause?: unknown,
-): WorkspaceError {
-  return new WorkspaceError(
-    "shell_pipeline_timeout",
-    `shell pipeline timed out after ${timeoutMs}ms`,
-    { cause },
-  );
-}
-
-function createShellPipelineCancelledError(cause?: unknown): WorkspaceError {
-  return new WorkspaceError(
-    "provision_cancelled",
-    "Shell pipeline was cancelled",
-    {
-      cause,
-    },
   );
 }
 
@@ -472,6 +445,9 @@ function runGitWithNullRecordLimitAdmitted(
           if (recordFormat === "name-status") {
             const statusLetter = token[0];
             expectedTokens = statusLetter === 82 || statusLetter === 67 ? 3 : 2;
+          } else if (recordFormat === "raw") {
+            const statusLetter = token[token.lastIndexOf(32) + 1];
+            expectedTokens = statusLetter === 82 || statusLetter === 67 ? 3 : 2;
           } else if (recordFormat === "numstat") {
             const firstTab = token.indexOf(9);
             const secondTab = token.indexOf(9, firstTab + 1);
@@ -590,73 +566,6 @@ export async function getGitCommonDir(
     );
   }
   return path.resolve(cwd, commonDir);
-}
-
-export async function runShellPipeline(
-  script: string,
-  positionalArgs: string[],
-  options: RunShellPipelineOptions,
-): Promise<GitCommandResult> {
-  if (options.signal?.aborted) {
-    throw createShellPipelineCancelledError(options.signal.reason);
-  }
-  try {
-    const processOptions = {
-      cwd: options.cwd,
-      env: resolveGitProcessEnv({
-        env: undefined,
-        shellPath: options.shellPath,
-      }),
-      maxBuffer: DEFAULT_BUFFER_BYTES,
-      signal: options.signal,
-      timeout: options.timeoutMs,
-    };
-    const shell =
-      process.platform === "win32"
-        ? (
-            await execPortableFile(
-              "git",
-              ["var", "GIT_SHELL_PATH"],
-              processOptions,
-            )
-          ).stdout.trim()
-        : "/bin/sh";
-    const result = await runVcsProcess(
-      "git",
-      [],
-      () =>
-        execPortableFile(
-          shell,
-          ["-c", script, "sh", ...positionalArgs],
-          processOptions,
-        ),
-      { signal: options.signal, slots: 2 },
-    );
-    return { stdout: result.stdout, stderr: result.stderr, exitCode: 0 };
-  } catch (error) {
-    if (options.signal?.aborted) {
-      throw createShellPipelineCancelledError(error);
-    }
-    const execError = toExecError(error);
-    const timeoutMs = readCommandTimeoutMs(execError, options.timeoutMs);
-    if (timeoutMs !== null) {
-      throw createShellPipelineTimedOutError(timeoutMs, error);
-    }
-    if (options.allowFailure) {
-      return {
-        stdout: execError?.stdout ?? "",
-        stderr: execError?.stderr ?? "",
-        exitCode: getExitCode(execError),
-      };
-    }
-    const stderr = trimOutput(execError?.stderr ?? "");
-    const detail = stderr ? `: ${stderr}` : "";
-    throw new WorkspaceError(
-      "shell_pipeline_failed",
-      `shell pipeline failed${detail}`,
-      { cause: error },
-    );
-  }
 }
 
 export function parsePatchId(line: string | undefined): string | undefined {
@@ -920,6 +829,63 @@ function parsePorcelainPath(rawPath: string): string {
   return parsePorcelainPathToken(rawPath, sourcePath.nextIndex + 4).value;
 }
 
+interface PorcelainV2Status {
+  entries: PorcelainEntry[];
+  headOid: string | null;
+  headBranch: string | null;
+}
+
+function porcelainV2StatusLetter(letter: string | undefined): string {
+  return letter === undefined || letter === "." ? " " : letter;
+}
+
+export function parsePorcelainV2StatusZ(output: string): PorcelainV2Status {
+  const records = output.split("\0");
+  const entries: PorcelainEntry[] = [];
+  let headOid: string | null = null;
+  let headBranch: string | null = null;
+  for (let index = 0; index < records.length; index += 1) {
+    const record = records[index];
+    if (!record) continue;
+    if (record.startsWith("# branch.oid ")) {
+      const oid = record.slice("# branch.oid ".length);
+      headOid = oid === "(initial)" ? null : oid;
+      continue;
+    }
+    if (record.startsWith("# branch.head ")) {
+      const head = record.slice("# branch.head ".length);
+      headBranch = head === "(detached)" ? null : head;
+      continue;
+    }
+    if (record.startsWith("#")) continue;
+    if (record.startsWith("? ")) {
+      entries.push({
+        path: record.slice(2),
+        status: "??",
+        indexStatus: "?",
+        worktreeStatus: "?",
+      });
+      continue;
+    }
+    const kind = record[0];
+    const fieldCount =
+      kind === "1" ? 8 : kind === "2" ? 9 : kind === "u" ? 10 : null;
+    if (fieldCount === null) continue;
+    const fields = record.split(" ");
+    const indexStatus = porcelainV2StatusLetter(fields[1]?.[0]);
+    const worktreeStatus = porcelainV2StatusLetter(fields[1]?.[1]);
+    const status = `${indexStatus}${worktreeStatus}`;
+    entries.push({
+      path: fields.slice(fieldCount).join(" "),
+      status: status.trim() || status,
+      indexStatus,
+      worktreeStatus,
+    });
+    if (kind === "2") index += 1;
+  }
+  return { entries, headOid, headBranch };
+}
+
 export function parsePorcelainEntries(statusOutput: string): PorcelainEntry[] {
   return statusOutput
     .split("\n")
@@ -1041,6 +1007,46 @@ export function parseNameStatusSourceEntries(
   return entries;
 }
 
+export interface RawDiffEntry extends NameStatusSourceEntry {
+  oldMode: string;
+  newMode: string;
+  oldBlob: string;
+  newBlob: string;
+}
+
+export function parseRawDiffEntriesZ(output: string): RawDiffEntry[] {
+  const tokens = output.split("\0");
+  const entries: RawDiffEntry[] = [];
+  let index = 0;
+  while (index < tokens.length) {
+    const header = tokens[index];
+    if (!header?.startsWith(":")) {
+      index += 1;
+      continue;
+    }
+    const [oldMode, newMode, oldBlob, newBlob, status] = header
+      .slice(1)
+      .split(" ");
+    const statusLetter = status?.[0] ?? "";
+    const isRenameOrCopy = statusLetter === "R" || statusLetter === "C";
+    const previousPath = isRenameOrCopy ? (tokens[index + 1] ?? null) : null;
+    const path = tokens[index + (isRenameOrCopy ? 2 : 1)];
+    if (path && oldMode && newMode && oldBlob && newBlob) {
+      entries.push({
+        path,
+        previousPath,
+        status: statusLetter,
+        oldMode,
+        newMode,
+        oldBlob,
+        newBlob,
+      });
+    }
+    index += isRenameOrCopy ? 3 : 2;
+  }
+  return entries;
+}
+
 export function parseNameStatusEntries(output: string): NameStatusEntry[] {
   return parseNameStatusSourceEntries(output).map(({ path, status }) => ({
     path,
@@ -1119,6 +1125,13 @@ export async function readDefaultBranch(
   options: GitTimeoutOptions = {},
 ): Promise<string | undefined> {
   await ensureGitRepo(cwd, options);
+  return readRepoDefaultBranch(cwd, options);
+}
+
+export async function readRepoDefaultBranch(
+  cwd: string,
+  options: GitTimeoutOptions = {},
+): Promise<string | undefined> {
   const originHeadBranch = await readOriginHeadBranchName(cwd, options);
   if (originHeadBranch !== undefined) {
     return originHeadBranch;

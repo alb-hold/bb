@@ -12,7 +12,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@bb/shared-ui/tooltip";
-import { TruncateStart } from "@/components/ui/truncate-start.js";
+import { TruncateStart } from "@bb/shared-ui/truncate-start";
 import { copyToClipboardWithToast } from "@/lib/clipboard";
 
 export const FILE_PREVIEW_WRAPPER_STYLE = {
@@ -27,7 +27,7 @@ export function FilePreviewHeaderFrame({
   headerRef?: Ref<HTMLDivElement>;
 }) {
   return (
-    <div ref={headerRef} className="sticky top-0 z-10 bg-sidebar">
+    <div ref={headerRef} className="sticky top-0 z-30 bg-sidebar">
       <div className="flex h-9 items-center gap-2 bg-surface-raised px-4 max-md:pointer-coarse:h-12 max-md:pointer-coarse:px-3">
         {children}
       </div>

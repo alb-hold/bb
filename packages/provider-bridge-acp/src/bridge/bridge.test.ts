@@ -5324,6 +5324,10 @@ describe("acp bridge: live session state", () => {
     const otherArgsLog = join(workspaceDir, "cli-delete-other-args.log");
     const overAcpLog = join(workspaceDir, "cli-delete-over-acp.log");
     const opencodeLog = join(workspaceDir, "cli-delete-opencode.log");
+    const discoveryLaunchLog = join(
+      workspaceDir,
+      "cli-delete-discovery-launch.log",
+    );
 
     await discover(otherAgentLog, { agent: acpAgent });
     await discover(otherArgsLog, { dialectId: "opencode" });
@@ -5332,14 +5336,29 @@ describe("acp bridge: live session state", () => {
       agent: acpAgent,
       envVars: { FAKE_ACP_DELETE_SESSION: "1" },
     });
-    await discover(opencodeLog, { dialectId: "opencode", agent: acpAgent });
+    await discover(opencodeLog, {
+      dialectId: "opencode",
+      agent: acpAgent,
+      envVars: { FAKE_ACP_LAUNCH_LOG: discoveryLaunchLog },
+    });
+
+    const discoveryProcessId = await waitFor(() => {
+      const launch = existsSync(discoveryLaunchLog)
+        ? readFileSync(discoveryLaunchLog, "utf8").match(/^launch (\d+)\n/mu)
+        : undefined;
+      return launch?.[1];
+    }, "opencode discovery agent launch");
 
     const deleted = await waitFor(
-      () =>
-        existsSync(opencodeLog) ? readFileSync(opencodeLog, "utf8") : undefined,
+      () => {
+        const contents = existsSync(opencodeLog)
+          ? readFileSync(opencodeLog, "utf8")
+          : undefined;
+        return contents ? contents : undefined;
+      },
       "opencode session delete",
     );
-    expect(deleted).toMatch(/^fake-sess-\d+\n$/u);
+    expect(deleted).toBe(`fake-sess-${discoveryProcessId}\n`);
     expect(
       [otherAgentLog, otherArgsLog, overAcpLog].filter((log) =>
         existsSync(log),

@@ -485,6 +485,30 @@ export function appendThreadEvent(
   return result.sequence;
 }
 
+export function appendThreadEventWithPreflight(
+  deps: Pick<AppDeps, "db" | "hub">,
+  args: AppendThreadEventArgs,
+  preflight: (tx: DbTransaction) => void,
+): number {
+  const result = deps.db.transaction(
+    (tx) => {
+      preflight(tx);
+      return appendThreadEventInTransactionWithAttention(tx, args);
+    },
+    { behavior: "immediate" },
+  );
+  deps.hub.notifyThread(
+    args.threadId,
+    buildAppendThreadEventNotificationChanges(result.readStateUpdate),
+    buildAppendThreadEventNotificationMetadata({
+      sequence: result.sequence,
+      readStateUpdate: result.readStateUpdate,
+      eventType: args.type,
+    }),
+  );
+  return result.sequence;
+}
+
 export function appendThreadEventInTransaction<TType extends ThreadEventType>(
   db: DbTransaction,
   args: AppendThreadEventArgs<TType>,

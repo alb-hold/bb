@@ -837,7 +837,7 @@ export function updateRunningEnvironmentTeardown(
 
 export function failRunningEnvironmentTeardown(
   db: EnvironmentWriteConnection,
-  input: { environmentId: string; attempt: number; message: string; retireAt: number; keepSnapshot: boolean },
+  input: { environmentId: string; attempt: number; message: string; retireAt: number | null; keepSnapshot: boolean },
 ): boolean {
   return (
     db

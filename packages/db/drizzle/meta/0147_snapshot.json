@@ -1,8 +1,8 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "370a824b-565d-4827-a3ac-89875f717728",
-  "prevId": "12939974-3ed3-4749-a073-178d9e77f318",
+  "id": "1b798ff1-72c2-4134-b4bc-b5b8e736f871",
+  "prevId": "7d0093af-15d4-4b46-819a-49f038d624ae",
   "tables": {
     "app_settings": {
       "name": "app_settings",
@@ -452,6 +452,74 @@
       "uniqueConstraints": {},
       "checkConstraints": {}
     },
+    "diff_viewed_files": {
+      "name": "diff_viewed_files",
+      "columns": {
+        "environment_id": {
+          "name": "environment_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "target_key": {
+          "name": "target_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "path": {
+          "name": "path",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "revision": {
+          "name": "revision",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "diff_viewed_files_environment_id_environments_id_fk": {
+          "name": "diff_viewed_files_environment_id_environments_id_fk",
+          "tableFrom": "diff_viewed_files",
+          "tableTo": "environments",
+          "columnsFrom": [
+            "environment_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "diff_viewed_files_environment_id_target_key_path_pk": {
+          "columns": [
+            "environment_id",
+            "target_key",
+            "path"
+          ],
+          "name": "diff_viewed_files_environment_id_target_key_path_pk"
+        }
+      },
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
     "environment_hook_operations": {
       "name": "environment_hook_operations",
       "columns": {
@@ -751,13 +819,6 @@
         },
         "teardown_message": {
           "name": "teardown_message",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "teardown_prior_status": {
-          "name": "teardown_prior_status",
           "type": "text",
           "primaryKey": false,
           "notNull": false,

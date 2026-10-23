@@ -30,7 +30,7 @@ export function assertPathAvoidsProtectedWorkspaces(
   const dataDir =
     sessionId === null
       ? null
-      : (getSessionById(deps.db, sessionId)?.dataDir ?? null);
+      : (getSessionById(deps.db, { sessionId })?.dataDir ?? null);
   if (dataDir === null) {
     throw new ApiError(
       409,

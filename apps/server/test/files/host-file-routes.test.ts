@@ -351,6 +351,37 @@ describe("host file routes", () => {
     });
   });
 
+  it("refuses a move on a compatible daemon that predates host.move_file, without sending anything or falling back", async () => {
+    await withTestHarness(async (harness) => {
+      const { host, session } = seedHostSession(harness.deps, {
+        protocolVersion: 249,
+      });
+      seedPrimaryHost(harness.deps, host.id);
+      const commands: HostDaemonOnlineRpcRequestMessage["command"][] = [];
+      registerHostRpcResponder(harness, {
+        hostId: host.id,
+        sessionId: session.id,
+        handle: (request) => {
+          commands.push(request.command);
+          return { ok: true, result: { ok: true } };
+        },
+      });
+
+      const response = await harness.app.request(
+        ...postJson("/api/v1/files/move", {
+          sourcePath: "/work/scratch/a.txt",
+          destinationPath: "/work/other/moved",
+        }),
+      );
+
+      expect(response.status).toBe(409);
+      expect(await readJson(response)).toMatchObject({
+        code: "file_move_upgrade_required",
+      });
+      expect(commands).toEqual([]);
+    });
+  });
+
   it("rejects hostile-origin and text/plain privileged mutations before host RPC", async () => {
     await withTestHarness(async (harness) => {
       const { host, session } = seedHostSession(harness.deps);

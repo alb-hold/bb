@@ -225,6 +225,15 @@ export function printExecutionProfile(
   console.log(
     `    Overrides:      ${model === null && reasoningLevel === null ? "none (defaults apply)" : `model ${model ?? "default"} · reasoning ${reasoningLevel ?? "default"}`}`,
   );
+  if (
+    model !== null &&
+    execution.nextTurn !== null &&
+    model !== execution.nextTurn.model
+  ) {
+    console.log(
+      `    Model comparison: stored override ${model}; next turn ${execution.nextTurn.model}`,
+    );
+  }
   console.log(
     `    Last requested: ${execution.lastRequested ? describe(execution.lastRequested) : "(no turn yet)"}`,
   );
@@ -603,7 +612,7 @@ export function registerShowCommand(
             if (ws.mergeBase) {
               console.log(`  Merge base:   ${ws.mergeBase.mergeBaseBranch}`);
               console.log(
-                `  Ahead: ${ws.mergeBase.aheadCount}  Behind: ${ws.mergeBase.behindCount}`,
+                `  Ahead: ${ws.mergeBase.aheadCount}  Behind: ${ws.mergeBase.behindCount}${ws.mergeBase.squashMergeCheckComplete ? "" : " (squash-merge check incomplete)"}`,
               );
             }
           } else {

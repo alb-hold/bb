@@ -2,7 +2,10 @@ import { createCoreComposerActions } from "@/lib/plugin-composer-handle";
 import { useAtom } from "jotai";
 import { atomWithStorage } from "jotai/utils";
 import { createJsonLocalStorage } from "@/lib/browser-storage";
-import { usePendingAttachmentUploads } from "./usePendingAttachmentUploads";
+import {
+  readPendingAttachmentUploads,
+  usePendingAttachmentUploads,
+} from "./usePendingAttachmentUploads";
 import { useInitialPromptDraft } from "./mentions/initial-prompt-draft";
 import { ProviderRequirementBanner } from "./banner/ProviderRequirementBanner";
 import { Button } from "@bb/shared-ui/button";
@@ -69,12 +72,12 @@ import {
   type NewThreadPromptBoxProps,
 } from "@/components/promptbox/NewThreadPromptBox";
 import { buildProviderPromptActionProps } from "@bb/client-core";
-import type { PromptMentionLinkResolver } from "@/components/promptbox/editor/prompt-mention-link";
+import type { PromptMentionLinkResolver } from "@bb/client-core";
 import {
   type PluginComposerHost,
   useComposerHostSelection,
 } from "@/components/plugin/plugin-composer-host";
-import type { ExperimentalComposerSubmitOptions } from "@get-bb/plugin-sdk";
+import type { ComposerSubmitExtras } from "@get-bb/plugin-sdk/internal/composer-handle";
 import {
   readExecutionSelection,
   resolveComposerSelectionDeadline,
@@ -1411,19 +1414,18 @@ export function NewThreadComposer({
     seedInitialPrompt(initialPromptDraft);
   }, [initialPromptDraft, seedInitialPrompt]);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
-  const [isUploading, setIsUploading] = useState(false);
   const [isCopyingAttachments, setIsCopyingAttachments] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [nativeTerminalRequested, setNativeTerminalRequested] = useAtom(
     nativeTerminalPreferenceAtom,
   );
-  const pendingUploadCountRef = useRef(0);
   const isCopyingAttachmentsRef = useRef(false);
   const isSubmittingRef = useRef(false);
   const uploadPromptAttachment = useUploadPromptAttachment();
   const uploadTargetKey = `${projectId}\0${promptDraft.storageKey}`;
   const { pendingUploads, startUploads, finishUploads } =
     usePendingAttachmentUploads(uploadTargetKey);
+  const isUploading = pendingUploads.length > 0;
   const currentUploadTargetRef = useRef(uploadTargetKey);
   useEffect(() => {
     currentUploadTargetRef.current = uploadTargetKey;
@@ -1434,8 +1436,6 @@ export function NewThreadComposer({
       if (!projectId || files.length === 0) return added;
       const capturedTarget = `${projectId}\0${promptDraft.storageKey}`;
       setAttachmentError(null);
-      pendingUploadCountRef.current += 1;
-      setIsUploading(true);
       const uploads = startUploads(files);
       try {
         for (const upload of uploads) {
@@ -1444,9 +1444,10 @@ export function NewThreadComposer({
               projectId,
               file: upload.file,
             });
-            if (currentUploadTargetRef.current !== capturedTarget) return added;
             promptDraft.addAttachment(uploaded);
-            added.push(uploaded);
+            if (currentUploadTargetRef.current === capturedTarget) {
+              added.push(uploaded);
+            }
           } catch (error) {
             if (currentUploadTargetRef.current === capturedTarget) {
               setAttachmentError(
@@ -1463,8 +1464,6 @@ export function NewThreadComposer({
         }
       } finally {
         finishUploads(uploads);
-        pendingUploadCountRef.current -= 1;
-        setIsUploading(pendingUploadCountRef.current > 0);
       }
       return added;
     },
@@ -1485,7 +1484,8 @@ export function NewThreadComposer({
       }
       if (
         isCopyingAttachmentsRef.current ||
-        pendingUploadCountRef.current > 0 ||
+        readPendingAttachmentUploads(currentUploadTargetRef.current).length >
+          0 ||
         isSubmittingRef.current
       ) {
         return "refused";
@@ -1609,19 +1609,6 @@ export function NewThreadComposer({
     agentProviders?.find((provider) => provider.id === selectedProviderId)
       ?.capabilities.supportsNativeTerminal === true;
   const nativeTerminal = nativeTerminalAvailable && nativeTerminalRequested;
-  const submitProgrammaticallyRef = useRef<
-    (
-      options: ExperimentalComposerSubmitOptions,
-      pluginSubmission: NewThreadComposerSubmission["pluginSubmission"],
-    ) => Promise<void>
-  >(async () => {});
-  const submitProgrammaticallyThroughRef = useCallback(
-    (
-      options: ExperimentalComposerSubmitOptions,
-      pluginSubmission: NewThreadComposerSubmission["pluginSubmission"],
-    ) => submitProgrammaticallyRef.current(options, pluginSubmission),
-    [],
-  );
   const seededExecutionInputSources = useMemo(
     (): CreateExecutionInputSources => ({
       ...(seed?.providerId !== undefined
@@ -1679,8 +1666,7 @@ export function NewThreadComposer({
   const submitDraft = useCallback(
     async (
       blockedReason: string | null,
-      submitOptions: ExperimentalComposerSubmitOptions | null,
-      pluginSubmission?: NewThreadComposerSubmission["pluginSubmission"],
+      { sendAt, pluginSubmission }: ComposerSubmitExtras,
     ) => {
       const submittedDraft = promptDraft.getCurrent();
       const input = promptDraftToInput(submittedDraft);
@@ -1724,9 +1710,7 @@ export function NewThreadComposer({
         ),
         environment: submissionEnvironment,
         input,
-        ...(submitOptions?.sendAt === undefined
-          ? {}
-          : { sendAt: submitOptions.sendAt }),
+        ...(sendAt === undefined ? {} : { sendAt }),
         ...(pluginSubmission === undefined ? {} : { pluginSubmission }),
         ...(creationData === undefined
           ? {}
@@ -1785,21 +1769,10 @@ export function NewThreadComposer({
   );
 
   const handleSubmit = useCallback(
-    async (blockedReason: string | null) => {
-      try {
-        await submitDraft(blockedReason, null);
-      } catch {}
-    },
+    (blockedReason: string | null, extras: ComposerSubmitExtras = {}) =>
+      submitDraft(blockedReason, extras),
     [submitDraft],
   );
-  useEffect(() => {
-    submitProgrammaticallyRef.current = async (
-      submitOptions,
-      pluginSubmission,
-    ) => {
-      await submitDraft(null, submitOptions, pluginSubmission);
-    };
-  }, [submitDraft]);
 
   const handleProviderChange = useDraftPreservingOptionChange(
     selectedProviderId,
@@ -1984,7 +1957,7 @@ export function NewThreadComposer({
       subscribeSelection,
       setDraft: promptDraft.setDraft,
       focus: focusPromptBox,
-      submit: submitProgrammaticallyThroughRef,
+      sendsOnEnter: true,
       setSelection,
     }),
     [
@@ -1997,7 +1970,6 @@ export function NewThreadComposer({
       promptDraft.subscribe,
       setSelection,
       subscribeSelection,
-      submitProgrammaticallyThroughRef,
     ],
   );
 
@@ -2018,7 +1990,9 @@ export function NewThreadComposer({
           id={options.id}
           focusRequest={promptBoxFocusRequest}
           onChange={promptDraft.setTextAndMentions}
-          onSubmit={() => void handleSubmit(options.blockedReason ?? null)}
+          onSubmit={(extras) =>
+            handleSubmit(options.blockedReason ?? null, extras)
+          }
           isSubmitting={isSubmitting}
           disabled={disabledReason !== null}
           disabledReason={disabledReason ?? undefined}

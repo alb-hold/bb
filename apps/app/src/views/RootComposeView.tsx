@@ -53,7 +53,10 @@ import {
   type ProjectMachineSetupDialogTarget,
 } from "@/components/dialogs/ProjectMachineSetupDialog";
 import { HEADER_ICON_BUTTON_CLASS } from "@/components/layout/AppPageHeader";
-import { RIGHT_PANEL_TOGGLE_ICON_NAME } from "@/components/secondary-panel/panelToggleControlState";
+import {
+  RIGHT_PANEL_TOGGLE_ICON_NAME,
+  RIGHT_PANEL_TOGGLE_SHORTCUT_HINT_CLASS,
+} from "@/components/secondary-panel/panelToggleControlState";
 import { AppCommandShortcutHint } from "@/components/commands/AppCommandShortcutHint";
 import type {
   SecondaryPanelPaneRenderContext,
@@ -99,7 +102,7 @@ import {
   type OpenAttachmentRequest,
 } from "@/components/secondary-panel/AttachmentOpenerContext";
 import { PluginComposerHostProvider } from "@/components/plugin/plugin-composer-host";
-import type { PromptMentionLinkResolver } from "@/components/promptbox/editor/prompt-mention-link";
+import type { PromptMentionLinkResolver } from "@bb/client-core";
 import { useQuickCreateProjectController } from "@/hooks/useQuickCreateProject";
 import { useNavigateToThreadAfterCreatePreference } from "@/lib/root-compose-create-preference";
 import {
@@ -148,6 +151,7 @@ import {
   syncTerminalTabsInFixedPanelState,
 } from "@/components/secondary-panel/terminalPanelTabs";
 import { useMountedTerminalIds } from "@/components/thread/terminal/mounted-terminals";
+import { usePendingTerminalIds } from "@/components/thread/terminal/pending-terminals";
 import { resolveTerminalScopeKey } from "@/components/thread/terminal/terminal-scope";
 import {
   getTerminalCurrentCwd,
@@ -277,7 +281,7 @@ export function RootComposeRightPanelToggle({
       type="button"
       variant="ghost"
       size="icon"
-      className={`${HEADER_ICON_BUTTON_CLASS} relative`}
+      className={cn(HEADER_ICON_BUTTON_CLASS, "relative")}
       aria-label={
         shortcut ? `${rightPanelLabel} (${shortcut.label})` : rightPanelLabel
       }
@@ -291,7 +295,7 @@ export function RootComposeRightPanelToggle({
       <Icon name={rightPanelIconName} />
       <AppCommandShortcutHint
         shortcut={shortcut}
-        className="absolute right-full mr-1"
+        className={RIGHT_PANEL_TOGGLE_SHORTCUT_HINT_CLASS}
       />
     </Button>
   );
@@ -967,6 +971,7 @@ function RootComposeSurface({
     openPluginPanel,
     projectId: isProjectless ? null : projectId,
   });
+  const pendingTerminalIds = usePendingTerminalIds();
   const syncedOrderedSecondaryFileTabs = useMemo(
     () =>
       loadedTerminalSessions === undefined
@@ -974,9 +979,15 @@ function RootComposeSurface({
         : buildTerminalSyncedSecondaryFileTabs({
             orderedTabs: orderedSecondaryFileTabs,
             retainedTerminalIds,
+            pendingTerminalIds,
             terminalSessions: loadedTerminalSessions,
           }),
-    [loadedTerminalSessions, orderedSecondaryFileTabs, retainedTerminalIds],
+    [
+      loadedTerminalSessions,
+      orderedSecondaryFileTabs,
+      pendingTerminalIds,
+      retainedTerminalIds,
+    ],
   );
   useEffect(() => {
     if (!terminalsListLoaded) {
@@ -985,12 +996,14 @@ function RootComposeSurface({
     updateFixedPanelTabsState((state) =>
       syncTerminalTabsInFixedPanelState({
         retainedTerminalIds,
+        pendingTerminalIds,
         state,
         terminalSessions,
       }),
     );
   }, [
     retainedTerminalIds,
+    pendingTerminalIds,
     terminalSessions,
     terminalsListLoaded,
     updateFixedPanelTabsState,
@@ -1277,8 +1290,10 @@ function RootComposeSurface({
         onActivateTab={activateTab}
         onAutoFocusNewTabHandled={handleNewTabAutoFocusHandled}
         onAutoFocusTerminalHandled={terminals.handleAutoFocusHandled}
+        onCloseTerminal={terminals.close}
         onOpenBrowser={openBrowser}
         onOpenPanelLink={handleOpenPanelLink}
+        onRetryTerminalStart={terminals.retryStart}
         onSelectFileSearchResult={handleSelectFileSearchResult}
         onSelectionAddToChat={handleRootPanelSelectionAddToChat}
         onStartTerminal={terminals.start}
@@ -1319,7 +1334,9 @@ function RootComposeSurface({
       rootProjectHostId,
       shouldAutoFocusNewTab,
       terminals.autoFocusTerminalId,
+      terminals.close,
       terminals.handleAutoFocusHandled,
+      terminals.retryStart,
       terminals.start,
     ],
   );

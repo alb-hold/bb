@@ -20,6 +20,7 @@ interface ThreadUnreadDividerSnapshot {
 }
 
 interface ThreadUnreadDividerState {
+  autoScroll: boolean;
   hasUnseenTimelineEvents: boolean;
   placement: ThreadTimelineUnreadDividerPlacement | null;
 }
@@ -50,6 +51,7 @@ interface UseThreadUnreadDividerStateArgs {
 }
 
 const NO_UNREAD_DIVIDER_STATE: ThreadUnreadDividerState = {
+  autoScroll: false,
   hasUnseenTimelineEvents: false,
   placement: null,
 };
@@ -239,6 +241,7 @@ export function useThreadUnreadDividerState({
   ) {
     return {
       ...NO_UNREAD_DIVIDER_STATE,
+      autoScroll: isFocused && hasUnseenTimelineEvents,
       hasUnseenTimelineEvents: isFocused && hasUnseenTimelineEvents,
     };
   }
@@ -270,12 +273,14 @@ export function useThreadUnreadDividerState({
     !hasUnseenUpdatesOnOpen &&
     (snapshot.hasAttentionAfterOpening ||
       (snapshot.attentionAt !== threadLatestAttentionAt && !becameFocused));
+  const autoScroll = shouldOpenThreadAtLatest({
+    hasUnseenTimelineEvents:
+      isFocused && hasUnseenTimelineEvents && !hasNewAttentionAfterOpening,
+    hasUnseenUpdatesOnOpen: isFocused && hasUnseenUpdatesOnOpen,
+  });
   return {
-    hasUnseenTimelineEvents: shouldOpenThreadAtLatest({
-      hasUnseenTimelineEvents:
-        isFocused && hasUnseenTimelineEvents && !hasNewAttentionAfterOpening,
-      hasUnseenUpdatesOnOpen: isFocused && hasUnseenUpdatesOnOpen,
-    }),
+    autoScroll,
+    hasUnseenTimelineEvents: autoScroll,
     placement:
       snapshot !== null &&
       snapshot.threadId === threadId &&

@@ -5,7 +5,7 @@ import { COARSE_POINTER_TEXT_BASE_CLASS } from "@bb/shared-ui/coarse-pointer-siz
 import { cn } from "@bb/shared-ui/lib/utils";
 import {
   PromptMentionLinkContext,
-  type PromptMentionLinkResolver,
+  type ComposerMentionLinkResolver,
 } from "./editor/prompt-mention-link";
 import {
   composerEditorHeightAtom,
@@ -39,7 +39,7 @@ export function ComposerEditorSlot({
   isCompactLayout: boolean;
   minHeight: number;
   layout: ComposerEditorLayout;
-  resolveMentionLink: PromptMentionLinkResolver | undefined;
+  resolveMentionLink: ComposerMentionLinkResolver | undefined;
 }) {
   const userHeightPx = useAtomValue(composerEditorHeightAtom);
   return (
@@ -51,7 +51,7 @@ export function ComposerEditorSlot({
         "w-full overflow-y-auto bg-transparent px-4 pb-1 pr-14 pt-3 outline-none",
         COARSE_POINTER_TEXT_BASE_CLASS,
         "leading-relaxed",
-        isCompactLayout && "h-12 overflow-hidden pb-0 pr-14 pt-0",
+        isCompactLayout && "h-12 overflow-hidden pb-0 pr-2 pt-0",
       )}
       style={{
         minHeight: isCompactLayout

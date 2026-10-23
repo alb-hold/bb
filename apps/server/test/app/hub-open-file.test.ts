@@ -279,6 +279,8 @@ describe("NotificationHub device handoff routing", () => {
     const hub = new NotificationHub();
     const viewing = createMockHubSocket();
     const other = createMockHubSocket();
+    hub.registerClient(viewing, true);
+    hub.registerClient(other, true);
     hub.subscribe(viewing, { kind: "thread-detail", threadId: "thr_1" });
     hub.subscribe(other, { kind: "thread-detail", threadId: "thr_2" });
 

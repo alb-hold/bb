@@ -11,8 +11,8 @@ import { tokenBreakdownLabels } from "@bb/domain";
 import { estimateCompactionSavings, summarizeTokenWeather } from "@bb/domain";
 import {
   useThreadSpendSummary,
-  useThreadTimeline,
 } from "@/hooks/queries/thread-queries";
+import { useThreadTimeline } from "@/hooks/queries/thread-panel-queries";
 import { threadCompactionTurnIdsQueryKey } from "@/hooks/queries/query-keys";
 import { sdk } from "@/lib/sdk";
 import { useThreadRoutePath } from "./ThreadTitleMentions";
