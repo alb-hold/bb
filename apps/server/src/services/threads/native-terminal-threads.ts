@@ -1,6 +1,7 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import {
   consumeNativeTerminalThreadLaunchInput,
+  deleteNativeTerminalToolCredential,
   getNativeTerminalToolCredential,
   setNativeTerminalToolCredential,
   getEnvironment,
@@ -465,35 +466,50 @@ async function openNativeTerminalOnce(
     }
   }
   const credential = issueNativeTerminalToolCredential(record.providerId);
+  const previousCredential = getNativeTerminalToolCredential(
+    deps.db,
+    thread.id,
+  );
   beginNativeTerminalRebind(thread.id);
   try {
+    deleteNativeTerminalToolCredential(deps.db, thread.id);
     clearNativeTerminalThreadEvidence(deps.db, thread.id);
-    const terminal = await deps.terminalSessions.createTerminal({
-      ...(args.repaintOnAttach
-        ? {
-            onTerminalStarted: (terminalId: string) =>
-              deps.terminalSessions.requestNativeTerminalRepaintOnNextAttach(
-                terminalId,
-              ),
-          }
-        : {}),
-      payload: {
-        cols: args.request.cols ?? NATIVE_TERMINAL_DEFAULT_COLS,
-        rows: args.request.rows ?? NATIVE_TERMINAL_DEFAULT_ROWS,
-        start: {
-          mode: "command",
-          command: nativeTerminalLaunchCommand({
-            executable: provider.cli.executable,
-            launchArgs: provider.cli.launchArgs,
-            reattachOnly: args.reattachOnly,
-            threadId: thread.id,
-          }),
+    const terminal = await deps.terminalSessions
+      .createTerminal({
+        ...(args.repaintOnAttach
+          ? {
+              onTerminalStarted: (terminalId: string) =>
+                deps.terminalSessions.requestNativeTerminalRepaintOnNextAttach(
+                  terminalId,
+                ),
+            }
+          : {}),
+        payload: {
+          cols: args.request.cols ?? NATIVE_TERMINAL_DEFAULT_COLS,
+          rows: args.request.rows ?? NATIVE_TERMINAL_DEFAULT_ROWS,
+          start: {
+            mode: "command",
+            command: nativeTerminalLaunchCommand({
+              executable: provider.cli.executable,
+              launchArgs: provider.cli.launchArgs,
+              reattachOnly: args.reattachOnly,
+              threadId: thread.id,
+            }),
+          },
+          target: { kind: "thread", threadId: thread.id },
+          title: provider.displayName,
         },
-        target: { kind: "thread", threadId: thread.id },
-        title: provider.displayName,
-      },
-      extraContributedEnv: [...providerEnv, credential.env],
-    });
+        extraContributedEnv: [...providerEnv, credential.env],
+      })
+      .catch((error: unknown) => {
+        if (
+          previousCredential !== null &&
+          getNativeTerminalToolCredential(deps.db, thread.id) === null
+        ) {
+          setNativeTerminalToolCredential(deps.db, previousCredential);
+        }
+        throw error;
+      });
     setNativeTerminalToolCredential(deps.db, {
       threadId: thread.id,
       terminalSessionId: terminal.id,
