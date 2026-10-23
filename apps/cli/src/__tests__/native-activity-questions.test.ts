@@ -532,6 +532,37 @@ describe("native terminal questions", () => {
       expect(firstId).not.toBe(secondId);
     });
 
+    it("keeps a third unannounced prompt open after its only candidates complete", () => {
+      const { hook, call, ask, done, tracker } = holder();
+      const input = bash("make build");
+      hook(call("toolu_1", input));
+      hook(call("toolu_2", input));
+      const first = hook(ask(input));
+      const second = hook(ask(input));
+      const third = hook(ask(input));
+      const thirdId = waiting(third)[2]!.id;
+
+      expect(hook(done("toolu_1", input))).toBeNull();
+      expect(waiting(hook(done("toolu_2", input)))).toEqual([
+        {
+          id: thirdId,
+          prompt: "Claude Code needs permission to use: Bash",
+        },
+      ]);
+      expect(waiting(tracker.heartbeat())).toEqual([
+        {
+          id: thirdId,
+          prompt: "Claude Code needs permission to use: Bash",
+        },
+      ]);
+      expect(hook(done("toolu_3", input))).toEqual({
+        state: "working",
+        prompt: null,
+      });
+      expect(waiting(first)).toHaveLength(1);
+      expect(waiting(second)).toHaveLength(2);
+    });
+
     it("keeps the second identical call's prompt open when the first auto-allowed call completes", () => {
       const { hook, call, ask, done, tracker } = holder();
       const input = bash("make build");
