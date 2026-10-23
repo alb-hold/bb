@@ -1206,21 +1206,21 @@ async function removeMachine(deps: Deps, hostId: string): Promise<void> {
     row.teardownAttempt === 0 && row.teardownStatus === "failed"
       ? row.statusMessage
       : null;
+  const kept = listOpenEnvironmentRetentionsForHost(deps.db, hostId);
+  if (kept.length > 0) {
+    updateHost(deps.db, deps.hub, hostId, {
+      teardownAttempt: attempt,
+      teardownStatus: "failed",
+      statusMessage: `${row.name} still holds work a failed create kept (${kept
+        .slice(0, 3)
+        .map((retention) => retention.keptPath ?? "(a path the provider did not report)")
+        .join(", ")}${kept.length > 3 ? ", …" : ""}); its owner has to release it before this machine can be destroyed, so that work is not erased.`,
+      removeRetryAt: Date.now() + MACHINE_IN_USE_RETRY_MS,
+    });
+    deps.hub.notifyHost(hostId, ["host-disconnected"]);
+    return;
+  }
   if (row.type === "ephemeral") {
-    const kept = listOpenEnvironmentRetentionsForHost(deps.db, hostId);
-    if (kept.length > 0) {
-      updateHost(deps.db, deps.hub, hostId, {
-        teardownAttempt: attempt,
-        teardownStatus: "failed",
-        statusMessage: `${row.name} still holds work a failed create kept (${kept
-          .slice(0, 3)
-          .map((retention) => retention.keptPath ?? "(a path the provider did not report)")
-          .join(", ")}${kept.length > 3 ? ", …" : ""}); its owner has to release it before this machine can be destroyed, so that work is not erased.`,
-        removeRetryAt: Date.now() + MACHINE_IN_USE_RETRY_MS,
-      });
-      deps.hub.notifyHost(hostId, ["host-disconnected"]);
-      return;
-    }
     const owners = listMachineBlockingThreadIds(deps.db, hostId);
     if (owners.length > 0) {
       updateHost(deps.db, deps.hub, hostId, {

@@ -24,8 +24,11 @@ import {
 import { eq, and, isNull, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import {
+  closeEnvironmentRetention,
   deleteEnvironmentRetentionIntents,
+  getProjectSourceByHost,
   listOpenEnvironmentRetentionsForThread,
+  listOpenEnvironmentRetentionsWithPath,
   markEnvironmentRetentionsUnresolved,
   recordEnvironmentRetention,
   releaseFinishedEnvironmentPreparationOwners,
@@ -196,6 +199,10 @@ const removeResultSchema = z.discriminatedUnion("status", [
   z.object({ status: z.literal("removed") }),
   z.object({ status: z.literal("retained"), message: z.string().min(1) }),
   z.object({ status: z.literal("failed"), message: z.string().min(1) }),
+]);
+const retentionProofSchema = z.discriminatedUnion("absent", [
+  z.object({ absent: z.literal(true), proof: z.string().min(1) }),
+  z.object({ absent: z.literal(false), reason: z.string().min(1) }),
 ]);
 const preflightRemoveResultSchema = z.discriminatedUnion("status", [
   z.object({ status: z.literal("removable") }),
@@ -1384,7 +1391,60 @@ export async function sweepProviderLifecycles(deps: Deps): Promise<void> {
     );
   }
   await Promise.all(pending);
+  await reconcileEnvironmentRetentions(deps);
   releaseFinishedEnvironmentPreparationOwners(deps.db);
+}
+
+export async function reconcileEnvironmentRetentions(
+  deps: Pick<Deps, "db" | "logger">,
+): Promise<void> {
+  for (const record of listEnvironmentProviders()) {
+    const prove = record.provider.experimental_proveRetentionAbsent;
+    if (prove === null) continue;
+    for (const row of listOpenEnvironmentRetentionsWithPath(
+      deps.db,
+      record.provider.id,
+    )) {
+      if (row.keptPath === null) continue;
+      const keptPath = row.keptPath;
+      try {
+        const source = getProjectSourceByHost(
+          deps.db,
+          row.projectId,
+          row.hostId,
+        );
+        const invocation = await invokeEnvironmentProvider(
+          record,
+          "retention proof",
+          () =>
+            Promise.resolve(
+              prove({
+                hostId: row.hostId,
+                path: keptPath,
+                sourcePath:
+                  source !== null && source.type === "local_path"
+                    ? source.path
+                    : null,
+                threadId: row.ownerThreadId,
+                signal: AbortSignal.timeout(30_000),
+              }),
+            ),
+        );
+        if (!invocation.ok || invocation.value === null) continue;
+        const proof = retentionProofSchema.parse(invocation.value);
+        if (!proof.absent) continue;
+        closeEnvironmentRetention(deps.db, {
+          id: row.id,
+          proof: `${proof.proof} (host ${row.hostId}, checked ${new Date().toISOString()})`,
+        });
+      } catch (error) {
+        deps.logger.warn(
+          { retentionId: row.id, error: errorMessage(error) },
+          "Retention proof failed; the retention stays open",
+        );
+      }
+    }
+  }
 }
 
 export function providerEnvironmentHasPendingWork(

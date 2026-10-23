@@ -65,3 +65,23 @@ it("normalizes an optional remove preflight and rejects a non-function", () => {
     }),
   ).toThrow();
 });
+
+it("normalizes an optional retention proof and rejects a non-function", () => {
+  expect(
+    validatePluginEnvironmentProviderDeclaration(declaration)
+      .experimental_proveRetentionAbsent,
+  ).toBeNull();
+  const prove = () => ({ absent: false as const, reason: "present" });
+  expect(
+    validatePluginEnvironmentProviderDeclaration({
+      ...declaration,
+      experimental_proveRetentionAbsent: prove,
+    }).experimental_proveRetentionAbsent,
+  ).toBe(prove);
+  expect(() =>
+    validatePluginEnvironmentProviderDeclaration({
+      ...declaration,
+      experimental_proveRetentionAbsent: "yes" as never,
+    }),
+  ).toThrow();
+});

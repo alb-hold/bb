@@ -24,6 +24,7 @@ import {
   removeWorktree,
   resolveAdoptableWorktree,
 } from "./host/worktree.js";
+import { proveRetentionAbsent } from "./host/retention-proof.js";
 import { isWorktreePreservedError } from "./host/worktree-preservation.js";
 
 function completionPathForWorktree(worktreePath: string): string {
@@ -212,6 +213,10 @@ export function createWorktreeHostEntry() {
                 : {}),
           } as const;
         }
+      },
+
+      async proveRetentionAbsent(input, context) {
+        return proveRetentionAbsent({ ...input, signal: context.signal });
       },
 
       async inspect(input, context) {

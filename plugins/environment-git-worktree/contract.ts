@@ -82,6 +82,23 @@ export const worktreeHostContract = defineRpcContract({
         .strict(),
     ]),
   },
+  proveRetentionAbsent: {
+    input: z
+      .object({
+        path: z.string().min(1),
+        sourcePath: z.string().min(1).nullable(),
+        threadId: z.string().min(1).nullable(),
+      })
+      .strict(),
+    output: z.discriminatedUnion("absent", [
+      z
+        .object({ absent: z.literal(true), proof: z.string().min(1) })
+        .strict(),
+      z
+        .object({ absent: z.literal(false), reason: z.string().min(1) })
+        .strict(),
+    ]),
+  },
   inspect: {
     input: z
       .object({

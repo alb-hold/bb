@@ -248,6 +248,22 @@ export default async function worktreePlugin(bb: BbPluginApi): Promise<void> {
         branchMode: "reuse-existing",
       });
     },
+    async experimental_proveRetentionAbsent(context) {
+      try {
+        return await host.call(
+          "proveRetentionAbsent",
+          {
+            path: context.path,
+            sourcePath: context.sourcePath,
+            threadId: context.threadId,
+          },
+          { hostId: context.hostId, signal: context.signal },
+        );
+      } catch (error) {
+        if (context.signal.aborted) throw error;
+        return { absent: false, reason: errorMessage(error) };
+      }
+    },
     async experimental_preflightRemove(context) {
       if (isAdoptedResource(context.resource) || context.hostId === null) {
         return { status: "removable" };

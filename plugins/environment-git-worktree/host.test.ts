@@ -469,6 +469,122 @@ describe("worktree host entry", () => {
     }
   });
 
+  describe("retention proof of absence", () => {
+    it("proves a kept path absent only when it is gone, unregistered and no workspace holds a branch of the thread", async () => {
+      const { sourcePath, dataDir } = await createSourceRepository();
+      const harness = createHarness(dataDir);
+      try {
+        const gone = join(dataDir, "worktrees", "never-existed", "repo");
+        const proof = await harness.experimental_call("proveRetentionAbsent", {
+          path: gone,
+          sourcePath,
+          threadId: "thr_proof",
+        });
+        expect(proof).toMatchObject({
+          absent: true,
+          proof: expect.stringContaining("lstat ENOENT"),
+        });
+      } finally {
+        await harness.experimental_dispose();
+      }
+    });
+
+    it("does not close while the path is still on disk", async () => {
+      const { sourcePath, dataDir } = await createSourceRepository();
+      const kept = join(dataDir, "worktrees", "kept", "repo");
+      await mkdir(kept, { recursive: true });
+      const harness = createHarness(dataDir);
+      try {
+        expect(
+          await harness.experimental_call("proveRetentionAbsent", {
+            path: kept,
+            sourcePath,
+            threadId: null,
+          }),
+        ).toMatchObject({ absent: false, reason: expect.stringContaining("still exists") });
+      } finally {
+        await harness.experimental_dispose();
+      }
+    });
+
+    it("does not close while a workspace is still registered at the path, even with its folder deleted", async () => {
+      const { sourcePath, dataDir } = await createSourceRepository();
+      const harness = createHarness(dataDir);
+      try {
+        const created = await harness.experimental_call(
+          "create",
+          createInput({
+            operationId: "registered",
+            sourcePath,
+            pathKey: "registered",
+            branchName: "bb/work-thr_reg",
+          }),
+        );
+        if (created.status !== "created") throw new Error(created.message);
+        await rm(created.path, { recursive: true, force: true });
+
+        expect(
+          await harness.experimental_call("proveRetentionAbsent", {
+            path: created.path,
+            sourcePath,
+            threadId: null,
+          }),
+        ).toMatchObject({
+          absent: false,
+          reason: expect.stringContaining("still registered"),
+        });
+      } finally {
+        await harness.experimental_dispose();
+      }
+    });
+
+    it("does not close while another workspace holds a branch of the thread", async () => {
+      const { sourcePath, dataDir } = await createSourceRepository();
+      const harness = createHarness(dataDir);
+      try {
+        const created = await harness.experimental_call(
+          "create",
+          createInput({
+            operationId: "holder",
+            sourcePath,
+            pathKey: "holder",
+            branchName: "bb/work-thr_hold",
+          }),
+        );
+        if (created.status !== "created") throw new Error(created.message);
+
+        expect(
+          await harness.experimental_call("proveRetentionAbsent", {
+            path: join(dataDir, "worktrees", "somewhere-else", "repo"),
+            sourcePath,
+            threadId: "thr_hold",
+          }),
+        ).toMatchObject({
+          absent: false,
+          reason: expect.stringContaining("still holds branch"),
+        });
+      } finally {
+        await harness.experimental_dispose();
+      }
+    });
+
+    it("does not close when the repository's workspaces cannot be listed", async () => {
+      const { dataDir } = await createSourceRepository();
+      const harness = createHarness(dataDir);
+      try {
+        expect(
+          await harness.experimental_call("proveRetentionAbsent", {
+            path: join(dataDir, "worktrees", "x", "repo"),
+            sourcePath: join(dataDir, "not-a-repo"),
+            threadId: null,
+          }),
+        ).toMatchObject({ absent: false });
+      } finally {
+        await harness.experimental_dispose();
+      }
+    });
+  });
+
   it("refuses to replace a target path that already exists", async () => {
     const { sourcePath, dataDir } = await createSourceRepository();
     const target = join(dataDir, "worktrees", "occupied", basename(sourcePath));

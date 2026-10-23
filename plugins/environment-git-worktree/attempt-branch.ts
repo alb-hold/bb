@@ -26,3 +26,10 @@ export function branchBelongsToAttempt(
     ? endsAtBoundary(branch, threadId)
     : endsAtBoundary(branch, `${threadId}${ATTEMPT_SEPARATOR}${attempt}`);
 }
+
+export function branchBelongsToThread(branch: string, threadId: string): boolean {
+  const suffix = /\.r\d+$/u.exec(branch);
+  const withoutAttempt =
+    suffix === null ? branch : branch.slice(0, branch.length - suffix[0].length);
+  return endsAtBoundary(withoutAttempt, threadId);
+}

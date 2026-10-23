@@ -1,5 +1,6 @@
 import {
   deleteEnvironmentRetentionIntents,
+  environmentRetentions,
   environments,
   getEnvironment,
   getThread,
@@ -7,11 +8,18 @@ import {
   recordEnvironmentRetention,
 } from "@bb/db";
 import type { PluginEnvironmentProviderCreateResult } from "@get-bb/plugin-sdk/environment-provider";
-import type { PluginEnvironmentProviderRestoreContext } from "@get-bb/plugin-sdk/environment-provider";
+import type {
+  PluginEnvironmentProviderRestoreContext,
+  PluginEnvironmentProviderRetentionProof,
+  PluginEnvironmentProviderRetentionProofContext,
+} from "@get-bb/plugin-sdk/environment-provider";
 import { validatePluginEnvironmentProviderDeclaration } from "@get-bb/plugin-sdk/internal/host-policy";
 import { eq } from "drizzle-orm";
 import { afterEach, describe, expect, it } from "vitest";
-import { sweepProviderEnvironment } from "../../src/services/environments/environment-engine.js";
+import {
+  reconcileEnvironmentRetentions,
+  sweepProviderEnvironment,
+} from "../../src/services/environments/environment-engine.js";
 import { setPluginEnvironmentProviderBridge } from "../../src/services/plugins/plugin-environment-provider-registry.js";
 import {
   seedEnvironment,
@@ -29,6 +37,9 @@ function registerProvider(
   restore: (
     context: PluginEnvironmentProviderRestoreContext,
   ) => Promise<PluginEnvironmentProviderCreateResult>,
+  prove?: (
+    context: PluginEnvironmentProviderRetentionProofContext,
+  ) => Promise<PluginEnvironmentProviderRetentionProof>,
 ) {
   const record = {
     pluginId: "test",
@@ -42,6 +53,9 @@ function registerProvider(
         throw new Error("Unexpected create");
       },
       restore,
+      ...(prove === undefined
+        ? {}
+        : { experimental_proveRetentionAbsent: prove }),
       remove: async () => ({ status: "removed" }),
     }),
   };
@@ -268,6 +282,92 @@ describe("a failed create records what it kept", () => {
       expect(
         getEnvironment(harness.db, current?.environmentId ?? "")?.statusMessage,
       ).toContain(KEPT_PATH);
+    });
+  });
+
+  describe("closing a retention on host proof of absence", () => {
+    const keptFailure = async (context: PluginEnvironmentProviderRestoreContext) => {
+      await context.experimental_claimPath(KEPT_PATH);
+      return {
+        status: "failed" as const,
+        message: "setup failed; the workspace stays in place",
+        experimental_retained: { path: KEPT_PATH },
+      };
+    };
+
+    it("closes the row, with the proof and time on it, when the provider proves the path absent, and it stops blocking", async () => {
+      await withTestHarness(async (harness) => {
+        const asked: PluginEnvironmentProviderRetentionProofContext[] = [];
+        registerProvider(keptFailure, async (context) => {
+          asked.push(context);
+          return { absent: true, proof: "lstat ENOENT; no registered workspace" };
+        });
+        const { host, thread } = await destroyedThread(harness);
+        await restoreAndWait(harness, thread.id);
+
+        await reconcileEnvironmentRetentions(harness.deps);
+
+        expect(asked.map((context) => context.path)).toEqual([KEPT_PATH]);
+        expect(
+          listOpenEnvironmentRetentionsForHost(harness.db, host.id),
+        ).toEqual([]);
+        const closed = harness.db.select().from(environmentRetentions).all();
+        expect(closed).toHaveLength(1);
+        expect(closed[0]).toMatchObject({
+          state: "closed",
+          closedProof: expect.stringContaining("lstat ENOENT"),
+        });
+        expect(closed[0]?.closedProof).toContain(host.id);
+        expect(closed[0]?.closedAt).toBeGreaterThan(0);
+      });
+    });
+
+    it.each([
+      [
+        "the path is still present",
+        async () => ({ absent: false as const, reason: "the path still exists" }),
+      ],
+      [
+        "a workspace is still registered there",
+        async () => ({
+          absent: false as const,
+          reason: "a workspace is still registered",
+        }),
+      ],
+      [
+        "the proof throws",
+        async (): Promise<PluginEnvironmentProviderRetentionProof> => {
+          throw new Error("host unreachable");
+        },
+      ],
+    ])("keeps the row blocking when %s", async (_label, prove) => {
+      await withTestHarness(async (harness) => {
+        registerProvider(keptFailure, prove);
+        const { host, thread } = await destroyedThread(harness);
+        await restoreAndWait(harness, thread.id);
+
+        await reconcileEnvironmentRetentions(harness.deps);
+
+        expect(
+          listOpenEnvironmentRetentionsForHost(harness.db, host.id).map(
+            (row) => row.state,
+          ),
+        ).toEqual(["retained"]);
+      });
+    });
+
+    it("never closes a row whose provider cannot prove absence", async () => {
+      await withTestHarness(async (harness) => {
+        registerProvider(keptFailure);
+        const { host, thread } = await destroyedThread(harness);
+        await restoreAndWait(harness, thread.id);
+
+        await reconcileEnvironmentRetentions(harness.deps);
+
+        expect(
+          listOpenEnvironmentRetentionsForHost(harness.db, host.id),
+        ).toHaveLength(1);
+      });
     });
   });
 });
