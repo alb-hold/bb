@@ -8,6 +8,7 @@ import {
   waitFor,
 } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { serializePromptDraftStorage } from "@bb/client-core";
 import { createQueryClientTestHarness } from "@/test/queryClientTestHarness";
 import { getPromptDraftAccessor } from "@/hooks/usePromptDraftStorage";
 import { NativeTerminalPromptBar } from "./NativeTerminalPromptBar";
@@ -64,7 +65,7 @@ afterEach(cleanup);
 
 describe("NativeTerminalPromptBar", () => {
   it("sends the trimmed message on Enter and clears the field", async () => {
-    const { input, sendButton } = renderBar();
+    const { input } = renderBar();
     fireEvent.change(input, { target: { value: "  fix the build  " } });
     fireEvent.keyDown(input, { key: "Enter" });
 
@@ -117,7 +118,23 @@ describe("NativeTerminalPromptBar", () => {
     fireEvent.click(sendButton);
     await waitFor(() => expect(send).toHaveBeenCalledTimes(1));
 
-    draft.setDraft({ text: "replacement draft", mentions: [], attachments: [] });
+    const replacementDraft = {
+      text: "replacement draft",
+      mentions: [],
+      attachments: [],
+    };
+    const replacementStorageValue =
+      serializePromptDraftStorage(replacementDraft);
+    if (replacementStorageValue === null) {
+      throw new Error("replacement draft should serialize");
+    }
+    window.localStorage.setItem(draft.storageKey, replacementStorageValue);
+    window.dispatchEvent(
+      new StorageEvent("storage", {
+        key: draft.storageKey,
+        newValue: replacementStorageValue,
+      }),
+    );
     resolveSend?.();
 
     await waitFor(() => expect(input.value).toBe(""));
