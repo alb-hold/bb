@@ -958,7 +958,7 @@ export function createApp(
   registerTerminalRoutes(publicApi, deps);
   registerDeviceHandoffRoutes(publicApi, deps);
   registerEnvironmentRoutes(publicApi, deps);
-  registerThreadRoutes(publicApi, deps);
+  registerThreadRoutes(publicApi, deps, pluginService);
   registerQueueRoutes(publicApi, deps);
   registerSpendRoutes(publicApi, deps);
   registerNativeTerminalThreadRoutes(publicApi, deps);
