@@ -3140,7 +3140,7 @@ export class TerminalSessionLifecycle {
       replayOffset,
     );
     const rebasedChunks: TerminalReplayMessage["chunks"] = [];
-    const retainedChunks: TerminalOutputChunk[] = [];
+    const retainedHeap: TerminalOutputChunk[] = [];
     let retainedTailBytes = 0;
     const retainedSequences = new Set<number>();
     let replayBytes = 0;
@@ -3150,31 +3150,47 @@ export class TerminalSessionLifecycle {
         Buffer.byteLength(chunk.dataBase64, "base64"),
         TERMINAL_RETAINED_OUTPUT_BYTES,
       );
-      let low = 0;
-      let high = retainedChunks.length;
-      while (low < high) {
-        const middle = (low + high) >>> 1;
-        if (
-          (retainedChunks[middle]?.seq ?? Number.POSITIVE_INFINITY) < chunk.seq
-        )
-          low = middle + 1;
-        else high = middle;
+      let index = retainedHeap.length;
+      retainedHeap.push(chunk);
+      while (index > 0) {
+        const parent = (index - 1) >>> 1;
+        const parentChunk = retainedHeap[parent];
+        if (!parentChunk || parentChunk.seq <= chunk.seq) break;
+        retainedHeap[index] = parentChunk;
+        index = parent;
       }
-      retainedChunks.splice(low, 0, chunk);
+      retainedHeap[index] = chunk;
       retainedSequences.add(chunk.seq);
       retainedTailBytes += bytes;
       while (
         retainedTailBytes > TERMINAL_RETAINED_OUTPUT_BYTES &&
-        retainedChunks.length > 1
+        retainedHeap.length > 1
       ) {
-        const removed = retainedChunks.shift();
-        if (removed) {
-          retainedSequences.delete(removed.seq);
-          retainedTailBytes -= Math.min(
-            Buffer.byteLength(removed.dataBase64, "base64"),
-            TERMINAL_RETAINED_OUTPUT_BYTES,
-          );
+        const removed = retainedHeap[0];
+        const last = retainedHeap.pop();
+        if (!removed || !last) break;
+        if (retainedHeap.length > 0) {
+          let parent = 0;
+          while (true) {
+            const left = parent * 2 + 1;
+            if (left >= retainedHeap.length) break;
+            const right = left + 1;
+            const child =
+              right < retainedHeap.length &&
+              retainedHeap[right]!.seq < retainedHeap[left]!.seq
+                ? right
+                : left;
+            if (last.seq <= retainedHeap[child]!.seq) break;
+            retainedHeap[parent] = retainedHeap[child]!;
+            parent = child;
+          }
+          retainedHeap[parent] = last;
         }
+        retainedSequences.delete(removed.seq);
+        retainedTailBytes -= Math.min(
+          Buffer.byteLength(removed.dataBase64, "base64"),
+          TERMINAL_RETAINED_OUTPUT_BYTES,
+        );
       }
     };
     let preparedBytes = 0;
@@ -3243,7 +3259,9 @@ export class TerminalSessionLifecycle {
 
     if (this.terminalOutputWritesStopped) return;
     capturePendingChunks();
-    const retainedTail = retainedChunks;
+    const retainedTail = retainedHeap.sort(
+      (left, right) => left.seq - right.seq,
+    );
     const latest = current
       ? getTerminalById(this.options.db, current.id)
       : null;
