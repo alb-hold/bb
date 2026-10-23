@@ -14,12 +14,11 @@ import {
   readFileSync,
   readlinkSync,
   readSync,
-  renameSync,
+  rmdirSync,
   rmSync,
   statfsSync,
   statSync,
   unlinkSync,
-  type BigIntStats,
   type Stats,
 } from "node:fs";
 import path from "node:path";
@@ -682,22 +681,20 @@ function isSymlinkRefusal(error: unknown): boolean {
   );
 }
 
-function lockHolderPid(
-  lock: string,
-  stats: Pick<Stats | BigIntStats, "isSymbolicLink">,
-): number | null {
-  let text: string;
+function lockHolderText(lock: string, stats: Stats): string | null {
   if (stats.isSymbolicLink()) {
     try {
-      text = readlinkSync(lock);
+      return readlinkSync(lock);
     } catch {
       return null;
     }
-  } else {
-    const content = readRegularFile(path.join(lock, "pid"));
-    if (content.kind !== "text") return null;
-    text = content.text;
   }
+  const content = readRegularFile(path.join(lock, "pid"));
+  return content.kind === "text" ? content.text : null;
+}
+
+function lockHolderPid(text: string | null): number | null {
+  if (text === null) return null;
   return /^\d+$/u.test(text.trim()) && Number(text) > 0 ? Number(text) : null;
 }
 
@@ -752,7 +749,6 @@ export class HookAppendReader {
   private incompleteSince: number | null = null;
   private incompleteOffset = -1;
   private incompleteCounted = false;
-  private brokenLocks = 0;
   private readonly seenLate = new Set<string>();
   private regularKey: string | null = null;
   private irregularKey: string | null = null;
@@ -760,7 +756,7 @@ export class HookAppendReader {
 
   constructor(
     private readonly file: string,
-    private readonly beforeLockMove: () => void = () => undefined,
+    private readonly beforeLockRemoval: () => void = () => undefined,
   ) {}
 
   read(now: number = Date.now()): HookSpoolRead {
@@ -966,25 +962,29 @@ export class HookAppendReader {
   private breakStaleLock(now: number): number {
     const lock = path.join(path.dirname(this.file), APPEND_LOCK_NAME);
     try {
-      const stats = lstatSync(lock, { bigint: true });
-      const holder = lockHolderPid(lock, stats);
+      const stats = lstatSync(lock);
+      const text = lockHolderText(lock, stats);
+      const holder = lockHolderPid(text);
       const dead = holder !== null && !processIsAlive(holder);
-      const ancient = now - Number(stats.mtimeMs) >= LOCK_PID_REUSE_BOUND_MS;
+      const ancient = now - stats.mtimeMs >= LOCK_PID_REUSE_BOUND_MS;
       if (!dead && !ancient) return 0;
-      const moved = `${lock}.stale.${process.pid}.${this.brokenLocks + 1}`;
-      this.beforeLockMove();
-      renameSync(lock, moved);
-      const taken = lstatSync(moved, { bigint: true });
-      if (
-        taken.ino !== stats.ino ||
-        taken.dev !== stats.dev ||
-        taken.mtimeNs !== stats.mtimeNs
-      ) {
-        renameSync(moved, lock);
-        return 0;
+      this.beforeLockRemoval();
+      if (stats.isSymbolicLink()) {
+        if (readlinkSync(lock) !== text) return 0;
+        unlinkSync(lock);
+      } else if (text === null) {
+        rmdirSync(lock);
+      } else {
+        const pidFile = path.join(lock, "pid");
+        const again = readRegularFile(pidFile);
+        if (again.kind !== "text" || again.text !== text) return 0;
+        unlinkSync(pidFile);
+        try {
+          rmdirSync(lock);
+        } catch {
+          return 1;
+        }
       }
-      this.brokenLocks += 1;
-      rmSync(moved, { force: true, recursive: true });
       return 1;
     } catch {
       return 0;
