@@ -87,6 +87,7 @@ function makeController({
     shouldRetainActiveTerminalView: false,
     start: null,
     terminalBodyMessage,
+    terminalsLoading: false,
   };
 }
 

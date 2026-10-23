@@ -356,6 +356,7 @@ export function Overview() {
             {...baseProps}
             initialExpanded={new Set([toolSearchTool.id])}
             timelineRows={[toolSearchTool]}
+            threadIsActive={false}
           />
         </TimelineStage>
       </StoryRow>
@@ -368,6 +369,7 @@ export function Overview() {
             {...baseProps}
             initialExpanded={new Set([longOutputTool.id])}
             timelineRows={[longOutputTool]}
+            threadIsActive={false}
           />
         </TimelineStage>
       </StoryRow>
@@ -380,6 +382,7 @@ export function Overview() {
             {...baseProps}
             initialExpanded={new Set([notifyUserShort.id])}
             timelineRows={[notifyUserShort]}
+            threadIsActive={false}
           />
         </TimelineStage>
       </StoryRow>
@@ -392,6 +395,7 @@ export function Overview() {
             {...baseProps}
             initialExpanded={new Set([notifyUserLong.id])}
             timelineRows={[notifyUserLong]}
+            threadIsActive={false}
           />
         </TimelineStage>
       </StoryRow>
@@ -400,7 +404,11 @@ export function Overview() {
         hint="status=pending, output empty, completedAt null"
       >
         <TimelineStage>
-          <ThreadTimelineRows {...baseProps} timelineRows={[runningTool]} />
+          <ThreadTimelineRows
+            {...baseProps}
+            timelineRows={[runningTool]}
+            threadIsActive={false}
+          />
         </TimelineStage>
       </StoryRow>
       <StoryRow
@@ -408,7 +416,11 @@ export function Overview() {
         hint="status=error, real toolArgs, error result string"
       >
         <TimelineStage>
-          <ThreadTimelineRows {...baseProps} timelineRows={[errorTool]} />
+          <ThreadTimelineRows
+            {...baseProps}
+            timelineRows={[errorTool]}
+            threadIsActive={false}
+          />
         </TimelineStage>
       </StoryRow>
       <StoryRow
@@ -419,6 +431,7 @@ export function Overview() {
           <ThreadTimelineRows
             {...baseProps}
             timelineRows={[waitingApprovalTool]}
+            threadIsActive={false}
           />
         </TimelineStage>
       </StoryRow>
@@ -427,7 +440,11 @@ export function Overview() {
         hint="status=interrupted, user steered before tool returned"
       >
         <TimelineStage>
-          <ThreadTimelineRows {...baseProps} timelineRows={[interruptedTool]} />
+          <ThreadTimelineRows
+            {...baseProps}
+            timelineRows={[interruptedTool]}
+            threadIsActive={false}
+          />
         </TimelineStage>
       </StoryRow>
       <StoryRow
@@ -435,7 +452,11 @@ export function Overview() {
         hint="approvalStatus=denied, user rejected the approval request"
       >
         <TimelineStage>
-          <ThreadTimelineRows {...baseProps} timelineRows={[deniedTool]} />
+          <ThreadTimelineRows
+            {...baseProps}
+            timelineRows={[deniedTool]}
+            threadIsActive={false}
+          />
         </TimelineStage>
       </StoryRow>
     </StoryCard>
@@ -448,7 +469,11 @@ export function SkillReads() {
       {skillReadStoryStates.map((state) => (
         <StoryRow key={state.row.id} label={state.label} hint={state.hint}>
           <TimelineStage>
-            <ThreadTimelineRows {...baseProps} timelineRows={[state.row]} />
+            <ThreadTimelineRows
+              {...baseProps}
+              timelineRows={[state.row]}
+              threadIsActive={false}
+            />
           </TimelineStage>
         </StoryRow>
       ))}
@@ -464,7 +489,11 @@ export function NativeSkillCall() {
         hint="provider presentation uses the established lightning glyph"
       >
         <TimelineStage>
-          <ThreadTimelineRows {...baseProps} timelineRows={[nativeSkillTool]} />
+          <ThreadTimelineRows
+            {...baseProps}
+            timelineRows={[nativeSkillTool]}
+            threadIsActive={false}
+          />
         </TimelineStage>
       </StoryRow>
     </StoryCard>

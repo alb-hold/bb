@@ -70,7 +70,7 @@ export interface ThreadTimelineSurfaceProps {
   timelineRows: TimelineRow[];
   timelineNavigationTargetRowId?: string | null;
   threadId: string;
-  threadIsActive?: boolean;
+  threadIsActive: boolean;
   threadRuntimeDisplayStatus: ThreadRuntimeDisplayStatus;
   unreadDividerPlacement?: ThreadTimelineUnreadDividerPlacement | null;
   workspaceRootPath: string | undefined;

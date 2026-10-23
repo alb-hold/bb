@@ -191,7 +191,11 @@ export function Overview() {
         hint="production-default — header only, click to expand"
       >
         <TimelineStage>
-          <ThreadTimelineRows {...baseProps} timelineRows={[buildCommand]} />
+          <ThreadTimelineRows
+            {...baseProps}
+            timelineRows={[buildCommand]}
+            threadIsActive={false}
+          />
         </TimelineStage>
       </StoryRow>
       <StoryRow
@@ -199,7 +203,11 @@ export function Overview() {
         hint="status=pending, no exit code yet, output streaming"
       >
         <TimelineStage>
-          <ThreadTimelineRows {...baseProps} timelineRows={[runningCommand]} />
+          <ThreadTimelineRows
+            {...baseProps}
+            timelineRows={[runningCommand]}
+            threadIsActive={false}
+          />
         </TimelineStage>
       </StoryRow>
       <StoryRow label="collapsed — error" hint="status=error, exit 1">
@@ -207,6 +215,7 @@ export function Overview() {
           <ThreadTimelineRows
             {...baseProps}
             timelineRows={[failedTestCommand]}
+            threadIsActive={false}
           />
         </TimelineStage>
       </StoryRow>
@@ -218,6 +227,7 @@ export function Overview() {
           <ThreadTimelineRows
             {...baseProps}
             timelineRows={[interruptedCommand]}
+            threadIsActive={false}
           />
         </TimelineStage>
       </StoryRow>
@@ -229,6 +239,7 @@ export function Overview() {
           <ThreadTimelineRows
             {...baseProps}
             timelineRows={[waitingApprovalCommand]}
+            threadIsActive={false}
           />
         </TimelineStage>
       </StoryRow>
@@ -237,7 +248,11 @@ export function Overview() {
         hint="approvalStatus=denied, user rejected the approval request"
       >
         <TimelineStage>
-          <ThreadTimelineRows {...baseProps} timelineRows={[deniedCommand]} />
+          <ThreadTimelineRows
+            {...baseProps}
+            timelineRows={[deniedCommand]}
+            threadIsActive={false}
+          />
         </TimelineStage>
       </StoryRow>
       <StoryRow label="git status" hint="short clean output, exit 0">
@@ -246,6 +261,7 @@ export function Overview() {
             {...baseProps}
             initialExpanded={new Set([gitStatusCommand.id])}
             timelineRows={[gitStatusCommand]}
+            threadIsActive={false}
           />
         </TimelineStage>
       </StoryRow>
@@ -258,6 +274,7 @@ export function Overview() {
             {...baseProps}
             initialExpanded={new Set([lintCommand.id])}
             timelineRows={[lintCommand]}
+            threadIsActive={false}
           />
         </TimelineStage>
       </StoryRow>
@@ -270,6 +287,7 @@ export function Overview() {
             {...baseProps}
             initialExpanded={new Set([buildCommand.id])}
             timelineRows={[buildCommand]}
+            threadIsActive={false}
           />
         </TimelineStage>
       </StoryRow>
@@ -282,6 +300,7 @@ export function Overview() {
             {...baseProps}
             initialExpanded={new Set([failedTestCommand.id])}
             timelineRows={[failedTestCommand]}
+            threadIsActive={false}
           />
         </TimelineStage>
       </StoryRow>

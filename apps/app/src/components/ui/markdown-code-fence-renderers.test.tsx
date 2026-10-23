@@ -416,6 +416,7 @@ describe("code fence renderers in assistant messages", () => {
           ]}
           threadRuntimeDisplayStatus="active"
           workspaceRootPath={undefined}
+          threadIsActive={false}
         />
       </MemoryRouter>,
     );

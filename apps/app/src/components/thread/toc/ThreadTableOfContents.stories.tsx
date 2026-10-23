@@ -121,6 +121,7 @@ export function Default() {
           threadId="thr_toc_story"
           threadRuntimeDisplayStatus="idle"
           workspaceRootPath={undefined}
+          threadIsActive={false}
         />
       </BottomAnchoredScrollBody>
     </div>

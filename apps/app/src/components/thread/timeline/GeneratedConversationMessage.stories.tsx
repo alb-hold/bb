@@ -345,6 +345,7 @@ export function MarkdownBody() {
               workspaceRootPath={undefined}
               initialExpanded={new Set([row.id])}
               timelineRows={[row]}
+              threadIsActive={false}
             />
           </TimelineStage>
         </StoryRow>

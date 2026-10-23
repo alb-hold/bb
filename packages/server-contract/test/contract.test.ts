@@ -1361,6 +1361,7 @@ describe("server-contract canonical schemas", () => {
           environmentProviderId: "git-worktree",
           environmentIsWorktree: true,
           environmentWorkspaceDisplayKind: "managed-worktree",
+          nativeTerminal: false,
           queuedWork: "none",
         },
       ]),
