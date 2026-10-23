@@ -80,10 +80,101 @@ describe("createConnection", () => {
         (log) => log.fields.operation === "transaction",
       );
       expect(transactionLog).toBeDefined();
+      expect(transactionLog?.fields.lockWaitSource).toBe("begin");
       expect(transactionLog?.fields.lockWaitMs).toBeGreaterThanOrEqual(250);
       expect(transactionLog?.fields.bodyMs).toBeLessThan(100);
     } finally {
       await worker.terminate();
+      db.$client.close();
+      rmSync(directory, { force: true, recursive: true });
+    }
+  });
+
+  it("measures the first write in a DEFAULT transaction after reads", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "bb-db-first-write-"));
+    const databasePath = join(directory, "bb.db");
+    const logger = new CapturingSlowQueryLogger();
+    const db = createConnection(databasePath, {
+      slowQueryLogger: logger,
+      slowQueryThresholdMs: 100,
+    });
+    db.$client.exec(
+      "CREATE TABLE lock_timing_values (id INTEGER PRIMARY KEY, value INTEGER)",
+    );
+    db.$client.exec("INSERT INTO lock_timing_values (id, value) VALUES (1, 0)");
+    const worker = new Worker(
+      `const { parentPort, workerData } = require("node:worker_threads");
+       const Database = require(workerData.driverPath);
+       const db = new Database(workerData.databasePath);
+       db.pragma("journal_mode = WAL");
+       db.exec("BEGIN IMMEDIATE");
+       parentPort.postMessage("held");
+       setTimeout(() => { db.exec("COMMIT"); db.close(); }, 300);`,
+      {
+        eval: true,
+        workerData: {
+          databasePath,
+          driverPath: createRequire(import.meta.url).resolve("better-sqlite3"),
+        },
+      },
+    );
+    try {
+      await new Promise<void>((resolve, reject) => {
+        worker.once("message", resolve);
+        worker.once("error", reject);
+      });
+      db.$client
+        .transaction(() => {
+          db.$client.prepare("SELECT 1 AS read_value").get();
+          db.$client
+            .prepare("UPDATE lock_timing_values SET value = value + 1 WHERE id = 1")
+            .run();
+        })
+        .default();
+      const transactionLog = logger.infoLogs.find(
+        (log) => log.fields.operation === "transaction",
+      );
+      expect(transactionLog?.fields.lockWaitSource).toBe("first-write");
+      expect(transactionLog?.fields.lockWaitMs).toBeGreaterThanOrEqual(250);
+      expect(transactionLog?.fields.bodyMs).toBeLessThan(100);
+    } finally {
+      await worker.terminate();
+      db.$client.close();
+      rmSync(directory, { force: true, recursive: true });
+    }
+  });
+
+  it("reports none for a read-only DEFAULT transaction", () => {
+    const directory = mkdtempSync(join(tmpdir(), "bb-db-read-only-lock-"));
+    const logger = new CapturingSlowQueryLogger();
+    const db = createConnection(join(directory, "bb.db"), {
+      slowQueryLogger: logger,
+      slowQueryThresholdMs: 0,
+    });
+    try {
+      db.$client
+        .transaction(() => {
+          db.$client.prepare("SELECT 1").get();
+        })
+        .default();
+      const transactionLog = logger.infoLogs.find(
+        (log) => log.fields.operation === "transaction",
+      );
+      expect(transactionLog?.fields.lockWaitSource).toBe("none");
+      expect(transactionLog?.fields.lockWaitMs).toBe(0);
+
+      db.$client.exec("CREATE TABLE exec_lock_timing (value INTEGER)");
+      logger.clear();
+      db.$client
+        .transaction(() => {
+          db.$client.exec("INSERT INTO exec_lock_timing VALUES (1)");
+        })
+        .default();
+      const writeTransactionLog = logger.infoLogs.find(
+        (log) => log.fields.operation === "transaction",
+      );
+      expect(writeTransactionLog?.fields.lockWaitSource).toBe("first-write");
+    } finally {
       db.$client.close();
       rmSync(directory, { force: true, recursive: true });
     }
@@ -99,6 +190,7 @@ describe("createConnection", () => {
     const transactionLog = logger.infoLogs.find(
       (log) => log.fields.operation === "transaction",
     );
+    expect(transactionLog?.fields.lockWaitSource).toBe("begin");
     expect(transactionLog?.fields.lockWaitMs).toBeLessThan(10);
     expect(transactionLog?.fields.bodyMs).toBeGreaterThanOrEqual(0);
     db.$client.close();
