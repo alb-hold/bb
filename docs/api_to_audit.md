@@ -703,7 +703,10 @@ removed and what was kept.
 A failed `create` or `restore` result says what the attempt kept in
 `experimental_retained`: `{ path }` means it kept that path on purpose, `null`
 means it kept nothing, and leaving the field out means the provider does not
-know, which core treats as unresolved. Core writes a row to
+know. Core treats that as unresolved only for a provider that declares
+`experimental_proveRetentionAbsent`; for any other provider an omitted answer,
+and a create that throws, are treated as having kept nothing and the server logs
+a warning (owner ruling 2026-10-23). Core writes a row to
 `environment_retentions` (no foreign keys, so it outlives the environment row):
 an `intent` row with no path before every provider create or restore is
 dispatched, a second `intent` row when the create claims a path, `retained`
