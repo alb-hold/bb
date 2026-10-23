@@ -1303,26 +1303,151 @@ describe.skipIf(process.platform === "win32")(
       ]);
     }, 60_000);
 
-    it("puts back a lock that was released and taken again between the reader's inspection and its move", async () => {
+    const readerKit = () => {
       const { directory, file, lock } = appendFixture();
-      const gone = spawn("true", [], { stdio: "ignore" });
-      await new Promise<void>((resolve) => gone.once("exit", () => resolve()));
-      const live = spawn("sleep", ["30"], { stdio: "ignore" });
-      children.push(live);
+      const dead = async (): Promise<number> => {
+        const gone = spawn("true", [], { stdio: "ignore" });
+        await new Promise<void>((resolve) =>
+          gone.once("exit", () => resolve()),
+        );
+        return gone.pid ?? -1;
+      };
+      const live = (): number => {
+        const holder = spawn("sleep", ["30"], { stdio: "ignore" });
+        children.push(holder);
+        return holder.pid ?? -1;
+      };
+      const staleNames = (): string[] =>
+        readdirSync(directory).filter((name) => name.includes(".stale."));
+      return { dead, directory, file, live, lock, staleNames };
+    };
+
+    it("removes a dead holder's directory lock by deleting the pid it read and removing the directory once, and moves nothing", async () => {
+      const { dead, directory, file, lock, staleNames } = readerKit();
       mkdirSync(lock);
-      writeFileSync(path.join(lock, "pid"), String(gone.pid));
+      writeFileSync(path.join(lock, "pid"), String(await dead()));
+      expect(new HookAppendReader(file).read().unreadable).toBe(1);
+      expect(existsSync(lock)).toBe(false);
+      expect(staleNames()).toEqual([]);
+      expect(readdirSync(directory).includes("hooks.lock")).toBe(false);
+    }, 30_000);
+
+    it("removes a dead holder's symlink lock, and no other hook can take the path before that because it is occupied", async () => {
+      const { dead, file, lock, staleNames } = readerKit();
+      symlinkSync(String(await dead()), lock);
+      let attempt = "none";
       const reader = new HookAppendReader(file, () => {
-        renameSync(lock, `${lock}.kept`);
-        mkdirSync(lock);
-        writeFileSync(path.join(lock, "pid"), String(live.pid));
+        try {
+          symlinkSync("1", lock);
+          attempt = "created";
+        } catch (error) {
+          attempt =
+            error instanceof Error && "code" in error
+              ? String(error.code)
+              : "error";
+        }
+      });
+      expect(reader.read().unreadable).toBe(1);
+      expect(attempt).toBe("EEXIST");
+      expect(() => lstatSync(lock)).toThrow();
+      expect(staleNames()).toEqual([]);
+    }, 30_000);
+
+    const takers = (lock: string) => {
+      const tookWhileHeld: string[] = [];
+      const symlinkTaker = (pid: number): void => {
+        try {
+          symlinkSync(String(pid), lock);
+          tookWhileHeld.push("symlink");
+        } catch (error) {
+          if (!(error instanceof Error && "code" in error)) throw error;
+        }
+      };
+      const directoryTaker = (): void => {
+        try {
+          mkdirSync(lock);
+          tookWhileHeld.push("directory");
+        } catch (error) {
+          if (!(error instanceof Error && "code" in error)) throw error;
+        }
+      };
+      return { directoryTaker, symlinkTaker, tookWhileHeld };
+    };
+
+    it("leaves another hook's symlink lock alone when the lock changed between the reader's inspection and its removal, and lets no third hook take the path while that lock is held", async () => {
+      const { dead, file, live, lock, staleNames } = readerKit();
+      const { symlinkTaker, tookWhileHeld } = takers(lock);
+      symlinkSync(String(await dead()), lock);
+      const holder = live();
+      const third = live();
+      let calls = 0;
+      const reader = new HookAppendReader(file, () => {
+        calls += 1;
+        if (calls === 1) {
+          rmSync(lock);
+          symlinkSync(String(holder), lock);
+        }
+        symlinkTaker(third);
       });
       expect(reader.read().unreadable).toBe(0);
-      expect(readFileSync(path.join(lock, "pid"), "utf8")).toBe(
-        String(live.pid),
-      );
+      expect(tookWhileHeld).toEqual([]);
+      expect(readlinkSync(lock)).toBe(String(holder));
+      expect(staleNames()).toEqual([]);
+    }, 30_000);
+
+    it("leaves another hook's new lock directory alone when it has no pid yet at the reader's removal, and lets no third hook take the path while it is there", async () => {
+      const { dead, file, lock, staleNames } = readerKit();
+      const { directoryTaker, tookWhileHeld } = takers(lock);
+      mkdirSync(lock);
+      writeFileSync(path.join(lock, "pid"), String(await dead()));
+      let calls = 0;
+      const reader = new HookAppendReader(file, () => {
+        calls += 1;
+        if (calls === 1) {
+          rmSync(lock, { force: true, recursive: true });
+          mkdirSync(lock);
+        }
+        directoryTaker();
+      });
+      expect(reader.read().unreadable).toBe(0);
+      expect(tookWhileHeld).toEqual([]);
+      expect(lstatSync(lock).isDirectory()).toBe(true);
+      expect(readdirSync(lock)).toEqual([]);
+      expect(staleNames()).toEqual([]);
+    }, 30_000);
+
+    it("leaves another hook's lock directory alone when it already holds a pid at the reader's removal, and lets no third hook take the path while it is held", async () => {
+      const { dead, file, live, lock, staleNames } = readerKit();
+      const { directoryTaker, tookWhileHeld } = takers(lock);
+      mkdirSync(lock);
+      writeFileSync(path.join(lock, "pid"), String(await dead()));
+      const holder = live();
+      let calls = 0;
+      const reader = new HookAppendReader(file, () => {
+        calls += 1;
+        if (calls === 1) {
+          rmSync(lock, { force: true, recursive: true });
+          mkdirSync(lock);
+          writeFileSync(path.join(lock, "pid"), String(holder));
+        }
+        directoryTaker();
+      });
+      expect(reader.read().unreadable).toBe(0);
+      expect(tookWhileHeld).toEqual([]);
+      expect(readFileSync(path.join(lock, "pid"), "utf8")).toBe(String(holder));
+      expect(staleNames()).toEqual([]);
+    }, 30_000);
+
+    it("removes only the pid file and the directory of a lock older than the pid reuse bound, without moving it", async () => {
+      const { file, live, lock, staleNames } = readerKit();
+      mkdirSync(lock);
+      writeFileSync(path.join(lock, "pid"), String(live()));
+      expect(new HookAppendReader(file).read().unreadable).toBe(0);
       expect(
-        readdirSync(directory).filter((name) => name.includes(".stale.")),
-      ).toEqual([]);
+        new HookAppendReader(file).read(Date.now() + 11 * 60_000).unreadable,
+      ).toBe(1);
+      expect(existsSync(lock)).toBe(false);
+      expect(staleNames()).toEqual([]);
     }, 30_000);
 
     it("does not reclaim a lock directory whose pid names a live process, and publishes its record late after the deadline", async () => {
