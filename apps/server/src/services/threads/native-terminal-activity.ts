@@ -34,6 +34,7 @@ import { requirePublicThread } from "../lib/entity-lookup.js";
 import { applyLoggedThreadLifecycleEvent } from "./lifecycle-outcome.js";
 import {
   isNativeTerminalRebindInFlight,
+  nativeTerminalAwaitsReattach,
   readRecordTerminal,
   requireLiveNativeTerminalToolThread,
   requireNativeTerminalToolCredential,
@@ -102,21 +103,29 @@ function hasCurrentTerminalCredential(
   }
 }
 
-function isCurrentTerminalLive(
+type CurrentTerminalState = "live" | "awaiting-reattach" | "unavailable";
+
+function currentTerminalState(
   deps: Pick<AppDeps, "db" | "terminalSessions">,
   threadId: string,
-): boolean {
+): CurrentTerminalState {
   try {
     requireLiveNativeTerminalToolThread(deps, threadId);
-    return true;
+    return "live";
   } catch (error) {
-    if (
-      error instanceof ApiError &&
-      (error.body.code === "native_terminal_not_live" ||
+    if (error instanceof ApiError) {
+      if (error.body.code === "native_terminal_not_live") {
+        if (nativeTerminalAwaitsReattach(deps, threadId)) {
+          return "awaiting-reattach";
+        }
+        throw error;
+      }
+      if (
         error.body.code === "thread_environment_unavailable" ||
-        error.body.code === "environment_not_found")
-    ) {
-      return false;
+        error.body.code === "environment_not_found"
+      ) {
+        return "unavailable";
+      }
     }
     throw error;
   }
@@ -173,6 +182,17 @@ export function recordNativeTerminalActivity(
       "A valid credential for this thread's current native terminal is required",
     );
   }
+  let currentTerminalIsLive: boolean;
+  try {
+    currentTerminalIsLive =
+      currentTerminalState(deps, args.threadId) === "live";
+  } catch (error) {
+    deps.logger.warn(
+      { threadId: args.threadId },
+      "A native terminal activity report for a terminal that is not running was rejected",
+    );
+    throw error;
+  }
   const active = activeThreads(deps);
   const repeatedWorkingSignal =
     args.state === "working" &&
@@ -180,7 +200,6 @@ export function recordNativeTerminalActivity(
     active.has(args.threadId);
   const now = Date.now();
   let notifyReceipt = false;
-  const currentTerminalIsLive = isCurrentTerminalLive(deps, args.threadId);
   const currentNativeRecord =
     currentTerminalIsLive && !isNativeTerminalRebindInFlight(args.threadId)
       ? getNativeTerminalThread(deps.db, args.threadId)

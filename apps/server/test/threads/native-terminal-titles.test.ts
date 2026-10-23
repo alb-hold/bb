@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import {
+  createTerminalSession,
   getNativeTerminalThread,
   getThread,
   setNativeTerminalThreadTerminal,
@@ -42,7 +43,7 @@ async function withTitleFixture(
       builtin: true,
       complete,
     });
-    const { host } = seedHostSession(harness.deps);
+    const { host, session } = seedHostSession(harness.deps);
     const { project } = seedProjectWithSource(harness.deps, {
       hostId: host.id,
     });
@@ -85,15 +86,26 @@ async function withTitleFixture(
         },
         async activity(threadId, prompt) {
           const credential = "synthetic-title-test-credential";
+          const terminal = createTerminalSession(harness.db, {
+            cols: 80,
+            daemonSessionId: session.id,
+            environmentId: environment.id,
+            hostId: host.id,
+            initialCwd: "/tmp/native-title",
+            rows: 24,
+            status: "running",
+            threadId,
+            title: "Claude Code",
+          });
           setNativeTerminalThreadTerminal(harness.db, {
-            terminalSessionId: "terminal-title-test",
+            terminalSessionId: terminal.id,
             threadId,
           });
           setNativeTerminalToolCredential(harness.db, {
             credentialHash: createHash("sha256")
               .update(credential)
               .digest("hex"),
-            terminalSessionId: "terminal-title-test",
+            terminalSessionId: terminal.id,
             threadId,
           });
           const response = await harness.app.request(

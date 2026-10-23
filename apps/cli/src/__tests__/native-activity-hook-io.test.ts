@@ -12,6 +12,7 @@ import {
   lstatSync,
   lutimesSync,
   mkdirSync,
+  mkdtempSync,
   readdirSync,
   readFileSync,
   readlinkSync,
@@ -130,24 +131,42 @@ function record(event: string, extra: Record<string, unknown> = {}): string {
   });
 }
 
-function startHook(command: string): {
+function startHook(
+  command: string,
+  env: NodeJS.ProcessEnv = process.env,
+): {
   child: ChildProcessByStdio<Writable, null, null>;
   exited: Promise<void>;
 } {
   const child = spawn("sh", ["-c", command], {
+    env,
     stdio: ["pipe", "ignore", "ignore"],
   });
   children.push(child);
+  child.stdin.on("error", () => {});
   const exited = new Promise<void>((resolve) => {
     child.once("exit", () => resolve());
   });
   return { child, exited };
 }
 
-async function runWhole(command: string, payload: string): Promise<void> {
-  const { child, exited } = startHook(command);
+async function runWhole(
+  command: string,
+  payload: string,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<void> {
+  const { child, exited } = startHook(command, env);
   child.stdin.end(payload);
   await exited;
+}
+
+function failingMktemp(): NodeJS.ProcessEnv {
+  const shims = mkdtempSync(path.join(os.tmpdir(), "bb-mktemp-shim-"));
+  spools.push(shims);
+  writeFileSync(path.join(shims, "mktemp"), "#!/bin/sh\nexit 1\n", {
+    mode: 0o755,
+  });
+  return { ...process.env, PATH: `${shims}:${process.env.PATH ?? ""}` };
 }
 
 async function until(condition: () => boolean, what: string): Promise<void> {
@@ -288,6 +307,132 @@ describe.skipIf(process.platform === "win32")(
         records: [],
         unreadable: 0,
       });
+    });
+
+    it("leaves a loss mark when mktemp fails, so the reader reports the lost idle event once and the thread stops reading as Working", async () => {
+      const { commandFor, reader, spool, unconfirmed } = fixture();
+      const t0 = Date.now();
+      const clock = vi.spyOn(Date, "now").mockImplementation(() => t0);
+      await runWhole(
+        commandFor("UserPromptSubmit"),
+        record("UserPromptSubmit", { prompt: "go" }),
+      );
+      expect(reader.read()).toEqual([{ prompt: "go", state: "working" }]);
+      expect(reader.heartbeat()).not.toBeNull();
+      await runWhole(
+        commandFor("Stop"),
+        record("Stop", { stop_hook_active: false }),
+        failingMktemp(),
+      );
+      expect(published(spool)).toHaveLength(1);
+      expect(leftovers(spool)).toEqual([]);
+      expect(readFileSync(path.join(spool, ".loss"), "utf8")).toBe("x");
+
+      clock.mockImplementation(() => t0 + 3_000);
+      const reports = reader.read();
+      expect(unconfirmed).toEqual([{ reason: "unreadable-record", total: 1 }]);
+      expect(reports.some((report) => report.state === "working")).toBe(false);
+      expect(reader.heartbeat()).toBeNull();
+      clock.mockImplementation(() => t0 + 6_000);
+      expect(reader.read()).toEqual([]);
+      expect(unconfirmed).toEqual([{ reason: "unreadable-record", total: 1 }]);
+    });
+
+    it("leaves a loss mark when mktemp fails for a permission request, so the lost question surfaces as unconfirmed and a later question still shows Needs input", async () => {
+      const { commandFor, reader, spool, unconfirmed } = fixture();
+      const t0 = Date.now();
+      const clock = vi.spyOn(Date, "now").mockImplementation(() => t0);
+      await runWhole(
+        commandFor("UserPromptSubmit"),
+        record("UserPromptSubmit", { prompt: "go" }),
+      );
+      expect(reader.read()).toEqual([{ prompt: "go", state: "working" }]);
+      await runWhole(
+        commandFor("PermissionRequest"),
+        record("PermissionRequest", { tool_name: "Lost" }),
+        failingMktemp(),
+      );
+      expect(published(spool)).toHaveLength(1);
+      expect(readFileSync(path.join(spool, ".loss"), "utf8")).toBe("x");
+
+      clock.mockImplementation(() => t0 + 3_000);
+      const reports = reader.read();
+      expect(unconfirmed).toEqual([{ reason: "unreadable-record", total: 1 }]);
+      expect(reports.some((report) => report.state === "working")).toBe(false);
+      expect(reader.heartbeat()).toBeNull();
+
+      await runWhole(
+        commandFor("PermissionRequest"),
+        record("PermissionRequest", { tool_name: "Bash" }),
+      );
+      clock.mockImplementation(() => t0 + 6_000);
+      const later = reader.read().at(-1);
+      expect(
+        later?.state === "waiting"
+          ? later.questions.map((question) => question.prompt)
+          : [],
+      ).toEqual(["Claude Code needs permission to use: Bash"]);
+      expect(reader.heartbeat()).toBeNull();
+    });
+
+    it("counts every concurrent mktemp failure exactly once, whatever order the marks land in", async () => {
+      const { commandFor, spool } = fixture();
+      const env = failingMktemp();
+      const command = commandFor("PermissionRequest");
+      const running = Array.from({ length: 6 }, () => startHook(command, env));
+      for (const { child } of running) {
+        child.stdin.end(record("PermissionRequest", { tool_name: "Lost" }));
+      }
+      await Promise.all(running.map(({ exited }) => exited));
+      expect(readFileSync(path.join(spool, ".loss"), "utf8")).toBe("xxxxxx");
+      expect(published(spool)).toEqual([]);
+      expect(leftovers(spool)).toEqual([]);
+      const reader = new HookSpoolReader(spool);
+      expect(reader.read(Date.now() + 5_000)).toEqual({
+        records: [],
+        unreadable: 6,
+      });
+      await runWhole(
+        command,
+        record("PermissionRequest", { tool_name: "A" }),
+        env,
+      );
+      expect(reader.read(Date.now() + 10_000)).toEqual({
+        records: [],
+        unreadable: 1,
+      });
+      expect(reader.read(Date.now() + 15_000)).toEqual({
+        records: [],
+        unreadable: 0,
+      });
+    });
+
+    it("reports a spool that cannot be written once when it becomes unwritable, and again only after it recovered and failed again", () => {
+      const { spool } = fixture();
+      let state: "writable" | "blocked" = "blocked";
+      const reader = new HookSpoolReader(
+        spool,
+        undefined,
+        undefined,
+        () => state,
+      );
+      const t0 = Date.now();
+      expect(reader.read(t0).unreadable).toBe(1);
+      expect(reader.read(t0 + 3_000).unreadable).toBe(0);
+      state = "writable";
+      expect(reader.read(t0 + 6_000).unreadable).toBe(0);
+      state = "blocked";
+      expect(reader.read(t0 + 9_000).unreadable).toBe(1);
+    });
+
+    it("probes a writable spool without leaving anything behind", () => {
+      const { spool } = fixture();
+      const reader = new HookSpoolReader(spool);
+      expect(reader.read(Date.now() + 5_000)).toEqual({
+        records: [],
+        unreadable: 0,
+      });
+      expect(readdirSync(spool)).toEqual([]);
     });
 
     it("detects an abandoned temp file that no process owns", async () => {

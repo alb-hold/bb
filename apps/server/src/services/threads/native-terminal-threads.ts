@@ -1090,6 +1090,29 @@ export function requireLiveNativeTerminalToolThread(
   return lookup;
 }
 
+export function nativeTerminalAwaitsReattach(
+  deps: Pick<AppDeps, "db" | "terminalSessions">,
+  threadId: string,
+): boolean {
+  const thread = getThread(deps.db, threadId);
+  const record = getNativeTerminalThread(deps.db, threadId);
+  if (
+    thread === null ||
+    thread.archivedAt !== null ||
+    thread.deletedAt !== null ||
+    record === null
+  ) {
+    return false;
+  }
+  const terminal = readRecordTerminal(deps, record);
+  return (
+    terminal !== null &&
+    (terminal.status === "disconnected" ||
+      (terminal.status === "exited" &&
+        terminal.closeReason === "daemon-disconnect"))
+  );
+}
+
 export async function resolveNativeTerminalAgentTools(
   deps: AppDeps,
   args: { authorization: string | undefined; threadId: string },

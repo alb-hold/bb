@@ -2411,6 +2411,110 @@ describe("native terminal activity evidence across a swap", () => {
     expect(threadStatus(fixture, thread.id)).toBe("idle");
   });
 
+  it("rejects every report with the stored credential of a terminal that exited on its own, with no state change", async () => {
+    const fixture = await createFixture();
+    const started = await startNativeThread(fixture);
+    const { thread } = started;
+    const activity = `/threads/${thread.id}/native-terminal/activity`;
+    expect(
+      (
+        await postJson(
+          fixture,
+          activity,
+          {
+            closes: [],
+            questions: [{ id: "q1", prompt: "Which layout?" }],
+            state: "waiting",
+          },
+          `Bearer ${started.credential}`,
+        )
+      ).status,
+    ).toBe(200);
+    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+      hostId: fixture.hostId,
+      sessionId: fixture.sessionId,
+      message: {
+        type: "terminal.exited",
+        terminalId: started.open.terminalId,
+        exitCode: 0,
+        closeReason: "process-exit",
+      },
+    });
+    const title = vi
+      .spyOn(titleGeneration, "generateAndApplyThreadTitle")
+      .mockResolvedValue(undefined as never);
+    try {
+      const statusBefore = threadStatus(fixture, thread.id);
+      const pendingBefore = openInteractions(fixture, thread.id).length;
+      const evidenceBefore = evidenceOf(fixture, thread.id);
+      for (const body of [
+        { state: "idle" },
+        { state: "working", prompt: "Name this thread" },
+        { closes: ["q1"], state: "working" },
+        {
+          closes: [],
+          questions: [{ id: "q2", prompt: "Another layout?" }],
+          state: "waiting",
+        },
+      ]) {
+        const response = await postJson(
+          fixture,
+          activity,
+          body,
+          `Bearer ${started.credential}`,
+        );
+        expect(response.status).toBe(409);
+        expect(await readApiErrorCode(response)).toBe(
+          "native_terminal_not_live",
+        );
+      }
+      expect(threadStatus(fixture, thread.id)).toBe(statusBefore);
+      expect(openInteractions(fixture, thread.id)).toHaveLength(pendingBefore);
+      expect(title).not.toHaveBeenCalled();
+      expect(evidenceOf(fixture, thread.id)).toBe(evidenceBefore);
+    } finally {
+      title.mockRestore();
+    }
+  });
+
+  it("still accepts a report from a terminal that awaits its reattach, whether it is disconnected or was exited by a daemon disconnect", async () => {
+    for (const awaiting of ["disconnected", "exited-by-daemon-disconnect"]) {
+      const fixture = await createFixture();
+      const started = await startNativeThread(fixture);
+      const { thread } = started;
+      if (awaiting === "disconnected") {
+        fixture.harness.deps.terminalSessions.handleDaemonSessionClosed({
+          sessionId: fixture.sessionId,
+        });
+        expect(
+          getTerminalSession(fixture.harness.db, {
+            kind: "terminal",
+            terminalId: started.open.terminalId,
+          })?.status,
+        ).toBe("disconnected");
+      } else {
+        fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+          hostId: fixture.hostId,
+          sessionId: fixture.sessionId,
+          message: {
+            type: "terminal.exited",
+            terminalId: started.open.terminalId,
+            exitCode: null,
+            closeReason: "daemon-disconnect",
+          },
+        });
+      }
+      const response = await postJson(
+        fixture,
+        `/threads/${thread.id}/native-terminal/activity`,
+        { state: "idle" },
+        `Bearer ${started.credential}`,
+      );
+      expect(response.status).toBe(200);
+      expect(threadStatus(fixture, thread.id)).toBe("idle");
+    }
+  });
+
   it("gives the old holder its credential back when the replacement terminal cannot be created, so it can report again", async () => {
     const fixture = await createFixture();
     const started = await startNativeThread(fixture);
