@@ -573,10 +573,10 @@ export class NativeActivityTracker {
     const announced =
       callId === null ? undefined : this.announcedCalls.get(callId);
     if (callId !== null) this.announcedCalls.delete(callId);
-    const direct =
+    const directOccurrences =
       callId === null
-        ? undefined
-        : open.find((occurrence) => occurrence.callId === callId);
+        ? []
+        : open.filter((occurrence) => occurrence.callId === callId);
     const candidates =
       callId === null
         ? []
@@ -593,9 +593,9 @@ export class NativeActivityTracker {
     const resolved = candidates.filter(
       (occurrence) => occurrence.candidateCallIds.length === 0,
     );
-    if (direct !== undefined || resolved.length > 0) {
+    if (directOccurrences.length > 0 || resolved.length > 0) {
       const resolvedOccurrences = new Set([
-        ...(direct === undefined ? [] : [direct.id]),
+        ...directOccurrences.map(({ id }) => id),
         ...resolved.map(({ id }) => id),
       ]);
       const remaining = open.filter(
@@ -604,7 +604,7 @@ export class NativeActivityTracker {
       if (remaining.length === 0) this.openOccurrences.delete(base);
       else this.openOccurrences.set(base, remaining);
       return [
-        ...(direct === undefined ? [] : [direct.id]),
+        ...directOccurrences.map(({ id }) => id),
         ...resolved.map((occurrence) => occurrence.id),
       ];
     }
