@@ -26,6 +26,7 @@ import {
   type PeriodicSweepJob,
   runPeriodicSweepJobs,
   runPeriodicSweeps,
+  runThreadLifecycleSweep,
 } from "../../src/services/system/periodic-sweeps.js";
 import {
   THREAD_PRUNING_SWEEP_LIMITS,
@@ -45,6 +46,7 @@ import {
   listQueuedThreadCommands,
   reportQueuedCommandError,
   waitForQueuedCommand,
+  waitForQueuedCommandAfter,
 } from "../helpers/commands.js";
 import { textInput } from "../helpers/prompt-input.js";
 import {
@@ -562,7 +564,7 @@ describe("runPeriodicSweeps", () => {
     });
   });
 
-  it("tells the user, in the deleted thread's own log, why its files were not deleted, names the holder and the retry", async () => {
+  it("tells the user, in the deleted thread's own log, why its files were not deleted, names the holder and the retry, and does not repeat itself when the sweep retries and is refused again", async () => {
     await withTestHarness(async (harness) => {
       const { host } = seedHostSession(harness.deps);
       const { project } = seedProjectWithSource(harness.deps, {
@@ -596,6 +598,19 @@ describe("runPeriodicSweeps", () => {
           candidate.command.threadId === thread.id,
       );
       await reportQueuedCommandError(harness, queued, {
+        errorCode: "path_in_use",
+        errorMessage: refusal,
+      });
+
+      await runThreadLifecycleSweep(harness.deps);
+      const retried = await waitForQueuedCommandAfter(
+        harness,
+        queued.row.cursor,
+        (candidate) =>
+          candidate.command.type === "thread.storage.delete" &&
+          candidate.command.threadId === thread.id,
+      );
+      await reportQueuedCommandError(harness, retried, {
         errorCode: "path_in_use",
         errorMessage: refusal,
       });
