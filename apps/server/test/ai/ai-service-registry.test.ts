@@ -166,6 +166,40 @@ describe("AI service registry", () => {
       }
     });
 
+    it("shows Settings the late answer of a slow check it started, while tasks keep routing past the service for 10 s after the check's 2 s ran out", async () => {
+      vi.useFakeTimers();
+      try {
+        const registry = createAiServiceRegistry();
+        const slow = slowStatus();
+        registry.register(service(slow.status));
+        const notResponding = { ready: false, message: "Not responding" };
+
+        const settings = registry.status(ACME);
+        await vi.advanceTimersByTimeAsync(2_001);
+        await expect(settings).resolves.toEqual({
+          ready: false,
+          message: "Checking",
+        });
+        await expect(registry.taskStatus(ACME)).resolves.toEqual(notResponding);
+
+        await vi.advanceTimersByTimeAsync(500);
+        slow.answer();
+        await vi.advanceTimersByTimeAsync(0);
+        await expect(registry.status(ACME)).resolves.toEqual({ ready: true });
+        await expect(registry.taskStatus(ACME)).resolves.toEqual(notResponding);
+
+        await vi.advanceTimersByTimeAsync(7_000);
+        await expect(registry.taskStatus(ACME)).resolves.toEqual(notResponding);
+        await vi.advanceTimersByTimeAsync(2_600);
+        await expect(registry.taskStatus(ACME)).resolves.toEqual({
+          ready: true,
+        });
+        expect(slow.status).toHaveBeenCalledTimes(1);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it("answers with the last known status while a later check is slow", async () => {
       vi.useFakeTimers();
       try {

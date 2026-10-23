@@ -22,10 +22,15 @@ export interface ClaudeExecutableCheckDeps {
   defaultExecutable: () => Promise<string>;
   resolve: (command: string) => Promise<string | null>;
   listAcl: (entry: string) => Promise<string>;
+  linkOwner: (link: string) => Promise<number>;
 }
 
 const ACL_WRITE =
   /\ballow\b.*\b(write|append|add_file|add_subdirectory|delete|delete_child|writeattr|writeextattr|writesecurity|chown)\b/u;
+
+async function linkOwner(link: string): Promise<number> {
+  return (await fs.lstat(link)).uid;
+}
 
 async function listAcl(entry: string): Promise<string> {
   const { stdout } = await execFileAsync("/bin/ls", ["-lde", entry]);
@@ -40,6 +45,7 @@ function defaultDeps(): ClaudeExecutableCheckDeps {
     defaultExecutable: claudeExecutable,
     resolve: resolveExecutablePath,
     listAcl,
+    linkOwner,
   };
 }
 
@@ -61,6 +67,10 @@ async function untrustedReason(
     withParents(await fs.realpath(path.dirname(current)), checked);
     const link = await fs.lstat(current);
     if (!link.isSymbolicLink()) break;
+    const owner = await deps.linkOwner(current);
+    if (deps.uid !== null && owner !== deps.uid && owner !== 0) {
+      return `${current} belongs to another account`;
+    }
     current = path.resolve(path.dirname(current), await fs.readlink(current));
   }
   const real = await fs.realpath(file);

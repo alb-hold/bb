@@ -47,6 +47,7 @@ function deps(
     resolve: async () => null,
     listAcl: async (entry) =>
       `drwxr-xr-x  2 owner  staff  64 Oct 23 12:00 ${entry}\n`,
+    linkOwner: async (link) => (await fs.lstat(link)).uid,
     ...overrides,
   };
 }
@@ -210,6 +211,33 @@ posix("the Claude CLI that writing assistance trusts", () => {
       ok: false,
       message: `Writing assistance will not run ${link}: any account can change ${bad}`,
     });
+  });
+
+  it("refuses a link owned by another account, even when its target and every directory are trusted", async () => {
+    const dir = await scratch();
+    const target = await cli(dir);
+    const first = path.join(dir, "claude-current");
+    const link = path.join(dir, "claude-link");
+    await fs.symlink(target, first);
+    await fs.symlink(first, link);
+    const uid = process.getuid?.() ?? 0;
+    for (const foreign of [link, first]) {
+      expect(
+        await trustedClaudeExecutable(
+          deps({
+            resolve: async () => link,
+            linkOwner: async (entry) =>
+              entry === foreign ? uid + 1 : (await fs.lstat(entry)).uid,
+          }),
+        ),
+      ).toEqual({
+        ok: false,
+        message: `Writing assistance will not run ${link}: ${foreign} belongs to another account`,
+      });
+    }
+    expect(
+      await trustedClaudeExecutable(deps({ resolve: async () => link })),
+    ).toEqual({ ok: true, path: target });
   });
 
   it("refuses a CLI owned by another account", async () => {

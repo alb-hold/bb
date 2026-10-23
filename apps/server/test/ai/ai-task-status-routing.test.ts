@@ -55,4 +55,59 @@ describe("existing AI task routing around a slow status check", () => {
       });
     },
   );
+
+  it.each(["thread-title", "commit-message"] as const)(
+    "routes %s past a service whose status check, started by Settings, outlasted 2 s before the task arrived",
+    async (task) => {
+      await withTestHarness({}, async (harness) => {
+        const cloud = registerFakeAiService(harness.deps.aiServices, {
+          id: "bb",
+          displayName: "Cloud",
+          pluginId: "bb-ai",
+          builtin: true,
+          status: () =>
+            new Promise((resolve) =>
+              setTimeout(() => resolve({ ready: true }), 2_500),
+            ),
+          complete: async () => "Cloud title",
+        });
+        const codex = registerFakeAiService(harness.deps.aiServices, {
+          id: "codex",
+          displayName: "Codex",
+          pluginId: "provider-codex",
+          builtin: true,
+          complete: async () => "Codex title",
+        });
+
+        const settings = harness.deps.aiServices.status({
+          pluginId: "bb-ai",
+          serviceId: "bb",
+        });
+        await new Promise((resolve) => setTimeout(resolve, 2_200));
+        const taskAt = Date.now();
+        const result = await runTextAiTask(harness.deps, {
+          task,
+          label: "test",
+          prompt: PROMPT,
+        });
+        const taskMs = Date.now() - taskAt;
+        expect(result).toMatchObject({ ok: true, value: "Codex title" });
+        expect(taskMs).toBeLessThan(500);
+
+        await settings;
+        await new Promise((resolve) => setTimeout(resolve, 600));
+        const afterLateReady = await runTextAiTask(harness.deps, {
+          task,
+          label: "test",
+          prompt: PROMPT,
+        });
+        expect(afterLateReady).toMatchObject({
+          ok: true,
+          value: "Codex title",
+        });
+        expect(cloud.completeCalls).toEqual([]);
+        expect(codex.completeCalls).toHaveLength(2);
+      });
+    },
+  );
 });

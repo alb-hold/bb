@@ -656,6 +656,8 @@ const HYPHENATED_START_LINE = /^\s*(?:[$%>#]\s*)?[A-Za-z]+-[A-Za-z]+(?=\s|$)/u;
 const IDENTIFIER_START_LINE =
   /^\s*(?:[$%>#]\s*)?(?:\w*_\w*|[A-Za-z]?[a-z0-9]+[A-Z]\w*)(?=\s|$)/u;
 const CALL_OPERATOR_LINE = /^\s*(?:[$%>#]\s*)?[&.]\s+\S/u;
+const ARITHMETIC = /[\w)\]]\s*[+*^]\s*[\w(]/u;
+const EXPRESSION_LINE = /^\s*[\w.]+(?:\s*[-+*/%^]\s*[\w.]+)+\s*[.;]?\s*$/u;
 
 const FENCE_LINE = /^\s*(?:`{3,}|~{3,})/u;
 
@@ -693,7 +695,9 @@ function inCodeLikeLine(target: string, start: number, end: number): boolean {
     SHORT_FLAG.test(line) ||
     HYPHENATED_START_LINE.test(line) ||
     IDENTIFIER_START_LINE.test(line) ||
-    CALL_OPERATOR_LINE.test(line)
+    CALL_OPERATOR_LINE.test(line) ||
+    ARITHMETIC.test(line) ||
+    EXPRESSION_LINE.test(line)
   );
 }
 

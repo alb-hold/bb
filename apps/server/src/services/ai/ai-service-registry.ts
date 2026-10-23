@@ -115,11 +115,22 @@ export function createAiServiceRegistry(
   const taskTimeouts = new Map<AiServiceRegistration, number>();
 
   function refresh(service: AiServiceRegistration): Promise<AiServiceStatus> {
+    return probeFor(service).request;
+  }
+
+  function probeFor(service: AiServiceRegistration): StatusProbe {
     const pending = inFlight.get(service);
     if (pending !== undefined && now() - pending.startedAt < STATUS_ANSWER_MS) {
-      return pending.request;
+      return pending;
     }
     const startedAt = now();
+    let answered = false;
+    const routingTimeout = setTimeout(() => {
+      if (answered) return;
+      if (services.get(mapKey(aiServiceKey(service))) !== service) return;
+      taskTimeouts.set(service, now());
+    }, STATUS_ANSWER_MS);
+    routingTimeout.unref();
     const probe: StatusProbe = {
       startedAt,
       request: readStatus(service)
@@ -137,11 +148,13 @@ export function createAiServiceRegistry(
           return status;
         })
         .finally(() => {
+          answered = true;
+          clearTimeout(routingTimeout);
           if (inFlight.get(service) === probe) inFlight.delete(service);
         }),
     };
     inFlight.set(service, probe);
-    return probe.request;
+    return probe;
   }
 
   function supersededNegative(
@@ -251,9 +264,10 @@ export function createAiServiceRegistry(
       const fresh = freshStatus(service);
       if (fresh !== undefined) return fresh;
       const timedOut: AiServiceStatus = { ...NOT_RESPONDING };
+      const probe = probeFor(service);
       const answer = await answerWithin(
-        refresh(service),
-        STATUS_ANSWER_MS,
+        probe.request,
+        Math.max(0, probe.startedAt + STATUS_ANSWER_MS - now()),
         () => timedOut,
       );
       if (answer === timedOut) taskTimeouts.set(service, now());
