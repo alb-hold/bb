@@ -353,6 +353,8 @@ interface OpenOccurrence {
   key: string | null;
   callId: string | null;
   candidateCallIds: string[];
+  candidateGroupId: number | null;
+  candidateGroupSize: number;
 }
 
 interface AnnouncedCall {
@@ -369,6 +371,7 @@ export class NativeActivityTracker {
   private readonly openOccurrences = new Map<string, OpenOccurrence[]>();
   private readonly announcedCalls = new Map<string, AnnouncedCall>();
   private readonly lastOrphanCloseSec = new Map<string, number>();
+  private candidateGroupCounter = 0;
   private lastClearSec = 0;
 
   constructor(private readonly nonce: string = processHolderNonce()) {}
@@ -463,13 +466,30 @@ export class NativeActivityTracker {
     base: string,
     key: string | undefined,
     callId: string | undefined,
-  ): { callId: string | null; candidateCallIds: string[] } {
+  ): {
+    callId: string | null;
+    candidateCallIds: string[];
+    candidateGroupId: number | null;
+    candidateGroupSize: number;
+  } {
     if (callId !== undefined) {
       const announced = this.announcedCalls.get(callId);
       if (announced !== undefined) announced.bound = true;
-      return { callId, candidateCallIds: [] };
+      return {
+        callId,
+        candidateCallIds: [],
+        candidateGroupId: null,
+        candidateGroupSize: 0,
+      };
     }
-    if (key === undefined) return { callId: null, candidateCallIds: [] };
+    if (key === undefined) {
+      return {
+        callId: null,
+        candidateCallIds: [],
+        candidateGroupId: null,
+        candidateGroupSize: 0,
+      };
+    }
     const candidates: string[] = [];
     for (const [id, call] of this.announcedCalls) {
       if (call.bound || call.base !== base || call.key !== key) continue;
@@ -478,19 +498,51 @@ export class NativeActivityTracker {
     }
     const freshCandidateCount = candidates.length;
     if (freshCandidateCount === 0) {
-      for (const occurrence of this.openOccurrences.get(base) ?? []) {
-        if (occurrence.key === key) {
-          candidates.push(...occurrence.candidateCallIds);
+      const open = this.openOccurrences.get(base) ?? [];
+      for (let index = open.length - 1; index >= 0; index -= 1) {
+        const occurrence = open[index]!;
+        if (
+          occurrence.key === key &&
+          occurrence.candidateGroupId !== null &&
+          occurrence.candidateCallIds.length > 0
+        ) {
+          const allocated = open.filter(
+            (candidate) =>
+              candidate.candidateGroupId === occurrence.candidateGroupId,
+          ).length;
+          if (allocated < occurrence.candidateGroupSize) {
+            return {
+              callId: null,
+              candidateCallIds: [...occurrence.candidateCallIds],
+              candidateGroupId: occurrence.candidateGroupId,
+              candidateGroupSize: occurrence.candidateGroupSize,
+            };
+          }
         }
       }
+      return {
+        callId: null,
+        candidateCallIds: [],
+        candidateGroupId: null,
+        candidateGroupSize: 0,
+      };
     }
     const uniqueCandidates = [...new Set(candidates)];
-    if (freshCandidateCount === 0) {
-      return { callId: null, candidateCallIds: uniqueCandidates };
+    if (uniqueCandidates.length === 1) {
+      return {
+        callId: uniqueCandidates[0]!,
+        candidateCallIds: [],
+        candidateGroupId: null,
+        candidateGroupSize: 0,
+      };
     }
-    return uniqueCandidates.length === 1
-      ? { callId: uniqueCandidates[0]!, candidateCallIds: [] }
-      : { callId: null, candidateCallIds: uniqueCandidates };
+    const candidateGroupId = ++this.candidateGroupCounter;
+    return {
+      callId: null,
+      candidateCallIds: uniqueCandidates,
+      candidateGroupId,
+      candidateGroupSize: uniqueCandidates.length,
+    };
   }
 
   private startOccurrence(
