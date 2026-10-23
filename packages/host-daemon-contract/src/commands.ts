@@ -70,10 +70,12 @@ export {
   HOST_DAEMON_CONNECT_NEXT_PROTOCOL_VERSION,
   HOST_DAEMON_DESKTOP_BROKER_PROOF_PROTOCOL_VERSION,
   HOST_DAEMON_ENVIRONMENT_CLEANUP_INSPECTION_PROTOCOL_VERSION,
+  HOST_DAEMON_MOVE_FILE_PROTOCOL_VERSION,
   HOST_DAEMON_PROTOCOL_VERSION,
   hostDaemonSupportsConnectNext,
   hostDaemonSupportsDesktopBrokerProof,
   hostDaemonSupportsEnvironmentCleanupInspection,
+  hostDaemonSupportsMoveFile,
   isCompatibleHostDaemonProtocolVersion,
 } from "./protocol.js";
 export {
