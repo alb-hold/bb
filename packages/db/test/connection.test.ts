@@ -216,6 +216,64 @@ describe("createConnection", () => {
     }
   });
 
+  it("measures a single exec write with a trailing semicolon", () => {
+    const directory = mkdtempSync(join(tmpdir(), "bb-db-single-exec-lock-"));
+    const logger = new CapturingSlowQueryLogger();
+    const db = createConnection(join(directory, "bb.db"), {
+      slowQueryLogger: logger,
+      slowQueryThresholdMs: 0,
+    });
+    try {
+      db.$client.exec("CREATE TABLE terminated_exec_values (value INTEGER)");
+      for (const suffix of [";", ";  \n"]) {
+        logger.clear();
+        db.$client
+          .transaction(() => {
+            db.$client.exec(`INSERT INTO terminated_exec_values VALUES (1)${suffix}`);
+          })
+          .default();
+        const transactionLog = logger.infoLogs.find(
+          (log) => log.fields.operation === "transaction",
+        );
+        expect(transactionLog?.fields.lockWaitSource).toBe("first-write");
+        expect(transactionLog?.fields.lockWaitMs).toBeGreaterThanOrEqual(0);
+        expect(transactionLog?.fields.bodyMs).toBeGreaterThanOrEqual(0);
+      }
+    } finally {
+      db.$client.close();
+      rmSync(directory, { force: true, recursive: true });
+    }
+  });
+
+  it("does not split lock wait for two writes in one exec", () => {
+    const directory = mkdtempSync(join(tmpdir(), "bb-db-two-exec-writes-"));
+    const logger = new CapturingSlowQueryLogger();
+    const db = createConnection(join(directory, "bb.db"), {
+      slowQueryLogger: logger,
+      slowQueryThresholdMs: 0,
+    });
+    try {
+      db.$client.exec("CREATE TABLE two_exec_values (value INTEGER)");
+      logger.clear();
+      db.$client
+        .transaction(() => {
+          db.$client.exec(
+            "INSERT INTO two_exec_values VALUES (1); INSERT INTO two_exec_values VALUES (2);",
+          );
+        })
+        .default();
+      const transactionLog = logger.infoLogs.find(
+        (log) => log.fields.operation === "transaction",
+      );
+      expect(transactionLog?.fields.lockWaitSource).toBe("exec");
+      expect(transactionLog?.fields).not.toHaveProperty("lockWaitMs");
+      expect(transactionLog?.fields).not.toHaveProperty("bodyMs");
+    } finally {
+      db.$client.close();
+      rmSync(directory, { force: true, recursive: true });
+    }
+  });
+
   it("reports near-zero BEGIN wait and preserves the slow-log threshold", () => {
     const logger = new CapturingSlowQueryLogger();
     const db = createConnection(":memory:", {

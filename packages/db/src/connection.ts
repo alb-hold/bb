@@ -333,10 +333,14 @@ function instrumentSqliteClient(
   };
   const originalExec = sqlite.exec.bind(sqlite);
   sqlite.exec = (source) => {
-    const isWrite = source.split(";").some((statement) =>
+    const statements = source
+      .split(";")
+      .map((statement) => statement.trim())
+      .filter((statement) => statement.length > 0);
+    const isWrite = statements.some((statement) =>
       WRITE_SQL_PATTERN.test(statement),
     );
-    const hasMultipleStatements = source.includes(";");
+    const hasMultipleStatements = statements.length > 1;
     if (
       isWrite &&
       hasMultipleStatements &&
