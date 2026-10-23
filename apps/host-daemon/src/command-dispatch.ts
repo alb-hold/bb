@@ -634,7 +634,7 @@ const onlineRpcHandlers: OnlineRpcHandlerMap = {
   "host.list_paths": (command, _options, signal) =>
     listHostPaths(command, signal),
   "host.mkdir": mkdirHostPath,
-  "host.move_file": moveHostFile,
+  "host.move_file": (command) => moveHostFile(command),
   "host.remove_path": removeHostPath,
   "host.browse_directory": browseHostDirectory,
   "host.paths_exist": checkHostPathsExist,

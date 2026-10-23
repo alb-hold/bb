@@ -1,5 +1,5 @@
 import { eq } from "drizzle-orm";
-import { environments, threads } from "@bb/db";
+import { environmentReleaseConsents, environments } from "@bb/db";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -315,10 +315,12 @@ describe.sequential("fake provider environment-isolation multi-thread integratio
           if (!worktreePath) {
             throw new Error("Managed worktree path was not assigned");
           }
+          await archiveThread(harness.api, worktreeThread.thread.id);
           harness.db
-            .update(threads)
-            .set({ archivedAt: Date.now() - 60_000 })
-            .where(eq(threads.id, worktreeThread.thread.id))
+            .delete(environmentReleaseConsents)
+            .where(
+              eq(environmentReleaseConsents.threadId, worktreeThread.thread.id),
+            )
             .run();
           harness.db
             .update(environments)
