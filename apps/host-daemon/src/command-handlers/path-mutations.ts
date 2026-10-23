@@ -117,6 +117,7 @@ function refuseMove(sourcePath: string, reason: string): never {
 export interface MoveHostFileHooks {
   afterOpen?: () => Promise<void>;
   afterLink?: () => Promise<void>;
+  afterHold?: () => Promise<void>;
 }
 
 function isSameFile(
@@ -204,18 +205,26 @@ export async function moveHostFile(
       await fs.unlink(holding);
       return { ok: true };
     }
-    const sourceFree = await fs.lstat(source).then(
-      () => false,
-      () => true,
-    );
-    if (sourceFree) {
-      await fs.rename(holding, source);
-      return { ok: true };
+    const movedNote = `The file was moved to ${command.destinationPath}, but something else replaced ${command.sourcePath} while it was moving`;
+    if (!held.isFile()) {
+      throw new CommandDispatchError(
+        "invalid_path",
+        `${movedNote}. It is not a regular file, so it was left at ${holding} and not moved back.`,
+      );
     }
-    throw new CommandDispatchError(
-      "invalid_path",
-      `The file was moved to ${command.destinationPath}, but something else replaced ${command.sourcePath} while it was moving and then something new took its place, so the replacement was left at ${holding}.`,
-    );
+    await hooks.afterHold?.();
+    try {
+      await fs.link(holding, source);
+    } catch (error) {
+      const code =
+        error instanceof Error && "code" in error ? String(error.code) : "";
+      throw new CommandDispatchError(
+        "invalid_path",
+        `${movedNote}, and it could not be put back (${code || "error"}), so it was left at ${holding}.`,
+      );
+    }
+    await fs.unlink(holding);
+    return { ok: true };
   } finally {
     await handle.close();
   }

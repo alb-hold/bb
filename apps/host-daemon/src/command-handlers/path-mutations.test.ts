@@ -264,23 +264,7 @@ describe("confined host path mutations", () => {
     ).resolves.toBe("workspace");
   });
 
-  it.each([
-    ["a folder", async (source: string) => {
-      await fs.rename(source, `${source}.orig`);
-      await fs.mkdir(source);
-      await fs.writeFile(path.join(source, "inside.txt"), "workspace");
-    }, async (source: string) => {
-      await expect(
-        fs.readFile(path.join(source, "inside.txt"), "utf8"),
-      ).resolves.toBe("workspace");
-    }],
-    ["another regular file", async (source: string) => {
-      await fs.rename(source, `${source}.orig`);
-      await fs.writeFile(source, "swapped in");
-    }, async (source: string) => {
-      await expect(fs.readFile(source, "utf8")).resolves.toBe("swapped in");
-    }],
-  ])("keeps %s swapped in after the link where it was, and the destination holds the original", async (_label, swap, check) => {
+  it("puts a regular file swapped in after the link back where it was, and the destination holds the original", async () => {
     const root = await makeRoot();
     const source = path.join(root, "a.txt");
     const destination = path.join(root, "b.txt");
@@ -295,15 +279,97 @@ describe("confined host path mutations", () => {
           destinationPath: destination,
           rootPath: root,
         },
-        { afterLink: () => swap(source) },
+        {
+          afterLink: async () => {
+            await fs.rename(source, `${source}.orig`);
+            await fs.writeFile(source, "swapped in");
+          },
+        },
       ),
     ).resolves.toEqual({ ok: true });
 
     expect((await fs.stat(destination)).ino).toBe(before.ino);
-    await check(source);
+    await expect(fs.readFile(source, "utf8")).resolves.toBe("swapped in");
     expect(
       (await fs.readdir(root)).filter((name) => name.startsWith(".bb-moving-")),
     ).toEqual([]);
+  });
+
+  it.each([
+    ["a folder", async (source: string) => {
+      await fs.rename(source, `${source}.orig`);
+      await fs.mkdir(source);
+      await fs.writeFile(path.join(source, "inside.txt"), "workspace");
+    }],
+    ["a symbolic link", async (source: string) => {
+      await fs.rename(source, `${source}.orig`);
+      await fs.symlink(`${source}.orig`, source);
+    }],
+  ])("never moves %s swapped in after the link back, leaves it under its holding name and says so", async (_label, swap) => {
+    const root = await makeRoot();
+    const source = path.join(root, "a.txt");
+    const destination = path.join(root, "b.txt");
+    await fs.writeFile(source, "original");
+    const before = await fs.stat(source);
+
+    const failure = await moveHostFile(
+      {
+        type: "host.move_file",
+        sourcePath: source,
+        destinationPath: destination,
+        rootPath: root,
+      },
+      { afterLink: () => swap(source) },
+    ).catch((error: unknown) => error);
+
+    expect(failure).toMatchObject({
+      code: "invalid_path",
+      message: expect.stringContaining(".bb-moving-"),
+    });
+    expect((await fs.stat(destination)).ino).toBe(before.ino);
+    await expect(fs.lstat(source)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(
+      (await fs.readdir(root)).filter((name) => name.startsWith(".bb-moving-")),
+    ).toHaveLength(1);
+  });
+
+  it("never overwrites something that lands at the source while a swapped-in file is being put back: the occupant survives and the moved file stays under its holding name", async () => {
+    const root = await makeRoot();
+    const source = path.join(root, "a.txt");
+    const destination = path.join(root, "b.txt");
+    await fs.writeFile(source, "original");
+
+    const failure = await moveHostFile(
+      {
+        type: "host.move_file",
+        sourcePath: source,
+        destinationPath: destination,
+        rootPath: root,
+      },
+      {
+        afterLink: async () => {
+          await fs.rename(source, `${source}.orig`);
+          await fs.writeFile(source, "swapped in");
+        },
+        afterHold: async () => {
+          await fs.writeFile(source, "occupant");
+        },
+      },
+    ).catch((error: unknown) => error);
+
+    expect(failure).toMatchObject({
+      code: "invalid_path",
+      message: expect.stringContaining("could not be put back"),
+    });
+    await expect(fs.readFile(source, "utf8")).resolves.toBe("occupant");
+    const holding = (await fs.readdir(root)).filter((name) =>
+      name.startsWith(".bb-moving-"),
+    );
+    expect(holding).toHaveLength(1);
+    await expect(
+      fs.readFile(path.join(root, holding[0]!), "utf8"),
+    ).resolves.toBe("swapped in");
+    await expect(fs.readFile(destination, "utf8")).resolves.toBe("original");
   });
 
   it("refuses a source and a destination reached through a symlinked folder, and a removal through one", async () => {
