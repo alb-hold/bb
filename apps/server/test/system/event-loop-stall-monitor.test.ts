@@ -84,6 +84,7 @@ const EMPTY_WORK_SNAPSHOT = {
   longestSynchronousWork: null,
   longestSynchronousWorkWallMs: null,
   longestSynchronousWorkCpuMs: null,
+  synchronousWorkCpuMs: 0,
 };
 
 describe("event loop stall monitor", () => {
@@ -120,7 +121,7 @@ describe("event loop stall monitor", () => {
       expect(histogram.percentile).toHaveBeenCalledWith(99);
       expect(histogram.reset).toHaveBeenCalledTimes(1);
       expect(logger.info).toHaveBeenCalledWith(
-        {
+        expect.objectContaining({
           intervalMs: 5_000,
           maxDelayMs: expectedThreshold,
           meanDelayMs: 25,
@@ -129,8 +130,14 @@ describe("event loop stall monitor", () => {
           thresholdMs: expectedThreshold,
           stallAttribution: "unattributed",
           stallCauseCandidate: null,
+          eventLoopUtilization: expect.objectContaining({
+            activeMs: expect.any(Number),
+            idleMs: expect.any(Number),
+            utilization: expect.any(Number),
+          }),
+          gcPauses: [],
           ...EMPTY_WORK_SNAPSHOT,
-        },
+        }),
         "Event loop stalled",
       );
 
@@ -371,6 +378,68 @@ describe("event loop stall monitor", () => {
     monitor.stop();
   });
 
+  it("attributes a GC pause as the strongest stall candidate", () => {
+    installHistogram({ maxDelayMs: 500, meanDelayMs: 25, p99DelayMs: 450 });
+    type SyntheticEntryList = {
+      getEntries: () => Array<PerformanceEntry & { kind?: number }>;
+    };
+    let observerCallback: ((list: SyntheticEntryList) => void) | undefined;
+    class SyntheticPerformanceObserver {
+      constructor(callback: (list: SyntheticEntryList) => void) {
+        observerCallback = callback;
+      }
+      observe() {}
+      disconnect() {}
+    }
+    const logger = { info: vi.fn() };
+    const monitor = startEventLoopStallMonitor({
+      logger,
+      performanceObserver: SyntheticPerformanceObserver,
+    });
+    observerCallback?.(
+      {
+        getEntries: () =>
+          [
+            { duration: 490, startTime: performance.now(), kind: 2 },
+          ] as Array<PerformanceEntry & { kind?: number }>,
+      },
+    );
+    vi.advanceTimersByTime(EVENT_LOOP_STALL_MONITOR_INTERVAL_MS);
+    expect(logger.info).toHaveBeenCalledWith(
+      expect.objectContaining({
+        gcPauses: [{ durationMs: 490, kind: 2 }],
+        stallAttribution: "candidate",
+        stallCauseCandidate: "gc",
+      }),
+      "Event loop stalled",
+    );
+    monitor.stop();
+  });
+
+  it("attributes a synchronous plugin proxy chunk by its route label", () => {
+    installHistogram({ maxDelayMs: 500, meanDelayMs: 25, p99DelayMs: 450 });
+    const logger = { info: vi.fn() };
+    const nowSpy = vi.spyOn(nodePerformance, "now");
+    const cpuSpy = vi.spyOn(process, "threadCpuUsage");
+    nowSpy.mockReturnValueOnce(0).mockReturnValueOnce(520);
+    cpuSpy.mockReturnValueOnce({ user: 0, system: 0 });
+    cpuSpy.mockReturnValueOnce({ user: 520_000, system: 0 });
+    runEventLoopWorkSync("plugin HTTP POST /v1/responses:sync", () => undefined);
+    nowSpy.mockRestore();
+    cpuSpy.mockRestore();
+    const monitor = startEventLoopStallMonitor({ logger });
+    vi.advanceTimersByTime(EVENT_LOOP_STALL_MONITOR_INTERVAL_MS);
+    expect(logger.info).toHaveBeenCalledWith(
+      expect.objectContaining({
+        longestSynchronousWork: "plugin HTTP POST /v1/responses:sync",
+        stallAttribution: "candidate",
+        stallCauseCandidate: "plugin HTTP POST /v1/responses:sync",
+      }),
+      "Event loop stalled",
+    );
+    monitor.stop();
+  });
+
   it("leaves a two-second stall unattributed when measured work took one millisecond", () => {
     installHistogram({ maxDelayMs: 2_000, meanDelayMs: 25, p99DelayMs: 450 });
     const logger = { info: vi.fn() };
@@ -390,7 +459,7 @@ describe("event loop stall monitor", () => {
           longestSynchronousWork: "ws:daemon heartbeat",
           longestSynchronousWorkWallMs: 1,
           stallAttribution: "unattributed",
-          stallCauseCandidate: null,
+          stallCauseCandidate: "ws:daemon heartbeat",
         }),
         "Event loop stalled",
       );

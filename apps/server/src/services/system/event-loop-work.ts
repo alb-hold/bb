@@ -24,6 +24,7 @@ interface EventLoopWorkSnapshot {
   longestSynchronousWork: string | null;
   longestSynchronousWorkWallMs: number | null;
   longestSynchronousWorkCpuMs: number | null;
+  synchronousWorkCpuMs: number;
 }
 
 const activeFrames = new Map<number, EventLoopWorkFrame>();
@@ -115,6 +116,13 @@ function getEventLoopWorkSnapshot(): EventLoopWorkSnapshot {
       longest === null || longest.cpuMs === null
         ? null
         : roundDurationMs(longest.cpuMs),
+    synchronousWorkCpuMs: roundDurationMs(
+      completedInWindow.reduce(
+        (total, completed) =>
+          total + (completed.blocksEventLoop ? (completed.cpuMs ?? 0) : 0),
+        0,
+      ),
+    ),
     longestSynchronousWorkWallMs:
       longest === null ? null : roundDurationMs(longest.durationMs),
   };

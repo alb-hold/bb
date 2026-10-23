@@ -99,7 +99,10 @@ import type {
   ServiceRuntime,
 } from "./plugin-service-internal.js";
 import { createKeyedLock } from "../lib/async-deduper.js";
-import { runEventLoopWork } from "../system/event-loop-work.js";
+import {
+  runEventLoopWork,
+  runEventLoopWorkSync,
+} from "../system/event-loop-work.js";
 import { abortPluginToolCallsForPlugin } from "./plugin-tool-calls.js";
 import { buildCachedPluginServer } from "./plugin-server-cache.js";
 import { createPluginRpcCallerRegistry } from "./plugin-rpc-caller.js";
@@ -838,6 +841,7 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
     id: string,
     label: string,
     run: () => T | Promise<T>,
+    eventLoopLabel = `plugin:${id} ${label}`,
   ): Promise<
     { ok: true; value: T } | { ok: false; error: string; cause: unknown }
   > {
@@ -856,7 +860,9 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
     try {
       return {
         ok: true,
-        value: await runEventLoopWork(`plugin:${id} ${label}`, run),
+        value: await runEventLoopWork(eventLoopLabel, () =>
+          runEventLoopWorkSync(`${eventLoopLabel}:sync`, run),
+        ),
       };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
