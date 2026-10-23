@@ -998,6 +998,70 @@ describe("overflow, answer, then no resumed activity through the real reader, re
     return { h, harness, thread };
   }
 
+  it("keeps active tool work confirmed through arriving hooks and heartbeat reports", async () => {
+    const { harness, thread } = await nativeThread();
+    const h = discoveredHolder(harness, thread.id);
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const currentThread = () => {
+      const current = getThread(harness.db, thread.id);
+      if (current === null) throw new Error("thread missing");
+      return current;
+    };
+    h.reader.sessionDiscovered(SESSION_ID);
+    h.hook([
+      {
+        hook_event_name: "UserPromptSubmit",
+        prompt_id: "turn-working",
+        prompt: "run the build",
+      },
+    ]);
+    await h.forward();
+    expect(getThread(harness.db, thread.id)?.status).toBe("active");
+    expect(
+      buildThreadStatusChangeMetadata(
+        harness.deps,
+        currentThread(),
+      ).statusChange,
+    ).toMatchObject({
+      runtime: { displayStatus: "active" },
+      status: "active",
+    });
+    expect(displayOf(harness, thread.id)).toMatchObject({
+      confirmation: "confirmed",
+      evidenceKind: "holder-report",
+    });
+
+    for (let index = 1; index <= 4; index += 1) {
+      vi.setSystemTime(Date.now() + 30_000);
+      h.hook([
+        {
+          hook_event_name: "PreToolUse",
+          tool_name: "Bash",
+          tool_use_id: `toolu_working_${index}`,
+          tool_input: { command: `build step ${index}` },
+        },
+      ]);
+      await h.forward();
+      await h.heartbeat();
+
+      expect(getThread(harness.db, thread.id)?.status).toBe("active");
+      expect(
+        buildThreadStatusChangeMetadata(
+          harness.deps,
+          currentThread(),
+        ).statusChange,
+      ).toMatchObject({
+        runtime: { displayStatus: "active" },
+        status: "active",
+      });
+      expect(displayOf(harness, thread.id)).toMatchObject({
+        confirmation: "confirmed",
+        evidenceKind: "holder-report",
+        lastEvidenceAt: Date.now(),
+      });
+    }
+  });
+
   it("publishes the retained question as Needs input and keeps the dropped one out of the display", async () => {
     const { harness, thread } = await overflowedAndAsked();
     expect(openQuestions(harness, thread.id)).toHaveLength(1);
