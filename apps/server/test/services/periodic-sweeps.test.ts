@@ -41,7 +41,11 @@ import {
   seedThreadFixture,
   seedThreadRuntimeState,
 } from "../helpers/seed.js";
-import { listQueuedThreadCommands } from "../helpers/commands.js";
+import {
+  listQueuedThreadCommands,
+  reportQueuedCommandError,
+  waitForQueuedCommand,
+} from "../helpers/commands.js";
 import { textInput } from "../helpers/prompt-input.js";
 import {
   testLogger,
@@ -555,6 +559,60 @@ describe("runPeriodicSweeps", () => {
       expect(
         listQueuedThreadCommands(harness, "thread.storage.delete", thread.id),
       ).toHaveLength(1);
+    });
+  });
+
+  it("tells the user, in the deleted thread's own log, why its files were not deleted, names the holder and the retry, and does not repeat itself", async () => {
+    await withTestHarness(async (harness) => {
+      const { host } = seedHostSession(harness.deps);
+      const { project } = seedProjectWithSource(harness.deps, {
+        hostId: host.id,
+      });
+      const environment = seedEnvironment(harness.deps, {
+        hostId: host.id,
+        projectId: project.id,
+      });
+      const thread = seedThread(harness.deps, {
+        environmentId: environment.id,
+        projectId: project.id,
+        status: "idle",
+      });
+      const response = await harness.app.request(
+        `/api/v1/threads/${thread.id}`,
+        {
+          method: "DELETE",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ childThreadsConfirmed: false }),
+        },
+      );
+      expect(response.status).toBe(200);
+      const refusal =
+        "Refusing to delete thread storage /storage/thr_x: a process is still working inside it (pid 4242 in /storage/thr_x/app). Nothing was stopped and nothing was removed.";
+
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const queued = await waitForQueuedCommand(
+          harness,
+          (candidate) =>
+            candidate.command.type === "thread.storage.delete" &&
+            candidate.command.threadId === thread.id &&
+            candidate.row.status !== "completed",
+        );
+        await reportQueuedCommandError(harness, queued, {
+          errorCode: "path_in_use",
+          errorMessage: refusal,
+        });
+      }
+
+      const notices = harness.db
+        .select({ data: events.data })
+        .from(events)
+        .where(eq(events.threadId, thread.id))
+        .all()
+        .map((row) => row.data)
+        .filter((data) => data.includes("thread_storage_delete_refused"));
+      expect(notices).toHaveLength(1);
+      expect(notices[0]).toContain("pid 4242");
+      expect(notices[0]).toContain("about every ten seconds");
     });
   });
 

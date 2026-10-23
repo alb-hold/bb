@@ -23,6 +23,7 @@ import {
   events,
   getEnvironment,
   getHost,
+  getLatestStoredThreadEventOfTypes,
   getLatestThreadInterruptedReason,
   getThread,
   listNativeTerminalThreadIds,
@@ -66,6 +67,7 @@ import {
   type HostDaemonCommandForType,
 } from "../../internal/command-result-side-effects.js";
 import {
+  appendSystemErrorEvent,
   appendSystemErrorEventInTransaction,
   appendThreadEventInTransaction,
   appendThreadEventsInTransaction,
@@ -1090,6 +1092,19 @@ export function settleThreadStorageDeleteCommandResult(
   args: SettleThreadStorageDeleteCommandResultArgs,
 ): CommandResultSideEffectsResult {
   if (!args.report.ok) {
+    const notice = refusedThreadStorageDeletionNotice(
+      args.deps.db,
+      args.command.threadId,
+      args.report.errorMessage,
+    );
+    if (notice !== null)
+      appendSystemErrorEventInTransaction(args.deps, {
+        threadId: args.command.threadId,
+        environmentId: args.command.environmentId,
+        scope: threadScope(),
+        code: STORAGE_DELETE_REFUSED_CODE,
+        message: notice,
+      });
     return emptyCommandResultSideEffects();
   }
   settleDanglingBackgroundTasksForStoppedThreadInTransaction(args.deps, {
@@ -1105,6 +1120,55 @@ export function settleThreadStorageDeleteCommandResult(
     threadId: args.command.threadId,
   });
   return emptyCommandResultSideEffects();
+}
+
+const STORAGE_DELETE_REFUSED_CODE = "thread_storage_delete_refused";
+
+function refusedThreadStorageDeletionNotice(
+  db: DbQueryConnection,
+  threadId: string,
+  daemonMessage: string,
+): string | null {
+  if (!daemonMessage.includes("Refusing to delete thread storage")) return null;
+  const notice = `This thread's files on the machine were not deleted. ${daemonMessage} bb tries again on every periodic sweep (about every ten seconds) and deletes the files once nothing is working inside them.`;
+  const latest = getLatestStoredThreadEventOfTypes(db, {
+    threadId,
+    types: ["system/error"],
+    afterSequence: 0,
+  });
+  if (latest !== null && latest.data.includes(STORAGE_DELETE_REFUSED_CODE)) {
+    try {
+      const parsed: unknown = JSON.parse(latest.data);
+      if (
+        typeof parsed === "object" &&
+        parsed !== null &&
+        "message" in parsed &&
+        parsed.message === notice
+      )
+        return null;
+    } catch {}
+  }
+  return notice;
+}
+
+function noteRefusedThreadStorageDeletion(
+  deps: Pick<CommandResultSideEffectsDeps, "db" | "hub">,
+  thread: Pick<Thread, "environmentId" | "id">,
+  error: unknown,
+): void {
+  const notice = refusedThreadStorageDeletionNotice(
+    deps.db,
+    thread.id,
+    error instanceof Error ? error.message : String(error),
+  );
+  if (notice === null) return;
+  appendSystemErrorEvent(deps, {
+    threadId: thread.id,
+    environmentId: thread.environmentId,
+    scope: threadScope(),
+    code: STORAGE_DELETE_REFUSED_CODE,
+    message: notice,
+  });
 }
 
 export function requestThreadStorageDeletion(
@@ -1150,6 +1214,7 @@ export function requestThreadStorageDeletion(
         { err: error, threadId: thread.id },
         "Thread storage deletion command failed",
       );
+      noteRefusedThreadStorageDeletion(deps, thread, error);
     })
     .finally(() => {
       inFlightThreadRpcGuard.release(thread.id, "thread.storage.delete");
