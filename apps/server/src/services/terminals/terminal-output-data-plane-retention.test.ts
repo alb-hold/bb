@@ -1273,7 +1273,8 @@ describe("terminal output retained from the data plane", () => {
     let yieldCount = 0;
     let nextYield = deferred<number>();
     let waitingForYield = nextYield.promise;
-    let releaseYield: (() => void) | null = null;
+    let releaseYield: () => void = () => {};
+    let yieldHeld = false;
     try {
       const injectedSeqs: number[] = [];
       let queuedMessageProcessed = false;
@@ -1292,6 +1293,7 @@ describe("terminal output retained from the data plane", () => {
         signal.resolve(yieldCount);
         return new Promise<void>((resolve) => {
           releaseYield = resolve;
+          yieldHeld = true;
         });
       };
       const replayChunks = Array.from({ length: 2_048 }, (_, seq) => ({
@@ -1360,11 +1362,10 @@ describe("terminal output retained from the data plane", () => {
             },
           ],
         });
-        const resume = releaseYield;
-        if (!resume)
+        if (!yieldHeld)
           throw new Error(`replay yield ${actualYield} was not held`);
-        releaseYield = null;
-        resume();
+        yieldHeld = false;
+        releaseYield();
       }
 
       const completedWithinBound = await Promise.race([
@@ -1395,7 +1396,7 @@ describe("terminal output retained from the data plane", () => {
       expect(new Set(retainedSeqs).size).toBe(retainedSeqs.length);
     } finally {
       replayYieldControl.intercept = null;
-      releaseYield?.();
+      if (yieldHeld) releaseYield();
       queue.close();
       vi.useRealTimers();
       fixture.child.shutdown();
