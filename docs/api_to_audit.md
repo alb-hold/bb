@@ -1533,6 +1533,18 @@ runtime), and `experimental_readProcessIdentity(pid)` returns
 `{ command, startedAt }` so a caller can confirm a recorded PID before
 signalling it.
 
+`internal_DO_NOT_USE_listProcessesWithCwdUnder` (not part of the public
+surface and not documented in the Plugin Guide) lists, without signalling,
+processes whose working directory is at or under the given directories. Its
+only callers are the first-party `environment-personal-workspace` and
+`storage-retention` host entries, which use it to report the holders of a tree
+and refuse to delete it; the daemon's thread-storage deletion and file
+removal use the same `@bb/process-utils` function directly. It checks working
+directories only (not open files) and returns nothing on Windows. Stabilize it
+by replacing it with a reviewed holder scan that also covers open files and
+mapped files (the worktree plugin has a private one) and by deleting this
+entry.
+
 Docs: `backend-foundation.md`, `testing.md`.
 
 **Audit before stabilizing.**
