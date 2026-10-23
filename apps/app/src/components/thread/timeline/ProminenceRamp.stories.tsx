@@ -242,7 +242,11 @@ export function Overview() {
         hint="full foreground — most prominent"
       >
         <TimelineStage>
-          <ThreadTimelineRows {...baseProps} timelineRows={[proseRow]} />
+          <ThreadTimelineRows
+            {...baseProps}
+            timelineRows={[proseRow]}
+            threadIsActive={false}
+          />
         </TimelineStage>
       </StoryRow>
       <StoryRow
@@ -250,7 +254,11 @@ export function Overview() {
         hint="running tool stays full strength; finished tool / command / file-change recede"
       >
         <TimelineStage>
-          <ThreadTimelineRows {...baseProps} timelineRows={leafRampRows} />
+          <ThreadTimelineRows
+            {...baseProps}
+            timelineRows={leafRampRows}
+            threadIsActive={false}
+          />
         </TimelineStage>
       </StoryRow>
       <StoryRow
@@ -258,7 +266,11 @@ export function Overview() {
         hint="idle scope — the rolled-up bundle recedes with the rest of the past layer"
       >
         <TimelineStage>
-          <ThreadTimelineRows {...baseProps} timelineRows={commandBundleRows} />
+          <ThreadTimelineRows
+            {...baseProps}
+            timelineRows={commandBundleRows}
+            threadIsActive={false}
+          />
         </TimelineStage>
       </StoryRow>
       <StoryRow
@@ -270,6 +282,7 @@ export function Overview() {
             {...baseProps}
             threadRuntimeDisplayStatus="active"
             timelineRows={activeCommandBundleRows}
+            threadIsActive={false}
           />
         </TimelineStage>
       </StoryRow>
@@ -278,7 +291,11 @@ export function Overview() {
         hint="an assistant boundary collapses the step into a receded recap"
       >
         <TimelineStage>
-          <ThreadTimelineRows {...baseProps} timelineRows={stepSummaryRows} />
+          <ThreadTimelineRows
+            {...baseProps}
+            timelineRows={stepSummaryRows}
+            threadIsActive={false}
+          />
         </TimelineStage>
       </StoryRow>
       <StoryRow
@@ -286,7 +303,11 @@ export function Overview() {
         hint="a pending operation stays prominent; the completed one recedes"
       >
         <TimelineStage>
-          <ThreadTimelineRows {...baseProps} timelineRows={systemRampRows} />
+          <ThreadTimelineRows
+            {...baseProps}
+            timelineRows={systemRampRows}
+            threadIsActive={false}
+          />
         </TimelineStage>
       </StoryRow>
       <StoryRow
@@ -298,6 +319,7 @@ export function Overview() {
             {...baseProps}
             threadRuntimeDisplayStatus="active"
             timelineRows={fullStackRows}
+            threadIsActive={false}
           />
         </TimelineStage>
       </StoryRow>

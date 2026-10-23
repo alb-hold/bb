@@ -56,6 +56,7 @@ describe("ThreadTimelineRows row isolation", () => {
             timelineRows={timelineRows}
             threadRuntimeDisplayStatus="idle"
             workspaceRootPath={undefined}
+            threadIsActive={false}
           />
         </QueryClientProvider>
       </MemoryRouter>
@@ -89,6 +90,7 @@ describe("ThreadTimelineRows row isolation", () => {
             timelineRows={timelineRows}
             threadRuntimeDisplayStatus="active"
             workspaceRootPath={undefined}
+            threadIsActive={false}
           />
         </QueryClientProvider>
       </MemoryRouter>

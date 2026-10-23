@@ -8,8 +8,10 @@ const idle = {
   displayStatus: "idle",
   isStopping: false,
   isTurnSubmitting: false,
+  nativeTerminal: false,
   nativeActivityUnconfirmed: false,
   timelineLoading: false,
+  threadStatus: "idle",
 } as const;
 
 describe("resolveThreadOngoingIndicator", () => {
@@ -21,8 +23,18 @@ describe("resolveThreadOngoingIndicator", () => {
     },
     {
       name: "the normal working label while runtime is active",
-      input: { ...idle, activeWorkflowCount: 1, displayStatus: "active" },
+      input: {
+        ...idle,
+        activeWorkflowCount: 1,
+        displayStatus: "active",
+        threadStatus: "active",
+      },
       expected: { show: true, label: undefined },
+    },
+    {
+      name: "no stale runtime indicator for an idle native thread",
+      input: { ...idle, displayStatus: "active", nativeTerminal: true },
+      expected: { show: false, label: undefined },
     },
     {
       name: "a background indicator for an idle thread with only a nested agent active",

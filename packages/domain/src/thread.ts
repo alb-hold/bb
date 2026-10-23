@@ -25,9 +25,7 @@ import {
   threadRuntimeStateSchema as upstreamThreadRuntimeStateSchema,
   threadActivityStateSchema,
 } from "./thread-runtime-state.js";
-export {
-  threadActivityStateSchema,
-} from "./thread-runtime-state.js";
+export { threadActivityStateSchema } from "./thread-runtime-state.js";
 export { threadStatusSchema, threadStatusValues } from "./thread-status.js";
 export type { ThreadStatus } from "./thread-status.js";
 export { threadOriginKindSchema } from "./thread-origin-kind.js";
@@ -70,9 +68,11 @@ export const nativeActivityDiagnosticSchema = z.object({
 export type NativeActivityDiagnostic = z.infer<
   typeof nativeActivityDiagnosticSchema
 >;
-export const threadRuntimeStateSchema = upstreamThreadRuntimeStateSchema.extend({
-  nativeActivity: nativeActivityDiagnosticSchema.optional(),
-});
+export const threadRuntimeStateSchema = upstreamThreadRuntimeStateSchema.extend(
+  {
+    nativeActivity: nativeActivityDiagnosticSchema.optional(),
+  },
+);
 export type ThreadRuntimeState = z.infer<typeof threadRuntimeStateSchema>;
 
 export type ThreadActivityState = z.infer<typeof threadActivityStateSchema>;
@@ -483,6 +483,7 @@ export const threadListIndicatorSchema = z.enum([
 export type ThreadListIndicator = z.infer<typeof threadListIndicatorSchema>;
 
 export const threadListEntrySchema = threadWithRuntimeSchema.extend({
+  nativeTerminal: z.boolean().optional(),
   activity: threadActivityStateSchema,
   queuedWork: threadQueuedWorkSchema,
   queuedFailedCount: z.number().int().nonnegative().default(0),

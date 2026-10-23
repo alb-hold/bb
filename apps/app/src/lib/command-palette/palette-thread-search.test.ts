@@ -15,6 +15,7 @@ function makeThread(
     projectId: "project-1",
     environmentId: null,
     providerId: "codex",
+    nativeTerminal: false,
     title: `Title ${id}`,
     titleFallback: `Fallback ${id}`,
     sectionId: null,

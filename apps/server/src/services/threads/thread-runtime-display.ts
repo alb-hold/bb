@@ -125,7 +125,7 @@ interface ToThreadListEntryResponseFromLatestSessionArgs {
   activity: ThreadActivityState;
   hostConnected: boolean;
   latestClosedSession: HostDaemonSessionRow | null;
-  nativeActivityThread: NativeActivityThreadRecord | null;
+  nativeTerminalThread: NativeActivityThreadRecord | null;
   now?: number;
   queuedWork: ThreadQueuedWork;
   queuedFailedCount: number;
@@ -299,18 +299,15 @@ function getNativeActivityThread(
     : null;
 }
 
-function getNativeActivityThreadsById(
+function getNativeTerminalThreadsById(
   deps: NativeActivityDisplayDeps,
   threads: readonly Thread[],
 ): Map<string, NativeActivityThreadRecord> {
-  const threadIds = threads
-    .filter((thread) => supportsNativeActivity(deps, thread))
-    .map((thread) => thread.id);
   return new Map<string, NativeActivityThreadRecord>(
-    listNativeTerminalThreadsByIds(deps.db, threadIds).map((thread) => [
-      thread.threadId,
-      thread,
-    ]),
+    listNativeTerminalThreadsByIds(
+      deps.db,
+      threads.map((thread) => thread.id),
+    ).map((thread) => [thread.threadId, thread]),
   );
 }
 
@@ -397,7 +394,7 @@ export function buildThreadStatusChangeMetadataByThreadId(
     hostConnected,
     hostId: args.environmentHostId,
   });
-  const nativeActivityThreadsById = getNativeActivityThreadsById(
+  const nativeTerminalThreadsById = getNativeTerminalThreadsById(
     deps,
     args.threads,
   );
@@ -414,7 +411,9 @@ export function buildThreadStatusChangeMetadataByThreadId(
             latestClosedSession,
             status: thread.status,
           }),
-          nativeActivityThreadsById.get(thread.id) ?? null,
+          supportsNativeActivity(deps, thread)
+            ? (nativeTerminalThreadsById.get(thread.id) ?? null)
+            : null,
         ),
         thread,
       }),
@@ -491,6 +490,7 @@ function buildThreadResponseFromThread(
   });
   return {
     ...threadWithRuntime,
+    nativeTerminal: getNativeTerminalThread(deps.db, args.thread.id) !== null,
     activeBackgroundAgentCount:
       listActiveBackgroundTaskCountsByThreadIds(deps.db, {
         threadIds: [args.thread.id],
@@ -748,7 +748,7 @@ export function toThreadListEntryResponses(
     deps,
     args.threads,
   );
-  const nativeActivityThreadsById = getNativeActivityThreadsById(
+  const nativeTerminalThreadsById = getNativeTerminalThreadsById(
     deps,
     args.threads,
   );
@@ -766,7 +766,7 @@ export function toThreadListEntryResponses(
         thread.environmentHostId === null
           ? null
           : (latestClosedSessionByHostId.get(thread.environmentHostId) ?? null),
-      nativeActivityThread: nativeActivityThreadsById.get(thread.id) ?? null,
+      nativeTerminalThread: nativeTerminalThreadsById.get(thread.id) ?? null,
       now: args.now,
       rowState: getThreadRowState(deps.db, thread.id),
       thread,
@@ -794,6 +794,7 @@ function toThreadListEntryResponseFromLatestSession(
   const thread = toPublicThread(args.thread);
   return {
     ...thread,
+    nativeTerminal: args.nativeTerminalThread !== null,
     activity: args.activity,
     queuedWork: args.queuedWork,
     queuedFailedCount: args.queuedFailedCount,
@@ -820,7 +821,9 @@ function toThreadListEntryResponseFromLatestSession(
         now: args.now,
         status: thread.status,
       }),
-      args.nativeActivityThread,
+      supportsNativeActivity(args.deps, args.thread)
+        ? args.nativeTerminalThread
+        : null,
       args.now,
     ),
   };

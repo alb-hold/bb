@@ -20,6 +20,7 @@ export function makeThreadResponse(
   const thread = makeThreadWithRuntime({ runtime: overrides.runtime });
   return {
     ...thread,
+    nativeTerminal: false,
     activeBackgroundAgentCount: 0,
     canRestoreEnvironment: false,
     canEditMessages: true,

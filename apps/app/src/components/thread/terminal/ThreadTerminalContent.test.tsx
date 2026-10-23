@@ -50,6 +50,7 @@ function controller(
     shouldRetainActiveTerminalView: false,
     start: null,
     terminalBodyMessage: "No terminals",
+    terminalsLoading: false,
   };
 }
 

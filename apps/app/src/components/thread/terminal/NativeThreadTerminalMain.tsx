@@ -123,6 +123,19 @@ export function NativeThreadTerminalMain({
     );
   }
 
+  if (session === null && terminalsQuery.isLoading) {
+    return (
+      <div
+        aria-busy="true"
+        className="flex h-full items-center justify-center px-4 text-center text-sm text-muted-foreground"
+        data-native-terminal-thread={view.providerId}
+        role="status"
+      >
+        Loading terminals...
+      </div>
+    );
+  }
+
   return (
     <div
       className="flex h-full flex-col items-center justify-center gap-3 px-4 text-center text-sm"

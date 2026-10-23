@@ -1,7 +1,10 @@
 // @vitest-environment jsdom
 import { Terminal } from "@xterm/xterm";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createTerminalTouchHandlers } from "./ThreadTerminalView";
+import {
+  createTerminalTouchHandlers,
+} from "./ThreadTerminalView";
+import { createTerminalTouchViewportSaveScheduler } from "./terminal-viewport";
 
 const CELL_WIDTH_PX = 8;
 const CELL_HEIGHT_PX = 15;
@@ -109,7 +112,7 @@ function openTerminal(withTouchHandlers: boolean): Opened {
     terminal.dispose();
     wrapper.remove();
   });
-  return { screen, wrapper, sent, terminal };
+  return { screen, sent, terminal, wrapper };
 }
 
 function dispatchTouch(
@@ -264,5 +267,46 @@ describe("terminal touch flow with mouse tracking off", () => {
     dispatchTouch(screen, "touchend", { x: 40, y: 50 }, 2_360);
     expect(scrollToLine).not.toHaveBeenCalled();
     await new Promise((resolve) => setTimeout(resolve, 350));
+  });
+
+  it("saves a native touch scroll when xterm changes viewport without onScroll", async () => {
+    stubMeasurements();
+    const { screen, terminal, wrapper } = openTerminal(true);
+    await write(
+      terminal,
+      Array.from({ length: 200 }, (_, index) => `line ${index}`).join("\r\n"),
+    );
+    const onScrollCallback = vi.fn();
+    Object.defineProperty(terminal, "onScroll", {
+      configurable: true,
+      value: () => ({ dispose: () => undefined }),
+    });
+    terminal.onScroll(onScrollCallback);
+    const pendingFrames = new Map<number, () => void>();
+    let nextFrame = 0;
+    const save = vi.fn();
+    const scheduler = createTerminalTouchViewportSaveScheduler({
+      getViewportY: () => terminal.buffer.active.viewportY,
+      requestFrame: (callback) => {
+        const id = ++nextFrame;
+        pendingFrames.set(id, callback);
+        return id;
+      },
+      cancelFrame: (id) => pendingFrames.delete(id),
+      save,
+    });
+    wrapper.addEventListener("touchmove", () => scheduler.schedule(), {
+      capture: true,
+      passive: true,
+    });
+
+    const before = terminal.buffer.active.viewportY;
+    swipe(screen, { x: 40, y: 100 }, 150);
+    [...pendingFrames.values()].forEach((callback) => callback());
+
+    expect(terminal.buffer.active.viewportY).not.toBe(before);
+    expect(onScrollCallback).not.toHaveBeenCalled();
+    expect(save).toHaveBeenCalledOnce();
+    scheduler.dispose();
   });
 });

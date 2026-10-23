@@ -39,6 +39,7 @@ export interface ThreadEntity {
 }
 
 const LIST_FACET: Record<ListFacetKey, true> = {
+  nativeTerminal: true,
   activity: true,
   listIndicator: true,
   rowState: true,
@@ -55,6 +56,7 @@ const LIST_FACET: Record<ListFacetKey, true> = {
   environmentWorkspaceDisplayKind: true,
 };
 const DETAIL_FACET: Record<DetailFacetKey, true> = {
+  nativeTerminal: true,
   activeBackgroundAgentCount: true,
   canRestoreEnvironment: true,
   canEditMessages: true,

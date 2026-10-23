@@ -502,6 +502,7 @@ export function Overview() {
             {...baseProps}
             initialExpanded={new Set([bundleId(commandBundleRows)])}
             timelineRows={commandBundleRows}
+            threadIsActive={false}
           />
         </TimelineStage>
       </StoryRow>
@@ -514,6 +515,7 @@ export function Overview() {
             {...baseProps}
             initialExpanded={new Set([bundleId(fileChangeBundleRows)])}
             timelineRows={fileChangeBundleRows}
+            threadIsActive={false}
           />
         </TimelineStage>
       </StoryRow>
@@ -526,6 +528,7 @@ export function Overview() {
             {...baseProps}
             initialExpanded={new Set([bundleId(explorationBundleRows)])}
             timelineRows={explorationBundleRows}
+            threadIsActive={false}
           />
         </TimelineStage>
       </StoryRow>
@@ -538,6 +541,7 @@ export function Overview() {
             {...baseProps}
             initialExpanded={new Set([bundleId(toolsBundleRows)])}
             timelineRows={toolsBundleRows}
+            threadIsActive={false}
           />
         </TimelineStage>
       </StoryRow>
@@ -550,6 +554,7 @@ export function Overview() {
             {...baseProps}
             initialExpanded={new Set([bundleId(delegationsBundleRows)])}
             timelineRows={delegationsBundleRows}
+            threadIsActive={false}
           />
         </TimelineStage>
       </StoryRow>
@@ -562,6 +567,7 @@ export function Overview() {
             {...baseProps}
             initialExpanded={new Set([bundleId(webResearchBundleRows)])}
             timelineRows={webResearchBundleRows}
+            threadIsActive={false}
           />
         </TimelineStage>
       </StoryRow>
@@ -574,6 +580,7 @@ export function Overview() {
             {...baseProps}
             initialExpanded={new Set([bundleId(commandBundleMixedStatusRows)])}
             timelineRows={commandBundleMixedStatusRows}
+            threadIsActive={false}
           />
         </TimelineStage>
       </StoryRow>
@@ -588,6 +595,7 @@ export function Overview() {
               new Set([bundleId(fileChangeBundleMixedStatusRows)])
             }
             timelineRows={fileChangeBundleMixedStatusRows}
+            threadIsActive={false}
           />
         </TimelineStage>
       </StoryRow>
@@ -600,6 +608,7 @@ export function Overview() {
             {...baseProps}
             threadRuntimeDisplayStatus="active"
             timelineRows={commandBundleRows}
+            threadIsActive={false}
           />
         </TimelineStage>
       </StoryRow>
@@ -733,6 +742,7 @@ export function Conversation() {
             threadRuntimeDisplayStatus="active"
             onSelectionAddToChat={handleAddToChat}
             timelineRows={interleavedConversationRows}
+            threadIsActive={false}
           />
           <div className="mt-3">
             <StoryDraftPromptBox draft={promptDraft} />

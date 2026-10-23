@@ -64,6 +64,7 @@ export function ThreadTimelinePanelContent({
     displayStatus,
     activeBackgroundAgentCount:
       threadQuery.data?.activeBackgroundAgentCount ?? 0,
+    nativeTerminal: threadQuery.data?.nativeTerminal === true,
     activeBackgroundCommandCount:
       resolvedTimeline.activeBackgroundCommands.length,
     activeWorkflowCount: resolvedTimeline.activeWorkflows.length,
@@ -71,6 +72,7 @@ export function ThreadTimelinePanelContent({
     isTurnSubmitting,
     nativeActivityUnconfirmed,
     timelineLoading: resolvedTimeline.timelineLoading,
+    threadStatus: threadQuery.data?.status,
   });
   const showOngoingIndicator = ongoingIndicator.show;
   const timelineRows = resolvedTimeline.timelineRows;
@@ -122,6 +124,7 @@ export function ThreadTimelinePanelContent({
       threadId={threadId}
       threadRuntimeDisplayStatus={displayStatus}
       workspaceRootPath={workspaceRootPath}
+      threadIsActive={threadQuery.data?.status === "active"}
     />
   );
 }

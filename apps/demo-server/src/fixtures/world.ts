@@ -81,6 +81,7 @@ export function threadListEntry(
     environmentProviderId: null,
     environmentIsWorktree: null,
     environmentWorkspaceDisplayKind: "other",
+    nativeTerminal: false,
     queuedWork: "none",
     queuedFailedCount: 0,
     rowState: { statuses: {}, progress: null },
@@ -111,6 +112,7 @@ export function threadResponse(
   } = threadListEntry(view, now);
   return {
     ...thread,
+    nativeTerminal: thread.nativeTerminal,
     activeBackgroundAgentCount: 0,
     canRestoreEnvironment: false,
     canEditMessages: true,

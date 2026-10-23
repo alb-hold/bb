@@ -113,6 +113,7 @@ export function Overview() {
       </div>
       <div className="h-[640px] min-h-0 overflow-hidden rounded-lg border border-border bg-background">
         <ThreadTimelinePane
+          threadIsActive={false}
           activeThinking={null}
           canSpawnChild={false}
           contextBoundarySeq={null}

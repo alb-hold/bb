@@ -5,16 +5,25 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TimelineRow } from "@bb/server-contract";
+import {
+  threadCommandFailureCopyForInterruption,
+  threadScope,
+} from "@bb/domain";
+import { buildThreadTimelineFromEvents } from "@bb/thread-view";
 import { ThreadTitleMentionResourcesProvider } from "@/components/thread/ThreadTitleMentions";
-import { systemRow } from "@/test/fixtures/thread-timeline-rows";
+import { systemRow, turnRow } from "@/test/fixtures/thread-timeline-rows";
 import { makeThreadListEntry } from "@bb/test-helpers/domain-fixtures";
-import { ThreadTimelineRows } from "./ThreadTimelineRows";
+import {
+  buildTimelineRowsListItems,
+  ThreadTimelineRows,
+} from "./ThreadTimelineRows";
 
 function renderRow(row: TimelineRow) {
   return render(
     <QueryClientProvider client={new QueryClient()}>
       <MemoryRouter>
         <ThreadTimelineRows
+          threadIsActive={false}
           timelineRows={[row]}
           threadRuntimeDisplayStatus="idle"
           workspaceRootPath={undefined}
@@ -50,6 +59,45 @@ function measureSummary(height: number) {
 const summary =
   "This session was recorded with model `gpt-6-astra` but is resuming with `gpt-5.6-luna`. Consider switching back to `gpt-6-astra` as it may affect Codex performance.";
 
+function serverProducedInterruptionRows(count: number): TimelineRow[] {
+  const events = Array.from({ length: count }, (_, index) => {
+    const copy = threadCommandFailureCopyForInterruption(
+      index % 2 === 0 ? "host-connection-lost" : "host-daemon-restarted",
+    );
+    if (copy === null) throw new Error("Expected an interruption error");
+    const seq = index + 1;
+    return {
+      event: {
+        type: "system/error" as const,
+        threadId: "thr_main",
+        scope: threadScope(),
+        code: "thread_command_failed",
+        message: copy.message,
+        detail: copy.detail,
+      },
+      meta: { id: `event-${seq}`, seq, createdAt: seq },
+    };
+  });
+  return buildThreadTimelineFromEvents({
+    acceptedClientRequestContext: {
+      acceptedClientRequestEvents: [],
+      rejectedClientRequestEvents: [],
+    },
+    contextWindowEvents: [],
+    events,
+    options: {
+      completedTurnDisplay: "collapse",
+      includeNestedRows: true,
+      includeDiagnosticOperations: false,
+      isLatestPage: true,
+      summarizeShellCommands: true,
+      threadStatus: "idle",
+      threadName: "",
+      workspaceRoot: null,
+    },
+  }).rows;
+}
+
 function preview() {
   const title = screen.getByTitle((title) => title.startsWith(summary));
   expect(title.classList.contains("whitespace-pre-wrap")).toBe(true);
@@ -57,6 +105,152 @@ function preview() {
 }
 
 describe("system summary overflow", () => {
+  it("groups consecutive thread interruptions and expands their individual entries", () => {
+    const interruptionRows = serverProducedInterruptionRows(12);
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <MemoryRouter>
+          <ThreadTimelineRows
+            threadId="thr_main"
+            timelineRows={interruptionRows}
+            threadIsActive={false}
+            threadRuntimeDisplayStatus="idle"
+            workspaceRootPath={undefined}
+          />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    const groupButton = screen.getByRole("button", {
+      name: "12 interruptions, show details",
+    });
+    expect(groupButton.getAttribute("aria-expanded")).toBe("false");
+    expect(interruptionRows).toHaveLength(12);
+    expect(screen.queryByText(/Thread interrupted because/)).toBeNull();
+    fireEvent.click(groupButton);
+    expect(groupButton.getAttribute("aria-expanded")).toBe("true");
+    const expandedReasons = screen.getAllByText(/Thread interrupted because/);
+    expect(expandedReasons).toHaveLength(12);
+  });
+
+  it("groups interruptions separated by their own interrupted turn summaries", () => {
+    const [first, second, third] = serverProducedInterruptionRows(3);
+    if (first === undefined || second === undefined || third === undefined) {
+      throw new Error("Expected three server-produced interruption rows");
+    }
+    const rows: TimelineRow[] = [
+      { ...first, sourceSeqStart: 1, sourceSeqEnd: 1 },
+      turnRow({
+        id: "interrupted-turn-two",
+        threadId: "thr_main",
+        turnId: "turn-two",
+        status: "interrupted",
+        seq: 2,
+        sourceSeqStart: 2,
+        sourceSeqEnd: 2,
+        startedAt: 2,
+        createdAt: 2,
+      }),
+      {
+        ...second,
+        turnId: "turn-two",
+        sourceSeqStart: 3,
+        sourceSeqEnd: 3,
+      },
+      turnRow({
+        id: "interrupted-turn-three",
+        threadId: "thr_main",
+        turnId: "turn-three",
+        status: "interrupted",
+        seq: 4,
+        sourceSeqStart: 4,
+        sourceSeqEnd: 4,
+        startedAt: 4,
+        createdAt: 4,
+      }),
+      {
+        ...third,
+        turnId: "turn-three",
+        sourceSeqStart: 5,
+        sourceSeqEnd: 5,
+      },
+    ];
+    const [item] = buildTimelineRowsListItems({
+      rows,
+      threadIsActive: false,
+      excludedInterruptionRowIds: new Set(),
+      unreadDividerPlacement: null,
+    });
+
+    expect(item?.kind).toBe("interruption-group");
+    if (item?.kind !== "interruption-group") return;
+    expect(item.interruptionCount).toBe(3);
+    expect(item.rows.filter((row) => row.kind === "turn")).toHaveLength(2);
+
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <MemoryRouter>
+          <ThreadTimelineRows
+            threadId="thr_main"
+            timelineRows={rows}
+            threadIsActive={false}
+            threadRuntimeDisplayStatus="idle"
+            workspaceRootPath={undefined}
+          />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+    expect(screen.getByText("3 interruptions")).toBeTruthy();
+  });
+
+  it("hides retry instructions after a later turn or while the thread is active", () => {
+    const interruption = systemRow({
+      id: "interruption",
+      threadId: "thr_main",
+      systemKind: "error",
+      title: "Thread interrupted because the host daemon disconnected",
+      detail: "Please retry the thread to continue.",
+      status: "error",
+      seq: 1,
+      sourceSeqStart: 1,
+      sourceSeqEnd: 1,
+      startedAt: 1,
+      createdAt: 1,
+    });
+    const laterTurn = systemRow({
+      id: "later-turn",
+      threadId: "thr_main",
+      systemKind: "error",
+      title: "Later turn event",
+      detail: null,
+      status: "error",
+      seq: 2,
+      sourceSeqStart: 2,
+      sourceSeqEnd: 2,
+      startedAt: 2,
+      createdAt: 2,
+      turnId: "turn-later",
+    });
+    const displayedDetail = (rows: TimelineRow[], threadIsActive = false) => {
+      const firstItem = buildTimelineRowsListItems({
+        rows,
+        threadIsActive,
+        excludedInterruptionRowIds: new Set(),
+        unreadDividerPlacement: null,
+      })[0];
+      return firstItem?.kind === "row" && firstItem.row.kind === "system"
+        ? firstItem.row.detail
+        : null;
+    };
+
+    expect(displayedDetail([interruption])).toBe(
+      "Please retry the thread to continue.",
+    );
+    expect(displayedDetail([interruption, laterTurn])).toBeNull();
+    expect(displayedDetail([interruption], true)).toBeNull();
+    expect(interruption.detail).toBe("Please retry the thread to continue.");
+  });
+
   it("links a thread title through the target thread's project", () => {
     const targetThread = makeThreadListEntry({
       id: "thr_target",
@@ -74,6 +268,7 @@ describe("system summary overflow", () => {
           >
             <ThreadTimelineRows
               projectId="proj_current"
+              threadIsActive={false}
               timelineRows={[
                 systemRow({
                   threadId: "thr_current",
