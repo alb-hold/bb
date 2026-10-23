@@ -1,7 +1,7 @@
 import Database from "better-sqlite3";
 import { resolve } from "node:path";
 import { performance } from "node:perf_hooks";
-import { resourceUsage, threadCpuUsage } from "node:process";
+import { hrtime, resourceUsage, threadCpuUsage } from "node:process";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import { registerHostPathSqlFunctions } from "./data/host-path-sql.js";
 import {
@@ -15,6 +15,8 @@ export interface SlowDbQueryLogFields {
   bindingArgumentCount: number;
   callers?: string[];
   durationMs: number;
+  lockWaitMs?: number;
+  bodyMs?: number;
   cpuDurationMs: number;
   eventLoopWork: string | null;
   operation: SlowDbQueryOperation;
@@ -73,6 +75,9 @@ interface SlowDbQueryConfig {
   walPath: string | null;
   sampleWal: () => QueryDiagnosticsLogFields["wal"];
   diagnosticsEnabled: () => boolean;
+  transactionDepth: number;
+  transactionLockWaitMs: number;
+  transactionStartNs: bigint | null;
 }
 
 const compiledQueries = new WeakMap<
@@ -179,6 +184,14 @@ function runTimedStatementOperation<TValue>(
           bindingArgumentCount: args.bindingArgumentCount,
           durationMs: roundDurationMs(durationMs),
           cpuDurationMs: roundDurationMs((cpu.user + cpu.system) / 1_000),
+          ...(args.operation === "transaction"
+            ? {
+                lockWaitMs: roundDurationMs(args.config.transactionLockWaitMs),
+                bodyMs: roundDurationMs(
+                  Math.max(0, durationMs - args.config.transactionLockWaitMs),
+                ),
+              }
+            : {}),
           eventLoopWork:
             eventLoopWork ??
             (args.operation === "transaction"
@@ -262,6 +275,9 @@ function instrumentSqliteClient(
       sqlite.memory ? null : `${resolve(sqlite.name)}-wal`,
     ),
     diagnosticsEnabled: options.slowQueryDiagnosticsEnabled ?? (() => false),
+    transactionDepth: 0,
+    transactionLockWaitMs: 0,
+    transactionStartNs: null,
   };
   const originalExec = sqlite.exec.bind(sqlite);
   sqlite.exec = (source) =>
@@ -275,20 +291,51 @@ function instrumentSqliteClient(
     });
   const originalTransaction = sqlite.transaction.bind(sqlite);
   sqlite.transaction = (fn) => {
-    const original = originalTransaction(fn);
+    const wrappedFn = function (
+      this: ThisParameterType<typeof fn>,
+      ...params: Parameters<typeof fn>
+    ): ReturnType<typeof fn> {
+      if (
+        config.transactionDepth === 1 &&
+        config.transactionStartNs !== null
+      ) {
+        config.transactionLockWaitMs =
+          Number(hrtime.bigint() - config.transactionStartNs) / 1_000_000;
+      }
+      return fn.apply(this, params) as ReturnType<typeof fn>;
+    } as typeof fn;
+    const original = originalTransaction(wrappedFn);
     function wrap(mode: "default" | "deferred" | "immediate" | "exclusive") {
       return function timedTransaction(
         this: unknown,
         ...params: Parameters<typeof original>
       ) {
-        return runTimedStatementOperation({
-          bindingArgumentCount: params.length,
-          callerStackBoundary: timedTransaction,
-          config,
-          operation: "transaction",
-          source: `TRANSACTION ${mode.toUpperCase()}`,
-          work: () => original[mode].apply(this, params),
-        });
+        const outermost = config.transactionDepth === 0;
+        const previousLockWaitMs = config.transactionLockWaitMs;
+        config.transactionLockWaitMs = 0;
+        config.transactionDepth++;
+        try {
+          return runTimedStatementOperation({
+            bindingArgumentCount: params.length,
+            callerStackBoundary: timedTransaction,
+            config,
+            operation: "transaction",
+            source: `TRANSACTION ${mode.toUpperCase()}`,
+            work: () => {
+              if (outermost) config.transactionStartNs = hrtime.bigint();
+              try {
+                return original[mode].apply(this, params);
+              } finally {
+                if (outermost) config.transactionStartNs = null;
+              }
+            },
+          });
+        } finally {
+          config.transactionDepth--;
+          if (!outermost) {
+            config.transactionLockWaitMs = previousLockWaitMs;
+          }
+        }
       };
     }
     const modes = {
