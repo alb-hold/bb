@@ -43,7 +43,8 @@ interface ThreadDetailSecondaryContentProps {
   footer: ReactNode;
   header: ReactNode;
   nativeTerminalMain: ReactNode | null;
-  isNativeTerminalLoading: boolean;
+  nativeTerminal: boolean | null;
+  nativeTerminalThreadQueryIsPending: boolean;
   isMetadataLoading: boolean;
   isSecondaryPanelOpen: boolean;
   isConversationCollapsed: boolean;
@@ -70,7 +71,8 @@ function ThreadDetailSecondaryContentBody({
   footer,
   header,
   nativeTerminalMain,
-  isNativeTerminalLoading,
+  nativeTerminal,
+  nativeTerminalThreadQueryIsPending,
   isMetadataLoading,
   isSecondaryPanelOpen,
   isConversationCollapsed,
@@ -85,6 +87,8 @@ function ThreadDetailSecondaryContentBody({
   const paneContext = useOptionalPaneContext();
   const composerHost = usePluginComposerHost();
   const { renderBrowserDeck, ...threadSecondaryPanelProps } = secondaryPanel;
+  const isNativeTerminalLoading =
+    nativeTerminal !== false && nativeTerminalThreadQueryIsPending;
 
   const forksQuery = useThreads(
     {

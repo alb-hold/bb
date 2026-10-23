@@ -553,7 +553,7 @@ export const threadSearchResponseSchema = z
 export type ThreadSearchResponse = z.infer<typeof threadSearchResponseSchema>;
 
 export const threadResponseSchema = threadWithRuntimeSchema.extend({
-  nativeTerminal: z.boolean(),
+  nativeTerminal: z.boolean().optional(),
   activeBackgroundAgentCount: z.number().int().nonnegative(),
   /**
    * Whether `POST /threads/:id/restore-environment` would build this thread a

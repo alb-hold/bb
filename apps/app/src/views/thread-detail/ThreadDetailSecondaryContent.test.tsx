@@ -6,7 +6,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
 import { CompactViewportOverrideProvider } from "@bb/shared-ui/hooks/use-compact-viewport";
 import { TooltipProvider } from "@bb/shared-ui/tooltip";
+import { createBrowserBbSdk } from "@bb/sdk/browser";
+import { threadResponseSchema } from "@bb/server-contract";
 import { createQueryClientTestHarness } from "@/test/queryClientTestHarness";
+import { makeThreadResponse } from "@/test/fixtures/thread-responses";
 import {
   usePluginComposerHost,
   usePluginComposerHostDraft,
@@ -244,7 +247,8 @@ function createProps(
     footer: <div data-testid="footer" />,
     header: <div data-testid="header" />,
     nativeTerminalMain: null,
-    isNativeTerminalLoading: false,
+    nativeTerminal: false,
+    nativeTerminalThreadQueryIsPending: false,
     isBoundedPane: false,
     isConversationCollapsed,
     isMetadataLoading,
@@ -315,14 +319,20 @@ function renderThreadDetail(
   isMetadataLoading = false,
   isConversationCollapsed = false,
   nativeTerminalMain: ReactNode | null = null,
-  isNativeTerminalLoading = false,
+  nativeTerminalThreadQueryIsPending = false,
+  nativeTerminalOption?: { nativeTerminal: boolean | null },
 ) {
+  const nativeTerminalValue =
+    nativeTerminalOption === undefined
+      ? false
+      : nativeTerminalOption.nativeTerminal;
   const content = (
     <CompactViewportOverrideProvider isCompactViewport={false}>
       <ThreadDetailSecondaryContent
         {...createProps(isMetadataLoading, isConversationCollapsed)}
         nativeTerminalMain={nativeTerminalMain}
-        isNativeTerminalLoading={isNativeTerminalLoading}
+        nativeTerminal={nativeTerminalValue}
+        nativeTerminalThreadQueryIsPending={nativeTerminalThreadQueryIsPending}
       />
     </CompactViewportOverrideProvider>
   );
@@ -451,7 +461,9 @@ describe("ThreadDetailSecondaryContent", () => {
   });
 
   it("shows a neutral loading pane while a native terminal thread is pending", async () => {
-    renderThreadDetail(false, false, false, null, true);
+    renderThreadDetail(false, false, false, null, true, {
+      nativeTerminal: true,
+    });
 
     const status = await screen.findByRole("status");
     expect(status.textContent).toBe("Loading terminals...");
@@ -460,6 +472,33 @@ describe("ThreadDetailSecondaryContent", () => {
     expect(screen.queryByRole("textbox", { name: /message/i })).toBeNull();
     expect(screen.queryByTestId("footer")).toBeNull();
     expect(timelinePaneRenders).not.toHaveBeenCalled();
+  });
+
+  it("keeps an old-server thread response in the loading pane while native status is unknown", async () => {
+    const oldServerResponse = makeThreadResponse();
+    delete oldServerResponse.nativeTerminal;
+    const sdk = createBrowserBbSdk({
+      baseUrl: "http://localhost",
+      fetch: async () =>
+        new Response(JSON.stringify(oldServerResponse), {
+          headers: { "content-type": "application/json" },
+        }),
+    });
+    const thread = await sdk.threads.get({ threadId: "thread-1" });
+
+    expect(thread.nativeTerminal).toBeUndefined();
+    expect(threadResponseSchema.parse(oldServerResponse).nativeTerminal).toBe(
+      undefined,
+    );
+    renderThreadDetail(false, false, false, null, true, {
+      nativeTerminal: thread.nativeTerminal ?? null,
+    });
+
+    expect((await screen.findByRole("status")).textContent).toBe(
+      "Loading terminals...",
+    );
+    expect(screen.queryByTestId("thread-timeline-pane")).toBeNull();
+    expect(screen.queryByTestId("footer")).toBeNull();
   });
 
   it("keeps the thread metadata loading presentation in the panel", async () => {

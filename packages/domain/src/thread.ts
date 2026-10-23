@@ -472,7 +472,7 @@ export const threadListIndicatorSchema = z.enum([
 export type ThreadListIndicator = z.infer<typeof threadListIndicatorSchema>;
 
 export const threadListEntrySchema = threadWithRuntimeSchema.extend({
-  nativeTerminal: z.boolean(),
+  nativeTerminal: z.boolean().optional(),
   activity: threadActivityStateSchema,
   queuedWork: threadQueuedWorkSchema,
   pinSortKey: z.string().nullable(),

@@ -3168,8 +3168,9 @@ function ThreadDetailViewInternal(
         <AppNavigationHostProvider capabilities={appNavigationCapabilities}>
           <ThreadDetailSecondaryContent
             footer={composerFooter}
-            isNativeTerminalLoading={
-              thread.nativeTerminal && nativeTerminalThreadQuery.isPending
+            nativeTerminal={thread.nativeTerminal ?? null}
+            nativeTerminalThreadQueryIsPending={
+              nativeTerminalThreadQuery.isPending
             }
             nativeTerminalMain={
               nativeTerminalThread === null ? null : (
