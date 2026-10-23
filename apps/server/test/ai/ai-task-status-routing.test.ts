@@ -110,4 +110,48 @@ describe("existing AI task routing around a slow status check", () => {
       });
     },
   );
+
+  it.each(["thread-title", "commit-message"] as const)(
+    "routes %s past a service when it joins a status check that Settings started 1.5 s earlier, at that check's own 2 s",
+    async (task) => {
+      await withTestHarness({}, async (harness) => {
+        const cloud = registerFakeAiService(harness.deps.aiServices, {
+          id: "bb",
+          displayName: "Cloud",
+          pluginId: "bb-ai",
+          builtin: true,
+          status: () =>
+            new Promise((resolve) =>
+              setTimeout(() => resolve({ ready: true }), 2_500),
+            ),
+          complete: async () => "Cloud title",
+        });
+        const codex = registerFakeAiService(harness.deps.aiServices, {
+          id: "codex",
+          displayName: "Codex",
+          pluginId: "provider-codex",
+          builtin: true,
+          complete: async () => "Codex title",
+        });
+
+        void harness.deps.aiServices.status({
+          pluginId: "bb-ai",
+          serviceId: "bb",
+        });
+        await new Promise((resolve) => setTimeout(resolve, 1_500));
+        const taskAt = Date.now();
+        const result = await runTextAiTask(harness.deps, {
+          task,
+          label: "test",
+          prompt: PROMPT,
+        });
+        const taskMs = Date.now() - taskAt;
+        expect(result).toMatchObject({ ok: true, value: "Codex title" });
+        expect(taskMs).toBeGreaterThanOrEqual(300);
+        expect(taskMs).toBeLessThan(900);
+        expect(cloud.completeCalls).toEqual([]);
+        expect(codex.completeCalls).toHaveLength(1);
+      });
+    },
+  );
 });

@@ -263,15 +263,12 @@ export function createAiServiceRegistry(
       }
       const fresh = freshStatus(service);
       if (fresh !== undefined) return fresh;
-      const timedOut: AiServiceStatus = { ...NOT_RESPONDING };
       const probe = probeFor(service);
-      const answer = await answerWithin(
+      return answerWithin(
         probe.request,
         Math.max(0, probe.startedAt + STATUS_ANSWER_MS - now()),
-        () => timedOut,
+        () => NOT_RESPONDING,
       );
-      if (answer === timedOut) taskTimeouts.set(service, now());
-      return answer;
     },
     async settledStatus(key, maxWaitMs) {
       const service = services.get(mapKey(key));
