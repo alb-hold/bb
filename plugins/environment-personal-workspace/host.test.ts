@@ -42,7 +42,7 @@ afterEach(async () => {
 });
 
 describe("personal workspace host entry", () => {
-  it("removes a workspace without signalling a process still running inside it", async ({
+  it("keeps a workspace and reports the process still running inside it, signalling nothing", async ({
     skip,
   }) => {
     skip(
@@ -71,8 +71,9 @@ describe("personal workspace host entry", () => {
         path: created.path,
       });
 
-      expect(removed).toEqual({ removed: true });
-      expect(existsSync(created.path)).toBe(false);
+      expect(removed.removed).toBe(false);
+      expect(removed.holders.map((holder) => holder.pid)).toContain(child.pid);
+      expect(existsSync(created.path)).toBe(true);
       expect(isPidAlive(child.pid ?? 0)).toBe(true);
     } finally {
       child.kill("SIGKILL");
@@ -100,14 +101,14 @@ describe("personal workspace host entry", () => {
         pathKey: "thr_a",
         path: created.path,
       }),
-    ).toEqual({ removed: true });
+    ).toEqual({ removed: true, holders: [] });
     expect(existsSync(created.path)).toBe(false);
     expect(
       await harness.experimental_call("removeWorkspace", {
         pathKey: "thr_a",
         path: created.path,
       }),
-    ).toEqual({ removed: false });
+    ).toEqual({ removed: false, holders: [] });
   });
 
   it("removes a workspace core made, so a migrated environment can retire", async () => {
@@ -127,7 +128,7 @@ describe("personal workspace host entry", () => {
         pathKey: "env_migrated",
         path: legacyPath,
       }),
-    ).toEqual({ removed: true });
+    ).toEqual({ removed: true, holders: [] });
     expect(existsSync(legacyPath)).toBe(false);
   });
 
@@ -143,7 +144,7 @@ describe("personal workspace host entry", () => {
         pathKey: "thr_interrupted",
         path: null,
       }),
-    ).toEqual({ removed: true });
+    ).toEqual({ removed: true, holders: [] });
     expect(existsSync(created.path)).toBe(false);
   });
 

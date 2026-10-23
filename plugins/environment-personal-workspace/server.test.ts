@@ -39,8 +39,10 @@ const PERSONAL_PROJECT: Project = {
 
 function createFakeWorkspaceHost() {
   const directories = new Set<string>();
+  const busy = new Set<string>();
   return {
     directories,
+    busy,
     async call(request: HostRpcCall): Promise<unknown> {
       switch (request.method) {
         case "createWorkspace": {
@@ -57,11 +59,14 @@ function createFakeWorkspaceHost() {
             personalWorkspaceHostContract.removeWorkspace.input.parse(
               request.input,
             );
-          return {
-            removed: directories.delete(
-              input.path ?? workspacePathFor(input.pathKey),
-            ),
-          };
+          const target = input.path ?? workspacePathFor(input.pathKey);
+          if (busy.has(target)) {
+            return {
+              removed: false,
+              holders: [{ pid: 4242, cwd: `${target}/sub` }],
+            };
+          }
+          return { removed: directories.delete(target), holders: [] };
         }
         default:
           throw new Error(`unexpected host method ${request.method}`);
@@ -216,5 +221,48 @@ describe("personal workspace resource operations", () => {
       status: "removed",
     });
     expect(released.host.directories.size).toBe(0);
+  });
+  it("keeps the directory and names the process working inside it", async () => {
+    const f = await setup();
+    await f.provider.create(f.context);
+    f.host.busy.add(WORKSPACE_PATH);
+    const result = await f.provider.remove({
+      environment: null,
+      hostId: HOST_ID,
+      path: WORKSPACE_PATH,
+      pathKey: THREAD_ID,
+      resource: null,
+      attempt: 1,
+      report: f.context.report,
+      signal: new AbortController().signal,
+    });
+    expect(result).toMatchObject({
+      status: "retained",
+      message: expect.stringContaining("pid 4242"),
+    });
+    expect(f.host.directories.size).toBe(1);
+  });
+  it("does not count its own row as covering the directory when the remove request carries no environment", async () => {
+    const own = environmentAt("env_self", WORKSPACE_PATH);
+    const f = await setup([
+      {
+        ...own,
+        environmentProviderInstanceKey: THREAD_ID,
+      },
+    ]);
+    await f.provider.create(f.context);
+    expect(
+      await f.provider.remove({
+        environment: null,
+        hostId: HOST_ID,
+        path: WORKSPACE_PATH,
+        pathKey: THREAD_ID,
+        resource: null,
+        attempt: 1,
+        report: f.context.report,
+        signal: new AbortController().signal,
+      }),
+    ).toEqual({ status: "removed" });
+    expect(f.host.directories.size).toBe(0);
   });
 });

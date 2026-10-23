@@ -1,5 +1,8 @@
 import { mkdir, stat } from "node:fs/promises";
-import { experimental_defineHostEntry } from "@get-bb/plugin-sdk/host";
+import {
+  experimental_defineHostEntry,
+  internal_DO_NOT_USE_listProcessesWithCwdUnder,
+} from "@get-bb/plugin-sdk/host";
 import { personalWorkspaceHostContract } from "./contract.js";
 import {
   assertRemovableWorkspacePath,
@@ -41,8 +44,15 @@ export function createPersonalWorkspaceHostEntry() {
                 path: input.path,
               });
         const existed = await pathExists(target);
+        if (existed) {
+          const holders =
+            await internal_DO_NOT_USE_listProcessesWithCwdUnder({
+              directories: [target],
+            });
+          if (holders.length > 0) return { removed: false, holders };
+        }
         await removeDirectoryTree(target);
-        return { removed: existed };
+        return { removed: existed, holders: [] };
       },
     },
   });

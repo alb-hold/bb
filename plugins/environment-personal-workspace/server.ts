@@ -65,6 +65,7 @@ export default async function personalWorkspacePlugin(
             ...page.filter(
               (other) =>
                 other.id !== environment?.id &&
+                other.environmentProviderInstanceKey !== pathKey &&
                 other.path !== null &&
                 other.status !== "destroyed" &&
                 other.lifecycle.teardown?.status !== "removed" &&
@@ -84,11 +85,20 @@ export default async function personalWorkspacePlugin(
               .join(", ")} still covers it. Nothing was removed.`,
           };
         }
-        await host.call(
+        const removal = await host.call(
           "removeWorkspace",
           { pathKey, path },
           { hostId, signal },
         );
+        if (removal.holders.length > 0) {
+          return {
+            status: "retained",
+            message: `Kept the personal workspace because ${removal.holders.length === 1 ? "a process is" : `${removal.holders.length} processes are`} still working inside it (${removal.holders
+              .slice(0, 5)
+              .map((holder) => `pid ${holder.pid} in ${holder.cwd}`)
+              .join("; ")}). Nothing was removed and nothing was stopped; it is checked again later.`,
+          };
+        }
         return { status: "removed" };
       } catch (error) {
         if (signal.aborted) throw error;
