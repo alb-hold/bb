@@ -110,6 +110,12 @@ export function NativeTerminalPromptBar({
     if (!canSend) return;
     const sentAttachments = attachments;
     const sentText = text;
+    const draft = getPromptDraftAccessor({
+      kind: "thread",
+      projectId,
+      threadId,
+    });
+    const sentDraft = draft.getCurrent();
     const input: PromptInput[] = [
       ...sentAttachments.map(attachmentPromptInput),
       ...(message.length === 0
@@ -120,11 +126,7 @@ export function NativeTerminalPromptBar({
       { input, threadId },
       {
         onSuccess: () => {
-          getPromptDraftAccessor({
-            kind: "thread",
-            projectId,
-            threadId,
-          }).clear();
+          draft.clearIfCurrentMatches(sentDraft);
           setText((current) => (current === sentText ? "" : current));
           setAttachments((current) =>
             current.filter(
