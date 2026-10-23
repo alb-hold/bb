@@ -10,6 +10,7 @@ import {
   existsSync,
   linkSync,
   lstatSync,
+  lutimesSync,
   mkdirSync,
   readdirSync,
   readFileSync,
@@ -1489,6 +1490,55 @@ describe.skipIf(process.platform === "win32")(
       expect(readFileSync(path.join(lock, "pid"), "utf8")).toBe(reused);
       expect(new HookAppendReader(file).read().unreadable).toBe(1);
       expect(existsSync(lock)).toBe(false);
+    }, 30_000);
+
+    it("judges a lock whose text starts with digits by that pid alone, never by age, whatever follows the digits", async () => {
+      const { dead, directory, file, live, lock } = readerKit();
+      const holder = live();
+      const gone = await dead();
+      const longAgo = new Date(Date.now() - 11 * 60_000);
+      const suffixes = [
+        "x",
+        ":",
+        ":garbage",
+        " ",
+        "\n",
+        ":p",
+        ":sFri Oct",
+        "-9",
+      ];
+      for (const suffix of suffixes) {
+        mkdirSync(lock);
+        writeFileSync(path.join(lock, "pid"), `${holder}${suffix}`);
+        utimesSync(lock, longAgo, longAgo);
+        expect(new HookAppendReader(file).read().unreadable).toBe(0);
+        expect(readFileSync(path.join(lock, "pid"), "utf8")).toBe(
+          `${holder}${suffix}`,
+        );
+        rmSync(lock, { force: true, recursive: true });
+      }
+      symlinkSync(`${holder}x`, lock);
+      lutimesSync(lock, longAgo, longAgo);
+      expect(new HookAppendReader(file).read().unreadable).toBe(0);
+      expect(readlinkSync(lock)).toBe(`${holder}x`);
+      rmSync(lock, { force: true });
+      for (const suffix of ["x", ":garbage", " "]) {
+        mkdirSync(lock);
+        writeFileSync(path.join(lock, "pid"), `${gone}${suffix}`);
+        expect(new HookAppendReader(file).read().unreadable).toBe(1);
+        expect(existsSync(lock)).toBe(false);
+      }
+      symlinkSync(`${gone}x`, lock);
+      expect(new HookAppendReader(file).read().unreadable).toBe(1);
+      expect(() => lstatSync(lock)).toThrow();
+      mkdirSync(lock);
+      writeFileSync(path.join(lock, "pid"), "x123");
+      expect(new HookAppendReader(file).read().unreadable).toBe(0);
+      utimesSync(lock, longAgo, longAgo);
+      expect(new HookAppendReader(file).read().unreadable).toBe(1);
+      expect(
+        readdirSync(directory).filter((n) => n.includes(".stale.")),
+      ).toEqual([]);
     }, 30_000);
 
     it("removes a lock directory that has no pid after it is older than the orphan bound", () => {

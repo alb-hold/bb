@@ -718,14 +718,12 @@ interface LockHolder {
 
 function parseLockHolder(text: string | null): LockHolder | null {
   if (text === null) return null;
-  const match = /^(\d+)(?::(.*))?$/su.exec(text.trim());
+  const match = /^(\d+)(.*)$/su.exec(text.trim());
   const pid = match === null ? Number.NaN : Number(match[1]);
   if (!Number.isSafeInteger(pid) || pid <= 0) return null;
-  const rest = match?.[2];
-  return {
-    pid,
-    start: rest !== undefined && /^[ps]\S+$/u.test(rest) ? rest : null,
-  };
+  const rest = match?.[2] ?? "";
+  const start = rest.startsWith(":") ? rest.slice(1) : "";
+  return { pid, start: /^[ps]\S+$/u.test(start) ? start : null };
 }
 
 function procStartTime(pid: number): string | null {
