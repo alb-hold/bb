@@ -7,7 +7,7 @@ import type { hostStorageContract } from "./host-contract.js";
 
 const launchRecordSchema = z.object({ repoRoot: z.string().min(1) });
 const runtimeRecordSchema = z.object({ entryPath: z.string().min(1) });
-const WORKSPACE_SCAN_MAX_DEPTH = 6;
+const WORKSPACE_SCAN_MAX_DEPTH = 10;
 const WORKSPACE_SCAN_MAX_ENTRIES = 50_000;
 
 async function readRecord(file: string) {
@@ -211,14 +211,16 @@ async function containsGitWorkspace(directory: string, signal: AbortSignal) {
       if (visited > WORKSPACE_SCAN_MAX_ENTRIES) return true;
       if (child.name === ".git") return true;
       if (
-        child.isDirectory() &&
-        child.name !== "node_modules" &&
-        next.depth < WORKSPACE_SCAN_MAX_DEPTH
+        child.name === "retained" &&
+        path.basename(next.directory) === "host-data"
       )
-        pending.push({
-          directory: path.join(next.directory, child.name),
-          depth: next.depth + 1,
-        });
+        return true;
+      if (!child.isDirectory() || child.name === "node_modules") continue;
+      if (next.depth >= WORKSPACE_SCAN_MAX_DEPTH) return true;
+      pending.push({
+        directory: path.join(next.directory, child.name),
+        depth: next.depth + 1,
+      });
     }
   }
   return false;
@@ -245,16 +247,10 @@ export async function removeDeveloperEntries(
     (entry): entry is typeof entry & { sourcePath: string } =>
       entry.sourcePath !== null && entry.sourcePathState === "missing",
   );
-  const running =
-    input.mode.condition === "any"
-      ? inspected.filter(
-          (entry) => entry.running && entry.sourcePathState !== "missing",
-        )
-      : [];
-  const candidates =
-    input.mode.condition === "checkoutMissing"
-      ? missing
-      : inspected.filter((entry) => !running.includes(entry));
+  const requested =
+    input.mode.condition === "checkoutMissing" ? missing : inspected;
+  const running = requested.filter((entry) => entry.running);
+  const candidates = requested.filter((entry) => !running.includes(entry));
   const held: { name: string; reason: string }[] = [];
   const eligible: typeof candidates = [];
   for (const entry of candidates) {
@@ -268,7 +264,7 @@ export async function removeDeveloperEntries(
       held.push({
         name: entry.name,
         reason:
-          "it contains a git checkout or worktree, which this cleanup never deletes",
+          "it contains a git checkout or worktree or a folder bb kept for later, or is too large or deep to rule that out, and this cleanup never deletes such an entry",
       });
     else eligible.push(entry);
   }

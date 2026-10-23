@@ -1655,6 +1655,69 @@ it.skipIf(process.platform === "win32")(
   },
 );
 
+it.skipIf(process.platform === "win32")(
+  "keeps a running instance whose checkout is missing, and any entry whose worktree is deeper than a shallow scan or that holds a folder bb kept",
+  async () => {
+    const fakeHome = await directory();
+    const rootPath = path.join(fakeHome, ".bb-dev");
+    const missingCheckout = (name: string) => path.join(fakeHome, name, "bb");
+    for (const name of ["running-gone", "deep", "kept-folder", "clean"]) {
+      await fs.mkdir(path.join(rootPath, name), { recursive: true });
+      await fs.writeFile(
+        path.join(rootPath, name, "bb-dev-instance.json"),
+        JSON.stringify({ repoRoot: missingCheckout(name) }),
+      );
+    }
+    await fs.mkdir(path.join(rootPath, "running-gone", "daemon.lock.lock"));
+    const deepest = path.join(
+      rootPath,
+      "deep",
+      ...Array.from({ length: 11 }, (_unused, index) => `level${index}`),
+    );
+    await fs.mkdir(deepest, { recursive: true });
+    await fs.mkdir(
+      path.join(rootPath, "kept-folder", "plugins", "x", "host-data", "retained"),
+      { recursive: true },
+    );
+    const worker = experimental_createHostEntryHarness(hostEntry);
+    try {
+      for (const mode of [
+        { condition: "checkoutMissing" as const },
+        { condition: "any" as const },
+      ]) {
+        const result = await worker.experimental_call(
+          "removeDeveloperEntries",
+          {
+            rootPath,
+            names: ["running-gone", "deep", "kept-folder"],
+            candidatePaths: [],
+            mode,
+          },
+        );
+        expect(result.removed).toEqual([]);
+        expect(result.running).toEqual(["running-gone"]);
+        expect(result.held.map((held) => held.name).sort()).toEqual([
+          "deep",
+          "kept-folder",
+        ]);
+      }
+      expect(
+        await worker.experimental_call("removeDeveloperEntries", {
+          rootPath,
+          names: ["clean"],
+          candidatePaths: [],
+          mode: { condition: "checkoutMissing" },
+        }),
+      ).toEqual({ removed: ["clean"], running: [], held: [] });
+      await expect
+        .poll(async () => (await fs.readdir(rootPath)).sort())
+        .toEqual(["deep", "kept-folder", "running-gone"]);
+    } finally {
+      await worker.experimental_dispose();
+    }
+  },
+);
+
 it("keeps a missing-checkout development instance while an environment still covers its checkout path", async () => {
   type Environment = Awaited<
     ReturnType<
