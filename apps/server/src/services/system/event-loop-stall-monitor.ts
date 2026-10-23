@@ -43,6 +43,7 @@ export function startEventLoopStallMonitor(
   let gcPauses: GcPause[] = [];
   let previousUtilization = performance.eventLoopUtilization();
   let previousCpuUsage = process.cpuUsage();
+  let previousMainThreadCpuUsage = process.threadCpuUsage();
   const now = options.now ?? Date.now;
   let previousSampleAt = now();
   const Observer = (options.performanceObserver ??
@@ -66,11 +67,24 @@ export function startEventLoopStallMonitor(
       const sampledAt = now();
       const windowWallMs = sampledAt - previousSampleAt;
       previousSampleAt = sampledAt;
-      const cpuUsage = process.cpuUsage(previousCpuUsage);
-      previousCpuUsage = process.cpuUsage();
-      const processCpuMs = (cpuUsage.user + cpuUsage.system) / 1_000;
+      const cpuUsage = process.cpuUsage();
+      const processCpuMs =
+        (cpuUsage.user - previousCpuUsage.user +
+          cpuUsage.system -
+          previousCpuUsage.system) /
+        1_000;
+      previousCpuUsage = cpuUsage;
       const processCpuWallRatio =
         windowWallMs <= 0 ? 0 : processCpuMs / windowWallMs;
+      const mainThreadCpuUsage = process.threadCpuUsage();
+      const mainThreadCpuMs =
+        (mainThreadCpuUsage.user - previousMainThreadCpuUsage.user +
+          mainThreadCpuUsage.system -
+          previousMainThreadCpuUsage.system) /
+        1_000;
+      previousMainThreadCpuUsage = mainThreadCpuUsage;
+      const mainThreadCpuWallRatio =
+        windowWallMs <= 0 ? 0 : mainThreadCpuMs / windowWallMs;
       const descheduled =
         processCpuWallRatio < DESCHEDULED_PROCESS_CPU_WALL_RATIO_THRESHOLD;
       const utilization = performance.eventLoopUtilization(previousUtilization);
@@ -107,6 +121,9 @@ export function startEventLoopStallMonitor(
             processCpuMs: roundDurationMs(processCpuMs),
             processCpuWallRatio:
               Math.round(processCpuWallRatio * 1_000) / 1_000,
+            mainThreadCpuMs: roundDurationMs(mainThreadCpuMs),
+            mainThreadCpuWallRatio:
+              Math.round(mainThreadCpuWallRatio * 1_000) / 1_000,
             windowWallMs: roundDurationMs(windowWallMs),
             eventLoopUtilization: {
               activeMs: roundDurationMs(utilization.active),

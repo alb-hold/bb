@@ -99,11 +99,18 @@ describe("event loop stall monitor", () => {
         "performance",
       ],
     });
-    vi.spyOn(process, "cpuUsage").mockImplementation((previous) =>
-      previous === undefined
-        ? { user: 0, system: 0 }
-        : { user: 5_000_000, system: 0 },
-    );
+    let processCpuUser = 0;
+    let mainThreadCpuUser = 0;
+    vi.spyOn(process, "cpuUsage").mockImplementation(() => {
+      const current = { user: processCpuUser, system: 0 };
+      processCpuUser += 5_000_000;
+      return current;
+    });
+    vi.spyOn(process, "threadCpuUsage").mockImplementation(() => {
+      const current = { user: mainThreadCpuUser, system: 0 };
+      mainThreadCpuUser += 5_000_000;
+      return current;
+    });
     perfHooksMock.monitorEventLoopDelay.mockClear();
     perfHooksMock.state.histogram = null;
     resetEventLoopWorkForTests();
@@ -147,6 +154,8 @@ describe("event loop stall monitor", () => {
           stallCauseCandidate: null,
           processCpuMs: 5_000,
           processCpuWallRatio: 1,
+          mainThreadCpuMs: 5_000,
+          mainThreadCpuWallRatio: 1,
           windowWallMs: 5_000,
           eventLoopUtilization: expect.objectContaining({
             activeMs: expect.any(Number),
@@ -181,11 +190,18 @@ describe("event loop stall monitor", () => {
 
   it("attributes a low process CPU to descheduled work", () => {
     installHistogram({ maxDelayMs: 1_000, meanDelayMs: 25, p99DelayMs: 450 });
-    vi.spyOn(process, "cpuUsage").mockImplementation((previous) =>
-      previous === undefined
-        ? { user: 0, system: 0 }
-        : { user: 100_000, system: 0 },
-    );
+    let processCpuUser = 0;
+    let mainThreadCpuUser = 0;
+    vi.spyOn(process, "cpuUsage").mockImplementation(() => {
+      const current = { user: processCpuUser, system: 0 };
+      processCpuUser += 100_000;
+      return current;
+    });
+    vi.spyOn(process, "threadCpuUsage").mockImplementation(() => {
+      const current = { user: mainThreadCpuUser, system: 0 };
+      mainThreadCpuUser += 100_000;
+      return current;
+    });
     const logger = { info: vi.fn() };
     const monitor = startEventLoopStallMonitor({ logger });
     vi.advanceTimersByTime(EVENT_LOOP_STALL_MONITOR_INTERVAL_MS);
@@ -193,9 +209,33 @@ describe("event loop stall monitor", () => {
       expect.objectContaining({
         processCpuMs: 100,
         processCpuWallRatio: 0.02,
+        mainThreadCpuMs: 100,
+        mainThreadCpuWallRatio: 0.02,
         windowWallMs: 5_000,
         stallAttribution: "candidate",
         stallCauseCandidate: "descheduled",
+      }),
+      "Event loop stalled",
+    );
+    monitor.stop();
+  });
+
+  it("reports low main-thread CPU when helper threads keep process CPU high", () => {
+    installHistogram({ maxDelayMs: 1_000, meanDelayMs: 25, p99DelayMs: 450 });
+    let mainThreadCpuUser = 0;
+    vi.spyOn(process, "threadCpuUsage").mockImplementation(() => {
+      const current = { user: mainThreadCpuUser, system: 0 };
+      mainThreadCpuUser += 100_000;
+      return current;
+    });
+    const logger = { info: vi.fn() };
+    const monitor = startEventLoopStallMonitor({ logger });
+    vi.advanceTimersByTime(EVENT_LOOP_STALL_MONITOR_INTERVAL_MS);
+    expect(logger.info).toHaveBeenCalledWith(
+      expect.objectContaining({
+        processCpuWallRatio: 1,
+        mainThreadCpuMs: 100,
+        mainThreadCpuWallRatio: 0.02,
       }),
       "Event loop stalled",
     );
@@ -485,6 +525,12 @@ describe("event loop stall monitor", () => {
     installHistogram({ maxDelayMs: 2_000, meanDelayMs: 25, p99DelayMs: 450 });
     const logger = { info: vi.fn() };
     const nowSpy = vi.spyOn(nodePerformance, "now");
+    let mainThreadCpuUser = 0;
+    vi.spyOn(process, "threadCpuUsage").mockImplementation(() => {
+      const current = { user: mainThreadCpuUser, system: 0 };
+      mainThreadCpuUser += 1_000;
+      return current;
+    });
     try {
       nowSpy.mockReturnValueOnce(0).mockReturnValueOnce(1);
       runEventLoopWorkSync("ws:daemon heartbeat", () => undefined);
