@@ -19,6 +19,7 @@ import {
 import { decodeBase64Bytes } from "@/lib/base64-bytes";
 import { makeTerminalSession } from "@/test/fixtures/terminal-sessions";
 import { wsManager } from "@/lib/ws";
+import * as terminalModules from "./terminal-modules";
 import {
   AppCommandProvider,
   useAppCommandHandler,
@@ -295,6 +296,94 @@ function scrollTerminalAsUser(terminal: Terminal, line: number): void {
 }
 
 describe("ThreadTerminalView terminal focus boundary", () => {
+  it("reveals before a pending search add-on loads, then attaches it", async () => {
+    prepareMobileTerminal();
+    testState.touchEnabled = false;
+    vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    vi.spyOn(FitAddon.prototype, "proposeDimensions").mockReturnValue({
+      cols: 40,
+      rows: 12,
+    });
+    type SearchAddonModule = Awaited<
+      ReturnType<typeof terminalModules.importTerminalSearchAddon>
+    >;
+    let resolveSearch!: (module: SearchAddonModule) => void;
+    const searchModule = new Promise<SearchAddonModule>((resolve) => {
+      resolveSearch = resolve;
+    });
+    vi.spyOn(terminalModules, "importTerminalSearchAddon").mockReturnValue(
+      searchModule,
+    );
+    const openTerminal = Terminal.prototype.open;
+    vi.spyOn(Terminal.prototype, "open").mockImplementation(function (
+      this: Terminal,
+      element: HTMLElement,
+    ) {
+      openTerminal.call(this, element);
+    });
+
+    const session = renderMobileTerminal();
+    await waitForReadinessCondition(
+      () => expect(document.querySelector(".xterm")).not.toBeNull(),
+      "terminal did not open while search was pending",
+    );
+    const socket = testState.sockets[0];
+    if (!socket) throw new Error("terminal socket was not created");
+    socket.receive({
+      type: "attached",
+      session,
+      replayStartSeq: 0,
+      nextSeq: 0,
+    });
+    const terminalElement = document.querySelector(".xterm");
+    if (!terminalElement) throw new Error("terminal was not opened");
+    fireEvent.pointerDown(terminalElement);
+    document
+      .querySelector<HTMLTextAreaElement>(".xterm-helper-textarea")
+      ?.focus();
+    await waitForReadinessCondition(
+      () => {
+        const renderer = document.querySelector<HTMLElement>(
+          "[data-terminal-renderer]",
+        );
+        expect(renderer?.style.opacity).toBe("");
+      },
+      "terminal did not reveal while search was pending",
+    );
+    expect(
+      (screen.getByRole("button", {
+        name: "Search terminal output",
+      }) as HTMLButtonElement).disabled,
+    ).toBe(true);
+
+    const addon = await import("@xterm/addon-search");
+    await act(async () => resolveSearch(addon));
+    await waitForReadinessCondition(
+      () => {
+        expect(
+          (screen.getByRole("button", {
+            name: "Search terminal output",
+          }) as HTMLButtonElement).disabled,
+        ).toBe(false);
+      },
+      "search add-on did not attach after loading",
+    );
+  }, 30_000);
+
+  it("keeps the terminal open when an optional search add-on fails", async () => {
+    prepareMobileTerminal();
+    testState.touchEnabled = false;
+    vi.spyOn(terminalModules, "importTerminalSearchAddon").mockRejectedValue(
+      new Error("search add-on unavailable"),
+    );
+    renderMobileTerminal();
+    await waitForReadinessCondition(
+      () => expect(document.querySelector(".xterm")).not.toBeNull(),
+      "terminal did not open after optional search failed",
+    );
+    expect(document.querySelector("[data-terminal-renderer]")).not.toBeNull();
+  }, 30_000);
+
   it("mounts and records output boundaries without crypto.randomUUID", async () => {
     prepareMobileTerminal();
     const originalRandomUUID = crypto.randomUUID;
