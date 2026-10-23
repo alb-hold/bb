@@ -70,11 +70,19 @@ async function checkLink(
 async function scanLinuxProcess(
   pid: number,
   directory: string,
+  mountNamespace: string,
 ): Promise<ProcessResult> {
   const base = `/proc/${pid}`;
   const comm = await readOptional(() => fs.readFile(`${base}/comm`, "utf8"));
   const command = "value" in comm ? comm.value.trim() || null : null;
 
+  const mount = await readOptional(() => fs.readlink(`${base}/ns/mnt`));
+  if ("failed" in mount) {
+    return { unknown: `process ${pid} mount namespace (${mount.failed})` };
+  }
+  if ("value" in mount && mount.value !== mountNamespace) {
+    return { unknown: `process ${pid} runs in a different mount namespace` };
+  }
   const root = await readOptional(() => fs.readlink(`${base}/root`));
   if ("failed" in root) {
     return { unknown: `process ${pid} root folder (${root.failed})` };
@@ -88,6 +96,15 @@ async function scanLinuxProcess(
   if ("failed" in tasks)
     return { unknown: `process ${pid} tasks (${tasks.failed})` };
   for (const task of tasks.value) {
+    const taskMount = await readOptional(() =>
+      fs.readlink(`${base}/task/${task}/ns/mnt`),
+    );
+    if ("failed" in taskMount) {
+      return { unknown: `process ${pid} thread ${task} mount namespace (${taskMount.failed})` };
+    }
+    if ("value" in taskMount && taskMount.value !== mountNamespace) {
+      return { unknown: `process ${pid} thread ${task} runs in a different mount namespace` };
+    }
     const found = await checkLink(
       pid,
       "working folder",
@@ -146,11 +163,20 @@ async function scanLinuxProcess(
   return null;
 }
 
-async function linuxVisibilityProblem(): Promise<string | null> {
+interface LinuxVisibility {
+  problem: string | null;
+  mountNamespace: string;
+}
+
+async function linuxVisibilityProblem(): Promise<LinuxVisibility> {
   const own = await readOptional(() => fs.readlink("/proc/self/ns/pid"));
   const init = await readOptional(() => fs.readlink("/proc/1/ns/pid"));
   if (!("value" in own) || !("value" in init) || own.value !== init.value) {
-    return "this process may not see every process (it runs in a separate process namespace)";
+    return {
+      problem:
+        "this process may not see every process (it runs in a separate process namespace)",
+      mountNamespace: "",
+    };
   }
   const ownMount = await readOptional(() => fs.readlink("/proc/self/ns/mnt"));
   const initMount = await readOptional(() => fs.readlink("/proc/1/ns/mnt"));
@@ -159,31 +185,48 @@ async function linuxVisibilityProblem(): Promise<string | null> {
     !("value" in initMount) ||
     ownMount.value !== initMount.value
   ) {
-    return "this process may not see every mount (it runs in a separate mount namespace)";
+    return {
+      problem:
+        "this process may not see every mount (it runs in a separate mount namespace)",
+      mountNamespace: "",
+    };
   }
   const ownRoot = await readOptional(() => fs.readlink("/proc/self/root"));
   if (!("value" in ownRoot) || ownRoot.value !== "/") {
-    return "this process runs under a different root folder";
+    return {
+      problem: "this process runs under a different root folder",
+      mountNamespace: ownMount.value,
+    };
   }
   const mounts = await readOptional(() =>
     fs.readFile("/proc/self/mountinfo", "utf8"),
   );
-  if (!("value" in mounts)) return "the process list settings are unreadable";
+  if (!("value" in mounts)) {
+    return {
+      problem: "the process list settings are unreadable",
+      mountNamespace: ownMount.value,
+    };
+  }
   for (const line of mounts.value.split("\n")) {
     const fields = line.split(" ");
     if (fields[4] !== "/proc") continue;
     const options = line.slice(line.indexOf(" - ") + 3);
     const hidepid = /hidepid=([^,\s]+)/u.exec(options);
     if (hidepid !== null && hidepid[1] !== "0" && hidepid[1] !== "off") {
-      return "the process list is hidden from this user";
+      return {
+        problem: "the process list is hidden from this user",
+        mountNamespace: ownMount.value,
+      };
     }
   }
-  return null;
+  return { problem: null, mountNamespace: ownMount.value };
 }
 
 async function scanLinux(directory: string): Promise<WorktreeHolderScan> {
-  const problem = await linuxVisibilityProblem();
-  if (problem !== null) return { status: "unknown", reason: problem };
+  const visibility = await linuxVisibilityProblem();
+  if (visibility.problem !== null) {
+    return { status: "unknown", reason: visibility.problem };
+  }
   const listing = await readOptional(() => fs.readdir("/proc"));
   if (!("value" in listing)) {
     return { status: "unknown", reason: "the process list is unreadable" };
@@ -197,7 +240,9 @@ async function scanLinux(directory: string): Promise<WorktreeHolderScan> {
   for (let offset = 0; offset < pids.length; offset += LINUX_SCAN_CONCURRENCY) {
     const batch = pids.slice(offset, offset + LINUX_SCAN_CONCURRENCY);
     const results = await Promise.all(
-      batch.map((pid) => scanLinuxProcess(pid, directory)),
+      batch.map((pid) =>
+        scanLinuxProcess(pid, directory, visibility.mountNamespace),
+      ),
     );
     for (const result of results) {
       if (result === null) continue;
