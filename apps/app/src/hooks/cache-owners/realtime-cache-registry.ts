@@ -13,16 +13,11 @@ import type {
 import type { ThreadSearchResponse } from "@bb/server-contract";
 import {
   getCachedEnvironmentRefWorkspaceStateInvalidationQueryKeys,
-  getCachedGlobalThreadListInvalidationQueryKeys,
-  getCachedProjectThreadListInvalidationQueryKeys,
   getCachedSidebarNavigationThreads,
   getCachedThreadListPlaceholder,
-  getCachedThreadListQueryKeys,
   getEnvironmentBranchListInvalidationQueryKeys,
   getEnvironmentRecordInvalidationQueryKeys,
   getEnvironmentWorkspaceStateInvalidationQueryKeys,
-  getFetchingThreadListQueryKeys,
-  isArchivedThreadListQueryKey,
   updateCachedThreadListPendingInteractionState,
   updateCachedThreadListStatusState,
   updateCachedThreadStatusState,
@@ -89,7 +84,6 @@ import {
   getProjectSourceDependentInvalidationQueryKeys,
   getThreadConversationOutlineInvalidationQueryKeys,
   getThreadDetailInvalidationQueryKeys,
-  getThreadListInvalidationQueryKeys,
   getThreadPendingInteractionInvalidationQueryKeys,
   getThreadPromptHistoryInvalidationQueryKeys,
   getThreadQueueContentInvalidationQueryKeys,
@@ -98,6 +92,7 @@ import {
   getThreadTimelineWindowInvalidationQueryKeys,
 } from "./cache-invalidation-groups";
 import { isCachedThreadTimelinePushEnabled } from "./thread-timeline-push-owner";
+import { patchCachedThreadListRow } from "./thread-list-realtime-patch";
 
 interface CollectCachedThreadIdsForEnvironmentArgs {
   environmentId: string;
@@ -143,8 +138,8 @@ interface ThrottledActiveRefetchArgs {
 }
 
 const WORK_STATUS_REFETCH_MIN_INTERVAL_MS = 1_000;
-
 const THREAD_LIST_STATUS_FALLBACK_REFETCH_MIN_INTERVAL_MS = 1_000;
+
 
 const TRAILING_REFETCH_MIN_INTERVAL_MS = 50;
 const TRAILING_REFETCH_MAX_INTERVAL_MS = 1_000;
@@ -597,6 +592,7 @@ interface ThreadRealtimeDirtyContext extends RealtimeDirtyContext {
   projectId: string | undefined;
   statusChange: ThreadStatusChangeMetadata | undefined;
   threadId: string | undefined;
+  fetchThreadListRow: (threadId: string) => Promise<ThreadListEntry | undefined>;
 }
 
 export function createFlushOncePredicate(): (key: string) => boolean {
@@ -803,73 +799,43 @@ export function collectCachedThreadIdsForEnvironment({
 }
 
 function dirtyThreadListQueries({
+  fetchThreadListRow,
   projectId,
   queryClient,
+  threadId,
 }: ThreadRealtimeDirtyContext): QueryKey[] {
-  if (projectId) {
-    for (const queryKey of getCachedGlobalThreadListInvalidationQueryKeys({
-      queryClient,
-    })) {
-      queryClient.invalidateQueries({ exact: true, queryKey });
-    }
-  }
-  return getThreadListInvalidationQueryKeys({ projectId, queryClient });
-}
-
-function dirtyActiveThreadListQueries({
-  projectId,
-  queryClient,
-}: ThreadRealtimeDirtyContext): QueryKey[] {
-  const listQueryKeys = projectId
-    ? [
-        ...getCachedProjectThreadListInvalidationQueryKeys({
-          projectId,
-          queryClient,
-        }),
-        ...getCachedGlobalThreadListInvalidationQueryKeys({ queryClient }),
-      ]
-    : getCachedThreadListQueryKeys(queryClient);
-  for (const queryKey of listQueryKeys) {
-    queryClient.invalidateQueries({
-      exact: true,
-      queryKey,
-      ...(isArchivedThreadListQueryKey(queryKey)
-        ? { refetchType: "none" }
-        : {}),
-    });
-  }
+  void patchCachedThreadListRow({ fetchThreadListRow, projectId, queryClient, threadId });
   return [sidebarNavigationQueryKey(), threadSearchQueryKeyPrefix()];
 }
 
-function dirtyActiveThreadListQueriesWithThrottledRefetch({
+function dirtyActiveThreadListQueries({
+  fetchThreadListRow,
   projectId,
   queryClient,
-}: ThreadRealtimeDirtyContext): void {
-  const listQueryKeys = projectId
-    ? [
-        ...getCachedProjectThreadListInvalidationQueryKeys({
-          projectId,
-          queryClient,
-        }),
-        ...getCachedGlobalThreadListInvalidationQueryKeys({ queryClient }),
-      ]
-    : getCachedThreadListQueryKeys(queryClient);
-  for (const queryKey of listQueryKeys) {
-    if (isArchivedThreadListQueryKey(queryKey)) {
-      queryClient.invalidateQueries({
-        exact: true,
-        queryKey,
-        refetchType: "none",
-      });
-      continue;
-    }
-    invalidateQueryKeyWithThrottledActiveRefetch({
-      exact: true,
-      minIntervalMs: THREAD_LIST_STATUS_FALLBACK_REFETCH_MIN_INTERVAL_MS,
-      queryClient,
-      queryKey,
-    });
+  threadId,
+}: ThreadRealtimeDirtyContext): QueryKey[] {
+  void patchCachedThreadListRow({
+    archivedRefetchType: "none",
+    fetchThreadListRow,
+    projectId,
+    queryClient,
+    threadId,
+  });
+  return [sidebarNavigationQueryKey(), threadSearchQueryKeyPrefix()];
+}
+
+function dirtyThreadListQueriesForBackgroundActivity(
+  context: ThreadRealtimeDirtyContext,
+): QueryKey[] {
+  if (context.backgroundActivityChanged !== true) {
+    return [];
   }
+  return dirtyActiveThreadListQueries(context);
+}
+
+function dirtyThreadListDerivedQueriesWithThrottledRefetch({
+  queryClient,
+}: ThreadRealtimeDirtyContext): void {
   for (const queryKey of [
     sidebarNavigationQueryKey(),
     threadSearchQueryKeyPrefix(),
@@ -881,15 +847,6 @@ function dirtyActiveThreadListQueriesWithThrottledRefetch({
       queryKey,
     });
   }
-}
-
-function dirtyThreadListQueriesForBackgroundActivity(
-  context: ThreadRealtimeDirtyContext,
-): QueryKey[] {
-  if (context.backgroundActivityChanged !== true) {
-    return [];
-  }
-  return dirtyActiveThreadListQueries(context);
 }
 
 function dirtyThreadDetailQueriesForBackgroundActivity(
@@ -1191,12 +1148,30 @@ function refreshThreadListStatusState(
   if (context.nativeActivityReceiptOnly === true) return;
   const { flushOnce, queryClient, statusChange, threadId } = context;
   if (!threadId || !statusChange) {
-    dirtyActiveThreadListQueriesWithThrottledRefetch(context);
+    void patchCachedThreadListRow({
+      archivedRefetchType: "none",
+      fetchThreadListRow: context.fetchThreadListRow,
+      projectId: context.projectId,
+      queryClient,
+      threadId,
+    });
+    dirtyThreadListDerivedQueriesWithThrottledRefetch(context);
     return;
   }
-  for (const queryKey of getFetchingThreadListQueryKeys(queryClient)) {
-    queryClient.invalidateQueries({ exact: true, queryKey });
+  for (const query of queryClient.getQueryCache().findAll({
+    fetchStatus: "fetching",
+  })) {
+    if (query.queryKey[0] === sidebarNavigationQueryKey()[0]) {
+      queryClient.invalidateQueries({ exact: true, queryKey: query.queryKey });
+    }
   }
+  void patchCachedThreadListRow({
+    archivedRefetchType: "none",
+    fetchThreadListRow: context.fetchThreadListRow,
+    projectId: context.projectId,
+    queryClient,
+    threadId,
+  });
   if (flushOnce("thread-search:status-changed")) {
     invalidateQueryKeysWithoutCancelingActiveFetches({
       queryClient,

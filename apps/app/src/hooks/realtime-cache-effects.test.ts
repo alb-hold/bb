@@ -4,6 +4,7 @@ import {
   taggedQueryOptions,
 } from "@bb/query-tags";
 import { environmentPullRequestTag } from "@bb/server-contract";
+import type { ThreadListEntry } from "@bb/domain";
 import { machineEnvironmentQueryKey } from "./queries/query-keys";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { QueryObserver } from "@tanstack/react-query";
@@ -146,6 +147,7 @@ function enableTimelinePush(queryClient: QueryClient): void {
 
 function createRealtimeEffectsTestContext(
   visibility?: RealtimeCacheEffectsVisibility,
+  fetchThreadListRow?: (threadId: string) => Promise<ThreadListEntry | undefined>,
 ) {
   const queryClient = createAppQueryClient({
     defaultOptions: {
@@ -156,7 +158,13 @@ function createRealtimeEffectsTestContext(
     },
     showMutationErrorToasts: false,
   });
-  const effects = createRealtimeCacheEffects({ queryClient, visibility });
+  const effects = createRealtimeCacheEffects({
+    queryClient,
+    visibility,
+    fetchThreadListRow: fetchThreadListRow ?? (async () => {
+      throw new Error("row fetch unavailable in cache invalidation tests");
+    }),
+  });
   const firstProjectHistoryKey = projectPromptHistoryQueryKey("project-1");
   const secondProjectHistoryKey = projectPromptHistoryQueryKey("project-2");
   const terminalKey = terminalsQueryKey({
@@ -873,7 +881,7 @@ describe("createRealtimeCacheEffects", () => {
     effects.dispose();
   });
 
-  it("uses thread project metadata to invalidate affected project and global thread lists", () => {
+  it("uses thread project metadata to invalidate affected project and global thread lists", async () => {
     vi.useFakeTimers();
     const { effects, queryClient } = createRealtimeEffectsTestContext();
     const firstProjectThreadListKey = threadListQueryKey({
@@ -903,7 +911,9 @@ describe("createRealtimeCacheEffects", () => {
       changes: ["title-changed"],
     });
 
-    vi.advanceTimersByTime(50);
+    await vi.advanceTimersByTimeAsync(50);
+    await Promise.resolve();
+    await Promise.resolve();
 
     expect(
       queryClient.getQueryState(firstProjectThreadListKey)?.isInvalidated,
@@ -1622,7 +1632,7 @@ describe("createRealtimeCacheEffects", () => {
     effects.dispose();
   });
 
-  it("falls back to invalidating all cached thread lists when a thread list event has no project metadata", () => {
+  it("falls back to invalidating all cached thread lists when a thread list event has no project metadata", async () => {
     vi.useFakeTimers();
     const { effects, queryClient } = createRealtimeEffectsTestContext();
     const firstProjectThreadListKey = threadListQueryKey({
@@ -1643,7 +1653,9 @@ describe("createRealtimeCacheEffects", () => {
       changes: ["title-changed"],
     });
 
-    vi.advanceTimersByTime(50);
+    await vi.advanceTimersByTimeAsync(50);
+    await Promise.resolve();
+    await Promise.resolve();
 
     expect(
       queryClient.getQueryState(firstProjectThreadListKey)?.isInvalidated,
@@ -2757,7 +2769,7 @@ describe("createRealtimeCacheEffects", () => {
     await vi.advanceTimersByTimeAsync(50);
 
     expect(sidebarQueryFn).toHaveBeenCalledTimes(1);
-    expect(threadListQueryFn).toHaveBeenCalledTimes(1);
+    expect(threadListQueryFn).toHaveBeenCalledTimes(2);
     expect(
       queryClient.getQueryState(sidebarNavigationKey)?.isInvalidated,
     ).not.toBe(true);
@@ -3044,7 +3056,7 @@ describe("createRealtimeCacheEffects", () => {
     effects.dispose();
   });
 
-  it("invalidates thread list and detail but not timeline for parent changes", () => {
+  it("invalidates thread list and detail but not timeline for parent changes", async () => {
     vi.useFakeTimers();
     const { effects, queryClient } = createRealtimeEffectsTestContext();
     const threadKey = threadQueryKey("thr_1");
@@ -3078,7 +3090,9 @@ describe("createRealtimeCacheEffects", () => {
       metadata: { projectId: "project-1" },
       changes: ["parent-changed"],
     });
-    vi.advanceTimersByTime(50);
+    await vi.advanceTimersByTimeAsync(50);
+    await Promise.resolve();
+    await Promise.resolve();
 
     expect(queryClient.getQueryState(threadKey)?.isInvalidated).toBe(true);
     expect(

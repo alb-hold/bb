@@ -1,5 +1,6 @@
 import { CORE_TAG_SCOPE, invalidateTags, pluginTagScope } from "@bb/query-tags";
 import type { QueryClient } from "@tanstack/react-query";
+import type { ThreadListEntry } from "@bb/domain";
 import { assertNever } from "@bb/core-ui";
 import {
   createDebouncedCallbackScheduler,
@@ -23,6 +24,7 @@ import {
   refetchErroredRealtimeQueriesOnInitialConnect,
 } from "./cache-owners/system-cache-effects";
 import { createBufferedEnvironmentInvalidator } from "./buffered-environment-invalidator";
+import { sdk } from "@/lib/sdk";
 import {
   isDocumentVisible,
   subscribeToDocumentVisibility,
@@ -96,6 +98,7 @@ export interface RealtimeCacheEffectsVisibility {
 
 interface RealtimeCacheEffectsOptions {
   queryClient: QueryClient;
+  fetchThreadListRow?: (threadId: string) => Promise<ThreadListEntry | undefined>;
   visibility?: RealtimeCacheEffectsVisibility;
 }
 
@@ -232,6 +235,7 @@ function mergeThreadChanges({
 function flushThreadInvalidations(
   queryClient: QueryClient,
   state: ThreadChangeState,
+  fetchThreadListRow: (threadId: string) => Promise<ThreadListEntry | undefined>,
 ): void {
   const flushOnce = createFlushOncePredicate();
   for (const changeKind of state.globalChangeKinds) {
@@ -247,6 +251,7 @@ function flushThreadInvalidations(
         queryClient,
         statusChange: undefined,
         threadId: undefined,
+        fetchThreadListRow,
       },
       handlers: REALTIME_THREAD_CHANGE_REGISTRY[changeKind].dirty,
     });
@@ -268,6 +273,7 @@ function flushThreadInvalidations(
           nativeActivityReceiptOnly:
             state.nativeActivityReceiptOnlyByThreadId.get(threadId),
           threadId,
+          fetchThreadListRow,
         },
         handlers: REALTIME_THREAD_CHANGE_REGISTRY[changeKind].dirty,
       });
@@ -283,6 +289,7 @@ interface ApplyImmediateThreadChangesArgs {
   metadata: ThreadChangeMetadata | undefined;
   nativeActivityReceiptOnly: boolean;
   queryClient: QueryClient;
+  fetchThreadListRow: (threadId: string) => Promise<ThreadListEntry | undefined>;
 }
 
 function applyImmediateThreadChanges({
@@ -291,6 +298,7 @@ function applyImmediateThreadChanges({
   metadata,
   nativeActivityReceiptOnly,
   queryClient,
+  fetchThreadListRow,
 }: ApplyImmediateThreadChangesArgs): void {
   const merged = metadata
     ? mergeThreadChangeMetadata({
@@ -313,6 +321,7 @@ function applyImmediateThreadChanges({
         queryClient,
         statusChange: merged?.statusChange,
         threadId: id,
+        fetchThreadListRow,
       },
       handlers: REALTIME_THREAD_CHANGE_REGISTRY[changeKind].dirty,
     });
@@ -416,6 +425,8 @@ const DEFAULT_VISIBILITY: RealtimeCacheEffectsVisibility = {
 
 export function createRealtimeCacheEffects({
   queryClient,
+  fetchThreadListRow = async (threadId) =>
+    (await sdk.threads.list({ threadIds: [threadId], includeHidden: true }))[0],
   visibility = DEFAULT_VISIBILITY,
 }: RealtimeCacheEffectsOptions): RealtimeCacheEffects {
   const threadChangeState = createThreadChangeState();
@@ -430,7 +441,7 @@ export function createRealtimeCacheEffects({
         return;
       }
       hasDeferredThreadChanges = false;
-      flushThreadInvalidations(queryClient, threadChangeState);
+      flushThreadInvalidations(queryClient, threadChangeState, fetchThreadListRow);
     },
   });
   const environmentInvalidator = createBufferedEnvironmentInvalidator({
@@ -650,6 +661,7 @@ export function createRealtimeCacheEffects({
               metadata: message.id ? message.metadata : undefined,
               nativeActivityReceiptOnly,
               queryClient,
+              fetchThreadListRow,
             });
           }
           break;

@@ -252,6 +252,12 @@ const CACHE_OWNER_QUERY_KEY_IMPORTS: CacheOwnerQueryKeyImportRegistry = {
     "threadSearchQueryKeyPrefix",
     "threadsQueryKey",
   ],
+  "hooks/cache-owners/thread-list-realtime-patch.ts": [
+    "ARCHIVED_THREADS_LIST_KIND",
+    "ArchivedThreadsListFilters",
+    "ThreadListQueryFilters",
+    "threadsQueryKey",
+  ],
   "hooks/cache-owners/thread-detail-cache-owner.ts": [
     "environmentQueryKey",
     "hostQueryKey",
