@@ -2,6 +2,14 @@ import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { personalWorkspaceHostContract } from "./contract.js";
 import { PERSONAL_WORKSPACE_ENVIRONMENT_PROVIDER_ID } from "./provider-id.js";
 
+function overlaps(left: string, right: string): boolean {
+  const normalize = (value: string) =>
+    `${value.replaceAll("\\", "/").replace(/\/+$/, "")}/`;
+  const a = normalize(left);
+  const b = normalize(right);
+  return a.startsWith(b) || b.startsWith(a);
+}
+
 export default async function personalWorkspacePlugin(
   bb: BbPluginApi,
 ): Promise<void> {
@@ -37,7 +45,7 @@ export default async function personalWorkspacePlugin(
         };
       }
     },
-    async remove({ hostId, path, pathKey, signal }) {
+    async remove({ environment, hostId, path, pathKey, signal }) {
       if (hostId === null) {
         return {
           status: "failed",
@@ -45,6 +53,37 @@ export default async function personalWorkspacePlugin(
         };
       }
       try {
+        const covering = [];
+        for (let offset = 0; ; offset += 500) {
+          const page = await bb.sdk.environments.list({
+            hostId,
+            limit: 500,
+            offset,
+            signal,
+          });
+          covering.push(
+            ...page.filter(
+              (other) =>
+                other.id !== environment?.id &&
+                other.path !== null &&
+                other.status !== "destroyed" &&
+                other.lifecycle.teardown?.status !== "removed" &&
+                (path === null
+                  ? other.path.replaceAll("\\", "/").split("/").pop() ===
+                    pathKey
+                  : overlaps(other.path, path)),
+            ),
+          );
+          if (page.length < 500) break;
+        }
+        if (covering.length > 0) {
+          return {
+            status: "retained",
+            message: `Kept the personal workspace because ${covering
+              .map((other) => other.id)
+              .join(", ")} still covers it. Nothing was removed.`,
+          };
+        }
         await host.call(
           "removeWorkspace",
           { pathKey, path },

@@ -1,8 +1,5 @@
 import { mkdir, stat } from "node:fs/promises";
-import {
-  experimental_defineHostEntry,
-  experimental_killProcessesWithCwdUnder,
-} from "@get-bb/plugin-sdk/host";
+import { experimental_defineHostEntry } from "@get-bb/plugin-sdk/host";
 import { personalWorkspaceHostContract } from "./contract.js";
 import {
   assertRemovableWorkspacePath,
@@ -44,11 +41,6 @@ export function createPersonalWorkspaceHostEntry() {
                 path: input.path,
               });
         const existed = await pathExists(target);
-        if (existed) {
-          await experimental_killProcessesWithCwdUnder({
-            directories: [target],
-          });
-        }
         await removeDirectoryTree(target);
         return { removed: existed };
       },

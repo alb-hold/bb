@@ -42,12 +42,12 @@ afterEach(async () => {
 });
 
 describe("personal workspace host entry", () => {
-  it("kills processes still running inside a workspace before removing it", async ({
+  it("removes a workspace without signalling a process still running inside it", async ({
     skip,
   }) => {
     skip(
       process.platform === "win32",
-      "killProcessesWithCwdUnder does not enumerate process working directories on Windows",
+      "process working directories are not exercised on Windows",
     );
     const dataDir = await createDataDir();
     const harness = createHarness(dataDir);
@@ -73,7 +73,7 @@ describe("personal workspace host entry", () => {
 
       expect(removed).toEqual({ removed: true });
       expect(existsSync(created.path)).toBe(false);
-      expect(isPidAlive(child.pid ?? 0)).toBe(false);
+      expect(isPidAlive(child.pid ?? 0)).toBe(true);
     } finally {
       child.kill("SIGKILL");
     }

@@ -1,6 +1,7 @@
 import type {
   PluginEnvironmentProviderCreateContext,
   PluginEnvironmentProviderProgress,
+  PluginEnvironmentProviderRemoveContext,
 } from "@get-bb/plugin-sdk/environment-provider";
 import {
   createFakePluginHost,
@@ -69,10 +70,41 @@ function createFakeWorkspaceHost() {
   };
 }
 
-async function setup() {
+type CoveringEnvironment = NonNullable<
+  PluginEnvironmentProviderRemoveContext["environment"]
+>;
+
+function environmentAt(id: string, path: string): CoveringEnvironment {
+  return {
+    id,
+    name: null,
+    projectId: PROJECT_ID,
+    hostId: HOST_ID,
+    path,
+    isGitRepo: false,
+    isWorktree: false,
+    branchName: null,
+    baseBranch: null,
+    defaultBranch: null,
+    mergeBaseBranch: null,
+    status: "ready",
+    environmentProviderId: PERSONAL_WORKSPACE_ENVIRONMENT_PROVIDER_ID,
+    environmentProviderSelection: null,
+    environmentProviderInstanceKey: null,
+    lifecycle: { phase: "active", retireAt: null, teardown: null },
+    hostLifecycle: "active",
+    managed: true,
+    workspaceProvisionType: "personal",
+    createdAt: 0,
+    updatedAt: 0,
+  };
+}
+
+async function setup(environments: CoveringEnvironment[] = []) {
   const host = createFakeWorkspaceHost();
   const { bb, harness } = createFakePluginHost({
     experimental_callHostRpc: (call) => host.call(call),
+    sdk: { environments: { list: async () => environments } },
   });
   await plugin(bb);
   const provider = harness.registrations.environmentProviders.get(
@@ -148,5 +180,41 @@ describe("personal workspace resource operations", () => {
       signal: new AbortController().signal,
     });
     expect(f.host.directories.size).toBe(0);
+  });
+  it("keeps the directory while another environment still covers it and removes it once that environment is removed", async () => {
+    const covering = environmentAt("env_other", WORKSPACE_PATH);
+    const f = await setup([covering]);
+    await f.provider.create(f.context);
+    const removeContext = {
+      environment: environmentAt("env_self", WORKSPACE_PATH),
+      hostId: HOST_ID,
+      path: WORKSPACE_PATH,
+      pathKey: THREAD_ID,
+      resource: null,
+      attempt: 1,
+      report: f.context.report,
+      signal: new AbortController().signal,
+    };
+    expect(await f.provider.remove(removeContext)).toEqual({
+      status: "retained",
+      message:
+        "Kept the personal workspace because env_other still covers it. Nothing was removed.",
+    });
+    expect(f.host.directories.size).toBe(1);
+    const released = await setup([
+      {
+        ...covering,
+        lifecycle: {
+          phase: "teardown",
+          retireAt: 1,
+          teardown: { status: "removed", attempt: 1 },
+        },
+      },
+    ]);
+    await released.provider.create(released.context);
+    expect(await released.provider.remove(removeContext)).toEqual({
+      status: "removed",
+    });
+    expect(released.host.directories.size).toBe(0);
   });
 });
