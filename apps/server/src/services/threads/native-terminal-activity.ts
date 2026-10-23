@@ -197,6 +197,7 @@ export function recordNativeTerminalActivity(
   const repeatedWorkingSignal =
     args.state === "working" &&
     args.prompt === undefined &&
+    (args.closes?.length ?? 0) === 0 &&
     active.has(args.threadId);
   const now = Date.now();
   let notifyReceipt = false;
@@ -217,6 +218,7 @@ export function recordNativeTerminalActivity(
     if (stamp.updated) {
       const states = reportStates(deps);
       const signature = JSON.stringify({
+        closes: args.closes ?? [],
         prompt: args.prompt ?? null,
         questions: args.questions ?? [],
         state: args.state,

@@ -490,6 +490,26 @@ describe("native activity reporter", () => {
       ]);
     });
 
+    it("keeps a rejected close tracked when the fallback is accepted, then closes it on a later report", async () => {
+      const { calls, reporter } = closureSetup([
+        async () => ({ ok: true }),
+        async () => {
+          throw rejection('"closes"');
+        },
+        async () => ({ ok: true }),
+        async () => ({ ok: true }),
+      ]);
+      reporter.report(asking("q1"));
+      await reporter.settled();
+      reporter.report(working);
+      await reporter.settled();
+      expect(closesOf(calls)).toEqual([[], ["q1"], undefined]);
+
+      reporter.report(working);
+      await reporter.settled();
+      expect(closesOf(calls)).toEqual([[], ["q1"], undefined, ["q1"]]);
+    });
+
     it("removes only the field the server names", async () => {
       const { calls, logged, reporter } = closureSetup([
         async () => {
