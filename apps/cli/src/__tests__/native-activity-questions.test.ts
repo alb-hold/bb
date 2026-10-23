@@ -494,6 +494,38 @@ describe("native terminal questions", () => {
       });
     });
 
+    it("keeps the second identical call's prompt open when the first auto-allowed call completes", () => {
+      const { hook, call, ask, done, tracker } = holder();
+      const input = bash("make build");
+      hook(call("toolu_1", input));
+      hook(call("toolu_2", input));
+      const opened = hook(ask(input));
+      expect(waiting(opened)).toHaveLength(1);
+      expect(waiting(hook(done("toolu_1", input)))).toHaveLength(1);
+      expect(waiting(tracker.heartbeat())).toHaveLength(1);
+      expect(hook(done("toolu_2", input))).toEqual({
+        state: "working",
+        prompt: null,
+      });
+      expect(tracker.heartbeat()).toMatchObject({ state: "working", prompt: null });
+    });
+
+    it("keeps the first identical call's prompt open when the second auto-allowed call completes", () => {
+      const { hook, call, ask, done, tracker } = holder();
+      const input = bash("make build");
+      hook(call("toolu_1", input));
+      hook(call("toolu_2", input));
+      const opened = hook(ask(input));
+      expect(waiting(opened)).toHaveLength(1);
+      expect(hook(done("toolu_2", input))).toBeNull();
+      expect(waiting(tracker.heartbeat())).toHaveLength(1);
+      expect(hook(done("toolu_1", input))).toEqual({
+        state: "working",
+        prompt: null,
+      });
+      expect(tracker.heartbeat()).toMatchObject({ state: "working", prompt: null });
+    });
+
     it("closes its own prompt by tool call id when the input was rewritten after the prompt", () => {
       const { hook, call, ask, done, tracker } = holder();
       hook(call("toolu_1", bash("npm test")));
