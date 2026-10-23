@@ -266,6 +266,146 @@ describe("daemon websocket session authorization", () => {
     expect(replacementSocket.readyState).toBe(WebSocket.OPEN);
   });
 
+  it("rejects an accepted queued effect when a replacement session opens before drain", async () => {
+    server = await startTestServer();
+    const { host, session } = seedHostSession(server.deps);
+    const { project } = seedProjectWithSource(server.deps, { hostId: host.id });
+    const environment = seedEnvironment(server.deps, {
+      hostId: host.id,
+      projectId: project.id,
+    });
+    const thread = seedThread(server.deps, {
+      environmentId: environment.id,
+      projectId: project.id,
+    });
+    const terminal = createTerminalSession(server.db, {
+      cols: 120,
+      daemonSessionId: session.id,
+      environmentId: environment.id,
+      hostId: host.id,
+      initialCwd: environment.path ?? "/tmp/terminal-workspace",
+      rows: 32,
+      status: "running",
+      threadId: thread.id,
+      title: "Terminal 1",
+    });
+    const oldSocket = await connectDaemon(session.id, host.id);
+    let releaseReplay!: () => void;
+    const replayGate = new Promise<void>((resolve) => {
+      releaseReplay = resolve;
+    });
+    let replayStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      replayStarted = resolve;
+    });
+    let replayFinished!: () => void;
+    const finished = new Promise<void>((resolve) => {
+      replayFinished = resolve;
+    });
+    const handleTerminalMessage =
+      server.deps.terminalSessions.handleDaemonTerminalMessage.bind(
+        server.deps.terminalSessions,
+      );
+    vi.spyOn(
+      server.deps.terminalSessions,
+      "handleDaemonTerminalMessage",
+    ).mockImplementation((args) => {
+      if (args.message.type !== "terminal.replay") {
+        return handleTerminalMessage(args);
+      }
+      replayStarted();
+      return replayGate
+        .then(() => handleTerminalMessage(args))
+        .finally(replayFinished);
+    });
+    let secondFrameAccepted!: () => void;
+    const secondAccepted = new Promise<void>((resolve) => {
+      secondFrameAccepted = resolve;
+    });
+    const recordActivity = server.hub.recordDaemonActivity.bind(server.hub);
+    let activityCount = 0;
+    vi.spyOn(server.hub, "recordDaemonActivity").mockImplementation(
+      (sessionId) => {
+        recordActivity(sessionId);
+        activityCount += 1;
+        if (activityCount === 2) secondFrameAccepted();
+      },
+    );
+    const notifyEnvironment = vi.spyOn(server.hub, "notifyEnvironment");
+    const info = vi.spyOn(server.deps.logger, "info");
+    const chunks = Array.from({ length: 8 }, (_, seq) => ({
+      seq,
+      dataBase64: Buffer.from(`replay-${seq}`).toString("base64"),
+    }));
+    const oldSocketClosed = new Promise<void>((resolve) =>
+      oldSocket.once("close", () => resolve()),
+    );
+
+    try {
+      oldSocket.send(
+        JSON.stringify({
+          type: "terminal.replay",
+          requestId: "replay-before-replacement",
+          terminalId: terminal.id,
+          replayStartSeq: 0,
+          nextSeq: chunks.length,
+          chunks,
+        }),
+      );
+      await started;
+      oldSocket.send(
+        JSON.stringify({
+          type: "environment-change",
+          environmentId: environment.id,
+          change: "work-status-changed",
+        }),
+      );
+      await secondAccepted;
+      expect(
+        getSessionById(server.db, { sessionId: session.id }),
+      ).toMatchObject({ status: "active" });
+
+      const replacement = seedSession(server.deps, host.id, {
+        instanceId: "replacement-instance",
+      });
+      const replacementSocket = await connectDaemon(replacement.id, host.id);
+      expect(
+        getSessionById(server.db, { sessionId: session.id }),
+      ).toMatchObject({ status: "closed", closeReason: "replaced" });
+      releaseReplay();
+      await finished;
+      await vi.waitFor(() => {
+        expect(
+          info.mock.calls.some(
+            ([fields, message]) =>
+              message ===
+                "Daemon heartbeat for inactive session, closing socket" &&
+              typeof fields === "object" &&
+              fields !== null &&
+              "sessionId" in fields &&
+              fields.sessionId === session.id,
+          ) || notifyEnvironment.mock.calls.length > 0,
+        ).toBe(true);
+      });
+      expect(notifyEnvironment).not.toHaveBeenCalled();
+      await vi.waitFor(() => {
+        expect(info).toHaveBeenCalledWith(
+          expect.objectContaining({
+            closeReason: "replaced",
+            sessionId: session.id,
+            sessionStatus: "closed",
+          }),
+          "Daemon heartbeat for inactive session, closing socket",
+        );
+      });
+      await oldSocketClosed;
+
+      expect(replacementSocket.readyState).toBe(WebSocket.OPEN);
+    } finally {
+      releaseReplay();
+    }
+  });
+
   it("preserves the unauthorized-session close code for a host mismatch", async () => {
     server = await startTestServer();
     const first = seedHostSession(server.deps);

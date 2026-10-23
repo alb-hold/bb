@@ -1,6 +1,10 @@
 import { reportEnvironmentHookProgress } from "../services/environments/environment-hooks.js";
 import { syncDesktopBrowserTabs } from "../services/desktop-browsers.js";
-import { getSessionById, heartbeatSession } from "@bb/db";
+import {
+  getLatestSessionForHost,
+  getSessionById,
+  heartbeatSession,
+} from "@bb/db";
 import {
   hasHostDaemonWebSocketProtocol,
   hostDaemonDaemonWsMessageSchema,
@@ -241,30 +245,52 @@ export function onDaemonSocketMessage(
     args.socket.close(1008, "inactive-session");
   };
 
+  const getSessionForDispatch = () => {
+    if (!args.acceptedAtArrival) {
+      return requireAuthorizedOpenSession(deps.db, {
+        hostId: args.hostId,
+        sessionId: args.sessionId,
+      });
+    }
+    const session = getSessionById(deps.db, { sessionId: args.sessionId });
+    if (!session) {
+      throw new ApiError(401, "inactive_session", "Inactive daemon session");
+    }
+    if (session.hostId !== args.hostId) {
+      throw new ApiError(
+        403,
+        "invalid_request",
+        "Session does not belong to the authenticated host",
+      );
+    }
+    const latestSession = getLatestSessionForHost(deps.db, {
+      hostId: args.hostId,
+    });
+    if (session.status === "active" && latestSession?.id === session.id)
+      return session;
+    if (
+      session.status === "closed" &&
+      session.closeReason === "daemon-disconnect" &&
+      latestSession?.id === session.id
+    ) {
+      return session;
+    }
+    throw new ApiError(401, "inactive_session", "Inactive daemon session");
+  };
+
   try {
     if (
       message.type === "terminal.output" &&
       !deps.hub.hasTerminalClients(message.terminalId)
     ) {
+      getSessionForDispatch();
       if (!args.acceptedAtArrival) {
-        requireAuthorizedOpenSession(deps.db, {
-          hostId: args.hostId,
-          sessionId: args.sessionId,
-        });
         deps.hub.recordDaemonActivity(args.sessionId);
       }
       return;
     }
     const work = runEventLoopWorkSync(`ws:daemon ${message.type}`, () => {
-      const session = args.acceptedAtArrival
-        ? getSessionById(deps.db, { sessionId: args.sessionId })
-        : requireAuthorizedOpenSession(deps.db, {
-            hostId: args.hostId,
-            sessionId: args.sessionId,
-          });
-      if (!session || session.hostId !== args.hostId) {
-        throw new ApiError(401, "inactive_session", "Inactive daemon session");
-      }
+      const session = getSessionForDispatch();
       if (!args.acceptedAtArrival) {
         deps.hub.recordDaemonActivity(args.sessionId);
       }
