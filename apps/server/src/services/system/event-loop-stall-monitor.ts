@@ -18,7 +18,13 @@ interface GcPause {
   kind: number;
 }
 
-const DESCHEDULED_PROCESS_CPU_WALL_RATIO_THRESHOLD = 0.1;
+const OFF_CPU_MAIN_THREAD_CPU_WALL_RATIO_THRESHOLD = 0.1;
+
+type ProcessContextSwitchHint =
+  | "voluntary-dominant"
+  | "involuntary-dominant"
+  | "balanced"
+  | "no-change";
 
 interface GcEntryList {
   getEntries: () => Array<PerformanceEntry & { kind?: number }>;
@@ -91,9 +97,24 @@ export function startEventLoopStallMonitor(
         resourceUsage.minorPageFault - previousResourceUsage.minorPageFault;
       const majorPageFaults =
         resourceUsage.majorPageFault - previousResourceUsage.majorPageFault;
+      const voluntaryContextSwitches =
+        resourceUsage.voluntaryContextSwitches -
+        previousResourceUsage.voluntaryContextSwitches;
+      const involuntaryContextSwitches =
+        resourceUsage.involuntaryContextSwitches -
+        previousResourceUsage.involuntaryContextSwitches;
       previousResourceUsage = resourceUsage;
-      const descheduled =
-        processCpuWallRatio < DESCHEDULED_PROCESS_CPU_WALL_RATIO_THRESHOLD;
+      const offCpu =
+        mainThreadCpuWallRatio <
+        OFF_CPU_MAIN_THREAD_CPU_WALL_RATIO_THRESHOLD;
+      const processContextSwitchHint: ProcessContextSwitchHint =
+        voluntaryContextSwitches > involuntaryContextSwitches
+          ? "voluntary-dominant"
+          : involuntaryContextSwitches > voluntaryContextSwitches
+            ? "involuntary-dominant"
+            : voluntaryContextSwitches > 0
+              ? "balanced"
+              : "no-change";
       const utilization = performance.eventLoopUtilization(previousUtilization);
       previousUtilization = performance.eventLoopUtilization();
       const gcPausesInWindow = gcPauses;
@@ -116,9 +137,9 @@ export function startEventLoopStallMonitor(
             ? "gc"
             : null
           : work.longestSynchronousWork;
-        const candidate = descheduled ? "descheduled" : measuredWorkCandidate;
+        const candidate = offCpu ? "off-cpu" : measuredWorkCandidate;
         const hasCandidate =
-          descheduled ||
+          offCpu ||
           (candidate !== null &&
             candidateDurationMs + stall.resolutionMs >= stall.maxDelayMs);
         options.logger.info(
@@ -133,6 +154,9 @@ export function startEventLoopStallMonitor(
               Math.round(mainThreadCpuWallRatio * 1_000) / 1_000,
             minorPageFaults,
             majorPageFaults,
+            processVoluntaryContextSwitches: voluntaryContextSwitches,
+            processInvoluntaryContextSwitches: involuntaryContextSwitches,
+            processContextSwitchHint,
             windowWallMs: roundDurationMs(windowWallMs),
             eventLoopUtilization: {
               activeMs: roundDurationMs(utilization.active),

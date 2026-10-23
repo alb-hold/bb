@@ -77,6 +77,30 @@ function installHistogram(
   return histogram;
 }
 
+function createResourceUsage(
+  overrides: Partial<NodeJS.ResourceUsage> = {},
+): NodeJS.ResourceUsage {
+  return {
+    userCPUTime: 0,
+    systemCPUTime: 0,
+    maxRSS: 0,
+    sharedMemorySize: 0,
+    unsharedDataSize: 0,
+    unsharedStackSize: 0,
+    minorPageFault: 0,
+    majorPageFault: 0,
+    swappedOut: 0,
+    fsRead: 0,
+    fsWrite: 0,
+    ipcSent: 0,
+    ipcReceived: 0,
+    signalsCount: 0,
+    voluntaryContextSwitches: 0,
+    involuntaryContextSwitches: 0,
+    ...overrides,
+  };
+}
+
 const EMPTY_WORK_SNAPSHOT = {
   inFlightWorkAtObservation: null,
   lastCompletedWork: null,
@@ -114,24 +138,10 @@ describe("event loop stall monitor", () => {
     let minorPageFault = 0;
     let majorPageFault = 0;
     vi.spyOn(process, "resourceUsage").mockImplementation(() => {
-      const current = {
-        userCPUTime: 0,
-        systemCPUTime: 0,
-        maxRSS: 0,
-        sharedMemorySize: 0,
-        unsharedDataSize: 0,
-        unsharedStackSize: 0,
+      const current = createResourceUsage({
         minorPageFault,
         majorPageFault,
-        swappedOut: 0,
-        fsRead: 0,
-        fsWrite: 0,
-        ipcSent: 0,
-        ipcReceived: 0,
-        signalsCount: 0,
-        voluntaryContextSwitches: 0,
-        involuntaryContextSwitches: 0,
-      } satisfies NodeJS.ResourceUsage;
+      });
       minorPageFault += 7;
       majorPageFault += 1;
       return current;
@@ -183,6 +193,9 @@ describe("event loop stall monitor", () => {
           mainThreadCpuWallRatio: 1,
           minorPageFaults: 7,
           majorPageFaults: 1,
+          processVoluntaryContextSwitches: 0,
+          processInvoluntaryContextSwitches: 0,
+          processContextSwitchHint: "no-change",
           windowWallMs: 5_000,
           eventLoopUtilization: expect.objectContaining({
             activeMs: expect.any(Number),
@@ -215,7 +228,7 @@ describe("event loop stall monitor", () => {
     monitor.stop();
   });
 
-  it("attributes a low process CPU to descheduled work", () => {
+  it("attributes a low main-thread CPU ratio as off-cpu", () => {
     installHistogram({ maxDelayMs: 1_000, meanDelayMs: 25, p99DelayMs: 450 });
     let processCpuUser = 0;
     let mainThreadCpuUser = 0;
@@ -240,14 +253,14 @@ describe("event loop stall monitor", () => {
         mainThreadCpuWallRatio: 0.02,
         windowWallMs: 5_000,
         stallAttribution: "candidate",
-        stallCauseCandidate: "descheduled",
+        stallCauseCandidate: "off-cpu",
       }),
       "Event loop stalled",
     );
     monitor.stop();
   });
 
-  it("reports low main-thread CPU when helper threads keep process CPU high", () => {
+  it("attributes off-cpu when helper threads keep process CPU high", () => {
     installHistogram({ maxDelayMs: 1_000, meanDelayMs: 25, p99DelayMs: 450 });
     let mainThreadCpuUser = 0;
     vi.spyOn(process, "threadCpuUsage").mockImplementation(() => {
@@ -263,11 +276,75 @@ describe("event loop stall monitor", () => {
         processCpuWallRatio: 1,
         mainThreadCpuMs: 100,
         mainThreadCpuWallRatio: 0.02,
+        stallAttribution: "candidate",
+        stallCauseCandidate: "off-cpu",
       }),
       "Event loop stalled",
     );
     monitor.stop();
   });
+
+  it("uses synchronous work attribution when the main thread is on CPU", () => {
+    installHistogram({ maxDelayMs: 1_000, meanDelayMs: 25, p99DelayMs: 450 });
+    const mainThreadCpuValues = [0, 0, 1_000_000, 2_500_000];
+    vi.spyOn(process, "threadCpuUsage").mockImplementation(() => ({
+      user: mainThreadCpuValues.shift() ?? 2_500_000,
+      system: 0,
+    }));
+    const logger = { info: vi.fn() };
+    const monitor = startEventLoopStallMonitor({ logger });
+    runEventLoopWorkSync("test:main-thread-work", () => undefined);
+    vi.advanceTimersByTime(EVENT_LOOP_STALL_MONITOR_INTERVAL_MS);
+    expect(logger.info).toHaveBeenCalledWith(
+      expect.objectContaining({
+        processCpuWallRatio: 1,
+        mainThreadCpuWallRatio: 0.5,
+        stallAttribution: "candidate",
+        stallCauseCandidate: "test:main-thread-work",
+      }),
+      "Event loop stalled",
+    );
+    monitor.stop();
+  });
+
+  it.each([
+    {
+      voluntaryContextSwitches: 4,
+      involuntaryContextSwitches: 1,
+      expectedHint: "voluntary-dominant",
+    },
+    {
+      voluntaryContextSwitches: 1,
+      involuntaryContextSwitches: 4,
+      expectedHint: "involuntary-dominant",
+    },
+  ])(
+    "reports process-wide context-switch hint $expectedHint from deltas",
+    ({ voluntaryContextSwitches, involuntaryContextSwitches, expectedHint }) => {
+      installHistogram({ maxDelayMs: 1_000, meanDelayMs: 25, p99DelayMs: 450 });
+      const base = createResourceUsage();
+      vi.spyOn(process, "resourceUsage")
+        .mockReturnValueOnce(base)
+        .mockReturnValueOnce(
+          createResourceUsage({
+            voluntaryContextSwitches,
+            involuntaryContextSwitches,
+          }),
+        );
+      const logger = { info: vi.fn() };
+      const monitor = startEventLoopStallMonitor({ logger });
+      vi.advanceTimersByTime(EVENT_LOOP_STALL_MONITOR_INTERVAL_MS);
+      expect(logger.info).toHaveBeenCalledWith(
+        expect.objectContaining({
+          processVoluntaryContextSwitches: voluntaryContextSwitches,
+          processInvoluntaryContextSwitches: involuntaryContextSwitches,
+          processContextSwitchHint: expectedHint,
+        }),
+        "Event loop stalled",
+      );
+      monitor.stop();
+    },
+  );
 
   it("does not log below the threshold", () => {
     const histogram = installHistogram({
@@ -454,10 +531,13 @@ describe("event loop stall monitor", () => {
     const logger = { info: vi.fn() };
     const nowSpy = vi.spyOn(nodePerformance, "now");
     const cpuSpy = vi.spyOn(process, "threadCpuUsage");
-    cpuSpy.mockReturnValueOnce({ user: 1000, system: 0 });
-    cpuSpy.mockReturnValueOnce({ user: 2000, system: 0 });
-    cpuSpy.mockReturnValueOnce({ user: 10000, system: 0 });
-    cpuSpy.mockReturnValueOnce({ user: 100, system: 0 });
+    cpuSpy
+      .mockReturnValueOnce({ user: 1000, system: 0 })
+      .mockReturnValueOnce({ user: 2000, system: 0 })
+      .mockReturnValueOnce({ user: 10_000, system: 0 })
+      .mockReturnValueOnce({ user: 1_000, system: 0 })
+      .mockReturnValueOnce({ user: 100_000, system: 0 })
+      .mockReturnValueOnce({ user: 2_600_000, system: 0 });
     nowSpy.mockReturnValueOnce(0);
     nowSpy.mockReturnValueOnce(650);
     runEventLoopWorkSync("sweep:database-maintenance", () => undefined);
@@ -465,10 +545,10 @@ describe("event loop stall monitor", () => {
     nowSpy.mockReturnValueOnce(651);
     runEventLoopWorkSync("ws:daemon heartbeat", () => undefined);
     nowSpy.mockRestore();
-    cpuSpy.mockRestore();
 
     const monitor = startEventLoopStallMonitor({ logger });
     vi.advanceTimersByTime(EVENT_LOOP_STALL_MONITOR_INTERVAL_MS);
+    cpuSpy.mockRestore();
 
     expect(logger.info).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -530,13 +610,16 @@ describe("event loop stall monitor", () => {
     const nowSpy = vi.spyOn(nodePerformance, "now");
     const cpuSpy = vi.spyOn(process, "threadCpuUsage");
     nowSpy.mockReturnValueOnce(0).mockReturnValueOnce(520);
-    cpuSpy.mockReturnValueOnce({ user: 0, system: 0 });
-    cpuSpy.mockReturnValueOnce({ user: 520_000, system: 0 });
+    cpuSpy
+      .mockReturnValueOnce({ user: 0, system: 0 })
+      .mockReturnValueOnce({ user: 520_000, system: 0 })
+      .mockReturnValueOnce({ user: 520_000, system: 0 })
+      .mockReturnValueOnce({ user: 1_520_000, system: 0 });
     runEventLoopWorkSync("plugin HTTP POST /v1/responses:sync", () => undefined);
     nowSpy.mockRestore();
-    cpuSpy.mockRestore();
     const monitor = startEventLoopStallMonitor({ logger });
     vi.advanceTimersByTime(EVENT_LOOP_STALL_MONITOR_INTERVAL_MS);
+    cpuSpy.mockRestore();
     expect(logger.info).toHaveBeenCalledWith(
       expect.objectContaining({
         longestSynchronousWork: "plugin HTTP POST /v1/responses:sync",
@@ -552,12 +635,11 @@ describe("event loop stall monitor", () => {
     installHistogram({ maxDelayMs: 2_000, meanDelayMs: 25, p99DelayMs: 450 });
     const logger = { info: vi.fn() };
     const nowSpy = vi.spyOn(nodePerformance, "now");
-    let mainThreadCpuUser = 0;
-    vi.spyOn(process, "threadCpuUsage").mockImplementation(() => {
-      const current = { user: mainThreadCpuUser, system: 0 };
-      mainThreadCpuUser += 1_000;
-      return current;
-    });
+    const mainThreadCpuValues = [0, 1_000, 1_000, 2_501_000];
+    vi.spyOn(process, "threadCpuUsage").mockImplementation(() => ({
+      user: mainThreadCpuValues.shift() ?? 2_501_000,
+      system: 0,
+    }));
     try {
       nowSpy.mockReturnValueOnce(0).mockReturnValueOnce(1);
       runEventLoopWorkSync("ws:daemon heartbeat", () => undefined);

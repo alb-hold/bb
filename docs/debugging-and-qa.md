@@ -954,12 +954,18 @@ applied chunk.
    `Thread timeline build blocked the event loop` and its stage timings.
    `inFlightWorkAtObservation` can name an unrelated long poll; compare
    `longestSynchronousWork` and its wall/CPU times with the profile instead.
-   `stallAttribution` is `candidate`, with the operation in
-   `stallCauseCandidate`, when a measured synchronous operation is long enough
-   (within one 20 ms sample) to explain the maximum delay, and `unattributed`
-   otherwise. A candidate is not a confirmed cause: both fall somewhere in the
-   five-second window. Profile processing runs in a worker and no longer emits
-   the historical `cpu-profile:*` synchronous-work labels.
+   `stallCauseCandidate` is `off-cpu` when the main-thread CPU/wall ratio is
+   below 0.1. This means the main thread was not running enough to explain the
+   delay; it does not distinguish preemption from a blocking wait. The
+   process-wide `processContextSwitchHint` compares voluntary and involuntary
+   context-switch deltas as a clue, not proof. Otherwise the candidate is the
+   larger of GC pause time and measured synchronous work, when the selected
+   duration is long enough (within one 20 ms sample) to explain the maximum
+   delay.
+   `unattributed` means neither rule explains it. Candidates are not confirmed
+   causes: both measurements fall somewhere in the five-second window. Profile
+   processing runs in a worker and no longer emits the historical
+   `cpu-profile:*` synchronous-work labels.
 2. With performance diagnostics enabled, look for `Event loop stall attribution`
    records for the same PID and UTC window. They are emitted at the next CPU
    profile rotation (normally within 30 seconds), or on diagnostics shutdown,
