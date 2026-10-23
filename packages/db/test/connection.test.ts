@@ -3,6 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { resourceUsage } from "node:process";
+import { createRequire } from "node:module";
+import { Worker } from "node:worker_threads";
 import { describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
 import {
@@ -44,6 +46,77 @@ function getOnlyInfoLog(logger: CapturingSlowQueryLogger): LoggedInfo {
 }
 
 describe("createConnection", () => {
+  it("separates BEGIN lock wait from transaction body time", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "bb-db-lock-wait-"));
+    const databasePath = join(directory, "bb.db");
+    const logger = new CapturingSlowQueryLogger();
+    const db = createConnection(databasePath, {
+      slowQueryLogger: logger,
+      slowQueryThresholdMs: 100,
+    });
+    const worker = new Worker(
+      `const { parentPort, workerData } = require("node:worker_threads");
+       const Database = require(workerData.driverPath);
+       const db = new Database(workerData.databasePath);
+       db.pragma("journal_mode = WAL");
+       db.exec("BEGIN IMMEDIATE");
+       parentPort.postMessage("held");
+       setTimeout(() => { db.exec("COMMIT"); db.close(); }, 300);`,
+      {
+        eval: true,
+        workerData: {
+          databasePath,
+          driverPath: createRequire(import.meta.url).resolve("better-sqlite3"),
+        },
+      },
+    );
+    try {
+      await new Promise<void>((resolve, reject) => {
+        worker.once("message", resolve);
+        worker.once("error", reject);
+      });
+      db.$client.transaction(() => {}).immediate();
+      const transactionLog = logger.infoLogs.find(
+        (log) => log.fields.operation === "transaction",
+      );
+      expect(transactionLog).toBeDefined();
+      expect(transactionLog?.fields.lockWaitMs).toBeGreaterThanOrEqual(250);
+      expect(transactionLog?.fields.bodyMs).toBeLessThan(100);
+    } finally {
+      await worker.terminate();
+      db.$client.close();
+      rmSync(directory, { force: true, recursive: true });
+    }
+  });
+
+  it("reports near-zero BEGIN wait and preserves the slow-log threshold", () => {
+    const logger = new CapturingSlowQueryLogger();
+    const db = createConnection(":memory:", {
+      slowQueryLogger: logger,
+      slowQueryThresholdMs: 0,
+    });
+    db.$client.transaction(() => {}).immediate();
+    const transactionLog = logger.infoLogs.find(
+      (log) => log.fields.operation === "transaction",
+    );
+    expect(transactionLog?.fields.lockWaitMs).toBeLessThan(10);
+    expect(transactionLog?.fields.bodyMs).toBeGreaterThanOrEqual(0);
+    db.$client.close();
+
+    const thresholdLogger = new CapturingSlowQueryLogger();
+    const thresholdDb = createConnection(":memory:", {
+      slowQueryLogger: thresholdLogger,
+      slowQueryThresholdMs: 100,
+    });
+    thresholdDb.$client.transaction(() => {}).immediate();
+    expect(
+      thresholdLogger.infoLogs.some(
+        (log) => log.fields.operation === "transaction",
+      ),
+    ).toBe(false);
+    thresholdDb.$client.close();
+  });
+
   it("distinguishes time waiting inside SQLite from CPU work", () => {
     const logger = new CapturingSlowQueryLogger();
     const db = createConnection(":memory:", {
