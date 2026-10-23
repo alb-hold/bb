@@ -45,7 +45,6 @@ import { buildTerminalWebSocketUrl } from "./terminal-websocket-url";
 import {
   importTerminalModules,
   importTerminalSearchAddon,
-  importTerminalUnicodeAddon,
   importTerminalWebLinksAddon,
   importTerminalWebglAddon,
 } from "./terminal-modules";
@@ -1693,7 +1692,11 @@ export function ThreadTerminalView({
         }
       };
       const requiredModulesPromise = importTerminalModules();
-      const [{ Terminal }, { FitAddon: LoadedFitAddon }] =
+      const [
+        { Terminal },
+        { FitAddon: LoadedFitAddon },
+        { Unicode11Addon },
+      ] =
         await requiredModulesPromise;
       if (disposed) {
         return;
@@ -1801,6 +1804,8 @@ export function ThreadTerminalView({
       );
       fitAddon = new LoadedFitAddon();
       terminal.loadAddon(fitAddon);
+      terminal.loadAddon(new Unicode11Addon());
+      terminal.unicode.activeVersion = TERMINAL_UNICODE_VERSION;
       terminal.open(containerElement);
       void loadOptionalTerminalSearchAddon(importTerminalSearchAddon)
         .then((searchAddonModule) => {
@@ -1834,17 +1839,6 @@ export function ThreadTerminalView({
                 },
               ),
             );
-          } catch {
-            return;
-          }
-        })
-        .catch(() => undefined);
-      void importTerminalUnicodeAddon()
-        .then(({ Unicode11Addon }) => {
-          if (disposed || terminal === null) return;
-          try {
-            terminal.loadAddon(new Unicode11Addon());
-            terminal.unicode.activeVersion = TERMINAL_UNICODE_VERSION;
           } catch {
             return;
           }
@@ -2284,12 +2278,15 @@ export function ThreadTerminalView({
               replayCompleted = false;
               const replayGrid = latestPtyGrid;
               const previewTerminal = new Terminal({
+                allowProposedApi: TERMINAL_ALLOW_PROPOSED_API,
                 cols: replayGrid.cols,
                 rows: replayGrid.rows,
                 fontFamily: readTerminalFontFamily(),
                 fontSize: 12,
                 theme: buildTerminalTheme(),
               });
+              previewTerminal.loadAddon(new Unicode11Addon());
+              previewTerminal.unicode.activeVersion = TERMINAL_UNICODE_VERSION;
               replayPreview = mountTerminalReplayPreview({
                 container: containerElement,
                 initialFitGrid: localFitGrid,

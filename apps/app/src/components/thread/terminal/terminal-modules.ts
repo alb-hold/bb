@@ -2,6 +2,7 @@ export function importTerminalModules() {
   return Promise.all([
     import("@xterm/xterm"),
     import("@xterm/addon-fit"),
+    importTerminalUnicodeAddon(),
   ]);
 }
 
@@ -25,6 +26,5 @@ export function preloadTerminalModules(): void {
   void importTerminalModules().catch(() => undefined);
   void importTerminalSearchAddon().catch(() => undefined);
   void importTerminalWebLinksAddon().catch(() => undefined);
-  void importTerminalUnicodeAddon().catch(() => undefined);
   void importTerminalWebglAddon().catch(() => undefined);
 }
