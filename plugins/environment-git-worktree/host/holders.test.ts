@@ -605,6 +605,89 @@ describe("the Linux process-list visibility rule", () => {
       });
     });
 
+    it("compares a maps device with the whole Linux st_dev encoding, for a major and a minor above 255", async () => {
+      const mapped = (stDev: string) =>
+        fakeProc({
+          ourView: { ...view, "/opt/lib/x.so": `${stDev}:12` },
+          processes: {
+            300: {
+              uid: 1000,
+              mount: "mnt:[2]",
+              mapFiles: ["/opt/lib/x.so"],
+              mapDevice: "103:1a2 12",
+            },
+          },
+        });
+      expect(
+        await scanLinux("/work/tree", mapped("1115042"), 4242),
+      ).toMatchObject({
+        status: "clear",
+        clearances: [
+          { pid: 300, path: "/opt/lib/x.so", identity: "1115042:12" },
+        ],
+      });
+    });
+
+    it("keeps the worktree for a different device that the truncated major<<8|minor encoding would also match", async () => {
+      const proc = fakeProc({
+        ourView: { ...view, "/opt/lib/x.so": "66466:12" },
+        processes: {
+          300: {
+            uid: 1000,
+            mount: "mnt:[2]",
+            mapFiles: ["/opt/lib/x.so"],
+            mapDevice: "103:1a2 12",
+          },
+        },
+      });
+      expect(await scanLinux("/work/tree", proc, 4242)).toMatchObject({
+        status: "unknown",
+        reason: expect.stringContaining("different file"),
+      });
+    });
+
+    it("keeps the worktree for a deleted mapped path and for a maps device or inode that does not parse", async () => {
+      const deleted = fakeProc({
+        ourView: view,
+        processes: {
+          300: {
+            uid: 1000,
+            mount: "mnt:[2]",
+            mapFiles: ["/opt/lib/x.so (deleted)"],
+          },
+        },
+      });
+      expect(await scanLinux("/work/tree", deleted, 4242)).toMatchObject({
+        status: "unknown",
+        reason: expect.stringContaining("was deleted"),
+      });
+      for (const mapDevice of [
+        "zz:01 12",
+        "08:0g 12",
+        "08 12",
+        "08:01:02 12",
+        "08:01 x12",
+        "08:01 012",
+        "123456789:01 12",
+      ]) {
+        const proc = fakeProc({
+          ourView: view,
+          processes: {
+            300: {
+              uid: 1000,
+              mount: "mnt:[2]",
+              mapFiles: ["/opt/lib/x.so"],
+              mapDevice,
+            },
+          },
+        });
+        expect(await scanLinux("/work/tree", proc, 4242)).toMatchObject({
+          status: "unknown",
+          reason: expect.stringContaining("cannot be identified"),
+        });
+      }
+    });
+
     it("keeps the worktree when the maps line of a mapped file has no usable identity", async () => {
       const proc = fakeProc({
         ourView: view,

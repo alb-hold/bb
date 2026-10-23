@@ -326,14 +326,15 @@ function identityOfMapsLine(
   inode: string,
 ): { identity?: string } {
   const parts = device.split(":");
-  const major = Number.parseInt(parts[0] ?? "", 16);
-  const minor = Number.parseInt(parts[1] ?? "", 16);
+  const [majorText, minorText] = parts;
   if (
     parts.length !== 2 ||
-    !Number.isInteger(major) ||
-    !Number.isInteger(minor)
+    !/^[0-9a-f]{1,8}$/iu.test(majorText ?? "") ||
+    !/^[0-9a-f]{1,8}$/iu.test(minorText ?? "")
   )
     return {};
+  const major = Number.parseInt(majorText ?? "", 16);
+  const minor = Number.parseInt(minorText ?? "", 16);
   if (!/^[1-9]\d*$/u.test(inode)) return {};
   const encoded =
     ((BigInt(major) & 0xfffn) << 8n) |
