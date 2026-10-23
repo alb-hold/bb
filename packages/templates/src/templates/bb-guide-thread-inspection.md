@@ -11,13 +11,14 @@ Read-only commands take a thread ID or --self where supported.
 
 Listing:
 
-  bb thread list                           List threads
+  bb thread list                           List active threads
     --project <id>                         Filter by project
     --environment <id>                     Filter by environment
     --machine <id-or-name>                 Filter by the machine the environment is on (alias --host)
     --parent-thread <id>                   Filter by parent thread
     --thread <id>                          Only this thread; unknown or deleted IDs are left out (repeatable, up to 200)
     --archived                             Show only archived threads
+    --all                                  Include archived and active threads
     --section <id>                         Filter by section
     --unsectioned                          Show only threads outside sections
     --include-hidden                       Include hidden threads
@@ -32,6 +33,9 @@ Listing:
   the thread title, then the fallback title from the first prompt, then "-". Long
   titles are cut at 60 characters. Project shows the project name; the
   personal project shows "-". Use --json for the full thread records.
+  Archived threads are excluded by default. Use --archived for archived-only
+  results or --all to include both archived and active threads. These two flags
+  cannot be combined.
 
   bb thread search <query> [--limit <1-50>]
                                              Search threads and messages

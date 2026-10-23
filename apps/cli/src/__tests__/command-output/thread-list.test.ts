@@ -45,8 +45,50 @@ describe("bb thread list command output", () => {
       query: {
         projectId: "proj-1",
         parentThreadId: "thread-manager-1",
+        archived: "false",
       },
     });
+  });
+
+  it("bb thread list defaults to active threads", async () => {
+    const list = vi.fn(async () => []);
+    stubServerApi({ "v1.threads.$get": list });
+
+    await runCommand(["thread", "list"], register);
+
+    expect(list).toHaveBeenCalledWith({ query: { archived: "false" } });
+  });
+
+  it("bb thread list selects archived threads with --archived", async () => {
+    const list = vi.fn(async () => []);
+    stubServerApi({ "v1.threads.$get": list });
+
+    await runCommand(["thread", "list", "--archived"], register);
+
+    expect(list).toHaveBeenCalledWith({ query: { archived: "true" } });
+  });
+
+  it("bb thread list includes archived and active threads with --all", async () => {
+    const list = vi.fn(async () => []);
+    stubServerApi({ "v1.threads.$get": list });
+
+    await runCommand(["thread", "list", "--all"], register);
+
+    expect(list).toHaveBeenCalledWith({ query: {} });
+  });
+
+  it("bb thread list rejects --all with --archived", async () => {
+    const list = vi.fn(async () => []);
+    stubServerApi({ "v1.threads.$get": list });
+
+    await expect(
+      runCommand(["thread", "list", "--all", "--archived"], register),
+    ).rejects.toThrow("process.exit:1");
+
+    expect(console.error).toHaveBeenCalledWith(
+      "Error: --all cannot be combined with --archived.",
+    );
+    expect(list).not.toHaveBeenCalled();
   });
 
   it("bb thread list narrows to repeated --thread IDs", async () => {
@@ -59,7 +101,7 @@ describe("bb thread list command output", () => {
     );
 
     expect(list).toHaveBeenCalledWith({
-      query: { threadIds: "thr_a,thr_b" },
+      query: { threadIds: "thr_a,thr_b", archived: "false" },
     });
   });
 
@@ -76,7 +118,9 @@ describe("bb thread list command output", () => {
       register,
     );
 
-    expect(list).toHaveBeenCalledWith({ query: { hostId: "host_removed123" } });
+    expect(list).toHaveBeenCalledWith({
+      query: { hostId: "host_removed123", archived: "false" },
+    });
     expect(hosts).not.toHaveBeenCalled();
   });
 
@@ -87,7 +131,7 @@ describe("bb thread list command output", () => {
     await runCommand(["thread", "list", "--include-hidden"], register);
 
     expect(list).toHaveBeenCalledWith({
-      query: { includeHidden: "true" },
+      query: { archived: "false", includeHidden: "true" },
     });
   });
 
@@ -150,7 +194,7 @@ describe("bb thread list command output", () => {
       await runCommand(["thread", "list"], register);
 
       expect(list).toHaveBeenCalledWith({
-        query: {},
+        query: { archived: "false" },
       });
       expect(collectLogPayloads(vi.mocked(console.log))).toEqual([
         "",
@@ -180,7 +224,7 @@ describe("bb thread list command output", () => {
     await runCommand(["thread", "list"], register);
 
     expect(list).toHaveBeenCalledWith({
-      query: {},
+      query: { archived: "false" },
     });
     expect(collectLogPayloads(vi.mocked(console.log))).toEqual([
       "",
@@ -396,7 +440,7 @@ describe("bb thread list command output", () => {
     await runCommand(["thread", "list"], register);
 
     expect(list).toHaveBeenCalledWith({
-      query: {},
+      query: { archived: "false" },
     });
   });
 });
