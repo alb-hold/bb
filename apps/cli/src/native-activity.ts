@@ -479,8 +479,10 @@ export class NativeActivityTracker {
     }
     for (const occurrences of groups.values()) {
       if (occurrences[0]?.candidateCallIds.includes(call.id)) continue;
-      const candidateGroupSize =
-        (occurrences[0]?.candidateGroupSize ?? 0) + 1;
+      const firstCandidate = occurrences[0]?.candidateCallIds.length === 0;
+      const candidateGroupSize = firstCandidate
+        ? (occurrences[0]?.candidateGroupSize ?? 0) + 1
+        : (occurrences[0]?.candidateGroupSize ?? 0);
       for (const occurrence of occurrences) {
         occurrence.candidateCallIds.push(call.id);
         occurrence.candidateGroupSize = candidateGroupSize;
