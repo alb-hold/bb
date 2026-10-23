@@ -101,8 +101,8 @@ function word typed twice with only spaces between when it can never stand twice
 (such as the, a, I, we, of, and, de and o; any other repeat, such as very very,
 had had, not not, her her or log in in, or a pair split by punctuation, is only
 suggested), a lowercase a to an or an to a (a capital A or An can be a label,
-so that change is only suggested), and accents on nao, voce, tambem,
-entao and amanha apply by themselves, never inside code, paths, identifiers or
+so that change is only suggested), and accents on a lowercase nao, voce, tambem,
+entao or amanha (a capitalized Nao can be a name, so that accent is only suggested) apply by themselves, never inside code, paths, identifiers or
 vocabulary terms, nor inside quoted text (a quotation can span lines, and one
 left open covers the rest of the text), nor on a line containing = ; { } ( ) < > [ ] $ ` | \ / # or --.
 Vocabulary terms are spelling hints for transcription and correction, not a

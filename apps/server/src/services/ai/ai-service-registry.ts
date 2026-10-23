@@ -114,7 +114,7 @@ export function createAiServiceRegistry(
 
   function refresh(service: AiServiceRegistration): Promise<AiServiceStatus> {
     const pending = inFlight.get(service);
-    if (pending !== undefined && now() - pending.startedAt <= STATUS_TTL_MS) {
+    if (pending !== undefined && now() - pending.startedAt < STATUS_ANSWER_MS) {
       return pending.request;
     }
     const startedAt = now();

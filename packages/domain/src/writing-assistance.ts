@@ -410,8 +410,8 @@ function isMeaningInvariantChange(
   if (changed.length !== 1) return false;
   const [from, to, lowercase] = changed[0]!;
   return (
-    NON_WORD_RESTORATIONS.get(from) === to ||
-    (lowercase &&
+    lowercase &&
+    (NON_WORD_RESTORATIONS.get(from) === to ||
       MEANING_INVARIANT_GROUPS.some(
         (group) => group.includes(from) && group.includes(to),
       ))

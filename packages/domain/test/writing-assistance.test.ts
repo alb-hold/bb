@@ -134,23 +134,41 @@ describe("resolveWritingEdits", () => {
     },
   );
 
+  it.each([
+    ["Ask Nao about the deploy.", "Nao", "Não"],
+    ["Nao vou rodar a migracao.", "Nao", "Não"],
+    ["Voce pode verificar o servidor?", "Voce", "Você"],
+  ])(
+    "only suggests an accent on a capitalized word, which can be a name: %s",
+    (target, original, replacement) => {
+      const edits = resolveWritingEdits({
+        ...base,
+        target,
+        proposals: [proposal(original, replacement, { category: "spelling" })],
+      });
+      expect(edits).toEqual([
+        expect.objectContaining({ disposition: "suggest" }),
+      ]);
+    },
+  );
+
   it("splits a bundled multi-word fix into safe per-word edits", () => {
-    const target = "Voce pode verificar a configuracao do servidor?";
+    const target = "Então voce pode verificar a configuracao do servidor?";
     const edits = resolveWritingEdits({
       ...base,
       target,
       proposals: [
         proposal(
-          "Voce pode verificar a configuracao",
-          "Você pode verificar a configuração",
+          "voce pode verificar a configuracao",
+          "você pode verificar a configuração",
           { category: "spelling" },
         ),
       ],
     });
     expect(edits).toEqual([
       expect.objectContaining({
-        original: "Voce",
-        replacement: "Você",
+        original: "voce",
+        replacement: "você",
         disposition: "apply",
       }),
       expect.objectContaining({
@@ -493,19 +511,19 @@ describe("resolveWritingEdits", () => {
 
   it("auto-applies article and accent fixes whose meaning cannot change and only suggests agreement", () => {
     const target =
-      "Voce disse que nao the users is ready and a error happened.";
+      "E voce disse que nao the users is ready and a error happened.";
     const edits = resolveWritingEdits({
       ...base,
       target,
       proposals: [
-        proposal("Voce", "Você", { category: "spelling" }),
+        proposal("voce", "você", { category: "spelling" }),
         proposal("nao", "não", { category: "spelling" }),
         proposal("users is", "users are"),
         proposal("a error", "an error"),
       ],
     });
     expect(edits.map((edit) => [edit.replacement, edit.disposition])).toEqual([
-      ["Você", "apply"],
+      ["você", "apply"],
       ["não", "apply"],
       ["are", "suggest"],
       ["an", "apply"],

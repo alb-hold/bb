@@ -317,7 +317,7 @@ describe("AI service registry", () => {
       }
     });
 
-    it("rechecks a service whose check hangs once the check is older than the status cache, for repeated quick task waits, and ignores the hung check's late result", async () => {
+    it("rechecks a service whose check hangs on the next quick task wait, so a service that recovers within the status cache is used, and ignores the hung check's late result", async () => {
       vi.useFakeTimers();
       try {
         const answers: ((status: { ready: true }) => void)[] = [];
@@ -331,24 +331,17 @@ describe("AI service registry", () => {
           }),
         );
         const wait = AI_STATUS_FALLBACK_WAIT_MS;
-        const quickWaitAnswer = async () => {
-          const status = registry.settledStatus(ACME, wait);
-          await vi.advanceTimersByTimeAsync(wait + 1);
-          return status;
-        };
+        const notResponding = { ready: false, message: "Not responding" };
 
-        await expect(quickWaitAnswer()).resolves.toEqual({
-          ready: false,
-          message: "Not responding",
-        });
-        await vi.advanceTimersByTimeAsync(3_000);
-        await expect(quickWaitAnswer()).resolves.toEqual({
-          ready: false,
-          message: "Not responding",
-        });
+        const first = registry.settledStatus(ACME, wait);
+        await vi.advanceTimersByTimeAsync(1_000);
+        const joined = registry.settledStatus(ACME, wait);
+        await vi.advanceTimersByTimeAsync(wait + 1);
+        await expect(first).resolves.toEqual(notResponding);
+        await expect(joined).resolves.toEqual(notResponding);
         expect(calls).toBe(1);
 
-        await vi.advanceTimersByTimeAsync(4_000);
+        await vi.advanceTimersByTimeAsync(2_000);
         const recovered = registry.settledStatus(ACME, wait);
         await vi.advanceTimersByTimeAsync(0);
         expect(calls).toBe(2);

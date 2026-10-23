@@ -407,8 +407,8 @@ suggested), removing a word typed twice with only spaces between (not a tab or l
 when it is one of these words, which never stand twice in a row: the, a, an, I, we, they, he, she, our, your, their, of, and, or, but, if, and the Portuguese o, os, a, as, um, uma, de, da, dos, das, em, na, nas, e, ou, eu, ele, ela, nós, por, com (any
 other repeat can be meant and is only suggested: very very, had had, that that, not not, her her as in
 tell her her access, in in as in log in in five minutes, para para, and a pair split by punctuation
-such as so did I. I left), the lowercase article a to an or an to a (a capital A or An can be a label, so that change is only suggested), and accents on a fixed list of Portuguese words that are
-not words without them (nao, voce, tambem, entao, amanha). Spelling fixes, a
+such as so did I. I left), the lowercase article a to an or an to a (a capital A or An can be a label, so that change is only suggested), and accents on a fixed list of lowercase Portuguese words that are
+not words without them (nao, voce, tambem, entao, amanha; a capitalized Nao can be a name, so an accent on a capitalized word is only suggested). Spelling fixes, a
 missing final period, capitalization or spacing in text that does not end a
 sentence (such as a bare `return true`), other punctuation (commas, question marks), homophones such as its/it's, verb
 agreement (is/are/am, was/were, has/have, does/do and their negations, since the
