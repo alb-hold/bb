@@ -1042,7 +1042,7 @@ describe("ThreadTerminalView terminal focus boundary", () => {
       type: "attached",
       session,
       replayStartSeq: 0,
-      nextSeq: 0,
+      nextSeq: 1,
     });
     const output = Array.from(
       { length: 48 },
@@ -1056,7 +1056,14 @@ describe("ThreadTerminalView terminal focus boundary", () => {
       expect(document.querySelector(".xterm-rows")?.textContent).toContain(
         "retained-48",
       );
-    }, "terminal scrollback did not render retained-48 within 5000 ms");
+    }, "retained-48 rendered BEFORE pointer toggle");
+    await waitForReadinessCondition(
+      () =>
+        expect(
+          testState.socketMessages.map((message) => JSON.parse(message)),
+        ).toContainEqual({ type: "ack", nextSeq: 1 }),
+      "retained-48 replay was not acknowledged BEFORE pointer toggle",
+    );
     const xterm = document.querySelector(".xterm");
     expect(xterm).not.toBeNull();
 
@@ -1074,6 +1081,17 @@ describe("ThreadTerminalView terminal focus boundary", () => {
       "terminal socket was not retained after pointer mode changed within 5000 ms",
     );
     expect(document.querySelector(".xterm")).toBe(xterm);
+    socket.receive({
+      type: "output",
+      chunk: { seq: 1, dataBase64: btoa("after-toggle-output") },
+    });
+    await waitForReadinessCondition(
+      () =>
+        expect(
+          testState.socketMessages.map((message) => JSON.parse(message)),
+        ).toContainEqual({ type: "ack", nextSeq: 2 }),
+      "new output was not acknowledged AFTER pointer toggle",
+    );
     fireEvent.click(screen.getByRole("button", { name: "More terminal keys" }));
     fireEvent.click(
       screen.getByRole("button", { name: "Select terminal text" }),
@@ -1084,7 +1102,8 @@ describe("ThreadTerminalView terminal focus boundary", () => {
       }) as HTMLTextAreaElement;
       expect(snapshot.value).toContain("retained-01");
       expect(snapshot.value).toContain("retained-48");
-    }, "terminal text snapshot did not retain the visible output within 5000 ms");
+      expect(snapshot.value).toContain("after-toggle-output");
+    }, "scrollback survives pointer toggle: retained and new output must render");
   }, 30_000);
 
   it("sends clipboard text once through xterm paste input", async () => {
