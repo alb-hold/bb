@@ -6,6 +6,7 @@ import {
 } from "@bb/db";
 import { eq } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
+import { registerHostRpcResponder } from "../helpers/host-rpc.js";
 import { runQueuedMessageDispatch } from "../../src/services/threads/queued-message-dispatch.js";
 import { textInput } from "../helpers/prompt-input.js";
 import {
@@ -21,7 +22,12 @@ import { withTestHarness } from "../helpers/test-app.js";
 describe("an unclaimed queued message on an archived thread whose environment is then removed", () => {
   it("is never run against the removed environment when the thread is unarchived: it fails visibly on the queue, with a reason", async () =>
     withTestHarness(async (harness) => {
-      const { host } = seedHostSession(harness.deps);
+      const { host, session } = seedHostSession(harness.deps);
+      registerHostRpcResponder(harness, {
+        hostId: host.id,
+        sessionId: session.id,
+        handle: () => ({ ok: true, result: { ok: true } }),
+      });
       const { project } = seedProjectWithSource(harness.deps, {
         hostId: host.id,
       });
@@ -58,6 +64,7 @@ describe("an unclaimed queued message on an archived thread whose environment is
         { method: "POST" },
       );
       expect(unarchived.status).toBe(200);
+
       await runQueuedMessageDispatch(harness.deps, {
         kind: "thread-ready",
         threadId: thread.id,
