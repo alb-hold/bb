@@ -156,7 +156,7 @@ async function settled(harness: TestAppHarness, threadId: string) {
     .poll(() => {
       const row = getPreparingEnvironment(harness.db, threadId);
       if (row === null) return "missing";
-      if (row.status === "creating" || row.status === "provisioning")
+      if (row.status === "creating")
         return "pending";
       if (row.status === "error" && row.statusMessage === null)
         return "pending";
