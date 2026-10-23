@@ -508,6 +508,38 @@ describe("native terminal questions", () => {
       }
     });
 
+    it("settles each prompt when its own overlapping candidates complete", () => {
+      const { hook, call, ask, done, tracker } = holder();
+      const input = bash("make build");
+      hook(call("toolu_1", input));
+      hook(call("toolu_2", input));
+      const first = hook(ask(input));
+      hook(call("toolu_3", input));
+      hook(call("toolu_4", input));
+      const second = hook(ask(input));
+      const third = hook(ask(input));
+      const firstId = waiting(first)[0]!.id;
+      const secondId = waiting(second)[1]!.id;
+      const thirdId = waiting(third)[2]!.id;
+
+      expect(hook(done("toolu_1", input))).toBeNull();
+      expect(waiting(hook(done("toolu_2", input))).map(({ id }) => id)).toEqual([
+        secondId,
+        thirdId,
+      ]);
+      expect(waiting(tracker.heartbeat()).map(({ id }) => id)).toEqual([
+        secondId,
+        thirdId,
+      ]);
+      expect(hook(done("toolu_3", input))).toBeNull();
+      expect(hook(done("toolu_4", input))).toEqual({
+        state: "working",
+        prompt: null,
+      });
+      expect(tracker.heartbeat()).toMatchObject({ state: "working", prompt: null });
+      expect(firstId).not.toBe(secondId);
+    });
+
     it("keeps the second identical call's prompt open when the first auto-allowed call completes", () => {
       const { hook, call, ask, done, tracker } = holder();
       const input = bash("make build");
