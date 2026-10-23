@@ -389,8 +389,12 @@ export class NativeActivityTracker {
     if (signal.answered !== undefined) {
       if (signal.occurrence !== true)
         return this.closeQuestion(signal.answered);
-      const occurrence = this.endMatchingOccurrence(signal.answered, signal);
-      return occurrence === null ? null : this.closeQuestion(occurrence);
+      const occurrences = this.endMatchingOccurrences(signal.answered, signal);
+      let report: NativeActivityReport | null = null;
+      for (const occurrence of occurrences) {
+        report = this.closeQuestion(occurrence);
+      }
+      return report;
     }
     if (signal.state === "idle") {
       this.clearQuestions();
@@ -506,10 +510,10 @@ export class NativeActivityTracker {
     return { id, prompt: question.prompt };
   }
 
-  private endMatchingOccurrence(
+  private endMatchingOccurrences(
     questionId: string,
     signal: NativeActivitySignal,
-  ): string | null {
+  ): string[] {
     const base = occurrenceBase(questionId);
     const open = this.openOccurrences.get(base) ?? [];
     const callId = signal.callId ?? null;
@@ -526,22 +530,26 @@ export class NativeActivityTracker {
         occurrence.candidateCallIds.includes(callId),
       );
       if (candidates.length > 0) {
-        const candidateIds = new Set(
-          candidates.flatMap((occurrence) => occurrence.candidateCallIds),
-        );
-        if (candidates.length >= candidateIds.size) {
-          index = open.indexOf(candidates[0]!);
-        }
         for (const occurrence of open) {
           occurrence.candidateCallIds = occurrence.candidateCallIds.filter(
             (candidateId) => candidateId !== callId,
           );
         }
-        if (index === -1) {
+        const unresolvedCandidates = new Set(
+          candidates.flatMap((occurrence) => occurrence.candidateCallIds),
+        );
+        if (unresolvedCandidates.size > 0) {
           if (open.length === 0) this.openOccurrences.delete(base);
           else this.openOccurrences.set(base, open);
-          return null;
+          return [];
         }
+        const resolvedOccurrences = new Set(candidates.map(({ id }) => id));
+        const remaining = open.filter(
+          (occurrence) => !resolvedOccurrences.has(occurrence.id),
+        );
+        if (remaining.length === 0) this.openOccurrences.delete(base);
+        else this.openOccurrences.set(base, remaining);
+        return candidates.map((occurrence) => occurrence.id);
       }
     }
     if (
@@ -562,7 +570,7 @@ export class NativeActivityTracker {
         [announced?.key, key ?? undefined],
         announced === undefined && open.length === 0,
       );
-      return null;
+      return [];
     }
     if (open.length === 1) this.openOccurrences.delete(base);
     else
@@ -570,7 +578,7 @@ export class NativeActivityTracker {
         base,
         open.filter((_, i) => i !== index),
       );
-    return matched.id;
+    return [matched.id];
   }
 
   private recordOrphanClose(
