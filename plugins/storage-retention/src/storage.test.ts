@@ -11,7 +11,7 @@ import {
 } from "@get-bb/plugin-sdk/testing";
 import { experimental_createHostEntryHarness } from "@get-bb/plugin-sdk/testing/host";
 import { resolveDevInstanceConfig } from "../../../packages/config/src/runtime.js";
-import hostEntry from "./host.js";
+import hostEntry, { removeTrashUnlessHeld } from "./host.js";
 import plugin from "./server.js";
 import { hostStorageContract } from "./host-contract.js";
 import {
@@ -878,6 +878,110 @@ it.skipIf(process.platform === "win32")(
     } finally {
       busy.kill("SIGKILL");
       await worker.experimental_dispose();
+    }
+  },
+);
+
+it.skipIf(process.platform === "win32")(
+  "keeps a trash directory with a process working inside it, names the process, stops nothing and still removes an idle trash neighbor",
+  async () => {
+    const root = await directory();
+    await fs.mkdir(path.join(root, ".bb-trash-busy", "checkout"), {
+      recursive: true,
+    });
+    await fs.mkdir(path.join(root, ".bb-trash-idle"));
+    const busy = spawn(
+      process.execPath,
+      ["-e", "setInterval(() => {}, 1000)"],
+      {
+        cwd: path.join(root, ".bb-trash-busy", "checkout"),
+        stdio: "ignore",
+      },
+    );
+    const worker = experimental_createHostEntryHarness(hostEntry);
+    try {
+      await expect
+        .poll(() => {
+          try {
+            process.kill(busy.pid!, 0);
+            return true;
+          } catch {
+            return false;
+          }
+        })
+        .toBe(true);
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      const result = await worker.experimental_call("discard", {
+        rootPath: root,
+        names: [".bb-trash-busy", ".bb-trash-idle"],
+        recreate: false,
+      });
+      expect(result.removed).toEqual([".bb-trash-idle"]);
+      expect(result.held).toHaveLength(1);
+      expect(result.held[0]?.name).toBe(".bb-trash-busy");
+      expect(result.held[0]?.unknown).toBeNull();
+      expect(result.held[0]?.holders.map((holder) => holder.pid)).toContain(
+        busy.pid,
+      );
+      expect(busy.exitCode).toBeNull();
+      expect(busy.signalCode).toBeNull();
+      expect(() => process.kill(busy.pid!, 0)).not.toThrow();
+      expect(
+        await fs.stat(path.join(root, ".bb-trash-busy", "checkout")),
+      ).toBeTruthy();
+      await expect
+        .poll(() =>
+          fs.stat(path.join(root, ".bb-trash-idle")).catch(() => null),
+        )
+        .toBeNull();
+      expect(await fs.stat(path.join(root, ".bb-trash-busy"))).toBeTruthy();
+    } finally {
+      busy.kill("SIGKILL");
+      await worker.experimental_dispose();
+    }
+  },
+);
+
+it.skipIf(process.platform === "win32")(
+  "does not remove a trash directory that a process has entered by the time it is removed, and removes it once the process is gone",
+  async () => {
+    const root = await directory();
+    const trash = path.join(root, ".bb-trash-late");
+    await fs.mkdir(path.join(trash, "inner"), { recursive: true });
+    const busy = spawn(
+      process.execPath,
+      ["-e", "setInterval(() => {}, 1000)"],
+      {
+        cwd: path.join(trash, "inner"),
+        stdio: "ignore",
+      },
+    );
+    try {
+      await expect
+        .poll(() => {
+          try {
+            process.kill(busy.pid!, 0);
+            return true;
+          } catch {
+            return false;
+          }
+        })
+        .toBe(true);
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      expect(await removeTrashUnlessHeld(trash)).toBe("kept");
+      expect(await fs.stat(path.join(trash, "inner"))).toBeTruthy();
+      expect(busy.exitCode).toBeNull();
+      expect(busy.signalCode).toBeNull();
+      expect(() => process.kill(busy.pid!, 0)).not.toThrow();
+      const exited = new Promise<void>((resolve) =>
+        busy.once("exit", () => resolve()),
+      );
+      busy.kill("SIGKILL");
+      await exited;
+      expect(await removeTrashUnlessHeld(trash)).toBe("removed");
+      expect(await fs.stat(trash).catch(() => null)).toBeNull();
+    } finally {
+      busy.kill("SIGKILL");
     }
   },
 );
@@ -2292,6 +2396,13 @@ it("never clears thread storage that holds a workspace an environment still uses
       `contains the workspace ${path.join(root, "thr_owner", "repair")}`,
     );
 
+    await expect
+      .poll(async () =>
+        (await fs.readdir(root)).filter((name) =>
+          name.startsWith(".bb-trash-"),
+        ),
+      )
+      .toEqual([]);
     await host.harness.callRpc("scanAll", null);
     await expect
       .poll(

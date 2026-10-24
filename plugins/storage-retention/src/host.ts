@@ -28,6 +28,26 @@ function assertStorageEntry(rootPath: string, name: string) {
     throw new Error("Invalid storage entry");
 }
 
+export async function removeTrashUnlessHeld(
+  trash: string,
+): Promise<"removed" | "kept"> {
+  const scan = await internal_DO_NOT_USE_scanProcessesWithCwdUnder({
+    directories: [trash],
+  });
+  if (scan.status !== "clear") {
+    console.error(
+      "Storage trash kept because a process may be working inside it",
+      trash,
+      scan.status === "held"
+        ? scan.holders.map((holder) => holder.pid)
+        : scan.reason,
+    );
+    return "kept";
+  }
+  await fs.rm(trash, { recursive: true, force: true });
+  return "removed";
+}
+
 export default experimental_defineHostEntry({
   contract: hostStorageContract,
   handlers: {
@@ -138,7 +158,8 @@ export default experimental_defineHostEntry({
       try {
         root = await fs.realpath(rootPath);
       } catch (error) {
-        if (isFsErrorWithCode(error, "ENOENT")) return { removed: [], held: [] };
+        if (isFsErrorWithCode(error, "ENOENT"))
+          return { removed: [], held: [] };
         throw error;
       }
       const held: {
@@ -159,11 +180,9 @@ export default experimental_defineHostEntry({
         }
       }
       for (const name of names) {
-        const scan = name.startsWith(".bb-trash-")
-          ? ({ status: "clear" } as const)
-          : await internal_DO_NOT_USE_scanProcessesWithCwdUnder({
-              directories: [path.join(root, name)],
-            });
+        const scan = await internal_DO_NOT_USE_scanProcessesWithCwdUnder({
+          directories: [path.join(root, name)],
+        });
         if (scan.status === "held")
           held.push({ name, holders: scan.holders, unknown: null });
         else if (scan.status === "unknown")
@@ -198,11 +217,9 @@ export default experimental_defineHostEntry({
           const lease = context.experimental_retainWorker();
           void (async () => {
             for (const trash of trashes)
-              await fs
-                .rm(trash, { recursive: true, force: true })
-                .catch((error) => {
-                  console.error("Storage trash cleanup failed", error);
-                });
+              await removeTrashUnlessHeld(trash).catch((error) => {
+                console.error("Storage trash cleanup failed", error);
+              });
           })().finally(() => lease.dispose());
         }
       }
