@@ -955,8 +955,9 @@ applied chunk.
    `inFlightWorkAtObservation` can name an unrelated long poll; compare
    `longestSynchronousWork` and its wall/CPU times with the profile instead.
    The stall-bound off-cpu rule labels `stallCauseCandidate` as `off-cpu` only
-   when whole-window main-thread CPU is less than 10% of `maxDelayMs`. Even if
-   all that CPU fell inside the stall, the main thread ran for less than 10% of
+   when raw whole-window main-thread CPU is less than 10% of raw `maxDelayMs`.
+   Comparisons use unrounded values; log durations are rounded only for display.
+   Even if all that CPU fell inside the stall, the main thread ran for less than 10% of
    the stall duration. The whole-window CPU/wall ratio remains context and
    cannot establish when CPU was used. This rule does not distinguish
    preemption from a blocking wait. The
@@ -964,7 +965,8 @@ applied chunk.
    context-switch deltas as a clue, not proof. Otherwise, the candidate is the
    longer of the single longest GC pause and the longest synchronous
    operation's CPU or wall duration. It is attributed only when that one
-   duration is at least 90% of `maxDelayMs`; separate work or GC pauses are
+   raw duration is at least 90% of raw `maxDelayMs`; separate work or GC pauses
+   are
    never summed. The 90% threshold includes the operator walk's 3500.8 ms
    operation against a 3527.4 ms stall (99.25%), while six separate 250 ms
    operations against a 1512 ms stall remain unattributed (16.5% each). If
