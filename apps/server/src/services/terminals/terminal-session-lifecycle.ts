@@ -1956,12 +1956,12 @@ export class TerminalSessionLifecycle {
     session: TerminalSessionRow,
     chunk: TerminalOutputChunk,
   ): void {
-    this.terminalScreenStates.push(
+    this.terminalScreenStates.pushBase64(
       session.id,
       session.cols,
       session.rows,
       chunk.seq,
-      Buffer.from(chunk.dataBase64, "base64"),
+      chunk.dataBase64,
     );
     const batches = this.pendingRetainedOutput.get(session.id) ?? [];
     const last = batches.at(-1);

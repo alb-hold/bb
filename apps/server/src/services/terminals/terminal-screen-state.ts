@@ -179,6 +179,35 @@ export class TerminalScreenState {
       });
   }
 
+  pushBase64(seq: number, data: string): void {
+    if (this.disposed || !this.valid || seq < this.nextSeq) return;
+    if (seq !== this.nextSeq) {
+      this.valid = false;
+      return;
+    }
+    this.nextSeq += 1;
+    this.pending = this.pending
+      .then(
+        () =>
+          new Promise<void>((resolve, reject) => {
+            setImmediate(() => {
+              if (this.disposed) {
+                resolve();
+                return;
+              }
+              try {
+                this.terminal.write(Buffer.from(data, "base64"), resolve);
+              } catch (error) {
+                reject(error);
+              }
+            });
+          }),
+      )
+      .catch(() => {
+        this.valid = false;
+      });
+  }
+
   resize(cols: number, rows: number): void {
     if (
       this.disposed ||
@@ -246,6 +275,23 @@ export class TerminalScreenStateCache {
     }
     state.resize(cols, rows);
     state.push(seq, data);
+  }
+
+  pushBase64(
+    terminalId: string,
+    cols: number,
+    rows: number,
+    seq: number,
+    data: string,
+  ): void {
+    let state = this.states.get(terminalId);
+    if (state === undefined) {
+      if (seq !== 0) return;
+      state = new TerminalScreenState(cols, rows);
+      this.states.set(terminalId, state);
+    }
+    state.resize(cols, rows);
+    state.pushBase64(seq, data);
   }
 
   resize(terminalId: string, cols: number, rows: number): void {
