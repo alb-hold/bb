@@ -47,6 +47,45 @@ function raw(number: number) {
 afterEach(() => vi.unstubAllEnvs());
 
 describe("host GraphQL batching", () => {
+  it("rejects unconfigured hosts before invoking gh with inherited credentials", async () => {
+    const gh = await installFakeGh({ "api graphql": { stdout: "{}" } });
+    const cwd = await makeTempDir("bb-pr-unconfigured-host-");
+    vi.stubEnv("GH_HOST", undefined);
+    vi.stubEnv("GH_ENTERPRISE_TOKEN", "must-not-be-forwarded");
+
+    await expect(
+      getPullRequestByUrl("https://attacker.example/acme/bb/pull/1", cwd),
+    ).resolves.toMatchObject({
+      outcome: "unavailable",
+      message: "GitHub host attacker.example is not configured in GitHub CLI",
+    });
+    expect(await gh.readCalls()).toEqual([]);
+  });
+
+  it("allows an enterprise host explicitly present in the GitHub CLI profile", async () => {
+    const enterpriseUrl = "https://ghe.example/acme/bb/pull/5";
+    const enterprisePr = { ...raw(5), url: enterpriseUrl };
+    const gh = await installFakeGh({
+      "api graphql": {
+        stdout: JSON.stringify({ data: { p0: enterprisePr } }),
+      },
+    });
+    const cwd = await makeTempDir("bb-pr-configured-host-");
+    await writeFile(
+      join(process.env.GH_CONFIG_DIR!, "hosts.yml"),
+      "ghe.example:\n    user: enterprise-user\n",
+    );
+
+    await expect(getPullRequestByUrl(enterpriseUrl, cwd)).resolves.toMatchObject({
+      outcome: "found",
+      pullRequest: { url: enterpriseUrl },
+    });
+    expect(await gh.readCalls()).toHaveLength(1);
+    expect(await gh.readCalls()).toEqual([
+      expect.arrayContaining(["--hostname", "ghe.example"]),
+    ]);
+  });
+
   it("shares duplicate PR loads and batches distinct PRs without mixing their checks", async () => {
     const gh = await installFakeGh({
       "api graphql": {

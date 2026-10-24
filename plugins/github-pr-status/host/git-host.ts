@@ -539,6 +539,47 @@ function parseNullTerminatedGitConfig(stdout: string): Map<string, string> {
   return values;
 }
 
+function githubConfigDirectory(env: NodeJS.ProcessEnv, cwd: string): string {
+  const appData = env.APPDATA ?? env.AppData;
+  return resolve(
+    cwd,
+    env.GH_CONFIG_DIR ||
+      (env.XDG_CONFIG_HOME
+        ? join(env.XDG_CONFIG_HOME, "gh")
+        : process.platform === "win32" && appData
+          ? join(appData, "GitHub CLI")
+          : join(env.HOME ?? homedir(), ".config", "gh")),
+  );
+}
+
+function configuredHosts(hostsYml: string): Set<string> {
+  const hosts = new Set<string>();
+  for (const line of hostsYml.split(/\r?\n/u)) {
+    const match = /^([^\s#:][^:]*):(?:\s*(?:#.*)?)$/u.exec(line);
+    const host = match?.[1]?.replace(/^['"]|['"]$/gu, "").toLowerCase();
+    if (host) hosts.add(host);
+  }
+  return hosts;
+}
+
+async function isConfiguredGitHubHost(
+  host: string,
+  env: NodeJS.ProcessEnv,
+  cwd: string,
+): Promise<boolean> {
+  const normalizedHost = host.toLowerCase();
+  if (
+    normalizedHost === "github.com" ||
+    env.GH_HOST?.toLowerCase() === normalizedHost
+  )
+    return true;
+  const profile = await readFile(
+    join(githubConfigDirectory(env, cwd), "hosts.yml"),
+    "utf8",
+  ).catch(() => "");
+  return configuredHosts(profile).has(normalizedHost);
+}
+
 const GIT_REMOTE_OWNER_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9-]*$/u;
 const GIT_REMOTE_REPOSITORY_PATTERN = /^[a-zA-Z0-9._-]+$/u;
 
@@ -879,16 +920,7 @@ async function credentialKey(
     return createHash("sha256")
       .update(JSON.stringify([host, token]))
       .digest("hex");
-  const appData = env.APPDATA ?? env.AppData;
-  const directory = resolve(
-    cwd,
-    env.GH_CONFIG_DIR ||
-      (env.XDG_CONFIG_HOME
-        ? join(env.XDG_CONFIG_HOME, "gh")
-        : process.platform === "win32" && appData
-          ? join(appData, "GitHub CLI")
-          : join(env.HOME ?? homedir(), ".config", "gh")),
-  );
+  const directory = githubConfigDirectory(env, cwd);
   const profile = await readFile(join(directory, "hosts.yml")).catch(() =>
     Buffer.alloc(0),
   );
@@ -1150,6 +1182,12 @@ async function enqueueRead(
   refresh = false,
 ): Promise<HostPullRequestLookup> {
   const env = { ...inheritedEnv };
+  if (!(await isConfiguredGitHubHost(target.host, env, cwd))) {
+    return {
+      outcome: "unavailable",
+      message: `GitHub host ${target.host} is not configured in GitHub CLI`,
+    };
+  }
   const group = await credentialKey(target.host, env, cwd);
   const key = `${group}:${JSON.stringify(target)}`;
   if (refresh) discovered.delete(key);
