@@ -135,20 +135,19 @@ export function createNativeActivityReporter(options: {
           permanentRefusal(error) !== null
         ) {
           if (closeIds.length > 1) {
+            let failed = false;
             for (const id of closeIds) {
               const result = await sendBatch([id], includeConfirms);
-              if (result === "failed") return result;
+              if (result === "failed") failed = true;
             }
-            return "accepted";
+            return failed ? "failed" : "accepted";
           }
-          try {
-            await options.send(request([], includeConfirms));
-            acknowledge([]);
-            return "accepted";
-          } catch (activityError) {
-            keep(activityError);
-            return "failed";
-          }
+          options.log?.("activity-closure-fallback-skipped", {
+            closes: closeIds.length,
+            reason: "server_rejected_close",
+          });
+          keepBlocked("unsupported_closes");
+          return "failed";
         }
 
         keep(error);
