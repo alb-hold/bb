@@ -2089,6 +2089,7 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
           const response = await route.handler(context);
           return adoptHttpRouteResponse(response);
         },
+        `plugin HTTP ${route.method} ${route.path}`,
       );
       if (outcome.ok) return outcome.value;
       return context.json(
@@ -2238,6 +2239,7 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
             argv.includes("--json"),
           );
         },
+        `plugin CLI ${registration.name}`,
       );
       if (outcome.ok) return outcome.value;
       return fail(`bb ${registration.name} failed: ${outcome.error}`);
