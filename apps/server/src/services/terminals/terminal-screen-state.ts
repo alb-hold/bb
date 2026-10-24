@@ -132,9 +132,15 @@ function serializeVisibleScreen(terminal: HeadlessTerminal): {
 
 export class TerminalScreenState {
   private readonly terminal: HeadlessTerminal;
+  private readonly pendingWork: Array<
+    | { kind: "base64"; data: string }
+    | { kind: "bytes"; data: Uint8Array }
+    | { kind: "resize"; cols: number; rows: number }
+  > = [];
   private cols: number;
   private rows: number;
   private pending = Promise.resolve();
+  private draining = false;
   private nextSeq = 0;
   private valid = true;
   private disposed = false;
@@ -159,24 +165,7 @@ export class TerminalScreenState {
       return;
     }
     this.nextSeq += 1;
-    this.pending = this.pending
-      .then(
-        () =>
-          new Promise<void>((resolve, reject) => {
-            if (this.disposed) {
-              resolve();
-              return;
-            }
-            try {
-              this.terminal.write(data, resolve);
-            } catch (error) {
-              reject(error);
-            }
-          }),
-      )
-      .catch(() => {
-        this.valid = false;
-      });
+    this.enqueue({ kind: "bytes", data });
   }
 
   pushBase64(seq: number, data: string): void {
@@ -186,26 +175,7 @@ export class TerminalScreenState {
       return;
     }
     this.nextSeq += 1;
-    this.pending = this.pending
-      .then(
-        () =>
-          new Promise<void>((resolve, reject) => {
-            setImmediate(() => {
-              if (this.disposed) {
-                resolve();
-                return;
-              }
-              try {
-                this.terminal.write(Buffer.from(data, "base64"), resolve);
-              } catch (error) {
-                reject(error);
-              }
-            });
-          }),
-      )
-      .catch(() => {
-        this.valid = false;
-      });
+    this.enqueue({ kind: "base64", data });
   }
 
   resize(cols: number, rows: number): void {
@@ -218,11 +188,52 @@ export class TerminalScreenState {
     }
     this.cols = cols;
     this.rows = rows;
+    this.enqueue({ kind: "resize", cols, rows });
+  }
+
+  private enqueue(
+    work:
+      | { kind: "base64"; data: string }
+      | { kind: "bytes"; data: Uint8Array }
+      | { kind: "resize"; cols: number; rows: number },
+  ): void {
+    this.pendingWork.push(work);
+    if (this.draining) return;
+    this.draining = true;
     this.pending = this.pending
-      .then(() => {
-        if (!this.disposed) this.terminal.resize(cols, rows);
-      })
+      .then(
+        () =>
+          new Promise<void>((resolve, reject) => {
+            const drain = () => {
+              const next = this.pendingWork.shift();
+              if (this.disposed || next === undefined) {
+                this.draining = false;
+                resolve();
+                return;
+              }
+              try {
+                if (next.kind === "resize") {
+                  this.terminal.resize(next.cols, next.rows);
+                  setImmediate(drain);
+                  return;
+                }
+                const data =
+                  next.kind === "base64"
+                    ? Buffer.from(next.data, "base64")
+                    : next.data;
+                this.terminal.write(data, () => {
+                  setImmediate(drain);
+                });
+              } catch (error) {
+                this.draining = false;
+                reject(error);
+              }
+            };
+            setImmediate(drain);
+          }),
+      )
       .catch(() => {
+        this.draining = false;
         this.valid = false;
       });
   }
