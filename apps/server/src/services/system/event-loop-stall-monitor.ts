@@ -105,8 +105,9 @@ export function startEventLoopStallMonitor(
         previousResourceUsage.involuntaryContextSwitches;
       previousResourceUsage = resourceUsage;
       const offCpu =
-        mainThreadCpuWallRatio <
-        OFF_CPU_MAIN_THREAD_CPU_WALL_RATIO_THRESHOLD;
+        stall !== null &&
+        mainThreadCpuMs <
+          OFF_CPU_MAIN_THREAD_CPU_WALL_RATIO_THRESHOLD * stall.maxDelayMs;
       const processContextSwitchHint: ProcessContextSwitchHint =
         voluntaryContextSwitches > involuntaryContextSwitches
           ? "voluntary-dominant"

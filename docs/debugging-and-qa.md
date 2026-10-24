@@ -954,9 +954,11 @@ applied chunk.
    `Thread timeline build blocked the event loop` and its stage timings.
    `inFlightWorkAtObservation` can name an unrelated long poll; compare
    `longestSynchronousWork` and its wall/CPU times with the profile instead.
-   `stallCauseCandidate` is `off-cpu` when the main-thread CPU/wall ratio is
-   below 0.1. This means the main thread was not running enough to explain the
-   delay; it does not distinguish preemption from a blocking wait. The
+   `stallCauseCandidate` is `off-cpu` only when whole-window main-thread CPU is
+   less than 10% of `maxDelayMs`. Even if all that CPU fell inside the stall,
+   the main thread ran for less than 10% of the stall duration. The whole-window
+   CPU/wall ratio remains context and cannot establish when CPU was used. This
+   rule does not distinguish preemption from a blocking wait. The
    process-wide `processContextSwitchHint` compares voluntary and involuntary
    context-switch deltas as a clue, not proof. Otherwise the candidate is the
    larger of GC pause time and measured synchronous work, when the selected

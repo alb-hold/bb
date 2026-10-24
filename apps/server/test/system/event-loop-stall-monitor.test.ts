@@ -228,7 +228,7 @@ describe("event loop stall monitor", () => {
     monitor.stop();
   });
 
-  it("attributes a low main-thread CPU ratio as off-cpu", () => {
+  it("attributes tiny main-thread CPU against a long stall as off-cpu", () => {
     installHistogram({ maxDelayMs: 1_000, meanDelayMs: 25, p99DelayMs: 450 });
     let processCpuUser = 0;
     let mainThreadCpuUser = 0;
@@ -239,7 +239,7 @@ describe("event loop stall monitor", () => {
     });
     vi.spyOn(process, "threadCpuUsage").mockImplementation(() => {
       const current = { user: mainThreadCpuUser, system: 0 };
-      mainThreadCpuUser += 100_000;
+      mainThreadCpuUser += 50_000;
       return current;
     });
     const logger = { info: vi.fn() };
@@ -249,11 +249,35 @@ describe("event loop stall monitor", () => {
       expect.objectContaining({
         processCpuMs: 100,
         processCpuWallRatio: 0.02,
-        mainThreadCpuMs: 100,
-        mainThreadCpuWallRatio: 0.02,
+        mainThreadCpuMs: 50,
+        mainThreadCpuWallRatio: 0.01,
         windowWallMs: 5_000,
         stallAttribution: "candidate",
         stallCauseCandidate: "off-cpu",
+      }),
+      "Event loop stalled",
+    );
+    monitor.stop();
+  });
+
+  it("does not infer off-cpu from a low window ratio alone", () => {
+    installHistogram({ maxDelayMs: 1_000, meanDelayMs: 25, p99DelayMs: 450 });
+    let mainThreadCpuUser = 0;
+    vi.spyOn(process, "threadCpuUsage").mockImplementation(() => {
+      const current = { user: mainThreadCpuUser, system: 0 };
+      mainThreadCpuUser += 150_000;
+      return current;
+    });
+    const logger = { info: vi.fn() };
+    const monitor = startEventLoopStallMonitor({ logger });
+    vi.advanceTimersByTime(EVENT_LOOP_STALL_MONITOR_INTERVAL_MS);
+    expect(logger.info).toHaveBeenCalledWith(
+      expect.objectContaining({
+        maxDelayMs: 1_000,
+        mainThreadCpuMs: 150,
+        mainThreadCpuWallRatio: 0.03,
+        stallAttribution: "unattributed",
+        stallCauseCandidate: null,
       }),
       "Event loop stalled",
     );
@@ -265,7 +289,7 @@ describe("event loop stall monitor", () => {
     let mainThreadCpuUser = 0;
     vi.spyOn(process, "threadCpuUsage").mockImplementation(() => {
       const current = { user: mainThreadCpuUser, system: 0 };
-      mainThreadCpuUser += 100_000;
+      mainThreadCpuUser += 50_000;
       return current;
     });
     const logger = { info: vi.fn() };
@@ -274,8 +298,8 @@ describe("event loop stall monitor", () => {
     expect(logger.info).toHaveBeenCalledWith(
       expect.objectContaining({
         processCpuWallRatio: 1,
-        mainThreadCpuMs: 100,
-        mainThreadCpuWallRatio: 0.02,
+        mainThreadCpuMs: 50,
+        mainThreadCpuWallRatio: 0.01,
         stallAttribution: "candidate",
         stallCauseCandidate: "off-cpu",
       }),
