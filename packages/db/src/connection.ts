@@ -10,6 +10,7 @@ import {
   type QueryDiagnosticsLogFields,
 } from "./query-diagnostics.js";
 import * as schema from "./schema.js";
+import { classifyStatementReader } from "./statement-lock-wait-source.js";
 
 export interface SlowDbQueryLogFields {
   bindingArgumentCount: number;
@@ -272,6 +273,7 @@ function instrumentStatement(
   source: string,
   config: SlowDbQueryConfig,
 ): Database.Statement {
+  const readerLockWaitSource = classifyStatementReader(statement);
   const originalAll = statement.all.bind(statement);
   const originalGet = statement.get.bind(statement);
   const originalRun = statement.run.bind(statement);
@@ -283,8 +285,8 @@ function instrumentStatement(
       config,
       operation: "all",
       source,
-      trackFirstWrite: statement.reader === false,
-      unknownReader: typeof statement.reader !== "boolean",
+      trackFirstWrite: readerLockWaitSource === "first-write",
+      unknownReader: readerLockWaitSource === "unknown",
       work: () => originalAll(...params),
     });
   statement.get = (...params) =>
@@ -294,8 +296,8 @@ function instrumentStatement(
       config,
       operation: "get",
       source,
-      trackFirstWrite: statement.reader === false,
-      unknownReader: typeof statement.reader !== "boolean",
+      trackFirstWrite: readerLockWaitSource === "first-write",
+      unknownReader: readerLockWaitSource === "unknown",
       work: () => originalGet(...params),
     });
   statement.run = (...params) =>
@@ -305,8 +307,8 @@ function instrumentStatement(
       config,
       operation: "run",
       source,
-      trackFirstWrite: statement.reader === false,
-      unknownReader: typeof statement.reader !== "boolean",
+      trackFirstWrite: readerLockWaitSource === "first-write",
+      unknownReader: readerLockWaitSource === "unknown",
       work: () => originalRun(...params),
     });
 

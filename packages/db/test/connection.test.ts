@@ -18,6 +18,7 @@ import {
 import { createMigratedConnection } from "../src/testing.js";
 import { migrate } from "../src/migrate.js";
 import { hosts } from "../src/schema.js";
+import { classifyStatementReader } from "../src/statement-lock-wait-source.js";
 
 interface LoggedInfo {
   fields: SlowDbQueryLogFields;
@@ -46,6 +47,13 @@ function getOnlyInfoLog(logger: CapturingSlowQueryLogger): LoggedInfo {
 }
 
 describe("createConnection", () => {
+  it("reports unknown when prepared statement reader metadata is unavailable", () => {
+    const statement = { reader: undefined };
+    const lockWaitSource = classifyStatementReader(statement);
+    expect(lockWaitSource).toBe("unknown");
+    expect(lockWaitSource).not.toBe("none");
+  });
+
   it("separates BEGIN lock wait from transaction body time", async () => {
     const directory = mkdtempSync(join(tmpdir(), "bb-db-lock-wait-"));
     const databasePath = join(directory, "bb.db");
