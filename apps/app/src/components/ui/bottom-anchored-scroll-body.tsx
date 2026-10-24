@@ -118,19 +118,28 @@ export function BottomAnchoredScrollBody({
   const pageContentRef = useRef<HTMLDivElement>(null);
   const scrollFooterRef = useRef<HTMLDivElement>(null);
   const hasFooter = Boolean(footer);
+  const restoredAnchorRef = useRef<{
+    threadId: string;
+    mode: "restore" | "latest";
+  } | null>(null);
   const scrollAnchorCaptureThrottleRef = useRef<{
     lastWriteAt: number;
     trailingTimeout: number | null;
   }>({ lastWriteAt: 0, trailingTimeout: null });
   const initialRestore = useMemo<TimelineScrollRestore | null>(() => {
-    if (scrollAnchorThreadId === undefined) return null;
+    if (
+      scrollAnchorThreadId === undefined ||
+      scrollAnchorMode === "latest"
+    ) {
+      return null;
+    }
     const anchor = store.get(
       threadTimelineScrollAnchorAtomFamily(scrollAnchorThreadId),
     );
     return anchor !== null && !anchor.atBottom
       ? { key: anchor.rowId, offset: -anchor.offsetWithinRow }
       : null;
-  }, [scrollAnchorThreadId, store]);
+  }, [scrollAnchorMode, scrollAnchorThreadId, store]);
   const [isAtBottom, setIsAtBottom] = useState(true);
 
   const getScrollElement = useCallback(() => scrollAreaRef.current, []);
@@ -226,6 +235,23 @@ export function BottomAnchoredScrollBody({
   }, [scrollAnchorCaptureThrottleMs, scrollAnchorThreadId, writeScrollAnchor]);
 
   useLayoutEffect(() => {
+    if (scrollAnchorThreadId === undefined) return;
+    const previous = restoredAnchorRef.current;
+    if (
+      previous?.threadId === scrollAnchorThreadId &&
+      (previous.mode === "latest" || scrollAnchorMode === "restore")
+    ) {
+      return;
+    }
+    restoredAnchorRef.current = {
+      threadId: scrollAnchorThreadId,
+      mode: scrollAnchorMode,
+    };
+    if (scrollAnchorMode === "latest") {
+      if (positionKeeper.hasUserScrolled()) return;
+      positionKeeper.scrollToBottom();
+      return;
+    }
     if (initialRestore !== null) {
       positionKeeper.restore({
         rowId: initialRestore.key,
@@ -233,7 +259,12 @@ export function BottomAnchoredScrollBody({
         atBottom: false,
       });
     }
-  }, [initialRestore, positionKeeper]);
+  }, [
+    initialRestore,
+    positionKeeper,
+    scrollAnchorMode,
+    scrollAnchorThreadId,
+  ]);
 
   useLayoutEffect(() => {
     const scrollArea = scrollAreaRef.current;

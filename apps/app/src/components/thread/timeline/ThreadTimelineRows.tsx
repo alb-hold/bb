@@ -2917,7 +2917,8 @@ function ThreadTimelineRowsForTimelineView(props: ThreadTimelineRowsProps) {
                               compactActivityIntents={false}
                               spacing="top-level"
                               unreadDividerAutoScroll={
-                                props.unreadDividerAutoScroll ?? true
+                                props.unreadDividerAutoScroll ??
+                                props.hasUnseenTimelineEvents !== true
                               }
                               unreadDividerPlacement={
                                 props.unreadDividerPlacement ?? null

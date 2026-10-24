@@ -7,12 +7,8 @@ import { ComposerPopupHost } from "./ComposerPopupHost";
 
 const viewport = vi.hoisted(() => ({ compact: true }));
 
-vi.mock("@bb/shared-ui/hooks/use-compact-viewport", () => ({
+vi.mock("@/components/ui/hooks/use-compact-viewport", () => ({
   useIsCompactViewport: () => viewport.compact,
-}));
-
-vi.mock("@/lib/bb-desktop", () => ({
-  readWindowFindTopOffset: () => 48,
 }));
 
 afterEach(() => {

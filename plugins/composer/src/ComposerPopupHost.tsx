@@ -3,7 +3,7 @@ import { createPortal } from "react-dom";
 import { useIsCompactViewport } from "@/components/ui/hooks/use-compact-viewport";
 import { ResponsiveDrawerShell } from "@/components/ui/responsive-overlay";
 import { cn } from "@/lib/utils";
-import { usePortalScopeProps } from "@bb/shared-ui/lib/portal-scope";
+import { usePortalScopeProps } from "./portal-scope.js";
 
 function readWindowFindTopOffset(): number {
   const declared = window

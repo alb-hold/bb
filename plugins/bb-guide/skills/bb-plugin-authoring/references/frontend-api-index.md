@@ -312,6 +312,7 @@ Read the installed SDK declarations for the exact current signatures.
 - `ExperimentalComposerVoice`
 - `ExperimentalComposerPromptAction`
 - `ExperimentalComposerInput`
+- `Internal_DO_NOT_USE_ComposerSizing`
 - `ExperimentalComposerThreadLinks`
 - `ExperimentalComposerClipboard`
 - `ExperimentalComposerView`

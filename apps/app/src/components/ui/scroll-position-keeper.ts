@@ -546,6 +546,7 @@ export class ScrollPositionKeeper {
         : this.targetScrollTop(scrollElement, scrollTop, max);
     if (
       target !== null &&
+      max > 0 &&
       (resized || restored) &&
       this.position.kind === "anchor" &&
       target >= max - this.options.bottomThresholdPx
