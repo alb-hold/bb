@@ -433,6 +433,8 @@ Well-known teams say), a line that starts with PowerShell's call or
 dot-source operator, & or . then a space (& Fetch-Data, . setup), a line that starts with an identifier written with an underscore or with a
 lowercase letter followed by a capital (fetch_data, \_fetch, fetchData,
 FetchData; also words such as iPhone or McDonald), a line with a short flag such as -la, a line
+with a +, * or ^ between two operands (x + y, total * rate, n ^ k), a line that is only an
+arithmetic expression (price - discount., count % size), a line
 indented four spaces or a tab, or a ``` or ~~~ fence line or a line inside such a fence (closed
 only by a bare fence of the same character at least as long), every
 change, even capitalization, is only suggested. A line that starts with a plain word, such as a custom command named setup or
@@ -454,7 +456,11 @@ correction, no longer than what was said after it and starting with the same
 word (on monday no wait on tuesday), with nothing else near it left out; a phrase
 that replaces nothing, as in "no wait is required", is not a correction), spoken symbol names in literal-code
 mode when the reply writes that symbol where it was spoken ("run dash force" may become "run -force" but never "run force" or "run force-"), and for paren, bracket or brace only when every pair it opens is closed ("call foo paren" may become "call foo()" but never "call foo("), and the spoken numbers of a numbered list with the connectors (and, then, next, finally, e,
-depois, então) said just before an item number, as in "and then second"; a connector inside an item ("users and groups") always stays; leaving out any other word, a negation
+depois, então) said just before an item number, as in "and then second"; the numbers may be
+ordinals (first, second, primeiro, segundo) or, when the transcript has a comma or colon right
+after each, counting words ("one, add users; two, remove keys", um, dois), one kind per list; a
+counting word without that pause, as in "one check auth two run tests", is never taken as a
+list number; a connector inside an item ("users and groups") always stays; leaving out any other word, a negation
 outside a self-correction phrase, or the minus sign of a number ("-5" never
 becomes "5", "-.5" never becomes ".5", and "-5 and 5" never becomes "5 and -5"), or adding, removing or moving a symbol next to a number, such as
 %, $, €, °, #, + or ~ ("5" never becomes "5%", and "5% and 5" never becomes
@@ -1517,8 +1523,11 @@ Two host-daemon environment variables reach the Claude Code bridge:
 `claude` from the host's PATH) for Claude threads and the Claude writing
 service alike; a request cannot choose it. Before the writing service sends
 text, it resolves that binary to its real file and refuses it unless the file,
-every link on the way to it and every directory above them belong to the
-daemon's own account or root and no other account can change them. Group write
+every link on the way to it (including a linked directory in its path) and
+every directory above them belong to the daemon's own account or root and no
+other account can change them. It then runs that resolved file, not the path
+it was given, so a link changed after the check cannot point the request at
+another binary. Group write
 counts as another account: a group-writable file is refused, and a directory
 that its group or any account can write counts only with the sticky bit, as
 `/tmp` has, so a binary under Homebrew's group-writable `/opt/homebrew/bin` is

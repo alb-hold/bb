@@ -104,7 +104,10 @@ suggested), a lowercase a to an or an to a (a capital A or An can be a label,
 so that change is only suggested), and accents on a lowercase nao, voce, tambem,
 entao or amanha (a capitalized Nao can be a name, so that accent is only suggested) apply by themselves, never inside code, paths, identifiers or
 vocabulary terms, nor inside quoted text (a quotation can span lines, and one
-left open covers the rest of the text), nor on a line containing = ; { } ( ) < > [ ] $ ` | \ / # or --.
+left open covers the rest of the text), nor on a line containing = ; { } ( ) < > [ ] $ ` | \ / # or --,
+nor on a line with a +, * or ^ between two operands (x + y, total * rate, n ^ k) or a line that is only an
+arithmetic expression (price - discount., count % size), nor on any other line the configuration docs
+treat as code, such as a key: value line, one starting with a shell command, or one with a short flag such as -la.
 Vocabulary terms are spelling hints for transcription and correction, not a
 guarantee. `vocabulary remove` changes nothing and fails when a term is
 not in the vocabulary. Everything else, including spelling, other punctuation, verb agreement such as

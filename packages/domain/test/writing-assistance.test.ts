@@ -1649,6 +1649,72 @@ describe("validateFormattedTranscript", () => {
     ).toEqual({ ok: false, reason: "dropped-words" });
   });
 
+  it.each([
+    ["one, add users; two, remove keys", "1. Add users.\n2. Remove keys."],
+    [
+      "one, add users and groups, and then two, remove keys and secrets",
+      "1. Add users and groups.\n2. Remove keys and secrets.",
+    ],
+    [
+      "One: check auth. Two: run the tests. Three: deploy.",
+      "1. Check auth.\n2. Run the tests.\n3. Deploy.",
+    ],
+    [
+      "um, criar uma tabela e depois dois, rodar os testes",
+      "1. Criar uma tabela.\n2. Rodar os testes.",
+    ],
+    [
+      "um, verificar o login; dois, rodar duas migrações; tres, publicar",
+      "1. Verificar o login.\n2. Rodar duas migrações.\n3. Publicar.",
+    ],
+  ])(
+    "converts a list enumerated with spoken numbers followed by a pause: %s",
+    (raw, formatted) => {
+      expect(validateFormattedTranscript(raw, formatted)).toEqual({ ok: true });
+    },
+  );
+
+  it.each([
+    [
+      "one, add users and groups, and then two, remove keys and secrets",
+      "1. Add users groups.\n2. Remove keys and secrets.",
+      "dropped-words",
+    ],
+    [
+      "one add users two remove keys",
+      "1. Add users.\n2. Remove keys.",
+      "list-numbers",
+    ],
+    [
+      "One. Add users. Two. Remove keys.",
+      "1. Add users.\n2. Remove keys.",
+      "list-numbers",
+    ],
+    [
+      "first, add users; two, remove keys",
+      "1. Add users.\n2. Remove keys.",
+      "list-numbers",
+    ],
+    [
+      "one, add users; second, remove keys",
+      "1. Add users.\n2. Remove keys.",
+      "list-numbers",
+    ],
+    [
+      "one, add users; two, remove two keys",
+      "1. Add users.\n2. Remove keys.",
+      "dropped-words",
+    ],
+  ])(
+    "keeps the transcript for a spoken-number list it cannot prove: %s -> %s",
+    (raw, formatted, reason) => {
+      expect(validateFormattedTranscript(raw, formatted)).toEqual({
+        ok: false,
+        reason,
+      });
+    },
+  );
+
   it("drops list connectors but never a repeated word", () => {
     expect(
       validateFormattedTranscript(

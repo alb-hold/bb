@@ -58,6 +58,7 @@ function withParents(dir: string, into: Set<string>): void {
 
 async function untrustedReason(
   file: string,
+  real: string,
   deps: ClaudeExecutableCheckDeps,
 ): Promise<string | null> {
   const checked = new Set<string>();
@@ -73,13 +74,20 @@ async function untrustedReason(
     }
     current = path.resolve(path.dirname(current), await fs.readlink(current));
   }
-  const real = await fs.realpath(file);
   checked.add(real);
   withParents(path.dirname(real), checked);
+  const links = new Set<string>();
   for (const entry of checked) {
-    const stat = await fs.stat(entry);
-    if (deps.uid !== null && stat.uid !== deps.uid && stat.uid !== 0) {
+    const stat = await fs.lstat(entry);
+    const owner = stat.isSymbolicLink()
+      ? await deps.linkOwner(entry)
+      : stat.uid;
+    if (deps.uid !== null && owner !== deps.uid && owner !== 0) {
       return `${entry} belongs to another account`;
+    }
+    if (stat.isSymbolicLink()) {
+      links.add(entry);
+      continue;
     }
     const sticky = stat.isDirectory() && (stat.mode & STICKY) !== 0;
     if (sticky) continue;
@@ -92,13 +100,14 @@ async function untrustedReason(
   }
   if (deps.platform === "darwin") {
     for (const entry of checked) {
+      if (links.has(entry)) continue;
       const listing = (await deps.listAcl(entry)).split("\n").slice(1);
       if (listing.some((line) => ACL_WRITE.test(line))) {
         return `an access control list lets other accounts change ${entry}`;
       }
     }
   }
-  if (!(await fs.stat(real)).isFile()) return `${real} is not a file`;
+  if (!(await fs.lstat(real)).isFile()) return `${real} is not a file`;
   return null;
 }
 
@@ -130,14 +139,15 @@ export async function trustedClaudeExecutable(
   }
   if (deps.platform === "win32") return { ok: true, path: candidate };
   try {
-    const reason = await untrustedReason(candidate, deps);
+    const real = await fs.realpath(candidate);
+    const reason = await untrustedReason(candidate, real, deps);
     if (reason !== null) {
       return {
         ok: false,
         message: `Writing assistance will not run ${candidate}: ${reason}`,
       };
     }
-    return { ok: true, path: await fs.realpath(candidate) };
+    return { ok: true, path: real };
   } catch {
     return {
       ok: false,

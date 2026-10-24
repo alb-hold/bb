@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 import type { ExperimentalHostRpcContext } from "@get-bb/plugin-sdk/host";
 import { afterEach, describe, expect, it } from "vitest";
 import hostEntry from "../host.js";
+import { completeClaudeInference } from "./claude-complete.js";
 import {
   type ClaudeExecutableCheckDeps,
   trustedClaudeExecutable,
@@ -238,6 +239,85 @@ posix("the Claude CLI that writing assistance trusts", () => {
     expect(
       await trustedClaudeExecutable(deps({ resolve: async () => link })),
     ).toEqual({ ok: true, path: target });
+  });
+
+  it("runs the real CLI behind a directory link it trusts", async () => {
+    const dir = await scratch();
+    await fs.mkdir(path.join(dir, "real"), { mode: 0o755 });
+    const target = await cli(path.join(dir, "real"));
+    await fs.symlink(path.join(dir, "real"), path.join(dir, "linked"));
+    const candidate = path.join(dir, "linked", "claude");
+    expect(
+      await trustedClaudeExecutable(deps({ resolve: async () => candidate })),
+    ).toEqual({ ok: true, path: target });
+  });
+
+  it("refuses a directory link owned by another account, even when the directory it points to is trusted", async () => {
+    const dir = await scratch();
+    await fs.mkdir(path.join(dir, "real"), { mode: 0o755 });
+    await cli(path.join(dir, "real"));
+    const linked = path.join(dir, "linked");
+    await fs.symlink(path.join(dir, "real"), linked);
+    const candidate = path.join(linked, "claude");
+    const uid = process.getuid?.() ?? 0;
+    expect(
+      await trustedClaudeExecutable(
+        deps({
+          resolve: async () => candidate,
+          linkOwner: async (entry) =>
+            entry === linked ? uid + 1 : (await fs.lstat(entry)).uid,
+        }),
+      ),
+    ).toEqual({
+      ok: false,
+      message: `Writing assistance will not run ${candidate}: ${linked} belongs to another account`,
+    });
+  });
+
+  it("runs the CLI it checked when a directory link on the way is retargeted while the check runs, so another CLI never receives the prompt", async () => {
+    const dir = await scratch();
+    const markers = await scratch();
+    for (const name of ["trusted", "other"]) {
+      await fs.mkdir(path.join(dir, name), { mode: 0o755 });
+      const file = await cli(path.join(dir, name));
+      await fs.writeFile(
+        file,
+        `#!/bin/sh\ncat > ${path.join(markers, name)}\nexit 0\n`,
+      );
+    }
+    const linked = path.join(dir, "linked");
+    await fs.symlink(path.join(dir, "trusted"), linked);
+    const candidate = path.join(linked, "claude");
+    let retargeted = false;
+    const result = await trustedClaudeExecutable(
+      deps({
+        platform: "darwin",
+        resolve: async () => candidate,
+        listAcl: async (entry) => {
+          if (!retargeted) {
+            retargeted = true;
+            await fs.rm(linked);
+            await fs.symlink(path.join(dir, "other"), linked);
+          }
+          return `drwxr-xr-x  2 owner  staff  64 Oct 23 12:00 ${entry}\n`;
+        },
+      }),
+    );
+    expect(retargeted).toBe(true);
+    expect(result).toEqual({
+      ok: true,
+      path: path.join(dir, "trusted", "claude"),
+    });
+    if (!result.ok) return;
+    await completeClaudeInference(
+      { model: "haiku", prompt: "Fix this.", timeoutMs: 5_000 },
+      new AbortController().signal,
+      { executable: result.path, env: {} },
+    );
+    await expect(
+      fs.readFile(path.join(markers, "trusted"), "utf8"),
+    ).resolves.toBe("Fix this.");
+    await expect(fs.access(path.join(markers, "other"))).rejects.toThrow();
   });
 
   it("refuses a CLI owned by another account", async () => {

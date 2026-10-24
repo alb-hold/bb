@@ -847,7 +847,7 @@ export function resolveWritingEdits(
   return accepted.sort((a, b) => a.start - b.start);
 }
 
-const ENUMERATOR_VALUES: ReadonlyMap<string, number> = new Map([
+const ORDINAL_ENUMERATORS: ReadonlyMap<string, number> = new Map([
   ["first", 1],
   ["primeiro", 1],
   ["primeira", 1],
@@ -879,6 +879,48 @@ const ENUMERATOR_VALUES: ReadonlyMap<string, number> = new Map([
   ["décimo", 10],
   ["décima", 10],
 ]);
+
+const CARDINAL_ENUMERATORS: ReadonlyMap<string, number> = new Map([
+  ["one", 1],
+  ["um", 1],
+  ["uma", 1],
+  ["two", 2],
+  ["dois", 2],
+  ["duas", 2],
+  ["three", 3],
+  ["três", 3],
+  ["tres", 3],
+  ["four", 4],
+  ["quatro", 4],
+  ["five", 5],
+  ["cinco", 5],
+  ["six", 6],
+  ["seis", 6],
+  ["seven", 7],
+  ["sete", 7],
+  ["eight", 8],
+  ["oito", 8],
+  ["nine", 9],
+  ["nove", 9],
+  ["ten", 10],
+  ["dez", 10],
+]);
+
+type EnumeratorAt = (index: number) => number | undefined;
+
+function ordinalEnumerators(tokens: readonly string[]): EnumeratorAt {
+  return (index) => ORDINAL_ENUMERATORS.get(tokens[index]!);
+}
+
+function cardinalEnumerators(raw: string): EnumeratorAt {
+  const lower = raw.toLowerCase();
+  const marked = wordSpans(raw).map(({ start, end }) =>
+    /^[,:]/u.test(lower.slice(end))
+      ? CARDINAL_ENUMERATORS.get(lower.slice(start, end))
+      : undefined,
+  );
+  return (index) => marked[index];
+}
 
 export type FormattedTranscriptVerdict =
   | { ok: true }
@@ -1213,10 +1255,13 @@ function nextSpokenWord(
   return undefined;
 }
 
-function spokenEnumeration(tokens: readonly string[]): Map<number, number> {
+function spokenEnumeration(
+  tokens: readonly string[],
+  enumeratorAt: EnumeratorAt,
+): Map<number, number> {
   const spoken = new Map<number, number>();
   for (let index = 0; index < tokens.length; index += 1) {
-    const value = ENUMERATOR_VALUES.get(tokens[index]!);
+    const value = enumeratorAt(index);
     if (
       value !== undefined &&
       nextSpokenWord(tokens, index) !== undefined &&
@@ -1243,8 +1288,9 @@ function joinsItems(
 function listMatchesSpeech(
   items: ReadonlyMap<number, readonly string[]>,
   rawTokens: readonly string[],
+  enumeratorAt: EnumeratorAt,
 ): boolean {
-  const spoken = spokenEnumeration(rawTokens);
+  const spoken = spokenEnumeration(rawTokens, enumeratorAt);
   const positions = [...spoken.values()];
   const source = new Set(rawTokens);
   return [...items].every(([number, tokens], position) => {
@@ -1393,7 +1439,13 @@ export function validateFormattedTranscript(
   const source = new Set(rawTokens);
   const items = listItems(formatted);
   const list = items.size > 0;
-  if (list && !listMatchesSpeech(items, rawTokens)) {
+  const ordinals = ordinalEnumerators(rawTokens);
+  const enumeratorAt = list
+    ? [ordinals, cardinalEnumerators(raw)].find((family) =>
+        listMatchesSpeech(items, rawTokens, family),
+      )
+    : ordinals;
+  if (enumeratorAt === undefined) {
     return { ok: false, reason: "list-numbers" };
   }
   const body = formatted.replace(/^(\s*)\d{1,2}[.)]\s+/gmu, "$1");
@@ -1489,7 +1541,7 @@ export function validateFormattedTranscript(
   let enumerated = 0;
   const { marker, window, spans } = correctionCoverage(rawTokens);
   const boundaries = new Set(
-    [...spokenEnumeration(rawTokens)]
+    [...spokenEnumeration(rawTokens, enumeratorAt)]
       .filter(([value]) => items.has(value))
       .map(([, index]) => index),
   );
@@ -1524,7 +1576,7 @@ export function validateFormattedTranscript(
       if (symbols.length > 0) spokenSymbols.set(index, symbols);
       continue;
     }
-    const enumerator = ENUMERATOR_VALUES.get(token);
+    const enumerator = enumeratorAt(index);
     if (
       enumerator !== undefined &&
       enumerator === enumerated + 1 &&

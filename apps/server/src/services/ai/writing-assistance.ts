@@ -124,7 +124,7 @@ export function buildDictationFormatPrompt(
     vocabularyLine(settings),
     "Infer sentence boundaries, commas, question marks, capitalization and paragraph breaks.",
     'Keep every spoken word, including hesitations such as um or uh and words said twice such as the the. The only words you may leave out are a self-correction ("no wait", "I mean", "quer dizer") together with the words just before it that it replaces, keeping only the corrected version.',
-    "When the speaker enumerates steps (first, second, third / primeiro, segundo), write a numbered Markdown list; you may leave out the spoken step numbers and a connector said right before one (and then second), but keep every other word, including an and inside a step. Do not turn ordinary conversation into lists or headings.",
+    "When the speaker enumerates steps (first, second, third / primeiro, segundo, or a number followed by a pause such as one, two, three / um, dois), write a numbered Markdown list; you may leave out the spoken step numbers and a connector said right before one (and then second), but keep every other word, including an and inside a step. Do not turn ordinary conversation into lists or headings.",
     "Use only words the speaker said, apart from punctuation, list numbers and fixes to obvious misspellings.",
     "CONTEXT is text already in the message before this speech. Do not repeat it.",
     "<context>",
