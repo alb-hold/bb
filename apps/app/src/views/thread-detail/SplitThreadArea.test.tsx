@@ -10,12 +10,18 @@ import {
   within,
 } from "@testing-library/react";
 import { createStore, Provider as JotaiProvider } from "jotai";
-import { useContext, useMemo, useState, type ReactNode } from "react";
+import {
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { MemoryRouter, useLocation, useNavigate } from "react-router-dom";
 import { QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { PERSONAL_PROJECT_ID } from "@bb/domain";
 import { TooltipProvider } from "@bb/shared-ui/tooltip";
-import { EMPTY_ORDERED_MENTION_SUGGESTIONS } from "@bb/client-core";
 import type { BbDesktopInfo } from "@bb/desktop-contract";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createQueryClientTestHarness } from "@/test/queryClientTestHarness";
@@ -34,6 +40,7 @@ import {
 } from "@/lib/split-layout";
 import type { LayoutNode, PaneContent, SplitLayout } from "@/lib/split-layout";
 import { usePromptDraftStorage } from "@/hooks/usePromptDraftStorage";
+import { registerPaneComposerFocus } from "@/lib/pane-composer-focus";
 import { createBbDesktopApi } from "@/test/bb-desktop-test-utils";
 import {
   PluginComposerHostProvider,
@@ -53,10 +60,8 @@ import { RouteNavigationProvider } from "@/components/ui/app-route-anchor";
 import { SplitThreadArea } from "./SplitThreadArea";
 import { applyThreadOpenToLayout } from "./splitThreadNavigation";
 import { makePluginRegistrationSet } from "@/test/fixtures/plugins";
-import {
-  INERT_TYPEAHEAD_COMMAND_CONFIG,
-  PromptBoxInternal,
-} from "@/components/promptbox/PromptBoxInternal";
+import { ComposerBox } from "@/components/promptbox/ComposerBox";
+import { testTypeaheadConfig } from "@/test/fixtures/composer-search";
 import { LocationProbe } from "@/test/location-probe";
 
 const threadStore = vi.hoisted(
@@ -343,6 +348,20 @@ vi.mock("./LazyThreadDetailView", () => ({
       projectId,
       threadId,
     });
+    const composerRootRef = useRef<HTMLDivElement>(null);
+    const textareaRef = useRef<HTMLTextAreaElement>(null);
+    useEffect(() => {
+      const root = composerRootRef.current;
+      if (root === null) return;
+      return registerPaneComposerFocus(root, () => {
+        const target = root.querySelector<HTMLElement>(
+          ".xterm-helper-textarea, [contenteditable='true'], textarea:not(:disabled)",
+        );
+        if (target === null) return false;
+        target.focus({ preventScroll: true });
+        return document.activeElement === target;
+      });
+    }, []);
     return (
       <div
         data-testid={`pane-${threadId}`}
@@ -353,46 +372,39 @@ vi.mock("./LazyThreadDetailView", () => ({
           data-testid={`drag-${threadId}`}
           onPointerDown={(event) => pane?.beginPaneDrag?.(event, threadId)}
         />
-        {nativeTerminalPanes.has(threadId) ? (
-          <div data-native-terminal-thread="native-provider">
-            <textarea
-              className="xterm-helper-textarea"
-              data-testid={`xterm-${threadId}`}
-            />
-          </div>
-        ) : null}
-        <div data-promptbox="">
-          {nativeTerminalPanes.has(
-            threadId,
-          ) ? null : responsiveComposerProbe.enabled ? (
-            <PluginComposerHostProvider value={composerHost}>
-              <PromptBoxInternal
-                value={draft.text}
-                mentionRanges={[]}
-                onChange={(value) => draft.setTextAndMentions(value, [])}
-                onSubmit={() => undefined}
-                mentionMenuPlacement="bottom"
-                typeahead={{
-                  mention: {
-                    results: EMPTY_ORDERED_MENTION_SUGGESTIONS,
-                    isLoading: false,
-                    isRefreshing: false,
-                    isError: false,
-                    onQueryChange: () => undefined,
-                  },
-                  command: INERT_TYPEAHEAD_COMMAND_CONFIG,
-                }}
+<div ref={composerRootRef}>
+          {nativeTerminalPanes.has(threadId) ? (
+            <div data-native-terminal-thread="native-provider">
+              <textarea
+                className="xterm-helper-textarea"
+                data-testid={`xterm-${threadId}`}
               />
-            </PluginComposerHostProvider>
-          ) : (
-            <textarea
-              data-testid={`draft-${threadId}`}
-              value={draft.text}
-              onChange={(event) =>
-                draft.setTextAndMentions(event.target.value, [])
-              }
-            />
-          )}
+            </div>
+          ) : null}
+          <div data-promptbox="">
+            {nativeTerminalPanes.has(threadId) ? null : responsiveComposerProbe.enabled ? (
+              <PluginComposerHostProvider value={composerHost}>
+                <ComposerBox
+                  surface="thread"
+                  value={draft.text}
+                  mentionRanges={[]}
+                  onChange={(value) => draft.setTextAndMentions(value, [])}
+                  onSubmit={() => undefined}
+                  mentionMenuPlacement="bottom"
+                  typeahead={testTypeaheadConfig()}
+                />
+              </PluginComposerHostProvider>
+            ) : (
+              <textarea
+                ref={textareaRef}
+                data-testid={`draft-${threadId}`}
+                value={draft.text}
+                onChange={(event) =>
+                  draft.setTextAndMentions(event.target.value, [])
+                }
+              />
+            )}
+          </div>
         </div>
         <div
           data-testid={`scroll-${threadId}`}
