@@ -2293,7 +2293,11 @@ async function handleTurnSteer(
       params: {
         threadId: session.codexThreadId,
         expectedTurnId: params.expectedTurnId,
-        input: await resolveCodexSkillInput(session, params.input),
+        input: await resolveCodexSkillInput(
+          session,
+          params.input,
+          decoded.sessionOptions,
+        ),
       },
       resultSchema: ignoredChildResultSchema,
       timeoutMs: CHILD_REQUEST_TIMEOUT_MS,

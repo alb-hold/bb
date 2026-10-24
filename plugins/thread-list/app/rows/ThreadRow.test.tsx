@@ -16,7 +16,6 @@ import { SidebarTouchSensor } from "../dnd/sidebarTouchSensor.js";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { SidebarRenameProvider } from "./SidebarInlineRename.js";
 import type {
-  PluginSidebarPullRequest,
   PluginSidebarProject,
   PluginSidebarSplitLayout,
   PluginSidebarThread,
@@ -33,6 +32,10 @@ import {
   type TestThreadActionsResolver,
 } from "@get-bb/plugin-sdk/testing/app";
 import { NO_COLLAPSED_CHILD_ACTIVITY } from "../model/thread-activity.js";
+import {
+  threadListPullRequestRpcContract,
+  type ThreadListPullRequest,
+} from "./pull-request-query.js";
 import { useAutomationWokeAt } from "../model/automation-woke.js";
 import {
   makeSidebarEnvironment,
@@ -96,28 +99,15 @@ function createThread(
 }
 
 function createPullRequest(
-  state: PluginSidebarPullRequest["state"],
+  state: ThreadListPullRequest["state"],
   number = 10843,
   title = `${state} pull request`,
-): PluginSidebarPullRequest {
+): ThreadListPullRequest {
   return {
     number,
     title,
     url: `https://github.com/albrand/bb/pull/${number}`,
     state,
-    attention:
-      state === "draft"
-        ? "draft"
-        : state === "merged"
-          ? "merged"
-          : state === "closed"
-            ? "closed"
-            : "none",
-    experimental_autoMerge: false,
-    experimental_inMergeQueue: false,
-    experimental_checks: { state: "no_checks" },
-    experimental_review: { state: "none" },
-    experimental_mergeability: { state: "unknown" },
   };
 }
 
@@ -250,7 +240,7 @@ interface RenderThreadRowArgs extends Omit<HarnessProps, "thread"> {
   splitLayout?: PluginSidebarSplitLayout;
   projects?: PluginSidebarProject[];
   providers?: PluginProvidersState["providers"];
-  sidebarPullRequest?: PluginSidebarPullRequest;
+  sidebarPullRequest?: ThreadListPullRequest;
   openUrl?: (url: string) => boolean;
   sdk?: PluginSdkTestFakes;
   threadActions?: TestThreadActionsResolver;
@@ -275,20 +265,46 @@ function renderThreadRow({
 }: RenderThreadRowArgs = {}): RenderedSlot & {
   rerenderThreadRow(nextThread: PluginSidebarThread): void;
 } {
+  const rowThread = sidebarPullRequest
+    ? {
+        ...thread,
+        environment: thread.environment ?? {
+          id: `environment-${thread.id}`,
+          name: null,
+          branchName: null,
+          path: null,
+          isWorktree: null,
+          providerId: null,
+          workspaceDisplayKind: null,
+        },
+      }
+    : thread;
   const slot = renderSlot(
     { component: ThreadRowHarness },
-    { thread, projects, providers, ...harness },
+    { thread: rowThread, projects, providers, ...harness },
     {
-      sidebarThreads: { threads: [thread], projects },
+      sidebarThreads: { threads: [rowThread], projects },
       providers: { providers },
       sidebarDraftThreadIds: [
         ...(hasComposerDraft ? [thread.id] : []),
         ...hiddenDraftThreadIds,
       ],
       sidebarRowStatuses: pluginStatus ? { [thread.id]: pluginStatus } : {},
-      sidebarPullRequests: sidebarPullRequest
-        ? { [thread.id]: sidebarPullRequest }
-        : {},
+      experimental_rpcContract: threadListPullRequestRpcContract,
+      rpc: {
+        pullRequests: (input) => {
+          const { keys } = threadListPullRequestRpcContract.pullRequests.input.parse(
+            input,
+          );
+          return Object.fromEntries(
+            keys.flatMap((key) =>
+              sidebarPullRequest && key === rowThread.environment?.id
+                ? [[key, { outcome: "available", pullRequest: sidebarPullRequest }]]
+                : [],
+            ),
+          );
+        },
+      },
       sidebarShortcuts: shortcutKey
         ? {
             [thread.id]: {
@@ -648,20 +664,33 @@ describe("ThreadRow", () => {
   it("renders open, draft, merged, and closed PR rows together", () => {
     const states = ["open", "draft", "merged", "closed"] as const;
     const threads = states.map((state) =>
-      createThread({ id: `thread-${state}`, title: `${state} thread` }),
+      createThread({
+        id: `thread-${state}`,
+        title: `${state} thread`,
+        environment: {
+          id: `environment-${state}`,
+          name: null,
+          branchName: null,
+          path: null,
+          isWorktree: null,
+          providerId: null,
+          workspaceDisplayKind: null,
+        },
+      }),
     );
     const pullRequests = Object.fromEntries(
       states.map((state, index) => [
-        threads[index].id,
-        createPullRequest(state, 10843 + index),
+        threads[index].environment!.id!,
+        { outcome: "available", pullRequest: createPullRequest(state, 10843 + index) },
       ]),
     );
     const slot = renderSlot(
       { component: ThreadRowGalleryHarness },
       { threads },
       {
+        experimental_rpcContract: threadListPullRequestRpcContract,
         sidebarThreads: { threads },
-        sidebarPullRequests: pullRequests,
+        rpc: { pullRequests: () => pullRequests },
       },
     );
 

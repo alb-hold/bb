@@ -42,7 +42,6 @@ import {
   experimental_ThreadActionsMenu as ThreadActionsMenu,
   experimental_ThreadStatusGlyph as ThreadStatusGlyph,
   experimental_THREAD_ACTION_GROUPS,
-  experimental_useSidebarThreadPullRequest,
   experimental_useThreadActions,
   experimental_useSidebarThreadSplit,
   experimental_ProviderIcon as ProviderIcon,
@@ -60,6 +59,7 @@ import {
   type PluginProvidersState,
 } from "@get-bb/plugin-sdk/app";
 import type { SidebarThread } from "../model/sidebar-thread.js";
+import { useThreadListPullRequest } from "./pull-request-query.js";
 import {
   NO_THREAD_IDS,
   useThreadsHaveDraft,
@@ -455,8 +455,12 @@ function getPullRequestRepository(url: string): string {
     : parsedUrl.hostname;
 }
 
-function SidebarThreadPullRequestChip({ threadId }: { threadId: string }) {
-  const { pullRequest } = experimental_useSidebarThreadPullRequest(threadId);
+function SidebarThreadPullRequestChip({
+  thread,
+}: {
+  thread: SidebarThread;
+}) {
+  const pullRequest = useThreadListPullRequest(thread.environment?.id ?? null);
   if (pullRequest === null) return null;
 
   const stateLabel =
@@ -926,7 +930,7 @@ function ThreadRowComponent({
             "flex min-w-0 shrink-0 items-center gap-0.5 [@media(hover:none)]:opacity-100!",
           )}
         >
-          <SidebarThreadPullRequestChip threadId={thread.id} />
+          <SidebarThreadPullRequestChip thread={thread} />
           {hasVisibleStatus ? (
             <span
               className={cn(
