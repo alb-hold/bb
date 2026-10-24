@@ -64,7 +64,7 @@ export function createNativeActivityReporter(options: {
       state: next.state,
       ...(next.prompt === null ? {} : { prompt: next.prompt }),
       ...(next.state === "waiting" ? { questions: next.questions } : {}),
-      closes: closeIds,
+      ...(closeIds.length === 0 ? {} : { closes: closeIds }),
       ...(includeConfirms ? { confirms: false } : {}),
     });
     const acknowledge = (closed: string[]): void => {
