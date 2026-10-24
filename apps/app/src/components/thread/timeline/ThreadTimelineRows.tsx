@@ -2505,7 +2505,7 @@ function TimelineRowsList({
       keys.add(navigationTargetRowId);
     }
     return keys;
-  }, [items, rows, spacing, stableSearchExpandedRowIds, navigationTargetRowId]);
+  }, [items, spacing, stableSearchExpandedRowIds, navigationTargetRowId]);
   const isTopLevelList = spacing === "top-level";
   const { measureRef: messageColumnWidthSourceRef, width: messageColumnWidth } =
     useMeasuredWidth({ enabled: isTopLevelList });
