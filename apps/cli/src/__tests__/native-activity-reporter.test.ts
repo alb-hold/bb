@@ -578,6 +578,34 @@ describe("native activity reporter", () => {
       expect(calls.at(-1)?.state).toBe("working");
     });
 
+    it("never retries a rejected non-empty close without its IDs", async () => {
+      const { calls, reporter } = closureSetup([
+        async () => ({ ok: true }),
+        async () => {
+          throw new BbHttpError({
+            body: null,
+            code: "invalid_request",
+            message: "invalid close identifier",
+            status: 400,
+          });
+        },
+        async () => ({ ok: true }),
+      ]);
+      reporter.report(asking("q1"));
+      await reporter.settled();
+      reporter.report(working);
+      await reporter.settled();
+
+      expect(closesOf(calls)).toEqual([undefined, ["q1"]]);
+      reporter.retry();
+      await reporter.settled();
+      expect(calls).toHaveLength(2);
+
+      reporter.report(working);
+      await reporter.settled();
+      expect(closesOf(calls)).toEqual([undefined, ["q1"], ["q1"]]);
+    });
+
     it("retains possibly-open IDs through a blocked legacy close for the next supported report", async () => {
       const { calls, reporter } = closureSetup([
         async () => {
