@@ -670,7 +670,7 @@ describe("a waiting report whose response is lost, then a newer report, through 
     });
   });
 
-  it("keeps every rejected close tracked through an accepted legacy fallback, then closes both on retry", async () => {
+  it("keeps a rejected close report blocked until a newer report applies the current state", async () => {
     const { harness, thread } = await nativeThread();
     const sent: Array<string[] | undefined> = [];
     let rejectClose = true;
@@ -718,12 +718,15 @@ describe("a waiting report whose response is lost, then a newer report, through 
     await reporter.settled();
     reporter.report({ prompt: null, state: "working" });
     await reporter.settled();
-    expect(sent).toEqual([[], ["q1", "q2"], undefined]);
+    expect(sent).toEqual([[], ["q1", "q2"]]);
     expect(openRequestIds(harness, thread.id)).toHaveLength(2);
 
+    reporter.retry();
+    await reporter.settled();
+    expect(sent).toEqual([[], ["q1", "q2"]]);
     reporter.report({ prompt: null, state: "working" });
     await reporter.settled();
-    expect(sent).toEqual([[], ["q1", "q2"], undefined, ["q1", "q2"]]);
+    expect(sent).toEqual([[], ["q1", "q2"], ["q1", "q2"]]);
     expect(openRequestIds(harness, thread.id)).toEqual([]);
     expect(
       listPendingInteractionsByThread(harness.db, {
@@ -1350,122 +1353,50 @@ describe("the pre-change native terminal server source fixture from fe0844422acc
   const pendingOf = (harness: TestAppHarness, threadId: string) =>
     openPayloads(harness, threadId);
 
-  it("rejects the initial request with zero writes and zod's own wording, then settles an answered question as before", async () => {
+  it("blocks unsupported closes and keeps an already-open newer question visible", async () => {
     const h = await oldServerOnTheRealStore();
+    await h.reportDirect({
+      authorization: `Bearer ${SECRET}`,
+      questions: [{ id: "permission:Bash#1", prompt: "Allow Bash?" }],
+      state: "waiting",
+      threadId: h.thread.id,
+    });
     h.reporter.report(asking("permission:Bash#1", "Allow Bash?"));
     await h.reporter.settled();
     h.reporter.report({ prompt: null, state: "working" });
     await h.reporter.settled();
-    expect(h.rejectedBodies).toHaveLength(2);
-    expect(h.rejectedBodies[0]).toMatch(/Unrecognized key: .*closes/u);
-    expect(h.writesAtRejection[0]).toEqual({
-      evidence: null,
-      pending: 0,
-      status: "idle",
-    });
-    expect(openQuestions(h.harness, h.thread.id)).toHaveLength(0);
-    expectClosedAsAnswered(h.harness, h.thread.id, "Bash");
-    expect(getThread(h.harness.db, h.thread.id)?.status).toBe("active");
-  });
-
-  it("uses the legacy question set to close X when closes is stripped, while registering Y unchanged", async () => {
-    const h = await oldServerOnTheRealStore();
-    h.reporter.report(asking("permission:Bash#1", "Allow Bash?"));
-    await h.reporter.settled();
-    expect(pendingOf(h.harness, h.thread.id)).toHaveLength(1);
-    h.reporter.report(asking("permission:Edit#1", "Allow Edit?"));
-    await h.reporter.settled();
-    expect(openRequestIds(h.harness, h.thread.id)).toEqual([
-      expect.stringContaining("permission:Edit#1"),
-    ]);
-    expect(JSON.stringify(pendingOf(h.harness, h.thread.id))).toContain(
-      "Allow Edit?",
-    );
-    expectClosedAsAnswered(h.harness, h.thread.id, "Bash");
-    expect(h.rejectedBodies).toHaveLength(2);
-    expect(h.requests).toHaveLength(4);
-    expect(h.requests[2]?.body).toMatchObject({
-      closes: ["permission:Bash#1"],
-      state: "waiting",
-    });
-    expect(h.requests[2]?.status).toBe(400);
-    expect(h.requests[3]?.body).not.toHaveProperty("closes");
-    expect(h.requests[3]?.body).toMatchObject({
-      questions: [{ id: "permission:Edit#1", prompt: "Allow Edit?" }],
-      state: "waiting",
-    });
-    expect(h.requests[3]?.status).toBe(200);
-  });
-
-  it("skips a superseded delayed legacy snapshot so a newer question stays open", async () => {
-    let initialRejectSeen: () => void = () => undefined;
-    let releaseInitialReject: () => void = () => undefined;
-    let laterRequestSeen: () => void = () => undefined;
-    let releaseLaterRequest: () => void = () => undefined;
-    const initialReject = new Promise<void>((resolve) => {
-      initialRejectSeen = resolve;
-    });
-    const initialRelease = new Promise<void>((resolve) => {
-      releaseInitialReject = resolve;
-    });
-    const laterRequest = new Promise<void>((resolve) => {
-      laterRequestSeen = resolve;
-    });
-    const laterRelease = new Promise<void>((resolve) => {
-      releaseLaterRequest = resolve;
-    });
-    let holdInitial = true;
-    let holdLater = false;
-    const h = await oldServerOnTheRealStore({
-      deferResponse: async (entry) => {
-        if (
-          holdInitial &&
-          entry.status === 400 &&
-          entry.body.state === "working"
-        ) {
-          holdInitial = false;
-          initialRejectSeen();
-          await initialRelease;
-          holdLater = true;
-          return;
-        }
-        if (holdLater) {
-          holdLater = false;
-          laterRequestSeen();
-          await laterRelease;
-        }
-      },
-    });
-    h.reporter.report(asking("permission:Bash#old", "Allow Bash?"));
-    await h.reporter.settled();
-    expect(openRequestIds(h.harness, h.thread.id)).toEqual(
-      expect.arrayContaining([expect.stringContaining("permission:Bash#old")]),
-    );
-
-    h.reporter.report({ prompt: null, state: "working" });
-    await initialReject;
-    h.reporter.report(asking("permission:Edit#new", "Allow Edit?"));
     await h.reportDirect({
       authorization: `Bearer ${SECRET}`,
       questions: [{ id: "permission:Edit#new", prompt: "Allow Edit?" }],
       state: "waiting",
       threadId: h.thread.id,
     });
-    expect(openRequestIds(h.harness, h.thread.id)).toEqual(
-      expect.arrayContaining([expect.stringContaining("permission:Edit#new")]),
-    );
-
-    releaseInitialReject();
-    await laterRequest;
-    expect(openRequestIds(h.harness, h.thread.id)).toEqual(
-      expect.arrayContaining([expect.stringContaining("permission:Edit#new")]),
-    );
-    expect(h.logged).toContain("activity-legacy-fallback-skipped");
-    releaseLaterRequest();
+    h.reporter.report(asking("permission:Edit#new", "Allow Edit?"));
     await h.reporter.settled();
+    expect(h.rejectedBodies).toHaveLength(3);
+    expect(h.requests.map((request) => request.status)).toEqual([400, 400, 400]);
+    expect(h.requests[0]?.body).toMatchObject({
+      closes: [],
+      questions: [{ id: "permission:Bash#1", prompt: "Allow Bash?" }],
+      state: "waiting",
+    });
+    expect(h.requests[1]?.body).toMatchObject({
+      closes: ["permission:Bash#1"],
+      state: "working",
+    });
+    expect(h.requests[2]?.body).toMatchObject({
+      closes: ["permission:Bash#1"],
+      questions: [{ id: "permission:Edit#new", prompt: "Allow Edit?" }],
+      state: "waiting",
+    });
     expect(openRequestIds(h.harness, h.thread.id)).toEqual(
-      expect.arrayContaining([expect.stringContaining("permission:Edit#new")]),
+      [expect.stringContaining("permission:Edit#new")],
     );
+    expect(pendingOf(h.harness, h.thread.id)).toHaveLength(1);
+    expect(h.logged).toContain("activity-closure-fallback-skipped");
+    h.reporter.retry();
+    await h.reporter.settled();
+    expect(h.requests).toHaveLength(3);
   });
 
   it("does not stamp a non-confirming report through a legacy server that defaults confirms to true", async () => {
@@ -1495,20 +1426,23 @@ describe("the pre-change native terminal server source fixture from fe0844422acc
     ).toBeNull();
   });
 
-  it("still applies a confirmed report through the legacy fallback", async () => {
+  it("keeps only the newest rejected close report in the bounded blocked slot", async () => {
     const h = await oldServerOnTheRealStore();
     h.reporter.report({ prompt: null, state: "working" });
     await h.reporter.settled();
-
+    h.reporter.report(asking("permission:Edit#new", "Allow Edit?"));
+    await h.reporter.settled();
+    h.reporter.retry();
+    await h.reporter.settled();
     expect(h.requests).toHaveLength(2);
     expect(h.requests[0]?.body).toMatchObject({ closes: [] });
     expect(h.requests[0]?.status).toBe(400);
-    expect(h.requests[1]?.body).not.toHaveProperty("closes");
-    expect(h.requests[1]?.status).toBe(200);
-    expect(
-      getNativeTerminalThread(h.harness.db, h.thread.id)?.lastEvidenceAt,
-    ).toEqual(expect.any(Number));
-    expect(getThread(h.harness.db, h.thread.id)?.status).toBe("active");
+    expect(h.requests[1]?.body).toMatchObject({
+      closes: [],
+      questions: [{ id: "permission:Edit#new", prompt: "Allow Edit?" }],
+    });
+    expect(h.requests[1]?.status).toBe(400);
+    expect(getThread(h.harness.db, h.thread.id)?.status).toBe("idle");
   });
 
   it("goes out with the fields again after a rejection: nothing is remembered about the server", async () => {
@@ -1536,7 +1470,7 @@ describe("the pre-change native terminal server source fixture from fe0844422acc
     expectClosedAsAnswered(h.harness, h.thread.id, "Bash");
   });
 
-  it("drains more legacy-fallback question IDs than the schema limit in bounded batches while applying the latest activity", async () => {
+  it("drains more blocked legacy close IDs than the schema limit in bounded batches while applying the latest activity", async () => {
     const h = await oldServerOnTheRealStore();
     const questionIds = Array.from(
       { length: NATIVE_TERMINAL_MAX_OPEN_QUESTIONS * 2 + 3 },

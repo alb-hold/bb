@@ -458,7 +458,7 @@ describe("native activity reporter", () => {
       expect(calls.map((call) => call.confirms)).toEqual([undefined, false]);
     });
 
-    it("retries a report that closes X and opens Y once without the fields, with the same credential, thread, state, prompt and questions", async () => {
+    it("blocks a report that closes X and opens Y when the server rejects closes", async () => {
       const { calls, logged, reporter } = closureSetup([
         async () => ({ ok: true }),
         async () => {
@@ -471,26 +471,25 @@ describe("native activity reporter", () => {
       reporter.report(asking("x"));
       reporter.report(asking("y"));
       await reporter.settled();
-      expect(calls).toHaveLength(3);
-      expect(closesOf(calls)).toEqual([[], ["x"], undefined]);
-      expect(calls[2]).toEqual({
-        authorization: calls[1]?.authorization,
-        closes: undefined,
-        confirms: undefined,
-        prompt: undefined,
-        questions: ["y"],
-        state: "waiting",
-      });
+      expect(calls).toHaveLength(2);
+      expect(closesOf(calls)).toEqual([[], ["x"]]);
       expect(calls[1]?.authorization).toBe("Bearer rotated-after-an-attempt");
       expect(logged).toEqual([
         {
           event: "activity-closure-field-rejected",
           fields: { closes: 1, confirms: 0 },
         },
+        {
+          event: "activity-closure-fallback-skipped",
+          fields: {
+            closes: 1,
+            reason: "legacy_server_does_not_support_closes",
+          },
+        },
       ]);
     });
 
-    it("does not send a superseded legacy question snapshot after the close rejection", async () => {
+    it("blocks an unsupported close report and only retries the newest report after supersession", async () => {
       const calls: Array<{
         questions: string[] | undefined;
         state: string;
@@ -535,67 +534,57 @@ describe("native activity reporter", () => {
         ["waiting", ["x"]],
         ["working", undefined],
         ["waiting", ["y"]],
-        ["waiting", ["y"]],
       ]);
-      expect(logged).toContain("activity-legacy-fallback-skipped");
+      reporter.retry();
+      await reporter.settled();
+      expect(calls).toHaveLength(3);
+      expect(logged).toContain("activity-closure-fallback-skipped");
     });
 
-    it("keeps every close tracked through a legacy fallback and a later rejected ID", async () => {
-      const rejectedId = new BbHttpError({
-        body: null,
-        code: "invalid_request",
-        message: "Question q1 could not be closed",
-        status: 400,
-      });
+    it("keeps a rejected close blocked until a newer report supersedes it", async () => {
       const { calls, reporter } = closureSetup([
         async () => ({ ok: true }),
         async () => {
           throw rejection('"closes"');
         },
         async () => ({ ok: true }),
-        async () => {
-          throw rejectedId;
-        },
-        async () => {
-          throw rejectedId;
-        },
-        async () => ({ ok: true }),
-        async () => ({ ok: true }),
-        async () => ({ ok: true }),
       ]);
       reporter.report(asking("q1", "q2"));
       await reporter.settled();
       reporter.report(working);
       await reporter.settled();
-      expect(closesOf(calls)).toEqual([[], ["q1", "q2"], undefined]);
-
+      expect(closesOf(calls)).toEqual([[], ["q1", "q2"]]);
+      reporter.retry();
+      await reporter.settled();
+      expect(calls).toHaveLength(2);
       reporter.report(working);
       await reporter.settled();
-      expect(closesOf(calls)).toEqual([
-        [],
-        ["q1", "q2"],
-        undefined,
-        ["q1", "q2"],
-        ["q1"],
-        [],
-        ["q2"],
-      ]);
+      expect(closesOf(calls)).toEqual([[], ["q1", "q2"], ["q1", "q2"]]);
+      expect(calls.at(-1)?.state).toBe("working");
+    });
 
+    it("retains possibly-open IDs through a blocked legacy close for the next supported report", async () => {
+      const { calls, reporter } = closureSetup([
+        async () => {
+          throw new BbHttpError({
+            body: null,
+            code: "temporarily_unavailable",
+            message: "response lost after possible apply",
+            status: 503,
+          });
+        },
+        async () => {
+          throw rejection('"closes"');
+        },
+        async () => ({ ok: true }),
+      ]);
+      reporter.report(asking("q1"));
+      await reporter.settled();
       reporter.report(working);
       await reporter.settled();
-      expect(closesOf(calls)).toEqual([
-        [],
-        ["q1", "q2"],
-        undefined,
-        ["q1", "q2"],
-        ["q1"],
-        [],
-        ["q2"],
-        ["q1"],
-      ]);
-      expect(calls.slice(1).every((call) => call.state === "working")).toBe(
-        true,
-      );
+      reporter.report(working);
+      await reporter.settled();
+      expect(closesOf(calls)).toEqual([[], ["q1"], ["q1"]]);
     });
 
     it("keeps a non-confirming report queued instead of retrying without confirms", async () => {
@@ -619,24 +608,25 @@ describe("native activity reporter", () => {
       expect(calls).toHaveLength(1);
     });
 
-    it("does not reuse a legacy fallback for the next report after it is superseded", async () => {
+    it("keeps only the newest unsupported-close report in the bounded retry slot", async () => {
       const { calls, logged, reporter } = closureSetup([
+        async () => {
+          throw rejection('"closes"');
+        },
         async () => {
           throw rejection('"closes"');
         },
       ]);
       reporter.report(working);
+      await reporter.settled();
       reporter.report(working);
       await reporter.settled();
       expect(closesOf(calls)).toEqual([[], []]);
-      expect(logged).toContainEqual({
-        event: "activity-legacy-fallback-skipped",
-        fields: {
-          latestSequence: 2,
-          reason: "superseded",
-          sequence: 1,
-        },
-      });
+      expect(
+        logged.filter(
+          (entry) => entry.event === "activity-closure-fallback-skipped",
+        ),
+      ).toHaveLength(2);
     });
 
     it.each([
