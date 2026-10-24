@@ -16,7 +16,7 @@ export interface SlowDbQueryLogFields {
   callers?: string[];
   durationMs: number;
   lockWaitMs?: number;
-  lockWaitSource?: "begin" | "first-write" | "exec" | "none";
+  lockWaitSource?: "begin" | "first-write" | "exec" | "unknown" | "none";
   bodyMs?: number;
   cpuDurationMs: number;
   eventLoopWork: string | null;
@@ -94,7 +94,7 @@ interface SlowDbQueryConfig {
   diagnosticsEnabled: () => boolean;
   transactionDepth: number;
   transactionLockWaitMs: number;
-  transactionLockWaitSource: "begin" | "first-write" | "exec" | null;
+  transactionLockWaitSource: "begin" | "first-write" | "exec" | "unknown" | null;
   transactionStartNs: bigint | null;
 }
 
@@ -136,6 +136,7 @@ interface TimedStatementOperationArgs<TValue> {
   operation: SlowDbQueryOperation;
   source: string;
   trackFirstWrite: boolean;
+  unknownReader: boolean;
   work: () => TValue;
 }
 
@@ -148,7 +149,6 @@ const MAX_LOGGED_CALLER_FRAMES = 8;
 const SQL_TRUNCATION_SUFFIX = "...";
 const SQL_STRING_LITERAL_PATTERN = /'(?:''|[^'])*'/gu;
 const SQL_WHITESPACE_PATTERN = /\s+/gu;
-const WRITE_SQL_PATTERN = /(?:^|;)\s*(?:(?:WITH\b[\s\S]*?\b)?(?:INSERT|UPDATE|DELETE|REPLACE)\b|(?:CREATE|DROP|ALTER|REINDEX|ANALYZE|VACUUM|ATTACH|DETACH)\b|PRAGMA\s+[\w.]+\s*=)/iu;
 
 function roundDurationMs(durationMs: number): number {
   return Math.round(durationMs * 10) / 10;
@@ -184,7 +184,7 @@ function runTimedStatementOperation<TValue>(
   const startedCpu = threadCpuUsage();
   const startedAt = performance.now();
   const firstWriteStartedAt =
-    args.trackFirstWrite &&
+    (args.trackFirstWrite || args.unknownReader) &&
     args.config.transactionDepth > 0 &&
     args.config.transactionLockWaitSource === null
       ? hrtime.bigint()
@@ -195,7 +195,9 @@ function runTimedStatementOperation<TValue>(
     if (firstWriteStartedAt !== null) {
       args.config.transactionLockWaitMs =
         Number(hrtime.bigint() - firstWriteStartedAt) / 1_000_000;
-      args.config.transactionLockWaitSource = "first-write";
+      args.config.transactionLockWaitSource = args.trackFirstWrite
+        ? "first-write"
+        : "unknown";
     }
     const durationMs = performance.now() - startedAt;
     const thresholdMs =
@@ -281,7 +283,8 @@ function instrumentStatement(
       config,
       operation: "all",
       source,
-      trackFirstWrite: !statement.reader,
+      trackFirstWrite: statement.reader === false,
+      unknownReader: typeof statement.reader !== "boolean",
       work: () => originalAll(...params),
     });
   statement.get = (...params) =>
@@ -291,7 +294,8 @@ function instrumentStatement(
       config,
       operation: "get",
       source,
-      trackFirstWrite: !statement.reader,
+      trackFirstWrite: statement.reader === false,
+      unknownReader: typeof statement.reader !== "boolean",
       work: () => originalGet(...params),
     });
   statement.run = (...params) =>
@@ -301,7 +305,8 @@ function instrumentStatement(
       config,
       operation: "run",
       source,
-      trackFirstWrite: !statement.reader,
+      trackFirstWrite: statement.reader === false,
+      unknownReader: typeof statement.reader !== "boolean",
       work: () => originalRun(...params),
     });
 
@@ -333,19 +338,7 @@ function instrumentSqliteClient(
   };
   const originalExec = sqlite.exec.bind(sqlite);
   sqlite.exec = (source) => {
-    const statements = source
-      .split(";")
-      .map((statement) => statement.trim())
-      .filter((statement) => statement.length > 0);
-    const isWrite = statements.some((statement) =>
-      WRITE_SQL_PATTERN.test(statement),
-    );
-    const hasMultipleStatements = statements.length > 1;
-    if (
-      isWrite &&
-      hasMultipleStatements &&
-      config.transactionLockWaitSource === null
-    ) {
+    if (config.transactionDepth > 0) {
       config.transactionLockWaitSource = "exec";
     }
     return runTimedStatementOperation({
@@ -354,7 +347,8 @@ function instrumentSqliteClient(
       config,
       operation: "exec",
       source,
-      trackFirstWrite: isWrite && !hasMultipleStatements,
+      trackFirstWrite: false,
+      unknownReader: false,
       work: () => originalExec(source),
     });
   };
@@ -395,6 +389,7 @@ function instrumentSqliteClient(
             operation: "transaction",
             source: `TRANSACTION ${mode.toUpperCase()}`,
             trackFirstWrite: false,
+            unknownReader: false,
             work: () => {
               if (outermost && config.transactionLockWaitSource === "begin") {
                 config.transactionStartNs = hrtime.bigint();

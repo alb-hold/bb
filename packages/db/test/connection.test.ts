@@ -94,6 +94,9 @@ describe("createConnection", () => {
     const directory = mkdtempSync(join(tmpdir(), "bb-db-first-write-"));
     const databasePath = join(directory, "bb.db");
     const logger = new CapturingSlowQueryLogger();
+    const template = createMigratedConnection();
+    writeFileSync(databasePath, template.$client.serialize());
+    template.$client.close();
     const db = createConnection(databasePath, {
       slowQueryLogger: logger,
       slowQueryThresholdMs: 100,
@@ -144,36 +147,50 @@ describe("createConnection", () => {
     }
   });
 
-  it("reports none for a read-only DEFAULT transaction", () => {
-    const directory = mkdtempSync(join(tmpdir(), "bb-db-read-only-lock-"));
+  it("classifies prepared writes from reader metadata and leaves exec unattributed", () => {
+    const directory = mkdtempSync(join(tmpdir(), "bb-db-driver-lock-classification-"));
+    const template = createMigratedConnection();
+    const databasePath = join(directory, "bb.db");
+    writeFileSync(databasePath, template.$client.serialize());
+    template.$client.close();
     const logger = new CapturingSlowQueryLogger();
-    const db = createConnection(join(directory, "bb.db"), {
+    const db = createConnection(databasePath, {
       slowQueryLogger: logger,
       slowQueryThresholdMs: 0,
     });
     try {
-      db.$client
-        .transaction(() => {
-          db.$client.prepare("SELECT 1").get();
-        })
-        .default();
-      const transactionLog = logger.infoLogs.find(
-        (log) => log.fields.operation === "transaction",
-      );
-      expect(transactionLog?.fields.lockWaitSource).toBe("none");
-      expect(transactionLog?.fields.lockWaitMs).toBe(0);
-
-      db.$client.exec("CREATE TABLE exec_lock_timing (value INTEGER)");
+      db.$client.exec("CREATE TABLE classify_values (value INTEGER PRIMARY KEY)");
+      db.$client.prepare("INSERT INTO classify_values VALUES (1)").run();
+      const writes = [
+        "-- note\nINSERT INTO classify_values VALUES (2)",
+        "WITH value AS (SELECT 3 AS value) INSERT INTO classify_values SELECT value FROM value",
+        "REPLACE INTO classify_values VALUES (1)",
+      ];
+      for (const sql of writes) {
+        logger.clear();
+        db.$client.transaction(() => db.$client.prepare(sql).run()).default();
+        const txLog = logger.infoLogs.find((log) => log.fields.operation === "transaction");
+        expect(txLog?.fields.lockWaitSource).toBe("first-write");
+      }
+      const execWrites = [
+        "-- note\nINSERT INTO classify_values VALUES (4)",
+        "WITH value AS (SELECT 5 AS value) INSERT INTO classify_values SELECT value FROM value",
+        "REPLACE INTO classify_values VALUES (1)",
+      ];
+      for (const sql of execWrites) {
+        logger.clear();
+        db.$client.transaction(() => db.$client.exec(sql)).default();
+        const txLog = logger.infoLogs.find((log) => log.fields.operation === "transaction");
+        expect(txLog?.fields.lockWaitSource).toBe("exec");
+        expect(txLog?.fields).not.toHaveProperty("lockWaitMs");
+        expect(txLog?.fields).not.toHaveProperty("bodyMs");
+        expect(txLog?.fields.lockWaitSource).not.toBe("none");
+      }
       logger.clear();
-      db.$client
-        .transaction(() => {
-          db.$client.exec("INSERT INTO exec_lock_timing VALUES (1)");
-        })
-        .default();
-      const writeTransactionLog = logger.infoLogs.find(
-        (log) => log.fields.operation === "transaction",
-      );
-      expect(writeTransactionLog?.fields.lockWaitSource).toBe("first-write");
+      db.$client.transaction(() => db.$client.prepare("SELECT 1").get()).default();
+      const readLog = logger.infoLogs.find((log) => log.fields.operation === "transaction");
+      expect(readLog?.fields.lockWaitSource).toBe("none");
+      expect(readLog?.fields.lockWaitMs).toBe(0);
     } finally {
       db.$client.close();
       rmSync(directory, { force: true, recursive: true });
@@ -216,34 +233,6 @@ describe("createConnection", () => {
     }
   });
 
-  it("measures a single exec write with a trailing semicolon", () => {
-    const directory = mkdtempSync(join(tmpdir(), "bb-db-single-exec-lock-"));
-    const logger = new CapturingSlowQueryLogger();
-    const db = createConnection(join(directory, "bb.db"), {
-      slowQueryLogger: logger,
-      slowQueryThresholdMs: 0,
-    });
-    try {
-      db.$client.exec("CREATE TABLE terminated_exec_values (value INTEGER)");
-      for (const suffix of [";", ";  \n"]) {
-        logger.clear();
-        db.$client
-          .transaction(() => {
-            db.$client.exec(`INSERT INTO terminated_exec_values VALUES (1)${suffix}`);
-          })
-          .default();
-        const transactionLog = logger.infoLogs.find(
-          (log) => log.fields.operation === "transaction",
-        );
-        expect(transactionLog?.fields.lockWaitSource).toBe("first-write");
-        expect(transactionLog?.fields.lockWaitMs).toBeGreaterThanOrEqual(0);
-        expect(transactionLog?.fields.bodyMs).toBeGreaterThanOrEqual(0);
-      }
-    } finally {
-      db.$client.close();
-      rmSync(directory, { force: true, recursive: true });
-    }
-  });
 
   it("does not split lock wait for two writes in one exec", () => {
     const directory = mkdtempSync(join(tmpdir(), "bb-db-two-exec-writes-"));
