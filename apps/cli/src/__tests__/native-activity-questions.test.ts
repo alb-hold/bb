@@ -104,6 +104,40 @@ function waiting(
 }
 
 describe("native terminal questions", () => {
+  it("rejects a delayed same-second opener sequenced before a clear", () => {
+    const tracker = new NativeActivityTracker("same-second-before");
+    tracker.apply({ state: "idle", prompt: null }, 20);
+    const delayed = {
+      occurrence: true as const,
+      question: {
+        id: "permission:Bash",
+        prompt: "Claude Code needs permission to use: Bash",
+      },
+      state: null,
+      prompt: null,
+    };
+
+    expect(tracker.acceptsLate(delayed, 1_798_208_000, 19)).toBe(false);
+    expect(tracker.heartbeat()).toBeNull();
+  });
+
+  it("accepts a same-second opener sequenced after a clear", () => {
+    const tracker = new NativeActivityTracker("same-second-after");
+    tracker.apply({ state: "idle", prompt: null }, 20);
+    const next = {
+      occurrence: true as const,
+      question: {
+        id: "permission:Bash",
+        prompt: "Claude Code needs permission to use: Bash",
+      },
+      state: null,
+      prompt: null,
+    };
+
+    expect(tracker.acceptsLate(next, 1_798_208_000, 21)).toBe(true);
+    tracker.apply(next, 21);
+    expect(waiting(tracker.heartbeat())).toHaveLength(1);
+  });
   it("reports an unanswered Claude AskUserQuestion as waiting and clears it on its tool result", () => {
     const tracker = new NativeActivityTracker();
     tracker.apply({ state: "working", prompt: "merge it" });
@@ -553,9 +587,9 @@ describe("native terminal questions", () => {
         secondId,
         thirdId,
       ]);
-      expect(
-        waiting(hook(done("toolu_2", input))).map(({ id }) => id),
-      ).toEqual([secondId, thirdId]);
+      expect(waiting(hook(done("toolu_2", input))).map(({ id }) => id)).toEqual(
+        [secondId, thirdId],
+      );
       expect(waiting(hook(done("toolu_3", input))).map(({ id }) => id)).toEqual(
         [thirdId],
       );
