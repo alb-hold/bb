@@ -215,7 +215,7 @@ async function containsGitWorkspace(directory: string, signal: AbortSignal) {
         path.basename(next.directory) === "host-data"
       )
         return true;
-      if (!child.isDirectory() || child.name === "node_modules") continue;
+      if (!child.isDirectory()) continue;
       if (next.depth >= WORKSPACE_SCAN_MAX_DEPTH) return true;
       pending.push({
         directory: path.join(next.directory, child.name),
@@ -300,12 +300,24 @@ export async function removeDeveloperEntries(
     if (trashes.length > 0) {
       const lease = retainWorker();
       void (async () => {
-        for (const trash of trashes)
+        for (const trash of trashes) {
+          const mayHoldWorkspace = await containsGitWorkspace(
+            trash,
+            new AbortController().signal,
+          ).catch(() => true);
+          if (mayHoldWorkspace) {
+            console.error(
+              "Development storage trash kept because it may hold a git checkout or worktree",
+              trash,
+            );
+            continue;
+          }
           await fs
             .rm(trash, { recursive: true, force: true })
             .catch((error) => {
               console.error("Development storage cleanup failed", error);
             });
+        }
       })().finally(() => lease.dispose());
     }
   }

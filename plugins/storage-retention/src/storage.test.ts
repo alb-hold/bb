@@ -1,5 +1,5 @@
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -1753,6 +1753,174 @@ it.skipIf(process.platform === "win32")(
       expect(bystander.signalCode).toBeNull();
     } finally {
       bystander.kill("SIGKILL");
+      await worker.experimental_dispose();
+    }
+  },
+);
+
+it.skipIf(process.platform === "win32")(
+  "keeps a development entry that holds a real git worktree under node_modules, in both removal modes, and names why",
+  async () => {
+    const fakeHome = await directory();
+    const rootPath = path.join(fakeHome, ".bb-dev");
+    const source = path.join(fakeHome, "source");
+    const git = (cwd: string, ...args: string[]) =>
+      execFileSync(
+        "git",
+        [
+          "-c",
+          "user.name=test",
+          "-c",
+          "user.email=test@example.com",
+          "-c",
+          "commit.gpgsign=false",
+          ...args,
+        ],
+        { cwd, stdio: "pipe" },
+      );
+    await fs.mkdir(source, { recursive: true });
+    git(source, "init", "-q", "-b", "main");
+    await fs.writeFile(path.join(source, "file"), "content");
+    git(source, "add", "file");
+    git(source, "commit", "-q", "-m", "initial");
+    await fs.mkdir(path.join(rootPath, "nested"), { recursive: true });
+    await fs.writeFile(
+      path.join(rootPath, "nested", "bb-dev-instance.json"),
+      JSON.stringify({ repoRoot: path.join(fakeHome, "gone", "bb") }),
+    );
+    const worktree = path.join(rootPath, "nested", "node_modules", "x");
+    git(source, "worktree", "add", "-q", "--detach", worktree);
+    expect(await fs.readFile(path.join(worktree, ".git"), "utf8")).toContain(
+      "gitdir:",
+    );
+    const worker = experimental_createHostEntryHarness(hostEntry);
+    try {
+      for (const mode of [
+        { condition: "checkoutMissing" as const },
+        { condition: "any" as const },
+      ]) {
+        const result = await worker.experimental_call(
+          "removeDeveloperEntries",
+          { rootPath, names: ["nested"], candidatePaths: [], mode },
+        );
+        expect(result.removed).toEqual([]);
+        expect(result.held).toEqual([
+          {
+            name: "nested",
+            reason: expect.stringContaining("git checkout or worktree"),
+          },
+        ]);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      expect(await fs.readdir(rootPath)).toEqual(["nested"]);
+      expect(await fs.readFile(path.join(worktree, ".git"), "utf8")).toContain(
+        "gitdir:",
+      );
+      expect(await fs.readFile(path.join(worktree, "file"), "utf8")).toBe(
+        "content",
+      );
+      expect(
+        git(source, "worktree", "list", "--porcelain").toString(),
+      ).toContain(`worktree ${await fs.realpath(worktree)}`);
+    } finally {
+      await worker.experimental_dispose();
+    }
+  },
+);
+
+it.skipIf(process.platform === "win32")(
+  "keeps a development entry whose node_modules is too deep to rule out a worktree, in both removal modes",
+  async () => {
+    const fakeHome = await directory();
+    const rootPath = path.join(fakeHome, ".bb-dev");
+    await fs.mkdir(path.join(rootPath, "deepmodules"), { recursive: true });
+    await fs.writeFile(
+      path.join(rootPath, "deepmodules", "bb-dev-instance.json"),
+      JSON.stringify({ repoRoot: path.join(fakeHome, "gone", "bb") }),
+    );
+    await fs.mkdir(
+      path.join(
+        rootPath,
+        "deepmodules",
+        "node_modules",
+        ...Array.from({ length: 11 }, (_unused, index) => `level${index}`),
+      ),
+      { recursive: true },
+    );
+    const worker = experimental_createHostEntryHarness(hostEntry);
+    try {
+      for (const mode of [
+        { condition: "checkoutMissing" as const },
+        { condition: "any" as const },
+      ]) {
+        const result = await worker.experimental_call(
+          "removeDeveloperEntries",
+          { rootPath, names: ["deepmodules"], candidatePaths: [], mode },
+        );
+        expect(result.removed).toEqual([]);
+        expect(result.held.map((held) => held.name)).toEqual(["deepmodules"]);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      expect(await fs.readdir(rootPath)).toEqual(["deepmodules"]);
+    } finally {
+      await worker.experimental_dispose();
+    }
+  },
+);
+
+it.skipIf(process.platform === "win32")(
+  "keeps a leftover trash folder in the development root that holds a git worktree, and still removes a leftover that holds none",
+  async () => {
+    const fakeHome = await directory();
+    const rootPath = path.join(fakeHome, ".bb-dev");
+    const source = path.join(fakeHome, "source");
+    const git = (cwd: string, ...args: string[]) =>
+      execFileSync(
+        "git",
+        [
+          "-c",
+          "user.name=test",
+          "-c",
+          "user.email=test@example.com",
+          "-c",
+          "commit.gpgsign=false",
+          ...args,
+        ],
+        { cwd, stdio: "pipe" },
+      );
+    await fs.mkdir(source, { recursive: true });
+    git(source, "init", "-q", "-b", "main");
+    await fs.writeFile(path.join(source, "file"), "content");
+    git(source, "add", "file");
+    git(source, "commit", "-q", "-m", "initial");
+    await fs.mkdir(path.join(rootPath, "plain"), { recursive: true });
+    await fs.writeFile(
+      path.join(rootPath, "plain", "bb-dev-instance.json"),
+      JSON.stringify({ repoRoot: path.join(fakeHome, "gone", "bb") }),
+    );
+    const worktree = path.join(rootPath, ".bb-trash-old-abc", "data", "x");
+    git(source, "worktree", "add", "-q", "--detach", worktree);
+    await fs.mkdir(path.join(rootPath, ".bb-trash-clean-def"));
+    await fs.writeFile(path.join(rootPath, ".bb-trash-clean-def", "file"), "x");
+    const worker = experimental_createHostEntryHarness(hostEntry);
+    try {
+      const result = await worker.experimental_call("removeDeveloperEntries", {
+        rootPath,
+        names: ["plain"],
+        candidatePaths: [],
+        mode: { condition: "any" },
+      });
+      expect(result.removed).toEqual(["plain"]);
+      await expect
+        .poll(async () => (await fs.readdir(rootPath)).sort())
+        .toEqual([".bb-trash-old-abc"]);
+      expect(await fs.readFile(path.join(worktree, ".git"), "utf8")).toContain(
+        "gitdir:",
+      );
+      expect(await fs.readFile(path.join(worktree, "file"), "utf8")).toBe(
+        "content",
+      );
+    } finally {
       await worker.experimental_dispose();
     }
   },
