@@ -620,6 +620,20 @@ export class NativeActivityTracker {
         : open.filter((occurrence) =>
             occurrence.candidateCallIds.includes(callId),
           );
+    const candidateKey = candidates[0]?.key ?? announced?.key ?? key;
+    const candidatePool =
+      callId === null || candidateKey === null
+        ? []
+        : open.filter(
+            (occurrence) =>
+              occurrence.key === candidateKey &&
+              occurrence.candidateCallIds.length > 0,
+          );
+    const candidateCallIds = new Set(
+      candidatePool.flatMap(({ candidateCallIds }) => candidateCallIds),
+    );
+    const candidateCapacityMatches =
+      candidatePool.length === candidateCallIds.size;
     if (callId !== null && candidates.length > 0) {
       for (const occurrence of open) {
         occurrence.candidateCallIds = occurrence.candidateCallIds.filter(
@@ -627,23 +641,20 @@ export class NativeActivityTracker {
         );
       }
     }
-    const resolved = candidates.filter(
-      (occurrence) => occurrence.candidateCallIds.length === 0,
-    );
-    if (directOccurrences.length > 0 || resolved.length > 0) {
-      const resolvedOccurrences = new Set([
-        ...directOccurrences.map(({ id }) => id),
-        ...resolved.map(({ id }) => id),
-      ]);
+    const settled =
+      directOccurrences.length > 0
+        ? directOccurrences
+        : candidateCapacityMatches && candidates.length > 0
+          ? [candidates[0]!]
+          : [];
+    if (settled.length > 0) {
+      const settledIds = new Set(settled.map(({ id }) => id));
       const remaining = open.filter(
-        (occurrence) => !resolvedOccurrences.has(occurrence.id),
+        (occurrence) => !settledIds.has(occurrence.id),
       );
       if (remaining.length === 0) this.openOccurrences.delete(base);
       else this.openOccurrences.set(base, remaining);
-      return [
-        ...directOccurrences.map(({ id }) => id),
-        ...resolved.map((occurrence) => occurrence.id),
-      ];
+      return settled.map(({ id }) => id);
     }
     if (candidates.length > 0) {
       this.openOccurrences.set(base, open);

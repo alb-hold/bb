@@ -472,32 +472,65 @@ describe("native terminal questions", () => {
       });
     });
 
-    it("keeps two identical prompts open until both indistinguishable calls complete", () => {
-      for (const completionOrder of [
-        ["toolu_1", "toolu_2"],
-        ["toolu_2", "toolu_1"],
-      ]) {
-        const {
-          hook: orderedHook,
-          call: orderedCall,
-          ask: orderedAsk,
-          done: orderedDone,
-          tracker,
-        } = holder();
-        orderedHook(orderedCall("toolu_1", bash("make build")));
-        orderedHook(orderedCall("toolu_2", bash("make build")));
-        const first = orderedHook(orderedAsk(bash("make build")));
-        const second = orderedHook(orderedAsk(bash("make build")));
-        expect(waiting(first)).toHaveLength(1);
-        expect(waiting(second)).toHaveLength(2);
-        expect(
-          orderedHook(orderedDone(completionOrder[0]!, bash("make build"))),
-        ).toBeNull();
-        expect(waiting(tracker.heartbeat())).toHaveLength(2);
-        expect(
-          orderedHook(orderedDone(completionOrder[1]!, bash("make build"))),
-        ).toEqual({ state: "working", prompt: null });
-      }
+    it("leaves exactly one identical prompt after completing A, then none after B", () => {
+      const { hook, call, ask, done, tracker } = holder();
+      const input = bash("make build");
+      hook(call("toolu_A", input));
+      hook(call("toolu_B", input));
+      hook(ask(input));
+      const opened = hook(ask(input));
+      expect(waiting(opened)).toHaveLength(2);
+
+      const afterA = hook(done("toolu_A", input));
+      expect(waiting(afterA)).toHaveLength(1);
+      expect(waiting(tracker.heartbeat())).toHaveLength(1);
+
+      expect(hook(done("toolu_B", input))).toEqual({
+        state: "working",
+        prompt: null,
+      });
+      expect(tracker.heartbeat()).toMatchObject({ state: "working" });
+    });
+
+    it("leaves exactly one identical prompt after completing B, then none after A", () => {
+      const { hook, call, ask, done, tracker } = holder();
+      const input = bash("make build");
+      hook(call("toolu_A", input));
+      hook(call("toolu_B", input));
+      hook(ask(input));
+      const opened = hook(ask(input));
+      expect(waiting(opened)).toHaveLength(2);
+
+      const afterB = hook(done("toolu_B", input));
+      expect(waiting(afterB)).toHaveLength(1);
+      expect(waiting(tracker.heartbeat())).toHaveLength(1);
+
+      expect(hook(done("toolu_A", input))).toEqual({
+        state: "working",
+        prompt: null,
+      });
+      expect(tracker.heartbeat()).toMatchObject({ state: "working" });
+    });
+
+    it("settles two prompts from three same-input calls one at a time", () => {
+      const { hook, call, ask, done, tracker } = holder();
+      const input = bash("make build");
+      hook(call("toolu_A", input));
+      hook(call("toolu_B", input));
+      hook(call("toolu_C", input));
+      hook(ask(input));
+      const opened = hook(ask(input));
+      expect(waiting(opened)).toHaveLength(2);
+
+      expect(hook(done("toolu_A", input))).toBeNull();
+      expect(waiting(tracker.heartbeat())).toHaveLength(2);
+      expect(waiting(hook(done("toolu_B", input)))).toHaveLength(1);
+      expect(waiting(tracker.heartbeat())).toHaveLength(1);
+      expect(hook(done("toolu_C", input))).toEqual({
+        state: "working",
+        prompt: null,
+      });
+      expect(tracker.heartbeat()).toMatchObject({ state: "working" });
     });
 
     it("settles each prompt when its own overlapping candidates complete", () => {
@@ -515,14 +548,20 @@ describe("native terminal questions", () => {
       const thirdId = waiting(third)[2]!.id;
 
       expect(hook(done("toolu_1", input))).toBeNull();
-      expect(waiting(hook(done("toolu_2", input))).map(({ id }) => id)).toEqual(
-        [secondId, thirdId],
-      );
       expect(waiting(tracker.heartbeat()).map(({ id }) => id)).toEqual([
+        firstId,
         secondId,
         thirdId,
       ]);
-      expect(hook(done("toolu_3", input))).toBeNull();
+      expect(
+        waiting(hook(done("toolu_2", input))).map(({ id }) => id),
+      ).toEqual([secondId, thirdId]);
+      expect(waiting(hook(done("toolu_3", input))).map(({ id }) => id)).toEqual(
+        [thirdId],
+      );
+      expect(waiting(tracker.heartbeat()).map(({ id }) => id)).toEqual([
+        thirdId,
+      ]);
       expect(hook(done("toolu_4", input))).toEqual({
         state: "working",
         prompt: null,
@@ -606,7 +645,7 @@ describe("native terminal questions", () => {
       });
     });
 
-    it("keeps a later unmatched prompt open after earlier dynamic candidates complete", () => {
+    it("keeps a candidate-less prompt open after earlier dynamic candidates complete", () => {
       const { hook, call, ask, done, tracker } = holder();
       const input = bash("make build");
       hook(ask(input));
@@ -616,7 +655,7 @@ describe("native terminal questions", () => {
       const later = hook(ask(input));
       const laterId = waiting(later)[2]!.id;
 
-      expect(hook(done("toolu_1", input))).toBeNull();
+      expect(waiting(hook(done("toolu_1", input)))).toHaveLength(2);
       expect(waiting(hook(done("toolu_2", input)))).toEqual([
         {
           id: laterId,
@@ -666,9 +705,16 @@ describe("native terminal questions", () => {
       const first = hook(ask(input));
       const second = hook(ask(input));
       const third = hook(ask(input));
+      const secondId = waiting(second)[1]!.id;
       const thirdId = waiting(third)[2]!.id;
 
-      expect(hook(done("toolu_1", input))).toBeNull();
+      expect(waiting(hook(done("toolu_1", input)))).toEqual([
+        { id: secondId, prompt: "Claude Code needs permission to use: Bash" },
+        {
+          id: thirdId,
+          prompt: "Claude Code needs permission to use: Bash",
+        },
+      ]);
       expect(waiting(hook(done("toolu_2", input)))).toEqual([
         {
           id: thirdId,
@@ -700,8 +746,8 @@ describe("native terminal questions", () => {
       const third = hook(ask(input));
       expect(waiting(third)).toHaveLength(3);
 
-      expect(hook(done("toolu_1", input))).toBeNull();
-      expect(hook(done("toolu_2", input))).toBeNull();
+      expect(waiting(hook(done("toolu_1", input)))).toHaveLength(2);
+      expect(waiting(hook(done("toolu_2", input)))).toHaveLength(1);
       expect(hook(done("toolu_3", input))).toEqual({
         state: "working",
         prompt: null,
@@ -730,6 +776,41 @@ describe("native terminal questions", () => {
         prompt: null,
       });
       expect(directId).not.toBe(ambiguousId);
+    });
+
+    it("keeps an emptied candidate prompt open until a later matching completion accounts for it", () => {
+      const { hook, call, ask, done, tracker } = holder();
+      const input = bash("make build");
+      hook(call("toolu_A", input));
+      hook(call("toolu_B", input));
+      const ambiguous = hook(ask(input));
+      const ambiguousId = waiting(ambiguous)[0]!.id;
+      hook({ ...ask(input), tool_use_id: "toolu_A" });
+
+      expect(waiting(hook(done("toolu_A", input)))).toEqual([
+        {
+          id: ambiguousId,
+          prompt: "Claude Code needs permission to use: Bash",
+        },
+      ]);
+      hook({ ...ask(input), tool_use_id: "toolu_B" });
+
+      expect(waiting(hook(done("toolu_B", input)))).toEqual([
+        {
+          id: ambiguousId,
+          prompt: "Claude Code needs permission to use: Bash",
+        },
+      ]);
+      expect(waiting(tracker.heartbeat())).toEqual([
+        {
+          id: ambiguousId,
+          prompt: "Claude Code needs permission to use: Bash",
+        },
+      ]);
+      expect(hook(done("toolu_C", input))).toEqual({
+        state: "working",
+        prompt: null,
+      });
     });
 
     it("closes duplicate permission occurrences bound to the same call ID", () => {
