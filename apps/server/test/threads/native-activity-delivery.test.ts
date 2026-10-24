@@ -1440,6 +1440,7 @@ describe("an older server that does not know the closure fields (INJECTED-SERVER
       "working",
       "working",
     ]);
+    expect(drainRequests.at(-1)?.body.state).toBe("working");
     const closeBatches = drainRequests.map((request) =>
       request.body.closes as string[],
     );
@@ -1453,7 +1454,9 @@ describe("an older server that does not know the closure fields (INJECTED-SERVER
         (batch) => batch.length <= NATIVE_TERMINAL_MAX_OPEN_QUESTIONS,
       ),
     ).toBe(true);
-    expect(closeBatches.flat().sort()).toEqual([...questionIds].sort());
+    const sentCloseIds = closeBatches.flat();
+    expect(new Set(sentCloseIds)).toEqual(new Set(questionIds));
+    expect(sentCloseIds).toHaveLength(questionIds.length);
     expect(openRequestIds(h.harness, h.thread.id)).toEqual([]);
     const answeredIds = listPendingInteractionsByThread(h.harness.db, {
       statuses: ["interrupted"],
