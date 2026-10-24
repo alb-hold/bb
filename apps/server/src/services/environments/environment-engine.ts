@@ -1476,6 +1476,30 @@ export function cleanupEnvironment(deps: Deps, environmentId: string): boolean {
   return true;
 }
 
+export const RECOVER_RESPONSE_WAIT_MS = 5_000;
+
+export async function recoverEnvironmentCleanupWithinBudget(
+  deps: Deps,
+  environmentId: string,
+): Promise<"done" | "checking"> {
+  const finished = recoverEnvironmentCleanup(deps, environmentId);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const budget = new Promise<"checking">((resolve) => {
+    timer = setTimeout(() => resolve("checking"), RECOVER_RESPONSE_WAIT_MS);
+  });
+  try {
+    return await Promise.race([finished.then(() => "done" as const), budget]);
+  } finally {
+    clearTimeout(timer);
+    void finished.catch((error) => {
+      deps.logger.warn(
+        { environmentId, error: errorMessage(error) },
+        "Environment recovery will retry",
+      );
+    });
+  }
+}
+
 export async function recoverEnvironmentCleanup(
   deps: Deps,
   environmentId: string,

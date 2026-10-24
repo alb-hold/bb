@@ -391,7 +391,11 @@ export function registerEnvironmentCommands(
             recover: opts.recover,
           });
           if (!outputJson(opts, result))
-            console.log("Environment cleanup requested.");
+            console.log(
+              result.checking === true
+                ? `Environment cleanup requested; bb is still checking it in the background. Run bb environment show ${id} to follow it.`
+                : "Environment cleanup requested.",
+            );
         },
       ),
     );

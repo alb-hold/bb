@@ -15,6 +15,7 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  clearFetchMemo,
   findPreservationReasons,
   identifyWorktree,
   isWorktreePreservedError,
@@ -53,6 +54,7 @@ async function isRunning(pid: number): Promise<boolean> {
 }
 
 afterEach(async () => {
+  clearFetchMemo();
   if (inheritedSshCommand === undefined) delete process.env.GIT_SSH_COMMAND;
   else process.env.GIT_SSH_COMMAND = inheritedSshCommand;
   await Promise.all(
@@ -84,6 +86,28 @@ async function createFixture(remoteUrl: string) {
   await mkdir(attemptRoot, { recursive: true });
   await git(sourcePath, "worktree", "add", "--detach", path, "origin/main");
   return { root, sourcePath, attemptRoot, path };
+}
+
+async function addWorktree(
+  fixture: Awaited<ReturnType<typeof createFixture>>,
+  name: string,
+) {
+  const path = join(fixture.attemptRoot, name);
+  await git(
+    fixture.sourcePath,
+    "worktree",
+    "add",
+    "--detach",
+    path,
+    "origin/main",
+  );
+  const identified = await identifyWorktree({
+    path,
+    rootPath: fixture.attemptRoot,
+  });
+  if (identified.status !== "identified")
+    throw new Error("the extra worktree was not identified");
+  return identified.identity;
 }
 
 async function writeScript(root: string, name: string, body: string) {
@@ -209,6 +233,126 @@ describe("the fetch that checks whether commits are published", () => {
     expect(reasons.join("\n")).toContain("could not fetch its remotes");
   });
 
+  it("still fetches from a remote that works: a local remote and an ssh remote reached through the user's own wrapper", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bb-worktree-served-"));
+    roots.push(root);
+    const served = join(root, "served.git");
+    await git(root, "init", "--bare", "--initial-branch=main", served);
+    const seed = join(root, "seed");
+    await mkdir(seed, { recursive: true });
+    await git(seed, "init", "--initial-branch=main");
+    await writeFile(join(seed, "a.txt"), "a\n");
+    await git(seed, "add", ".");
+    await git(seed, "commit", "-m", "first");
+    await git(seed, "push", served, "main");
+    const log = join(root, "working-ssh.log");
+    const wrapper = await writeScript(
+      root,
+      "working-ssh.sh",
+      [
+        `echo "ARGV: $*" >> ${JSON.stringify(log)}`,
+        'for a in "$@"; do [ "$a" = "-G" ] && exit 0; done',
+        'eval "last=\\${$#}"',
+        'exec sh -c "$last"',
+      ].join("\n"),
+    );
+    const fixture = await createFixture(`ssh://fetch.invalid${served}`);
+    await git(
+      fixture.sourcePath,
+      "config",
+      "core.sshCommand",
+      `${wrapper} --from-config`,
+    );
+    await writeFile(join(seed, "b.txt"), "b\n");
+    await git(seed, "add", ".");
+    await git(seed, "commit", "-m", "second");
+    await git(seed, "push", served, "main");
+    const published = (await git(seed, "rev-parse", "HEAD")).trim();
+
+    const reasons = await findPreservationReasons(
+      await identityOf(fixture),
+      undefined,
+      { fetchTimeoutMs: 20_000 },
+    );
+
+    expect(reasons.join("\n")).not.toContain("could not fetch");
+    expect(
+      (
+        await git(fixture.sourcePath, "rev-parse", "refs/remotes/backup/main")
+      ).trim(),
+    ).toBe(published);
+    expect(
+      (
+        await git(fixture.sourcePath, "rev-parse", "refs/remotes/origin/main")
+      ).trim(),
+    ).toMatch(/^[0-9a-f]{40}$/u);
+    expect(await readFile(log, "utf8")).toMatch(
+      /--from-config -o BatchMode=yes .*git-upload-pack/u,
+    );
+  });
+
+  it("fetches once per source repository per pass, however many of its worktrees are checked", async () => {
+    const fixture = await createFixture("ssh://fetch.invalid/repo.git");
+    const { log, script } = await recordingSsh(fixture.root);
+    await git(fixture.sourcePath, "config", "core.sshCommand", script);
+    const first = await identityOf(fixture);
+    const second = await addWorktree(fixture, "second");
+    const third = await addWorktree(fixture, "third");
+    const attempts = async () =>
+      (await readFile(log, "utf8").catch(() => ""))
+        .split("\n")
+        .filter((line) => line.includes("git-upload-pack")).length;
+
+    const reasons = [
+      await findPreservationReasons(first, undefined, {
+        fetchTimeoutMs: 20_000,
+      }),
+      await findPreservationReasons(second, undefined, {
+        fetchTimeoutMs: 20_000,
+      }),
+      await findPreservationReasons(third, undefined, {
+        fetchTimeoutMs: 20_000,
+      }),
+    ];
+
+    expect(await attempts()).toBe(1);
+    for (const each of reasons)
+      expect(each.join("\n")).toContain("could not fetch its remotes");
+    clearFetchMemo();
+    await findPreservationReasons(second, undefined, {
+      fetchTimeoutMs: 20_000,
+    });
+    expect(await attempts()).toBe(2);
+    await findPreservationReasons(third, undefined, {
+      fetchTimeoutMs: 20_000,
+      fetchMemoMs: 0,
+    });
+    expect(await attempts()).toBe(3);
+  });
+
+  it("fetches each of two source repositories once", async () => {
+    const one = await createFixture("ssh://fetch.invalid/one.git");
+    const two = await createFixture("ssh://fetch.invalid/two.git");
+    const logOne = await recordingSsh(one.root);
+    const logTwo = await recordingSsh(two.root);
+    await git(one.sourcePath, "config", "core.sshCommand", logOne.script);
+    await git(two.sourcePath, "config", "core.sshCommand", logTwo.script);
+
+    await findPreservationReasons(await identityOf(one), undefined, {
+      fetchTimeoutMs: 20_000,
+    });
+    await findPreservationReasons(await identityOf(two), undefined, {
+      fetchTimeoutMs: 20_000,
+    });
+
+    for (const { log } of [logOne, logTwo])
+      expect(
+        (await readFile(log, "utf8"))
+          .split("\n")
+          .filter((line) => line.includes("git-upload-pack")),
+      ).toHaveLength(1);
+  });
+
   describe("when the remote never answers", () => {
     async function hangingFixture() {
       const fixture = await createFixture("ssh://fetch.invalid/repo.git");
@@ -216,7 +360,7 @@ describe("the fetch that checks whether commits are published", () => {
       const script = await writeScript(
         fixture.root,
         "hanging-ssh.sh",
-        `echo $$ > ${JSON.stringify(pidFile)}\ntrap '' TERM\nwhile true; do sleep 1; done`,
+        `echo $$ >> ${JSON.stringify(pidFile)}\ntrap '' TERM\nwhile true; do sleep 1; done`,
       );
       await git(fixture.sourcePath, "config", "core.sshCommand", script);
       return { ...fixture, pidFile };
@@ -244,11 +388,44 @@ describe("the fetch that checks whether commits are published", () => {
       expect(reasons.join("\n")).toMatch(
         /could not fetch its remotes to verify its commits are published \(.*timed out after 1500ms\)/u,
       );
-      const pid = Number((await readFile(fixture.pidFile, "utf8")).trim());
+      const pid = Number(
+        (await readFile(fixture.pidFile, "utf8")).trim().split("\n")[0],
+      );
       for (let wait = 0; wait < 30 && (await isRunning(pid)); wait += 1)
         await new Promise((resolve) => setTimeout(resolve, 100));
       expect(await isRunning(pid)).toBe(false);
       expect(await processGroupMembers(pid)).toBe(0);
+    }, 30_000);
+
+    it("bounds a pass over several worktrees of one repository to one timeout, not one per worktree", async () => {
+      const fixture = await hangingFixture();
+      const identities = [
+        await identityOf(fixture),
+        await addWorktree(fixture, "second"),
+        await addWorktree(fixture, "third"),
+      ];
+
+      const startedAt = Date.now();
+      const outcomes: string[][] = [];
+      for (const identity of identities)
+        outcomes.push(
+          await findPreservationReasons(identity, undefined, {
+            fetchTimeoutMs: 1_500,
+          }),
+        );
+      const elapsed = Date.now() - startedAt;
+
+      expect(elapsed).toBeLessThan(6_000);
+      for (const reasons of outcomes)
+        expect(reasons.join("\n")).toContain("could not fetch its remotes");
+
+      const again = await findPreservationReasons(identities[0]!, undefined, {
+        fetchTimeoutMs: 1_500,
+      });
+      expect(
+        (await readFile(fixture.pidFile, "utf8")).trim().split("\n"),
+      ).toHaveLength(1);
+      expect(again.join("\n")).toContain("could not fetch its remotes");
     }, 30_000);
 
     it("never removes the worktree: removal stops with the preserved error and the worktree is untouched", async () => {

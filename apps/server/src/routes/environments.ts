@@ -1,7 +1,7 @@
 import { joinHostPathSegments } from "../services/lib/host-path.js";
 import {
   cleanupEnvironment,
-  recoverEnvironmentCleanup,
+  recoverEnvironmentCleanupWithinBudget,
 } from "../services/environments/environment-engine.js";
 import { parsePaginationQuery } from "../services/lib/validation.js";
 import {
@@ -337,8 +337,15 @@ export function registerEnvironmentRoutes(app: Hono, deps: AppDeps): void {
         "Environment still has live threads",
       );
     if (query?.recover === "true") {
-      await recoverEnvironmentCleanup(deps, environment.id);
-      return context.json({ ok: true } as const);
+      const outcome = await recoverEnvironmentCleanupWithinBudget(
+        deps,
+        environment.id,
+      );
+      return context.json(
+        outcome === "checking"
+          ? ({ ok: true, checking: true } as const)
+          : ({ ok: true } as const),
+      );
     }
     if (!cleanupEnvironment(deps, environment.id))
       throw new ApiError(

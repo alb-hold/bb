@@ -264,6 +264,36 @@ export async function findStructuralReasons(
 }
 
 const FETCH_TIMEOUT_MS = 60_000;
+const FETCH_MEMO_MS = 30_000;
+const fetchMemo = new Map<
+  string,
+  { settledAt: number | null; outcome: Promise<string | null> }
+>();
+
+export function clearFetchMemo(): void {
+  fetchMemo.clear();
+}
+
+function fetchRemotesOncePerRepository(
+  commonDir: string,
+  memoMs: number,
+  run: () => Promise<string | null>,
+): Promise<string | null> {
+  const known = fetchMemo.get(commonDir);
+  if (
+    known !== undefined &&
+    (known.settledAt === null || Date.now() - known.settledAt < memoMs)
+  )
+    return known.outcome;
+  const entry = {
+    settledAt: null as number | null,
+    outcome: run().finally(() => {
+      entry.settledAt = Date.now();
+    }),
+  };
+  fetchMemo.set(commonDir, entry);
+  return entry.outcome;
+}
 const BATCH_MODE_OPTION = "-o BatchMode=yes";
 const NON_INTERACTIVE_FETCH_ENVIRONMENT: NodeJS.ProcessEnv = {
   GIT_TERMINAL_PROMPT: "0",
@@ -334,7 +364,11 @@ async function findZeroCommitBase(
 export async function findPreservationReasons(
   identity: WorktreeIdentity,
   signal: AbortSignal | undefined,
-  options: { fetchRemotes?: boolean; fetchTimeoutMs?: number } = {},
+  options: {
+    fetchRemotes?: boolean;
+    fetchTimeoutMs?: number;
+    fetchMemoMs?: number;
+  } = {},
 ): Promise<string[]> {
   const reasons = await findStructuralReasons(identity);
   const gitOptions = {
@@ -390,35 +424,45 @@ export async function findPreservationReasons(
   }
 
   if (options.fetchRemotes !== false) {
-    try {
-      const configured = await runGit(
-        ["--no-optional-locks", "config", "--get", "core.sshCommand"],
-        gitOptions,
-      );
-      const fetched = await runGit(
-        ["-c", "credential.helper=", "fetch", "--all", "--quiet", "--no-tags"],
-        {
-          ...gitOptions,
-          env: nonInteractiveFetchEnvironment(
-            gitOptions.env,
-            process.env,
-            configured.exitCode === 0 && configured.stdout.trim() !== ""
-              ? configured.stdout.trim()
-              : null,
-          ),
-          timeoutMs: options.fetchTimeoutMs ?? FETCH_TIMEOUT_MS,
-        },
-      );
-      if (fetched.exitCode !== 0) {
-        reasons.push(
-          `could not fetch its remotes to verify its commits are published${fetched.stderr.trim() ? ` (${fetched.stderr.trim()})` : ""}`,
-        );
-      }
-    } catch (error) {
-      reasons.push(
-        `could not fetch its remotes to verify its commits are published (${describeError(error)})`,
-      );
-    }
+    const fetchReason = await fetchRemotesOncePerRepository(
+      identity.commonDir,
+      options.fetchMemoMs ?? FETCH_MEMO_MS,
+      async () => {
+        try {
+          const configured = await runGit(
+            ["--no-optional-locks", "config", "--get", "core.sshCommand"],
+            gitOptions,
+          );
+          const fetched = await runGit(
+            [
+              "-c",
+              "credential.helper=",
+              "fetch",
+              "--all",
+              "--quiet",
+              "--no-tags",
+            ],
+            {
+              ...gitOptions,
+              env: nonInteractiveFetchEnvironment(
+                gitOptions.env,
+                process.env,
+                configured.exitCode === 0 && configured.stdout.trim() !== ""
+                  ? configured.stdout.trim()
+                  : null,
+              ),
+              timeoutMs: options.fetchTimeoutMs ?? FETCH_TIMEOUT_MS,
+            },
+          );
+          return fetched.exitCode === 0
+            ? null
+            : `could not fetch its remotes to verify its commits are published${fetched.stderr.trim() ? ` (${fetched.stderr.trim()})` : ""}`;
+        } catch (error) {
+          return `could not fetch its remotes to verify its commits are published (${describeError(error)})`;
+        }
+      },
+    );
+    if (fetchReason !== null) reasons.push(fetchReason);
   }
 
   const zeroCommitBase =

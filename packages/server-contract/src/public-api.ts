@@ -1247,7 +1247,7 @@ export const publicApiRoutes = {
       request: optionalQueryRequest<PathId, EnvironmentCleanupQuery>(
         environmentCleanupQuerySchema,
       ),
-      response: jsonResponse<{ ok: true }>(),
+      response: jsonResponse<{ ok: true; checking?: true }>(),
     }),
     list: defineRoute({
       path: "/environments",

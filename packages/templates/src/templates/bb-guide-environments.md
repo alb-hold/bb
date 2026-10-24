@@ -123,6 +123,8 @@ Making your repo work with bb:
   bb environment cleanup <id>             Remove an unused provider-managed environment now
     --recover                             After inspection, acknowledge interrupted hooks and
                                           retry failed cleanup (Linux same-user process guard)
+                                          (answers "still checking" after five seconds and
+                                          finishes in the background)
   bb environment show <id>                Show environment details (path, branch, status, lifecycle, retirement deadline and teardown attempts)
 
   bb environment status <id>              Show workspace status. Each file list holds at most
@@ -204,7 +206,10 @@ Making your repo work with bb:
   is kept, not removed, when it holds recoverable work: a `.keep-worktree`
   file in its root (create one to keep a worktree on purpose), modified or
   untracked files, a stash made on its branch, a commit not reachable from any
-  remote-tracking branch after bb fetches the repository's remotes (this
+  remote-tracking branch after bb fetches the repository's remotes once per
+  teardown pass (without prompting: ssh runs in batch mode appended to your own
+  ssh command, no askpass or credential helper runs, and a fetch that fails or
+  takes longer than 60 seconds keeps the worktree with that reason; this
   includes repositories with no remote, and the message says when the branch has
   no upstream), a lock, or an unfinished merge, rebase, cherry-pick or revert, or
   a process working inside it (bb never stops a

@@ -53,6 +53,7 @@ import { validatePluginEnvironmentProviderDeclaration } from "@get-bb/plugin-sdk
 import {
   markProviderEnvironmentAttached,
   cancelProviderEnvironmentCreation,
+  RECOVER_RESPONSE_WAIT_MS,
   sweepProviderEnvironment,
   sweepProviderLifecycles,
   type ProviderOperationContext,
@@ -2077,6 +2078,68 @@ it.each([false, true])(
     });
   },
 );
+
+it("answers a recovery that is still being checked after the response budget, and finishes it in the background", async () => {
+  await withTestHarness(async (harness) => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const attempts: number[] = [];
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const fixture = setup(harness, {
+      create: async () => ({
+        status: "created",
+        path: "/tmp/cancel-retry",
+        ownsPath: false,
+        resource: { allocation: "retained" },
+      }),
+      remove: async ({ attempt }) => {
+        attempts.push(attempt);
+        if (attempts.length <= 5)
+          return { status: "failed", message: "temporarily unavailable" };
+        await gate;
+        return { status: "removed" };
+      },
+    });
+    fixture.ask();
+    await fixture.settled();
+    await expect(
+      cancelProviderEnvironmentCreation(harness.deps, fixture.thread.id),
+    ).rejects.toThrow("temporarily unavailable");
+    const failed = fixture.row();
+    for (let attempt = 2; attempt <= 5; attempt++) {
+      vi.setSystemTime(fixture.row().retireAt!);
+      await sweepProviderLifecycles(harness.deps);
+    }
+    harness.db
+      .update(threads)
+      .set({ status: "idle", archivedAt: Date.now() })
+      .where(eq(threads.id, fixture.thread.id))
+      .run();
+    recordThreadEnvironmentReleases(harness.db, [fixture.thread.id], {
+      kind: "system",
+      threadId: null,
+    });
+    vi.useRealTimers();
+
+    const startedAt = Date.now();
+    const response = await harness.app.request(
+      `/api/v1/environments/${failed.id}/cleanup?recover=true`,
+      { method: "POST" },
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ ok: true, checking: true });
+    expect(Date.now() - startedAt).toBeLessThan(RECOVER_RESPONSE_WAIT_MS + 3_000);
+    expect(attempts).toHaveLength(6);
+    expect(fixture.row().teardownStatus).toBe("running");
+    release();
+    await expect
+      .poll(() => fixture.row().teardownStatus, { timeout: 5_000 })
+      .toBe("removed");
+  });
+}, 30_000);
 
 it("skips environments blocked on a foreign plugin owner until that plugin provides them again", async () => {
   await withTestHarness(async (harness) => {
