@@ -109,6 +109,23 @@ interface CliModules {
   ) => ReaderLike;
 }
 
+interface NativeActivityTrackerLike {
+  apply(signal: {
+    answered?: string;
+    call?: { base: string; id: string; key: string };
+    callId?: string;
+    inputKey?: string;
+    occurrence?: true;
+    prompt: string | null;
+    question?: { id: string; prompt: string };
+    state: "idle" | "working" | null;
+  }): NativeReport | null;
+}
+
+interface NativeActivityModule {
+  NativeActivityTracker: new (nonce: string) => NativeActivityTrackerLike;
+}
+
 type HookSourceLike =
   | string
   | { appendFile: string }
@@ -138,6 +155,9 @@ const spoolModule: Pick<SpoolModules, "createHookSpool" | "removeHookSpool"> =
   await import(cliUrl("native-hook-spool.ts"));
 const settingsModule: Pick<SpoolModules, "nativeActivityHookSettings"> =
   await import(cliUrl("native-activity.ts"));
+const nativeActivityModule: NativeActivityModule = await import(
+  cliUrl("native-activity.ts")
+);
 
 const SESSION_ID = "2e624c50-68af-4689-9410-06caa371eb8a";
 const SECRET = "synthetic-delivery-test-credential";
@@ -1487,6 +1507,68 @@ describe("an older server that does not know the closure fields (INJECTED-SERVER
       { body: { closes: [], state: "idle" }, status: 200 },
     ]);
     expect(getThread(h.harness.db, h.thread.id)?.status).toBe("idle");
+  });
+
+  it("reports one server-side Needs input question after the first of two identical calls completes", async () => {
+    const h = await oldServerOnTheRealStore();
+    h.upgrade();
+    const tracker = new nativeActivityModule.NativeActivityTracker("r18");
+    const inputKey = "identical-input";
+    const send = async (report: NativeReport | null) => {
+      if (report !== null) h.reporter.report(report);
+      await h.reporter.settled();
+    };
+
+    tracker.apply({ state: "working", prompt: "go" });
+    tracker.apply({
+      state: null,
+      prompt: null,
+      call: { id: "toolu_A", base: "permission:Bash", key: inputKey },
+    });
+    tracker.apply({
+      state: null,
+      prompt: null,
+      call: { id: "toolu_B", base: "permission:Bash", key: inputKey },
+    });
+    for (let index = 0; index < 2; index += 1) {
+      await send(
+        tracker.apply({
+          state: null,
+          prompt: null,
+          question: {
+            id: "permission:Bash",
+            prompt: "Claude Code needs permission to use: Bash",
+          },
+          occurrence: true,
+          inputKey,
+        }),
+      );
+    }
+    expect(openQuestions(h.harness, h.thread.id)).toHaveLength(2);
+
+    await send(
+      tracker.apply({
+        state: null,
+        prompt: null,
+        answered: "permission:Bash",
+        occurrence: true,
+        callId: "toolu_A",
+        inputKey,
+      }),
+    );
+    expect(openQuestions(h.harness, h.thread.id)).toHaveLength(1);
+
+    await send(
+      tracker.apply({
+        state: null,
+        prompt: null,
+        answered: "permission:Bash",
+        occurrence: true,
+        callId: "toolu_B",
+        inputKey,
+      }),
+    );
+    expect(openQuestions(h.harness, h.thread.id)).toHaveLength(0);
   });
 
   it("closes no question for a report that was stripped for an old server and reaches an upgraded server late, including a question opened after it", async () => {
