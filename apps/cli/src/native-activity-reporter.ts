@@ -44,6 +44,7 @@ export function createNativeActivityReporter(options: {
   const deliver = async (
     next: NativeActivityReport,
     sequence: number | null,
+    latestAtQueue: number,
   ): Promise<void> => {
     const credential = options.currentCredential();
     const opened =
@@ -98,7 +99,7 @@ export function createNativeActivityReporter(options: {
     const sendBatch = async (
       closeIds: string[],
       includeConfirms: boolean,
-    ): Promise<"accepted" | "unsupported" | "failed"> => {
+    ): Promise<"accepted" | "unsupported" | "failed" | "superseded"> => {
       try {
         await options.send(request(closeIds, includeConfirms));
         acknowledge(closeIds);
@@ -123,10 +124,16 @@ export function createNativeActivityReporter(options: {
           return "failed";
         }
         if (unsupported.closes) {
+          if (latestAtQueue !== latestSequence) {
+            options.log?.("activity-legacy-fallback-skipped", {
+              latestSequence,
+              reason: "superseded",
+              sequence: latestAtQueue,
+            });
+            return "superseded";
+          }
           try {
-            await options.send(
-              request(undefined, includeConfirms),
-            );
+            await options.send(request(undefined, includeConfirms));
             acknowledge(undefined);
             return "unsupported";
           } catch (retryError) {
@@ -150,12 +157,32 @@ export function createNativeActivityReporter(options: {
         ) {
           if (closeIds.length > 1) {
             for (const id of closeIds) {
+              if (latestAtQueue !== latestSequence) {
+                options.log?.("activity-closure-retry-skipped", {
+                  latestSequence,
+                  reason: "superseded",
+                  sequence: latestAtQueue,
+                });
+                return "superseded";
+              }
               const result = await sendBatch([id], includeConfirms);
-              if (result === "unsupported" || result === "failed") {
+              if (
+                result === "unsupported" ||
+                result === "failed" ||
+                result === "superseded"
+              ) {
                 return result;
               }
             }
             return "accepted";
+          }
+          if (latestAtQueue !== latestSequence) {
+            options.log?.("activity-closure-retry-skipped", {
+              latestSequence,
+              reason: "superseded",
+              sequence: latestAtQueue,
+            });
+            return "superseded";
           }
           try {
             await options.send(request([], includeConfirms));
@@ -177,7 +204,7 @@ export function createNativeActivityReporter(options: {
       start < Math.max(closes.length, 1);
       start += NATIVE_TERMINAL_MAX_OPEN_QUESTIONS
     ) {
-      if (start > 0 && sequence !== null && sequence !== latestSequence) return;
+      if (start > 0 && latestAtQueue !== latestSequence) return;
       const batch = closes.slice(
         start,
         start + NATIVE_TERMINAL_MAX_OPEN_QUESTIONS,
@@ -196,7 +223,8 @@ export function createNativeActivityReporter(options: {
         sequence = latestSequence;
         retained = null;
       }
-      pending = pending.then(() => deliver(next, sequence));
+      const latestAtQueue = latestSequence;
+      pending = pending.then(() => deliver(next, sequence, latestAtQueue));
     },
     discardRetained() {
       latestSequence += 1;
@@ -208,7 +236,9 @@ export function createNativeActivityReporter(options: {
         return;
       }
       retained = null;
-      pending = pending.then(() => deliver(resend.report, resend.sequence));
+      pending = pending.then(() =>
+        deliver(resend.report, resend.sequence, resend.sequence),
+      );
     },
     settled: () => pending,
   };
