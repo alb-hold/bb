@@ -13,6 +13,7 @@ import { experimental_createHostEntryHarness } from "@get-bb/plugin-sdk/testing/
 import { resolveDevInstanceConfig } from "../../../packages/config/src/runtime.js";
 import hostEntry, { removeTrashUnlessHeld } from "./host.js";
 import plugin from "./server.js";
+import { removeDeveloperEntries } from "./developer-storage.js";
 import { hostStorageContract } from "./host-contract.js";
 import {
   hostStorageListResponseSchema,
@@ -1828,25 +1829,144 @@ it.skipIf(process.platform === "win32")(
   },
 );
 
+const developmentCandidate = async (rootPath: string, name: string) => {
+  await fs.mkdir(path.join(rootPath, name), { recursive: true });
+  await fs.writeFile(
+    path.join(rootPath, name, "bb-dev-instance.json"),
+    JSON.stringify({
+      repoRoot: path.join(path.dirname(rootPath), "gone", "bb"),
+    }),
+  );
+};
+
+const nestedFolder = (base: string, levels: number) =>
+  path.join(
+    base,
+    ...Array.from({ length: levels }, (_unused, index) => `level${index}`),
+  );
+
+for (const mode of [
+  { condition: "checkoutMissing" as const },
+  { condition: "any" as const },
+]) {
+  it.skipIf(process.platform === "win32")(
+    `removes a development entry with a pnpm-shaped node_modules more than ten levels deep and no git checkout (${mode.condition})`,
+    async () => {
+      const fakeHome = await directory();
+      const rootPath = path.join(fakeHome, ".bb-dev");
+      await developmentCandidate(rootPath, "pnpmdeep");
+      const package_ = nestedFolder(
+        path.join(
+          rootPath,
+          "pnpmdeep",
+          "node_modules",
+          ".pnpm",
+          "dep@1.0.0",
+          "node_modules",
+          "dep",
+        ),
+        8,
+      );
+      await fs.mkdir(package_, { recursive: true });
+      await fs.writeFile(path.join(package_, "index.js"), "module.exports = 1");
+      await fs.symlink(
+        package_,
+        path.join(rootPath, "pnpmdeep", "node_modules", "dep"),
+      );
+      const worker = experimental_createHostEntryHarness(hostEntry);
+      try {
+        const result = await worker.experimental_call(
+          "removeDeveloperEntries",
+          { rootPath, names: ["pnpmdeep"], candidatePaths: [], mode },
+        );
+        expect(result).toEqual({
+          removed: ["pnpmdeep"],
+          running: [],
+          held: [],
+        });
+        await expect.poll(async () => await fs.readdir(rootPath)).toEqual([]);
+      } finally {
+        await worker.experimental_dispose();
+      }
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    `removes a development entry fourteen levels deep with no git checkout (${mode.condition})`,
+    async () => {
+      const fakeHome = await directory();
+      const rootPath = path.join(fakeHome, ".bb-dev");
+      await developmentCandidate(rootPath, "fourteen");
+      const deepest = nestedFolder(
+        path.join(rootPath, "fourteen", "plugins", "x"),
+        12,
+      );
+      await fs.mkdir(deepest, { recursive: true });
+      await fs.writeFile(path.join(deepest, "source.ts"), "export {};");
+      const worker = experimental_createHostEntryHarness(hostEntry);
+      try {
+        const result = await worker.experimental_call(
+          "removeDeveloperEntries",
+          { rootPath, names: ["fourteen"], candidatePaths: [], mode },
+        );
+        expect(result).toEqual({
+          removed: ["fourteen"],
+          running: [],
+          held: [],
+        });
+        await expect.poll(async () => await fs.readdir(rootPath)).toEqual([]);
+      } finally {
+        await worker.experimental_dispose();
+      }
+    },
+  );
+}
+
 it.skipIf(process.platform === "win32")(
-  "keeps a development entry whose node_modules is too deep to rule out a worktree, in both removal modes",
+  "keeps a development entry whose git worktree is more than ten levels deep under node_modules, in both removal modes",
   async () => {
     const fakeHome = await directory();
     const rootPath = path.join(fakeHome, ".bb-dev");
-    await fs.mkdir(path.join(rootPath, "deepmodules"), { recursive: true });
-    await fs.writeFile(
-      path.join(rootPath, "deepmodules", "bb-dev-instance.json"),
-      JSON.stringify({ repoRoot: path.join(fakeHome, "gone", "bb") }),
-    );
-    await fs.mkdir(
+    const source = path.join(fakeHome, "source");
+    const git = (cwd: string, ...args: string[]) =>
+      execFileSync(
+        "git",
+        [
+          "-c",
+          "user.name=test",
+          "-c",
+          "user.email=test@example.com",
+          "-c",
+          "commit.gpgsign=false",
+          ...args,
+        ],
+        { cwd, stdio: "pipe" },
+      );
+    await fs.mkdir(source, { recursive: true });
+    git(source, "init", "-q", "-b", "main");
+    await fs.writeFile(path.join(source, "file"), "content");
+    git(source, "add", "file");
+    git(source, "commit", "-q", "-m", "initial");
+    await developmentCandidate(rootPath, "deepnested");
+    const parent = nestedFolder(
       path.join(
         rootPath,
-        "deepmodules",
+        "deepnested",
         "node_modules",
-        ...Array.from({ length: 11 }, (_unused, index) => `level${index}`),
+        ".pnpm",
+        "dep@1.0.0",
+        "node_modules",
+        "dep",
       ),
-      { recursive: true },
+      6,
     );
+    await fs.mkdir(parent, { recursive: true });
+    const worktree = path.join(parent, "x");
+    git(source, "worktree", "add", "-q", "--detach", worktree);
+    const levels = path
+      .relative(path.join(rootPath, "deepnested"), worktree)
+      .split(path.sep).length;
+    expect(levels).toBeGreaterThan(10);
     const worker = experimental_createHostEntryHarness(hostEntry);
     try {
       for (const mode of [
@@ -1855,16 +1975,92 @@ it.skipIf(process.platform === "win32")(
       ]) {
         const result = await worker.experimental_call(
           "removeDeveloperEntries",
-          { rootPath, names: ["deepmodules"], candidatePaths: [], mode },
+          { rootPath, names: ["deepnested"], candidatePaths: [], mode },
         );
         expect(result.removed).toEqual([]);
-        expect(result.held.map((held) => held.name)).toEqual(["deepmodules"]);
+        expect(result.held).toEqual([
+          {
+            name: "deepnested",
+            reason: expect.stringContaining("git checkout or worktree"),
+          },
+        ]);
       }
       await new Promise((resolve) => setTimeout(resolve, 200));
-      expect(await fs.readdir(rootPath)).toEqual(["deepmodules"]);
+      expect(await fs.readdir(rootPath)).toEqual(["deepnested"]);
+      expect(await fs.readFile(path.join(worktree, ".git"), "utf8")).toContain(
+        "gitdir:",
+      );
+      expect(await fs.readFile(path.join(worktree, "file"), "utf8")).toBe(
+        "content",
+      );
     } finally {
       await worker.experimental_dispose();
     }
+  },
+);
+
+it.skipIf(process.platform === "win32")(
+  "keeps a development entry that exceeds the scan's entry bound or depth bound and reports why",
+  async () => {
+    const fakeHome = await directory();
+    const rootPath = path.join(fakeHome, ".bb-dev");
+    await developmentCandidate(rootPath, "wide");
+    for (let index = 0; index < 60; index += 1)
+      await fs.writeFile(path.join(rootPath, "wide", `file${index}`), "x");
+    await developmentCandidate(rootPath, "tall");
+    await fs.mkdir(nestedFolder(path.join(rootPath, "tall"), 66), {
+      recursive: true,
+    });
+    const retainWorker = () => ({ dispose() {} });
+    for (const mode of [
+      { condition: "checkoutMissing" as const },
+      { condition: "any" as const },
+    ]) {
+      const input = {
+        rootPath,
+        names: ["wide"],
+        candidatePaths: [],
+        mode,
+      };
+      const narrow = await removeDeveloperEntries(
+        input,
+        new AbortController().signal,
+        retainWorker,
+        { maxDepth: 64, maxEntries: 50 },
+      );
+      expect(narrow.removed).toEqual([]);
+      expect(narrow.held).toEqual([
+        {
+          name: "wide",
+          reason: expect.stringContaining("more files or deeper folders"),
+        },
+      ]);
+      const defaults = await removeDeveloperEntries(
+        { ...input, names: ["tall"] },
+        new AbortController().signal,
+        retainWorker,
+      );
+      expect(defaults.removed).toEqual([]);
+      expect(defaults.held).toEqual([
+        {
+          name: "tall",
+          reason: expect.stringContaining("more files or deeper folders"),
+        },
+      ]);
+    }
+    expect((await fs.readdir(rootPath)).sort()).toEqual(["tall", "wide"]);
+    const roomy = await removeDeveloperEntries(
+      {
+        rootPath,
+        names: ["wide"],
+        candidatePaths: [],
+        mode: { condition: "any" },
+      },
+      new AbortController().signal,
+      retainWorker,
+      { maxDepth: 64, maxEntries: 500 },
+    );
+    expect(roomy.removed).toEqual(["wide"]);
   },
 );
 
@@ -1927,12 +2123,12 @@ it.skipIf(process.platform === "win32")(
 );
 
 it.skipIf(process.platform === "win32")(
-  "keeps a running instance whose checkout is missing, and any entry whose worktree is deeper than a shallow scan or that holds a folder bb kept",
+  "keeps a running instance whose checkout is missing, and any entry that holds a folder bb kept",
   async () => {
     const fakeHome = await directory();
     const rootPath = path.join(fakeHome, ".bb-dev");
     const missingCheckout = (name: string) => path.join(fakeHome, name, "bb");
-    for (const name of ["running-gone", "deep", "kept-folder", "clean"]) {
+    for (const name of ["running-gone", "kept-folder", "clean"]) {
       await fs.mkdir(path.join(rootPath, name), { recursive: true });
       await fs.writeFile(
         path.join(rootPath, name, "bb-dev-instance.json"),
@@ -1940,12 +2136,6 @@ it.skipIf(process.platform === "win32")(
       );
     }
     await fs.mkdir(path.join(rootPath, "running-gone", "daemon.lock.lock"));
-    const deepest = path.join(
-      rootPath,
-      "deep",
-      ...Array.from({ length: 11 }, (_unused, index) => `level${index}`),
-    );
-    await fs.mkdir(deepest, { recursive: true });
     await fs.mkdir(
       path.join(rootPath, "kept-folder", "plugins", "x", "host-data", "retained"),
       { recursive: true },
@@ -1960,17 +2150,14 @@ it.skipIf(process.platform === "win32")(
           "removeDeveloperEntries",
           {
             rootPath,
-            names: ["running-gone", "deep", "kept-folder"],
+            names: ["running-gone", "kept-folder"],
             candidatePaths: [],
             mode,
           },
         );
         expect(result.removed).toEqual([]);
         expect(result.running).toEqual(["running-gone"]);
-        expect(result.held.map((held) => held.name).sort()).toEqual([
-          "deep",
-          "kept-folder",
-        ]);
+        expect(result.held.map((held) => held.name)).toEqual(["kept-folder"]);
       }
       expect(
         await worker.experimental_call("removeDeveloperEntries", {
@@ -1982,7 +2169,7 @@ it.skipIf(process.platform === "win32")(
       ).toEqual({ removed: ["clean"], running: [], held: [] });
       await expect
         .poll(async () => (await fs.readdir(rootPath)).sort())
-        .toEqual(["deep", "kept-folder", "running-gone"]);
+        .toEqual(["kept-folder", "running-gone"]);
     } finally {
       await worker.experimental_dispose();
     }

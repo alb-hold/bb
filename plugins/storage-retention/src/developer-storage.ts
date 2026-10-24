@@ -7,8 +7,19 @@ import type { hostStorageContract } from "./host-contract.js";
 
 const launchRecordSchema = z.object({ repoRoot: z.string().min(1) });
 const runtimeRecordSchema = z.object({ entryPath: z.string().min(1) });
-const WORKSPACE_SCAN_MAX_DEPTH = 10;
-const WORKSPACE_SCAN_MAX_ENTRIES = 50_000;
+const WORKSPACE_SCAN_LIMITS = { maxDepth: 64, maxEntries: 500_000 };
+
+type WorkspaceScanLimits = typeof WORKSPACE_SCAN_LIMITS;
+type WorkspaceScan = "workspace" | "unbounded" | "unreadable" | "clear";
+
+const HELD_REASONS = {
+  workspace:
+    "it contains a git checkout or worktree or a folder bb kept for later, and this cleanup never deletes such an entry",
+  unbounded:
+    "it has more files or deeper folders than the scan reads, so it cannot be ruled out as holding a git checkout or worktree, and this cleanup never deletes such an entry",
+  unreadable:
+    "a folder in it could not be read, so it cannot be ruled out as holding a git checkout or worktree, and this cleanup never deletes such an entry",
+} as const;
 
 async function readRecord(file: string) {
   try {
@@ -191,7 +202,11 @@ export async function inspectDeveloperEntries(
   return { entries };
 }
 
-async function containsGitWorkspace(directory: string, signal: AbortSignal) {
+async function scanForGitWorkspace(
+  directory: string,
+  signal: AbortSignal,
+  limits: WorkspaceScanLimits,
+): Promise<WorkspaceScan> {
   const pending: { directory: string; depth: number }[] = [
     { directory, depth: 0 },
   ];
@@ -204,32 +219,33 @@ async function containsGitWorkspace(directory: string, signal: AbortSignal) {
       children = await fs.readdir(next.directory, { withFileTypes: true });
     } catch (error) {
       if (isFsErrorWithCode(error, "ENOENT")) continue;
-      return true;
+      return "unreadable";
     }
     for (const child of children) {
       visited += 1;
-      if (visited > WORKSPACE_SCAN_MAX_ENTRIES) return true;
-      if (child.name === ".git") return true;
+      if (visited > limits.maxEntries) return "unbounded";
+      if (child.name === ".git") return "workspace";
       if (
         child.name === "retained" &&
         path.basename(next.directory) === "host-data"
       )
-        return true;
+        return "workspace";
       if (!child.isDirectory()) continue;
-      if (next.depth >= WORKSPACE_SCAN_MAX_DEPTH) return true;
+      if (next.depth >= limits.maxDepth) return "unbounded";
       pending.push({
         directory: path.join(next.directory, child.name),
         depth: next.depth + 1,
       });
     }
   }
-  return false;
+  return "clear";
 }
 
 export async function removeDeveloperEntries(
   input: z.infer<typeof hostStorageContract.removeDeveloperEntries.input>,
   signal: AbortSignal,
   retainWorker: () => { dispose(): void },
+  limits: WorkspaceScanLimits = WORKSPACE_SCAN_LIMITS,
 ) {
   assertDeveloperInput(input);
   if (path.basename(input.rootPath) !== ".bb-dev")
@@ -257,16 +273,12 @@ export async function removeDeveloperEntries(
     const entryStats = await fs
       .lstat(path.join(root, entry.name))
       .catch(() => null);
-    if (
-      entryStats?.isDirectory() === true &&
-      (await containsGitWorkspace(path.join(root, entry.name), signal))
-    )
-      held.push({
-        name: entry.name,
-        reason:
-          "it contains a git checkout or worktree or a folder bb kept for later, or is too large or deep to rule that out, and this cleanup never deletes such an entry",
-      });
-    else eligible.push(entry);
+    const scan =
+      entryStats?.isDirectory() === true
+        ? await scanForGitWorkspace(path.join(root, entry.name), signal, limits)
+        : "clear";
+    if (scan === "clear") eligible.push(entry);
+    else held.push({ name: entry.name, reason: HELD_REASONS[scan] });
   }
   signal.throwIfAborted();
   const trashes = (await fs.readdir(root))
@@ -301,10 +313,12 @@ export async function removeDeveloperEntries(
       const lease = retainWorker();
       void (async () => {
         for (const trash of trashes) {
-          const mayHoldWorkspace = await containsGitWorkspace(
-            trash,
-            new AbortController().signal,
-          ).catch(() => true);
+          const mayHoldWorkspace =
+            (await scanForGitWorkspace(
+              trash,
+              new AbortController().signal,
+              limits,
+            ).catch(() => "unreadable")) !== "clear";
           if (mayHoldWorkspace) {
             console.error(
               "Development storage trash kept because it may hold a git checkout or worktree",
