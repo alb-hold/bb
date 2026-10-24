@@ -268,9 +268,30 @@ describe("a create that fails after its thread exists", () => {
     return tombstoned[0]?.id ?? "";
   }
 
-  it("releases the workspace once it is clean, recording the failed-create actor", async () =>
+  it("removes the workspace of a failed create once it is clean", async () =>
     withTestHarness(async (harness) => {
       const { remove } = installProvider();
+      const { environment, project, thread } = seedWorkspace(harness);
+      harness.db.delete(threads).where(eq(threads.id, thread.id)).run();
+
+      await failCreate(harness, {
+        environmentId: environment.id,
+        projectId: project.id,
+      });
+      expect(requestEnvironmentRemoval(harness.deps, environment.id)).toBe(
+        true,
+      );
+      await sweepProviderEnvironment(harness.deps, environment.id);
+
+      expect(remove).toHaveBeenCalledTimes(1);
+      expect(getEnvironment(harness.db, environment.id)).toMatchObject({
+        status: "destroyed",
+      });
+    }));
+
+  it("records the failed-create actor in the consent row of the thread it deleted", async () =>
+    withTestHarness(async (harness) => {
+      installProvider();
       const { environment, project, thread } = seedWorkspace(harness);
       harness.db.delete(threads).where(eq(threads.id, thread.id)).run();
 
@@ -288,15 +309,6 @@ describe("a create that fails after its thread exists", () => {
           actorThreadId: null,
         },
       ]);
-      expect(requestEnvironmentRemoval(harness.deps, environment.id)).toBe(
-        true,
-      );
-      await sweepProviderEnvironment(harness.deps, environment.id);
-
-      expect(remove).toHaveBeenCalledTimes(1);
-      expect(getEnvironment(harness.db, environment.id)).toMatchObject({
-        status: "destroyed",
-      });
     }));
 
   it.each([
@@ -320,11 +332,6 @@ describe("a create that fails after its thread exists", () => {
           environmentId: environment.id,
           projectId: project.id,
         });
-        expect(
-          listEnvironmentReleaseConsents(harness.db, environment.id),
-        ).toMatchObject([
-          { threadId: failedId, actorKind: "system:failed-create" },
-        ]);
         expect(requestEnvironmentRemoval(harness.deps, environment.id)).toBe(
           true,
         );
@@ -338,6 +345,11 @@ describe("a create that fails after its thread exists", () => {
         });
         expect(kept?.teardownStatus).not.toBe("removed");
         expect(kept?.teardownMessage).toContain(message);
+        expect(
+          listEnvironmentReleaseConsents(harness.db, environment.id),
+        ).toMatchObject([
+          { threadId: failedId, actorKind: "system:failed-create" },
+        ]);
       }),
   );
 });
