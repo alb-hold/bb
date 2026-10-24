@@ -1296,6 +1296,40 @@ async function stopLingering(worktree: ManagedWorktree): Promise<void> {
     .toBe(false);
 }
 
+async function startMergeWithResolvedConflicts(
+  worktree: ManagedWorktree,
+  resolveTo: "ours" | "theirs",
+): Promise<string> {
+  const files = ["merge-a.txt", "merge-b.txt", "merge-c.txt"];
+  const writeAll = async (content: string) => {
+    for (const file of files)
+      await writeFile(join(worktree.path, file), content);
+    await git(worktree.path, "add", ...files);
+  };
+  await writeAll("base\n");
+  await git(worktree.path, "commit", "-m", "base");
+  await git(worktree.path, "push", "--set-upstream", "origin", "HEAD");
+  await git(worktree.path, "checkout", "-b", "merge-side");
+  await writeAll("side\n");
+  await git(worktree.path, "commit", "-m", "side");
+  await git(worktree.path, "push", "origin", "merge-side");
+  await git(worktree.path, "checkout", worktree.branchName);
+  await writeAll("branch\n");
+  await git(worktree.path, "commit", "-m", "branch");
+  await git(worktree.path, "push", "origin", "HEAD");
+  await expect(
+    git(worktree.path, "merge", "--no-edit", "merge-side"),
+  ).rejects.toThrow();
+  await git(worktree.path, "checkout", `--${resolveTo}`, ...files);
+  await git(worktree.path, "add", ...files);
+  const gitDir = (
+    await git(worktree.path, "rev-parse", "--absolute-git-dir")
+  ).trim();
+  expect(existsSync(join(gitDir, "MERGE_HEAD"))).toBe(true);
+  expect((await git(worktree.path, "ls-files", "--unmerged")).trim()).toBe("");
+  return gitDir;
+}
+
 async function commitFile(cwd: string, name: string): Promise<string> {
   await writeFile(join(cwd, name), `${name}\n`);
   await git(cwd, "add", name);
@@ -1480,6 +1514,44 @@ describe.skipIf(process.platform === "win32")(
           },
         }),
       ),
+      {
+        name: "a real merge in progress with every conflict resolved to this branch and staged, nothing else changed",
+        reason: "MERGE_HEAD",
+        prepare: async (worktree) => {
+          const gitDir = await startMergeWithResolvedConflicts(
+            worktree,
+            "ours",
+          );
+          expect(await git(worktree.path, "status", "--porcelain")).toBe("");
+          return async () => {
+            expect(existsSync(join(gitDir, "MERGE_HEAD"))).toBe(true);
+            expect(
+              await readFile(join(worktree.path, "merge-a.txt"), "utf8"),
+            ).toBe("branch\n");
+          };
+        },
+      },
+      {
+        name: "a real merge in progress with every conflict resolved to the other branch and staged",
+        reason: "uncommitted changes",
+        prepare: async (worktree) => {
+          const gitDir = await startMergeWithResolvedConflicts(
+            worktree,
+            "theirs",
+          );
+          expect(
+            (await git(worktree.path, "diff", "--cached", "--name-only"))
+              .trim()
+              .split("\n"),
+          ).toEqual(["merge-a.txt", "merge-b.txt", "merge-c.txt"]);
+          return async () => {
+            expect(existsSync(join(gitDir, "MERGE_HEAD"))).toBe(true);
+            expect(
+              await readFile(join(worktree.path, "merge-a.txt"), "utf8"),
+            ).toBe("side\n");
+          };
+        },
+      },
       {
         name: "an in-progress rebase",
         reason: "rebase-merge",

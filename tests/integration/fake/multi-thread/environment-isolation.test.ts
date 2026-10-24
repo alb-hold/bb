@@ -305,6 +305,120 @@ describe.sequential("fake provider environment-isolation multi-thread integratio
   );
 
   it(
+    "keeps a published worktree with a merge in progress and every conflict resolved and staged, archived with no recorded release and then through bb",
+    () =>
+      withHarness(
+        { builtinPlugins: ["environment-git-worktree"] },
+        async (harness) => {
+          await publishTestGitRepo({ repoDir: harness.repoDir });
+          const project = await createProjectFixture(harness, {
+            name: "Merge In Progress Worktree",
+          });
+          const worktreeThread = await createReadyHostThread(harness, {
+            projectId: project.id,
+            timeoutMs: DEFAULT_TIMEOUT_MS,
+            workspace: { type: "managed-worktree" },
+          });
+          const worktreePath = worktreeThread.environment.path;
+          if (!worktreePath) {
+            throw new Error("Managed worktree path was not assigned");
+          }
+          const git = (...args: string[]) =>
+            runGit({ cwd: worktreePath, args });
+          const files = ["merge-a.txt", "merge-b.txt", "merge-c.txt"];
+          const writeAll = async (content: string) => {
+            for (const file of files) {
+              await createTestFile({
+                filePath: path.join(worktreePath, file),
+                content,
+              });
+            }
+            await git("add", ...files);
+          };
+          const branch = (
+            await git("rev-parse", "--abbrev-ref", "HEAD")
+          ).trim();
+          await writeAll("base\n");
+          await git("commit", "-m", "base");
+          await git("push", "--set-upstream", "origin", "HEAD");
+          await git("checkout", "-b", "merge-side");
+          await writeAll("side\n");
+          await git("commit", "-m", "side");
+          await git("push", "origin", "merge-side");
+          await git("checkout", branch);
+          await writeAll("branch\n");
+          await git("commit", "-m", "branch");
+          await git("push", "origin", "HEAD");
+          await expect(
+            git("merge", "--no-edit", "merge-side"),
+          ).rejects.toThrow();
+          await git("checkout", "--ours", ...files);
+          await git("add", ...files);
+          const mergeHead = path.resolve(
+            worktreePath,
+            (await git("rev-parse", "--git-path", "MERGE_HEAD")).trim(),
+          );
+          await fs.access(mergeHead);
+          expect(await git("status", "--porcelain")).toBe("");
+
+          const retireNow = () =>
+            harness.db
+              .update(environments)
+              .set({ retireAt: Date.now() - 1 })
+              .where(eq(environments.id, worktreeThread.environment.id))
+              .run();
+          const keptMessage = (expected: string) =>
+            expect
+              .poll(
+                async () => {
+                  await harness.server.sweepEnvironments();
+                  return (
+                    (
+                      await getEnvironment(
+                        harness.api,
+                        worktreeThread.environment.id,
+                      )
+                    ).lifecycle.message ?? ""
+                  );
+                },
+                { timeout: REBUILD_TIMEOUT_MS },
+              )
+              .toContain(expected);
+          const expectIntact = async () => {
+            const kept = await getEnvironment(
+              harness.api,
+              worktreeThread.environment.id,
+            );
+            expect(kept.status).toBe("ready");
+            expect(kept.lifecycle.teardown).toBeNull();
+            expect(kept.path).toBe(worktreePath);
+            await fs.access(mergeHead);
+            expect(
+              await fs.readFile(path.join(worktreePath, files[0]!), "utf8"),
+            ).toBe("branch\n");
+          };
+
+          await archiveThread(harness.api, worktreeThread.thread.id);
+          harness.db
+            .delete(environmentReleaseConsents)
+            .where(
+              eq(environmentReleaseConsents.threadId, worktreeThread.thread.id),
+            )
+            .run();
+          retireNow();
+          await keptMessage("no archive or delete through bb");
+          await expectIntact();
+
+          await archiveThread(harness.api, worktreeThread.thread.id);
+          retireNow();
+          await keptMessage("MERGE_HEAD");
+          await expectIntact();
+        },
+      ),
+    REBUILD_TEST_TIMEOUT_MS,
+  );
+
+  it(
     "keeps a clean published worktree whose thread was archived without a recorded release, until an archive through bb records one",
     () =>
       withHarness(
