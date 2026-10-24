@@ -1349,6 +1349,8 @@ function WritableContextBanner({
   onToggleSegment: (key: string) => void;
   queuedWorkspaceWait?: string | null;
 }) {
+  const { git } = useCoreThreadContext();
+  const workspaceSharingThreadCount = git?.workspaceSharingThreadCount ?? 0;
   const { entries, observers } = useThreadContextSegments(
     input,
     coreThreadContextSegments,
@@ -1377,7 +1379,10 @@ function WritableContextBanner({
   return (
     <>
       {observers}
-      {showRow && (entries.length > 0 || queuedWorkspaceWait) ? (
+      {showRow &&
+      (entries.length > 0 ||
+        queuedWorkspaceWait ||
+        workspaceSharingThreadCount > 1) ? (
         <PromptStackCard
           ariaLabel="Thread context before sending"
           className="overflow-hidden"
@@ -1390,6 +1395,11 @@ function WritableContextBanner({
             )}
           >
             {entries.map((entry) => mount(entry, "summary"))}
+            {workspaceSharingThreadCount > 1 ? (
+              <div className="shrink-0">
+                Shared · {workspaceSharingThreadCount} threads
+              </div>
+            ) : null}
             {queuedWorkspaceWait ? (
               <div
                 className={cn(

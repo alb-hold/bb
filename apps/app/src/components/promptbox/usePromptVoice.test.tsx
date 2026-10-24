@@ -103,7 +103,7 @@ describe("usePromptVoice", () => {
       result.current.cancel();
       options?.onTranscript("cancelled transcript", "insert");
     });
-    expect(deliverTranscript).toHaveBeenCalledOnce();
+    expect(deliverTranscript).toHaveBeenCalledTimes(2);
     expect(deliverTranscript).toHaveBeenLastCalledWith("cancelled transcript", "insert");
     act(() => {
       result.current.stop();

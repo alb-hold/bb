@@ -86,6 +86,10 @@ const timelineProbe = vi.hoisted(() => ({
 const responsiveComposerProbe = vi.hoisted(() => ({ enabled: false }));
 const nativeTerminalPanes = vi.hoisted(() => new Set<string>());
 
+function ResponsiveFocusComposer() {
+  return <textarea aria-label="Ask BB" />;
+}
+
 function HostedComposerScopeProbe({ threadId }: { threadId: string }) {
   const composerHost = usePluginComposerHost();
   return (
@@ -132,6 +136,12 @@ vi.mock("@bb/shared-ui/hooks/use-pointer-coarse", () => ({
 }));
 
 vi.mock("@/hooks/queries/thread-queries", () => ({
+  useThreadMentionCandidates: () => ({
+    data: undefined,
+    isError: false,
+    isFetching: false,
+    isLoading: false,
+  }),
   useThread: (id: string) => {
     const entry = threadStore.get(id);
     if (entry === undefined) {
@@ -834,6 +844,18 @@ describe("SplitThreadArea", () => {
       viewportState.compact = fromCompact;
       pointerState.coarse = fromCompact;
       responsiveComposerProbe.enabled = true;
+      setPluginSlotRegistrations(
+        "responsive-focus-composer",
+        makePluginRegistrationSet({
+          composers: [
+            {
+              id: "responsive-focus",
+              title: "Responsive focus composer",
+              component: ResponsiveFocusComposer,
+            },
+          ],
+        }),
+      );
       const store = createStore();
       const renderTree = () => (
         <TooltipProvider delayDuration={0}>
@@ -879,6 +901,18 @@ describe("SplitThreadArea", () => {
 
   it("does not let responsive composer remount autofocus steal an external control", async () => {
     responsiveComposerProbe.enabled = true;
+    setPluginSlotRegistrations(
+      "responsive-focus-composer",
+      makePluginRegistrationSet({
+        composers: [
+          {
+            id: "responsive-focus",
+            title: "Responsive focus composer",
+            component: ResponsiveFocusComposer,
+          },
+        ],
+      }),
+    );
     pointerState.coarse = false;
     const store = createStore();
     const renderTree = () => (

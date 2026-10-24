@@ -661,7 +661,7 @@ describe("ThreadRow", () => {
     );
   });
 
-  it("renders open, draft, merged, and closed PR rows together", () => {
+  it("renders open, draft, merged, and closed PR rows together", async () => {
     const states = ["open", "draft", "merged", "closed"] as const;
     const threads = states.map((state) =>
       createThread({
@@ -696,7 +696,7 @@ describe("ThreadRow", () => {
 
     for (const [index, state] of states.entries()) {
       expect(
-        slot.getByRole("link", {
+        await slot.findByRole("link", {
           name: new RegExp(`Pull request #${10843 + index}`),
         }),
       ).toBeTruthy();
@@ -704,12 +704,12 @@ describe("ThreadRow", () => {
     }
   });
 
-  it("keeps the PR chip in the trailing row while status is visible", () => {
+  it("keeps the PR chip in the trailing row while status is visible", async () => {
     renderThreadRow({
       thread: createThread({ isUnread: true }),
       sidebarPullRequest: createPullRequest("open"),
     });
-    const pullRequest = screen.getByRole("link", {
+    const pullRequest = await screen.findByRole("link", {
       name: /Pull request #10843/,
     });
 
@@ -719,7 +719,7 @@ describe("ThreadRow", () => {
     ).not.toBeNull();
   });
 
-  it("keeps the PR badge and row actions in the row's trailing layout lane", () => {
+  it("keeps the PR badge and row actions in the row's trailing layout lane", async () => {
     const { container } = renderThreadRow({
       sidebarPullRequest: createPullRequest("open"),
     });
@@ -730,7 +730,7 @@ describe("ThreadRow", () => {
       "[data-sidebar-row-controls]",
     );
     const actionSlot = controls?.parentElement;
-    const pullRequest = screen.getByRole("link", {
+    const pullRequest = await screen.findByRole("link", {
       name: /Pull request #10843/,
     });
 
@@ -783,7 +783,7 @@ describe("ThreadRow", () => {
     expect(badges.className).toContain("[@media(hover:none)]:opacity-100!");
   });
 
-  it("keeps working status, PR badge, and actions in the trailing layout lane", () => {
+  it("keeps working status, PR badge, and actions in the trailing layout lane", async () => {
     const { container } = renderThreadRow({
       thread: createThread({ status: "active", runtimeStatus: "active" }),
       sidebarPullRequest: createPullRequest("open"),
@@ -796,7 +796,7 @@ describe("ThreadRow", () => {
       "[data-sidebar-row-controls]",
     );
     const actionSlot = controls?.parentElement;
-    const pullRequest = screen.getByRole("link", {
+    const pullRequest = await screen.findByRole("link", {
       name: /Pull request #10843/,
     });
 
@@ -874,7 +874,7 @@ describe("ThreadRow", () => {
       expect(screen.getByRole("img", { name: statusLabel })).toBe(status);
       expectPersistentRowMetadata(status);
       expectPersistentRowMetadata(
-        screen.getByRole("link", { name: /Pull request #10843/ }),
+        await screen.findByRole("link", { name: /Pull request #10843/ }),
       );
       const glyph = status.querySelector<HTMLElement>(
         "[data-thread-status-glyph]",
@@ -920,7 +920,7 @@ describe("ThreadRow", () => {
     ["closed", "text-destructive"],
   ] as const)(
     "shows a %s pull request chip with its state color",
-    (state, tone) => {
+    async (state, tone) => {
       const stateLabel = state[0].toUpperCase() + state.slice(1);
       const slot = renderThreadRow({
         sidebarPullRequest: createPullRequest(
@@ -930,7 +930,7 @@ describe("ThreadRow", () => {
         ),
       });
 
-      const chip = slot.getByRole("link", {
+      const chip = await slot.findByRole("link", {
         name: `Pull request #10843: Add sidebar PR status, ${stateLabel}, albrand/bb`,
       });
       expect(chip.textContent).toBe("#10843");
@@ -948,7 +948,7 @@ describe("ThreadRow", () => {
     });
 
     fireEvent.pointerMove(
-      slot.getByRole("link", { name: /Pull request #10843/ }),
+      await slot.findByRole("link", { name: /Pull request #10843/ }),
     );
 
     expect((await slot.findByRole("tooltip")).textContent).toBe(
@@ -962,7 +962,7 @@ describe("ThreadRow", () => {
     expect(slot.queryByRole("link", { name: /Pull request/ })).toBeNull();
   });
 
-  it("does not select the row when the PR chip is clicked", () => {
+  it("does not select the row when the PR chip is clicked", async () => {
     const onRowEvent = vi.fn();
     const openUrl = vi.fn(() => true);
     const slot = renderThreadRow({
@@ -975,7 +975,9 @@ describe("ThreadRow", () => {
       ),
     });
 
-    fireEvent.click(slot.getByRole("link", { name: /Pull request #10843/ }));
+    fireEvent.click(
+      await slot.findByRole("link", { name: /Pull request #10843/ }),
+    );
 
     expect(onRowEvent).not.toHaveBeenCalled();
     expect(openUrl).toHaveBeenCalledWith(
