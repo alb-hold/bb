@@ -26,7 +26,10 @@ interface PluginTestHost {
 const {
   createFakePluginHost,
 }: {
-  createFakePluginHost(options: { pluginId: string }): PluginTestHost;
+  createFakePluginHost(options: {
+    pluginId: string;
+    experimental_declaredIconNames?: readonly string[];
+  }): PluginTestHost;
 } = await import(
   new URL(
     "../../../../packages/plugin-sdk/src/testing/fake-plugin-host.ts",
@@ -47,7 +50,12 @@ const { default: codexPlugin }: { default(bb: unknown): void } = await import(
 function declaredActivity(
   providerId: "claude-code" | "codex",
 ): ProviderNativeTerminalActivity {
-  const host = createFakePluginHost({ pluginId: `provider-${providerId}` });
+  const host = createFakePluginHost({
+    pluginId: `provider-${providerId}`,
+    ...(providerId === "codex"
+      ? { experimental_declaredIconNames: ["ultrafast"] }
+      : {}),
+  });
   (providerId === "codex" ? codexPlugin : claudeCodePlugin)(host.bb);
   const activity = host.harness.registrations.providerRegistrations.find(
     (entry) => entry.id === providerId,

@@ -187,23 +187,15 @@ Read the installed declarations for exact current signatures.
 - `ExperimentalComposerMentionSuggestion`
 - `ExperimentalComposerMentionSuggestionGroup`
 - `ExperimentalComposerMentionTarget`
-- `ExperimentalComposerMenuEntryProps`
-- `ExperimentalComposerMenuSelection`
-- `ExperimentalComposerPendingUpload`
-- `ExperimentalComposerPlusMenuContribution`
-- `ExperimentalComposerPopupContribution`
-- `ExperimentalComposerPopupProps`
-- `ExperimentalComposerPromptAction`
-- `ExperimentalComposerProps`
-- `ExperimentalComposerRegistration`
-- `ExperimentalComposerRendererApi`
-- `ExperimentalComposerRootProps`
-- `ExperimentalComposerSearchQuery`
+- `ExperimentalComposerMenuEntryProps`, `ExperimentalComposerMenuSelection`
+- `ExperimentalComposerPendingUpload`, `ExperimentalComposerPlusMenuContribution`
+- `ExperimentalComposerPopupContribution`, `ExperimentalComposerPopupProps`
+- `ExperimentalComposerPromptAction`, `ExperimentalComposerProps`
+- `ExperimentalComposerRegistration`, `ExperimentalComposerRendererApi`
+- `ExperimentalComposerRootProps`, `ExperimentalComposerSearchQuery`
 - `ExperimentalComposerSelection`
-- `ExperimentalComposerSendMenuContribution`
-- `ExperimentalComposerSubmission`
-- `ExperimentalComposerSubmitOptions`
-- `ExperimentalComposerThreadLink`
+- `ExperimentalComposerSendMenuContribution`, `ExperimentalComposerSubmission`
+- `ExperimentalComposerSubmitOptions`, `ExperimentalComposerThreadLink`
 - `ExperimentalComposerThreadLinks`
 - `ExperimentalComposerThreadRelation`
 - `ExperimentalComposerView`

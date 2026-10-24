@@ -68,6 +68,7 @@ interface ResolveExistingThreadExecutionPlanArgs {
   executionSource: ThreadExecutionSource;
   hostId?: string | null;
   input: ExistingThreadExecutionInput;
+  inheritParentExecutionModel?: boolean;
   projectDefaults?: ProjectExecutionDefaults | null;
   threadId: string;
 }
@@ -348,14 +349,20 @@ export async function resolveExistingThreadExecutionPlan(
     parentThread !== null
       ? getLastExecutionOptions(deps, parentThread.id)
       : null;
+  const inheritedParentModel =
+    args.inheritParentExecutionModel === true &&
+    parentThread?.providerId === thread.providerId
+      ? parentExecution?.model
+      : undefined;
   const model = resolveRequiredField<string>([
+    args.input.model?.value,
+    inheritedParentModel,
     childThreadModel({
       parentThreadId:
         thread.parentThreadId ?? getThreadSpawner(deps.db, thread.id),
       declaredChildModel: deps.providerRegistry.get(thread.providerId)
         ?.childThreadModel,
     }) ?? undefined,
-    args.input.model?.value,
     thread.modelOverride ?? undefined,
     lastExecution?.model,
     projectExecution?.model,
