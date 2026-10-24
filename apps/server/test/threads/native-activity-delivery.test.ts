@@ -24,21 +24,13 @@ import {
   NATIVE_TERMINAL_QUESTION_REQUEST_PREFIX,
   type ProviderNativeTerminal,
 } from "@bb/domain";
-import {
-  publicApiRoutes,
-  NATIVE_TERMINAL_MAX_OPEN_QUESTIONS,
-  reportNativeTerminalActivityRequestSchema,
-  typedRoutes,
-  type PublicApiSchema,
-} from "@bb/server-contract";
+import { NATIVE_TERMINAL_MAX_OPEN_QUESTIONS } from "@bb/server-contract";
 import type { NativeTerminalReportActivityArgs } from "@bb/sdk";
 import { BbHttpError, BbRequestTimeoutError } from "@bb/sdk";
 import { createNodeBbSdk } from "@bb/sdk/node";
 import { Hono } from "hono";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { z } from "zod";
-import { ApiError, createServerErrorHandler } from "../../src/errors.js";
-import { recordNativeTerminalActivity } from "../../src/services/threads/native-terminal-activity.js";
+import { createServerErrorHandler } from "../../src/errors.js";
 import * as lifecycleOutcome from "../../src/services/threads/lifecycle-outcome.js";
 import { buildThreadStatusChangeMetadata } from "../../src/services/threads/thread-runtime-display.js";
 import * as titleGeneration from "../../src/services/threads/title-generation.js";
@@ -53,6 +45,7 @@ import {
   createTestAppHarness,
   type TestAppHarness,
 } from "../helpers/test-app.js";
+import { registerLegacyNativeTerminalActivityRoute } from "../fixtures/native-terminal-legacy-server.js";
 
 interface NativeReport {
   confirms?: false;
@@ -1105,10 +1098,8 @@ describe("overflow, answer, then no resumed activity through the real reader, re
     await h.forward();
     expect(getThread(harness.db, thread.id)?.status).toBe("active");
     expect(
-      buildThreadStatusChangeMetadata(
-        harness.deps,
-        currentThread(),
-      ).statusChange,
+      buildThreadStatusChangeMetadata(harness.deps, currentThread())
+        .statusChange,
     ).toMatchObject({
       runtime: { displayStatus: "active" },
       status: "active",
@@ -1133,10 +1124,8 @@ describe("overflow, answer, then no resumed activity through the real reader, re
 
       expect(getThread(harness.db, thread.id)?.status).toBe("active");
       expect(
-        buildThreadStatusChangeMetadata(
-          harness.deps,
-          currentThread(),
-        ).statusChange,
+        buildThreadStatusChangeMetadata(harness.deps, currentThread())
+          .statusChange,
       ).toMatchObject({
         runtime: { displayStatus: "active" },
         status: "active",
@@ -1273,23 +1262,21 @@ describe("overflow, answer, then no resumed activity through the real reader, re
   });
 });
 
-describe("an older server that does not know the closure fields (INJECTED-SERVER evidence: the 400 comes from the pre-change strict schema through the real typedRoutes validation and error handler, and the accepted report goes through the real service and database; no old server build was run, and old-server late-close protection is NOT FIXED and its execution NOT RUN)", () => {
-  const routes = publicApiRoutes.nativeTerminalThreads;
-  const fields = reportNativeTerminalActivityRequestSchema.shape;
-  const preChangeSchema = z
-    .object({
-      prompt: fields.prompt,
-      questions: fields.questions,
-      state: fields.state,
-    })
-    .strict();
+describe("the pre-change native terminal server source fixture from fe0844422accc60363b9b9af7c741dedfb705832", () => {
   const asking = (id: string, prompt: string) => ({
     prompt: null,
     questions: [{ id, prompt }],
     state: "waiting" as const,
   });
 
-  async function oldServerOnTheRealStore() {
+  async function oldServerOnTheRealStore(
+    options: {
+      deferResponse?(entry: {
+        body: Record<string, unknown>;
+        status: number;
+      }): Promise<void>;
+    } = {},
+  ) {
     const { harness, thread } = await nativeThread();
     const app = new Hono();
     app.onError(
@@ -1300,32 +1287,7 @@ describe("an older server that does not know the closure fields (INJECTED-SERVER
         warn: () => undefined,
       }),
     );
-    const { post } = typedRoutes<PublicApiSchema>(app.basePath("/api/v1"), {
-      onValidationError: (msg) => new ApiError(400, "invalid_request", msg),
-    });
-    post(
-      {
-        ...routes.reportActivity,
-        request: { ...routes.reportActivity.request, schema: preChangeSchema },
-      } as typeof routes.reportActivity,
-      (context, payload) => {
-        const listed = new Set(
-          (payload.questions ?? []).map((question) => question.id),
-        );
-        recordNativeTerminalActivity(harness.deps, {
-          authorization: context.req.header("authorization"),
-          threadId: context.req.param("id"),
-          ...payload,
-          closes: openRequestIds(harness, context.req.param("id"))
-            .map((id) =>
-              id.slice(NATIVE_TERMINAL_QUESTION_REQUEST_PREFIX.length),
-            )
-            .filter((id) => !listed.has(id)),
-          confirms: true,
-        });
-        return context.json({ ok: true as const });
-      },
-    );
+    registerLegacyNativeTerminalActivityRoute(app, harness.deps);
     const writesAtRejection: Array<{
       evidence: number | null | undefined;
       pending: number;
@@ -1341,7 +1303,8 @@ describe("an older server that does not know the closure fields (INJECTED-SERVER
         const request = new Request(input, init);
         const body = (await request.clone().json()) as Record<string, unknown>;
         const response = await target.fetch(request);
-        requests.push({ body, status: response.status });
+        const entry = { body, status: response.status };
+        requests.push(entry);
         if (response.status === 400) {
           rejectedBodies.push(await response.clone().text());
           writesAtRejection.push({
@@ -1353,8 +1316,13 @@ describe("an older server that does not know the closure fields (INJECTED-SERVER
             status: getThread(harness.db, thread.id)?.status,
           });
         }
+        await options.deferResponse?.(entry);
         return response;
       },
+    });
+    const directSdk = createNodeBbSdk({
+      baseUrl: "http://127.0.0.1:3000",
+      fetch: async (input, init) => target.fetch(new Request(input, init)),
     });
     const logged: string[] = [];
     const reporter = reporterModule.createNativeActivityReporter({
@@ -1369,6 +1337,8 @@ describe("an older server that does not know the closure fields (INJECTED-SERVER
       rejectedBodies,
       reporter,
       requests,
+      reportDirect: (args: NativeTerminalReportActivityArgs) =>
+        directSdk.nativeTerminals.reportActivity(args),
       thread,
       upgrade: () => {
         target = harness.app;
@@ -1383,6 +1353,7 @@ describe("an older server that does not know the closure fields (INJECTED-SERVER
   it("rejects the initial request with zero writes and zod's own wording, then settles an answered question as before", async () => {
     const h = await oldServerOnTheRealStore();
     h.reporter.report(asking("permission:Bash#1", "Allow Bash?"));
+    await h.reporter.settled();
     h.reporter.report({ prompt: null, state: "working" });
     await h.reporter.settled();
     expect(h.rejectedBodies).toHaveLength(2);
@@ -1424,6 +1395,77 @@ describe("an older server that does not know the closure fields (INJECTED-SERVER
       state: "waiting",
     });
     expect(h.requests[3]?.status).toBe(200);
+  });
+
+  it("skips a superseded delayed legacy snapshot so a newer question stays open", async () => {
+    let initialRejectSeen: () => void = () => undefined;
+    let releaseInitialReject: () => void = () => undefined;
+    let laterRequestSeen: () => void = () => undefined;
+    let releaseLaterRequest: () => void = () => undefined;
+    const initialReject = new Promise<void>((resolve) => {
+      initialRejectSeen = resolve;
+    });
+    const initialRelease = new Promise<void>((resolve) => {
+      releaseInitialReject = resolve;
+    });
+    const laterRequest = new Promise<void>((resolve) => {
+      laterRequestSeen = resolve;
+    });
+    const laterRelease = new Promise<void>((resolve) => {
+      releaseLaterRequest = resolve;
+    });
+    let holdInitial = true;
+    let holdLater = false;
+    const h = await oldServerOnTheRealStore({
+      deferResponse: async (entry) => {
+        if (
+          holdInitial &&
+          entry.status === 400 &&
+          entry.body.state === "working"
+        ) {
+          holdInitial = false;
+          initialRejectSeen();
+          await initialRelease;
+          holdLater = true;
+          return;
+        }
+        if (holdLater) {
+          holdLater = false;
+          laterRequestSeen();
+          await laterRelease;
+        }
+      },
+    });
+    h.reporter.report(asking("permission:Bash#old", "Allow Bash?"));
+    await h.reporter.settled();
+    expect(openRequestIds(h.harness, h.thread.id)).toEqual(
+      expect.arrayContaining([expect.stringContaining("permission:Bash#old")]),
+    );
+
+    h.reporter.report({ prompt: null, state: "working" });
+    await initialReject;
+    h.reporter.report(asking("permission:Edit#new", "Allow Edit?"));
+    await h.reportDirect({
+      authorization: `Bearer ${SECRET}`,
+      questions: [{ id: "permission:Edit#new", prompt: "Allow Edit?" }],
+      state: "waiting",
+      threadId: h.thread.id,
+    });
+    expect(openRequestIds(h.harness, h.thread.id)).toEqual(
+      expect.arrayContaining([expect.stringContaining("permission:Edit#new")]),
+    );
+
+    releaseInitialReject();
+    await laterRequest;
+    expect(openRequestIds(h.harness, h.thread.id)).toEqual(
+      expect.arrayContaining([expect.stringContaining("permission:Edit#new")]),
+    );
+    expect(h.logged).toContain("activity-legacy-fallback-skipped");
+    releaseLaterRequest();
+    await h.reporter.settled();
+    expect(openRequestIds(h.harness, h.thread.id)).toEqual(
+      expect.arrayContaining([expect.stringContaining("permission:Edit#new")]),
+    );
   });
 
   it("does not stamp a non-confirming report through a legacy server that defaults confirms to true", async () => {
@@ -1472,7 +1514,9 @@ describe("an older server that does not know the closure fields (INJECTED-SERVER
   it("goes out with the fields again after a rejection: nothing is remembered about the server", async () => {
     const h = await oldServerOnTheRealStore();
     h.reporter.report({ prompt: null, state: "working" });
+    await h.reporter.settled();
     h.reporter.report({ prompt: null, state: "working" });
+    await h.reporter.settled();
     h.reporter.report({ prompt: null, state: "working" });
     await h.reporter.settled();
     expect(h.rejectedBodies).toHaveLength(3);
@@ -1516,8 +1560,8 @@ describe("an older server that does not know the closure fields (INJECTED-SERVER
       "working",
     ]);
     expect(drainRequests.at(-1)?.body.state).toBe("working");
-    const closeBatches = drainRequests.map((request) =>
-      request.body.closes as string[],
+    const closeBatches = drainRequests.map(
+      (request) => request.body.closes as string[],
     );
     expect(closeBatches.map((batch) => batch.length)).toEqual([
       NATIVE_TERMINAL_MAX_OPEN_QUESTIONS,

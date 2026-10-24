@@ -490,6 +490,56 @@ describe("native activity reporter", () => {
       ]);
     });
 
+    it("does not send a superseded legacy question snapshot after the close rejection", async () => {
+      const calls: Array<{
+        questions: string[] | undefined;
+        state: string;
+      }> = [];
+      const logged: string[] = [];
+      let rejectFirstClose: () => void = () => undefined;
+      let releaseFirstClose: () => void = () => undefined;
+      const firstCloseSeen = new Promise<void>((resolve) => {
+        rejectFirstClose = resolve;
+      });
+      const release = new Promise<void>((resolve) => {
+        releaseFirstClose = resolve;
+      });
+      const reporter = createNativeActivityReporter({
+        currentCredential: () => "c",
+        log: (event) => logged.push(event),
+        send: async (args) => {
+          calls.push({
+            questions: args.questions?.map((question) => question.id),
+            state: args.state,
+          });
+          if (calls.length === 2) {
+            rejectFirstClose();
+            await release;
+            throw rejection('"closes"');
+          }
+          if (calls.length === 3) throw rejection('"closes"');
+          return { ok: true };
+        },
+        threadId: "thr_1",
+      });
+
+      reporter.report(asking("x"));
+      await reporter.settled();
+      reporter.report(working);
+      await firstCloseSeen;
+      reporter.report(asking("y"));
+      releaseFirstClose();
+      await reporter.settled();
+
+      expect(calls.map(({ state, questions }) => [state, questions])).toEqual([
+        ["waiting", ["x"]],
+        ["working", undefined],
+        ["waiting", ["y"]],
+        ["waiting", ["y"]],
+      ]);
+      expect(logged).toContain("activity-legacy-fallback-skipped");
+    });
+
     it("keeps every close tracked through a legacy fallback and a later rejected ID", async () => {
       const rejectedId = new BbHttpError({
         body: null,
@@ -569,8 +619,8 @@ describe("native activity reporter", () => {
       expect(calls).toHaveLength(1);
     });
 
-    it("keeps no downgrade: the next report goes out with the fields again", async () => {
-      const { calls, reporter } = closureSetup([
+    it("does not reuse a legacy fallback for the next report after it is superseded", async () => {
+      const { calls, logged, reporter } = closureSetup([
         async () => {
           throw rejection('"closes"');
         },
@@ -578,7 +628,15 @@ describe("native activity reporter", () => {
       reporter.report(working);
       reporter.report(working);
       await reporter.settled();
-      expect(closesOf(calls)).toEqual([[], undefined, []]);
+      expect(closesOf(calls)).toEqual([[], []]);
+      expect(logged).toContainEqual({
+        event: "activity-legacy-fallback-skipped",
+        fields: {
+          latestSequence: 2,
+          reason: "superseded",
+          sequence: 1,
+        },
+      });
     });
 
     it.each([
