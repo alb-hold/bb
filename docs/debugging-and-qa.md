@@ -961,10 +961,15 @@ applied chunk.
    cannot establish when CPU was used. This rule does not distinguish
    preemption from a blocking wait. The
    process-wide `processContextSwitchHint` compares voluntary and involuntary
-   context-switch deltas as a clue, not proof. Otherwise the candidate is the
-   larger of GC pause time and measured synchronous work, when the selected
-   duration is long enough (within one 20 ms sample) to explain the maximum
-   delay.
+   context-switch deltas as a clue, not proof. Otherwise, the candidate is the
+   longer of the single longest GC pause and the longest synchronous
+   operation's CPU or wall duration. It is attributed only when that one
+   duration is at least 90% of `maxDelayMs`; separate work or GC pauses are
+   never summed. The 90% threshold includes the operator walk's 3500.8 ms
+   operation against a 3527.4 ms stall (99.25%), while six separate 250 ms
+   operations against a 1512 ms stall remain unattributed (16.5% each). If
+   off-cpu and a work or GC candidate both qualify, off-cpu wins and the
+   work or GC cause is not reported.
    `unattributed` means neither rule explains it and `stallCauseCandidate` is
    null. `longestSynchronousWork` and `lastCompletedWork` remain available as
    context. Candidates are not confirmed causes: both measurements fall

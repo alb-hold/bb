@@ -1,7 +1,4 @@
-import {
-  roundDurationMs,
-  startEventLoopDelaySampler,
-} from "@bb/process-utils";
+import { roundDurationMs, startEventLoopDelaySampler } from "@bb/process-utils";
 import { PerformanceObserver, performance } from "node:perf_hooks";
 import type { ServerLogger } from "../../types.js";
 import { takeEventLoopWorkWindowSnapshot } from "./event-loop-work.js";
@@ -19,6 +16,7 @@ interface GcPause {
 }
 
 const OFF_CPU_MAIN_THREAD_CPU_WALL_RATIO_THRESHOLD = 0.1;
+const STALL_CANDIDATE_DURATION_RATIO_THRESHOLD = 0.9;
 
 type ProcessContextSwitchHint =
   | "voluntary-dominant"
@@ -76,7 +74,8 @@ export function startEventLoopStallMonitor(
       previousSampleAt = sampledAt;
       const cpuUsage = process.cpuUsage();
       const processCpuMs =
-        (cpuUsage.user - previousCpuUsage.user +
+        (cpuUsage.user -
+          previousCpuUsage.user +
           cpuUsage.system -
           previousCpuUsage.system) /
         1_000;
@@ -85,7 +84,8 @@ export function startEventLoopStallMonitor(
         windowWallMs <= 0 ? 0 : processCpuMs / windowWallMs;
       const mainThreadCpuUsage = process.threadCpuUsage();
       const mainThreadCpuMs =
-        (mainThreadCpuUsage.user - previousMainThreadCpuUsage.user +
+        (mainThreadCpuUsage.user -
+          previousMainThreadCpuUsage.user +
           mainThreadCpuUsage.system -
           previousMainThreadCpuUsage.system) /
         1_000;
@@ -121,8 +121,8 @@ export function startEventLoopStallMonitor(
       const gcPausesInWindow = gcPauses;
       gcPauses = [];
       if (stall !== null) {
-        const totalGcPauseMs = gcPausesInWindow.reduce(
-          (total, pause) => total + pause.durationMs,
+        const longestGcPauseMs = gcPausesInWindow.reduce(
+          (longest, pause) => Math.max(longest, pause.durationMs),
           0,
         );
         const longestSynchronousWorkDurationMs = Math.max(
@@ -130,12 +130,12 @@ export function startEventLoopStallMonitor(
           work.longestSynchronousWorkWallMs ?? 0,
         );
         const gcIsStrongest =
-          totalGcPauseMs > longestSynchronousWorkDurationMs;
+          longestGcPauseMs > longestSynchronousWorkDurationMs;
         const candidateDurationMs = gcIsStrongest
-          ? totalGcPauseMs
+          ? longestGcPauseMs
           : longestSynchronousWorkDurationMs;
         const measuredWorkCandidate = gcIsStrongest
-          ? totalGcPauseMs > 0
+          ? longestGcPauseMs > 0
             ? "gc"
             : null
           : work.longestSynchronousWork;
@@ -143,7 +143,8 @@ export function startEventLoopStallMonitor(
         const hasCandidate =
           offCpu ||
           (candidate !== null &&
-            candidateDurationMs + stall.resolutionMs >= stall.maxDelayMs);
+            candidateDurationMs >=
+              STALL_CANDIDATE_DURATION_RATIO_THRESHOLD * stall.maxDelayMs);
         options.logger.info(
           {
             ...stall,

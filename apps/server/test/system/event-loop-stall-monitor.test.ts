@@ -308,6 +308,37 @@ describe("event loop stall monitor", () => {
     monitor.stop();
   });
 
+  it("prefers off-cpu over a work duration that otherwise qualifies", () => {
+    installHistogram({ maxDelayMs: 1_000, meanDelayMs: 25, p99DelayMs: 450 });
+    let cpuUs = 0;
+    vi.spyOn(process, "threadCpuUsage").mockImplementation((start) => {
+      if (start !== undefined) {
+        cpuUs = start.user + 50_000;
+      }
+      return { user: cpuUs, system: 0 };
+    });
+    const logger = { info: vi.fn() };
+    const nowSpy = vi.spyOn(nodePerformance, "now");
+    nowSpy.mockReturnValueOnce(0).mockReturnValueOnce(900);
+    const monitor = startEventLoopStallMonitor({ logger });
+    try {
+      runEventLoopWorkSync("test:blocking-sync-operation", () => undefined);
+      vi.advanceTimersByTime(EVENT_LOOP_STALL_MONITOR_INTERVAL_MS);
+      expect(logger.info).toHaveBeenCalledWith(
+        expect.objectContaining({
+          mainThreadCpuMs: 50,
+          longestSynchronousWorkWallMs: 900,
+          stallAttribution: "candidate",
+          stallCauseCandidate: "off-cpu",
+        }),
+        "Event loop stalled",
+      );
+    } finally {
+      nowSpy.mockRestore();
+      monitor.stop();
+    }
+  });
+
   it("uses synchronous work attribution when the main thread is on CPU", () => {
     installHistogram({ maxDelayMs: 1_000, meanDelayMs: 25, p99DelayMs: 450 });
     const mainThreadCpuValues = [0, 0, 1_000_000, 2_500_000];
@@ -344,7 +375,11 @@ describe("event loop stall monitor", () => {
     },
   ])(
     "reports process-wide context-switch hint $expectedHint from deltas",
-    ({ voluntaryContextSwitches, involuntaryContextSwitches, expectedHint }) => {
+    ({
+      voluntaryContextSwitches,
+      involuntaryContextSwitches,
+      expectedHint,
+    }) => {
       installHistogram({ maxDelayMs: 1_000, meanDelayMs: 25, p99DelayMs: 450 });
       const base = createResourceUsage();
       vi.spyOn(process, "resourceUsage")
@@ -595,16 +630,7 @@ describe("event loop stall monitor", () => {
     const logger = { info: vi.fn() };
     const nowSpy = vi.spyOn(nodePerformance, "now");
     const cpuValues = [
-      0,
-      300_000,
-      0,
-      300_000,
-      0,
-      300_000,
-      0,
-      300_000,
-      0,
-      1_200_000,
+      0, 300_000, 0, 300_000, 0, 300_000, 0, 300_000, 0, 1_200_000,
     ];
     vi.spyOn(process, "threadCpuUsage").mockImplementation(() => ({
       user: cpuValues.shift() ?? 1_200_000,
@@ -634,6 +660,149 @@ describe("event loop stall monitor", () => {
       "Event loop stalled",
     );
     monitor.stop();
+  });
+
+  it.each([
+    { workDurationMs: 900, candidate: "test:boundary-work" },
+    { workDurationMs: 899.9, candidate: null },
+  ])(
+    "uses the 90 percent boundary for a single operation of $workDurationMs ms",
+    ({ workDurationMs, candidate }) => {
+      installHistogram({ maxDelayMs: 1_000, meanDelayMs: 25, p99DelayMs: 450 });
+      let cpuUs = 0;
+      vi.spyOn(process, "threadCpuUsage").mockImplementation((start) => {
+        if (start !== undefined) {
+          cpuUs = start.user + workDurationMs * 1_000;
+        }
+        return { user: cpuUs, system: 0 };
+      });
+      const logger = { info: vi.fn() };
+      const nowSpy = vi.spyOn(nodePerformance, "now");
+      nowSpy.mockReturnValueOnce(0).mockReturnValueOnce(workDurationMs);
+      const monitor = startEventLoopStallMonitor({ logger });
+      try {
+        runEventLoopWorkSync("test:boundary-work", () => undefined);
+        vi.advanceTimersByTime(EVENT_LOOP_STALL_MONITOR_INTERVAL_MS);
+        expect(logger.info).toHaveBeenCalledWith(
+          expect.objectContaining({
+            longestSynchronousWorkWallMs: workDurationMs,
+            stallAttribution: candidate === null ? "unattributed" : "candidate",
+            stallCauseCandidate: candidate,
+          }),
+          "Event loop stalled",
+        );
+      } finally {
+        nowSpy.mockRestore();
+        monitor.stop();
+      }
+    },
+  );
+
+  it("attributes the operator walk duration that covers at least 90 percent of the stall", () => {
+    installHistogram({ maxDelayMs: 3_527.4, meanDelayMs: 25, p99DelayMs: 450 });
+    let cpuUs = 0;
+    vi.spyOn(process, "threadCpuUsage").mockImplementation((start) => {
+      if (start !== undefined) {
+        cpuUs = start.user + 3_500_800;
+      }
+      return { user: cpuUs, system: 0 };
+    });
+    const logger = { info: vi.fn() };
+    const nowSpy = vi.spyOn(nodePerformance, "now");
+    nowSpy.mockReturnValueOnce(0).mockReturnValueOnce(3_500.8);
+    const monitor = startEventLoopStallMonitor({ logger });
+    try {
+      runEventLoopWorkSync("plugin HTTP GET /stall:sync", () => undefined);
+      vi.advanceTimersByTime(EVENT_LOOP_STALL_MONITOR_INTERVAL_MS);
+      expect(logger.info).toHaveBeenCalledWith(
+        expect.objectContaining({
+          maxDelayMs: 3_527.4,
+          longestSynchronousWork: "plugin HTTP GET /stall:sync",
+          longestSynchronousWorkCpuMs: 3_500.8,
+          longestSynchronousWorkWallMs: 3_500.8,
+          stallAttribution: "candidate",
+          stallCauseCandidate: "plugin HTTP GET /stall:sync",
+        }),
+        "Event loop stalled",
+      );
+    } finally {
+      nowSpy.mockRestore();
+      monitor.stop();
+    }
+  });
+
+  it("leaves six 250 ms operations unattributed against a 1,512 ms stall", () => {
+    installHistogram({ maxDelayMs: 1_512, meanDelayMs: 25, p99DelayMs: 450 });
+    let cpuUs = 0;
+    vi.spyOn(process, "threadCpuUsage").mockImplementation((start) => {
+      if (start !== undefined) {
+        cpuUs = start.user + 250_000;
+      }
+      return { user: cpuUs, system: 0 };
+    });
+    const logger = { info: vi.fn() };
+    const nowSpy = vi.spyOn(nodePerformance, "now");
+    for (let operation = 0; operation < 6; operation += 1) {
+      nowSpy
+        .mockReturnValueOnce(operation * 250)
+        .mockReturnValueOnce((operation + 1) * 250);
+    }
+    const monitor = startEventLoopStallMonitor({ logger });
+    try {
+      for (let operation = 1; operation <= 6; operation += 1) {
+        runEventLoopWorkSync(`test:short-${operation}`, () => undefined);
+      }
+      vi.advanceTimersByTime(EVENT_LOOP_STALL_MONITOR_INTERVAL_MS);
+      expect(logger.info).toHaveBeenCalledWith(
+        expect.objectContaining({
+          maxDelayMs: 1_512,
+          longestSynchronousWorkWallMs: 250,
+          longestSynchronousWorkCpuMs: 250,
+          stallAttribution: "unattributed",
+          stallCauseCandidate: null,
+        }),
+        "Event loop stalled",
+      );
+    } finally {
+      nowSpy.mockRestore();
+      monitor.stop();
+    }
+  });
+
+  it("does not qualify two 600 ms operations below the 90 percent boundary", () => {
+    installHistogram({ maxDelayMs: 1_000, meanDelayMs: 25, p99DelayMs: 450 });
+    let cpuUs = 0;
+    vi.spyOn(process, "threadCpuUsage").mockImplementation((start) => {
+      if (start !== undefined) {
+        cpuUs = start.user + 600_000;
+      }
+      return { user: cpuUs, system: 0 };
+    });
+    const logger = { info: vi.fn() };
+    const nowSpy = vi.spyOn(nodePerformance, "now");
+    nowSpy
+      .mockReturnValueOnce(0)
+      .mockReturnValueOnce(600)
+      .mockReturnValueOnce(600)
+      .mockReturnValueOnce(1_200);
+    const monitor = startEventLoopStallMonitor({ logger });
+    try {
+      runEventLoopWorkSync("test:two-short-1", () => undefined);
+      runEventLoopWorkSync("test:two-short-2", () => undefined);
+      vi.advanceTimersByTime(EVENT_LOOP_STALL_MONITOR_INTERVAL_MS);
+      expect(logger.info).toHaveBeenCalledWith(
+        expect.objectContaining({
+          maxDelayMs: 1_000,
+          longestSynchronousWorkWallMs: 600,
+          stallAttribution: "unattributed",
+          stallCauseCandidate: null,
+        }),
+        "Event loop stalled",
+      );
+    } finally {
+      nowSpy.mockRestore();
+      monitor.stop();
+    }
   });
 
   it("attributes a long operation over later short work in the same stall window", () => {
@@ -690,20 +859,58 @@ describe("event loop stall monitor", () => {
       logger,
       performanceObserver: SyntheticPerformanceObserver,
     });
-    observerCallback?.(
-      {
-        getEntries: () =>
-          [
-            { duration: 490, startTime: performance.now(), kind: 2 },
-          ] as Array<PerformanceEntry & { kind?: number }>,
-      },
-    );
+    observerCallback?.({
+      getEntries: () =>
+        [{ duration: 490, startTime: performance.now(), kind: 2 }] as Array<
+          PerformanceEntry & { kind?: number }
+        >,
+    });
     vi.advanceTimersByTime(EVENT_LOOP_STALL_MONITOR_INTERVAL_MS);
     expect(logger.info).toHaveBeenCalledWith(
       expect.objectContaining({
         gcPauses: [{ durationMs: 490, kind: 2 }],
         stallAttribution: "candidate",
         stallCauseCandidate: "gc",
+      }),
+      "Event loop stalled",
+    );
+    monitor.stop();
+  });
+
+  it("does not sum separate short GC pauses into one candidate", () => {
+    installHistogram({ maxDelayMs: 500, meanDelayMs: 25, p99DelayMs: 450 });
+    type SyntheticEntryList = {
+      getEntries: () => Array<PerformanceEntry & { kind?: number }>;
+    };
+    let observerCallback: ((list: SyntheticEntryList) => void) | undefined;
+    class SyntheticPerformanceObserver {
+      constructor(callback: (list: SyntheticEntryList) => void) {
+        observerCallback = callback;
+      }
+      observe() {}
+      disconnect() {}
+    }
+    const logger = { info: vi.fn() };
+    const monitor = startEventLoopStallMonitor({
+      logger,
+      performanceObserver: SyntheticPerformanceObserver,
+    });
+    observerCallback?.({
+      getEntries: () =>
+        [
+          { duration: 250, startTime: performance.now(), kind: 2 },
+          { duration: 250, startTime: performance.now(), kind: 2 },
+        ] as Array<PerformanceEntry & { kind?: number }>,
+    });
+    vi.advanceTimersByTime(EVENT_LOOP_STALL_MONITOR_INTERVAL_MS);
+    expect(logger.info).toHaveBeenCalledWith(
+      expect.objectContaining({
+        gcPauses: [
+          { durationMs: 250, kind: 2 },
+          { durationMs: 250, kind: 2 },
+        ],
+        stallAttribution: "unattributed",
+        stallCauseCandidate: null,
       }),
       "Event loop stalled",
     );
@@ -721,7 +928,10 @@ describe("event loop stall monitor", () => {
       .mockReturnValueOnce({ user: 520_000, system: 0 })
       .mockReturnValueOnce({ user: 520_000, system: 0 })
       .mockReturnValueOnce({ user: 1_520_000, system: 0 });
-    runEventLoopWorkSync("plugin HTTP POST /v1/responses:sync", () => undefined);
+    runEventLoopWorkSync(
+      "plugin HTTP POST /v1/responses:sync",
+      () => undefined,
+    );
     nowSpy.mockRestore();
     const monitor = startEventLoopStallMonitor({ logger });
     vi.advanceTimersByTime(EVENT_LOOP_STALL_MONITOR_INTERVAL_MS);
