@@ -12,6 +12,7 @@ export interface EventLoopStallMonitorOptions {
 
 interface GcPause {
   durationMs: number;
+  rawDurationMs: number;
   kind: number;
 }
 
@@ -59,6 +60,7 @@ export function startEventLoopStallMonitor(
       if (gcEntry.kind === undefined) continue;
       gcPauses.push({
         durationMs: roundDurationMs(gcEntry.duration),
+        rawDurationMs: gcEntry.duration,
         kind: gcEntry.kind,
       });
     }
@@ -69,6 +71,15 @@ export function startEventLoopStallMonitor(
     thresholdMs: options.thresholdMs,
     onSample: ({ stall }) => {
       const work = takeEventLoopWorkWindowSnapshot();
+      const {
+        rawLongestSynchronousWorkCpuMs: _rawWorkCpuMs,
+        rawLongestSynchronousWorkWallMs: _rawWorkWallMs,
+        ...loggedWork
+      } = work;
+      const loggedStall =
+        stall === null
+          ? null
+          : (({ rawMaxDelayMs: _rawMaxDelayMs, ...fields }) => fields)(stall);
       const sampledAt = now();
       const windowWallMs = sampledAt - previousSampleAt;
       previousSampleAt = sampledAt;
@@ -107,7 +118,7 @@ export function startEventLoopStallMonitor(
       const offCpu =
         stall !== null &&
         mainThreadCpuMs <
-          OFF_CPU_MAIN_THREAD_CPU_WALL_RATIO_THRESHOLD * stall.maxDelayMs;
+          OFF_CPU_MAIN_THREAD_CPU_WALL_RATIO_THRESHOLD * stall.rawMaxDelayMs;
       const processContextSwitchHint: ProcessContextSwitchHint =
         voluntaryContextSwitches > involuntaryContextSwitches
           ? "voluntary-dominant"
@@ -122,12 +133,12 @@ export function startEventLoopStallMonitor(
       gcPauses = [];
       if (stall !== null) {
         const longestGcPauseMs = gcPausesInWindow.reduce(
-          (longest, pause) => Math.max(longest, pause.durationMs),
+          (longest, pause) => Math.max(longest, pause.rawDurationMs),
           0,
         );
         const longestSynchronousWorkDurationMs = Math.max(
-          work.longestSynchronousWorkCpuMs ?? 0,
-          work.longestSynchronousWorkWallMs ?? 0,
+          work.rawLongestSynchronousWorkCpuMs ?? 0,
+          work.rawLongestSynchronousWorkWallMs ?? 0,
         );
         const gcIsStrongest =
           longestGcPauseMs > longestSynchronousWorkDurationMs;
@@ -144,11 +155,11 @@ export function startEventLoopStallMonitor(
           offCpu ||
           (candidate !== null &&
             candidateDurationMs >=
-              STALL_CANDIDATE_DURATION_RATIO_THRESHOLD * stall.maxDelayMs);
+              STALL_CANDIDATE_DURATION_RATIO_THRESHOLD * stall.rawMaxDelayMs);
         options.logger.info(
           {
-            ...stall,
-            ...work,
+            ...loggedStall,
+            ...loggedWork,
             processCpuMs: roundDurationMs(processCpuMs),
             processCpuWallRatio:
               Math.round(processCpuWallRatio * 1_000) / 1_000,
@@ -166,7 +177,10 @@ export function startEventLoopStallMonitor(
               idleMs: roundDurationMs(utilization.idle),
               utilization: roundDurationMs(utilization.utilization),
             },
-            gcPauses: gcPausesInWindow,
+            gcPauses: gcPausesInWindow.map(({ durationMs, kind }) => ({
+              durationMs,
+              kind,
+            })),
             stallAttribution: hasCandidate ? "candidate" : "unattributed",
             stallCauseCandidate: hasCandidate ? candidate : null,
           },
