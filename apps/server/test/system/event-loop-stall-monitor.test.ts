@@ -907,41 +907,51 @@ describe("event loop stall monitor", () => {
     monitor.stop();
   });
 
-  it("does not qualify a raw GC pause below the 90 percent boundary after rounding", () => {
-    installHistogram({ maxDelayMs: 500, meanDelayMs: 25, p99DelayMs: 450 });
-    type SyntheticEntryList = {
-      getEntries: () => Array<PerformanceEntry & { kind?: number }>;
-    };
-    let observerCallback: ((list: SyntheticEntryList) => void) | undefined;
-    class SyntheticPerformanceObserver {
-      constructor(callback: (list: SyntheticEntryList) => void) {
-        observerCallback = callback;
+  it.each([
+    { durationMs: 450, candidate: "gc" },
+    { durationMs: 449.96, candidate: null },
+  ])(
+    "uses the raw GC duration at the 90 percent boundary for $durationMs ms",
+    ({ durationMs, candidate }) => {
+      installHistogram({ maxDelayMs: 500, meanDelayMs: 25, p99DelayMs: 450 });
+      vi.spyOn(process, "threadCpuUsage")
+        .mockReturnValueOnce({ user: 0, system: 0 })
+        .mockReturnValueOnce({ user: 500_000, system: 0 });
+      type SyntheticEntryList = {
+        getEntries: () => Array<PerformanceEntry & { kind?: number }>;
+      };
+      let observerCallback: ((list: SyntheticEntryList) => void) | undefined;
+      class SyntheticPerformanceObserver {
+        constructor(callback: (list: SyntheticEntryList) => void) {
+          observerCallback = callback;
+        }
+        observe() {}
+        disconnect() {}
       }
-      observe() {}
-      disconnect() {}
-    }
-    const logger = { info: vi.fn() };
-    const monitor = startEventLoopStallMonitor({
-      logger,
-      performanceObserver: SyntheticPerformanceObserver,
-    });
-    observerCallback?.({
-      getEntries: () =>
-        [{ duration: 449.96, startTime: performance.now(), kind: 2 }] as Array<
-          PerformanceEntry & { kind?: number }
-        >,
-    });
-    vi.advanceTimersByTime(EVENT_LOOP_STALL_MONITOR_INTERVAL_MS);
-    expect(logger.info).toHaveBeenCalledWith(
-      expect.objectContaining({
-        gcPauses: [{ durationMs: 450, kind: 2 }],
-        stallAttribution: "unattributed",
-        stallCauseCandidate: null,
-      }),
-      "Event loop stalled",
-    );
-    monitor.stop();
-  });
+      const logger = { info: vi.fn() };
+      const monitor = startEventLoopStallMonitor({
+        logger,
+        performanceObserver: SyntheticPerformanceObserver,
+      });
+      observerCallback?.({
+        getEntries: () =>
+          [{ duration: durationMs, startTime: performance.now(), kind: 2 }] as Array<
+            PerformanceEntry & { kind?: number }
+          >,
+      });
+      vi.advanceTimersByTime(EVENT_LOOP_STALL_MONITOR_INTERVAL_MS);
+      expect(logger.info).toHaveBeenCalledWith(
+        expect.objectContaining({
+          mainThreadCpuMs: 500,
+          gcPauses: [{ durationMs: Math.round(durationMs * 10) / 10, kind: 2 }],
+          stallAttribution: candidate === null ? "unattributed" : "candidate",
+          stallCauseCandidate: candidate,
+        }),
+        "Event loop stalled",
+      );
+      monitor.stop();
+    },
+  );
 
   it("uses raw max delay when applying the candidate threshold", () => {
     installHistogram({ maxDelayMs: 1_000.04, meanDelayMs: 25, p99DelayMs: 450 });
