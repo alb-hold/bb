@@ -21,6 +21,7 @@ import {
   hosts,
   listThreadIdsWithHostOfflineQueueWaits,
   updateHost,
+  SYSTEM_RELEASE_ACTOR,
 } from "@bb/db";
 import { validatePluginEnvironmentProviderDeclaration } from "@get-bb/plugin-sdk/internal/host-policy";
 import {
@@ -283,7 +284,7 @@ it.each([
           key: "cleanup-machine",
         }),
       ).rejects.toThrow("cancelled");
-      archiveThread(harness.db, harness.hub, thread.id);
+      archiveThread(harness.db, harness.hub, thread.id, SYSTEM_RELEASE_ACTOR);
       await sweepProviderMachine(harness.deps, target.host.id);
       if (failCleanup) {
         expect(getHost(harness.db, target.host.id)).toMatchObject({

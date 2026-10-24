@@ -571,6 +571,7 @@ async function createPendingThreadAndAttemptFirstDispatch(
       updatedAt: Date.now(),
     });
     const deleted = markThreadDeleted(deps.db, deps.hub, {
+      release: null,
       threadId: thread.id,
     });
     if (deleted)

@@ -55,7 +55,6 @@ import { reviveFailedEnvironmentTeardown } from "./environments.js";
 import {
   recordThreadEnvironmentReleases,
   revokeThreadEnvironmentReleases,
-  SYSTEM_RELEASE_ACTOR,
   type EnvironmentReleaseActor,
 } from "./environment-release-consents.js";
 
@@ -674,7 +673,7 @@ export interface ListNonDeletedChildThreadsArgs {
 
 export interface MarkThreadDeletedArgs {
   deletedAt?: number;
-  release?: EnvironmentReleaseActor;
+  release: EnvironmentReleaseActor | null;
   threadId: string;
 }
 
@@ -2200,11 +2199,12 @@ export function markThreadDeleted(
       )
       .returning()
       .all();
-    recordThreadEnvironmentReleases(
-      tx,
-      deleted.map((thread) => thread.id),
-      args.release ?? SYSTEM_RELEASE_ACTOR,
-    );
+    if (args.release)
+      recordThreadEnvironmentReleases(
+        tx,
+        deleted.map((thread) => thread.id),
+        args.release,
+      );
     return deleted;
   });
   for (const thread of updated) {
@@ -2251,7 +2251,7 @@ export function archiveThread(
   db: ThreadWriteConnection,
   notifier: DbNotifier,
   id: string,
-  release: EnvironmentReleaseActor = SYSTEM_RELEASE_ACTOR,
+  release: EnvironmentReleaseActor | null,
 ) {
   const now = Date.now();
   const updated = db.transaction((tx) => {
@@ -2272,11 +2272,12 @@ export function archiveThread(
       archived.map((thread) => thread.id),
       "rate-limits",
     );
-    recordThreadEnvironmentReleases(
-      tx,
-      archived.map((thread) => thread.id),
-      release,
-    );
+    if (release)
+      recordThreadEnvironmentReleases(
+        tx,
+        archived.map((thread) => thread.id),
+        release,
+      );
     return archived;
   });
   for (const thread of updated) {

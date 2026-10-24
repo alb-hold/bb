@@ -12,6 +12,7 @@ import {
   migrate,
   unarchiveThread,
   upsertHost,
+  SYSTEM_RELEASE_ACTOR,
 } from "../src/index.js";
 import { createMigratedConnection } from "../src/testing.js";
 import { environmentReleaseConsents, threads } from "../src/schema.js";
@@ -48,6 +49,7 @@ describe("environment release consents", () => {
     ["user", { kind: "user", threadId: null }],
     ["self", { kind: "self", threadId: "thr_self" }],
     ["coordinator", { kind: "coordinator", threadId: "thr_parent" }],
+    ["system", SYSTEM_RELEASE_ACTOR],
   ] as const)("records an archive by the %s with the actor", (_name, actor) => {
     const { db, environment, thread } = setup();
     const archived = thread();
@@ -72,6 +74,7 @@ describe("environment release consents", () => {
     ["user", { kind: "user", threadId: null }],
     ["self", { kind: "self", threadId: "thr_self" }],
     ["coordinator", { kind: "coordinator", threadId: "thr_parent" }],
+    ["system", SYSTEM_RELEASE_ACTOR],
   ] as const)("records a delete by the %s with the actor", (_name, actor) => {
     const { db, environment, thread } = setup();
     const deleted = thread();
@@ -99,7 +102,10 @@ describe("environment release consents", () => {
     ]);
 
     const archived = thread();
-    archiveThread(db, noopNotifier, archived.id);
+    archiveThread(db, noopNotifier, archived.id, {
+      kind: "user",
+      threadId: null,
+    });
     expect(listUnreleasedEnvironmentThreadIds(db, environment.id)).toEqual([
       raw.id,
     ]);
@@ -108,6 +114,51 @@ describe("environment release consents", () => {
     expect(
       listUnreleasedEnvironmentThreadIds(db, environment.id).sort(),
     ).toEqual([raw.id, archived.id].sort());
+  });
+
+  it("records no consent for an archive that passes no release, and leaves the thread unreleased", () => {
+    const { db, environment, thread } = setup();
+    const archived = thread();
+
+    archiveThread(db, noopNotifier, archived.id, null);
+
+    expect(listEnvironmentReleaseConsents(db, environment.id)).toEqual([]);
+    expect(listUnreleasedEnvironmentThreadIds(db, environment.id)).toEqual([
+      archived.id,
+    ]);
+  });
+
+  it("records no consent for a delete that passes no release, and leaves the thread unreleased", () => {
+    const { db, environment, thread } = setup();
+    const deleted = thread();
+
+    markThreadDeleted(db, noopNotifier, {
+      release: null,
+      threadId: deleted.id,
+    });
+
+    expect(listEnvironmentReleaseConsents(db, environment.id)).toEqual([]);
+    expect(listUnreleasedEnvironmentThreadIds(db, environment.id)).toEqual([
+      deleted.id,
+    ]);
+  });
+
+  it("cannot be made to grant consent by leaving the release out of an archive or a delete", () => {
+    const { db, environment, thread } = setup();
+    const archived = thread();
+    const deleted = thread();
+
+    Reflect.apply(archiveThread, undefined, [db, noopNotifier, archived.id]);
+    Reflect.apply(markThreadDeleted, undefined, [
+      db,
+      noopNotifier,
+      { threadId: deleted.id },
+    ]);
+
+    expect(listEnvironmentReleaseConsents(db, environment.id)).toEqual([]);
+    expect(
+      listUnreleasedEnvironmentThreadIds(db, environment.id).sort(),
+    ).toEqual([archived.id, deleted.id].sort());
   });
 
   it("releases only the threads that were archived, not their siblings on the environment", () => {

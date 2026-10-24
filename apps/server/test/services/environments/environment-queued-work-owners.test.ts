@@ -4,6 +4,7 @@ import {
   environmentHasLiveThreads,
   listEnvironmentLiveThreadIds,
   machineHasLiveThreads,
+  SYSTEM_RELEASE_ACTOR,
 } from "@bb/db";
 import { describe, expect, it } from "vitest";
 import { requestEnvironmentRemoval } from "../../../src/services/environments/environment-engine.js";
@@ -33,7 +34,7 @@ describe("an archived thread's queued work", () => {
         environmentId: environment.id,
         status: "idle",
       });
-      archiveThread(harness.db, harness.hub, thread.id);
+      archiveThread(harness.db, harness.hub, thread.id, SYSTEM_RELEASE_ACTOR);
 
       expect(environmentHasLiveThreads(harness.db, environment.id)).toBe(false);
       expect(machineHasLiveThreads(harness.db, host.id)).toBe(false);

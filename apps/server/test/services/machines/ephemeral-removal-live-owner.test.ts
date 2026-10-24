@@ -10,6 +10,7 @@ import {
   threads,
   getThread,
   updateHost,
+  SYSTEM_RELEASE_ACTOR,
 } from "@bb/db";
 import { createDeferredPromise } from "@bb/test-helpers";
 import { eq } from "drizzle-orm";
@@ -70,7 +71,8 @@ function seedEphemeralMachine(
     environmentId: environment.id,
     status: "idle",
   });
-  if (args.archived) archiveThread(harness.db, harness.hub, thread.id);
+  if (args.archived)
+    archiveThread(harness.db, harness.hub, thread.id, SYSTEM_RELEASE_ACTOR);
   updateHost(harness.db, harness.hub, host.id, {
     type: "ephemeral",
     machineProviderId: "test-machine",
@@ -208,7 +210,7 @@ describe("an ephemeral machine being removed", () => {
           "archive",
         );
 
-        archiveThread(harness.db, harness.hub, thread.id);
+        archiveThread(harness.db, harness.hub, thread.id, SYSTEM_RELEASE_ACTOR);
         updateHost(harness.db, harness.hub, host.id, {
           removeRetryAt: Date.now() - 1,
         });
@@ -371,7 +373,7 @@ describe("an ephemeral machine whose creation failed", () => {
           teardownStatus: "failed",
         });
 
-        archiveThread(harness.db, harness.hub, second.id);
+        archiveThread(harness.db, harness.hub, second.id, SYSTEM_RELEASE_ACTOR);
         retryNow(harness, host.id);
         await sweepProviderMachine(harness.deps, host.id);
 
@@ -562,7 +564,7 @@ describe("an ephemeral machine an ordinary owner keeps using", () => {
           statusMessage: first?.statusMessage ?? "",
         });
 
-        archiveThread(harness.db, harness.hub, thread.id);
+        archiveThread(harness.db, harness.hub, thread.id, SYSTEM_RELEASE_ACTOR);
         retryNow(harness, host.id);
         await sweepProviderMachine(harness.deps, host.id);
 

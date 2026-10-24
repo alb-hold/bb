@@ -5,6 +5,7 @@ import {
   getPreparingEnvironment,
   getThread,
   threads,
+  SYSTEM_RELEASE_ACTOR,
 } from "@bb/db";
 import { createDeferredPromise } from "@bb/test-helpers";
 import type { PluginEnvironmentProviderDeclaration } from "@get-bb/plugin-sdk";
@@ -156,8 +157,7 @@ async function settled(harness: TestAppHarness, threadId: string) {
     .poll(() => {
       const row = getPreparingEnvironment(harness.db, threadId);
       if (row === null) return "missing";
-      if (row.status === "creating")
-        return "pending";
+      if (row.status === "creating") return "pending";
       if (row.status === "error" && row.statusMessage === null)
         return "pending";
       return "settled";
@@ -331,7 +331,7 @@ describe("a create or restore on a branch another workspace still holds", () => 
         environmentId: holder.id,
         status: "idle",
       });
-      archiveThread(harness.db, harness.hub, owner.id);
+      archiveThread(harness.db, harness.hub, owner.id, SYSTEM_RELEASE_ACTOR);
 
       const requester = await startCreate(harness, fixture, record);
       try {
@@ -383,7 +383,7 @@ describe("a create or restore on a branch another workspace still holds", () => 
         environmentId: holder.id,
         status: "idle",
       });
-      archiveThread(harness.db, harness.hub, owner.id);
+      archiveThread(harness.db, harness.hub, owner.id, SYSTEM_RELEASE_ACTOR);
 
       const requester = await startCreate(harness, fixture, record);
       try {

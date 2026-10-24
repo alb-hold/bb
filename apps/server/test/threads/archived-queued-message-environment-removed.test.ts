@@ -3,6 +3,7 @@ import {
   environments,
   listEvents,
   listQueuedThreadMessages,
+  SYSTEM_RELEASE_ACTOR,
 } from "@bb/db";
 import { eq } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
@@ -49,7 +50,7 @@ describe("an unclaimed queued message on an archived thread whose environment is
         threadId: thread.id,
         content: textInput("run this later"),
       });
-      archiveThread(harness.db, harness.hub, thread.id);
+      archiveThread(harness.db, harness.hub, thread.id, SYSTEM_RELEASE_ACTOR);
       harness.db
         .update(environments)
         .set({ status: "destroyed", teardownStatus: "removed", path: null })
@@ -71,9 +72,7 @@ describe("an unclaimed queued message on an archived thread whose environment is
       });
 
       await expect
-        .poll(
-          () => listQueuedThreadMessages(harness.db, thread.id)[0]?.state,
-        )
+        .poll(() => listQueuedThreadMessages(harness.db, thread.id)[0]?.state)
         .toBe("failed_exhausted");
       expect(
         listQueuedThreadMessages(harness.db, thread.id)[0]?.failureReason,

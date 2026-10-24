@@ -54,7 +54,7 @@ interface ReleaseUnarchivedChildrenFromArchivedThreadArgs {
 }
 
 interface ArchiveThreadAndReleaseChildrenArgs {
-  release?: EnvironmentReleaseActor;
+  release: EnvironmentReleaseActor | null;
   threadId: string;
 }
 

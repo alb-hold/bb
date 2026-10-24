@@ -1,4 +1,11 @@
-import { archiveThread, getEnvironment, threads } from "@bb/db";
+import {
+  archiveThread,
+  getEnvironment,
+  listEnvironmentReleaseConsents,
+  markThreadDeleted,
+  threads,
+  SYSTEM_RELEASE_ACTOR,
+} from "@bb/db";
 import type { PluginEnvironmentProviderDeclaration } from "@get-bb/plugin-sdk";
 import { validatePluginEnvironmentProviderDeclaration } from "@get-bb/plugin-sdk/internal/host-policy";
 import { eq } from "drizzle-orm";
@@ -7,6 +14,7 @@ import {
   requestEnvironmentRemoval,
   sweepProviderEnvironment,
 } from "../../../src/services/environments/environment-engine.js";
+import { beginProjectDeletion } from "../../../src/services/projects/project-deletion.js";
 import { invokePluginInline } from "../../../src/services/plugins/plugin-hook-registry.js";
 import { setPluginEnvironmentProviderBridge } from "../../../src/services/plugins/plugin-environment-provider-registry.js";
 import { registerTestHostRpcCapture } from "../../helpers/commands.js";
@@ -116,6 +124,65 @@ describe("removing a provider-owned workspace requires its threads' release", ()
       );
     }));
 
+  it.each([
+    [
+      "an archive that passes no release",
+      (harness: TestAppHarness, threadId: string) =>
+        archiveThread(harness.db, harness.hub, threadId, null),
+    ],
+    [
+      "a delete that passes no release",
+      (harness: TestAppHarness, threadId: string) =>
+        markThreadDeleted(harness.db, harness.hub, {
+          release: null,
+          threadId,
+        }),
+    ],
+  ])(
+    "keeps the workspace, with its work, after %s, and names the thread",
+    async (_name, act) =>
+      withTestHarness(async (harness) => {
+        const { remove } = installProvider();
+        const { environment, thread } = seedWorkspace(harness);
+        act(harness, thread.id);
+
+        expect(
+          listEnvironmentReleaseConsents(harness.db, environment.id),
+        ).toEqual([]);
+        expect(requestEnvironmentRemoval(harness.deps, environment.id)).toBe(
+          true,
+        );
+        await sweepProviderEnvironment(harness.deps, environment.id);
+
+        expect(remove).not.toHaveBeenCalled();
+        const kept = getEnvironment(harness.db, environment.id);
+        expect(kept).toMatchObject({
+          status: "ready",
+          path: "/tmp/release-gate-workspace",
+        });
+        expect(kept?.teardownStatus).not.toBe("removed");
+        expect(kept?.teardownMessage).toContain(thread.id);
+        expect(kept?.teardownMessage).toContain(
+          "no archive or delete through bb",
+        );
+      }),
+  );
+
+  it("records a user release when a project is deleted, so its workspace can be removed", async () =>
+    withTestHarness(async (harness) => {
+      installProvider();
+      const { environment, thread } = seedWorkspace(harness);
+      const projectId = thread.projectId;
+
+      beginProjectDeletion(harness.deps, { projectId });
+
+      expect(
+        listEnvironmentReleaseConsents(harness.db, environment.id),
+      ).toMatchObject([
+        { threadId: thread.id, actorKind: "user", actorThreadId: null },
+      ]);
+    }));
+
   it("removes the workspace once the thread's archive recorded the release", async () =>
     withTestHarness(async (harness) => {
       const { remove } = installProvider();
@@ -151,7 +218,7 @@ describe("removing a provider-owned workspace requires its threads' release", ()
         .set({ archivedAt: Date.now() })
         .where(eq(threads.id, sibling.id))
         .run();
-      archiveThread(harness.db, harness.hub, thread.id);
+      archiveThread(harness.db, harness.hub, thread.id, SYSTEM_RELEASE_ACTOR);
 
       expect(requestEnvironmentRemoval(harness.deps, environment.id)).toBe(
         true,

@@ -12,6 +12,7 @@ import {
   replaceStoredProviderModelCatalog,
   setThreadStartupContext,
   updateHost,
+  SYSTEM_RELEASE_ACTOR,
 } from "@bb/db";
 import { createDeferredPromise } from "@bb/test-helpers";
 import { eq } from "drizzle-orm";
@@ -398,7 +399,12 @@ describe("machine retirement", () => {
             expect(
               requestAutomaticMachineRemoval(harness.deps, allocation.hostId),
             ).toBe(false);
-            archiveThread(harness.db, harness.hub, thread.id);
+            archiveThread(
+              harness.db,
+              harness.hub,
+              thread.id,
+              SYSTEM_RELEASE_ACTOR,
+            );
             expect(
               requestAutomaticMachineRemoval(harness.deps, allocation.hostId),
             ).toBe(index === owners.length - 1);
@@ -502,7 +508,7 @@ describe("machine retirement", () => {
         teardownStatus: "failed",
         statusMessage: expect.stringContaining(thread.id),
       });
-      archiveThread(harness.db, harness.hub, thread.id);
+      archiveThread(harness.db, harness.hub, thread.id, SYSTEM_RELEASE_ACTOR);
       updateHost(harness.db, harness.hub, host.id, {
         removeRetryAt: Date.now() - 1,
       });
@@ -693,7 +699,7 @@ describe("machine suspension", () => {
       const first = sweepMachineLifecycles(harness.deps);
       await started.promise;
       try {
-        archiveThread(harness.db, harness.hub, thread.id);
+        archiveThread(harness.db, harness.hub, thread.id, SYSTEM_RELEASE_ACTOR);
         await sweepMachineLifecycles(harness.deps, { background: true });
         expect(getHost(harness.db, target.host.id)?.phase).toBe("removing");
       } finally {
@@ -787,7 +793,7 @@ describe("machine suspension", () => {
       };
 
       await expectBusy();
-      archiveThread(harness.db, harness.hub, thread.id);
+      archiveThread(harness.db, harness.hub, thread.id, SYSTEM_RELEASE_ACTOR);
 
       const environment = createEnvironment(harness.db, harness.hub, {
         projectId: project.id,

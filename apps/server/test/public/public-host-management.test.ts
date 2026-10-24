@@ -16,6 +16,7 @@ import {
   listStoredTurnCompletedKeys,
   replaceStoredProviderModelCatalog,
   updateHost,
+  SYSTEM_RELEASE_ACTOR,
 } from "@bb/db";
 import {
   createHostJoinCodeResponseSchema,
@@ -773,7 +774,7 @@ describe("public host management", () => {
           ).toEqual([{ threadId: thread.id, turnId: "turn_removal" }]);
         }
 
-        archiveThread(harness.db, harness.hub, thread.id);
+        archiveThread(harness.db, harness.hub, thread.id, SYSTEM_RELEASE_ACTOR);
         updateHost(harness.db, harness.hub, host.id, {
           removeRetryAt: Date.now() - 1,
         });
