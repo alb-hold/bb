@@ -668,7 +668,7 @@ describe("following a discovered session only after the server accepted it", () 
         expect(await h.readOnly()).toEqual(["waiting", "working"]);
         expect(h.sentMarkers).toEqual([undefined, false]);
         expect(h.sentQuestions[0]).toEqual(["permission:Edit#1"]);
-        expect(h.sentCloses).toEqual([undefined, ["permission:Edit#1"]]);
+        expect(h.sentCloses).toEqual([[], ["permission:Edit#1"]]);
       });
 
       it("never restores Working from a close while the dropped question may exist: even a close of the dropped opener's tool stays unconfirmed until a prompt or idle", async () => {
@@ -762,8 +762,8 @@ describe("following a discovered session only after the server accepted it", () 
           undefined,
         ]);
         expect(h.sentCloses).toEqual([
-          undefined,
-          undefined,
+          [],
+          [],
           ["permission:Edit#1"],
           ["permission:Edit#2"],
         ]);
