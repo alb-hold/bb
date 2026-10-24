@@ -2668,6 +2668,7 @@ export function ThreadTerminalView({
     jumpToPrompt,
     requestOpenTerminalLink,
     session.id,
+    session.threadId,
     handoffOwnerToken,
     session.title,
     updateHoveredTerminalLink,
