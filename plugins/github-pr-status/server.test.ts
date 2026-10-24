@@ -69,9 +69,15 @@ async function setup(options: {
 }) {
   const environments = options.environments ?? { "env-1": environment() };
   const sdkCalls: string[] = [];
+  const whileWatchedHandlers = new Map<
+    string,
+    Parameters<BbPluginApi["rpc"]["experimental_whileWatched"]>[1]
+  >();
   const fake = createFakePluginHost({
     pluginId: "bb--github-pr-status",
     sdk: {
+      subscribe: () => () => {},
+      threads: { events: { list: async () => [] } },
       environments: {
         get: async ({ environmentId }: { environmentId: string }) => {
           sdkCalls.push(`environments.get ${environmentId}`);
@@ -100,8 +106,23 @@ async function setup(options: {
             ? { outcome: "found", pullRequest: view() }
             : { ok: true }),
   });
+  vi.spyOn(fake.bb.rpc, "experimental_whileWatched").mockImplementation(
+    (method, handler) => {
+      whileWatchedHandlers.set(method, handler);
+    },
+  );
   await plugin(fake.bb);
-  return Object.assign(fake, { sdkCalls });
+  return Object.assign(fake, {
+    sdkCalls,
+    async watchPullRequests(environmentId: string) {
+      const handler = whileWatchedHandlers.get("pullRequests");
+      if (handler === undefined)
+        throw new Error("pullRequests while-watched handler was not registered");
+      const controller = new AbortController();
+      await handler({ key: environmentId }, controller.signal);
+      return () => controller.abort();
+    },
+  });
 }
 
 describe("GitHub PR Status server", () => {
@@ -223,8 +244,9 @@ describe("GitHub PR Status server", () => {
     ]);
   });
 
-  it("refreshes the thread environment's pull request after a completed turn", async () => {
+  it("invalidates a watched environment's pull request after a completed turn", async () => {
     const fake = await setup({});
+    const stopWatching = await fake.watchPullRequests("env-1");
     await fake.harness.callRpc("pullRequests", { keys: ["env-1"] });
     expect(
       fake.harness.experimental_hostRpcCalls.filter(
@@ -233,11 +255,12 @@ describe("GitHub PR Status server", () => {
     ).toHaveLength(1);
 
     fake.harness.experimental_rpcInvalidations.length = 0;
-    await fake.harness.emitThreadEvent("thread.idle", {
+    const emitted = await fake.harness.emitThreadEvent("thread.idle", {
       thread: makeThreadResponse({ environmentId: "env-1" }),
       lastAssistantText: null,
     });
 
+    expect(emitted.errors).toEqual([]);
     expect(fake.harness.experimental_rpcInvalidations).toContainEqual([
       "environment:env-1",
     ]);
@@ -246,7 +269,48 @@ describe("GitHub PR Status server", () => {
       fake.harness.experimental_hostRpcCalls.filter(
         (call) => call.method === "view",
       ),
-    ).toHaveLength(2);
+    ).toHaveLength(1);
+    stopWatching();
+  });
+
+  it("does nothing for an unwatched environment after a completed turn", async () => {
+    const fake = await setup({});
+    await fake.harness.callRpc("pullRequests", { keys: ["env-1"] });
+    fake.harness.experimental_rpcInvalidations.length = 0;
+
+    const emitted = await fake.harness.emitThreadEvent("thread.idle", {
+      thread: makeThreadResponse({ environmentId: "env-1" }),
+      lastAssistantText: null,
+    });
+
+    expect(emitted.errors).toEqual([]);
+    expect(fake.harness.experimental_rpcInvalidations).toEqual([]);
+    expect(
+      fake.harness.experimental_hostRpcCalls.filter(
+        (call) => call.method === "view",
+      ),
+    ).toHaveLength(1);
+  });
+
+  it("does not call GitHub when a watched existing PR completes a turn without gh", async () => {
+    const fake = await setup({});
+    const stopWatching = await fake.watchPullRequests("env-1");
+    await fake.harness.callRpc("pullRequests", { keys: ["env-1"] });
+    fake.harness.experimental_rpcInvalidations.length = 0;
+
+    const emitted = await fake.harness.emitThreadEvent("thread.idle", {
+      thread: makeThreadResponse({ environmentId: "env-1" }),
+      lastAssistantText: null,
+    });
+    expect(emitted.errors).toEqual([]);
+    await fake.harness.callRpc("pullRequests", { keys: ["env-1"] });
+    expect(
+      fake.harness.experimental_hostRpcCalls.filter(
+        (call) => call.method === "view",
+      ),
+    ).toHaveLength(1);
+    expect(fake.harness.sdk.callsTo("threads.events.list")).toHaveLength(1);
+    stopWatching();
   });
 
   it("refuses actions without calling a machine that isn't available", async () => {

@@ -425,12 +425,43 @@ export default function githubPrStatusPlugin(bb: BbPluginApi): void {
     signal.addEventListener("abort", release, { once: true });
   });
 
+  async function turnRanGh(threadId: string): Promise<boolean> {
+    let beforeSeq: string | undefined;
+    for (;;) {
+      const events = await bb.sdk.threads.events.list({
+        threadId,
+        beforeSeq,
+        order: "desc",
+        limit: "100",
+        types: ["item/started", "item/completed", "client/turn/requested"],
+      });
+      if (events.length === 0) return false;
+      for (const event of events) {
+        if (event.type === "client/turn/requested") return false;
+        if (event.type !== "item/started" && event.type !== "item/completed")
+          continue;
+        const item = event.data.item;
+        const command =
+          item.type === "commandExecution"
+            ? item.command
+            : item.type === "toolCall"
+              ? JSON.stringify(item.arguments ?? {})
+              : "";
+        if (/(?:^|[\s;|&"'])gh\s/u.test(command)) return true;
+      }
+      beforeSeq = String(events[events.length - 1]!.seq);
+    }
+  }
+
   for (const event of ["thread.idle", "thread.failed"] as const) {
-    bb.events.on(event, ({ thread }) => {
+    bb.events.on(event, async ({ thread }) => {
       const environmentId = thread.environmentId;
-      if (environmentId === null) return;
-      store.refresh(environmentId, !store.hasPullRequest(environmentId));
-      bb.rpc.experimental_invalidate([environmentPullRequestTag(environmentId)]);
+      if (environmentId === null || !store.isWatched(environmentId)) return;
+      if (!store.hasPullRequest(environmentId))
+        store.refresh(environmentId, true);
+      else if (await turnRanGh(thread.id)) store.recheck(environmentId);
+      if (event === "thread.idle")
+        bb.rpc.experimental_invalidate([environmentPullRequestTag(environmentId)]);
     });
   }
 
