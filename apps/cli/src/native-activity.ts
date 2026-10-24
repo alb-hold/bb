@@ -45,9 +45,6 @@ const MAX_ANNOUNCED_CALLS = 256;
 const TOOL_CALL_ID_FIELD = "tool_use_id";
 const TOOL_INPUT_FIELD = "tool_input";
 
-function nowSeconds(): number {
-  return Math.floor(Date.now() / 1000);
-}
 const MAX_READ_BYTES = 4 * 1024 * 1024;
 
 export function readRecordField(value: unknown, fieldPath: string): unknown {
@@ -371,13 +368,24 @@ export class NativeActivityTracker {
   private readonly occurrenceCounters = new Map<string, number>();
   private readonly openOccurrences = new Map<string, OpenOccurrence[]>();
   private readonly announcedCalls = new Map<string, AnnouncedCall>();
-  private readonly lastOrphanCloseSec = new Map<string, number>();
+  private readonly lastOrphanCloseSequence = new Map<string, number>();
   private candidateGroupCounter = 0;
-  private lastClearSec = 0;
+  private lastClearSequence = 0;
+  private lastObservedHookSequence = 0;
+  private hasUnsequencedClear = false;
 
   constructor(private readonly nonce: string = processHolderNonce()) {}
 
-  apply(signal: NativeActivitySignal): NativeActivityReport | null {
+  apply(
+    signal: NativeActivitySignal,
+    hookSequence: number | null = null,
+  ): NativeActivityReport | null {
+    if (hookSequence !== null) {
+      this.lastObservedHookSequence = Math.max(
+        this.lastObservedHookSequence,
+        hookSequence,
+      );
+    }
     if (signal.call !== undefined) this.announceCall(signal.call);
     if (signal.question !== undefined) {
       return this.openQuestion(
@@ -393,7 +401,11 @@ export class NativeActivityTracker {
     if (signal.answered !== undefined) {
       if (signal.occurrence !== true)
         return this.closeQuestion(signal.answered);
-      const occurrences = this.endMatchingOccurrences(signal.answered, signal);
+      const occurrences = this.endMatchingOccurrences(
+        signal.answered,
+        signal,
+        hookSequence,
+      );
       let report: NativeActivityReport | null = null;
       for (const occurrence of occurrences) {
         report = this.closeQuestion(occurrence);
@@ -401,7 +413,7 @@ export class NativeActivityTracker {
       return report;
     }
     if (signal.state === "idle") {
-      this.clearQuestions();
+      this.clearQuestions(hookSequence);
       if (this.state === "idle") return null;
       this.state = "idle";
       this.reportedPrompt = null;
@@ -412,26 +424,37 @@ export class NativeActivityTracker {
       signal.prompt !== null && signal.prompt !== this.reportedPrompt
         ? signal.prompt
         : null;
-    if (newPrompt !== null) this.clearQuestions();
+    if (newPrompt !== null) this.clearQuestions(hookSequence);
     if (this.state === "working" && newPrompt === null) return null;
     this.state = "working";
     if (newPrompt !== null) this.reportedPrompt = newPrompt;
     return { state: "working", prompt: newPrompt };
   }
 
-  acceptsLate(signal: NativeActivitySignal, startedAtSec: number): boolean {
+  acceptsLate(
+    signal: NativeActivitySignal,
+    startedAtSec: number,
+    hookSequence: number | null = null,
+  ): boolean {
     if (signal.question === undefined || signal.occurrence !== true) {
       return false;
     }
-    if (this.lastClearSec > startedAtSec) return false;
+    if (
+      !Number.isInteger(startedAtSec) ||
+      hookSequence === null ||
+      this.hasUnsequencedClear ||
+      hookSequence <= this.lastClearSequence
+    )
+      return false;
     const base = occurrenceBase(signal.question.id);
     const closedAt = Math.max(
-      this.lastOrphanCloseSec.get(base) ?? 0,
+      this.lastOrphanCloseSequence.get(base) ?? 0,
       signal.inputKey === undefined
         ? 0
-        : (this.lastOrphanCloseSec.get(orphanKey(base, signal.inputKey)) ?? 0),
+        : (this.lastOrphanCloseSequence.get(orphanKey(base, signal.inputKey)) ??
+            0),
     );
-    return closedAt === 0 || closedAt < startedAtSec;
+    return closedAt === 0 || hookSequence > closedAt;
   }
 
   heartbeat(): NativeActivityReport | null {
@@ -443,11 +466,15 @@ export class NativeActivityTracker {
     return this.apply({ state: "idle", prompt: null });
   }
 
-  private clearQuestions(): void {
+  private clearQuestions(hookSequence: number | null): void {
     this.questions.clear();
     this.openOccurrences.clear();
     this.announcedCalls.clear();
-    this.lastClearSec = nowSeconds();
+    if (hookSequence === null) this.hasUnsequencedClear = true;
+    else {
+      this.lastClearSequence = hookSequence;
+      this.hasUnsequencedClear = false;
+    }
   }
 
   private announceCall(call: NativeToolCall): void {
@@ -602,6 +629,7 @@ export class NativeActivityTracker {
   private endMatchingOccurrences(
     questionId: string,
     signal: NativeActivitySignal,
+    hookSequence: number | null,
   ): string[] {
     const base = occurrenceBase(questionId);
     const open = this.openOccurrences.get(base) ?? [];
@@ -670,8 +698,7 @@ export class NativeActivityTracker {
         (occurrence) =>
           occurrence.key === key &&
           occurrence.candidateCallIds.length === 0 &&
-          (callId === null ||
-            occurrence.callId === null),
+          (callId === null || occurrence.callId === null),
       );
     }
     const matched = open[index];
@@ -680,6 +707,7 @@ export class NativeActivityTracker {
         base,
         [announced?.key, key ?? undefined],
         announced === undefined && open.length === 0,
+        hookSequence,
       );
       return [];
     }
@@ -696,17 +724,18 @@ export class NativeActivityTracker {
     base: string,
     keys: ReadonlyArray<string | undefined>,
     wholeBase: boolean,
+    hookSequence: number | null,
   ): void {
-    const at = nowSeconds();
-    if (wholeBase) this.lastOrphanCloseSec.set(base, at);
+    const sequence = hookSequence ?? this.lastObservedHookSequence;
+    if (wholeBase) this.lastOrphanCloseSequence.set(base, sequence);
     for (const key of keys) {
       if (key !== undefined)
-        this.lastOrphanCloseSec.set(orphanKey(base, key), at);
+        this.lastOrphanCloseSequence.set(orphanKey(base, key), sequence);
     }
-    while (this.lastOrphanCloseSec.size > MAX_ORPHAN_BASES) {
-      const first = this.lastOrphanCloseSec.keys().next().value;
+    while (this.lastOrphanCloseSequence.size > MAX_ORPHAN_BASES) {
+      const first = this.lastOrphanCloseSequence.keys().next().value;
       if (first === undefined) break;
-      this.lastOrphanCloseSec.delete(first);
+      this.lastOrphanCloseSequence.delete(first);
     }
   }
 

@@ -36,7 +36,7 @@ const GAP_REPORT_AFTER_MS = 10_000;
 const ABANDONED_TEMP_AGE_MS = 10 * 60_000;
 const MAX_RESERVATIONS_PER_SCAN = 64;
 const LOCK_WAIT_SECONDS = 20;
-const LATE_FILE_NAME = /^\.late\.\d+\.(\d+)$/u;
+const LATE_FILE_NAME = /^\.late\.\d+\.(\d+)(?:\.(\d+))?$/u;
 const APPEND_LOCK_NAME = "hooks.lock";
 const ORPHANED_LOCK_AGE_MS = 10 * 60_000;
 const LOST_MARKER_NAME = /^\.lost\./u;
@@ -231,6 +231,16 @@ export function hookAppendCommand(
     "exec 2>/dev/null",
     `d=${shellQuote(path.dirname(file))}`,
     `f=${shellQuote(file)}`,
+    'o="$d/.sequence"',
+    'lq="$d/.sequence.lock"',
+    "tries=0",
+    'while ! /bin/ln -s "$$" "$lq" 2>/dev/null; do ' +
+      'p=$(/bin/readlink "$lq" 2>/dev/null); case "$p" in \'\'|*[!0-9]*) p=0;; esac; ' +
+      'if [ "$p" -gt 0 ] && ! kill -0 "$p" 2>/dev/null; then /bin/rm -f "$lq"; fi; ' +
+      'tries=$((tries+1)); [ "$tries" -lt 2000 ] || exit 0; sleep 0.01; done',
+    'n=$(cat "$o" 2>/dev/null); case "$n" in \'\'|*[!0-9]*) n=0;; esac; ' +
+      'q=$((n+1)); printf \'%s\' "$q" >"$o.$$" && mv -f "$o.$$" "$o"; ' +
+      '[ "$(/bin/readlink "$lq" 2>/dev/null)" = "$$" ] && /bin/rm -f "$lq"',
     `l="$d/${APPEND_LOCK_NAME}"`,
     'm="$d/.tmp.$$.mark"',
     ': >"$m" || exit 0',
@@ -267,10 +277,10 @@ export function hookAppendCommand(
       'rmdir "$l"; fi; fi; fi; ' +
       'if ! [ "$(date +%s)" -lt "$e" ]; then ' +
       'printf \'%s\\n\' "$r" >"$d/.late.$$.tmp" ' +
-      '&& mv -f "$d/.late.$$.tmp" "$d/.late.$$.$s" && rm -f "$m" ' +
+      '&& mv -f "$d/.late.$$.tmp" "$d/.late.$$.$s.$q" && rm -f "$m" ' +
       '|| mv -f "$m" "$d/.lost.$$"; exit 0; fi; ' +
       'if [ "$w" -lt 10 ]; then w=$((w+1)); else sleep 0.05 || sleep 1; fi; done',
-    'printf \'%s\\n\' "$r" >>"$f" && rm -f "$m"',
+    'printf \'%s\\t%s\\n\' "$q" "$r" >>"$f" && rm -f "$m"',
     'if [ -L "$l" ]; then [ "$(readlink "$l")" = "$c" ] && rm -f "$l"; ' +
       'elif [ -d "$l" ] && [ "$(cat "$l/pid")" = "$c" ]; then ' +
       'rm -f "$l/pid"; rmdir "$l"; fi',
@@ -287,9 +297,36 @@ export function hookCommandFor(
 }
 
 export interface HookSpoolRead {
-  late?: Array<{ record: unknown; startedAt: number }>;
+  late?: Array<{
+    record: unknown;
+    sequence: number | null;
+    startedAt: number;
+  }>;
   records: unknown[];
+  sequenceWatermark?: number;
   unreadable: number;
+}
+
+const hookSequences = new WeakMap<object, number>();
+const hookStartedAtSeconds = new WeakMap<object, number>();
+const lateHookRecords = new WeakSet<object>();
+
+export function hookSequenceOf(record: unknown): number | null {
+  return typeof record === "object" && record !== null
+    ? (hookSequences.get(record) ?? null)
+    : null;
+}
+
+export function hookStartedAtSecondsOf(record: unknown): number | null {
+  return typeof record === "object" && record !== null
+    ? (hookStartedAtSeconds.get(record) ?? null)
+    : null;
+}
+
+export function isLateHookRecord(record: unknown): boolean {
+  return typeof record === "object" && record !== null
+    ? lateHookRecords.has(record)
+    : false;
 }
 
 export interface DirectoryBatch {
@@ -894,6 +931,14 @@ export class HookAppendReader {
     const snapshot = this.takeSnapshot();
     const late = this.readLate();
     const result = this.readLines(now, snapshot);
+    const sequenceState = readRegularFile(
+      path.join(path.dirname(this.file), ".sequence"),
+    );
+    if (sequenceState.kind === "text" && /^\d+$/u.test(sequenceState.text)) {
+      Object.defineProperty(result, "sequenceWatermark", {
+        value: Number(sequenceState.text),
+      });
+    }
     result.unreadable += late.lost;
     if (late.records.length > 0) result.late = late.records;
     if (now - this.lastScanAt >= SCAN_INTERVAL_MS) {
@@ -959,25 +1004,45 @@ export class HookAppendReader {
     return shrunk || !comingFromIrregular ? 1 : 0;
   }
 
-  listLate(): Array<{ name: string; startedAt: number }> {
+  listLate(): Array<{
+    name: string;
+    sequence: number | null;
+    startedAt: number;
+  }> {
     let names: string[];
     try {
       names = readdirSync(path.dirname(this.file));
     } catch {
       return [];
     }
-    const fresh: Array<{ name: string; startedAt: number }> = [];
+    const fresh: Array<{
+      name: string;
+      sequence: number | null;
+      startedAt: number;
+    }> = [];
     for (const name of names.sort()) {
       const match = LATE_FILE_NAME.exec(name);
       if (match === null || this.seenLate.has(name)) continue;
-      fresh.push({ name, startedAt: Number(match[1]) });
+      fresh.push({
+        name,
+        sequence: match[2] === undefined ? null : Number(match[2]),
+        startedAt: Number(match[1]),
+      });
     }
     return fresh;
   }
 
-  readLateFile(entry: { name: string; startedAt: number }): {
+  readLateFile(entry: {
+    name: string;
+    sequence: number | null;
+    startedAt: number;
+  }): {
     lost: number;
-    record: { record: unknown; startedAt: number } | null;
+    record: {
+      record: unknown;
+      sequence: number | null;
+      startedAt: number;
+    } | null;
     settle(): number;
   } {
     this.seenLate.add(entry.name);
@@ -986,9 +1051,23 @@ export class HookAppendReader {
     if (content.kind !== "text") {
       return { lost: 1, record: null, settle: () => 0 };
     }
-    let record: { record: unknown; startedAt: number } | null = null;
+    let record: {
+      record: unknown;
+      sequence: number | null;
+      startedAt: number;
+    } | null = null;
     try {
-      record = { record: JSON.parse(content.text), startedAt: entry.startedAt };
+      const parsed: unknown = JSON.parse(content.text);
+      if (typeof parsed === "object" && parsed !== null) {
+        if (entry.sequence !== null) hookSequences.set(parsed, entry.sequence);
+        hookStartedAtSeconds.set(parsed, entry.startedAt);
+        lateHookRecords.add(parsed);
+      }
+      record = {
+        record: parsed,
+        sequence: entry.sequence,
+        startedAt: entry.startedAt,
+      };
     } catch {
       record = null;
     }
@@ -1008,9 +1087,17 @@ export class HookAppendReader {
 
   readLate(): {
     lost: number;
-    records: Array<{ record: unknown; startedAt: number }>;
+    records: Array<{
+      record: unknown;
+      sequence: number | null;
+      startedAt: number;
+    }>;
   } {
-    const records: Array<{ record: unknown; startedAt: number }> = [];
+    const records: Array<{
+      record: unknown;
+      sequence: number | null;
+      startedAt: number;
+    }> = [];
     let lost = 0;
     for (const entry of this.listLate()) {
       const step = this.readLateFile(entry);
@@ -1050,7 +1137,12 @@ export class HookAppendReader {
         .split("\n")) {
         if (line.trim().length === 0) continue;
         try {
-          records.push(JSON.parse(line));
+          const split = /^(\d+)\t([\s\S]*)$/u.exec(line);
+          const parsed: unknown = JSON.parse(split?.[2] ?? line);
+          if (split !== null && typeof parsed === "object" && parsed !== null) {
+            hookSequences.set(parsed, Number(split[1]));
+          }
+          records.push(parsed);
         } catch {
           unreadable += 1;
         }

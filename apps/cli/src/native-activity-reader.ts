@@ -15,6 +15,9 @@ import {
 import { EvictedRecordIndex } from "./native-activity-index.js";
 import {
   hookRecordSource,
+  hookSequenceOf,
+  hookStartedAtSecondsOf,
+  isLateHookRecord,
   hookSourceIsUnavailable,
   type HookRecordSource,
   type HookSource,
@@ -79,6 +82,7 @@ export async function measureResumedTranscript(
 export class NativeActivityReader {
   private readonly tracker = new NativeActivityTracker();
   private readonly hookSource: HookRecordSource | null;
+  private hookSequenceWatermark: number | null = null;
   private readonly hooksUnavailable: boolean;
   private unreadableHookRecords = 0;
   private transcriptTail: JsonlTail;
@@ -190,15 +194,16 @@ export class NativeActivityReader {
         "missing-session" | "foreign-session"
       >();
       const spooled = this.hookSource.read();
-      const lateOpeners = (spooled.late ?? [])
-        .filter(({ record, startedAt }) =>
-          this.tracker.acceptsLate(
-            classifyHookRecord(hooks, record),
-            startedAt,
-          ),
-        )
-        .map(({ record }) => record);
-      const arrived = [...lateOpeners, ...spooled.records];
+      if (spooled.sequenceWatermark !== undefined) {
+        this.hookSequenceWatermark = spooled.sequenceWatermark;
+      }
+      const arrived = [
+        ...(spooled.late ?? []).map(({ record }) => record),
+        ...spooled.records,
+      ].sort(
+        (left, right) =>
+          (hookSequenceOf(left) ?? 0) - (hookSequenceOf(right) ?? 0),
+      );
       const unreadable = spooled.unreadable;
       if (unreadable > 0) {
         this.unreadableHookRecords += unreadable;
@@ -256,6 +261,17 @@ export class NativeActivityReader {
           }
         }
         const signal = classifyHookRecord(hooks, record);
+        const hookSequence = hookSequenceOf(record);
+        if (
+          isLateHookRecord(record) &&
+          !this.tracker.acceptsLate(
+            signal,
+            hookStartedAtSecondsOf(record) ?? 0,
+            hookSequence,
+          )
+        ) {
+          continue;
+        }
         if (
           signal.state === "idle" ||
           (signal.state === "working" && signal.prompt !== null)
@@ -272,7 +288,10 @@ export class NativeActivityReader {
           this.currentTurn = turn;
           this.rememberTurn(turn);
         }
-        const report = this.tracker.apply(signal);
+        const report = this.tracker.apply(
+          signal,
+          hookSequence ?? this.hookSequenceWatermark,
+        );
         if (fresh && signal.state !== null && !this.droppedOpenQuestion) {
           this.historyIncomplete = false;
         }
@@ -314,7 +333,7 @@ export class NativeActivityReader {
       }
       const signal = classifyTranscriptRecord(transcript, record);
       const identified = this.identifyTranscript(record, signal, location);
-      const report = this.tracker.apply(identified);
+      const report = this.tracker.apply(identified, this.hookSequenceWatermark);
       if (
         this.cli.activity?.hooks?.sessionIdField !== undefined &&
         (identified.state !== null ||

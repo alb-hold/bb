@@ -832,7 +832,11 @@ describe.skipIf(process.platform === "win32")(
         unreadable += read.unreadable;
         polls += 1;
       }
-      expect(delivered).toEqual(lines.map((line) => toolOf(JSON.parse(line))));
+      expect(delivered).toEqual(
+        lines.map((line) =>
+          toolOf(JSON.parse(line.slice(line.indexOf("\t") + 1))),
+        ),
+      );
       expect([...delivered].sort()).toEqual([...tools].sort());
       expect(unreadable).toBe(0);
       expect(firstPollBytes).toBeLessThanOrEqual(4 * 1024 * 1024);
@@ -896,7 +900,10 @@ describe.skipIf(process.platform === "win32")(
         commandFor("PermissionRequest"),
         record("PermissionRequest", { tool_name: "Once" }),
       );
-      expect(readdirSync(directory)).toEqual(["hooks.jsonl"]);
+      expect(readdirSync(directory).sort()).toEqual([
+        ".sequence",
+        "hooks.jsonl",
+      ]);
       expect(new HookAppendReader(file).read().records.map(toolOf)).toEqual([
         "Once",
       ]);
@@ -917,7 +924,7 @@ describe.skipIf(process.platform === "win32")(
         }
       }, "the lock");
       expect(readlinkSync(lock)).toBe(recordOf(writer.child.pid ?? -1));
-      expect(await readFilePromise(file, "utf8")).toBe(`${payload}\n`);
+      expect(await readFilePromise(file, "utf8")).toBe(`1\t${payload}\n`);
       await writer.exited;
       expect(() => lstatSync(lock)).toThrow();
     }, 30_000);
@@ -1931,7 +1938,9 @@ describe.skipIf(process.platform === "win32")(
     };
 
     const lateFiles = (directory: string): string[] =>
-      readdirSync(directory).filter((name) => /^\.late\.\d+\.\d+$/u.test(name));
+      readdirSync(directory).filter((name) =>
+        /^\.late\.\d+\.\d+(?:\.\d+)?$/u.test(name),
+      );
 
     it("at its wall-clock deadline publishes its in-memory record as .late.<pid>.<start> and removes its marker, instead of losing it", async () => {
       const { directory, file, lock } = appendFixture();
@@ -1948,7 +1957,8 @@ describe.skipIf(process.platform === "win32")(
       ).toEqual([]);
       const [late] = lateFiles(directory);
       expect(lateFiles(directory)).toHaveLength(1);
-      expect(Number(late?.split(".").at(-1))).toBeGreaterThanOrEqual(began);
+      expect(Number(late?.split(".").at(-2))).toBeGreaterThanOrEqual(began);
+      expect(Number(late?.split(".").at(-1))).toBeGreaterThan(0);
       const read = new HookAppendReader(file).read();
       expect(read.unreadable).toBe(1);
       expect(read.late?.map((entry) => toolOf(entry.record))).toEqual(["Late"]);
@@ -1956,6 +1966,32 @@ describe.skipIf(process.platform === "win32")(
         new HookAppendReader(file).read(Date.now() + 3_000).late,
       ).toBeUndefined();
     }, 30_000);
+
+    it("uses hook sequence to reject a delayed same-second opener and accept a later one", () => {
+      const { directory, file, reader } = appendFixture();
+      const sameSecond = Math.floor(Date.now() / 1000);
+      const clear = record("UserPromptSubmit", { prompt: "next" });
+      appendFileSync(file, `2\t${clear}\n`);
+      expect(reader.read()).toEqual([{ state: "working", prompt: "next" }]);
+
+      const beforeClear = path.join(directory, `.late.101.${sameSecond}.1`);
+      writeFileSync(
+        beforeClear,
+        record("PermissionRequest", { tool_name: "Stale" }),
+      );
+      expect(reader.read()).toEqual([]);
+      expect(reader.heartbeat()).toBeNull();
+
+      const afterClear = path.join(directory, `.late.102.${sameSecond}.3`);
+      writeFileSync(
+        afterClear,
+        record("PermissionRequest", { tool_name: "Current" }),
+      );
+      expect(reader.read().at(-1)).toMatchObject({
+        questions: [{ prompt: "Claude Code needs permission to use: Current" }],
+        state: "waiting",
+      });
+    });
 
     it("keeps .lost only for a hook that cannot even write its late file, and the reader counts it at once", async () => {
       const { directory, file, lock } = appendFixture();
