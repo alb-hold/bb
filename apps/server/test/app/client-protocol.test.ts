@@ -40,7 +40,7 @@ describe("client websocket protocol", () => {
     });
   });
 
-  it("rejects a subscribe target whose id is not a string", () => {
+  it("skips a subscribe target whose id is not a string and keeps the socket", () => {
     const hub = new NotificationHub();
     const socket = createMockHubSocket();
 
@@ -55,7 +55,7 @@ describe("client websocket protocol", () => {
     );
     hub.notifyThread("thread-1", ["events-appended"]);
 
-    expect(socket.closed).toEqual([{ code: 1008, reason: "invalid-message" }]);
+    expect(socket.closed).toEqual([]);
     expect(socket.messages).toHaveLength(0);
   });
 

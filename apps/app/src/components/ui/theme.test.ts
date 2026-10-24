@@ -398,7 +398,7 @@ describe("thread row trailing space", () => {
   });
 });
 
-describe("theme.css shimmer and scroll-anchor paint scope", () => {
+describe("theme.css shimmer paint scope", () => {
   function ruleBody(selector: string, source = css): string {
     const at = source.indexOf(`${selector} {`);
     if (at === -1) throw new Error(`no ${selector} rule in theme.css`);

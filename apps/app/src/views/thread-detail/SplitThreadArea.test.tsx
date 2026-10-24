@@ -382,7 +382,7 @@ vi.mock("./LazyThreadDetailView", () => ({
           data-testid={`drag-${threadId}`}
           onPointerDown={(event) => pane?.beginPaneDrag?.(event, threadId)}
         />
-<div ref={composerRootRef}>
+        <div ref={composerRootRef}>
           {nativeTerminalPanes.has(threadId) ? (
             <div data-native-terminal-thread="native-provider">
               <textarea
@@ -391,30 +391,28 @@ vi.mock("./LazyThreadDetailView", () => ({
               />
             </div>
           ) : null}
-          <div data-promptbox="">
-            {nativeTerminalPanes.has(threadId) ? null : responsiveComposerProbe.enabled ? (
-              <PluginComposerHostProvider value={composerHost}>
-                <ComposerBox
-                  surface="thread"
-                  value={draft.text}
-                  mentionRanges={[]}
-                  onChange={(value) => draft.setTextAndMentions(value, [])}
-                  onSubmit={() => undefined}
-                  mentionMenuPlacement="bottom"
-                  typeahead={testTypeaheadConfig()}
-                />
-              </PluginComposerHostProvider>
-            ) : (
-              <textarea
-                ref={textareaRef}
-                data-testid={`draft-${threadId}`}
+          {nativeTerminalPanes.has(threadId) ? null : responsiveComposerProbe.enabled ? (
+            <PluginComposerHostProvider value={composerHost}>
+              <ComposerBox
+                surface="thread"
                 value={draft.text}
-                onChange={(event) =>
-                  draft.setTextAndMentions(event.target.value, [])
-                }
+                mentionRanges={[]}
+                onChange={(value) => draft.setTextAndMentions(value, [])}
+                onSubmit={() => undefined}
+                mentionMenuPlacement="bottom"
+                typeahead={testTypeaheadConfig()}
               />
-            )}
-          </div>
+            </PluginComposerHostProvider>
+          ) : (
+            <textarea
+              ref={textareaRef}
+              data-testid={`draft-${threadId}`}
+              value={draft.text}
+              onChange={(event) =>
+                draft.setTextAndMentions(event.target.value, [])
+              }
+            />
+          )}
         </div>
         <div
           data-testid={`scroll-${threadId}`}
