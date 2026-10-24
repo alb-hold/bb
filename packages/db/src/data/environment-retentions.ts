@@ -34,6 +34,10 @@ export interface RecordEnvironmentRetentionInput {
   message: string;
 }
 
+function advancedVersion(now: number) {
+  return sql<number>`max(${now}, ${environmentRetentions.updatedAt} + 1)`;
+}
+
 function logTransition(
   db: RetentionConnection,
   row: Pick<
@@ -104,7 +108,7 @@ export function recordEnvironmentRetention(
     const touch = (row: EnvironmentRetentionRow): EnvironmentRetentionRow =>
       db
         .update(environmentRetentions)
-        .set({ updatedAt: Math.max(now, row.updatedAt + 1) })
+        .set({ updatedAt: advancedVersion(now) })
         .where(eq(environmentRetentions.id, row.id))
         .returning()
         .get();
@@ -124,7 +128,7 @@ export function recordEnvironmentRetention(
           message: input.message,
           closedAt: null,
           closedProof: null,
-          updatedAt: Math.max(now, existing.updatedAt + 1),
+          updatedAt: advancedVersion(now),
         })
         .where(eq(environmentRetentions.id, existing.id))
         .returning()
@@ -179,7 +183,11 @@ export function markEnvironmentRetentionsUnresolved(
       .all();
     for (const row of intents) {
       db.update(environmentRetentions)
-        .set({ state: "unresolved", message, updatedAt: Date.now() })
+        .set({
+          state: "unresolved",
+          message,
+          updatedAt: advancedVersion(Date.now()),
+        })
         .where(eq(environmentRetentions.id, row.id))
         .run();
       logTransition(db, row, "intent", "unresolved", message);
@@ -259,7 +267,7 @@ export function closeEnvironmentRetention(
         state: "closed",
         closedAt: now,
         closedProof: args.proof,
-        updatedAt: Math.max(now, args.expectedUpdatedAt + 1),
+        updatedAt: advancedVersion(now),
       })
       .where(
         and(
