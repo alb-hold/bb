@@ -60,6 +60,7 @@ it("snap-syncs the timeline height when older rows are prepended", () => {
           timelineRows={rows}
           threadRuntimeDisplayStatus="idle"
           workspaceRootPath={undefined}
+          threadIsActive={false}
         />
       </QueryClientProvider>
     </MemoryRouter>
@@ -91,6 +92,7 @@ it("snaps active timeline growth on fine-pointer browsers", () => {
           timelineRows={rows}
           threadRuntimeDisplayStatus={active ? "active" : "idle"}
           workspaceRootPath={undefined}
+          threadIsActive={false}
         />
       </QueryClientProvider>
     </MemoryRouter>

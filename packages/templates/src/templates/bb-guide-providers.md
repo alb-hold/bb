@@ -52,6 +52,15 @@ carries them per model as `sessionOptions`. Choose values at creation with
 without `--model` starts on a model that fits the chosen options, and a spawn
 whose `--model` cannot run with them is refused with the name of one that can.
 
+Providers may declare a child-thread model. When spawning a child thread, an
+explicit `--model` must exactly match that model or bb refuses the request;
+omit `--model` to use it automatically. Spawning with `bb thread spawn` from
+inside a thread during its turn records an active spawner and also makes the
+new thread a child, even without `--parent-self`. The same rule applies to
+explicit models on child-thread messages and sticky model updates. Stored
+overrides and queued work from before this rule remain readable and use the
+provider's child model when executed.
+
 Service tiers are provider-defined ids. `bb provider list --json` reports each
 provider's `serviceTiers` ({id, label, description?}); `default` always means
 the provider's standard tier. A model may narrow that list: `bb provider
@@ -119,13 +128,14 @@ browser there.
 Claude Code's native Workflow tool can be disabled separately on its provider
 page. This preference also defaults off and applies to newly started, resumed,
 or forked provider sessions. Claude Code plugin settings (`disable1MContext`,
-`chromeEnabled`, `sandboxEnabled`) are set with
+`chromeEnabled`, `artifactsEnabled`, `sandboxEnabled`) are set with
 `bb plugin config provider-claude-code set <key> <value>` and documented in the
 claude-code-provider skill.
 
-Automatic retries after provider overloads and subscription-window limits
-come from the bundled Provider retry plugin (`bb provider-retry status`); see
-`bb guide plugins`. For a manual retry of a failed turn, use `bb thread retry`.
+Automatic retries after provider overloads, server or connection errors, and
+subscription-window limits come from the bundled Provider retry plugin
+(`bb provider-retry status`); see `bb guide plugins`. For a manual retry of a
+failed turn, use `bb thread retry`.
 
 Known ACP agents can appear automatically when their CLI is installed on the
 host. For example, opencode, omp, Grok Build's grok CLI, or Hermes' hermes CLI

@@ -1,105 +1,99 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, render, screen } from "@testing-library/react";
 import type { NativeTerminalThread } from "@bb/server-contract";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { NativeThreadTerminalMain } from "./NativeThreadTerminalMain";
 
-const pane = vi.hoisted(() => ({ isFocused: true }));
+const hooks = vi.hoisted(() => ({
+  listTerminals: vi.fn(),
+  refetchNative: vi.fn(),
+}));
 
-vi.mock("@/views/thread-detail/PaneContext", () => ({
-  useOptionalPaneContext: () => ({ isFocused: pane.isFocused }),
+vi.mock("@/hooks/queries/thread-terminal-queries", () => ({
+  useThreadTerminals: hooks.listTerminals,
 }));
-vi.mock("@bb/shared-ui/hooks/use-media-query", () => ({
-  useMediaQuery: () => false,
-}));
+
 vi.mock("@/hooks/queries/native-terminal-queries", () => ({
-  useNativeTerminalThread: () => ({ dataUpdatedAt: 1, refetch: vi.fn() }),
-  useOpenNativeTerminal: () => ({ mutate: vi.fn(), isPending: false }),
+  useNativeTerminalThread: () => ({
+    dataUpdatedAt: 0,
+    refetch: hooks.refetchNative,
+  }),
+  useOpenNativeTerminal: () => ({ isPending: false, mutate: vi.fn() }),
 }));
+
 vi.mock("@/hooks/queries/thread-queries", () => ({
   useThreadPendingInteractions: () => ({ data: [] }),
 }));
-vi.mock("@/hooks/queries/thread-terminal-queries", () => ({
-  useThreadTerminals: () => ({ data: undefined, dataUpdatedAt: 0 }),
+
+vi.mock("@/hooks/useNativeActivityUnconfirmed", () => ({
+  useNativeActivityUnconfirmed: () => false,
 }));
-vi.mock("@/components/secondary-panel/lazySecondaryPanelComponents", () => ({
-  LazyThreadTerminalPanel: ({ autoFocus }: { autoFocus?: boolean }) => (
-    <div data-testid="terminal" data-autofocus={String(autoFocus)} />
-  ),
+
+vi.mock("@bb/shared-ui/hooks/use-media-query", () => ({
+  useMediaQuery: () => false,
 }));
-vi.mock("./NativeTerminalPromptBar", () => ({
-  NativeTerminalPromptBar: () => (
-    <form data-native-terminal-prompt="">
-      <textarea aria-label="Message" />
-    </form>
-  ),
+
+vi.mock("@/views/thread-detail/PaneContext", () => ({
+  useOptionalPaneContext: () => null,
 }));
-vi.mock("./NativeTerminalWaitingBanner", () => ({
-  NativeTerminalWaitingBanner: () => null,
-  nativeTerminalWaitingPrompts: () => [],
-}));
+
+const nativeView: NativeTerminalThread = {
+  threadId: "thr_native",
+  providerId: "claude-code",
+  displayName: "Claude Code",
+  nativeSessionId: "session-native",
+  canReturnToChat: true,
+  terminal: null,
+};
 
 afterEach(() => {
   cleanup();
-  pane.isFocused = true;
+  vi.clearAllMocks();
 });
 
-const view = {
-  providerId: "codex",
-  displayName: "Codex",
-  terminal: { id: "term_1", status: "running", exitCode: null },
-} as unknown as NativeTerminalThread;
+describe("NativeThreadTerminalMain", () => {
+  it("shows loading while its terminal list is pending and no session is known", () => {
+    hooks.listTerminals.mockReturnValue({
+      data: undefined,
+      dataUpdatedAt: 0,
+      isLoading: true,
+    });
+    hooks.refetchNative.mockResolvedValue(undefined);
 
-function renderMain() {
-  return render(
-    <NativeThreadTerminalMain
-      projectId="proj_1"
-      threadId="thr_1"
-      threadIsProvisioning={false}
-      view={view}
-      runtime={{ displayStatus: "idle" }}
-    />,
-  );
-}
+    render(
+      <NativeThreadTerminalMain
+        projectId="proj_native"
+        runtime={{ displayStatus: "idle" }}
+        threadId="thr_native"
+        threadIsProvisioning={false}
+        view={nativeView}
+      />,
+    );
 
-const terminalAutoFocus = () =>
-  screen.getByTestId("terminal").getAttribute("data-autofocus");
-
-describe("NativeThreadTerminalMain focus", () => {
-  it("auto-focuses the terminal on desktop until the user focuses the composer", () => {
-    renderMain();
-    expect(terminalAutoFocus()).toBe("true");
-    fireEvent.focus(screen.getByLabelText("Message"));
-    expect(terminalAutoFocus()).toBe("false");
+    expect(screen.getByRole("status").textContent).toBe("Loading terminals...");
+    expect(screen.queryByText("Claude Code session ended")).toBeNull();
   });
 
-  it("keeps the terminal from taking focus back after the composer blurs, until the pane loses focus", () => {
-    const view_ = renderMain();
-    const composer = screen.getByLabelText("Message");
-    fireEvent.focus(composer);
-    fireEvent.blur(composer);
-    expect(terminalAutoFocus()).toBe("false");
-    pane.isFocused = false;
-    view_.rerender(
+  it("shows the ended state only after the empty terminal list is known", () => {
+    hooks.listTerminals.mockReturnValue({
+      data: { sessions: [] },
+      dataUpdatedAt: 1,
+      isLoading: false,
+    });
+    hooks.refetchNative.mockResolvedValue(undefined);
+
+    render(
       <NativeThreadTerminalMain
-        projectId="proj_1"
-        threadId="thr_1"
-        threadIsProvisioning={false}
-        view={view}
+        projectId="proj_native"
         runtime={{ displayStatus: "idle" }}
+        threadId="thr_native"
+        threadIsProvisioning={false}
+        view={nativeView}
       />,
     );
-    pane.isFocused = true;
-    view_.rerender(
-      <NativeThreadTerminalMain
-        projectId="proj_1"
-        threadId="thr_1"
-        threadIsProvisioning={false}
-        view={view}
-        runtime={{ displayStatus: "idle" }}
-      />,
-    );
-    expect(terminalAutoFocus()).toBe("true");
+
+    expect(screen.getByText("Claude Code session ended")).toBeTruthy();
+    expect(screen.queryByRole("status")).toBeNull();
   });
 });

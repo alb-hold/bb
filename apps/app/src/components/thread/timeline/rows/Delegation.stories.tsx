@@ -1485,6 +1485,7 @@ export function Overview() {
             threadRuntimeDisplayStatus="active"
             initialExpanded={new Set([subagentDeduplicationDelegation.id])}
             timelineRows={[subagentDeduplicationDelegation]}
+            threadIsActive={false}
           />
         </TimelineStage>
       </StoryRow>
@@ -1497,6 +1498,7 @@ export function Overview() {
             {...baseProps}
             initialExpanded={new Set([completedDelegation.id])}
             timelineRows={[completedDelegation]}
+            threadIsActive={false}
           />
         </TimelineStage>
       </StoryRow>
@@ -1508,6 +1510,7 @@ export function Overview() {
           <ThreadTimelineRows
             {...baseProps}
             timelineRows={[runningDelegation]}
+            threadIsActive={false}
           />
         </TimelineStage>
       </StoryRow>
@@ -1516,7 +1519,11 @@ export function Overview() {
         hint="test quality review (real dispatch, status synthesized as error; childRows are real)"
       >
         <TimelineStage>
-          <ThreadTimelineRows {...baseProps} timelineRows={[errorDelegation]} />
+          <ThreadTimelineRows
+            {...baseProps}
+            timelineRows={[errorDelegation]}
+            threadIsActive={false}
+          />
         </TimelineStage>
       </StoryRow>
       <StoryRow
@@ -1527,6 +1534,7 @@ export function Overview() {
           <ThreadTimelineRows
             {...baseProps}
             timelineRows={[interruptedDelegation]}
+            threadIsActive={false}
           />
         </TimelineStage>
       </StoryRow>

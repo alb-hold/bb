@@ -8,6 +8,24 @@ export function isVisibleTerminalSession(session: TerminalSession): boolean {
   );
 }
 
+export function getThreadTerminalLayoutSessions(
+  sessions: readonly TerminalSession[],
+  terminalIds: readonly string[],
+  threadId: string,
+): TerminalSession[] | null {
+  const selected = terminalIds.map((terminalId) =>
+    sessions.find(
+      (session) =>
+        session.id === terminalId &&
+        session.threadId === threadId &&
+        isVisibleTerminalSession(session),
+    ),
+  );
+  return selected.some((session) => session === undefined)
+    ? null
+    : selected.filter((session): session is TerminalSession => session !== undefined);
+}
+
 interface RetainedTerminalSessionArgs {
   retainedTerminalIds: ReadonlySet<string>;
   session: TerminalSession;

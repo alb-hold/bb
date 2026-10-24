@@ -1,4 +1,10 @@
 import {
+  environmentPullRequestRoute,
+  uiPreferencesRoute,
+  updateUiPreferenceRoute,
+  resetUiPreferenceRoute,
+} from "./client-route-descriptors.js";
+import {
   machineEnvironmentSetSchema,
   machineEnvironmentDeleteSchema,
   type MachineEnvironmentSet,
@@ -26,6 +32,9 @@ import {
   type DeviceHandoffRequest,
 } from "./api/device-handoff.js";
 import {
+  desktopBrowserBrokerProofRequestSchema,
+  type DesktopBrowserBrokerProofRequest,
+  type DesktopBrowserBrokerProof,
   desktopBrowserHostRequestSchema,
   desktopBrowserScopeSchema,
   desktopBrowserCreateRequestSchema,
@@ -129,9 +138,13 @@ import type {
   EnvironmentDiffPatchRequest,
   EnvironmentDiffPatchResponse,
   EnvironmentDiffQuery,
+  EnvironmentDiffFilesQuery,
+  EnvironmentDiffViewedClearRequest,
+  EnvironmentDiffViewedQueryRequest,
+  EnvironmentDiffViewedMarkRequest,
+  EnvironmentDiffViewedResponse,
   EnvironmentDiffResponse,
   EnvironmentPathsQuery,
-  EnvironmentPullRequestResponse,
   EnvironmentStatusQuery,
   EnvironmentStatusResponse,
   HostDirectoryListing,
@@ -140,6 +153,8 @@ import type {
   HostEnrollmentCommandResponse,
   HostReconnectResponse,
   HostListQuery,
+  HostDeleteQuery,
+  EnvironmentCleanupQuery,
   HostActionResponse,
   HostCloneDefaultPathQuery,
   HostCloneDefaultPathResponse,
@@ -241,6 +256,8 @@ import type {
   TerminalNotifyRequest,
   TerminalOutputQuery,
   TerminalOutputResponse,
+  TerminalScreenQuery,
+  TerminalScreenResponse,
   TerminalResizeRequest,
   ThreadArchiveAllResponse,
   ThreadChildSummaryResponse,
@@ -363,13 +380,6 @@ import type {
   UpdateThreadRowStateRequest,
 } from "./api/thread-row-state.js";
 import { updateThreadRowStateRequestSchema } from "./api/thread-row-state.js";
-import type {
-  PathUiPreferenceKey,
-  UiPreferenceResponse,
-  UiPreferencesResponse,
-  UpdateUiPreferenceRequest,
-} from "./api/ui-preferences.js";
-import { updateUiPreferenceRequestSchema } from "./api/ui-preferences.js";
 import {
   closeTerminalRequestSchema,
   copyProjectAttachmentsRequestSchema,
@@ -398,10 +408,16 @@ import {
   environmentDiffFileQuerySchema,
   environmentDiffPatchRequestSchema,
   environmentDiffQuerySchema,
+  environmentDiffFilesQuerySchema,
+  environmentDiffViewedClearRequestSchema,
+  environmentDiffViewedQueryRequestSchema,
+  environmentDiffViewedMarkRequestSchema,
   environmentPathsQuerySchema,
   environmentStatusQuerySchema,
   hostDirectoryQuerySchema,
   hostListQuerySchema,
+  hostDeleteQuerySchema,
+  environmentCleanupQuerySchema,
   hostCloneDefaultPathQuerySchema,
   hostFileListRequestSchema,
   hostFileReadRequestSchema,
@@ -461,6 +477,7 @@ import {
   terminalListQuerySchema,
   terminalNotifyRequestSchema,
   terminalOutputQuerySchema,
+  terminalScreenQuerySchema,
   terminalResizeRequestSchema,
   threadTimelineQuerySchema,
   systemCliSkillsStatusQuerySchema,
@@ -831,6 +848,14 @@ export const publicApiRoutes = {
   },
 
   desktopBrowsers: {
+    brokerProof: defineRoute({
+      path: "/desktop-browsers/broker-proof",
+      method: "post",
+      request: jsonRequest<{}, DesktopBrowserBrokerProofRequest>(
+        desktopBrowserBrokerProofRequestSchema,
+      ),
+      response: jsonResponse<DesktopBrowserBrokerProof>(),
+    }),
     listInstances: defineRoute({
       path: "/desktop-browsers/instances",
       method: "post",
@@ -1018,7 +1043,9 @@ export const publicApiRoutes = {
     delete: defineRoute({
       path: "/hosts/:id",
       method: "delete",
-      request: noRequest<PathId>(),
+      request: optionalQueryRequest<PathId, HostDeleteQuery>(
+        hostDeleteQuerySchema,
+      ),
       response: jsonResponse<{ ok: true }>(),
     }),
     directory: defineRoute({
@@ -1214,13 +1241,23 @@ export const publicApiRoutes = {
       ),
       response: jsonResponse<TerminalOutputResponse>(),
     }),
+    screen: defineRoute({
+      path: "/terminals/:terminalId/screen",
+      method: "get",
+      request: optionalQueryRequest<PathTerminal, TerminalScreenQuery>(
+        terminalScreenQuerySchema,
+      ),
+      response: jsonResponse<TerminalScreenResponse>(),
+    }),
   },
 
   environments: {
     cleanup: defineRoute({
       path: "/environments/:id/cleanup",
       method: "post",
-      request: noRequest<PathId>(),
+      request: optionalQueryRequest<PathId, EnvironmentCleanupQuery>(
+        environmentCleanupQuerySchema,
+      ),
       response: jsonResponse<{ ok: true }>(),
     }),
     list: defineRoute({
@@ -1266,12 +1303,7 @@ export const publicApiRoutes = {
       ),
       response: jsonResponse<EnvironmentStatusResponse>(),
     }),
-    pullRequest: defineRoute({
-      path: "/environments/:id/pull-request",
-      method: "get",
-      request: noRequest<PathId>(),
-      response: jsonResponse<EnvironmentPullRequestResponse>(),
-    }),
+    pullRequest: environmentPullRequestRoute,
     diff: defineRoute({
       path: "/environments/:id/diff",
       method: "get",
@@ -1283,8 +1315,8 @@ export const publicApiRoutes = {
     diffFiles: defineRoute({
       path: "/environments/:id/diff/files",
       method: "get",
-      request: queryRequest<PathId, EnvironmentDiffQuery>(
-        environmentDiffQuerySchema,
+      request: queryRequest<PathId, EnvironmentDiffFilesQuery>(
+        environmentDiffFilesQuerySchema,
       ),
       response: jsonResponse<EnvironmentDiffFilesResponse>(),
     }),
@@ -1295,6 +1327,38 @@ export const publicApiRoutes = {
         environmentDiffPatchRequestSchema,
       ),
       response: jsonResponse<EnvironmentDiffPatchResponse>(),
+    }),
+    diffViewed: defineRoute({
+      path: "/environments/:id/diff/viewed",
+      method: "get",
+      request: queryRequest<PathId, EnvironmentDiffQuery>(
+        environmentDiffQuerySchema,
+      ),
+      response: jsonResponse<EnvironmentDiffViewedResponse>(),
+    }),
+    queryDiffViewed: defineRoute({
+      path: "/environments/:id/diff/viewed",
+      method: "post",
+      request: jsonRequest<PathId, EnvironmentDiffViewedQueryRequest>(
+        environmentDiffViewedQueryRequestSchema,
+      ),
+      response: jsonResponse<EnvironmentDiffViewedResponse>(),
+    }),
+    markDiffViewed: defineRoute({
+      path: "/environments/:id/diff/viewed",
+      method: "put",
+      request: jsonRequest<PathId, EnvironmentDiffViewedMarkRequest>(
+        environmentDiffViewedMarkRequestSchema,
+      ),
+      response: jsonResponse<{ ok: true }>(),
+    }),
+    clearDiffViewed: defineRoute({
+      path: "/environments/:id/diff/viewed",
+      method: "delete",
+      request: jsonRequest<PathId, EnvironmentDiffViewedClearRequest>(
+        environmentDiffViewedClearRequestSchema,
+      ),
+      response: jsonResponse<{ ok: true }>(),
     }),
     diffFile: defineRoute({
       path: "/environments/:id/diff/file",
@@ -2205,33 +2269,9 @@ export const publicApiRoutes = {
       ),
       response: jsonResponse<AppTheme>(),
     }),
-    uiPreferences: defineRoute({
-      path: "/preferences/ui",
-      method: "get",
-      request: noRequest(),
-      response: jsonResponse<UiPreferencesResponse>(),
-    }),
-    updateUiPreference: defineRoute({
-      path: "/preferences/ui/:key",
-      method: "put",
-      request: jsonRequest<PathUiPreferenceKey, UpdateUiPreferenceRequest>(
-        updateUiPreferenceRequestSchema,
-      ),
-      response: [
-        jsonResponse<UiPreferenceResponse>(),
-        jsonResponse<ApiError>({ status: 404 }),
-        jsonResponse<ApiError>({ status: 409 }),
-      ],
-    }),
-    resetUiPreference: defineRoute({
-      path: "/preferences/ui/:key",
-      method: "delete",
-      request: noRequest<PathUiPreferenceKey>(),
-      response: [
-        jsonResponse<UiPreferenceResponse>(),
-        jsonResponse<ApiError>({ status: 404 }),
-      ],
-    }),
+    uiPreferences: uiPreferencesRoute,
+    updateUiPreference: updateUiPreferenceRoute,
+    resetUiPreference: resetUiPreferenceRoute,
     themes: defineRoute({
       path: "/settings/themes",
       method: "get",

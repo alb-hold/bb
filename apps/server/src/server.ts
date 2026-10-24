@@ -17,6 +17,11 @@ import {
   INSTALL_MACHINE_WINDOWS_SCRIPT_PATH,
 } from "./install-machine-asset.js";
 import { createNodeWebSocket } from "@hono/node-ws";
+import { createGateKeyStore } from "./services/connect-next/gate-keys.js";
+import {
+  createTunnelIngressManager,
+  type TunnelIngressManager,
+} from "./services/connect-next/tunnel-ingress.js";
 import { createHash, randomUUID } from "node:crypto";
 import { readFile, stat } from "node:fs/promises";
 import { performance } from "node:perf_hooks";
@@ -27,6 +32,11 @@ import { compress } from "hono/compress";
 import { cors } from "hono/cors";
 import type { ServerAppDeps } from "./types.js";
 import { ApiError, createServerErrorHandler } from "./errors.js";
+import {
+  getInactiveSessionLogFields,
+  requireAuthorizedOpenSession,
+} from "./internal/session-state.js";
+import { runtimeErrorLogFields } from "./services/lib/error-log-fields.js";
 import { registerEnvironmentRoutes } from "./routes/environments.js";
 import { registerFileRoutes } from "./routes/files.js";
 import { registerHostRoutes } from "./routes/hosts.js";
@@ -83,6 +93,7 @@ import {
   resolveRequestAppSurface,
 } from "./request-context.js";
 import { runEventLoopWork } from "./services/system/event-loop-work.js";
+import { setTurnTelemetryDeps } from "./services/system/turn-telemetry.js";
 import { runWithTelemetryAppSurface } from "./services/system/telemetry.js";
 import {
   onClientSocketClose,
@@ -91,6 +102,7 @@ import {
 } from "./ws/client-protocol.js";
 import {
   createDaemonSocketMessageQueue,
+  enqueueDaemonSocketFrame,
   onDaemonSocketClose,
   onDaemonSocketMessage,
   onDaemonSocketOpen,
@@ -164,6 +176,7 @@ interface ServerApp {
   pluginService: PluginService;
   pluginCatalogService: PluginCatalogService;
   serverMove: ServerMoveCoordinator;
+  tunnelIngress: TunnelIngressManager;
 }
 
 interface CloseWebSocketServerArgs {
@@ -204,6 +217,7 @@ interface CreateAppOptions {
   slowApiRequestLogThresholdMs?: number;
   performanceDiagnosticsEnabled?: () => boolean;
   staticDir?: string;
+  tunnelIngressNow?: () => number;
 }
 
 interface StaticResponseHeadersArgs {
@@ -484,6 +498,18 @@ export function createApp(
   const app = new Hono();
   const { injectWebSocket, upgradeWebSocket, wss } = createNodeWebSocket({
     app,
+  });
+  const tunnelIngressNow = options?.tunnelIngressNow ?? Date.now;
+  const tunnelIngress = createTunnelIngressManager({
+    app,
+    injectWebSocket,
+    keys: createGateKeyStore({
+      url: () => deps.config.connectGateKeysUrl,
+      logger: deps.logger,
+      now: tunnelIngressNow,
+    }),
+    loopbackOrigin: () => `http://127.0.0.1:${deps.config.serverPort}`,
+    logger: deps.logger,
   });
   const slowApiRequestLogThresholdMs =
     options?.slowApiRequestLogThresholdMs ?? SLOW_API_REQUEST_LOG_THRESHOLD_MS;
@@ -798,6 +824,7 @@ export function createApp(
         }),
       ),
     callPluginHost: (args) => callPluginHostRpc(deps, args),
+    openTunnelIngress: (audience) => tunnelIngress.open(audience),
     disposePluginHost: (args) => disposePluginHostWorkers(deps, args),
     onSettingsChanged: (pluginId) => {
       deps.providerNativeRoots.invalidate(pluginId);
@@ -847,6 +874,7 @@ export function createApp(
         });
     },
   );
+  setTurnTelemetryDeps(deps);
   setPluginThreadEventEmitter(pluginService.events);
   setPluginHookProvider(pluginService.hooks);
   setPluginEnvironmentProviderBridge(pluginService.environmentProviders);
@@ -1006,11 +1034,14 @@ export function createApp(
     "/ws",
     upgradeWebSocket((context) => {
       assertBrowserWebSocketAllowed(context);
+      const origin = context.req.header("origin");
+      const isAppClient = origin !== undefined;
       return {
-        onOpen: (_event, socket) => onClientSocketOpen(deps.hub, socket),
+        onOpen: (_event, socket) =>
+          onClientSocketOpen(deps.hub, socket, isAppClient),
         onMessage: (event, socket) =>
-          onClientSocketMessage(deps, socket, event.data),
-        onClose: (_event, socket) => onClientSocketClose(deps, socket),
+          onClientSocketMessage(deps.hub, socket, event.data),
+        onClose: (_event, socket) => onClientSocketClose(deps.hub, socket),
       };
     }),
   );
@@ -1066,10 +1097,15 @@ export function createApp(
         protocolHeader: context.req.header("sec-websocket-protocol"),
         sessionId: context.req.query("sessionId") ?? null,
       });
-      const daemonMessageQueue = createDaemonSocketMessageQueue<() => void>({
+      const daemonMessageQueue = createDaemonSocketMessageQueue<
+        () => void | Promise<void>
+      >({
         handle: (message) => message(),
         onError: (error) => {
-          deps.logger.error({ err: error }, "Daemon socket message queue failed");
+          deps.logger.error(
+            { err: error },
+            "Daemon socket message queue failed",
+          );
         },
       });
       return {
@@ -1090,20 +1126,81 @@ export function createApp(
           );
         },
         onMessage: (event, socket) =>
-          daemonMessageQueue.enqueue(() =>
-            onDaemonSocketMessage(
-              deps,
-              {
-                hostId: websocketContext.hostId,
-                raw: event.data,
-                sessionId: websocketContext.sessionId,
-                socket,
-              },
-              pluginService,
-              serverMove,
-            ),
-          ),
-        onClose: () => onDaemonSocketClose(deps, websocketContext.sessionId),
+          enqueueDaemonSocketFrame({
+            authorize: (messageType) => {
+              try {
+                requireAuthorizedOpenSession(deps.db, {
+                  hostId: websocketContext.hostId,
+                  sessionId: websocketContext.sessionId,
+                });
+                return true;
+              } catch (error) {
+                if (
+                  error instanceof ApiError &&
+                  error.body.code === "inactive_session"
+                ) {
+                  deps.logger.info(
+                    getInactiveSessionLogFields(deps.db, {
+                      authenticatedHostId: websocketContext.hostId,
+                      now: Date.now(),
+                      sessionId: websocketContext.sessionId,
+                    }),
+                    "Daemon heartbeat for inactive session, closing socket",
+                  );
+                } else if (error instanceof ApiError && error.status === 403) {
+                  deps.logger.warn(
+                    {
+                      sessionId: websocketContext.sessionId,
+                      ...runtimeErrorLogFields(deps.config, error),
+                    },
+                    "Daemon heartbeat for unauthorized session, closing socket",
+                  );
+                } else {
+                  deps.logger.warn(
+                    {
+                      sessionId: websocketContext.sessionId,
+                      messageType,
+                      ...runtimeErrorLogFields(deps.config, error),
+                    },
+                    "Daemon message rejected, closing socket",
+                  );
+                }
+                socket.close(
+                  1008,
+                  error instanceof ApiError && error.status === 403
+                    ? "unauthorized-session"
+                    : "inactive-session",
+                );
+                return false;
+              }
+            },
+            enqueue: (message, priority, acceptedAtArrival) =>
+              daemonMessageQueue.enqueue(
+                () =>
+                  onDaemonSocketMessage(
+                    deps,
+                    {
+                      acceptedAtArrival,
+                      hostId: websocketContext.hostId,
+                      message,
+                      raw: event.data,
+                      sessionId: websocketContext.sessionId,
+                      socket,
+                    },
+                    pluginService,
+                    serverMove,
+                  ),
+                priority,
+              ),
+            raw: event.data,
+            recordActivity: () =>
+              deps.hub.recordDaemonActivity(websocketContext.sessionId),
+            socket,
+          }),
+        onClose: () => {
+          daemonMessageQueue.close();
+          onDaemonSocketClose(deps, websocketContext.sessionId);
+        },
       };
     }),
   );
@@ -1126,5 +1223,6 @@ export function createApp(
     pluginService,
     pluginCatalogService,
     serverMove,
+    tunnelIngress,
   };
 }

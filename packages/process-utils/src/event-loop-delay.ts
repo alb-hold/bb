@@ -3,6 +3,7 @@ import { monitorEventLoopDelay } from "node:perf_hooks";
 interface EventLoopStall {
   intervalMs: number;
   maxDelayMs: number;
+  rawMaxDelayMs: number;
   meanDelayMs: number;
   p99DelayMs: number;
   resolutionMs: number;
@@ -69,6 +70,7 @@ export function startEventLoopDelaySampler(
         ? {
             intervalMs: EVENT_LOOP_DELAY_SAMPLE_INTERVAL_MS,
             maxDelayMs: roundDurationMs(maxDelayMs),
+            rawMaxDelayMs: maxDelayMs,
             meanDelayMs: roundDurationMs(
               nanosecondsToMilliseconds(histogram.mean),
             ),

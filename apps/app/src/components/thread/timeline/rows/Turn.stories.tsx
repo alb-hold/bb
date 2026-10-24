@@ -385,7 +385,10 @@ const groupedCodexActiveRunRows: TimelineTurnRow[] = [
   ),
 ];
 
-function seedActiveFooterSpend(threadId: string, reasoningOutputTokens: number) {
+function seedActiveFooterSpend(
+  threadId: string,
+  reasoningOutputTokens: number,
+) {
   const turns = ["1", "2", "active"].map((turn) => ({
     turnId: `${threadId.includes("claude") ? "claude" : "codex"}-${turn === "active" ? "active-turn" : `turn-${turn}`}`,
     inputTokens: turn === "active" ? 8 : 4_100,
@@ -410,11 +413,7 @@ function seedActiveFooterSpend(threadId: string, reasoningOutputTokens: number) 
   };
 }
 
-function ActiveRunFooterThread({
-  provider,
-}: {
-  provider: "claude" | "codex";
-}) {
+function ActiveRunFooterThread({ provider }: { provider: "claude" | "codex" }) {
   const queryClient = useQueryClient();
   const threadId = activeFooterThreadIds[provider];
   queryClient.setQueryData(
@@ -428,8 +427,8 @@ function ActiveRunFooterThread({
   return (
     <div className="w-full min-w-0 p-3" data-active-footer-fixture={provider}>
       <p className="mb-3 text-xs text-muted-foreground">
-        {provider === "claude" ? "Flat Claude" : "Grouped Codex"}: two
-        completed responses followed by an active turn paused in a tool call.
+        {provider === "claude" ? "Flat Claude" : "Grouped Codex"}: two completed
+        responses followed by an active turn paused in a tool call.
       </p>
       <ThreadTimelineRows
         threadId={threadId}
@@ -505,6 +504,7 @@ function TokenFooterThread() {
         initialExpanded={new Set(tokenTurnRows.map((row) => row.id))}
         threadId={TOKEN_THREAD_ID}
         timelineRows={tokenTurnRows}
+        threadIsActive={false}
       />
     </div>
   );
@@ -521,6 +521,7 @@ export function Overview() {
           <ThreadTimelineRows
             {...baseProps}
             timelineRows={[completedTurnRow]}
+            threadIsActive={false}
           />
         </TimelineStage>
       </StoryRow>
@@ -530,6 +531,7 @@ export function Overview() {
             {...baseProps}
             initialExpanded={new Set([completedTurnRow.id])}
             timelineRows={[completedTurnRow]}
+            threadIsActive={false}
           />
         </TimelineStage>
       </StoryRow>

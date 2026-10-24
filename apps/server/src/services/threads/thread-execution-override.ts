@@ -1,6 +1,10 @@
 import {
+  type DbQueryConnection,
   getProjectExecutionDefaults,
+  getThread,
   getThreadExecutionOverride,
+  getThreadSpawner,
+  isNativeTerminalThread,
   setThreadExecutionOverride,
   type ThreadExecutionOverride,
 } from "@bb/db";
@@ -17,6 +21,10 @@ import type { ProviderRegistryService } from "../providers/provider-registry.js"
 import { resolveSystemExecutionOptionsForValidation } from "../system/execution-options.js";
 import { getLastExecutionOptions } from "./thread-events.js";
 import { getSupportedReasoningLevelsForProvider } from "./thread-reasoning-policy.js";
+import {
+  assertRequestedModelAllowedForCurrentScope,
+  childThreadModel,
+} from "./child-thread-model.js";
 
 interface ThreadExecutionOverridePatch {
   model?: string | null;
@@ -42,6 +50,94 @@ interface RecoverThreadModelOverrideArgs {
   reasoningLevel: ReasoningLevel | undefined;
   reasoningLevelSource: CallerExecutionInputSource | undefined;
   thread: Thread;
+}
+
+export interface PreparedThreadModelOverrideRecovery {
+  model: string | undefined;
+  modelSource: CallerExecutionInputSource | undefined;
+  reasoningLevel: ReasoningLevel | undefined;
+  reasoningLevelSource: CallerExecutionInputSource | undefined;
+  models: readonly AvailableModel[];
+  fallbackModel: string | null;
+  spawnerThreadId: string | null;
+}
+
+export async function prepareThreadModelOverrideRecovery(
+  deps: LoggedWorkSessionDeps,
+  args: RecoverThreadModelOverrideArgs,
+): Promise<PreparedThreadModelOverrideRecovery | null> {
+  await deps.providerRegistry.whenRegistrationsSettled();
+  const existing = getThreadExecutionOverride(deps.db, args.thread.id);
+  if (
+    existing?.modelOverride == null &&
+    existing?.reasoningLevelOverride == null
+  ) {
+    return null;
+  }
+  if (
+    (args.model === undefined || args.modelSource !== "explicit") &&
+    (args.reasoningLevel === undefined ||
+      args.reasoningLevelSource !== "explicit")
+  ) {
+    return null;
+  }
+  const models = await loadThreadProviderModels(
+    deps,
+    args.thread,
+    args.modelSource === "explicit" ? (args.model ?? null) : null,
+  );
+  return {
+    ...args,
+    models,
+    fallbackModel: resolveFallbackModel(deps, args.thread),
+    spawnerThreadId: getThreadSpawner(deps.db, args.thread.id),
+  };
+}
+
+export function applyPreparedThreadModelOverrideRecovery(
+  db: DbQueryConnection,
+  registry: ProviderRegistryService,
+  thread: Thread,
+  prepared: PreparedThreadModelOverrideRecovery | null,
+): void {
+  if (prepared === null) return;
+  const existing = getThreadExecutionOverride(db, thread.id);
+  if (existing === null) return;
+  const requiredChildModel = childThreadModel({
+    parentThreadId: thread.parentThreadId ?? prepared.spawnerThreadId,
+    declaredChildModel: registry.get(thread.providerId)?.childThreadModel,
+  });
+  const patch: ThreadExecutionOverridePatch = {};
+  if (
+    prepared.model !== undefined &&
+    prepared.modelSource === "explicit" &&
+    (requiredChildModel === null || prepared.model === requiredChildModel) &&
+    existing.modelOverride != null &&
+    existing.modelOverride !== prepared.model
+  ) {
+    patch.model = prepared.model;
+  }
+  if (
+    prepared.reasoningLevel !== undefined &&
+    prepared.reasoningLevelSource === "explicit" &&
+    existing.reasoningLevelOverride != null &&
+    existing.reasoningLevelOverride !== prepared.reasoningLevel
+  ) {
+    patch.reasoningLevel = prepared.reasoningLevel;
+  }
+  if (patch.model === undefined && patch.reasoningLevel === undefined) return;
+  const next = resolveThreadExecutionOverrideUpdate(registry, {
+    existing,
+    patch,
+    models: prepared.models,
+    providerId: thread.providerId,
+    fallbackModel: prepared.fallbackModel,
+  });
+  setThreadExecutionOverride(db, {
+    threadId: thread.id,
+    modelOverride: next.modelOverride,
+    reasoningLevelOverride: next.reasoningLevelOverride,
+  });
 }
 
 export function resolveThreadExecutionOverrideUpdate(
@@ -127,35 +223,65 @@ export async function applyThreadExecutionOverride(
     thread,
     typeof patch.model === "string" ? patch.model : null,
   );
-  const existing = getThreadExecutionOverride(deps.db, thread.id) ?? {
-    modelOverride: null,
-    reasoningLevelOverride: null,
-  };
-
-  const next = resolveThreadExecutionOverrideUpdate(deps.providerRegistry, {
-    existing,
-    patch,
-    models,
-    providerId: thread.providerId,
-    fallbackModel: resolveFallbackModel(deps, thread),
-  });
-
-  setThreadExecutionOverride(deps.db, {
-    threadId: thread.id,
-    modelOverride: next.modelOverride,
-    reasoningLevelOverride: next.reasoningLevelOverride,
-  });
+  deps.db.transaction(
+    (tx) => {
+      const currentThread = getThread(tx, thread.id);
+      if (!currentThread) {
+        throw new ApiError(404, "thread_not_found", "Thread not found");
+      }
+      if (
+        typeof patch.model === "string" &&
+        !isNativeTerminalThread(tx, thread.id)
+      ) {
+        assertRequestedModelAllowedForCurrentScope(
+          { db: tx, providerRegistry: deps.providerRegistry },
+          {
+            threadId: thread.id,
+            model: patch.model,
+            providerId: currentThread.providerId,
+            sources: undefined,
+            spawnerThreadId: getThreadSpawner(deps.db, thread.id),
+          },
+        );
+      }
+      const existing = getThreadExecutionOverride(tx, thread.id) ?? {
+        modelOverride: null,
+        reasoningLevelOverride: null,
+      };
+      const next = resolveThreadExecutionOverrideUpdate(deps.providerRegistry, {
+        existing,
+        patch,
+        models,
+        providerId: currentThread.providerId,
+        fallbackModel: resolveFallbackModel(deps, currentThread),
+      });
+      setThreadExecutionOverride(tx, {
+        threadId: thread.id,
+        modelOverride: next.modelOverride,
+        reasoningLevelOverride: next.reasoningLevelOverride,
+      });
+    },
+    { behavior: "immediate" },
+  );
 }
 
 export async function recoverThreadModelOverride(
   deps: LoggedWorkSessionDeps,
   args: RecoverThreadModelOverrideArgs,
 ): Promise<void> {
+  await deps.providerRegistry.whenRegistrationsSettled();
   const existing = getThreadExecutionOverride(deps.db, args.thread.id);
+  const requiredChildModel = childThreadModel({
+    parentThreadId:
+      args.thread.parentThreadId ?? getThreadSpawner(deps.db, args.thread.id),
+    declaredChildModel: deps.providerRegistry.get(args.thread.providerId)
+      ?.childThreadModel,
+  });
   const patch: ThreadExecutionOverridePatch = {};
   if (
     args.model !== undefined &&
     args.modelSource === "explicit" &&
+    (requiredChildModel === null || args.model === requiredChildModel) &&
     existing?.modelOverride != null &&
     existing.modelOverride !== args.model
   ) {
@@ -177,7 +303,7 @@ export async function recoverThreadModelOverride(
   });
 }
 
-async function loadThreadProviderModels(
+export async function loadThreadProviderModels(
   deps: LoggedWorkSessionDeps,
   thread: Thread,
   requiredModel: string | null,
@@ -202,8 +328,8 @@ async function loadThreadProviderModels(
   return [...result.models, ...result.selectedOnlyModels];
 }
 
-function resolveFallbackModel(
-  deps: LoggedWorkSessionDeps,
+export function resolveFallbackModel(
+  deps: Pick<LoggedWorkSessionDeps, "db">,
   thread: Thread,
 ): string | null {
   const lastExecution = getLastExecutionOptions(deps, thread.id);

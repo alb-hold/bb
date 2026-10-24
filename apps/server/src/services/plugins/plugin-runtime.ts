@@ -12,7 +12,7 @@ import {
   realpathSync,
   type FSWatcher,
 } from "node:fs";
-import { readFile, readdir, stat } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import { dirname, extname, join, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createRequire, registerHooks } from "node:module";
@@ -28,13 +28,14 @@ import {
   type Thread,
   type ThreadQueuedMessage,
 } from "@bb/domain";
-import {
-  buildPluginApp,
-  buildPluginHost,
-  isIgnoredPluginDevPath,
-} from "@bb/plugin-build";
+import { buildPluginApp } from "@bb/plugin-build";
 import { PluginHostArtifactRegistry } from "./plugin-host-artifact-registry.js";
 import { getPluginBuildToolchain } from "./build-toolchain.js";
+import {
+  buildMutablePluginHost,
+  isMutableArtifactStale,
+  isMutablePluginHostReusable,
+} from "./mutable-plugin-artifacts.js";
 import { createNodeBbSdk, type BbSdk } from "@bb/sdk";
 import {
   getInstalledPlugin,
@@ -98,7 +99,10 @@ import type {
   ServiceRuntime,
 } from "./plugin-service-internal.js";
 import { createKeyedLock } from "../lib/async-deduper.js";
-import { runEventLoopWork } from "../system/event-loop-work.js";
+import {
+  runEventLoopWork,
+  runEventLoopWorkSync,
+} from "../system/event-loop-work.js";
 import { abortPluginToolCallsForPlugin } from "./plugin-tool-calls.js";
 import { buildCachedPluginServer } from "./plugin-server-cache.js";
 import { createPluginRpcCallerRegistry } from "./plugin-rpc-caller.js";
@@ -837,6 +841,7 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
     id: string,
     label: string,
     run: () => T | Promise<T>,
+    eventLoopLabel = `plugin:${id} ${label}`,
   ): Promise<
     { ok: true; value: T } | { ok: false; error: string; cause: unknown }
   > {
@@ -855,7 +860,9 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
     try {
       return {
         ok: true,
-        value: await runEventLoopWork(`plugin:${id} ${label}`, run),
+        value: await runEventLoopWork(eventLoopLabel, () =>
+          runEventLoopWorkSync(`${eventLoopLabel}:sync`, run),
+        ),
       };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -1082,43 +1089,6 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
     return true;
   }
 
-  async function isMutableAppBundleStale(rootDir: string): Promise<boolean> {
-    let artifactMtimeMs: number;
-    try {
-      artifactMtimeMs = (await stat(join(rootDir, "dist", "app.js"))).mtimeMs;
-    } catch {
-      return true;
-    }
-
-    const pendingDirectories = [""];
-    while (pendingDirectories.length > 0) {
-      const relativeDirectory = pendingDirectories.pop();
-      if (relativeDirectory === undefined) break;
-      const directory = join(rootDir, relativeDirectory);
-      let entries;
-      try {
-        const directoryStats = await stat(directory);
-        if (directoryStats.mtimeMs > artifactMtimeMs) return true;
-        entries = await readdir(directory, { withFileTypes: true });
-      } catch {
-        return true;
-      }
-
-      for (const entry of entries) {
-        const relativePath = join(relativeDirectory, entry.name);
-        if (isIgnoredPluginDevPath(relativePath)) continue;
-        try {
-          const entryStats = await stat(join(rootDir, relativePath));
-          if (entryStats.mtimeMs > artifactMtimeMs) return true;
-        } catch {
-          return true;
-        }
-        if (entry.isDirectory()) pendingDirectories.push(relativePath);
-      }
-    }
-    return false;
-  }
-
   type ResolvedServerEntry = {
     path: string;
     digest: string;
@@ -1257,7 +1227,7 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
       const meta = await readPluginAppBundleMeta(row.rootDir);
       const sdkChanged = meta?.sdkVersion !== PLUGIN_SDK_VERSION;
       const sourceChanged =
-        !sdkChanged && (await isMutableAppBundleStale(row.rootDir));
+        !sdkChanged && (await isMutableArtifactStale(row.rootDir, "app"));
       if (sdkChanged || sourceChanged) {
         const reason = sdkChanged
           ? `built with SDK ${meta?.sdkVersion ?? "unknown"}, running SDK is ${PLUGIN_SDK_VERSION}`
@@ -1304,12 +1274,24 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
         artifact: "host",
       })
     ) {
-      await buildPluginHost(
-        row.rootDir,
-        deps.appVersion,
-        await getPluginBuildToolchain(deps),
-      );
-      setDevBuildProblem(row.id, "host", null);
+      if (
+        !(await isMutablePluginHostReusable({
+          dataDir: deps.dataDir,
+          pluginId: row.id,
+          pluginVersion: manifest.version,
+          rootDir: row.rootDir,
+          bbVersion: deps.appVersion,
+        }))
+      ) {
+        await buildMutablePluginHost({
+          dataDir: deps.dataDir,
+          pluginId: row.id,
+          rootDir: row.rootDir,
+          bbVersion: deps.appVersion,
+          toolchain: await getPluginBuildToolchain(deps),
+        });
+        setDevBuildProblem(row.id, "host", null);
+      }
     }
     const jsPath = join(row.rootDir, "dist", "host.js");
     const metaPath = join(row.rootDir, "dist", "host.meta.json");
@@ -1653,6 +1635,7 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
       getAppUrl: deps.getAppUrl ?? (() => null),
       getLoopbackBaseUrl: () => boundLoopbackBaseUrl,
       rpcCaller: rpcCallers.issue(row.id),
+      invalidateRpc: (tags) => deps.hub.notifyPluginChanged(row.id, tags),
       publishSignal: (channel, payload) => {
         deps.hub.notifyPluginSignal(row.id, channel, payload);
       },
@@ -1726,6 +1709,20 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
           ports,
         });
       },
+      setNextTunnels: (config) => {
+        if (!deps.sharedPorts) {
+          throw new Error("host shared-port control plane is unavailable");
+        }
+        deps.sharedPorts.setNextTunnelConfig(row.id, config);
+      },
+      nextTunnelStatuses: () =>
+        (deps.sharedPorts?.listNextTunnelStatuses() ?? []).map((entry) => ({
+          hostId: entry.hostId,
+          hostName: entry.hostName,
+          ...entry.status,
+        })),
+      onNextTunnelStatusChange: (listener) =>
+        deps.sharedPorts?.onNextTunnelStatusChange(listener) ?? (() => {}),
       replaceDeclaredSharedPorts: (declarations) => {
         if (declarations.length > 0 && !deps.sharedPorts) {
           throw new Error("host shared-port control plane is unavailable");
@@ -1746,6 +1743,12 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
           ...args,
           artifact: hostArtifactCandidate,
         });
+      },
+      openTunnelIngress: (audience) => {
+        if (!deps.openTunnelIngress) {
+          throw new Error("tunnel ingress is unavailable in this plugin host");
+        }
+        return deps.openTunnelIngress(audience);
       },
       registerAiService: (declaration) =>
         deps.aiServices.register({
@@ -1901,6 +1904,7 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
       );
     }
     disposeUnavailableProviderRegistrations(row.id);
+    deps.hub.notifyPluginChanged(row.id, null);
     loaded.set(row.id, plugin);
     appBundles.set(row.id, appBundleCandidate.snapshot);
     if (hostArtifactCandidate === null) hostArtifacts.delete(row.id);
@@ -2000,6 +2004,7 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
     const plugin = loaded.get(id);
     if (!plugin) return;
     loaded.delete(id);
+    deps.hub.notifyPluginChanged(id, null);
     await disposePluginInstance(id, plugin);
     releaseMutableRoots(plugin.moduleRootUrls);
     hostArtifacts.delete(id);

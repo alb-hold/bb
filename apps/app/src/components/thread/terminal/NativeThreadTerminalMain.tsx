@@ -98,6 +98,8 @@ export function NativeThreadTerminalMain({
           isPanelOpen
           isPanelPersistedOpen
           onOpenLink={onOpenLink}
+          onCloseStart={() => {}}
+          onRetryStart={() => {}}
           target={{ kind: "thread", threadId }}
           terminalId={state.terminalId}
         />
@@ -117,6 +119,19 @@ export function NativeThreadTerminalMain({
         data-native-terminal-thread={view.providerId}
       >
         Preparing the workspace for {providerLabel}…
+      </div>
+    );
+  }
+
+  if (session === null && terminalsQuery.isLoading) {
+    return (
+      <div
+        aria-busy="true"
+        className="flex h-full items-center justify-center px-4 text-center text-sm text-muted-foreground"
+        data-native-terminal-thread={view.providerId}
+        role="status"
+      >
+        Loading terminals...
       </div>
     );
   }

@@ -1,7 +1,6 @@
 import { clientMessageSchema, type PongMessage } from "@bb/domain";
 import { parseSocketMessage } from "./decode-payload.js";
 import type { NotificationHub } from "./hub.js";
-import type { WatchInterestCoordinator } from "./watch-interests.js";
 
 const PONG_MESSAGE: PongMessage = { type: "pong" };
 
@@ -13,18 +12,13 @@ interface ClientSocket {
 export function onClientSocketOpen(
   hub: NotificationHub,
   socket: ClientSocket,
+  isAppClient = false,
 ): void {
-  hub.registerClient(socket);
+  hub.registerClient(socket, isAppClient);
 }
 
 export function onClientSocketMessage(
-  deps: {
-    hub: NotificationHub;
-    watchInterests: Pick<
-      WatchInterestCoordinator,
-      "subscribe" | "unsubscribe" | "releaseSocket"
-    >;
-  },
+  hub: NotificationHub,
   socket: ClientSocket,
   raw: unknown,
 ): void {
@@ -35,28 +29,35 @@ export function onClientSocketMessage(
 
   switch (parsed.type) {
     case "device-handoff-device":
-      deps.hub.issueDeviceHandoffClientToken(socket, parsed.token);
+      hub.issueDeviceHandoffClientToken(socket, parsed.token);
       break;
     case "subscribe":
-      deps.hub.subscribe(socket, parsed.target);
-      deps.watchInterests.subscribe(socket, parsed.target);
+      for (const target of parsed.targets ??
+        (parsed.target ? [parsed.target] : [])) {
+        hub.subscribe(socket, target);
+      }
       break;
     case "unsubscribe":
-      deps.hub.unsubscribe(socket, parsed.target);
-      deps.watchInterests.unsubscribe(socket, parsed.target);
+      for (const target of parsed.targets ??
+        (parsed.target ? [parsed.target] : [])) {
+        hub.unsubscribe(socket, target);
+      }
       break;
     case "ping":
       socket.send(JSON.stringify(PONG_MESSAGE));
       break;
     case "device-handoff-view":
-      deps.hub.setDeviceHandoffView(
+      hub.setDeviceHandoffView(
         socket,
         parsed.threadId,
         parsed.terminalSessionId,
       );
       break;
     case "device-handoff-ack":
-      deps.hub.acknowledgeDeviceHandoff(socket, parsed.id);
+      hub.acknowledgeDeviceHandoff(socket, parsed.id);
+      break;
+    case "visibility":
+      hub.setClientVisible(socket, parsed.visible);
       break;
     default: {
       const _exhaustive: never = parsed;
@@ -66,12 +67,8 @@ export function onClientSocketMessage(
 }
 
 export function onClientSocketClose(
-  deps: {
-    hub: NotificationHub;
-    watchInterests: Pick<WatchInterestCoordinator, "releaseSocket">;
-  },
+  hub: NotificationHub,
   socket: ClientSocket,
 ): void {
-  deps.watchInterests.releaseSocket(socket);
-  deps.hub.unregisterClient(socket);
+  hub.unregisterClient(socket);
 }

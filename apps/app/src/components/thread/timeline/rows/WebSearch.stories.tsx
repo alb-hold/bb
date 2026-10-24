@@ -127,6 +127,7 @@ export function Overview() {
           <ThreadTimelineRows
             {...baseProps}
             timelineRows={[multiQuerySearch]}
+            threadIsActive={false}
           />
         </TimelineStage>
       </StoryRow>
@@ -135,12 +136,20 @@ export function Overview() {
         hint="status=pending, completedAt null"
       >
         <TimelineStage>
-          <ThreadTimelineRows {...baseProps} timelineRows={[runningSearch]} />
+          <ThreadTimelineRows
+            {...baseProps}
+            timelineRows={[runningSearch]}
+            threadIsActive={false}
+          />
         </TimelineStage>
       </StoryRow>
       <StoryRow label="collapsed — error" hint="status=error">
         <TimelineStage>
-          <ThreadTimelineRows {...baseProps} timelineRows={[erroredSearch]} />
+          <ThreadTimelineRows
+            {...baseProps}
+            timelineRows={[erroredSearch]}
+            threadIsActive={false}
+          />
         </TimelineStage>
       </StoryRow>
       <StoryRow
@@ -151,6 +160,7 @@ export function Overview() {
           <ThreadTimelineRows
             {...baseProps}
             timelineRows={[interruptedSearch]}
+            threadIsActive={false}
           />
         </TimelineStage>
       </StoryRow>
@@ -162,6 +172,7 @@ export function Overview() {
           <ThreadTimelineRows
             {...baseProps}
             timelineRows={[singleQuerySearch]}
+            threadIsActive={false}
           />
         </TimelineStage>
       </StoryRow>
@@ -173,6 +184,7 @@ export function Overview() {
           <ThreadTimelineRows
             {...baseProps}
             timelineRows={[multiQuerySearch]}
+            threadIsActive={false}
           />
         </TimelineStage>
       </StoryRow>
@@ -181,7 +193,11 @@ export function Overview() {
         hint="one long natural-language query"
       >
         <TimelineStage>
-          <ThreadTimelineRows {...baseProps} timelineRows={[tanstackSearch]} />
+          <ThreadTimelineRows
+            {...baseProps}
+            timelineRows={[tanstackSearch]}
+            threadIsActive={false}
+          />
         </TimelineStage>
       </StoryRow>
     </StoryCard>

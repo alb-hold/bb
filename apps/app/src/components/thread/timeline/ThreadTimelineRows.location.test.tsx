@@ -69,6 +69,7 @@ function PaneTimeline({ threadId }: { threadId: string }) {
       timelineRows={rows}
       threadRuntimeDisplayStatus="idle"
       workspaceRootPath={undefined}
+      threadIsActive={false}
     />
   );
 }

@@ -146,6 +146,11 @@ This index lists every command path that the core CLI registers, including alias
 - `bb device copy`
 - `bb device open`
 - `bb terminal list`
+- `bb terminal surfaces`
+- `bb terminal focus`
+- `bb terminal open-link`
+- `bb terminal split`
+- `bb terminal move`
 - `bb terminal notify`
 - `bb terminal attention`
 - `bb terminal attention list`
@@ -158,6 +163,7 @@ This index lists every command path that the core CLI registers, including alias
 - `bb terminal send`
 - `bb terminal resize`
 - `bb terminal output`
+- `bb terminal screen`
 - `bb terminal pipe`
 - `bb terminal read`
 - `bb terminal wait`
@@ -165,6 +171,9 @@ This index lists every command path that the core CLI registers, including alias
 - `bb terminal restart`
 - `bb terminal close`
 - `bb terminal stop`
+
+For `focus`, `open-link`, `split`, and `move`, `deliveredClients` counts open
+app sockets the request was sent to; it does not confirm receipt or application.
 
 ## thread
 
@@ -260,6 +269,14 @@ This index lists every command path that the core CLI registers, including alias
 - `bb environment diff-files`
 - `bb environment diff-file`
 - `bb environment diff-patch`
+- `bb environment diff-viewed`
+- `bb environment diff-viewed list`
+
+  Repeat `--path` for a bounded lookup.
+
+- `bb environment diff-viewed mark`
+- `bb environment diff-viewed unmark`
+- `bb environment diff-viewed clear`
 - `bb environment update`
 - `bb environment commit`
 - `bb environment archive-threads`

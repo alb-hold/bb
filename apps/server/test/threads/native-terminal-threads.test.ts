@@ -585,7 +585,7 @@ describe("native terminal threads", () => {
           "Expected terminal.attach after browser client connects",
         );
       }
-      restarted.deps.terminalSessions.handleDaemonTerminalMessage({
+      await restarted.deps.terminalSessions.handleDaemonTerminalMessage({
         hostId: fixture.hostId,
         sessionId: fixture.sessionId,
         message: {
@@ -3097,7 +3097,7 @@ describe("native terminal threads", () => {
     const replayMarker = Buffer.from(
       `\u001b]7791;bb-grid;80;24\u0007\u001b]7717;bb-holder;${replayTerminalId}\u0007`,
     );
-    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+    await fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
       hostId: fixture.hostId,
       sessionId: fixture.sessionId,
       message: {
@@ -3140,7 +3140,7 @@ describe("native terminal threads", () => {
       ...Array.from(midReplayMarker, (byte) => Buffer.from([byte])),
       Buffer.from("AFTER\n"),
     ];
-    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+    await fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
       hostId: fixture.hostId,
       sessionId: fixture.sessionId,
       message: {

@@ -80,6 +80,15 @@ const compiledQueries = new WeakMap<
   Map<(db: DbQueryConnection) => unknown, unknown>
 >();
 
+type CommitContext = { pending: Array<() => void> | undefined };
+const commitContexts = new WeakMap<DbQueryConnection, CommitContext>();
+
+export function afterCommit(db: DbQueryConnection, callback: () => void): void {
+  const pending = commitContexts.get(db)?.pending;
+  if (pending) pending.push(callback);
+  else callback();
+}
+
 export function prepareCachedQuery<TQuery>(
   db: DbQueryConnection,
   build: (db: DbQueryConnection) => TQuery,
@@ -160,18 +169,25 @@ function runTimedStatementOperation<TValue>(
     if (durationMs >= thresholdMs) {
       const cpu = threadCpuUsage(startedCpu);
       const finishedUsage = startedUsage ? resourceUsage() : null;
+      const callers =
+        args.callerStackBoundary === null
+          ? undefined
+          : captureCallers(args.callerStackBoundary);
+      const eventLoopWork = args.config.workLabel();
       args.config.logger.info(
         {
           bindingArgumentCount: args.bindingArgumentCount,
           durationMs: roundDurationMs(durationMs),
           cpuDurationMs: roundDurationMs((cpu.user + cpu.system) / 1_000),
-          eventLoopWork: args.config.workLabel(),
+          eventLoopWork:
+            eventLoopWork ??
+            (args.operation === "transaction"
+              ? `db transaction: ${callers?.[0] ?? "unknown caller"}`
+              : null),
           operation: args.operation,
           sql: formatSqlForLog(args.source),
           thresholdMs,
-          ...(args.callerStackBoundary === null
-            ? {}
-            : { callers: captureCallers(args.callerStackBoundary) }),
+          ...(callers === undefined ? {} : { callers }),
           ...(startedUsage && finishedUsage
             ? {
                 diagnostics: finishQueryDiagnostics(
@@ -347,11 +363,46 @@ export function createConnection(
   const queries = new Map<(db: DbQueryConnection) => unknown, unknown>();
   compiledQueries.set(db, queries);
   const originalTransaction = db.transaction.bind(db);
+  const commitContext: CommitContext = { pending: undefined };
+  commitContexts.set(db, commitContext);
+  function prepareTransaction(tx: DbTransaction): void {
+    compiledQueries.set(tx, queries);
+    commitContexts.set(tx, commitContext);
+    const nestedTransaction = tx.transaction.bind(tx);
+    tx.transaction = (work) =>
+      transactionCallbacks(() =>
+        nestedTransaction((nested) => {
+          prepareTransaction(nested);
+          return work(nested);
+        }),
+      );
+  }
+  function transactionCallbacks<T>(work: () => T): T {
+    const parent = commitContext.pending;
+    const callbacks: Array<() => void> = [];
+    let result: T;
+    try {
+      commitContext.pending = callbacks;
+      result = work();
+    } finally {
+      commitContext.pending = parent;
+    }
+    if (parent) parent.push(...callbacks);
+    else
+      for (const callback of callbacks) {
+        try {
+          callback();
+        } catch {}
+      }
+    return result;
+  }
   db.transaction = (work, config) =>
-    originalTransaction((tx) => {
-      compiledQueries.set(tx, queries);
-      return work(tx);
-    }, config);
+    transactionCallbacks(() =>
+      originalTransaction((tx) => {
+        prepareTransaction(tx);
+        return work(tx);
+      }, config),
+    );
   const originalClose = sqlite.close.bind(sqlite);
   sqlite.close = () => {
     const result = originalClose();

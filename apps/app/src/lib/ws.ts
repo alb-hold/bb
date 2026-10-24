@@ -55,7 +55,9 @@ export type WebSocketConnectedEvent =
     };
 type ConnectedCallback = (event: WebSocketConnectedEvent) => void;
 type ConnectionStateCallback = () => void;
-type ResumedCallback = () => void;
+type ResumedCallback = (
+  releasedTargets: readonly RealtimeSubscriptionTarget[],
+) => void;
 export type WebSocketConnectionState =
   | "connecting"
   | "connected"
@@ -126,6 +128,8 @@ export class WebSocketManager {
   private pongTimer: ReturnType<typeof setTimeout> | null = null;
   private pongDeadline = 0;
   private hiddenAt: number | null = null;
+  private releaseTimer: ReturnType<typeof setTimeout> | null = null;
+  private watchesReleased = false;
   private readonly minReconnectionDelay =
     REALTIME_MIN_RECONNECTION_DELAY_MS +
     Math.random() * REALTIME_RECONNECTION_DELAY_JITTER_MS;
@@ -162,8 +166,16 @@ export class WebSocketManager {
           token: this.deviceHandoffClientToken,
         });
       }
-      for (const subscription of this.subscriptions.values()) {
-        this.sendMessage({ type: "subscribe", target: subscription.target });
+      if (this.watchesReleased) {
+        this.sendMessage({ type: "visibility", visible: false });
+      }
+      if (this.subscriptions.size > 0) {
+        this.sendMessage({
+          type: "subscribe",
+          targets: [...this.subscriptions.values()].map(
+            (subscription) => subscription.target,
+          ),
+        });
       }
       if (
         this.activeDeviceHandoffView.threadId !== null ||
@@ -231,6 +243,7 @@ export class WebSocketManager {
     }
     if (!this.browserEvents.isDocumentVisible()) {
       this.hiddenAt ??= Date.now();
+      this.scheduleWatchRelease();
     }
     const unsubscribeVisibility = this.browserEvents.subscribeToVisibility(
       () => {
@@ -250,15 +263,17 @@ export class WebSocketManager {
     if (!this.browserEvents.isDocumentVisible()) {
       this.hiddenAt ??= Date.now();
       this.stopPingLoop();
+      this.scheduleWatchRelease();
       return;
     }
     const hiddenAt = this.hiddenAt;
     this.hiddenAt = null;
+    const releasedTargets = this.resumeWatching();
     if (
       hiddenAt !== null &&
       Date.now() - hiddenAt >= REALTIME_RESUME_HIDDEN_THRESHOLD_MS
     ) {
-      this.notifyResumed();
+      this.notifyResumed(releasedTargets);
     }
     this.probeOrReconnect();
     this.startPingLoop();
@@ -268,16 +283,47 @@ export class WebSocketManager {
     if (!this.browserEvents.isDocumentVisible()) {
       return;
     }
-    this.notifyResumed();
+    this.notifyResumed([]);
     this.probeOrReconnect();
   }
 
-  private notifyResumed(): void {
+  private scheduleWatchRelease(): void {
+    if (this.releaseTimer !== null || this.watchesReleased) {
+      return;
+    }
+    this.releaseTimer = setTimeout(() => {
+      this.releaseTimer = null;
+      if (this.browserEvents.isDocumentVisible()) {
+        return;
+      }
+      this.watchesReleased = true;
+      this.sendMessage({ type: "visibility", visible: false });
+    }, REALTIME_RESUME_HIDDEN_THRESHOLD_MS);
+  }
+
+  private resumeWatching(): RealtimeSubscriptionTarget[] {
+    if (this.releaseTimer !== null) {
+      clearTimeout(this.releaseTimer);
+      this.releaseTimer = null;
+    }
+    if (!this.watchesReleased) {
+      return [];
+    }
+    this.watchesReleased = false;
+    this.sendMessage({ type: "visibility", visible: true });
+    return [...this.subscriptions.values()].map(
+      (subscription) => subscription.target,
+    );
+  }
+
+  private notifyResumed(
+    releasedTargets: readonly RealtimeSubscriptionTarget[],
+  ): void {
     if (!this.socket) {
       return;
     }
     for (const callback of this.resumedCallbacks) {
-      callback();
+      callback(releasedTargets);
     }
   }
 
@@ -493,6 +539,11 @@ export class WebSocketManager {
       this.unsubscribeBrowserEvents = null;
     }
     this.hiddenAt = null;
+    if (this.releaseTimer !== null) {
+      clearTimeout(this.releaseTimer);
+      this.releaseTimer = null;
+    }
+    this.watchesReleased = false;
     if (this.socket) {
       this.socket.close();
       this.socket = null;

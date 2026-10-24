@@ -248,6 +248,9 @@ type ExpectedRealtimeKey = "subscribe";
 
 type ExpectedEnvironmentsKey =
   | "experimental_cleanup"
+  | "experimental_clearDiffViewed"
+  | "experimental_diffViewed"
+  | "experimental_markDiffViewed"
   | "archiveThreads"
   | "commit"
   | "delete"
@@ -492,6 +495,11 @@ type ExpectedTerminalsKey =
   | "create"
   | "experimental_attention"
   | "experimental_follow"
+  | "experimental_screen"
+  | "experimental_focus"
+  | "experimental_layout"
+  | "experimental_openBrowser"
+  | "experimental_surfaces"
   | "get"
   | "input"
   | "list"
