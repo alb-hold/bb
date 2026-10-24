@@ -548,7 +548,7 @@ describe("native activity reporter", () => {
       );
     });
 
-    it("removes only the field the server names", async () => {
+    it("keeps a non-confirming report queued instead of retrying without confirms", async () => {
       const { calls, logged, reporter } = closureSetup([
         async () => {
           throw rejection('"confirms"');
@@ -556,14 +556,17 @@ describe("native activity reporter", () => {
       ]);
       reporter.report({ confirms: false, prompt: "kept", state: "working" });
       await reporter.settled();
-      expect(calls).toHaveLength(2);
+      expect(calls).toHaveLength(1);
       expect(calls[0]).toMatchObject({ closes: [], confirms: false });
-      expect(calls[1]).toMatchObject({
-        closes: [],
-        confirms: undefined,
-        prompt: "kept",
-      });
-      expect(logged[0]?.fields).toEqual({ closes: 0, confirms: 1 });
+      expect(logged).toEqual([
+        {
+          event: "activity-confirmation-fallback-skipped",
+          fields: { confirms: 1, reason: "legacy_server_defaults_true" },
+        },
+      ]);
+      reporter.retry();
+      await reporter.settled();
+      expect(calls).toHaveLength(1);
     });
 
     it("keeps no downgrade: the next report goes out with the fields again", async () => {
@@ -672,22 +675,26 @@ describe("native activity reporter", () => {
       expect(calls).toHaveLength(1);
     });
 
-    it("keeps the report for a later resend when the retry fails for a transient reason", async () => {
+    it("keeps a report for a later resend when delivery fails transiently", async () => {
       const { calls, reporter } = closureSetup([
         async () => {
-          throw rejection();
+          throw unavailable();
         },
         async () => {
           throw unavailable();
         },
+        async () => ({ ok: true }),
       ]);
       reporter.report(marked);
+      await reporter.settled();
+      expect(calls).toHaveLength(1);
+      reporter.retry();
       await reporter.settled();
       expect(calls).toHaveLength(2);
       reporter.retry();
       await reporter.settled();
       expect(calls).toHaveLength(3);
-      expect(closesOf(calls)).toEqual([[], undefined, []]);
+      expect(closesOf(calls)).toEqual([[], [], []]);
     });
   });
 });

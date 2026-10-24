@@ -14,6 +14,7 @@ export interface NativeActivityReporter {
 }
 
 interface RetainedReport {
+  blockedByUnsupportedConfirms?: true;
   report: NativeActivityReport;
   sequence: number;
 }
@@ -85,6 +86,15 @@ export function createNativeActivityReporter(options: {
         retained = { report: next, sequence };
       }
     };
+    const keepBlockedConfirmation = (): void => {
+      if (sequence !== null && sequence === latestSequence) {
+        retained = {
+          blockedByUnsupportedConfirms: true,
+          report: next,
+          sequence,
+        };
+      }
+    };
     const sendBatch = async (
       closeIds: string[],
       includeConfirms: boolean,
@@ -98,21 +108,36 @@ export function createNativeActivityReporter(options: {
           closes: unrecognizedField(error, "closes"),
           confirms: includeConfirms && unrecognizedField(error, "confirms"),
         };
-        if (unsupported.closes || unsupported.confirms) {
+        if (unsupported.closes) {
           options.log?.("activity-closure-field-rejected", {
-            closes: unsupported.closes ? 1 : 0,
-            confirms: unsupported.confirms ? 1 : 0,
+            closes: 1,
+            confirms: 0,
           });
+        }
+        if (unsupported.confirms) {
+          options.log?.("activity-confirmation-fallback-skipped", {
+            confirms: 1,
+            reason: "legacy_server_defaults_true",
+          });
+          keepBlockedConfirmation();
+          return "failed";
+        }
+        if (unsupported.closes) {
           try {
             await options.send(
-              request(
-                unsupported.closes ? undefined : closeIds,
-                includeConfirms && !unsupported.confirms,
-              ),
+              request(undefined, includeConfirms),
             );
-            acknowledge(unsupported.closes ? undefined : closeIds);
-            return unsupported.closes ? "unsupported" : "accepted";
+            acknowledge(undefined);
+            return "unsupported";
           } catch (retryError) {
+            if (includeConfirms && unrecognizedField(retryError, "confirms")) {
+              options.log?.("activity-confirmation-fallback-skipped", {
+                confirms: 1,
+                reason: "legacy_server_defaults_true",
+              });
+              keepBlockedConfirmation();
+              return "failed";
+            }
             keep(retryError);
             return "failed";
           }
@@ -179,7 +204,9 @@ export function createNativeActivityReporter(options: {
     },
     retry() {
       const resend = retained;
-      if (resend === null) return;
+      if (resend === null || resend.blockedByUnsupportedConfirms === true) {
+        return;
+      }
       retained = null;
       pending = pending.then(() => deliver(resend.report, resend.sequence));
     },

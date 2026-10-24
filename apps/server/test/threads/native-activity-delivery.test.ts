@@ -1397,7 +1397,7 @@ describe("an older server that does not know the closure fields (INJECTED-SERVER
     expect(getThread(h.harness.db, h.thread.id)?.status).toBe("active");
   });
 
-  it("registers Y with its original payload when a report closes X and opens Y, and ends X as the old contract does", async () => {
+  it("uses the legacy question set to close X when closes is stripped, while registering Y unchanged", async () => {
     const h = await oldServerOnTheRealStore();
     h.reporter.report(asking("permission:Bash#1", "Allow Bash?"));
     await h.reporter.settled();
@@ -1412,6 +1412,61 @@ describe("an older server that does not know the closure fields (INJECTED-SERVER
     );
     expectClosedAsAnswered(h.harness, h.thread.id, "Bash");
     expect(h.rejectedBodies).toHaveLength(2);
+    expect(h.requests).toHaveLength(4);
+    expect(h.requests[2]?.body).toMatchObject({
+      closes: ["permission:Bash#1"],
+      state: "waiting",
+    });
+    expect(h.requests[2]?.status).toBe(400);
+    expect(h.requests[3]?.body).not.toHaveProperty("closes");
+    expect(h.requests[3]?.body).toMatchObject({
+      questions: [{ id: "permission:Edit#1", prompt: "Allow Edit?" }],
+      state: "waiting",
+    });
+    expect(h.requests[3]?.status).toBe(200);
+  });
+
+  it("does not stamp a non-confirming report through a legacy server that defaults confirms to true", async () => {
+    const h = await oldServerOnTheRealStore();
+    h.reporter.report({ confirms: false, prompt: null, state: "working" });
+    await h.reporter.settled();
+
+    expect(h.requests).toHaveLength(1);
+    expect(h.requests[0]?.body).toMatchObject({ confirms: false });
+    expect(h.rejectedBodies[0]).toContain('\\"confirms\\"');
+    expect(h.writesAtRejection[0]).toEqual({
+      evidence: null,
+      pending: 0,
+      status: "idle",
+    });
+    expect(
+      getNativeTerminalThread(h.harness.db, h.thread.id)?.lastEvidenceAt,
+    ).toBeNull();
+    expect(getThread(h.harness.db, h.thread.id)?.status).toBe("idle");
+    expect(h.logged).toContain("activity-confirmation-fallback-skipped");
+
+    h.reporter.retry();
+    await h.reporter.settled();
+    expect(h.requests).toHaveLength(1);
+    expect(
+      getNativeTerminalThread(h.harness.db, h.thread.id)?.lastEvidenceAt,
+    ).toBeNull();
+  });
+
+  it("still applies a confirmed report through the legacy fallback", async () => {
+    const h = await oldServerOnTheRealStore();
+    h.reporter.report({ prompt: null, state: "working" });
+    await h.reporter.settled();
+
+    expect(h.requests).toHaveLength(2);
+    expect(h.requests[0]?.body).toMatchObject({ closes: [] });
+    expect(h.requests[0]?.status).toBe(400);
+    expect(h.requests[1]?.body).not.toHaveProperty("closes");
+    expect(h.requests[1]?.status).toBe(200);
+    expect(
+      getNativeTerminalThread(h.harness.db, h.thread.id)?.lastEvidenceAt,
+    ).toEqual(expect.any(Number));
+    expect(getThread(h.harness.db, h.thread.id)?.status).toBe("active");
   });
 
   it("goes out with the fields again after a rejection: nothing is remembered about the server", async () => {
