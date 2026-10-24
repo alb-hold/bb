@@ -237,39 +237,42 @@ export function deleteEnvironmentRetentionIntents(
   });
 }
 
+export type CloseEnvironmentRetentionResult = "closed" | "stale" | "not_open";
+
 export function closeEnvironmentRetention(
   connection: DbConnection,
-  args: { id: string; proof: string; expectedUpdatedAt?: number },
-): boolean {
+  args: { id: string; proof: string; expectedUpdatedAt: number },
+): CloseEnvironmentRetentionResult {
+  if (!Number.isInteger(args.expectedUpdatedAt)) return "stale";
   return connection.transaction((db) => {
     const now = Date.now();
     const before = db
       .select()
       .from(environmentRetentions)
-      .where(
-        and(
-          eq(environmentRetentions.id, args.id),
-          inArray(environmentRetentions.state, BLOCKING_STATES),
-        ),
-      )
+      .where(eq(environmentRetentions.id, args.id))
       .get();
-    if (before === undefined) return false;
-    if (
-      args.expectedUpdatedAt !== undefined &&
-      before.updatedAt !== args.expectedUpdatedAt
-    )
-      return false;
-    db.update(environmentRetentions)
+    if (before === undefined || !BLOCKING_STATES.includes(before.state))
+      return "not_open";
+    const closed = db
+      .update(environmentRetentions)
       .set({
         state: "closed",
         closedAt: now,
         closedProof: args.proof,
-        updatedAt: now,
+        updatedAt: Math.max(now, args.expectedUpdatedAt + 1),
       })
-      .where(eq(environmentRetentions.id, args.id))
-      .run();
+      .where(
+        and(
+          eq(environmentRetentions.id, args.id),
+          eq(environmentRetentions.updatedAt, args.expectedUpdatedAt),
+          inArray(environmentRetentions.state, BLOCKING_STATES),
+        ),
+      )
+      .returning({ id: environmentRetentions.id })
+      .get();
+    if (closed === undefined) return "stale";
     logTransition(db, before, before.state, "closed", args.proof);
-    return true;
+    return "closed";
   });
 }
 

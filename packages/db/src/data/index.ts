@@ -376,6 +376,7 @@ export {
 export type { EnvironmentRow } from "./environments.js";
 export {
   closeEnvironmentRetention,
+  type CloseEnvironmentRetentionResult,
   deleteEnvironmentRetentionIntents,
   findOpenEnvironmentRetentionOverlapping,
   listEnvironmentRetentionTransitions,

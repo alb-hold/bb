@@ -25,6 +25,23 @@ const base = {
   message: "kept",
 } as const;
 
+function closeCurrent(
+  db: ReturnType<typeof createMigratedConnection>,
+  id: string,
+  proof: string,
+) {
+  const current = db
+    .select()
+    .from(environmentRetentions)
+    .where(eq(environmentRetentions.id, id))
+    .get();
+  return closeEnvironmentRetention(db, {
+    id,
+    proof,
+    expectedUpdatedAt: current?.updatedAt ?? -1,
+  });
+}
+
 describe("environment retentions", () => {
   it("outlives the environment and project rows, because it has no foreign keys", () => {
     const db = createMigratedConnection();
@@ -110,9 +127,7 @@ describe("environment retentions", () => {
     expect(
       recordEnvironmentRetention(db, { ...base, state: "retained" }).state,
     ).toBe("unresolved");
-    expect(
-      closeEnvironmentRetention(db, { id: retained.id, proof: "absent" }),
-    ).toBe(true);
+    expect(closeCurrent(db, retained.id, "absent")).toBe("closed");
     expect(listOpenEnvironmentRetentionsForHost(db, "host_a")).toEqual([]);
     expect(
       recordEnvironmentRetention(db, { ...base, state: "intent" }).state,
@@ -149,26 +164,30 @@ describe("environment retentions", () => {
   it("records the closure proof and time on the row and stops blocking", () => {
     const db = createMigratedConnection();
     const row = recordEnvironmentRetention(db, { ...base, state: "retained" });
-    expect(
-      closeEnvironmentRetention(db, { id: row.id, proof: "lstat ENOENT on host_a" }),
-    ).toBe(true);
+    expect(closeCurrent(db, row.id, "lstat ENOENT on host_a")).toBe("closed");
     const closed = db.select().from(environmentRetentions).all()[0];
     expect(closed).toMatchObject({
       state: "closed",
       closedProof: "lstat ENOENT on host_a",
     });
     expect(closed?.closedAt).toBeGreaterThan(0);
-    expect(closeEnvironmentRetention(db, { id: row.id, proof: "again" })).toBe(
-      false,
-    );
+    expect(closeCurrent(db, row.id, "again")).toBe("not_open");
   });
 
   it("appends a transition for every change and keeps the closure after the row is reopened", () => {
     const db = createMigratedConnection();
     const row = recordEnvironmentRetention(db, { ...base, state: "intent" });
-    recordEnvironmentRetention(db, { ...base, state: "retained", message: "kept" });
-    closeEnvironmentRetention(db, { id: row.id, proof: "lstat ENOENT on host_a" });
-    recordEnvironmentRetention(db, { ...base, state: "intent", message: "again" });
+    recordEnvironmentRetention(db, {
+      ...base,
+      state: "retained",
+      message: "kept",
+    });
+    closeCurrent(db, row.id, "lstat ENOENT on host_a");
+    recordEnvironmentRetention(db, {
+      ...base,
+      state: "intent",
+      message: "again",
+    });
 
     expect(
       listEnvironmentRetentionTransitions(db, row.id).map((entry) => [
@@ -255,11 +274,14 @@ describe("environment retentions", () => {
 
     it("leaves a row open and unchanged when its closure transition cannot be written", () => {
       const db = createMigratedConnection();
-      const row = recordEnvironmentRetention(db, { ...base, state: "retained" });
+      const row = recordEnvironmentRetention(db, {
+        ...base,
+        state: "retained",
+      });
       failTransitions(db);
-      expect(() =>
-        closeEnvironmentRetention(db, { id: row.id, proof: "absent" }),
-      ).toThrow("transition insert failed");
+      expect(() => closeCurrent(db, row.id, "absent")).toThrow(
+        "transition insert failed",
+      );
       expect(db.select().from(environmentRetentions).all()[0]).toMatchObject({
         state: "retained",
         closedProof: null,
@@ -315,36 +337,105 @@ describe("environment retentions", () => {
       expect(Date.now() - again.updatedAt).toBeLessThan(5_000);
     });
 
-    it("refuses to close a row that changed after it was read, and closes it when it did not", () => {
+    it("refuses a stale close after a same-state re-record, changing neither the row nor the transition log", () => {
       const db = createMigratedConnection();
-      const read = recordEnvironmentRetention(db, { ...base, state: "retained" });
-      db.update(environmentRetentions)
-        .set({ updatedAt: read.updatedAt })
-        .where(eq(environmentRetentions.id, read.id))
-        .run();
+      const read = recordEnvironmentRetention(db, {
+        ...base,
+        state: "retained",
+      });
+      const versionRead = read.updatedAt;
       const reRecorded = recordEnvironmentRetention(db, {
         ...base,
         state: "retained",
       });
-      expect(reRecorded.updatedAt).toBeGreaterThan(read.updatedAt);
+      expect(reRecorded.updatedAt).not.toBe(versionRead);
+      const rowBefore = JSON.stringify(
+        db.select().from(environmentRetentions).all(),
+      );
+      const transitionsBefore = listEnvironmentRetentionTransitions(
+        db,
+        read.id,
+      );
 
       expect(
         closeEnvironmentRetention(db, {
           id: read.id,
           proof: "stale",
-          expectedUpdatedAt: read.updatedAt,
+          expectedUpdatedAt: versionRead,
         }),
-      ).toBe(false);
-      expect(db.select().from(environmentRetentions).all()[0]?.state).toBe(
-        "retained",
+      ).toBe("stale");
+
+      expect(
+        JSON.stringify(db.select().from(environmentRetentions).all()),
+      ).toBe(rowBefore);
+      expect(listEnvironmentRetentionTransitions(db, read.id)).toEqual(
+        transitionsBefore,
       );
+      expect(listOpenEnvironmentRetentionsForHost(db, "host_a")).toHaveLength(
+        1,
+      );
+
       expect(
         closeEnvironmentRetention(db, {
           id: read.id,
           proof: "fresh",
           expectedUpdatedAt: reRecorded.updatedAt,
         }),
-      ).toBe(true);
+      ).toBe("closed");
+      const transitions = listEnvironmentRetentionTransitions(db, read.id);
+      expect(transitions).toHaveLength(transitionsBefore.length + 1);
+      expect(transitions.at(-1)).toMatchObject({
+        fromState: "retained",
+        toState: "closed",
+        detail: "fresh",
+      });
+      expect(db.select().from(environmentRetentions).all()[0]).toMatchObject({
+        state: "closed",
+        closedProof: "fresh",
+      });
+    });
+
+    it("refuses a stale close after a re-record that changed the state, and a close of a row that is not open", () => {
+      const db = createMigratedConnection();
+      const read = recordEnvironmentRetention(db, {
+        ...base,
+        state: "retained",
+      });
+      recordEnvironmentRetention(db, { ...base, state: "unresolved" });
+      const transitionsBefore = listEnvironmentRetentionTransitions(
+        db,
+        read.id,
+      );
+      expect(
+        closeEnvironmentRetention(db, {
+          id: read.id,
+          proof: "stale",
+          expectedUpdatedAt: read.updatedAt,
+        }),
+      ).toBe("stale");
+      expect(listEnvironmentRetentionTransitions(db, read.id)).toEqual(
+        transitionsBefore,
+      );
+      expect(db.select().from(environmentRetentions).all()[0]?.state).toBe(
+        "unresolved",
+      );
+      const open = db.select().from(environmentRetentions).all()[0];
+      expect(
+        Reflect.apply(closeEnvironmentRetention, undefined, [
+          db,
+          { id: open?.id, proof: "no version" },
+        ]),
+      ).toBe("stale");
+      expect(db.select().from(environmentRetentions).all()[0]?.state).toBe(
+        "unresolved",
+      );
+      expect(
+        closeEnvironmentRetention(db, {
+          id: "missing",
+          proof: "none",
+          expectedUpdatedAt: 1,
+        }),
+      ).toBe("not_open");
     });
   });
 });

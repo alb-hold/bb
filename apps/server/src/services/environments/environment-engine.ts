@@ -1720,11 +1720,16 @@ export async function reconcileEnvironmentRetentions(
         const proof = retentionProofSchema.parse(invocation.value);
         if (!proof.absent) continue;
         if (isOperationRunning(row.environmentId)) continue;
-        closeEnvironmentRetention(deps.db, {
+        const closure = closeEnvironmentRetention(deps.db, {
           id: row.id,
           proof: `${proof.proof} (host ${row.hostId}, checked ${new Date().toISOString()})`,
           expectedUpdatedAt: row.updatedAt,
         });
+        if (closure === "stale")
+          deps.logger.info(
+            { retentionId: row.id },
+            "Retention changed after it was read, so the proof of absence was not applied",
+          );
       } catch (error) {
         deps.logger.warn(
           { retentionId: row.id, error: errorMessage(error) },

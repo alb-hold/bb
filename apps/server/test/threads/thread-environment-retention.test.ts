@@ -378,6 +378,73 @@ describe("a failed create records what it kept", () => {
       });
     });
 
+    it("does not apply a proof of absence to a row that was recorded again while the host was answering, and closes it on the next pass", async () => {
+      await withTestHarness(async (harness) => {
+        let answers = 0;
+        registerProvider(keptFailure, async () => {
+          answers += 1;
+          if (answers === 1) {
+            const [open] = harness.db
+              .select()
+              .from(environmentRetentions)
+              .all();
+            if (open === undefined) throw new Error("no retention row");
+            recordEnvironmentRetention(harness.db, {
+              environmentId: open.environmentId,
+              projectId: open.projectId,
+              hostId: open.hostId,
+              ownerThreadId: open.ownerThreadId,
+              providerId: open.providerId,
+              originalPath: open.originalPath,
+              keptPath: open.keptPath,
+              state: "retained",
+              message: open.message,
+            });
+          }
+          return {
+            absent: true,
+            proof: "lstat ENOENT; no registered workspace",
+          };
+        });
+        const { host, thread } = await destroyedThread(harness);
+        await restoreAndWait(harness, thread.id);
+        const [before] = harness.db.select().from(environmentRetentions).all();
+        const transitionsBefore =
+          listEnvironmentRetentionTransitionsForEnvironment(
+            harness.db,
+            before?.environmentId ?? "",
+          ).length;
+
+        await reconcileEnvironmentRetentions(harness.deps);
+
+        expect(answers).toBe(1);
+        expect(
+          listOpenEnvironmentRetentionsForHost(harness.db, host.id).map(
+            (row) => row.state,
+          ),
+        ).toEqual(["retained"]);
+        expect(
+          listEnvironmentRetentionTransitionsForEnvironment(
+            harness.db,
+            before?.environmentId ?? "",
+          ),
+        ).toHaveLength(transitionsBefore);
+
+        await reconcileEnvironmentRetentions(harness.deps);
+
+        expect(answers).toBe(2);
+        expect(
+          listOpenEnvironmentRetentionsForHost(harness.db, host.id),
+        ).toEqual([]);
+        expect(
+          listEnvironmentRetentionTransitionsForEnvironment(
+            harness.db,
+            before?.environmentId ?? "",
+          ),
+        ).toHaveLength(transitionsBefore + 1);
+      });
+    });
+
     it("never closes a row whose provider cannot prove absence", async () => {
       await withTestHarness(async (harness) => {
         registerProvider(keptFailure);
