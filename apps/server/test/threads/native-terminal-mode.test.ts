@@ -32,6 +32,7 @@ import {
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as interactiveRequests from "../../src/internal/interactive-requests.js";
 import { DAEMON_RESTARTED_PENDING_INTERACTION_REASON } from "../../src/services/interactions/pending-interactions.js";
+import { NATIVE_QUESTION_ANSWERED_REASON } from "../../src/services/threads/native-terminal-questions.js";
 import { applyLoggedThreadLifecycleEvent } from "../../src/services/threads/lifecycle-outcome.js";
 import { stopThreadForCurrentState } from "../../src/services/threads/thread-lifecycle.js";
 import {
@@ -2189,7 +2190,12 @@ describe("native terminal activity evidence across a swap", () => {
     oldTerminal: "exited" | "disconnected",
   ) {
     const { thread } = started;
-    await report(fixture, thread.id, `Bearer ${started.credential}`);
+    await postJson(
+      fixture,
+      `/threads/${thread.id}/native-terminal/activity`,
+      { closes: [], state: "working" },
+      `Bearer ${started.credential}`,
+    );
     expect(evidenceOf(fixture, thread.id)).not.toBeNull();
     const opens = countDaemonMessages(fixture, "terminal.open");
     let finish: Promise<unknown>;
@@ -3227,43 +3233,103 @@ describe("a native activity report that does not confirm activity", () => {
     }
   });
 
-  it("an empty list closes nothing, a holder's computed list closes exactly what the report does not list, and an omitted list closes nothing", async () => {
+  it("a legacy report without closes closes open questions it omits from its snapshot", async () => {
+    const fixture = await createFixture();
+    const clock = vi.spyOn(Date, "now").mockReturnValue(1_000_000);
+    try {
+      const thread = await startThread(fixture);
+      const first = { id: "q1", prompt: "Which layout?" };
+      const second = { id: "q2", prompt: "Which colour?" };
+      expect(
+        (
+          await send(fixture, thread.id, {
+            questions: [first, second],
+            state: "waiting",
+          })
+        ).status,
+      ).toBe(200);
+      expect(openInteractions(fixture, thread.id)).toHaveLength(2);
+      clock.mockReturnValue(1_020_000);
+      expect(
+        (
+          await send(fixture, thread.id, {
+            questions: [first],
+            state: "waiting",
+          })
+        ).status,
+      ).toBe(200);
+      expect(pendingIds(fixture, thread.id)).toEqual([
+        expect.stringContaining("q1"),
+      ]);
+      expect(
+        listPendingInteractionsByThread(fixture.harness.db, {
+          statuses: ["interrupted"],
+          threadId: thread.id,
+        }).map((interaction) => [
+          interaction.providerRequestId,
+          interaction.statusReason,
+        ]),
+      ).toContainEqual(["native:q2", NATIVE_QUESTION_ANSWERED_REASON]);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it("an explicit empty closes list preserves questions omitted from the snapshot", async () => {
+    const fixture = await createFixture();
+    const thread = await startThread(fixture);
+    const first = { id: "q1", prompt: "Which layout?" };
+    const second = { id: "q2", prompt: "Which colour?" };
+    expect(
+      (
+        await send(fixture, thread.id, {
+          questions: [first, second],
+          state: "waiting",
+        })
+      ).status,
+    ).toBe(200);
+    expect(
+      (
+        await send(fixture, thread.id, {
+          closes: [],
+          questions: [first],
+          state: "waiting",
+        })
+      ).status,
+    ).toBe(200);
+    expect(pendingIds(fixture, thread.id).sort()).toEqual([
+      "native:q1",
+      "native:q2",
+    ]);
+  });
+
+  it("clears an answered question from a pre-change report that omits closes", async () => {
     const fixture = await createFixture();
     const clock = vi.spyOn(Date, "now").mockReturnValue(1_000_000);
     try {
       const thread = await answeredQuestion(fixture, clock);
       clock.mockReturnValue(1_020_000);
       expect(
-        (await send(fixture, thread.id, { closes: [], state: "working" }))
-          .status,
-      ).toBe(200);
-      expect(openInteractions(fixture, thread.id)).toHaveLength(1);
-      expect(evidence(fixture, thread.id)).toBe(1_020_000);
-      clock.mockReturnValue(1_030_000);
-      expect(
-        (
-          await send(fixture, thread.id, {
-            closes: [],
-            questions: [{ id: "q2", prompt: "Which colour?" }],
-            state: "waiting",
-          })
-        ).status,
-      ).toBe(200);
-      expect(openInteractions(fixture, thread.id)).toHaveLength(2);
-      clock.mockReturnValue(1_040_000);
-      expect(
         (
           await postJson(
             fixture,
             `/threads/${thread.id}/native-terminal/activity`,
-            { state: "working", prompt: "omitted" },
+            {
+              state: "working",
+            },
           )
         ).status,
       ).toBe(200);
-      expect(openInteractions(fixture, thread.id)).toHaveLength(2);
-      clock.mockReturnValue(1_050_000);
-      await send(fixture, thread.id, { state: "working", prompt: "next" });
       expect(openInteractions(fixture, thread.id)).toHaveLength(0);
+      expect(
+        listPendingInteractionsByThread(fixture.harness.db, {
+          statuses: ["interrupted"],
+          threadId: thread.id,
+        }).map((interaction) => [
+          interaction.providerRequestId,
+          interaction.statusReason,
+        ]),
+      ).toContainEqual(["native:q1", NATIVE_QUESTION_ANSWERED_REASON]);
     } finally {
       clock.mockRestore();
     }

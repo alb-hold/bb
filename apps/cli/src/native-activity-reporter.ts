@@ -40,6 +40,7 @@ export function createNativeActivityReporter(options: {
   let latestSequence = 0;
   let retained: RetainedReport | null = null;
   let possiblyOpen = new Set<string>();
+  let closesSupported = true;
 
   const deliver = async (
     next: NativeActivityReport,
@@ -58,13 +59,14 @@ export function createNativeActivityReporter(options: {
     const request = (
       closeIds: string[],
       includeConfirms: boolean,
+      includeCloses: boolean,
     ): NativeTerminalReportActivityArgs => ({
       threadId: options.threadId,
       ...(credential === null ? {} : { authorization: `Bearer ${credential}` }),
       state: next.state,
       ...(next.prompt === null ? {} : { prompt: next.prompt }),
       ...(next.state === "waiting" ? { questions: next.questions } : {}),
-      ...(closeIds.length === 0 ? {} : { closes: closeIds }),
+      ...(includeCloses ? { closes: closeIds } : {}),
       ...(includeConfirms ? { confirms: false } : {}),
     });
     const acknowledge = (closed: string[]): void => {
@@ -96,17 +98,19 @@ export function createNativeActivityReporter(options: {
     const sendBatch = async (
       closeIds: string[],
       includeConfirms: boolean,
+      includeCloses: boolean,
     ): Promise<"accepted" | "failed"> => {
       try {
-        await options.send(request(closeIds, includeConfirms));
+        await options.send(request(closeIds, includeConfirms, includeCloses));
         acknowledge(closeIds);
         return "accepted";
       } catch (error) {
         const unsupported: Record<ClosureField, boolean> = {
-          closes: unrecognizedField(error, "closes"),
+          closes: includeCloses && unrecognizedField(error, "closes"),
           confirms: includeConfirms && unrecognizedField(error, "confirms"),
         };
         if (unsupported.closes) {
+          closesSupported = false;
           options.log?.("activity-closure-field-rejected", {
             closes: 1,
             confirms: 0,
@@ -121,6 +125,27 @@ export function createNativeActivityReporter(options: {
           return "failed";
         }
         if (unsupported.closes) {
+          if (closeIds.length === 0) {
+            try {
+              await options.send(request([], includeConfirms, false));
+              acknowledge([]);
+              return "accepted";
+            } catch (fallbackError) {
+              if (
+                includeConfirms &&
+                unrecognizedField(fallbackError, "confirms")
+              ) {
+                options.log?.("activity-confirmation-fallback-skipped", {
+                  confirms: 1,
+                  reason: "legacy_server_defaults_true",
+                });
+                keepBlocked("unsupported_confirms");
+                return "failed";
+              }
+              keep(fallbackError);
+              return "failed";
+            }
+          }
           options.log?.("activity-closure-fallback-skipped", {
             closes: closeIds.length,
             reason: "legacy_server_does_not_support_closes",
@@ -137,7 +162,11 @@ export function createNativeActivityReporter(options: {
           if (closeIds.length > 1) {
             let failed = false;
             for (const id of closeIds) {
-              const result = await sendBatch([id], includeConfirms);
+              const result = await sendBatch(
+                [id],
+                includeConfirms,
+                includeCloses,
+              );
               if (result === "failed") failed = true;
             }
             return failed ? "failed" : "accepted";
@@ -164,7 +193,7 @@ export function createNativeActivityReporter(options: {
         start,
         start + NATIVE_TERMINAL_MAX_OPEN_QUESTIONS,
       );
-      const result = await sendBatch(batch, sends.confirms);
+      const result = await sendBatch(batch, sends.confirms, closesSupported);
       if (result === "failed") return;
     }
   };
@@ -190,9 +219,7 @@ export function createNativeActivityReporter(options: {
         return;
       }
       retained = null;
-      pending = pending.then(() =>
-        deliver(resend.report, resend.sequence),
-      );
+      pending = pending.then(() => deliver(resend.report, resend.sequence));
     },
     settled: () => pending,
   };

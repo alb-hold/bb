@@ -269,16 +269,16 @@ describe("native activity reporter", () => {
     const closesOf = (calls: Array<{ closes: string[] | undefined }>) =>
       calls.map((call) => call.closes);
 
-    it("omits empty closes and includes IDs only when a report closes questions", async () => {
+    it("sends an explicit empty closes list to a supporting server", async () => {
       const { calls, reporter } = closureSetup([]);
       reporter.report(asking("q1"));
       reporter.report(working);
       reporter.report(working);
       await reporter.settled();
-      expect(closesOf(calls)).toEqual([undefined, ["q1"], undefined]);
+      expect(closesOf(calls)).toEqual([[], ["q1"], []]);
     });
 
-    it("omits empty close lists on every report kind", async () => {
+    it("sends empty close lists on every report kind while closes are supported", async () => {
       const { calls, reporter } = closureSetup([]);
       reporter.report(asking("q1", "q2"));
       reporter.report(asking("q2"));
@@ -297,15 +297,7 @@ describe("native activity reporter", () => {
         "waiting",
         "idle",
       ]);
-      expect(closesOf(calls)).toEqual([
-        undefined,
-        ["q1"],
-        ["q2"],
-        undefined,
-        undefined,
-        undefined,
-        ["q3"],
-      ]);
+      expect(closesOf(calls)).toEqual([[], ["q1"], ["q2"], [], [], [], ["q3"]]);
     });
 
     it("lets an opening report replace the questions it does not list, and never names the ones it opens", async () => {
@@ -314,7 +306,7 @@ describe("native activity reporter", () => {
       reporter.report(asking("q2"));
       reporter.report(asking("q2", "q3"));
       await reporter.settled();
-      expect(closesOf(calls)).toEqual([undefined, ["q1"], undefined]);
+      expect(closesOf(calls)).toEqual([[], ["q1"], []]);
     });
 
     it("carries a close whose delivery timed out in the next report, so a late delivery of the first one has nothing left to take", async () => {
@@ -329,7 +321,7 @@ describe("native activity reporter", () => {
       await reporter.settled();
       reporter.report(asking("q2"));
       await reporter.settled();
-      expect(closesOf(calls)).toEqual([undefined, ["q1"], ["q1"]]);
+      expect(closesOf(calls)).toEqual([[], ["q1"], ["q1"]]);
     });
 
     it("treats a question as possibly open from the moment its report is attempted", async () => {
@@ -344,7 +336,7 @@ describe("native activity reporter", () => {
       await reporter.settled();
       reporter.report(working);
       await reporter.settled();
-      expect(closesOf(calls)).toEqual([undefined, undefined, ["q1"]]);
+      expect(closesOf(calls)).toEqual([[], [], ["q1"]]);
     });
 
     const faults: Array<[string, () => Error]> = [
@@ -372,10 +364,10 @@ describe("native activity reporter", () => {
             reporter.report(asking("q1"));
             reporter.report(next);
             await reporter.settled();
-            expect(closesOf(calls)).toEqual([undefined, ["q1"]]);
+            expect(closesOf(calls)).toEqual([[], ["q1"]]);
             reporter.report(next);
             await reporter.settled();
-            expect(closesOf(calls)).toEqual([undefined, ["q1"], undefined]);
+            expect(closesOf(calls)).toEqual([[], ["q1"], []]);
           },
         );
 
@@ -389,10 +381,10 @@ describe("native activity reporter", () => {
           reporter.report(asking("q2"));
           await reporter.settled();
           expect(calls.map((call) => call.questions)).toEqual([["q1"], ["q2"]]);
-          expect(closesOf(calls)).toEqual([undefined, ["q1"]]);
+          expect(closesOf(calls)).toEqual([[], ["q1"]]);
           reporter.report(working);
           await reporter.settled();
-          expect(closesOf(calls)).toEqual([undefined, ["q1"], ["q2"]]);
+          expect(closesOf(calls)).toEqual([[], ["q1"], ["q2"]]);
         });
 
         it("is listed as open by a report that supersedes it while it is retained, and the retained copy is not resent afterwards", async () => {
@@ -411,7 +403,7 @@ describe("native activity reporter", () => {
             "waiting",
             "working",
           ]);
-          expect(closesOf(calls)).toEqual([undefined, ["q1"]]);
+          expect(closesOf(calls)).toEqual([[], ["q1"]]);
         });
 
         it("is not listed twice when the retained copy is resent, and the next report still closes it", async () => {
@@ -431,7 +423,7 @@ describe("native activity reporter", () => {
             "waiting",
             "working",
           ]);
-      expect(closesOf(calls)).toEqual([undefined, undefined, ["q1"]]);
+          expect(closesOf(calls)).toEqual([[], [], ["q1"]]);
         });
       },
     );
@@ -454,11 +446,7 @@ describe("native activity reporter", () => {
       reporter.report(asking("q2"));
       reporter.report({ prompt: null, state: "idle" });
       await reporter.settled();
-      expect(closesOf(calls)).toEqual([
-        undefined,
-        ["q1"],
-        ["q1", "q2"],
-      ]);
+      expect(closesOf(calls)).toEqual([[], ["q1"], ["q1", "q2"]]);
     });
 
     it("sends confirms false only on a report that carries the marker", async () => {
@@ -483,7 +471,7 @@ describe("native activity reporter", () => {
       reporter.report(asking("y"));
       await reporter.settled();
       expect(calls).toHaveLength(2);
-      expect(closesOf(calls)).toEqual([undefined, ["x"]]);
+      expect(closesOf(calls)).toEqual([[], ["x"]]);
       expect(calls[1]?.authorization).toBe("Bearer rotated-after-an-attempt");
       expect(logged).toEqual([
         {
@@ -527,7 +515,6 @@ describe("native activity reporter", () => {
             await release;
             throw rejection('"closes"');
           }
-          if (calls.length === 3) throw rejection('"closes"');
           return { ok: true };
         },
         threadId: "thr_1",
@@ -552,7 +539,7 @@ describe("native activity reporter", () => {
       expect(logged).toContain("activity-closure-fallback-skipped");
     });
 
-    it("keeps a rejected close blocked until a newer report supersedes it", async () => {
+    it("keeps a rejected close blocked until a newer snapshot supersedes it", async () => {
       const { calls, reporter } = closureSetup([
         async () => ({ ok: true }),
         async () => {
@@ -564,17 +551,13 @@ describe("native activity reporter", () => {
       await reporter.settled();
       reporter.report(working);
       await reporter.settled();
-      expect(closesOf(calls)).toEqual([undefined, ["q1", "q2"]]);
+      expect(closesOf(calls)).toEqual([[], ["q1", "q2"]]);
       reporter.retry();
       await reporter.settled();
       expect(calls).toHaveLength(2);
       reporter.report(working);
       await reporter.settled();
-      expect(closesOf(calls)).toEqual([
-        undefined,
-        ["q1", "q2"],
-        ["q1", "q2"],
-      ]);
+      expect(closesOf(calls)).toEqual([[], ["q1", "q2"], undefined]);
       expect(calls.at(-1)?.state).toBe("working");
     });
 
@@ -596,14 +579,14 @@ describe("native activity reporter", () => {
       reporter.report(working);
       await reporter.settled();
 
-      expect(closesOf(calls)).toEqual([undefined, ["q1"]]);
+      expect(closesOf(calls)).toEqual([[], ["q1"]]);
       reporter.retry();
       await reporter.settled();
       expect(calls).toHaveLength(2);
 
       reporter.report(working);
       await reporter.settled();
-      expect(closesOf(calls)).toEqual([undefined, ["q1"], ["q1"]]);
+      expect(closesOf(calls)).toEqual([[], ["q1"], ["q1"]]);
     });
 
     it("retains possibly-open IDs through a blocked legacy close for the next supported report", async () => {
@@ -627,7 +610,7 @@ describe("native activity reporter", () => {
       await reporter.settled();
       reporter.report(working);
       await reporter.settled();
-      expect(closesOf(calls)).toEqual([undefined, ["q1"], ["q1"]]);
+      expect(closesOf(calls)).toEqual([[], ["q1"], undefined]);
     });
 
     it("keeps a non-confirming report queued instead of retrying without confirms", async () => {
@@ -640,7 +623,7 @@ describe("native activity reporter", () => {
       await reporter.settled();
       expect(calls).toHaveLength(1);
       expect(calls[0]).toMatchObject({ confirms: false });
-      expect(calls[0]?.closes).toBeUndefined();
+      expect(calls[0]?.closes).toEqual([]);
       expect(logged).toEqual([
         {
           event: "activity-confirmation-fallback-skipped",
@@ -652,11 +635,8 @@ describe("native activity reporter", () => {
       expect(calls).toHaveLength(1);
     });
 
-    it("keeps only the newest unsupported-close report in the bounded retry slot", async () => {
+    it("remembers a legacy closes rejection and omits the field on later reports", async () => {
       const { calls, logged, reporter } = closureSetup([
-        async () => {
-          throw rejection('"closes"');
-        },
         async () => {
           throw rejection('"closes"');
         },
@@ -665,12 +645,12 @@ describe("native activity reporter", () => {
       await reporter.settled();
       reporter.report(working);
       await reporter.settled();
-      expect(closesOf(calls)).toEqual([undefined, undefined]);
+      expect(closesOf(calls)).toEqual([[], undefined, undefined]);
       expect(
         logged.filter(
-          (entry) => entry.event === "activity-closure-fallback-skipped",
+          (entry) => entry.event === "activity-closure-field-rejected",
         ),
-      ).toHaveLength(2);
+      ).toHaveLength(1);
     });
 
     it.each([
@@ -786,7 +766,7 @@ describe("native activity reporter", () => {
       reporter.retry();
       await reporter.settled();
       expect(calls).toHaveLength(3);
-      expect(closesOf(calls)).toEqual([undefined, undefined, undefined]);
+      expect(closesOf(calls)).toEqual([[], [], []]);
     });
   });
 });
