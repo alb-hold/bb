@@ -19,6 +19,11 @@ export const SYSTEM_RELEASE_ACTOR: EnvironmentReleaseActor = {
   threadId: null,
 };
 
+export const FAILED_CREATE_RELEASE_ACTOR: EnvironmentReleaseActor = {
+  kind: "system:failed-create",
+  threadId: null,
+};
+
 export function recordThreadEnvironmentReleases(
   db: ConsentConnection,
   threadIds: readonly string[],

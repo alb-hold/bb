@@ -12,6 +12,7 @@ import {
   migrate,
   unarchiveThread,
   upsertHost,
+  FAILED_CREATE_RELEASE_ACTOR,
   SYSTEM_RELEASE_ACTOR,
 } from "../src/index.js";
 import { createMigratedConnection } from "../src/testing.js";
@@ -50,6 +51,7 @@ describe("environment release consents", () => {
     ["self", { kind: "self", threadId: "thr_self" }],
     ["coordinator", { kind: "coordinator", threadId: "thr_parent" }],
     ["system", SYSTEM_RELEASE_ACTOR],
+    ["failed create", FAILED_CREATE_RELEASE_ACTOR],
   ] as const)("records an archive by the %s with the actor", (_name, actor) => {
     const { db, environment, thread } = setup();
     const archived = thread();
@@ -75,6 +77,7 @@ describe("environment release consents", () => {
     ["self", { kind: "self", threadId: "thr_self" }],
     ["coordinator", { kind: "coordinator", threadId: "thr_parent" }],
     ["system", SYSTEM_RELEASE_ACTOR],
+    ["failed create", FAILED_CREATE_RELEASE_ACTOR],
   ] as const)("records a delete by the %s with the actor", (_name, actor) => {
     const { db, environment, thread } = setup();
     const deleted = thread();

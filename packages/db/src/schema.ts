@@ -1378,7 +1378,14 @@ export const environmentReleaseConsents = sqliteTable(
     environmentId: text("environment_id").notNull(),
     threadId: text("thread_id").notNull(),
     actorKind: text("actor_kind")
-      .$type<"user" | "self" | "coordinator" | "system" | "migrated">()
+      .$type<
+        | "user"
+        | "self"
+        | "coordinator"
+        | "system"
+        | "system:failed-create"
+        | "migrated"
+      >()
       .notNull(),
     actorThreadId: text("actor_thread_id"),
     grantedAt: integer("granted_at").notNull(),

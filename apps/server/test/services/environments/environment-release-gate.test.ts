@@ -15,9 +15,11 @@ import {
   sweepProviderEnvironment,
 } from "../../../src/services/environments/environment-engine.js";
 import { beginProjectDeletion } from "../../../src/services/projects/project-deletion.js";
+import { createThreadFromRequest } from "../../../src/services/threads/thread-create.js";
 import { invokePluginInline } from "../../../src/services/plugins/plugin-hook-registry.js";
 import { setPluginEnvironmentProviderBridge } from "../../../src/services/plugins/plugin-environment-provider-registry.js";
 import { registerTestHostRpcCapture } from "../../helpers/commands.js";
+import { textInput } from "../../helpers/prompt-input.js";
 import {
   seedEnvironment,
   seedHostSession,
@@ -36,7 +38,9 @@ afterEach(() => {
   setPluginEnvironmentProviderBridge(undefined);
 });
 
-function installProvider() {
+function installProvider(
+  preflight: { status: "retained"; message: string } | null = null,
+) {
   const remove = vi.fn<PluginEnvironmentProviderDeclaration["remove"]>(
     async () => ({ status: "removed" }),
   );
@@ -52,6 +56,9 @@ function installProvider() {
         path: "/tmp/release-gate-new",
         ownsPath: true,
       }),
+      ...(preflight === null
+        ? {}
+        : { experimental_preflightRemove: async () => preflight }),
       remove,
     }),
   };
@@ -92,7 +99,7 @@ function seedWorkspace(harness: TestAppHarness) {
     environmentId: environment.id,
     status: "idle",
   });
-  return { environment, thread };
+  return { environment, host, project, thread };
 }
 
 describe("removing a provider-owned workspace requires its threads' release", () => {
@@ -230,4 +237,107 @@ describe("removing a provider-owned workspace requires its threads' release", ()
         getEnvironment(harness.db, environment.id)?.teardownMessage,
       ).toContain(sibling.id);
     }));
+});
+
+describe("a create that fails after its thread exists", () => {
+  async function failCreate(
+    harness: TestAppHarness,
+    args: { environmentId: string; projectId: string },
+  ): Promise<string> {
+    await expect(
+      createThreadFromRequest(harness.deps, {
+        environment: { type: "reuse", environmentId: args.environmentId },
+        experimental_pluginCreateData: { "no-such-plugin": {} },
+        input: textInput("Doomed launch"),
+        origin: "sdk",
+        projectId: args.projectId,
+        providerId: "codex",
+        startedOnBehalfOf: null,
+      }),
+    ).rejects.toMatchObject({
+      status: 400,
+      body: { code: "plugin_configuration_unavailable" },
+    });
+    const tombstoned = harness.db
+      .select()
+      .from(threads)
+      .where(eq(threads.environmentId, args.environmentId))
+      .all();
+    expect(tombstoned).toHaveLength(1);
+    expect(tombstoned[0]?.deletedAt).not.toBeNull();
+    return tombstoned[0]?.id ?? "";
+  }
+
+  it("releases the workspace once it is clean, recording the failed-create actor", async () =>
+    withTestHarness(async (harness) => {
+      const { remove } = installProvider();
+      const { environment, project, thread } = seedWorkspace(harness);
+      harness.db.delete(threads).where(eq(threads.id, thread.id)).run();
+
+      const failedId = await failCreate(harness, {
+        environmentId: environment.id,
+        projectId: project.id,
+      });
+
+      expect(
+        listEnvironmentReleaseConsents(harness.db, environment.id),
+      ).toMatchObject([
+        {
+          threadId: failedId,
+          actorKind: "system:failed-create",
+          actorThreadId: null,
+        },
+      ]);
+      expect(requestEnvironmentRemoval(harness.deps, environment.id)).toBe(
+        true,
+      );
+      await sweepProviderEnvironment(harness.deps, environment.id);
+
+      expect(remove).toHaveBeenCalledTimes(1);
+      expect(getEnvironment(harness.db, environment.id)).toMatchObject({
+        status: "destroyed",
+      });
+    }));
+
+  it.each([
+    [
+      "a program is working in it",
+      "it is still in use: process 4242 (node) has its working folder inside it",
+    ],
+    [
+      "it holds changes that are not published",
+      "it holds uncommitted changes, so it was kept",
+    ],
+  ])(
+    "keeps the workspace with the provider's reason when %s",
+    async (_name, message) =>
+      withTestHarness(async (harness) => {
+        const { remove } = installProvider({ status: "retained", message });
+        const { environment, project, thread } = seedWorkspace(harness);
+        harness.db.delete(threads).where(eq(threads.id, thread.id)).run();
+
+        const failedId = await failCreate(harness, {
+          environmentId: environment.id,
+          projectId: project.id,
+        });
+        expect(
+          listEnvironmentReleaseConsents(harness.db, environment.id),
+        ).toMatchObject([
+          { threadId: failedId, actorKind: "system:failed-create" },
+        ]);
+        expect(requestEnvironmentRemoval(harness.deps, environment.id)).toBe(
+          true,
+        );
+        await sweepProviderEnvironment(harness.deps, environment.id);
+
+        expect(remove).not.toHaveBeenCalled();
+        const kept = getEnvironment(harness.db, environment.id);
+        expect(kept).toMatchObject({
+          status: "ready",
+          path: "/tmp/release-gate-workspace",
+        });
+        expect(kept?.teardownStatus).not.toBe("removed");
+        expect(kept?.teardownMessage).toContain(message);
+      }),
+  );
 });

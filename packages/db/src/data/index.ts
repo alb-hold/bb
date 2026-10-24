@@ -701,6 +701,7 @@ export {
   listUnreleasedEnvironmentThreadIds,
   recordThreadEnvironmentReleases,
   revokeThreadEnvironmentReleases,
+  FAILED_CREATE_RELEASE_ACTOR,
   SYSTEM_RELEASE_ACTOR,
 } from "./environment-release-consents.js";
 export type {
