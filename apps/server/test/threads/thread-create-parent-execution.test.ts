@@ -28,14 +28,14 @@ describe("child creation execution defaults", () => {
       },
     },
     {
-      name: "inherits parent provider ahead of project defaults",
+      name: "inherits parent provider and reasoning; fork rule #282: the provider's declared child model wins over parent history (owner decision 2026-10-24)",
       parentProviderId: "claude-code",
       hasParentExecution: true,
       disabledProviderIds: [],
       request: {},
       expected: {
         providerId: "claude-code",
-        model: "parent-model",
+        model: "claude-sonnet-5-5",
         reasoningLevel: "low",
       },
     },
@@ -52,14 +52,14 @@ describe("child creation execution defaults", () => {
       },
     },
     {
-      name: "keeps parent defaults with an explicit matching provider",
+      name: "keeps parent provider and reasoning with an explicit matching provider; fork rule #282: the provider's declared child model wins over parent history (owner decision 2026-10-24)",
       parentProviderId: "claude-code",
       hasParentExecution: true,
       disabledProviderIds: [],
       request: { providerId: "claude-code" },
       expected: {
         providerId: "claude-code",
-        model: "parent-model",
+        model: "claude-sonnet-5-5",
         reasoningLevel: "low",
       },
     },
@@ -88,7 +88,7 @@ describe("child creation execution defaults", () => {
       },
     },
     {
-      name: "ignores unowned picker values before inheriting parent execution",
+      name: "ignores unowned picker values before inheriting parent provider and reasoning; fork rule #282: the provider's declared child model wins over parent history (owner decision 2026-10-24)",
       parentProviderId: "claude-code",
       hasParentExecution: true,
       disabledProviderIds: [],
@@ -100,7 +100,20 @@ describe("child creation execution defaults", () => {
       },
       expected: {
         providerId: "claude-code",
-        model: "parent-model",
+        model: "claude-sonnet-5-5",
+        reasoningLevel: "low",
+      },
+    },
+    {
+      name: "inherits parent reasoning while using the provider's declared child model",
+      parentProviderId: "claude-code",
+      parentModel: "claude-opus-5-5",
+      hasParentExecution: true,
+      disabledProviderIds: [],
+      request: {},
+      expected: {
+        providerId: "claude-code",
+        model: "claude-sonnet-5-5",
         reasoningLevel: "low",
       },
     },
@@ -119,6 +132,7 @@ describe("child creation execution defaults", () => {
   ] satisfies {
     name: string;
     parentProviderId: string;
+    parentModel?: string;
     hasParentExecution: boolean;
     disabledProviderIds: string[];
     request: Pick<
@@ -132,6 +146,7 @@ describe("child creation execution defaults", () => {
     "$name",
     async ({
       parentProviderId,
+      parentModel,
       hasParentExecution,
       disabledProviderIds,
       request,
@@ -156,7 +171,7 @@ describe("child creation execution defaults", () => {
             threadId: parent.id,
             environmentId: environment.id,
             providerThreadId: "parent-session",
-            model: "parent-model",
+            model: parentModel ?? "parent-model",
             reasoningLevel: "low",
             permissionMode: "auto",
           });
