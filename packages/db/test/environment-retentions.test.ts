@@ -493,113 +493,147 @@ describe("environment retentions", () => {
       vi.useRealTimers();
     });
 
+    const versionOf = (db: TestDb, id: string) =>
+      db
+        .select()
+        .from(environmentRetentions)
+        .where(eq(environmentRetentions.id, id))
+        .get()?.updatedAt;
+    const tableJson = (db: TestDb) =>
+      JSON.stringify(db.select().from(environmentRetentions).all());
+
     it.each(writers)(
       "refuses a close made with the version read before $name, changing neither the row nor the transition log",
+      ({ name, seed, write }) => {
+        vi.useFakeTimers({ toFake: ["Date"] });
+        vi.setSystemTime(FROZEN_AT);
+        const db = createMigratedConnection();
+        const id = seed(db);
+        const versionRead = versionOf(db, id) ?? -1;
+        write(db);
+        expect(Date.now()).toBe(FROZEN_AT);
+        const rowBefore = tableJson(db);
+        const transitionsBefore = listEnvironmentRetentionTransitions(db, id);
+
+        const result = closeEnvironmentRetention(db, {
+          id,
+          proof: "stale",
+          expectedUpdatedAt: versionRead,
+        });
+
+        const rowAfter = tableJson(db);
+        const transitionsAfter = listEnvironmentRetentionTransitions(db, id);
+        const observation = JSON.stringify({
+          writer: name,
+          versionRead,
+          versionOfRow: versionOf(db, id),
+          result,
+          rowBefore: JSON.parse(rowBefore),
+          rowAfter: JSON.parse(rowAfter),
+          transitionsBefore: transitionsBefore.length,
+          transitionsAfter: transitionsAfter.length,
+        });
+        expect(result, `stale-close observation: ${observation}`).toBe("stale");
+        expect(rowAfter, `stale-close observation: ${observation}`).toBe(
+          rowBefore,
+        );
+        expect(
+          transitionsAfter,
+          `stale-close observation: ${observation}`,
+        ).toEqual(transitionsBefore);
+      },
+    );
+
+    it.each(writers)(
+      "gives the row a new version after $name, and a close with that version writes exactly one transition",
       ({ seed, write }) => {
         vi.useFakeTimers({ toFake: ["Date"] });
         vi.setSystemTime(FROZEN_AT);
         const db = createMigratedConnection();
         const id = seed(db);
-        const versionRead = db
-          .select()
-          .from(environmentRetentions)
-          .where(eq(environmentRetentions.id, id))
-          .get()?.updatedAt;
-        expect(versionRead).toBeDefined();
-
+        const versionRead = versionOf(db, id) ?? -1;
         write(db);
+        const currentVersion = versionOf(db, id) ?? -1;
+        const transitionsBefore = listEnvironmentRetentionTransitions(db, id);
 
-        expect(Date.now()).toBe(FROZEN_AT);
-        const rowAfterWrite = JSON.stringify(
-          db.select().from(environmentRetentions).all(),
-        );
-        const transitionsAfterWrite = listEnvironmentRetentionTransitions(
-          db,
-          id,
-        );
-        const currentVersion = db
-          .select()
-          .from(environmentRetentions)
-          .where(eq(environmentRetentions.id, id))
-          .get()?.updatedAt;
-        expect(currentVersion).toBeGreaterThan(versionRead ?? Infinity);
-
-        expect(
-          closeEnvironmentRetention(db, {
-            id,
-            proof: "stale",
-            expectedUpdatedAt: versionRead ?? -1,
-          }),
-        ).toBe("stale");
-        expect(
-          JSON.stringify(db.select().from(environmentRetentions).all()),
-        ).toBe(rowAfterWrite);
-        expect(listEnvironmentRetentionTransitions(db, id)).toEqual(
-          transitionsAfterWrite,
-        );
-
+        expect(currentVersion).toBeGreaterThan(versionRead);
         expect(
           closeEnvironmentRetention(db, {
             id,
             proof: "fresh",
-            expectedUpdatedAt: currentVersion ?? -1,
+            expectedUpdatedAt: currentVersion,
           }),
         ).toBe("closed");
         expect(listEnvironmentRetentionTransitions(db, id)).toHaveLength(
-          transitionsAfterWrite.length + 1,
+          transitionsBefore.length + 1,
         );
       },
     );
 
-    it("moves the version past the one a close was read at when the row is closed and recorded again within one millisecond", () => {
+    it("refuses a close made with a version read before the row was closed and recorded again within one millisecond", () => {
       vi.useFakeTimers({ toFake: ["Date"] });
       vi.setSystemTime(FROZEN_AT);
       const db = createMigratedConnection();
       const id = retained(db);
-      const versionRead = db
-        .select()
-        .from(environmentRetentions)
-        .get()?.updatedAt;
+      const versionRead = versionOf(db, id) ?? -1;
       expect(
         closeEnvironmentRetention(db, {
           id,
           proof: "absent",
-          expectedUpdatedAt: versionRead ?? -1,
+          expectedUpdatedAt: versionRead,
         }),
       ).toBe("closed");
-      const closedVersion = db
-        .select()
-        .from(environmentRetentions)
-        .get()?.updatedAt;
-      expect(closedVersion).toBeGreaterThan(versionRead ?? Infinity);
-
+      const closedVersion = versionOf(db, id) ?? -1;
       recordEnvironmentRetention(db, { ...base, state: "retained" });
-      const reopenedVersion = db
-        .select()
-        .from(environmentRetentions)
-        .get()?.updatedAt;
-      expect(reopenedVersion).toBeGreaterThan(closedVersion ?? Infinity);
-      const rowBefore = JSON.stringify(
-        db.select().from(environmentRetentions).all(),
+      const rowBefore = tableJson(db);
+      const transitionsBefore = listEnvironmentRetentionTransitions(db, id);
+
+      const results = [versionRead, closedVersion].map((expectedUpdatedAt) =>
+        closeEnvironmentRetention(db, {
+          id,
+          proof: "stale",
+          expectedUpdatedAt,
+        }),
       );
 
+      const observation = JSON.stringify({
+        versionRead,
+        closedVersion,
+        versionOfRow: versionOf(db, id),
+        results,
+        transitionsBefore: transitionsBefore.length,
+        transitionsAfter: listEnvironmentRetentionTransitions(db, id).length,
+      });
+      expect(results, `stale-close observation: ${observation}`).toEqual([
+        "stale",
+        "stale",
+      ]);
+      expect(tableJson(db), `stale-close observation: ${observation}`).toBe(
+        rowBefore,
+      );
       expect(
-        closeEnvironmentRetention(db, {
-          id,
-          proof: "stale",
-          expectedUpdatedAt: versionRead ?? -1,
-        }),
-      ).toBe("stale");
-      expect(
-        closeEnvironmentRetention(db, {
-          id,
-          proof: "stale",
-          expectedUpdatedAt: closedVersion ?? -1,
-        }),
-      ).toBe("stale");
-      expect(
-        JSON.stringify(db.select().from(environmentRetentions).all()),
-      ).toBe(rowBefore);
+        listEnvironmentRetentionTransitions(db, id),
+        `stale-close observation: ${observation}`,
+      ).toEqual(transitionsBefore);
+    });
+
+    it("leaves a closed row with a version past the one the close was made at, and a reopened row past that", () => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(FROZEN_AT);
+      const db = createMigratedConnection();
+      const id = retained(db);
+      const versionRead = versionOf(db, id) ?? -1;
+      closeEnvironmentRetention(db, {
+        id,
+        proof: "absent",
+        expectedUpdatedAt: versionRead,
+      });
+      const closedVersion = versionOf(db, id) ?? -1;
+      recordEnvironmentRetention(db, { ...base, state: "retained" });
+      const reopenedVersion = versionOf(db, id) ?? -1;
+
+      expect(closedVersion).toBeGreaterThan(versionRead);
+      expect(reopenedVersion).toBeGreaterThan(closedVersion);
     });
 
     it("answers not_open to a close of an intent that was deleted", () => {
