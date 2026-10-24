@@ -193,7 +193,10 @@ function runTimedStatementOperation<TValue>(
   try {
     return args.work();
   } finally {
-    if (firstWriteStartedAt !== null) {
+    if (
+      firstWriteStartedAt !== null &&
+      args.config.transactionLockWaitSource === null
+    ) {
       args.config.transactionLockWaitMs =
         Number(hrtime.bigint() - firstWriteStartedAt) / 1_000_000;
       args.config.transactionLockWaitSource = args.trackFirstWrite
@@ -340,7 +343,10 @@ function instrumentSqliteClient(
   };
   const originalExec = sqlite.exec.bind(sqlite);
   sqlite.exec = (source) => {
-    if (config.transactionDepth > 0) {
+    if (
+      config.transactionDepth > 0 &&
+      config.transactionLockWaitSource === null
+    ) {
       config.transactionLockWaitSource = "exec";
     }
     return runTimedStatementOperation({
