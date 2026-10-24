@@ -3243,6 +3243,7 @@ describe("a native activity report that does not confirm activity", () => {
       expect(
         (
           await send(fixture, thread.id, {
+            closes: [],
             questions: [first, second],
             state: "waiting",
           })
@@ -3252,10 +3253,11 @@ describe("a native activity report that does not confirm activity", () => {
       clock.mockReturnValue(1_020_000);
       expect(
         (
-          await send(fixture, thread.id, {
-            questions: [first],
-            state: "waiting",
-          })
+          await postJson(
+            fixture,
+            `/threads/${thread.id}/native-terminal/activity`,
+            { questions: [first], state: "waiting" },
+          )
         ).status,
       ).toBe(200);
       expect(pendingIds(fixture, thread.id)).toEqual([
