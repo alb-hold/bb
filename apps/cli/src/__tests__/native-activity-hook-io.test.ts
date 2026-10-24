@@ -1993,6 +1993,33 @@ describe.skipIf(process.platform === "win32")(
       });
     });
 
+    it("drops a gap-filled late clear so it cannot lower the reader's clear sequence", () => {
+      const { directory, file, reader } = appendFixture();
+      writeFileSync(
+        file,
+        `30\t${record("UserPromptSubmit", { prompt: "current" })}\n`,
+      );
+      expect(reader.read()).toEqual([
+        { state: "working", prompt: "current" },
+      ]);
+
+      const startedAt = Math.floor(Date.now() / 1000);
+      writeFileSync(
+        path.join(directory, `.late.101.${startedAt}.20`),
+        record("Stop"),
+      );
+      expect(reader.read()).toEqual([]);
+      const tracker: unknown = Reflect.get(reader, "tracker");
+      expect(Reflect.get(tracker as object, "lastClearSequence")).toBe(30);
+
+      writeFileSync(
+        path.join(directory, `.late.102.${startedAt}.25`),
+        record("PermissionRequest", { tool_name: "Bash" }),
+      );
+      expect(reader.read()).toEqual([]);
+      expect(reader.heartbeat()).toBeNull();
+    });
+
     it("keeps .lost only for a hook that cannot even write its late file, and the reader counts it at once", async () => {
       const { directory, file, lock } = appendFixture();
       symlinkSync(String(process.pid), lock);

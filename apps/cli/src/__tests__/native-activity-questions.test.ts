@@ -127,6 +127,24 @@ describe("native terminal questions", () => {
     }
   });
 
+  it("keeps the latest clear sequence when a late clear is applied directly", () => {
+    const tracker = new NativeActivityTracker("out-of-order-clears");
+    tracker.apply({ state: "idle", prompt: null }, 30);
+    tracker.apply({ state: "idle", prompt: null }, 20);
+    const delayed = {
+      occurrence: true as const,
+      question: {
+        id: "permission:Bash",
+        prompt: "Claude Code needs permission to use: Bash",
+      },
+      state: null,
+      prompt: null,
+    };
+
+    expect(tracker.acceptsLate(delayed, 1_798_208_000, 25)).toBe(false);
+    expect(tracker.heartbeat()).toBeNull();
+  });
+
   it("accepts a same-second opener sequenced after a clear", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(1_798_208_000_000));

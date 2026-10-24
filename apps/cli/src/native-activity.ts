@@ -472,7 +472,7 @@ export class NativeActivityTracker {
     this.announcedCalls.clear();
     if (hookSequence === null) this.hasUnsequencedClear = true;
     else {
-      this.lastClearSequence = hookSequence;
+      this.lastClearSequence = Math.max(this.lastClearSequence, hookSequence);
       this.hasUnsequencedClear = false;
     }
   }
