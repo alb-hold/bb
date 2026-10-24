@@ -2,6 +2,7 @@ import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import {
   createFakePluginHost,
   makeHostResponse,
+  makeThreadResponse,
   type ExperimentalFakeHostRpcCall,
 } from "@get-bb/plugin-sdk/testing";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -220,6 +221,32 @@ describe("GitHub PR Status server", () => {
         hostId: "host-1",
       },
     ]);
+  });
+
+  it("refreshes the thread environment's pull request after a completed turn", async () => {
+    const fake = await setup({});
+    await fake.harness.callRpc("pullRequests", { keys: ["env-1"] });
+    expect(
+      fake.harness.experimental_hostRpcCalls.filter(
+        (call) => call.method === "view",
+      ),
+    ).toHaveLength(1);
+
+    fake.harness.experimental_rpcInvalidations.length = 0;
+    await fake.harness.emitThreadEvent("thread.idle", {
+      thread: makeThreadResponse({ environmentId: "env-1" }),
+      lastAssistantText: null,
+    });
+
+    expect(fake.harness.experimental_rpcInvalidations).toContainEqual([
+      "environment:env-1",
+    ]);
+    await fake.harness.callRpc("pullRequests", { keys: ["env-1"] });
+    expect(
+      fake.harness.experimental_hostRpcCalls.filter(
+        (call) => call.method === "view",
+      ),
+    ).toHaveLength(2);
   });
 
   it("refuses actions without calling a machine that isn't available", async () => {

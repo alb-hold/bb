@@ -18,7 +18,8 @@ import {
 
 const sdk = vi.hoisted(() => ({
   rows: {} as Record<string, EnvironmentPullRequest>,
-  mutate: vi.fn(async () => ({ message: "Merged" })),
+  mutate: vi.fn(async (_input?: unknown) => ({ message: "Merged" })),
+  mutationCalls: [] as Array<{ method: string; input: unknown }>,
   isPending: false,
 }));
 
@@ -28,8 +29,11 @@ vi.mock("@get-bb/plugin-sdk/app", () => ({
     error: null,
     refetch: async () => {},
   }),
-  experimental_useRpcMutation: () => ({
-    mutate: sdk.mutate,
+  experimental_useRpcMutation: ({ method }: { method: string }) => ({
+    mutate: (input: unknown) => {
+      sdk.mutationCalls.push({ method, input });
+      return sdk.mutate(input);
+    },
     isPending: sdk.isPending,
   }),
   useBbNavigate: () => ({ openUrl: () => false }),
@@ -103,6 +107,7 @@ afterEach(() => {
   sdk.rows = {};
   sdk.isPending = false;
   sdk.mutate.mockClear();
+  sdk.mutationCalls.length = 0;
   window.localStorage.clear();
 });
 
@@ -137,7 +142,10 @@ describe("pull request context segment", () => {
   it("labels a standalone pull request without a redundant open state", () => {
     show(PULL_REQUEST);
     const { container } = renderPart("summary");
+    const link = screen.getByRole("link", { name: /Pull request 128:/ });
 
+    expect(link.getAttribute("href")).toBe(PULL_REQUEST.url);
+    expect(link.getAttribute("aria-label")).toMatch(/Open, Ready to merge/u);
     expect(container.textContent).toContain("PR #128");
     expect(container.textContent).not.toContain("· Open");
     expect(container.textContent).not.toContain("Ready to merge");
@@ -253,6 +261,9 @@ describe("pull request context segment", () => {
     renderPart("action");
     fireEvent.click(screen.getByRole("button", { name: "Mark ready" }));
     expect(sdk.mutate).toHaveBeenCalledWith({ environmentId: "env_1" });
+    expect(sdk.mutationCalls).toEqual([
+      { method: "markReady", input: { environmentId: "env_1" } },
+    ]);
   });
 
   it("merges with the remembered method and remembers a new one", () => {
@@ -264,6 +275,12 @@ describe("pull request context segment", () => {
       environmentId: "env_1",
       method: "squash",
     });
+    expect(sdk.mutationCalls).toEqual([
+      {
+        method: "merge",
+        input: { environmentId: "env_1", method: "squash" },
+      },
+    ]);
   });
 
   it("disables the actions while one runs", () => {

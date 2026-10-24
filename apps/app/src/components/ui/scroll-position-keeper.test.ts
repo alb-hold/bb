@@ -160,6 +160,37 @@ describe("ScrollPositionKeeper", () => {
     expect(timeline.keeper.isAttached()).toBe(false);
   });
 
+  it("reattaches on touch at the clamped end and follows later content growth", () => {
+    const rows = rowsOf(10);
+    const timeline = createTimeline(rows);
+    timeline.userScrollTo(1200);
+
+    timeline.setRows(rows.slice(0, 7));
+    timeline.keeper.reconcile();
+    expect(timeline.layout.scrollTop).toBe(timeline.layout.maxScrollTop());
+    expect(timeline.keeper.isAttached()).toBe(false);
+
+    timeline.scrollElement.dispatchEvent(new TouchEvent("touchstart"));
+    expect(timeline.keeper.isAttached()).toBe(true);
+
+    timeline.setRows(rows.slice(0, 8));
+    timeline.keeper.reconcile();
+    expect(timeline.layout.scrollTop).toBe(timeline.layout.maxScrollTop());
+  });
+
+  it("keeps a user-scrolled-up reader detached when later content grows", () => {
+    const rows = rowsOf(10);
+    const timeline = createTimeline(rows);
+    timeline.userScrollTo(400);
+    const readingRowTop = timeline.topOf("row-2");
+
+    timeline.setRows([...rows, ...rowsOf(2, 200, "later")]);
+    timeline.keeper.reconcile();
+
+    expect(timeline.keeper.isAttached()).toBe(false);
+    expect(timeline.topOf("row-2")).toBe(readingRowTop);
+  });
+
   it("attaches when the viewport grows and the reader's position no longer fits above the end", () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
     const timeline = createTimeline(rowsOf(10));

@@ -192,6 +192,7 @@ export class ScrollPositionKeeper {
         this.touchStartY = event.touches[0]?.clientY ?? null;
       }
       this.touching = true;
+      this.attachIfAtEnd();
     };
     const onTouchMove = (event: TouchEvent) => {
       const startY = this.touchStartY;
