@@ -41,6 +41,7 @@ export function mountTerminalReplayPreview({
   const previousContainerType = container.style.containerType;
   container.style.containerType = "inline-size";
   const preview = document.createElement("div");
+  const focusedElement = document.activeElement;
   preview.dataset.terminalReplayPreview = "";
   preview.dataset.gridCols = String(terminal.cols);
   preview.dataset.gridRows = String(terminal.rows);
@@ -56,15 +57,21 @@ export function mountTerminalReplayPreview({
   container.style.opacity = "0";
   parent.append(preview);
   terminal.open(preview);
+  if (
+    focusedElement instanceof HTMLElement &&
+    focusedElement !== document.body &&
+    focusedElement.isConnected &&
+    document.activeElement !== focusedElement
+  ) {
+    focusedElement.focus({ preventScroll: true });
+  }
   let fitGrid = initialFitGrid;
   let latestPtyGrid = { cols: terminal.cols, rows: terminal.rows };
   let surfaceScale =
     fitGrid === null ? 1 : terminalSurfaceScale(latestPtyGrid, fitGrid);
   const detachPointerCoordinates = terminal.element
-    ? attachTerminalScalePointerCoordinates(
-        terminal.element,
-        () =>
-          terminal.element ? readTerminalSurfaceScale(terminal.element) : 1,
+    ? attachTerminalScalePointerCoordinates(terminal.element, () =>
+        terminal.element ? readTerminalSurfaceScale(terminal.element) : 1,
       )
     : () => undefined;
   const updateSurfaceScale = () => {
