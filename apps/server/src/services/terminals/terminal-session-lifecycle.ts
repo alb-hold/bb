@@ -1894,10 +1894,12 @@ export class TerminalSessionLifecycle {
         `lines must be at most ${TERMINAL_SCREEN_MAX_LINES}`,
       );
     }
-    const maintained = await this.terminalScreenStates.snapshot(
-      args.terminalId,
-    );
-    if (maintained !== null) return maintained;
+    if (args.query.lines === undefined) {
+      const maintained = await this.terminalScreenStates.snapshot(
+        args.terminalId,
+      );
+      if (maintained !== null) return maintained;
+    }
     const output = await this.readTerminalOutput({
       terminalId: args.terminalId,
       query: { tailBytes: TERMINAL_SCREEN_REPLAY_BYTES },
