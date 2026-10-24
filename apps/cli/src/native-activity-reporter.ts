@@ -14,7 +14,7 @@ export interface NativeActivityReporter {
 }
 
 interface RetainedReport {
-  blockedByUnsupportedConfirms?: true;
+  blockedReason?: "unsupported_closes" | "unsupported_confirms";
   report: NativeActivityReport;
   sequence: number;
 }
@@ -44,7 +44,6 @@ export function createNativeActivityReporter(options: {
   const deliver = async (
     next: NativeActivityReport,
     sequence: number | null,
-    latestAtQueue: number,
   ): Promise<void> => {
     const credential = options.currentCredential();
     const opened =
@@ -57,7 +56,7 @@ export function createNativeActivityReporter(options: {
       confirms: next.state !== "waiting" && next.confirms === false,
     };
     const request = (
-      closeIds: string[] | undefined,
+      closeIds: string[],
       includeConfirms: boolean,
     ): NativeTerminalReportActivityArgs => ({
       threadId: options.threadId,
@@ -65,14 +64,10 @@ export function createNativeActivityReporter(options: {
       state: next.state,
       ...(next.prompt === null ? {} : { prompt: next.prompt }),
       ...(next.state === "waiting" ? { questions: next.questions } : {}),
-      ...(closeIds === undefined ? {} : { closes: closeIds }),
+      closes: closeIds,
       ...(includeConfirms ? { confirms: false } : {}),
     });
-    const acknowledge = (closed: string[] | undefined): void => {
-      if (closed === undefined) {
-        possiblyOpen = new Set([...possiblyOpen, ...opened]);
-        return;
-      }
+    const acknowledge = (closed: string[]): void => {
       for (const id of closed) {
         if (!openedSet.has(id)) possiblyOpen.delete(id);
       }
@@ -87,10 +82,12 @@ export function createNativeActivityReporter(options: {
         retained = { report: next, sequence };
       }
     };
-    const keepBlockedConfirmation = (): void => {
+    const keepBlocked = (
+      blockedReason: RetainedReport["blockedReason"],
+    ): void => {
       if (sequence !== null && sequence === latestSequence) {
         retained = {
-          blockedByUnsupportedConfirms: true,
+          blockedReason,
           report: next,
           sequence,
         };
@@ -99,7 +96,7 @@ export function createNativeActivityReporter(options: {
     const sendBatch = async (
       closeIds: string[],
       includeConfirms: boolean,
-    ): Promise<"accepted" | "unsupported" | "failed" | "superseded"> => {
+    ): Promise<"accepted" | "failed"> => {
       try {
         await options.send(request(closeIds, includeConfirms));
         acknowledge(closeIds);
@@ -120,34 +117,16 @@ export function createNativeActivityReporter(options: {
             confirms: 1,
             reason: "legacy_server_defaults_true",
           });
-          keepBlockedConfirmation();
+          keepBlocked("unsupported_confirms");
           return "failed";
         }
         if (unsupported.closes) {
-          if (latestAtQueue !== latestSequence) {
-            options.log?.("activity-legacy-fallback-skipped", {
-              latestSequence,
-              reason: "superseded",
-              sequence: latestAtQueue,
-            });
-            return "superseded";
-          }
-          try {
-            await options.send(request(undefined, includeConfirms));
-            acknowledge(undefined);
-            return "unsupported";
-          } catch (retryError) {
-            if (includeConfirms && unrecognizedField(retryError, "confirms")) {
-              options.log?.("activity-confirmation-fallback-skipped", {
-                confirms: 1,
-                reason: "legacy_server_defaults_true",
-              });
-              keepBlockedConfirmation();
-              return "failed";
-            }
-            keep(retryError);
-            return "failed";
-          }
+          options.log?.("activity-closure-fallback-skipped", {
+            closes: closeIds.length,
+            reason: "legacy_server_does_not_support_closes",
+          });
+          keepBlocked("unsupported_closes");
+          return "failed";
         }
 
         if (
@@ -157,32 +136,10 @@ export function createNativeActivityReporter(options: {
         ) {
           if (closeIds.length > 1) {
             for (const id of closeIds) {
-              if (latestAtQueue !== latestSequence) {
-                options.log?.("activity-closure-retry-skipped", {
-                  latestSequence,
-                  reason: "superseded",
-                  sequence: latestAtQueue,
-                });
-                return "superseded";
-              }
               const result = await sendBatch([id], includeConfirms);
-              if (
-                result === "unsupported" ||
-                result === "failed" ||
-                result === "superseded"
-              ) {
-                return result;
-              }
+              if (result === "failed") return result;
             }
             return "accepted";
-          }
-          if (latestAtQueue !== latestSequence) {
-            options.log?.("activity-closure-retry-skipped", {
-              latestSequence,
-              reason: "superseded",
-              sequence: latestAtQueue,
-            });
-            return "superseded";
           }
           try {
             await options.send(request([], includeConfirms));
@@ -204,13 +161,12 @@ export function createNativeActivityReporter(options: {
       start < Math.max(closes.length, 1);
       start += NATIVE_TERMINAL_MAX_OPEN_QUESTIONS
     ) {
-      if (start > 0 && latestAtQueue !== latestSequence) return;
       const batch = closes.slice(
         start,
         start + NATIVE_TERMINAL_MAX_OPEN_QUESTIONS,
       );
       const result = await sendBatch(batch, sends.confirms);
-      if (result !== "accepted") return;
+      if (result === "failed") return;
     }
   };
 
@@ -223,8 +179,7 @@ export function createNativeActivityReporter(options: {
         sequence = latestSequence;
         retained = null;
       }
-      const latestAtQueue = latestSequence;
-      pending = pending.then(() => deliver(next, sequence, latestAtQueue));
+      pending = pending.then(() => deliver(next, sequence));
     },
     discardRetained() {
       latestSequence += 1;
@@ -232,12 +187,12 @@ export function createNativeActivityReporter(options: {
     },
     retry() {
       const resend = retained;
-      if (resend === null || resend.blockedByUnsupportedConfirms === true) {
+      if (resend === null || resend.blockedReason !== undefined) {
         return;
       }
       retained = null;
       pending = pending.then(() =>
-        deliver(resend.report, resend.sequence, resend.sequence),
+        deliver(resend.report, resend.sequence),
       );
     },
     settled: () => pending,
