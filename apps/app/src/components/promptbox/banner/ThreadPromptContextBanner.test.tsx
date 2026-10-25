@@ -48,6 +48,7 @@ function Banner({
         childThreads={isReadOnly ? null : childThreadsSection}
         isExpanded={expandedSection === CHILD_THREADS}
         onExpandedChange={() => onToggleSection(CHILD_THREADS)}
+        autoExpandDisabled={expandedSection !== null}
       />
       <ThreadPromptContextBanner
         input={{ threadId: "thr_1", projectId: "proj_1", environment: null }}
@@ -637,7 +638,7 @@ describe("ThreadPromptContextBanner", () => {
     expect(screen.getByText("Thread is archived")).toBeTruthy();
   });
 
-  it("opens the child card for a newly waiting child while changed files are open", () => {
+  it("does not replace the open changed-files section when a child newly needs input", () => {
     const onToggleSection = vi.fn();
     const renderBanner = (
       items: ReturnType<typeof childThreadItem>[],
@@ -671,8 +672,12 @@ describe("ThreadPromptContextBanner", () => {
     );
     expect(onToggleSection).not.toHaveBeenCalled();
     rerender(renderBanner([blocked, working], "bb--core/changed-files"));
-    expect(onToggleSection).toHaveBeenCalledTimes(1);
-    expect(onToggleSection).toHaveBeenCalledWith(CHILD_THREADS);
+    expect(onToggleSection).not.toHaveBeenCalled();
+    expect(
+      screen.getByRole("button", { name: /Changed files/ }).getAttribute(
+        "aria-expanded",
+      ),
+    ).toBe("true");
   });
 });
 

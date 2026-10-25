@@ -1163,13 +1163,19 @@ export function ThreadChildThreadsBanner({
   childThreads,
   isExpanded,
   onExpandedChange,
+  autoExpandDisabled = false,
 }: {
   childThreads: ThreadPromptChildThreadsSection | null;
   isExpanded: boolean;
   onExpandedChange: (isExpanded: boolean) => void;
+  autoExpandDisabled?: boolean;
 }) {
   const items = childThreads?.items ?? NO_CHILD_THREAD_ITEMS;
-  useExpandForNewNeedsInput(items, isExpanded, () => onExpandedChange(true));
+  useExpandForNewNeedsInput(
+    items,
+    isExpanded || autoExpandDisabled,
+    () => onExpandedChange(true),
+  );
   if (childThreads === null || items.length === 0) return null;
   return (
     <ActiveChildThreadsCard

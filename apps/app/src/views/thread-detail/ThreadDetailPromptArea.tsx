@@ -2120,6 +2120,7 @@ export function ThreadDetailPromptArea({
           }
           isExpanded={isChildThreadsExpanded}
           onExpandedChange={setIsChildThreadsExpanded}
+          autoExpandDisabled={expandedBannerSegment !== null}
         />
         <ThreadPromptContextBanner
           key={contextBannerKey}
@@ -2296,6 +2297,7 @@ export function ThreadDetailPromptArea({
           childThreads={childThreadsSection}
           isExpanded={isChildThreadsExpanded}
           onExpandedChange={setIsChildThreadsExpanded}
+          autoExpandDisabled={expandedBannerSegment !== null}
         />
         {activePromptMode ? activePromptModeCard : null}
         {goal ? activeGoalCard : null}
