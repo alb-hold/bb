@@ -1671,7 +1671,14 @@ ssh-agent, sshd, sshd-session, gpg-agent, dbus-daemon (owner ruling
 2026-10-23). `clear` vouches for the current user's readable processes only:
 other users' processes are excluded and counted (each recorded with pid, uid
 and errno in `skippedOtherUsers`), and allow-listed helpers are
-reported by name and pid. Measured on a development host, 22 of 287 same-user
+reported by name and pid. Processes are classified by effective uid on both
+platforms (Linux: the second value of the `Uid:` line of `/proc/<pid>/status`).
+On macOS the same-euid pids come from `ps -A -o pid=,uid=,comm=` and the
+working directories from the `lsof` call: a same-euid pid that `lsof` does not
+list, that is not an allow-listed helper and that is still alive on a second
+`ps` 200 ms later (same pid, same command) answers `unknown` and names its pid
+and command; a pid that has exited by then is ignored. A same-user process
+that vanishes during a Linux scan is likewise ignored. Measured on a development host, 22 of 287 same-user
 processes were unreadable, all of them these helpers, so refusing on every
 unreadable process would make `clear` unreachable on an ordinary Linux machine.
 Residuals the PR body states: `comm` is settable by the process itself, so a

@@ -16,8 +16,13 @@ export type InternalDoNotUseCwdHolderScan = Awaited<
  * a same-user process whose working directory cannot be read is
  * `unknown` unless its exact `comm` is a known session helper (systemd,
  * (sd-pam), ssh-agent, sshd, sshd-session, gpg-agent, dbus-daemon), which is
- * reported by name and pid. `comm` is settable by the process itself. It checks working
- * directories only, not open files. See docs/api_to_audit.md.
+ * reported by name and pid. `comm` is settable by the process itself.
+ * Processes are classified by effective uid. On macOS the same-user processes
+ * come from `ps` and the working directories from `lsof`: a same-user process
+ * that `lsof` does not list, that is not a known session helper and that is
+ * still alive 200 ms later is `unknown`, naming its pid and command. A process
+ * that exits during the scan is ignored. It checks working directories only,
+ * not open files. See docs/api_to_audit.md.
  */
 export function internal_DO_NOT_USE_scanProcessesWithCwdUnder(args: {
   directories: readonly string[];
