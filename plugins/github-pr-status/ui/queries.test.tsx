@@ -11,6 +11,7 @@ import {
   isEnvironmentPullRequestStale,
   useEnvironmentPullRequest,
 } from "./queries";
+import { readEnvironmentPullRequestResults } from "../producer";
 
 const keyedQuery = vi.hoisted(() => ({
   data: {} as Record<string, EnvironmentPullRequest>,
@@ -108,15 +109,25 @@ describe("isEnvironmentPullRequestStale", () => {
 });
 
 describe("useEnvironmentPullRequest refreshes", () => {
-  it("consumes producer outcomes by environment id at the RPC boundary", () => {
-    const producerOutput = {
-      "env-available": environmentPullRequestSchema.parse(row("open")),
-      "env-absent": environmentPullRequestSchema.parse({ outcome: "absent" }),
-      "env-unavailable": environmentPullRequestSchema.parse({
+  it("consumes the producer's outcomes by environment id at the RPC boundary", async () => {
+    const rows: Record<string, EnvironmentPullRequest> = {
+      "env-available": row("open"),
+      "env-absent": { outcome: "absent" },
+      "env-unavailable": {
         outcome: "unavailable",
         message: "Host is suspended",
-      }),
+      },
     };
+    const produced = await readEnvironmentPullRequestResults(
+      ["env-available", "env-absent", "env-unavailable"],
+      async (environmentId) => rows[environmentId]!,
+    );
+    const producerOutput = Object.fromEntries(
+      Object.entries(produced).map(([environmentId, value]) => [
+        environmentId,
+        environmentPullRequestSchema.parse(value),
+      ]),
+    );
     keyedQuery.data = producerOutput;
 
     const available = renderHook(() =>

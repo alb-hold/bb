@@ -15,6 +15,7 @@ import {
   type PullRequest,
 } from "./contract.js";
 import { createPullRequestPersistence } from "./persistence.js";
+import { readEnvironmentPullRequestResults } from "./producer.js";
 import { createPullRequestStore } from "./store.js";
 
 const JSON_OPTION = {
@@ -400,12 +401,9 @@ export default function githubPrStatusPlugin(bb: BbPluginApi): void {
     {
       async pullRequests({ keys }, context) {
         const viewer = context.experimental_caller.kind === "client";
-        const results = await Promise.all(
-          keys.map(
-            async (key) => [key, await store.read(key, { viewer })] as const,
-          ),
+        return readEnvironmentPullRequestResults(keys, (key) =>
+          store.read(key, { viewer }),
         );
-        return Object.fromEntries(results);
       },
       markReady: ({ environmentId }) => markReady(environmentId),
       markDraft: ({ environmentId }) => markDraft(environmentId),

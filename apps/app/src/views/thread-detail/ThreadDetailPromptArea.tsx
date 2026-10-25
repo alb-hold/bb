@@ -2309,6 +2309,7 @@ export function ThreadDetailPromptArea({
       activePromptModeCard,
       childThreadsBannerKey,
       childThreadsSection,
+      expandedBannerSegment,
       isChildThreadsExpanded,
       goal,
     ],
