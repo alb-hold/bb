@@ -448,8 +448,8 @@ function useComposerRendererHostApi({
   const syntheticKey = useId();
   const [layout, setLayout] = useState<ComposerView["layout"]>("expanded");
   useEffect(() => {
-    onComposerLayoutChange?.("expanded");
-  }, [onComposerLayoutChange]);
+    onComposerLayoutChange?.(layout);
+  }, [layout, onComposerLayoutChange]);
   const handleLayoutChange = (next: ComposerView["layout"]) => {
     setLayout(next);
     onComposerLayoutChange?.(next);

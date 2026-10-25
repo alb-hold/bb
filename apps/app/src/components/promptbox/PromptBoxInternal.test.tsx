@@ -1435,6 +1435,36 @@ describe("ComposerBox controlled value sync", () => {
     }
   });
 
+  it("reports compact after a compact composer receives a new layout callback", async () => {
+    const firstLayoutChange = vi.fn();
+    const nextLayoutChange = vi.fn();
+    const props = createPromptBoxProps({
+      onComposerLayoutChange: firstLayoutChange,
+    });
+    const view = render(
+      <PromptBoxInternal
+        {...props}
+        compact={{ when: "always", placeholder: "Compact prompt" }}
+      />,
+    );
+
+    await waitFor(() =>
+      expect(firstLayoutChange).toHaveBeenLastCalledWith("compact"),
+    );
+    view.rerender(
+      <PromptBoxInternal
+        {...props}
+        compact={{ when: "always", placeholder: "Compact prompt" }}
+        onComposerLayoutChange={nextLayoutChange}
+      />,
+    );
+
+    await waitFor(() =>
+      expect(nextLayoutChange).toHaveBeenLastCalledWith("compact"),
+    );
+    expect(nextLayoutChange).not.toHaveBeenCalledWith("expanded");
+  });
+
   it("preserves external focus when a coarse pointer becomes fine", async () => {
     const pointer = mockMutablePointerCoarse(true);
     const outsideTarget = document.createElement("button");
