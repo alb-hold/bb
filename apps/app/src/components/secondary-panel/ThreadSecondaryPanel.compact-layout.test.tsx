@@ -105,15 +105,6 @@ describe("compact terminal layout requests", () => {
       tab: infoTab,
       title: "Thread info",
     };
-    const terminalFixedTab: SecondaryPanelFixedTab = {
-      ariaLabel: "Show requested terminal",
-      label: "Terminal",
-      leadingVisual: null,
-      onSelect: noop,
-      renderContent: () => <div>Requested terminal fixed content</div>,
-      tab: terminalTab,
-      title: "Requested terminal",
-    };
     const terminalDescriptor: SecondaryPanelRenderableTab = {
       label: "Requested terminal",
       leadingVisual: null,
@@ -140,7 +131,7 @@ describe("compact terminal layout requests", () => {
             activeTab={createThreadInfoFixedPanelTab()}
             areFixedTabsReady={ready}
             canUseGitUi={false}
-            fixedTabs={ready ? [infoFixedTab, terminalFixedTab] : []}
+            fixedTabs={ready ? [infoFixedTab] : []}
             tabs={[terminalDescriptor]}
             isConversationCollapsed={false}
             isOpen
