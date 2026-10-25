@@ -641,6 +641,23 @@ describe("ScrollPositionKeeper", () => {
     expect(timeline.topOf("row-3")).toBe(before);
   });
 
+  it("defers a detached reader correction through the scroll-settle window", () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
+    const timeline = createTimeline(rowsOf(10), { deferWrites: true });
+    timeline.userScrollTo(600);
+    vi.advanceTimersByTime(40);
+    const before = timeline.topOf("row-3");
+    const scrollTopBefore = timeline.layout.scrollTop;
+    const setter = vi.spyOn(timeline.scrollElement, "scrollTop", "set");
+
+    timeline.resize("row-1", 240);
+    timeline.keeper.reconcile();
+
+    expect(setter).not.toHaveBeenCalled();
+    expect(timeline.layout.scrollTop).toBe(scrollTopBefore);
+    expect(timeline.topOf("row-3")).toBe(before);
+  });
+
   it("keeps a touch drag that delivered no scroll events as the reader's movement", () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
     const timeline = createTimeline(rowsOf(10), { deferWrites: true });
