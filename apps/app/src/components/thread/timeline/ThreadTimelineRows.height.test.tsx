@@ -203,6 +203,7 @@ it("keeps the reading row in place through eased growth frames", () => {
   act(() => ResizeObserverStub.trigger(content, intrinsicHeight));
   expect(wrapper.style.height).toBe("1000px");
   expect(wrapper.style.transition).toContain("height 180ms");
+  expect(wrapper.style.transition).toContain("cubic-bezier(0.16, 1, 0.3, 1)");
   expect(area.scrollTop).toBe(initialScrollTop);
   expect(scrollTopWrites).toEqual([]);
   expect(row.getBoundingClientRect().top).toBe(readingRowTop);
