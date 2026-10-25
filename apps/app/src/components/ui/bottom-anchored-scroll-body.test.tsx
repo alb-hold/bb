@@ -425,9 +425,12 @@ describe("BottomAnchoredScrollBody", () => {
         />,
       ),
     );
-    act(() => layout.flushResizeObservers());
+    act(() => {
+      layout.flushResizeObservers();
+      layout.layoutScrollTo(layout.scrollTop - 20);
+    });
 
-    expect(topOf(reader)).toBe(before);
+    expect(topOf(reader)).toBe(before + 20);
     expect(handles.bottomAnchor?.isAtBottom).toBe(false);
   });
 
