@@ -344,7 +344,7 @@ describe("BottomAnchoredScrollBody", () => {
     expect(topOf(reader)).toBe(before);
   });
 
-  it("keeps the reading row still when older rows load after momentum scrolling", () => {
+  it("keeps the reading row still when older rows load after movement before touchend", () => {
     const keys = rowKeys("thread-a", 60);
     const { layout, topOf, firstVisible, view } = setup("thread-a", keys);
     act(() => layout.userScrollTo(layout.maxScrollTop() - 1_000));
@@ -357,6 +357,44 @@ describe("BottomAnchoredScrollBody", () => {
       scrollElement.dispatchEvent(new TouchEvent("touchstart"));
       layout.layoutScrollTo(layout.scrollTop - 80);
       scrollElement.dispatchEvent(new TouchEvent("touchend"));
+    });
+    const before = topOf(reader);
+
+    act(() =>
+      view.rerender(
+        <Shell
+          threadId="thread-a"
+          keys={["thread-a:older-0", "thread-a:older-1", ...keys]}
+        />,
+      ),
+    );
+    act(() => layout.flushResizeObservers());
+
+    expect(topOf(reader)).toBe(before);
+    expect(handles.bottomAnchor?.isAtBottom).toBe(false);
+  });
+
+  it("keeps the reading row still when older rows load after post-touchend momentum", () => {
+    const keys = rowKeys("thread-a", 60);
+    const { layout, topOf, firstVisible, view } = setup("thread-a", keys);
+    act(() => layout.userScrollTo(layout.maxScrollTop() - 1_000));
+    const scrollElement = document.querySelector<HTMLElement>(
+      "[data-page-scroll-viewport]",
+    );
+    if (scrollElement === null) throw new Error("no scroll element");
+    const reader = firstVisible();
+    act(() => {
+      scrollElement.dispatchEvent(new TouchEvent("touchstart"));
+      scrollElement.dispatchEvent(
+        new TouchEvent("touchmove", {
+          touches: [{ clientY: 100 } as Touch],
+        }),
+      );
+      layout.layoutScrollTo(layout.scrollTop - 80);
+      scrollElement.dispatchEvent(new TouchEvent("touchend"));
+      layout.layoutScrollTo(layout.scrollTop - 20);
+      layout.layoutScrollTo(layout.scrollTop - 20);
+      layout.layoutScrollTo(layout.scrollTop - 20);
     });
     const before = topOf(reader);
 
