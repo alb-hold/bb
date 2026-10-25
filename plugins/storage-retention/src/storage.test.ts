@@ -1,9 +1,9 @@
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createFakePluginHost,
   makeHostResponse,
@@ -11,8 +11,9 @@ import {
 } from "@get-bb/plugin-sdk/testing";
 import { experimental_createHostEntryHarness } from "@get-bb/plugin-sdk/testing/host";
 import { resolveDevInstanceConfig } from "../../../packages/config/src/runtime.js";
-import hostEntry from "./host.js";
+import hostEntry, { removeTrashUnlessHeld } from "./host.js";
 import plugin from "./server.js";
+import { removeDeveloperEntries } from "./developer-storage.js";
 import { hostStorageContract } from "./host-contract.js";
 import {
   hostStorageListResponseSchema,
@@ -81,7 +82,7 @@ it("clears different threads concurrently, excludes overlapping maintenance and 
               reject: () => reject(new Error("host disconnected")),
             }),
           );
-        return { removed: names };
+        return { removed: names, held: [] };
       }
       throw new Error("Unexpected host method");
     },
@@ -209,7 +210,7 @@ it.each([
                 reject: () => reject(new Error("host disconnected")),
               };
             });
-          return { removed: names };
+          return { removed: names, held: [] };
         }
         throw new Error("Unexpected host method");
       },
@@ -832,54 +833,156 @@ it.runIf(process.platform !== "win32")(
 );
 
 it.skipIf(process.platform === "win32")(
-  "stops processes working inside thread storage before discarding it and leaves neighbors running",
+  "keeps thread storage with a process working inside it, names the process, stops nothing and still discards a neighbor",
   async () => {
     const root = await directory();
     await fs.mkdir(path.join(root, "thr_busy", "checkout"), {
       recursive: true,
     });
     await fs.mkdir(path.join(root, "thr_neighbor"));
-    const run = (cwd: string) => {
-      const child = spawn(
-        process.execPath,
-        ["-e", "setInterval(() => {}, 1000)"],
-        { cwd, stdio: "ignore" },
-      );
-      return {
-        child,
-        exited: new Promise<void>((resolve) =>
-          child.once("exit", () => resolve()),
-        ),
-      };
-    };
+    const run = (cwd: string) =>
+      spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+        cwd,
+        stdio: "ignore",
+      });
     const busy = run(path.join(root, "thr_busy", "checkout"));
-    const neighbor = run(path.join(root, "thr_neighbor"));
     const worker = experimental_createHostEntryHarness(hostEntry);
     try {
       await expect
         .poll(async () => {
           try {
-            process.kill(busy.child.pid!, 0);
+            process.kill(busy.pid!, 0);
             return true;
           } catch {
             return false;
           }
         })
         .toBe(true);
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      const result = await worker.experimental_call("discard", {
+        rootPath: root,
+        names: ["thr_busy", "thr_neighbor"],
+        recreate: false,
+      });
+      expect(result.removed).toEqual(["thr_neighbor"]);
+      expect(result.held).toHaveLength(1);
+      expect(result.held[0]?.name).toBe("thr_busy");
+      expect(result.held[0]?.unknown).toBeNull();
+      expect(result.held[0]?.holders.map((holder) => holder.pid)).toContain(
+        busy.pid,
+      );
+      expect(busy.exitCode).toBeNull();
+      expect(busy.signalCode).toBeNull();
       expect(
-        await worker.experimental_call("discard", {
-          rootPath: root,
-          names: ["thr_busy"],
-          recreate: true,
-        }),
-      ).toEqual({ removed: ["thr_busy"] });
-      await busy.exited;
-      expect(neighbor.child.exitCode).toBeNull();
-      expect(await fs.readdir(path.join(root, "thr_busy"))).toEqual([]);
+        await fs.stat(path.join(root, "thr_busy", "checkout")),
+      ).toBeTruthy();
     } finally {
-      busy.child.kill("SIGKILL");
-      neighbor.child.kill("SIGKILL");
+      busy.kill("SIGKILL");
       await worker.experimental_dispose();
+    }
+  },
+);
+
+it.skipIf(process.platform === "win32")(
+  "keeps a trash directory with a process working inside it, names the process, stops nothing and still removes an idle trash neighbor",
+  async () => {
+    const root = await directory();
+    await fs.mkdir(path.join(root, ".bb-trash-busy", "checkout"), {
+      recursive: true,
+    });
+    await fs.mkdir(path.join(root, ".bb-trash-idle"));
+    const busy = spawn(
+      process.execPath,
+      ["-e", "setInterval(() => {}, 1000)"],
+      {
+        cwd: path.join(root, ".bb-trash-busy", "checkout"),
+        stdio: "ignore",
+      },
+    );
+    const worker = experimental_createHostEntryHarness(hostEntry);
+    try {
+      await expect
+        .poll(() => {
+          try {
+            process.kill(busy.pid!, 0);
+            return true;
+          } catch {
+            return false;
+          }
+        })
+        .toBe(true);
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      const result = await worker.experimental_call("discard", {
+        rootPath: root,
+        names: [".bb-trash-busy", ".bb-trash-idle"],
+        recreate: false,
+      });
+      expect(result.removed).toEqual([".bb-trash-idle"]);
+      expect(result.held).toHaveLength(1);
+      expect(result.held[0]?.name).toBe(".bb-trash-busy");
+      expect(result.held[0]?.unknown).toBeNull();
+      expect(result.held[0]?.holders.map((holder) => holder.pid)).toContain(
+        busy.pid,
+      );
+      expect(busy.exitCode).toBeNull();
+      expect(busy.signalCode).toBeNull();
+      expect(() => process.kill(busy.pid!, 0)).not.toThrow();
+      expect(
+        await fs.stat(path.join(root, ".bb-trash-busy", "checkout")),
+      ).toBeTruthy();
+      await expect
+        .poll(() =>
+          fs.stat(path.join(root, ".bb-trash-idle")).catch(() => null),
+        )
+        .toBeNull();
+      expect(await fs.stat(path.join(root, ".bb-trash-busy"))).toBeTruthy();
+    } finally {
+      busy.kill("SIGKILL");
+      await worker.experimental_dispose();
+    }
+  },
+);
+
+it.skipIf(process.platform === "win32")(
+  "does not remove a trash directory that a process has entered by the time it is removed, and removes it once the process is gone",
+  async () => {
+    const root = await directory();
+    const trash = path.join(root, ".bb-trash-late");
+    await fs.mkdir(path.join(trash, "inner"), { recursive: true });
+    const busy = spawn(
+      process.execPath,
+      ["-e", "setInterval(() => {}, 1000)"],
+      {
+        cwd: path.join(trash, "inner"),
+        stdio: "ignore",
+      },
+    );
+    try {
+      await expect
+        .poll(() => {
+          try {
+            process.kill(busy.pid!, 0);
+            return true;
+          } catch {
+            return false;
+          }
+        })
+        .toBe(true);
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      expect(await removeTrashUnlessHeld(trash)).toBe("kept");
+      expect(await fs.stat(path.join(trash, "inner"))).toBeTruthy();
+      expect(busy.exitCode).toBeNull();
+      expect(busy.signalCode).toBeNull();
+      expect(() => process.kill(busy.pid!, 0)).not.toThrow();
+      const exited = new Promise<void>((resolve) =>
+        busy.once("exit", () => resolve()),
+      );
+      busy.kill("SIGKILL");
+      await exited;
+      expect(await removeTrashUnlessHeld(trash)).toBe("removed");
+      expect(await fs.stat(trash).catch(() => null)).toBeNull();
+    } finally {
+      busy.kill("SIGKILL");
     }
   },
 );
@@ -912,10 +1015,88 @@ it("rejects traversal and symlinks without deleting their targets", async () => 
         names: ["thr_gone"],
         recreate: false,
       }),
-    ).toEqual({ removed: [] });
+    ).toEqual({ removed: [], held: [] });
   } finally {
     await worker.experimental_dispose();
   }
+});
+
+describe.skipIf(
+  process.platform !== "linux" ||
+    (typeof process.getuid === "function" && process.getuid() === 0),
+)("a same-user process whose working directory cannot be read", () => {
+  const children: ReturnType<typeof spawn>[] = [];
+  afterEach(() => {
+    for (const child of children.splice(0)) child.kill("SIGKILL");
+  });
+
+  async function startUnreadable(ctx: {
+    skip: (condition: boolean, note: string) => void;
+  }) {
+    const child = spawn(
+      "python3",
+      [
+        "-c",
+        `import ctypes, time
+libc = ctypes.CDLL(None)
+libc.prctl(4, 0, 0, 0, 0)
+libc.prctl(15, b"renamed-helper", 0, 0, 0)
+print("ready", flush=True)
+time.sleep(120)`,
+      ],
+      { stdio: ["ignore", "pipe", "ignore"] },
+    );
+    children.push(child);
+    await new Promise<void>((resolve) =>
+      child
+        .once("error", () => resolve())
+        .stdout?.once("data", () => resolve()),
+    );
+    let readable = true;
+    try {
+      await fs.readlink(`/proc/${child.pid}/cwd`);
+    } catch (error) {
+      readable = (error as NodeJS.ErrnoException).code !== "EACCES";
+    }
+    ctx.skip(readable, "the kernel lets this user read the process");
+    return child;
+  }
+
+  it("is an unknown holder: thread storage is kept with the reason, a trash directory is kept, and nothing is stopped", async (ctx) => {
+    const root = await directory();
+    const trash = path.join(root, ".bb-trash-idle");
+    await fs.mkdir(path.join(trash, "inner"), { recursive: true });
+    await fs.mkdir(path.join(root, "thr_gone"));
+    const helper = await startUnreadable(ctx);
+    const worker = experimental_createHostEntryHarness(hostEntry);
+    try {
+      expect(
+        await worker.experimental_call("discard", {
+          rootPath: root,
+          names: ["thr_gone"],
+          recreate: false,
+        }),
+      ).toEqual({
+        removed: [],
+        held: [
+          {
+            name: "thr_gone",
+            holders: [],
+            unknown: expect.stringContaining(
+              `process ${helper.pid} (renamed-helper) could not be read and it is not a known session helper`,
+            ),
+          },
+        ],
+      });
+      expect(await fs.stat(path.join(root, "thr_gone"))).toBeTruthy();
+      expect(await removeTrashUnlessHeld(trash)).toBe("kept");
+      expect(await fs.stat(path.join(trash, "inner"))).toBeTruthy();
+      expect(helper.exitCode).toBeNull();
+      expect(helper.signalCode).toBeNull();
+    } finally {
+      await worker.experimental_dispose();
+    }
+  });
 });
 
 it("keeps cleanup available during a scan and leaves cleared storage out of its result", async () => {
@@ -954,6 +1135,7 @@ it("keeps cleanup available during a scan and leaves cleared storage out of its 
       if (call.method === "discard")
         return {
           removed: hostStorageContract.discard.input.parse(call.input).names,
+          held: [],
         };
       throw new Error("Unexpected host method");
     },
@@ -1330,7 +1512,7 @@ it("recovers developer checkout paths from launch records, old runtime records, 
 });
 
 it.skipIf(process.platform === "win32")(
-  "does not signal a recorded launcher PID that now belongs to another process",
+  "never signals the recorded launcher process and keeps a running instance in place",
   async () => {
     const fakeHome = await directory();
     const rootPath = path.join(fakeHome, ".bb-dev");
@@ -1363,11 +1545,14 @@ it.skipIf(process.platform === "win32")(
           rootPath,
           names: ["reused"],
           candidatePaths: [],
-          mode: { condition: "any", stopRunning: true },
+          mode: { condition: "any" },
         }),
-      ).toMatchObject({ removed: ["reused"], stoppedProcessCount: 0 });
+      ).toEqual({ removed: [], running: ["reused"], held: [] });
       expect(unrelated.exitCode).toBeNull();
       expect(unrelated.signalCode).toBeNull();
+      expect(
+        (await fs.readdir(rootPath)).filter((name) => name === "reused"),
+      ).toEqual(["reused"]);
     } finally {
       unrelated.kill("SIGKILL");
       await worker.experimental_dispose();
@@ -1376,7 +1561,7 @@ it.skipIf(process.platform === "win32")(
 );
 
 it.skipIf(process.platform === "win32")(
-  "removes development instances whose checkout is gone, stopping their servers and keeping revived or existing checkouts",
+  "removes development instances whose checkout is gone without stopping any server, and keeps running, revived or existing ones",
   async () => {
     const fakeHome = await directory();
     const rootPath = path.join(fakeHome, ".bb-dev");
@@ -1500,44 +1685,28 @@ it.skipIf(process.platform === "win32")(
         host.harness.callRpc("removeDevInstances", {
           hostId: "host_test",
           names: ["unscanned"],
-          stopRunning: false,
         }),
       ).rejects.toThrow("Not a development instance in the last scan");
-      expect(
-        await host.harness.callRpc("removeDevInstances", {
-          hostId: "host_test",
-          names: ["busy"],
-          stopRunning: false,
-        }),
-      ).toEqual({
+      const keptRunning = {
         removedCount: 0,
         removedBytes: 0,
         skippedCount: 0,
-        stoppedProcessCount: 0,
+        held: [],
         running: ["busy"],
-      });
-      expect(busyServer.child.exitCode).toBeNull();
+      };
       expect(
         await host.harness.callRpc("removeDevInstances", {
           hostId: "host_test",
           names: ["busy"],
-          stopRunning: true,
         }),
-      ).toEqual({
-        removedCount: 1,
-        removedBytes: scanned.entries.find((entry) => entry.name === "busy")!
-          .sizeBytes,
-        skippedCount: 0,
-        stoppedProcessCount: 1,
-        running: [],
-      });
-      await busyServer.exited;
+      ).toEqual(keptRunning);
+      expect(busyServer.child.exitCode).toBeNull();
       const single = (name: string) => ({
         removedCount: 1,
         removedBytes: scanned.entries.find((entry) => entry.name === name)!
           .sizeBytes,
         skippedCount: 0,
-        stoppedProcessCount: 0,
+        held: [],
         running: [],
       });
       expect(
@@ -1546,7 +1715,6 @@ it.skipIf(process.platform === "win32")(
             host.harness.callRpc("removeDevInstances", {
               hostId: "host_test",
               names: [name],
-              stopRunning: false,
             }),
           ),
         ),
@@ -1556,11 +1724,11 @@ it.skipIf(process.platform === "win32")(
           .parse(await host.harness.callRpc("host", { hostId: "host_test" }))
           .report!.developerStorage!.entries.map((entry) => entry.name)
           .sort(),
-      ).toEqual(["gone", "kept", "revived"]);
+      ).toEqual(["busy", "gone", "kept", "revived"]);
       expect(goneServer.child.exitCode).toBeNull();
       await expect
         .poll(async () => (await fs.readdir(rootPath)).sort())
-        .toEqual(["gone", "kept", "revived"]);
+        .toEqual(["busy", "gone", "kept", "revived"]);
       await fs.mkdir(checkouts.revived, { recursive: true });
       expect(
         await host.harness.callRpc("removeDevInstances", {
@@ -1572,20 +1740,21 @@ it.skipIf(process.platform === "win32")(
         removedBytes: scanned.entries.find((entry) => entry.name === "gone")!
           .sizeBytes,
         skippedCount: 1,
-        stoppedProcessCount: 1,
+        held: [],
         running: [],
       });
-      await goneServer.exited;
+      expect(goneServer.child.exitCode).toBeNull();
       expect(keptServer.child.exitCode).toBeNull();
+      expect(busyServer.child.exitCode).toBeNull();
       await expect
         .poll(async () => (await fs.readdir(rootPath)).sort())
-        .toEqual(["kept", "revived"]);
+        .toEqual(["busy", "kept", "revived"]);
       expect(
         hostStorageResponseSchema
           .parse(await host.harness.callRpc("host", { hostId: "host_test" }))
           .report!.developerStorage!.entries.map((entry) => entry.name)
           .sort(),
-      ).toEqual(["kept", "revived"]);
+      ).toEqual(["busy", "kept", "revived"]);
       await expect
         .poll(() => worker.experimental_getRetainedWorkerLeaseCount())
         .toBe(0);
@@ -1598,6 +1767,607 @@ it.skipIf(process.platform === "win32")(
     }
   },
 );
+
+it.skipIf(process.platform === "win32")(
+  "removes a named development entry without a git worktree, keeps one that contains a worktree and names why, and stops no process",
+  async () => {
+    const fakeHome = await directory();
+    const rootPath = path.join(fakeHome, ".bb-dev");
+    for (const name of ["plain", "withWorktree"]) {
+      await fs.mkdir(path.join(rootPath, name), { recursive: true });
+      await fs.writeFile(
+        path.join(rootPath, name, "bb-dev-instance.json"),
+        JSON.stringify({ repoRoot: path.join(fakeHome, name, "bb") }),
+      );
+    }
+    await fs.mkdir(path.join(rootPath, "withWorktree", "data", "checkout"), {
+      recursive: true,
+    });
+    await fs.writeFile(
+      path.join(rootPath, "withWorktree", "data", "checkout", ".git"),
+      "gitdir: /elsewhere/.git/worktrees/checkout\n",
+    );
+    const bystander = spawn(
+      process.execPath,
+      ["-e", "setInterval(() => {}, 1000)"],
+      { cwd: path.join(rootPath, "withWorktree", "data", "checkout"), stdio: "ignore" },
+    );
+    const worker = experimental_createHostEntryHarness(hostEntry);
+    try {
+      const any = await worker.experimental_call("removeDeveloperEntries", {
+        rootPath,
+        names: ["plain", "withWorktree"],
+        candidatePaths: [],
+        mode: { condition: "any" },
+      });
+      expect(any.removed).toEqual(["plain"]);
+      expect(any.running).toEqual([]);
+      expect(any.held).toEqual([
+        {
+          name: "withWorktree",
+          reason: expect.stringContaining("git checkout or worktree"),
+        },
+      ]);
+      const missing = await worker.experimental_call(
+        "removeDeveloperEntries",
+        {
+          rootPath,
+          names: ["withWorktree"],
+          candidatePaths: [],
+          mode: { condition: "checkoutMissing" },
+        },
+      );
+      expect(missing.removed).toEqual([]);
+      expect(missing.held.map((held) => held.name)).toEqual(["withWorktree"]);
+      await expect
+        .poll(async () => (await fs.readdir(rootPath)).sort())
+        .toEqual(["withWorktree"]);
+      expect(
+        await fs.readFile(
+          path.join(rootPath, "withWorktree", "data", "checkout", ".git"),
+          "utf8",
+        ),
+      ).toContain("gitdir:");
+      expect(bystander.exitCode).toBeNull();
+      expect(bystander.signalCode).toBeNull();
+    } finally {
+      bystander.kill("SIGKILL");
+      await worker.experimental_dispose();
+    }
+  },
+);
+
+it.skipIf(process.platform === "win32")(
+  "keeps a development entry that holds a real git worktree under node_modules, in both removal modes, and names why",
+  async () => {
+    const fakeHome = await directory();
+    const rootPath = path.join(fakeHome, ".bb-dev");
+    const source = path.join(fakeHome, "source");
+    const git = (cwd: string, ...args: string[]) =>
+      execFileSync(
+        "git",
+        [
+          "-c",
+          "user.name=test",
+          "-c",
+          "user.email=test@example.com",
+          "-c",
+          "commit.gpgsign=false",
+          ...args,
+        ],
+        { cwd, stdio: "pipe" },
+      );
+    await fs.mkdir(source, { recursive: true });
+    git(source, "init", "-q", "-b", "main");
+    await fs.writeFile(path.join(source, "file"), "content");
+    git(source, "add", "file");
+    git(source, "commit", "-q", "-m", "initial");
+    await fs.mkdir(path.join(rootPath, "nested"), { recursive: true });
+    await fs.writeFile(
+      path.join(rootPath, "nested", "bb-dev-instance.json"),
+      JSON.stringify({ repoRoot: path.join(fakeHome, "gone", "bb") }),
+    );
+    const worktree = path.join(rootPath, "nested", "node_modules", "x");
+    git(source, "worktree", "add", "-q", "--detach", worktree);
+    expect(await fs.readFile(path.join(worktree, ".git"), "utf8")).toContain(
+      "gitdir:",
+    );
+    const worker = experimental_createHostEntryHarness(hostEntry);
+    try {
+      for (const mode of [
+        { condition: "checkoutMissing" as const },
+        { condition: "any" as const },
+      ]) {
+        const result = await worker.experimental_call(
+          "removeDeveloperEntries",
+          { rootPath, names: ["nested"], candidatePaths: [], mode },
+        );
+        expect(result.removed).toEqual([]);
+        expect(result.held).toEqual([
+          {
+            name: "nested",
+            reason: expect.stringContaining("git checkout or worktree"),
+          },
+        ]);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      expect(await fs.readdir(rootPath)).toEqual(["nested"]);
+      expect(await fs.readFile(path.join(worktree, ".git"), "utf8")).toContain(
+        "gitdir:",
+      );
+      expect(await fs.readFile(path.join(worktree, "file"), "utf8")).toBe(
+        "content",
+      );
+      expect(
+        git(source, "worktree", "list", "--porcelain").toString(),
+      ).toContain(`worktree ${await fs.realpath(worktree)}`);
+    } finally {
+      await worker.experimental_dispose();
+    }
+  },
+);
+
+const developmentCandidate = async (rootPath: string, name: string) => {
+  await fs.mkdir(path.join(rootPath, name), { recursive: true });
+  await fs.writeFile(
+    path.join(rootPath, name, "bb-dev-instance.json"),
+    JSON.stringify({
+      repoRoot: path.join(path.dirname(rootPath), "gone", "bb"),
+    }),
+  );
+};
+
+const nestedFolder = (base: string, levels: number) =>
+  path.join(
+    base,
+    ...Array.from({ length: levels }, (_unused, index) => `level${index}`),
+  );
+
+for (const mode of [
+  { condition: "checkoutMissing" as const },
+  { condition: "any" as const },
+]) {
+  it.skipIf(process.platform === "win32")(
+    `removes a development entry with a pnpm-shaped node_modules more than ten levels deep and no git checkout (${mode.condition})`,
+    async () => {
+      const fakeHome = await directory();
+      const rootPath = path.join(fakeHome, ".bb-dev");
+      await developmentCandidate(rootPath, "pnpmdeep");
+      const package_ = nestedFolder(
+        path.join(
+          rootPath,
+          "pnpmdeep",
+          "node_modules",
+          ".pnpm",
+          "dep@1.0.0",
+          "node_modules",
+          "dep",
+        ),
+        8,
+      );
+      await fs.mkdir(package_, { recursive: true });
+      await fs.writeFile(path.join(package_, "index.js"), "module.exports = 1");
+      await fs.symlink(
+        package_,
+        path.join(rootPath, "pnpmdeep", "node_modules", "dep"),
+      );
+      const worker = experimental_createHostEntryHarness(hostEntry);
+      try {
+        const result = await worker.experimental_call(
+          "removeDeveloperEntries",
+          { rootPath, names: ["pnpmdeep"], candidatePaths: [], mode },
+        );
+        expect(result).toEqual({
+          removed: ["pnpmdeep"],
+          running: [],
+          held: [],
+        });
+        await expect.poll(async () => await fs.readdir(rootPath)).toEqual([]);
+      } finally {
+        await worker.experimental_dispose();
+      }
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    `removes a development entry fourteen levels deep with no git checkout (${mode.condition})`,
+    async () => {
+      const fakeHome = await directory();
+      const rootPath = path.join(fakeHome, ".bb-dev");
+      await developmentCandidate(rootPath, "fourteen");
+      const deepest = nestedFolder(
+        path.join(rootPath, "fourteen", "plugins", "x"),
+        12,
+      );
+      await fs.mkdir(deepest, { recursive: true });
+      await fs.writeFile(path.join(deepest, "source.ts"), "export {};");
+      const worker = experimental_createHostEntryHarness(hostEntry);
+      try {
+        const result = await worker.experimental_call(
+          "removeDeveloperEntries",
+          { rootPath, names: ["fourteen"], candidatePaths: [], mode },
+        );
+        expect(result).toEqual({
+          removed: ["fourteen"],
+          running: [],
+          held: [],
+        });
+        await expect.poll(async () => await fs.readdir(rootPath)).toEqual([]);
+      } finally {
+        await worker.experimental_dispose();
+      }
+    },
+  );
+}
+
+it.skipIf(process.platform === "win32")(
+  "keeps a development entry whose git worktree is more than ten levels deep under node_modules, in both removal modes",
+  async () => {
+    const fakeHome = await directory();
+    const rootPath = path.join(fakeHome, ".bb-dev");
+    const source = path.join(fakeHome, "source");
+    const git = (cwd: string, ...args: string[]) =>
+      execFileSync(
+        "git",
+        [
+          "-c",
+          "user.name=test",
+          "-c",
+          "user.email=test@example.com",
+          "-c",
+          "commit.gpgsign=false",
+          ...args,
+        ],
+        { cwd, stdio: "pipe" },
+      );
+    await fs.mkdir(source, { recursive: true });
+    git(source, "init", "-q", "-b", "main");
+    await fs.writeFile(path.join(source, "file"), "content");
+    git(source, "add", "file");
+    git(source, "commit", "-q", "-m", "initial");
+    await developmentCandidate(rootPath, "deepnested");
+    const parent = nestedFolder(
+      path.join(
+        rootPath,
+        "deepnested",
+        "node_modules",
+        ".pnpm",
+        "dep@1.0.0",
+        "node_modules",
+        "dep",
+      ),
+      6,
+    );
+    await fs.mkdir(parent, { recursive: true });
+    const worktree = path.join(parent, "x");
+    git(source, "worktree", "add", "-q", "--detach", worktree);
+    const levels = path
+      .relative(path.join(rootPath, "deepnested"), worktree)
+      .split(path.sep).length;
+    expect(levels).toBeGreaterThan(10);
+    const worker = experimental_createHostEntryHarness(hostEntry);
+    try {
+      for (const mode of [
+        { condition: "checkoutMissing" as const },
+        { condition: "any" as const },
+      ]) {
+        const result = await worker.experimental_call(
+          "removeDeveloperEntries",
+          { rootPath, names: ["deepnested"], candidatePaths: [], mode },
+        );
+        expect(result.removed).toEqual([]);
+        expect(result.held).toEqual([
+          {
+            name: "deepnested",
+            reason: expect.stringContaining("git checkout or worktree"),
+          },
+        ]);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      expect(await fs.readdir(rootPath)).toEqual(["deepnested"]);
+      expect(await fs.readFile(path.join(worktree, ".git"), "utf8")).toContain(
+        "gitdir:",
+      );
+      expect(await fs.readFile(path.join(worktree, "file"), "utf8")).toBe(
+        "content",
+      );
+    } finally {
+      await worker.experimental_dispose();
+    }
+  },
+);
+
+it.skipIf(process.platform === "win32")(
+  "keeps a development entry that exceeds the scan's entry bound or depth bound and reports why",
+  async () => {
+    const fakeHome = await directory();
+    const rootPath = path.join(fakeHome, ".bb-dev");
+    await developmentCandidate(rootPath, "wide");
+    for (let index = 0; index < 60; index += 1)
+      await fs.writeFile(path.join(rootPath, "wide", `file${index}`), "x");
+    await developmentCandidate(rootPath, "tall");
+    await fs.mkdir(nestedFolder(path.join(rootPath, "tall"), 66), {
+      recursive: true,
+    });
+    const retainWorker = () => ({ dispose() {} });
+    for (const mode of [
+      { condition: "checkoutMissing" as const },
+      { condition: "any" as const },
+    ]) {
+      const input = {
+        rootPath,
+        names: ["wide"],
+        candidatePaths: [],
+        mode,
+      };
+      const narrow = await removeDeveloperEntries(
+        input,
+        new AbortController().signal,
+        retainWorker,
+        { maxDepth: 64, maxEntries: 50 },
+      );
+      expect(narrow.removed).toEqual([]);
+      expect(narrow.held).toEqual([
+        {
+          name: "wide",
+          reason: expect.stringContaining("more files or deeper folders"),
+        },
+      ]);
+      const defaults = await removeDeveloperEntries(
+        { ...input, names: ["tall"] },
+        new AbortController().signal,
+        retainWorker,
+      );
+      expect(defaults.removed).toEqual([]);
+      expect(defaults.held).toEqual([
+        {
+          name: "tall",
+          reason: expect.stringContaining("more files or deeper folders"),
+        },
+      ]);
+    }
+    expect((await fs.readdir(rootPath)).sort()).toEqual(["tall", "wide"]);
+    const roomy = await removeDeveloperEntries(
+      {
+        rootPath,
+        names: ["wide"],
+        candidatePaths: [],
+        mode: { condition: "any" },
+      },
+      new AbortController().signal,
+      retainWorker,
+      { maxDepth: 64, maxEntries: 500 },
+    );
+    expect(roomy.removed).toEqual(["wide"]);
+  },
+);
+
+it.skipIf(process.platform === "win32")(
+  "keeps a leftover trash folder in the development root that holds a git worktree, and still removes a leftover that holds none",
+  async () => {
+    const fakeHome = await directory();
+    const rootPath = path.join(fakeHome, ".bb-dev");
+    const source = path.join(fakeHome, "source");
+    const git = (cwd: string, ...args: string[]) =>
+      execFileSync(
+        "git",
+        [
+          "-c",
+          "user.name=test",
+          "-c",
+          "user.email=test@example.com",
+          "-c",
+          "commit.gpgsign=false",
+          ...args,
+        ],
+        { cwd, stdio: "pipe" },
+      );
+    await fs.mkdir(source, { recursive: true });
+    git(source, "init", "-q", "-b", "main");
+    await fs.writeFile(path.join(source, "file"), "content");
+    git(source, "add", "file");
+    git(source, "commit", "-q", "-m", "initial");
+    await fs.mkdir(path.join(rootPath, "plain"), { recursive: true });
+    await fs.writeFile(
+      path.join(rootPath, "plain", "bb-dev-instance.json"),
+      JSON.stringify({ repoRoot: path.join(fakeHome, "gone", "bb") }),
+    );
+    const worktree = path.join(rootPath, ".bb-trash-old-abc", "data", "x");
+    git(source, "worktree", "add", "-q", "--detach", worktree);
+    await fs.mkdir(path.join(rootPath, ".bb-trash-clean-def"));
+    await fs.writeFile(path.join(rootPath, ".bb-trash-clean-def", "file"), "x");
+    const worker = experimental_createHostEntryHarness(hostEntry);
+    try {
+      const result = await worker.experimental_call("removeDeveloperEntries", {
+        rootPath,
+        names: ["plain"],
+        candidatePaths: [],
+        mode: { condition: "any" },
+      });
+      expect(result.removed).toEqual(["plain"]);
+      await expect
+        .poll(async () => (await fs.readdir(rootPath)).sort())
+        .toEqual([".bb-trash-old-abc"]);
+      expect(await fs.readFile(path.join(worktree, ".git"), "utf8")).toContain(
+        "gitdir:",
+      );
+      expect(await fs.readFile(path.join(worktree, "file"), "utf8")).toBe(
+        "content",
+      );
+    } finally {
+      await worker.experimental_dispose();
+    }
+  },
+);
+
+it.skipIf(process.platform === "win32")(
+  "keeps a running instance whose checkout is missing, and any entry that holds a folder bb kept",
+  async () => {
+    const fakeHome = await directory();
+    const rootPath = path.join(fakeHome, ".bb-dev");
+    const missingCheckout = (name: string) => path.join(fakeHome, name, "bb");
+    for (const name of ["running-gone", "kept-folder", "clean"]) {
+      await fs.mkdir(path.join(rootPath, name), { recursive: true });
+      await fs.writeFile(
+        path.join(rootPath, name, "bb-dev-instance.json"),
+        JSON.stringify({ repoRoot: missingCheckout(name) }),
+      );
+    }
+    await fs.mkdir(path.join(rootPath, "running-gone", "daemon.lock.lock"));
+    await fs.mkdir(
+      path.join(rootPath, "kept-folder", "plugins", "x", "host-data", "retained"),
+      { recursive: true },
+    );
+    const worker = experimental_createHostEntryHarness(hostEntry);
+    try {
+      for (const mode of [
+        { condition: "checkoutMissing" as const },
+        { condition: "any" as const },
+      ]) {
+        const result = await worker.experimental_call(
+          "removeDeveloperEntries",
+          {
+            rootPath,
+            names: ["running-gone", "kept-folder"],
+            candidatePaths: [],
+            mode,
+          },
+        );
+        expect(result.removed).toEqual([]);
+        expect(result.running).toEqual(["running-gone"]);
+        expect(result.held.map((held) => held.name)).toEqual(["kept-folder"]);
+      }
+      expect(
+        await worker.experimental_call("removeDeveloperEntries", {
+          rootPath,
+          names: ["clean"],
+          candidatePaths: [],
+          mode: { condition: "checkoutMissing" },
+        }),
+      ).toEqual({ removed: ["clean"], running: [], held: [] });
+      await expect
+        .poll(async () => (await fs.readdir(rootPath)).sort())
+        .toEqual(["kept-folder", "running-gone"]);
+    } finally {
+      await worker.experimental_dispose();
+    }
+  },
+);
+
+it("keeps a missing-checkout development instance while an environment still covers its checkout path", async () => {
+  type Environment = Awaited<
+    ReturnType<
+      import("@get-bb/plugin-sdk").BbPluginApi["sdk"]["environments"]["list"]
+    >
+  >[number];
+  const fakeHome = await directory();
+  const rootPath = path.join(fakeHome, ".bb-dev");
+  const covered = path.join(fakeHome, "covered", "bb");
+  const free = path.join(fakeHome, "free", "bb");
+  for (const [name, repoRoot] of [
+    ["covered", covered],
+    ["free", free],
+  ] as const) {
+    await fs.mkdir(path.join(rootPath, name), { recursive: true });
+    await fs.writeFile(
+      path.join(rootPath, name, "bb-dev-instance.json"),
+      JSON.stringify({ repoRoot }),
+    );
+    await fs.writeFile(path.join(rootPath, name, "bb.db"), Buffer.alloc(4096));
+  }
+  const environment: Environment = {
+    id: "env_covering",
+    name: null,
+    projectId: "proj_work",
+    hostId: "host_test",
+    path: covered,
+    isGitRepo: true,
+    isWorktree: true,
+    branchName: "feature",
+    baseBranch: "main",
+    defaultBranch: "main",
+    mergeBaseBranch: "main",
+    status: "ready",
+    environmentProviderId: "bb--environment-git-worktree",
+    environmentProviderSelection: null,
+    environmentProviderInstanceKey: null,
+    lifecycle: { phase: "active", retireAt: null, teardown: null },
+    hostLifecycle: "active",
+    managed: true,
+    workspaceProvisionType: "managed-worktree",
+    createdAt: 0,
+    updatedAt: 0,
+  };
+  const worker = experimental_createHostEntryHarness(hostEntry);
+  const host = createFakePluginHost({
+    pluginId: "storage-retention",
+    experimental_hostEntry: true,
+    experimental_callHostRpc: async (call) => {
+      if (call.method === "homeDirectory") return fakeHome;
+      if (call.method === "capacity")
+        return { totalBytes: 10000, freeBytes: 5000 };
+      if (call.method === "inspectDeveloperEntries")
+        return worker.experimental_call(
+          "inspectDeveloperEntries",
+          hostStorageContract.inspectDeveloperEntries.input.parse(call.input),
+        );
+      if (call.method === "removeDeveloperEntries")
+        return worker.experimental_call(
+          "removeDeveloperEntries",
+          hostStorageContract.removeDeveloperEntries.input.parse(call.input),
+        );
+      if (call.method === "measure")
+        return worker.experimental_call(
+          "measure",
+          hostStorageContract.measure.input.parse(call.input),
+        );
+      throw new Error("Unexpected host method");
+    },
+    sdk: {
+      projects: { list: async () => [] },
+      hosts: {
+        get: async () => ({
+          ...makeHostResponse({ id: "host_test", status: "connected" }),
+          threadStorageRootPath: path.join(fakeHome, "storage"),
+        }),
+      },
+      environments: { list: async () => [environment] },
+      threads: { list: async () => [] },
+    },
+  });
+  try {
+    plugin(host.bb);
+    await host.harness.callRpc("scanHost", { hostId: "host_test" });
+    await expect
+      .poll(
+        async () =>
+          hostStorageResponseSchema.parse(
+            await host.harness.callRpc("host", { hostId: "host_test" }),
+          ).scan.state,
+      )
+      .toBe("idle");
+    const result = await host.harness.callRpc("removeDevInstances", {
+      hostId: "host_test",
+      names: null,
+    });
+    expect(result).toMatchObject({
+      removedCount: 1,
+      running: [],
+      held: [
+        {
+          name: "covered",
+          reason: `environment env_covering still covers ${covered}`,
+        },
+      ],
+    });
+    await expect
+      .poll(async () => (await fs.readdir(rootPath)).sort())
+      .toEqual(["covered"]);
+  } finally {
+    await host.harness.dispose();
+    await worker.experimental_dispose();
+  }
+});
 
 it.skipIf(process.platform === "win32")(
   "removes a symlinked development instance as a link and keeps its target",
@@ -1625,11 +2395,7 @@ it.skipIf(process.platform === "win32")(
           candidatePaths: [],
           mode: { condition: "checkoutMissing" },
         }),
-      ).toEqual({
-        removed: ["linked", "plain"],
-        running: [],
-        stoppedProcessCount: 0,
-      });
+      ).toEqual({ removed: ["linked", "plain"], running: [], held: [] });
       await expect
         .poll(async () => (await fs.readdir(rootPath)).sort())
         .toEqual([]);
@@ -1797,7 +2563,7 @@ it("waits for storage inventory for detached archives and persists backoff for f
   let failing = true;
   const discard = vi.fn(async () => {
     if (failing) throw new Error("host unavailable");
-    return { removed: [thread.id] };
+    return { removed: [thread.id], held: [] };
   });
   let host = createFakePluginHost({
     pluginId: "storage-retention",
@@ -2063,6 +2829,13 @@ it("never clears thread storage that holds a workspace an environment still uses
       `contains the workspace ${path.join(root, "thr_owner", "repair")}`,
     );
 
+    await expect
+      .poll(async () =>
+        (await fs.readdir(root)).filter((name) =>
+          name.startsWith(".bb-trash-"),
+        ),
+      )
+      .toEqual([]);
     await host.harness.callRpc("scanAll", null);
     await expect
       .poll(

@@ -1,7 +1,3 @@
-import {
-  experimental_killProcessesWithCwdUnder,
-  experimental_readProcessIdentity,
-} from "@get-bb/plugin-sdk/host";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
@@ -11,13 +7,19 @@ import type { hostStorageContract } from "./host-contract.js";
 
 const launchRecordSchema = z.object({ repoRoot: z.string().min(1) });
 const runtimeRecordSchema = z.object({ entryPath: z.string().min(1) });
-const runtimeProcessSchema = z.object({
-  entryPath: z.string().min(1),
-  pid: z.number().int().positive(),
-  startedAt: z.string().min(1),
-});
-const STOP_GRACE_MS = 15_000;
-const PROCESS_START_TOLERANCE_MS = 60_000;
+const WORKSPACE_SCAN_LIMITS = { maxDepth: 64, maxEntries: 500_000 };
+
+type WorkspaceScanLimits = typeof WORKSPACE_SCAN_LIMITS;
+type WorkspaceScan = "workspace" | "unbounded" | "unreadable" | "clear";
+
+const HELD_REASONS = {
+  workspace:
+    "it contains a git checkout or worktree or a folder bb kept for later, and this cleanup never deletes such an entry",
+  unbounded:
+    "it has more files or deeper folders than the scan reads, so it cannot be ruled out as holding a git checkout or worktree, and this cleanup never deletes such an entry",
+  unreadable:
+    "a folder in it could not be read, so it cannot be ruled out as holding a git checkout or worktree, and this cleanup never deletes such an entry",
+} as const;
 
 async function readRecord(file: string) {
   try {
@@ -200,60 +202,50 @@ export async function inspectDeveloperEntries(
   return { entries };
 }
 
-function isAlive(pid: number) {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return !isFsErrorWithCode(error, "ESRCH");
-  }
-}
-
-async function isRecordedLauncher(
-  record: z.infer<typeof runtimeProcessSchema>,
-) {
-  const identity = await experimental_readProcessIdentity(record.pid);
-  if (identity?.command == null || identity.startedAt === null) return false;
-  const command = identity.command;
-  const recordedStart = Date.parse(record.startedAt);
-  return (
-    [record.entryPath, path.basename(record.entryPath)].some((token) =>
-      command.includes(token),
-    ) &&
-    !Number.isNaN(recordedStart) &&
-    Math.abs(identity.startedAt - recordedStart) <= PROCESS_START_TOLERANCE_MS
-  );
-}
-
-async function stopInstance(directory: string, signal: AbortSignal) {
-  const record = runtimeProcessSchema.safeParse(
-    await readRecord(path.join(directory, "bb-app-runtime.json")),
-  );
-  if (!record.success) return 0;
-  const { pid } = record.data;
-  if (pid === process.pid || !isAlive(pid)) return 0;
-  if (!(await isRecordedLauncher(record.data))) return 0;
-  for (const kill of ["SIGTERM", "SIGKILL"] as const) {
+async function scanForGitWorkspace(
+  directory: string,
+  signal: AbortSignal,
+  limits: WorkspaceScanLimits,
+): Promise<WorkspaceScan> {
+  const pending: { directory: string; depth: number }[] = [
+    { directory, depth: 0 },
+  ];
+  let visited = 0;
+  while (pending.length > 0) {
+    signal.throwIfAborted();
+    const next = pending.pop()!;
+    let children;
     try {
-      process.kill(pid, kill);
+      children = await fs.readdir(next.directory, { withFileTypes: true });
     } catch (error) {
-      if (isFsErrorWithCode(error, "ESRCH")) return 1;
-      throw error;
+      if (isFsErrorWithCode(error, "ENOENT")) continue;
+      return "unreadable";
     }
-    const deadline = Date.now() + STOP_GRACE_MS;
-    while (Date.now() < deadline && isAlive(pid)) {
-      signal.throwIfAborted();
-      await new Promise((resolve) => setTimeout(resolve, 100));
+    for (const child of children) {
+      visited += 1;
+      if (visited > limits.maxEntries) return "unbounded";
+      if (child.name === ".git") return "workspace";
+      if (
+        child.name === "retained" &&
+        path.basename(next.directory) === "host-data"
+      )
+        return "workspace";
+      if (!child.isDirectory()) continue;
+      if (next.depth >= limits.maxDepth) return "unbounded";
+      pending.push({
+        directory: path.join(next.directory, child.name),
+        depth: next.depth + 1,
+      });
     }
-    if (!isAlive(pid)) return 1;
   }
-  return 1;
+  return "clear";
 }
 
 export async function removeDeveloperEntries(
   input: z.infer<typeof hostStorageContract.removeDeveloperEntries.input>,
   signal: AbortSignal,
   retainWorker: () => { dispose(): void },
+  limits: WorkspaceScanLimits = WORKSPACE_SCAN_LIMITS,
 ) {
   assertDeveloperInput(input);
   if (path.basename(input.rootPath) !== ".bb-dev")
@@ -263,7 +255,7 @@ export async function removeDeveloperEntries(
     root = await fs.realpath(input.rootPath);
   } catch (error) {
     if (isFsErrorWithCode(error, "ENOENT"))
-      return { removed: [], running: [], stoppedProcessCount: 0 };
+      return { removed: [], running: [], held: [] };
     throw error;
   }
   const inspected = (await inspectDeveloperEntries(input, signal)).entries;
@@ -271,30 +263,23 @@ export async function removeDeveloperEntries(
     (entry): entry is typeof entry & { sourcePath: string } =>
       entry.sourcePath !== null && entry.sourcePathState === "missing",
   );
-  const stopRunning = input.mode.condition === "any" && input.mode.stopRunning;
-  const running =
-    input.mode.condition === "any"
-      ? inspected.filter(
-          (entry) => entry.running && entry.sourcePathState !== "missing",
-        )
-      : [];
-  const eligible =
-    input.mode.condition === "checkoutMissing"
-      ? missing
-      : stopRunning
-        ? inspected
-        : inspected.filter((entry) => !running.includes(entry));
-  let stoppedProcessCount = (
-    await experimental_killProcessesWithCwdUnder({
-      directories: missing.map((entry) => entry.sourcePath),
-    })
-  ).length;
-  if (stopRunning)
-    for (const entry of running)
-      stoppedProcessCount += await stopInstance(
-        path.join(root, entry.name),
-        signal,
-      );
+  const requested =
+    input.mode.condition === "checkoutMissing" ? missing : inspected;
+  const running = requested.filter((entry) => entry.running);
+  const candidates = requested.filter((entry) => !running.includes(entry));
+  const held: { name: string; reason: string }[] = [];
+  const eligible: typeof candidates = [];
+  for (const entry of candidates) {
+    const entryStats = await fs
+      .lstat(path.join(root, entry.name))
+      .catch(() => null);
+    const scan =
+      entryStats?.isDirectory() === true
+        ? await scanForGitWorkspace(path.join(root, entry.name), signal, limits)
+        : "clear";
+    if (scan === "clear") eligible.push(entry);
+    else held.push({ name: entry.name, reason: HELD_REASONS[scan] });
+  }
   signal.throwIfAborted();
   const trashes = (await fs.readdir(root))
     .filter((name) => name.startsWith(".bb-trash-"))
@@ -327,18 +312,28 @@ export async function removeDeveloperEntries(
     if (trashes.length > 0) {
       const lease = retainWorker();
       void (async () => {
-        for (const trash of trashes)
+        for (const trash of trashes) {
+          const mayHoldWorkspace =
+            (await scanForGitWorkspace(
+              trash,
+              new AbortController().signal,
+              limits,
+            ).catch(() => "unreadable")) !== "clear";
+          if (mayHoldWorkspace) {
+            console.error(
+              "Development storage trash kept because it may hold a git checkout or worktree",
+              trash,
+            );
+            continue;
+          }
           await fs
             .rm(trash, { recursive: true, force: true })
             .catch((error) => {
               console.error("Development storage cleanup failed", error);
             });
+        }
       })().finally(() => lease.dispose());
     }
   }
-  return {
-    removed,
-    running: stopRunning ? [] : running.map((entry) => entry.name),
-    stoppedProcessCount,
-  };
+  return { removed, running: running.map((entry) => entry.name), held };
 }

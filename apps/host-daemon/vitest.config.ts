@@ -12,6 +12,7 @@ export default defineWorkspaceTestConfig({
       BB_HOST_DAEMON_PORT: "49162",
     },
     testTimeout: 15_000,
+    setupFiles: ["./vitest.setup.ts"],
     projects: sharedWorkerProjects({
       pkgDir: __dirname,
       name: "@bb/host-daemon",

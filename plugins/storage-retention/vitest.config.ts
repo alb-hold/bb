@@ -5,6 +5,7 @@ import {
 export default defineWorkspaceTestConfig({
   resolve: { tsconfigPaths: true },
   test: {
+    setupFiles: ["./vitest.setup.ts"],
     projects: sharedWorkerProjects({
       pkgDir: __dirname,
       name: "bb-plugin-bb--storage-retention",
