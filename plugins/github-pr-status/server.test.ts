@@ -6,6 +6,7 @@ import {
   type ExperimentalFakeHostRpcCall,
 } from "@get-bb/plugin-sdk/testing";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { z } from "zod";
 import {
   environmentPullRequestSchema,
   type GitHubPullRequestView,
@@ -148,9 +149,13 @@ describe("GitHub PR Status server", () => {
             : lookup,
       });
 
-      const result = await fake.harness.callRpc("pullRequests", {
-        keys: ["env-1"],
-      });
+      const result = z
+        .record(z.string(), environmentPullRequestSchema)
+        .parse(
+          await fake.harness.callRpc("pullRequests", {
+            keys: ["env-1"],
+          }),
+        );
 
       expect(Object.keys(result)).toEqual(["env-1"]);
       expect(environmentPullRequestSchema.parse(result["env-1"])).toEqual(
@@ -389,12 +394,13 @@ describe("GitHub PR Status server", () => {
       async () => [
         {
           id: "event-1",
-          scope: "turn",
+          scope: { kind: "turn", turnId: "turn-1" },
           threadId: "thread-1",
           seq: 2,
           createdAt: 1,
           type: "item/started",
           data: {
+            providerThreadId: "provider-thread-1",
             item: {
               type: "commandExecution",
               id: "item-1",
