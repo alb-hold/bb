@@ -6,7 +6,10 @@ import {
   type ExperimentalFakeHostRpcCall,
 } from "@get-bb/plugin-sdk/testing";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { GitHubPullRequestView } from "./contract.js";
+import {
+  environmentPullRequestSchema,
+  type GitHubPullRequestView,
+} from "./contract.js";
 import plugin, { environmentChangeEffect } from "./server.js";
 
 type Environment = Awaited<
@@ -131,6 +134,37 @@ async function setup(options: {
 }
 
 describe("GitHub PR Status server", () => {
+  it.each([
+    ["available", { outcome: "found", pullRequest: view() }],
+    ["absent", { outcome: "none" }],
+    ["unavailable", { outcome: "unavailable", message: "Host suspended" }],
+  ] as const)(
+    "emits a schema-valid %s row keyed by environment id",
+    async (_outcome, lookup) => {
+      const fake = await setup({
+        callHost: (call) =>
+          call.method === "upstream"
+            ? { oid: null, branchName: "bb/pr" }
+            : lookup,
+      });
+
+      const result = await fake.harness.callRpc("pullRequests", {
+        keys: ["env-1"],
+      });
+
+      expect(Object.keys(result)).toEqual(["env-1"]);
+      expect(environmentPullRequestSchema.parse(result["env-1"])).toEqual(
+        result["env-1"],
+      );
+      if (_outcome === "available")
+        expect(result["env-1"]?.outcome).toBe("available");
+      if (_outcome === "absent")
+        expect(result["env-1"]).toEqual({ outcome: "absent" });
+      if (_outcome === "unavailable")
+        expect(result["env-1"]?.outcome).toBe("unavailable");
+    },
+  );
+
   afterEach(() => vi.useRealTimers());
 
   it("keeps identical snapshots unchanged across a real plugin database reload", async () => {

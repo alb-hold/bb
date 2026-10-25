@@ -1,7 +1,11 @@
 // @vitest-environment jsdom
 
 import { cleanup, render, renderHook } from "@testing-library/react";
-import type { EnvironmentPullRequest, PullRequest } from "../contract";
+import {
+  environmentPullRequestSchema,
+  type EnvironmentPullRequest,
+  type PullRequest,
+} from "../contract";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   isEnvironmentPullRequestStale,
@@ -104,6 +108,41 @@ describe("isEnvironmentPullRequestStale", () => {
 });
 
 describe("useEnvironmentPullRequest refreshes", () => {
+  it("consumes producer outcomes by environment id at the RPC boundary", () => {
+    const producerOutput = {
+      "env-available": environmentPullRequestSchema.parse(row("open")),
+      "env-absent": environmentPullRequestSchema.parse({ outcome: "absent" }),
+      "env-unavailable": environmentPullRequestSchema.parse({
+        outcome: "unavailable",
+        message: "Host is suspended",
+      }),
+    };
+    keyedQuery.data = producerOutput;
+
+    const available = renderHook(() =>
+      useEnvironmentPullRequest("env-available"),
+    );
+    const absent = renderHook(() => useEnvironmentPullRequest("env-absent"));
+    const unavailable = renderHook(() =>
+      useEnvironmentPullRequest("env-unavailable"),
+    );
+
+    expect(available.result.current.pullRequest?.number).toBe(7);
+    expect(absent.result.current).toEqual({
+      isLoading: false,
+      pullRequest: null,
+    });
+    expect(unavailable.result.current).toEqual({
+      isLoading: false,
+      pullRequest: null,
+    });
+    expect(keyedQuery.calls.slice(0, 3).map((call) => call.keys)).toEqual([
+      ["env-available"],
+      ["env-absent"],
+      ["env-unavailable"],
+    ]);
+  });
+
   it("owns its query by environment id through the plugin RPC contract", () => {
     renderHook(() => useEnvironmentPullRequest("env-1"));
 
