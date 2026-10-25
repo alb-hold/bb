@@ -305,6 +305,29 @@ describe("opening an unseen timeline", () => {
     expect(area.scrollTop).toBe(3300);
   });
 
+  it("keeps an earlier upward scroll when unseen activity arrives before refocus", () => {
+    const { area, blurThread, receiveUnseenAttentionWhileHidden, focusThread } =
+      renderThread(150, true);
+    resize();
+    flushFrames();
+    expect(area.scrollTop).toBe(2700);
+
+    fireEvent.wheel(area, { deltaY: -500 });
+    area.scrollTop = 200;
+    fireEvent.scroll(area);
+    flushFrames();
+    expect(area.scrollTop).toBe(200);
+
+    blurThread();
+    receiveUnseenAttentionWhileHidden();
+    focusThread();
+    expect(area.scrollTop).toBe(200);
+    height += 600;
+    resize();
+    flushFrames();
+    expect(area.scrollTop).toBe(200);
+  });
+
   it.each(["wheel", "touch", "keyboard", "pointer"])(
     "leaves deliberate upward %s scrolling alone while unseen rows settle",
     (input) => {
