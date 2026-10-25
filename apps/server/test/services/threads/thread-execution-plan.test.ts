@@ -1,5 +1,6 @@
 import {
   getAppSettings,
+  setThreadExecutionOverride,
   setAppSettings,
   updateHost,
   upsertProjectExecutionDefaults,
@@ -26,6 +27,69 @@ import {
 } from "../../helpers/test-app.js";
 
 describe("thread execution plan input sources", () => {
+  it("inherits parent reasoning ahead of child override, last execution, and project defaults", async () => {
+    await withTestHarness(async (harness) => {
+      const { host } = seedHostSession(harness.deps, {
+        id: "host-parent-reasoning-precedence",
+      });
+      const { project } = seedProjectWithSource(harness.deps, {
+        hostId: host.id,
+      });
+      const environment = seedEnvironment(harness.deps, {
+        hostId: host.id,
+        projectId: project.id,
+      });
+      const parent = seedThread(harness.deps, {
+        projectId: project.id,
+        environmentId: environment.id,
+        providerId: "codex",
+      });
+      seedThreadRuntimeState(harness.deps, {
+        environmentId: environment.id,
+        model: "gpt-5",
+        providerThreadId: "parent-reasoning-session",
+        reasoningLevel: "low",
+        permissionMode: "auto",
+        threadId: parent.id,
+      });
+      const child = seedThread(harness.deps, {
+        projectId: project.id,
+        environmentId: environment.id,
+        parentThreadId: parent.id,
+        providerId: "codex",
+      });
+      seedThreadRuntimeState(harness.deps, {
+        environmentId: environment.id,
+        model: "gpt-5",
+        providerThreadId: "child-reasoning-session",
+        reasoningLevel: "medium",
+        permissionMode: "auto",
+        threadId: child.id,
+      });
+      setThreadExecutionOverride(harness.db, {
+        threadId: child.id,
+        reasoningLevelOverride: "high",
+      });
+      upsertProjectExecutionDefaults(harness.deps.db, {
+        projectId: project.id,
+        providerId: "codex",
+        model: "gpt-5",
+        reasoningLevel: "high",
+        permissionMode: "auto",
+        serviceTier: "default",
+      });
+
+      const plan = await resolveExistingThreadExecutionPlan(harness.deps, {
+        executionSource: "client/turn/requested",
+        inheritParentExecution: true,
+        input: buildExistingThreadExecutionInput({}),
+        threadId: child.id,
+      });
+
+      expect(plan.resolvedExecution.reasoningLevel).toBe("low");
+    });
+  });
+
   it("uses the default tier for explicit and inherited fast selections when fast is disabled", async () => {
     await withTestHarness(async (harness) => {
       const { host } = seedHostSession(harness.deps, {
