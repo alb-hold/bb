@@ -183,17 +183,49 @@ export type RealtimeSubscriptionTarget = z.infer<
   typeof realtimeSubscriptionTargetSchema
 >;
 
-function isValidSubscriptionTarget(value: unknown): boolean {
-  return realtimeSubscriptionTargetSchema.safeParse(value).success;
+function isUnknownSubscriptionTarget(value: unknown): boolean {
+  if (typeof value !== "object" || value === null || !("kind" in value)) {
+    return false;
+  }
+  const kind = value.kind;
+  return (
+    typeof kind === "string" &&
+    !realtimeSubscriptionTargetSchema.options.some(
+      (option) => option.shape.kind.value === kind,
+    )
+  );
 }
+
+function isOversizedPluginReadTarget(value: unknown): boolean {
+  if (typeof value !== "object" || value === null || !("kind" in value)) {
+    return false;
+  }
+  if (value.kind !== "plugin-read") return false;
+  const result = pluginReadSubscriptionTargetSchema.safeParse(value);
+  return (
+    !result.success &&
+    result.error.issues.some(
+      (issue) => issue.message === "Plugin read input exceeds 16 KiB",
+    )
+  );
+}
+
+function shouldSkipSubscriptionTarget(value: unknown): boolean {
+  return (
+    isUnknownSubscriptionTarget(value) || isOversizedPluginReadTarget(value)
+  );
+}
+
 const validSubscriptionTargetsSchema = z.preprocess(
   (value) =>
-    Array.isArray(value) ? value.filter(isValidSubscriptionTarget) : value,
+    Array.isArray(value)
+      ? value.filter((target) => !shouldSkipSubscriptionTarget(target))
+      : value,
   z.array(realtimeSubscriptionTargetSchema),
 );
 const validSubscriptionTargetSchema = z.preprocess(
   (value) =>
-    value === undefined || isValidSubscriptionTarget(value) ? value : null,
+    value === undefined || shouldSkipSubscriptionTarget(value) ? null : value,
   realtimeSubscriptionTargetSchema.nullable().optional(),
 );
 const subscriptionFields = {

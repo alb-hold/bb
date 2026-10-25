@@ -40,7 +40,7 @@ describe("client websocket protocol", () => {
     });
   });
 
-  it("skips a subscribe target whose id is not a string and keeps the socket", () => {
+  it("rejects a malformed known subscribe target", () => {
     const hub = new NotificationHub();
     const socket = createMockHubSocket();
 
@@ -55,8 +55,8 @@ describe("client websocket protocol", () => {
     );
     hub.notifyThread("thread-1", ["events-appended"]);
 
-    expect(socket.closed).toEqual([]);
-    expect(socket.messages).toHaveLength(0);
+    expect(socket.closed).toEqual([{ code: 1008, reason: "invalid-message" }]);
+    expect(applicationMessages(socket)).toHaveLength(0);
   });
 
   it("subscribes the valid targets of a batch that also holds an oversized plugin read", () => {
@@ -92,7 +92,7 @@ describe("client websocket protocol", () => {
     expect(socket.messages).toHaveLength(1);
   });
 
-  it("keeps valid subscriptions when a batch also holds a malformed known target", () => {
+  it("rejects a batch containing a malformed known target", () => {
     const hub = new NotificationHub();
     const socket = createMockHubSocket();
     const watched: unknown[] = [];
@@ -115,9 +115,9 @@ describe("client websocket protocol", () => {
     );
     hub.notifyThread("thread-1", ["events-appended"]);
 
-    expect(socket.closed).toEqual([]);
-    expect(watched).toEqual([{ started: [thread], stopped: [] }]);
-    expect(applicationMessages(socket)).toHaveLength(1);
+    expect(socket.closed).toEqual([{ code: 1008, reason: "invalid-message" }]);
+    expect(watched).toEqual([]);
+    expect(applicationMessages(socket)).toHaveLength(0);
   });
 
   it("removes subscriptions after unsubscribe messages", () => {
