@@ -116,6 +116,7 @@ import {
   TimelineScrollRestoreContext,
   useBottomAnchoredScroll,
 } from "@/components/ui/bottom-anchored-scroll-body.js";
+import { AutoHeightContainer } from "@/components/ui/height-transition.js";
 import {
   collectSearchedMessageAncestorRowIds,
   SearchMessageLocationProvider,
@@ -585,6 +586,22 @@ function useTimelineViewRowsCache(): GetTimelineViewRows {
       buildTimelineViewRows(rawRows, { ...options, cache: cacheRef.current }),
     [],
   );
+}
+
+function timelineHeightSnapRevision(rows: readonly TimelineRow[]): string {
+  const firstRowId = rows[0]?.id;
+  for (let index = rows.length - 1; index >= 0; index -= 1) {
+    const row = rows[index];
+    if (row?.kind === "turn") {
+      return joinSignatureParts([
+        firstRowId,
+        row.id,
+        row.sourceSeqStart,
+        row.sourceSeqEnd,
+      ]);
+    }
+  }
+  return joinSignatureParts([firstRowId, "active"]);
 }
 
 function shouldRenderCompactActivityIntentRows(
@@ -2155,7 +2172,7 @@ export function buildTimelineRowsListItems({
     unreadDividerPlacement,
   });
 
-  for (let index = 0; index < rows.length;) {
+  for (let index = 0; index < rows.length; ) {
     if (index === dividerIndex) {
       items.push({ kind: "unread-divider", id: "thread-unread-divider" });
     }
@@ -2634,6 +2651,7 @@ function ThreadTimelineRowsComponent(props: ThreadTimelineRowsProps) {
 function ThreadTimelineRowsForTimelineView(props: ThreadTimelineRowsProps) {
   const getViewRows = useTimelineViewRowsCache();
   const [windowingMeasurements] = useState(() => new Map<string, number>());
+  const heightSnapRevision = timelineHeightSnapRevision(props.timelineRows);
   const rows = useMemo(
     () => getViewRows(props.timelineRows),
     [getViewRows, props.timelineRows],
@@ -2888,7 +2906,11 @@ function ThreadTimelineRowsForTimelineView(props: ThreadTimelineRowsProps) {
                         value={windowingMeasurements}
                       >
                         <div className="relative">
-<TimelineRowsList
+                          <AutoHeightContainer
+                            snapRevision={heightSnapRevision}
+                            animateGrowth={!scopeActive}
+                          >
+                            <TimelineRowsList
                               hasOlderTimelineRows={props.hasOlderTimelineRows}
                               isLoadingOlderTimelineRows={
                                 props.isLoadingOlderTimelineRows
@@ -2924,6 +2946,7 @@ function ThreadTimelineRowsForTimelineView(props: ThreadTimelineRowsProps) {
                                 props.unreadDividerPlacement ?? null
                               }
                             />
+                          </AutoHeightContainer>
 
                           {hasSelectionActions ? (
                             <div

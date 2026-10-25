@@ -253,6 +253,7 @@ describe("BottomAnchoredScrollBody", () => {
     document
       .querySelector(`[data-timeline-row-id="${last}"]`)
       ?.setAttribute("data-fake-height", "20");
+    act(() => layout.flushResizeObservers());
     act(() => layout.layoutScrollTo(layout.maxScrollTop()));
     act(() => layout.flushResizeObservers());
     expect(handles.bottomAnchor?.isAtBottom).toBe(true);
@@ -270,6 +271,7 @@ describe("BottomAnchoredScrollBody", () => {
       `[data-timeline-row-id="${keys[keys.indexOf(reader) - 1]}"]`,
     );
     above?.setAttribute("data-fake-height", "30");
+    act(() => layout.flushResizeObservers());
     act(() => layout.layoutScrollTo(layout.scrollTop - 40));
 
     expect(topOf(reader)).toBe(before);
@@ -320,5 +322,229 @@ describe("BottomAnchoredScrollBody", () => {
     act(() => layout.flushResizeObservers());
 
     expect(topOf(key) + 40).toBe(bottomBefore);
+  });
+
+  it("detaches from new messages when the page header scrolls to the top", () => {
+    const keys = rowKeys("thread-a", 60);
+    const { layout, topOf, firstVisible, view } = setup("thread-a", keys);
+    act(() => layout.userScrollTo(layout.maxScrollTop()));
+    act(() => layout.userScrollTo(0));
+    const reader = firstVisible();
+    const before = topOf(reader);
+
+    act(() =>
+      view.rerender(
+        <Shell threadId="thread-a" keys={[...keys, "thread-a:new-event"]} />,
+      ),
+    );
+    act(() => layout.flushResizeObservers());
+
+    expect(handles.bottomAnchor?.isAtBottom).toBe(false);
+    expect(layout.scrollTop).toBe(0);
+    expect(topOf(reader)).toBe(before);
+  });
+
+  it("keeps the reading row still when older rows load after momentum scrolling", () => {
+    const keys = rowKeys("thread-a", 60);
+    const { layout, topOf, firstVisible, view } = setup("thread-a", keys);
+    act(() => layout.userScrollTo(layout.maxScrollTop() - 1_000));
+    const scrollElement = document.querySelector<HTMLElement>(
+      "[data-page-scroll-viewport]",
+    );
+    if (scrollElement === null) throw new Error("no scroll element");
+    const reader = firstVisible();
+    act(() => {
+      scrollElement.dispatchEvent(new TouchEvent("touchstart"));
+      layout.layoutScrollTo(layout.scrollTop - 80);
+      scrollElement.dispatchEvent(new TouchEvent("touchend"));
+    });
+    const before = topOf(reader);
+
+    act(() =>
+      view.rerender(
+        <Shell
+          threadId="thread-a"
+          keys={["thread-a:older-0", "thread-a:older-1", ...keys]}
+        />,
+      ),
+    );
+    act(() => layout.flushResizeObservers());
+
+    expect(topOf(reader)).toBe(before);
+    expect(handles.bottomAnchor?.isAtBottom).toBe(false);
+  });
+
+  it("keeps a restored row gap through a passive windowed-list scroll correction after remount", () => {
+    vi.useFakeTimers({
+      toFake: ["setTimeout", "clearTimeout", "performance"],
+    });
+    const keys = rowKeys("thread-a", 120);
+    const first = setup("thread-a", keys);
+    act(() => first.layout.userScrollTo(first.layout.maxScrollTop() - 2_500));
+    act(() => vi.advanceTimersByTime(300));
+    const reader = first.firstVisible();
+    const before = first.topOf(reader);
+    first.view.unmount();
+
+    const restored = setup("thread-a", keys);
+    const restoredTop = restored.topOf(reader);
+    act(() => {
+      restored.layout.bounceTo(restored.layout.scrollTop - 149);
+      handles.bottomAnchor?.positionKeeper.reconcile(false);
+      vi.advanceTimersByTime(300);
+      restored.layout.flushResizeObservers();
+    });
+
+    expect(restored.layout.scrollTop).toBeGreaterThan(0);
+    expect(restored.topOf(reader)).toBe(restoredTop);
+    expect(restored.topOf(reader)).toBe(before);
+  });
+
+  it("lets a wheel scroll supersede a pending windowed-list restore", () => {
+    getDefaultStore().set(threadTimelineScrollAnchorAtomFamily("thread-a"), {
+      rowId: "thread-a:row-never-loaded",
+      offsetWithinRow: -197,
+      atBottom: false,
+    });
+    const { layout } = setup("thread-a", rowKeys("thread-a", 120));
+    const manualScrollTop = 1_000;
+
+    act(() => layout.userScrollTo(manualScrollTop));
+    act(() => layout.flushResizeObservers());
+
+    expect(layout.scrollTop).toBe(manualScrollTop);
+    expect(
+      handles.bottomAnchor?.positionKeeper.pendingRestoreRowId(),
+    ).toBeNull();
+  });
+
+  it("does not mistake a released pointer press without movement for a manual scroll", () => {
+    getDefaultStore().set(threadTimelineScrollAnchorAtomFamily("thread-a"), {
+      rowId: "thread-a:row-50",
+      offsetWithinRow: -197,
+      atBottom: false,
+    });
+    const { layout, topOf } = setup("thread-a", rowKeys("thread-a", 120));
+    const scrollElement = document.querySelector<HTMLElement>(
+      "[data-page-scroll-viewport]",
+    );
+    if (scrollElement === null) throw new Error("no scroll element");
+    const before = topOf("thread-a:row-50");
+
+    act(() => {
+      scrollElement.dispatchEvent(new PointerEvent("pointerdown"));
+      window.dispatchEvent(new PointerEvent("pointerup"));
+      layout.layoutScrollTo(layout.scrollTop - 149);
+      layout.flushResizeObservers();
+    });
+
+    expect(layout.scrollTop).toBeGreaterThan(0);
+    expect(topOf("thread-a:row-50")).toBe(before);
+  });
+
+  it("preserves the restored row gap during a pointer press without movement", () => {
+    getDefaultStore().set(threadTimelineScrollAnchorAtomFamily("thread-a"), {
+      rowId: "thread-a:row-50",
+      offsetWithinRow: -197,
+      atBottom: false,
+    });
+    const { layout, topOf } = setup("thread-a", rowKeys("thread-a", 120));
+    const scrollElement = document.querySelector<HTMLElement>(
+      "[data-page-scroll-viewport]",
+    );
+    if (scrollElement === null) throw new Error("no scroll element");
+    const before = topOf("thread-a:row-50");
+
+    act(() => {
+      scrollElement.dispatchEvent(new PointerEvent("pointerdown"));
+      layout.layoutScrollTo(layout.scrollTop - 149);
+      window.dispatchEvent(new PointerEvent("pointerup"));
+      layout.flushResizeObservers();
+    });
+
+    expect(layout.scrollTop).toBeGreaterThan(0);
+    expect(topOf("thread-a:row-50")).toBe(before);
+  });
+
+  it("tracks a pointer drag as reader movement", () => {
+    getDefaultStore().set(threadTimelineScrollAnchorAtomFamily("thread-a"), {
+      rowId: "thread-a:row-50",
+      offsetWithinRow: -197,
+      atBottom: false,
+    });
+    const { layout, topOf } = setup("thread-a", rowKeys("thread-a", 120));
+    const scrollElement = document.querySelector<HTMLElement>(
+      "[data-page-scroll-viewport]",
+    );
+    if (scrollElement === null) throw new Error("no scroll element");
+    const before = topOf("thread-a:row-50");
+
+    act(() => {
+      scrollElement.dispatchEvent(
+        new PointerEvent("pointerdown", { clientX: 10, clientY: 10 }),
+      );
+      window.dispatchEvent(
+        new PointerEvent("pointermove", { clientX: 10, clientY: 20 }),
+      );
+      layout.layoutScrollTo(layout.scrollTop - 149);
+      window.dispatchEvent(new PointerEvent("pointerup"));
+      layout.flushResizeObservers();
+    });
+
+    expect(topOf("thread-a:row-50")).toBe(before + 149);
+  });
+
+  it("keeps a read anchor when live row regrouping shrinks the timeline", () => {
+    const keys = rowKeys("thread-a", 80);
+    const { layout, topOf, firstVisible, view } = setup("thread-a", keys);
+    act(() => layout.userScrollTo(layout.maxScrollTop() - 1_500));
+    const reader = firstVisible();
+    const before = topOf(reader);
+    const regrouped = keys.slice(0, keys.indexOf(reader) + 12);
+
+    act(() => view.rerender(<Shell threadId="thread-a" keys={regrouped} />));
+    act(() => layout.flushResizeObservers());
+
+    expect(handles.bottomAnchor?.isAtBottom).toBe(false);
+    expect(topOf(reader)).toBe(before);
+  });
+
+  it("keeps a read anchor when a compaction row settles after it", () => {
+    const keys = [
+      ...rowKeys("thread-a", 30),
+      "thread-a:compaction-row",
+      ...rowKeys("thread-a-tail", 30),
+    ];
+    const { layout, topOf, firstVisible } = setup("thread-a", keys);
+    act(() => layout.userScrollTo(layout.maxScrollTop() - 1_500));
+    const reader = firstVisible();
+    const before = topOf(reader);
+
+    act(() =>
+      handles.setHeights((heights) =>
+        heights.set("thread-a:compaction-row", 360),
+      ),
+    );
+    act(() => layout.flushResizeObservers());
+
+    expect(handles.bottomAnchor?.isAtBottom).toBe(false);
+    expect(topOf(reader)).toBe(before);
+  });
+
+  it("falls back to the bottom when the saved row never appears", () => {
+    vi.useFakeTimers({
+      toFake: ["setTimeout", "clearTimeout", "performance"],
+    });
+    getDefaultStore().set(threadTimelineScrollAnchorAtomFamily("thread-a"), {
+      rowId: "thread-a:row-gone",
+      offsetWithinRow: 20,
+      atBottom: false,
+    });
+    const { layout } = setup("thread-a", rowKeys("thread-a", 60));
+
+    act(() => vi.advanceTimersByTime(10_000));
+    act(() => layout.flushResizeObservers());
+
+    expect(layout.scrollTop).toBe(layout.maxScrollTop());
   });
 });

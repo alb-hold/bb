@@ -58,11 +58,18 @@ const DIRECT_ROW_SELECTOR = [
 const MIN_WRITE_PX = 0.5;
 const MIN_VISIBLE_ANCHOR_PX = 48;
 const MAX_ANCHOR_NEIGHBORS = 8;
+const POINTER_MOVE_THRESHOLD_PX = 4;
 const SCROLL_SETTLE_MS = 150;
 const RESTORE_WAIT_MS = 1_000;
 const PASSIVE_CAPTURE = { capture: true, passive: true } as const;
 const ATTACH_KEYS = new Set(["End", "PageDown", " ", "ArrowDown"]);
-const SCROLL_KEYS = new Set([...ATTACH_KEYS, "Home", "PageUp", "ArrowUp"]);
+const SCROLL_KEYS = new Set([
+  ...ATTACH_KEYS,
+  "Home",
+  "PageUp",
+  "ArrowUp",
+  "Tab",
+]);
 const WHEEL_SESSION_MS = 150;
 const KEY_SESSION_MS = 500;
 const PROGRAMMATIC_SMOOTH_SESSION_MS = 1_000;
@@ -123,6 +130,12 @@ export class ScrollPositionKeeper {
   private deferredElement: HTMLElement | null = null;
   private touching = false;
   private pointerDown = false;
+  private pointerMoved = false;
+  private pointerPressReleasedWithoutMove = false;
+  private pointerStartX = 0;
+  private pointerStartY = 0;
+  private shrinkClampPending = false;
+  private layoutScrollPending = false;
   private gestureScrolled = false;
   private inputUntil = Number.NEGATIVE_INFINITY;
   private touchStartScrollTop = 0;
@@ -131,6 +144,8 @@ export class ScrollPositionKeeper {
   private scrollMovedAt = Number.NEGATIVE_INFINITY;
   private settleTimeout: number | null = null;
   private clampFrame: number | null = null;
+  private scrollFrame: number | null = null;
+  private layoutPendingFrame: number | null = null;
   private readonly lists = new Set<ScrollWindowList>();
   private readonly listeners = new Set<() => void>();
   private readonly positionListeners = new Set<() => void>();
@@ -184,8 +199,42 @@ export class ScrollPositionKeeper {
   connect(scrollElement: HTMLElement): () => void {
     scrollElement.style.overflowAnchor = "none";
     this.ownScrollTop = scrollElement.scrollTop;
-    const onScroll = () => this.handleScroll();
+    const onScroll = () => {
+      if (this.shrinkClampPending && this.isAtEnd(scrollElement.scrollTop)) {
+        this.handleScroll();
+        return;
+      }
+      if (this.isInputSession()) {
+        this.layoutScrollPending = false;
+        this.handleScroll();
+        return;
+      }
+      if (this.layoutScrollPending && this.position.kind !== "bottom") {
+        this.handleScroll();
+        return;
+      }
+      if (
+        (this.pointerDown && !this.pointerMoved) ||
+        this.pointerPressReleasedWithoutMove
+      ) {
+        this.handleScroll();
+        return;
+      }
+      if (this.position.kind !== "bottom") {
+        this.handleScroll();
+        return;
+      }
+      if (!this.isAtEnd(scrollElement.scrollTop)) {
+        this.apply(scrollElement, true, true, true);
+      }
+      if (this.scrollFrame !== null) return;
+      this.scrollFrame = window.requestAnimationFrame(() => {
+        this.scrollFrame = null;
+        this.reconcile();
+      });
+    };
     const onTouchStart = (event: TouchEvent) => {
+      this.pointerPressReleasedWithoutMove = false;
       if (!this.touching) {
         this.gestureScrolled = false;
         this.touchStartScrollTop = scrollElement.scrollTop;
@@ -226,7 +275,19 @@ export class ScrollPositionKeeper {
         return;
       }
       this.pointerDown = true;
+      this.pointerMoved = false;
+      this.pointerPressReleasedWithoutMove = false;
+      this.pointerStartX = event.clientX;
+      this.pointerStartY = event.clientY;
       this.gestureScrolled = false;
+    };
+    const onPointerMove = (event: PointerEvent) => {
+      if (!this.pointerDown || this.pointerMoved) return;
+      this.pointerMoved =
+        Math.hypot(
+          event.clientX - this.pointerStartX,
+          event.clientY - this.pointerStartY,
+        ) >= POINTER_MOVE_THRESHOLD_PX;
     };
     const onPointerUp = (event: PointerEvent) => {
       if (event.pointerType === "touch") {
@@ -237,9 +298,11 @@ export class ScrollPositionKeeper {
       }
       if (!this.pointerDown) return;
       this.pointerDown = false;
-      if (this.gestureScrolled) this.extendInput(SESSION_EXTENSION_MS);
+      this.pointerPressReleasedWithoutMove = !this.pointerMoved;
+      if (this.pointerMoved) this.extendInput(SESSION_EXTENSION_MS);
     };
     const onWheel = (event: WheelEvent) => {
+      this.pointerPressReleasedWithoutMove = false;
       this.extendInput(WHEEL_SESSION_MS);
       if (event.deltaY > 0) this.attachIfAtEnd();
     };
@@ -256,6 +319,7 @@ export class ScrollPositionKeeper {
         return;
       }
       this.extendInput(KEY_SESSION_MS);
+      this.pointerPressReleasedWithoutMove = false;
       if (ATTACH_KEYS.has(event.key)) this.attachIfAtEnd();
     };
     scrollElement.addEventListener("scroll", onScroll, { passive: true });
@@ -267,6 +331,7 @@ export class ScrollPositionKeeper {
     scrollElement.addEventListener("pointerdown", onPointerDown, {
       passive: true,
     });
+    window.addEventListener("pointermove", onPointerMove, true);
     window.addEventListener("pointerup", onPointerUp, true);
     window.addEventListener("pointercancel", onPointerUp, true);
     window.addEventListener("keydown", onKeyDown);
@@ -309,6 +374,7 @@ export class ScrollPositionKeeper {
         PASSIVE_CAPTURE,
       );
       scrollElement.removeEventListener("pointerdown", onPointerDown);
+      window.removeEventListener("pointermove", onPointerMove, true);
       window.removeEventListener("pointerup", onPointerUp, true);
       window.removeEventListener("pointercancel", onPointerUp, true);
       window.removeEventListener("keydown", onKeyDown);
@@ -317,8 +383,14 @@ export class ScrollPositionKeeper {
       if (this.settleTimeout !== null) window.clearTimeout(this.settleTimeout);
       if (this.clampFrame !== null)
         window.cancelAnimationFrame(this.clampFrame);
+      if (this.scrollFrame !== null)
+        window.cancelAnimationFrame(this.scrollFrame);
+      if (this.layoutPendingFrame !== null)
+        window.cancelAnimationFrame(this.layoutPendingFrame);
       this.settleTimeout = null;
       this.clampFrame = null;
+      this.scrollFrame = null;
+      this.layoutPendingFrame = null;
       this.setDeferred(0);
     };
   }
@@ -450,17 +522,34 @@ export class ScrollPositionKeeper {
     const scrollElement = this.options.getScrollElement();
     if (scrollElement === null) return;
     const scrollTop = scrollElement.scrollTop;
+    if (this.shrinkClampPending && this.isAtEnd(scrollTop)) {
+      this.shrinkClampPending = false;
+      this.setPosition({ kind: "bottom" });
+      this.apply(scrollElement, true, true, true);
+      return;
+    }
+    if (
+      this.layoutScrollPending &&
+      this.position.kind !== "bottom" &&
+      !this.isInputSession()
+    ) {
+      this.layoutScrollPending = false;
+      this.ownScrollTop = scrollTop;
+      this.apply(scrollElement, true, true, true);
+      return;
+    }
     const previous = this.ownScrollTop;
     if (previous !== null && Math.abs(scrollTop - previous) < MIN_WRITE_PX) {
       return;
     }
-    if (!this.isInputSession()) {
-      const cachedMax = this.maxScrollTop;
-      if (Math.abs(this.refreshExtent(scrollElement) - cachedMax) >= 1) {
-        this.ownScrollTop = scrollTop;
-        this.apply(scrollElement, true);
-        return;
-      }
+    if (
+      (this.pointerDown && !this.pointerMoved) ||
+      (this.pointerPressReleasedWithoutMove && !this.isInputSession())
+    ) {
+      this.pointerPressReleasedWithoutMove = false;
+      this.ownScrollTop = scrollTop;
+      this.apply(scrollElement, true, true, true);
+      return;
     }
     this.extendInput(SESSION_EXTENSION_MS);
     if (this.touching || this.pointerDown) this.gestureScrolled = true;
@@ -475,7 +564,6 @@ export class ScrollPositionKeeper {
     }
     if (position.kind === "bottom") {
       if (!movedDown && !this.isAtEnd(scrollTop)) {
-        this.refreshExtent(scrollElement);
         if (!this.isAtEnd(scrollTop)) {
           this.setPosition(this.capture(scrollElement) ?? FREE);
         }
@@ -483,13 +571,15 @@ export class ScrollPositionKeeper {
     } else if (movedDown && this.isAtEnd(scrollTop)) {
       this.setPosition({ kind: "bottom" });
     } else {
-      if (position.kind === "anchor") this.apply(scrollElement, false);
+      if (position.kind === "anchor")
+        this.apply(scrollElement, false, true, true);
       const current = this.position;
       if (current.kind !== "anchor" || !this.isInView(scrollElement, current)) {
         this.setPosition(this.capture(scrollElement) ?? FREE);
       }
       this.notifyLists();
-      if (this.position.kind === "anchor") this.apply(scrollElement, false);
+      if (this.position.kind === "anchor")
+        this.apply(scrollElement, false, true, true);
       this.setPosition(this.capture(scrollElement) ?? FREE);
     }
     if (this.deferred !== 0) this.scheduleDeferredWrite();
@@ -506,10 +596,15 @@ export class ScrollPositionKeeper {
     scrollElement: HTMLElement,
     notify: boolean,
     urgent = true,
+    useCachedExtent = false,
   ): void {
     const scrollTop = scrollElement.scrollTop;
-    const max = this.refreshExtent(scrollElement);
-    const width = scrollElement.clientWidth;
+    const max = useCachedExtent
+      ? this.maxScrollTop
+      : this.refreshExtent(scrollElement);
+    const width = useCachedExtent
+      ? this.reconciledWidth
+      : scrollElement.clientWidth;
     const widthChanged =
       this.reconciledWidth > 0 && Math.abs(this.reconciledWidth - width) >= 1;
     if (widthChanged) this.keepAnchorVisible(scrollElement);
@@ -531,9 +626,21 @@ export class ScrollPositionKeeper {
     }
     this.ownScrollTop = scrollTop;
     const restored = this.advancePendingRestore(scrollElement);
-    const scrollHeight = scrollElement.scrollHeight;
-    const extentChanged = scrollHeight !== this.reconciledScrollHeight;
+    const scrollHeight = useCachedExtent
+      ? this.reconciledScrollHeight
+      : scrollElement.scrollHeight;
+    const previousScrollHeight = this.reconciledScrollHeight;
+    const extentChanged = scrollHeight !== previousScrollHeight;
     this.reconciledScrollHeight = scrollHeight;
+    if (extentChanged) {
+      this.layoutScrollPending = true;
+      if (this.layoutPendingFrame !== null)
+        window.cancelAnimationFrame(this.layoutPendingFrame);
+      this.layoutPendingFrame = window.requestAnimationFrame(() => {
+        this.layoutPendingFrame = null;
+        this.layoutScrollPending = false;
+      });
+    }
     const defer = this.shouldDefer(scrollTop, max);
     const bouncing =
       defer && !extentChanged && (scrollTop <= 0 || scrollTop >= max - 1);
@@ -545,6 +652,19 @@ export class ScrollPositionKeeper {
       bouncing || settledAtEnd
         ? null
         : this.targetScrollTop(scrollElement, scrollTop, max);
+    const shrinkClampedToEnd =
+      extentChanged &&
+      scrollHeight < previousScrollHeight &&
+      previous !== null &&
+      previous > max + this.options.bottomThresholdPx;
+    if (shrinkClampedToEnd) {
+      this.shrinkClampPending = true;
+      if (this.touching) {
+        this.shrinkClampPending = false;
+        this.setPosition({ kind: "bottom" });
+        target = max;
+      }
+    }
     if (
       target !== null &&
       max > 0 &&
@@ -784,7 +904,7 @@ export class ScrollPositionKeeper {
   private isInputSession(): boolean {
     return (
       this.touching ||
-      this.pointerDown ||
+      (this.pointerDown && this.pointerMoved) ||
       window.performance.now() <= this.inputUntil
     );
   }

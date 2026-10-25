@@ -154,6 +154,7 @@ describe("bb thread show command output", () => {
       expect(get).toHaveBeenCalledWith({
         param: { id: `thread-${flag}-1` },
       });
+      expect(timelineGet).toHaveBeenCalledTimes(1);
       expect(timelineGet).toHaveBeenCalledWith({
         param: { id: `thread-${flag}-1` },
         query: { summaryOnly: "true" },
@@ -599,7 +600,7 @@ describe("bb thread show command output", () => {
           cachedInputTokens: 300,
           outputTokens: 80_000,
           reasoningOutputTokens: 12_000,
-          totalTokens: 93_500,
+          totalTokens: 81_500,
         },
         turns: [
           {
@@ -629,7 +630,7 @@ describe("bb thread show command output", () => {
 
     const lines = collectLogLines(vi.mocked(console.log));
     expect(lines).toContain(
-      "  Thread: Input (uncached) 1.2K · Out 80K · Reasoning (within output) 12K · Cached 300 · Σ 93.5K",
+      "  Thread: Input (uncached) 1.2K · Out 80K · Reasoning (within output) 12K · Cached 300 · Σ 81.5K",
     );
     expect(lines).toContain(
       "  Turn turn-1: Input (uncached) 1K · Out 20 · Reasoning (within output) 4 · Cached unavailable · Σ 1K",

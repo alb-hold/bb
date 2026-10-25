@@ -186,7 +186,7 @@ describe("ThreadPromptContextBanner", () => {
   );
 
   it("shows shared workspace ownership only when multiple threads are attached", () => {
-    const shared = renderToMarkup(
+    const shared = render(
       <Banner
         gitSection={{
           ...makeGitSection(),
@@ -201,6 +201,13 @@ describe("ThreadPromptContextBanner", () => {
         onToggleSection={noop}
       />,
     );
+    expect(
+      screen.getByRole("status", {
+        name: "Shared workspace with 17 threads",
+      }),
+    ).not.toBeNull();
+    expect(shared.container.textContent).toContain("Shared · 17 threads");
+    shared.unmount();
     const privateMarkup = renderToMarkup(
       <Banner
         gitSection={{ ...makeGitSection(), workspaceSharingThreadCount: 1 }}
@@ -213,7 +220,6 @@ describe("ThreadPromptContextBanner", () => {
         onToggleSection={noop}
       />,
     );
-    expect(shared).toContain("Shared · 17 threads");
     expect(privateMarkup).not.toContain("Shared");
   });
 

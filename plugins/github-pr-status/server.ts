@@ -459,9 +459,17 @@ export default function githubPrStatusPlugin(bb: BbPluginApi): void {
       if (environmentId === null || !store.isWatched(environmentId)) return;
       if (!store.hasPullRequest(environmentId))
         store.refresh(environmentId, true);
-      else if (await turnRanGh(thread.id)) store.recheck(environmentId);
+      else {
+        try {
+          if (await turnRanGh(thread.id)) store.recheck(environmentId);
+        } catch {
+          store.refresh(environmentId);
+        }
+      }
       if (event === "thread.idle")
-        bb.rpc.experimental_invalidate([environmentPullRequestTag(environmentId)]);
+        bb.rpc.experimental_invalidate([
+          environmentPullRequestTag(environmentId),
+        ]);
     });
   }
 

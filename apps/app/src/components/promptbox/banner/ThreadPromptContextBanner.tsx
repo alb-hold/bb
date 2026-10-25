@@ -1396,7 +1396,11 @@ function WritableContextBanner({
           >
             {entries.map((entry) => mount(entry, "summary"))}
             {workspaceSharingThreadCount > 1 ? (
-              <div className="shrink-0">
+              <div
+                className="shrink-0"
+                role="status"
+                aria-label={`Shared workspace with ${workspaceSharingThreadCount} threads`}
+              >
                 Shared · {workspaceSharingThreadCount} threads
               </div>
             ) : null}

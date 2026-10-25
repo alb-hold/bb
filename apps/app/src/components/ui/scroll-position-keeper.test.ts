@@ -147,7 +147,7 @@ describe("ScrollPositionKeeper", () => {
     expect(timeline.topOf("row-3")).toBe(before);
   });
 
-  it("never attaches when content shrinks under a detached reader and the browser clamps to the end", () => {
+  it("reattaches when content shrinks under a detached reader and clamps to the end (test-change-reason: owner rule 2026-10-24, fork behaviour wins; shrink-clamp reattach kept (fork suite :1626, :1832))", () => {
     const rows = rowsOf(10);
     const timeline = createTimeline(rows);
     timeline.userScrollTo(1200);
@@ -157,7 +157,7 @@ describe("ScrollPositionKeeper", () => {
     timeline.scrollElement.dispatchEvent(new Event("scroll"));
 
     expect(timeline.layout.scrollTop).toBe(timeline.layout.maxScrollTop());
-    expect(timeline.keeper.isAttached()).toBe(false);
+    expect(timeline.keeper.isAttached()).toBe(true);
   });
 
   it("reattaches on touch at the clamped end and follows later content growth", () => {
@@ -220,6 +220,18 @@ describe("ScrollPositionKeeper", () => {
 
     expect(timeline.keeper.isAttached()).toBe(false);
     expect(timeline.topOf("row-3")).toBe(before);
+  });
+
+  it("keeps the reading row in place across eased content-growth frames", () => {
+    const timeline = createTimeline(rowsOf(10));
+    timeline.userScrollTo(450);
+    const readingRowTop = timeline.topOf("row-3");
+
+    for (const height of [210, 220, 230, 240]) {
+      timeline.resize("row-1", height);
+      timeline.keeper.reconcile();
+      expect(timeline.topOf("row-3")).toBe(readingRowTop);
+    }
   });
 
   it("attaches a reader left detached at the end when they drag toward the end, though the drag cannot scroll", () => {
@@ -377,9 +389,31 @@ describe("ScrollPositionKeeper", () => {
     const before = timeline.topOf("row-3");
 
     timeline.resize("row-1", 224);
-    timeline.userScrollTo(440);
+    timeline.keeper.reconcile();
+    timeline.userScrollTo(timeline.layout.scrollTop - 10);
 
     expect(timeline.topOf("row-3")).toBe(before + 10);
+  });
+
+  it("does not read scroll dimensions from the scroll handler", () => {
+    const timeline = createTimeline(rowsOf(10));
+    timeline.userScrollTo(450);
+    timeline.scrollElement.scrollTop = 460;
+    const scrollHeight = vi.spyOn(
+      timeline.scrollElement,
+      "scrollHeight",
+      "get",
+    );
+    const clientHeight = vi.spyOn(
+      timeline.scrollElement,
+      "clientHeight",
+      "get",
+    );
+
+    timeline.scrollElement.dispatchEvent(new Event("scroll"));
+
+    expect(scrollHeight).not.toHaveBeenCalled();
+    expect(clientHeight).not.toHaveBeenCalled();
   });
 
   it("corrects a row above the reading row that grows while the lists re-render for a scroll", () => {
@@ -548,6 +582,7 @@ describe("ScrollPositionKeeper", () => {
     window.dispatchEvent(pointer("pointerup"));
 
     timeline.setRows(rowsOf(12));
+    timeline.keeper.reconcile();
     timeline.layout.layoutScrollTo(timeline.layout.scrollTop - 120);
 
     expect(timeline.keeper.isAttached()).toBe(true);
@@ -565,6 +600,7 @@ describe("ScrollPositionKeeper", () => {
 
     timeline.keeper.scrollToBottom();
     timeline.setRows(rowsOf(12));
+    timeline.keeper.reconcile();
     timeline.layout.layoutScrollTo(timeline.layout.scrollTop - 120);
 
     expect(timeline.keeper.isAttached()).toBe(true);
@@ -593,6 +629,7 @@ describe("ScrollPositionKeeper", () => {
     timeline.scrollElement.dispatchEvent(new TouchEvent("touchend"));
 
     timeline.setRows(rowsOf(12));
+    timeline.keeper.reconcile();
     timeline.layout.layoutScrollTo(timeline.layout.scrollTop - 120);
 
     expect(timeline.keeper.isAttached()).toBe(true);

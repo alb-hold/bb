@@ -4,6 +4,10 @@ import {
   COMPOSER_EDITOR_HEIGHT_STORAGE_KEY,
   composerEditorHeightAtom,
 } from "./composerHeightAtoms";
+import {
+  COMPOSER_CONTENT_WIDTH_STORAGE_KEY,
+  composerContentWidthAtom,
+} from "@/lib/content-measure";
 import { buildMessageClipboardHtml } from "@/lib/message-clipboard";
 import { createPortal } from "react-dom";
 import { focusPaneComposer } from "@/lib/pane-composer-focus";
@@ -1453,7 +1457,7 @@ describe("ComposerBox controlled value sync", () => {
         view.rerender(
           <PromptBoxInternal
             {...props}
-        compact={{ when: "always", placeholder: "Compact prompt" }}
+            compact={{ when: "always", placeholder: "Compact prompt" }}
             onComposerLayoutChange={nextLayoutChange}
           />,
         );
@@ -1493,7 +1497,7 @@ describe("ComposerBox controlled value sync", () => {
         view.rerender(
           <PromptBoxInternal
             {...props}
-        compact={{ when: "always", placeholder: "Compact prompt" }}
+            compact={{ when: "always", placeholder: "Compact prompt" }}
             onComposerLayoutChange={nextLayoutChange}
           />,
         );
@@ -2796,15 +2800,21 @@ describe("ComposerBox escape", () => {
 });
 
 describe("ComposerBox size controls", () => {
-  it("renders the height saved under the existing composer key before the upgrade", () => {
+  it("renders pre-upgrade height and width from the existing core settings keys", () => {
     const storedHeight = 312;
+    const storedWidth = 900;
     window.localStorage.setItem(
       COMPOSER_EDITOR_HEIGHT_STORAGE_KEY,
       JSON.stringify(storedHeight),
     );
-    onTestFinished(() =>
-      window.localStorage.removeItem(COMPOSER_EDITOR_HEIGHT_STORAGE_KEY),
+    window.localStorage.setItem(
+      COMPOSER_CONTENT_WIDTH_STORAGE_KEY,
+      JSON.stringify(storedWidth),
     );
+    onTestFinished(() => {
+      window.localStorage.removeItem(COMPOSER_EDITOR_HEIGHT_STORAGE_KEY);
+      window.localStorage.removeItem(COMPOSER_CONTENT_WIDTH_STORAGE_KEY);
+    });
     const store = createStore();
     render(
       <Provider store={store}>
@@ -2812,10 +2822,61 @@ describe("ComposerBox size controls", () => {
       </Provider>,
     );
 
+    expect(
+      screen
+        .getByRole("separator", { name: "Resize composer height" })
+        .getAttribute("aria-valuenow"),
+    ).toBe(String(storedHeight));
+    expect(
+      screen
+        .getByRole("separator", {
+          name: "Resize chat width from right corner",
+        })
+        .getAttribute("aria-valuenow"),
+    ).toBe(String(storedWidth));
     const editorScroll = document.querySelector<HTMLElement>(
       "[data-promptbox-editor-scroll]",
     );
     expect(editorScroll?.style.minHeight).toContain(`${storedHeight}px`);
+  });
+
+  it("writes plugin handle changes through the existing core settings keys", () => {
+    const store = getDefaultStore();
+    store.set(composerEditorHeightAtom, null);
+    store.set(composerContentWidthAtom, null);
+    window.localStorage.removeItem(COMPOSER_EDITOR_HEIGHT_STORAGE_KEY);
+    window.localStorage.removeItem(COMPOSER_CONTENT_WIDTH_STORAGE_KEY);
+    onTestFinished(() => {
+      store.set(composerEditorHeightAtom, null);
+      store.set(composerContentWidthAtom, null);
+      window.localStorage.removeItem(COMPOSER_EDITOR_HEIGHT_STORAGE_KEY);
+      window.localStorage.removeItem(COMPOSER_CONTENT_WIDTH_STORAGE_KEY);
+    });
+
+    render(<ComposerBox {...createPromptBoxProps()} />);
+    const heightHandle = screen.getByRole("separator", {
+      name: "Resize composer height",
+    });
+    const widthHandle = screen.getByRole("separator", {
+      name: "Resize chat width from right corner",
+    });
+    const editorScroll = document.querySelector<HTMLElement>(
+      "[data-promptbox-editor-scroll]",
+    );
+    if (!editorScroll) throw new Error("composer editor scroll is missing");
+    editorScroll.getBoundingClientRect = () => ({ height: 200 }) as DOMRect;
+
+    fireEvent.keyDown(heightHandle, { key: "ArrowUp" });
+    fireEvent.keyDown(widthHandle, { key: "ArrowRight" });
+
+    expect(
+      Number(window.localStorage.getItem(COMPOSER_EDITOR_HEIGHT_STORAGE_KEY)),
+    ).toBe(224);
+    expect(
+      Number(window.localStorage.getItem(COMPOSER_CONTENT_WIDTH_STORAGE_KEY)),
+    ).toBe(784);
+    expect(store.get(composerEditorHeightAtom)).toBe(224);
+    expect(store.get(composerContentWidthAtom)).toBe(784);
   });
 
   it.each([
@@ -2843,7 +2904,9 @@ describe("ComposerBox size controls", () => {
     getDefaultStore().set(composerEditorHeightAtom, 300);
     render(
       <PromptBoxInternal
-        {...createPromptBoxProps({ compact: { when: "always", placeholder: "Compact prompt" } })}
+        {...createPromptBoxProps({
+          compact: { when: "always", placeholder: "Compact prompt" },
+        })}
       />,
     );
 

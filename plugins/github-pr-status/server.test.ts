@@ -66,6 +66,7 @@ async function setup(options: {
   environments?: Record<string, Environment>;
   host?: Parameters<typeof makeHostResponse>[0];
   callHost?: (call: ExperimentalFakeHostRpcCall) => unknown;
+  listThreadEvents?: BbPluginApi["sdk"]["threads"]["events"]["list"];
 }) {
   const environments = options.environments ?? { "env-1": environment() };
   const sdkCalls: string[] = [];
@@ -77,7 +78,9 @@ async function setup(options: {
     pluginId: "bb--github-pr-status",
     sdk: {
       subscribe: () => () => {},
-      threads: { events: { list: async () => [] } },
+      threads: {
+        events: { list: options.listThreadEvents ?? (async () => []) },
+      },
       environments: {
         get: async ({ environmentId }: { environmentId: string }) => {
           sdkCalls.push(`environments.get ${environmentId}`);
@@ -117,7 +120,9 @@ async function setup(options: {
     async watchPullRequests(environmentId: string) {
       const handler = whileWatchedHandlers.get("pullRequests");
       if (handler === undefined)
-        throw new Error("pullRequests while-watched handler was not registered");
+        throw new Error(
+          "pullRequests while-watched handler was not registered",
+        );
       const controller = new AbortController();
       await handler({ key: environmentId }, controller.signal);
       return () => controller.abort();
@@ -310,6 +315,42 @@ describe("GitHub PR Status server", () => {
       ),
     ).toHaveLength(1);
     expect(fake.harness.sdk.callsTo("threads.events.list")).toHaveLength(1);
+    stopWatching();
+  });
+
+  it("refreshes and invalidates when thread event lookup rejects", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(1_000_000));
+    const listThreadEvents = vi.fn(async () => {
+      throw new Error("events unavailable");
+    });
+    const fake = await setup({ listThreadEvents });
+    const stopWatching = await fake.watchPullRequests("env-1");
+    await fake.harness.callRpc("pullRequests", { keys: ["env-1"] });
+    expect(
+      fake.harness.experimental_hostRpcCalls.filter(
+        (call) => call.method === "view",
+      ),
+    ).toHaveLength(1);
+
+    fake.harness.experimental_rpcInvalidations.length = 0;
+    vi.setSystemTime(new Date(1_011_000));
+    const emitted = await fake.harness.emitThreadEvent("thread.idle", {
+      thread: makeThreadResponse({ environmentId: "env-1" }),
+      lastAssistantText: null,
+    });
+
+    expect(emitted.errors).toEqual([]);
+    expect(listThreadEvents).toHaveBeenCalledOnce();
+    expect(fake.harness.experimental_rpcInvalidations).toContainEqual([
+      "environment:env-1",
+    ]);
+    await fake.harness.callRpc("pullRequests", { keys: ["env-1"] });
+    expect(
+      fake.harness.experimental_hostRpcCalls.filter(
+        (call) => call.method === "view",
+      ),
+    ).toHaveLength(2);
     stopWatching();
   });
 

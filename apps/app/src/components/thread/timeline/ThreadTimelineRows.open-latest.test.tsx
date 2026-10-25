@@ -262,6 +262,7 @@ describe("opening an unseen timeline", () => {
     height += 100;
     area.scrollTop = 20_500;
     fireEvent.scroll(area);
+    flushFrames();
     act(() => vi.advanceTimersByTime(25_000));
     expect(area.scrollTop).toBe(399_300);
   });
@@ -310,12 +311,19 @@ describe("opening an unseen timeline", () => {
       const { area } = renderThread();
       resize();
       if (input === "wheel") fireEvent.wheel(area, { deltaY: -500 });
-      if (input === "touch") fireEvent.touchMove(area);
+      if (input === "touch") {
+        fireEvent.touchStart(area, { touches: [{ clientY: 100 }] });
+        fireEvent.touchMove(area, { touches: [{ clientY: 120 }] });
+      }
       if (input === "keyboard") fireEvent.keyDown(area, { key: "ArrowUp" });
-      if (input === "pointer") fireEvent.pointerDown(area);
+      if (input === "pointer") {
+        fireEvent.pointerDown(area, { clientX: 10, clientY: 10 });
+        fireEvent.pointerMove(window, { clientX: 10, clientY: 20 });
+      }
       area.scrollTop = 200;
       fireEvent.scroll(area);
       if (input === "pointer") fireEvent.pointerUp(window);
+      if (input === "touch") fireEvent.touchEnd(area);
       act(() => vi.advanceTimersByTime(1));
       height += 600;
       resize();
