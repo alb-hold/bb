@@ -917,7 +917,8 @@ function ThreadSecondaryPanelContent({
   const shouldEnableSidebarSplits =
     canRenderSidebarSplits(renderAsDrawer, splitPanelStateId) && areFixedTabsReady;
   useCompactTerminalLayoutRequest({
-    enabled: !shouldEnableSidebarSplits && isOpen,
+    enabled:
+      !canRenderSidebarSplits(renderAsDrawer, splitPanelStateId) && isOpen,
     ensureTerminalTabs: (terminalIds) => onEnsureTerminalTabs?.(terminalIds) ?? false,
     onHandled: onCompactTerminalLayoutRequestHandled,
     onResolved: (terminalAvailable) =>
