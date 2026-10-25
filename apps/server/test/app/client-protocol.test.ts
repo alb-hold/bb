@@ -92,6 +92,34 @@ describe("client websocket protocol", () => {
     expect(socket.messages).toHaveLength(1);
   });
 
+  it("keeps valid subscriptions when a batch also holds a malformed known target", () => {
+    const hub = new NotificationHub();
+    const socket = createMockHubSocket();
+    const watched: unknown[] = [];
+    hub.onWatchedTargets(["thread-detail"], (change) => {
+      watched.push(change);
+    });
+    const thread = { kind: "thread-detail", threadId: "thread-1" };
+
+    onClientSocketOpen(hub, socket);
+    onClientSocketMessage(
+      hub,
+      socket,
+      JSON.stringify({
+        type: "subscribe",
+        targets: [
+          { kind: "thread-detail", threadId: 123 },
+          thread,
+        ],
+      }),
+    );
+    hub.notifyThread("thread-1", ["events-appended"]);
+
+    expect(socket.closed).toEqual([]);
+    expect(watched).toEqual([{ started: [thread], stopped: [] }]);
+    expect(applicationMessages(socket)).toHaveLength(1);
+  });
+
   it("removes subscriptions after unsubscribe messages", () => {
     const hub = new NotificationHub();
     const socket = createMockHubSocket();
