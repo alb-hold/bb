@@ -293,13 +293,17 @@ function renderThreadRow({
       experimental_rpcContract: threadListPullRequestRpcContract,
       rpc: {
         pullRequests: (input) => {
-          const { keys } = threadListPullRequestRpcContract.pullRequests.input.parse(
-            input,
-          );
+          const { keys } =
+            threadListPullRequestRpcContract.pullRequests.input.parse(input);
           return Object.fromEntries(
             keys.flatMap((key) =>
               sidebarPullRequest && key === rowThread.environment?.id
-                ? [[key, { outcome: "available", pullRequest: sidebarPullRequest }]]
+                ? [
+                    [
+                      key,
+                      { outcome: "available", pullRequest: sidebarPullRequest },
+                    ],
+                  ]
                 : [],
             ),
           );
@@ -681,7 +685,10 @@ describe("ThreadRow", () => {
     const pullRequests = Object.fromEntries(
       states.map((state, index) => [
         threads[index].environment!.id!,
-        { outcome: "available", pullRequest: createPullRequest(state, 10843 + index) },
+        {
+          outcome: "available",
+          pullRequest: createPullRequest(state, 10843 + index),
+        },
       ]),
     );
     const slot = renderSlot(
@@ -1067,20 +1074,25 @@ describe("ThreadRow", () => {
   it.each([
     ["meta", { metaKey: true }],
     ["ctrl", { ctrlKey: true }],
-  ])("selects the row on %s-shift-click and still splits without shift with multi-select on", (_label, modifier) => {
-    const slot = renderThreadRow({ experiments: ["sidebarMultiSelect"] });
-    const link = screen.getByRole("link", { name: "Open Thread" });
-    const row = link.closest("[data-sidebar-rename-row]");
-    expect(row?.hasAttribute("data-sidebar-thread-selected")).toBe(false);
-    expect(fireEvent.click(link, { ...modifier, shiftKey: true })).toBe(false);
-    expect(row?.hasAttribute("data-sidebar-thread-selected")).toBe(true);
-    expect(slot.inspection.navigateCalls).toEqual([]);
-    expect(fireEvent.click(link, modifier)).toBe(false);
-    expect(row?.hasAttribute("data-sidebar-thread-selected")).toBe(false);
-    expect(slot.inspection.navigateCalls).toEqual([
-      { method: "toThread", threadId: "thr_test", options: { split: true } },
-    ]);
-  });
+  ])(
+    "selects the row on %s-shift-click and still splits without shift with multi-select on",
+    (_label, modifier) => {
+      const slot = renderThreadRow({ experiments: ["sidebarMultiSelect"] });
+      const link = screen.getByRole("link", { name: "Open Thread" });
+      const row = link.closest("[data-sidebar-rename-row]");
+      expect(row?.hasAttribute("data-sidebar-thread-selected")).toBe(false);
+      expect(fireEvent.click(link, { ...modifier, shiftKey: true })).toBe(
+        false,
+      );
+      expect(row?.hasAttribute("data-sidebar-thread-selected")).toBe(true);
+      expect(slot.inspection.navigateCalls).toEqual([]);
+      expect(fireEvent.click(link, modifier)).toBe(false);
+      expect(row?.hasAttribute("data-sidebar-thread-selected")).toBe(false);
+      expect(slot.inspection.navigateCalls).toEqual([
+        { method: "toThread", threadId: "thr_test", options: { split: true } },
+      ]);
+    },
+  );
 
   it("clears the selection on a press outside the sidebar but keeps it for menus", () => {
     renderThreadRow({ experiments: ["sidebarMultiSelect"] });

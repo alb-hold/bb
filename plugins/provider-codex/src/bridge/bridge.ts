@@ -904,7 +904,9 @@ function handleChildRequest(
         );
         return;
       }
-      responder.result(buildCodexInteractiveResult(request.payload, runtimeResult));
+      responder.result(
+        buildCodexInteractiveResult(request.payload, runtimeResult),
+      );
     })
     .catch((error: unknown) => {
       responder.error(

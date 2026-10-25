@@ -391,7 +391,9 @@ vi.mock("./LazyThreadDetailView", () => ({
               />
             </div>
           ) : null}
-          {nativeTerminalPanes.has(threadId) ? null : responsiveComposerProbe.enabled ? (
+          {nativeTerminalPanes.has(
+            threadId,
+          ) ? null : responsiveComposerProbe.enabled ? (
             <PluginComposerHostProvider value={composerHost}>
               <ComposerBox
                 surface="thread"

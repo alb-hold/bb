@@ -386,10 +386,7 @@ function composerHistory(
             projectId: promptHistorySearch.projectId,
             open: promptHistorySearchOpen,
             onOpenChange: onPromptHistorySearchOpenChange,
-            renderDialog: ({
-              onInsert,
-              onAfterClose,
-            }) => (
+            renderDialog: ({ onInsert, onAfterClose }) => (
               <PromptHistorySearchDialog
                 open={promptHistorySearchOpen}
                 projectId={promptHistorySearch.projectId}

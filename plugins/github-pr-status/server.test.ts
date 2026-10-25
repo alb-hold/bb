@@ -149,13 +149,11 @@ describe("GitHub PR Status server", () => {
             : lookup,
       });
 
-      const result = z
-        .record(z.string(), environmentPullRequestSchema)
-        .parse(
-          await fake.harness.callRpc("pullRequests", {
-            keys: ["env-1"],
-          }),
-        );
+      const result = z.record(z.string(), environmentPullRequestSchema).parse(
+        await fake.harness.callRpc("pullRequests", {
+          keys: ["env-1"],
+        }),
+      );
 
       expect(Object.keys(result)).toEqual(["env-1"]);
       expect(environmentPullRequestSchema.parse(result["env-1"])).toEqual(

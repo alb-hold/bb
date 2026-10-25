@@ -674,9 +674,9 @@ describe("ThreadPromptContextBanner", () => {
     rerender(renderBanner([blocked, working], "bb--core/changed-files"));
     expect(onToggleSection).not.toHaveBeenCalled();
     expect(
-      screen.getByRole("button", { name: /Changed files/ }).getAttribute(
-        "aria-expanded",
-      ),
+      screen
+        .getByRole("button", { name: /Changed files/ })
+        .getAttribute("aria-expanded"),
     ).toBe("true");
   });
 });

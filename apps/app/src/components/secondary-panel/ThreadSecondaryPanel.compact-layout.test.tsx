@@ -86,10 +86,20 @@ describe("compact terminal layout requests", () => {
     }
 
     const { wrapper: Wrapper } = createQueryClientTestHarness();
-    render(<Wrapper><TooltipProvider><Harness /></TooltipProvider></Wrapper>);
+    render(
+      <Wrapper>
+        <TooltipProvider>
+          <Harness />
+        </TooltipProvider>
+      </Wrapper>,
+    );
 
-    await waitFor(() => expect(screen.getByText("Requested terminal content")).toBeTruthy());
-    expect(toastWarning).toHaveBeenCalledWith("Split panes aren't available at this window size.");
+    await waitFor(() =>
+      expect(screen.getByText("Requested terminal content")).toBeTruthy(),
+    );
+    expect(toastWarning).toHaveBeenCalledWith(
+      "Split panes aren't available at this window size.",
+    );
   });
 
   it("keeps a desktop split request pending until fixed tabs are ready", async () => {
@@ -153,7 +163,10 @@ describe("compact terminal layout requests", () => {
     }
 
     const initial = createSidebarSplitState([infoTab.id], infoTab.id);
-    window.localStorage.setItem(storageKey, serializeSidebarSplitState(initial));
+    window.localStorage.setItem(
+      storageKey,
+      serializeSidebarSplitState(initial),
+    );
     const { wrapper: Wrapper } = createQueryClientTestHarness();
     const view = render(
       <Wrapper>
@@ -246,10 +259,20 @@ describe("compact terminal layout requests", () => {
       }
 
       const { wrapper: Wrapper } = createQueryClientTestHarness();
-      render(<Wrapper><TooltipProvider><Harness /></TooltipProvider></Wrapper>);
+      render(
+        <Wrapper>
+          <TooltipProvider>
+            <Harness />
+          </TooltipProvider>
+        </Wrapper>,
+      );
 
-      await waitFor(() => expect(screen.getByText("Requested terminal content")).toBeTruthy());
-      expect(toastWarning).toHaveBeenCalledWith("Split panes aren't available at this window size.");
+      await waitFor(() =>
+        expect(screen.getByText("Requested terminal content")).toBeTruthy(),
+      );
+      expect(toastWarning).toHaveBeenCalledWith(
+        "Split panes aren't available at this window size.",
+      );
       expect(window.localStorage.getItem(storageKey)).toBe("unchanged-layout");
     },
   );

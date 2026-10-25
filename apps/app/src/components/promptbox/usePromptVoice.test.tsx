@@ -89,7 +89,9 @@ describe("usePromptVoice", () => {
       isListening: true,
     });
     const { promptBoxRef, deliverTranscript } = createPromptBoxRef();
-    const { result } = renderHook(() => usePromptVoice(promptBoxRef, undefined, null));
+    const { result } = renderHook(() =>
+      usePromptVoice(promptBoxRef, undefined, null),
+    );
     const options = vi.mocked(useVoiceInput).mock.calls[0]?.[0];
     act(() => {
       result.current.send();
@@ -97,19 +99,28 @@ describe("usePromptVoice", () => {
     });
     expect(voiceInput.stop).toHaveBeenCalledTimes(2);
     act(() => options?.onTranscript("first transcript", "send"));
-    expect(deliverTranscript).toHaveBeenCalledExactlyOnceWith("first transcript", "send");
+    expect(deliverTranscript).toHaveBeenCalledExactlyOnceWith(
+      "first transcript",
+      "send",
+    );
     act(() => {
       result.current.send();
       result.current.cancel();
       options?.onTranscript("cancelled transcript", "insert");
     });
     expect(deliverTranscript).toHaveBeenCalledTimes(2);
-    expect(deliverTranscript).toHaveBeenLastCalledWith("cancelled transcript", "insert");
+    expect(deliverTranscript).toHaveBeenLastCalledWith(
+      "cancelled transcript",
+      "insert",
+    );
     act(() => {
       result.current.stop();
       options?.onTranscript("draft transcript", "insert");
     });
-    expect(deliverTranscript).toHaveBeenLastCalledWith("draft transcript", "insert");
+    expect(deliverTranscript).toHaveBeenLastCalledWith(
+      "draft transcript",
+      "insert",
+    );
     expect(deliverTranscript).toHaveBeenCalledTimes(3);
   });
 
@@ -123,7 +134,9 @@ describe("usePromptVoice", () => {
       isListening: state === "recording",
     }));
     const { promptBoxRef, deliverTranscript } = createPromptBoxRef();
-    const { result, rerender } = renderHook(() => usePromptVoice(promptBoxRef, undefined, null));
+    const { result, rerender } = renderHook(() =>
+      usePromptVoice(promptBoxRef, undefined, null),
+    );
     const options = vi.mocked(useVoiceInput).mock.calls[0]?.[0];
     act(() => result.current.send());
     state = "error";
@@ -131,7 +144,10 @@ describe("usePromptVoice", () => {
     state = "recording";
     rerender();
     act(() => options?.onTranscript("later transcript", "insert"));
-    expect(deliverTranscript).toHaveBeenCalledExactlyOnceWith("later transcript", "insert");
+    expect(deliverTranscript).toHaveBeenCalledExactlyOnceWith(
+      "later transcript",
+      "insert",
+    );
   });
 
   it("does not submit into a replacement composer after navigating away", () => {
@@ -143,7 +159,9 @@ describe("usePromptVoice", () => {
       isListening: true,
     });
     const { promptBoxRef, deliverTranscript } = createPromptBoxRef();
-    const { result, unmount } = renderHook(() => usePromptVoice(promptBoxRef, undefined, null));
+    const { result, unmount } = renderHook(() =>
+      usePromptVoice(promptBoxRef, undefined, null),
+    );
     const options = vi.mocked(useVoiceInput).mock.calls[0]?.[0];
     act(() => result.current.send());
     unmount();
@@ -183,7 +201,10 @@ describe("usePromptVoice", () => {
       act(() => result.current[action]());
       unmount();
       draft = { ...draft, text: "Existing and later edits" };
-      await options?.onTranscript("late transcript", action === "send" ? "send" : "insert");
+      await options?.onTranscript(
+        "late transcript",
+        action === "send" ? "send" : "insert",
+      );
       expect(draft.text).toBe("Existing and later edits late transcript");
       expect(deliverTranscript).not.toHaveBeenCalled();
       expect(submit).toHaveBeenCalledTimes(action === "send" ? 1 : 0);
@@ -207,7 +228,9 @@ describe("usePromptVoice", () => {
     const setDraft = vi.fn((next: PromptDraftState) => {
       draft = next;
     });
-    renderHook(() => usePromptVoice(promptBoxRef, { getCurrent, setDraft }, null));
+    renderHook(() =>
+      usePromptVoice(promptBoxRef, { getCurrent, setDraft }, null),
+    );
     const options = vi.mocked(useVoiceInput).mock.calls[0]?.[0];
     draft = { ...draft, text: "Existing and later edits" };
     options?.onTranscript("new words", "insert");

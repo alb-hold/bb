@@ -455,11 +455,7 @@ function getPullRequestRepository(url: string): string {
     : parsedUrl.hostname;
 }
 
-function SidebarThreadPullRequestChip({
-  thread,
-}: {
-  thread: SidebarThread;
-}) {
+function SidebarThreadPullRequestChip({ thread }: { thread: SidebarThread }) {
   const pullRequest = useThreadListPullRequest(thread.environment?.id ?? null);
   if (pullRequest === null) return null;
 

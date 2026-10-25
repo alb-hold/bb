@@ -120,7 +120,9 @@ describe("native terminal questions", () => {
     );
     expect(waiting(open)).toEqual([{ id: "toolu_ask", prompt: "Merge now?" }]);
     expect(tracker.heartbeat()).toEqual(open);
-    expect(tracker.apply(claudeTranscript(toolResult("toolu_bash")))).toBeNull();
+    expect(
+      tracker.apply(claudeTranscript(toolResult("toolu_bash"))),
+    ).toBeNull();
     expect(tracker.heartbeat()).toEqual(open);
     expect(tracker.apply(claudeTranscript(toolResult("toolu_ask")))).toEqual({
       state: "working",

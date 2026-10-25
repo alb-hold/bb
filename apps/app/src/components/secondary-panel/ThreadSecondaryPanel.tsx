@@ -915,11 +915,13 @@ function ThreadSecondaryPanelContent({
   };
 
   const shouldEnableSidebarSplits =
-    canRenderSidebarSplits(renderAsDrawer, splitPanelStateId) && areFixedTabsReady;
+    canRenderSidebarSplits(renderAsDrawer, splitPanelStateId) &&
+    areFixedTabsReady;
   useCompactTerminalLayoutRequest({
     enabled:
       !canRenderSidebarSplits(renderAsDrawer, splitPanelStateId) && isOpen,
-    ensureTerminalTabs: (terminalIds) => onEnsureTerminalTabs?.(terminalIds) ?? false,
+    ensureTerminalTabs: (terminalIds) =>
+      onEnsureTerminalTabs?.(terminalIds) ?? false,
     onHandled: onCompactTerminalLayoutRequestHandled,
     onResolved: (terminalAvailable) =>
       appToast.warning(

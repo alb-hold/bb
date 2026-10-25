@@ -76,7 +76,9 @@ describe("host GraphQL batching", () => {
       "ghe.example:\n    user: enterprise-user\n",
     );
 
-    await expect(getPullRequestByUrl(enterpriseUrl, cwd)).resolves.toMatchObject({
+    await expect(
+      getPullRequestByUrl(enterpriseUrl, cwd),
+    ).resolves.toMatchObject({
       outcome: "found",
       pullRequest: { url: enterpriseUrl },
     });

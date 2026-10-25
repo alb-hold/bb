@@ -107,10 +107,7 @@ describe("client websocket protocol", () => {
       socket,
       JSON.stringify({
         type: "subscribe",
-        targets: [
-          { kind: "thread-detail", threadId: 123 },
-          thread,
-        ],
+        targets: [{ kind: "thread-detail", threadId: 123 }, thread],
       }),
     );
     hub.notifyThread("thread-1", ["events-appended"]);

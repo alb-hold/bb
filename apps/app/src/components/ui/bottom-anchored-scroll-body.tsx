@@ -127,10 +127,7 @@ export function BottomAnchoredScrollBody({
     trailingTimeout: number | null;
   }>({ lastWriteAt: 0, trailingTimeout: null });
   const initialRestore = useMemo<TimelineScrollRestore | null>(() => {
-    if (
-      scrollAnchorThreadId === undefined ||
-      scrollAnchorMode === "latest"
-    ) {
+    if (scrollAnchorThreadId === undefined || scrollAnchorMode === "latest") {
       return null;
     }
     const anchor = store.get(
@@ -259,12 +256,7 @@ export function BottomAnchoredScrollBody({
         atBottom: false,
       });
     }
-  }, [
-    initialRestore,
-    positionKeeper,
-    scrollAnchorMode,
-    scrollAnchorThreadId,
-  ]);
+  }, [initialRestore, positionKeeper, scrollAnchorMode, scrollAnchorThreadId]);
 
   useLayoutEffect(() => {
     const scrollArea = scrollAreaRef.current;

@@ -1171,10 +1171,8 @@ export function ThreadChildThreadsBanner({
   autoExpandDisabled?: boolean;
 }) {
   const items = childThreads?.items ?? NO_CHILD_THREAD_ITEMS;
-  useExpandForNewNeedsInput(
-    items,
-    isExpanded || autoExpandDisabled,
-    () => onExpandedChange(true),
+  useExpandForNewNeedsInput(items, isExpanded || autoExpandDisabled, () =>
+    onExpandedChange(true),
   );
   if (childThreads === null || items.length === 0) return null;
   return (
