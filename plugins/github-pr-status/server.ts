@@ -466,10 +466,9 @@ export default function githubPrStatusPlugin(bb: BbPluginApi): void {
           store.refresh(environmentId);
         }
       }
-      if (event === "thread.idle")
-        bb.rpc.experimental_invalidate([
-          environmentPullRequestTag(environmentId),
-        ]);
+      bb.rpc.experimental_invalidate([
+        environmentPullRequestTag(environmentId),
+      ]);
     });
   }
 

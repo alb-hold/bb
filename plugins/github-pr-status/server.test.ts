@@ -318,6 +318,68 @@ describe("GitHub PR Status server", () => {
     stopWatching();
   });
 
+  it("refreshes and invalidates the watched PR after a failed turn that ran gh", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(1_000_000));
+    let pullRequest = view();
+    const listThreadEvents: BbPluginApi["sdk"]["threads"]["events"]["list"] =
+      async () => [
+        {
+          id: "event-1",
+          scope: "turn",
+          threadId: "thread-1",
+          seq: 2,
+          createdAt: 1,
+          type: "item/started",
+          data: {
+            item: {
+              type: "commandExecution",
+              id: "item-1",
+              command: "gh pr edit 7 --title Updated",
+              cwd: "/work/env-1",
+              status: "completed",
+              approvalStatus: null,
+            },
+          },
+        },
+      ];
+    const fake = await setup({
+      listThreadEvents,
+      callHost: (call) =>
+        call.method === "upstream"
+          ? { oid: null, branchName: "bb/pr" }
+          : call.method === "view"
+            ? { outcome: "found", pullRequest }
+            : { ok: true },
+    });
+    const stopWatching = await fake.watchPullRequests("env-1");
+    await fake.harness.callRpc("pullRequests", { keys: ["env-1"] });
+    fake.harness.experimental_rpcInvalidations.length = 0;
+    pullRequest = view({ title: "Updated" });
+    vi.setSystemTime(new Date(1_011_000));
+
+    const emitted = await fake.harness.emitThreadEvent("thread.failed", {
+      thread: makeThreadResponse({ environmentId: "env-1" }),
+      error: "failed after updating the pull request",
+    });
+
+    expect(emitted.errors).toEqual([]);
+    expect(fake.harness.experimental_rpcInvalidations).toContainEqual([
+      "environment:env-1",
+    ]);
+    await expect(
+      fake.harness.callRpc("pullRequests", { keys: ["env-1"] }),
+    ).resolves.toMatchObject({
+      "env-1": { outcome: "available", pullRequest: { title: "Updated" } },
+    });
+    expect(
+      fake.harness.experimental_hostRpcCalls.filter(
+        (call) => call.method === "view",
+      ),
+    ).toHaveLength(2);
+    stopWatching();
+  });
+
   it("refreshes and invalidates when thread event lookup rejects", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date(1_000_000));

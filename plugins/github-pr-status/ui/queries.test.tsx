@@ -11,16 +11,23 @@ import {
 const keyedQuery = vi.hoisted(() => ({
   data: {} as Record<string, EnvironmentPullRequest>,
   refetch: vi.fn(async () => {}),
+  calls: [] as Array<{ method: string; keys: readonly string[] }>,
 }));
 
 vi.mock("@get-bb/plugin-sdk/app", () => ({
-  experimental_useRpcKeyedQuery: () => ({
-    data: keyedQuery.data,
-    error: null,
-    isLoading: false,
-    isFetching: false,
-    refetch: keyedQuery.refetch,
-  }),
+  experimental_useRpcKeyedQuery: (input: {
+    method: string;
+    keys: readonly string[];
+  }) => {
+    keyedQuery.calls.push(input);
+    return {
+      data: keyedQuery.data,
+      error: null,
+      isLoading: false,
+      isFetching: false,
+      refetch: keyedQuery.refetch,
+    };
+  },
   experimental_useRpcMutation: () => ({ mutate: vi.fn(), isPending: false }),
 }));
 
@@ -68,6 +75,7 @@ afterEach(() => {
   cleanup();
   vi.useRealTimers();
   keyedQuery.refetch.mockClear();
+  keyedQuery.calls.length = 0;
   keyedQuery.data = {};
 });
 
@@ -96,6 +104,15 @@ describe("isEnvironmentPullRequestStale", () => {
 });
 
 describe("useEnvironmentPullRequest refreshes", () => {
+  it("owns its query by environment id through the plugin RPC contract", () => {
+    renderHook(() => useEnvironmentPullRequest("env-1"));
+
+    expect(keyedQuery.calls[0]).toMatchObject({
+      method: "pullRequests",
+      keys: ["env-1"],
+    });
+  });
+
   it("refetches a cached row on mount and when the page shows after 30 s", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     keyedQuery.data = { "env-open": row("open") };
