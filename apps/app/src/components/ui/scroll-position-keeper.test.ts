@@ -358,6 +358,25 @@ describe("ScrollPositionKeeper", () => {
     expect(timeline.keeper.isAttached()).toBe(true);
   });
 
+  it("publishes the touch scroll position at touchend before a scroll event arrives", () => {
+    const timeline = createTimeline(rowsOf(10));
+    const reportedPositions: string[] = [];
+    timeline.keeper.subscribePosition(() => {
+      reportedPositions.push(timeline.keeper.getPosition().kind);
+    });
+    const touch = (type: string, clientY: number) =>
+      Object.assign(new Event(type), { touches: [{ clientY }] });
+
+    timeline.scrollElement.dispatchEvent(touch("touchstart", 300));
+    timeline.scrollElement.scrollTop = 100;
+    timeline.scrollElement.dispatchEvent(
+      Object.assign(new Event("touchend"), { touches: [] }),
+    );
+
+    expect(reportedPositions).toEqual(["anchor", "anchor"]);
+    expect(timeline.keeper.getPosition().kind).toBe("anchor");
+  });
+
   it("saves a detached reader who sits at the end as at the bottom", () => {
     const rows = rowsOf(10);
     const timeline = createTimeline(rows);
