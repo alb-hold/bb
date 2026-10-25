@@ -610,7 +610,7 @@ describe("bb thread show command output", () => {
             cachedInputTokens: null,
             outputTokens: 20,
             reasoningOutputTokens: 4,
-            totalTokens: 1_024,
+            totalTokens: 1_020,
           },
         ],
       })),
