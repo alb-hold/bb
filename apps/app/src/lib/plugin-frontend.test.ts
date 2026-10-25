@@ -148,9 +148,10 @@ describe("installPluginRuntime", () => {
       react.useState,
     );
     expect((runtime.jsxRuntime as { jsx: unknown }).jsx).toBe(jsxRuntime.jsx);
-    expect(runtime.pluginSdkApp.experimental_useSidebarThreadPullRequest).toBe(
-      useSidebarThreadPullRequest,
-    );
+    expect(
+      (runtime.pluginSdkApp as Record<string, unknown>)
+        .experimental_useSidebarThreadPullRequest,
+    ).toBe(useSidebarThreadPullRequest);
     expect(runtime.pluginSdkApp).toEqual({
       ...pluginSdkAppImplementation,
       experimental_useSidebarThreadPullRequest: useSidebarThreadPullRequest,
