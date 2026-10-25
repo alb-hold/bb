@@ -1501,6 +1501,7 @@ describe("ComposerBox controlled value sync", () => {
 
       expect(initialLayoutChange).toHaveBeenCalledWith("expanded");
       expect(nextLayoutChange).toHaveBeenCalledWith("compact");
+      expect(nextLayoutChange.mock.calls).toEqual([["expanded"], ["compact"]]);
       expect(document.activeElement).toBe(outsideTarget);
     } finally {
       outsideTarget.remove();
@@ -1541,6 +1542,7 @@ describe("ComposerBox controlled value sync", () => {
 
       expect(initialLayoutChange).toHaveBeenCalledWith("expanded");
       expect(nextLayoutChange).toHaveBeenCalledWith("compact");
+      expect(nextLayoutChange.mock.calls).toEqual([["expanded"], ["compact"]]);
       expect(document.activeElement).toBe(outsideTarget);
     } finally {
       outsideTarget.remove();

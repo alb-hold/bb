@@ -449,7 +449,6 @@ function useComposerRendererHostApi({
   }, [layout, onComposerLayoutChange]);
   const handleLayoutChange = (next: ComposerView["layout"]) => {
     setLayout(next);
-    onComposerLayoutChange?.(next);
   };
   const localView = usePluginComposerViewModel({
     scope: host?.scope ?? DEFAULT_COMPOSER_SCOPE,
