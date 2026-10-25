@@ -12,7 +12,8 @@ export type InternalDoNotUseCwdHolderScan = Awaited<
  * delete: Windows, a symlinked target, a process list that cannot be read, and
  * an `lsof` failure or warning are `unknown`. `clear` vouches for the current
  * user's readable processes only; other users' processes are excluded and
- * counted, and a same-user process whose working directory cannot be read is
+ * counted, each recorded with pid, uid and errno in `skippedOtherUsers`, and
+ * a same-user process whose working directory cannot be read is
  * `unknown` unless its exact `comm` is a known session helper (systemd,
  * (sd-pam), ssh-agent, sshd, sshd-session, gpg-agent, dbus-daemon), which is
  * reported by name and pid. `comm` is settable by the process itself. It checks working

@@ -118,7 +118,56 @@ describe("scanProcessesWithCwdUnder", () => {
       status: "clear",
       excludedOtherUsers: 1,
       unvouchedHelpers: [],
+      skippedOtherUsers: [{ pid: 10, uid: 0, errno: "EACCES" }],
     });
+  });
+
+  it("records every skipped other-user process with its pid, uid and errno, whatever the read error", async () => {
+    const base = await dir();
+    const scan = await scanProcessesWithCwdUnder(
+      { directories: [base] },
+      fakeLinux(
+        {
+          10: denied(),
+          11: Object.assign(new Error("perm"), { code: "EPERM" }),
+          12: Object.assign(new Error("io"), { code: "EIO" }),
+          13: "/elsewhere",
+        },
+        { 10: 0, 11: 33, 12: 1234 },
+      ),
+    );
+    expect(scan).toEqual({
+      status: "clear",
+      excludedOtherUsers: 3,
+      unvouchedHelpers: [],
+      skippedOtherUsers: [
+        { pid: 10, uid: 0, errno: "EACCES" },
+        { pid: 11, uid: 33, errno: "EPERM" },
+        { pid: 12, uid: 1234, errno: "EIO" },
+      ],
+    });
+  });
+
+  it("is unknown for a same-user process whose working directory fails to read for any other reason", async () => {
+    const base = await dir();
+    const scan = await scanProcessesWithCwdUnder(
+      { directories: [base] },
+      fakeLinux({ 12: Object.assign(new Error("io"), { code: "EIO" }) }),
+    );
+    expect(scan).toEqual({
+      status: "unknown",
+      reason: expect.stringContaining("process 12"),
+    });
+  });
+
+  it("keeps an unreadable same-user process unknown even when an unreadable other-user process is also present", async () => {
+    const base = await dir();
+    const scan = await scanProcessesWithCwdUnder(
+      { directories: [base] },
+      fakeLinux({ 10: denied(), 11: denied() }, { 10: 0 }, { 11: "renamed-helper" }),
+    );
+    expect(scan.status).toBe("unknown");
+    expect(scan.status === "unknown" ? scan.reason : "").toContain("process 11");
   });
 
   it("is unknown when the process list cannot be read, on Windows, and for a symlinked target", async () => {

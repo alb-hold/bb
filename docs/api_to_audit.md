@@ -1669,7 +1669,8 @@ working directory cannot be read unless its exact `comm` (from
 `/proc/<pid>/stat`) is on the allow-list of session helpers: systemd, (sd-pam),
 ssh-agent, sshd, sshd-session, gpg-agent, dbus-daemon (owner ruling
 2026-10-23). `clear` vouches for the current user's readable processes only:
-other users' processes are excluded and counted, and allow-listed helpers are
+other users' processes are excluded and counted (each recorded with pid, uid
+and errno in `skippedOtherUsers`), and allow-listed helpers are
 reported by name and pid. Measured on a development host, 22 of 287 same-user
 processes were unreadable, all of them these helpers, so refusing on every
 unreadable process would make `clear` unreachable on an ordinary Linux machine.

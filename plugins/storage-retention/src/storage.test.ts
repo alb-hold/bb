@@ -3,7 +3,7 @@ import { execFileSync, spawn } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createFakePluginHost,
   makeHostResponse,
@@ -1019,6 +1019,84 @@ it("rejects traversal and symlinks without deleting their targets", async () => 
   } finally {
     await worker.experimental_dispose();
   }
+});
+
+describe.skipIf(
+  process.platform !== "linux" ||
+    (typeof process.getuid === "function" && process.getuid() === 0),
+)("a same-user process whose working directory cannot be read", () => {
+  const children: ReturnType<typeof spawn>[] = [];
+  afterEach(() => {
+    for (const child of children.splice(0)) child.kill("SIGKILL");
+  });
+
+  async function startUnreadable(ctx: {
+    skip: (condition: boolean, note: string) => void;
+  }) {
+    const child = spawn(
+      "python3",
+      [
+        "-c",
+        `import ctypes, time
+libc = ctypes.CDLL(None)
+libc.prctl(4, 0, 0, 0, 0)
+libc.prctl(15, b"renamed-helper", 0, 0, 0)
+print("ready", flush=True)
+time.sleep(120)`,
+      ],
+      { stdio: ["ignore", "pipe", "ignore"] },
+    );
+    children.push(child);
+    await new Promise<void>((resolve) =>
+      child
+        .once("error", () => resolve())
+        .stdout?.once("data", () => resolve()),
+    );
+    let readable = true;
+    try {
+      await fs.readlink(`/proc/${child.pid}/cwd`);
+    } catch (error) {
+      readable = (error as NodeJS.ErrnoException).code !== "EACCES";
+    }
+    ctx.skip(readable, "the kernel lets this user read the process");
+    return child;
+  }
+
+  it("is an unknown holder: thread storage is kept with the reason, a trash directory is kept, and nothing is stopped", async (ctx) => {
+    const root = await directory();
+    const trash = path.join(root, ".bb-trash-idle");
+    await fs.mkdir(path.join(trash, "inner"), { recursive: true });
+    await fs.mkdir(path.join(root, "thr_gone"));
+    const helper = await startUnreadable(ctx);
+    const worker = experimental_createHostEntryHarness(hostEntry);
+    try {
+      expect(
+        await worker.experimental_call("discard", {
+          rootPath: root,
+          names: ["thr_gone"],
+          recreate: false,
+        }),
+      ).toEqual({
+        removed: [],
+        held: [
+          {
+            name: "thr_gone",
+            holders: [],
+            unknown: expect.stringContaining(
+              `process ${helper.pid} (renamed-helper) could not be read and it is not a known session helper`,
+            ),
+          },
+        ],
+      });
+      expect(await fs.stat(path.join(root, "thr_gone"))).toBeTruthy();
+      expect(await removeTrashUnlessHeld(trash)).toBe("kept");
+      expect(await fs.stat(path.join(trash, "inner"))).toBeTruthy();
+      expect(helper.exitCode).toBeNull();
+      expect(helper.signalCode).toBeNull();
+    } finally {
+      await worker.experimental_dispose();
+    }
+  });
 });
 
 it("keeps cleanup available during a scan and leaves cleared storage out of its result", async () => {

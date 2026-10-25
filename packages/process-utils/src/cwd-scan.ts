@@ -12,8 +12,15 @@ export interface CwdUnvouchedHelper {
   comm: string;
 }
 
+export interface CwdSkippedProcess {
+  pid: number;
+  uid: number;
+  errno: string;
+}
+
 export interface CwdScanCoverage {
   excludedOtherUsers: number | null;
+  skippedOtherUsers?: CwdSkippedProcess[];
   unvouchedHelpers: CwdUnvouchedHelper[] | null;
 }
 
@@ -65,7 +72,7 @@ function isUnder(candidate: string, directory: string): boolean {
   );
 }
 
-const defaultIo: CwdScanIo = {
+export const hostCwdScanIo: CwdScanIo = {
   platform: process.platform,
   uid: typeof process.getuid === "function" ? process.getuid() : null,
   selfPid: process.pid,
@@ -109,9 +116,55 @@ const defaultIo: CwdScanIo = {
     }),
 };
 
+let activeIo: CwdScanIo = hostCwdScanIo;
+
+export function useCwdScanIoForTests(io: CwdScanIo | null): void {
+  activeIo = io ?? hostCwdScanIo;
+}
+
+export function cwdScanIoDescendantsOnly(
+  base: CwdScanIo,
+  rootPid: number,
+): CwdScanIo {
+  const parentOf = async (pid: number): Promise<number | null> => {
+    try {
+      const text = await readFile(`/proc/${pid}/stat`, "utf8");
+      const parent = Number(
+        text.slice(text.lastIndexOf(")") + 2).split(" ")[1],
+      );
+      return Number.isInteger(parent) ? parent : null;
+    } catch {
+      return null;
+    }
+  };
+  const below = async (pid: number): Promise<boolean> => {
+    let current: number | null = pid;
+    for (
+      let steps = 0;
+      steps < 64 && current !== null && current > 1;
+      steps += 1
+    ) {
+      if (current === rootPid) return true;
+      current = await parentOf(current);
+    }
+    return false;
+  };
+  return {
+    ...base,
+    listProcessIds: async () => {
+      const kept: string[] = [];
+      for (const entry of await base.listProcessIds()) {
+        if (!/^\d+$/u.test(entry) || (await below(Number(entry))))
+          kept.push(entry);
+      }
+      return kept;
+    },
+  };
+}
+
 export async function scanProcessesWithCwdUnder(
   args: { directories: readonly string[]; timeoutMs?: number },
-  io: CwdScanIo = defaultIo,
+  io: CwdScanIo = activeIo,
 ): Promise<CwdHolderScan> {
   if (io.platform === "win32") {
     return {
@@ -142,6 +195,7 @@ export async function scanProcessesWithCwdUnder(
       };
     }
     let excluded = 0;
+    const skippedOtherUsers: CwdSkippedProcess[] = [];
     const unvouchedHelpers: CwdUnvouchedHelper[] = [];
     for (const entry of entries) {
       if (!/^\d+$/u.test(entry)) continue;
@@ -166,6 +220,7 @@ export async function scanProcessesWithCwdUnder(
           }
           if (io.uid !== null && owner !== io.uid) {
             excluded += 1;
+            skippedOtherUsers.push({ pid, uid: owner, errno: code });
             continue;
           }
           if (io.uid !== null) {
@@ -189,6 +244,19 @@ export async function scanProcessesWithCwdUnder(
             };
           }
         }
+        if (io.uid !== null) {
+          let owner: number | null = null;
+          try {
+            owner = await io.ownerUid(pid);
+          } catch (ownerError) {
+            if (GONE.has(codeOf(ownerError))) continue;
+          }
+          if (owner !== null && owner !== io.uid) {
+            excluded += 1;
+            skippedOtherUsers.push({ pid, uid: owner, errno: code || "error" });
+            continue;
+          }
+        }
         return {
           status: "unknown",
           reason: `the working directory of process ${pid} could not be read (${code || "error"})`,
@@ -197,7 +265,11 @@ export async function scanProcessesWithCwdUnder(
       if (directories.some((directory) => isUnder(cwd, directory)))
         holders.push({ pid, cwd });
     }
-    const coverage = { excludedOtherUsers: excluded, unvouchedHelpers };
+    const coverage = {
+      excludedOtherUsers: excluded,
+      unvouchedHelpers,
+      ...(skippedOtherUsers.length > 0 ? { skippedOtherUsers } : {}),
+    };
     return holders.length > 0
       ? { status: "held", holders, ...coverage }
       : { status: "clear", ...coverage };
