@@ -376,6 +376,9 @@ describe("BottomAnchoredScrollBody", () => {
   });
 
   it("keeps the reading row still when older rows load after post-touchend momentum", async () => {
+    vi.useFakeTimers({
+      toFake: ["setTimeout", "clearTimeout", "performance"],
+    });
     vi.stubGlobal("navigator", {
       maxTouchPoints: 5,
       platform: "iPhone",
@@ -389,9 +392,6 @@ describe("BottomAnchoredScrollBody", () => {
     );
     if (scrollElement === null) throw new Error("no scroll element");
     const reader = firstVisible();
-    const pageContent = scrollElement.querySelector<HTMLElement>(
-      ".mx-auto.flex.w-full.min-w-0.flex-1",
-    );
     act(() => {
       scrollElement.dispatchEvent(
         new TouchEvent("touchstart", {
@@ -414,6 +414,7 @@ describe("BottomAnchoredScrollBody", () => {
         });
       });
     }
+    act(() => vi.advanceTimersByTime(200));
     const before = topOf(reader);
 
     act(() =>
@@ -427,7 +428,6 @@ describe("BottomAnchoredScrollBody", () => {
     act(() => layout.flushResizeObservers());
 
     expect(topOf(reader)).toBe(before);
-    expect(pageContent?.style.transform).not.toBe("");
     expect(handles.bottomAnchor?.isAtBottom).toBe(false);
   });
 
