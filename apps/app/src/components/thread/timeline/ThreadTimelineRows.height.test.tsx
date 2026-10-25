@@ -157,6 +157,16 @@ it("keeps the reading row in place through eased growth frames", () => {
   const area = view.getByTestId("scroll-area");
   const wrapper = area.firstElementChild as HTMLElement;
   const content = wrapper.firstElementChild as HTMLElement;
+  let scrollTop = 600;
+  const scrollTopWrites: number[] = [];
+  Object.defineProperty(area, "scrollTop", {
+    configurable: true,
+    get: () => scrollTop,
+    set: (value: number) => {
+      scrollTopWrites.push(value);
+      scrollTop = value;
+    },
+  });
   const row = view.container.querySelector<HTMLElement>(
     '[data-timeline-row-id="reading-row"]',
   );
@@ -171,7 +181,7 @@ it("keeps the reading row in place through eased growth frames", () => {
   });
   area.getBoundingClientRect = () => new DOMRect(0, 0, 400, 500);
   row.getBoundingClientRect = () =>
-    new DOMRect(0, 900 + transitionHeight - 800 - area.scrollTop, 400, 100);
+    new DOMRect(0, 900 - area.scrollTop, 400, 100);
   area.scrollTop = 600;
 
   const keeper = new ScrollPositionKeeper({
@@ -185,6 +195,7 @@ it("keeps the reading row in place through eased growth frames", () => {
   });
   const disconnect = keeper.connect(area);
   keeper.hold(row, "top");
+  scrollTopWrites.length = 0;
   const readingRowTop = row.getBoundingClientRect().top;
   const initialScrollTop = area.scrollTop;
 
@@ -193,11 +204,13 @@ it("keeps the reading row in place through eased growth frames", () => {
   expect(wrapper.style.height).toBe("1000px");
   expect(wrapper.style.transition).toContain("height 180ms");
   expect(area.scrollTop).toBe(initialScrollTop);
+  expect(scrollTopWrites).toEqual([]);
   expect(row.getBoundingClientRect().top).toBe(readingRowTop);
 
   for (const frameHeight of [850, 900, 950, 1_000]) {
     transitionHeight = frameHeight;
     act(() => ResizeObserverStub.trigger(wrapper, frameHeight));
+    expect(scrollTopWrites).toEqual([]);
     expect(row.getBoundingClientRect().top).toBe(readingRowTop);
   }
   disconnect();
