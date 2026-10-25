@@ -28,6 +28,7 @@ export const promptAreaMocks = {
   deleteQueuedMessageMutateAsync: vi.fn(),
   navigate: vi.fn(),
   pluginComposerHost: null as PluginComposerHost | null,
+  renderThreadContextBanner: false,
   composerSubmit: null as
     | ((extras?: ComposerSubmitExtras) => void | Promise<void>)
     | null,
@@ -506,19 +507,34 @@ vi.mock("@/components/promptbox/banner/ThreadGoalCard", () => ({
     ) : null,
 }));
 
-vi.mock("@/components/promptbox/banner/ThreadPromptContextBanner", () => ({
-  ThreadPromptContextBanner: () => null,
-  ThreadChildThreadsBanner: ({
-    childThreads,
-  }: {
-    childThreads: { items: readonly unknown[] } | null;
-  }) =>
-    childThreads ? (
-      <div data-testid="child-threads-banner">
-        {childThreads.items.length} child threads
-      </div>
-    ) : null,
-}));
+vi.mock(
+  "@/components/promptbox/banner/ThreadPromptContextBanner",
+  async (importOriginal) => {
+    const actual =
+      await importOriginal<
+        typeof import("@/components/promptbox/banner/ThreadPromptContextBanner")
+      >();
+    return {
+      ...actual,
+      ThreadPromptContextBanner: (
+        props: Parameters<typeof actual.ThreadPromptContextBanner>[0],
+      ) =>
+        promptAreaMocks.renderThreadContextBanner ? (
+          <actual.ThreadPromptContextBanner {...props} />
+        ) : null,
+      ThreadChildThreadsBanner: (
+        props: Parameters<typeof actual.ThreadChildThreadsBanner>[0],
+      ) =>
+        promptAreaMocks.renderThreadContextBanner ? (
+          <actual.ThreadChildThreadsBanner {...props} />
+        ) : props.childThreads ? (
+          <div data-testid="child-threads-banner">
+            {props.childThreads.items.length} child threads
+          </div>
+        ) : null,
+    };
+  },
+);
 
 vi.mock("@/components/promptbox/banner/ThreadPromptModeCard", () => ({
   ThreadPromptModeCard: ({

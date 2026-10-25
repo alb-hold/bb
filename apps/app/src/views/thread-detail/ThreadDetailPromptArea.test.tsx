@@ -151,6 +151,9 @@ interface RenderPromptAreaOptions {
   sentMessageEdit?: ThreadDetailSentMessageEdit;
   sessionOptions?: readonly ThreadTimelineSessionOption[] | null;
   thread?: ThreadWithRuntime;
+  workspaceChangedFilesSection?: ComponentProps<
+    typeof ThreadDetailPromptArea
+  >["workspaceChangedFilesSection"];
 }
 
 let testQueryClient: QueryClient;
@@ -168,6 +171,7 @@ function buildPromptAreaElement({
   sentMessageEdit,
   sessionOptions = null,
   thread = makeThread(),
+  workspaceChangedFilesSection = null,
 }: RenderPromptAreaOptions = {}) {
   return (
     <QueryClientProvider client={testQueryClient}>
@@ -202,7 +206,7 @@ function buildPromptAreaElement({
         sentMessageEdit={sentMessageEdit}
         steerActiveThreadOnEnter={false}
         thread={thread}
-        workspaceChangedFilesSection={null}
+        workspaceChangedFilesSection={workspaceChangedFilesSection}
         workspaceStatusPending={false}
       />
     </QueryClientProvider>
@@ -222,6 +226,7 @@ beforeEach(() => {
   mocks.defaultExecutionOptions = null;
   mocks.executionInputSources = {};
   mocks.pluginComposerHost = null;
+  mocks.renderThreadContextBanner = false;
   mocks.composerSubmit = null;
   mocks.composerModifierSubmit = null;
   mocks.promptDraft.text = "";
@@ -1431,6 +1436,150 @@ describe("ThreadDetailPromptArea", () => {
     rerender(buildPromptAreaElement({ childThreadsSection }));
     expect(screen.queryByText("Pending interaction")).toBeNull();
     expect(screen.getByTestId("child-threads-banner")).toBe(banner);
+  });
+
+  it("keeps changed files expanded when a child newly needs input through prompt-area wiring", async () => {
+    mocks.renderThreadContextBanner = true;
+    const workspaceChangedFilesSection = {
+      kind: "uncommitted" as const,
+      label: "Uncommitted",
+      files: [
+        {
+          path: "src/example.ts",
+          status: "M" as const,
+          insertions: 1,
+          deletions: 0,
+        },
+      ],
+      mergeBaseRef: null,
+      stats: {
+        insertions: 1,
+        deletions: 0,
+        lineStatsComplete: true,
+        fileCount: 1,
+        files: [
+          {
+            path: "src/example.ts",
+            status: "M" as const,
+            insertions: 1,
+            deletions: 0,
+          },
+        ],
+      },
+    };
+    const childThreadsSection = {
+      items: [
+        {
+          id: "thr_child",
+          title: "Install workspace tools",
+          href: "/threads/thr_child",
+          hasPendingInteraction: false,
+        },
+      ],
+      pendingInteractions: [],
+    };
+    const options = { childThreadsSection, workspaceChangedFilesSection };
+    const { rerender } = renderPromptArea(options);
+
+    fireEvent.click(screen.getByRole("button", { name: /Changed files/ }));
+    expect(
+      screen
+        .getByRole("button", { name: /Changed files/ })
+        .getAttribute("aria-expanded"),
+    ).toBe("true");
+
+    rerender(
+      buildPromptAreaElement({
+        ...options,
+        childThreadsSection: {
+          ...childThreadsSection,
+          items: [
+            { ...childThreadsSection.items[0], hasPendingInteraction: true },
+          ],
+        },
+      }),
+    );
+
+    expect(
+      screen
+        .getByRole("button", { name: /Changed files/ })
+        .getAttribute("aria-expanded"),
+    ).toBe("true");
+    expect(
+      screen
+        .getByRole("button", { name: "1 active child thread" })
+        .getAttribute("aria-expanded"),
+    ).toBe("false");
+  });
+
+  it("keeps a newly waiting child collapsed in the pending-interaction prompt stack", () => {
+    mocks.renderThreadContextBanner = true;
+    const workspaceChangedFilesSection = {
+      kind: "uncommitted" as const,
+      label: "Uncommitted",
+      files: [
+        {
+          path: "src/example.ts",
+          status: "M" as const,
+          insertions: 1,
+          deletions: 0,
+        },
+      ],
+      mergeBaseRef: null,
+      stats: {
+        insertions: 1,
+        deletions: 0,
+        lineStatsComplete: true,
+        fileCount: 1,
+        files: [
+          {
+            path: "src/example.ts",
+            status: "M" as const,
+            insertions: 1,
+            deletions: 0,
+          },
+        ],
+      },
+    };
+    const childThreadsSection = {
+      items: [
+        {
+          id: "thr_child",
+          title: "Install workspace tools",
+          href: "/threads/thr_child",
+          hasPendingInteraction: false,
+        },
+      ],
+      pendingInteractions: [],
+    };
+    const options = { childThreadsSection, workspaceChangedFilesSection };
+    const { rerender } = renderPromptArea(options);
+
+    fireEvent.click(screen.getByRole("button", { name: /Changed files/ }));
+    expect(
+      screen
+        .getByRole("button", { name: /Changed files/ })
+        .getAttribute("aria-expanded"),
+    ).toBe("true");
+
+    rerender(
+      buildPromptAreaElement({
+        ...options,
+        childThreadsSection: {
+          ...childThreadsSection,
+          items: [
+            { ...childThreadsSection.items[0], hasPendingInteraction: true },
+          ],
+        },
+        pendingInteractions: [makePendingInteraction()],
+      }),
+    );
+
+    expect(
+      screen
+        .getByRole("button", { name: "1 active child thread" })
+        .getAttribute("aria-expanded"),
+    ).toBe("false");
   });
 
   it("keeps Goal above a pending interaction", () => {
