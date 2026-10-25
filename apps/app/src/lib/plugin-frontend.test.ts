@@ -9,9 +9,7 @@ import {
   loadPluginFrontend,
   type PluginFrontendCandidate,
 } from "./plugin-frontend";
-import {
-  pluginSdkAppImplementation,
-} from "./plugin-sdk-app-impl";
+import { pluginSdkAppImplementation } from "./plugin-sdk-app-impl";
 import { useSidebarThreadPullRequest } from "./plugin-sidebar-hooks";
 
 function candidate(
