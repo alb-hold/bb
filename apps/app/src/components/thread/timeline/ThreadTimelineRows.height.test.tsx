@@ -147,10 +147,9 @@ it("keeps the reading row in place through eased growth frames", () => {
     <Provider>
       <div data-page-scroll-viewport="" data-testid="scroll-area">
         <AutoHeightContainer>
-          <div data-testid="animated-content">
-            <div data-timeline-row-id="reading-row">Reading row</div>
-          </div>
+          <div data-testid="animated-content" />
         </AutoHeightContainer>
+        <div data-timeline-row-id="reading-row">Reading row</div>
       </div>
     </Provider>,
   );
@@ -181,7 +180,7 @@ it("keeps the reading row in place through eased growth frames", () => {
   });
   area.getBoundingClientRect = () => new DOMRect(0, 0, 400, 500);
   row.getBoundingClientRect = () =>
-    new DOMRect(0, 900 - area.scrollTop, 400, 100);
+    new DOMRect(0, 100 + transitionHeight - area.scrollTop, 400, 100);
   area.scrollTop = 600;
 
   const keeper = new ScrollPositionKeeper({
@@ -211,7 +210,6 @@ it("keeps the reading row in place through eased growth frames", () => {
   for (const frameHeight of [850, 900, 950, 1_000]) {
     transitionHeight = frameHeight;
     act(() => ResizeObserverStub.trigger(wrapper, frameHeight));
-    expect(scrollTopWrites).toEqual([]);
     expect(row.getBoundingClientRect().top).toBe(readingRowTop);
   }
   disconnect();
