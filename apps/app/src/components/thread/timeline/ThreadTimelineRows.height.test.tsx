@@ -5,6 +5,10 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 import { Provider } from "jotai";
 import { afterEach, expect, it, vi } from "vitest";
+import {
+  BottomAnchorContext,
+  type BottomAnchorContextValue,
+} from "@/components/ui/bottom-anchored-scroll-body";
 import { AutoHeightContainer } from "@/components/ui/height-transition";
 import { ScrollPositionKeeper } from "@/components/ui/scroll-position-keeper";
 import { conversationRow, turnRow } from "@/test/fixtures/thread-timeline-rows";
@@ -40,6 +44,7 @@ class ResizeObserverStub implements ResizeObserver {
 
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
   ResizeObserverStub.instances = [];
@@ -136,6 +141,31 @@ it("snaps active timeline growth on fine-pointer browsers", () => {
 it("keeps the reading row in place through eased growth frames", () => {
   let intrinsicHeight = 800;
   let transitionHeight = 800;
+  let scrollArea: HTMLElement | null = null;
+  let contentWrapper: HTMLElement | null = null;
+  let readingRow: HTMLElement | null = null;
+  const positionKeeper = new ScrollPositionKeeper({
+    bottomThresholdPx: 4,
+    deferWritesWhileScrolling: false,
+    getContentElement: () => contentWrapper,
+    getFooterElement: () => null,
+    getScrollElement: () => scrollArea,
+    getTopLevelRows: () => (readingRow === null ? [] : [readingRow]),
+    initiallyAttached: false,
+  });
+  const bottomAnchorValue: BottomAnchorContextValue = {
+    getScrollElement: () => scrollArea,
+    isAtBottom: false,
+    scrollToBottom: () => undefined,
+    scrollElementIntoView: () => undefined,
+    scrollElementIntoViewClampedToMaxScroll: () => undefined,
+    captureScrollAnchor: () => undefined,
+    holdContentPosition: () => undefined,
+    positionKeeper,
+  };
+  vi.useFakeTimers({
+    toFake: ["setTimeout", "clearTimeout", "performance"],
+  });
   vi.stubGlobal("ResizeObserver", ResizeObserverStub);
   vi.stubGlobal("CSS", { supports: () => true });
   vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockImplementation(
@@ -145,16 +175,33 @@ it("keeps the reading row in place through eased growth frames", () => {
   );
   const view = render(
     <Provider>
-      <div data-page-scroll-viewport="" data-testid="scroll-area">
-        <AutoHeightContainer>
-          <div data-testid="animated-content" />
-        </AutoHeightContainer>
-        <div data-timeline-row-id="reading-row">Reading row</div>
-      </div>
+      <BottomAnchorContext.Provider value={bottomAnchorValue}>
+        <div
+          ref={(element) => {
+            scrollArea = element;
+          }}
+          data-page-scroll-viewport=""
+          data-testid="scroll-area"
+        >
+          <AutoHeightContainer>
+            <div data-testid="animated-content" />
+          </AutoHeightContainer>
+          <div
+            ref={(element) => {
+              readingRow = element;
+            }}
+            data-timeline-row-id="reading-row"
+          >
+            Reading row
+          </div>
+        </div>
+      </BottomAnchorContext.Provider>
     </Provider>,
   );
   const area = view.getByTestId("scroll-area");
-  const wrapper = area.firstElementChild as HTMLElement;
+  scrollArea = area;
+  contentWrapper = area.firstElementChild as HTMLElement;
+  const wrapper = contentWrapper;
   const content = wrapper.firstElementChild as HTMLElement;
   let scrollTop = 600;
   const scrollTopWrites: number[] = [];
@@ -170,6 +217,7 @@ it("keeps the reading row in place through eased growth frames", () => {
     '[data-timeline-row-id="reading-row"]',
   );
   if (row === null) throw new Error("reading row is missing");
+  readingRow = row;
   Object.defineProperty(area, "clientHeight", {
     configurable: true,
     value: 500,
@@ -179,21 +227,23 @@ it("keeps the reading row in place through eased growth frames", () => {
     get: () => 2_000 + transitionHeight,
   });
   area.getBoundingClientRect = () => new DOMRect(0, 0, 400, 500);
-  row.getBoundingClientRect = () =>
-    new DOMRect(0, 100 + transitionHeight - area.scrollTop, 400, 100);
+  row.getBoundingClientRect = () => {
+    const transformY =
+      Number(
+        /translate3d\(0, (-?[\d.]+)px/u.exec(wrapper.style.transform)?.[1],
+      ) || 0;
+    return new DOMRect(
+      0,
+      100 + transitionHeight - area.scrollTop + transformY,
+      400,
+      100,
+    );
+  };
   area.scrollTop = 600;
 
-  const keeper = new ScrollPositionKeeper({
-    bottomThresholdPx: 4,
-    deferWritesWhileScrolling: false,
-    getContentElement: () => wrapper,
-    getFooterElement: () => null,
-    getScrollElement: () => area,
-    getTopLevelRows: () => [row],
-    initiallyAttached: false,
-  });
-  const disconnect = keeper.connect(area);
-  keeper.hold(row, "top");
+  const disconnect = positionKeeper.connect(area);
+  positionKeeper.hold(row, "top");
+  act(() => vi.advanceTimersByTime(300));
   scrollTopWrites.length = 0;
   const readingRowTop = row.getBoundingClientRect().top;
   const initialScrollTop = area.scrollTop;
@@ -210,7 +260,13 @@ it("keeps the reading row in place through eased growth frames", () => {
   for (const frameHeight of [850, 900, 950, 1_000]) {
     transitionHeight = frameHeight;
     act(() => ResizeObserverStub.trigger(wrapper, frameHeight));
+    expect(scrollTopWrites).toEqual([]);
     expect(row.getBoundingClientRect().top).toBe(readingRowTop);
   }
+  act(() => {
+    const transitionEnd = new Event("transitionend");
+    Object.defineProperty(transitionEnd, "propertyName", { value: "height" });
+    wrapper.dispatchEvent(transitionEnd);
+  });
   disconnect();
 });

@@ -136,6 +136,7 @@ export class ScrollPositionKeeper {
   private pointerStartY = 0;
   private shrinkClampPending = false;
   private layoutScrollPending = false;
+  private heightTransitionCount = 0;
   private gestureScrolled = false;
   private inputUntil = Number.NEGATIVE_INFINITY;
   private touchStartScrollTop = 0;
@@ -161,6 +162,19 @@ export class ScrollPositionKeeper {
 
   isAttached(): boolean {
     return this.position.kind === "bottom";
+  }
+
+  beginHeightTransition(): () => void {
+    this.heightTransitionCount += 1;
+    let active = true;
+    return () => {
+      if (!active) return;
+      active = false;
+      this.heightTransitionCount = Math.max(0, this.heightTransitionCount - 1);
+      if (this.heightTransitionCount === 0 && this.deferred !== 0) {
+        this.scheduleDeferredWrite();
+      }
+    };
   }
 
   getPosition(): ReadingPosition {
@@ -652,7 +666,8 @@ export class ScrollPositionKeeper {
         this.layoutScrollPending = false;
       });
     }
-    const defer = this.shouldDefer(scrollTop, max);
+    const defer =
+      this.heightTransitionCount > 0 || this.shouldDefer(scrollTop, max);
     const bouncing =
       defer && !extentChanged && (scrollTop <= 0 || scrollTop >= max - 1);
     const settledAtEnd =
@@ -1000,7 +1015,10 @@ export class ScrollPositionKeeper {
       const scrollElement = this.options.getScrollElement();
       if (scrollElement === null || this.deferred === 0) return;
       const scrollTop = scrollElement.scrollTop;
-      if (this.shouldDefer(scrollTop, this.maxScrollTop)) {
+      if (
+        this.heightTransitionCount > 0 ||
+        this.shouldDefer(scrollTop, this.maxScrollTop)
+      ) {
         this.scheduleDeferredWrite();
         return;
       }
