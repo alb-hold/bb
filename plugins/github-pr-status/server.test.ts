@@ -318,6 +318,35 @@ describe("GitHub PR Status server", () => {
     stopWatching();
   });
 
+  it("refreshes and invalidates when thread event lookup rejects", async () => {
+    const fake = await setup({
+      listThreadEvents: async () => {
+        throw new Error("event history unavailable");
+      },
+    });
+    const stopWatching = await fake.watchPullRequests("env-1");
+    await fake.harness.callRpc("pullRequests", { keys: ["env-1"] });
+    fake.harness.experimental_rpcInvalidations.length = 0;
+
+    const emitted = await fake.harness.emitThreadEvent("thread.idle", {
+      thread: makeThreadResponse({ environmentId: "env-1" }),
+      lastAssistantText: null,
+    });
+
+    expect(emitted.errors).toEqual([]);
+    expect(fake.harness.experimental_rpcInvalidations).toContainEqual([
+      "environment:env-1",
+    ]);
+    await vi.waitFor(() =>
+      expect(
+        fake.harness.experimental_hostRpcCalls.filter(
+          (call) => call.method === "view",
+        ),
+      ).toHaveLength(2),
+    );
+    stopWatching();
+  });
+
   it("refreshes and invalidates the watched PR after a failed turn that ran gh", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date(1_000_000));
