@@ -21,6 +21,7 @@ let restoreLayout: (() => void) | null = null;
 
 afterEach(() => {
   cleanup();
+  vi.unstubAllGlobals();
   restoreLayout?.();
   restoreLayout = null;
   for (const threadId of THREADS) {
@@ -374,7 +375,12 @@ describe("BottomAnchoredScrollBody", () => {
     expect(handles.bottomAnchor?.isAtBottom).toBe(false);
   });
 
-  it("keeps the reading row still when older rows load after post-touchend momentum", () => {
+  it("keeps the reading row still when older rows load after post-touchend momentum", async () => {
+    vi.stubGlobal("navigator", {
+      maxTouchPoints: 5,
+      platform: "iPhone",
+      userAgent: "Mozilla/5.0 AppleWebKit/605.1.15",
+    });
     const keys = rowKeys("thread-a", 60);
     const { layout, topOf, firstVisible, view } = setup("thread-a", keys);
     act(() => layout.userScrollTo(layout.maxScrollTop() - 1_000));
@@ -383,8 +389,15 @@ describe("BottomAnchoredScrollBody", () => {
     );
     if (scrollElement === null) throw new Error("no scroll element");
     const reader = firstVisible();
+    const pageContent = scrollElement.querySelector<HTMLElement>(
+      ".mx-auto.flex.w-full.min-w-0.flex-1",
+    );
     act(() => {
-      scrollElement.dispatchEvent(new TouchEvent("touchstart"));
+      scrollElement.dispatchEvent(
+        new TouchEvent("touchstart", {
+          touches: [{ clientY: 150 } as Touch],
+        }),
+      );
       scrollElement.dispatchEvent(
         new TouchEvent("touchmove", {
           touches: [{ clientY: 100 } as Touch],
@@ -392,10 +405,15 @@ describe("BottomAnchoredScrollBody", () => {
       );
       layout.layoutScrollTo(layout.scrollTop - 80);
       scrollElement.dispatchEvent(new TouchEvent("touchend"));
-      layout.layoutScrollTo(layout.scrollTop - 20);
-      layout.layoutScrollTo(layout.scrollTop - 20);
-      layout.layoutScrollTo(layout.scrollTop - 20);
     });
+    for (const delta of [20, 20, 20]) {
+      await act(async () => {
+        layout.layoutScrollTo(layout.scrollTop - delta);
+        await new Promise<void>((resolve) => {
+          window.requestAnimationFrame(() => resolve());
+        });
+      });
+    }
     const before = topOf(reader);
 
     act(() =>
@@ -409,6 +427,7 @@ describe("BottomAnchoredScrollBody", () => {
     act(() => layout.flushResizeObservers());
 
     expect(topOf(reader)).toBe(before);
+    expect(pageContent?.style.transform).not.toBe("");
     expect(handles.bottomAnchor?.isAtBottom).toBe(false);
   });
 
@@ -426,9 +445,13 @@ describe("BottomAnchoredScrollBody", () => {
 
     const restored = setup("thread-a", keys);
     const restoredTop = restored.topOf(reader);
+    const scrollElement = document.querySelector<HTMLElement>(
+      "[data-page-scroll-viewport]",
+    );
+    if (scrollElement === null) throw new Error("no scroll element");
     act(() => {
       restored.layout.bounceTo(restored.layout.scrollTop - 149);
-      handles.bottomAnchor?.positionKeeper.reconcile(false);
+      scrollElement.dispatchEvent(new Event("scroll"));
       vi.advanceTimersByTime(300);
       restored.layout.flushResizeObservers();
     });
