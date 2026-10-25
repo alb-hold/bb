@@ -267,6 +267,17 @@ describe("opening an unseen timeline", () => {
     expect(area.scrollTop).toBe(399_300);
   });
 
+  it("repairs a virtualizer scroll correction while an unseen opening is pinned", () => {
+    height = 400_000;
+    const { area } = renderThread();
+    resize();
+    expect(area.scrollTop).toBe(399_200);
+    area.scrollTop = 20_500;
+    fireEvent.scroll(area);
+    act(() => vi.advanceTimersByTime(25_000));
+    expect(area.scrollTop).toBe(399_200);
+  });
+
   it("respects browser scrolling to a timeline control reached by Tab", () => {
     const { area } = renderThread();
     resize();
