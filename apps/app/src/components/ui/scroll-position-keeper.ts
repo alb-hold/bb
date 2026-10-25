@@ -204,10 +204,7 @@ export class ScrollPositionKeeper {
         this.shrinkClampPending = false;
         return;
       }
-      if (
-        this.shrinkClampPending &&
-        !this.isAtEnd(scrollElement.scrollTop)
-      ) {
+      if (this.shrinkClampPending && !this.isAtEnd(scrollElement.scrollTop)) {
         this.shrinkClampPending = false;
       }
       if (this.isInputSession()) {

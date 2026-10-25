@@ -226,7 +226,9 @@ describe("ScrollPositionKeeper", () => {
         timeline.keeper.reconcile();
         timeline.layout.layoutScrollTo(0);
       }
-      expect(timeline.layout.scrollTop).not.toBe(timeline.layout.maxScrollTop());
+      expect(timeline.layout.scrollTop).not.toBe(
+        timeline.layout.maxScrollTop(),
+      );
       expect(timeline.keeper.isAttached()).toBe(false);
 
       if (input === "single-event jump") {

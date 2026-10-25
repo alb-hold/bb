@@ -1365,7 +1365,12 @@ function WritableContextBanner({
       pluginId: slot.pluginId,
     })),
     ...(queuedWorkspaceWait
-      ? [{ key: `${CORE_THREAD_CONTEXT_OWNER}/workspace-wait`, pluginId: CORE_THREAD_CONTEXT_OWNER }]
+      ? [
+          {
+            key: `${CORE_THREAD_CONTEXT_OWNER}/workspace-wait`,
+            pluginId: CORE_THREAD_CONTEXT_OWNER,
+          },
+        ]
       : []),
   ];
   const mount = (

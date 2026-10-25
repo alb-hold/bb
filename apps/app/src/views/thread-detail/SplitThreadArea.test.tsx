@@ -365,9 +365,10 @@ vi.mock("./LazyThreadDetailView", () => ({
       const root = composerRootRef.current;
       if (root === null) return;
       return registerPaneComposerFocus(root, () => {
-        const target = root.querySelector<HTMLElement>(
-          "[contenteditable='true'], textarea:not(.xterm-helper-textarea):not(:disabled)",
-        ) ?? root.querySelector<HTMLElement>(".xterm-helper-textarea");
+        const target =
+          root.querySelector<HTMLElement>(
+            "[contenteditable='true'], textarea:not(.xterm-helper-textarea):not(:disabled)",
+          ) ?? root.querySelector<HTMLElement>(".xterm-helper-textarea");
         if (target === null) return false;
         target.focus({ preventScroll: true });
         return document.activeElement === target;
@@ -393,7 +394,9 @@ vi.mock("./LazyThreadDetailView", () => ({
             </div>
           ) : null}
           {nativeTerminalPanes.has(threadId) &&
-          !nativeTerminalComposerPanes.has(threadId) ? null : responsiveComposerProbe.enabled ? (
+          !nativeTerminalComposerPanes.has(
+            threadId,
+          ) ? null : responsiveComposerProbe.enabled ? (
             <PluginComposerHostProvider value={composerHost}>
               <ComposerBox
                 surface="thread"
