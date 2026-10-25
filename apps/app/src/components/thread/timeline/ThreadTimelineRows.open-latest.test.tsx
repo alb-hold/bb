@@ -254,7 +254,7 @@ describe("opening an unseen timeline", () => {
     expect(area.scrollTop).toBe(3300);
   });
 
-  it("repairs a virtualizer scroll correction while an unseen opening is pinned", () => {
+  it("repairs a virtualizer scroll correction after growth while an unseen opening is pinned", () => {
     height = 400_000;
     const { area } = renderThread();
     resize();
