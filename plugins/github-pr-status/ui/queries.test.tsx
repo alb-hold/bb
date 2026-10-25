@@ -143,7 +143,7 @@ describe("useEnvironmentPullRequest refreshes", () => {
     ]);
   });
 
-  it("owns its query by environment id through the plugin RPC contract", () => {
+  it("owns its environment-keyed query in the plugin RPC contract", () => {
     renderHook(() => useEnvironmentPullRequest("env-1"));
 
     expect(keyedQuery.calls[0]).toMatchObject({
