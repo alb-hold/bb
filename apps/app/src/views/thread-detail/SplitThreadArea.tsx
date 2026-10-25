@@ -435,6 +435,9 @@ function SplitThreadAreaContent({ routeContent }: SplitThreadAreaProps) {
     const focus = () => {
       if (!root.isConnected || root.getAttribute("aria-hidden") === "true")
         return false;
+      if (focusPaneComposer(root) && root.contains(document.activeElement)) {
+        return true;
+      }
       const nativeTerminalInput = root.querySelector<HTMLElement>(
         "[data-native-terminal-thread] .xterm-helper-textarea",
       );
@@ -442,7 +445,7 @@ function SplitThreadAreaContent({ routeContent }: SplitThreadAreaProps) {
         nativeTerminalInput.focus({ preventScroll: true });
         return document.activeElement === nativeTerminalInput;
       }
-      return focusPaneComposer(root) && root.contains(document.activeElement);
+      return false;
     };
     const frame = requestAnimationFrame(() => {
       if (focus()) {

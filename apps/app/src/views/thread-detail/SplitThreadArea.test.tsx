@@ -85,6 +85,7 @@ const timelineProbe = vi.hoisted(() => ({
 }));
 const responsiveComposerProbe = vi.hoisted(() => ({ enabled: false }));
 const nativeTerminalPanes = vi.hoisted(() => new Set<string>());
+const nativeTerminalComposerPanes = vi.hoisted(() => new Set<string>());
 
 function ResponsiveFocusComposer() {
   return <textarea aria-label="Ask BB" />;
@@ -365,8 +366,8 @@ vi.mock("./LazyThreadDetailView", () => ({
       if (root === null) return;
       return registerPaneComposerFocus(root, () => {
         const target = root.querySelector<HTMLElement>(
-          ".xterm-helper-textarea, [contenteditable='true'], textarea:not(:disabled)",
-        );
+          "[contenteditable='true'], textarea:not(.xterm-helper-textarea):not(:disabled)",
+        ) ?? root.querySelector<HTMLElement>(".xterm-helper-textarea");
         if (target === null) return false;
         target.focus({ preventScroll: true });
         return document.activeElement === target;
@@ -391,9 +392,8 @@ vi.mock("./LazyThreadDetailView", () => ({
               />
             </div>
           ) : null}
-          {nativeTerminalPanes.has(
-            threadId,
-          ) ? null : responsiveComposerProbe.enabled ? (
+          {nativeTerminalPanes.has(threadId) &&
+          !nativeTerminalComposerPanes.has(threadId) ? null : responsiveComposerProbe.enabled ? (
             <PluginComposerHostProvider value={composerHost}>
               <ComposerBox
                 surface="thread"
@@ -819,6 +819,7 @@ beforeEach(() => {
   timelineProbe.calls.clear();
   responsiveComposerProbe.enabled = false;
   nativeTerminalPanes.clear();
+  nativeTerminalComposerPanes.clear();
   threadStore.set("thr-a", { archivedAt: null, deletedAt: null });
   threadStore.set("thr-b", { archivedAt: null, deletedAt: null });
 });
@@ -2549,6 +2550,22 @@ describe("SplitThreadArea", () => {
       commandHandlers.get("pane.focus.previous")?.();
     });
     await waitFor(() => expect(document.activeElement).toBe(source));
+  });
+
+  it("focuses the composer before the native terminal when both share a pane", async () => {
+    nativeTerminalPanes.add("thr-b");
+    nativeTerminalComposerPanes.add("thr-b");
+    renderSplitArea({
+      path: threadPath("thr-a"),
+      layout: twoPaneLayout("pane-1"),
+    });
+    const source = await screen.findByTestId("draft-thr-a");
+    const composer = screen.getByTestId("draft-thr-b");
+    source.focus();
+    act(() => {
+      commandHandlers.get("pane.focus.next")?.();
+    });
+    await waitFor(() => expect(document.activeElement).toBe(composer));
   });
 
   it("focuses plugin content controls instead of pane chrome", async () => {
