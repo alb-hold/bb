@@ -147,36 +147,64 @@ describe("ScrollPositionKeeper", () => {
     expect(timeline.topOf("row-3")).toBe(before);
   });
 
-  it("reattaches when content shrinks under a detached reader and clamps to the end (test-change-reason: owner rule 2026-10-24, fork behaviour wins; shrink-clamp reattach kept (fork suite :1626, :1832))", () => {
-    const rows = rowsOf(10);
-    const timeline = createTimeline(rows);
-    timeline.userScrollTo(1200);
+  it.each(["scroll-before-resize", "resize-before-scroll"] as const)(
+    "keeps a passive shrink clamp detached in %s order and through later growth (test-change-reason: owner rule 2026-10-24; fork #124 (a70b9e0f73) keeps passive shrink clamps detached in both event orders)",
+    async (eventOrder) => {
+      const rows = rowsOf(10);
+      const timeline = createTimeline(rows);
+      timeline.userScrollTo(1_400);
+      expect(timeline.keeper.isAttached()).toBe(false);
 
-    timeline.setRows(rows.slice(0, 7));
-    timeline.keeper.reconcile();
-    timeline.scrollElement.dispatchEvent(new Event("scroll"));
+      timeline.setRows(rows.slice(0, 7));
+      if (eventOrder === "scroll-before-resize") {
+        timeline.layout.layoutScrollTo(timeline.layout.maxScrollTop());
+        timeline.keeper.reconcile();
+      } else {
+        timeline.keeper.reconcile();
+        timeline.layout.layoutScrollTo(timeline.layout.maxScrollTop());
+      }
+      await new Promise<void>((resolve) => {
+        window.requestAnimationFrame(() => resolve());
+      });
 
-    expect(timeline.layout.scrollTop).toBe(timeline.layout.maxScrollTop());
-    expect(timeline.keeper.isAttached()).toBe(true);
-  });
+      expect(timeline.layout.scrollTop).toBe(timeline.layout.maxScrollTop());
+      expect(timeline.keeper.isAttached()).toBe(false);
+      const clampedScrollTop = timeline.layout.scrollTop;
 
-  it("reattaches on touch at the clamped end and follows later content growth", () => {
-    const rows = rowsOf(10);
-    const timeline = createTimeline(rows);
-    timeline.userScrollTo(1200);
+      timeline.setRows(rows.slice(0, 8));
+      timeline.keeper.reconcile();
+      expect(timeline.keeper.isAttached()).toBe(false);
+      expect(timeline.layout.scrollTop).toBe(clampedScrollTop);
+    },
+  );
 
-    timeline.setRows(rows.slice(0, 7));
-    timeline.keeper.reconcile();
-    expect(timeline.layout.scrollTop).toBe(timeline.layout.maxScrollTop());
-    expect(timeline.keeper.isAttached()).toBe(false);
+  it.each(["scroll-before-resize", "resize-before-scroll"] as const)(
+    "reattaches on touch at the clamped end in %s order and follows growth",
+    async (eventOrder) => {
+      const rows = rowsOf(10);
+      const timeline = createTimeline(rows);
+      timeline.userScrollTo(1_400);
 
-    timeline.scrollElement.dispatchEvent(new TouchEvent("touchstart"));
-    expect(timeline.keeper.isAttached()).toBe(true);
+      timeline.setRows(rows.slice(0, 7));
+      if (eventOrder === "scroll-before-resize") {
+        timeline.layout.layoutScrollTo(timeline.layout.maxScrollTop());
+        timeline.keeper.reconcile();
+      } else {
+        timeline.keeper.reconcile();
+        timeline.layout.layoutScrollTo(timeline.layout.maxScrollTop());
+      }
+      timeline.scrollElement.dispatchEvent(new TouchEvent("touchstart"));
+      expect(timeline.keeper.isAttached()).toBe(true);
 
-    timeline.setRows(rows.slice(0, 8));
-    timeline.keeper.reconcile();
-    expect(timeline.layout.scrollTop).toBe(timeline.layout.maxScrollTop());
-  });
+      timeline.setRows(rows.slice(0, 8));
+      timeline.keeper.reconcile();
+      await new Promise<void>((resolve) => {
+        window.requestAnimationFrame(() => resolve());
+      });
+      expect(timeline.layout.scrollTop).toBe(timeline.layout.maxScrollTop());
+      expect(timeline.keeper.isAttached()).toBe(true);
+    },
+  );
 
   it("keeps a user-scrolled-up reader detached when later content grows", () => {
     const rows = rowsOf(10);

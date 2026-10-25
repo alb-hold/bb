@@ -201,7 +201,7 @@ export class ScrollPositionKeeper {
     this.ownScrollTop = scrollElement.scrollTop;
     const onScroll = () => {
       if (this.shrinkClampPending && this.isAtEnd(scrollElement.scrollTop)) {
-        this.handleScroll();
+        this.shrinkClampPending = false;
         return;
       }
       if (this.isInputSession()) {
@@ -221,7 +221,11 @@ export class ScrollPositionKeeper {
         return;
       }
       if (this.position.kind !== "bottom") {
-        this.handleScroll();
+        if (this.scrollFrame !== null) return;
+        this.scrollFrame = window.requestAnimationFrame(() => {
+          this.scrollFrame = null;
+          this.handleScroll();
+        });
         return;
       }
       if (!this.isAtEnd(scrollElement.scrollTop)) {
@@ -524,8 +528,6 @@ export class ScrollPositionKeeper {
     const scrollTop = scrollElement.scrollTop;
     if (this.shrinkClampPending && this.isAtEnd(scrollTop)) {
       this.shrinkClampPending = false;
-      this.setPosition({ kind: "bottom" });
-      this.apply(scrollElement, true, true, true);
       return;
     }
     if (
@@ -909,7 +911,7 @@ export class ScrollPositionKeeper {
     );
   }
 
-  private attachIfAtEnd(): void {
+  attachIfAtEnd(): void {
     const scrollElement = this.options.getScrollElement();
     if (scrollElement === null || this.position.kind === "bottom") return;
     if (!this.isAtEnd(scrollElement.scrollTop)) return;
