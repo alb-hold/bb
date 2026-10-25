@@ -1565,6 +1565,15 @@ describe("ThreadDetailPromptArea", () => {
     rerender(
       buildPromptAreaElement({
         ...options,
+        pendingInteractions: [makePendingInteraction()],
+      }),
+    );
+
+    expect(screen.getByText("Pending interaction")).toBeTruthy();
+
+    rerender(
+      buildPromptAreaElement({
+        ...options,
         childThreadsSection: {
           ...childThreadsSection,
           items: [
