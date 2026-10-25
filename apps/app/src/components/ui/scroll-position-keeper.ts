@@ -200,9 +200,12 @@ export class ScrollPositionKeeper {
     scrollElement.style.overflowAnchor = "none";
     this.ownScrollTop = scrollElement.scrollTop;
     const onScroll = () => {
-      if (this.shrinkClampPending && this.isAtEnd(scrollElement.scrollTop)) {
+      if (this.shrinkClampPending) {
+        if (this.isAtEnd(scrollElement.scrollTop)) {
+          this.shrinkClampPending = false;
+          return;
+        }
         this.shrinkClampPending = false;
-        return;
       }
       if (this.isInputSession()) {
         this.layoutScrollPending = false;
@@ -526,9 +529,12 @@ export class ScrollPositionKeeper {
     const scrollElement = this.options.getScrollElement();
     if (scrollElement === null) return;
     const scrollTop = scrollElement.scrollTop;
-    if (this.shrinkClampPending && this.isAtEnd(scrollTop)) {
+    if (this.shrinkClampPending) {
+      if (this.isAtEnd(scrollTop)) {
+        this.shrinkClampPending = false;
+        return;
+      }
       this.shrinkClampPending = false;
-      return;
     }
     if (
       this.layoutScrollPending &&
@@ -592,6 +598,9 @@ export class ScrollPositionKeeper {
     const scrollElement = this.options.getScrollElement();
     if (scrollElement === null) return;
     this.apply(scrollElement, true, urgent);
+    if (this.shrinkClampPending && !this.isAtEnd(scrollElement.scrollTop)) {
+      this.shrinkClampPending = false;
+    }
   }
 
   private apply(

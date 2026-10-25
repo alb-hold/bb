@@ -178,6 +178,84 @@ describe("ScrollPositionKeeper", () => {
     },
   );
 
+  it.each([
+    {
+      eventOrder: "clamp-without-own-event-before-reconcile",
+      input: "single-event jump",
+      outcome: "reattaches on a single-event jump to end",
+    },
+    {
+      eventOrder: "clamp-without-own-event-before-reconcile",
+      input: "wheel",
+      outcome: "reattaches on a wheel scroll to end",
+    },
+    {
+      eventOrder: "clamp-without-own-event-before-reconcile",
+      input: "touch",
+      outcome: "stays reattachable on a touch to end (second touchend pass)",
+    },
+    {
+      eventOrder: "non-end-scroll-after-reconcile",
+      input: "single-event jump",
+      outcome: "reattaches on a single-event jump to end",
+    },
+    {
+      eventOrder: "non-end-scroll-after-reconcile",
+      input: "wheel",
+      outcome: "reattaches on a wheel scroll to end",
+    },
+    {
+      eventOrder: "non-end-scroll-after-reconcile",
+      input: "touch",
+      outcome: "stays reattachable on a touch to end (second touchend pass)",
+    },
+  ] as const)(
+    "clears the passive shrink latch after $eventOrder and $outcome",
+    async ({ eventOrder, input }) => {
+      const rows = rowsOf(10);
+      const timeline = createTimeline(rows);
+      timeline.userScrollTo(1_400);
+
+      timeline.setRows(rows.slice(0, 7));
+      if (eventOrder === "clamp-without-own-event-before-reconcile") {
+        timeline.layout.bounceTo(0);
+        timeline.keeper.reconcile();
+        timeline.layout.bounceTo(0);
+        timeline.keeper.reconcile();
+      } else {
+        timeline.keeper.reconcile();
+        timeline.layout.layoutScrollTo(0);
+      }
+      expect(timeline.layout.scrollTop).not.toBe(timeline.layout.maxScrollTop());
+      expect(timeline.keeper.isAttached()).toBe(false);
+
+      if (input === "single-event jump") {
+        timeline.layout.layoutScrollTo(timeline.layout.maxScrollTop());
+      } else if (input === "wheel") {
+        timeline.layout.userScrollTo(timeline.layout.maxScrollTop());
+      } else {
+        const touch = (type: string, clientY: number) =>
+          Object.assign(new Event(type), { touches: [{ clientY }] });
+        timeline.scrollElement.dispatchEvent(touch("touchstart", 300));
+        timeline.scrollElement.dispatchEvent(touch("touchmove", 280));
+        timeline.layout.layoutScrollTo(timeline.layout.maxScrollTop());
+        timeline.scrollElement.dispatchEvent(new TouchEvent("touchend"));
+      }
+      await new Promise<void>((resolve) => {
+        window.requestAnimationFrame(() => resolve());
+      });
+
+      expect(timeline.keeper.isAttached()).toBe(true);
+      timeline.setRows(rows.slice(0, 8));
+      timeline.keeper.reconcile();
+      await new Promise<void>((resolve) => {
+        window.requestAnimationFrame(() => resolve());
+      });
+      expect(timeline.layout.scrollTop).toBe(timeline.layout.maxScrollTop());
+      expect(timeline.keeper.isAttached()).toBe(true);
+    },
+  );
+
   it.each(["scroll-before-resize", "resize-before-scroll"] as const)(
     "reattaches on touch at the clamped end in %s order and follows growth",
     async (eventOrder) => {
