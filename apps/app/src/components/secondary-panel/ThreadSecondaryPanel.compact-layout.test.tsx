@@ -18,6 +18,8 @@ import {
 } from "./ThreadSecondaryPanel";
 import {
   createSidebarSplitState,
+  parseSidebarSplitState,
+  sidebarPaneGroupId,
   serializeSidebarSplitState,
   sidebarSplitStorageKey,
 } from "./sidebarSplitLayout";
@@ -156,7 +158,7 @@ describe("compact terminal layout requests", () => {
             onToggleConversationCollapse={noop}
             renderAsDrawer={false}
             splitPanelStateId={panelStateId}
-            terminalLayoutRequest={request}
+            terminalLayoutRequest={{ ...request }}
           />
         </PanelGroup>
       );
@@ -194,8 +196,47 @@ describe("compact terminal layout requests", () => {
     await waitFor(() => {
       const persisted = window.localStorage.getItem(storageKey);
       expect(persisted).not.toBeNull();
-      expect(JSON.parse(persisted ?? "{}").layout?.root?.type).toBe("split");
+      const state = parseSidebarSplitState(
+        persisted,
+        [infoTab.id, terminalTab.id],
+        terminalTab.id,
+      );
+      expect(state.layout.root.type).toBe("split");
+      if (state.layout.root.type !== "split") return;
+      expect(state.layout.root.children).toHaveLength(2);
+      const [left, right] = state.layout.root.children;
+      expect(left?.type).toBe("pane");
+      expect(right?.type).toBe("pane");
+      if (left?.type !== "pane" || right?.type !== "pane") return;
+      const leftGroupId = sidebarPaneGroupId(left);
+      const rightGroupId = sidebarPaneGroupId(right);
+      expect(leftGroupId).not.toBeNull();
+      expect(rightGroupId).not.toBeNull();
+      expect(state.groups[leftGroupId ?? ""]?.tabIds).toContain(infoTab.id);
+      expect(state.groups[rightGroupId ?? ""]?.tabIds).toContain(
+        terminalTab.id,
+      );
     });
+
+    view.rerender(
+      <Wrapper>
+        <TooltipProvider>
+          <Harness ready />
+        </TooltipProvider>
+      </Wrapper>,
+    );
+    await waitFor(() => expect(onEnsureTerminalTabs).toHaveBeenCalledTimes(1));
+    const persisted = window.localStorage.getItem(storageKey);
+    expect(persisted).not.toBeNull();
+    const state = parseSidebarSplitState(
+      persisted,
+      [infoTab.id, terminalTab.id],
+      terminalTab.id,
+    );
+    expect(state.layout.root.type).toBe("split");
+    if (state.layout.root.type === "split") {
+      expect(state.layout.root.children).toHaveLength(2);
+    }
   });
 
   it.each(["split", "move"] as const)(
