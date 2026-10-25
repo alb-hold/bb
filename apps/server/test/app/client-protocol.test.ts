@@ -48,6 +48,11 @@ describe("client websocket protocol", () => {
     onClientSocketMessage(
       hub,
       socket,
+      JSON.stringify({ type: "device-handoff-device", token: null }),
+    );
+    onClientSocketMessage(
+      hub,
+      socket,
       JSON.stringify({
         type: "subscribe",
         target: { kind: "thread-detail", threadId: 123 },
@@ -56,7 +61,10 @@ describe("client websocket protocol", () => {
     hub.notifyThread("thread-1", ["events-appended"]);
 
     expect(socket.closed).toEqual([{ code: 1008, reason: "invalid-message" }]);
-    expect(applicationMessages(socket)).toHaveLength(0);
+    expect(socket.messages).toHaveLength(1);
+    expect(JSON.parse(socket.messages[0]!).type).toBe(
+      "device-handoff-client-token",
+    );
   });
 
   it("subscribes the valid targets of a batch that also holds an oversized plugin read", () => {
