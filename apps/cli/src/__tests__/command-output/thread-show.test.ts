@@ -248,11 +248,18 @@ describe("bb thread show command output", () => {
       anchorId: "older-anchor",
       anchorSeq: 20,
     };
+    const middleTimeline = fixtures.makeTimelineResponse([]);
+    middleTimeline.timelinePage.olderCursor = {
+      anchorId: "oldest-anchor",
+      anchorSeq: 10,
+    };
     const timelineGet = vi.fn(
       async ({ query }: { query: Record<string, string> }) =>
         query.beforeAnchorSeq === undefined
           ? latestTimeline
-          : fixtures.makeTimelineResponse([]),
+          : query.beforeAnchorSeq === "20"
+            ? middleTimeline
+            : fixtures.makeTimelineResponse([]),
     );
     stubThreadApi({
       "v1.threads.:id.$get": vi.fn(async () => thread),
@@ -283,17 +290,13 @@ describe("bb thread show command output", () => {
 
     await runCommand(["thread", "show", thread.id, "--usage"], register);
 
-    expect(timelineGet).toHaveBeenCalledWith({
-      param: { id: thread.id },
-      query: {},
-    });
-    expect(timelineGet).toHaveBeenCalledWith({
-      param: { id: thread.id },
-      query: {
-        beforeAnchorId: "older-anchor",
-        beforeAnchorSeq: "20",
-      },
-    });
+    expect(timelineGet).toHaveBeenCalledTimes(4);
+    expect(timelineGet.mock.calls.map(([request]) => request.query)).toEqual([
+      {},
+      { beforeAnchorId: "older-anchor", beforeAnchorSeq: "20" },
+      { beforeAnchorId: "oldest-anchor", beforeAnchorSeq: "10" },
+      { summaryOnly: "true" },
+    ]);
     expect(collectLogLines(vi.mocked(console.log))).toContain(
       "  History: partial",
     );
