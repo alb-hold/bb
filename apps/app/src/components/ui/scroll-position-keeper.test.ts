@@ -192,7 +192,7 @@ describe("ScrollPositionKeeper", () => {
     {
       eventOrder: "clamp-without-own-event-before-reconcile",
       input: "touch",
-      outcome: "stays reattachable on a touch to end (second touchend pass)",
+      outcome: "stays reattachable on a touch to end",
     },
     {
       eventOrder: "non-end-scroll-after-reconcile",
@@ -207,7 +207,7 @@ describe("ScrollPositionKeeper", () => {
     {
       eventOrder: "non-end-scroll-after-reconcile",
       input: "touch",
-      outcome: "stays reattachable on a touch to end (second touchend pass)",
+      outcome: "stays reattachable on a touch to end",
     },
   ] as const)(
     "clears the passive shrink latch after $eventOrder and $outcome",
