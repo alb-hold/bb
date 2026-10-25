@@ -178,6 +178,36 @@ describe("ScrollPositionKeeper", () => {
     },
   );
 
+  it("does not publish a passive shrink clamp after a deferred downward scroll", () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
+    const timeline = createTimeline(rowsOf(10), { deferWrites: true });
+    timeline.userScrollTo(500);
+    vi.advanceTimersByTime(500);
+    const frameCallbacks: FrameRequestCallback[] = [];
+    let nextFrameId = 0;
+    vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+      frameCallbacks.push(callback);
+      nextFrameId += 1;
+      return nextFrameId;
+    });
+
+    timeline.layout.layoutScrollTo(1_300);
+    for (const callback of frameCallbacks.splice(0)) callback(0);
+    timeline.setRows(rowsOf(7));
+    timeline.keeper.reconcile();
+    let positionNotifications = 0;
+    timeline.keeper.subscribePosition(() => {
+      positionNotifications += 1;
+    });
+    timeline.layout.layoutScrollTo(timeline.layout.maxScrollTop());
+    const clampedReadingRowTop = timeline.topOf("row-4");
+    for (const callback of frameCallbacks.splice(0)) callback(0);
+
+    expect(timeline.keeper.isAttached()).toBe(false);
+    expect(timeline.topOf("row-4")).toBe(clampedReadingRowTop);
+    expect(positionNotifications).toBe(0);
+  });
+
   it.each([
     {
       eventOrder: "clamp-without-own-event-before-reconcile",
