@@ -2,10 +2,10 @@
 
 import { cleanup, render, renderHook, waitFor } from "@testing-library/react";
 import { useEffect, useState } from "react";
+import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import {
   createFakePluginHost,
   makeHostResponse,
-  type BbPluginApi,
 } from "@get-bb/plugin-sdk/testing";
 import {
   environmentPullRequestSchema,
@@ -104,6 +104,7 @@ type Environment = Awaited<
 function rpcEnvironment(): Environment {
   return {
     id: "env-rpc",
+    createdAt: 1,
     name: null,
     projectId: "project-1",
     hostId: "host-1",
@@ -121,8 +122,9 @@ function rpcEnvironment(): Environment {
     environmentProviderSelection: null,
     environmentProviderInstanceKey: null,
     managed: true,
-    workspaceProvisionType: "worktree",
-  } as Environment;
+    updatedAt: 1,
+    workspaceProvisionType: "managed-worktree",
+  };
 }
 
 async function bootRpcPlugin() {
