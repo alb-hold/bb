@@ -1359,10 +1359,15 @@ function WritableContextBanner({
     input,
     coreThreadContextSegments,
   );
-  const segments = entries.map(({ slot }) => ({
-    key: threadContextSegmentKey(slot),
-    pluginId: slot.pluginId,
-  }));
+  const segments = [
+    ...entries.map(({ slot }) => ({
+      key: threadContextSegmentKey(slot),
+      pluginId: slot.pluginId,
+    })),
+    ...(queuedWorkspaceWait
+      ? [{ key: `${CORE_THREAD_CONTEXT_OWNER}/workspace-wait`, pluginId: CORE_THREAD_CONTEXT_OWNER }]
+      : []),
+  ];
   const mount = (
     entry: ThreadContextSegmentEntry,
     part: ThreadContextSegmentPart,

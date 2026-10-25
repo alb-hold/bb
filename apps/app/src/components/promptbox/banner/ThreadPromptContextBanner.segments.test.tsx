@@ -65,6 +65,16 @@ function PluginSummary(props: ExperimentalThreadContextSegmentProps) {
   );
 }
 
+function PullRequestSummary({
+  segments,
+}: ExperimentalThreadContextSegmentProps) {
+  const showLabel =
+    segments.length === 1 ||
+    (segments.length === 2 &&
+      segments.some((segment) => segment.key === "bb--core/changed-files"));
+  return <span>{showLabel ? "PR #128" : null}</span>;
+}
+
 function PluginAction() {
   return <span>Plugin action</span>;
 }
@@ -172,6 +182,70 @@ describe("thread context segments", () => {
     });
     expect(screen.getByRole("group", { name: "Demo status" })).toBeTruthy();
     expect(screen.queryByText("Merge base")).toBeNull();
+  });
+
+  it.each([
+    {
+      label: "PR, changed files, and a workspace wait",
+      gitSection: true,
+      queuedWorkspaceWait: "Waiting for another thread",
+      expectPullRequestLabel: false,
+      expectGitCompactHide: true,
+    },
+    {
+      label: "PR and changed files without a wait",
+      gitSection: true,
+      queuedWorkspaceWait: null,
+      expectPullRequestLabel: true,
+      expectGitCompactHide: false,
+    },
+    {
+      label: "changed files and a workspace wait",
+      gitSection: true,
+      queuedWorkspaceWait: "Waiting for another thread",
+      expectPullRequestLabel: false,
+      expectGitCompactHide: false,
+      includePullRequest: false,
+    },
+  ])("counts a workspace wait as a compact banner segment for $label", (scenario) => {
+    if (scenario.includePullRequest !== false) {
+      setPluginSlotRegistrations(
+        "demo",
+        makePluginRegistrationSet({
+          threadContextSegments: [
+            {
+              id: "pull-request",
+              title: "Pull request",
+              group: "2_pullRequest",
+              summary: PullRequestSummary,
+            },
+          ],
+        }),
+      );
+    }
+    renderBanner({
+      core: {
+        ...EMPTY_CORE,
+        git: scenario.gitSection ? git : null,
+        queuedWorkspaceWait: scenario.queuedWorkspaceWait,
+      },
+    });
+
+    expect(screen.queryByText("PR #128") !== null).toBe(
+      scenario.expectPullRequestLabel,
+    );
+    const changedFiles = screen.queryByRole("button", {
+      name: /Changed files/,
+    });
+    if (scenario.expectGitCompactHide) {
+      expect(
+        changedFiles?.querySelector("[data-promptbox-hide-compact]"),
+      ).not.toBeNull();
+    } else if (changedFiles !== null) {
+      expect(
+        changedFiles.querySelector("[data-promptbox-hide-compact]"),
+      ).toBeNull();
+    }
   });
 
   it("places a segment in a group of its own where that group sorts", () => {
