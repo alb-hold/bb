@@ -84,6 +84,7 @@ export function dropEnvironmentRetentionSchema(db: DbConnection): void {
       db.$client.exec(`ALTER TABLE environments DROP COLUMN ${column}`);
     }
   }
+  db.$client.exec("DROP TABLE IF EXISTS fork_legacy_unreleased_environments");
   db.$client.exec("DROP TABLE IF EXISTS environment_release_consents");
   db.$client.exec("DROP TABLE IF EXISTS environment_retention_transitions");
   db.$client.exec("DROP TABLE IF EXISTS environment_retentions");
@@ -135,4 +136,8 @@ export function rewindQueuedMessageStateMigration(db: DbConnection): void {
     CREATE INDEX queued_thread_messages_wait_holder_idx ON queued_thread_messages (wait_holder, id) WHERE wait_holder IS NOT NULL;
     DELETE FROM __drizzle_migrations WHERE created_at >= ${QUEUED_MESSAGE_STATE_MIGRATION_WHEN};
   `);
+}
+
+export function dropLegacyUnreleasedEnvironments(db: DbConnection): void {
+  db.$client.exec("DROP TABLE IF EXISTS fork_legacy_unreleased_environments");
 }

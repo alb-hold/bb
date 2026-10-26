@@ -1,7 +1,11 @@
 import { and, eq, inArray, isNotNull, notInArray } from "drizzle-orm";
 import type { DbConnection, DbTransaction } from "../connection.js";
 import { createEnvironmentReleaseConsentId } from "../ids.js";
-import { environmentReleaseConsents, threads } from "../schema.js";
+import {
+  environmentReleaseConsents,
+  forkLegacyUnreleasedEnvironments,
+  threads,
+} from "../schema.js";
 
 type ConsentConnection = DbConnection | DbTransaction;
 export type EnvironmentReleaseConsentRow =
@@ -108,4 +112,62 @@ export function listEnvironmentReleaseConsents(
     .from(environmentReleaseConsents)
     .where(eq(environmentReleaseConsents.environmentId, environmentId))
     .all();
+}
+
+export type LegacyUnreleasedVerdict =
+  | { legacy: true; recordedAt: number; threadIds: string[] }
+  | {
+      legacy: false;
+      reason:
+        | "no-marker"
+        | "thread-not-archived-or-deleted"
+        | "archived-or-deleted-after-install";
+    };
+
+export function judgeLegacyUnreleasedEnvironment(
+  db: ConsentConnection,
+  environmentId: string,
+): LegacyUnreleasedVerdict {
+  const marker = db
+    .select({ recordedAt: forkLegacyUnreleasedEnvironments.recordedAt })
+    .from(forkLegacyUnreleasedEnvironments)
+    .where(eq(forkLegacyUnreleasedEnvironments.environmentId, environmentId))
+    .get();
+  if (marker === undefined) return { legacy: false, reason: "no-marker" };
+  const unreleased = db
+    .select({
+      id: threads.id,
+      archivedAt: threads.archivedAt,
+      deletedAt: threads.deletedAt,
+    })
+    .from(threads)
+    .where(
+      and(
+        eq(threads.environmentId, environmentId),
+        notInArray(
+          threads.id,
+          db
+            .select({ id: environmentReleaseConsents.threadId })
+            .from(environmentReleaseConsents)
+            .where(eq(environmentReleaseConsents.environmentId, environmentId)),
+        ),
+      ),
+    )
+    .all();
+  for (const thread of unreleased) {
+    if (thread.archivedAt === null && thread.deletedAt === null) {
+      return { legacy: false, reason: "thread-not-archived-or-deleted" };
+    }
+    if (
+      (thread.archivedAt ?? 0) >= marker.recordedAt ||
+      (thread.deletedAt ?? 0) >= marker.recordedAt
+    ) {
+      return { legacy: false, reason: "archived-or-deleted-after-install" };
+    }
+  }
+  return {
+    legacy: true,
+    recordedAt: marker.recordedAt,
+    threadIds: unreleased.map((thread) => thread.id),
+  };
 }

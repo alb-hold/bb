@@ -1394,6 +1394,16 @@ export const environmentReleaseConsents = sqliteTable(
   ],
 );
 
+export const forkLegacyUnreleasedEnvironments = sqliteTable(
+  "fork_legacy_unreleased_environments",
+  {
+    environmentId: text("environment_id")
+      .primaryKey()
+      .references(() => environments.id, { onDelete: "cascade" }),
+    recordedAt: integer("recorded_at").notNull(),
+  },
+);
+
 export const environmentRetentionTransitions = sqliteTable(
   "environment_retention_transitions",
   {

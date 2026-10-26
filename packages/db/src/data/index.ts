@@ -705,6 +705,7 @@ export type {
   DiffViewedFileScope,
 } from "./diff-viewed-files.js";
 export {
+  judgeLegacyUnreleasedEnvironment,
   listEnvironmentReleaseConsents,
   listUnreleasedEnvironmentThreadIds,
   recordThreadEnvironmentReleases,
@@ -716,4 +717,5 @@ export type {
   EnvironmentReleaseActor,
   EnvironmentReleaseActorKind,
   EnvironmentReleaseConsentRow,
+  LegacyUnreleasedVerdict,
 } from "./environment-release-consents.js";

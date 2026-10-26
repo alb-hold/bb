@@ -7,6 +7,7 @@ import {
   createProject,
   createThread,
   environmentHasLiveThreads,
+  judgeLegacyUnreleasedEnvironment,
   listEnvironmentReleaseConsents,
   listUnreleasedEnvironmentThreadIds,
   markThreadDeleted,
@@ -17,10 +18,18 @@ import {
   SYSTEM_RELEASE_ACTOR,
 } from "../src/index.js";
 import { createMigratedConnection } from "../src/testing.js";
-import { environmentReleaseConsents, threads } from "../src/schema.js";
-import { dropEnvironmentRetentionSchema } from "./helpers/rewind.js";
+import {
+  dropEnvironmentRetentionSchema,
+  dropLegacyUnreleasedEnvironments,
+} from "./helpers/rewind.js";
+import {
+  environmentReleaseConsents,
+  forkLegacyUnreleasedEnvironments,
+  threads,
+} from "../src/schema.js";
 
 const MIGRATION_WHEN = 1792744408107;
+const LEGACY_MARKER_MIGRATION_WHEN = 1793035087043;
 
 function setup() {
   const db = createMigratedConnection();
@@ -317,5 +326,213 @@ describe("the release of a whole thread tree", () => {
       [parent.id, child.id, grandchild.id],
       live.id,
     );
+  });
+});
+
+describe("the legacy unreleased environment marker (migration 0150)", () => {
+  const user = { kind: "user", threadId: null } as const;
+
+  function setupTwo() {
+    const base = setup();
+    const second = createEnvironment(base.db, noopNotifier, {
+      projectId: base.environment.projectId,
+      hostId: base.environment.hostId,
+      path: "/tmp/project-env-2",
+      providerOwnsPath: true,
+      status: "ready",
+    });
+    const empty = createEnvironment(base.db, noopNotifier, {
+      projectId: base.environment.projectId,
+      hostId: base.environment.hostId,
+      path: "/tmp/project-env-empty",
+      providerOwnsPath: true,
+      status: "ready",
+    });
+    const secondThread = () =>
+      createThread(base.db, noopNotifier, {
+        projectId: base.environment.projectId,
+        providerId: "provider",
+        status: "idle",
+        environmentId: second.id,
+      });
+    return { ...base, second, empty, secondThread };
+  }
+
+  function rerunMigration0150(db: ReturnType<typeof setup>["db"]): void {
+    dropLegacyUnreleasedEnvironments(db);
+    db.$client
+      .prepare("DELETE FROM __drizzle_migrations WHERE created_at >= ?")
+      .run(LEGACY_MARKER_MIGRATION_WHEN);
+    migrate(db);
+  }
+
+  function markers(db: ReturnType<typeof setup>["db"]): string[] {
+    return db
+      .select({ id: forkLegacyUnreleasedEnvironments.environmentId })
+      .from(forkLegacyUnreleasedEnvironments)
+      .all()
+      .map((row) => row.id)
+      .sort();
+  }
+
+  it("records no marker on a fresh database", () => {
+    const { db } = setup();
+    expect(markers(db)).toEqual([]);
+  });
+
+  it("marks exactly the environments with a thread that has no consent, once", () => {
+    const { db, environment, second, empty, thread, secondThread } = setupTwo();
+    thread();
+    const releasedThread = secondThread();
+    archiveThread(db, noopNotifier, releasedThread.id, user);
+    expect(markers(db)).toEqual([]);
+
+    rerunMigration0150(db);
+
+    expect(markers(db)).toEqual([environment.id]);
+    expect(markers(db)).not.toContain(second.id);
+    expect(markers(db)).not.toContain(empty.id);
+    rerunMigration0150(db);
+    expect(markers(db)).toEqual([environment.id]);
+  });
+
+  it("marks an environment that has both a released and an unreleased thread", () => {
+    const { db, environment, thread } = setup();
+    const released = thread();
+    thread();
+    archiveThread(db, noopNotifier, released.id, user);
+
+    rerunMigration0150(db);
+
+    expect(markers(db)).toEqual([environment.id]);
+  });
+
+  it("stamps every marker with the time the migration ran", () => {
+    const { db, thread } = setup();
+    thread();
+    const before = Date.now();
+
+    rerunMigration0150(db);
+
+    const rows = db.select().from(forkLegacyUnreleasedEnvironments).all();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.recordedAt).toBeGreaterThan(before - 2_000);
+    expect(rows[0]?.recordedAt).toBeLessThanOrEqual(Date.now());
+  });
+
+  it("removes the marker with its environment", () => {
+    const { db, environment, thread } = setup();
+    thread();
+    rerunMigration0150(db);
+    db.$client.pragma("foreign_keys = ON");
+    db.$client
+      .prepare("DELETE FROM environments WHERE id = ?")
+      .run(environment.id);
+    expect(markers(db)).toEqual([]);
+  });
+
+  describe("judging whether an unreleased environment is legacy", () => {
+    function legacyFixture(
+      archivedAt: number | null,
+      deletedAt: number | null,
+    ) {
+      const { db, environment, thread } = setup();
+      const old = thread();
+      db.update(threads)
+        .set({ archivedAt, deletedAt })
+        .where(eq(threads.id, old.id))
+        .run();
+      rerunMigration0150(db);
+      const recordedAt = db
+        .select()
+        .from(forkLegacyUnreleasedEnvironments)
+        .get()?.recordedAt;
+      if (recordedAt === undefined) throw new Error("no marker recorded");
+      return { db, environment, thread, old, recordedAt };
+    }
+
+    it("is legacy when every unreleased thread was archived or deleted before the migration ran", () => {
+      const { db, environment, old } = legacyFixture(5_000, null);
+      expect(
+        judgeLegacyUnreleasedEnvironment(db, environment.id),
+      ).toMatchObject({ legacy: true, threadIds: [old.id] });
+    });
+
+    it("is legacy for a thread deleted before the migration ran", () => {
+      const { db, environment, old } = legacyFixture(null, 6_000);
+      expect(
+        judgeLegacyUnreleasedEnvironment(db, environment.id),
+      ).toMatchObject({ legacy: true, threadIds: [old.id] });
+    });
+
+    it("is not legacy without a marker", () => {
+      const { db, environment, thread } = setup();
+      const old = thread();
+      db.update(threads)
+        .set({ archivedAt: 5_000 })
+        .where(eq(threads.id, old.id))
+        .run();
+      expect(judgeLegacyUnreleasedEnvironment(db, environment.id)).toEqual({
+        legacy: false,
+        reason: "no-marker",
+      });
+    });
+
+    it("is not legacy when an unreleased thread was archived after the migration ran", () => {
+      const { db, environment, thread, recordedAt } = legacyFixture(
+        5_000,
+        null,
+      );
+      const later = thread();
+      db.update(threads)
+        .set({ archivedAt: recordedAt + 1 })
+        .where(eq(threads.id, later.id))
+        .run();
+      expect(judgeLegacyUnreleasedEnvironment(db, environment.id)).toEqual({
+        legacy: false,
+        reason: "archived-or-deleted-after-install",
+      });
+    });
+
+    it("is not legacy when the thread was archived at the very moment the migration ran", () => {
+      const { db, environment, old, recordedAt } = legacyFixture(5_000, null);
+      db.update(threads)
+        .set({ archivedAt: recordedAt })
+        .where(eq(threads.id, old.id))
+        .run();
+      expect(
+        judgeLegacyUnreleasedEnvironment(db, environment.id),
+      ).toMatchObject({ legacy: false });
+    });
+
+    it("is not legacy when a thread archived before the migration was deleted after it without a release", () => {
+      const { db, environment, old, recordedAt } = legacyFixture(5_000, null);
+      db.update(threads)
+        .set({ deletedAt: recordedAt + 10 })
+        .where(eq(threads.id, old.id))
+        .run();
+      expect(judgeLegacyUnreleasedEnvironment(db, environment.id)).toEqual({
+        legacy: false,
+        reason: "archived-or-deleted-after-install",
+      });
+    });
+
+    it("is not legacy while an unreleased thread is neither archived nor deleted", () => {
+      const { db, environment, thread } = legacyFixture(5_000, null);
+      thread();
+      expect(judgeLegacyUnreleasedEnvironment(db, environment.id)).toEqual({
+        legacy: false,
+        reason: "thread-not-archived-or-deleted",
+      });
+    });
+
+    it("does not count a thread released after the migration ran against the environment", () => {
+      const { db, environment, thread } = legacyFixture(5_000, null);
+      const later = thread();
+      archiveThread(db, noopNotifier, later.id, user);
+      expect(
+        judgeLegacyUnreleasedEnvironment(db, environment.id),
+      ).toMatchObject({ legacy: true });
+    });
   });
 });
