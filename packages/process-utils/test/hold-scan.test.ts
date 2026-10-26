@@ -8,7 +8,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   hostHoldScanIo,
@@ -553,6 +553,7 @@ describe("scanProcessesHoldingUnder on Linux", () => {
           {
             10: { cwd: `/mnt/other${base}/sub` },
             11: { cwd: `/srv/var${base}/sub` },
+            12: { cwd: `/srv/var/${basename(base)}/sub` },
           },
           { readMountInfo: async () => mounts(base) },
         ),
@@ -963,6 +964,25 @@ describe("scanProcessesHoldingUnder on macOS, through ps and lsof -F pfn0", () =
       fakeMac({ ps: [psLine(60, 501, "node")], lsof: "", ...outcome }),
     );
     expect(scan.status).toBe("unknown");
+  });
+
+  it("needs lsof to exit 0, because the listing of the current user's own processes is never empty", async () => {
+    const base = await dir();
+    const others = psLine(2, 0, "launchd");
+    expect(
+      (
+        await scanProcessesHoldingUnder(
+          { directories: [base] },
+          fakeMac({ ps: [others], lsof: "", code: 0 }),
+        )
+      ).status,
+    ).toBe("clear");
+    const partial = await scanProcessesHoldingUnder(
+      { directories: [base] },
+      fakeMac({ ps: [others], lsof: "", code: 1 }),
+    );
+    expect(partial.status).toBe("unknown");
+    expect(reasonOf(partial)).toContain("lsof exited with code 1");
   });
 
   it("is unknown when lsof or ps cannot run, when ps is unavailable and when the user is unknown", async () => {
