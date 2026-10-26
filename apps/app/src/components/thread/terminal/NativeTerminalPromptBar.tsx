@@ -24,6 +24,7 @@ import { useUploadPromptAttachment } from "@/hooks/mutations/project-mutations";
 import { useSendNativeTerminalMessage } from "@/hooks/queries/native-terminal-queries";
 import { useSystemConfig } from "@/hooks/queries/system-queries";
 import { useWritingAssistanceView } from "@/hooks/queries/writing-assistance-queries";
+import { getPromptDraftAccessor } from "@/hooks/usePromptDraftStorage";
 import { useSegmentedDictation } from "@/hooks/useSegmentedDictation";
 import { sdk } from "@/lib/sdk";
 import { useOptionalPaneContext } from "@/views/thread-detail/PaneContext";
@@ -320,6 +321,12 @@ export function NativeTerminalPromptBar({
     const sentAttachments = attachments;
     if (sentMessage.length === 0 && sentAttachments.length === 0) return;
     if (pendingUploads > 0 || send.isPending) return;
+    const draft = getPromptDraftAccessor({
+      kind: "thread",
+      projectId,
+      threadId,
+    });
+    const sentDraft = draft.getCurrent();
     const input: PromptInput[] = [
       ...sentAttachments.map(attachmentPromptInput),
       ...(sentMessage.length === 0
@@ -330,6 +337,7 @@ export function NativeTerminalPromptBar({
       { input, threadId },
       {
         onSuccess: () => {
+          draft.clearIfCurrentMatches(sentDraft);
           if (textRef.current === sentText) applyValue("", true);
           setAttachments((current) =>
             current.filter(
