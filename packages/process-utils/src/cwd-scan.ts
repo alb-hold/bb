@@ -1,4 +1,4 @@
-import { readdir, readFile, readlink } from "node:fs/promises";
+import { readdir, readFile, readlink, stat } from "node:fs/promises";
 import { resolveSweepDirectory } from "./cwd-processes.js";
 import { spawnPortableOutputProcess } from "./spawn.js";
 
@@ -534,6 +534,7 @@ export interface HoldScanIo extends CwdScanIo {
   readExe(pid: number): Promise<string>;
   listOpenFiles(pid: number): Promise<string[]>;
   readMaps(pid: number): Promise<string>;
+  statPath(path: string): Promise<{ uid: number; mode: number }>;
   readOwnMountNamespace(): Promise<string>;
   readMountInfo(): Promise<string>;
   listTasks(pid: number): Promise<string[]>;
@@ -560,6 +561,10 @@ export const hostHoldScanIo: HoldScanIo = {
     return targets;
   },
   readMaps: (pid) => readFile(`/proc/${pid}/maps`, "utf8"),
+  statPath: async (path) => {
+    const { uid, mode } = await stat(path);
+    return { uid, mode };
+  },
   readOwnMountNamespace: () => readlink("/proc/self/ns/mnt"),
   readMountInfo: () => readFile("/proc/self/mountinfo", "utf8"),
   listTasks: (pid) => readdir(`/proc/${pid}/task`),
@@ -596,6 +601,55 @@ type HoldRead<Value> =
 interface HoldCoverage {
   helpers: CwdUnvouchedHelper[];
   skipped: CwdSkippedProcess[];
+  hiddenFromOtherUsers: boolean;
+}
+
+const ROOT_UID = 0;
+const GROUP_AND_OTHER_SEARCH_BITS = 0o011;
+
+function ancestorsOf(path: string): string[] {
+  const chain: string[] = [];
+  let current = path;
+  while (current !== "/" && current !== "") {
+    chain.push(current);
+    current = current.slice(0, current.lastIndexOf("/")) || "/";
+  }
+  chain.push("/");
+  return chain;
+}
+
+async function hiddenFromOtherUsers(
+  io: HoldScanIo,
+  paths: readonly string[],
+  barrierRoot: string | undefined,
+): Promise<boolean> {
+  if (io.uid === null) return false;
+  for (const path of paths) {
+    let hidden = false;
+    for (const candidate of ancestorsOf(path)) {
+      if (
+        barrierRoot !== undefined &&
+        isUnder(path, barrierRoot) &&
+        !isUnder(candidate, barrierRoot)
+      )
+        break;
+      try {
+        const { uid, mode } = await io.statPath(candidate);
+        if (uid === io.uid && (mode & GROUP_AND_OTHER_SEARCH_BITS) === 0) {
+          hidden = true;
+          break;
+        }
+      } catch {
+        return false;
+      }
+    }
+    if (!hidden) return false;
+  }
+  return true;
+}
+
+function otherUserCanReach(pid: number, uid: number): string {
+  return `process ${pid} runs as user ${uid}, who is neither this user nor root and can reach the folder, so what it holds cannot be vouched for`;
 }
 
 async function readHeldProcessFact<Value>(
@@ -622,6 +676,8 @@ async function readHeldProcessFact<Value>(
         };
     }
     if (io.uid !== null && owner !== null && owner !== io.uid) {
+      if (owner !== ROOT_UID && !coverage.hiddenFromOtherUsers)
+        return { status: "unknown", reason: otherUserCanReach(pid, owner) };
       coverage.skipped.push({ pid, uid: owner, errno: code || "error" });
       return { status: "skip" };
     }
@@ -666,6 +722,8 @@ async function foreignOrUnknown(
     return { status: "unknown", reason };
   }
   if (io.uid !== null && owner !== io.uid) {
+    if (owner !== ROOT_UID && !coverage.hiddenFromOtherUsers)
+      return { status: "unknown", reason: otherUserCanReach(pid, owner) };
     coverage.skipped.push({ pid, uid: owner, errno: "other-namespace" });
     return { status: "skip" };
   }
@@ -890,6 +948,7 @@ async function scanLinuxProcess(
 async function scanLinuxHolders(
   io: HoldScanIo,
   directories: readonly string[],
+  barrierRoot: string | undefined,
 ): Promise<HolderScan> {
   let entries: string[];
   try {
@@ -932,7 +991,11 @@ async function scanLinuxHolders(
   }
   const under = (path: string) =>
     paths.some((directory) => isUnder(path, directory));
-  const coverage: HoldCoverage = { helpers: [], skipped: [] };
+  const coverage: HoldCoverage = {
+    helpers: [],
+    skipped: [],
+    hiddenFromOtherUsers: await hiddenFromOtherUsers(io, paths, barrierRoot),
+  };
   const holders: FileHolder[] = [];
   for (const entry of entries) {
     if (!/^\d+$/u.test(entry)) continue;
@@ -972,6 +1035,7 @@ async function scanDarwinHolders(
   io: HoldScanIo,
   directories: readonly string[],
   timeoutMs: number,
+  barrierRoot: string | undefined,
 ): Promise<HolderScan> {
   const escaped = directories.find((directory) =>
     LSOF_ESCAPED_PATH.test(directory),
@@ -1023,6 +1087,18 @@ async function scanDarwinHolders(
       reason: `process ${first.pid} (${first.comm}) runs as the current user, is not a known session helper and has no entries in the lsof listing, so whether it holds a file inside the folder cannot be established${inspection.invisible.length > 1 ? ` (${inspection.invisible.length} such processes)` : ""}`,
     };
   }
+  const reachableUser =
+    holders.length > 0
+      ? undefined
+      : inspection.skipped?.find((process) => process.uid !== ROOT_UID);
+  if (
+    reachableUser !== undefined &&
+    !(await hiddenFromOtherUsers(io, directories, barrierRoot))
+  )
+    return {
+      status: "unknown",
+      reason: otherUserCanReach(reachableUser.pid, reachableUser.uid),
+    };
   const report = {
     excludedOtherUsers:
       inspection.skipped === null ? null : inspection.skipped.length,
@@ -1037,7 +1113,11 @@ async function scanDarwinHolders(
 }
 
 export async function scanProcessesHoldingUnder(
-  args: { directories: readonly string[]; timeoutMs?: number },
+  args: {
+    directories: readonly string[];
+    timeoutMs?: number;
+    hiddenFromOtherUsersBelow?: string;
+  },
   io: HoldScanIo = activeHoldIo,
 ): Promise<HolderScan> {
   if (args.directories.length === 0) {
@@ -1064,6 +1144,11 @@ export async function scanProcessesHoldingUnder(
     directories.push(resolved);
   }
   return io.platform === "linux"
-    ? scanLinuxHolders(io, directories)
-    : scanDarwinHolders(io, directories, args.timeoutMs ?? 30_000);
+    ? scanLinuxHolders(io, directories, args.hiddenFromOtherUsersBelow)
+    : scanDarwinHolders(
+        io,
+        directories,
+        args.timeoutMs ?? 30_000,
+        args.hiddenFromOtherUsersBelow,
+      );
 }

@@ -8,7 +8,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   hostHoldScanIo,
@@ -128,6 +128,7 @@ function fakeLinux(
     readExe: (pid) => fact(pid, (process) => process.exe, "/usr/bin/node"),
     listOpenFiles: (pid) => fact(pid, (process) => process.fds, []),
     readMaps: (pid) => fact(pid, (process) => process.maps, ""),
+    statPath: async () => ({ uid: 1000, mode: 0o755 }),
     readOwnMountNamespace: async () => OWN_NAMESPACE,
     readRoot: (pid) => fact(pid, (process) => process.root, "/"),
     runLsofOpenFiles: async () => {
@@ -660,6 +661,166 @@ describe("scanProcessesHoldingUnder on Linux", () => {
     });
   });
 
+  describe("processes of other users", () => {
+    const statsOf = (
+      stats: Record<string, { uid: number; mode: number }>,
+    ): Partial<HoldScanIo> => ({
+      statPath: async (path) => {
+        const known = stats[path];
+        if (known === undefined) return { uid: 1000, mode: 0o755 };
+        return known;
+      },
+    });
+    const stranger = { fds: denied(), uid: 1234 };
+
+    it("excludes a root process and counts it, whatever the modes of the directories", async () => {
+      const base = await dir();
+      const scan = await scanProcessesHoldingUnder(
+        { directories: [base] },
+        fakeLinux({ 10: { fds: denied(), uid: 0 } }),
+      );
+      expect(scan).toMatchObject({
+        status: "clear",
+        excludedOtherUsers: 1,
+        skippedOtherUsers: [{ pid: 10, uid: 0 }],
+      });
+    });
+
+    it("is unknown for another non-root user's process when the directory can be reached by group or other", async () => {
+      const base = await dir();
+      const scan = await scanProcessesHoldingUnder(
+        { directories: [base] },
+        fakeLinux({ 10: stranger }),
+      );
+      expect(scan.status).toBe("unknown");
+      expect(reasonOf(scan)).toContain("process 10 runs as user 1234");
+    });
+
+    it("is clear, and records the process, when the directory itself has no search bit for group or other", async () => {
+      const base = await dir();
+      const scan = await scanProcessesHoldingUnder(
+        { directories: [base] },
+        fakeLinux(
+          { 10: stranger },
+          statsOf({ [base]: { uid: 1000, mode: 0o40700 } }),
+        ),
+      );
+      expect(scan).toMatchObject({
+        status: "clear",
+        excludedOtherUsers: 1,
+        skippedOtherUsers: [{ pid: 10, uid: 1234 }],
+      });
+    });
+
+    it("is clear when an ancestor closes the path, and unknown when that ancestor belongs to someone else", async () => {
+      const base = await dir();
+      const parent = dirname(base);
+      const closed = await scanProcessesHoldingUnder(
+        { directories: [base] },
+        fakeLinux(
+          { 10: stranger },
+          statsOf({ [parent]: { uid: 1000, mode: 0o700 } }),
+        ),
+      );
+      expect(closed.status).toBe("clear");
+      const foreign = await scanProcessesHoldingUnder(
+        { directories: [base] },
+        fakeLinux(
+          { 10: stranger },
+          statsOf({ [parent]: { uid: 0, mode: 0o700 } }),
+        ),
+      );
+      expect(foreign.status).toBe("unknown");
+    });
+
+    it.each([
+      [0o700, "clear"],
+      [0o744, "clear"],
+      [0o640, "clear"],
+      [0o750, "unknown"],
+      [0o705, "unknown"],
+      [0o711, "unknown"],
+      [0o755, "unknown"],
+    ])("treats mode %o as %s", async (mode, status) => {
+      const base = await dir();
+      const scan = await scanProcessesHoldingUnder(
+        { directories: [base] },
+        fakeLinux({ 10: stranger }, statsOf({ [base]: { uid: 1000, mode } })),
+      );
+      expect(scan.status).toBe(status);
+    });
+
+    it("looks for the closing ancestor only up to the named root", async () => {
+      const base = await dir();
+      const parent = dirname(base);
+      const stats = statsOf({ [parent]: { uid: 1000, mode: 0o700 } });
+      const within = await scanProcessesHoldingUnder(
+        { directories: [base], hiddenFromOtherUsersBelow: base },
+        fakeLinux({ 10: stranger }, stats),
+      );
+      expect(within.status).toBe("unknown");
+      const reaching = await scanProcessesHoldingUnder(
+        { directories: [base], hiddenFromOtherUsersBelow: parent },
+        fakeLinux({ 10: stranger }, stats),
+      );
+      expect(reaching.status).toBe("clear");
+    });
+
+    it("is unknown when a directory cannot be statted", async () => {
+      const base = await dir();
+      const scan = await scanProcessesHoldingUnder(
+        { directories: [base] },
+        fakeLinux(
+          { 10: stranger },
+          {
+            statPath: async () => {
+              throw denied();
+            },
+          },
+        ),
+      );
+      expect(scan.status).toBe("unknown");
+    });
+
+    it("is unknown when the directory is closed but another path to it, through a second mount, is not", async () => {
+      const base = await dir();
+      const scan = await scanProcessesHoldingUnder(
+        { directories: [base] },
+        fakeLinux(
+          { 10: stranger },
+          {
+            ...statsOf({ [base]: { uid: 1000, mode: 0o700 } }),
+            readMountInfo: async () =>
+              [
+                "1 0 8:48 / / rw - ext4 /dev/sdd rw",
+                "2 1 8:48 / /mnt/alias ro - ext4 /dev/sdd ro",
+              ].join("\n"),
+          },
+        ),
+      );
+      expect(scan.status).toBe("unknown");
+    });
+
+    it("is unknown for a non-root user's process in another mount namespace, and excludes root's", async () => {
+      const base = await dir();
+      const reachable = await scanProcessesHoldingUnder(
+        { directories: [base] },
+        fakeLinux({
+          10: { uid: 1234, namespace: "mnt:[4026532999]" },
+        }),
+      );
+      expect(reachable.status).toBe("unknown");
+      const closed = await scanProcessesHoldingUnder(
+        { directories: [base] },
+        fakeLinux(
+          { 10: { uid: 1234, namespace: "mnt:[4026532999]" } },
+          statsOf({ [base]: { uid: 1000, mode: 0o700 } }),
+        ),
+      );
+      expect(closed).toMatchObject({ status: "clear", excludedOtherUsers: 1 });
+    });
+  });
+
   it("is unknown when no directory is named", async () => {
     const scan = await scanProcessesHoldingUnder(
       { directories: [] },
@@ -964,6 +1125,47 @@ describe("scanProcessesHoldingUnder on macOS, through ps and lsof -F pfn0", () =
       fakeMac({ ps: [psLine(60, 501, "node")], lsof: "", ...outcome }),
     );
     expect(scan.status).toBe("unknown");
+  });
+
+  it("is unknown when a non-root user's process exists and the directory can be reached, and clear when it cannot", async () => {
+    const base = await dir();
+    const table =
+      psLine(70, 501, "node") +
+      psLine(71, 248, "_distnoted") +
+      psLine(2, 0, "launchd");
+    const lsof = record(70, { cwd: "/Users/me" });
+    const reachable = await scanProcessesHoldingUnder(
+      { directories: [base] },
+      fakeMac({ ps: [table], lsof }),
+    );
+    expect(reachable.status).toBe("unknown");
+    expect(reasonOf(reachable)).toContain("process 71 runs as user 248");
+    const closed = await scanProcessesHoldingUnder(
+      { directories: [base] },
+      {
+        ...fakeMac({ ps: [table], lsof }),
+        statPath: async (path) => ({
+          uid: 501,
+          mode: path === base ? 0o700 : 0o755,
+        }),
+      },
+    );
+    expect(closed).toMatchObject({
+      status: "clear",
+      excludedOtherUsers: 2,
+    });
+  });
+
+  it("excludes root's processes on macOS without asking about the modes", async () => {
+    const base = await dir();
+    const scan = await scanProcessesHoldingUnder(
+      { directories: [base] },
+      fakeMac({
+        ps: [psLine(70, 501, "node") + psLine(2, 0, "launchd")],
+        lsof: record(70, { cwd: "/Users/me" }),
+      }),
+    );
+    expect(scan).toMatchObject({ status: "clear", excludedOtherUsers: 1 });
   });
 
   it("needs lsof to exit 0, because the listing of the current user's own processes is never empty", async () => {
