@@ -706,16 +706,19 @@ function statusTransitionNeedsAttention(args: StatusTransition): boolean {
   return args.currentStatus === "active" || args.currentStatus === "starting";
 }
 
-function buildListThreadsFilters(options: ListThreadsOptions) {
+function buildListThreadsFilters(
+  options: ListThreadsOptions,
+  threadIdsFilter = options.threadIds === undefined
+    ? undefined
+    : inArray(threads.id, [...options.threadIds]),
+) {
   return [
     options.projectId ? eq(threads.projectId, options.projectId) : undefined,
     options.environmentId
       ? eq(threads.environmentId, options.environmentId)
       : undefined,
     options.hostId ? eq(environments.hostId, options.hostId) : undefined,
-    options.threadIds === undefined
-      ? undefined
-      : inArray(threads.id, [...options.threadIds]),
+    threadIdsFilter,
     options.sectionId ? eq(threads.sectionId, options.sectionId) : undefined,
     options.unsectioned ? isNull(threads.sectionId) : undefined,
     nonDeletedThreads(),
@@ -757,7 +760,16 @@ export function buildThreadListEnrichmentScope(
       eq(threads.environmentId, environments.id),
     );
   }
-  query = query.where(and(...buildListThreadsFilters(options)));
+  query = query.where(
+    and(
+      ...buildListThreadsFilters(
+        options,
+        options.threadIds === undefined
+          ? undefined
+          : sql`${threads.id} IN (SELECT value FROM json_each(${JSON.stringify(options.threadIds)}))`,
+      ),
+    ),
+  );
   if (options.limit !== undefined || options.offset !== undefined) {
     query = query.orderBy(...buildListThreadsOrderBy(options));
   }
@@ -768,9 +780,10 @@ export function buildThreadListEnrichmentScope(
 
 function buildListThreadsForProjectsFilters(
   options: ListThreadsForProjectsOptions,
+  projectIdsFilter = inArray(threads.projectId, [...options.projectIds]),
 ) {
   return [
-    inArray(threads.projectId, [...options.projectIds]),
+    projectIdsFilter,
     eq(threads.visibility, "visible"),
     nonDeletedThreads(),
     options.archived === true
@@ -788,7 +801,14 @@ export function buildProjectThreadListEnrichmentScope(
   const query = db
     .select({ id: threads.id })
     .from(threads)
-    .where(and(...buildListThreadsForProjectsFilters(options)));
+    .where(
+      and(
+        ...buildListThreadsForProjectsFilters(
+          options,
+          sql`${threads.projectId} IN (SELECT value FROM json_each(${JSON.stringify(options.projectIds)}))`,
+        ),
+      ),
+    );
   return { kind: "query", ids: sql`${query}` };
 }
 

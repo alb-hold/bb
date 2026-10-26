@@ -11,6 +11,7 @@ import {
   listLatestThreadStateEventRowsByThreadIds,
   listLatestThreadStateEventRowsByScope,
   listOpenTurnInputAcceptedRowsByThreadIds,
+  listOpenTurnInputAcceptedRowsByScope,
   listStoredClientTurnRequestRowsByKeys,
   type DbConnection,
   type HostDaemonSessionRow,
@@ -578,11 +579,17 @@ function listPromptBannerActivityCandidateRows(
         threadIds: threads.map((thread) => thread.id),
         kind: LEGACY_CODEX_GOAL_EXTENSION_KIND,
       });
-  const openAcceptedRows = listOpenTurnInputAcceptedRowsByThreadIds(deps.db, {
-    threadIds: threads
-      .filter((thread) => canThreadShowActivePlanMode(deps, thread))
-      .map((thread) => thread.id),
-  });
+  const eligibleThreadIds = threads
+    .filter((thread) => canThreadShowActivePlanMode(deps, thread))
+    .map((thread) => thread.id);
+  const openAcceptedRows = scope
+    ? listOpenTurnInputAcceptedRowsByScope(deps.db, {
+        kind: "ids",
+        ids: eligibleThreadIds,
+      })
+    : listOpenTurnInputAcceptedRowsByThreadIds(deps.db, {
+        threadIds: eligibleThreadIds,
+      });
   const openAcceptedEvents = openAcceptedRows.map(toThreadEventWithMeta);
   const requestKeys: ThreadClientTurnRequestKey[] = openAcceptedEvents.flatMap(
     ({ event }) =>

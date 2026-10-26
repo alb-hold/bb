@@ -1748,6 +1748,47 @@ export function listOpenTurnInputAcceptedRowsByThreadIds(
   );
 }
 
+export function listOpenTurnInputAcceptedRowsByScope(
+  db: DbQueryConnection,
+  scope: ThreadListEnrichmentScope,
+): StoredEventRow[] {
+  if (scope.kind === "ids" && scope.ids.length === 0) return [];
+  const acceptedType = "turn/input/accepted" satisfies ThreadEventType;
+  const completedType = "turn/completed" satisfies ThreadEventType;
+  const interruptedType = "system/thread/interrupted" satisfies ThreadEventType;
+  const completed = alias(events, "completed_turn_for_accepted_input");
+  return db
+    .select(storedEventRowFields)
+    .from(events)
+    .where(
+      and(
+        threadListEnrichmentScopePredicate(events.threadId, scope),
+        eq(events.type, acceptedType),
+        isNotNull(events.turnId),
+        sql`${events.sequence} > COALESCE((
+          SELECT MAX(interrupted.sequence)
+          FROM events interrupted
+          WHERE interrupted.thread_id = ${events.threadId}
+            AND interrupted.type = ${interruptedType}
+        ), -1)`,
+        notExists(
+          db
+            .select({ one: sql`1` })
+            .from(completed)
+            .where(
+              and(
+                eq(completed.threadId, events.threadId),
+                eq(completed.turnId, events.turnId),
+                eq(completed.type, completedType),
+              ),
+            ),
+        ),
+      ),
+    )
+    .orderBy(events.threadId, events.sequence)
+    .all();
+}
+
 export function listStoredClientTurnRequestRowsByKeys(
   db: DbQueryConnection,
   args: ListStoredClientTurnRequestRowsByKeysArgs,

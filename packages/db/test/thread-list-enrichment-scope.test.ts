@@ -110,6 +110,66 @@ describe("thread list enrichment scopes", () => {
     },
   );
 
+  it("uses the project ID index for the JSON-backed project scope", () => {
+    const db = createConnection(":memory:");
+    connections.push(db);
+    migrate(db);
+    const host = upsertHost(db, noopNotifier, { name: "scope-plan-host" });
+    const { project } = createProject(db, noopNotifier, {
+      name: "scope-plan-project",
+      source: {
+        type: "local_path",
+        hostId: host.id,
+        path: "/tmp/scope-plan",
+      },
+    });
+    const scope = buildProjectThreadListEnrichmentScope(db, {
+      archived: false,
+      projectIds: [project.id],
+    });
+    const plan = db.all<{ detail: string }>(
+      sql`EXPLAIN QUERY PLAN SELECT id FROM (${scope.ids})`,
+    );
+    expect(plan.map((row) => row.detail).join("\n")).toContain(
+      "threads_project_archived_deleted_idx",
+    );
+  });
+
+  it("uses the thread ID index for the JSON-backed threadIds scope", () => {
+    const db = createConnection(":memory:");
+    connections.push(db);
+    migrate(db);
+    const host = upsertHost(db, noopNotifier, {
+      name: "scope-thread-plan-host",
+    });
+    const { project } = createProject(db, noopNotifier, {
+      name: "scope-thread-plan-project",
+      source: {
+        type: "local_path",
+        hostId: host.id,
+        path: "/tmp/scope-thread-plan",
+      },
+    });
+    db.$client
+      .prepare(`
+        INSERT INTO threads (
+          id, project_id, provider_id, status, visibility, latest_attention_at,
+          created_at, updated_at
+        ) VALUES ('scope-thread-plan-id', ?, 'codex', 'idle', 'visible', 1, 1, 1)
+      `)
+      .run(project.id);
+    const scope = buildThreadListEnrichmentScope(db, {
+      threadIds: ["scope-thread-plan-id"],
+      archived: false,
+    });
+    const plan = db.all<{ detail: string }>(
+      sql`EXPLAIN QUERY PLAN SELECT id FROM (${scope.ids})`,
+    );
+    expect(plan.map((row) => row.detail).join("\n")).toMatch(
+      /SEARCH threads USING (INDEX|INTEGER PRIMARY KEY|COVERING INDEX)/,
+    );
+  });
+
   it("keeps the selected page IDs when the scope applies limit and offset", () => {
     const db = createConnection(":memory:");
     connections.push(db);

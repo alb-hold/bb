@@ -33,7 +33,69 @@ import { toThreadListEntryResponsesForTest } from "../../helpers/thread-list-enr
 
 const SEARCH_QUERY = "routeenrichmentprobe";
 
-async function seedThreadListFixture(harness: TestAppHarness) {
+function recordEnrichmentBinds(harness: TestAppHarness) {
+  const bindings: { count: number; source: string }[] = [];
+  const originalPrepare = harness.db.$client.prepare.bind(harness.db.$client);
+  harness.db.$client.prepare = ((source: string) => {
+    const statement = originalPrepare(source);
+    if (
+      /events_thread_state_thread_sequence_idx|events_background_task_thread_type_item_sequence_idx|interrupted\.sequence|queued_thread_messages|fork_thread_row_states/i.test(
+        source,
+      )
+    ) {
+      const methods = statement as unknown as Record<
+        "all" | "get" | "run" | "iterate",
+        (...params: unknown[]) => unknown
+      >;
+      for (const method of ["all", "get", "run", "iterate"] as const) {
+        const original = methods[method].bind(statement);
+        methods[method] = (...params: unknown[]) => {
+          bindings.push({ count: params.length, source });
+          return original(...params);
+        };
+      }
+    }
+    return statement;
+  }) as typeof harness.db.$client.prepare;
+  return {
+    count: () => bindings.reduce((sum, binding) => sum + binding.count, 0),
+    clear: () => bindings.splice(0),
+  };
+}
+
+async function seedBindCountFixture(
+  harness: TestAppHarness,
+  projectCount: number,
+  threadCount: number,
+) {
+  const { host } = seedHostSession(harness.deps, {
+    name: "Thread list enrichment bind host",
+  });
+  const projects = Array.from(
+    { length: projectCount },
+    (_, index) =>
+      seedProjectWithSource(harness.deps, {
+        hostId: host.id,
+        name: `Thread list enrichment bind project ${index}`,
+        path: `/tmp/thread-list-enrichment-bind-${host.id}-${index}`,
+      }).project,
+  );
+  const threadIds = Array.from(
+    { length: threadCount },
+    (_, index) =>
+      seedThread(harness.deps, {
+        projectId: projects[index % projects.length]!.id,
+        status: index % 2 === 0 ? "active" : "idle",
+        title: `Thread list enrichment bind thread ${index}`,
+      }).id,
+  );
+  return { projects, threadIds };
+}
+
+async function seedThreadListFixture(
+  harness: TestAppHarness,
+  projectCount = 1,
+) {
   const { host } = seedHostSession(harness.deps, {
     name: "Thread list enrichment route host",
   });
@@ -42,11 +104,23 @@ async function seedThreadListFixture(harness: TestAppHarness) {
     name: "Thread list enrichment route project",
     path: `/tmp/thread-list-enrichment-${host.id}`,
   });
-  const environment = seedEnvironment(harness.deps, {
-    hostId: host.id,
-    projectId: project.id,
-    path: `/tmp/thread-list-enrichment-environment-${host.id}`,
-  });
+  const projects = [project];
+  for (let index = 1; index < projectCount; index += 1) {
+    projects.push(
+      seedProjectWithSource(harness.deps, {
+        hostId: host.id,
+        name: `Thread list enrichment route project ${index}`,
+        path: `/tmp/thread-list-enrichment-${host.id}-${index}`,
+      }).project,
+    );
+  }
+  const environments = projects.map((listedProject, index) =>
+    seedEnvironment(harness.deps, {
+      hostId: host.id,
+      projectId: listedProject.id,
+      path: `/tmp/thread-list-enrichment-environment-${host.id}-${index}`,
+    }),
+  );
   const definitions = [
     { archived: false, hidden: false, label: "visible-1" },
     { archived: false, hidden: false, label: "visible-2" },
@@ -60,8 +134,9 @@ async function seedThreadListFixture(harness: TestAppHarness) {
 
   for (const [index, definition] of definitions.entries()) {
     const thread = seedThread(harness.deps, {
-      projectId: project.id,
-      environmentId: environment.id,
+      projectId: projects[index % projects.length]!.id,
+      environmentId: environments[index % environments.length]!.id,
+      status: definition.label === "visible-1" ? "active" : "idle",
       title: `${SEARCH_QUERY} ${definition.label}`,
       visibility: definition.hidden ? "hidden" : "visible",
     });
@@ -144,7 +219,7 @@ async function seedThreadListFixture(harness: TestAppHarness) {
     }
   }
 
-  return { project, hiddenThreadId };
+  return { project, projects, hiddenThreadId };
 }
 
 function legacySearchGroup(
@@ -230,26 +305,131 @@ describe("thread list enrichment route callers", () => {
 
   it("keeps project thread responses byte-identical", async () => {
     await withTestHarness(async (harness) => {
-      const { project } = await seedThreadListFixture(harness);
+      const { projects } = await seedThreadListFixture(harness, 3);
       const response = await harness.app.request(
         "/api/v1/projects?include=threads",
       );
       expect(response.status).toBe(200);
       const actual = (await readJson(response)) as ProjectWithThreadsResponse[];
-      const listedThreads = listThreadsWithPendingInteractionStateForProjects(
-        harness.db,
-        { archived: false, projectIds: [project.id] },
-      );
-      const expectedThreads = toThreadListEntryResponsesForTest(harness.deps, {
-        threads: listedThreads,
-      });
+      const expectedByProjectId = new Map<
+        string,
+        ReturnType<typeof toThreadListEntryResponsesForTest>
+      >();
+      for (const listedProject of projects) {
+        const projectThreads =
+          listThreadsWithPendingInteractionStateForProjects(harness.db, {
+            archived: false,
+            projectIds: [listedProject.id],
+          });
+        expectedByProjectId.set(
+          listedProject.id,
+          toThreadListEntryResponsesForTest(harness.deps, {
+            threads: projectThreads,
+          }),
+        );
+      }
       const expected = actual.map((item) => ({
         ...item,
-        threads: item.id === project.id ? expectedThreads : [],
+        threads: expectedByProjectId.get(item.id) ?? [],
       }));
-      expect(actual.some((item) => item.id === project.id)).toBe(true);
+      expect(
+        projects.every((listedProject) =>
+          actual.some((item) => item.id === listedProject.id),
+        ),
+      ).toBe(true);
       expect(JSON.stringify(actual)).toBe(JSON.stringify(expected));
     });
+  });
+
+  it("keeps project-route enrichment binds constant across project and thread counts", async () => {
+    const counts: number[] = [];
+    for (const projectCount of [1, 10, 200]) {
+      for (const threadCount of [10, 300]) {
+        await withTestHarness(async (harness) => {
+          await seedBindCountFixture(harness, projectCount, threadCount);
+          const recorder = recordEnrichmentBinds(harness);
+          const response = await harness.app.request(
+            "/api/v1/projects?include=threads",
+          );
+          expect(response.status).toBe(200);
+          const actual = (await readJson(
+            response,
+          )) as ProjectWithThreadsResponse[];
+          const routeBindCount = recorder.count();
+          recorder.clear();
+          const listedProjectIds = actual.map((project) => project.id);
+          const listedThreads =
+            listThreadsWithPendingInteractionStateForProjects(harness.db, {
+              archived: false,
+              projectIds: listedProjectIds,
+            });
+          const expectedThreads = toThreadListEntryResponsesForTest(
+            harness.deps,
+            {
+              threads: listedThreads,
+            },
+          );
+          const threadsByProjectId = new Map<string, typeof expectedThreads>();
+          for (const project of expectedThreads) {
+            const projectThreads =
+              threadsByProjectId.get(project.projectId) ?? [];
+            projectThreads.push(project);
+            threadsByProjectId.set(project.projectId, projectThreads);
+          }
+          const expected = actual.map((project) => ({
+            ...project,
+            threads: threadsByProjectId.get(project.id) ?? [],
+          }));
+          expect(JSON.stringify(actual)).toBe(JSON.stringify(expected));
+          counts.push(routeBindCount);
+        });
+      }
+    }
+    expect(counts).toHaveLength(6);
+    expect(new Set(counts).size).toBe(1);
+  });
+
+  it("keeps threadIds-route enrichment binds constant across ID and thread counts", async () => {
+    const allCounts: number[] = [];
+    for (const threadCount of [10, 300]) {
+      await withTestHarness(async (harness) => {
+        const { threadIds } = await seedBindCountFixture(
+          harness,
+          1,
+          threadCount,
+        );
+        const recorder = recordEnrichmentBinds(harness);
+        const counts: number[] = [];
+        for (const requestedCount of [1, 10, 200]) {
+          const requestedIds = Array.from(
+            { length: requestedCount },
+            (_, index) => threadIds[index] ?? `missing-thread-${index}`,
+          );
+          const response = await harness.app.request(
+            `/api/v1/threads?threadIds=${requestedIds.join(",")}`,
+          );
+          expect(response.status).toBe(200);
+          const actual = (await readJson(response)) as ThreadListResponse[];
+          const routeBindCount = recorder.count();
+          recorder.clear();
+          const listedThreads = listThreadsWithPendingInteractionState(
+            harness.db,
+            { threadIds: requestedIds },
+          );
+          const expected = toThreadListEntryResponsesForTest(harness.deps, {
+            threads: listedThreads,
+          });
+          expect(JSON.stringify(actual)).toBe(JSON.stringify(expected));
+          recorder.clear();
+          counts.push(routeBindCount);
+          allCounts.push(routeBindCount);
+        }
+        expect(counts).toHaveLength(3);
+        expect(new Set(counts).size, JSON.stringify(counts)).toBe(1);
+      });
+    }
+    expect(allCounts).toHaveLength(6);
+    expect(new Set(allCounts).size, JSON.stringify(allCounts)).toBe(1);
   });
 
   it("keeps pinned-root action responses byte-identical", async () => {
