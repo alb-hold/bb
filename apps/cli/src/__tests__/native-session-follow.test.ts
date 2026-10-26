@@ -38,7 +38,10 @@ interface CodexPluginTestHost {
 const {
   createFakePluginHost,
 }: {
-  createFakePluginHost(options: { pluginId: string }): CodexPluginTestHost;
+  createFakePluginHost(options: {
+    pluginId: string;
+    experimental_declaredIconNames?: readonly string[];
+  }): CodexPluginTestHost;
 } = await import(
   new URL(
     "../../../../packages/plugin-sdk/src/testing/fake-plugin-host.ts",
@@ -93,7 +96,10 @@ function codexTurn(prompt: string): unknown[] {
 }
 
 function codexCli(): ProviderNativeTerminal {
-  const host = createFakePluginHost({ pluginId: "provider-codex" });
+  const host = createFakePluginHost({
+    pluginId: "provider-codex",
+    experimental_declaredIconNames: ["ultrafast"],
+  });
   codexPlugin(host.bb);
   const cli = host.harness.registrations.providerRegistrations.find(
     (entry) => entry.id === "codex",
