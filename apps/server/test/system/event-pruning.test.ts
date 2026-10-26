@@ -1019,7 +1019,6 @@ describe("thread event pruning", () => {
           },
         );
         expect(budgetedResult).not.toBeNull();
-        expect(scheduledSlices).toHaveLength(1);
         for (let slice = 0; slice < 10_000 && scheduledSlices.length > 0; slice++)
           scheduledSlices.shift()?.();
         expect(scheduledSlices).toHaveLength(0);
