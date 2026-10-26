@@ -67,6 +67,31 @@ it("discounts the same block when the histogram records its late tick next windo
   sampler.stop();
 });
 
+it("keeps an independent following-window histogram stall intact", () => {
+  vi.useFakeTimers();
+  let now = 0;
+  const histogram = createHistogram();
+  const stalls: Array<{ maxDelayMs: number; timerLagMs: number }> = [];
+  const sampler = startEventLoopDelaySampler({
+    histogram,
+    now: () => now,
+    onSample: ({ stall }) => {
+      if (stall !== null) stalls.push(stall);
+    },
+  });
+
+  now = 7_000;
+  vi.advanceTimersByTime(5_000);
+  histogram.max = 2_400 * nanosecondsPerMillisecond;
+  now = 12_000;
+  vi.advanceTimersByTime(5_000);
+
+  expect(stalls).toHaveLength(2);
+  expect(stalls[0]).toMatchObject({ maxDelayMs: 2_000, timerLagMs: 2_000 });
+  expect(stalls[1]).toMatchObject({ maxDelayMs: 2_400, timerLagMs: 0 });
+  sampler.stop();
+});
+
 it("reports a 30-second gap under the suspension guard as timer lag", () => {
   vi.useFakeTimers();
   let now = 0;

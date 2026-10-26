@@ -71,11 +71,12 @@ export function startEventLoopDelaySampler(
       0,
       gapMs - EVENT_LOOP_DELAY_SAMPLE_INTERVAL_MS,
     );
-    const histogramMaxDelayMs = Math.max(
-      0,
-      nanosecondsToMilliseconds(histogram.max) -
-        previouslyReportedTimerLagMs,
-    );
+    const rawHistogramMaxDelayMs = nanosecondsToMilliseconds(histogram.max);
+    const histogramMaxDelayMs =
+      rawHistogramMaxDelayMs <=
+      previouslyReportedTimerLagMs + EVENT_LOOP_DELAY_RESOLUTION_MS
+        ? 0
+        : rawHistogramMaxDelayMs;
     const maxDelayMs = Math.max(histogramMaxDelayMs, timerLagMs);
     const thresholdMs =
       typeof args.thresholdMs === "function"
