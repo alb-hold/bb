@@ -14,8 +14,11 @@ import {
   createQueuedThreadMessage,
   createTerminalSession,
   createThread,
+  getThreadRowState,
   insertEvents,
   hostDaemonSessions,
+  listActiveBackgroundTaskCountsByThreadIds,
+  listQueuedThreadMessageCountsByThreadIds,
   listQueuedThreadMessages,
   listThreadsWithPendingInteractionState,
   listThreadsWithPendingInteractionStateForProjects,
@@ -24,6 +27,7 @@ import {
   openSession,
   pinThread,
   putThreadRowState,
+  searchThreadsWithPendingInteractionState,
   setNativeTerminalThreadTerminal,
   setQueuedThreadMessageFailureReason,
   stampNativeTerminalThreadActivity,
@@ -47,6 +51,11 @@ import type {
 } from "@bb/domain";
 import { HOST_RECONNECT_GRACE_MS } from "../../../src/constants.js";
 import {
+  resolveThreadListIndicator,
+  threadListIndicatorStateForThread,
+} from "@bb/client-core";
+import {
+  getThreadPromptBannerActivity,
   resolveThreadRuntimeState,
   toPluginThreadDtoFromThread,
   toThreadResponseFromThread,
@@ -320,9 +329,65 @@ function toThreadListEntryResponsesForTest(
   deps: Parameters<typeof toThreadListEntryResponses>[0],
   args: Omit<Parameters<typeof toThreadListEntryResponses>[1], "scope">,
 ) {
-  return toThreadListEntryResponses(deps, {
+  const now = args.now ?? Date.now();
+  const entries = toThreadListEntryResponses(deps, {
     ...args,
+    now,
     scope: { kind: "ids", ids: args.threads.map((thread) => thread.id) },
+  });
+  const backgroundByThreadId = new Map(
+    listActiveBackgroundTaskCountsByThreadIds(deps.db, {
+      threadIds: args.threads.map((thread) => thread.id),
+    }).map((row) => [row.threadId, row]),
+  );
+  const queuedByThreadId = new Map(
+    listQueuedThreadMessageCountsByThreadIds(deps.db, {
+      threadIds: args.threads.map((thread) => thread.id),
+    }).map((row) => [row.threadId, row]),
+  );
+  const promptBannerByThreadId = new Map(
+    args.threads.map((thread) => [
+      thread.id,
+      getThreadPromptBannerActivity(deps, thread),
+    ]),
+  );
+  const rowStateByThreadId = new Map(
+    args.threads.map((thread) => [
+      thread.id,
+      getThreadRowState(deps.db, thread.id, now),
+    ]),
+  );
+  return entries.map((entry) => {
+    const background = backgroundByThreadId.get(entry.id);
+    const promptBanner = promptBannerByThreadId.get(entry.id);
+    const queued = queuedByThreadId.get(entry.id);
+    const withLegacyEnrichment = {
+      ...entry,
+      activity: {
+        activeBackgroundAgentCount: background?.activeBackgroundAgentCount ?? 0,
+        activeBackgroundCommandCount:
+          background?.activeBackgroundCommandCount ?? 0,
+        activeGoalCount: promptBanner?.activeGoalCount ?? 0,
+        activePlanModeCount: promptBanner?.activePlanModeCount ?? 0,
+        activeWorkflowCount: background?.activeWorkflowCount ?? 0,
+      },
+      queuedWork:
+        queued === undefined || queued.queuedMessageCount === 0
+          ? ("none" as const)
+          : queued.failedQueuedMessageCount > 0
+            ? ("failed" as const)
+            : ("waiting" as const),
+      rowState: rowStateByThreadId.get(entry.id) ?? {
+        statuses: {},
+        progress: null,
+      },
+    };
+    return {
+      ...withLegacyEnrichment,
+      listIndicator: resolveThreadListIndicator(
+        threadListIndicatorStateForThread(withLegacyEnrichment, false, now),
+      ),
+    };
   });
 }
 
@@ -337,6 +402,15 @@ describe("thread runtime display", () => {
     const visible = createThreadWithEnvironment({ db, hostId, status: "idle" });
     const hidden = createThreadWithEnvironment({ db, hostId, status: "idle" });
     updateThread(db, noopNotifier, hidden.thread.id, { visibility: "hidden" });
+    updateThread(db, noopNotifier, archived.thread.id, {
+      title: "scopeidentity archived",
+    });
+    updateThread(db, noopNotifier, visible.thread.id, {
+      title: "scopeidentity active",
+    });
+    updateThread(db, noopNotifier, hidden.thread.id, {
+      title: "scopeidentity hidden",
+    });
     appendStoredThreadEvent(db, noopNotifier, {
       threadId: archived.thread.id,
       scope: threadScope(),
@@ -437,6 +511,20 @@ describe("thread runtime display", () => {
     ).toBe("Ready");
     expect(byQuery.some((entry) => entry.id === hidden.thread.id)).toBe(true);
     expect(visible.thread.id).not.toBe(archived.thread.id);
+
+    const search = searchThreadsWithPendingInteractionState(db, {
+      query: "scopeidentity",
+      limitPerGroup: 10,
+    });
+    for (const group of [search.active, search.archived]) {
+      const threads = group.results.map((result) => result.thread);
+      const byIds = toThreadListEntryResponsesForTest(deps, { threads });
+      const bySearchScope = toThreadListEntryResponses(deps, {
+        threads,
+        scope: { kind: "ids", ids: threads.map((thread) => thread.id) },
+      });
+      expect(JSON.stringify(bySearchScope)).toBe(JSON.stringify(byIds));
+    }
 
     const projectOptions = {
       archived: false,
@@ -963,11 +1051,12 @@ describe("thread runtime display", () => {
     }));
 
     expect(
-      toThreadListEntryResponsesForTest(
+      toThreadListEntryResponses(
         { db, hub, providerRegistry },
         {
           now: 1_000,
           threads,
+          scope: { kind: "ids", ids: threads.map((candidate) => candidate.id) },
         },
       ),
     ).toHaveLength(32_767);
