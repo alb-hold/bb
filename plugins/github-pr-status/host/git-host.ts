@@ -574,16 +574,38 @@ function parseNullTerminatedGitConfig(stdout: string): Map<string, string> {
   return values;
 }
 
-function githubConfigDirectory(env: NodeJS.ProcessEnv): string | null {
+function configDirectorySource(env: NodeJS.ProcessEnv): {
+  variable: string;
+  directory: string;
+} {
   const appData = env.APPDATA ?? env.AppData;
-  const directory =
-    env.GH_CONFIG_DIR ||
-    (env.XDG_CONFIG_HOME
-      ? join(env.XDG_CONFIG_HOME, "gh")
-      : process.platform === "win32" && appData
-        ? join(appData, "GitHub CLI")
-        : join(env.HOME ?? homedir(), ".config", "gh"));
+  if (env.GH_CONFIG_DIR)
+    return { variable: "GH_CONFIG_DIR", directory: env.GH_CONFIG_DIR };
+  if (env.XDG_CONFIG_HOME)
+    return {
+      variable: "XDG_CONFIG_HOME",
+      directory: join(env.XDG_CONFIG_HOME, "gh"),
+    };
+  if (process.platform === "win32" && appData)
+    return { variable: "APPDATA", directory: join(appData, "GitHub CLI") };
+  return {
+    variable: "HOME",
+    directory: join(env.HOME ?? homedir(), ".config", "gh"),
+  };
+}
+
+function githubConfigDirectory(env: NodeJS.ProcessEnv): string | null {
+  const { directory } = configDirectorySource(env);
   return isAbsolute(directory) ? directory : null;
+}
+
+function admissionRefusal(host: string): string {
+  const { variable, directory } = configDirectorySource(
+    sanitizeInheritedChildProcessEnv({ env: process.env }),
+  );
+  return isAbsolute(directory)
+    ? unconfiguredHostMessage(host)
+    : `${variable} must be an absolute path; refusing to run gh with a relative GitHub CLI config directory`;
 }
 
 function configuredHosts(hostsYml: string): Set<string> {
@@ -901,7 +923,7 @@ export async function runPullRequestActionForCurrentBranch(
   }
   const host = await AdmittedGitHubHost.admit(branchTarget.host, args.cwd);
   if (host === null) {
-    return { ok: false, message: unconfiguredHostMessage(branchTarget.host) };
+    return { ok: false, message: admissionRefusal(branchTarget.host) };
   }
   const selector =
     branchTarget.headOwner === null
@@ -1249,7 +1271,7 @@ async function enqueueRead(
   if (host === null) {
     return {
       outcome: "unavailable",
-      message: unconfiguredHostMessage(target.host),
+      message: admissionRefusal(target.host),
     };
   }
   const group = await credentialKey(host);

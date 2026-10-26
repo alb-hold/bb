@@ -1096,4 +1096,114 @@ describe("action selector and routing edge cases", () => {
       expect(await gh.readCalls()).toEqual([]);
     },
   );
+
+  const RELATIVE_CONFIG_SOURCES: readonly (readonly [
+    string,
+    string,
+    string,
+    () => void,
+  ])[] = [
+    [
+      "GH_CONFIG_DIR",
+      "GH_CONFIG_DIR",
+      "https://github.com/acme/bb.git",
+      () => vi.stubEnv("GH_CONFIG_DIR", ".gh"),
+    ],
+    [
+      "XDG_CONFIG_HOME",
+      "XDG_CONFIG_HOME",
+      "https://github.com/acme/bb.git",
+      () => {
+        vi.stubEnv("GH_CONFIG_DIR", undefined);
+        vi.stubEnv("XDG_CONFIG_HOME", ".config");
+      },
+    ],
+    [
+      "HOME",
+      "HOME",
+      "https://github.com/acme/bb.git",
+      () => {
+        vi.stubEnv("GH_CONFIG_DIR", undefined);
+        vi.stubEnv("XDG_CONFIG_HOME", undefined);
+        vi.stubEnv("HOME", "relative-home");
+      },
+    ],
+    [
+      "GH_CONFIG_DIR with a host named by GH_HOST",
+      "GH_CONFIG_DIR",
+      "https://ghe.example/acme/bb.git",
+      () => {
+        vi.stubEnv("GH_CONFIG_DIR", ".gh");
+        vi.stubEnv("GH_HOST", "ghe.example");
+      },
+    ],
+  ];
+
+  it.each(RELATIVE_CONFIG_SOURCES)(
+    "a relative %s refuses the action naming the variable and starts no gh process",
+    async (_label, variable, remote, relativize) => {
+      const gh = await actionGh();
+      stubTokens(TOKEN_KEYS);
+      const cwd = await makeGitRepository({ origin: remote });
+      relativize();
+
+      const result = await runAction(cwd);
+      expect(result).toMatchObject({ ok: false });
+      expect(result.ok ? "" : result.message).toBe(
+        `${variable} must be an absolute path; refusing to run gh with a relative GitHub CLI config directory`,
+      );
+      expect(await gh.readCalls()).toEqual([]);
+    },
+  );
+
+  it.each(RELATIVE_CONFIG_SOURCES)(
+    "a relative %s refuses the lookup naming the variable and starts no gh process",
+    async (_label, variable, remote, relativize) => {
+      const gh = await actionGh();
+      stubTokens(TOKEN_KEYS);
+      const cwd = await makeGitRepository({ origin: remote });
+      relativize();
+
+      await expect(runLookup(cwd)).resolves.toEqual({
+        outcome: "unavailable",
+        message: `${variable} must be an absolute path; refusing to run gh with a relative GitHub CLI config directory`,
+      });
+      expect(await gh.readCalls()).toEqual([]);
+    },
+  );
+
+  it("an absolute GH_CONFIG_DIR still admits github.com", async () => {
+    const gh = await actionGh();
+    const configDirectory = await makeTempDir("bb-pr-absolute-config-");
+    vi.stubEnv("GH_CONFIG_DIR", configDirectory);
+    const cwd = await makeGitRepository({ origin: GITHUB_REMOTE });
+
+    await expect(runAction(cwd)).resolves.toEqual({ ok: true });
+    expect(await actionCalls(gh)).toHaveLength(1);
+  });
+
+  it("token variables are stripped on a mocked win32 platform whatever their case", async () => {
+    const gh = await actionGh();
+    vi.stubEnv("gh_token", "lowercase-gh-token");
+    vi.stubEnv("Github_Enterprise_Token", "mixed-case-enterprise-token");
+    const cwd = await makeGitRepository({ origin: GITHUB_REMOTE });
+    const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+    Object.defineProperty(process, "platform", { value: "win32" });
+    let result;
+    try {
+      result = await runAction(cwd);
+    } finally {
+      Object.defineProperty(process, "platform", platform);
+    }
+
+    expect(result).toEqual({ ok: true });
+    const [call] = await actionInvocations(gh);
+    expect(call).toBeDefined();
+    expect(call!.tokenKeys.filter((key) => /^gh_token$/iu.test(key))).toEqual(
+      [],
+    );
+    expect(
+      call!.tokenKeys.filter((key) => /^github_enterprise_token$/iu.test(key)),
+    ).toEqual([]);
+  });
 });
