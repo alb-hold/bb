@@ -4581,7 +4581,7 @@ function pruneUsageSnapshots(
       | "thread/tokenUsage/updated";
     threadId: string;
   },
-): number {
+): { removed: number; removedBytes: number } {
   const keepers = args.usageKeepers;
   const boundarySequence =
     args.eventType === "thread/contextWindowUsage/updated"
@@ -4599,20 +4599,24 @@ function pruneUsageSnapshots(
         sql`SELECT 1 FROM events WHERE thread_id = ${args.threadId} AND type = ${args.eventType} AND sequence = ${sequence}`,
       )
     )
-      return 0;
+      return { removed: 0, removedBytes: 0 };
   }
-  return db.run(sql`DELETE FROM events
+  const deletedRows = db.all<{ bytes: number }>(sql`DELETE FROM events
     WHERE id IN (${pruningCandidates(args)}) AND thread_id = ${args.threadId}
       AND type = ${args.eventType}
       AND ${isBeforeLatestThreadEvent(args.threadId)}
-      AND sequence NOT IN (${keepers.latestRootSequence}, ${keepers.latestContextSequence}, ${boundarySequence})`)
-    .changes;
+      AND sequence NOT IN (${keepers.latestRootSequence}, ${keepers.latestContextSequence}, ${boundarySequence})
+    RETURNING octet_length(data) AS bytes`);
+  return {
+    removed: deletedRows.length,
+    removedBytes: deletedRows.reduce((sum, row) => sum + row.bytes, 0),
+  };
 }
 
 export function pruneContextWindowUsageEventsInTransaction(
   db: DbQueryConnection,
   args: PruneContextWindowUsageEventsArgs,
-): number {
+): { removed: number; removedBytes: number } {
   return pruneUsageSnapshots(db, {
     ...args,
     eventType: "thread/contextWindowUsage/updated",
@@ -4622,7 +4626,7 @@ export function pruneContextWindowUsageEventsInTransaction(
 export function pruneTokenUsageEventsInTransaction(
   db: DbQueryConnection,
   args: PruneTokenUsageEventsArgs,
-): number {
+): { removed: number; removedBytes: number } {
   return pruneUsageSnapshots(db, {
     ...args,
     eventType: "thread/tokenUsage/updated",
