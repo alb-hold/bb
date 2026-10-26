@@ -6,6 +6,7 @@ import {
   createEnvironment,
   createProject,
   createThread,
+  environmentHasLiveThreads,
   listEnvironmentReleaseConsents,
   listUnreleasedEnvironmentThreadIds,
   markThreadDeleted,
@@ -244,5 +245,77 @@ describe("environment release consents", () => {
         archivedBefore.id,
       ]);
     });
+  });
+});
+
+describe("the release of a whole thread tree", () => {
+  const user = { kind: "user", threadId: null } as const;
+
+  function treeFixture() {
+    const { db, environment, thread } = setup();
+    const create = (relation: {
+      parentThreadId?: string;
+      lifecycleOwnerThreadId?: string;
+    }) =>
+      createThread(db, noopNotifier, {
+        projectId: environment.projectId,
+        providerId: "provider",
+        status: "idle",
+        environmentId: environment.id,
+        ...relation,
+      });
+    return { db, environment, thread, create };
+  }
+
+  function expectTreeReleasedAndLiveThreadBlocking(
+    db: ReturnType<typeof setup>["db"],
+    environmentId: string,
+    released: readonly string[],
+    live: string,
+  ) {
+    const consents = listEnvironmentReleaseConsents(db, environmentId);
+    expect(consents.map((row) => row.threadId).sort()).toEqual(
+      [...released].sort(),
+    );
+    expect(consents.every((row) => row.actorKind === "user")).toBe(true);
+    expect(consents.map((row) => row.threadId)).not.toContain(live);
+    expect(listUnreleasedEnvironmentThreadIds(db, environmentId)).toEqual([
+      live,
+    ]);
+    expect(environmentHasLiveThreads(db, environmentId)).toBe(true);
+  }
+
+  it("records a release for the parent, child and grandchild of an archive, and the unrelated live thread on the environment keeps blocking its removal", () => {
+    const { db, environment, thread, create } = treeFixture();
+    const parent = thread();
+    const child = create({ lifecycleOwnerThreadId: parent.id });
+    const grandchild = create({ lifecycleOwnerThreadId: child.id });
+    const live = thread();
+
+    archiveThread(db, noopNotifier, parent.id, user);
+
+    expectTreeReleasedAndLiveThreadBlocking(
+      db,
+      environment.id,
+      [parent.id, child.id, grandchild.id],
+      live.id,
+    );
+  });
+
+  it("records a release for the parent, child and grandchild of a delete, and the unrelated live thread on the environment keeps blocking its removal", () => {
+    const { db, environment, thread, create } = treeFixture();
+    const parent = thread();
+    const child = create({ parentThreadId: parent.id });
+    const grandchild = create({ lifecycleOwnerThreadId: child.id });
+    const live = thread();
+
+    markThreadDeleted(db, noopNotifier, { threadId: parent.id, release: user });
+
+    expectTreeReleasedAndLiveThreadBlocking(
+      db,
+      environment.id,
+      [parent.id, child.id, grandchild.id],
+      live.id,
+    );
   });
 });
