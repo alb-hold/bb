@@ -4,6 +4,7 @@ interface EventLoopStall {
   intervalMs: number;
   maxDelayMs: number;
   rawMaxDelayMs: number;
+  timerLagMs: number;
   meanDelayMs: number;
   p99DelayMs: number;
   resolutionMs: number;
@@ -13,7 +14,17 @@ interface EventLoopStall {
 interface StartEventLoopDelaySamplerArgs {
   thresholdMs?: number | (() => number);
   now?: () => number;
+  histogram?: EventLoopDelayHistogram;
   onSample: (sample: { stall: EventLoopStall | null }) => void;
+}
+
+interface EventLoopDelayHistogram {
+  disable: () => void;
+  enable: () => void;
+  max: number;
+  mean: number;
+  percentile: (percentile: number) => number;
+  reset: () => void;
 }
 
 interface EventLoopDelaySampler {
@@ -45,17 +56,27 @@ export function startEventLoopDelaySampler(
   args: StartEventLoopDelaySamplerArgs,
 ): EventLoopDelaySampler {
   const now = args.now ?? (() => Date.now());
-  const histogram = monitorEventLoopDelay({
-    resolution: EVENT_LOOP_DELAY_RESOLUTION_MS,
-  });
+  const histogram =
+    args.histogram ??
+    monitorEventLoopDelay({ resolution: EVENT_LOOP_DELAY_RESOLUTION_MS });
   histogram.enable();
   let lastSampleAt = now();
+  let previouslyReportedTimerLagMs = 0;
 
   const interval = setInterval(() => {
     const sampledAt = now();
     const gapMs = sampledAt - lastSampleAt;
     lastSampleAt = sampledAt;
-    const maxDelayMs = nanosecondsToMilliseconds(histogram.max);
+    const timerLagMs = Math.max(
+      0,
+      gapMs - EVENT_LOOP_DELAY_SAMPLE_INTERVAL_MS,
+    );
+    const histogramMaxDelayMs = Math.max(
+      0,
+      nanosecondsToMilliseconds(histogram.max) -
+        previouslyReportedTimerLagMs,
+    );
+    const maxDelayMs = Math.max(histogramMaxDelayMs, timerLagMs);
     const thresholdMs =
       typeof args.thresholdMs === "function"
         ? args.thresholdMs()
@@ -65,12 +86,14 @@ export function startEventLoopDelaySampler(
         gapMs,
         intervalMs: EVENT_LOOP_DELAY_SAMPLE_INTERVAL_MS,
       }) && maxDelayMs >= thresholdMs;
+    previouslyReportedTimerLagMs = stalled ? timerLagMs : 0;
     args.onSample({
       stall: stalled
         ? {
             intervalMs: EVENT_LOOP_DELAY_SAMPLE_INTERVAL_MS,
             maxDelayMs: roundDurationMs(maxDelayMs),
             rawMaxDelayMs: maxDelayMs,
+            timerLagMs: roundDurationMs(timerLagMs),
             meanDelayMs: roundDurationMs(
               nanosecondsToMilliseconds(histogram.mean),
             ),
