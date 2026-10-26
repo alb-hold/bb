@@ -8,7 +8,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
+import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   hostHoldScanIo,
@@ -553,7 +553,7 @@ describe("scanProcessesHoldingUnder on Linux", () => {
           {
             10: { cwd: `/mnt/other${base}/sub` },
             11: { cwd: `/srv/var${base}/sub` },
-            12: { cwd: `/srv/var/${basename(base)}/sub` },
+            12: { cwd: `/srv/var${base.slice("/var".length)}/sub` },
           },
           { readMountInfo: async () => mounts(base) },
         ),
