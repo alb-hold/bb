@@ -122,11 +122,17 @@ export const hostStorageContract = defineRpcContract({
                 z.enum([
                   "notWorktree",
                   "locked",
+                  "keepMarker",
+                  "operationInProgress",
                   "uncommittedChanges",
                   "unsavedCommits",
+                  "stash",
+                  "inUse",
+                  "unknown",
                 ]),
               )
               .min(1),
+            message: z.string(),
           }),
           z.object({
             path: z.string(),
@@ -165,6 +171,7 @@ export const hostStorageContract = defineRpcContract({
       removed: z.array(z.string()),
       running: z.array(z.string()),
       stoppedProcessCount: z.number().int().nonnegative(),
+      held: z.array(z.object({ name: z.string(), reason: z.string() })),
     }),
   },
   homeDirectory: { input: z.null(), output: z.string().min(1) },
@@ -185,6 +192,15 @@ export const hostStorageContract = defineRpcContract({
   },
   discard: {
     input: storageEntriesSchema,
-    output: z.object({ removed: z.array(z.string()) }),
+    output: z.object({
+      removed: z.array(z.string()),
+      held: z.array(
+        z.object({
+          name: z.string(),
+          holders: z.array(z.object({ pid: z.number().int(), cwd: z.string() })),
+          unknown: z.string().nullable(),
+        }),
+      ),
+    }),
   },
 });

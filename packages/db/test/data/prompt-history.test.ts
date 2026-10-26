@@ -8,6 +8,7 @@ import {
   listPromptHistoryPage,
   markThreadDeleted,
   upsertHost,
+  SYSTEM_RELEASE_ACTOR,
 } from "../../src/data/index.js";
 import { noopNotifier } from "../../src/notifier.js";
 
@@ -133,7 +134,7 @@ describe("prompt history page query", () => {
       createdAt: 10,
       input: [text("still history")],
     });
-    markThreadDeleted(fixture.db, noopNotifier, {
+    markThreadDeleted(fixture.db, noopNotifier, { release: SYSTEM_RELEASE_ACTOR,
       threadId: fixture.firstThread.id,
     });
 

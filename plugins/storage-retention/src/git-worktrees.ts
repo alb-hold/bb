@@ -1,3 +1,4 @@
+import { internal_DO_NOT_USE_scanProcessesWithCwdUnder } from "@get-bb/plugin-sdk/host";
 import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -201,6 +202,158 @@ export async function listGitWorktrees(
   return { repositories, failures };
 }
 
+const IN_PROGRESS_OPERATIONS = [
+  "MERGE_HEAD",
+  "rebase-merge",
+  "rebase-apply",
+  "CHERRY_PICK_HEAD",
+  "REVERT_HEAD",
+];
+const STASH_SUBJECT = /^(?:WIP on|On) ([^:]+): /u;
+
+type PreservationReason = Extract<
+  RemoveOutput,
+  { outcome: "skipped" }
+>["reasons"][number];
+
+const RECOVERY: Record<PreservationReason, { loss: string; recovery: string }> =
+  {
+    notWorktree: {
+      loss: "nothing, it is no longer a worktree of this repository",
+      recovery: "check it with git worktree list",
+    },
+    locked: {
+      loss: "a worktree something relies on, marked with a lock",
+      recovery: "run git worktree unlock on it once nothing relies on it",
+    },
+    keepMarker: {
+      loss: "a worktree its .keep-worktree marker asks bb to keep",
+      recovery: "delete the .keep-worktree file once it can go",
+    },
+    operationInProgress: {
+      loss: "the unfinished merge, rebase, cherry-pick or revert and its resolved conflicts",
+      recovery:
+        "finish it, or abort it with git merge --abort, git rebase --abort, git cherry-pick --abort or git revert --abort",
+    },
+    uncommittedChanges: {
+      loss: "its uncommitted and untracked changes",
+      recovery: "commit them, or copy them out, before removing the worktree",
+    },
+    unsavedCommits: {
+      loss: "commits that are on no remote branch",
+      recovery:
+        "push them with git push, or merge them into a branch that is published",
+    },
+    stash: {
+      loss: "the changes stashed on its branch",
+      recovery:
+        "apply them with git stash apply and commit them, or drop them yourself",
+    },
+    inUse: {
+      loss: "the work of the process running in it",
+      recovery: "stop the process yourself first",
+    },
+    unknown: {
+      loss: "whatever it holds, because whether it holds recoverable work could not be established",
+      recovery: "check git status, git stash list and git log yourself",
+    },
+  };
+
+export function describeKept(
+  worktreePath: string,
+  reasons: readonly PreservationReason[],
+): string {
+  return `Kept ${worktreePath}: removing it would lose ${reasons
+    .map((reason) => RECOVERY[reason].loss)
+    .join("; ")}. To recover: ${reasons
+    .map((reason) => RECOVERY[reason].recovery)
+    .join("; ")}. Nothing was removed.`;
+}
+
+export async function recoverableWorkReasons(
+  entry: { path: string; locked: boolean },
+  signal: AbortSignal,
+  options: { ignoreProcesses: boolean } = { ignoreProcesses: false },
+): Promise<PreservationReason[]> {
+  const reasons: PreservationReason[] = [];
+  const unknown = () => {
+    if (!reasons.includes("unknown")) reasons.push("unknown");
+  };
+  if (entry.locked) reasons.push("locked");
+  const marker = await fs.lstat(path.join(entry.path, ".keep-worktree")).then(
+    () => true,
+    (error: NodeJS.ErrnoException) => (error.code === "ENOENT" ? false : null),
+  );
+  if (marker === true) reasons.push("keepMarker");
+  else if (marker === null) unknown();
+  const gitDir = await git(
+    ["rev-parse", "--absolute-git-dir"],
+    entry.path,
+    signal,
+  );
+  if (gitDir.exitCode !== 0) unknown();
+  else {
+    for (const operation of IN_PROGRESS_OPERATIONS) {
+      const present = await fs
+        .lstat(path.join(gitDir.stdout.trim(), operation))
+        .then(
+          () => true,
+          (error: NodeJS.ErrnoException) =>
+            error.code === "ENOENT" ? false : null,
+        );
+      if (present === true && !reasons.includes("operationInProgress"))
+        reasons.push("operationInProgress");
+      else if (present === null) unknown();
+    }
+  }
+  const status = await git(
+    [
+      "status",
+      "--porcelain=v1",
+      "-z",
+      "--untracked-files=all",
+      "--ignore-submodules=none",
+    ],
+    entry.path,
+    signal,
+  );
+  if (status.exitCode !== 0) unknown();
+  else if (status.stdout !== "") reasons.push("uncommittedChanges");
+  const unpublished = await git(
+    ["rev-list", "--max-count=1", "HEAD", "--not", "--remotes"],
+    entry.path,
+    signal,
+  );
+  if (unpublished.exitCode !== 0) unknown();
+  else if (unpublished.stdout.trim() !== "") reasons.push("unsavedCommits");
+  const head = await git(
+    ["symbolic-ref", "--short", "-q", "HEAD"],
+    entry.path,
+    signal,
+  );
+  const branch = head.exitCode === 0 ? head.stdout.trim() : "(no branch)";
+  const stashes = await git(
+    ["stash", "list", "--format=%gs"],
+    entry.path,
+    signal,
+  );
+  if (stashes.exitCode !== 0) unknown();
+  else if (
+    stashes.stdout
+      .split("\n")
+      .some((subject) => (STASH_SUBJECT.exec(subject)?.[1] ?? null) === branch)
+  )
+    reasons.push("stash");
+  if (!options.ignoreProcesses) {
+    const holders = await internal_DO_NOT_USE_scanProcessesWithCwdUnder({
+      directories: [entry.path],
+    });
+    if (holders.status === "held") reasons.push("inUse");
+    else if (holders.status === "unknown") unknown();
+  }
+  return reasons;
+}
+
 async function removeOne(
   repositoryPath: string,
   worktreePath: string,
@@ -215,29 +368,23 @@ async function removeOne(
       path.relative(candidate.path, worktreePath) === "",
   );
   if (entry === undefined || entry.bare || entry.prunable)
-    return { path: worktreePath, outcome: "skipped", reasons: ["notWorktree"] };
-  if (!force) {
-    const { changedFileCount, unsavedCommitCount } = await inspect(
-      entry,
-      signal,
-    );
-    const reasons = [
-      ...(entry.locked ? (["locked"] as const) : []),
-      ...(changedFileCount > 0 ? (["uncommittedChanges"] as const) : []),
-      ...(unsavedCommitCount > 0 ? (["unsavedCommits"] as const) : []),
-    ];
-    if (reasons.length > 0)
-      return { path: worktreePath, outcome: "skipped", reasons };
-  }
+    return {
+      path: worktreePath,
+      outcome: "skipped",
+      reasons: ["notWorktree"],
+      message: describeKept(worktreePath, ["notWorktree"]),
+    };
+  const reasons = await recoverableWorkReasons(entry, signal);
+  if (reasons.length > 0)
+    return {
+      path: worktreePath,
+      outcome: "skipped",
+      reasons,
+      message: describeKept(worktreePath, reasons),
+    };
   signal.throwIfAborted();
   const removal = await git(
-    [
-      "worktree",
-      "remove",
-      ...(force ? ["--force"] : []),
-      ...(force && entry.locked ? ["--force"] : []),
-      worktreePath,
-    ],
+    ["worktree", "remove", ...(force ? ["--force"] : []), worktreePath],
     repositoryPath,
     signal,
   );

@@ -32,6 +32,7 @@ import {
   updateThread,
   type DbConnection,
   type ThreadWithPendingInteractionState,
+  SYSTEM_RELEASE_ACTOR,
 } from "@bb/db";
 import { createMigratedConnection } from "@bb/db/testing";
 import {
@@ -305,6 +306,7 @@ function createThreadListEntry(
     modelOverride: null,
     reasoningLevelOverride: null,
     storageDeletedAt: null,
+    storageDeleteRefusal: null,
     environmentBranchName: null,
     environmentPath: null,
     environmentProviderId: null,
@@ -411,7 +413,7 @@ describe("thread runtime display", () => {
       statuses: { review: { value: "Ready" } },
       progress: null,
     });
-    archiveThread(db, noopNotifier, archived.thread.id);
+    archiveThread(db, noopNotifier, archived.thread.id, SYSTEM_RELEASE_ACTOR);
     const options = { includeHidden: true };
     const threads = listThreadsWithPendingInteractionState(db, options);
     const deps = { db, hub, providerRegistry };

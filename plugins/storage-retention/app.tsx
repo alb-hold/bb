@@ -984,71 +984,30 @@ function StoragePage({
                           rowActions={rowActions}
                           confirmationKey={cleanup?.key ?? null}
                           confirmation={cleanupConfirmation}
-                          onRemove={(worktree, label) => {
-                            const feedback = {
-                              title: "Removing worktree",
-                              completed: "Worktree removed",
-                              failed: "Couldn’t remove worktree",
-                              description: worktree.path,
-                            };
-                            const remove = async (force: boolean) => {
-                              const result = await rpc.call(
-                                "removeExternalWorktrees",
-                                {
-                                  hostId: report.hostId,
-                                  paths: [worktree.path],
-                                  force,
-                                },
-                              );
-                              const failed = result.failed[0];
-                              if (failed) throw new Error(failed.message);
-                              return result;
-                            };
+                          onRemove={(worktree) => {
                             void runRowAction(
                               `worktree:${worktree.path}`,
-                              feedback,
+                              {
+                                title: "Removing worktree",
+                                completed: "Worktree removed",
+                                failed: "Couldn’t remove worktree",
+                                description: worktree.path,
+                              },
                               async () => {
-                                const result = await remove(false);
-                                const reasons = result.skipped[0]?.reasons;
-                                if (reasons === undefined)
-                                  return `${worktree.path} · ${bytes(result.removedBytes)} freed`;
-                                const forceable = reasons.filter(
-                                  (reason) =>
-                                    reason === "locked" ||
-                                    reason === "uncommittedChanges" ||
-                                    reason === "unsavedCommits",
-                                );
-                                if (forceable.length !== reasons.length)
-                                  throw new Error(
-                                    EXTERNAL_WORKTREE_SKIP_REASONS[reasons[0]!],
-                                  );
-                                setCleanup({
-                                  key: `external-worktree:${worktree.path}`,
-                                  feedback,
-                                  action: "Remove anyway",
-                                  title: `Remove “${label}” anyway (${bytes(worktree.sizeBytes)})?`,
-                                  detail: [
-                                    ...forceable.map(
-                                      (reason) =>
-                                        EXTERNAL_WORKTREE_FORCE_WARNINGS[
-                                          reason
-                                        ],
-                                    ),
-                                    "The checkout is deleted, including ignored files. Its branch is kept. This can’t be undone.",
-                                  ].join(" "),
-                                  run: async () => {
-                                    const forced = await remove(true);
-                                    const skipped = forced.skipped[0];
-                                    if (skipped)
-                                      throw new Error(
-                                        EXTERNAL_WORKTREE_SKIP_REASONS[
-                                          skipped.reasons[0]!
-                                        ],
-                                      );
-                                    return `${worktree.path} · ${bytes(forced.removedBytes)} freed`;
+                                const result = await rpc.call(
+                                  "removeExternalWorktrees",
+                                  {
+                                    hostId: report.hostId,
+                                    paths: [worktree.path],
+                                    force: false,
                                   },
-                                });
-                                return null;
+                                );
+                                const failed = result.failed[0];
+                                if (failed) throw new Error(failed.message);
+                                const kept = result.skipped[0];
+                                if (kept !== undefined)
+                                  throw new Error(kept.message);
+                                return `${worktree.path} · ${bytes(result.removedBytes)} freed`;
                               },
                             );
                           }}
@@ -1059,7 +1018,7 @@ function StoragePage({
                       <CleanupRow
                         title="Development instances without a checkout"
                         size={missingDevBytes}
-                        description={`${plural(missingDev.length, "development instance")} in ~/.bb-dev whose source checkout no longer exists. Servers still running from them are stopped before removal.`}
+                        description={`${plural(missingDev.length, "development instance")} in ~/.bb-dev whose source checkout no longer exists. Instances whose server is still running are kept.`}
                         action="Remove instances"
                         disabled={locked || missingDev.length === 0}
                         onAction={() =>
@@ -1192,10 +1151,11 @@ function StoragePage({
                         },
                         action: "Remove instances",
                         title: `Remove ${plural(entries.length, "development instance")} (${bytes(size)})?`,
-                        detail: `Delete their databases, logs, and thread files. Source checkouts are kept.${running > 0 ? ` ${plural(running, "dev server")} running at the last scan ${running === 1 ? "is" : "are"} stopped first.` : ""} This can’t be undone.`,
+                        detail: `Delete their databases, logs, and thread files. Source checkouts are kept.${running > 0 ? ` ${plural(running, "dev server")} running at the last scan ${running === 1 ? "is" : "are"} stopped first, unless its checkout holds recoverable work.` : ""} This can’t be undone.`,
                         run: async () => {
                           let removedCount = 0;
                           let removedBytes = 0;
+                          const kept: { name: string; reason: string }[] = [];
                           for (
                             let offset = 0;
                             offset < entries.length;
@@ -1213,12 +1173,15 @@ function StoragePage({
                             );
                             removedCount += result.removedCount;
                             removedBytes += result.removedBytes;
+                            kept.push(...result.held);
                           }
                           if (removedCount === 0)
                             throw new Error(
-                              "No data was deleted. Rescan the machine to update its status.",
+                              kept[0] !== undefined
+                                ? `Kept: ${kept[0].reason}.`
+                                : "No data was deleted. Rescan the machine to update its status.",
                             );
-                          return `${plural(removedCount, "instance")} removed · ${bytes(removedBytes)} freed`;
+                          return `${plural(removedCount, "instance")} removed · ${bytes(removedBytes)} freed${kept.length > 0 ? ` · ${kept.length} kept` : ""}`;
                         },
                       });
                     }}
@@ -1237,6 +1200,9 @@ function StoragePage({
                             names: [entry.name],
                             stopRunning: false,
                           });
+                          const kept = result.held[0];
+                          if (kept !== undefined)
+                            throw new Error(`Kept: ${kept.reason}.`);
                           if (result.running.length > 0)
                             setCleanup({
                               key: `dev-instance:${entry.name}`,
@@ -1259,6 +1225,9 @@ function StoragePage({
                                     stopRunning: true,
                                   },
                                 );
+                                const stoppedKept = stopped.held[0];
+                                if (stoppedKept !== undefined)
+                                  throw new Error(`Kept: ${stoppedKept.reason}.`);
                                 if (stopped.removedCount === 0)
                                   throw new Error(
                                     "No data was deleted. Rescan the machine to update its status.",
@@ -1916,22 +1885,6 @@ type RowAction = { state: "running" };
 type ExternalWorktree = NonNullable<
   HostReport["report"]
 >["externalWorktrees"][number];
-
-const EXTERNAL_WORKTREE_SKIP_REASONS = {
-  notWorktree: "It is no longer a worktree of this repository",
-  locked: "The worktree is locked",
-  uncommittedChanges: "The worktree has uncommitted changes",
-  unsavedCommits: "The worktree has commits that are not on any branch",
-  inUseByBb: "A BB environment now uses this worktree",
-} as const;
-
-const EXTERNAL_WORKTREE_FORCE_WARNINGS = {
-  locked:
-    "It is locked, which usually means a tool or agent still relies on it.",
-  uncommittedChanges: "Its uncommitted and untracked changes are deleted.",
-  unsavedCommits:
-    "Its commits that aren’t on any branch or tag become unreachable, and git deletes them in a later cleanup.",
-} as const;
 
 function externalWorktreeWarnings(worktree: ExternalWorktree) {
   return [

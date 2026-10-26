@@ -20,6 +20,7 @@ import {
   createThread,
   unarchiveThread,
 } from "../../src/data/threads.js";
+import { SYSTEM_RELEASE_ACTOR } from "../../src/data/environment-release-consents.js";
 import {
   advanceThreadPruning,
   getNextThreadPruningPolicy,
@@ -416,7 +417,7 @@ describe("thread pruning", () => {
       const work = () => f.db.select().from(threadPruningWork).all();
       expect(() =>
         f.db.transaction((tx) => {
-          archiveThread(tx, noopNotifier, f.thread.id);
+          archiveThread(tx, noopNotifier, f.thread.id, SYSTEM_RELEASE_ACTOR);
           throw new Error("rollback archive");
         }),
       ).toThrow("rollback archive");
@@ -428,7 +429,7 @@ describe("thread pruning", () => {
           .all()
           .every((thread) => thread.archivedAt === null),
       ).toBe(true);
-      archiveThread(f.db, noopNotifier, f.thread.id);
+      archiveThread(f.db, noopNotifier, f.thread.id, SYSTEM_RELEASE_ACTOR);
       expect(work()).toHaveLength(2);
       expect(work()).toEqual(
         expect.arrayContaining([
@@ -436,7 +437,7 @@ describe("thread pruning", () => {
           { policy: "rate-limits", threadId: child.id, revision: 1 },
         ]),
       );
-      archiveThread(f.db, noopNotifier, f.thread.id);
+      archiveThread(f.db, noopNotifier, f.thread.id, SYSTEM_RELEASE_ACTOR);
       expect(work().every((row) => row.revision === 1)).toBe(true);
       unarchiveThread(f.db, noopNotifier, f.thread.id);
       expect(() =>
@@ -1383,7 +1384,7 @@ describe("thread pruning", () => {
   it("drains more than 500 resolved deltas and preserves scope, first-delta and output guards", () => {
     const f = setup();
     try {
-      archiveThread(f.db, noopNotifier, f.thread.id);
+      archiveThread(f.db, noopNotifier, f.thread.id, SYSTEM_RELEASE_ACTOR);
       f.db.transaction(() => {
         for (let i = 1; i <= 1200; i++)
           seed(f, i, {
@@ -1490,12 +1491,12 @@ describe("thread pruning", () => {
     try {
       for (let i = 1; i <= 130; i++) seed(f, i);
       seed(f, 131, { type: "turn/completed" });
-      archiveThread(f.db, noopNotifier, f.thread.id);
+      archiveThread(f.db, noopNotifier, f.thread.id, SYSTEM_RELEASE_ACTOR);
       expect(advanceThreadPruning(f.db, "rate-limits").removed).toBe(64);
       unarchiveThread(f.db, noopNotifier, f.thread.id);
       cycle(f, "rate-limits");
       expect(sequences(f)).toEqual([130, 131]);
-      archiveThread(f.db, noopNotifier, f.thread.id);
+      archiveThread(f.db, noopNotifier, f.thread.id, SYSTEM_RELEASE_ACTOR);
       f.db.delete(events).where(eq(events.sequence, 131)).run();
       markThreadPruningWork(f.db, [f.thread.id]);
       cycle(f, "rate-limits");
@@ -1513,7 +1514,7 @@ describe("thread pruning", () => {
     (archivedAt) => {
       const f = setup();
       try {
-        if (archivedAt !== null) archiveThread(f.db, noopNotifier, f.thread.id);
+        if (archivedAt !== null) archiveThread(f.db, noopNotifier, f.thread.id, SYSTEM_RELEASE_ACTOR);
         for (let sequence = 1; sequence <= 6; sequence++) {
           seed(f, sequence, {
             type: "thread/contextWindowUsage/updated",
@@ -1694,7 +1695,7 @@ describe("thread pruning", () => {
   it("restarts usage keeper discovery after a keeper disappears during a visit", () => {
     const f = setup();
     try {
-      archiveThread(f.db, noopNotifier, f.thread.id);
+      archiveThread(f.db, noopNotifier, f.thread.id, SYSTEM_RELEASE_ACTOR);
       f.db.transaction(() => {
         for (let i = 1; i <= 600; i++)
           seed(f, i, {
@@ -1728,7 +1729,7 @@ describe("thread pruning", () => {
   it("revisits deltas whose completion arrives after their candidate window", () => {
     const f = setup();
     try {
-      archiveThread(f.db, noopNotifier, f.thread.id);
+      archiveThread(f.db, noopNotifier, f.thread.id, SYSTEM_RELEASE_ACTOR);
       f.db.transaction(() => {
         for (let i = 1; i <= 800; i++)
           seed(f, i, {
@@ -1759,7 +1760,7 @@ describe("thread pruning", () => {
   it("resumes bounded support probes through adversarial reused-item scopes", () => {
     let f = setup();
     try {
-      archiveThread(f.db, noopNotifier, f.thread.id);
+      archiveThread(f.db, noopNotifier, f.thread.id, SYSTEM_RELEASE_ACTOR);
       seed(f, 1, {
         type: "item/agentMessage/delta",
         itemId: "reused",

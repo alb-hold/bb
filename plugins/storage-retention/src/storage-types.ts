@@ -245,12 +245,18 @@ export const hostStorageRemoveExternalWorktreesResponseSchema = z.object({
           z.enum([
             "notWorktree",
             "locked",
+            "keepMarker",
+            "operationInProgress",
             "uncommittedChanges",
             "unsavedCommits",
+            "stash",
+            "inUse",
+            "unknown",
             "inUseByBb",
           ]),
         )
         .min(1),
+      message: z.string(),
     }),
   ),
   failed: z.array(z.object({ path: z.string(), message: z.string() })),

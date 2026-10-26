@@ -12,6 +12,8 @@ import {
   reorderQueuedThreadMessage,
   setQueuedThreadMessageGroupBoundary,
   unarchiveThread,
+  isThreadEnvironmentRemovalRunning,
+  isThreadEphemeralMachineRemoving,
   unpinThread,
   updateQueuedThreadMessage,
   updateThread,
@@ -85,6 +87,10 @@ import {
   scheduleThreadProvisioningAdvance,
 } from "../../services/threads/thread-provisioning.js";
 import { archiveThreadAndChildren } from "../../services/threads/thread-archive.js";
+import {
+  parseReleaseActorThreadId,
+  RELEASE_ACTOR_THREAD_HEADER,
+} from "../../services/threads/release-actor.js";
 import {
   requireThreadCommandEnvironment,
   requireThreadHostCommandEnvironment,
@@ -620,6 +626,9 @@ export function registerThreadActionRoutes(app: Hono, deps: AppDeps): void {
   post(routes.archiveAll, (context) => {
     const thread = requirePublicThread(deps.db, context.req.param("id"));
     const archivedThreadIds = archiveThreadAndChildren(deps, {
+      actorThreadId: parseReleaseActorThreadId(
+        context.req.header(RELEASE_ACTOR_THREAD_HEADER),
+      ),
       parentThread: thread,
     });
     return context.json({
@@ -635,6 +644,18 @@ export function registerThreadActionRoutes(app: Hono, deps: AppDeps): void {
     if (!unarchiveThread(deps.db, deps.hub, thread.id)) {
       if (getThread(deps.db, thread.id)?.archivedAt === null)
         return context.json({ ok: true });
+      if (isThreadEphemeralMachineRemoving(deps.db, thread.id))
+        throw new ApiError(
+          409,
+          "machine_removing",
+          "Machine removal has begun; this thread cannot be unarchived.",
+        );
+      if (isThreadEnvironmentRemovalRunning(deps.db, thread.id))
+        throw new ApiError(
+          409,
+          "workspace_busy",
+          "Workspace removal is in progress. Try again shortly.",
+        );
       throw new ApiError(
         409,
         "invalid_request",
@@ -643,8 +664,12 @@ export function registerThreadActionRoutes(app: Hono, deps: AppDeps): void {
     }
     const unarchivedThread = getThread(deps.db, thread.id);
     if (unarchivedThread !== null) {
-      if (unarchivedThread.environmentId !== null)
+      if (unarchivedThread.environmentId !== null) {
+        deps.hub.notifyEnvironment(unarchivedThread.environmentId, [
+          "metadata-changed",
+        ]);
         refreshProviderRetirement(deps, unarchivedThread.environmentId);
+      }
       emitPluginThreadUnarchived(unarchivedThread);
     }
     void resumeNativeTerminalAfterUnarchive(deps, {
@@ -673,7 +698,11 @@ export function registerThreadActionRoutes(app: Hono, deps: AppDeps): void {
     ensureThreadIsWritable(thread);
     const resolution = resolveThreadEnvironmentRestore(deps, { thread });
     if (!resolution.restorable) {
-      throwThreadEnvironmentRestoreRefusal(resolution.refusal, thread);
+      throwThreadEnvironmentRestoreRefusal(
+        resolution.refusal,
+        thread,
+        resolution.environment,
+      );
     }
     const started = requestThreadEnvironmentRestore(deps, {
       environment: resolution.target.environment,

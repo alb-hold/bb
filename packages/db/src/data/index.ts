@@ -198,8 +198,11 @@ export {
   archiveThread,
   markThreadDeleted,
   markThreadStorageDeleted,
+  setThreadStorageDeleteRefusal,
   unpinThread,
   unarchiveThread,
+  isThreadEnvironmentRemovalRunning,
+  isThreadEphemeralMachineRemoving,
   applyThreadLifecycleEvent,
   applyThreadLifecycleEventInTransaction,
   requireThreadLifecycleEventApplied,
@@ -347,6 +350,16 @@ export {
   updatePreparingEnvironment,
   listProviderLifecycleEnvironments,
   environmentHasLiveThreads,
+  listEnvironmentLiveThreadIds,
+  listBranchHolderEnvironments,
+  listEnvironmentReferencingThreadIds,
+  claimEnvironmentTeardown,
+  releaseUnstartedEnvironmentTeardown,
+  reviveFailedEnvironmentTeardown,
+  releaseCancelledEnvironmentOwner,
+  updateRunningEnvironmentTeardown,
+  retainRunningEnvironmentTeardown,
+  failRunningEnvironmentTeardown,
   releaseFinishedEnvironmentPreparationOwners,
   claimEnvironmentPath,
   findEnvironmentPathClaim,
@@ -365,6 +378,27 @@ export {
   updateEnvironmentMetadata,
 } from "./environments.js";
 export type { EnvironmentRow } from "./environments.js";
+export {
+  closeEnvironmentRetention,
+  type CloseEnvironmentRetentionResult,
+  deleteEnvironmentRetentionIntents,
+  findOpenEnvironmentRetentionOverlapping,
+  listEnvironmentRetentionTransitions,
+  listEnvironmentRetentionTransitionsForEnvironment,
+  listOpenEnvironmentRetentionsForEnvironment,
+  listOpenEnvironmentRetentionsForHost,
+  listOpenEnvironmentRetentionsForProject,
+  listOpenEnvironmentRetentionsForProvider,
+  listOpenEnvironmentRetentionsForThread,
+  markEnvironmentRetentionsUnresolved,
+  recordEnvironmentRetention,
+} from "./environment-retentions.js";
+export type {
+  EnvironmentRetentionRow,
+  EnvironmentRetentionState,
+  EnvironmentRetentionTransitionRow,
+  RecordEnvironmentRetentionInput,
+} from "./environment-retentions.js";
 
 export {
   upsertHost,
@@ -670,3 +704,16 @@ export type {
   DiffViewedFileRecord,
   DiffViewedFileScope,
 } from "./diff-viewed-files.js";
+export {
+  listEnvironmentReleaseConsents,
+  listUnreleasedEnvironmentThreadIds,
+  recordThreadEnvironmentReleases,
+  revokeThreadEnvironmentReleases,
+  FAILED_CREATE_RELEASE_ACTOR,
+  SYSTEM_RELEASE_ACTOR,
+} from "./environment-release-consents.js";
+export type {
+  EnvironmentReleaseActor,
+  EnvironmentReleaseActorKind,
+  EnvironmentReleaseConsentRow,
+} from "./environment-release-consents.js";

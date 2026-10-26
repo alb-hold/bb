@@ -10,6 +10,7 @@ import {
   putThreadRowState,
   searchThreadsWithPendingInteractionState,
   type ThreadSearchResultGroup,
+  SYSTEM_RELEASE_ACTOR,
 } from "@bb/db";
 import type {
   ProjectWithThreadsResponse,
@@ -212,7 +213,7 @@ async function seedThreadListFixture(
       progress: null,
     });
     if (definition.archived) {
-      archiveThread(harness.db, harness.hub, thread.id);
+      archiveThread(harness.db, harness.hub, thread.id, SYSTEM_RELEASE_ACTOR);
     }
     if (!definition.archived && !definition.hidden) {
       pinThread(harness.db, harness.hub, { threadId: thread.id });
