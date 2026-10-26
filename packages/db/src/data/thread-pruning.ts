@@ -56,7 +56,7 @@ function threadEventKeepRecent(thread: {
 }
 
 const BATCH_SIZE = 500;
-const LIVE_BATCH_SIZE = 4;
+const LIVE_BATCH_SIZE = 3;
 
 export function getNextThreadPruningPolicy(
   db: DbConnection,

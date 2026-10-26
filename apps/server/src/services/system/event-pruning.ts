@@ -28,12 +28,25 @@ interface ThreadEventPruningResult {
 interface MaybePruneActiveThreadEventHistoryArgs {
   latestPrunableSequence: number;
   now?: () => number;
+  schedule?: ActiveThreadPruneScheduler;
   threadId: string;
+  throttleNow?: () => number;
 }
 
 interface ActiveThreadPruneState {
   lastPrunedAt: number;
   lastPrunedSequence: number;
+}
+
+type ActiveThreadPruneScheduler = (callback: () => void) => void;
+
+interface ActiveThreadPruneChain {
+  clock: () => number;
+  completedPolicies: Set<string>;
+  mode: "active" | "idle";
+  schedule: ActiveThreadPruneScheduler;
+  threadId: string;
+  totals: { scanned: number; totalRemoved: number };
 }
 
 const ACTIVE_THREAD_EVENT_PRUNE_MIN_SEQUENCE_DELTA = 250;
@@ -57,6 +70,10 @@ const activePruneTriggerThreadEventTypeSet = new Set<ThreadEventType>(
 const activeThreadPruneStateByThreadId = new Map<
   string,
   ActiveThreadPruneState
+>();
+const activeThreadPruneChainsByThreadId = new Map<
+  string,
+  ActiveThreadPruneChain
 >();
 
 export function isActivePruneTriggerThreadEventType(
@@ -133,6 +150,8 @@ export function maybePruneActiveThreadEventHistory(
     return null;
   }
 
+  if (activeThreadPruneChainsByThreadId.has(args.threadId)) return null;
+
   const lastState = activeThreadPruneStateByThreadId.get(args.threadId);
   const lastPrunedSequence = lastState?.lastPrunedSequence ?? 0;
   if (
@@ -142,7 +161,7 @@ export function maybePruneActiveThreadEventHistory(
     return null;
   }
 
-  const now = Date.now();
+  const now = args.throttleNow?.() ?? Date.now();
   const lastPrunedAt = lastState?.lastPrunedAt ?? 0;
   if (now - lastPrunedAt < ACTIVE_THREAD_EVENT_PRUNE_MIN_INTERVAL_MS) {
     return null;
@@ -156,39 +175,74 @@ export function maybePruneActiveThreadEventHistory(
   return pruneActiveThreadEventHistoryWithinBudget(deps, {
     mode: thread.status === "active" ? "active" : "idle",
     now: args.now,
+    schedule: args.schedule,
     threadId: args.threadId,
   });
 }
 
 export function pruneActiveThreadEventHistoryWithinBudget(
   deps: Pick<AppDeps, "db" | "logger" | "hub">,
-  args: { mode: "active" | "idle"; now?: () => number; threadId: string },
+  args: {
+    mode: "active" | "idle";
+    now?: () => number;
+    schedule?: ActiveThreadPruneScheduler;
+    threadId: string;
+  },
 ): ThreadEventPruningResult | null {
-  const clock = args.now ?? (() => performance.now());
-  const startedAt = clock();
-  const totals = { scanned: 0, totalRemoved: 0 };
-  const completedPolicies = new Set<string>();
+  if (activeThreadPruneChainsByThreadId.has(args.threadId)) return null;
+  const chain: ActiveThreadPruneChain = {
+    clock: args.now ?? (() => performance.now()),
+    completedPolicies: new Set<string>(),
+    mode: args.mode,
+    schedule: args.schedule ?? ((callback) => setImmediate(callback)),
+    threadId: args.threadId,
+    totals: { scanned: 0, totalRemoved: 0 },
+  };
+  activeThreadPruneChainsByThreadId.set(args.threadId, chain);
+  return runActiveThreadPruneSlice(deps, chain);
+}
+
+function runActiveThreadPruneSlice(
+  deps: Pick<AppDeps, "db" | "logger" | "hub">,
+  chain: ActiveThreadPruneChain,
+): ThreadEventPruningResult | null {
+  if (activeThreadPruneChainsByThreadId.get(chain.threadId) !== chain)
+    return null;
+  const startedAt = chain.clock();
   let latest: ThreadEventPruningResult | null = null;
   do {
     latest = pruneThreadEventHistoryBestEffort(deps, {
-      mode: args.mode,
-      threadId: args.threadId,
+      mode: chain.mode,
+      threadId: chain.threadId,
     });
-    if (latest === null) return null;
-    totals.scanned += latest.scanned;
-    totals.totalRemoved += latest.totalRemoved;
+    if (latest === null) {
+      activeThreadPruneChainsByThreadId.delete(chain.threadId);
+      return null;
+    }
+    chain.totals.scanned += latest.scanned;
+    chain.totals.totalRemoved += latest.totalRemoved;
     if (
       latest.action === "cycle-complete" ||
       latest.action === "thread-complete"
     )
-      completedPolicies.add(latest.policy);
+      chain.completedPolicies.add(latest.policy);
   } while (
-    clock() - startedAt < ACTIVE_THREAD_EVENT_PRUNE_BUDGET_MS &&
-    completedPolicies.size < THREAD_PRUNING_POLICIES.length
+    chain.clock() - startedAt < ACTIVE_THREAD_EVENT_PRUNE_BUDGET_MS &&
+    chain.completedPolicies.size < THREAD_PRUNING_POLICIES.length
   );
-  return { ...latest, ...totals };
+  if (chain.completedPolicies.size < THREAD_PRUNING_POLICIES.length) {
+    chain.schedule(() => {
+      if (activeThreadPruneChainsByThreadId.get(chain.threadId) !== chain)
+        return;
+      runActiveThreadPruneSlice(deps, chain);
+    });
+  } else {
+    activeThreadPruneChainsByThreadId.delete(chain.threadId);
+  }
+  return { ...latest, ...chain.totals };
 }
 
 export function resetActiveThreadEventPruningState(threadId: string): void {
   activeThreadPruneStateByThreadId.delete(threadId);
+  activeThreadPruneChainsByThreadId.delete(threadId);
 }
