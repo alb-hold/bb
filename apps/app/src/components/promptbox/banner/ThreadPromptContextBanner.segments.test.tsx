@@ -184,6 +184,31 @@ describe("thread context segments", () => {
     expect(screen.queryByText("Merge base")).toBeNull();
   });
 
+  it("renders shared workspace as a counted, truncated inlay segment", () => {
+    registerPluginSegment();
+    renderBanner({
+      core: {
+        ...EMPTY_CORE,
+        git: { ...git, workspaceSharingThreadCount: 3 },
+      },
+    });
+
+    const sharedWorkspace = screen.getByRole("status", {
+      name: "Shared workspace with 3 threads",
+    });
+    expect(sharedWorkspace.textContent).toContain("Shared · 3 threads");
+    expect(sharedWorkspace.className).toContain("min-h-6");
+    expect(sharedWorkspace.className).toContain("px-2");
+    expect(sharedWorkspace.className).toContain("py-1");
+    expect(
+      sharedWorkspace.querySelector('[data-icon="UserRound"]'),
+    ).not.toBeNull();
+    expect(sharedWorkspace.querySelector("span.truncate")).not.toBeNull();
+    expect(
+      screen.getByText(/Plugin summary .*bb--core\/shared-workspace/),
+    ).toBeTruthy();
+  });
+
   it.each([
     {
       label: "PR, changed files, and a workspace wait",
