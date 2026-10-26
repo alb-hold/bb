@@ -15,6 +15,7 @@ const forkRemote = "review-fork";
 const upstreamBranch = "per-turn-permission-escalation";
 const forkRemoteUrl = "git@github.com:fork-owner/bb.git";
 const qualifiedUpstream = `fork-owner:${upstreamBranch}`;
+const baseRepository = ["--repo", "github.com/acme/bb"];
 
 function pullRequestJson(): string {
   return JSON.stringify({
@@ -166,7 +167,7 @@ describe("pull request lookup for differently named upstream branches", () => {
       expect((await gh.readQueries())[0]).toContain(
         `headRefName: "${localBranch}"`,
       );
-      expect(calls[1]).toEqual(["pr", "ready"]);
+      expect(calls[1]).toEqual(["pr", "ready", localBranch, ...baseRepository]);
     },
   );
 
@@ -361,9 +362,9 @@ describe("pull request lookup for differently named upstream branches", () => {
     }
 
     expect(await gh.readCalls()).toEqual([
-      ["pr", "ready", qualifiedUpstream],
-      ["pr", "ready", qualifiedUpstream, "--undo"],
-      ["pr", "merge", qualifiedUpstream, "--squash"],
+      ["pr", "ready", qualifiedUpstream, ...baseRepository],
+      ["pr", "ready", qualifiedUpstream, "--undo", ...baseRepository],
+      ["pr", "merge", qualifiedUpstream, "--squash", ...baseRepository],
     ]);
   });
 

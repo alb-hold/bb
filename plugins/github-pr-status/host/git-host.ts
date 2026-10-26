@@ -30,24 +30,6 @@ const GH_PR_VIEW_MAX_BUFFER_BYTES = 16 * 1024 * 1024;
 const GH_PR_ACTION_TIMEOUT_MS = 60_000;
 const GH_PR_ACTION_MAX_BUFFER_BYTES = 16 * 1024 * 1024;
 
-const GH_PR_VIEW_JSON_FIELDS = [
-  "number",
-  "title",
-  "state",
-  "url",
-  "isDraft",
-  "autoMergeRequest",
-  "baseRefName",
-  "headRefName",
-  "headRefOid",
-  "updatedAt",
-  "statusCheckRollup",
-  "reviewDecision",
-  "reviewRequests",
-  "mergeStateStatus",
-  "mergeable",
-].join(",");
-
 interface GetPullRequestForCurrentBranchArgs {
   cwd: string;
   localBranch: string;
@@ -428,18 +410,69 @@ function runGhAdmitted(
   });
 }
 
+const GITHUB_TOKEN_VARIABLES = ["GH_TOKEN", "GITHUB_TOKEN"] as const;
+const ENTERPRISE_TOKEN_VARIABLES = [
+  "GH_ENTERPRISE_TOKEN",
+  "GITHUB_ENTERPRISE_TOKEN",
+] as const;
+
+function credentialEnvironment(
+  host: string,
+  inherited: NodeJS.ProcessEnv,
+): NodeJS.ProcessEnv {
+  const env = { ...inherited };
+  delete env.GH_REPO;
+  for (const name of [...GITHUB_TOKEN_VARIABLES, ...ENTERPRISE_TOKEN_VARIABLES])
+    delete env[name];
+  const selected = (
+    host === "github.com" || host.endsWith(".ghe.com")
+      ? GITHUB_TOKEN_VARIABLES
+      : ENTERPRISE_TOKEN_VARIABLES
+  ).find((name) => inherited[name]);
+  if (selected !== undefined) env[selected] = inherited[selected];
+  return env;
+}
+
+class AdmittedGitHubHost {
+  readonly #env: NodeJS.ProcessEnv;
+
+  private constructor(
+    readonly host: string,
+    env: NodeJS.ProcessEnv,
+  ) {
+    this.#env = env;
+  }
+
+  get env(): NodeJS.ProcessEnv {
+    return { ...this.#env };
+  }
+
+  static async admit(
+    host: string,
+    cwd: string,
+  ): Promise<AdmittedGitHubHost | null> {
+    const normalizedHost = host.toLowerCase();
+    const inherited = sanitizeInheritedChildProcessEnv({ env: process.env });
+    if (!(await isConfiguredGitHubHost(normalizedHost, inherited, cwd)))
+      return null;
+    return new AdmittedGitHubHost(
+      normalizedHost,
+      credentialEnvironment(normalizedHost, inherited),
+    );
+  }
+}
+
 function runGh(
   args: string[],
+  host: AdmittedGitHubHost,
   options: {
     cwd: string;
     priority: ExperimentalVcsProcessPriority;
     timeoutMs: number;
     maxBuffer: number;
-    env?: NodeJS.ProcessEnv;
   },
 ): Promise<{ stdout: string }> {
-  const env =
-    options.env ?? sanitizeInheritedChildProcessEnv({ env: process.env });
+  const env = host.env;
   return runVcsProcess(
     "gh",
     args,
@@ -465,8 +498,6 @@ export function parseGitHubPullRequestView(
   }
   return normalizeGitHubPullRequestView(json);
 }
-
-const GH_NO_PULL_REQUEST_PATTERN = /no pull requests found for branch/iu;
 
 type PullRequestTargetLookup =
   | { outcome: "current-branch" }
@@ -498,18 +529,6 @@ function ghCommandUnavailable(
     outcome: "unavailable",
     message: detail ? `${command} failed: ${detail}` : `${command} failed`,
   };
-}
-
-function classifyPullRequestViewError(
-  error: unknown,
-): Extract<HostPullRequestLookup, { outcome: "none" | "unavailable" }> {
-  if (
-    error instanceof GhCommandError &&
-    GH_NO_PULL_REQUEST_PATTERN.test(error.stderr)
-  ) {
-    return { outcome: "none" };
-  }
-  return ghCommandUnavailable(["pr", "view"], error);
 }
 
 function gitUpstreamLookupUnavailable(
@@ -731,6 +750,28 @@ function parseGhRepoOverride(value: string): GitRemoteRepository | null {
   return null;
 }
 
+function unambiguousTopRemote(
+  remotes: readonly { name: string; repository: GitRemoteRepository }[],
+): GitRemoteRepository | null {
+  const priority = (remote: { name: string }) =>
+    GH_REMOTE_PRIORITY[remote.name] ?? 0;
+  const top = Math.max(...remotes.map(priority));
+  const candidates = new Map<string, GitRemoteRepository>();
+  for (const remote of remotes)
+    if (priority(remote) === top)
+      candidates.set(
+        [
+          remote.repository.host,
+          remote.repository.owner,
+          remote.repository.repository,
+        ]
+          .join("/")
+          .toLowerCase(),
+        remote.repository,
+      );
+  return candidates.size === 1 ? [...candidates.values()][0]! : null;
+}
+
 async function resolveBranchReadTarget(
   args: Pick<GetPullRequestForCurrentBranchArgs, "cwd" | "localBranch">,
   target: Exclude<PullRequestTargetLookup, { outcome: "unavailable" }>,
@@ -767,20 +808,17 @@ async function resolveBranchReadTarget(
       resolved: config.get(`remote.${name}.gh-resolved`) ?? null,
     });
   }
-  const resolved = remotes.find((remote) => remote.resolved !== null);
+  const resolvedRemotes = remotes.filter((remote) => remote.resolved !== null);
+  const resolved = resolvedRemotes[0];
   const base = process.env.GH_REPO
     ? parseGhRepoOverride(process.env.GH_REPO)
-    : resolved !== undefined && resolved.resolved !== "base"
-      ? parseGitRemoteRepository(
-          `https://${resolved.repository.host}/${resolved.resolved}`,
-        )
-      : (resolved?.repository ??
-        [...remotes].sort(
-          (a, b) =>
-            (GH_REMOTE_PRIORITY[b.name] ?? 0) -
-            (GH_REMOTE_PRIORITY[a.name] ?? 0),
-        )[0]?.repository ??
-        null);
+    : resolvedRemotes.length > 1
+      ? null
+      : resolved !== undefined && resolved.resolved !== "base"
+        ? parseGitRemoteRepository(
+            `https://${resolved.repository.host}/${resolved.resolved}`,
+          )
+        : (resolved?.repository ?? unambiguousTopRemote(remotes));
   if (base === null) return null;
   const sameOwner = (owner: string) =>
     owner.toLowerCase() === base.owner.toLowerCase();
@@ -817,48 +855,22 @@ async function resolveBranchReadTarget(
   };
 }
 
+const UNRESOLVED_REPOSITORY_MESSAGE =
+  "Could not resolve a single GitHub repository for this branch";
+
+function unconfiguredHostMessage(host: string): string {
+  return `GitHub host ${host} is not configured in GitHub CLI`;
+}
+
 export async function getPullRequestForCurrentBranch(
   args: GetPullRequestForCurrentBranchArgs,
 ): Promise<HostPullRequestLookup> {
   const target = await getPullRequestTarget(args);
   if (target.outcome === "unavailable") return target;
   const branchTarget = await resolveBranchReadTarget(args, target);
-  if (branchTarget !== null)
-    return enqueueRead(
-      branchTarget,
-      args.cwd,
-      sanitizeInheritedChildProcessEnv({ env: process.env }),
-      args.refresh,
-    );
-  const ghArgs = [
-    "pr",
-    "view",
-    ...(target.outcome === "upstream-branch" ? [target.selector] : []),
-    "--json",
-    GH_PR_VIEW_JSON_FIELDS,
-  ];
-  try {
-    const { stdout } = await runGh(ghArgs, {
-      priority: "background",
-      cwd: args.cwd,
-      timeoutMs: GH_PR_VIEW_TIMEOUT_MS,
-      maxBuffer: GH_PR_VIEW_MAX_BUFFER_BYTES,
-    });
-    const pr = parseGitHubPullRequestView(stdout);
-    if (pr === null)
-      return {
-        outcome: "unavailable",
-        message: "gh pr view returned unparseable output",
-      };
-    if (pr.isDraft || pr.state !== "OPEN")
-      return { outcome: "found", pullRequest: { ...pr, inMergeQueue: false } };
-    const full = await getPullRequestByUrl(pr.url, args.cwd);
-    return full.outcome === "found"
-      ? full
-      : { outcome: "found", pullRequest: pr };
-  } catch (error) {
-    return classifyPullRequestViewError(error);
-  }
+  if (branchTarget === null)
+    return { outcome: "unavailable", message: UNRESOLVED_REPOSITORY_MESSAGE };
+  return enqueueRead(branchTarget, args.cwd, args.refresh);
 }
 
 export async function runPullRequestActionForCurrentBranch(
@@ -868,12 +880,26 @@ export async function runPullRequestActionForCurrentBranch(
   if (target.outcome === "unavailable") {
     return { ok: false, message: target.message };
   }
-  const ghArgs = buildPullRequestActionArgs(
-    args.action,
-    target.outcome === "upstream-branch" ? target.selector : null,
-  );
+  const branchTarget = await resolveBranchReadTarget(args, target);
+  if (branchTarget === null) {
+    return { ok: false, message: UNRESOLVED_REPOSITORY_MESSAGE };
+  }
+  const host = await AdmittedGitHubHost.admit(branchTarget.host, args.cwd);
+  if (host === null) {
+    return { ok: false, message: unconfiguredHostMessage(branchTarget.host) };
+  }
+  const ghArgs = [
+    ...buildPullRequestActionArgs(
+      args.action,
+      branchTarget.headOwner === null
+        ? branchTarget.branch
+        : `${branchTarget.headOwner}:${branchTarget.branch}`,
+    ),
+    "--repo",
+    `${branchTarget.host}/${branchTarget.owner}/${branchTarget.repository}`,
+  ];
   try {
-    await runGh(ghArgs, {
+    await runGh(ghArgs, host, {
       priority: "interactive",
       cwd: args.cwd,
       timeoutMs: GH_PR_ACTION_TIMEOUT_MS,
@@ -898,7 +924,7 @@ type ReadTarget =
 type QueuedRead = {
   target: ReadTarget;
   cwd: string;
-  env: NodeJS.ProcessEnv;
+  host: AdmittedGitHubHost;
   resolve(result: HostPullRequestLookup): void;
 };
 const batches = new Map<string, QueuedRead[]>();
@@ -911,24 +937,27 @@ const pausedUntil = new Map<string, number>();
 const mergeQueueUnsupported = new Set<string>();
 
 async function credentialKey(
-  host: string,
-  env: NodeJS.ProcessEnv,
+  admitted: AdmittedGitHubHost,
   cwd: string,
 ): Promise<string> {
-  const token =
-    host === "github.com" || host.endsWith(".ghe.com")
-      ? env.GH_TOKEN || env.GITHUB_TOKEN
-      : env.GH_ENTERPRISE_TOKEN || env.GITHUB_ENTERPRISE_TOKEN;
+  const env = admitted.env;
+  const token = (
+    admitted.host === "github.com" || admitted.host.endsWith(".ghe.com")
+      ? GITHUB_TOKEN_VARIABLES
+      : ENTERPRISE_TOKEN_VARIABLES
+  )
+    .map((name) => env[name])
+    .find(Boolean);
   if (token)
     return createHash("sha256")
-      .update(JSON.stringify([host, token]))
+      .update(JSON.stringify([admitted.host, token]))
       .digest("hex");
   const directory = githubConfigDirectory(env, cwd);
   const profile = await readFile(join(directory, "hosts.yml")).catch(() =>
     Buffer.alloc(0),
   );
   return createHash("sha256")
-    .update(JSON.stringify([host, directory]))
+    .update(JSON.stringify([admitted.host, directory]))
     .update(profile)
     .digest("hex");
 }
@@ -1034,7 +1063,6 @@ async function decodeRead(
     const next = await enqueueRead(
       { kind: "url", host: entry.target.host, url: view.url, cursor },
       entry.cwd,
-      entry.env,
     );
     if (next.outcome !== "found") return next;
     if (next.pullRequest.headRefOid !== view.headRefOid)
@@ -1060,15 +1088,15 @@ async function runGraphQLRead(
         "api",
         "graphql",
         "--hostname",
-        entry.target.host,
+        entry.host.host,
         "--method",
         "POST",
         "--input",
         inputPath,
       ],
+      entry.host,
       {
         cwd: entry.cwd,
-        env: entry.env,
         priority: "background",
         timeoutMs: GH_PR_VIEW_TIMEOUT_MS,
         maxBuffer: GH_PR_VIEW_MAX_BUFFER_BYTES,
@@ -1181,17 +1209,16 @@ async function flushBatch(group: string): Promise<void> {
 async function enqueueRead(
   target: ReadTarget,
   cwd: string,
-  inheritedEnv = sanitizeInheritedChildProcessEnv({ env: process.env }),
   refresh = false,
 ): Promise<HostPullRequestLookup> {
-  const env = { ...inheritedEnv };
-  if (!(await isConfiguredGitHubHost(target.host, env, cwd))) {
+  const host = await AdmittedGitHubHost.admit(target.host, cwd);
+  if (host === null) {
     return {
       outcome: "unavailable",
-      message: `GitHub host ${target.host} is not configured in GitHub CLI`,
+      message: unconfiguredHostMessage(target.host),
     };
   }
-  const group = await credentialKey(target.host, env, cwd);
+  const group = await credentialKey(host, cwd);
   const key = `${group}:${JSON.stringify(target)}`;
   if (refresh) discovered.delete(key);
   const cached = discovered.get(key);
@@ -1205,7 +1232,7 @@ async function enqueueRead(
   if (pending !== undefined) return pending;
   const result = new Promise<HostPullRequestLookup>((resolve) => {
     const entries = batches.get(group);
-    const entry = { target, cwd, env, resolve };
+    const entry = { target, cwd, host, resolve };
     if (entries !== undefined) entries.push(entry);
     else {
       batches.set(group, [entry]);
