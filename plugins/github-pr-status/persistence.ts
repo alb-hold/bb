@@ -3,7 +3,7 @@ import { z } from "zod";
 import { pullRequestSchema, type PullRequest } from "./contract.js";
 
 const PERSISTENCE_ENABLED = true;
-const PERSISTENCE_VERSION = 1;
+const PERSISTENCE_VERSION = 2;
 
 const snapshotRow = z.object({
   url: z.string().url(),

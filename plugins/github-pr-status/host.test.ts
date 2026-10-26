@@ -15,6 +15,7 @@ const forkRemote = "review-fork";
 const upstreamBranch = "per-turn-permission-escalation";
 const forkRemoteUrl = "git@github.com:fork-owner/bb.git";
 const qualifiedUpstream = `fork-owner:${upstreamBranch}`;
+const baseRepository = ["--repo", "github.com/acme/bb"];
 
 function pullRequestJson(): string {
   return JSON.stringify({
@@ -25,7 +26,7 @@ function pullRequestJson(): string {
     isDraft: false,
     baseRefName: "main",
     headRefName: upstreamBranch,
-    headRefOid: null,
+    headRefOid: "a".repeat(40),
     updatedAt: "2026-08-10T12:30:00Z",
     statusCheckRollup: [],
     reviewDecision: null,
@@ -162,11 +163,17 @@ describe("pull request lookup for differently named upstream branches", () => {
       });
 
       const calls = await gh.readCalls();
-      expect(calls).toHaveLength(2);
+      expect(calls.map((call) => call[0])).toEqual(["api", "api", "pr"]);
       expect((await gh.readQueries())[0]).toContain(
         `headRefName: "${localBranch}"`,
       );
-      expect(calls[1]).toEqual(["pr", "ready"]);
+      expect(calls[2]).toEqual([
+        "pr",
+        "ready",
+        ...baseRepository,
+        "--",
+        "1236",
+      ]);
     },
   );
 
@@ -348,22 +355,39 @@ describe("pull request lookup for differently named upstream branches", () => {
 
   it("uses the qualified upstream target for ready, draft, and merge actions", async () => {
     const workspacePath = await createTrackedForkWorkspace();
-    const gh = await installFakeGh({});
+    const gh = await installFakeGh(found);
 
     for (const action of [
       { operation: "ready" },
       { operation: "draft" },
-      { operation: "merge", method: "squash" },
+      {
+        operation: "merge",
+        method: "squash",
+        expectedHeadOid: "a".repeat(40),
+        expectedHost: "github.com",
+        expectedRepository: "acme/bb",
+        expectedNumber: 1236,
+        expectedBaseRef: "main",
+      },
     ] as const) {
       await expect(
         harness.experimental_call("act", { path: workspacePath, action }),
       ).resolves.toEqual({ ok: true });
     }
 
-    expect(await gh.readCalls()).toEqual([
-      ["pr", "ready", qualifiedUpstream],
-      ["pr", "ready", qualifiedUpstream, "--undo"],
-      ["pr", "merge", qualifiedUpstream, "--squash"],
+    expect((await gh.readCalls()).filter((call) => call[0] === "pr")).toEqual([
+      ["pr", "ready", ...baseRepository, "--", "1236"],
+      ["pr", "ready", "--undo", ...baseRepository, "--", "1236"],
+      [
+        "pr",
+        "merge",
+        "--squash",
+        "--match-head-commit",
+        "a".repeat(40),
+        ...baseRepository,
+        "--",
+        "1236",
+      ],
     ]);
   });
 
@@ -465,6 +489,30 @@ describe("workspace state", () => {
         refresh: false,
       }),
     ).resolves.toEqual({ outcome: "none" });
+    expect(await gh.readCalls()).toEqual([]);
+  });
+
+  it("refuses to run gh when HEAD names a branch that looks like an option", async () => {
+    const workspacePath = await createRepository("bb-pr-head-option-");
+    await runGit(["symbolic-ref", "HEAD", "refs/heads/--admin"], {
+      cwd: workspacePath,
+    });
+    const gh = await installFakeGh(sameRepository);
+
+    await expect(
+      harness.experimental_call("act", {
+        path: workspacePath,
+        action: {
+          operation: "merge",
+          method: "squash",
+          expectedHeadOid: "a".repeat(40),
+          expectedHost: "github.com",
+          expectedRepository: "acme/bb",
+          expectedNumber: 1236,
+          expectedBaseRef: "main",
+        },
+      }),
+    ).resolves.toMatchObject({ ok: false });
     expect(await gh.readCalls()).toEqual([]);
   });
 });

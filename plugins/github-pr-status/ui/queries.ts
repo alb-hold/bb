@@ -223,7 +223,16 @@ export function usePullRequestActions(environmentId: string) {
         { loading: "Converting pull request to draft", ...UPDATE_FAILURE },
         () => markDraft.mutate({ environmentId }),
       ),
-    merge: (method: PullRequestMergeMethod) => {
+    merge: (
+      method: PullRequestMergeMethod,
+      expectedHeadOid: string | null,
+      identity: {
+        expectedHost: string;
+        expectedRepository: string;
+        expectedNumber: number;
+        expectedBaseRef: string;
+      },
+    ) => {
       window.localStorage.setItem(MERGE_METHOD_STORAGE_KEY, method);
       setMergeMethod(method);
       return runWithToast(
@@ -232,7 +241,8 @@ export function usePullRequestActions(environmentId: string) {
           failure: "Failed to merge pull request",
           fallback: "Pull request was not merged",
         },
-        () => merge.mutate({ environmentId, method }),
+        () =>
+          merge.mutate({ environmentId, method, expectedHeadOid, ...identity }),
       );
     },
   };

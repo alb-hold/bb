@@ -14,6 +14,7 @@ function pullRequest(overrides: Partial<PullRequest> = {}): PullRequest {
     url: "https://github.com/acme/bb/pull/42",
     baseRefName: "main",
     headRefName: "bb/pr-watch",
+    headRefOid: "a".repeat(40),
     updatedAt: "2026-06-16T12:30:00Z",
     autoMerge: false,
     inMergeQueue: false,

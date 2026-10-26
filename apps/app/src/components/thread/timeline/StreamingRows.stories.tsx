@@ -301,7 +301,7 @@ const INDICATOR_CONTEXT_STEPS: readonly ConversationStep[] = [
   },
   {
     role: "assistant",
-    text: "While the user is at the bottom, a class on the content sets `overflow-anchor: none` on every child and re-targets the browser's scroll anchor to a 1px sentinel at the end.\n\nA ResizeObserver-driven rAF loop also re-pins scrollTop to the maximum on layout changes that browser anchoring misses, like sidebar collapse or prompt-box resize.",
+    text: "While the user is at the bottom, ScrollPositionKeeper owns the timeline's scroll position and disables native scroll anchoring. It follows content and viewport changes to keep the timeline pinned to the end.",
   },
   {
     role: "user",
@@ -309,7 +309,7 @@ const INDICATOR_CONTEXT_STEPS: readonly ConversationStep[] = [
   },
   {
     role: "assistant",
-    text: "User intent is inferred from wheel, touch, keyboard, and pointer-drag events. As soon as one of those fires and a `scroll` event leaves the bottom threshold, we mark the sticky ref `false` and remove the anchor class.\n\nFrom then on the browser's default scroll anchoring (any visible element) takes over, so the row the user is reading stays put even as content settles below.",
+    text: "Wheel, touch, keyboard, and pointer-drag events update the keeper's reading position. When the user scrolls up, it holds a visible row in place as content above that row changes height.",
   },
   {
     role: "user",
@@ -317,7 +317,7 @@ const INDICATOR_CONTEXT_STEPS: readonly ConversationStep[] = [
   },
   {
     role: "assistant",
-    text: "Two paths: scrolling back within 4px of the bottom, or clicking the floating scroll-to-bottom pill in the prompt box. Either flips the sticky ref back to `true` and re-applies the anchor class on the next render.",
+    text: "Scrolling back within 4px of the end or using the scroll-to-bottom pill attaches the keeper again, so later content growth keeps the timeline pinned to the end.",
   },
 ];
 

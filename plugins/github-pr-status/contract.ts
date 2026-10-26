@@ -169,6 +169,7 @@ export const pullRequestSchema = z
     url: z.string().url(),
     baseRefName: z.string(),
     headRefName: z.string(),
+    headRefOid: z.string().nullable(),
     updatedAt: z.string().datetime(),
     autoMerge: z.boolean(),
     inMergeQueue: z.boolean().nullable(),
@@ -245,7 +246,14 @@ export const githubPrStatusRpcContract = defineRpcContract({
     experimental_description:
       "Merge the environment's pull request with the given method.",
     input: environmentActionInputSchema
-      .extend({ method: pullRequestMergeMethodSchema })
+      .extend({
+        method: pullRequestMergeMethodSchema,
+        expectedHeadOid: z.string().nullable(),
+        expectedHost: z.string().nullable(),
+        expectedRepository: z.string().nullable(),
+        expectedNumber: z.number().int().positive().nullable(),
+        expectedBaseRef: z.string().nullable(),
+      })
       .strict(),
     output: actionOutputSchema,
     invalidates: ({ environmentId }) => [
@@ -261,6 +269,11 @@ const hostPullRequestActionSchema = z.discriminatedUnion("operation", [
     .object({
       operation: z.literal("merge"),
       method: pullRequestMergeMethodSchema,
+      expectedHeadOid: z.string().nullable(),
+      expectedHost: z.string().nullable(),
+      expectedRepository: z.string().nullable(),
+      expectedNumber: z.number().int().positive().nullable(),
+      expectedBaseRef: z.string().nullable(),
     })
     .strict(),
 ]);

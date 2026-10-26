@@ -1372,6 +1372,14 @@ function WritableContextBanner({
           },
         ]
       : []),
+    ...(workspaceSharingThreadCount > 1
+      ? [
+          {
+            key: `${CORE_THREAD_CONTEXT_OWNER}/shared-workspace`,
+            pluginId: CORE_THREAD_CONTEXT_OWNER,
+          },
+        ]
+      : []),
   ];
   const mount = (
     entry: ThreadContextSegmentEntry,
@@ -1411,11 +1419,21 @@ function WritableContextBanner({
             {entries.map((entry) => mount(entry, "summary"))}
             {workspaceSharingThreadCount > 1 ? (
               <div
-                className="shrink-0"
+                className={cn(
+                  "flex min-w-0 items-center gap-1.5 text-xs",
+                  PROMPT_STACK_INLAY_SEGMENT_CLASS,
+                )}
                 role="status"
                 aria-label={`Shared workspace with ${workspaceSharingThreadCount} threads`}
               >
-                Shared · {workspaceSharingThreadCount} threads
+                <Icon
+                  name="UserRound"
+                  className="size-3.5 shrink-0"
+                  aria-hidden="true"
+                />
+                <span className="truncate">
+                  Shared · {workspaceSharingThreadCount} threads
+                </span>
               </div>
             ) : null}
             {queuedWorkspaceWait ? (

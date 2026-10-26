@@ -20,6 +20,13 @@ export async function installFakeGh(
 ): Promise<{
   readCalls(): Promise<string[][]>;
   readQueries(): Promise<string[]>;
+  readInvocations(): Promise<
+    {
+      args: string[];
+      env: Record<string, string | null>;
+      tokenKeys: string[];
+    }[]
+  >;
 }> {
   const binPath = await makeTempDir("bb-fake-gh-");
   const logPath = path.join(binPath, "gh.log");
@@ -31,7 +38,9 @@ const fs = require("node:fs");
 const args = process.argv.slice(2);
 const inputIndex = args.indexOf("--input");
 const query = inputIndex === -1 ? null : JSON.parse(fs.readFileSync(args[inputIndex + 1], "utf8")).query;
-fs.appendFileSync(process.env.TEST_GH_LOG, JSON.stringify({args, query}) + "\\n");
+const env = Object.fromEntries(["GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN", "GH_REPO", "GH_HOST"].map((key) => [key, process.env[key] ?? null]));
+const tokenKeys = Object.keys(process.env).filter((key) => /token/i.test(key));
+fs.appendFileSync(process.env.TEST_GH_LOG, JSON.stringify({args, query, env, tokenKeys}) + "\\n");
 const responses = JSON.parse(process.env.TEST_GH_RESPONSES);
 const configured = responses[args.slice(0, 2).join(" ")] ?? {};
 const response = configured.whenQueryIncludes && query?.includes(configured.whenQueryIncludes.text) ? configured.whenQueryIncludes.response : configured;
@@ -78,6 +87,32 @@ process.exitCode = response.exit ?? 0;
             (line) =>
               z.object({ args: z.array(z.string()) }).parse(JSON.parse(line))
                 .args,
+          );
+      } catch (error) {
+        if (
+          error instanceof Error &&
+          "code" in error &&
+          error.code === "ENOENT"
+        ) {
+          return [];
+        }
+        throw error;
+      }
+    },
+    async readInvocations() {
+      try {
+        return (await fs.readFile(logPath, "utf8"))
+          .trim()
+          .split("\n")
+          .filter(Boolean)
+          .map((line) =>
+            z
+              .object({
+                args: z.array(z.string()),
+                env: z.record(z.string(), z.string().nullable()),
+                tokenKeys: z.array(z.string()),
+              })
+              .parse(JSON.parse(line)),
           );
       } catch (error) {
         if (

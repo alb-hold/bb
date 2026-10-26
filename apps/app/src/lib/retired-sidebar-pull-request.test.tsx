@@ -55,6 +55,7 @@ function row(state: PullRequest["state"]): EnvironmentPullRequest {
       url: "https://github.com/acme/bb/pull/7",
       baseRefName: "main",
       headRefName: "bb/ship",
+      headRefOid: "a".repeat(40),
       updatedAt: "2026-10-22T00:00:00Z",
       autoMerge: false,
       inMergeQueue: false,

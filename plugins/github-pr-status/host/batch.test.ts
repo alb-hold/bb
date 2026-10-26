@@ -88,6 +88,157 @@ describe("host GraphQL batching", () => {
     ]);
   });
 
+  it("reads a *.ghe.com tenant configured via GH_HOST with GH_TOKEN", async () => {
+    const url = "https://acme.ghe.com/acme/bb/pull/6";
+    const gh = await installFakeGh({
+      "api graphql": {
+        stdout: JSON.stringify({ data: { p0: { ...raw(6), url } } }),
+      },
+    });
+    const cwd = await makeTempDir("bb-pr-ghe-com-host-");
+    vi.stubEnv("GH_HOST", "acme.ghe.com");
+    vi.stubEnv("GH_TOKEN", "tenant-token");
+
+    await expect(getPullRequestByUrl(url, cwd)).resolves.toMatchObject({
+      outcome: "found",
+    });
+    expect(await gh.readCalls()).toEqual([
+      expect.arrayContaining(["--hostname", "acme.ghe.com"]),
+    ]);
+  });
+
+  it("reads a *.ghe.com tenant configured in hosts.yml with GH_TOKEN", async () => {
+    const url = "https://acme.ghe.com/acme/bb/pull/10";
+    const gh = await installFakeGh({
+      "api graphql": {
+        stdout: JSON.stringify({ data: { p0: { ...raw(10), url } } }),
+      },
+    });
+    const cwd = await makeTempDir("bb-pr-ghe-com-yml-");
+    vi.stubEnv("GH_HOST", undefined);
+    vi.stubEnv("GH_TOKEN", "tenant-token");
+    await writeFile(
+      join(process.env.GH_CONFIG_DIR!, "hosts.yml"),
+      "acme.ghe.com:\n    user: tenant-user\n",
+    );
+
+    await expect(getPullRequestByUrl(url, cwd)).resolves.toMatchObject({
+      outcome: "found",
+    });
+    expect(await gh.readCalls()).toHaveLength(1);
+  });
+
+  it("gives an unconfigured *.ghe.com host no gh call and no token", async () => {
+    const gh = await installFakeGh({ "api graphql": { stdout: "{}" } });
+    const cwd = await makeTempDir("bb-pr-evil-ghe-com-");
+    vi.stubEnv("GH_HOST", undefined);
+    vi.stubEnv("GH_TOKEN", "must-not-be-forwarded");
+
+    await expect(
+      getPullRequestByUrl("https://evil.ghe.com/acme/bb/pull/1", cwd),
+    ).resolves.toMatchObject({
+      outcome: "unavailable",
+      message: "GitHub host evil.ghe.com is not configured in GitHub CLI",
+    });
+    expect(await gh.readCalls()).toEqual([]);
+  });
+
+  it("gives GH_ENTERPRISE_TOKEN no gh call when GH_HOST is unset", async () => {
+    const gh = await installFakeGh({ "api graphql": { stdout: "{}" } });
+    const cwd = await makeTempDir("bb-pr-ghe-token-nohost-");
+    vi.stubEnv("GH_HOST", undefined);
+    vi.stubEnv("GH_ENTERPRISE_TOKEN", "must-not-be-forwarded");
+
+    await expect(
+      getPullRequestByUrl("https://ghe.example/acme/bb/pull/1", cwd),
+    ).resolves.toMatchObject({ outcome: "unavailable" });
+    expect(await gh.readCalls()).toEqual([]);
+  });
+
+  it("reads enterprise PRs for the GH_HOST host using only GH_ENTERPRISE_TOKEN", async () => {
+    const url = "https://ghe.example/acme/bb/pull/7";
+    const gh = await installFakeGh({
+      "api graphql": {
+        stdout: JSON.stringify({ data: { p0: { ...raw(7), url } } }),
+      },
+    });
+    const cwd = await makeTempDir("bb-pr-ghe-token-");
+    vi.stubEnv("GH_HOST", "ghe.example");
+    vi.stubEnv("GH_TOKEN", undefined);
+    vi.stubEnv("GITHUB_TOKEN", undefined);
+    vi.stubEnv("GH_ENTERPRISE_TOKEN", "enterprise-token");
+
+    await expect(getPullRequestByUrl(url, cwd)).resolves.toMatchObject({
+      outcome: "found",
+    });
+    expect(await gh.readCalls()).toHaveLength(1);
+  });
+
+  it("reads enterprise PRs on a configured host with a port", async () => {
+    const url = "https://ghe.example:8443/acme/bb/pull/8";
+    const gh = await installFakeGh({
+      "api graphql": {
+        stdout: JSON.stringify({ data: { p0: { ...raw(8), url } } }),
+      },
+    });
+    const cwd = await makeTempDir("bb-pr-ghe-port-");
+    await writeFile(
+      join(process.env.GH_CONFIG_DIR!, "hosts.yml"),
+      "ghe.example:8443:\n    user: enterprise-user\n",
+    );
+
+    await expect(getPullRequestByUrl(url, cwd)).resolves.toMatchObject({
+      outcome: "found",
+    });
+    expect(await gh.readCalls()).toEqual([
+      expect.arrayContaining(["--hostname", "ghe.example:8443"]),
+    ]);
+  });
+
+  it("reads enterprise PRs on a GH_HOST host with a port", async () => {
+    const url = "https://ghe.example:8443/acme/bb/pull/9";
+    const gh = await installFakeGh({
+      "api graphql": {
+        stdout: JSON.stringify({ data: { p0: { ...raw(9), url } } }),
+      },
+    });
+    const cwd = await makeTempDir("bb-pr-ghe-host-port-");
+    vi.stubEnv("GH_HOST", "ghe.example:8443");
+
+    await expect(getPullRequestByUrl(url, cwd)).resolves.toMatchObject({
+      outcome: "found",
+    });
+    expect(await gh.readCalls()).toHaveLength(1);
+  });
+
+  it("never invokes gh with any token for hosts that are not configured", async () => {
+    const gh = await installFakeGh({ "api graphql": { stdout: "{}" } });
+    const cwd = await makeTempDir("bb-pr-unconfigured-tokens-");
+    vi.stubEnv("GH_HOST", "ghe.example:8443");
+    vi.stubEnv("GH_TOKEN", "must-not-be-forwarded");
+    vi.stubEnv("GITHUB_TOKEN", "must-not-be-forwarded");
+    vi.stubEnv("GH_ENTERPRISE_TOKEN", "must-not-be-forwarded");
+    vi.stubEnv("GITHUB_ENTERPRISE_TOKEN", "must-not-be-forwarded");
+    await writeFile(
+      join(process.env.GH_CONFIG_DIR!, "hosts.yml"),
+      "ghe.example:8443:\n    user: enterprise-user\n",
+    );
+
+    for (const url of [
+      "https://attacker.example/acme/bb/pull/1",
+      "https://attacker.example:8443/acme/bb/pull/1",
+      "https://ghe.example/acme/bb/pull/1",
+      "https://ghe.example:9999/acme/bb/pull/1",
+      "https://evilghe.com/acme/bb/pull/1",
+      "https://acme.ghe.com.attacker.example/acme/bb/pull/1",
+    ])
+      await expect(getPullRequestByUrl(url, cwd)).resolves.toMatchObject({
+        outcome: "unavailable",
+        message: expect.stringContaining("is not configured in GitHub CLI"),
+      });
+    expect(await gh.readCalls()).toEqual([]);
+  });
+
   it("shares duplicate PR loads and batches distinct PRs without mixing their checks", async () => {
     const gh = await installFakeGh({
       "api graphql": {

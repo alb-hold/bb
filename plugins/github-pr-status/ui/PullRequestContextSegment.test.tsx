@@ -50,6 +50,7 @@ const PULL_REQUEST: PullRequest = {
   url: "https://github.com/acme/bb/pull/128",
   baseRefName: "main",
   headRefName: "bb/pr-context-banner",
+  headRefOid: "a".repeat(40),
   updatedAt: "2026-06-16T12:30:00Z",
   autoMerge: false,
   inMergeQueue: false,
@@ -274,11 +275,24 @@ describe("pull request context segment", () => {
     expect(sdk.mutate).toHaveBeenCalledWith({
       environmentId: "env_1",
       method: "squash",
+      expectedHeadOid: PULL_REQUEST.headRefOid,
+      expectedHost: "github.com",
+      expectedRepository: "acme/bb",
+      expectedNumber: PULL_REQUEST.number,
+      expectedBaseRef: PULL_REQUEST.baseRefName,
     });
     expect(sdk.mutationCalls).toEqual([
       {
         method: "merge",
-        input: { environmentId: "env_1", method: "squash" },
+        input: {
+          environmentId: "env_1",
+          method: "squash",
+          expectedHeadOid: PULL_REQUEST.headRefOid,
+          expectedHost: "github.com",
+          expectedRepository: "acme/bb",
+          expectedNumber: PULL_REQUEST.number,
+          expectedBaseRef: PULL_REQUEST.baseRefName,
+        },
       },
     ]);
   });
