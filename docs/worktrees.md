@@ -169,14 +169,49 @@ withdraws it. Whoever archives or deletes counts: you, the thread itself, or a
 coordinator that archives its child; bb records which of them it was, as the
 caller claims it (the CLI claims the thread in `BB_THREAD_ID`). The release is
 not what keeps your work safe: the checks above are. A thread that was archived
-or deleted before bb recorded releases is treated as released by an
-upgrade-time record. bb also looks for programs that use the worktree: any
+or deleted before bb recorded releases is not treated as released: its
+worktree is kept until an explicit release. The upgrade that added releases
+records, once, which environments held such threads, and the time it ran
+(migration 0150, table `fork_legacy_unreleased_environments`). That record is
+only a marker. It releases nothing, and it can be written only by the migration,
+which runs once per database and must never be re-run or its time re-stamped:
+the recorded time is what separates an archive from before the upgrade from one
+made after it, so a later stamp would make newer archives look old. bb also looks for programs that use the worktree: any
 process of yours whose working directory is inside it, or that holds a file open
 inside it. bb never signals those programs. While one is running, or when bb
 cannot tell (for example on Windows, or when a process cannot be inspected), the
 worktree is kept and the message names the program so its owner can finish and
 close it. A scan is a snapshot: a program that opens a file after the last check
-is not excluded. When bb does remove the worktree
+is not excluded.
+
+What the check can and cannot see:
+
+- On Linux it reads every thread's working directory and mount namespace, the
+  program, every open file and every mapped file of each process, and it also
+  looks for the directory under every other path the mount table shows for the
+  same filesystem. A process in another mount namespace or under another root
+  folder, or one whose main thread exited while other threads run, makes the
+  answer "unknown".
+- On macOS it cross-checks one `lsof` listing of your processes against `ps`.
+  A process of yours that `lsof` does not list makes the answer "unknown".
+  macOS firmlinks (the same folder reached through `/System/Volumes/Data`) are
+  not covered.
+- Processes of root are not checked: Spotlight, backup tools and other system
+  indexers cope with a deleted folder. bb running as root is not supported.
+- A process of any other user that is not root makes the answer "unknown",
+  unless the folder cannot be reached by them: the folder, or a folder above it
+  up to bb's worktree or storage folder, belongs to you and has no search
+  permission (`x`) for group and other, checked when the removal is decided. A
+  process that opened the folder or a file in it before that permission was
+  taken away is not seen.
+- When the answer is "unknown" nothing is removed. The reason is one of: no
+  folder named, unsupported platform, a symbolic link, an unreadable process
+  list, a failed `lsof`, an unreadable or unparsable mount table, a foreign
+  mount namespace or root, an exited main thread, an unreadable process of yours,
+  an invisible process (macOS), a folder whose name `lsof` prints escaped, or
+  another user's process that can reach the folder.
+
+When bb does remove the worktree
 of a create that failed, it runs `git worktree remove` without `--force`, and bb
 never uses `--force`. A create that finds a branch still checked out by
 an earlier workspace leaves it alone and says where it is; the owning cleanup
