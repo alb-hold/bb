@@ -6,19 +6,20 @@ import {
   useRef,
   type ReactNode,
 } from "react";
-import { cn } from "@bb/shared-ui/lib/utils";
 import { usePrefersReducedMotion } from "@bb/shared-ui/hooks/use-media-query";
 import { usePointerCoarse } from "@bb/shared-ui/hooks/use-pointer-coarse";
+import { supportsScrollAnchoring } from "@/lib/scroll-anchoring-support";
+import { cn } from "@bb/shared-ui/lib/utils";
 import {
   isDocumentVisible,
   subscribeToDocumentVisibility,
 } from "@/lib/document-visibility";
-import { supportsScrollAnchoring } from "@/lib/scroll-anchoring-support";
 import {
   observedBorderBoxBlockSize,
   observeSharedResize,
 } from "@/lib/shared-resize-observer";
 import { layoutAnimationInFlightCountAtom } from "./layoutAnimationAtoms.js";
+import { useBottomAnchoredScroll } from "./bottom-anchored-scroll-body.js";
 
 const HEIGHT_TRANSITION_DURATION_MS = 180;
 const HEIGHT_TRANSITION_EASE_CSS = "cubic-bezier(0.16, 1, 0.3, 1)";
@@ -28,18 +29,6 @@ const PAUSE_COLLAPSED_DESCENDANT_ANIMATIONS_CLASS =
 interface SnapState {
   savedDuration: string | null;
   restoreFrame: number | null;
-}
-
-interface IntrinsicHeightResizeState {
-  restoreTimerId: number | null;
-  usingIntrinsicHeight: boolean;
-}
-
-interface ScheduleIntrinsicHeightRestoreArgs {
-  inner: HTMLElement;
-  snapState: SnapState;
-  target: HTMLElement;
-  resizeState: IntrinsicHeightResizeState;
 }
 
 function enterSnapMode(target: HTMLElement, state: SnapState): void {
@@ -89,6 +78,18 @@ function cleanupSnapState(target: HTMLElement | null, state: SnapState): void {
     target.style.transitionDuration = state.savedDuration;
     state.savedDuration = null;
   }
+}
+
+interface IntrinsicHeightResizeState {
+  restoreTimerId: number | null;
+  usingIntrinsicHeight: boolean;
+}
+
+interface ScheduleIntrinsicHeightRestoreArgs {
+  inner: HTMLElement;
+  snapState: SnapState;
+  target: HTMLElement;
+  resizeState: IntrinsicHeightResizeState;
 }
 
 function enterIntrinsicHeightMode(
@@ -242,11 +243,17 @@ export function AutoHeightContainer({
   const snapGrowth = useSnapHeightGrowth();
   const durationMs =
     snapGrowth || !animateGrowth ? 0 : HEIGHT_TRANSITION_DURATION_MS;
+  const durationMsRef = useRef(durationMs);
+  const bottomAnchor = useBottomAnchoredScroll();
+  const positionKeeper = bottomAnchor?.positionKeeper ?? null;
   const wrapperRef = useRef<HTMLDivElement>(null);
   const innerRef = useRef<HTMLDivElement>(null);
   const snapToCurrentHeightRef = useRef<(() => void) | null>(null);
   const previousSnapRevisionRef = useRef(snapRevision);
   const store = useStore();
+  useLayoutEffect(() => {
+    durationMsRef.current = durationMs;
+  }, [durationMs]);
   const snapToContentHeight = useCallback(() => {
     snapToCurrentHeightRef.current?.();
   }, []);
@@ -261,12 +268,28 @@ export function AutoHeightContainer({
     let initialSettleTimerId = window.setTimeout(() => {
       initialSettleComplete = true;
     }, AUTO_HEIGHT_INITIAL_SETTLE_MS);
+    let releaseHeightTransition: (() => void) | null = null;
+    let heightTransitionFallbackTimerId: number | null = null;
+    const finishHeightTransition = () => {
+      releaseHeightTransition?.();
+      releaseHeightTransition = null;
+      if (heightTransitionFallbackTimerId !== null) {
+        window.clearTimeout(heightTransitionFallbackTimerId);
+        heightTransitionFallbackTimerId = null;
+      }
+    };
+    const onTransitionEnd = (event: TransitionEvent) => {
+      if (event.target !== wrapper || event.propertyName !== "height") return;
+      finishHeightTransition();
+    };
+    wrapper.addEventListener("transitionend", onTransitionEnd);
     const snapState: SnapState = { savedDuration: null, restoreFrame: null };
     const resizeState: IntrinsicHeightResizeState = {
       restoreTimerId: null,
       usingIntrinsicHeight: false,
     };
     const snapToCurrentHeight = () => {
+      finishHeightTransition();
       cancelIntrinsicHeightRestore(resizeState);
       resizeState.usingIntrinsicHeight = false;
       applyHeight(wrapper, `${inner.offsetHeight}px`, true, snapState);
@@ -308,6 +331,7 @@ export function AutoHeightContainer({
       },
       write: (sync) => {
         if (sync.useIntrinsicHeight) {
+          finishHeightTransition();
           enterIntrinsicHeightMode(wrapper, resizeState, snapState);
           scheduleIntrinsicHeightRestore({
             inner,
@@ -317,6 +341,31 @@ export function AutoHeightContainer({
           });
           deferInitialSettleComplete();
           return;
+        }
+        const currentHeight = Number.parseFloat(wrapper.style.height);
+        const nextHeight = Number.parseFloat(sync.nextHeight);
+        const shouldAnimateGrowth =
+          durationMsRef.current > 0 &&
+          !sync.snap &&
+          Number.isFinite(currentHeight) &&
+          Number.isFinite(nextHeight) &&
+          nextHeight > currentHeight;
+        if (shouldAnimateGrowth) {
+          if (releaseHeightTransition === null) {
+            releaseHeightTransition =
+              positionKeeper?.beginHeightTransition() ?? null;
+          }
+          if (releaseHeightTransition !== null) {
+            if (heightTransitionFallbackTimerId !== null) {
+              window.clearTimeout(heightTransitionFallbackTimerId);
+            }
+            heightTransitionFallbackTimerId = window.setTimeout(
+              finishHeightTransition,
+              durationMsRef.current + 50,
+            );
+          }
+        } else {
+          finishHeightTransition();
         }
         applyHeight(wrapper, sync.nextHeight, sync.snap, snapState);
         deferInitialSettleComplete();
@@ -331,13 +380,15 @@ export function AutoHeightContainer({
       subscribeToDocumentVisibility(onVisibility);
     return () => {
       snapToCurrentHeightRef.current = null;
+      wrapper.removeEventListener("transitionend", onTransitionEnd);
+      finishHeightTransition();
       unobserveInner();
       unsubscribeFromDocumentVisibility();
       window.clearTimeout(initialSettleTimerId);
       cancelIntrinsicHeightRestore(resizeState);
       cleanupSnapState(wrapper, snapState);
     };
-  }, [store]);
+  }, [positionKeeper, store]);
   useLayoutEffect(() => {
     if (previousSnapRevisionRef.current === snapRevision) {
       return;

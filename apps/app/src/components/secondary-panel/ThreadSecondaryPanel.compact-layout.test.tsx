@@ -11,8 +11,18 @@ import {
   type SecondaryFixedPanelTab,
 } from "@/lib/fixed-panel-tabs-state";
 import { createQueryClientTestHarness } from "@/test/queryClientTestHarness";
-import { ThreadSecondaryPanel, type SecondaryPanelRenderableTab } from "./ThreadSecondaryPanel";
-import { sidebarSplitStorageKey } from "./sidebarSplitLayout";
+import {
+  ThreadSecondaryPanel,
+  type SecondaryPanelFixedTab,
+  type SecondaryPanelRenderableTab,
+} from "./ThreadSecondaryPanel";
+import {
+  createSidebarSplitState,
+  parseSidebarSplitState,
+  sidebarPaneGroupId,
+  serializeSidebarSplitState,
+  sidebarSplitStorageKey,
+} from "./sidebarSplitLayout";
 
 const { toastWarning } = vi.hoisted(() => ({ toastWarning: vi.fn() }));
 vi.mock("@/components/ui/app-toast", () => ({
@@ -78,10 +88,155 @@ describe("compact terminal layout requests", () => {
     }
 
     const { wrapper: Wrapper } = createQueryClientTestHarness();
-    render(<Wrapper><TooltipProvider><Harness /></TooltipProvider></Wrapper>);
+    render(
+      <Wrapper>
+        <TooltipProvider>
+          <Harness />
+        </TooltipProvider>
+      </Wrapper>,
+    );
 
-    await waitFor(() => expect(screen.getByText("Requested terminal content")).toBeTruthy());
-    expect(toastWarning).toHaveBeenCalledWith("Split panes aren't available at this window size.");
+    await waitFor(() =>
+      expect(screen.getByText("Requested terminal content")).toBeTruthy(),
+    );
+    expect(toastWarning).toHaveBeenCalledWith(
+      "Split panes aren't available at this window size.",
+    );
+  });
+
+  it("keeps a desktop split request pending until fixed tabs are ready", async () => {
+    const terminalId = "term-waiting-fixed-tabs";
+    const terminalTab = createTerminalFixedPanelTab({ terminalId });
+    const infoTab = createThreadInfoFixedPanelTab();
+    const infoFixedTab: SecondaryPanelFixedTab = {
+      ariaLabel: "Show thread info",
+      label: "Info",
+      leadingVisual: null,
+      onSelect: noop,
+      renderContent: () => <div>Thread info</div>,
+      tab: infoTab,
+      title: "Thread info",
+    };
+    const terminalDescriptor: SecondaryPanelRenderableTab = {
+      label: "Requested terminal",
+      leadingVisual: null,
+      onClose: noop,
+      onSelect: noop,
+      renderContent: () => <div>Requested terminal content</div>,
+      statusLabel: null,
+      tab: terminalTab,
+    };
+    const panelStateId = "desktop-fixed-tabs-pending-split";
+    const storageKey = sidebarSplitStorageKey(panelStateId);
+    const onEnsureTerminalTabs = vi.fn(() => true);
+    const onHandled = vi.fn();
+    const request = {
+      action: "split" as const,
+      requestId: 55,
+      terminalId,
+      side: "right" as const,
+    };
+    function Harness({ ready }: { ready: boolean }) {
+      return (
+        <PanelGroup direction="horizontal">
+          <ThreadSecondaryPanel
+            activeTab={createThreadInfoFixedPanelTab()}
+            areFixedTabsReady={ready}
+            canUseGitUi={false}
+            fixedTabs={ready ? [infoFixedTab] : []}
+            tabs={[terminalDescriptor]}
+            isConversationCollapsed={false}
+            isOpen
+            metadataContent={null}
+            onClose={noop}
+            onCollapse={noop}
+            onEnsureTerminalTabs={onEnsureTerminalTabs}
+            onCompactTerminalLayoutRequestHandled={onHandled}
+            onTabReorder={noop}
+            onOpenNewTab={noop}
+            onPanelFocus={noop}
+            onToggleConversationCollapse={noop}
+            renderAsDrawer={false}
+            splitPanelStateId={panelStateId}
+            terminalLayoutRequest={{ ...request }}
+          />
+        </PanelGroup>
+      );
+    }
+
+    const initial = createSidebarSplitState([infoTab.id], infoTab.id);
+    window.localStorage.setItem(
+      storageKey,
+      serializeSidebarSplitState(initial),
+    );
+    const { wrapper: Wrapper } = createQueryClientTestHarness();
+    const view = render(
+      <Wrapper>
+        <TooltipProvider>
+          <Harness ready={false} />
+        </TooltipProvider>
+      </Wrapper>,
+    );
+
+    expect(onHandled).not.toHaveBeenCalled();
+    expect(onEnsureTerminalTabs).not.toHaveBeenCalled();
+    expect(toastWarning).not.toHaveBeenCalled();
+
+    view.rerender(
+      <Wrapper>
+        <TooltipProvider>
+          <Harness ready />
+        </TooltipProvider>
+      </Wrapper>,
+    );
+
+    await waitFor(() => expect(onEnsureTerminalTabs).toHaveBeenCalledTimes(1));
+    expect(onHandled).not.toHaveBeenCalled();
+    expect(toastWarning).not.toHaveBeenCalled();
+    await waitFor(() => {
+      const persisted = window.localStorage.getItem(storageKey);
+      expect(persisted).not.toBeNull();
+      const state = parseSidebarSplitState(
+        persisted,
+        [infoTab.id, terminalTab.id],
+        terminalTab.id,
+      );
+      expect(state.layout.root.type).toBe("split");
+      if (state.layout.root.type !== "split") return;
+      expect(state.layout.root.children).toHaveLength(2);
+      const [left, right] = state.layout.root.children;
+      expect(left?.type).toBe("pane");
+      expect(right?.type).toBe("pane");
+      if (left?.type !== "pane" || right?.type !== "pane") return;
+      const leftGroupId = sidebarPaneGroupId(left);
+      const rightGroupId = sidebarPaneGroupId(right);
+      expect(leftGroupId).not.toBeNull();
+      expect(rightGroupId).not.toBeNull();
+      expect(state.groups[leftGroupId ?? ""]?.tabIds).toContain(infoTab.id);
+      expect(state.groups[rightGroupId ?? ""]?.tabIds).toContain(
+        terminalTab.id,
+      );
+    });
+
+    view.rerender(
+      <Wrapper>
+        <TooltipProvider>
+          <Harness ready />
+        </TooltipProvider>
+      </Wrapper>,
+    );
+    await waitFor(() => expect(onEnsureTerminalTabs).toHaveBeenCalledTimes(1));
+    const persisted = window.localStorage.getItem(storageKey);
+    expect(persisted).not.toBeNull();
+    const state = parseSidebarSplitState(
+      persisted,
+      [infoTab.id, terminalTab.id],
+      terminalTab.id,
+    );
+    expect(state.layout.root.type).toBe("split");
+    if (state.layout.root.type === "split") {
+      expect(state.layout.root.children).toHaveLength(2);
+    }
   });
 
   it.each(["split", "move"] as const)(
@@ -145,10 +300,20 @@ describe("compact terminal layout requests", () => {
       }
 
       const { wrapper: Wrapper } = createQueryClientTestHarness();
-      render(<Wrapper><TooltipProvider><Harness /></TooltipProvider></Wrapper>);
+      render(
+        <Wrapper>
+          <TooltipProvider>
+            <Harness />
+          </TooltipProvider>
+        </Wrapper>,
+      );
 
-      await waitFor(() => expect(screen.getByText("Requested terminal content")).toBeTruthy());
-      expect(toastWarning).toHaveBeenCalledWith("Split panes aren't available at this window size.");
+      await waitFor(() =>
+        expect(screen.getByText("Requested terminal content")).toBeTruthy(),
+      );
+      expect(toastWarning).toHaveBeenCalledWith(
+        "Split panes aren't available at this window size.",
+      );
       expect(window.localStorage.getItem(storageKey)).toBe("unchanged-layout");
     },
   );

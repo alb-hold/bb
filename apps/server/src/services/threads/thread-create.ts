@@ -521,6 +521,7 @@ async function createPendingThreadAndAttemptFirstDispatch(
       });
     }
     const executionPlanArgs = {
+      inheritParentExecution: true,
       projectDefaults: args.executionDefaults,
       hostId: hostIdForEnvironmentIntent(deps, args.environmentIntent),
       threadId: thread.id,
@@ -757,6 +758,7 @@ export async function createThreadFromRequest(
   } = resolveProjectExecutionDefaultsForCreate(deps, {
     executionInputSources: requestInput.executionInputSources,
     model: requestInput.model,
+    parentThread,
     projectId: requestInput.projectId,
     providerId: requestInput.providerId,
   });
