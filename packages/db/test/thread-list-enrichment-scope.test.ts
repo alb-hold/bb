@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
+import { sql } from "drizzle-orm";
 import {
   buildPinnedRootThreadListEnrichmentScope,
   buildProjectThreadListEnrichmentScope,
@@ -9,6 +10,7 @@ import {
   listLatestThreadStateEventRowsByScope,
   listQueuedThreadMessageCountsByScope,
   listThreadRowStatesByScope,
+  listThreadsWithPendingInteractionState,
   migrate,
   noopNotifier,
   upsertHost,
@@ -82,7 +84,7 @@ function measureScopeQueries(kind: string, size: number): number {
     case "projects":
       scope = buildProjectThreadListEnrichmentScope(db, {
         archived: false,
-        projectIds: ["project-fixture"],
+        projectIds: [project.id],
       });
       break;
     default:
@@ -107,4 +109,37 @@ describe("thread list enrichment scopes", () => {
       );
     },
   );
+
+  it("keeps the selected page IDs when the scope applies limit and offset", () => {
+    const db = createConnection(":memory:");
+    connections.push(db);
+    migrate(db);
+    const host = upsertHost(db, noopNotifier, { name: "scope-page-host" });
+    const { project } = createProject(db, noopNotifier, {
+      name: "scope-page-project",
+      source: {
+        type: "local_path",
+        hostId: host.id,
+        path: "/tmp/scope-page",
+      },
+    });
+    const insertThread = db.$client.prepare(`
+      INSERT INTO threads (
+        id, project_id, provider_id, status, visibility, latest_attention_at,
+        created_at, updated_at
+      ) VALUES (?, ?, 'codex', 'idle', 'visible', 1, ?, ?)
+    `);
+    for (let index = 0; index < 30; index += 1) {
+      insertThread.run(`thread-page-${index}`, project.id, index, index);
+    }
+    const options = { includeHidden: true, limit: 7, offset: 5 };
+    const pageIds = listThreadsWithPendingInteractionState(db, options).map(
+      (thread) => thread.id,
+    );
+    const scope = buildThreadListEnrichmentScope(db, options);
+    const scopeIds = db
+      .all<{ id: string }>(sql`SELECT scoped.id FROM (${scope.ids}) AS scoped`)
+      .map((row) => row.id);
+    expect(scopeIds).toEqual(pageIds);
+  });
 });

@@ -750,10 +750,17 @@ export function buildThreadListEnrichmentScope(
   let query = db
     .select({ id: threads.id })
     .from(threads)
-    .leftJoin(environments, eq(threads.environmentId, environments.id))
-    .where(and(...buildListThreadsFilters(options)))
-    .orderBy(...buildListThreadsOrderBy(options))
     .$dynamic();
+  if (options.hostId) {
+    query = query.leftJoin(
+      environments,
+      eq(threads.environmentId, environments.id),
+    );
+  }
+  query = query.where(and(...buildListThreadsFilters(options)));
+  if (options.limit !== undefined || options.offset !== undefined) {
+    query = query.orderBy(...buildListThreadsOrderBy(options));
+  }
   if (options.limit !== undefined) query = query.limit(options.limit);
   if (options.offset !== undefined) query = query.offset(options.offset);
   return { kind: "query", ids: sql`${query}` };
@@ -781,8 +788,7 @@ export function buildProjectThreadListEnrichmentScope(
   const query = db
     .select({ id: threads.id })
     .from(threads)
-    .where(and(...buildListThreadsForProjectsFilters(options)))
-    .orderBy(...buildActiveProjectThreadOrderBy());
+    .where(and(...buildListThreadsForProjectsFilters(options)));
   return { kind: "query", ids: sql`${query}` };
 }
 
@@ -792,8 +798,7 @@ export function buildPinnedRootThreadListEnrichmentScope(
   const query = db
     .select({ id: threads.id })
     .from(threads)
-    .where(liveThreads(pinnedThreadWhere()))
-    .orderBy(asc(threads.pinSortKey), asc(threads.id));
+    .where(liveThreads(pinnedThreadWhere()));
   return { kind: "query", ids: sql`${query}` };
 }
 
