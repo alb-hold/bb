@@ -415,6 +415,199 @@ describe("terminal output retained from the data plane", () => {
     fixture.child.shutdown();
   });
 
+  it("yields one append per shared continuation and rotates three terminals", async () => {
+    const fixture = await setup();
+    const secondHostSession = seedHostSession(fixture.harness.deps);
+    const secondProject = seedProjectWithSource(fixture.harness.deps, {
+      hostId: secondHostSession.host.id,
+    });
+    const secondThread = seedThread(fixture.harness.deps, {
+      projectId: secondProject.project.id,
+    });
+    const makeTerminal = (
+      hostId: string,
+      daemonSessionId: string,
+      threadId: string,
+      title: string,
+    ) =>
+      createTerminalSession(fixture.db, {
+        cols: 80,
+        environmentId: null,
+        hostId,
+        daemonSessionId,
+        initialCwd: "/tmp",
+        rows: 24,
+        status: "running",
+        threadId,
+        title,
+      });
+    const terminals = [
+      {
+        terminal: fixture.terminal,
+        hostId: fixture.host.id,
+        daemonSessionId: fixture.session.id,
+        threadId: fixture.thread.id,
+        title: "slice host one",
+      },
+      {
+        terminal: makeTerminal(
+          fixture.host.id,
+          fixture.session.id,
+          fixture.thread.id,
+          "slice host one second",
+        ),
+        hostId: fixture.host.id,
+        daemonSessionId: fixture.session.id,
+        threadId: fixture.thread.id,
+        title: "slice host one second",
+      },
+      {
+        terminal: makeTerminal(
+          secondHostSession.host.id,
+          secondHostSession.session.id,
+          secondThread.id,
+          "slice host two",
+        ),
+        hostId: secondHostSession.host.id,
+        daemonSessionId: secondHostSession.session.id,
+        threadId: secondThread.id,
+        title: "slice host two",
+      },
+    ];
+    const chunksByTerminal = terminals.map(({ title }) =>
+      Array.from({ length: 96 }, (_, seq) => ({
+        seq,
+        dataBase64: Buffer.from(`${title}-${seq}`).toString("base64"),
+      })),
+    );
+    const baselines = terminals.map(({ hostId, threadId, title }) => {
+      const baseline = makeTerminal(
+        hostId,
+        threadId === fixture.thread.id
+          ? fixture.session.id
+          : secondHostSession.session.id,
+        threadId,
+        `baseline ${title}`,
+      );
+      return baseline;
+    });
+    for (const [index, { hostId }] of terminals.entries()) {
+      appendRetainedTerminalOutputChunks(fixture.db, {
+        hostId,
+        terminalSessionId: baselines[index]!.id,
+        chunks: chunksByTerminal[index]!,
+        clock: Date.now,
+      });
+    }
+
+    const lifecycle = fixture.terminalSessions as unknown as {
+      options: Record<string, unknown>;
+      flushAllRetainedOutputForTimer(): void;
+    };
+    const scheduled: Array<() => void> = [];
+    let timerNow = 0;
+    let timerSamples = 0;
+    lifecycle.options.retainedOutputTimerClock = () => {
+      if (timerSamples % 2 === 1) timerNow += 51;
+      timerSamples += 1;
+      return timerNow;
+    };
+    lifecycle.options.retainedOutputTimerScheduler = (callback: () => void) =>
+      scheduled.push(callback);
+    let measureNow = 0;
+    lifecycle.options.retainedOutputMeasureClock = () => (measureNow += 20);
+    let markerTaskRan = false;
+    const appendOrder: string[] = [];
+    const logger = fixture.harness.deps.logger;
+    const originalInfo = logger.info.bind(logger);
+    const info = vi.spyOn(logger, "info");
+    info.mockImplementation((...args) => {
+      if (String(args[1]).includes("Slow retained terminal output append")) {
+        appendOrder.push(markerTaskRan ? "append after marker" : "append");
+      }
+      return originalInfo(...args);
+    });
+    const slowRows = () =>
+      info.mock.calls.filter(([, message]) =>
+        String(message).includes("Slow retained terminal output append"),
+      );
+    const retainedCount = (index: number) =>
+      getRetainedTerminalOutput(fixture.db, {
+        hostId: terminals[index]!.hostId,
+        terminalSessionId: terminals[index]!.terminal.id,
+        now: Date.now(),
+      })?.length ?? 0;
+
+    for (const [index, { daemonSessionId, terminal }] of terminals.entries()) {
+      fixture.terminalSessions.recordDirectTerminalOutputBatch({
+        daemonSessionId,
+        terminalId: terminal.id,
+        chunks: chunksByTerminal[index]!,
+      });
+    }
+
+    lifecycle.flushAllRetainedOutputForTimer();
+    expect(terminals.map((_, index) => retainedCount(index))).toEqual([
+      32, 0, 0,
+    ]);
+    expect(slowRows()).toHaveLength(1);
+    expect(scheduled).toHaveLength(1);
+
+    const eventOrder: string[] = [];
+    setImmediate(() => {
+      markerTaskRan = true;
+      eventOrder.push("marker");
+    });
+    await new Promise<void>((resolve) =>
+      setImmediate(() => {
+        eventOrder.push("continuation");
+        scheduled.shift()!();
+        resolve();
+      }),
+    );
+    expect(eventOrder).toEqual(["marker", "continuation"]);
+    expect(appendOrder.slice(0, 2)).toEqual(["append", "append after marker"]);
+    expect(slowRows()).toHaveLength(2);
+    expect(terminals.map((_, index) => retainedCount(index))).toEqual([
+      32, 32, 0,
+    ]);
+
+    const appendedTerminalIds = slowRows().map(([fields]) =>
+      String((fields as { terminalSessionId: string }).terminalSessionId),
+    );
+    while (scheduled.length > 0) {
+      const before = slowRows().length;
+      scheduled.shift()!();
+      expect(slowRows()).toHaveLength(before + 1);
+      appendedTerminalIds.push(
+        String(
+          (slowRows().at(-1)?.[0] as { terminalSessionId: string })
+            .terminalSessionId,
+        ),
+      );
+    }
+    expect(appendedTerminalIds.slice(0, 3)).toEqual(
+      terminals.map(({ terminal }) => terminal.id),
+    );
+    expect(appendedTerminalIds).toHaveLength(9);
+    for (const [index, { terminal, hostId }] of terminals.entries()) {
+      expect(
+        getRetainedTerminalOutput(fixture.db, {
+          hostId,
+          terminalSessionId: terminal.id,
+          now: Date.now(),
+        }),
+      ).toEqual(
+        getRetainedTerminalOutput(fixture.db, {
+          hostId,
+          terminalSessionId: baselines[index]!.id,
+          now: Date.now(),
+        }),
+      );
+    }
+    fixture.child.shutdown();
+  });
+
   it("matches unsliced retained output across two terminals and hosts", async () => {
     const fixture = await setup();
     const secondHostSession = seedHostSession(fixture.harness.deps);
