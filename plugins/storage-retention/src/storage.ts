@@ -1534,10 +1534,11 @@ export function createStorage(
   async function removeExternalWorktrees(
     input:
       | { hostId: string; paths: null }
-      | { hostId: string; paths: string[] },
+      | { hostId: string; paths: string[]; force: boolean },
     reserved: (() => void) | null = null,
   ): Promise<HostStorageRemoveExternalWorktreesResponse> {
     const { hostId, paths } = input;
+    const force = input.paths !== null && input.force;
     const release =
       reserved ??
       (paths === null
@@ -1579,6 +1580,7 @@ export function createStorage(
           response.skipped.push({
             path: worktree.path,
             reasons: ["inUseByBb"],
+            message: `Kept ${worktree.path}: a BB environment uses it. Nothing was removed.`,
           });
           continue;
         }
@@ -1595,6 +1597,7 @@ export function createStorage(
             {
               repositoryPath,
               paths: batch.map((worktree) => worktree.path),
+              force,
             },
             { hostId, timeoutMs: 30 * 60_000, signal: lifecycle.signal },
           );
@@ -1605,6 +1608,7 @@ export function createStorage(
               response.skipped.push({
                 path: result.path,
                 reasons: result.reasons,
+                message: result.message,
               });
             else
               response.failed.push({

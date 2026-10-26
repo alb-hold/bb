@@ -38,9 +38,12 @@ recoverable work (it is unlocked, has no `.keep-worktree` marker, no merge or
 rebase in progress, no uncommitted or untracked changes, no commits that are on
 no remote branch, no stashed changes on its branch, and no process working in
 it); branches are kept. Rows show the blockers found during the scan, and a
-worktree that fails the recheck is kept with the reasons; there is no force
-option. The matching CLI command is
-`bb storage remove-external-worktrees --machine HOST_ID [--path PATH] --yes`.
+worktree that fails the recheck is kept with the reasons, and the result's
+message names what would be lost and how to recover it. `--force` (with
+`--path`) runs the same recheck first and, when it finds nothing, runs
+`git worktree remove --force`; it never removes recoverable work. The matching
+CLI command is
+`bb storage remove-external-worktrees --machine HOST_ID [--path PATH [--force]] --yes`.
 
 Large-file cleanup from the page starts a background job so slow folder walks
 can finish after the remote HTTP request returns. Each machine reports running,

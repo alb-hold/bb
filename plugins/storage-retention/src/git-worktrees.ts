@@ -216,6 +216,60 @@ type PreservationReason = Extract<
   { outcome: "skipped" }
 >["reasons"][number];
 
+const RECOVERY: Record<PreservationReason, { loss: string; recovery: string }> =
+  {
+    notWorktree: {
+      loss: "nothing, it is no longer a worktree of this repository",
+      recovery: "check it with git worktree list",
+    },
+    locked: {
+      loss: "a worktree something relies on, marked with a lock",
+      recovery: "run git worktree unlock on it once nothing relies on it",
+    },
+    keepMarker: {
+      loss: "a worktree its .keep-worktree marker asks bb to keep",
+      recovery: "delete the .keep-worktree file once it can go",
+    },
+    operationInProgress: {
+      loss: "the unfinished merge, rebase, cherry-pick or revert and its resolved conflicts",
+      recovery:
+        "finish it, or abort it with git merge --abort, git rebase --abort, git cherry-pick --abort or git revert --abort",
+    },
+    uncommittedChanges: {
+      loss: "its uncommitted and untracked changes",
+      recovery: "commit them, or copy them out, before removing the worktree",
+    },
+    unsavedCommits: {
+      loss: "commits that are on no remote branch",
+      recovery:
+        "push them with git push, or merge them into a branch that is published",
+    },
+    stash: {
+      loss: "the changes stashed on its branch",
+      recovery:
+        "apply them with git stash apply and commit them, or drop them yourself",
+    },
+    inUse: {
+      loss: "the work of the process running in it",
+      recovery: "stop the process yourself first",
+    },
+    unknown: {
+      loss: "whatever it holds, because whether it holds recoverable work could not be established",
+      recovery: "check git status, git stash list and git log yourself",
+    },
+  };
+
+export function describeKept(
+  worktreePath: string,
+  reasons: readonly PreservationReason[],
+): string {
+  return `Kept ${worktreePath}: removing it would lose ${reasons
+    .map((reason) => RECOVERY[reason].loss)
+    .join("; ")}. To recover: ${reasons
+    .map((reason) => RECOVERY[reason].recovery)
+    .join("; ")}. Nothing was removed.`;
+}
+
 export async function recoverableWorkReasons(
   entry: { path: string; locked: boolean },
   signal: AbortSignal,
@@ -272,9 +326,17 @@ export async function recoverableWorkReasons(
   );
   if (unpublished.exitCode !== 0) unknown();
   else if (unpublished.stdout.trim() !== "") reasons.push("unsavedCommits");
-  const head = await git(["symbolic-ref", "--short", "-q", "HEAD"], entry.path, signal);
+  const head = await git(
+    ["symbolic-ref", "--short", "-q", "HEAD"],
+    entry.path,
+    signal,
+  );
   const branch = head.exitCode === 0 ? head.stdout.trim() : "(no branch)";
-  const stashes = await git(["stash", "list", "--format=%gs"], entry.path, signal);
+  const stashes = await git(
+    ["stash", "list", "--format=%gs"],
+    entry.path,
+    signal,
+  );
   if (stashes.exitCode !== 0) unknown();
   else if (
     stashes.stdout
@@ -295,6 +357,7 @@ export async function recoverableWorkReasons(
 async function removeOne(
   repositoryPath: string,
   worktreePath: string,
+  force: boolean,
   signal: AbortSignal,
 ): Promise<RemoveOutput> {
   const [main, ...linked] = await listRepository(repositoryPath, signal);
@@ -305,13 +368,23 @@ async function removeOne(
       path.relative(candidate.path, worktreePath) === "",
   );
   if (entry === undefined || entry.bare || entry.prunable)
-    return { path: worktreePath, outcome: "skipped", reasons: ["notWorktree"] };
+    return {
+      path: worktreePath,
+      outcome: "skipped",
+      reasons: ["notWorktree"],
+      message: describeKept(worktreePath, ["notWorktree"]),
+    };
   const reasons = await recoverableWorkReasons(entry, signal);
   if (reasons.length > 0)
-    return { path: worktreePath, outcome: "skipped", reasons };
+    return {
+      path: worktreePath,
+      outcome: "skipped",
+      reasons,
+      message: describeKept(worktreePath, reasons),
+    };
   signal.throwIfAborted();
   const removal = await git(
-    ["worktree", "remove", worktreePath],
+    ["worktree", "remove", ...(force ? ["--force"] : []), worktreePath],
     repositoryPath,
     signal,
   );
@@ -321,7 +394,11 @@ async function removeOne(
 }
 
 export async function removeGitWorktrees(
-  { repositoryPath, paths }: { repositoryPath: string; paths: string[] },
+  {
+    repositoryPath,
+    paths,
+    force,
+  }: { repositoryPath: string; paths: string[]; force: boolean },
   signal: AbortSignal,
 ) {
   if (
@@ -333,7 +410,7 @@ export async function removeGitWorktrees(
   for (const target of paths) {
     signal.throwIfAborted();
     try {
-      results.push(await removeOne(repositoryPath, target, signal));
+      results.push(await removeOne(repositoryPath, target, force, signal));
     } catch (error) {
       signal.throwIfAborted();
       results.push({

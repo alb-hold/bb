@@ -236,6 +236,11 @@ export function registerCli(
               description:
                 "Remove only this worktree path from the last scan (default: every worktree created outside BB)",
             },
+            force: {
+              type: "boolean",
+              description:
+                "With --path, run git worktree remove --force once the same checks have found no recoverable work; a worktree with recoverable work is still kept, and the output names what would be lost and how to recover it",
+            },
             yes: YES,
           },
           run: (input) =>
@@ -245,11 +250,16 @@ export function registerCli(
                   "Pass --yes to permanently delete these worktree checkouts.",
                 );
               const hostId = required(input.options.machine, "machine");
-              return storage.removeExternalWorktrees(
-                input.options.path === undefined
-                  ? { hostId, paths: null }
-                  : { hostId, paths: [input.options.path] },
-              );
+              if (input.options.path === undefined) {
+                if (input.options.force)
+                  throw new Error("--force requires --path.");
+                return storage.removeExternalWorktrees({ hostId, paths: null });
+              }
+              return storage.removeExternalWorktrees({
+                hostId,
+                paths: [input.options.path],
+                force: input.options.force === true,
+              });
             }),
         }),
         "clear-thread": cliCommand({

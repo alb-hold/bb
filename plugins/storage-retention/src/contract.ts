@@ -66,6 +66,7 @@ export const storageRpc = defineRpcContract({
         .object({
           hostId: z.string().min(1),
           paths: z.array(z.string().min(1)).min(1).max(500),
+          force: z.boolean(),
         })
         .strict(),
     ]),

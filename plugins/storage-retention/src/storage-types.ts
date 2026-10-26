@@ -256,6 +256,7 @@ export const hostStorageRemoveExternalWorktreesResponseSchema = z.object({
           ]),
         )
         .min(1),
+      message: z.string(),
     }),
   ),
   failed: z.array(z.object({ path: z.string(), message: z.string() })),

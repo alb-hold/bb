@@ -17,6 +17,7 @@ import { removeDeveloperEntries } from "./developer-storage.js";
 import { hostStorageContract } from "./host-contract.js";
 import {
   hostStorageListResponseSchema,
+  hostStorageRemoveExternalWorktreesResponseSchema,
   hostStorageResponseSchema,
 } from "./storage-types.js";
 
@@ -1434,7 +1435,7 @@ it("counts distinct live managed worktrees for machine projects, including empty
   }
 });
 
-it("finds worktrees created outside BB and removes only those with no recoverable work, in bulk and one at a time, never forcing the rest", async () => {
+it("finds worktrees created outside BB and removes only those with no recoverable work, in bulk and one at a time, and a forced removal runs the same checks", async () => {
   type Environment = Awaited<
     ReturnType<
       import("@get-bb/plugin-sdk").BbPluginApi["sdk"]["environments"]["list"]
@@ -1471,6 +1472,7 @@ it("finds worktrees created outside BB and removes only those with no recoverabl
   };
   const managed = worktree("managed", "-b", "managed");
   const clean = worktree("clean", "-b", "clean");
+  const forceable = worktree("forceable", "-b", "forceable");
   await fs.mkdir(path.join(clean, "node_modules"));
   await fs.writeFile(
     path.join(clean, "node_modules", "dep.js"),
@@ -1644,7 +1646,7 @@ it("finds worktrees created outside BB and removes only those with no recoverabl
         },
       ]),
     );
-    expect(scanned.externalWorktrees).toHaveLength(9);
+    expect(scanned.externalWorktrees).toHaveLength(10);
     expect(
       scanned.externalWorktrees.find((entry) => entry.path === clean)!
         .sizeBytes,
@@ -1653,9 +1655,17 @@ it("finds worktrees created outside BB and removes only those with no recoverabl
       expect.objectContaining({
         projectId: "proj_work",
         worktreeCount: 1,
-        externalCount: 9,
+        externalCount: 10,
       }),
     ]);
+    await expect(
+      host.harness.callRpc("removeExternalWorktrees", {
+        hostId: "host_test",
+        paths: [forceable],
+        force: true,
+      }),
+    ).resolves.toMatchObject({ removedCount: 1, skipped: [], failed: [] });
+    await expect(fs.stat(forceable)).rejects.toThrow();
     const keptReasons: Record<string, string[]> = {
       [dirty]: ["uncommittedChanges"],
       [detached]: ["unsavedCommits"],
@@ -1666,6 +1676,40 @@ it("finds worktrees created outside BB and removes only those with no recoverabl
       [marked]: ["keepMarker"],
       [busy]: ["inUse"],
     };
+    const forced = await host.harness.callRpc("removeExternalWorktrees", {
+      hostId: "host_test",
+      paths: Object.keys(keptReasons),
+      force: true,
+    });
+    expect(forced).toMatchObject({ removedCount: 0, failed: [] });
+    const forcedSkips =
+      hostStorageRemoveExternalWorktreesResponseSchema.parse(forced).skipped;
+    expect(
+      Object.fromEntries(forcedSkips.map((entry) => [entry.path, entry.reasons])),
+    ).toEqual(keptReasons);
+    const named: Record<string, [string, string]> = {
+      [dirty]: ["its uncommitted and untracked changes", "commit them, or copy them out"],
+      [detached]: ["commits that are on no remote branch", "git push"],
+      [locked]: ["a lock", "git worktree unlock"],
+      [unpublished]: ["commits that are on no remote branch", "git push"],
+      [stashed]: ["the changes stashed on its branch", "git stash apply"],
+      [merging]: ["the unfinished merge", "git merge --abort"],
+      [marked]: [".keep-worktree", "delete the .keep-worktree file"],
+      [busy]: ["the process running in it", "stop the process yourself"],
+    };
+    for (const entry of forcedSkips) {
+      const [loss, recovery] = named[entry.path]!;
+      expect(entry.message).toContain(`Kept ${entry.path}`);
+      expect(entry.message).toContain(loss);
+      expect(entry.message).toContain(recovery);
+      expect(entry.message).toContain("Nothing was removed");
+    }
+    for (const kept of Object.keys(keptReasons))
+      await expect(fs.stat(kept)).resolves.toBeTruthy();
+    expect(await fs.readFile(path.join(dirty, "draft.ts"), "utf8")).toBe(
+      "unsaved",
+    );
+    expect(busyProcess.exitCode).toBeNull();
     const result = await host.harness.callRpc("removeExternalWorktrees", {
       hostId: "host_test",
       paths: null,
@@ -1691,18 +1735,13 @@ it("finds worktrees created outside BB and removes only those with no recoverabl
       host.harness.callRpc("removeExternalWorktrees", {
         hostId: "host_test",
         paths: [managed],
+        force: false,
       }),
     ).rejects.toThrow("Not a worktree created outside BB");
-    await expect(
-      host.harness.callRpc("removeExternalWorktrees", {
-        hostId: "host_test",
-        paths: [dirty],
-        force: true,
-      } as never),
-    ).rejects.toThrow();
     const single = await host.harness.callRpc("removeExternalWorktrees", {
       hostId: "host_test",
       paths: Object.keys(keptReasons),
+      force: false,
     });
     expect(single).toMatchObject({ removedCount: 0, failed: [] });
     expect(
@@ -1726,6 +1765,7 @@ it("finds worktrees created outside BB and removes only those with no recoverabl
       host.harness.callRpc("removeExternalWorktrees", {
         hostId: "host_test",
         paths: [busy],
+        force: false,
       }),
     ).resolves.toMatchObject({ removedCount: 1, skipped: [], failed: [] });
     await expect(fs.stat(busy)).rejects.toThrow();

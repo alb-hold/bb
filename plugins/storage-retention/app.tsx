@@ -999,22 +999,14 @@ function StoragePage({
                                   {
                                     hostId: report.hostId,
                                     paths: [worktree.path],
+                                    force: false,
                                   },
                                 );
                                 const failed = result.failed[0];
                                 if (failed) throw new Error(failed.message);
-                                const reasons = result.skipped[0]?.reasons;
-                                if (reasons !== undefined)
-                                  throw new Error(
-                                    `Kept: ${reasons
-                                      .map(
-                                        (reason) =>
-                                          EXTERNAL_WORKTREE_SKIP_REASONS[
-                                            reason
-                                          ],
-                                      )
-                                      .join("; ")}.`,
-                                  );
+                                const kept = result.skipped[0];
+                                if (kept !== undefined)
+                                  throw new Error(kept.message);
                                 return `${worktree.path} · ${bytes(result.removedBytes)} freed`;
                               },
                             );
@@ -1893,19 +1885,6 @@ type RowAction = { state: "running" };
 type ExternalWorktree = NonNullable<
   HostReport["report"]
 >["externalWorktrees"][number];
-
-const EXTERNAL_WORKTREE_SKIP_REASONS = {
-  notWorktree: "it is no longer a worktree of this repository",
-  locked: "the worktree is locked",
-  keepMarker: "the worktree holds a .keep-worktree marker",
-  operationInProgress: "a merge, rebase, cherry-pick or revert is in progress",
-  uncommittedChanges: "the worktree has uncommitted or untracked changes",
-  unsavedCommits: "it has commits that are on no remote branch",
-  stash: "it has stashed changes on its branch",
-  inUse: "a process is working in it",
-  unknown: "whether it holds recoverable work could not be established",
-  inUseByBb: "a BB environment uses this worktree",
-} as const;
 
 function externalWorktreeWarnings(worktree: ExternalWorktree) {
   return [
