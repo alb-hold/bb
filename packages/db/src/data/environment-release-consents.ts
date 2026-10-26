@@ -124,6 +124,10 @@ export type LegacyUnreleasedVerdict =
         | "archived-or-deleted-after-install";
     };
 
+function stampedBefore(stamp: number | null, recordedAt: number): boolean {
+  return stamp === null || stamp < recordedAt;
+}
+
 export function judgeLegacyUnreleasedEnvironment(
   db: ConsentConnection,
   environmentId: string,
@@ -159,8 +163,8 @@ export function judgeLegacyUnreleasedEnvironment(
       return { legacy: false, reason: "thread-not-archived-or-deleted" };
     }
     if (
-      (thread.archivedAt ?? 0) >= marker.recordedAt ||
-      (thread.deletedAt ?? 0) >= marker.recordedAt
+      !stampedBefore(thread.archivedAt, marker.recordedAt) ||
+      !stampedBefore(thread.deletedAt, marker.recordedAt)
     ) {
       return { legacy: false, reason: "archived-or-deleted-after-install" };
     }

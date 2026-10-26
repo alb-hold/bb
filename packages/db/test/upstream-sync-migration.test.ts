@@ -30,7 +30,7 @@ const addedMigrations = [
   },
   {
     createdAt: 1793035087043,
-    hash: "1e257b3a0125b073954cceb89666cb2c47590bab285a2645cd73b4fed13f48db",
+    hash: "6014ac333ee4f1ce8663664fad33279012f8bf68209589b35b74bc5ad6c5a443",
   },
 ];
 const ignoredIndexName = "fork_events_item_completion_lookup_idx";
@@ -62,6 +62,15 @@ describe("upstream database migration reconciliation", () => {
     const fresh = createMigratedConnection();
     try {
       importLiveSchema(live);
+      const seededAt = Date.now();
+      live.$client.exec(`
+        INSERT INTO hosts (id, name, type, created_at, updated_at) VALUES ('host_seed', 'seed', 'local', ${seededAt}, ${seededAt});
+        INSERT INTO projects (id, name, created_at, updated_at) VALUES ('proj_seed', 'seed', ${seededAt}, ${seededAt});
+        INSERT INTO environments (id, project_id, host_id, status, created_at, updated_at) VALUES ('env_seed', 'proj_seed', 'host_seed', 'ready', ${seededAt}, ${seededAt});
+        INSERT INTO environments (id, project_id, host_id, status, created_at, updated_at) VALUES ('env_bare', 'proj_seed', 'host_seed', 'ready', ${seededAt}, ${seededAt});
+        INSERT INTO threads (id, project_id, environment_id, provider_id, status, archived_at, latest_attention_at, created_at, updated_at) VALUES ('thr_seed_a', 'proj_seed', 'env_seed', 'provider', 'idle', 5000, ${seededAt}, ${seededAt}, ${seededAt});
+        INSERT INTO threads (id, project_id, environment_id, provider_id, status, archived_at, latest_attention_at, created_at, updated_at) VALUES ('thr_seed_b', 'proj_seed', 'env_seed', 'provider', 'idle', 6000, ${seededAt}, ${seededAt}, ${seededAt});
+      `);
       const priorForkTables = live.$client
         .prepare(
           "SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'fork_%' ORDER BY name",
@@ -100,6 +109,18 @@ describe("upstream database migration reconciliation", () => {
       );
 
       expect(addedMigrationRows).toEqual(addedMigrations);
+      const markers = live.$client
+        .prepare(
+          "SELECT environment_id AS environmentId, recorded_at AS recordedAt FROM fork_legacy_unreleased_environments",
+        )
+        .all() as { environmentId: string; recordedAt: number }[];
+      expect(markers.map((marker) => marker.environmentId)).toEqual([
+        "env_seed",
+      ]);
+      expect(markers[0]?.recordedAt).toBeGreaterThanOrEqual(
+        seededAt - (seededAt % 1000),
+      );
+      expect(markers[0]?.recordedAt).toBeLessThanOrEqual(Date.now());
       expect(
         live.$client
           .prepare(

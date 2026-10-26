@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { eq } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
 import { noopNotifier } from "../src/notifier.js";
@@ -383,6 +385,8 @@ describe("the legacy unreleased environment marker (migration 0150)", () => {
   it("marks exactly the environments with a thread that has no consent, once", () => {
     const { db, environment, second, empty, thread, secondThread } = setupTwo();
     thread();
+    thread();
+    thread();
     const releasedThread = secondThread();
     archiveThread(db, noopNotifier, releasedThread.id, user);
     expect(markers(db)).toEqual([]);
@@ -394,6 +398,101 @@ describe("the legacy unreleased environment marker (migration 0150)", () => {
     expect(markers(db)).not.toContain(empty.id);
     rerunMigration0150(db);
     expect(markers(db)).toEqual([environment.id]);
+  });
+
+  it("matches the per-environment unreleased threads for purged, moved and mixed consents", () => {
+    const { db, environment, second, empty, thread, secondThread } = setupTwo();
+    const purgedConsent = thread();
+    const keptMixed = thread();
+    const movedAway = thread();
+    const stillInSecond = secondThread();
+    archiveThread(db, noopNotifier, purgedConsent.id, user);
+    archiveThread(db, noopNotifier, keptMixed.id, user);
+    archiveThread(db, noopNotifier, movedAway.id, user);
+    archiveThread(db, noopNotifier, stillInSecond.id, user);
+    db.$client.pragma("foreign_keys = OFF");
+    db.$client
+      .prepare("DELETE FROM threads WHERE id = ?")
+      .run(purgedConsent.id);
+    db.$client
+      .prepare("UPDATE threads SET environment_id = ? WHERE id = ?")
+      .run(second.id, movedAway.id);
+    thread();
+    const environments = [environment, second, empty];
+
+    rerunMigration0150(db);
+
+    const expected = environments
+      .filter(
+        (candidate) =>
+          listUnreleasedEnvironmentThreadIds(db, candidate.id).length > 0,
+      )
+      .map((candidate) => candidate.id)
+      .sort();
+    expect(expected).toEqual([environment.id, second.id].sort());
+    expect(markers(db)).toEqual(expected);
+  });
+
+  it("marks an environment whose only consent belongs to a thread that was purged", () => {
+    const { db, environment, thread } = setup();
+    const gone = thread();
+    thread();
+    archiveThread(db, noopNotifier, gone.id, user);
+    db.$client.pragma("foreign_keys = OFF");
+    db.$client.prepare("DELETE FROM threads WHERE id = ?").run(gone.id);
+
+    rerunMigration0150(db);
+
+    expect(listUnreleasedEnvironmentThreadIds(db, environment.id)).toHaveLength(
+      1,
+    );
+    expect(markers(db)).toEqual([environment.id]);
+  });
+
+  it("marks an environment whose consent belongs to a thread that moved to another environment", () => {
+    const { db, environment, second, thread, secondThread } = setupTwo();
+    const moved = thread();
+    thread();
+    archiveThread(db, noopNotifier, moved.id, user);
+    db.$client
+      .prepare("UPDATE threads SET environment_id = ? WHERE id = ?")
+      .run(second.id, moved.id);
+    secondThread();
+
+    rerunMigration0150(db);
+
+    expect(markers(db)).toEqual([environment.id, second.id].sort());
+  });
+
+  it("selects the threads through a covering index and never scans a live table", () => {
+    const { db } = setup();
+    const statements = readFileSync(
+      fileURLToPath(
+        new URL(
+          "../drizzle/0150_legacy_unreleased_environments.sql",
+          import.meta.url,
+        ),
+      ),
+      "utf8",
+    ).split("--> statement-breakpoint");
+    const insert = statements[1]?.trim();
+    if (insert === undefined) throw new Error("0150 has no insert statement");
+
+    const plan = db.$client
+      .prepare<[], { detail: string }>(`EXPLAIN QUERY PLAN ${insert}`)
+      .all()
+      .map((row) => row.detail);
+
+    expect(plan).toContain(
+      "SEARCH threads USING COVERING INDEX threads_environment_idx (environment_id>?)",
+    );
+    expect(
+      plan.filter((line) =>
+        /^SCAN (threads|environments|environment_release_consents)\b/.test(
+          line,
+        ),
+      ),
+    ).toEqual([]);
   });
 
   it("marks an environment that has both a released and an unreleased thread", () => {
@@ -523,6 +622,72 @@ describe("the legacy unreleased environment marker (migration 0150)", () => {
       expect(judgeLegacyUnreleasedEnvironment(db, environment.id)).toEqual({
         legacy: false,
         reason: "thread-not-archived-or-deleted",
+      });
+    });
+
+    it("compares epoch milliseconds on both sides", () => {
+      const before = Date.now();
+      const { db, environment, old, recordedAt } = legacyFixture(
+        before - 5_000,
+        null,
+      );
+      expect(recordedAt).toBeGreaterThan(1_000_000_000_000);
+      expect(recordedAt - (before - 5_000)).toBeGreaterThan(0);
+      expect(recordedAt - (before - 5_000)).toBeLessThan(60_000);
+      expect(
+        judgeLegacyUnreleasedEnvironment(db, environment.id),
+      ).toMatchObject({ legacy: true, threadIds: [old.id] });
+    });
+
+    it("is legacy for a stamp one millisecond before the migration ran and not for the same millisecond", () => {
+      const { db, environment, old, recordedAt } = legacyFixture(5_000, null);
+      for (const column of ["archived_at", "deleted_at"] as const) {
+        db.$client
+          .prepare("UPDATE threads SET archived_at = NULL, deleted_at = NULL")
+          .run();
+        db.$client
+          .prepare(`UPDATE threads SET ${column} = ? WHERE id = ?`)
+          .run(recordedAt - 1, old.id);
+        expect(
+          judgeLegacyUnreleasedEnvironment(db, environment.id),
+        ).toMatchObject({ legacy: true });
+        db.$client
+          .prepare(`UPDATE threads SET ${column} = ? WHERE id = ?`)
+          .run(recordedAt, old.id);
+        expect(judgeLegacyUnreleasedEnvironment(db, environment.id)).toEqual({
+          legacy: false,
+          reason: "archived-or-deleted-after-install",
+        });
+      }
+    });
+
+    it("is not legacy when a stamp is not a number", () => {
+      const { db, environment, old } = legacyFixture(5_000, null);
+      db.$client
+        .prepare("UPDATE threads SET deleted_at = 'yesterday' WHERE id = ?")
+        .run(old.id);
+      expect(judgeLegacyUnreleasedEnvironment(db, environment.id)).toEqual({
+        legacy: false,
+        reason: "archived-or-deleted-after-install",
+      });
+    });
+
+    it("stops being legacy once a thread archived before the migration is unarchived and archived again without a release", () => {
+      const { db, environment, old } = legacyFixture(5_000, null);
+      expect(
+        judgeLegacyUnreleasedEnvironment(db, environment.id),
+      ).toMatchObject({ legacy: true });
+
+      expect(unarchiveThread(db, noopNotifier, old.id)).not.toBeNull();
+      expect(judgeLegacyUnreleasedEnvironment(db, environment.id)).toEqual({
+        legacy: false,
+        reason: "thread-not-archived-or-deleted",
+      });
+
+      archiveThread(db, noopNotifier, old.id, null);
+      expect(judgeLegacyUnreleasedEnvironment(db, environment.id)).toEqual({
+        legacy: false,
+        reason: "archived-or-deleted-after-install",
       });
     });
 
