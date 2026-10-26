@@ -167,10 +167,10 @@ export function useCwdScanIoForTests(io: CwdScanIo | null): void {
   activeIo = io ?? hostCwdScanIo;
 }
 
-export function cwdScanIoDescendantsOnly(
-  base: CwdScanIo,
+export function cwdScanIoDescendantsOnly<Io extends CwdScanIo>(
+  base: Io,
   rootPid: number,
-): CwdScanIo {
+): Io {
   const parentOf = async (pid: number): Promise<number | null> => {
     try {
       const text = await readFile(`/proc/${pid}/stat`, "utf8");
@@ -345,6 +345,11 @@ export async function scanProcessesWithCwdUnder(
     : { status: "clear", ...coverage };
 }
 
+export interface DarwinOpenFile {
+  fd: string;
+  name: string;
+}
+
 export type CwdProcessClass =
   | "readable"
   | "unreadable-same-uid"
@@ -356,6 +361,7 @@ export type DarwinInspection =
   | {
       status: "ok";
       cwds: Map<number, string>;
+      files: Map<number, DarwinOpenFile[]>;
       skipped: CwdSkippedProcess[] | null;
       helpers: CwdUnvouchedHelper[] | null;
       invisible: CwdUnvouchedHelper[];
@@ -387,6 +393,7 @@ function parsePs(stdout: string): PsRow[] {
 export async function inspectDarwinProcesses(
   io: CwdScanIo,
   timeoutMs: number,
+  runLsof: CwdScanIo["runLsof"] = io.runLsof,
 ): Promise<DarwinInspection> {
   let listed: PsRow[] | null = null;
   if (io.runPs !== undefined) {
@@ -407,7 +414,7 @@ export async function inspectDarwinProcesses(
   }
   let output: { code: number | null; stdout: string; stderr: string };
   try {
-    output = await io.runLsof(timeoutMs);
+    output = await runLsof(timeoutMs);
   } catch (error) {
     return {
       status: "unknown",
@@ -427,15 +434,28 @@ export async function inspectDarwinProcesses(
     };
   }
   const cwds = new Map<number, string>();
+  const files = new Map<number, DarwinOpenFile[]>();
   let pid: number | null = null;
-  for (const line of output.stdout.split("\n")) {
-    if (line.startsWith("p")) pid = Number(line.slice(1));
-    else if (line.startsWith("n") && pid !== null) cwds.set(pid, line.slice(1));
+  let fd: string | null = null;
+  for (const field of output.stdout.split(/[\0\n]/u)) {
+    if (field.startsWith("p")) {
+      pid = Number(field.slice(1));
+      fd = null;
+    } else if (field.startsWith("f")) fd = field.slice(1);
+    else if (field.startsWith("n") && pid !== null) {
+      if (fd === null || fd === "cwd") cwds.set(pid, field.slice(1));
+      else
+        files.set(pid, [
+          ...(files.get(pid) ?? []),
+          { fd, name: field.slice(1) },
+        ]);
+    }
   }
   if (listed === null || io.uid === null)
     return {
       status: "ok",
       cwds,
+      files,
       skipped: null,
       helpers: null,
       invisible: [],
@@ -489,5 +509,394 @@ export async function inspectDarwinProcesses(
       }
     }
   }
-  return { status: "ok", cwds, skipped, helpers, invisible, rows };
+  return { status: "ok", cwds, files, skipped, helpers, invisible, rows };
+}
+
+export type HolderThrough =
+  | "working-directory"
+  | "program"
+  | "open-file"
+  | "memory-map";
+
+export interface FileHolder {
+  pid: number;
+  path: string;
+  through: HolderThrough;
+}
+
+export type HolderScan =
+  | ({ status: "clear" } & CwdScanCoverage)
+  | ({ status: "held"; holders: FileHolder[] } & CwdScanCoverage)
+  | { status: "unknown"; reason: string };
+
+export interface HoldScanIo extends CwdScanIo {
+  readExe(pid: number): Promise<string>;
+  listOpenFiles(pid: number): Promise<string[]>;
+  readMaps(pid: number): Promise<string>;
+  readMountNamespace(pid: number | "self"): Promise<string>;
+  readRoot(pid: number): Promise<string>;
+  runLsofOpenFiles(
+    timeoutMs: number,
+  ): Promise<{ code: number | null; stdout: string; stderr: string }>;
+}
+
+export const hostHoldScanIo: HoldScanIo = {
+  ...hostCwdScanIo,
+  readExe: (pid) => readlink(`/proc/${pid}/exe`),
+  listOpenFiles: async (pid) => {
+    const targets: string[] = [];
+    for (const name of await readdir(`/proc/${pid}/fd`)) {
+      try {
+        targets.push(await readlink(`/proc/${pid}/fd/${name}`));
+      } catch (error) {
+        if (!GONE.has(codeOf(error))) throw error;
+      }
+    }
+    return targets;
+  },
+  readMaps: (pid) => readFile(`/proc/${pid}/maps`, "utf8"),
+  readMountNamespace: (pid) => readlink(`/proc/${pid}/ns/mnt`),
+  readRoot: (pid) => readlink(`/proc/${pid}/root`),
+  runLsofOpenFiles: (timeoutMs) =>
+    runCommand(
+      "lsof",
+      [
+        "-n",
+        "-F",
+        "pfn0",
+        ...(hostCwdScanIo.uid === null
+          ? []
+          : ["-u", String(hostCwdScanIo.uid)]),
+      ],
+      timeoutMs,
+    ),
+};
+
+let activeHoldIo: HoldScanIo = hostHoldScanIo;
+
+export function useHoldScanIoForTests(io: HoldScanIo | null): void {
+  activeHoldIo = io ?? hostHoldScanIo;
+}
+
+type HoldRead<Value> =
+  | { status: "read"; value: Value }
+  | { status: "skip" }
+  | { status: "unknown"; reason: string };
+
+interface HoldCoverage {
+  helpers: CwdUnvouchedHelper[];
+  skipped: CwdSkippedProcess[];
+}
+
+async function readHeldProcessFact<Value>(
+  io: HoldScanIo,
+  coverage: HoldCoverage,
+  pid: number,
+  what: string,
+  read: () => Promise<Value>,
+): Promise<HoldRead<Value>> {
+  try {
+    return { status: "read", value: await read() };
+  } catch (error) {
+    const code = codeOf(error);
+    if (GONE.has(code)) return { status: "skip" };
+    let owner: number | null = null;
+    try {
+      owner = await io.effectiveUid(pid);
+    } catch (ownerError) {
+      if (GONE.has(codeOf(ownerError))) return { status: "skip" };
+      if (code === "EACCES" || code === "EPERM")
+        return {
+          status: "unknown",
+          reason: `the owner of process ${pid} could not be read`,
+        };
+    }
+    if (io.uid !== null && owner !== null && owner !== io.uid) {
+      coverage.skipped.push({ pid, uid: owner, errno: code || "error" });
+      return { status: "skip" };
+    }
+    if (io.uid !== null && (code === "EACCES" || code === "EPERM")) {
+      let comm: string;
+      try {
+        comm = await io.readComm(pid);
+      } catch (commError) {
+        if (GONE.has(codeOf(commError))) return { status: "skip" };
+        return {
+          status: "unknown",
+          reason: `the ${what} of process ${pid} could not be read and its name could not be read either`,
+        };
+      }
+      if (UNREADABLE_SAME_USER_HELPER_COMMS.has(comm)) {
+        coverage.helpers.push({ pid, comm });
+        return { status: "skip" };
+      }
+      return {
+        status: "unknown",
+        reason: `the ${what} of process ${pid} (${comm}) could not be read and it is not a known session helper`,
+      };
+    }
+    return {
+      status: "unknown",
+      reason: `the ${what} of process ${pid} could not be read (${code || "error"})`,
+    };
+  }
+}
+
+async function foreignOrUnknown(
+  io: HoldScanIo,
+  coverage: HoldCoverage,
+  pid: number,
+  reason: string,
+): Promise<HoldRead<never>> {
+  let owner: number;
+  try {
+    owner = await io.effectiveUid(pid);
+  } catch (error) {
+    if (GONE.has(codeOf(error))) return { status: "skip" };
+    return { status: "unknown", reason };
+  }
+  if (io.uid !== null && owner !== io.uid) {
+    coverage.skipped.push({ pid, uid: owner, errno: "other-namespace" });
+    return { status: "skip" };
+  }
+  return { status: "unknown", reason };
+}
+
+function mappedPaths(maps: string): string[] {
+  const paths: string[] = [];
+  for (const line of maps.split("\n")) {
+    const mapped = line.split(/\s+/u).slice(5).join(" ");
+    if (mapped.startsWith("/")) paths.push(mapped);
+  }
+  return paths;
+}
+
+async function scanLinuxHolders(
+  io: HoldScanIo,
+  directories: readonly string[],
+): Promise<HolderScan> {
+  let entries: string[];
+  try {
+    entries = await io.listProcessIds();
+  } catch (error) {
+    return {
+      status: "unknown",
+      reason: `the process list could not be read (${codeOf(error) || "error"})`,
+    };
+  }
+  let ownNamespace: string;
+  try {
+    ownNamespace = await io.readMountNamespace("self");
+  } catch (error) {
+    return {
+      status: "unknown",
+      reason: `the mount namespace of this process could not be read (${codeOf(error) || "error"})`,
+    };
+  }
+  const under = (path: string) =>
+    directories.some((directory) => isUnder(path, directory));
+  const coverage: HoldCoverage = { helpers: [], skipped: [] };
+  const holders: FileHolder[] = [];
+  for (const entry of entries) {
+    if (!/^\d+$/u.test(entry)) continue;
+    const pid = Number(entry);
+    if (pid === io.selfPid) continue;
+    const namespace = await readHeldProcessFact(
+      io,
+      coverage,
+      pid,
+      "mount namespace",
+      () => io.readMountNamespace(pid),
+    );
+    if (namespace.status === "unknown") return namespace;
+    if (namespace.status === "skip") continue;
+    if (namespace.value !== ownNamespace) {
+      const outcome = await foreignOrUnknown(
+        io,
+        coverage,
+        pid,
+        `process ${pid} runs in a different mount namespace, so which folder its paths name cannot be vouched for`,
+      );
+      if (outcome.status === "unknown") return outcome;
+      continue;
+    }
+    const root = await readHeldProcessFact(
+      io,
+      coverage,
+      pid,
+      "root folder",
+      () => io.readRoot(pid),
+    );
+    if (root.status === "unknown") return root;
+    if (root.status === "skip") continue;
+    if (root.value !== "/") {
+      const outcome = await foreignOrUnknown(
+        io,
+        coverage,
+        pid,
+        `process ${pid} runs under a different root folder, so which folder its paths name cannot be vouched for`,
+      );
+      if (outcome.status === "unknown") return outcome;
+      continue;
+    }
+    const cwd = await readHeldProcessFact(
+      io,
+      coverage,
+      pid,
+      "working directory",
+      () => io.readCwd(pid),
+    );
+    if (cwd.status === "unknown") return cwd;
+    if (cwd.status === "skip") continue;
+    if (under(cwd.value)) {
+      holders.push({ pid, path: cwd.value, through: "working-directory" });
+      continue;
+    }
+    const exe = await readHeldProcessFact(io, coverage, pid, "program", () =>
+      io.readExe(pid),
+    );
+    if (exe.status === "unknown") return exe;
+    if (exe.status === "skip") continue;
+    if (under(exe.value)) {
+      holders.push({ pid, path: exe.value, through: "program" });
+      continue;
+    }
+    const opened = await readHeldProcessFact(
+      io,
+      coverage,
+      pid,
+      "open files",
+      () => io.listOpenFiles(pid),
+    );
+    if (opened.status === "unknown") return opened;
+    if (opened.status === "skip") continue;
+    const openFile = opened.value.find(under);
+    if (openFile !== undefined) {
+      holders.push({ pid, path: openFile, through: "open-file" });
+      continue;
+    }
+    const maps = await readHeldProcessFact(
+      io,
+      coverage,
+      pid,
+      "memory maps",
+      () => io.readMaps(pid),
+    );
+    if (maps.status === "unknown") return maps;
+    if (maps.status === "skip") continue;
+    const mapped = mappedPaths(maps.value).find(under);
+    if (mapped !== undefined)
+      holders.push({ pid, path: mapped, through: "memory-map" });
+  }
+  const report = {
+    excludedOtherUsers: coverage.skipped.length,
+    unvouchedHelpers: coverage.helpers,
+    ...(coverage.skipped.length > 0
+      ? { skippedOtherUsers: coverage.skipped }
+      : {}),
+  };
+  return holders.length > 0
+    ? { status: "held", holders, ...report }
+    : { status: "clear", ...report };
+}
+
+function darwinThrough(fd: string): HolderThrough {
+  if (fd === "txt") return "program";
+  if (fd === "mem") return "memory-map";
+  return "open-file";
+}
+
+const LSOF_ESCAPED_PATH = /[^\x20-\x7e]|\\/u;
+
+async function scanDarwinHolders(
+  io: HoldScanIo,
+  directories: readonly string[],
+  timeoutMs: number,
+): Promise<HolderScan> {
+  const escaped = directories.find((directory) =>
+    LSOF_ESCAPED_PATH.test(directory),
+  );
+  if (escaped !== undefined)
+    return {
+      status: "unknown",
+      reason: `${escaped} holds characters lsof prints escaped, so a match against its listing cannot be vouched for`,
+    };
+  if (io.uid === null || io.runPs === undefined)
+    return {
+      status: "unknown",
+      reason:
+        "which processes belong to the current user cannot be listed, so none can be ruled out",
+    };
+  const inspection = await inspectDarwinProcesses(
+    io,
+    timeoutMs,
+    io.runLsofOpenFiles,
+  );
+  if (inspection.status === "unknown") return inspection;
+  const under = (path: string) =>
+    directories.some((directory) => isUnder(path, directory));
+  const holders: FileHolder[] = [];
+  const holding = new Set<number>();
+  for (const [pid, cwd] of inspection.cwds) {
+    if (pid !== io.selfPid && under(cwd)) {
+      holders.push({ pid, path: cwd, through: "working-directory" });
+      holding.add(pid);
+    }
+  }
+  for (const [pid, opened] of inspection.files) {
+    if (pid === io.selfPid || holding.has(pid)) continue;
+    const found = opened.find((file) => under(file.name));
+    if (found !== undefined) {
+      holders.push({
+        pid,
+        path: found.name,
+        through: darwinThrough(found.fd),
+      });
+      holding.add(pid);
+    }
+  }
+  if (holders.length === 0 && inspection.invisible.length > 0) {
+    const first = inspection.invisible[0]!;
+    return {
+      status: "unknown",
+      reason: `process ${first.pid} (${first.comm}) runs as the current user, is not a known session helper and has no entries in the lsof listing, so whether it holds a file inside the folder cannot be established${inspection.invisible.length > 1 ? ` (${inspection.invisible.length} such processes)` : ""}`,
+    };
+  }
+  const report = {
+    excludedOtherUsers:
+      inspection.skipped === null ? null : inspection.skipped.length,
+    unvouchedHelpers: inspection.helpers,
+    ...(inspection.skipped !== null && inspection.skipped.length > 0
+      ? { skippedOtherUsers: inspection.skipped }
+      : {}),
+  };
+  return holders.length > 0
+    ? { status: "held", holders, ...report }
+    : { status: "clear", ...report };
+}
+
+export async function scanProcessesHoldingUnder(
+  args: { directories: readonly string[]; timeoutMs?: number },
+  io: HoldScanIo = activeHoldIo,
+): Promise<HolderScan> {
+  if (io.platform === "win32") {
+    return {
+      status: "unknown",
+      reason: "what processes hold open on Windows cannot be listed",
+    };
+  }
+  const directories: string[] = [];
+  for (const directory of args.directories) {
+    const resolved = await resolveSweepDirectory(directory);
+    if (resolved === null) {
+      return {
+        status: "unknown",
+        reason: `${directory} is a symbolic link, so which folder it names cannot be vouched for`,
+      };
+    }
+    directories.push(resolved);
+  }
+  return io.platform === "linux"
+    ? scanLinuxHolders(io, directories)
+    : scanDarwinHolders(io, directories, args.timeoutMs ?? 30_000);
 }
