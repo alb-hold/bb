@@ -94,6 +94,7 @@ function describePullRequest(pr: PullRequest): string {
     `Pull request: #${pr.number} ${pr.state} - ${pr.title}`,
     `URL: ${pr.url}`,
     `Branch: ${pr.headRefName} -> ${pr.baseRefName}`,
+    `Head commit: ${pr.headRefOid ?? "unknown"}`,
     `Attention: ${pr.attention}`,
     `Auto-merge: ${pr.autoMerge ? "on" : "off"}`,
     `Merge queue: ${pr.inMergeQueue === null ? "unknown" : pr.inMergeQueue ? "queued" : "not queued"}`,
@@ -380,10 +381,11 @@ export default function githubPrStatusPlugin(bb: BbPluginApi): void {
   async function merge(
     environmentId: string,
     method: "merge" | "squash" | "rebase",
+    expectedHeadOid: string | null,
   ) {
     await runAction(
       environmentId,
-      { operation: "merge", method },
+      { operation: "merge", method, expectedHeadOid },
       (pullRequest) => {
         if (
           pullRequest.state !== "open" ||
@@ -407,7 +409,8 @@ export default function githubPrStatusPlugin(bb: BbPluginApi): void {
       },
       markReady: ({ environmentId }) => markReady(environmentId),
       markDraft: ({ environmentId }) => markDraft(environmentId),
-      merge: ({ environmentId, method }) => merge(environmentId, method),
+      merge: ({ environmentId, method, expectedHeadOid }) =>
+        merge(environmentId, method, expectedHeadOid),
     },
     {
       experimental_discoverable: true,
@@ -524,6 +527,13 @@ export default function githubPrStatusPlugin(bb: BbPluginApi): void {
               default: "merge",
               description: "Merge method",
             },
+            "expected-head-oid": {
+              type: "string",
+              placeholder: "oid",
+              aliases: ["expectedHeadOid"],
+              description:
+                "Head commit shown by `bb pull-request`; the merge is refused if the pull request changed since",
+            },
             json: JSON_OPTION,
           },
           run: (input) =>
@@ -532,6 +542,7 @@ export default function githubPrStatusPlugin(bb: BbPluginApi): void {
                 merge(
                   input.positionals["environment-id"],
                   input.options.method,
+                  input.options["expected-head-oid"] ?? null,
                 ),
               input.options.json,
             ),

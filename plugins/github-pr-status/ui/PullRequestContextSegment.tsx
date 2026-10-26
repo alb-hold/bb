@@ -294,7 +294,7 @@ function PullRequestAction({
       isPending={actions.isPending}
       mergeMethod={actions.mergeMethod}
       onMarkReady={() => void actions.markReady()}
-      onMerge={(method) => void actions.merge(method)}
+      onMerge={(method) => void actions.merge(method, pullRequest.headRefOid)}
       onConvertToDraft={() => void actions.markDraft()}
     />
   );

@@ -360,7 +360,7 @@ describe("pull request lookup for differently named upstream branches", () => {
     for (const action of [
       { operation: "ready" },
       { operation: "draft" },
-      { operation: "merge", method: "squash" },
+      { operation: "merge", method: "squash", expectedHeadOid: "a".repeat(40) },
     ] as const) {
       await expect(
         harness.experimental_call("act", { path: workspacePath, action }),
@@ -494,7 +494,11 @@ describe("workspace state", () => {
     await expect(
       harness.experimental_call("act", {
         path: workspacePath,
-        action: { operation: "merge", method: "squash" },
+        action: {
+          operation: "merge",
+          method: "squash",
+          expectedHeadOid: "a".repeat(40),
+        },
       }),
     ).resolves.toMatchObject({ ok: false });
     expect(await gh.readCalls()).toEqual([]);

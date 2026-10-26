@@ -502,6 +502,7 @@ describe("GitHub PR Status server", () => {
       fake.harness.callRpc("merge", {
         environmentId: "env-1",
         method: "squash",
+        expectedHeadOid: "a".repeat(40),
       }),
     ).rejects.toMatchObject({
       code: "conflict",
@@ -523,6 +524,7 @@ describe("GitHub PR Status server", () => {
       fake.harness.callRpc("merge", {
         environmentId: "env-1",
         method: "rebase",
+        expectedHeadOid: "a".repeat(40),
       }),
     ).resolves.toEqual({ message: "Pull request merge started" });
     expect(
@@ -533,7 +535,11 @@ describe("GitHub PR Status server", () => {
       {
         input: {
           path: "/work/env-1",
-          action: { operation: "merge", method: "rebase" },
+          action: {
+            operation: "merge",
+            method: "rebase",
+            expectedHeadOid: "a".repeat(40),
+          },
         },
         hostId: "host-1",
       },

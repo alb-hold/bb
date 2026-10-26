@@ -450,17 +450,17 @@ describe("runPullRequestActionForCurrentBranch", () => {
     ["draft", { operation: "draft" }, ["pr", "ready", "--undo"]],
     [
       "merge",
-      { operation: "merge", method: "merge" },
+      { operation: "merge", method: "merge", expectedHeadOid: HEAD_OID },
       ["pr", "merge", "--merge", "--match-head-commit", HEAD_OID],
     ],
     [
       "squash",
-      { operation: "merge", method: "squash" },
+      { operation: "merge", method: "squash", expectedHeadOid: HEAD_OID },
       ["pr", "merge", "--squash", "--match-head-commit", HEAD_OID],
     ],
     [
       "rebase",
-      { operation: "merge", method: "rebase" },
+      { operation: "merge", method: "rebase", expectedHeadOid: HEAD_OID },
       ["pr", "merge", "--rebase", "--match-head-commit", HEAD_OID],
     ],
   ] satisfies readonly [string, HostPullRequestAction, readonly string[]][])(
@@ -486,7 +486,11 @@ describe("runPullRequestActionForCurrentBranch", () => {
     const cwd = await makeGitRepository({ origin: GITHUB_REMOTE });
 
     await expect(
-      runAction(cwd, { operation: "merge", method: "squash" }, "bb/pr-action"),
+      runAction(
+        cwd,
+        { operation: "merge", method: "squash", expectedHeadOid: HEAD_OID },
+        "bb/pr-action",
+      ),
     ).resolves.toEqual({
       ok: false,
       message: `gh pr merge --squash --match-head-commit ${HEAD_OID} --repo github.com/acme/bb -- 42 failed: Pull request is not mergeable`,
@@ -688,7 +692,7 @@ function repoFlag(args: string[]): string | undefined {
 }
 
 const ACTIONS: readonly (readonly [string, HostPullRequestAction])[] = [
-  ["merge", { operation: "merge", method: "merge" }],
+  ["merge", { operation: "merge", method: "merge", expectedHeadOid: HEAD_OID }],
   ["ready", { operation: "ready" }],
   ["draft", { operation: "draft" }],
 ];
@@ -794,7 +798,11 @@ describe("action selector and routing edge cases", () => {
       const cwd = await makeGitRepository({ origin: GITHUB_REMOTE });
 
       await expect(
-        runAction(cwd, { operation: "merge", method: "merge" }, localBranch),
+        runAction(
+          cwd,
+          { operation: "merge", method: "merge", expectedHeadOid: HEAD_OID },
+          localBranch,
+        ),
       ).resolves.toMatchObject({ ok: false });
       expect(await gh.readCalls()).toEqual([]);
     },
@@ -823,7 +831,11 @@ describe("action selector and routing edge cases", () => {
       const cwd = await makeGitRepository({ origin: GITHUB_REMOTE });
 
       await expect(
-        runAction(cwd, { operation: "merge", method: "squash" }, branch),
+        runAction(
+          cwd,
+          { operation: "merge", method: "squash", expectedHeadOid: HEAD_OID },
+          branch,
+        ),
       ).resolves.toEqual({ ok: true });
       const [args] = await actionCalls(gh);
       expect(args?.at(-1)).toBe("7");
@@ -841,12 +853,153 @@ describe("action selector and routing edge cases", () => {
     const cwd = await makeGitRepository({ origin: GITHUB_REMOTE });
 
     await expect(
-      runAction(cwd, { operation: "merge", method: "merge" }),
+      runAction(cwd, {
+        operation: "merge",
+        method: "merge",
+        expectedHeadOid: oid,
+      }),
     ).resolves.toEqual({ ok: true });
     const [args] = await actionCalls(gh);
     expect(args).toContain("--match-head-commit");
     expect(args?.[args.indexOf("--match-head-commit") + 1]).toBe(oid);
   });
+
+  it("action refuses to merge a pull request that changed since it was shown", async () => {
+    const shown = "a".repeat(40);
+    const fresh = "b".repeat(40);
+    const gh = await installFakeGh({
+      "api graphql": {
+        stdout: branchResponse([branchPr({ headRefOid: fresh })]),
+      },
+    });
+    const cwd = await makeGitRepository({ origin: GITHUB_REMOTE });
+
+    await expect(
+      runAction(cwd, {
+        operation: "merge",
+        method: "merge",
+        expectedHeadOid: shown,
+      }),
+    ).resolves.toEqual({
+      ok: false,
+      message:
+        "The pull request changed since it was shown. Refresh it and try again",
+    });
+    expect(await actionCalls(gh)).toEqual([]);
+  });
+
+  it("action merges with the displayed head commit when the read still reports it", async () => {
+    const shown = "c".repeat(40);
+    const gh = await installFakeGh({
+      "api graphql": {
+        stdout: branchResponse([branchPr({ headRefOid: shown })]),
+      },
+    });
+    const cwd = await makeGitRepository({ origin: GITHUB_REMOTE });
+
+    await expect(
+      runAction(cwd, {
+        operation: "merge",
+        method: "squash",
+        expectedHeadOid: shown,
+      }),
+    ).resolves.toEqual({ ok: true });
+    expect(await actionCalls(gh)).toEqual([
+      [
+        "pr",
+        "merge",
+        "--squash",
+        "--match-head-commit",
+        shown,
+        "--repo",
+        ACTION_REPO,
+        "--",
+        "42",
+      ],
+    ]);
+  });
+
+  it("action refuses to merge without a displayed head commit", async () => {
+    const gh = await actionGh();
+    const cwd = await makeGitRepository({ origin: GITHUB_REMOTE });
+
+    await expect(
+      runAction(cwd, {
+        operation: "merge",
+        method: "merge",
+        expectedHeadOid: null,
+      }),
+    ).resolves.toEqual({
+      ok: false,
+      message:
+        "The pull request changed since it was shown. Refresh it and try again",
+    });
+    expect(await actionCalls(gh)).toEqual([]);
+  });
+
+  it.each([
+    "--admin",
+    "ABCDEF" + "a".repeat(34),
+    "a".repeat(39),
+    "a".repeat(41),
+  ])(
+    "action refuses to merge when the shown and read head commit %s is not a commit id",
+    async (oid) => {
+      const gh = await installFakeGh({
+        "api graphql": {
+          stdout: branchResponse([branchPr({ headRefOid: oid })]),
+        },
+      });
+      const cwd = await makeGitRepository({ origin: GITHUB_REMOTE });
+
+      await expect(
+        runAction(cwd, {
+          operation: "merge",
+          method: "merge",
+          expectedHeadOid: oid,
+        }),
+      ).resolves.toMatchObject({ ok: false });
+      expect(await actionCalls(gh)).toEqual([]);
+    },
+  );
+
+  it("action accepts a 64 character head commit id", async () => {
+    const oid = "d".repeat(64);
+    const gh = await installFakeGh({
+      "api graphql": {
+        stdout: branchResponse([branchPr({ headRefOid: oid })]),
+      },
+    });
+    const cwd = await makeGitRepository({ origin: GITHUB_REMOTE });
+
+    await expect(
+      runAction(cwd, {
+        operation: "merge",
+        method: "merge",
+        expectedHeadOid: oid,
+      }),
+    ).resolves.toEqual({ ok: true });
+    expect((await actionCalls(gh))[0]).toContain(oid);
+  });
+
+  it.each([
+    ["a no-break space", "a\u00a0b"],
+    ["an em space", "a\u2003b"],
+    ["a line separator", "a\u2028b"],
+  ])(
+    "action refuses a local branch with %s and starts no gh process",
+    async (_label, localBranch) => {
+      const gh = await actionGh();
+      const cwd = await makeGitRepository({ origin: GITHUB_REMOTE });
+
+      await expect(
+        runAction(cwd, undefined, localBranch),
+      ).resolves.toMatchObject({
+        ok: false,
+      });
+      expect(await gh.readCalls()).toEqual([]);
+    },
+  );
 
   it("action refuses to merge when the read reports no head commit", async () => {
     const gh = await installFakeGh({
@@ -857,7 +1010,11 @@ describe("action selector and routing edge cases", () => {
     const cwd = await makeGitRepository({ origin: GITHUB_REMOTE });
 
     await expect(
-      runAction(cwd, { operation: "merge", method: "merge" }),
+      runAction(cwd, {
+        operation: "merge",
+        method: "merge",
+        expectedHeadOid: HEAD_OID,
+      }),
     ).resolves.toMatchObject({ ok: false });
     expect(await actionCalls(gh)).toEqual([]);
   });

@@ -285,11 +285,13 @@ function getMergeMethodFlag(
 }
 
 const UNSAFE_SELECTOR_PATTERN = /^-|[\s\u0000-\u001f\u007f]/u;
+const COMMIT_OID_PATTERN = /^[0-9a-f]{40}([0-9a-f]{24})?$/u;
 
 function buildPullRequestActionArgs(
   action: HostPullRequestAction,
   repository: string,
-  pullRequest: { number: number; headRefOid: string | null },
+  pullRequest: { number: number },
+  mergeHeadOid: string | null,
 ): string[] | null {
   const target = ["--repo", repository, "--", String(pullRequest.number)];
   switch (action.operation) {
@@ -298,14 +300,14 @@ function buildPullRequestActionArgs(
     case "draft":
       return ["pr", "ready", "--undo", ...target];
     case "merge":
-      return pullRequest.headRefOid === null
+      return mergeHeadOid === null
         ? null
         : [
             "pr",
             "merge",
             getMergeMethodFlag(action.method),
             "--match-head-commit",
-            pullRequest.headRefOid,
+            mergeHeadOid,
             ...target,
           ];
   }
@@ -946,10 +948,34 @@ export async function runPullRequestActionForCurrentBranch(
   if (lookup.outcome === "none") {
     return { ok: false, message: "No pull request found for this branch" };
   }
+  let mergeHeadOid: string | null = null;
+  if (args.action.operation === "merge") {
+    const readOid = lookup.pullRequest.headRefOid;
+    if (
+      args.action.expectedHeadOid === null ||
+      readOid === null ||
+      args.action.expectedHeadOid !== readOid
+    ) {
+      return {
+        ok: false,
+        message:
+          "The pull request changed since it was shown. Refresh it and try again",
+      };
+    }
+    if (!COMMIT_OID_PATTERN.test(readOid)) {
+      return {
+        ok: false,
+        message:
+          "Pull request head commit is not a valid commit id; refusing to merge",
+      };
+    }
+    mergeHeadOid = readOid;
+  }
   const ghArgs = buildPullRequestActionArgs(
     args.action,
     `${branchTarget.host}/${branchTarget.owner}/${branchTarget.repository}`,
     lookup.pullRequest,
+    mergeHeadOid,
   );
   if (ghArgs === null) {
     return {
