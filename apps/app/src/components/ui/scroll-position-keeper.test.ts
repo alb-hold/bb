@@ -117,6 +117,41 @@ function createTimeline(
 }
 
 describe("ScrollPositionKeeper", () => {
+  it("disables native scroll anchoring on the owned scroll element (test-change-reason: review #296 defect 1 replaces a dead CSS-text assertion with the scroll owner's behavior)", () => {
+    const timeline = createTimeline(rowsOf(1));
+
+    expect(timeline.scrollElement.style.overflowAnchor).toBe("none");
+  });
+
+  it("keeps an attached reader attached after a shrink clamps them to the end (test-change-reason: review #296 defect 3 covers refreshed end geometry)", () => {
+    const timeline = createTimeline(rowsOf(10), { attached: true });
+    timeline.keeper.reconcile();
+
+    timeline.setRows(rowsOf(7));
+    timeline.layout.bounceTo(timeline.layout.maxScrollTop());
+    timeline.keeper.handleScroll();
+
+    expect(timeline.keeper.isAttached()).toBe(true);
+  });
+
+  it("flushes a deferred anchor correction after content growth stops despite another height transition (test-change-reason: review #296 defect 5 covers deferred correction after extent growth ends)", () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
+    const timeline = createTimeline(rowsOf(10), { deferWrites: true });
+    timeline.userScrollTo(450);
+    vi.advanceTimersByTime(500);
+    const readingRowTop = timeline.topOf("row-3");
+    timeline.keeper.beginHeightTransition();
+
+    timeline.resize("row-1", 300);
+    timeline.keeper.reconcile();
+    expect(timeline.layout.scrollTop).toBe(450);
+
+    vi.advanceTimersByTime(150);
+
+    expect(timeline.layout.scrollTop).toBe(550);
+    expect(timeline.topOf("row-3")).toBe(readingRowTop);
+  });
+
   it("keeps the reading row in place when an older page is prepended", () => {
     const rows = rowsOf(10);
     const timeline = createTimeline(rows);

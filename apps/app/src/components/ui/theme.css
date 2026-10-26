@@ -1105,13 +1105,3 @@ body.sidebar-resizing [data-sidebar="panel"] {
 [data-panel-group]:has([data-resize-handle-active]) [data-panel] {
   transition-property: opacity;
 }
-
-.scroll-bottom-anchor-content {
-  overflow-anchor: none;
-}
-
-.scroll-bottom-anchor {
-  height: 1px;
-  flex-shrink: 0;
-  overflow-anchor: auto;
-}

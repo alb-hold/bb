@@ -125,6 +125,7 @@ export class ScrollPositionKeeper {
   private reconciledWidth = 0;
   private reconciledViewportHeight = 0;
   private reconciledScrollHeight = 0;
+  private lastExtentChangeAt = Number.NEGATIVE_INFINITY;
   private topRow: TopRow | null = null;
   private deferred = 0;
   private deferredElement: HTMLElement | null = null;
@@ -586,6 +587,7 @@ export class ScrollPositionKeeper {
     }
     if (position.kind === "bottom") {
       if (!movedDown && !this.isAtEnd(scrollTop)) {
+        this.refreshExtent(scrollElement);
         if (!this.isAtEnd(scrollTop)) {
           this.setPosition(this.capture(scrollElement) ?? FREE);
         }
@@ -658,6 +660,7 @@ export class ScrollPositionKeeper {
     const extentChanged = scrollHeight !== previousScrollHeight;
     this.reconciledScrollHeight = scrollHeight;
     if (extentChanged) {
+      this.lastExtentChangeAt = window.performance.now();
       this.layoutScrollPending = true;
       if (this.layoutPendingFrame !== null)
         window.cancelAnimationFrame(this.layoutPendingFrame);
@@ -1015,8 +1018,11 @@ export class ScrollPositionKeeper {
       const scrollElement = this.options.getScrollElement();
       if (scrollElement === null || this.deferred === 0) return;
       const scrollTop = scrollElement.scrollTop;
+      const growthStillChanging =
+        this.heightTransitionCount > 0 &&
+        window.performance.now() - this.lastExtentChangeAt < SCROLL_SETTLE_MS;
       if (
-        this.heightTransitionCount > 0 ||
+        growthStillChanging ||
         this.shouldDefer(scrollTop, this.maxScrollTop)
       ) {
         this.scheduleDeferredWrite();
