@@ -22,7 +22,7 @@ const addedMigrations = [
   },
   {
     createdAt: 1792744408107,
-    hash: "469d9cc77489ba41e77a885cdd569e776ed015a4d5cdc42959a633ea986af571",
+    hash: "aa4279a346076d1f979c5b36717866dc7d3e73fa43052445cb1509a5b93f8d0d",
   },
   {
     createdAt: 1792782930987,

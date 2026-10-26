@@ -176,41 +176,73 @@ describe("environment release consents", () => {
     ]);
   });
 
-  it("treats threads archived or deleted before the upgrade as released by the upgrade", () => {
-    const { db, environment, thread } = setup();
-    const archivedBefore = thread();
-    const deletedBefore = thread();
-    const liveBefore = thread();
-    db.update(threads)
-      .set({ archivedAt: 5_000 })
-      .where(eq(threads.id, archivedBefore.id))
-      .run();
-    db.update(threads)
-      .set({ deletedAt: 6_000 })
-      .where(eq(threads.id, deletedBefore.id))
-      .run();
-    db.delete(environmentReleaseConsents).run();
-    db.$client
-      .prepare("DELETE FROM __drizzle_migrations WHERE created_at >= ?")
-      .run(MIGRATION_WHEN);
-    dropEnvironmentRetentionSchema(db);
+  describe("threads archived or deleted before migration 0148", () => {
+    function migrateLegacyThreads(
+      db: ReturnType<typeof setup>["db"],
+      archived: readonly { id: string }[],
+      deleted: readonly { id: string }[],
+    ) {
+      for (const thread of archived)
+        db.update(threads)
+          .set({ archivedAt: 5_000 })
+          .where(eq(threads.id, thread.id))
+          .run();
+      for (const thread of deleted)
+        db.update(threads)
+          .set({ deletedAt: 6_000 })
+          .where(eq(threads.id, thread.id))
+          .run();
+      db.delete(environmentReleaseConsents).run();
+      db.$client
+        .prepare("DELETE FROM __drizzle_migrations WHERE created_at >= ?")
+        .run(MIGRATION_WHEN);
+      dropEnvironmentRetentionSchema(db);
+      migrate(db);
+    }
 
-    migrate(db);
+    it("stays unreleased and kept when its environment is shared with a live thread", () => {
+      const { db, environment, thread } = setup();
+      const archivedBefore = thread();
+      const liveBefore = thread();
 
-    expect(
-      listEnvironmentReleaseConsents(db, environment.id)
-        .map((row) => ({
-          threadId: row.threadId,
-          actorKind: row.actorKind,
-          grantedAt: row.grantedAt,
-        }))
-        .sort((a, b) => a.grantedAt - b.grantedAt),
-    ).toEqual([
-      { threadId: archivedBefore.id, actorKind: "migrated", grantedAt: 5_000 },
-      { threadId: deletedBefore.id, actorKind: "migrated", grantedAt: 6_000 },
-    ]);
-    expect(listUnreleasedEnvironmentThreadIds(db, environment.id)).toEqual([
-      liveBefore.id,
-    ]);
+      migrateLegacyThreads(db, [archivedBefore], []);
+
+      expect(listEnvironmentReleaseConsents(db, environment.id)).toEqual([]);
+      expect(
+        listUnreleasedEnvironmentThreadIds(db, environment.id).sort(),
+      ).toEqual([archivedBefore.id, liveBefore.id].sort());
+    });
+
+    it("stays unreleased and kept when its environment is not shared", () => {
+      const { db, environment, thread } = setup();
+      const archivedBefore = thread();
+      const deletedBefore = thread();
+
+      migrateLegacyThreads(db, [archivedBefore], [deletedBefore]);
+
+      expect(listEnvironmentReleaseConsents(db, environment.id)).toEqual([]);
+      expect(
+        listUnreleasedEnvironmentThreadIds(db, environment.id).sort(),
+      ).toEqual([archivedBefore.id, deletedBefore.id].sort());
+    });
+
+    it("gives consent to a thread archived after the migration while the legacy one stays unreleased", () => {
+      const { db, environment, thread } = setup();
+      const archivedBefore = thread();
+      const archivedAfter = thread();
+      migrateLegacyThreads(db, [archivedBefore], []);
+
+      archiveThread(db, noopNotifier, archivedAfter.id, {
+        kind: "user",
+        threadId: null,
+      });
+
+      expect(listEnvironmentReleaseConsents(db, environment.id)).toMatchObject([
+        { threadId: archivedAfter.id, actorKind: "user" },
+      ]);
+      expect(listUnreleasedEnvironmentThreadIds(db, environment.id)).toEqual([
+        archivedBefore.id,
+      ]);
+    });
   });
 });

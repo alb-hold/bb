@@ -46,5 +46,4 @@ CREATE INDEX `environment_retentions_project_idx` ON `environment_retentions` (`
 CREATE INDEX `environment_retentions_thread_idx` ON `environment_retentions` (`owner_thread_id`);--> statement-breakpoint
 CREATE UNIQUE INDEX `environment_retentions_environment_kept_idx` ON `environment_retentions` (`environment_id`,`kept_path`);--> statement-breakpoint
 ALTER TABLE `environments` ADD `teardown_failures` integer DEFAULT 0 NOT NULL;--> statement-breakpoint
-ALTER TABLE `environments` ADD `teardown_prior_status` text;--> statement-breakpoint
-INSERT INTO `environment_release_consents` (`id`, `environment_id`, `thread_id`, `actor_kind`, `actor_thread_id`, `granted_at`) SELECT 'rel_' || lower(hex(randomblob(10))), `environment_id`, `id`, 'migrated', NULL, COALESCE(`archived_at`, `deleted_at`) FROM `threads` WHERE `environment_id` IS NOT NULL AND (`archived_at` IS NOT NULL OR `deleted_at` IS NOT NULL);
+ALTER TABLE `environments` ADD `teardown_prior_status` text;
