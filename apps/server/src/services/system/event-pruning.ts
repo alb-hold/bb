@@ -151,17 +151,17 @@ export function maybePruneActiveThreadEventHistory(
     | "activeThreadEventPruneScheduler"
   >,
   args: MaybePruneActiveThreadEventHistoryArgs,
-): null {
+): boolean {
   const thread = getThread(deps.db, args.threadId);
   if (
     !thread ||
     (thread.status !== "active" && thread.status !== "idle") ||
     thread.archivedAt !== null
   ) {
-    return null;
+    return false;
   }
 
-  if (activeThreadPruneChainsByThreadId.has(args.threadId)) return null;
+  if (activeThreadPruneChainsByThreadId.has(args.threadId)) return false;
 
   const lastState = activeThreadPruneStateByThreadId.get(args.threadId);
   const lastPrunedSequence = lastState?.lastPrunedSequence ?? 0;
@@ -169,13 +169,13 @@ export function maybePruneActiveThreadEventHistory(
     args.latestPrunableSequence - lastPrunedSequence <
     ACTIVE_THREAD_EVENT_PRUNE_MIN_SEQUENCE_DELTA
   ) {
-    return null;
+    return false;
   }
 
   const now = args.throttleNow?.() ?? Date.now();
   const lastPrunedAt = lastState?.lastPrunedAt ?? 0;
   if (now - lastPrunedAt < ACTIVE_THREAD_EVENT_PRUNE_MIN_INTERVAL_MS) {
-    return null;
+    return false;
   }
 
   activeThreadPruneStateByThreadId.set(args.threadId, {
@@ -199,8 +199,8 @@ export function pruneActiveThreadEventHistoryWithinBudget(
     schedule?: ActiveThreadPruneScheduler;
     threadId: string;
   },
-): null {
-  if (activeThreadPruneChainsByThreadId.has(args.threadId)) return null;
+): boolean {
+  if (activeThreadPruneChainsByThreadId.has(args.threadId)) return false;
   const chain: ActiveThreadPruneChain = {
     deps,
     clock: args.now ?? (() => performance.now()),
@@ -213,7 +213,7 @@ export function pruneActiveThreadEventHistoryWithinBudget(
   activeThreadPruneChainsByThreadId.set(args.threadId, chain);
   activeThreadPruneQueue.push(chain);
   scheduleActiveThreadPruneRunner(chain);
-  return null;
+  return true;
 }
 
 function scheduleActiveThreadPruneRunner(

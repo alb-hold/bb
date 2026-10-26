@@ -1005,7 +1005,7 @@ describe("thread event pruning", () => {
         now,
         schedule: (callback) => scheduled.push(callback),
       });
-      expect(result).toBeNull();
+      expect(result).toBe(true);
       expect(scheduled).toHaveLength(1);
       expect(
         harness.db.all(
@@ -1052,7 +1052,7 @@ describe("thread event pruning", () => {
         schedule,
         threadId: thread.id,
       });
-      expect(result).toBeNull();
+      expect(result).toBe(true);
       expect(scheduleCount).toBe(1);
       scheduled.shift()?.();
       expect(order).toEqual(["marker"]);
@@ -1085,7 +1085,7 @@ describe("thread event pruning", () => {
         threadId: thread.id,
         throttleNow: () => throttleTime,
       });
-      expect(first).toBeNull();
+      expect(first).toBe(true);
       expect(scheduled).toHaveLength(1);
       throttleTime += 30_001;
       const second = maybePruneActiveThreadEventHistory(harness.deps, {
@@ -1095,7 +1095,7 @@ describe("thread event pruning", () => {
         threadId: thread.id,
         throttleNow: () => throttleTime,
       });
-      expect(second).toBeNull();
+      expect(second).toBe(false);
       expect(scheduled).toHaveLength(1);
       resetActiveThreadEventPruningState(thread.id);
       scheduled.shift()?.();
@@ -1121,7 +1121,7 @@ describe("thread event pruning", () => {
         now: () => 0,
         schedule: (callback) => scheduled.push(callback),
       });
-      expect(result).toBeNull();
+      expect(result).toBe(true);
       while (scheduled.length > 0) scheduled.shift()?.();
       expect(
         harness.db.all(
@@ -1200,7 +1200,7 @@ describe("thread event pruning", () => {
         resetActiveThreadEventPruningState(thread.id);
         const scheduledSlices: Array<() => void> = [];
         let clockReads = 0;
-        maybePruneActiveThreadEventHistory(
+        const enqueued = maybePruneActiveThreadEventHistory(
           harness.deps,
           {
             latestPrunableSequence: 1_400,
@@ -1212,6 +1212,7 @@ describe("thread event pruning", () => {
             schedule: (callback) => scheduledSlices.push(callback),
           },
         );
+        expect(enqueued).toBe(true);
         expect(scheduledSlices).toHaveLength(1);
         for (let slice = 0; slice < 10_000 && scheduledSlices.length > 0; slice++)
           scheduledSlices.shift()?.();
