@@ -555,7 +555,7 @@ function githubConfigDirectory(env: NodeJS.ProcessEnv, cwd: string): string {
 function configuredHosts(hostsYml: string): Set<string> {
   const hosts = new Set<string>();
   for (const line of hostsYml.split(/\r?\n/u)) {
-    const match = /^([^\s#:][^:]*):(?:\s*(?:#.*)?)$/u.exec(line);
+    const match = /^([^\s#:][^:]*(?::\d{1,5})?):(?:\s*(?:#.*)?)$/u.exec(line);
     const host = match?.[1]?.replace(/^['"]|['"]$/gu, "").toLowerCase();
     if (host) hosts.add(host);
   }
@@ -570,6 +570,7 @@ async function isConfiguredGitHubHost(
   const normalizedHost = host.toLowerCase();
   if (
     normalizedHost === "github.com" ||
+    normalizedHost.endsWith(".ghe.com") ||
     env.GH_HOST?.toLowerCase() === normalizedHost
   )
     return true;
@@ -600,7 +601,10 @@ function parseGitRemoteRepository(
     if (!["git:", "http:", "https:", "ssh:"].includes(url.protocol)) {
       return null;
     }
-    host = url.hostname;
+    host =
+      url.protocol === "ssh:" || url.protocol === "git:"
+        ? url.hostname
+        : url.host;
     repositoryPath = url.pathname;
   } else {
     const scpStyle = /^(?:[^@/:\s]+@)?([^/:\s]+):(.+)$/u.exec(trimmed);
@@ -1228,7 +1232,7 @@ export function getPullRequestByUrl(
   cwd: string,
 ): Promise<HostPullRequestLookup> {
   return enqueueRead(
-    { kind: "url", host: new URL(url).hostname, url, cursor: null },
+    { kind: "url", host: new URL(url).host, url, cursor: null },
     cwd,
   );
 }
