@@ -661,14 +661,35 @@ describe("the legacy unreleased environment marker (migration 0150)", () => {
       }
     });
 
-    it("is not legacy when a stamp is not a number", () => {
-      const { db, environment, old } = legacyFixture(5_000, null);
+    it.each([
+      ["archived_at", "'yesterday'"],
+      ["deleted_at", "'yesterday'"],
+      ["archived_at", "5000.5"],
+      ["deleted_at", "x'00'"],
+    ] as const)(
+      "refuses a thread whose %s is stored as %s instead of an integer",
+      (column, literal) => {
+        const { db, environment, old } = legacyFixture(5_000, null);
+        db.$client
+          .prepare(`UPDATE threads SET ${column} = ${literal} WHERE id = ?`)
+          .run(old.id);
+        expect(judgeLegacyUnreleasedEnvironment(db, environment.id)).toEqual({
+          legacy: false,
+          reason: "non-integer-stamp",
+        });
+      },
+    );
+
+    it("refuses a marker whose recorded_at is stored as text", () => {
+      const { db, environment } = legacyFixture(5_000, null);
       db.$client
-        .prepare("UPDATE threads SET deleted_at = 'yesterday' WHERE id = ?")
-        .run(old.id);
+        .prepare(
+          "UPDATE fork_legacy_unreleased_environments SET recorded_at = 'later'",
+        )
+        .run();
       expect(judgeLegacyUnreleasedEnvironment(db, environment.id)).toEqual({
         legacy: false,
-        reason: "archived-or-deleted-after-install",
+        reason: "non-integer-stamp",
       });
     });
 

@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNotNull, notInArray } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, notInArray, sql } from "drizzle-orm";
 import type { DbConnection, DbTransaction } from "../connection.js";
 import { createEnvironmentReleaseConsentId } from "../ids.js";
 import {
@@ -121,8 +121,13 @@ export type LegacyUnreleasedVerdict =
       reason:
         | "no-marker"
         | "thread-not-archived-or-deleted"
-        | "archived-or-deleted-after-install";
+        | "archived-or-deleted-after-install"
+        | "non-integer-stamp";
     };
+
+function isIntegerOrNull(storageClass: string): boolean {
+  return storageClass === "integer" || storageClass === "null";
+}
 
 function stampedBefore(stamp: number | null, recordedAt: number): boolean {
   return stamp === null || stamp < recordedAt;
@@ -133,16 +138,24 @@ export function judgeLegacyUnreleasedEnvironment(
   environmentId: string,
 ): LegacyUnreleasedVerdict {
   const marker = db
-    .select({ recordedAt: forkLegacyUnreleasedEnvironments.recordedAt })
+    .select({
+      recordedAt: forkLegacyUnreleasedEnvironments.recordedAt,
+      recordedAtClass: sql<string>`typeof(${forkLegacyUnreleasedEnvironments.recordedAt})`,
+    })
     .from(forkLegacyUnreleasedEnvironments)
     .where(eq(forkLegacyUnreleasedEnvironments.environmentId, environmentId))
     .get();
   if (marker === undefined) return { legacy: false, reason: "no-marker" };
+  if (marker.recordedAtClass !== "integer") {
+    return { legacy: false, reason: "non-integer-stamp" };
+  }
   const unreleased = db
     .select({
       id: threads.id,
       archivedAt: threads.archivedAt,
+      archivedAtClass: sql<string>`typeof(${threads.archivedAt})`,
       deletedAt: threads.deletedAt,
+      deletedAtClass: sql<string>`typeof(${threads.deletedAt})`,
     })
     .from(threads)
     .where(
@@ -159,6 +172,12 @@ export function judgeLegacyUnreleasedEnvironment(
     )
     .all();
   for (const thread of unreleased) {
+    if (
+      !isIntegerOrNull(thread.archivedAtClass) ||
+      !isIntegerOrNull(thread.deletedAtClass)
+    ) {
+      return { legacy: false, reason: "non-integer-stamp" };
+    }
     if (thread.archivedAt === null && thread.deletedAt === null) {
       return { legacy: false, reason: "thread-not-archived-or-deleted" };
     }
