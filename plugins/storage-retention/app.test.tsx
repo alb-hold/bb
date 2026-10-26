@@ -88,11 +88,12 @@ function fixture(subPath = "host_test") {
   });
   const remove = vi.fn(
     async (_input: z.infer<typeof storageRpc.removeDevInstances.input>) => ({
-    running: [] as string[],
-    removedCount: 1,
-    removedBytes: 20,
-    skippedCount: 0,
-    stoppedProcessCount: 1,
+      running: [] as string[],
+      removedCount: 1,
+      removedBytes: 20,
+      skippedCount: 0,
+      stoppedProcessCount: 1,
+      held: [] as { name: string; reason: string }[],
     }),
   );
   const start = vi.fn(async () => null);
@@ -146,6 +147,7 @@ it("stops a running development instance only after the user confirms stop and r
     removedBytes: 0,
     skippedCount: 0,
     stoppedProcessCount: 0,
+    held: [],
   });
   const page = within(slot.container);
   fireEvent.click(
@@ -166,6 +168,50 @@ it("stops a running development instance only after the user confirms stop and r
       { hostId: "host_test", names: ["after"], stopRunning: true },
     ]),
   );
+});
+
+it("tells the user why a running development instance was kept when its checkout holds recoverable work, and stops nothing", async () => {
+  const { slot, remove } = fixture();
+  remove
+    .mockResolvedValueOnce({
+      running: ["after"],
+      removedCount: 0,
+      removedBytes: 0,
+      skippedCount: 0,
+      stoppedProcessCount: 0,
+      held: [],
+    })
+    .mockResolvedValueOnce({
+      running: [],
+      removedCount: 0,
+      removedBytes: 0,
+      skippedCount: 0,
+      stoppedProcessCount: 0,
+      held: [
+        {
+          name: "after",
+          reason:
+            "its dev server is running and its checkout /work/after holds recoverable work (uncommittedChanges), so nothing was stopped and nothing was removed",
+        },
+      ],
+    });
+  const page = within(slot.container);
+  fireEvent.click(
+    await page.findByRole("button", { name: "Remove instance: after" }),
+  );
+  const confirmation = await page.findByRole("region", {
+    name: "Confirm cleanup",
+  });
+  fireEvent.click(
+    within(confirmation).getByRole("button", { name: "Stop and remove" }),
+  );
+  expect(
+    await within(document.body).findByText(/holds recoverable work/i),
+  ).toBeTruthy();
+  expect(remove.mock.calls.map(([input]) => input)).toEqual([
+    { hostId: "host_test", names: ["after"], stopRunning: false },
+    { hostId: "host_test", names: ["after"], stopRunning: true },
+  ]);
 });
 
 it("shows cleanup failures as toasts, keeps other actions available, and permits retry", async () => {
@@ -434,6 +480,7 @@ it("shows the development path below a short pending title and updates the same 
       removedBytes: 20,
       skippedCount: 0,
       stoppedProcessCount: 0,
+      held: [],
     }),
   );
   await waitFor(() =>

@@ -278,7 +278,7 @@ const ONLINE_RPC_RESPONSE_RESULT_FIXTURES: OnlineRpcResponseResultFixtures = {
     truncated: false,
   },
   "host.mkdir": { ok: true },
-  "host.move_path": { ok: true },
+  "host.move_file": { ok: true },
   "host.remove_path": { ok: true },
   "host.browse_directory": {
     directory: "/home/me/project",
@@ -1240,7 +1240,7 @@ describe("host-daemon command schemas", () => {
   });
 
   it("uses the current host-daemon protocol version", () => {
-    expect(HOST_DAEMON_PROTOCOL_VERSION).toBe(253);
+    expect(HOST_DAEMON_PROTOCOL_VERSION).toBe(254);
     expect(HOST_ARTIFACT_MAX_BYTES).toBe(256 * 1024 * 1024);
   });
 
@@ -1253,7 +1253,10 @@ describe("host-daemon command schemas", () => {
     expect(contract.isCompatibleHostDaemonProtocolVersion(250)).toBe(false);
     expect(contract.isCompatibleHostDaemonProtocolVersion(251)).toBe(false);
     expect(contract.isCompatibleHostDaemonProtocolVersion(252)).toBe(false);
-    expect(contract.isCompatibleHostDaemonProtocolVersion(253)).toBe(true);
+    expect(contract.isCompatibleHostDaemonProtocolVersion(253)).toBe(false);
+    expect(contract.isCompatibleHostDaemonProtocolVersion(254)).toBe(true);
+    expect(contract.hostDaemonSupportsMoveFile(253)).toBe(false);
+    expect(contract.hostDaemonSupportsMoveFile(254)).toBe(true);
     expect(contract.hostDaemonSupportsConnectNext(246)).toBe(false);
     expect(contract.hostDaemonSupportsConnectNext(247)).toBe(true);
     expect(contract.hostDaemonSupportsDesktopBrokerProof(247)).toBe(false);

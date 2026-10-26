@@ -1,12 +1,10 @@
-import {
-  experimental_killProcessesWithCwdUnder,
-  experimental_readProcessIdentity,
-} from "@get-bb/plugin-sdk/host";
+import { experimental_readProcessIdentity } from "@get-bb/plugin-sdk/host";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
 import { isFsErrorWithCode } from "./fs-errors.js";
+import { recoverableWorkReasons } from "./git-worktrees.js";
 import type { hostStorageContract } from "./host-contract.js";
 
 const launchRecordSchema = z.object({ repoRoot: z.string().min(1) });
@@ -18,6 +16,19 @@ const runtimeProcessSchema = z.object({
 });
 const STOP_GRACE_MS = 15_000;
 const PROCESS_START_TOLERANCE_MS = 60_000;
+const WORKSPACE_SCAN_LIMITS = { maxDepth: 64, maxEntries: 500_000 };
+
+type WorkspaceScanLimits = typeof WORKSPACE_SCAN_LIMITS;
+type WorkspaceScan = "workspace" | "unbounded" | "unreadable" | "clear";
+
+const HELD_REASONS = {
+  workspace:
+    "it contains a git checkout or worktree or a folder bb kept for later, and this cleanup never deletes such an entry",
+  unbounded:
+    "it has more files or deeper folders than the scan reads, so it cannot be ruled out as holding a git checkout or worktree, and this cleanup never deletes such an entry",
+  unreadable:
+    "a folder in it could not be read, so it cannot be ruled out as holding a git checkout or worktree, and this cleanup never deletes such an entry",
+} as const;
 
 async function readRecord(file: string) {
   try {
@@ -250,10 +261,67 @@ async function stopInstance(directory: string, signal: AbortSignal) {
   return 1;
 }
 
+async function checkoutHoldsRecoverableWork(
+  entry: { sourcePath: string | null; sourcePathState: string },
+  signal: AbortSignal,
+): Promise<string | null> {
+  if (entry.sourcePathState === "missing") return null;
+  if (entry.sourcePath === null || entry.sourcePathState !== "exists")
+    return "whether its checkout holds recoverable work cannot be established";
+  const reasons = await recoverableWorkReasons(
+    { path: entry.sourcePath, locked: false },
+    signal,
+    { ignoreProcesses: true },
+  );
+  return reasons.length === 0
+    ? null
+    : `its checkout ${entry.sourcePath} holds recoverable work (${reasons.join(", ")})`;
+}
+
+async function scanForGitWorkspace(
+  directory: string,
+  signal: AbortSignal,
+  limits: WorkspaceScanLimits,
+): Promise<WorkspaceScan> {
+  const pending: { directory: string; depth: number }[] = [
+    { directory, depth: 0 },
+  ];
+  let visited = 0;
+  while (pending.length > 0) {
+    signal.throwIfAborted();
+    const next = pending.pop()!;
+    let children;
+    try {
+      children = await fs.readdir(next.directory, { withFileTypes: true });
+    } catch (error) {
+      if (isFsErrorWithCode(error, "ENOENT")) continue;
+      return "unreadable";
+    }
+    for (const child of children) {
+      visited += 1;
+      if (visited > limits.maxEntries) return "unbounded";
+      if (child.name === ".git") return "workspace";
+      if (
+        child.name === "retained" &&
+        path.basename(next.directory) === "host-data"
+      )
+        return "workspace";
+      if (!child.isDirectory()) continue;
+      if (next.depth >= limits.maxDepth) return "unbounded";
+      pending.push({
+        directory: path.join(next.directory, child.name),
+        depth: next.depth + 1,
+      });
+    }
+  }
+  return "clear";
+}
+
 export async function removeDeveloperEntries(
   input: z.infer<typeof hostStorageContract.removeDeveloperEntries.input>,
   signal: AbortSignal,
   retainWorker: () => { dispose(): void },
+  limits: WorkspaceScanLimits = WORKSPACE_SCAN_LIMITS,
 ) {
   assertDeveloperInput(input);
   if (path.basename(input.rootPath) !== ".bb-dev")
@@ -263,7 +331,7 @@ export async function removeDeveloperEntries(
     root = await fs.realpath(input.rootPath);
   } catch (error) {
     if (isFsErrorWithCode(error, "ENOENT"))
-      return { removed: [], running: [], stoppedProcessCount: 0 };
+      return { removed: [], running: [], stoppedProcessCount: 0, held: [] };
     throw error;
   }
   const inspected = (await inspectDeveloperEntries(input, signal)).entries;
@@ -271,30 +339,51 @@ export async function removeDeveloperEntries(
     (entry): entry is typeof entry & { sourcePath: string } =>
       entry.sourcePath !== null && entry.sourcePathState === "missing",
   );
+  const requested =
+    input.mode.condition === "checkoutMissing" ? missing : inspected;
   const stopRunning = input.mode.condition === "any" && input.mode.stopRunning;
-  const running =
-    input.mode.condition === "any"
-      ? inspected.filter(
-          (entry) => entry.running && entry.sourcePathState !== "missing",
-        )
-      : [];
-  const eligible =
-    input.mode.condition === "checkoutMissing"
-      ? missing
-      : stopRunning
-        ? inspected
-        : inspected.filter((entry) => !running.includes(entry));
-  let stoppedProcessCount = (
-    await experimental_killProcessesWithCwdUnder({
-      directories: missing.map((entry) => entry.sourcePath),
-    })
-  ).length;
-  if (stopRunning)
-    for (const entry of running)
+  const running = requested.filter((entry) => entry.running);
+  const held: { name: string; reason: string }[] = [];
+  const stopping: typeof running = [];
+  const notStopped: typeof running = [];
+  for (const entry of running) {
+    if (!stopRunning) {
+      notStopped.push(entry);
+      continue;
+    }
+    const recoverable = await checkoutHoldsRecoverableWork(entry, signal);
+    if (recoverable === null) stopping.push(entry);
+    else
+      held.push({
+        name: entry.name,
+        reason: `its dev server is running and ${recoverable}, so nothing was stopped and nothing was removed`,
+      });
+  }
+  const candidates = [
+    ...requested.filter((entry) => !running.includes(entry)),
+    ...stopping,
+  ];
+  const eligible: typeof candidates = [];
+  let stoppedProcessCount = 0;
+  for (const entry of candidates) {
+    const entryStats = await fs
+      .lstat(path.join(root, entry.name))
+      .catch(() => null);
+    const scan =
+      entryStats?.isDirectory() === true
+        ? await scanForGitWorkspace(path.join(root, entry.name), signal, limits)
+        : "clear";
+    if (scan !== "clear") {
+      held.push({ name: entry.name, reason: HELD_REASONS[scan] });
+      continue;
+    }
+    if (stopping.includes(entry))
       stoppedProcessCount += await stopInstance(
         path.join(root, entry.name),
         signal,
       );
+    eligible.push(entry);
+  }
   signal.throwIfAborted();
   const trashes = (await fs.readdir(root))
     .filter((name) => name.startsWith(".bb-trash-"))
@@ -327,18 +416,33 @@ export async function removeDeveloperEntries(
     if (trashes.length > 0) {
       const lease = retainWorker();
       void (async () => {
-        for (const trash of trashes)
+        for (const trash of trashes) {
+          const mayHoldWorkspace =
+            (await scanForGitWorkspace(
+              trash,
+              new AbortController().signal,
+              limits,
+            ).catch(() => "unreadable")) !== "clear";
+          if (mayHoldWorkspace) {
+            console.error(
+              "Development storage trash kept because it may hold a git checkout or worktree",
+              trash,
+            );
+            continue;
+          }
           await fs
             .rm(trash, { recursive: true, force: true })
             .catch((error) => {
               console.error("Development storage cleanup failed", error);
             });
+        }
       })().finally(() => lease.dispose());
     }
   }
   return {
     removed,
-    running: stopRunning ? [] : running.map((entry) => entry.name),
+    running: notStopped.map((entry) => entry.name),
     stoppedProcessCount,
+    held,
   };
 }

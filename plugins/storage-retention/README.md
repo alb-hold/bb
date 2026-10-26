@@ -16,25 +16,31 @@ keeps conversations and uploaded attachments and requires confirmation. The
 matching CLI command is `bb storage clear-archived-files --machine HOST_ID --yes`.
 
 The Clean up section offers Remove instances for `~/.bb-dev` entries whose
-source checkout no longer exists. The host re-verifies each checkout is missing,
-stops processes whose working directory is inside it, then removes the entry. The
-matching CLI command is `bb storage remove-dev-instances --machine HOST_ID --yes`.
+source checkout no longer exists. The host re-verifies each checkout is missing
+and removes the entry. It never stops a process. The matching CLI command is
+`bb storage remove-dev-instances --machine HOST_ID --yes`.
 Every development row's trash button removes that single entry immediately
 (`--instance NAME`), like the thread rows' trash button clears a thread's files.
 If the instance's dev server is running (fresh daemon lock), the row asks
-"Stop and remove?" first; confirming stops that instance's launcher and
-removes it. The CLI's `--yes` covers that confirmation.
+"Stop and remove?" first; confirming stops that instance's launcher and removes
+it, but only when its source checkout holds no recoverable work. The CLI's
+`--yes` covers that confirmation. An entry that contains a git checkout or
+worktree, whose checkout holds recoverable work while its server runs, or whose
+checkout path a live environment still covers is kept, and the page and CLI say
+why. Bulk and automatic removal never stop a process.
 
 Scans also run `git worktree list` in each project source on the machine and
 report linked worktrees that no live BB environment owns, such as ones agents
 created with `git worktree add`. The Worktrees by project table counts them next
 to BB worktrees, and the Clean up section lists them with sizes. Removal runs
-`git worktree remove` on the host after rechecking that the worktree is unlocked,
-clean, and not detached on commits outside every branch and tag; branches are
-kept. Rows show the blockers found during the scan. Removing a kept worktree from
-its row asks "Remove anyway?" and runs `git worktree remove --force`; bulk removal
-never forces. The matching CLI command is
-`bb storage remove-external-worktrees --machine HOST_ID [--path PATH [--force]] --yes`.
+`git worktree remove` on the host after rechecking that the worktree holds no
+recoverable work (it is unlocked, has no `.keep-worktree` marker, no merge or
+rebase in progress, no uncommitted or untracked changes, no commits that are on
+no remote branch, no stashed changes on its branch, and no process working in
+it); branches are kept. Rows show the blockers found during the scan, and a
+worktree that fails the recheck is kept with the reasons; there is no force
+option. The matching CLI command is
+`bb storage remove-external-worktrees --machine HOST_ID [--path PATH] --yes`.
 
 Large-file cleanup from the page starts a background job so slow folder walks
 can finish after the remote HTTP request returns. Each machine reports running,

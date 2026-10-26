@@ -228,18 +228,13 @@ export function registerCli(
         }),
         "remove-external-worktrees": cliCommand({
           summary:
-            "Remove git worktrees of project repositories that BB did not create, keeping branches and skipping worktrees with uncommitted changes, locked worktrees, or commits on no branch",
+            "Remove git worktrees of project repositories that BB did not create, keeping branches and skipping any worktree with recoverable work: uncommitted or untracked changes, commits on no remote, stashes, a merge or rebase in progress, a lock, a .keep-worktree marker, or a process working in it",
           options: {
             machine: MACHINE,
             path: {
               type: "string",
               description:
                 "Remove only this worktree path from the last scan (default: every worktree created outside BB)",
-            },
-            force: {
-              type: "boolean",
-              description:
-                "With --path, also remove a locked worktree or one with uncommitted changes or commits on no branch, discarding them",
             },
             yes: YES,
           },
@@ -250,16 +245,11 @@ export function registerCli(
                   "Pass --yes to permanently delete these worktree checkouts.",
                 );
               const hostId = required(input.options.machine, "machine");
-              if (input.options.path === undefined) {
-                if (input.options.force)
-                  throw new Error("--force requires --path.");
-                return storage.removeExternalWorktrees({ hostId, paths: null });
-              }
-              return storage.removeExternalWorktrees({
-                hostId,
-                paths: [input.options.path],
-                force: input.options.force === true,
-              });
+              return storage.removeExternalWorktrees(
+                input.options.path === undefined
+                  ? { hostId, paths: null }
+                  : { hostId, paths: [input.options.path] },
+              );
             }),
         }),
         "clear-thread": cliCommand({
@@ -296,13 +286,13 @@ export function registerCli(
         }),
         "remove-dev-instances": cliCommand({
           summary:
-            "Remove ~/.bb-dev instances whose source checkout no longer exists, stopping servers still running from them",
+            "Remove ~/.bb-dev instances whose source checkout no longer exists, never stopping a process; with --instance, remove one entry and stop its dev server first if its checkout has no recoverable work. Keeps any instance that contains a git worktree",
           options: {
             machine: MACHINE,
             instance: {
               type: "string",
               description:
-                "Remove only this ~/.bb-dev entry, stopping its dev server first if it is running (default: every instance with a missing checkout)",
+                "Remove only this ~/.bb-dev entry, stopping its dev server first if it is running and its checkout has no recoverable work (default: every instance with a missing checkout, which never stops anything)",
             },
             yes: YES,
           },
@@ -310,7 +300,7 @@ export function registerCli(
             output(async () => {
               if (!input.options.yes)
                 throw new Error(
-                  "Pass --yes to stop their servers and permanently remove development instance data.",
+                  "Pass --yes to permanently remove development instance data.",
                 );
               return storage.removeDevInstances({
                 hostId: required(input.options.machine, "machine"),

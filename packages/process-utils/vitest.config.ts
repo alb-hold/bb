@@ -6,6 +6,7 @@ import {
 export default defineWorkspaceTestConfig({
   test: {
     silent: "passed-only",
+    setupFiles: ["./vitest.setup.ts"],
     projects: sharedWorkerProjects({
       pkgDir: import.meta.dirname,
       name: "@bb/process-utils",
