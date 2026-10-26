@@ -584,6 +584,61 @@ describe("native terminal questions", () => {
       expect(tracker.heartbeat()).toMatchObject({ state: "working" });
     });
 
+    it("matches duplicate prompts by rewritten updatedInput without closing a different input", () => {
+      const { hook, call, ask, done, tracker } = holder();
+      const distinctInput = bash("another permission");
+      const originalInput = bash("ask before rewrite");
+      const updatedInput = bash("ask after rewrite");
+      const preToolUseResult = {
+        hookSpecificOutput: {
+          hookEventName: "PreToolUse",
+          updatedInput,
+        },
+      };
+
+      hook(ask(distinctInput));
+      hook(call("toolu_A", originalInput));
+      hook(call("toolu_B", originalInput));
+      hook(ask(preToolUseResult.hookSpecificOutput.updatedInput));
+      const opened = hook(ask(preToolUseResult.hookSpecificOutput.updatedInput));
+      expect(waiting(opened)).toEqual([
+        {
+          id: "permission:Bash#n0.1",
+          prompt: "Claude Code needs permission to use: Bash",
+        },
+        {
+          id: "permission:Bash#n0.2",
+          prompt: "Claude Code needs permission to use: Bash",
+        },
+        {
+          id: "permission:Bash#n0.3",
+          prompt: "Claude Code needs permission to use: Bash",
+        },
+      ]);
+
+      expect(waiting(hook(done("toolu_B", updatedInput)))).toEqual([
+        {
+          id: "permission:Bash#n0.1",
+          prompt: "Claude Code needs permission to use: Bash",
+        },
+        {
+          id: "permission:Bash#n0.3",
+          prompt: "Claude Code needs permission to use: Bash",
+        },
+      ]);
+      expect(waiting(hook(done("toolu_A", updatedInput)))).toEqual([
+        {
+          id: "permission:Bash#n0.1",
+          prompt: "Claude Code needs permission to use: Bash",
+        },
+      ]);
+      expect(hook(done("toolu_C", distinctInput))).toEqual({
+        state: "working",
+        prompt: null,
+      });
+      expect(tracker.heartbeat()).toMatchObject({ state: "working" });
+    });
+
     it("settles two prompts from three same-input calls one at a time", () => {
       const { hook, call, ask, done, tracker } = holder();
       const input = bash("make build");
