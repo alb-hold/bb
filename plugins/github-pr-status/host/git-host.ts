@@ -570,7 +570,6 @@ async function isConfiguredGitHubHost(
   const normalizedHost = host.toLowerCase();
   if (
     normalizedHost === "github.com" ||
-    normalizedHost.endsWith(".ghe.com") ||
     env.GH_HOST?.toLowerCase() === normalizedHost
   )
     return true;
