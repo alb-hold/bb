@@ -369,6 +369,215 @@ async function retainReplayAcrossLifecycleTransition(args: {
 }
 
 describe("terminal output retained from the data plane", () => {
+  it("yields retained timer output after one chunk slice and keeps order", async () => {
+    const fixture = await setup();
+    const lifecycle = fixture.terminalSessions as unknown as {
+      options: Record<string, unknown>;
+      flushAllRetainedOutputForTimer(): void;
+    };
+    const scheduled: Array<() => void> = [];
+    const times = [0, 51];
+    lifecycle.options.retainedOutputTimerClock = () => times.shift() ?? 51;
+    lifecycle.options.retainedOutputTimerScheduler = (callback: () => void) =>
+      scheduled.push(callback);
+    const chunks = Array.from({ length: 96 }, (_, seq) => ({
+      seq,
+      dataBase64: Buffer.from(`slice-${seq}`).toString("base64"),
+    }));
+    fixture.terminalSessions.recordDirectTerminalOutputBatch({
+      daemonSessionId: fixture.session.id,
+      terminalId: fixture.terminal.id,
+      chunks,
+    });
+    lifecycle.flushAllRetainedOutputForTimer();
+    expect(
+      getRetainedTerminalOutput(fixture.db, {
+        hostId: fixture.host.id,
+        terminalSessionId: fixture.terminal.id,
+        now: Date.now(),
+      })?.map(({ seq }) => seq),
+    ).toEqual(chunks.slice(0, 32).map(({ seq }) => seq));
+    expect(scheduled).toHaveLength(1);
+    const order: string[] = [];
+    setImmediate(() => order.push("queued task"));
+    setImmediate(() => {
+      order.push("next slice");
+      scheduled.shift()!();
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(order[0]).toBe("queued task");
+    while (scheduled.length > 0) scheduled.shift()!();
+    expect(getRetainedTerminalOutput(fixture.db, {
+      hostId: fixture.host.id,
+      terminalSessionId: fixture.terminal.id,
+      now: Date.now(),
+    })).toEqual(chunks);
+    fixture.child.shutdown();
+  });
+
+  it("matches unsliced retained output across two terminals and hosts", async () => {
+    const fixture = await setup();
+    const secondHostSession = seedHostSession(fixture.harness.deps);
+    const secondProject = seedProjectWithSource(fixture.harness.deps, {
+      hostId: secondHostSession.host.id,
+    });
+    const secondThread = seedThread(fixture.harness.deps, {
+      projectId: secondProject.project.id,
+    });
+    const makeTerminal = (
+      hostId: string,
+      daemonSessionId: string,
+      threadId: string,
+      title: string,
+    ) =>
+      createTerminalSession(fixture.db, {
+        cols: 80,
+        environmentId: null,
+        hostId,
+        daemonSessionId,
+        initialCwd: "/tmp",
+        rows: 24,
+        status: "running",
+        threadId,
+        title,
+      });
+    const secondTerminal = makeTerminal(
+      secondHostSession.host.id,
+      secondHostSession.session.id,
+      secondThread.id,
+      "sliced second host",
+    );
+    const baselineOne = makeTerminal(
+      fixture.host.id,
+      fixture.session.id,
+      fixture.thread.id,
+      "baseline one",
+    );
+    const baselineTwo = makeTerminal(
+      secondHostSession.host.id,
+      secondHostSession.session.id,
+      secondThread.id,
+      "baseline two",
+    );
+    const chunks = Array.from({ length: 96 }, (_, seq) => ({
+      seq,
+      dataBase64: Buffer.from(`same-${seq}`).toString("base64"),
+    }));
+    const baselineArgs = [
+      { hostId: fixture.host.id, terminalSessionId: baselineOne.id },
+      { hostId: secondHostSession.host.id, terminalSessionId: baselineTwo.id },
+    ];
+    for (const args of baselineArgs) {
+      appendRetainedTerminalOutputChunks(fixture.db, {
+        ...args,
+        chunks,
+        clock: Date.now,
+      });
+    }
+    const lifecycle = fixture.terminalSessions as unknown as {
+      options: Record<string, unknown>;
+      flushAllRetainedOutputForTimer(): void;
+    };
+    const scheduled: Array<() => void> = [];
+    lifecycle.options.retainedOutputTimerClock = () => 0;
+    lifecycle.options.retainedOutputTimerScheduler = (callback: () => void) =>
+      scheduled.push(callback);
+    fixture.terminalSessions.recordDirectTerminalOutputBatch({
+      daemonSessionId: fixture.session.id,
+      terminalId: fixture.terminal.id,
+      chunks,
+    });
+    fixture.terminalSessions.recordDirectTerminalOutputBatch({
+      daemonSessionId: secondHostSession.session.id,
+      terminalId: secondTerminal.id,
+      chunks,
+    });
+    lifecycle.flushAllRetainedOutputForTimer();
+    while (scheduled.length > 0) scheduled.shift()!();
+    for (const [terminal, hostId, baseline] of [
+      [fixture.terminal, fixture.host.id, baselineOne],
+      [secondTerminal, secondHostSession.host.id, baselineTwo],
+    ] as const) {
+      expect(getRetainedTerminalOutput(fixture.db, {
+        hostId,
+        terminalSessionId: terminal.id,
+        now: Date.now(),
+      })).toEqual(getRetainedTerminalOutput(fixture.db, {
+        hostId,
+        terminalSessionId: baseline.id,
+        now: Date.now(),
+      }));
+    }
+    fixture.child.shutdown();
+  });
+
+  it("keeps shutdown retained output flushing all chunks synchronously", async () => {
+    const fixture = await setup();
+    const chunks = Array.from({ length: 96 }, (_, seq) => ({
+      seq,
+      dataBase64: Buffer.from(`shutdown-${seq}`).toString("base64"),
+    }));
+    fixture.terminalSessions.recordDirectTerminalOutputBatch({
+      daemonSessionId: fixture.session.id,
+      terminalId: fixture.terminal.id,
+      chunks,
+    });
+    fixture.terminalSessions.flushAllRetainedOutput();
+    expect(getRetainedTerminalOutput(fixture.db, {
+      hostId: fixture.host.id,
+      terminalSessionId: fixture.terminal.id,
+      now: Date.now(),
+    })).toEqual(chunks);
+    fixture.child.shutdown();
+  });
+
+  it("records append phases and logs slow calls without retained bytes", async () => {
+    const fixture = await setup();
+    let measure = 0;
+    const chunk = {
+      seq: 1,
+      dataBase64: Buffer.from("secret-chunk-data").toString("base64"),
+    };
+    const timings = appendRetainedTerminalOutputChunks(fixture.db, {
+      hostId: fixture.host.id,
+      terminalSessionId: fixture.terminal.id,
+      chunks: [chunk],
+      clock: Date.now,
+      measureClock: () => ++measure,
+    });
+    const phaseTotal =
+      timings.expiryPruneMs +
+      timings.ownerLookupMs +
+      timings.rowReadParseMs +
+      timings.chunkLoopMs +
+      timings.upsertMs +
+      timings.hostRetentionMs;
+    expect(phaseTotal).toBeLessThanOrEqual(timings.totalMs);
+    expect(timings).toMatchObject({ chunkCount: 1, inputBytes: 17 });
+
+    let slowMeasure = 0;
+    (fixture.terminalSessions as unknown as { options: Record<string, unknown> })
+      .options.retainedOutputMeasureClock = () => (slowMeasure += 20);
+    const info = vi.spyOn(fixture.harness.deps.logger, "info");
+    fixture.terminalSessions.recordDirectTerminalOutputBatch({
+      daemonSessionId: fixture.session.id,
+      terminalId: fixture.terminal.id,
+      chunks: [{ ...chunk, seq: 2 }],
+    });
+    fixture.terminalSessions.flushAllRetainedOutput();
+    const slowRows = info.mock.calls.filter(([, message]) =>
+      String(message).includes("Slow retained terminal output append"),
+    );
+    expect(slowRows).toHaveLength(1);
+    const row = JSON.stringify(slowRows[0]?.[0]);
+    expect(row).toContain("terminalSessionId");
+    expect(row).toContain("hostId");
+    expect(row).toContain("phasesMs");
+    expect(row).toContain("hostRowsTrimmed");
+    expect(row).not.toContain("secret-chunk-data");
+    fixture.child.shutdown();
+  });
+
   it("flushes output and waits for replay before shutdown without logging it as lost", async () => {
     const fixture = await setup();
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
