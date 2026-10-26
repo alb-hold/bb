@@ -103,7 +103,6 @@ import {
 import { WorkRowBody } from "./TimelineRowDetails.js";
 import { TimelineDetailScroll } from "./TimelineDetailScroll.js";
 import { Button } from "@bb/shared-ui/button";
-import { AutoHeightContainer } from "../../ui/height-transition.js";
 import { Icon, type IconName } from "@bb/shared-ui/icon";
 import { presentationTintStyle } from "./presentation-display.js";
 import { usePluginIconUrl } from "@/lib/plugin-logos";
@@ -114,9 +113,10 @@ import {
 } from "./PluginTimelineRendererBody.js";
 import type { PromptMentionLinkResolver } from "@bb/client-core";
 import {
-  TimelineScrollRestoreRowIdContext,
+  TimelineScrollRestoreContext,
   useBottomAnchoredScroll,
 } from "@/components/ui/bottom-anchored-scroll-body.js";
+import { AutoHeightContainer } from "@/components/ui/height-transition.js";
 import {
   collectSearchedMessageAncestorRowIds,
   SearchMessageLocationProvider,
@@ -126,7 +126,6 @@ import {
 import {
   joinSignatureParts,
   timelineRowRenderSignature,
-  timelineRowsSignature,
 } from "@bb/client-core";
 import {
   TOP_LEVEL_TIMELINE_ROW_INTRINSIC_SIZE_CLASS_NAME,
@@ -580,9 +579,17 @@ function useTimelineSearchExpansionRowIds(
   }, [inheritedRowIds, rows, target, threadId]);
 }
 
+function useTimelineViewRowsCache(): GetTimelineViewRows {
+  const cacheRef = useRef(createTimelineViewRowsCache());
+  return useCallback<GetTimelineViewRows>(
+    (rawRows, options) =>
+      buildTimelineViewRows(rawRows, { ...options, cache: cacheRef.current }),
+    [],
+  );
+}
+
 function timelineHeightSnapRevision(rows: readonly TimelineRow[]): string {
   const firstRowId = rows[0]?.id;
-
   for (let index = rows.length - 1; index >= 0; index -= 1) {
     const row = rows[index];
     if (row?.kind === "turn") {
@@ -595,15 +602,6 @@ function timelineHeightSnapRevision(rows: readonly TimelineRow[]): string {
     }
   }
   return joinSignatureParts([firstRowId, "active"]);
-}
-
-function useTimelineViewRowsCache(): GetTimelineViewRows {
-  const cacheRef = useRef(createTimelineViewRowsCache());
-  return useCallback<GetTimelineViewRows>(
-    (rawRows, options) =>
-      buildTimelineViewRows(rawRows, { ...options, cache: cacheRef.current }),
-    [],
-  );
 }
 
 function shouldRenderCompactActivityIntentRows(
@@ -1282,7 +1280,6 @@ function TimelineSystemDetailBlock({
     <TimelineDetailScroll
       size="base"
       streaming={streaming}
-      contentKey={detail}
       className="overflow-hidden rounded-lg border border-border bg-card"
     >
       <pre className="whitespace-pre-wrap break-words px-4 py-3 font-mono text-xs leading-tight text-subtle-foreground opacity-70">
@@ -1370,11 +1367,7 @@ function TimelineExpandableBodyContent({
       const isFrontier =
         row.kind === "bundle-summary" && row.id === activeLatestBundleId;
       return (
-        <TimelineDetailScroll
-          size="summary"
-          streaming={isFrontier}
-          contentKey={timelineRowsSignature(row.children)}
-        >
+        <TimelineDetailScroll size="summary" streaming={isFrontier}>
           {list}
         </TimelineDetailScroll>
       );
@@ -1714,7 +1707,6 @@ function DelegationRowBody({ row }: { row: TimelineViewDelegationWorkRow }) {
     <TimelineDetailScroll
       size="delegation"
       streaming={delegationActive}
-      contentKey={`${row.childRows === null ? "deferred" : timelineRowsSignature(row.childRows)}|${row.output.length}`}
       className={NESTED_TIMELINE_GROUP_LINE_CLASS_NAME}
     >
       <div className="flex flex-col gap-3">
@@ -2180,7 +2172,7 @@ export function buildTimelineRowsListItems({
     unreadDividerPlacement,
   });
 
-  for (let index = 0; index < rows.length;) {
+  for (let index = 0; index < rows.length; ) {
     if (index === dividerIndex) {
       items.push({ kind: "unread-divider", id: "thread-unread-divider" });
     }
@@ -2339,17 +2331,15 @@ function TimelineRowItemWrapper({
       ref={composedRef}
       data-timeline-row-id={row.id}
       data-timeline-window-key={row.id}
-      data-index={windowedState.itemIndex}
       className={
         isTopLevel && !windowedState.windowingEnabled
           ? TOP_LEVEL_TIMELINE_ROW_INTRINSIC_SIZE_CLASS_NAME
           : undefined
       }
       style={
-        windowedState.itemStyle ??
-        (isTopLevel && !windowedState.windowingEnabled
+        isTopLevel && !windowedState.windowingEnabled
           ? timelineRowContainmentStyle(row)
-          : undefined)
+          : undefined
       }
     >
       {children}
@@ -2447,7 +2437,7 @@ function TimelineRowsList({
 }: TimelineRowsListProps) {
   const { threadId } = useTimelineRendererStaticContext();
   const bottomAnchor = useBottomAnchoredScroll();
-  const scrollRestoreRowId = useContext(TimelineScrollRestoreRowIdContext);
+  const scrollRestore = useContext(TimelineScrollRestoreContext);
   const detailScrollRoot = useContext(TimelineWindowingScrollRootContext);
   const inheritedMeasurements = useContext(
     TimelineWindowingMeasurementsContext,
@@ -2528,24 +2518,11 @@ function TimelineRowsList({
     for (const rowId of stableSearchExpandedRowIds) {
       keys.add(rowId);
     }
-    if (spacing === "top-level" && scrollRestoreRowId !== null) {
-      keys.add(scrollRestoreRowId);
-    }
     if (spacing === "top-level" && navigationTargetRowId != null) {
       keys.add(navigationTargetRowId);
     }
     return keys;
-  }, [
-    items,
-    scrollRestoreRowId,
-    spacing,
-    stableSearchExpandedRowIds,
-    navigationTargetRowId,
-  ]);
-  const getWindowingScrollElement =
-    detailScrollRoot?.getScrollElement ??
-    bottomAnchor?.getScrollElement ??
-    null;
+  }, [items, spacing, stableSearchExpandedRowIds, navigationTargetRowId]);
   const isTopLevelList = spacing === "top-level";
   const { measureRef: messageColumnWidthSourceRef, width: messageColumnWidth } =
     useMeasuredWidth({ enabled: isTopLevelList });
@@ -2579,7 +2556,9 @@ function TimelineRowsList({
               return 28;
             }}
             gap={spacing === "bundle" ? 0 : 8}
-            getScrollElement={getWindowingScrollElement}
+            initialWindowAnchor={
+              isTopLevelList && detailScrollRoot === null ? scrollRestore : null
+            }
             itemKeys={itemKeys}
             measurements={measurements}
             positionKeeper={
@@ -2602,9 +2581,7 @@ function TimelineRowsList({
                   <div
                     key={item.id}
                     ref={windowedState.itemRef}
-                    data-index={windowedState.itemIndex}
                     data-timeline-window-key={`divider:${item.id}`}
-                    style={windowedState.itemStyle}
                   >
                     <TimelineUnreadDivider
                       autoScroll={unreadDividerAutoScroll}
@@ -2617,11 +2594,9 @@ function TimelineRowsList({
                   <div
                     key={item.id}
                     ref={windowedState.itemRef}
-                    data-index={windowedState.itemIndex}
                     data-timeline-row-id={item.id}
                     data-timeline-window-key={item.id}
                     className="max-md:[contain-intrinsic-block-size:auto_1.25rem]"
-                    style={windowedState.itemStyle}
                   >
                     <TimelineInterruptionGroupView
                       activeLatestBundleId={activeLatestBundleId}
@@ -2676,11 +2651,11 @@ function ThreadTimelineRowsComponent(props: ThreadTimelineRowsProps) {
 function ThreadTimelineRowsForTimelineView(props: ThreadTimelineRowsProps) {
   const getViewRows = useTimelineViewRowsCache();
   const [windowingMeasurements] = useState(() => new Map<string, number>());
+  const heightSnapRevision = timelineHeightSnapRevision(props.timelineRows);
   const rows = useMemo(
     () => getViewRows(props.timelineRows),
     [getViewRows, props.timelineRows],
   );
-  const heightSnapRevision = timelineHeightSnapRevision(props.timelineRows);
   const latestActionableAssistantMessageId = useMemo(
     () => findLastActionableAssistantMessageId(rows),
     [rows],
@@ -2972,6 +2947,7 @@ function ThreadTimelineRowsForTimelineView(props: ThreadTimelineRowsProps) {
                               }
                             />
                           </AutoHeightContainer>
+
                           {hasSelectionActions ? (
                             <div
                               ref={setSelectionMenuLayer}

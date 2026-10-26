@@ -22,7 +22,7 @@ import {
   listSpendRollupRows,
   listThreadsWithPendingInteractionState,
   markThreadDeleted,
-  listLifecycleThreadTree,
+  listThreadDeletionTree,
   listPluginThreadMetadata,
   queuedThreadMessages,
   listThreadAncestors,
@@ -63,6 +63,11 @@ import {
 } from "@bb/server-contract";
 import type { Hono } from "hono";
 import type { AppDeps } from "../../types.js";
+import type { PluginService } from "../../services/plugins/plugin-service.js";
+import {
+  clearCurrentThreadListSlowQueryContext,
+  setCurrentThreadListSlowQueryContext,
+} from "../../services/system/event-loop-work.js";
 import { ApiError } from "../../errors.js";
 import {
   parseBoundedPositiveOptionalInteger,
@@ -258,7 +263,11 @@ function buildThreadSearchResponse(
   };
 }
 
-export function registerThreadBaseRoutes(app: Hono, deps: AppDeps): void {
+export function registerThreadBaseRoutes(
+  app: Hono,
+  deps: AppDeps,
+  pluginService: Pick<PluginService, "resolveRpcCaller">,
+): void {
   const { get, post, patch, del } = typedRoutes<PublicApiSchema>(app, {
     onValidationError: (msg) => new ApiError(400, "invalid_request", msg),
   });
@@ -337,43 +346,64 @@ export function registerThreadBaseRoutes(app: Hono, deps: AppDeps): void {
       limit: query.limit,
       offset: query.offset,
     });
-    if (query.projectId) {
-      requirePublicProject(deps.db, query.projectId);
-    }
-    if (query.sectionId && query.unsectioned === "true") {
-      throw new ApiError(
-        400,
-        "invalid_request",
-        "sectionId and unsectioned cannot be used together",
-      );
-    }
-    if (query.sectionId) {
-      requireThreadSection(deps, query.sectionId);
-    }
-    const threads = listThreadsWithPendingInteractionState(deps.db, {
-      ...(query.projectId ? { projectId: query.projectId } : {}),
-      ...(query.environmentId ? { environmentId: query.environmentId } : {}),
-      ...(query.hostId ? { hostId: query.hostId } : {}),
-      ...(query.parentThreadId ? { parentThreadId: query.parentThreadId } : {}),
-      ...(query.sourceThreadId ? { sourceThreadId: query.sourceThreadId } : {}),
-      ...(query.sectionId ? { sectionId: query.sectionId } : {}),
-      ...(query.unsectioned === "true" ? { unsectioned: true } : {}),
-      ...(query.originKind ? { originKind: query.originKind } : {}),
-      ...(query.originPluginId ? { originPluginId: query.originPluginId } : {}),
-      ...(query.threadIds === undefined
-        ? {}
-        : { threadIds: parseThreadListThreadIds(query.threadIds) }),
-      includeHidden: query.includeHidden === "true",
-      archived:
-        query.archived === undefined ? undefined : query.archived === "true",
-      hasParent:
-        query.hasParent === undefined ? undefined : query.hasParent === "true",
-      ...(limit !== undefined ? { limit } : {}),
-      ...(offset !== undefined ? { offset } : {}),
-    });
-    return context.json(
-      toThreadListEntryResponses(deps, { threads }) satisfies ThreadListEntry[],
+    setCurrentThreadListSlowQueryContext(
+      context,
+      query,
+      limit,
+      offset,
+      pluginService,
     );
+    try {
+      if (query.projectId) {
+        requirePublicProject(deps.db, query.projectId);
+      }
+      if (query.sectionId && query.unsectioned === "true") {
+        throw new ApiError(
+          400,
+          "invalid_request",
+          "sectionId and unsectioned cannot be used together",
+        );
+      }
+      if (query.sectionId) {
+        requireThreadSection(deps, query.sectionId);
+      }
+      const threads = listThreadsWithPendingInteractionState(deps.db, {
+        ...(query.projectId ? { projectId: query.projectId } : {}),
+        ...(query.environmentId ? { environmentId: query.environmentId } : {}),
+        ...(query.hostId ? { hostId: query.hostId } : {}),
+        ...(query.parentThreadId
+          ? { parentThreadId: query.parentThreadId }
+          : {}),
+        ...(query.sourceThreadId
+          ? { sourceThreadId: query.sourceThreadId }
+          : {}),
+        ...(query.sectionId ? { sectionId: query.sectionId } : {}),
+        ...(query.unsectioned === "true" ? { unsectioned: true } : {}),
+        ...(query.originKind ? { originKind: query.originKind } : {}),
+        ...(query.originPluginId
+          ? { originPluginId: query.originPluginId }
+          : {}),
+        ...(query.threadIds === undefined
+          ? {}
+          : { threadIds: parseThreadListThreadIds(query.threadIds) }),
+        includeHidden: query.includeHidden === "true",
+        archived:
+          query.archived === undefined ? undefined : query.archived === "true",
+        hasParent:
+          query.hasParent === undefined
+            ? undefined
+            : query.hasParent === "true",
+        ...(limit !== undefined ? { limit } : {}),
+        ...(offset !== undefined ? { offset } : {}),
+      });
+      return context.json(
+        toThreadListEntryResponses(deps, {
+          threads,
+        }) satisfies ThreadListEntry[],
+      );
+    } finally {
+      clearCurrentThreadListSlowQueryContext();
+    }
   });
 
   get(routes.searchPromptHistory, (context, query) => {
@@ -916,7 +946,7 @@ export function registerThreadBaseRoutes(app: Hono, deps: AppDeps): void {
       deps,
       thread,
     });
-    const dependents = listLifecycleThreadTree(deps.db, thread.id);
+    const dependents = listThreadDeletionTree(deps.db, thread.id);
     markThreadDeleted(deps.db, deps.hub, { threadId: thread.id });
     for (const dependent of dependents) {
       const deleted = getThread(deps.db, dependent.id);

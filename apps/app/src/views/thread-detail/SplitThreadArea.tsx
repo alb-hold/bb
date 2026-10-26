@@ -435,12 +435,8 @@ function SplitThreadAreaContent({ routeContent }: SplitThreadAreaProps) {
     const focus = () => {
       if (!root.isConnected || root.getAttribute("aria-hidden") === "true")
         return false;
-      const composer = root.querySelector<HTMLElement>(
-        "[data-promptbox] [contenteditable='true'], [data-promptbox] textarea:not(:disabled)",
-      );
-      if (composer) {
-        focusPaneComposer(composer);
-        return document.activeElement === composer;
+      if (focusPaneComposer(root) && root.contains(document.activeElement)) {
+        return true;
       }
       const nativeTerminalInput = root.querySelector<HTMLElement>(
         "[data-native-terminal-thread] .xterm-helper-textarea",

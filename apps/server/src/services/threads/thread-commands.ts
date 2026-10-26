@@ -134,6 +134,7 @@ interface RuntimeExecutionOptionsArgs {
 
 interface BuildExecutionOptionsArgs {
   hostId?: string | null;
+  inheritParentExecution?: boolean;
   projectDefaults?: ProjectExecutionDefaults | null;
   threadId: string;
 }
@@ -260,6 +261,9 @@ export async function buildExecutionOptions(
       ? { projectDefaults: args.projectDefaults }
       : {}),
     ...(args.hostId !== undefined ? { hostId: args.hostId } : {}),
+    ...(args.inheritParentExecution === true
+      ? { inheritParentExecution: true }
+      : {}),
     executionSource: "client/turn/requested",
     input: buildExistingThreadExecutionInput(request),
     threadId: args.threadId,

@@ -3,6 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { resourceUsage } from "node:process";
+import { createRequire } from "node:module";
+import { Worker } from "node:worker_threads";
 import { describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
 import {
@@ -16,6 +18,7 @@ import {
 import { createMigratedConnection } from "../src/testing.js";
 import { migrate } from "../src/migrate.js";
 import { hosts } from "../src/schema.js";
+import { classifyStatementReader } from "../src/statement-lock-wait-source.js";
 
 interface LoggedInfo {
   fields: SlowDbQueryLogFields;
@@ -43,7 +46,403 @@ function getOnlyInfoLog(logger: CapturingSlowQueryLogger): LoggedInfo {
   return infoLog;
 }
 
+async function createWriteLockFixture(prefix: string) {
+  const directory = mkdtempSync(join(tmpdir(), prefix));
+  const databasePath = join(directory, "bb.db");
+  const template = createMigratedConnection();
+  writeFileSync(databasePath, template.$client.serialize());
+  template.$client.close();
+  const logger = new CapturingSlowQueryLogger();
+  const db = createConnection(databasePath, {
+    slowQueryLogger: logger,
+    slowQueryThresholdMs: 100,
+  });
+  db.$client.exec(
+    "CREATE TABLE lock_timing_values (id INTEGER PRIMARY KEY, value INTEGER)",
+  );
+  db.$client.exec("INSERT INTO lock_timing_values (id, value) VALUES (1, 0)");
+  const worker = new Worker(
+    `const { parentPort, workerData } = require("node:worker_threads");
+     const Database = require(workerData.driverPath);
+     const db = new Database(workerData.databasePath);
+     db.pragma("journal_mode = WAL");
+     db.exec("BEGIN IMMEDIATE");
+     parentPort.postMessage("held");
+     setTimeout(() => { db.exec("COMMIT"); db.close(); }, 300);`,
+    {
+      eval: true,
+      workerData: {
+        databasePath,
+        driverPath: createRequire(import.meta.url).resolve("better-sqlite3"),
+      },
+    },
+  );
+  await new Promise<void>((resolve, reject) => {
+    worker.once("message", resolve);
+    worker.once("error", reject);
+  });
+  return { db, directory, logger, worker };
+}
+
 describe("createConnection", () => {
+  it("reports unknown when prepared statement reader metadata is unavailable", () => {
+    const statement = { reader: undefined };
+    const lockWaitSource = classifyStatementReader(statement);
+    expect(lockWaitSource).toBe("unknown");
+    expect(lockWaitSource).not.toBe("none");
+  });
+
+  it("separates BEGIN lock wait from transaction body time", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "bb-db-lock-wait-"));
+    const databasePath = join(directory, "bb.db");
+    const logger = new CapturingSlowQueryLogger();
+    const db = createConnection(databasePath, {
+      slowQueryLogger: logger,
+      slowQueryThresholdMs: 100,
+    });
+    const worker = new Worker(
+      `const { parentPort, workerData } = require("node:worker_threads");
+       const Database = require(workerData.driverPath);
+       const db = new Database(workerData.databasePath);
+       db.pragma("journal_mode = WAL");
+       db.exec("BEGIN IMMEDIATE");
+       parentPort.postMessage("held");
+       setTimeout(() => { db.exec("COMMIT"); db.close(); }, 300);`,
+      {
+        eval: true,
+        workerData: {
+          databasePath,
+          driverPath: createRequire(import.meta.url).resolve("better-sqlite3"),
+        },
+      },
+    );
+    try {
+      await new Promise<void>((resolve, reject) => {
+        worker.once("message", resolve);
+        worker.once("error", reject);
+      });
+      db.$client.transaction(() => {}).immediate();
+      const transactionLog = logger.infoLogs.find(
+        (log) => log.fields.operation === "transaction",
+      );
+      expect(transactionLog).toBeDefined();
+      expect(transactionLog?.fields.lockWaitSource).toBe("begin");
+      expect(transactionLog?.fields.lockWaitMs).toBeGreaterThanOrEqual(250);
+      expect(transactionLog?.fields.bodyMs).toBeLessThan(100);
+    } finally {
+      await worker.terminate();
+      db.$client.close();
+      rmSync(directory, { force: true, recursive: true });
+    }
+  });
+
+  it("measures the first write in a DEFAULT transaction after reads", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "bb-db-first-write-"));
+    const databasePath = join(directory, "bb.db");
+    const logger = new CapturingSlowQueryLogger();
+    const template = createMigratedConnection();
+    writeFileSync(databasePath, template.$client.serialize());
+    template.$client.close();
+    const db = createConnection(databasePath, {
+      slowQueryLogger: logger,
+      slowQueryThresholdMs: 100,
+    });
+    db.$client.exec(
+      "CREATE TABLE lock_timing_values (id INTEGER PRIMARY KEY, value INTEGER)",
+    );
+    db.$client.exec("INSERT INTO lock_timing_values (id, value) VALUES (1, 0)");
+    const worker = new Worker(
+      `const { parentPort, workerData } = require("node:worker_threads");
+       const Database = require(workerData.driverPath);
+       const db = new Database(workerData.databasePath);
+       db.pragma("journal_mode = WAL");
+       db.exec("BEGIN IMMEDIATE");
+       parentPort.postMessage("held");
+       setTimeout(() => { db.exec("COMMIT"); db.close(); }, 300);`,
+      {
+        eval: true,
+        workerData: {
+          databasePath,
+          driverPath: createRequire(import.meta.url).resolve("better-sqlite3"),
+        },
+      },
+    );
+    try {
+      await new Promise<void>((resolve, reject) => {
+        worker.once("message", resolve);
+        worker.once("error", reject);
+      });
+      db.$client
+        .transaction(() => {
+          db.$client.prepare("SELECT 1 AS read_value").get();
+          db.$client
+            .prepare("UPDATE lock_timing_values SET value = value + 1 WHERE id = 1")
+            .run();
+        })
+        .default();
+      const transactionLog = logger.infoLogs.find(
+        (log) => log.fields.operation === "transaction",
+      );
+      expect(transactionLog?.fields.lockWaitSource).toBe("first-write");
+      expect(transactionLog?.fields.lockWaitMs).toBeGreaterThanOrEqual(250);
+      expect(transactionLog?.fields.bodyMs).toBeLessThan(100);
+    } finally {
+      await worker.terminate();
+      db.$client.close();
+      rmSync(directory, { force: true, recursive: true });
+    }
+  });
+
+  it("preserves first-write timing when exec follows a lock-waiting write", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "bb-db-first-write-exec-followup-"));
+    const databasePath = join(directory, "bb.db");
+    const logger = new CapturingSlowQueryLogger();
+    const template = createMigratedConnection();
+    writeFileSync(databasePath, template.$client.serialize());
+    template.$client.close();
+    const db = createConnection(databasePath, {
+      slowQueryLogger: logger,
+      slowQueryThresholdMs: 100,
+    });
+    db.$client.exec(
+      "CREATE TABLE lock_timing_values (id INTEGER PRIMARY KEY, value INTEGER)",
+    );
+    db.$client.exec("INSERT INTO lock_timing_values (id, value) VALUES (1, 0)");
+    const worker = new Worker(
+      `const { parentPort, workerData } = require("node:worker_threads");
+       const Database = require(workerData.driverPath);
+       const db = new Database(workerData.databasePath);
+       db.pragma("journal_mode = WAL");
+       db.exec("BEGIN IMMEDIATE");
+       parentPort.postMessage("held");
+       setTimeout(() => { db.exec("COMMIT"); db.close(); }, 300);`,
+      {
+        eval: true,
+        workerData: {
+          databasePath,
+          driverPath: createRequire(import.meta.url).resolve("better-sqlite3"),
+        },
+      },
+    );
+    try {
+      await new Promise<void>((resolve, reject) => {
+        worker.once("message", resolve);
+        worker.once("error", reject);
+      });
+      db.$client
+        .transaction(() => {
+          db.$client.prepare("SELECT 1 AS read_value").get();
+          db.$client
+            .prepare("UPDATE lock_timing_values SET value = value + 1 WHERE id = 1")
+            .run();
+          db.$client.exec("SELECT 1");
+        })
+        .default();
+      const transactionLog = logger.infoLogs.find(
+        (log) => log.fields.operation === "transaction",
+      );
+      expect(transactionLog?.fields.lockWaitSource).toBe("first-write");
+      expect(transactionLog?.fields.lockWaitMs).toBeGreaterThanOrEqual(250);
+      expect(transactionLog?.fields.bodyMs).toBeDefined();
+    } finally {
+      await worker.terminate();
+      db.$client.close();
+      rmSync(directory, { force: true, recursive: true });
+    }
+  });
+
+  it("preserves BEGIN attribution when exec follows an IMMEDIATE transaction begin", async () => {
+    const { db, directory, logger, worker } = await createWriteLockFixture(
+      "bb-db-begin-exec-followup-",
+    );
+    try {
+      db.$client
+        .transaction(() => db.$client.exec("SELECT 1"))
+        .immediate();
+      const transactionLog = logger.infoLogs.find(
+        (log) => log.fields.operation === "transaction",
+      );
+      expect(transactionLog?.fields.lockWaitSource).toBe("begin");
+      expect(transactionLog?.fields.lockWaitMs).toBeGreaterThanOrEqual(250);
+      expect(transactionLog?.fields.bodyMs).toBeDefined();
+    } finally {
+      await worker.terminate();
+      db.$client.close();
+      rmSync(directory, { force: true, recursive: true });
+    }
+  });
+
+  it("keeps exec attribution when a prepared write follows exec", async () => {
+    const { db, directory, logger, worker } = await createWriteLockFixture(
+      "bb-db-exec-prepared-followup-",
+    );
+    try {
+      db.$client
+        .transaction(() => {
+          db.$client.exec("SELECT 1");
+          db.$client
+            .prepare("UPDATE lock_timing_values SET value = value + 1 WHERE id = 1")
+            .run();
+        })
+        .default();
+      const transactionLog = logger.infoLogs.find(
+        (log) => log.fields.operation === "transaction",
+      );
+      expect(transactionLog?.fields.lockWaitSource).toBe("exec");
+      expect(transactionLog?.fields).not.toHaveProperty("lockWaitMs");
+      expect(transactionLog?.fields).not.toHaveProperty("bodyMs");
+    } finally {
+      await worker.terminate();
+      db.$client.close();
+      rmSync(directory, { force: true, recursive: true });
+    }
+  });
+
+  it("classifies prepared writes from reader metadata and leaves exec unattributed", () => {
+    const directory = mkdtempSync(join(tmpdir(), "bb-db-driver-lock-classification-"));
+    const template = createMigratedConnection();
+    const databasePath = join(directory, "bb.db");
+    writeFileSync(databasePath, template.$client.serialize());
+    template.$client.close();
+    const logger = new CapturingSlowQueryLogger();
+    const db = createConnection(databasePath, {
+      slowQueryLogger: logger,
+      slowQueryThresholdMs: 0,
+    });
+    try {
+      db.$client.exec("CREATE TABLE classify_values (value INTEGER PRIMARY KEY)");
+      db.$client.prepare("INSERT INTO classify_values VALUES (1)").run();
+      const writes = [
+        "-- note\nINSERT INTO classify_values VALUES (2)",
+        "WITH value AS (SELECT 3 AS value) INSERT INTO classify_values SELECT value FROM value",
+        "REPLACE INTO classify_values VALUES (1)",
+      ];
+      for (const sql of writes) {
+        logger.clear();
+        db.$client.transaction(() => db.$client.prepare(sql).run()).default();
+        const txLog = logger.infoLogs.find((log) => log.fields.operation === "transaction");
+        expect(txLog?.fields.lockWaitSource).toBe("first-write");
+      }
+      const execWrites = [
+        "-- note\nINSERT INTO classify_values VALUES (4)",
+        "WITH value AS (SELECT 5 AS value) INSERT INTO classify_values SELECT value FROM value",
+        "REPLACE INTO classify_values VALUES (1)",
+      ];
+      for (const sql of execWrites) {
+        logger.clear();
+        db.$client.transaction(() => db.$client.exec(sql)).default();
+        const txLog = logger.infoLogs.find((log) => log.fields.operation === "transaction");
+        expect(txLog?.fields.lockWaitSource).toBe("exec");
+        expect(txLog?.fields).not.toHaveProperty("lockWaitMs");
+        expect(txLog?.fields).not.toHaveProperty("bodyMs");
+        expect(txLog?.fields.lockWaitSource).not.toBe("none");
+      }
+      logger.clear();
+      db.$client.transaction(() => db.$client.prepare("SELECT 1").get()).default();
+      const readLog = logger.infoLogs.find((log) => log.fields.operation === "transaction");
+      expect(readLog?.fields.lockWaitSource).toBe("none");
+      expect(readLog?.fields.lockWaitMs).toBe(0);
+    } finally {
+      db.$client.close();
+      rmSync(directory, { force: true, recursive: true });
+    }
+  });
+
+  it("does not split lock wait for a multi-statement exec", () => {
+    const directory = mkdtempSync(join(tmpdir(), "bb-db-multi-exec-lock-"));
+    const logger = new CapturingSlowQueryLogger();
+    const db = createConnection(join(directory, "bb.db"), {
+      slowQueryLogger: logger,
+      slowQueryThresholdMs: 0,
+    });
+    try {
+      db.$client.exec("CREATE TABLE multi_exec_values (value INTEGER)");
+      logger.clear();
+      db.$client
+        .transaction(() => {
+          db.$client.exec(`
+            SELECT 1;
+            INSERT INTO multi_exec_values VALUES (1);
+            SELECT sum(value) FROM (
+              WITH RECURSIVE numbers(value) AS (
+                SELECT 1 UNION ALL SELECT value + 1 FROM numbers WHERE value < 100000
+              ) SELECT value FROM numbers
+            );
+          `);
+        })
+        .default();
+      const transactionLog = logger.infoLogs.find(
+        (log) => log.fields.operation === "transaction",
+      );
+      expect(logger.infoLogs.map((log) => log.fields.operation)).toContain("exec");
+      expect(transactionLog?.fields.lockWaitSource).toBe("exec");
+      expect(transactionLog?.fields).not.toHaveProperty("lockWaitMs");
+      expect(transactionLog?.fields).not.toHaveProperty("bodyMs");
+    } finally {
+      db.$client.close();
+      rmSync(directory, { force: true, recursive: true });
+    }
+  });
+
+
+  it("does not split lock wait for two writes in one exec", () => {
+    const directory = mkdtempSync(join(tmpdir(), "bb-db-two-exec-writes-"));
+    const logger = new CapturingSlowQueryLogger();
+    const db = createConnection(join(directory, "bb.db"), {
+      slowQueryLogger: logger,
+      slowQueryThresholdMs: 0,
+    });
+    try {
+      db.$client.exec("CREATE TABLE two_exec_values (value INTEGER)");
+      logger.clear();
+      db.$client
+        .transaction(() => {
+          db.$client.exec(
+            "INSERT INTO two_exec_values VALUES (1); INSERT INTO two_exec_values VALUES (2);",
+          );
+        })
+        .default();
+      const transactionLog = logger.infoLogs.find(
+        (log) => log.fields.operation === "transaction",
+      );
+      expect(transactionLog?.fields.lockWaitSource).toBe("exec");
+      expect(transactionLog?.fields).not.toHaveProperty("lockWaitMs");
+      expect(transactionLog?.fields).not.toHaveProperty("bodyMs");
+    } finally {
+      db.$client.close();
+      rmSync(directory, { force: true, recursive: true });
+    }
+  });
+
+  it("reports near-zero BEGIN wait and preserves the slow-log threshold", () => {
+    const logger = new CapturingSlowQueryLogger();
+    const db = createConnection(":memory:", {
+      slowQueryLogger: logger,
+      slowQueryThresholdMs: 0,
+    });
+    db.$client.transaction(() => {}).immediate();
+    const transactionLog = logger.infoLogs.find(
+      (log) => log.fields.operation === "transaction",
+    );
+    expect(transactionLog?.fields.lockWaitSource).toBe("begin");
+    expect(transactionLog?.fields.lockWaitMs).toBeLessThan(10);
+    expect(transactionLog?.fields.bodyMs).toBeGreaterThanOrEqual(0);
+    db.$client.close();
+
+    const thresholdLogger = new CapturingSlowQueryLogger();
+    const thresholdDb = createConnection(":memory:", {
+      slowQueryLogger: thresholdLogger,
+      slowQueryThresholdMs: 100,
+    });
+    thresholdDb.$client.transaction(() => {}).immediate();
+    expect(
+      thresholdLogger.infoLogs.some(
+        (log) => log.fields.operation === "transaction",
+      ),
+    ).toBe(false);
+    thresholdDb.$client.close();
+  });
+
   it("distinguishes time waiting inside SQLite from CPU work", () => {
     const logger = new CapturingSlowQueryLogger();
     const db = createConnection(":memory:", {
