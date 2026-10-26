@@ -110,10 +110,10 @@ describe("upstream database migration reconciliation", () => {
 
       expect(addedMigrationRows).toEqual(addedMigrations);
       const markers = live.$client
-        .prepare(
+        .prepare<[], { environmentId: string; recordedAt: number }>(
           "SELECT environment_id AS environmentId, recorded_at AS recordedAt FROM fork_legacy_unreleased_environments",
         )
-        .all() as { environmentId: string; recordedAt: number }[];
+        .all();
       expect(markers.map((marker) => marker.environmentId)).toEqual([
         "env_seed",
       ]);
