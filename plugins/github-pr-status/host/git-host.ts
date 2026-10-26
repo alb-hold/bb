@@ -941,6 +941,22 @@ export async function runPullRequestActionForCurrentBranch(
       message: "Refusing a pull request branch that gh could read as an option",
     };
   }
+  if (args.action.operation === "merge") {
+    const displayedIdentity: Array<[string, string | number | null]> = [
+      ["host", args.action.expectedHost],
+      ["owner/repo", args.action.expectedRepository],
+      ["number", args.action.expectedNumber],
+      ["base ref", args.action.expectedBaseRef],
+    ];
+    for (const [field, value] of displayedIdentity) {
+      if (value === undefined || value === null || value === "") {
+        return {
+          ok: false,
+          message: `Missing displayed pull request ${field}; refusing to merge`,
+        };
+      }
+    }
+  }
   const lookup = await enqueueRead(branchTarget, args.cwd, true);
   if (lookup.outcome === "unavailable") {
     return { ok: false, message: lookup.message };
@@ -950,6 +966,23 @@ export async function runPullRequestActionForCurrentBranch(
   }
   let mergeHeadOid: string | null = null;
   if (args.action.operation === "merge") {
+    const mismatchedIdentity =
+      args.action.expectedHost !== branchTarget.host
+        ? "host"
+        : args.action.expectedRepository !==
+            `${branchTarget.owner}/${branchTarget.repository}`
+          ? "owner/repo"
+          : args.action.expectedNumber !== lookup.pullRequest.number
+            ? "number"
+            : args.action.expectedBaseRef !== lookup.pullRequest.baseRefName
+              ? "base ref"
+              : null;
+    if (mismatchedIdentity) {
+      return {
+        ok: false,
+        message: `Pull request ${mismatchedIdentity} changed since it was shown; refusing to merge`,
+      };
+    }
     const readOid = lookup.pullRequest.headRefOid;
     if (
       args.action.expectedHeadOid === null ||

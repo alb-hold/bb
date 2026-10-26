@@ -276,6 +276,10 @@ describe("pull request context segment", () => {
       environmentId: "env_1",
       method: "squash",
       expectedHeadOid: PULL_REQUEST.headRefOid,
+      expectedHost: "github.com",
+      expectedRepository: "acme/bb",
+      expectedNumber: PULL_REQUEST.number,
+      expectedBaseRef: PULL_REQUEST.baseRefName,
     });
     expect(sdk.mutationCalls).toEqual([
       {
@@ -284,6 +288,10 @@ describe("pull request context segment", () => {
           environmentId: "env_1",
           method: "squash",
           expectedHeadOid: PULL_REQUEST.headRefOid,
+          expectedHost: "github.com",
+          expectedRepository: "acme/bb",
+          expectedNumber: PULL_REQUEST.number,
+          expectedBaseRef: PULL_REQUEST.baseRefName,
         },
       },
     ]);

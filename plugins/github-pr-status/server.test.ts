@@ -503,6 +503,10 @@ describe("GitHub PR Status server", () => {
         environmentId: "env-1",
         method: "squash",
         expectedHeadOid: "a".repeat(40),
+        expectedHost: "github.com",
+        expectedRepository: "acme/bb",
+        expectedNumber: 7,
+        expectedBaseRef: "main",
       }),
     ).rejects.toMatchObject({
       code: "conflict",
@@ -525,6 +529,10 @@ describe("GitHub PR Status server", () => {
         environmentId: "env-1",
         method: "rebase",
         expectedHeadOid: "a".repeat(40),
+        expectedHost: "github.com",
+        expectedRepository: "acme/bb",
+        expectedNumber: 7,
+        expectedBaseRef: "main",
       }),
     ).resolves.toEqual({ message: "Pull request merge started" });
     expect(
@@ -610,6 +618,14 @@ describe("GitHub PR Status server", () => {
         "env-1",
         "--expected-head-oid",
         "b".repeat(40),
+        "--expected-host",
+        "github.com",
+        "--expected-repository",
+        "acme/bb",
+        "--expected-number",
+        "7",
+        "--expected-base-ref",
+        "main",
       ]),
     ).resolves.toMatchObject({
       exitCode: 1,

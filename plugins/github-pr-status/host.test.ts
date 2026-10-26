@@ -360,7 +360,15 @@ describe("pull request lookup for differently named upstream branches", () => {
     for (const action of [
       { operation: "ready" },
       { operation: "draft" },
-      { operation: "merge", method: "squash", expectedHeadOid: "a".repeat(40) },
+      {
+        operation: "merge",
+        method: "squash",
+        expectedHeadOid: "a".repeat(40),
+        expectedHost: "github.com",
+        expectedRepository: "acme/bb",
+        expectedNumber: 1236,
+        expectedBaseRef: "main",
+      },
     ] as const) {
       await expect(
         harness.experimental_call("act", { path: workspacePath, action }),
@@ -498,6 +506,10 @@ describe("workspace state", () => {
           operation: "merge",
           method: "squash",
           expectedHeadOid: "a".repeat(40),
+          expectedHost: "github.com",
+          expectedRepository: "acme/bb",
+          expectedNumber: 1236,
+          expectedBaseRef: "main",
         },
       }),
     ).resolves.toMatchObject({ ok: false });

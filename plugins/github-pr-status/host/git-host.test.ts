@@ -68,10 +68,48 @@ function runLookup(cwd: string) {
 
 function runAction(
   cwd: string,
-  action: HostPullRequestAction = { operation: "ready" },
+  action:
+    | HostPullRequestAction
+    | {
+        operation: "merge";
+        method: "merge" | "squash" | "rebase";
+        expectedHeadOid: string | null;
+        expectedHost?: string;
+        expectedRepository?: string;
+        expectedNumber?: number;
+        expectedBaseRef?: string;
+      } = { operation: "ready" },
   localBranch = "bb/pr-target",
 ) {
-  return runPullRequestActionForCurrentBranch({ cwd, localBranch, action });
+  const hasDisplayedIdentity =
+    action.operation === "merge" &&
+    (action.expectedHost !== undefined ||
+      action.expectedRepository !== undefined ||
+      action.expectedNumber !== undefined ||
+      action.expectedBaseRef !== undefined);
+  const resolvedAction =
+    action.operation === "merge"
+      ? {
+          ...action,
+          expectedHost: hasDisplayedIdentity
+            ? (action.expectedHost ?? null)
+            : "github.com",
+          expectedRepository: hasDisplayedIdentity
+            ? (action.expectedRepository ?? null)
+            : "acme/bb",
+          expectedNumber: hasDisplayedIdentity
+            ? (action.expectedNumber ?? null)
+            : 42,
+          expectedBaseRef: hasDisplayedIdentity
+            ? (action.expectedBaseRef ?? null)
+            : "main",
+        }
+      : action;
+  return runPullRequestActionForCurrentBranch({
+    cwd,
+    localBranch,
+    action: resolvedAction,
+  });
 }
 
 function branchPr(overrides: Record<string, unknown> = {}) {
@@ -450,17 +488,41 @@ describe("runPullRequestActionForCurrentBranch", () => {
     ["draft", { operation: "draft" }, ["pr", "ready", "--undo"]],
     [
       "merge",
-      { operation: "merge", method: "merge", expectedHeadOid: HEAD_OID },
+      {
+        operation: "merge",
+        method: "merge",
+        expectedHeadOid: HEAD_OID,
+        expectedHost: "github.com",
+        expectedRepository: "acme/bb",
+        expectedNumber: 42,
+        expectedBaseRef: "main",
+      },
       ["pr", "merge", "--merge", "--match-head-commit", HEAD_OID],
     ],
     [
       "squash",
-      { operation: "merge", method: "squash", expectedHeadOid: HEAD_OID },
+      {
+        operation: "merge",
+        method: "squash",
+        expectedHeadOid: HEAD_OID,
+        expectedHost: "github.com",
+        expectedRepository: "acme/bb",
+        expectedNumber: 42,
+        expectedBaseRef: "main",
+      },
       ["pr", "merge", "--squash", "--match-head-commit", HEAD_OID],
     ],
     [
       "rebase",
-      { operation: "merge", method: "rebase", expectedHeadOid: HEAD_OID },
+      {
+        operation: "merge",
+        method: "rebase",
+        expectedHeadOid: HEAD_OID,
+        expectedHost: "github.com",
+        expectedRepository: "acme/bb",
+        expectedNumber: 42,
+        expectedBaseRef: "main",
+      },
       ["pr", "merge", "--rebase", "--match-head-commit", HEAD_OID],
     ],
   ] satisfies readonly [string, HostPullRequestAction, readonly string[]][])(
@@ -692,7 +754,18 @@ function repoFlag(args: string[]): string | undefined {
 }
 
 const ACTIONS: readonly (readonly [string, HostPullRequestAction])[] = [
-  ["merge", { operation: "merge", method: "merge", expectedHeadOid: HEAD_OID }],
+  [
+    "merge",
+    {
+      operation: "merge",
+      method: "merge",
+      expectedHeadOid: HEAD_OID,
+      expectedHost: "github.com",
+      expectedRepository: "acme/bb",
+      expectedNumber: 42,
+      expectedBaseRef: "main",
+    },
+  ],
   ["ready", { operation: "ready" }],
   ["draft", { operation: "draft" }],
 ];
@@ -735,7 +808,7 @@ function expectTokens(
   );
 }
 
-describe("action selector and routing edge cases", () => {
+describe("action selector and routing edge cases (test-change-reason: bind merges to the displayed PR identity)", () => {
   it.each(ACTIONS)(
     "action refuses an upstream branch that looks like an option for %s and starts no gh process",
     async (_label, action) => {
@@ -833,7 +906,15 @@ describe("action selector and routing edge cases", () => {
       await expect(
         runAction(
           cwd,
-          { operation: "merge", method: "squash", expectedHeadOid: HEAD_OID },
+          {
+            operation: "merge",
+            method: "squash",
+            expectedHeadOid: HEAD_OID,
+            expectedHost: "github.com",
+            expectedRepository: "acme/bb",
+            expectedNumber: 7,
+            expectedBaseRef: "main",
+          },
           branch,
         ),
       ).resolves.toEqual({ ok: true });
@@ -886,6 +967,116 @@ describe("action selector and routing edge cases", () => {
         "The pull request changed since it was shown. Refresh it and try again",
     });
     expect(await actionCalls(gh)).toEqual([]);
+  });
+
+  it("action refuses a different PR number and base at the same displayed head", async () => {
+    const gh = await installFakeGh({
+      "api graphql": {
+        stdout: branchResponse([
+          branchPr({
+            number: 43,
+            url: "https://github.com/acme/bb/pull/43",
+            baseRefName: "release",
+          }),
+        ]),
+      },
+    });
+    const cwd = await makeGitRepository({ origin: GITHUB_REMOTE });
+
+    await expect(
+      runAction(
+        cwd,
+        JSON.parse(
+          JSON.stringify({
+            operation: "merge",
+            method: "merge",
+            expectedHeadOid: HEAD_OID,
+            expectedHost: "github.com",
+            expectedRepository: "acme/bb",
+            expectedNumber: 42,
+            expectedBaseRef: "main",
+          }),
+        ),
+      ),
+    ).resolves.toEqual({
+      ok: false,
+      message:
+        "Pull request number changed since it was shown; refusing to merge",
+    });
+    expect(await actionCalls(gh)).toEqual([]);
+  });
+
+  it.each([
+    ["host", { expectedHost: "github.enterprise" }, "github.com"],
+    ["owner/repo", { expectedRepository: "other/repo" }, "acme/bb"],
+    ["number", { expectedNumber: 41 }, 42],
+    ["base ref", { expectedBaseRef: "develop" }, "main"],
+  ])(
+    "action refuses a mismatched displayed %s",
+    async (field, shown, _fresh) => {
+      const gh = await actionGh();
+      const cwd = await makeGitRepository({ origin: GITHUB_REMOTE });
+      const identity = {
+        expectedHost: "github.com",
+        expectedRepository: "acme/bb",
+        expectedNumber: 42,
+        expectedBaseRef: "main",
+        ...shown,
+      };
+      await expect(
+        runAction(
+          cwd,
+          JSON.parse(
+            JSON.stringify({
+              operation: "merge",
+              method: "merge",
+              expectedHeadOid: HEAD_OID,
+              ...identity,
+            }),
+          ),
+        ),
+      ).resolves.toEqual({
+        ok: false,
+        message: `Pull request ${field} changed since it was shown; refusing to merge`,
+      });
+      expect(await actionCalls(gh)).toEqual([]);
+    },
+  );
+
+  it.each([
+    ["host", "expectedHost"],
+    ["owner/repo", "expectedRepository"],
+    ["number", "expectedNumber"],
+    ["base ref", "expectedBaseRef"],
+  ])("action refuses a missing displayed %s", async (field, key) => {
+    const gh = await actionGh();
+    const cwd = await makeGitRepository({ origin: GITHUB_REMOTE });
+    const identity = Object.fromEntries(
+      Object.entries({
+        expectedHost: "github.com",
+        expectedRepository: "acme/bb",
+        expectedNumber: 42,
+        expectedBaseRef: "main",
+      }).filter(([name]) => name !== key),
+    );
+    await expect(
+      runAction(
+        cwd,
+        JSON.parse(
+          JSON.stringify({
+            operation: "merge",
+            method: "merge",
+            expectedHeadOid: HEAD_OID,
+            ...identity,
+          }),
+        ),
+      ),
+    ).resolves.toEqual({
+      ok: false,
+      message: `Missing displayed pull request ${field}; refusing to merge`,
+    });
+    expect(await actionCalls(gh)).toEqual([]);
+    expect(await gh.readCalls()).toEqual([]);
   });
 
   it("action merges with the displayed head commit when the read still reports it", async () => {

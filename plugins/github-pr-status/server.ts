@@ -93,9 +93,15 @@ async function runCliAction(
 }
 
 function describePullRequest(pr: PullRequest): string {
+  const displayedUrl = new URL(pr.url);
+  const [owner, repository] = displayedUrl.pathname.split("/").slice(1, 3);
   return [
     `Pull request: #${pr.number} ${pr.state} - ${pr.title}`,
     `URL: ${pr.url}`,
+    `Host: ${displayedUrl.host}`,
+    `Repository: ${owner}/${repository?.replace(/\.git$/u, "") ?? ""}`,
+    `Number: ${pr.number}`,
+    `Base ref: ${pr.baseRefName}`,
     `Branch: ${pr.headRefName} -> ${pr.baseRefName}`,
     `Head commit: ${pr.headRefOid ?? "unknown"}`,
     `Attention: ${pr.attention}`,
@@ -385,10 +391,22 @@ export default function githubPrStatusPlugin(bb: BbPluginApi): void {
     environmentId: string,
     method: "merge" | "squash" | "rebase",
     expectedHeadOid: string | null,
+    expectedHost: string | null,
+    expectedRepository: string | null,
+    expectedNumber: number | null,
+    expectedBaseRef: string | null,
   ) {
     await runAction(
       environmentId,
-      { operation: "merge", method, expectedHeadOid },
+      {
+        operation: "merge",
+        method,
+        expectedHeadOid,
+        expectedHost,
+        expectedRepository,
+        expectedNumber,
+        expectedBaseRef,
+      },
       (pullRequest) => {
         if (
           pullRequest.state !== "open" ||
@@ -412,8 +430,24 @@ export default function githubPrStatusPlugin(bb: BbPluginApi): void {
       },
       markReady: ({ environmentId }) => markReady(environmentId),
       markDraft: ({ environmentId }) => markDraft(environmentId),
-      merge: ({ environmentId, method, expectedHeadOid }) =>
-        merge(environmentId, method, expectedHeadOid),
+      merge: ({
+        environmentId,
+        method,
+        expectedHeadOid,
+        expectedHost,
+        expectedRepository,
+        expectedNumber,
+        expectedBaseRef,
+      }) =>
+        merge(
+          environmentId,
+          method,
+          expectedHeadOid,
+          expectedHost,
+          expectedRepository,
+          expectedNumber,
+          expectedBaseRef,
+        ),
     },
     {
       experimental_discoverable: true,
@@ -537,6 +571,28 @@ export default function githubPrStatusPlugin(bb: BbPluginApi): void {
               description:
                 "Head commit shown by `bb pull-request`; the merge is refused if the pull request changed since",
             },
+            "expected-host": {
+              type: "string",
+              placeholder: "host",
+              description: "Host shown by `bb pull-request show`",
+            },
+            "expected-repository": {
+              type: "string",
+              placeholder: "owner/repository",
+              description:
+                "Owner and repository shown by `bb pull-request show`",
+            },
+            "expected-number": {
+              type: "string",
+              placeholder: "number",
+              description:
+                "Pull request number shown by `bb pull-request show`",
+            },
+            "expected-base-ref": {
+              type: "string",
+              placeholder: "branch",
+              description: "Base ref shown by `bb pull-request show`",
+            },
             json: JSON_OPTION,
           },
           run: (input) =>
@@ -544,10 +600,40 @@ export default function githubPrStatusPlugin(bb: BbPluginApi): void {
               const expectedHeadOid = input.options["expected-head-oid"];
               if (expectedHeadOid === undefined)
                 refuse(MERGE_NEEDS_HEAD_MESSAGE);
+              const expectedHost = input.options["expected-host"];
+              const expectedRepository = input.options["expected-repository"];
+              const expectedNumber = input.options["expected-number"];
+              const expectedBaseRef = input.options["expected-base-ref"];
+              if (expectedHost === undefined)
+                refuse(
+                  "Merge needs --expected-host (shown by `bb pull-request show`)",
+                );
+              if (expectedRepository === undefined)
+                refuse(
+                  "Merge needs --expected-repository (shown by `bb pull-request show`)",
+                );
+              if (expectedNumber === undefined)
+                refuse(
+                  "Merge needs --expected-number (shown by `bb pull-request show`)",
+                );
+              const parsedExpectedNumber = Number(expectedNumber);
+              if (
+                !Number.isInteger(parsedExpectedNumber) ||
+                parsedExpectedNumber < 1
+              )
+                refuse("Merge needs a positive integer --expected-number");
+              if (expectedBaseRef === undefined)
+                refuse(
+                  "Merge needs --expected-base-ref (shown by `bb pull-request show`)",
+                );
               return merge(
                 input.positionals["environment-id"],
                 input.options.method,
                 expectedHeadOid,
+                expectedHost,
+                expectedRepository,
+                parsedExpectedNumber,
+                expectedBaseRef,
               );
             }, input.options.json),
         }),

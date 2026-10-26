@@ -249,6 +249,10 @@ export const githubPrStatusRpcContract = defineRpcContract({
       .extend({
         method: pullRequestMergeMethodSchema,
         expectedHeadOid: z.string().nullable(),
+        expectedHost: z.string().nullable(),
+        expectedRepository: z.string().nullable(),
+        expectedNumber: z.number().int().positive().nullable(),
+        expectedBaseRef: z.string().nullable(),
       })
       .strict(),
     output: actionOutputSchema,
@@ -266,6 +270,10 @@ const hostPullRequestActionSchema = z.discriminatedUnion("operation", [
       operation: z.literal("merge"),
       method: pullRequestMergeMethodSchema,
       expectedHeadOid: z.string().nullable(),
+      expectedHost: z.string().nullable(),
+      expectedRepository: z.string().nullable(),
+      expectedNumber: z.number().int().positive().nullable(),
+      expectedBaseRef: z.string().nullable(),
     })
     .strict(),
 ]);
