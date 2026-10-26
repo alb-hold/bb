@@ -33,6 +33,7 @@ function ThreadDraftStatus({
     hasUnsubmittedDraft,
     hasUnreadError: false,
     hasUnreadSuccess: false,
+    isActivityUnreported: false,
     isAutomationWoken: false,
     isBackgroundAgentActive: kind === "working",
     isBackgroundCommandActive: false,
@@ -41,6 +42,7 @@ function ThreadDraftStatus({
     isPlanModeActive: false,
     isRuntimeActive: false,
     isWorkflowActive: false,
+    queuedFailedCount: 0,
   });
   return <ThreadStatusGlyph indicator={indicator} />;
 }
