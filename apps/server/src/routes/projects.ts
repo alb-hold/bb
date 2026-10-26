@@ -21,6 +21,7 @@ import {
   listProjectSourcesByProjectIds,
   listThreadSections,
   listThreadsWithPendingInteractionStateForProjects,
+  buildProjectThreadListEnrichmentScope,
   reorderProject,
   updateProject,
   updateProjectSource,
@@ -230,12 +231,14 @@ function buildProjectsWithThreadsResponseFromRows(
 ): ProjectWithThreadsResponse[] {
   const projects = buildProjectResponsesFromRows(deps, projectRows);
   const projectIds = projects.map((project) => project.id);
+  const threadListOptions = { archived: false, projectIds };
   const threadRows = listThreadsWithPendingInteractionStateForProjects(
     deps.db,
-    { archived: false, projectIds },
+    threadListOptions,
   );
   const threadResponses = toThreadListEntryResponses(deps, {
     threads: threadRows,
+    scope: buildProjectThreadListEnrichmentScope(deps.db, threadListOptions),
   });
   const threadsByProjectId = new Map<
     string,
