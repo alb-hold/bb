@@ -34,7 +34,7 @@ const fs = require("node:fs");
 const args = process.argv.slice(2);
 const inputIndex = args.indexOf("--input");
 const query = inputIndex === -1 ? null : JSON.parse(fs.readFileSync(args[inputIndex + 1], "utf8")).query;
-const env = Object.fromEntries(["GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"].map((key) => [key, process.env[key] ?? null]));
+const env = Object.fromEntries(["GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN", "GH_REPO", "GH_HOST"].map((key) => [key, process.env[key] ?? null]));
 fs.appendFileSync(process.env.TEST_GH_LOG, JSON.stringify({args, query, env}) + "\\n");
 const responses = JSON.parse(process.env.TEST_GH_RESPONSES);
 const configured = responses[args.slice(0, 2).join(" ")] ?? {};

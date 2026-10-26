@@ -167,7 +167,13 @@ describe("pull request lookup for differently named upstream branches", () => {
       expect((await gh.readQueries())[0]).toContain(
         `headRefName: "${localBranch}"`,
       );
-      expect(calls[1]).toEqual(["pr", "ready", localBranch, ...baseRepository]);
+      expect(calls[1]).toEqual([
+        "pr",
+        "ready",
+        ...baseRepository,
+        "--",
+        localBranch,
+      ]);
     },
   );
 
@@ -362,9 +368,9 @@ describe("pull request lookup for differently named upstream branches", () => {
     }
 
     expect(await gh.readCalls()).toEqual([
-      ["pr", "ready", qualifiedUpstream, ...baseRepository],
-      ["pr", "ready", qualifiedUpstream, "--undo", ...baseRepository],
-      ["pr", "merge", qualifiedUpstream, "--squash", ...baseRepository],
+      ["pr", "ready", ...baseRepository, "--", qualifiedUpstream],
+      ["pr", "ready", "--undo", ...baseRepository, "--", qualifiedUpstream],
+      ["pr", "merge", "--squash", ...baseRepository, "--", qualifiedUpstream],
     ]);
   });
 

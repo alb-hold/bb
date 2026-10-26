@@ -284,18 +284,21 @@ function getMergeMethodFlag(
   }
 }
 
+const UNSAFE_SELECTOR_PATTERN = /^-|[\s\u0000-\u001f\u007f]/u;
+
 function buildPullRequestActionArgs(
   action: HostPullRequestAction,
-  selector: string | null,
+  repository: string,
+  selector: string,
 ): string[] {
-  const target = selector ? [selector] : [];
+  const target = ["--repo", repository, "--", selector];
   switch (action.operation) {
     case "ready":
       return ["pr", "ready", ...target];
     case "draft":
-      return ["pr", "ready", ...target, "--undo"];
+      return ["pr", "ready", "--undo", ...target];
     case "merge":
-      return ["pr", "merge", ...target, getMergeMethodFlag(action.method)];
+      return ["pr", "merge", getMergeMethodFlag(action.method), ...target];
   }
 }
 
@@ -888,16 +891,25 @@ export async function runPullRequestActionForCurrentBranch(
   if (host === null) {
     return { ok: false, message: unconfiguredHostMessage(branchTarget.host) };
   }
-  const ghArgs = [
-    ...buildPullRequestActionArgs(
-      args.action,
-      branchTarget.headOwner === null
-        ? branchTarget.branch
-        : `${branchTarget.headOwner}:${branchTarget.branch}`,
-    ),
-    "--repo",
+  const selector =
+    branchTarget.headOwner === null
+      ? branchTarget.branch
+      : `${branchTarget.headOwner}:${branchTarget.branch}`;
+  if (
+    [branchTarget.branch, branchTarget.headOwner ?? "", selector].some((part) =>
+      UNSAFE_SELECTOR_PATTERN.test(part),
+    )
+  ) {
+    return {
+      ok: false,
+      message: "Refusing a pull request branch that gh could read as an option",
+    };
+  }
+  const ghArgs = buildPullRequestActionArgs(
+    args.action,
     `${branchTarget.host}/${branchTarget.owner}/${branchTarget.repository}`,
-  ];
+    selector,
+  );
   try {
     await runGh(ghArgs, host, {
       priority: "interactive",
