@@ -3,7 +3,7 @@ import { createRequire } from "node:module";
 import type { TerminalScreenResponse } from "@bb/server-contract";
 
 const TERMINAL_SCREEN_STATE_SCROLLBACK = 2_000;
-const TERMINAL_SCREEN_STATE_PENDING_BYTES_LIMIT = 8 * 1024 * 1024;
+export const TERMINAL_SCREEN_STATE_PENDING_BYTES_LIMIT = 8 * 1024 * 1024;
 const ESC = "\u001b";
 const require = createRequire(import.meta.url);
 const Terminal = require("@xterm/headless")
@@ -300,6 +300,11 @@ export class TerminalScreenStateCache {
   create(terminalId: string, cols: number, rows: number): void {
     if (this.states.has(terminalId)) return;
     this.states.set(terminalId, new TerminalScreenState(cols, rows));
+  }
+
+  install(terminalId: string, state: TerminalScreenState): void {
+    this.remove(terminalId);
+    this.states.set(terminalId, state);
   }
 
   push(
