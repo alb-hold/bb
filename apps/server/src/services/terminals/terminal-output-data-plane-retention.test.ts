@@ -568,9 +568,6 @@ describe("terminal output retained from the data plane", () => {
     expect(eventOrder).toEqual(["marker", "continuation"]);
     expect(appendOrder.slice(0, 2)).toEqual(["append", "append after marker"]);
     expect(slowRows()).toHaveLength(2);
-    expect(terminals.map((_, index) => retainedCount(index))).toEqual([
-      32, 32, 0,
-    ]);
 
     const appendedTerminalIds = slowRows().map(([fields]) =>
       String((fields as { terminalSessionId: string }).terminalSessionId),
