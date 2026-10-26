@@ -127,6 +127,30 @@ it("reports timer lag when the deferred histogram maximum is smaller", () => {
   sampler.stop();
 });
 
+it("does not report a deferred sample after stopping", () => {
+  vi.useFakeTimers();
+  let now = 0;
+  const histogram = createHistogram();
+  const deferred: Array<() => void> = [];
+  const onSample = vi.fn();
+  const sampler = startEventLoopDelaySampler({
+    histogram,
+    now: () => now,
+    defer: (callback) => deferred.push(callback),
+    onSample,
+  });
+
+  now = 7_000;
+  vi.advanceTimersByTime(5_000);
+  expect(deferred).toHaveLength(1);
+
+  sampler.stop();
+  deferred.shift()?.();
+
+  expect(onSample).not.toHaveBeenCalled();
+  expect(histogram.reset).not.toHaveBeenCalled();
+});
+
 it("suppresses gaps at or above the suspension guard", () => {
   vi.useFakeTimers();
   let now = 0;

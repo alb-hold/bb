@@ -65,6 +65,7 @@ export function startEventLoopDelaySampler(
     monitorEventLoopDelay({ resolution: EVENT_LOOP_DELAY_RESOLUTION_MS });
   histogram.enable();
   let lastSampleAt = now();
+  let stopped = false;
 
   const interval = setInterval(() => {
     const sampledAt = now();
@@ -77,6 +78,7 @@ export function startEventLoopDelaySampler(
         : (args.thresholdMs ?? EVENT_LOOP_STALL_THRESHOLD_MS);
     const suspended = isLikelySystemSuspensionDelay({ gapMs, intervalMs });
     const readAndReport = () => {
+      if (stopped) return;
       const histogramMaxDelayMs = nanosecondsToMilliseconds(histogram.max);
       const maxDelayMs = Math.max(histogramMaxDelayMs, timerLagMs);
       const stalled = !suspended && maxDelayMs >= thresholdMs;
@@ -107,6 +109,7 @@ export function startEventLoopDelaySampler(
 
   return {
     stop: () => {
+      stopped = true;
       clearInterval(interval);
       histogram.disable();
     },
