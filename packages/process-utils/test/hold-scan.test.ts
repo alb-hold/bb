@@ -30,7 +30,14 @@ const dir = async () => {
   return base;
 };
 
+interface FakeThread {
+  cwd?: string | Error;
+  namespace?: string | Error;
+}
+
 interface FakeProcess {
+  threads?: Record<string, FakeThread>;
+  tasks?: string[] | Error;
   cwd?: string | Error;
   exe?: string | Error;
   fds?: string[] | Error;
@@ -43,8 +50,10 @@ interface FakeProcess {
 
 const OWN_NAMESPACE = "mnt:[4026531841]";
 
+const ROOT_MOUNT_INFO = "1 0 8:1 / / rw - ext4 /dev/sda1 rw\n";
+
 function mapsLine(path: string): string {
-  return `7f0000000000-7f0000001000 r--p 00000000 08:01 1234 ${path}`;
+  return `7f0000000000-7f0000001000 r--p 00000000 08:01 1234                      ${path}`;
 }
 
 function fakeLinux(
@@ -62,11 +71,54 @@ function fakeLinux(
     if (value instanceof Error) return Promise.reject(value);
     return Promise.resolve(value ?? fallback);
   };
+  const threadFact = <Key extends keyof FakeThread>(
+    pid: number,
+    tid: string,
+    key: Key,
+    inherited: (process: FakeProcess) => FakeThread[Key],
+    fallback: string,
+  ): Promise<string> => {
+    const process = processes[pid];
+    if (process === undefined) return Promise.reject(gone());
+    const own = process.threads?.[tid];
+    const value =
+      own !== undefined
+        ? own[key]
+        : tid === String(pid)
+          ? inherited(process)
+          : undefined;
+    if (value instanceof Error) return Promise.reject(value);
+    if (own === undefined && tid !== String(pid)) return Promise.reject(gone());
+    return Promise.resolve(typeof value === "string" ? value : fallback);
+  };
   return {
     platform: "linux",
     uid: 1000,
     selfPid: 1,
     listProcessIds: async () => Object.keys(processes),
+    listTasks: (pid) =>
+      fact(
+        pid,
+        (process) =>
+          process.tasks ?? [
+            String(pid),
+            ...Object.keys(process.threads ?? {}).filter(
+              (tid) => tid !== String(pid),
+            ),
+          ],
+        [],
+      ),
+    readTaskCwd: (pid, tid) =>
+      threadFact(pid, tid, "cwd", (process) => process.cwd, "/elsewhere"),
+    readTaskNamespace: (pid, tid) =>
+      threadFact(
+        pid,
+        tid,
+        "namespace",
+        (process) => process.namespace,
+        OWN_NAMESPACE,
+      ),
+    readMountInfo: async () => ROOT_MOUNT_INFO,
     readCwd: (pid) => fact(pid, (process) => process.cwd, "/elsewhere"),
     effectiveUid: async (pid) => processes[pid]?.uid ?? 1000,
     readComm: async (pid) => processes[pid]?.comm ?? "node",
@@ -76,10 +128,7 @@ function fakeLinux(
     readExe: (pid) => fact(pid, (process) => process.exe, "/usr/bin/node"),
     listOpenFiles: (pid) => fact(pid, (process) => process.fds, []),
     readMaps: (pid) => fact(pid, (process) => process.maps, ""),
-    readMountNamespace: (pid) =>
-      pid === "self"
-        ? Promise.resolve(OWN_NAMESPACE)
-        : fact(pid, (process) => process.namespace, OWN_NAMESPACE),
+    readOwnMountNamespace: async () => OWN_NAMESPACE,
     readRoot: (pid) => fact(pid, (process) => process.root, "/"),
     runLsofOpenFiles: async () => {
       throw new Error("unused");
@@ -340,7 +389,7 @@ describe("scanProcessesHoldingUnder on Linux", () => {
           fakeLinux(
             {},
             {
-              readMountNamespace: async () => {
+              readOwnMountNamespace: async () => {
                 throw denied();
               },
             },
@@ -366,6 +415,256 @@ describe("scanProcessesHoldingUnder on Linux", () => {
         )
       ).status,
     ).toBe("unknown");
+  });
+
+  describe("threads", () => {
+    it("is held through the working directory of a worker thread while the main thread works elsewhere", async () => {
+      const base = await dir();
+      const scan = await scanProcessesHoldingUnder(
+        { directories: [base] },
+        fakeLinux({
+          10: {
+            cwd: "/elsewhere",
+            threads: { "11": { cwd: `${base}/sub` } },
+          },
+        }),
+      );
+      expect(scan).toMatchObject({
+        status: "held",
+        holders: [
+          { pid: 10, path: `${base}/sub`, through: "working-directory" },
+        ],
+      });
+    });
+
+    it("is unknown for a worker thread in another mount namespace of a same-user process, and excludes another user's", async () => {
+      const base = await dir();
+      const sandboxed = await scanProcessesHoldingUnder(
+        { directories: [base] },
+        fakeLinux({
+          10: { threads: { "11": { namespace: "mnt:[4026532999]" } } },
+        }),
+      );
+      expect(sandboxed.status).toBe("unknown");
+      expect(reasonOf(sandboxed)).toContain("mount namespace");
+      const foreign = await scanProcessesHoldingUnder(
+        { directories: [base] },
+        fakeLinux({
+          10: { uid: 0, threads: { "11": { namespace: "mnt:[4026532999]" } } },
+        }),
+      );
+      expect(foreign).toMatchObject({ status: "clear", excludedOtherUsers: 1 });
+    });
+
+    it("is unknown when the working directory of a worker thread cannot be read", async () => {
+      const base = await dir();
+      const scan = await scanProcessesHoldingUnder(
+        { directories: [base] },
+        fakeLinux({ 10: { threads: { "11": { cwd: denied() } } } }),
+      );
+      expect(scan.status).toBe("unknown");
+      expect(reasonOf(scan)).toContain("working directory of process 10");
+    });
+
+    it("ignores a thread that exits while the threads are read", async () => {
+      const base = await dir();
+      const scan = await scanProcessesHoldingUnder(
+        { directories: [base] },
+        fakeLinux({ 10: { tasks: ["10", "12"] } }),
+      );
+      expect(scan.status).toBe("clear");
+    });
+
+    it("is unknown when the main thread has exited while other threads still run", async () => {
+      const base = await dir();
+      const scan = await scanProcessesHoldingUnder(
+        { directories: [base] },
+        fakeLinux({
+          10: {
+            cwd: gone(),
+            root: gone(),
+            tasks: ["10", "11"],
+            threads: { "11": { cwd: "/elsewhere" } },
+          },
+        }),
+      );
+      expect(scan.status).toBe("unknown");
+      expect(reasonOf(scan)).toContain("main thread of process 10");
+    });
+
+    it("is clear for a zombie with no other thread and for a process that vanished", async () => {
+      const base = await dir();
+      const scan = await scanProcessesHoldingUnder(
+        { directories: [base] },
+        fakeLinux({
+          10: { cwd: gone(), root: gone(), tasks: ["10"] },
+          11: { tasks: gone() },
+        }),
+      );
+      expect(scan.status).toBe("clear");
+    });
+  });
+
+  describe("a filesystem mounted more than once", () => {
+    const mounts = (base: string) =>
+      [
+        "1 0 8:48 / / rw - ext4 /dev/sdd rw",
+        "2 1 8:48 / /mnt/alias ro - ext4 /dev/sdd ro",
+        "3 1 8:48 /tmp /srv/tmp rw - ext4 /dev/sdd rw",
+        "4 1 8:48 /var /srv/var rw - ext4 /dev/sdd rw",
+        "5 1 9:1 / /mnt/other rw - ext4 /dev/sde rw",
+        "6 1 8:48 / /mnt/with\\040space ro - ext4 /dev/sdd ro",
+        `7 1 0:50 / ${base}-unrelated rw - tmpfs tmpfs rw`,
+      ].join("\n") + "\n";
+
+    it.each([
+      [
+        "a second mount of the whole filesystem",
+        (base: string) => `/mnt/alias${base}/sub`,
+      ],
+      [
+        "a bind mount of an ancestor directory",
+        (base: string) => `/srv/tmp${base.slice("/tmp".length)}/sub`,
+      ],
+      [
+        "a mount point whose name holds an escaped space",
+        (base: string) => `/mnt/with space${base}/sub`,
+      ],
+    ])("is held through %s", async (_label, aliasOf) => {
+      const base = await dir();
+      const scan = await scanProcessesHoldingUnder(
+        { directories: [base] },
+        fakeLinux(
+          { 10: { cwd: aliasOf(base) } },
+          { readMountInfo: async () => mounts(base) },
+        ),
+      );
+      expect(scan).toMatchObject({
+        status: "held",
+        holders: [{ pid: 10, through: "working-directory" }],
+      });
+    });
+
+    it("does not treat a mount of another device, or of a sibling directory, as showing the directory", async () => {
+      const base = await dir();
+      const scan = await scanProcessesHoldingUnder(
+        { directories: [base] },
+        fakeLinux(
+          {
+            10: { cwd: `/mnt/other${base}/sub` },
+            11: { cwd: `/srv/var${base}/sub` },
+          },
+          { readMountInfo: async () => mounts(base) },
+        ),
+      );
+      expect(scan.status).toBe("clear");
+    });
+
+    it("is held through the alias of a directory that itself sits under a bind mount", async () => {
+      const scan = await scanProcessesHoldingUnder(
+        { directories: [await dir()] },
+        fakeLinux(
+          { 10: { cwd: "/home/me/wt/sub" } },
+          {
+            readMountInfo: async () =>
+              [
+                "1 0 8:1 / / rw - ext4 /dev/sda1 rw",
+                "2 1 8:1 /home/me /srv/me rw - ext4 /dev/sda1 rw",
+              ].join("\n"),
+          },
+        ),
+      );
+      expect(scan.status).toBe("clear");
+      const aliased = await scanProcessesHoldingUnder(
+        { directories: ["/srv/me/wt"] },
+        fakeLinux(
+          { 10: { cwd: "/home/me/wt/sub" } },
+          {
+            readMountInfo: async () =>
+              [
+                "1 0 8:1 / / rw - ext4 /dev/sda1 rw",
+                "2 1 8:1 /home/me /srv/me rw - ext4 /dev/sda1 rw",
+              ].join("\n"),
+          },
+        ),
+      );
+      expect(aliased.status).toBe("held");
+    });
+
+    it.each([
+      [
+        "cannot be read",
+        async () => {
+          throw denied();
+        },
+      ],
+      ["has a line that cannot be parsed", async () => "garbage\n"],
+      ["is empty", async () => ""],
+    ])("is unknown when the mount table %s", async (_label, readMountInfo) => {
+      const base = await dir();
+      const scan = await scanProcessesHoldingUnder(
+        { directories: [base] },
+        fakeLinux({}, { readMountInfo }),
+      );
+      expect(scan.status).toBe("unknown");
+      expect(reasonOf(scan)).toContain("mount table");
+    });
+  });
+
+  describe("memory map paths", () => {
+    it.each([
+      ["a space", "a b", "a\\040b"],
+      ["a run of spaces", "a  b", "a\\040\\040b"],
+      ["a tab", "a\tb", "a\\011b"],
+      ["a backslash", "a\\b", "a\\134b"],
+    ])(
+      "finds a file mapped from a directory name holding %s",
+      async (_label, name, escaped) => {
+        const base = await dir();
+        const directory = join(base, name);
+        await mkdir(directory);
+        const scan = await scanProcessesHoldingUnder(
+          { directories: [directory] },
+          fakeLinux({ 10: { maps: mapsLine(`${base}/${escaped}/index.bin`) } }),
+        );
+        expect(scan).toMatchObject({
+          status: "held",
+          holders: [
+            { pid: 10, path: `${directory}/index.bin`, through: "memory-map" },
+          ],
+        });
+      },
+    );
+
+    it("keeps the path of a deleted mapped file", async () => {
+      const base = await dir();
+      const scan = await scanProcessesHoldingUnder(
+        { directories: [base] },
+        fakeLinux({ 10: { maps: mapsLine(`${base}/x.bin (deleted)`) } }),
+      );
+      expect(scan.status).toBe("held");
+    });
+
+    it("ignores anonymous mappings and pseudo paths", async () => {
+      const base = await dir();
+      const scan = await scanProcessesHoldingUnder(
+        { directories: [base] },
+        fakeLinux({
+          10: {
+            maps: `7f0000000000-7f0000001000 rw-p 00000000 00:00 0 \n7ffd0000-7ffd1000 rw-p 00000000 00:00 0                          [stack]\n`,
+          },
+        }),
+      );
+      expect(scan.status).toBe("clear");
+    });
+  });
+
+  it("is unknown when no directory is named", async () => {
+    const scan = await scanProcessesHoldingUnder(
+      { directories: [] },
+      fakeLinux({ 10: { cwd: "/anywhere" } }),
+    );
+    expect(scan.status).toBe("unknown");
   });
 
   it.skipIf(process.platform !== "linux")(
@@ -406,15 +705,19 @@ describe("scanProcessesHoldingUnder on Linux", () => {
   );
 
   it.skipIf(process.platform !== "linux")(
-    "is clear once that real process closes the file and has moved on",
+    "is clear for a real process that opened a file inside the directory and closed it again",
     async () => {
       const base = await dir();
+      const target = join(base, "attachment.bin");
+      await writeFile(target, "x");
       const child = spawn(
         process.execPath,
-        ["-e", "setInterval(() => {}, 1000)"],
-        {
-          stdio: "ignore",
-        },
+        [
+          "-e",
+          "const fs = require('node:fs'); fs.closeSync(fs.openSync(process.argv[1], 'r')); process.stdout.write('closed\\n'); setInterval(() => {}, 1000)",
+          target,
+        ],
+        { stdio: ["ignore", "pipe", "ignore"] },
       );
       const exited = new Promise<void>((resolve) =>
         child.once("exit", () => resolve()),
@@ -423,7 +726,9 @@ describe("scanProcessesHoldingUnder on Linux", () => {
         child.kill("SIGKILL");
         await exited;
       });
-      await new Promise((resolve) => setTimeout(resolve, 200));
+      await new Promise<void>((resolve) =>
+        child.stdout.once("data", () => resolve()),
+      );
       const scan = await scanProcessesHoldingUnder({ directories: [base] });
       expect(scan.status).toBe("clear");
     },
@@ -445,7 +750,8 @@ describe("scanProcessesHoldingUnder on macOS, through ps and lsof -F pfn0", () =
     code?: number;
     stderr?: string;
   }): HoldScanIo & { delays: number[]; psCalls: number; lsofCalls: number } {
-    const state = { delays: [] as number[], psCalls: 0, lsofCalls: 0 };
+    const delays: number[] = [];
+    const state = { delays, psCalls: 0, lsofCalls: 0 };
     return {
       ...fakeLinux({}),
       platform: "darwin",
@@ -641,6 +947,7 @@ describe("scanProcessesHoldingUnder on macOS, through ps and lsof -F pfn0", () =
 
   it.each([
     ["exit code 2", { code: 2, stderr: "" }],
+    ["exit 1 and an empty stderr", { code: 1, stderr: "" }],
     [
       "exit 0 and a warning on stderr",
       {

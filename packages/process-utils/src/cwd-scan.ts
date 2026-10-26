@@ -394,6 +394,7 @@ export async function inspectDarwinProcesses(
   io: CwdScanIo,
   timeoutMs: number,
   runLsof: CwdScanIo["runLsof"] = io.runLsof,
+  exitOneIsComplete = true,
 ): Promise<DarwinInspection> {
   let listed: PsRow[] | null = null;
   if (io.runPs !== undefined) {
@@ -421,7 +422,7 @@ export async function inspectDarwinProcesses(
       reason: `lsof failed (${error instanceof Error ? error.message : String(error)})`,
     };
   }
-  if (output.code !== 0 && output.code !== 1) {
+  if (output.code !== 0 && !(exitOneIsComplete && output.code === 1)) {
     return {
       status: "unknown",
       reason: `lsof exited with ${output.code === null ? "a signal" : `code ${output.code}`}`,
@@ -533,7 +534,11 @@ export interface HoldScanIo extends CwdScanIo {
   readExe(pid: number): Promise<string>;
   listOpenFiles(pid: number): Promise<string[]>;
   readMaps(pid: number): Promise<string>;
-  readMountNamespace(pid: number | "self"): Promise<string>;
+  readOwnMountNamespace(): Promise<string>;
+  readMountInfo(): Promise<string>;
+  listTasks(pid: number): Promise<string[]>;
+  readTaskNamespace(pid: number, tid: string): Promise<string>;
+  readTaskCwd(pid: number, tid: string): Promise<string>;
   readRoot(pid: number): Promise<string>;
   runLsofOpenFiles(
     timeoutMs: number,
@@ -555,7 +560,11 @@ export const hostHoldScanIo: HoldScanIo = {
     return targets;
   },
   readMaps: (pid) => readFile(`/proc/${pid}/maps`, "utf8"),
-  readMountNamespace: (pid) => readlink(`/proc/${pid}/ns/mnt`),
+  readOwnMountNamespace: () => readlink("/proc/self/ns/mnt"),
+  readMountInfo: () => readFile("/proc/self/mountinfo", "utf8"),
+  listTasks: (pid) => readdir(`/proc/${pid}/task`),
+  readTaskNamespace: (pid, tid) => readlink(`/proc/${pid}/task/${tid}/ns/mnt`),
+  readTaskCwd: (pid, tid) => readlink(`/proc/${pid}/task/${tid}/cwd`),
   readRoot: (pid) => readlink(`/proc/${pid}/root`),
   runLsofOpenFiles: (timeoutMs) =>
     runCommand(
@@ -580,6 +589,7 @@ export function useHoldScanIoForTests(io: HoldScanIo | null): void {
 
 type HoldRead<Value> =
   | { status: "read"; value: Value }
+  | { status: "gone" }
   | { status: "skip" }
   | { status: "unknown"; reason: string };
 
@@ -599,12 +609,12 @@ async function readHeldProcessFact<Value>(
     return { status: "read", value: await read() };
   } catch (error) {
     const code = codeOf(error);
-    if (GONE.has(code)) return { status: "skip" };
+    if (GONE.has(code)) return { status: "gone" };
     let owner: number | null = null;
     try {
       owner = await io.effectiveUid(pid);
     } catch (ownerError) {
-      if (GONE.has(codeOf(ownerError))) return { status: "skip" };
+      if (GONE.has(codeOf(ownerError))) return { status: "gone" };
       if (code === "EACCES" || code === "EPERM")
         return {
           status: "unknown",
@@ -620,7 +630,7 @@ async function readHeldProcessFact<Value>(
       try {
         comm = await io.readComm(pid);
       } catch (commError) {
-        if (GONE.has(codeOf(commError))) return { status: "skip" };
+        if (GONE.has(codeOf(commError))) return { status: "gone" };
         return {
           status: "unknown",
           reason: `the ${what} of process ${pid} could not be read and its name could not be read either`,
@@ -652,7 +662,7 @@ async function foreignOrUnknown(
   try {
     owner = await io.effectiveUid(pid);
   } catch (error) {
-    if (GONE.has(codeOf(error))) return { status: "skip" };
+    if (GONE.has(codeOf(error))) return { status: "gone" };
     return { status: "unknown", reason };
   }
   if (io.uid !== null && owner !== io.uid) {
@@ -662,13 +672,219 @@ async function foreignOrUnknown(
   return { status: "unknown", reason };
 }
 
+const MAPS_PATH_COLUMN = /^\S+\s+\S+\s+\S+\s+\S+\s+\S+\s+(\/.*)$/u;
+
+function decodeKernelEscapes(text: string): string {
+  return text.replace(/\\([0-7]{3})/gu, (_match, octal: string) =>
+    String.fromCharCode(Number.parseInt(octal, 8)),
+  );
+}
+
 function mappedPaths(maps: string): string[] {
   const paths: string[] = [];
   for (const line of maps.split("\n")) {
-    const mapped = line.split(/\s+/u).slice(5).join(" ");
-    if (mapped.startsWith("/")) paths.push(mapped);
+    const mapped = MAPS_PATH_COLUMN.exec(line)?.[1];
+    if (mapped !== undefined) paths.push(decodeKernelEscapes(mapped));
   }
   return paths;
+}
+
+interface MountEntry {
+  device: string;
+  root: string;
+  mountPoint: string;
+}
+
+function parseMountInfo(text: string): MountEntry[] | null {
+  const entries: MountEntry[] = [];
+  for (const line of text.split("\n")) {
+    if (line.trim() === "") continue;
+    const fields = line.split(" ");
+    const separator = fields.indexOf("-");
+    const device = fields[2];
+    const root = fields[3];
+    const mountPoint = fields[4];
+    if (
+      separator < 6 ||
+      device === undefined ||
+      root === undefined ||
+      mountPoint === undefined
+    )
+      return null;
+    entries.push({
+      device,
+      root: decodeKernelEscapes(root),
+      mountPoint: decodeKernelEscapes(mountPoint),
+    });
+  }
+  return entries.length > 0 ? entries : null;
+}
+
+function isAncestorOrSame(ancestor: string, path: string): boolean {
+  return (
+    ancestor === "/" || path === ancestor || path.startsWith(`${ancestor}/`)
+  );
+}
+
+function expandMountAliases(
+  directory: string,
+  mounts: readonly MountEntry[],
+): string[] | null {
+  let containing: MountEntry | null = null;
+  for (const mount of mounts) {
+    if (
+      isAncestorOrSame(mount.mountPoint, directory) &&
+      (containing === null ||
+        mount.mountPoint.length >= containing.mountPoint.length)
+    )
+      containing = mount;
+  }
+  if (containing === null) return null;
+  const relative =
+    containing.mountPoint === "/"
+      ? directory
+      : directory.slice(containing.mountPoint.length);
+  const inFilesystem =
+    containing.root === "/" ? relative : `${containing.root}${relative}`;
+  const paths = [directory];
+  for (const mount of mounts) {
+    if (
+      mount === containing ||
+      mount.device !== containing.device ||
+      !isAncestorOrSame(mount.root, inFilesystem)
+    )
+      continue;
+    const below =
+      mount.root === "/" ? inFilesystem : inFilesystem.slice(mount.root.length);
+    const alias =
+      mount.mountPoint === "/" ? below || "/" : `${mount.mountPoint}${below}`;
+    if (!paths.includes(alias)) paths.push(alias);
+  }
+  return paths;
+}
+
+type LinuxProcessScan =
+  | { status: "clear" }
+  | { status: "held"; holder: FileHolder }
+  | { status: "unknown"; reason: string };
+
+async function scanLinuxProcess(
+  io: HoldScanIo,
+  coverage: HoldCoverage,
+  pid: number,
+  ownNamespace: string,
+  under: (path: string) => boolean,
+): Promise<LinuxProcessScan> {
+  const tasks = await readHeldProcessFact(io, coverage, pid, "threads", () =>
+    io.listTasks(pid),
+  );
+  if (tasks.status === "unknown") return tasks;
+  if (tasks.status !== "read") return { status: "clear" };
+  for (const tid of tasks.value) {
+    const namespace = await readHeldProcessFact(
+      io,
+      coverage,
+      pid,
+      "mount namespace",
+      () => io.readTaskNamespace(pid, tid),
+    );
+    if (namespace.status === "unknown") return namespace;
+    if (namespace.status === "skip") return { status: "clear" };
+    if (namespace.status === "gone") continue;
+    if (namespace.value !== ownNamespace) {
+      const outcome = await foreignOrUnknown(
+        io,
+        coverage,
+        pid,
+        `process ${pid} runs in a different mount namespace, so which folder its paths name cannot be vouched for`,
+      );
+      return outcome.status === "unknown" ? outcome : { status: "clear" };
+    }
+    const cwd = await readHeldProcessFact(
+      io,
+      coverage,
+      pid,
+      "working directory",
+      () => io.readTaskCwd(pid, tid),
+    );
+    if (cwd.status === "unknown") return cwd;
+    if (cwd.status === "skip") return { status: "clear" };
+    if (cwd.status === "read" && under(cwd.value))
+      return {
+        status: "held",
+        holder: { pid, path: cwd.value, through: "working-directory" },
+      };
+  }
+  const vanished = async (): Promise<LinuxProcessScan> => {
+    const again = await readHeldProcessFact(io, coverage, pid, "threads", () =>
+      io.listTasks(pid),
+    );
+    if (again.status === "unknown") return again;
+    if (
+      again.status === "read" &&
+      again.value.some((tid) => tid !== String(pid))
+    )
+      return {
+        status: "unknown",
+        reason: `the main thread of process ${pid} has exited while other threads still run, so what the process holds cannot be listed`,
+      };
+    return { status: "clear" };
+  };
+  const root = await readHeldProcessFact(io, coverage, pid, "root folder", () =>
+    io.readRoot(pid),
+  );
+  if (root.status === "unknown") return root;
+  if (root.status === "skip") return { status: "clear" };
+  if (root.status === "gone") return vanished();
+  if (root.value !== "/") {
+    const outcome = await foreignOrUnknown(
+      io,
+      coverage,
+      pid,
+      `process ${pid} runs under a different root folder, so which folder its paths name cannot be vouched for`,
+    );
+    return outcome.status === "unknown" ? outcome : { status: "clear" };
+  }
+  const exe = await readHeldProcessFact(io, coverage, pid, "program", () =>
+    io.readExe(pid),
+  );
+  if (exe.status === "unknown") return exe;
+  if (exe.status === "skip") return { status: "clear" };
+  if (exe.status === "gone") return vanished();
+  if (under(exe.value))
+    return {
+      status: "held",
+      holder: { pid, path: exe.value, through: "program" },
+    };
+  const opened = await readHeldProcessFact(
+    io,
+    coverage,
+    pid,
+    "open files",
+    () => io.listOpenFiles(pid),
+  );
+  if (opened.status === "unknown") return opened;
+  if (opened.status === "skip") return { status: "clear" };
+  if (opened.status === "gone") return vanished();
+  const openFile = opened.value.find(under);
+  if (openFile !== undefined)
+    return {
+      status: "held",
+      holder: { pid, path: openFile, through: "open-file" },
+    };
+  const maps = await readHeldProcessFact(io, coverage, pid, "memory maps", () =>
+    io.readMaps(pid),
+  );
+  if (maps.status === "unknown") return maps;
+  if (maps.status === "skip") return { status: "clear" };
+  if (maps.status === "gone") return vanished();
+  const mapped = mappedPaths(maps.value).find(under);
+  return mapped === undefined
+    ? { status: "clear" }
+    : {
+        status: "held",
+        holder: { pid, path: mapped, through: "memory-map" },
+      };
 }
 
 async function scanLinuxHolders(
@@ -686,107 +902,51 @@ async function scanLinuxHolders(
   }
   let ownNamespace: string;
   try {
-    ownNamespace = await io.readMountNamespace("self");
+    ownNamespace = await io.readOwnMountNamespace();
   } catch (error) {
     return {
       status: "unknown",
       reason: `the mount namespace of this process could not be read (${codeOf(error) || "error"})`,
     };
   }
+  let mounts: MountEntry[] | null;
+  try {
+    mounts = parseMountInfo(await io.readMountInfo());
+  } catch (error) {
+    return {
+      status: "unknown",
+      reason: `the mount table could not be read (${codeOf(error) || "error"})`,
+    };
+  }
+  if (mounts === null)
+    return { status: "unknown", reason: "the mount table could not be parsed" };
+  const paths: string[] = [];
+  for (const directory of directories) {
+    const aliases = expandMountAliases(directory, mounts);
+    if (aliases === null)
+      return {
+        status: "unknown",
+        reason: `which mounts show ${directory} could not be worked out from the mount table`,
+      };
+    for (const alias of aliases) if (!paths.includes(alias)) paths.push(alias);
+  }
   const under = (path: string) =>
-    directories.some((directory) => isUnder(path, directory));
+    paths.some((directory) => isUnder(path, directory));
   const coverage: HoldCoverage = { helpers: [], skipped: [] };
   const holders: FileHolder[] = [];
   for (const entry of entries) {
     if (!/^\d+$/u.test(entry)) continue;
     const pid = Number(entry);
     if (pid === io.selfPid) continue;
-    const namespace = await readHeldProcessFact(
+    const scanned = await scanLinuxProcess(
       io,
       coverage,
       pid,
-      "mount namespace",
-      () => io.readMountNamespace(pid),
+      ownNamespace,
+      under,
     );
-    if (namespace.status === "unknown") return namespace;
-    if (namespace.status === "skip") continue;
-    if (namespace.value !== ownNamespace) {
-      const outcome = await foreignOrUnknown(
-        io,
-        coverage,
-        pid,
-        `process ${pid} runs in a different mount namespace, so which folder its paths name cannot be vouched for`,
-      );
-      if (outcome.status === "unknown") return outcome;
-      continue;
-    }
-    const root = await readHeldProcessFact(
-      io,
-      coverage,
-      pid,
-      "root folder",
-      () => io.readRoot(pid),
-    );
-    if (root.status === "unknown") return root;
-    if (root.status === "skip") continue;
-    if (root.value !== "/") {
-      const outcome = await foreignOrUnknown(
-        io,
-        coverage,
-        pid,
-        `process ${pid} runs under a different root folder, so which folder its paths name cannot be vouched for`,
-      );
-      if (outcome.status === "unknown") return outcome;
-      continue;
-    }
-    const cwd = await readHeldProcessFact(
-      io,
-      coverage,
-      pid,
-      "working directory",
-      () => io.readCwd(pid),
-    );
-    if (cwd.status === "unknown") return cwd;
-    if (cwd.status === "skip") continue;
-    if (under(cwd.value)) {
-      holders.push({ pid, path: cwd.value, through: "working-directory" });
-      continue;
-    }
-    const exe = await readHeldProcessFact(io, coverage, pid, "program", () =>
-      io.readExe(pid),
-    );
-    if (exe.status === "unknown") return exe;
-    if (exe.status === "skip") continue;
-    if (under(exe.value)) {
-      holders.push({ pid, path: exe.value, through: "program" });
-      continue;
-    }
-    const opened = await readHeldProcessFact(
-      io,
-      coverage,
-      pid,
-      "open files",
-      () => io.listOpenFiles(pid),
-    );
-    if (opened.status === "unknown") return opened;
-    if (opened.status === "skip") continue;
-    const openFile = opened.value.find(under);
-    if (openFile !== undefined) {
-      holders.push({ pid, path: openFile, through: "open-file" });
-      continue;
-    }
-    const maps = await readHeldProcessFact(
-      io,
-      coverage,
-      pid,
-      "memory maps",
-      () => io.readMaps(pid),
-    );
-    if (maps.status === "unknown") return maps;
-    if (maps.status === "skip") continue;
-    const mapped = mappedPaths(maps.value).find(under);
-    if (mapped !== undefined)
-      holders.push({ pid, path: mapped, through: "memory-map" });
+    if (scanned.status === "unknown") return scanned;
+    if (scanned.status === "held") holders.push(scanned.holder);
   }
   const report = {
     excludedOtherUsers: coverage.skipped.length,
@@ -831,6 +991,7 @@ async function scanDarwinHolders(
     io,
     timeoutMs,
     io.runLsofOpenFiles,
+    false,
   );
   if (inspection.status === "unknown") return inspection;
   const under = (path: string) =>
@@ -879,6 +1040,12 @@ export async function scanProcessesHoldingUnder(
   args: { directories: readonly string[]; timeoutMs?: number },
   io: HoldScanIo = activeHoldIo,
 ): Promise<HolderScan> {
+  if (args.directories.length === 0) {
+    return {
+      status: "unknown",
+      reason: "no directory was named, so nothing can be vouched for",
+    };
+  }
   if (io.platform === "win32") {
     return {
       status: "unknown",
