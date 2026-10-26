@@ -1545,7 +1545,7 @@ describe("terminal output retained from the data plane", () => {
     let snapshotCount = 0;
     const snapshot = vi
       .spyOn(TerminalScreenState.prototype, "snapshot")
-      .mockImplementation(async function () {
+      .mockImplementation(async function (this: TerminalScreenState) {
         snapshotCount += 1;
         if (snapshotCount === 2) {
           reachedSnapshot.resolve();
