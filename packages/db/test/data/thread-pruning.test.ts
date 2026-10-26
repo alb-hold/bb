@@ -514,14 +514,38 @@ describe("thread pruning", () => {
           itemId: "message",
         });
       });
-      for (let i = 0; i < 3; i++)
-        advanceThreadPruning(f.db, { threadId: f.thread.id });
-      let result = advanceThreadPruning(f.db, { threadId: f.thread.id });
+      const advances: Array<{
+        policy: string;
+        action: string;
+        scanned: number;
+        removed: number;
+      }> = [];
+      const advance = () => {
+        const result = advanceThreadPruning(f.db, { threadId: f.thread.id });
+        advances.push({
+          policy: result.policy,
+          action: result.action,
+          scanned: result.scanned,
+          removed: result.removed,
+        });
+        return result;
+      };
+      for (let i = 0; i < 3; i++) advance();
+      let result = advance();
       expect(result.policy).toBe("resolved-items");
-      for (let i = 0; i < 8 && result.removed === 0; i += 1) {
-        result = advanceThreadPruning(f.db, { threadId: f.thread.id });
+      const maxAdvances = 8;
+      for (
+        let i = 0;
+        i < maxAdvances - advances.length && result.removed === 0;
+        i += 1
+      ) {
+        result = advance();
       }
       expect(result.removed).toBe(1);
+      expect(advances.length).toBeLessThanOrEqual(maxAdvances);
+      expect(
+        advances.reduce((total, entry) => total + entry.scanned, 0),
+      ).toBeLessThanOrEqual(8);
       expect(sequences(f)).toContain(2001);
       expect(sequences(f)).not.toContain(2002);
       expect(sequences(f)).toContain(2003);

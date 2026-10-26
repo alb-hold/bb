@@ -1,9 +1,10 @@
 import { performance } from "node:perf_hooks";
 import {
+  advanceThreadPruning,
   getThread,
   getThreadEventRewriteGeneration,
-  advanceThreadPruning,
   THREAD_EVENT_KEEP_RECENT_BY_MODE,
+  THREAD_PRUNING_POLICIES,
 } from "@bb/db";
 import type { ThreadEventType } from "@bb/domain";
 import { roundDurationMs } from "@bb/process-utils";
@@ -17,7 +18,7 @@ interface PruneThreadEventHistoryArgs {
 }
 
 interface ThreadEventPruningResult {
-  action: string;
+  action: ReturnType<typeof advanceThreadPruning>["action"];
   latestSequence: number;
   policy: string;
   scanned: number;
@@ -183,7 +184,7 @@ export function pruneActiveThreadEventHistoryWithinBudget(
       completedPolicies.add(latest.policy);
   } while (
     clock() - startedAt < ACTIVE_THREAD_EVENT_PRUNE_BUDGET_MS &&
-    completedPolicies.size < 4
+    completedPolicies.size < THREAD_PRUNING_POLICIES.length
   );
   return { ...latest, ...totals };
 }
