@@ -50,8 +50,14 @@ export function createNativeActivityReporter(options: {
     const opened =
       next.state === "waiting" ? next.questions.map((q) => q.id) : [];
     const openedSet = new Set(opened);
-    const closes = [...possiblyOpen].filter((id) => !openedSet.has(id));
-    for (const id of opened) possiblyOpen.add(id);
+    const closes = closesSupported
+      ? [...possiblyOpen].filter((id) => !openedSet.has(id))
+      : [];
+    if (closesSupported) {
+      for (const id of opened) possiblyOpen.add(id);
+    } else {
+      possiblyOpen.clear();
+    }
     const sends = {
       closes: true,
       confirms: next.state !== "waiting" && next.confirms === false,
@@ -70,6 +76,10 @@ export function createNativeActivityReporter(options: {
       ...(includeConfirms ? { confirms: false } : {}),
     });
     const acknowledge = (closed: string[]): void => {
+      if (!closesSupported) {
+        possiblyOpen.clear();
+        return;
+      }
       for (const id of closed) {
         if (!openedSet.has(id)) possiblyOpen.delete(id);
       }

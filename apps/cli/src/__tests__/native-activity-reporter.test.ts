@@ -608,7 +608,7 @@ describe("native activity reporter", () => {
       expect(calls).toHaveLength(3);
       expect(closesOf(calls)).toEqual([
         [],
-        ["q1", "q2", "q3", "q4", "q5", "q6", "q7", "q8", "q9"],
+        ["q1", "q2", "q3", "q4", "q5", "q6", "q7", "q8"],
         undefined,
       ]);
     });
