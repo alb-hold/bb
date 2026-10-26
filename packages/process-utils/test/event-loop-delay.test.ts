@@ -172,14 +172,35 @@ interface RealHistogramTrial {
   maxAtCallbackMs: number;
   maxAtDeferredReadMs: number;
   stallCount: number;
+  blockStallCount: number;
+  otherStalls: number;
+  blockStallMaxDelayMs: number;
+}
+
+interface RealHistogramStall {
+  intervalMs: number;
+  maxDelayMs: number;
+  timerLagMs: number;
+}
+
+interface RealHistogramWindow {
+  startMs: number;
+  endMs: number;
 }
 
 async function runRealHistogramTrial(): Promise<RealHistogramTrial> {
   const histogram = monitorEventLoopDelay({ resolution: 20 });
-  const stalls: unknown[] = [];
+  const stalls: Array<{
+    stall: RealHistogramStall;
+    window: RealHistogramWindow;
+  }> = [];
   let maxAtCallbackMs = 0;
   let maxAtDeferredReadMs = 0;
   let sampleCount = 0;
+  let lastSampleAtMs: number | undefined;
+  let sampleWindow: RealHistogramWindow | undefined;
+  let blockStartMs = 0;
+  let blockEndMs = 0;
   let resolveTrial: ((result: RealHistogramTrial) => void) | undefined;
   const completed = new Promise<RealHistogramTrial>((resolve) => {
     resolveTrial = resolve;
@@ -188,6 +209,14 @@ async function runRealHistogramTrial(): Promise<RealHistogramTrial> {
     histogram,
     intervalMs: 200,
     thresholdMs: 100,
+    now: () => {
+      const sampledAtMs = performance.now();
+      if (lastSampleAtMs !== undefined) {
+        sampleWindow = { startMs: lastSampleAtMs, endMs: sampledAtMs };
+      }
+      lastSampleAtMs = sampledAtMs;
+      return sampledAtMs;
+    },
     defer: (callback) => {
       maxAtCallbackMs = histogram.max / nanosecondsPerMillisecond;
       setImmediate(() => {
@@ -196,21 +225,34 @@ async function runRealHistogramTrial(): Promise<RealHistogramTrial> {
       });
     },
     onSample: ({ stall }) => {
-      if (stall !== null) stalls.push(stall);
+      if (stall !== null && sampleWindow !== undefined) {
+        stalls.push({ stall, window: sampleWindow });
+      }
       sampleCount += 1;
       if (sampleCount === 3) {
         sampler.stop();
+        const blockStalls = stalls.filter(
+          ({ window }) =>
+            window.startMs < blockEndMs && window.endMs > blockStartMs,
+        );
         resolveTrial?.({
           maxAtCallbackMs,
           maxAtDeferredReadMs,
           stallCount: stalls.length,
+          blockStallCount: blockStalls.length,
+          otherStalls: stalls.length - blockStalls.length,
+          blockStallMaxDelayMs: Math.max(
+            0,
+            ...blockStalls.map(({ stall }) => stall.maxDelayMs),
+          ),
         });
       }
     },
   });
   setTimeout(() => {
-    const startedAt = performance.now();
-    while (performance.now() - startedAt < 300) {}
+    blockStartMs = performance.now();
+    while (performance.now() - blockStartMs < 300) {}
+    blockEndMs = performance.now();
   }, 100);
   return completed;
 }
@@ -224,13 +266,18 @@ it("observes each real histogram late tick before the deferred read", async () =
   expect(rows).toHaveLength(trRuns);
   for (const row of rows) {
     expect(row.maxAtDeferredReadMs).toBeGreaterThanOrEqual(260);
-    expect(row.stallCount).toBe(1);
+    expect(row.blockStallCount).toBe(1);
+    expect(row.blockStallMaxDelayMs).toBeGreaterThanOrEqual(260);
   }
-  process.stdout.write("TR_RESULT_BEGIN\nrun,maxAtCallbackMs,maxAtDeferredReadMs,stallCount\n");
+  process.stdout.write(
+    "TR_RESULT_BEGIN\nrun,maxAtCallbackMs,maxAtDeferredReadMs,stallCount,blockStallCount,otherStalls,blockStallMaxDelayMs\n",
+  );
   rows.forEach((row, index) => {
     process.stdout.write(
-      `${index + 1},${row.maxAtCallbackMs.toFixed(1)},${row.maxAtDeferredReadMs.toFixed(1)},${row.stallCount}\n`,
+      `${index + 1},${row.maxAtCallbackMs.toFixed(1)},${row.maxAtDeferredReadMs.toFixed(1)},${row.stallCount},${row.blockStallCount},${row.otherStalls},${row.blockStallMaxDelayMs.toFixed(1)}\n`,
     );
   });
-  process.stdout.write(`TR_SUMMARY=${rows.filter((row) => row.maxAtDeferredReadMs >= 260 && row.stallCount === 1).length}/${trRuns}\nTR_RESULT_END\n`);
+  process.stdout.write(
+    `TR_SUMMARY=${rows.filter((row) => row.maxAtDeferredReadMs >= 260 && row.blockStallCount === 1 && row.blockStallMaxDelayMs >= 260).length}/${trRuns}\nTR_RESULT_END\n`,
+  );
 }, 60_000);
