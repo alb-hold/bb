@@ -64,6 +64,9 @@ function httpStatusOf(error: unknown): number | null {
     : null;
 }
 
+const MERGE_NEEDS_HEAD_MESSAGE =
+  "Merge needs the head commit you reviewed: pass --expected-head-oid <oid> (shown as 'Head commit' by `bb pull-request`)";
+
 function refuse(message: string): never {
   throw new experimental_PluginRpcRefusal({ code: "conflict", message });
 }
@@ -537,15 +540,16 @@ export default function githubPrStatusPlugin(bb: BbPluginApi): void {
             json: JSON_OPTION,
           },
           run: (input) =>
-            runCliAction(
-              () =>
-                merge(
-                  input.positionals["environment-id"],
-                  input.options.method,
-                  input.options["expected-head-oid"] ?? null,
-                ),
-              input.options.json,
-            ),
+            runCliAction(async () => {
+              const expectedHeadOid = input.options["expected-head-oid"];
+              if (expectedHeadOid === undefined)
+                refuse(MERGE_NEEDS_HEAD_MESSAGE);
+              return merge(
+                input.positionals["environment-id"],
+                input.options.method,
+                expectedHeadOid,
+              );
+            }, input.options.json),
         }),
       },
     }),

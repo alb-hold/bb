@@ -14,7 +14,7 @@ Use the CLI from any thread:
 
 - `bb pull-request show <environment-id>` prints the pull request.
 - `bb pull-request ready|draft <environment-id>` changes draft state.
-- `bb pull-request merge <environment-id> --method squash` merges it.
+- `bb pull-request merge <environment-id> --method squash --expected-head-oid <oid>` merges it, with the `Head commit` that `show` printed.
 
 ## Requirements
 

@@ -572,6 +572,53 @@ describe("GitHub PR Status server", () => {
     });
   });
 
+  it("the CLI refuses a merge without the reviewed head commit and starts no host action", async () => {
+    const fake = await setup({});
+
+    await expect(
+      fake.harness.runCli(["merge", "env-1"]),
+    ).resolves.toMatchObject({
+      exitCode: 1,
+      stderr: expect.stringContaining(
+        "Merge needs the head commit you reviewed: pass --expected-head-oid <oid> (shown as 'Head commit' by `bb pull-request`)",
+      ),
+    });
+    expect(
+      fake.harness.experimental_hostRpcCalls.filter(
+        (call) => call.method === "act",
+      ),
+    ).toEqual([]);
+  });
+
+  it("the CLI prints the host's changed-since-shown refusal for a mismatched head commit", async () => {
+    const fake = await setup({
+      callHost: (call) =>
+        call.method === "upstream"
+          ? { oid: null, branchName: "bb/pr" }
+          : call.method === "view"
+            ? { outcome: "found", pullRequest: view() }
+            : {
+                ok: false,
+                message:
+                  "The pull request changed since it was shown. Refresh it and try again",
+              },
+    });
+
+    await expect(
+      fake.harness.runCli([
+        "merge",
+        "env-1",
+        "--expected-head-oid",
+        "b".repeat(40),
+      ]),
+    ).resolves.toMatchObject({
+      exitCode: 1,
+      stderr: expect.stringContaining(
+        "The pull request changed since it was shown. Refresh it and try again",
+      ),
+    });
+  });
+
   it.each([
     [["status-changed"], "refresh"],
     [["environment-created"], "refresh"],

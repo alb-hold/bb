@@ -14,7 +14,7 @@ panel and sidebar plugins read their PR status from it.
 bb pull-request show <environment-id> [--json]
 bb pull-request ready <environment-id> [--json]
 bb pull-request draft <environment-id> [--json]
-bb pull-request merge <environment-id> [--method merge|squash|rebase] [--json]
+bb pull-request merge <environment-id> --expected-head-oid <oid> [--method merge|squash|rebase] [--json]
 ```
 
 - `show` prints the PR number, state, branch, attention, checks, review and
@@ -22,7 +22,11 @@ bb pull-request merge <environment-id> [--method merge|squash|rebase] [--json]
   `{ "outcome": "absent" }` or `{ "outcome": "unavailable", "message" }`.
 - `ready` needs a draft PR, `draft` needs an open PR and `merge` needs an open
   PR GitHub reports as mergeable. Each re-reads the PR first and fails with
-  the reason otherwise.
+  the reason otherwise. `merge` also needs `--expected-head-oid`, the
+  `Head commit` that `show` printed (`headRefOid` in `--json`); without it the
+  merge is refused, and if the PR changed since it was shown the merge is
+  refused with a request to refresh. The `merge` RPC takes the same value as
+  `expectedHeadOid` (a string or null; null is refused).
 - bb never wakes a machine for PR work. When the environment's machine is
   suspended or offline, `show` reports `unavailable` and the actions fail
   with a message naming the machine.

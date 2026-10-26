@@ -235,7 +235,8 @@ Making your repo work with bb:
   Inspect `bb environment show <id>` after recovery to confirm removal.
 
   Pull requests moved to the bundled GitHub PR Status plugin:
-  `bb pull-request show|ready|draft|merge <environment-id>`. See its
+  `bb pull-request show|ready|draft|merge <environment-id>`; merge needs
+  `--expected-head-oid` from `show`. See its
   github-pr-status skill.
 
 Every inspection command accepts an arbitrary environment ID and supports
