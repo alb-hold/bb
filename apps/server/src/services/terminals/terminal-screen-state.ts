@@ -3,6 +3,7 @@ import { createRequire } from "node:module";
 import type { TerminalScreenResponse } from "@bb/server-contract";
 
 const TERMINAL_SCREEN_STATE_SCROLLBACK = 2_000;
+const TERMINAL_SCREEN_STATE_PENDING_BYTES_LIMIT = 8 * 1024 * 1024;
 const ESC = "\u001b";
 const require = createRequire(import.meta.url);
 const Terminal = require("@xterm/headless")
@@ -137,6 +138,7 @@ export class TerminalScreenState {
     | { kind: "bytes"; data: Uint8Array }
     | { kind: "resize"; cols: number; rows: number }
   > = [];
+  private pendingWorkBytes = 0;
   private cols: number;
   private rows: number;
   private pending = Promise.resolve();
@@ -161,7 +163,7 @@ export class TerminalScreenState {
   push(seq: number, data: Uint8Array): void {
     if (this.disposed || !this.valid || seq < this.nextSeq) return;
     if (seq !== this.nextSeq) {
-      this.valid = false;
+      this.invalidate();
       return;
     }
     this.nextSeq += 1;
@@ -171,11 +173,17 @@ export class TerminalScreenState {
   pushBase64(seq: number, data: string): void {
     if (this.disposed || !this.valid || seq < this.nextSeq) return;
     if (seq !== this.nextSeq) {
-      this.valid = false;
+      this.invalidate();
       return;
     }
     this.nextSeq += 1;
     this.enqueue({ kind: "base64", data });
+  }
+
+  private invalidate(): void {
+    this.valid = false;
+    this.pendingWork.length = 0;
+    this.pendingWorkBytes = 0;
   }
 
   resize(cols: number, rows: number): void {
@@ -197,6 +205,19 @@ export class TerminalScreenState {
       | { kind: "bytes"; data: Uint8Array }
       | { kind: "resize"; cols: number; rows: number },
   ): void {
+    const bytes =
+      work.kind === "resize"
+        ? 0
+        : work.kind === "bytes"
+          ? work.data.byteLength
+          : Buffer.byteLength(work.data, "utf8");
+    if (
+      this.pendingWorkBytes + bytes > TERMINAL_SCREEN_STATE_PENDING_BYTES_LIMIT
+    ) {
+      this.invalidate();
+      return;
+    }
+    this.pendingWorkBytes += bytes;
     this.pendingWork.push(work);
     if (this.draining) return;
     this.draining = true;
@@ -206,10 +227,18 @@ export class TerminalScreenState {
           new Promise<void>((resolve, reject) => {
             const drain = () => {
               const next = this.pendingWork.shift();
-              if (this.disposed || next === undefined) {
+              if (this.disposed || !this.valid || next === undefined) {
+                this.pendingWork.length = 0;
+                this.pendingWorkBytes = 0;
                 this.draining = false;
                 resolve();
                 return;
+              }
+              if (next.kind !== "resize") {
+                this.pendingWorkBytes -=
+                  next.kind === "bytes"
+                    ? next.data.byteLength
+                    : Buffer.byteLength(next.data, "utf8");
               }
               try {
                 if (next.kind === "resize") {
@@ -234,7 +263,7 @@ export class TerminalScreenState {
       )
       .catch(() => {
         this.draining = false;
-        this.valid = false;
+        this.invalidate();
       });
   }
 
@@ -255,6 +284,8 @@ export class TerminalScreenState {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    this.pendingWork.length = 0;
+    this.pendingWorkBytes = 0;
     this.terminal.dispose();
   }
 }

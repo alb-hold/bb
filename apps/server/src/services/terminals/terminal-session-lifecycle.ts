@@ -980,6 +980,7 @@ export class TerminalSessionLifecycle {
           chunk.seq,
           Buffer.from(chunk.dataBase64, "base64"),
         );
+        await yieldToEventLoop();
       }
       await this.terminalScreenStates.snapshot(session.id);
     }
@@ -4411,8 +4412,10 @@ export class TerminalSessionLifecycle {
     if (session.threadId !== null) {
       this.options.hub.notifyThread(session.threadId, ["terminals-changed"]);
     }
+    if (session.status !== "running") {
+      this.terminalScreenStates.remove(session.id);
+    }
     if (session.status !== "exited") return;
-    this.terminalScreenStates.remove(session.id);
     for (const listener of this.exitListeners) {
       try {
         listener(session);

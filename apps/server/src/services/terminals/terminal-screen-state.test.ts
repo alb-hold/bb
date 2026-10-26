@@ -99,6 +99,16 @@ describe("TerminalScreenState", () => {
     state.dispose();
   });
 
+  it("invalidates and drops queued data after the pending byte limit is crossed", async () => {
+    const state = new TerminalScreenState(40, 5);
+    state.push(0, Buffer.from("initial"));
+    state.push(1, Buffer.alloc(8 * 1024 * 1024, 120));
+    await expect(state.snapshot()).resolves.toBeNull();
+    expect(Reflect.get(state, "pendingWork")).toHaveLength(0);
+    expect(Reflect.get(state, "pendingWorkBytes")).toBe(0);
+    state.dispose();
+  });
+
   it("preserves the older-history seam when a lazy history page meets the snapshot and suffix", async () => {
     const olderRows = Array.from({ length: 2_005 }, (_, index) =>
       `history-${index + 1}`,

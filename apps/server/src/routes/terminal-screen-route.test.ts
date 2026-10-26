@@ -18,7 +18,10 @@ function createApp() {
   };
   const terminalSessions = {
     readTerminalScreen: vi.fn(async ({ terminalId, query }) => {
-      if (terminalId !== "term_allowed" || query.threadId !== "thr_allowed") {
+      if (
+        terminalId !== "term_allowed" ||
+        (query.threadId !== undefined && query.threadId !== "thr_allowed")
+      ) {
         throw new ApiError(
           404,
           "terminal_not_found",
@@ -92,6 +95,18 @@ describe("terminal screen public API mounting", () => {
       `http://localhost:4872/api/v1/terminals/${terminalId}/screen?threadId=${threadId}`,
     );
     expect(response.status).toBe(404);
+  });
+
+  it("allows the existing terminal-ID screen read without a threadId", async () => {
+    const { app, terminalSessions } = createApp();
+    const response = await app.request(
+      "http://localhost:4872/api/v1/terminals/term_allowed/screen",
+    );
+    expect(response.status).toBe(200);
+    expect(terminalSessions.readTerminalScreen).toHaveBeenCalledWith({
+      terminalId: "term_allowed",
+      query: {},
+    });
   });
 
   it("keeps terminal routes inside the production publicApi mount", () => {

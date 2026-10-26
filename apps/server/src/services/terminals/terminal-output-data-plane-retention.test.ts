@@ -148,6 +148,7 @@ async function setup(
     holdOutputBatches?: boolean;
     terminalStatus?: "running" | "starting";
     environmentBacked?: boolean;
+    threadless?: boolean;
   } = {},
 ) {
   const harness = await createTestAppHarness({
@@ -168,7 +169,7 @@ async function setup(
     initialCwd: "/tmp",
     rows: 24,
     status: args.terminalStatus ?? "running",
-    threadId: thread.id,
+    threadId: args.threadless ? null : thread.id,
     title: "Unwatched output",
   });
   const daemonSocket = new FakeSocket();
@@ -238,6 +239,20 @@ async function setup(
       }
     },
   };
+}
+
+function seedMaintainedScreen(fixture: Awaited<ReturnType<typeof setup>>) {
+  fixture.terminalSessions.recordDirectTerminalOutputBatch({
+    daemonSessionId: fixture.session.id,
+    terminalId: fixture.terminal.id,
+    chunks: [
+      {
+        seq: 0,
+        dataBase64: Buffer.from("cached screen").toString("base64"),
+      },
+    ],
+  });
+  return Reflect.get(fixture.terminalSessions, "terminalScreenStates");
 }
 
 async function retainReplayAcrossLifecycleTransition(args: {
@@ -1014,6 +1029,149 @@ describe("terminal output retained from the data plane", () => {
       expectedStatus: "disconnected",
     });
   }, 15_000);
+
+  it("removes maintained screens on every running-session stop path", async () => {
+    type Fixture = Awaited<ReturnType<typeof setup>>;
+    const assertRemoved = async (
+      stop: (fixture: Fixture) => void | Promise<void>,
+      options: { environmentBacked?: boolean; threadless?: boolean } = {},
+    ) => {
+      const fixture = await setup(options);
+      const screenStates = seedMaintainedScreen(fixture);
+      try {
+        expect(screenStates.has(fixture.terminal.id)).toBe(true);
+        await stop(fixture);
+        expect(screenStates.has(fixture.terminal.id)).toBe(false);
+      } finally {
+        fixture.child.shutdown();
+      }
+    };
+
+    await assertRemoved((fixture) =>
+      fixture.terminalSessions.closeDeletedThreadTerminals({
+        threadId: fixture.thread.id,
+      }),
+    );
+    await assertRemoved((fixture) =>
+      fixture.terminalSessions.closeArchivedThreadTerminals({
+        threadId: fixture.thread.id,
+      }),
+    );
+    await assertRemoved(
+      (fixture) => {
+        if (fixture.environment === null)
+          throw new Error("environment fixture missing");
+        fixture.terminalSessions.closeDestroyedEnvironmentTerminals({
+          environmentId: fixture.environment.id,
+        });
+      },
+      { environmentBacked: true },
+    );
+    await assertRemoved(
+      (fixture) =>
+        fixture.terminalSessions.closeRemovedHostTerminals({
+          hostId: fixture.host.id,
+        }),
+      { threadless: true },
+    );
+    await assertRemoved(async (fixture) => {
+      updateTerminalSession(fixture.db, {
+        scope: {
+          kind: "terminal",
+          statuses: ["running"],
+          terminalId: fixture.terminal.id,
+        },
+        update: { daemonSessionId: null },
+      });
+      await fixture.terminalSessions.closeTerminal({
+        terminalId: fixture.terminal.id,
+        payload: { mode: "force", reason: "user" },
+      });
+    });
+    await assertRemoved((fixture) =>
+      fixture.terminalSessions.handleDaemonTerminalMessage({
+        hostId: fixture.host.id,
+        sessionId: fixture.session.id,
+        message: {
+          type: "terminal.exited",
+          terminalId: fixture.terminal.id,
+          exitCode: 0,
+          closeReason: "process-exit",
+        },
+      }),
+    );
+    await assertRemoved((fixture) =>
+      fixture.terminalSessions.handleDaemonSessionClosed({
+        sessionId: fixture.session.id,
+      }),
+    );
+    await assertRemoved((fixture) => {
+      const controller = new AbortController();
+      controller.abort("failed");
+      fixture.terminalSessions.flushRetainedOutputBeforeClose(
+        controller.signal,
+      );
+    });
+    await assertRemoved(async (fixture) => {
+      fixture.terminalSessions.handleDaemonSessionClosed({
+        sessionId: fixture.session.id,
+      });
+      const replacement = seedSession(fixture.harness.deps, fixture.host.id, {
+        instanceId: "replacement-instance",
+      });
+      await fixture.terminalSessions.reconcileDisconnectedHostTerminals({
+        hostId: fixture.host.id,
+        daemonSessionId: replacement.id,
+      });
+    });
+  });
+
+  it("serves replay fallback after a screen state exceeds its pending byte limit", async () => {
+    const fixture = await setup();
+    const screenStates = Reflect.get(
+      fixture.terminalSessions,
+      "terminalScreenStates",
+    );
+    try {
+      fixture.terminalSessions.recordDirectTerminalOutputBatch({
+        daemonSessionId: fixture.session.id,
+        terminalId: fixture.terminal.id,
+        chunks: [
+          {
+            seq: 0,
+            dataBase64: Buffer.from("replay fallback").toString("base64"),
+          },
+        ],
+      });
+      fixture.terminalSessions.flushAllRetainedOutput();
+      screenStates.push(
+        fixture.terminal.id,
+        fixture.terminal.cols,
+        fixture.terminal.rows,
+        1,
+        Buffer.alloc(8 * 1024 * 1024, 120),
+      );
+      updateTerminalSession(fixture.db, {
+        scope: {
+          kind: "terminal",
+          statuses: ["running"],
+          terminalId: fixture.terminal.id,
+        },
+        update: { kind: "exit" },
+      });
+
+      const response = await fixture.harness.app.request(
+        `/api/v1/terminals/${fixture.terminal.id}/screen?threadId=${fixture.thread.id}`,
+      );
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toMatchObject({
+        rows: expect.arrayContaining(["replay fallback"]),
+        complete: true,
+      });
+    } finally {
+      fixture.child.shutdown();
+    }
+  });
 
   it("retains pending, replay, and concurrent running output in sequence order", async () => {
     const fixture = await setup();
