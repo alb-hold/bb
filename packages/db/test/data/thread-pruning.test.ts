@@ -534,11 +534,7 @@ describe("thread pruning", () => {
       let result = advance();
       expect(result.policy).toBe("resolved-items");
       const maxAdvances = 8;
-      for (
-        let i = 0;
-        i < maxAdvances - advances.length && result.removed === 0;
-        i += 1
-      ) {
+      while (advances.length < maxAdvances && result.removed === 0) {
         result = advance();
       }
       expect(result.removed).toBe(1);
