@@ -318,26 +318,24 @@ function advanceThreadPruningTransaction(
               candidateIds: rows.map((row) => row.id),
             };
             const relevantIds = rows.map((row) => row.id);
-            const bytesQuery = sql`SELECT COALESCE(SUM(octet_length(data)), 0) AS bytes FROM events WHERE ${inArray(events.id, relevantIds)} AND ${events.type} = ${type}`;
-            const before =
-              relevantIds.length === 0 ||
-              threadScope !== undefined ||
-              (policy === "usage" && (cursor.step === 0 || cursor.step === 2))
-                ? 0
-                : (tx.get<{ bytes: number }>(bytesQuery)?.bytes ?? 0);
             if (policy === "turn-diffs") {
-              removed = tx
+              const deletedRows = tx
                 .delete(events)
                 .where(
                   and(
-                    inArray(
-                      events.id,
-                      rows.map((row) => row.id),
-                    ),
+                    inArray(events.id, relevantIds),
                     isBeforeLatestThreadEvent(threadId),
                   ),
                 )
-                .run().changes;
+                .returning({
+                  bytes: sql<number>`octet_length(${events.data})`,
+                })
+                .all();
+              removed = deletedRows.length;
+              removedBytes = deletedRows.reduce(
+                (sum, row) => sum + row.bytes,
+                0,
+              );
             } else {
               const args = {
                 ...window,
@@ -374,21 +372,16 @@ function advanceThreadPruningTransaction(
                   break;
                 }
                 case 1:
-                  removed = pruneContextWindowUsageEventsInTransaction(
-                    tx,
-                    args,
-                  );
+                  ({ removed, removedBytes } =
+                    pruneContextWindowUsageEventsInTransaction(tx, args));
                   break;
                 case 3:
-                  removed = pruneTokenUsageEventsInTransaction(tx, args);
+                  ({ removed, removedBytes } =
+                    pruneTokenUsageEventsInTransaction(tx, args));
                   break;
                 default:
                   throw new Error("Invalid usage pruning step");
               }
-            }
-            if (removed > 0) {
-              const after = tx.get<{ bytes: number }>(bytesQuery)?.bytes ?? 0;
-              removedBytes = before - after;
             }
             cursor.sequence = throughSequence;
           }
