@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -98,20 +98,6 @@ function branchResponse(nodes: unknown[]): string {
   });
 }
 
-function expectOnlyToken(
-  env: Record<string, string | null>,
-  key: TokenKey,
-  value: string,
-) {
-  expect(
-    Object.fromEntries(TOKEN_KEYS.map((name) => [name, env[name]])),
-  ).toEqual(
-    Object.fromEntries(
-      TOKEN_KEYS.map((name) => [name, name === key ? value : null]),
-    ),
-  );
-}
-
 type Configure = "none" | "gh-host" | "hosts-yml";
 
 async function configureHost(host: string, configure: Configure) {
@@ -128,7 +114,7 @@ const DESTINATIONS: readonly (readonly [
   string,
   Configure,
   readonly TokenKey[],
-  TokenKey,
+  TokenKey | null,
 ])[] = [
   ["github.com", "github.com", "none", TOKEN_KEYS, "GH_TOKEN"],
   [
@@ -146,18 +132,25 @@ const DESTINATIONS: readonly (readonly [
     "GH_TOKEN",
   ],
   [
-    "a configured enterprise host",
+    "a configured enterprise host named by GH_HOST",
     "ghe.example",
-    "hosts-yml",
+    "gh-host",
     TOKEN_KEYS,
     "GH_ENTERPRISE_TOKEN",
   ],
   [
-    "a configured enterprise host with only GITHUB_ENTERPRISE_TOKEN set",
+    "a configured enterprise host named by GH_HOST with only GITHUB_ENTERPRISE_TOKEN set",
     "ghe.example",
-    "hosts-yml",
+    "gh-host",
     ["GH_TOKEN", "GITHUB_TOKEN", "GITHUB_ENTERPRISE_TOKEN"],
     "GITHUB_ENTERPRISE_TOKEN",
+  ],
+  [
+    "a hosts.yml enterprise host that GH_HOST does not name",
+    "ghe.example",
+    "hosts-yml",
+    TOKEN_KEYS,
+    null,
   ],
 ];
 
@@ -338,11 +331,41 @@ describe("parseGitHubPullRequestView", () => {
   });
 });
 
+const HEAD_OID = "a".repeat(40);
+
+async function actionGh(
+  extra: Record<
+    string,
+    { stdout?: string; stderr?: string; exit?: number }
+  > = {},
+) {
+  return installFakeGh({
+    "api graphql": { stdout: branchResponse([branchPr()]) },
+    ...extra,
+  });
+}
+
+async function actionCalls(gh: { readCalls(): Promise<string[][]> }) {
+  return (await gh.readCalls()).filter((call) => call[0] === "pr");
+}
+
+async function actionInvocations(gh: {
+  readInvocations(): Promise<
+    {
+      args: string[];
+      env: Record<string, string | null>;
+      tokenKeys: string[];
+    }[]
+  >;
+}) {
+  return (await gh.readInvocations()).filter((call) => call.args[0] === "pr");
+}
+
 describe("runPullRequestActionForCurrentBranch", () => {
   it.each(REJECTED_REMOTES)(
     "action fails closed with %s and starts no gh process",
     async (_label, remotes, config) => {
-      const gh = await installFakeGh({});
+      const gh = await actionGh();
       stubTokens(TOKEN_KEYS);
       const cwd = await makeGitRepository(remotes, config);
 
@@ -352,7 +375,7 @@ describe("runPullRequestActionForCurrentBranch", () => {
   );
 
   it(`action fails closed for an unconfigured evil.ghe.com remote and starts no gh process`, async () => {
-    const gh = await installFakeGh({});
+    const gh = await actionGh();
     stubTokens(TOKEN_KEYS);
     const cwd = await makeGitRepository({
       origin: "https://evil.ghe.com/acme/bb.git",
@@ -363,9 +386,9 @@ describe("runPullRequestActionForCurrentBranch", () => {
   });
 
   it.each(DESTINATIONS)(
-    "action pins %s to its repository with one gh process",
+    "action pins %s to its repository and the read pull request number",
     async (_label, host, configure, present) => {
-      const gh = await installFakeGh({});
+      const gh = await actionGh();
       stubTokens(present);
       await configureHost(host, configure);
       const cwd = await makeGitRepository({
@@ -373,8 +396,8 @@ describe("runPullRequestActionForCurrentBranch", () => {
       });
 
       await expect(runAction(cwd)).resolves.toEqual({ ok: true });
-      expect(await gh.readCalls()).toEqual([
-        ["pr", "ready", "--repo", `${host}/acme/bb`, "--", "bb/pr-target"],
+      expect(await actionCalls(gh)).toEqual([
+        ["pr", "ready", "--repo", `${host}/acme/bb`, "--", "42"],
       ]);
     },
   );
@@ -382,7 +405,7 @@ describe("runPullRequestActionForCurrentBranch", () => {
   it.each(DESTINATIONS)(
     "action gives %s only its selected credential",
     async (_label, host, configure, present, selected) => {
-      const gh = await installFakeGh({});
+      const gh = await actionGh();
       const tokens = stubTokens(present);
       await configureHost(host, configure);
       const cwd = await makeGitRepository({
@@ -390,14 +413,24 @@ describe("runPullRequestActionForCurrentBranch", () => {
       });
 
       await expect(runAction(cwd)).resolves.toEqual({ ok: true });
-      const invocations = await gh.readInvocations();
+      const invocations = await actionInvocations(gh);
       expect(invocations).toHaveLength(1);
-      expectOnlyToken(invocations[0]!.env, selected, tokens[selected]);
+      expectTokens(invocations[0]!.env, selected, tokens);
     },
   );
 
-  it(`action targets the upstream repository with the fork head selector`, async () => {
-    const gh = await installFakeGh({});
+  it(`action targets the upstream repository with the fork pull request number`, async () => {
+    const gh = await installFakeGh({
+      "api graphql": {
+        stdout: branchResponse([
+          branchPr({
+            number: 9,
+            isCrossRepository: true,
+            headRepositoryOwner: { login: "me" },
+          }),
+        ]),
+      },
+    });
     const cwd = await makeGitRepository(
       {
         origin: "https://github.com/me/bb.git",
@@ -407,8 +440,8 @@ describe("runPullRequestActionForCurrentBranch", () => {
     );
 
     await expect(runAction(cwd)).resolves.toEqual({ ok: true });
-    expect(await gh.readCalls()).toEqual([
-      ["pr", "ready", "--repo", ACTION_REPO, "--", "me:bb/pr-target"],
+    expect(await actionCalls(gh)).toEqual([
+      ["pr", "ready", "--repo", ACTION_REPO, "--", "9"],
     ]);
   });
 
@@ -418,36 +451,36 @@ describe("runPullRequestActionForCurrentBranch", () => {
     [
       "merge",
       { operation: "merge", method: "merge" },
-      ["pr", "merge", "--merge"],
+      ["pr", "merge", "--merge", "--match-head-commit", HEAD_OID],
     ],
     [
       "squash",
       { operation: "merge", method: "squash" },
-      ["pr", "merge", "--squash"],
+      ["pr", "merge", "--squash", "--match-head-commit", HEAD_OID],
     ],
     [
       "rebase",
       { operation: "merge", method: "rebase" },
-      ["pr", "merge", "--rebase"],
+      ["pr", "merge", "--rebase", "--match-head-commit", HEAD_OID],
     ],
   ] satisfies readonly [string, HostPullRequestAction, readonly string[]][])(
-    "runs gh pr %s with an explicit branch selector pinned to the resolved repository",
+    "runs gh pr %s with the read pull request number pinned to the resolved repository",
     async (_label, action, expectedArgs) => {
-      const gh = await installFakeGh({});
+      const gh = await actionGh();
       const cwd = await makeGitRepository({ origin: GITHUB_REMOTE });
 
       await expect(runAction(cwd, action, "bb/pr-action")).resolves.toEqual({
         ok: true,
       });
 
-      expect(await gh.readCalls()).toEqual([
-        [...expectedArgs, "--repo", ACTION_REPO, "--", "bb/pr-action"],
+      expect(await actionCalls(gh)).toEqual([
+        [...expectedArgs, "--repo", ACTION_REPO, "--", "42"],
       ]);
     },
   );
 
   it("reports the gh failure detail", async () => {
-    await installFakeGh({
+    await actionGh({
       "pr merge": { stderr: "Pull request is not mergeable\n", exit: 1 },
     });
     const cwd = await makeGitRepository({ origin: GITHUB_REMOTE });
@@ -456,8 +489,7 @@ describe("runPullRequestActionForCurrentBranch", () => {
       runAction(cwd, { operation: "merge", method: "squash" }, "bb/pr-action"),
     ).resolves.toEqual({
       ok: false,
-      message:
-        "gh pr merge --squash --repo github.com/acme/bb -- bb/pr-action failed: Pull request is not mergeable",
+      message: `gh pr merge --squash --match-head-commit ${HEAD_OID} --repo github.com/acme/bb -- 42 failed: Pull request is not mergeable`,
     });
   });
 });
@@ -536,7 +568,7 @@ describe("getPullRequestForCurrentBranch", () => {
       });
       const invocations = await gh.readInvocations();
       expect(invocations).toHaveLength(1);
-      expectOnlyToken(invocations[0]!.env, selected, tokens[selected]);
+      expectTokens(invocations[0]!.env, selected, tokens);
     },
   );
 
@@ -703,7 +735,7 @@ describe("action selector and routing edge cases", () => {
   it.each(ACTIONS)(
     "action refuses an upstream branch that looks like an option for %s and starts no gh process",
     async (_label, action) => {
-      const gh = await installFakeGh({});
+      const gh = await actionGh();
       const cwd = await makeGitRepository(
         {
           origin: "https://github.com/me/bb.git",
@@ -724,9 +756,9 @@ describe("action selector and routing edge cases", () => {
   );
 
   it.each(ACTIONS)(
-    "action puts a normal upstream branch after the separator for %s",
+    "action puts the pull request number of a normal upstream branch after the separator for %s",
     async (_label, action) => {
-      const gh = await installFakeGh({});
+      const gh = await actionGh();
       const cwd = await makeGitRepository(
         {
           origin: "https://github.com/me/bb.git",
@@ -740,9 +772,11 @@ describe("action selector and routing edge cases", () => {
       );
 
       await expect(runAction(cwd, action)).resolves.toEqual({ ok: true });
-      const [args] = await gh.readCalls();
-      expect(args).toContain("feature/ok");
-      expect(repoFlag(args!)).toBe(ACTION_REPO);
+      const [args] = await actionCalls(gh);
+      expect(args?.slice(-4)).toEqual(["--repo", ACTION_REPO, "--", "42"]);
+      expect((await gh.readQueries())[0]).toContain(
+        'headRefName: "feature/ok"',
+      );
     },
   );
 
@@ -756,7 +790,7 @@ describe("action selector and routing edge cases", () => {
   ])(
     "action refuses a local branch with %s and starts no gh process",
     async (_label, localBranch) => {
-      const gh = await installFakeGh({});
+      const gh = await actionGh();
       const cwd = await makeGitRepository({ origin: GITHUB_REMOTE });
 
       await expect(
@@ -767,45 +801,100 @@ describe("action selector and routing edge cases", () => {
   );
 
   it.each(ACTIONS)(
-    "action keeps options before the separator and the selector last for %s",
+    "action keeps options before the separator and the number last for %s",
     async (_label, action) => {
-      const gh = await installFakeGh({});
+      const gh = await actionGh();
       const cwd = await makeGitRepository({ origin: GITHUB_REMOTE });
 
       await expect(runAction(cwd, action)).resolves.toEqual({ ok: true });
-      const [args] = await gh.readCalls();
-      expect(args?.slice(-4)).toEqual([
-        "--repo",
-        ACTION_REPO,
-        "--",
-        "bb/pr-target",
-      ]);
+      const [args] = await actionCalls(gh);
+      expect(args?.slice(-4)).toEqual(["--repo", ACTION_REPO, "--", "42"]);
     },
   );
 
-  it("action pins a remote that carries a port and gives it only the enterprise token", async () => {
-    const gh = await installFakeGh({});
+  it.each(["42", "#42"])(
+    "action passes the read pull request number for branch %s instead of the branch name",
+    async (branch) => {
+      const gh = await installFakeGh({
+        "api graphql": {
+          stdout: branchResponse([branchPr({ number: 7 })]),
+        },
+      });
+      const cwd = await makeGitRepository({ origin: GITHUB_REMOTE });
+
+      await expect(
+        runAction(cwd, { operation: "merge", method: "squash" }, branch),
+      ).resolves.toEqual({ ok: true });
+      const [args] = await actionCalls(gh);
+      expect(args?.at(-1)).toBe("7");
+      expect(args).not.toContain(branch);
+    },
+  );
+
+  it("action merges only the head commit that the read reported", async () => {
+    const oid = "b".repeat(40);
+    const gh = await installFakeGh({
+      "api graphql": {
+        stdout: branchResponse([branchPr({ headRefOid: oid })]),
+      },
+    });
+    const cwd = await makeGitRepository({ origin: GITHUB_REMOTE });
+
+    await expect(
+      runAction(cwd, { operation: "merge", method: "merge" }),
+    ).resolves.toEqual({ ok: true });
+    const [args] = await actionCalls(gh);
+    expect(args).toContain("--match-head-commit");
+    expect(args?.[args.indexOf("--match-head-commit") + 1]).toBe(oid);
+  });
+
+  it("action refuses to merge when the read reports no head commit", async () => {
+    const gh = await installFakeGh({
+      "api graphql": {
+        stdout: branchResponse([branchPr({ headRefOid: null })]),
+      },
+    });
+    const cwd = await makeGitRepository({ origin: GITHUB_REMOTE });
+
+    await expect(
+      runAction(cwd, { operation: "merge", method: "merge" }),
+    ).resolves.toMatchObject({ ok: false });
+    expect(await actionCalls(gh)).toEqual([]);
+  });
+
+  it("action reports no pull request when the read finds none", async () => {
+    const gh = await installFakeGh({
+      "api graphql": { stdout: branchResponse([]) },
+    });
+    const cwd = await makeGitRepository({ origin: GITHUB_REMOTE });
+
+    await expect(runAction(cwd)).resolves.toMatchObject({ ok: false });
+    expect(await actionCalls(gh)).toEqual([]);
+  });
+
+  it("action pins a remote that carries a port and gives it the enterprise token named by GH_HOST", async () => {
+    const gh = await actionGh();
     const tokens = stubTokens(TOKEN_KEYS);
-    await configureHost("ghe.example:8443", "hosts-yml");
+    await configureHost("ghe.example:8443", "gh-host");
     const cwd = await makeGitRepository({
       origin: "https://ghe.example:8443/acme/bb.git",
     });
 
     await expect(runAction(cwd)).resolves.toEqual({ ok: true });
-    const [call] = await gh.readInvocations();
+    const [call] = await actionInvocations(gh);
     expect(repoFlag(call!.args)).toBe("ghe.example:8443/acme/bb");
     expectTokens(call!.env, "GH_ENTERPRISE_TOKEN", tokens);
   });
 
   it("action ignores ambient GH_HOST and GH_REPO and keeps the remote's pin and credential", async () => {
-    const gh = await installFakeGh({});
+    const gh = await actionGh();
     const tokens = stubTokens(TOKEN_KEYS);
     vi.stubEnv("GH_HOST", "other.example");
     vi.stubEnv("GH_REPO", ACTION_REPO);
     const cwd = await makeGitRepository({ origin: GITHUB_REMOTE });
 
     await expect(runAction(cwd)).resolves.toEqual({ ok: true });
-    const [call] = await gh.readInvocations();
+    const [call] = await actionInvocations(gh);
     expect(repoFlag(call!.args)).toBe(ACTION_REPO);
     expect(call!.env.GH_REPO).toBeNull();
     expectTokens(call!.env, "GH_TOKEN", tokens);
@@ -814,7 +903,7 @@ describe("action selector and routing edge cases", () => {
   it.each(TOKEN_EDGES)(
     "action gives %s the expected credential",
     async (_label, host, configure, present, selected) => {
-      const gh = await installFakeGh({});
+      const gh = await actionGh();
       const tokens = stubTokens(present);
       await configureHost(host, configure);
       const cwd = await makeGitRepository({
@@ -822,7 +911,7 @@ describe("action selector and routing edge cases", () => {
       });
 
       await expect(runAction(cwd)).resolves.toEqual({ ok: true });
-      const [call] = await gh.readInvocations();
+      const [call] = await actionInvocations(gh);
       expectTokens(call!.env, selected, tokens);
     },
   );
@@ -848,13 +937,13 @@ describe("action selector and routing edge cases", () => {
   );
 
   it("action normalizes an uppercase remote to a lowercase host in the pinned repository", async () => {
-    const gh = await installFakeGh({});
+    const gh = await actionGh();
     const cwd = await makeGitRepository({
       origin: "https://GitHub.COM/Acme/BB.git",
     });
 
     await expect(runAction(cwd)).resolves.toEqual({ ok: true });
-    const [args] = await gh.readCalls();
+    const [args] = await actionCalls(gh);
     expect(repoFlag(args!)).toBe("github.com/Acme/BB");
   });
 
@@ -880,9 +969,19 @@ describe("action selector and routing edge cases", () => {
   });
 
   it("action qualifies a fork head on a configured enterprise host", async () => {
-    const gh = await installFakeGh({});
+    const gh = await installFakeGh({
+      "api graphql": {
+        stdout: branchResponse([
+          branchPr({
+            number: 9,
+            isCrossRepository: true,
+            headRepositoryOwner: { login: "me" },
+          }),
+        ]),
+      },
+    });
     const tokens = stubTokens(TOKEN_KEYS);
-    await configureHost("ghe.example", "hosts-yml");
+    await configureHost("ghe.example", "gh-host");
     const cwd = await makeGitRepository(
       {
         origin: "https://ghe.example/me/bb.git",
@@ -892,9 +991,109 @@ describe("action selector and routing edge cases", () => {
     );
 
     await expect(runAction(cwd)).resolves.toEqual({ ok: true });
-    const [call] = await gh.readInvocations();
-    expect(call!.args).toContain("me:bb/pr-target");
+    const [call] = await actionInvocations(gh);
+    expect(call!.args.at(-1)).toBe("9");
     expect(repoFlag(call!.args)).toBe("ghe.example/acme/bb");
     expectTokens(call!.env, "GH_ENTERPRISE_TOKEN", tokens);
   });
+
+  it("an enterprise token is withheld from a hosts.yml host that GH_HOST does not name", async () => {
+    const gh = await actionGh();
+    const tokens = stubTokens(TOKEN_KEYS);
+    await writeFile(
+      join(process.env.GH_CONFIG_DIR ?? "", "hosts.yml"),
+      "corp-a.example:\n  user: a\ncorp-b.example:\n  user: b\n",
+    );
+    const cwd = await makeGitRepository({
+      origin: "https://corp-b.example/acme/bb.git",
+    });
+
+    await expect(runAction(cwd)).resolves.toEqual({ ok: true });
+    const [call] = await actionInvocations(gh);
+    expectTokens(call!.env, null, tokens);
+  });
+
+  it("an enterprise token is withheld from a hosts.yml host on the lookup path", async () => {
+    const gh = await installFakeGh({
+      "api graphql": { stdout: branchResponse([branchPr()]) },
+    });
+    const tokens = stubTokens(TOKEN_KEYS);
+    await writeFile(
+      join(process.env.GH_CONFIG_DIR ?? "", "hosts.yml"),
+      "corp-a.example:\n  user: a\ncorp-b.example:\n  user: b\n",
+    );
+    const cwd = await makeGitRepository({
+      origin: "https://corp-b.example/acme/bb.git",
+    });
+
+    await expect(runLookup(cwd)).resolves.toMatchObject({ outcome: "found" });
+    const [call] = await gh.readInvocations();
+    expectTokens(call!.env, null, tokens);
+  });
+
+  it("token variables are stripped from the child environment whatever their case", async () => {
+    const gh = await actionGh();
+    vi.stubEnv("gh_token", "lowercase-gh-token");
+    vi.stubEnv("Github_Enterprise_Token", "mixed-case-enterprise-token");
+    const cwd = await makeGitRepository({ origin: GITHUB_REMOTE });
+
+    await expect(runAction(cwd)).resolves.toEqual({ ok: true });
+    const [call] = await actionInvocations(gh);
+    expect(call!.tokenKeys.filter((key) => /^gh_token$/iu.test(key))).toEqual(
+      [],
+    );
+    expect(
+      call!.tokenKeys.filter((key) => /^github_enterprise_token$/iu.test(key)),
+    ).toEqual([]);
+  });
+
+  it.each([
+    ["github.com", "https://github.com/acme/bb.git"],
+    [
+      "a host listed only in the repository's relative config",
+      "https://evil.example/acme/bb.git",
+    ],
+  ])(
+    "a relative GH_CONFIG_DIR fails closed for %s on the action path",
+    async (_label, remote) => {
+      const gh = await actionGh();
+      stubTokens(TOKEN_KEYS);
+      const cwd = await makeGitRepository({ origin: remote });
+      await mkdir(join(cwd, ".gh"));
+      await writeFile(
+        join(cwd, ".gh", "hosts.yml"),
+        "evil.example:\n  user: x\n",
+      );
+      vi.stubEnv("GH_CONFIG_DIR", ".gh");
+
+      await expect(runAction(cwd)).resolves.toMatchObject({ ok: false });
+      expect(await gh.readCalls()).toEqual([]);
+    },
+  );
+
+  it.each([
+    ["github.com", "https://github.com/acme/bb.git"],
+    [
+      "a host listed only in the repository's relative config",
+      "https://evil.example/acme/bb.git",
+    ],
+  ])(
+    "a relative GH_CONFIG_DIR fails closed for %s on the lookup path",
+    async (_label, remote) => {
+      const gh = await actionGh();
+      stubTokens(TOKEN_KEYS);
+      const cwd = await makeGitRepository({ origin: remote });
+      await mkdir(join(cwd, ".gh"));
+      await writeFile(
+        join(cwd, ".gh", "hosts.yml"),
+        "evil.example:\n  user: x\n",
+      );
+      vi.stubEnv("GH_CONFIG_DIR", ".gh");
+
+      await expect(runLookup(cwd)).resolves.toMatchObject({
+        outcome: "unavailable",
+      });
+      expect(await gh.readCalls()).toEqual([]);
+    },
+  );
 });

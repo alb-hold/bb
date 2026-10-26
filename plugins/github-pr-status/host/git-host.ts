@@ -1,6 +1,6 @@
 import { mkdtemp, writeFile, rm, readFile } from "node:fs/promises";
 import { tmpdir, homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { createHash } from "node:crypto";
 import {
   experimental_runVcsProcess as runVcsProcess,
@@ -289,16 +289,25 @@ const UNSAFE_SELECTOR_PATTERN = /^-|[\s\u0000-\u001f\u007f]/u;
 function buildPullRequestActionArgs(
   action: HostPullRequestAction,
   repository: string,
-  selector: string,
-): string[] {
-  const target = ["--repo", repository, "--", selector];
+  pullRequest: { number: number; headRefOid: string | null },
+): string[] | null {
+  const target = ["--repo", repository, "--", String(pullRequest.number)];
   switch (action.operation) {
     case "ready":
       return ["pr", "ready", ...target];
     case "draft":
       return ["pr", "ready", "--undo", ...target];
     case "merge":
-      return ["pr", "merge", getMergeMethodFlag(action.method), ...target];
+      return pullRequest.headRefOid === null
+        ? null
+        : [
+            "pr",
+            "merge",
+            getMergeMethodFlag(action.method),
+            "--match-head-commit",
+            pullRequest.headRefOid,
+            ...target,
+          ];
   }
 }
 
@@ -419,19 +428,23 @@ const ENTERPRISE_TOKEN_VARIABLES = [
   "GITHUB_ENTERPRISE_TOKEN",
 ] as const;
 
+const CREDENTIAL_VARIABLE_PATTERN =
+  /^(?:gh_repo|gh_token|github_token|gh_enterprise_token|github_enterprise_token)$/iu;
+
 function credentialEnvironment(
   host: string,
   inherited: NodeJS.ProcessEnv,
 ): NodeJS.ProcessEnv {
   const env = { ...inherited };
-  delete env.GH_REPO;
-  for (const name of [...GITHUB_TOKEN_VARIABLES, ...ENTERPRISE_TOKEN_VARIABLES])
-    delete env[name];
-  const selected = (
+  for (const key of Object.keys(env))
+    if (CREDENTIAL_VARIABLE_PATTERN.test(key)) delete env[key];
+  const names =
     host === "github.com" || host.endsWith(".ghe.com")
       ? GITHUB_TOKEN_VARIABLES
-      : ENTERPRISE_TOKEN_VARIABLES
-  ).find((name) => inherited[name]);
+      : inherited.GH_HOST?.toLowerCase() === host
+        ? ENTERPRISE_TOKEN_VARIABLES
+        : [];
+  const selected = names.find((name) => inherited[name]);
   if (selected !== undefined) env[selected] = inherited[selected];
   return env;
 }
@@ -456,8 +469,8 @@ class AdmittedGitHubHost {
   ): Promise<AdmittedGitHubHost | null> {
     const normalizedHost = host.toLowerCase();
     const inherited = sanitizeInheritedChildProcessEnv({ env: process.env });
-    if (!(await isConfiguredGitHubHost(normalizedHost, inherited, cwd)))
-      return null;
+    if (githubConfigDirectory(inherited) === null) return null;
+    if (!(await isConfiguredGitHubHost(normalizedHost, inherited))) return null;
     return new AdmittedGitHubHost(
       normalizedHost,
       credentialEnvironment(normalizedHost, inherited),
@@ -561,17 +574,16 @@ function parseNullTerminatedGitConfig(stdout: string): Map<string, string> {
   return values;
 }
 
-function githubConfigDirectory(env: NodeJS.ProcessEnv, cwd: string): string {
+function githubConfigDirectory(env: NodeJS.ProcessEnv): string | null {
   const appData = env.APPDATA ?? env.AppData;
-  return resolve(
-    cwd,
+  const directory =
     env.GH_CONFIG_DIR ||
-      (env.XDG_CONFIG_HOME
-        ? join(env.XDG_CONFIG_HOME, "gh")
-        : process.platform === "win32" && appData
-          ? join(appData, "GitHub CLI")
-          : join(env.HOME ?? homedir(), ".config", "gh")),
-  );
+    (env.XDG_CONFIG_HOME
+      ? join(env.XDG_CONFIG_HOME, "gh")
+      : process.platform === "win32" && appData
+        ? join(appData, "GitHub CLI")
+        : join(env.HOME ?? homedir(), ".config", "gh"));
+  return isAbsolute(directory) ? directory : null;
 }
 
 function configuredHosts(hostsYml: string): Set<string> {
@@ -587,7 +599,6 @@ function configuredHosts(hostsYml: string): Set<string> {
 async function isConfiguredGitHubHost(
   host: string,
   env: NodeJS.ProcessEnv,
-  cwd: string,
 ): Promise<boolean> {
   const normalizedHost = host.toLowerCase();
   if (
@@ -595,10 +606,11 @@ async function isConfiguredGitHubHost(
     env.GH_HOST?.toLowerCase() === normalizedHost
   )
     return true;
-  const profile = await readFile(
-    join(githubConfigDirectory(env, cwd), "hosts.yml"),
-    "utf8",
-  ).catch(() => "");
+  const directory = githubConfigDirectory(env);
+  if (directory === null) return false;
+  const profile = await readFile(join(directory, "hosts.yml"), "utf8").catch(
+    () => "",
+  );
   return configuredHosts(profile).has(normalizedHost);
 }
 
@@ -905,11 +917,24 @@ export async function runPullRequestActionForCurrentBranch(
       message: "Refusing a pull request branch that gh could read as an option",
     };
   }
+  const lookup = await enqueueRead(branchTarget, args.cwd, true);
+  if (lookup.outcome === "unavailable") {
+    return { ok: false, message: lookup.message };
+  }
+  if (lookup.outcome === "none") {
+    return { ok: false, message: "No pull request found for this branch" };
+  }
   const ghArgs = buildPullRequestActionArgs(
     args.action,
     `${branchTarget.host}/${branchTarget.owner}/${branchTarget.repository}`,
-    selector,
+    lookup.pullRequest,
   );
+  if (ghArgs === null) {
+    return {
+      ok: false,
+      message: "Pull request head commit is unknown; refusing to merge",
+    };
+  }
   try {
     await runGh(ghArgs, host, {
       priority: "interactive",
@@ -948,10 +973,7 @@ const discovered = new Map<
 const pausedUntil = new Map<string, number>();
 const mergeQueueUnsupported = new Set<string>();
 
-async function credentialKey(
-  admitted: AdmittedGitHubHost,
-  cwd: string,
-): Promise<string> {
+async function credentialKey(admitted: AdmittedGitHubHost): Promise<string> {
   const env = admitted.env;
   const token = (
     admitted.host === "github.com" || admitted.host.endsWith(".ghe.com")
@@ -964,7 +986,7 @@ async function credentialKey(
     return createHash("sha256")
       .update(JSON.stringify([admitted.host, token]))
       .digest("hex");
-  const directory = githubConfigDirectory(env, cwd);
+  const directory = githubConfigDirectory(env) ?? "";
   const profile = await readFile(join(directory, "hosts.yml")).catch(() =>
     Buffer.alloc(0),
   );
@@ -1230,7 +1252,7 @@ async function enqueueRead(
       message: unconfiguredHostMessage(target.host),
     };
   }
-  const group = await credentialKey(host, cwd);
+  const group = await credentialKey(host);
   const key = `${group}:${JSON.stringify(target)}`;
   if (refresh) discovered.delete(key);
   const cached = discovered.get(key);
