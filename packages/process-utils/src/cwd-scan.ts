@@ -357,7 +357,14 @@ export type CwdProcessClass =
   | "known-helper";
 
 export type DarwinInspection =
-  | { status: "unknown"; reason: string }
+  | {
+      status: "unknown";
+      code: Extract<
+        HolderUnknownCode,
+        "process-list-unreadable" | "lsof-failed"
+      >;
+      reason: string;
+    }
   | {
       status: "ok";
       cwds: Map<number, string>;
@@ -403,12 +410,14 @@ export async function inspectDarwinProcesses(
       if (ps.code !== 0)
         return {
           status: "unknown",
+          code: "process-list-unreadable",
           reason: `ps exited with ${ps.code === null ? "a signal" : `code ${ps.code}`}`,
         };
       listed = parsePs(ps.stdout);
     } catch (error) {
       return {
         status: "unknown",
+        code: "process-list-unreadable",
         reason: `ps failed (${error instanceof Error ? error.message : String(error)})`,
       };
     }
@@ -419,18 +428,21 @@ export async function inspectDarwinProcesses(
   } catch (error) {
     return {
       status: "unknown",
+      code: "lsof-failed",
       reason: `lsof failed (${error instanceof Error ? error.message : String(error)})`,
     };
   }
   if (output.code !== 0 && !(exitOneIsComplete && output.code === 1)) {
     return {
       status: "unknown",
+      code: "lsof-failed",
       reason: `lsof exited with ${output.code === null ? "a signal" : `code ${output.code}`}`,
     };
   }
   if (output.stderr.trim() !== "") {
     return {
       status: "unknown",
+      code: "lsof-failed",
       reason: `lsof exited with code ${output.code} and reported: ${output.stderr.trim().split("\n")[0]}`,
     };
   }
@@ -492,12 +504,14 @@ export async function inspectDarwinProcesses(
       if (ps.code !== 0)
         return {
           status: "unknown",
+          code: "process-list-unreadable",
           reason: `ps exited with ${ps.code === null ? "a signal" : `code ${ps.code}`} on the second look`,
         };
       again = parsePs(ps.stdout);
     } catch (error) {
       return {
         status: "unknown",
+        code: "process-list-unreadable",
         reason: `ps failed on the second look (${error instanceof Error ? error.message : String(error)})`,
       };
     }
@@ -512,6 +526,20 @@ export async function inspectDarwinProcesses(
   }
   return { status: "ok", cwds, files, skipped, helpers, invisible, rows };
 }
+
+export type HolderUnknownCode =
+  | "no-directory"
+  | "unsupported-platform"
+  | "symlinked-directory"
+  | "process-list-unreadable"
+  | "lsof-failed"
+  | "mount-table"
+  | "foreign-namespace"
+  | "main-thread-exited"
+  | "unreadable-same-user"
+  | "invisible-process"
+  | "escaped-directory"
+  | "other-user-reachable";
 
 export type HolderThrough =
   | "working-directory"
@@ -528,7 +556,7 @@ export interface FileHolder {
 export type HolderScan =
   | ({ status: "clear" } & CwdScanCoverage)
   | ({ status: "held"; holders: FileHolder[] } & CwdScanCoverage)
-  | { status: "unknown"; reason: string };
+  | { status: "unknown"; code: HolderUnknownCode; reason: string };
 
 export interface HoldScanIo extends CwdScanIo {
   readExe(pid: number): Promise<string>;
@@ -596,7 +624,7 @@ type HoldRead<Value> =
   | { status: "read"; value: Value }
   | { status: "gone" }
   | { status: "skip" }
-  | { status: "unknown"; reason: string };
+  | { status: "unknown"; code: HolderUnknownCode; reason: string };
 
 interface HoldCoverage {
   helpers: CwdUnvouchedHelper[];
@@ -672,12 +700,17 @@ async function readHeldProcessFact<Value>(
       if (code === "EACCES" || code === "EPERM")
         return {
           status: "unknown",
+          code: "unreadable-same-user",
           reason: `the owner of process ${pid} could not be read`,
         };
     }
     if (io.uid !== null && owner !== null && owner !== io.uid) {
       if (owner !== ROOT_UID && !coverage.hiddenFromOtherUsers)
-        return { status: "unknown", reason: otherUserCanReach(pid, owner) };
+        return {
+          status: "unknown",
+          code: "other-user-reachable",
+          reason: otherUserCanReach(pid, owner),
+        };
       coverage.skipped.push({ pid, uid: owner, errno: code || "error" });
       return { status: "skip" };
     }
@@ -689,6 +722,7 @@ async function readHeldProcessFact<Value>(
         if (GONE.has(codeOf(commError))) return { status: "gone" };
         return {
           status: "unknown",
+          code: "unreadable-same-user",
           reason: `the ${what} of process ${pid} could not be read and its name could not be read either`,
         };
       }
@@ -698,11 +732,13 @@ async function readHeldProcessFact<Value>(
       }
       return {
         status: "unknown",
+        code: "unreadable-same-user",
         reason: `the ${what} of process ${pid} (${comm}) could not be read and it is not a known session helper`,
       };
     }
     return {
       status: "unknown",
+      code: "unreadable-same-user",
       reason: `the ${what} of process ${pid} could not be read (${code || "error"})`,
     };
   }
@@ -719,15 +755,19 @@ async function foreignOrUnknown(
     owner = await io.effectiveUid(pid);
   } catch (error) {
     if (GONE.has(codeOf(error))) return { status: "gone" };
-    return { status: "unknown", reason };
+    return { status: "unknown", code: "foreign-namespace", reason };
   }
   if (io.uid !== null && owner !== io.uid) {
     if (owner !== ROOT_UID && !coverage.hiddenFromOtherUsers)
-      return { status: "unknown", reason: otherUserCanReach(pid, owner) };
+      return {
+        status: "unknown",
+        code: "other-user-reachable",
+        reason: otherUserCanReach(pid, owner),
+      };
     coverage.skipped.push({ pid, uid: owner, errno: "other-namespace" });
     return { status: "skip" };
   }
-  return { status: "unknown", reason };
+  return { status: "unknown", code: "foreign-namespace", reason };
 }
 
 const MAPS_PATH_COLUMN = /^\S+\s+\S+\s+\S+\s+\S+\s+\S+\s+(\/.*)$/u;
@@ -824,7 +864,7 @@ function expandMountAliases(
 type LinuxProcessScan =
   | { status: "clear" }
   | { status: "held"; holder: FileHolder }
-  | { status: "unknown"; reason: string };
+  | { status: "unknown"; code: HolderUnknownCode; reason: string };
 
 async function scanLinuxProcess(
   io: HoldScanIo,
@@ -884,6 +924,7 @@ async function scanLinuxProcess(
     )
       return {
         status: "unknown",
+        code: "main-thread-exited",
         reason: `the main thread of process ${pid} has exited while other threads still run, so what the process holds cannot be listed`,
       };
     return { status: "clear" };
@@ -956,6 +997,7 @@ async function scanLinuxHolders(
   } catch (error) {
     return {
       status: "unknown",
+      code: "process-list-unreadable",
       reason: `the process list could not be read (${codeOf(error) || "error"})`,
     };
   }
@@ -965,6 +1007,7 @@ async function scanLinuxHolders(
   } catch (error) {
     return {
       status: "unknown",
+      code: "mount-table",
       reason: `the mount namespace of this process could not be read (${codeOf(error) || "error"})`,
     };
   }
@@ -974,17 +1017,23 @@ async function scanLinuxHolders(
   } catch (error) {
     return {
       status: "unknown",
+      code: "mount-table",
       reason: `the mount table could not be read (${codeOf(error) || "error"})`,
     };
   }
   if (mounts === null)
-    return { status: "unknown", reason: "the mount table could not be parsed" };
+    return {
+      status: "unknown",
+      code: "mount-table",
+      reason: "the mount table could not be parsed",
+    };
   const paths: string[] = [];
   for (const directory of directories) {
     const aliases = expandMountAliases(directory, mounts);
     if (aliases === null)
       return {
         status: "unknown",
+        code: "mount-table",
         reason: `which mounts show ${directory} could not be worked out from the mount table`,
       };
     for (const alias of aliases) if (!paths.includes(alias)) paths.push(alias);
@@ -1043,11 +1092,13 @@ async function scanDarwinHolders(
   if (escaped !== undefined)
     return {
       status: "unknown",
+      code: "escaped-directory",
       reason: `${escaped} holds characters lsof prints escaped, so a match against its listing cannot be vouched for`,
     };
   if (io.uid === null || io.runPs === undefined)
     return {
       status: "unknown",
+      code: "process-list-unreadable",
       reason:
         "which processes belong to the current user cannot be listed, so none can be ruled out",
     };
@@ -1084,6 +1135,7 @@ async function scanDarwinHolders(
     const first = inspection.invisible[0]!;
     return {
       status: "unknown",
+      code: "invisible-process",
       reason: `process ${first.pid} (${first.comm}) runs as the current user, is not a known session helper and has no entries in the lsof listing, so whether it holds a file inside the folder cannot be established${inspection.invisible.length > 1 ? ` (${inspection.invisible.length} such processes)` : ""}`,
     };
   }
@@ -1097,6 +1149,7 @@ async function scanDarwinHolders(
   )
     return {
       status: "unknown",
+      code: "other-user-reachable",
       reason: otherUserCanReach(reachableUser.pid, reachableUser.uid),
     };
   const report = {
@@ -1123,12 +1176,14 @@ export async function scanProcessesHoldingUnder(
   if (args.directories.length === 0) {
     return {
       status: "unknown",
+      code: "no-directory",
       reason: "no directory was named, so nothing can be vouched for",
     };
   }
   if (io.platform === "win32") {
     return {
       status: "unknown",
+      code: "unsupported-platform",
       reason: "what processes hold open on Windows cannot be listed",
     };
   }
@@ -1138,6 +1193,7 @@ export async function scanProcessesHoldingUnder(
     if (resolved === null) {
       return {
         status: "unknown",
+        code: "symlinked-directory",
         reason: `${directory} is a symbolic link, so which folder it names cannot be vouched for`,
       };
     }

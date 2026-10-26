@@ -897,6 +897,154 @@ describe("scanProcessesHoldingUnder on Linux", () => {
   );
 });
 
+describe("the code of an unknown result", () => {
+  const psLine = (pid: number, uid: number, comm: string) =>
+    `${String(pid).padStart(6)} ${String(uid).padStart(5)} ${comm}\n`;
+  const mac = (
+    lsof: { code: number; stdout: string; stderr: string },
+    ps: string,
+  ): HoldScanIo => ({
+    ...fakeLinux({}),
+    platform: "darwin",
+    uid: 501,
+    runPs: async () => ({ code: 0, stdout: ps, stderr: "" }),
+    runLsofOpenFiles: async () => lsof,
+    delay: async () => undefined,
+  });
+  const ok = { code: 0, stdout: "", stderr: "" };
+
+  it.each([
+    [
+      "no-directory",
+      async () => scanProcessesHoldingUnder({ directories: [] }, fakeLinux({})),
+    ],
+    [
+      "unsupported-platform",
+      async (base: string) =>
+        scanProcessesHoldingUnder(
+          { directories: [base] },
+          { ...fakeLinux({}), platform: "win32" },
+        ),
+    ],
+    [
+      "symlinked-directory",
+      async (base: string) => {
+        await mkdir(join(base, "real"));
+        await symlink(join(base, "real"), join(base, "link"));
+        return scanProcessesHoldingUnder(
+          { directories: [join(base, "link")] },
+          fakeLinux({}),
+        );
+      },
+    ],
+    [
+      "process-list-unreadable",
+      async (base: string) =>
+        scanProcessesHoldingUnder(
+          { directories: [base] },
+          fakeLinux(
+            {},
+            {
+              listProcessIds: async () => {
+                throw denied();
+              },
+            },
+          ),
+        ),
+    ],
+    [
+      "process-list-unreadable",
+      async (base: string) =>
+        scanProcessesHoldingUnder(
+          { directories: [base] },
+          {
+            ...mac(ok, ""),
+            runPs: async () => ({ code: 1, stdout: "", stderr: "" }),
+          },
+        ),
+    ],
+    [
+      "lsof-failed",
+      async (base: string) =>
+        scanProcessesHoldingUnder(
+          { directories: [base] },
+          mac({ code: 2, stdout: "", stderr: "" }, ""),
+        ),
+    ],
+    [
+      "mount-table",
+      async (base: string) =>
+        scanProcessesHoldingUnder(
+          { directories: [base] },
+          fakeLinux(
+            {},
+            {
+              readMountInfo: async () => {
+                throw denied();
+              },
+            },
+          ),
+        ),
+    ],
+    [
+      "foreign-namespace",
+      async (base: string) =>
+        scanProcessesHoldingUnder(
+          { directories: [base] },
+          fakeLinux({ 10: { namespace: "mnt:[4026532999]" } }),
+        ),
+    ],
+    [
+      "main-thread-exited",
+      async (base: string) =>
+        scanProcessesHoldingUnder(
+          { directories: [base] },
+          fakeLinux({
+            10: { root: gone(), tasks: ["10", "11"], threads: { "11": {} } },
+          }),
+        ),
+    ],
+    [
+      "unreadable-same-user",
+      async (base: string) =>
+        scanProcessesHoldingUnder(
+          { directories: [base] },
+          fakeLinux({ 10: { fds: denied() } }),
+        ),
+    ],
+    [
+      "invisible-process",
+      async (base: string) => {
+        const table = psLine(20, 501, "hardened");
+        return scanProcessesHoldingUnder(
+          { directories: [base] },
+          mac(ok, table),
+        );
+      },
+    ],
+    [
+      "escaped-directory",
+      async (base: string) => {
+        const odd = join(base, "back\\slash");
+        await mkdir(odd);
+        return scanProcessesHoldingUnder({ directories: [odd] }, mac(ok, ""));
+      },
+    ],
+    [
+      "other-user-reachable",
+      async (base: string) =>
+        scanProcessesHoldingUnder(
+          { directories: [base] },
+          fakeLinux({ 10: { fds: denied(), uid: 1234 } }),
+        ),
+    ],
+  ])("is %s", async (code, run) => {
+    const scan = await run(await dir());
+    expect(scan.status).toBe("unknown");
+    expect(scan.status === "unknown" ? scan.code : "").toBe(code);
+  });
+});
+
 describe("scanProcessesHoldingUnder on macOS, through ps and lsof -F pfn0", () => {
   const psLine = (pid: number, uid: number, comm: string) =>
     `${String(pid).padStart(6)} ${String(uid).padStart(5)} ${comm}\n`;
