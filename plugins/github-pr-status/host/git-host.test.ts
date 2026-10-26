@@ -808,7 +808,7 @@ function expectTokens(
   );
 }
 
-describe("action selector and routing edge cases (test-change-reason: bind merges to the displayed PR identity)", () => {
+describe("action selector and routing edge cases", () => {
   it.each(ACTIONS)(
     "action refuses an upstream branch that looks like an option for %s and starts no gh process",
     async (_label, action) => {
