@@ -60,6 +60,7 @@ import {
 } from "../ids.js";
 import { createOrderKeyAfter, createOrderKeyBetween } from "./order-keys.js";
 import { queryInSqliteVariableBatches } from "./sqlite-variable-batches.js";
+import { threadListEnrichmentScopePredicate, type ThreadListEnrichmentScope } from "../thread-list-enrichment-scope.js";
 
 export interface CreateQueuedThreadMessageInput {
   threadId: string;
@@ -1741,6 +1742,29 @@ export function listQueuedThreadMessageCountsByThreadIds(
         .groupBy(queuedThreadMessages.threadId)
         .all(),
   });
+}
+
+export function listQueuedThreadMessageCountsByScope(
+  db: DbQueryConnection,
+  scope: ThreadListEnrichmentScope,
+): QueuedThreadMessageCounts[] {
+  return db
+    .select({
+      threadId: queuedThreadMessages.threadId,
+      queuedMessageCount: count(queuedThreadMessages.id),
+      failedQueuedMessageCount: count(
+        sql`CASE WHEN ${inArray(queuedThreadMessages.state, [...QUEUED_MESSAGE_FAILED_STATES])} THEN 1 END`,
+      ),
+    })
+    .from(queuedThreadMessages)
+    .where(
+      and(
+        threadListEnrichmentScopePredicate(queuedThreadMessages.threadId, scope),
+        liveQueuedThreadMessage(),
+      ),
+    )
+    .groupBy(queuedThreadMessages.threadId)
+    .all();
 }
 
 function waitHolderFor(

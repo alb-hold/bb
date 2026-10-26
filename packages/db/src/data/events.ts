@@ -85,6 +85,7 @@ import {
   prepareCompletedEventOutputData,
 } from "./retained-event-outputs.js";
 import { queryInSqliteVariableBatches } from "./sqlite-variable-batches.js";
+import { threadListEnrichmentScopePredicate, type ThreadListEnrichmentScope } from "../thread-list-enrichment-scope.js";
 
 const STORED_EVENT_SEQUENCE_LOOKUP_CHUNK_SIZE = 250;
 const CLIENT_TURN_REQUEST_KEY_BATCH_SIZE = 995;
@@ -1644,6 +1645,36 @@ export function listLatestThreadStateEventRowsByThreadIds(
   });
 }
 
+export function listLatestThreadStateEventRowsByScope(
+  db: DbQueryConnection,
+  args: { scope: ThreadListEnrichmentScope; kind: string },
+): StoredEventRow[] {
+  return db.all<StoredEventRow>(sql`
+    SELECT candidate.created_at AS createdAt, candidate.data AS data,
+      candidate.id AS id, candidate.item_id AS itemId,
+      candidate.item_kind AS itemKind,
+      candidate.parent_tool_call_id AS parentToolCallId,
+      candidate.provider_thread_id AS providerThreadId,
+      candidate.scope_kind AS scopeKind, candidate.sequence AS sequence,
+      candidate.thread_id AS threadId, candidate.turn_id AS turnId,
+      candidate.type AS type
+    FROM events AS candidate
+    WHERE ${threadListEnrichmentScopePredicate(sql`candidate.thread_id`, args.scope)}
+      AND candidate.type IN ('thread/goal/updated', 'thread/goal/cleared', 'thread/extensionState/updated')
+      AND (candidate.type <> 'thread/extensionState/updated'
+        OR json_extract(candidate.data, '$.kind') = ${args.kind})
+      AND NOT EXISTS (
+        SELECT 1 FROM events AS newer
+        WHERE newer.thread_id = candidate.thread_id
+          AND newer.type IN ('thread/goal/updated', 'thread/goal/cleared', 'thread/extensionState/updated')
+          AND (newer.type <> 'thread/extensionState/updated'
+            OR json_extract(newer.data, '$.kind') = ${args.kind})
+          AND (newer.sequence > candidate.sequence
+            OR (newer.sequence = candidate.sequence AND newer.rowid > candidate.rowid))
+      )
+  `);
+}
+
 export function listOpenTurnInputAcceptedRowsByThreadIds(
   db: DbQueryConnection,
   args: ListOpenTurnInputAcceptedRowsByThreadIdsArgs,
@@ -2599,7 +2630,7 @@ export function listActiveBackgroundTaskCountsByThreadIds(
 
 function queryActiveBackgroundTaskCountsByThreadIds(
   db: DbQueryConnection,
-  args: ListActiveBackgroundTaskCountsByThreadIdsArgs,
+  args: ListActiveBackgroundTaskCountsByThreadIdsArgs & { scope?: ThreadListEnrichmentScope },
 ): ActiveBackgroundTaskCountRow[] {
   const rows = queryInSqliteVariableBatches({
     dedupeKey: (threadId) => threadId,
@@ -2634,7 +2665,7 @@ function queryActiveBackgroundTaskCountsByThreadIds(
           END
         ) AS is_completed
       FROM ${events} INDEXED BY events_background_task_thread_type_item_sequence_idx
-      WHERE ${inArray(events.threadId, [...threadIds])}
+      WHERE ${args.scope ? threadListEnrichmentScopePredicate(events.threadId, args.scope) : inArray(events.threadId, [...threadIds])}
         AND ${events.itemKind} ${backgroundTaskItemKindPredicate}
         AND ${inArray(events.type, [startedType, progressType, completedType])}
         AND ${isNotNull(events.itemId)}
@@ -2693,7 +2724,7 @@ function queryActiveBackgroundTaskCountsByThreadIds(
     ORDER BY active_event.thread_id
   `);
     },
-    values: args.threadIds,
+    values: args.scope ? [""] : args.threadIds,
     variableCountPerValue: 1,
   });
 
@@ -2704,6 +2735,16 @@ function queryActiveBackgroundTaskCountsByThreadIds(
         ? 1
         : 0,
   );
+}
+
+export function listActiveBackgroundTaskCountsByScope(
+  db: DbQueryConnection,
+  scope: ThreadListEnrichmentScope,
+): ActiveBackgroundTaskCountRow[] {
+  return queryActiveBackgroundTaskCountsByThreadIds(db, {
+    threadIds: [],
+    scope,
+  });
 }
 
 type StoredTurnKeyEventType = Extract<

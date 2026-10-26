@@ -50,6 +50,7 @@ import { NON_TERMINAL_SESSION_STATUSES } from "./terminal-sessions.js";
 import { bumpThreadEventOwnershipEpoch } from "./event-rewrite-generation.js";
 import { createOrderKeyBetween } from "./order-keys.js";
 import { insertThreadPluginMetadata } from "./thread-plugin-metadata.js";
+import type { ThreadListEnrichmentScope } from "../thread-list-enrichment-scope.js";
 
 type ThreadWriteConnection = DbConnection | DbTransaction;
 
@@ -742,6 +743,22 @@ function buildListThreadsFilters(options: ListThreadsOptions) {
   ].filter((value) => value !== undefined);
 }
 
+export function buildThreadListEnrichmentScope(
+  db: DbConnection,
+  options: ListThreadsOptions,
+): ThreadListEnrichmentScope {
+  let query = db
+    .select({ id: threads.id })
+    .from(threads)
+    .leftJoin(environments, eq(threads.environmentId, environments.id))
+    .where(and(...buildListThreadsFilters(options)))
+    .orderBy(...buildListThreadsOrderBy(options))
+    .$dynamic();
+  if (options.limit !== undefined) query = query.limit(options.limit);
+  if (options.offset !== undefined) query = query.offset(options.offset);
+  return { kind: "query", ids: sql`${query}` };
+}
+
 function buildListThreadsForProjectsFilters(
   options: ListThreadsForProjectsOptions,
 ) {
@@ -755,6 +772,29 @@ function buildListThreadsForProjectsFilters(
         ? isNull(threads.archivedAt)
         : undefined,
   ].filter((value) => value !== undefined);
+}
+
+export function buildProjectThreadListEnrichmentScope(
+  db: DbConnection,
+  options: ListThreadsForProjectsOptions,
+): ThreadListEnrichmentScope {
+  const query = db
+    .select({ id: threads.id })
+    .from(threads)
+    .where(and(...buildListThreadsForProjectsFilters(options)))
+    .orderBy(...buildActiveProjectThreadOrderBy());
+  return { kind: "query", ids: sql`${query}` };
+}
+
+export function buildPinnedRootThreadListEnrichmentScope(
+  db: DbConnection,
+): ThreadListEnrichmentScope {
+  const query = db
+    .select({ id: threads.id })
+    .from(threads)
+    .where(liveThreads(pinnedThreadWhere()))
+    .orderBy(asc(threads.pinSortKey), asc(threads.id));
+  return { kind: "query", ids: sql`${query}` };
 }
 
 function buildActiveProjectThreadOrderBy() {

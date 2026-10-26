@@ -21,6 +21,7 @@ import {
   listNonDeletedChildThreads,
   listSpendRollupRows,
   listThreadsWithPendingInteractionState,
+  buildThreadListEnrichmentScope,
   markThreadDeleted,
   listThreadDeletionTree,
   listPluginThreadMetadata,
@@ -236,6 +237,10 @@ function buildThreadSearchGroupResponse(
 ): ThreadSearchResultGroupResponse {
   const threadEntries = toThreadListEntryResponses(deps, {
     threads: args.group.results.map((result) => result.thread),
+    scope: {
+      kind: "ids",
+      ids: args.group.results.map((result) => result.thread.id),
+    },
   });
   const threadEntriesById = new Map(
     threadEntries.map((thread) => [thread.id, thread]),
@@ -367,7 +372,7 @@ export function registerThreadBaseRoutes(
       if (query.sectionId) {
         requireThreadSection(deps, query.sectionId);
       }
-      const threads = listThreadsWithPendingInteractionState(deps.db, {
+      const options = {
         ...(query.projectId ? { projectId: query.projectId } : {}),
         ...(query.environmentId ? { environmentId: query.environmentId } : {}),
         ...(query.hostId ? { hostId: query.hostId } : {}),
@@ -395,10 +400,12 @@ export function registerThreadBaseRoutes(
             : query.hasParent === "true",
         ...(limit !== undefined ? { limit } : {}),
         ...(offset !== undefined ? { offset } : {}),
-      });
+      };
+      const threads = listThreadsWithPendingInteractionState(deps.db, options);
       return context.json(
         toThreadListEntryResponses(deps, {
           threads,
+          scope: buildThreadListEnrichmentScope(deps.db, options),
         }) satisfies ThreadListEntry[],
       );
     } finally {
