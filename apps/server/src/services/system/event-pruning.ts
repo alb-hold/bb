@@ -41,6 +41,7 @@ interface ActiveThreadPruneState {
 type ActiveThreadPruneScheduler = (callback: () => void) => void;
 
 interface ActiveThreadPruneChain {
+  deps: Pick<AppDeps, "db" | "logger" | "hub">;
   clock: () => number;
   completedPolicies: Set<string>;
   mode: "active" | "idle";
@@ -75,6 +76,9 @@ const activeThreadPruneChainsByThreadId = new Map<
   string,
   ActiveThreadPruneChain
 >();
+const activeThreadPruneQueue: ActiveThreadPruneChain[] = [];
+let activeThreadPruneRunnerScheduled = false;
+let activeThreadPruneRunnerToken = 0;
 
 export function isActivePruneTriggerThreadEventType(
   eventType: ThreadEventType,
@@ -138,9 +142,16 @@ export function pruneThreadEventHistoryBestEffort(
 }
 
 export function maybePruneActiveThreadEventHistory(
-  deps: Pick<AppDeps, "db" | "logger" | "hub">,
+  deps: Pick<
+    AppDeps,
+    | "db"
+    | "logger"
+    | "hub"
+    | "activeThreadEventPruneClock"
+    | "activeThreadEventPruneScheduler"
+  >,
   args: MaybePruneActiveThreadEventHistoryArgs,
-): ThreadEventPruningResult | null {
+): null {
   const thread = getThread(deps.db, args.threadId);
   if (
     !thread ||
@@ -188,9 +199,10 @@ export function pruneActiveThreadEventHistoryWithinBudget(
     schedule?: ActiveThreadPruneScheduler;
     threadId: string;
   },
-): ThreadEventPruningResult | null {
+): null {
   if (activeThreadPruneChainsByThreadId.has(args.threadId)) return null;
   const chain: ActiveThreadPruneChain = {
+    deps,
     clock: args.now ?? (() => performance.now()),
     completedPolicies: new Set<string>(),
     mode: args.mode,
@@ -199,15 +211,44 @@ export function pruneActiveThreadEventHistoryWithinBudget(
     totals: { scanned: 0, totalRemoved: 0 },
   };
   activeThreadPruneChainsByThreadId.set(args.threadId, chain);
-  return runActiveThreadPruneSlice(deps, chain);
+  activeThreadPruneQueue.push(chain);
+  scheduleActiveThreadPruneRunner(chain);
+  return null;
 }
 
-function runActiveThreadPruneSlice(
-  deps: Pick<AppDeps, "db" | "logger" | "hub">,
+function scheduleActiveThreadPruneRunner(
   chain: ActiveThreadPruneChain,
-): ThreadEventPruningResult | null {
-  if (activeThreadPruneChainsByThreadId.get(chain.threadId) !== chain)
-    return null;
+): void {
+  if (activeThreadPruneRunnerScheduled || activeThreadPruneQueue.length === 0)
+    return;
+  activeThreadPruneRunnerScheduled = true;
+  const token = ++activeThreadPruneRunnerToken;
+  chain.schedule(() => runNextActiveThreadPruneSlice(token));
+}
+
+function runNextActiveThreadPruneSlice(token: number): void {
+  if (token !== activeThreadPruneRunnerToken) return;
+  activeThreadPruneRunnerScheduled = false;
+  while (activeThreadPruneQueue.length > 0) {
+    const chain = activeThreadPruneQueue.shift();
+    if (
+      chain &&
+      activeThreadPruneChainsByThreadId.get(chain.threadId) === chain
+    ) {
+      runActiveThreadPruneSlice(chain);
+      if (
+        activeThreadPruneChainsByThreadId.get(chain.threadId) === chain &&
+        !activeThreadPruneQueue.includes(chain)
+      )
+        activeThreadPruneQueue.push(chain);
+      scheduleActiveThreadPruneRunner(chain);
+      return;
+    }
+  }
+}
+
+function runActiveThreadPruneSlice(chain: ActiveThreadPruneChain): void {
+  const deps = chain.deps;
   const startedAt = chain.clock();
   let latest: ThreadEventPruningResult | null = null;
   do {
@@ -217,7 +258,7 @@ function runActiveThreadPruneSlice(
     });
     if (latest === null) {
       activeThreadPruneChainsByThreadId.delete(chain.threadId);
-      return null;
+      return;
     }
     chain.totals.scanned += latest.scanned;
     chain.totals.totalRemoved += latest.totalRemoved;
@@ -230,19 +271,21 @@ function runActiveThreadPruneSlice(
     chain.clock() - startedAt < ACTIVE_THREAD_EVENT_PRUNE_BUDGET_MS &&
     chain.completedPolicies.size < THREAD_PRUNING_POLICIES.length
   );
-  if (chain.completedPolicies.size < THREAD_PRUNING_POLICIES.length) {
-    chain.schedule(() => {
-      if (activeThreadPruneChainsByThreadId.get(chain.threadId) !== chain)
-        return;
-      runActiveThreadPruneSlice(deps, chain);
-    });
-  } else {
+  if (chain.completedPolicies.size >= THREAD_PRUNING_POLICIES.length) {
     activeThreadPruneChainsByThreadId.delete(chain.threadId);
   }
-  return { ...latest, ...chain.totals };
 }
 
 export function resetActiveThreadEventPruningState(threadId: string): void {
   activeThreadPruneStateByThreadId.delete(threadId);
+  const chain = activeThreadPruneChainsByThreadId.get(threadId);
   activeThreadPruneChainsByThreadId.delete(threadId);
+  if (chain) {
+    const index = activeThreadPruneQueue.indexOf(chain);
+    if (index >= 0) activeThreadPruneQueue.splice(index, 1);
+  }
+  if (activeThreadPruneQueue.length === 0 && activeThreadPruneRunnerScheduled) {
+    activeThreadPruneRunnerScheduled = false;
+    activeThreadPruneRunnerToken += 1;
+  }
 }

@@ -1504,7 +1504,11 @@ export function registerInternalEventRoutes(app: Hono, deps: AppDeps): void {
         name: "Active thread event pruning",
         work: async () => {
           for (const candidate of activePruneCandidates) {
-            maybePruneActiveThreadEventHistory(deps, candidate);
+            maybePruneActiveThreadEventHistory(deps, {
+              ...candidate,
+              now: deps.activeThreadEventPruneClock,
+              schedule: deps.activeThreadEventPruneScheduler,
+            });
           }
         },
       });
