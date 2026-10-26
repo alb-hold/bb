@@ -198,18 +198,30 @@ What the check can and cannot see:
   not covered.
 - Processes of root are not checked: Spotlight, backup tools and other system
   indexers cope with a deleted folder. bb running as root is not supported.
-- A process of any other user that is not root makes the answer "unknown",
-  unless the folder cannot be reached by them: the folder, or a folder above it
-  up to bb's worktree or storage folder, belongs to you and has no search
-  permission (`x`) for group and other, checked when the removal is decided. A
+- A process of any other user that is not root makes the answer "unknown"
+  unless bb can show that user cannot reach the folder. That needs all of: the
+  process shares this mount namespace (its namespace link is readable and equal
+  to bb's; an unreadable link, a nested process namespace or another namespace
+  is unknown), it does not descend from a process of yours, it has no
+  capability that bypasses search permission, and some folder on every path to
+  the target, from the target up to `/`, denies search (`x`) to that user and
+  every group the process belongs to, judged from the owner, group and other
+  bits. A folder with an access control list that allows anything, or whose
+  list cannot be read, is unknown; a list that only denies adds nothing. A
   process that opened the folder or a file in it before that permission was
   taken away is not seen.
-- When the answer is "unknown" nothing is removed. The reason is one of: no
-  folder named, unsupported platform, a symbolic link, an unreadable process
-  list, a failed `lsof`, an unreadable or unparsable mount table, a foreign
-  mount namespace or root, an exited main thread, an unreadable process of yours,
-  an invisible process (macOS), a folder whose name `lsof` prints escaped, or
-  another user's process that can reach the folder.
+- A process of yours in another mount namespace (for example rootless Docker's
+  containers) keeps the answer "unknown" for as long as it runs. bb does not
+  try to work out from that process's own mounts whether it can see the folder.
+- When the answer is "unknown" nothing is removed. The result names the reason
+  (no folder named, unsupported platform, a symbolic link, an unreadable
+  process list, a failed `lsof`, an unreadable or unparsable mount table, a
+  foreign mount namespace or root, an exited main thread, an unreadable process
+  of yours, an invisible process (macOS), a folder whose name `lsof` prints
+  escaped, or another user's process that can reach the folder, is in another
+  namespace, descends from yours, has a bypassing capability, has unreadable
+  groups or sits behind an access control list), and for a foreign namespace it
+  names the process: pid, user and namespace.
 
 When bb does remove the worktree
 of a create that failed, it runs `git worktree remove` without `--force`, and bb

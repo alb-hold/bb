@@ -389,7 +389,7 @@ interface PsRow {
 function parsePs(stdout: string): PsRow[] {
   const rows: PsRow[] = [];
   for (const line of stdout.split("\n")) {
-    const match = /^\s*(\d+)\s+(\d+)\s+(.*\S)\s*$/u.exec(line);
+    const match = /^\s*(\d+)\s+(-?\d+)\s+(.*\S)\s*$/u.exec(line);
     if (match === null) continue;
     const comm = (match[3] ?? "").split("/").pop() ?? "";
     rows.push({ pid: Number(match[1]), uid: Number(match[2]), comm });
@@ -543,7 +543,14 @@ export type HolderUnknownCode =
   | "other-user-namespace"
   | "other-user-descendant"
   | "other-user-acl"
-  | "other-user-groups";
+  | "other-user-groups"
+  | "other-user-capability";
+
+export interface HolderBlocker {
+  pid: number;
+  uid: number | null;
+  namespace: string;
+}
 
 export type HolderThrough =
   | "working-directory"
@@ -560,7 +567,12 @@ export interface FileHolder {
 export type HolderScan =
   | ({ status: "clear" } & CwdScanCoverage)
   | ({ status: "held"; holders: FileHolder[] } & CwdScanCoverage)
-  | { status: "unknown"; code: HolderUnknownCode; reason: string };
+  | {
+      status: "unknown";
+      code: HolderUnknownCode;
+      reason: string;
+      blocker?: HolderBlocker;
+    };
 
 export interface HoldScanIo extends CwdScanIo {
   readExe(pid: number): Promise<string>;
@@ -569,12 +581,17 @@ export interface HoldScanIo extends CwdScanIo {
   statPath(path: string): Promise<{ uid: number; gid: number; mode: number }>;
   readAcl(path: string): Promise<HolderAcl>;
   readCredentials(pid: number): Promise<HolderCredentials>;
+  readProcessNamespace(pid: number): Promise<string>;
+  runPsUser(
+    pid: number,
+    timeoutMs: number,
+  ): Promise<{ code: number | null; stdout: string; stderr: string }>;
   readCmdline(pid: number): Promise<string[]>;
   runPsTree(
     timeoutMs: number,
   ): Promise<{ code: number | null; stdout: string; stderr: string }>;
   runIdGroups(
-    uid: number,
+    user: number | string,
     timeoutMs: number,
   ): Promise<{ code: number | null; stdout: string; stderr: string }>;
   readOwnMountNamespace(): Promise<string>;
@@ -625,8 +642,11 @@ export const hostHoldScanIo: HoldScanIo = {
     (await readFile(`/proc/${pid}/cmdline`, "utf8")).split("\0"),
   runPsTree: (timeoutMs) =>
     runCommand("ps", ["-A", "-o", "pid=,ppid=,uid="], timeoutMs),
-  runIdGroups: (uid, timeoutMs) =>
-    runCommand("id", ["-G", String(uid)], timeoutMs),
+  runIdGroups: (user, timeoutMs) =>
+    runCommand("id", ["-G", String(user)], timeoutMs),
+  runPsUser: (pid, timeoutMs) =>
+    runCommand("ps", ["-o", "user=", "-p", String(pid)], timeoutMs),
+  readProcessNamespace: (pid) => readlink(`/proc/${pid}/ns/mnt`),
   readOwnMountNamespace: () => readlink("/proc/self/ns/mnt"),
   readMountInfo: () => readFile("/proc/self/mountinfo", "utf8"),
   listTasks: (pid) => readdir(`/proc/${pid}/task`),
@@ -658,13 +678,19 @@ type HoldRead<Value> =
   | { status: "read"; value: Value }
   | { status: "gone" }
   | { status: "skip" }
-  | { status: "unknown"; code: HolderUnknownCode; reason: string };
+  | {
+      status: "unknown";
+      code: HolderUnknownCode;
+      reason: string;
+      blocker?: HolderBlocker;
+    };
 
 export interface HolderCredentials {
   uid: number;
   gids: number[];
   parentPid: number;
   nestedPidNamespace: boolean;
+  dacCapability: boolean;
 }
 
 export type HolderAcl = "none" | "deny-only" | "allow";
@@ -679,10 +705,12 @@ interface HoldCoverage {
   helpers: CwdUnvouchedHelper[];
   skipped: CwdSkippedProcess[];
   strangers: Map<number, Stranger>;
+  ownNamespace: string;
 }
 
 const ROOT_UID = 0;
 const MAX_ANCESTOR_STEPS = 64;
+const DAC_CAPABILITY_BITS = 0b110n;
 
 function ancestorsOf(path: string): string[] {
   const chain: string[] = [];
@@ -733,17 +761,22 @@ export function parseCredentials(status: string): HolderCredentials {
   )
     throw Object.assign(new Error("unparsable status"), { code: "EINVAL" });
   const supplementary = /^Groups:\t([0-9\t ]*)$/mu.exec(status);
+  const effective = /^CapEff:\t([0-9a-fA-F]+)$/mu.exec(status);
+  if (supplementary === null || effective === null)
+    throw Object.assign(new Error("unparsable status"), { code: "EINVAL" });
   return {
     uid,
     gids: [
       gid,
-      ...(supplementary?.[1] ?? "")
+      ...(supplementary[1] ?? "")
         .split(/\s+/u)
         .filter((value) => value !== "")
         .map(Number),
     ],
     parentPid,
     nestedPidNamespace: namespaced.length > 1,
+    dacCapability:
+      (BigInt(`0x${effective[1] ?? "0"}`) & DAC_CAPABILITY_BITS) !== 0n,
   };
 }
 
@@ -755,24 +788,29 @@ export function parseAclListing(
   const flag = /^[-dlcbps][rwxsStT-]{9}([+@. ]?)\s/u.exec(lines[0] ?? "");
   if (flag === null)
     throw Object.assign(new Error("unparsable listing"), { code: "EINVAL" });
-  if (flag[1] !== "+") return "none";
-  if (platform !== "darwin") return "allow";
+  if (platform !== "darwin") return flag[1] === "+" ? "allow" : "none";
   let entries = 0;
   let allow = false;
   for (const line of lines.slice(1)) {
     if (line.trim() === "") continue;
-    const entry = /^\s*\d+:\s+\S+\s+(allow|deny)\s/u.exec(line);
-    if (entry === null)
+    if (!/^\s*\d+:\s+\S/u.test(line))
       throw Object.assign(new Error("unparsable ACL entry"), {
         code: "EINVAL",
       });
     entries += 1;
-    if (entry[1] === "allow") allow = true;
+    if (/\ballow\b/u.test(line)) allow = true;
+    else if (!/\bdeny\b/u.test(line))
+      throw Object.assign(new Error("unparsable ACL entry"), {
+        code: "EINVAL",
+      });
   }
-  if (entries === 0)
-    throw Object.assign(new Error("ACL flag without entries"), {
-      code: "EINVAL",
-    });
+  if (entries === 0) {
+    if (flag[1] === "+")
+      throw Object.assign(new Error("ACL flag without entries"), {
+        code: "EINVAL",
+      });
+    return "none";
+  }
   return allow ? "allow" : "deny-only";
 }
 
@@ -838,6 +876,32 @@ async function noteStranger(
       status: "unknown",
       code: "other-user-namespace",
       reason: `process ${pid} runs as user ${owner} in a nested process namespace, so another user, other namespace: the folder may be reachable through a mount bb cannot see`,
+      blocker: { pid, uid: owner, namespace: "nested process namespace" },
+    };
+  if (credentials.dacCapability)
+    return {
+      status: "unknown",
+      code: "other-user-capability",
+      reason: `process ${pid} runs as user ${owner} with a capability that bypasses search permission, so the folder modes do not bound what it can reach`,
+    };
+  let theirs: string;
+  try {
+    theirs = await io.readProcessNamespace(pid);
+  } catch (error) {
+    if (GONE.has(codeOf(error))) return { status: "gone" };
+    return {
+      status: "unknown",
+      code: "other-user-namespace",
+      reason: `the mount namespace of process ${pid}, which runs as user ${owner}, cannot be read, so another user, other namespace: it is not shown to share this one`,
+      blocker: { pid, uid: owner, namespace: "unreadable" },
+    };
+  }
+  if (theirs !== coverage.ownNamespace)
+    return {
+      status: "unknown",
+      code: "other-user-namespace",
+      reason: `process ${pid} runs as user ${owner} in another mount namespace, so another user, other namespace: the folder may be reachable through a mount bb cannot see`,
+      blocker: { pid, uid: owner, namespace: theirs },
     };
   const inherited = await ancestorRunsAs(io, pid, io.uid);
   if (inherited !== "no")
@@ -980,6 +1044,7 @@ async function foreignOrUnknown(
   io: HoldScanIo,
   coverage: HoldCoverage,
   pid: number,
+  namespace: string,
   reason: string,
 ): Promise<HoldRead<never>> {
   let owner: number;
@@ -987,7 +1052,12 @@ async function foreignOrUnknown(
     owner = await io.effectiveUid(pid);
   } catch (error) {
     if (GONE.has(codeOf(error))) return { status: "gone" };
-    return { status: "unknown", code: "foreign-namespace", reason };
+    return {
+      status: "unknown",
+      code: "foreign-namespace",
+      reason,
+      blocker: { pid, uid: null, namespace },
+    };
   }
   if (io.uid !== null && owner !== io.uid) {
     if (owner !== ROOT_UID)
@@ -995,11 +1065,17 @@ async function foreignOrUnknown(
         status: "unknown",
         code: "other-user-namespace",
         reason: `another user, other namespace: ${reason}`,
+        blocker: { pid, uid: owner, namespace },
       };
     coverage.skipped.push({ pid, uid: owner, errno: "other-namespace" });
     return { status: "skip" };
   }
-  return { status: "unknown", code: "foreign-namespace", reason };
+  return {
+    status: "unknown",
+    code: "foreign-namespace",
+    reason,
+    blocker: { pid, uid: owner, namespace },
+  };
 }
 
 const MAPS_PATH_COLUMN = /^\S+\s+\S+\s+\S+\s+\S+\s+\S+\s+(\/.*)$/u;
@@ -1117,7 +1193,12 @@ export function mountsInsideDirectory(
 type LinuxProcessScan =
   | { status: "clear" }
   | { status: "held"; holder: FileHolder }
-  | { status: "unknown"; code: HolderUnknownCode; reason: string };
+  | {
+      status: "unknown";
+      code: HolderUnknownCode;
+      reason: string;
+      blocker?: HolderBlocker;
+    };
 
 async function scanLinuxProcess(
   io: HoldScanIo,
@@ -1147,6 +1228,7 @@ async function scanLinuxProcess(
         io,
         coverage,
         pid,
+        namespace.value,
         `process ${pid} runs in a different mount namespace, so which folder its paths name cannot be vouched for`,
       );
       return outcome.status === "unknown" ? outcome : { status: "clear" };
@@ -1193,6 +1275,7 @@ async function scanLinuxProcess(
       io,
       coverage,
       pid,
+      `root:${root.value}`,
       `process ${pid} runs under a different root folder, so which folder its paths name cannot be vouched for`,
     );
     return outcome.status === "unknown" ? outcome : { status: "clear" };
@@ -1296,6 +1379,7 @@ async function scanLinuxHolders(
     helpers: [],
     skipped: [],
     strangers: new Map(),
+    ownNamespace,
   };
   const holders: FileHolder[] = [];
   for (const entry of entries) {
@@ -1352,7 +1436,7 @@ async function darwinStrangers(
     tree = new Map();
     for (const line of listing.stdout.split("\n")) {
       if (line.trim() === "") continue;
-      const row = /^\s*(\d+)\s+(\d+)\s+(\d+)\s*$/u.exec(line);
+      const row = /^\s*(\d+)\s+(\d+)\s+(-?\d+)\s*$/u.exec(line);
       if (row === null) throw new Error("unparsable ps line");
       tree.set(Number(row[1]), {
         parent: Number(row[2]),
@@ -1371,8 +1455,21 @@ async function darwinStrangers(
   for (const other of others) {
     let current = other.pid;
     for (let step = 0; step < MAX_ANCESTOR_STEPS; step += 1) {
-      const parent = tree.get(current)?.parent;
-      if (parent === undefined || parent <= 0) break;
+      const known = tree.get(current);
+      if (known === undefined)
+        return {
+          status: "unknown",
+          code: "other-user-descendant",
+          reason: `process ${current} is missing from the process tree, so whether process ${other.pid} descends from a process of this user cannot be established`,
+        };
+      const parent = known.parent;
+      if (parent <= 0) break;
+      if (tree.get(parent) === undefined)
+        return {
+          status: "unknown",
+          code: "other-user-descendant",
+          reason: `the parent ${parent} of process ${current} is missing from the process tree, so whether process ${other.pid} descends from a process of this user cannot be established`,
+        };
       if (tree.get(parent)?.uid === io.uid)
         return {
           status: "unknown",
@@ -1384,7 +1481,14 @@ async function darwinStrangers(
     if (strangers.has(other.uid)) continue;
     let gids: number[];
     try {
-      const listing = await io.runIdGroups(other.uid, timeoutMs);
+      let account: number | string = other.uid;
+      if (other.uid < 0) {
+        const named = await io.runPsUser(other.pid, timeoutMs);
+        if (named.code !== 0 || !/^\S+$/u.test(named.stdout.trim()))
+          throw new Error("user name unreadable");
+        account = named.stdout.trim();
+      }
+      const listing = await io.runIdGroups(account, timeoutMs);
       if (listing.code !== 0) throw new Error("id failed");
       gids = listing.stdout
         .trim()

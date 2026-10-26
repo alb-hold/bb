@@ -51,6 +51,8 @@ interface FakeProcess {
   gids?: number[];
   parent?: number;
   nestedPidNamespace?: boolean;
+  dacCapability?: boolean;
+  processNamespace?: string | Error;
   argv?: string[];
   comm?: string;
 }
@@ -141,7 +143,13 @@ function fakeLinux(
       const process = processes[pid];
       if (process === undefined) {
         if (pid === 1)
-          return { uid: 0, gids: [0], parentPid: 0, nestedPidNamespace: false };
+          return {
+            uid: 0,
+            gids: [0],
+            parentPid: 0,
+            nestedPidNamespace: false,
+            dacCapability: false,
+          };
         throw gone();
       }
       const uid = process.uid ?? 1000;
@@ -150,8 +158,12 @@ function fakeLinux(
         gids: process.gids ?? [uid],
         parentPid: process.parent ?? 1,
         nestedPidNamespace: process.nestedPidNamespace ?? false,
+        dacCapability: process.dacCapability ?? false,
       };
     },
+    readProcessNamespace: (pid) =>
+      fact(pid, (process) => process.processNamespace, OWN_NAMESPACE),
+    runPsUser: async () => ({ code: 0, stdout: "nobody\n", stderr: "" }),
     readCmdline: (pid) =>
       fact(pid, (process) => process.argv, [processes[pid]?.comm ?? "node"]),
     runPsTree: async () => {
@@ -386,6 +398,26 @@ describe("scanProcessesHoldingUnder on Linux", () => {
     );
     expect(scan.status).toBe("unknown");
     expect(reasonOf(scan)).toContain("root folder");
+  });
+
+  it("names the process, its user and the namespace that block a same-user result", async () => {
+    const base = await dir();
+    const namespaced = await scanProcessesHoldingUnder(
+      { directories: [base] },
+      fakeLinux({ 10: { namespace: "mnt:[4026532226]" } }),
+    );
+    expect(namespaced).toMatchObject({
+      status: "unknown",
+      code: "foreign-namespace",
+      blocker: { pid: 10, uid: 1000, namespace: "mnt:[4026532226]" },
+    });
+    const rooted = await scanProcessesHoldingUnder(
+      { directories: [base] },
+      fakeLinux({ 10: { root: "/srv/chroot" } }),
+    );
+    expect(rooted).toMatchObject({
+      blocker: { pid: 10, uid: 1000, namespace: "root:/srv/chroot" },
+    });
   });
 
   it("is unknown, not held, when a process holds a file but another process cannot be vouched for", async () => {
@@ -995,6 +1027,47 @@ describe("scanProcessesHoldingUnder on Linux", () => {
       expect(clean.status).toBe("clear");
     });
 
+    it("is unknown when the mount namespace of another user's process cannot be read or is not ours, however closed the folder is", async () => {
+      const base = await dir();
+      const closed = statsOf({ [base]: entry(1000, 50, 0o700) });
+      const unreadable = await scanProcessesHoldingUnder(
+        { directories: [base] },
+        fakeLinux({ 10: { ...stranger, processNamespace: denied() } }, closed),
+      );
+      expect(codeOfScan(unreadable)).toBe("other-user-namespace");
+      expect(unreadable).toMatchObject({
+        blocker: { pid: 10, uid: 1234, namespace: "unreadable" },
+      });
+      const different = await scanProcessesHoldingUnder(
+        { directories: [base] },
+        fakeLinux(
+          { 10: { ...stranger, processNamespace: "mnt:[4026532999]" } },
+          closed,
+        ),
+      );
+      expect(codeOfScan(different)).toBe("other-user-namespace");
+      expect(different).toMatchObject({
+        blocker: { pid: 10, uid: 1234, namespace: "mnt:[4026532999]" },
+      });
+      const same = await scanProcessesHoldingUnder(
+        { directories: [base] },
+        fakeLinux({ 10: stranger }, closed),
+      );
+      expect(same.status).toBe("clear");
+    });
+
+    it("is unknown for another user's process with a capability that bypasses search permission", async () => {
+      const base = await dir();
+      const scan = await scanProcessesHoldingUnder(
+        { directories: [base] },
+        fakeLinux(
+          { 10: { ...stranger, dacCapability: true } },
+          statsOf({ [base]: entry(1000, 50, 0o700) }),
+        ),
+      );
+      expect(codeOfScan(scan)).toBe("other-user-capability");
+    });
+
     it("is unknown when the groups of another user's process cannot be read", async () => {
       const base = await dir();
       const scan = await scanProcessesHoldingUnder(
@@ -1309,6 +1382,16 @@ describe("the code of an unknown result", () => {
         ),
     ],
     [
+      "other-user-capability",
+      async (base: string) =>
+        scanProcessesHoldingUnder(
+          { directories: [base] },
+          fakeLinux({
+            10: { fds: denied(), uid: 1234, dacCapability: true },
+          }),
+        ),
+    ],
+    [
       "other-user-groups",
       async (base: string) =>
         scanProcessesHoldingUnder(
@@ -1573,7 +1656,7 @@ describe("scanProcessesHoldingUnder on macOS, through ps and lsof -F pfn0", () =
     const strangerSetup = (
       base: string,
       overrides: Partial<HoldScanIo> = {},
-      tree = "    70     1   501\n    71     1   248\n     2     1     0\n",
+      tree = "     1     0     0\n    70     1   501\n    71     1   248\n     2     1     0\n",
       groups = "248 12\n",
     ): HoldScanIo => ({
       ...fakeMac({ ps: [table], lsof }),
@@ -1618,10 +1701,79 @@ describe("scanProcessesHoldingUnder on macOS, through ps and lsof -F pfn0", () =
         strangerSetup(
           base,
           {},
-          "    70     1   501\n    71    70   248\n     2     1     0\n",
+          "     1     0     0\n    70     1   501\n    71    70   248\n     2     1     0\n",
         ),
       );
       expect(scan.status === "unknown" ? scan.code : "").toBe(
+        "other-user-descendant",
+      );
+    });
+
+    it("treats a user with a negative id like any other non-root user, and finds its groups by name", async () => {
+      const base = await dir();
+      const withNobody =
+        psLine(70, 501, "node") +
+        psLine(72, -2, "dhcp6d") +
+        psLine(2, 0, "launchd");
+      const tree =
+        "     1     0     0\n    70     1   501\n    72     1    -2\n     2     1     0\n";
+      const names: string[] = [];
+      const setup = (overrides: Partial<HoldScanIo> = {}): HoldScanIo => ({
+        ...strangerSetup(base, {}, tree),
+        ...fakeMac({ ps: [withNobody], lsof }),
+        statPath: staffHome(base),
+        runPsTree: async () => ({ code: 0, stdout: tree, stderr: "" }),
+        runPsUser: async () => ({ code: 0, stdout: "nobody\n", stderr: "" }),
+        runIdGroups: async (user) => {
+          names.push(String(user));
+          return { code: 0, stdout: "4294967294\n", stderr: "" };
+        },
+        ...overrides,
+      });
+      const closed = await scanProcessesHoldingUnder(
+        { directories: [base] },
+        setup(),
+      );
+      expect(closed).toMatchObject({ status: "clear", excludedOtherUsers: 2 });
+      expect(names).toEqual(["nobody"]);
+      const open = await scanProcessesHoldingUnder(
+        { directories: [base] },
+        setup({ statPath: async () => ({ uid: 501, gid: 20, mode: 0o755 }) }),
+      );
+      expect(open.status === "unknown" ? open.code : "").toBe(
+        "other-user-reachable",
+      );
+      const nameless = await scanProcessesHoldingUnder(
+        { directories: [base] },
+        setup({ runPsUser: async () => ({ code: 1, stdout: "", stderr: "" }) }),
+      );
+      expect(nameless.status === "unknown" ? nameless.code : "").toBe(
+        "other-user-groups",
+      );
+    });
+
+    it("is unknown when a process or its parent is missing from the process tree", async () => {
+      const base = await dir();
+      const missingParent = await scanProcessesHoldingUnder(
+        { directories: [base] },
+        strangerSetup(
+          base,
+          {},
+          "     1     0     0\n    70     1   501\n    71    99   248\n     2     1     0\n",
+        ),
+      );
+      expect(missingParent.status === "unknown" ? missingParent.code : "").toBe(
+        "other-user-descendant",
+      );
+      const missingSelf = await scanProcessesHoldingUnder(
+        { directories: [base] },
+        strangerSetup(
+          base,
+          {},
+          "     1     0     0\n    70     1   501\n     2     1     0\n",
+        ),
+      );
+      expect(missingSelf.status === "unknown" ? missingSelf.code : "").toBe(
         "other-user-descendant",
       );
     });
@@ -1788,6 +1940,7 @@ describe("the boundary parsers", () => {
     "Groups:\t100071 100072 ",
     "NSpid:\t4242\t1",
     "PPid:\t4200",
+    "CapEff:\t0000000000000000",
     "",
   ].join("\n");
 
@@ -1797,6 +1950,7 @@ describe("the boundary parsers", () => {
       gids: [100070, 100071, 100072],
       parentPid: 4200,
       nestedPidNamespace: true,
+      dacCapability: false,
     });
     expect(
       parseCredentials(
@@ -1805,6 +1959,21 @@ describe("the boundary parsers", () => {
           .replace("Groups:\t100071 100072 \n", "Groups:\t\n"),
       ),
     ).toMatchObject({ gids: [100070], nestedPidNamespace: false });
+    expect(
+      parseCredentials(status.replace("0000000000000000", "0000000000000004")),
+    ).toMatchObject({ dacCapability: true });
+    expect(
+      parseCredentials(status.replace("0000000000000000", "0000000000000002")),
+    ).toMatchObject({ dacCapability: true });
+    expect(
+      parseCredentials(status.replace("0000000000000000", "0000000000000001")),
+    ).toMatchObject({ dacCapability: false });
+    expect(() =>
+      parseCredentials(status.replace(/Groups:.*\n/u, "")),
+    ).toThrow();
+    expect(() =>
+      parseCredentials(status.replace(/CapEff:.*\n/u, "")),
+    ).toThrow();
     expect(() => parseCredentials("Name:\tx\n")).toThrow();
     expect(() =>
       parseCredentials(status.replace("PPid:\t4200\n", "")),
@@ -1828,6 +1997,25 @@ describe("the boundary parsers", () => {
         "darwin",
       ),
     ).toBe("allow");
+    const xattr = "drwx------@ 5 me staff 160 Oct 26 10:00 /x";
+    expect(
+      parseAclListing(`${xattr}\n 0: user:nobody allow search`, "darwin"),
+    ).toBe("allow");
+    expect(
+      parseAclListing(`${xattr}\n 0: group:everyone deny delete`, "darwin"),
+    ).toBe("deny-only");
+    expect(
+      parseAclListing(
+        `${flagged}\n 0: user:john smith inherited allow list,search`,
+        "darwin",
+      ),
+    ).toBe("allow");
+    expect(
+      parseAclListing(
+        `${flagged}\n 0: group:a deny b inherited deny delete`,
+        "darwin",
+      ),
+    ).toBe("deny-only");
     expect(() => parseAclListing(flagged, "darwin")).toThrow();
     expect(() => parseAclListing(`${flagged}\n nonsense`, "darwin")).toThrow();
     expect(() => parseAclListing("total 0", "linux")).toThrow();
