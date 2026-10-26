@@ -57,6 +57,7 @@ import {
   revokeThreadEnvironmentReleases,
   type EnvironmentReleaseActor,
 } from "./environment-release-consents.js";
+import type { ThreadListEnrichmentScope } from "../thread-list-enrichment-scope.js";
 
 type ThreadWriteConnection = DbConnection | DbTransaction;
 
@@ -713,16 +714,19 @@ function statusTransitionNeedsAttention(args: StatusTransition): boolean {
   return args.currentStatus === "active" || args.currentStatus === "starting";
 }
 
-function buildListThreadsFilters(options: ListThreadsOptions) {
+function buildListThreadsFilters(
+  options: ListThreadsOptions,
+  threadIdsFilter = options.threadIds === undefined
+    ? undefined
+    : inArray(threads.id, [...options.threadIds]),
+) {
   return [
     options.projectId ? eq(threads.projectId, options.projectId) : undefined,
     options.environmentId
       ? eq(threads.environmentId, options.environmentId)
       : undefined,
     options.hostId ? eq(environments.hostId, options.hostId) : undefined,
-    options.threadIds === undefined
-      ? undefined
-      : inArray(threads.id, [...options.threadIds]),
+    threadIdsFilter,
     options.sectionId ? eq(threads.sectionId, options.sectionId) : undefined,
     options.unsectioned ? isNull(threads.sectionId) : undefined,
     nonDeletedThreads(),
@@ -750,11 +754,44 @@ function buildListThreadsFilters(options: ListThreadsOptions) {
   ].filter((value) => value !== undefined);
 }
 
+export function buildThreadListEnrichmentScope(
+  db: DbConnection,
+  options: ListThreadsOptions,
+): ThreadListEnrichmentScope {
+  let query = db
+    .select({ id: threads.id })
+    .from(threads)
+    .$dynamic();
+  if (options.hostId) {
+    query = query.leftJoin(
+      environments,
+      eq(threads.environmentId, environments.id),
+    );
+  }
+  query = query.where(
+    and(
+      ...buildListThreadsFilters(
+        options,
+        options.threadIds === undefined
+          ? undefined
+          : sql`${threads.id} IN (SELECT value FROM json_each(${JSON.stringify(options.threadIds)}))`,
+      ),
+    ),
+  );
+  if (options.limit !== undefined || options.offset !== undefined) {
+    query = query.orderBy(...buildListThreadsOrderBy(options));
+  }
+  if (options.limit !== undefined) query = query.limit(options.limit);
+  if (options.offset !== undefined) query = query.offset(options.offset);
+  return { kind: "query", ids: sql`${query}` };
+}
+
 function buildListThreadsForProjectsFilters(
   options: ListThreadsForProjectsOptions,
+  projectIdsFilter = inArray(threads.projectId, [...options.projectIds]),
 ) {
   return [
-    inArray(threads.projectId, [...options.projectIds]),
+    projectIdsFilter,
     eq(threads.visibility, "visible"),
     nonDeletedThreads(),
     options.archived === true
@@ -763,6 +800,34 @@ function buildListThreadsForProjectsFilters(
         ? isNull(threads.archivedAt)
         : undefined,
   ].filter((value) => value !== undefined);
+}
+
+export function buildProjectThreadListEnrichmentScope(
+  db: DbConnection,
+  options: ListThreadsForProjectsOptions,
+): ThreadListEnrichmentScope {
+  const query = db
+    .select({ id: threads.id })
+    .from(threads)
+    .where(
+      and(
+        ...buildListThreadsForProjectsFilters(
+          options,
+          sql`${threads.projectId} IN (SELECT value FROM json_each(${JSON.stringify(options.projectIds)}))`,
+        ),
+      ),
+    );
+  return { kind: "query", ids: sql`${query}` };
+}
+
+export function buildPinnedRootThreadListEnrichmentScope(
+  db: DbConnection,
+): ThreadListEnrichmentScope {
+  const query = db
+    .select({ id: threads.id })
+    .from(threads)
+    .where(liveThreads(pinnedThreadWhere()));
+  return { kind: "query", ids: sql`${query}` };
 }
 
 function buildActiveProjectThreadOrderBy() {

@@ -3,6 +3,10 @@ import { eq } from "drizzle-orm";
 import { describe, expect, it, vi } from "vitest";
 import {
   appendStoredThreadEvent,
+  archiveThread,
+  buildPinnedRootThreadListEnrichmentScope,
+  buildProjectThreadListEnrichmentScope,
+  buildThreadListEnrichmentScope,
   closeSession,
   createEnvironment,
   createNativeTerminalThread,
@@ -10,20 +14,29 @@ import {
   createQueuedThreadMessage,
   createTerminalSession,
   createThread,
+  insertEvents,
   hostDaemonSessions,
   listQueuedThreadMessages,
   listThreadsWithPendingInteractionState,
+  listThreadsWithPendingInteractionStateForProjects,
+  listActiveVisiblePinnedThreadRootsWithPendingInteractionState,
   noopNotifier,
   openSession,
+  pinThread,
+  putThreadRowState,
+  searchThreadsWithPendingInteractionState,
   setNativeTerminalThreadTerminal,
   setQueuedThreadMessageFailureReason,
   stampNativeTerminalThreadActivity,
   upsertHost,
+  updateThread,
   type DbConnection,
   type ThreadWithPendingInteractionState,
+  SYSTEM_RELEASE_ACTOR,
 } from "@bb/db";
 import { createMigratedConnection } from "@bb/db/testing";
 import {
+  LOCAL_AGENT_TASK_TYPE,
   formatClientTurnRequestIdSuffix,
   threadScope,
   turnScope,
@@ -43,6 +56,7 @@ import {
 } from "../../../src/services/threads/thread-runtime-display.js";
 import { NotificationHub } from "../../../src/ws/hub.js";
 import { createTestProviderRegistry } from "../../helpers/provider-registry.js";
+import { toThreadListEntryResponsesForTest } from "../../helpers/thread-list-enrichment.js";
 
 const providerRegistry = await createTestProviderRegistry();
 
@@ -307,6 +321,169 @@ function createThreadListEntry(
 }
 
 describe("thread runtime display", () => {
+  it("keeps scoped list enrichment byte-identical for archived goal and task events", () => {
+    const { db, hostId, hub } = setup();
+    const archived = createThreadWithEnvironment({
+      db,
+      hostId,
+      status: "idle",
+    });
+    const visible = createThreadWithEnvironment({ db, hostId, status: "idle" });
+    const hidden = createThreadWithEnvironment({ db, hostId, status: "idle" });
+    updateThread(db, noopNotifier, hidden.thread.id, { visibility: "hidden" });
+    updateThread(db, noopNotifier, archived.thread.id, {
+      title: "scopeidentity archived",
+    });
+    updateThread(db, noopNotifier, visible.thread.id, {
+      title: "scopeidentity active",
+    });
+    updateThread(db, noopNotifier, hidden.thread.id, {
+      title: "scopeidentity hidden",
+    });
+    appendStoredThreadEvent(db, noopNotifier, {
+      threadId: archived.thread.id,
+      scope: threadScope(),
+      type: "thread/goal/updated",
+      data: {
+        providerThreadId: "provider-archived-goal",
+        objective: "Finish archived work",
+        status: "active",
+        tokenBudget: null,
+        tokensUsed: 10,
+        timeUsedSeconds: 1,
+      },
+    });
+    insertEvents(db, noopNotifier, [
+      {
+        threadId: archived.thread.id,
+        sequence: 2,
+        scope: turnScope("turn-archived-task"),
+        type: "item/started",
+        itemId: "task-archived",
+        itemKind: "backgroundTask",
+        parentToolCallId: null,
+        data: JSON.stringify({
+          item: {
+            id: "task-archived",
+            type: "backgroundTask",
+            taskType: LOCAL_AGENT_TASK_TYPE,
+            description: "Archived task fixture",
+            status: "pending",
+            taskStatus: "running",
+            foreground: false,
+            skipTranscript: false,
+          },
+        }),
+      },
+      {
+        threadId: visible.thread.id,
+        sequence: 1,
+        scope: turnScope("turn-visible-task"),
+        type: "item/started",
+        itemId: "task-visible",
+        itemKind: "backgroundTask",
+        parentToolCallId: null,
+        data: JSON.stringify({
+          item: {
+            id: "task-visible",
+            type: "backgroundTask",
+            taskType: LOCAL_AGENT_TASK_TYPE,
+            description: "Active task fixture",
+            status: "pending",
+            taskStatus: "running",
+            foreground: false,
+            skipTranscript: false,
+          },
+        }),
+      },
+    ]);
+    createQueuedThreadMessage(db, noopNotifier, {
+      threadId: visible.thread.id,
+      content: [{ type: "text", text: "queued", mentions: [] }],
+      model: "gpt-5",
+      reasoningLevel: "medium",
+      permissionMode: "auto",
+      serviceTier: "default",
+      waitingOn: { kind: "thread-busy" },
+      sendAt: null,
+      payload: { kind: "inline" },
+      systemNotice: null,
+    });
+    putThreadRowState(db, visible.thread.id, {
+      statuses: { review: { value: "Ready" } },
+      progress: null,
+    });
+    archiveThread(db, noopNotifier, archived.thread.id, SYSTEM_RELEASE_ACTOR);
+    const options = { includeHidden: true };
+    const threads = listThreadsWithPendingInteractionState(db, options);
+    const deps = { db, hub, providerRegistry };
+    const byIds = toThreadListEntryResponsesForTest(deps, { threads });
+    const byQuery = toThreadListEntryResponses(deps, {
+      threads,
+      scope: buildThreadListEnrichmentScope(db, options),
+    });
+    expect(JSON.stringify(byQuery)).toBe(JSON.stringify(byIds));
+    expect(
+      byQuery.find((entry) => entry.id === archived.thread.id)?.activity
+        .activeGoalCount,
+    ).toBe(1);
+    expect(
+      byQuery.find((entry) => entry.id === visible.thread.id)?.activity
+        .activeBackgroundAgentCount,
+    ).toBe(1);
+    expect(
+      byQuery.find((entry) => entry.id === visible.thread.id)?.queuedWork,
+    ).toBe("waiting");
+    expect(
+      byQuery.find((entry) => entry.id === visible.thread.id)?.rowState.statuses
+        .review?.value,
+    ).toBe("Ready");
+    expect(byQuery.some((entry) => entry.id === hidden.thread.id)).toBe(true);
+    expect(visible.thread.id).not.toBe(archived.thread.id);
+
+    const search = searchThreadsWithPendingInteractionState(db, {
+      query: "scopeidentity",
+      limitPerGroup: 10,
+    });
+    for (const group of [search.active, search.archived]) {
+      const threads = group.results.map((result) => result.thread);
+      const byIds = toThreadListEntryResponsesForTest(deps, { threads });
+      const bySearchScope = toThreadListEntryResponses(deps, {
+        threads,
+        scope: { kind: "ids", ids: threads.map((thread) => thread.id) },
+      });
+      expect(JSON.stringify(bySearchScope)).toBe(JSON.stringify(byIds));
+    }
+
+    const projectOptions = {
+      archived: false,
+      projectIds: [visible.project.id, hidden.project.id],
+    };
+    const projectThreads = listThreadsWithPendingInteractionStateForProjects(
+      db,
+      projectOptions,
+    );
+    const projectByIds = toThreadListEntryResponsesForTest(deps, {
+      threads: projectThreads,
+    });
+    const projectByScope = toThreadListEntryResponses(deps, {
+      threads: projectThreads,
+      scope: buildProjectThreadListEnrichmentScope(db, projectOptions),
+    });
+    expect(JSON.stringify(projectByScope)).toBe(JSON.stringify(projectByIds));
+
+    pinThread(db, noopNotifier, { threadId: visible.thread.id });
+    const pinnedThreads =
+      listActiveVisiblePinnedThreadRootsWithPendingInteractionState(db);
+    const pinnedByIds = toThreadListEntryResponsesForTest(deps, {
+      threads: pinnedThreads,
+    });
+    const pinnedByScope = toThreadListEntryResponses(deps, {
+      threads: pinnedThreads,
+      scope: buildPinnedRootThreadListEnrichmentScope(db),
+    });
+    expect(JSON.stringify(pinnedByScope)).toBe(JSON.stringify(pinnedByIds));
+  });
   it("applies one receipt freshness policy to native list and detail status", () => {
     const { db, hostId, hub } = setup();
     const session = openTestSession({ db, hostId });
@@ -352,7 +529,7 @@ describe("thread runtime display", () => {
     const oneNativeLookupStatements = countNativeActivityLookupStatements(
       db,
       () =>
-        toThreadListEntryResponses(
+        toThreadListEntryResponsesForTest(
           { db, hub, providerRegistry },
           { now: 190_000, threads: [nativeEntry, ordinaryEntry] },
         ),
@@ -360,7 +537,7 @@ describe("thread runtime display", () => {
     const twoNativeLookupStatements = countNativeActivityLookupStatements(
       db,
       () =>
-        toThreadListEntryResponses(
+        toThreadListEntryResponsesForTest(
           { db, hub, providerRegistry },
           {
             now: 190_000,
@@ -369,11 +546,11 @@ describe("thread runtime display", () => {
         ),
     );
 
-    const fresh = toThreadListEntryResponses(
+    const fresh = toThreadListEntryResponsesForTest(
       { db, hub, providerRegistry },
       { now: 190_000, threads: [nativeEntry, nativeTwoEntry, ordinaryEntry] },
     );
-    const stale = toThreadListEntryResponses(
+    const stale = toThreadListEntryResponsesForTest(
       { db, hub, providerRegistry },
       { now: 190_001, threads: [nativeEntry, nativeTwoEntry, ordinaryEntry] },
     );
@@ -630,7 +807,7 @@ describe("thread runtime display", () => {
 
     const providerIdByThreadId = new Map(
       [provided, checkout].flatMap(({ project }) =>
-        toThreadListEntryResponses(
+        toThreadListEntryResponsesForTest(
           { db, hub, providerRegistry },
           {
             now: 1_000,
@@ -669,7 +846,7 @@ describe("thread runtime display", () => {
       }),
     });
 
-    const [entry] = toThreadListEntryResponses(
+    const [entry] = toThreadListEntryResponsesForTest(
       { db, hub, providerRegistry },
       {
         threads: listThreadsWithPendingInteractionState(db, {
@@ -699,7 +876,7 @@ describe("thread runtime display", () => {
       status: "active",
     });
 
-    const entries = toThreadListEntryResponses(
+    const entries = toThreadListEntryResponsesForTest(
       { db, hub, providerRegistry },
       {
         now,
@@ -770,7 +947,7 @@ describe("thread runtime display", () => {
       retryDelaysMs: [],
     });
 
-    const entries = toThreadListEntryResponses(
+    const entries = toThreadListEntryResponsesForTest(
       { db, hub, providerRegistry },
       {
         now: 1_000,
@@ -808,6 +985,7 @@ describe("thread runtime display", () => {
         {
           now: 1_000,
           threads,
+          scope: { kind: "ids", ids: threads.map((candidate) => candidate.id) },
         },
       ),
     ).toHaveLength(32_767);
@@ -966,7 +1144,7 @@ describe("thread runtime display", () => {
       },
     });
 
-    const entries = toThreadListEntryResponses(
+    const entries = toThreadListEntryResponsesForTest(
       { db, hub, providerRegistry },
       {
         threads: [

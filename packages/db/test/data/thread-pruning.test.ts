@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { and, eq, sql } from "drizzle-orm";
 import { createConnection } from "../../src/connection.js";
+import { migrate } from "../../src/migrate.js";
 import {
   events,
   threadPruningCursors,
@@ -321,6 +322,90 @@ function expectLegacyParityCase(
 }
 
 describe("thread pruning", () => {
+  it("preserves the exact usage pruning deletion set and byte total", () => {
+    const db = createConnection(":memory:");
+    migrate(db);
+    const host = upsertHost(db, noopNotifier, { name: "pruning" });
+    const { project } = createProject(db, noopNotifier, {
+      name: "pruning",
+      source: { type: "local_path", hostId: host.id, path: "/tmp/pruning" },
+    });
+    const thread = createThread(db, noopNotifier, {
+      projectId: project.id,
+      providerId: "codex",
+    });
+    try {
+      const add = (
+        sequence: number,
+        type: (typeof events.$inferInsert)["type"],
+        data: string,
+        turnId = "turn",
+      ) => {
+        db.insert(events)
+          .values({
+            id: `usage-${sequence}`,
+            threadId: thread.id,
+            sequence,
+            scopeKind: "turn",
+            turnId,
+            type,
+            data,
+            createdAt: sequence,
+          })
+          .run();
+        markThreadPruningWork(db, [thread.id]);
+      };
+      add(
+        1,
+        "thread/contextWindowUsage/updated",
+        '{"contextWindowUsage":{"modelContextWindow":200000}}',
+      );
+      add(
+        2,
+        "thread/contextWindowUsage/updated",
+        '{"contextWindowUsage":{"modelContextWindow":null}}',
+      );
+      add(
+        3,
+        "thread/contextWindowUsage/updated",
+        '{"contextWindowUsage":{"modelContextWindow":null}}',
+      );
+      add(4, "thread/tokenUsage/updated", '{"usedTokens":10}');
+      add(5, "thread/tokenUsage/updated", '{"usedTokens":20}');
+      add(6, "thread/tokenUsage/updated", '{"usedTokens":30}');
+      add(7, "system/error", "keep");
+      add(8, "turn/completed", "{}", "turn");
+      add(1008, "turn/completed", "{}", "later");
+      const expectedBytes =
+        Buffer.byteLength(
+          '{"contextWindowUsage":{"modelContextWindow":null}}',
+        ) +
+        Buffer.byteLength('{"usedTokens":10}') +
+        Buffer.byteLength('{"usedTokens":20}');
+      const results = cycle({ db, thread, project }, "usage");
+      const survivingIds = db
+        .select({ id: events.id })
+        .from(events)
+        .where(eq(events.threadId, thread.id))
+        .orderBy(events.sequence)
+        .all()
+        .map((row) => row.id);
+      expect(survivingIds).toEqual([
+        "usage-1",
+        "usage-3",
+        "usage-6",
+        "usage-7",
+        "usage-8",
+        "usage-1008",
+      ]);
+      expect(
+        results.reduce((sum, result) => sum + result.removedBytes, 0),
+      ).toBe(expectedBytes);
+    } finally {
+      db.$client.close();
+    }
+  });
+
   it("queues archive changes for every owned thread and rolls them back together", () => {
     const f = setup();
     try {

@@ -25,11 +25,13 @@ export {
 export {
   clearThreadRowState,
   getThreadRowState,
+  listThreadRowStatesByScope,
   putThreadRowState,
   type ThreadRowProgress,
   type ThreadRowState,
   type ThreadRowStatus,
 } from "./fork-thread-row-state.js";
+export type { ThreadListEnrichmentScope } from "./thread-list-enrichment-scope.js";
 export {
   clearTerminalAttention,
   clearPersistedDeviceHandoffAttention,
