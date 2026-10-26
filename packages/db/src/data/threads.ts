@@ -1681,6 +1681,16 @@ export function listThreadEnvironmentAssignmentsOnHost(
     .all();
 }
 
+export function threadIdsWithRowsQuery(
+  db: DbQueryConnection,
+  threadIds: string[],
+) {
+  return db
+    .select({ id: threads.id })
+    .from(threads)
+    .where(inArray(threads.id, threadIds));
+}
+
 export function listExistingThreadIds(
   db: DbQueryConnection,
   threadIds: string[],
@@ -1688,10 +1698,7 @@ export function listExistingThreadIds(
   if (threadIds.length === 0) {
     return [];
   }
-  return db
-    .select({ id: threads.id })
-    .from(threads)
-    .where(inArray(threads.id, threadIds))
+  return threadIdsWithRowsQuery(db, threadIds)
     .all()
     .map((row) => row.id);
 }

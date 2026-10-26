@@ -1464,12 +1464,6 @@ async function darwinStrangers(
         };
       const parent = known.parent;
       if (parent <= 0) break;
-      if (tree.get(parent) === undefined)
-        return {
-          status: "unknown",
-          code: "other-user-descendant",
-          reason: `the parent ${parent} of process ${current} is missing from the process tree, so whether process ${other.pid} descends from a process of this user cannot be established`,
-        };
       if (tree.get(parent)?.uid === io.uid)
         return {
           status: "unknown",

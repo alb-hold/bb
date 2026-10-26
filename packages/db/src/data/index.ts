@@ -172,6 +172,7 @@ export {
   getThreadStartupContext,
   setThreadStartupContext,
   listExistingThreadIds,
+  threadIdsWithRowsQuery,
   listHostThreadIds,
   listActiveHostThreads,
   listActiveVisiblePinnedThreadRootsWithPendingInteractionState,

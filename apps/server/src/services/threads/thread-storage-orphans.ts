@@ -6,7 +6,7 @@ import {
   isDatabaseMaintenanceIdle,
   listExistingThreadIds,
 } from "@bb/db";
-import { isRawThreadId } from "@bb/domain";
+import { listThreadStorageIds, withoutThreadRows } from "@bb/domain";
 import { COMMAND_TIMEOUT_MS } from "../../constants.js";
 import { ApiError } from "../../errors.js";
 import type { LoggedWorkSessionDeps } from "../../types.js";
@@ -153,9 +153,7 @@ async function listOrphanedThreadStorage(
     hostId: args.hostId,
     timeoutMs: COMMAND_TIMEOUT_MS,
   });
-  const storedThreadIds = listing.entries
-    .filter((entry) => entry.kind === "directory" && isRawThreadId(entry.name))
-    .map((entry) => entry.name);
+  const storedThreadIds = listThreadStorageIds(listing.entries);
   const existingThreadIds = new Set<string>();
   for (
     let start = 0;
@@ -174,8 +172,6 @@ async function listOrphanedThreadStorage(
     parked: false,
     rootPath,
     sessionId: args.sessionId,
-    threadIds: storedThreadIds.filter(
-      (threadId) => !existingThreadIds.has(threadId),
-    ),
+    threadIds: withoutThreadRows(storedThreadIds, existingThreadIds),
   };
 }
