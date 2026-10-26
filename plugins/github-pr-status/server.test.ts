@@ -17,6 +17,14 @@ type Environment = Awaited<
   ReturnType<BbPluginApi["sdk"]["environments"]["get"]>
 >;
 
+type EnvironmentChangedSubscribeArgs = Extract<
+  Parameters<BbPluginApi["sdk"]["subscribe"]>[0],
+  { event: "environment:changed" }
+>;
+type EnvironmentChangedEvent = Parameters<
+  EnvironmentChangedSubscribeArgs["callback"]
+>[0];
+
 function environment(overrides: Partial<Environment> = {}): Environment {
   return {
     id: "env-1",
@@ -71,6 +79,8 @@ async function setup(options: {
   host?: Parameters<typeof makeHostResponse>[0];
   callHost?: (call: ExperimentalFakeHostRpcCall) => unknown;
   listThreadEvents?: BbPluginApi["sdk"]["threads"]["events"]["list"];
+  getEnvironment?: (environmentId: string) => Promise<Environment>;
+  debug?: (message: string) => void;
 }) {
   const environments = options.environments ?? { "env-1": environment() };
   const sdkCalls: string[] = [];
@@ -78,16 +88,24 @@ async function setup(options: {
     string,
     Parameters<BbPluginApi["rpc"]["experimental_whileWatched"]>[1]
   >();
+  const environmentChangedHandlers: EnvironmentChangedSubscribeArgs["callback"][] =
+    [];
   const fake = createFakePluginHost({
     pluginId: "bb--github-pr-status",
     sdk: {
-      subscribe: () => () => {},
+      subscribe: (args) => {
+        if (args.event === "environment:changed")
+          environmentChangedHandlers.push(args.callback);
+        return () => {};
+      },
       threads: {
         events: { list: options.listThreadEvents ?? (async () => []) },
       },
       environments: {
         get: async ({ environmentId }: { environmentId: string }) => {
           sdkCalls.push(`environments.get ${environmentId}`);
+          if (options.getEnvironment)
+            return options.getEnvironment(environmentId);
           const found = environments[environmentId];
           if (found === undefined) {
             throw Object.assign(new Error("Environment not found"), {
@@ -118,9 +136,21 @@ async function setup(options: {
       whileWatchedHandlers.set(method, handler);
     },
   );
-  await plugin(fake.bb);
+  const loadPlugin = (bb: BbPluginApi) =>
+    plugin(
+      options.debug === undefined
+        ? bb
+        : { ...bb, log: { ...bb.log, debug: options.debug } },
+    );
+  await loadPlugin(fake.bb);
   return Object.assign(fake, {
     sdkCalls,
+    emitEnvironmentChanged(event: EnvironmentChangedEvent) {
+      for (const callback of environmentChangedHandlers) callback(event);
+    },
+    reloadPlugin() {
+      return fake.harness.reload(loadPlugin);
+    },
     async watchPullRequests(environmentId: string) {
       const handler = whileWatchedHandlers.get("pullRequests");
       if (handler === undefined)
@@ -135,6 +165,95 @@ async function setup(options: {
 }
 
 describe("GitHub PR Status server", () => {
+  it.each([
+    ["null-prototype rejection", Object.create(null) as unknown],
+    [
+      "rejection with a throwing toString",
+      {
+        toString: () => {
+          throw new Error("toString failed");
+        },
+      },
+    ],
+  ])(
+    "keeps invalidation rejection handling safe for %s",
+    async (_, failure) => {
+      const debugMessages: string[] = [];
+      let hostFailure: unknown = null;
+      const fake = await setup({
+        callHost: (call) => {
+          if (call.method === "upstream" && hostFailure !== null)
+            throw hostFailure;
+          return call.method === "upstream"
+            ? { oid: null, branchName: "bb/pr" }
+            : call.method === "view"
+              ? { outcome: "found", pullRequest: view() }
+              : { ok: true };
+        },
+        debug: (message) => {
+          debugMessages.push(message);
+          throw new Error("debug logger failed");
+        },
+      });
+      await fake.harness.callRpc("pullRequests", { keys: ["env-1"] });
+      const stopWatching = await fake.watchPullRequests("env-1");
+      hostFailure = failure;
+      const unhandled: unknown[] = [];
+      const onUnhandled = (reason: unknown) => unhandled.push(reason);
+      process.on("unhandledRejection", onUnhandled);
+      try {
+        fake.emitEnvironmentChanged({
+          entity: "environment",
+          type: "changed",
+          id: "env-1",
+          changes: ["git-refs-changed"],
+        });
+        await new Promise((resolve) => setImmediate(resolve));
+      } finally {
+        process.off("unhandledRejection", onUnhandled);
+        stopWatching();
+      }
+      expect(unhandled).toEqual([]);
+      expect(debugMessages).toContain(
+        "Failed to inspect refs for env-1: unprintable error",
+      );
+    },
+  );
+
+  it("keeps the saved-environment voided check handled when formatting and logging throw", async () => {
+    const debugMessages: string[] = [];
+    let environmentFailure: unknown = null;
+    const fake = await setup({
+      getEnvironment: async () => {
+        if (environmentFailure !== null) throw environmentFailure;
+        return environment();
+      },
+      debug: (message) => {
+        debugMessages.push(message);
+        throw new Error("debug logger failed");
+      },
+    });
+    await fake.harness.callRpc("pullRequests", { keys: ["env-1"] });
+    environmentFailure = {
+      toString: () => {
+        throw new Error("toString failed");
+      },
+    };
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => unhandled.push(reason);
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      await fake.reloadPlugin();
+      await new Promise((resolve) => setImmediate(resolve));
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+    expect(unhandled).toEqual([]);
+    expect(debugMessages).toContain(
+      "Failed to check saved environment env-1: unprintable error",
+    );
+  });
+
   it.each([
     ["available", { outcome: "found", pullRequest: view() }],
     ["absent", { outcome: "none" }],

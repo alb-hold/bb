@@ -52,7 +52,11 @@ type Environment = Awaited<
 >;
 
 function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+  try {
+    return error instanceof Error ? error.message : String(error);
+  } catch {
+    return "unprintable error";
+  }
 }
 
 function httpStatusOf(error: unknown): number | null {
@@ -144,6 +148,16 @@ export default function githubPrStatusPlugin(bb: BbPluginApi): void {
     }
   }
 
+  const logDebug = (message: string) => {
+    try {
+      bb.log.debug(message);
+    } catch {}
+  };
+
+  function ignoreRejection(promise: Promise<unknown>): void {
+    void promise.catch(() => {});
+  }
+
   const persistence = createPullRequestPersistence(bb.storage);
   const savedLinks = persistence.links();
   const lookedUpBranches = new Map<string, string | null>(
@@ -178,7 +192,7 @@ export default function githubPrStatusPlugin(bb: BbPluginApi): void {
       )
         store.pushed(environmentId);
     } catch (error) {
-      bb.log.debug(
+      logDebug(
         `Failed to inspect refs for ${environmentId}: ${errorMessage(error)}`,
       );
     }
@@ -256,7 +270,7 @@ export default function githubPrStatusPlugin(bb: BbPluginApi): void {
       );
     },
     onCheckFailed: (environmentId, error) => {
-      bb.log.debug(
+      logDebug(
         `Failed to check watched pull request for ${environmentId}: ${errorMessage(error)}`,
       );
     },
@@ -275,7 +289,7 @@ export default function githubPrStatusPlugin(bb: BbPluginApi): void {
         if (environment === null) store.remove(environmentId);
       })
       .catch((error) =>
-        bb.log.debug(
+        logDebug(
           `Failed to check saved environment ${environmentId}: ${errorMessage(error)}`,
         ),
       );
@@ -296,13 +310,15 @@ export default function githubPrStatusPlugin(bb: BbPluginApi): void {
             store.refresh(environmentId);
             return;
           case "branch":
-            void inspectRefs(
-              environmentId,
-              event.changes.includes("git-refs-changed"),
+            ignoreRejection(
+              inspectRefs(
+                environmentId,
+                event.changes.includes("git-refs-changed"),
+              ),
             );
             return;
           case "invalidate":
-            void inspectRefs(environmentId, true);
+            ignoreRejection(inspectRefs(environmentId, true));
             return;
           case null:
             return;
