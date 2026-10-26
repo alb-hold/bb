@@ -589,28 +589,59 @@ describe("native activity reporter", () => {
       expect(closesOf(calls)).toEqual([[], ["q1"], ["q1"]]);
     });
 
-    it("retains possibly-open IDs through a blocked legacy close for the next supported report", async () => {
+    it("omits closes after a legacy closes rejection", async () => {
       const { calls, reporter } = closureSetup([
-        async () => {
-          throw new BbHttpError({
-            body: null,
-            code: "temporarily_unavailable",
-            message: "response lost after possible apply",
-            status: 503,
-          });
-        },
+        async () => ({ ok: true }),
         async () => {
           throw rejection('"closes"');
         },
         async () => ({ ok: true }),
       ]);
-      reporter.report(asking("q1"));
+      reporter.report(
+        asking("q1", "q2", "q3", "q4", "q5", "q6", "q7", "q8", "q9"),
+      );
       await reporter.settled();
       reporter.report(working);
       await reporter.settled();
+      reporter.report(asking("q10"));
+      await reporter.settled();
+      expect(calls).toHaveLength(3);
+      expect(closesOf(calls)).toEqual([
+        [],
+        ["q1", "q2", "q3", "q4", "q5", "q6", "q7", "q8", "q9"],
+        undefined,
+      ]);
+    });
+
+    it("does not batch or accumulate legacy closes across later waiting reports", async () => {
+      const { calls, reporter } = closureSetup([
+        async () => ({ ok: true }),
+        async () => {
+          throw rejection('"closes"');
+        },
+      ]);
+      reporter.report(
+        asking("q1", "q2", "q3", "q4", "q5", "q6", "q7", "q8", "q9"),
+      );
+      await reporter.settled();
       reporter.report(working);
       await reporter.settled();
-      expect(closesOf(calls)).toEqual([[], ["q1"], undefined]);
+      reporter.report(asking("q10"));
+      await reporter.settled();
+      reporter.report(asking("q11"));
+      await reporter.settled();
+      reporter.report(asking("q12"));
+      await reporter.settled();
+
+      expect(calls).toHaveLength(5);
+      expect(calls.slice(2).map(({ questions }) => questions)).toEqual([
+        ["q10"],
+        ["q11"],
+        ["q12"],
+      ]);
+      expect(calls.slice(2).every(({ closes }) => closes === undefined)).toBe(
+        true,
+      );
     });
 
     it("keeps a non-confirming report queued instead of retrying without confirms", async () => {
