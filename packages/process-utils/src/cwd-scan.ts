@@ -539,7 +539,11 @@ export type HolderUnknownCode =
   | "unreadable-same-user"
   | "invisible-process"
   | "escaped-directory"
-  | "other-user-reachable";
+  | "other-user-reachable"
+  | "other-user-namespace"
+  | "other-user-descendant"
+  | "other-user-acl"
+  | "other-user-groups";
 
 export type HolderThrough =
   | "working-directory"
@@ -562,7 +566,17 @@ export interface HoldScanIo extends CwdScanIo {
   readExe(pid: number): Promise<string>;
   listOpenFiles(pid: number): Promise<string[]>;
   readMaps(pid: number): Promise<string>;
-  statPath(path: string): Promise<{ uid: number; mode: number }>;
+  statPath(path: string): Promise<{ uid: number; gid: number; mode: number }>;
+  readAcl(path: string): Promise<HolderAcl>;
+  readCredentials(pid: number): Promise<HolderCredentials>;
+  readCmdline(pid: number): Promise<string[]>;
+  runPsTree(
+    timeoutMs: number,
+  ): Promise<{ code: number | null; stdout: string; stderr: string }>;
+  runIdGroups(
+    uid: number,
+    timeoutMs: number,
+  ): Promise<{ code: number | null; stdout: string; stderr: string }>;
   readOwnMountNamespace(): Promise<string>;
   readMountInfo(): Promise<string>;
   listTasks(pid: number): Promise<string[]>;
@@ -590,9 +604,29 @@ export const hostHoldScanIo: HoldScanIo = {
   },
   readMaps: (pid) => readFile(`/proc/${pid}/maps`, "utf8"),
   statPath: async (path) => {
-    const { uid, mode } = await stat(path);
-    return { uid, mode };
+    const { uid, gid, mode } = await stat(path);
+    return { uid, gid, mode };
   },
+  readAcl: async (path) => {
+    const listing = await runCommand(
+      "ls",
+      process.platform === "darwin"
+        ? ["-lde", "--", path]
+        : ["-ld", "--", path],
+      10_000,
+    );
+    if (listing.code !== 0)
+      throw Object.assign(new Error("ls failed"), { code: "EIO" });
+    return parseAclListing(listing.stdout, process.platform);
+  },
+  readCredentials: async (pid) =>
+    parseCredentials(await readFile(`/proc/${pid}/status`, "utf8")),
+  readCmdline: async (pid) =>
+    (await readFile(`/proc/${pid}/cmdline`, "utf8")).split("\0"),
+  runPsTree: (timeoutMs) =>
+    runCommand("ps", ["-A", "-o", "pid=,ppid=,uid="], timeoutMs),
+  runIdGroups: (uid, timeoutMs) =>
+    runCommand("id", ["-G", String(uid)], timeoutMs),
   readOwnMountNamespace: () => readlink("/proc/self/ns/mnt"),
   readMountInfo: () => readFile("/proc/self/mountinfo", "utf8"),
   listTasks: (pid) => readdir(`/proc/${pid}/task`),
@@ -626,14 +660,29 @@ type HoldRead<Value> =
   | { status: "skip" }
   | { status: "unknown"; code: HolderUnknownCode; reason: string };
 
+export interface HolderCredentials {
+  uid: number;
+  gids: number[];
+  parentPid: number;
+  nestedPidNamespace: boolean;
+}
+
+export type HolderAcl = "none" | "deny-only" | "allow";
+
+interface Stranger {
+  uid: number;
+  gids: number[];
+  pid: number;
+}
+
 interface HoldCoverage {
   helpers: CwdUnvouchedHelper[];
   skipped: CwdSkippedProcess[];
-  hiddenFromOtherUsers: boolean;
+  strangers: Map<number, Stranger>;
 }
 
 const ROOT_UID = 0;
-const GROUP_AND_OTHER_SEARCH_BITS = 0o011;
+const MAX_ANCESTOR_STEPS = 64;
 
 function ancestorsOf(path: string): string[] {
   const chain: string[] = [];
@@ -646,38 +695,216 @@ function ancestorsOf(path: string): string[] {
   return chain;
 }
 
-async function hiddenFromOtherUsers(
-  io: HoldScanIo,
-  paths: readonly string[],
-  barrierRoot: string | undefined,
-): Promise<boolean> {
-  if (io.uid === null) return false;
-  for (const path of paths) {
-    let hidden = false;
-    for (const candidate of ancestorsOf(path)) {
-      if (
-        barrierRoot !== undefined &&
-        isUnder(path, barrierRoot) &&
-        !isUnder(candidate, barrierRoot)
-      )
-        break;
-      try {
-        const { uid, mode } = await io.statPath(candidate);
-        if (uid === io.uid && (mode & GROUP_AND_OTHER_SEARCH_BITS) === 0) {
-          hidden = true;
-          break;
-        }
-      } catch {
-        return false;
-      }
-    }
-    if (!hidden) return false;
-  }
-  return true;
-}
-
 function otherUserCanReach(pid: number, uid: number): string {
   return `process ${pid} runs as user ${uid}, who is neither this user nor root and can reach the folder, so what it holds cannot be vouched for`;
+}
+
+function hasSearchPermission(
+  entry: { uid: number; gid: number; mode: number },
+  user: { uid: number; gids: readonly number[] },
+): boolean {
+  if (user.uid === entry.uid) return (entry.mode & 0o100) !== 0;
+  if (user.gids.includes(entry.gid)) return (entry.mode & 0o010) !== 0;
+  return (entry.mode & 0o001) !== 0;
+}
+
+export function parseCredentials(status: string): HolderCredentials {
+  const field = (name: string): number[] => {
+    const line = new RegExp(`^${name}:\\t([0-9\\t ]*)$`, "mu").exec(status);
+    if (line === null)
+      throw Object.assign(new Error(`no ${name} line`), { code: "EINVAL" });
+    return (line[1] ?? "")
+      .split(/\s+/u)
+      .filter((value) => value !== "")
+      .map(Number);
+  };
+  const uids = field("Uid");
+  const gids = field("Gid");
+  const parent = field("PPid");
+  const namespaced = field("NSpid");
+  const uid = uids[1];
+  const gid = gids[1];
+  const parentPid = parent[0];
+  if (
+    uid === undefined ||
+    gid === undefined ||
+    parentPid === undefined ||
+    namespaced.length === 0
+  )
+    throw Object.assign(new Error("unparsable status"), { code: "EINVAL" });
+  const supplementary = /^Groups:\t([0-9\t ]*)$/mu.exec(status);
+  return {
+    uid,
+    gids: [
+      gid,
+      ...(supplementary?.[1] ?? "")
+        .split(/\s+/u)
+        .filter((value) => value !== "")
+        .map(Number),
+    ],
+    parentPid,
+    nestedPidNamespace: namespaced.length > 1,
+  };
+}
+
+export function parseAclListing(
+  listing: string,
+  platform: NodeJS.Platform,
+): HolderAcl {
+  const lines = listing.split("\n");
+  const flag = /^[-dlcbps][rwxsStT-]{9}([+@. ]?)\s/u.exec(lines[0] ?? "");
+  if (flag === null)
+    throw Object.assign(new Error("unparsable listing"), { code: "EINVAL" });
+  if (flag[1] !== "+") return "none";
+  if (platform !== "darwin") return "allow";
+  let entries = 0;
+  let allow = false;
+  for (const line of lines.slice(1)) {
+    if (line.trim() === "") continue;
+    const entry = /^\s*\d+:\s+\S+\s+(allow|deny)\s/u.exec(line);
+    if (entry === null)
+      throw Object.assign(new Error("unparsable ACL entry"), {
+        code: "EINVAL",
+      });
+    entries += 1;
+    if (entry[1] === "allow") allow = true;
+  }
+  if (entries === 0)
+    throw Object.assign(new Error("ACL flag without entries"), {
+      code: "EINVAL",
+    });
+  return allow ? "allow" : "deny-only";
+}
+
+function helperCommandLineMatches(
+  comm: string,
+  argv: readonly string[],
+): boolean {
+  const first = (argv[0] ?? "").split(/[: ]/u)[0] ?? "";
+  return first.split("/").pop() === comm;
+}
+
+async function ancestorRunsAs(
+  io: HoldScanIo,
+  pid: number,
+  uid: number,
+): Promise<"yes" | "no" | "unreadable"> {
+  let current = pid;
+  for (let step = 0; step < MAX_ANCESTOR_STEPS; step += 1) {
+    let parent: number;
+    try {
+      parent = (await io.readCredentials(current)).parentPid;
+    } catch {
+      return "unreadable";
+    }
+    if (parent <= 0) return "no";
+    let credentials: HolderCredentials;
+    try {
+      credentials = await io.readCredentials(parent);
+    } catch {
+      return "unreadable";
+    }
+    if (credentials.uid === uid) return "yes";
+    if (parent === 1) return "no";
+    current = parent;
+  }
+  return "unreadable";
+}
+
+async function noteStranger(
+  io: HoldScanIo,
+  coverage: HoldCoverage,
+  pid: number,
+  owner: number,
+  errno: string,
+): Promise<HoldRead<never>> {
+  if (owner === ROOT_UID || io.uid === null) {
+    coverage.skipped.push({ pid, uid: owner, errno });
+    return { status: "skip" };
+  }
+  let credentials: HolderCredentials;
+  try {
+    credentials = await io.readCredentials(pid);
+  } catch (error) {
+    if (GONE.has(codeOf(error))) return { status: "gone" };
+    return {
+      status: "unknown",
+      code: "other-user-groups",
+      reason: `the groups of process ${pid}, which runs as user ${owner}, could not be read`,
+    };
+  }
+  if (credentials.nestedPidNamespace)
+    return {
+      status: "unknown",
+      code: "other-user-namespace",
+      reason: `process ${pid} runs as user ${owner} in a nested process namespace, so another user, other namespace: the folder may be reachable through a mount bb cannot see`,
+    };
+  const inherited = await ancestorRunsAs(io, pid, io.uid);
+  if (inherited !== "no")
+    return {
+      status: "unknown",
+      code: "other-user-descendant",
+      reason:
+        inherited === "yes"
+          ? `process ${pid} runs as user ${owner} but descends from a process of this user, so it may have inherited a working directory inside the folder`
+          : `whether process ${pid}, which runs as user ${owner}, descends from a process of this user could not be established`,
+    };
+  const known = coverage.strangers.get(owner);
+  coverage.strangers.set(owner, {
+    uid: owner,
+    gids: [...new Set([...(known?.gids ?? []), ...credentials.gids])],
+    pid: known?.pid ?? pid,
+  });
+  coverage.skipped.push({ pid, uid: owner, errno });
+  return { status: "skip" };
+}
+
+async function strangersReachFolder(
+  io: HoldScanIo,
+  strangers: readonly Stranger[],
+  paths: readonly string[],
+): Promise<HolderScan | null> {
+  if (strangers.length === 0) return null;
+  const chains = new Map<
+    string,
+    { uid: number; gid: number; mode: number }[]
+  >();
+  const acls = new Map<string, HolderAcl>();
+  for (const path of paths) {
+    const chain: { uid: number; gid: number; mode: number }[] = [];
+    for (const ancestor of ancestorsOf(path)) {
+      try {
+        chain.push(await io.statPath(ancestor));
+        if (!acls.has(ancestor)) acls.set(ancestor, await io.readAcl(ancestor));
+      } catch {
+        return {
+          status: "unknown",
+          code: "other-user-acl",
+          reason: `the owner, mode or access control list of ${ancestor} could not be read, so whether other users can reach ${path} cannot be established`,
+        };
+      }
+    }
+    chains.set(path, chain);
+  }
+  const allowing = [...acls].find(([, acl]) => acl === "allow");
+  if (allowing !== undefined)
+    return {
+      status: "unknown",
+      code: "other-user-acl",
+      reason: `${allowing[0]} has an access control list entry that allows access, so whether other users can reach the folder cannot be judged from its mode`,
+    };
+  for (const stranger of strangers) {
+    const reaches = [...chains.values()].some((chain) =>
+      chain.every((entry) => hasSearchPermission(entry, stranger)),
+    );
+    if (reaches)
+      return {
+        status: "unknown",
+        code: "other-user-reachable",
+        reason: otherUserCanReach(stranger.pid, stranger.uid),
+      };
+  }
+  return null;
 }
 
 async function readHeldProcessFact<Value>(
@@ -704,16 +931,8 @@ async function readHeldProcessFact<Value>(
           reason: `the owner of process ${pid} could not be read`,
         };
     }
-    if (io.uid !== null && owner !== null && owner !== io.uid) {
-      if (owner !== ROOT_UID && !coverage.hiddenFromOtherUsers)
-        return {
-          status: "unknown",
-          code: "other-user-reachable",
-          reason: otherUserCanReach(pid, owner),
-        };
-      coverage.skipped.push({ pid, uid: owner, errno: code || "error" });
-      return { status: "skip" };
-    }
+    if (io.uid !== null && owner !== null && owner !== io.uid)
+      return noteStranger(io, coverage, pid, owner, code || "error");
     if (io.uid !== null && (code === "EACCES" || code === "EPERM")) {
       let comm: string;
       try {
@@ -727,8 +946,21 @@ async function readHeldProcessFact<Value>(
         };
       }
       if (UNREADABLE_SAME_USER_HELPER_COMMS.has(comm)) {
-        coverage.helpers.push({ pid, comm });
-        return { status: "skip" };
+        let argv: string[];
+        try {
+          argv = await io.readCmdline(pid);
+        } catch (argvError) {
+          if (GONE.has(codeOf(argvError))) return { status: "gone" };
+          return {
+            status: "unknown",
+            code: "unreadable-same-user",
+            reason: `the ${what} of process ${pid} (${comm}) could not be read and its command line could not be read either`,
+          };
+        }
+        if (helperCommandLineMatches(comm, argv)) {
+          coverage.helpers.push({ pid, comm });
+          return { status: "skip" };
+        }
       }
       return {
         status: "unknown",
@@ -758,11 +990,11 @@ async function foreignOrUnknown(
     return { status: "unknown", code: "foreign-namespace", reason };
   }
   if (io.uid !== null && owner !== io.uid) {
-    if (owner !== ROOT_UID && !coverage.hiddenFromOtherUsers)
+    if (owner !== ROOT_UID)
       return {
         status: "unknown",
-        code: "other-user-reachable",
-        reason: otherUserCanReach(pid, owner),
+        code: "other-user-namespace",
+        reason: `another user, other namespace: ${reason}`,
       };
     coverage.skipped.push({ pid, uid: owner, errno: "other-namespace" });
     return { status: "skip" };
@@ -846,12 +1078,15 @@ function expandMountAliases(
     containing.root === "/" ? relative : `${containing.root}${relative}`;
   const paths = [directory];
   for (const mount of mounts) {
+    if (mount === containing || mount.device !== containing.device) continue;
     if (
-      mount === containing ||
-      mount.device !== containing.device ||
-      !isAncestorOrSame(mount.root, inFilesystem)
-    )
+      !isAncestorOrSame(mount.root, inFilesystem) &&
+      isAncestorOrSame(inFilesystem, mount.root)
+    ) {
+      if (!paths.includes(mount.mountPoint)) paths.push(mount.mountPoint);
       continue;
+    }
+    if (!isAncestorOrSame(mount.root, inFilesystem)) continue;
     const below =
       mount.root === "/" ? inFilesystem : inFilesystem.slice(mount.root.length);
     const alias =
@@ -859,6 +1094,24 @@ function expandMountAliases(
     if (!paths.includes(alias)) paths.push(alias);
   }
   return paths;
+}
+
+export function mountsInsideDirectory(
+  directory: string,
+  mountInfo: string,
+): string[] | null {
+  const mounts = parseMountInfo(mountInfo);
+  if (mounts === null) return null;
+  const inside: string[] = [];
+  for (const mount of mounts) {
+    if (
+      mount.mountPoint !== directory &&
+      isAncestorOrSame(directory, mount.mountPoint) &&
+      !inside.includes(mount.mountPoint)
+    )
+      inside.push(mount.mountPoint);
+  }
+  return inside;
 }
 
 type LinuxProcessScan =
@@ -989,7 +1242,6 @@ async function scanLinuxProcess(
 async function scanLinuxHolders(
   io: HoldScanIo,
   directories: readonly string[],
-  barrierRoot: string | undefined,
 ): Promise<HolderScan> {
   let entries: string[];
   try {
@@ -1043,7 +1295,7 @@ async function scanLinuxHolders(
   const coverage: HoldCoverage = {
     helpers: [],
     skipped: [],
-    hiddenFromOtherUsers: await hiddenFromOtherUsers(io, paths, barrierRoot),
+    strangers: new Map(),
   };
   const holders: FileHolder[] = [];
   for (const entry of entries) {
@@ -1059,6 +1311,14 @@ async function scanLinuxHolders(
     );
     if (scanned.status === "unknown") return scanned;
     if (scanned.status === "held") holders.push(scanned.holder);
+  }
+  if (holders.length === 0) {
+    const reachable = await strangersReachFolder(
+      io,
+      [...coverage.strangers.values()],
+      paths,
+    );
+    if (reachable !== null) return reachable;
   }
   const report = {
     excludedOtherUsers: coverage.skipped.length,
@@ -1078,13 +1338,79 @@ function darwinThrough(fd: string): HolderThrough {
   return "open-file";
 }
 
+async function darwinStrangers(
+  io: HoldScanIo,
+  skipped: readonly CwdSkippedProcess[],
+  timeoutMs: number,
+): Promise<Stranger[] | HolderScan> {
+  const others = skipped.filter((process) => process.uid !== ROOT_UID);
+  if (others.length === 0 || io.uid === null) return [];
+  let tree: Map<number, { parent: number; uid: number }>;
+  try {
+    const listing = await io.runPsTree(timeoutMs);
+    if (listing.code !== 0) throw new Error("ps failed");
+    tree = new Map();
+    for (const line of listing.stdout.split("\n")) {
+      if (line.trim() === "") continue;
+      const row = /^\s*(\d+)\s+(\d+)\s+(\d+)\s*$/u.exec(line);
+      if (row === null) throw new Error("unparsable ps line");
+      tree.set(Number(row[1]), {
+        parent: Number(row[2]),
+        uid: Number(row[3]),
+      });
+    }
+  } catch {
+    return {
+      status: "unknown",
+      code: "other-user-descendant",
+      reason:
+        "the process tree could not be read, so whether another user's process descends from one of this user's cannot be established",
+    };
+  }
+  const strangers = new Map<number, Stranger>();
+  for (const other of others) {
+    let current = other.pid;
+    for (let step = 0; step < MAX_ANCESTOR_STEPS; step += 1) {
+      const parent = tree.get(current)?.parent;
+      if (parent === undefined || parent <= 0) break;
+      if (tree.get(parent)?.uid === io.uid)
+        return {
+          status: "unknown",
+          code: "other-user-descendant",
+          reason: `process ${other.pid} runs as user ${other.uid} but descends from a process of this user, so it may have inherited a working directory inside the folder`,
+        };
+      current = parent;
+    }
+    if (strangers.has(other.uid)) continue;
+    let gids: number[];
+    try {
+      const listing = await io.runIdGroups(other.uid, timeoutMs);
+      if (listing.code !== 0) throw new Error("id failed");
+      gids = listing.stdout
+        .trim()
+        .split(/\s+/u)
+        .map((value) => {
+          if (!/^\d+$/u.test(value)) throw new Error("unparsable group");
+          return Number(value);
+        });
+    } catch {
+      return {
+        status: "unknown",
+        code: "other-user-groups",
+        reason: `the groups of user ${other.uid}, who runs process ${other.pid}, could not be read`,
+      };
+    }
+    strangers.set(other.uid, { uid: other.uid, gids, pid: other.pid });
+  }
+  return [...strangers.values()];
+}
+
 const LSOF_ESCAPED_PATH = /[^\x20-\x7e]|\\/u;
 
 async function scanDarwinHolders(
   io: HoldScanIo,
   directories: readonly string[],
   timeoutMs: number,
-  barrierRoot: string | undefined,
 ): Promise<HolderScan> {
   const escaped = directories.find((directory) =>
     LSOF_ESCAPED_PATH.test(directory),
@@ -1139,19 +1465,12 @@ async function scanDarwinHolders(
       reason: `process ${first.pid} (${first.comm}) runs as the current user, is not a known session helper and has no entries in the lsof listing, so whether it holds a file inside the folder cannot be established${inspection.invisible.length > 1 ? ` (${inspection.invisible.length} such processes)` : ""}`,
     };
   }
-  const reachableUser =
-    holders.length > 0
-      ? undefined
-      : inspection.skipped?.find((process) => process.uid !== ROOT_UID);
-  if (
-    reachableUser !== undefined &&
-    !(await hiddenFromOtherUsers(io, directories, barrierRoot))
-  )
-    return {
-      status: "unknown",
-      code: "other-user-reachable",
-      reason: otherUserCanReach(reachableUser.pid, reachableUser.uid),
-    };
+  if (holders.length === 0 && inspection.skipped !== null) {
+    const strangers = await darwinStrangers(io, inspection.skipped, timeoutMs);
+    if (!Array.isArray(strangers)) return strangers;
+    const reachable = await strangersReachFolder(io, strangers, directories);
+    if (reachable !== null) return reachable;
+  }
   const report = {
     excludedOtherUsers:
       inspection.skipped === null ? null : inspection.skipped.length,
@@ -1166,11 +1485,7 @@ async function scanDarwinHolders(
 }
 
 export async function scanProcessesHoldingUnder(
-  args: {
-    directories: readonly string[];
-    timeoutMs?: number;
-    hiddenFromOtherUsersBelow?: string;
-  },
+  args: { directories: readonly string[]; timeoutMs?: number },
   io: HoldScanIo = activeHoldIo,
 ): Promise<HolderScan> {
   if (args.directories.length === 0) {
@@ -1200,11 +1515,6 @@ export async function scanProcessesHoldingUnder(
     directories.push(resolved);
   }
   return io.platform === "linux"
-    ? scanLinuxHolders(io, directories, args.hiddenFromOtherUsersBelow)
-    : scanDarwinHolders(
-        io,
-        directories,
-        args.timeoutMs ?? 30_000,
-        args.hiddenFromOtherUsersBelow,
-      );
+    ? scanLinuxHolders(io, directories)
+    : scanDarwinHolders(io, directories, args.timeoutMs ?? 30_000);
 }
