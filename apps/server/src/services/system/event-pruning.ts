@@ -17,6 +17,7 @@ interface PruneThreadEventHistoryArgs {
 }
 
 interface ThreadEventPruningResult {
+  action: string;
   latestSequence: number;
   policy: string;
   scanned: number;
@@ -25,6 +26,7 @@ interface ThreadEventPruningResult {
 
 interface MaybePruneActiveThreadEventHistoryArgs {
   latestPrunableSequence: number;
+  now?: () => number;
   threadId: string;
 }
 
@@ -35,6 +37,7 @@ interface ActiveThreadPruneState {
 
 const ACTIVE_THREAD_EVENT_PRUNE_MIN_SEQUENCE_DELTA = 250;
 const ACTIVE_THREAD_EVENT_PRUNE_MIN_INTERVAL_MS = 30_000;
+export const ACTIVE_THREAD_EVENT_PRUNE_BUDGET_MS = 100;
 const SLOW_THREAD_EVENT_PRUNE_LOG_THRESHOLD_MS = 50;
 
 const ACTIVE_PRUNE_TRIGGER_THREAD_EVENT_TYPES: readonly ThreadEventType[] = [
@@ -67,6 +70,7 @@ export function pruneThreadEventHistory(
 ): ThreadEventPruningResult {
   const result = advanceThreadPruning(deps.db, { threadId: args.threadId });
   return {
+    action: result.action,
     latestSequence: result.cursor.upperSequence,
     policy: result.policy,
     scanned: result.scanned,
@@ -148,10 +152,40 @@ export function maybePruneActiveThreadEventHistory(
     lastPrunedSequence: args.latestPrunableSequence,
   });
 
-  return pruneThreadEventHistoryBestEffort(deps, {
+  return pruneActiveThreadEventHistoryWithinBudget(deps, {
     mode: thread.status === "active" ? "active" : "idle",
+    now: args.now,
     threadId: args.threadId,
   });
+}
+
+export function pruneActiveThreadEventHistoryWithinBudget(
+  deps: Pick<AppDeps, "db" | "logger" | "hub">,
+  args: { mode: "active" | "idle"; now?: () => number; threadId: string },
+): ThreadEventPruningResult | null {
+  const clock = args.now ?? (() => performance.now());
+  const startedAt = clock();
+  const totals = { scanned: 0, totalRemoved: 0 };
+  const completedPolicies = new Set<string>();
+  let latest: ThreadEventPruningResult | null = null;
+  do {
+    latest = pruneThreadEventHistoryBestEffort(deps, {
+      mode: args.mode,
+      threadId: args.threadId,
+    });
+    if (latest === null) return null;
+    totals.scanned += latest.scanned;
+    totals.totalRemoved += latest.totalRemoved;
+    if (
+      latest.action === "cycle-complete" ||
+      latest.action === "thread-complete"
+    )
+      completedPolicies.add(latest.policy);
+  } while (
+    clock() - startedAt < ACTIVE_THREAD_EVENT_PRUNE_BUDGET_MS &&
+    completedPolicies.size < 4
+  );
+  return { ...latest, ...totals };
 }
 
 export function resetActiveThreadEventPruningState(threadId: string): void {
