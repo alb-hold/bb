@@ -42,7 +42,7 @@ function getTerminalSessionTabIds({
   pendingTerminalIds,
   retainedTerminalIds = new Set<string>(),
   terminalSessions,
-: TerminalTabSources): ReadonlySet<string> {
+}: TerminalTabSources): ReadonlySet<string> {
   const ids = new Set(pendingTerminalIds.starting);
   for (const session of omitSupersededDisconnectedSessions(terminalSessions)) {
     if (shouldShowRetainedTerminalSession({ retainedTerminalIds, session })) {
@@ -51,7 +51,6 @@ function getTerminalSessionTabIds({
   }
   for (const terminalId of pendingTerminalIds.closing) ids.delete(terminalId);
   return ids;
-}
 }
 
 export function pruneTerminalTabsForSessions({
