@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   act,
   cleanup,
@@ -18,13 +18,43 @@ import {
   resetNotificationStore,
 } from "./notification-store";
 
+let verifyNoSonnerTimerAfterTeardown = false;
+
 beforeEach(() => {
   cleanup();
   vi.restoreAllMocks();
   resetNotificationStore();
 });
 
+afterEach(() => {
+  const shouldVerifyTimers = verifyNoSonnerTimerAfterTeardown;
+  verifyNoSonnerTimerAfterTeardown = false;
+  cleanup();
+  try {
+    if (shouldVerifyTimers) {
+      expect(vi.getTimerCount()).toBe(0);
+    }
+  } finally {
+    if (shouldVerifyTimers) {
+      vi.useRealTimers();
+    }
+    vi.restoreAllMocks();
+    resetNotificationStore();
+  }
+});
+
 describe("toast history", () => {
+  it("leaves no Sonner timer pending after the test is torn down", () => {
+    vi.useFakeTimers();
+    verifyNoSonnerTimerAfterTeardown = true;
+    render(<AppToasterView />);
+    const toast = createPluginToast(sonnerToast);
+
+    act(() => toast.error("Timer cleanup probe"));
+
+    expect(vi.getTimerCount()).toBeGreaterThan(0);
+  });
+
   it("collapses a toast that is replaced by its result into one entry", () => {
     appToast.message("Installing…", { id: "install" });
     appToast.error("Install failed", {
