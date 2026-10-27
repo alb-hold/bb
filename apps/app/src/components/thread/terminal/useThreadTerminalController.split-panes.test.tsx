@@ -279,12 +279,10 @@ describe("two split panes each holding a terminal", () => {
     unmount();
   });
 
-  it("accepts subsequent OSC process title changes", async () => {
+  it("a user-renamed terminal keeps its title when the program emits a title", async () => {
     const current = session("term_a", "running");
-    current.title = "vim";
-    const renamed = { ...current, title: "bash" };
+    current.title = "deploy";
     vi.mocked(sdk.terminals.list).mockResolvedValue({ sessions: [current] });
-    vi.mocked(sdk.terminals.rename).mockResolvedValue(renamed);
 
     const { wrapper } = createQueryClientTestHarness();
     const { result } = renderHook(
@@ -293,14 +291,54 @@ describe("two split panes each holding a terminal", () => {
     );
 
     await waitFor(() =>
-      expect(result.current.activeSession?.title).toBe("vim"),
+      expect(result.current.activeSession?.title).toBe("deploy"),
     );
-    act(() => result.current.handleActiveTerminalTitleChange("bash"));
+    act(() =>
+      result.current.handleActiveTerminalTitleChange("user@host:~/proj"),
+    );
+    await new Promise((resolve) => window.setTimeout(resolve, 300));
+
+    expect(sdk.terminals.rename).not.toHaveBeenCalled();
+  });
+
+  it("successive program titles keep updating the title", async () => {
+    const current = session("term_a", "running");
+    current.title = "bash";
+    vi.mocked(sdk.terminals.list).mockResolvedValue({ sessions: [current] });
+    vi.mocked(sdk.terminals.rename).mockImplementation(async ({ title }) => ({
+      ...current,
+      title,
+    }));
+
+    const { wrapper } = createQueryClientTestHarness();
+    const { result } = renderHook(
+      () => useThreadTerminalController(paneArgs("term_a")),
+      { wrapper },
+    );
+
+    await waitFor(() =>
+      expect(result.current.activeSession?.title).toBe("bash"),
+    );
+    act(() => result.current.handleActiveTerminalTitleChange("vim"));
 
     await waitFor(() =>
       expect(sdk.terminals.rename).toHaveBeenCalledWith({
         terminalId: "term_a",
-        title: "bash",
+        title: "vim",
+      }),
+    );
+    act(() =>
+      result.current.handleActiveTerminalSessionChange({
+        ...current,
+        title: "vim",
+      }),
+    );
+
+    act(() => result.current.handleActiveTerminalTitleChange("vim main.ts"));
+    await waitFor(() =>
+      expect(sdk.terminals.rename).toHaveBeenLastCalledWith({
+        terminalId: "term_a",
+        title: "vim main.ts",
       }),
     );
   });

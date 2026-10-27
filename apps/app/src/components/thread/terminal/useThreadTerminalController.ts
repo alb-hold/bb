@@ -224,8 +224,7 @@ export function useThreadTerminalController({
   const uiCreatedTerminalIdsRef = useRef<Set<string>>(new Set());
   const terminalCwdsRef = useRef(new Map<string, string>());
   const terminalCwdTitlesRef = useRef(new Map<string, string>());
-  const userSetTerminalTitlesRef = useRef(new Set<string>());
-  const programSetTerminalTitlesRef = useRef(new Set<string>());
+  const terminalProgramTitlesRef = useRef(new Map<string, string>());
   const lastProgressUpdateRef = useRef<{
     threadId: string;
     value: number | null;
@@ -522,7 +521,6 @@ export function useThreadTerminalController({
       terminalCwdsRef.current.set(activeSession.id, cwd);
       setTerminalCurrentCwd(activeSession.id, cwd);
       if (
-        userSetTerminalTitlesRef.current.has(activeSession.id) ||
         !shouldUseTerminalCwdTitle({
           currentTitle: activeSession.title,
           defaultTitle: ["bash", "zsh", "fish"].includes(activeSession.title)
@@ -530,6 +528,8 @@ export function useThreadTerminalController({
             : "",
           previousCwdTitle:
             terminalCwdTitlesRef.current.get(activeSession.id) ?? null,
+          previousProgramTitle:
+            terminalProgramTitlesRef.current.get(activeSession.id) ?? null,
         })
       ) {
         return;
@@ -711,8 +711,7 @@ export function useThreadTerminalController({
         clearTerminalCurrentCwd(session.id);
         terminalCwdsRef.current.delete(session.id);
         terminalCwdTitlesRef.current.delete(session.id);
-        userSetTerminalTitlesRef.current.delete(session.id);
-        programSetTerminalTitlesRef.current.delete(session.id);
+        terminalProgramTitlesRef.current.delete(session.id);
         setRetainedExitedSession(session);
         applyTerminalSessionUpsert({ queryClient, session });
         return;
@@ -759,7 +758,23 @@ export function useThreadTerminalController({
         if (!normalizedTitle || normalizedTitle === activeSession.title) {
           return;
         }
-        programSetTerminalTitlesRef.current.add(activeSession.id);
+        if (
+          !shouldUseTerminalCwdTitle({
+            currentTitle: activeSession.title,
+            defaultTitle: ["bash", "zsh", "fish"].includes(
+              activeSession.title,
+            )
+              ? activeSession.title
+              : "",
+            previousCwdTitle:
+              terminalCwdTitlesRef.current.get(activeSession.id) ?? null,
+            previousProgramTitle:
+              terminalProgramTitlesRef.current.get(activeSession.id) ?? null,
+          })
+        ) {
+          return;
+        }
+        terminalProgramTitlesRef.current.set(activeSession.id, normalizedTitle);
 
         const request: TerminalTitleRenameRequest = {
           terminalId: activeSession.id,
