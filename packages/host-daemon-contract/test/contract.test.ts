@@ -178,7 +178,7 @@ const WORKSPACE_DIFF_AVAILABLE_RESULT: JsonObject = {
 };
 
 const ONLINE_RPC_RESPONSE_RESULT_FIXTURES: OnlineRpcResponseResultFixtures = {
-  "native_terminal.read_claude_transcript_tail": { outcome: "missing" },
+  "native_terminal.read_transcript_tail": { outcome: "missing" },
   "environment.hook.run": {},
   "environment.hook.cancel": { status: "terminated" },
   "terminal-data-plane.probe": { dataSocket: true, ipcVersion: 1 },

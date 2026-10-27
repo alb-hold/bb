@@ -1,14 +1,17 @@
 import { Buffer } from "node:buffer";
 import { open, realpath } from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
 import {
-  NATIVE_CLAUDE_TRANSCRIPT_TAIL_MAX_BYTES,
+  expandSessionFilesAsync,
+  resolveNativeTerminalTranscriptPattern,
+} from "@bb/cli/native-session-files";
+import {
+  NATIVE_TRANSCRIPT_TAIL_MAX_BYTES,
   type HostDaemonOnlineRpcResult,
 } from "@bb/host-daemon-contract";
 import type { CommandOf } from "../command-dispatch-support.js";
 
-interface ReadClaudeTranscriptTailOptions {
+interface ReadTranscriptTailOptions {
   homeDir?: string;
   shellEnv?: Readonly<Record<string, string | undefined>>;
 }
@@ -22,45 +25,39 @@ function missingFile(error: unknown): boolean {
   );
 }
 
-export async function readClaudeTranscriptTail(
-  command: CommandOf<"native_terminal.read_claude_transcript_tail">,
-  options: ReadClaudeTranscriptTailOptions = {},
-): Promise<
-  HostDaemonOnlineRpcResult<"native_terminal.read_claude_transcript_tail">
-> {
+export async function readTranscriptTail(
+  command: CommandOf<"native_terminal.read_transcript_tail">,
+  options: ReadTranscriptTailOptions = {},
+): Promise<HostDaemonOnlineRpcResult<"native_terminal.read_transcript_tail">> {
   if (!path.isAbsolute(command.cwd)) {
-    throw new Error("Native Claude transcript cwd must be absolute");
+    throw new Error("Native transcript cwd must be absolute");
   }
-  const configuredRoot =
-    options.shellEnv?.CLAUDE_CONFIG_DIR ??
-    process.env.CLAUDE_CONFIG_DIR ??
-    path.join(options.homeDir ?? os.homedir(), ".claude");
-  const projectSlug = command.cwd
-    .replaceAll("\\", "/")
-    .replaceAll("/", "-")
-    .replace(/:/gu, "-");
-  const transcriptPath = path.join(
-    configuredRoot,
-    "projects",
-    projectSlug,
-    `${command.sessionId}.jsonl`,
-  );
+  const resolved = resolveNativeTerminalTranscriptPattern({
+    sessionRoot: command.sessionRoot,
+    transcriptPattern: command.transcriptPattern,
+    sessionId: command.sessionId,
+    env: options.shellEnv ?? process.env,
+    ...(options.homeDir === undefined ? {} : { fallbackHome: options.homeDir }),
+  });
   try {
-    const root = await realpath(configuredRoot);
+    const root = await realpath(resolved.root);
+    const candidates = await expandSessionFilesAsync(
+      resolved.root,
+      resolved.pattern,
+    );
+    const transcriptPath = candidates[0];
+    if (transcriptPath === undefined) return { outcome: "missing" };
     const resolvedPath = await realpath(transcriptPath);
     if (!resolvedPath.startsWith(`${root}${path.sep}`)) {
-      throw new Error("Native Claude transcript path escaped its config root");
+      throw new Error("Native transcript path escaped its session root");
     }
     const file = await open(resolvedPath, "r");
     try {
       const stat = await file.stat();
       if (!stat.isFile()) {
-        throw new Error("Native Claude transcript is not a regular file");
+        throw new Error("Native transcript is not a regular file");
       }
-      const length = Math.min(
-        stat.size,
-        NATIVE_CLAUDE_TRANSCRIPT_TAIL_MAX_BYTES,
-      );
+      const length = Math.min(stat.size, NATIVE_TRANSCRIPT_TAIL_MAX_BYTES);
       const buffer = Buffer.alloc(length);
       const { bytesRead } = await file.read(
         buffer,

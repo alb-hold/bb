@@ -1,10 +1,15 @@
-import { closeSync, openSync, readSync, readdirSync, statSync } from "node:fs";
-import os from "node:os";
+import { closeSync, openSync, readSync, statSync } from "node:fs";
 import path from "node:path";
 import {
   fillNativeTerminalTemplate,
   type ProviderNativeTerminal,
 } from "@bb/domain";
+import {
+  expandSessionFiles,
+  resolveNativeTerminalSessionRoot,
+  resolveNativeTerminalTranscriptPattern,
+} from "./native-session-files.js";
+export { expandSessionFiles } from "./native-session-files.js";
 import { experimental_nativeTerminalEnvArgs } from "@get-bb/plugin-sdk/host";
 import type { NativeTerminalLaunchSpec } from "@bb/server-contract";
 import { readRecordField } from "./native-activity.js";
@@ -31,60 +36,11 @@ type DiscoveredSession = Extract<
   { kind: "discovered" }
 >;
 
-function homeDir(env: NativeHarnessEnv): string {
-  return env.HOME ?? os.homedir();
-}
-
 export function nativeSessionRoot(
   cli: ProviderNativeTerminal,
   env: NativeHarnessEnv,
 ): string {
-  const override =
-    cli.sessionRoot.env === null ? undefined : env[cli.sessionRoot.env];
-  return override !== undefined && override.length > 0
-    ? override
-    : path.join(homeDir(env), cli.sessionRoot.home);
-}
-
-function listDirectory(dir: string): string[] {
-  try {
-    return readdirSync(dir);
-  } catch {
-    return [];
-  }
-}
-
-function isFile(filePath: string): boolean {
-  try {
-    return statSync(filePath).isFile();
-  } catch {
-    return false;
-  }
-}
-
-function segmentPattern(segment: string): RegExp {
-  const source = segment
-    .split("*")
-    .map((part) => part.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&"))
-    .join("[^/]*");
-  return new RegExp(`^${source}$`, "u");
-}
-
-export function expandSessionFiles(root: string, pattern: string): string[] {
-  let current = [root];
-  for (const segment of pattern.split("/")) {
-    if (!segment.includes("*")) {
-      current = current.map((dir) => path.join(dir, segment));
-      continue;
-    }
-    const matcher = segmentPattern(segment);
-    current = current.flatMap((dir) =>
-      listDirectory(dir)
-        .filter((name) => matcher.test(name))
-        .map((name) => path.join(dir, name)),
-    );
-  }
-  return current.filter(isFile);
+  return resolveNativeTerminalSessionRoot(cli.sessionRoot, env);
 }
 
 function fill(
@@ -271,12 +227,13 @@ export function findNativeSessionFile(
   const root = nativeSessionRoot(cli, env);
   const session = cli.session;
   if (session.kind === "assigned") {
-    return (
-      expandSessionFiles(
-        root,
-        fillNativeTerminalTemplate(session.transcript, { sessionId }),
-      )[0] ?? null
-    );
+    const resolved = resolveNativeTerminalTranscriptPattern({
+      sessionRoot: cli.sessionRoot,
+      transcriptPattern: session.transcript,
+      sessionId,
+      env,
+    });
+    return expandSessionFiles(resolved.root, resolved.pattern)[0] ?? null;
   }
   const files = expandSessionFiles(
     root,

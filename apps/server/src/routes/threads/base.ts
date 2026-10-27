@@ -158,60 +158,70 @@ async function reconcileNativeStatusOnRead(
   }
   states.set(threadId, now);
   let state: "idle" | "working" | null = null;
-  if (thread.providerId === "claude-code" && native.nativeSessionId !== null) {
+  const nativeTerminal = deps.providerRegistry.get(
+    thread.providerId,
+  )?.nativeTerminal;
+  const session = nativeTerminal?.session;
+  const transcript = nativeTerminal?.activity?.transcript;
+  if (
+    nativeTerminal != null &&
+    native.nativeSessionId !== null &&
+    session?.kind === "assigned" &&
+    transcript !== undefined
+  ) {
     const environment =
       thread.environmentId === null
         ? null
         : getEnvironment(deps.db, thread.environmentId);
-    if (environment === null || environment.path === null) return;
-    const registration = deps.providerRegistry.get(thread.providerId);
-    const transcript = registration?.nativeTerminal?.activity?.transcript;
-    if (transcript === undefined) return;
-    try {
-      const result = await callHostOnlineRpcForWork(deps, {
-        hostId: environment.hostId,
-        command: {
-          type: "native_terminal.read_claude_transcript_tail",
-          sessionId: native.nativeSessionId,
-          cwd: environment.path,
-        },
-        timeoutMs: 2_000,
-      });
-      states.set(threadId, Date.now());
-      if (result.outcome !== "available" || result.contentBase64 === undefined)
-        return;
-      const content = Buffer.from(result.contentBase64, "base64").toString(
-        "utf8",
-      );
-      const records = content.split("\n").filter((line) => line.length > 0);
-      for (let index = records.length - 1; index >= 0; index -= 1) {
-        try {
-          state = classifyNativeTranscriptRecord(
-            transcript,
-            JSON.parse(records[index]),
-          );
-        } catch {
-          continue;
-        }
-        if (state !== null) break;
-      }
-      if (state !== null) {
-        stampNativeTerminalTranscriptEvidence(deps.db, {
-          at: now,
-          nativeSessionId: native.nativeSessionId,
-          threadId,
+    if (environment !== null && environment.path !== null) {
+      try {
+        const result = await callHostOnlineRpcForWork(deps, {
+          hostId: environment.hostId,
+          command: {
+            type: "native_terminal.read_transcript_tail",
+            sessionId: native.nativeSessionId,
+            sessionRoot: nativeTerminal.sessionRoot,
+            transcriptPattern: session.transcript,
+            cwd: environment.path,
+          },
+          timeoutMs: 2_000,
         });
+        states.set(threadId, Date.now());
+        if (result.outcome === "available") {
+          const content = Buffer.from(result.contentBase64, "base64").toString(
+            "utf8",
+          );
+          const records = content.split("\n").filter((line) => line.length > 0);
+          for (let index = records.length - 1; index >= 0; index -= 1) {
+            try {
+              state = classifyNativeTranscriptRecord(
+                transcript,
+                JSON.parse(records[index]),
+              );
+            } catch {
+              continue;
+            }
+            if (state !== null) break;
+          }
+          if (state !== null) {
+            stampNativeTerminalTranscriptEvidence(deps.db, {
+              at: now,
+              nativeSessionId: native.nativeSessionId,
+              threadId,
+            });
+          }
+        }
+      } catch (error) {
+        states.set(threadId, Date.now());
+        deps.logger.debug(
+          { threadId, error },
+          "Native status transcript lookup failed",
+        );
       }
-    } catch (error) {
-      states.set(threadId, Date.now());
-      deps.logger.debug(
-        { threadId, error },
-        "Native status transcript lookup failed",
-      );
-      return;
     }
-  } else if (
-    thread.providerId === "codex" &&
+  }
+  if (
+    state === null &&
     thread.status === "active" &&
     native.nativeSessionId !== null &&
     native.initialPrompt === null &&

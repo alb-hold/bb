@@ -3,10 +3,10 @@ import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { NATIVE_CLAUDE_TRANSCRIPT_TAIL_MAX_BYTES } from "@bb/host-daemon-contract";
-import { readClaudeTranscriptTail } from "./native-transcript.js";
+import { NATIVE_TRANSCRIPT_TAIL_MAX_BYTES } from "@bb/host-daemon-contract";
+import { readTranscriptTail } from "./native-transcript.js";
 
-describe("readClaudeTranscriptTail", () => {
+describe("readTranscriptTail", () => {
   let root: string | undefined;
 
   afterEach(async () => {
@@ -14,29 +14,31 @@ describe("readClaudeTranscriptTail", () => {
     root = undefined;
   });
 
-  it("returns a bounded async tail from the session path and handles missing sessions", async () => {
+  it("resolves a declared assigned transcript pattern and returns a bounded async tail", async () => {
     root = await mkdtemp(join(tmpdir(), "bb-native-transcript-"));
     const command = {
-      type: "native_terminal.read_claude_transcript_tail" as const,
+      type: "native_terminal.read_transcript_tail" as const,
       cwd: "/work/native-status",
-      sessionId: "legacy-session-123",
+      sessionRoot: { env: "FIXTURE_HOME", home: ".fixture" },
+      transcriptPattern: "projects/*/{sessionId}.jsonl",
+      sessionId: "session-123",
     };
-    const options = { shellEnv: { CLAUDE_CONFIG_DIR: root } };
-    expect(await readClaudeTranscriptTail(command, options)).toEqual({
+    const options = { shellEnv: { FIXTURE_HOME: root } };
+    expect(await readTranscriptTail(command, options)).toEqual({
       outcome: "missing",
     });
 
-    const project = join(root, "projects", "-work-native-status");
+    const project = join(root, "projects", "fixture-project");
     await mkdir(project, { recursive: true });
-    const content = "x".repeat(NATIVE_CLAUDE_TRANSCRIPT_TAIL_MAX_BYTES + 12);
+    const content = "x".repeat(NATIVE_TRANSCRIPT_TAIL_MAX_BYTES + 12);
     await writeFile(join(project, command.sessionId + ".jsonl"), content);
-    const result = await readClaudeTranscriptTail(command, options);
+    const result = await readTranscriptTail(command, options);
     expect(result.outcome).toBe("available");
     if (result.outcome !== "available") return;
     expect(result.sizeBytes).toBe(content.length);
     expect(result.truncated).toBe(true);
     expect(Buffer.from(result.contentBase64, "base64").toString()).toBe(
-      content.slice(-NATIVE_CLAUDE_TRANSCRIPT_TAIL_MAX_BYTES),
+      content.slice(-NATIVE_TRANSCRIPT_TAIL_MAX_BYTES),
     );
   });
 });

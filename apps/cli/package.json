@@ -47,5 +47,12 @@
     "tailwindcss": "^4.3.0",
     "tsrs": "0.18.0-ts7.1.0-dev.20260929",
     "typescript": "npm:@typescript/typescript6@^6.0.2"
+  },
+  "exports": {
+    "./native-session-files": {
+      "source": "./src/native-session-files.ts",
+      "types": "./src/native-session-files.ts",
+      "default": "./src/native-session-files.ts"
+    }
   }
 }

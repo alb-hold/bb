@@ -29,6 +29,8 @@ import {
   jsonObjectSchema,
   jsonValueSchema,
   providerNativeRootSetSchema,
+  providerNativeTerminalAssignedSessionSchema,
+  providerNativeTerminalSessionRootSchema,
   providerNativeRootsSchema,
   BRANCH_LIST_LIMIT_MAX,
   BRANCH_LIST_QUERY_MAX_LENGTH,
@@ -446,23 +448,26 @@ export type HostReadFileIfNoneMatch = z.infer<
   typeof hostReadFileIfNoneMatchSchema
 >;
 
-export const NATIVE_CLAUDE_TRANSCRIPT_TAIL_MAX_BYTES = 64 * 1024;
+export const NATIVE_TRANSCRIPT_TAIL_MAX_BYTES = 64 * 1024;
 
-const nativeClaudeTranscriptTailCommandSchema = z
+const nativeTranscriptTailCommandSchema = z
   .object({
-    type: z.literal("native_terminal.read_claude_transcript_tail"),
+    type: z.literal("native_terminal.read_transcript_tail"),
     sessionId: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/u),
+    sessionRoot: providerNativeTerminalSessionRootSchema,
+    transcriptPattern:
+      providerNativeTerminalAssignedSessionSchema.shape.transcript,
     cwd: z.string().min(1).max(4096),
   })
   .strict();
 
-const nativeClaudeTranscriptTailResultSchema = z.discriminatedUnion("outcome", [
+const nativeTranscriptTailResultSchema = z.discriminatedUnion("outcome", [
   z
     .object({
       outcome: z.literal("available"),
       contentBase64: z
         .string()
-        .max(4 * Math.ceil(NATIVE_CLAUDE_TRANSCRIPT_TAIL_MAX_BYTES / 3)),
+        .max(4 * Math.ceil(NATIVE_TRANSCRIPT_TAIL_MAX_BYTES / 3)),
       sizeBytes: z.number().int().nonnegative(),
       truncated: z.boolean(),
     })
@@ -1938,16 +1943,15 @@ export const hostDaemonCommandRegistry = {
     flushEventsBeforeResult: false,
     envLane: null,
   }),
-  "native_terminal.read_claude_transcript_tail":
-    defineHostDaemonCommandDescriptor({
-      type: "native_terminal.read_claude_transcript_tail",
-      schema: nativeClaudeTranscriptTailCommandSchema,
-      resultSchema: nativeClaudeTranscriptTailResultSchema,
-      transport: "onlineRpc",
-      retryable: true,
-      flushEventsBeforeResult: false,
-      envLane: null,
-    }),
+  "native_terminal.read_transcript_tail": defineHostDaemonCommandDescriptor({
+    type: "native_terminal.read_transcript_tail",
+    schema: nativeTranscriptTailCommandSchema,
+    resultSchema: nativeTranscriptTailResultSchema,
+    transport: "onlineRpc",
+    retryable: true,
+    flushEventsBeforeResult: false,
+    envLane: null,
+  }),
   "host.read_file": defineHostDaemonCommandDescriptor({
     type: "host.read_file",
     schema: hostReadFileCommandSchema,
@@ -2179,7 +2183,9 @@ type HostDaemonRetryableOnlineRpcCommandSchema =
 type HostDaemonResultSchemaMapForTransport<
   Transport extends HostDaemonCommandTransport,
 > = {
-  [Descriptor in HostDaemonCommandDescriptorForTransport<Transport> as Descriptor["type"]]: Descriptor["resultSchema"];
+  [
+    Descriptor in HostDaemonCommandDescriptorForTransport<Transport> as Descriptor["type"]
+  ]: Descriptor["resultSchema"];
 };
 
 type HostDaemonCommandResultSchemaMap =
