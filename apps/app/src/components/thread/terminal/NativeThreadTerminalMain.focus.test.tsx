@@ -15,6 +15,12 @@ vi.mock("@bb/shared-ui/hooks/use-media-query", () => ({
 }));
 vi.mock("@/hooks/useNativeActivityUnconfirmed", () => ({
   useNativeActivityUnconfirmed: () => false,
+  useNativeActivityNotice: () => ({
+    evidenceKind: "unknown",
+    lastToolCallAt: null,
+    now: 0,
+    unconfirmed: false,
+  }),
 }));
 vi.mock("@/hooks/queries/native-terminal-queries", () => ({
   useNativeTerminalThread: () => ({ dataUpdatedAt: 1, refetch: vi.fn() }),
@@ -40,6 +46,9 @@ vi.mock("./NativeTerminalPromptBar", () => ({
       <textarea aria-label="Message" />
     </form>
   ),
+}));
+vi.mock("./NativeActivityNotice", () => ({
+  NativeActivityNotice: () => null,
 }));
 vi.mock("./NativeTerminalWaitingBanner", () => ({
   NativeTerminalWaitingBanner: () => null,
