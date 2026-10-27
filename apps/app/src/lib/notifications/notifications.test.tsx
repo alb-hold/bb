@@ -130,6 +130,7 @@ describe("toast history", () => {
     });
 
     const title = await screen.findByText("Sandbox boot failed");
+    expect(pendingSonnerTimeouts.size).toBeGreaterThan(0);
     expect(title.dataset.testid).toBe("app-toast-title");
     expect(
       title
