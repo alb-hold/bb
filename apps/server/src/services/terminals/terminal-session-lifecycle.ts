@@ -2198,7 +2198,14 @@ export class TerminalSessionLifecycle {
 
   private flushAllRetainedOutputForTimer(): void {
     const started = (this.options.retainedOutputTimerClock ?? Date.now)();
+    let appended = false;
     for (const terminalSessionId of [...this.pendingRetainedOutput.keys()]) {
+      if (
+        appended &&
+        (this.options.retainedOutputTimerClock ?? Date.now)() - started >=
+          RETAINED_OUTPUT_TIMER_BUDGET_MS
+      )
+        break;
       if (this.activeTerminalReplays.has(terminalSessionId)) continue;
       try {
         this.flushRetainedOutput(
@@ -2212,11 +2219,7 @@ export class TerminalSessionLifecycle {
           "Failed to retain terminal output",
         );
       }
-      if (
-        (this.options.retainedOutputTimerClock ?? Date.now)() - started >=
-        RETAINED_OUTPUT_TIMER_BUDGET_MS
-      )
-        break;
+      appended = true;
     }
     if (
       [...this.pendingRetainedOutput.keys()].some(

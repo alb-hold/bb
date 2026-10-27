@@ -415,6 +415,122 @@ describe("terminal output retained from the data plane", () => {
     fixture.child.shutdown();
   });
 
+  it("does not start an append after the timer budget while skipping an active replay", async () => {
+    const fixture = await setup();
+    const replayTerminal = createTerminalSession(fixture.db, {
+      cols: 80,
+      environmentId: fixture.environment?.id ?? null,
+      hostId: fixture.host.id,
+      daemonSessionId: fixture.session.id,
+      initialCwd: "/tmp",
+      rows: 24,
+      status: "running",
+      threadId: fixture.thread.id,
+      title: "active replay between retained terminals",
+    });
+    const nextTerminal = createTerminalSession(fixture.db, {
+      cols: 80,
+      environmentId: fixture.environment?.id ?? null,
+      hostId: fixture.host.id,
+      daemonSessionId: fixture.session.id,
+      initialCwd: "/tmp",
+      rows: 24,
+      status: "running",
+      threadId: fixture.thread.id,
+      title: "pending after active replay",
+    });
+    const lifecycle = fixture.terminalSessions as unknown as {
+      activeTerminalReplays: {
+        has(terminalSessionId: string): boolean;
+      };
+      beginTerminalReplay(terminalSessionId: string): void;
+      flushAllRetainedOutputForTimer(): void;
+      flushRetainedOutput(
+        terminalSessionId: string,
+        maxChunks?: number,
+        stopAfterAppend?: boolean,
+      ): void;
+      options: Record<string, unknown>;
+    };
+    const scheduled: Array<() => void> = [];
+    let now = 0;
+    lifecycle.options.retainedOutputTimerClock = () => now;
+    lifecycle.options.retainedOutputTimerScheduler = (callback: () => void) =>
+      scheduled.push(callback);
+    const originalFlushRetainedOutput =
+      lifecycle.flushRetainedOutput.bind(lifecycle);
+    lifecycle.flushRetainedOutput = (
+      terminalSessionId,
+      maxChunks,
+      stopAfterAppend,
+    ) => {
+      originalFlushRetainedOutput(
+        terminalSessionId,
+        maxChunks,
+        stopAfterAppend,
+      );
+      if (terminalSessionId === fixture.terminal.id) now = 49;
+    };
+    const originalHas = vi.fn(
+      lifecycle.activeTerminalReplays.has.bind(lifecycle.activeTerminalReplays),
+    );
+    lifecycle.activeTerminalReplays.has = (terminalSessionId) => {
+      if (terminalSessionId === replayTerminal.id) now = 51;
+      return originalHas(terminalSessionId);
+    };
+    const firstChunks = Array.from({ length: 33 }, (_, seq) => ({
+      seq,
+      dataBase64: Buffer.from(`first-${seq}`).toString("base64"),
+    }));
+    const replayChunks = [{
+      seq: 0,
+      dataBase64: Buffer.from("replay").toString("base64"),
+    }];
+    const nextChunks = [{
+      seq: 0,
+      dataBase64: Buffer.from("next").toString("base64"),
+    }];
+    fixture.terminalSessions.recordDirectTerminalOutputBatch({
+      daemonSessionId: fixture.session.id,
+      terminalId: fixture.terminal.id,
+      chunks: firstChunks,
+    });
+    fixture.terminalSessions.recordDirectTerminalOutputBatch({
+      daemonSessionId: fixture.session.id,
+      terminalId: replayTerminal.id,
+      chunks: replayChunks,
+    });
+    lifecycle.beginTerminalReplay(replayTerminal.id);
+    fixture.terminalSessions.recordDirectTerminalOutputBatch({
+      daemonSessionId: fixture.session.id,
+      terminalId: nextTerminal.id,
+      chunks: nextChunks,
+    });
+
+    try {
+      lifecycle.flushAllRetainedOutputForTimer();
+
+      expect(
+        getRetainedTerminalOutput(fixture.db, {
+          hostId: fixture.host.id,
+          terminalSessionId: fixture.terminal.id,
+          now: Date.now(),
+        })?.map(({ seq }) => seq),
+      ).toEqual(firstChunks.slice(0, 32).map(({ seq }) => seq));
+      expect(
+        getRetainedTerminalOutput(fixture.db, {
+          hostId: fixture.host.id,
+          terminalSessionId: nextTerminal.id,
+          now: Date.now(),
+        })?.map(({ seq }) => seq) ?? [],
+      ).toEqual([]);
+      expect(scheduled).toHaveLength(1);
+      expect(originalHas).toHaveBeenCalledWith(replayTerminal.id);
+    } finally {
+      fixture.child.shutdown();
+    }
+  });
+
   it("yields one append per shared continuation and rotates three terminals", async () => {
     const fixture = await setup();
     const secondHostSession = seedHostSession(fixture.harness.deps);
