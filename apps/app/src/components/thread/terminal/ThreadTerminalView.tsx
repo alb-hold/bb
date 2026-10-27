@@ -1614,6 +1614,7 @@ export function ThreadTerminalView({
       containerElement: container,
     });
     let terminalVisible: boolean | null = null;
+    let hasReceivedInitialAttach = false;
     let lastParsedOutputNextSeq = 0;
     const reportDocumentVisibility = () => {
       if (
@@ -1629,7 +1630,7 @@ export function ThreadTerminalView({
       if (wasVisible === nextVisible) return;
       terminalVisible = nextVisible;
       transport?.setVisible(nextVisible);
-      if (wasVisible === false && nextVisible) {
+      if (wasVisible === false && nextVisible && hasReceivedInitialAttach) {
         transport?.replayOutputFrom(lastParsedOutputNextSeq);
       }
     };
@@ -2188,6 +2189,7 @@ export function ThreadTerminalView({
             message.type === "session-updated"
           ) {
             if (message.type === "attached") {
+              hasReceivedInitialAttach = true;
               lastParsedOutputNextSeq = message.replayStartSeq;
             }
             const { cols, rows } = message.session;
