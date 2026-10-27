@@ -39,6 +39,7 @@ const testState = vi.hoisted(() => ({
 }));
 
 class TestTerminalSocket {
+  readonly protocol = "bb.terminal.resize-echo.v1";
   static readonly CLOSED = 3;
   static readonly CONNECTING = 0;
   static readonly OPEN = 1;

@@ -17,6 +17,7 @@ import {
   INSTALL_MACHINE_WINDOWS_SCRIPT_PATH,
 } from "./install-machine-asset.js";
 import { createNodeWebSocket } from "@hono/node-ws";
+import { TERMINAL_RESIZE_ECHO_WEBSOCKET_PROTOCOL } from "@bb/server-contract";
 import { createGateKeyStore } from "./services/connect-next/gate-keys.js";
 import {
   createTunnelIngressManager,
@@ -498,6 +499,10 @@ export function createApp(
   const { injectWebSocket, upgradeWebSocket, wss } = createNodeWebSocket({
     app,
   });
+  wss.options.handleProtocols = (protocols) =>
+    protocols.has(TERMINAL_RESIZE_ECHO_WEBSOCKET_PROTOCOL)
+      ? TERMINAL_RESIZE_ECHO_WEBSOCKET_PROTOCOL
+      : (protocols.values().next().value ?? false);
   const tunnelIngressNow = options?.tunnelIngressNow ?? Date.now;
   const tunnelIngress = createTunnelIngressManager({
     app,
@@ -1068,6 +1073,8 @@ export function createApp(
             outputAcks: query.data.outputAcks,
             handoffOwnerToken: query.data.handoffOwnerToken,
             resizeAcks: query.data.resizeAcks,
+            resizeSeqEcho:
+              socket.protocol === TERMINAL_RESIZE_ECHO_WEBSOCKET_PROTOCOL,
             socket,
             sinceSeq: query.data.sinceSeq,
             terminalId,

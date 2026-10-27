@@ -16,6 +16,7 @@ class FakeTerminalBrowserSocket implements TerminalBrowserSocket {
   onerror: ((event: Event) => void) | null = null;
   onmessage: ((event: MessageEvent) => void) | null = null;
   onopen: ((event: Event) => void) | null = null;
+  protocol = "bb.terminal.resize-echo.v1";
   readyState = 0;
   readonly sent: string[] = [];
   throwOnSend = false;
@@ -51,6 +52,7 @@ class FakeTerminalBrowserSocket implements TerminalBrowserSocket {
 interface TransportHarness {
   messages: TerminalServerMessage[];
   overflow: ReturnType<typeof vi.fn<(maxBytes: number) => void>>;
+  protocols: string[][];
   sockets: FakeTerminalBrowserSocket[];
   states: TerminalSocketConnectionState[];
   transport: TerminalWebSocketTransport;
@@ -67,10 +69,12 @@ function createHarness(
   const states: TerminalSocketConnectionState[] = [];
   const overflow = vi.fn<(maxBytes: number) => void>();
   const urls: string[] = [];
+  const protocols: string[][] = [];
   const transport = new TerminalWebSocketTransport({
     terminalId: "term_1",
-    createSocket: (url) => {
+    createSocket: (url, offeredProtocols) => {
       urls.push(url);
+      protocols.push(offeredProtocols);
       const socket = new FakeTerminalBrowserSocket();
       sockets.push(socket);
       return socket;
@@ -85,7 +89,7 @@ function createHarness(
     url: "ws://example.test/ws/terminals/term-1",
     ...overrides,
   });
-  return { messages, overflow, sockets, states, transport, urls };
+  return { messages, overflow, protocols, sockets, states, transport, urls };
 }
 
 function terminalSession(): TerminalSession {
@@ -669,12 +673,14 @@ describe("TerminalWebSocketTransport", () => {
       cols: number,
       rows: number,
       overrides: Parameters<typeof createHarness>[0] = {},
+      protocol = "bb.terminal.resize-echo.v1",
     ) {
       vi.useFakeTimers();
       const harness = createHarness(overrides);
       harness.transport.sendResize(cols, rows);
       harness.transport.start();
       const socket = harness.sockets[0]!;
+      socket.protocol = protocol;
       socket.open();
       harness.transport.markLayoutSettled();
       return { harness, socket };
@@ -761,6 +767,39 @@ describe("TerminalWebSocketTransport", () => {
       expect(
         harness.transport.consumeRepaintNudgeEcho({ cols: 99, rows: 30 }),
       ).toBe(false);
+      harness.transport.dispose();
+    });
+
+    it("does not nudge when an old server selects only the legacy websocket protocol", async () => {
+      const { harness, socket } = openHarness(
+        100,
+        30,
+        {},
+        "bb.terminal.v1",
+      );
+      socket.receive({ type: "features", resizeAcks: true });
+
+      harness.transport.requestRepaint();
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(socket.sent).toEqual([
+        JSON.stringify({ type: "resize", cols: 100, rows: 30 }),
+      ]);
+      expect(
+        harness.transport.consumeRepaintNudgeEcho({ cols: 99, rows: 30 }),
+      ).toBe(false);
+      harness.transport.dispose();
+    });
+
+    it("offers the resize echo protocol after the legacy protocol for old servers", () => {
+      const harness = createHarness();
+      harness.transport.start();
+
+      expect(harness.urls).toHaveLength(1);
+      expect(harness.protocols[0]).toEqual([
+        "bb.terminal.v1",
+        "bb.terminal.resize-echo.v1",
+      ]);
       harness.transport.dispose();
     });
 

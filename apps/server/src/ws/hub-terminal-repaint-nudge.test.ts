@@ -64,8 +64,10 @@ function createRoom(): TwoClientRoom {
   const queued: unknown[] = [];
 
   const browserSocket: TerminalBrowserSocket & {
+    readonly protocol: string;
     deliver: (message: unknown) => void;
   } = {
+    protocol: "bb.terminal.resize-echo.v1",
     onclose: null,
     onerror: null,
     onmessage: null,

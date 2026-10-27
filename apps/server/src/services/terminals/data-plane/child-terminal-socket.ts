@@ -51,6 +51,7 @@ export class ChildTerminalSocket {
     private readonly sink: ChildTerminalSocketSink,
     readonly outputAcks: boolean,
     readonly resizeAcks: boolean,
+    readonly resizeSeqEcho: boolean,
   ) {}
 
   get isClosed(): boolean {

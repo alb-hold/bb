@@ -1,5 +1,7 @@
 import { getTerminalBase64DecodedByteLength } from "@bb/domain";
 import {
+  TERMINAL_LEGACY_WEBSOCKET_PROTOCOL,
+  TERMINAL_RESIZE_ECHO_WEBSOCKET_PROTOCOL,
   terminalServerMessageSchema,
   type TerminalServerMessage,
 } from "@bb/server-contract";
@@ -27,12 +29,14 @@ export interface TerminalBrowserSocket {
   onerror: ((event: Event) => void) | null;
   onmessage: ((event: MessageEvent) => void) | null;
   onopen: ((event: Event) => void) | null;
+  readonly protocol?: string;
   readonly readyState: number;
   send(data: string): void;
 }
 
 export type CreateTerminalBrowserSocket = (
   url: string,
+  protocols: string[],
 ) => TerminalBrowserSocket;
 
 function repaintNudgeSize(size: {
@@ -58,6 +62,13 @@ function terminalSocketUrl(url: string, sinceSeq: number): string {
   parsed.searchParams.set("outputAcks", "1");
   parsed.searchParams.set("resizeAcks", "1");
   return parsed.toString();
+}
+
+function terminalSocketProtocols(): string[] {
+  return [
+    TERMINAL_LEGACY_WEBSOCKET_PROTOCOL,
+    TERMINAL_RESIZE_ECHO_WEBSOCKET_PROTOCOL,
+  ];
 }
 
 interface RepaintNudgeInFlight {
@@ -135,8 +146,10 @@ export class TerminalWebSocketTransport {
   private ackedResizeSeq = 0;
   private nextResizeSeq = 0;
   private resizeAcksConfirmed = false;
+  private resizeEchoSeqConfirmed = false;
   private repaintNudgeInFlight: RepaintNudgeInFlight | null = null;
   private repaintTimeout: ReturnType<typeof setTimeout> | null = null;
+  private repaintRestoreRetryTimeout: ReturnType<typeof setTimeout> | null = null;
   private settleTimeout: ReturnType<typeof setTimeout> | null = null;
   private socket: TerminalBrowserSocket | null = null;
   private terminalEnded = false;
@@ -144,7 +157,8 @@ export class TerminalWebSocketTransport {
   private visibilityReported = false;
 
   constructor(private readonly options: TerminalWebSocketTransportOptions) {
-    this.createSocket = options.createSocket ?? ((url) => new WebSocket(url));
+    this.createSocket =
+      options.createSocket ?? ((url, protocols) => new WebSocket(url, protocols));
     this.drainPollMs = options.drainPollMs ?? DEFAULT_DRAIN_POLL_MS;
     this.heartbeatIntervalMs =
       options.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS;
@@ -353,6 +367,9 @@ export class TerminalWebSocketTransport {
   }
 
   requestRepaint(): void {
+    if (!this.resizeEchoSeqConfirmed) {
+      return;
+    }
     if (this.settleTimeout !== null) {
       this.repaintRequestedWhileSettling = true;
       return;
@@ -493,6 +510,7 @@ export class TerminalWebSocketTransport {
     try {
       socket = this.createSocket(
         terminalSocketUrl(this.options.url, this.nextOutputSeq),
+        terminalSocketProtocols(),
       );
     } catch {
       this.scheduleReconnect();
@@ -502,6 +520,7 @@ export class TerminalWebSocketTransport {
     this.ackedResizeSeq = 0;
     this.nextResizeSeq = 0;
     this.resizeAcksConfirmed = false;
+    this.resizeEchoSeqConfirmed = false;
     this.resizeReportedAfterLayoutSettle = false;
     this.repaintNudgeInFlight = null;
     socket.onopen = () => this.handleOpen(socket);
@@ -515,6 +534,8 @@ export class TerminalWebSocketTransport {
       return;
     }
     this.lastPongAt = this.now();
+    this.resizeEchoSeqConfirmed =
+      socket.protocol === TERMINAL_RESIZE_ECHO_WEBSOCKET_PROTOCOL;
     this.startHeartbeat(socket);
     if (this.visibilityReported) {
       this.trySend(

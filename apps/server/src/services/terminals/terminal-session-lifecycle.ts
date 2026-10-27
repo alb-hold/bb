@@ -241,6 +241,7 @@ interface AttachBrowserTerminalArgs {
   handoffOwnerToken?: string;
   outputAcks: boolean;
   resizeAcks: boolean;
+  resizeSeqEcho?: boolean;
   socket: TerminalClientSocket;
   sinceSeq: number;
   terminalId: string;
@@ -849,6 +850,7 @@ export class TerminalSessionLifecycle {
     boolean
   >();
   private readonly resizeAckSockets = new WeakSet<TerminalClientSocket>();
+  private readonly resizeSeqEchoSockets = new WeakSet<TerminalClientSocket>();
   private readonly outputFlow: TerminalOutputFlowControl;
   private readonly outputSequenceRebase = new TerminalOutputSequenceRebase();
   private readonly pendingHolderMarkers = new Set<string>();
@@ -2709,6 +2711,9 @@ export class TerminalSessionLifecycle {
         resizeAcks: true,
       });
     }
+    if (args.resizeSeqEcho) {
+      this.resizeSeqEchoSockets.add(args.socket);
+    }
     const current = this.getBrowserTerminalSession({
       ...args,
       reportMissing: false,
@@ -3656,7 +3661,7 @@ export class TerminalSessionLifecycle {
         const tagResizeEcho =
           args.socket !== null &&
           resizeSeq !== undefined &&
-          this.resizeAckSockets.has(args.socket);
+          this.resizeSeqEchoSockets.has(args.socket);
         if (tagResizeEcho && args.socket !== null && resizeSeq !== undefined) {
           this.options.hub.sendTerminalClientMessage(
             resized.id,

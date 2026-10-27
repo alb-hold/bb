@@ -36,6 +36,7 @@ export interface DataPlaneLifecyclePort {
     handoffOwnerToken?: string;
     outputAcks: boolean;
     resizeAcks: boolean;
+    resizeSeqEcho: boolean;
     sinceSeq: number;
     socket: ChildTerminalSocket;
     terminalId: string;
@@ -61,6 +62,7 @@ export interface DataPlaneLifecyclePort {
 interface PendingAttach {
   outputAcks: boolean;
   resizeAcks: boolean;
+  resizeSeqEcho: boolean;
   sinceSeq: number;
   terminalId: string;
 }
@@ -71,6 +73,7 @@ export interface DataPlaneAttachArgs {
   handoffOwnerToken?: string;
   outputAcks: boolean;
   resizeAcks: boolean;
+  resizeSeqEcho: boolean;
   request: TerminalDataPlaneHandoffRequest;
   sequenceBase: number;
   sinceSeq: number;
@@ -109,6 +112,7 @@ export class TerminalDataPlaneRouter implements ChildTerminalSocketSink {
     this.pending.set(attachId, {
       outputAcks: args.outputAcks,
       resizeAcks: args.resizeAcks,
+      resizeSeqEcho: args.resizeSeqEcho,
       sinceSeq: args.sinceSeq,
       terminalId: args.terminalId,
     });
@@ -389,6 +393,7 @@ export class TerminalDataPlaneRouter implements ChildTerminalSocketSink {
       this,
       pending.outputAcks,
       pending.resizeAcks,
+      pending.resizeSeqEcho,
     );
     this.socketsByAttachId.set(attachId, socket);
     const ids = this.attachIdsByTerminalId.get(pending.terminalId) ?? new Set();
@@ -398,6 +403,7 @@ export class TerminalDataPlaneRouter implements ChildTerminalSocketSink {
       handoffOwnerToken: this.handoffOwnerTokensByAttachId.get(attachId),
       outputAcks: pending.outputAcks,
       resizeAcks: pending.resizeAcks,
+      resizeSeqEcho: pending.resizeSeqEcho,
       sinceSeq: pending.sinceSeq,
       socket,
       terminalId: pending.terminalId,
@@ -433,12 +439,14 @@ export class TerminalDataPlaneRouter implements ChildTerminalSocketSink {
       this,
       socket.outputAcks,
       socket.resizeAcks,
+      socket.resizeSeqEcho,
     );
     this.socketsByAttachId.set(attachId, fresh);
     this.lifecycle.attach({
       handoffOwnerToken: this.handoffOwnerTokensByAttachId.get(attachId),
       outputAcks: fresh.outputAcks,
       resizeAcks: fresh.resizeAcks,
+      resizeSeqEcho: fresh.resizeSeqEcho,
       sinceSeq: fromSeq,
       socket: fresh,
       terminalId,

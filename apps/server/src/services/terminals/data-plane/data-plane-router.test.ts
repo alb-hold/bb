@@ -92,6 +92,7 @@ function createFixture() {
       handoffOwnerToken,
       outputAcks: true,
       resizeAcks: false,
+      resizeSeqEcho: false,
       request,
       sequenceBase: 0,
       sinceSeq: 0,
@@ -164,6 +165,7 @@ describe("TerminalDataPlaneRouter", () => {
         daemonSessionId: "ds_1",
         outputAcks: false,
         resizeAcks: false,
+        resizeSeqEcho: false,
         sequenceBase: 0,
         request:
           fixture.sent[0]?.message.type === "browser.attach"
