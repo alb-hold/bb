@@ -16,7 +16,10 @@ import {
   INSTALL_MACHINE_SCRIPT_PATH,
   INSTALL_MACHINE_WINDOWS_SCRIPT_PATH,
 } from "./install-machine-asset.js";
-import { createNodeWebSocket } from "@hono/node-ws";
+import { defineWebSocketHelper } from "hono/ws";
+import { WebSocketServer, type WebSocket } from "ws";
+import { STATUS_CODES } from "node:http";
+import type { ServerType } from "@hono/node-server";
 import { TERMINAL_RESIZE_ECHO_WEBSOCKET_PROTOCOL } from "@bb/server-contract";
 import { createGateKeyStore } from "./services/connect-next/gate-keys.js";
 import {
@@ -28,6 +31,7 @@ import { readFile, stat } from "node:fs/promises";
 import { performance } from "node:perf_hooks";
 import { extname, join, resolve } from "node:path";
 import { Hono } from "hono";
+import type { WSContext, WSReadyState } from "hono/ws";
 import { terminalWebSocketQuerySchema } from "@bb/server-contract";
 import { compress } from "hono/compress";
 import { cors } from "hono/cors";
@@ -166,13 +170,13 @@ import {
 } from "./services/server-move/pending-boot.js";
 
 type CloseWebSockets = () => Promise<void>;
-type NodeWebSocketServer = ReturnType<typeof createNodeWebSocket>["wss"];
+type NodeWebSocketServer = WebSocketServer;
 type WebSocketCloseError = Error | undefined;
 
 interface ServerApp {
   app: Hono;
   closeWebSockets: CloseWebSockets;
-  injectWebSocket: ReturnType<typeof createNodeWebSocket>["injectWebSocket"];
+  injectWebSocket: (server: ServerType) => void;
   pluginService: PluginService;
   pluginCatalogService: PluginCatalogService;
   serverMove: ServerMoveCoordinator;
@@ -491,18 +495,141 @@ const nativeExitHandlingRegistered = new WeakSet<
   ServerAppDeps["terminalSessions"]
 >();
 
+function createServerWebSocket(app: Hono) {
+  const connectionSymbol = Symbol("connection");
+  const waiters = new Map<
+    import("node:http").IncomingMessage,
+    { resolve: (socket: WebSocket) => void }
+  >();
+  const wss = new WebSocketServer({
+    handleProtocols: (
+      protocols: Set<string>,
+      _request: import("node:http").IncomingMessage,
+    ) =>
+      protocols.has(TERMINAL_RESIZE_ECHO_WEBSOCKET_PROTOCOL)
+        ? TERMINAL_RESIZE_ECHO_WEBSOCKET_PROTOCOL
+        : (protocols.values().next().value ?? false),
+    noServer: true,
+  });
+  wss.on("connection", (socket, request) => {
+    waiters.get(request)?.resolve(socket);
+    waiters.delete(request);
+  });
+  const upgradeWebSocket = defineWebSocketHelper<
+    WebSocket,
+    { onError: (error: unknown) => void }
+  >(async (context, events, options) => {
+    if (context.req.header("upgrade")?.toLowerCase() !== "websocket") {
+      return;
+    }
+    const request = context.env.incoming as import("node:http").IncomingMessage;
+    context.env[connectionSymbol] = true;
+    const socketPromise = new Promise<WebSocket>((resolve) => {
+      waiters.set(request, { resolve });
+    });
+    void (async () => {
+      const socket = await socketPromise;
+      const buffered: Array<[Buffer, boolean]> = [];
+      const bufferMessage = (data: Buffer, isBinary: boolean) => {
+        buffered.push([data, isBinary]);
+      };
+      socket.on("message", bufferMessage);
+      const socketContext: WSContext<WebSocket> = {
+        binaryType: "arraybuffer" as const,
+        close: (code?: number, reason?: string) => socket.close(code, reason),
+        protocol: socket.protocol,
+        raw: socket,
+        get readyState() {
+          return socket.readyState as WSReadyState;
+        },
+        send: (
+          source: string | ArrayBuffer | Uint8Array,
+          sendOptions?: { compress?: boolean },
+        ) => socket.send(source, { compress: sendOptions?.compress }),
+        url: new URL(context.req.url),
+      };
+      try {
+        events?.onOpen?.(new Event("open"), socketContext);
+      } catch (error) {
+        (options?.onError ?? console.error)(error);
+      }
+      const handleMessage = (data: Buffer, isBinary: boolean) => {
+        const message = isBinary
+          ? data.buffer.slice(
+              data.byteOffset,
+              data.byteOffset + data.byteLength,
+            )
+          : data.toString("utf8");
+        try {
+          events?.onMessage?.(
+            new MessageEvent("message", { data: message }),
+            socketContext,
+          );
+        } catch (error) {
+          (options?.onError ?? console.error)(error);
+        }
+      };
+      socket.off("message", bufferMessage);
+      buffered.forEach(([data, isBinary]) => handleMessage(data, isBinary));
+      socket.on("message", handleMessage);
+      socket.on("close", (code: number, reason: Buffer) => {
+        try {
+          events?.onClose?.(
+            new CloseEvent("close", { code, reason: reason.toString() }),
+            socketContext,
+          );
+        } catch (error) {
+          (options?.onError ?? console.error)(error);
+        }
+      });
+      socket.on("error", (error) => {
+        try {
+          events?.onError?.(new ErrorEvent("error", { error }), socketContext);
+        } catch (eventError) {
+          (options?.onError ?? console.error)(eventError);
+        }
+      });
+    })();
+    return new Response();
+  });
+  return {
+    injectWebSocket(server: ServerType) {
+      server.on("upgrade", async (request, socket, head) => {
+        const url = new URL(request.url ?? "/", "http://localhost");
+        const headers = new Headers();
+        for (const key in request.headers) {
+          const value = request.headers[key];
+          if (value)
+            headers.append(key, Array.isArray(value) ? value[0]! : value);
+        }
+        const env: Record<PropertyKey, unknown> & {
+          incoming: typeof request;
+          outgoing: undefined;
+        } = { incoming: request, outgoing: undefined };
+        const response = await app.request(url, { headers }, env);
+        if (!waiters.has(request) || !env[connectionSymbol]) {
+          socket.end(
+            `HTTP/1.1 ${response.status} ${STATUS_CODES[response.status] ?? ""}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`,
+          );
+          waiters.delete(request);
+          return;
+        }
+        wss.handleUpgrade(request, socket, head, (webSocket) => {
+          wss.emit("connection", webSocket, request);
+        });
+      });
+    },
+    upgradeWebSocket,
+    wss,
+  };
+}
+
 export function createApp(
   deps: ServerAppDeps,
   options?: CreateAppOptions,
 ): ServerApp {
   const app = new Hono();
-  const { injectWebSocket, upgradeWebSocket, wss } = createNodeWebSocket({
-    app,
-  });
-  wss.options.handleProtocols = (protocols) =>
-    protocols.has(TERMINAL_RESIZE_ECHO_WEBSOCKET_PROTOCOL)
-      ? TERMINAL_RESIZE_ECHO_WEBSOCKET_PROTOCOL
-      : (protocols.values().next().value ?? false);
+  const { injectWebSocket, upgradeWebSocket, wss } = createServerWebSocket(app);
   const tunnelIngressNow = options?.tunnelIngressNow ?? Date.now;
   const tunnelIngress = createTunnelIngressManager({
     app,
