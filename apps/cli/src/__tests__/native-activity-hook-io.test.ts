@@ -743,17 +743,28 @@ describe.skipIf(process.platform === "win32")(
 describe.skipIf(process.platform === "win32")(
   `the append fallback, used only when no candidate directory supports links ${platformNote}`,
   () => {
-    function appendFixture() {
+    function appendFixture(idleEvents?: string[]) {
       const cli = claudeDeclaration();
       const hooks = cli.activity?.hooks;
       if (hooks === undefined) throw new Error("Claude hooks missing");
+      const fixtureHooks =
+        idleEvents === undefined ? hooks : { ...hooks, idle: idleEvents };
+      const fixtureCli =
+        idleEvents === undefined
+          ? cli
+          : {
+              ...cli,
+              activity: { ...cli.activity, hooks: fixtureHooks },
+            };
       const directory = createHookSpool(os.tmpdir(), "append-test");
       spools.push(directory);
       const file = path.join(directory, "hooks.jsonl");
       writeFileSync(file, "", { mode: 0o600 });
       const settings: {
         hooks: Record<string, { hooks: { command: string }[] }[]>;
-      } = JSON.parse(nativeActivityHookSettings(hooks, { appendFile: file }));
+      } = JSON.parse(
+        nativeActivityHookSettings(fixtureHooks, { appendFile: file }),
+      );
       const commandFor = (event: string): string => {
         const command = settings.hooks[event]?.[0]?.hooks[0]?.command;
         if (command === undefined)
@@ -762,7 +773,7 @@ describe.skipIf(process.platform === "win32")(
       };
       const unconfirmed: Array<{ reason: string; total: number }> = [];
       const reader = new NativeActivityReader(
-        cli,
+        fixtureCli,
         { HOME: os.tmpdir() },
         { appendFile: file },
         { kind: "start", id: SESSION_ID },
@@ -2078,6 +2089,34 @@ describe.skipIf(process.platform === "win32")(
         { reason: "superseded-late-record", total: 2 },
       ]);
       expect(reader.heartbeat()).toBeNull();
+    });
+
+    it("keeps the thread idle when late working and permission records predate the last clear", () => {
+      const { directory, file, reader, unconfirmed } = appendFixture(["Stop"]);
+      appendFileSync(
+        file,
+        `30\t${record("UserPromptSubmit", { prompt: "current" })}\n`,
+      );
+      expect(reader.read()).toEqual([{ state: "working", prompt: "current" }]);
+      appendFileSync(file, `31\t${record("Stop")}\n`);
+      expect(reader.read()).toEqual([{ state: "idle", prompt: null }]);
+      expect(reader.heartbeat()).toBeNull();
+
+      const startedAt = Math.floor(Date.now() / 1000);
+      writeFileSync(
+        path.join(directory, `.late.101.${startedAt}.30`),
+        record("UserPromptSubmit", { prompt: "stale work" }),
+      );
+      writeFileSync(
+        path.join(directory, `.late.102.${startedAt}.31`),
+        record("PermissionRequest", { tool_name: "Stale" }),
+      );
+
+      expect(reader.read()).toEqual([]);
+      expect(reader.heartbeat()).toBeNull();
+      expect(unconfirmed).toEqual([
+        { reason: "superseded-late-record", total: 2 },
+      ]);
     });
 
     it("keeps .lost only for a hook that cannot even write its late file, and the reader counts it at once", async () => {
