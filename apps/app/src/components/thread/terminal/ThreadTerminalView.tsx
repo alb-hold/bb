@@ -1630,7 +1630,9 @@ export function ThreadTerminalView({
       dispose(): void;
       resize(cols: number, rows: number): Promise<void>;
       setFitGrid(cols: number, rows: number): void;
+      setLatestPtyGrid(cols: number, rows: number): void;
       setPtyGrid(cols: number, rows: number): void;
+      processExited(): void;
       push(bytes: Uint8Array, callback: () => void): void;
     } | null = null;
     let outputPipeline: ReturnType<typeof createTerminalOutputPipeline> | null =
@@ -2228,6 +2230,9 @@ export function ThreadTerminalView({
               scheduleFit();
             } else {
               replayPreview?.resize(cols, rows);
+            }
+            if (message.session.status === "exited") {
+              replayPreview?.processExited();
             }
             if (message.type === "session-updated" && !markerGridActive) {
               if (outputPipeline) {

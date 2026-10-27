@@ -10,11 +10,15 @@ import {
 } from "./terminal-grid-presentation";
 
 export function updateTerminalReplayPreviewPtyGrid(
-  preview: { setPtyGrid(cols: number, rows: number): void } | null,
+  preview: {
+    setLatestPtyGrid(cols: number, rows: number): void;
+    setPtyGrid(cols: number, rows: number): void;
+  } | null,
   grid: TerminalGrid,
   apply: boolean,
 ): void {
   if (apply) preview?.setPtyGrid(grid.cols, grid.rows);
+  else preview?.setLatestPtyGrid(grid.cols, grid.rows);
 }
 
 export function mountTerminalReplayPreview({
@@ -31,7 +35,9 @@ export function mountTerminalReplayPreview({
   dispose(): void;
   resize(cols: number, rows: number): Promise<void>;
   setPtyGrid(cols: number, rows: number): void;
+  setLatestPtyGrid(cols: number, rows: number): void;
   setFitGrid(cols: number, rows: number): void;
+  processExited(): void;
   push(bytes: Uint8Array, callback: () => void): void;
 } {
   const parent = container.parentElement;
@@ -39,6 +45,7 @@ export function mountTerminalReplayPreview({
 
   const previousOpacity = container.style.opacity;
   const previousContainerType = container.style.containerType;
+  const snapshotGrid = { cols: terminal.cols, rows: terminal.rows };
   container.style.containerType = "inline-size";
   const preview = document.createElement("div");
   const focusedElement = document.activeElement;
@@ -49,6 +56,7 @@ export function mountTerminalReplayPreview({
     position: "absolute",
     inset: "0 16px 0 0",
     overflow: "hidden",
+    overflowX: "hidden",
     paddingLeft: "0.5rem",
     pointerEvents: "none",
     zIndex: "5",
@@ -67,6 +75,15 @@ export function mountTerminalReplayPreview({
   }
   let fitGrid = initialFitGrid;
   let latestPtyGrid = { cols: terminal.cols, rows: terminal.rows };
+  let shown = false;
+  let snapshotWriteFinished = false;
+  let authoritativeGridAvailable = false;
+  let handoffRequested = false;
+  let pendingWrites: Array<{ bytes: Uint8Array; callback: () => void }> = [];
+  let pendingBytes = 0;
+  let handoffDeadlineFrame: number | null = null;
+  let handoffDeadline: number | null = null;
+  const pendingBytesLimit = 256 * 1024;
   let surfaceScale =
     fitGrid === null ? 1 : terminalSurfaceScale(latestPtyGrid, fitGrid);
   const detachPointerCoordinates = terminal.element
@@ -78,7 +95,10 @@ export function mountTerminalReplayPreview({
     if (fitGrid === null) return;
     const wasVisible = preview.style.visibility === "visible";
     preview.style.visibility = "hidden";
-    surfaceScale = terminalSurfaceScale(latestPtyGrid, fitGrid);
+    surfaceScale = terminalSurfaceScale(
+      { cols: terminal.cols, rows: terminal.rows },
+      fitGrid,
+    );
     if (terminal.element) {
       applyTerminalSurfaceScale(terminal.element, surfaceScale);
     }
@@ -108,57 +128,153 @@ export function mountTerminalReplayPreview({
   window.addEventListener("resize", updateSurfaceScale);
   const updateVisibility = () => {
     updateSurfaceScale();
+    const localGridReady =
+      fitGrid !== null &&
+      terminal.cols === snapshotGrid.cols &&
+      terminal.rows >= snapshotGrid.rows &&
+      terminal.rows >= fitGrid.rows;
     preview.style.visibility =
       fitGrid !== null &&
-      canRevealTerminalSurface({
-        fitGrid,
-        isOwner: isOwner(),
-        ptyGrid: latestPtyGrid,
-        rendererGrid: { cols: terminal.cols, rows: terminal.rows },
-      })
+      (shown ||
+        localGridReady ||
+        canRevealTerminalSurface({
+          fitGrid,
+          isOwner: isOwner(),
+          ptyGrid: latestPtyGrid,
+          rendererGrid: { cols: terminal.cols, rows: terminal.rows },
+        }))
         ? "visible"
         : "hidden";
+    if (preview.style.visibility === "visible") shown = true;
   };
   const refreshVisibility = () => updateVisibility();
+  const flushPendingWrites = () => {
+    if (disposed || !snapshotWriteFinished || !authoritativeGridAvailable) {
+      return;
+    }
+    const writes = pendingWrites.splice(0);
+    pendingBytes = 0;
+    for (const write of writes) {
+      outputPipeline.push(write.bytes, write.callback);
+    }
+  };
+  const clearHandoffDeadline = () => {
+    if (handoffDeadlineFrame !== null) {
+      window.cancelAnimationFrame(handoffDeadlineFrame);
+      handoffDeadlineFrame = null;
+    }
+    if (handoffDeadline !== null) {
+      window.clearTimeout(handoffDeadline);
+      handoffDeadline = null;
+    }
+  };
+  const handoffAtLatestGrid = () => {
+    if (disposed || authoritativeGridAvailable || handoffRequested) return;
+    handoffRequested = true;
+    clearHandoffDeadline();
+    const handoffGrid = {
+      cols: latestPtyGrid.cols,
+      rows: Math.max(latestPtyGrid.rows, terminal.rows),
+    };
+    outputPipeline.setGrid(handoffGrid.cols, handoffGrid.rows, () => {
+      if (disposed) return;
+      preview.dataset.gridCols = String(handoffGrid.cols);
+      preview.dataset.gridRows = String(handoffGrid.rows);
+      authoritativeGridAvailable = true;
+      updateVisibility();
+      flushPendingWrites();
+    });
+  };
+  const startHandoffDeadline = () => {
+    if (
+      disposed ||
+      authoritativeGridAvailable ||
+      handoffRequested ||
+      handoffDeadlineFrame !== null ||
+      handoffDeadline !== null
+    ) {
+      return;
+    }
+    handoffDeadlineFrame = window.requestAnimationFrame(() => {
+      handoffDeadlineFrame = null;
+      handoffDeadline = window.setTimeout(handoffAtLatestGrid, 500);
+    });
+  };
   document.addEventListener("focusin", refreshVisibility);
   document.addEventListener("focusout", refreshVisibility);
   window.addEventListener("focus", refreshVisibility);
   window.addEventListener("blur", refreshVisibility);
+  if (fitGrid !== null && fitGrid.rows > terminal.rows) {
+    terminal.resize(snapshotGrid.cols, fitGrid.rows);
+  }
   updateVisibility();
   const setPtyGrid = (cols: number, rows: number) => {
     if (disposed) return;
+    clearHandoffDeadline();
     latestPtyGrid = { cols, rows };
+    authoritativeGridAvailable = true;
     updateVisibility();
+    flushPendingWrites();
   };
   return {
     resize(cols, rows) {
       if (disposed) return Promise.resolve();
-      setPtyGrid(cols, rows);
+      clearHandoffDeadline();
+      latestPtyGrid = { cols, rows };
       return new Promise((resolve) => {
         outputPipeline.setGrid(cols, rows, () => {
           if (!disposed) {
             preview.dataset.gridCols = String(cols);
             preview.dataset.gridRows = String(rows);
+            authoritativeGridAvailable = true;
             updateVisibility();
+            flushPendingWrites();
           }
           resolve();
         });
       });
     },
     setPtyGrid,
+    setLatestPtyGrid(cols, rows) {
+      if (disposed) return;
+      latestPtyGrid = { cols, rows };
+    },
     setFitGrid(cols, rows) {
       if (disposed) return;
       fitGrid = { cols, rows };
+      if (terminal.cols === snapshotGrid.cols && rows > terminal.rows) {
+        terminal.resize(snapshotGrid.cols, rows);
+      }
       updateSurfaceScale();
       updateVisibility();
     },
+    processExited() {
+      handoffAtLatestGrid();
+    },
     push(bytes, callback) {
-      if (!disposed) outputPipeline.push(bytes, callback);
-      else callback();
+      if (disposed) {
+        callback();
+      } else if (!snapshotWriteFinished) {
+        outputPipeline.push(bytes, () => {
+          snapshotWriteFinished = true;
+          startHandoffDeadline();
+          callback();
+          flushPendingWrites();
+        });
+      } else if (authoritativeGridAvailable) {
+        outputPipeline.push(bytes, callback);
+      } else {
+        pendingWrites.push({ bytes, callback });
+        pendingBytes += bytes.byteLength;
+        if (pendingBytes > pendingBytesLimit) handoffAtLatestGrid();
+      }
     },
     dispose() {
       if (disposed) return;
       disposed = true;
+      clearHandoffDeadline();
+      for (const write of pendingWrites.splice(0)) write.callback();
+      pendingBytes = 0;
       document.removeEventListener("focusin", refreshVisibility);
       document.removeEventListener("focusout", refreshVisibility);
       window.removeEventListener("resize", updateSurfaceScale);

@@ -20,6 +20,7 @@ import { decodeBase64Bytes } from "@/lib/base64-bytes";
 import { makeTerminalSession } from "@/test/fixtures/terminal-sessions";
 import { wsManager } from "@/lib/ws";
 import * as terminalModules from "./terminal-modules";
+import * as terminalReplayPreview from "./terminal-replay-preview";
 import {
   AppCommandProvider,
   useAppCommandHandler,
@@ -36,6 +37,7 @@ const testState = vi.hoisted(() => ({
   socketCreated: null as (() => void) | null,
   socketMessages: [] as string[],
   socketUrls: [] as string[],
+  screen: vi.fn(),
 }));
 
 class TestTerminalSocket {
@@ -89,6 +91,7 @@ class TestTerminalSocket {
 vi.mock("@/lib/sdk", () => ({
   sdk: {
     terminals: {
+      experimental_screen: testState.screen,
       experimental_attention: {
         clear: testState.clearAttention,
       },
@@ -180,6 +183,7 @@ afterEach(() => {
   testState.socketMessages.length = 0;
   testState.socketUrls.length = 0;
   testState.clearAttention.mockReset();
+  testState.screen.mockReset();
   testState.toastError.mockReset();
   testState.touchEnabled = false;
   testState.mediaQueryListeners.clear();
@@ -342,6 +346,51 @@ function writeReplay(terminal: Terminal, data: string): Promise<void> {
 }
 
 describe("ThreadTerminalView terminal focus boundary", () => {
+  it("notifies the replay preview when a session update reports process exit", async () => {
+    prepareMobileTerminal();
+    vi.spyOn(FitAddon.prototype, "proposeDimensions").mockReturnValue({
+      cols: 40,
+      rows: 12,
+    });
+    testState.screen.mockResolvedValue({
+      rows: ["snapshot text"],
+      cursor: { col: 0, row: 0 },
+      cols: 40,
+      gridRows: 12,
+      truncated: false,
+      complete: true,
+      checkpointSeq: 0,
+      dataBase64: btoa("snapshot text"),
+    });
+    const originalMountPreview =
+      terminalReplayPreview.mountTerminalReplayPreview;
+    const processExited = vi.fn();
+    const mountPreview = vi
+      .spyOn(terminalReplayPreview, "mountTerminalReplayPreview")
+      .mockImplementation((options) => {
+        const preview = originalMountPreview(options);
+        vi.spyOn(preview, "processExited").mockImplementation(processExited);
+        return preview;
+      });
+
+    const session = renderMobileTerminal();
+    await waitForReadinessCondition(
+      () => expect(mountPreview).toHaveBeenCalledOnce(),
+      "screen snapshot did not mount a replay preview",
+    );
+    const socket = testState.sockets[0];
+    if (!socket) throw new Error("terminal socket was not created");
+    await act(async () => {
+      socket.receive({
+        type: "session-updated",
+        session: { ...session, status: "exited" },
+      });
+      await Promise.resolve();
+    });
+
+    expect(processExited).toHaveBeenCalledOnce();
+  });
+
   it("reveals before a pending search add-on loads, then attaches it", async () => {
     prepareMobileTerminal();
     testState.touchEnabled = false;
