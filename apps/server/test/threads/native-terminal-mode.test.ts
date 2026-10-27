@@ -104,7 +104,6 @@ import {
 } from "../helpers/seed.js";
 import {
   createTestAppHarness,
-  createTestDb,
   type TestAppHarness,
 } from "../helpers/test-app.js";
 
