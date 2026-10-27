@@ -302,6 +302,12 @@ export class TerminalWebSocketTransport {
     const inFlight = this.repaintNudgeInFlight;
     if (
       inFlight !== null &&
+      (cols < inFlight.nudge.cols || rows < inFlight.nudge.rows)
+    ) {
+      inFlight.ignored = null;
+    }
+    if (
+      inFlight !== null &&
       this.resizeAcksConfirmed &&
       this.ackedResizeSeq < inFlight.nudgeSeq
     ) {
@@ -422,6 +428,15 @@ export class TerminalWebSocketTransport {
     const inFlight = this.repaintNudgeInFlight;
     if (inFlight === null) {
       return false;
+    }
+    if (
+      resizeSeq === undefined &&
+      size.cols === inFlight.nudge.cols &&
+      size.rows === inFlight.nudge.rows
+    ) {
+      inFlight.echoTaken = true;
+      inFlight.ignored = size;
+      return true;
     }
     if (
       !inFlight.echoTaken &&

@@ -97,6 +97,7 @@ class FakeSocket implements TerminalBrowserSocket {
   onerror: ((event: Event) => void) | null = null;
   onmessage: ((event: MessageEvent) => void) | null = null;
   onopen: ((event: Event) => void) | null = null;
+  protocol = "bb.terminal.resize-echo.v1";
   readyState = 1;
   readonly resizes: Array<{ cols: number; rows: number; seq?: number }> = [];
 
@@ -532,7 +533,7 @@ describe("page terminal when the fitted size changes between nudge and restore",
     room.fit(30);
     room.advance(2000);
 
-    expect(room.widths).toContain(FITTED_COLS - 1);
+    expect(room.widths).not.toContain(FITTED_COLS - 1);
     expect(room.ptyCols()).toBe(30);
     expect(room.terminal.cols).toBe(30);
     room.transport.dispose();

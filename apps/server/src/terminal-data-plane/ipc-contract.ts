@@ -50,7 +50,7 @@ const browserReplyServerMessageSchema = terminalServerMessageSchema.refine(
   (message) =>
     message.type === "features" ||
     message.type === "resize-applied" ||
-    (message.type === "session-updated" && message.resizeSeq !== undefined),
+    message.type === "session-updated",
   "Only attach-specific terminal messages are replies to one browser attach",
 );
 

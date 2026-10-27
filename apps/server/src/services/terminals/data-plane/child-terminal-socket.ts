@@ -19,9 +19,7 @@ export type ChildTerminalBroadcastMessage = Extract<
 
 export type ChildTerminalReplyMessage =
   | Extract<TerminalServerMessage, { type: "features" | "resize-applied" }>
-  | (Extract<TerminalServerMessage, { type: "session-updated" }> & {
-      resizeSeq: number;
-    });
+  | Extract<TerminalServerMessage, { type: "session-updated" }>;
 
 export interface ChildTerminalSocketSink {
   broadcast(
@@ -115,7 +113,7 @@ export class ChildTerminalSocket {
           this.collecting.trailing.push(message);
           return;
         }
-        this.sink.broadcast(this.terminalId, message, data.length);
+        this.sink.reply(this.attachId, message);
         return;
     }
   }

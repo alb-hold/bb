@@ -245,7 +245,7 @@ describe("repaint nudge with a second client on the same terminal", () => {
     room.start();
     room.advance(100);
     room.peerResizes(FITTED.cols - 1, FITTED.rows);
-    expect(room.viewCols()).toBe(FITTED.cols - 1);
+    expect(room.viewCols()).toBe(FITTED.cols);
 
     room.advance(300);
     expect(room.restoresSentByOwner()).toBe(1);
@@ -303,7 +303,7 @@ describe("repaint nudge with a second client on the same terminal", () => {
     room.fit(100);
     room.advance(2000);
 
-    expect(room.viewHistory).toContain(FITTED.cols - 1);
+    expect(room.viewHistory).not.toContain(FITTED.cols - 1);
     expect(room.ptySize().cols).toBe(100);
     expect(room.viewCols()).toBe(100);
     room.transport.dispose();
