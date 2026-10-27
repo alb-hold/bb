@@ -601,6 +601,7 @@ interface HandleTerminalServerMessageArgs {
   replayCheckpointSequence?: number | null;
   allowAttachedGrid?: boolean;
   onReplayStart?: (session: TerminalSession) => void;
+  shouldProcessOutput?: () => boolean;
 }
 
 function encodeBytesBase64(bytes: Uint8Array): string {
@@ -1059,7 +1060,11 @@ export function handleTerminalServerMessage({
   replayCheckpointSequence,
   allowAttachedGrid = true,
   onReplayStart,
+  shouldProcessOutput,
 }: HandleTerminalServerMessageArgs): void {
+  if (message.type === "output" && shouldProcessOutput?.() === false) {
+    return;
+  }
   switch (message.type) {
     case "attached":
       if (message.replayStartSeq < message.nextSeq) {
@@ -1240,6 +1245,8 @@ export function ThreadTerminalView({
   );
   const autoFocusRef = useRef(autoFocus);
   const isPanelOpenRef = useRef(isPanelOpen);
+  const previousPanelOpenRef = useRef(isPanelOpen);
+  const reportDocumentVisibilityRef = useRef<(() => void) | null>(null);
   const sessionStatusRef = useRef<TerminalSession["status"]>(session.status);
   const sessionRef = useRef(session);
   const lastStatusNoticeRef = useRef<TerminalSessionStatusNotice | null>(null);
@@ -1640,6 +1647,9 @@ export function ThreadTerminalView({
     let containerHasSize = hasVisibleTerminalSize({
       containerElement: container,
     });
+    let terminalVisible: boolean | null = null;
+    let hasReceivedInitialAttach = false;
+    let lastParsedOutputNextSeq = 0;
     const reportDocumentVisibility = () => {
       if (
         document.visibilityState !== "visible" ||
@@ -1648,10 +1658,19 @@ export function ThreadTerminalView({
       ) {
         cancelTerminalOutputNextRenders(session.id);
       }
-      transport?.setVisible(
-        document.visibilityState === "visible" && containerHasSize,
-      );
+      const nextVisible =
+        document.visibilityState === "visible" &&
+        containerHasSize &&
+        isPanelOpenRef.current;
+      const wasVisible = terminalVisible;
+      if (wasVisible === nextVisible) return;
+      terminalVisible = nextVisible;
+      transport?.setVisible(nextVisible);
+      if (wasVisible === false && nextVisible && hasReceivedInitialAttach) {
+        transport?.replayOutputFrom(lastParsedOutputNextSeq);
+      }
     };
+    reportDocumentVisibilityRef.current = reportDocumentVisibility;
 
     let liveBottomBeforeGridResize = false;
     let liveBottomResizeClearFrame: number | null = null;
@@ -2213,6 +2232,14 @@ export function ThreadTerminalView({
             message.type === "attached" ||
             message.type === "session-updated"
           ) {
+            if (message.type === "attached") {
+              const reconnectingWhileHidden =
+                hasReceivedInitialAttach && terminalVisible !== true;
+              hasReceivedInitialAttach = true;
+              lastParsedOutputNextSeq = reconnectingWhileHidden
+                ? Math.min(lastParsedOutputNextSeq, message.replayStartSeq)
+                : message.replayStartSeq;
+            }
             const { cols, rows } = message.session;
             const isOwnNudgeEcho =
               message.type === "session-updated" &&
@@ -2252,7 +2279,13 @@ export function ThreadTerminalView({
           }
           handleTerminalServerMessage({
             acknowledgeOutput: (nextSeq) =>
-              activeTransport.acknowledgeOutput(nextSeq),
+              {
+                lastParsedOutputNextSeq = Math.max(
+                  lastParsedOutputNextSeq,
+                  nextSeq,
+                );
+                activeTransport.acknowledgeOutput(nextSeq);
+              },
             message,
             terminalId: session.id,
             onOutputFrameParsed: () => {
@@ -2349,6 +2382,7 @@ export function ThreadTerminalView({
             replayCheckpointSequence,
             outputBoundaryToken,
             allowAttachedGrid: !markerGridActive,
+            shouldProcessOutput: () => terminalVisible === true && isPanelOpenRef.current,
           });
         },
         onSequenceGap: () => {
@@ -2649,6 +2683,9 @@ export function ThreadTerminalView({
       terminalResizeSubscription = null;
       cancelTerminalOutputNextRenders(session.id);
       handleFileDropRef.current = null;
+      if (reportDocumentVisibilityRef.current === reportDocumentVisibility) {
+        reportDocumentVisibilityRef.current = null;
+      }
       document.removeEventListener(
         "visibilitychange",
         reportDocumentVisibility,
@@ -2678,6 +2715,13 @@ export function ThreadTerminalView({
     session.title,
     updateHoveredTerminalLink,
   ]);
+
+  useEffect(() => {
+    const panelWasOpen = previousPanelOpenRef.current;
+    previousPanelOpenRef.current = isPanelOpen;
+    if (panelWasOpen === isPanelOpen) return;
+    reportDocumentVisibilityRef.current?.();
+  }, [isPanelOpen]);
 
   useEffect(() => {
     const terminal = terminalRef.current;
