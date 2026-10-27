@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { Button } from "@bb/shared-ui/button";
 import { useMediaQuery } from "@bb/shared-ui/hooks/use-media-query";
 import type { NativeTerminalThread } from "@bb/server-contract";
+import type { ThreadRuntimeState } from "@bb/domain";
 import { LazyThreadTerminalPanel } from "@/components/secondary-panel/lazySecondaryPanelComponents";
 import type { MarkdownPreviewLinkHandler } from "@/components/ui/markdown-link";
 import {
@@ -12,6 +13,7 @@ import { useThreadPendingInteractions } from "@/hooks/queries/thread-queries";
 import { useThreadTerminals } from "@/hooks/queries/thread-terminal-queries";
 import { useOptionalPaneContext } from "@/views/thread-detail/PaneContext";
 import { NativeTerminalPromptBar } from "./NativeTerminalPromptBar";
+import { useNativeActivityUnconfirmed } from "@/hooks/useNativeActivityUnconfirmed";
 import {
   NativeTerminalWaitingBanner,
   nativeTerminalWaitingPrompts,
@@ -24,6 +26,7 @@ import {
 interface NativeThreadTerminalMainProps {
   onOpenLink?: MarkdownPreviewLinkHandler;
   projectId: string;
+  runtime: ThreadRuntimeState;
   threadId: string;
   threadIsProvisioning: boolean;
   view: NativeTerminalThread;
@@ -32,10 +35,12 @@ interface NativeThreadTerminalMainProps {
 export function NativeThreadTerminalMain({
   onOpenLink,
   projectId,
+  runtime,
   threadId,
   threadIsProvisioning,
   view,
 }: NativeThreadTerminalMainProps) {
+  const activityUnconfirmed = useNativeActivityUnconfirmed(runtime);
   const terminalsQuery = useThreadTerminals(threadId);
   const interactionsQuery = useThreadPendingInteractions(threadId);
   const nativeQuery = useNativeTerminalThread(threadId);
@@ -66,16 +71,21 @@ export function NativeThreadTerminalMain({
         data-no-sidebar-swipe=""
       >
         <NativeTerminalWaitingBanner
-          prompts={nativeTerminalWaitingPrompts(
-            interactionsQuery.data ?? [],
-          )}
+          prompts={nativeTerminalWaitingPrompts(interactionsQuery.data ?? [])}
           providerLabel={providerLabel}
         />
+        {activityUnconfirmed ? (
+          <p className="px-3 py-1 text-xs text-muted-foreground" role="status">
+            Activity unconfirmed — No recent report from this native session
+          </p>
+        ) : null}
         <LazyThreadTerminalPanel
           autoFocus={paneIsFocused && !isTouchDevice}
           isPanelOpen
           isPanelPersistedOpen
           onOpenLink={onOpenLink}
+          onCloseStart={() => {}}
+          onRetryStart={() => {}}
           target={{ kind: "thread", threadId }}
           terminalId={state.terminalId}
         />
@@ -97,6 +107,19 @@ export function NativeThreadTerminalMain({
         data-native-terminal-thread={view.providerId}
       >
         Preparing the workspace for {providerLabel}…
+      </div>
+    );
+  }
+
+  if (session === null && terminalsQuery.isLoading) {
+    return (
+      <div
+        aria-busy="true"
+        className="flex h-full items-center justify-center px-4 text-center text-sm text-muted-foreground"
+        data-native-terminal-thread={view.providerId}
+        role="status"
+      >
+        Loading terminals...
       </div>
     );
   }

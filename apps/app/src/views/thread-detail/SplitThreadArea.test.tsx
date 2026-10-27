@@ -10,12 +10,18 @@ import {
   within,
 } from "@testing-library/react";
 import { createStore, Provider as JotaiProvider } from "jotai";
-import { useContext, useMemo, useState, type ReactNode } from "react";
+import {
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { MemoryRouter, useLocation, useNavigate } from "react-router-dom";
 import { QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { PERSONAL_PROJECT_ID } from "@bb/domain";
 import { TooltipProvider } from "@bb/shared-ui/tooltip";
-import { EMPTY_ORDERED_MENTION_SUGGESTIONS } from "@bb/client-core";
 import type { BbDesktopInfo } from "@bb/desktop-contract";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createQueryClientTestHarness } from "@/test/queryClientTestHarness";
@@ -34,8 +40,8 @@ import {
 } from "@/lib/split-layout";
 import type { LayoutNode, PaneContent, SplitLayout } from "@/lib/split-layout";
 import { usePromptDraftStorage } from "@/hooks/usePromptDraftStorage";
+import { registerPaneComposerFocus } from "@/lib/pane-composer-focus";
 import { createBbDesktopApi } from "@/test/bb-desktop-test-utils";
-import { resourceRouteLabelAtom } from "@/components/layout/resourceRouteLabelAtom";
 import {
   PluginComposerHostProvider,
   usePluginComposerHost,
@@ -54,10 +60,8 @@ import { RouteNavigationProvider } from "@/components/ui/app-route-anchor";
 import { SplitThreadArea } from "./SplitThreadArea";
 import { applyThreadOpenToLayout } from "./splitThreadNavigation";
 import { makePluginRegistrationSet } from "@/test/fixtures/plugins";
-import {
-  INERT_TYPEAHEAD_COMMAND_CONFIG,
-  PromptBoxInternal,
-} from "@/components/promptbox/PromptBoxInternal";
+import { ComposerBox } from "@/components/promptbox/ComposerBox";
+import { testTypeaheadConfig } from "@/test/fixtures/composer-search";
 import { LocationProbe } from "@/test/location-probe";
 
 const threadStore = vi.hoisted(
@@ -81,6 +85,11 @@ const timelineProbe = vi.hoisted(() => ({
 }));
 const responsiveComposerProbe = vi.hoisted(() => ({ enabled: false }));
 const nativeTerminalPanes = vi.hoisted(() => new Set<string>());
+const nativeTerminalComposerPanes = vi.hoisted(() => new Set<string>());
+
+function ResponsiveFocusComposer() {
+  return <textarea aria-label="Ask BB" />;
+}
 
 function HostedComposerScopeProbe({ threadId }: { threadId: string }) {
   const composerHost = usePluginComposerHost();
@@ -128,6 +137,12 @@ vi.mock("@bb/shared-ui/hooks/use-pointer-coarse", () => ({
 }));
 
 vi.mock("@/hooks/queries/thread-queries", () => ({
+  useThreadMentionCandidates: () => ({
+    data: undefined,
+    isError: false,
+    isFetching: false,
+    isLoading: false,
+  }),
   useThread: (id: string) => {
     const entry = threadStore.get(id);
     if (entry === undefined) {
@@ -344,6 +359,21 @@ vi.mock("./LazyThreadDetailView", () => ({
       projectId,
       threadId,
     });
+    const composerRootRef = useRef<HTMLDivElement>(null);
+    const textareaRef = useRef<HTMLTextAreaElement>(null);
+    useEffect(() => {
+      const root = composerRootRef.current;
+      if (root === null) return;
+      return registerPaneComposerFocus(root, () => {
+        const target =
+          root.querySelector<HTMLElement>(
+            "[contenteditable='true'], textarea:not(.xterm-helper-textarea):not(:disabled)",
+          ) ?? root.querySelector<HTMLElement>(".xterm-helper-textarea");
+        if (target === null) return false;
+        target.focus({ preventScroll: true });
+        return document.activeElement === target;
+      });
+    }, []);
     return (
       <div
         data-testid={`pane-${threadId}`}
@@ -354,39 +384,33 @@ vi.mock("./LazyThreadDetailView", () => ({
           data-testid={`drag-${threadId}`}
           onPointerDown={(event) => pane?.beginPaneDrag?.(event, threadId)}
         />
-        {nativeTerminalPanes.has(threadId) ? (
-          <div data-native-terminal-thread="native-provider">
-            <textarea
-              className="xterm-helper-textarea"
-              data-testid={`xterm-${threadId}`}
-            />
-          </div>
-        ) : null}
-        <div data-promptbox="">
-          {nativeTerminalPanes.has(
+        <div ref={composerRootRef}>
+          {nativeTerminalPanes.has(threadId) ? (
+            <div data-native-terminal-thread="native-provider">
+              <textarea
+                className="xterm-helper-textarea"
+                data-testid={`xterm-${threadId}`}
+              />
+            </div>
+          ) : null}
+          {nativeTerminalPanes.has(threadId) &&
+          !nativeTerminalComposerPanes.has(
             threadId,
           ) ? null : responsiveComposerProbe.enabled ? (
             <PluginComposerHostProvider value={composerHost}>
-              <PromptBoxInternal
+              <ComposerBox
+                surface="thread"
                 value={draft.text}
                 mentionRanges={[]}
                 onChange={(value) => draft.setTextAndMentions(value, [])}
                 onSubmit={() => undefined}
                 mentionMenuPlacement="bottom"
-                typeahead={{
-                  mention: {
-                    results: EMPTY_ORDERED_MENTION_SUGGESTIONS,
-                    isLoading: false,
-                    isRefreshing: false,
-                    isError: false,
-                    onQueryChange: () => undefined,
-                  },
-                  command: INERT_TYPEAHEAD_COMMAND_CONFIG,
-                }}
+                typeahead={testTypeaheadConfig()}
               />
             </PluginComposerHostProvider>
           ) : (
             <textarea
+              ref={textareaRef}
               data-testid={`draft-${threadId}`}
               value={draft.text}
               onChange={(event) =>
@@ -798,6 +822,7 @@ beforeEach(() => {
   timelineProbe.calls.clear();
   responsiveComposerProbe.enabled = false;
   nativeTerminalPanes.clear();
+  nativeTerminalComposerPanes.clear();
   threadStore.set("thr-a", { archivedAt: null, deletedAt: null });
   threadStore.set("thr-b", { archivedAt: null, deletedAt: null });
 });
@@ -823,6 +848,18 @@ describe("SplitThreadArea", () => {
       viewportState.compact = fromCompact;
       pointerState.coarse = fromCompact;
       responsiveComposerProbe.enabled = true;
+      setPluginSlotRegistrations(
+        "responsive-focus-composer",
+        makePluginRegistrationSet({
+          composers: [
+            {
+              id: "responsive-focus",
+              title: "Responsive focus composer",
+              component: ResponsiveFocusComposer,
+            },
+          ],
+        }),
+      );
       const store = createStore();
       const renderTree = () => (
         <TooltipProvider delayDuration={0}>
@@ -868,6 +905,18 @@ describe("SplitThreadArea", () => {
 
   it("does not let responsive composer remount autofocus steal an external control", async () => {
     responsiveComposerProbe.enabled = true;
+    setPluginSlotRegistrations(
+      "responsive-focus-composer",
+      makePluginRegistrationSet({
+        composers: [
+          {
+            id: "responsive-focus",
+            title: "Responsive focus composer",
+            component: ResponsiveFocusComposer,
+          },
+        ],
+      }),
+    );
     pointerState.coarse = false;
     const store = createStore();
     const renderTree = () => (
@@ -2506,6 +2555,22 @@ describe("SplitThreadArea", () => {
     await waitFor(() => expect(document.activeElement).toBe(source));
   });
 
+  it("focuses the composer before the native terminal when both share a pane", async () => {
+    nativeTerminalPanes.add("thr-b");
+    nativeTerminalComposerPanes.add("thr-b");
+    renderSplitArea({
+      path: threadPath("thr-a"),
+      layout: twoPaneLayout("pane-1"),
+    });
+    const source = await screen.findByTestId("draft-thr-a");
+    const composer = screen.getByTestId("draft-thr-b");
+    source.focus();
+    act(() => {
+      commandHandlers.get("pane.focus.next")?.();
+    });
+    await waitFor(() => expect(document.activeElement).toBe(composer));
+  });
+
   it("focuses plugin content controls instead of pane chrome", async () => {
     setPluginSlotRegistrations(
       "docs",
@@ -2881,7 +2946,7 @@ describe("SplitThreadArea", () => {
     );
   });
 
-  it("uses automation breadcrumbs in the split-owned plugin header", async () => {
+  it("uses page-owned breadcrumbs in the split-owned plugin header", async () => {
     setPluginSlotRegistrations(
       "automations",
       makePluginRegistrationSet({
@@ -2892,6 +2957,12 @@ describe("SplitThreadArea", () => {
             icon: "Clock",
             path: "automations",
             component: () => <div>Automation detail</div>,
+            experimental_usePageTitle: () => ({
+              breadcrumbs: [
+                { label: "Installed", to: "/plugins/automations/automations" },
+                { label: "Weekly review" },
+              ],
+            }),
           },
         ],
         threadPanelActions: [],
@@ -2906,7 +2977,7 @@ describe("SplitThreadArea", () => {
       panelPath: "automations",
       subPath: "proj_personal/weekly-review",
     };
-    const store = renderSplitArea({
+    renderSplitArea({
       path: "/plugins/automations/automations/proj_personal/weekly-review",
       layout: {
         root: { type: "pane", paneId: "pane-automation", content },
@@ -2918,14 +2989,9 @@ describe("SplitThreadArea", () => {
     const breadcrumb = await screen.findByRole("navigation", {
       name: "Breadcrumb",
     });
-    expect(breadcrumb.textContent).toContain("Automations");
     expect(breadcrumb.textContent).toContain("Installed");
-    expect(breadcrumb.textContent).toContain("weekly-review");
-
-    store.set(resourceRouteLabelAtom, "Weekly review");
-    await waitFor(() =>
-      expect(breadcrumb.textContent).toContain("Weekly review"),
-    );
+    expect(breadcrumb.textContent).toContain("Weekly review");
+    expect(screen.getByText("Automations")).toBeTruthy();
 
     fireEvent.click(screen.getByRole("link", { name: "Installed" }));
     expect(screen.getByTestId("location").textContent).toBe(

@@ -26,6 +26,22 @@ function fastestSampleMs(
   return fastest;
 }
 
+function countStickyScannerChunks(run: () => void): number {
+  const originalExec = RegExp.prototype.exec;
+  let chunks = 0;
+  RegExp.prototype.exec = function (input: string) {
+    const match = originalExec.call(this, input);
+    if (this.sticky && match !== null) chunks += 1;
+    return match;
+  };
+  try {
+    run();
+  } finally {
+    RegExp.prototype.exec = originalExec;
+  }
+  return chunks;
+}
+
 it("bounds intent parsing work after a script's disqualifying write", () => {
   const readOnly = "rg needle src;".repeat(64);
   const writeFirst = `cat > output.txt; ${readOnly}`;
@@ -88,12 +104,11 @@ it("scans long quoted thread messages in chunks without summary caching", () => 
   const escaped = `bb thread tell thr_wrkr234567 ${message.replaceAll(" ", "\\ ")}`;
   const parse = (command: string) =>
     parseSentThreadMessage({ command, exitCode: 0, status: "completed" });
-  for (const command of [quoted, escaped]) {
-    expect(parse(command)).toEqual({ threadId: "thr_wrkr234567", message });
-  }
-  const [quotedMs, escapedMs] = fastestSampleMs(
-    [quoted, escaped].map((command) => () => parse(command)),
-    16,
-  );
-  expect(quotedMs).toBeLessThan(escapedMs! / 4);
+  const quotedChunks = countStickyScannerChunks(() => {
+    expect(parse(quoted)).toEqual({ threadId: "thr_wrkr234567", message });
+  });
+  const escapedChunks = countStickyScannerChunks(() => {
+    expect(parse(escaped)).toEqual({ threadId: "thr_wrkr234567", message });
+  });
+  expect(quotedChunks).toBeLessThan(escapedChunks / 4);
 });

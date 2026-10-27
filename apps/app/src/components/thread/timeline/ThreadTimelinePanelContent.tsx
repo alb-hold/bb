@@ -2,10 +2,11 @@ import type { ReactNode } from "react";
 import { EmptyStatePanel } from "@bb/shared-ui/empty-state";
 import { ThreadTimelinePanelLoadingSkeleton } from "./ThreadChatLoading";
 import { resolveThreadOngoingIndicator } from "./thread-ongoing-indicator";
-import type { PromptMentionLinkResolver } from "@/components/promptbox/editor/prompt-mention-link";
+import type { PromptMentionLinkResolver } from "@bb/client-core";
 import { ConversationTimeline } from "@/components/ui/conversation.js";
 import { useThread } from "@/hooks/queries/thread-queries";
 import { BbHttpError } from "@/lib/sdk";
+import { useNativeActivityUnconfirmed } from "@/hooks/useNativeActivityUnconfirmed";
 import {
   ThreadTimelineSurface,
   type ThreadTimelineSurfaceProps,
@@ -56,16 +57,22 @@ export function ThreadTimelinePanelContent({
   });
   const resolvedTimeline = timeline ?? ownedTimeline;
   const displayStatus = threadQuery.data?.runtime.displayStatus ?? "idle";
+  const nativeActivityUnconfirmed = useNativeActivityUnconfirmed(
+    threadQuery.data?.runtime,
+  );
   const ongoingIndicator = resolveThreadOngoingIndicator({
     displayStatus,
     activeBackgroundAgentCount:
       threadQuery.data?.activeBackgroundAgentCount ?? 0,
+    nativeTerminal: threadQuery.data?.nativeTerminal === true,
     activeBackgroundCommandCount:
       resolvedTimeline.activeBackgroundCommands.length,
     activeWorkflowCount: resolvedTimeline.activeWorkflows.length,
     isStopping: threadQuery.data?.status === "stopping",
     isTurnSubmitting,
+    nativeActivityUnconfirmed,
     timelineLoading: resolvedTimeline.timelineLoading,
+    threadStatus: threadQuery.data?.status,
   });
   const showOngoingIndicator = ongoingIndicator.show;
   const timelineRows = resolvedTimeline.timelineRows;
@@ -117,6 +124,7 @@ export function ThreadTimelinePanelContent({
       threadId={threadId}
       threadRuntimeDisplayStatus={displayStatus}
       workspaceRootPath={workspaceRootPath}
+      threadIsActive={threadQuery.data?.status === "active"}
     />
   );
 }

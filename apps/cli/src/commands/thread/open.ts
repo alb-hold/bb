@@ -93,7 +93,7 @@ export function registerOpenCommand(
               threadId: target.threadId,
               split,
               file,
-              delivered: result.delivered,
+              deliveredClients: result.deliveredClients,
               inputPath: target.inputPath,
             })
           ) {
@@ -110,7 +110,9 @@ export function registerOpenCommand(
               console.log(`Line: ${file.lineNumber}`);
             }
           }
-          console.log(`Delivered: ${result.delivered}`);
+          console.log(
+            `Request sent to ${result.deliveredClients} open bb app client${result.deliveredClients === 1 ? "" : "s"}; receipt and application are not confirmed.`,
+          );
         },
       ),
     );

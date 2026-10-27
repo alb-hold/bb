@@ -1439,7 +1439,7 @@ describe("QueuedMessagesList", () => {
     ]);
 
     expect(queryByLabelText("Copy code")).toBeNull();
-    expect(queryByLabelText("Wrap long lines")).toBeNull();
+    expect(queryByLabelText("Wrap lines")).toBeNull();
     expect(container.querySelector("pre")).toBeNull();
     expect(container.querySelector("code")?.textContent).toContain(
       "const value = 1;",

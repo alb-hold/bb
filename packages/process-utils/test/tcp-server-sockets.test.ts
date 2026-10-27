@@ -8,9 +8,10 @@ describe("superviseTcpServerSockets", () => {
   it("reproduces an uncaught reset on an accepted socket without supervision", async () => {
     const script = `
       import { createServer, connect } from "node:net";
-      const server = createServer((socket) =>
-        socket.on("data", () => socket.write("ack")),
-      );
+      const server = createServer((socket) => {
+        socket.on("data", () => socket.write("ack"));
+        socket.once("close", () => server.close());
+      });
       server.listen(0, "127.0.0.1", () => {
         const client = connect(server.address().port, "127.0.0.1", () => {
           client.write("hello");
@@ -18,7 +19,6 @@ describe("superviseTcpServerSockets", () => {
         client.on("data", () => client.resetAndDestroy());
         client.on("error", () => undefined);
       });
-      setTimeout(() => server.close(), 100);
     `;
     const result = await execFileAsync(
       process.execPath,
@@ -43,9 +43,10 @@ describe("superviseTcpServerSockets", () => {
       import { createServer, connect } from "node:net";
       import { superviseTcpServerSockets } from "../src/tcp-server-sockets.ts";
 
-      const server = createServer((socket) =>
-        socket.on("data", () => socket.write("ack")),
-      );
+      const server = createServer((socket) => {
+        socket.on("data", () => socket.write("ack"));
+        socket.once("close", () => server.close());
+      });
       superviseTcpServerSockets(server, (error, _socket, context) => {
         process.stdout.write(
           "warn:" + error.code + ":" + String(context.remotePort !== undefined),
@@ -59,7 +60,43 @@ describe("superviseTcpServerSockets", () => {
         client.on("data", () => client.resetAndDestroy());
         client.on("error", () => undefined);
       });
-      setTimeout(() => server.close(), 100);
+    `;
+    const result = await execFileAsync(
+      process.execPath,
+      ["--import", "tsx", "--input-type=module", "--eval", script],
+      { cwd: import.meta.dirname },
+    );
+
+    expect(result).toMatchObject({
+      stdout: "warn:ECONNRESET:true",
+      stderr: "",
+    });
+  });
+
+  it("waits for a reset from a delayed client before closing the server", async () => {
+    const script = `
+      import { createServer, connect } from "node:net";
+      import { superviseTcpServerSockets } from "../src/tcp-server-sockets.ts";
+
+      const server = createServer((socket) => {
+        socket.on("data", () => socket.write("ack"));
+        socket.once("close", () => server.close());
+      });
+      superviseTcpServerSockets(server, (error, _socket, context) => {
+        process.stdout.write(
+          "warn:" + error.code + ":" + String(context.remotePort !== undefined),
+        );
+      });
+      server.listen(0, "127.0.0.1", () => {
+        const address = server.address();
+        setTimeout(() => {
+          const client = connect(address.port, "127.0.0.1", () => {
+            client.write("hello");
+          });
+          client.on("data", () => client.resetAndDestroy());
+          client.on("error", () => undefined);
+        }, 150);
+      });
     `;
     const result = await execFileAsync(
       process.execPath,

@@ -77,6 +77,227 @@ describe("bb terminal command output", () => {
     );
   });
 
+  it("lists terminal surfaces for an explicit thread", async () => {
+    stubServerApi({
+      "v1.threads.:id.$get": async () => ({ archivedAt: null }),
+      "v1.terminals.$get": async () => ({ sessions: [makeTerminalSession()] }),
+      "v1.threads.:id.native-terminal.$get": async () => ({ terminal: null }),
+    });
+
+    await runCommand(["terminal", "surfaces", "--thread", "thr-1"], register);
+
+    expect(collectLogLines(vi.mocked(console.log))).toEqual([
+      "term-1\tTerminal 1\trunning\tterminal",
+    ]);
+  });
+
+  it("focuses a terminal through the app thread-open request", async () => {
+    const open = vi.fn(async () => ({ deliveredClients: 1 }));
+    stubServerApi({
+      "v1.terminals.:terminalId.$get": async () => makeTerminalSession(),
+      "v1.threads.:id.open.$post": open,
+    });
+
+    await runCommand(["terminal", "focus", "term-1"], register);
+
+    expect(open).toHaveBeenCalledWith({
+      param: { id: "thr-1" },
+      json: {
+        file: null,
+        terminalAction: { action: "focus", terminalId: "term-1" },
+      },
+    });
+    expect(collectLogLines(vi.mocked(console.log))).toContain(
+      "Request sent to 1 open bb app client; receipt and application are not confirmed.",
+    );
+  });
+
+  it("fails terminal focus when no app client is open to apply the request", async () => {
+    stubServerApi({
+      "v1.terminals.:terminalId.$get": async () => makeTerminalSession(),
+      "v1.threads.:id.open.$post": async () => ({ deliveredClients: 0 }),
+    });
+
+    await expect(
+      runCommand(["terminal", "focus", "term-1"], register),
+    ).rejects.toThrow("process.exit:1");
+    expect(collectLogLines(vi.mocked(console.error))).toContain(
+      "Error: No bb app is open to apply this; open bb and retry",
+    );
+  });
+
+  it.each([
+    ["focus", ["terminal", "focus", "term-1", "--json"]],
+    [
+      "open-link",
+      ["terminal", "open-link", "term-1", "https://example.com", "--json"],
+    ],
+  ] as const)("reports zero delivery in %s JSON", async (_name, args) => {
+    stubServerApi({
+      "v1.terminals.:terminalId.$get": async () => makeTerminalSession(),
+      "v1.threads.:id.open.$post": async () => ({ deliveredClients: 0 }),
+    });
+
+    await expect(runCommand([...args], register)).rejects.toThrow(
+      "process.exit:1",
+    );
+    expect(
+      JSON.parse(collectLogPayloads(vi.mocked(console.log))[0]!),
+    ).toMatchObject({
+      deliveredClients: 0,
+      error: { code: "no_app_clients" },
+    });
+  });
+
+  it.each([
+    [
+      "focus",
+      ["terminal", "focus", "term-1", "--json"],
+      { terminalId: "term-1" },
+    ],
+    [
+      "open-link",
+      ["terminal", "open-link", "term-1", "https://example.com", "--json"],
+      { terminalId: "term-1", url: "https://example.com" },
+    ],
+  ] as const)(
+    "reports one delivery in %s JSON",
+    async (_name, args, payload) => {
+      stubServerApi({
+        "v1.terminals.:terminalId.$get": async () => makeTerminalSession(),
+        "v1.threads.:id.open.$post": async () => ({ deliveredClients: 1 }),
+      });
+
+      await runCommand([...args], register);
+
+      expect(
+        JSON.parse(collectLogPayloads(vi.mocked(console.log))[0]!),
+      ).toEqual({
+        ...payload,
+        deliveredClients: 1,
+      });
+    },
+  );
+
+  it("opens a URL through the app thread-open browser request", async () => {
+    const open = vi.fn(async () => ({ deliveredClients: 1 }));
+    stubServerApi({
+      "v1.terminals.:terminalId.$get": async () => makeTerminalSession(),
+      "v1.threads.:id.open.$post": open,
+    });
+
+    await runCommand(
+      ["terminal", "open-link", "term-1", "http://localhost:3000"],
+      register,
+    );
+
+    expect(open).toHaveBeenCalledWith({
+      param: { id: "thr-1" },
+      json: {
+        file: null,
+        terminalAction: {
+          action: "openBrowser",
+          terminalId: "term-1",
+          url: "http://localhost:3000",
+        },
+      },
+    });
+  });
+
+  it("splits a terminal to a requested sidebar side", async () => {
+    const open = vi.fn(async () => ({ deliveredClients: 1 }));
+    stubServerApi({
+      "v1.terminals.:terminalId.$get": async () => makeTerminalSession(),
+      "v1.threads.:id.open.$post": open,
+    });
+
+    await runCommand(
+      ["terminal", "split", "term-1", "--side", "down"],
+      register,
+    );
+
+    expect(open).toHaveBeenCalledWith({
+      param: { id: "thr-1" },
+      json: {
+        file: null,
+        terminalLayoutAction: {
+          action: "split",
+          terminalId: "term-1",
+          side: "down",
+        },
+      },
+    });
+  });
+
+  it("moves a terminal into the pane of the requested terminal", async () => {
+    const get = vi
+      .fn()
+      .mockResolvedValueOnce(makeTerminalSession({ id: "term-1" }))
+      .mockResolvedValueOnce(makeTerminalSession({ id: "term-2" }));
+    const open = vi.fn(async () => ({ deliveredClients: 1 }));
+    stubServerApi({
+      "v1.terminals.:terminalId.$get": get,
+      "v1.threads.:id.open.$post": open,
+    });
+
+    await runCommand(
+      ["terminal", "move", "term-1", "--to-pane-of", "term-2"],
+      register,
+    );
+
+    expect(open).toHaveBeenCalledWith({
+      param: { id: "thr-1" },
+      json: {
+        file: null,
+        terminalLayoutAction: {
+          action: "move",
+          terminalId: "term-1",
+          targetTerminalId: "term-2",
+        },
+      },
+    });
+  });
+
+  it.each([
+    ["split", ["terminal", "split", "term-1", "--side", "right", "--json"]],
+    [
+      "move",
+      ["terminal", "move", "term-1", "--to-pane-of", "term-2", "--json"],
+    ],
+  ] as const)("reports %s JSON delivery outcomes", async (_name, args) => {
+    for (const deliveredClients of [0, 1]) {
+      vi.mocked(console.log).mockClear();
+      const get = vi.fn(async ({ param }: { param: { terminalId: string } }) =>
+        makeTerminalSession({ id: param.terminalId }),
+      );
+      stubServerApi({
+        "v1.terminals.:terminalId.$get": get,
+        "v1.threads.:id.open.$post": async () => ({ deliveredClients }),
+      });
+      const result = runCommand([...args], register);
+      if (deliveredClients === 0) {
+        await expect(result).rejects.toThrow("process.exit:1");
+      } else {
+        await result;
+      }
+      const payload = JSON.parse(
+        collectLogPayloads(vi.mocked(console.log))[0]!,
+      ) as {
+        deliveredClients: number;
+        error?: { code: string; message: string };
+      };
+      expect(payload.deliveredClients).toBe(deliveredClients);
+      if (deliveredClients === 0) {
+        expect(payload.error).toEqual({
+          code: "no_app_clients",
+          message: "No bb app is open to apply this; open bb and retry",
+        });
+      } else {
+        expect(payload.error).toBeUndefined();
+      }
+    }
+  });
+
   it("raises attention for the terminal identity injected into its shell", async () => {
     const notify = vi.fn(async () => makeTerminalSession());
     stubServerApi({ "v1.terminals.:terminalId.notify.$post": notify });

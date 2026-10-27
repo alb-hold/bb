@@ -3,6 +3,7 @@ import {
   DOWNLOAD_FALLBACK_URL,
   DOWNLOAD_RELEASE_ASSET_BASE_URL,
   CAMPAIGN_PARAM_NAMES,
+  CLICK_ID_PARAM_NAMES,
 } from "./site";
 import type { CtaPlacement, DesktopPlatform } from "./site";
 
@@ -335,11 +336,15 @@ function buildDownloadEventProperties(
   const requestUrl = new URL(args.requestUrl);
   let referrer = args.request.headers.get("referer");
   if (globalPrivacyControl) {
-    requestUrl.searchParams.delete("gclid");
+    for (const name of CLICK_ID_PARAM_NAMES) {
+      requestUrl.searchParams.delete(name);
+    }
     if (referrer) {
       try {
         const referrerUrl = new URL(referrer);
-        referrerUrl.searchParams.delete("gclid");
+        for (const name of CLICK_ID_PARAM_NAMES) {
+          referrerUrl.searchParams.delete(name);
+        }
         referrer = referrerUrl.href;
       } catch {
         referrer = null;

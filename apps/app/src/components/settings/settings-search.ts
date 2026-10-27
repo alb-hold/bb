@@ -9,6 +9,7 @@ import {
 
 export type SettingsSearchCondition =
   | "cliCommand"
+  | "composers"
   | "desktopBrowser"
   | "diffRenderers"
   | "fileOpeners"
@@ -106,6 +107,10 @@ export const SETTINGS_SEARCH_INDEX: Record<
         title: "Allow faster service tiers",
         keywords: ["fast mode", "priority", "speed"],
       },
+      {
+        title: "Release idle agent sessions",
+        keywords: ["memory", "RAM", "timeout", "retention", "cleanup"],
+      },
     ],
   },
   "ai-services": {
@@ -154,6 +159,11 @@ export const SETTINGS_SEARCH_INDEX: Record<
         title: "Diffs",
         keywords: ["renderer", "split", "unified"],
         when: "diffRenderers",
+      },
+      {
+        title: "Composer",
+        keywords: ["prompt box", "input", "editor", "renderer", "plugin"],
+        when: "composers",
       },
       {
         title: "Sidebar footer",

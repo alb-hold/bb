@@ -1,6 +1,7 @@
 import { MobileAppSection } from "@/components/settings/MobileAppSection";
 import { MachineEnvironmentSettings } from "@/components/settings/MachineEnvironmentSettings";
 import { MachineAccessSettings } from "@/components/settings/MachineAccessSettings";
+import { TerminalLatencyDiagnostics } from "@/components/settings/TerminalLatencyDiagnostics";
 import { useMemo, useRef, useState, type ReactNode } from "react";
 import {
   Navigate,
@@ -1129,6 +1130,11 @@ export function PrivacySettingsSection({
             aria-label={DIAGNOSTIC_EVENTS_SETTING_LABEL}
           />
         </SettingsWithControl>
+
+        <div>
+          <div className="font-medium">Terminal latency</div>
+          <TerminalLatencyDiagnostics />
+        </div>
       </div>
     </SettingsSection>
   );
@@ -1157,6 +1163,11 @@ const EXPERIMENT_DEFINITIONS: Record<
     label: "Server move",
     description:
       "Move the bb server to another machine from Settings → Machines, and export or import server data with bb server.",
+  },
+  sidebarMultiSelect: {
+    label: "Select multiple sidebar threads",
+    description:
+      "In the built-in thread list sidebar, Cmd/Ctrl+Shift-click and Shift-click threads to select several, right-click for bulk actions, and drag them together into a section, under a thread, into Pinned, or into a composer as mentions.",
   },
   timelinePush: {
     label: "Pushed timeline updates",

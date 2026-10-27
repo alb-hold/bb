@@ -22,6 +22,7 @@ function TimelineStage({ children }: TimelineStageProps) {
 }
 
 const baseProps: TimelineRowsBaseProps = {
+  threadIsActive: false,
   threadRuntimeDisplayStatus: "idle",
   workspaceRootPath: undefined,
 };
@@ -127,6 +128,7 @@ export function Overview() {
             {...baseProps}
             timelineRows={[pendingQuestion]}
             initialExpanded={new Set([pendingQuestion.id])}
+            threadIsActive={false}
           />
         </TimelineStage>
       </StoryRow>
@@ -139,6 +141,7 @@ export function Overview() {
             {...baseProps}
             timelineRows={[resolvingQuestion]}
             initialExpanded={new Set([resolvingQuestion.id])}
+            threadIsActive={false}
           />
         </TimelineStage>
       </StoryRow>
@@ -148,6 +151,7 @@ export function Overview() {
             {...baseProps}
             timelineRows={[answeredQuestion]}
             initialExpanded={new Set([answeredQuestion.id])}
+            threadIsActive={false}
           />
         </TimelineStage>
       </StoryRow>
@@ -157,6 +161,7 @@ export function Overview() {
             {...baseProps}
             timelineRows={[interruptedQuestion]}
             initialExpanded={new Set([interruptedQuestion.id])}
+            threadIsActive={false}
           />
         </TimelineStage>
       </StoryRow>
@@ -169,6 +174,7 @@ export function Overview() {
             {...baseProps}
             timelineRows={[interruptedSessionQuestion]}
             initialExpanded={new Set([interruptedSessionQuestion.id])}
+            threadIsActive={false}
           />
         </TimelineStage>
       </StoryRow>

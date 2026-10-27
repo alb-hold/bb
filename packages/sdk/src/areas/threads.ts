@@ -1,6 +1,5 @@
 import {
   maskResolvedProviderEnvironmentRow,
-  parseThreadEventRow,
   type PromptInput,
   type PendingInteraction,
   type PendingInteractionResolution,
@@ -743,6 +742,7 @@ function sendJson(args: ThreadSendArgs): SendMessageRequest {
     permissionMode: args.permissionMode,
     reasoningLevel: args.reasoningLevel,
     senderThreadId: args.senderThreadId,
+    originPluginId: args.originPluginId,
     serviceTier: args.serviceTier,
     pluginSubmission: args.pluginSubmission,
     executionInputSources: args.executionInputSources,
@@ -972,6 +972,7 @@ export function createThreadsArea(args: CreateSdkAreaArgs): ThreadsArea {
       if (statusCode === 204) {
         return null;
       }
+      const { parseThreadEventRow } = await import("./thread-event-parser.js");
       return parseThreadEventRow(await response.json());
     },
   };

@@ -16,7 +16,6 @@ import {
 import {
   applyThreadReadStateResult,
   applyThreadUpdateResult,
-  applyThreadPinStateResult,
   applyPinnedThreadOrderResult,
   applyThreadMetadataBatchResult,
   beginThreadMetadataBatchTransaction,
@@ -147,6 +146,8 @@ describe("thread state cache owner", () => {
       });
       expect(queryClient.getQueryData(threadQueryKey(original.id))).toEqual({
         ...activeThread,
+        title: "Updated title",
+        latestAttentionAt: 200,
         lastReadAt,
       });
       expect(queryClient.getQueryData(listKey)).toEqual(
@@ -541,7 +542,7 @@ function seedConcurrentThreadCaches() {
   return { queryClient, listKey, original, seed, read };
 }
 
-it.each(["rename", "pin", "reorder", "batch"])(
+it.each(["rename", "reorder", "batch"])(
   "preserves concurrent state on a delayed %s response",
   (operation) => {
     const { queryClient, original, seed, read } = seedConcurrentThreadCaches();
@@ -566,12 +567,6 @@ it.each(["rename", "pin", "reorder", "batch"])(
         thread: response,
         request: { title: "Renamed" },
       });
-    if (operation === "pin")
-      applyThreadPinStateResult({
-        queryClient,
-        thread: response,
-        pinSortKey: null,
-      });
     if (operation === "reorder")
       applyPinnedThreadOrderResult({ queryClient, orderedRoots: [response] });
     if (operation === "batch")
@@ -593,7 +588,6 @@ it.each(["rename", "pin", "reorder", "batch"])(
           : "Original",
       );
     }
-    if (operation === "pin") expect(read()[0]?.pinnedAt).toBe(20);
     if (operation === "reorder")
       expect(read()[1]).toMatchObject({ pinnedAt: 20, pinSortKey: "a" });
   },
@@ -604,20 +598,33 @@ it.each(["single", "batch"])(
   async (operation) => {
     const { queryClient, original, seed, read, listKey } =
       seedConcurrentThreadCaches();
-    const transaction =
+    const rollback =
       operation === "single"
         ? await beginThreadMetadataTransaction({
             queryClient,
             threadId: original.id,
             title: "Pending",
             sectionId: "pending",
-          })
+          }).then(
+            (transaction) => () =>
+              rollbackThreadListMutationTransaction({
+                queryClient,
+                threadId: original.id,
+                transaction,
+              }),
+          )
         : await beginThreadMetadataBatchTransaction({
             queryClient,
             updates: [
               { threadId: original.id, title: "Pending", sectionId: "pending" },
             ],
-          });
+          }).then(
+            (transaction) => () =>
+              rollbackThreadMetadataBatchTransaction({
+                queryClient,
+                transaction,
+              }),
+          );
     const sibling = makeThreadListEntry({ id: "new-sibling" });
     seed(
       makeThreadListEntry({
@@ -630,15 +637,7 @@ it.each(["single", "batch"])(
       }),
       [sibling],
     );
-    transaction.releasePendingPatches();
-    if ("previousThreads" in transaction)
-      rollbackThreadMetadataBatchTransaction({ queryClient, transaction });
-    else
-      rollbackThreadListMutationTransaction({
-        queryClient,
-        threadId: original.id,
-        transaction,
-      });
+    rollback();
     for (const thread of read())
       expect(thread).toMatchObject({
         title: "Original",
@@ -683,4 +682,48 @@ it("preserves concurrent state when an older status event reaches detail and sid
       runtime: { displayStatus: "active" },
       updatedAt: 30,
     });
+});
+
+it("patches receipt metadata when the thread updatedAt is unchanged", () => {
+  const { queryClient, original, seed, read } = seedConcurrentThreadCaches();
+  seed(
+    makeThreadListEntry({
+      ...original,
+      status: "active",
+      runtime: {
+        displayStatus: "active",
+        nativeActivity: {
+          lastEvidenceAt: 10,
+          freshForMs: 90_000,
+          confirmation: "confirmed",
+        },
+      },
+      updatedAt: 30,
+    }),
+  );
+  const receipt = {
+    status: "active" as const,
+    runtime: {
+      displayStatus: "active" as const,
+      nativeActivity: {
+        lastEvidenceAt: 20,
+        freshForMs: 90_000 as const,
+        confirmation: "confirmed" as const,
+      },
+    },
+    latestAttentionAt: original.latestAttentionAt,
+    activity: original.activity,
+    updatedAt: 30,
+  };
+
+  updateCachedThreadStatusState(queryClient, original.id, receipt);
+  updateCachedThreadListStatusState(queryClient, original.id, receipt);
+
+  for (const thread of read()) {
+    if (thread === undefined) {
+      throw new Error("Expected the thread in each cache");
+    }
+    expect(thread.updatedAt).toBe(30);
+    expect(thread.runtime.nativeActivity?.lastEvidenceAt).toBe(20);
+  }
 });

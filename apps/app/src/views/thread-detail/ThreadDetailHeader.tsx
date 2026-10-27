@@ -31,16 +31,20 @@ import {
   useAppCommandHandler,
   useAppCommandShortcut,
 } from "@/components/commands/AppCommandProvider";
-import { AppCommandShortcutHint } from "@/components/commands/AppCommandShortcutHint";
 import { useSidebarRename } from "@/components/sidebar/SidebarInlineRename";
 import { useThreadActions } from "@/components/thread/ThreadActionsProvider";
 import { ThreadTitle } from "@/components/thread/ThreadTitleMentions";
 import { ThreadUsageAndAgents } from "@/components/thread/ThreadUsageSummary";
 import { useDefaultRequestRename } from "@/lib/thread-actions/thread-action-registry";
 import { SecondaryPanelHostLayoutContext } from "@/components/secondary-panel/SecondaryPanelHostLayoutContext";
-import { RIGHT_PANEL_TOGGLE_ICON_NAME } from "@/components/secondary-panel/panelToggleControlState";
+import {
+  RIGHT_PANEL_TOGGLE_ICON_NAME,
+  RIGHT_PANEL_TOGGLE_SHORTCUT_HINT_CLASS,
+} from "@/components/secondary-panel/panelToggleControlState";
+import { AppCommandShortcutHint } from "@/components/commands/AppCommandShortcutHint";
 import { CHROME_SUBTLE_ICON_BUTTON_FOREGROUND_CLASS } from "@bb/shared-ui/chrome-style-tokens";
 import { useIsCompactViewport } from "@bb/shared-ui/hooks/use-compact-viewport";
+import { usePointerCoarse } from "@bb/shared-ui/hooks/use-pointer-coarse";
 import { dimInactiveSplitsAtom } from "@/lib/split-layout/atoms";
 import {
   CONTEXT_INACTIVE_TEXT_CLASS,
@@ -88,6 +92,7 @@ export function ThreadDetailHeader({
   workspaceOpenButton,
 }: ThreadDetailHeaderProps) {
   const isCompactViewport = useIsCompactViewport();
+  const isPointerCoarse = usePointerCoarse();
   const [primaryAction, ...secondaryActions] = threadHeaderGitActions;
   const { renameThreadAsync } = useThreadActions();
   const handleRename = useCallback(
@@ -104,11 +109,11 @@ export function ThreadDetailHeader({
   const requestRenameDialog = useDefaultRequestRename();
   const pendingMenuRename = useRef(false);
   const requestRename = (id: string) => {
-    if (isCompactViewport) requestRenameDialog(id);
+    if (isCompactViewport || isPointerCoarse) requestRenameDialog(id);
     else startEditing();
   };
   const requestRenameFromMenu = (id: string) => {
-    if (isCompactViewport) requestRenameDialog(id);
+    if (isCompactViewport || isPointerCoarse) requestRenameDialog(id);
     else pendingMenuRename.current = true;
   };
   const handleActionsMenuCloseAutoFocus = (event: Event) => {
@@ -175,7 +180,8 @@ export function ThreadDetailHeader({
     if (isEditing) {
       return;
     }
-    startEditing();
+    if (isPointerCoarse) requestRenameDialog(threadId);
+    else startEditing();
   };
   const rightPanelLabel = isSecondaryPanelOpen
     ? "Hide right panel"
@@ -297,34 +303,37 @@ export function ThreadDetailHeader({
           </Button>
         ) : null}
         {showRightPanelToggle ? (
-          <span className="inline-flex items-center gap-1.5">
-            <AppCommandShortcutHint shortcut={panelShortcut} />
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon"
-              className={cn(
-                HEADER_ICON_BUTTON_CLASS,
-                CHROME_SUBTLE_ICON_BUTTON_FOREGROUND_CLASS,
-                isTopRow &&
-                  isSidebarFramed &&
-                  MACOS_TITLE_BAR_TRAILING_TOGGLE_CLASS,
-              )}
-              aria-label={
-                panelShortcut
-                  ? `${rightPanelLabel} (${panelShortcut.label})`
-                  : rightPanelLabel
-              }
-              aria-keyshortcuts={panelShortcut?.ariaKeyshortcuts}
-              aria-expanded={isSecondaryPanelOpen}
-              onPointerEnter={preloadThreadSecondaryPanel}
-              onFocus={preloadThreadSecondaryPanel}
-              onPointerDown={preloadThreadSecondaryPanel}
-              onClick={onToggleSecondaryPanel}
-            >
-              <Icon name={rightPanelIconName} />
-            </Button>
-          </span>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className={cn(
+              HEADER_ICON_BUTTON_CLASS,
+              CHROME_SUBTLE_ICON_BUTTON_FOREGROUND_CLASS,
+              "relative",
+              usesDesktopChrome && MACOS_WINDOW_NO_DRAG_CLASS,
+              isTopRow &&
+                isSidebarFramed &&
+                MACOS_TITLE_BAR_TRAILING_TOGGLE_CLASS,
+            )}
+            aria-label={
+              panelShortcut
+                ? `${rightPanelLabel} (${panelShortcut.label})`
+                : rightPanelLabel
+            }
+            aria-keyshortcuts={panelShortcut?.ariaKeyshortcuts}
+            aria-expanded={isSecondaryPanelOpen}
+            onPointerEnter={preloadThreadSecondaryPanel}
+            onFocus={preloadThreadSecondaryPanel}
+            onPointerDown={preloadThreadSecondaryPanel}
+            onClick={onToggleSecondaryPanel}
+          >
+            <Icon name={rightPanelIconName} />
+            <AppCommandShortcutHint
+              shortcut={panelShortcut}
+              className={RIGHT_PANEL_TOGGLE_SHORTCUT_HINT_CLASS}
+            />
+          </Button>
         ) : null}
         {reservesWindowPanelToggle && !isWindowPanelOpen ? (
           <span

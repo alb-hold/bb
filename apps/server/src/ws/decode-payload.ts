@@ -15,6 +15,23 @@ function decodeSocketPayload(raw: unknown): string {
   return String(raw);
 }
 
+export function socketMessageType(raw: unknown): string | null {
+  try {
+    const decoded: unknown = JSON.parse(decodeSocketPayload(raw));
+    if (
+      typeof decoded === "object" &&
+      decoded !== null &&
+      "type" in decoded &&
+      typeof decoded.type === "string"
+    ) {
+      return decoded.type;
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
 export function parseSocketMessage<T>(
   socket: { close(code?: number, reason?: string): void },
   raw: unknown,

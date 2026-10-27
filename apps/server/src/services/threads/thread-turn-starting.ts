@@ -8,7 +8,10 @@ import {
 } from "./queue-waits.js";
 import { getActiveTurnId } from "./thread-events.js";
 
-type TurnStartingDeps = Pick<AppDeps, "db" | "hub" | "logger">;
+type TurnStartingDeps = Pick<
+  AppDeps,
+  "db" | "hub" | "logger" | "providerRegistry"
+>;
 
 export type QueueInputForStartingTurnResult =
   | { kind: "dispatched" }
@@ -21,6 +24,7 @@ export function queueInputForStartingTurn(
     claimed: readonly ClaimedQueuedThreadMessageRow[] | null;
     input: QueuedDispatchMessage;
     threadId: string;
+    expectedParentThreadId?: string | null;
   },
 ): QueueInputForStartingTurnResult {
   if (args.input.input.length === 0) return { kind: "dispatched" };
@@ -36,11 +40,21 @@ export function queueInputForStartingTurn(
       ) {
         return { kind: "retry", thread };
       }
+      if (
+        args.expectedParentThreadId !== undefined &&
+        thread.parentThreadId !== args.expectedParentThreadId
+      ) {
+        return { kind: "retry", thread };
+      }
       if (getActiveTurnId({ db: tx }, args.threadId) !== null) {
         return { kind: "retry", thread };
       }
       const entry = recordQueuedMessageWait(
-        { db: tx, hub: notifications },
+        {
+          db: tx,
+          hub: notifications,
+          providerRegistry: deps.providerRegistry,
+        },
         {
           thread,
           message: args.input,

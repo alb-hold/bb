@@ -11,6 +11,9 @@ import {
   LEASE_TIMEOUT_MS,
 } from "../../src/constants.js";
 import {
+  createDaemonSocketMessageQueue,
+  enqueueDaemonSocketFrame,
+  onDaemonSocketMessage,
   onDaemonSocketClose,
   startDaemonLivenessChecks,
 } from "../../src/ws/daemon-protocol.js";
@@ -120,7 +123,7 @@ describe("daemon liveness checks", () => {
   it("closes a daemon socket that sends nothing for the lease timeout", async () => {
     await withTestHarness(async (harness) => {
       const daemon = connectDaemon(harness);
-      vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+      vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
       const stop = startDaemonLivenessChecks(harness.deps);
       try {
         vi.advanceTimersByTime(LEASE_TIMEOUT_MS);
@@ -173,6 +176,67 @@ describe("daemon liveness checks", () => {
         ).toMatchObject({ status: "active" });
       } finally {
         stop();
+      }
+    });
+  });
+
+  it("keeps a daemon session alive when heartbeats arrive during a yielded replay", async () => {
+    await withTestHarness(async (harness) => {
+      const daemon = connectDaemon(harness);
+      let finishReplay!: () => void;
+      const replay = new Promise<void>((resolve) => {
+        finishReplay = resolve;
+      });
+      const queue = createDaemonSocketMessageQueue<() => void | Promise<void>>({
+        handle: (message) => message(),
+        onError: (error) => {
+          throw error;
+        },
+      });
+      vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+      const stop = startDaemonLivenessChecks(harness.deps);
+      queue.release();
+      queue.enqueue(() => replay);
+      try {
+        for (let index = 0; index < 8; index += 1) {
+          vi.advanceTimersByTime(HEARTBEAT_INTERVAL_MS - 1);
+          enqueueDaemonSocketFrame({
+            authorize: () => true,
+            enqueue: (message, priority, acceptedAtArrival) =>
+              queue.enqueue(
+                () =>
+                  onDaemonSocketMessage(harness.deps, {
+                    acceptedAtArrival,
+                    hostId: daemon.hostId,
+                    message,
+                    raw: JSON.stringify({ type: "heartbeat" }),
+                    sessionId: daemon.sessionId,
+                    socket: daemon.socket,
+                  }),
+                priority,
+              ),
+            raw: JSON.stringify({ type: "heartbeat" }),
+            recordActivity: () =>
+              harness.hub.recordDaemonActivity(daemon.sessionId),
+            socket: daemon.socket,
+          });
+          vi.advanceTimersByTime(1);
+        }
+        expect(
+          getSessionById(harness.db, { sessionId: daemon.sessionId })!
+            .leaseExpiresAt,
+        ).toBeGreaterThan(Date.now());
+        expect(harness.hub.hasDaemonForHost(daemon.hostId)).toBe(true);
+        expect(
+          daemon.socket.messages.map((message) => JSON.parse(message)),
+        ).toContainEqual({
+          type: "heartbeat-ack",
+        });
+      } finally {
+        stop();
+        queue.close();
+        finishReplay();
+        vi.useRealTimers();
       }
     });
   });

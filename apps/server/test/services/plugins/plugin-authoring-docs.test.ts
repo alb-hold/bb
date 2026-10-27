@@ -12,6 +12,7 @@ import {
   type PluginContentScriptContext,
   type PluginContentScriptRegistration,
   type PluginDiffRendererProps,
+  type ExperimentalComposerProps,
   type PluginFileOpenerProps,
   type PluginHomepageSectionProps,
   type PluginHttpAuthMode,
@@ -35,6 +36,8 @@ import {
   type PluginSidebarFooterActionProps,
   type PluginSourceCodeRendererProps,
   type PluginThreadHeaderActionProps,
+  type ExperimentalThreadContextSegmentProps,
+  type ExperimentalThreadInfoProps,
   type PluginThreadActionItemInput,
   type ExperimentalPluginBrowserToolbarActionProps,
   type PluginThreadListProps,
@@ -43,7 +46,7 @@ import {
   type ExperimentalSidebarHeaderProps,
   type PluginSidebarFooterActionRegistration,
   type PluginThreadEventPayloads,
-  type PluginThreadPanelProps,
+  type ExperimentalThreadActionTabProps,
   type ThreadChatMessageAction,
   type ThreadChatProps,
 } from "@get-bb/plugin-sdk";
@@ -154,7 +157,7 @@ const PUBLIC_PLUGIN_SDK_EXPORT_NAMES = [
       join(REPO_ROOT, "packages/plugin-sdk/bundled-types", filename),
       "utf8",
     ),
-  ),
+  ).filter((name) => !name.startsWith("InternalDoNotUse")),
 );
 
 const BB_PLUGIN_API_KEYS = [
@@ -250,7 +253,9 @@ const THREAD_EVENT_PAYLOAD_FIELDS = {
     "attemptNumber",
   ],
 } as const satisfies {
-  [E in keyof PluginThreadEventPayloads]: readonly (keyof PluginThreadEventPayloads[E])[];
+  [
+    E in keyof PluginThreadEventPayloads
+  ]: readonly (keyof PluginThreadEventPayloads[E])[];
 };
 
 type MissingThreadEventField = {
@@ -269,18 +274,22 @@ type SlotPropsByName = {
   settingsSection: PluginSettingsSectionProps;
   experimental_appOverlay: ExperimentalAppOverlayProps;
   navPanel: PluginNavPanelProps;
-  threadPanelAction: PluginThreadPanelProps;
+  experimental_tab: ExperimentalThreadActionTabProps | PluginNavPanelProps;
   experimental_newThreadPanelAction: PluginNewThreadPanelProps;
   pendingInteraction: PluginPendingInteractionProps;
   sidebarFooterAction: PluginSidebarFooterActionProps;
   experimental_threadList: PluginThreadListProps;
   experimental_sidebarNavigation: ExperimentalSidebarNavigationProps;
   experimental_threadHeaderAction: PluginThreadHeaderActionProps;
+  experimental_threadContextSegment: ExperimentalThreadContextSegmentProps;
+  experimental_threadInfoRow: ExperimentalThreadInfoProps;
+  experimental_threadInfoSection: ExperimentalThreadInfoProps;
   experimental_threadAction: PluginThreadActionItemInput<unknown>;
   experimental_browserToolbarAction: ExperimentalPluginBrowserToolbarActionProps;
   fileOpener: PluginFileOpenerProps;
   experimental_sourceCodeRenderer: PluginSourceCodeRendererProps;
   experimental_diffRenderer: PluginDiffRendererProps;
+  experimental_composer: ExperimentalComposerProps;
   messageDirective: PluginMessageDirectiveProps;
   experimental_codeFenceRenderer: ExperimentalCodeFenceRendererProps;
   messageAction: PluginMessageActionContext;
@@ -290,6 +299,8 @@ type SlotPropsByName = {
   experimental_environmentProviderInputs: PluginEnvironmentProviderInputsProps;
   experimental_machineProviderInputs: PluginMachineProviderInputsProps;
 };
+
+type SlotPropKeys<T> = T extends unknown ? keyof T : never;
 
 type MissingSlot = Exclude<keyof PluginAppSlots, keyof SlotPropsByName>;
 const _assertAllSlotsListed: MissingSlot extends never ? true : never = true;
@@ -348,7 +359,7 @@ const FRONTEND_SLOT_PROP_FIELDS = {
   settingsSection: [],
   experimental_appOverlay: [],
   navPanel: ["subPath"],
-  threadPanelAction: ["threadId", "params"],
+  experimental_tab: ["threadId", "subPath", "params"],
   experimental_newThreadPanelAction: ["projectId", "params"],
   pendingInteraction: ["interaction", "submit", "cancel"],
   sidebarFooterAction: [],
@@ -364,6 +375,16 @@ const FRONTEND_SLOT_PROP_FIELDS = {
     "projectId",
     "isCompactViewport",
   ],
+  experimental_threadContextSegment: [
+    "threadId",
+    "projectId",
+    "environment",
+    "segments",
+    "isExpanded",
+    "onToggle",
+  ],
+  experimental_threadInfoRow: ["threadId", "projectId", "environment"],
+  experimental_threadInfoSection: ["threadId", "projectId", "environment"],
   experimental_threadAction: ["thread", "data", "sdk", "navigate"],
   experimental_browserToolbarAction: [
     "threadId",
@@ -389,6 +410,7 @@ const FRONTEND_SLOT_PROP_FIELDS = {
     "experimental_fullFileContents",
     "Original",
   ],
+  experimental_composer: [],
   messageDirective: ["attributes", "source", "message", "openWorkspaceFile"],
   experimental_codeFenceRenderer: [
     "code",
@@ -427,12 +449,12 @@ const FRONTEND_SLOT_PROP_FIELDS = {
     "experimental_Original",
   ],
 } as const satisfies {
-  [S in keyof SlotPropsByName]: readonly (keyof SlotPropsByName[S])[];
+  [S in keyof SlotPropsByName]: readonly SlotPropKeys<SlotPropsByName[S]>[];
 };
 
 type MissingSlotPropField = {
   [S in keyof SlotPropsByName]: Exclude<
-    keyof SlotPropsByName[S],
+    SlotPropKeys<SlotPropsByName[S]>,
     (typeof FRONTEND_SLOT_PROP_FIELDS)[S][number]
   >;
 }[keyof SlotPropsByName];
@@ -480,9 +502,10 @@ const NAV_PANEL_REGISTRATION_FIELDS = [
   "icon",
   "path",
   "component",
-  "fixedTabs",
   "experimental_useBadge",
+  "experimental_usePageTitle",
   "headerContent",
+  "experimental_sidebar",
 ] as const satisfies readonly (keyof PluginNavPanelRegistration)[];
 
 type MissingNavPanelRegistrationField = Exclude<

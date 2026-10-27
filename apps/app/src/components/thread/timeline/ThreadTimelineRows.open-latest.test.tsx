@@ -128,6 +128,7 @@ function OpenThread({
     });
   return (
     <ThreadTimelinePane
+      threadIsActive={true}
       footer={<div>Composer</div>}
       canSpawnChild={false}
       hasOlderTimelineRows={false}
@@ -216,7 +217,8 @@ function renderThread(
       rerender(element(false, 400, false, false, false)),
     blurThread: () => rerender(element(false, 300, false, false, false)),
     focusThread: () => rerender(element(false, 400, false, false, true)),
-    focusWithoutNewAttention: () => rerender(element(false, 300, false, false, true)),
+    focusWithoutNewAttention: () =>
+      rerender(element(false, 300, false, false, true)),
     receiveFreshThread: (latestAttentionAt: number) => {
       currentIsPlaceholderData = false;
       rerender(element(false, latestAttentionAt));
@@ -250,6 +252,19 @@ describe("opening an unseen timeline", () => {
     resize();
     flushFrames();
     expect(area.scrollTop).toBe(3300);
+  });
+
+  it("repairs a virtualizer scroll correction after growth while an unseen opening is pinned", () => {
+    height = 400_000;
+    const { area } = renderThread();
+    resize();
+    expect(area.scrollTop).toBe(399_200);
+    height += 100;
+    area.scrollTop = 20_500;
+    fireEvent.scroll(area);
+    flushFrames();
+    act(() => vi.advanceTimersByTime(25_000));
+    expect(area.scrollTop).toBe(399_300);
   });
 
   it("repairs a virtualizer scroll correction while an unseen opening is pinned", () => {
@@ -301,18 +316,48 @@ describe("opening an unseen timeline", () => {
     expect(area.scrollTop).toBe(3300);
   });
 
+  it("keeps an earlier upward scroll when unseen activity arrives before refocus", () => {
+    const { area, blurThread, receiveUnseenAttentionWhileHidden, focusThread } =
+      renderThread(150, true);
+    resize();
+    flushFrames();
+    expect(area.scrollTop).toBe(2700);
+
+    fireEvent.wheel(area, { deltaY: -500 });
+    area.scrollTop = 200;
+    fireEvent.scroll(area);
+    flushFrames();
+    expect(area.scrollTop).toBe(200);
+
+    blurThread();
+    receiveUnseenAttentionWhileHidden();
+    focusThread();
+    expect(area.scrollTop).toBe(200);
+    height += 600;
+    resize();
+    flushFrames();
+    expect(area.scrollTop).toBe(200);
+  });
+
   it.each(["wheel", "touch", "keyboard", "pointer"])(
     "leaves deliberate upward %s scrolling alone while unseen rows settle",
     (input) => {
       const { area } = renderThread();
       resize();
       if (input === "wheel") fireEvent.wheel(area, { deltaY: -500 });
-      if (input === "touch") fireEvent.touchMove(area);
+      if (input === "touch") {
+        fireEvent.touchStart(area, { touches: [{ clientY: 100 }] });
+        fireEvent.touchMove(area, { touches: [{ clientY: 120 }] });
+      }
       if (input === "keyboard") fireEvent.keyDown(area, { key: "ArrowUp" });
-      if (input === "pointer") fireEvent.pointerDown(area);
+      if (input === "pointer") {
+        fireEvent.pointerDown(area, { clientX: 10, clientY: 10 });
+        fireEvent.pointerMove(window, { clientX: 10, clientY: 20 });
+      }
       area.scrollTop = 200;
       fireEvent.scroll(area);
       if (input === "pointer") fireEvent.pointerUp(window);
+      if (input === "touch") fireEvent.touchEnd(area);
       act(() => vi.advanceTimersByTime(1));
       height += 600;
       resize();
@@ -506,7 +551,11 @@ describe("opening an unseen timeline", () => {
       offsetWithinRow: 0,
       atBottom: false,
     });
-    const { area, changeOpening, receiveNewEvent } = renderThread(350, false, true);
+    const { area, changeOpening, receiveNewEvent } = renderThread(
+      350,
+      false,
+      true,
+    );
     resize();
     act(() => vi.advanceTimersByTime(1));
     flushFrames();
@@ -544,7 +593,11 @@ describe("opening an unseen timeline", () => {
   });
 
   it("opens at newest when new attention arrives while a read cache is opening", () => {
-    const { area, catchUp, receiveOpeningAttention } = renderThread(350, false, true);
+    const { area, catchUp, receiveOpeningAttention } = renderThread(
+      350,
+      false,
+      true,
+    );
     resize();
     receiveOpeningAttention();
     act(() => vi.advanceTimersByTime(25_000));

@@ -1,11 +1,22 @@
 import { z } from "zod";
 import {
+  GENERATED_ID_ALPHABET,
+  GENERATED_ID_SUFFIX_LENGTH,
   terminalColsSchema,
   terminalDataBase64Schema,
   terminalRowsSchema,
   terminalSessionCloseReasonSchema,
   terminalSessionStatusSchema,
 } from "@bb/domain";
+
+export const terminalSessionIdSchema = z
+  .string()
+  .regex(
+    new RegExp(
+      `^term_[${GENERATED_ID_ALPHABET}]{${GENERATED_ID_SUFFIX_LENGTH}}$`,
+      "u",
+    ),
+  );
 
 export const terminalSessionSchema = z.object({
   id: z.string().min(1),
@@ -120,6 +131,7 @@ export type TerminalCreateTarget = z.infer<typeof terminalCreateTargetSchema>;
 export const createTerminalRequestSchema = z
   .object({
     cols: terminalColsSchema,
+    id: terminalSessionIdSchema.optional(),
     rows: terminalRowsSchema,
     cwd: z.string().trim().min(1).max(4096).optional(),
     start: z
@@ -206,6 +218,32 @@ export const terminalOutputQuerySchema = z
   })
   .strict();
 export type TerminalOutputQuery = z.infer<typeof terminalOutputQuerySchema>;
+
+export const terminalScreenQuerySchema = z
+  .object({
+    lines: z.coerce.number().int().positive().max(500).optional(),
+  })
+  .strict();
+export type TerminalScreenQuery = z.infer<typeof terminalScreenQuerySchema>;
+
+export const terminalScreenResponseSchema = z
+  .object({
+    rows: z.array(z.string()),
+    cursor: z
+      .object({
+        col: z.number().int().nonnegative(),
+        row: z.number().int().nonnegative(),
+      })
+      .strict(),
+    cols: terminalColsSchema,
+    gridRows: terminalRowsSchema,
+    truncated: z.boolean(),
+    complete: z.boolean(),
+  })
+  .strict();
+export type TerminalScreenResponse = z.infer<
+  typeof terminalScreenResponseSchema
+>;
 
 export const terminalWebSocketQuerySchema = z
   .object({

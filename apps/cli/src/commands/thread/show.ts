@@ -13,7 +13,6 @@ import {
   type Thread,
   type ThreadEventRow,
   type ThreadGitDiffResponse,
-  type ThreadPullRequest,
   type ThreadTimelinePendingTodos,
   type WorkspaceStatus,
 } from "@bb/domain";
@@ -24,6 +23,12 @@ import {
   type ThreadChildSummaryResult,
   type ThreadSpendSummaryResult,
 } from "@bb/sdk";
+import {
+  environmentPullRequestSchema,
+  GITHUB_PR_STATUS_PLUGIN_ID,
+  type PullRequest,
+} from "bb-plugin-bb--github-pr-status/contract";
+import { z } from "zod";
 import type {
   EnvironmentDiffQuery,
   ThreadTimelineResponse,
@@ -99,7 +104,7 @@ interface ThreadShowJsonPayload extends ThreadStatusPayload {
 
 interface ThreadShowPullRequestPayload {
   status: "available" | "none" | "unavailable";
-  pullRequest: ThreadPullRequest | null;
+  pullRequest: PullRequest | null;
   message?: string;
 }
 
@@ -160,9 +165,13 @@ async function fetchPullRequest(args: {
   sdk: BbSdk;
 }): Promise<FetchedPullRequest> {
   try {
-    const response = await args.sdk.environments.pullRequest({
-      environmentId: args.environmentId,
+    const rows = await args.sdk.plugins.callRpc({
+      pluginId: GITHUB_PR_STATUS_PLUGIN_ID,
+      method: "pullRequests",
+      input: { keys: [args.environmentId] },
+      outputSchema: z.record(z.string(), environmentPullRequestSchema),
     });
+    const response = rows[args.environmentId] ?? { outcome: "absent" };
     if (response.outcome === "available") {
       return {
         status: "available",
@@ -225,6 +234,15 @@ export function printExecutionProfile(
   console.log(
     `    Overrides:      ${model === null && reasoningLevel === null ? "none (defaults apply)" : `model ${model ?? "default"} · reasoning ${reasoningLevel ?? "default"}`}`,
   );
+  if (
+    model !== null &&
+    execution.nextTurn !== null &&
+    model !== execution.nextTurn.model
+  ) {
+    console.log(
+      `    Model comparison: stored override ${model}; next turn ${execution.nextTurn.model}`,
+    );
+  }
   console.log(
     `    Last requested: ${execution.lastRequested ? describe(execution.lastRequested) : "(no turn yet)"}`,
   );
@@ -603,7 +621,7 @@ export function registerShowCommand(
             if (ws.mergeBase) {
               console.log(`  Merge base:   ${ws.mergeBase.mergeBaseBranch}`);
               console.log(
-                `  Ahead: ${ws.mergeBase.aheadCount}  Behind: ${ws.mergeBase.behindCount}`,
+                `  Ahead: ${ws.mergeBase.aheadCount}  Behind: ${ws.mergeBase.behindCount}${ws.mergeBase.squashMergeCheckComplete ? "" : " (squash-merge check incomplete)"}`,
               );
             }
           } else {

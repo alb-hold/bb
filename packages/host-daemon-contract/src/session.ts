@@ -13,6 +13,7 @@ import {
 } from "./server-move.js";
 import {
   discoveredWorkspacePropertiesSchema,
+  idleProviderSessionTimeoutMinutesSchema,
   ENVIRONMENT_CHANGE_KINDS,
   jsonValueSchema,
   pendingInteractionCreateSchema,
@@ -96,6 +97,66 @@ export type HostDaemonConnectShares = z.infer<
   typeof hostDaemonConnectSharesSchema
 >;
 
+const hostDaemonConnectNextServerSchema = z
+  .object({
+    protocol: z.enum(["wss", "websocket"]),
+    host: z.string().min(1).max(253),
+    port: z.number().int().min(1).max(65535),
+  })
+  .strict();
+
+export const hostDaemonConnectNextConfigSchema = z
+  .object({
+    domain: z.string().min(1).max(253),
+    server: hostDaemonConnectNextServerSchema,
+  })
+  .strict();
+export type HostDaemonConnectNextConfig = z.infer<
+  typeof hostDaemonConnectNextConfigSchema
+>;
+
+const hostDaemonConnectNextSchema = z
+  .object({
+    generation: z.number().int().nonnegative(),
+    config: hostDaemonConnectNextConfigSchema.nullable(),
+  })
+  .strict();
+export type HostDaemonConnectNext = z.infer<typeof hostDaemonConnectNextSchema>;
+
+export const hostDaemonConnectNextStateSchema = z.enum([
+  "idle",
+  "connecting",
+  "connected",
+  "refused",
+  "offline",
+  "error",
+]);
+export type HostDaemonConnectNextState = z.infer<
+  typeof hostDaemonConnectNextStateSchema
+>;
+
+export const hostDaemonConnectNextStatusSchema = z
+  .object({
+    state: hostDaemonConnectNextStateSchema,
+    label: z.string().min(1).nullable(),
+    lastError: z.string().max(2000).nullable(),
+    nextRetryAt: z.number().int().nonnegative().nullable(),
+    since: z.number().int().nonnegative(),
+    shares: z.array(
+      z
+        .object({
+          port: z.number().int().min(1).max(65535),
+          state: z.enum(["pending", "active", "refused"]),
+          error: z.string().max(2000).nullable(),
+        })
+        .strict(),
+    ),
+  })
+  .strict();
+export type HostDaemonConnectNextStatus = z.infer<
+  typeof hostDaemonConnectNextStatusSchema
+>;
+
 const hostDaemonPluginHostGenerationSchema = z
   .object({
     pluginId: z.string().min(1),
@@ -172,6 +233,7 @@ export const hostDaemonSessionOpenResponseSchema = z
   .object({
     sessionId: z.string().min(1),
     machineEnvironment: machineEnvironmentSchema,
+    idleProviderSessionTimeoutMinutes: idleProviderSessionTimeoutMinutesSchema,
     heartbeatIntervalMs: z.number().int().positive(),
     leaseTimeoutMs: z.number().int().positive(),
     watchSet: hostDaemonWatchSetSchema.default({
@@ -182,6 +244,10 @@ export const hostDaemonSessionOpenResponseSchema = z
     connectShares: hostDaemonConnectSharesSchema.default({
       generation: 0,
       ports: [],
+    }),
+    connectNext: hostDaemonConnectNextSchema.default({
+      generation: 0,
+      config: null,
     }),
     pluginHostGenerations: z
       .array(hostDaemonPluginHostGenerationSchema)
@@ -408,6 +474,15 @@ export type HostDaemonConnectSharesReplaceMessage = z.infer<
   typeof hostDaemonConnectSharesReplaceMessageSchema
 >;
 
+const hostDaemonConnectNextReplaceMessageSchema = hostDaemonConnectNextSchema
+  .extend({
+    type: z.literal("connect-next.replace"),
+  })
+  .strict();
+export type HostDaemonConnectNextReplaceMessage = z.infer<
+  typeof hostDaemonConnectNextReplaceMessageSchema
+>;
+
 const hostDaemonOnlineRpcResponseSuccessBaseSchema = z
   .object({
     type: z.literal("host-rpc.response"),
@@ -440,6 +515,7 @@ function commandRpcResponseSuccessSchemaFor<
 const hostDaemonOnlineRpcResponseSuccessSchema = z.discriminatedUnion(
   "commandType",
   [
+    onlineRpcResponseSuccessSchemaFor("desktop.broker.prove"),
     onlineRpcResponseSuccessSchemaFor("desktop.browser.list_instances"),
     onlineRpcResponseSuccessSchemaFor("desktop.browser.list_tabs"),
     onlineRpcResponseSuccessSchemaFor("desktop.browser.create_tab"),
@@ -463,6 +539,7 @@ const hostDaemonOnlineRpcResponseSuccessSchema = z.discriminatedUnion(
     onlineRpcResponseSuccessSchemaFor("host.pick_folder"),
     onlineRpcResponseSuccessSchemaFor("environment.hook.run"),
     onlineRpcResponseSuccessSchemaFor("environment.hook.cancel"),
+    onlineRpcResponseSuccessSchemaFor("environment.inspect_cleanup"),
     onlineRpcResponseSuccessSchemaFor("plugin.host.call"),
     onlineRpcResponseSuccessSchemaFor("plugin.host.cancel"),
     onlineRpcResponseSuccessSchemaFor("plugin.host.dispose"),
@@ -493,7 +570,6 @@ const hostDaemonOnlineRpcResponseSuccessSchema = z.discriminatedUnion(
     onlineRpcResponseSuccessSchemaFor("workspace.diff"),
     onlineRpcResponseSuccessSchemaFor("workspace.diffFiles"),
     onlineRpcResponseSuccessSchemaFor("workspace.diffPatch"),
-    onlineRpcResponseSuccessSchemaFor("workspace.pull_request"),
     onlineRpcResponseSuccessSchemaFor("server_move.inspect"),
     onlineRpcResponseSuccessSchemaFor("server_move.probe"),
     onlineRpcResponseSuccessSchemaFor("server_move.prepare"),
@@ -516,7 +592,6 @@ const hostDaemonOnlineRpcResponseSuccessSchema = z.discriminatedUnion(
     commandRpcResponseSuccessSchemaFor("project.clone"),
     commandRpcResponseSuccessSchemaFor("environment.attach.cancel"),
     commandRpcResponseSuccessSchemaFor("workspace.commit"),
-    commandRpcResponseSuccessSchemaFor("workspace.pull_request_action"),
   ],
 );
 
@@ -663,6 +738,13 @@ const hostDaemonTerminalAckMessageSchema = z
 export const hostDaemonServerWsMessageSchema = z.discriminatedUnion("type", [
   z
     .object({
+      type: z.literal("provider-session-policy.replace"),
+      idleProviderSessionTimeoutMinutes:
+        idleProviderSessionTimeoutMinutesSchema,
+    })
+    .strict(),
+  z
+    .object({
       type: z.literal("machine-environment.replace"),
       environment: machineEnvironmentSchema,
     })
@@ -688,6 +770,7 @@ export const hostDaemonServerWsMessageSchema = z.discriminatedUnion("type", [
   hostDaemonOnlineRpcCancelMessageSchema,
   hostDaemonWatchSetReplaceMessageSchema,
   hostDaemonConnectSharesReplaceMessageSchema,
+  hostDaemonConnectNextReplaceMessageSchema,
   hostDaemonTerminalOpenMessageSchema,
   hostDaemonTerminalAttachMessageSchema,
   hostDaemonTerminalInputMessageSchema,
@@ -738,6 +821,16 @@ const hostDaemonConnectTunnelIdentityMessageSchema = z
     identity: hostDaemonConnectTunnelIdentitySchema,
   })
   .strict();
+
+const hostDaemonConnectNextStatusMessageSchema = z
+  .object({
+    type: z.literal("connect-next.status"),
+    status: hostDaemonConnectNextStatusSchema,
+  })
+  .strict();
+export type HostDaemonConnectNextStatusMessage = z.infer<
+  typeof hostDaemonConnectNextStatusMessageSchema
+>;
 
 const pluginHostWorkerExitedMessageSchema = z
   .object({
@@ -851,6 +944,7 @@ export const hostDaemonDaemonWsMessageSchema = z.union([
   hostDaemonEnvironmentChangeMessageSchema,
   hostDaemonEnvironmentMetadataChangeMessageSchema,
   hostDaemonConnectTunnelIdentityMessageSchema,
+  hostDaemonConnectNextStatusMessageSchema,
   pluginHostWorkerExitedMessageSchema,
   pluginHostSignalMessageSchema,
   environmentHookProgressMessageSchema,
