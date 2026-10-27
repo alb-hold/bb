@@ -332,7 +332,7 @@ describe("the request shape a pre-#277 holder sends", () => {
     });
   }
 
-  it("is rejected with 401, no lifecycle effect and no stamp, while the same report with the current credential has every effect", async () => {
+  it("applies credentialless legacy working, waiting and idle reports", async () => {
     const { harness, thread } = await nativeThread();
     const title = vi
       .spyOn(titleGeneration, "generateAndApplyThreadTitle")
@@ -344,46 +344,28 @@ describe("the request shape a pre-#277 holder sends", () => {
       { state: "idle" },
     ];
 
-    for (const body of reports) {
-      const legacy = await post(harness, thread.id, body);
-      expect(legacy.status).toBe(401);
-      expect(await legacy.json()).toMatchObject({
-        code: "native_terminal_credential_invalid",
-      });
-    }
-    expect(getThread(harness.db, thread.id)?.status).toBe("idle");
-    expect(
-      listPendingInteractionsByThread(harness.db, { threadId: thread.id }),
-    ).toHaveLength(0);
-    expect(title).not.toHaveBeenCalled();
-    expect(getNativeTerminalThread(harness.db, thread.id)).toMatchObject({
-      lastEvidenceAt: null,
-      nativeSessionId: SESSION_ID,
-    });
-
-    const authorization = `Bearer ${SECRET}`;
-    expect(
-      (await post(harness, thread.id, reports[0], authorization)).status,
-    ).toBe(200);
+    expect((await post(harness, thread.id, reports[0])).status).toBe(200);
     expect(getThread(harness.db, thread.id)?.status).toBe("active");
     expect(title).toHaveBeenCalledTimes(1);
-    expect(
-      getNativeTerminalThread(harness.db, thread.id)?.lastEvidenceAt,
-    ).not.toBeNull();
-    expect(
-      (await post(harness, thread.id, reports[1], authorization)).status,
-    ).toBe(200);
+    expect((await post(harness, thread.id, reports[1])).status).toBe(200);
     expect(openQuestions(harness, thread.id)).toHaveLength(1);
     expect(
       listPendingInteractionsByThread(harness.db, { threadId: thread.id }),
     ).toHaveLength(1);
-    expect(
-      (await post(harness, thread.id, reports[2], authorization)).status,
-    ).toBe(200);
+    expect((await post(harness, thread.id, reports[2])).status).toBe(200);
     expect(getThread(harness.db, thread.id)?.status).toBe("idle");
+    expect(openQuestions(harness, thread.id)).toHaveLength(0);
+    expect(
+      listPendingInteractionsByThread(harness.db, { threadId: thread.id })
+        .filter((row) => row.status === "interrupted")
+        .map((row) => [row.providerRequestId, row.statusReason]),
+    ).toEqual([["native:q1", ANSWERED]]);
+    expect(
+      getNativeTerminalThread(harness.db, thread.id)?.lastEvidenceAt,
+    ).not.toBeNull();
   });
 
-  it("a legacy idle report sent while the thread is ACTIVE is rejected with 401 and leaves it active, while the credentialed idle settles it", async () => {
+  it("applies a credentialless legacy idle report while the thread is ACTIVE", async () => {
     const { harness, thread } = await nativeThread();
     lifecycleOutcome.applyLoggedThreadLifecycleEvent(harness.deps, {
       event: { type: "run.started" },
@@ -392,16 +374,7 @@ describe("the request shape a pre-#277 holder sends", () => {
     expect(getThread(harness.db, thread.id)?.status).toBe("active");
 
     const legacy = await post(harness, thread.id, { state: "idle" });
-    expect(legacy.status).toBe(401);
-    expect(getThread(harness.db, thread.id)?.status).toBe("active");
-
-    const current = await post(
-      harness,
-      thread.id,
-      { state: "idle" },
-      `Bearer ${SECRET}`,
-    );
-    expect(current.status).toBe(200);
+    expect(legacy.status).toBe(200);
     expect(getThread(harness.db, thread.id)?.status).toBe("idle");
   });
 });
@@ -699,7 +672,7 @@ describe("a waiting report whose response is lost, then a newer report, through 
     });
   });
 
-  it("keeps a rejected close report blocked until a newer report applies the current state", async () => {
+  it("resends a rejected non-empty close once without the field and applies its state", async () => {
     const { harness, thread } = await nativeThread();
     const sent: Array<string[] | undefined> = [];
     let rejectClose = true;
@@ -747,15 +720,16 @@ describe("a waiting report whose response is lost, then a newer report, through 
     await reporter.settled();
     reporter.report({ prompt: null, state: "working" });
     await reporter.settled();
-    expect(sent).toEqual([[], ["q1", "q2"]]);
-    expect(openRequestIds(harness, thread.id)).toHaveLength(2);
+    expect(sent).toEqual([[], ["q1", "q2"], undefined]);
+    expect(openRequestIds(harness, thread.id)).toEqual([]);
+    expect(getThread(harness.db, thread.id)?.status).toBe("active");
 
     reporter.retry();
     await reporter.settled();
-    expect(sent).toEqual([[], ["q1", "q2"]]);
+    expect(sent).toEqual([[], ["q1", "q2"], undefined]);
     reporter.report({ prompt: null, state: "working" });
     await reporter.settled();
-    expect(sent).toEqual([[], ["q1", "q2"], undefined]);
+    expect(sent).toEqual([[], ["q1", "q2"], undefined, undefined]);
     expect(openRequestIds(harness, thread.id)).toEqual([]);
     expect(
       listPendingInteractionsByThread(harness.db, {
