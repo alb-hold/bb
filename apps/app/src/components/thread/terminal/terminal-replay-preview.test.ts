@@ -16,6 +16,78 @@ afterEach(() => {
   HTMLCanvasElement.prototype.getContext = originalGetContext;
 });
 
+function installPreviewCanvasContext() {
+  const context = new Proxy(
+    {
+      measureText: (text: string) => ({ width: text.length * 8 }),
+      getImageData: () => ({ data: new Uint8ClampedArray(4) }),
+      createImageData: () => ({ data: new Uint8ClampedArray(4) }),
+    } as Record<string, unknown>,
+    {
+      get(target, property) {
+        const value = target[property as string];
+        return value ?? (() => undefined);
+      },
+      set(target, property, value) {
+        target[property as string] = value;
+        return true;
+      },
+    },
+  );
+  HTMLCanvasElement.prototype.getContext = (() =>
+    context) as unknown as typeof HTMLCanvasElement.prototype.getContext;
+}
+
+async function createPreviewHarness({
+  cols,
+  rows,
+  fitCols,
+  fitRows,
+}: {
+  cols: number;
+  rows: number;
+  fitCols: number;
+  fitRows: number;
+}) {
+  installPreviewCanvasContext();
+  const parent = document.createElement("div");
+  const container = document.createElement("div");
+  parent.append(container);
+  document.body.append(parent);
+  Object.defineProperty(container, "getBoundingClientRect", {
+    configurable: true,
+    value: () => new DOMRect(0, 0, 960, 940),
+  });
+  Object.defineProperty(container, "clientWidth", {
+    configurable: true,
+    value: 960,
+  });
+  const terminal = new Terminal({ cols, rows });
+  const cover = mountTerminalReplayPreview({
+    container,
+    initialFitGrid: { cols: fitCols, rows: fitRows },
+    isOwner: () => false,
+    terminal,
+  });
+  await new Promise<void>((resolve) =>
+    cover.push(Buffer.from("\u001b[12;9Hscreenshot snapshot"), resolve),
+  );
+  const expectedCursor = {
+    x: terminal.buffer.active.cursorX,
+    y: terminal.buffer.active.cursorY,
+  };
+  return {
+    container,
+    cover,
+    expectedCursor,
+    parent,
+    previewElement: parent.querySelector<HTMLElement>(
+      "[data-terminal-replay-preview]",
+    )!,
+    terminal,
+  };
+}
+
 describe("terminal replay preview", () => {
   it("preserves xterm focus when mounting the snapshot preview surface", () => {
     const context = new Proxy(
@@ -175,7 +247,7 @@ describe("terminal replay preview", () => {
     parent.remove();
   });
 
-  it("keeps a phone preview hidden until the PTY grid matches its fit", async () => {
+  it("keeps snapshot columns until the authoritative PTY grid matches the phone fit", async () => {
     const context = new Proxy(
       {
         measureText: (text: string) => ({ width: text.length * 8 }),
@@ -213,7 +285,11 @@ describe("terminal replay preview", () => {
       "[data-terminal-replay-preview]",
     )!;
     expect(preview.cols).toBe(135);
-    expect(getComputedStyle(previewElement).visibility).toBe("hidden");
+    expect(getComputedStyle(previewElement).visibility).toBe("visible");
+    expect({ cols: preview.cols, rows: preview.rows }).toEqual({
+      cols: 135,
+      rows: 56,
+    });
     expect(previewElement.getAttribute("data-grid-cols")).toBe("135");
 
     await cover.resize(51, 47);
@@ -423,7 +499,7 @@ describe("terminal replay preview", () => {
     parent.remove();
   });
 
-  it("keeps an owner hidden until its fitted grid arrives", async () => {
+  it("shows an owner the snapshot grid until the authoritative fitted grid arrives", async () => {
     const context = new Proxy(
       {
         measureText: (text: string) => ({ width: text.length * 8 }),
@@ -459,7 +535,11 @@ describe("terminal replay preview", () => {
       "[data-terminal-replay-preview]",
     )!;
 
-    expect(getComputedStyle(previewElement).visibility).toBe("hidden");
+    expect(getComputedStyle(previewElement).visibility).toBe("visible");
+    expect({ cols: preview.cols, rows: preview.rows }).toEqual({
+      cols: 135,
+      rows: 56,
+    });
 
     const resized = cover.resize(51, 47);
     await resized;
@@ -641,6 +721,111 @@ describe("terminal replay preview", () => {
     expect({ x: finalFrame.cursorX, y: finalFrame.cursorY }).toEqual(
       expectedCursor,
     );
+  });
+
+  it("keeps snapshot columns and content while fitting a wider pane", async () => {
+    const harness = await createPreviewHarness({
+      cols: 100,
+      rows: 36,
+      fitCols: 120,
+      fitRows: 47,
+    });
+    const widthBefore = harness.container.getBoundingClientRect().width;
+
+    expect(getComputedStyle(harness.previewElement).visibility).toBe("visible");
+    expect({ cols: harness.terminal.cols, rows: harness.terminal.rows }).toEqual({
+      cols: 100,
+      rows: 47,
+    });
+    expect(
+      Array.from({ length: harness.terminal.buffer.active.length }, (_, index) =>
+        harness.terminal.buffer.active.getLine(index)?.translateToString(true),
+      ).join("\n"),
+    ).toContain("screenshot snapshot");
+    expect({
+      x: harness.terminal.buffer.active.cursorX,
+      y: harness.terminal.buffer.active.cursorY,
+    }).toEqual(harness.expectedCursor);
+    expect(harness.previewElement.style.overflow).toBe("hidden");
+    expect(harness.container.scrollWidth).toBeLessThanOrEqual(
+      harness.container.clientWidth,
+    );
+    expect(harness.container.getBoundingClientRect().width).toBe(widthBefore);
+
+    harness.cover.dispose();
+    harness.parent.remove();
+  });
+
+  it("keeps the local frame painted until the authoritative smaller grid is applied", async () => {
+    const harness = await createPreviewHarness({
+      cols: 120,
+      rows: 36,
+      fitCols: 120,
+      fitRows: 47,
+    });
+
+    expect(harness.terminal.rows).toBe(47);
+    expect(getComputedStyle(harness.previewElement).visibility).toBe("visible");
+    harness.cover.setPtyGrid(120, 40);
+    expect(getComputedStyle(harness.previewElement).visibility).toBe("visible");
+    expect(harness.terminal.rows).toBe(47);
+    await harness.cover.resize(120, 40);
+    expect(getComputedStyle(harness.previewElement).visibility).toBe("visible");
+    expect({ cols: harness.terminal.cols, rows: harness.terminal.rows }).toEqual({
+      cols: 120,
+      rows: 40,
+    });
+
+    harness.cover.dispose();
+    harness.parent.remove();
+  });
+
+  it("keeps snapshot rows visible when the pane fit is smaller and no grid arrives", async () => {
+    const harness = await createPreviewHarness({
+      cols: 120,
+      rows: 47,
+      fitCols: 120,
+      fitRows: 36,
+    });
+    vi.useFakeTimers();
+    await vi.advanceTimersByTimeAsync(30_000);
+
+    expect(harness.terminal.rows).toBe(47);
+    expect(getComputedStyle(harness.previewElement).visibility).toBe("visible");
+
+    harness.cover.dispose();
+    harness.parent.remove();
+  });
+
+  it("holds post-snapshot output until the authoritative grid arrives", async () => {
+    const harness = await createPreviewHarness({
+      cols: 120,
+      rows: 36,
+      fitCols: 120,
+      fitRows: 47,
+    });
+    let liveWriteCompleted = false;
+    harness.cover.push(Buffer.from("\r\nlive after marker"), () => {
+      liveWriteCompleted = true;
+    });
+
+    expect(liveWriteCompleted).toBe(false);
+    expect(
+      Array.from({ length: harness.terminal.buffer.active.length }, (_, index) =>
+        harness.terminal.buffer.active.getLine(index)?.translateToString(true),
+      ).join("\n"),
+    ).not.toContain("live after marker");
+
+    harness.cover.setPtyGrid(120, 40);
+    await vi.waitFor(() => expect(liveWriteCompleted).toBe(true));
+    expect(
+      Array.from({ length: harness.terminal.buffer.active.length }, (_, index) =>
+        harness.terminal.buffer.active.getLine(index)?.translateToString(true),
+      ).join("\n"),
+    ).toContain("live after marker");
+
+    harness.cover.dispose();
+    harness.parent.remove();
   });
 
   it("allows a frame to paint during a 61,929-byte 1,019-chunk replay", async () => {
