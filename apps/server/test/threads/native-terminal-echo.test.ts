@@ -250,6 +250,54 @@ describe("terminalOutputShowsPasteAgain", () => {
     ).toBe(false);
   });
 
+  it("accepts the repeated paste when a reset redraws it in the input box", () => {
+    const text = "repeat the visible Claude prompt exactly";
+    expect(
+      terminalOutputShowsPasteAgain({
+        before: `> ${text}\r\n\r\n❯ `,
+        output: `\u001b[H\u001b[2J> ${text}\r\n\r\n❯ ${text}`,
+        pastePlaceholders: [],
+        text,
+      }),
+    ).toBe(true);
+  });
+
+  it("does not accept a reset redraw that omits the repeated paste", () => {
+    const text = "repeat the visible Claude prompt exactly";
+    expect(
+      terminalOutputShowsPasteAgain({
+        before: `> ${text}\r\n\r\n❯ `,
+        output: `\u001b[H\u001b[2J> ${text}\r\n\r\n❯ `,
+        pastePlaceholders: [],
+        text,
+      }),
+    ).toBe(false);
+  });
+
+  it("does not trust an extra history redraw when the input box is empty", () => {
+    const text = "repeat the visible Claude prompt exactly";
+    expect(
+      terminalOutputShowsPasteAgain({
+        before: `> ${text}\r\n\r\n❯ `,
+        output: `\u001b[H\u001b[2J> ${text}\r\n> ${text}\r\n\r\n❯ `,
+        pastePlaceholders: [],
+        text,
+      }),
+    ).toBe(false);
+  });
+
+  it("does not treat an already visible input copy as newly pasted after reset", () => {
+    const text = "repeat the visible Claude prompt exactly";
+    expect(
+      terminalOutputShowsPasteAgain({
+        before: `> ${text}\r\n\r\n❯ ${text}`,
+        output: `\u001b[H\u001b[2J> ${text}\r\n\r\n❯ ${text}`,
+        pastePlaceholders: [],
+        text,
+      }),
+    ).toBe(false);
+  });
+
   it.each([
     ["erase below the cursor", "\u001b[J"],
     ["erase below the cursor, explicit", "\u001b[0J"],

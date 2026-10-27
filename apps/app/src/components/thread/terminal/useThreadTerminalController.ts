@@ -19,6 +19,7 @@ import {
 import { applyTerminalSessionUpsert } from "@/hooks/cache-owners/terminal-cache-owner";
 import {
   isVisibleTerminalSession,
+  omitSupersededDisconnectedSessions,
   shouldCloseUnretainedDisconnectedTerminalSession,
   shouldShowRetainedTerminalSession,
 } from "@/lib/terminal-session-visibility";
@@ -295,7 +296,7 @@ export function useThreadTerminalController({
   );
   const visibleSessions = useMemo(
     () =>
-      sessions.filter((session) =>
+      omitSupersededDisconnectedSessions(sessions).filter((session) =>
         shouldShowRetainedTerminalSession({
           retainedTerminalIds: paneRetainedTerminalIds,
           session,

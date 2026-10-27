@@ -181,6 +181,7 @@ describe("event loop stall monitor", () => {
         expect.objectContaining({
           intervalMs: 5_000,
           maxDelayMs: expectedThreshold,
+          timerLagMs: 0,
           meanDelayMs: 25,
           p99DelayMs: 450,
           resolutionMs: 20,

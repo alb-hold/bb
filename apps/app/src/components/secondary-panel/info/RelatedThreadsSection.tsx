@@ -44,7 +44,13 @@ export function RelatedThreadsSection({
                   {idleIcon !== undefined && indicator === "none" ? (
                     <Icon name={idleIcon} aria-hidden="true" />
                   ) : (
-                    <ThreadStatusGlyph indicator={indicator} size="compact" />
+                    <ThreadStatusGlyph
+                      indicator={indicator}
+                      experimental_queuedFailedCount={
+                        relatedThread.queuedFailedCount
+                      }
+                      size="compact"
+                    />
                   )}
                 </span>
               }

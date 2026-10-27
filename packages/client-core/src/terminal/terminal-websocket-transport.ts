@@ -283,6 +283,25 @@ export class TerminalWebSocketTransport {
     }
   }
 
+  replayOutputFrom(nextSeq: number): void {
+    if (this.disposed || this.terminalEnded || nextSeq < 0) {
+      return;
+    }
+    this.nextOutputSeq = nextSeq;
+    this.pendingOutputAckNextSeq = null;
+    const socket = this.socket;
+    if (socket === null) {
+      this.connect("reconnecting");
+      return;
+    }
+    this.socket = null;
+    this.stopHeartbeat();
+    this.clearDrainTimeout();
+    this.clearRepaintTimeout();
+    socket.close();
+    this.connect("reconnecting");
+  }
+
   sendResize(cols: number, rows: number): void {
     if (this.lastResize?.cols === cols && this.lastResize.rows === rows) {
       return;

@@ -236,6 +236,18 @@ export {
   setDisabledProviderIds,
   setPluginSafeMode,
 } from "./app-settings.js";
+export {
+  addWritingUsage,
+  editWritingAssistanceVocabulary,
+  reserveWritingUsage,
+  emptyWritingUsage,
+  getWritingAssistanceSettings,
+  getWritingUsage,
+  openWritingReservation,
+  updateWritingAssistanceSettings,
+  type WritingUsageReservation,
+  type WritingVocabularyEditResult,
+} from "./writing-assistance.js";
 export { getStoredThreadTabs, replaceStoredThreadTabs } from "./thread-tabs.js";
 export {
   getStoredUiPreferenceDefault,
@@ -526,11 +538,13 @@ export type {
 } from "./terminal-sessions.js";
 
 export {
+  createInterruptedProviderPendingInteraction,
   createPendingInteraction,
   getActivePendingInteractionForThread,
   hasTurnBoundActivePendingInteractionForThread,
   getPendingInteraction,
   getPendingInteractionByProviderRequest,
+  retagInterruptedPendingInteraction,
   reviveInterruptedProviderInteraction,
   interruptPendingInteractionsForThreadIds,
   interruptPendingInteractionsForThreads,

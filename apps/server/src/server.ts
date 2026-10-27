@@ -49,6 +49,7 @@ import { registerDeviceHandoffRoutes } from "./routes/device-handoff.js";
 import { registerThreadRoutes } from "./routes/threads/index.js";
 import { registerQueueRoutes } from "./routes/queue.js";
 import { registerSpendRoutes } from "./routes/spend.js";
+import { registerWritingAssistanceRoutes } from "./routes/writing-assistance.js";
 import { registerNativeTerminalThreadRoutes } from "./routes/native-terminal-threads.js";
 import { registerPluginRoutes } from "./routes/plugins.js";
 import { registerPluginCatalogRoutes } from "./routes/plugin-catalog.js";
@@ -137,9 +138,7 @@ import {
 const PLUGIN_WIRE_HTTP_PATH = /^\/api\/v1\/plugins\/[^/]+\/http(?:\/|$)/u;
 import { rankAcceptedAssetEncodings } from "./asset-content-encoding.js";
 import { apiJsonCompression } from "./api-response-compression.js";
-import { planUnclaimedAnswerDelivery } from "./services/interactions/deliver-unclaimed-answer.js";
-import { createQueuedMessageForThread } from "./services/threads/queued-messages.js";
-import { getThread } from "@bb/db";
+import { handleUnclaimedPluginAnswer } from "./services/interactions/deliver-unclaimed-answer.js";
 import { APP_SURFACE_WEB, type AppSurface } from "@bb/config/app-surface";
 import type { ServerBindHost } from "@bb/config/server";
 import { registerServerMoveRoutes } from "./routes/server-move.js";
@@ -847,31 +846,8 @@ export function createApp(
       threadId,
     });
   });
-  deps.pendingInteractions.setUnclaimedPluginAnswerListener(
-    ({ interaction, value }) => {
-      const delivery = planUnclaimedAnswerDelivery({ interaction, value });
-      if (delivery === null) return;
-      const thread = getThread(deps.db, delivery.threadId);
-      if (!thread) return;
-      void createQueuedMessageForThread(deps, {
-        payload: {
-          input: [{ type: "text", text: delivery.text, mentions: [] }],
-        } as never,
-        thread,
-      })
-        .then(() => {
-          requestQueuedMessageDispatch(deps, {
-            kind: "interaction-settled",
-            threadId: delivery.threadId,
-          });
-        })
-        .catch((error: unknown) => {
-          deps.logger.warn(
-            { err: error, threadId: interaction.threadId },
-            "Could not queue an answer that arrived after its tool call ended",
-          );
-        });
-    },
+  deps.pendingInteractions.setUnclaimedPluginAnswerListener((answer) =>
+    handleUnclaimedPluginAnswer(deps, answer),
   );
   setTurnTelemetryDeps(deps);
   setPluginThreadEventEmitter(pluginService.events);
@@ -961,6 +937,7 @@ export function createApp(
   registerThreadRoutes(publicApi, deps, pluginService);
   registerQueueRoutes(publicApi, deps);
   registerSpendRoutes(publicApi, deps);
+  registerWritingAssistanceRoutes(publicApi, deps);
   registerNativeTerminalThreadRoutes(publicApi, deps);
   registerSystemRoutes(publicApi, deps, pluginService);
   registerUiPreferenceRoutes(publicApi, deps);

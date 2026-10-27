@@ -4,6 +4,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
@@ -30,6 +31,8 @@ import { cn } from "@/lib/utils";
 import { LIST_HOVER_TRANSITION } from "@/components/ui/motion";
 import {
   hasThreadListWorkingActivity,
+  nativeActivityGuidanceText,
+  nativeActivityNoticeText,
   resolveThreadListIndicator,
   resolveThreadStatus,
   threadListIndicatorStateForThread,
@@ -55,6 +58,7 @@ import {
   type PluginSidebarSplitPane,
   type PluginThreadActionsInlineItem,
   type PluginThreadActionsTriggerProps,
+  type PluginSidebarThread,
   type PluginSidebarThreadRowStatus,
   type PluginProvidersState,
 } from "@get-bb/plugin-sdk/app";
@@ -291,6 +295,8 @@ export function CollapsedThreadStatusGlyph({
     isBackgroundAgentActive: activity.backgroundAgent,
     isBackgroundCommandActive: activity.backgroundCommand,
     isGoalActive: activity.goal,
+    isActivityUnreported: false,
+    queuedFailedCount: 0,
     queuedWork: "none",
     isPlanModeActive: activity.planMode,
     isRuntimeActive: activity.runtimeWorking,
@@ -309,6 +315,8 @@ function ThreadTrailingIndicator({
   hideIdleDraftLabel,
   rowStatus,
   nativeActivityUnconfirmed,
+  nativeActivityNotice,
+  nativeActivityGuidance,
   automationStartedAt,
   elapsedMinutes,
 }: {
@@ -316,9 +324,12 @@ function ThreadTrailingIndicator({
   hideIdleDraftLabel: boolean;
   rowStatus: PluginSidebarThreadRowStatus | null;
   nativeActivityUnconfirmed: boolean;
+  nativeActivityNotice: string;
+  nativeActivityGuidance: string | null;
   automationStartedAt: number | null;
   elapsedMinutes: number | null;
 }) {
+  const guidanceId = useId();
   const resolvedState = {
     ...state,
     isAutomationWoken: automationStartedAt !== null,
@@ -345,17 +356,25 @@ function ThreadTrailingIndicator({
           ? `Woke${elapsedMinutes === null ? "" : ` ${elapsedMinutes}m`}`
           : indicatorKind === "done-unread"
             ? "Done"
-            : nativeActivityUnconfirmed
-              ? "Activity unconfirmed"
+            : indicatorKind === "activity-unreported"
+              ? nativeActivityNotice
               : null;
 
+  const activityNoticeApplies =
+    nativeActivityUnconfirmed &&
+    indicatorKind !== "needs-input" &&
+    indicatorKind !== "queued-failed";
+  const hasGuidance =
+    indicatorKind === "activity-unreported" && nativeActivityGuidance !== null;
   const indicator = (
     <span
+      aria-describedby={hasGuidance ? guidanceId : undefined}
       data-sidebar-thread-trailing-indicator=""
       data-sidebar-status-slot={statusText === null ? undefined : ""}
       className={cn(
         "inline-flex h-5 shrink-0 items-center gap-1.5 rounded-full px-1.5 font-medium text-xs",
         statusText !== null && "justify-end gap-1 whitespace-nowrap px-0",
+        statusText === null && "px-0",
         indicatorKind === "needs-input" && "text-destructive-text",
         indicatorKind === "working" && SIDEBAR_WORKING_STATUS_COLOR_CLASS,
         indicatorKind === "woke" && "text-warning",
@@ -365,36 +384,65 @@ function ThreadTrailingIndicator({
       )}
       role={statusText === null ? undefined : "img"}
       aria-label={statusText ?? undefined}
+      title={
+        statusText === null && activityNoticeApplies && !hasGuidance
+          ? nativeActivityNotice
+          : undefined
+      }
     >
       <ThreadStatusGlyph
         indicator={indicatorKind}
         rowStatus={rowStatus}
         hideIdleDraftLabel={hideIdleDraftLabel}
         hideAccessibleLabel={statusText !== null}
+        experimental_queuedFailedCount={state.queuedFailedCount}
       />
       {statusText === null ? null : (
         <span data-sidebar-status-full="" className="text-right">
           {statusText}
         </span>
       )}
-      {nativeActivityUnconfirmed && statusText !== "Activity unconfirmed" ? (
+      {activityNoticeApplies && indicatorKind !== "activity-unreported" ? (
         <span
           data-sidebar-native-activity-warning=""
-          className="text-muted-foreground"
+          className={statusText === null ? "sr-only" : "text-muted-foreground"}
           role="status"
         >
-          Activity unconfirmed
+          {nativeActivityNotice}
+        </span>
+      ) : null}
+      {hasGuidance ? (
+        <span
+          data-sidebar-native-activity-guidance=""
+          id={guidanceId}
+          className="sr-only"
+        >
+          {nativeActivityGuidance}
         </span>
       ) : null}
     </span>
   );
-  if (statusText === null) return indicator;
+  if (statusText === null && !hasGuidance) return indicator;
   return (
     <Tooltip>
       <TooltipTrigger asChild>{indicator}</TooltipTrigger>
-      <TooltipContent side="top">{statusText}</TooltipContent>
+      <TooltipContent side="top">
+        {[
+          statusText ?? nativeActivityNotice,
+          hasGuidance ? nativeActivityGuidance : null,
+        ]
+          .filter((text) => text !== null)
+          .join(". ")}
+      </TooltipContent>
     </Tooltip>
   );
+}
+
+function isNativeActivityNotConfirmed(
+  thread: Pick<PluginSidebarThread, "experimental_nativeActivity">,
+): boolean {
+  const activity = thread.experimental_nativeActivity;
+  return activity !== undefined && activity.confirmation !== "confirmed";
 }
 
 const ARCHIVED_ROW_ACTION_KEYS = ["bb--core/archive"];
@@ -649,6 +697,8 @@ function ThreadRowComponent({
     isGoalActive:
       threadStatus.isGoalActive || (hasHiddenChildren && childActivity.goal),
     queuedWork: threadStatus.queuedWork,
+    queuedFailedCount: threadStatus.queuedFailedCount,
+    isActivityUnreported: threadStatus.isActivityUnreported,
     isPlanModeActive:
       threadStatus.isPlanModeActive ||
       (hasHiddenChildren && childActivity.planMode),
@@ -674,7 +724,7 @@ function ThreadRowComponent({
   const hasVisibleStatus =
     trailingIndicatorKind !== "none" ||
     trailingIndicatorResolution.rowStatusIsVisible ||
-    thread.experimental_nativeActivity?.confirmation === "unconfirmed" ||
+    isNativeActivityNotConfirmed(thread) ||
     miniMap !== null ||
     automationStartedAt !== null;
   const splitIndicatorIsWorking = hasThreadListWorkingActivity(
@@ -953,10 +1003,11 @@ function ThreadRowComponent({
               ) : (
                 <ThreadTrailingIndicator
                   state={trailingIndicatorState}
-                  nativeActivityUnconfirmed={
-                    thread.experimental_nativeActivity?.confirmation ===
-                    "unconfirmed"
-                  }
+                  nativeActivityUnconfirmed={isNativeActivityNotConfirmed(
+                    thread,
+                  )}
+                  nativeActivityNotice={nativeActivityNoticeText(thread)}
+                  nativeActivityGuidance={nativeActivityGuidanceText(thread)}
                   automationStartedAt={automationStartedAt}
                   elapsedMinutes={elapsedMinutes}
                   hideIdleDraftLabel={
