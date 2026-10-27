@@ -33,6 +33,7 @@ function ThreadDraftStatus({
     hasUnsubmittedDraft,
     hasUnreadError: false,
     hasUnreadSuccess: false,
+    isActivityUnreported: false,
     isAutomationWoken: false,
     isBackgroundAgentActive: kind === "working",
     isBackgroundCommandActive: false,
@@ -41,6 +42,7 @@ function ThreadDraftStatus({
     isPlanModeActive: false,
     isRuntimeActive: false,
     isWorkflowActive: false,
+    queuedFailedCount: 0,
   });
   return <ThreadStatusGlyph indicator={indicator} />;
 }
@@ -108,7 +110,7 @@ describe("ThreadStatusGlyph", () => {
 
   it.each([
     ["unread-error", "Unread thread failed", "CircleX"],
-    ["queued-failed", "Queued message failed to send", "CircleX"],
+    ["activity-unreported", "Activity not reported", "Minus"],
     ["waiting-for-input", "Thread needs user input", "CircleQuestion"],
     ["queued-waiting", "Thread has a message waiting to send", "Clock"],
     ["working-draft", "Thread working with unsubmitted draft", "Loading"],
@@ -128,6 +130,34 @@ describe("ThreadStatusGlyph", () => {
     },
   );
 
+  it("draws undelivered queued messages as a warning with a count, distinct from a thread error", () => {
+    const { rerender } = render(
+      <ThreadStatusGlyph
+        indicator="queued-failed"
+        experimental_queuedFailedCount={4}
+      />,
+    );
+    const queued = screen.getByLabelText("4 queued messages not delivered");
+    expect(queued.getAttribute("data-icon")).toBe("Mail");
+    expect(Array.from(queued.classList)).toContain("text-warning");
+    expect(Array.from(queued.classList)).not.toContain("text-destructive");
+
+    rerender(
+      <ThreadStatusGlyph
+        indicator="queued-failed"
+        experimental_queuedFailedCount={1}
+      />,
+    );
+    expect(
+      screen.getByLabelText("1 queued message not delivered"),
+    ).toBeTruthy();
+
+    rerender(<ThreadStatusGlyph indicator="unread-error" />);
+    const failed = screen.getByLabelText("Unread thread failed");
+    expect(failed.getAttribute("data-icon")).toBe("CircleX");
+    expect(Array.from(failed.classList)).toContain("text-destructive");
+  });
+
   it("shimmers named work and spins the runtime glyph unless motion is reduced", () => {
     const { rerender } = render(<ThreadStatusGlyph indicator="workflow" />);
     const workflow = screen.getByLabelText("Workflow running");
@@ -139,7 +169,9 @@ describe("ThreadStatusGlyph", () => {
     rerender(<ThreadStatusGlyph indicator="runtime" />);
     const runtime = screen.getByLabelText("Thread working");
     expect(Array.from(runtime.classList)).toContain("animate-spin");
-    expect(Array.from(runtime.classList)).toContain("motion-reduce:animate-none");
+    expect(Array.from(runtime.classList)).toContain(
+      "motion-reduce:animate-none",
+    );
   });
 
   it("draws unread success as a dot and nothing for none", () => {
@@ -192,7 +224,9 @@ describe("ThreadStatusGlyph", () => {
 
     const working = screen.getByLabelText("Working");
     expect(Array.from(working.classList)).toContain("animate-spin");
-    expect(Array.from(working.classList)).toContain("motion-reduce:animate-none");
+    expect(Array.from(working.classList)).toContain(
+      "motion-reduce:animate-none",
+    );
   });
 
   it("hides a status glyph from assistive technology when the row labels it", () => {
@@ -220,16 +254,18 @@ describe("ThreadStatusGlyph", () => {
       );
 
       expect(screen.getByLabelText(label)).not.toBeNull();
-      expect(screen.queryByLabelText("Improving") !== null).toBe(rowStatusShown);
+      expect(screen.queryByLabelText("Improving") !== null).toBe(
+        rowStatusShown,
+      );
     },
   );
 
   it("draws the archive glyph for archived threads", () => {
     render(<ThreadStatusGlyph indicator="runtime" archived />);
 
-    expect(screen.getByLabelText("Archived thread").getAttribute("data-icon")).toBe(
-      "Archive",
-    );
+    expect(
+      screen.getByLabelText("Archived thread").getAttribute("data-icon"),
+    ).toBe("Archive");
   });
 
   it.each([
