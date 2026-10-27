@@ -24,6 +24,7 @@ import {
   type TunnelIngressManager,
 } from "./services/connect-next/tunnel-ingress.js";
 import { createHash, randomUUID } from "node:crypto";
+import type { IncomingMessage } from "node:http";
 import { readFile, stat } from "node:fs/promises";
 import { performance } from "node:perf_hooks";
 import { extname, join, resolve } from "node:path";
@@ -167,7 +168,27 @@ import {
 
 type CloseWebSockets = () => Promise<void>;
 type NodeWebSocketServer = ReturnType<typeof createNodeWebSocket>["wss"];
+type WebSocketProtocolOptions = {
+  options: {
+    handleProtocols?: (
+      protocols: Set<string>,
+      request: IncomingMessage,
+    ) => string | false;
+  };
+};
 type WebSocketCloseError = Error | undefined;
+
+function assertWebSocketProtocolOptions(
+  wss: NodeWebSocketServer,
+): asserts wss is NodeWebSocketServer & WebSocketProtocolOptions {
+  if (
+    !("options" in wss) ||
+    typeof wss.options !== "object" ||
+    wss.options === null
+  ) {
+    throw new Error("WebSocket server does not expose protocol options");
+  }
+}
 
 interface ServerApp {
   app: Hono;
@@ -499,7 +520,11 @@ export function createApp(
   const { injectWebSocket, upgradeWebSocket, wss } = createNodeWebSocket({
     app,
   });
-  wss.options.handleProtocols = (protocols) =>
+  assertWebSocketProtocolOptions(wss);
+  wss.options.handleProtocols = (
+    protocols: Set<string>,
+    _request: IncomingMessage,
+  ): string | false =>
     protocols.has(TERMINAL_RESIZE_ECHO_WEBSOCKET_PROTOCOL)
       ? TERMINAL_RESIZE_ECHO_WEBSOCKET_PROTOCOL
       : (protocols.values().next().value ?? false);
