@@ -7,6 +7,7 @@ import {
   mountTerminalReplayPreview,
   updateTerminalReplayPreviewPtyGrid,
 } from "./terminal-replay-preview";
+import { writeTerminalOutput } from "./ThreadTerminalView";
 
 const originalGetContext = HTMLCanvasElement.prototype.getContext;
 
@@ -542,5 +543,194 @@ describe("terminal replay preview", () => {
 
     cover.dispose();
     parent.remove();
+  });
+
+  it("does not show a short first frame while the pane waits for the PTY resize", async () => {
+    const context = new Proxy(
+      {
+        measureText: (text: string) => ({ width: text.length * 8 }),
+        getImageData: () => ({ data: new Uint8ClampedArray(4) }),
+        createImageData: () => ({ data: new Uint8ClampedArray(4) }),
+      } as Record<string, unknown>,
+      {
+        get(target, property) {
+          const value = target[property as string];
+          return value ?? (() => undefined);
+        },
+        set(target, property, value) {
+          target[property as string] = value;
+          return true;
+        },
+      },
+    );
+    HTMLCanvasElement.prototype.getContext = (() =>
+      context) as unknown as typeof HTMLCanvasElement.prototype.getContext;
+    const parent = document.createElement("div");
+    const container = document.createElement("div");
+    parent.append(container);
+    document.body.append(parent);
+    Object.defineProperty(container, "getBoundingClientRect", {
+      configurable: true,
+      value: () => new DOMRect(0, 0, 960, 940),
+    });
+
+    const preview = new Terminal({ cols: 120, rows: 36 });
+    await new Promise<void>((resolve) =>
+      preview.write("\u001b[12;9Hcurrent screen", resolve),
+    );
+    const expectedCursor = {
+      x: preview.buffer.active.cursorX,
+      y: preview.buffer.active.cursorY,
+    };
+    const cover = mountTerminalReplayPreview({
+      container,
+      initialFitGrid: { cols: 120, rows: 47 },
+      isOwner: () => false,
+      terminal: preview,
+    });
+    const previewElement = parent.querySelector<HTMLElement>(
+      "[data-terminal-replay-preview]",
+    )!;
+    const screen = preview.element?.querySelector<HTMLElement>(".xterm-screen");
+    expect(screen).not.toBeNull();
+    Object.defineProperty(screen!, "getBoundingClientRect", {
+      configurable: true,
+      value: () => new DOMRect(0, 0, 960, preview.rows * 20),
+    });
+    const firstFrame = {
+      paneHeight: container.getBoundingClientRect().height,
+      screenHeight: screen!.getBoundingClientRect().height,
+      visibility: getComputedStyle(previewElement).visibility,
+    };
+
+    cover.setPtyGrid(120, 47);
+    await cover.resize(120, 47);
+    const finalFrame = {
+      visibility: getComputedStyle(previewElement).visibility,
+      cols: preview.cols,
+      rows: preview.rows,
+      cursorX: preview.buffer.active.cursorX,
+      cursorY: preview.buffer.active.cursorY,
+    };
+
+    cover.dispose();
+    parent.remove();
+
+    expect(
+      firstFrame.visibility === "hidden" ||
+        firstFrame.screenHeight >= firstFrame.paneHeight,
+    ).toBe(true);
+    expect(finalFrame.visibility).toBe("visible");
+    expect({ cols: finalFrame.cols, rows: finalFrame.rows }).toEqual({
+      cols: 120,
+      rows: 47,
+    });
+    expect({ x: finalFrame.cursorX, y: finalFrame.cursorY }).toEqual(
+      expectedCursor,
+    );
+  });
+
+  it("allows a frame to paint during a 61,929-byte 1,019-chunk replay", async () => {
+    const context = new Proxy(
+      {
+        measureText: (text: string) => ({ width: text.length * 8 }),
+        getImageData: () => ({ data: new Uint8ClampedArray(4) }),
+        createImageData: () => ({ data: new Uint8ClampedArray(4) }),
+      } as Record<string, unknown>,
+      {
+        get(target, property) {
+          const value = target[property as string];
+          return value ?? (() => undefined);
+        },
+        set(target, property, value) {
+          target[property as string] = value;
+          return true;
+        },
+      },
+    );
+    HTMLCanvasElement.prototype.getContext = (() =>
+      context) as unknown as typeof HTMLCanvasElement.prototype.getContext;
+    const parent = document.createElement("div");
+    const container = document.createElement("div");
+    parent.append(container);
+    document.body.append(parent);
+
+    const terminal = new Terminal({ cols: 120, rows: 36, scrollback: 10_000 });
+    terminal.open(container);
+    const preview = new Terminal({ cols: 120, rows: 36, scrollback: 10_000 });
+    const cover = mountTerminalReplayPreview({
+      container,
+      initialFitGrid: { cols: 120, rows: 36 },
+      isOwner: () => false,
+      terminal: preview,
+    });
+    await new Promise<void>((resolve) =>
+      cover.push(Buffer.from("snapshot\r\n"), resolve),
+    );
+    let parsedChunks = 0;
+    const previewElement = parent.querySelector<HTMLElement>(
+      "[data-terminal-replay-preview]",
+    )!;
+    const previewPaint = new Promise<{
+      parsedChunks: number;
+      screenPresent: boolean;
+      visible: boolean;
+    }>((resolve) =>
+      window.requestAnimationFrame(() =>
+        resolve({
+          parsedChunks,
+          screenPresent: Boolean(
+            preview.element?.querySelector(".xterm-screen"),
+          ),
+          visible: getComputedStyle(previewElement).visibility === "visible",
+        }),
+      ),
+    );
+    const replayWriteState = { suppressedWriteCount: 0 };
+    const pipeline = createTerminalOutputPipeline(terminal);
+    const chunkSizes = Array.from({ length: 1_019 }, (_, index) =>
+      index < 789 ? 61 : 60,
+    );
+    let finishReplay!: () => void;
+    const replayDone = new Promise<void>((resolve) => {
+      finishReplay = resolve;
+    });
+    for (const [sequence, size] of chunkSizes.entries()) {
+      writeTerminalOutput({
+        data: new Uint8Array(size).fill(65),
+        isReplay: true,
+        onParsed: () => {
+          parsedChunks += 1;
+          if (parsedChunks === chunkSizes.length) finishReplay();
+        },
+        outputSequence: sequence,
+        replayCheckpointSequence: 0,
+        replayWriteState,
+        terminal,
+        pipeline,
+        replayPipeline: cover,
+      });
+    }
+
+    const frameAtFirstPaint = await previewPaint;
+    await replayDone;
+    const parsedCount = parsedChunks;
+    const suppressedWriteCount = replayWriteState.suppressedWriteCount;
+    const previewBuffer = Array.from(
+      { length: preview.buffer.active.length },
+      (_, index) => preview.buffer.active.getLine(index)?.translateToString(true),
+    ).join("\n");
+
+    cover.dispose();
+    terminal.dispose();
+    parent.remove();
+
+    expect(chunkSizes.reduce((total, size) => total + size, 0)).toBe(61_929);
+    expect(frameAtFirstPaint.visible).toBe(true);
+    expect(frameAtFirstPaint.screenPresent).toBe(true);
+    expect(frameAtFirstPaint.parsedChunks).toBeLessThan(chunkSizes.length);
+    expect(parsedCount).toBe(chunkSizes.length);
+    expect(suppressedWriteCount).toBe(0);
+    expect(previewBuffer).toContain("snapshot");
   });
 });
