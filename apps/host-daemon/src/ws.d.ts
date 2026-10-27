@@ -23,10 +23,7 @@ declare module "ws" {
     readonly readyState: number;
     readonly bufferedAmount: number;
     readonly protocol: string;
-    send(
-      data: string | ArrayBuffer | Buffer | Uint8Array,
-      options?: { compress?: boolean },
-    ): void;
+    send(data: string | Buffer | Uint8Array): void;
     close(code?: number, reason?: string): void;
     terminate(): void;
     ping(): void;
@@ -52,10 +49,6 @@ declare module "ws" {
       autoPong?: boolean;
       noServer?: boolean;
       maxPayload?: number;
-      handleProtocols?: (
-        protocols: Set<string>,
-        request: IncomingMessage,
-      ) => string | false;
     });
     handleUpgrade(
       request: IncomingMessage,

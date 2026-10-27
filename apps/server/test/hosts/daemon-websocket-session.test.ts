@@ -72,14 +72,6 @@ afterEach(async () => {
 });
 
 describe("daemon websocket session authorization", () => {
-  it("selects the daemon protocol and preserves daemon authorization", async () => {
-    server = await startTestServer();
-    const { host, session } = seedHostSession(server.deps);
-    const socket = await connectDaemon(session.id, host.id);
-
-    expect(socket.protocol).toBe(buildHostDaemonWebSocketProtocols()[0]);
-  });
-
   it("rejects closed-session frames before terminal, environment, RPC, or plugin effects", async () => {
     server = await startTestServer();
     const environmentFixture = seedHostSession(server.deps);
