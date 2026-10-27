@@ -39,12 +39,14 @@ function ErrorRowsPreview({ initialExpanded, rows }: ErrorRowsPreviewProps) {
         {...baseProps}
         initialExpanded={initialExpanded}
         timelineRows={rows}
+        threadIsActive={false}
       />
     </TimelineStage>
   );
 }
 
 const baseProps: TimelineRowsStoryBaseProps = {
+  threadIsActive: false,
   threadRuntimeDisplayStatus: "idle",
   workspaceRootPath: undefined,
 };

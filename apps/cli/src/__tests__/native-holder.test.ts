@@ -43,6 +43,7 @@ import {
 const tempDirs: string[] = [];
 
 afterEach(() => {
+  vi.restoreAllMocks();
   for (const dir of tempDirs.splice(0)) {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -154,15 +155,82 @@ async function attach(socketPath: string): Promise<Client> {
   return new Client(socket);
 }
 
+function deferred<T>(): {
+  promise: Promise<T>;
+  resolve(value: T): void;
+} {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((complete) => {
+    resolve = complete;
+  });
+  return { promise, resolve };
+}
+
+function startHolderWithTick(
+  socketPath: string,
+  reapAfterMs: number,
+  checkTerminal: () => Promise<NativeTerminalCheck>,
+  tick: () => Promise<void>,
+): Promise<number> {
+  return runNativeHolder({
+    socketPath,
+    cwd: os.tmpdir(),
+    env: { ...process.env, PS1: "" },
+    reapAfterMs,
+    detachedCheckIntervalMs: 20,
+    tick,
+    tickIntervalMs: 100,
+    checkTerminal,
+    prepare: async () => ECHO_LOOP,
+    spawnPty: (process, options) =>
+      spawnPty(process.command, process.args, {
+        name: "xterm-256color",
+        cols: options.cols,
+        rows: options.rows,
+        cwd: options.cwd,
+        env: options.env,
+      }),
+  });
+}
+
 const ECHO_LOOP: NativeHolderProcess = {
-  command: "/bin/sh",
+  command: process.execPath,
   args: [
-    "-c",
-    'echo "started:$$"; while IFS= read -r line; do echo "got:$line:$$"; done; exit 7',
+    "-e",
+    [
+      'let input = "";',
+      'process.stdin.setEncoding("utf8");',
+      'process.stdin.on("data", (chunk) => {',
+      "  input += chunk;",
+      "  for (;;) {",
+      '    const end = input.indexOf("\\n");',
+      "    if (end < 0) break;",
+      '    const line = input.slice(0, end).replace(/\\r$/u, "");',
+      "    input = input.slice(end + 1);",
+      '    process.stdout.write("got:" + line + ":" + process.pid + "\\n");',
+      "  }",
+      "});",
+      "process.stdin.on(\"end\", () => process.exit(7));",
+      'process.stdout.write("started:" + process.pid + "\\n");',
+    ].join(" "),
   ],
 };
 
 describe("native terminal holder", () => {
+  it(
+    "accepts input sent as soon as the holder reports its input reader is ready",
+    async () => {
+      const socketPath = socketIn();
+      const held = startHolder(socketPath, ECHO_LOOP);
+      const client = await attach(socketPath);
+      const pid = (await client.waitFor(/started:(\d+)/u))[1];
+      client.type("ready\r");
+      await client.waitFor(new RegExp(`got:ready:${pid}`, "u"));
+      client.type("\u0004");
+      await expect(held).resolves.toBe(7);
+    },
+  );
+
   it("keeps the log at the size cap when an oversized record reaches the boundary", () => {
     const socketPath = socketIn();
     const logPath = socketPath.replace(/\.sock$/u, ".log");
@@ -463,14 +531,311 @@ try {
     expect(code).not.toBe(7);
   });
 
+  it("does not reap a detached CLI before any terminal check settles", async () => {
+    const socketPath = socketIn();
+    const pendingCheck = deferred<NativeTerminalCheck>();
+    const checkStarted = deferred<void>();
+    const ticksReached = deferred<void>();
+    const now = vi.spyOn(Date, "now").mockReturnValue(0);
+    let detached = false;
+    let ticks = 0;
+    const held = startHolderWithTick(
+      socketPath,
+      100,
+      () => {
+        checkStarted.resolve();
+        return pendingCheck.promise;
+      },
+      async () => {
+        if (detached && ++ticks >= 3) ticksReached.resolve();
+      },
+    );
+    const first = await attach(socketPath);
+    const pid = (await first.waitFor(/started:(\d+)/u))[1];
+    detached = true;
+    first.socket.destroy();
+    await checkStarted.promise;
+    now.mockReturnValue(1_000);
+    await ticksReached.promise;
+
+    const secondSocket = await waitForNativeHolder(socketPath, 500);
+    expect(secondSocket).not.toBeNull();
+    if (secondSocket === null) return;
+    const second = new Client(secondSocket);
+    second.type("pending check survived\r");
+    await second.waitFor(new RegExp(`got:pending check survived:${pid}`, "u"));
+    pendingCheck.resolve("detached");
+    second.type("\u0004");
+    await expect(held).resolves.toBe(7);
+    now.mockRestore();
+  });
+
+  it("does not reap a detached CLI between awaiting-daemon results", async () => {
+    const socketPath = socketIn();
+    const firstCheck = deferred<NativeTerminalCheck>();
+    const secondCheck = deferred<NativeTerminalCheck>();
+    const firstStarted = deferred<void>();
+    const secondStarted = deferred<void>();
+    const ticksReached = deferred<void>();
+    const now = vi.spyOn(Date, "now").mockReturnValue(0);
+    let detached = false;
+    let checks = 0;
+    let ticks = 0;
+    const held = startHolderWithTick(
+      socketPath,
+      100,
+      () => {
+        checks += 1;
+        if (checks === 1) {
+          firstStarted.resolve();
+          return firstCheck.promise;
+        }
+        secondStarted.resolve();
+        return secondCheck.promise;
+      },
+      async () => {
+        if (detached && ++ticks >= 3) ticksReached.resolve();
+      },
+    );
+    const first = await attach(socketPath);
+    const pid = (await first.waitFor(/started:(\d+)/u))[1];
+    detached = true;
+    first.socket.destroy();
+    await firstStarted.promise;
+    firstCheck.resolve("awaiting-daemon");
+    await secondStarted.promise;
+    now.mockReturnValue(1_000);
+    await ticksReached.promise;
+
+    const secondSocket = await waitForNativeHolder(socketPath, 500);
+    expect(secondSocket).not.toBeNull();
+    if (secondSocket === null) return;
+    const second = new Client(secondSocket);
+    second.type("awaiting check survived\r");
+    await second.waitFor(new RegExp(`got:awaiting check survived:${pid}`, "u"));
+    second.type("\u0004");
+    await expect(held).resolves.toBe(7);
+    now.mockRestore();
+  });
+
+  it("keeps a detached CLI alive while a terminal check never settles", async () => {
+    const socketPath = socketIn();
+    const checkStarted = deferred<void>();
+    const ticksReached = deferred<void>();
+    const now = vi.spyOn(Date, "now").mockReturnValue(0);
+    let detached = false;
+    let ticks = 0;
+    const held = startHolderWithTick(
+      socketPath,
+      100,
+      () => {
+        checkStarted.resolve();
+        return new Promise<NativeTerminalCheck>(() => undefined);
+      },
+      async () => {
+        if (detached && ++ticks >= 3) ticksReached.resolve();
+      },
+    );
+    const first = await attach(socketPath);
+    const pid = (await first.waitFor(/started:(\d+)/u))[1];
+    detached = true;
+    first.socket.destroy();
+    await checkStarted.promise;
+    now.mockReturnValue(1_000);
+    await ticksReached.promise;
+
+    const secondSocket = await waitForNativeHolder(socketPath, 500);
+    expect(secondSocket).not.toBeNull();
+    if (secondSocket === null) return;
+    const second = new Client(secondSocket);
+    second.type("never settling check\r");
+    await second.waitFor(new RegExp(`got:never settling check:${pid}`, "u"));
+    second.type("\u0004");
+    await expect(held).resolves.toBe(7);
+    now.mockRestore();
+  });
+
+  it("does not reap when an awaiting-daemon result precedes a pending check past the reap age", async () => {
+    const socketPath = socketIn();
+    const firstCheck = deferred<NativeTerminalCheck>();
+    const nextCheck = deferred<NativeTerminalCheck>();
+    const firstStarted = deferred<void>();
+    const nextStarted = deferred<void>();
+    const ticksReached = deferred<void>();
+    const now = vi.spyOn(Date, "now").mockReturnValue(0);
+    let detached = false;
+    let checks = 0;
+    let ticks = 0;
+    let completed = false;
+    const held = startHolderWithTick(
+      socketPath,
+      100,
+      () => {
+        checks += 1;
+        if (checks === 1) {
+          firstStarted.resolve();
+          return firstCheck.promise;
+        }
+        nextStarted.resolve();
+        return nextCheck.promise;
+      },
+      async () => {
+        if (detached && ++ticks >= 3) ticksReached.resolve();
+      },
+    ).then((code) => {
+      completed = true;
+      return code;
+    });
+    const first = await attach(socketPath);
+    const pid = (await first.waitFor(/started:(\d+)/u))[1];
+    detached = true;
+    first.socket.destroy();
+    await firstStarted.promise;
+    firstCheck.resolve("awaiting-daemon");
+    await nextStarted.promise;
+    now.mockReturnValue(1_000);
+    await ticksReached.promise;
+    expect(completed).toBe(false);
+
+    const secondSocket = await waitForNativeHolder(socketPath, 500);
+    expect(secondSocket).not.toBeNull();
+    if (secondSocket === null) return;
+    const second = new Client(secondSocket);
+    second.type("traced race survived\r");
+    await second.waitFor(new RegExp(`got:traced race survived:${pid}`, "u"));
+    second.type("\u0004");
+    await expect(held).resolves.toBe(7);
+    now.mockRestore();
+  });
+
+  it("reaps after a settled detached check when no client attaches", async () => {
+    const socketPath = socketIn();
+    const checkStarted = deferred<void>();
+    const pendingCheck = deferred<NativeTerminalCheck>();
+    const now = vi.spyOn(Date, "now").mockReturnValue(0);
+    const held = startHolder(socketPath, ECHO_LOOP, 100, () => {
+      checkStarted.resolve();
+      return pendingCheck.promise;
+    });
+    const first = await attach(socketPath);
+    await first.waitFor(/started:/u);
+    first.socket.destroy();
+    await checkStarted.promise;
+    pendingCheck.resolve("detached");
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    now.mockReturnValue(100);
+    await expect(held).resolves.not.toBe(7);
+    now.mockRestore();
+  });
+
+  it("reaps one reap window after the last awaiting-daemon result", async () => {
+    const socketPath = socketIn();
+    const nextCheck = deferred<NativeTerminalCheck>();
+    const nextStarted = deferred<void>();
+    const ticksReached = deferred<void>();
+    const now = vi.spyOn(Date, "now").mockReturnValue(0);
+    let detached = false;
+    let checks = 0;
+    let ticks = 0;
+    let completed = false;
+    const held = startHolderWithTick(
+      socketPath,
+      100,
+      () => {
+        checks += 1;
+        if (checks === 1) return Promise.resolve("awaiting-daemon");
+        nextStarted.resolve();
+        return nextCheck.promise;
+      },
+      async () => {
+        if (detached && ++ticks >= 3) ticksReached.resolve();
+      },
+    ).then((code) => {
+      completed = true;
+      return code;
+    });
+    const first = await attach(socketPath);
+    await first.waitFor(/started:/u);
+    detached = true;
+    first.socket.destroy();
+    await nextStarted.promise;
+    now.mockReturnValue(99);
+    nextCheck.resolve("detached");
+    await ticksReached.promise;
+    expect(completed).toBe(false);
+    now.mockReturnValue(100);
+    await expect(held).resolves.not.toBe(7);
+    now.mockRestore();
+  });
+
+  it("ignores EBADF resizes during redraw when the PTY fd closes before onExit", async () => {
+    const socketPath = socketIn();
+    let exit: ((event: { exitCode: number; signal?: number }) => void) | null =
+      null;
+    let exitEventDelivered = false;
+    let resizeCalls = 0;
+    let ptyFdClosed = false;
+    const resizeRows: number[] = [];
+    const held = runNativeHolder({
+      socketPath,
+      cwd: os.tmpdir(),
+      env: {},
+      prepare: async () => ({ command: "fake", args: [] }),
+      spawnPty: () => ({
+        pid: 654,
+        onData: () => undefined,
+        onExit: (listener) => {
+          exit = listener;
+        },
+        write: () => undefined,
+        resize: (_cols, rows) => {
+          resizeCalls += 1;
+          resizeRows.push(rows);
+          if (resizeCalls === 2) {
+            exitEventDelivered = true;
+            exit?.({ exitCode: 23 });
+          }
+          if (!ptyFdClosed) throw new Error("resize before fd close");
+          throw new Error("ioctl(2) failed, EBADF");
+        },
+        kill: () => undefined,
+      }),
+    });
+    const first = await attach(socketPath);
+    await expect.poll(() => exit).not.toBeNull();
+    first.socket.destroy();
+    const second = await waitForNativeHolder(socketPath, 500);
+    expect(second).not.toBeNull();
+    if (second === null) return;
+    ptyFdClosed = true;
+    const resize = encodeNativeHolderFrame(
+      NativeHolderFrame.resize,
+      Buffer.from(JSON.stringify({ cols: 100, rows: 30 })),
+    );
+    second.write(Buffer.concat([resize, resize]));
+    await expect(held).resolves.toBe(23);
+    expect(exitEventDelivered).toBe(true);
+    expect(resizeCalls).toBe(2);
+    expect(resizeRows).toEqual([29, 30]);
+  });
+
   it("keeps a detached CLI for twenty reap windows while bb waits for the host daemon, and reaps it once bb stops waiting", async () => {
     const socketPath = socketIn();
     let state: NativeTerminalCheck = "awaiting-daemon";
-    const held = startHolder(socketPath, ECHO_LOOP, 100, async () => state);
+    let awaitingChecks = 0;
+    let resolveAwaitingChecks!: () => void;
+    const twentyAwaitingChecks = new Promise<void>((resolve) => {
+      resolveAwaitingChecks = resolve;
+    });
+    const held = startHolder(socketPath, ECHO_LOOP, 100, async () => {
+      awaitingChecks += 1;
+      if (awaitingChecks >= 20) resolveAwaitingChecks();
+      return state;
+    });
     const first = await attach(socketPath);
     const pid = (await first.waitFor(/started:(\d+)/u))[1];
     first.socket.destroy();
-    await new Promise((resolve) => setTimeout(resolve, 2_000));
+    await twentyAwaitingChecks;
     const second = await attach(socketPath);
     second.type("daemon back\r");
     await second.waitFor(new RegExp(`got:daemon back:${pid}`, "u"));
@@ -882,11 +1247,16 @@ describe("checking whether bb closed a native terminal for good", () => {
     return url;
   }
 
-  const check = (baseUrl: string, timeoutMs = 5_000) =>
+  const check = (
+    baseUrl: string,
+    timeoutMs = 5_000,
+    fetch?: typeof globalThis.fetch,
+  ) =>
     checkNativeTerminal({
       baseUrl,
       threadId: "thr_x",
       timeoutMs,
+      fetch,
     });
 
   it("treats a missing thread as closed for good", async () => {
@@ -912,9 +1282,27 @@ describe("checking whether bb closed a native terminal for good", () => {
   });
 
   it("counts a response whose body stalls past the timeout as bb answering", async () => {
-    await expect(check(await stallingAfterHeaders(), 50)).resolves.toBe(
-      "detached",
-    );
+    const fetch: typeof globalThis.fetch = async (_input, init) => {
+      const signal = init?.signal;
+      return new Response(
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode("{"));
+            if (signal?.aborted) {
+              controller.error(signal.reason);
+              return;
+            }
+            signal?.addEventListener(
+              "abort",
+              () => controller.error(signal.reason),
+              { once: true },
+            );
+          },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    };
+    await expect(check("http://127.0.0.1", 50, fetch)).resolves.toBe("detached");
   });
 
   it.each([
@@ -1015,6 +1403,11 @@ describe("checking whether bb closed a native terminal for good", () => {
 
   it("keeps a detached CLI past the reap window while bb answers that its terminal awaits the host daemon", async () => {
     let waiting = true;
+    let awaitingChecks = 0;
+    let resolveAwaitingChecks!: () => void;
+    const twentyAwaitingChecks = new Promise<void>((resolve) => {
+      resolveAwaitingChecks = resolve;
+    });
     const baseUrl = await bb((response) => {
       response.writeHead(200, { "content-type": "application/json" });
       response.end(
@@ -1027,11 +1420,18 @@ describe("checking whether bb closed a native terminal for good", () => {
       );
     });
     const socketPath = socketIn();
-    const held = startHolder(socketPath, ECHO_LOOP, 300, () => check(baseUrl));
+    const held = startHolder(socketPath, ECHO_LOOP, 300, async () => {
+      const state = await check(baseUrl);
+      if (state === "awaiting-daemon") {
+        awaitingChecks += 1;
+        if (awaitingChecks >= 20) resolveAwaitingChecks();
+      }
+      return state;
+    });
     const first = await attach(socketPath);
     const pid = (await first.waitFor(/started:(\d+)/u))[1];
     first.socket.destroy();
-    await new Promise((resolve) => setTimeout(resolve, 1_200));
+    await twentyAwaitingChecks;
     const second = await attach(socketPath);
     second.type("survived\r");
     await second.waitFor(new RegExp(`got:survived:${pid}`, "u"));

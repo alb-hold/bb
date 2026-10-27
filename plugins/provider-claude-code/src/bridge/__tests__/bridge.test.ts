@@ -26,11 +26,12 @@ import {
   type RuntimePermissionScope,
 } from "@get-bb/plugin-sdk/provider-bridge";
 
-const { forkSessionMock, queryMock, openMock, nativeOpenRef } = vi.hoisted(
+const { forkSessionMock, queryMock, openMock, nativeOpenRef, contextQueryMock } = vi.hoisted(
   () => ({
     forkSessionMock: vi.fn(),
     queryMock: vi.fn(),
     openMock: vi.fn(),
+    contextQueryMock: vi.fn(),
     nativeOpenRef: {
       current: null as null | typeof import("node:fs/promises").open,
     },
@@ -38,7 +39,12 @@ const { forkSessionMock, queryMock, openMock, nativeOpenRef } = vi.hoisted(
 );
 
 vi.mock("@anthropic-ai/claude-agent-sdk", () => ({
-  query: queryMock,
+  query: (args: {
+    options?: { persistSession?: boolean; forkSession?: boolean };
+  }) =>
+    args.options?.persistSession === false && args.options.forkSession === true
+      ? contextQueryMock(args)
+      : queryMock(args),
   forkSession: forkSessionMock,
   createSdkMcpServer: vi.fn(() => ({})),
   tool: vi.fn((_name, _desc, _schema, handler) => handler),
@@ -103,6 +109,7 @@ interface CanUseToolPolicyCase {
 }
 
 interface ControlledClaudeQuery {
+  mcpServerStatus: ReturnType<typeof vi.fn>;
   getContextUsage: ReturnType<typeof vi.fn>;
   applyFlagSettings: ReturnType<typeof vi.fn>;
   close: ReturnType<typeof vi.fn>;
@@ -114,7 +121,6 @@ interface ControlledClaudeQuery {
   setModel: ReturnType<typeof vi.fn>;
   setPermissionMode: ReturnType<typeof vi.fn>;
   setMcpServers: ReturnType<typeof vi.fn>;
-  mcpServerStatus: ReturnType<typeof vi.fn>;
   reconnectMcpServer: ReturnType<typeof vi.fn>;
   toggleMcpServer: ReturnType<typeof vi.fn>;
   supportedCommands: ReturnType<typeof vi.fn>;
@@ -123,6 +129,7 @@ interface ControlledClaudeQuery {
 
 interface ClaudeQueryCallOptions {
   allowDangerouslySkipPermissions?: boolean;
+  mcpServers?: BridgeSessionOptions["mcpServers"];
   canUseTool?: CanUseTool;
   onElicitation?: OnElicitation;
   env?: Record<string, string | undefined>;
@@ -3987,6 +3994,7 @@ describe("bridge", () => {
       await vi.waitFor(async () => {
         const outputs = await invokeBridgeHooks(
           call.options.hooks?.PreToolUse,
+
           {
             hook_event_name: "PreToolUse",
             tool_name: "mcp__fixture__search",
@@ -4119,15 +4127,20 @@ describe("bridge", () => {
     async (capacity, delayed) => {
       const bridge = createBridgeJsonRpcTestHarness(handleLine);
       const queries: ControlledClaudeQuery[] = [];
+      const contextReads = vi.fn().mockResolvedValue({
+        categories: [{ name: "Provider category", tokens: 450 }],
+        totalTokens: 450,
+        rawMaxTokens: capacity,
+        model: "claude-test",
+        isAutoCompactEnabled: false,
+      });
+      contextQueryMock.mockImplementation(() => {
+        const query = createControlledClaudeQuery();
+        query.getContextUsage = contextReads;
+        return query;
+      });
       queryMock.mockImplementation(() => {
         const query = createControlledClaudeQuery();
-        query.getContextUsage.mockResolvedValue({
-          categories: [{ name: "Provider category", tokens: 450 }],
-          totalTokens: 450,
-          rawMaxTokens: capacity,
-          model: "claude-test",
-          isAutoCompactEnabled: false,
-        });
         queries.push(query);
         return query;
       });
@@ -4162,7 +4175,7 @@ describe("bridge", () => {
         );
         await readNextPrompt(getLatestQueryCall());
         await bridge.waitForResponse(2);
-        if (delayed) queries[0].getContextUsage.mockReturnValueOnce(pending);
+        if (delayed) contextReads.mockReturnValueOnce(pending);
         queries[0].emit({
           type: "system",
           subtype: "init",
@@ -4181,9 +4194,7 @@ describe("bridge", () => {
           session_id: threadId,
         });
         if (delayed) {
-          await vi.waitFor(() =>
-            expect(queries[0].getContextUsage).toHaveBeenCalledTimes(1),
-          );
+          await vi.waitFor(() => expect(contextReads).toHaveBeenCalledTimes(1));
           queries[0].emit(
             createAssistantToolUseMessage({
               parentToolUseId: null,
@@ -4257,7 +4268,7 @@ describe("bridge", () => {
             },
           ]);
         });
-        expect(queries[0].getContextUsage).toHaveBeenCalledTimes(1);
+        expect(contextReads).toHaveBeenCalledTimes(1);
         queries[0].emit(
           createAssistantToolUseMessage({
             parentToolUseId: null,
@@ -4280,10 +4291,8 @@ describe("bridge", () => {
           expect(usage?.snapshot).toBeUndefined();
         });
         queries[0].emit(createSuccessfulResultMessage(threadId));
-        await vi.waitFor(() =>
-          expect(queries[0].getContextUsage).toHaveBeenCalledTimes(2),
-        );
-        queries[0].getContextUsage.mockResolvedValue(null);
+        await vi.waitFor(() => expect(contextReads).toHaveBeenCalledTimes(2));
+        contextReads.mockResolvedValue(null);
         queries[0].emit({
           type: "system",
           subtype: "compact_boundary",
@@ -4307,7 +4316,7 @@ describe("bridge", () => {
             modelContextWindow: null,
             estimated: true,
           });
-          expect(queries[0].getContextUsage).toHaveBeenCalledTimes(3);
+          expect(contextReads).toHaveBeenCalledTimes(3);
         });
       } finally {
         await stopBridgeThread({ bridge, queries, threadId });
@@ -4315,6 +4324,98 @@ describe("bridge", () => {
       }
     },
   );
+
+  it("keeps prompts on the live session while automatic context reporting is blocked", async () => {
+    const bridge = createBridgeJsonRpcTestHarness(handleLine);
+    const live = createControlledClaudeQuery();
+    const reports: ControlledClaudeQuery[] = [];
+    queryMock.mockReturnValue(live);
+    contextQueryMock.mockImplementation(() => {
+      const report = createControlledClaudeQuery();
+      report.mcpServerStatus.mockResolvedValue([
+        { name: "bb-bridge", status: "connected" },
+      ]);
+      report.getContextUsage.mockReturnValue(new Promise(() => {}));
+      reports.push(report);
+      return report;
+    });
+    const threadId = "thread-isolated-context";
+    try {
+      bridge.sendRequest(1, "thread/start", {
+        threadId,
+        cwd: "/tmp/worktree",
+        instructionMode: "append",
+        options: canonicalOptions({}),
+        dynamicTools: [
+          {
+            name: "probe_tool",
+            description: "Probe tool",
+            inputSchema: { type: "object", properties: {} },
+          },
+        ],
+      });
+      await bridge.waitForResponse(1);
+      bridge.sendRequest(
+        2,
+        "turn/start",
+        canonicalTurnParams({
+          threadId,
+          input: [{ type: "text", text: "first" }],
+        }),
+      );
+      await readNextPrompt(getLatestQueryCall());
+      await bridge.waitForResponse(2);
+      live.emit(createSuccessfulResultMessage(threadId));
+      await bridge.flushWork();
+      expect(reports).toHaveLength(1);
+      await vi.waitFor(() =>
+        expect(reports[0].getContextUsage).toHaveBeenCalledOnce(),
+      );
+      const reportOptions = contextQueryMock.mock.calls[0][0].options;
+      expect(reportOptions).toMatchObject({
+        resume: threadId,
+        forkSession: true,
+        persistSession: false,
+        settings: { disableAllHooks: true },
+      });
+      expect(reportOptions.hooks).toBeUndefined();
+      expect(reportOptions.mcpServers["bb-bridge"]).not.toBe(
+        getLatestQueryOptions().mcpServers?.["bb-bridge"],
+      );
+
+      bridge.sendRequest(
+        3,
+        "turn/start",
+        canonicalTurnParams({
+          threadId,
+          input: [{ type: "text", text: "continue while report is blocked" }],
+        }),
+      );
+      await expect(readNextPromptText(getLatestQueryCall())).resolves.toBe(
+        "continue while report is blocked",
+      );
+      await bridge.waitForResponse(3);
+      expect(live.getContextUsage).not.toHaveBeenCalled();
+      expect(live.close).not.toHaveBeenCalled();
+      expect(queryMock).toHaveBeenCalledOnce();
+
+      live.emit(createSuccessfulResultMessage(threadId));
+      await bridge.flushWork();
+      expect(reports[0].close).toHaveBeenCalledOnce();
+      expect(reports).toHaveLength(2);
+      expect(
+        assembleCapturedThreadEvents(bridge.messages, "claude-code").filter(
+          (event) => event.type === "turn/completed",
+        ),
+      ).toHaveLength(2);
+    } finally {
+      await stopBridgeThread({ bridge, queries: [live], threadId });
+      expect(
+        reports.every((report) => report.close.mock.calls.length === 1),
+      ).toBe(true);
+      bridge.restore();
+    }
+  });
 
   it("publishes the session's live slash commands as provider commands", async () => {
     const bridge = createBridgeJsonRpcTestHarness(handleLine);
@@ -4577,6 +4678,7 @@ describe("bridge", () => {
       {
         chromeEnabled: false,
         disable1MContext: false,
+        artifactsEnabled: false,
         sandboxEnabled: true,
         serviceTier: "default",
         workflowsEnabled: false,
@@ -4593,11 +4695,44 @@ describe("bridge", () => {
     expect(options.systemPrompt).toBe("You are a manager.");
   });
 
+  it.each([
+    { artifactsEnabled: true, inherited: {}, expected: "1" },
+    { artifactsEnabled: false, inherited: {}, expected: undefined },
+    {
+      artifactsEnabled: false,
+      inherited: { CLAUDE_CODE_ARTIFACT: "1" },
+      expected: "1",
+    },
+  ])(
+    "sets CLAUDE_CODE_ARTIFACT=$expected with artifactsEnabled=$artifactsEnabled and inherited $inherited",
+    ({ artifactsEnabled, inherited, expected }) => {
+      const options = buildSessionOptions(
+        {
+          chromeEnabled: false,
+          disable1MContext: false,
+          artifactsEnabled,
+          sandboxEnabled: true,
+          serviceTier: "default",
+          workflowsEnabled: false,
+          baseInstructions: "You are a coder.",
+          cwd: "/tmp/worktree",
+          instructionMode: "append",
+          permissionMode: "default",
+          permissionScope: "workspace",
+        },
+        inherited,
+      );
+
+      expect(options.env?.CLAUDE_CODE_ARTIFACT).toBe(expected);
+    },
+  );
+
   it("decomposes ultracode into xhigh effort plus the ultracode settings flag", () => {
     const options = buildSessionOptions(
       {
         chromeEnabled: false,
         disable1MContext: false,
+        artifactsEnabled: false,
         sandboxEnabled: true,
         serviceTier: "default",
         baseInstructions: "You are a coder.",
@@ -4625,6 +4760,7 @@ describe("bridge", () => {
       {
         chromeEnabled: false,
         disable1MContext: false,
+        artifactsEnabled: false,
         sandboxEnabled: true,
         serviceTier: "default",
         baseInstructions: "You are a coder.",
@@ -4652,6 +4788,7 @@ describe("bridge", () => {
       {
         chromeEnabled: false,
         disable1MContext: false,
+        artifactsEnabled: false,
         sandboxEnabled: true,
         workflowsEnabled: false,
         serviceTier: "fast",
@@ -4672,6 +4809,7 @@ describe("bridge", () => {
       {
         chromeEnabled: false,
         disable1MContext: false,
+        artifactsEnabled: false,
         sandboxEnabled: true,
         serviceTier: "default",
         workflowsEnabled: false,
@@ -4698,6 +4836,7 @@ describe("bridge", () => {
       {
         chromeEnabled: false,
         disable1MContext: false,
+        artifactsEnabled: false,
         sandboxEnabled: true,
         serviceTier: "default",
         workflowsEnabled: false,
@@ -4723,6 +4862,7 @@ describe("bridge", () => {
       {
         chromeEnabled: false,
         disable1MContext: false,
+        artifactsEnabled: false,
         sandboxEnabled: true,
         serviceTier: "default",
         workflowsEnabled: false,
@@ -4758,6 +4898,7 @@ describe("bridge", () => {
         {
           chromeEnabled: false,
           disable1MContext: false,
+          artifactsEnabled: false,
           sandboxEnabled: true,
           workflowsEnabled: false,
           cwd: "/tmp/worktree",
@@ -4787,6 +4928,7 @@ describe("bridge", () => {
       {
         chromeEnabled: false,
         disable1MContext: false,
+        artifactsEnabled: false,
         sandboxEnabled: true,
         serviceTier: "default",
         workflowsEnabled: false,
@@ -4815,6 +4957,7 @@ describe("bridge", () => {
       {
         chromeEnabled: false,
         disable1MContext: false,
+        artifactsEnabled: false,
         sandboxEnabled: true,
         serviceTier: "default",
         workflowsEnabled: false,
@@ -4836,6 +4979,7 @@ describe("bridge", () => {
       {
         chromeEnabled: false,
         disable1MContext: false,
+        artifactsEnabled: false,
         sandboxEnabled: true,
         serviceTier: "default",
         workflowsEnabled: false,
@@ -4864,6 +5008,7 @@ describe("bridge", () => {
         {
           chromeEnabled: false,
           disable1MContext: false,
+          artifactsEnabled: false,
           sandboxEnabled: true,
           serviceTier: "default",
           workflowsEnabled: false,
@@ -4886,6 +5031,7 @@ describe("bridge", () => {
       {
         chromeEnabled: false,
         disable1MContext: false,
+        artifactsEnabled: false,
         sandboxEnabled: true,
         serviceTier: "default",
         workflowsEnabled: false,
@@ -4901,6 +5047,7 @@ describe("bridge", () => {
       {
         chromeEnabled: false,
         disable1MContext: false,
+        artifactsEnabled: false,
         sandboxEnabled: true,
         serviceTier: "default",
         workflowsEnabled: false,
@@ -4936,6 +5083,7 @@ describe("bridge", () => {
       {
         chromeEnabled: false,
         disable1MContext: false,
+        artifactsEnabled: false,
         sandboxEnabled: true,
         serviceTier: "default",
         workflowsEnabled: false,
@@ -4959,6 +5107,7 @@ describe("bridge", () => {
       {
         chromeEnabled: false,
         disable1MContext: false,
+        artifactsEnabled: false,
         sandboxEnabled: false,
         serviceTier: "default",
         workflowsEnabled: false,
@@ -7553,7 +7702,7 @@ describe("bridge", () => {
     }
   });
 
-  it.each(["chromeEnabled", "disable1MContext"])(
+  it.each(["chromeEnabled", "disable1MContext", "artifactsEnabled"])(
     "restarts the Claude process before the next turn when %s changes",
     async (setting) => {
       const bridge = createBridgeJsonRpcTestHarness(handleLine);
@@ -7585,6 +7734,8 @@ describe("bridge", () => {
             chrome: null,
             "replay-user-messages": null,
           });
+        } else if (setting === "artifactsEnabled") {
+          expect(getLatestQueryOptions().env?.CLAUDE_CODE_ARTIFACT).toBe("1");
         } else {
           expect(
             getLatestQueryOptions().env?.CLAUDE_CODE_DISABLE_1M_CONTEXT,
@@ -7627,6 +7778,9 @@ describe("bridge", () => {
         expect(
           getLatestQueryOptions().env?.CLAUDE_CODE_DISABLE_1M_CONTEXT,
         ).toBe("0");
+        expect(getLatestQueryOptions().env).not.toHaveProperty(
+          "CLAUDE_CODE_ARTIFACT",
+        );
         await expect(readNextPromptText(getLatestQueryCall())).resolves.toBe(
           "setting turned off",
         );
@@ -9389,7 +9543,10 @@ describe("canonical skills/configure", () => {
     const rootB = join(stagedRoot, "b", "skills");
     for (const root of [rootA, rootB]) {
       mkdirSync(join(root, "demo"), { recursive: true });
-      writeFileSync(join(root, "demo", "SKILL.md"), "---\nname: demo\n---\n");
+      writeFileSync(
+        join(root, "demo", "SKILL.md"),
+        `---\nname: demo\n---\n${root}\n`,
+      );
     }
 
     try {
@@ -9486,7 +9643,7 @@ describe("canonical model context-window hint", () => {
         options: {
           ...canonicalOptions,
           envVars: { PLUGIN_ACCESS_TOKEN: "first" },
-          providerOptions: { disable1MContext: true },
+          providerOptions: { disable1MContext: true, artifactsEnabled: true },
         },
       });
       const startResponse = await bridge.waitForResponse(1);
@@ -9510,6 +9667,7 @@ describe("canonical model context-window hint", () => {
         env: {
           PLUGIN_ACCESS_TOKEN: "second",
           CLAUDE_CODE_DISABLE_1M_CONTEXT: "1",
+          CLAUDE_CODE_ARTIFACT: "1",
         },
         resume: providerThreadId,
       });

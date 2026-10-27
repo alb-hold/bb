@@ -33,6 +33,36 @@ const DEFAULT_COLS = 80;
 const DEFAULT_ROWS = 24;
 const TERMINAL_ATTACH_HEARTBEAT_MS = 15_000;
 const TERMINAL_WAIT_TIMEOUT_EXIT_CODE = 124;
+const NO_APP_CLIENT_MESSAGE = "No bb app is open to apply this; open bb and retry";
+
+function reportTerminalActionDelivery(deliveredClients: number): void {
+  if (deliveredClients === 0) {
+    throw new CliExitError(NO_APP_CLIENT_MESSAGE, 1, {
+      code: "no_app_clients",
+      hint: null,
+    });
+  }
+  console.log(
+    `Request sent to ${deliveredClients} open bb app client${deliveredClients === 1 ? "" : "s"}; receipt and application are not confirmed.`,
+  );
+}
+
+function reportTerminalActionResult(
+  opts: TerminalJsonOptions,
+  result: Record<string, unknown> & { deliveredClients: number },
+): void {
+  if (opts.json) {
+    outputJson(opts, {
+      ...result,
+      ...(result.deliveredClients === 0
+        ? { error: { code: "no_app_clients", message: NO_APP_CLIENT_MESSAGE } }
+        : {}),
+    });
+    if (result.deliveredClients === 0) reportTerminalActionDelivery(0);
+    return;
+  }
+  reportTerminalActionDelivery(result.deliveredClients);
+}
 
 interface TerminalJsonOptions {
   json?: boolean;
@@ -54,6 +84,7 @@ interface TerminalStartOptions
   attach?: boolean;
   command?: string;
   cols?: string;
+  id?: string;
   rows?: string;
   title?: string;
   workingDirectory?: string;
@@ -75,6 +106,10 @@ interface TerminalOutputOptions extends TerminalJsonOptions {
   lines?: string;
   sinceSeq?: string;
   tailBytes?: string;
+}
+
+interface TerminalScreenOptions extends TerminalJsonOptions {
+  lines?: string;
 }
 
 interface TerminalPipeOptions {
@@ -267,25 +302,75 @@ export function registerTerminalCommands(
   terminal
     .command("focus <terminalId>")
     .description("Focus a terminal tab in the app")
+    .option("--json", "Print machine-readable JSON output")
     .action(
-      action(async (terminalId: string) => {
-        await createCliBbSdk(getUrl()).terminals.experimental_focus({
-          terminalId,
-        });
-        console.log(`Focused terminal ${terminalId}`);
+      action(async (terminalId: string, opts: TerminalJsonOptions) => {
+        const result = await createCliBbSdk(
+          getUrl(),
+        ).terminals.experimental_focus({ terminalId });
+        reportTerminalActionResult(opts, { terminalId, deliveredClients: result.deliveredClients });
       }),
     );
 
   terminal
     .command("open-link <terminalId> <url>")
     .description("Open a URL in the terminal thread's browser")
+    .option("--json", "Print machine-readable JSON output")
     .action(
-      action(async (terminalId: string, url: string) => {
-        await createCliBbSdk(getUrl()).terminals.experimental_openBrowser({
+      action(async (terminalId: string, url: string, opts: TerminalJsonOptions) => {
+        const result = await createCliBbSdk(
+          getUrl(),
+        ).terminals.experimental_openBrowser({ terminalId, url });
+        reportTerminalActionResult(opts, { terminalId, url, deliveredClients: result.deliveredClients });
+      }),
+    );
+
+  terminal
+    .command("split <terminalId>")
+    .description("Place a terminal in a new side panel pane")
+    .requiredOption("--side <side>", "Pane side: right, left, up, or down")
+    .option("--json", "Print machine-readable JSON output")
+    .action(
+      action(async (terminalId: string, opts: { side: string; json?: boolean }) => {
+        if (!["right", "left", "up", "down"].includes(opts.side)) {
+          throw new CliUsageError({
+            code: "invalid_terminal_split_side",
+            hint: "Choose right, left, up, or down.",
+            message: "--side must be right, left, up, or down",
+          });
+        }
+        const result = await createCliBbSdk(
+          getUrl(),
+        ).terminals.experimental_layout.split({
           terminalId,
-          url,
+          side: opts.side as "right" | "left" | "up" | "down",
         });
-        console.log(`Opened ${url} in terminal ${terminalId}'s thread browser`);
+        reportTerminalActionResult(opts, {
+            terminalId,
+            side: opts.side,
+            deliveredClients: result.deliveredClients,
+          });
+      }),
+    );
+
+  terminal
+    .command("move <terminalId>")
+    .description("Move a terminal tab to the pane containing another terminal")
+    .requiredOption("--to-pane-of <terminalId>", "Terminal whose pane receives this tab")
+    .option("--json", "Print machine-readable JSON output")
+    .action(
+      action(async (terminalId: string, opts: { toPaneOf: string; json?: boolean }) => {
+        const result = await createCliBbSdk(
+          getUrl(),
+        ).terminals.experimental_layout.move({
+          terminalId,
+          targetTerminalId: opts.toPaneOf,
+        });
+        reportTerminalActionResult(opts, {
+            terminalId,
+            targetTerminalId: opts.toPaneOf,
+            deliveredClients: result.deliveredClients,
+          });
       }),
     );
 
@@ -356,6 +441,10 @@ export function registerTerminalCommands(
       .description("Create a terminal session in exactly one scope")
       .option("--title <title>", "Terminal title")
       .option(
+        "--id <terminal-id>",
+        "Create the terminal with this ID (term_ plus 10 characters); fails if the ID exists",
+      )
+      .option(
         "--command <command>",
         "Command to run instead of an interactive shell",
       )
@@ -376,6 +465,7 @@ export function registerTerminalCommands(
         ...(opts.workingDirectory === undefined
           ? {}
           : { cwd: opts.workingDirectory }),
+        id: opts.id,
         rows: parsePositiveInteger(opts.rows, DEFAULT_ROWS, "--rows"),
         scope: await resolveTerminalCreateScope(opts, getUrl()),
         title: opts.title,
@@ -470,6 +560,32 @@ export function registerTerminalCommands(
         console.log(
           `Resized terminal ${terminalId} to ${session.cols}x${session.rows}`,
         );
+      }),
+    );
+
+  terminal
+    .command("screen <terminalId>")
+    .description("Print the rendered terminal screen")
+    .option(
+      "--lines <n>",
+      "Print the latest N rendered rows, including scrollback",
+    )
+    .option(
+      "--json",
+      "Print machine-readable JSON including cursor and grid size",
+    )
+    .action(
+      action(async (terminalId: string, opts: TerminalScreenOptions) => {
+        const sdk = createCliBbSdk(getUrl());
+        const screen = await sdk.terminals.experimental_screen({
+          terminalId,
+          ...(opts.lines === undefined ? {} : { lines: Number(opts.lines) }),
+        });
+        if (outputJson(opts, screen)) return;
+        process.stdout.write(`${screen.rows.join("\n")}\n`);
+        if (!screen.complete) {
+          process.stdout.write("Screen may be incomplete because earlier terminal output was discarded.\n");
+        }
       }),
     );
 

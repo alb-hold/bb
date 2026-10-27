@@ -1,21 +1,10 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import {
   onClientSocketMessage,
   onClientSocketOpen,
 } from "../../src/ws/client-protocol.js";
 import { NotificationHub } from "../../src/ws/hub.js";
 import { createMockHubSocket } from "../helpers/mock-hub-socket.js";
-
-function createProtocolDeps(hub: NotificationHub) {
-  return {
-    hub,
-    watchInterests: {
-      releaseSocket: vi.fn(),
-      subscribe: vi.fn(),
-      unsubscribe: vi.fn(),
-    },
-  };
-}
 
 function applicationMessages(
   socket: ReturnType<typeof createMockHubSocket>,
@@ -28,12 +17,11 @@ function applicationMessages(
 describe("client websocket protocol", () => {
   it("subscribes valid client messages parsed through the shared schema", () => {
     const hub = new NotificationHub();
-    const deps = createProtocolDeps(hub);
     const socket = createMockHubSocket();
 
     onClientSocketOpen(hub, socket);
     onClientSocketMessage(
-      deps,
+      hub,
       socket,
       JSON.stringify({
         type: "subscribe",
@@ -52,14 +40,18 @@ describe("client websocket protocol", () => {
     });
   });
 
-  it("rejects subscribe messages whose target id is not a string", () => {
+  it("rejects a malformed known subscribe target", () => {
     const hub = new NotificationHub();
-    const deps = createProtocolDeps(hub);
     const socket = createMockHubSocket();
 
     onClientSocketOpen(hub, socket);
     onClientSocketMessage(
-      deps,
+      hub,
+      socket,
+      JSON.stringify({ type: "device-handoff-device", token: null }),
+    );
+    onClientSocketMessage(
+      hub,
       socket,
       JSON.stringify({
         type: "subscribe",
@@ -69,17 +61,77 @@ describe("client websocket protocol", () => {
     hub.notifyThread("thread-1", ["events-appended"]);
 
     expect(socket.closed).toEqual([{ code: 1008, reason: "invalid-message" }]);
+    expect(socket.messages).toHaveLength(1);
+    expect(JSON.parse(socket.messages[0]!).type).toBe(
+      "device-handoff-client-token",
+    );
+  });
+
+  it("subscribes the valid targets of a batch that also holds an oversized plugin read", () => {
+    const hub = new NotificationHub();
+    const socket = createMockHubSocket();
+    const watched: unknown[] = [];
+    hub.onWatchedTargets(["thread-detail", "plugin-read"], (change) => {
+      watched.push(change);
+    });
+    const thread = { kind: "thread-detail", threadId: "thread-1" };
+
+    onClientSocketOpen(hub, socket);
+    onClientSocketMessage(
+      hub,
+      socket,
+      JSON.stringify({
+        type: "subscribe",
+        targets: [
+          {
+            kind: "plugin-read",
+            pluginId: "usage",
+            method: "getUsage",
+            read: { input: "x".repeat(17_000) },
+          },
+          thread,
+        ],
+      }),
+    );
+    hub.notifyThread("thread-1", ["events-appended"]);
+
+    expect(socket.closed).toEqual([]);
+    expect(watched).toEqual([{ started: [thread], stopped: [] }]);
+    expect(socket.messages).toHaveLength(1);
+  });
+
+  it("rejects a batch containing a malformed known target", () => {
+    const hub = new NotificationHub();
+    const socket = createMockHubSocket();
+    const watched: unknown[] = [];
+    hub.onWatchedTargets(["thread-detail"], (change) => {
+      watched.push(change);
+    });
+    const thread = { kind: "thread-detail", threadId: "thread-1" };
+
+    onClientSocketOpen(hub, socket);
+    onClientSocketMessage(
+      hub,
+      socket,
+      JSON.stringify({
+        type: "subscribe",
+        targets: [{ kind: "thread-detail", threadId: 123 }, thread],
+      }),
+    );
+    hub.notifyThread("thread-1", ["events-appended"]);
+
+    expect(socket.closed).toEqual([{ code: 1008, reason: "invalid-message" }]);
+    expect(watched).toEqual([]);
     expect(applicationMessages(socket)).toHaveLength(0);
   });
 
   it("removes subscriptions after unsubscribe messages", () => {
     const hub = new NotificationHub();
-    const deps = createProtocolDeps(hub);
     const socket = createMockHubSocket();
 
     onClientSocketOpen(hub, socket);
     onClientSocketMessage(
-      deps,
+      hub,
       socket,
       JSON.stringify({
         type: "subscribe",
@@ -87,7 +139,7 @@ describe("client websocket protocol", () => {
       }),
     );
     onClientSocketMessage(
-      deps,
+      hub,
       socket,
       JSON.stringify({
         type: "unsubscribe",
@@ -100,14 +152,13 @@ describe("client websocket protocol", () => {
     expect(applicationMessages(socket)).toHaveLength(0);
   });
 
-  it("rejects subscribe messages for unknown targets", () => {
+  it("ignores unknown targets without disconnecting the client", () => {
     const hub = new NotificationHub();
-    const deps = createProtocolDeps(hub);
     const socket = createMockHubSocket();
 
     onClientSocketOpen(hub, socket);
     onClientSocketMessage(
-      deps,
+      hub,
       socket,
       JSON.stringify({
         type: "subscribe",
@@ -115,18 +166,17 @@ describe("client websocket protocol", () => {
       }),
     );
 
-    expect(socket.closed).toEqual([{ code: 1008, reason: "invalid-message" }]);
+    expect(socket.closed).toEqual([]);
     expect(applicationMessages(socket)).toHaveLength(0);
   });
 
   it("rejects client messages with missing required fields", () => {
     const hub = new NotificationHub();
-    const deps = createProtocolDeps(hub);
     const socket = createMockHubSocket();
 
     onClientSocketOpen(hub, socket);
     onClientSocketMessage(
-      deps,
+      hub,
       socket,
       JSON.stringify({
         type: "subscribe",
@@ -139,31 +189,39 @@ describe("client websocket protocol", () => {
 
   it("closes the socket instead of throwing on malformed JSON", () => {
     const hub = new NotificationHub();
-    const deps = createProtocolDeps(hub);
     const socket = createMockHubSocket();
 
     onClientSocketOpen(hub, socket);
 
-    expect(() => onClientSocketMessage(deps, socket, "{")).not.toThrow();
+    expect(() => onClientSocketMessage(hub, socket, "{")).not.toThrow();
     expect(socket.closed).toEqual([{ code: 1008, reason: "invalid-message" }]);
   });
 
-  it("updates watch interests from subscribe and unsubscribe messages", () => {
+  it("starts and stops watched targets from subscribe, visibility and unsubscribe messages", () => {
     const hub = new NotificationHub();
-    const deps = createProtocolDeps(hub);
     const socket = createMockHubSocket();
+    const changes: unknown[] = [];
+    hub.onWatchedTargets(["environment-detail"], (change) => {
+      changes.push(change);
+    });
 
     onClientSocketOpen(hub, socket);
     onClientSocketMessage(
-      deps,
+      hub,
       socket,
       JSON.stringify({
         type: "subscribe",
         target: { kind: "environment-detail", environmentId: "env-1" },
       }),
     );
+    for (const visible of [false, true])
+      onClientSocketMessage(
+        hub,
+        socket,
+        JSON.stringify({ type: "visibility", visible }),
+      );
     onClientSocketMessage(
-      deps,
+      hub,
       socket,
       JSON.stringify({
         type: "unsubscribe",
@@ -171,42 +229,39 @@ describe("client websocket protocol", () => {
       }),
     );
 
-    expect(deps.watchInterests.subscribe).toHaveBeenCalledWith(socket, {
-      kind: "environment-detail",
-      environmentId: "env-1",
-    });
-    expect(deps.watchInterests.unsubscribe).toHaveBeenCalledWith(socket, {
-      kind: "environment-detail",
-      environmentId: "env-1",
-    });
+    const target = { kind: "environment-detail", environmentId: "env-1" };
+    expect(socket.closed).toHaveLength(0);
+    expect(changes).toEqual([
+      { started: [target], stopped: [] },
+      { started: [], stopped: [target] },
+      { started: [target], stopped: [] },
+      { started: [], stopped: [target] },
+    ]);
   });
 
   it("answers a ping with a pong on the same socket only", () => {
     const hub = new NotificationHub();
-    const deps = createProtocolDeps(hub);
     const socket = createMockHubSocket();
     const otherSocket = createMockHubSocket();
 
     onClientSocketOpen(hub, socket);
     onClientSocketOpen(hub, otherSocket);
-    onClientSocketMessage(deps, socket, JSON.stringify({ type: "ping" }));
+    onClientSocketMessage(hub, socket, JSON.stringify({ type: "ping" }));
 
     expect(socket.closed).toHaveLength(0);
     expect(
       applicationMessages(socket).map((message) => JSON.parse(message)),
     ).toEqual([{ type: "pong" }]);
     expect(applicationMessages(otherSocket)).toHaveLength(0);
-    expect(deps.watchInterests.subscribe).not.toHaveBeenCalled();
   });
 
   it("rejects direct watch messages", () => {
     const hub = new NotificationHub();
-    const deps = createProtocolDeps(hub);
     const socket = createMockHubSocket();
 
     onClientSocketOpen(hub, socket);
     onClientSocketMessage(
-      deps,
+      hub,
       socket,
       JSON.stringify({
         type: "watch.acquire",
@@ -218,6 +273,36 @@ describe("client websocket protocol", () => {
     );
 
     expect(socket.closed).toEqual([{ code: 1008, reason: "invalid-message" }]);
-    expect(deps.watchInterests.subscribe).not.toHaveBeenCalled();
   });
+});
+
+it("routes batched plugin subscriptions and invalidate-all to the subscribed sockets", () => {
+  const hub = new NotificationHub();
+  const socket = createMockHubSocket();
+  const idle = createMockHubSocket();
+  onClientSocketOpen(hub, socket);
+  onClientSocketOpen(hub, idle);
+  onClientSocketMessage(
+    hub,
+    socket,
+    JSON.stringify({
+      type: "subscribe",
+      targets: [
+        { kind: "future-target" },
+        { kind: "plugin", pluginId: "push-notifications" },
+      ],
+    }),
+  );
+  hub.notifyPluginChanged("other", null);
+  hub.notifyPluginChanged("push-notifications", null);
+  expect(socket.closed).toEqual([]);
+  expect(socket.messages.map((message) => JSON.parse(message))).toEqual([
+    {
+      type: "changed",
+      entity: "plugin",
+      pluginId: "push-notifications",
+      tags: null,
+    },
+  ]);
+  expect(idle.messages).toEqual([]);
 });

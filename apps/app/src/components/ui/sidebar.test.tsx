@@ -7,7 +7,7 @@ import {
   render,
   screen,
 } from "@testing-library/react";
-import { memo } from "react";
+import { memo, startTransition, useState } from "react";
 import { flushSync } from "react-dom";
 import { renderToString } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -61,6 +61,7 @@ afterEach(() => {
   uninstallNativeShell();
   cleanup();
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
   vi.useRealTimers();
 });
 
@@ -519,6 +520,56 @@ describe("SidebarContent", () => {
 
     expect(screen.getByTestId("content").classList).toContain("bg-sidebar");
   });
+
+  it("publishes its scrollbar lane and keeps it current when the scrollbar style changes", () => {
+    const observers: {
+      callback: ResizeObserverCallback;
+      instance: ResizeObserver;
+      targets: Set<Element>;
+    }[] = [];
+    class StubResizeObserver {
+      private readonly targets = new Set<Element>();
+      constructor(callback: ResizeObserverCallback) {
+        observers.push({
+          callback,
+          instance: this as unknown as ResizeObserver,
+          targets: this.targets,
+        });
+      }
+      observe(target: Element) {
+        this.targets.add(target);
+      }
+      unobserve(target: Element) {
+        this.targets.delete(target);
+      }
+      disconnect() {
+        this.targets.clear();
+      }
+    }
+    vi.stubGlobal("ResizeObserver", StubResizeObserver);
+    vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockReturnValue(256);
+    const clientWidth = vi
+      .spyOn(Element.prototype, "clientWidth", "get")
+      .mockReturnValue(246);
+
+    render(<SidebarContent data-testid="content">Rows</SidebarContent>);
+    const content = screen.getByTestId("content");
+    expect(content.style.getPropertyValue("--bb-sidebar-scrollbar-lane")).toBe(
+      "10px",
+    );
+
+    clientWidth.mockReturnValue(256);
+    act(() => {
+      for (const { callback, instance, targets } of observers) {
+        if (targets.has(content)) {
+          callback([], instance);
+        }
+      }
+    });
+    expect(content.style.getPropertyValue("--bb-sidebar-scrollbar-lane")).toBe(
+      "0px",
+    );
+  });
 });
 
 function getMobilePanel(): HTMLElement | null {
@@ -934,6 +985,71 @@ describe("mobile sidebar persistence", () => {
     fireEvent.click(trigger);
     settleMobileToggle();
     expect(getMobilePanel()?.dataset.state).toBe("open");
+  });
+
+  it("slides closed in the commit that shows the destination of a pending navigation", async () => {
+    vi.useFakeTimers();
+    let isDestinationReady = false;
+    let resolveDestination = () => {};
+    const destinationReady = new Promise<void>((resolve) => {
+      resolveDestination = resolve;
+    });
+    function Destination() {
+      if (!isDestinationReady) throw destinationReady;
+      return <p>Destination</p>;
+    }
+    function NavigationHarness() {
+      const { closeMobileSidebar } = useSidebar();
+      const [route, setRoute] = useState<"origin" | "destination">("origin");
+      return (
+        <>
+          <Sidebar>
+            <button
+              type="button"
+              onClick={() => {
+                closeMobileSidebar();
+                startTransition(() => {
+                  setRoute("destination");
+                });
+              }}
+            >
+              Open destination
+            </button>
+          </Sidebar>
+          <SidebarInset>
+            <SidebarTrigger />
+            {route === "origin" ? <p>Origin</p> : <Destination />}
+          </SidebarInset>
+        </>
+      );
+    }
+    render(
+      <CompactViewportOverrideProvider isCompactViewport>
+        <SidebarProvider>
+          <NavigationHarness />
+        </SidebarProvider>
+      </CompactViewportOverrideProvider>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Toggle Sidebar" }));
+    settleMobileToggle();
+    fireEvent.click(screen.getByRole("button", { name: "Open destination" }));
+
+    expect(screen.getByText("Origin")).toBeTruthy();
+    expect(getShelfRevealTranslate()).not.toBe(SHELF_CLOSED_TRANSLATE);
+    settleMobileToggle();
+    expect(getMobilePanel()?.dataset.state).toBe("open");
+
+    isDestinationReady = true;
+    await act(async () => {
+      resolveDestination();
+      await destinationReady;
+    });
+
+    expect(screen.getByText("Destination")).toBeTruthy();
+    expect(getShelfRevealTranslate()).toBe(SHELF_CLOSED_TRANSLATE);
+    settleMobileToggle();
+    expect(getMobilePanel()?.dataset.state).toBe("closed");
   });
 
   it("traps Tab between the trigger and the open drawer", () => {

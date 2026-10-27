@@ -8,12 +8,14 @@ import {
 
 interface TerminalTextSelectSheetProps {
   onOpenChange: (open: boolean) => void;
+  initialLine?: number | null;
   open: boolean;
   text: string;
 }
 
 export function TerminalTextSelectSheet({
   onOpenChange,
+  initialLine = null,
   open,
   text,
 }: TerminalTextSelectSheetProps) {
@@ -42,12 +44,44 @@ export function TerminalTextSelectSheet({
     );
   }, []);
 
+  const selectPressedLine = useCallback(() => {
+    const element = textRef.current;
+    if (element === null || initialLine === null) return;
+    const lineStart = element.value
+      .split("\n")
+      .slice(0, Math.max(0, initialLine))
+      .reduce((offset, line) => offset + line.length + 1, 0);
+    const newline = element.value.indexOf("\n", lineStart);
+    const lineEnd = newline === -1 ? element.value.length : newline;
+    element.focus({ preventScroll: true });
+    element.setSelectionRange(lineStart, lineEnd);
+    updateSelection();
+  }, [initialLine, updateSelection]);
+
   useLayoutEffect(() => {
     const element = textRef.current;
-    if (element !== null) {
+    if (element === null) return;
+    if (initialLine === null) {
       element.scrollTop = element.scrollHeight;
+      return;
     }
-  }, [isContentRealized, text]);
+    const frame = window.requestAnimationFrame(() => {
+      const lineStart = element.value
+        .split("\n")
+        .slice(0, Math.max(0, initialLine))
+        .reduce((offset, line) => offset + line.length + 1, 0);
+      if (document.activeElement !== element) {
+        element.focus({ preventScroll: true });
+      }
+      element.setSelectionRange(lineStart, lineStart);
+      const beforeLine = element.value.slice(0, lineStart);
+      const lineCount = Math.max(1, element.value.split("\n").length);
+      const lineHeight = element.scrollHeight / lineCount;
+      const lineIndex = beforeLine.match(/\n/g)?.length ?? 0;
+      element.scrollTop = Math.max(0, lineIndex - 2) * lineHeight;
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [initialLine, isContentRealized, text]);
 
   return (
     <PersistentResponsiveDrawerShell
@@ -58,8 +92,8 @@ export function TerminalTextSelectSheet({
     >
       {isContentRealized ? (
         <div className="flex min-h-0 flex-1 flex-col gap-2 px-3 pb-3">
-          <div className="flex shrink-0 items-center gap-2">
-            <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
+          <div className="flex shrink-0 flex-wrap items-center gap-2">
+            <span className="w-full truncate text-xs text-muted-foreground">
               Touch and hold to select, then Copy selection
             </span>
             <Button
@@ -74,6 +108,11 @@ export function TerminalTextSelectSheet({
             >
               Copy all
             </Button>
+            {initialLine !== null ? (
+              <Button type="button" variant="ghost" onClick={selectPressedLine}>
+                Select line
+              </Button>
+            ) : null}
             <Button
               type="button"
               disabled={!hasSelection}
@@ -95,6 +134,8 @@ export function TerminalTextSelectSheet({
             data-terminal-text-snapshot=""
             inputMode="none"
             onSelect={updateSelection}
+            onPointerUp={updateSelection}
+            onTouchEnd={updateSelection}
             readOnly
             spellCheck={false}
             wrap="off"

@@ -1,7 +1,10 @@
 // @vitest-environment jsdom
 import { Terminal } from "@xterm/xterm";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createTerminalTouchHandlers } from "./ThreadTerminalView";
+import {
+  createTerminalTouchHandlers,
+} from "./ThreadTerminalView";
+import { createTerminalTouchViewportSaveScheduler } from "./terminal-viewport";
 
 const CELL_WIDTH_PX = 8;
 const CELL_HEIGHT_PX = 15;
@@ -18,15 +21,29 @@ interface TouchPoint {
 
 interface Opened {
   screen: HTMLElement;
+  wrapper: HTMLElement;
   sent: string[];
   terminal: Terminal;
 }
 
 const disposers: (() => void)[] = [];
+const maxTouchPointsDescriptor = Object.getOwnPropertyDescriptor(
+  navigator,
+  "maxTouchPoints",
+);
 
 afterEach(() => {
   while (disposers.length > 0) {
     disposers.pop()?.();
+  }
+  if (maxTouchPointsDescriptor === undefined) {
+    Reflect.deleteProperty(navigator, "maxTouchPoints");
+  } else {
+    Object.defineProperty(
+      navigator,
+      "maxTouchPoints",
+      maxTouchPointsDescriptor,
+    );
   }
   vi.restoreAllMocks();
 });
@@ -52,6 +69,10 @@ function stubMeasurements(): void {
 }
 
 function openTerminal(withTouchHandlers: boolean): Opened {
+  Object.defineProperty(navigator, "maxTouchPoints", {
+    configurable: true,
+    value: 1,
+  });
   const wrapper = document.createElement("div");
   const host = document.createElement("div");
   wrapper.append(host);
@@ -69,8 +90,10 @@ function openTerminal(withTouchHandlers: boolean): Opened {
       width: COLS * CELL_WIDTH_PX,
       height: ROWS * CELL_HEIGHT_PX,
     });
+  let cancelTouchHandlers = () => {};
   if (withTouchHandlers) {
     const handlers = createTerminalTouchHandlers({ current: terminal });
+    cancelTouchHandlers = handlers.cancel;
     wrapper.addEventListener("touchstart", (event) =>
       handlers.start(event as TouchEvent),
     );
@@ -85,10 +108,11 @@ function openTerminal(withTouchHandlers: boolean): Opened {
   const sent: string[] = [];
   terminal.onData((data) => sent.push(data));
   disposers.push(() => {
+    cancelTouchHandlers();
     terminal.dispose();
     wrapper.remove();
   });
-  return { screen, sent, terminal };
+  return { screen, sent, terminal, wrapper };
 }
 
 function dispatchTouch(
@@ -192,22 +216,97 @@ describe("terminal touch flow with mouse tracking off", () => {
     expect(sent).toEqual([]);
   });
 
-  it("scrolls a swipe exactly as without the touch handlers", async () => {
+  it("scrolls a swipe without sending terminal input", async () => {
     stubMeasurements();
     const lines = Array.from({ length: 200 }, (_, index) => `line ${index}`);
     const withHandlers = openTerminal(true);
-    const without = openTerminal(false);
     await write(withHandlers.terminal, lines.join("\r\n"));
-    await write(without.terminal, lines.join("\r\n"));
-    swipe(withHandlers.screen, { x: 40, y: 100 }, 150);
-    swipe(without.screen, { x: 40, y: 100 }, 150);
+    withHandlers.terminal.scrollToLine(
+      withHandlers.terminal.buffer.active.baseY - 20,
+    );
+    const startViewportY = withHandlers.terminal.buffer.active.viewportY;
+    swipe(withHandlers.screen, { x: 40, y: 200 }, -150);
     expect(withHandlers.sent).toEqual([]);
-    expect(without.sent).toEqual([]);
-    expect(withHandlers.terminal.buffer.active.viewportY).toBeLessThan(
-      withHandlers.terminal.buffer.active.baseY,
+    expect(withHandlers.terminal.buffer.active.viewportY).toBeGreaterThan(
+      startViewportY,
     );
-    expect(withHandlers.terminal.buffer.active.viewportY).toBe(
-      without.terminal.buffer.active.viewportY,
+  });
+
+  it("keeps the eight-move drag on xterm native scrolling", async () => {
+    stubMeasurements();
+    const { screen, terminal } = openTerminal(true);
+    await write(
+      terminal,
+      Array.from({ length: 200 }, (_, index) => `line ${index}`).join("\r\n"),
     );
+    terminal.scrollToLine(terminal.buffer.active.baseY - 100);
+    const scrollToLine = vi.spyOn(terminal, "scrollToLine");
+    const startViewportY = terminal.buffer.active.viewportY;
+    let nativeMoves = 0;
+    screen.addEventListener("-xterm-gesturechange", () => {
+      nativeMoves += 1;
+    });
+    let now = 2_000;
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    dispatchTouch(screen, "touchstart", { x: 40, y: 350 }, 2_000);
+    for (let step = 1; step <= 8; step += 1) {
+      now += 40;
+      dispatchTouch(
+        screen,
+        "touchmove",
+        { x: 40, y: 350 - (300 * step) / 8 },
+        2_000 + step * 40,
+      );
+    }
+
+    const rowsMoved = terminal.buffer.active.viewportY - startViewportY;
+    const expectedRows = Math.round(300 / CELL_HEIGHT_PX);
+    expect(nativeMoves).toBe(8);
+    expect(Math.abs(rowsMoved - expectedRows)).toBeLessThanOrEqual(1);
+    now += 40;
+    dispatchTouch(screen, "touchend", { x: 40, y: 50 }, 2_360);
+    expect(scrollToLine).not.toHaveBeenCalled();
+    await new Promise((resolve) => setTimeout(resolve, 350));
+  });
+
+  it("saves a native touch scroll when xterm changes viewport without onScroll", async () => {
+    stubMeasurements();
+    const { screen, terminal, wrapper } = openTerminal(true);
+    await write(
+      terminal,
+      Array.from({ length: 200 }, (_, index) => `line ${index}`).join("\r\n"),
+    );
+    const onScrollCallback = vi.fn();
+    Object.defineProperty(terminal, "onScroll", {
+      configurable: true,
+      value: () => ({ dispose: () => undefined }),
+    });
+    terminal.onScroll(onScrollCallback);
+    const pendingFrames = new Map<number, () => void>();
+    let nextFrame = 0;
+    const save = vi.fn();
+    const scheduler = createTerminalTouchViewportSaveScheduler({
+      getViewportY: () => terminal.buffer.active.viewportY,
+      requestFrame: (callback) => {
+        const id = ++nextFrame;
+        pendingFrames.set(id, callback);
+        return id;
+      },
+      cancelFrame: (id) => pendingFrames.delete(id),
+      save,
+    });
+    wrapper.addEventListener("touchmove", () => scheduler.schedule(), {
+      capture: true,
+      passive: true,
+    });
+
+    const before = terminal.buffer.active.viewportY;
+    swipe(screen, { x: 40, y: 100 }, 150);
+    [...pendingFrames.values()].forEach((callback) => callback());
+
+    expect(terminal.buffer.active.viewportY).not.toBe(before);
+    expect(onScrollCallback).not.toHaveBeenCalled();
+    expect(save).toHaveBeenCalledOnce();
+    scheduler.dispose();
   });
 });

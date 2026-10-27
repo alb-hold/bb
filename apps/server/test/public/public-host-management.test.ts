@@ -452,6 +452,10 @@ describe("public host management", () => {
           method: "POST",
           headers: { "x-bb-gate-auth": "machine" },
         }),
+        harness.app.request(`${API}/hosts/${host.id}?force=true`, {
+          method: "DELETE",
+          headers: { "x-bb-gate-auth": "machine" },
+        }),
         harness.app.request(`${API}/hosts/${host.id}/permission-ceiling`, {
           method: "PATCH",
           headers: {
@@ -915,6 +919,7 @@ describe("public host management", () => {
       const revokeHandler = vi.fn(async () => ({ ok: true }));
       const revokeRecord = {
         publication: null,
+        declarations: {},
         inputSchema: z.object({ machineId: z.string() }),
         outputSchema: z.object({ ok: z.literal(true) }),
         handler: revokeHandler,
@@ -925,7 +930,10 @@ describe("public host management", () => {
       });
       const invoke = vi
         .spyOn(harness.pluginService, "invokeRpcHandler")
-        .mockResolvedValue({ ok: true, result: { ok: true } });
+        .mockResolvedValue({
+          ok: true,
+          result: { ok: true },
+        });
 
       const response = await harness.app.request(`${API}/hosts/${host.id}`, {
         method: "DELETE",

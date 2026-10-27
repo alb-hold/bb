@@ -143,6 +143,26 @@ export function applyThreadSessionOptionPatch(
   deps: Pick<AppDeps, "db" | "hub">,
   args: { thread: Thread; patch: SessionOptionSelectionPatch },
 ): void {
+  const selections = resolveThreadSessionOptionPatch(deps, args);
+  const state = readThreadSessionOptionState(deps.db, args.thread.id);
+  if (
+    state.providerThreadId === null ||
+    sameSelections(state.selections, selections)
+  ) {
+    return;
+  }
+  writeThreadSessionOptionSelections(deps, {
+    threadId: args.thread.id,
+    environmentId: args.thread.environmentId,
+    providerThreadId: state.providerThreadId,
+    selections,
+  });
+}
+
+export function resolveThreadSessionOptionPatch(
+  deps: Pick<AppDeps, "db">,
+  args: { thread: Thread; patch: SessionOptionSelectionPatch },
+): SessionOptionSelections {
   const state = readThreadSessionOptionState(deps.db, args.thread.id);
   const result = applySessionOptionSelectionPatch({
     options: state.options,
@@ -152,18 +172,7 @@ export function applyThreadSessionOptionPatch(
   if (!result.ok) {
     throw new ApiError(400, "invalid_request", result.message);
   }
-  if (
-    state.providerThreadId === null ||
-    sameSelections(state.selections, result.selections)
-  ) {
-    return;
-  }
-  writeThreadSessionOptionSelections(deps, {
-    threadId: args.thread.id,
-    environmentId: args.thread.environmentId,
-    providerThreadId: state.providerThreadId,
-    selections: result.selections,
-  });
+  return result.selections;
 }
 
 export function dropSettledThreadSessionOptionSelections(

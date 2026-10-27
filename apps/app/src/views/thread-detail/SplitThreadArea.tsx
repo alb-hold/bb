@@ -86,9 +86,7 @@ import {
   HEADER_ICON_BUTTON_CLASS,
   HEADER_PANE_ACTION_ICON_BUTTON_CLASS,
 } from "@/components/layout/AppPageHeader";
-import { AppBreadcrumbs } from "@/components/layout/AppBreadcrumbs";
-import { resourceRouteLabelAtom } from "@/components/layout/resourceRouteLabelAtom";
-import { resolveAutomationBreadcrumbs } from "@/components/tools/tools-navigation";
+import { PluginPageTitleHost } from "@/components/plugin/PluginPageTitleHost";
 import { Button } from "@bb/shared-ui/button";
 import { Icon } from "@bb/shared-ui/icon";
 import { CHROME_SUBTLE_ICON_BUTTON_FOREGROUND_CLASS } from "@bb/shared-ui/chrome-style-tokens";
@@ -437,12 +435,8 @@ function SplitThreadAreaContent({ routeContent }: SplitThreadAreaProps) {
     const focus = () => {
       if (!root.isConnected || root.getAttribute("aria-hidden") === "true")
         return false;
-      const composer = root.querySelector<HTMLElement>(
-        "[data-promptbox] [contenteditable='true'], [data-promptbox] textarea:not(:disabled)",
-      );
-      if (composer) {
-        focusPaneComposer(composer);
-        return document.activeElement === composer;
+      if (focusPaneComposer(root) && root.contains(document.activeElement)) {
+        return true;
       }
       const nativeTerminalInput = root.querySelector<HTMLElement>(
         "[data-native-terminal-thread] .xterm-helper-textarea",
@@ -1208,36 +1202,44 @@ function StandalonePaneContent({
     </Button>
   ) : null;
   return (
-    <PluginPagePanelHost
-      flushPageInsets
+    <PluginPageTitleHost
       pluginId={content.pluginId}
       panelPath={content.panelPath}
-      paneId={paneId}
       subPath={content.subPath}
     >
-      {panelChrome ? (
-        <div className="flex h-full min-h-0 flex-col">
-          <AppPageHeader
-            center={<PluginPanelHeaderCenter chrome={panelChrome} />}
-            actions={
-              panel ? (
-                <PluginPanelHeaderActions
-                  panel={panel}
-                  paneId={paneId}
-                  subPath={content.subPath}
-                  paneActions={paneActions}
-                />
-              ) : (
-                paneActions
-              )
-            }
-          />
-          <div className="flex min-h-0 flex-1 flex-col p-4 md:p-5">{body}</div>
-        </div>
-      ) : (
-        body
-      )}
-    </PluginPagePanelHost>
+      <PluginPagePanelHost
+        flushPageInsets
+        pluginId={content.pluginId}
+        panelPath={content.panelPath}
+        paneId={paneId}
+        subPath={content.subPath}
+      >
+        {panelChrome ? (
+          <div className="flex h-full min-h-0 flex-col">
+            <AppPageHeader
+              center={<PluginPanelHeaderCenter chrome={panelChrome} />}
+              actions={
+                panel ? (
+                  <PluginPanelHeaderActions
+                    panel={panel}
+                    paneId={paneId}
+                    subPath={content.subPath}
+                    paneActions={paneActions}
+                  />
+                ) : (
+                  paneActions
+                )
+              }
+            />
+            <div className="flex min-h-0 flex-1 flex-col p-4 md:p-5">
+              {body}
+            </div>
+          </div>
+        ) : (
+          body
+        )}
+      </PluginPagePanelHost>
+    </PluginPageTitleHost>
   );
 }
 
@@ -1257,7 +1259,6 @@ function NonThreadPaneContent({
   ownsWindowTopLeft: boolean;
 }) {
   const navPanelChrome = usePluginNavPanelChrome();
-  const resourceRouteLabel = useAtomValue(resourceRouteLabelAtom);
   const dimsInactiveSplits = useAtomValue(dimInactiveSplitsAtom);
   const { reservesWindowPanelToggle, isFocused } = useOptionalPaneContext() ?? {
     reservesWindowPanelToggle: false,
@@ -1277,13 +1278,6 @@ function NonThreadPaneContent({
       : undefined;
   const panel = panelEntry?.panel ?? undefined;
   const panelChrome = panelEntry?.chrome;
-  const automationBreadcrumbs =
-    content.kind === "plugin-panel"
-      ? resolveAutomationBreadcrumbs(
-          paneContentRoute(content),
-          isFocused ? resourceRouteLabel : null,
-        )
-      : null;
   const label =
     panelChrome?.title ??
     (content.kind === "plugin-detail" ? "Extension" : "New thread");
@@ -1372,12 +1366,7 @@ function NonThreadPaneContent({
               )}
               onPointerDown={beginPaneDrag ? handlePointerDown : undefined}
             >
-              {automationBreadcrumbs ? (
-                <AppBreadcrumbs
-                  breadcrumbs={automationBreadcrumbs}
-                  usesDesktopChrome={usesDesktopChrome}
-                />
-              ) : panelChrome ? (
+              {panelChrome ? (
                 <PluginPanelHeaderCenter chrome={panelChrome} />
               ) : (
                 <p
@@ -1422,14 +1411,21 @@ function NonThreadPaneContent({
   );
 
   return content.kind === "plugin-panel" ? (
-    <PluginPagePanelHost
-      flushPageInsets={!isBoundedPane}
+    <PluginPageTitleHost
       pluginId={content.pluginId}
       panelPath={content.panelPath}
       subPath={content.subPath}
+      focused={isFocused}
     >
-      {contentMarkup}
-    </PluginPagePanelHost>
+      <PluginPagePanelHost
+        flushPageInsets={!isBoundedPane}
+        pluginId={content.pluginId}
+        panelPath={content.panelPath}
+        subPath={content.subPath}
+      >
+        {contentMarkup}
+      </PluginPagePanelHost>
+    </PluginPageTitleHost>
   ) : (
     contentMarkup
   );

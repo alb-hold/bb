@@ -1,6 +1,11 @@
 import { eq } from "drizzle-orm";
+import { sql } from "drizzle-orm";
 import type { DbConnection, DbQueryConnection } from "./connection.js";
 import { forkThreadRowStates } from "./schema.js";
+import {
+  threadListEnrichmentScopePredicate,
+  type ThreadListEnrichmentScope,
+} from "./thread-list-enrichment-scope.js";
 import {
   threadRowStateSchema,
   type ThreadRowProgress,
@@ -45,6 +50,34 @@ export function getThreadRowState(
             : null,
         }
       : { statuses: {}, progress: null },
+  );
+}
+
+export function listThreadRowStatesByScope(
+  db: DbQueryConnection,
+  scope: ThreadListEnrichmentScope,
+  nowMs = Date.now(),
+): Map<string, ThreadRowState> {
+  const rows = db.all<StoredThreadRowState & { threadId: string }>(sql`
+    SELECT thread_id AS threadId, statuses_json AS statusesJson,
+      progress_json AS progressJson, updated_at AS updatedAt
+    FROM fork_thread_row_states
+    WHERE ${threadListEnrichmentScopePredicate(sql`thread_id`, scope)}
+      AND updated_at >= ${nowMs - THREAD_ROW_STATE_TTL_MS}
+  `);
+  return new Map(
+    rows.map((row) => [
+      row.threadId,
+      threadRowStateSchema.parse({
+        statuses: JSON.parse(row.statusesJson) as Record<
+          string,
+          ThreadRowStatus
+        >,
+        progress: row.progressJson
+          ? (JSON.parse(row.progressJson) as ThreadRowProgress)
+          : null,
+      }),
+    ]),
   );
 }
 

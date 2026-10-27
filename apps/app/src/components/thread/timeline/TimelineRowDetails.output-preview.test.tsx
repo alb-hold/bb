@@ -54,6 +54,7 @@ function renderExpandedRow(row: TimelineCommandWorkRow) {
           timelineRows={[row]}
           threadRuntimeDisplayStatus="idle"
           workspaceRootPath={undefined}
+          threadIsActive={false}
         />
       </Wrapper>
     </MemoryRouter>,

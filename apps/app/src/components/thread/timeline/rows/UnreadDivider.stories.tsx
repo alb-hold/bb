@@ -123,6 +123,7 @@ export function Overview() {
             {...baseProps}
             timelineRows={conversationRows}
             unreadDividerPlacement={afterCutoffPlacement}
+            threadIsActive={false}
           />
         </TimelineStage>
       </StoryRow>

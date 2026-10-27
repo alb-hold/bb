@@ -36,6 +36,7 @@ afterEach(cleanup);
 it("forwards pane callbacks to the timeline and conversation outline", () => {
   render(
     <ThreadTimelinePane
+      threadIsActive={false}
       activeThinking={null}
       canSpawnChild={false}
       contextBoundarySeq={null}

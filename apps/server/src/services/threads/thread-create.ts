@@ -8,6 +8,7 @@ import {
   markThreadDeleted,
   getEnvironment,
   getThread,
+  getThreadSpawner,
 } from "@bb/db";
 import { randomUUID } from "node:crypto";
 import {
@@ -50,8 +51,10 @@ import { configureThreadPlugins } from "./dispatch-hooks.js";
 import {
   createThreadRecord,
   getThreadSafe,
+  resolveRecordableSpawner,
   requirePublicProjectForThreadCreate,
 } from "./thread-create-helpers.js";
+import { assertRequestedModelAllowed } from "./child-thread-model.js";
 import {
   resolveStableThreadRequestEnvironment,
   type ResolvedStableThreadRequestEnvironment,
@@ -70,6 +73,11 @@ import {
   type ThreadCreateServiceRequest,
 } from "./thread-create-request.js";
 import { resolveDispatchAuthor } from "./dispatch-author.js";
+import { getActiveTurnId } from "./thread-events.js";
+import {
+  resolveTelemetryInitiator,
+  initiatorTelemetryProperty,
+} from "./telemetry-initiator.js";
 import { deriveForkTitle, deriveTitleFallback } from "./title-generation.js";
 import type { ThreadProvisionEnvironmentIntent } from "./thread-startup-store.js";
 import {
@@ -456,6 +464,18 @@ async function createPendingThreadAndAttemptFirstDispatch(
   });
   let execution: Awaited<ReturnType<typeof buildExecutionOptions>>;
   try {
+    if (args.nativeTerminal === null) {
+      await assertRequestedModelAllowed(deps, {
+        childScope: thread.parentThreadId
+          ? "parent"
+          : getThreadSpawner(deps.db, thread.id) === null
+            ? null
+            : "spawner",
+        model: args.request.model,
+        providerId: thread.providerId,
+        sources: args.request.executionInputSources,
+      });
+    }
     await configureThreadPlugins(
       thread,
       args.request.experimental_pluginCreateData,
@@ -501,6 +521,7 @@ async function createPendingThreadAndAttemptFirstDispatch(
       });
     }
     const executionPlanArgs = {
+      inheritParentExecution: true,
       projectDefaults: args.executionDefaults,
       hostId: hostIdForEnvironmentIntent(deps, args.environmentIntent),
       threadId: thread.id,
@@ -515,10 +536,10 @@ async function createPendingThreadAndAttemptFirstDispatch(
       payload: {
         input: args.request.input,
         mode: "start",
-        model: execution.model,
-        reasoningLevel: execution.reasoningLevel,
-        serviceTier: execution.serviceTier,
-        permissionMode: execution.permissionMode,
+        model: args.request.model,
+        reasoningLevel: args.request.reasoningLevel,
+        serviceTier: args.request.serviceTier,
+        permissionMode: args.request.permissionMode,
         ...(args.request.executionInputSources !== undefined
           ? { executionInputSources: args.request.executionInputSources }
           : {}),
@@ -737,6 +758,7 @@ export async function createThreadFromRequest(
   } = resolveProjectExecutionDefaultsForCreate(deps, {
     executionInputSources: requestInput.executionInputSources,
     model: requestInput.model,
+    parentThread,
     projectId: requestInput.projectId,
     providerId: requestInput.providerId,
   });
@@ -865,6 +887,23 @@ export async function createThreadFromRequest(
       ? requireNativeTerminalProvider(deps, request.providerId)
       : null;
 
+  if (nativeTerminalProvider === null) {
+    const recordableSpawner = resolveRecordableSpawner(deps, {
+      projectId: request.projectId,
+      spawnedByThreadId: request.spawnedByThreadId,
+    });
+    await assertRequestedModelAllowed(deps, {
+      childScope: request.parentThreadId
+        ? "parent"
+        : recordableSpawner === null
+          ? null
+          : "spawner",
+      model: request.model,
+      providerId: request.providerId,
+      sources: request.executionInputSources,
+    });
+  }
+
   const { environmentId, environmentIntent } =
     await resolveThreadEnvironmentPlacement(deps, {
       ...(forkSourceEnvironmentId !== undefined
@@ -929,23 +968,37 @@ export async function createThreadFromRequest(
     ...createArgs,
     sendAt: request.sendAt,
   });
+  const { initiator } = resolveDispatchAuthor({
+    retrying: false,
+    senderThreadId: null,
+    startedOnBehalfOf: request.startedOnBehalfOf,
+  });
+  const spawnedByWorkingAgent =
+    request.senderThreadId !== undefined &&
+    getActiveTurnId(deps, request.senderThreadId) !== null;
+  const telemetryInitiator = resolveTelemetryInitiator({
+    origin: request.origin,
+    originPluginId: request.originPluginId ?? null,
+    initiator:
+      spawnedByWorkingAgent && initiator === "user" ? "agent" : initiator,
+  });
   deps.telemetry.capture({
     name: "thread_created",
     properties: {
       is_child_thread: parentThread !== null,
       provider: request.providerId,
+      ...initiatorTelemetryProperty(
+        deps.config.featureFlags,
+        telemetryInitiator,
+      ),
     },
-  });
-  const { initiator } = resolveDispatchAuthor({
-    retrying: false,
-    senderThreadId: null,
-    startedOnBehalfOf: request.startedOnBehalfOf,
   });
   if (initiator === "user" && request.input.length > 0) {
     captureUserMessageSentTelemetry(deps, {
       isChildThread: parentThread !== null,
       messageSource: "thread_create",
       providerId: request.providerId,
+      initiator: telemetryInitiator,
     });
   }
   return thread;

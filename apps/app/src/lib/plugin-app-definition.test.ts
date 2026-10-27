@@ -10,6 +10,7 @@ import {
   definePluginApp,
   isPluginAppDefinition,
 } from "./plugin-app-definition";
+import { resolveFileOpenerReplacement } from "./plugin-slot-resolvers";
 
 function Component() {
   return null;
@@ -421,6 +422,68 @@ describe("collectPluginAppRegistrations — experimental_sidebarFooter", () => {
 });
 
 describe("collectPluginAppRegistrations", () => {
+  it.each(["design_board", "workspace-file"])(
+    "registers and resolves a file opener for %s",
+    (extension) => {
+      const definition = definePluginApp((app) => {
+        app.slots.fileOpener({
+          id: "viewer",
+          title: "Viewer",
+          extensions: [extension],
+          component: Component,
+        });
+      });
+      const collected = collectPluginAppRegistrations(definition);
+      const registrations = collected.fileOpeners.map((registration) => ({
+        ...registration,
+        pluginId: "extension-viewer",
+        generation: 1,
+      }));
+
+      expect(collected.fileOpeners).toEqual([
+        {
+          id: "viewer",
+          title: "Viewer",
+          extensions: [extension],
+          component: Component,
+        },
+      ]);
+      expect(
+        resolveFileOpenerReplacement({
+          registrations,
+          path: `project/file.${extension.toUpperCase()}`,
+        }),
+      ).toEqual({ kind: "plugin", registration: registrations[0] });
+    },
+  );
+
+  it.each([
+    "_board",
+    "board_",
+    "-board",
+    "board-",
+    "design__board",
+    "design--board",
+    "design_-board",
+    "design_BOARD",
+    "design.board",
+    "design/board",
+    "design board",
+  ])("rejects a malformed file opener extension %s", (extension) => {
+    const definition = definePluginApp((app) => {
+      app.slots.fileOpener({
+        id: "viewer",
+        title: "Viewer",
+        extensions: [extension],
+        component: Component,
+      });
+    });
+
+    expect(() => collectPluginAppRegistrations(definition)).toThrow(
+      /extensions must be lowercase alphanumerics/,
+    );
+  });
+
   it("produces the same complete registration set in the app and test runtimes", async () => {
     const run = () => {};
     const mount = () => {};
@@ -450,7 +513,10 @@ describe("collectPluginAppRegistrations", () => {
         experimental_useBadge: useNoBadge,
         headerContent: Component,
       });
-      app.slots.threadPanelAction({
+      Reflect.get(
+        app.slots,
+        "threadPanelAction",
+      )({
         id: "thread-panel",
         title: "Thread panel",
         icon: "Columns",
@@ -553,7 +619,10 @@ describe("collectPluginAppRegistrations", () => {
         path: "board",
         component: Component,
       });
-      app.slots.threadPanelAction({
+      Reflect.get(
+        app.slots,
+        "threadPanelAction",
+      )({
         id: "issue",
         title: "Issue",
         icon: "Columns",
@@ -625,7 +694,7 @@ describe("collectPluginAppRegistrations", () => {
         component: Component,
       },
     ]);
-    expect(registrations.threadPanelActions).toEqual([
+    expect(registrations.threadPanelActions).toMatchObject([
       {
         id: "issue",
         title: "Issue",
@@ -995,7 +1064,10 @@ describe("collectPluginAppRegistrations", () => {
       "thread panel action with a non-function run",
       () =>
         definePluginApp((app) => {
-          app.slots.threadPanelAction({
+          app.slots.experimental_tab({
+            context: { kind: "thread" },
+            availability: "action",
+            icon: "Info",
             id: "x",
             title: "X",
             component: Component,

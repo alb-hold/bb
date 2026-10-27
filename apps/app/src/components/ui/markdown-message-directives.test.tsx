@@ -794,6 +794,7 @@ describe("ThreadTimelineRows message directive subscription", () => {
             ]}
             threadRuntimeDisplayStatus="active"
             workspaceRootPath={undefined}
+            threadIsActive={false}
           />
         </MemoryRouter>
       </QueryClientProvider>,
@@ -837,6 +838,7 @@ describe("ThreadTimelineRows message directive subscription", () => {
             ]}
             threadRuntimeDisplayStatus="idle"
             workspaceRootPath={undefined}
+            threadIsActive={false}
           />
         </MemoryRouter>,
       );

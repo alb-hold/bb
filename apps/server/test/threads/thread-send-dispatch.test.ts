@@ -10,10 +10,12 @@ import {
   setAppSettings,
   setQueuedThreadMessageFailureReason,
   setQueuedThreadMessageGroupBoundary,
+  updateThread,
 } from "@bb/db";
 import type { EnvironmentRow } from "@bb/db";
 import {
   changedMessageSchema,
+  isStandaloneBuiltinClearCommand,
   threadScope,
   turnScope,
   type ServiceTier,
@@ -26,6 +28,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { TelemetryService } from "../../src/services/system/telemetry.js";
 import * as queuedDispatch from "../../src/services/threads/queued-message-dispatch.js";
 import * as threadEvents from "../../src/services/threads/thread-events.js";
+import * as dispatchHooks from "../../src/services/threads/dispatch-hooks.js";
+import * as hostLifecycle from "../../src/services/hosts/host-lifecycle.js";
 import { runQueuedMessageDispatch } from "../../src/services/threads/queued-message-dispatch.js";
 import {
   createAutomaticQueuedMessageGroupEligibility,
@@ -35,6 +39,7 @@ import {
 } from "../../src/services/threads/queued-messages.js";
 import { queueParentSystemMessage } from "../../src/services/threads/parent-system-messages.js";
 import { acceptThreadSendRequest } from "../../src/services/threads/thread-send-request.js";
+import { reattemptDispatchForThreadChange } from "../../src/services/threads/dispatch-attempt.js";
 import { handleUpdateEnvironmentDirectoryToolCall } from "../../src/services/threads/thread-environment-directory.js";
 import { applyLoggedThreadLifecycleEvent } from "../../src/services/threads/lifecycle-outcome.js";
 import { buildExecutionOptions } from "../../src/services/threads/thread-commands.js";
@@ -46,6 +51,10 @@ import {
   reportQueuedCommandError,
   waitForQueuedCommand,
 } from "../helpers/commands.js";
+import {
+  registerHostRpcResponder,
+  type HostRpcHandlerResult,
+} from "../helpers/host-rpc.js";
 import { createMockHubSocket } from "../helpers/mock-hub-socket.js";
 import { textInput } from "../helpers/prompt-input.js";
 import {
@@ -62,6 +71,7 @@ import { withTestHarness, type TestAppHarness } from "../helpers/test-app.js";
 
 interface IdleThreadFixture {
   environment: EnvironmentRow;
+  session: ReturnType<typeof seedHostSession>["session"];
   sessionId: string;
   thread: Thread;
 }
@@ -74,9 +84,12 @@ interface SeedIdleThreadFixtureArgs {
 interface SeedProviderThreadFixtureArgs extends SeedIdleThreadFixtureArgs {
   status?: "active" | "idle" | "starting";
   serviceTier?: ServiceTier;
+  providerId?: string;
 }
 
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 function seedProviderThreadFixture(
   args: SeedProviderThreadFixtureArgs,
@@ -97,6 +110,7 @@ function seedProviderThreadFixture(
   const thread = seedThread(args.harness.deps, {
     projectId: project.id,
     environmentId: environment.id,
+    providerId: args.providerId,
     status: args.status ?? "idle",
   });
   seedThreadRuntimeState(args.harness.deps, {
@@ -106,7 +120,7 @@ function seedProviderThreadFixture(
     threadId: thread.id,
   });
 
-  return { environment, sessionId: session.id, thread };
+  return { environment, session, sessionId: session.id, thread };
 }
 
 function seedColdIdleThreadFixture(
@@ -131,7 +145,7 @@ function seedColdIdleThreadFixture(
     status: "idle",
   });
 
-  return { environment, sessionId: session.id, thread };
+  return { environment, session, sessionId: session.id, thread };
 }
 
 function installTelemetryCaptureSpy(harness: TestAppHarness) {
@@ -311,9 +325,49 @@ describe("user message telemetry", () => {
       expect(capture).toHaveBeenCalledWith({
         name: "user_message_sent",
         properties: {
+          initiator: "user",
           is_child_thread: false,
           message_source: "thread_send",
           provider: "codex",
+        },
+      });
+    });
+  });
+
+  it("labels a send from the automations plugin as automation when initiator telemetry is on", async () => {
+    await withTestHarness(async (harness) => {
+      const capture = installTelemetryCaptureSpy(harness);
+      harness.deps.config.featureFlags = {
+        ...harness.deps.config.featureFlags,
+        initiatorTelemetry: true,
+      };
+      const { environment, thread } = seedColdIdleThreadFixture({
+        harness,
+        value: 7,
+      });
+
+      await sendThreadMessage(harness.deps, {
+        environment,
+        payload: {
+          input: textInput("automation run into an existing thread"),
+          mode: "start",
+          model: "gpt-5",
+          permissionMode: "full",
+          reasoningLevel: "medium",
+          serviceTier: "default",
+          originPluginId: "automations",
+        },
+        thread,
+        trigger: "user",
+      });
+
+      expect(capture).toHaveBeenCalledWith({
+        name: "user_message_sent",
+        properties: {
+          is_child_thread: false,
+          message_source: "thread_send",
+          provider: "codex",
+          initiator: "automation",
         },
       });
     });
@@ -1678,9 +1732,11 @@ describe("service tier execution lifecycle", () => {
       await expect(
         buildExecutionOptions(harness.deps, {}, { threadId: thread.id }),
       ).resolves.toMatchObject({ serviceTier: "default" });
-      expect(listQueuedThreadMessages(harness.db, thread.id)).toMatchObject([
-        { id: newer.id, serviceTier: "fast" },
-      ]);
+      await vi.waitFor(() => {
+        expect(listQueuedThreadMessages(harness.db, thread.id)).toMatchObject([
+          { id: newer.id, serviceTier: "fast" },
+        ]);
+      });
       expect(
         listQueuedThreadCommands(harness, "turn.submit", thread.id),
       ).toContainEqual(
@@ -1763,6 +1819,338 @@ describe("service tier execution lifecycle", () => {
 });
 
 describe("concurrent idle dispatch regression", () => {
+  it("preserves the cause in repeated dispatch reattempt errors", async () => {
+    await withTestHarness(async (harness) => {
+      const { thread } = seedProviderThreadFixture({ harness, value: 3722 });
+      for (const [scopeChanged, expectedCode] of [
+        [false, "thread_changed"],
+        [true, "thread_scope_changed"],
+      ] as const) {
+        try {
+          reattemptDispatchForThreadChange(
+            harness.deps,
+            {} as never,
+            thread,
+            true,
+            scopeChanged,
+          );
+          expect.fail("expected repeated reattempt to throw");
+        } catch (error) {
+          expect(error).toMatchObject({
+            status: 409,
+            body: { code: expectedCode },
+          });
+        }
+      }
+    });
+  });
+
+  it("clears after a real stop when the parent changes during the stop", async () => {
+    await withTestHarness(async (harness) => {
+      const { session, thread } = seedProviderThreadFixture({
+        harness,
+        value: 3721,
+        providerId: "claude-code",
+        status: "idle",
+      });
+      const firstParent = seedThread(harness.deps, {
+        projectId: thread.projectId,
+        environmentId: thread.environmentId,
+        providerId: thread.providerId,
+      });
+      const nextParent = seedThread(harness.deps, {
+        projectId: thread.projectId,
+        environmentId: thread.environmentId,
+        providerId: thread.providerId,
+      });
+      const child = updateThread(harness.db, harness.hub, thread.id, {
+        parentThreadId: firstParent.id,
+      })!;
+      const clearInput = [
+        {
+          type: "text" as const,
+          text: "/clear",
+          mentions: [
+            {
+              start: 0,
+              end: 6,
+              resource: {
+                kind: "command" as const,
+                trigger: "/" as const,
+                name: "clear",
+                source: "command" as const,
+                origin: "builtin" as const,
+                label: "clear",
+                argumentHint: null,
+              },
+            },
+          ],
+        },
+      ];
+      expect(isStandaloneBuiltinClearCommand(clearInput)).toBe(true);
+      const responder = registerHostRpcResponder(harness, {
+        hostId: "host-send-dispatch-3721",
+        sessionId: session.id,
+        handle: async ({ command }): Promise<HostRpcHandlerResult> => {
+          if (command.type === "thread.stop") {
+            updateThread(harness.db, harness.hub, child.id, {
+              parentThreadId: nextParent.id,
+            });
+            return { ok: true, result: { providerCheckpointId: null } };
+          }
+          throw new Error(`Unexpected command ${command.type}`);
+        },
+      });
+      const response = await harness.app.request(
+        `/api/v1/threads/${child.id}/send`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ input: clearInput, mode: "auto" }),
+        },
+      );
+      expect(response.status, await response.text()).toBe(200);
+      expect(getThread(harness.db, child.id)?.parentThreadId).toBe(
+        nextParent.id,
+      );
+      expect(responder.requests).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            command: expect.objectContaining({ type: "thread.stop" }),
+          }),
+        ]),
+      );
+    });
+  });
+
+  it("keeps a claimed legacy row on the old scope when a new child policy is refused", async () => {
+    await withTestHarness(async (harness) => {
+      const { session, thread } = seedProviderThreadFixture({
+        harness,
+        value: 3717,
+        providerId: "claude-code",
+      });
+      const parent = seedThread(harness.deps, {
+        projectId: thread.projectId,
+        environmentId: thread.environmentId,
+        providerId: thread.providerId,
+      });
+      const queued = seedQueuedMessage(harness.deps, {
+        content: textInput("legacy opusus row"),
+        model: "claude-opus-5-5",
+        threadId: thread.id,
+        waitingOn: { kind: "time" },
+        sendAt: Date.now() + 60_000,
+      });
+      let release!: () => void;
+      let entered!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const started = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      vi.spyOn(
+        hostLifecycle,
+        "ensureHostSessionReadyForWork",
+      ).mockImplementation(async () => {
+        entered();
+        await gate;
+        return session;
+      });
+
+      const dispatch = sendQueuedMessageNow(harness.deps, {
+        mode: "auto",
+        queuedMessageId: queued.id,
+        threadId: thread.id,
+      });
+      await started;
+      const patch = await harness.app.request(`/api/v1/threads/${thread.id}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ parentThreadId: parent.id }),
+      });
+      expect(patch.status).toBe(400);
+      expect(await patch.json()).toMatchObject({
+        code: "child_model_conflict",
+        details: {
+          queuedMessageIds: [queued.id],
+          requestedModel: "claude-opus-5-5",
+        },
+      });
+      release();
+      await dispatch;
+
+      expect(getQueuedThreadMessage(harness.db, queued.id)).toBeNull();
+      expect(
+        threadEvents.getLastExecutionOptions(harness.deps, thread.id),
+      ).toMatchObject({ model: "claude-opus-5-5" });
+      expect(
+        listQueuedThreadCommands(harness, "turn.submit", thread.id),
+      ).toHaveLength(1);
+      expect(
+        listEvents(harness.db, { threadId: thread.id }).filter(
+          (event) => event.type === "client/turn/requested",
+        ),
+      ).toHaveLength(2);
+    });
+  });
+
+  it("releases a claimed row when its child scope is removed during fast send", async () => {
+    await withTestHarness(async (harness) => {
+      let { session, thread } = seedProviderThreadFixture({
+        harness,
+        value: 3718,
+        providerId: "claude-code",
+      });
+      const parent = seedThread(harness.deps, {
+        projectId: thread.projectId,
+        environmentId: thread.environmentId,
+        providerId: thread.providerId,
+      });
+      thread = updateThread(harness.db, harness.hub, thread.id, {
+        parentThreadId: parent.id,
+      })!;
+      const queued = seedQueuedMessage(harness.deps, {
+        content: textInput("child model row"),
+        model: "claude-sonnet-5-5",
+        threadId: thread.id,
+        waitingOn: { kind: "time" },
+        sendAt: Date.now() + 60_000,
+      });
+      let release!: () => void;
+      let entered!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const started = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      vi.spyOn(
+        hostLifecycle,
+        "ensureHostSessionReadyForWork",
+      ).mockImplementation(async () => {
+        entered();
+        await gate;
+        return session;
+      });
+
+      const dispatch = sendQueuedMessageNow(harness.deps, {
+        mode: "auto",
+        queuedMessageId: queued.id,
+        threadId: thread.id,
+      });
+      await started;
+      const patch = await harness.app.request(`/api/v1/threads/${thread.id}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ parentThreadId: null }),
+      });
+      expect(patch.status).toBe(200);
+      release();
+      await expect(dispatch).rejects.toMatchObject({
+        body: { code: "queued_message_claim_lost" },
+      });
+
+      expect(getQueuedThreadMessage(harness.db, queued.id)).toMatchObject({
+        state: "scheduled",
+        model: "claude-sonnet-5-5",
+      });
+      expect(
+        threadEvents.getLastExecutionOptions(harness.deps, thread.id),
+      ).toMatchObject({ model: "gpt-5" });
+      expect(
+        listQueuedThreadCommands(harness, "turn.submit", thread.id),
+      ).toEqual([]);
+      await sendQueuedMessageNow(harness.deps, {
+        mode: "auto",
+        queuedMessageId: queued.id,
+        threadId: thread.id,
+      });
+      expect(getQueuedThreadMessage(harness.db, queued.id)).toBeNull();
+      expect(
+        threadEvents.getLastExecutionOptions(harness.deps, thread.id),
+      ).toMatchObject({ model: "claude-sonnet-5-5" });
+      expect(
+        listQueuedThreadCommands(harness, "turn.submit", thread.id),
+      ).toHaveLength(1);
+    });
+  });
+
+  it("reattempts a legacy conflicting row after a same-policy reparent", async () => {
+    await withTestHarness(async (harness) => {
+      const { session, thread } = seedProviderThreadFixture({
+        harness,
+        value: 3720,
+        providerId: "claude-code",
+      });
+      const firstParent = seedThread(harness.deps, {
+        projectId: thread.projectId,
+        environmentId: thread.environmentId,
+        providerId: thread.providerId,
+      });
+      const secondParent = seedThread(harness.deps, {
+        projectId: thread.projectId,
+        environmentId: thread.environmentId,
+        providerId: thread.providerId,
+      });
+      const child = updateThread(harness.db, harness.hub, thread.id, {
+        parentThreadId: firstParent.id,
+      })!;
+      const queued = seedQueuedMessage(harness.deps, {
+        content: textInput("legacy conflicting queued model"),
+        model: "claude-opus-5-5",
+        threadId: child.id,
+        waitingOn: { kind: "time" },
+        sendAt: Date.now() + 60_000,
+      });
+      vi.spyOn(dispatchHooks, "hasMessageDispatchHooks").mockReturnValue(true);
+      let release!: () => void;
+      let entered!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const started = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      vi.spyOn(
+        hostLifecycle,
+        "ensureHostSessionReadyForWork",
+      ).mockImplementation(async () => {
+        entered();
+        await gate;
+        return session;
+      });
+
+      const dispatch = sendQueuedMessageNow(harness.deps, {
+        mode: "auto",
+        queuedMessageId: queued.id,
+        threadId: child.id,
+      });
+      await started;
+      const patch = await harness.app.request(`/api/v1/threads/${child.id}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ parentThreadId: secondParent.id }),
+      });
+      expect(patch.status).toBe(200);
+      release();
+      await expect(dispatch).resolves.toMatchObject({ delivery: "sent" });
+      expect(getQueuedThreadMessage(harness.db, queued.id)).toBeNull();
+      expect(
+        threadEvents.getLastExecutionOptions(harness.deps, child.id),
+      ).toMatchObject({ model: "claude-sonnet-5-5" });
+      expect(
+        listQueuedThreadCommands(harness, "turn.submit", child.id),
+      ).toHaveLength(1);
+      expect(
+        listEvents(harness.db, { threadId: child.id }).filter(
+          (event) => event.type === "client/turn/requested",
+        ),
+      ).toHaveLength(2);
+    });
+  });
+
   it("retains every concurrent queue-mode send", async () => {
     await withTestHarness(async (harness) => {
       const { thread } = seedProviderThreadFixture({ harness, value: 3716 });
@@ -1965,7 +2353,11 @@ describe("turn held open for background work", () => {
     };
   }
 
-  function queueIfActive(harness: TestAppHarness, thread: Thread, text: string) {
+  function queueIfActive(
+    harness: TestAppHarness,
+    thread: Thread,
+    text: string,
+  ) {
     return acceptThreadSendRequest(harness.deps, {
       payload: {
         input: textInput(text),

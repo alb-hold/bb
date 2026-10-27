@@ -1,10 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  cancelTerminalOutputNextRenders,
   getTerminalLatencyDiagnostics,
-  recordTerminalInputEnqueued,
+  recordTerminalInputAccepted,
   recordTerminalInputWebSocketSent,
+  recordTerminalOutputNextRender,
+  recordTerminalOutputParsed,
   recordTerminalOutputReceived,
-  recordTerminalOutputRendered,
 } from "./terminal-latency-diagnostics.js";
 
 describe("terminal latency diagnostics", () => {
@@ -18,36 +20,58 @@ describe("terminal latency diagnostics", () => {
 
   it("keeps a fixed-size rolling sample and stores numeric measurements only", () => {
     for (let index = 0; index < 400; index += 1) {
-      recordTerminalInputEnqueued("term-a", index + 1, index);
+      recordTerminalInputAccepted("term-a", index + 1, index, index + 0.5);
       recordTerminalInputWebSocketSent("term-a", index + 1, index + 1.25);
-      recordTerminalOutputReceived("term-a", index + 2);
-      recordTerminalOutputRendered("term-a", index + 2, index + 3);
+      const frameId = recordTerminalOutputReceived("term-a", index + 2);
+      recordTerminalOutputParsed("term-a", frameId ?? undefined, index + 2.5);
+      recordTerminalOutputNextRender("term-a", index + 3);
     }
 
     const snapshot = getTerminalLatencyDiagnostics();
-    expect(snapshot.desktop.outputRenderMs.count).toBe(256);
-    expect(snapshot.desktop.outputRenderMs.totalCount).toBe(400);
-    expect(snapshot.desktop.outputRenderMs.p50Ms).toBe(1);
-    expect(snapshot.desktop.outputRenderMs.p95Ms).toBe(1);
-    expect(snapshot.desktop.inputToFirstOutputReceivedMs.count).toBe(256);
-    expect(snapshot.desktop.inputFirstOutputReceivedToRenderMs.count).toBe(256);
-    expect(snapshot.desktop.inputFirstOutputReceivedToRenderMs.p50Ms).toBe(1);
-    expect(snapshot.desktop.inputToFirstOutputRenderMs.count).toBe(256);
-    expect(snapshot.desktop.inputEventToEnqueueMs.count).toBe(256);
-    expect(snapshot.desktop.inputEventToEnqueueMs.totalCount).toBe(400);
-    expect(snapshot.desktop.inputEventToEnqueueMs.p50Ms).toBe(1);
-    expect(snapshot.desktop.inputEnqueueToWebSocketSendMs.count).toBe(256);
-    expect(snapshot.desktop.inputEnqueueToWebSocketSendMs.totalCount).toBe(400);
-    expect(snapshot.desktop.inputEnqueueToWebSocketSendMs.p50Ms).toBe(0.25);
+    expect(snapshot.desktop.outputParseMs.count).toBe(256);
+    expect(snapshot.desktop.outputParseMs.totalCount).toBe(400);
+    expect(snapshot.desktop.outputParseMs.p50Ms).toBe(0.5);
+    expect(snapshot.desktop.outputParseMs.p95Ms).toBe(0.5);
+    expect(snapshot.desktop.outputNextRenderMs.count).toBe(256);
+    expect(snapshot.desktop.outputNextRenderMs.totalCount).toBe(400);
+    expect(snapshot.desktop.outputNextRenderMs.p50Ms).toBe(1);
+    expect(snapshot.desktop.outputNextRenderMs.p95Ms).toBe(1);
+    expect(snapshot.desktop.inputAcceptedToFirstOutputAfterSendMs.count).toBe(
+      256,
+    );
+    expect(snapshot.desktop.firstOutputAfterSendToParseMs.count).toBe(256);
+    expect(snapshot.desktop.firstOutputAfterSendToParseMs.p50Ms).toBe(0.5);
+    expect(snapshot.desktop.firstOutputAfterSendToNextRenderMs.count).toBe(256);
+    expect(snapshot.desktop.inputEventToFirstOutputAfterSendParseMs.count).toBe(
+      256,
+    );
     expect(
-      snapshot.desktop.inputWebSocketSendToFirstOutputReceivedMs.count,
+      snapshot.desktop.inputEventToFirstOutputAfterSendNextRenderMs.count,
     ).toBe(256);
+    expect(snapshot.desktop.inputEventToSerializationMs.count).toBe(256);
+    expect(snapshot.desktop.inputEventToSerializationMs.totalCount).toBe(400);
+    expect(snapshot.desktop.inputEventToSerializationMs.p50Ms).toBe(0.5);
+    expect(snapshot.desktop.inputSerializationToAcceptanceMs.count).toBe(256);
+    expect(snapshot.desktop.inputSerializationToAcceptanceMs.totalCount).toBe(
+      400,
+    );
+    expect(snapshot.desktop.inputSerializationToAcceptanceMs.p50Ms).toBe(0.5);
+    expect(snapshot.desktop.inputAcceptanceToWebSocketSendMs.count).toBe(256);
+    expect(snapshot.desktop.inputAcceptanceToWebSocketSendMs.totalCount).toBe(
+      400,
+    );
+    expect(snapshot.desktop.inputAcceptanceToWebSocketSendMs.p50Ms).toBe(0.25);
+    expect(snapshot.desktop.inputEventToFirstOutputAfterSendParseMs.p50Ms).toBe(
+      2.5,
+    );
     expect(
-      snapshot.desktop.inputWebSocketSendToFirstOutputReceivedMs.totalCount,
-    ).toBe(400);
-    expect(
-      snapshot.desktop.inputWebSocketSendToFirstOutputReceivedMs.p50Ms,
-    ).toBe(0.75);
+      snapshot.desktop.inputEventToFirstOutputAfterSendNextRenderMs.p50Ms,
+    ).toBe(3);
+    expect(snapshot.desktop.inputSendToFirstOutputAfterSendMs.count).toBe(256);
+    expect(snapshot.desktop.inputSendToFirstOutputAfterSendMs.totalCount).toBe(
+      400,
+    );
+    expect(snapshot.desktop.inputSendToFirstOutputAfterSendMs.p50Ms).toBe(0.75);
     const recordedValues = Object.values(snapshot.desktop).flatMap((metric) => [
       metric.count,
       metric.totalCount,
@@ -78,97 +102,141 @@ describe("terminal latency diagnostics", () => {
 
   it("keeps phone and desktop timing samples separate", () => {
     vi.stubGlobal("window", { innerWidth: 390 });
-    recordTerminalOutputReceived("term-a", 5);
-    recordTerminalOutputRendered("term-a", 5, 11);
+    const frameId = recordTerminalOutputReceived("term-a", 5);
+    recordTerminalOutputParsed("term-a", frameId ?? undefined, 9);
+    recordTerminalOutputNextRender("term-a", 11);
 
     const snapshot = getTerminalLatencyDiagnostics();
-    expect(snapshot.phone.outputRenderMs.p50Ms).toBe(6);
-    expect(snapshot.desktop.outputRenderMs.p50Ms).toBe(1);
+    expect(snapshot.phone.outputParseMs.p50Ms).toBe(4);
+    expect(snapshot.phone.outputNextRenderMs.p50Ms).toBe(6);
+    expect(snapshot.desktop.outputParseMs.p50Ms).toBe(0.5);
+    expect(snapshot.desktop.outputNextRenderMs.p50Ms).toBe(1);
   });
 
-  it("attributes a coalesced first output to the first key and stores no terminal text", () => {
+  it("records first same-terminal output after send as a temporal proxy and stores no terminal text", () => {
     vi.stubGlobal("window", { innerWidth: 390 });
     const keystroke = "private-keystroke-7f31";
     const output = "private-terminal-output-93ad";
-    recordTerminalInputEnqueued("term-a", 100);
-    recordTerminalInputEnqueued("term-a", 108);
-    recordTerminalInputEnqueued("term-a", 116);
+    recordTerminalInputAccepted("term-a", 100, 90);
+    recordTerminalInputAccepted("term-a", 108, 98);
+    recordTerminalInputAccepted("term-a", 116, 106);
     recordTerminalInputWebSocketSent("term-a", 100, 101);
     recordTerminalInputWebSocketSent("term-a", 108, 109);
     recordTerminalInputWebSocketSent("term-a", 116, 117);
-    recordTerminalOutputReceived("term-a", 130);
-    recordTerminalOutputRendered("term-a", 130, 140);
+    const frameId = recordTerminalOutputReceived("term-a", 130);
+    recordTerminalOutputParsed("term-a", frameId ?? undefined, 140);
+    recordTerminalOutputNextRender("term-a", 150);
 
     const serialized = JSON.stringify(getTerminalLatencyDiagnostics());
     expect(serialized).not.toContain(keystroke);
     expect(serialized).not.toContain(output);
     expect(
-      getTerminalLatencyDiagnostics().phone.inputToFirstOutputReceivedMs.p50Ms,
+      getTerminalLatencyDiagnostics().phone
+        .inputAcceptedToFirstOutputAfterSendMs.p50Ms,
     ).toBe(30);
     expect(
-      getTerminalLatencyDiagnostics().phone
-        .inputWebSocketSendToFirstOutputReceivedMs.p50Ms,
+      getTerminalLatencyDiagnostics().phone.inputSendToFirstOutputAfterSendMs
+        .p50Ms,
     ).toBe(29);
     expect(
-      getTerminalLatencyDiagnostics().phone.inputToFirstOutputRenderMs.p50Ms,
-    ).toBe(40);
+      getTerminalLatencyDiagnostics().phone
+        .inputEventToFirstOutputAfterSendParseMs.p50Ms,
+    ).toBe(50);
     expect(
-      getTerminalLatencyDiagnostics().phone.inputFirstOutputReceivedToRenderMs
-        .p50Ms,
+      getTerminalLatencyDiagnostics().phone.firstOutputAfterSendToParseMs.p50Ms,
     ).toBe(10);
     expect(
-      getTerminalLatencyDiagnostics().phone.inputToFirstOutputReceivedMs.count,
+      getTerminalLatencyDiagnostics().phone
+        .inputEventToFirstOutputAfterSendNextRenderMs.p50Ms,
+    ).toBe(60);
+    expect(
+      getTerminalLatencyDiagnostics().phone.firstOutputAfterSendToNextRenderMs
+        .p50Ms,
+    ).toBe(20);
+    expect(
+      getTerminalLatencyDiagnostics().phone
+        .inputAcceptedToFirstOutputAfterSendMs.count,
     ).toBe(1);
   });
 
-  it("pairs output only with input sent by its receive time and keeps unsent input", () => {
+  it("counts output only after same-terminal send time and keeps unsent input", () => {
     const before = getTerminalLatencyDiagnostics().desktop;
-    recordTerminalInputEnqueued("term-before-send", 10_000);
-    recordTerminalOutputReceived("term-before-send", 10_005);
-    recordTerminalOutputRendered("term-before-send", 10_005, 10_008);
+    recordTerminalInputAccepted("term-before-send", 10_000);
+    recordTerminalInputWebSocketSent("term-before-send", 10_000, 10_020);
+    const beforeSendFrame = recordTerminalOutputReceived(
+      "term-before-send",
+      10_005,
+    );
+    recordTerminalOutputParsed(
+      "term-before-send",
+      beforeSendFrame ?? undefined,
+      10_008,
+    );
+    recordTerminalOutputNextRender("term-before-send", 10_009);
 
     expect(
-      getTerminalLatencyDiagnostics().desktop.inputToFirstOutputReceivedMs
-        .totalCount,
-    ).toBe(before.inputToFirstOutputReceivedMs.totalCount);
-    recordTerminalInputWebSocketSent("term-before-send", 10_000, 10_020);
+      getTerminalLatencyDiagnostics().desktop
+        .inputAcceptedToFirstOutputAfterSendMs.totalCount,
+    ).toBe(before.inputAcceptedToFirstOutputAfterSendMs.totalCount);
     recordTerminalOutputReceived("term-before-send", 10_025);
 
     expect(
-      getTerminalLatencyDiagnostics().desktop.inputToFirstOutputReceivedMs
-        .totalCount,
-    ).toBe(before.inputToFirstOutputReceivedMs.totalCount + 1);
+      getTerminalLatencyDiagnostics().desktop
+        .inputAcceptedToFirstOutputAfterSendMs.totalCount,
+    ).toBe(before.inputAcceptedToFirstOutputAfterSendMs.totalCount + 1);
   });
 
-  it("does not pair output from another terminal with pending input", () => {
+  it("counts asynchronous same-terminal output after send as the temporal proxy", () => {
+    const terminalId = "term-asynchronous-output-after-send";
+    const before = getTerminalLatencyDiagnostics().desktop;
+    for (let index = 0; index < 300; index += 1) {
+      const sentAt = 1_000_000 + index * 10;
+      const acceptedAt = sentAt - 2;
+      recordTerminalInputAccepted(terminalId, acceptedAt, acceptedAt - 5);
+      recordTerminalInputWebSocketSent(terminalId, acceptedAt, sentAt);
+      recordTerminalOutputReceived(terminalId, sentAt + 5);
+      recordTerminalOutputReceived(terminalId, sentAt + 6);
+    }
+
+    const snapshot = getTerminalLatencyDiagnostics().desktop;
+    expect(snapshot.inputAcceptedToFirstOutputAfterSendMs.totalCount).toBe(
+      before.inputAcceptedToFirstOutputAfterSendMs.totalCount + 300,
+    );
+    expect(snapshot.inputAcceptedToFirstOutputAfterSendMs.p50Ms).toBe(7);
+    expect(snapshot.inputSendToFirstOutputAfterSendMs.p50Ms).toBe(5);
+  });
+
+  it("ignores other-terminal output for pending input", () => {
     const before =
-      getTerminalLatencyDiagnostics().desktop.inputToFirstOutputReceivedMs
-        .totalCount;
-    recordTerminalInputEnqueued("term-cross-a", 20_000);
+      getTerminalLatencyDiagnostics().desktop
+        .inputAcceptedToFirstOutputAfterSendMs.totalCount;
+    recordTerminalInputAccepted("term-cross-a", 20_000);
     recordTerminalInputWebSocketSent("term-cross-a", 20_000, 20_001);
 
-    recordTerminalOutputReceived("term-cross-b", 20_005);
-    recordTerminalOutputRendered("term-cross-b", 20_005, 20_008);
+    const otherFrame = recordTerminalOutputReceived("term-cross-b", 20_005);
+    recordTerminalOutputParsed("term-cross-b", otherFrame ?? undefined, 20_008);
+    recordTerminalOutputNextRender("term-cross-b", 20_009);
     expect(
-      getTerminalLatencyDiagnostics().desktop.inputToFirstOutputReceivedMs
-        .totalCount,
+      getTerminalLatencyDiagnostics().desktop
+        .inputAcceptedToFirstOutputAfterSendMs.totalCount,
     ).toBe(before);
 
-    recordTerminalOutputReceived("term-cross-a", 20_010);
-    recordTerminalOutputRendered("term-cross-a", 20_010, 20_013);
+    const ownFrame = recordTerminalOutputReceived("term-cross-a", 20_010);
+    recordTerminalOutputParsed("term-cross-a", ownFrame ?? undefined, 20_012);
+    recordTerminalOutputNextRender("term-cross-a", 20_013);
     expect(
-      getTerminalLatencyDiagnostics().desktop.inputToFirstOutputReceivedMs
-        .totalCount,
+      getTerminalLatencyDiagnostics().desktop
+        .inputAcceptedToFirstOutputAfterSendMs.totalCount,
     ).toBe(before + 1);
   });
 
-  it("consumes every sent input coalesced into the first output frame", () => {
+  it("clears each same-terminal sent input at the first subsequent output", () => {
     const before =
-      getTerminalLatencyDiagnostics().desktop.inputToFirstOutputReceivedMs
-        .totalCount;
+      getTerminalLatencyDiagnostics().desktop
+        .inputAcceptedToFirstOutputAfterSendMs.totalCount;
     for (let index = 0; index < 127; index += 1) {
       const enqueuedAt = 40_000 + index * 100;
-      recordTerminalInputEnqueued("term-coalesce-fill", enqueuedAt);
+      recordTerminalInputAccepted("term-coalesce-fill", enqueuedAt);
       recordTerminalInputWebSocketSent(
         "term-coalesce-fill",
         enqueuedAt,
@@ -178,7 +246,7 @@ describe("terminal latency diagnostics", () => {
     }
     for (let index = 0; index < 128; index += 1) {
       const enqueuedAt = 60_000 + index * 100;
-      recordTerminalInputEnqueued("term-coalesce-fill", enqueuedAt);
+      recordTerminalInputAccepted("term-coalesce-fill", enqueuedAt);
       recordTerminalInputWebSocketSent(
         "term-coalesce-fill",
         enqueuedAt,
@@ -186,25 +254,185 @@ describe("terminal latency diagnostics", () => {
       );
       recordTerminalOutputReceived("term-coalesce-fill", enqueuedAt + 20);
     }
-    recordTerminalInputEnqueued("term-coalesced", 30_000);
-    recordTerminalInputEnqueued("term-coalesced", 30_008);
+    recordTerminalInputAccepted("term-coalesced", 30_000);
+    recordTerminalInputAccepted("term-coalesced", 30_008);
     recordTerminalInputWebSocketSent("term-coalesced", 30_000, 30_001);
     recordTerminalInputWebSocketSent("term-coalesced", 30_008, 30_009);
 
     recordTerminalOutputReceived("term-coalesced", 30_020);
     expect(
-      getTerminalLatencyDiagnostics().desktop.inputToFirstOutputReceivedMs
-        .totalCount,
+      getTerminalLatencyDiagnostics().desktop
+        .inputAcceptedToFirstOutputAfterSendMs.totalCount,
     ).toBe(before + 256);
     expect(
-      getTerminalLatencyDiagnostics().desktop.inputToFirstOutputReceivedMs
-        .p50Ms,
+      getTerminalLatencyDiagnostics().desktop
+        .inputAcceptedToFirstOutputAfterSendMs.p50Ms,
     ).toBe(20);
 
     recordTerminalOutputReceived("term-coalesced", 30_030);
     expect(
-      getTerminalLatencyDiagnostics().desktop.inputToFirstOutputReceivedMs
-        .totalCount,
+      getTerminalLatencyDiagnostics().desktop
+        .inputAcceptedToFirstOutputAfterSendMs.totalCount,
     ).toBe(before + 256);
+  });
+
+  it("measures input-event-to-next-render after first output following send", () => {
+    const before =
+      getTerminalLatencyDiagnostics().desktop
+        .inputEventToFirstOutputAfterSendNextRenderMs.totalCount;
+    for (let index = 0; index < 32; index += 1) {
+      const inputEventAt = 1_000_000 + index * 100;
+      const acceptedAt = inputEventAt + 10;
+      const sentAt = inputEventAt + 20;
+      const receivedAt = inputEventAt + 30;
+      const terminalId = `term-keystroke-anchor-${index}`;
+      recordTerminalInputAccepted(
+        terminalId,
+        acceptedAt,
+        inputEventAt,
+        inputEventAt + 5,
+      );
+      recordTerminalInputWebSocketSent(terminalId, acceptedAt, sentAt);
+      const frameId = recordTerminalOutputReceived(terminalId, receivedAt);
+      recordTerminalOutputParsed(
+        terminalId,
+        frameId ?? undefined,
+        receivedAt + 10,
+      );
+      recordTerminalOutputNextRender(terminalId, inputEventAt + 5_000);
+    }
+
+    const metric =
+      getTerminalLatencyDiagnostics().desktop
+        .inputEventToFirstOutputAfterSendNextRenderMs;
+    expect(metric.totalCount).toBe(before + 32);
+    expect(metric.p95Ms).toBe(5_000);
+  });
+
+  it("pairs delayed parse callbacks and next-render callbacks across ring eviction", () => {
+    const before = getTerminalLatencyDiagnostics().desktop;
+    const terminalId = "term-next-render-ring-pairing";
+    const frames: Array<{
+      frameId: number | null;
+      receivedAt: number;
+      index: number;
+    }> = [];
+
+    for (let index = 0; index < 300; index += 1) {
+      const receivedAt = 100_000 + index * 100;
+      const inputEventAt = receivedAt - (1_000 + index);
+      const acceptedAt = inputEventAt + 100;
+      recordTerminalInputAccepted(
+        terminalId,
+        acceptedAt,
+        inputEventAt,
+        inputEventAt + 50,
+      );
+      recordTerminalInputWebSocketSent(
+        terminalId,
+        acceptedAt,
+        inputEventAt + 200,
+      );
+      frames.push({
+        frameId: recordTerminalOutputReceived(terminalId, receivedAt),
+        receivedAt,
+        index,
+      });
+    }
+
+    for (const frame of frames.slice(0, 150)) {
+      recordTerminalOutputParsed(
+        terminalId,
+        frame.frameId ?? undefined,
+        frame.receivedAt + frame.index,
+      );
+      recordTerminalOutputNextRender(
+        terminalId,
+        frame.receivedAt + frame.index + 1,
+      );
+    }
+    for (const frame of frames.slice(150).reverse()) {
+      recordTerminalOutputParsed(
+        terminalId,
+        frame.frameId ?? undefined,
+        frame.receivedAt + frame.index,
+      );
+      recordTerminalOutputNextRender(
+        terminalId,
+        frame.receivedAt + frame.index + 1,
+      );
+    }
+
+    const after = getTerminalLatencyDiagnostics().desktop;
+    expect(after.outputParseMs.totalCount).toBe(
+      before.outputParseMs.totalCount + 256,
+    );
+    expect(after.outputParseMs.count).toBe(256);
+    expect(after.outputParseMs.p50Ms).toBe(171);
+    expect(after.outputParseMs.p95Ms).toBe(287);
+    expect(after.outputNextRenderMs.totalCount).toBe(
+      before.outputNextRenderMs.totalCount + 256,
+    );
+    expect(after.outputNextRenderMs.count).toBe(256);
+    expect(after.outputNextRenderMs.p50Ms).toBe(172);
+    expect(after.outputNextRenderMs.p95Ms).toBe(288);
+    expect(after.inputAcceptedToFirstOutputAfterSendMs.totalCount).toBe(
+      before.inputAcceptedToFirstOutputAfterSendMs.totalCount + 300,
+    );
+    expect(after.inputEventToFirstOutputAfterSendNextRenderMs.totalCount).toBe(
+      before.inputEventToFirstOutputAfterSendNextRenderMs.totalCount + 256,
+    );
+    expect(after.inputEventToFirstOutputAfterSendNextRenderMs.p50Ms).toBe(
+      1_343,
+    );
+    expect(after.inputEventToFirstOutputAfterSendNextRenderMs.p95Ms).toBe(
+      1_575,
+    );
+  });
+
+  it("next render after parse completes pending frames regardless of rows", () => {
+    const terminalId = "term-parse-before-next-render";
+    const before = getTerminalLatencyDiagnostics().desktop;
+    recordTerminalInputAccepted(terminalId, 11, 10);
+    recordTerminalInputWebSocketSent(terminalId, 11, 12);
+    const frameId = recordTerminalOutputReceived(terminalId, 20);
+    const nextFrameId = recordTerminalOutputReceived(terminalId, 22);
+
+    recordTerminalOutputNextRender(terminalId, 25);
+    expect(
+      getTerminalLatencyDiagnostics().desktop.outputNextRenderMs.totalCount,
+    ).toBe(before.outputNextRenderMs.totalCount);
+
+    recordTerminalOutputParsed(terminalId, frameId ?? undefined, 30);
+    recordTerminalOutputParsed(terminalId, nextFrameId ?? undefined, 32);
+    recordTerminalOutputNextRender(terminalId, 35);
+
+    const snapshot = getTerminalLatencyDiagnostics().desktop;
+    expect(snapshot.outputParseMs.totalCount).toBe(
+      before.outputParseMs.totalCount + 2,
+    );
+    expect(snapshot.outputNextRenderMs.totalCount).toBe(
+      before.outputNextRenderMs.totalCount + 2,
+    );
+    expect(
+      snapshot.inputEventToFirstOutputAfterSendNextRenderMs.totalCount,
+    ).toBe(before.inputEventToFirstOutputAfterSendNextRenderMs.totalCount + 1);
+  });
+
+  it("does not record a next-render sample when the terminal is hidden", () => {
+    const terminalId = "term-hidden-before-next-render";
+    const before = getTerminalLatencyDiagnostics().desktop;
+    const frameId = recordTerminalOutputReceived(terminalId, 50);
+    cancelTerminalOutputNextRenders(terminalId);
+    recordTerminalOutputParsed(terminalId, frameId ?? undefined, 55);
+    recordTerminalOutputNextRender(terminalId, 65);
+
+    const snapshot = getTerminalLatencyDiagnostics().desktop;
+    expect(snapshot.outputParseMs.totalCount).toBe(
+      before.outputParseMs.totalCount + 1,
+    );
+    expect(snapshot.outputNextRenderMs.totalCount).toBe(
+      before.outputNextRenderMs.totalCount,
+    );
   });
 });

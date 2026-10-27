@@ -44,6 +44,7 @@ function renderRow(row: TimelineRow, initialExpanded: ReadonlySet<string>) {
           timelineRows={[row]}
           threadRuntimeDisplayStatus="idle"
           workspaceRootPath={undefined}
+          threadIsActive={false}
         />
       </Wrapper>
     </MemoryRouter>,
@@ -243,6 +244,7 @@ describe("deferred timeline details", () => {
             timelineRows={rows}
             threadRuntimeDisplayStatus="idle"
             workspaceRootPath={undefined}
+            threadIsActive={false}
           />
         </Wrapper>
       </MemoryRouter>

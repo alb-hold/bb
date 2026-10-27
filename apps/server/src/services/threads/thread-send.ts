@@ -1,6 +1,7 @@
 import {
   getEnvironment,
   getThread,
+  getThreadSpawner,
   requireThreadLifecycleEventApplied,
 } from "@bb/db";
 import { assertNotNativeTerminalThread } from "./native-terminal-guard.js";
@@ -78,7 +79,14 @@ import {
   type GroupedPrompt,
   type PromptWithGroups,
 } from "./deferred-first-turn-context.js";
-import type { TelemetryEvent } from "../system/telemetry.js";
+import type {
+  TelemetryEvent,
+  TelemetryInitiator,
+} from "../system/telemetry.js";
+import {
+  initiatorTelemetryProperty,
+  resolveTelemetryInitiator,
+} from "./telemetry-initiator.js";
 import { assertThreadHostAcceptsWork } from "./thread-host-admission.js";
 
 type SendThreadMessageMode = SendMessageRequest["mode"];
@@ -429,11 +437,12 @@ type UserMessageSentProperties = Extract<
 >["properties"];
 
 export function captureUserMessageSentTelemetry(
-  deps: Pick<LoggedPendingInteractionWorkSessionDeps, "telemetry">,
+  deps: Pick<LoggedPendingInteractionWorkSessionDeps, "config" | "telemetry">,
   args: {
     isChildThread: boolean;
     messageSource: UserMessageSentProperties["message_source"];
     providerId: string;
+    initiator: TelemetryInitiator;
   },
 ): void {
   deps.telemetry.capture({
@@ -442,6 +451,7 @@ export function captureUserMessageSentTelemetry(
       is_child_thread: args.isChildThread,
       message_source: args.messageSource,
       provider: args.providerId,
+      ...initiatorTelemetryProperty(deps.config.featureFlags, args.initiator),
     },
   });
 }
@@ -519,6 +529,13 @@ export async function sendThreadMessage(
     await clearThreadContext(deps, {
       environment: args.environment,
       thread: args.thread,
+      beforeClearInTransaction: (tx) => {
+        const current = getThread(tx, args.thread.id);
+        if (!current) {
+          throw new ApiError(404, "thread_not_found", "Thread not found");
+        }
+        args.beforeAppendInTransaction?.({ tx });
+      },
     });
     return { refusal: null };
   }
@@ -619,28 +636,45 @@ async function sendThreadMessageWithoutContextClear(
   });
   const shouldCaptureUserMessageSent =
     args.trigger === "user" && initiator === "user" && input.length > 0;
+  const telemetryInitiator = resolveTelemetryInitiator({
+    origin: args.payload.originPluginId === undefined ? null : "plugin",
+    originPluginId: args.payload.originPluginId ?? null,
+    initiator,
+  });
   const expectedSteerTurnId =
     mode === "auto" || mode === "steer"
       ? getActiveTurnId(deps, thread.id)
       : null;
-  if (senderThreadId === null && args.retryOf === undefined) {
-    await recoverThreadModelOverride(deps, {
-      model: payload.model,
-      modelSource:
-        payload.executionInputSources === undefined
-          ? "explicit"
-          : payload.executionInputSources.model,
-      reasoningLevel: payload.reasoningLevel,
-      reasoningLevelSource:
-        payload.executionInputSources === undefined
-          ? "explicit"
-          : payload.executionInputSources.reasoningLevel,
-      thread,
-    });
-  }
   const execution = await buildExecutionOptions(deps, payload, {
     threadId: thread.id,
   });
+  const isManagedChild =
+    thread.parentThreadId !== null ||
+    getThreadSpawner(deps.db, thread.id) !== null;
+  const usesChildModelPolicy =
+    isManagedChild &&
+    deps.providerRegistry.get(thread.providerId)?.childThreadModel != null;
+  if (
+    senderThreadId === null &&
+    args.retryOf === undefined &&
+    (!usesChildModelPolicy || args.trigger === "user")
+  ) {
+    await recoverThreadModelOverride(deps, {
+      model: usesChildModelPolicy ? payload.model : execution.model,
+      modelSource: usesChildModelPolicy
+        ? payload.executionInputSources === undefined
+          ? "explicit"
+          : payload.executionInputSources.model
+        : "explicit",
+      reasoningLevel: execution.reasoningLevel,
+      reasoningLevelSource: usesChildModelPolicy
+        ? payload.executionInputSources === undefined
+          ? "explicit"
+          : payload.executionInputSources.reasoningLevel
+        : "explicit",
+      thread,
+    });
+  }
   const permissionEscalation = resolvePermissionEscalation({
     initiator,
   });
@@ -663,6 +697,7 @@ async function sendThreadMessageWithoutContextClear(
         isChildThread: thread.parentThreadId !== null,
         messageSource: "thread_send",
         providerId: thread.providerId,
+        initiator: telemetryInitiator,
       });
     }
     return NO_REFUSAL;
@@ -807,6 +842,7 @@ async function sendThreadMessageWithoutContextClear(
         isChildThread: thread.parentThreadId !== null,
         messageSource: "thread_send",
         providerId: thread.providerId,
+        initiator: telemetryInitiator,
       });
     }
     return {
@@ -888,6 +924,7 @@ async function sendThreadMessageWithoutContextClear(
       isChildThread: thread.parentThreadId !== null,
       messageSource: "thread_send",
       providerId: thread.providerId,
+      initiator: telemetryInitiator,
     });
   }
   return { acceptance: acceptance.result, requestId };

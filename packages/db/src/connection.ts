@@ -1,7 +1,7 @@
 import Database from "better-sqlite3";
 import { resolve } from "node:path";
 import { performance } from "node:perf_hooks";
-import { resourceUsage, threadCpuUsage } from "node:process";
+import { hrtime, resourceUsage, threadCpuUsage } from "node:process";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import { registerHostPathSqlFunctions } from "./data/host-path-sql.js";
 import {
@@ -10,17 +10,37 @@ import {
   type QueryDiagnosticsLogFields,
 } from "./query-diagnostics.js";
 import * as schema from "./schema.js";
+import { classifyStatementReader } from "./statement-lock-wait-source.js";
 
 export interface SlowDbQueryLogFields {
   bindingArgumentCount: number;
   callers?: string[];
   durationMs: number;
+  lockWaitMs?: number;
+  lockWaitSource?: "begin" | "first-write" | "exec" | "unknown" | "none";
+  bodyMs?: number;
   cpuDurationMs: number;
   eventLoopWork: string | null;
   operation: SlowDbQueryOperation;
   sql: string;
   thresholdMs: number;
   diagnostics?: QueryDiagnosticsLogFields;
+  requestShape?: ThreadListRequestShape;
+  clientKind?: ThreadListClientKind;
+}
+
+export interface ThreadListRequestShape {
+  includeHidden: boolean;
+  archived: "true" | "false" | "absent";
+  filters: string[];
+  limit: number | null;
+  offset: number | null;
+}
+
+export interface ThreadListClientKind {
+  appSurface: "api" | "desktop" | "mobile" | "web";
+  userAgentKind: "node" | "browser" | "other" | "missing";
+  pluginId?: string;
 }
 
 export interface SlowDbQueryLogger {
@@ -73,12 +93,25 @@ interface SlowDbQueryConfig {
   walPath: string | null;
   sampleWal: () => QueryDiagnosticsLogFields["wal"];
   diagnosticsEnabled: () => boolean;
+  transactionDepth: number;
+  transactionLockWaitMs: number;
+  transactionLockWaitSource: "begin" | "first-write" | "exec" | "unknown" | null;
+  transactionStartNs: bigint | null;
 }
 
 const compiledQueries = new WeakMap<
   DbQueryConnection,
   Map<(db: DbQueryConnection) => unknown, unknown>
 >();
+
+type CommitContext = { pending: Array<() => void> | undefined };
+const commitContexts = new WeakMap<DbQueryConnection, CommitContext>();
+
+export function afterCommit(db: DbQueryConnection, callback: () => void): void {
+  const pending = commitContexts.get(db)?.pending;
+  if (pending) pending.push(callback);
+  else callback();
+}
 
 export function prepareCachedQuery<TQuery>(
   db: DbQueryConnection,
@@ -103,6 +136,8 @@ interface TimedStatementOperationArgs<TValue> {
   config: SlowDbQueryConfig;
   operation: SlowDbQueryOperation;
   source: string;
+  trackFirstWrite: boolean;
+  unknownReader: boolean;
   work: () => TValue;
 }
 
@@ -149,9 +184,25 @@ function runTimedStatementOperation<TValue>(
     : null;
   const startedCpu = threadCpuUsage();
   const startedAt = performance.now();
+  const firstWriteStartedAt =
+    (args.trackFirstWrite || args.unknownReader) &&
+    args.config.transactionDepth > 0 &&
+    args.config.transactionLockWaitSource === null
+      ? hrtime.bigint()
+      : null;
   try {
     return args.work();
   } finally {
+    if (
+      firstWriteStartedAt !== null &&
+      args.config.transactionLockWaitSource === null
+    ) {
+      args.config.transactionLockWaitMs =
+        Number(hrtime.bigint() - firstWriteStartedAt) / 1_000_000;
+      args.config.transactionLockWaitSource = args.trackFirstWrite
+        ? "first-write"
+        : "unknown";
+    }
     const durationMs = performance.now() - startedAt;
     const thresholdMs =
       typeof args.config.thresholdMs === "function"
@@ -160,18 +211,50 @@ function runTimedStatementOperation<TValue>(
     if (durationMs >= thresholdMs) {
       const cpu = threadCpuUsage(startedCpu);
       const finishedUsage = startedUsage ? resourceUsage() : null;
+      const callers =
+        args.callerStackBoundary === null
+          ? undefined
+          : captureCallers(args.callerStackBoundary);
+      const eventLoopWork = args.config.workLabel();
       args.config.logger.info(
         {
           bindingArgumentCount: args.bindingArgumentCount,
           durationMs: roundDurationMs(durationMs),
           cpuDurationMs: roundDurationMs((cpu.user + cpu.system) / 1_000),
-          eventLoopWork: args.config.workLabel(),
+          ...(args.operation === "transaction"
+            ? args.config.transactionDepth === 1 &&
+              args.config.transactionLockWaitSource === "exec"
+              ? { lockWaitSource: "exec" }
+              : {
+                  lockWaitMs: roundDurationMs(
+                    args.config.transactionDepth === 1
+                      ? args.config.transactionLockWaitMs
+                      : 0,
+                  ),
+                  lockWaitSource:
+                    args.config.transactionDepth === 1
+                      ? (args.config.transactionLockWaitSource ?? "none")
+                      : "none",
+                  bodyMs: roundDurationMs(
+                    Math.max(
+                      0,
+                      durationMs -
+                        (args.config.transactionDepth === 1
+                          ? args.config.transactionLockWaitMs
+                          : 0),
+                    ),
+                  ),
+                }
+            : {}),
+          eventLoopWork:
+            eventLoopWork ??
+            (args.operation === "transaction"
+              ? `db transaction: ${callers?.[0] ?? "unknown caller"}`
+              : null),
           operation: args.operation,
           sql: formatSqlForLog(args.source),
           thresholdMs,
-          ...(args.callerStackBoundary === null
-            ? {}
-            : { callers: captureCallers(args.callerStackBoundary) }),
+          ...(callers === undefined ? {} : { callers }),
           ...(startedUsage && finishedUsage
             ? {
                 diagnostics: finishQueryDiagnostics(
@@ -193,6 +276,7 @@ function instrumentStatement(
   source: string,
   config: SlowDbQueryConfig,
 ): Database.Statement {
+  const readerLockWaitSource = classifyStatementReader(statement);
   const originalAll = statement.all.bind(statement);
   const originalGet = statement.get.bind(statement);
   const originalRun = statement.run.bind(statement);
@@ -204,6 +288,8 @@ function instrumentStatement(
       config,
       operation: "all",
       source,
+      trackFirstWrite: readerLockWaitSource === "first-write",
+      unknownReader: readerLockWaitSource === "unknown",
       work: () => originalAll(...params),
     });
   statement.get = (...params) =>
@@ -213,6 +299,8 @@ function instrumentStatement(
       config,
       operation: "get",
       source,
+      trackFirstWrite: readerLockWaitSource === "first-write",
+      unknownReader: readerLockWaitSource === "unknown",
       work: () => originalGet(...params),
     });
   statement.run = (...params) =>
@@ -222,6 +310,8 @@ function instrumentStatement(
       config,
       operation: "run",
       source,
+      trackFirstWrite: readerLockWaitSource === "first-write",
+      unknownReader: readerLockWaitSource === "unknown",
       work: () => originalRun(...params),
     });
 
@@ -246,33 +336,87 @@ function instrumentSqliteClient(
       sqlite.memory ? null : `${resolve(sqlite.name)}-wal`,
     ),
     diagnosticsEnabled: options.slowQueryDiagnosticsEnabled ?? (() => false),
+    transactionDepth: 0,
+    transactionLockWaitMs: 0,
+    transactionLockWaitSource: null,
+    transactionStartNs: null,
   };
   const originalExec = sqlite.exec.bind(sqlite);
-  sqlite.exec = (source) =>
-    runTimedStatementOperation({
+  sqlite.exec = (source) => {
+    if (
+      config.transactionDepth > 0 &&
+      config.transactionLockWaitSource === null
+    ) {
+      config.transactionLockWaitSource = "exec";
+    }
+    return runTimedStatementOperation({
       bindingArgumentCount: 0,
       callerStackBoundary: null,
       config,
       operation: "exec",
       source,
+      trackFirstWrite: false,
+      unknownReader: false,
       work: () => originalExec(source),
     });
+  };
   const originalTransaction = sqlite.transaction.bind(sqlite);
   sqlite.transaction = (fn) => {
-    const original = originalTransaction(fn);
+    const wrappedFn = function (
+      this: ThisParameterType<typeof fn>,
+      ...params: Parameters<typeof fn>
+    ): ReturnType<typeof fn> {
+      if (
+        config.transactionDepth === 1 &&
+        config.transactionStartNs !== null
+      ) {
+        config.transactionLockWaitMs =
+          Number(hrtime.bigint() - config.transactionStartNs) / 1_000_000;
+        config.transactionStartNs = null;
+      }
+      return fn.apply(this, params) as ReturnType<typeof fn>;
+    } as typeof fn;
+    const original = originalTransaction(wrappedFn);
     function wrap(mode: "default" | "deferred" | "immediate" | "exclusive") {
       return function timedTransaction(
         this: unknown,
         ...params: Parameters<typeof original>
       ) {
-        return runTimedStatementOperation({
-          bindingArgumentCount: params.length,
-          callerStackBoundary: timedTransaction,
-          config,
-          operation: "transaction",
-          source: `TRANSACTION ${mode.toUpperCase()}`,
-          work: () => original[mode].apply(this, params),
-        });
+        const outermost = config.transactionDepth === 0;
+        if (outermost) {
+          config.transactionLockWaitMs = 0;
+          config.transactionLockWaitSource =
+            mode === "immediate" || mode === "exclusive" ? "begin" : null;
+        }
+        config.transactionDepth++;
+        try {
+          return runTimedStatementOperation({
+            bindingArgumentCount: params.length,
+            callerStackBoundary: timedTransaction,
+            config,
+            operation: "transaction",
+            source: `TRANSACTION ${mode.toUpperCase()}`,
+            trackFirstWrite: false,
+            unknownReader: false,
+            work: () => {
+              if (outermost && config.transactionLockWaitSource === "begin") {
+                config.transactionStartNs = hrtime.bigint();
+              }
+              try {
+                return original[mode].apply(this, params);
+              } finally {
+                if (outermost && config.transactionStartNs !== null) {
+                  config.transactionLockWaitMs =
+                    Number(hrtime.bigint() - config.transactionStartNs) /
+                    1_000_000;
+                  config.transactionStartNs = null;
+                }
+              }
+            },
+          });
+        } finally {
+          config.transactionDepth--;
+        }
       };
     }
     const modes = {
@@ -347,11 +491,46 @@ export function createConnection(
   const queries = new Map<(db: DbQueryConnection) => unknown, unknown>();
   compiledQueries.set(db, queries);
   const originalTransaction = db.transaction.bind(db);
+  const commitContext: CommitContext = { pending: undefined };
+  commitContexts.set(db, commitContext);
+  function prepareTransaction(tx: DbTransaction): void {
+    compiledQueries.set(tx, queries);
+    commitContexts.set(tx, commitContext);
+    const nestedTransaction = tx.transaction.bind(tx);
+    tx.transaction = (work) =>
+      transactionCallbacks(() =>
+        nestedTransaction((nested) => {
+          prepareTransaction(nested);
+          return work(nested);
+        }),
+      );
+  }
+  function transactionCallbacks<T>(work: () => T): T {
+    const parent = commitContext.pending;
+    const callbacks: Array<() => void> = [];
+    let result: T;
+    try {
+      commitContext.pending = callbacks;
+      result = work();
+    } finally {
+      commitContext.pending = parent;
+    }
+    if (parent) parent.push(...callbacks);
+    else
+      for (const callback of callbacks) {
+        try {
+          callback();
+        } catch {}
+      }
+    return result;
+  }
   db.transaction = (work, config) =>
-    originalTransaction((tx) => {
-      compiledQueries.set(tx, queries);
-      return work(tx);
-    }, config);
+    transactionCallbacks(() =>
+      originalTransaction((tx) => {
+        prepareTransaction(tx);
+        return work(tx);
+      }, config),
+    );
   const originalClose = sqlite.close.bind(sqlite);
   sqlite.close = () => {
     const result = originalClose();

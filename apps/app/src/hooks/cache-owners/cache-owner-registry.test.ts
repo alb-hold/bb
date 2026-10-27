@@ -73,11 +73,13 @@ const CACHE_OWNER_QUERY_KEY_IMPORTS: CacheOwnerQueryKeyImportRegistry = {
     "environmentDiffPatchQueryKey",
     "environmentDiffPatchQueryKeyPrefix",
   ],
+  "hooks/cache-owners/environment-diff-viewed-cache-owner.ts": [
+    "environmentDiffTargetKey",
+    "environmentDiffViewedQueryKey",
+  ],
   "hooks/cache-owners/environment-workspace-cache-owner.ts": [
     "environmentQueryKey",
-    "sidebarNavigationQueryKey",
     "threadSearchQueryKeyPrefix",
-    "threadsQueryKey",
   ],
   "hooks/cache-owners/host-directory-cache-owner.ts": ["hostDirectoryQueryKey"],
   "hooks/cache-owners/mutation-cache-effects.ts": [
@@ -97,11 +99,6 @@ const CACHE_OWNER_QUERY_KEY_IMPORTS: CacheOwnerQueryKeyImportRegistry = {
     "threadTimelineTurnSummaryDetailsQueryKeyPrefix",
     "threadsQueryKey",
   ],
-  "hooks/cache-owners/pending-thread-patches.ts": [
-    "sidebarNavigationQueryKey",
-    "threadQueryKey",
-    "threadsQueryKey",
-  ],
   "hooks/cache-owners/project-cache-owner.ts": [
     "projectsQueryKey",
     "sidebarNavigationQueryKey",
@@ -118,12 +115,10 @@ const CACHE_OWNER_QUERY_KEY_IMPORTS: CacheOwnerQueryKeyImportRegistry = {
     "environmentDiffPatchQueryKeyPrefix",
     "environmentFilePreviewQueryKeyPrefix",
     "environmentMergeBaseBranchesQueryKeyPrefix",
-    "environmentPullRequestQueryKey",
     "environmentQueryKey",
     "environmentWorkStatusQueryKey",
     "environmentWorkStatusQueryKeyPrefix",
     "sidebarNavigationQueryKey",
-    "threadQueryKey",
     "threadTimelineQueryKeyPrefix",
     "threadsQueryKey",
   ],
@@ -159,8 +154,8 @@ const CACHE_OWNER_QUERY_KEY_IMPORTS: CacheOwnerQueryKeyImportRegistry = {
     "allThreadQueryKeyPrefix",
     "allTerminalsQueryKeyPrefix",
     "environmentDiffFilesQueryKeyPrefix",
+    "environmentDiffViewedQueryKeyPrefix",
     "environmentFilePreviewQueryKeyPrefix",
-    "environmentPullRequestQueryKey",
     "environmentWorkStatusQueryKeyPrefix",
     "hostsQueryKey",
     "pluginSafeModeQueryKey",
@@ -182,7 +177,6 @@ const CACHE_OWNER_QUERY_KEY_IMPORTS: CacheOwnerQueryKeyImportRegistry = {
     "threadTimelineQueryKeyPrefix",
     "terminalsQueryKey",
     "threadsQueryKey",
-    "uiPreferencesQueryKey",
   ],
   "hooks/cache-owners/skills-cache-effects.ts": ["projectSkillsQueryKey"],
   "hooks/cache-owners/system-cache-effects.ts": [
@@ -248,8 +242,12 @@ const CACHE_OWNER_QUERY_KEY_IMPORTS: CacheOwnerQueryKeyImportRegistry = {
     "TerminalQueryScope",
     "terminalsQueryKey",
   ],
-  "hooks/cache-owners/thread-archive-cache.ts": [
-    "threadQueryKey",
+  "hooks/cache-owners/thread-entity-store.ts": [
+    "ARCHIVED_THREADS_LIST_KIND",
+    "allThreadDetailBootstrapQueryKeyPrefix",
+    "allThreadQueryKeyPrefix",
+    "sidebarNavigationQueryKey",
+    "threadSearchQueryKeyPrefix",
     "threadsQueryKey",
   ],
   "hooks/cache-owners/thread-detail-cache-owner.ts": [
@@ -271,7 +269,6 @@ const CACHE_OWNER_QUERY_KEY_IMPORTS: CacheOwnerQueryKeyImportRegistry = {
   "hooks/cache-owners/thread-timeline-unseen-events.ts": [
     "threadTimelineQueryKey",
   ],
-  "hooks/cache-owners/ui-preferences-cache-owner.ts": ["uiPreferencesQueryKey"],
   "hooks/cache-owners/thread-runtime-cache-owner.ts": [
     "environmentQueryKey",
     "projectPromptHistoryQueryKey",
@@ -279,7 +276,6 @@ const CACHE_OWNER_QUERY_KEY_IMPORTS: CacheOwnerQueryKeyImportRegistry = {
     "threadPromptHistoryQueryKey",
     "threadQueryKey",
     "threadQueuedMessagesQueryKey",
-    "threadSearchQueryKeyPrefix",
     "threadTimelineQueryKeyPrefix",
     "threadTimelineTurnSummaryDetailsQueryKeyPrefix",
     "threadsQueryKey",

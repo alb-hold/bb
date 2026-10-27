@@ -11,6 +11,12 @@ import { registerTerminalGridOscHandler } from "./terminal-grid-osc";
 import { createTerminalOutputPipeline } from "./terminal-output-pipeline";
 import {
   buildTerminalThemeFromCssColors,
+  attachTerminalManualScrollIntentListeners,
+  applyTerminalGridBeforeViewportRestore,
+  applyTerminalGridAndKeepViewport,
+  createTerminalViewportLineAnchor,
+  restoreTerminalViewportToRetainedLine,
+  restoreTerminalViewportOnResize,
   applyTerminalFontFamily,
   attachTerminalInputForwarding,
   captureTerminalContextMenuState,
@@ -36,6 +42,39 @@ import {
   createTerminalOsc8LinkHandler,
   requestTerminalLinkOpen,
 } from "./terminal-links";
+import {
+  createTerminalViewportReplaySaveGate,
+  createTerminalViewportPersistence,
+  createTerminalTouchViewportSaveScheduler,
+  createTerminalOutputLineAnchorTracker,
+  registerTerminalOutputBoundaryHandler,
+  readTerminalViewportAnchor,
+  resolveTerminalViewportRestore,
+  startTerminalOutputReplay,
+  terminalViewportStorageKey,
+  writeTerminalViewportAnchor,
+} from "./terminal-viewport";
+
+function outputAnchor(sequence: number, line: number, disposed = false) {
+  return { sequence, line, expired: disposed };
+}
+
+function writeTerminal(terminal: Terminal, data: string): Promise<void> {
+  return new Promise((resolve) => terminal.write(data, resolve));
+}
+import {
+  createEmptyFixedPanelTabsState,
+  createTerminalFixedPanelTab,
+  parseFixedPanelTabsState,
+  serializeFixedPanelTabsState,
+} from "@/lib/fixed-panel-tabs-state";
+import {
+  createSidebarSplitState,
+  moveSidebarTab,
+  parseSidebarSplitState,
+  resizeSidebarSplit,
+  serializeSidebarSplitState,
+} from "@/components/secondary-panel/sidebarSplitLayout";
 
 describe("terminal hyperlinks", () => {
   it("preserves OSC-8 provenance through hover and primary activation", () => {
@@ -209,6 +248,1392 @@ describe("terminal async mount focus", () => {
         isPanelOpen: false,
       }),
     ).toBe(false);
+  });
+});
+
+describe("terminal viewport restore", () => {
+  function createStorage() {
+    const values = new Map<string, string>();
+    const setItem = vi.fn((key: string, value: string) => {
+      values.set(key, value);
+    });
+    return {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem,
+      removeItem: (key: string) => values.delete(key),
+      key: (index: number) => [...values.keys()][index] ?? null,
+      get length() {
+        return values.size;
+      },
+    };
+  }
+
+  it("persists a per-terminal content anchor and restores its exact line", () => {
+    const storage = createStorage();
+    const key = terminalViewportStorageKey("terminal-a");
+
+    writeTerminalViewportAnchor(storage, key, {
+      distanceFromTail: 12,
+      lineOffset: 3,
+      outputSequence: 42,
+    });
+
+    const anchor = readTerminalViewportAnchor(storage, key);
+    expect(anchor).toEqual({
+      distanceFromTail: 12,
+      lineOffset: 3,
+      outputSequence: 42,
+    });
+    expect(
+      resolveTerminalViewportRestore({
+        anchor,
+        baseY: 80,
+        outputLineAnchors: [outputAnchor(42, 51)],
+        replayNextSequence: 50,
+        replayStartSequence: 20,
+      }),
+    ).toBe(54);
+  });
+
+  it("restores the same content line when 500 newer lines replay", () => {
+    expect(
+      resolveTerminalViewportRestore({
+        anchor: {
+          distanceFromTail: 18,
+          lineOffset: 2,
+          outputSequence: 64,
+        },
+        baseY: 600,
+        outputLineAnchors: [outputAnchor(64, 310)],
+        replayNextSequence: 565,
+        replayStartSequence: 50,
+      }),
+    ).toBe(312);
+  });
+
+  it("restores a retained client anchor after a server restart replay starts later", () => {
+    expect(
+      resolveTerminalViewportRestore({
+        anchor: {
+          distanceFromTail: 1200,
+          lineOffset: 8,
+          outputSequence: 10,
+        },
+        baseY: 3213,
+        outputLineAnchors: [outputAnchor(10, 132)],
+        replayNextSequence: 5353,
+        replayStartSequence: 5274,
+      }),
+    ).toBe(140);
+  });
+
+  it("restores the observed phone anchor when replay contains its sequence", async () => {
+    const terminal = new Terminal({ cols: 80, rows: 52, scrollback: 10_000 });
+    const pipeline = createTerminalOutputPipeline(terminal);
+    const tracker = createTerminalOutputLineAnchorTracker({
+      registerMarker: () => terminal.registerMarker(),
+      getCurrentLine: () =>
+        terminal.buffer.active.baseY + terminal.buffer.active.cursorY,
+    });
+    const outputLineAnchors: NonNullable<
+      ReturnType<typeof tracker.recordOutputStart>
+    >[] = [];
+    tracker.reset();
+    const chunks = [
+      {
+        seq: 0,
+        data: new TextEncoder().encode(
+          `${Array.from({ length: 3_000 }, (_, index) => `line ${String(index + 1).padStart(5, "0")}\r\n`).join("")}`,
+        ),
+      },
+      ...Array.from({ length: 16 }, (_, index) => ({
+        seq: index + 1,
+        data: new Uint8Array(),
+      })),
+    ];
+    await writeRetainedTerminalOutput({
+      chunks,
+      lastNotice: { current: null },
+      session: {
+        id: "term_phone_replay",
+        threadId: "thr_1",
+        environmentId: "env_1",
+        hostId: "host_1",
+        title: "Terminal",
+        initialCwd: "/workspace",
+        cols: 80,
+        rows: 52,
+        status: "exited",
+        exitCode: null,
+        closeReason: "daemon-disconnect",
+        createdAt: 1,
+        updatedAt: 1,
+        lastUserInputAt: null,
+      } satisfies TerminalSession,
+      terminal,
+      pipeline,
+      onOutputStart: (sequence) => {
+        const anchor = tracker.recordOutputStart(sequence);
+        if (anchor) outputLineAnchors.push(anchor);
+      },
+    });
+
+    const restoreLine = resolveTerminalViewportRestore({
+      anchor: {
+        distanceFromTail: 1_472,
+        lineOffset: 1_473,
+        outputSequence: 0,
+      },
+      baseY: terminal.buffer.active.baseY,
+      outputLineAnchors,
+      replayStartSequence: 0,
+      replayNextSequence: 17,
+    });
+    terminal.scrollToLine(restoreLine);
+
+    expect(restoreLine).toBe(1_473);
+    expect(
+      terminal.buffer.active.getLine(restoreLine)?.translateToString(true),
+    ).toBe("line 01474");
+    tracker.dispose();
+    terminal.dispose();
+  });
+
+  it("keeps the exact saved phone line when replay completion applies the PTY grid afterward", async () => {
+    const terminal = new Terminal({ cols: 80, rows: 52, scrollback: 10_000 });
+    const pipeline = createTerminalOutputPipeline(terminal);
+    const tracker = createTerminalOutputLineAnchorTracker({
+      registerMarker: () => terminal.registerMarker(),
+      getCurrentLine: () =>
+        terminal.buffer.active.baseY + terminal.buffer.active.cursorY,
+    });
+    const outputLineAnchors: NonNullable<
+      ReturnType<typeof tracker.recordOutputStart>
+    >[] = [];
+    tracker.reset();
+    await writeRetainedTerminalOutput({
+      chunks: [
+        {
+          seq: 0,
+          data: new TextEncoder().encode(
+            Array.from(
+              { length: 9 },
+              (_, i) => `line ${String(i + 1).padStart(5, "0")}\r\n`,
+            ).join(""),
+          ),
+        },
+        {
+          seq: 1,
+          data: new TextEncoder().encode(
+            Array.from(
+              { length: 515 },
+              (_, i) => `line ${String(i + 10).padStart(5, "0")}\r\n`,
+            ).join(""),
+          ),
+        },
+        {
+          seq: 2,
+          data: new TextEncoder().encode(
+            Array.from(
+              { length: 1_313 },
+              (_, i) => `line ${String(i + 525).padStart(5, "0")}\r\n`,
+            ).join(""),
+          ),
+        },
+        {
+          seq: 3,
+          data: new TextEncoder().encode(
+            Array.from(
+              { length: 341 },
+              (_, i) => `line ${String(i + 1_838).padStart(5, "0")}\r\n`,
+            ).join(""),
+          ),
+        },
+        {
+          seq: 4,
+          data: new TextEncoder().encode(
+            Array.from(
+              { length: 682 },
+              (_, i) => `line ${String(i + 2_179).padStart(5, "0")}\r\n`,
+            ).join(""),
+          ),
+        },
+        {
+          seq: 5,
+          data: new TextEncoder().encode(
+            Array.from(
+              { length: 140 },
+              (_, i) => `line ${String(i + 2_861).padStart(5, "0")}\r\n`,
+            ).join(""),
+          ),
+        },
+        {
+          seq: 6,
+          data: new TextEncoder().encode("\u001b[?2004h\u001b]0;terminal: $ "),
+        },
+        { seq: 7, data: new Uint8Array() },
+        { seq: 8, data: new TextEncoder().encode("\r\u001b[Kterminal: $ ") },
+      ],
+      lastNotice: { current: null },
+      session: {
+        id: "term_phone_resize_replay",
+        threadId: "thr_1",
+        environmentId: "env_1",
+        hostId: "host_1",
+        title: "Terminal",
+        initialCwd: "/workspace",
+        cols: 80,
+        rows: 52,
+        status: "running",
+        exitCode: null,
+        closeReason: null,
+        createdAt: 1,
+        updatedAt: 1,
+        lastUserInputAt: null,
+      } satisfies TerminalSession,
+      terminal,
+      pipeline,
+      onOutputStart: (sequence) => {
+        const anchor = tracker.recordOutputStart(sequence);
+        if (anchor) outputLineAnchors.push(anchor);
+      },
+    });
+    expect(outputLineAnchors.find(({ sequence }) => sequence === 2)?.line).toBe(
+      524,
+    );
+    expect(terminal.buffer.active.baseY).toBe(2_949);
+
+    await new Promise<void>((resolve) => {
+      applyTerminalGridBeforeViewportRestore({
+        pipeline,
+        cols: 80,
+        rows: 22,
+        onGridApplied: () => {},
+        restoreViewport: () => {
+          const restoreLine = resolveTerminalViewportRestore({
+            anchor: {
+              distanceFromTail: 30,
+              lineOffset: 2_396,
+              outputSequence: 2,
+            },
+            baseY: terminal.buffer.active.baseY,
+            outputLineAnchors,
+            replayStartSequence: 0,
+            replayNextSequence: 9,
+          });
+          terminal.scrollToLine(restoreLine);
+        },
+        afterRestore: resolve,
+      });
+    });
+
+    expect(terminal.buffer.active.viewportY).toBe(2_920);
+    expect(
+      terminal.buffer.active
+        .getLine(terminal.buffer.active.viewportY)
+        ?.translateToString(true),
+    ).toBe("line 02921");
+    tracker.dispose();
+    terminal.dispose();
+  });
+
+  it("keeps replay output sequence markers at chunk starts while writes are queued", async () => {
+    const terminal = new Terminal({ cols: 80, rows: 51, scrollback: 10_000 });
+    const pipeline = createTerminalOutputPipeline(terminal);
+    const tracker = createTerminalOutputLineAnchorTracker({
+      registerMarker: () => terminal.registerMarker(),
+      getCurrentLine: () =>
+        terminal.buffer.active.baseY + terminal.buffer.active.cursorY,
+    });
+    const outputLineAnchors: NonNullable<
+      ReturnType<typeof tracker.recordOutputStart>
+    >[] = [];
+    const token = "replay-marker-test";
+    tracker.reset();
+    const markerHandler = registerTerminalOutputBoundaryHandler(
+      terminal.parser,
+      token,
+      (sequence) => {
+        const anchor = tracker.recordOutputStart(sequence);
+        if (anchor) outputLineAnchors.push(anchor);
+      },
+    );
+    const chunks = [
+      { seq: 0, first: 1, count: 300 },
+      { seq: 1, first: 301, count: 224 },
+      { seq: 2, first: 525, count: 2_476 },
+      ...Array.from({ length: 6 }, (_, index) => ({
+        seq: index + 3,
+        first: 0,
+        count: 0,
+      })),
+    ];
+    await Promise.all(
+      chunks.map(
+        ({ seq, first, count }) =>
+          new Promise<void>((resolve) => {
+            const data = Array.from(
+              { length: count },
+              (_, index) =>
+                `line ${String(first + index).padStart(5, "0")}\r\n`,
+            ).join("");
+            writeTerminalOutput({
+              data,
+              isReplay: false,
+              outputSequence: seq,
+              outputBoundaryToken: token,
+              onParsed: resolve,
+              replayWriteState: { suppressedWriteCount: 0 },
+              terminal,
+              pipeline,
+            });
+          }),
+      ),
+    );
+
+    const outputAnchor = outputLineAnchors.find(
+      ({ sequence }) => sequence === 2,
+    );
+    expect(outputAnchor?.line).toBe(524);
+    expect(terminal.buffer.active.baseY).toBe(2_950);
+    const restoreLine = resolveTerminalViewportRestore({
+      anchor: {
+        distanceFromTail: 30,
+        lineOffset: 2_396,
+        outputSequence: 2,
+      },
+      baseY: terminal.buffer.active.baseY,
+      outputLineAnchors,
+      replayStartSequence: 0,
+      replayNextSequence: 9,
+    });
+    terminal.scrollToLine(restoreLine);
+
+    expect(restoreLine).toBe(2_920);
+    expect(
+      terminal.buffer.active
+        .getLine(terminal.buffer.active.viewportY)
+        ?.translateToString(true),
+    ).toBe("line 02921");
+    markerHandler.dispose();
+    tracker.dispose();
+    terminal.dispose();
+  });
+
+  it("keeps a retained viewport marker when a reconnect replay starts later", async () => {
+    const terminal = new Terminal({ cols: 80, rows: 52, scrollback: 10_000 });
+    const tracker = createTerminalOutputLineAnchorTracker({
+      registerMarker: () => terminal.registerMarker(),
+      getCurrentLine: () =>
+        terminal.buffer.active.baseY + terminal.buffer.active.cursorY,
+    });
+    const outputLineAnchors: NonNullable<
+      ReturnType<typeof tracker.recordOutputStart>
+    >[] = [];
+    tracker.reset();
+    const initialAnchor = tracker.recordOutputStart(0);
+    if (initialAnchor) outputLineAnchors.push(initialAnchor);
+    await writeTerminal(
+      terminal,
+      Array.from(
+        { length: 3_000 },
+        (_, index) => `line ${String(index + 1).padStart(5, "0")}\r\n`,
+      ).join(""),
+    );
+    startTerminalOutputReplay({
+      outputLineAnchors,
+      sequence: 10,
+      tracker,
+    });
+    await writeTerminal(terminal, "later replay data\r\n");
+    const restoreLine = resolveTerminalViewportRestore({
+      anchor: {
+        distanceFromTail: 1_477,
+        lineOffset: 1_473,
+        outputSequence: 0,
+      },
+      baseY: terminal.buffer.active.baseY,
+      outputLineAnchors,
+      replayNextSequence: 17,
+      replayStartSequence: 10,
+    });
+    terminal.scrollToLine(restoreLine);
+
+    expect(
+      terminal.buffer.active
+        .getLine(terminal.buffer.active.viewportY)
+        ?.translateToString(true),
+    ).toBe("line 01474");
+    tracker.dispose();
+    terminal.dispose();
+  });
+
+  it("keeps the observed replay anchor after a fit resize", async () => {
+    const terminal = new Terminal({ cols: 80, rows: 52, scrollback: 10_000 });
+    const tracker = createTerminalOutputLineAnchorTracker({
+      registerMarker: () => terminal.registerMarker(),
+      getCurrentLine: () =>
+        terminal.buffer.active.baseY + terminal.buffer.active.cursorY,
+    });
+    tracker.reset();
+    const anchor = tracker.recordOutputStart(0)!;
+    await writeTerminal(
+      terminal,
+      `${Array.from({ length: 3_000 }, (_, index) => `line ${String(index + 1).padStart(5, "0")}\r\n`).join("")}`,
+    );
+    const restoreLine = resolveTerminalViewportRestore({
+      anchor: {
+        distanceFromTail: 1_472,
+        lineOffset: 1_473,
+        outputSequence: 0,
+      },
+      baseY: terminal.buffer.active.baseY,
+      outputLineAnchors: [anchor],
+      replayStartSequence: 0,
+      replayNextSequence: 17,
+    });
+    terminal.scrollToLine(restoreLine);
+
+    terminal.resize(60, 24);
+    terminal.resize(80, 52);
+
+    expect(terminal.buffer.active.viewportY).toBe(1_473);
+    expect(
+      terminal.buffer.active
+        .getLine(terminal.buffer.active.viewportY)
+        ?.translateToString(true),
+    ).toBe("line 01474");
+    tracker.dispose();
+    terminal.dispose();
+  });
+
+  it("keeps the saved top line when the phone fit shrinks the replay grid", async () => {
+    const terminal = new Terminal({ cols: 80, rows: 33, scrollback: 10_000 });
+    const pipeline = createTerminalOutputPipeline(terminal);
+    const tracker = createTerminalOutputLineAnchorTracker({
+      registerMarker: () => terminal.registerMarker(),
+      getCurrentLine: () =>
+        terminal.buffer.active.baseY + terminal.buffer.active.cursorY,
+    });
+    tracker.reset();
+    await writeTerminal(
+      terminal,
+      Array.from(
+        { length: 1_023 },
+        (_, index) => `line ${String(index + 1).padStart(5, "0")}\r\n`,
+      ).join(""),
+    );
+    const anchor = tracker.recordOutputStart(3)!;
+    await writeTerminal(
+      terminal,
+      Array.from(
+        { length: 1_977 },
+        (_, index) => `line ${String(index + 1_024).padStart(5, "0")}\r\n`,
+      ).join(""),
+    );
+    const savedAnchor = {
+      distanceFromTail: terminal.buffer.active.baseY - 1_100,
+      lineOffset: 77,
+      outputSequence: 3,
+    };
+    await new Promise<void>((resolve) => {
+      applyTerminalGridBeforeViewportRestore({
+        pipeline,
+        cols: 80,
+        rows: 56,
+        fitGrid: { cols: 80, rows: 33 },
+        onGridApplied: () => {},
+        restoreViewport: () => {
+          terminal.scrollToLine(
+            resolveTerminalViewportRestore({
+              anchor: savedAnchor,
+              baseY: terminal.buffer.active.baseY,
+              outputLineAnchors: [anchor],
+              replayStartSequence: 1,
+              replayNextSequence: 2,
+            }),
+          );
+        },
+        afterRestore: () => {
+          if (terminal.rows !== 33) terminal.resize(80, 33);
+          resolve();
+        },
+      });
+    });
+
+    expect(
+      terminal.buffer.active
+        .getLine(terminal.buffer.active.viewportY)
+        ?.translateToString(true),
+    ).toBe("line 01101");
+    tracker.dispose();
+    terminal.dispose();
+  });
+
+  it("keeps the saved top line when a later fit changes the replay grid", async () => {
+    const terminal = new Terminal({ cols: 80, rows: 33, scrollback: 10_000 });
+    const pipeline = createTerminalOutputPipeline(terminal);
+    const tracker = createTerminalOutputLineAnchorTracker({
+      registerMarker: () => terminal.registerMarker(),
+      getCurrentLine: () =>
+        terminal.buffer.active.baseY + terminal.buffer.active.cursorY,
+    });
+    tracker.reset();
+    const anchor = tracker.recordOutputStart(1)!;
+    await writeTerminal(
+      terminal,
+      Array.from(
+        { length: 3_000 },
+        (_, index) => `line ${String(index + 1).padStart(5, "0")}\r\n`,
+      ).join(""),
+    );
+    const savedAnchor = {
+      distanceFromTail: terminal.buffer.active.baseY - 1_100,
+      lineOffset: 1_100,
+      outputSequence: 1,
+    };
+    terminal.scrollToLine(
+      resolveTerminalViewportRestore({
+        anchor: savedAnchor,
+        baseY: terminal.buffer.active.baseY,
+        outputLineAnchors: [anchor],
+        replayStartSequence: 0,
+        replayNextSequence: 8,
+      }),
+    );
+    await new Promise<void>((resolve) => {
+      applyTerminalGridAndKeepViewport({
+        pipeline,
+        cols: 80,
+        rows: 56,
+        onGridApplied: resolve,
+        restoreViewport: () => {
+          terminal.scrollToLine(
+            resolveTerminalViewportRestore({
+              anchor: savedAnchor,
+              baseY: terminal.buffer.active.baseY,
+              outputLineAnchors: [anchor],
+              replayStartSequence: 0,
+              replayNextSequence: 8,
+            }),
+          );
+        },
+      });
+    });
+
+    expect(
+      terminal.buffer.active
+        .getLine(terminal.buffer.active.viewportY)
+        ?.translateToString(true),
+    ).toBe("line 01101");
+    tracker.dispose();
+    terminal.dispose();
+  });
+
+  it("keeps the saved line when the replay grid grows by 23 rows", async () => {
+    const terminal = new Terminal({ cols: 80, rows: 33, scrollback: 10_000 });
+    const pipeline = createTerminalOutputPipeline(terminal);
+    const tracker = createTerminalOutputLineAnchorTracker({
+      registerMarker: () => terminal.registerMarker(),
+      getCurrentLine: () =>
+        terminal.buffer.active.baseY + terminal.buffer.active.cursorY,
+    });
+    tracker.reset();
+    await writeTerminal(
+      terminal,
+      Array.from(
+        { length: 3_000 },
+        (_, index) => `line ${String(index + 1).padStart(5, "0")}\r\n`,
+      ).join(""),
+    );
+    const anchor = tracker.recordOutputStart(2)!;
+    await writeTerminal(
+      terminal,
+      Array.from(
+        { length: 3_000 },
+        (_, index) => `line ${String(index + 3_001).padStart(5, "0")}\r\n`,
+      ).join(""),
+    );
+    const savedAnchor = {
+      distanceFromTail: terminal.buffer.active.baseY - 5_396,
+      lineOffset: 2_396,
+      outputSequence: 2,
+    };
+    terminal.scrollToLine(
+      resolveTerminalViewportRestore({
+        anchor: savedAnchor,
+        baseY: terminal.buffer.active.baseY,
+        outputLineAnchors: [anchor],
+        replayStartSequence: 0,
+        replayNextSequence: 16,
+      }),
+    );
+    await new Promise<void>((resolve) => {
+      applyTerminalGridAndKeepViewport({
+        pipeline,
+        cols: 80,
+        rows: 56,
+        onGridApplied: () => {},
+        restoreViewport: () => {
+          terminal.scrollToLine(
+            resolveTerminalViewportRestore({
+              anchor: savedAnchor,
+              baseY: terminal.buffer.active.baseY,
+              outputLineAnchors: [anchor],
+              replayStartSequence: 0,
+              replayNextSequence: 16,
+            }),
+          );
+          resolve();
+        },
+      });
+    });
+
+    expect(
+      terminal.buffer.active
+        .getLine(terminal.buffer.active.viewportY)
+        ?.translateToString(true),
+    ).toBe("line 05397");
+    tracker.dispose();
+    terminal.dispose();
+  });
+
+  it("keeps the saved line when another client resizes the terminal grid", async () => {
+    const terminal = new Terminal({ cols: 80, rows: 56, scrollback: 10_000 });
+    const tracker = createTerminalOutputLineAnchorTracker({
+      registerMarker: () => terminal.registerMarker(),
+      getCurrentLine: () =>
+        terminal.buffer.active.baseY + terminal.buffer.active.cursorY,
+    });
+    tracker.reset();
+    const outputAnchor = tracker.recordOutputStart(0)!;
+    await writeTerminal(
+      terminal,
+      Array.from(
+        { length: 3_000 },
+        (_, index) => `line ${String(index + 1).padStart(5, "0")}\r\n`,
+      ).join(""),
+    );
+    const savedAnchor = {
+      distanceFromTail: terminal.buffer.active.baseY - 1_100,
+      lineOffset: 1_100,
+      outputSequence: 0,
+    };
+    const restoreViewport = () => {
+      terminal.scrollToLine(
+        resolveTerminalViewportRestore({
+          anchor: savedAnchor,
+          baseY: terminal.buffer.active.baseY,
+          outputLineAnchors: [outputAnchor],
+          replayStartSequence: 0,
+          replayNextSequence: 1,
+        }),
+      );
+    };
+    terminal.scrollToLine(1_100);
+    expect(
+      terminal.buffer.active
+        .getLine(terminal.buffer.active.viewportY)
+        ?.translateToString(true),
+    ).toBe("line 01101");
+    const viewportLineAnchor = createTerminalViewportLineAnchor(terminal);
+    viewportLineAnchor.setLine(1_100);
+    const pendingResizeFrame: { current: FrameRequestCallback | null } = {
+      current: null,
+    };
+    const resizeSubscription = restoreTerminalViewportOnResize({
+      terminal,
+      canRestore: () => true,
+      restoreViewport: () => {
+        if (
+          !restoreTerminalViewportToRetainedLine({
+            terminal,
+            lineAnchor: viewportLineAnchor,
+          })
+        ) {
+          restoreViewport();
+        }
+      },
+      requestFrame: (callback) => {
+        pendingResizeFrame.current = callback;
+        return 1;
+      },
+      cancelFrame: () => {
+        pendingResizeFrame.current = null;
+      },
+    });
+
+    terminal.resize(80, 33);
+    pendingResizeFrame.current?.(0);
+
+    expect(
+      terminal.buffer.active
+        .getLine(terminal.buffer.active.viewportY)
+        ?.translateToString(true),
+    ).toBe("line 01101");
+    resizeSubscription.dispose();
+    viewportLineAnchor.dispose();
+    tracker.dispose();
+    terminal.dispose();
+  });
+
+  it("keeps the same output line when a companion size owner changes the shared grid", async () => {
+    const terminal = new Terminal({ cols: 80, rows: 56, scrollback: 10_000 });
+    const pipeline = createTerminalOutputPipeline(terminal);
+    const tracker = createTerminalOutputLineAnchorTracker({
+      registerMarker: () => terminal.registerMarker(),
+      getCurrentLine: () =>
+        terminal.buffer.active.baseY + terminal.buffer.active.cursorY,
+    });
+    tracker.reset();
+    const outputAnchor = tracker.recordOutputStart(2)!;
+    await writeTerminal(
+      terminal,
+      Array.from(
+        { length: 3_000 },
+        (_, index) =>
+          `line ${String(index + 1).padStart(5, "0")} ${"x".repeat(54)}\r\n`,
+      ).join(""),
+    );
+    const savedAnchor = {
+      distanceFromTail: terminal.buffer.active.baseY - 2_396,
+      lineOffset: 2_396,
+      outputSequence: 2,
+    };
+    const viewportLineAnchor = createTerminalViewportLineAnchor(terminal);
+    const restoreViewport = (afterGridResize = false) => {
+      if (
+        afterGridResize &&
+        restoreTerminalViewportToRetainedLine({
+          terminal,
+          lineAnchor: viewportLineAnchor,
+        })
+      ) {
+        return;
+      }
+      const line = resolveTerminalViewportRestore({
+        anchor: savedAnchor,
+        baseY: terminal.buffer.active.baseY,
+        outputLineAnchors: [outputAnchor],
+        replayStartSequence: 0,
+        replayNextSequence: 16,
+      });
+      terminal.scrollToLine(line);
+      viewportLineAnchor.setLine(line);
+    };
+    restoreViewport();
+    const pendingResizeFrame: { current: FrameRequestCallback | null } = {
+      current: null,
+    };
+    const resizeSubscription = restoreTerminalViewportOnResize({
+      terminal,
+      canRestore: () => true,
+      restoreViewport: () => restoreViewport(true),
+      requestFrame: (callback) => {
+        pendingResizeFrame.current = callback;
+        return 1;
+      },
+      cancelFrame: () => {
+        pendingResizeFrame.current = null;
+      },
+    });
+
+    await new Promise<void>((resolve) => {
+      applyTerminalGridAndKeepViewport({
+        pipeline,
+        cols: 40,
+        rows: 33,
+        onGridApplied: resolve,
+        restoreViewport: () => restoreViewport(true),
+      });
+    });
+    pendingResizeFrame.current?.(0);
+
+    expect(
+      terminal.buffer.active
+        .getLine(terminal.buffer.active.viewportY)
+        ?.translateToString(true),
+    ).toMatch(/^line 02397 /);
+    resizeSubscription.dispose();
+    viewportLineAnchor.dispose();
+    tracker.dispose();
+    terminal.dispose();
+  });
+
+  it("keeps a saved marker live when the output anchor cap is exceeded", async () => {
+    const terminal = new Terminal({ cols: 80, rows: 52, scrollback: 10_000 });
+    const tracker = createTerminalOutputLineAnchorTracker({
+      registerMarker: () => terminal.registerMarker(),
+      getCurrentLine: () =>
+        terminal.buffer.active.baseY + terminal.buffer.active.cursorY,
+    });
+    const outputLineAnchors: NonNullable<
+      ReturnType<typeof tracker.recordOutputStart>
+    >[] = [];
+    tracker.reset();
+    const outputAnchor = tracker.recordOutputStart(0)!;
+    outputLineAnchors.push(outputAnchor);
+    await writeTerminal(
+      terminal,
+      `${Array.from({ length: 3_000 }, (_, index) => `line ${String(index + 1).padStart(5, "0")}\r\n`).join("")}`,
+    );
+    const savedOutputLineAnchor = tracker.updatePinnedAnchor(
+      null,
+      outputAnchor,
+      outputLineAnchors,
+    )!;
+
+    for (let sequence = 1; sequence <= 4_097; sequence += 1) {
+      const outputAnchor = tracker.recordOutputStart(sequence);
+      if (outputAnchor) outputLineAnchors.push(outputAnchor);
+      if (outputLineAnchors.length > 4_096) {
+        const removed = outputLineAnchors.splice(
+          0,
+          outputLineAnchors.length - 4_096,
+        );
+        tracker.forget(removed);
+      }
+    }
+
+    const restoreLine = resolveTerminalViewportRestore({
+      anchor: {
+        distanceFromTail: 0,
+        lineOffset: 1_473,
+        outputSequence: 0,
+      },
+      baseY: terminal.buffer.active.baseY,
+      outputLineAnchors: [...outputLineAnchors, savedOutputLineAnchor],
+      replayStartSequence: 0,
+      replayNextSequence: 4_098,
+    });
+    terminal.scrollToLine(restoreLine);
+
+    expect(savedOutputLineAnchor.expired).toBe(false);
+    expect(
+      terminal.buffer.active.getLine(restoreLine)?.translateToString(true),
+    ).toBe("line 01474");
+    tracker.dispose();
+    terminal.dispose();
+  });
+
+  it("restores an anchor in a middle chunk after replaying many small chunks", async () => {
+    const terminal = new Terminal({ cols: 40, rows: 3, scrollback: 100 });
+    const tracker = createTerminalOutputLineAnchorTracker({
+      registerMarker: () => terminal.registerMarker(),
+      getCurrentLine: () =>
+        terminal.buffer.active.baseY + terminal.buffer.active.cursorY,
+    });
+    tracker.reset();
+    const anchors = [tracker.recordOutputStart(0)!];
+
+    for (let sequence = 0; sequence < 20; sequence += 1) {
+      await writeTerminal(
+        terminal,
+        `line ${String(sequence).padStart(5, "0")}\r\n`,
+      );
+      anchors.push(tracker.recordOutputStart(sequence + 1)!);
+    }
+
+    const restoreLine = resolveTerminalViewportRestore({
+      anchor: { distanceFromTail: 10, lineOffset: 0, outputSequence: 8 },
+      baseY: terminal.buffer.active.baseY,
+      outputLineAnchors: anchors,
+      replayNextSequence: 20,
+      replayStartSequence: 0,
+    });
+    terminal.scrollToLine(restoreLine);
+
+    expect(
+      terminal.buffer.active
+        .getLine(terminal.buffer.active.viewportY)
+        ?.translateToString(true),
+    ).toBe("line 00008");
+    tracker.dispose();
+    terminal.dispose();
+  });
+
+  it("restores to the oldest retained line when the saved marker is trimmed", async () => {
+    const terminal = new Terminal({ cols: 40, rows: 3, scrollback: 10 });
+    await writeTerminal(
+      terminal,
+      `${Array.from({ length: 12 }, (_, index) => `line ${String(index).padStart(5, "0")}\r\n`).join("")}line 00012`,
+    );
+    const markers: ReturnType<Terminal["registerMarker"]>[] = [];
+    const tracker = createTerminalOutputLineAnchorTracker({
+      registerMarker: () => {
+        const marker = terminal.registerMarker();
+        if (marker) markers.push(marker);
+        return marker;
+      },
+      getCurrentLine: () =>
+        terminal.buffer.active.baseY + terminal.buffer.active.cursorY,
+    });
+    tracker.reset();
+    const anchor = tracker.recordOutputStart(10);
+    expect(anchor).toBeDefined();
+    await writeTerminal(
+      terminal,
+      `\r\n${Array.from({ length: 30 }, (_, index) => `line ${String(index + 13).padStart(5, "0")}\r\n`).join("")}`,
+    );
+    const firstRetainedLine = terminal.buffer.active
+      .getLine(0)
+      ?.translateToString(true);
+    const line = resolveTerminalViewportRestore({
+      anchor: { distanceFromTail: 20, lineOffset: 8, outputSequence: 10 },
+      baseY: terminal.buffer.active.baseY,
+      outputLineAnchors: [anchor!],
+      replayNextSequence: 11,
+      replayStartSequence: 0,
+    });
+
+    expect(markers[0]?.isDisposed).toBe(true);
+    expect(anchor?.expired).toBe(true);
+    expect(line).toBe(0);
+    terminal.scrollToLine(line);
+    expect(
+      terminal.buffer.active
+        .getLine(terminal.buffer.active.viewportY)
+        ?.translateToString(true),
+    ).toBe(firstRetainedLine);
+    tracker.dispose();
+    terminal.dispose();
+  });
+
+  it("restores a retained marker to the same content after scrollback trimming", async () => {
+    const terminal = new Terminal({ cols: 40, rows: 3, scrollback: 1250 });
+    const markers: ReturnType<Terminal["registerMarker"]>[] = [];
+    const tracker = createTerminalOutputLineAnchorTracker({
+      registerMarker: () => {
+        const marker = terminal.registerMarker();
+        if (marker) markers.push(marker);
+        return marker;
+      },
+      getCurrentLine: () =>
+        terminal.buffer.active.baseY + terminal.buffer.active.cursorY,
+    });
+    tracker.reset();
+    tracker.recordOutputStart(10);
+    await writeTerminal(
+      terminal,
+      Array.from(
+        { length: 1234 },
+        (_, index) => `line ${String(index).padStart(5, "0")}\r\n`,
+      ).join(""),
+    );
+    const anchor = tracker.recordOutputStart(11);
+    expect(anchor).toBeDefined();
+    await writeTerminal(terminal, "line 01234");
+    await writeTerminal(
+      terminal,
+      `\r\n${Array.from({ length: 40 }, (_, index) => `line ${String(index + 1235).padStart(5, "0")}\r\n`).join("")}`,
+    );
+    const line = resolveTerminalViewportRestore({
+      anchor: { distanceFromTail: 40, lineOffset: 0, outputSequence: 11 },
+      baseY: terminal.buffer.active.baseY,
+      outputLineAnchors: [anchor!],
+      replayNextSequence: 12,
+      replayStartSequence: 0,
+    });
+    terminal.scrollToLine(line);
+
+    expect(anchor?.line).toBeGreaterThanOrEqual(0);
+    expect(
+      terminal.buffer.active
+        .getLine(terminal.buffer.active.viewportY)
+        ?.translateToString(true),
+    ).toBe("line 01234");
+    tracker.dispose();
+    terminal.dispose();
+  });
+
+  it("uses one marker for many output sequence anchors", () => {
+    const terminal = new Terminal({ cols: 40, rows: 3 });
+    const registerMarker = vi.fn(() => terminal.registerMarker());
+    const tracker = createTerminalOutputLineAnchorTracker({
+      registerMarker,
+      getCurrentLine: () =>
+        terminal.buffer.active.baseY + terminal.buffer.active.cursorY,
+    });
+
+    tracker.reset();
+    for (let sequence = 0; sequence < 4096; sequence += 1) {
+      tracker.recordOutputStart(sequence);
+    }
+
+    expect(registerMarker).toHaveBeenCalledOnce();
+    tracker.dispose();
+    terminal.dispose();
+  });
+
+  it("restores the saved marker after a server restart with later replay sequences", async () => {
+    const terminal = new Terminal({ cols: 40, rows: 3, scrollback: 1000 });
+    await writeTerminal(
+      terminal,
+      `${Array.from({ length: 132 }, (_, index) => `line ${String(index).padStart(5, "0")}\r\n`).join("")}line 00132`,
+    );
+    const tracker = createTerminalOutputLineAnchorTracker({
+      registerMarker: () => terminal.registerMarker(),
+      getCurrentLine: () =>
+        terminal.buffer.active.baseY + terminal.buffer.active.cursorY,
+    });
+    tracker.reset();
+    const markerAnchor = tracker.recordOutputStart(10);
+    expect(markerAnchor).toBeDefined();
+    await writeTerminal(
+      terminal,
+      `\r\n${Array.from({ length: 20 }, (_, index) => `line ${String(index + 133).padStart(5, "0")}\r\n`).join("")}`,
+    );
+    const lineOffset = 0;
+    const restoreLine = resolveTerminalViewportRestore({
+      anchor: { distanceFromTail: 100, lineOffset, outputSequence: 10 },
+      baseY: terminal.buffer.active.baseY,
+      outputLineAnchors: [markerAnchor!],
+      replayNextSequence: 5353,
+      replayStartSequence: 5274,
+    });
+    terminal.scrollToLine(restoreLine);
+
+    expect(
+      terminal.buffer.active
+        .getLine(terminal.buffer.active.viewportY)
+        ?.translateToString(true),
+    ).toBe("line 00132");
+    tracker.dispose();
+    terminal.dispose();
+  });
+
+  it("restores an old negative line offset to the chunk start", () => {
+    expect(
+      resolveTerminalViewportRestore({
+        anchor: {
+          distanceFromTail: 18,
+          lineOffset: -2,
+          outputSequence: 64,
+        },
+        baseY: 600,
+        outputLineAnchors: [outputAnchor(64, 310)],
+        replayNextSequence: 565,
+        replayStartSequence: 50,
+      }),
+    ).toBe(310);
+  });
+
+  it("restores to the top of replay when the anchored chunk expired", () => {
+    expect(
+      resolveTerminalViewportRestore({
+        anchor: {
+          distanceFromTail: 18,
+          lineOffset: -2,
+          outputSequence: 16,
+        },
+        baseY: 100,
+        outputLineAnchors: [outputAnchor(17, 8)],
+        replayNextSequence: 30,
+        replayStartSequence: 17,
+      }),
+    ).toBe(0);
+  });
+
+  it("uses tail distance only when sequence numbering reset", () => {
+    expect(
+      resolveTerminalViewportRestore({
+        anchor: {
+          distanceFromTail: 12,
+          lineOffset: -1,
+          outputSequence: 42,
+        },
+        baseY: 80,
+        outputLineAnchors: [outputAnchor(3, 5)],
+        replayNextSequence: 8,
+        replayStartSequence: 0,
+      }),
+    ).toBe(68);
+  });
+
+  it("restores the saved viewport after a reconnect replay", () => {
+    const storage = createStorage();
+    const key = terminalViewportStorageKey("terminal-a");
+    const anchor = { distanceFromTail: 18, outputSequence: 64 };
+    writeTerminalViewportAnchor(storage, key, anchor);
+    const replaySaveGate = createTerminalViewportReplaySaveGate();
+
+    replaySaveGate.finishRestore();
+    replaySaveGate.beginReplay();
+    expect(replaySaveGate.canSave(true)).toBe(false);
+    const restoreLine = resolveTerminalViewportRestore({
+      anchor: readTerminalViewportAnchor(storage, key),
+      baseY: 100,
+      outputLineAnchors: [outputAnchor(64, 84)],
+      replayNextSequence: 80,
+      replayStartSequence: 0,
+    });
+    replaySaveGate.finishRestore();
+
+    expect(restoreLine).toBe(84);
+    expect(replaySaveGate.canSave(false)).toBe(false);
+    expect(replaySaveGate.canSave(true)).toBe(true);
+  });
+
+  it("does not replace a saved anchor with replay scroll events", () => {
+    const storage = createStorage();
+    const key = terminalViewportStorageKey("terminal-a");
+    const anchor = { distanceFromTail: 18, outputSequence: 64 };
+    writeTerminalViewportAnchor(storage, key, anchor);
+    const persistence = createTerminalViewportPersistence({ storage, key });
+    const replaySaveGate = createTerminalViewportReplaySaveGate();
+
+    replaySaveGate.beginReplay();
+    if (replaySaveGate.canSave(true)) {
+      persistence.schedule({ distanceFromTail: 0, outputSequence: 0 });
+    }
+    persistence.flush();
+
+    expect(readTerminalViewportAnchor(storage, key)).toEqual(anchor);
+    replaySaveGate.finishRestore();
+    if (replaySaveGate.canSave(false)) {
+      persistence.schedule({ distanceFromTail: 0, outputSequence: 0 });
+    }
+    expect(readTerminalViewportAnchor(storage, key)).toEqual(anchor);
+    if (replaySaveGate.canSave(true)) {
+      persistence.schedule({ distanceFromTail: 15, outputSequence: 70 });
+    }
+    persistence.flush();
+
+    expect(readTerminalViewportAnchor(storage, key)).toEqual({
+      distanceFromTail: 15,
+      outputSequence: 70,
+    });
+  });
+
+  it.each(["wheel", "touchmove"] as const)(
+    "saves an anchor when an inner element stops %s propagation",
+    (eventType) => {
+      const storage = createStorage();
+      const key = terminalViewportStorageKey(`terminal-${eventType}`);
+      const persistence = createTerminalViewportPersistence({ storage, key });
+      const replaySaveGate = createTerminalViewportReplaySaveGate();
+      const listeners: Array<{
+        type: string;
+        listener: EventListenerOrEventListenerObject;
+        capture: boolean;
+      }> = [];
+      const parent = {
+        addEventListener: vi.fn((type, listener, options) => {
+          const capture =
+            typeof options === "boolean"
+              ? options
+              : (options?.capture ?? false);
+          listeners.push({ type, listener, capture });
+        }),
+        removeEventListener: vi.fn(),
+      } as unknown as HTMLElement;
+      let hasManualScrollIntent = false;
+      attachTerminalManualScrollIntentListeners(
+        parent,
+        () => (hasManualScrollIntent = true),
+      );
+      replaySaveGate.finishRestore();
+
+      let propagationStopped = false;
+      const event = {
+        type: eventType,
+        stopPropagation: () => {
+          propagationStopped = true;
+        },
+      } as unknown as Event;
+      for (const entry of listeners.filter(
+        (listener) => listener.type === eventType && listener.capture,
+      )) {
+        typeof entry.listener === "function"
+          ? entry.listener(event)
+          : entry.listener.handleEvent(event);
+      }
+      const stopPropagationAtInnerElement = (innerEvent: Event) =>
+        innerEvent.stopPropagation();
+      stopPropagationAtInnerElement(event);
+      if (!propagationStopped) {
+        for (const entry of listeners.filter(
+          (listener) => listener.type === eventType && !listener.capture,
+        )) {
+          typeof entry.listener === "function"
+            ? entry.listener(event)
+            : entry.listener.handleEvent(event);
+        }
+      }
+      if (replaySaveGate.canSave(hasManualScrollIntent)) {
+        persistence.schedule({ distanceFromTail: 12, outputSequence: 42 });
+      }
+      persistence.flush();
+
+      expect(
+        listeners.find(
+          (listener) => listener.type === eventType && listener.capture,
+        ),
+      ).toBeDefined();
+      expect(propagationStopped).toBe(true);
+      expect(storage.getItem(key)).not.toBeNull();
+    },
+  );
+
+  it("saves a touch scroll after xterm updates its viewport", () => {
+    let viewportY = 100;
+    const frames = new Map<number, () => void>();
+    let nextFrame = 0;
+    const save = vi.fn();
+    const scheduler = createTerminalTouchViewportSaveScheduler({
+      getViewportY: () => viewportY,
+      requestFrame: (callback) => {
+        const handle = ++nextFrame;
+        frames.set(handle, callback);
+        return handle;
+      },
+      cancelFrame: (handle) => frames.delete(handle),
+      save,
+    });
+
+    scheduler.schedule();
+    viewportY = 84;
+    [...frames.values()].forEach((callback) => callback());
+
+    expect(save).toHaveBeenCalledOnce();
+    scheduler.dispose();
+  });
+
+  it("does not save a touch gesture that leaves the viewport unchanged", () => {
+    const frames = new Map<number, () => void>();
+    let nextFrame = 0;
+    const save = vi.fn();
+    const scheduler = createTerminalTouchViewportSaveScheduler({
+      getViewportY: () => 100,
+      requestFrame: (callback) => {
+        const handle = ++nextFrame;
+        frames.set(handle, callback);
+        return handle;
+      },
+      cancelFrame: (handle) => frames.delete(handle),
+      save,
+    });
+
+    scheduler.schedule();
+    [...frames.values()].forEach((callback) => callback());
+
+    expect(save).not.toHaveBeenCalled();
+    scheduler.dispose();
+  });
+
+  it("keeps anchors isolated by terminal session", () => {
+    expect(terminalViewportStorageKey("terminal-a")).not.toBe(
+      terminalViewportStorageKey("terminal-b"),
+    );
+  });
+
+  it("coalesces 1,000 scroll updates and flushes the latest anchor on unmount", () => {
+    vi.useFakeTimers();
+    try {
+      const storage = createStorage();
+      const key = terminalViewportStorageKey("terminal-a");
+      const persistence = createTerminalViewportPersistence({ storage, key });
+
+      for (let event = 0; event < 1_000; event += 1) {
+        persistence.schedule({
+          distanceFromTail: 1_000 - event,
+          outputSequence: 42,
+        });
+      }
+
+      expect(storage.setItem).not.toHaveBeenCalled();
+      persistence.dispose();
+
+      expect(storage.setItem).toHaveBeenCalledTimes(2);
+      expect(readTerminalViewportAnchor(storage, key)).toEqual({
+        distanceFromTail: 1,
+        outputSequence: 42,
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps only the 200 newest terminal anchors", () => {
+    const storage = createStorage();
+    for (let terminal = 1; terminal <= 201; terminal += 1) {
+      writeTerminalViewportAnchor(
+        storage,
+        terminalViewportStorageKey(`terminal-${terminal}`),
+        { distanceFromTail: terminal, outputSequence: terminal },
+      );
+    }
+
+    expect(
+      readTerminalViewportAnchor(
+        storage,
+        terminalViewportStorageKey("terminal-1"),
+      ),
+    ).toBeNull();
+    expect(
+      readTerminalViewportAnchor(
+        storage,
+        terminalViewportStorageKey("terminal-201"),
+      ),
+    ).toEqual({ distanceFromTail: 201, outputSequence: 201 });
+    expect(storage.length).toBe(201);
+  });
+
+  it("restores the selected terminal and resized split with its viewport anchor", () => {
+    const terminalA = createTerminalFixedPanelTab({ terminalId: "terminal-a" });
+    const terminalB = createTerminalFixedPanelTab({ terminalId: "terminal-b" });
+    const fixedTabs = createEmptyFixedPanelTabsState({
+      lastUsedAt: 1_700_000_000_000,
+      secondary: {
+        activeTabId: terminalB.id,
+        isOpen: true,
+        tabs: [terminalA, terminalB],
+      },
+    });
+    const restoredTabs = parseFixedPanelTabsState({
+      initialValue: createEmptyFixedPanelTabsState({ lastUsedAt: 0 }),
+      now: 1_700_000_000_000,
+      storedValue: serializeFixedPanelTabsState({ state: fixedTabs }),
+    });
+
+    const initialSplit = createSidebarSplitState(
+      [terminalA.id, terminalB.id],
+      terminalA.id,
+    );
+    const split = moveSidebarTab(
+      initialSplit,
+      initialSplit.layout.focusedPaneId,
+      terminalB.id,
+      { paneId: initialSplit.layout.focusedPaneId, zone: "right" },
+      { groupId: "terminal-b" },
+    );
+    const resizedSplit = resizeSidebarSplit(split, [], 0, 0.65);
+    const restoredSplit = parseSidebarSplitState(
+      serializeSidebarSplitState(resizedSplit),
+      [terminalA.id, terminalB.id],
+      restoredTabs.secondary.activeTabId ?? terminalA.id,
+    );
+    const storage = createStorage();
+    const viewportKey = terminalViewportStorageKey("terminal-a");
+    writeTerminalViewportAnchor(storage, viewportKey, {
+      distanceFromTail: 15,
+      outputSequence: 42,
+    });
+
+    expect(restoredTabs.secondary.activeTabId).toBe(terminalB.id);
+    expect(restoredSplit.layout.root).toMatchObject({
+      type: "split",
+      sizes: [0.65, 0.35],
+    });
+    expect(
+      resolveTerminalViewportRestore({
+        anchor: readTerminalViewportAnchor(storage, viewportKey),
+        baseY: 90,
+        outputLineAnchors: [outputAnchor(24, 80)],
+        replayNextSequence: 40,
+        replayStartSequence: 20,
+      }),
+    ).toBe(75);
   });
 });
 
@@ -759,6 +2184,47 @@ describe("terminal output encoding", () => {
     terminal.dispose();
   });
 
+  it("registers the next sequence anchor in the preceding chunk parse callback", async () => {
+    const writeCallbacks: Array<() => void> = [];
+    const terminal = {
+      resize: vi.fn(),
+      write: vi.fn((_bytes: Uint8Array, callback: () => void) => {
+        writeCallbacks.push(callback);
+      }),
+    };
+    const outputStarts: number[] = [];
+    const base = {
+      acknowledgeOutput: vi.fn(),
+      onOutputStart: (sequence: number) => outputStarts.push(sequence),
+      onReplayComplete: vi.fn(),
+      replayNextSeq: null,
+      replayWriteState: { suppressedWriteCount: 0 },
+      setReplayNextSeq: vi.fn(),
+      terminal: terminal as unknown as Terminal,
+      pipeline: createTerminalOutputPipeline(terminal),
+    };
+
+    for (const sequence of [0, 1]) {
+      handleTerminalServerMessage({
+        ...base,
+        message: {
+          type: "output",
+          chunk: {
+            seq: sequence,
+            dataBase64: Buffer.from(`line ${sequence}`).toString("base64"),
+          },
+        },
+      });
+    }
+
+    expect(outputStarts).toEqual([]);
+    expect(writeCallbacks).toHaveLength(2);
+    writeCallbacks.shift()?.();
+    await vi.waitFor(() => expect(outputStarts).toEqual([1]));
+    writeCallbacks.shift()?.();
+    await vi.waitFor(() => expect(outputStarts).toEqual([1, 2]));
+  });
+
   it("keeps unknown grid OSC invisible to an older stock xterm", async () => {
     const withMarker = new Terminal({ cols: 12, rows: 3 });
     const withoutMarker = new Terminal({ cols: 12, rows: 3 });
@@ -817,9 +2283,12 @@ describe("terminal output encoding", () => {
       updatedAt: 1,
       lastUserInputAt: null,
     } satisfies TerminalSession;
-    const chunks = Array.from({ length: 1_024 }, (_, index) =>
-      new TextEncoder().encode(index === 1_023 ? "xFINAL-RETAINED-CHUNK" : "x"),
-    );
+    const chunks = Array.from({ length: 1_024 }, (_, index) => ({
+      seq: index,
+      data: new TextEncoder().encode(
+        index === 1_023 ? "xFINAL-RETAINED-CHUNK" : "x",
+      ),
+    }));
 
     await writeRetainedTerminalOutput({
       chunks,
@@ -864,8 +2333,8 @@ describe("terminal output encoding", () => {
 
     await writeRetainedTerminalOutput({
       chunks: [
-        new TextEncoder().encode("CW-1\nCW-2\n"),
-        new TextEncoder().encode("CW-3\nCW-4\n"),
+        { seq: 12, data: new TextEncoder().encode("CW-1\nCW-2\n") },
+        { seq: 13, data: new TextEncoder().encode("CW-3\nCW-4\n") },
       ],
       lastNotice: { current: null },
       session,
@@ -883,6 +2352,81 @@ describe("terminal output encoding", () => {
     expect(renderedText.indexOf("CW-4")).toBeLessThan(
       renderedText.indexOf("Terminal exited with code 0"),
     );
+    terminal.dispose();
+  });
+
+  it("restores an exited daemon replay to a saved line in its first retained chunk", async () => {
+    const terminal = new Terminal({ cols: 80, rows: 24, scrollback: 10_000 });
+    const pipeline = createTerminalOutputPipeline(terminal);
+    const tracker = createTerminalOutputLineAnchorTracker({
+      registerMarker: () => terminal.registerMarker(),
+      getCurrentLine: () =>
+        terminal.buffer.active.baseY + terminal.buffer.active.cursorY,
+    });
+    const outputLineAnchors: NonNullable<
+      ReturnType<typeof tracker.recordOutputStart>
+    >[] = [];
+    const chunks = [
+      {
+        seq: 0,
+        data: new TextEncoder().encode(
+          `${Array.from({ length: 3_000 }, (_, index) =>
+            String(index + 1).padStart(5, "0"),
+          ).join("\r\n")}\r\n`,
+        ),
+      },
+      { seq: 1, data: new TextEncoder().encode("\r\n") },
+      { seq: 2, data: new TextEncoder().encode("\r\n") },
+      { seq: 3, data: new TextEncoder().encode("\r\n") },
+      { seq: 4, data: new TextEncoder().encode("\r\n") },
+    ];
+    const savedAnchor = {
+      distanceFromTail: 832,
+      lineOffset: 2_123,
+      outputSequence: 0,
+    };
+    await writeRetainedTerminalOutput({
+      chunks,
+      lastNotice: { current: null },
+      session: {
+        id: "term_daemon_replay",
+        threadId: "thr_1",
+        environmentId: "env_1",
+        hostId: "host_1",
+        title: "Terminal",
+        initialCwd: "/workspace",
+        cols: 80,
+        rows: 24,
+        status: "exited",
+        exitCode: null,
+        closeReason: "daemon-disconnect",
+        createdAt: 1,
+        updatedAt: 1,
+        lastUserInputAt: null,
+      } satisfies TerminalSession,
+      terminal,
+      pipeline,
+      onOutputStart: (sequence) => {
+        const anchor = tracker.recordOutputStart(sequence);
+        if (anchor) outputLineAnchors.push(anchor);
+      },
+    });
+
+    const restoredY = resolveTerminalViewportRestore({
+      anchor: savedAnchor,
+      baseY: terminal.buffer.active.baseY,
+      outputLineAnchors,
+      replayStartSequence: chunks[0]!.seq,
+      replayNextSequence: 5,
+    });
+
+    expect(
+      outputLineAnchors.find(({ sequence }) => sequence === 0),
+    ).toBeDefined();
+    expect(
+      terminal.buffer.active.getLine(restoredY)?.translateToString(true),
+    ).toBe("02124");
+    tracker.dispose();
     terminal.dispose();
   });
 
