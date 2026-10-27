@@ -1613,8 +1613,7 @@ export function ThreadTerminalView({
     let containerHasSize = hasVisibleTerminalSize({
       containerElement: container,
     });
-    let terminalVisible =
-      document.visibilityState === "visible" && containerHasSize;
+    let terminalVisible: boolean | null = null;
     let lastParsedOutputNextSeq = 0;
     const reportDocumentVisibility = () => {
       if (
@@ -1625,9 +1624,7 @@ export function ThreadTerminalView({
         cancelTerminalOutputNextRenders(session.id);
       }
       const nextVisible =
-        document.visibilityState === "visible" &&
-        containerHasSize &&
-        isPanelOpenRef.current;
+        document.visibilityState === "visible" && containerHasSize;
       if (terminalVisible === nextVisible) return;
       terminalVisible = nextVisible;
       transport?.setVisible(nextVisible);
@@ -2324,7 +2321,7 @@ export function ThreadTerminalView({
             replayPipeline: replayPreview ?? undefined,
             outputBoundaryToken,
             allowAttachedGrid: !markerGridActive,
-            shouldProcessOutput: () => terminalVisible,
+            shouldProcessOutput: () => terminalVisible === true && isPanelOpenRef.current,
           });
         },
         onSequenceGap: () => {
