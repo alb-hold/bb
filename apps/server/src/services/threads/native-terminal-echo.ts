@@ -280,7 +280,48 @@ export function terminalOutputShowsPasteAgain(args: {
   pastePlaceholders: readonly string[];
   text: string;
 }): boolean {
-  if (TERMINAL_SCREEN_RESET.test(args.output)) return false;
+  if (TERMINAL_SCREEN_RESET.test(args.output)) {
+    const resets = [
+      ...args.output.matchAll(
+        /\u001b\[[0-3]?J|\u001bc|\u001b\[\?(?:47|1047|1049)[hl]/gu,
+      ),
+    ];
+    const reset = resets.at(-1);
+    if (reset === undefined || reset.index === undefined) return false;
+    const redrawn = replayTerminalRows(
+      args.output.slice(reset.index + reset[0].length),
+    );
+    const redraw = args.output.slice(reset.index + reset[0].length);
+    const fullNeedle = echoNeedle(args.text);
+    const needle = fullNeedle.slice(-ECHO_TAIL_LENGTH);
+    const beforeCopies = occurrenceCount(
+      replayTerminalOutput(args.before),
+      needle,
+    );
+    if (occurrenceCount(replayTerminalOutput(redraw), needle) <= beforeCopies) {
+      return false;
+    }
+    let inputRow = -1;
+    for (let index = redrawn.length - 1; index >= 0; index -= 1) {
+      if (redrawn[index]!.tokens[0] === "❯") {
+        inputRow = index;
+        break;
+      }
+    }
+    if (inputRow < 0) return false;
+    const input = [
+      ...redrawn[inputRow]!.tokens.slice(1),
+      ...redrawn.slice(inputRow + 1).flatMap((row) => row.tokens),
+    ];
+    const head = fullNeedle.slice(0, ECHO_TAIL_LENGTH);
+    const drawnHead = input.slice(0, head.length);
+    const tail = fullNeedle.slice(-ECHO_TAIL_LENGTH);
+    const requiredHead = Math.ceil(head.length * ECHO_DRAWN_SHARE);
+    return (
+      drawnHead.filter((token, index) => token === head[index]).length >=
+        requiredHead && looseMatchEnds(input, tail).length > 0
+    );
+  }
   if (!terminalOutputShowsPaste(args)) return false;
   const needle = echoNeedle(args.text).slice(-ECHO_TAIL_LENGTH);
   if (looseMatchEnds(replayTerminalOutput(args.output), needle).length === 0) {
