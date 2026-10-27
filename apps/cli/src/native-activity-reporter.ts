@@ -200,6 +200,7 @@ export function createNativeActivityReporter(options: {
       );
       const result = await sendBatch(batch, sends.confirms, closesSupported);
       if (result === "failed") return;
+      if (!closesSupported) return;
     }
   };
 
