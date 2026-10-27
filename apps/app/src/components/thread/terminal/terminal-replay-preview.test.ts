@@ -749,6 +749,30 @@ describe("terminal replay preview", () => {
     expect(harness.previewElement.style.overflow).toBe("hidden");
     expect(harness.previewElement.style.overflowX).toBe("hidden");
 
+    const snapshotLines = Array.from(
+      { length: harness.terminal.rows },
+      (_, index) =>
+        harness.terminal.buffer.active.getLine(index)?.translateToString(true) ??
+        "",
+    );
+    harness.cover.setFitGrid(120, 50);
+    expect({ cols: harness.terminal.cols, rows: harness.terminal.rows }).toEqual({
+      cols: 100,
+      rows: 50,
+    });
+    expect(
+      Array.from({ length: snapshotLines.length }, (_, index) =>
+        harness.terminal.buffer.active.getLine(index)?.translateToString(true) ?? "",
+      ),
+    ).toEqual(snapshotLines);
+    expect(
+      Array.from({ length: 3 }, (_, index) =>
+        harness.terminal.buffer.active
+          .getLine(snapshotLines.length + index)
+          ?.translateToString(true) ?? "",
+      ),
+    ).toEqual(["", "", ""]);
+
     harness.cover.dispose();
     harness.parent.remove();
   });
