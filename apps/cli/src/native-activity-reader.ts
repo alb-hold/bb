@@ -131,7 +131,8 @@ export class NativeActivityReader {
         | "missing-session"
         | "foreign-session"
         | "held-overflow"
-        | "unreadable-record",
+        | "unreadable-record"
+        | "unsequenced-late-record",
       total: number,
     ) => void,
     private readonly onSessionAdopted?: (

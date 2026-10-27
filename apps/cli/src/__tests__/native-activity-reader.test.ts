@@ -184,7 +184,8 @@ function claudeFixture(
       | "missing-session"
       | "foreign-session"
       | "held-overflow"
-      | "unreadable-record",
+      | "unreadable-record"
+      | "unsequenced-late-record",
     total: number,
   ) => void,
   onSessionAdopted?: (sessionId: string, previousSessionId: string) => void,
