@@ -905,11 +905,11 @@ describe("terminal replay preview", () => {
   });
 
   it("keeps chunks in order while the deadline handoff is pending", async () => {
-    let deadlineFrame: FrameRequestCallback | null = null;
+    const captured: { frame: FrameRequestCallback | null } = { frame: null };
     const frameRequest = vi
       .spyOn(window, "requestAnimationFrame")
       .mockImplementation((callback) => {
-        deadlineFrame = callback;
+        captured.frame = callback;
         return 1;
       });
     const harness = await createPreviewHarness({
@@ -919,14 +919,14 @@ describe("terminal replay preview", () => {
       fitRows: 47,
     });
     frameRequest.mockRestore();
-    if (deadlineFrame === null) throw new Error("Expected preview frame");
+    if (captured.frame === null) throw new Error("Expected preview frame");
     vi.useFakeTimers();
     let firstCallbackCount = 0;
     let secondCallbackCount = 0;
     harness.cover.push(Buffer.from("\r\nchunk A"), () => {
       firstCallbackCount += 1;
     });
-    deadlineFrame(0);
+    captured.frame(0);
     const terminalResize = harness.terminal.resize.bind(harness.terminal);
     vi.spyOn(harness.terminal, "resize").mockImplementation((cols, rows) => {
       terminalResize(cols, rows);
