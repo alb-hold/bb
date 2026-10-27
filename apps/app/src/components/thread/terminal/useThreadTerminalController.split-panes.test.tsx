@@ -94,7 +94,9 @@ describe("two split panes each holding a terminal", () => {
       { wrapper },
     );
 
-    await waitFor(() => expect(result.current.activeSession?.id).toBe("term_a"));
+    await waitFor(() =>
+      expect(result.current.activeSession?.id).toBe("term_a"),
+    );
     act(() => result.current.handleActiveTerminalProgressChange(0.75));
 
     await waitFor(() =>
@@ -161,6 +163,89 @@ describe("two split panes each holding a terminal", () => {
 
     vi.useRealTimers();
     unmount();
+  });
+
+  it("clears progress when the active terminal exits", async () => {
+    vi.mocked(sdk.terminals.list).mockResolvedValue({
+      sessions: [session("term_a", "running")],
+    });
+    const { wrapper } = createQueryClientTestHarness();
+    const { result } = renderHook(
+      () => useThreadTerminalController(paneArgs("term_a")),
+      { wrapper },
+    );
+
+    await waitFor(() =>
+      expect(result.current.activeSession?.id).toBe("term_a"),
+    );
+    act(() => result.current.handleActiveTerminalProgressChange(0.5));
+    act(() =>
+      result.current.handleActiveTerminalSessionChange(
+        session("term_a", "exited"),
+      ),
+    );
+
+    expect(sdk.threads.experimental_updateRowState).toHaveBeenLastCalledWith({
+      threadId: "thr_1",
+      action: "progress-clear",
+    });
+  });
+
+  it("clears progress when the active terminal closes with its panel", async () => {
+    const created = session("term_new", "running");
+    vi.mocked(sdk.terminals.list).mockResolvedValue({ sessions: [created] });
+    vi.mocked(sdk.terminals.create).mockResolvedValue(created);
+    vi.mocked(sdk.terminals.close).mockResolvedValue(
+      session("term_new", "exited"),
+    );
+
+    const { wrapper } = createQueryClientTestHarness();
+    const { result, rerender } = renderHook(
+      ({ open }: { open: boolean }) =>
+        useThreadTerminalController({
+          ...paneArgs("term_new"),
+          isPanelOpen: open,
+          isPanelPersistedOpen: open,
+        }),
+      { initialProps: { open: true }, wrapper },
+    );
+
+    await waitFor(() =>
+      expect(result.current.activeSession?.id).toBe("term_new"),
+    );
+    act(() => result.current.handleCreateTerminal());
+    await waitFor(() => expect(sdk.terminals.create).toHaveBeenCalled());
+    act(() => result.current.handleActiveTerminalProgressChange(0.5));
+
+    rerender({ open: false });
+    await waitFor(() => expect(sdk.terminals.close).toHaveBeenCalled());
+
+    expect(sdk.threads.experimental_updateRowState).toHaveBeenLastCalledWith({
+      threadId: "thr_1",
+      action: "progress-clear",
+    });
+  });
+
+  it("clears progress when its terminal controller unmounts", async () => {
+    vi.mocked(sdk.terminals.list).mockResolvedValue({
+      sessions: [session("term_a", "running")],
+    });
+    const { wrapper } = createQueryClientTestHarness();
+    const { result, unmount } = renderHook(
+      () => useThreadTerminalController(paneArgs("term_a")),
+      { wrapper },
+    );
+
+    await waitFor(() =>
+      expect(result.current.activeSession?.id).toBe("term_a"),
+    );
+    act(() => result.current.handleActiveTerminalProgressChange(0.5));
+    unmount();
+
+    expect(sdk.threads.experimental_updateRowState).toHaveBeenLastCalledWith({
+      threadId: "thr_1",
+      action: "progress-clear",
+    });
   });
 
   it("accepts subsequent OSC process title changes", async () => {

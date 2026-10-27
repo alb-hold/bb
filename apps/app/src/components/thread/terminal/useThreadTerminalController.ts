@@ -234,6 +234,8 @@ export function useThreadTerminalController({
     value: number | null;
   } | null>(null);
   const progressUpdateTimeoutRef = useRef<number | null>(null);
+  const progressThreadIdRef = useRef<string | null>(resolvedSyncThreadId);
+  const progressTerminalIdRef = useRef<string | null>(null);
   const dirtyTerminalIdsRef = useRef<Set<string>>(new Set());
   const closingCleanTerminalIdsRef = useRef<Set<string>>(new Set());
   const closingDisconnectedTerminalIdsRef = useRef<Set<string>>(new Set());
@@ -311,6 +313,12 @@ export function useThreadTerminalController({
   );
   const activeSession =
     visibleSessions.find((session) => session.id === activeTerminalId) ?? null;
+  if (activeSession?.threadId) {
+    progressThreadIdRef.current = activeSession.threadId;
+    progressTerminalIdRef.current = activeSession.id;
+  } else if (resolvedSyncThreadId) {
+    progressThreadIdRef.current = resolvedSyncThreadId;
+  }
   useMountedTerminalRegistration({
     isMounted: shouldMountTerminalView,
     scopeKey: terminalTargetId,
@@ -392,7 +400,8 @@ export function useThreadTerminalController({
   );
 
   const clearTerminalProgress = useCallback(
-    (threadId: string) => {
+    (threadId: string | null) => {
+      if (threadId === null) return;
       if (progressUpdateTimeoutRef.current !== null) {
         window.clearTimeout(progressUpdateTimeoutRef.current);
         progressUpdateTimeoutRef.current = null;
@@ -460,6 +469,10 @@ export function useThreadTerminalController({
     },
     [sendTerminalProgressUpdate],
   );
+
+  useEffect(() => {
+    return () => clearTerminalProgress(progressThreadIdRef.current);
+  }, [clearTerminalProgress]);
 
   const activeSessionId = activeSession?.id;
   const activeSessionInitialCwd = activeSession?.initialCwd;
@@ -538,6 +551,9 @@ export function useThreadTerminalController({
       onSuccess?: (session: TerminalSession) => void;
       terminalId: string;
     }) => {
+      if (terminalId === progressTerminalIdRef.current) {
+        clearTerminalProgress(progressThreadIdRef.current);
+      }
       closeTerminalMutation.mutate(
         { mode, terminalId },
         {
@@ -548,7 +564,7 @@ export function useThreadTerminalController({
         },
       );
     },
-    [closeTerminalMutation],
+    [clearTerminalProgress, closeTerminalMutation],
   );
 
   useEffect(() => {
@@ -687,6 +703,7 @@ export function useThreadTerminalController({
   const handleActiveTerminalSessionChange = useCallback(
     (session: TerminalSession) => {
       if (session.status === "exited") {
+        clearTerminalProgress(session.threadId);
         clearTerminalCurrentCwd(session.id);
         terminalCwdsRef.current.delete(session.id);
         terminalCwdTitlesRef.current.delete(session.id);
@@ -697,7 +714,7 @@ export function useThreadTerminalController({
       }
       applyTerminalSessionUpsert({ queryClient, session });
     },
-    [queryClient],
+    [clearTerminalProgress, queryClient],
   );
 
   const handleActiveTerminalUserInput = useCallback(() => {
@@ -711,6 +728,8 @@ export function useThreadTerminalController({
     (progress: number | null) => {
       const threadId = activeSession?.threadId;
       if (!threadId) return;
+      progressThreadIdRef.current = threadId;
+      progressTerminalIdRef.current = activeSession.id;
       if (progress === null) {
         clearTerminalProgress(threadId);
         return;
