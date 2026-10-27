@@ -782,6 +782,32 @@ describe("terminal replay preview", () => {
     harness.parent.remove();
   });
 
+  it("keeps an expanded snapshot visible when no authoritative grid arrives", async () => {
+    const harness = await createPreviewHarness({
+      cols: 120,
+      rows: 36,
+      fitCols: 120,
+      fitRows: 47,
+    });
+    vi.useFakeTimers();
+    await vi.advanceTimersByTimeAsync(30_000);
+
+    expect(harness.terminal.rows).toBe(47);
+    expect(getComputedStyle(harness.previewElement).visibility).toBe("visible");
+    expect(
+      Array.from({ length: harness.terminal.buffer.active.length }, (_, index) =>
+        harness.terminal.buffer.active.getLine(index)?.translateToString(true),
+      ).join("\n"),
+    ).toContain("screenshot snapshot");
+    expect({
+      x: harness.terminal.buffer.active.cursorX,
+      y: harness.terminal.buffer.active.cursorY,
+    }).toEqual(harness.expectedCursor);
+
+    harness.cover.dispose();
+    harness.parent.remove();
+  });
+
   it("keeps snapshot rows visible when the pane fit is smaller and no grid arrives", async () => {
     const harness = await createPreviewHarness({
       cols: 120,
