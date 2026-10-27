@@ -19,18 +19,70 @@ import {
 } from "./notification-store";
 
 let verifyNoSonnerTimerAfterTeardown = false;
+const originalSetTimeout = globalThis.setTimeout.bind(globalThis);
+const originalClearTimeout = globalThis.clearTimeout.bind(globalThis);
+let pendingSonnerTimeouts = new Map<
+  Parameters<typeof globalThis.clearTimeout>[0],
+  () => void
+>();
 
 beforeEach(() => {
   cleanup();
   vi.restoreAllMocks();
   resetNotificationStore();
+  pendingSonnerTimeouts = new Map();
+  vi.spyOn(globalThis, "setTimeout").mockImplementation(
+    (handler, timeout, ...args) => {
+      const isSonnerTimeout =
+        new Error().stack?.includes("sonner/dist/index.mjs") ?? false;
+      if (!isSonnerTimeout || typeof handler !== "function") {
+        return originalSetTimeout(handler, timeout, ...args);
+      }
+      let timeoutId: ReturnType<typeof setTimeout>;
+      const wrappedHandler = (...handlerArgs: Parameters<typeof handler>) => {
+        pendingSonnerTimeouts.delete(timeoutId);
+        handler(...handlerArgs);
+      };
+      timeoutId = originalSetTimeout(wrappedHandler, timeout, ...args);
+      pendingSonnerTimeouts.set(timeoutId, () => wrappedHandler());
+      return timeoutId;
+    },
+  );
+  vi.spyOn(globalThis, "clearTimeout").mockImplementation((timeoutId) => {
+    pendingSonnerTimeouts.delete(timeoutId);
+    return originalClearTimeout(timeoutId);
+  });
 });
 
-afterEach(() => {
+async function drainSonnerTimeouts() {
+  await act(async () => {
+    while (pendingSonnerTimeouts.size > 0) {
+      const next = pendingSonnerTimeouts.entries().next();
+      if (next.done) {
+        break;
+      }
+      const [timeoutId, runTimeout] = next.value;
+      originalClearTimeout(timeoutId);
+      runTimeout();
+      await Promise.resolve();
+    }
+  });
+}
+
+afterEach(async () => {
   const shouldVerifyTimers = verifyNoSonnerTimerAfterTeardown;
   verifyNoSonnerTimerAfterTeardown = false;
-  cleanup();
   try {
+    if (vi.isFakeTimers()) {
+      await act(async () => {
+        await vi.runOnlyPendingTimersAsync();
+      });
+    }
+    await drainSonnerTimeouts();
+    cleanup();
+    sonnerToast.dismiss();
+    await drainSonnerTimeouts();
+    expect(pendingSonnerTimeouts.size).toBe(0);
     if (shouldVerifyTimers) {
       expect(vi.getTimerCount()).toBe(0);
     }
