@@ -26,7 +26,7 @@ import {
 } from "node:fs";
 import { readFile as readFilePromise } from "node:fs/promises";
 import os from "node:os";
-import path from "node:path";
+import path, { join } from "node:path";
 import type { Writable } from "node:stream";
 import type { ProviderNativeTerminal } from "@bb/domain";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -221,8 +221,12 @@ describe.skipIf(process.platform === "win32")(
         tools.map((_, index) => String(index + 1).padStart(12, "0")),
       );
       expect(leftovers(spool)).toEqual([]);
+      const expectedOrder = names.map((name) =>
+        toolOf(JSON.parse(readFileSync(join(spool, name), "utf8"))),
+      );
       const read = new HookSpoolReader(spool).read();
       expect(read.unreadable).toBe(0);
+      expect(read.records.map(toolOf)).toEqual(expectedOrder);
       expect(read.records.map(toolOf).sort()).toEqual([...tools].sort());
       for (const entry of read.records) {
         expect(entry).toMatchObject({
