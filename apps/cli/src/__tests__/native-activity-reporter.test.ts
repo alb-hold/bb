@@ -278,6 +278,69 @@ describe("native activity reporter", () => {
       expect(closesOf(calls)).toEqual([[], ["q1"], []]);
     });
 
+    it("retries one rejected non-empty close report without closes and applies its state", async () => {
+      const calls: Array<{
+        closes: string[] | undefined;
+        questions: string[] | undefined;
+        state: string;
+      }> = [];
+      const open = new Set<string>();
+      const appliedStates: string[] = [];
+      const logged: Array<{ event: string; fields: unknown }> = [];
+      const reporter = createNativeActivityReporter({
+        currentCredential: () => "c",
+        log: (event, fields) => logged.push({ event, fields }),
+        send: async (args) => {
+          calls.push({
+            closes: args.closes,
+            questions: args.questions?.map((question) => question.id),
+            state: args.state,
+          });
+          if (args.closes?.length) {
+            throw new BbHttpError({
+              body: null,
+              code: "invalid_request",
+              message: 'Unrecognized key: "closes"',
+              status: 400,
+            });
+          }
+          if (args.closes === undefined) {
+            for (const id of open) {
+              if (!args.questions?.some((question) => question.id === id)) {
+                open.delete(id);
+              }
+            }
+          } else {
+            for (const id of args.closes) open.delete(id);
+          }
+          for (const question of args.questions ?? []) open.add(question.id);
+          appliedStates.push(args.state);
+          return { ok: true };
+        },
+        threadId: "thr_1",
+      });
+
+      reporter.report(asking("q1"));
+      await reporter.settled();
+      reporter.report(working);
+      await reporter.settled();
+
+      expect(calls).toEqual([
+        { closes: [], questions: ["q1"], state: "waiting" },
+        { closes: ["q1"], questions: undefined, state: "working" },
+        { closes: undefined, questions: undefined, state: "working" },
+      ]);
+      expect(appliedStates).toEqual(["waiting", "working"]);
+      expect(open).toEqual(new Set());
+      expect(logged).toContainEqual({
+        event: "activity-closure-fallback-omitted",
+        fields: { closes: 1 },
+      });
+      reporter.retry();
+      await reporter.settled();
+      expect(calls).toHaveLength(3);
+    });
+
     it("sends empty close lists on every report kind while closes are supported", async () => {
       const { calls, reporter } = closureSetup([]);
       reporter.report(asking("q1", "q2"));

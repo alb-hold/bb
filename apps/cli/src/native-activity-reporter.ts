@@ -135,33 +135,28 @@ export function createNativeActivityReporter(options: {
           return "failed";
         }
         if (unsupported.closes) {
-          if (closeIds.length === 0) {
-            try {
-              await options.send(request([], includeConfirms, false));
-              acknowledge([]);
-              return "accepted";
-            } catch (fallbackError) {
-              if (
-                includeConfirms &&
-                unrecognizedField(fallbackError, "confirms")
-              ) {
-                options.log?.("activity-confirmation-fallback-skipped", {
-                  confirms: 1,
-                  reason: "legacy_server_defaults_true",
-                });
-                keepBlocked("unsupported_confirms");
-                return "failed";
-              }
-              keep(fallbackError);
+          options.log?.("activity-closure-fallback-omitted", {
+            closes: closeIds.length,
+          });
+          try {
+            await options.send(request(closeIds, includeConfirms, false));
+            acknowledge(closeIds);
+            return "accepted";
+          } catch (fallbackError) {
+            if (
+              includeConfirms &&
+              unrecognizedField(fallbackError, "confirms")
+            ) {
+              options.log?.("activity-confirmation-fallback-skipped", {
+                confirms: 1,
+                reason: "legacy_server_defaults_true",
+              });
+              keepBlocked("unsupported_confirms");
               return "failed";
             }
+            keep(fallbackError);
+            return "failed";
           }
-          options.log?.("activity-closure-fallback-skipped", {
-            closes: closeIds.length,
-            reason: "legacy_server_does_not_support_closes",
-          });
-          keepBlocked("unsupported_closes");
-          return "failed";
         }
 
         if (
