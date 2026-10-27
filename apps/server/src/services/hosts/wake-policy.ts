@@ -68,6 +68,7 @@ const hostCommandWakePolicy = {
   "provider.list_models": "work",
   "provider.list_commands": "work",
   "provider.health": "work",
+  "native_terminal.read_claude_transcript_tail": "never",
   "terminal-data-plane.probe": "never",
   "terminal-data-plane.connect": "never",
   "provider.installation.status": "work",

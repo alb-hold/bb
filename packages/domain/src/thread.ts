@@ -52,6 +52,7 @@ export const nativeActivityConfirmationSchema = z.enum([
 ]);
 export const nativeActivityEvidenceKindSchema = z.enum([
   "holder-report",
+  "transcript",
   "tool-call",
   "unknown",
 ]);

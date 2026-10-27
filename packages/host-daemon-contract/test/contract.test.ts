@@ -178,6 +178,7 @@ const WORKSPACE_DIFF_AVAILABLE_RESULT: JsonObject = {
 };
 
 const ONLINE_RPC_RESPONSE_RESULT_FIXTURES: OnlineRpcResponseResultFixtures = {
+  "native_terminal.read_claude_transcript_tail": { outcome: "missing" },
   "environment.hook.run": {},
   "environment.hook.cancel": { status: "terminated" },
   "terminal-data-plane.probe": { dataSocket: true, ipcVersion: 1 },
@@ -1240,7 +1241,7 @@ describe("host-daemon command schemas", () => {
   });
 
   it("uses the current host-daemon protocol version", () => {
-    expect(HOST_DAEMON_PROTOCOL_VERSION).toBe(253);
+    expect(HOST_DAEMON_PROTOCOL_VERSION).toBe(254);
     expect(HOST_ARTIFACT_MAX_BYTES).toBe(256 * 1024 * 1024);
   });
 
@@ -1253,7 +1254,8 @@ describe("host-daemon command schemas", () => {
     expect(contract.isCompatibleHostDaemonProtocolVersion(250)).toBe(false);
     expect(contract.isCompatibleHostDaemonProtocolVersion(251)).toBe(false);
     expect(contract.isCompatibleHostDaemonProtocolVersion(252)).toBe(false);
-    expect(contract.isCompatibleHostDaemonProtocolVersion(253)).toBe(true);
+    expect(contract.isCompatibleHostDaemonProtocolVersion(253)).toBe(false);
+    expect(contract.isCompatibleHostDaemonProtocolVersion(254)).toBe(true);
     expect(contract.hostDaemonSupportsConnectNext(246)).toBe(false);
     expect(contract.hostDaemonSupportsConnectNext(247)).toBe(true);
     expect(contract.hostDaemonSupportsDesktopBrokerProof(247)).toBe(false);

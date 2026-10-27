@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { closeSync, openSync, readSync, statSync } from "node:fs";
 import { hookCommandFor } from "./native-hook-spool.js";
+import { classifyNativeTranscriptRecord } from "@bb/domain";
 import type {
   ProviderNativeTerminalActivity,
   ProviderNativeTerminalRecordMatch,
@@ -217,13 +218,10 @@ export function classifyTranscriptRecord(
       if (prompt !== null) return { state: "working", prompt };
     }
   }
-  if (transcript.idle.some((match) => recordMatches(match, record))) {
-    return { state: "idle", prompt: null };
-  }
-  if (transcript.working.some((match) => recordMatches(match, record))) {
-    return { state: "working", prompt: null };
-  }
-  return { state: null, prompt: null };
+  const state = classifyNativeTranscriptRecord(transcript, record);
+  return state === null
+    ? { state: null, prompt: null }
+    : { state, prompt: null };
 }
 
 export function fileSize(filePath: string): number | null {
