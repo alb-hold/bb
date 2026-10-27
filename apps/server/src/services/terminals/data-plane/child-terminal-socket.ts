@@ -101,6 +101,7 @@ export class ChildTerminalSocket {
         this.sink.broadcast(this.terminalId, message, data.length);
         return;
       case "session-updated":
+      {
         const resizeSeq = message.resizeSeq;
         if (typeof resizeSeq === "number") {
           this.sink.reply(this.attachId, {
@@ -115,6 +116,7 @@ export class ChildTerminalSocket {
         }
         this.sink.reply(this.attachId, message);
         return;
+      }
     }
   }
 
