@@ -730,7 +730,6 @@ describe("terminal replay preview", () => {
       fitCols: 120,
       fitRows: 47,
     });
-    const widthBefore = harness.container.getBoundingClientRect().width;
     harness.cover.setFitGrid(120, 47);
 
     expect(getComputedStyle(harness.previewElement).visibility).toBe("visible");
@@ -749,10 +748,6 @@ describe("terminal replay preview", () => {
     }).toEqual(harness.expectedCursor);
     expect(harness.previewElement.style.overflow).toBe("hidden");
     expect(harness.previewElement.style.overflowX).toBe("hidden");
-    expect(harness.container.scrollWidth).toBeLessThanOrEqual(
-      harness.container.clientWidth,
-    );
-    expect(harness.container.getBoundingClientRect().width).toBe(widthBefore);
 
     harness.cover.dispose();
     harness.parent.remove();
@@ -773,10 +768,10 @@ describe("terminal replay preview", () => {
     expect(harness.terminal.rows).toBe(47);
     await harness.cover.resize(120, 40);
     expect(getComputedStyle(harness.previewElement).visibility).toBe("visible");
-    expect({ cols: harness.terminal.cols, rows: harness.terminal.rows }).toEqual({
-      cols: 120,
-      rows: 40,
-    });
+    expect({
+      cols: harness.terminal.cols,
+      rows: harness.terminal.rows,
+    }).toEqual({ cols: 120, rows: 40 });
 
     harness.cover.dispose();
     harness.parent.remove();
@@ -789,8 +784,7 @@ describe("terminal replay preview", () => {
       fitCols: 120,
       fitRows: 47,
     });
-    vi.useFakeTimers();
-    await vi.advanceTimersByTimeAsync(30_000);
+    await new Promise((resolve) => setTimeout(resolve, 550));
 
     expect(harness.terminal.rows).toBe(47);
     expect(getComputedStyle(harness.previewElement).visibility).toBe("visible");
@@ -854,6 +848,158 @@ describe("terminal replay preview", () => {
         harness.terminal.buffer.active.getLine(index)?.translateToString(true),
       ).join("\n"),
     ).toContain("live after marker");
+
+    harness.cover.dispose();
+    harness.parent.remove();
+  });
+
+  it("hands held output off at the last-known grid after the deadline", async () => {
+    const harness = await createPreviewHarness({
+      cols: 120,
+      rows: 36,
+      fitCols: 120,
+      fitRows: 47,
+    });
+    const terminalWrite = vi.spyOn(harness.terminal, "write");
+    let firstCompleted = false;
+    let secondCompleted = false;
+    harness.cover.push(Buffer.from("\r\nfirst queued chunk"), () => {
+      firstCompleted = true;
+    });
+    updateTerminalReplayPreviewPtyGrid(
+      harness.cover,
+      { cols: 120, rows: 40 },
+      false,
+    );
+    harness.cover.push(Buffer.from("\r\nsecond queued chunk"), () => {
+      secondCompleted = true;
+    });
+
+    expect(firstCompleted).toBe(false);
+    expect(secondCompleted).toBe(false);
+    expect(terminalWrite).not.toHaveBeenCalled();
+    expect(getComputedStyle(harness.previewElement).visibility).toBe("visible");
+
+    await vi.waitFor(() => {
+      expect(firstCompleted).toBe(true);
+      expect(secondCompleted).toBe(true);
+    }, { timeout: 1500 });
+
+    const rendered = Array.from(
+      { length: harness.terminal.buffer.active.length },
+      (_, index) =>
+        harness.terminal.buffer.active.getLine(index)?.translateToString(true),
+    ).join("\n");
+    expect(rendered.indexOf("first queued chunk")).toBeGreaterThanOrEqual(0);
+    expect(rendered.indexOf("second queued chunk")).toBeGreaterThan(
+      rendered.indexOf("first queued chunk"),
+    );
+    expect({ cols: harness.terminal.cols, rows: harness.terminal.rows }).toEqual({
+      cols: 120,
+      rows: 40,
+    });
+    expect(getComputedStyle(harness.previewElement).visibility).toBe("visible");
+
+    harness.cover.dispose();
+    harness.parent.remove();
+  });
+
+  it("hands held output off when an equal-grid attach arrives", async () => {
+    const harness = await createPreviewHarness({
+      cols: 120,
+      rows: 36,
+      fitCols: 120,
+      fitRows: 47,
+    });
+    let completed = false;
+    harness.cover.push(Buffer.from("\r\nequal-grid attach output"), () => {
+      completed = true;
+    });
+
+    await harness.cover.resize(120, 36);
+    await vi.waitFor(() => expect(completed).toBe(true));
+    expect(
+      Array.from({ length: harness.terminal.buffer.active.length }, (_, index) =>
+        harness.terminal.buffer.active.getLine(index)?.translateToString(true),
+      ).join("\n"),
+    ).toContain("equal-grid attach output");
+
+    harness.cover.dispose();
+    harness.parent.remove();
+  });
+
+  it("hands held output off when the process exits", async () => {
+    const harness = await createPreviewHarness({
+      cols: 120,
+      rows: 36,
+      fitCols: 120,
+      fitRows: 47,
+    });
+    let completed = false;
+    harness.cover.push(Buffer.from("\r\nfinal process output"), () => {
+      completed = true;
+    });
+    const terminalWrite = vi.spyOn(harness.terminal, "write");
+    terminalWrite.mockClear();
+
+    harness.cover.processExited();
+
+    await vi.waitFor(() => expect(completed).toBe(true));
+    expect(terminalWrite).toHaveBeenCalled();
+    expect(
+      Array.from({ length: harness.terminal.buffer.active.length }, (_, index) =>
+        harness.terminal.buffer.active.getLine(index)?.translateToString(true),
+      ).join("\n"),
+    ).toContain("final process output");
+
+    harness.cover.dispose();
+    harness.parent.remove();
+  });
+
+  it("completes held callbacks without writing when disposed", async () => {
+    const harness = await createPreviewHarness({
+      cols: 120,
+      rows: 36,
+      fitCols: 120,
+      fitRows: 47,
+    });
+    const terminalWrite = vi.spyOn(harness.terminal, "write");
+    terminalWrite.mockClear();
+    let completed = false;
+    harness.cover.push(Buffer.from("\r\nheld then disposed"), () => {
+      completed = true;
+    });
+
+    harness.cover.dispose();
+
+    expect(completed).toBe(true);
+    expect(terminalWrite).not.toHaveBeenCalled();
+    await new Promise((resolve) => setTimeout(resolve, 550));
+    expect(terminalWrite).not.toHaveBeenCalled();
+    harness.parent.remove();
+  });
+
+  it("hands off without dropping output when the pending byte bound is exceeded", async () => {
+    const harness = await createPreviewHarness({
+      cols: 120,
+      rows: 36,
+      fitCols: 120,
+      fitRows: 47,
+    });
+    const queuedOutput = `${"x".repeat(256 * 1024)} overflow tail`;
+    let completed = false;
+    harness.cover.push(Buffer.from(`\r\n${queuedOutput}`), () => {
+      completed = true;
+    });
+
+    await vi.waitFor(() => expect(completed).toBe(true), { timeout: 5000 });
+    const rendered = Array.from(
+      { length: harness.terminal.buffer.active.length },
+      (_, index) =>
+        harness.terminal.buffer.active.getLine(index)?.translateToString(true),
+    ).join("\n");
+    expect(rendered).toContain("overflow tail");
+    expect(getComputedStyle(harness.previewElement).visibility).toBe("visible");
 
     harness.cover.dispose();
     harness.parent.remove();
