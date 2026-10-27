@@ -172,10 +172,14 @@ export function mountTerminalReplayPreview({
     if (disposed || authoritativeGridAvailable || handoffRequested) return;
     handoffRequested = true;
     clearHandoffDeadline();
-    outputPipeline.setGrid(latestPtyGrid.cols, latestPtyGrid.rows, () => {
+    const handoffGrid = {
+      cols: latestPtyGrid.cols,
+      rows: Math.max(latestPtyGrid.rows, terminal.rows),
+    };
+    outputPipeline.setGrid(handoffGrid.cols, handoffGrid.rows, () => {
       if (disposed) return;
-      preview.dataset.gridCols = String(latestPtyGrid.cols);
-      preview.dataset.gridRows = String(latestPtyGrid.rows);
+      preview.dataset.gridCols = String(handoffGrid.cols);
+      preview.dataset.gridRows = String(handoffGrid.rows);
       authoritativeGridAvailable = true;
       updateVisibility();
       flushPendingWrites();

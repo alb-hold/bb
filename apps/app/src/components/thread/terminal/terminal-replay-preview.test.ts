@@ -896,7 +896,7 @@ describe("terminal replay preview", () => {
     );
     expect({ cols: harness.terminal.cols, rows: harness.terminal.rows }).toEqual({
       cols: 120,
-      rows: 40,
+      rows: 47,
     });
     expect(getComputedStyle(harness.previewElement).visibility).toBe("visible");
 
