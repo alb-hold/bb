@@ -911,13 +911,23 @@ describe("terminal replay preview", () => {
       fitCols: 120,
       fitRows: 47,
     });
+    const terminalWrite = vi.spyOn(harness.terminal, "write");
     let completed = false;
     harness.cover.push(Buffer.from("\r\nequal-grid attach output"), () => {
       completed = true;
     });
+    updateTerminalReplayPreviewPtyGrid(
+      harness.cover,
+      { cols: 120, rows: 36 },
+      false,
+    );
+
+    expect(completed).toBe(false);
+    expect(terminalWrite).not.toHaveBeenCalled();
 
     await harness.cover.resize(120, 36);
     await vi.waitFor(() => expect(completed).toBe(true));
+    expect(terminalWrite).toHaveBeenCalledOnce();
     expect(
       Array.from({ length: harness.terminal.buffer.active.length }, (_, index) =>
         harness.terminal.buffer.active.getLine(index)?.translateToString(true),
