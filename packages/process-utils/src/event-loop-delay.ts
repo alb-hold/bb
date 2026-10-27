@@ -1,4 +1,4 @@
-import { monitorEventLoopDelay } from "node:perf_hooks";
+import { monitorEventLoopDelay, performance } from "node:perf_hooks";
 
 interface EventLoopStall {
   intervalMs: number;
@@ -57,7 +57,7 @@ export function isLikelySystemSuspensionDelay(args: {
 export function startEventLoopDelaySampler(
   args: StartEventLoopDelaySamplerArgs,
 ): EventLoopDelaySampler {
-  const now = args.now ?? (() => Date.now());
+  const now = args.now ?? (() => performance.now());
   const intervalMs = args.intervalMs ?? EVENT_LOOP_DELAY_SAMPLE_INTERVAL_MS;
   const defer = args.defer ?? ((callback) => setImmediate(callback));
   const histogram =

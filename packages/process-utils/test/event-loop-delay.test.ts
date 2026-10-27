@@ -23,6 +23,23 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+it("ignores a forward wall-clock step when measuring timer lag", async () => {
+  vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
+  const samples: Array<{ maxDelayMs: number; timerLagMs: number } | null> = [];
+  const sampler = startEventLoopDelaySampler({
+    histogram: createHistogram(),
+    onSample: ({ stall }) => samples.push(stall),
+  });
+
+  vi.advanceTimersByTime(5_000);
+  vi.setSystemTime(new Date(Date.now() + 5_000));
+  vi.advanceTimersByTime(5_000);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+
+  expect(samples).toEqual([null, null]);
+  sampler.stop();
+});
+
 it("defers a late histogram tick and reports one 7,980 ms block", () => {
   vi.useFakeTimers();
   let now = 0;
