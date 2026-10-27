@@ -7,6 +7,7 @@ import {
 import {
   acquireProjectAttachmentOwnership,
   getEnvironment,
+  getThreadSpawner,
   isNativeTerminalThread,
 } from "@bb/db";
 import { ApiError } from "../../errors.js";
@@ -25,6 +26,7 @@ import { requireThreadCommandEnvironment } from "./thread-command-environment.js
 import { sendThreadMessage } from "./thread-send.js";
 import { assertThreadHostAcceptsWork } from "./thread-host-admission.js";
 import { runWithTurnTrace } from "../system/turn-trace.js";
+import { assertRequestedModelAllowed } from "./child-thread-model.js";
 
 interface AcceptThreadSendRequestArgs {
   payload: SendMessageRequest;
@@ -37,6 +39,13 @@ export async function acceptThreadSendRequest(
   args: AcceptThreadSendRequestArgs,
 ): Promise<SendMessageResponse> {
   if (isNativeTerminalThread(deps.db, args.thread.id)) {
+    if (args.payload.sendAt !== undefined) {
+      throw new ApiError(
+        400,
+        "invalid_request",
+        "sendAt is not supported for native terminal threads",
+      );
+    }
     const hostId =
       args.thread.environmentId === null
         ? null
@@ -67,6 +76,16 @@ export async function acceptThreadSendRequest(
     });
     return { ok: true, delivery: "sent" };
   }
+  await assertRequestedModelAllowed(deps, {
+    childScope: args.thread.parentThreadId
+      ? "parent"
+      : getThreadSpawner(deps.db, args.thread.id) === null
+        ? null
+        : "spawner",
+    model: args.payload.model,
+    providerId: args.thread.providerId,
+    sources: args.payload.executionInputSources,
+  });
   assertThreadHostAcceptsWork(deps.db, args.thread);
   const { compactFirst, ...request } = args.payload;
   if (isStandaloneBuiltinClearCommand(request.input)) {
@@ -108,8 +127,8 @@ export async function acceptThreadSendRequest(
         source: { kind: "inline" },
         queuePayload: { kind: "inline" },
         pluginSubmission: payload.pluginSubmission ?? null,
-        origin: null,
-        originPluginId: null,
+        origin: payload.originPluginId === undefined ? null : "plugin",
+        originPluginId: payload.originPluginId ?? null,
         startedOnBehalfOf: null,
         onTurnRequestCreated: (turnRequestId, turnId) =>
           deps.hub.recordDeviceHandoffTurnSubmitter(

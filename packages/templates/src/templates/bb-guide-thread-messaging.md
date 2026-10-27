@@ -17,7 +17,8 @@ Messaging:
                                            multi-line or Markdown messages: inside double quotes the
                                            shell runs `backticks` and $(...) before bb sees them
     --mode <mode>                          Message mode: steer (default), queue, or auto
-    --model <model>                        Model override for this turn
+    --model <model>                        Model override for this turn; a child thread
+                                           accepts only the provider's child model
     --reasoning-level <level>              Reasoning level override
     --plan                                 Send the message as the provider's /plan action
     --send-at <when>                       Dispatch at an ISO 8601 timestamp or a duration from now (30s, 10m, 2h, 7d)
@@ -72,6 +73,9 @@ Ownership:
   Model and reasoning updates stay within the thread's current provider. BB
   validates them against that provider's current model catalog, applies them on
   the next turn, and keeps using them on later turns until changed.
+  An explicit model update on a child thread must match the provider's child
+  model; omit --model to keep its automatically selected model. Existing stored
+  overrides and queued messages remain readable and use that model when run.
 
   bb thread read [id]                      Mark read
   bb thread unread [id]                    Mark unread
@@ -163,6 +167,8 @@ Queued messages:
   offset) or a duration from now (30s, 10m, 2h, 7d). A time that has already
   passed is rejected, as is a bare date, which has no time of day. Several
   queued rows on one thread are normal: two scheduled sends coexist. A
-  scheduled spawn creates a `pending` thread and does no environment work (no
+  native terminal thread cannot schedule messages; a send with --send-at is
+  rejected because native terminal scheduling is unsupported. A scheduled
+  spawn creates a `pending` thread and does no environment work (no
   worktree, no setup script) until it is due. The SDK takes `sendAt` in epoch
   milliseconds on `threads.spawn` and `threads.send`.

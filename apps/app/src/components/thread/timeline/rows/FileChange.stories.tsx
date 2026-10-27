@@ -153,7 +153,11 @@ export function Overview() {
         hint="production-default — header only, click to expand. Real unified diff."
       >
         <TimelineStage>
-          <ThreadTimelineRows {...baseProps} timelineRows={[updateApiTypes]} />
+          <ThreadTimelineRows
+            {...baseProps}
+            timelineRows={[updateApiTypes]}
+            threadIsActive={false}
+          />
         </TimelineStage>
       </StoryRow>
       <StoryRow
@@ -164,6 +168,7 @@ export function Overview() {
           <ThreadTimelineRows
             {...baseProps}
             timelineRows={[addFormatHelpersTest]}
+            threadIsActive={false}
           />
         </TimelineStage>
       </StoryRow>
@@ -175,6 +180,7 @@ export function Overview() {
           <ThreadTimelineRows
             {...baseProps}
             timelineRows={[deleteActiveThinking]}
+            threadIsActive={false}
           />
         </TimelineStage>
       </StoryRow>
@@ -186,12 +192,17 @@ export function Overview() {
           <ThreadTimelineRows
             {...baseProps}
             timelineRows={[runningFileChange]}
+            threadIsActive={false}
           />
         </TimelineStage>
       </StoryRow>
       <StoryRow label="collapsed — error" hint="status=error, stderr populated">
         <TimelineStage>
-          <ThreadTimelineRows {...baseProps} timelineRows={[errorFileChange]} />
+          <ThreadTimelineRows
+            {...baseProps}
+            timelineRows={[errorFileChange]}
+            threadIsActive={false}
+          />
         </TimelineStage>
       </StoryRow>
       <StoryRow
@@ -202,6 +213,7 @@ export function Overview() {
           <ThreadTimelineRows
             {...baseProps}
             timelineRows={[interruptedFileChange]}
+            threadIsActive={false}
           />
         </TimelineStage>
       </StoryRow>
@@ -213,6 +225,7 @@ export function Overview() {
           <ThreadTimelineRows
             {...baseProps}
             timelineRows={[waitingApprovalFileChange]}
+            threadIsActive={false}
           />
         </TimelineStage>
       </StoryRow>
@@ -224,6 +237,7 @@ export function Overview() {
           <ThreadTimelineRows
             {...baseProps}
             timelineRows={[deniedFileChange]}
+            threadIsActive={false}
           />
         </TimelineStage>
       </StoryRow>
@@ -236,6 +250,7 @@ export function Overview() {
             {...baseProps}
             initialExpanded={new Set([largeRefactorComposer.id])}
             timelineRows={[largeRefactorComposer]}
+            threadIsActive={false}
           />
         </TimelineStage>
       </StoryRow>

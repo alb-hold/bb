@@ -5,6 +5,7 @@ import {
   type JsonValue,
   type ThreadListEntry,
 } from "@bb/domain";
+import { isNativeActivityUnconfirmed } from "@bb/client-core";
 import { action } from "../../action.js";
 import { createCliBbSdk } from "../../client.js";
 import { resolveExplicitIdFlag } from "../../context-env.js";
@@ -27,6 +28,7 @@ interface ThreadListCommandOptions {
   parentThread?: string;
   thread: string[];
   archived?: boolean;
+  all?: boolean;
   section?: string;
   unsectioned?: boolean;
   json?: boolean;
@@ -39,7 +41,9 @@ export function registerListCommand(
 ): void {
   parent
     .command("list")
-    .description("List threads")
+    .description(
+      "List active threads; --thread IDs can include archived threads; use --archived or --all for history",
+    )
     .option("--project <id>", "Filter by project ID (defaults to all projects)")
     .option("--environment <id>", "Filter by environment ID")
     .option(
@@ -50,17 +54,21 @@ export function registerListCommand(
     .option("--parent-thread <id>", "Filter by parent thread ID")
     .option(
       "--thread <id>",
-      "Show only this thread ID, leaving out unknown or deleted IDs (repeatable, up to 200)",
+      "Show only this thread ID, including archived threads; leave out unknown or deleted IDs (repeatable, up to 200)",
       collectOption,
       [],
     )
     .option("--section <id>", "Filter by thread section ID")
     .option("--unsectioned", "Show only threads outside sections")
     .option("--archived", "Show only archived threads")
+    .option("--all", "Include archived and non-archived threads")
     .option("--include-hidden", "Include hidden threads")
     .option("--json", "Print machine-readable JSON output")
     .action(
       action(async (opts: ThreadListCommandOptions) => {
+        if (opts.all && opts.archived) {
+          throw new Error("--all cannot be combined with --archived.");
+        }
         const sdk = createCliBbSdk(getUrl());
         const projectId = resolveExplicitIdFlag({
           flagName: "--project flag",
@@ -104,7 +112,11 @@ export function registerListCommand(
           ...(hostId ? { hostId } : {}),
           ...(parentThreadId ? { parentThreadId } : {}),
           ...(threadIds.length > 0 ? { threadIds } : {}),
-          ...(opts.archived ? { archived: true } : {}),
+          ...(opts.archived
+            ? { archived: true }
+            : opts.all || threadIds.length > 0
+              ? {}
+              : { archived: false }),
           ...(sectionId ? { sectionId } : {}),
           ...(opts.unsectioned ? { unsectioned: true } : {}),
           ...(opts.includeHidden ? { includeHidden: true } : {}),
@@ -115,13 +127,7 @@ export function registerListCommand(
             opts,
             threads.map((thread) => ({
               ...thread,
-              listIndicator:
-                thread.listIndicator === "working" ||
-                thread.listIndicator === "needs-input"
-                  ? thread.listIndicator
-                  : wokeThreadIds.has(thread.id)
-                    ? "woke"
-                    : thread.listIndicator,
+              listIndicator: activityAwareListIndicator(thread, wokeThreadIds),
             })),
           )
         )
@@ -178,8 +184,17 @@ function formatThreadListProject(
   return projectNames.get(thread.projectId) ?? thread.projectId;
 }
 
-function formatThreadListStatus(thread: ThreadListEntry): string {
+function formatThreadListStatus(
+  thread: Pick<ThreadListEntry, "archivedAt" | "pinnedAt" | "status"> &
+    Partial<Pick<ThreadListEntry, "runtime">>,
+): string {
   const flags: string[] = [];
+  if (
+    thread.runtime !== undefined &&
+    isNativeActivityUnconfirmed(thread.runtime)
+  ) {
+    flags.push("activity unconfirmed");
+  }
   if (thread.archivedAt !== null) {
     flags.push("archived");
   }
@@ -190,6 +205,35 @@ function formatThreadListStatus(thread: ThreadListEntry): string {
     return thread.status;
   }
   return `${thread.status} (${flags.join(", ")})`;
+}
+
+function hasIndependentWorkingActivity(
+  thread: Pick<ThreadListEntry, "activity">,
+): boolean {
+  return (
+    thread.activity.activeWorkflowCount > 0 ||
+    thread.activity.activeBackgroundAgentCount > 0 ||
+    thread.activity.activeBackgroundCommandCount > 0 ||
+    thread.activity.activePlanModeCount > 0 ||
+    thread.activity.activeGoalCount > 0
+  );
+}
+
+function activityAwareListIndicator(
+  thread: Pick<ThreadListEntry, "id" | "listIndicator"> &
+    Partial<Pick<ThreadListEntry, "runtime" | "activity">>,
+  wokeThreadIds: ReadonlySet<string>,
+): ThreadListEntry["listIndicator"] {
+  if (thread.listIndicator === "needs-input") return thread.listIndicator;
+  if (thread.listIndicator === "working") {
+    return thread.runtime !== undefined &&
+      isNativeActivityUnconfirmed(thread.runtime) &&
+      (thread.activity === undefined ||
+        !hasIndependentWorkingActivity({ activity: thread.activity }))
+      ? "none"
+      : "working";
+  }
+  return wokeThreadIds.has(thread.id) ? "woke" : thread.listIndicator;
 }
 
 async function getWokenThreadIds(
@@ -233,11 +277,24 @@ function asJsonObject(
 }
 
 export function formatThreadListIndicator(
-  thread: Pick<ThreadListEntry, "id" | "listIndicator">,
+  thread: Pick<ThreadListEntry, "id" | "listIndicator"> &
+    Partial<Pick<ThreadListEntry, "runtime" | "activity">>,
   wokeThreadIds: ReadonlySet<string>,
 ): string {
   if (thread.listIndicator === "needs-input") return "Needs input";
-  if (thread.listIndicator === "working") return "Working";
+  if (thread.listIndicator === "working") {
+    const hasIndependentActivity = thread.activity
+      ? hasIndependentWorkingActivity({ activity: thread.activity })
+      : false;
+    if (
+      thread.runtime === undefined ||
+      !isNativeActivityUnconfirmed(thread.runtime) ||
+      hasIndependentActivity
+    ) {
+      return "Working";
+    }
+    return "-";
+  }
   if (wokeThreadIds.has(thread.id)) return "Woke";
   if (thread.listIndicator === "done-unread") return "Done";
   return "-";

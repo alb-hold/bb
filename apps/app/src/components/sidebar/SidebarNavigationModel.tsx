@@ -8,6 +8,8 @@ import {
   useState,
   type ReactNode,
 } from "react";
+import { useStore } from "jotai";
+import { splitLayoutAtom } from "@/lib/split-layout/atoms";
 import { matchPath, useLocation, useNavigate } from "react-router-dom";
 import type {
   ExperimentalSidebarNavigationActions,
@@ -146,6 +148,7 @@ export function SidebarNavigationModelProvider({
   children,
   ...host
 }: SidebarNavigationHostOptions & { children: ReactNode }) {
+  const store = useStore();
   const { isCompactViewport, openMobile } = useSidebar();
   const drawerTerminalTargetRef = useRef<HTMLElement | null>(null);
   const blurredTerminalTargetRef = useRef<HTMLElement | null>(null);
@@ -314,16 +317,34 @@ export function SidebarNavigationModelProvider({
         label,
         onNavigate: current.host.onNavigate,
       });
+    const openInBrowserTab = (routePath: string) => {
+      window.open(routePath, "_blank", "noopener,noreferrer");
+    };
     return {
       activate(itemId, options) {
         const found = lookup(itemId);
         if (!found || found.item.isDisabled || found.item.isLoading) return;
         const { current, row, item } = found;
         const content = getSidebarNavigationRowContent(row);
+        const legacyOpenInSplit =
+          "openInSplit" in options && options.openInSplit === true;
+        const requestedTarget =
+          options.target ?? (legacyOpenInSplit ? "split" : "current");
+        const canSplit =
+          content !== null &&
+          current.host.splitEnabled &&
+          !current.splitActions.isCompact &&
+          store.get(splitLayoutAtom) !== null;
+        const target =
+          requestedTarget === "split" && !canSplit ? "tab" : requestedTarget;
         switch (row.action.kind) {
           case "new-thread":
-            if (options.openInSplit && content) {
-              openInSplit(current, content, item.label);
+            if (target === "split") {
+              if (content) openInSplit(current, content, item.label);
+              return;
+            }
+            if (target === "tab") {
+              openInBrowserTab(getRootComposeRoutePath());
               return;
             }
             current.host.onNewChat?.();
@@ -332,35 +353,47 @@ export function SidebarNavigationModelProvider({
             current.host.onSearchThreads?.();
             current.commandRunner.dispatch(
               "thread.search",
-              options.target ?? drawerTerminalTargetRef.current,
+              options.experimental_focusTarget ??
+                drawerTerminalTargetRef.current,
             );
             return;
           case "open-extensions":
           case "open-skills": {
             const routePath = getResourceNavigationRoutePath(row.action);
             if (routePath === null) return;
+            if (target === "tab") {
+              openInBrowserTab(routePath);
+              return;
+            }
             void current.navigate(routePath);
             return;
           }
           case "open-plugin-panel": {
             const chrome = row.panelEntry?.chrome;
             if (!chrome) return;
-            if (options.openInSplit && content) {
-              openInSplit(current, content, item.label);
+            if (target === "split") {
+              if (content) openInSplit(current, content, item.label);
+              return;
+            }
+            const routePath = getPluginPanelRoutePath({
+              pluginId: chrome.pluginId,
+              path: chrome.path,
+            });
+            if (target === "tab") {
+              openInBrowserTab(routePath);
               return;
             }
             current.host.onNavigate?.();
-            void current.navigate(
-              getPluginPanelRoutePath({
-                pluginId: chrome.pluginId,
-                path: chrome.path,
-              }),
-            );
+            void current.navigate(routePath);
           }
         }
       },
-      goHome() {
+      goHome(options) {
         const current = latest.current;
+        if (options?.target === "tab") {
+          openInBrowserTab(getRootComposeRoutePath());
+          return;
+        }
         if (current.isHomeActive) return;
         void current.navigate(homeRoutePathRef.current);
       },
@@ -407,7 +440,7 @@ export function SidebarNavigationModelProvider({
         }
       },
     };
-  }, []);
+  }, [store]);
 
   const state = useMemo<ExperimentalSidebarNavigationState>(
     () => ({

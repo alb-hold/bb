@@ -1149,6 +1149,24 @@ export const providerModelCatalogs = sqliteTable(
   ],
 );
 
+export const diffViewedFiles = sqliteTable(
+  "diff_viewed_files",
+  {
+    environmentId: text("environment_id")
+      .notNull()
+      .references(() => environments.id, { onDelete: "cascade" }),
+    targetKey: text("target_key").notNull(),
+    path: text("path").notNull(),
+    revision: text("revision").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+  },
+  (table) => [
+    primaryKey({
+      columns: [table.environmentId, table.targetKey, table.path],
+    }),
+  ],
+);
+
 export const terminalSessions = sqliteTable(
   "terminal_sessions",
   {
@@ -1187,9 +1205,23 @@ export const terminalSessions = sqliteTable(
       table.environmentId,
       table.status,
     ),
+    index("terminal_sessions_status_thread_idx").on(
+      table.status,
+      table.threadId,
+    ),
     index("terminal_sessions_host_status_idx").on(table.hostId, table.status),
     index("terminal_sessions_daemon_session_idx").on(table.daemonSessionId),
   ],
+);
+
+export const forkTerminalHolderSessions = sqliteTable(
+  "fork_terminal_holder_sessions",
+  {
+    terminalSessionId: text("terminal_id")
+      .primaryKey()
+      .references(() => terminalSessions.id, { onDelete: "cascade" }),
+    confirmedAt: integer("confirmed_at").notNull(),
+  },
 );
 
 export const forkDeviceHandoffAttention = sqliteTable(

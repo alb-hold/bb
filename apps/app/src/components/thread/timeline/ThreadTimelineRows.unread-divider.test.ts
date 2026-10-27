@@ -17,6 +17,8 @@ function renderTopLevelSequence(
 ): string[] {
   return buildTimelineRowsListItems({
     rows: buildTimelineViewRows(timelineRows),
+    threadIsActive: false,
+    excludedInterruptionRowIds: new Set(),
     unreadDividerPlacement,
   }).map((item) => {
     if (item.kind !== "row") return DIVIDER;

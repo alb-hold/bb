@@ -69,6 +69,10 @@ export class NativeActivityReader {
   private transcriptFile: string | null;
   private sessionId: string | null;
   private currentTurn: string | null = null;
+  private hookIdentityConfirmed = false;
+  private unconfirmedTranscriptOffset: number | null = null;
+  private unconfirmedHookBoundaryEstablished = false;
+  private unconfirmedHookCount = 0;
   private workingRecord: string | null = null;
   private transcriptPosition = 0;
   private evictedRecords: EvictedRecordIndex | null = null;
@@ -87,6 +91,10 @@ export class NativeActivityReader {
     private readonly eventsFile: string | null,
     start: NativeActivityStart,
     private readonly onUnconfirmedIdentity?: (total: number) => void,
+    private readonly onUnconfirmedHookIdentity?: (
+      reason: "missing-session" | "foreign-session" | "unbound",
+      total: number,
+    ) => void,
   ) {
     if (start.kind === "resume") {
       this.sessionId = start.id;
@@ -101,6 +109,10 @@ export class NativeActivityReader {
 
   sessionDiscovered(sessionId: string): void {
     this.sessionId = sessionId;
+    if (this.cli.activity?.hooks?.sessionIdField !== undefined) {
+      this.unconfirmedTranscriptOffset = this.currentTranscriptSize();
+      this.unconfirmedHookBoundaryEstablished = false;
+    }
   }
 
   read(): NativeActivityReport[] {
@@ -112,7 +124,34 @@ export class NativeActivityReader {
     };
     const hooks = activity.hooks;
     if (hooks !== undefined && this.eventsFile !== null) {
+      const unconfirmedHookReasons = new Set<
+        "missing-session" | "foreign-session" | "unbound"
+      >();
       for (const record of this.hookTail.readRecords(this.eventsFile)) {
+        if (hooks.sessionIdField !== undefined) {
+          const hookSession = this.stringField(record, hooks.sessionIdField);
+          const reason =
+            this.sessionId === null
+              ? "unbound"
+              : hookSession === null
+                ? "missing-session"
+                : hookSession !== this.sessionId
+                  ? "foreign-session"
+                  : null;
+          if (reason !== null) {
+            if (
+              this.hookIdentityConfirmed ||
+              !this.unconfirmedHookBoundaryEstablished
+            ) {
+              this.unconfirmedTranscriptOffset = this.currentTranscriptSize();
+              this.unconfirmedHookBoundaryEstablished = true;
+            }
+            this.hookIdentityConfirmed = false;
+            this.unconfirmedHookCount += 1;
+            unconfirmedHookReasons.add(reason);
+            continue;
+          }
+        }
         const signal = classifyHookRecord(hooks, record);
         const turn =
           hooks.turnId === undefined
@@ -124,23 +163,64 @@ export class NativeActivityReader {
           this.currentTurn = turn;
           this.rememberTurn(turn);
         }
-        push(this.tracker.apply(signal));
+        const report = this.tracker.apply(signal);
+        if (
+          hooks.sessionIdField !== undefined &&
+          (signal.state !== null ||
+            (report !== null &&
+              (signal.question !== undefined || signal.answered !== undefined)))
+        ) {
+          this.confirmHookIdentity();
+        }
+        push(report);
+      }
+      for (const reason of unconfirmedHookReasons) {
+        this.onUnconfirmedHookIdentity?.(reason, this.unconfirmedHookCount);
       }
     }
     const transcript = activity.transcript;
     if (transcript === undefined) return reports;
     this.transcriptFile ??= this.findTranscript();
     if (this.transcriptFile === null) return reports;
+    if (
+      !this.hookIdentityConfirmed &&
+      this.unconfirmedTranscriptOffset === Number.POSITIVE_INFINITY
+    ) {
+      this.unconfirmedTranscriptOffset =
+        fileSize(this.transcriptFile) ?? Number.POSITIVE_INFINITY;
+    }
     this.transcriptTail.readRecords(this.transcriptFile, (record, location) => {
+      if (
+        !this.hookIdentityConfirmed &&
+        this.unconfirmedTranscriptOffset !== null &&
+        location.offset < this.unconfirmedTranscriptOffset
+      ) {
+        return;
+      }
       const signal = classifyTranscriptRecord(transcript, record);
-      push(
-        this.tracker.apply(this.identifyTranscript(record, signal, location)),
-      );
+      const identified = this.identifyTranscript(record, signal, location);
+      const report = this.tracker.apply(identified);
+      if (
+        this.cli.activity?.hooks?.sessionIdField !== undefined &&
+        (identified.state !== null ||
+          (report !== null &&
+            (identified.question !== undefined ||
+              identified.answered !== undefined)))
+      ) {
+        this.confirmHookIdentity();
+      }
+      push(report);
     });
     return reports;
   }
 
   heartbeat(): NativeActivityReport | null {
+    if (
+      this.cli.activity?.hooks?.sessionIdField !== undefined &&
+      !this.hookIdentityConfirmed
+    ) {
+      return null;
+    }
     return this.tracker.heartbeat();
   }
 
@@ -155,6 +235,18 @@ export class NativeActivityReader {
     } catch {
       return null;
     }
+  }
+
+  private currentTranscriptSize(): number {
+    const file = this.transcriptFile ?? this.findTranscript();
+    if (file === null) return Number.POSITIVE_INFINITY;
+    return fileSize(file) ?? Number.POSITIVE_INFINITY;
+  }
+
+  private confirmHookIdentity(): void {
+    this.hookIdentityConfirmed = true;
+    this.unconfirmedTranscriptOffset = null;
+    this.unconfirmedHookBoundaryEstablished = false;
   }
 
   private stringField(record: unknown, field: string): string | null {
@@ -202,7 +294,9 @@ export class NativeActivityReader {
     });
     this.pruneRecords();
     if (signal.question !== undefined || signal.answered !== undefined) {
-      return turn === null || this.currentTurn === null || this.currentTurn === turn
+      return turn === null ||
+        this.currentTurn === null ||
+        this.currentTurn === turn
         ? signal
         : ignored;
     }

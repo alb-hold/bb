@@ -36,6 +36,7 @@ export function getEventProviderThreadId(
     case "thread/contextWindowUsage/updated":
     case "turn/plan/updated":
     case "turn/diff/updated":
+    case "turn/mainRun/updated":
     case "provider/error":
     case "provider/warning":
     case "provider/modelFallback":
@@ -102,6 +103,7 @@ export function getEventParentToolCallId(
     case "thread/contextWindowUsage/updated":
     case "turn/plan/updated":
     case "turn/diff/updated":
+    case "turn/mainRun/updated":
     case "provider/error":
     case "provider/warning":
     case "provider/modelFallback":

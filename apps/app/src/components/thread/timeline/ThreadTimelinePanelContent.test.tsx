@@ -17,6 +17,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock("@/hooks/queries/thread-queries", () => ({
   useThread: () => ({
     data: {
+      nativeTerminal: false,
       activeBackgroundAgentCount: mocks.activeBackgroundAgentCount,
       runtime: { displayStatus: mocks.displayStatus },
       status: mocks.threadStatus,

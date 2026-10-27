@@ -69,6 +69,7 @@ interface CreateHarnessOptions {
   maxExitedTerminals?: number;
   onSendMessage: TerminalMessageObserver;
   preserveGridMarkers?: boolean;
+  shellEnv?: NodeJS.ProcessEnv;
   resolveShell: ResolveTerminalShell;
 }
 
@@ -262,6 +263,7 @@ function createFakeRuntime(): AgentRuntime {
     archiveThread: vi.fn(async () => undefined),
     unarchiveThread: vi.fn(async () => undefined),
     listModels: vi.fn(async () => ({ models: [], selectedOnlyModels: [] })),
+    listCommands: vi.fn(async () => ({ commands: [] })),
     providerHealth: vi.fn(async () => ({ supported: false as const })),
     providerUsage: vi.fn(async () => ({ supported: false as const })),
     providerInstallationStatus: vi.fn(async () => {
@@ -292,8 +294,14 @@ function createFakeWorkspace(path: string): HostWorkspace {
     isWorktree: false,
     getCurrentBranch: vi.fn(async () => "main"),
     getHeadSha: vi.fn(async () => "commit-1"),
-    getLocalStateFingerprint: vi.fn(async () => "local-1"),
-    getSharedGitRefsFingerprint: vi.fn(async () => "refs-1"),
+    getLocalStateSnapshot: vi.fn(async () => ({
+      fingerprint: "local-1",
+      branchName: "main",
+    })),
+    getSharedGitRefsSnapshot: vi.fn(async () => ({
+      fingerprint: "refs-1",
+      defaultBranch: "main",
+    })),
     getAdditionalWorkspaceWriteRoots: vi.fn(async () => []),
     getStatus: vi.fn(async () =>
       makeWorkspaceStatus({
@@ -315,12 +323,10 @@ function createFakeWorkspace(path: string): HostWorkspace {
       truncated: false,
     })),
     diffPatch: vi.fn(async () => []),
-    getPullRequest: vi.fn(async () => ({ outcome: "none" as const })),
     commit: vi.fn(async () => ({
       commitSha: "commit-1",
       commitSubject: "commit",
     })),
-    runPullRequestAction: vi.fn(async () => undefined),
   };
 }
 
@@ -359,6 +365,7 @@ function createHarnessWithOptions(
     provisionWorkspace: async () => workspace,
     shellEnv: {
       BB_BASE_ENV: "1",
+      ...args.shellEnv,
     },
   });
   const manager = new TerminalManager({
@@ -534,6 +541,74 @@ function textChunk(text: string, seq: number): TerminalOutputChunk {
 }
 
 describe("TerminalManager", () => {
+  it("starts shell terminals through the terminal-id holder client when bb is available", async () => {
+    const harness = createHarnessWithOptions({
+      onSendMessage: () => undefined,
+      resolveShell: async () => "/bin/zsh",
+      shellEnv: { BB_CLI: "/tmp/bb" },
+    });
+
+    await openTerminal(harness);
+
+    expect(harness.adapter.lastSpawnArgs?.file).toBe("/tmp/bb");
+    expect(harness.adapter.lastSpawnArgs?.args.slice(0, 3)).toEqual([
+      "terminal",
+      "holder-shell-client",
+      "term-1",
+    ]);
+    expect(harness.adapter.lastSpawnArgs?.args[3]).toBe("/bin/zsh");
+    expect(
+      JSON.parse(
+        Buffer.from(
+          harness.adapter.lastSpawnArgs?.args[4] ?? "",
+          "base64",
+        ).toString("utf8"),
+      ),
+    ).toEqual([]);
+  });
+
+  it("starts a direct shell when bb is unavailable", async () => {
+    const harness = createHarnessWithOptions({
+      onSendMessage: () => undefined,
+      resolveShell: async () => "/bin/zsh",
+      shellEnv: {},
+    });
+
+    await openTerminal(harness);
+
+    expect(harness.adapter.lastSpawnArgs?.file).toBe("/bin/zsh");
+    expect(harness.adapter.lastSpawnArgs?.args).not.toContain(
+      "holder-shell-client",
+    );
+  });
+
+  it("passes bash integration env and rcfile args through the holder client", async () => {
+    const harness = createHarnessWithOptions({
+      onSendMessage: () => undefined,
+      resolveShell: async () => "/bin/bash",
+      shellEnv: { BB_CLI: "/tmp/bb" },
+    });
+
+    await openTerminal(harness);
+
+    const spawn = harness.adapter.lastSpawnArgs;
+    expect(spawn?.file).toBe("/tmp/bb");
+    expect(spawn?.args.slice(0, 4)).toEqual([
+      "terminal",
+      "holder-shell-client",
+      "term-1",
+      "/bin/bash",
+    ]);
+    const shellArgs = JSON.parse(
+      Buffer.from(spawn?.args[4] ?? "", "base64").toString("utf8"),
+    ) as string[];
+    expect(shellArgs[0]).toBe("--rcfile");
+    const rcFile = shellArgs[1];
+    if (!rcFile) throw new Error("Expected bash integration rcfile");
+    expect(await fs.readFile(rcFile, "utf8")).toContain("\\e]133;A\\a");
+    expect(spawn?.env.BB_CLI).toBe("/tmp/bb");
+  });
+
   afterEach(async () => {
     vi.useRealTimers();
     vi.unstubAllEnvs();

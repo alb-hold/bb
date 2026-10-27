@@ -5,12 +5,12 @@ import {
 } from "../hosts/host-environment.js";
 import { randomUUID } from "node:crypto";
 import { Buffer } from "node:buffer";
+import { setImmediate as yieldToEventLoop } from "node:timers/promises";
 import { z } from "zod";
 import {
   createTerminalSession,
   clearPersistedDeviceHandoffAttention,
   dismissRetainedTerminalOutput,
-  appendRetainedTerminalOutputChunk,
   appendRetainedTerminalOutputChunks,
   clearTerminalAttention,
   getTerminalAttention,
@@ -19,7 +19,9 @@ import {
   listTerminalAttention,
   getSessionById,
   getTerminalSession,
+  HOST_RETAINED_OUTPUT_BYTES,
   getRetainedTerminalOutput,
+  countTerminalSessions,
   listTerminalSessions,
   markRetainedTerminalOutputExited,
   setDeviceHandoffAttentionMarker,
@@ -30,6 +32,7 @@ import {
   TERMINAL_OUTPUT_RETENTION_MS,
   type TerminalSessionMutation,
   type TerminalSessionRow,
+  TERMINAL_RETAINED_OUTPUT_BYTES,
 } from "@bb/db";
 import {
   findLastTerminalGridMarker,
@@ -45,6 +48,7 @@ import type {
   HostDaemonDaemonWsMessage,
   HostDaemonServerWsMessage,
 } from "@bb/host-daemon-contract";
+import { runEventLoopWorkSync } from "../system/event-loop-work.js";
 import type {
   CloseTerminalRequest,
   CreateTerminalRequest,
@@ -55,6 +59,8 @@ import type {
   TerminalOutputChunk,
   TerminalOutputQuery,
   TerminalOutputResponse,
+  TerminalScreenQuery,
+  TerminalScreenResponse,
   TerminalResizeRequest,
   TerminalSession,
   TerminalNotifyRequest,
@@ -63,6 +69,11 @@ import type {
 import { ApiError } from "../../errors.js";
 import type { AppDeps, ServerLogger } from "../../types.js";
 import { assertUsableHostId } from "../hosts/primary-host.js";
+import {
+  renderTerminalScreen,
+  TERMINAL_SCREEN_MAX_LINES,
+  TERMINAL_SCREEN_REPLAY_BYTES,
+} from "./terminal-screen.js";
 import {
   requireConnectedHostSession,
   requireEnvironment,
@@ -83,19 +94,37 @@ import {
   PendingRpcRegistry,
 } from "./pending-rpc-registry.js";
 import { TerminalOutputFlowControl } from "./terminal-output-flow-control.js";
+import { TerminalOutputSequenceRebase } from "./terminal-output-sequence-rebase.js";
+import {
+  isTimeoutFlushableHolderMarkerPrefix,
+  shouldFlushHolderMarkerChunksOnTimeout,
+  stripHolderMarkerChunks,
+  timeoutReleasedHolderMarkerPrefix,
+  type HolderMarkerStripState,
+} from "./holder-marker.js";
 
 const DEFAULT_TERMINAL_OPEN_TIMEOUT_MS = 10_000;
 const DEFAULT_TERMINAL_CLOSE_TIMEOUT_MS = 5_000;
+const RETAINED_OUTPUT_FLUSH_MS = 1_000;
+const RETAINED_OUTPUT_CLOSE_ATTEMPTS = 3;
 const DEFAULT_TERMINAL_START: NonNullable<CreateTerminalRequest["start"]> = {
   mode: "shell",
 };
 const HOST_HOME_INITIAL_CWD = "~";
 const TERMINAL_SCROLLBACK_MAX_BYTES = 4 * 1024 * 1024;
+const TERMINAL_REPLAY_PREPARE_BYTES_PER_TICK = 64 * 1024;
 const TERMINAL_EXIT_RETENTION_MINUTES = Math.round(
   TERMINAL_OUTPUT_RETENTION_MS / 60_000,
 );
 const TERMINAL_OUTPUT_NOT_RUNNING_MESSAGE =
   "Terminal output is unavailable because the session is not running";
+const TERMINAL_HOLDER_MARKER_PREFIX = "\u001b]7717;bb-holder;";
+const TERMINAL_HOLDER_MARKER_LIMIT = 160;
+const TERMINAL_HOLDER_MARKER_TIMEOUT_MS = 250;
+const TERMINAL_HOLDER_MARKER_PREFIX_BYTES = Buffer.from(
+  TERMINAL_HOLDER_MARKER_PREFIX,
+);
+const TERMINAL_GRID_MARKER_PREFIX_BYTES = Buffer.from("\u001b]7791;bb-grid;");
 const TERMINAL_OUTPUT_DISCARDED_MESSAGE = `The server no longer has the retained output of this exited terminal. The server keeps terminal output for ${TERMINAL_EXIT_RETENTION_MINUTES} minutes after a terminal exits, so read it sooner or run the command again.`;
 const TERMINAL_ATTACH_CANCELLED = new Error("Terminal attach cancelled");
 const REOPEN_NATIVE_TERMINAL_REPAINT_DELAY_MS = 1_500;
@@ -328,6 +357,7 @@ interface GetTerminalArgs {
 
 interface TerminalCreatePayload {
   cols: number;
+  id?: string;
   rows: number;
   cwd?: string;
   start?: NonNullable<CreateTerminalRequest["start"]>;
@@ -389,6 +419,19 @@ interface HandleDaemonTerminalMessageArgs {
   sessionId: string;
 }
 
+interface PendingHolderOutputChunk {
+  current: TerminalSessionRow;
+  sessionId: string;
+  chunk: TerminalOutputChunk;
+  data: Buffer;
+}
+
+interface PendingHolderOutputBuffer {
+  chunks: PendingHolderOutputChunk[];
+  timer: ReturnType<typeof setTimeout>;
+  releasedPrefix: Buffer | null;
+}
+
 interface RefuseDaemonTerminalOpenArgs {
   message: TerminalOpenedMessage;
   sessionId: string;
@@ -401,9 +444,132 @@ interface HandleDaemonSessionClosedArgs {
 function toTerminalOutputChunk(
   chunk: TerminalOutputMessage["chunk"],
 ): TerminalOutputChunk {
+  return chunk;
+}
+
+function stripTerminalHolderMarker(data: Buffer): {
+  data: Buffer;
+  terminalId: string | null;
+} {
+  if (
+    !data
+      .subarray(0, TERMINAL_HOLDER_MARKER_PREFIX_BYTES.length)
+      .equals(TERMINAL_HOLDER_MARKER_PREFIX_BYTES)
+  ) {
+    return { data, terminalId: null };
+  }
+  const end = data.indexOf(0x07, TERMINAL_HOLDER_MARKER_PREFIX_BYTES.length);
+  if (end < 0 || end > TERMINAL_HOLDER_MARKER_LIMIT) {
+    return { data, terminalId: null };
+  }
+  const terminalId = data
+    .subarray(TERMINAL_HOLDER_MARKER_PREFIX_BYTES.length, end)
+    .toString("utf8");
+  if (!/^[A-Za-z0-9_-]{1,128}$/u.test(terminalId)) {
+    return { data, terminalId: null };
+  }
+  return { data: data.subarray(end + 1), terminalId };
+}
+
+function inspectTerminalHolderMarker(data: Buffer):
+  | { kind: "pending" }
+  | { kind: "mismatch" }
+  | {
+      kind: "complete";
+      markerLength: number;
+      markerOffset: number;
+      terminalId: string;
+    } {
+  let markerOffset = 0;
+  if (
+    !data
+      .subarray(
+        0,
+        Math.min(data.length, TERMINAL_HOLDER_MARKER_PREFIX_BYTES.length),
+      )
+      .equals(
+        TERMINAL_HOLDER_MARKER_PREFIX_BYTES.subarray(
+          0,
+          Math.min(data.length, TERMINAL_HOLDER_MARKER_PREFIX_BYTES.length),
+        ),
+      )
+  ) {
+    if (isTimeoutFlushableHolderMarkerPrefix(data)) {
+      return { kind: "pending" };
+    }
+    const gridPrefixLength = Math.min(
+      data.length,
+      TERMINAL_GRID_MARKER_PREFIX_BYTES.length,
+    );
+    if (
+      !data
+        .subarray(0, gridPrefixLength)
+        .equals(TERMINAL_GRID_MARKER_PREFIX_BYTES.subarray(0, gridPrefixLength))
+    ) {
+      return { kind: "mismatch" };
+    }
+    const gridMarkerEnd = data.indexOf(
+      0x07,
+      TERMINAL_GRID_MARKER_PREFIX_BYTES.length,
+    );
+    if (gridMarkerEnd < 0) {
+      const gridMarkerBody = data
+        .subarray(TERMINAL_GRID_MARKER_PREFIX_BYTES.length)
+        .toString("ascii");
+      return /^[0-9;]*$/u.test(gridMarkerBody) && data.length < 64
+        ? { kind: "pending" }
+        : { kind: "mismatch" };
+    }
+    const gridMarkerBody = data
+      .subarray(TERMINAL_GRID_MARKER_PREFIX_BYTES.length, gridMarkerEnd)
+      .toString("ascii");
+    if (!/^\d{1,4};\d{1,4}$/u.test(gridMarkerBody)) {
+      return { kind: "mismatch" };
+    }
+    markerOffset = gridMarkerEnd + 1;
+  }
+  const markerData = data.subarray(markerOffset);
+  const prefixLength = Math.min(
+    markerData.length,
+    TERMINAL_HOLDER_MARKER_PREFIX_BYTES.length,
+  );
+  if (
+    !markerData
+      .subarray(0, prefixLength)
+      .equals(TERMINAL_HOLDER_MARKER_PREFIX_BYTES.subarray(0, prefixLength))
+  ) {
+    return { kind: "mismatch" };
+  }
+  if (markerData.length < TERMINAL_HOLDER_MARKER_PREFIX_BYTES.length) {
+    return { kind: "pending" };
+  }
+  const end = markerData.indexOf(
+    0x07,
+    TERMINAL_HOLDER_MARKER_PREFIX_BYTES.length,
+  );
+  if (end < 0) {
+    const idBytes = markerData.subarray(
+      TERMINAL_HOLDER_MARKER_PREFIX_BYTES.length,
+    );
+    if (
+      idBytes.length > 128 ||
+      markerData.length >= TERMINAL_HOLDER_MARKER_LIMIT ||
+      !/^[A-Za-z0-9_-]*$/u.test(idBytes.toString("ascii"))
+    ) {
+      return { kind: "mismatch" };
+    }
+    return { kind: "pending" };
+  }
+  const markerLength = markerOffset + end + 1;
+  const marker = stripTerminalHolderMarker(markerData.subarray(0, end + 1));
+  if (end + 1 > TERMINAL_HOLDER_MARKER_LIMIT || marker.terminalId === null) {
+    return { kind: "mismatch" };
+  }
   return {
-    seq: chunk.seq,
-    dataBase64: chunk.dataBase64,
+    kind: "complete",
+    markerLength,
+    markerOffset,
+    terminalId: marker.terminalId,
   };
 }
 
@@ -683,12 +849,41 @@ export class TerminalSessionLifecycle {
   >();
   private readonly resizeAckSockets = new WeakSet<TerminalClientSocket>();
   private readonly outputFlow: TerminalOutputFlowControl;
+  private readonly outputSequenceRebase = new TerminalOutputSequenceRebase();
+  private readonly pendingHolderMarkers = new Set<string>();
+  private readonly pendingHolderOutput = new Map<
+    string,
+    PendingHolderOutputBuffer
+  >();
+  private readonly releasedHolderMarkerPrefixes = new Map<string, Buffer>();
+  private readonly dataPlaneHolderOutput = new Map<
+    string,
+    HolderMarkerStripState
+  >();
+  private readonly pendingRetainedOutput = new Map<
+    string,
+    Array<{ hostId: string; chunks: TerminalOutputChunk[] }>
+  >();
+  private readonly activeTerminalReplays = new Map<string, number>();
+  private readonly terminalReplayWaiters = new Map<string, Set<() => void>>();
+  private terminalOutputWritesStopped = false;
+  private retainedOutputFlushTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(private readonly options: TerminalSessionLifecycleOptions) {
     clearPersistedDeviceHandoffAttention(options.db, Date.now());
     this.outputFlow = new TerminalOutputFlowControl({
       sendDaemonMessage: (daemonSessionId, message) => {
-        this.options.hub.sendDaemonSessionMessage(daemonSessionId, message);
+        const outgoing =
+          message.type === "terminal.ack"
+            ? {
+                ...message,
+                nextSeq: this.outputSequenceRebase.toDaemon(
+                  message.terminalId,
+                  message.nextSeq,
+                ),
+              }
+            : message;
+        this.options.hub.sendDaemonSessionMessage(daemonSessionId, outgoing);
       },
     });
     const attachTimeoutMs =
@@ -1017,7 +1212,14 @@ export class TerminalSessionLifecycle {
   }
 
   async createTerminal(args: CreateTerminalArgs): Promise<TerminalSession> {
-    const { target } = args.payload;
+    const { id, target } = args.payload;
+    if (id !== undefined && getTerminalById(this.options.db, id)) {
+      throw new ApiError(
+        409,
+        "terminal_id_conflict",
+        `Terminal session ${id} already exists`,
+      );
+    }
     const existingSessionCount = this.countExistingSessionsForTarget(target);
     const launchTarget =
       target.kind === "thread"
@@ -1039,30 +1241,24 @@ export class TerminalSessionLifecycle {
     switch (target.kind) {
       case "thread": {
         const thread = requirePublicThread(this.options.db, target.threadId);
-        return listTerminalSessions(this.options.db, {
+        return countTerminalSessions(this.options.db, {
           scope: { kind: "thread", threadId: thread.id },
           visible: false,
-        }).length;
+        });
       }
       case "environment":
-        return listTerminalSessions(this.options.db, {
+        return countTerminalSessions(this.options.db, {
           scope: {
             environmentId: target.environmentId,
             kind: "threadless-environment",
           },
           visible: false,
-        }).length;
+        });
       case "host_path":
-        return listTerminalSessions(this.options.db, {
-          scope: { kind: "all" },
+        return countTerminalSessions(this.options.db, {
+          scope: { kind: "host-path", hostId: target.hostId, cwd: target.cwd },
           visible: true,
-        }).filter(
-          (session) =>
-            session.threadId === null &&
-            session.environmentId === null &&
-            session.hostId === target.hostId &&
-            (target.cwd === null || session.initialCwd === target.cwd),
-        ).length;
+        });
     }
   }
 
@@ -1092,6 +1288,7 @@ export class TerminalSessionLifecycle {
       daemonSessionId: daemonSession.id,
       environmentId: launchTarget.environmentId,
       hostId: launchTarget.hostId,
+      id: args.payload.id,
       initialCwd: launchTarget.initialCwd,
       rows: args.payload.rows,
       status: "starting",
@@ -1133,11 +1330,13 @@ export class TerminalSessionLifecycle {
       rpcKey: pendingOpenKey,
       terminalId: startingSession.id,
     }).promise;
+    this.pendingHolderMarkers.add(startingSession.id);
     const sent = this.options.hub.sendDaemonSessionMessage(
       daemonSession.id,
       openMessage,
     );
     if (!sent) {
+      this.flushPendingHolderOutput(startingSession.id);
       this.pendingOpens.cancel(pendingOpenKey);
       const exited = updateTerminalById(this.options.db, startingSession.id, {
         closeReason: "daemon-disconnect",
@@ -1378,6 +1577,10 @@ export class TerminalSessionLifecycle {
     const current = args.current;
     if (current.status === "exited") {
       if (args.payload.reason === "user") {
+        await this.waitForTerminalReplay(current.id);
+        if (this.terminalOutputWritesStopped)
+          return this.toTerminalSession(current);
+        this.flushRetainedOutput(current.id);
         dismissRetainedTerminalOutput(
           this.options.db,
           current.id,
@@ -1600,7 +1803,7 @@ export class TerminalSessionLifecycle {
         TERMINAL_OUTPUT_NOT_RUNNING_MESSAGE,
       );
     }
-    const retained = this.getRetainedOutput(current);
+    const retained = await this.getRetainedOutput(current);
     if (retained === null) {
       throw new ApiError(
         409,
@@ -1615,9 +1818,46 @@ export class TerminalSessionLifecycle {
     });
   }
 
-  private getRetainedOutput(
+  async readTerminalScreen(args: {
+    terminalId: string;
+    query: TerminalScreenQuery;
+  }): Promise<TerminalScreenResponse> {
+    const session = getTerminalById(this.options.db, args.terminalId);
+    if (!session) {
+      throw new ApiError(
+        404,
+        "terminal_not_found",
+        "Terminal session not found",
+      );
+    }
+    if (
+      args.query.lines !== undefined &&
+      args.query.lines > TERMINAL_SCREEN_MAX_LINES
+    ) {
+      throw new ApiError(
+        400,
+        "invalid_request",
+        `lines must be at most ${TERMINAL_SCREEN_MAX_LINES}`,
+      );
+    }
+    const output = await this.readTerminalOutput({
+      terminalId: args.terminalId,
+      query: { tailBytes: TERMINAL_SCREEN_REPLAY_BYTES },
+    });
+    return renderTerminalScreen({
+      cols: session.cols,
+      lines: args.query.lines,
+      output,
+      rows: session.rows,
+      logger: this.options.logger,
+    });
+  }
+
+  private async getRetainedOutput(
     session: TerminalSessionRow,
-  ): TerminalOutputChunk[] | null {
+  ): Promise<TerminalOutputChunk[] | null> {
+    await this.waitForTerminalReplay(session.id);
+    this.flushRetainedOutput(session.id);
     return getRetainedTerminalOutput(this.options.db, {
       hostId: session.hostId,
       terminalSessionId: session.id,
@@ -1656,23 +1896,300 @@ export class TerminalSessionLifecycle {
     session: TerminalSessionRow,
     chunk: TerminalOutputChunk,
   ): void {
-    appendRetainedTerminalOutputChunk(this.options.db, {
-      hostId: session.hostId,
-      terminalSessionId: session.id,
-      chunk,
-      now: Date.now(),
+    const batches = this.pendingRetainedOutput.get(session.id) ?? [];
+    const last = batches.at(-1);
+    if (last !== undefined && last.hostId === session.hostId) {
+      last.chunks.push(chunk);
+    } else {
+      batches.push({ hostId: session.hostId, chunks: [chunk] });
+    }
+    this.pendingRetainedOutput.set(session.id, batches);
+    this.scheduleRetainedOutputFlush();
+  }
+
+  private scheduleRetainedOutputFlush(): void {
+    if (this.terminalOutputWritesStopped) return;
+    if (this.retainedOutputFlushTimer !== null) return;
+    this.retainedOutputFlushTimer = setTimeout(() => {
+      this.retainedOutputFlushTimer = null;
+      this.flushAllRetainedOutputForTimer();
+    }, RETAINED_OUTPUT_FLUSH_MS);
+    this.retainedOutputFlushTimer.unref?.();
+  }
+
+  private beginTerminalReplay(terminalSessionId: string): void {
+    this.activeTerminalReplays.set(
+      terminalSessionId,
+      (this.activeTerminalReplays.get(terminalSessionId) ?? 0) + 1,
+    );
+  }
+
+  private finishTerminalReplay(terminalSessionId: string): void {
+    const active = this.activeTerminalReplays.get(terminalSessionId);
+    if (active === undefined || active <= 1) {
+      this.activeTerminalReplays.delete(terminalSessionId);
+      if (this.pendingRetainedOutput.has(terminalSessionId)) {
+        this.scheduleRetainedOutputFlush();
+      }
+      const waiters = this.terminalReplayWaiters.get(terminalSessionId);
+      this.terminalReplayWaiters.delete(terminalSessionId);
+      if (waiters && waiters.size > 0) {
+        setImmediate(() => {
+          for (const resolve of waiters) resolve();
+        });
+      }
+      return;
+    }
+    this.activeTerminalReplays.set(terminalSessionId, active - 1);
+  }
+
+  private waitForTerminalReplay(terminalSessionId: string): Promise<void> {
+    if (!this.activeTerminalReplays.has(terminalSessionId)) {
+      return Promise.resolve();
+    }
+    return new Promise((resolve) => {
+      const waiters =
+        this.terminalReplayWaiters.get(terminalSessionId) ?? new Set();
+      waiters.add(resolve);
+      this.terminalReplayWaiters.set(terminalSessionId, waiters);
     });
+  }
+
+  private async waitForAllTerminalReplays(): Promise<void> {
+    while (this.activeTerminalReplays.size > 0) {
+      await Promise.all(
+        [...this.activeTerminalReplays.keys()].map((terminalSessionId) =>
+          this.waitForTerminalReplay(terminalSessionId),
+        ),
+      );
+    }
+  }
+
+  private flushRetainedOutput(terminalSessionId: string): void {
+    if (this.terminalOutputWritesStopped) return;
+    if (this.activeTerminalReplays.has(terminalSessionId)) return;
+    const batches = this.pendingRetainedOutput.get(terminalSessionId);
+    if (batches === undefined) return;
+    this.pendingRetainedOutput.delete(terminalSessionId);
+    for (const [index, batch] of batches.entries()) {
+      try {
+        appendRetainedTerminalOutputChunks(this.options.db, {
+          hostId: batch.hostId,
+          terminalSessionId,
+          chunks: batch.chunks,
+          clock: Date.now,
+        });
+      } catch (error) {
+        const unwritten = batches.slice(index);
+        let bytes = unwritten.reduce(
+          (total, entry) =>
+            total +
+            entry.chunks.reduce(
+              (sum, chunk) =>
+                sum + Buffer.byteLength(chunk.dataBase64, "base64"),
+              0,
+            ),
+          0,
+        );
+        while (bytes > HOST_RETAINED_OUTPUT_BYTES) {
+          const oldest = unwritten[0];
+          if (
+            oldest === undefined ||
+            (unwritten.length === 1 && oldest.chunks.length === 1)
+          )
+            break;
+          const dropped = oldest.chunks.shift();
+          if (dropped) bytes -= Buffer.byteLength(dropped.dataBase64, "base64");
+          if (oldest.chunks.length === 0) unwritten.shift();
+        }
+        const newer = this.pendingRetainedOutput.get(terminalSessionId) ?? [];
+        this.pendingRetainedOutput.set(terminalSessionId, [
+          ...unwritten,
+          ...newer,
+        ]);
+        this.scheduleRetainedOutputFlush();
+        throw error;
+      }
+    }
+    const session = getTerminalById(this.options.db, terminalSessionId);
+    if (session?.status === "exited") {
+      markRetainedTerminalOutputExited(
+        this.options.db,
+        session.id,
+        session.hostId,
+        Date.now(),
+      );
+    }
+  }
+
+  flushRetainedOutputBeforeClose(signal?: AbortSignal): void | Promise<void> {
+    if (signal?.aborted) {
+      this.stopTerminalOutputWritesForShutdown(
+        signal.reason === "failed" ? "failed" : "timed-out",
+      );
+      return;
+    }
+    if (this.activeTerminalReplays.size > 0) {
+      return new Promise<void>((resolve, reject) => {
+        let settled = false;
+        const finish = (error?: unknown): void => {
+          if (settled) return;
+          settled = true;
+          signal?.removeEventListener("abort", onAbort);
+          if (error !== undefined) reject(error);
+          else resolve();
+        };
+        const onAbort = (): void => {
+          this.stopTerminalOutputWritesForShutdown(
+            signal?.reason === "failed" ? "failed" : "timed-out",
+          );
+          finish();
+        };
+        signal?.addEventListener("abort", onAbort, { once: true });
+        void this.waitForAllTerminalReplays().then(
+          async () => {
+            try {
+              if (signal?.aborted)
+                this.stopTerminalOutputWritesForShutdown(
+                  signal.reason === "failed" ? "failed" : "timed-out",
+                );
+              else await this.flushRetainedOutputBeforeClose();
+              finish();
+            } catch (error) {
+              finish(error);
+            }
+          },
+          (error: unknown) => finish(error),
+        );
+      });
+    }
+    for (
+      let attempt = 0;
+      attempt < RETAINED_OUTPUT_CLOSE_ATTEMPTS &&
+      this.pendingRetainedOutput.size > 0;
+      attempt += 1
+    ) {
+      this.flushAllRetainedOutput();
+    }
+    if (this.retainedOutputFlushTimer !== null) {
+      clearTimeout(this.retainedOutputFlushTimer);
+      this.retainedOutputFlushTimer = null;
+    }
+    for (const [terminalId, batches] of this.pendingRetainedOutput) {
+      this.options.logger.error(
+        {
+          terminalId,
+          chunks: batches.reduce(
+            (total, batch) => total + batch.chunks.length,
+            0,
+          ),
+        },
+        "Lost retained terminal output at shutdown",
+      );
+    }
+    this.pendingRetainedOutput.clear();
+  }
+
+  private stopTerminalOutputWritesForShutdown(
+    reason: "failed" | "timed-out" = "timed-out",
+  ): void {
+    if (this.terminalOutputWritesStopped) return;
+    this.terminalOutputWritesStopped = true;
+    if (this.retainedOutputFlushTimer !== null) {
+      clearTimeout(this.retainedOutputFlushTimer);
+      this.retainedOutputFlushTimer = null;
+    }
+    const terminalIds = new Set([
+      ...this.pendingRetainedOutput.keys(),
+      ...this.activeTerminalReplays.keys(),
+      ...this.pendingHolderOutput.keys(),
+    ]);
+    const terminals = [...terminalIds].map((terminalId) => ({
+      terminalId,
+      chunks:
+        (this.pendingRetainedOutput.get(terminalId) ?? []).reduce(
+          (total, batch) => total + batch.chunks.length,
+          0,
+        ) + (this.pendingHolderOutput.get(terminalId)?.chunks.length ?? 0),
+      replayActive: this.activeTerminalReplays.has(terminalId),
+    }));
+    this.options.logger.warn(
+      { terminals },
+      reason === "failed"
+        ? "Terminal output shutdown flush failed; pending output was not written"
+        : "Terminal output shutdown flush timed out; pending output was not written",
+    );
+    this.pendingRetainedOutput.clear();
+    for (const pending of this.pendingHolderOutput.values()) {
+      clearTimeout(pending.timer);
+    }
+    this.pendingHolderOutput.clear();
+  }
+
+  flushAllRetainedOutput(): void {
+    this.flushRetainedOutputBatches([...this.pendingRetainedOutput.keys()]);
+  }
+
+  private flushAllRetainedOutputForTimer(): void {
+    this.flushRetainedOutputBatches(
+      [...this.pendingRetainedOutput.keys()].filter(
+        (terminalSessionId) =>
+          !this.activeTerminalReplays.has(terminalSessionId),
+      ),
+    );
+  }
+
+  private flushRetainedOutputBatches(terminalSessionIds: string[]): void {
+    for (const terminalSessionId of terminalSessionIds) {
+      try {
+        this.flushRetainedOutput(terminalSessionId);
+      } catch (error) {
+        this.options.logger.warn(
+          { error, terminalId: terminalSessionId },
+          "Failed to retain terminal output",
+        );
+      }
+    }
   }
 
   private async readRunningTerminalOutput(
     args: ReadRunningTerminalOutputArgs,
   ): Promise<TerminalOutputResponse> {
     try {
-      return await this.requestTerminalOutputReplay({
+      const replay = await this.requestTerminalOutputReplay({
         daemonSessionId: args.session.daemonSessionId,
         query: args.query,
         session: args.session,
       });
+      const retained = (await this.getRetainedOutput(args.session)) ?? [];
+      const chunksBySequence = new Map<number, TerminalOutputChunk>();
+      for (const chunk of retained) chunksBySequence.set(chunk.seq, chunk);
+      for (const chunk of replay.chunks) chunksBySequence.set(chunk.seq, chunk);
+      const chunks = [...chunksBySequence.values()].sort(
+        (left, right) => left.seq - right.seq,
+      );
+      const nextSeq = Math.max(replay.nextSeq, (chunks.at(-1)?.seq ?? -1) + 1);
+      const bounded = applyTerminalOutputBounds({
+        chunks,
+        query: args.query,
+        replayNextSeq: nextSeq,
+        requestedSinceSeq: args.query.sinceSeq ?? 0,
+      });
+      const output: TerminalOutputResponse = {
+        chunks: bounded.chunks,
+        nextSeq,
+        truncated: bounded.truncated,
+        status: replay.status,
+        exitCode: replay.exitCode,
+        closeReason: replay.closeReason,
+      };
+      if (args.query.lines === undefined) return output;
+      const lineBounded = terminalOutputLastLines(output, args.query.lines);
+      return {
+        ...output,
+        chunks: lineBounded.chunks,
+        truncated: output.truncated || lineBounded.truncated,
+      };
     } catch (error) {
       if (
         !(error instanceof ApiError) ||
@@ -1694,7 +2211,7 @@ export class TerminalSessionLifecycle {
   private async readExitedTerminalOutput(
     args: ReadExitedTerminalOutputArgs,
   ): Promise<TerminalOutputResponse> {
-    const retained = this.getRetainedOutput(args.session);
+    const retained = await this.getRetainedOutput(args.session);
     if (retained === null) {
       throw new ApiError(
         409,
@@ -1730,7 +2247,10 @@ export class TerminalSessionLifecycle {
         type: "terminal.attach",
         requestId,
         terminalId: args.session.id,
-        sinceSeq: args.query.sinceSeq ?? 0,
+        sinceSeq: this.outputSequenceRebase.toDaemon(
+          args.session.id,
+          args.query.sinceSeq ?? 0,
+        ),
         tailBytes: args.query.tailBytes ?? TERMINAL_SCROLLBACK_MAX_BYTES,
       },
     );
@@ -1829,9 +2349,10 @@ export class TerminalSessionLifecycle {
     });
   }
 
-  reconcileDisconnectedHostTerminals(
+  async reconcileDisconnectedHostTerminals(
     args: ReconcileDisconnectedHostTerminalsArgs,
-  ): void {
+  ): Promise<void> {
+    if (this.terminalOutputWritesStopped) return;
     const openedInstanceId =
       getSessionById(this.options.db, { sessionId: args.daemonSessionId })
         ?.instanceId ?? null;
@@ -1846,8 +2367,19 @@ export class TerminalSessionLifecycle {
           : (getSessionById(this.options.db, {
               sessionId: session.daemonSessionId,
             })?.instanceId ?? null);
-      if (openedInstanceId === null || ownerInstanceId !== openedInstanceId) {
+      if (openedInstanceId === null) continue;
+      const daemonRestarted = ownerInstanceId !== openedInstanceId;
+      if (daemonRestarted && !session.holderBacked) {
         continue;
+      }
+      const wasHolderBacked = session.holderBacked;
+      if (daemonRestarted) {
+        const retained = await this.getRetainedOutput(session);
+        if (this.terminalOutputWritesStopped) return;
+        this.outputSequenceRebase.setBase(
+          session.id,
+          (retained?.at(-1)?.seq ?? -1) + 1,
+        );
       }
       const reconnected = updateTerminalSession(this.options.db, {
         scope: {
@@ -1855,7 +2387,11 @@ export class TerminalSessionLifecycle {
           statuses: ["disconnected"],
           terminalId: session.id,
         },
-        update: { daemonSessionId: args.daemonSessionId, kind: "reconnect" },
+        update: {
+          daemonSessionId: args.daemonSessionId,
+          kind: "reconnect",
+          ...(daemonRestarted ? { resetHolderBacked: true } : {}),
+        },
       });
       if (!reconnected) {
         continue;
@@ -1869,10 +2405,107 @@ export class TerminalSessionLifecycle {
         type: "session-updated",
         session: this.toTerminalSession(reconnected),
       });
-      this.requestTerminalCatchUp({
-        daemonSessionId: args.daemonSessionId,
-        terminalId: reconnected.id,
-      });
+      if (daemonRestarted) {
+        const target: TerminalLaunchTarget =
+          reconnected.environmentId === null
+            ? {
+                kind: "host_path",
+                hostId: reconnected.hostId,
+                cwd: reconnected.initialCwd,
+              }
+            : {
+                kind: "environment",
+                environmentId: reconnected.environmentId,
+              };
+        const launchTarget = this.resolveTerminalLaunchTarget(target);
+        const environment =
+          launchTarget.environmentId === null
+            ? null
+            : requireEnvironment(this.options.db, launchTarget.environmentId);
+        const requestId = randomUUID();
+        const contributedEnv = mergeHostAndProviderEnvironment(
+          await resolveHostEnvironment(this.options, {
+            hostId: launchTarget.hostId,
+            projectId: environment?.projectId ?? null,
+          }),
+          [],
+        );
+        if (wasHolderBacked) {
+          contributedEnv.push({
+            name: "BB_TERMINAL_HOLDER_REATTACH_ONLY",
+            value: "1",
+            source: { core: "machine-environment" },
+            reason: "Attach the existing shell holder after daemon reconnect",
+          });
+        }
+        const openMessage: HostDaemonServerWsMessage = {
+          type: "terminal.open",
+          contributedEnv,
+          requestId,
+          terminalId: reconnected.id,
+          ...(reconnected.threadId === null
+            ? {}
+            : { threadId: reconnected.threadId }),
+          target: launchTarget.daemonTarget,
+          cwd: reconnected.initialCwd,
+          cols: reconnected.cols,
+          rows: reconnected.rows,
+          start: DEFAULT_TERMINAL_START,
+        };
+        const rpcKey = terminalRpcKey(
+          args.daemonSessionId,
+          reconnected.id,
+          requestId,
+        );
+        const pendingOpen = this.pendingOpens.claim({
+          daemonSessionId: args.daemonSessionId,
+          requestId,
+          rpcKey,
+          terminalId: reconnected.id,
+        }).promise;
+        if (wasHolderBacked) this.pendingHolderMarkers.add(reconnected.id);
+        if (
+          !this.options.hub.sendDaemonSessionMessage(
+            args.daemonSessionId,
+            openMessage,
+          )
+        ) {
+          this.flushPendingHolderOutput(reconnected.id);
+          this.pendingOpens.cancel(rpcKey);
+        } else {
+          void pendingOpen.catch(() => {
+            if (this.terminalOutputWritesStopped) return;
+            const current = getTerminalById(this.options.db, reconnected.id);
+            if (
+              !current ||
+              current.status !== "running" ||
+              current.daemonSessionId !== args.daemonSessionId
+            ) {
+              return;
+            }
+            const exited = updateTerminalSession(this.options.db, {
+              scope: {
+                kind: "terminal",
+                statuses: ["running"],
+                terminalId: current.id,
+              },
+              update: { closeReason: "daemon-disconnect", kind: "exit" },
+            });
+            if (exited !== null) {
+              this.notifyExitedTerminalSession({
+                session: exited,
+                code: "host_disconnected",
+                message: "Host disconnected from terminal session",
+              });
+            }
+          });
+        }
+      } else {
+        this.requestTerminalCatchUp({
+          daemonSessionId: args.daemonSessionId,
+          terminalId: reconnected.id,
+        });
+      }
     }
 
     const exitedSessions = updateTerminalSessions(this.options.db, {
@@ -1897,9 +2530,12 @@ export class TerminalSessionLifecycle {
     }
   }
 
-  resolveRunningTerminalRoute(
-    terminalId: string,
-  ): { daemonSessionId: string; terminalId: string } | null {
+  resolveRunningTerminalRoute(terminalId: string): {
+    daemonSessionId: string;
+    holderMarkerPending: boolean;
+    sequenceBase: number;
+    terminalId: string;
+  } | null {
     const current = getTerminalById(this.options.db, terminalId);
     if (
       !current ||
@@ -1908,7 +2544,12 @@ export class TerminalSessionLifecycle {
     ) {
       return null;
     }
-    return { daemonSessionId: current.daemonSessionId, terminalId: current.id };
+    return {
+      daemonSessionId: current.daemonSessionId,
+      holderMarkerPending: this.pendingHolderMarkers.has(current.id),
+      sequenceBase: this.outputSequenceRebase.toServer(current.id, 0),
+      terminalId: current.id,
+    };
   }
 
   markDirectOutputSocket(socket: TerminalClientSocket): void {
@@ -1940,6 +2581,7 @@ export class TerminalSessionLifecycle {
     daemonSessionId: string;
     terminalId: string;
   }): void {
+    if (this.terminalOutputWritesStopped) return;
     const current = getTerminalById(this.options.db, args.terminalId);
     if (
       !current ||
@@ -1952,17 +2594,24 @@ export class TerminalSessionLifecycle {
     ) {
       return;
     }
-    for (const chunk of args.chunks) {
-      if (current.status === "running") {
-        this.outputFlow.recordOutput(
-          args.terminalId,
-          args.daemonSessionId,
-          chunk.seq,
-        );
+    for (const rawChunk of args.chunks) {
+      const chunks = this.stripHolderMarkersFromDataPlaneOutput(
+        args.terminalId,
+        rawChunk,
+      );
+      for (const chunk of chunks) {
+        if (current.status === "running") {
+          this.outputFlow.recordOutput(
+            args.terminalId,
+            args.daemonSessionId,
+            chunk.seq,
+          );
+        }
+        this.retainTerminalOutput(current, chunk);
       }
-      this.retainTerminalOutput(current, chunk);
     }
     if (current.status === "exited") {
+      this.flushRetainedOutput(current.id);
       markRetainedTerminalOutputExited(
         this.options.db,
         current.id,
@@ -1970,6 +2619,40 @@ export class TerminalSessionLifecycle {
         Date.now(),
       );
     }
+  }
+
+  stripHolderMarkersFromDataPlaneOutput(
+    terminalId: string,
+    chunk: TerminalOutputChunk,
+  ): TerminalOutputChunk[] {
+    if (!this.pendingHolderMarkers.has(terminalId)) return [chunk];
+    let state = this.dataPlaneHolderOutput.get(terminalId);
+    if (state === undefined) {
+      state = { chunks: [], data: [], releasedPrefix: null };
+      this.dataPlaneHolderOutput.set(terminalId, state);
+    }
+    const inspection = inspectTerminalHolderMarker(
+      Buffer.concat([...state.data, Buffer.from(chunk.dataBase64, "base64")]),
+    );
+    const stripped = stripHolderMarkerChunks(chunk, state);
+    if (state.chunks.length === 0) {
+      this.pendingHolderMarkers.delete(terminalId);
+      this.dataPlaneHolderOutput.delete(terminalId);
+      if (
+        inspection.kind === "complete" &&
+        inspection.terminalId === terminalId
+      ) {
+        updateTerminalSession(this.options.db, {
+          scope: {
+            kind: "terminal",
+            statuses: ["starting", "running"],
+            terminalId,
+          },
+          update: { kind: "holder-backed" },
+        });
+      }
+    }
+    return stripped;
   }
 
   private closeDaemonSessionBrowserTerminals(args: {
@@ -2042,7 +2725,7 @@ export class TerminalSessionLifecycle {
       this.holdBrowserTerminalForReattach({
         handoffOwnerToken: args.handoffOwnerToken,
         session,
-        sinceSeq: args.sinceSeq,
+        sinceSeq: this.outputSequenceRebase.toDaemon(current.id, args.sinceSeq),
         socket: args.socket,
       });
       return;
@@ -2210,7 +2893,10 @@ export class TerminalSessionLifecycle {
     );
   }
 
-  handleDaemonTerminalMessage(args: HandleDaemonTerminalMessageArgs): void {
+  handleDaemonTerminalMessage(
+    args: HandleDaemonTerminalMessageArgs,
+  ): void | Promise<void> {
+    if (this.terminalOutputWritesStopped) return;
     switch (args.message.type) {
       case "heartbeat":
         return;
@@ -2295,6 +2981,7 @@ export class TerminalSessionLifecycle {
           current.status === "running" &&
           this.directOutputSessionIds.has(args.sessionId)
         ) {
+          this.flushPendingHolderOutput(current.id);
           void this.requestTerminalOutputReplay({
             daemonSessionId: args.sessionId,
             query: { sinceSeq: 0, tailBytes: TERMINAL_SCROLLBACK_MAX_BYTES },
@@ -2309,6 +2996,7 @@ export class TerminalSessionLifecycle {
             .finally(() => this.finalizeTerminalExit(args));
           return;
         }
+        this.flushPendingHolderOutput(current.id);
         this.finalizeTerminalExit(args);
         return;
       case "terminal.output": {
@@ -2333,79 +3021,344 @@ export class TerminalSessionLifecycle {
           }
           return;
         }
-        this.outputFlow.recordOutput(
-          args.message.terminalId,
-          args.sessionId,
-          args.message.chunk.seq,
-        );
         if (
-          current.status !== "running" ||
-          this.catchingUpTerminalIds.has(current.id)
+          this.bufferPendingHolderOutput(args.sessionId, args.message, current)
         ) {
           return;
         }
-        this.retainTerminalOutput(
+        this.processTerminalOutputChunk(
+          args.sessionId,
+          args.message,
           current,
-          toTerminalOutputChunk(args.message.chunk),
+          args.message.chunk,
         );
-        this.forwardTerminalOutput(current.id, args.message.chunk);
         return;
       }
-      case "terminal.replay":
-        {
-          const current = getTerminalById(
-            this.options.db,
-            args.message.terminalId,
-          );
-          if (
-            current &&
-            (current.hostId !== args.hostId ||
-              current.daemonSessionId !== args.sessionId)
-          ) {
-            this.options.logger.warn(
-              {
-                hostId: args.hostId,
-                ownerHostId: current.hostId,
-                terminalId: current.id,
-              },
-              "Ignoring terminal replay from a non-owner host",
-            );
-            return;
-          }
-          if (current) {
-            appendRetainedTerminalOutputChunks(this.options.db, {
-              hostId: current.hostId,
-              terminalSessionId: current.id,
-              chunks: args.message.chunks.map(toTerminalOutputChunk),
-              clock: Date.now,
-            });
-            if (current.status === "exited") {
-              markRetainedTerminalOutputExited(
-                this.options.db,
-                current.id,
-                current.hostId,
-                Date.now(),
-              );
-            }
-          }
-        }
-        this.pendingAttaches.settle(
-          terminalResponseRpcKey(args.sessionId, args.message),
-          args.message,
-        );
-        this.pendingOutputReads.settle(
-          terminalResponseRpcKey(args.sessionId, args.message),
-          args.message,
-        );
-        this.pendingCatchUps.settle(
-          terminalResponseRpcKey(args.sessionId, args.message),
-          args.message,
-        );
-        return;
+      case "terminal.replay": {
+        return this.handleTerminalReplay({ ...args, message: args.message });
+      }
     }
   }
 
+  private async handleTerminalReplay(
+    args: HandleDaemonTerminalMessageArgs & { message: TerminalReplayMessage },
+  ): Promise<void> {
+    const sourceMessage = args.message;
+    const replayOffset = this.outputSequenceRebase.baseFor(
+      sourceMessage.terminalId,
+    );
+    const replaySession = runEventLoopWorkSync(
+      "ws:daemon terminal.replay terminal-lookup",
+      () => getTerminalById(this.options.db, sourceMessage.terminalId),
+    );
+    const isOwned = (current: TerminalSessionRow | null): boolean => {
+      if (
+        !current ||
+        (current.hostId === args.hostId &&
+          current.daemonSessionId === args.sessionId)
+      ) {
+        return true;
+      }
+      this.options.logger.warn(
+        {
+          hostId: args.hostId,
+          ownerHostId: current.hostId,
+          terminalId: current.id,
+        },
+        "Ignoring terminal replay from a non-owner host",
+      );
+      return false;
+    };
+    if (!isOwned(replaySession)) return;
+    const current = replaySession;
+    if (current) {
+      this.beginTerminalReplay(current.id);
+      return this.handleTerminalReplayWork(
+        args,
+        replaySession,
+        replayOffset,
+      ).finally(() => this.finishTerminalReplay(current.id));
+    }
+    return this.handleTerminalReplayWork(args, replaySession, replayOffset);
+  }
+
+  private async handleTerminalReplayWork(
+    args: HandleDaemonTerminalMessageArgs & { message: TerminalReplayMessage },
+    replaySession: TerminalSessionRow | null,
+    replayOffset: number,
+  ): Promise<void> {
+    const sourceMessage = args.message;
+    const current = replaySession;
+    const pendingBatches = current
+      ? (this.pendingRetainedOutput.get(current.id) ?? []).map((batch) => ({
+          batch,
+          chunks: [...batch.chunks],
+          hostId: batch.hostId,
+        }))
+      : [];
+    const persistedPendingChunks = new Map(
+      pendingBatches.map(({ batch }) => [
+        batch,
+        new Set<TerminalOutputChunk>(),
+      ]),
+    );
+    const stillOwned = (): boolean => {
+      if (
+        this.outputSequenceRebase.baseFor(sourceMessage.terminalId) !==
+        replayOffset
+      ) {
+        return false;
+      }
+      if (replaySession === null) return true;
+      const latest = getTerminalById(this.options.db, sourceMessage.terminalId);
+      return (
+        latest !== null &&
+        latest.hostId === replaySession.hostId &&
+        (latest.daemonSessionId === null ||
+          latest.daemonSessionId === args.sessionId) &&
+        latest.status === replaySession.status
+      );
+    };
+    let replayOwnershipChanged = false;
+    const checkReplayAfterYield = (): boolean => {
+      if (this.terminalOutputWritesStopped) return false;
+      if (!replayOwnershipChanged && !stillOwned())
+        replayOwnershipChanged = true;
+      return true;
+    };
+    let sourceChunks = sourceMessage.chunks;
+    if (replaySession !== null) {
+      sourceChunks = await this.stripPendingHolderMarkerFromReplay(
+        replaySession,
+        sourceChunks,
+      );
+    }
+    if (this.terminalOutputWritesStopped) return;
+    if (!stillOwned()) replayOwnershipChanged = true;
+    const replayHeader = this.outputSequenceRebase.replayToServer(
+      { ...sourceMessage, chunks: [] },
+      replayOffset,
+    );
+    const rebasedChunks: TerminalReplayMessage["chunks"] = [];
+    const retainedHeap: TerminalOutputChunk[] = [];
+    let retainedTailBytes = 0;
+    const retainedSequences = new Set<number>();
+    let replayBytes = 0;
+    const retainTail = (chunk: TerminalOutputChunk): void => {
+      if (retainedSequences.has(chunk.seq)) return;
+      const bytes = Math.min(
+        Buffer.byteLength(chunk.dataBase64, "base64"),
+        TERMINAL_RETAINED_OUTPUT_BYTES,
+      );
+      let index = retainedHeap.length;
+      retainedHeap.push(chunk);
+      while (index > 0) {
+        const parent = (index - 1) >>> 1;
+        const parentChunk = retainedHeap[parent];
+        if (!parentChunk || parentChunk.seq <= chunk.seq) break;
+        retainedHeap[index] = parentChunk;
+        index = parent;
+      }
+      retainedHeap[index] = chunk;
+      retainedSequences.add(chunk.seq);
+      retainedTailBytes += bytes;
+      while (
+        retainedTailBytes > TERMINAL_RETAINED_OUTPUT_BYTES &&
+        retainedHeap.length > 1
+      ) {
+        const removed = retainedHeap[0];
+        const last = retainedHeap.pop();
+        if (!removed || !last) break;
+        if (retainedHeap.length > 0) {
+          let parent = 0;
+          while (true) {
+            const left = parent * 2 + 1;
+            if (left >= retainedHeap.length) break;
+            const right = left + 1;
+            const child =
+              right < retainedHeap.length &&
+              retainedHeap[right]!.seq < retainedHeap[left]!.seq
+                ? right
+                : left;
+            if (last.seq <= retainedHeap[child]!.seq) break;
+            retainedHeap[parent] = retainedHeap[child]!;
+            parent = child;
+          }
+          retainedHeap[parent] = last;
+        }
+        retainedSequences.delete(removed.seq);
+        retainedTailBytes -= Math.min(
+          Buffer.byteLength(removed.dataBase64, "base64"),
+          TERMINAL_RETAINED_OUTPUT_BYTES,
+        );
+      }
+    };
+    let preparedBytes = 0;
+    let preparedChunks = 0;
+    const prepareChunk = (chunk: TerminalOutputChunk): void => {
+      retainTail(chunk);
+      preparedBytes += Buffer.byteLength(chunk.dataBase64, "base64");
+      preparedChunks += 1;
+    };
+    const capturePendingChunks = (): void => {
+      if (!current) return;
+      for (const batch of this.pendingRetainedOutput.get(current.id) ?? []) {
+        if (batch.hostId !== current.hostId) continue;
+        let captured = persistedPendingChunks.get(batch);
+        if (!captured) {
+          captured = new Set<TerminalOutputChunk>();
+          persistedPendingChunks.set(batch, captured);
+        }
+        for (const chunk of batch.chunks) {
+          if (captured.has(chunk)) continue;
+          captured.add(chunk);
+          prepareChunk(chunk);
+        }
+      }
+    };
+    for (const batch of pendingBatches) {
+      if (current && batch.hostId === current.hostId) {
+        for (const chunk of batch.chunks) {
+          prepareChunk(chunk);
+          persistedPendingChunks.get(batch.batch)?.add(chunk);
+          if (
+            preparedBytes >= TERMINAL_REPLAY_PREPARE_BYTES_PER_TICK ||
+            preparedChunks >= 256
+          ) {
+            await yieldToEventLoop();
+            if (!checkReplayAfterYield()) return;
+            capturePendingChunks();
+            preparedBytes = 0;
+            preparedChunks = 0;
+          }
+        }
+      }
+    }
+    for (const chunk of sourceChunks) {
+      const chunkBytes = Buffer.byteLength(chunk.dataBase64, "base64");
+      replayBytes += chunkBytes;
+      const rebased = { ...chunk, seq: chunk.seq + replayOffset };
+      rebasedChunks.push(rebased);
+      if (current) {
+        prepareChunk(toTerminalOutputChunk(rebased));
+      } else {
+        preparedBytes += chunkBytes;
+        preparedChunks += 1;
+      }
+      if (
+        preparedBytes >= TERMINAL_REPLAY_PREPARE_BYTES_PER_TICK ||
+        preparedChunks >= 256
+      ) {
+        await yieldToEventLoop();
+        if (!checkReplayAfterYield()) return;
+        capturePendingChunks();
+        preparedBytes = 0;
+        preparedChunks = 0;
+      }
+    }
+
+    if (this.terminalOutputWritesStopped) return;
+    capturePendingChunks();
+    const retainedTail = retainedHeap.sort(
+      (left, right) => left.seq - right.seq,
+    );
+    const latest = current
+      ? getTerminalById(this.options.db, current.id)
+      : null;
+    const replacement =
+      current !== null &&
+      (latest === null ||
+        latest.hostId !== current.hostId ||
+        (latest.daemonSessionId !== null &&
+          latest.daemonSessionId !== args.sessionId) ||
+        this.outputSequenceRebase.baseFor(sourceMessage.terminalId) !==
+          replayOffset);
+    const rpcKey = terminalResponseRpcKey(args.sessionId, sourceMessage);
+    if (replacement) {
+      const error = new ApiError(
+        409,
+        "terminal_replaced",
+        "Terminal session was replaced while replaying output",
+      );
+      this.pendingAttaches.fail(rpcKey, error);
+      this.pendingOutputReads.fail(rpcKey, error);
+      this.pendingCatchUps.fail(rpcKey, error);
+      this.options.logger.info(
+        {
+          daemonSessionId: args.sessionId,
+          hostId: args.hostId,
+          processId: process.pid,
+          requestId: sourceMessage.requestId,
+          terminalId: sourceMessage.terminalId,
+        },
+        "Terminal replay discarded after ownership change",
+      );
+      return;
+    }
+    const retainedAppendPerformed = current !== null && retainedTail.length > 0;
+    if (retainedAppendPerformed && current) {
+      runEventLoopWorkSync("ws:daemon terminal.replay append-retained", () => {
+        appendRetainedTerminalOutputChunks(this.options.db, {
+          hostId: current.hostId,
+          terminalSessionId: current.id,
+          chunks: retainedTail,
+          clock: Date.now,
+        });
+      });
+      const remaining = this.pendingRetainedOutput
+        .get(current.id)
+        ?.flatMap((batch) => {
+          const persisted = persistedPendingChunks.get(batch);
+          if (!persisted) return [batch];
+          batch.chunks = batch.chunks.filter((chunk) => !persisted.has(chunk));
+          return batch.chunks.length > 0 ? [batch] : [];
+        });
+      if (remaining?.length)
+        this.pendingRetainedOutput.set(current.id, remaining);
+      else this.pendingRetainedOutput.delete(current.id);
+    }
+
+    if (current && (current.status === "exited" || replayOwnershipChanged)) {
+      if (latest?.status === "exited") {
+        markRetainedTerminalOutputExited(
+          this.options.db,
+          latest.id,
+          latest.hostId,
+          Date.now(),
+        );
+      }
+    }
+    const message = { ...replayHeader, chunks: rebasedChunks };
+    const callers = [
+      this.pendingAttaches.settle(rpcKey, message) ? "terminal-attach" : null,
+      this.pendingOutputReads.settle(rpcKey, message) ? "output-read" : null,
+      this.pendingCatchUps.settle(rpcKey, message) ? "catch-up" : null,
+    ].filter((caller): caller is string => caller !== null);
+    this.options.logger.info(
+      {
+        callers: callers.length > 0 ? callers : ["unmatched"],
+        daemonSessionId: args.sessionId,
+        hostId: args.hostId,
+        processId: process.pid,
+        replayBytes,
+        replayChunks: sourceChunks.length,
+        retainedWriteBytes: retainedAppendPerformed ? retainedTailBytes : 0,
+        retainedWriteChunks: retainedAppendPerformed ? retainedTail.length : 0,
+        maxRetainedWriteBatchBytes: retainedAppendPerformed
+          ? retainedTailBytes
+          : 0,
+        maxRetainedWriteBatchChunks: retainedAppendPerformed
+          ? retainedTail.length
+          : 0,
+        requestId: sourceMessage.requestId,
+        terminalId: sourceMessage.terminalId,
+      },
+      "Terminal replay attributed",
+    );
+  }
+
   private finalizeTerminalExit(args: HandleDaemonTerminalMessageArgs): void {
+    if (this.terminalOutputWritesStopped) return;
     if (args.message.type !== "terminal.exited") {
       return;
     }
@@ -2428,6 +3381,7 @@ export class TerminalSessionLifecycle {
     this.clearDeviceHandoffAttention(exited.id);
     this.forwardedNextSeqByTerminalId.delete(exited.id);
     this.outputFlow.forgetTerminal(exited.id);
+    this.flushRetainedOutput(exited.id);
     markRetainedTerminalOutputExited(
       this.options.db,
       exited.id,
@@ -2552,7 +3506,9 @@ export class TerminalSessionLifecycle {
   private notifyExitedTerminalSession(
     args: NotifyExitedTerminalSessionArgs,
   ): void {
+    if (this.terminalOutputWritesStopped) return;
     this.clearDeviceHandoffAttention(args.session.id);
+    this.flushRetainedOutput(args.session.id);
     markRetainedTerminalOutputExited(
       this.options.db,
       args.session.id,
@@ -2821,6 +3777,7 @@ export class TerminalSessionLifecycle {
     pending: PendingTerminalCloseKey,
     error: Error,
   ): void {
+    if (this.terminalOutputWritesStopped) return;
     if (
       !(error instanceof ApiError) ||
       error.body.code !== "terminal_close_timeout"
@@ -2892,7 +3849,7 @@ export class TerminalSessionLifecycle {
         type: "terminal.attach",
         requestId,
         terminalId: args.terminalId,
-        sinceSeq,
+        sinceSeq: this.outputSequenceRebase.toDaemon(args.terminalId, sinceSeq),
         tailBytes: TERMINAL_SCROLLBACK_MAX_BYTES,
       },
     );
@@ -2912,6 +3869,287 @@ export class TerminalSessionLifecycle {
     for (const chunk of message.chunks) {
       this.forwardTerminalOutput(pending.terminalId, chunk);
     }
+  }
+
+  private bufferPendingHolderOutput(
+    sessionId: string,
+    message: TerminalOutputMessage,
+    current: TerminalSessionRow,
+  ): boolean {
+    if (this.terminalOutputWritesStopped) return true;
+    if (!this.pendingHolderMarkers.has(current.id)) return false;
+    const chunk = message.chunk;
+    const data = Buffer.from(chunk.dataBase64, "base64");
+    let pending = this.pendingHolderOutput.get(current.id);
+    if (pending === undefined) {
+      const releasedPrefix =
+        this.releasedHolderMarkerPrefixes.get(current.id) ?? null;
+      const inspection = inspectTerminalHolderMarker(
+        Buffer.concat([releasedPrefix ?? Buffer.alloc(0), data]),
+      );
+      if (inspection.kind === "mismatch") {
+        this.pendingHolderMarkers.delete(current.id);
+        this.releasedHolderMarkerPrefixes.delete(current.id);
+        return false;
+      }
+      const timer = setTimeout(() => {
+        const timedOut = this.pendingHolderOutput.get(current.id);
+        const stripState: HolderMarkerStripState = {
+          chunks: [],
+          data: timedOut?.chunks.map((part) => part.data) ?? [],
+          releasedPrefix: timedOut?.releasedPrefix ?? null,
+        };
+        if (
+          timedOut !== undefined &&
+          !shouldFlushHolderMarkerChunksOnTimeout(stripState)
+        )
+          return;
+        this.flushPendingHolderOutput(
+          current.id,
+          timeoutReleasedHolderMarkerPrefix(stripState),
+        );
+      }, TERMINAL_HOLDER_MARKER_TIMEOUT_MS);
+      timer.unref?.();
+      pending = { chunks: [], timer, releasedPrefix };
+      this.pendingHolderOutput.set(current.id, pending);
+    }
+    pending.chunks.push({
+      current,
+      sessionId,
+      chunk,
+      data,
+    });
+    const combined = Buffer.concat([
+      pending.releasedPrefix ?? Buffer.alloc(0),
+      ...pending.chunks.map((part) => part.data),
+    ]);
+    const inspection = inspectTerminalHolderMarker(combined);
+    if (inspection.kind === "pending") return true;
+    if (inspection.kind === "mismatch") {
+      this.flushPendingHolderOutput(current.id);
+      return true;
+    }
+
+    clearTimeout(pending.timer);
+    this.pendingHolderOutput.delete(current.id);
+    this.pendingHolderMarkers.delete(current.id);
+    this.releasedHolderMarkerPrefixes.delete(current.id);
+    if (inspection.terminalId === current.id) {
+      updateTerminalSession(this.options.db, {
+        scope: {
+          kind: "terminal",
+          statuses: ["starting", "running"],
+          terminalId: current.id,
+        },
+        update: { kind: "holder-backed" },
+      });
+    }
+    const stripState: HolderMarkerStripState = {
+      chunks: [],
+      data: [],
+      releasedPrefix: pending.releasedPrefix,
+    };
+    const outputChunks = pending.chunks.flatMap((part) =>
+      stripHolderMarkerChunks(part.chunk, stripState),
+    );
+    for (const [index, part] of pending.chunks.entries()) {
+      const outputChunk = outputChunks[index] ?? part.chunk;
+      this.processTerminalOutputChunk(
+        part.sessionId,
+        { type: "terminal.output", terminalId: current.id, chunk: part.chunk },
+        part.current,
+        outputChunk,
+      );
+    }
+    return true;
+  }
+
+  private async stripPendingHolderMarkerFromReplay(
+    current: TerminalSessionRow,
+    chunks: TerminalReplayMessage["chunks"],
+  ): Promise<TerminalReplayMessage["chunks"]> {
+    const markerPending = this.pendingHolderMarkers.has(current.id);
+    const marker = Buffer.from(
+      `${TERMINAL_HOLDER_MARKER_PREFIX}${current.id}\u0007`,
+    );
+    let markerFound = false;
+    let pendingBytes = Buffer.alloc(0);
+    const outputBuffers: Buffer[] = [];
+    const outputLengths: number[] = [];
+    const capacities: number[] = [];
+    let targetIndex = 0;
+    let targetOffset = 0;
+    const emit = (bytes: Buffer): void => {
+      let sourceOffset = 0;
+      while (sourceOffset < bytes.length) {
+        while (
+          targetIndex < outputBuffers.length &&
+          targetOffset >= capacities[targetIndex]!
+        ) {
+          targetIndex += 1;
+          targetOffset = 0;
+        }
+        const target = outputBuffers[targetIndex];
+        if (!target) return;
+        const length = Math.min(
+          bytes.length - sourceOffset,
+          target.length - targetOffset,
+        );
+        bytes.copy(target, targetOffset, sourceOffset, sourceOffset + length);
+        sourceOffset += length;
+        targetOffset += length;
+        outputLengths[targetIndex] = targetOffset;
+      }
+    };
+    let rowsRead = 0;
+    let bytesRead = 0;
+    for (const chunk of chunks) {
+      runEventLoopWorkSync(
+        "ws:daemon terminal.replay holder-marker-scan",
+        () => {
+          const data = Buffer.from(chunk.dataBase64, "base64");
+          outputBuffers.push(Buffer.alloc(data.length));
+          outputLengths.push(0);
+          capacities.push(data.length);
+          const scan = Buffer.concat([pendingBytes, data]);
+          let offset = 0;
+          for (;;) {
+            const markerOffset = scan.indexOf(marker, offset);
+            if (markerOffset < 0) {
+              const safeEnd = Math.max(offset, scan.length - marker.length + 1);
+              emit(scan.subarray(offset, safeEnd));
+              pendingBytes = scan.subarray(safeEnd);
+              break;
+            }
+            markerFound = true;
+            emit(scan.subarray(offset, markerOffset));
+            offset = markerOffset + marker.length;
+          }
+          rowsRead += 1;
+          bytesRead += data.length;
+        },
+      );
+      if (rowsRead >= 8 || bytesRead >= 256 * 1024) {
+        rowsRead = 0;
+        bytesRead = 0;
+        await yieldToEventLoop();
+      }
+    }
+    if (this.terminalOutputWritesStopped) return chunks;
+    if (!markerFound && !current.holderBacked) {
+      runEventLoopWorkSync(
+        "ws:daemon terminal.replay holder-output-flush",
+        () => this.flushPendingHolderOutput(current.id),
+      );
+      return chunks;
+    }
+    if (!markerFound) return chunks;
+    emit(pendingBytes);
+    runEventLoopWorkSync(
+      "ws:daemon terminal.replay holder-marker-state",
+      () => {
+        if (markerPending) {
+          this.pendingHolderMarkers.delete(current.id);
+          this.releasedHolderMarkerPrefixes.delete(current.id);
+          updateTerminalSession(this.options.db, {
+            scope: {
+              kind: "terminal",
+              statuses: ["starting", "running"],
+              terminalId: current.id,
+            },
+            update: { kind: "holder-backed" },
+          });
+        }
+        const pending = this.pendingHolderOutput.get(current.id);
+        if (pending !== undefined) {
+          clearTimeout(pending.timer);
+          this.pendingHolderOutput.delete(current.id);
+        }
+      },
+    );
+    const outputChunks: TerminalReplayMessage["chunks"] = [];
+    let outputBytes = 0;
+    for (const [index, chunk] of chunks.entries()) {
+      runEventLoopWorkSync(
+        "ws:daemon terminal.replay holder-marker-output",
+        () => {
+          const outputChunk = outputBuffers[index]!.subarray(
+            0,
+            outputLengths[index] ?? 0,
+          );
+          outputChunks.push({
+            ...chunk,
+            dataBase64: outputChunk.toString("base64"),
+          });
+          outputBytes += outputChunk.length;
+        },
+      );
+      if ((index + 1) % 8 === 0 || outputBytes >= 256 * 1024) {
+        outputBytes = 0;
+        await yieldToEventLoop();
+      }
+    }
+    return outputChunks;
+  }
+
+  private flushPendingHolderOutput(
+    terminalId: string,
+    releasedPrefix: Buffer | null = null,
+  ): void {
+    if (this.terminalOutputWritesStopped) return;
+    const pending = this.pendingHolderOutput.get(terminalId);
+    if (pending === undefined) {
+      if (releasedPrefix === null) this.pendingHolderMarkers.delete(terminalId);
+      else {
+        this.pendingHolderMarkers.add(terminalId);
+        this.releasedHolderMarkerPrefixes.set(terminalId, releasedPrefix);
+      }
+      return;
+    }
+    clearTimeout(pending.timer);
+    this.pendingHolderOutput.delete(terminalId);
+    if (releasedPrefix === null) {
+      this.pendingHolderMarkers.delete(terminalId);
+      this.releasedHolderMarkerPrefixes.delete(terminalId);
+    } else {
+      this.pendingHolderMarkers.add(terminalId);
+      this.releasedHolderMarkerPrefixes.set(terminalId, releasedPrefix);
+    }
+    for (const part of pending.chunks) {
+      this.processTerminalOutputChunk(
+        part.sessionId,
+        { type: "terminal.output", terminalId, chunk: part.chunk },
+        part.current,
+        part.chunk,
+      );
+    }
+  }
+
+  private processTerminalOutputChunk(
+    sessionId: string,
+    message: TerminalOutputMessage,
+    current: TerminalSessionRow,
+    chunk: TerminalOutputChunk,
+  ): void {
+    const serverSeq = this.outputSequenceRebase.toServer(
+      message.terminalId,
+      chunk.seq,
+    );
+    const outputChunk =
+      serverSeq === chunk.seq ? chunk : { ...chunk, seq: serverSeq };
+    this.outputFlow.recordOutput(
+      message.terminalId,
+      sessionId,
+      outputChunk.seq,
+    );
+    if (
+      current.status !== "running" ||
+      this.catchingUpTerminalIds.has(current.id)
+    ) {
+      return;
+    }
+    this.retainTerminalOutput(current, toTerminalOutputChunk(outputChunk));
+    this.forwardTerminalOutput(current.id, outputChunk);
   }
 
   private forwardTerminalOutput(

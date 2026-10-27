@@ -54,7 +54,10 @@ const navigationMocks = vi.hoisted(() => ({
   activate: null as
     | ((
         itemId: string,
-        options: { openInSplit: boolean; target?: EventTarget | null },
+        options: {
+          target: string;
+          experimental_focusTarget?: EventTarget | null;
+        },
       ) => void)
     | null,
 }));
@@ -319,6 +322,7 @@ function makeThread(
     projectId: "project-1",
     environmentId: null,
     providerId: "codex",
+    nativeTerminal: false,
     title: `Title ${id}`,
     titleFallback: `Title ${id}`,
     sectionId: null,
@@ -406,7 +410,7 @@ function renderPalette({
 function ThreadSearchMoreLauncher() {
   const runner = useAppCommandRunner();
   navigationMocks.activate = (_itemId, options) =>
-    runner.dispatch("thread.search", options.target ?? null);
+    runner.dispatch("thread.search", options.experimental_focusTarget ?? null);
   return (
     <SidebarNavigationMoreMenu
       trigger={<button type="button">More</button>}

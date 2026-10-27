@@ -485,13 +485,26 @@ export function createAccountPoolPlugin(
     const contributeFor =
       (
         provider: PoolProvider,
-        serving: (token: string) => Promise<PoolEnvEntry[]>,
+        serving: (
+          token: string,
+          scope?: "thread" | "machine",
+        ) => Promise<PoolEnvEntry[]>,
       ) =>
       async (context: ExperimentalPluginProviderEnvContext) => {
         const lifetime =
           context.experimental_runtimeKind === "native" ? "process" : "durable";
         const unrouted = () =>
           hasConfiguredParentPool ? neutralized(provider) : [];
+        if (context.threadId === null) {
+          if (!(await canServe(provider))) return unrouted();
+          const hostToken = await hubTokens.forHost(context.hostId);
+          const token = await threadTokens.forCatalog(
+            context.hostId,
+            provider,
+            hostToken,
+          );
+          return serving(token, "machine");
+        }
         const archive = await checkArchived(context.threadId);
         if (archive.status === "archived") return unrouted();
         const bypassed = await routing.isBypassed(context.threadId);
@@ -565,7 +578,7 @@ export function createAccountPoolPlugin(
         : null;
     bb.providers.experimental_contributeEnv(
       "claude-code",
-      contributeFor("claude", async (token) => [
+      contributeFor("claude", async (token, scope) => [
         {
           name: "ANTHROPIC_BASE_URL",
           value: { serverPath: HUB_BASE_PATH },
@@ -574,7 +587,7 @@ export function createAccountPoolPlugin(
         {
           name: "ANTHROPIC_AUTH_TOKEN",
           value: token,
-          reason: "Account Pooler token scoped to this thread",
+          reason: `Account Pooler token scoped to this ${scope ?? "thread"}`,
         },
         {
           name: "ENABLE_TOOL_SEARCH",
@@ -596,7 +609,7 @@ export function createAccountPoolPlugin(
     );
     bb.providers.experimental_contributeEnv(
       "codex",
-      contributeFor("codex", async (token) => [
+      contributeFor("codex", async (token, scope) => [
         {
           name: "CODEX_OPENAI_BASE_URL",
           value: { serverPath: `${HUB_BASE_PATH}/v1` },
@@ -605,7 +618,7 @@ export function createAccountPoolPlugin(
         {
           name: "CODEX_POOL_AUTH_TOKEN",
           value: token,
-          reason: "Account Pooler token scoped to this thread",
+          reason: `Account Pooler token scoped to this ${scope ?? "thread"}`,
         },
       ]),
     );

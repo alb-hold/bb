@@ -1,5 +1,8 @@
 #!/usr/bin/env node
+
+import { experimental_selectedSkillMentions as selectedSkillMentions } from "@get-bb/plugin-sdk/provider-bridge";
 import { ClaudeContextUsageCollector } from "./context-usage.js";
+import { readIsolatedClaudeContextUsage } from "./context-usage-probe.js";
 
 import {
   type PendingInteractionGrantedPermissionProfile,
@@ -70,6 +73,11 @@ import {
   probeClaudeCodeDiscoveredModels,
 } from "./model-list.js";
 import {
+  PROVIDER_COMMANDS_STATE_KIND,
+  createClaudeCodeBridgeCommandListMemo,
+  toProviderCommandsState,
+} from "./provider-commands.js";
+import {
   claudeThreadForkParamsSchema,
   claudeThreadResumeParamsSchema,
   claudeThreadStartParamsSchema,
@@ -93,6 +101,7 @@ import {
 } from "./provider-maintenance.js";
 import {
   buildChromeExtraArgs,
+  buildClaudeFeatureEnv,
   buildReadonlyDenialMessage,
   buildMutableFlagSettings,
   buildSessionOptions,
@@ -104,6 +113,8 @@ import {
 import {
   createClaudeSkillPluginsRoot,
   ensureClaudeSkillPlugin,
+  filterClaudeSkillRoots,
+  claudeSkillsConfigDirectory,
 } from "./skill-plugins.js";
 import {
   buildBridgeMcpServer,
@@ -236,6 +247,7 @@ interface ClaudeSessionRestart {
 }
 
 interface ThreadSession {
+  commandListGeneration: number;
   contextUsageCollector: ClaudeContextUsageCollector;
   session: SdkSession;
   attachment: ThreadAttachment;
@@ -266,6 +278,7 @@ interface ThreadAttachment {
   liveSettings: ClaudeLiveSessionSettings;
   approvedPlanPermissionMode: ClaudePermissionMode;
   providerThreadId?: string;
+  publishedProviderCommands: string | null;
   sessionPermissionGrants: ClaudeSessionPermissionGrant[];
   mcpConfigSignature: string | null;
   mcpConfigRefresh: Promise<void> | null;
@@ -496,7 +509,7 @@ function cancelPendingElicitationQuestions(
     pending.settle({ ok: false, message });
   }
 }
-let configuredSkillRoots: ClaudeCodeSkillRoot[] | null = null;
+let configuredSkillRoots: { id: string; path: string }[] | null = null;
 let skillPluginsRoot: string | null = null;
 let bridgeTempDir: string | null = null;
 let bridgeDataDir: string | null = null;
@@ -551,6 +564,7 @@ function resolvePendingSessionWork(
   threadSession: ThreadSession,
   message: string,
 ): void {
+  threadSession.contextUsageCollector.cancel();
   toolCallTracker.resolvePendingToolCalls(threadSession, message);
   resolvePendingInteractiveRequests(threadSession, message);
 }
@@ -587,16 +601,42 @@ function applyContextWindowSetting(
     return;
   }
   sessionOptions.disable1MContext = disabled;
-  attachment.sessionOptions.env = {
-    ...attachment.sessionOptions.env,
-    CLAUDE_CODE_DISABLE_1M_CONTEXT: disabled ? "1" : "0",
-  };
+  refreshSessionEnv(attachment);
   if (attachment.residentSession) {
     attachment.residentSession.restartBeforeNextTurn = {
       reason: "Claude Code 1M context setting changed",
       showRuntimeNote: false,
     };
   }
+}
+
+function applyArtifactSetting(
+  attachment: ThreadAttachment,
+  enabled: boolean | undefined,
+): void {
+  const sessionOptions = attachment.sessionConstructionConfig.sessionOptions;
+  if (enabled === undefined || sessionOptions.artifactsEnabled === enabled) {
+    return;
+  }
+  sessionOptions.artifactsEnabled = enabled;
+  refreshSessionEnv(attachment);
+  if (attachment.residentSession) {
+    attachment.residentSession.restartBeforeNextTurn = {
+      reason: "Claude Artifacts setting changed",
+      showRuntimeNote: false,
+    };
+  }
+}
+
+function refreshSessionEnv(attachment: ThreadAttachment): void {
+  attachment.sessionOptions.env = {
+    ...buildSessionEnv(
+      readConfigEnvOverrides(attachment.sessionConstructionConfig.config),
+    ),
+    ...buildClaudeFeatureEnv(
+      attachment.sessionConstructionConfig.sessionOptions,
+    ),
+  };
 }
 
 async function applyPermissionSettings(
@@ -913,6 +953,7 @@ async function applyLiveSessionSettings(
   threadSession.attachment.liveSettings = next;
 }
 
+
 const MODEL_LIST_MEMO_TTL_MS = 2 * 60_000;
 const MODEL_PROBE_RENEWAL_WINDOW_MS = 5 * 60_000;
 const MODEL_CATALOG_FILE_NAME = "claude-code-model-catalog.json";
@@ -927,6 +968,10 @@ const listModelsMemoized = createClaudeCodeBridgeModelListMemo({
           joinPath(bridgeDataDir, MODEL_CATALOG_FILE_NAME),
         ),
   renewalDue: () => isClaudeSignInRenewalDue(MODEL_PROBE_RENEWAL_WINDOW_MS),
+});
+const PROVIDER_CATALOG_MEMO_TTL_MS = 2 * 60_000;
+const listCommandsMemoized = createClaudeCodeBridgeCommandListMemo({
+  ttlMs: PROVIDER_CATALOG_MEMO_TTL_MS,
 });
 
 function sendThreadDeltas(
@@ -1126,6 +1171,7 @@ function toSessionConstructionConfig(
       baseInstructions: params.baseInstructions,
       chromeEnabled: params.chromeEnabled,
       disable1MContext: params.disable1MContext,
+      artifactsEnabled: params.artifactsEnabled,
       cwd: params.cwd,
       instructionMode: params.instructionMode,
       permissionMode: params.permissionMode,
@@ -1197,6 +1243,7 @@ function createThreadAttachment(
     ...(args.providerThreadId
       ? { providerThreadId: args.providerThreadId }
       : {}),
+    publishedProviderCommands: null,
     sessionPermissionGrants: [],
     mcpConfigSignature: null,
     mcpConfigRefresh: null,
@@ -1235,6 +1282,7 @@ function createThreadSession(attachment: ThreadAttachment): ThreadSession {
     })),
   );
   const threadSession: ThreadSession = {
+    commandListGeneration: 0,
     contextUsageCollector: new ClaudeContextUsageCollector(),
     session,
     attachment,
@@ -1630,6 +1678,46 @@ function getCurrentThreadSession(
   return threadSession;
 }
 
+function publishProviderCommands(
+  threadSession: ThreadSession,
+  commands: unknown,
+): void {
+  if (threadSession.closing) {
+    return;
+  }
+  const state = toProviderCommandsState(commands);
+  const serialized = JSON.stringify(state);
+  const { attachment } = threadSession;
+  if (
+    attachment.publishedProviderCommands === serialized ||
+    (attachment.publishedProviderCommands === null &&
+      state.commands.length === 0)
+  ) {
+    return;
+  }
+  attachment.publishedProviderCommands = serialized;
+  sendThreadDeltas(attachment.threadIdRef.current, [
+    {
+      kind: "extension.state",
+      extensionKind: PROVIDER_COMMANDS_STATE_KIND,
+      payload: state,
+    },
+  ]);
+}
+
+function refreshProviderCommands(threadSession: ThreadSession): void {
+  threadSession.commandListGeneration += 1;
+  const generation = threadSession.commandListGeneration;
+  void threadSession.session.supportedCommands().then(
+    (commands) => {
+      if (generation === threadSession.commandListGeneration) {
+        publishProviderCommands(threadSession, commands);
+      }
+    },
+    () => {},
+  );
+}
+
 function createOnSdkMessage(
   args: CreateSdkCallbackArgs,
 ): (message: SDKMessage) => void {
@@ -1667,6 +1755,15 @@ function createOnSdkMessage(
       threadId: args.threadIdRef.current,
       message,
     });
+    if (message.type === "system" && message.subtype === "init") {
+      refreshProviderCommands(threadSession);
+    } else if (
+      message.type === "system" &&
+      message.subtype === "commands_changed"
+    ) {
+      threadSession.commandListGeneration += 1;
+      publishProviderCommands(threadSession, message.commands);
+    }
     if (
       message.type === "result" ||
       (message.type === "system" &&
@@ -1684,7 +1781,15 @@ function createOnSdkMessage(
       }
       if (providerThreadId) {
         void threadSession.contextUsageCollector.capture({
-          read: () => threadSession.session.getContextUsage(),
+          read: (signal) =>
+            readIsolatedClaudeContextUsage({
+              sessionOptions: threadSession.attachment.sessionOptions,
+              providerSessionId: providerThreadId,
+              dynamicTools:
+                threadSession.attachment.sessionConstructionConfig
+                  .dynamicTools ?? [],
+              signal,
+            }),
           providerSessionId: providerThreadId,
           isCurrent: () =>
             getCurrentThreadSession({
@@ -1833,13 +1938,7 @@ function applyTurnEnvironment(
     ...attachment.sessionConstructionConfig,
     config,
   };
-  attachment.sessionOptions.env = {
-    ...buildSessionEnv(envOverrides),
-    CLAUDE_CODE_DISABLE_1M_CONTEXT: attachment.sessionConstructionConfig
-      .sessionOptions.disable1MContext
-      ? "1"
-      : "0",
-  };
+  refreshSessionEnv(attachment);
   if (attachment.residentSession) {
     attachment.residentSession.restartBeforeNextTurn = {
       reason:
@@ -2297,6 +2396,7 @@ async function handleRequest(request: ClaudeCodeJsonRpcRequest): Promise<void> {
           grammarVersions: [THREAD_DELTA_GRAMMAR_V3, THREAD_DELTA_GRAMMAR_V3],
           steerMode: "inject",
           skills: { configure: true },
+          commands: { list: true },
         },
       };
       sendResult(request.id, result);
@@ -2304,6 +2404,21 @@ async function handleRequest(request: ClaudeCodeJsonRpcRequest): Promise<void> {
     case "model/list":
       try {
         sendResult(request.id, await listModelsMemoized());
+      } catch (error) {
+        if (error instanceof MissingClaudeCliError) {
+          sendError(
+            request.id,
+            BRIDGE_JSON_RPC_ERRORS.MISSING_EXECUTABLE,
+            error.message,
+          );
+          break;
+        }
+        throw error;
+      }
+      break;
+    case "commands/list":
+      try {
+        sendResult(request.id, await listCommandsMemoized(request.params.cwd));
       } catch (error) {
         if (error instanceof MissingClaudeCliError) {
           sendError(
@@ -2338,7 +2453,7 @@ async function handleRequest(request: ClaudeCodeJsonRpcRequest): Promise<void> {
       await handleThreadStart(
         request.id,
         claudeThreadStartParamsSchema.parse(
-          toClaudeSessionParams(request.params),
+          await toClaudeSessionParams(request.params),
         ),
       );
       break;
@@ -2346,7 +2461,7 @@ async function handleRequest(request: ClaudeCodeJsonRpcRequest): Promise<void> {
       await handleThreadResume(
         request.id,
         claudeThreadResumeParamsSchema.parse({
-          ...toClaudeSessionParams(request.params),
+          ...(await toClaudeSessionParams(request.params)),
           providerThreadId: request.params.providerThreadId,
         }),
       );
@@ -2355,7 +2470,7 @@ async function handleRequest(request: ClaudeCodeJsonRpcRequest): Promise<void> {
       await handleThreadFork(
         request.id,
         claudeThreadForkParamsSchema.parse({
-          ...toClaudeSessionParams(request.params),
+          ...(await toClaudeSessionParams(request.params)),
           sourceProviderThreadId: request.params.sourceProviderThreadId,
           ...(request.params.sourceProviderCheckpointId !== undefined
             ? {
@@ -2379,7 +2494,7 @@ async function handleRequest(request: ClaudeCodeJsonRpcRequest): Promise<void> {
       sendResult(request.id, await closeThreadForStop(request.params.threadId));
       break;
     case "skills/configure":
-      configuredSkillRoots = assembleSkillPlugins(request.params.roots);
+      configuredSkillRoots = request.params.roots;
       sendResult(request.id, { ok: true });
       break;
   }
@@ -2539,16 +2654,27 @@ async function handleThreadFork(
   attachThreadSession(id, params, forkedProviderThreadId, true);
 }
 
-function toClaudeSessionParams(
+async function toClaudeSessionParams(
   params: z.infer<typeof canonicalThreadStartParamsSchema>,
-): Record<string, unknown> {
+): Promise<Record<string, unknown>> {
+  const roots =
+    configuredSkillRoots === null
+      ? undefined
+      : assembleSkillPlugins(
+          await filterClaudeSkillRoots({
+            roots: configuredSkillRoots,
+            cwd: params.cwd,
+            pluginsRoot: requireSkillPluginsRoot(),
+            claudeDir: claudeSkillsConfigDirectory(),
+          }),
+        );
   return buildClaudeSessionParams({
     threadId: params.threadId,
     cwd: params.cwd,
     options: params.options,
     instructionMode: params.instructionMode,
     dynamicTools: params.dynamicTools,
-    skillRoots: configuredSkillRoots ?? undefined,
+    skillRoots: roots,
   });
 }
 
@@ -2571,6 +2697,7 @@ async function runTurnInput(
     }
     applyChromeSetting(attachment, params.chromeEnabled);
     applyContextWindowSetting(attachment, params.disable1MContext);
+    applyArtifactSetting(attachment, params.artifactsEnabled);
   }
 
   let permissionRestartRequired = false;
@@ -2803,18 +2930,8 @@ function normalizeClaudeSkillMentions(
   entry: Extract<z.infer<typeof promptInputItemSchema>, { type: "text" }>,
 ): string {
   const replacements = new Set<number>();
-  for (const mention of entry.mentions) {
-    const resource = mention.resource;
-    if (
-      resource.kind === "command" &&
-      resource.source === "skill" &&
-      resource.trigger === "$" &&
-      typeof resource.name === "string" &&
-      mention.end <= entry.text.length &&
-      entry.text.slice(mention.start, mention.end) === `$${resource.name}`
-    ) {
-      replacements.add(mention.start);
-    }
+  for (const mention of selectedSkillMentions(entry)) {
+    if (mention.resource.trigger === "$") replacements.add(mention.start);
   }
 
   let normalized = entry.text;

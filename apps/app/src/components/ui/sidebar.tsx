@@ -1,5 +1,6 @@
 import * as React from "react";
 import { flushSync } from "react-dom";
+import { useComposedRefs } from "@radix-ui/react-compose-refs";
 import { Slot } from "@radix-ui/react-slot";
 
 import { useIsCompactViewport } from "@bb/shared-ui/hooks/use-compact-viewport";
@@ -508,7 +509,16 @@ const SidebarProvider = React.forwardRef<
         return;
       }
 
-      setIsMobileSidebarClosing(true);
+      React.startTransition(() => {
+        setIsMobileSidebarClosing(true);
+      });
+    }, []);
+
+    React.useLayoutEffect(() => {
+      if (!isMobileSidebarClosing || mobileSettleTimeoutRef.current !== null) {
+        return;
+      }
+
       applySidebarMobileDragStyles({ progress: 0, settling: true });
       mobileSettleTimeoutRef.current = window.setTimeout(() => {
         mobileSettleTimeoutRef.current = null;
@@ -520,7 +530,7 @@ const SidebarProvider = React.forwardRef<
         });
         clearSidebarMobileDragAttributes();
       }, SIDEBAR_MOBILE_DRAG_SETTLE_MS);
-    }, []);
+    }, [isMobileSidebarClosing]);
 
     const openMobileSidebar = React.useCallback(() => {
       if (openMobileRef.current || mobileSettleTimeoutRef.current !== null) {
@@ -1756,12 +1766,30 @@ const SidebarContent = React.forwardRef<
   HTMLDivElement,
   React.ComponentProps<"div">
 >(({ className, ...props }, ref) => {
+  const contentRef = React.useRef<HTMLDivElement | null>(null);
+  const composedRef = useComposedRefs(ref, contentRef);
+  React.useLayoutEffect(() => {
+    const element = contentRef.current;
+    if (!element || typeof ResizeObserver === "undefined") {
+      return;
+    }
+    const publishScrollbarLane = () => {
+      element.style.setProperty(
+        "--bb-sidebar-scrollbar-lane",
+        `${element.offsetWidth - element.clientWidth}px`,
+      );
+    };
+    publishScrollbarLane();
+    const observer = new ResizeObserver(publishScrollbarLane);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
   return (
     <div
-      ref={ref}
+      ref={composedRef}
       data-sidebar="content"
       className={cn(
-        "flex min-h-0 flex-1 flex-col gap-2 overflow-auto bg-sidebar",
+        "flex min-h-0 flex-1 flex-col gap-2 overflow-auto bg-sidebar [scrollbar-gutter:stable]",
         className,
       )}
       {...props}

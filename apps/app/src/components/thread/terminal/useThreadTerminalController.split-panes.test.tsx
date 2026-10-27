@@ -1,6 +1,13 @@
 // @vitest-environment jsdom
 
-import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  render,
+  renderHook,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import type { TerminalSession } from "@bb/server-contract";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { sdk } from "@/lib/sdk";
@@ -11,6 +18,7 @@ import {
 } from "./useThreadTerminalController";
 import { makeTerminalSession } from "@/test/fixtures/terminal-sessions";
 import { clearTerminalCurrentCwd } from "./terminal-shell-state";
+import { ThreadTerminalContent } from "./ThreadTerminalContent";
 
 vi.mock("@/lib/sdk", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/sdk")>();
@@ -119,6 +127,29 @@ describe("two split panes each holding a terminal", () => {
         title: "bash",
       }),
     );
+  });
+
+  it("shows a loading state while the terminal sessions query is pending", () => {
+    vi.mocked(sdk.terminals.list).mockImplementation(
+      () => new Promise(() => undefined),
+    );
+    const { wrapper } = createQueryClientTestHarness();
+    function PendingTerminalPane() {
+      const controller = useThreadTerminalController(paneArgs("term_a"));
+      return (
+        <ThreadTerminalContent
+          controller={controller}
+          onCloseStart={() => undefined}
+          onRetryStart={() => undefined}
+        />
+      );
+    }
+
+    render(<PendingTerminalPane />, { wrapper });
+
+    expect(screen.getByRole("status").textContent).toBe("Loading terminals...");
+    expect(screen.getByRole("status").getAttribute("aria-busy")).toBe("true");
+    expect(screen.queryByText("No terminals")).toBeNull();
   });
 
   it("does not close the other pane's terminal when both disconnect", async () => {

@@ -1,6 +1,7 @@
 import { MobileAppSection } from "@/components/settings/MobileAppSection";
 import { MachineEnvironmentSettings } from "@/components/settings/MachineEnvironmentSettings";
 import { MachineAccessSettings } from "@/components/settings/MachineAccessSettings";
+import { TerminalLatencyDiagnostics } from "@/components/settings/TerminalLatencyDiagnostics";
 import { useMemo, useRef, useState, type ReactNode } from "react";
 import {
   Navigate,
@@ -188,6 +189,8 @@ interface GeneralSettingsSectionProps {
   onReplaySetupGuide: () => void;
   onRewriteLocalhostLinksChange: (enabled: boolean) => void;
   onSteerActiveThreadOnEnterChange: (enabled: boolean) => void;
+  onTerminalCopyOnSelectChange: (enabled: boolean) => void;
+  terminalCopyOnSelect: boolean;
   openLinksInAppBrowser: boolean;
   rewriteLocalhostLinks: boolean;
   steerActiveThreadOnEnter: boolean;
@@ -879,6 +882,8 @@ export function GeneralSettingsSection({
   onReplaySetupGuide,
   onRewriteLocalhostLinksChange,
   onSteerActiveThreadOnEnterChange,
+  onTerminalCopyOnSelectChange,
+  terminalCopyOnSelect,
   openLinksInAppBrowser,
   rewriteLocalhostLinks,
   steerActiveThreadOnEnter,
@@ -1052,6 +1057,19 @@ export function GeneralSettingsSection({
           </div>
         </SettingsSection>
       ) : null}
+      <SettingsSection title="Terminals">
+        <SettingsWithControl
+          label="Copy on select"
+          description="Automatically copy selected terminal text and show a notification. Does not affect text elsewhere in the app. Linux middle-click paste uses the primary selection independently."
+        >
+          <Switch
+            checked={terminalCopyOnSelect}
+            disabled={generalSettingsDisabled}
+            onCheckedChange={onTerminalCopyOnSelectChange}
+            aria-label="Copy on select"
+          />
+        </SettingsWithControl>
+      </SettingsSection>
       <SettingsSection title="Git">
         <div className="space-y-5">
           <ManagedBranchPrefixSetting
@@ -1112,6 +1130,11 @@ export function PrivacySettingsSection({
             aria-label={DIAGNOSTIC_EVENTS_SETTING_LABEL}
           />
         </SettingsWithControl>
+
+        <div>
+          <div className="font-medium">Terminal latency</div>
+          <TerminalLatencyDiagnostics />
+        </div>
       </div>
     </SettingsSection>
   );
@@ -1140,6 +1163,11 @@ const EXPERIMENT_DEFINITIONS: Record<
     label: "Server move",
     description:
       "Move the bb server to another machine from Settings → Machines, and export or import server data with bb server.",
+  },
+  sidebarMultiSelect: {
+    label: "Select multiple sidebar threads",
+    description:
+      "In the built-in thread list sidebar, Cmd/Ctrl+Shift-click and Shift-click threads to select several, right-click for bulk actions, and drag them together into a section, under a thread, into Pinned, or into a composer as mentions.",
   },
   timelinePush: {
     label: "Pushed timeline updates",
@@ -1455,6 +1483,13 @@ export function SettingsView() {
           openLinksInAppBrowser={openLinksInAppBrowser}
           rewriteLocalhostLinks={rewriteLocalhostLinks}
           steerActiveThreadOnEnter={generalSettings.steerActiveThreadOnEnter}
+          terminalCopyOnSelect={generalSettings.terminalCopyOnSelect}
+          onTerminalCopyOnSelectChange={(enabled) =>
+            updateGeneralSettingsMutation.mutate({
+              ...generalSettings,
+              terminalCopyOnSelect: enabled,
+            })
+          }
           onNavigateToThreadAfterCreateChange={setNavigateToThreadAfterCreate}
           onOpenLinksInAppBrowserChange={setOpenLinksInAppBrowser}
           onRewriteLocalhostLinksChange={setRewriteLocalhostLinks}

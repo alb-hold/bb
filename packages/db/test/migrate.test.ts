@@ -1790,6 +1790,7 @@ describe("migrate", () => {
         showKeyboardHints: false,
         showGitChanges: true,
         steerActiveThreadOnEnter: true,
+        terminalCopyOnSelect: true,
         confirmThreadArchive: true,
         showDiagnosticEvents: true,
         keepHistoryAfterContextClear: false,
@@ -1804,6 +1805,7 @@ describe("migrate", () => {
         allowFastServiceTier: true,
         telemetryEnabled: true,
         managedBranchPrefix: "bb/",
+        idleProviderSessionTimeoutMinutes: 30,
         onboardingCompletedAt: "2026-08-01T00:00:00.000Z",
         earlyAdopter: false,
       });

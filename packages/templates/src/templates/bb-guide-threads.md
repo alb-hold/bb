@@ -59,7 +59,8 @@ Spawning:
     --parent-self                  Parent to the current thread (BB_THREAD_ID)
     --lifecycle-owner-thread <id>  Archive/delete with this owner
     --provider <id>                Provider override
-    --model <model>                Model override
+    --model <model>                Model override; for a child thread, an explicit
+                                   model must match the provider's child model
     --reasoning-level <level>      Reasoning level id the model lists: low, medium, high, xhigh, max, or a provider-specific id
     --environment <id-or-path>     Attach to an existing environment (ID or workspace path)
     --new-environment <kind>       Create a fresh personal workspace or managed worktree
@@ -124,8 +125,9 @@ Spawning:
   reports every finished, failed, or interrupted turn and every blocker. stuck
   skips completed turns and keeps failures, interruptions, and blockers on an
   approval or question; the child sends its results with `bb thread tell`, so
-  say so in its prompt. off reports nothing. `bb status` and `bb thread show`
-  print the value for a child thread.
+  say so in its prompt. off reports nothing. Under stuck and off, unassigning
+  the child does not notify the former parent either. `bb status` and
+  `bb thread show` print the value for a child thread.
   A machine selector accepts an exact ID or an unambiguous name. It works with
   an unmanaged --environment path, --new-environment worktree, or the personal
   workspace. It cannot be combined with an existing environment ID because that
@@ -133,6 +135,11 @@ Spawning:
   machine resolution is unchanged.
   Omit --base-branch for bb's default. Explicit values are exact; use
   origin/<branch> for a remote ref.
+  With no environment flag, a new thread gets a fresh worktree of the
+  project's default branch (the project checkout when the project has no
+  branch) on the primary host, or on the persistent machine that holds the
+  project's source when the primary host has none. A child of a live thread
+  in the same project gets a worktree on its parent's machine.
   Before selecting a provider, run `bb environment providers --project <id>
   --machine <id-or-name>` to see whether it is available, needs setup, or is
   unavailable and why. The first-party providers are Project checkout,
@@ -187,10 +194,15 @@ Editing a sent message:
 
   Without --expected-request-sequence, the latest eligible message is edited.
   Codex, Claude Code, and Pi threads are supported, including failed and
-  incomplete turns; grouped multi-message requests are not editable. The
+  incomplete turns; grouped multi-message requests are not editable.
+  `canEditMessages` on `bb thread show --json` reports whether the thread's
+  provider and archive state allow edits. The
   original conversation remains unchanged until the provider prepares the
   replacement history. If the thread is running,
-  submission stops the current turn and waits for it to settle. It then
+  submission stops the current turn and waits for it to settle. Provider-owned
+  background commands, agents, and workflows are stopped before replacing the
+  session, and retained task cards keep their terminal status. Durable runs
+  managed by the Workflows plugin continue independently. It then
   replaces the selected turn and every later turn while retaining workspace
   changes. Unsent queued messages remain in the queue and dispatch after the
   replacement turn when their waits clear. An already-sending queued message

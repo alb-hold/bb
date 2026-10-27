@@ -1,13 +1,13 @@
 import { useCallback, useMemo } from "react";
 import { useStore } from "jotai";
-import type { InfiniteData, QueryClient } from "@tanstack/react-query";
 import {
   PERSONAL_PROJECT_ID,
   type Host,
-  type Thread,
   type ThreadListEntry,
 } from "@bb/domain";
+import type { PullRequest } from "bb-plugin-bb--github-pr-status/contract";
 import { useIsCompactViewport } from "@bb/shared-ui/hooks/use-compact-viewport";
+import { isNativeActivityUnconfirmed } from "@bb/client-core";
 import type {
   PluginSdkApp,
   PluginSidebarProject,
@@ -16,12 +16,10 @@ import type {
   PluginSidebarThread,
   PluginSidebarThreadActions,
   PluginSidebarThreadDraftState,
-  PluginSidebarThreadPullRequestState,
   PluginSidebarThreadRowStatus,
   PluginSidebarThreadShortcut,
   PluginSidebarThreadsState,
 } from "@get-bb/plugin-sdk";
-import { sdk } from "@/lib/sdk";
 import { useSidebarThreadShortcut as useHostSidebarThreadShortcut } from "@/components/sidebar/sidebarThreadShortcuts";
 import {
   useThreadTitleMentionResources,
@@ -37,19 +35,11 @@ import {
 } from "./plugin-thread-row-status";
 import { getThreadConversationCollapsedAtom } from "@/components/secondary-panel/threadSecondaryPanelAtoms";
 import { useThreadActions } from "@/components/thread/ThreadActionsProvider";
-import {
-  getEnvironmentPullRequestFromResponse,
-  useEnvironmentPullRequest,
-} from "@/hooks/queries/environment-queries";
+import { useRetiredSidebarEnvironmentPullRequest } from "./retired-sidebar-pull-request";
 import { useHosts } from "@/hooks/queries/host-queries";
 import { useQuickCreateProject } from "@/hooks/useQuickCreateProject";
 import { useArchivedThreads } from "@/hooks/queries/thread-queries";
 import { useSidebarNavigation } from "@/hooks/queries/sidebar-navigation-query";
-import {
-  archivedThreadsListQueryKey,
-  sidebarNavigationQueryKey,
-  threadQueryKey,
-} from "@/hooks/queries/query-keys";
 import {
   usePinThread,
   useUnpinThread,
@@ -57,11 +47,9 @@ import {
 } from "@/hooks/mutations/thread-state-mutations";
 import { useRouteNavigate } from "@/components/ui/app-route-anchor";
 import { toPluginSidebarThread } from "./plugin-sidebar-threads";
-import {
-  threadEntryMapFor,
-  useSidebarThreadEntries,
-} from "./sidebar-thread-entries";
+import { useSidebarThreadEntries } from "./sidebar-thread-entries";
 import { useSetRootComposeProjectId } from "./root-compose-selection";
+import { useSecondTick } from "@/hooks/useSecondTick";
 import { notifyPaneLimit } from "./split-layout/notifyPaneLimit";
 import { openThreadInSplit } from "./split-layout/openThreadInSplit";
 import {
@@ -70,7 +58,7 @@ import {
   getSettingsProjectRoutePath,
   getThreadRoutePath,
 } from "./route-paths";
-
+export { lookupCachedThread, resolveThread } from "./cached-thread.js";
 const EMPTY_THREADS: readonly PluginSidebarThread[] = [];
 const EMPTY_PROJECTS: readonly PluginSidebarProject[] = [];
 const EMPTY_SECTIONS: readonly PluginSidebarSection[] = [];
@@ -97,6 +85,7 @@ const pluginSidebarThreadByEntry = new WeakMap<
   {
     hostNamesById: ReadonlyMap<string, string>;
     titleResources: ThreadTitleMentionResources;
+    nativeActivityUnconfirmed: boolean;
     thread: PluginSidebarThread;
   }
 >();
@@ -105,19 +94,32 @@ function toPluginSidebarThreadCached(
   entry: ThreadListEntry,
   hostNamesById: ReadonlyMap<string, string>,
   titleResources: ThreadTitleMentionResources,
+  now: number,
 ): PluginSidebarThread {
   const cached = pluginSidebarThreadByEntry.get(entry);
+  const nativeActivityUnconfirmed = isNativeActivityUnconfirmed(
+    entry.runtime,
+    now,
+  );
   if (
     cached !== undefined &&
     cached.hostNamesById === hostNamesById &&
-    cached.titleResources === titleResources
+    cached.titleResources === titleResources &&
+    cached.nativeActivityUnconfirmed === nativeActivityUnconfirmed
   ) {
     return cached.thread;
   }
-  const thread = toPluginSidebarThread(entry, hostNamesById, titleResources);
+  const thread = toPluginSidebarThread(
+    entry,
+    hostNamesById,
+    titleResources,
+    now,
+    nativeActivityUnconfirmed,
+  );
   pluginSidebarThreadByEntry.set(entry, {
     hostNamesById,
     titleResources,
+    nativeActivityUnconfirmed,
     thread,
   });
   return thread;
@@ -164,6 +166,19 @@ export function useSidebarThreads(
   );
   const query = useSidebarNavigation();
   const data = query.data;
+  const activityNow = useSecondTick(
+    data?.projects.some((project) =>
+      project.threads.some(
+        (thread) => thread.runtime.nativeActivity !== undefined,
+      ),
+    ) === true ||
+      data?.personalProject.threads.some(
+        (thread) => thread.runtime.nativeActivity !== undefined,
+      ) === true ||
+      archived.data?.pages.some((page) =>
+        page.some((thread) => thread.runtime.nativeActivity !== undefined),
+      ) === true,
+  );
   const { data: hosts } = useHosts();
   const hostNamesById = hostNamesFor(hosts);
   const titleResources = useThreadTitleMentionResources();
@@ -197,7 +212,12 @@ export function useSidebarThreads(
       experimental_archived: archiveState,
       status: !active && archiveState !== null ? archiveState.status : "ready",
       threads: [...selected.values()].map((thread) =>
-        toPluginSidebarThreadCached(thread, hostNamesById, titleResources),
+        toPluginSidebarThreadCached(
+          thread,
+          hostNamesById,
+          titleResources,
+          activityNow,
+        ),
       ),
       experimental_hosts: hosts ?? [],
       projects: allProjects.map((project) => ({
@@ -211,6 +231,7 @@ export function useSidebarThreads(
     };
   }, [
     data,
+    activityNow,
     hostNamesById,
     hosts,
     query.isError,
@@ -224,36 +245,6 @@ export function useSidebarThreads(
 
 export function useThreadEntryMap(): ReadonlyMap<string, ThreadListEntry> {
   return useSidebarThreadEntries();
-}
-
-export function lookupCachedThread(
-  queryClient: QueryClient,
-  threadId: string,
-): Thread | null {
-  const detail = queryClient.getQueryData<Thread>(threadQueryKey(threadId));
-  if (detail !== undefined) return detail;
-  const active = threadEntryMapFor(
-    queryClient.getQueryData<ReturnType<typeof useSidebarNavigation>["data"]>(
-      sidebarNavigationQueryKey(),
-    ),
-  ).get(threadId);
-  if (active !== undefined) return active;
-  const archived = queryClient.getQueryData<
-    InfiniteData<readonly ThreadListEntry[]>
-  >(archivedThreadsListQueryKey({}));
-  return (
-    archived?.pages.flat().find((thread) => thread.id === threadId) ?? null
-  );
-}
-
-export async function resolveThread(
-  queryClient: QueryClient,
-  threadId: string,
-): Promise<Thread> {
-  return (
-    lookupCachedThread(queryClient, threadId) ??
-    (await sdk.threads.get({ threadId }))
-  );
 }
 
 export function useSidebarThreadEntry(
@@ -422,17 +413,35 @@ export function useSidebarThreadShortcut(
   return useHostSidebarThreadShortcut(threadId) ?? null;
 }
 
+interface RetiredSidebarThreadPullRequestState {
+  isLoading: boolean;
+  pullRequest: {
+    number: number;
+    title: string;
+    url: string;
+    state: PullRequest["state"];
+    attention: PullRequest["attention"];
+    experimental_autoMerge: boolean;
+    experimental_inMergeQueue: boolean | null;
+    experimental_checks: { state: PullRequest["checks"]["state"] };
+    experimental_review: { state: PullRequest["review"]["state"] };
+    experimental_mergeability: {
+      state: PullRequest["mergeability"]["state"];
+    };
+  } | null;
+}
+
 export function useSidebarThreadPullRequest(
   threadId: string,
-): PluginSidebarThreadPullRequestState {
+): RetiredSidebarThreadPullRequestState {
   const entry = useSidebarThreadEntry(threadId);
   const environmentId = entry?.environmentId ?? null;
-  const query = useEnvironmentPullRequest(environmentId);
-  const pullRequest = getEnvironmentPullRequestFromResponse(query.data);
+  const { isLoading, pullRequest } =
+    useRetiredSidebarEnvironmentPullRequest(environmentId);
 
-  return useMemo<PluginSidebarThreadPullRequestState>(
+  return useMemo<RetiredSidebarThreadPullRequestState>(
     () => ({
-      isLoading: environmentId !== null && query.isPending,
+      isLoading,
       pullRequest:
         pullRequest === null
           ? null
@@ -451,7 +460,7 @@ export function useSidebarThreadPullRequest(
               },
             },
     }),
-    [environmentId, pullRequest, query.isPending],
+    [isLoading, pullRequest],
   );
 }
 

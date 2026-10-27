@@ -19,13 +19,14 @@ export async function checkNativeTerminal(args: {
   baseUrl: string;
   threadId: string;
   timeoutMs?: number;
+  fetch?: typeof fetch;
 }): Promise<NativeTerminalCheck> {
   let answered = false;
   const timeoutMs = args.timeoutMs ?? NATIVE_TERMINAL_CHECK_TIMEOUT_MS;
   const sdk = createNodeBbSdk({
     baseUrl: args.baseUrl,
     fetch: async (input, init) => {
-      const response = await cliFetch(input, {
+      const response = await (args.fetch ?? cliFetch)(input, {
         ...init,
         signal: AbortSignal.timeout(timeoutMs),
       });

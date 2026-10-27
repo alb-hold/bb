@@ -72,6 +72,7 @@ export function Lifecycle() {
             <ThreadTimelineRows
               {...baseProps}
               timelineRows={[{ ...thought, id: `reasoning-${cycle}` }]}
+              threadIsActive={false}
             />
           ) : (
             <TimelineWorkingIndicator
@@ -94,12 +95,14 @@ export function Completed() {
         {...baseProps}
         timelineRows={[thought]}
         initialExpanded={new Set([thought.id])}
+        threadIsActive={false}
       />
       <ThreadTimelineRows
         {...baseProps}
         timelineRows={[
           { ...thought, id: "interrupted", status: "interrupted" },
         ]}
+        threadIsActive={false}
       />
     </div>
   );
@@ -139,6 +142,7 @@ export function Grouped() {
                 ]
               : rows
           }
+          threadIsActive={false}
         />
       </TimelineReasoningExpansionProvider>
     </div>

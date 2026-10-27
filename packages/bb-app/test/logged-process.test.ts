@@ -11,15 +11,17 @@ import {
   renameSync,
   rmSync,
   statSync,
+  watch,
   symlinkSync,
   unlinkSync,
   utimesSync,
+  truncateSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { createConnection } from "node:net";
 import { join, resolve } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { spawnLoggedProcess } from "../src/logged-process.js";
 
 const scratchDirs: string[] = [];
@@ -56,6 +58,48 @@ function familyFiles(logDir: string, logName: string): string[] {
         name.startsWith(`${logName}-stdio.log.backup-`),
     )
     .map((name) => join(logDir, name));
+}
+
+async function waitForFileContents(
+  path: string,
+  contents: string,
+): Promise<void> {
+  await expect
+    .poll(
+      () =>
+        existsSync(path) && readFileSync(path, "utf8") === contents,
+      { timeout: 5_000, interval: 10 },
+    )
+    .toBe(true);
+}
+
+async function waitForPaths(paths: string[], timeout: number): Promise<void> {
+  const allExist = () =>
+    paths.every((path) => existsSync(path) && statSync(path).size > 0);
+  if (allExist()) return;
+  await new Promise<void>((resolve, reject) => {
+    const watcher = watch(join(paths[0], ".."), () => {
+      if (allExist()) {
+        clearTimeout(timer);
+        watcher.close();
+        resolve();
+      }
+    });
+    const timer = setTimeout(() => {
+      watcher.close();
+      reject(new Error(`Timed out waiting for paths: ${paths.join(", ")}`));
+    }, timeout);
+    watcher.on("error", (error) => {
+      clearTimeout(timer);
+      watcher.close();
+      reject(error);
+    });
+    if (allExist()) {
+      clearTimeout(timer);
+      watcher.close();
+      resolve();
+    }
+  });
 }
 
 function fileIncludes(path: string, content: string): boolean {
@@ -412,6 +456,35 @@ describe("spawnLoggedProcess", () => {
       .toBe(true);
   });
 
+  it("moves an oversized capture aside at spawn, keeping one previous file", async () => {
+    const logDir = scratchDir();
+    const logPath = join(logDir, "host-daemon-stdio.log");
+    const previousPath = join(logDir, "host-daemon-stdio.1.log");
+    writeFileSync(previousPath, "older capture");
+    writeFileSync(logPath, "oversized capture");
+    truncateSync(logPath, 10 * 1024 * 1024 + 1);
+
+    const child = spawnLoggedProcess({
+      command: process.execPath,
+      args: ["-e", `console.error("fresh startup"); process.exit(1);`],
+      env: process.env,
+      logDir,
+      logName: "host-daemon",
+    });
+
+    expect(await waitForExit(child)).toBe(1);
+    await vi.waitFor(
+      () => expect(readFileSync(logPath, "utf8")).toBe("fresh startup\n"),
+      { timeout: 5_000 },
+    );
+    const captures = uniqueFamilyFiles(logDir, "host-daemon")
+      .filter((path) => path !== logPath)
+      .map((path) => readFileSync(path, "utf8"))
+      .join("");
+    expect(captures).toContain("older capture");
+    expect(captures).toContain("oversized capture");
+  });
+
   it("keeps a paused writer within its own segment while another writer rotates", async () => {
     const logDir = scratchDir();
     const enteredPath = join(logDir, "first-writer-before-write");
@@ -725,6 +798,22 @@ describe("spawnLoggedProcess", () => {
     }
   });
 
+  it("waits for marker contents after its path appears", async () => {
+    const markerPath = join(scratchDir(), "marker");
+    const contents = "complete";
+    writeFileSync(markerPath, "");
+    const delayedWrite = setTimeout(
+      () => writeFileSync(markerPath, contents),
+      100,
+    );
+    try {
+      await waitForFileContents(markerPath, contents);
+      expect(readFileSync(markerPath, "utf8")).toBe(contents);
+    } finally {
+      clearTimeout(delayedWrite);
+    }
+  });
+
   it("recovers a killed writer's completed output when a later writer starts", async () => {
     const logDir = scratchDir();
     const enteredPath = join(logDir, "killed-writer-finalizing");
@@ -743,9 +832,7 @@ describe("spawnLoggedProcess", () => {
     let survivor: ReturnType<typeof spawnLoggedProcess> | undefined;
     try {
       expect(await waitForExit(first)).toBe(0);
-      await expect
-        .poll(() => existsSync(enteredPath), { timeout: 5_000, interval: 10 })
-        .toBe(true);
+      await waitForFileContents(enteredPath, String(first.writerProcess.pid));
       const activeSegment = familyFiles(logDir, "server").find(
         (file) =>
           file.includes(".active-") &&
@@ -3058,13 +3145,29 @@ fs.renameSync = function (source, destination) {
       pruneObservedCountsPath: join(logDir, `prune-counts-${label}`),
       completionPath: join(logDir, `writer-complete-${label}`),
     }));
+    const pipeProbeBarrier = {
+      childOutputStartedPath: join(logDir, "pipe-probe-output-started"),
+      childOutputFinishedPath: join(logDir, "pipe-probe-output-finished"),
+      completionPath: join(logDir, "pipe-probe-writer-complete"),
+      enteredPath: join(logDir, "pipe-probe-writer-entered"),
+      releasePath: join(logDir, "release-pipe-probe-writer"),
+      pauseAtBytes: 1,
+    };
+    const pipeProbeLogDir = join(logDir, "pipe-probe");
+    const pipeProbeScript = `
+      const fs = require("node:fs");
+      fs.writeFileSync(${JSON.stringify(pipeProbeBarrier.childOutputStartedPath)}, String(Date.now()));
+      process.stdout.write(Buffer.alloc(2 * 1024 * 1024, 67), () =>
+        fs.writeFileSync(${JSON.stringify(pipeProbeBarrier.childOutputFinishedPath)}, String(Date.now())),
+      );
+    `;
     for (let index = 0; index < 4; index += 1) {
       const backupPath = `${logPath}.backup-${index + 1}-1-${String(index + 1).padStart(8, "0")}`;
       writeFileSync(backupPath, `old-backup-${index}\n`);
       const timestamp = new Date(1_700_000_000_000 + index * 1_000);
       utimesSync(backupPath, timestamp, timestamp);
     }
-    const writers = ["A", "B"].map((label, index) =>
+    const startPruningWriter = (label: string, index: number) =>
       spawnLoggedProcess({
         command: process.execPath,
         args: [
@@ -3075,48 +3178,55 @@ fs.renameSync = function (source, destination) {
         logDir,
         logName: "server",
         testWriterBarrier: barriers[index],
-      }),
-    );
+      });
+    const pruningWriters = [startPruningWriter("A", 0)];
+    let pipeProbe: ReturnType<typeof spawnLoggedProcess> | undefined;
+    const writers: ReturnType<typeof spawnLoggedProcess>[] = [...pruningWriters];
 
     try {
-      expect(
-        await Promise.all(writers.map((writer) => waitForExit(writer))),
-      ).toEqual([0, 0]);
-      await expect
-        .poll(
-          () =>
-            barriers.every((barrier) =>
-              existsSync(barrier.postRenameEnteredPath!),
-            ),
-          { timeout: 10_000 },
-        )
-        .toBe(true);
+      await waitForPaths([barriers[0].postRenameEnteredPath!], 10_000);
+      pruningWriters.push(startPruningWriter("B", 1));
+      writers.push(pruningWriters[1]);
+      await waitForPaths([barriers[1].postRenameEnteredPath!], 10_000);
       expect(backupCount()).toBe(6);
       writeFileSync(postRenameReleasePath, "release");
-      await expect
-        .poll(
-          () =>
-            barriers.every((barrier) =>
-              existsSync(barrier.pruneSnapshotEnteredPath!),
-            ),
-          { timeout: 10_000 },
-        )
-        .toBe(true);
+      await waitForPaths(barriers.map((barrier) => barrier.pruneSnapshotEnteredPath!), 10_000);
       expect(backupCount()).toBe(6);
       expect(
-        barriers.every(
-          (barrier) =>
-            readFileSync(barrier.pruneSnapshotEnteredPath!, "utf8") === "6",
+        barriers.map((barrier) =>
+          readFileSync(barrier.pruneSnapshotEnteredPath!, "utf8"),
         ),
-      ).toBe(true);
+      ).toEqual(["6", "6"]);
+      pipeProbe = spawnLoggedProcess({
+        command: process.execPath,
+        args: ["-e", pipeProbeScript],
+        env: process.env,
+        logDir: pipeProbeLogDir,
+        logName: "server",
+        testWriterBarrier: pipeProbeBarrier,
+      });
+      writers.push(pipeProbe);
+      await waitForPaths(
+        [pipeProbeBarrier.enteredPath, pipeProbeBarrier.childOutputStartedPath],
+        10_000,
+      );
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      expect(pipeProbe.exitCode).toBe(null);
+      expect(existsSync(pipeProbeBarrier.childOutputFinishedPath)).toBe(false);
       writeFileSync(barriers[0].pruneSnapshotReleasePath!, "release");
       await writers[0].writerExit;
       writeFileSync(barriers[1].pruneSnapshotReleasePath!, "release");
-      await Promise.all(writers.map((writer) => writer.writerExit));
+      await writers[1].writerExit;
+      writeFileSync(pipeProbeBarrier.releasePath, "release");
+      expect(
+        await Promise.all(writers.map((writer) => waitForExit(writer))),
+      ).toEqual([0, 0, 0]);
+      await pipeProbe.writerExit;
       await expect
         .poll(
           () =>
-            barriers.every((barrier) => existsSync(barrier.completionPath!)),
+            barriers.every((barrier) => existsSync(barrier.completionPath!)) &&
+            existsSync(pipeProbeBarrier.completionPath),
           {
             timeout: 10_000,
           },
@@ -3159,11 +3269,22 @@ fs.renameSync = function (source, destination) {
       expect(contents.some((content) => content.includes("old-backup-3"))).toBe(
         true,
       );
+      const pipeProbeContents = uniqueFamilyFiles(
+        pipeProbeLogDir,
+        "server",
+      ).map((file) => readFileSync(file).toString("latin1"));
+      expect(
+        pipeProbeContents.reduce(
+          (total, content) => total + content.split("C").length - 1,
+          0,
+        ),
+      ).toBe(2 * 1024 * 1024);
     } finally {
       writeFileSync(postRenameReleasePath, "release");
       for (const barrier of barriers) {
         writeFileSync(barrier.pruneSnapshotReleasePath!, "release");
       }
+      writeFileSync(pipeProbeBarrier.releasePath, "release");
       for (const writer of writers) {
         if (writer.exitCode === null) writer.kill("SIGKILL");
       }

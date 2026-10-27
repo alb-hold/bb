@@ -1,6 +1,10 @@
 import { reportEnvironmentHookProgress } from "../services/environments/environment-hooks.js";
 import { syncDesktopBrowserTabs } from "../services/desktop-browsers.js";
-import { heartbeatSession } from "@bb/db";
+import {
+  getLatestSessionForHost,
+  getSessionById,
+  heartbeatSession,
+} from "@bb/db";
 import {
   hasHostDaemonWebSocketProtocol,
   hostDaemonDaemonWsMessageSchema,
@@ -50,6 +54,8 @@ interface DaemonSocket {
 
 interface DaemonSocketMessageArgs {
   hostId: string;
+  message?: HostDaemonDaemonWsMessage;
+  acceptedAtArrival?: boolean;
   raw: unknown;
   sessionId: string;
   socket: DaemonSocket;
@@ -101,11 +107,47 @@ export const SERVER_MOVE_FENCED_DAEMON_MESSAGE_TYPES: ReadonlySet<
   "terminal.exited",
 ]);
 
-export function onDaemonSocketOpen(
+export function decodeDaemonSocketMessage(
+  socket: DaemonSocket,
+  raw: unknown,
+): HostDaemonDaemonWsMessage | null {
+  return parseSocketMessage(socket, raw, hostDaemonDaemonWsMessageSchema);
+}
+
+export function prepareDaemonSocketFrame(
+  socket: DaemonSocket,
+  raw: unknown,
+  decode: typeof decodeDaemonSocketMessage = decodeDaemonSocketMessage,
+): { message: HostDaemonDaemonWsMessage; priority: boolean } | null {
+  const message = decode(socket, raw);
+  if (message === null) return null;
+  return { message, priority: isDaemonSocketMessageQueuePriority(message) };
+}
+
+export function enqueueDaemonSocketFrame(args: {
+  authorize: (messageType: HostDaemonDaemonWsMessage["type"]) => boolean;
+  decode?: typeof decodeDaemonSocketMessage;
+  enqueue: (
+    message: HostDaemonDaemonWsMessage,
+    priority: boolean,
+    acceptedAtArrival: true,
+  ) => void;
+  raw: unknown;
+  recordActivity: () => void;
+  socket: DaemonSocket;
+}): void {
+  const prepared = prepareDaemonSocketFrame(args.socket, args.raw, args.decode);
+  if (prepared === null) return;
+  if (!args.authorize(prepared.message.type)) return;
+  args.recordActivity();
+  args.enqueue(prepared.message, prepared.priority, true);
+}
+
+export async function onDaemonSocketOpen(
   deps: LoggedPendingInteractionWorkSessionDeps &
     Pick<AppDeps, "hub" | "logger" | "sharedPorts" | "terminalSessions">,
   args: { hostId: string; sessionId: string; socket: DaemonSocket },
-): void {
+): Promise<void> {
   deps.logger.info(
     { sessionId: args.sessionId, hostId: args.hostId },
     "Daemon WebSocket opened",
@@ -114,12 +156,13 @@ export function onDaemonSocketOpen(
   handleDaemonSocketOpened(deps, { hostId: args.hostId });
   deps.sharedPorts.pushCurrentSharedPortsForHost(args.hostId);
   let nativeThreadIds: string[] = [];
+  deps.sharedPorts.pushCurrentNextTunnelForHost(args.hostId);
   if (!isServerMoveSnapshotFenced(deps.db)) {
     nativeThreadIds = listNativeTerminalThreadsAwaitingDaemon(
       deps,
       args.hostId,
     );
-    deps.terminalSessions.reconcileDisconnectedHostTerminals({
+    await deps.terminalSessions.reconcileDisconnectedHostTerminals({
       daemonSessionId: args.sessionId,
       hostId: args.hostId,
     });
@@ -158,40 +201,106 @@ export function onDaemonSocketMessage(
   args: DaemonSocketMessageArgs,
   plugins?: Pick<PluginService, "handleHostSignal" | "handleHostWorkerExit">,
   serverMove?: Pick<ServerMoveCoordinator, "handleProgress">,
-): void {
-  const message = parseSocketMessage(
-    args.socket,
-    args.raw,
-    hostDaemonDaemonWsMessageSchema,
-  );
+): void | Promise<void> {
+  const message =
+    args.message ?? decodeDaemonSocketMessage(args.socket, args.raw);
   if (message === null) {
     return;
   }
+
+  const handleError = (error: unknown): void => {
+    if (error instanceof ApiError && error.body.code === "inactive_session") {
+      deps.logger.info(
+        getInactiveSessionLogFields(deps.db, {
+          authenticatedHostId: args.hostId,
+          now: Date.now(),
+          sessionId: args.sessionId,
+        }),
+        "Daemon heartbeat for inactive session, closing socket",
+      );
+      args.socket.close(1008, "inactive-session");
+      return;
+    }
+
+    if (error instanceof ApiError && error.status === 403) {
+      deps.logger.warn(
+        {
+          sessionId: args.sessionId,
+          ...runtimeErrorLogFields(deps.config, error),
+        },
+        "Daemon heartbeat for unauthorized session, closing socket",
+      );
+      args.socket.close(1008, "unauthorized-session");
+      return;
+    }
+
+    deps.logger.warn(
+      {
+        sessionId: args.sessionId,
+        messageType: message.type,
+        ...runtimeErrorLogFields(deps.config, error),
+      },
+      "Daemon message rejected, closing socket",
+    );
+    args.socket.close(1008, "inactive-session");
+  };
+
+  const getSessionForDispatch = () => {
+    if (!args.acceptedAtArrival) {
+      return requireAuthorizedOpenSession(deps.db, {
+        hostId: args.hostId,
+        sessionId: args.sessionId,
+      });
+    }
+    const session = getSessionById(deps.db, { sessionId: args.sessionId });
+    if (!session) {
+      throw new ApiError(401, "inactive_session", "Inactive daemon session");
+    }
+    if (session.hostId !== args.hostId) {
+      throw new ApiError(
+        403,
+        "invalid_request",
+        "Session does not belong to the authenticated host",
+      );
+    }
+    const latestSession = getLatestSessionForHost(deps.db, {
+      hostId: args.hostId,
+    });
+    if (session.status === "active" && latestSession?.id === session.id)
+      return session;
+    if (
+      session.status === "closed" &&
+      session.closeReason === "daemon-disconnect" &&
+      latestSession?.id === session.id
+    ) {
+      return session;
+    }
+    throw new ApiError(401, "inactive_session", "Inactive daemon session");
+  };
 
   try {
     if (
       message.type === "terminal.output" &&
       !deps.hub.hasTerminalClients(message.terminalId)
     ) {
-      requireAuthorizedOpenSession(deps.db, {
-        hostId: args.hostId,
-        sessionId: args.sessionId,
-      });
-      deps.hub.recordDaemonActivity(args.sessionId);
+      getSessionForDispatch();
+      if (!args.acceptedAtArrival) {
+        deps.hub.recordDaemonActivity(args.sessionId);
+      }
       return;
     }
-    runEventLoopWorkSync(`ws:daemon ${message.type}`, () => {
-      const session = requireAuthorizedOpenSession(deps.db, {
-        hostId: args.hostId,
-        sessionId: args.sessionId,
-      });
-      deps.hub.recordDaemonActivity(args.sessionId);
+    const work = runEventLoopWorkSync(`ws:daemon ${message.type}`, () => {
+      const session = getSessionForDispatch();
+      if (!args.acceptedAtArrival) {
+        deps.hub.recordDaemonActivity(args.sessionId);
+      }
       const now = Date.now();
       if (
-        message.type === "heartbeat" ||
-        now < session.updatedAt ||
-        now - session.updatedAt >= session.heartbeatIntervalMs ||
-        session.leaseExpiresAt <= now + session.heartbeatIntervalMs
+        session.status === "active" &&
+        (message.type === "heartbeat" ||
+          now < session.updatedAt ||
+          now - session.updatedAt >= session.heartbeatIntervalMs ||
+          session.leaseExpiresAt <= now + session.heartbeatIntervalMs)
       ) {
         heartbeatSession(
           deps.db,
@@ -266,6 +375,14 @@ export function onDaemonSocketMessage(
         deps.sharedPorts.recordTunnelIdentity(args.hostId, message.identity);
         return;
       }
+      if (message.type === "connect-next.status") {
+        deps.sharedPorts.recordNextTunnelStatus({
+          hostId: args.hostId,
+          sessionId: args.sessionId,
+          status: message.status,
+        });
+        return;
+      }
       if (message.type === "desktop-browser.changed") {
         const scope = {
           hostId: args.hostId,
@@ -325,48 +442,108 @@ export function onDaemonSocketMessage(
       if (message.type === "machine.shutdown-ack") {
         return;
       }
-      deps.terminalSessions.handleDaemonTerminalMessage({
+      return deps.terminalSessions.handleDaemonTerminalMessage({
         hostId: args.hostId,
         message,
         sessionId: args.sessionId,
       });
     });
+    if (work instanceof Promise) return work.catch(handleError);
   } catch (error) {
-    if (error instanceof ApiError && error.body.code === "inactive_session") {
-      deps.logger.info(
-        getInactiveSessionLogFields(deps.db, {
-          authenticatedHostId: args.hostId,
-          now: Date.now(),
-          sessionId: args.sessionId,
-        }),
-        "Daemon heartbeat for inactive session, closing socket",
-      );
-      args.socket.close(1008, "inactive-session");
-      return;
-    }
-
-    if (error instanceof ApiError && error.status === 403) {
-      deps.logger.warn(
-        {
-          sessionId: args.sessionId,
-          ...runtimeErrorLogFields(deps.config, error),
-        },
-        "Daemon heartbeat for unauthorized session, closing socket",
-      );
-      args.socket.close(1008, "unauthorized-session");
-      return;
-    }
-
-    deps.logger.warn(
-      {
-        sessionId: args.sessionId,
-        messageType: message.type,
-        ...runtimeErrorLogFields(deps.config, error),
-      },
-      "Daemon message rejected, closing socket",
-    );
-    args.socket.close(1008, "inactive-session");
+    handleError(error);
   }
+}
+
+export function createDaemonSocketMessageQueue<T>(args: {
+  handle: (message: T) => void | Promise<void>;
+  onError: (error: unknown) => void;
+}): {
+  enqueue: (message: T, priority?: boolean) => void;
+  release: () => void;
+  close: () => void;
+} {
+  let released = false;
+  let handling = false;
+  let closed = false;
+  const queued: { value: T }[] = [];
+  const reportError = (error: unknown): void => {
+    try {
+      args.onError(error);
+    } catch {}
+  };
+  const deliverPriority = (message: T): void => {
+    try {
+      const result = args.handle(message);
+      if (result instanceof Promise) void result.catch(reportError);
+    } catch (error) {
+      reportError(error);
+    }
+  };
+  const deliver = (message: T): void => {
+    handling = true;
+    try {
+      const result = args.handle(message);
+      if (result instanceof Promise) {
+        void result.then(
+          () => {
+            handling = false;
+            drain();
+          },
+          (error: unknown) => {
+            reportError(error);
+            handling = false;
+            drain();
+          },
+        );
+        return;
+      }
+    } catch (error) {
+      reportError(error);
+    }
+    handling = false;
+  };
+  const drain = (): void => {
+    if (handling || !released) return;
+    while (!handling && queued.length > 0) {
+      const item = queued.shift();
+      if (item !== undefined) deliver(item.value);
+    }
+  };
+  const release = (): void => {
+    if (released) return;
+    released = true;
+    drain();
+  };
+  const close = (): void => {
+    closed = true;
+    drain();
+  };
+  return {
+    enqueue: (message, priority = false) => {
+      if (closed) return;
+      if (released) {
+        if (priority) {
+          deliverPriority(message);
+          return;
+        }
+        if (handling || queued.length > 0) queued.push({ value: message });
+        else {
+          queued.push({ value: message });
+          drain();
+        }
+        return;
+      }
+      queued.push({ value: message });
+    },
+    release,
+    close,
+  };
+}
+
+export function isDaemonSocketMessageQueuePriority(message: {
+  type: string;
+}): boolean {
+  return message.type === "heartbeat";
 }
 
 const DAEMON_LIVENESS_CHECK_INTERVAL_MS = HEARTBEAT_INTERVAL_MS;

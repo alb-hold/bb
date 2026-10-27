@@ -15,6 +15,7 @@ import {
   SERVER_HTTP_CLOSE_WAIT_TIMEOUT_MS,
   SERVER_HTTP_DRAIN_TIMEOUT_MS,
   SERVER_PLUGIN_SHUTDOWN_TIMEOUT_MS,
+  SERVER_TERMINAL_OUTPUT_FLUSH_TIMEOUT_MS,
   SERVER_WEBSOCKET_SHUTDOWN_WAIT_TIMEOUT_MS,
 } from "@bb/config/full-stack-shutdown";
 import { superviseTcpServerSockets } from "@bb/process-utils";
@@ -161,8 +162,10 @@ export async function shutdownHttpBeforePlugins(args: {
   stopPeriodicUpdateChecks?: () => Promise<void>;
   stopPlugins: () => Promise<void>;
   stopTerminalDataPlane: () => void;
+  flushTerminalOutputBeforeClose?: (signal: AbortSignal) => Promise<void>;
 }): Promise<{ completedWithinBounds: boolean; pluginStopTimedOut: boolean }> {
   let completedWithinBounds = true;
+  let databaseCanClose = true;
   let pluginStopTimedOut = false;
   args.stopTerminalDataPlane();
   const closed = new Promise<void>((resolve, reject) => {
@@ -199,25 +202,60 @@ export async function shutdownHttpBeforePlugins(args: {
   if (!drained) {
     args.server.closeAllConnections();
   }
-  completedWithinBounds =
-    (await waitAtMost(
-      webSocketsClosed,
-      SERVER_WEBSOCKET_SHUTDOWN_WAIT_TIMEOUT_MS,
-    )) && completedWithinBounds;
-  completedWithinBounds =
-    (await waitAtMost(closed, SERVER_HTTP_CLOSE_WAIT_TIMEOUT_MS)) &&
-    completedWithinBounds;
+  const webSocketsClosedWithinBound = await waitAtMost(
+    webSocketsClosed,
+    SERVER_WEBSOCKET_SHUTDOWN_WAIT_TIMEOUT_MS,
+  );
+  completedWithinBounds = webSocketsClosedWithinBound && completedWithinBounds;
+  databaseCanClose = webSocketsClosedWithinBound;
+  if (args.flushTerminalOutputBeforeClose !== undefined) {
+    const flushController = new AbortController();
+    const flushOutcome = await new Promise<
+      "completed" | "failed" | "timed-out"
+    >((resolve) => {
+      const timer = setTimeout(
+        () => resolve("timed-out"),
+        SERVER_TERMINAL_OUTPUT_FLUSH_TIMEOUT_MS,
+      );
+      void Promise.resolve()
+        .then(() =>
+          args.flushTerminalOutputBeforeClose!(flushController.signal),
+        )
+        .then(
+          () => {
+            clearTimeout(timer);
+            resolve("completed");
+          },
+          () => {
+            clearTimeout(timer);
+            resolve("failed");
+          },
+        );
+    });
+    if (flushOutcome !== "completed") flushController.abort(flushOutcome);
+    completedWithinBounds =
+      flushOutcome === "completed" && completedWithinBounds;
+  }
+  const httpClosed = await waitAtMost(
+    closed,
+    SERVER_HTTP_CLOSE_WAIT_TIMEOUT_MS,
+  );
+  completedWithinBounds = httpClosed && completedWithinBounds;
+  databaseCanClose = databaseCanClose && httpClosed;
   for (const socket of shutdownSockets.get(args.server) ?? []) socket.destroy();
-  completedWithinBounds =
-    (await waitAtMost(closed, SERVER_HTTP_CLOSE_WAIT_TIMEOUT_MS)) &&
-    completedWithinBounds;
+  const httpClosedAfterSocketDestroy = await waitAtMost(
+    closed,
+    SERVER_HTTP_CLOSE_WAIT_TIMEOUT_MS,
+  );
+  completedWithinBounds = httpClosedAfterSocketDestroy && completedWithinBounds;
+  databaseCanClose =
+    databaseCanClose && (httpClosed || httpClosedAfterSocketDestroy);
   let pluginStopTimer: ReturnType<typeof setTimeout> | undefined;
   try {
     const stopped = await Promise.race([
-      Promise.all([
-        args.stopPeriodicUpdateChecks?.(),
-        args.stopPlugins(),
-      ]).then(() => true),
+      Promise.all([args.stopPeriodicUpdateChecks?.(), args.stopPlugins()]).then(
+        () => true,
+      ),
       new Promise<false>((resolve) => {
         pluginStopTimer = setTimeout(
           () => resolve(false),
@@ -227,13 +265,14 @@ export async function shutdownHttpBeforePlugins(args: {
     ]);
     if (!stopped) {
       pluginStopTimedOut = true;
+      databaseCanClose = false;
       args.onPluginStopTimeout?.();
     }
     completedWithinBounds = stopped && completedWithinBounds;
   } finally {
     if (pluginStopTimer !== undefined) clearTimeout(pluginStopTimer);
   }
-  if (completedWithinBounds) args.closeDatabase?.();
+  if (databaseCanClose && !pluginStopTimedOut) args.closeDatabase?.();
   return { completedWithinBounds, pluginStopTimedOut };
 }
 
@@ -245,6 +284,7 @@ export async function shutdownServerRuntime(args: {
   stopPlugins: () => Promise<void>;
   server: ReturnType<typeof startHttpListener>;
   stopTerminalDataPlane: () => void;
+  flushTerminalOutputBeforeClose?: (signal: AbortSignal) => Promise<void>;
 }): Promise<{ completedWithinBounds: boolean; pluginStopTimedOut: boolean }> {
   const result = await shutdownHttpBeforePlugins({
     closeDatabase: () => args.db.$client.close(),
@@ -257,11 +297,14 @@ export async function shutdownServerRuntime(args: {
     stopPeriodicUpdateChecks: args.stopPeriodicUpdateChecks,
     stopPlugins: args.stopPlugins,
     stopTerminalDataPlane: args.stopTerminalDataPlane,
+    flushTerminalOutputBeforeClose: args.flushTerminalOutputBeforeClose,
   });
   if (result.pluginStopTimedOut) {
     args.logger.warn("Database close skipped because plugin stop timed out");
   } else if (!result.completedWithinBounds) {
-    args.logger.warn("Database close skipped because a shutdown step exceeded its bound");
+    args.logger.warn(
+      "Database close skipped because a shutdown step exceeded its bound",
+    );
   }
   return result;
 }
@@ -358,6 +401,7 @@ export async function runServer(serverConfig: ServerConfig): Promise<void> {
     appVersion: serverConfig.BB_APP_VERSION,
     builtinSkillsRootPath: resolveBuiltinSkillsRootPath(),
     marketplaceUrl: serverConfig.BB_MARKETPLACE_URL,
+    connectGateKeysUrl: serverConfig.BB_CONNECT_GATE_KEYS_URL,
     customModels: [],
     dataDir: serverConfig.BB_DATA_DIR,
     featureFlags: serverConfig.featureFlags,
@@ -494,6 +538,7 @@ export async function runServer(serverConfig: ServerConfig): Promise<void> {
     pluginCatalogService,
     pluginService,
     serverMove,
+    tunnelIngress,
   } = createApp(
     {
       appUpdate,
@@ -644,6 +689,11 @@ export async function runServer(serverConfig: ServerConfig): Promise<void> {
               onTerminalSocketParsedMessage({ terminalSessions }, args),
             recordInputActivity: (terminalId) =>
               terminalSessions.recordDirectTerminalInput(terminalId),
+            stripHolderMarkersFromDataPlaneOutput: (terminalId, chunk) =>
+              terminalSessions.stripHolderMarkersFromDataPlaneOutput(
+                terminalId,
+                chunk,
+              ),
             recordOutputBatch: (args) =>
               terminalSessions.recordDirectTerminalOutputBatch(args),
           },
@@ -728,8 +778,15 @@ export async function runServer(serverConfig: ServerConfig): Promise<void> {
         stopPeriodicUpdateChecks: () =>
           pluginService.stopPeriodicUpdateChecks(),
         server,
-        stopTerminalDataPlane: () => terminalDataPlane?.stop(),
+        stopTerminalDataPlane: () => {
+          terminalDataPlane?.stop();
+        },
+        flushTerminalOutputBeforeClose: async (signal) => {
+          await terminalSessions.flushRetainedOutputBeforeClose(signal);
+        },
       });
+      await tunnelIngress.closeAll();
+      await closeWebSockets();
     })();
     return shutdownPromise;
   };

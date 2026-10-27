@@ -8,6 +8,7 @@ import {
 } from "../helpers/command-output-harness.js";
 import type { CommandRegistrar } from "../helpers/command-output-harness.js";
 import * as fixtures from "../helpers/command-output-fixtures.js";
+import { makeThreadListEntry } from "@bb/test-helpers/domain-fixtures";
 import { registerThreadCommands } from "../../commands/thread/index.js";
 import { formatThreadListIndicator } from "../../commands/thread/list.js";
 
@@ -16,6 +17,13 @@ describe("bb thread list command output", () => {
 
   const register: CommandRegistrar = (program) =>
     registerThreadCommands(program, () => "http://server");
+
+  const makeThreadListFixture = (
+    overrides: Parameters<typeof fixtures.makeThread>[0],
+  ) => {
+    const thread = fixtures.makeThread(overrides);
+    return { ...makeThreadListEntry(thread), ...thread };
+  };
 
   it("bb thread list supports parent-thread filtering", async () => {
     const list = vi.fn(async () => []);
@@ -37,8 +45,64 @@ describe("bb thread list command output", () => {
       query: {
         projectId: "proj-1",
         parentThreadId: "thread-manager-1",
+        archived: "false",
       },
     });
+  });
+
+  it("bb thread list includes archived children with --all", async () => {
+    const list = vi.fn(async () => []);
+    stubServerApi({ "v1.threads.$get": list });
+
+    await runCommand(
+      ["thread", "list", "--parent-thread", "thread-manager-1", "--all"],
+      register,
+    );
+
+    expect(list).toHaveBeenCalledWith({
+      query: { parentThreadId: "thread-manager-1" },
+    });
+  });
+
+  it("bb thread list defaults to active threads", async () => {
+    const list = vi.fn(async () => []);
+    stubServerApi({ "v1.threads.$get": list });
+
+    await runCommand(["thread", "list"], register);
+
+    expect(list).toHaveBeenCalledWith({ query: { archived: "false" } });
+  });
+
+  it("bb thread list selects archived threads with --archived", async () => {
+    const list = vi.fn(async () => []);
+    stubServerApi({ "v1.threads.$get": list });
+
+    await runCommand(["thread", "list", "--archived"], register);
+
+    expect(list).toHaveBeenCalledWith({ query: { archived: "true" } });
+  });
+
+  it("bb thread list includes archived and active threads with --all", async () => {
+    const list = vi.fn(async () => []);
+    stubServerApi({ "v1.threads.$get": list });
+
+    await runCommand(["thread", "list", "--all"], register);
+
+    expect(list).toHaveBeenCalledWith({ query: {} });
+  });
+
+  it("bb thread list rejects --all with --archived", async () => {
+    const list = vi.fn(async () => []);
+    stubServerApi({ "v1.threads.$get": list });
+
+    await expect(
+      runCommand(["thread", "list", "--all", "--archived"], register),
+    ).rejects.toThrow("process.exit:1");
+
+    expect(console.error).toHaveBeenCalledWith(
+      "Error: --all cannot be combined with --archived.",
+    );
+    expect(list).not.toHaveBeenCalled();
   });
 
   it("bb thread list narrows to repeated --thread IDs", async () => {
@@ -55,6 +119,50 @@ describe("bb thread list command output", () => {
     });
   });
 
+  it("bb thread list returns an archived thread requested by ID", async () => {
+    const list = vi.fn(async () => [
+      makeThreadListFixture({
+        id: "thread-archived-by-id",
+        projectId: "proj-1",
+        providerId: "codex",
+        status: "idle",
+        archivedAt: 1,
+        createdAt: 1,
+        updatedAt: 1,
+      }),
+    ]);
+    stubServerApi({
+      "v1.threads.$get": list,
+      "v1.projects.$get": async () => [{ id: "proj-1", name: "Alpha" }],
+    });
+
+    await runCommand(
+      ["thread", "list", "--thread", "thread-archived-by-id"],
+      register,
+    );
+
+    expect(list).toHaveBeenCalledWith({
+      query: { threadIds: "thread-archived-by-id" },
+    });
+    expect(collectLogPayloads(vi.mocked(console.log)).join("\n")).toContain(
+      "thread-archived-by-id",
+    );
+  });
+
+  it("bb thread list combines --thread with --archived", async () => {
+    const list = vi.fn(async () => []);
+    stubServerApi({ "v1.threads.$get": list });
+
+    await runCommand(
+      ["thread", "list", "--thread", "thread-1", "--archived"],
+      register,
+    );
+
+    expect(list).toHaveBeenCalledWith({
+      query: { threadIds: "thread-1", archived: "true" },
+    });
+  });
+
   it("bb thread list accepts a removed machine ID without looking it up among active machines", async () => {
     const list = vi.fn(async () => []);
     const hosts = vi.fn(async () => []);
@@ -68,7 +176,9 @@ describe("bb thread list command output", () => {
       register,
     );
 
-    expect(list).toHaveBeenCalledWith({ query: { hostId: "host_removed123" } });
+    expect(list).toHaveBeenCalledWith({
+      query: { hostId: "host_removed123", archived: "false" },
+    });
     expect(hosts).not.toHaveBeenCalled();
   });
 
@@ -79,7 +189,7 @@ describe("bb thread list command output", () => {
     await runCommand(["thread", "list", "--include-hidden"], register);
 
     expect(list).toHaveBeenCalledWith({
-      query: { includeHidden: "true" },
+      query: { archived: "false", includeHidden: "true" },
     });
   });
 
@@ -124,7 +234,7 @@ describe("bb thread list command output", () => {
     "bb thread list renders $flag status in the shared borderless table",
     async ({ flag, stamp, table }) => {
       const list = vi.fn(async () => [
-        fixtures.makeThread({
+        makeThreadListFixture({
           id: `thread-${flag}-1`,
           projectId: "proj-1",
           providerId: "codex",
@@ -142,7 +252,7 @@ describe("bb thread list command output", () => {
       await runCommand(["thread", "list"], register);
 
       expect(list).toHaveBeenCalledWith({
-        query: {},
+        query: { archived: "false" },
       });
       expect(collectLogPayloads(vi.mocked(console.log))).toEqual([
         "",
@@ -154,7 +264,7 @@ describe("bb thread list command output", () => {
 
   it("bb thread list hides the personal project label", async () => {
     const list = vi.fn(async () => [
-      fixtures.makeThread({
+      makeThreadListFixture({
         id: "thread-personal-1",
         projectId: domain.PERSONAL_PROJECT_ID,
         providerId: "codex",
@@ -172,7 +282,7 @@ describe("bb thread list command output", () => {
     await runCommand(["thread", "list"], register);
 
     expect(list).toHaveBeenCalledWith({
-      query: {},
+      query: { archived: "false" },
     });
     expect(collectLogPayloads(vi.mocked(console.log))).toEqual([
       "",
@@ -181,9 +291,106 @@ describe("bb thread list command output", () => {
     ]);
   });
 
+  it("shows native activity uncertainty and suppresses runtime-only Working", async () => {
+    const list = vi.fn(async () => [
+      {
+        ...makeThreadListFixture({
+          id: "thread-native-uncertain",
+          projectId: "proj-1",
+          providerId: "claude-code",
+          status: "active",
+          createdAt: 1,
+          updatedAt: 1,
+        }),
+        listIndicator: "working" as const,
+        runtime: {
+          displayStatus: "active" as const,
+          nativeActivity: {
+            lastEvidenceAt: null,
+            freshForMs: 90_000,
+            confirmation: "unconfirmed" as const,
+          },
+        },
+        activity: {
+          activeWorkflowCount: 0,
+          activeBackgroundAgentCount: 0,
+          activeBackgroundCommandCount: 0,
+          activePlanModeCount: 0,
+          activeGoalCount: 0,
+        },
+      },
+    ]);
+    stubServerApi({
+      "v1.threads.$get": list,
+      "v1.projects.$get": async () => [{ id: "proj-1", name: "Alpha" }],
+    });
+
+    await runCommand(["thread", "list"], register);
+
+    const table = collectLogPayloads(vi.mocked(console.log)).join("\n");
+    expect(table).toContain("active (activity unconfirmed)");
+    expect(table).not.toContain("Working");
+  });
+
+  it("keeps needs-input and independent background work visible for an unconfirmed native thread", async () => {
+    const makeNativeThread = (
+      id: string,
+      listIndicator: "needs-input" | "working",
+      overrides: {
+        activeBackgroundAgentCount?: number;
+        hasPendingInteraction?: boolean;
+      } = {},
+    ) => ({
+      ...makeThreadListFixture({
+        id,
+        projectId: "proj-1",
+        providerId: "claude-code",
+        status: "active",
+        createdAt: 1,
+        updatedAt: 1,
+      }),
+      listIndicator,
+      hasPendingInteraction: overrides.hasPendingInteraction ?? false,
+      runtime: {
+        displayStatus: "active" as const,
+        nativeActivity: {
+          lastEvidenceAt: null,
+          freshForMs: 90_000,
+          confirmation: "unconfirmed" as const,
+        },
+      },
+      activity: {
+        activeWorkflowCount: 0,
+        activeBackgroundAgentCount: overrides.activeBackgroundAgentCount ?? 0,
+        activeBackgroundCommandCount: 0,
+        activePlanModeCount: 0,
+        activeGoalCount: 0,
+      },
+    });
+    const list = vi.fn(async () => [
+      makeNativeThread("thread-needs-input", "needs-input", {
+        hasPendingInteraction: true,
+      }),
+      makeNativeThread("thread-background", "working", {
+        activeBackgroundAgentCount: 1,
+      }),
+    ]);
+    stubServerApi({
+      "v1.threads.$get": list,
+      "v1.projects.$get": async () => [{ id: "proj-1", name: "Alpha" }],
+    });
+
+    await runCommand(["thread", "list"], register);
+
+    const table = collectLogPayloads(vi.mocked(console.log)).join("\n");
+    expect(table).toContain("active (activity unconfirmed)");
+    expect(table).toContain("Needs input");
+    expect(table).toContain("Working");
+  });
+
   it("bb thread list prints the thread title, fallback, and project name (#1648)", async () => {
     const list = vi.fn(async () => [
-      fixtures.makeThread({
+      makeThreadListFixture({
         id: "thr_a9niqhjj9c",
         projectId: "proj_bsst4jxfwv",
         providerId: "codex",
@@ -193,7 +400,7 @@ describe("bb thread list command output", () => {
         createdAt: 1,
         updatedAt: 1,
       }),
-      fixtures.makeThread({
+      makeThreadListFixture({
         id: "thr_uwfzqywzsz",
         projectId: "proj_bsst4jxfwv",
         providerId: "codex",
@@ -203,7 +410,7 @@ describe("bb thread list command output", () => {
         createdAt: 1,
         updatedAt: 1,
       }),
-      fixtures.makeThread({
+      makeThreadListFixture({
         id: "thr_unknownproj",
         projectId: "proj_missing",
         providerId: "codex",
@@ -291,7 +498,7 @@ describe("bb thread list command output", () => {
     await runCommand(["thread", "list"], register);
 
     expect(list).toHaveBeenCalledWith({
-      query: {},
+      query: { archived: "false" },
     });
   });
 });

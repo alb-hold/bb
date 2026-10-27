@@ -1,10 +1,12 @@
-export { createConnection } from "./connection.js";
+export { afterCommit, createConnection } from "./connection.js";
 export type {
   DbConnection,
   DbQueryConnection,
   DbTransaction,
   SlowDbQueryLogger,
   SlowDbQueryLogFields,
+  ThreadListClientKind,
+  ThreadListRequestShape,
 } from "./connection.js";
 
 export * from "./schema.js";
@@ -23,11 +25,13 @@ export {
 export {
   clearThreadRowState,
   getThreadRowState,
+  listThreadRowStatesByScope,
   putThreadRowState,
   type ThreadRowProgress,
   type ThreadRowState,
   type ThreadRowStatus,
 } from "./fork-thread-row-state.js";
+export type { ThreadListEnrichmentScope } from "./thread-list-enrichment-scope.js";
 export {
   clearTerminalAttention,
   clearPersistedDeviceHandoffAttention,
@@ -64,11 +68,14 @@ export {
   getNativeTerminalThread,
   isNativeTerminalThread,
   listNativeTerminalThreadIds,
+  listNativeTerminalThreadsByIds,
   listNativeTerminalThreadsWithDisconnectedTerminal,
   recordNativeTerminalThreadSessionId,
+  stampNativeTerminalThreadActivity,
   setNativeTerminalThreadTerminal,
   type NativeTerminalThreadRecord,
   type RecordNativeSessionIdResult,
+  type StampNativeTerminalActivityResult,
   setNativeTerminalToolCredential,
   getNativeTerminalToolCredential,
   deleteNativeTerminalToolCredential,

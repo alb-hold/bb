@@ -14,6 +14,15 @@ import {
 } from "@bb/server-contract";
 import { action, CliExitError, CliUsageError } from "../action.js";
 import { createCliBbSdk } from "../client.js";
+import {
+  defaultNativeHolderSocketPath,
+  ignoreNativeHolderSignals,
+  nativeTerminalCheck,
+  openNativeHolderConnection,
+  pipeNativeHolderClient,
+  runNativeHolder,
+  writeNativeHolderAttachMarker,
+} from "../native-holder.js";
 import { terminalScopeHint } from "../context-hints.js";
 import { durationHelp, parseDurationMs } from "../duration.js";
 import { columnWidths, printBorderlessTable } from "../table.js";
@@ -24,6 +33,36 @@ const DEFAULT_COLS = 80;
 const DEFAULT_ROWS = 24;
 const TERMINAL_ATTACH_HEARTBEAT_MS = 15_000;
 const TERMINAL_WAIT_TIMEOUT_EXIT_CODE = 124;
+const NO_APP_CLIENT_MESSAGE = "No bb app is open to apply this; open bb and retry";
+
+function reportTerminalActionDelivery(deliveredClients: number): void {
+  if (deliveredClients === 0) {
+    throw new CliExitError(NO_APP_CLIENT_MESSAGE, 1, {
+      code: "no_app_clients",
+      hint: null,
+    });
+  }
+  console.log(
+    `Request sent to ${deliveredClients} open bb app client${deliveredClients === 1 ? "" : "s"}; receipt and application are not confirmed.`,
+  );
+}
+
+function reportTerminalActionResult(
+  opts: TerminalJsonOptions,
+  result: Record<string, unknown> & { deliveredClients: number },
+): void {
+  if (opts.json) {
+    outputJson(opts, {
+      ...result,
+      ...(result.deliveredClients === 0
+        ? { error: { code: "no_app_clients", message: NO_APP_CLIENT_MESSAGE } }
+        : {}),
+    });
+    if (result.deliveredClients === 0) reportTerminalActionDelivery(0);
+    return;
+  }
+  reportTerminalActionDelivery(result.deliveredClients);
+}
 
 interface TerminalJsonOptions {
   json?: boolean;
@@ -45,6 +84,7 @@ interface TerminalStartOptions
   attach?: boolean;
   command?: string;
   cols?: string;
+  id?: string;
   rows?: string;
   title?: string;
   workingDirectory?: string;
@@ -66,6 +106,10 @@ interface TerminalOutputOptions extends TerminalJsonOptions {
   lines?: string;
   sinceSeq?: string;
   tailBytes?: string;
+}
+
+interface TerminalScreenOptions extends TerminalJsonOptions {
+  lines?: string;
 }
 
 interface TerminalPipeOptions {
@@ -93,6 +137,10 @@ interface TerminalNotifyOptions {
 
 interface TerminalAttentionOptions extends TerminalJsonOptions {}
 
+interface TerminalSurfacesOptions extends TerminalJsonOptions {
+  thread: string;
+}
+
 type TerminalStartResolution =
   | { mode: "shell" }
   | { mode: "command"; command: string }
@@ -106,6 +154,88 @@ export function registerTerminalCommands(
     .command("terminal")
     .description(
       "Manage terminal sessions across threads, environments, and machines",
+    );
+
+  terminal
+    .command("holder-shell-client <terminalId> <shell> <shellArgsBase64>", {
+      hidden: true,
+    })
+    .action(
+      action(async (terminalId: string, shell: string, shellArgsBase64: string) => {
+        const baseUrl = getUrl();
+        const socketPath = defaultNativeHolderSocketPath(baseUrl, terminalId);
+        const script = process.argv[1];
+        if (script === undefined) throw new CliExitError("Cannot locate the bb CLI", 1);
+        const session = await createCliBbSdk(baseUrl).terminals.get({ terminalId });
+        const connection = await openNativeHolderConnection({
+          socketPath,
+          reattachOnly:
+            session.status === "exited" ||
+            process.env.BB_TERMINAL_HOLDER_REATTACH_ONLY === "1",
+          startTimeoutMs: 20_000,
+          startHolder: () => {
+            const holder = spawn(
+              process.execPath,
+              [...process.execArgv, script, "terminal", "holder-shell", terminalId, shell, shellArgsBase64],
+              { cwd: process.cwd(), detached: true, env: process.env, stdio: "ignore" },
+            );
+            holder.unref();
+          },
+        });
+        if (connection.kind !== "attached") return;
+        writeNativeHolderAttachMarker(process.stdout, terminalId);
+        for (const signal of ["SIGTERM", "SIGHUP"] as const) {
+          process.on(signal, () => connection.socket.destroy());
+        }
+        await pipeNativeHolderClient(connection.socket, {
+          input: process.stdin,
+          output: process.stdout,
+          fallbackSize: { cols: 80, rows: 24 },
+        });
+      }),
+    );
+
+  terminal
+    .command("holder-shell <terminalId> <shell> <shellArgsBase64>", { hidden: true })
+    .action(
+      action(async (terminalId: string, shell: string, shellArgsBase64: string) => {
+        const socketPath = defaultNativeHolderSocketPath(getUrl(), terminalId);
+        ignoreNativeHolderSignals(process, socketPath);
+        delete process.env.BB_TERMINAL_HOLDER_REATTACH_ONLY;
+        const shellArgs: unknown = JSON.parse(
+          Buffer.from(shellArgsBase64, "base64").toString("utf8"),
+        );
+        if (!Array.isArray(shellArgs) || !shellArgs.every((arg) => typeof arg === "string")) {
+          throw new CliExitError("Invalid shell arguments", 1);
+        }
+        const nodePty = await import("node-pty");
+        const sdk = createCliBbSdk(getUrl());
+        const exitCode = await runNativeHolder({
+          socketPath,
+          cwd: process.cwd(),
+          env: process.env,
+          prepare: async () => ({ command: shell, args: shellArgs }),
+          spawnPty: (child, options) => nodePty.spawn(child.command, child.args, {
+            name: process.env.TERM ?? "xterm-256color",
+            cols: options.cols,
+            rows: options.rows,
+            cwd: options.cwd,
+            env: options.env,
+          }),
+          checkTerminal: async () => {
+            try {
+              const session = await sdk.terminals.get({ terminalId });
+              return nativeTerminalCheck({ terminal: session });
+            } catch (error) {
+              if (error instanceof Error && "status" in error && error.status === 404) {
+                return "closed-for-good";
+              }
+              throw error;
+            }
+          },
+        });
+        process.exitCode = exitCode;
+      }),
     );
 
   addTerminalScopeOptions(
@@ -148,6 +278,99 @@ export function registerTerminalCommands(
             `${session.attention?.at ?? 0}\t${session.id}\t${session.title}\t${session.threadId ?? session.environmentId ?? session.hostId}`,
           );
         }
+      }),
+    );
+
+  terminal
+    .command("surfaces")
+    .description("List terminal surfaces attached to a thread")
+    .requiredOption("--thread <id>", "Thread ID")
+    .option("--json", "Print machine-readable JSON output")
+    .action(
+      action(async (opts: TerminalSurfacesOptions) => {
+        const surfaces = await createCliBbSdk(getUrl()).terminals
+          .experimental_surfaces.list({ threadId: opts.thread });
+        if (outputJson(opts, { threadId: opts.thread, surfaces })) return;
+        for (const surface of surfaces) {
+          console.log(
+            `${surface.terminalId}\t${surface.title}\t${surface.status}\t${surface.kind}`,
+          );
+        }
+      }),
+    );
+
+  terminal
+    .command("focus <terminalId>")
+    .description("Focus a terminal tab in the app")
+    .option("--json", "Print machine-readable JSON output")
+    .action(
+      action(async (terminalId: string, opts: TerminalJsonOptions) => {
+        const result = await createCliBbSdk(
+          getUrl(),
+        ).terminals.experimental_focus({ terminalId });
+        reportTerminalActionResult(opts, { terminalId, deliveredClients: result.deliveredClients });
+      }),
+    );
+
+  terminal
+    .command("open-link <terminalId> <url>")
+    .description("Open a URL in the terminal thread's browser")
+    .option("--json", "Print machine-readable JSON output")
+    .action(
+      action(async (terminalId: string, url: string, opts: TerminalJsonOptions) => {
+        const result = await createCliBbSdk(
+          getUrl(),
+        ).terminals.experimental_openBrowser({ terminalId, url });
+        reportTerminalActionResult(opts, { terminalId, url, deliveredClients: result.deliveredClients });
+      }),
+    );
+
+  terminal
+    .command("split <terminalId>")
+    .description("Place a terminal in a new side panel pane")
+    .requiredOption("--side <side>", "Pane side: right, left, up, or down")
+    .option("--json", "Print machine-readable JSON output")
+    .action(
+      action(async (terminalId: string, opts: { side: string; json?: boolean }) => {
+        if (!["right", "left", "up", "down"].includes(opts.side)) {
+          throw new CliUsageError({
+            code: "invalid_terminal_split_side",
+            hint: "Choose right, left, up, or down.",
+            message: "--side must be right, left, up, or down",
+          });
+        }
+        const result = await createCliBbSdk(
+          getUrl(),
+        ).terminals.experimental_layout.split({
+          terminalId,
+          side: opts.side as "right" | "left" | "up" | "down",
+        });
+        reportTerminalActionResult(opts, {
+            terminalId,
+            side: opts.side,
+            deliveredClients: result.deliveredClients,
+          });
+      }),
+    );
+
+  terminal
+    .command("move <terminalId>")
+    .description("Move a terminal tab to the pane containing another terminal")
+    .requiredOption("--to-pane-of <terminalId>", "Terminal whose pane receives this tab")
+    .option("--json", "Print machine-readable JSON output")
+    .action(
+      action(async (terminalId: string, opts: { toPaneOf: string; json?: boolean }) => {
+        const result = await createCliBbSdk(
+          getUrl(),
+        ).terminals.experimental_layout.move({
+          terminalId,
+          targetTerminalId: opts.toPaneOf,
+        });
+        reportTerminalActionResult(opts, {
+            terminalId,
+            targetTerminalId: opts.toPaneOf,
+            deliveredClients: result.deliveredClients,
+          });
       }),
     );
 
@@ -218,6 +441,10 @@ export function registerTerminalCommands(
       .description("Create a terminal session in exactly one scope")
       .option("--title <title>", "Terminal title")
       .option(
+        "--id <terminal-id>",
+        "Create the terminal with this ID (term_ plus 10 characters); fails if the ID exists",
+      )
+      .option(
         "--command <command>",
         "Command to run instead of an interactive shell",
       )
@@ -238,6 +465,7 @@ export function registerTerminalCommands(
         ...(opts.workingDirectory === undefined
           ? {}
           : { cwd: opts.workingDirectory }),
+        id: opts.id,
         rows: parsePositiveInteger(opts.rows, DEFAULT_ROWS, "--rows"),
         scope: await resolveTerminalCreateScope(opts, getUrl()),
         title: opts.title,
@@ -332,6 +560,32 @@ export function registerTerminalCommands(
         console.log(
           `Resized terminal ${terminalId} to ${session.cols}x${session.rows}`,
         );
+      }),
+    );
+
+  terminal
+    .command("screen <terminalId>")
+    .description("Print the rendered terminal screen")
+    .option(
+      "--lines <n>",
+      "Print the latest N rendered rows, including scrollback",
+    )
+    .option(
+      "--json",
+      "Print machine-readable JSON including cursor and grid size",
+    )
+    .action(
+      action(async (terminalId: string, opts: TerminalScreenOptions) => {
+        const sdk = createCliBbSdk(getUrl());
+        const screen = await sdk.terminals.experimental_screen({
+          terminalId,
+          ...(opts.lines === undefined ? {} : { lines: Number(opts.lines) }),
+        });
+        if (outputJson(opts, screen)) return;
+        process.stdout.write(`${screen.rows.join("\n")}\n`);
+        if (!screen.complete) {
+          process.stdout.write("Screen may be incomplete because earlier terminal output was discarded.\n");
+        }
       }),
     );
 

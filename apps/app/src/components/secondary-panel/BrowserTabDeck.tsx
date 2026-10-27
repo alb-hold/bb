@@ -68,8 +68,8 @@ function resolveBrowserTabPlacement(
   saved: BbDesktopBrowserTarget | undefined,
   windowTarget: WindowTargetCheck,
 ): BrowserTabPlacement {
-  if (windowTarget.status === "pending") return "pending";
   if (saved === undefined) return "open";
+  if (windowTarget.status === "pending") return "pending";
   const actual = windowTarget.target;
   if (actual === null || actual.hostId !== saved.hostId) return "unavailable";
   return actual.instanceId === saved.instanceId
@@ -286,11 +286,11 @@ const BROWSER_TAB_ELSEWHERE_COPY = {
   },
   reconnecting: {
     title: "Reconnecting to this tab",
-    body: "bb can't reach this computer's browser right now. The tab opens once it reconnects.",
+    body: "The tab opens again as soon as bb reconnects.",
   },
   unreachable: {
     title: "Can't reach this tab",
-    body: "bb couldn't reach this computer's browser. Try again once bb has reconnected.",
+    body: "bb couldn't reconnect. Try again in a moment.",
   },
 } as const;
 

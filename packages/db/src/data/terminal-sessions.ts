@@ -1,6 +1,7 @@
 import {
   and,
   asc,
+  count,
   eq,
   exists,
   gt,
@@ -18,19 +19,24 @@ import type { DbConnection, DbTransaction } from "../connection.js";
 import { createTerminalSessionId } from "../ids.js";
 import {
   forkTerminalOutput,
+  forkTerminalHolderSessions,
   forkTerminalTabDismissals,
   terminalSessions,
 } from "../schema.js";
 
 type TerminalSessionConnection = DbConnection | DbTransaction;
 
-export type TerminalSessionRow = typeof terminalSessions.$inferSelect;
+type StoredTerminalSessionRow = typeof terminalSessions.$inferSelect;
+export type TerminalSessionRow = StoredTerminalSessionRow & {
+  holderBacked: boolean;
+};
 
 export interface CreateTerminalSessionInput {
   cols: number;
   daemonSessionId: string | null;
   environmentId: string | null;
   hostId: string;
+  id?: string;
   initialCwd: string;
   now?: number;
   rows: number;
@@ -49,6 +55,7 @@ export type TerminalSessionScope = TerminalStatusScope &
     | { daemonSessionId: string; kind: "daemon"; terminalId?: string }
     | { environmentId: string; kind: "environment" }
     | { hostId: string; kind: "host" }
+    | { cwd: string | null; hostId: string; kind: "host-path" }
     | { kind: "terminal"; terminalId: string }
     | { kind: "thread"; threadId: string }
     | { environmentId: string; kind: "threadless-environment" }
@@ -62,7 +69,7 @@ export type TerminalSessionSingleScope = TerminalStatusScope &
 
 export type TerminalSessionMutation =
   | { kind: "disconnect"; retainDaemonSession: boolean }
-  | { daemonSessionId: string; kind: "reconnect" }
+  | { daemonSessionId: string; kind: "reconnect"; resetHolderBacked?: boolean }
   | {
       closeReason: TerminalSessionCloseReason;
       exitCode?: number | null;
@@ -79,6 +86,7 @@ export type TerminalSessionMutation =
     }
   | { cols: number; kind: "size"; rows: number }
   | { kind: "title"; title: string }
+  | { kind: "holder-backed" }
   | { kind: "user-input" };
 
 export interface ListTerminalSessionsArgs {
@@ -124,6 +132,16 @@ function terminalScope(
       break;
     case "host":
       scoped = eq(terminalSessions.hostId, scope.hostId);
+      break;
+    case "host-path":
+      scoped = and(
+        eq(terminalSessions.hostId, scope.hostId),
+        isNull(terminalSessions.threadId),
+        isNull(terminalSessions.environmentId),
+        scope.cwd === null
+          ? undefined
+          : eq(terminalSessions.initialCwd, scope.cwd),
+      );
       break;
     case "terminal":
       scoped = eq(terminalSessions.id, scope.terminalId);
@@ -188,9 +206,62 @@ function mutationValues(
       return { cols: update.cols, rows: update.rows, updatedAt: now };
     case "title":
       return { title: update.title, updatedAt: now };
+    case "holder-backed":
+      return { updatedAt: now };
     case "user-input":
       return { lastUserInputAt: now, updatedAt: now };
   }
+}
+
+function withHolderBacked(
+  db: TerminalSessionConnection,
+  rows: StoredTerminalSessionRow[],
+): TerminalSessionRow[] {
+  if (rows.length === 0) return [];
+  const holderBackedIds = new Set(
+    db
+      .select({
+        terminalSessionId: forkTerminalHolderSessions.terminalSessionId,
+      })
+      .from(forkTerminalHolderSessions)
+      .where(
+        inArray(
+          forkTerminalHolderSessions.terminalSessionId,
+          rows.map((row) => row.id),
+        ),
+      )
+      .all()
+      .map((row) => row.terminalSessionId),
+  );
+  return rows.map((row) => ({
+    ...row,
+    holderBacked: holderBackedIds.has(row.id),
+  }));
+}
+
+function clearHolderBacked(
+  db: TerminalSessionConnection,
+  terminalIds: string[],
+): void {
+  if (terminalIds.length === 0) return;
+  db.delete(forkTerminalHolderSessions)
+    .where(inArray(forkTerminalHolderSessions.terminalSessionId, terminalIds))
+    .run();
+}
+
+function markHolderBacked(
+  db: TerminalSessionConnection,
+  terminalIds: string[],
+  confirmedAt: number,
+): void {
+  if (terminalIds.length === 0) return;
+  db.insert(forkTerminalHolderSessions)
+    .values(terminalIds.map((terminalSessionId) => ({
+      terminalSessionId,
+      confirmedAt,
+    })))
+    .onConflictDoNothing()
+    .run();
 }
 
 function mutationWhere(update: TerminalSessionMutation): SQL | undefined {
@@ -204,10 +275,10 @@ export function createTerminalSession(
   input: CreateTerminalSessionInput,
 ): TerminalSessionRow {
   const now = input.now ?? Date.now();
-  return db
+  const row = db
     .insert(terminalSessions)
     .values({
-      id: createTerminalSessionId(),
+      id: input.id ?? createTerminalSessionId(),
       threadId: input.threadId,
       environmentId: input.environmentId,
       hostId: input.hostId,
@@ -225,13 +296,14 @@ export function createTerminalSession(
     })
     .returning()
     .get();
+  return { ...row, holderBacked: false };
 }
 
 export function listTerminalSessions(
   db: TerminalSessionConnection,
   args: ListTerminalSessionsArgs,
 ): TerminalSessionRow[] {
-  return db
+  const rows = db
     .select()
     .from(terminalSessions)
     .where(
@@ -285,39 +357,80 @@ export function listTerminalSessions(
     )
     .orderBy(asc(terminalSessions.createdAt), asc(terminalSessions.id))
     .all();
+  return withHolderBacked(db, rows);
+}
+
+export function countTerminalSessions(
+  db: TerminalSessionConnection,
+  args: ListTerminalSessionsArgs,
+): number {
+  return db
+    .select({ count: count() })
+    .from(terminalSessions)
+    .where(
+      terminalScope(
+        args.scope,
+        args.visible
+          ? inArray(terminalSessions.status, NON_TERMINAL_SESSION_STATUSES)
+          : undefined,
+      ),
+    )
+    .get()!.count;
 }
 
 export function getTerminalSession(
   db: TerminalSessionConnection,
   scope: TerminalSessionSingleScope,
 ): TerminalSessionRow | null {
-  return (
-    db.select().from(terminalSessions).where(terminalScope(scope)).get() ?? null
-  );
+  const row = db
+    .select()
+    .from(terminalSessions)
+    .where(terminalScope(scope))
+    .get();
+  return row === undefined ? null : (withHolderBacked(db, [row])[0] ?? null);
 }
 
 export function updateTerminalSession(
   db: TerminalSessionConnection,
   args: UpdateTerminalSessionArgs,
 ): TerminalSessionRow | null {
-  return (
-    db
-      .update(terminalSessions)
-      .set(mutationValues(args.update, args.now ?? Date.now()))
-      .where(terminalScope(args.scope, mutationWhere(args.update)))
-      .returning()
-      .get() ?? null
-  );
+  const now = args.now ?? Date.now();
+  const row = db
+    .update(terminalSessions)
+    .set(mutationValues(args.update, now))
+    .where(terminalScope(args.scope, mutationWhere(args.update)))
+    .returning()
+    .get();
+  if (row === undefined) return null;
+  if (args.update.kind === "holder-backed") {
+    markHolderBacked(db, [row.id], now);
+  } else if (
+    args.update.kind === "exit" ||
+    (args.update.kind === "reconnect" && args.update.resetHolderBacked)
+  ) {
+    clearHolderBacked(db, [row.id]);
+  }
+  return withHolderBacked(db, [row])[0] ?? null;
 }
 
 export function updateTerminalSessions(
   db: TerminalSessionConnection,
   args: UpdateTerminalSessionsArgs,
 ): TerminalSessionRow[] {
-  return db
+  const now = Date.now();
+  const rows = db
     .update(terminalSessions)
-    .set(mutationValues(args.update, Date.now()))
+    .set(mutationValues(args.update, now))
     .where(terminalScope(args.scope, mutationWhere(args.update)))
     .returning()
     .all();
+  if (args.update.kind === "holder-backed") {
+    markHolderBacked(db, rows.map((row) => row.id), now);
+  } else if (
+    args.update.kind === "exit" ||
+    (args.update.kind === "reconnect" && args.update.resetHolderBacked)
+  ) {
+    clearHolderBacked(db, rows.map((row) => row.id));
+  }
+  return withHolderBacked(db, rows);
 }

@@ -2,7 +2,7 @@ export const JSON_SHAPE_BY_COMMAND_PATH: Readonly<Record<string, string>> = {
   status:
     "{project: {id, name} | null, thread: {id, status, title, parentThreadId, environment: {hostId, display} | null} | null, childThreads: [{id, status, title}] | null, pendingTodos, pluginsNeedingAttention: [{id, status}], dataDir}",
   "thread list":
-    "[{id, projectId, environmentId, providerId, title, status, parentThreadId, sectionId, visibility, archivedAt, pinnedAt, createdAt, updatedAt, activity}]    (bare array; title can be null)",
+    "[{id, projectId, environmentId, providerId, title, status, parentThreadId, sectionId, visibility, archivedAt, pinnedAt, createdAt, updatedAt, activity}]    (bare array; excludes archived by default unless --thread IDs are given, --archived selects archived only, --all includes both; title can be null)",
   "thread show":
     "{thread: {id, status, title, projectId, environmentId, parentThreadId, ...}, environment: {id, hostId, path, branchName, ...} | null, pendingTodos, spendSummary, usageTimeline?}    (thread fields are under .thread; --usage includes compaction rows)",
   "thread log":
@@ -28,6 +28,17 @@ export const JSON_SHAPE_BY_COMMAND_PATH: Readonly<Record<string, string>> = {
     "{id, name, projectId, hostId, path, branchName, baseBranch, status, lifecycle}",
   "terminal list":
     "{sessions: [{id, title, status, exitCode, closeReason, cols, rows}]}    (wrapped in .sessions)",
+  "terminal surfaces":
+    "{threadId, surfaces: [{threadId, terminalId, title, status, kind}]}    (thread-scoped terminal surfaces)",
+  "terminal focus":
+    "{terminalId, deliveredClients, error?: {code, message} when deliveredClients is 0}",
+  "terminal open-link":
+    "{terminalId, url, deliveredClients, error?: {code, message} when deliveredClients is 0}",
+  "terminal split":
+    "{terminalId, side, deliveredClients, error?: {code, message} when deliveredClients is 0}",
+  "terminal move":
+    "{terminalId, targetTerminalId, deliveredClients, error?: {code, message} when deliveredClients is 0}",
+  "thread open": "{threadId, split, file, deliveredClients, inputPath}",
   "terminal output":
     '{chunks: [{seq, dataBase64}], nextSeq, truncated, status, exitCode, closeReason}    (chunk data is base64; status is "exited" once the command has finished)',
   "terminal wait": "{terminalId, matched, nextSeq, exitCode}",

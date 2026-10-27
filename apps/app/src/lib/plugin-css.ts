@@ -7,6 +7,7 @@ import {
 
 const CSS_MARKER = "data-bb-plugin-css";
 const CSS_PRELOAD_MARKER = "data-bb-plugin-css-preload";
+const CSS_PREFETCH_MARKER = "data-bb-plugin-css-prefetch";
 const CSS_RELEASE_GRACE_MS = 1_500;
 
 interface PluginCssRecord {
@@ -190,6 +191,17 @@ function deactivateAfterFinalRelease(
   }, CSS_RELEASE_GRACE_MS);
 }
 
+export function prefetchPluginCss(url: string): void {
+  const link = document.createElement("link");
+  link.rel = "preload";
+  link.as = "style";
+  link.href = url;
+  link.setAttribute(CSS_PREFETCH_MARKER, "");
+  link.onload = () => link.remove();
+  link.onerror = () => link.remove();
+  document.head.appendChild(link);
+}
+
 export function applyPluginCss(pluginId: string, url: string | null): void {
   const record = recordFor(pluginId);
   if (url === null) {
@@ -253,7 +265,7 @@ export function resetPluginCssForTest(): void {
   }
   recordsByPluginId.clear();
   for (const link of document.head.querySelectorAll(
-    `link[${CSS_MARKER}], link[${CSS_PRELOAD_MARKER}]`,
+    `link[${CSS_MARKER}], link[${CSS_PRELOAD_MARKER}], link[${CSS_PREFETCH_MARKER}]`,
   )) {
     link.remove();
   }

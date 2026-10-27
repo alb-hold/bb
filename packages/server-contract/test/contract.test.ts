@@ -469,10 +469,12 @@ const OPTIONAL_SERVER_FIELD_GROUPS: readonly OptionalServerFieldGroup[] = [
   },
   {
     reason:
-      "Queued and follow-up messages omit senderThreadId unless the request originates from another thread.",
+      "Thread creation, queued messages, and follow-up messages omit their sender unless the request originates from another thread or, for sends, a plugin.",
     fields: [
       "createQueuedMessageRequestSchema.senderThreadId",
       "sendMessageRequestSchema.senderThreadId",
+      "createThreadRequestSchema.senderThreadId",
+      "sendMessageRequestSchema.originPluginId",
     ],
   },
   {
@@ -1359,6 +1361,7 @@ describe("server-contract canonical schemas", () => {
           environmentProviderId: "git-worktree",
           environmentIsWorktree: true,
           environmentWorkspaceDisplayKind: "managed-worktree",
+          nativeTerminal: false,
           queuedWork: "none",
         },
       ]),
@@ -1434,32 +1437,6 @@ describe("server-contract canonical schemas", () => {
       action: "commit",
     });
 
-    expect(
-      environmentActionRequestSchema.parse({
-        action: "pull_request_ready",
-      }),
-    ).toMatchObject({
-      action: "pull_request_ready",
-    });
-
-    expect(
-      environmentActionRequestSchema.parse({
-        action: "pull_request_merge",
-        options: { method: "rebase" },
-      }),
-    ).toMatchObject({
-      action: "pull_request_merge",
-      options: { method: "rebase" },
-    });
-
-    expect(
-      environmentActionRequestSchema.parse({
-        action: "pull_request_draft",
-      }),
-    ).toMatchObject({
-      action: "pull_request_draft",
-    });
-
     expect(() =>
       environmentActionRequestSchema.parse({
         action: "squash_merge",
@@ -1470,7 +1447,7 @@ describe("server-contract canonical schemas", () => {
     expect(() =>
       environmentActionRequestSchema.parse({
         action: "pull_request_merge",
-        options: { method: "admin" },
+        options: { method: "squash" },
       }),
     ).toThrow();
 
@@ -1501,28 +1478,6 @@ describe("server-contract canonical schemas", () => {
         ok: true,
       }),
     ).toThrow();
-
-    expect(
-      contract.environmentActionResponseSchema.parse({
-        action: "pull_request_merge",
-        method: "squash",
-        message: "Pull request merge started",
-        ok: true,
-      }),
-    ).toMatchObject({
-      action: "pull_request_merge",
-      method: "squash",
-    });
-
-    expect(
-      contract.environmentActionResponseSchema.parse({
-        action: "pull_request_draft",
-        message: "Pull request converted to draft",
-        ok: true,
-      }),
-    ).toMatchObject({
-      action: "pull_request_draft",
-    });
 
     expect(
       updateEnvironmentRequestSchema.parse({

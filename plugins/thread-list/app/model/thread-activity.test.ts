@@ -62,6 +62,37 @@ const idleIndicatorState: ThreadListIndicatorState = {
 };
 
 describe("thread-activity", () => {
+  it("suppresses unconfirmed native runtime while preserving independent activity and attention", () => {
+    const unconfirmed = makeEntry({
+      status: "active",
+      runtimeStatus: "active",
+      experimental_nativeActivity: {
+        lastEvidenceAt: null,
+        freshForMs: 90_000,
+        confirmation: "unconfirmed",
+      },
+    });
+    const state = threadListIndicatorStateForThread(unconfirmed, false);
+    expect(state.isRuntimeActive).toBe(false);
+    expect(resolveThreadListIndicator(state)).toBe("none");
+
+    const background = makeEntry({
+      ...unconfirmed,
+      activity: { ...unconfirmed.activity, backgroundAgents: 1 },
+    });
+    expect(
+      resolveThreadListIndicator(
+        threadListIndicatorStateForThread(background, false),
+      ),
+    ).toBe("working");
+    const waiting = makeEntry({ ...unconfirmed, hasPendingInteraction: true });
+    expect(
+      resolveThreadListIndicator(
+        threadListIndicatorStateForThread(waiting, false),
+      ),
+    ).toBe("needs-input");
+  });
+
   describe("hasThreadListWorkingActivity", () => {
     it.each([
       "isRuntimeActive",
@@ -111,6 +142,16 @@ describe("thread-activity", () => {
           [flag]: true,
         }),
       ).toBe(kind);
+    });
+
+    it("keeps needs-input ahead of a concurrent draft", () => {
+      expect(
+        resolveThreadListIndicator({
+          ...idleIndicatorState,
+          hasPendingInteraction: true,
+          hasUnsubmittedDraft: true,
+        }),
+      ).toBe("needs-input");
     });
 
     it.each([

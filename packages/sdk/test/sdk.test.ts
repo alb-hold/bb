@@ -8,6 +8,7 @@ import { TERMINAL_ATTENTION_CONTRACT_CASES } from "../../test-helpers/src/termin
 import type { FetchImplementation } from "../src/response.js";
 
 interface CapturedRequest {
+  authorization?: string;
   bodyText: string | undefined;
   method: string;
   url: string;
@@ -93,7 +94,9 @@ function createFetchQueue(
   const requests: CapturedRequest[] = [];
   const remaining = [...responses];
   const fetchMock: FetchImplementation = async (input, init) => {
+    const authorization = new Headers(init?.headers).get("authorization");
     requests.push({
+      ...(authorization === null ? {} : { authorization }),
       bodyText: bodyText(init),
       method: init?.method ?? "GET",
       url: String(input),
@@ -108,6 +111,234 @@ function createFetchQueue(
 }
 
 describe("@bb/sdk", () => {
+  it("lists thread terminal surfaces with kind and stable IDs", async () => {
+    const queue = createFetchQueue([
+      { body: { archivedAt: null } },
+      {
+        body: {
+          sessions: [
+            makeTerminalSession({ id: "term_native", title: "Native" }),
+            makeTerminalSession({ id: "term_panel", title: "Panel" }),
+          ],
+        },
+      },
+      { body: { terminal: { id: "term_native" } } },
+    ]);
+    const sdk = createBbSdk({
+      transport: createHttpTransport({
+        baseUrl: "http://bb.test",
+        fetch: queue.fetch,
+        runtime: "node",
+      }),
+    });
+
+    await expect(
+      sdk.terminals.experimental_surfaces.list({ threadId: "thr_test" }),
+    ).resolves.toEqual([
+      {
+        kind: "native",
+        status: "running",
+        terminalId: "term_native",
+        threadId: "thr_test",
+        title: "Native",
+      },
+      {
+        kind: "terminal",
+        status: "running",
+        terminalId: "term_panel",
+        threadId: "thr_test",
+        title: "Panel",
+      },
+    ]);
+    expect(queue.requests.map(({ url }) => url)).toEqual([
+      "http://bb.test/api/v1/threads/thr_test",
+      "http://bb.test/api/v1/terminals?threadId=thr_test",
+      "http://bb.test/api/v1/threads/thr_test/native-terminal",
+    ]);
+  });
+
+  it("rejects archived thread terminal surfaces", async () => {
+    const queue = createFetchQueue([
+      { body: { archivedAt: 123 } },
+      { body: { sessions: [] } },
+      { body: null },
+    ]);
+    const sdk = createBbSdk({
+      transport: createHttpTransport({
+        baseUrl: "http://bb.test",
+        fetch: queue.fetch,
+        runtime: "node",
+      }),
+    });
+
+    await expect(
+      sdk.terminals.experimental_surfaces.list({ threadId: "thr_test" }),
+    ).rejects.toThrow("Thread thr_test is archived");
+  });
+
+  it("focuses a terminal through the thread-open action", async () => {
+    const queue = createFetchQueue([
+      { body: makeTerminalSession({ id: "term_focus" }) },
+      { body: { deliveredClients: 1 } },
+    ]);
+    const sdk = createBbSdk({
+      transport: createHttpTransport({
+        baseUrl: "http://bb.test",
+        fetch: queue.fetch,
+        runtime: "node",
+      }),
+    });
+
+    await expect(
+      sdk.terminals.experimental_focus({ terminalId: "term_focus" }),
+    ).resolves.toEqual({ deliveredClients: 1 });
+    expect(queue.requests[1]).toMatchObject({
+      method: "POST",
+      url: "http://bb.test/api/v1/threads/thr_test/open",
+      bodyText: JSON.stringify({
+        file: null,
+        terminalAction: { action: "focus", terminalId: "term_focus" },
+      }),
+    });
+  });
+
+  it("opens a URL through the thread-open browser action", async () => {
+    const queue = createFetchQueue([
+      { body: makeTerminalSession({ id: "term_browser" }) },
+      { body: { deliveredClients: 1 } },
+    ]);
+    const sdk = createBbSdk({
+      transport: createHttpTransport({
+        baseUrl: "http://bb.test",
+        fetch: queue.fetch,
+        runtime: "node",
+      }),
+    });
+
+    const result = await sdk.terminals.experimental_openBrowser({
+      terminalId: "term_browser",
+      url: "http://localhost:3000",
+    });
+    expect(result).toEqual({ deliveredClients: 1 });
+    expect(queue.requests[1]?.bodyText).toBe(
+      JSON.stringify({
+        file: null,
+        terminalAction: {
+          action: "openBrowser",
+          terminalId: "term_browser",
+          url: "http://localhost:3000",
+        },
+      }),
+    );
+  });
+
+  it("requests a persisted sidebar split through the thread-open signal", async () => {
+    const queue = createFetchQueue([
+      { body: makeTerminalSession({ id: "term_split" }) },
+      { body: { deliveredClients: 1 } },
+    ]);
+    const sdk = createBbSdk({
+      transport: createHttpTransport({
+        baseUrl: "http://bb.test",
+        fetch: queue.fetch,
+        runtime: "node",
+      }),
+    });
+
+    const result = await sdk.terminals.experimental_layout.split({
+      terminalId: "term_split",
+      side: "down",
+    });
+    expect(result).toEqual({ deliveredClients: 1 });
+    expect(queue.requests[1]?.bodyText).toBe(
+      JSON.stringify({
+        file: null,
+        terminalLayoutAction: {
+          action: "split",
+          terminalId: "term_split",
+          side: "down",
+        },
+      }),
+    );
+  });
+
+  it("moves a terminal only to another terminal in the same thread", async () => {
+    const queue = createFetchQueue([
+      { body: makeTerminalSession({ id: "term_move" }) },
+      { body: makeTerminalSession({ id: "term_target" }) },
+      { body: { deliveredClients: 1 } },
+    ]);
+    const sdk = createBbSdk({
+      transport: createHttpTransport({
+        baseUrl: "http://bb.test",
+        fetch: queue.fetch,
+        runtime: "node",
+      }),
+    });
+
+    const result = await sdk.terminals.experimental_layout.move({
+      terminalId: "term_move",
+      targetTerminalId: "term_target",
+    });
+    expect(result).toEqual({ deliveredClients: 1 });
+    expect(queue.requests[2]?.bodyText).toBe(
+      JSON.stringify({
+        file: null,
+        terminalLayoutAction: {
+          action: "move",
+          terminalId: "term_move",
+          targetTerminalId: "term_target",
+        },
+      }),
+    );
+
+    const foreignQueue = createFetchQueue([
+      { body: makeTerminalSession({ id: "term_move" }) },
+      { body: makeTerminalSession({ id: "term_foreign", threadId: "thr_other" }) },
+    ]);
+    const foreignSdk = createBbSdk({
+      transport: createHttpTransport({
+        baseUrl: "http://bb.test",
+        fetch: foreignQueue.fetch,
+        runtime: "node",
+      }),
+    });
+    await expect(
+      foreignSdk.terminals.experimental_layout.move({
+        terminalId: "term_move",
+        targetTerminalId: "term_foreign",
+      }),
+    ).rejects.toThrow("Terminal sessions must belong to the same thread");
+    expect(foreignQueue.requests).toHaveLength(2);
+  });
+
+  it("passes an optional native activity report credential as a header", async () => {
+    const queue = createFetchQueue([{ body: { ok: true } }]);
+    const sdk = createBbSdk({
+      transport: createHttpTransport({
+        baseUrl: "http://bb.test",
+        fetch: queue.fetch,
+        runtime: "node",
+      }),
+    });
+
+    await expect(
+      sdk.nativeTerminals.reportActivity({
+        threadId: "thr_test",
+        state: "working",
+        authorization: "Bearer synthetic-sdk-test-credential",
+      }),
+    ).resolves.toEqual({ ok: true });
+    expect(queue.requests).toEqual([
+      {
+        authorization: "Bearer synthetic-sdk-test-credential",
+        bodyText: JSON.stringify({ state: "working" }),
+        method: "POST",
+        url: "http://bb.test/api/v1/threads/thr_test/native-terminal/activity",
+      },
+    ]);
+  });
+
   it("pages prompt history with an opaque cursor", async () => {
     const response = {
       entries: [
@@ -1213,7 +1444,8 @@ describe("@bb/sdk", () => {
       const sessions = contract.sessions.map(makeSession);
       const afterClear = contract.unreadIdsAfterClear.map((id) => {
         const entry = contract.sessions.find((item) => item.id === id);
-        if (entry === undefined) throw new Error(`Unknown contract terminal ${id}`);
+        if (entry === undefined)
+          throw new Error(`Unknown contract terminal ${id}`);
         return makeSession(entry);
       });
       const responses: QueuedJsonResponse[] = [
@@ -1241,13 +1473,11 @@ describe("@bb/sdk", () => {
       });
 
       expect(
-        (await sdk.terminals.experimental_attention.list()).map(
-          ({ id }) => id,
-        ),
+        (await sdk.terminals.experimental_attention.list()).map(({ id }) => id),
       ).toEqual(contract.unreadIds);
-      expect((await sdk.terminals.experimental_attention.next())?.id ?? null).toBe(
-        contract.nextId,
-      );
+      expect(
+        (await sdk.terminals.experimental_attention.next())?.id ?? null,
+      ).toBe(contract.nextId);
       if (contract.clearId !== null) {
         await sdk.terminals.experimental_attention.clear({
           terminalId: contract.clearId,
@@ -1328,30 +1558,6 @@ describe("@bb/sdk", () => {
     await expect(sdk.threads.get({ threadId: "thr_missing" })).rejects.toThrow(
       "HTTP 404: Thread not found",
     );
-  });
-
-  it("routes environment pull request calls through the HTTP transport", async () => {
-    const response = { outcome: "absent" };
-    const queue = createFetchQueue([{ body: response }]);
-    const sdk = createBbSdk({
-      transport: createHttpTransport({
-        baseUrl: "http://bb.test",
-        fetch: queue.fetch,
-        runtime: "node",
-      }),
-    });
-
-    await expect(
-      sdk.environments.pullRequest({ environmentId: "env_pr" }),
-    ).resolves.toEqual(response);
-
-    expect(queue.requests).toEqual([
-      {
-        bodyText: undefined,
-        method: "GET",
-        url: "http://bb.test/api/v1/environments/env_pr/pull-request",
-      },
-    ]);
   });
 
   it("updates environment metadata through the HTTP transport", async () => {
@@ -1539,6 +1745,7 @@ describe("@bb/sdk", () => {
       input: [{ type: "text", text: "Accept edits", mentions: [] }],
       mode: "start",
       permissionMode: "accept-edits",
+      originPluginId: "automations",
       pluginSubmission: {
         pluginId: "example-plugin",
         data: { action: "hold" },
@@ -1556,6 +1763,7 @@ describe("@bb/sdk", () => {
       expect.objectContaining({ permissionMode: "auto" }),
       expect.objectContaining({
         permissionMode: "accept-edits",
+        originPluginId: "automations",
         pluginSubmission: {
           pluginId: "example-plugin",
           data: { action: "hold" },

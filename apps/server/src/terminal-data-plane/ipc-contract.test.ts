@@ -24,6 +24,7 @@ describe("terminal data plane IPC contract", () => {
       terminalId: "term_authorized",
       daemonSessionId: "session_1",
       outputAcks: true,
+      sequenceBase: 0,
       sinceSeq: null,
       request,
     });
@@ -38,6 +39,7 @@ describe("terminal data plane IPC contract", () => {
         type: "browser.attach",
         attachId: "attach_1",
         outputAcks: true,
+        sequenceBase: 0,
         sinceSeq: null,
         request,
       }).success,

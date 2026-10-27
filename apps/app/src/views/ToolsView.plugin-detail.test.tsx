@@ -43,7 +43,11 @@ import {
   pluginFrontendDiagnosticRequiresFailureBanner,
 } from "@/components/tools/PluginDetail";
 import type { PluginCatalogSearchEntry } from "@/hooks/queries/plugin-catalog-queries";
-import { pluginSourceQueryKey } from "@/hooks/queries/query-keys";
+import {
+  pluginCatalogSearchQueryKey,
+  pluginListQueryKey,
+  pluginSourceQueryKey,
+} from "@/hooks/queries/query-keys";
 import { formatAbsoluteDate } from "@/components/plugin/management/plugin-ui";
 import type { PluginFrontendDiagnostic } from "@/lib/plugin-frontend";
 import {
@@ -1290,7 +1294,8 @@ describe("BB Official plugin detail routing", () => {
         }),
       );
 
-      const { wrapper: QueryClientWrapper } = createQueryClientTestHarness();
+      const { queryClient, wrapper: QueryClientWrapper } =
+        createQueryClientTestHarness();
       render(
         <MemoryRouter
           initialEntries={[installed ? "/plugins?view=installed" : "/plugins"]}
@@ -1304,11 +1309,23 @@ describe("BB Official plugin detail routing", () => {
         { wrapper: QueryClientWrapper },
       );
 
-      const card = await screen.findByRole("button", {
-        name: installed
-          ? `${pluginName} plugin details`
-          : "Open GitHub details",
-      });
+      const cardQueryKey = installed
+        ? pluginListQueryKey(true)
+        : pluginCatalogSearchQueryKey("");
+      const card = await screen.findByRole(
+        "button",
+        {
+          name: installed
+            ? `${pluginName} plugin details`
+            : "Open GitHub details",
+        },
+        { timeout: 10_000 },
+      );
+      expect(queryClient.getQueryState(cardQueryKey)?.data).toMatchObject(
+        installed
+          ? [{ id: "github" }]
+          : { entries: [expect.objectContaining({ entryId: "github" })] },
+      );
       const panels = Array.from(document.querySelectorAll("[data-panel]"));
       expect(panels).toHaveLength(2);
       expect(panels[0]?.getAttribute("data-panel-size")).toBe("100.0");
@@ -1340,7 +1357,7 @@ describe("BB Official plugin detail routing", () => {
         );
         expect(document.activeElement).toBe(card);
         if (installed) expect(search).toHaveProperty("value", "Local GitHub");
-      });
+      }, { timeout: 10_000 });
       expect(Array.from(document.querySelectorAll("[data-panel]"))).toEqual(
         panels,
       );

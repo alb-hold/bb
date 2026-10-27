@@ -56,6 +56,7 @@ import {
 } from "./useThreadTimelineController";
 import { makeThreadTimelineResponse as makeTimelineResponse } from "@/test/fixtures/thread-responses";
 import { createQueryNotificationScheduler } from "@/test/queryNotificationScheduler";
+import { ScrollPositionKeeper } from "@/components/ui/scroll-position-keeper";
 
 const notifications = createQueryNotificationScheduler();
 
@@ -72,9 +73,11 @@ vi.mock("@/lib/sdk", async (importOriginal) => {
   };
 });
 
-vi.mock("@/hooks/queries/thread-queries", async (importOriginal) => {
+vi.mock("@/hooks/queries/thread-panel-queries", async (importOriginal) => {
   const actual =
-    await importOriginal<typeof import("@/hooks/queries/thread-queries")>();
+    await importOriginal<
+      typeof import("@/hooks/queries/thread-panel-queries")
+    >();
   return {
     ...actual,
     useThreadTimeline: (...args: Parameters<typeof actual.useThreadTimeline>) =>
@@ -233,40 +236,36 @@ function makeSameSnapshotRealtimeResponse(): ThreadTimelineResponse {
 }
 
 function installAutoLoadEnvironment() {
-  const intersectionCallbacks: IntersectionObserverCallback[] = [];
-  vi.stubGlobal(
-    "IntersectionObserver",
-    class {
-      constructor(callback: IntersectionObserverCallback) {
-        intersectionCallbacks.push(callback);
-      }
-      observe(): void {}
-      disconnect(): void {}
-    },
-  );
   const scrollElement = document.createElement("div");
   const sentinel = document.createElement("div");
+  document.body.append(sentinel);
   vi.spyOn(scrollElement, "getBoundingClientRect").mockReturnValue(
     new DOMRect(0, 0, 100, 500),
   );
   vi.spyOn(sentinel, "getBoundingClientRect").mockReturnValue(
     new DOMRect(0, 10, 100, 10),
   );
+  const positionKeeper = new ScrollPositionKeeper({
+    bottomThresholdPx: 4,
+    deferWritesWhileScrolling: false,
+    getContentElement: () => null,
+    getFooterElement: () => null,
+    getScrollElement: () => scrollElement,
+    getTopLevelRows: () => [],
+    initiallyAttached: false,
+  });
   const anchor: BottomAnchorContextValue = {
-    captureScrollAnchor: vi.fn(),
+    positionKeeper,
     holdContentPosition: vi.fn(),
     getScrollElement: () => scrollElement,
     isAtBottom: false,
     scrollElementIntoView: vi.fn(),
+    scrollElementIntoViewClampedToMaxScroll: vi.fn(),
+    captureScrollAnchor: vi.fn(),
     scrollToBottom: vi.fn(),
   };
   const emitIntersection = () => {
-    for (const callback of intersectionCallbacks) {
-      callback(
-        [{ isIntersecting: true } as IntersectionObserverEntry],
-        {} as IntersectionObserver,
-      );
-    }
+    positionKeeper.reconcile();
   };
   return { anchor, emitIntersection, sentinel };
 }
@@ -475,6 +474,50 @@ describe("useThreadTimelineController", () => {
     expect(result.current.timelineRows.map((row) => row.id)).toEqual([
       boundaryRow.id,
     ]);
+  });
+
+  it("keeps the thread's loaded older pages when its timeline mounts again", async () => {
+    const olderRow = makeUserRow("thread-1:user-seed:1", 1);
+    const latestRow = makeUserRow("thread-1:user-seed:10", 10);
+    const latestPage = makeTimelineResponse({
+      rows: [latestRow],
+      maxSeq: 10,
+      timelinePage: {
+        historySnapshot: "snapshot-1",
+        olderCursor: { anchorId: "cursor-10", anchorSeq: 10 },
+        olderRowsSourceSeqEnd: null,
+      },
+    });
+    vi.mocked(sdk.threads.timeline)
+      .mockResolvedValueOnce(latestPage)
+      .mockResolvedValueOnce(
+        makeTimelineResponse({
+          rows: [olderRow],
+          maxSeq: 10,
+          timelinePage: { historySnapshot: "snapshot-1" },
+        }),
+      )
+      .mockResolvedValue(latestPage);
+    const { wrapper } = createQueryClientTestHarness();
+    const first = renderHook(
+      () => useThreadTimelineController({ threadId: "thread-1" }),
+      { wrapper },
+    );
+    await waitFor(() => {
+      expect(first.result.current.hasOlderTimelineRows).toBe(true);
+    });
+    await act(async () => {
+      await first.result.current.loadOlderTimelineRows();
+    });
+    first.unmount();
+
+    const second = renderHook(
+      () => useThreadTimelineController({ threadId: "thread-1" }),
+      { wrapper },
+    );
+
+    expect(rowIds(second.result.current)).toEqual([olderRow.id, latestRow.id]);
+    expect(second.result.current.hasOlderTimelineRows).toBe(false);
   });
 
   it("replaces loaded rows when realtime data starts a new context epoch", async () => {

@@ -8,6 +8,7 @@ import {
 } from "@/lib/fixed-panel-tabs-state";
 import {
   adjacentSidebarTab,
+  applyTerminalSidebarLayoutAction,
   SIDEBAR_FIXED_INFO_TAB_ID,
   createSidebarSplitState,
   getSidebarTabPlacement,
@@ -93,6 +94,98 @@ function splitOff(
 }
 
 describe("sidebar split layout", () => {
+  it.each(["right", "left", "up", "down"] as const)(
+    "splits a terminal tab to the %s",
+    (side) => {
+      const state = createSidebarSplitState(["terminal-a", "terminal-b"], "terminal-a");
+      const next = applyTerminalSidebarLayoutAction(
+        state,
+        "terminal-a",
+        "split",
+        "group-terminal-a",
+        side,
+      );
+      expect(countPanes(next.layout.root)).toBe(2);
+      expect(listPanes(next.layout.root).some((pane) =>
+        getSidebarGroupForPane(next, pane.paneId)?.tabIds.includes("terminal-a"),
+      )).toBe(true);
+    },
+  );
+
+  it("moves a terminal tab into the pane containing another terminal", () => {
+    const initial = createSidebarSplitState(["terminal-a", "terminal-b"], "terminal-a");
+    const split = applyTerminalSidebarLayoutAction(
+      initial,
+      "terminal-b",
+      "split",
+      "group-terminal-b",
+      "right",
+    );
+    const moved = applyTerminalSidebarLayoutAction(
+      split,
+      "terminal-a",
+      "move",
+      "group-unused",
+      undefined,
+      "terminal-b",
+    );
+    const targetPane = listPanes(moved.layout.root).find((pane) =>
+      getSidebarGroupForPane(moved, pane.paneId)?.tabIds.includes("terminal-b"),
+    );
+    expect(targetPane).toBeDefined();
+    expect(getSidebarGroupForPane(moved, targetPane!.paneId)?.tabIds).toContain("terminal-a");
+  });
+
+  it("leaves layout unchanged when a terminal split exceeds the pane limit", () => {
+    let state = createSidebarSplitState(Array.from({ length: MAX_PANES }, (_, index) => `terminal-${index}`), "terminal-0");
+    for (let index = 1; index < MAX_PANES; index += 1) {
+      state = applyTerminalSidebarLayoutAction(
+        state,
+        `terminal-${index}`,
+        "split",
+        `group-${index}`,
+        "right",
+      );
+    }
+    const next = applyTerminalSidebarLayoutAction(
+      state,
+      "terminal-0",
+      "split",
+      "group-over-limit",
+      "down",
+    );
+    expect(next).toBe(state);
+    expect(countPanes(next.layout.root)).toBe(MAX_PANES);
+  });
+
+  it("keeps a legacy Diff tab in its saved split pane", () => {
+    const saved = createSidebarSplitState(
+      [
+        "terminal:keep:none",
+        "git-diff:git-diff:none",
+        "thread-info:thread-info:none",
+      ],
+      "git-diff:git-diff:none",
+    );
+    const restored = parseSidebarSplitState(
+      serializeSidebarSplitState(saved),
+      [
+        "terminal:keep:none",
+        "plugin-fixed:core:diff",
+        "plugin-fixed:core:info",
+      ],
+      "plugin-fixed:core:diff",
+    );
+    const group = Object.values(restored.groups)[0];
+    expect(group?.tabIds).toEqual([
+      "terminal:keep:none",
+      "plugin-fixed:core:diff",
+      "plugin-fixed:core:info",
+    ]);
+    expect(group?.activeTabId).toBe("plugin-fixed:core:diff");
+    expect(restored.layout).toEqual(saved.layout);
+  });
+
   it("derives fixed sidebar identities from the canonical fixed-panel tabs", () => {
     expect(SIDEBAR_FIXED_INFO_TAB_ID).toBe(createThreadInfoFixedPanelTab().id);
   });
