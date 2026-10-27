@@ -569,6 +569,10 @@ describe("resolveWritingEdits", () => {
     ["  - état: we saw a error", "a error", "an error", "grammar"],
     ["größe_wert we saw a error.", "a error", "an error", "grammar"],
     ["_état we saw a error.", "a error", "an error", "grammar"],
+    ["über-prüfen we saw a error.", "a error", "an error", "grammar"],
+    ["Über-Prüfen we saw a error.", "a error", "an error", "grammar"],
+    ["größeWert we saw a error.", "a error", "an error", "grammar"],
+    ["étatCourant we saw a error.", "a error", "an error", "grammar"],
     ["echo $HOME | grep user", "user", "User", "capitalization"],
     ["return return value;", "return return", "return", "grammar"],
     ["if (we saw a error)", "a error", "an error", "grammar"],
@@ -1147,6 +1151,21 @@ describe("validateFormattedTranscript", () => {
       });
     },
   );
+
+  it("counts only the words before the next list item as a self-correction's replacement", () => {
+    expect(
+      validateFormattedTranscript(
+        "first deploy check the auth token no wait check second run tests",
+        "1. Deploy check.\n2. Run tests.",
+      ),
+    ).toEqual({ ok: false, reason: "dropped-words" });
+    expect(
+      validateFormattedTranscript(
+        "first deploy at noon no wait at midnight second run tests",
+        "1. Deploy at midnight.\n2. Run tests.",
+      ),
+    ).toEqual({ ok: true });
+  });
 
   it("keeps a spoken list whose self-correction drops more than it replaces", () => {
     expect(

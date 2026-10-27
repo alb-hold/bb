@@ -445,10 +445,10 @@ vocabulary terms are never edited, and on a line containing any of
 (10:30), a key: value line in any script (status: ready, größe: bereit, - name: x, "title": x), a line
 that starts with a shell command, builtin or keyword such as echo, git, npm, read, for or if (also after a $,
 %, > or # prompt or sudo), a line that starts with a hyphenated word, as every PowerShell
-command does (Write-Output, ConvertTo-Json, fetch-data; also prose such as
+command does (Write-Output, ConvertTo-Json, fetch-data, über-prüfen; also prose such as
 Well-known teams say), a line that starts with PowerShell's call or
 dot-source operator, & or . then a space (& Fetch-Data, . setup), a line that starts with an identifier written with an underscore or with a
-lowercase letter followed by a capital (fetch_data, \_fetch, größe_wert, fetchData,
+lowercase letter followed by a capital, in any script (fetch_data, \_fetch, größe_wert, fetchData, größeWert,
 FetchData; also words such as iPhone or McDonald), a line with a short flag such as -la, a line
 with a +, * or ^ between two operands (x + y, total * rate, n ^ k), a line that is only an
 arithmetic expression (price - discount., count % size), with operands in
