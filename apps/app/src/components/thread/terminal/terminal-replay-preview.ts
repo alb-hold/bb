@@ -10,11 +10,15 @@ import {
 } from "./terminal-grid-presentation";
 
 export function updateTerminalReplayPreviewPtyGrid(
-  preview: { setPtyGrid(cols: number, rows: number): void } | null,
+  preview: {
+    setLatestPtyGrid(cols: number, rows: number): void;
+    setPtyGrid(cols: number, rows: number): void;
+  } | null,
   grid: TerminalGrid,
   apply: boolean,
 ): void {
   if (apply) preview?.setPtyGrid(grid.cols, grid.rows);
+  else preview?.setLatestPtyGrid(grid.cols, grid.rows);
 }
 
 export function mountTerminalReplayPreview({
@@ -31,7 +35,9 @@ export function mountTerminalReplayPreview({
   dispose(): void;
   resize(cols: number, rows: number): Promise<void>;
   setPtyGrid(cols: number, rows: number): void;
+  setLatestPtyGrid(cols: number, rows: number): void;
   setFitGrid(cols: number, rows: number): void;
+  processExited(): void;
   push(bytes: Uint8Array, callback: () => void): void;
 } {
   const parent = container.parentElement;
@@ -72,7 +78,12 @@ export function mountTerminalReplayPreview({
   let shown = false;
   let snapshotWriteFinished = false;
   let authoritativeGridAvailable = false;
+  let handoffRequested = false;
   let pendingWrites: Array<{ bytes: Uint8Array; callback: () => void }> = [];
+  let pendingBytes = 0;
+  let handoffDeadlineFrame: number | null = null;
+  let handoffDeadline: number | null = null;
+  const pendingBytesLimit = 256 * 1024;
   let surfaceScale =
     fitGrid === null ? 1 : terminalSurfaceScale(latestPtyGrid, fitGrid);
   const detachPointerCoordinates = terminal.element
@@ -138,10 +149,52 @@ export function mountTerminalReplayPreview({
   };
   const refreshVisibility = () => updateVisibility();
   const flushPendingWrites = () => {
-    if (!snapshotWriteFinished || !authoritativeGridAvailable) return;
-    for (const write of pendingWrites.splice(0)) {
+    if (disposed || !snapshotWriteFinished || !authoritativeGridAvailable) {
+      return;
+    }
+    const writes = pendingWrites.splice(0);
+    pendingBytes = 0;
+    for (const write of writes) {
       outputPipeline.push(write.bytes, write.callback);
     }
+  };
+  const clearHandoffDeadline = () => {
+    if (handoffDeadlineFrame !== null) {
+      window.cancelAnimationFrame(handoffDeadlineFrame);
+      handoffDeadlineFrame = null;
+    }
+    if (handoffDeadline !== null) {
+      window.clearTimeout(handoffDeadline);
+      handoffDeadline = null;
+    }
+  };
+  const handoffAtLatestGrid = () => {
+    if (disposed || authoritativeGridAvailable || handoffRequested) return;
+    handoffRequested = true;
+    clearHandoffDeadline();
+    outputPipeline.setGrid(latestPtyGrid.cols, latestPtyGrid.rows, () => {
+      if (disposed) return;
+      preview.dataset.gridCols = String(latestPtyGrid.cols);
+      preview.dataset.gridRows = String(latestPtyGrid.rows);
+      authoritativeGridAvailable = true;
+      updateVisibility();
+      flushPendingWrites();
+    });
+  };
+  const startHandoffDeadline = () => {
+    if (
+      disposed ||
+      authoritativeGridAvailable ||
+      handoffRequested ||
+      handoffDeadlineFrame !== null ||
+      handoffDeadline !== null
+    ) {
+      return;
+    }
+    handoffDeadlineFrame = window.requestAnimationFrame(() => {
+      handoffDeadlineFrame = null;
+      handoffDeadline = window.setTimeout(handoffAtLatestGrid, 500);
+    });
   };
   document.addEventListener("focusin", refreshVisibility);
   document.addEventListener("focusout", refreshVisibility);
@@ -153,6 +206,7 @@ export function mountTerminalReplayPreview({
   updateVisibility();
   const setPtyGrid = (cols: number, rows: number) => {
     if (disposed) return;
+    clearHandoffDeadline();
     latestPtyGrid = { cols, rows };
     authoritativeGridAvailable = true;
     updateVisibility();
@@ -161,6 +215,7 @@ export function mountTerminalReplayPreview({
   return {
     resize(cols, rows) {
       if (disposed) return Promise.resolve();
+      clearHandoffDeadline();
       latestPtyGrid = { cols, rows };
       return new Promise((resolve) => {
         outputPipeline.setGrid(cols, rows, () => {
@@ -176,7 +231,11 @@ export function mountTerminalReplayPreview({
       });
     },
     setPtyGrid,
-    setFitGrid(_cols, rows) {
+    setLatestPtyGrid(cols, rows) {
+      if (disposed) return;
+      latestPtyGrid = { cols, rows };
+    },
+    setFitGrid(cols, rows) {
       if (disposed) return;
       fitGrid = { cols, rows };
       if (terminal.cols === snapshotGrid.cols && rows > terminal.rows) {
@@ -185,25 +244,33 @@ export function mountTerminalReplayPreview({
       updateSurfaceScale();
       updateVisibility();
     },
+    processExited() {
+      handoffAtLatestGrid();
+    },
     push(bytes, callback) {
       if (disposed) {
         callback();
       } else if (!snapshotWriteFinished) {
         outputPipeline.push(bytes, () => {
           snapshotWriteFinished = true;
+          startHandoffDeadline();
           callback();
           flushPendingWrites();
         });
-      } else if (authoritativeGridAvailable) {
+      } else if (authoritativeGridAvailable || handoffRequested) {
         outputPipeline.push(bytes, callback);
       } else {
         pendingWrites.push({ bytes, callback });
+        pendingBytes += bytes.byteLength;
+        if (pendingBytes > pendingBytesLimit) handoffAtLatestGrid();
       }
     },
     dispose() {
       if (disposed) return;
       disposed = true;
+      clearHandoffDeadline();
       for (const write of pendingWrites.splice(0)) write.callback();
+      pendingBytes = 0;
       document.removeEventListener("focusin", refreshVisibility);
       document.removeEventListener("focusout", refreshVisibility);
       window.removeEventListener("resize", updateSurfaceScale);
