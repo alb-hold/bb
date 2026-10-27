@@ -1625,10 +1625,11 @@ export function ThreadTerminalView({
       }
       const nextVisible =
         document.visibilityState === "visible" && containerHasSize;
-      if (terminalVisible === nextVisible) return;
+      const wasVisible = terminalVisible;
+      if (wasVisible === nextVisible) return;
       terminalVisible = nextVisible;
       transport?.setVisible(nextVisible);
-      if (nextVisible) {
+      if (wasVisible === false && nextVisible) {
         transport?.replayOutputFrom(lastParsedOutputNextSeq);
       }
     };
