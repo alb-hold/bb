@@ -2089,7 +2089,7 @@ describe.skipIf(process.platform === "win32")(
     }, 30_000);
 
     it("keeps a valid late tool-start record working without blocking its heartbeat", () => {
-      const { directory, file, reader, unconfirmed } = appendFixture();
+      const { directory, reader, unconfirmed } = appendFixture();
       const startedAt = Math.floor(Date.now() / 1000);
       writeFileSync(
         path.join(directory, `.late.101.${startedAt}.1`),
