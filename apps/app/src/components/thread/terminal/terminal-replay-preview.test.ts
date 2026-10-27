@@ -904,6 +904,54 @@ describe("terminal replay preview", () => {
     harness.parent.remove();
   });
 
+  it("keeps chunks in order while the deadline handoff is pending", async () => {
+    let deadlineFrame: FrameRequestCallback | null = null;
+    const frameRequest = vi
+      .spyOn(window, "requestAnimationFrame")
+      .mockImplementation((callback) => {
+        deadlineFrame = callback;
+        return 1;
+      });
+    const harness = await createPreviewHarness({
+      cols: 120,
+      rows: 36,
+      fitCols: 120,
+      fitRows: 47,
+    });
+    frameRequest.mockRestore();
+    if (deadlineFrame === null) throw new Error("Expected preview frame");
+    vi.useFakeTimers();
+    let firstCallbackCount = 0;
+    let secondCallbackCount = 0;
+    harness.cover.push(Buffer.from("\r\nchunk A"), () => {
+      firstCallbackCount += 1;
+    });
+    deadlineFrame(0);
+    const terminalResize = harness.terminal.resize.bind(harness.terminal);
+    vi.spyOn(harness.terminal, "resize").mockImplementation((cols, rows) => {
+      terminalResize(cols, rows);
+      harness.cover.push(Buffer.from("\r\nchunk B"), () => {
+        secondCallbackCount += 1;
+      });
+    });
+    vi.advanceTimersByTime(500);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(firstCallbackCount).toBe(1);
+    expect(secondCallbackCount).toBe(1);
+    const rendered = Array.from(
+      { length: harness.terminal.buffer.active.length },
+      (_, index) =>
+        harness.terminal.buffer.active.getLine(index)?.translateToString(true),
+    ).join("\n");
+    expect(rendered.indexOf("chunk A")).toBeGreaterThanOrEqual(0);
+    expect(rendered.indexOf("chunk B")).toBeGreaterThan(
+      rendered.indexOf("chunk A"),
+    );
+
+    harness.cover.dispose();
+    harness.parent.remove();
+  });
+
   it("hands held output off when an equal-grid attach arrives", async () => {
     const harness = await createPreviewHarness({
       cols: 120,
