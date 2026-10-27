@@ -257,7 +257,7 @@ export function mountTerminalReplayPreview({
           callback();
           flushPendingWrites();
         });
-      } else if (authoritativeGridAvailable || handoffRequested) {
+      } else if (authoritativeGridAvailable) {
         outputPipeline.push(bytes, callback);
       } else {
         pendingWrites.push({ bytes, callback });
