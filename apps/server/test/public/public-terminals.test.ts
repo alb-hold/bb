@@ -4766,11 +4766,16 @@ describe("public terminal routes", () => {
         socket,
         message,
       });
-    const attach = async (socket: FakeBrowserSocket, resizeAcks: boolean) => {
+    const attach = async (
+      socket: FakeBrowserSocket,
+      resizeAcks: boolean,
+      resizeSeqEcho = false,
+    ) => {
       const before = readDaemonOperationMessages(fixture.socket).length;
       terminals.attachBrowserTerminal({
         outputAcks: false,
         resizeAcks,
+        resizeSeqEcho,
         terminalId: stored.id,
         socket,
         sinceSeq: 0,
@@ -4795,7 +4800,11 @@ describe("public terminal routes", () => {
     const kinds = (socket: FakeBrowserSocket) =>
       readBrowserMessages(socket).flatMap((message) => {
         if (message.type === "session-updated") {
-          return [`size ${message.session.cols}x${message.session.rows}`];
+          return [
+            `size ${message.session.cols}x${message.session.rows}${
+              message.resizeSeq === undefined ? "" : ` seq ${message.resizeSeq}`
+            }`,
+          ];
         }
         if (message.type === "resize-applied") {
           return [`applied ${message.seq}`];
@@ -4806,28 +4815,54 @@ describe("public terminal routes", () => {
         return [];
       });
 
-    await attach(owner, true);
+    await attach(owner, true, true);
     await attach(peer, false);
-    await attach(legacy, false);
+    await attach(legacy, true);
     expect(kinds(owner)).toEqual(["features"]);
     expect(kinds(peer)).toEqual([]);
 
     send(owner, { type: "resize", cols: 60, rows: 20, seq: 1 });
-    expect(kinds(owner)).toEqual(["features", "size 60x20", "applied 1"]);
+    expect(kinds(owner)).toEqual([
+      "features",
+      "size 60x20 seq 1",
+      "applied 1",
+    ]);
+    expect(kinds(legacy)).toEqual(["features", "size 60x20"]);
+    expect(
+      readBrowserMessages(legacy).every(
+        (message) =>
+          message.type !== "session-updated" ||
+          message.resizeSeq === undefined,
+      ),
+    ).toBe(true);
     send(owner, { type: "resize", cols: 60, rows: 20, seq: 2 });
     expect(kinds(owner)).toEqual([
       "features",
-      "size 60x20",
+      "size 60x20 seq 1",
       "applied 1",
       "applied 2",
     ]);
     send(peer, { type: "resize", cols: 40, rows: 20 });
     send(peer, { type: "resize", cols: 30, rows: 10, seq: 7 });
-    send(legacy, { type: "resize", cols: 50, rows: 12 });
+    send(legacy, { type: "resize", cols: 50, rows: 12, seq: 8 });
+    expect(kinds(legacy)).toEqual([
+      "features",
+      "size 60x20",
+      "size 40x20",
+      "size 30x10",
+      "applied 8",
+    ]);
+    expect(
+      readBrowserMessages(legacy).every(
+        (message) =>
+          message.type !== "session-updated" ||
+          message.resizeSeq === undefined,
+      ),
+    ).toBe(true);
 
     expect(kinds(owner)).toEqual([
       "features",
-      "size 60x20",
+      "size 60x20 seq 1",
       "applied 1",
       "applied 2",
       "size 40x20",

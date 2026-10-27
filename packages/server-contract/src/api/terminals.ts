@@ -272,6 +272,10 @@ export const terminalWebSocketQuerySchema = z
   })
   .strict();
 
+export const TERMINAL_LEGACY_WEBSOCKET_PROTOCOL = "bb.terminal.v1";
+export const TERMINAL_RESIZE_ECHO_WEBSOCKET_PROTOCOL =
+  "bb.terminal.resize-echo.v1";
+
 export const terminalOutputResponseSchema = z
   .object({
     chunks: z.array(terminalOutputChunkSchema),
@@ -341,6 +345,7 @@ export const terminalServerMessageSchema = z.discriminatedUnion("type", [
     .object({
       type: z.literal("session-updated"),
       session: terminalSessionSchema,
+      resizeSeq: z.number().int().positive().optional(),
     })
     .strict(),
   z

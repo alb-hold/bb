@@ -2,6 +2,7 @@ import { eq } from "drizzle-orm";
 import { buildHostDaemonWebSocketProtocols } from "@bb/host-daemon-contract";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
+import { TERMINAL_RESIZE_ECHO_WEBSOCKET_PROTOCOL } from "@bb/server-contract";
 import {
   createTerminalSession,
   getRetainedTerminalOutput,
@@ -27,12 +28,13 @@ const sockets = new Set<WebSocket>();
 async function connectDaemon(
   sessionId: string,
   hostId: string,
+  protocols = buildHostDaemonWebSocketProtocols(),
 ): Promise<WebSocket> {
   if (!server) throw new Error("test server is not running");
   const url = new URL("/internal/ws", server.baseUrl);
   url.protocol = "ws:";
   url.searchParams.set("sessionId", sessionId);
-  const socket = new WebSocket(url, buildHostDaemonWebSocketProtocols(), {
+  const socket = new WebSocket(url, protocols, {
     headers: { authorization: `Bearer ${createTestDaemonHostKey({ hostId })}` },
   });
   sockets.add(socket);
@@ -72,6 +74,25 @@ afterEach(async () => {
 });
 
 describe("daemon websocket session authorization", () => {
+  it("applies the server protocol handler on the daemon socket", async () => {
+    server = await startTestServer();
+    const { host, session } = seedHostSession(server.deps);
+    const socket = await connectDaemon(session.id, host.id, [
+      ...buildHostDaemonWebSocketProtocols(),
+      TERMINAL_RESIZE_ECHO_WEBSOCKET_PROTOCOL,
+    ]);
+
+    expect(socket.protocol).toBe(TERMINAL_RESIZE_ECHO_WEBSOCKET_PROTOCOL);
+  });
+
+  it("a real daemon offer negotiates the daemon protocol", async () => {
+    server = await startTestServer();
+    const { host, session } = seedHostSession(server.deps);
+    const socket = await connectDaemon(session.id, host.id);
+
+    expect(socket.protocol).toBe(buildHostDaemonWebSocketProtocols()[0]);
+  });
+
   it("rejects closed-session frames before terminal, environment, RPC, or plugin effects", async () => {
     server = await startTestServer();
     const environmentFixture = seedHostSession(server.deps);

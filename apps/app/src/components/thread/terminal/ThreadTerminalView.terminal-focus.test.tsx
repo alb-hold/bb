@@ -30,6 +30,7 @@ import { ThreadTerminalView, writeTerminalOutput } from "./ThreadTerminalView";
 const testState = vi.hoisted(() => ({
   calls: [] as string[],
   clearAttention: vi.fn(),
+  deferSocketOpen: false,
   mediaQueryListeners: new Set<() => void>(),
   touchEnabled: false,
   toastError: vi.fn(),
@@ -41,6 +42,7 @@ const testState = vi.hoisted(() => ({
 }));
 
 class TestTerminalSocket {
+  readonly protocol = "bb.terminal.resize-echo.v1";
   static readonly CLOSED = 3;
   static readonly CONNECTING = 0;
   static readonly OPEN = 1;
@@ -51,6 +53,7 @@ class TestTerminalSocket {
   onopen: ((event: Event) => void) | null = null;
   readyState = TestTerminalSocket.CONNECTING;
   readonly opened: Promise<void>;
+  readonly sent: string[] = [];
   private resolveOpened!: () => void;
 
   constructor(url: string) {
@@ -61,11 +64,15 @@ class TestTerminalSocket {
     this.opened = new Promise((resolve) => {
       this.resolveOpened = resolve;
     });
-    queueMicrotask(() => {
-      this.readyState = TestTerminalSocket.OPEN;
-      this.onopen?.(new Event("open"));
-      this.resolveOpened();
-    });
+    if (!testState.deferSocketOpen) {
+      queueMicrotask(() => this.open());
+    }
+  }
+
+  open(): void {
+    this.readyState = TestTerminalSocket.OPEN;
+    this.onopen?.(new Event("open"));
+    this.resolveOpened();
   }
 
   close(): void {
@@ -78,6 +85,7 @@ class TestTerminalSocket {
   }
 
   send(data: string): void {
+    this.sent.push(data);
     testState.socketMessages.push(data);
   }
 
@@ -180,6 +188,7 @@ afterEach(() => {
   testState.calls.length = 0;
   testState.sockets.length = 0;
   testState.socketCreated = null;
+  testState.deferSocketOpen = false;
   testState.socketMessages.length = 0;
   testState.socketUrls.length = 0;
   testState.clearAttention.mockReset();
@@ -2166,15 +2175,41 @@ describe("ThreadTerminalView terminal focus boundary", () => {
       </MemoryRouter>,
     );
 
+
     await waitForReadiness(
       socketCreated,
       "socket was not created within 5000 ms",
     );
     const socket = testState.sockets[0]!;
-    await Promise.all([
-      waitForReadiness(socket.opened, "socket did not open within 5000 ms"),
-      waitForReadiness(layoutSettled, "layout did not settle within 5000 ms"),
-    ]);
+    await Promise.all([socket.opened, layoutSettled]);
+    const initialResizes = testState.socketMessages
+      .map(
+        (message) =>
+          JSON.parse(message) as {
+            cols?: number;
+            rows?: number;
+            type?: string;
+          },
+      )
+      .filter((message) => message.type === "resize");
+    expect(initialResizes).toEqual([{ type: "resize", cols: 51, rows: 47 }]);
+    await waitFor(
+      () =>
+        expect(
+          testState.socketMessages
+            .map(
+              (message) =>
+                JSON.parse(message) as {
+                  cols?: number;
+                  rows?: number;
+                  type?: string;
+                },
+            )
+            .filter((message) => message.type === "resize"),
+        ).toEqual([{ type: "resize", cols: 51, rows: 47 }]),
+      { timeout: 6_000 },
+
+    );
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const resizeFrames = () =>
       testState.socketMessages
@@ -2215,32 +2250,69 @@ describe("ThreadTerminalView terminal focus boundary", () => {
         .filter((message) => message.type === "resize"),
     ).toEqual([{ type: "resize", cols: 51, rows: 47 }]);
 
+    testState.deferSocketOpen = true;
     testState.sockets[0]?.disconnect();
-    await vi.advanceTimersByTimeAsync(100);
-    const reconnectedSocket = testState.sockets[1];
-    if (!reconnectedSocket) {
-      throw new Error("terminal socket was not recreated after disconnect");
-    }
-    await waitForReadiness(
-      reconnectedSocket.opened,
-      "reconnected socket did not open within 5000 ms",
-    );
+
+    await waitFor(() => expect(testState.sockets).toHaveLength(2));
+    const reconnectedSocket = testState.sockets[1]!;
+    vi.useFakeTimers();
+    reconnectedSocket.open();
+    await reconnectedSocket.opened;
+    reconnectedSocket.receive({ type: "features", resizeAcks: true });
+
     reconnectedSocket.receive({
       type: "attached",
       session,
       replayStartSeq: 0,
       nextSeq: 0,
     });
-    await vi.advanceTimersByTimeAsync(REPAINT_RESTORE_DELAY_MS + 1);
-    await waitForReadinessCondition(
-      () =>
-        expect(resizeFrames().slice(-2)).toEqual([
-          { type: "resize", cols: 50, rows: 47 },
-          { type: "resize", cols: 51, rows: 47 },
-        ]),
-      "reconnected terminal resize was not restored within 5000 ms",
-    );
-  }, 30_000);
+
+    const socketResizes = () =>
+      reconnectedSocket.sent
+        .map(
+          (message) =>
+            JSON.parse(message) as {
+              cols?: number;
+              rows?: number;
+              seq?: number;
+              type?: string;
+            },
+        )
+        .filter((message) => message.type === "resize");
+    await vi.waitFor(() => {
+      expect(socketResizes()).toContainEqual({
+        type: "resize",
+        cols: 50,
+        rows: 47,
+        seq: 1,
+      });
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(400);
+    });
+    expect(socketResizes().at(-1)).toEqual({
+      type: "resize",
+      cols: 50,
+      rows: 47,
+      seq: 1,
+    });
+    reconnectedSocket.receive({ type: "resize-applied", seq: 1 });
+    expect(socketResizes().at(-1)).toEqual({
+      type: "resize",
+      cols: 51,
+      rows: 47,
+      seq: 2,
+    });
+    expect(
+      socketResizes()
+        .slice(-2)
+        .map(({ type, cols, rows }) => ({ type, cols, rows })),
+    ).toEqual([
+      { type: "resize", cols: 50, rows: 47 },
+      { type: "resize", cols: 51, rows: 47 },
+    ]);
+  }, 15_000);
+
 
   it("replays hidden output across a reconnect before showing the terminal", async () => {
     prepareMobileTerminal();
