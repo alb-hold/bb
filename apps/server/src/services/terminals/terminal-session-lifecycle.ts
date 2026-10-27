@@ -96,6 +96,11 @@ import {
 import { TerminalOutputFlowControl } from "./terminal-output-flow-control.js";
 import { TerminalOutputSequenceRebase } from "./terminal-output-sequence-rebase.js";
 import {
+  TerminalScreenState,
+  TerminalScreenStateCache,
+  TERMINAL_SCREEN_STATE_PENDING_BYTES_LIMIT,
+} from "./terminal-screen-state.js";
+import {
   isTimeoutFlushableHolderMarkerPrefix,
   shouldFlushHolderMarkerChunksOnTimeout,
   stripHolderMarkerChunks,
@@ -169,6 +174,17 @@ type RunningBrowserTerminalSession = TerminalSessionRow & {
   daemonSessionId: string;
   status: "running";
 };
+
+interface TerminalScreenStateRebuild {
+  bufferedBytes: number;
+  bufferedChunks: TerminalOutputChunk[];
+  cancelled: boolean;
+  cols: number;
+  daemonSessionId: string | null;
+  nextSeq: number;
+  rows: number;
+  terminalId: string;
+}
 
 interface TerminalClientSocket {
   close(code?: number, reason?: string): void;
@@ -850,6 +866,12 @@ export class TerminalSessionLifecycle {
   private readonly resizeAckSockets = new WeakSet<TerminalClientSocket>();
   private readonly outputFlow: TerminalOutputFlowControl;
   private readonly outputSequenceRebase = new TerminalOutputSequenceRebase();
+  private readonly terminalScreenStates = new TerminalScreenStateCache();
+  private readonly terminalScreenStateRebuilds = new Map<
+    string,
+    TerminalScreenStateRebuild
+  >();
+  private terminalScreenStateRebuildQueue: Promise<void> = Promise.resolve();
   private readonly pendingHolderMarkers = new Set<string>();
   private readonly pendingHolderOutput = new Map<
     string,
@@ -945,6 +967,137 @@ export class TerminalSessionLifecycle {
         "Timed out replaying terminal output after the host reconnected",
       ),
     });
+  }
+
+  async warmTerminalScreenStates(): Promise<void> {
+    const sessions = listTerminalSessions(this.options.db, {
+      scope: { kind: "all", statuses: ["running"] },
+      visible: false,
+    });
+    for (const session of sessions) {
+      await yieldToEventLoop();
+      this.scheduleTerminalScreenStateRebuild(session);
+    }
+    await this.terminalScreenStateRebuildQueue;
+  }
+
+  private scheduleTerminalScreenStateRebuild(
+    session: TerminalSessionRow,
+  ): void {
+    if (
+      this.terminalOutputWritesStopped ||
+      this.terminalScreenStates.has(session.id) ||
+      this.terminalScreenStateRebuilds.has(session.id) ||
+      session.status !== "running"
+    ) {
+      return;
+    }
+    const rebuild: TerminalScreenStateRebuild = {
+      bufferedBytes: 0,
+      bufferedChunks: [],
+      cancelled: false,
+      cols: session.cols,
+      daemonSessionId: session.daemonSessionId,
+      nextSeq: 0,
+      rows: session.rows,
+      terminalId: session.id,
+    };
+    this.terminalScreenStateRebuilds.set(session.id, rebuild);
+    this.terminalScreenStateRebuildQueue = this.terminalScreenStateRebuildQueue
+      .then(() => this.rebuildTerminalScreenState(session, rebuild))
+      .catch((error: unknown) => {
+        if (this.terminalScreenStateRebuilds.get(session.id) === rebuild) {
+          this.terminalScreenStateRebuilds.delete(session.id);
+        }
+        this.options.logger.warn(
+          { err: error, terminalId: session.id },
+          "Failed to rebuild maintained terminal screen",
+        );
+      });
+  }
+
+  private async rebuildTerminalScreenState(
+    session: TerminalSessionRow,
+    rebuild: TerminalScreenStateRebuild,
+  ): Promise<void> {
+    let state: TerminalScreenState | null = null;
+    try {
+      await yieldToEventLoop();
+      if (!this.isTerminalScreenStateRebuildActive(rebuild)) return;
+      const current = getTerminalById(this.options.db, session.id);
+      if (
+        current === null ||
+        current.status !== "running" ||
+        current.daemonSessionId !== rebuild.daemonSessionId
+      ) {
+        return;
+      }
+      const chunks = getRetainedTerminalOutput(this.options.db, {
+        hostId: current.hostId,
+        terminalSessionId: current.id,
+        now: Date.now(),
+      });
+      if (chunks !== null && chunks[0]?.seq !== 0) return;
+      state = new TerminalScreenState(rebuild.cols, rebuild.rows);
+      for (const chunk of chunks ?? []) {
+        if (!this.isTerminalScreenStateRebuildActive(rebuild)) return;
+        state.push(chunk.seq, Buffer.from(chunk.dataBase64, "base64"));
+        rebuild.nextSeq = Math.max(rebuild.nextSeq, chunk.seq + 1);
+        await yieldToEventLoop();
+      }
+      if (await state.snapshot() === null) return;
+      for (;;) {
+        if (!this.isTerminalScreenStateRebuildActive(rebuild)) return;
+        const buffered = rebuild.bufferedChunks.splice(0);
+        rebuild.bufferedBytes = 0;
+        for (const chunk of buffered) {
+          if (!this.isTerminalScreenStateRebuildActive(rebuild)) return;
+          state.push(chunk.seq, Buffer.from(chunk.dataBase64, "base64"));
+          rebuild.nextSeq = Math.max(rebuild.nextSeq, chunk.seq + 1);
+          await yieldToEventLoop();
+        }
+        if (await state.snapshot() === null) return;
+        if (rebuild.bufferedChunks.length === 0) {
+          if (!this.isTerminalScreenStateRebuildActive(rebuild)) return;
+          this.terminalScreenStates.install(session.id, state);
+          state = null;
+          return;
+        }
+      }
+    } finally {
+      state?.dispose();
+      if (this.terminalScreenStateRebuilds.get(session.id) === rebuild) {
+        this.terminalScreenStateRebuilds.delete(session.id);
+      }
+    }
+  }
+
+  private isTerminalScreenStateRebuildActive(
+    rebuild: TerminalScreenStateRebuild,
+  ): boolean {
+    return (
+      !rebuild.cancelled &&
+      !this.terminalOutputWritesStopped &&
+      this.terminalScreenStateRebuilds.get(rebuild.terminalId) === rebuild
+    );
+  }
+
+  private cancelTerminalScreenStateRebuild(terminalId: string): void {
+    const rebuild = this.terminalScreenStateRebuilds.get(terminalId);
+    if (rebuild === undefined) return;
+    rebuild.cancelled = true;
+    rebuild.bufferedChunks.length = 0;
+    rebuild.bufferedBytes = 0;
+    this.terminalScreenStateRebuilds.delete(terminalId);
+  }
+
+  private resizeTerminalScreenState(session: TerminalSessionRow): void {
+    if (this.terminalScreenStateRebuilds.has(session.id)) {
+      this.cancelTerminalScreenStateRebuild(session.id);
+      this.scheduleTerminalScreenStateRebuild(session);
+      return;
+    }
+    this.terminalScreenStates.resize(session.id, session.cols, session.rows);
   }
 
   listTerminals(args: ListTerminalsArgs): TerminalSession[] {
@@ -1419,6 +1572,11 @@ export class TerminalSessionLifecycle {
         "Terminal session was cancelled before it opened",
       );
     }
+    this.terminalScreenStates.create(
+      runningSession.id,
+      runningSession.cols,
+      runningSession.rows,
+    );
     args.onTerminalStarted?.(runningSession.id);
     this.notifyTerminalSessionChanged(runningSession);
     return this.toTerminalSession(runningSession);
@@ -1754,6 +1912,7 @@ export class TerminalSessionLifecycle {
           });
     const session = resized ?? current;
     if (resized && resized !== current) {
+      this.resizeTerminalScreenState(resized);
       this.notifyTerminalSessionChanged(resized);
       this.options.hub.sendTerminalClientMessage(resized.id, {
         type: "session-updated",
@@ -1831,6 +1990,16 @@ export class TerminalSessionLifecycle {
       );
     }
     if (
+      args.query.threadId !== undefined &&
+      session.threadId !== args.query.threadId
+    ) {
+      throw new ApiError(
+        404,
+        "terminal_not_found",
+        "Terminal session not found",
+      );
+    }
+    if (
       args.query.lines !== undefined &&
       args.query.lines > TERMINAL_SCREEN_MAX_LINES
     ) {
@@ -1839,6 +2008,12 @@ export class TerminalSessionLifecycle {
         "invalid_request",
         `lines must be at most ${TERMINAL_SCREEN_MAX_LINES}`,
       );
+    }
+    if (args.query.lines === undefined) {
+      const maintained = await this.terminalScreenStates.snapshot(
+        args.terminalId,
+      );
+      if (maintained !== null) return maintained;
     }
     const output = await this.readTerminalOutput({
       terminalId: args.terminalId,
@@ -1896,6 +2071,26 @@ export class TerminalSessionLifecycle {
     session: TerminalSessionRow,
     chunk: TerminalOutputChunk,
   ): void {
+    const rebuild = this.terminalScreenStateRebuilds.get(session.id);
+    if (rebuild === undefined) {
+      this.terminalScreenStates.pushBase64(
+        session.id,
+        session.cols,
+        session.rows,
+        chunk.seq,
+        chunk.dataBase64,
+      );
+    } else if (!rebuild.cancelled) {
+      const bytes = Buffer.byteLength(chunk.dataBase64, "utf8");
+      if (rebuild.bufferedBytes + bytes > TERMINAL_SCREEN_STATE_PENDING_BYTES_LIMIT) {
+        rebuild.cancelled = true;
+        rebuild.bufferedChunks.length = 0;
+        rebuild.bufferedBytes = 0;
+      } else {
+        rebuild.bufferedChunks.push(chunk);
+        rebuild.bufferedBytes += bytes;
+      }
+    }
     const batches = this.pendingRetainedOutput.get(session.id) ?? [];
     const last = batches.at(-1);
     if (last !== undefined && last.hostId === session.hostId) {
@@ -2120,10 +2315,14 @@ export class TerminalSessionLifecycle {
         : "Terminal output shutdown flush timed out; pending output was not written",
     );
     this.pendingRetainedOutput.clear();
+    for (const terminalId of this.terminalScreenStateRebuilds.keys()) {
+      this.cancelTerminalScreenStateRebuild(terminalId);
+    }
     for (const pending of this.pendingHolderOutput.values()) {
       clearTimeout(pending.timer);
     }
     this.pendingHolderOutput.clear();
+    this.terminalScreenStates.dispose();
   }
 
   flushAllRetainedOutput(): void {
@@ -2396,6 +2595,7 @@ export class TerminalSessionLifecycle {
       if (!reconnected) {
         continue;
       }
+      this.scheduleTerminalScreenStateRebuild(reconnected);
       this.options.logger.info(
         { terminalId: reconnected.id, sessionId: args.daemonSessionId },
         "Terminal session reattached to reconnected daemon",
@@ -3642,6 +3842,7 @@ export class TerminalSessionLifecycle {
         rows: size.rows,
       });
       if (resized) {
+        this.resizeTerminalScreenState(resized);
         const session = this.toTerminalSession(resized);
         this.notifyTerminalSessionChanged(resized);
         this.options.hub.sendTerminalClientMessage(resized.id, {
@@ -3842,6 +4043,7 @@ export class TerminalSessionLifecycle {
       terminalId: args.terminalId,
     };
     this.catchingUpTerminalIds.add(args.terminalId);
+    this.terminalScreenStates.remove(args.terminalId);
     void this.pendingCatchUps.claim(pending).promise.catch(() => undefined);
     const sent = this.options.hub.sendDaemonSessionMessage(
       args.daemonSessionId,
@@ -4336,6 +4538,10 @@ export class TerminalSessionLifecycle {
   private notifyTerminalSessionChanged(session: TerminalSessionRow): void {
     if (session.threadId !== null) {
       this.options.hub.notifyThread(session.threadId, ["terminals-changed"]);
+    }
+    if (session.status !== "running") {
+      this.cancelTerminalScreenStateRebuild(session.id);
+      this.terminalScreenStates.remove(session.id);
     }
     if (session.status !== "exited") return;
     for (const listener of this.exitListeners) {
