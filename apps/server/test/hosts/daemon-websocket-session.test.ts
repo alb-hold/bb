@@ -74,7 +74,7 @@ afterEach(async () => {
 });
 
 describe("daemon websocket session authorization", () => {
-  it("selects the daemon protocol and preserves daemon authorization", async () => {
+  it("applies the server protocol handler on the daemon socket", async () => {
     server = await startTestServer();
     const { host, session } = seedHostSession(server.deps);
     const socket = await connectDaemon(session.id, host.id, [
@@ -83,6 +83,14 @@ describe("daemon websocket session authorization", () => {
     ]);
 
     expect(socket.protocol).toBe(TERMINAL_RESIZE_ECHO_WEBSOCKET_PROTOCOL);
+  });
+
+  it("a real daemon offer negotiates the daemon protocol", async () => {
+    server = await startTestServer();
+    const { host, session } = seedHostSession(server.deps);
+    const socket = await connectDaemon(session.id, host.id);
+
+    expect(socket.protocol).toBe(buildHostDaemonWebSocketProtocols()[0]);
   });
 
   it("rejects closed-session frames before terminal, environment, RPC, or plugin effects", async () => {
