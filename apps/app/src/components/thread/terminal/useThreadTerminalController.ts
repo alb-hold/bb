@@ -224,6 +224,7 @@ export function useThreadTerminalController({
   const terminalCwdsRef = useRef(new Map<string, string>());
   const terminalCwdTitlesRef = useRef(new Map<string, string>());
   const userSetTerminalTitlesRef = useRef(new Set<string>());
+  const programSetTerminalTitlesRef = useRef(new Set<string>());
   const lastProgressUpdateRef = useRef<{
     threadId: string;
     value: number | null;
@@ -708,6 +709,7 @@ export function useThreadTerminalController({
         terminalCwdsRef.current.delete(session.id);
         terminalCwdTitlesRef.current.delete(session.id);
         userSetTerminalTitlesRef.current.delete(session.id);
+        programSetTerminalTitlesRef.current.delete(session.id);
         setRetainedExitedSession(session);
         applyTerminalSessionUpsert({ queryClient, session });
         return;
@@ -753,7 +755,7 @@ export function useThreadTerminalController({
         if (!normalizedTitle || normalizedTitle === activeSession.title) {
           return;
         }
-        userSetTerminalTitlesRef.current.add(activeSession.id);
+        programSetTerminalTitlesRef.current.add(activeSession.id);
 
         const request: TerminalTitleRenameRequest = {
           terminalId: activeSession.id,

@@ -248,6 +248,37 @@ describe("two split panes each holding a terminal", () => {
     });
   });
 
+  it("does not let program titles block cwd title updates", async () => {
+    const current = session("term_a", "running");
+    current.title = "bash";
+    vi.mocked(sdk.terminals.list).mockResolvedValue({ sessions: [current] });
+    const { wrapper } = createQueryClientTestHarness();
+    const { result, unmount } = renderHook(
+      () => useThreadTerminalController(paneArgs("term_a")),
+      { wrapper },
+    );
+
+    await waitFor(() =>
+      expect(result.current.activeSession).toMatchObject({
+        id: "term_a",
+        title: "bash",
+        status: "running",
+      }),
+    );
+    act(() => result.current.handleActiveTerminalTitleChange("build output"));
+    act(() =>
+      result.current.handleActiveTerminalCwdChange("/workspace/project"),
+    );
+
+    await waitFor(() =>
+      expect(sdk.terminals.rename).toHaveBeenCalledWith({
+        terminalId: "term_a",
+        title: "project",
+      }),
+    );
+    unmount();
+  });
+
   it("accepts subsequent OSC process title changes", async () => {
     const current = session("term_a", "running");
     current.title = "vim";
