@@ -59,6 +59,7 @@ export {
   HOST_RETAINED_TERMINAL_LIMIT,
   TERMINAL_OUTPUT_RETENTION_MS,
   type RetainedTerminalOutputChunk,
+  type RetainedTerminalOutputAppendTimings,
 } from "./fork-terminal-output.js";
 export {
   consumeNativeTerminalThreadLaunchInput,

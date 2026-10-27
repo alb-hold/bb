@@ -111,6 +111,8 @@ import {
 const DEFAULT_TERMINAL_OPEN_TIMEOUT_MS = 10_000;
 const DEFAULT_TERMINAL_CLOSE_TIMEOUT_MS = 5_000;
 const RETAINED_OUTPUT_FLUSH_MS = 1_000;
+const RETAINED_OUTPUT_TIMER_SLICE_CHUNKS = 32;
+const RETAINED_OUTPUT_TIMER_BUDGET_MS = 50;
 const RETAINED_OUTPUT_CLOSE_ATTEMPTS = 3;
 const DEFAULT_TERMINAL_START: NonNullable<CreateTerminalRequest["start"]> = {
   mode: "shell",
@@ -355,6 +357,9 @@ interface TerminalSessionLifecycleOptions {
   hub: AppDeps["hub"];
   logger: ServerLogger;
   openTimeoutMs?: number;
+  retainedOutputTimerClock?: () => number;
+  retainedOutputTimerScheduler?: (callback: () => void) => void;
+  retainedOutputMeasureClock?: () => number;
 }
 
 interface ListTerminalsArgs {
@@ -890,6 +895,7 @@ export class TerminalSessionLifecycle {
   private readonly terminalReplayWaiters = new Map<string, Set<() => void>>();
   private terminalOutputWritesStopped = false;
   private retainedOutputFlushTimer: ReturnType<typeof setTimeout> | null = null;
+  private retainedOutputContinuationScheduled = false;
 
   constructor(private readonly options: TerminalSessionLifecycleOptions) {
     clearPersistedDeviceHandoffAttention(options.db, Date.now());
@@ -2102,6 +2108,35 @@ export class TerminalSessionLifecycle {
     this.scheduleRetainedOutputFlush();
   }
 
+  private logSlowRetainedOutputAppend(
+    terminalSessionId: string,
+    hostId: string,
+    timings: ReturnType<typeof appendRetainedTerminalOutputChunks>,
+  ): void {
+    if (timings.totalMs < 100) return;
+    this.options.logger.info(
+      {
+        terminalSessionId,
+        hostId,
+        phasesMs: {
+          total: timings.totalMs,
+          expiryPrune: timings.expiryPruneMs,
+          ownerLookup: timings.ownerLookupMs,
+          rowReadParse: timings.rowReadParseMs,
+          chunkLoop: timings.chunkLoopMs,
+          upsert: timings.upsertMs,
+          hostRetention: timings.hostRetentionMs,
+        },
+        chunkCount: timings.chunkCount,
+        inputBytes: timings.inputBytes,
+        existingRowBytes: timings.existingRowBytes,
+        rowsPruned: timings.rowsPruned,
+        hostRowsTrimmed: timings.hostRowsTrimmed,
+      },
+      "Slow retained terminal output append",
+    );
+  }
+
   private scheduleRetainedOutputFlush(): void {
     if (this.terminalOutputWritesStopped) return;
     if (this.retainedOutputFlushTimer !== null) return;
@@ -2160,22 +2195,53 @@ export class TerminalSessionLifecycle {
     }
   }
 
-  private flushRetainedOutput(terminalSessionId: string): void {
+  private flushRetainedOutput(
+    terminalSessionId: string,
+    maxChunks = Number.POSITIVE_INFINITY,
+    stopAfterAppend = false,
+  ): void {
     if (this.terminalOutputWritesStopped) return;
     if (this.activeTerminalReplays.has(terminalSessionId)) return;
     const batches = this.pendingRetainedOutput.get(terminalSessionId);
     if (batches === undefined) return;
     this.pendingRetainedOutput.delete(terminalSessionId);
+    let remainingChunks = maxChunks;
     for (const [index, batch] of batches.entries()) {
+      if (remainingChunks <= 0) {
+        this.pendingRetainedOutput.set(terminalSessionId, batches.slice(index));
+        return;
+      }
+      const writing = batch.chunks.slice(0, remainingChunks);
+      const remainder = batch.chunks.slice(writing.length);
       try {
-        appendRetainedTerminalOutputChunks(this.options.db, {
+        const timings = appendRetainedTerminalOutputChunks(this.options.db, {
           hostId: batch.hostId,
           terminalSessionId,
-          chunks: batch.chunks,
+          chunks: writing,
           clock: Date.now,
+          measureClock: this.options.retainedOutputMeasureClock,
         });
+        this.logSlowRetainedOutputAppend(
+          terminalSessionId,
+          batch.hostId,
+          timings,
+        );
+        remainingChunks -= writing.length;
+        if (
+          remainder.length > 0 ||
+          (stopAfterAppend && index < batches.length - 1)
+        ) {
+          this.pendingRetainedOutput.set(terminalSessionId, [
+            ...(remainder.length > 0 ? [{ ...batch, chunks: remainder }] : []),
+            ...batches.slice(index + 1),
+          ]);
+          return;
+        }
       } catch (error) {
-        const unwritten = batches.slice(index);
+        const unwritten = [
+          { ...batch, chunks: [...writing, ...remainder] },
+          ...batches.slice(index + 1),
+        ];
         let bytes = unwritten.reduce(
           (total, entry) =>
             total +
@@ -2330,12 +2396,43 @@ export class TerminalSessionLifecycle {
   }
 
   private flushAllRetainedOutputForTimer(): void {
-    this.flushRetainedOutputBatches(
-      [...this.pendingRetainedOutput.keys()].filter(
-        (terminalSessionId) =>
-          !this.activeTerminalReplays.has(terminalSessionId),
-      ),
-    );
+    const started = (this.options.retainedOutputTimerClock ?? Date.now)();
+    let appended = false;
+    for (const terminalSessionId of [...this.pendingRetainedOutput.keys()]) {
+      if (
+        appended &&
+        (this.options.retainedOutputTimerClock ?? Date.now)() - started >=
+          RETAINED_OUTPUT_TIMER_BUDGET_MS
+      )
+        break;
+      if (this.activeTerminalReplays.has(terminalSessionId)) continue;
+      try {
+        this.flushRetainedOutput(
+          terminalSessionId,
+          RETAINED_OUTPUT_TIMER_SLICE_CHUNKS,
+          true,
+        );
+      } catch (error) {
+        this.options.logger.warn(
+          { error, terminalId: terminalSessionId },
+          "Failed to retain terminal output",
+        );
+      }
+      appended = true;
+    }
+    if (
+      [...this.pendingRetainedOutput.keys()].some(
+        (id) => !this.activeTerminalReplays.has(id),
+      )
+    ) {
+      if (!this.retainedOutputContinuationScheduled) {
+        this.retainedOutputContinuationScheduled = true;
+        (this.options.retainedOutputTimerScheduler ?? setImmediate)(() => {
+          this.retainedOutputContinuationScheduled = false;
+          this.flushAllRetainedOutputForTimer();
+        });
+      }
+    }
   }
 
   private flushRetainedOutputBatches(terminalSessionIds: string[]): void {
@@ -3498,12 +3595,14 @@ export class TerminalSessionLifecycle {
     const retainedAppendPerformed = current !== null && retainedTail.length > 0;
     if (retainedAppendPerformed && current) {
       runEventLoopWorkSync("ws:daemon terminal.replay append-retained", () => {
-        appendRetainedTerminalOutputChunks(this.options.db, {
+        const timings = appendRetainedTerminalOutputChunks(this.options.db, {
           hostId: current.hostId,
           terminalSessionId: current.id,
           chunks: retainedTail,
           clock: Date.now,
+          measureClock: this.options.retainedOutputMeasureClock,
         });
+        this.logSlowRetainedOutputAppend(current.id, current.hostId, timings);
       });
       const remaining = this.pendingRetainedOutput
         .get(current.id)
