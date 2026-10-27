@@ -1,4 +1,4 @@
-import { monitorEventLoopDelay, performance } from "node:perf_hooks";
+import { monitorEventLoopDelay } from "node:perf_hooks";
 
 interface EventLoopStall {
   intervalMs: number;
