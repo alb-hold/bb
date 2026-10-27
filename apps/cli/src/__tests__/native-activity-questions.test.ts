@@ -183,7 +183,9 @@ describe("native terminal questions", () => {
     const lateWorking = { state: "working" as const, prompt: "current" };
 
     expect(tracker.acceptsLate(lateWorking, 1_798_208_000, 19)).toBe(false);
+    expect(tracker.lateSequenceIsUnconfirmed(19)).toBe(true);
     expect(tracker.acceptsLate(lateWorking, 1_798_208_000, 21)).toBe(true);
+    expect(tracker.lateSequenceIsUnconfirmed(21)).toBe(false);
 
     tracker.apply({ state: "idle", prompt: null });
     expect(tracker.acceptsLate(lateWorking, 1_798_208_000, 22)).toBe(false);

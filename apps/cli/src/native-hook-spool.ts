@@ -925,6 +925,7 @@ export class HookAppendReader {
   private incompleteOffset = -1;
   private incompleteCounted = false;
   private readonly seenLate = new Set<string>();
+  private readonly replacedLate = new Set<string>();
   private regularKey: string | null = null;
   private irregularKey: string | null = null;
   private readonly reportedMarkers = new Set<string>();
@@ -1057,6 +1058,7 @@ export class HookAppendReader {
   } {
     this.seenLate.add(entry.name);
     const file = path.join(path.dirname(this.file), entry.name);
+    let lost = this.replacedLate.delete(entry.name) ? 1 : 0;
     const content = readRegularFile(file);
     if (content.kind !== "text") {
       return { lost: 1, record: null, settle: () => 0 };
@@ -1066,7 +1068,6 @@ export class HookAppendReader {
       sequence: number | null;
       startedAt: number;
     } | null = null;
-    let lost = 0;
     try {
       const parsed: unknown = JSON.parse(content.text);
       if (typeof parsed === "object" && parsed !== null) {
@@ -1090,6 +1091,7 @@ export class HookAppendReader {
         const outcome = truncateRegularFile(file, content.identity, true);
         if (outcome === "replaced") {
           this.seenLate.delete(entry.name);
+          this.replacedLate.add(entry.name);
           return 0;
         }
         return outcome === "linked" || outcome === "irregular" ? 1 : 0;

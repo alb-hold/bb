@@ -2020,7 +2020,7 @@ describe.skipIf(process.platform === "win32")(
     }, 30_000);
 
     it("uses hook sequence to reject a delayed same-second opener and accept a later one", () => {
-      const { directory, file, reader } = appendFixture();
+      const { directory, file, reader, unconfirmed } = appendFixture();
       const sameSecond = Math.floor(Date.now() / 1000);
       const clear = record("UserPromptSubmit", { prompt: "next" });
       appendFileSync(file, `2\t${clear}\n`);
@@ -2033,6 +2033,9 @@ describe.skipIf(process.platform === "win32")(
       );
       expect(reader.read()).toEqual([]);
       expect(reader.heartbeat()).toBeNull();
+      expect(unconfirmed).toEqual([
+        { reason: "superseded-late-record", total: 1 },
+      ]);
 
       const afterClear = path.join(directory, `.late.102.${sameSecond}.3`);
       writeFileSync(
@@ -2046,7 +2049,7 @@ describe.skipIf(process.platform === "win32")(
     });
 
     it("drops a gap-filled late clear so it cannot lower the reader's clear sequence", () => {
-      const { directory, file, reader } = appendFixture();
+      const { directory, file, reader, unconfirmed } = appendFixture();
       writeFileSync(
         file,
         `30\t${record("UserPromptSubmit", { prompt: "current" })}\n`,
@@ -2059,6 +2062,9 @@ describe.skipIf(process.platform === "win32")(
         record("Stop"),
       );
       expect(reader.read()).toEqual([]);
+      expect(unconfirmed).toEqual([
+        { reason: "superseded-late-record", total: 1 },
+      ]);
       const tracker: unknown = Reflect.get(reader, "tracker");
       expect(Reflect.get(tracker as object, "lastClearSequence")).toBe(30);
 
@@ -2067,6 +2073,10 @@ describe.skipIf(process.platform === "win32")(
         record("PermissionRequest", { tool_name: "Bash" }),
       );
       expect(reader.read()).toEqual([]);
+      expect(unconfirmed).toEqual([
+        { reason: "superseded-late-record", total: 1 },
+        { reason: "superseded-late-record", total: 2 },
+      ]);
       expect(reader.heartbeat()).toBeNull();
     });
 

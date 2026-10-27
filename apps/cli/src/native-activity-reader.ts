@@ -132,7 +132,8 @@ export class NativeActivityReader {
         | "foreign-session"
         | "held-overflow"
         | "unreadable-record"
-        | "unsequenced-late-record",
+        | "unsequenced-late-record"
+        | "superseded-late-record",
       total: number,
     ) => void,
     private readonly onSessionAdopted?: (
@@ -192,7 +193,10 @@ export class NativeActivityReader {
     const hooks = activity.hooks;
     if (hooks !== undefined && this.hookSource !== null) {
       const unconfirmedHookReasons = new Set<
-        "missing-session" | "foreign-session" | "unsequenced-late-record"
+        | "missing-session"
+        | "foreign-session"
+        | "unsequenced-late-record"
+        | "superseded-late-record"
       >();
       const spooled = this.hookSource.read();
       if (spooled.sequenceWatermark !== undefined) {
@@ -282,7 +286,11 @@ export class NativeActivityReader {
             this.droppedOpenQuestion = true;
             this.historyIncomplete = true;
             this.unconfirmedHookCount += 1;
-            unconfirmedHookReasons.add("unsequenced-late-record");
+            unconfirmedHookReasons.add(
+              this.tracker.lateSequenceIsUnsequenced(hookSequence)
+                ? "unsequenced-late-record"
+                : "superseded-late-record",
+            );
           }
           continue;
         }

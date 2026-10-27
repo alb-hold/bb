@@ -459,6 +459,14 @@ export class NativeActivityTracker {
   }
 
   lateSequenceIsUnconfirmed(hookSequence: number | null): boolean {
+    return (
+      hookSequence === null ||
+      this.hasUnsequencedClear ||
+      hookSequence <= this.lastClearSequence
+    );
+  }
+
+  lateSequenceIsUnsequenced(hookSequence: number | null): boolean {
     return hookSequence === null || this.hasUnsequencedClear;
   }
 

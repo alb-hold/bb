@@ -171,7 +171,7 @@ export function recordNativeTerminalActivity(
     authorization: args.authorization,
     threadId: args.threadId,
   });
-  if (!credentialIsCurrent) {
+  if (args.authorization !== undefined && !credentialIsCurrent) {
     deps.logger.warn(
       { threadId: args.threadId },
       "A native terminal activity report without the current holder credential was rejected",
@@ -182,6 +182,13 @@ export function recordNativeTerminalActivity(
       "A valid credential for this thread's current native terminal is required",
     );
   }
+  const active = activeThreads(deps);
+  const repeatedWorkingSignal =
+    args.state === "working" &&
+    args.prompt === undefined &&
+    (args.closes?.length ?? 0) === 0 &&
+    active.has(args.threadId);
+  if (args.authorization === undefined && repeatedWorkingSignal) return;
   let currentTerminalIsLive: boolean;
   try {
     currentTerminalIsLive =
@@ -193,12 +200,6 @@ export function recordNativeTerminalActivity(
     );
     throw error;
   }
-  const active = activeThreads(deps);
-  const repeatedWorkingSignal =
-    args.state === "working" &&
-    args.prompt === undefined &&
-    (args.closes?.length ?? 0) === 0 &&
-    active.has(args.threadId);
   const now = Date.now();
   let notifyReceipt = false;
   const currentNativeRecord =
