@@ -1958,6 +1958,95 @@ describe("ThreadTerminalView terminal focus boundary", () => {
     }, "hidden output was not replayed when the terminal became visible");
   });
 
+  it("replays output received while the terminal panel is closed", async () => {
+    prepareMobileTerminal();
+    let mountedTerminal: Terminal | null = null;
+    const openTerminal = Terminal.prototype.open;
+    vi.spyOn(Terminal.prototype, "open").mockImplementation(function (
+      this: Terminal,
+      element: HTMLElement,
+    ) {
+      mountedTerminal ??= this;
+      openTerminal.call(this, element);
+    });
+    const session = makeTerminalSession({
+      id: "term_panel_replay",
+      status: "running",
+      cols: 40,
+      rows: 12,
+    });
+    const makeView = (isPanelOpen: boolean) => (
+      <MemoryRouter>
+        <AppCommandProvider>
+          <ThreadTerminalView
+            autoFocus={false}
+            isPanelOpen={isPanelOpen}
+            session={session}
+          />
+        </AppCommandProvider>
+      </MemoryRouter>
+    );
+    const view = render(makeView(true));
+    await waitForReadinessCondition(
+      () => expect(testState.sockets).toHaveLength(1),
+      "initial terminal socket was not created within 5000 ms",
+    );
+    const socket = testState.sockets[0];
+    if (!socket) throw new Error("initial terminal socket is missing");
+    await waitForReadiness(socket.opened, "initial socket did not open");
+    socket.receive({
+      type: "attached",
+      session,
+      replayStartSeq: 0,
+      nextSeq: 0,
+    });
+
+    view.rerender(makeView(false));
+    await waitForReadinessCondition(
+      () =>
+        expect(
+          testState.socketMessages.map((message) => JSON.parse(message)),
+        ).toContainEqual({ type: "visibility", visible: false }),
+      "closed terminal panel did not pause terminal visibility",
+    );
+    socket.receive({
+      type: "output",
+      chunk: { seq: 0, dataBase64: btoa("panel ghost output\r\n") },
+    });
+
+    view.rerender(makeView(true));
+    await waitForReadinessCondition(
+      () => expect(testState.sockets).toHaveLength(2),
+      "opening terminal panel did not request replay",
+    );
+    const replaySocket = testState.sockets[1];
+    if (!replaySocket) throw new Error("panel replay socket is missing");
+    await waitForReadiness(replaySocket.opened, "panel replay socket did not open");
+    expect(
+      new URL(testState.socketUrls[1] ?? "ws://localhost").searchParams.get(
+        "sinceSeq",
+      ),
+    ).toBe("0");
+    replaySocket.receive({
+      type: "attached",
+      session,
+      replayStartSeq: 0,
+      nextSeq: 1,
+    });
+    replaySocket.receive({
+      type: "output",
+      chunk: { seq: 0, dataBase64: btoa("panel ghost output\r\n") },
+    });
+    await waitForReadinessCondition(() => {
+      const terminalText = Array.from(
+        { length: mountedTerminal?.buffer.active.length ?? 0 },
+        (_, index) =>
+          mountedTerminal?.buffer.active.getLine(index)?.translateToString(true),
+      ).join("\n");
+      expect(terminalText).toContain("panel ghost output");
+    }, "panel output was not replayed when the terminal panel reopened");
+  });
+
   it("suppresses terminal-scoped shortcuts from the real xterm input", async () => {
     vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({
       measureText: (text: string) => ({ width: text.length * 9 }),

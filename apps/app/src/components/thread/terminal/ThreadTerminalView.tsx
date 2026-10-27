@@ -1216,6 +1216,8 @@ export function ThreadTerminalView({
   );
   const autoFocusRef = useRef(autoFocus);
   const isPanelOpenRef = useRef(isPanelOpen);
+  const previousPanelOpenRef = useRef(isPanelOpen);
+  const reportDocumentVisibilityRef = useRef<(() => void) | null>(null);
   const sessionStatusRef = useRef<TerminalSession["status"]>(session.status);
   const sessionRef = useRef(session);
   const lastStatusNoticeRef = useRef<TerminalSessionStatusNotice | null>(null);
@@ -1625,7 +1627,9 @@ export function ThreadTerminalView({
         cancelTerminalOutputNextRenders(session.id);
       }
       const nextVisible =
-        document.visibilityState === "visible" && containerHasSize;
+        document.visibilityState === "visible" &&
+        containerHasSize &&
+        isPanelOpenRef.current;
       const wasVisible = terminalVisible;
       if (wasVisible === nextVisible) return;
       terminalVisible = nextVisible;
@@ -1634,6 +1638,7 @@ export function ThreadTerminalView({
         transport?.replayOutputFrom(lastParsedOutputNextSeq);
       }
     };
+    reportDocumentVisibilityRef.current = reportDocumentVisibility;
 
     let liveBottomBeforeGridResize = false;
     let liveBottomResizeClearFrame: number | null = null;
@@ -2580,6 +2585,9 @@ export function ThreadTerminalView({
       terminalResizeSubscription = null;
       cancelTerminalOutputNextRenders(session.id);
       handleFileDropRef.current = null;
+      if (reportDocumentVisibilityRef.current === reportDocumentVisibility) {
+        reportDocumentVisibilityRef.current = null;
+      }
       document.removeEventListener(
         "visibilitychange",
         reportDocumentVisibility,
@@ -2608,6 +2616,13 @@ export function ThreadTerminalView({
     session.title,
     updateHoveredTerminalLink,
   ]);
+
+  useEffect(() => {
+    const panelWasOpen = previousPanelOpenRef.current;
+    previousPanelOpenRef.current = isPanelOpen;
+    if (panelWasOpen === isPanelOpen) return;
+    reportDocumentVisibilityRef.current?.();
+  }, [isPanelOpen]);
 
   useEffect(() => {
     const terminal = terminalRef.current;
