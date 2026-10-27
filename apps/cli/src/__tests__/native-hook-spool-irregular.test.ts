@@ -145,8 +145,10 @@ describe.skipIf(process.platform === "win32")(
         opener("Late"),
       );
       const appendRun = await readInChild("append", file);
-      expect(appendRun.reads[0]?.late).toHaveLength(1);
-      expect(appendRun.reads[0]?.unreadable).toBe(1);
+      expect(appendRun.reads[0]?.late).toMatchObject([
+        { record: JSON.parse(opener("Late")) },
+      ]);
+      expect(appendRun.reads[0]?.unreadable).toBe(0);
     }, 40_000);
   },
 );
