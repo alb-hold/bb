@@ -314,12 +314,14 @@ export function useThreadTerminalController({
   );
   const activeSession =
     visibleSessions.find((session) => session.id === activeTerminalId) ?? null;
-  if (activeSession?.threadId) {
-    progressThreadIdRef.current = activeSession.threadId;
-    progressTerminalIdRef.current = activeSession.id;
-  } else if (resolvedSyncThreadId) {
-    progressThreadIdRef.current = resolvedSyncThreadId;
-  }
+  useEffect(() => {
+    if (activeSession?.threadId) {
+      progressThreadIdRef.current = activeSession.threadId;
+      progressTerminalIdRef.current = activeSession.id;
+    } else if (resolvedSyncThreadId) {
+      progressThreadIdRef.current = resolvedSyncThreadId;
+    }
+  }, [activeSession?.id, activeSession?.threadId, resolvedSyncThreadId]);
   useMountedTerminalRegistration({
     isMounted: shouldMountTerminalView,
     scopeKey: terminalTargetId,
@@ -739,6 +741,7 @@ export function useThreadTerminalController({
       queueTerminalProgressUpdate(threadId, progress);
     },
     [
+      activeSession?.id,
       activeSession?.threadId,
       clearTerminalProgress,
       queueTerminalProgressUpdate,
