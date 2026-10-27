@@ -44,6 +44,7 @@ export const DEFAULT_TERMINAL_COLS = 100;
 export const DEFAULT_TERMINAL_ROWS = 30;
 const EMPTY_TERMINAL_SESSIONS: readonly TerminalSession[] = [];
 const TERMINAL_TITLE_RENAME_DEBOUNCE_MS = 250;
+const TERMINAL_PROGRESS_UPDATE_INTERVAL_MS = 250;
 
 export type { ThreadTerminalTarget };
 
@@ -223,6 +224,16 @@ export function useThreadTerminalController({
   const terminalCwdsRef = useRef(new Map<string, string>());
   const terminalCwdTitlesRef = useRef(new Map<string, string>());
   const userSetTerminalTitlesRef = useRef(new Set<string>());
+  const lastProgressUpdateRef = useRef<{
+    threadId: string;
+    value: number | null;
+    sentAt: number;
+  } | null>(null);
+  const pendingProgressUpdateRef = useRef<{
+    threadId: string;
+    value: number | null;
+  } | null>(null);
+  const progressUpdateTimeoutRef = useRef<number | null>(null);
   const dirtyTerminalIdsRef = useRef<Set<string>>(new Set());
   const closingCleanTerminalIdsRef = useRef<Set<string>>(new Set());
   const closingDisconnectedTerminalIdsRef = useRef<Set<string>>(new Set());
@@ -365,6 +376,90 @@ export function useThreadTerminalController({
       window.clearTimeout(pendingTitleRenameTimeoutRef.current);
     };
   }, []);
+
+  const sendTerminalProgressUpdate = useCallback(
+    (threadId: string, value: number | null) => {
+      const request =
+        value === null
+          ? { threadId, action: "progress-clear" as const }
+          : { threadId, action: "progress-set" as const, progress: { value } };
+      lastProgressUpdateRef.current = { threadId, value, sentAt: Date.now() };
+      void sdk.threads
+        .experimental_updateRowState(request)
+        .catch(() => undefined);
+    },
+    [],
+  );
+
+  const clearTerminalProgress = useCallback(
+    (threadId: string) => {
+      if (progressUpdateTimeoutRef.current !== null) {
+        window.clearTimeout(progressUpdateTimeoutRef.current);
+        progressUpdateTimeoutRef.current = null;
+      }
+      pendingProgressUpdateRef.current = null;
+      const lastUpdate = lastProgressUpdateRef.current;
+      if (lastUpdate?.threadId === threadId && lastUpdate.value === null)
+        return;
+      sendTerminalProgressUpdate(threadId, null);
+    },
+    [sendTerminalProgressUpdate],
+  );
+
+  const queueTerminalProgressUpdate = useCallback(
+    (threadId: string, value: number) => {
+      const lastUpdate = lastProgressUpdateRef.current;
+      const pendingUpdate = pendingProgressUpdateRef.current;
+      if (
+        pendingUpdate?.threadId === threadId &&
+        pendingUpdate.value === value
+      ) {
+        return;
+      }
+      if (lastUpdate?.threadId === threadId && lastUpdate.value === value) {
+        if (pendingUpdate?.threadId === threadId) {
+          pendingProgressUpdateRef.current = null;
+          if (progressUpdateTimeoutRef.current !== null) {
+            window.clearTimeout(progressUpdateTimeoutRef.current);
+            progressUpdateTimeoutRef.current = null;
+          }
+        }
+        return;
+      }
+
+      const elapsed =
+        lastUpdate?.threadId === threadId
+          ? Date.now() - lastUpdate.sentAt
+          : TERMINAL_PROGRESS_UPDATE_INTERVAL_MS;
+      if (elapsed >= TERMINAL_PROGRESS_UPDATE_INTERVAL_MS) {
+        if (progressUpdateTimeoutRef.current !== null) {
+          window.clearTimeout(progressUpdateTimeoutRef.current);
+          progressUpdateTimeoutRef.current = null;
+        }
+        pendingProgressUpdateRef.current = null;
+        sendTerminalProgressUpdate(threadId, value);
+        return;
+      }
+
+      pendingProgressUpdateRef.current = { threadId, value };
+      if (progressUpdateTimeoutRef.current !== null) return;
+      progressUpdateTimeoutRef.current = window.setTimeout(() => {
+        progressUpdateTimeoutRef.current = null;
+        const nextUpdate = pendingProgressUpdateRef.current;
+        pendingProgressUpdateRef.current = null;
+        if (nextUpdate === null) return;
+        const previousUpdate = lastProgressUpdateRef.current;
+        if (
+          previousUpdate?.threadId === nextUpdate.threadId &&
+          previousUpdate.value === nextUpdate.value
+        ) {
+          return;
+        }
+        sendTerminalProgressUpdate(nextUpdate.threadId, nextUpdate.value);
+      }, TERMINAL_PROGRESS_UPDATE_INTERVAL_MS - elapsed);
+    },
+    [sendTerminalProgressUpdate],
+  );
 
   const activeSessionId = activeSession?.id;
   const activeSessionInitialCwd = activeSession?.initialCwd;
@@ -616,17 +711,17 @@ export function useThreadTerminalController({
     (progress: number | null) => {
       const threadId = activeSession?.threadId;
       if (!threadId) return;
-      const request =
-        progress === null
-          ? { threadId, action: "progress-clear" as const }
-          : {
-              threadId,
-              action: "progress-set" as const,
-              progress: { value: progress },
-            };
-      void sdk.threads.experimental_updateRowState(request).catch(() => undefined);
+      if (progress === null) {
+        clearTerminalProgress(threadId);
+        return;
+      }
+      queueTerminalProgressUpdate(threadId, progress);
     },
-    [activeSession?.threadId],
+    [
+      activeSession?.threadId,
+      clearTerminalProgress,
+      queueTerminalProgressUpdate,
+    ],
   );
 
   const handleActiveTerminalTitleChange: ThreadTerminalTitleChangeHandler =

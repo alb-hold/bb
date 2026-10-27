@@ -9,7 +9,7 @@ import {
   waitFor,
 } from "@testing-library/react";
 import type { TerminalSession } from "@bb/server-contract";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { sdk } from "@/lib/sdk";
 import { createQueryClientTestHarness } from "@/test/queryClientTestHarness";
 import {
@@ -62,7 +62,15 @@ function paneArgs(preferredTerminalId: string): ThreadTerminalControllerArgs {
   };
 }
 
+beforeEach(() => {
+  vi.mocked(sdk.threads.experimental_updateRowState).mockResolvedValue({
+    statuses: {},
+    progress: null,
+  });
+});
+
 afterEach(() => {
+  vi.useRealTimers();
   cleanup();
   vi.clearAllMocks();
   for (const terminalId of ["term_a", "term_b", "term_orphan", "term_new"]) {
@@ -105,6 +113,56 @@ describe("two split panes each holding a terminal", () => {
     );
   });
 
+  it("deduplicates progress and coalesces bursts to four updates per second", async () => {
+    vi.mocked(sdk.terminals.list).mockResolvedValue({
+      sessions: [session("term_a", "running")],
+    });
+    vi.mocked(sdk.threads.experimental_updateRowState).mockResolvedValue({
+      statuses: {},
+      progress: { value: 0.2 },
+    });
+
+    const { wrapper } = createQueryClientTestHarness();
+    const { result, unmount } = renderHook(
+      () => useThreadTerminalController(paneArgs("term_a")),
+      { wrapper },
+    );
+
+    await waitFor(() =>
+      expect(result.current.activeSession?.id).toBe("term_a"),
+    );
+    vi.useFakeTimers();
+    act(() => {
+      result.current.handleActiveTerminalProgressChange(0.2);
+      result.current.handleActiveTerminalProgressChange(0.2);
+      result.current.handleActiveTerminalProgressChange(0.4);
+      result.current.handleActiveTerminalProgressChange(0.6);
+    });
+
+    expect(sdk.threads.experimental_updateRowState).toHaveBeenCalledTimes(1);
+    expect(sdk.threads.experimental_updateRowState).toHaveBeenLastCalledWith({
+      threadId: "thr_1",
+      action: "progress-set",
+      progress: { value: 0.2 },
+    });
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(250);
+    });
+
+    expect(sdk.threads.experimental_updateRowState).toHaveBeenCalledTimes(2);
+    expect(sdk.threads.experimental_updateRowState).toHaveBeenLastCalledWith({
+      threadId: "thr_1",
+      action: "progress-set",
+      progress: { value: 0.6 },
+    });
+    act(() => result.current.handleActiveTerminalProgressChange(0.6));
+    expect(sdk.threads.experimental_updateRowState).toHaveBeenCalledTimes(2);
+
+    vi.useRealTimers();
+    unmount();
+  });
+
   it("accepts subsequent OSC process title changes", async () => {
     const current = session("term_a", "running");
     current.title = "vim";
@@ -118,7 +176,9 @@ describe("two split panes each holding a terminal", () => {
       { wrapper },
     );
 
-    await waitFor(() => expect(result.current.activeSession?.title).toBe("vim"));
+    await waitFor(() =>
+      expect(result.current.activeSession?.title).toBe("vim"),
+    );
     act(() => result.current.handleActiveTerminalTitleChange("bash"));
 
     await waitFor(() =>
