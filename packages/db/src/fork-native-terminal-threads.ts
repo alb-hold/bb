@@ -7,6 +7,7 @@ export interface NativeTerminalThreadRecord {
   nativeSessionId: string | null;
   terminalSessionId: string | null;
   lastEvidenceAt: number | null;
+  lastEvidenceKind: "holder-report" | "transcript" | null;
   lastToolCallAt: number | null;
   lastToolCallSessionId: string | null;
   initialPrompt: string | null;
@@ -17,6 +18,7 @@ export interface NativeTerminalThreadRecord {
 
 const SELECT_COLUMNS = `thread_id AS threadId, provider_id AS providerId, native_session_id AS nativeSessionId,
   terminal_session_id AS terminalSessionId, last_evidence_at AS lastEvidenceAt,
+  last_evidence_kind AS lastEvidenceKind,
   last_tool_call_at AS lastToolCallAt, last_tool_call_session_id AS lastToolCallSessionId,
   initial_prompt AS initialPrompt, model,
   created_at AS createdAt, updated_at AS updatedAt`;
@@ -28,6 +30,7 @@ export function ensureNativeTerminalThreadsTable(db: DbConnection): void {
       provider_id TEXT NOT NULL,
       native_session_id TEXT,
       terminal_session_id TEXT,
+      last_evidence_kind TEXT,
       initial_prompt TEXT,
       model TEXT,
       created_at INTEGER NOT NULL,
@@ -56,6 +59,14 @@ export function ensureNativeTerminalThreadsTable(db: DbConnection): void {
       `ALTER TABLE fork_native_terminal_threads ADD COLUMN last_evidence_at INTEGER`,
     );
   }
+  if (!columns.some((column) => column.name === "last_evidence_kind")) {
+    db.$client.exec(
+      "ALTER TABLE fork_native_terminal_threads ADD COLUMN last_evidence_kind TEXT",
+    );
+  }
+  db.$client.exec(
+    "UPDATE fork_native_terminal_threads SET last_evidence_kind = 'holder-report' WHERE last_evidence_at IS NOT NULL AND last_evidence_kind IS NULL",
+  );
   if (!columns.some((column) => column.name === "last_tool_call_at")) {
     db.$client.exec(
       `ALTER TABLE fork_native_terminal_threads ADD COLUMN last_tool_call_at INTEGER`,
@@ -104,6 +115,7 @@ export function createNativeTerminalThread(
     nativeSessionId: args.nativeSessionId,
     terminalSessionId: null,
     lastEvidenceAt: null,
+    lastEvidenceKind: null,
     lastToolCallAt: null,
     lastToolCallSessionId: null,
     initialPrompt: args.initialPrompt,
@@ -182,6 +194,7 @@ export function listNativeTerminalThreadsByIds(
   | "threadId"
   | "providerId"
   | "lastEvidenceAt"
+  | "lastEvidenceKind"
   | "lastToolCallAt"
   | "lastToolCallSessionId"
   | "nativeSessionId"
@@ -192,6 +205,7 @@ export function listNativeTerminalThreadsByIds(
       `SELECT thread_id AS threadId, provider_id AS providerId,
          native_session_id AS nativeSessionId,
          last_evidence_at AS lastEvidenceAt,
+         last_evidence_kind AS lastEvidenceKind,
          last_tool_call_at AS lastToolCallAt,
          last_tool_call_session_id AS lastToolCallSessionId
        FROM fork_native_terminal_threads
@@ -202,6 +216,7 @@ export function listNativeTerminalThreadsByIds(
     | "threadId"
     | "providerId"
     | "lastEvidenceAt"
+    | "lastEvidenceKind"
     | "lastToolCallAt"
     | "lastToolCallSessionId"
     | "nativeSessionId"
@@ -237,7 +252,7 @@ export function setNativeTerminalThreadTerminal(
 ): void {
   db.$client
     .prepare(
-      `UPDATE fork_native_terminal_threads SET terminal_session_id = ?, last_evidence_at = NULL, last_tool_call_at = NULL, last_tool_call_session_id = NULL, updated_at = ? WHERE thread_id = ?`,
+      `UPDATE fork_native_terminal_threads SET terminal_session_id = ?, last_evidence_at = NULL, last_evidence_kind = NULL, last_tool_call_at = NULL, last_tool_call_session_id = NULL, updated_at = ? WHERE thread_id = ?`,
     )
     .run(args.terminalSessionId, Date.now(), args.threadId);
 }
@@ -248,7 +263,7 @@ export function clearNativeTerminalThreadEvidence(
 ): void {
   db.$client
     .prepare(
-      `UPDATE fork_native_terminal_threads SET last_evidence_at = NULL, last_tool_call_at = NULL, last_tool_call_session_id = NULL WHERE thread_id = ?`,
+      `UPDATE fork_native_terminal_threads SET last_evidence_at = NULL, last_evidence_kind = NULL, last_tool_call_at = NULL, last_tool_call_session_id = NULL WHERE thread_id = ?`,
     )
     .run(threadId);
 }
@@ -275,13 +290,24 @@ export function stampNativeTerminalThreadActivity(
     const result = db.$client
       .prepare(
         `UPDATE fork_native_terminal_threads
-         SET last_evidence_at = ?
+         SET last_evidence_at = ?, last_evidence_kind = 'holder-report'
          WHERE thread_id = ? AND terminal_session_id = ?`,
       )
       .run(args.at, args.threadId, args.terminalSessionId);
     if (result.changes !== 1) return { updated: false };
     return { updated: true, previousLastEvidenceAt: record.lastEvidenceAt };
   })();
+}
+
+export function stampNativeTerminalTranscriptEvidence(
+  db: DbConnection,
+  args: { at: number; nativeSessionId: string; threadId: string },
+): void {
+  db.$client
+    .prepare(
+      "UPDATE fork_native_terminal_threads SET last_evidence_at = ?, last_evidence_kind = 'transcript', updated_at = ? WHERE thread_id = ? AND native_session_id = ?",
+    )
+    .run(args.at, args.at, args.threadId, args.nativeSessionId);
 }
 
 export function clearNativeTerminalThreadActivityEvidence(

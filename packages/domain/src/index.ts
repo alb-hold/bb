@@ -3,6 +3,7 @@ export * from "./active-thinking.js";
 export * from "./acp-cli.js";
 export * from "./native-roots.js";
 export * from "./native-terminal.js";
+export * from "./native-terminal-activity.js";
 export * from "./ai-services.js";
 export * from "./writing-assistance.js";
 export * from "./dictation-segment.js";
