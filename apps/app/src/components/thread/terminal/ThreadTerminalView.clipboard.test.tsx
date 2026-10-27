@@ -11,6 +11,7 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Terminal } from "@xterm/xterm";
 import { appToast } from "@/components/ui/app-toast";
+import { sdk } from "@/lib/sdk";
 import { makeTerminalSession } from "@/test/fixtures/terminal-sessions";
 import { ThreadTerminalView } from "./ThreadTerminalView";
 
@@ -61,6 +62,7 @@ afterEach(() => {
 
 async function mountTerminal() {
   const terminals: Terminal[] = [];
+  const screenRequest = vi.spyOn(sdk.terminals, "experimental_screen");
   const open = Terminal.prototype.open;
   vi.spyOn(Terminal.prototype, "open").mockImplementation(function (
     this: Terminal,
@@ -83,6 +85,14 @@ async function mountTerminal() {
   if (mountedTerminal === undefined) {
     throw new Error("Expected a mounted terminal");
   }
+  await waitFor(() => expect(screenRequest).toHaveBeenCalledOnce());
+  const screenResult = screenRequest.mock.results[0];
+  if (screenResult?.type !== "return") {
+    throw new Error("Expected terminal screen request to start");
+  }
+  await act(async () => {
+    await screenResult.value.catch(() => undefined);
+  });
   await act(
     () =>
       new Promise<void>((resolve) => {

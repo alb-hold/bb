@@ -72,6 +72,10 @@ export function NativeThreadTerminalMain({
   }, [paneIsFocused]);
 
   useEffect(() => {
+    void LazyThreadTerminalPanel.preload();
+  }, []);
+
+  useEffect(() => {
     if (state.kind === "live") return;
     void refetch();
   }, [refetch, state.kind, terminalsUpdatedAt]);

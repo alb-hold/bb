@@ -16,6 +16,64 @@ afterEach(() => {
 });
 
 describe("terminal replay preview", () => {
+  it("preserves xterm focus when mounting the snapshot preview surface", () => {
+    const context = new Proxy(
+      {
+        measureText: (text: string) => ({ width: text.length * 8 }),
+        getImageData: () => ({ data: new Uint8ClampedArray(4) }),
+        createImageData: () => ({ data: new Uint8ClampedArray(4) }),
+      } as Record<string, unknown>,
+      {
+        get(target, property) {
+          const value = target[property as string];
+          return value ?? (() => undefined);
+        },
+        set(target, property, value) {
+          target[property as string] = value;
+          return true;
+        },
+      },
+    );
+    HTMLCanvasElement.prototype.getContext = (() =>
+      context) as unknown as typeof HTMLCanvasElement.prototype.getContext;
+    const parent = document.createElement("div");
+    const historyContainer = document.createElement("div");
+    parent.append(historyContainer);
+    document.body.append(parent);
+
+    const history = new Terminal({ cols: 80, rows: 24 });
+    history.open(historyContainer);
+    history.textarea?.focus();
+    const focusedElement = history.textarea;
+    if (
+      focusedElement === undefined ||
+      document.activeElement !== focusedElement
+    ) {
+      throw new Error("Expected the active terminal to own focus");
+    }
+
+    const preview = new Terminal({ cols: 80, rows: 24 });
+    const openPreview = preview.open;
+    vi.spyOn(preview, "open").mockImplementation((element) => {
+      if (document.activeElement instanceof HTMLElement) {
+        document.activeElement.blur();
+      }
+      openPreview.call(preview, element);
+    });
+    const cover = mountTerminalReplayPreview({
+      container: historyContainer,
+      initialFitGrid: { cols: 80, rows: 24 },
+      isOwner: () => false,
+      terminal: preview,
+    });
+
+    expect(document.activeElement).toBe(focusedElement);
+
+    cover.dispose();
+    history.dispose();
+    parent.remove();
+  });
+
   it("keeps the attached grid visible while replay hides historical grids", async () => {
     const context = new Proxy(
       {
@@ -270,7 +328,12 @@ describe("terminal replay preview", () => {
       value: () => {
         const scale = Number(preview.element?.dataset.surfaceScale ?? "1");
         const widthScale = Math.min(1, availableWidth / 975);
-        return new DOMRect(0, 0, 975 * Math.min(scale, widthScale), 784 * Math.min(scale, widthScale));
+        return new DOMRect(
+          0,
+          0,
+          975 * Math.min(scale, widthScale),
+          784 * Math.min(scale, widthScale),
+        );
       },
     });
     const paintedWidth = () => screen!.getBoundingClientRect().width;
@@ -288,7 +351,9 @@ describe("terminal replay preview", () => {
     expect(preview.element?.style.transform).toBe(
       "scale(min(var(--terminal-grid-scale, 1), calc(100cqw / var(--terminal-natural-width, 1px))))",
     );
-    expect(preview.element?.style.getPropertyValue("--terminal-grid-scale")).toBe("1");
+    expect(
+      preview.element?.style.getPropertyValue("--terminal-grid-scale"),
+    ).toBe("1");
 
     cover.dispose();
     parent.remove();
@@ -336,8 +401,7 @@ describe("terminal replay preview", () => {
         resize: () => undefined,
         write: (_bytes, callback) => callback(),
       },
-      (grid, apply) =>
-        updateTerminalReplayPreviewPtyGrid(cover, grid, apply),
+      (grid, apply) => updateTerminalReplayPreviewPtyGrid(cover, grid, apply),
     );
     const newGrid = { cols: 51, rows: 47 };
     markerPipeline.push(
