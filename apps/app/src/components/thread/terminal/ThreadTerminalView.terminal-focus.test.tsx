@@ -1777,7 +1777,10 @@ describe("ThreadTerminalView terminal focus boundary", () => {
     );
 
 
-    await socketCreated;
+    await waitForReadiness(
+      socketCreated,
+      "socket was not created within 5000 ms",
+    );
     const socket = testState.sockets[0]!;
     await Promise.all([socket.opened, layoutSettled]);
     const initialResizes = testState.socketMessages
