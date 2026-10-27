@@ -436,7 +436,7 @@ describe("terminal replay preview", () => {
     parent.remove();
   });
 
-  it("hides a visible preview as soon as a newer PTY marker arrives", async () => {
+  it("keeps the preview painted while the authoritative PTY grid is applied", async () => {
     const context = new Proxy(
       {
         measureText: (text: string) => ({ width: text.length * 8 }),
@@ -486,7 +486,7 @@ describe("terminal replay preview", () => {
       () => undefined,
     );
 
-    expect(getComputedStyle(previewElement).visibility).toBe("hidden");
+    expect(getComputedStyle(previewElement).visibility).toBe("visible");
     expect(previewElement.getAttribute("data-grid-cols")).toBe("135");
 
     await cover.resize(newGrid.cols, newGrid.rows);
@@ -550,7 +550,7 @@ describe("terminal replay preview", () => {
     parent.remove();
   });
 
-  it("reveals a non-owner at the authoritative PTY grid without waiting for a resize", async () => {
+  it("keeps the fitted snapshot visible when its viewer becomes the owner", async () => {
     const context = new Proxy(
       {
         measureText: (text: string) => ({ width: text.length * 8 }),
@@ -619,7 +619,7 @@ describe("terminal replay preview", () => {
 
     nonOwner = false;
     document.dispatchEvent(new Event("focusin"));
-    expect(getComputedStyle(previewElement).visibility).toBe("hidden");
+    expect(getComputedStyle(previewElement).visibility).toBe("visible");
 
     cover.dispose();
     parent.remove();
@@ -747,6 +747,7 @@ describe("terminal replay preview", () => {
       y: harness.terminal.buffer.active.cursorY,
     }).toEqual(harness.expectedCursor);
     expect(harness.previewElement.style.overflow).toBe("hidden");
+    expect(harness.previewElement.style.overflowX).toBe("hidden");
     expect(harness.container.scrollWidth).toBeLessThanOrEqual(
       harness.container.clientWidth,
     );
@@ -804,12 +805,14 @@ describe("terminal replay preview", () => {
       fitCols: 120,
       fitRows: 47,
     });
+    const terminalWrite = vi.spyOn(harness.terminal, "write");
     let liveWriteCompleted = false;
     harness.cover.push(Buffer.from("\r\nlive after marker"), () => {
       liveWriteCompleted = true;
     });
 
     expect(liveWriteCompleted).toBe(false);
+    expect(terminalWrite).not.toHaveBeenCalled();
     expect(
       Array.from({ length: harness.terminal.buffer.active.length }, (_, index) =>
         harness.terminal.buffer.active.getLine(index)?.translateToString(true),
@@ -818,6 +821,7 @@ describe("terminal replay preview", () => {
 
     harness.cover.setPtyGrid(120, 40);
     await vi.waitFor(() => expect(liveWriteCompleted).toBe(true));
+    expect(terminalWrite).toHaveBeenCalledOnce();
     expect(
       Array.from({ length: harness.terminal.buffer.active.length }, (_, index) =>
         harness.terminal.buffer.active.getLine(index)?.translateToString(true),

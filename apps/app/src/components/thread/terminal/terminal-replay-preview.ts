@@ -39,6 +39,7 @@ export function mountTerminalReplayPreview({
 
   const previousOpacity = container.style.opacity;
   const previousContainerType = container.style.containerType;
+  const snapshotGrid = { cols: terminal.cols, rows: terminal.rows };
   container.style.containerType = "inline-size";
   const preview = document.createElement("div");
   const focusedElement = document.activeElement;
@@ -49,6 +50,7 @@ export function mountTerminalReplayPreview({
     position: "absolute",
     inset: "0 16px 0 0",
     overflow: "hidden",
+    overflowX: "hidden",
     paddingLeft: "0.5rem",
     pointerEvents: "none",
     zIndex: "5",
@@ -67,6 +69,10 @@ export function mountTerminalReplayPreview({
   }
   let fitGrid = initialFitGrid;
   let latestPtyGrid = { cols: terminal.cols, rows: terminal.rows };
+  let shown = false;
+  let snapshotWriteFinished = false;
+  let authoritativeGridAvailable = false;
+  let pendingWrites: Array<{ bytes: Uint8Array; callback: () => void }> = [];
   let surfaceScale =
     fitGrid === null ? 1 : terminalSurfaceScale(latestPtyGrid, fitGrid);
   const detachPointerCoordinates = terminal.element
@@ -78,7 +84,10 @@ export function mountTerminalReplayPreview({
     if (fitGrid === null) return;
     const wasVisible = preview.style.visibility === "visible";
     preview.style.visibility = "hidden";
-    surfaceScale = terminalSurfaceScale(latestPtyGrid, fitGrid);
+    surfaceScale = terminalSurfaceScale(
+      { cols: terminal.cols, rows: terminal.rows },
+      fitGrid,
+    );
     if (terminal.element) {
       applyTerminalSurfaceScale(terminal.element, surfaceScale);
     }
@@ -108,57 +117,93 @@ export function mountTerminalReplayPreview({
   window.addEventListener("resize", updateSurfaceScale);
   const updateVisibility = () => {
     updateSurfaceScale();
+    const localGridReady =
+      fitGrid !== null &&
+      terminal.cols === snapshotGrid.cols &&
+      terminal.rows >= snapshotGrid.rows &&
+      terminal.rows >= fitGrid.rows;
     preview.style.visibility =
       fitGrid !== null &&
-      canRevealTerminalSurface({
-        fitGrid,
-        isOwner: isOwner(),
-        ptyGrid: latestPtyGrid,
-        rendererGrid: { cols: terminal.cols, rows: terminal.rows },
-      })
+      (shown ||
+        localGridReady ||
+        canRevealTerminalSurface({
+          fitGrid,
+          isOwner: isOwner(),
+          ptyGrid: latestPtyGrid,
+          rendererGrid: { cols: terminal.cols, rows: terminal.rows },
+        }))
         ? "visible"
         : "hidden";
+    if (preview.style.visibility === "visible") shown = true;
   };
   const refreshVisibility = () => updateVisibility();
+  const flushPendingWrites = () => {
+    if (!snapshotWriteFinished || !authoritativeGridAvailable) return;
+    for (const write of pendingWrites.splice(0)) {
+      outputPipeline.push(write.bytes, write.callback);
+    }
+  };
   document.addEventListener("focusin", refreshVisibility);
   document.addEventListener("focusout", refreshVisibility);
   window.addEventListener("focus", refreshVisibility);
   window.addEventListener("blur", refreshVisibility);
+  if (fitGrid !== null && fitGrid.rows > terminal.rows) {
+    terminal.resize(snapshotGrid.cols, fitGrid.rows);
+  }
   updateVisibility();
   const setPtyGrid = (cols: number, rows: number) => {
     if (disposed) return;
     latestPtyGrid = { cols, rows };
+    authoritativeGridAvailable = true;
     updateVisibility();
+    flushPendingWrites();
   };
   return {
     resize(cols, rows) {
       if (disposed) return Promise.resolve();
-      setPtyGrid(cols, rows);
+      latestPtyGrid = { cols, rows };
       return new Promise((resolve) => {
         outputPipeline.setGrid(cols, rows, () => {
           if (!disposed) {
             preview.dataset.gridCols = String(cols);
             preview.dataset.gridRows = String(rows);
+            authoritativeGridAvailable = true;
             updateVisibility();
+            flushPendingWrites();
           }
           resolve();
         });
       });
     },
     setPtyGrid,
-    setFitGrid(cols, rows) {
+    setFitGrid(_cols, rows) {
       if (disposed) return;
       fitGrid = { cols, rows };
+      if (terminal.cols === snapshotGrid.cols && rows > terminal.rows) {
+        terminal.resize(snapshotGrid.cols, rows);
+      }
       updateSurfaceScale();
       updateVisibility();
     },
     push(bytes, callback) {
-      if (!disposed) outputPipeline.push(bytes, callback);
-      else callback();
+      if (disposed) {
+        callback();
+      } else if (!snapshotWriteFinished) {
+        outputPipeline.push(bytes, () => {
+          snapshotWriteFinished = true;
+          callback();
+          flushPendingWrites();
+        });
+      } else if (authoritativeGridAvailable) {
+        outputPipeline.push(bytes, callback);
+      } else {
+        pendingWrites.push({ bytes, callback });
+      }
     },
     dispose() {
       if (disposed) return;
       disposed = true;
+      for (const write of pendingWrites.splice(0)) write.callback();
       document.removeEventListener("focusin", refreshVisibility);
       document.removeEventListener("focusout", refreshVisibility);
       window.removeEventListener("resize", updateSurfaceScale);
