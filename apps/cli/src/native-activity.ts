@@ -436,9 +436,6 @@ export class NativeActivityTracker {
     startedAtSec: number,
     hookSequence: number | null = null,
   ): boolean {
-    if (signal.question === undefined || signal.occurrence !== true) {
-      return false;
-    }
     if (
       !Number.isInteger(startedAtSec) ||
       hookSequence === null ||
@@ -446,6 +443,10 @@ export class NativeActivityTracker {
       hookSequence <= this.lastClearSequence
     )
       return false;
+    if (signal.state === "working") return true;
+    if (signal.question === undefined || signal.occurrence !== true) {
+      return false;
+    }
     const base = occurrenceBase(signal.question.id);
     const closedAt = Math.max(
       this.lastOrphanCloseSequence.get(base) ?? 0,
@@ -455,6 +456,10 @@ export class NativeActivityTracker {
             0),
     );
     return closedAt === 0 || hookSequence > closedAt;
+  }
+
+  lateSequenceIsUnconfirmed(hookSequence: number | null): boolean {
+    return hookSequence === null || this.hasUnsequencedClear;
   }
 
   heartbeat(): NativeActivityReport | null {

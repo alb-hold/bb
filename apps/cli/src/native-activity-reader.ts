@@ -191,7 +191,7 @@ export class NativeActivityReader {
     const hooks = activity.hooks;
     if (hooks !== undefined && this.hookSource !== null) {
       const unconfirmedHookReasons = new Set<
-        "missing-session" | "foreign-session"
+        "missing-session" | "foreign-session" | "unsequenced-late-record"
       >();
       const spooled = this.hookSource.read();
       if (spooled.sequenceWatermark !== undefined) {
@@ -270,6 +270,19 @@ export class NativeActivityReader {
             hookSequence,
           )
         ) {
+          if (this.tracker.lateSequenceIsUnconfirmed(hookSequence)) {
+            if (
+              this.hookIdentityConfirmed ||
+              !this.unconfirmedHookBoundaryEstablished
+            ) {
+              this.unconfirmedTranscriptOffset = this.currentTranscriptSize();
+              this.unconfirmedHookBoundaryEstablished = true;
+            }
+            this.droppedOpenQuestion = true;
+            this.historyIncomplete = true;
+            this.unconfirmedHookCount += 1;
+            unconfirmedHookReasons.add("unsequenced-late-record");
+          }
           continue;
         }
         if (

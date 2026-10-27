@@ -1927,15 +1927,20 @@ describe.skipIf(process.platform === "win32")(
       file: string,
       payload: string,
       wrapper = "",
+      sequenceLockMaxTries = 2000,
     ): Promise<void> => {
       const child = spawn(
         "sh",
-        ["-c", `${wrapper}${hookAppendCommand(file, 1)}`],
+        ["-c", `${wrapper}${hookAppendCommand(file, 1, sequenceLockMaxTries)}`],
         { stdio: ["pipe", "ignore", "ignore"] },
       );
       children.push(child);
-      const exited = new Promise<void>((resolve) => {
-        child.once("exit", () => resolve());
+      const exited = new Promise<void>((resolve, reject) => {
+        child.once("error", reject);
+        child.once("exit", (code) => {
+          if (code === 0) resolve();
+          else reject(new Error(`hook command exited ${String(code)}`));
+        });
       });
       child.stdin.end(payload);
       await exited;
@@ -1945,6 +1950,49 @@ describe.skipIf(process.platform === "win32")(
       readdirSync(directory).filter((name) =>
         /^\.late\.\d+\.\d+(?:\.\d+)?$/u.test(name),
       );
+
+    it("publishes the payload as an unsequenced late record when the sequence lock stays busy", async () => {
+      const { directory, file } = appendFixture();
+      const sequenceLock = path.join(directory, ".sequence.lock");
+      symlinkSync(String(process.pid), sequenceLock);
+      const payload = record("PermissionRequest", { tool_name: "Timed out" });
+
+      await forcedDeadline(file, payload, "", 2);
+
+      expect(readlinkSync(sequenceLock)).toBe(String(process.pid));
+      expect(statSync(file).size).toBe(0);
+      expect(markers(directory)).toEqual([]);
+      expect(
+        readdirSync(directory).filter((name) => name.startsWith(".lost.")),
+      ).toEqual([]);
+      const read = new HookAppendReader(file).read();
+      expect(read.unreadable).toBe(0);
+      expect(read.late?.map((entry) => entry.record)).toEqual([
+        JSON.parse(payload),
+      ]);
+      expect(read.late?.[0]?.sequence).toBeNull();
+    });
+
+    it("reports an unsequenced late Stop as unconfirmed instead of silently keeping stale working state", async () => {
+      const { commandFor, directory, file, reader, unconfirmed } =
+        appendFixture();
+      await runWhole(
+        commandFor("UserPromptSubmit"),
+        record("UserPromptSubmit", { prompt: "current work" }),
+      );
+      expect(reader.read()).toEqual([
+        { state: "working", prompt: "current work" },
+      ]);
+
+      symlinkSync(String(process.pid), path.join(directory, ".sequence.lock"));
+      await forcedDeadline(file, record("Stop"), "", 2);
+
+      expect(reader.read()).toEqual([]);
+      expect(unconfirmed).toEqual([
+        { reason: "unsequenced-late-record", total: 1 },
+      ]);
+      expect(reader.heartbeat()).toBeNull();
+    });
 
     it("at its wall-clock deadline publishes its in-memory record as .late.<pid>.<start> and removes its marker, instead of losing it", async () => {
       const { directory, file, lock } = appendFixture();
@@ -1964,7 +2012,7 @@ describe.skipIf(process.platform === "win32")(
       expect(Number(late?.split(".").at(-2))).toBeGreaterThanOrEqual(began);
       expect(Number(late?.split(".").at(-1))).toBeGreaterThan(0);
       const read = new HookAppendReader(file).read();
-      expect(read.unreadable).toBe(1);
+      expect(read.unreadable).toBe(0);
       expect(read.late?.map((entry) => toolOf(entry.record))).toEqual(["Late"]);
       expect(
         new HookAppendReader(file).read(Date.now() + 3_000).late,
@@ -2003,9 +2051,7 @@ describe.skipIf(process.platform === "win32")(
         file,
         `30\t${record("UserPromptSubmit", { prompt: "current" })}\n`,
       );
-      expect(reader.read()).toEqual([
-        { state: "working", prompt: "current" },
-      ]);
+      expect(reader.read()).toEqual([{ state: "working", prompt: "current" }]);
 
       const startedAt = Math.floor(Date.now() / 1000);
       writeFileSync(
@@ -2042,7 +2088,20 @@ describe.skipIf(process.platform === "win32")(
       expect(reader.read(Date.now() + 3_000).unreadable).toBe(0);
     }, 30_000);
 
-    it("delivers a late PermissionRequest as Needs input while still counting the loss, and refuses a late close or state change", async () => {
+    it("keeps a valid late tool-start record working without blocking its heartbeat", () => {
+      const { directory, file, reader, unconfirmed } = appendFixture();
+      const startedAt = Math.floor(Date.now() / 1000);
+      writeFileSync(
+        path.join(directory, `.late.101.${startedAt}.1`),
+        record("PreToolUse", { tool_name: "Bash" }),
+      );
+
+      expect(reader.read()).toEqual([{ state: "working", prompt: null }]);
+      expect(reader.heartbeat()).toEqual({ state: "working", prompt: null });
+      expect(unconfirmed).toEqual([]);
+    });
+
+    it("delivers parsed late records without marking history incomplete and applies only sequence-current state", async () => {
       const { commandFor, directory, file, lock, reader, unconfirmed } =
         appendFixture();
       await runWhole(
@@ -2055,35 +2114,36 @@ describe.skipIf(process.platform === "win32")(
       });
       symlinkSync(String(process.pid), lock);
       await forcedDeadline(file, record("PostToolUse", { tool_name: "Bash" }));
+      expect(lateFiles(directory)).toHaveLength(1);
+      expect(reader.read()).toEqual([]);
+      expect(reader.heartbeat()).toMatchObject({
+        state: "waiting",
+        questions: [{ prompt: "Claude Code needs permission to use: Bash" }],
+      });
       await forcedDeadline(
         file,
         record("UserPromptSubmit", { prompt: "late prompt" }),
       );
       expect(lateFiles(directory)).toHaveLength(2);
-      expect(reader.read()).toEqual([]);
-      expect(unconfirmed).toEqual([{ reason: "unreadable-record", total: 2 }]);
-      expect(reader.heartbeat()).toBeNull();
+      expect(reader.read()).toEqual([
+        { state: "working", prompt: "late prompt" },
+      ]);
+      expect(unconfirmed).toEqual([]);
+      expect(reader.heartbeat()).toEqual({ state: "working", prompt: null });
 
       await forcedDeadline(
         file,
         record("PermissionRequest", { tool_name: "Edit" }),
       );
       const reports = reader.read();
-      expect(unconfirmed.at(-1)).toEqual({
-        reason: "unreadable-record",
-        total: 3,
-      });
-      expect(reports.some((report) => report.state === "working")).toBe(false);
+      expect(unconfirmed).toEqual([]);
       const last = reports.at(-1);
       expect(
         last?.state === "waiting"
           ? last.questions.map((question) => question.prompt).sort()
           : [],
-      ).toEqual([
-        "Claude Code needs permission to use: Bash",
-        "Claude Code needs permission to use: Edit",
-      ]);
-      expect(reader.heartbeat()).toBeNull();
+      ).toEqual(["Claude Code needs permission to use: Edit"]);
+      expect(reader.heartbeat()).toMatchObject({ state: "waiting" });
     }, 30_000);
 
     it("refuses a late opener whose close was already applied here", async () => {
@@ -2137,7 +2197,7 @@ describe.skipIf(process.platform === "win32")(
         record("PermissionRequest", { tool_name: "Bash" }),
       );
       const late = reader.readLate();
-      expect(late.lost).toBe(1);
+      expect(late.lost).toBe(0);
       expect(
         late.records.map((entry) => [toolOf(entry.record), entry.startedAt]),
       ).toEqual([["Bash", began]]);

@@ -176,6 +176,20 @@ describe("native terminal questions", () => {
       vi.useRealTimers();
     }
   });
+
+  it("accepts a late working prompt only when its sequence follows the last clear", () => {
+    const tracker = new NativeActivityTracker("late-working-sequence");
+    tracker.apply({ state: "idle", prompt: null }, 20);
+    const lateWorking = { state: "working" as const, prompt: "current" };
+
+    expect(tracker.acceptsLate(lateWorking, 1_798_208_000, 19)).toBe(false);
+    expect(tracker.acceptsLate(lateWorking, 1_798_208_000, 21)).toBe(true);
+
+    tracker.apply({ state: "idle", prompt: null });
+    expect(tracker.acceptsLate(lateWorking, 1_798_208_000, 22)).toBe(false);
+    expect(tracker.lateSequenceIsUnconfirmed(22)).toBe(true);
+  });
+
   it("reports an unanswered Claude AskUserQuestion as waiting and clears it on its tool result", () => {
     const tracker = new NativeActivityTracker();
     tracker.apply({ state: "working", prompt: "merge it" });
@@ -600,7 +614,9 @@ describe("native terminal questions", () => {
       hook(call("toolu_A", originalInput));
       hook(call("toolu_B", originalInput));
       hook(ask(preToolUseResult.hookSpecificOutput.updatedInput));
-      const opened = hook(ask(preToolUseResult.hookSpecificOutput.updatedInput));
+      const opened = hook(
+        ask(preToolUseResult.hookSpecificOutput.updatedInput),
+      );
       expect(waiting(opened)).toEqual([
         {
           id: "permission:Bash#n0.1",

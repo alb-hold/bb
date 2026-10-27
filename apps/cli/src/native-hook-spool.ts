@@ -226,7 +226,11 @@ export function hookSpoolCommand(directory: string): string {
 export function hookAppendCommand(
   file: string,
   waitSeconds: number = LOCK_WAIT_SECONDS,
+  sequenceLockMaxTries = 2000,
 ): string {
+  if (!Number.isSafeInteger(sequenceLockMaxTries) || sequenceLockMaxTries < 1) {
+    throw new RangeError("sequenceLockMaxTries must be a positive integer");
+  }
   return [
     "exec 2>/dev/null",
     `d=${shellQuote(path.dirname(file))}`,
@@ -237,7 +241,13 @@ export function hookAppendCommand(
     'while ! /bin/ln -s "$$" "$lq" 2>/dev/null; do ' +
       'p=$(/bin/readlink "$lq" 2>/dev/null); case "$p" in \'\'|*[!0-9]*) p=0;; esac; ' +
       'if [ "$p" -gt 0 ] && ! kill -0 "$p" 2>/dev/null; then /bin/rm -f "$lq"; fi; ' +
-      'tries=$((tries+1)); [ "$tries" -lt 2000 ] || exit 0; sleep 0.01; done',
+      `tries=$((tries+1)); if [ "$tries" -ge ${sequenceLockMaxTries} ]; then ` +
+      "if r=$(cat); then s=$(date +%s); " +
+      "case \"$s\" in ''|*[!0-9]*) s=0;; esac; " +
+      'if printf \'%s\\n\' "$r" >"$d/.late.$$.tmp" ' +
+      '&& mv -f "$d/.late.$$.tmp" "$d/.late.$$.$s"; then exit 0; fi; ' +
+      'fi; /bin/rm -f "$d/.late.$$.tmp"; ' +
+      ': >"$d/.lost.$$" && exit 0; exit 1; fi; sleep 0.01; done',
     'n=$(cat "$o" 2>/dev/null); case "$n" in \'\'|*[!0-9]*) n=0;; esac; ' +
       'q=$((n+1)); printf \'%s\' "$q" >"$o.$$" && mv -f "$o.$$" "$o"; ' +
       '[ "$(/bin/readlink "$lq" 2>/dev/null)" = "$$" ] && /bin/rm -f "$lq"',
@@ -1056,6 +1066,7 @@ export class HookAppendReader {
       sequence: number | null;
       startedAt: number;
     } | null = null;
+    let lost = 0;
     try {
       const parsed: unknown = JSON.parse(content.text);
       if (typeof parsed === "object" && parsed !== null) {
@@ -1070,9 +1081,10 @@ export class HookAppendReader {
       };
     } catch {
       record = null;
+      lost = 1;
     }
     return {
-      lost: 1,
+      lost,
       record,
       settle: () => {
         const outcome = truncateRegularFile(file, content.identity, true);
