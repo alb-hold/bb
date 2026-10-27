@@ -400,6 +400,7 @@
       // clean worktree must build that runtime before the server starts.
       "dependsOn": [
         "@bb/server#generate:bb-official-marketplace",
+        "@bb/server#generate:terminal-screen-worker",
         "@bb/templates#generate:templates",
         "@bb/plugin-build#generate",
         "@get-bb/plugin-sdk#build:runtime"

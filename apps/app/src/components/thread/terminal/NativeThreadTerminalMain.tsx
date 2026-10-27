@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useState, type FocusEvent } from "react";
 import { isRunningThreadRuntimeDisplayStatus } from "@bb/client-core";
 import { Button } from "@bb/shared-ui/button";
 import { useMediaQuery } from "@bb/shared-ui/hooks/use-media-query";
@@ -66,6 +66,23 @@ export function NativeThreadTerminalMain({
   const isTouchDevice = useMediaQuery("(pointer: coarse)");
   const { refetch } = nativeQuery;
   const terminalsUpdatedAt = terminalsQuery.dataUpdatedAt;
+  const [composerEngaged, setComposerEngaged] = useState(false);
+  const onFocusWithin = (event: FocusEvent<HTMLDivElement>) => {
+    if (
+      event.target instanceof Element &&
+      event.target.closest("form[data-native-terminal-prompt]") !== null
+    ) {
+      setComposerEngaged(true);
+    }
+  };
+
+  useEffect(() => {
+    if (!paneIsFocused) setComposerEngaged(false);
+  }, [paneIsFocused]);
+
+  useEffect(() => {
+    void LazyThreadTerminalPanel.preload();
+  }, []);
 
   useEffect(() => {
     if (state.kind === "live") return;
@@ -78,6 +95,7 @@ export function NativeThreadTerminalMain({
         className="flex h-full min-h-0 min-w-0 flex-col"
         data-native-terminal-thread={view.providerId}
         data-no-sidebar-swipe=""
+        onFocus={onFocusWithin}
       >
         <NativeTerminalWaitingBanner
           prompts={waitingPrompts}
@@ -90,7 +108,7 @@ export function NativeThreadTerminalMain({
           threadId={threadId}
         />
         <LazyThreadTerminalPanel
-          autoFocus={paneIsFocused && !isTouchDevice}
+          autoFocus={paneIsFocused && !isTouchDevice && !composerEngaged}
           isPanelOpen
           isPanelPersistedOpen
           onOpenLink={onOpenLink}
@@ -99,13 +117,11 @@ export function NativeThreadTerminalMain({
           target={{ kind: "thread", threadId }}
           terminalId={state.terminalId}
         />
-        {isTouchDevice ? (
-          <NativeTerminalPromptBar
-            projectId={projectId}
-            providerLabel={providerLabel}
-            threadId={threadId}
-          />
-        ) : null}
+        <NativeTerminalPromptBar
+          projectId={projectId}
+          providerLabel={providerLabel}
+          threadId={threadId}
+        />
       </div>
     );
   }

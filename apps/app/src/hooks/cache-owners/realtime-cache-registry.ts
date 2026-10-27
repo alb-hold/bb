@@ -65,6 +65,7 @@ import {
   sidebarNavigationQueryKey,
   systemAiServicesQueryKey,
   systemConfigQueryKey,
+  writingAssistanceQueryKey,
   allSystemProvidersQueryKeyPrefix,
   threadDefaultExecutionOptionsQueryKey,
   threadQueryKey,
@@ -1317,6 +1318,7 @@ function dirtySystemConfigQueries({ queryClient }: RealtimeDirtyContext): void {
     queryKeys: [
       systemConfigQueryKey(),
       systemAiServicesQueryKey(),
+      writingAssistanceQueryKey(),
       allSystemThemesQueryKeyPrefix(),
     ],
   });

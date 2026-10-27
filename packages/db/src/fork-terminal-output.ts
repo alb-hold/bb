@@ -12,6 +12,21 @@ export interface RetainedTerminalOutputChunk {
   dataBase64: string;
 }
 
+export interface RetainedTerminalOutputAppendTimings {
+  totalMs: number;
+  expiryPruneMs: number;
+  ownerLookupMs: number;
+  rowReadParseMs: number;
+  chunkLoopMs: number;
+  upsertMs: number;
+  hostRetentionMs: number;
+  chunkCount: number;
+  inputBytes: number;
+  existingRowBytes: number;
+  rowsPruned: number;
+  hostRowsTrimmed: number;
+}
+
 interface RetainedTerminalOutputRow {
   chunksJson: string;
   byteLength: number;
@@ -103,9 +118,28 @@ export function appendRetainedTerminalOutputChunks(
     terminalSessionId: string;
     chunks: RetainedTerminalOutputChunk[];
     clock: () => number;
+    measureClock?: () => number;
   },
-): void {
-  if (args.chunks.length === 0) return;
+): RetainedTerminalOutputAppendTimings {
+  const measure =
+    args.measureClock ?? (() => Number(process.hrtime.bigint()) / 1_000_000);
+  const timings: RetainedTerminalOutputAppendTimings = {
+    totalMs: 0,
+    expiryPruneMs: 0,
+    ownerLookupMs: 0,
+    rowReadParseMs: 0,
+    chunkLoopMs: 0,
+    upsertMs: 0,
+    hostRetentionMs: 0,
+    chunkCount: args.chunks.length,
+    inputBytes: args.chunks.reduce((sum, chunk) => sum + chunkBytes(chunk), 0),
+    existingRowBytes: 0,
+    rowsPruned: 0,
+    hostRowsTrimmed: 0,
+  };
+  if (args.chunks.length === 0) return timings;
+  const totalStarted = measure();
+  let phaseStarted = measure();
   const run = db.$client.transaction(() => {
     const nextExpiryStatement = db.$client.prepare(
       `SELECT MIN(expires_at) AS nextExpiry FROM fork_terminal_output
@@ -114,23 +148,30 @@ export function appendRetainedTerminalOutputChunks(
     let lastPruned = 0;
     let nextExpiry: number | null = null;
     const prune = (now: number, always: boolean): boolean => {
+      const pruneStarted = measure();
       if (
         !always &&
         lastPruned < PRUNE_BATCH_ROWS &&
         (nextExpiry === null || nextExpiry > now)
       ) {
+        timings.expiryPruneMs += measure() - pruneStarted;
         return false;
       }
       lastPruned = pruneRetainedTerminalOutput(db, now);
-      nextExpiry = (nextExpiryStatement.get() as { nextExpiry: number | null })
-        .nextExpiry;
+      timings.rowsPruned += lastPruned;
+      nextExpiry = (
+        nextExpiryStatement.get() as { nextExpiry: number | null }
+      ).nextExpiry;
+      timings.expiryPruneMs += measure() - pruneStarted;
       return true;
     };
     const firstNow = args.clock();
     prune(firstNow, true);
+    phaseStarted = measure();
     const owner = db.$client
       .prepare("SELECT host_id AS hostId FROM terminal_sessions WHERE id = ?")
       .get(args.terminalSessionId) as { hostId: string } | undefined;
+    timings.ownerLookupMs += measure() - phaseStarted;
     if (owner?.hostId !== args.hostId) {
       for (let index = 1; index < args.chunks.length; index += 1) {
         prune(args.clock(), false);
@@ -138,6 +179,7 @@ export function appendRetainedTerminalOutputChunks(
       return;
     }
 
+    phaseStarted = measure();
     const existing = db.$client
       .prepare(
         `SELECT chunks_json AS chunksJson, byte_length AS byteLength,
@@ -148,6 +190,7 @@ export function appendRetainedTerminalOutputChunks(
       .get(args.terminalSessionId, args.hostId) as
       | RetainedTerminalOutputRow
       | undefined;
+    timings.existingRowBytes = existing?.byteLength ?? 0;
     const ownRowStatement = db.$client.prepare(
       `SELECT 1 AS present FROM fork_terminal_output
        WHERE terminal_session_id = ? AND host_id = ?`,
@@ -156,6 +199,8 @@ export function appendRetainedTerminalOutputChunks(
       `DELETE FROM fork_terminal_output WHERE terminal_session_id = ?`,
     );
     const chunks = existing ? parseChunks(existing.chunksJson) : [];
+    timings.rowReadParseMs += measure() - phaseStarted;
+    phaseStarted = measure();
     const seenSequences = new Set(chunks.map(({ chunk }) => chunk.seq));
     let appended = false;
     let ownRowStored = existing !== undefined;
@@ -166,12 +211,13 @@ export function appendRetainedTerminalOutputChunks(
       (total, entry) => total + chunkBytes(entry.chunk),
       0,
     );
+    const expiryPruneBeforeChunkLoop = timings.expiryPruneMs;
     for (const [index, chunk] of args.chunks.entries()) {
       const now = index === 0 ? firstNow : args.clock();
       lastNow = now;
+      const didPrune = index > 0 && prune(now, false);
       if (
-        index > 0 &&
-        prune(now, false) &&
+        didPrune &&
         ownRowExpiresAt !== null &&
         ownRowStatement.get(args.terminalSessionId, args.hostId) === undefined
       ) {
@@ -252,7 +298,12 @@ export function appendRetainedTerminalOutputChunks(
         insertedRetainedAt = chunks[0]?.retainedAt ?? now;
       }
     }
+    timings.chunkLoopMs +=
+      measure() -
+      phaseStarted -
+      (timings.expiryPruneMs - expiryPruneBeforeChunkLoop);
     if (!appended || bytes === 0) return;
+    phaseStarted = measure();
     db.$client
       .prepare(
         `INSERT INTO fork_terminal_output
@@ -271,7 +322,9 @@ export function appendRetainedTerminalOutputChunks(
         bytes,
         insertedRetainedAt ?? chunks[0]?.retainedAt ?? lastNow,
       );
+    timings.upsertMs += measure() - phaseStarted;
 
+    phaseStarted = measure();
     let hostTotals = db.$client
       .prepare(
         `SELECT COUNT(*) AS bufferCount, COALESCE(SUM(byte_length), 0) AS byteLength
@@ -332,9 +385,13 @@ export function appendRetainedTerminalOutputChunks(
         byteLength:
           hostTotals.byteLength - (removed ? chunkBytes(removed.chunk) : 0),
       };
+      timings.hostRowsTrimmed += 1;
     }
+    timings.hostRetentionMs += measure() - phaseStarted;
   });
   run();
+  timings.totalMs = measure() - totalStarted;
+  return timings;
 }
 
 export function markRetainedTerminalOutputExited(
