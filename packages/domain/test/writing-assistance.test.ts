@@ -560,6 +560,11 @@ describe("resolveWritingEdits", () => {
     ["price - discount.", "price", "Price", "capitalization"],
     ["count % size", "count", "Count", "capitalization"],
     ["we saw a error in x + y", "a error", "an error", "grammar"],
+    ["we saw a error in α + β", "a error", "an error", "grammar"],
+    ["α + β.", "α", "Α", "capitalization"],
+    ["größe * faktor.", "größe", "Größe", "capitalization"],
+    ["preço - desconto.", "preço", "Preço", "capitalization"],
+    ["x² + y²", "x²", "X²", "capitalization"],
     ["echo $HOME | grep user", "user", "User", "capitalization"],
     ["return return value;", "return return", "return", "grammar"],
     ["if (we saw a error)", "a error", "an error", "grammar"],
@@ -1138,6 +1143,21 @@ describe("validateFormattedTranscript", () => {
       });
     },
   );
+
+  it("keeps a spoken list whose self-correction drops more than it replaces", () => {
+    expect(
+      validateFormattedTranscript(
+        "first check the auth service no wait tokens second run tests",
+        "1. Check the auth service, no wait, tokens.\n2. Run tests.",
+      ),
+    ).toEqual({ ok: true });
+    expect(
+      validateFormattedTranscript(
+        "first check the auth service no wait tokens second run tests",
+        "1. Check tokens.\n2. Run tests.",
+      ),
+    ).toEqual({ ok: false, reason: "dropped-words" });
+  });
 
   it.each([
     ["I had had enough of the flaky test", "I had enough of the flaky test."],

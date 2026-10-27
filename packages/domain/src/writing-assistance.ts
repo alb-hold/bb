@@ -656,8 +656,9 @@ const HYPHENATED_START_LINE = /^\s*(?:[$%>#]\s*)?[A-Za-z]+-[A-Za-z]+(?=\s|$)/u;
 const IDENTIFIER_START_LINE =
   /^\s*(?:[$%>#]\s*)?(?:\w*_\w*|[A-Za-z]?[a-z0-9]+[A-Z]\w*)(?=\s|$)/u;
 const CALL_OPERATOR_LINE = /^\s*(?:[$%>#]\s*)?[&.]\s+\S/u;
-const ARITHMETIC = /[\w)\]]\s*[+*^]\s*[\w(]/u;
-const EXPRESSION_LINE = /^\s*[\w.]+(?:\s*[-+*/%^]\s*[\w.]+)+\s*[.;]?\s*$/u;
+const ARITHMETIC = /[\p{L}\p{M}\p{N}_)\]]\s*[+*^]\s*[\p{L}\p{M}\p{N}_(]/u;
+const EXPRESSION_LINE =
+  /^\s*[\p{L}\p{M}\p{N}_.]+(?:\s*[-+*/%^]\s*[\p{L}\p{M}\p{N}_.]+)+\s*[.;]?\s*$/u;
 
 const FENCE_LINE = /^\s*(?:`{3,}|~{3,})/u;
 

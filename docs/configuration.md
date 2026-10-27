@@ -451,7 +451,8 @@ dot-source operator, & or . then a space (& Fetch-Data, . setup), a line that st
 lowercase letter followed by a capital (fetch_data, \_fetch, fetchData,
 FetchData; also words such as iPhone or McDonald), a line with a short flag such as -la, a line
 with a +, * or ^ between two operands (x + y, total * rate, n ^ k), a line that is only an
-arithmetic expression (price - discount., count % size), a line
+arithmetic expression (price - discount., count % size), with operands in
+any script (α + β, größe * faktor), a line
 indented four spaces or a tab, or a ``` or ~~~ fence line or a line inside such a fence (closed
 only by a bare fence of the same character at least as long), every
 change, even capitalization, is only suggested. A line that starts with a plain word, such as a custom command named setup or

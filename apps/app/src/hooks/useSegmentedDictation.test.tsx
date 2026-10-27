@@ -113,6 +113,14 @@ describe("useSegmentedDictation microphone release", () => {
     expect(unloaded.track.stop).toHaveBeenCalledTimes(1);
   });
 
+  it("stops the microphone track when dictation is cancelled", async () => {
+    const { hook, track } = await startRecording();
+    act(() => hook.result.current.cancel());
+    expect(track.stop).toHaveBeenCalledTimes(1);
+    expect(hook.result.current.phase).toBe("idle");
+    expect(hook.result.current.stream).toBeNull();
+  });
+
   it("stops the microphone track when the composer unmounts", async () => {
     const { hook, track } = await startRecording();
     hook.unmount();
