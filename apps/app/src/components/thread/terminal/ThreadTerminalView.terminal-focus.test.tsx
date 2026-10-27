@@ -1844,6 +1844,120 @@ describe("ThreadTerminalView terminal focus boundary", () => {
     );
   }, 30_000);
 
+  it("replays hidden output across a reconnect before showing the terminal", async () => {
+    prepareMobileTerminal();
+    let mountedTerminal: Terminal | null = null;
+    const openTerminal = Terminal.prototype.open;
+    vi.spyOn(Terminal.prototype, "open").mockImplementation(function (
+      this: Terminal,
+      element: HTMLElement,
+    ) {
+      mountedTerminal ??= this;
+      openTerminal.call(this, element);
+    });
+
+    const session = renderMobileTerminal();
+    await waitForReadinessCondition(
+      () => expect(testState.sockets).toHaveLength(1),
+      "initial terminal socket was not created within 5000 ms",
+    );
+    const initialSocket = testState.sockets[0];
+    if (!initialSocket) throw new Error("initial terminal socket is missing");
+    await waitForReadiness(initialSocket.opened, "initial socket did not open");
+    initialSocket.receive({
+      type: "attached",
+      session,
+      replayStartSeq: 0,
+      nextSeq: 1,
+    });
+    initialSocket.receive({
+      type: "output",
+      chunk: { seq: 0, dataBase64: btoa("visible baseline\r\n") },
+    });
+    await waitForReadinessCondition(
+      () =>
+        expect(
+          testState.socketMessages.map((message) => JSON.parse(message)),
+        ).toContainEqual({ type: "ack", nextSeq: 1 }),
+      "visible baseline output was not acknowledged",
+    );
+
+    const visibilityState = vi.spyOn(document, "visibilityState", "get");
+    visibilityState.mockReturnValue("hidden");
+    document.dispatchEvent(new Event("visibilitychange"));
+    await waitForReadinessCondition(
+      () =>
+        expect(
+          testState.socketMessages.map((message) => JSON.parse(message)),
+        ).toContainEqual({ type: "visibility", visible: false }),
+      "terminal did not enter the hidden state",
+    );
+    initialSocket.receive({
+      type: "output",
+      chunk: { seq: 1, dataBase64: btoa("ghost range one\r\n") },
+    });
+    initialSocket.receive({
+      type: "output",
+      chunk: { seq: 2, dataBase64: btoa("ghost range two\r\n") },
+    });
+    initialSocket.disconnect();
+    await waitForReadinessCondition(
+      () => expect(testState.sockets).toHaveLength(2),
+      "hidden terminal did not reconnect",
+    );
+    const reconnectSocket = testState.sockets[1];
+    if (!reconnectSocket) throw new Error("reconnect socket is missing");
+    await waitForReadiness(reconnectSocket.opened, "reconnect socket did not open");
+    expect(
+      new URL(testState.socketUrls[1] ?? "ws://localhost").searchParams.get(
+        "sinceSeq",
+      ),
+    ).toBe("3");
+    reconnectSocket.receive({
+      type: "attached",
+      session,
+      replayStartSeq: 3,
+      nextSeq: 3,
+    });
+
+    visibilityState.mockReturnValue("visible");
+    document.dispatchEvent(new Event("visibilitychange"));
+    await waitForReadinessCondition(
+      () => expect(testState.sockets).toHaveLength(3),
+      "showing terminal did not request replay",
+    );
+    const replaySocket = testState.sockets[2];
+    if (!replaySocket) throw new Error("replay socket is missing");
+    await waitForReadiness(replaySocket.opened, "replay socket did not open");
+    expect(
+      new URL(testState.socketUrls[2] ?? "ws://localhost").searchParams.get(
+        "sinceSeq",
+      ),
+    ).toBe("1");
+    replaySocket.receive({
+      type: "attached",
+      session,
+      replayStartSeq: 1,
+      nextSeq: 3,
+    });
+    replaySocket.receive({
+      type: "output",
+      chunk: { seq: 1, dataBase64: btoa("ghost range one\r\n") },
+    });
+    replaySocket.receive({
+      type: "output",
+      chunk: { seq: 2, dataBase64: btoa("ghost range two\r\n") },
+    });
+    await waitForReadinessCondition(() => {
+      const terminalText = Array.from(
+        { length: mountedTerminal?.buffer.active.length ?? 0 },
+        (_, index) =>
+          mountedTerminal?.buffer.active.getLine(index)?.translateToString(true),
+      ).join("\n");
+      expect(terminalText).toContain("ghost range one");
+    }, "hidden output was not replayed when the terminal became visible");
+  });
+
   it("suppresses terminal-scoped shortcuts from the real xterm input", async () => {
     vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({
       measureText: (text: string) => ({ width: text.length * 9 }),

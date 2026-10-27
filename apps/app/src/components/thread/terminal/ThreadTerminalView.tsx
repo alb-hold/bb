@@ -2189,8 +2189,12 @@ export function ThreadTerminalView({
             message.type === "session-updated"
           ) {
             if (message.type === "attached") {
+              const reconnectingWhileHidden =
+                hasReceivedInitialAttach && terminalVisible !== true;
               hasReceivedInitialAttach = true;
-              lastParsedOutputNextSeq = message.replayStartSeq;
+              lastParsedOutputNextSeq = reconnectingWhileHidden
+                ? Math.min(lastParsedOutputNextSeq, message.replayStartSeq)
+                : message.replayStartSeq;
             }
             const { cols, rows } = message.session;
             const isOwnNudgeEcho =
