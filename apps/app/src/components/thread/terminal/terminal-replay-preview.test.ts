@@ -601,6 +601,14 @@ describe("terminal replay preview", () => {
       paneHeight: container.getBoundingClientRect().height,
       screenHeight: screen!.getBoundingClientRect().height,
       visibility: getComputedStyle(previewElement).visibility,
+      rows: preview.rows,
+      snapshotText: Array.from(
+        { length: preview.buffer.active.length },
+        (_, index) =>
+          preview.buffer.active.getLine(index)?.translateToString(true),
+      ).join("\n"),
+      cursorX: preview.buffer.active.cursorX,
+      cursorY: preview.buffer.active.cursorY,
     };
 
     cover.setPtyGrid(120, 47);
@@ -616,10 +624,15 @@ describe("terminal replay preview", () => {
     cover.dispose();
     parent.remove();
 
-    expect(
-      firstFrame.visibility === "hidden" ||
-        firstFrame.screenHeight >= firstFrame.paneHeight,
-    ).toBe(true);
+    expect(firstFrame.visibility).toBe("visible");
+    expect(firstFrame.rows).toBe(47);
+    expect(firstFrame.screenHeight).toBeGreaterThanOrEqual(
+      firstFrame.paneHeight,
+    );
+    expect(firstFrame.snapshotText).toContain("current screen");
+    expect({ x: firstFrame.cursorX, y: firstFrame.cursorY }).toEqual(
+      expectedCursor,
+    );
     expect(finalFrame.visibility).toBe("visible");
     expect({ cols: finalFrame.cols, rows: finalFrame.rows }).toEqual({
       cols: 120,
