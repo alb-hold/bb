@@ -1669,6 +1669,7 @@ export function ThreadTerminalView({
         document.visibilityState === "visible" &&
         containerHasSize &&
         isPanelOpenRef.current;
+      if (transport === null) return;
       const wasVisible = terminalVisible;
       if (wasVisible === nextVisible) return;
       terminalVisible = nextVisible;
