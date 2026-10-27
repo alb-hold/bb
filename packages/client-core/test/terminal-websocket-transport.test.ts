@@ -841,6 +841,27 @@ describe("TerminalWebSocketTransport", () => {
       harness.transport.dispose();
     });
 
+    it("retries the restore while the nudge acknowledgement is missing", async () => {
+      const { harness, socket, ack } = openAckedHarness(51, 47);
+
+      harness.transport.requestRepaint();
+      await vi.advanceTimersByTimeAsync(0);
+      vi.advanceTimersByTime(400);
+      expect(socket.sent.at(-1)).toBe(resizeFrame(50, 47, 1));
+
+      vi.advanceTimersByTime(999);
+      expect(socket.sent.at(-1)).toBe(resizeFrame(50, 47, 1));
+      vi.advanceTimersByTime(1);
+      expect(socket.sent.at(-1)).toBe(resizeFrame(51, 47, 2));
+      vi.advanceTimersByTime(1_000);
+      expect(socket.sent.at(-1)).toBe(resizeFrame(51, 47, 3));
+
+      ack(3);
+      vi.advanceTimersByTime(1_000);
+      expect(socket.sent.at(-1)).toBe(resizeFrame(51, 47, 3));
+      harness.transport.dispose();
+    });
+
     it("reports the first size equal to its nudge as the echo, once", async () => {
       const { harness, echo } = openAckedHarness(100, 30);
 
