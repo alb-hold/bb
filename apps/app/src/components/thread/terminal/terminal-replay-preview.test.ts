@@ -731,6 +731,7 @@ describe("terminal replay preview", () => {
       fitRows: 47,
     });
     const widthBefore = harness.container.getBoundingClientRect().width;
+    harness.cover.setFitGrid(120, 47);
 
     expect(getComputedStyle(harness.previewElement).visibility).toBe("visible");
     expect({ cols: harness.terminal.cols, rows: harness.terminal.rows }).toEqual({
