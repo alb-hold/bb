@@ -10,6 +10,7 @@ import {
 } from "@testing-library/react";
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
+import { readFileSync } from "node:fs";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -2354,6 +2355,135 @@ describe("ThreadTerminalView terminal focus boundary", () => {
       ).join("\n");
       expect(terminalText).toContain("ghost range one");
     }, "hidden output was not replayed when the terminal became visible");
+  });
+
+  it("replays a retained OSC 52 continuation from a parser-safe cursor", async () => {
+    prepareMobileTerminal();
+    stubVisibleIntersectionObserver();
+    vi.spyOn(terminalModules, "importTerminalWebglAddon").mockRejectedValue(
+      new Error("WebGL unavailable"),
+    );
+    let mountedTerminal: Terminal | null = null;
+    const openTerminal = Terminal.prototype.open;
+    vi.spyOn(Terminal.prototype, "open").mockImplementation(function (
+      this: Terminal,
+      element: HTMLElement,
+    ) {
+      mountedTerminal ??= this;
+      openTerminal.call(this, element);
+    });
+    const visibilityState = vi.spyOn(document, "visibilityState", "get");
+    visibilityState.mockReturnValue("hidden");
+    const fixture = JSON.parse(
+      readFileSync(
+        "src/components/thread/terminal/fixtures/osc52-chunks.json",
+        "utf8",
+      ),
+    ) as {
+      osc52: Array<{
+        chunks: Array<{
+          belInChunk: number;
+          dataBase64: string;
+          seq: number;
+        }>;
+      }>;
+    };
+    const chunks = fixture.osc52[1]?.chunks;
+    const prefix = chunks?.[0];
+    const continuation = chunks?.[1];
+    if (!prefix || !continuation) {
+      throw new Error("missing OSC 52 split fixture chunks");
+    }
+    const session = renderMobileTerminal();
+    await waitForReadinessCondition(
+      () => expect(testState.sockets).toHaveLength(1),
+      "initial terminal socket was not created within 5000 ms",
+    );
+    const initialSocket = testState.sockets[0];
+    if (!initialSocket) throw new Error("initial terminal socket is missing");
+    await waitForReadiness(initialSocket.opened, "initial socket did not open");
+    await waitForReadinessCondition(
+      () =>
+        expect(
+          testState.socketMessages.map((message) => JSON.parse(message)),
+        ).toContainEqual({ type: "visibility", visible: false }),
+      "terminal did not enter the hidden state",
+    );
+    initialSocket.receive({
+      type: "attached",
+      session,
+      replayStartSeq: prefix.seq,
+      nextSeq: continuation.seq + 1,
+    });
+    initialSocket.receive({
+      type: "output",
+      chunk: { seq: prefix.seq, dataBase64: prefix.dataBase64 },
+    });
+    initialSocket.disconnect();
+    await waitForReadinessCondition(
+      () => expect(testState.sockets).toHaveLength(2),
+      "hidden terminal did not reconnect",
+    );
+    const reconnectSocket = testState.sockets[1];
+    if (!reconnectSocket) throw new Error("reconnect socket is missing");
+    await waitForReadiness(reconnectSocket.opened, "reconnect socket did not open");
+    expect(
+      new URL(testState.socketUrls[1] ?? "ws://localhost").searchParams.get(
+        "sinceSeq",
+      ),
+    ).toBe(String(continuation.seq));
+    reconnectSocket.receive({
+      type: "attached",
+      session,
+      replayStartSeq: continuation.seq,
+      nextSeq: continuation.seq + 1,
+    });
+
+    visibilityState.mockReturnValue("visible");
+    document.dispatchEvent(new Event("visibilitychange"));
+    await waitForReadinessCondition(
+      () => expect(testState.sockets).toHaveLength(3),
+      "showing terminal did not request replay from its parser cursor",
+    );
+    const replaySocket = testState.sockets[2];
+    if (!replaySocket) throw new Error("replay socket is missing");
+    await waitForReadiness(replaySocket.opened, "replay socket did not open");
+    const replaySinceSeq = new URL(
+      testState.socketUrls[2] ?? "ws://localhost",
+    ).searchParams.get("sinceSeq");
+    replaySocket.receive({
+      type: "attached",
+      session,
+      replayStartSeq: continuation.seq,
+      nextSeq: continuation.seq + 1,
+    });
+    const continuationBytes = Buffer.from(continuation.dataBase64, "base64");
+    const replayBytes =
+      replaySinceSeq === "0"
+        ? continuationBytes.subarray(continuation.belInChunk + 1)
+        : continuationBytes;
+    replaySocket.receive({
+      type: "output",
+      chunk: {
+        seq: continuation.seq,
+        dataBase64: replayBytes.toString("base64"),
+      },
+    });
+    await waitForReadinessCondition(
+      () =>
+        expect(
+          testState.socketMessages.map((message) => JSON.parse(message)),
+        ).toContainEqual({ type: "ack", nextSeq: continuation.seq + 1 }),
+      "safe replay output was not acknowledged",
+    );
+    const capturedTerminal = mountedTerminal as Terminal | null;
+    const terminalText = Array.from(
+      { length: capturedTerminal?.buffer.active.length ?? 0 },
+      (_, index) =>
+        capturedTerminal?.buffer.active.getLine(index)?.translateToString(true),
+    ).join("\n");
+    expect(terminalText).not.toContain("Q".repeat(24));
+    expect(replaySinceSeq).toBe("0");
   });
 
   it("replays output received while the terminal panel is closed", async () => {

@@ -2233,12 +2233,7 @@ export function ThreadTerminalView({
             message.type === "session-updated"
           ) {
             if (message.type === "attached") {
-              const reconnectingWhileHidden =
-                hasReceivedInitialAttach && terminalVisible !== true;
               hasReceivedInitialAttach = true;
-              lastParsedOutputNextSeq = reconnectingWhileHidden
-                ? Math.min(lastParsedOutputNextSeq, message.replayStartSeq)
-                : message.replayStartSeq;
             }
             const { cols, rows } = message.session;
             const isOwnNudgeEcho =
@@ -2382,7 +2377,8 @@ export function ThreadTerminalView({
             replayCheckpointSequence,
             outputBoundaryToken,
             allowAttachedGrid: !markerGridActive,
-            shouldProcessOutput: () => terminalVisible === true && isPanelOpenRef.current,
+            shouldProcessOutput: () =>
+              terminalVisible === true && isPanelOpenRef.current,
           });
         },
         onSequenceGap: () => {
