@@ -1811,11 +1811,6 @@ describe("ThreadTerminalView terminal focus boundary", () => {
       { timeout: 6_000 },
 
     );
-    const socket = testState.sockets[0]!;
-    await Promise.all([
-      waitForReadiness(socket.opened, "socket did not open within 5000 ms"),
-      waitForReadiness(layoutSettled, "layout did not settle within 5000 ms"),
-    ]);
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const resizeFrames = () =>
       testState.socketMessages
