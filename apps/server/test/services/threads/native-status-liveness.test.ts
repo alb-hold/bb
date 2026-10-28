@@ -12,6 +12,7 @@ import {
 } from "@bb/db";
 import { createMigratedConnection } from "@bb/db/testing";
 import { turnRequestEventDataSchema } from "@bb/domain";
+import { setPluginThreadEventEmitter } from "../../../src/services/plugins/plugin-thread-events.js";
 import { runPeriodicSweeps } from "../../../src/services/system/periodic-sweeps.js";
 import {
   withTestHarness,
@@ -161,6 +162,33 @@ function parentSystemRequests(harness: TestAppHarness, parentThreadId: string) {
     .filter((data) => data.initiator === "system");
 }
 
+function recordPluginThreadEvents(): string[] {
+  const calls: string[] = [];
+  const record = (name: string) => () => {
+    calls.push(name);
+  };
+  setPluginThreadEventEmitter({
+    emitThreadEvents: record("emitThreadEvents"),
+    emitTerminalInput: record("emitTerminalInput"),
+    emitHostDeleted: record("emitHostDeleted"),
+    emitEnvironmentRemoved: record("emitEnvironmentRemoved"),
+    emitThreadCreated: record("emitThreadCreated"),
+    emitThreadActive: record("emitThreadActive"),
+    emitThreadIdle: record("emitThreadIdle"),
+    emitThreadFailed: record("emitThreadFailed"),
+    emitThreadArchived: record("emitThreadArchived"),
+    emitThreadDeleted: record("emitThreadDeleted"),
+    emitInteractionPending: record("emitInteractionPending"),
+    emitMessageQueued: record("emitMessageQueued"),
+    emitMessageDispatched: record("emitMessageDispatched"),
+    emitMessageCancelled: record("emitMessageCancelled"),
+    emitThreadUnarchived: record("emitThreadUnarchived"),
+    emitThreadParentChanged: record("emitThreadParentChanged"),
+    emitTurnFailed: record("emitTurnFailed"),
+  });
+  return calls;
+}
+
 async function withHarness(
   run: (harness: TestAppHarness) => Promise<void>,
 ): Promise<void> {
@@ -292,6 +320,84 @@ describe("native thread status liveness", () => {
       await vi.waitFor(async () =>
         expect(await listDisplayStatus()).toBe("error"),
       );
+    });
+  });
+
+  it("settles an idle thread straight to error without a working state, a timeline item, a parent message or a plugin idle or active event", async () => {
+    await withHarness(async (harness) => {
+      const context = seedNativeContext(harness);
+      const parent = seedThread(harness.deps, {
+        projectId: context.project.id,
+        environmentId: context.environment.id,
+        status: "idle",
+        title: "Parent",
+      });
+      seedThreadRuntimeState(harness.deps, {
+        threadId: parent.id,
+        environmentId: context.environment.id,
+        providerThreadId: "parent-provider-thread",
+      });
+      const { threadId } = seedNativeThread(
+        harness,
+        {
+          initialStatus: "idle",
+          parentThreadId: parent.id,
+          terminal: "exited-process-exit",
+        },
+        context,
+      );
+      const eventTypesBefore = listEvents(harness.db, { threadId }).map(
+        (row) => row.type,
+      );
+      const broadcastStatuses: string[] = [];
+      const notifyThread = harness.deps.hub.notifyThread.bind(harness.deps.hub);
+      vi.spyOn(harness.deps.hub, "notifyThread").mockImplementation(
+        (id, kinds, metadata) => {
+          if (id === threadId && metadata?.statusChange !== undefined) {
+            broadcastStatuses.push(metadata.statusChange.status);
+          }
+          notifyThread(id, kinds, metadata);
+        },
+      );
+      const pluginCalls = recordPluginThreadEvents();
+      const listedDisplayStatuses: string[] = [];
+      const listDisplayStatus = async () => {
+        const response = await harness.app.request(
+          `/api/v1/threads?threadIds=${threadId}`,
+        );
+        const body = (await response.json()) as {
+          id: string;
+          runtime: { displayStatus: string };
+        }[];
+        const displayStatus = body.find((thread) => thread.id === threadId)
+          ?.runtime.displayStatus;
+        listedDisplayStatuses.push(displayStatus ?? "missing");
+        return displayStatus;
+      };
+
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      try {
+        await listDisplayStatus();
+        await vi.waitFor(async () =>
+          expect(await listDisplayStatus()).toBe("error"),
+        );
+        await vi.advanceTimersByTimeAsync(5_000);
+      } finally {
+        vi.useRealTimers();
+        setPluginThreadEventEmitter(undefined);
+      }
+
+      expect(getThread(harness.db, threadId)?.status).toBe("error");
+      expect(listedDisplayStatuses.every((status) => status !== "active")).toBe(
+        true,
+      );
+      expect(listedDisplayStatuses.at(0)).toBe("idle");
+      expect(broadcastStatuses).toEqual(["error"]);
+      expect(
+        listEvents(harness.db, { threadId }).map((row) => row.type),
+      ).toEqual(eventTypesBefore);
+      expect(pluginCalls).toEqual(["emitThreadFailed"]);
+      expect(parentSystemRequests(harness, parent.id)).toHaveLength(0);
     });
   });
 

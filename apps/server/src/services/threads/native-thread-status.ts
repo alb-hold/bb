@@ -61,17 +61,17 @@ function settleThreadWithDeadTerminal(
     return;
   const environment = getEnvironment(deps.db, thread.environmentId);
   if (environment === null) return;
-  if (thread.status === "idle") {
-    const started = applyLoggedThreadLifecycleEvent(deps, {
-      event: { type: "run.started" },
-      threadId,
-    });
-    if (!started.applied) return;
-  }
   deps.logger.info(
     { hostId: environment.hostId, threadId },
     "Settling a native terminal thread whose terminal exited",
   );
+  if (thread.status === "idle") {
+    applyLoggedThreadLifecycleEvent(deps, {
+      event: { type: "session.lost" },
+      threadId,
+    });
+    return;
+  }
   interruptActiveThreadsForHost(deps, {
     hostId: environment.hostId,
     includeStopping: false,

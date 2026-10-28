@@ -406,13 +406,8 @@ function returnResumedNativeThreadToIdle(
   threadId: string,
 ): void {
   if (getThread(deps.db, threadId)?.status !== "error") return;
-  const preparing = applyLoggedThreadLifecycleEvent(deps, {
-    event: { type: "run.preparing" },
-    threadId,
-  });
-  if (!preparing.applied) return;
   applyLoggedThreadLifecycleEvent(deps, {
-    event: { type: "run.succeeded" },
+    event: { type: "session.resumed" },
     threadId,
   });
 }

@@ -91,7 +91,9 @@ export function applyLoggedThreadLifecycleEvent(
     );
   }
   logUnappliedThreadLifecycleEvent(deps.logger, args, outcome);
-  emitPluginThreadLifecycleOutcome(outcome);
+  if (args.event.type !== "session.resumed") {
+    emitPluginThreadLifecycleOutcome(outcome);
+  }
   announceTurnFailed(args, outcome);
   return outcome;
 }
@@ -112,10 +114,11 @@ export function applyLoggedThreadLifecycleEventInTransaction(
   ) {
     clearThreadRowState(deps.db, args.threadId);
     releaseWorkspaceForThread(deps, outcome.thread);
-
   }
   logUnappliedThreadLifecycleEvent(deps.logger, args, outcome);
-  emitPluginThreadLifecycleOutcome(outcome);
+  if (args.event.type !== "session.resumed") {
+    emitPluginThreadLifecycleOutcome(outcome);
+  }
   announceTurnFailed(args, outcome);
   return outcome;
 }
