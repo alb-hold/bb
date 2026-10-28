@@ -59,6 +59,7 @@ import {
 } from "../../src/services/threads/native-terminal-threads.js";
 import { handleDaemonSocketClosed } from "../../src/internal/session-owner-side-effects.js";
 import { applyLoggedThreadLifecycleEvent } from "../../src/services/threads/lifecycle-outcome.js";
+import { terminalScreenInputBoxHoldsText } from "../../src/services/threads/native-terminal-echo.js";
 import { internalAuthHeaders } from "../helpers/commands.js";
 import { createProviderRegistryService } from "../../src/services/providers/provider-registry.js";
 import { createTestProviderRegistry } from "../helpers/provider-registry.js";
@@ -283,6 +284,23 @@ async function waitForThreadStatus(
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
   throw new Error(`Thread ${threadId} never reached ${status}`);
+}
+
+async function waitForTerminalInputBox(
+  fixture: Fixture,
+  terminalId: string,
+  text: string,
+): Promise<void> {
+  for (let attempt = 0; attempt < 600; attempt += 1) {
+    const screen =
+      await fixture.harness.deps.terminalSessions.readTerminalScreen({
+        terminalId,
+        query: {},
+      });
+    if (terminalScreenInputBoxHoldsText({ rows: screen.rows, text })) return;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  throw new Error("Recorded terminal input did not reach the input box");
 }
 
 async function openRunningNativeThread(
@@ -5019,6 +5037,7 @@ describe("native terminal threads", () => {
         { paste: () => [], enter: () => [] },
       );
       try {
+        await waitForTerminalInputBox(fixture, open.terminalId, "say ok");
         const response = await sendSayOk(fixture, thread.id);
         expect(response.status).toBe(200);
         await new Promise((resolve) => setTimeout(resolve, 200));
