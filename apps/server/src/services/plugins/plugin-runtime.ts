@@ -939,6 +939,41 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
     });
   }
 
+  function emitThreadEventAndWait<E extends PluginThreadEventName>(
+    event: E,
+    buildPayload: () => PluginThreadEventPayloads[E] | null,
+  ): Promise<void> {
+    if (!hasThreadEventHandlers(event)) return Promise.resolve();
+    return new Promise((resolve) => {
+      setImmediate(() => {
+        let payload: PluginThreadEventPayloads[E] | null;
+        try {
+          payload = buildPayload();
+        } catch (error) {
+          logger.warn(
+            `failed to build ${event} plugin event payload: ${error instanceof Error ? error.message : String(error)}`,
+          );
+          resolve();
+          return;
+        }
+        if (payload === null) {
+          resolve();
+          return;
+        }
+        const delivered = payload;
+        const invocations = [...loaded].flatMap(([id, plugin]) =>
+          [...plugin.handle.threadEventHandlers[event]].map((handler) =>
+            invokeWrapped(id, `${event} handler`, () => handler(delivered)),
+          ),
+        );
+        void Promise.all(invocations).then(
+          () => resolve(),
+          () => resolve(),
+        );
+      });
+    });
+  }
+
   function buildQueuedMessageEventEmitter(
     event: Extract<PluginThreadEventName, `message.${string}`>,
   ): (entry: ThreadQueuedMessage) => void {
@@ -2112,6 +2147,7 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
     disposeOne,
     buildQueuedMessageEventEmitter,
     emitThreadEvent,
+    emitThreadEventAndWait,
     getStatus,
     handlerStats,
     handleUncaughtException,

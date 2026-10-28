@@ -5,6 +5,7 @@ import type { ThreadQueuedMessage } from "@bb/domain";
 import type { PluginThreadEventEmitter } from "./plugin-service.js";
 
 const pendingThreadEvents = new Map<string, ReturnType<typeof setTimeout>>();
+const pendingTurnFailedEvents = new Map<string, Promise<void>>();
 
 let emitter: PluginThreadEventEmitter | undefined;
 
@@ -13,6 +14,7 @@ export function setPluginThreadEventEmitter(
 ): void {
   for (const timer of pendingThreadEvents.values()) clearTimeout(timer);
   pendingThreadEvents.clear();
+  pendingTurnFailedEvents.clear();
   emitter = next;
 }
 
@@ -77,7 +79,21 @@ export function emitPluginMessageCancelled(entry: ThreadQueuedMessage): void {
  * failure stands either way — so neither can block the seam.
  */
 export function emitPluginTurnFailed(threadId: string): void {
-  emitter?.emitTurnFailed(threadId);
+  const emitted = emitter?.emitTurnFailed(threadId);
+  if (emitted === undefined) return;
+  const pending = Promise.resolve(emitted)
+    .then(() => undefined)
+    .catch(() => undefined);
+  pendingTurnFailedEvents.set(threadId, pending);
+  void pending.then(() => {
+    if (pendingTurnFailedEvents.get(threadId) === pending) {
+      pendingTurnFailedEvents.delete(threadId);
+    }
+  });
+}
+
+export async function waitForPluginTurnFailed(threadId: string): Promise<void> {
+  await pendingTurnFailedEvents.get(threadId);
 }
 
 /**

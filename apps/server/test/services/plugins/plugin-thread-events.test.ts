@@ -24,6 +24,7 @@ import type { ThreadCreateServiceRequest } from "../../../src/services/threads/t
 import {
   seedEvent,
   seedThreadFixture,
+  seedThreadRuntimeState,
   seedTurnStarted,
   seedThread,
 } from "../../helpers/seed.js";
@@ -203,6 +204,53 @@ function lifecycleDeps(harness: TestAppHarness) {
 }
 
 describe("plugin thread lifecycle events", () => {
+  it("waits for turn.failed listeners to finish when requested internally", async () => {
+    const started: string[] = [];
+    globals.__turnFailedStarted = started;
+    let release!: () => void;
+    globals.__turnFailedGate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const { harness, cleanup } = await setUpPluginHarness(`
+      export default function plugin(bb: any) {
+        bb.events.on("turn.failed", async (event: any) => {
+          (globalThis as any).__turnFailedStarted.push(event.threadId);
+          await (globalThis as any).__turnFailedGate;
+        });
+      }
+    `);
+    try {
+      const { environment, thread } = seedThreadFixture(harness, {
+        thread: { status: "error" },
+      });
+      seedThreadRuntimeState(harness.deps, {
+        environmentId: environment.id,
+        providerThreadId: "provider-failed-wait",
+        threadId: thread.id,
+      });
+
+      const dispatch = harness.pluginService.events.emitTurnFailed(thread.id);
+      if (dispatch === undefined) {
+        throw new Error("expected an awaitable turn.failed event");
+      }
+      let settled = false;
+      void dispatch.then(() => {
+        settled = true;
+      });
+      await vi.waitFor(() => expect(started).toEqual([thread.id]));
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(settled).toBe(false);
+      release();
+      await expect(dispatch).resolves.toBeUndefined();
+      expect(settled).toBe(true);
+    } finally {
+      release();
+      delete globals.__turnFailedStarted;
+      delete globals.__turnFailedGate;
+      await cleanup();
+    }
+  });
+
   it("delivers a native thread DTO when the runtime has no provider registry", async () => {
     const recorded: RecordedThreadPayload[] = [];
     globals.__nativeRegistrylessEvents = recorded;

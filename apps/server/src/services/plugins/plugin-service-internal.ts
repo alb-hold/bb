@@ -255,7 +255,7 @@ export interface PluginThreadEventEmitter {
    * Takes the id alone: the payload is read from the failed turn's own records,
    * and only when a plugin is listening.
    */
-  emitTurnFailed(threadId: string): void;
+  emitTurnFailed(threadId: string): void | Promise<void>;
 }
 
 export type PluginWireLookup<T> =
