@@ -78,7 +78,7 @@ function archiveThreadWithLifecycleEffects(
   dispatchSettledArchivedThreadProviderArchiveCommand(deps, {
     threadId: archivedThread.id,
   });
-  resetActiveThreadEventPruningState(archivedThread.id);
+  resetActiveThreadEventPruningState(deps, archivedThread.id);
   pruneThreadEventHistoryBestEffort(deps, {
     mode: "archived",
     threadId: archivedThread.id,

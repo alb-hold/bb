@@ -58,7 +58,7 @@ export function applyTurnCompletedEvent(
   const nextStatus = outcome.applied ? outcome.thread.status : null;
 
   if (nextStatus) {
-    resetActiveThreadEventPruningState(payload.threadId);
+    resetActiveThreadEventPruningState(deps, payload.threadId);
   }
 
   if (nextStatus === "idle") {

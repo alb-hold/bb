@@ -44,8 +44,6 @@ export interface ServerRuntimeConfig {
 }
 
 export interface AppDeps {
-  activeThreadEventPruneClock?: () => number;
-  activeThreadEventPruneScheduler?: (callback: () => void) => void;
   config: ServerRuntimeConfig;
   db: DbConnection;
   hub: NotificationHub;

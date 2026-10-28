@@ -56,7 +56,7 @@ function threadEventKeepRecent(thread: {
 }
 
 const BATCH_SIZE = 500;
-const LIVE_BATCH_SIZE = 3;
+const LIVE_BATCH_SIZE = 32;
 const MAX_COLLAPSED_EMPTY_STEPS = 4;
 
 export function getNextThreadPruningPolicy(
@@ -459,9 +459,10 @@ function advanceThreadPruningTransaction(
   return result;
 }
 
-export function advanceThreadPruning(
+function advanceThreadPruningWithCollapsedEmptySteps(
   db: DbConnection,
   target: ThreadPruningPolicy | { threadId: string },
+  maxCollapsedEmptySteps: number,
 ) {
   const timeout: unknown = db.$client.pragma("busy_timeout", { simple: true });
   if (typeof timeout !== "number")
@@ -478,7 +479,7 @@ export function advanceThreadPruning(
     let result = advanceThreadPruningTransaction(db, policy, threadScope);
     for (
       let collapsed = 0;
-      collapsed < MAX_COLLAPSED_EMPTY_STEPS &&
+      collapsed < maxCollapsedEmptySteps &&
       result.action === "advanced" &&
       result.scanned === 0;
       collapsed += 1
@@ -488,4 +489,22 @@ export function advanceThreadPruning(
   } finally {
     db.$client.pragma(`busy_timeout = ${timeout}`);
   }
+}
+
+export function advanceThreadPruning(
+  db: DbConnection,
+  target: ThreadPruningPolicy | { threadId: string },
+) {
+  return advanceThreadPruningWithCollapsedEmptySteps(
+    db,
+    target,
+    MAX_COLLAPSED_EMPTY_STEPS,
+  );
+}
+
+export function advanceThreadPruningStep(
+  db: DbConnection,
+  target: ThreadPruningPolicy | { threadId: string },
+) {
+  return advanceThreadPruningWithCollapsedEmptySteps(db, target, 0);
 }

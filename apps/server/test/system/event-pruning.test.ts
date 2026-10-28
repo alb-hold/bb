@@ -12,6 +12,7 @@ import { groupHostDaemonEvents } from "@bb/host-daemon-contract";
 import { describe, expect, it, vi } from "vitest";
 import { applyTurnCompletedEvent } from "../../src/internal/turn-completed-events.js";
 import {
+  ACTIVE_THREAD_EVENT_PRUNE_SYNC_BLOCK_CAP_MS,
   maybePruneActiveThreadEventHistory,
   pruneThreadEventHistoryBestEffort,
   resetActiveThreadEventPruningState,
@@ -187,7 +188,19 @@ function seedResolvedAssistantMessage(
 
 describe("thread event pruning", () => {
   it("yields between candidate slices and preserves each thread's deletion set", async () => {
-    await withTestHarness(async (harness) => {
+    const scheduled: Array<() => void> = [];
+    let pruneClock = 0;
+    const injectedClock = () => {
+      pruneClock += 4;
+      return pruneClock;
+    };
+    const harness = await createTestAppHarness({
+      activeThreadPruneRuntime: {
+        now: injectedClock,
+        schedule: (callback) => scheduled.push(callback),
+      },
+    });
+    try {
       const { host, session } = seedHostSession(harness.deps);
       const { project } = seedProjectWithSource(harness.deps, { hostId: host.id });
       const environment = seedEnvironment(harness.deps, {
@@ -222,15 +235,9 @@ describe("thread event pruning", () => {
           providerThreadId: `provider-${thread.id}`,
           sequence: 301,
         });
-        resetActiveThreadEventPruningState(thread.id);
+        resetActiveThreadEventPruningState(harness.deps, thread.id);
       }
-      const scheduled: Array<() => void> = [];
       const order: string[] = [];
-      let clockReads = 0;
-      harness.deps.activeThreadEventPruneClock = () =>
-        clockReads++ % 2 === 0 ? 0 : 101;
-      harness.deps.activeThreadEventPruneScheduler = (callback) =>
-        scheduled.push(callback);
       harness.db.run(
         sql`CREATE TABLE prune_slice_observations (thread_id TEXT NOT NULL, policy TEXT NOT NULL)`,
       );
@@ -330,7 +337,12 @@ describe("thread event pruning", () => {
         const before = harness.db.all(
           sql`SELECT thread_id, policy FROM prune_slice_observations`,
         ).length;
+        const startedAt = injectedClock();
         callback?.();
+        const syncBlockMs = injectedClock() - startedAt;
+        expect(syncBlockMs).toBeLessThanOrEqual(
+          ACTIVE_THREAD_EVENT_PRUNE_SYNC_BLOCK_CAP_MS,
+        );
         const observations = harness.db.all(
           sql`SELECT thread_id, policy FROM prune_slice_observations`,
         ) as Array<{ policy: string; thread_id: string }>;
@@ -366,9 +378,11 @@ describe("thread event pruning", () => {
             .map((event) => event.id)
             .sort(),
         ).toEqual(referenceIds.get(thread.id));
-        resetActiveThreadEventPruningState(thread.id);
+        resetActiveThreadEventPruningState(harness.deps, thread.id);
       }
-    });
+    } finally {
+      await harness.cleanup();
+    }
   }, 60_000);
 
   it("prunes idle-thread noise rows and resolved item deltas", async () => {
@@ -699,8 +713,8 @@ describe("thread event pruning", () => {
       });
       expect(first).toMatchObject({
         policy: "rate-limits",
-        scanned: 3,
-        totalRemoved: 3,
+        scanned: 32,
+        totalRemoved: 32,
       });
       expect(notify).toHaveBeenCalledExactlyOnceWith(thread.id, [
         "history-compacted",
@@ -803,7 +817,7 @@ describe("thread event pruning", () => {
         });
       }
 
-      resetActiveThreadEventPruningState(thread.id);
+      resetActiveThreadEventPruningState(harness.deps, thread.id);
       const response = await harness.app.request("/internal/session/events", {
         method: "POST",
         headers: internalAuthHeaders(harness),
@@ -908,7 +922,7 @@ describe("thread event pruning", () => {
       harness.db.run(
         sql`CREATE TRIGGER observe_prune_deletes AFTER DELETE ON events BEGIN INSERT INTO prune_delete_observations (event_id) VALUES (OLD.id); END`,
       );
-      resetActiveThreadEventPruningState(thread.id);
+      resetActiveThreadEventPruningState(harness.deps, thread.id);
       const response = await harness.app.request("/internal/session/events", {
         method: "POST",
         headers: internalAuthHeaders(harness),
@@ -981,7 +995,7 @@ describe("thread event pruning", () => {
         harness.db.all(sql`SELECT event_id FROM prune_delete_observations`)
           .length,
       ).toBeGreaterThan(0);
-      resetActiveThreadEventPruningState(thread.id);
+      resetActiveThreadEventPruningState(harness.deps, thread.id);
     });
   });
 
@@ -995,7 +1009,7 @@ describe("thread event pruning", () => {
         projectId: project.id,
         status: "active",
       });
-      resetActiveThreadEventPruningState(thread.id);
+      resetActiveThreadEventPruningState(harness.deps, thread.id);
       let reads = 0;
       const scheduled: Array<() => void> = [];
       const now = () => (reads++ === 0 ? 0 : 101);
@@ -1018,7 +1032,7 @@ describe("thread event pruning", () => {
           sql`SELECT policy FROM thread_pruning_cursors WHERE scope = ${thread.id}`,
         ),
       ).toHaveLength(1);
-      resetActiveThreadEventPruningState(thread.id);
+      resetActiveThreadEventPruningState(harness.deps, thread.id);
     });
   });
 
@@ -1033,7 +1047,7 @@ describe("thread event pruning", () => {
         status: "active",
       });
       seedNoiseRows(harness, { endingSequence: 300, threadId: thread.id });
-      resetActiveThreadEventPruningState(thread.id);
+      resetActiveThreadEventPruningState(harness.deps, thread.id);
       const scheduled: Array<() => void> = [];
       const order: string[] = [];
       let scheduleCount = 0;
@@ -1059,7 +1073,7 @@ describe("thread event pruning", () => {
       scheduled.shift()?.();
       expect(order).toEqual(["marker", "slice"]);
       expect(scheduleCount).toBe(2);
-      resetActiveThreadEventPruningState(thread.id);
+      resetActiveThreadEventPruningState(harness.deps, thread.id);
     });
   });
 
@@ -1074,7 +1088,7 @@ describe("thread event pruning", () => {
         status: "active",
       });
       seedNoiseRows(harness, { endingSequence: 300, threadId: thread.id });
-      resetActiveThreadEventPruningState(thread.id);
+      resetActiveThreadEventPruningState(harness.deps, thread.id);
       const scheduled: Array<() => void> = [];
       let clockReads = 0;
       let throttleTime = 50_000;
@@ -1097,7 +1111,7 @@ describe("thread event pruning", () => {
       });
       expect(second).toBe(false);
       expect(scheduled).toHaveLength(1);
-      resetActiveThreadEventPruningState(thread.id);
+      resetActiveThreadEventPruningState(harness.deps, thread.id);
       scheduled.shift()?.();
       expect(scheduled).toHaveLength(0);
     });
@@ -1113,7 +1127,7 @@ describe("thread event pruning", () => {
         projectId: project.id,
         status: "active",
       });
-      resetActiveThreadEventPruningState(thread.id);
+      resetActiveThreadEventPruningState(harness.deps, thread.id);
       const scheduled: Array<() => void> = [];
       const result = maybePruneActiveThreadEventHistory(harness.deps, {
         latestPrunableSequence: 300,
@@ -1128,7 +1142,7 @@ describe("thread event pruning", () => {
           sql`SELECT policy FROM thread_pruning_cursors WHERE scope = ${thread.id}`,
         ),
       ).toHaveLength(4);
-      resetActiveThreadEventPruningState(thread.id);
+      resetActiveThreadEventPruningState(harness.deps, thread.id);
     });
   });
 
@@ -1197,7 +1211,7 @@ describe("thread event pruning", () => {
           .sort();
         expect(legacyIds.length).toBeLessThan(baseline.length);
 
-        resetActiveThreadEventPruningState(thread.id);
+        resetActiveThreadEventPruningState(harness.deps, thread.id);
         const scheduledSlices: Array<() => void> = [];
         let clockReads = 0;
         const enqueued = maybePruneActiveThreadEventHistory(
@@ -1221,7 +1235,7 @@ describe("thread event pruning", () => {
           .map((event) => event.id)
           .sort();
         expect(budgetedIds).toEqual(legacyIds);
-        resetActiveThreadEventPruningState(thread.id);
+        resetActiveThreadEventPruningState(harness.deps, thread.id);
       } finally {
         legacyDb.$client.close();
       }

@@ -659,6 +659,7 @@ export {
 export * from "./machines.js";
 export {
   advanceThreadPruning,
+  advanceThreadPruningStep,
   getNextThreadPruningPolicy,
   THREAD_EVENT_KEEP_RECENT_BY_MODE,
   THREAD_PRUNING_POLICIES,

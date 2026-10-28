@@ -50,6 +50,7 @@ import type {
 import {
   isActivePruneTriggerThreadEventType,
   maybePruneActiveThreadEventHistory,
+  type ActiveThreadEventPruneRuntimeOptions,
 } from "../services/system/event-pruning.js";
 import {
   recordSpendForInsertedEvents,
@@ -1256,7 +1257,11 @@ function dropReplayedEntries(
   );
 }
 
-export function registerInternalEventRoutes(app: Hono, deps: AppDeps): void {
+export function registerInternalEventRoutes(
+  app: Hono,
+  deps: AppDeps,
+  activeThreadPruneRuntime?: ActiveThreadEventPruneRuntimeOptions,
+): void {
   const { post } = typedRoutes<HostDaemonInternalSchema>(app, {
     onValidationError: (msg) => new ApiError(400, "invalid_request", msg),
   });
@@ -1500,8 +1505,8 @@ export function registerInternalEventRoutes(app: Hono, deps: AppDeps): void {
           for (const candidate of activePruneCandidates) {
             maybePruneActiveThreadEventHistory(deps, {
               ...candidate,
-              now: deps.activeThreadEventPruneClock,
-              schedule: deps.activeThreadEventPruneScheduler,
+              now: activeThreadPruneRuntime?.now,
+              schedule: activeThreadPruneRuntime?.schedule,
             });
           }
         },

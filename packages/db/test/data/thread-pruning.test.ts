@@ -573,8 +573,8 @@ describe("thread pruning", () => {
         if (policy === null) throw new Error("Missing policy");
         policies.push(policy);
         const result = advanceThreadPruning(f.db, { threadId: f.thread.id });
-        expect(result.scanned).toBeLessThanOrEqual(3);
-        expect(result.removed).toBeLessThanOrEqual(3);
+        expect(result.scanned).toBeLessThanOrEqual(32);
+        expect(result.removed).toBeLessThanOrEqual(32);
         if (i === 6) {
           const saved = f.db.$client.serialize();
           f.db.$client.close();

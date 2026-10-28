@@ -18,6 +18,7 @@ import {
 import { defaultFeatureFlags } from "@bb/domain";
 import { createMigratedConnection } from "@bb/db/testing";
 import { createApp } from "../../src/server.js";
+import type { ActiveThreadEventPruneRuntimeOptions } from "../../src/services/system/event-pruning.js";
 import { PendingInteractionLifecycle } from "../../src/services/interactions/pending-interactions.js";
 import { createMachineAuthService } from "../../src/services/machine-auth.js";
 import { createProviderRegistryService } from "../../src/services/providers/provider-registry.js";
@@ -100,6 +101,7 @@ export type TestAppHarnessConfigOverrides = Partial<ServerRuntimeConfig> & {
   terminalCloseTimeoutMs?: number;
   terminalOpenTimeoutMs?: number;
   nativeRootsClock?: () => number;
+  activeThreadPruneRuntime?: ActiveThreadEventPruneRuntimeOptions;
   seedFirstPartyProviders?: boolean;
   tunnelIngressNow?: () => number;
   extraProviders?: readonly {
@@ -167,6 +169,7 @@ export async function createTestAppHarness(
     terminalCloseTimeoutMs,
     terminalOpenTimeoutMs = TEST_TERMINAL_RPC_TIMEOUT_MS,
     nativeRootsClock,
+    activeThreadPruneRuntime,
     seedFirstPartyProviders = true,
     tunnelIngressNow: _tunnelIngressNow,
     ...configOverrides
@@ -342,8 +345,12 @@ export async function createTestAppHarness(
     sharedPorts,
     workspaceReadCaches,
   };
-  const { app, pluginCatalogService, pluginService, serverMove } =
-    createApp(deps);
+  const { app, pluginCatalogService, pluginService, serverMove } = createApp(
+    deps,
+    activeThreadPruneRuntime === undefined
+      ? undefined
+      : { activeThreadPruneRuntime },
+  );
   installDefaultEnvironmentProviders();
 
   return {
@@ -412,9 +419,17 @@ export async function startTestServer(
     tunnelIngress,
   } = createApp(
     harness.deps,
-    overrides.tunnelIngressNow === undefined
+    overrides.activeThreadPruneRuntime === undefined &&
+      overrides.tunnelIngressNow === undefined
       ? undefined
-      : { tunnelIngressNow: overrides.tunnelIngressNow },
+      : {
+          ...(overrides.activeThreadPruneRuntime === undefined
+            ? {}
+            : { activeThreadPruneRuntime: overrides.activeThreadPruneRuntime }),
+          ...(overrides.tunnelIngressNow === undefined
+            ? {}
+            : { tunnelIngressNow: overrides.tunnelIngressNow }),
+        },
   );
   const server = serve(
     {
