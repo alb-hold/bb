@@ -1154,7 +1154,7 @@ function ThreadRowComponent({
                 key={key}
                 data-sidebar-thread-status-chip={key}
                 title={`${key}: ${status.value}`}
-                className="max-w-full truncate rounded-sm bg-sidebar-accent px-1.5 py-0.5 font-medium text-xs text-sidebar-accent-foreground"
+                className="max-w-full self-start truncate rounded-sm bg-sidebar-accent px-1.5 py-0.5 font-medium text-xs text-sidebar-accent-foreground"
                 style={status.color ? { color: status.color } : undefined}
               >
                 {status.icon ? `${status.icon} ` : ""}

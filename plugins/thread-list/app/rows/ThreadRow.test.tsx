@@ -2563,8 +2563,15 @@ const CHROMIUM_QUIET_FLAGS = [
 
 interface RowLayout {
   innerWidth: number;
-  row: { width: number; height: number; bottom: number };
+  row: {
+    width: number;
+    height: number;
+    bottom: number;
+    left: number;
+    right: number;
+  };
   link: { width: number };
+  chip: { width: number; left: number; right: number } | null;
   bar: {
     width: number;
     height: number;
@@ -2577,13 +2584,21 @@ interface RowLayout {
 const MEASURE_SCRIPT = `
 const box = (element) => {
   const rect = element.getBoundingClientRect();
-  return { width: rect.width, height: rect.height, bottom: rect.bottom };
+  return {
+    width: rect.width,
+    height: rect.height,
+    bottom: rect.bottom,
+    left: rect.left,
+    right: rect.right,
+  };
 };
 const bar = document.querySelector("[role=progressbar]");
+const chip = document.querySelector("[data-sidebar-thread-status-chip]");
 const layout = {
   innerWidth: window.innerWidth,
   row: box(document.querySelector("[data-sidebar-rename-row]")),
   link: box(document.querySelector("[data-sidebar-thread-id]")),
+  chip: chip ? box(chip) : null,
   bar: bar
     ? {
         ...box(bar),
@@ -2699,6 +2714,56 @@ describe.skipIf(
 
       expect(layout.link.width).toBeGreaterThan(viewport.width / 3);
       expect(layout.bar?.width).toBeGreaterThan(viewport.width / 2);
+    },
+  );
+
+  it.each(VIEWPORTS)(
+    "keeps a short status chip content-sized on $name",
+    async (viewport) => {
+      const { container } = renderThreadRow({
+        thread: createThread({
+          experimental_rowState: {
+            statuses: { task: { value: "Running" } },
+            progress: { value: 0.6 },
+          },
+        }),
+        isCompactViewport: viewport.isCompact,
+        options: { ...DEFAULT_OPTIONS, isCompact: viewport.isCompact },
+      });
+      const layout = await measureRowLayout(
+        container.innerHTML,
+        viewport.width,
+      );
+
+      expect(layout.chip?.width).toBeGreaterThan(0);
+      expect(layout.chip?.width).toBeLessThan(layout.row.width / 2);
+      expect(layout.bar?.width).toBeGreaterThan(viewport.width / 2);
+    },
+  );
+
+  it.each(VIEWPORTS)(
+    "truncates a long status chip inside the row on $name",
+    async (viewport) => {
+      const { container } = renderThreadRow({
+        thread: createThread({
+          experimental_rowState: {
+            statuses: {
+              task: { value: "A very long status value ".repeat(8) },
+            },
+            progress: null,
+          },
+        }),
+        isCompactViewport: viewport.isCompact,
+        options: { ...DEFAULT_OPTIONS, isCompact: viewport.isCompact },
+      });
+      const layout = await measureRowLayout(
+        container.innerHTML,
+        viewport.width,
+      );
+
+      expect(layout.chip?.width).toBeGreaterThan(layout.row.width / 2);
+      expect(layout.chip?.left).toBeGreaterThanOrEqual(layout.row.left);
+      expect(layout.chip?.right).toBeLessThanOrEqual(layout.row.right);
     },
   );
 
