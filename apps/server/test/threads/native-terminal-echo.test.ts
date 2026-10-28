@@ -214,6 +214,74 @@ describe("terminalScreenAlreadyShowsText", () => {
   });
 });
 
+describe("terminalScreenAlreadyShowsText in the input line", () => {
+  const rule = "─".repeat(60);
+  const idleClaudeScreen = (args: { scrollback: string; input: string }) =>
+    [
+      "\u001b[H\u001b[2J",
+      `❯ ${args.scrollback}`,
+      "",
+      `⏺ ${args.scrollback.replace(/^.*: /u, "")}`,
+      "",
+      "✻ Cooked for 3s · done 7:12 AM",
+      rule,
+      `❯\u00a0${args.input}`,
+      rule,
+      "  61 │ 5h 10% · 3h17 │ 7d 56% · 3d12h",
+    ].join("\r\n");
+  const repeated = "Reply with exactly: repeat-probe";
+
+  it("passes text that only scrollback shows above an empty prompt", () => {
+    expect(
+      terminalScreenAlreadyShowsText({
+        output: idleClaudeScreen({ scrollback: repeated, input: "" }),
+        screenRows: 36,
+        text: repeated,
+      }),
+    ).toBe(false);
+  });
+
+  it("flags text left unsent in the input line", () => {
+    expect(
+      terminalScreenAlreadyShowsText({
+        output: idleClaudeScreen({ scrollback: repeated, input: repeated }),
+        screenRows: 36,
+        text: repeated,
+      }),
+    ).toBe(true);
+  });
+
+  it("flags text unsent on a later row of a multi-line input", () => {
+    expect(
+      terminalScreenAlreadyShowsText({
+        output: `${idleClaudeScreen({ scrollback: repeated, input: "first line" })}\r\n  ${repeated}`,
+        screenRows: 36,
+        text: repeated,
+      }),
+    ).toBe(true);
+  });
+
+  it("passes /clear that only scrollback shows above an empty prompt", () => {
+    expect(
+      terminalScreenAlreadyShowsText({
+        output: idleClaudeScreen({ scrollback: "/clear", input: "" }),
+        screenRows: 36,
+        text: "/clear",
+      }),
+    ).toBe(false);
+  });
+
+  it("flags text on a screen that draws no prompt marker", () => {
+    expect(
+      terminalScreenAlreadyShowsText({
+        output: `\u001b[H\u001b[2J${repeated}\r\n  Esc to cancel`,
+        screenRows: 36,
+        text: repeated,
+      }),
+    ).toBe(true);
+  });
+});
+
 describe("terminalOutputShowsPasteAgain", () => {
   const before = `• Everything is ok now\r\n${"• Ran a step\r\n".repeat(60)}› `;
 
