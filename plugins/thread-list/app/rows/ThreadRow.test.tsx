@@ -8,9 +8,8 @@ import {
   waitFor,
 } from "@testing-library/react";
 import { execFile } from "node:child_process";
-import { existsSync, globSync } from "node:fs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, inject, it, vi } from "vitest";
@@ -2553,26 +2552,14 @@ describe("ThreadRow", () => {
 
 const execFileAsync = promisify(execFile);
 
-function findChromium(): string | null {
-  const candidates = [
-    process.env.BB_TEST_CHROMIUM,
-    ...globSync(
-      join(homedir(), ".cache/ms-playwright/chromium-*/chrome-linux*/chrome"),
-    ),
-    "/usr/bin/chromium",
-    "/usr/bin/chromium-browser",
-    "/usr/bin/google-chrome",
-  ];
-  return (
-    candidates.find(
-      (candidate): candidate is string =>
-        candidate !== undefined && existsSync(candidate),
-    ) ?? null
-  );
-}
-
-const chromiumPath = findChromium();
+const chromiumPath = inject("threadListChromiumPath");
 const pluginCss = inject("threadListPluginCss");
+const CHROMIUM_QUIET_FLAGS = [
+  "--disable-dev-shm-usage",
+  "--disable-extensions",
+  "--disable-background-networking",
+  "--no-first-run",
+];
 
 interface RowLayout {
   innerWidth: number;
@@ -2632,6 +2619,7 @@ ${pluginCss ?? ""}
       "--headless",
       "--no-sandbox",
       "--disable-gpu",
+      ...CHROMIUM_QUIET_FLAGS,
       "--hide-scrollbars",
       `--window-size=${viewportWidth},900`,
       "--virtual-time-budget=2000",
