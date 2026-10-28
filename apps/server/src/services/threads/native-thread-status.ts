@@ -69,7 +69,7 @@ function interruptActiveThreadWithDeadTerminal(
     hostId: environment.hostId,
     includeStopping: false,
     onlyThreadIds: new Set([threadId]),
-    reason: "manual-stop",
+    reason: "host-daemon-restarted",
   });
 }
 

@@ -1,14 +1,16 @@
 import { Buffer } from "node:buffer";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   createNativeTerminalThread,
   createTerminalSession,
   getNativeTerminalThread,
   getThread,
+  listEvents,
   setNativeTerminalThreadTerminal,
   type DbConnection,
 } from "@bb/db";
 import { createMigratedConnection } from "@bb/db/testing";
+import { turnRequestEventDataSchema } from "@bb/domain";
 import { runPeriodicSweeps } from "../../../src/services/system/periodic-sweeps.js";
 import {
   withTestHarness,
@@ -19,10 +21,13 @@ import {
   seedHostSession,
   seedProjectWithSource,
   seedThread,
+  seedThreadRuntimeState,
+  seedTurnStarted,
 } from "../../helpers/seed.js";
 import {
   reportQueuedCommandSuccess,
   waitForQueuedCommand,
+  type QueuedCommand,
 } from "../../helpers/commands.js";
 
 const WORKING_TRANSCRIPT =
@@ -64,6 +69,7 @@ function seedNativeThread(
   harness: TestAppHarness,
   args: {
     initialStatus: "active" | "idle";
+    parentThreadId?: string;
     terminal: TerminalState;
   },
   context: ReturnType<typeof seedNativeContext> = seedNativeContext(harness),
@@ -74,6 +80,9 @@ function seedNativeThread(
     environmentId: environment.id,
     providerId: "claude-code",
     status: args.initialStatus,
+    ...(args.parentThreadId === undefined
+      ? {}
+      : { parentThreadId: args.parentThreadId }),
   });
   const terminal = createTerminalSession(harness.db, {
     cols: 80,
@@ -111,13 +120,17 @@ function seedNativeThread(
 async function readThreadStatus(
   harness: TestAppHarness,
   threadId: string,
+  transcriptRpc: "expected" | "not-expected",
 ): Promise<string> {
   const responsePromise = harness.app.request(`/api/v1/threads/${threadId}`);
-  const queued = await waitForQueuedCommand(
-    harness,
-    ({ command }) => command.type === "native_terminal.read_transcript_tail",
-    250,
-  ).catch(() => null);
+  const isTranscriptRead = ({ command }: QueuedCommand) =>
+    command.type === "native_terminal.read_transcript_tail";
+  const queued =
+    transcriptRpc === "expected"
+      ? await waitForQueuedCommand(harness, isTranscriptRead)
+      : await waitForQueuedCommand(harness, isTranscriptRead, 250).catch(
+          () => null,
+        );
   if (queued !== null) {
     await reportQueuedCommandSuccess(harness, queued, {
       outcome: "available",
@@ -129,6 +142,13 @@ async function readThreadStatus(
   const response = await responsePromise;
   expect(response.status).toBe(200);
   return ((await response.json()) as { status: string }).status;
+}
+
+function parentSystemRequests(harness: TestAppHarness, parentThreadId: string) {
+  return listEvents(harness.db, { threadId: parentThreadId })
+    .filter((row) => row.type === "client/turn/requested")
+    .map((row) => turnRequestEventDataSchema.parse(JSON.parse(row.data)))
+    .filter((data) => data.initiator === "system");
 }
 
 async function withHarness(
@@ -143,19 +163,23 @@ async function withHarness(
 }
 
 describe("native thread status liveness", () => {
-  it("settles an active thread whose terminal exited instead of trusting its working transcript", async () => {
+  it("settles an active thread whose terminal exited as interrupted instead of trusting its working transcript", async () => {
     await withHarness(async (harness) => {
       const { threadId } = seedNativeThread(harness, {
         initialStatus: "active",
         terminal: "exited-process-exit",
       });
 
-      expect(await readThreadStatus(harness, threadId)).toBe("idle");
+      expect(await readThreadStatus(harness, threadId, "not-expected")).toBe(
+        "error",
+      );
       expect(
         getNativeTerminalThread(harness.db, threadId)?.lastEvidenceAt,
       ).toBeNull();
 
-      expect(await readThreadStatus(harness, threadId)).toBe("idle");
+      expect(await readThreadStatus(harness, threadId, "not-expected")).toBe(
+        "error",
+      );
       expect(
         getNativeTerminalThread(harness.db, threadId)?.lastEvidenceAt,
       ).toBeNull();
@@ -169,7 +193,9 @@ describe("native thread status liveness", () => {
         terminal: "exited-process-exit",
       });
 
-      expect(await readThreadStatus(harness, threadId)).toBe("idle");
+      expect(await readThreadStatus(harness, threadId, "not-expected")).toBe(
+        "idle",
+      );
       expect(
         getNativeTerminalThread(harness.db, threadId)?.lastEvidenceAt,
       ).toBeNull();
@@ -183,7 +209,9 @@ describe("native thread status liveness", () => {
         terminal: "running",
       });
 
-      expect(await readThreadStatus(harness, threadId)).toBe("active");
+      expect(await readThreadStatus(harness, threadId, "expected")).toBe(
+        "active",
+      );
       expect(getNativeTerminalThread(harness.db, threadId)).toMatchObject({
         lastEvidenceKind: "transcript",
       });
@@ -212,7 +240,65 @@ describe("native thread status liveness", () => {
 
       expect(
         seeded.map(({ threadId }) => getThread(harness.db, threadId)?.status),
-      ).toEqual(seeded.map(() => "idle"));
+      ).toEqual(seeded.map(() => "error"));
+    });
+  });
+
+  it("tells the parent when a native child is settled because its terminal exited", async () => {
+    await withHarness(async (harness) => {
+      const context = seedNativeContext(harness);
+      const parent = seedThread(harness.deps, {
+        projectId: context.project.id,
+        environmentId: context.environment.id,
+        status: "idle",
+        title: "Parent",
+      });
+      seedThreadRuntimeState(harness.deps, {
+        threadId: parent.id,
+        environmentId: context.environment.id,
+        providerThreadId: "parent-provider-thread",
+      });
+      const { threadId } = seedNativeThread(
+        harness,
+        {
+          initialStatus: "active",
+          parentThreadId: parent.id,
+          terminal: "exited-process-exit",
+        },
+        context,
+      );
+      seedTurnStarted(harness.deps, {
+        environmentId: context.environment.id,
+        threadId,
+        turnId: "native-child-turn",
+      });
+
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      try {
+        await runPeriodicSweeps({
+          ...harness.deps,
+          pluginSchedules: harness.pluginService,
+          plugins: harness.pluginService,
+        });
+        await vi.advanceTimersByTimeAsync(2_000);
+        await vi.waitFor(() =>
+          expect(parentSystemRequests(harness, parent.id)).toHaveLength(1),
+        );
+      } finally {
+        vi.useRealTimers();
+      }
+
+      expect(
+        parentSystemRequests(harness, parent.id)[0]?.systemMessageSubject,
+      ).toMatchObject({
+        outcomes: [
+          {
+            threadId,
+            status: "interrupted",
+            interruption: { reason: "host-daemon-restarted" },
+          },
+        ],
+      });
     });
   });
 });
