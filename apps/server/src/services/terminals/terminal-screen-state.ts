@@ -131,6 +131,48 @@ function serializeVisibleScreen(terminal: HeadlessTerminal): {
   };
 }
 
+interface ControlStringState {
+  escape: boolean;
+  kind: "osc" | "string" | null;
+}
+
+function advanceControlStringState(
+  state: ControlStringState,
+  bytes: Uint8Array,
+): void {
+  for (const byte of bytes) {
+    if (byte === 0x18 || byte === 0x1a) {
+      state.escape = false;
+      state.kind = null;
+      continue;
+    }
+    if (state.kind !== null && !state.escape) {
+      if (byte === 0x1b) state.escape = true;
+      else if (state.kind === "osc" && byte === 0x07) state.kind = null;
+      continue;
+    }
+    if (state.escape) {
+      state.escape = false;
+      if (byte === 0x1b) {
+        state.escape = true;
+      } else if (byte === 0x5d) {
+        state.kind = "osc";
+      } else if (
+        byte === 0x50 ||
+        byte === 0x58 ||
+        byte === 0x5e ||
+        byte === 0x5f
+      ) {
+        state.kind = "string";
+      } else {
+        state.kind = null;
+      }
+      continue;
+    }
+    if (byte === 0x1b) state.escape = true;
+  }
+}
+
 export class TerminalScreenState {
   private readonly terminal: HeadlessTerminal;
   private readonly pendingWork: Array<
@@ -146,6 +188,10 @@ export class TerminalScreenState {
   private nextSeq = 0;
   private valid = true;
   private disposed = false;
+  private readonly controlString: ControlStringState = {
+    escape: false,
+    kind: null,
+  };
 
   constructor(cols: number, rows: number) {
     this.cols = cols;
@@ -167,6 +213,7 @@ export class TerminalScreenState {
       return;
     }
     this.nextSeq += 1;
+    advanceControlStringState(this.controlString, data);
     this.enqueue({ kind: "bytes", data });
   }
 
@@ -177,6 +224,7 @@ export class TerminalScreenState {
       return;
     }
     this.nextSeq += 1;
+    advanceControlStringState(this.controlString, Buffer.from(data, "base64"));
     this.enqueue({ kind: "base64", data });
   }
 
@@ -212,7 +260,8 @@ export class TerminalScreenState {
           ? work.data.byteLength
           : Buffer.byteLength(work.data, "utf8");
     if (
-      this.pendingWorkBytes + bytes > TERMINAL_SCREEN_STATE_PENDING_BYTES_LIMIT
+      this.pendingWorkBytes + bytes >
+      TERMINAL_SCREEN_STATE_PENDING_BYTES_LIMIT
     ) {
       this.invalidate();
       return;
@@ -273,6 +322,9 @@ export class TerminalScreenState {
   > {
     await this.pending;
     if (this.disposed || !this.valid) return null;
+    if (this.controlString.kind !== null || this.controlString.escape) {
+      return null;
+    }
     const snapshot = serializeVisibleScreen(this.terminal);
     return {
       ...snapshot.response,

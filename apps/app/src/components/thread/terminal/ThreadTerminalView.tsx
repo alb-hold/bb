@@ -1820,28 +1820,40 @@ export function ThreadTerminalView({
       osc52Disposable = registerTerminalOsc52Handler(
         { parser: terminal.parser },
         (text) => {
-          const now = Date.now();
-          window.dispatchEvent(
-            new CustomEvent("bb-device-handoff", {
-              detail: {
-                type: "device-handoff",
-                id: `${now}-${Math.random()}`,
-                createdAt: now,
-                expiresAt: now + 120_000,
-                originLabel: session.title,
-                request: {
-                  kind: "copy-text",
-                  text,
-                  origin: {
-                    ...(sessionRef.current.threadId === null
-                      ? {}
-                      : { threadId: sessionRef.current.threadId }),
-                    terminalSessionId: session.id,
+          const offerCopyHandoff = () => {
+            const now = Date.now();
+            window.dispatchEvent(
+              new CustomEvent("bb-device-handoff", {
+                detail: {
+                  type: "device-handoff",
+                  id: `${now}-${Math.random()}`,
+                  createdAt: now,
+                  expiresAt: now + 120_000,
+                  originLabel: session.title,
+                  request: {
+                    kind: "copy-text",
+                    text,
+                    origin: {
+                      ...(sessionRef.current.threadId === null
+                        ? {}
+                        : { threadId: sessionRef.current.threadId }),
+                      terminalSessionId: session.id,
+                    },
                   },
                 },
-              },
-            }),
-          );
+              }),
+            );
+          };
+          if (!copyOnSelectRef.current) {
+            offerCopyHandoff();
+            return;
+          }
+          void copyToClipboardWithToast(text, {
+            successMessage: "Selection copied",
+            errorMessage: null,
+          }).then((copied) => {
+            if (!copied) offerCopyHandoff();
+          });
         },
         () => replayWriteState.suppressedWriteCount > 0,
       );
