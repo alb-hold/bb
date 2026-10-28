@@ -403,17 +403,24 @@ function recordedClaudeSession(): RecordedChunk[] {
 }
 
 function syntheticTypedInput(text: string): string {
-  return `\u001b[?2026h\u001b[?25l\u001b[H\r\u001b[2C\u001b[32B${text}\u001b[?25h\u001b[?2026l`;
+  return `\u001b[?2026h\u001b[?25l\u001b[2J\u001b[22;1H\u001b[2K❯ ${text}\u001b[?25h\u001b[?2026l`;
+}
+
+function syntheticInputBoxBorder(): string {
+  return `\u001b[?2026h\u001b[?25l\u001b[23;1H─\u001b[?25h\u001b[?2026l`;
 }
 
 function recordedClaudeSessionWithUnsentText(text: string): RecordedChunk[] {
   return recordedClaudeSession().map((chunk) =>
-    chunk.seq === 430
+    chunk.seq === 430 || chunk.seq === 431
       ? {
           ...chunk,
-          dataBase64: Buffer.from(syntheticTypedInput(text), "utf8").toString(
-            "base64",
-          ),
+          dataBase64: Buffer.from(
+            chunk.seq === 430
+              ? syntheticTypedInput(text)
+              : syntheticInputBoxBorder(),
+            "utf8",
+          ).toString("base64"),
         }
       : chunk,
   );
@@ -5029,7 +5036,7 @@ describe("native terminal threads", () => {
       const cli = startRecordedCli(
         fixture,
         open.terminalId,
-        recordedClaudeSession(),
+        recordedClaudeSessionWithUnsentText("say ok"),
         { paste: () => [], enter: () => [] },
       );
       try {
@@ -5054,16 +5061,11 @@ describe("native terminal threads", () => {
         providerId: "claude-code",
       });
       const { idle } = split();
-      const ghost =
-        "\u001b[?2026h\u001b[?25l\u001b[H\r\u001b[2C\u001b[32B\u001b[2msay ok\u001b[22m\u001b[36;1H\u001b[33;3H\u001b[?25h\u001b[?2026l";
-      const submitted = [
-        "\u001b[?2026h\u001b[?25l\u001b[H\r\u001b[2B\u001b[48;2;55;55;55m\u001b[38;2;153;153;153m\u276f \u001b[38;2;255;255;255msay ok\u001b[39m\u001b[49m\u001b[36;1H\u001b[33;3H\u001b[?25h\u001b[?2026l",
-        "\u001b[?2026h\u001b[?25l\u001b[H\r\u001b[2C\u001b[32B\u001b[K\u001b[36;1H\u001b[33;3H\u001b[?25h\u001b[?2026l",
-        ghost,
-      ];
+      const faintSuggestion =
+        "\u001b[?2026h\u001b[?25l\u001b[2J\u001b[19;1H\u001b[2msay ok\u001b[22m\u001b[22;1H❯ \u001b[23;1H─\u001b[?25h\u001b[?2026l";
       const cli = startRecordedCli(fixture, open.terminalId, idle, {
         paste: (pasted) => [syntheticTypedInput(pasted)],
-        enter: () => submitted,
+        enter: () => [faintSuggestion],
       });
       const tells = 6;
       try {
