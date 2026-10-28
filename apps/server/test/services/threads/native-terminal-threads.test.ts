@@ -7,6 +7,7 @@ import {
   createProject,
   createTerminalSession,
   createThread,
+  getThread,
   listNativeTerminalThreadsWithDisconnectedTerminal,
   noopNotifier,
   setNativeTerminalThreadTerminal,
@@ -400,6 +401,52 @@ describe("reopenNativeTerminalsAfterDaemonReconnect", () => {
           }),
         }),
       );
+    });
+  });
+
+  it("returns a thread settled as error to idle when its exited CLI is resumed", async () => {
+    await withTestHarness({ seedFirstPartyProviders: false }, async (h) => {
+      const host = upsertHost(h.db, noopNotifier, {
+        id: "host-native-resume",
+        name: "Native Terminal Host",
+      });
+      const { threadId } = await createDisconnectedNativeThread(h, 6, host.id);
+      h.db
+        .update(terminalSessions)
+        .set({ status: "exited", closeReason: "process-exit", exitCode: 0 })
+        .where(eq(terminalSessions.threadId, threadId))
+        .run();
+      h.db.$client
+        .prepare("UPDATE threads SET status = 'error' WHERE id = ?")
+        .run(threadId);
+      const sourceRegistry = await createTestProviderRegistry();
+      const registration = sourceRegistry.get("codex");
+      if (registration === null)
+        throw new Error("Codex provider is not seeded");
+      const providerRegistry = createProviderRegistryService();
+      providerRegistry.register(registration);
+      h.deps.providerRegistry = providerRegistry;
+      vi.spyOn(h.pluginService, "resolveProviderEnv").mockResolvedValue({
+        entries: [],
+      });
+      vi.spyOn(h.deps.terminalSessions, "createTerminal").mockImplementation(
+        async () =>
+          createTerminalSession(h.db, {
+            threadId,
+            environmentId: null,
+            hostId: host.id,
+            daemonSessionId: null,
+            title: "Codex",
+            initialCwd: "/tmp",
+            cols: 120,
+            rows: 36,
+            status: "running",
+          }),
+      );
+
+      await openNativeTerminal(h.deps, { threadId, request: {} });
+
+      expect(getThread(h.db, threadId)?.status).toBe("idle");
     });
   });
 
