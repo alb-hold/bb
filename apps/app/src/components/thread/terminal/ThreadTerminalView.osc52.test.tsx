@@ -1,12 +1,22 @@
 // @vitest-environment jsdom
 
-import { act, cleanup, render, waitFor } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  waitFor,
+} from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Terminal } from "@xterm/xterm";
 import { appToast } from "@/components/ui/app-toast";
 import { sdk } from "@/lib/sdk";
 import { makeTerminalSession } from "@/test/fixtures/terminal-sessions";
 import { ThreadTerminalView } from "./ThreadTerminalView";
+import {
+  OSC_52_AUTO_COPY_MAX_BYTES,
+  OSC_52_AUTO_COPY_WINDOW_MS,
+} from "./terminal-osc52-policy";
 
 const preferences = vi.hoisted(() => ({ terminalCopyOnSelect: true }));
 const ptyInput = vi.hoisted(() => ({ sent: [] as string[] }));
@@ -139,7 +149,7 @@ async function mountTerminal() {
       handoffs.push(event.detail.request.text);
     }
   });
-  return { terminal, emittedToTerminal, handoffs };
+  return { terminal, view, emittedToTerminal, handoffs };
 }
 
 function screenText(terminal: Terminal): string {
@@ -148,6 +158,10 @@ function screenText(terminal: Terminal): string {
     (_, index) =>
       terminal.buffer.active.getLine(index)?.translateToString(true) ?? "",
   ).join("\n");
+}
+
+function typeInTerminal(terminal: Terminal) {
+  act(() => terminal.input("x", true));
 }
 
 async function writeReads(terminal: Terminal, reads: Buffer[]) {
@@ -169,6 +183,9 @@ describe("terminal OSC 52 copy", () => {
       const writeText = vi.fn().mockResolvedValue(undefined);
       vi.stubGlobal("navigator", { clipboard: { writeText } });
       const { terminal, emittedToTerminal, handoffs } = await mountTerminal();
+      typeInTerminal(terminal);
+      ptyInput.sent.length = 0;
+      emittedToTerminal.length = 0;
 
       await writeReads(terminal, reads());
 
@@ -204,6 +221,9 @@ describe("terminal OSC 52 copy", () => {
     vi.stubGlobal("navigator", { clipboard: { writeText } });
     const error = vi.spyOn(appToast, "error");
     const { terminal, emittedToTerminal, handoffs } = await mountTerminal();
+    typeInTerminal(terminal);
+    ptyInput.sent.length = 0;
+    emittedToTerminal.length = 0;
 
     await writeReads(terminal, splitIntoPtyReads(osc52("c", "\x07")));
 
@@ -228,5 +248,105 @@ describe("terminal OSC 52 copy", () => {
     expect(handoffs).toEqual([]);
     expect(ptyInput.sent).toEqual([]);
     expect(emittedToTerminal).toEqual([]);
+  });
+});
+
+describe("terminal OSC 52 copy gate", () => {
+  const smallCopy = () => splitIntoPtyReads(osc52("c", "\x07"));
+
+  it("offers the handoff and leaves the clipboard alone when no user input preceded the OSC 52", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("navigator", { clipboard: { writeText } });
+    const { terminal, emittedToTerminal, handoffs } = await mountTerminal();
+
+    await writeReads(terminal, smallCopy());
+
+    await waitFor(() => expect(handoffs).toEqual([SELECTED_TEXT]));
+    expect(writeText).not.toHaveBeenCalled();
+    expect(ptyInput.sent).toEqual([]);
+    expect(emittedToTerminal).toEqual([]);
+  });
+
+  it("writes the clipboard when the OSC 52 arrives within the window after the user's input", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("navigator", { clipboard: { writeText } });
+    const now = vi.spyOn(Date, "now");
+    now.mockReturnValue(1_000_000);
+    const { terminal, handoffs } = await mountTerminal();
+    typeInTerminal(terminal);
+    now.mockReturnValue(1_000_000 + OSC_52_AUTO_COPY_WINDOW_MS - 1);
+
+    await writeReads(terminal, smallCopy());
+
+    await waitFor(() =>
+      expect(writeText).toHaveBeenCalledExactlyOnceWith(SELECTED_TEXT),
+    );
+    expect(handoffs).toEqual([]);
+  });
+
+  it("offers the handoff when the OSC 52 arrives after the window", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("navigator", { clipboard: { writeText } });
+    const now = vi.spyOn(Date, "now");
+    now.mockReturnValue(1_000_000);
+    const { terminal, handoffs } = await mountTerminal();
+    typeInTerminal(terminal);
+    now.mockReturnValue(1_000_000 + OSC_52_AUTO_COPY_WINDOW_MS + 1);
+
+    await writeReads(terminal, smallCopy());
+
+    await waitFor(() => expect(handoffs).toEqual([SELECTED_TEXT]));
+    expect(writeText).not.toHaveBeenCalled();
+  });
+
+  it("counts a pointer gesture on the terminal as the user's input", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("navigator", { clipboard: { writeText } });
+    const { terminal, view, handoffs } = await mountTerminal();
+    const terminalScreen = view.container.querySelector(".xterm-screen");
+    if (terminalScreen === null) throw new Error("Expected terminal screen");
+
+    fireEvent.pointerDown(terminalScreen, { clientX: 0, clientY: 0 });
+    fireEvent.pointerUp(terminalScreen, { clientX: 40, clientY: 0 });
+    await writeReads(terminal, smallCopy());
+
+    await waitFor(() =>
+      expect(writeText).toHaveBeenCalledExactlyOnceWith(SELECTED_TEXT),
+    );
+    expect(handoffs).toEqual([]);
+  });
+
+  it("offers the handoff instead of writing when the decoded text is over the cap, even right after input", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("navigator", { clipboard: { writeText } });
+    const { terminal, handoffs } = await mountTerminal();
+    typeInTerminal(terminal);
+    const overCap = "x".repeat(OSC_52_AUTO_COPY_MAX_BYTES + 1);
+
+    await writeReads(
+      terminal,
+      splitIntoPtyReads(osc52("c", "\x07", overCap), 8192),
+    );
+
+    await waitFor(() => expect(handoffs).toEqual([overCap]));
+    expect(writeText).not.toHaveBeenCalled();
+  });
+
+  it("still writes a payload exactly at the cap right after input", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("navigator", { clipboard: { writeText } });
+    const { terminal, handoffs } = await mountTerminal();
+    typeInTerminal(terminal);
+    const atCap = "x".repeat(OSC_52_AUTO_COPY_MAX_BYTES);
+
+    await writeReads(
+      terminal,
+      splitIntoPtyReads(osc52("c", "\x07", atCap), 8192),
+    );
+
+    await waitFor(() =>
+      expect(writeText).toHaveBeenCalledExactlyOnceWith(atCap),
+    );
+    expect(handoffs).toEqual([]);
   });
 });
