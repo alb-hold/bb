@@ -8,6 +8,7 @@ import type {
   UpdateTerminalRequest,
 } from "@bb/server-contract";
 import { BbHttpError, sdk } from "@/lib/sdk";
+import { clearTerminalProgressForClosedSession } from "@/lib/terminal-progress-owner";
 import {
   applyTerminalSessionClose,
   applyTerminalSessionMissing,
@@ -114,7 +115,13 @@ export function useCloseTerminal() {
         if (error instanceof BbHttpError && error.status === 404) return null;
         throw error;
       }),
-    onSuccess: (session: TerminalSession | null, variables) => {
+    onSuccess: async (session: TerminalSession | null, variables) => {
+      await clearTerminalProgressForClosedSession({
+        session,
+        terminalId: variables.terminalId,
+        updateThreadRowState: (request) =>
+          sdk.threads.experimental_updateRowState(request),
+      });
       if (session === null) {
         applyTerminalSessionMissing({
           queryClient,
