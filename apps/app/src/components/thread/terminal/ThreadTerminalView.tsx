@@ -120,6 +120,10 @@ import {
   registerTerminalOsc52Handler,
   terminalPromptLine,
 } from "./terminal-shell-state";
+import {
+  osc52CopiedNotice,
+  shouldAutoCopyOsc52,
+} from "./terminal-osc52-policy";
 import { parseTerminalProgressOsc } from "./terminal-progress";
 import { createTerminalOutputPipeline } from "./terminal-output-pipeline";
 import {
@@ -1257,6 +1261,7 @@ export function ThreadTerminalView({
   const terminalVisibilityReporterRef = useRef<(() => void) | null>(null);
   const systemConfig = useSystemConfig();
   const copyOnSelectRef = useRef(false);
+  const lastUserInputAtRef = useRef<number | null>(null);
   copyOnSelectRef.current =
     systemConfig.data?.generalSettings.terminalCopyOnSelect === true;
   const preferredTheme = usePreferredTheme();
@@ -1853,12 +1858,19 @@ export function ThreadTerminalView({
               }),
             );
           };
-          if (!copyOnSelectRef.current) {
+          if (
+            !shouldAutoCopyOsc52({
+              copyOnSelect: copyOnSelectRef.current,
+              lastUserInputAt: lastUserInputAtRef.current,
+              now: Date.now(),
+              text,
+            })
+          ) {
             offerCopyHandoff();
             return;
           }
           void copyToClipboardWithToast(text, {
-            successMessage: "Selection copied",
+            successMessage: osc52CopiedNotice(text),
             errorMessage: null,
           }).then((copied) => {
             if (!copied) offerCopyHandoff();
@@ -2604,11 +2616,15 @@ export function ThreadTerminalView({
             activeTerminal.element?.contains(event.target)
           ) {
             terminalInputClaimed = true;
+            lastUserInputAtRef.current = Date.now();
             updateGridVisibility();
           }
           handleTerminalPointerDown(event);
         },
-        onPointerRelease: handleTerminalPointerRelease,
+        onPointerRelease: (event) => {
+          if (pointerIsDownRef.current) lastUserInputAtRef.current = Date.now();
+          handleTerminalPointerRelease(event);
+        },
         onPointerCancel: handleTerminalPointerCancel,
         onSelection: (text) =>
           reportTerminalSelection(lastPointerReleaseAnchorRef.current, text),
@@ -2626,6 +2642,7 @@ export function ThreadTerminalView({
       terminalInputForwarding = attachTerminalInputForwarding({
         onData: (data, isUserInput) => {
           const inputEventAt = isUserInput ? performance.now() : undefined;
+          if (isUserInput) lastUserInputAtRef.current = Date.now();
           if (controlActiveRef.current) {
             data = applyTerminalControl(data);
             controlActiveRef.current = false;

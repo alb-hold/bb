@@ -5,7 +5,6 @@ import {
   cleanup,
   fireEvent,
   render,
-  screen,
   waitFor,
 } from "@testing-library/react";
 import { FitAddon } from "@xterm/addon-fit";
@@ -718,6 +717,27 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
     const searchModule = new Promise<SearchAddonModule>((resolve) => {
       resolveSearch = resolve;
     });
+    let SearchAddonConstructor: SearchAddonModule["SearchAddon"] | undefined;
+    let resolveSearchAddonAttached!: () => void;
+    const searchAddonAttached = new Promise<void>((resolve) => {
+      resolveSearchAddonAttached = resolve;
+    });
+    const searchButton = () =>
+      document.querySelector<HTMLButtonElement>(
+        '[data-app-terminal] button[aria-label="Search terminal output"]',
+      );
+    const originalLoadAddon = Terminal.prototype.loadAddon;
+    vi.spyOn(Terminal.prototype, "loadAddon").mockImplementation(
+      function loadAddon(this: Terminal, addon) {
+        originalLoadAddon.call(this, addon);
+        if (
+          SearchAddonConstructor !== undefined &&
+          addon instanceof SearchAddonConstructor
+        ) {
+          resolveSearchAddonAttached();
+        }
+      },
+    );
     vi.spyOn(terminalModules, "importTerminalSearchAddon").mockReturnValue(
       searchModule,
     );
@@ -753,25 +773,15 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
       );
       expect(renderer?.style.opacity).toBe("");
     }, "terminal did not reveal while search was pending");
-    expect(
-      (
-        screen.getByRole("button", {
-          name: "Search terminal output",
-        }) as HTMLButtonElement
-      ).disabled,
-    ).toBe(true);
+    expect(searchButton()?.disabled).toBe(true);
 
     const addon = await import("@xterm/addon-search");
-    await act(async () => resolveSearch(addon));
-    await waitForReadinessCondition(() => {
-      expect(
-        (
-          screen.getByRole("button", {
-            name: "Search terminal output",
-          }) as HTMLButtonElement
-        ).disabled,
-      ).toBe(false);
-    }, "search add-on did not attach after loading");
+    SearchAddonConstructor = addon.SearchAddon;
+    await act(async () => {
+      resolveSearch(addon);
+      await searchAddonAttached;
+    });
+    expect(searchButton()?.disabled).toBe(false);
   }, 30_000);
 
   it("keeps the terminal open when an optional search add-on fails", async () => {
