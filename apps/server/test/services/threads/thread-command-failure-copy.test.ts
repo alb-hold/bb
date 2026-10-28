@@ -1,14 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
-  createConnection,
   createEnvironment,
   createProject,
   createThread,
   listEvents,
-  migrate,
   noopNotifier,
   upsertHost,
 } from "@bb/db";
+import { createMigratedConnection } from "@bb/db/testing";
 import type { HostDaemonCommandForType } from "../../../src/internal/command-result-side-effects.js";
 import { settleTurnSubmitCommandResult } from "../../../src/services/threads/thread-lifecycle.js";
 import { testLogger } from "../../helpers/test-app.js";
@@ -18,8 +17,7 @@ function runFailure(
   errorMessage: string,
   branchName: string | null,
 ) {
-  const db = createConnection(":memory:");
-  migrate(db);
+  const db = createMigratedConnection();
   const host = upsertHost(db, noopNotifier, {
     id: "host-thread-command-failure-copy",
     name: "Thread Command Failure Copy Host",
