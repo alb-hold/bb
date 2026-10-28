@@ -65,6 +65,21 @@ function linkUri(
   return `@${data?.uri ?? "?"}`;
 }
 
+function ownUnderline(cell: object): string {
+  const fg = Reflect.get(cell, "fg");
+  if (typeof fg !== "number" || (fg & 0x10000000) === 0) return "";
+  const extended = Reflect.get(cell, "extended");
+  const ext = Reflect.get(extended ?? {}, "_ext");
+  const style = typeof ext === "number" ? (ext & 0x1c000000) >>> 26 : 1;
+  const colorMode = Reflect.get(cell, "getUnderlineColorMode");
+  const colorValue = Reflect.get(cell, "getUnderlineColor");
+  const color =
+    typeof colorMode === "function" && typeof colorValue === "function"
+      ? `${colorMode.call(cell)}:${colorValue.call(cell)}`
+      : "";
+  return `_${style || 1}/${color}`;
+}
+
 function cells(terminal: Terminal): string[] {
   const out: string[] = [];
   const buffer = terminal.buffer.active;
@@ -74,7 +89,7 @@ function cells(terminal: Terminal): string[] {
     for (let x = 0; x < terminal.cols; x += 1) {
       const cell = line?.getCell(x);
       if (cell === undefined) continue;
-      row += `${cell.getChars() || " "}${cell.isUnderline() ? "_" : ""}${cell.isBold() ? "b" : ""}${cell.getFgColor()},${cell.getBgColor()}${linkUri(terminal, cell)}|`;
+      row += `${cell.getChars() || " "}${ownUnderline(cell)}${cell.isBold() ? "b" : ""}${cell.getFgColor()},${cell.getBgColor()}${linkUri(terminal, cell)}|`;
     }
     out.push(row);
   }
@@ -156,6 +171,86 @@ describe("screen snapshot taken at an arbitrary byte cut", () => {
     const nextTextCells = row.split("|").filter((cell) => cell.startsWith("x"));
     expect(nextTextCells.some((cell) => cell.includes("_"))).toBe(false);
     clean.dispose();
+    client.dispose();
+  });
+  async function expectEveryCutToContinue(stream: Uint8Array) {
+    const clean = newTerminal();
+    await write(clean, stream);
+    const expected = cells(clean);
+    const failures: Array<{ cut: number }> = [];
+    for (let cut = 1; cut < stream.length; cut += 1) {
+      const state = new TerminalScreenState(40, 12);
+      state.push(0, stream.subarray(0, cut));
+      const snapshot = await state.snapshot();
+      state.dispose();
+      expect(snapshot).not.toBeNull();
+      const client = newTerminal();
+      await write(client, Buffer.from(snapshot?.dataBase64 ?? "", "base64"));
+      await write(client, stream.subarray(cut));
+      if (JSON.stringify(cells(client)) !== JSON.stringify(expected)) {
+        failures.push({ cut });
+      }
+      client.dispose();
+    }
+    clean.dispose();
+    expect(failures).toEqual([]);
+    return expected;
+  }
+
+  it("keeps an explicit double or dashed underline on linked cells, at every cut", async () => {
+    const stream = text(
+      [
+        "\x1b[2J\x1b[H",
+        "\x1b]8;;https://a.test/1\x1b\\\x1b[21mdouble link\x1b[0m\x1b]8;;\x1b\\ ",
+        "\x1b]8;;https://a.test/2\x1b\\\x1b[4:5;58;2;1;2;3mdashed link\x1b[0m\x1b]8;;\x1b\\ ",
+        "\x1b]8;;https://a.test/3\x1b\\\x1b[4:3mcurly link\x1b[0m\x1b]8;;\x1b\\",
+      ].join(""),
+    );
+    const expected = await expectEveryCutToContinue(stream);
+    const row = expected[0] ?? "";
+    expect(row).toContain("d_2/");
+    expect(row).toContain("d_5/");
+    expect(row).toContain("c_3/");
+  }, 120_000);
+
+  it("keeps an underlined active pen, with and without an open link, across every cut", async () => {
+    const stream = text(
+      [
+        "\x1b[2J\x1b[H",
+        "\x1b[4:3;58;2;9;8;7mcurly red pen text\x1b[0m\r\n",
+        "\x1b]8;;https://a.test/4\x1b\\\x1b[21mlinked double pen\x1b[24m more linked\x1b]8;;\x1b\\ after",
+      ].join(""),
+    );
+    const expected = await expectEveryCutToContinue(stream);
+    expect(expected[0]).toContain("c_3/");
+    expect(expected[1]).toContain("l_2/");
+    expect(expected[1]).not.toMatch(/m_/u);
+  }, 120_000);
+
+  it("serializes plain linked text with no SGR underline without any underline code", async () => {
+    const stream = text(
+      "\x1b[2J\x1b[Hplain \x1b]8;;https://a.test/5\x1b\\just a link\x1b]8;;\x1b\\ then text\x1b]8;;https://a.test/6\x1b\\open",
+    );
+    const state = new TerminalScreenState(40, 12);
+    state.push(0, stream);
+    const snapshot = await state.snapshot();
+    state.dispose();
+    const serialized = Buffer.from(
+      snapshot?.dataBase64 ?? "",
+      "base64",
+    ).toString("latin1");
+    const sgrSequences = [...serialized.matchAll(/\u001b\[([0-9;:]*)m/gu)];
+    expect(sgrSequences.length).toBeGreaterThan(0);
+    for (const match of sgrSequences) {
+      const codes = (match[1] ?? "").split(";");
+      expect(codes.some((code) => code === "4" || code.startsWith("4:"))).toBe(
+        false,
+      );
+    }
+    expect(serialized).toContain("\u001b]8;;https://a.test/5\u001b\\");
+    const client = newTerminal();
+    await write(client, Buffer.from(snapshot?.dataBase64 ?? "", "base64"));
+    expect((cells(client)[0] ?? "").includes("_")).toBe(false);
     client.dispose();
   });
 });

@@ -1,6 +1,6 @@
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { Terminal } from "@xterm/headless";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { TerminalScreenState } from "./terminal-screen-state.js";
 
 const encoder = new TextEncoder();
@@ -173,6 +173,43 @@ describe("hostile hyperlink data in a snapshot", () => {
       const serialized = await snapshotWithLink({ uri });
       expect(serialized).not.toContain("https://a.test/");
     }
+  });
+});
+
+describe("snapshot cost when nothing is open", () => {
+  it("does not decode, concatenate or re-encode with Buffer.from when no sequence is partial", async () => {
+    const state = new TerminalScreenState(40, 8);
+    state.push(0, text("ordinary output\r\n\x1b[1;32mgreen\x1b[0m done\r\n"));
+    state.push(1, text("more text with ünïcode ✓\r\n"));
+    const from = vi.spyOn(Buffer, "from");
+    try {
+      const snapshot = await state.snapshot();
+      expect(snapshot).not.toBeNull();
+      expect(from).not.toHaveBeenCalled();
+      const client = newTerminal();
+      await write(client, Buffer.from(snapshot?.dataBase64 ?? "", "base64"));
+      expect(screenText(client).slice(0, 3)).toEqual([
+        "ordinary output",
+        "green done",
+        "more text with ünïcode ✓",
+      ]);
+      client.dispose();
+    } finally {
+      from.mockRestore();
+      state.dispose();
+    }
+  });
+
+  it("still appends an open sequence when one is partial", async () => {
+    const state = new TerminalScreenState(40, 8);
+    state.push(0, text("text\r\n\x1b[?20"));
+    const snapshot = await state.snapshot();
+    state.dispose();
+    expect(
+      Buffer.from(snapshot?.dataBase64 ?? "", "base64")
+        .toString("latin1")
+        .endsWith("\u001b[?20"),
+    ).toBe(true);
   });
 });
 
