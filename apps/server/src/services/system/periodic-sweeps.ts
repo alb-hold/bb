@@ -75,6 +75,7 @@ import {
 } from "../threads/queued-message-dispatch.js";
 import { releaseOrphanedQueuedMessageDispatchClaims } from "../threads/queued-messages.js";
 import { deliverLegacyDeferredThreadMessages } from "../threads/legacy-deferred-messages.js";
+import { sweepNativeThreadStatus } from "../threads/native-thread-status.js";
 import { runEventLoopWork, runEventLoopWorkSync } from "./event-loop-work.js";
 
 type DatabaseMaintenanceSweepDeps = Pick<AppDeps, "db" | "logger">;
@@ -641,6 +642,12 @@ const PERIODIC_SWEEP_JOBS: PeriodicSweepJob[] = [
         kind: "orphaned-plugin-recovery",
         plugins: deps.plugins,
       }),
+  },
+  {
+    cadenceMs: 0,
+    category: "durable-intent-retry",
+    name: "native-thread-status",
+    run: sweepNativeThreadStatus,
   },
   {
     cadenceMs: 0,
