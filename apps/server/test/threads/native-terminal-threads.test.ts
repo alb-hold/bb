@@ -297,7 +297,17 @@ async function waitForTerminalInputBox(
         terminalId,
         query: {},
       });
-    if (terminalScreenInputBoxHoldsText({ rows: screen.rows, text })) return;
+    if (
+      terminalScreenInputBoxHoldsText({
+        cols: screen.cols,
+        cursor: screen.cursor,
+        requestText: text,
+        rows: screen.rows,
+        text,
+      })
+    ) {
+      return;
+    }
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
   throw new Error("Recorded terminal input did not reach the input box");
@@ -425,7 +435,7 @@ function syntheticTypedInput(text: string): string {
 }
 
 function syntheticInputBoxBorder(): string {
-  return `\u001b[?2026h\u001b[?25l\u001b[23;1H─\u001b[?25h\u001b[?2026l`;
+  return `\u001b[?2026h\u001b[?25l\u001b[23;1H─\u001b[22;9H\u001b[?25h\u001b[?2026l`;
 }
 
 function recordedClaudeSessionWithUnsentText(text: string): RecordedChunk[] {
