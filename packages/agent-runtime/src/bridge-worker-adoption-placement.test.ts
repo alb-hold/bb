@@ -97,10 +97,20 @@ describe("new provider sessions never land on an adopted bridge worker", () => {
   }
 
   async function startPreSwapThread(args: {
+    earlierThreadIds?: string[];
     env?: Record<string, string>;
     events: ThreadEvent[];
   }) {
     const before = createRuntime(args);
+    for (const threadId of args.earlierThreadIds ?? []) {
+      await before.startThread({
+        environmentId: "env-1",
+        threadId,
+        projectId: "p1",
+        providerId: PROVIDER_ID,
+        options: fullRuntimeOptions,
+      });
+    }
     const { providerThreadId } = await before.startThread({
       environmentId: "env-1",
       threadId: "t1",
@@ -114,13 +124,15 @@ describe("new provider sessions never land on an adopted bridge worker", () => {
     return { adoptedWorker: entry, providerThreadId };
   }
 
-  function adoptAll(runtime: AgentRuntime): void {
+  function adoptAll(runtime: AgentRuntime, threadIds: string[] = ["t1"]): void {
     const adopted = runtime.adoptBridgeWorkers({
       dir: bridgeWorkers.dir,
       entries: readBridgeWorkerEntries(bridgeWorkers.dir).entries,
     });
-    expect(adopted.map((thread) => thread.threadId)).toEqual(["t1"]);
-    runtime.completeBridgeWorkerAdoption(new Map([["t1", null]]));
+    expect(adopted.map((thread) => thread.threadId).sort()).toEqual(threadIds);
+    runtime.completeBridgeWorkerAdoption(
+      new Map(threadIds.map((threadId) => [threadId, null])),
+    );
   }
 
   function workerHosting(threadId: string): BridgeWorkerRegistryEntry {
@@ -222,6 +234,8 @@ describe("new provider sessions never land on an adopted bridge worker", () => {
         exits.filter((exit) => exit.bridgeWorker?.id === adoptedWorker.id),
       ).toHaveLength(1);
       expect(workerHosting("t1").id).not.toBe(adoptedWorker.id);
+      expect(workerHosting("t1").processKey).toBe(adoptedWorker.processKey);
+      expect(workerHosting("t1").processKey).not.toContain("#adopted:");
       expect(record.last("thread/resume")?.params?.providerThreadId).toBe(
         providerThreadId,
       );
@@ -269,6 +283,71 @@ describe("new provider sessions never land on an adopted bridge worker", () => {
       trackWorkers();
 
       expect(workerHosting("t1").id).not.toBe(adoptedWorker.id);
+      expect(workerHosting("t1").processKey).toBe(adoptedWorker.processKey);
+      expect(workerHosting("t1").processKey).not.toContain("#adopted:");
+    },
+    ADOPTED_EXIT_DETECTION_TIMEOUT_MS,
+  );
+
+  it(
+    "joins the worker already serving another thread when an adopted worker exits, and retires nothing",
+    async () => {
+      const events: ThreadEvent[] = [];
+      const exits: AgentRuntimeProcessExitInfo[] = [];
+      const { adoptedWorker, providerThreadId } = await startPreSwapThread({
+        earlierThreadIds: ["t0"],
+        events,
+      });
+
+      const after = createRuntime({ events, exits });
+      adoptAll(after, ["t0", "t1"]);
+      await after.startThread({
+        environmentId: "env-1",
+        threadId: "t2",
+        projectId: "p1",
+        providerId: PROVIDER_ID,
+        options: fullRuntimeOptions,
+      });
+      trackWorkers();
+      const normalWorker = workerHosting("t2");
+      expect(normalWorker.processKey).toBe(adoptedWorker.processKey);
+
+      process.kill(adoptedWorker.pid, "SIGKILL");
+      await waitForRuntimeState({
+        label: "adopted worker exit reported",
+        predicate: () =>
+          exits.some((exit) => exit.bridgeWorker?.id === adoptedWorker.id),
+        timeoutMs: ADOPTED_EXIT_DETECTION_TIMEOUT_MS,
+      });
+      await after.resumeThread({
+        environmentId: "env-1",
+        threadId: "t1",
+        projectId: "p1",
+        providerId: PROVIDER_ID,
+        providerThreadId,
+        options: fullRuntimeOptions,
+      });
+      await after.runTurn({
+        clientRequestId: "creq_adptt55555",
+        threadId: "t1",
+        input: [promptTextInput({ text: "join the normal worker" })],
+        options: fullRuntimeOptions,
+      });
+      await waitForThreadTurnCompleted({ events, threadId: "t1" });
+      trackWorkers();
+
+      const entries = readBridgeWorkerEntries(bridgeWorkers.dir).entries;
+      expect(entries.map((entry) => entry.id)).toEqual([normalWorker.id]);
+      expect(Object.keys(workerHosting("t1").threads).sort()).toEqual([
+        "t1",
+        "t2",
+      ]);
+      expect(workerHosting("t1").id).toBe(normalWorker.id);
+      expect(workerHosting("t1").processKey).toBe(adoptedWorker.processKey);
+      expect(isPidAlive(normalWorker.pid)).toBe(true);
+      expect(
+        exits.filter((exit) => exit.bridgeWorker?.id === normalWorker.id),
+      ).toEqual([]);
     },
     ADOPTED_EXIT_DETECTION_TIMEOUT_MS,
   );
