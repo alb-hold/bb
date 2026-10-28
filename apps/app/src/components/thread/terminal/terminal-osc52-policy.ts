@@ -20,3 +20,7 @@ export function shouldAutoCopyOsc52({
     new TextEncoder().encode(text).length <= OSC_52_AUTO_COPY_MAX_BYTES
   );
 }
+
+export function osc52CopiedNotice(text: string): string {
+  return `Copied ${text.length.toLocaleString("en-US")} characters from the terminal`;
+}

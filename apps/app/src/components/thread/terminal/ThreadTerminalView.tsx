@@ -120,7 +120,10 @@ import {
   registerTerminalOsc52Handler,
   terminalPromptLine,
 } from "./terminal-shell-state";
-import { shouldAutoCopyOsc52 } from "./terminal-osc52-policy";
+import {
+  osc52CopiedNotice,
+  shouldAutoCopyOsc52,
+} from "./terminal-osc52-policy";
 import { parseTerminalProgressOsc } from "./terminal-progress";
 import { createTerminalOutputPipeline } from "./terminal-output-pipeline";
 import {
@@ -1867,7 +1870,7 @@ export function ThreadTerminalView({
             return;
           }
           void copyToClipboardWithToast(text, {
-            successMessage: "Selection copied",
+            successMessage: osc52CopiedNotice(text),
             errorMessage: null,
           }).then((copied) => {
             if (!copied) offerCopyHandoff();
