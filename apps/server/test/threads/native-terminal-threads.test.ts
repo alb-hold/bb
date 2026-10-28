@@ -402,8 +402,21 @@ function recordedClaudeSession(): RecordedChunk[] {
   ).chunks;
 }
 
-function recordedText(chunk: RecordedChunk): string {
-  return Buffer.from(chunk.dataBase64, "base64").toString("utf8");
+function syntheticTypedInput(text: string): string {
+  return `\u001b[?2026h\u001b[?25l\u001b[H\r\u001b[2C\u001b[32B${text}\u001b[?25h\u001b[?2026l`;
+}
+
+function recordedClaudeSessionWithUnsentText(text: string): RecordedChunk[] {
+  return recordedClaudeSession().map((chunk) =>
+    chunk.seq === 430
+      ? {
+          ...chunk,
+          dataBase64: Buffer.from(syntheticTypedInput(text), "utf8").toString(
+            "base64",
+          ),
+        }
+      : chunk,
+  );
 }
 
 interface RecordedCli {
@@ -4947,9 +4960,9 @@ describe("native terminal threads", () => {
       const { open, thread } = await openRunningNativeThread(fixture, {
         providerId: "claude-code",
       });
-      const { idle, typed } = split();
+      const { idle } = split();
       const cli = startRecordedCli(fixture, open.terminalId, idle, {
-        paste: () => typed.map(recordedText),
+        paste: (pasted) => [syntheticTypedInput(pasted)],
         enter: () => [],
       });
       try {
@@ -4970,7 +4983,7 @@ describe("native terminal threads", () => {
       const cli = startRecordedCli(
         fixture,
         open.terminalId,
-        recordedClaudeSession(),
+        recordedClaudeSessionWithUnsentText("say ok"),
         { paste: () => [], enter: () => [] },
       );
       try {
@@ -4995,7 +5008,7 @@ describe("native terminal threads", () => {
       const cli = startRecordedCli(
         fixture,
         open.terminalId,
-        recordedClaudeSession(),
+        recordedClaudeSessionWithUnsentText("say ok"),
         { paste: () => [], enter: () => [] },
       );
       try {
@@ -5040,7 +5053,7 @@ describe("native terminal threads", () => {
       const { open, thread } = await openRunningNativeThread(fixture, {
         providerId: "claude-code",
       });
-      const { idle, typed } = split();
+      const { idle } = split();
       const ghost =
         "\u001b[?2026h\u001b[?25l\u001b[H\r\u001b[2C\u001b[32B\u001b[2msay ok\u001b[22m\u001b[36;1H\u001b[33;3H\u001b[?25h\u001b[?2026l";
       const submitted = [
@@ -5049,7 +5062,7 @@ describe("native terminal threads", () => {
         ghost,
       ];
       const cli = startRecordedCli(fixture, open.terminalId, idle, {
-        paste: () => typed.map(recordedText),
+        paste: (pasted) => [syntheticTypedInput(pasted)],
         enter: () => submitted,
       });
       const tells = 6;

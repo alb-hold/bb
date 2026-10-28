@@ -1036,6 +1036,52 @@ describe("thread event pruning", () => {
     });
   });
 
+  it("keeps each active prune callback within the synchronous block cap", async () => {
+    await withTestHarness(async (harness) => {
+      const { host } = seedHostSession(harness.deps);
+      const { project } = seedProjectWithSource(harness.deps, {
+        hostId: host.id,
+      });
+      const thread = seedThread(harness.deps, {
+        projectId: project.id,
+        status: "active",
+      });
+      seedNoiseRows(harness, { endingSequence: 1_400, threadId: thread.id });
+      resetActiveThreadEventPruningState(harness.deps, thread.id);
+      const scheduled: Array<() => void> = [];
+      const synchronousRunDurations: number[] = [];
+      let clock = 0;
+      const enqueued = maybePruneActiveThreadEventHistory(harness.deps, {
+        latestPrunableSequence: 1_400,
+        threadId: thread.id,
+        now: () => {
+          clock += 4;
+          return clock;
+        },
+        schedule: (callback) =>
+          scheduled.push(() => {
+            const startedAt = clock;
+            callback();
+            synchronousRunDurations.push(clock - startedAt);
+          }),
+      });
+      expect(enqueued).toBe(true);
+      for (
+        let slice = 0;
+        slice < 10_000 && scheduled.length > 0;
+        slice += 1
+      )
+        scheduled.shift()?.();
+      expect(scheduled).toHaveLength(0);
+      expect(synchronousRunDurations.length).toBeGreaterThan(1);
+      expect(Math.max(...synchronousRunDurations)).toBeGreaterThan(0);
+      expect(Math.max(...synchronousRunDurations)).toBeLessThanOrEqual(
+        ACTIVE_THREAD_EVENT_PRUNE_SYNC_BLOCK_CAP_MS,
+      );
+      resetActiveThreadEventPruningState(harness.deps, thread.id);
+    });
+  });
+
   it("runs an event-loop task between active pruning slices", async () => {
     await withTestHarness(async (harness) => {
       const { host } = seedHostSession(harness.deps);
