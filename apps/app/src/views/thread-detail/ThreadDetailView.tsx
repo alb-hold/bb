@@ -59,8 +59,10 @@ import {
 } from "@bb/server-contract";
 import type { WorkspaceOpenTarget } from "@bb/host-daemon-contract";
 import { appToast } from "@/components/ui/app-toast";
-import { resolveThreadTerminalLayout } from "@/lib/terminal-session-visibility";
-import { useThreadTerminalLayoutRequest } from "@/lib/useThreadTerminalLayoutRequest";
+import {
+  useEnsureThreadTerminalTabs,
+  useThreadTerminalLayoutRequest,
+} from "@/lib/useThreadTerminalLayout";
 import { useCompactTerminalLayoutRequest } from "@/lib/useCompactTerminalLayoutRequest";
 import { copyToClipboardWithToast } from "@/lib/clipboard";
 import {
@@ -646,7 +648,6 @@ function ThreadDetailViewInternal(
   } | null>(null);
   const splitTabToRightRequestIdRef = useRef(0);
   const {
-    claimRefresh: claimTerminalLayoutRequestRefresh,
     clear: clearTerminalLayoutRequest,
     issue: issueTerminalLayoutRequest,
     request: terminalLayoutRequest,
@@ -1668,46 +1669,28 @@ function ThreadDetailViewInternal(
     onCloseLastTab: secondaryPanelDrawerVisibility.closeDrawer,
   });
   const { canStart: canStartTerminal, select: selectTerminal } = terminals;
-  const ensureTerminalTabs = useCallback(
-    (terminalIds: readonly string[]): boolean | null => {
-      const resolution = resolveThreadTerminalLayout({
-        isPending: terminalsListQuery.isPending,
-        sessions: terminalsListQuery.data?.sessions,
-        terminalIds,
-        threadId,
-      });
-      if (resolution.status === "pending") return null;
-      if (resolution.status === "missing") {
-        if (
-          terminalLayoutRequest !== null &&
-          claimTerminalLayoutRequestRefresh(terminalLayoutRequest.requestId)
-        ) {
-          void refetchTerminalList();
-          return null;
-        }
-        return false;
-      }
-      const selectedSessions = resolution.sessions;
+  const handleTerminalTabsReady = useCallback(
+    (selectedSessions: readonly TerminalSession[]) => {
       if (renderSecondaryPanelAsDrawer && !isSecondaryPanelOpen) {
         appToast.warning("Split panes aren't available at this window size.");
       }
       for (const session of selectedSessions) {
         selectTerminal(session.id, { kind: "thread", threadId });
       }
-      return true;
     },
-    [
-      claimTerminalLayoutRequestRefresh,
-      selectTerminal,
-      terminalLayoutRequest,
-      terminalsListQuery.data,
-      terminalsListQuery.isPending,
-      refetchTerminalList,
-      renderSecondaryPanelAsDrawer,
-      isSecondaryPanelOpen,
-      threadId,
-    ],
+    [isSecondaryPanelOpen, renderSecondaryPanelAsDrawer, selectTerminal, threadId],
   );
+  const ensureTerminalTabs = useEnsureThreadTerminalTabs({
+    onTabsReady: handleTerminalTabsReady,
+    request: terminalLayoutRequest,
+    terminals: {
+      isFetching: terminalsListQuery.isFetching,
+      isPending: terminalsListQuery.isPending,
+      refetch: refetchTerminalList,
+      sessions: terminalsListQuery.data?.sessions,
+    },
+    threadId,
+  });
   const handleCompactTerminalLayoutRequestHandled = clearTerminalLayoutRequest;
   const handleCompactTerminalLayoutRequestResolved = useCallback(
     (terminalAvailable: boolean) => {
