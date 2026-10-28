@@ -29,6 +29,7 @@ import {
   nativeTerminalThreadSchema,
   threadResponseSchema,
 } from "@bb/server-contract";
+import { NATIVE_TERMINAL_ACTIVITY_FRESH_FOR_MS } from "@bb/domain";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as interactiveRequests from "../../src/internal/interactive-requests.js";
 import { DAEMON_RESTARTED_PENDING_INTERACTION_REASON } from "../../src/services/interactions/pending-interactions.js";
@@ -1879,6 +1880,102 @@ describe("native terminal activity evidence across a swap", () => {
     } finally {
       clock.mockRestore();
     }
+  });
+
+  describe("a fresh terminal that has not reported yet", () => {
+    const BOUND_AT = 7_000_000;
+
+    async function startActiveNativeThread(fixture: Fixture) {
+      const started = await startNativeThread(fixture);
+      applyLoggedThreadLifecycleEvent(fixture.harness.deps, {
+        event: { type: "run.started" },
+        threadId: started.thread.id,
+      });
+      expect(threadStatus(fixture, started.thread.id)).toBe("active");
+      return started;
+    }
+
+    it("shows its launch as fresh activity, never Activity not reported, while the CLI starts", async () => {
+      const fixture = await createFixture();
+      const clock = vi.spyOn(Date, "now").mockReturnValue(BOUND_AT);
+      try {
+        const { thread } = await startActiveNativeThread(fixture);
+        expect(evidenceOf(fixture, thread.id)).toBeNull();
+        for (const elapsed of [0, 5_000, 20_000, 31_000]) {
+          clock.mockReturnValue(BOUND_AT + elapsed);
+          expect(displayOf(fixture, thread.id)).toMatchObject({
+            confirmation: "confirmed",
+            lastEvidenceAt: BOUND_AT,
+          });
+        }
+      } finally {
+        clock.mockRestore();
+      }
+    });
+
+    it("still shows Activity not reported once the stale window passes with no report", async () => {
+      const fixture = await createFixture();
+      const clock = vi.spyOn(Date, "now").mockReturnValue(BOUND_AT);
+      try {
+        const { thread } = await startActiveNativeThread(fixture);
+        clock.mockReturnValue(BOUND_AT + NATIVE_TERMINAL_ACTIVITY_FRESH_FOR_MS);
+        expect(displayOf(fixture, thread.id)).toMatchObject({
+          confirmation: "confirmed",
+        });
+        clock.mockReturnValue(
+          BOUND_AT + NATIVE_TERMINAL_ACTIVITY_FRESH_FOR_MS + 1,
+        );
+        expect(displayOf(fixture, thread.id)).toMatchObject({
+          confirmation: "unconfirmed",
+          lastEvidenceAt: null,
+        });
+      } finally {
+        clock.mockRestore();
+      }
+    });
+
+    it("is replaced by the first real report", async () => {
+      const fixture = await createFixture();
+      const clock = vi.spyOn(Date, "now").mockReturnValue(BOUND_AT);
+      try {
+        const { credential, thread } = await startActiveNativeThread(fixture);
+        clock.mockReturnValue(BOUND_AT + 25_000);
+        await report(fixture, thread.id, `Bearer ${credential}`);
+        expect(displayOf(fixture, thread.id)).toMatchObject({
+          confirmation: "confirmed",
+          lastEvidenceAt: BOUND_AT + 25_000,
+        });
+      } finally {
+        clock.mockRestore();
+      }
+    });
+
+    it("does not grant the launch grace to a rebind that cleared real evidence", async () => {
+      const fixture = await createFixture();
+      const clock = vi.spyOn(Date, "now").mockReturnValue(BOUND_AT);
+      try {
+        const started = await startActiveNativeThread(fixture);
+        clock.mockReturnValue(BOUND_AT + 1_000);
+        await report(
+          fixture,
+          started.thread.id,
+          `Bearer ${started.credential}`,
+        );
+        clock.mockReturnValue(BOUND_AT + 2_000);
+        await reattachAfterDaemonDisconnect(
+          fixture,
+          started.thread.id,
+          started.open,
+        );
+        expect(evidenceOf(fixture, started.thread.id)).toBeNull();
+        expect(displayOf(fixture, started.thread.id)).toMatchObject({
+          confirmation: "unconfirmed",
+          lastEvidenceAt: null,
+        });
+      } finally {
+        clock.mockRestore();
+      }
+    });
   });
 
   it("rejects a stale credential after reattach with 401", async () => {

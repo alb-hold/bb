@@ -198,6 +198,7 @@ export function listNativeTerminalThreadsByIds(
   | "lastToolCallAt"
   | "lastToolCallSessionId"
   | "nativeSessionId"
+  | "updatedAt"
 >[] {
   if (threadIds.length === 0) return [];
   const rows = db.$client
@@ -207,7 +208,8 @@ export function listNativeTerminalThreadsByIds(
          last_evidence_at AS lastEvidenceAt,
          last_evidence_kind AS lastEvidenceKind,
          last_tool_call_at AS lastToolCallAt,
-         last_tool_call_session_id AS lastToolCallSessionId
+         last_tool_call_session_id AS lastToolCallSessionId,
+         updated_at AS updatedAt
        FROM fork_native_terminal_threads
        WHERE thread_id IN (SELECT value FROM json_each(?))`,
     )
@@ -220,6 +222,7 @@ export function listNativeTerminalThreadsByIds(
     | "lastToolCallAt"
     | "lastToolCallSessionId"
     | "nativeSessionId"
+    | "updatedAt"
   >[];
   return rows;
 }
@@ -279,7 +282,7 @@ export function setNativeTerminalThreadTerminal(
 ): void {
   db.$client
     .prepare(
-      `UPDATE fork_native_terminal_threads SET terminal_session_id = ?, last_evidence_at = NULL, last_evidence_kind = NULL, last_tool_call_at = NULL, last_tool_call_session_id = NULL, updated_at = ? WHERE thread_id = ?`,
+      `UPDATE fork_native_terminal_threads SET terminal_session_id = ?, last_evidence_at = NULL, last_tool_call_at = NULL, last_tool_call_session_id = NULL, updated_at = ? WHERE thread_id = ?`,
     )
     .run(args.terminalSessionId, Date.now(), args.threadId);
 }
@@ -290,7 +293,7 @@ export function clearNativeTerminalThreadEvidence(
 ): void {
   db.$client
     .prepare(
-      `UPDATE fork_native_terminal_threads SET last_evidence_at = NULL, last_evidence_kind = NULL, last_tool_call_at = NULL, last_tool_call_session_id = NULL WHERE thread_id = ?`,
+      `UPDATE fork_native_terminal_threads SET last_evidence_at = NULL, last_tool_call_at = NULL, last_tool_call_session_id = NULL WHERE thread_id = ?`,
     )
     .run(threadId);
 }
