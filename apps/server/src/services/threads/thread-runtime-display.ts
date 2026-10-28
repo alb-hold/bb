@@ -97,6 +97,7 @@ type NativeActivityThreadRecord = Pick<
   | "lastToolCallAt"
   | "lastToolCallSessionId"
   | "nativeSessionId"
+  | "updatedAt"
 >;
 
 interface ResolveThreadRuntimeStateArgs {
@@ -331,11 +332,17 @@ function addNativeActivityDiagnostic(
   ) {
     return runtime;
   }
-  const lastEvidenceAt = nativeThread.lastEvidenceAt;
+  const neverReported =
+    nativeThread.lastEvidenceAt === null &&
+    nativeThread.lastEvidenceKind === null;
+  const confirmedAt = neverReported
+    ? nativeThread.updatedAt
+    : nativeThread.lastEvidenceAt;
   const isFresh =
-    lastEvidenceAt !== null &&
-    now >= lastEvidenceAt &&
-    now - lastEvidenceAt <= NATIVE_TERMINAL_ACTIVITY_FRESH_FOR_MS;
+    confirmedAt !== null &&
+    now >= confirmedAt &&
+    now - confirmedAt <= NATIVE_TERMINAL_ACTIVITY_FRESH_FOR_MS;
+  const lastEvidenceAt = isFresh ? confirmedAt : nativeThread.lastEvidenceAt;
   const lastToolCallAt = nativeThread.lastToolCallAt;
   const toolCallIsBoundToSession =
     nativeThread.nativeSessionId !== null &&
