@@ -351,6 +351,44 @@ describe("NativeTerminalPromptBar", () => {
     await waitFor(() => expect(screen.queryByText("shot.png")).toBeNull());
   });
 
+  it("attaches files dropped on the textarea and sends them like the attach button", async () => {
+    const { input, sendButton } = renderBar();
+    const image = new File(["png"], "dropped.png", { type: "image/png" });
+    const pdf = new File(["pdf"], "notes.pdf", { type: "application/pdf" });
+    const dataTransfer = { files: [image, pdf], types: ["Files"] };
+
+    expect(fireEvent.dragOver(input, { dataTransfer })).toBe(false);
+    expect(fireEvent.drop(input, { dataTransfer })).toBe(false);
+
+    await screen.findByText("dropped.png");
+    await screen.findByText("notes.pdf");
+    expect(upload).toHaveBeenCalledTimes(2);
+    expect(upload).toHaveBeenCalledWith(
+      expect.objectContaining({ clientFile: image, projectId: "proj-n" }),
+    );
+    expect(upload).toHaveBeenCalledWith(
+      expect.objectContaining({ clientFile: pdf, projectId: "proj-n" }),
+    );
+    fireEvent.click(sendButton);
+
+    await waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+    expect(send.mock.calls[0]?.[0]).toMatchObject({
+      input: [
+        { type: "localImage", path: "stored-dropped.png" },
+        { type: "localImage", path: "stored-notes.pdf" },
+      ],
+    });
+  });
+
+  it("leaves a plain text drag to the browser", () => {
+    const { input } = renderBar();
+    const dataTransfer = { files: [], types: ["text/plain"] };
+
+    expect(fireEvent.dragOver(input, { dataTransfer })).toBe(true);
+    expect(fireEvent.drop(input, { dataTransfer })).toBe(true);
+    expect(upload).not.toHaveBeenCalled();
+  });
+
   it("sends an image on its own and lets a pasted text through untouched", async () => {
     const { input, sendButton } = renderBar();
     pasteFiles(input, []);

@@ -6,6 +6,7 @@ import {
   useRef,
   useState,
   type ClipboardEvent,
+  type DragEvent,
   type FormEvent,
   type KeyboardEvent,
   type PointerEvent,
@@ -460,6 +461,17 @@ export function NativeTerminalPromptBar({
     attachFiles(files);
   };
 
+  const onDragOver = (event: DragEvent<HTMLElement>) => {
+    if (event.dataTransfer.types.includes("Files")) event.preventDefault();
+  };
+
+  const onDrop = (event: DragEvent<HTMLElement>) => {
+    const files = pastedFiles(event.dataTransfer);
+    if (files.length === 0) return;
+    event.preventDefault();
+    attachFiles(files);
+  };
+
   useLayoutEffect(() => {
     const selection = pendingSelectionRef.current;
     const element = textareaRef.current;
@@ -532,6 +544,8 @@ export function NativeTerminalPromptBar({
           recording ? "border-destructive/40" : "border-input",
         )}
         data-native-composer=""
+        onDragOver={onDragOver}
+        onDrop={onDrop}
       >
         {dictation.phase === "idle" ? null : (
           <DictationStrip
