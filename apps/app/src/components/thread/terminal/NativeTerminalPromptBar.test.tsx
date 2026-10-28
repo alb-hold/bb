@@ -134,7 +134,7 @@ beforeEach(() => {
   upload.mockReset();
   upload.mockImplementation(({ clientFile }: { clientFile: File }) =>
     Promise.resolve({
-      type: "localImage",
+      type: clientFile.type.startsWith("image/") ? "localImage" : "localFile",
       sourceProjectId: "proj-n",
       path: `stored-${clientFile.name}`,
       name: clientFile.name,
@@ -375,7 +375,13 @@ describe("NativeTerminalPromptBar", () => {
     expect(send.mock.calls[0]?.[0]).toMatchObject({
       input: [
         { type: "localImage", path: "stored-dropped.png" },
-        { type: "localImage", path: "stored-notes.pdf" },
+        {
+          type: "localFile",
+          path: "stored-notes.pdf",
+          name: "notes.pdf",
+          sizeBytes: 3,
+          mimeType: "application/pdf",
+        },
       ],
     });
   });
