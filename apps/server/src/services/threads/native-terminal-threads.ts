@@ -42,7 +42,10 @@ import {
   type ThreadEnvironmentLookupResult,
 } from "../lib/entity-lookup.js";
 import { resolvePluginProviderEnv } from "../plugins/plugin-agent-contributions.js";
-import { applyLoggedThreadLifecycleEventInTransaction } from "./lifecycle-outcome.js";
+import {
+  applyLoggedThreadLifecycleEvent,
+  applyLoggedThreadLifecycleEventInTransaction,
+} from "./lifecycle-outcome.js";
 import {
   forgetRejectedNativeQuestions,
   interruptNativeTerminalQuestions,
@@ -399,6 +402,17 @@ function terminalIsLive(terminal: TerminalSession | null): boolean {
   );
 }
 
+function returnResumedNativeThreadToIdle(
+  deps: NativeTerminalDeps,
+  threadId: string,
+): void {
+  if (getThread(deps.db, threadId)?.status !== "error") return;
+  applyLoggedThreadLifecycleEvent(deps, {
+    event: { type: "session.resumed" },
+    threadId,
+  });
+}
+
 async function openNativeTerminalOnce(
   deps: NativeTerminalDeps,
   args: {
@@ -522,6 +536,7 @@ async function openNativeTerminalOnce(
     });
     interruptNativeTerminalQuestions(deps, thread.id);
     forgetRejectedNativeQuestions(deps, thread.id);
+    returnResumedNativeThreadToIdle(deps, thread.id);
     return toNativeTerminalThread(deps, record, terminal);
   } finally {
     endNativeTerminalRebind(thread.id);

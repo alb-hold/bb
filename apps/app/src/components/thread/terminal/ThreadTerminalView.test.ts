@@ -9,6 +9,7 @@ import { describe, expect, it, vi } from "vitest";
 import { decodeBase64Bytes } from "@/lib/base64-bytes";
 import { registerTerminalGridOscHandler } from "./terminal-grid-osc";
 import { createTerminalOutputPipeline } from "./terminal-output-pipeline";
+import { createTerminalOutputBoundaries } from "./terminal-output-boundaries";
 import {
   buildTerminalThemeFromCssColors,
   attachTerminalManualScrollIntentListeners,
@@ -549,6 +550,7 @@ describe("terminal viewport restore", () => {
       ReturnType<typeof tracker.recordOutputStart>
     >[] = [];
     const token = "replay-marker-test";
+    const outputBoundaries = createTerminalOutputBoundaries(token);
     tracker.reset();
     const markerHandler = registerTerminalOutputBoundaryHandler(
       terminal.parser,
@@ -581,7 +583,7 @@ describe("terminal viewport restore", () => {
               data,
               isReplay: false,
               outputSequence: seq,
-              outputBoundaryToken: token,
+              outputBoundaries,
               onParsed: resolve,
               replayWriteState: { suppressedWriteCount: 0 },
               terminal,

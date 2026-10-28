@@ -14,6 +14,7 @@ import plugin from "./server.js";
 import {
   MAX_RETRY_ATTEMPTS,
   OVERLOAD_RETRY_BASE_MS,
+  PROVIDER_PROCESS_EXIT_MAX_ATTEMPTS,
   RESET_BUFFER_MS,
   RESET_JITTER_MS,
   UNAVAILABLE_RETRY_BASE_MS,
@@ -390,6 +391,42 @@ describe("provider retry policy", () => {
         random: 0,
       }),
     ).toEqual({ kind: "decline", reason: "not-resettable" });
+  });
+
+  it("retries a provider process exit once and then stops", () => {
+    const exited = failure({
+      errorInfo: {
+        category: "internal",
+        providerCode: "provider_process_exited",
+        httpStatusCode: null,
+      },
+      rateLimits: null,
+    });
+    expect(
+      decideRetry({
+        availability: { kind: "not-routed" },
+        failure: exited,
+        maximumWaitMs: null,
+        now: NOW_MS,
+        random: 0,
+      }),
+    ).toEqual({
+      kind: "retry",
+      sendAt: NOW_MS + OVERLOAD_RETRY_BASE_MS,
+      reason: "Provider process exited",
+    });
+    expect(
+      decideRetry({
+        availability: { kind: "not-routed" },
+        failure: {
+          ...exited,
+          attemptNumber: PROVIDER_PROCESS_EXIT_MAX_ATTEMPTS,
+        },
+        maximumWaitMs: null,
+        now: NOW_MS,
+        random: 0,
+      }),
+    ).toEqual({ kind: "decline", reason: "attempts-exhausted" });
   });
 
   it("gives up once a turn has been retried its maximum number of times", () => {

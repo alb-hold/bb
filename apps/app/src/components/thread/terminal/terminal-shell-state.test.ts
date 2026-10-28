@@ -145,7 +145,13 @@ describe("terminal shell OSC state", () => {
   it("offers OSC 52 copy payloads and ignores queries and retained replays", () => {
     expect(parseTerminalOsc52Copy("c;b2s=")).toBe("ok");
     expect(parseTerminalOsc52Copy("c;?")).toBeNull();
-    expect(parseTerminalOsc52Copy("p;b2s=")).toBeNull();
+    expect(parseTerminalOsc52Copy(";b2s=")).toBe("ok");
+    expect(parseTerminalOsc52Copy("p;b2s=")).toBe("ok");
+    expect(parseTerminalOsc52Copy("s0;b2s=")).toBe("ok");
+    expect(parseTerminalOsc52Copy("cp;b2s=")).toBe("ok");
+    expect(parseTerminalOsc52Copy("x;b2s=")).toBeNull();
+    expect(parseTerminalOsc52Copy("b2s=")).toBeNull();
+    expect(parseTerminalOsc52Copy("c;")).toBeNull();
 
     let handler: ((data: string) => boolean) | undefined;
     let isReplay = true;

@@ -7,6 +7,7 @@ export type TerminalShellEvent =
 
 const MAX_OSC_PAYLOAD_LENGTH = 4096;
 const OSC_52_MAX_TEXT_BYTES = 1024 * 1024;
+const OSC_52_SELECTION_PREFIX = /^[cpqs0-7]{0,8};/u;
 const terminalCurrentCwds = new Map<string, string>();
 
 export function setTerminalCurrentCwd(terminalId: string, cwd: string): void {
@@ -162,13 +163,12 @@ export function registerTerminalShellOscHandlers(
 }
 
 export function parseTerminalOsc52Copy(payload: string): string | null {
-  if (
-    payload.length > Math.ceil(OSC_52_MAX_TEXT_BYTES / 3) * 4 + 4 ||
-    !payload.startsWith("c;")
-  ) {
+  if (payload.length > Math.ceil(OSC_52_MAX_TEXT_BYTES / 3) * 4 + 12) {
     return null;
   }
-  const encoded = payload.slice(2);
+  const selection = OSC_52_SELECTION_PREFIX.exec(payload);
+  if (selection === null) return null;
+  const encoded = payload.slice(selection[0].length);
   if (encoded === "?" || encoded.length === 0) return null;
   try {
     const binary = atob(encoded);

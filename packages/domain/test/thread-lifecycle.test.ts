@@ -37,6 +37,8 @@ const allEventTypes: readonly ThreadLifecycleEventType[] = [
   "run.failed",
   "stop.requested",
   "stop.settled",
+  "session.lost",
+  "session.resumed",
 ];
 
 function rowState(
@@ -82,6 +84,7 @@ describe("THREAD_LIFECYCLE table", () => {
       idle: {
         "run.preparing": "starting",
         "run.started": "active",
+        "session.lost": "error",
       },
       starting: {
         "run.started": "active",
@@ -103,6 +106,7 @@ describe("THREAD_LIFECYCLE table", () => {
       error: {
         "run.preparing": "starting",
         "run.started": "active",
+        "session.resumed": "idle",
       },
     });
   });
@@ -115,6 +119,8 @@ describe("THREAD_LIFECYCLE table", () => {
       "run.failed": { notDeleted: true },
       "stop.requested": {},
       "stop.settled": {},
+      "session.lost": { notArchived: true, notDeleted: true },
+      "session.resumed": {},
     });
   });
 

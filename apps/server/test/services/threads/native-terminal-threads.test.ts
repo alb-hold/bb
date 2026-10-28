@@ -7,6 +7,8 @@ import {
   createProject,
   createTerminalSession,
   createThread,
+  getThread,
+  listEvents,
   listNativeTerminalThreadsWithDisconnectedTerminal,
   noopNotifier,
   setNativeTerminalThreadTerminal,
@@ -15,6 +17,7 @@ import {
 } from "@bb/db";
 import { eq } from "drizzle-orm";
 import { terminalDataBase64Schema, TERMINAL_DATA_MAX_BYTES } from "@bb/domain";
+import { setPluginThreadEventEmitter } from "../../../src/services/plugins/plugin-thread-events.js";
 import { createProviderRegistryService } from "../../../src/services/providers/provider-registry.js";
 import {
   openNativeTerminal,
@@ -400,6 +403,98 @@ describe("reopenNativeTerminalsAfterDaemonReconnect", () => {
           }),
         }),
       );
+    });
+  });
+
+  it("returns a thread settled as error to idle when its exited CLI is resumed", async () => {
+    await withTestHarness({ seedFirstPartyProviders: false }, async (h) => {
+      const host = upsertHost(h.db, noopNotifier, {
+        id: "host-native-resume",
+        name: "Native Terminal Host",
+      });
+      const { threadId } = await createDisconnectedNativeThread(h, 6, host.id);
+      h.db
+        .update(terminalSessions)
+        .set({ status: "exited", closeReason: "process-exit", exitCode: 0 })
+        .where(eq(terminalSessions.threadId, threadId))
+        .run();
+      h.db.$client
+        .prepare("UPDATE threads SET status = 'error' WHERE id = ?")
+        .run(threadId);
+      const sourceRegistry = await createTestProviderRegistry();
+      const registration = sourceRegistry.get("codex");
+      if (registration === null)
+        throw new Error("Codex provider is not seeded");
+      const providerRegistry = createProviderRegistryService();
+      providerRegistry.register(registration);
+      h.deps.providerRegistry = providerRegistry;
+      vi.spyOn(h.pluginService, "resolveProviderEnv").mockResolvedValue({
+        entries: [],
+      });
+      vi.spyOn(h.deps.terminalSessions, "createTerminal").mockImplementation(
+        async () =>
+          createTerminalSession(h.db, {
+            threadId,
+            environmentId: null,
+            hostId: host.id,
+            daemonSessionId: null,
+            title: "Codex",
+            initialCwd: "/tmp",
+            cols: 120,
+            rows: 36,
+            status: "running",
+          }),
+      );
+
+      const eventTypesBefore = listEvents(h.db, { threadId }).map(
+        (row) => row.type,
+      );
+      const broadcastStatuses: string[] = [];
+      const notifyThread = h.deps.hub.notifyThread.bind(h.deps.hub);
+      vi.spyOn(h.deps.hub, "notifyThread").mockImplementation(
+        (id, kinds, metadata) => {
+          if (id === threadId && metadata?.statusChange !== undefined) {
+            broadcastStatuses.push(metadata.statusChange.status);
+          }
+          notifyThread(id, kinds, metadata);
+        },
+      );
+      const pluginCalls: string[] = [];
+      const record = (name: string) => () => {
+        pluginCalls.push(name);
+      };
+      setPluginThreadEventEmitter({
+        emitThreadEvents: record("emitThreadEvents"),
+        emitTerminalInput: record("emitTerminalInput"),
+        emitHostDeleted: record("emitHostDeleted"),
+        emitEnvironmentRemoved: record("emitEnvironmentRemoved"),
+        emitThreadCreated: record("emitThreadCreated"),
+        emitThreadActive: record("emitThreadActive"),
+        emitThreadIdle: record("emitThreadIdle"),
+        emitThreadFailed: record("emitThreadFailed"),
+        emitThreadArchived: record("emitThreadArchived"),
+        emitThreadDeleted: record("emitThreadDeleted"),
+        emitInteractionPending: record("emitInteractionPending"),
+        emitMessageQueued: record("emitMessageQueued"),
+        emitMessageDispatched: record("emitMessageDispatched"),
+        emitMessageCancelled: record("emitMessageCancelled"),
+        emitThreadUnarchived: record("emitThreadUnarchived"),
+        emitThreadParentChanged: record("emitThreadParentChanged"),
+        emitTurnFailed: record("emitTurnFailed"),
+      });
+
+      try {
+        await openNativeTerminal(h.deps, { threadId, request: {} });
+      } finally {
+        setPluginThreadEventEmitter(undefined);
+      }
+
+      expect(getThread(h.db, threadId)?.status).toBe("idle");
+      expect(broadcastStatuses).toEqual(["idle"]);
+      expect(listEvents(h.db, { threadId }).map((row) => row.type)).toEqual(
+        eventTypesBefore,
+      );
+      expect(pluginCalls).toEqual([]);
     });
   });
 

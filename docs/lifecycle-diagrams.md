@@ -33,6 +33,7 @@ flowchart LR
     pending -->|"run.preparing ⟨notArchived, notDeleted⟩"| starting
     idle -->|"run.preparing ⟨notArchived, notDeleted⟩"| starting
     idle -->|"run.started ⟨notArchived, notDeleted⟩"| active
+    idle -->|"session.lost ⟨notArchived, notDeleted⟩"| error
     starting -->|"run.started ⟨notArchived, notDeleted⟩"| active
     starting -->|"run.succeeded"| idle
     starting -->|"run.failed ⟨notDeleted⟩"| error
@@ -44,6 +45,7 @@ flowchart LR
     stopping -->|"run.failed ⟨notDeleted⟩"| error
     error -->|"run.preparing ⟨notArchived, notDeleted⟩"| starting
     error -->|"run.started ⟨notArchived, notDeleted⟩"| active
+    error -->|"session.resumed"| idle
 ```
 
 ## Environment

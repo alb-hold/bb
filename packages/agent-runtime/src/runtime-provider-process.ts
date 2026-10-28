@@ -173,11 +173,19 @@ class ProviderProcessExitedError extends Error {
   constructor(args: ProviderProcessExitedErrorArgs) {
     const stderr = formatProviderStderr(args.stderrTail);
     super(
-      `Provider "${args.providerId}" exited unexpectedly (${formatProviderProcessExitStatus(args.status)})` +
-        (stderr ? `\nstderr: ${stderr}` : ""),
+      describeProviderProcessExit(args) + (stderr ? `\nstderr: ${stderr}` : ""),
     );
     this.name = "ProviderProcessExitedError";
   }
+}
+
+function describeProviderProcessExit(
+  args: ProviderProcessExitedErrorArgs,
+): string {
+  if (args.status.code === null && args.status.signal === null) {
+    return `Provider "${args.providerId}" stopped unexpectedly; its exit status could not be read`;
+  }
+  return `Provider "${args.providerId}" exited unexpectedly (${formatProviderProcessExitStatus(args.status)})`;
 }
 
 export function isProviderProcessExitedError(
@@ -833,6 +841,9 @@ export function hasChildProcessExited(child: BridgeWorkerProcess): boolean {
 function getChildProcessExitStatus(
   child: BridgeWorkerProcess,
 ): ProviderProcessExitStatus {
+  if (child instanceof SocketBridgeWorker && child.exitStatusUnreadable) {
+    return { code: null, signal: null };
+  }
   return { code: child.exitCode, signal: child.signalCode };
 }
 

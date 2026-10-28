@@ -127,6 +127,9 @@ function formatProviderProcessExitStatus(
 function buildProviderProcessExitMessage(
   info: AgentRuntimeProcessExitInfo,
 ): string {
+  if (info.code === null && !info.signal) {
+    return `Provider "${info.providerId}" stopped unexpectedly; its exit status could not be read`;
+  }
   return `Provider "${info.providerId}" exited unexpectedly with ${formatProviderProcessExitStatus(info)}`;
 }
 
