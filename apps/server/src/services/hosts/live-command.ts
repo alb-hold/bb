@@ -19,6 +19,7 @@ import {
   type LiveHostCommandSuccessResultReportForType,
 } from "../../internal/command-result-side-effects.js";
 import { handleLiveCommandResultSideEffects } from "../../internal/command-results.js";
+import { resolveMissingWorkspaceFailure } from "../threads/missing-workspace.js";
 import { NotificationBuffer } from "../lib/notification-buffer.js";
 import {
   callHostOnlineRpcForWork,
@@ -272,15 +273,19 @@ export async function runLiveHostCommand<
     });
     return result;
   } catch (error) {
-    const normalized =
-      error instanceof Error ? error : new Error(String(error));
+    const failure = error instanceof Error ? error : new Error(String(error));
     noteTurnTraceCommandFailed(args.command);
     if (
       args.preserveOnHostUnavailable === true &&
-      isHostUnavailableApiError(normalized)
+      isHostUnavailableApiError(failure)
     ) {
-      throw normalized;
+      throw failure;
     }
+    const normalized = await resolveMissingWorkspaceFailure(deps, {
+      command: args.command,
+      error: failure,
+      hostId: args.hostId,
+    });
     const failureReport = buildLiveHostCommandFailureReport({
       command: args.command,
       completedAt: Date.now(),

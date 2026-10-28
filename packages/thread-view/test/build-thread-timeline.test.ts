@@ -2257,6 +2257,29 @@ describe("buildThreadTimelineFromEvents", () => {
     ]);
   });
 
+  it("keeps a long system error message visible when the error also carries detail", () => {
+    const message =
+      "This thread's workspace folder no longer exists: /tmp/p19-i29-ws-fixture. Restore it from branch fix/ws-gone-fixture, or archive the thread.";
+    const detail =
+      "Unmanaged workspace path does not exist: /tmp/p19-i29-ws-fixture";
+    const rows = buildTimelineRows([
+      systemErrorEvent({
+        code: "thread_command_failed",
+        message,
+        detail,
+        seq: 1,
+      }),
+    ]);
+
+    expect(collectSystemRows(rows)).toEqual([
+      expect.objectContaining({
+        systemKind: "error",
+        title: "System error",
+        detail: `${message}\n${detail}`,
+      }),
+    ]);
+  });
+
   it("renders provider turn watchdog diagnostics as an error operation row", () => {
     const rows = buildTimelineRows([
       systemProviderTurnWatchdogEvent({ seq: 1 }),

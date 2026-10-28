@@ -81,6 +81,7 @@ import {
   getLastProviderThreadId,
   requireDispatchableProviderThreadId,
 } from "./thread-events.js";
+import { describeMissingWorkspace } from "./missing-workspace.js";
 import {
   applyLoggedThreadLifecycleEvent,
   applyLoggedThreadLifecycleEventInTransaction,
@@ -788,6 +789,11 @@ function settleThreadCommandFailure(
   if (hasTerminalClientTurnRequestEvent(args.deps, args.command)) {
     return emptyCommandResultSideEffects();
   }
+  const missingWorkspaceMessage = describeMissingWorkspace(args.deps.db, {
+    environmentId: thread.environmentId,
+    errorCode: args.report.errorCode,
+    errorMessage: args.report.errorMessage,
+  });
   if (args.command.type === "turn.submit") {
     appendThreadEventInTransaction(args.deps.db, {
       threadId: thread.id,
@@ -797,7 +803,7 @@ function settleThreadCommandFailure(
       data: {
         requestId: args.command.requestId,
         reason: args.report.errorCode,
-        message: args.report.errorMessage,
+        message: missingWorkspaceMessage ?? args.report.errorMessage,
       },
     });
     if (
@@ -810,24 +816,11 @@ function settleThreadCommandFailure(
   if (hasExpectedTurnCompletedEvent(args.deps, args.command)) {
     return emptyCommandResultSideEffects();
   }
-  const missingWorkspacePath =
-    args.report.errorCode === "path_not_found"
-      ? parseMissingWorkspacePath(args.report.errorMessage)
-      : null;
-  const workspaceBranch =
-    missingWorkspacePath !== null && thread.environmentId !== null
-      ? (getEnvironment(args.deps.db, thread.environmentId)?.branchName ?? null)
-      : null;
   appendSystemErrorEventInTransaction(args.deps, {
     threadId: thread.id,
     environmentId: thread.environmentId,
     code: "thread_command_failed",
-    message:
-      missingWorkspacePath === null
-        ? `Command ${args.report.type} failed`
-        : workspaceBranch === null
-          ? `This thread's workspace folder no longer exists: ${missingWorkspacePath}. Restore it, or archive the thread.`
-          : `This thread's workspace folder no longer exists: ${missingWorkspacePath}. Restore it from branch ${workspaceBranch}, or archive the thread.`,
+    message: missingWorkspaceMessage ?? `Command ${args.report.type} failed`,
     detail: args.report.errorMessage,
     scope: getThreadFailureCommandErrorScope(args.command),
   });
@@ -850,15 +843,6 @@ function settleThreadCommandFailure(
     });
   }
   return { postCommitActions };
-}
-
-function parseMissingWorkspacePath(errorMessage: string): string | null {
-  const prefix = "Unmanaged workspace path does not exist: ";
-  if (!errorMessage.startsWith(prefix)) {
-    return null;
-  }
-  const path = errorMessage.slice(prefix.length);
-  return path.length > 0 ? path : null;
 }
 
 export function settleThreadStartCommandResult(

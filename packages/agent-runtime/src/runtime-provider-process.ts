@@ -2,6 +2,7 @@ import type { ThreadEvent } from "@bb/domain";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import {
+  pathExists,
   sanitizeInheritedChildProcessEnv,
   spawnManagedProcess,
   type ManagedProcess,
@@ -32,6 +33,15 @@ import type {
   AgentRuntimeProcessExitThreadState,
   AgentRuntimeSkillRoot,
 } from "./types.js";
+
+export class ProviderWorkspaceMissingError extends Error {
+  readonly code = "path_not_found";
+
+  constructor(readonly workspacePath: string) {
+    super(`Unmanaged workspace path does not exist: ${workspacePath}`);
+    this.name = "ProviderWorkspaceMissingError";
+  }
+}
 
 export interface RuntimeProviderProcess {
   adapter: BridgeProtocolAdapter;
@@ -218,6 +228,9 @@ export class RuntimeProviderProcessManager {
     }
 
     const startPromise = (async () => {
+      if (!(await pathExists(this.args.workspacePath))) {
+        throw new ProviderWorkspaceMissingError(this.args.workspacePath);
+      }
       const adapter = this.getAdapter(args.providerId, args.bridgeLaunch);
       const providerProcess = this.spawnProvider({
         adapter,
