@@ -191,7 +191,6 @@ describe("compact terminal layout requests", () => {
     );
 
     await waitFor(() => expect(onEnsureTerminalTabs).toHaveBeenCalledTimes(1));
-    expect(onHandled).not.toHaveBeenCalled();
     expect(toastWarning).not.toHaveBeenCalled();
     await waitFor(() => {
       const persisted = window.localStorage.getItem(storageKey);
@@ -217,6 +216,7 @@ describe("compact terminal layout requests", () => {
         terminalTab.id,
       );
     });
+    expect(onHandled).toHaveBeenCalledWith(55);
 
     view.rerender(
       <Wrapper>
@@ -368,5 +368,45 @@ describe("compact terminal layout requests", () => {
     ]);
     expect(screen.queryByText("Requested terminal content")).toBeNull();
     expect(window.localStorage.getItem(storageKey)).toBe("unchanged-layout");
+  });
+
+  it("stays silent while the terminal list is still loading", async () => {
+    const panelStateId = "compact-layout-pending";
+    const onEnsureTerminalTabs = vi.fn(() => null);
+    const { wrapper: Wrapper } = createQueryClientTestHarness();
+    render(
+      <Wrapper>
+        <TooltipProvider>
+          <PanelGroup direction="horizontal">
+            <ThreadSecondaryPanel
+              activeTab={createThreadInfoFixedPanelTab()}
+              canUseGitUi={false}
+              fixedTabs={[]}
+              tabs={[]}
+              isConversationCollapsed={false}
+              isOpen
+              metadataContent={null}
+              onClose={noop}
+              onCollapse={noop}
+              onEnsureTerminalTabs={onEnsureTerminalTabs}
+              onTabReorder={noop}
+              onOpenNewTab={noop}
+              onPanelFocus={noop}
+              onToggleConversationCollapse={noop}
+              renderAsDrawer
+              splitPanelStateId={panelStateId}
+              terminalLayoutRequest={{
+                action: "split",
+                requestId: 54,
+                terminalId: "term-loading",
+              }}
+            />
+          </PanelGroup>
+        </TooltipProvider>
+      </Wrapper>,
+    );
+
+    await waitFor(() => expect(onEnsureTerminalTabs).toHaveBeenCalled());
+    expect(toastWarning).not.toHaveBeenCalled();
   });
 });

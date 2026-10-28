@@ -921,7 +921,9 @@ function ThreadSecondaryPanelContent({
     enabled:
       !canRenderSidebarSplits(renderAsDrawer, splitPanelStateId) && isOpen,
     ensureTerminalTabs: (terminalIds) =>
-      onEnsureTerminalTabs?.(terminalIds) ?? false,
+      onEnsureTerminalTabs === undefined
+        ? false
+        : onEnsureTerminalTabs(terminalIds),
     onHandled: onCompactTerminalLayoutRequestHandled,
     onResolved: (terminalAvailable) =>
       appToast.warning(
@@ -989,6 +991,7 @@ function ThreadSecondaryPanelContent({
       onToggleFullScreen={onToggleConversationCollapse}
       onCreateTerminalInNewPane={onCreateTerminalInNewPane}
       onEnsureTerminalTabs={onEnsureTerminalTabs}
+      onTerminalLayoutRequestHandled={onCompactTerminalLayoutRequestHandled}
       panelStateId={splitPanelStateId}
       splitTabToRightRequest={splitTabToRightRequest}
       terminalLayoutRequest={terminalLayoutRequest}

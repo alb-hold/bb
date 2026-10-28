@@ -118,6 +118,7 @@ interface SidebarSplitContainerProps {
   onActivateTab: (tabId: string) => void;
   onCreateTerminalInNewPane?: () => Promise<string | null>;
   onEnsureTerminalTabs?: (terminalIds: readonly string[]) => boolean | null;
+  onTerminalLayoutRequestHandled?: (requestId: number) => void;
   onGlobalTabReorder: (request: SecondaryPanelTabReorderRequest) => void;
   onToggleFullScreen: () => void;
   panelStateId: string;
@@ -152,6 +153,7 @@ export function SidebarSplitContainer({
   onActivateTab,
   onCreateTerminalInNewPane,
   onEnsureTerminalTabs,
+  onTerminalLayoutRequestHandled,
   onGlobalTabReorder,
   onToggleFullScreen,
   panelStateId,
@@ -457,6 +459,7 @@ export function SidebarSplitContainer({
     ) {
       notifyPaneLimit("at-pane-limit");
       handledTerminalLayoutRequestId.current = terminalLayoutRequest.requestId;
+      onTerminalLayoutRequestHandled?.(terminalLayoutRequest.requestId);
       return;
     }
     const sourceTabId = createTerminalFixedPanelTab({
@@ -477,7 +480,10 @@ export function SidebarSplitContainer({
           ? terminalLayoutRequest.terminalId
           : terminalLayoutRequest.targetTerminalId!,
       );
-      const ensured = onEnsureTerminalTabs?.(terminalIds) ?? false;
+      const ensured =
+        onEnsureTerminalTabs === undefined
+          ? false
+          : onEnsureTerminalTabs(terminalIds);
       if (ensured === true) return;
       if (ensured === null) {
         requestedTerminalLayoutAvailabilityId.current = null;
@@ -485,18 +491,23 @@ export function SidebarSplitContainer({
       }
       appToast.warning("The terminal is no longer available in this thread.");
       handledTerminalLayoutRequestId.current = terminalLayoutRequest.requestId;
+      onTerminalLayoutRequestHandled?.(terminalLayoutRequest.requestId);
       return;
     }
-    const ensured = onEnsureTerminalTabs?.([
-      terminalLayoutRequest.terminalId,
-      ...(terminalLayoutRequest.targetTerminalId === undefined
-        ? []
-        : [terminalLayoutRequest.targetTerminalId]),
-    ]);
+    const ensured =
+      onEnsureTerminalTabs === undefined
+        ? true
+        : onEnsureTerminalTabs([
+            terminalLayoutRequest.terminalId,
+            ...(terminalLayoutRequest.targetTerminalId === undefined
+              ? []
+              : [terminalLayoutRequest.targetTerminalId]),
+          ]);
     if (ensured === null) return;
     if (ensured === false) {
       appToast.warning("The terminal is no longer available in this thread.");
       handledTerminalLayoutRequestId.current = terminalLayoutRequest.requestId;
+      onTerminalLayoutRequestHandled?.(terminalLayoutRequest.requestId);
       return;
     }
     commitState((current) =>
@@ -511,7 +522,14 @@ export function SidebarSplitContainer({
       true,
     );
     handledTerminalLayoutRequestId.current = terminalLayoutRequest.requestId;
-  }, [availableTabIds, commitState, onEnsureTerminalTabs, terminalLayoutRequest]);
+    onTerminalLayoutRequestHandled?.(terminalLayoutRequest.requestId);
+  }, [
+    availableTabIds,
+    commitState,
+    onEnsureTerminalTabs,
+    onTerminalLayoutRequestHandled,
+    terminalLayoutRequest,
+  ]);
 
   const removeSplit = useCallback(
     (paneId: string) => {

@@ -109,6 +109,7 @@ function containerElement({
   renderPane,
   tabs = TABS,
   onEnsureTerminalTabs,
+  onTerminalLayoutRequestHandled,
   terminalLayoutRequest,
 }: {
   activeTabId?: string;
@@ -118,6 +119,7 @@ function containerElement({
   renderPane: (args: SidebarSplitPaneRenderArgs) => ReactNode;
   tabs?: readonly SidebarSplitTabDescriptor[];
   onEnsureTerminalTabs?: (terminalIds: readonly string[]) => boolean | null;
+  onTerminalLayoutRequestHandled?: (requestId: number) => void;
   terminalLayoutRequest?: {
     action: "split" | "move";
     requestId: number;
@@ -135,6 +137,7 @@ function containerElement({
           onActivateTab={onActivateTab}
           onGlobalTabReorder={vi.fn()}
           onEnsureTerminalTabs={onEnsureTerminalTabs}
+          onTerminalLayoutRequestHandled={onTerminalLayoutRequestHandled}
           onToggleFullScreen={onToggleFullScreen}
           panelStateId={PANEL_STATE_ID}
           renderPane={renderPane}
@@ -228,6 +231,53 @@ describe("SidebarSplitContainer", () => {
       renderPane,
     }));
     await waitFor(() => expect(listPaneIds()).toHaveLength(2));
+    expect(toastWarning).not.toHaveBeenCalled();
+  });
+
+  it("reports a split request as handled once it has been applied", async () => {
+    const terminalTab = createTerminalFixedPanelTab({ terminalId: "term-handled" });
+    const tabs = [
+      { id: terminalTab.id, label: "Terminal", restoresPlacementAfterRemoval: true },
+      { id: "tab-b", label: "Other", restoresPlacementAfterRemoval: true },
+    ];
+    const onTerminalLayoutRequestHandled = vi.fn();
+    renderContainer({
+      activeTabId: terminalTab.id,
+      tabs,
+      terminalLayoutRequest: { action: "split", requestId: 44, side: "right", terminalId: "term-handled" },
+      onEnsureTerminalTabs: () => true,
+      onTerminalLayoutRequestHandled,
+      renderPane: ({ paneId }) => <div>{paneId}</div>,
+    });
+
+    await waitFor(() => expect(listPaneIds()).toHaveLength(2));
+    expect(onTerminalLayoutRequestHandled).toHaveBeenCalledWith(44);
+    expect(toastWarning).not.toHaveBeenCalled();
+  });
+
+  it("reports an unavailable-terminal request as handled after notifying once", async () => {
+    const onTerminalLayoutRequestHandled = vi.fn();
+    renderContainer({
+      terminalLayoutRequest: { action: "split", requestId: 45, terminalId: "term-foreign" },
+      onEnsureTerminalTabs: () => false,
+      onTerminalLayoutRequestHandled,
+      renderPane: ({ paneId }) => <div>{paneId}</div>,
+    });
+
+    await waitFor(() => expect(onTerminalLayoutRequestHandled).toHaveBeenCalledWith(45));
+    expect(toastWarning).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a request unhandled and silent while the terminal list is still unknown", async () => {
+    const onTerminalLayoutRequestHandled = vi.fn();
+    renderContainer({
+      terminalLayoutRequest: { action: "split", requestId: 46, terminalId: "term-loading" },
+      onEnsureTerminalTabs: () => null,
+      onTerminalLayoutRequestHandled,
+      renderPane: ({ paneId }) => <div>{paneId}</div>,
+    });
+
+    expect(onTerminalLayoutRequestHandled).not.toHaveBeenCalled();
     expect(toastWarning).not.toHaveBeenCalled();
   });
 
