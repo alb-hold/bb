@@ -582,7 +582,7 @@ describe("terminalScreenInputBoxHoldsText", () => {
   });
 
   it.each([" ", "\u00a0", "\t"])(
-    "refuses requested text with leading or trailing boundary whitespace %j",
+    "refuses screen payload with leading or trailing boundary whitespace %j",
     (whitespace) => {
       expect(holds([`\u276f ${whitespace}say ok`], `${whitespace}say ok`)).toBe(
         false,

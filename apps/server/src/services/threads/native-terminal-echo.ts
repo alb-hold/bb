@@ -341,11 +341,10 @@ export function terminalScreenAlreadyShowsText(args: {
 export function terminalScreenInputBoxHoldsText(args: {
   cols: number;
   cursor: { col: number; row: number };
+  requestText?: string;
   rows: readonly string[];
   text: string;
 }): boolean {
-  if (/^[ \u00a0\t]|[ \u00a0\t]$/u.test(args.text)) return false;
-
   let promptAt = -1;
   for (let index = args.rows.length - 1; index >= 0; index -= 1) {
     const first = Array.from(args.rows[index]!.trimStart())[0] ?? null;
@@ -360,6 +359,9 @@ export function terminalScreenInputBoxHoldsText(args: {
   if (marker === undefined) return false;
   const promptStart = args.rows[promptAt]!.length - prompt.length;
   const promptRemainder = prompt.slice(marker.length);
+  if (args.requestText?.startsWith(" ") && promptRemainder.startsWith(" ")) {
+    return false;
+  }
   let promptPadding = 0;
   if (promptRemainder.startsWith("\u00a0")) promptPadding = 1;
   else if (promptRemainder.startsWith(" ")) {
@@ -421,6 +423,7 @@ export function terminalScreenInputBoxHoldsText(args: {
     return false;
   }
 
+  if (/^[ \u00a0\t]|[ \u00a0\t]$/u.test(joined)) return false;
   return joined === args.text;
 }
 

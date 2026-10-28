@@ -62,7 +62,7 @@ export async function acceptThreadSendRequest(
       input,
       projectId: args.thread.projectId,
     });
-    const inputBoxText = input.every((entry) => entry.type === "text")
+    const requestText = input.every((entry) => entry.type === "text")
       ? input
           .flatMap((entry) => (entry.type === "text" ? [entry.text] : []))
           .join("\n\n")
@@ -76,7 +76,7 @@ export async function acceptThreadSendRequest(
       throw new ApiError(400, "invalid_request", "Message text is empty");
     }
     await sendNativeTerminalMessage(deps, {
-      ...(inputBoxText === undefined ? {} : { inputBoxText }),
+      ...(requestText === undefined ? {} : { requestText }),
       threadId: args.thread.id,
       pastes,
     });
