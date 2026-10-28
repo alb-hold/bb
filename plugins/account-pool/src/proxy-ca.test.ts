@@ -182,6 +182,33 @@ describe("proxy certificate authority", () => {
     expect(verification).toMatch(/permitted subtree violation/iu);
   });
 
+  it("regenerates a CA whose key does not match its certificate", async () => {
+    const root = await tempDir();
+    const dir = path.join(root, "proxy-ca");
+    const other = path.join(root, "other-ca");
+    const first = await createProxyCertificateAuthority({ dir, now: Date.now });
+    const stale = await first.caPem();
+    const foreign = await createProxyCertificateAuthority({
+      dir: other,
+      now: Date.now,
+    });
+    await fs.copyFile(path.join(other, "ca.pem"), path.join(dir, "ca.pem"));
+    const healed = await createProxyCertificateAuthority({
+      dir,
+      now: Date.now,
+    });
+    const pem = await healed.caPem();
+    expect(pem).not.toBe(await foreign.caPem());
+    expect(pem).not.toBe(stale);
+    const leaf = await healed.leafFor("host-one");
+    expect(
+      await handshake(pem, "api.anthropic.com", leaf.certPem, leaf.keyPem),
+    ).toEqual({ authorized: true, error: null });
+    expect(
+      (await fs.readdir(dir)).filter((name) => name.startsWith("work-")),
+    ).toEqual([]);
+  });
+
   it("refuses to mint certificates for hosts other than api.anthropic.com", async () => {
     const dir = path.join(await tempDir(), "proxy-ca");
     const authority = await createProxyCertificateAuthority({

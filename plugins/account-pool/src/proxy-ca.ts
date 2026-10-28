@@ -1,5 +1,11 @@
 import { execFile } from "node:child_process";
-import { X509Certificate, generateKeyPairSync, randomBytes } from "node:crypto";
+import {
+  X509Certificate,
+  createHmac,
+  createPrivateKey,
+  generateKeyPairSync,
+  randomBytes,
+} from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -21,6 +27,7 @@ export interface ProxyLeaf {
 
 export interface ProxyCertificateAuthority {
   caPem(): Promise<string>;
+  proxyCredential(token: string): string;
   leafFor(hostId: string): Promise<ProxyLeaf>;
   mintLeaf(host: string): Promise<ProxyLeaf>;
 }
@@ -86,6 +93,7 @@ export async function createProxyCertificateAuthority(options: {
   const openssl = options.openssl ?? "openssl";
   const caKeyPath = path.join(dir, "ca.key");
   const caCertPath = path.join(dir, "ca.pem");
+  const proxySecretPath = path.join(dir, "proxy-secret");
   await fs.mkdir(dir, { recursive: true, mode: 0o700 });
   await fs.chmod(dir, 0o700);
 
@@ -115,26 +123,36 @@ export async function createProxyCertificateAuthority(options: {
   async function generateCa(): Promise<void> {
     await withWorkDir(async (work) => {
       const config = path.join(work, "ca.cnf");
+      const keyPath = path.join(work, "ca.key");
+      const certPath = path.join(work, "ca.pem");
       await fs.writeFile(config, CA_CONFIG, { mode: 0o600 });
-      const keyPem = newKeyPem();
-      await writePrivate(caKeyPath, keyPem);
+      await writePrivate(keyPath, newKeyPem());
       await run([
         "req",
         "-x509",
         "-new",
         "-sha256",
         "-key",
-        caKeyPath,
+        keyPath,
         "-days",
         String(CA_VALID_DAYS),
         "-config",
         config,
         "-out",
-        path.join(work, "ca.pem"),
+        certPath,
       ]);
-      await fs.copyFile(path.join(work, "ca.pem"), caCertPath);
-      await fs.chmod(caCertPath, 0o644);
+      await fs.chmod(certPath, 0o644);
+      await fs.rename(keyPath, caKeyPath);
+      await fs.rename(certPath, caCertPath);
     });
+  }
+
+  function keyMatchesCertificate(cert: string, key: string): boolean {
+    try {
+      return new X509Certificate(cert).checkPrivateKey(createPrivateKey(key));
+    } catch {
+      return false;
+    }
   }
 
   async function ensureCa(): Promise<void> {
@@ -143,6 +161,7 @@ export async function createProxyCertificateAuthority(options: {
     if (
       cert !== null &&
       key !== null &&
+      keyMatchesCertificate(cert, key) &&
       validUntil(cert) - now() > CA_RENEW_BEFORE_MS
     ) {
       await fs.chmod(caKeyPath, 0o600);
@@ -151,8 +170,20 @@ export async function createProxyCertificateAuthority(options: {
     await generateCa();
   }
 
+  async function loadProxySecret(): Promise<Buffer> {
+    const existing = await readIfPresent(proxySecretPath);
+    if (existing !== null && /^[a-f0-9]{64}$/u.test(existing.trim()))
+      return Buffer.from(existing.trim(), "hex");
+    const secret = randomBytes(32);
+    const temp = `${proxySecretPath}.${randomBytes(8).toString("hex")}.tmp`;
+    await writePrivate(temp, secret.toString("hex"));
+    await fs.rename(temp, proxySecretPath);
+    return secret;
+  }
+
   let chain: Promise<unknown> = ensureCa();
   await chain;
+  const proxySecret = await loadProxySecret();
   const leaves = new Map<string, ProxyLeaf>();
 
   function serialized<T>(task: () => Promise<T>): Promise<T> {
@@ -215,6 +246,10 @@ export async function createProxyCertificateAuthority(options: {
 
   return {
     caPem: () => serialized(() => fs.readFile(caCertPath, "utf8")),
+    proxyCredential: (token) =>
+      createHmac("sha256", proxySecret)
+        .update(`account-pool proxy credential\0${token}`)
+        .digest("base64url"),
     mintLeaf(host) {
       if (host !== OAUTH_PROXY_HOST)
         return Promise.reject(

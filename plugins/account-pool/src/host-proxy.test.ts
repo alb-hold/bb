@@ -11,6 +11,7 @@ import { createHostProxy, type HostProxy } from "./host-proxy.js";
 import { createProxyCertificateAuthority } from "./proxy-ca.js";
 
 const POOL_TOKEN = "T".repeat(43);
+const CREDENTIAL = "C".repeat(43);
 const OTHER_TOKEN = "U".repeat(43);
 const sha256 = (value: string) =>
   createHash("sha256").update(value).digest("hex");
@@ -117,7 +118,7 @@ async function intercepted(
   const { socket, status } = await connect(
     port,
     "api.anthropic.com:443",
-    basic(POOL_TOKEN),
+    basic(CREDENTIAL),
   );
   expect(status).toBe(200);
   const secure = tls.connect({
@@ -178,7 +179,7 @@ describe("host Artifact proxy", () => {
     cleanups.push(() => proxy.close());
     const { port, caPath } = await proxy.ensure({
       ...material,
-      tokenSha256: sha256(POOL_TOKEN),
+      proxyCredentialSha256: sha256(CREDENTIAL),
       serverUrl,
     });
     return { proxy, port, caPath };
@@ -204,19 +205,22 @@ describe("host Artifact proxy", () => {
     expect(tunnel.status).toBe(407);
   });
 
-  it("listens on loopback only and stores secrets with owner-only modes", async () => {
+  it("listens on loopback only and keeps no leaf key or token on disk", async () => {
     const { proxy, caPath } = await start("http://127.0.0.1:1");
     expect(proxy.address()).toBe("127.0.0.1");
     expect(await fs.readFile(caPath, "utf8")).toBe(caPem);
     const hostDir = path.join(dataDir, "host");
-    expect((await fs.stat(path.join(hostDir, "leaf.key"))).mode & 0o777).toBe(
-      0o600,
-    );
     const files = await fs.readdir(hostDir);
+    expect(files).not.toContain("leaf.key");
+    expect(files).not.toContain("leaf.pem");
     for (const name of files) {
       const content = await fs.readFile(path.join(hostDir, name), "utf8");
-      expect(content).not.toContain(POOL_TOKEN);
+      expect(content).not.toContain(CREDENTIAL);
+      expect(content).not.toContain(material.leafKeyPem.trim());
     }
+    expect(
+      (await fs.stat(path.join(hostDir, "credentials.json"))).mode & 0o777,
+    ).toBe(0o600);
   });
 
   it("tunnels other hosts directly from the host without inspecting them", async () => {
@@ -226,7 +230,7 @@ describe("host Artifact proxy", () => {
     const { socket, status } = await connect(
       port,
       `127.0.0.1:${echoPort}`,
-      basic(POOL_TOKEN),
+      basic(CREDENTIAL),
     );
     expect(status).toBe(200);
     socket.write("ping");
@@ -288,12 +292,6 @@ describe("host Artifact proxy", () => {
       path: "/api/claude_code/policy_limits",
     });
     expect(anonymous.status).toBe(401);
-    const wrongToken = await intercepted(port, caPem, {
-      method: "GET",
-      path: "/api/claude_code/policy_limits",
-      authorization: `Bearer ${OTHER_TOKEN}`,
-    });
-    expect(wrongToken.status).toBe(401);
     expect(hub.calls).toEqual([]);
   });
 
@@ -308,6 +306,71 @@ describe("host Artifact proxy", () => {
     expect(result.headers).toMatch(/x-proxy-error: hub-unreachable/iu);
   });
 
+  it("keeps serving after the hub resets a response mid-stream", async () => {
+    let calls = 0;
+    const hub = http.createServer((request, response) => {
+      request.resume();
+      calls += 1;
+      if (calls === 1) {
+        response.writeHead(200, { "content-type": "text/plain" });
+        response.write("partial");
+        setTimeout(() => response.destroy(), 30);
+        return;
+      }
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end('{"ok":true}');
+    });
+    const hubPort = await listen(hub);
+    cleanups.push(() => hub.closeAllConnections());
+    const failures: unknown[] = [];
+    const record = (error: unknown) => failures.push(error);
+    process.on("uncaughtException", record);
+    process.on("unhandledRejection", record);
+    cleanups.push(() => {
+      process.off("uncaughtException", record);
+      process.off("unhandledRejection", record);
+    });
+    const { port } = await start(`http://127.0.0.1:${hubPort}`);
+    await intercepted(port, caPem, {
+      method: "GET",
+      path: "/api/claude_code/policy_limits",
+      authorization: `Bearer ${POOL_TOKEN}`,
+    }).catch(() => undefined);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const second = await intercepted(port, caPem, {
+      method: "GET",
+      path: "/api/claude_code/policy_limits",
+      authorization: `Bearer ${POOL_TOKEN}`,
+    });
+    expect(second.status).toBe(200);
+    expect(second.body).toContain('{"ok":true}');
+    expect(failures).toEqual([]);
+  });
+
+  it("registers every token when ensure calls run concurrently", async () => {
+    const proxy = createHostProxy({ dataDir: path.join(dataDir, "host") });
+    cleanups.push(() => proxy.close());
+    const tokens = Array.from({ length: 8 }, (_, index) =>
+      String(index).repeat(43).slice(0, 43),
+    );
+    const results = await Promise.all(
+      tokens.map((token) =>
+        proxy.ensure({
+          ...material,
+          proxyCredentialSha256: sha256(token),
+          serverUrl: "http://127.0.0.1:1",
+        }),
+      ),
+    );
+    const port = results[0]?.port ?? 0;
+    expect(new Set(results.map((result) => result.port)).size).toBe(1);
+    for (const token of tokens) {
+      const result = await connect(port, "api.anthropic.com:443", basic(token));
+      expect(result.status).toBe(200);
+      result.socket.destroy();
+    }
+  });
+
   it("keeps its port and registered tokens across a restart", async () => {
     const first = await start("http://127.0.0.1:1");
     await first.proxy.close();
@@ -315,14 +378,14 @@ describe("host Artifact proxy", () => {
     cleanups.push(() => proxy.close());
     const second = await proxy.ensure({
       ...material,
-      tokenSha256: null,
+      proxyCredentialSha256: null,
       serverUrl: "http://127.0.0.1:1",
     });
     expect(second.port).toBe(first.port);
     const result = await connect(
       second.port,
       "api.anthropic.com:443",
-      basic(POOL_TOKEN),
+      basic(CREDENTIAL),
     );
     expect(result.status).toBe(200);
   });

@@ -189,6 +189,33 @@ interface FailureSummary {
 
 class UpstreamConnectionError extends Error {}
 
+async function readBoundedBody(
+  request: Request,
+  limit: number,
+): Promise<Uint8Array | "too-large"> {
+  if (request.body === null) return new Uint8Array(0);
+  const reader = request.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > limit) {
+      await reader.cancel().catch(() => undefined);
+      return "too-large";
+    }
+    chunks.push(value);
+  }
+  const body = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) {
+    body.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return body;
+}
+
 export class AccountPoolHub {
   private accepting = false;
   private stopped = new AbortController();
@@ -356,8 +383,10 @@ export class AccountPoolHub {
         403,
         "This Artifact request is not allowed through the Account Pooler.",
       );
-    const length = Number(request.headers.get("content-length") ?? "0");
-    if (length > OAUTH_PROXY_MAX_BODY_BYTES)
+    const declared = request.headers.get("content-length");
+    if (declared !== null && !/^\d+$/u.test(declared.trim()))
+      return adapter.errorResponse(400, "Invalid Content-Length.");
+    if (declared !== null && Number(declared) > OAUTH_PROXY_MAX_BODY_BYTES)
       return adapter.errorResponse(413, "The Artifact request is too large.");
     const account = await this.oauthAccountForThread(threadRoute, hostId);
     if (account === null)
@@ -368,8 +397,8 @@ export class AccountPoolHub {
     const body =
       method === "GET" || method === "DELETE"
         ? null
-        : new Uint8Array(await request.arrayBuffer());
-    if (body !== null && body.byteLength > OAUTH_PROXY_MAX_BODY_BYTES)
+        : await readBoundedBody(request, OAUTH_PROXY_MAX_BODY_BYTES);
+    if (body === "too-large")
       return adapter.errorResponse(413, "The Artifact request is too large.");
     const url =
       this.options.getSettings().anthropicUpstreamBaseUrl.replace(/\/+$/u, "") +

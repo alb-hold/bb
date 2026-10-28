@@ -1,9 +1,9 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import http from "node:http";
 import net from "node:net";
 import path from "node:path";
-import { Readable } from "node:stream";
+import { Readable, pipeline } from "node:stream";
 import tls from "node:tls";
 import {
   OAUTH_PROXY_HOST,
@@ -17,8 +17,8 @@ import {
 export const HUB_ROUTE_PREFIX = "/api/v1/plugins/account-pool/http";
 
 const LOOPBACK = "127.0.0.1";
-const TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1_000;
-const MAX_TOKENS = 4_096;
+const CREDENTIAL_TTL_MS = 30 * 24 * 60 * 60 * 1_000;
+const MAX_CREDENTIALS = 4_096;
 const MAX_TUNNELS_PER_TOKEN = 256;
 const CONNECT_TIMEOUT_MS = 10_000;
 const IDLE_TIMEOUT_MS = 10 * 60 * 1_000;
@@ -53,7 +53,7 @@ export interface HostProxyEnsureInput {
   caPem: string;
   leafCertPem: string;
   leafKeyPem: string;
-  tokenSha256: string | null;
+  proxyCredentialSha256: string | null;
   serverUrl: string;
 }
 
@@ -92,10 +92,15 @@ async function writeFileAtomic(
   content: string,
   mode: number,
 ): Promise<void> {
-  const temp = `${file}.${process.pid}.tmp`;
-  await fs.writeFile(temp, content, { mode });
-  await fs.chmod(temp, mode);
-  await fs.rename(temp, file);
+  const temp = `${file}.${randomUUID()}.tmp`;
+  try {
+    await fs.writeFile(temp, content, { mode });
+    await fs.chmod(temp, mode);
+    await fs.rename(temp, file);
+  } catch (error) {
+    await fs.rm(temp, { force: true });
+    throw error;
+  }
 }
 
 async function readText(file: string): Promise<string | null> {
@@ -107,12 +112,12 @@ async function readText(file: string): Promise<string | null> {
   }
 }
 
-function parseTokens(text: string | null): Map<string, number> {
-  const tokens = new Map<string, number>();
-  if (text === null) return tokens;
+function parseCredentials(text: string | null): Map<string, number> {
+  const credentials = new Map<string, number>();
+  if (text === null) return credentials;
   try {
     const parsed: unknown = JSON.parse(text);
-    if (!Array.isArray(parsed)) return tokens;
+    if (!Array.isArray(parsed)) return credentials;
     for (const entry of parsed) {
       if (
         Array.isArray(entry) &&
@@ -120,12 +125,12 @@ function parseTokens(text: string | null): Map<string, number> {
         DIGEST_PATTERN.test(entry[0]) &&
         typeof entry[1] === "number"
       )
-        tokens.set(entry[0], entry[1]);
+        credentials.set(entry[0], entry[1]);
     }
   } catch {
-    return tokens;
+    return credentials;
   }
-  return tokens;
+  return credentials;
 }
 
 export function createHostProxy(options: {
@@ -135,16 +140,17 @@ export function createHostProxy(options: {
   const { dataDir } = options;
   const upstreamFetch = options.fetch ?? fetch;
   const caPath = path.join(dataDir, "ca.pem");
-  const tokensPath = path.join(dataDir, "tokens.json");
+  const credentialsPath = path.join(dataDir, "credentials.json");
   const portPath = path.join(dataDir, "proxy-port");
-  let tokens: Map<string, number> | null = null;
+  let credentials: Map<string, number> | null = null;
   let secureContext: tls.SecureContext | null = null;
   let serverUrl = "";
   let listener: http.Server | null = null;
   let boundPort = 0;
   const sockets = new Set<net.Socket>();
-  const tunnelsByToken = new Map<string, number>();
+  const tunnelsByCredential = new Map<string, number>();
   let starting: Promise<void> | null = null;
+  let queue: Promise<unknown> = Promise.resolve();
 
   const interceptServer = http.createServer((request, response) => {
     void handleIntercepted(request, response).catch(() => {
@@ -155,8 +161,8 @@ export function createHostProxy(options: {
   interceptServer.on("clientError", (_error, socket) => socket.destroy());
 
   function knownDigest(digest: string): boolean {
-    const addedAt = tokens?.get(digest);
-    return addedAt !== undefined && Date.now() - addedAt < TOKEN_TTL_MS;
+    const addedAt = credentials?.get(digest);
+    return addedAt !== undefined && Date.now() - addedAt < CREDENTIAL_TTL_MS;
   }
 
   function fail(
@@ -214,7 +220,7 @@ export function createHostProxy(options: {
       return;
     }
     const token = bearer(request.headers.authorization);
-    if (token === null || !knownDigest(sha256(token))) {
+    if (token === null) {
       request.resume();
       fail(response, 401, "unauthorized");
       return;
@@ -267,20 +273,22 @@ export function createHostProxy(options: {
       response.end();
       return;
     }
-    Readable.fromWeb(upstream.body as never).pipe(response);
+    pipeline(Readable.fromWeb(upstream.body as never), response, () => {
+      response.destroy();
+    });
   }
 
   function track(socket: net.Socket, digest: string): () => void {
     sockets.add(socket);
-    tunnelsByToken.set(digest, (tunnelsByToken.get(digest) ?? 0) + 1);
+    tunnelsByCredential.set(digest, (tunnelsByCredential.get(digest) ?? 0) + 1);
     let released = false;
     const release = () => {
       if (released) return;
       released = true;
       sockets.delete(socket);
-      const remaining = (tunnelsByToken.get(digest) ?? 1) - 1;
-      if (remaining <= 0) tunnelsByToken.delete(digest);
-      else tunnelsByToken.set(digest, remaining);
+      const remaining = (tunnelsByCredential.get(digest) ?? 1) - 1;
+      if (remaining <= 0) tunnelsByCredential.delete(digest);
+      else tunnelsByCredential.set(digest, remaining);
     };
     socket.once("close", release);
     socket.setTimeout(IDLE_TIMEOUT_MS, () => socket.destroy());
@@ -315,7 +323,7 @@ export function createHostProxy(options: {
       socket.end(proxyStatus(400, "Bad Request"));
       return;
     }
-    if ((tunnelsByToken.get(digest) ?? 0) >= MAX_TUNNELS_PER_TOKEN) {
+    if ((tunnelsByCredential.get(digest) ?? 0) >= MAX_TUNNELS_PER_TOKEN) {
       socket.end(proxyStatus(503, "Service Unavailable"));
       return;
     }
@@ -406,53 +414,57 @@ export function createHostProxy(options: {
     await writeFileAtomic(portPath, String(boundPort), 0o600);
   }
 
+  async function ensureOnce(
+    input: HostProxyEnsureInput,
+  ): Promise<{ port: number; caPath: string }> {
+    if (
+      input.proxyCredentialSha256 !== null &&
+      !DIGEST_PATTERN.test(input.proxyCredentialSha256)
+    )
+      throw new Error(
+        "proxyCredentialSha256 must be a lowercase hex SHA-256 digest.",
+      );
+    await fs.mkdir(dataDir, { recursive: true, mode: 0o700 });
+    await fs.chmod(dataDir, 0o700);
+    await writeFileAtomic(caPath, input.caPem, 0o644);
+    secureContext = tls.createSecureContext({
+      key: input.leafKeyPem,
+      cert: input.leafCertPem,
+    });
+    serverUrl = input.serverUrl.replace(/\/+$/u, "");
+    credentials ??= parseCredentials(await readText(credentialsPath));
+    const now = Date.now();
+    for (const [digest, addedAt] of credentials)
+      if (now - addedAt >= CREDENTIAL_TTL_MS) credentials.delete(digest);
+    if (input.proxyCredentialSha256 !== null)
+      credentials.set(input.proxyCredentialSha256, now);
+    while (credentials.size > MAX_CREDENTIALS) {
+      const oldest = credentials.keys().next().value;
+      if (oldest === undefined) break;
+      credentials.delete(oldest);
+    }
+    await writeFileAtomic(
+      credentialsPath,
+      JSON.stringify([...credentials.entries()]),
+      0o600,
+    );
+    starting ??= start();
+    await starting;
+    return { port: boundPort, caPath };
+  }
+
   return {
-    async ensure(input) {
-      if (input.tokenSha256 !== null && !DIGEST_PATTERN.test(input.tokenSha256))
-        throw new Error("tokenSha256 must be a lowercase hex SHA-256 digest.");
-      await fs.mkdir(dataDir, { recursive: true, mode: 0o700 });
-      await fs.chmod(dataDir, 0o700);
-      await writeFileAtomic(caPath, input.caPem, 0o644);
-      await writeFileAtomic(
-        path.join(dataDir, "leaf.pem"),
-        input.leafCertPem,
-        0o644,
-      );
-      await writeFileAtomic(
-        path.join(dataDir, "leaf.key"),
-        input.leafKeyPem,
-        0o600,
-      );
-      secureContext = tls.createSecureContext({
-        key: input.leafKeyPem,
-        cert: input.leafCertPem,
-      });
-      serverUrl = input.serverUrl.replace(/\/+$/u, "");
-      tokens ??= parseTokens(await readText(tokensPath));
-      const now = Date.now();
-      for (const [digest, addedAt] of tokens)
-        if (now - addedAt >= TOKEN_TTL_MS) tokens.delete(digest);
-      if (input.tokenSha256 !== null) tokens.set(input.tokenSha256, now);
-      while (tokens.size > MAX_TOKENS) {
-        const oldest = tokens.keys().next().value;
-        if (oldest === undefined) break;
-        tokens.delete(oldest);
-      }
-      await writeFileAtomic(
-        tokensPath,
-        JSON.stringify([...tokens.entries()]),
-        0o600,
-      );
-      starting ??= start();
-      await starting;
-      return { port: boundPort, caPath };
+    ensure(input) {
+      const run = queue.then(() => ensureOnce(input));
+      queue = run.catch(() => undefined);
+      return run;
     },
     address: () => (listener === null ? null : LOOPBACK),
     async close() {
       const server = listener;
       listener = null;
       starting = null;
-      tokens = null;
+      credentials = null;
       for (const socket of sockets) socket.destroy();
       sockets.clear();
       if (server === null) return;

@@ -9,7 +9,7 @@ export const accountPoolHostContract = defineRpcContract({
         caPem: z.string().min(1),
         leafCertPem: z.string().min(1),
         leafKeyPem: z.string().min(1),
-        tokenSha256: z
+        proxyCredentialSha256: z
           .string()
           .regex(/^[a-f0-9]{64}$/u)
           .nullable(),
@@ -19,6 +19,7 @@ export const accountPoolHostContract = defineRpcContract({
       .object({
         port: z.number().int().min(1).max(65_535),
         caPath: z.string().min(1),
+        noProxy: z.string().min(1),
       })
       .strict(),
   },

@@ -11,11 +11,14 @@ import { createProxyCertificateAuthority } from "./proxy-ca.js";
 
 const TOKEN = "H".repeat(43);
 const originalServerUrl = process.env.BB_SERVER_URL;
+const originalNoProxy = process.env.NO_PROXY;
 const dirs: string[] = [];
 
 afterEach(async () => {
   if (originalServerUrl === undefined) delete process.env.BB_SERVER_URL;
   else process.env.BB_SERVER_URL = originalServerUrl;
+  if (originalNoProxy === undefined) delete process.env.NO_PROXY;
+  else process.env.NO_PROXY = originalNoProxy;
   await Promise.all(
     dirs.splice(0).map((dir) => fs.rm(dir, { recursive: true, force: true })),
   );
@@ -35,7 +38,7 @@ async function material() {
       caPem: await authority.caPem(),
       leafCertPem: leaf.certPem,
       leafKeyPem: leaf.keyPem,
-      tokenSha256: createHash("sha256").update(TOKEN).digest("hex"),
+      proxyCredentialSha256: createHash("sha256").update(TOKEN).digest("hex"),
     },
   };
 }
@@ -80,12 +83,34 @@ describe("account pool host entry", () => {
     expect(await connectStatus(first.port, TOKEN)).toBe(200);
     const second = await harness.experimental_call("ensureProxy", {
       ...input,
-      tokenSha256: null,
+      proxyCredentialSha256: null,
     });
     expect(second.port).toBe(first.port);
     expect(harness.experimental_getRetainedWorkerLeaseCount()).toBe(1);
     await harness.experimental_dispose();
     await expect(connectStatus(first.port, TOKEN)).rejects.toThrow();
+  });
+
+  it("merges an existing NO_PROXY with loopback and the hub host instead of replacing it", async () => {
+    process.env.BB_SERVER_URL = "http://hub.tailnet.test:38886";
+    process.env.NO_PROXY = "corp.example, .internal.example";
+    const { root, input } = await material();
+    const harness = experimental_createHostEntryHarness(hostEntry, {
+      experimental_paths: {
+        dataDir: path.join(root, "data"),
+        tempDir: path.join(root, "temp"),
+      },
+    });
+    const result = await harness.experimental_call("ensureProxy", input);
+    expect(result.noProxy.split(",")).toEqual([
+      "corp.example",
+      ".internal.example",
+      "localhost",
+      "127.0.0.1",
+      "::1",
+      "hub.tailnet.test",
+    ]);
+    await harness.experimental_dispose();
   });
 
   it("refuses to start without the server URL from the daemon", async () => {

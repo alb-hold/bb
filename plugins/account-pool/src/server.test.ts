@@ -9406,6 +9406,7 @@ describe("Account Pool nested proxy", () => {
       "ANTHROPIC_AUTH_TOKEN",
       "CLAUDE_CODE_OAUTH_TOKEN",
       "HTTPS_PROXY",
+      "NO_PROXY",
       "NODE_EXTRA_CA_CERTS",
     ],
     codex: ["CODEX_OPENAI_BASE_URL", "CODEX_POOL_AUTH_TOKEN"],
@@ -9485,6 +9486,7 @@ describe("Account Pool nested proxy", () => {
       "ENABLE_PROMPT_CACHING_1H",
       "CLAUDE_CODE_OAUTH_TOKEN",
       "HTTPS_PROXY",
+      "NO_PROXY",
       "NODE_EXTRA_CA_CERTS",
       "BB_ACCOUNT_POOL_PARENT_URL",
       "BB_ACCOUNT_POOL_PARENT_TOKEN",
@@ -9563,6 +9565,7 @@ describe("Account Pool nested proxy", () => {
     for (const name of [
       "CLAUDE_CODE_OAUTH_TOKEN",
       "HTTPS_PROXY",
+      "NO_PROXY",
       "NODE_EXTRA_CA_CERTS",
     ])
       expect(byName.get(name)).toBe("");
@@ -12182,6 +12185,7 @@ describe("Account Pool credential scoping", () => {
       ["ANTHROPIC_AUTH_TOKEN", ""],
       ["CLAUDE_CODE_OAUTH_TOKEN", ""],
       ["HTTPS_PROXY", ""],
+      ["NO_PROXY", ""],
       ["NODE_EXTRA_CA_CERTS", ""],
     ]);
     expect(await statusOf(child, live, "/v1/messages")).toBe(401);
@@ -12274,6 +12278,7 @@ describe("Account Pool credential scoping", () => {
           ["ANTHROPIC_AUTH_TOKEN", ""],
           ["CLAUDE_CODE_OAUTH_TOKEN", ""],
           ["HTTPS_PROXY", ""],
+          ["NO_PROXY", ""],
           ["NODE_EXTRA_CA_CERTS", ""],
         ]);
         expect(await statusOf(child, held, "/v1/messages")).toBe(401);
@@ -12304,6 +12309,7 @@ describe("Account Pool credential scoping", () => {
           ["ANTHROPIC_AUTH_TOKEN", ""],
           ["CLAUDE_CODE_OAUTH_TOKEN", ""],
           ["HTTPS_PROXY", ""],
+          ["NO_PROXY", ""],
           ["NODE_EXTRA_CA_CERTS", ""],
         ]);
         expect(
@@ -12421,6 +12427,7 @@ describe("Account Pool credential scoping", () => {
       ["ANTHROPIC_AUTH_TOKEN", ""],
       ["CLAUDE_CODE_OAUTH_TOKEN", ""],
       ["HTTPS_PROXY", ""],
+      ["NO_PROXY", ""],
       ["NODE_EXTRA_CA_CERTS", ""],
     ]);
   });
@@ -12543,6 +12550,7 @@ describe("Account Pool Artifact proxy", () => {
   const hostRpcResult = {
     port: 45871,
     caPath: "/host/plugin-data/proxy-ca.pem",
+    noProxy: "corp.example,localhost,127.0.0.1,::1,hub.test",
   };
 
   function artifactFixture(
@@ -12607,10 +12615,13 @@ describe("Account Pool Artifact proxy", () => {
     expect(byName.get("ANTHROPIC_BASE_URL")).toEqual({
       serverPath: "/api/v1/plugins/account-pool/http",
     });
-    expect(byName.get("HTTPS_PROXY")).toBe(
-      `http://pool:${fixture.key}@127.0.0.1:45871`,
-    );
-    expect(byName.get("NO_PROXY")).toBe("localhost,127.0.0.1,::1");
+    const proxyUrl = new URL(String(byName.get("HTTPS_PROXY")));
+    expect(proxyUrl.username).toBe("pool");
+    expect(proxyUrl.host).toBe("127.0.0.1:45871");
+    expect(proxyUrl.password).toMatch(/^[A-Za-z0-9_-]{43}$/u);
+    expect(proxyUrl.password).not.toBe(fixture.key);
+    expect(String(byName.get("HTTPS_PROXY"))).not.toContain(fixture.key);
+    expect(byName.get("NO_PROXY")).toBe(hostRpcResult.noProxy);
     expect(byName.get("NODE_EXTRA_CA_CERTS")).toBe(hostRpcResult.caPath);
     expect(byName.get("CLAUDE_CODE_ARTIFACT")).toBe("1");
     expect(byName.has("HTTP_PROXY")).toBe(false);
@@ -12618,7 +12629,9 @@ describe("Account Pool Artifact proxy", () => {
     const call = calls[calls.length - 1];
     expect(call).toMatchObject({ method: "ensureProxy", hostId: "host-one" });
     expect(call?.input).toMatchObject({
-      tokenSha256: createHash("sha256").update(fixture.key).digest("hex"),
+      proxyCredentialSha256: createHash("sha256")
+        .update(proxyUrl.password)
+        .digest("hex"),
       caPem: expect.stringContaining("BEGIN CERTIFICATE"),
       leafCertPem: expect.stringContaining("BEGIN CERTIFICATE"),
       leafKeyPem: expect.stringContaining("PRIVATE KEY"),
@@ -12674,6 +12687,7 @@ describe("Account Pool Artifact proxy", () => {
     for (const name of [
       "CLAUDE_CODE_OAUTH_TOKEN",
       "HTTPS_PROXY",
+      "NO_PROXY",
       "NODE_EXTRA_CA_CERTS",
       "CLAUDE_CODE_ARTIFACT",
     ])
@@ -12788,8 +12802,100 @@ describe("Account Pool Artifact proxy", () => {
     expect(calls[before]).toMatchObject({
       method: "ensureProxy",
       hostId: "host-one",
-      input: { tokenSha256: null },
+      input: { proxyCredentialSha256: null },
     });
+  });
+
+  it("stops reading an oversized chunked Artifact request at the cap and answers 413", async () => {
+    const upstream = vi.fn(async () => Response.json({}));
+    const fixture = await artifactFixture(upstream, () => hostRpcResult);
+    const chunk = new Uint8Array(1024 * 1024);
+    let pulled = 0;
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (pulled >= 200) {
+          controller.close();
+          return;
+        }
+        pulled += 1;
+        controller.enqueue(chunk);
+      },
+    });
+    const response = await fixture.host.harness.behavior.fetchHttp(
+      "POST",
+      "/claude-oauth",
+      {
+        headers: {
+          authorization: `Bearer ${fixture.key}`,
+          "x-pool-target-host": "api.anthropic.com",
+          "x-pool-target-method": "POST",
+          "x-pool-target-path": "/api/frame/deploy/direct",
+        },
+        body,
+        duplex: "half",
+      } as RequestInit,
+    );
+    expect(response.status).toBe(413);
+    await response.text();
+    expect(pulled).toBeLessThan(40);
+    expect(upstream).not.toHaveBeenCalled();
+  });
+
+  it.each(["abc", "-5", "1.5"])(
+    "rejects a %s Content-Length on the oauth route",
+    async (contentLength) => {
+      const upstream = vi.fn(async () => Response.json({}));
+      const fixture = await artifactFixture(upstream, () => hostRpcResult);
+      const response = await fixture.host.harness.behavior.fetchHttp(
+        "POST",
+        "/claude-oauth",
+        {
+          headers: {
+            authorization: `Bearer ${fixture.key}`,
+            "x-pool-target-host": "api.anthropic.com",
+            "x-pool-target-method": "POST",
+            "x-pool-target-path": "/api/frame/deploy/direct",
+            "content-length": contentLength,
+          },
+          body: "{}",
+        },
+      );
+      expect(response.status).toBe(400);
+      await response.text();
+      expect(upstream).not.toHaveBeenCalled();
+    },
+  );
+
+  it("never accepts the proxy credential as a hub token", async () => {
+    const upstream = vi.fn(async () => Response.json({}));
+    const fixture = await artifactFixture(upstream, () => hostRpcResult);
+    const entries = await claudeEnv(fixture);
+    const proxyUrl = new URL(
+      String(entries.find((entry) => entry.name === "HTTPS_PROXY")?.value),
+    );
+    const credential = proxyUrl.password;
+    expect(credential).not.toBe(fixture.key);
+    for (const [method, route] of [
+      ["POST", "/claude-oauth"],
+      ["POST", "/v1/messages"],
+    ] as const) {
+      const response = await fixture.host.harness.behavior.fetchHttp(
+        method,
+        route,
+        {
+          headers: {
+            ...authHeaders(credential),
+            "x-pool-target-host": "api.anthropic.com",
+            "x-pool-target-method": "GET",
+            "x-pool-target-path": "/api/claude_code/policy_limits",
+          },
+          body: "{}",
+        },
+      );
+      expect(response.status).toBe(401);
+      await response.text();
+    }
+    expect(upstream).not.toHaveBeenCalled();
   });
 
   it("rejects the oauth route without a valid pool token", async () => {

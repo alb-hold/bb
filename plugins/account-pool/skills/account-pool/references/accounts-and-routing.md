@@ -367,14 +367,14 @@ attributes it to the parent host rather than to the nested instance.
 
 ## Claude Artifacts
 
-Claude Code offers `Artifact` only in a claude.ai account session, and it refuses every call while `ANTHROPIC_AUTH_TOKEN` is set. A pooled Claude thread on a pool with at least one subscription account therefore signs in with its pool token as `CLAUDE_CODE_OAUTH_TOKEN` and gets `HTTPS_PROXY`, `NO_PROXY`, `NODE_EXTRA_CA_CERTS` and `CLAUDE_CODE_ARTIFACT=1`. Inference keeps using the hub base URL.
+Claude Code offers `Artifact` only in a claude.ai account session, and it refuses every call while `ANTHROPIC_AUTH_TOKEN` is set. A pooled Claude thread on a pool with at least one subscription account therefore signs in with its pool token as `CLAUDE_CODE_OAUTH_TOKEN` and gets `HTTPS_PROXY`, `NODE_EXTRA_CA_CERTS` and `CLAUDE_CODE_ARTIFACT=1`. It sets no `NO_PROXY`, so a value already in the thread keeps working. Inference keeps using the hub base URL.
 
 Claude Code sends Artifact, policy and feature-flag requests straight to `https://api.anthropic.com` and ignores `ANTHROPIC_BASE_URL` for them, so the plugin's `bb.host` entry runs a proxy on `127.0.0.1` of each thread's host:
 
-- Every `CONNECT` must carry the thread's pool token (`Proxy-Authorization`); anything else gets 407. Other hosts are tunnelled directly from that host.
+- Every `CONNECT` must carry the thread's proxy credential (`Proxy-Authorization`), an HMAC the server derives from the pool token with a per-server secret; it buys tunnel use only and is never accepted by the hub. Anything else gets 407. Other hosts are tunnelled directly from that host.
 - `api.anthropic.com:443` is terminated with a 7-day leaf certificate. Only `/api/frame/*`, the policy lookup, feature flags and bootstrap are relayed to the hub route `POST /claude-oauth`; `settings` answers 404 and telemetry 204 locally; everything else is 403. The hub re-checks host, method and path against the same allowlist, swaps the pool token for the selected subscription account's access token (refreshing it, and retrying once on 401), and never forwards the pool token.
-- The certificate authority lives on the server in `secrets/proxy-ca` (key mode 0600) and is limited to `api.anthropic.com` by a critical name constraint. Hosts receive only the CA certificate, their own leaf certificate and its key (mode 0600 in the plugin data directory). Minting needs the system `openssl` command; without it, or when the host proxy cannot start, threads keep the plain pool credentials and `Artifact` stays unavailable.
-- Pools with only API keys, nested servers that proxy to a parent pool, and Codex are unchanged. Artifacts belong to the account that published them, so a conversation moved to another account cannot see the earlier ones.
+- The certificate authority lives on the server in `secrets/proxy-ca` (key mode 0600) and is limited to `api.anthropic.com` by a critical name constraint. Hosts receive only the CA certificate (written to the plugin data directory) and their own leaf certificate and key, which the host worker keeps in memory only and the server resends when the worker restarts. Minting needs the system `openssl` command; without it, or when the host proxy cannot start, threads keep the plain pool credentials and `Artifact` stays unavailable.
+- Pools with only API keys, nested servers that proxy to a parent pool, and Codex are unchanged. Any thread on the pool can PATCH or DELETE `/api/frame/*` artifacts of the shared account, which is accepted for a single-owner pool. Artifacts belong to the account that published them, so a conversation moved to another account cannot see the earlier ones.
 
 ## Automatic retries
 

@@ -103,13 +103,13 @@ const THREAD_SWEEP_LOOKUP_TIMEOUT_MS = 5_000;
 const THREAD_SWEEP_RETRY_MS = 60_000;
 const HUB_BASE_PATH = "/api/v1/plugins/account-pool/http";
 const HOST_PROXY_CALL_TIMEOUT_MS = 8_000;
-const HOST_PROXY_RECONCILE_INTERVAL_MS = 5 * 60_000;
+const HOST_PROXY_RECONCILE_INTERVAL_MS = 60_000;
 const HOST_PROXY_HOSTS_KEY = "artifact-proxy-hosts";
 const HOST_PROXY_WARN_INTERVAL_MS = 10 * 60_000;
-const HOST_PROXY_NO_PROXY = "localhost,127.0.0.1,::1";
 const ARTIFACT_PROXY_ENV = [
   "CLAUDE_CODE_OAUTH_TOKEN",
   "HTTPS_PROXY",
+  "NO_PROXY",
   "NODE_EXTRA_CA_CERTS",
 ] as const;
 
@@ -119,6 +119,7 @@ const PROVIDER_ROUTING_ENV: Record<PoolProvider, readonly string[]> = {
     "ANTHROPIC_AUTH_TOKEN",
     "CLAUDE_CODE_OAUTH_TOKEN",
     "HTTPS_PROXY",
+    "NO_PROXY",
     "NODE_EXTRA_CA_CERTS",
   ],
   codex: ["CODEX_OPENAI_BASE_URL", "CODEX_POOL_AUTH_TOKEN"],
@@ -243,20 +244,27 @@ export function createAccountPoolPlugin(
     const ensureArtifactProxy = async (
       hostId: string,
       token: string | null,
-    ): Promise<{ port: number; caPath: string } | null> => {
+    ): Promise<{
+      port: number;
+      caPath: string;
+      noProxy: string;
+      credential: string;
+    } | null> => {
       try {
         const authority = await artifactProxyAuthority();
         const leaf = await authority.leafFor(hostId);
+        const credential =
+          token === null ? "" : authority.proxyCredential(token);
         const result = await hostProxy.call(
           "ensureProxy",
           {
             caPem: await authority.caPem(),
             leafCertPem: leaf.certPem,
             leafKeyPem: leaf.keyPem,
-            tokenSha256:
+            proxyCredentialSha256:
               token === null
                 ? null
-                : createHash("sha256").update(token).digest("hex"),
+                : createHash("sha256").update(credential).digest("hex"),
           },
           { hostId, timeoutMs: HOST_PROXY_CALL_TIMEOUT_MS },
         );
@@ -270,7 +278,7 @@ export function createAccountPoolPlugin(
           known.add(hostId);
           await bb.storage.kv.set(HOST_PROXY_HOSTS_KEY, [...known]);
         }
-        return result;
+        return { ...result, credential };
       } catch (error) {
         warnArtifactProxy(hostId, error);
         return null;
@@ -739,14 +747,15 @@ export function createAccountPoolPlugin(
             : [
                 {
                   name: "HTTPS_PROXY",
-                  value: `http://pool:${token}@127.0.0.1:${proxy.port}`,
+                  value: `http://pool:${proxy.credential}@127.0.0.1:${proxy.port}`,
                   reason:
                     "Host-local Account Pooler proxy: it relays Claude Code's Artifact traffic to the hub and tunnels everything else directly",
                 },
                 {
                   name: "NO_PROXY",
-                  value: HOST_PROXY_NO_PROXY,
-                  reason: "Keeps loopback traffic off the Account Pooler proxy",
+                  value: proxy.noProxy,
+                  reason:
+                    "Keeps the hub and loopback traffic, plus any NO_PROXY already set on the host, off the Account Pooler proxy",
                 },
                 {
                   name: "NODE_EXTRA_CA_CERTS",
