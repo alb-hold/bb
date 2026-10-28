@@ -32,6 +32,7 @@ export interface ChildThreadTurnNotificationBatchItem {
   turnStatus: ThreadEventTurnStatus;
   failureContext?: string;
   interruption?: ChildThreadOutcome["interruption"];
+  retryScheduledAt?: number;
 }
 
 interface ChildThreadTurnNotificationBatch {
@@ -67,6 +68,7 @@ interface QueueChildThreadTurnNotificationArgs {
   turnStatus: ThreadEventTurnStatus;
   failureContext?: string;
   interruption?: ChildThreadOutcome["interruption"];
+  retryScheduledAt?: number;
 }
 
 interface QueueChildThreadNeedsAttentionNotificationArgs {
@@ -98,6 +100,9 @@ function childThreadTurnStatusLabel(
   item: ChildThreadTurnNotificationBatchItem,
 ): string {
   if (item.failureContext) return item.failureContext;
+  if (item.retryScheduledAt !== undefined) {
+    return `failed; an automatic retry is scheduled for ${new Date(item.retryScheduledAt).toISOString()}`;
+  }
   const { turnStatus } = item;
   switch (turnStatus) {
     case "completed":
@@ -200,6 +205,15 @@ function buildSingleChildThreadTurnStatusSegments(
       ];
     }
     case "failed":
+      if (line.item.retryScheduledAt !== undefined) {
+        return [
+          { kind: "mention", mention: line.mention },
+          {
+            kind: "text",
+            text: ` failed; an automatic retry is scheduled for ${new Date(line.item.retryScheduledAt).toISOString()}.`,
+          },
+        ];
+      }
       return [
         { kind: "mention", mention: line.mention },
         {
@@ -439,6 +453,9 @@ function queueChildThreadTurnNotificationBatchItem(
     turnStatus: args.turnStatus,
     ...(args.failureContext ? { failureContext: args.failureContext } : {}),
     ...(args.interruption ? { interruption: args.interruption } : {}),
+    ...(args.retryScheduledAt !== undefined
+      ? { retryScheduledAt: args.retryScheduledAt }
+      : {}),
   };
   const existingBatch = childThreadTurnNotificationBatches.get(
     args.parentThreadId,

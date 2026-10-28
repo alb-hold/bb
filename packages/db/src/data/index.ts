@@ -577,6 +577,7 @@ export {
   deleteClaimedQueuedThreadMessageBatchInTransaction,
   deleteQueuedThreadMessage,
   getQueuedThreadMessage,
+  getQueuedRetryOfTurnRequest,
   getQueuedThreadStartMessage,
   hasQueuedRetryOfTurnRequest,
   hasClaimedQueuedThreadMessages,
