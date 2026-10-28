@@ -103,6 +103,7 @@ const THREAD_SWEEP_LOOKUP_TIMEOUT_MS = 5_000;
 const THREAD_SWEEP_RETRY_MS = 60_000;
 const HUB_BASE_PATH = "/api/v1/plugins/account-pool/http";
 const HOST_PROXY_CALL_TIMEOUT_MS = 8_000;
+const HOST_PROXY_SYNC_DEBOUNCE_MS = 100;
 const HOST_PROXY_RECONCILE_INTERVAL_MS = 60_000;
 const HOST_PROXY_HOSTS_KEY = "artifact-proxy-hosts";
 const HOST_PROXY_WARN_INTERVAL_MS = 10 * 60_000;
@@ -241,66 +242,97 @@ export function createAccountPoolPlugin(
         `Account Pooler Artifact proxy is unavailable on host ${hostId}; threads there keep the plain pool credentials: ${error instanceof Error ? error.message : String(error)}`,
       );
     };
+    const sha256Hex = (value: string): string =>
+      createHash("sha256").update(value).digest("hex");
+    const proxyQueues = new Map<string, Promise<unknown>>();
+    const syncArtifactProxy = (
+      hostId: string,
+    ): Promise<{ port: number; caPath: string; noProxy: string } | null> => {
+      const run = (proxyQueues.get(hostId) ?? Promise.resolve()).then(
+        async () => {
+          try {
+            const authority = await artifactProxyAuthority();
+            const leaf = await authority.leafFor(hostId);
+            const tokenDigests = await threadTokens.activeTokenDigests(hostId);
+            const result = await hostProxy.call(
+              "ensureProxy",
+              {
+                caPem: await authority.caPem(),
+                leafCertPem: leaf.certPem,
+                leafKeyPem: leaf.keyPem,
+                proxyCredentialSha256s: tokenDigests.map((digest) =>
+                  sha256Hex(authority.proxyCredential(digest)),
+                ),
+              },
+              { hostId, timeoutMs: HOST_PROXY_CALL_TIMEOUT_MS },
+            );
+            const known = new Set(
+              z
+                .array(z.string())
+                .catch([])
+                .parse(await bb.storage.kv.get(HOST_PROXY_HOSTS_KEY)),
+            );
+            if (!known.has(hostId)) {
+              known.add(hostId);
+              await bb.storage.kv.set(HOST_PROXY_HOSTS_KEY, [...known]);
+            }
+            return result;
+          } catch (error) {
+            warnArtifactProxy(hostId, error);
+            return null;
+          }
+        },
+      );
+      proxyQueues.set(
+        hostId,
+        run.catch(() => undefined),
+      );
+      return run;
+    };
     const ensureArtifactProxy = async (
       hostId: string,
-      token: string | null,
+      token: string,
     ): Promise<{
       port: number;
       caPath: string;
       noProxy: string;
       credential: string;
     } | null> => {
-      try {
-        const authority = await artifactProxyAuthority();
-        const leaf = await authority.leafFor(hostId);
-        const credential =
-          token === null ? "" : authority.proxyCredential(token);
-        const result = await hostProxy.call(
-          "ensureProxy",
-          {
-            caPem: await authority.caPem(),
-            leafCertPem: leaf.certPem,
-            leafKeyPem: leaf.keyPem,
-            proxyCredentialSha256:
-              token === null
-                ? null
-                : createHash("sha256").update(credential).digest("hex"),
-          },
-          { hostId, timeoutMs: HOST_PROXY_CALL_TIMEOUT_MS },
-        );
-        const known = new Set(
-          z
-            .array(z.string())
-            .catch([])
-            .parse(await bb.storage.kv.get(HOST_PROXY_HOSTS_KEY)),
-        );
-        if (!known.has(hostId)) {
-          known.add(hostId);
-          await bb.storage.kv.set(HOST_PROXY_HOSTS_KEY, [...known]);
-        }
-        return { ...result, credential };
-      } catch (error) {
-        warnArtifactProxy(hostId, error);
-        return null;
-      }
+      const result = await syncArtifactProxy(hostId);
+      if (result === null) return null;
+      const authority = await artifactProxyAuthority();
+      return {
+        ...result,
+        credential: authority.proxyCredential(sha256Hex(token)),
+      };
     };
     const reconcileArtifactProxies = async (): Promise<void> => {
       const hosts = z
         .array(z.string())
         .catch([])
         .parse(await bb.storage.kv.get(HOST_PROXY_HOSTS_KEY));
-      await Promise.all(
-        hosts.map((hostId) => ensureArtifactProxy(hostId, null)),
-      );
+      await Promise.all(hosts.map((hostId) => syncArtifactProxy(hostId)));
     };
     hostProxy.experimental_onWorkerExit(({ hostId }) => {
-      void ensureArtifactProxy(hostId, null);
+      void syncArtifactProxy(hostId);
+    });
+    let proxySyncTimer: ReturnType<typeof setTimeout> | null = null;
+    threadTokens.onCredentialsChanged(() => {
+      if (proxySyncTimer !== null) return;
+      proxySyncTimer = setTimeout(() => {
+        proxySyncTimer = null;
+        void reconcileArtifactProxies().catch(() => undefined);
+      }, HOST_PROXY_SYNC_DEBOUNCE_MS);
+      proxySyncTimer.unref();
     });
     const reconcileTimer = setInterval(() => {
       void reconcileArtifactProxies().catch(() => undefined);
     }, HOST_PROXY_RECONCILE_INTERVAL_MS);
     reconcileTimer.unref();
-    bb.onDispose(() => clearInterval(reconcileTimer));
+    bb.onDispose(() => {
+      clearInterval(reconcileTimer);
+      if (proxySyncTimer !== null) clearTimeout(proxySyncTimer);
+    });
     void reconcileArtifactProxies().catch(() => undefined);
     const db = bb.storage.database();
     bb.storage.migrate(db, QUOTA_MIGRATIONS);

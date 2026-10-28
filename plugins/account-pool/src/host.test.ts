@@ -38,7 +38,9 @@ async function material() {
       caPem: await authority.caPem(),
       leafCertPem: leaf.certPem,
       leafKeyPem: leaf.keyPem,
-      proxyCredentialSha256: createHash("sha256").update(TOKEN).digest("hex"),
+      proxyCredentialSha256s: [
+        createHash("sha256").update(TOKEN).digest("hex"),
+      ],
     },
   };
 }
@@ -83,7 +85,7 @@ describe("account pool host entry", () => {
     expect(await connectStatus(first.port, TOKEN)).toBe(200);
     const second = await harness.experimental_call("ensureProxy", {
       ...input,
-      proxyCredentialSha256: null,
+      proxyCredentialSha256s: [],
     });
     expect(second.port).toBe(first.port);
     expect(harness.experimental_getRetainedWorkerLeaseCount()).toBe(1);

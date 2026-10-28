@@ -9,10 +9,9 @@ export const accountPoolHostContract = defineRpcContract({
         caPem: z.string().min(1),
         leafCertPem: z.string().min(1),
         leafKeyPem: z.string().min(1),
-        proxyCredentialSha256: z
-          .string()
-          .regex(/^[a-f0-9]{64}$/u)
-          .nullable(),
+        proxyCredentialSha256s: z
+          .array(z.string().regex(/^[a-f0-9]{64}$/u))
+          .max(4_096),
       })
       .strict(),
     output: z

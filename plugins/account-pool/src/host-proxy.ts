@@ -17,7 +17,6 @@ import {
 export const HUB_ROUTE_PREFIX = "/api/v1/plugins/account-pool/http";
 
 const LOOPBACK = "127.0.0.1";
-const CREDENTIAL_TTL_MS = 30 * 24 * 60 * 60 * 1_000;
 const MAX_CREDENTIALS = 4_096;
 const MAX_TUNNELS_PER_TOKEN = 256;
 const CONNECT_TIMEOUT_MS = 10_000;
@@ -53,7 +52,7 @@ export interface HostProxyEnsureInput {
   caPem: string;
   leafCertPem: string;
   leafKeyPem: string;
-  proxyCredentialSha256: string | null;
+  proxyCredentialSha256s: readonly string[];
   serverUrl: string;
 }
 
@@ -112,27 +111,6 @@ async function readText(file: string): Promise<string | null> {
   }
 }
 
-function parseCredentials(text: string | null): Map<string, number> {
-  const credentials = new Map<string, number>();
-  if (text === null) return credentials;
-  try {
-    const parsed: unknown = JSON.parse(text);
-    if (!Array.isArray(parsed)) return credentials;
-    for (const entry of parsed) {
-      if (
-        Array.isArray(entry) &&
-        typeof entry[0] === "string" &&
-        DIGEST_PATTERN.test(entry[0]) &&
-        typeof entry[1] === "number"
-      )
-        credentials.set(entry[0], entry[1]);
-    }
-  } catch {
-    return credentials;
-  }
-  return credentials;
-}
-
 export function createHostProxy(options: {
   dataDir: string;
   fetch?: typeof fetch;
@@ -140,15 +118,14 @@ export function createHostProxy(options: {
   const { dataDir } = options;
   const upstreamFetch = options.fetch ?? fetch;
   const caPath = path.join(dataDir, "ca.pem");
-  const credentialsPath = path.join(dataDir, "credentials.json");
   const portPath = path.join(dataDir, "proxy-port");
-  let credentials: Map<string, number> | null = null;
+  let credentials: Set<string> | null = null;
   let secureContext: tls.SecureContext | null = null;
   let serverUrl = "";
   let listener: http.Server | null = null;
   let boundPort = 0;
   const sockets = new Set<net.Socket>();
-  const tunnelsByCredential = new Map<string, number>();
+  const socketsByCredential = new Map<string, Set<net.Socket>>();
   let starting: Promise<void> | null = null;
   let queue: Promise<unknown> = Promise.resolve();
 
@@ -161,8 +138,7 @@ export function createHostProxy(options: {
   interceptServer.on("clientError", (_error, socket) => socket.destroy());
 
   function knownDigest(digest: string): boolean {
-    const addedAt = credentials?.get(digest);
-    return addedAt !== undefined && Date.now() - addedAt < CREDENTIAL_TTL_MS;
+    return credentials?.has(digest) === true;
   }
 
   function fail(
@@ -278,21 +254,18 @@ export function createHostProxy(options: {
     });
   }
 
-  function track(socket: net.Socket, digest: string): () => void {
+  function track(socket: net.Socket, digest: string): void {
     sockets.add(socket);
-    tunnelsByCredential.set(digest, (tunnelsByCredential.get(digest) ?? 0) + 1);
-    let released = false;
-    const release = () => {
-      if (released) return;
-      released = true;
+    const open = socketsByCredential.get(digest) ?? new Set<net.Socket>();
+    open.add(socket);
+    socketsByCredential.set(digest, open);
+    socket.once("close", () => {
       sockets.delete(socket);
-      const remaining = (tunnelsByCredential.get(digest) ?? 1) - 1;
-      if (remaining <= 0) tunnelsByCredential.delete(digest);
-      else tunnelsByCredential.set(digest, remaining);
-    };
-    socket.once("close", release);
+      open.delete(socket);
+      if (open.size === 0 && socketsByCredential.get(digest) === open)
+        socketsByCredential.delete(digest);
+    });
     socket.setTimeout(IDLE_TIMEOUT_MS, () => socket.destroy());
-    return release;
   }
 
   function onConnect(
@@ -323,7 +296,7 @@ export function createHostProxy(options: {
       socket.end(proxyStatus(400, "Bad Request"));
       return;
     }
-    if ((tunnelsByCredential.get(digest) ?? 0) >= MAX_TUNNELS_PER_TOKEN) {
+    if ((socketsByCredential.get(digest)?.size ?? 0) >= MAX_TUNNELS_PER_TOKEN) {
       socket.end(proxyStatus(503, "Service Unavailable"));
       return;
     }
@@ -418,11 +391,13 @@ export function createHostProxy(options: {
     input: HostProxyEnsureInput,
   ): Promise<{ port: number; caPath: string }> {
     if (
-      input.proxyCredentialSha256 !== null &&
-      !DIGEST_PATTERN.test(input.proxyCredentialSha256)
+      input.proxyCredentialSha256s.length > MAX_CREDENTIALS ||
+      !input.proxyCredentialSha256s.every((digest) =>
+        DIGEST_PATTERN.test(digest),
+      )
     )
       throw new Error(
-        "proxyCredentialSha256 must be a lowercase hex SHA-256 digest.",
+        "proxyCredentialSha256s must hold lowercase hex SHA-256 digests.",
       );
     await fs.mkdir(dataDir, { recursive: true, mode: 0o700 });
     await fs.chmod(dataDir, 0o700);
@@ -432,22 +407,10 @@ export function createHostProxy(options: {
       cert: input.leafCertPem,
     });
     serverUrl = input.serverUrl.replace(/\/+$/u, "");
-    credentials ??= parseCredentials(await readText(credentialsPath));
-    const now = Date.now();
-    for (const [digest, addedAt] of credentials)
-      if (now - addedAt >= CREDENTIAL_TTL_MS) credentials.delete(digest);
-    if (input.proxyCredentialSha256 !== null)
-      credentials.set(input.proxyCredentialSha256, now);
-    while (credentials.size > MAX_CREDENTIALS) {
-      const oldest = credentials.keys().next().value;
-      if (oldest === undefined) break;
-      credentials.delete(oldest);
-    }
-    await writeFileAtomic(
-      credentialsPath,
-      JSON.stringify([...credentials.entries()]),
-      0o600,
-    );
+    const active = new Set(input.proxyCredentialSha256s);
+    credentials = active;
+    for (const [digest, open] of socketsByCredential)
+      if (!active.has(digest)) for (const socket of open) socket.destroy();
     starting ??= start();
     await starting;
     return { port: boundPort, caPath };

@@ -179,7 +179,7 @@ describe("host Artifact proxy", () => {
     cleanups.push(() => proxy.close());
     const { port, caPath } = await proxy.ensure({
       ...material,
-      proxyCredentialSha256: sha256(CREDENTIAL),
+      proxyCredentialSha256s: [sha256(CREDENTIAL)],
       serverUrl,
     });
     return { proxy, port, caPath };
@@ -218,9 +218,7 @@ describe("host Artifact proxy", () => {
       expect(content).not.toContain(CREDENTIAL);
       expect(content).not.toContain(material.leafKeyPem.trim());
     }
-    expect(
-      (await fs.stat(path.join(hostDir, "credentials.json"))).mode & 0o777,
-    ).toBe(0o600);
+    expect(files).not.toContain("credentials.json");
   });
 
   it("tunnels other hosts directly from the host without inspecting them", async () => {
@@ -347,17 +345,17 @@ describe("host Artifact proxy", () => {
     expect(failures).toEqual([]);
   });
 
-  it("registers every token when ensure calls run concurrently", async () => {
+  it("serves every credential when ensure calls run concurrently", async () => {
     const proxy = createHostProxy({ dataDir: path.join(dataDir, "host") });
     cleanups.push(() => proxy.close());
     const tokens = Array.from({ length: 8 }, (_, index) =>
       String(index).repeat(43).slice(0, 43),
     );
     const results = await Promise.all(
-      tokens.map((token) =>
+      tokens.map((_, count) =>
         proxy.ensure({
           ...material,
-          proxyCredentialSha256: sha256(token),
+          proxyCredentialSha256s: tokens.slice(0, count + 1).map(sha256),
           serverUrl: "http://127.0.0.1:1",
         }),
       ),
@@ -371,6 +369,64 @@ describe("host Artifact proxy", () => {
     }
   });
 
+  it("drops a credential the next ensure omits while another keeps tunnelling", async () => {
+    const revoked = "R".repeat(43);
+    const kept = "K".repeat(43);
+    const proxy = createHostProxy({ dataDir: path.join(dataDir, "host") });
+    cleanups.push(() => proxy.close());
+    const ensure = (digests: string[]) =>
+      proxy.ensure({
+        ...material,
+        proxyCredentialSha256s: digests,
+        serverUrl: "http://127.0.0.1:1",
+      });
+    const { port } = await ensure([sha256(revoked), sha256(kept)]);
+    const before = await connect(port, "api.anthropic.com:443", basic(revoked));
+    expect(before.status).toBe(200);
+    before.socket.destroy();
+    await ensure([sha256(kept)]);
+    const after = await connect(port, "api.anthropic.com:443", basic(revoked));
+    expect(after.status).toBe(407);
+    const stillActive = await connect(
+      port,
+      "api.anthropic.com:443",
+      basic(kept),
+    );
+    expect(stillActive.status).toBe(200);
+    stillActive.socket.destroy();
+    await ensure([]);
+    const none = await connect(port, "api.anthropic.com:443", basic(kept));
+    expect(none.status).toBe(407);
+  });
+
+  it("closes the tunnels of a credential the next ensure omits", async () => {
+    const revoked = "R".repeat(43);
+    const kept = "K".repeat(43);
+    const echo = net.createServer((socket) => socket.pipe(socket));
+    const echoPort = await listen(echo);
+    const proxy = createHostProxy({ dataDir: path.join(dataDir, "host") });
+    cleanups.push(() => proxy.close());
+    const ensure = (digests: string[]) =>
+      proxy.ensure({
+        ...material,
+        proxyCredentialSha256s: digests,
+        serverUrl: "http://127.0.0.1:1",
+      });
+    const { port } = await ensure([sha256(revoked), sha256(kept)]);
+    const target = `127.0.0.1:${echoPort}`;
+    const doomed = await connect(port, target, basic(revoked));
+    const survivor = await connect(port, target, basic(kept));
+    expect(doomed.status).toBe(200);
+    expect(survivor.status).toBe(200);
+    const closed = new Promise<void>((resolve) =>
+      doomed.socket.once("close", () => resolve()),
+    );
+    await ensure([sha256(kept)]);
+    await closed;
+    survivor.socket.write("ping");
+    expect(await readUntil(survivor.socket, "ping")).toBe("ping");
+  });
+
   it("keeps its port and registered tokens across a restart", async () => {
     const first = await start("http://127.0.0.1:1");
     await first.proxy.close();
@@ -378,7 +434,7 @@ describe("host Artifact proxy", () => {
     cleanups.push(() => proxy.close());
     const second = await proxy.ensure({
       ...material,
-      proxyCredentialSha256: null,
+      proxyCredentialSha256s: [sha256(CREDENTIAL)],
       serverUrl: "http://127.0.0.1:1",
     });
     expect(second.port).toBe(first.port);

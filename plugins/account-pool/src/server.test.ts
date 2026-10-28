@@ -11,6 +11,7 @@ import {
 } from "./usage-contract.js";
 import fs from "node:fs/promises";
 import http, { type IncomingMessage, type ServerResponse } from "node:http";
+import net from "node:net";
 import path from "node:path";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -48,6 +49,7 @@ import {
   PoolAffinityStore,
   QuotaStore,
 } from "./store.js";
+import { createHostProxy } from "./host-proxy.js";
 import {
   createAccountPoolPlugin,
   helloResponse,
@@ -12625,13 +12627,13 @@ describe("Account Pool Artifact proxy", () => {
     expect(byName.get("NODE_EXTRA_CA_CERTS")).toBe(hostRpcResult.caPath);
     expect(byName.get("CLAUDE_CODE_ARTIFACT")).toBe("1");
     expect(byName.has("HTTP_PROXY")).toBe(false);
-    expect(calls).toHaveLength(2);
+    expect(calls.length).toBeGreaterThanOrEqual(2);
     const call = calls[calls.length - 1];
     expect(call).toMatchObject({ method: "ensureProxy", hostId: "host-one" });
     expect(call?.input).toMatchObject({
-      proxyCredentialSha256: createHash("sha256")
-        .update(proxyUrl.password)
-        .digest("hex"),
+      proxyCredentialSha256s: [
+        createHash("sha256").update(proxyUrl.password).digest("hex"),
+      ],
       caPem: expect.stringContaining("BEGIN CERTIFICATE"),
       leafCertPem: expect.stringContaining("BEGIN CERTIFICATE"),
       leafKeyPem: expect.stringContaining("PRIVATE KEY"),
@@ -12784,7 +12786,7 @@ describe("Account Pool Artifact proxy", () => {
     expect(seen).toEqual(["Bearer oauth-old", "Bearer oauth-new"]);
   });
 
-  it("re-ensures the host proxy without a token when the host worker exits", async () => {
+  it("re-ensures the host proxy when the host worker exits", async () => {
     const calls: ExperimentalFakeHostRpcCall[] = [];
     const fixture = await artifactFixture(
       async () => Response.json({}),
@@ -12794,15 +12796,18 @@ describe("Account Pool Artifact proxy", () => {
       },
     );
     await claudeEnv(fixture);
+    await new Promise((resolve) => setTimeout(resolve, 300));
     const before = calls.length;
     await fixture.host.harness.behavior.experimental_emitHostWorkerExit(
       "host-one",
     );
-    await vi.waitFor(() => expect(calls.length).toBe(before + 1));
+    await vi.waitFor(() => expect(calls.length).toBeGreaterThan(before));
     expect(calls[before]).toMatchObject({
       method: "ensureProxy",
       hostId: "host-one",
-      input: { proxyCredentialSha256: null },
+      input: {
+        proxyCredentialSha256s: [expect.stringMatching(/^[a-f0-9]{64}$/u)],
+      },
     });
   });
 
@@ -12896,6 +12901,94 @@ describe("Account Pool Artifact proxy", () => {
       await response.text();
     }
     expect(upstream).not.toHaveBeenCalled();
+  });
+
+  describe("with a real host proxy", () => {
+    const sha256 = (value: string) =>
+      createHash("sha256").update(value).digest("hex");
+
+    async function withHostProxy() {
+      const hostDir = await mkdtemp(path.join(tmpdir(), "bb-host-proxy-live-"));
+      const proxy = createHostProxy({ dataDir: hostDir });
+      cleanups.push(async () => {
+        await proxy.close();
+        await fs.rm(hostDir, { recursive: true, force: true });
+      });
+      const fixture = await artifactFixture(
+        async () => Response.json({}),
+        async (call) => {
+          const ensured = await proxy.ensure({
+            ...(call.input as Parameters<typeof proxy.ensure>[0]),
+            serverUrl: "http://127.0.0.1:1",
+          });
+          return { ...ensured, noProxy: "localhost" };
+        },
+      );
+      const credentialOf = async (threadId: string) => {
+        const entries = await claudeEnv(fixture, threadId);
+        const url = new URL(
+          String(entries.find((entry) => entry.name === "HTTPS_PROXY")?.value),
+        );
+        return { password: url.password, port: Number(url.port) };
+      };
+      const connectStatus = (port: number, password: string) =>
+        new Promise<number>((resolve, reject) => {
+          const socket = net.connect(port, "127.0.0.1");
+          socket.once("error", reject);
+          socket.once("connect", () =>
+            socket.write(
+              `CONNECT api.anthropic.com:443 HTTP/1.1\r\nHost: api.anthropic.com:443\r\nProxy-Authorization: Basic ${Buffer.from(`pool:${password}`).toString("base64")}\r\n\r\n`,
+            ),
+          );
+          socket.once("data", (chunk) => {
+            socket.destroy();
+            resolve(Number(/^HTTP\/1\.1 (\d{3})/u.exec(chunk.toString())?.[1]));
+          });
+        });
+      return { fixture, credentialOf, connectStatus };
+    }
+
+    it("answers 407 to the credential of an archived thread while another thread's credential still tunnels", async () => {
+      const { fixture, credentialOf, connectStatus } = await withHostProxy();
+      const revoked = await credentialOf("thread-one");
+      const active = await credentialOf("thread-two");
+      expect(revoked.password).not.toBe(active.password);
+      expect(await connectStatus(revoked.port, revoked.password)).toBe(200);
+      expect(await connectStatus(active.port, active.password)).toBe(200);
+      bbThreadStates.set("thread-one", "archived");
+      try {
+        expect(
+          await fixture.host.harness.behavior.emitThreadEvent(
+            "thread.archived",
+            { thread: makeThreadResponse({ id: "thread-one" }) },
+          ),
+        ).toEqual({ errors: [] });
+        await vi.waitFor(async () =>
+          expect(await connectStatus(revoked.port, revoked.password)).toBe(407),
+        );
+        expect(await connectStatus(active.port, active.password)).toBe(200);
+      } finally {
+        bbThreadStates.delete("thread-one");
+      }
+    });
+
+    it("answers 407 to the credential of a deleted thread", async () => {
+      const { fixture, credentialOf, connectStatus } = await withHostProxy();
+      const revoked = await credentialOf("thread-one");
+      const active = await credentialOf("thread-two");
+      bbThreadStates.set("thread-one", "deleted");
+      try {
+        await fixture.host.harness.behavior.emitThreadEvent("thread.deleted", {
+          thread: makeThreadResponse({ id: "thread-one" }),
+        });
+        await vi.waitFor(async () =>
+          expect(await connectStatus(revoked.port, revoked.password)).toBe(407),
+        );
+        expect(await connectStatus(active.port, active.password)).toBe(200);
+      } finally {
+        bbThreadStates.delete("thread-one");
+      }
+    });
   });
 
   it("rejects the oauth route without a valid pool token", async () => {

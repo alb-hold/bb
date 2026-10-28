@@ -27,7 +27,7 @@ export interface ProxyLeaf {
 
 export interface ProxyCertificateAuthority {
   caPem(): Promise<string>;
-  proxyCredential(token: string): string;
+  proxyCredential(tokenDigest: string): string;
   leafFor(hostId: string): Promise<ProxyLeaf>;
   mintLeaf(host: string): Promise<ProxyLeaf>;
 }
@@ -246,9 +246,9 @@ export async function createProxyCertificateAuthority(options: {
 
   return {
     caPem: () => serialized(() => fs.readFile(caCertPath, "utf8")),
-    proxyCredential: (token) =>
+    proxyCredential: (tokenDigest) =>
       createHmac("sha256", proxySecret)
-        .update(`account-pool proxy credential\0${token}`)
+        .update(`account-pool proxy credential\0${tokenDigest}`)
         .digest("base64url"),
     mintLeaf(host) {
       if (host !== OAUTH_PROXY_HOST)
