@@ -176,6 +176,8 @@ function holder(
           id: SESSION_ID,
           cwd: CWD,
           timestamp: "2026-10-11T12:00:01Z",
+          originator: "codex-tui",
+          source: "cli",
         },
       },
     ]),

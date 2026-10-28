@@ -243,6 +243,9 @@ export const providerNativeTerminalDiscoveredSessionSchema = z
     header: z
       .object({
         match: z.record(headerFieldPathSchema, z.string().min(1)),
+        discoveryMatch: z
+          .record(headerFieldPathSchema, z.string().min(1))
+          .optional(),
         id: headerFieldPathSchema,
         cwd: headerFieldPathSchema,
         startedAt: headerFieldPathSchema,

@@ -1133,7 +1133,7 @@ declaration should name the server rather than hard-code `bb-bridge`, and
 whether a third CLI needs a config file instead of argv.
 
 **Audit before stabilizing.** Confirm the two session strategies cover a
-third CLI without a new kind; decide whether the first-JSON-line header is
+third CLI without a new kind; confirm `session.header.discoveryMatch` (extra header fields a new launch's session must carry, which `provider-codex` sets to its interactive `source`) is enough to tell the CLI's own session from another client's in the same workspace, or whether the launch should hand the CLI an identity that its session file records, and that core binds a new session only through `findNativeSession`, the same path the Codex declaration uses; decide whether the first-JSON-line header is
 the right discovery vocabulary or whether discovery belongs in the plugin's
 `bb.host` entry as a resolver, like `experimental_resolvesNativeRoots`;
 decide whether injected instructions, skills and MCP configuration should
