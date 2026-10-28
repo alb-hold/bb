@@ -60,7 +60,9 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-async function mountTerminal() {
+async function mountTerminal(
+  props: { onSelectionAddToChat?: (text: string) => void } = {},
+) {
   const terminals: Terminal[] = [];
   const screenRequest = vi.spyOn(sdk.terminals, "experimental_screen");
   const open = Terminal.prototype.open;
@@ -76,6 +78,7 @@ async function mountTerminal() {
       autoFocus={false}
       isPanelOpen
       session={makeTerminalSession({ status: "running" })}
+      {...props}
     />,
   );
   await waitFor(() =>
@@ -125,6 +128,70 @@ describe("terminal clipboard interactions", () => {
     );
     expect(success).toHaveBeenCalledExactlyOnceWith("Selection copied");
   });
+
+  it("keeps copying drag selections after the terminal is unmounted and mounted again", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("navigator", { clipboard: { writeText } });
+    const dragSelect = async (
+      terminal: Terminal,
+      view: { container: HTMLElement },
+      startColumn: number,
+    ) => {
+      const terminalScreen = view.container.querySelector(".xterm-screen");
+      if (terminalScreen === null) throw new Error("Expected terminal screen");
+      fireEvent.pointerDown(terminalScreen, { clientX: 0, clientY: 0 });
+      act(() => terminal.select(startColumn, 0, 5));
+      fireEvent.pointerUp(terminalScreen, { clientX: 40, clientY: 0 });
+      await act(() => new Promise((resolve) => requestAnimationFrame(resolve)));
+    };
+
+    const first = await mountTerminal();
+    await dragSelect(first.terminal, first.view, 0);
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith("alpha"));
+    first.view.unmount();
+    vi.mocked(Terminal.prototype.open).mockRestore();
+    vi.mocked(sdk.terminals.experimental_screen).mockRestore();
+
+    const second = await mountTerminal();
+    await dragSelect(second.terminal, second.view, 6);
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith("bravo"));
+    await dragSelect(second.terminal, second.view, 0);
+    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(3));
+    expect(writeText).toHaveBeenNthCalledWith(3, "alpha");
+  });
+
+  it.each([
+    ["different text", 6, "bravo"],
+    ["identical text", 0, "alpha"],
+  ])(
+    "copies a new drag selection with %s when the previous selection's menu is dismissed after the release",
+    async (_name, startColumn, expectedText) => {
+      const writeText = vi.fn().mockResolvedValue(undefined);
+      vi.stubGlobal("navigator", { clipboard: { writeText } });
+      const { terminal, view } = await mountTerminal({
+        onSelectionAddToChat: vi.fn(),
+      });
+      const terminalScreen = view.container.querySelector(".xterm-screen");
+      if (terminalScreen === null) throw new Error("Expected terminal screen");
+
+      fireEvent.pointerDown(terminalScreen, { clientX: 0, clientY: 0 });
+      act(() => terminal.select(0, 0, 5));
+      fireEvent.pointerUp(terminalScreen, { clientX: 40, clientY: 0 });
+      await waitFor(() => expect(writeText).toHaveBeenCalledWith("alpha"));
+      const menuButton = await screen.findByRole("button", {
+        name: "Add to chat",
+      });
+
+      fireEvent.pointerDown(terminalScreen, { clientX: 0, clientY: 0 });
+      act(() => terminal.select(startColumn, 0, 5));
+      fireEvent.pointerUp(menuButton, { clientX: 40, clientY: 0 });
+      fireEvent.keyDown(document.body, { key: "Escape" });
+      await act(() => new Promise((resolve) => requestAnimationFrame(resolve)));
+
+      await waitFor(() => expect(writeText).toHaveBeenCalledTimes(2));
+      expect(writeText).toHaveBeenLastCalledWith(expectedText);
+    },
+  );
 
   it("copies a drag selection released outside the terminal", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);

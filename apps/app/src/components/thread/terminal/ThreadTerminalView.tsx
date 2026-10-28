@@ -1223,6 +1223,7 @@ export function ThreadTerminalView({
   const hoveredTerminalLinkRef = useRef<TerminalLinkTarget | null>(null);
   const pointerStartPointRef = useRef<SelectionAnchorPoint | null>(null);
   const pointerIsDownRef = useRef(false);
+  const terminalSelectionGestureRef = useRef(false);
   const touchFocusGestureRef = useRef<TerminalTouchFocusGesture | null>(null);
   const touchHandlersRef = useRef<ReturnType<
     typeof createTerminalTouchHandlers
@@ -1302,6 +1303,7 @@ export function ThreadTerminalView({
       if (pointerIsDownRef.current) {
         return;
       }
+      terminalSelectionGestureRef.current = false;
       const text = selectionText ?? terminal.getSelection();
       setActiveSelection(
         buildTerminalSelection({
@@ -1332,6 +1334,14 @@ export function ThreadTerminalView({
     terminalRef.current?.clearSelection();
     setActiveSelection(null);
   }, []);
+
+  const dismissTerminalSelectionMenu = useCallback(() => {
+    if (terminalSelectionGestureRef.current) {
+      setActiveSelection(null);
+      return;
+    }
+    clearTerminalSelection();
+  }, [clearTerminalSelection]);
 
   const updateHoveredTerminalLink = useCallback(
     (target: TerminalLinkTarget | null) => {
@@ -1418,6 +1428,7 @@ export function ThreadTerminalView({
         return;
       }
       pointerIsDownRef.current = true;
+      terminalSelectionGestureRef.current = true;
       pointerStartPointRef.current = anchorPointFromMouseEvent(event);
     },
     [],
@@ -1937,9 +1948,8 @@ export function ThreadTerminalView({
       viewportLineAnchor = createTerminalViewportLineAnchor(terminal);
       outputLineAnchorTracker.reset();
       const outputBoundaryToken = randomUuid();
-      const outputBoundaries = createTerminalOutputBoundaries(
-        outputBoundaryToken,
-      );
+      const outputBoundaries =
+        createTerminalOutputBoundaries(outputBoundaryToken);
       outputBoundaryDisposable = registerTerminalOutputBoundaryHandler(
         terminal.parser,
         outputBoundaryToken,
@@ -3029,7 +3039,7 @@ export function ThreadTerminalView({
               ? undefined
               : handleSelectionAddToChat
           }
-          onDismiss={clearTerminalSelection}
+          onDismiss={dismissTerminalSelectionMenu}
         />
         <TerminalLinkOpenDialog
           target={pendingTerminalLink}

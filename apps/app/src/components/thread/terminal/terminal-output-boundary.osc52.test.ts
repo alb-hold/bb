@@ -111,4 +111,49 @@ describe("terminal output boundaries inside escape sequences", () => {
 
     expect(bufferText(terminal).split("\n")[0]?.trimEnd()).toBe("red ✓ café");
   });
+  it("leaves the visible output identical to an unsplit stream and reports every chunk start once, in order, wherever the chunks are cut", async () => {
+    const stream = Buffer.from(
+      [
+        "\x1b[2J\x1b[H\x1b[38;2;20;120;220mready 界🙂\x1b[0m\r\n",
+        `\x1b]52;c;${Buffer.from(SELECTED_TEXT).toString("base64")}\x07`,
+        "\x1b]133;A\x07prompt \x1b[1;32m$\x1b[0m café ✓\r\n",
+        "\x1b]0;title\x1b\\line two\x1b[2;5Hmoved\x1b[K\r\n",
+        "x".repeat(300),
+      ].join(""),
+      "utf8",
+    );
+    const reference = new Terminal({
+      cols: 100,
+      rows: 30,
+      allowProposedApi: true,
+    });
+    await new Promise<void>((resolve) => reference.write(stream, resolve));
+
+    let seed = 12345;
+    const next = () => {
+      seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+      return seed;
+    };
+    for (let round = 0; round < 12; round += 1) {
+      const sizes: number[] = [];
+      let remaining = stream.length;
+      while (remaining > 0) {
+        const size = 1 + (next() % (round % 2 === 0 ? 9 : 200));
+        sizes.push(Math.min(size, remaining));
+        remaining -= size;
+      }
+      const parts = splitAt(stream, sizes.slice(0, -1));
+      const { terminal, copies, starts } = await deliver(parts);
+
+      expect(starts).toEqual(parts.map((_, index) => index));
+      expect(copies).toEqual([SELECTED_TEXT]);
+      expect(bufferText(terminal)).toBe(bufferText(reference));
+      expect(terminal.buffer.active.cursorX).toBe(
+        reference.buffer.active.cursorX,
+      );
+      expect(terminal.buffer.active.cursorY).toBe(
+        reference.buffer.active.cursorY,
+      );
+    }
+  });
 });
