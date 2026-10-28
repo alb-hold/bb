@@ -191,6 +191,121 @@ describe("two split panes each holding a terminal", () => {
     });
   });
 
+  it("keeps the previous terminal's progress when a different active terminal exits", async () => {
+    vi.mocked(sdk.terminals.list).mockResolvedValue({
+      sessions: [session("term_a", "running"), session("term_b", "running")],
+    });
+    const { wrapper } = createQueryClientTestHarness();
+    const { result, rerender } = renderHook(
+      ({ preferredTerminalId }: { preferredTerminalId: string }) =>
+        useThreadTerminalController(paneArgs(preferredTerminalId)),
+      { initialProps: { preferredTerminalId: "term_a" }, wrapper },
+    );
+
+    await waitFor(() =>
+      expect(result.current.activeSession?.id).toBe("term_a"),
+    );
+    act(() => result.current.handleActiveTerminalProgressChange(0.6));
+
+    rerender({ preferredTerminalId: "term_b" });
+    await waitFor(() =>
+      expect(result.current.activeSession?.id).toBe("term_b"),
+    );
+    act(() =>
+      result.current.handleActiveTerminalSessionChange(
+        session("term_b", "exited"),
+      ),
+    );
+
+    expect(sdk.threads.experimental_updateRowState).toHaveBeenLastCalledWith({
+      threadId: "thr_1",
+      action: "progress-set",
+      progress: { value: 0.6 },
+    });
+    expect(sdk.threads.experimental_updateRowState).not.toHaveBeenCalledWith({
+      threadId: "thr_1",
+      action: "progress-clear",
+    });
+  });
+
+  it("clears progress when the terminal that reported it exits after switching tabs", async () => {
+    vi.mocked(sdk.terminals.list).mockResolvedValue({
+      sessions: [session("term_a", "running"), session("term_b", "running")],
+    });
+    const { wrapper } = createQueryClientTestHarness();
+    const { result, rerender } = renderHook(
+      ({ preferredTerminalId }: { preferredTerminalId: string }) =>
+        useThreadTerminalController(paneArgs(preferredTerminalId)),
+      { initialProps: { preferredTerminalId: "term_a" }, wrapper },
+    );
+
+    await waitFor(() =>
+      expect(result.current.activeSession?.id).toBe("term_a"),
+    );
+    rerender({ preferredTerminalId: "term_b" });
+    await waitFor(() =>
+      expect(result.current.activeSession?.id).toBe("term_b"),
+    );
+    act(() => result.current.handleActiveTerminalProgressChange(0.4));
+    act(() =>
+      result.current.handleActiveTerminalSessionChange(
+        session("term_b", "exited"),
+      ),
+    );
+
+    expect(sdk.threads.experimental_updateRowState).toHaveBeenLastCalledWith({
+      threadId: "thr_1",
+      action: "progress-clear",
+    });
+  });
+
+  it("does not let one pane's terminal exit clear progress owned by another pane", async () => {
+    vi.mocked(sdk.terminals.list).mockResolvedValue({
+      sessions: [session("term_a", "running"), session("term_b", "running")],
+    });
+    const { wrapper } = createQueryClientTestHarness();
+    const paneA = renderHook(
+      () => useThreadTerminalController(paneArgs("term_a")),
+      { wrapper },
+    );
+    const paneB = renderHook(
+      () => useThreadTerminalController(paneArgs("term_b")),
+      { wrapper },
+    );
+
+    await waitFor(() => {
+      expect(paneA.result.current.activeSession?.id).toBe("term_a");
+      expect(paneB.result.current.activeSession?.id).toBe("term_b");
+    });
+    act(() => paneA.result.current.handleActiveTerminalProgressChange(0.6));
+    act(() => paneB.result.current.handleActiveTerminalProgressChange(0.4));
+    act(() =>
+      paneA.result.current.handleActiveTerminalSessionChange(
+        session("term_a", "exited"),
+      ),
+    );
+
+    expect(sdk.threads.experimental_updateRowState).toHaveBeenLastCalledWith({
+      threadId: "thr_1",
+      action: "progress-set",
+      progress: { value: 0.4 },
+    });
+    expect(sdk.threads.experimental_updateRowState).not.toHaveBeenCalledWith({
+      threadId: "thr_1",
+      action: "progress-clear",
+    });
+
+    act(() =>
+      paneB.result.current.handleActiveTerminalSessionChange(
+        session("term_b", "exited"),
+      ),
+    );
+    expect(sdk.threads.experimental_updateRowState).toHaveBeenLastCalledWith({
+      threadId: "thr_1",
+      action: "progress-clear",
+    });
+  });
+
   it("clears progress when the active terminal closes with its panel", async () => {
     const created = session("term_new", "running");
     vi.mocked(sdk.terminals.list).mockResolvedValue({ sessions: [created] });

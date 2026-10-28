@@ -46,6 +46,7 @@ export const DEFAULT_TERMINAL_ROWS = 30;
 const EMPTY_TERMINAL_SESSIONS: readonly TerminalSession[] = [];
 const TERMINAL_TITLE_RENAME_DEBOUNCE_MS = 250;
 const TERMINAL_PROGRESS_UPDATE_INTERVAL_MS = 250;
+const terminalProgressOwnerByThread = new Map<string, string>();
 
 export type { ThreadTerminalTarget };
 
@@ -227,16 +228,16 @@ export function useThreadTerminalController({
   const terminalProgramTitlesRef = useRef(new Map<string, string>());
   const lastProgressUpdateRef = useRef<{
     threadId: string;
+    terminalId: string;
     value: number | null;
     sentAt: number;
   } | null>(null);
   const pendingProgressUpdateRef = useRef<{
     threadId: string;
-    value: number | null;
+    terminalId: string;
+    value: number;
   } | null>(null);
   const progressUpdateTimeoutRef = useRef<number | null>(null);
-  const progressThreadIdRef = useRef<string | null>(resolvedSyncThreadId);
-  const progressTerminalIdRef = useRef<string | null>(null);
   const dirtyTerminalIdsRef = useRef<Set<string>>(new Set());
   const closingCleanTerminalIdsRef = useRef<Set<string>>(new Set());
   const closingDisconnectedTerminalIdsRef = useRef<Set<string>>(new Set());
@@ -314,14 +315,6 @@ export function useThreadTerminalController({
   );
   const activeSession =
     visibleSessions.find((session) => session.id === activeTerminalId) ?? null;
-  useEffect(() => {
-    if (activeSession?.threadId) {
-      progressThreadIdRef.current = activeSession.threadId;
-      progressTerminalIdRef.current = activeSession.id;
-    } else if (resolvedSyncThreadId) {
-      progressThreadIdRef.current = resolvedSyncThreadId;
-    }
-  }, [activeSession?.id, activeSession?.threadId, resolvedSyncThreadId]);
   useMountedTerminalRegistration({
     isMounted: shouldMountTerminalView,
     scopeKey: terminalTargetId,
@@ -389,12 +382,24 @@ export function useThreadTerminalController({
   }, []);
 
   const sendTerminalProgressUpdate = useCallback(
-    (threadId: string, value: number | null) => {
+    (threadId: string, terminalId: string, value: number | null) => {
+      if (value === null) {
+        if (terminalProgressOwnerByThread.get(threadId) === terminalId) {
+          terminalProgressOwnerByThread.delete(threadId);
+        }
+      } else {
+        terminalProgressOwnerByThread.set(threadId, terminalId);
+      }
       const request =
         value === null
           ? { threadId, action: "progress-clear" as const }
           : { threadId, action: "progress-set" as const, progress: { value } };
-      lastProgressUpdateRef.current = { threadId, value, sentAt: Date.now() };
+      lastProgressUpdateRef.current = {
+        threadId,
+        terminalId,
+        value,
+        sentAt: Date.now(),
+      };
       void sdk.threads
         .experimental_updateRowState(request)
         .catch(() => undefined);
@@ -403,35 +408,58 @@ export function useThreadTerminalController({
   );
 
   const clearTerminalProgress = useCallback(
-    (threadId: string | null) => {
-      if (threadId === null) return;
-      if (progressUpdateTimeoutRef.current !== null) {
-        window.clearTimeout(progressUpdateTimeoutRef.current);
-        progressUpdateTimeoutRef.current = null;
-      }
-      const hadPendingUpdate =
-        pendingProgressUpdateRef.current?.threadId === threadId;
-      pendingProgressUpdateRef.current = null;
+    (threadId: string | null, terminalId: string | null) => {
+      const pendingUpdate = pendingProgressUpdateRef.current;
       const lastUpdate = lastProgressUpdateRef.current;
-      const hasSentProgress =
-        lastUpdate?.threadId === threadId && lastUpdate.value !== null;
-      if (!hasSentProgress && !hadPendingUpdate) return;
-      sendTerminalProgressUpdate(threadId, null);
+      const matchesTarget = (update: {
+        threadId: string;
+        terminalId: string;
+      }) =>
+        (threadId === null || update.threadId === threadId) &&
+        (terminalId === null || update.terminalId === terminalId);
+      const pendingMatches =
+        pendingUpdate !== null && matchesTarget(pendingUpdate);
+      const lastMatches =
+        lastUpdate !== null &&
+        lastUpdate.value !== null &&
+        matchesTarget(lastUpdate) &&
+        terminalProgressOwnerByThread.get(lastUpdate.threadId) ===
+          lastUpdate.terminalId;
+
+      if (pendingMatches) {
+        pendingProgressUpdateRef.current = null;
+        if (progressUpdateTimeoutRef.current !== null) {
+          window.clearTimeout(progressUpdateTimeoutRef.current);
+          progressUpdateTimeoutRef.current = null;
+        }
+      }
+      if (lastMatches && lastUpdate !== null) {
+        sendTerminalProgressUpdate(
+          lastUpdate.threadId,
+          lastUpdate.terminalId,
+          null,
+        );
+      }
     },
     [sendTerminalProgressUpdate],
   );
 
   const queueTerminalProgressUpdate = useCallback(
-    (threadId: string, value: number) => {
+    (threadId: string, terminalId: string, value: number) => {
       const lastUpdate = lastProgressUpdateRef.current;
       const pendingUpdate = pendingProgressUpdateRef.current;
       if (
         pendingUpdate?.threadId === threadId &&
+        pendingUpdate.terminalId === terminalId &&
         pendingUpdate.value === value
       ) {
         return;
       }
-      if (lastUpdate?.threadId === threadId && lastUpdate.value === value) {
+      if (
+        lastUpdate?.threadId === threadId &&
+        lastUpdate.terminalId === terminalId &&
+        lastUpdate.value === value
+      ) {
         if (pendingUpdate?.threadId === threadId) {
           pendingProgressUpdateRef.current = null;
           if (progressUpdateTimeoutRef.current !== null) {
@@ -452,11 +480,11 @@ export function useThreadTerminalController({
           progressUpdateTimeoutRef.current = null;
         }
         pendingProgressUpdateRef.current = null;
-        sendTerminalProgressUpdate(threadId, value);
+        sendTerminalProgressUpdate(threadId, terminalId, value);
         return;
       }
 
-      pendingProgressUpdateRef.current = { threadId, value };
+      pendingProgressUpdateRef.current = { threadId, terminalId, value };
       if (progressUpdateTimeoutRef.current !== null) return;
       progressUpdateTimeoutRef.current = window.setTimeout(() => {
         progressUpdateTimeoutRef.current = null;
@@ -466,18 +494,23 @@ export function useThreadTerminalController({
         const previousUpdate = lastProgressUpdateRef.current;
         if (
           previousUpdate?.threadId === nextUpdate.threadId &&
+          previousUpdate.terminalId === nextUpdate.terminalId &&
           previousUpdate.value === nextUpdate.value
         ) {
           return;
         }
-        sendTerminalProgressUpdate(nextUpdate.threadId, nextUpdate.value);
+        sendTerminalProgressUpdate(
+          nextUpdate.threadId,
+          nextUpdate.terminalId,
+          nextUpdate.value,
+        );
       }, TERMINAL_PROGRESS_UPDATE_INTERVAL_MS - elapsed);
     },
     [sendTerminalProgressUpdate],
   );
 
   useEffect(() => {
-    return () => clearTerminalProgress(progressThreadIdRef.current);
+    return () => clearTerminalProgress(null, null);
   }, [clearTerminalProgress]);
 
   const activeSessionId = activeSession?.id;
@@ -558,9 +591,7 @@ export function useThreadTerminalController({
       onSuccess?: (session: TerminalSession) => void;
       terminalId: string;
     }) => {
-      if (terminalId === progressTerminalIdRef.current) {
-        clearTerminalProgress(progressThreadIdRef.current);
-      }
+      clearTerminalProgress(null, terminalId);
       closeTerminalMutation.mutate(
         { mode, terminalId },
         {
@@ -710,7 +741,7 @@ export function useThreadTerminalController({
   const handleActiveTerminalSessionChange = useCallback(
     (session: TerminalSession) => {
       if (session.status === "exited") {
-        clearTerminalProgress(session.threadId);
+        clearTerminalProgress(session.threadId, session.id);
         clearTerminalCurrentCwd(session.id);
         terminalCwdsRef.current.delete(session.id);
         terminalCwdTitlesRef.current.delete(session.id);
@@ -735,13 +766,11 @@ export function useThreadTerminalController({
     (progress: number | null) => {
       const threadId = activeSession?.threadId;
       if (!threadId) return;
-      progressThreadIdRef.current = threadId;
-      progressTerminalIdRef.current = activeSession.id;
       if (progress === null) {
-        clearTerminalProgress(threadId);
+        clearTerminalProgress(threadId, activeSession.id);
         return;
       }
-      queueTerminalProgressUpdate(threadId, progress);
+      queueTerminalProgressUpdate(threadId, activeSession.id, progress);
     },
     [
       activeSession?.id,
@@ -764,9 +793,7 @@ export function useThreadTerminalController({
         if (
           !shouldUseTerminalCwdTitle({
             currentTitle: activeSession.title,
-            defaultTitle: ["bash", "zsh", "fish"].includes(
-              activeSession.title,
-            )
+            defaultTitle: ["bash", "zsh", "fish"].includes(activeSession.title)
               ? activeSession.title
               : "",
             previousCwdTitle:
