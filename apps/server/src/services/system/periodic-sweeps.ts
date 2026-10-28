@@ -1,3 +1,4 @@
+import { performance } from "node:perf_hooks";
 import {
   runThreadPruningSweep,
   THREAD_PRUNING_SWEEP_LIMITS,
@@ -11,6 +12,7 @@ import {
 import { sweepProviderLifecycles } from "../environments/environment-engine.js";
 import {
   runThreadStorageOrphanSweep,
+  THREAD_STORAGE_ORPHAN_PASS_LIMITS,
   THREAD_STORAGE_ORPHAN_SWEEP_CADENCE_MS,
 } from "../threads/thread-storage-orphans.js";
 import { and, eq, isNull, isNotNull, inArray } from "drizzle-orm";
@@ -20,7 +22,6 @@ import {
   compactDatabase,
   DATABASE_COMPACTION_MIN_RECLAIMABLE_BYTES,
   DATABASE_COMPACTION_MIN_RECLAIMABLE_RATIO,
-  DATABASE_INCREMENTAL_VACUUM_MAX_PAGES,
   DATABASE_INCREMENTAL_VACUUM_MIN_FREELIST_PAGES,
   DEFAULT_CLOSED_SESSION_PRUNE_BATCH_SIZE,
   deleteExpiredRetainedEventOutputs,
@@ -89,7 +90,10 @@ type PeriodicSweepDeps = LoggedPendingInteractionWorkSessionDeps & {
 };
 
 const DATABASE_MAINTENANCE_CHECK_INTERVAL_MS = 60 * 60_000;
-const DATABASE_INCREMENTAL_VACUUM_CHUNK_PAGES = 256;
+export const DATABASE_INCREMENTAL_VACUUM_CHUNK_PAGES = 256;
+const DATABASE_INCREMENTAL_VACUUM_LIMITS: IncrementalVacuumLimits = {
+  elapsedBudgetMs: THREAD_STORAGE_ORPHAN_PASS_LIMITS.elapsedBudgetMs,
+};
 const COMPLETED_EVENT_OUTPUT_MIGRATION_MAX_ADVANCES_PER_SWEEP = 64;
 const RETAINED_EVENT_OUTPUT_EXPIRY_MAX_ADVANCES_PER_SWEEP = 256;
 const RETAINED_EVENT_OUTPUT_EXPIRY_BATCH_SIZE = 1;
@@ -178,33 +182,29 @@ export async function runPeriodicSweepJobs(
   }
 }
 
-async function runChunkedIncrementalVacuum(
+interface IncrementalVacuumLimits {
+  elapsedBudgetMs: number;
+}
+
+export async function runChunkedIncrementalVacuum(
   db: DatabaseMaintenanceSweepDeps["db"],
+  limits: IncrementalVacuumLimits,
 ): Promise<ReturnType<typeof runIncrementalVacuum>> {
+  const startedAt = performance.now();
   let first: ReturnType<typeof runIncrementalVacuum> | null = null;
   let last: ReturnType<typeof runIncrementalVacuum> | null = null;
-  for (
-    let vacuumedPages = 0;
-    vacuumedPages < DATABASE_INCREMENTAL_VACUUM_MAX_PAGES;
-    vacuumedPages += DATABASE_INCREMENTAL_VACUUM_CHUNK_PAGES
-  ) {
+  do {
     if (last !== null) {
       await new Promise<void>((resolve) => setImmediate(resolve));
     }
     last = runIncrementalVacuum(db, {
-      maxPages: Math.min(
-        DATABASE_INCREMENTAL_VACUUM_CHUNK_PAGES,
-        DATABASE_INCREMENTAL_VACUUM_MAX_PAGES - vacuumedPages,
-      ),
+      maxPages: DATABASE_INCREMENTAL_VACUUM_CHUNK_PAGES,
     });
     first ??= last;
-    if (last.after.freelistCount === 0) {
-      break;
-    }
-  }
-  if (first === null || last === null) {
-    throw new Error("Incremental vacuum ran no chunks");
-  }
+  } while (
+    last.after.freelistCount > 0 &&
+    performance.now() - startedAt < limits.elapsedBudgetMs
+  );
   return { before: first.before, after: last.after };
 }
 
@@ -254,7 +254,10 @@ export async function runDatabaseMaintenanceSweep(
       return;
     }
     try {
-      const result = await runChunkedIncrementalVacuum(deps.db);
+      const result = await runChunkedIncrementalVacuum(
+        deps.db,
+        DATABASE_INCREMENTAL_VACUUM_LIMITS,
+      );
       deps.logger.info({ result }, "Incremental database vacuum completed");
     } catch (error) {
       deps.logger.warn({ err: error }, "Incremental database vacuum failed");
