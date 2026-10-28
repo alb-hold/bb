@@ -358,3 +358,42 @@ it("exits after a requested shutdown even when the bridge's close never finishes
     worker.child.kill("SIGKILL");
   }
 }, 20_000);
+
+it("keeps serving after the process that spawned it is gone and it writes to stderr", async () => {
+  const fixture = await createFixture(
+    [
+      "export const experimental_providerBridge = {",
+      "  experimental_apiVersion: 1,",
+      "  handleLine(line) {",
+      "    const request = JSON.parse(line);",
+      "    if (request.method === 'noise') process.stderr.write('warning from the provider\\n');",
+      "    process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { pid: process.pid } }) + '\\n');",
+      "  },",
+      "};",
+    ].join("\n"),
+  );
+  const socketDir = await createShortSocketDir();
+  tempDirs.push(socketDir);
+  const socketPath = join(socketDir, "w.sock");
+  const worker = spawnSocketWorker(
+    [fixture.bridgeModulePath, "provider-fixture", fixture.dataDir],
+    socketPath,
+  );
+  try {
+    const client = await connectBridgeSocket(socketPath);
+    client.send({ id: 1, method: "ping", params: {} });
+    await client.waitForLine((line) => line.includes('"id":1'));
+
+    worker.child.stderr.destroy();
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    client.send({ id: 2, method: "noise", params: {} });
+    await client.waitForLine((line) => line.includes('"id":2'));
+    await new Promise((resolve) => setTimeout(resolve, 300));
+
+    expect(worker.child.exitCode).toBeNull();
+    client.send({ id: 3, method: "ping", params: {} });
+    await client.waitForLine((line) => line.includes('"id":3'));
+  } finally {
+    worker.child.kill("SIGKILL");
+  }
+}, 20_000);

@@ -103,6 +103,7 @@ const socketServer =
         },
       });
 if (socketServer !== null) {
+  process.stderr.on("error", () => undefined);
   process.stdout.write = ((
     chunk: string | Uint8Array,
     ...rest: unknown[]
