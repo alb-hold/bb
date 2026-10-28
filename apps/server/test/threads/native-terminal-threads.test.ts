@@ -4934,6 +4934,40 @@ describe("native terminal threads", () => {
         input: textInput("say ok"),
         mode: "auto",
       });
+    const inputBoxScreen = (
+      cols: number,
+      boxRows: readonly string[],
+      cursor: { col: number; row: number },
+    ) => {
+      const rule = "\u2500".repeat(cols);
+      const rows = [
+        "• Previous work",
+        rule,
+        ...boxRows,
+        rule,
+        "  Sonnet 5.5 | ctx 64K",
+      ];
+      const drawn = rows
+        .map(
+          (row, index) =>
+            `\u001b[${index + 1};1H\u001b[2K${row}`,
+        )
+        .join("");
+      return `\u001b[?7l\u001b[2J${drawn}\u001b[?7h\u001b[${cursor.row + 1};${cursor.col + 1}H`;
+    };
+    const inputBoxHistory = (
+      cols: number,
+      boxRows: readonly string[],
+      cursor: { col: number; row: number },
+    ): RecordedChunk[] => [
+      {
+        seq: 0,
+        dataBase64: Buffer.from(
+          inputBoxScreen(cols, boxRows, cursor),
+          "utf8",
+        ).toString("base64"),
+      },
+    ];
     const split = () => {
       const chunks = recordedClaudeSession();
       return {
@@ -5007,6 +5041,100 @@ describe("native terminal threads", () => {
         cli.stop();
       }
     });
+
+    it("presses Enter once when the exact long message wraps across three input rows", async () => {
+      const fixture = await createFixture();
+      const { open, thread } = await openRunningNativeThread(fixture, {
+        providerId: "claude-code",
+      });
+      const text = `${"a".repeat(open.cols * 2 - 4)}b`;
+      const cli = startRecordedCli(
+        fixture,
+        open.terminalId,
+        inputBoxHistory(
+          open.cols,
+          [
+            `\u276f\u00a0${"a".repeat(open.cols - 2)}`,
+            `  ${"a".repeat(open.cols - 2)}`,
+            "  b",
+          ],
+          { col: 3, row: 4 },
+        ),
+        { paste: () => [], enter: () => [] },
+      );
+      try {
+        const response = await postJson(fixture, `/threads/${thread.id}/send`, {
+          input: textInput(text),
+          mode: "auto",
+        });
+        expect(response.status).toBe(200);
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        expect(cli.inputs()).toEqual(["\r"]);
+      } finally {
+        cli.stop();
+      }
+    });
+
+    it.each([
+      {
+        name: "a draft with an extra space",
+        text: "say ok",
+        boxRows: ["\u276f\u00a0say  ok"],
+        cursor: { col: 9, row: 2 },
+        wrapDifference: false,
+      },
+      {
+        name: "a request with an extra space",
+        text: "say  ok",
+        boxRows: ["\u276f\u00a0say ok"],
+        cursor: { col: 8, row: 2 },
+        wrapDifference: false,
+      },
+      {
+        name: "a draft with a space hidden at the wrap point",
+        text: "",
+        boxRows: [],
+        wrapDifference: true,
+        cursor: { col: 3, row: 3 },
+      },
+    ])(
+      "refuses Enter for $name",
+      async ({ text, boxRows, wrapDifference, cursor }) => {
+        const fixture = await createFixture();
+        const { open, thread } = await openRunningNativeThread(fixture, {
+          providerId: "claude-code",
+        });
+        const width = open.cols - 2;
+        const request = wrapDifference ? `${"a".repeat(width)}b` : text;
+        const draftRows = wrapDifference
+          ? [`\u276f\u00a0${"a".repeat(width - 1)} `, "  b"]
+          : boxRows;
+        const cli = startRecordedCli(
+          fixture,
+          open.terminalId,
+          inputBoxHistory(open.cols, draftRows, cursor),
+          { paste: () => [], enter: () => [] },
+        );
+        try {
+          const response = await postJson(
+            fixture,
+            `/threads/${thread.id}/send`,
+            {
+              input: textInput(request),
+              mode: "auto",
+            },
+          );
+          expect(response.status).toBe(409);
+          expect(apiErrorSchema.parse(await readJson(response)).code).toBe(
+            "native_terminal_input_ambiguous",
+          );
+          await new Promise((resolve) => setTimeout(resolve, 200));
+          expect(cli.inputs()).toEqual([]);
+        } finally {
+          cli.stop();
+        }
+      },
+    );
 
     it("refuses when the requested text is only part of what the input box holds", async () => {
       const fixture = await createFixture();

@@ -1314,7 +1314,14 @@ async function deliverNativeTerminalMessage(
       terminalId,
       query: {},
     });
-    if (!terminalScreenInputBoxHoldsText({ rows: screen.rows, text: only })) {
+    if (
+      !terminalScreenInputBoxHoldsText({
+        cols: screen.cols,
+        cursor: screen.cursor,
+        rows: screen.rows,
+        text: only,
+      })
+    ) {
       throw nativeTerminalInputAmbiguous(provider, 0);
     }
     return submitNativeTerminalInput(deps, terminalId);
