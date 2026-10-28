@@ -17,6 +17,7 @@ import { tmpdir } from "node:os";
 import {
   createFakePluginHost,
   makeThreadResponse,
+  type ExperimentalFakeHostRpcCall,
 } from "@get-bb/plugin-sdk/testing";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -144,7 +145,11 @@ async function resolveToken(
         : { experimental_runtimeKind: runtimeKind }),
     },
   );
-  const token = entries.find((entry) => entry.name === "ANTHROPIC_AUTH_TOKEN");
+  const token = entries.find(
+    (entry) =>
+      entry.name === "ANTHROPIC_AUTH_TOKEN" ||
+      entry.name === "CLAUDE_CODE_OAUTH_TOKEN",
+  );
   if (token === undefined || typeof token.value !== "string") {
     throw new Error("Account Pool token was not resolved.");
   }
@@ -613,12 +618,16 @@ async function createFixture(args: {
   apiKey?: string;
   priority?: number;
   beforePlugin?: (host: Fixture["host"]) => void;
+  hostRpc?: (call: ExperimentalFakeHostRpcCall) => unknown | Promise<unknown>;
 }): Promise<Fixture> {
   const dataDir = await mkdtemp(path.join(tmpdir(), "bb-account-pool-"));
   const host = createFakePluginHost({
     pluginId: "account-pool",
     dataDir,
     sdk: sdkStubs(),
+    ...(args.hostRpc === undefined
+      ? {}
+      : { experimental_callHostRpc: args.hostRpc }),
   });
   await host.bb.storage.kv.set("config", {
     anthropicUpstreamBaseUrl: args.upstreamUrl,
@@ -2441,7 +2450,9 @@ describe("Account Pool plugin", () => {
   });
 
   it("does not contribute a catalog token when no pooled account can serve", async () => {
-    const fixture = await createFixture({ upstreamUrl: "https://upstream.example" });
+    const fixture = await createFixture({
+      upstreamUrl: "https://upstream.example",
+    });
     await fixture.host.harness.behavior.callRpc("account.remove", {
       id: fixture.account.id,
     });
@@ -9390,7 +9401,13 @@ describe("Account Pool nested proxy", () => {
   });
 
   const PROVIDER_ENV = {
-    claude: ["ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN"],
+    claude: [
+      "ANTHROPIC_BASE_URL",
+      "ANTHROPIC_AUTH_TOKEN",
+      "CLAUDE_CODE_OAUTH_TOKEN",
+      "HTTPS_PROXY",
+      "NODE_EXTRA_CA_CERTS",
+    ],
     codex: ["CODEX_OPENAI_BASE_URL", "CODEX_POOL_AUTH_TOKEN"],
   } as const;
 
@@ -9466,6 +9483,9 @@ describe("Account Pool nested proxy", () => {
       "ENABLE_TOOL_SEARCH",
       "_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL",
       "ENABLE_PROMPT_CACHING_1H",
+      "CLAUDE_CODE_OAUTH_TOKEN",
+      "HTTPS_PROXY",
+      "NODE_EXTRA_CA_CERTS",
       "BB_ACCOUNT_POOL_PARENT_URL",
       "BB_ACCOUNT_POOL_PARENT_TOKEN",
     ]);
@@ -9524,6 +9544,29 @@ describe("Account Pool nested proxy", () => {
       url: "/api/v1/plugins/account-pool/http/v1/messages",
       token: PARENT_TOKEN,
     });
+  });
+
+  it("keeps the plain token and clears the inherited Artifact proxy settings when proxying to a parent pool", async () => {
+    const parent = await startParent({});
+    cleanups.push(parent.upstream.close);
+    const host = await createChild({
+      parentUrl: `${parent.upstream.url}/api/v1/plugins/account-pool/http`,
+      loopbackBaseUrl: "http://localhost:49999/",
+      inheritedServerUrl: parent.upstream.url,
+    });
+    const entries = await host.harness.behavior.resolveProviderEnv(
+      "claude-code",
+      { threadId: "thread-one", projectId: "project-one", hostId: "host-one" },
+    );
+    const byName = new Map(entries.map((entry) => [entry.name, entry.value]));
+    expect(byName.get("ANTHROPIC_AUTH_TOKEN")).toMatch(/^[A-Za-z0-9_-]{43}$/u);
+    for (const name of [
+      "CLAUDE_CODE_OAUTH_TOKEN",
+      "HTTPS_PROXY",
+      "NODE_EXTRA_CA_CERTS",
+    ])
+      expect(byName.get(name)).toBe("");
+    expect(byName.has("CLAUDE_CODE_ARTIFACT")).toBe(false);
   });
 
   it("forwards pooled traffic to the parent with the parent token", async () => {
@@ -12137,6 +12180,9 @@ describe("Account Pool credential scoping", () => {
     expect(entries.map((entry) => [entry.name, entry.value])).toEqual([
       ["ANTHROPIC_BASE_URL", ""],
       ["ANTHROPIC_AUTH_TOKEN", ""],
+      ["CLAUDE_CODE_OAUTH_TOKEN", ""],
+      ["HTTPS_PROXY", ""],
+      ["NODE_EXTRA_CA_CERTS", ""],
     ]);
     expect(await statusOf(child, live, "/v1/messages")).toBe(401);
   });
@@ -12226,6 +12272,9 @@ describe("Account Pool credential scoping", () => {
         expect(entries.map((entry) => [entry.name, entry.value])).toEqual([
           ["ANTHROPIC_BASE_URL", ""],
           ["ANTHROPIC_AUTH_TOKEN", ""],
+          ["CLAUDE_CODE_OAUTH_TOKEN", ""],
+          ["HTTPS_PROXY", ""],
+          ["NODE_EXTRA_CA_CERTS", ""],
         ]);
         expect(await statusOf(child, held, "/v1/messages")).toBe(401);
         expect(await statusOf(child, heldNested, "/availability")).toBe(401);
@@ -12253,6 +12302,9 @@ describe("Account Pool credential scoping", () => {
         expect(entries.map((entry) => [entry.name, entry.value])).toEqual([
           ["ANTHROPIC_BASE_URL", ""],
           ["ANTHROPIC_AUTH_TOKEN", ""],
+          ["CLAUDE_CODE_OAUTH_TOKEN", ""],
+          ["HTTPS_PROXY", ""],
+          ["NODE_EXTRA_CA_CERTS", ""],
         ]);
         expect(
           await credentialFiles(dataDir, "thread-lookup").catch(() => []),
@@ -12367,6 +12419,9 @@ describe("Account Pool credential scoping", () => {
     expect(neutralised.map((entry) => [entry.name, entry.value])).toEqual([
       ["ANTHROPIC_BASE_URL", ""],
       ["ANTHROPIC_AUTH_TOKEN", ""],
+      ["CLAUDE_CODE_OAUTH_TOKEN", ""],
+      ["HTTPS_PROXY", ""],
+      ["NODE_EXTRA_CA_CERTS", ""],
     ]);
   });
 });
@@ -12481,5 +12536,288 @@ describe("Account Pool provider health", () => {
       .parse(await fixture.host.harness.behavior.callRpc("account.list", null));
     expect(account?.status === "error" || account?.signInExpired).toBe(true);
     await expect(codexHealth(fixture)).resolves.toBeNull();
+  });
+});
+
+describe("Account Pool Artifact proxy", () => {
+  const hostRpcResult = {
+    port: 45871,
+    caPath: "/host/plugin-data/proxy-ca.pem",
+  };
+
+  function artifactFixture(
+    upstreamFetch: typeof fetch,
+    hostRpc?: (call: ExperimentalFakeHostRpcCall) => unknown | Promise<unknown>,
+    source: "import" | "api-key" = "import",
+  ): Promise<Fixture> {
+    return createFixture({
+      upstreamUrl: "https://upstream.example",
+      source,
+      options: {
+        fetch: (input, init) =>
+          String(input) === EMPTY_USAGE_URL
+            ? Promise.resolve(Response.json({}))
+            : upstreamFetch(input, init),
+        refreshUrl: "https://upstream.example/oauth/token",
+        importCredentials: async () =>
+          importedCredentials({ accessToken: "oauth-old" }),
+      },
+      ...(hostRpc === undefined ? {} : { hostRpc }),
+    });
+  }
+
+  function claudeEnv(fixture: Fixture, threadId = "thread-one") {
+    return fixture.host.harness.behavior.resolveProviderEnv("claude-code", {
+      threadId,
+      projectId: "project-one",
+      hostId: "host-one",
+    });
+  }
+
+  function oauthProxyRequest(
+    fixture: Fixture,
+    target: { method: string; path: string; host?: string },
+    token = fixture.key,
+  ) {
+    return fixture.host.harness.behavior.fetchHttp("POST", "/claude-oauth", {
+      headers: {
+        authorization: `Bearer ${token}`,
+        "x-pool-target-host": target.host ?? "api.anthropic.com",
+        "x-pool-target-method": target.method,
+        "x-pool-target-path": target.path,
+        accept: "application/json",
+        cookie: "session=thread-cookie",
+      },
+    });
+  }
+
+  it("puts a subscription pool's claude threads in claude.ai account mode behind the host proxy", async () => {
+    const calls: ExperimentalFakeHostRpcCall[] = [];
+    const fixture = await artifactFixture(
+      async () => Response.json({}),
+      (call) => {
+        calls.push(call);
+        return hostRpcResult;
+      },
+    );
+    const entries = await claudeEnv(fixture);
+    const byName = new Map(entries.map((entry) => [entry.name, entry.value]));
+    expect(byName.has("ANTHROPIC_AUTH_TOKEN")).toBe(false);
+    expect(byName.get("CLAUDE_CODE_OAUTH_TOKEN")).toBe(fixture.key);
+    expect(byName.get("ANTHROPIC_BASE_URL")).toEqual({
+      serverPath: "/api/v1/plugins/account-pool/http",
+    });
+    expect(byName.get("HTTPS_PROXY")).toBe(
+      `http://pool:${fixture.key}@127.0.0.1:45871`,
+    );
+    expect(byName.get("NO_PROXY")).toBe("localhost,127.0.0.1,::1");
+    expect(byName.get("NODE_EXTRA_CA_CERTS")).toBe(hostRpcResult.caPath);
+    expect(byName.get("CLAUDE_CODE_ARTIFACT")).toBe("1");
+    expect(byName.has("HTTP_PROXY")).toBe(false);
+    expect(calls).toHaveLength(2);
+    const call = calls[calls.length - 1];
+    expect(call).toMatchObject({ method: "ensureProxy", hostId: "host-one" });
+    expect(call?.input).toMatchObject({
+      tokenSha256: createHash("sha256").update(fixture.key).digest("hex"),
+      caPem: expect.stringContaining("BEGIN CERTIFICATE"),
+      leafCertPem: expect.stringContaining("BEGIN CERTIFICATE"),
+      leafKeyPem: expect.stringContaining("PRIVATE KEY"),
+    });
+    const keyPem = (call?.input as { leafKeyPem: string }).leafKeyPem;
+    expect(JSON.stringify(entries)).not.toContain("PRIVATE KEY");
+    expect(JSON.stringify(entries)).not.toContain(keyPem.trim().slice(30, 60));
+    const caDir = path.join(
+      fixture.dataDir,
+      "plugins",
+      "account-pool",
+      "secrets",
+      "proxy-ca",
+    );
+    expect((await fs.stat(path.join(caDir, "ca.key"))).mode & 0o777).toBe(
+      0o600,
+    );
+    expect((await fs.stat(caDir)).mode & 0o777).toBe(0o700);
+  });
+
+  it("leaves api-key-only pools and the codex environment unchanged", async () => {
+    const calls: ExperimentalFakeHostRpcCall[] = [];
+    const fixture = await artifactFixture(
+      async () => Response.json({}),
+      (call) => {
+        calls.push(call);
+        return hostRpcResult;
+      },
+      "api-key",
+    );
+    const entries = await claudeEnv(fixture);
+    expect(entries.map((entry) => entry.name)).toEqual([
+      "ANTHROPIC_BASE_URL",
+      "ANTHROPIC_AUTH_TOKEN",
+      "ENABLE_TOOL_SEARCH",
+      "_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL",
+      "BB_ACCOUNT_POOL_PARENT_URL",
+      "BB_ACCOUNT_POOL_PARENT_TOKEN",
+    ]);
+    expect(calls).toEqual([]);
+  });
+
+  it("falls back to the plain pool environment when the host proxy cannot start", async () => {
+    const fixture = await artifactFixture(
+      async () => Response.json({}),
+      () => {
+        throw new Error("host proxy unavailable");
+      },
+    );
+    const entries = await claudeEnv(fixture);
+    const names = entries.map((entry) => entry.name);
+    expect(names).toContain("ANTHROPIC_AUTH_TOKEN");
+    for (const name of [
+      "CLAUDE_CODE_OAUTH_TOKEN",
+      "HTTPS_PROXY",
+      "NODE_EXTRA_CA_CERTS",
+      "CLAUDE_CODE_ARTIFACT",
+    ])
+      expect(names).not.toContain(name);
+  });
+
+  it("forwards an allowlisted Artifact request with the account token and never the pool token", async () => {
+    const seen: Array<{ url: string; headers: Headers }> = [];
+    const fixture = await artifactFixture(
+      async (input, init) => {
+        seen.push({
+          url: String(input),
+          headers: new Headers(init?.headers),
+        });
+        return Response.json({ allow_cobalt_plinth: true });
+      },
+      () => hostRpcResult,
+    );
+    const response = await oauthProxyRequest(fixture, {
+      method: "GET",
+      path: "/api/claude_code/policy_limits",
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ allow_cobalt_plinth: true });
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.url).toBe(
+      "https://upstream.example/api/claude_code/policy_limits",
+    );
+    expect(seen[0]?.headers.get("authorization")).toBe("Bearer oauth-old");
+    expect(seen[0]?.headers.get("cookie")).toBeNull();
+    expect(JSON.stringify([...(seen[0]?.headers ?? [])])).not.toContain(
+      fixture.key,
+    );
+  });
+
+  it.each([
+    [
+      "a path outside the allowlist",
+      { method: "GET", path: "/api/oauth/profile" },
+    ],
+    [
+      "a method outside the allowlist",
+      { method: "DELETE", path: "/api/claude_code/policy_limits" },
+    ],
+    [
+      "a path traversal out of /api/frame",
+      { method: "GET", path: "/api/frame/../oauth/profile" },
+    ],
+    [
+      "an encoded traversal",
+      { method: "GET", path: "/api/frame/%2e%2e/oauth/profile" },
+    ],
+    [
+      "another host",
+      {
+        method: "GET",
+        path: "/api/claude_code/policy_limits",
+        host: "evil.example",
+      },
+    ],
+    [
+      "a locally answered path",
+      { method: "GET", path: "/api/claude_code/settings" },
+    ],
+  ])("refuses %s and makes no upstream call", async (_name, target) => {
+    const upstream = vi.fn(async () => Response.json({}));
+    const fixture = await artifactFixture(upstream, () => hostRpcResult);
+    const response = await oauthProxyRequest(fixture, target);
+    expect(response.status).toBe(403);
+    await response.text();
+    expect(upstream).not.toHaveBeenCalled();
+  });
+
+  it("refreshes the account token once after a 401 and retries the Artifact request", async () => {
+    const seen: string[] = [];
+    const fixture = await artifactFixture(
+      async (input, init) => {
+        if (String(input).endsWith("/oauth/token"))
+          return Response.json({ access_token: "oauth-new", expires_in: 3600 });
+        const authorization = new Headers(init?.headers).get("authorization");
+        seen.push(authorization ?? "");
+        return authorization === "Bearer oauth-old"
+          ? new Response("{}", { status: 401 })
+          : Response.json({ frames: [] });
+      },
+      () => hostRpcResult,
+    );
+    const response = await oauthProxyRequest(fixture, {
+      method: "GET",
+      path: "/api/frame/frames?limit=200",
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ frames: [] });
+    expect(seen).toEqual(["Bearer oauth-old", "Bearer oauth-new"]);
+  });
+
+  it("re-ensures the host proxy without a token when the host worker exits", async () => {
+    const calls: ExperimentalFakeHostRpcCall[] = [];
+    const fixture = await artifactFixture(
+      async () => Response.json({}),
+      (call) => {
+        calls.push(call);
+        return hostRpcResult;
+      },
+    );
+    await claudeEnv(fixture);
+    const before = calls.length;
+    await fixture.host.harness.behavior.experimental_emitHostWorkerExit(
+      "host-one",
+    );
+    await vi.waitFor(() => expect(calls.length).toBe(before + 1));
+    expect(calls[before]).toMatchObject({
+      method: "ensureProxy",
+      hostId: "host-one",
+      input: { tokenSha256: null },
+    });
+  });
+
+  it("rejects the oauth route without a valid pool token", async () => {
+    const upstream = vi.fn(async () => Response.json({}));
+    const fixture = await artifactFixture(upstream, () => hostRpcResult);
+    const response = await oauthProxyRequest(
+      fixture,
+      { method: "GET", path: "/api/claude_code/policy_limits" },
+      "x".repeat(43),
+    );
+    expect(response.status).toBe(401);
+    await response.text();
+    expect(upstream).not.toHaveBeenCalled();
+  });
+
+  it("refuses the oauth route for a thread pinned to an api-key account", async () => {
+    const upstream = vi.fn(async () => Response.json({}));
+    const fixture = await artifactFixture(
+      upstream,
+      () => hostRpcResult,
+      "api-key",
+    );
+    const response = await oauthProxyRequest(fixture, {
+      method: "GET",
+      path: "/api/claude_code/policy_limits",
+    });
+    expect(response.status).toBe(403);
+    await response.text();
+    expect(upstream).not.toHaveBeenCalled();
   });
 });

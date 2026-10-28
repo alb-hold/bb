@@ -9,6 +9,7 @@ import {
   createUpstreamTransport,
   transportErrorCode,
 } from "./upstream-transport.js";
+import { createHash } from "node:crypto";
 import path from "node:path";
 import { z } from "zod";
 import type {
@@ -41,6 +42,12 @@ import type {
   ImportedCodexCredentials,
 } from "./credentials.js";
 import { createHub, waitForDelay } from "./hub.js";
+import { accountPoolHostContract } from "./host-contract.js";
+import { OAUTH_PROXY_ROUTE } from "./oauth-proxy-policy.js";
+import {
+  createProxyCertificateAuthority,
+  type ProxyCertificateAuthority,
+} from "./proxy-ca.js";
 import { PoolOperations } from "./operations.js";
 import {
   accountPoolBindingReadRpcContract,
@@ -95,9 +102,25 @@ const THREAD_SWEEP_TIMEOUT_MS = 15_000;
 const THREAD_SWEEP_LOOKUP_TIMEOUT_MS = 5_000;
 const THREAD_SWEEP_RETRY_MS = 60_000;
 const HUB_BASE_PATH = "/api/v1/plugins/account-pool/http";
+const HOST_PROXY_CALL_TIMEOUT_MS = 8_000;
+const HOST_PROXY_RECONCILE_INTERVAL_MS = 5 * 60_000;
+const HOST_PROXY_HOSTS_KEY = "artifact-proxy-hosts";
+const HOST_PROXY_WARN_INTERVAL_MS = 10 * 60_000;
+const HOST_PROXY_NO_PROXY = "localhost,127.0.0.1,::1";
+const ARTIFACT_PROXY_ENV = [
+  "CLAUDE_CODE_OAUTH_TOKEN",
+  "HTTPS_PROXY",
+  "NODE_EXTRA_CA_CERTS",
+] as const;
 
 const PROVIDER_ROUTING_ENV: Record<PoolProvider, readonly string[]> = {
-  claude: ["ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN"],
+  claude: [
+    "ANTHROPIC_BASE_URL",
+    "ANTHROPIC_AUTH_TOKEN",
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "HTTPS_PROXY",
+    "NODE_EXTRA_CA_CERTS",
+  ],
   codex: ["CODEX_OPENAI_BASE_URL", "CODEX_POOL_AUTH_TOKEN"],
 };
 
@@ -187,6 +210,90 @@ export function createAccountPoolPlugin(
     };
     const proxyingParent = (): ParentPool | null =>
       currentSettings.parentMode === "proxy" ? parentPool() : null;
+    const hostProxy = bb.hosts.experimental_client({
+      contract: accountPoolHostContract,
+    });
+    const proxyDir = path.join(
+      bb.server.experimental_dataDir,
+      "plugins",
+      bb.pluginId,
+      "secrets",
+      "proxy-ca",
+    );
+    let proxyAuthority: Promise<ProxyCertificateAuthority> | null = null;
+    const artifactProxyAuthority = (): Promise<ProxyCertificateAuthority> => {
+      proxyAuthority ??= createProxyCertificateAuthority({
+        dir: proxyDir,
+        now,
+      }).catch((error: unknown) => {
+        proxyAuthority = null;
+        throw error;
+      });
+      return proxyAuthority;
+    };
+    let lastProxyWarningAt = 0;
+    const warnArtifactProxy = (hostId: string, error: unknown): void => {
+      const at = now();
+      if (at - lastProxyWarningAt < HOST_PROXY_WARN_INTERVAL_MS) return;
+      lastProxyWarningAt = at;
+      bb.log.warn(
+        `Account Pooler Artifact proxy is unavailable on host ${hostId}; threads there keep the plain pool credentials: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    };
+    const ensureArtifactProxy = async (
+      hostId: string,
+      token: string | null,
+    ): Promise<{ port: number; caPath: string } | null> => {
+      try {
+        const authority = await artifactProxyAuthority();
+        const leaf = await authority.leafFor(hostId);
+        const result = await hostProxy.call(
+          "ensureProxy",
+          {
+            caPem: await authority.caPem(),
+            leafCertPem: leaf.certPem,
+            leafKeyPem: leaf.keyPem,
+            tokenSha256:
+              token === null
+                ? null
+                : createHash("sha256").update(token).digest("hex"),
+          },
+          { hostId, timeoutMs: HOST_PROXY_CALL_TIMEOUT_MS },
+        );
+        const known = new Set(
+          z
+            .array(z.string())
+            .catch([])
+            .parse(await bb.storage.kv.get(HOST_PROXY_HOSTS_KEY)),
+        );
+        if (!known.has(hostId)) {
+          known.add(hostId);
+          await bb.storage.kv.set(HOST_PROXY_HOSTS_KEY, [...known]);
+        }
+        return result;
+      } catch (error) {
+        warnArtifactProxy(hostId, error);
+        return null;
+      }
+    };
+    const reconcileArtifactProxies = async (): Promise<void> => {
+      const hosts = z
+        .array(z.string())
+        .catch([])
+        .parse(await bb.storage.kv.get(HOST_PROXY_HOSTS_KEY));
+      await Promise.all(
+        hosts.map((hostId) => ensureArtifactProxy(hostId, null)),
+      );
+    };
+    hostProxy.experimental_onWorkerExit(({ hostId }) => {
+      void ensureArtifactProxy(hostId, null);
+    });
+    const reconcileTimer = setInterval(() => {
+      void reconcileArtifactProxies().catch(() => undefined);
+    }, HOST_PROXY_RECONCILE_INTERVAL_MS);
+    reconcileTimer.unref();
+    bb.onDispose(() => clearInterval(reconcileTimer));
+    void reconcileArtifactProxies().catch(() => undefined);
     const db = bb.storage.database();
     bb.storage.migrate(db, QUOTA_MIGRATIONS);
     const quotas = new QuotaStore(db);
@@ -488,6 +595,7 @@ export function createAccountPoolPlugin(
         serving: (
           token: string,
           scope?: "thread" | "machine",
+          context?: ExperimentalPluginProviderEnvContext,
         ) => Promise<PoolEnvEntry[]>,
       ) =>
       async (context: ExperimentalPluginProviderEnvContext) => {
@@ -541,7 +649,10 @@ export function createAccountPoolPlugin(
           if (provider === "claude") {
             await routing.recordRouted(context.threadId, context.hostId);
           }
-          return [...(await serving(token)), ...markerEntries(nestedToken)];
+          return [
+            ...(await serving(token, "thread", context)),
+            ...markerEntries(nestedToken),
+          ];
         }
         await bb.storage.kv.delete(`retry-route:${context.threadId}`);
         return unrouted();
@@ -578,31 +689,80 @@ export function createAccountPoolPlugin(
         : null;
     bb.providers.experimental_contributeEnv(
       "claude-code",
-      contributeFor("claude", async (token, scope) => [
-        {
-          name: "ANTHROPIC_BASE_URL",
-          value: { serverPath: HUB_BASE_PATH },
-          reason: "Routed through the Account Pooler hub",
-        },
-        {
-          name: "ANTHROPIC_AUTH_TOKEN",
-          value: token,
-          reason: `Account Pooler token scoped to this ${scope ?? "thread"}`,
-        },
-        {
-          name: "ENABLE_TOOL_SEARCH",
-          value: "true",
-          reason:
-            "Claude Code turns tool search off behind a custom base URL; the hub forwards tool_reference blocks",
-        },
-        {
-          name: "_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL",
-          value: "1",
-          reason:
-            "Claude Code limits Opus to a 200k context window behind a custom base URL; the hub forwards to Anthropic's API",
-        },
-        ...(await subscriptionCacheEntries()),
-      ]),
+      contributeFor("claude", async (token, scope, context) => {
+        const proxy =
+          context === undefined ||
+          context.threadId === null ||
+          proxyingParent() !== null ||
+          (await operations.routesOnlyApiKeys("claude"))
+            ? null
+            : await ensureArtifactProxy(context.hostId, token);
+        return [
+          {
+            name: "ANTHROPIC_BASE_URL",
+            value: { serverPath: HUB_BASE_PATH },
+            reason: "Routed through the Account Pooler hub",
+          },
+          proxy === null
+            ? {
+                name: "ANTHROPIC_AUTH_TOKEN",
+                value: token,
+                reason: `Account Pooler token scoped to this ${scope ?? "thread"}`,
+              }
+            : {
+                name: "CLAUDE_CODE_OAUTH_TOKEN",
+                value: token,
+                reason: `Account Pooler token scoped to this ${scope ?? "thread"}; it puts Claude Code in claude.ai account mode so Artifacts work, and the hub swaps it for the selected account's credential`,
+              },
+          {
+            name: "ENABLE_TOOL_SEARCH",
+            value: "true",
+            reason:
+              "Claude Code turns tool search off behind a custom base URL; the hub forwards tool_reference blocks",
+          },
+          {
+            name: "_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL",
+            value: "1",
+            reason:
+              "Claude Code limits Opus to a 200k context window behind a custom base URL; the hub forwards to Anthropic's API",
+          },
+          ...(await subscriptionCacheEntries()),
+          ...(proxy === null
+            ? hasConfiguredParentPool
+              ? ARTIFACT_PROXY_ENV.map((name) => ({
+                  name,
+                  value: "",
+                  reason:
+                    "This bb server does not provide the Account Pooler Artifact proxy, so the parent thread's proxy settings are cleared",
+                }))
+              : []
+            : [
+                {
+                  name: "HTTPS_PROXY",
+                  value: `http://pool:${token}@127.0.0.1:${proxy.port}`,
+                  reason:
+                    "Host-local Account Pooler proxy: it relays Claude Code's Artifact traffic to the hub and tunnels everything else directly",
+                },
+                {
+                  name: "NO_PROXY",
+                  value: HOST_PROXY_NO_PROXY,
+                  reason: "Keeps loopback traffic off the Account Pooler proxy",
+                },
+                {
+                  name: "NODE_EXTRA_CA_CERTS",
+                  value: proxy.caPath,
+                  reason:
+                    "Trusts the Account Pooler proxy's certificate authority, which is limited to api.anthropic.com",
+                },
+                {
+                  name: "CLAUDE_CODE_ARTIFACT",
+                  value: "1",
+                  reason:
+                    "Claude Code leaves Artifacts off in SDK sessions unless this is set",
+                },
+              ]),
+        ];
+      }),
     );
     bb.providers.experimental_contributeEnvHealth("claude-code", () =>
       proxiedHealth("claude"),
@@ -661,6 +821,12 @@ export function createAccountPoolPlugin(
         { auth: "none" },
       );
     }
+    bb.http.route(
+      "POST",
+      OAUTH_PROXY_ROUTE,
+      (context) => hub.handleOAuthProxy(context.req.raw),
+      { auth: "none" },
+    );
     for (const route of [
       "/v1/responses",
       "/v1/images/generations",
