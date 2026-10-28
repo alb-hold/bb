@@ -341,7 +341,7 @@ describe("two split panes each holding a terminal", () => {
     });
   });
 
-  it("clears progress when its terminal controller unmounts", async () => {
+  it("keeps terminal progress when its controller unmounts while the terminal remains open", async () => {
     vi.mocked(sdk.terminals.list).mockResolvedValue({
       sessions: [session("terminal-a", "running")],
     });
@@ -359,7 +359,8 @@ describe("two split panes each holding a terminal", () => {
 
     expect(sdk.threads.experimental_updateRowState).toHaveBeenLastCalledWith({
       threadId: "thread-a",
-      action: "progress-clear",
+      action: "progress-set",
+      progress: { value: 0.5 },
     });
   });
 
@@ -423,7 +424,8 @@ describe("two split panes each holding a terminal", () => {
     paneA.unmount();
     expect(sdk.threads.experimental_updateRowState).toHaveBeenLastCalledWith({
       threadId: "thread-a",
-      action: "progress-clear",
+      action: "progress-set",
+      progress: { value: 0.6 },
     });
   });
 

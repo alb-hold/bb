@@ -509,10 +509,6 @@ export function useThreadTerminalController({
     [sendTerminalProgressUpdate],
   );
 
-  useEffect(() => {
-    return () => clearTerminalProgress(null, null);
-  }, [clearTerminalProgress]);
-
   const activeSessionId = activeSession?.id;
   const activeSessionInitialCwd = activeSession?.initialCwd;
   const startTerminal = useCallback(() => {
