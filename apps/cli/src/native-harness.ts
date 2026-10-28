@@ -194,6 +194,7 @@ interface SessionHeader {
 function parseSessionHeader(
   line: string,
   header: DiscoveredSession["header"],
+  options: { forDiscovery: boolean } = { forDiscovery: false },
 ): SessionHeader | null {
   let json: unknown;
   try {
@@ -203,6 +204,13 @@ function parseSessionHeader(
   }
   for (const [field, expected] of Object.entries(header.match)) {
     if (readRecordField(json, field) !== expected) return null;
+  }
+  if (options.forDiscovery) {
+    for (const [field, expected] of Object.entries(
+      header.discoveryMatch ?? {},
+    )) {
+      if (readRecordField(json, field) !== expected) return null;
+    }
   }
   const id = readRecordField(json, header.id);
   const cwd = readRecordField(json, header.cwd);
@@ -293,7 +301,9 @@ export function findNativeSession(args: {
     if (modifiedMs < sinceMs) continue;
     const line = readFirstLine(filePath);
     const header =
-      line === null ? null : parseSessionHeader(line, session.header);
+      line === null
+        ? null
+        : parseSessionHeader(line, session.header, { forDiscovery: true });
     if (header === null) continue;
     if (header.startedAtMs < sinceMs) continue;
     if (!samePath(header.cwd, args.cwd)) continue;
