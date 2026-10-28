@@ -62,6 +62,7 @@ export function createSessionDiscoverer(options: {
       pending = outcome.kind === "retry";
       if (outcome.kind === "recorded") {
         options.reader()?.sessionDiscovered(sessionId);
+        options.log("session-discovery-recorded", { sessionId });
       }
       if (outcome.kind === "refused") {
         options.reader()?.suspend();

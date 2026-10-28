@@ -1040,6 +1040,27 @@ function issueNativeTerminalToolCredential(providerId: string) {
   };
 }
 
+const TOOL_CREDENTIAL_FINGERPRINT_CHARS = 8;
+
+export function describeRefusedNativeTerminalCredential(
+  deps: Pick<AppDeps, "db">,
+  args: { authorization: string | undefined; threadId: string },
+): { currentFingerprint: string | null; suppliedFingerprint: string | null } {
+  const supplied = /^Bearer ([A-Za-z0-9_-]+)$/u.exec(args.authorization ?? "");
+  const stored = getNativeTerminalToolCredential(deps.db, args.threadId);
+  return {
+    currentFingerprint:
+      stored?.credentialHash.slice(0, TOOL_CREDENTIAL_FINGERPRINT_CHARS) ??
+      null,
+    suppliedFingerprint:
+      supplied?.[1] === undefined
+        ? null
+        : hashToolCredential(supplied[1])
+            .toString("hex")
+            .slice(0, TOOL_CREDENTIAL_FINGERPRINT_CHARS),
+  };
+}
+
 export function requireNativeTerminalToolCredential(
   deps: Pick<AppDeps, "db" | "terminalSessions">,
   args: { authorization: string | undefined; threadId: string },

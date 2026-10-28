@@ -1,6 +1,7 @@
 import { BbHttpError, type NativeTerminalReportActivityArgs } from "@bb/sdk";
 import { NATIVE_TERMINAL_MAX_OPEN_QUESTIONS } from "@bb/server-contract";
 import type { NativeActivityReport } from "./native-activity.js";
+import { nativeToolCredentialFingerprint } from "./native-holder.js";
 import { permanentRefusal } from "./native-session-rebinder.js";
 
 export interface NativeActivityReporter {
@@ -21,6 +22,16 @@ interface RetainedReport {
 
 type ClosureField = "closes" | "confirms";
 
+const CREDENTIAL_REFUSAL_LOG_INTERVAL_MS = 10 * 60_000;
+
+function credentialRefused(error: unknown): boolean {
+  return (
+    error instanceof BbHttpError &&
+    error.status === 401 &&
+    error.code === "native_terminal_credential_invalid"
+  );
+}
+
 function unrecognizedField(error: unknown, field: ClosureField): boolean {
   return (
     error instanceof BbHttpError &&
@@ -33,6 +44,7 @@ function unrecognizedField(error: unknown, field: ClosureField): boolean {
 export function createNativeActivityReporter(options: {
   currentCredential(): string | null;
   log?(event: string, fields: Record<string, number | string | null>): void;
+  now?(): number;
   send(args: NativeTerminalReportActivityArgs): Promise<unknown>;
   threadId: string;
 }): NativeActivityReporter {
@@ -41,6 +53,38 @@ export function createNativeActivityReporter(options: {
   let retained: RetainedReport | null = null;
   let possiblyOpen = new Set<string>();
   let closesSupported = true;
+  let refused = 0;
+  let refusalLoggedAt: number | null = null;
+  const now = options.now ?? Date.now;
+
+  const noteRefusal = (error: unknown, credential: string | null): void => {
+    if (!credentialRefused(error)) return;
+    refused += 1;
+    const at = now();
+    if (
+      refusalLoggedAt !== null &&
+      at - refusalLoggedAt < CREDENTIAL_REFUSAL_LOG_INTERVAL_MS
+    ) {
+      return;
+    }
+    refusalLoggedAt = at;
+    options.log?.("activity-credential-rejected", {
+      fingerprint:
+        credential === null ? null : nativeToolCredentialFingerprint(credential),
+      rejected: refused,
+    });
+  };
+
+  const noteAccepted = (credential: string | null): void => {
+    if (refused === 0) return;
+    options.log?.("activity-credential-accepted", {
+      afterRejected: refused,
+      fingerprint:
+        credential === null ? null : nativeToolCredentialFingerprint(credential),
+    });
+    refused = 0;
+    refusalLoggedAt = null;
+  };
 
   const deliver = async (
     next: NativeActivityReport,
@@ -112,9 +156,11 @@ export function createNativeActivityReporter(options: {
     ): Promise<"accepted" | "failed"> => {
       try {
         await options.send(request(closeIds, includeConfirms, includeCloses));
+        noteAccepted(credential);
         acknowledge(closeIds);
         return "accepted";
       } catch (error) {
+        noteRefusal(error, credential);
         const unsupported: Record<ClosureField, boolean> = {
           closes: includeCloses && unrecognizedField(error, "closes"),
           confirms: includeConfirms && unrecognizedField(error, "confirms"),
@@ -140,9 +186,11 @@ export function createNativeActivityReporter(options: {
           });
           try {
             await options.send(request(closeIds, includeConfirms, false));
+            noteAccepted(credential);
             acknowledge(closeIds);
             return "accepted";
           } catch (fallbackError) {
+            noteRefusal(fallbackError, credential);
             if (
               includeConfirms &&
               unrecognizedField(fallbackError, "confirms")

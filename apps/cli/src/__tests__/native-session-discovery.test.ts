@@ -121,7 +121,9 @@ describe("the holder's session discovery", () => {
     expect(h.sent).toHaveLength(2);
     expect(h.suspended()).toBe(0);
     expect(h.followed).toEqual([ID]);
-    expect(h.logged).toEqual([]);
+    expect(h.logged).toEqual([
+      { event: "session-discovery-recorded", fields: { sessionId: ID } },
+    ]);
   });
 
   it.each([
