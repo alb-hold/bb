@@ -105,10 +105,12 @@ export function shouldUseTerminalCwdTitle(args: {
   currentTitle: string;
   defaultTitle: string;
   previousCwdTitle: string | null;
+  previousProgramTitle?: string | null;
 }): boolean {
   return (
     args.currentTitle === args.defaultTitle ||
-    args.currentTitle === args.previousCwdTitle
+    args.currentTitle === args.previousCwdTitle ||
+    args.currentTitle === (args.previousProgramTitle ?? null)
   );
 }
 

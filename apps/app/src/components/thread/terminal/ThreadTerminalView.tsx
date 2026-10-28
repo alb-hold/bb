@@ -117,6 +117,7 @@ import {
   registerTerminalOsc52Handler,
   terminalPromptLine,
 } from "./terminal-shell-state";
+import { parseTerminalProgressOsc } from "./terminal-progress";
 import { createTerminalOutputPipeline } from "./terminal-output-pipeline";
 import {
   mountTerminalReplayPreview,
@@ -495,6 +496,7 @@ interface ThreadTerminalViewProps {
   onSelectionAddToChat?: (text: string) => void;
   onSessionChange?: (session: TerminalSession) => void;
   onTitleChange?: TerminalTitleChangeHandler;
+  onProgressChange?: (progress: number | null) => void;
   onCwdChange?: (cwd: string) => void;
   onUserInput?: () => void;
   session: TerminalSession;
@@ -1146,6 +1148,7 @@ export function ThreadTerminalView({
   onSelectionAddToChat,
   onSessionChange,
   onTitleChange,
+  onProgressChange,
   onCwdChange,
   onUserInput,
   session,
@@ -1238,6 +1241,7 @@ export function ThreadTerminalView({
   const onTitleChangeRef = useRef<TerminalTitleChangeHandler | undefined>(
     onTitleChange,
   );
+  const onProgressChangeRef = useRef(onProgressChange);
   const onCwdChangeRef = useRef(onCwdChange);
   const onUserInputRef = useRef<(() => void) | undefined>(onUserInput);
   const onAutoFocusHandledRef = useRef<(() => void) | undefined>(
@@ -1251,6 +1255,7 @@ export function ThreadTerminalView({
   const sessionRef = useRef(session);
   const lastStatusNoticeRef = useRef<TerminalSessionStatusNotice | null>(null);
   const scheduleFitRef = useRef<TerminalFitScheduler | null>(null);
+  const terminalVisibilityReporterRef = useRef<(() => void) | null>(null);
   const systemConfig = useSystemConfig();
   const copyOnSelectRef = useRef(false);
   copyOnSelectRef.current =
@@ -1284,6 +1289,7 @@ export function ThreadTerminalView({
   onOpenLinkRef.current = effectiveOnOpenLink;
   onSessionChangeRef.current = onSessionChange;
   onTitleChangeRef.current = onTitleChange;
+  onProgressChangeRef.current = onProgressChange;
   onCwdChangeRef.current = onCwdChange;
   onUserInputRef.current = onUserInput;
 
@@ -1549,6 +1555,7 @@ export function ThreadTerminalView({
     let terminalKeyDisposable: { dispose: () => void } | null = null;
     let terminalInputForwarding: { dispose: () => void } | null = null;
     let shellOscDisposable: { dispose: () => void } | null = null;
+    let terminalProgressDisposable: { dispose: () => void } | null = null;
     let osc52Disposable: { dispose: () => void } | null = null;
     let outputBoundaryDisposable: { dispose: () => void } | null = null;
     let stopObservingFonts: (() => void) | null = null;
@@ -1662,6 +1669,7 @@ export function ThreadTerminalView({
         document.visibilityState === "visible" &&
         containerHasSize &&
         isPanelOpenRef.current;
+      if (transport === null) return;
       const wasVisible = terminalVisible;
       if (wasVisible === nextVisible) return;
       terminalVisible = nextVisible;
@@ -1670,6 +1678,7 @@ export function ThreadTerminalView({
         transport?.replayOutputFrom(lastParsedOutputNextSeq);
       }
     };
+    terminalVisibilityReporterRef.current = reportDocumentVisibility;
     reportDocumentVisibilityRef.current = reportDocumentVisibility;
 
     let liveBottomBeforeGridResize = false;
@@ -1766,6 +1775,15 @@ export function ThreadTerminalView({
         scrollback: 10_000,
         theme: buildTerminalTheme(),
       });
+      terminalProgressDisposable = terminal.parser.registerOscHandler(
+        9,
+        (payload) => {
+          const progress = parseTerminalProgressOsc(payload);
+          if (progress === undefined) return false;
+          onProgressChangeRef.current?.(progress);
+          return true;
+        },
+      );
       terminalRenderSubscription = terminal.onRender(() => {
         if (
           document.visibilityState === "visible" &&
@@ -2673,6 +2691,7 @@ export function ThreadTerminalView({
       terminalInputForwarding?.dispose();
       terminalInputForwarding = null;
       shellOscDisposable?.dispose();
+      terminalProgressDisposable?.dispose();
       osc52Disposable?.dispose();
       outputBoundaryDisposable?.dispose();
       terminalInteractions?.dispose();
@@ -2696,6 +2715,9 @@ export function ThreadTerminalView({
       terminal?.dispose();
       terminalRef.current = null;
       scheduleFitRef.current = null;
+      if (terminalVisibilityReporterRef.current === reportDocumentVisibility) {
+        terminalVisibilityReporterRef.current = null;
+      }
     };
   }, [
     copyTerminalContextValue,
@@ -2784,6 +2806,7 @@ export function ThreadTerminalView({
           : null;
   useEffect(() => {
     webglVisibilityRef.current?.sync();
+    terminalVisibilityReporterRef.current?.();
   }, [isPanelOpen]);
 
   const gestureTouches = (
