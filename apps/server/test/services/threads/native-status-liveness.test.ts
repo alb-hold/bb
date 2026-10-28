@@ -7,10 +7,12 @@ import {
   getThread,
   listEvents,
   setNativeTerminalThreadTerminal,
+  stampNativeTerminalTranscriptEvidence,
   type DbConnection,
 } from "@bb/db";
 import { createMigratedConnection } from "@bb/db/testing";
 import { turnRequestEventDataSchema } from "@bb/domain";
+import { setPluginThreadEventEmitter } from "../../../src/services/plugins/plugin-thread-events.js";
 import { runPeriodicSweeps } from "../../../src/services/system/periodic-sweeps.js";
 import {
   withTestHarness,
@@ -44,7 +46,11 @@ const WORKING_TRANSCRIPT =
   }) +
   "\n";
 
-type TerminalState = "running" | "exited-process-exit";
+type TerminalState =
+  | "running"
+  | "exited-process-exit"
+  | "exited-process-exit-code-1"
+  | "exited-daemon-disconnect";
 
 interface SeededNativeThread {
   threadId: string;
@@ -107,12 +113,17 @@ function seedNativeThread(
     threadId: thread.id,
     terminalSessionId: terminal.id,
   });
-  if (args.terminal === "exited-process-exit") {
+  if (args.terminal !== "running") {
+    const closeReason =
+      args.terminal === "exited-daemon-disconnect"
+        ? "daemon-disconnect"
+        : "process-exit";
+    const exitCode = args.terminal === "exited-process-exit-code-1" ? 1 : 0;
     harness.db.$client
       .prepare(
-        "UPDATE terminal_sessions SET status = 'exited', close_reason = 'process-exit', exit_code = 0 WHERE id = ?",
+        "UPDATE terminal_sessions SET status = 'exited', close_reason = ?, exit_code = ? WHERE id = ?",
       )
-      .run(terminal.id);
+      .run(closeReason, exitCode, terminal.id);
   }
   return { threadId: thread.id };
 }
@@ -151,6 +162,33 @@ function parentSystemRequests(harness: TestAppHarness, parentThreadId: string) {
     .filter((data) => data.initiator === "system");
 }
 
+function recordPluginThreadEvents(): string[] {
+  const calls: string[] = [];
+  const record = (name: string) => () => {
+    calls.push(name);
+  };
+  setPluginThreadEventEmitter({
+    emitThreadEvents: record("emitThreadEvents"),
+    emitTerminalInput: record("emitTerminalInput"),
+    emitHostDeleted: record("emitHostDeleted"),
+    emitEnvironmentRemoved: record("emitEnvironmentRemoved"),
+    emitThreadCreated: record("emitThreadCreated"),
+    emitThreadActive: record("emitThreadActive"),
+    emitThreadIdle: record("emitThreadIdle"),
+    emitThreadFailed: record("emitThreadFailed"),
+    emitThreadArchived: record("emitThreadArchived"),
+    emitThreadDeleted: record("emitThreadDeleted"),
+    emitInteractionPending: record("emitInteractionPending"),
+    emitMessageQueued: record("emitMessageQueued"),
+    emitMessageDispatched: record("emitMessageDispatched"),
+    emitMessageCancelled: record("emitMessageCancelled"),
+    emitThreadUnarchived: record("emitThreadUnarchived"),
+    emitThreadParentChanged: record("emitThreadParentChanged"),
+    emitTurnFailed: record("emitTurnFailed"),
+  });
+  return calls;
+}
+
 async function withHarness(
   run: (harness: TestAppHarness) => Promise<void>,
 ): Promise<void> {
@@ -186,7 +224,64 @@ describe("native thread status liveness", () => {
     });
   });
 
-  it("keeps an idle thread with an exited terminal idle when its transcript still says working", async () => {
+  it("settles a thread whose CLI exited with a non-zero code as error whether it was active or idle", async () => {
+    await withHarness(async (harness) => {
+      const context = seedNativeContext(harness);
+      for (const initialStatus of ["active", "idle"] as const) {
+        const { threadId } = seedNativeThread(
+          harness,
+          { initialStatus, terminal: "exited-process-exit-code-1" },
+          context,
+        );
+        expect(await readThreadStatus(harness, threadId, "not-expected")).toBe(
+          "error",
+        );
+      }
+    });
+  });
+
+  it("does not tell the parent about an idle child whose CLI exited after it finished", async () => {
+    await withHarness(async (harness) => {
+      const context = seedNativeContext(harness);
+      const parent = seedThread(harness.deps, {
+        projectId: context.project.id,
+        environmentId: context.environment.id,
+        status: "idle",
+        title: "Parent",
+      });
+      seedThreadRuntimeState(harness.deps, {
+        threadId: parent.id,
+        environmentId: context.environment.id,
+        providerThreadId: "parent-provider-thread",
+      });
+      const { threadId } = seedNativeThread(
+        harness,
+        {
+          initialStatus: "idle",
+          parentThreadId: parent.id,
+          terminal: "exited-process-exit",
+        },
+        context,
+      );
+
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      try {
+        await runPeriodicSweeps({
+          ...harness.deps,
+          pluginSchedules: harness.pluginService,
+          plugins: harness.pluginService,
+        });
+        await vi.advanceTimersByTimeAsync(5_000);
+      } finally {
+        vi.useRealTimers();
+      }
+
+      expect(getThread(harness.db, threadId)?.status).toBe("error");
+      expect(parentSystemRequests(harness, parent.id)).toHaveLength(0);
+    });
+  });
+
+  it("settles an idle thread whose CLI exited cleanly as error instead of showing it idle", async () => {
     await withHarness(async (harness) => {
       const { threadId } = seedNativeThread(harness, {
         initialStatus: "idle",
@@ -194,11 +289,146 @@ describe("native thread status liveness", () => {
       });
 
       expect(await readThreadStatus(harness, threadId, "not-expected")).toBe(
-        "idle",
+        "error",
       );
       expect(
         getNativeTerminalThread(harness.db, threadId)?.lastEvidenceAt,
       ).toBeNull();
+    });
+  });
+
+  it("reports an error display status in the thread list for an idle thread whose CLI exited cleanly", async () => {
+    await withHarness(async (harness) => {
+      const { threadId } = seedNativeThread(harness, {
+        initialStatus: "idle",
+        terminal: "exited-process-exit",
+      });
+
+      const listDisplayStatus = async () => {
+        const response = await harness.app.request(
+          `/api/v1/threads?threadIds=${threadId}`,
+        );
+        expect(response.status).toBe(200);
+        const body = (await response.json()) as {
+          id: string;
+          runtime: { displayStatus: string };
+        }[];
+        return body.find((thread) => thread.id === threadId)?.runtime
+          .displayStatus;
+      };
+      await listDisplayStatus();
+      await vi.waitFor(async () =>
+        expect(await listDisplayStatus()).toBe("error"),
+      );
+    });
+  });
+
+  it("settles an idle thread straight to error without a working state, a timeline item, a parent message or any plugin failed, idle or active event", async () => {
+    await withHarness(async (harness) => {
+      const context = seedNativeContext(harness);
+      const parent = seedThread(harness.deps, {
+        projectId: context.project.id,
+        environmentId: context.environment.id,
+        status: "idle",
+        title: "Parent",
+      });
+      seedThreadRuntimeState(harness.deps, {
+        threadId: parent.id,
+        environmentId: context.environment.id,
+        providerThreadId: "parent-provider-thread",
+      });
+      const { threadId } = seedNativeThread(
+        harness,
+        {
+          initialStatus: "idle",
+          parentThreadId: parent.id,
+          terminal: "exited-process-exit",
+        },
+        context,
+      );
+      const eventTypesBefore = listEvents(harness.db, { threadId }).map(
+        (row) => row.type,
+      );
+      const broadcastStatuses: string[] = [];
+      const notifyThread = harness.deps.hub.notifyThread.bind(harness.deps.hub);
+      vi.spyOn(harness.deps.hub, "notifyThread").mockImplementation(
+        (id, kinds, metadata) => {
+          if (id === threadId && metadata?.statusChange !== undefined) {
+            broadcastStatuses.push(metadata.statusChange.status);
+          }
+          notifyThread(id, kinds, metadata);
+        },
+      );
+      const pluginCalls = recordPluginThreadEvents();
+      const listedDisplayStatuses: string[] = [];
+      const listDisplayStatus = async () => {
+        const response = await harness.app.request(
+          `/api/v1/threads?threadIds=${threadId}`,
+        );
+        const body = (await response.json()) as {
+          id: string;
+          runtime: { displayStatus: string };
+        }[];
+        const displayStatus = body.find((thread) => thread.id === threadId)
+          ?.runtime.displayStatus;
+        listedDisplayStatuses.push(displayStatus ?? "missing");
+        return displayStatus;
+      };
+
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      try {
+        await listDisplayStatus();
+        await vi.waitFor(async () =>
+          expect(await listDisplayStatus()).toBe("error"),
+        );
+        await vi.advanceTimersByTimeAsync(5_000);
+      } finally {
+        vi.useRealTimers();
+        setPluginThreadEventEmitter(undefined);
+      }
+
+      expect(getThread(harness.db, threadId)?.status).toBe("error");
+      expect(listedDisplayStatuses.every((status) => status !== "active")).toBe(
+        true,
+      );
+      expect(listedDisplayStatuses.at(0)).toBe("idle");
+      expect(broadcastStatuses).toEqual(["error"]);
+      expect(
+        listEvents(harness.db, { threadId }).map((row) => row.type),
+      ).toEqual(eventTypesBefore);
+      expect(pluginCalls).toEqual([]);
+      expect(parentSystemRequests(harness, parent.id)).toHaveLength(0);
+    });
+  });
+
+  it("keeps an idle thread idle while its terminal awaits a daemon reconnect", async () => {
+    await withHarness(async (harness) => {
+      const { threadId } = seedNativeThread(harness, {
+        initialStatus: "idle",
+        terminal: "exited-daemon-disconnect",
+      });
+
+      expect(await readThreadStatus(harness, threadId, "not-expected")).toBe(
+        "idle",
+      );
+    });
+  });
+
+  it("keeps an idle thread with a running CLI idle", async () => {
+    await withHarness(async (harness) => {
+      const { threadId } = seedNativeThread(harness, {
+        initialStatus: "idle",
+        terminal: "running",
+      });
+      stampNativeTerminalTranscriptEvidence(harness.db, {
+        at: Date.now(),
+        nativeSessionId: `session-${threadId}`,
+        threadId,
+      });
+
+      expect(await readThreadStatus(harness, threadId, "not-expected")).toBe(
+        "idle",
+      );
     });
   });
 
@@ -241,6 +471,31 @@ describe("native thread status liveness", () => {
       expect(
         seeded.map(({ threadId }) => getThread(harness.db, threadId)?.status),
       ).toEqual(seeded.map(() => "error"));
+    });
+  });
+
+  it("settles every idle thread whose CLI exited in the periodic sweep", async () => {
+    await withHarness(async (harness) => {
+      const context = seedNativeContext(harness);
+      const exited = seedNativeThread(
+        harness,
+        { initialStatus: "idle", terminal: "exited-process-exit" },
+        context,
+      );
+      const reconnecting = seedNativeThread(
+        harness,
+        { initialStatus: "idle", terminal: "exited-daemon-disconnect" },
+        context,
+      );
+
+      await runPeriodicSweeps({
+        ...harness.deps,
+        pluginSchedules: harness.pluginService,
+        plugins: harness.pluginService,
+      });
+
+      expect(getThread(harness.db, exited.threadId)?.status).toBe("error");
+      expect(getThread(harness.db, reconnecting.threadId)?.status).toBe("idle");
     });
   });
 

@@ -404,6 +404,10 @@ describe("turn_finished telemetry", () => {
     expect(turnFinishedOutcome({ type: "run.failed" }, "starting")).toBe(
       "failed",
     );
+    expect(turnFinishedOutcome({ type: "session.lost" }, "idle")).toBe(null);
+    expect(turnFinishedOutcome({ type: "session.resumed" }, "error")).toBe(
+      null,
+    );
     expect(turnErrorCategory("unauthorized")).toBe("auth");
     expect(turnErrorCategory("budget-exceeded")).toBe("billing");
     expect(turnErrorCategory("rate-limit")).toBe("rate_limit");

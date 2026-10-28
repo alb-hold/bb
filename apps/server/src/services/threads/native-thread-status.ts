@@ -48,14 +48,14 @@ function classifyNativeTerminalLiveness(
     : "dead";
 }
 
-function interruptActiveThreadWithDeadTerminal(
+function settleThreadWithDeadTerminal(
   deps: NativeThreadStatusDeps,
   threadId: string,
 ): void {
   const thread = getThread(deps.db, threadId);
   if (
     thread === null ||
-    thread.status !== "active" ||
+    (thread.status !== "active" && thread.status !== "idle") ||
     thread.environmentId === null
   )
     return;
@@ -65,12 +65,31 @@ function interruptActiveThreadWithDeadTerminal(
     { hostId: environment.hostId, threadId },
     "Settling a native terminal thread whose terminal exited",
   );
+  if (thread.status === "idle") {
+    applyLoggedThreadLifecycleEvent(deps, {
+      event: { type: "session.lost" },
+      threadId,
+    });
+    return;
+  }
   interruptActiveThreadsForHost(deps, {
     hostId: environment.hostId,
     includeStopping: false,
     onlyThreadIds: new Set([threadId]),
     reason: "host-daemon-restarted",
   });
+}
+
+function terminalExitedOnItsOwn(
+  deps: NativeThreadStatusDeps,
+  native: NativeTerminalThreadRecord,
+): boolean {
+  const terminal = readRecordTerminal(deps, native);
+  return (
+    terminal !== null &&
+    terminal.status === "exited" &&
+    terminal.closeReason === "process-exit"
+  );
 }
 
 function nativeStatusReadStates(deps: NativeThreadStatusDeps) {
@@ -96,8 +115,11 @@ export async function reconcileNativeThreadStatus(
   if (native === null || native.providerId !== thread.providerId) return;
   const liveness = classifyNativeTerminalLiveness(deps, native);
   if (liveness === "dead") {
-    if (!isNativeTerminalRebindInFlight(threadId)) {
-      interruptActiveThreadWithDeadTerminal(deps, threadId);
+    if (
+      !isNativeTerminalRebindInFlight(threadId) &&
+      (thread.status === "active" || terminalExitedOnItsOwn(deps, native))
+    ) {
+      settleThreadWithDeadTerminal(deps, threadId);
     }
     return;
   }
