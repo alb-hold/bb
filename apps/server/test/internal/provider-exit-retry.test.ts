@@ -1,6 +1,9 @@
 import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
 import type { BbPluginApi, PluginTurnFailedEvent } from "@get-bb/plugin-sdk";
 import { getThread, listQueuedThreadMessages } from "@bb/db";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   encodeClientTurnRequestIdNumber,
   threadScope,
@@ -47,8 +50,9 @@ interface ParentedProviderExitScenario {
 function seedParentedProviderExitScenario(
   harness: TestAppHarness,
   attemptNumber = 1,
+  hostSession?: ReturnType<typeof seedHostSession>,
 ): ParentedProviderExitScenario {
-  const { host, session } = seedHostSession(harness.deps);
+  const { host, session } = hostSession ?? seedHostSession(harness.deps);
   const { project } = seedProjectWithSource(harness.deps, {
     hostId: host.id,
   });
@@ -250,6 +254,170 @@ function captureTurnFailed(
 }
 
 describe("a provider process that exits under a running turn", () => {
+  it("notifies the parent after a never-resolving turn.failed handler times out", async () => {
+    await withTestHarness(async (harness) => {
+      const scenario = seedParentedProviderExitScenario(harness);
+      const pluginDirectory = await mkdtemp(
+        join(tmpdir(), "bb-provider-exit-hanging-handler-"),
+      );
+      const globals = globalThis as Record<string, unknown>;
+      let markHandlerStarted!: () => void;
+      const handlerStarted = new Promise<void>((resolve) => {
+        markHandlerStarted = resolve;
+      });
+      globals.__providerExitRetryHandlerStarted = markHandlerStarted;
+      try {
+        const pluginRoot = join(pluginDirectory, "observer");
+        await mkdir(pluginRoot, { recursive: true });
+        await writeFile(
+          join(pluginRoot, "package.json"),
+          JSON.stringify({
+            name: "bb-plugin-hanging-turn-failed",
+            version: "0.1.0",
+            bb: {
+              name: "Hanging turn failed fixture",
+              description: "Keeps a turn failure handler pending.",
+              branding: { icon: "Zap" },
+              server: "./server.ts",
+            },
+          }),
+        );
+        await writeFile(
+          join(pluginRoot, "server.ts"),
+          `export default function plugin(bb: any) {
+            bb.events.on("turn.failed", async (event: any) => {
+              (globalThis as any).__providerExitRetryHandlerStarted();
+              await new Promise(() => {});
+            });
+          }`,
+        );
+        const entry = await harness.pluginService.installPath(pluginRoot);
+        expect(entry.status).toBe("running");
+        const response = await postEvents(
+          harness,
+          scenario.sessionId,
+          failureEvents({
+            errorCode: "provider_process_exited",
+            threadId: scenario.child.id,
+            turnId: scenario.turnId,
+          }),
+        );
+
+        expect(response.status).toBe(200);
+        await handlerStarted;
+        await new Promise((resolve) => setTimeout(resolve, 13_000));
+        const parentFailure = await waitForQueuedCommand(
+          harness,
+          ({ command }) =>
+            command.type === "turn.submit" &&
+            command.threadId === scenario.parent.id,
+          3_000,
+        );
+        expect(
+          listQueuedThreadCommands(harness, "turn.submit", scenario.parent.id),
+        ).toHaveLength(1);
+        if (parentFailure.command.type !== "turn.submit") {
+          throw new Error("expected a parent turn submission");
+        }
+        const [input] = parentFailure.command.input;
+        expect(input?.type).toBe("text");
+        if (input?.type !== "text") {
+          throw new Error("expected a parent failure notification");
+        }
+        expect(input.text).toContain("failed.");
+        expect(input.text).toContain(
+          "Review the thread before deciding next steps.",
+        );
+      } finally {
+        delete globals.__providerExitRetryHandlerStarted;
+        await rm(pluginDirectory, { recursive: true, force: true });
+      }
+    });
+  }, 25_000);
+
+  it("reports distant retries with a schedule and keeps short retries silent", async () => {
+    await withTestHarness(async (harness) => {
+      const hostSession = seedHostSession(harness.deps);
+      const distant = seedParentedProviderExitScenario(harness, 1, hostSession);
+      const short = seedParentedProviderExitScenario(harness, 1, hostSession);
+      const sendAtByThreadId = new Map([
+        [distant.child.id, Date.now() + 60 * 60 * 1_000],
+        [short.child.id, Date.now() + 5_000],
+      ]);
+      captureTurnFailed(
+        (threadId) => buildTurnFailedEvent(harness.db, threadId),
+        async (failure) => {
+          const thread = getThread(harness.db, failure.threadId);
+          const sendAt = sendAtByThreadId.get(failure.threadId);
+          if (thread === null || sendAt === undefined) {
+            throw new Error("expected a scheduled retry scenario");
+          }
+          await retryFailedTurn(harness.deps, {
+            thread,
+            request: {
+              turnRequestId: failure.requestId,
+              sendAt,
+              reason: "Provider process exited",
+            },
+          });
+        },
+      );
+
+      for (const scenario of [distant, short]) {
+        const response = await postEvents(
+          harness,
+          scenario.sessionId,
+          failureEvents({
+            errorCode: "provider_process_exited",
+            threadId: scenario.child.id,
+            turnId: scenario.turnId,
+          }),
+        );
+        expect(response.status).toBe(200);
+        await new Promise((resolve) => setTimeout(resolve, 2_200));
+      }
+
+      const distantRetry = listQueuedThreadMessages(
+        harness.db,
+        distant.child.id,
+      )[0];
+      const shortRetry = listQueuedThreadMessages(
+        harness.db,
+        short.child.id,
+      )[0];
+      expect(distantRetry?.sendAt).toBeGreaterThan(
+        Date.now() + 59 * 60 * 1_000,
+      );
+      expect(shortRetry?.sendAt).toBeGreaterThan(Date.now());
+
+      const distantMessages = listQueuedThreadCommands(
+        harness,
+        "turn.submit",
+        distant.parent.id,
+      );
+      expect(distantMessages).toHaveLength(1);
+      const [distantNotice] = distantMessages;
+      if (distantNotice?.type !== "turn.submit") {
+        throw new Error("expected a parent retry notice");
+      }
+      const [distantInput] = distantNotice.input;
+      expect(distantInput?.type).toBe("text");
+      if (distantInput?.type !== "text") {
+        throw new Error("expected retry schedule text");
+      }
+      expect(distantInput.text).toContain("automatic retry is scheduled for");
+      expect(distantInput.text).toContain(
+        new Date(distantRetry?.sendAt ?? 0).toISOString(),
+      );
+      expect(distantInput.text).not.toContain(
+        "Review the thread before deciding next steps.",
+      );
+      expect(
+        listQueuedThreadCommands(harness, "turn.submit", short.parent.id),
+      ).toEqual([]);
+    });
+  }, 15_000);
+
   it("does not notify a parent while its retry decision is pending", async () => {
     await withTestHarness(async (harness) => {
       const { host, session } = seedHostSession(harness.deps);

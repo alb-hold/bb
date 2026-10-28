@@ -92,8 +92,23 @@ export function emitPluginTurnFailed(threadId: string): void {
   });
 }
 
-export async function waitForPluginTurnFailed(threadId: string): Promise<void> {
-  await pendingTurnFailedEvents.get(threadId);
+export async function waitForPluginTurnFailed(
+  threadId: string,
+  timeoutMs: number,
+): Promise<void> {
+  const pending = pendingTurnFailedEvents.get(threadId);
+  if (pending === undefined) return;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      pending,
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
 }
 
 /**
