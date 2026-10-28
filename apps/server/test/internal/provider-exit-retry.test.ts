@@ -147,7 +147,7 @@ describe("a provider process that exits under a running turn", () => {
                 request: {
                   turnRequestId: request.turnRequestId ?? null,
                   sendAt: request.sendAt ?? null,
-                  reason: request.reason ?? "Provider unavailable",
+                  reason: request.reason ?? "Provider process exited",
                 },
               });
             },
@@ -166,6 +166,7 @@ describe("a provider process that exits under a running turn", () => {
           kind: "retry",
           retryOfTurnRequestId: failure.requestId,
           attempt: 2,
+          reason: "Provider process exited",
         });
         expect(failure.errorInfo).toEqual({
           category: "internal",

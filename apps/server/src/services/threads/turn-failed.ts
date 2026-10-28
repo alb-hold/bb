@@ -157,15 +157,6 @@ function doorRejectionErrorInfo(
   }
 }
 
-/**
- * The classification of a failure the provider process itself caused.
- *
- * A provider process that ends under a turn leaves no `provider/error`: the
- * host daemon, not the provider, reports it, as a `system/error` coded
- * `provider_process_exited`. Without this mapping the failure reaches a retry
- * policy with no classification at all and is declined as not retryable,
- * though a fresh process resumes the same session.
- */
 function processExitErrorInfo(
   db: DbConnection,
   args: { threadId: string; failed: FailedTurnRecord },

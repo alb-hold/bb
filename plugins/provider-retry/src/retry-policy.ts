@@ -30,7 +30,11 @@ export type RetryDecision =
   | {
       kind: "retry";
       sendAt: number;
-      reason: "Rate limited" | "Provider overloaded" | "Provider unavailable";
+      reason:
+        | "Rate limited"
+        | "Provider overloaded"
+        | "Provider unavailable"
+        | "Provider process exited";
     };
 
 export interface RetryPolicyInput {
@@ -125,7 +129,7 @@ export function decideRetry(input: RetryPolicyInput): RetryDecision {
         now: input.now,
         random: input.random,
       }),
-      reason: "Provider unavailable",
+      reason: "Provider process exited",
     };
   }
   if (!isRateLimitFailure(failure)) {

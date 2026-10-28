@@ -413,7 +413,7 @@ describe("provider retry policy", () => {
     ).toEqual({
       kind: "retry",
       sendAt: NOW_MS + OVERLOAD_RETRY_BASE_MS,
-      reason: "Provider unavailable",
+      reason: "Provider process exited",
     });
     expect(
       decideRetry({
