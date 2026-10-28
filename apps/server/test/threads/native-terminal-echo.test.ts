@@ -271,6 +271,56 @@ describe("terminalScreenAlreadyShowsText in the input line", () => {
     ).toBe(false);
   });
 
+  it.each([
+    ["\u001b[2m", "\u001b[22m"],
+    ["\u001b[2m", "\u001b[0m"],
+    ["\u001b[2;38;5;244m", "\u001b[m"],
+  ])(
+    "passes the text a faint Claude Code prompt suggestion shows (%j then %j)",
+    (faint, normal) => {
+      expect(
+        terminalScreenAlreadyShowsText({
+          output: idleClaudeScreen({
+            scrollback: repeated,
+            input: `${faint}${repeated}${normal}`,
+          }),
+          screenRows: 36,
+          text: repeated,
+        }),
+      ).toBe(false);
+    },
+  );
+
+  it("passes the text a faint Codex placeholder shows", () => {
+    expect(
+      terminalScreenAlreadyShowsText({
+        output: `• Ran a step\r\n› \u001b[2m${repeated}\u001b[22m`,
+        screenRows: 36,
+        text: repeated,
+      }),
+    ).toBe(false);
+  });
+
+  it("flags the same text typed in normal intensity after a faint one was erased", () => {
+    expect(
+      terminalScreenAlreadyShowsText({
+        output: `❯\u00a0\u001b[2m${repeated}\u001b[22m\u001b[2K\u001b[1G❯\u00a0${repeated}`,
+        screenRows: 36,
+        text: repeated,
+      }),
+    ).toBe(true);
+  });
+
+  it("flags typed text drawn next to a faint suggestion", () => {
+    expect(
+      terminalScreenAlreadyShowsText({
+        output: `❯\u00a0${repeated}\u001b[2m and more\u001b[22m`,
+        screenRows: 36,
+        text: repeated,
+      }),
+    ).toBe(true);
+  });
+
   it("flags text on a screen that draws no prompt marker", () => {
     expect(
       terminalScreenAlreadyShowsText({

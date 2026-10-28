@@ -2036,8 +2036,7 @@ describe("native terminal threads", () => {
     const cli = startFakeCli(
       fixture,
       open.terminalId,
-      () =>
-        "\u001b[6;1H\u001b[2K\u203a [Image #1] run the tests",
+      () => "\u001b[6;1H\u001b[2K\u203a [Image #1] run the tests",
     );
     try {
       const response = await postJson(fixture, `/threads/${thread.id}/send`, {
@@ -2198,11 +2197,20 @@ describe("native terminal threads", () => {
     ].join("\r\n");
 
     it.each([
-      ["Reply with exactly: repeat-probe", idleScreen("")],
-      ["/clear", clearedScreen],
+      [
+        "history above an empty prompt",
+        "Reply with exactly: repeat-probe",
+        idleScreen(""),
+      ],
+      ["history above an empty prompt", "/clear", clearedScreen],
+      [
+        "a faint suggestion",
+        "Reply with exactly: repeat-probe",
+        idleScreen("\u001b[2mReply with exactly: repeat-probe\u001b[22m"),
+      ],
     ])(
-      "accepts %s when only the history above an empty prompt shows it",
-      async (message, screen) => {
+      "accepts a message when only %s shows it: %s",
+      async (_label, message, screen) => {
         const fixture = await createFixture();
         const { open, thread } = await openRunningNativeThread(fixture, {
           providerId: "claude-code",
