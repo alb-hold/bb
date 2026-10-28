@@ -13,6 +13,7 @@ import { createAgentRuntime } from "./runtime.js";
 import { createProviderForId } from "./provider-registry.js";
 import {
   isProviderProcessExitedError,
+  ProviderWorkspaceMissingError,
   RuntimeProviderProcessManager,
 } from "./runtime-provider-process.js";
 import { RuntimeThreadIdentityRegistry } from "./runtime-thread-identity.js";
@@ -245,6 +246,33 @@ describe("createAgentRuntime process lifecycle", () => {
       expect.objectContaining({ providerId: "fake", code: 0, expected: false }),
     );
     await runtime.shutdown();
+  });
+
+  it("reports a missing workspace folder instead of spawning the provider into it", async () => {
+    const onProcessExit = vi.fn();
+    const goneWorkspacePath = join(tmpDir, "deleted-workspace");
+    const manager = createProviderProcessManager({
+      onProcessExit,
+      workspacePath: goneWorkspacePath,
+    });
+
+    const failure = await manager
+      .ensureProvider(MANAGER_PROVIDER)
+      .catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(ProviderWorkspaceMissingError);
+    expect(failure).toMatchObject({
+      code: "path_not_found",
+      message: `Unmanaged workspace path does not exist: ${goneWorkspacePath}`,
+      workspacePath: goneWorkspacePath,
+    });
+    expect(onProcessExit).not.toHaveBeenCalled();
+    expect(() =>
+      manager.requireProviderProcess({
+        processKey: "fake",
+        providerId: "fake",
+      }),
+    ).toThrow();
   });
 
   it("retires a threadless bridge process superseded by a new artifact hash", async () => {
