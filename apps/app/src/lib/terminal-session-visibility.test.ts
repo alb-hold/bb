@@ -3,6 +3,7 @@ import type { TerminalSession } from "@bb/server-contract";
 import {
   getThreadTerminalLayoutSessions,
   omitSupersededDisconnectedSessions,
+  resolveThreadTerminalLayout,
 } from "./terminal-session-visibility";
 import { makeTerminalSession } from "@/test/fixtures/terminal-sessions";
 
@@ -41,6 +42,69 @@ describe("getThreadTerminalLayoutSessions", () => {
   });
 });
 
+
+describe("resolveThreadTerminalLayout", () => {
+  const live = session();
+
+  it("stays pending while the terminal list is loading", () => {
+    expect(
+      resolveThreadTerminalLayout({
+        isPending: true,
+        sessions: undefined,
+        terminalIds: [live.id],
+        threadId: "thread-1",
+      }),
+    ).toEqual({ status: "pending" });
+  });
+
+  it("stays pending when the list is not loaded yet but the query is not pending", () => {
+    expect(
+      resolveThreadTerminalLayout({
+        isPending: false,
+        sessions: undefined,
+        terminalIds: [live.id],
+        threadId: "thread-1",
+      }),
+    ).toEqual({ status: "pending" });
+  });
+
+  it("resolves a live terminal, including a native terminal session", () => {
+    const native = session({ id: "term-native", title: "Native" });
+    expect(
+      resolveThreadTerminalLayout({
+        isPending: false,
+        sessions: [live, native],
+        terminalIds: [native.id, live.id],
+        threadId: "thread-1",
+      }),
+    ).toEqual({ status: "ready", sessions: [native, live] });
+  });
+
+  it.each([
+    ["an exited terminal", session({ status: "exited", exitCode: 0 })],
+    ["a terminal of another thread", session({ threadId: "thread-2" })],
+  ])("reports %s as missing once the list is loaded", (_case, terminal) => {
+    expect(
+      resolveThreadTerminalLayout({
+        isPending: false,
+        sessions: [terminal],
+        terminalIds: [terminal.id],
+        threadId: "thread-1",
+      }),
+    ).toEqual({ status: "missing" });
+  });
+
+  it("reports an id absent from a loaded list as missing", () => {
+    expect(
+      resolveThreadTerminalLayout({
+        isPending: false,
+        sessions: [live],
+        terminalIds: ["term-gone"],
+        threadId: "thread-1",
+      }),
+    ).toEqual({ status: "missing" });
+  });
+});
 
 describe("omitSupersededDisconnectedSessions", () => {
   const disconnected = makeTerminalSession({
