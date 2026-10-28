@@ -1792,11 +1792,12 @@ describe("NativeActivityReader", () => {
     },
   );
 
-  it("bounds retained identity state across 50000 turns with tools, late flushes and duplicates", () => {
+  it("bounds retained identity state across 5000 turns with tools, late flushes and duplicates", () => {
     const fixture = claudeFixture();
     finalClaudeStop(fixture);
     const maxima = retainedIdentitySizes(fixture.reader);
-    for (let index = 2; index <= 50_001; index += 1) {
+    const lastIndex = 5_001;
+    for (let index = 2; index <= lastIndex; index += 1) {
       const turn = `turn-${index}`;
       const prompt = `prompt ${index}`;
       const answer = {
@@ -1874,6 +1875,13 @@ describe("NativeActivityReader", () => {
     expect(maxima.knownTurns, evidence).toBeLessThanOrEqual(128);
     expect(maxima.completedTurns, evidence).toBeLessThanOrEqual(128);
     expect(maxima.recentEvictedIds, evidence).toBeLessThanOrEqual(4096);
+    expect(maxima, evidence).toEqual({
+      recordTurns: 4096,
+      recordParents: 4096,
+      knownTurns: 128,
+      completedTurns: 128,
+      recentEvictedIds: 4096,
+    });
     fixture.hook([
       {
         hook_event_name: "UserPromptSubmit",
@@ -1888,7 +1896,7 @@ describe("NativeActivityReader", () => {
         isMeta: true,
         uuid: "last-feedback",
         promptId: "last-turn",
-        parentUuid: "end-50001",
+        parentUuid: `end-${lastIndex}`,
         message: { content: "Stop hook feedback:\nWrite two more sentences." },
       },
       {

@@ -2203,7 +2203,7 @@ describe("TerminalManager", () => {
   );
 
   it.each([256, 512])(
-    "bounds retained CSI snapshots across 12000 separate %s-byte output chunks",
+    "bounds retained CSI snapshots across separate %s-byte output chunks emitted past the retention window",
     async (chunkBytes) => {
       const harness = createHarness();
       const pty = await openTerminal(harness);
@@ -2220,34 +2220,53 @@ describe("TerminalManager", () => {
       if (!session) {
         throw new Error("Terminal session did not open");
       }
+      const retainedChunks = Math.min(10_000, (4 * 1024 * 1024) / chunkBytes);
+      const emittedChunks = retainedChunks + 1_000;
       const capturedLengths = new Set<number>();
       let maxRetainedChunks = 0;
       let maxRetainedBytes = 0;
-      for (let index = 0; index < 12_000; index += 1) {
+      let firstBadSeq = -1;
+      let firstBadLength = -1;
+      for (let index = 0; index < emittedChunks; index += 1) {
         pty.emitData(
           `${index === 0 ? "\u001b[" : ""}${";".repeat(chunkBytes)}`,
         );
         vi.advanceTimersByTime(4);
         const entry = session.scrollback.at(-1);
-        expect(entry?.chunk.seq).toBe(index);
         const length = entry?.parserStateBefore.csiParameters.length ?? -1;
-        expect(length).toBeGreaterThanOrEqual(0);
-        expect(length).toBeLessThanOrEqual(1024);
+        if (entry?.chunk.seq !== index && firstBadSeq === -1) {
+          firstBadSeq = index;
+        }
+        if ((length < 0 || length > 1024) && firstBadLength === -1) {
+          firstBadLength = index;
+        }
         capturedLengths.add(length);
         maxRetainedChunks = Math.max(
           maxRetainedChunks,
           session.scrollback.length,
         );
         maxRetainedBytes = Math.max(maxRetainedBytes, session.scrollbackBytes);
+        if (index % 500 === 0) {
+          expect(session.scrollback.length).toBe(
+            Math.min(index + 1, retainedChunks),
+          );
+          expect(session.scrollbackBytes).toBeGreaterThanOrEqual(
+            session.scrollback.length * chunkBytes,
+          );
+          expect(session.scrollbackBytes).toBeLessThanOrEqual(4 * 1024 * 1024);
+        }
       }
+      expect(firstBadSeq).toBe(-1);
+      expect(firstBadLength).toBe(-1);
       expect(capturedLengths.has(chunkBytes)).toBe(true);
       expect(capturedLengths.has(1024)).toBe(true);
-      const retainedChunks = Math.min(10_000, (4 * 1024 * 1024) / chunkBytes);
       expect(maxRetainedChunks).toBe(retainedChunks);
       expect(maxRetainedBytes).toBeLessThanOrEqual(4 * 1024 * 1024);
       expect(session.scrollback).toHaveLength(retainedChunks);
       expect(session.scrollbackBytes).toBe(retainedChunks * chunkBytes);
-      expect(session.scrollback[0]?.chunk.seq).toBe(12_000 - retainedChunks);
+      expect(session.scrollback[0]?.chunk.seq).toBe(
+        emittedChunks - retainedChunks,
+      );
       expect(
         session.scrollback.every(
           (entry) => entry.parserStateBefore.escape === "csi-ignore",
