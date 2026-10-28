@@ -2064,13 +2064,13 @@ export function listQueuedThreadMessagesWaitingOnKind(
     .all();
 }
 
-export function hasQueuedRetryOfTurnRequest(
+export function getQueuedRetryOfTurnRequest(
   db: DbQueryConnection,
   args: { threadId: string; retryOfTurnRequestId: string },
-): boolean {
+): Pick<QueuedThreadMessageRow, "sendAt"> | null {
   return (
     db
-      .select({ id: queuedThreadMessages.id })
+      .select({ sendAt: queuedThreadMessages.sendAt })
       .from(queuedThreadMessages)
       .where(
         and(
@@ -2082,8 +2082,15 @@ export function hasQueuedRetryOfTurnRequest(
         ),
       )
       .limit(1)
-      .get() !== undefined
+      .get() ?? null
   );
+}
+
+export function hasQueuedRetryOfTurnRequest(
+  db: DbQueryConnection,
+  args: { threadId: string; retryOfTurnRequestId: string },
+): boolean {
+  return getQueuedRetryOfTurnRequest(db, args) !== null;
 }
 
 export function listThreadIdsWithHostOfflineQueueWaits(
