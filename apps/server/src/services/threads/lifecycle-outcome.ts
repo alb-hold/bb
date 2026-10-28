@@ -9,6 +9,7 @@ import {
   type DbConnection,
   type DbTransaction,
 } from "@bb/db";
+import type { ThreadLifecycleEvent } from "@bb/domain";
 import { recordFinishedTurn } from "../system/turn-telemetry.js";
 import type { ServerLogger } from "../../types.js";
 import type { NotificationHub } from "../../ws/hub.js";
@@ -19,6 +20,10 @@ import {
 import type { ProviderRegistryService } from "../providers/provider-registry.js";
 import { buildThreadStatusChangeMetadata } from "./thread-runtime-display.js";
 import { releaseWorkspaceForThread } from "./workspace-write-serialization.js";
+
+function isSessionStatusCorrection(event: ThreadLifecycleEvent): boolean {
+  return event.type === "session.lost" || event.type === "session.resumed";
+}
 
 function announceTurnFailed(
   args: ApplyThreadLifecycleEventArgs,
@@ -91,7 +96,7 @@ export function applyLoggedThreadLifecycleEvent(
     );
   }
   logUnappliedThreadLifecycleEvent(deps.logger, args, outcome);
-  if (args.event.type !== "session.resumed") {
+  if (!isSessionStatusCorrection(args.event)) {
     emitPluginThreadLifecycleOutcome(outcome);
   }
   announceTurnFailed(args, outcome);
@@ -116,7 +121,7 @@ export function applyLoggedThreadLifecycleEventInTransaction(
     releaseWorkspaceForThread(deps, outcome.thread);
   }
   logUnappliedThreadLifecycleEvent(deps.logger, args, outcome);
-  if (args.event.type !== "session.resumed") {
+  if (!isSessionStatusCorrection(args.event)) {
     emitPluginThreadLifecycleOutcome(outcome);
   }
   announceTurnFailed(args, outcome);

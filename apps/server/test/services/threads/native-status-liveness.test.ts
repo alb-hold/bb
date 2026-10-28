@@ -323,7 +323,7 @@ describe("native thread status liveness", () => {
     });
   });
 
-  it("settles an idle thread straight to error without a working state, a timeline item, a parent message or a plugin idle or active event", async () => {
+  it("settles an idle thread straight to error without a working state, a timeline item, a parent message or any plugin failed, idle or active event", async () => {
     await withHarness(async (harness) => {
       const context = seedNativeContext(harness);
       const parent = seedThread(harness.deps, {
@@ -396,7 +396,7 @@ describe("native thread status liveness", () => {
       expect(
         listEvents(harness.db, { threadId }).map((row) => row.type),
       ).toEqual(eventTypesBefore);
-      expect(pluginCalls).toEqual(["emitThreadFailed"]);
+      expect(pluginCalls).toEqual([]);
       expect(parentSystemRequests(harness, parent.id)).toHaveLength(0);
     });
   });
