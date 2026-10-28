@@ -1,10 +1,17 @@
 import { Buffer } from "node:buffer";
 import { createRequire } from "node:module";
+import {
+  advanceTerminalReplayParserByte,
+  advanceTerminalReplayParserBytes,
+  createTerminalReplayParserState,
+  isTerminalReplaySafeBoundary,
+} from "@bb/domain";
 import type { TerminalScreenResponse } from "@bb/server-contract";
 
 const TERMINAL_SCREEN_STATE_SCROLLBACK = 2_000;
 export const TERMINAL_SCREEN_STATE_PENDING_BYTES_LIMIT = 8 * 1024 * 1024;
 const ESC = "\u001b";
+const TERMINAL_SCREEN_STATE_PARTIAL_SEQUENCE_LIMIT = 64 * 1024;
 const require = createRequire(import.meta.url);
 const Terminal = require("@xterm/headless")
   .Terminal as typeof import("@xterm/headless").Terminal;
@@ -20,12 +27,39 @@ type HeadlessCell = NonNullable<
   >
 >;
 
-function cellSgr(cell: HeadlessCell): string {
+interface SgrAttributes {
+  isBold(): number;
+  isDim(): number;
+  isItalic(): number;
+  isUnderline(): number;
+  isBlink(): number;
+  isInverse(): number;
+  isInvisible(): number;
+  isStrikethrough(): number;
+  isOverline(): number;
+  isFgRGB(): boolean;
+  isFgPalette(): boolean;
+  getFgColor(): number;
+  isBgRGB(): boolean;
+  isBgPalette(): boolean;
+  getBgColor(): number;
+}
+
+interface PenAttributes extends SgrAttributes {
+  extended: { underlineStyle: number; urlId: number };
+  getUnderlineColor(): number;
+  getUnderlineColorMode(): number;
+}
+
+const UNDERLINE_COLOR_MODE_PALETTE = 0x2000000;
+const UNDERLINE_COLOR_MODE_RGB = 0x3000000;
+
+function sgrCodes(cell: SgrAttributes, linked: boolean): string[] {
   const codes: string[] = ["0"];
   if (cell.isBold()) codes.push("1");
   if (cell.isDim()) codes.push("2");
   if (cell.isItalic()) codes.push("3");
-  if (cell.isUnderline()) codes.push("4");
+  if (!linked && cell.isUnderline()) codes.push("4");
   if (cell.isBlink()) codes.push("5");
   if (cell.isInverse()) codes.push("7");
   if (cell.isInvisible()) codes.push("8");
@@ -46,6 +80,91 @@ function cellSgr(cell: HeadlessCell): string {
     codes.push(`48;5;${cell.getBgColor()}`);
   } else {
     codes.push("49");
+  }
+  return codes;
+}
+
+function cellSgr(cell: HeadlessCell, linked: boolean): string {
+  return `${ESC}[${sgrCodes(cell, linked).join(";")}m`;
+}
+
+interface HyperlinkData {
+  id?: string;
+  uri: string;
+}
+
+function readObject(value: unknown, key: string): unknown {
+  return typeof value === "object" && value !== null
+    ? Reflect.get(value, key)
+    : undefined;
+}
+
+function cellUrlId(cell: HeadlessCell): number {
+  const urlId = readObject(readObject(cell, "extended"), "urlId");
+  return typeof urlId === "number" ? urlId : 0;
+}
+
+function hyperlinkFor(
+  terminal: HeadlessTerminal,
+  urlId: number,
+): HyperlinkData | null {
+  if (urlId === 0) return null;
+  const linkService = readObject(
+    readObject(terminal, "_core"),
+    "_oscLinkService",
+  );
+  const getLinkData = readObject(linkService, "getLinkData");
+  if (typeof getLinkData !== "function") return null;
+  const data: unknown = getLinkData.call(linkService, urlId);
+  const uri = readObject(data, "uri");
+  const id = readObject(data, "id");
+  if (typeof uri !== "string" || /[\u0000-\u001f\u007f-\u009f]/u.test(uri)) {
+    return null;
+  }
+  return typeof id === "string" && !/[\u0000-\u001f\u007f-\u009f;:]/u.test(id)
+    ? { id, uri }
+    : { uri };
+}
+
+function hyperlinkOpen(link: HyperlinkData): string {
+  return `${ESC}]8;${link.id === undefined ? "" : `id=${link.id}`};${link.uri}${ESC}\\`;
+}
+
+const HYPERLINK_CLOSE = `${ESC}]8;;${ESC}\\`;
+
+function isPenAttributes(value: unknown): value is PenAttributes {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    typeof Reflect.get(value, "isBold") === "function" &&
+    typeof Reflect.get(value, "getUnderlineColorMode") === "function" &&
+    typeof Reflect.get(value, "extended") === "object"
+  );
+}
+
+function currentPen(terminal: HeadlessTerminal): PenAttributes | null {
+  const core: unknown = Reflect.get(terminal, "_core");
+  if (typeof core !== "object" || core === null) return null;
+  const inputHandler: unknown = Reflect.get(core, "_inputHandler");
+  if (typeof inputHandler !== "object" || inputHandler === null) return null;
+  const getAttrData: unknown = Reflect.get(inputHandler, "getAttrData");
+  if (typeof getAttrData !== "function") return null;
+  const pen: unknown = getAttrData.call(inputHandler);
+  return isPenAttributes(pen) ? pen : null;
+}
+
+function penSgr(pen: PenAttributes, linked: boolean): string {
+  const codes = sgrCodes(pen, linked);
+  const underlineIndex = codes.indexOf("4");
+  if (underlineIndex >= 0) {
+    codes[underlineIndex] = `4:${pen.extended.underlineStyle || 1}`;
+  }
+  const mode = pen.getUnderlineColorMode();
+  const color = pen.getUnderlineColor();
+  if (mode === UNDERLINE_COLOR_MODE_RGB) {
+    codes.push(`58:2::${color >> 16}:${(color >> 8) & 255}:${color & 255}`);
+  } else if (mode === UNDERLINE_COLOR_MODE_PALETTE) {
+    codes.push(`58:5:${color}`);
   }
   return `${ESC}[${codes.join(";")}m`;
 }
@@ -93,19 +212,29 @@ function serializeVisibleScreen(terminal: HeadlessTerminal): {
     const line = buffer.getLine(buffer.baseY + row);
     let text = "";
     let previousSgr = "";
+    let activeUrlId = 0;
     parts.push(`${ESC}[${row + 1};1H`);
     for (let col = 0; col < terminal.cols; col += 1) {
       const cell = line?.getCell(col);
       if (cell === undefined || cell.getWidth() === 0) continue;
       const chars = cell.getChars() || " ";
       text += chars;
-      const sgr = cellSgr(cell);
+      const urlId = cellUrlId(cell);
+      const link = hyperlinkFor(terminal, urlId);
+      const linkedUrlId = link === null ? 0 : urlId;
+      if (linkedUrlId !== activeUrlId) {
+        if (activeUrlId !== 0) parts.push(HYPERLINK_CLOSE);
+        if (link !== null) parts.push(hyperlinkOpen(link));
+        activeUrlId = linkedUrlId;
+      }
+      const sgr = cellSgr(cell, urlId !== 0);
       if (sgr !== previousSgr) {
         parts.push(sgr);
         previousSgr = sgr;
       }
       parts.push(chars);
     }
+    if (activeUrlId !== 0) parts.push(HYPERLINK_CLOSE);
     rows.push(text.trimEnd());
   }
   const cursorCell = buffer
@@ -114,7 +243,14 @@ function serializeVisibleScreen(terminal: HeadlessTerminal): {
   parts.push(
     `${ESC}[0m${ESC}[?6l${ESC}[${buffer.cursorY + 1};${buffer.cursorX + 1}H`,
   );
-  if (cursorCell !== undefined) parts.push(cellSgr(cursorCell));
+  const pen = currentPen(terminal);
+  if (pen !== null) {
+    parts.push(penSgr(pen, pen.extended.urlId !== 0));
+    const penLink = hyperlinkFor(terminal, pen.extended.urlId);
+    if (penLink !== null) parts.push(hyperlinkOpen(penLink));
+  } else if (cursorCell !== undefined) {
+    parts.push(cellSgr(cursorCell, cellUrlId(cursorCell) !== 0));
+  }
   parts.push(restoreModes(terminal));
   parts.push(`${ESC}[${buffer.cursorY + 1};${buffer.cursorX + 1}H`);
   const data = Buffer.from(parts.join(""), "utf8");
@@ -146,6 +282,9 @@ export class TerminalScreenState {
   private nextSeq = 0;
   private valid = true;
   private disposed = false;
+  private readonly parserState = createTerminalReplayParserState();
+  private partialSequence: Uint8Array = new Uint8Array(0);
+  private partialSequenceOverflow = false;
 
   constructor(cols: number, rows: number) {
     this.cols = cols;
@@ -167,6 +306,7 @@ export class TerminalScreenState {
       return;
     }
     this.nextSeq += 1;
+    this.trackPartialSequence(data);
     this.enqueue({ kind: "bytes", data });
   }
 
@@ -177,7 +317,36 @@ export class TerminalScreenState {
       return;
     }
     this.nextSeq += 1;
+    this.trackPartialSequence(Buffer.from(data, "base64"));
     this.enqueue({ kind: "base64", data });
+  }
+
+  private trackPartialSequence(data: Uint8Array): void {
+    advanceTerminalReplayParserBytes(this.parserState, data);
+    if (isTerminalReplaySafeBoundary(this.parserState)) {
+      this.partialSequence = new Uint8Array(0);
+      this.partialSequenceOverflow = false;
+      return;
+    }
+    if (
+      this.partialSequenceOverflow ||
+      this.partialSequence.length + data.length >
+        TERMINAL_SCREEN_STATE_PARTIAL_SEQUENCE_LIMIT
+    ) {
+      this.partialSequence = new Uint8Array(0);
+      this.partialSequenceOverflow = true;
+      return;
+    }
+    const combined = new Uint8Array(this.partialSequence.length + data.length);
+    combined.set(this.partialSequence);
+    combined.set(data, this.partialSequence.length);
+    const scan = createTerminalReplayParserState();
+    let lastSafe = 0;
+    for (let index = 0; index < combined.length; index += 1) {
+      advanceTerminalReplayParserByte(scan, combined[index] ?? 0);
+      if (isTerminalReplaySafeBoundary(scan)) lastSafe = index + 1;
+    }
+    this.partialSequence = combined.slice(lastSafe);
   }
 
   private invalidate(): void {
@@ -212,7 +381,8 @@ export class TerminalScreenState {
           ? work.data.byteLength
           : Buffer.byteLength(work.data, "utf8");
     if (
-      this.pendingWorkBytes + bytes > TERMINAL_SCREEN_STATE_PENDING_BYTES_LIMIT
+      this.pendingWorkBytes + bytes >
+      TERMINAL_SCREEN_STATE_PENDING_BYTES_LIMIT
     ) {
       this.invalidate();
       return;
@@ -273,11 +443,15 @@ export class TerminalScreenState {
   > {
     await this.pending;
     if (this.disposed || !this.valid) return null;
+    if (this.partialSequenceOverflow) return null;
     const snapshot = serializeVisibleScreen(this.terminal);
     return {
       ...snapshot.response,
       checkpointSeq: this.nextSeq,
-      dataBase64: snapshot.dataBase64,
+      dataBase64: Buffer.concat([
+        Buffer.from(snapshot.dataBase64, "base64"),
+        this.partialSequence,
+      ]).toString("base64"),
     };
   }
 
