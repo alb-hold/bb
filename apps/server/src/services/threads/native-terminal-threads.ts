@@ -1262,7 +1262,7 @@ export function recordNativeTerminalSession(
 
 export function sendNativeTerminalMessage(
   deps: NativeTerminalDeps,
-  args: { threadId: string; pastes: readonly string[] },
+  args: { requestText?: string; threadId: string; pastes: readonly string[] },
 ): Promise<TerminalSession> {
   const previous = pendingSends.get(args.threadId) ?? Promise.resolve();
   const sending = previous.then(() => deliverNativeTerminalMessage(deps, args));
@@ -1302,7 +1302,7 @@ function nativeTerminalInputAmbiguous(
 
 async function deliverNativeTerminalMessage(
   deps: NativeTerminalDeps,
-  args: { threadId: string; pastes: readonly string[] },
+  args: { requestText?: string; threadId: string; pastes: readonly string[] },
 ): Promise<TerminalSession> {
   const view = getNativeTerminalThreadView(deps, args.threadId);
   if (view.terminal === null || view.terminal.status !== "running") {
@@ -1329,7 +1329,17 @@ async function deliverNativeTerminalMessage(
       terminalId,
       query: {},
     });
-    if (!terminalScreenInputBoxHoldsText({ rows: screen.rows, text: only })) {
+    if (
+      !terminalScreenInputBoxHoldsText({
+        cols: screen.cols,
+        cursor: screen.cursor,
+        ...(args.requestText === undefined
+          ? {}
+          : { requestText: args.requestText }),
+        rows: screen.rows,
+        text: only,
+      })
+    ) {
       throw nativeTerminalInputAmbiguous(provider, 0);
     }
     return submitNativeTerminalInput(deps, terminalId);

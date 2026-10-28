@@ -339,6 +339,9 @@ export function terminalScreenAlreadyShowsText(args: {
 }
 
 export function terminalScreenInputBoxHoldsText(args: {
+  cols: number;
+  cursor: { col: number; row: number };
+  requestText?: string;
   rows: readonly string[];
   text: string;
 }): boolean {
@@ -351,16 +354,77 @@ export function terminalScreenInputBoxHoldsText(args: {
     }
   }
   if (promptAt < 0) return false;
-  const box = [args.rows[promptAt]!.trimStart().slice(1)];
-  for (const row of args.rows.slice(promptAt + 1)) {
-    if (ECHO_BORDER_ROW.test(row)) {
-      return (
-        normalizeTerminalEcho(box.join("")) === normalizeTerminalEcho(args.text)
-      );
-    }
-    box.push(row);
+  const prompt = args.rows[promptAt]!.trimStart();
+  const marker = Array.from(prompt)[0];
+  if (marker === undefined) return false;
+  const promptStart = args.rows[promptAt]!.length - prompt.length;
+  const promptRemainder = prompt.slice(marker.length);
+  if (args.requestText?.startsWith(" ") && promptRemainder.startsWith(" ")) {
+    return false;
   }
-  return false;
+  let promptPadding = 0;
+  if (promptRemainder.startsWith("\u00a0")) promptPadding = 1;
+  else if (promptRemainder.startsWith(" ")) {
+    if (promptRemainder.startsWith("  ")) return false;
+    promptPadding = 1;
+  }
+  const firstStart = promptStart + 1 + promptPadding;
+  const firstCapacity = args.cols - firstStart;
+  if (firstCapacity < 1) return false;
+  const firstPayload = promptRemainder.slice(promptPadding);
+  if (firstPayload.endsWith(" ")) return false;
+
+  const payloads = [firstPayload];
+  const rows = [promptAt];
+  let borderAt = -1;
+  for (let index = promptAt + 1; index < args.rows.length; index += 1) {
+    const row = args.rows[index]!;
+    if (ECHO_BORDER_ROW.test(row)) {
+      borderAt = index;
+      break;
+    }
+    if (!row.startsWith("  ") || row.endsWith(" ")) return false;
+    payloads.push(row.slice(2));
+    rows.push(index);
+  }
+  if (borderAt < 0) return false;
+
+  const payload = payloads[0]!;
+  let joined = payload;
+  let startColumn = firstStart;
+  for (let index = 1; index < payloads.length; index += 1) {
+    const previousCapacity = index === 1 ? firstCapacity : args.cols - 2;
+    if (Array.from(payloads[index - 1]!).length !== previousCapacity) {
+      return false;
+    }
+    joined += payloads[index]!;
+    startColumn = 2;
+  }
+
+  const lastPayload = payloads.at(-1)!;
+  const lastRow = rows.at(-1)!;
+  const lastCapacity =
+    startColumn === firstStart ? firstCapacity : args.cols - 2;
+  const visibleEnd = startColumn + Array.from(lastPayload).length;
+  if (
+    visibleEnd === args.cols - 1 &&
+    args.cursor.col === args.cols - 1 &&
+    Array.from(lastPayload).length < lastCapacity
+  ) {
+    return false;
+  }
+  const cursorAtWrappedEnd =
+    Array.from(lastPayload).length === lastCapacity &&
+    args.cursor.col === args.cols - 1;
+  if (
+    args.cursor.row !== lastRow ||
+    (!cursorAtWrappedEnd && args.cursor.col !== visibleEnd)
+  ) {
+    return false;
+  }
+
+  if (/^[ \u00a0\t]|[ \u00a0\t]$/u.test(joined)) return false;
+  return joined === args.text;
 }
 
 export function terminalOutputShowsPasteAgain(args: {
