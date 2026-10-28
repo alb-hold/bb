@@ -2405,8 +2405,6 @@ describe("slow query index plans", () => {
           type: "turn/completed",
         },
       ]);
-      advanceThreadPruning(db, "usage");
-      advanceThreadPruning(db, "usage");
       const statements = captureStatements(db, () => {
         const result = advanceThreadPruning(db, "usage");
         expect(result.scanned).toBe(2);

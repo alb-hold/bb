@@ -57,6 +57,7 @@ function threadEventKeepRecent(thread: {
 
 const BATCH_SIZE = 500;
 const LIVE_BATCH_SIZE = 32;
+const MAX_COLLAPSED_EMPTY_STEPS = 4;
 
 export function getNextThreadPruningPolicy(
   db: DbConnection,
@@ -474,7 +475,16 @@ export function advanceThreadPruning(
         ? target
         : getNextThreadPruningPolicy(db, new Set(), target.threadId);
     if (policy === null) throw new Error("Missing live pruning policy");
-    return advanceThreadPruningTransaction(db, policy, threadScope);
+    let result = advanceThreadPruningTransaction(db, policy, threadScope);
+    for (
+      let collapsed = 0;
+      collapsed < MAX_COLLAPSED_EMPTY_STEPS &&
+      result.action === "advanced" &&
+      result.scanned === 0;
+      collapsed += 1
+    )
+      result = advanceThreadPruningTransaction(db, policy, threadScope);
+    return result;
   } finally {
     db.$client.pragma(`busy_timeout = ${timeout}`);
   }

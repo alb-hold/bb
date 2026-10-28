@@ -1,5 +1,8 @@
 import { prepareCachedQuery } from "../connection.js";
-import { markThreadPruningPolicyWork } from "./thread-pruning-work.js";
+import {
+  markEveryThreadPruningPolicyWork,
+  markThreadPruningPolicyWork,
+} from "./thread-pruning-work.js";
 import { copyProjectAttachmentOwnership } from "./project-attachments.js";
 import {
   and,
@@ -2311,10 +2314,9 @@ export function archiveThread(
       )
       .returning()
       .all();
-    markThreadPruningPolicyWork(
+    markEveryThreadPruningPolicyWork(
       tx,
       archived.map((thread) => thread.id),
-      "rate-limits",
     );
     return archived;
   });

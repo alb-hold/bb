@@ -3,11 +3,13 @@ import { eq, sql } from "drizzle-orm";
 import { describe, expect, it, vi } from "vitest";
 import {
   advanceThreadPruning,
+  archiveThread,
   events,
   insertEvents,
   noopNotifier,
   getNextThreadPruningPolicy,
   getThreadEventRewriteGeneration,
+  THREAD_EVENT_KEEP_RECENT_BY_MODE,
   threadPruningCursors,
   threads,
 } from "@bb/db";
@@ -79,6 +81,56 @@ const UNTIMED_SWEEP_LIMITS: ThreadPruningSweepLimits = {
 };
 
 describe("thread pruning sweep", () => {
+  it("covers a backlog of archived threads within a few production-sized sweeps", async () => {
+    await withTestHarness(async (harness) => {
+      const host = seedHost(harness.deps);
+      const { project } = seedProjectWithSource(harness.deps, {
+        hostId: host.id,
+      });
+      const archivedThreadCount = 100;
+      const eventsPerThread = 200;
+      const threadIds = Array.from({ length: archivedThreadCount }, () => {
+        const thread = seedThread(harness.deps, { projectId: project.id });
+        insertEvents(
+          harness.db,
+          noopNotifier,
+          Array.from({ length: eventsPerThread }, (_, index) => ({
+            threadId: thread.id,
+            sequence: index + 1,
+            scope: { kind: "turn", turnId: "turn" },
+            type: "turn/diff/updated",
+            itemId: null,
+            itemKind: null,
+            parentToolCallId: null,
+            data: '{"diff":"unused"}',
+            createdAt: 1,
+          })),
+        );
+        archiveThread(harness.db, noopNotifier, thread.id);
+        return thread.id;
+      });
+      const productionSizedSweep: ThreadPruningSweepLimits = {
+        elapsedBudgetMs: Number.POSITIVE_INFINITY,
+        maxAdvances: THREAD_PRUNING_SWEEP_LIMITS.maxAdvances,
+      };
+      let sweeps = 0;
+      while (getNextThreadPruningPolicy(harness.db, new Set()) !== null) {
+        await runThreadPruningSweep(harness.deps, productionSizedSweep);
+        sweeps += 1;
+        expect(sweeps).toBeLessThanOrEqual(2);
+      }
+      for (const threadId of threadIds) {
+        expect(
+          harness.db
+            .select({ sequence: events.sequence })
+            .from(events)
+            .where(eq(events.threadId, threadId))
+            .all(),
+        ).toHaveLength(THREAD_EVENT_KEEP_RECENT_BY_MODE.archived);
+      }
+    });
+  });
+
   it("skips busy work and rechecks activity after a committed advance", async () => {
     await withTestHarness(async (harness) => {
       const thread = seed(harness, 1200);
@@ -89,6 +141,7 @@ describe("thread pruning sweep", () => {
         .run();
       await runThreadPruningSweep(harness.deps, UNTIMED_SWEEP_LIMITS);
       expect(harness.db.select().from(threadPruningCursors).all()).toEqual([]);
+      expect(harness.db.select().from(events).all()).toHaveLength(1200);
       harness.db
         .update(threads)
         .set({ status: "idle" })
@@ -244,7 +297,8 @@ describe("thread pruning sweep", () => {
       const debug = vi
         .spyOn(harness.deps.logger, "debug")
         .mockImplementation((_fields, message) => {
-          if (message === "Thread pruning policy advanced") elapsed = 51;
+          if (message === "Thread pruning policy advanced")
+            elapsed = THREAD_PRUNING_SWEEP_LIMITS.elapsedBudgetMs + 1;
         });
       try {
         await runThreadPruningSweep(harness.deps, THREAD_PRUNING_SWEEP_LIMITS);
@@ -263,24 +317,25 @@ describe("thread pruning sweep", () => {
   it("reports an advance that overruns the elapsed budget and then yields", async () => {
     await withTestHarness(async (harness) => {
       seed(harness, 1200);
+      const overrunMs = THREAD_PRUNING_SWEEP_LIMITS.elapsedBudgetMs + 25;
       const now = vi
         .spyOn(performance, "now")
         .mockReturnValueOnce(0)
         .mockReturnValueOnce(0)
         .mockReturnValueOnce(0)
-        .mockReturnValue(75);
+        .mockReturnValue(overrunMs);
       const warn = vi.spyOn(harness.deps.logger, "warn");
       const debug = vi.spyOn(harness.deps.logger, "debug");
       try {
         await runThreadPruningSweep(harness.deps, THREAD_PRUNING_SWEEP_LIMITS);
         expect(warn).toHaveBeenCalledWith(
-          expect.objectContaining({ advanceElapsedMs: 75 }),
+          expect.objectContaining({ advanceElapsedMs: overrunMs }),
           "Slow thread pruning advance",
         );
         expect(debug).toHaveBeenCalledWith(
           expect.objectContaining({
             advances: 1,
-            maxAdvanceMs: 75,
+            maxAdvanceMs: overrunMs,
             reason: "budget",
           }),
           "Thread pruning sweep finished",
@@ -298,11 +353,15 @@ describe("thread pruning sweep", () => {
       seed(harness, 1);
       for (let i = 0; i < 100; i++) seed(harness, 1);
       const debug = vi.spyOn(harness.deps.logger, "debug");
-      await runThreadPruningSweep(harness.deps, UNTIMED_SWEEP_LIMITS);
+      const advanceBudget = 6;
+      await runThreadPruningSweep(harness.deps, {
+        ...UNTIMED_SWEEP_LIMITS,
+        maxAdvances: advanceBudget,
+      });
       const steps = debug.mock.calls.filter(
         (call) => call[1] === "Thread pruning policy advanced",
       );
-      expect(steps.length).toBeLessThanOrEqual(64);
+      expect(steps).toHaveLength(advanceBudget);
       expect(harness.db.select().from(threadPruningCursors).all()).toHaveLength(
         4,
       );

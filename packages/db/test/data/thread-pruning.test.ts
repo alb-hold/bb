@@ -24,6 +24,7 @@ import {
   advanceThreadPruning,
   getNextThreadPruningPolicy,
   THREAD_EVENT_KEEP_RECENT_BY_MODE,
+  THREAD_PRUNING_POLICIES,
 } from "../../src/data/thread-pruning.js";
 import type { ThreadPruningPolicy } from "../../src/data/thread-pruning.js";
 import {
@@ -429,12 +430,14 @@ describe("thread pruning", () => {
           .every((thread) => thread.archivedAt === null),
       ).toBe(true);
       archiveThread(f.db, noopNotifier, f.thread.id);
-      expect(work()).toHaveLength(2);
+      expect(work()).toHaveLength(2 * THREAD_PRUNING_POLICIES.length);
       expect(work()).toEqual(
-        expect.arrayContaining([
-          { policy: "rate-limits", threadId: f.thread.id, revision: 1 },
-          { policy: "rate-limits", threadId: child.id, revision: 1 },
-        ]),
+        expect.arrayContaining(
+          THREAD_PRUNING_POLICIES.flatMap((policy) => [
+            { policy, threadId: f.thread.id, revision: 1 },
+            { policy, threadId: child.id, revision: 1 },
+          ]),
+        ),
       );
       archiveThread(f.db, noopNotifier, f.thread.id);
       expect(work().every((row) => row.revision === 1)).toBe(true);
@@ -445,13 +448,29 @@ describe("thread pruning", () => {
           throw new Error("rollback unarchive");
         }),
       ).toThrow("rollback unarchive");
-      expect(work().find((row) => row.threadId === child.id)?.revision).toBe(1);
+      expect(
+        work()
+          .filter((row) => row.threadId === child.id)
+          .every((row) => row.revision === 1),
+      ).toBe(true);
       expect(
         f.db.select().from(threads).where(eq(threads.id, child.id)).get()
           ?.archivedAt,
       ).not.toBeNull();
       unarchiveThread(f.db, noopNotifier, child.id);
-      expect(work().every((row) => row.revision === 2)).toBe(true);
+      expect(
+        work().filter((row) => row.policy === "rate-limits"),
+      ).toHaveLength(2);
+      expect(
+        work()
+          .filter((row) => row.policy === "rate-limits")
+          .every((row) => row.revision === 2),
+      ).toBe(true);
+      expect(
+        work()
+          .filter((row) => row.policy !== "rate-limits")
+          .every((row) => row.revision === 1),
+      ).toBe(true);
     } finally {
       f.db.$client.close();
     }
@@ -1834,6 +1853,43 @@ describe("thread pruning", () => {
       expect(f.db.select().from(threadPruningCursors).all()).toHaveLength(1);
       cycle(f, "turn-diffs");
       expect(f.db.select().from(threadPruningCursors).all()).toHaveLength(2);
+    } finally {
+      f.db.$client.close();
+    }
+  });
+  it("revisits a drained thread's windowed policies under the archived window when it is archived", () => {
+    const f = setup();
+    try {
+      f.db
+        .update(threads)
+        .set({ status: "idle" })
+        .where(eq(threads.id, f.thread.id))
+        .run();
+      seedWindow(f, 1, 400, { type: "turn/diff/updated" });
+      for (const policy of THREAD_PRUNING_POLICIES) cycle(f, policy);
+      expect(sequences(f)).toHaveLength(THREAD_EVENT_KEEP_RECENT_BY_MODE.idle);
+      archiveThread(f.db, noopNotifier, f.thread.id);
+      for (const policy of THREAD_PRUNING_POLICIES) cycle(f, policy);
+      expect(sequences(f)).toEqual(
+        range(400 - THREAD_EVENT_KEEP_RECENT_BY_MODE.archived + 1, 400),
+      );
+    } finally {
+      f.db.$client.close();
+    }
+  });
+
+  it("covers a thread with nothing to prune in one advance per policy", () => {
+    const f = setup();
+    try {
+      archiveThread(f.db, noopNotifier, f.thread.id);
+      seed(f, 1);
+      for (const policy of THREAD_PRUNING_POLICIES) {
+        const results = cycle(f, policy);
+        expect(results.map((result) => result.action)).toEqual([
+          "thread-complete",
+          "cycle-complete",
+        ]);
+      }
     } finally {
       f.db.$client.close();
     }
