@@ -40,11 +40,7 @@ import {
   terminalCwdTitle,
   terminalSpawnCwd,
 } from "./terminal-shell-state";
-import {
-  clearTerminalProgressOwner,
-  isTerminalProgressOwner,
-  setTerminalProgressOwner,
-} from "@/lib/terminal-progress-owner";
+import { queueThreadProgressUpdate } from "@/lib/terminal-progress-updates";
 
 export const DEFAULT_TERMINAL_COLS = 100;
 export const DEFAULT_TERMINAL_ROWS = 30;
@@ -387,23 +383,24 @@ export function useThreadTerminalController({
 
   const sendTerminalProgressUpdate = useCallback(
     (threadId: string, terminalId: string, value: number | null) => {
-      if (value === null) {
-        if (!clearTerminalProgressOwner(threadId, terminalId)) return;
-      } else {
-        setTerminalProgressOwner(threadId, terminalId);
-      }
       const request =
         value === null
-          ? { threadId, action: "progress-clear" as const }
-          : { threadId, action: "progress-set" as const, progress: { value } };
+          ? { threadId, terminalId, action: "progress-clear" as const }
+          : {
+              threadId,
+              terminalId,
+              action: "progress-set" as const,
+              progress: { value },
+            };
       lastProgressUpdateRef.current = {
         threadId,
         terminalId,
         value,
         sentAt: Date.now(),
       };
-      void sdk.threads
-        .experimental_updateRowState(request)
+      void queueThreadProgressUpdate(threadId, () =>
+        sdk.threads.experimental_updateRowState(request),
+      )
         .catch(() => undefined);
     },
     [],
@@ -412,7 +409,6 @@ export function useThreadTerminalController({
   const clearTerminalProgress = useCallback(
     (threadId: string | null, terminalId: string | null) => {
       const pendingUpdate = pendingProgressUpdateRef.current;
-      const lastUpdate = lastProgressUpdateRef.current;
       const matchesTarget = (update: {
         threadId: string;
         terminalId: string;
@@ -421,16 +417,6 @@ export function useThreadTerminalController({
         (terminalId === null || update.terminalId === terminalId);
       const pendingMatches =
         pendingUpdate !== null && matchesTarget(pendingUpdate);
-      const ownerMatches =
-        threadId !== null &&
-        terminalId !== null &&
-        isTerminalProgressOwner(threadId, terminalId);
-      const lastMatches =
-        lastUpdate !== null &&
-        lastUpdate.value !== null &&
-        matchesTarget(lastUpdate) &&
-        isTerminalProgressOwner(lastUpdate.threadId, lastUpdate.terminalId);
-
       if (pendingMatches) {
         pendingProgressUpdateRef.current = null;
         if (progressUpdateTimeoutRef.current !== null) {
@@ -438,18 +424,8 @@ export function useThreadTerminalController({
           progressUpdateTimeoutRef.current = null;
         }
       }
-      const updateToClear = ownerMatches
-        ? { threadId, terminalId }
-        : lastMatches
-          ? lastUpdate
-          : null;
-      if (updateToClear !== null) {
-        sendTerminalProgressUpdate(
-          updateToClear.threadId,
-          updateToClear.terminalId,
-          null,
-        );
-      }
+      if (threadId === null || terminalId === null) return;
+      sendTerminalProgressUpdate(threadId, terminalId, null);
     },
     [sendTerminalProgressUpdate],
   );
@@ -597,9 +573,6 @@ export function useThreadTerminalController({
       onSuccess?: (session: TerminalSession) => void;
       terminalId: string;
     }) => {
-      const threadId =
-        sessions.find((session) => session.id === terminalId)?.threadId ?? null;
-      clearTerminalProgress(threadId, terminalId);
       closeTerminalMutation.mutate(
         { mode, terminalId },
         {
@@ -610,7 +583,7 @@ export function useThreadTerminalController({
         },
       );
     },
-    [clearTerminalProgress, closeTerminalMutation, sessions],
+    [closeTerminalMutation],
   );
 
   useEffect(() => {

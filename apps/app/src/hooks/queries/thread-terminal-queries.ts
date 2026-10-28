@@ -8,13 +8,17 @@ import type {
   UpdateTerminalRequest,
 } from "@bb/server-contract";
 import { BbHttpError, sdk } from "@/lib/sdk";
-import { clearTerminalProgressForClosedSession } from "@/lib/terminal-progress-owner";
+import { clearTerminalProgressForClosedSession } from "@/lib/terminal-progress-updates";
 import {
   applyTerminalSessionClose,
   applyTerminalSessionMissing,
   applyTerminalSessionUpsert,
 } from "../cache-owners/terminal-cache-owner";
-import { terminalsQueryKey, type TerminalQueryScope } from "./query-keys";
+import {
+  allTerminalsQueryKeyPrefix,
+  terminalsQueryKey,
+  type TerminalQueryScope,
+} from "./query-keys";
 import { requireEnabledQueryArg, type QueryOptions } from "./query-helpers";
 import { REALTIME_OWNED_NO_FOCUS_QUERY_POLICY } from "./query-policies";
 
@@ -116,9 +120,16 @@ export function useCloseTerminal() {
         throw error;
       }),
     onSuccess: async (session: TerminalSession | null, variables) => {
+      const cachedSession = queryClient
+        .getQueriesData<TerminalListResponse>({
+          queryKey: allTerminalsQueryKeyPrefix(),
+        })
+        .flatMap(([, data]) => data?.sessions ?? [])
+        .find((candidate) => candidate.id === variables.terminalId);
       await clearTerminalProgressForClosedSession({
         session,
         terminalId: variables.terminalId,
+        threadId: session?.threadId ?? cachedSession?.threadId ?? null,
         updateThreadRowState: (request) =>
           sdk.threads.experimental_updateRowState(request),
       });

@@ -24,6 +24,64 @@ async function updateState(
 }
 
 describe("public thread row state", () => {
+  it("clears progress only when the source terminal matches", async () => {
+    await withTestHarness(async (harness) => {
+      const { thread } = seedThreadFixture(harness);
+      expect(
+        (
+          await updateState(harness, thread.id, {
+            action: "progress-set",
+            progress: { value: 0.6 },
+            terminalId: "terminal-a",
+          })
+        ).status,
+      ).toBe(200);
+      expect(
+        (
+          await updateState(harness, thread.id, {
+            action: "status-set",
+            key: "review",
+            status: { value: "In progress" },
+          })
+        ).status,
+      ).toBe(200);
+      await updateState(harness, thread.id, {
+        action: "progress-clear",
+        terminalId: "terminal-b",
+      });
+      expect(
+        threadRowStateSchema.parse(
+          await readJson(await readState(harness, thread.id)),
+        ).progress,
+      ).toEqual({ value: 0.6 });
+
+      await updateState(harness, thread.id, {
+        action: "progress-set",
+        progress: { value: 0.4 },
+        terminalId: "terminal-b",
+      });
+      await updateState(harness, thread.id, {
+        action: "progress-clear",
+        terminalId: "terminal-a",
+      });
+      expect(
+        threadRowStateSchema.parse(
+          await readJson(await readState(harness, thread.id)),
+        ).progress,
+      ).toEqual({ value: 0.4 });
+
+      await updateState(harness, thread.id, {
+        action: "progress-clear",
+        terminalId: "terminal-b",
+      });
+      expect(
+        threadRowStateSchema.parse(
+          await readJson(await readState(harness, thread.id)),
+        ).progress,
+      ).toBeNull();
+    });
+  });
+
   it("persists changes, notifies sidebar subscribers, validates bounds, and clears", async () => {
     await withTestHarness(async (harness) => {
       const { thread } = seedThreadFixture(harness);

@@ -1,4 +1,8 @@
-import { getThreadRowState, putThreadRowState } from "@bb/db";
+import {
+  getThreadRowProgressSourceTerminalId,
+  getThreadRowState,
+  putThreadRowState,
+} from "@bb/db";
 import {
   publicApiRoutes,
   typedRoutes,
@@ -54,6 +58,17 @@ export function registerThreadRowStateRoutes(app: Hono, deps: AppDeps): void {
   patch(routes.updateRowState, (context, request) => {
     const thread = requirePublicThread(deps.db, context.req.param("id"));
     const current = threadRowStateSchema.parse(getThreadRowState(deps.db, thread.id));
+    const currentSourceTerminalId = getThreadRowProgressSourceTerminalId(
+      deps.db,
+      thread.id,
+    );
+    if (
+      request.action === "progress-clear" &&
+      request.terminalId !== undefined &&
+      request.terminalId !== currentSourceTerminalId
+    ) {
+      return context.json(current);
+    }
     const next = threadRowStateSchema.safeParse(applyUpdate(current, request));
     if (!next.success) {
       throw new ApiError(
@@ -62,7 +77,13 @@ export function registerThreadRowStateRoutes(app: Hono, deps: AppDeps): void {
         next.error.issues[0]?.message ?? "Invalid thread row state",
       );
     }
-    putThreadRowState(deps.db, thread.id, next.data);
+    const sourceTerminalId =
+      request.action === "progress-set"
+        ? (request.terminalId ?? null)
+        : request.action === "progress-clear" || request.action === "clear"
+          ? null
+          : currentSourceTerminalId;
+    putThreadRowState(deps.db, thread.id, next.data, sourceTerminalId);
     deps.hub.notifyThread(thread.id, ["status-changed"]);
     deps.hub.notifyProject(thread.projectId, ["threads-changed"]);
     return context.json(next.data);

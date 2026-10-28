@@ -102,6 +102,7 @@ describe("two split panes each holding a terminal", () => {
     await waitFor(() =>
       expect(sdk.threads.experimental_updateRowState).toHaveBeenCalledWith({
         threadId: "thread-a",
+        terminalId: "terminal-a",
         action: "progress-set",
         progress: { value: 0.75 },
       }),
@@ -110,6 +111,7 @@ describe("two split panes each holding a terminal", () => {
     await waitFor(() =>
       expect(sdk.threads.experimental_updateRowState).toHaveBeenLastCalledWith({
         threadId: "thread-a",
+        terminalId: "terminal-a",
         action: "progress-clear",
       }),
     );
@@ -141,20 +143,26 @@ describe("two split panes each holding a terminal", () => {
       result.current.handleActiveTerminalProgressChange(0.6);
     });
 
+    await act(async () => {
+      await Promise.resolve();
+    });
     expect(sdk.threads.experimental_updateRowState).toHaveBeenCalledTimes(1);
     expect(sdk.threads.experimental_updateRowState).toHaveBeenLastCalledWith({
       threadId: "thread-a",
+      terminalId: "terminal-a",
       action: "progress-set",
       progress: { value: 0.2 },
     });
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(250);
+      await Promise.resolve();
     });
 
     expect(sdk.threads.experimental_updateRowState).toHaveBeenCalledTimes(2);
     expect(sdk.threads.experimental_updateRowState).toHaveBeenLastCalledWith({
       threadId: "thread-a",
+      terminalId: "terminal-a",
       action: "progress-set",
       progress: { value: 0.6 },
     });
@@ -185,8 +193,12 @@ describe("two split panes each holding a terminal", () => {
       ),
     );
 
+    await waitFor(() =>
+      expect(sdk.threads.experimental_updateRowState).toHaveBeenCalledTimes(2),
+    );
     expect(sdk.threads.experimental_updateRowState).toHaveBeenLastCalledWith({
       threadId: "thread-a",
+      terminalId: "terminal-a",
       action: "progress-clear",
     });
   });
@@ -217,13 +229,18 @@ describe("two split panes each holding a terminal", () => {
       ),
     );
 
-    expect(sdk.threads.experimental_updateRowState).toHaveBeenLastCalledWith({
+    await waitFor(() =>
+      expect(sdk.threads.experimental_updateRowState).toHaveBeenCalledTimes(2),
+    );
+    expect(sdk.threads.experimental_updateRowState).toHaveBeenCalledWith({
       threadId: "thread-a",
+      terminalId: "terminal-a",
       action: "progress-set",
       progress: { value: 0.6 },
     });
-    expect(sdk.threads.experimental_updateRowState).not.toHaveBeenCalledWith({
+    expect(sdk.threads.experimental_updateRowState).toHaveBeenLastCalledWith({
       threadId: "thread-a",
+      terminalId: "terminal-b",
       action: "progress-clear",
     });
   });
@@ -253,8 +270,12 @@ describe("two split panes each holding a terminal", () => {
       ),
     );
 
+    await waitFor(() =>
+      expect(sdk.threads.experimental_updateRowState).toHaveBeenCalledTimes(2),
+    );
     expect(sdk.threads.experimental_updateRowState).toHaveBeenLastCalledWith({
       threadId: "thread-a",
+      terminalId: "terminal-b",
       action: "progress-clear",
     });
   });
@@ -279,20 +300,28 @@ describe("two split panes each holding a terminal", () => {
     });
     act(() => paneA.result.current.handleActiveTerminalProgressChange(0.6));
     act(() => paneB.result.current.handleActiveTerminalProgressChange(0.4));
+    await waitFor(() =>
+      expect(sdk.threads.experimental_updateRowState).toHaveBeenCalledTimes(2),
+    );
     act(() =>
       paneA.result.current.handleActiveTerminalSessionChange(
         session("terminal-a", "exited"),
       ),
     );
 
+    await waitFor(() =>
+      expect(sdk.threads.experimental_updateRowState).toHaveBeenCalledTimes(3),
+    );
     expect(sdk.threads.experimental_updateRowState).toHaveBeenLastCalledWith({
       threadId: "thread-a",
+      terminalId: "terminal-a",
+      action: "progress-clear",
+    });
+    expect(sdk.threads.experimental_updateRowState).toHaveBeenCalledWith({
+      threadId: "thread-a",
+      terminalId: "terminal-b",
       action: "progress-set",
       progress: { value: 0.4 },
-    });
-    expect(sdk.threads.experimental_updateRowState).not.toHaveBeenCalledWith({
-      threadId: "thread-a",
-      action: "progress-clear",
     });
 
     act(() =>
@@ -300,8 +329,12 @@ describe("two split panes each holding a terminal", () => {
         session("terminal-b", "exited"),
       ),
     );
+    await waitFor(() =>
+      expect(sdk.threads.experimental_updateRowState).toHaveBeenCalledTimes(4),
+    );
     expect(sdk.threads.experimental_updateRowState).toHaveBeenLastCalledWith({
       threadId: "thread-a",
+      terminalId: "terminal-b",
       action: "progress-clear",
     });
   });
@@ -335,8 +368,16 @@ describe("two split panes each holding a terminal", () => {
     rerender({ open: false });
     await waitFor(() => expect(sdk.terminals.close).toHaveBeenCalled());
 
+    await waitFor(() =>
+      expect(sdk.threads.experimental_updateRowState).toHaveBeenLastCalledWith({
+        threadId: "thread-a",
+        terminalId: "terminal-new",
+        action: "progress-clear",
+      }),
+    );
     expect(sdk.threads.experimental_updateRowState).toHaveBeenLastCalledWith({
       threadId: "thread-a",
+      terminalId: "terminal-new",
       action: "progress-clear",
     });
   });
@@ -357,8 +398,12 @@ describe("two split panes each holding a terminal", () => {
     act(() => result.current.handleActiveTerminalProgressChange(0.5));
     unmount();
 
+    await waitFor(() =>
+      expect(sdk.threads.experimental_updateRowState).toHaveBeenCalledTimes(1),
+    );
     expect(sdk.threads.experimental_updateRowState).toHaveBeenLastCalledWith({
       threadId: "thread-a",
+      terminalId: "terminal-a",
       action: "progress-set",
       progress: { value: 0.5 },
     });
@@ -376,8 +421,12 @@ describe("two split panes each holding a terminal", () => {
       ),
     );
 
+    await waitFor(() =>
+      expect(sdk.threads.experimental_updateRowState).toHaveBeenCalledTimes(2),
+    );
     expect(sdk.threads.experimental_updateRowState).toHaveBeenLastCalledWith({
       threadId: "thread-a",
+      terminalId: "terminal-a",
       action: "progress-clear",
     });
   });
@@ -400,7 +449,7 @@ describe("two split panes each holding a terminal", () => {
     expect(sdk.threads.experimental_updateRowState).not.toHaveBeenCalled();
   });
 
-  it("does not clear progress set by another pane when a pane that never set progress unmounts", async () => {
+  it("scopes a clear from a pane that never set progress to its terminal", async () => {
     vi.mocked(sdk.terminals.list).mockResolvedValue({
       sessions: [session("terminal-a", "running"), session("terminal-b", "running")],
     });
@@ -419,7 +468,9 @@ describe("two split panes each holding a terminal", () => {
       expect(paneB.result.current.activeSession?.id).toBe("terminal-b");
     });
     act(() => paneA.result.current.handleActiveTerminalProgressChange(0.6));
-    expect(sdk.threads.experimental_updateRowState).toHaveBeenCalledTimes(1);
+    await waitFor(() =>
+      expect(sdk.threads.experimental_updateRowState).toHaveBeenCalledTimes(1),
+    );
 
     paneB.unmount();
     act(() =>
@@ -428,22 +479,27 @@ describe("two split panes each holding a terminal", () => {
       ),
     );
 
-    expect(sdk.threads.experimental_updateRowState).toHaveBeenCalledTimes(1);
-    expect(sdk.threads.experimental_updateRowState).not.toHaveBeenCalledWith({
+    await waitFor(() =>
+      expect(sdk.threads.experimental_updateRowState).toHaveBeenCalledTimes(2),
+    );
+    expect(sdk.threads.experimental_updateRowState).toHaveBeenCalledTimes(2);
+    expect(sdk.threads.experimental_updateRowState).toHaveBeenCalledWith({
       threadId: "thread-a",
-      action: "progress-clear",
+      terminalId: "terminal-a",
+      action: "progress-set",
+      progress: { value: 0.6 },
     });
     expect(sdk.threads.experimental_updateRowState).toHaveBeenLastCalledWith({
       threadId: "thread-a",
-      action: "progress-set",
-      progress: { value: 0.6 },
+      terminalId: "terminal-b",
+      action: "progress-clear",
     });
 
     paneA.unmount();
     expect(sdk.threads.experimental_updateRowState).toHaveBeenLastCalledWith({
       threadId: "thread-a",
-      action: "progress-set",
-      progress: { value: 0.6 },
+      terminalId: "terminal-b",
+      action: "progress-clear",
     });
   });
 
