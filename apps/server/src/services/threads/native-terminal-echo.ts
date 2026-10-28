@@ -344,6 +344,8 @@ export function terminalScreenInputBoxHoldsText(args: {
   rows: readonly string[];
   text: string;
 }): boolean {
+  if (/^[ \u00a0\t]|[ \u00a0\t]$/u.test(args.text)) return false;
+
   let promptAt = -1;
   for (let index = args.rows.length - 1; index >= 0; index -= 1) {
     const first = Array.from(args.rows[index]!.trimStart())[0] ?? null;
@@ -358,10 +360,12 @@ export function terminalScreenInputBoxHoldsText(args: {
   if (marker === undefined) return false;
   const promptStart = args.rows[promptAt]!.length - prompt.length;
   const promptRemainder = prompt.slice(marker.length);
-  const promptPadding =
-    promptRemainder.startsWith("\u00a0") || promptRemainder.startsWith(" ")
-      ? 1
-      : 0;
+  let promptPadding = 0;
+  if (promptRemainder.startsWith("\u00a0")) promptPadding = 1;
+  else if (promptRemainder.startsWith(" ")) {
+    if (promptRemainder.startsWith("  ")) return false;
+    promptPadding = 1;
+  }
   const firstStart = promptStart + 1 + promptPadding;
   const firstCapacity = args.cols - firstStart;
   if (firstCapacity < 1) return false;

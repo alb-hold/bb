@@ -5075,6 +5075,97 @@ describe("native terminal threads", () => {
       }
     });
 
+    it("refuses an ASCII prompt with a typed leading space and never calls the input writer", async () => {
+      const fixture = await createFixture();
+      const { open, thread } = await openRunningNativeThread(fixture, {
+        providerId: "claude-code",
+      });
+      const inputWriter = vi.spyOn(
+        fixture.harness.deps.terminalSessions,
+        "sendTerminalInput",
+      );
+      const cli = startRecordedCli(
+        fixture,
+        open.terminalId,
+        inputBoxHistory(open.cols, ["\u276f say ok"], { col: 8, row: 2 }),
+        { paste: () => [], enter: () => [] },
+      );
+      try {
+        const response = await postJson(fixture, `/threads/${thread.id}/send`, {
+          input: textInput(" say ok"),
+          mode: "auto",
+        });
+        expect(inputWriter).not.toHaveBeenCalled();
+        expect(response.status).toBe(409);
+        expect(apiErrorSchema.parse(await readJson(response)).code).toBe(
+          "native_terminal_input_ambiguous",
+        );
+        expect(cli.inputs()).toEqual([]);
+      } finally {
+        cli.stop();
+      }
+    });
+
+    it("refuses an ASCII-padded prompt with a typed leading space", async () => {
+      const fixture = await createFixture();
+      const { open, thread } = await openRunningNativeThread(fixture, {
+        providerId: "claude-code",
+      });
+      const inputWriter = vi.spyOn(
+        fixture.harness.deps.terminalSessions,
+        "sendTerminalInput",
+      );
+      const cli = startRecordedCli(
+        fixture,
+        open.terminalId,
+        inputBoxHistory(open.cols, ["\u276f  say ok"], { col: 9, row: 2 }),
+        { paste: () => [], enter: () => [] },
+      );
+      try {
+        const response = await postJson(fixture, `/threads/${thread.id}/send`, {
+          input: textInput("say ok"),
+          mode: "auto",
+        });
+        expect(response.status).toBe(409);
+        expect(apiErrorSchema.parse(await readJson(response)).code).toBe(
+          "native_terminal_input_ambiguous",
+        );
+        expect(inputWriter).not.toHaveBeenCalled();
+        expect(cli.inputs()).toEqual([]);
+      } finally {
+        cli.stop();
+      }
+    });
+
+    it("presses Enter once for an NBSP-padded prompt", async () => {
+      const fixture = await createFixture();
+      const { open, thread } = await openRunningNativeThread(fixture, {
+        providerId: "claude-code",
+      });
+      const inputWriter = vi.spyOn(
+        fixture.harness.deps.terminalSessions,
+        "sendTerminalInput",
+      );
+      const cli = startRecordedCli(
+        fixture,
+        open.terminalId,
+        inputBoxHistory(open.cols, ["\u276f\u00a0say ok"], { col: 8, row: 2 }),
+        { paste: () => [], enter: () => [] },
+      );
+      try {
+        const response = await postJson(fixture, `/threads/${thread.id}/send`, {
+          input: textInput("say ok"),
+          mode: "auto",
+        });
+        expect(response.status).toBe(200);
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        expect(inputWriter).toHaveBeenCalledTimes(1);
+        expect(cli.inputs()).toEqual(["\r"]);
+      } finally {
+        cli.stop();
+      }
+    });
+
     it.each([
       {
         name: "a draft with an extra space",

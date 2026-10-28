@@ -581,6 +581,18 @@ describe("terminalScreenInputBoxHoldsText", () => {
     ).toBe(false);
   });
 
+  it.each([" ", "\u00a0", "\t"])(
+    "refuses requested text with leading or trailing boundary whitespace %j",
+    (whitespace) => {
+      expect(holds([`\u276f ${whitespace}say ok`], `${whitespace}say ok`)).toBe(
+        false,
+      );
+      expect(
+        holds([`\u276f\u00a0say ok${whitespace}`], `say ok${whitespace}`),
+      ).toBe(false);
+    },
+  );
+
   it.each([
     ["case", "Say ok", "say ok"],
     ["leading space", " say ok", "say ok"],
