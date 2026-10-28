@@ -33,6 +33,7 @@ import type {
 import { requirePublicThread } from "../lib/entity-lookup.js";
 import { applyLoggedThreadLifecycleEvent } from "./lifecycle-outcome.js";
 import {
+  describeRefusedNativeTerminalCredential,
   isNativeTerminalRebindInFlight,
   nativeTerminalAwaitsReattach,
   readRecordTerminal,
@@ -44,6 +45,7 @@ import {
   NATIVE_QUESTION_ANSWERED_REASON,
   rejectedQuestions,
 } from "./native-terminal-questions.js";
+import { reconcileNativeThreadStatus } from "./native-thread-status.js";
 import { buildThreadStatusChangeMetadata } from "./thread-runtime-display.js";
 
 export { interruptNativeTerminalQuestions };
@@ -82,6 +84,76 @@ function reportStates(deps: Pick<AppDeps, "hub">) {
     nativeActivityReports.set(deps.hub, states);
   }
   return states;
+}
+
+const REFUSED_HOLDER_LOG_INTERVAL_MS = 10 * 60_000;
+const REFUSED_HOLDER_STATE_LIMIT = 512;
+
+interface RefusedHolderState {
+  loggedAt: number | null;
+  reconciledAt: number | null;
+  refusedSinceLog: number;
+}
+
+const refusedHolders = new WeakMap<
+  AppDeps["hub"],
+  Map<string, RefusedHolderState>
+>();
+
+function refusedHolderStates(deps: Pick<AppDeps, "hub">) {
+  let states = refusedHolders.get(deps.hub);
+  if (states === undefined) {
+    states = new Map();
+    refusedHolders.set(deps.hub, states);
+  }
+  return states;
+}
+
+function handleRefusedHolderReport(
+  deps: NativeTerminalActivityDeps,
+  args: { authorization: string | undefined; threadId: string },
+): void {
+  const now = Date.now();
+  const states = refusedHolderStates(deps);
+  let state = states.get(args.threadId);
+  if (state === undefined) {
+    if (states.size >= REFUSED_HOLDER_STATE_LIMIT) {
+      const oldest = states.keys().next().value;
+      if (oldest !== undefined) states.delete(oldest);
+    }
+    state = { loggedAt: null, reconciledAt: null, refusedSinceLog: 0 };
+    states.set(args.threadId, state);
+  }
+  state.refusedSinceLog += 1;
+  if (
+    state.loggedAt === null ||
+    now - state.loggedAt >= REFUSED_HOLDER_LOG_INTERVAL_MS
+  ) {
+    deps.logger.warn(
+      {
+        ...describeRefusedNativeTerminalCredential(deps, args),
+        refusedSinceLastLog: state.refusedSinceLog,
+        threadId: args.threadId,
+      },
+      "A native terminal activity report without the current holder credential was rejected",
+    );
+    state.loggedAt = now;
+    state.refusedSinceLog = 0;
+  }
+  if (
+    state.reconciledAt === null ||
+    now - state.reconciledAt >= NATIVE_TERMINAL_ACTIVITY_HEARTBEAT_INTERVAL_MS
+  ) {
+    state.reconciledAt = now;
+    void reconcileNativeThreadStatus(deps, args.threadId).catch(
+      (error: unknown) => {
+        deps.logger.debug(
+          { err: error, threadId: args.threadId },
+          "Native status reconciliation after a refused holder report failed",
+        );
+      },
+    );
+  }
 }
 
 function hasCurrentTerminalCredential(
@@ -172,10 +244,10 @@ export function recordNativeTerminalActivity(
     threadId: args.threadId,
   });
   if (args.authorization !== undefined && !credentialIsCurrent) {
-    deps.logger.warn(
-      { threadId: args.threadId },
-      "A native terminal activity report without the current holder credential was rejected",
-    );
+    handleRefusedHolderReport(deps, {
+      authorization: args.authorization,
+      threadId: args.threadId,
+    });
     throw new ApiError(
       401,
       "native_terminal_credential_invalid",
