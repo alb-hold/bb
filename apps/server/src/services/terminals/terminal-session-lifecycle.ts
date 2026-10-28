@@ -2464,9 +2464,10 @@ export class TerminalSessionLifecycle {
       const chunksBySequence = new Map<number, TerminalOutputChunk>();
       for (const chunk of retained) chunksBySequence.set(chunk.seq, chunk);
       for (const chunk of replay.chunks) chunksBySequence.set(chunk.seq, chunk);
-      const chunks = [...chunksBySequence.values()].sort(
-        (left, right) => left.seq - right.seq,
-      );
+      const sinceSeq = args.query.sinceSeq ?? 0;
+      const chunks = [...chunksBySequence.values()]
+        .filter((chunk) => chunk.seq >= sinceSeq)
+        .sort((left, right) => left.seq - right.seq);
       const nextSeq = Math.max(replay.nextSeq, (chunks.at(-1)?.seq ?? -1) + 1);
       const bounded = applyTerminalOutputBounds({
         chunks,

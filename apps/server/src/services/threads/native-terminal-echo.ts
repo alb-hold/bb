@@ -8,6 +8,7 @@ const TERMINAL_SCREEN_RESET =
   /\u001b\[[0-3]?J|\u001bc|\u001b\[\?(?:47|1047|1049)[hl]/u;
 const ECHO_IGNORED_CHARACTER = /^[\s─-╿]$/u;
 const ECHO_IGNORED_CHARACTERS = /[\s─-╿]/gu;
+const ECHO_BORDER_ROW = /^[\s─-╿]*[─-╿][\s─-╿]*$/u;
 const ECHO_TAIL_LENGTH = 32;
 const ECHO_DRAWN_SHARE = 0.75;
 const PLACEHOLDER_DETAIL_LENGTH = 32;
@@ -208,6 +209,10 @@ function replayTerminalOutput(output: string): EchoToken[] {
   return replayTerminalRows(output).flatMap((row) => row.tokens);
 }
 
+function replayTerminalSolidOutput(output: string): EchoToken[] {
+  return replayTerminalRows(output).flatMap((row) => row.solidTokens);
+}
+
 function inputLineTokens(
   rows: readonly ReplayedRow[],
   markers: ReadonlySet<EchoToken>,
@@ -333,6 +338,31 @@ export function terminalScreenAlreadyShowsText(args: {
   );
 }
 
+export function terminalScreenInputBoxHoldsText(args: {
+  rows: readonly string[];
+  text: string;
+}): boolean {
+  let promptAt = -1;
+  for (let index = args.rows.length - 1; index >= 0; index -= 1) {
+    const first = Array.from(args.rows[index]!.trimStart())[0] ?? null;
+    if (INPUT_PROMPT_MARKERS.has(first)) {
+      promptAt = index;
+      break;
+    }
+  }
+  if (promptAt < 0) return false;
+  const box = [args.rows[promptAt]!.trimStart().slice(1)];
+  for (const row of args.rows.slice(promptAt + 1)) {
+    if (ECHO_BORDER_ROW.test(row)) {
+      return (
+        normalizeTerminalEcho(box.join("")) === normalizeTerminalEcho(args.text)
+      );
+    }
+    box.push(row);
+  }
+  return false;
+}
+
 export function terminalOutputShowsPasteAgain(args: {
   before: string;
   output: string;
@@ -354,10 +384,12 @@ export function terminalOutputShowsPasteAgain(args: {
     const fullNeedle = echoNeedle(args.text);
     const needle = fullNeedle.slice(-ECHO_TAIL_LENGTH);
     const beforeCopies = occurrenceCount(
-      replayTerminalOutput(args.before),
+      replayTerminalSolidOutput(args.before),
       needle,
     );
-    if (occurrenceCount(replayTerminalOutput(redraw), needle) <= beforeCopies) {
+    if (
+      occurrenceCount(replayTerminalSolidOutput(redraw), needle) <= beforeCopies
+    ) {
       return false;
     }
     const input = inputLineTokens(redrawn, REDRAWN_INPUT_PROMPT_MARKERS);
@@ -377,8 +409,10 @@ export function terminalOutputShowsPasteAgain(args: {
     return true;
   }
   return (
-    occurrenceCount(replayTerminalOutput(args.before + args.output), needle) >
-    occurrenceCount(replayTerminalOutput(args.before), needle)
+    occurrenceCount(
+      replayTerminalSolidOutput(args.before + args.output),
+      needle,
+    ) > occurrenceCount(replayTerminalSolidOutput(args.before), needle)
   );
 }
 

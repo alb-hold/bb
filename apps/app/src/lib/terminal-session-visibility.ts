@@ -26,6 +26,35 @@ export function getThreadTerminalLayoutSessions(
     : selected.filter((session): session is TerminalSession => session !== undefined);
 }
 
+interface ResolveThreadTerminalLayoutArgs {
+  isPending: boolean;
+  sessions: readonly TerminalSession[] | undefined;
+  terminalIds: readonly string[];
+  threadId: string;
+}
+
+export type ThreadTerminalLayoutResolution =
+  | { status: "pending" }
+  | { status: "missing" }
+  | { status: "ready"; sessions: TerminalSession[] };
+
+export function resolveThreadTerminalLayout({
+  isPending,
+  sessions,
+  terminalIds,
+  threadId,
+}: ResolveThreadTerminalLayoutArgs): ThreadTerminalLayoutResolution {
+  if (isPending || sessions === undefined) return { status: "pending" };
+  const selected = getThreadTerminalLayoutSessions(
+    sessions,
+    terminalIds,
+    threadId,
+  );
+  return selected === null
+    ? { status: "missing" }
+    : { status: "ready", sessions: selected };
+}
+
 interface RetainedTerminalSessionArgs {
   retainedTerminalIds: ReadonlySet<string>;
   session: TerminalSession;

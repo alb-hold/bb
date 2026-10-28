@@ -59,7 +59,10 @@ import {
 } from "@bb/server-contract";
 import type { WorkspaceOpenTarget } from "@bb/host-daemon-contract";
 import { appToast } from "@/components/ui/app-toast";
-import { getThreadTerminalLayoutSessions } from "@/lib/terminal-session-visibility";
+import {
+  useEnsureThreadTerminalTabs,
+  useThreadTerminalLayoutRequest,
+} from "@/lib/useThreadTerminalLayout";
 import { useCompactTerminalLayoutRequest } from "@/lib/useCompactTerminalLayoutRequest";
 import { copyToClipboardWithToast } from "@/lib/clipboard";
 import {
@@ -644,15 +647,11 @@ function ThreadDetailViewInternal(
     tabId: string;
   } | null>(null);
   const splitTabToRightRequestIdRef = useRef(0);
-  const [terminalLayoutRequest, setTerminalLayoutRequest] = useState<{
-    action: "split" | "move";
-    requestId: number;
-    side?: "right" | "left" | "up" | "down";
-    targetTerminalId?: string;
-    terminalId: string;
-  } | null>(null);
-  const terminalLayoutRequestIdRef = useRef(0);
-  const terminalLayoutRequestRefreshRef = useRef<number | null>(null);
+  const {
+    clear: clearTerminalLayoutRequest,
+    issue: issueTerminalLayoutRequest,
+    request: terminalLayoutRequest,
+  } = useThreadTerminalLayoutRequest(threadId);
   const consumedTerminalActionLocationRef = useRef<string | null>(null);
   const shouldLoadThreadStorageFiles = shouldLoadThreadStorageFileList({
     hasThread: thread !== undefined,
@@ -1670,56 +1669,29 @@ function ThreadDetailViewInternal(
     onCloseLastTab: secondaryPanelDrawerVisibility.closeDrawer,
   });
   const { canStart: canStartTerminal, select: selectTerminal } = terminals;
-  const ensureTerminalTabs = useCallback(
-    (terminalIds: readonly string[]): boolean | null => {
-      if (terminalsListQuery.isPending) return null;
-      const sessions = terminalsListQuery.data?.sessions;
-      if (sessions === undefined) return false;
-      const selectedSessions = getThreadTerminalLayoutSessions(
-        sessions,
-        terminalIds,
-        threadId,
-      );
-      if (selectedSessions === null) {
-        if (
-          terminalLayoutRequest !== null &&
-          terminalLayoutRequestRefreshRef.current !==
-            terminalLayoutRequest.requestId
-        ) {
-          terminalLayoutRequestRefreshRef.current =
-            terminalLayoutRequest.requestId;
-          void refetchTerminalList();
-          return null;
-        }
-        return false;
-      }
+  const handleTerminalTabsReady = useCallback(
+    (selectedSessions: readonly TerminalSession[]) => {
       if (renderSecondaryPanelAsDrawer && !isSecondaryPanelOpen) {
         appToast.warning("Split panes aren't available at this window size.");
       }
       for (const session of selectedSessions) {
         selectTerminal(session.id, { kind: "thread", threadId });
       }
-      return true;
     },
-    [
-      selectTerminal,
-      terminalLayoutRequest,
-      terminalsListQuery.data,
-      terminalsListQuery.isPending,
-      refetchTerminalList,
-      renderSecondaryPanelAsDrawer,
-      isSecondaryPanelOpen,
-      threadId,
-    ],
+    [isSecondaryPanelOpen, renderSecondaryPanelAsDrawer, selectTerminal, threadId],
   );
-  const handleCompactTerminalLayoutRequestHandled = useCallback(
-    (requestId: number) => {
-      setTerminalLayoutRequest((current) =>
-        current?.requestId === requestId ? null : current,
-      );
+  const ensureTerminalTabs = useEnsureThreadTerminalTabs({
+    onTabsReady: handleTerminalTabsReady,
+    request: terminalLayoutRequest,
+    terminals: {
+      isFetching: terminalsListQuery.isFetching,
+      isPending: terminalsListQuery.isPending,
+      refetch: refetchTerminalList,
+      sessions: terminalsListQuery.data?.sessions,
     },
-    [],
-  );
+    threadId,
+  });
+  const handleCompactTerminalLayoutRequestHandled = clearTerminalLayoutRequest;
   const handleCompactTerminalLayoutRequestResolved = useCallback(
     (terminalAvailable: boolean) => {
       if (!terminalAvailable) {
@@ -2291,12 +2263,14 @@ function ThreadDetailViewInternal(
     if (!parsed.success) return;
     consumedTerminalActionLocationRef.current = location.key;
     navigate(location.pathname, { replace: true, state: null });
-    terminalLayoutRequestIdRef.current += 1;
-    setTerminalLayoutRequest({
-      ...parsed.data,
-      requestId: terminalLayoutRequestIdRef.current,
-    });
-  }, [location.key, location.pathname, location.state, navigate]);
+    issueTerminalLayoutRequest(parsed.data);
+  }, [
+    issueTerminalLayoutRequest,
+    location.key,
+    location.pathname,
+    location.state,
+    navigate,
+  ]);
   const handleTimelineTitleAction = useCallback<TimelineTitleActionResolver>(
     (action) => {
       switch (action.kind) {
