@@ -225,4 +225,88 @@ describe("a provider process that exits under a running turn", () => {
       expect(buildTurnFailedEvent(harness.db, thread.id)?.errorInfo).toBeNull();
     });
   });
+
+  it("does not classify a thread-scoped process exit after a failed turn", async () => {
+    await withTestHarness(async (harness) => {
+      const { host, session } = seedHostSession(harness.deps);
+      const { project } = seedProjectWithSource(harness.deps, {
+        hostId: host.id,
+      });
+      const environment = seedEnvironment(harness.deps, {
+        hostId: host.id,
+        projectId: project.id,
+      });
+      const thread = seedThread(harness.deps, {
+        environmentId: environment.id,
+        projectId: project.id,
+        providerId: "claude-code",
+        status: "active",
+      });
+      seedThreadRuntimeState(harness.deps, {
+        environmentId: environment.id,
+        inputText: "Do the thing",
+        providerThreadId: PROVIDER_THREAD_ID,
+        threadId: thread.id,
+      });
+      seedTurnStarted(harness.deps, {
+        environmentId: environment.id,
+        providerThreadId: PROVIDER_THREAD_ID,
+        threadId: thread.id,
+        turnId: TURN_ID,
+      });
+      const message = 'Provider "claude-code" exited unexpectedly with code -1';
+      const events: HostDaemonEventEnvelope[] = [
+        {
+          threadId: thread.id,
+          event: {
+            type: "turn/completed",
+            threadId: thread.id,
+            providerThreadId: PROVIDER_THREAD_ID,
+            scope: turnScope(TURN_ID),
+            status: "failed",
+            error: { message },
+          },
+        },
+        {
+          threadId: thread.id,
+          event: {
+            type: "system/error",
+            threadId: thread.id,
+            scope: threadScope(),
+            code: "provider_process_exited",
+            message,
+          },
+        },
+      ];
+
+      const response = await harness.app.request("/internal/session/events", {
+        method: "POST",
+        headers: internalAuthHeaders(harness),
+        body: JSON.stringify({
+          sessionId: session.id,
+          eventGroups: groupHostDaemonEvents(events),
+        }),
+      });
+
+      expect(response.status).toBe(200);
+      const failure = buildTurnFailedEvent(harness.db, thread.id);
+      if (failure === null) throw new Error("expected a turn.failed");
+      expect(failure.errorInfo).toBeNull();
+      const retryPolicy = await import(
+        new URL(
+          "../../../../plugins/provider-retry/src/retry-policy.ts",
+          import.meta.url,
+        ).href
+      );
+      expect(
+        retryPolicy.decideRetry({
+          availability: { kind: "not-routed" },
+          failure,
+          maximumWaitMs: null,
+          now: Date.now(),
+          random: 0,
+        }),
+      ).toEqual({ kind: "decline", reason: "not-retryable" });
+    });
+  });
 });
