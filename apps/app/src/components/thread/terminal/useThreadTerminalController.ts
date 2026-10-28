@@ -419,6 +419,10 @@ export function useThreadTerminalController({
         (terminalId === null || update.terminalId === terminalId);
       const pendingMatches =
         pendingUpdate !== null && matchesTarget(pendingUpdate);
+      const ownerMatches =
+        threadId !== null &&
+        terminalId !== null &&
+        terminalProgressOwnerByThread.get(threadId) === terminalId;
       const lastMatches =
         lastUpdate !== null &&
         lastUpdate.value !== null &&
@@ -433,10 +437,15 @@ export function useThreadTerminalController({
           progressUpdateTimeoutRef.current = null;
         }
       }
-      if (lastMatches && lastUpdate !== null) {
+      const updateToClear = ownerMatches
+        ? { threadId, terminalId }
+        : lastMatches
+          ? lastUpdate
+          : null;
+      if (updateToClear !== null) {
         sendTerminalProgressUpdate(
-          lastUpdate.threadId,
-          lastUpdate.terminalId,
+          updateToClear.threadId,
+          updateToClear.terminalId,
           null,
         );
       }
@@ -587,7 +596,9 @@ export function useThreadTerminalController({
       onSuccess?: (session: TerminalSession) => void;
       terminalId: string;
     }) => {
-      clearTerminalProgress(null, terminalId);
+      const threadId =
+        sessions.find((session) => session.id === terminalId)?.threadId ?? null;
+      clearTerminalProgress(threadId, terminalId);
       closeTerminalMutation.mutate(
         { mode, terminalId },
         {
@@ -598,7 +609,7 @@ export function useThreadTerminalController({
         },
       );
     },
-    [clearTerminalProgress, closeTerminalMutation],
+    [clearTerminalProgress, closeTerminalMutation, sessions],
   );
 
   useEffect(() => {

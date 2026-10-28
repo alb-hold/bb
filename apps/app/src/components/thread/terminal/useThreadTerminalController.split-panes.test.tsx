@@ -362,6 +362,24 @@ describe("two split panes each holding a terminal", () => {
       action: "progress-set",
       progress: { value: 0.5 },
     });
+
+    const reopened = renderHook(
+      () => useThreadTerminalController(paneArgs("terminal-a")),
+      { wrapper },
+    );
+    await waitFor(() =>
+      expect(reopened.result.current.activeSession?.id).toBe("terminal-a"),
+    );
+    act(() =>
+      reopened.result.current.handleActiveTerminalSessionChange(
+        session("terminal-a", "exited"),
+      ),
+    );
+
+    expect(sdk.threads.experimental_updateRowState).toHaveBeenLastCalledWith({
+      threadId: "thread-a",
+      action: "progress-clear",
+    });
   });
 
   it("sends no progress write when a terminal that never reported progress unmounts", async () => {
