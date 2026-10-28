@@ -567,14 +567,18 @@ describe("thread pruning", () => {
           data: '{"contextWindowUsage":{"usedTokens":1,"modelContextWindow":null}}',
         },
       );
+      const expectedSequences = [1, 200, 201, ...activeWindow];
+      const removalsNeeded = sequences(f).length - expectedSequences.length;
+      let removed = 0;
       const policies = [];
-      for (let i = 0; i < 1_600; i++) {
+      for (let i = 0; i < 160 && removed < removalsNeeded; i++) {
         const policy = getNextThreadPruningPolicy(f.db, new Set(), f.thread.id);
         if (policy === null) throw new Error("Missing policy");
         policies.push(policy);
         const result = advanceThreadPruning(f.db, { threadId: f.thread.id });
         expect(result.scanned).toBeLessThanOrEqual(32);
         expect(result.removed).toBeLessThanOrEqual(32);
+        removed += result.removed;
         if (i === 6) {
           const saved = f.db.$client.serialize();
           f.db.$client.close();
@@ -591,7 +595,7 @@ describe("thread pruning", () => {
         "turn-diffs",
         "resolved-items",
       ]);
-      expect(sequences(f)).toEqual([1, 200, 201, ...activeWindow]);
+      expect(sequences(f)).toEqual(expectedSequences);
       expect(
         f.db
           .select()
