@@ -133,7 +133,6 @@ interface AdoptProviderProcessArgs {
   bridgeLaunch: AgentRuntimeBridgeLaunch;
   capabilities: BridgeCapabilities;
   entry: BridgeWorkerRegistryEntry;
-  processKey: string;
   providerId: string;
   workerDir: string;
 }
@@ -175,6 +174,16 @@ export function isProviderProcessExitedError(
   error: unknown,
 ): error is ProviderProcessExitedError {
   return error instanceof ProviderProcessExitedError;
+}
+
+const ADOPTED_PROCESS_KEY_MARKER = "#adopted:";
+
+export function adoptedBridgeWorkerProcessKey(
+  entry: Pick<BridgeWorkerRegistryEntry, "id" | "processKey">,
+): string {
+  return entry.processKey.includes(ADOPTED_PROCESS_KEY_MARKER)
+    ? entry.processKey
+    : `${entry.processKey}${ADOPTED_PROCESS_KEY_MARKER}${entry.id}`;
 }
 
 export class RuntimeProviderProcessManager {
@@ -503,16 +512,16 @@ export class RuntimeProviderProcessManager {
   adoptProviderProcess(args: AdoptProviderProcessArgs): RuntimeProviderProcess {
     const adapter = this.getAdapter(args.providerId, args.bridgeLaunch);
     adapter.adoptHandshake(args.capabilities);
-    this.currentProcessKeyByProviderId.set(args.providerId, args.processKey);
+    const processKey = adoptedBridgeWorkerProcessKey(args.entry);
     return this.attachProviderProcess({
       adapter,
       child: new SocketBridgeWorker({
         kind: "adopt",
-        entry: args.entry,
+        entry: { ...args.entry, processKey },
         workerDir: args.workerDir,
         connectTimeoutMs: BRIDGE_WORKER_CONNECT_TIMEOUT_MS,
       }),
-      processKey: args.processKey,
+      processKey,
       providerId: args.providerId,
     });
   }

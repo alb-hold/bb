@@ -3,23 +3,75 @@ import {
   getEnvironment,
   getNativeTerminalThread,
   getThread,
+  listNativeTerminalThreadsNeedingStatusCheck,
   listStoredEventRows,
   stampNativeTerminalTranscriptEvidence,
+  type NativeTerminalThreadRecord,
 } from "@bb/db";
 import {
   NATIVE_TERMINAL_ACTIVITY_FRESH_FOR_MS,
   classifyNativeTranscriptRecord,
+  isActiveTerminalSessionStatus,
 } from "@bb/domain";
 import type { LoggedPendingInteractionWorkSessionDeps } from "../../types.js";
 import { callHostOnlineRpcForWork } from "../hosts/online-rpc.js";
 import { applyLoggedThreadLifecycleEvent } from "./lifecycle-outcome.js";
+import {
+  isNativeTerminalRebindInFlight,
+  readRecordTerminal,
+} from "./native-terminal-threads.js";
+import { interruptActiveThreadsForHost } from "./thread-lifecycle.js";
 import { getActiveTurnId } from "./thread-events.js";
 
 type NativeThreadStatusDeps = LoggedPendingInteractionWorkSessionDeps;
 
+type NativeTerminalLiveness = "live" | "dead" | "recovering";
+
 const nativeStatusReads = new WeakMap<object, Map<string, number>>();
 const NATIVE_STATUS_READ_CACHE_MS = 4_000;
 const NATIVE_STATUS_CACHE_LIMIT = 512;
+const NATIVE_STATUS_SWEEP_LIMIT = 64;
+const NATIVE_STATUS_SWEEP_CONCURRENCY = 8;
+
+function classifyNativeTerminalLiveness(
+  deps: NativeThreadStatusDeps,
+  native: NativeTerminalThreadRecord,
+): NativeTerminalLiveness {
+  if (native.terminalSessionId === null) return "live";
+  const terminal = readRecordTerminal(deps, native);
+  if (terminal === null) return "dead";
+  if (isActiveTerminalSessionStatus(terminal.status)) return "live";
+  if (terminal.status === "disconnected") return "recovering";
+  return terminal.closeReason === "daemon-disconnect" ||
+    terminal.closeReason === "thread-archived"
+    ? "recovering"
+    : "dead";
+}
+
+function interruptActiveThreadWithDeadTerminal(
+  deps: NativeThreadStatusDeps,
+  threadId: string,
+): void {
+  const thread = getThread(deps.db, threadId);
+  if (
+    thread === null ||
+    thread.status !== "active" ||
+    thread.environmentId === null
+  )
+    return;
+  const environment = getEnvironment(deps.db, thread.environmentId);
+  if (environment === null) return;
+  deps.logger.info(
+    { hostId: environment.hostId, threadId },
+    "Settling a native terminal thread whose terminal exited",
+  );
+  interruptActiveThreadsForHost(deps, {
+    hostId: environment.hostId,
+    includeStopping: false,
+    onlyThreadIds: new Set([threadId]),
+    reason: "host-daemon-restarted",
+  });
+}
 
 function nativeStatusReadStates(deps: NativeThreadStatusDeps) {
   let states = nativeStatusReads.get(deps.hub);
@@ -42,6 +94,14 @@ export async function reconcileNativeThreadStatus(
     return;
   const native = getNativeTerminalThread(deps.db, threadId);
   if (native === null || native.providerId !== thread.providerId) return;
+  const liveness = classifyNativeTerminalLiveness(deps, native);
+  if (liveness === "dead") {
+    if (!isNativeTerminalRebindInFlight(threadId)) {
+      interruptActiveThreadWithDeadTerminal(deps, threadId);
+    }
+    return;
+  }
+  if (liveness === "recovering") return;
   const now = Date.now();
   if (
     native.lastEvidenceAt !== null &&
@@ -59,6 +119,7 @@ export async function reconcileNativeThreadStatus(
   }
   states.set(threadId, now);
   let state: "idle" | "working" | null = null;
+  let transcriptSessionId: string | null = null;
   const nativeTerminal = deps.providerRegistry.get(
     thread.providerId,
   )?.nativeTerminal;
@@ -89,6 +150,7 @@ export async function reconcileNativeThreadStatus(
         });
         states.set(threadId, Date.now());
         if (result.outcome === "available") {
+          transcriptSessionId = native.nativeSessionId;
           const content = Buffer.from(result.contentBase64, "base64").toString(
             "utf8",
           );
@@ -104,13 +166,6 @@ export async function reconcileNativeThreadStatus(
             }
             if (state !== null) break;
           }
-          if (state !== null) {
-            stampNativeTerminalTranscriptEvidence(deps.db, {
-              at: now,
-              nativeSessionId: native.nativeSessionId,
-              threadId,
-            });
-          }
         }
       } catch (error) {
         states.set(threadId, Date.now());
@@ -120,6 +175,20 @@ export async function reconcileNativeThreadStatus(
         );
       }
     }
+  }
+  if (state !== null && transcriptSessionId !== null) {
+    const current = getNativeTerminalThread(deps.db, threadId);
+    if (
+      current === null ||
+      classifyNativeTerminalLiveness(deps, current) !== "live"
+    ) {
+      return;
+    }
+    stampNativeTerminalTranscriptEvidence(deps.db, {
+      at: now,
+      nativeSessionId: transcriptSessionId,
+      threadId,
+    });
   }
   if (
     state === null &&
@@ -141,4 +210,34 @@ export async function reconcileNativeThreadStatus(
     event: { type: state === "idle" ? "run.succeeded" : "run.started" },
     threadId,
   });
+}
+
+export async function sweepNativeThreadStatus(
+  deps: NativeThreadStatusDeps,
+  now: number,
+): Promise<void> {
+  const threadIds = listNativeTerminalThreadsNeedingStatusCheck(deps.db, {
+    evidenceFreshAfter: now - NATIVE_TERMINAL_ACTIVITY_FRESH_FOR_MS,
+    limit: NATIVE_STATUS_SWEEP_LIMIT,
+  });
+  for (
+    let offset = 0;
+    offset < threadIds.length;
+    offset += NATIVE_STATUS_SWEEP_CONCURRENCY
+  ) {
+    await Promise.all(
+      threadIds
+        .slice(offset, offset + NATIVE_STATUS_SWEEP_CONCURRENCY)
+        .map((threadId) =>
+          reconcileNativeThreadStatus(deps, threadId).catch(
+            (error: unknown) => {
+              deps.logger.debug(
+                { threadId, error },
+                "Native status sweep reconciliation failed",
+              );
+            },
+          ),
+        ),
+    );
+  }
 }

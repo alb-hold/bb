@@ -246,6 +246,33 @@ export function listNativeTerminalThreadsWithDisconnectedTerminal(
   return rows.map((row) => row.threadId);
 }
 
+export function listNativeTerminalThreadsNeedingStatusCheck(
+  db: DbConnection,
+  args: { evidenceFreshAfter: number; limit: number },
+): string[] {
+  const rows = db.$client
+    .prepare(
+      `SELECT n.thread_id AS threadId
+       FROM fork_native_terminal_threads n
+       JOIN threads th ON th.id = n.thread_id
+       LEFT JOIN terminal_sessions t ON t.id = n.terminal_session_id
+       WHERE th.status IN ('active', 'idle')
+         AND th.provider_id = n.provider_id
+         AND th.archived_at IS NULL
+         AND th.deleted_at IS NULL
+         AND (n.last_evidence_at IS NULL OR n.last_evidence_at < ?)
+         AND NOT (
+           th.status = 'idle'
+           AND COALESCE(t.status, '') = 'exited'
+           AND COALESCE(t.close_reason, '') NOT IN ('daemon-disconnect', 'thread-archived')
+         )
+       ORDER BY n.last_evidence_at IS NOT NULL, n.last_evidence_at, n.thread_id
+       LIMIT ?`,
+    )
+    .all(args.evidenceFreshAfter, args.limit) as { threadId: string }[];
+  return rows.map((row) => row.threadId);
+}
+
 export function setNativeTerminalThreadTerminal(
   db: DbConnection,
   args: { threadId: string; terminalSessionId: string },
