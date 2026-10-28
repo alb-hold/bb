@@ -1,5 +1,6 @@
 import { renderTemplate } from "@bb/templates";
-import { getThread, updateThread } from "@bb/db";
+import { and, eq, sql } from "drizzle-orm";
+import { events, getThread, updateThread } from "@bb/db";
 import {
   removeCommandMentionsFromPromptInput,
   type PromptInput,
@@ -57,6 +58,19 @@ interface AppliedThreadTitleOutcome {
 }
 
 const titlesInFlight = new Map<string, Promise<AppliedThreadTitleOutcome>>();
+const providerTitleFallbacks = new WeakMap<
+  AppDeps["db"],
+  Map<string, string>
+>();
+
+function providerTitleFallbacksForDb(db: AppDeps["db"]): Map<string, string> {
+  let titles = providerTitleFallbacks.get(db);
+  if (titles === undefined) {
+    titles = new Map();
+    providerTitleFallbacks.set(db, titles);
+  }
+  return titles;
+}
 
 function cleanPromptText(input: PromptInput[]): string {
   return input
@@ -244,28 +258,129 @@ export function applyGeneratedThreadTitle(
   deps: Pick<AppDeps, "db" | "hub">,
   args: ApplyGeneratedThreadTitleArgs,
 ): boolean {
-  const title = args.title.trim();
-  if (title.length === 0) {
+  const title = sanitizeGeneratedTitle(args.title);
+  if (
+    title === null ||
+    title.length <= 3 ||
+    isPrefixOfFirstAssistantReply(deps, args.threadId, title)
+  ) {
     return false;
   }
 
-  const currentThread = getThread(deps.db, args.threadId);
-  if (!currentThread || currentThread.title) {
-    return false;
-  }
+  return writeThreadTitleIfEmpty(deps, args.threadId, title);
+}
 
-  updateThread(deps.db, deps.hub, args.threadId, {
-    title,
-  });
+function writeThreadTitleIfEmpty(
+  deps: Pick<AppDeps, "db" | "hub">,
+  threadId: string,
+  title: string,
+): boolean {
+  const currentThread = getThread(deps.db, threadId);
+  if (!currentThread || currentThread.title) return false;
 
+  updateThread(deps.db, deps.hub, threadId, { title });
   return true;
+}
+
+function isPrefixOfFirstAssistantReply(
+  deps: Pick<AppDeps, "db">,
+  threadId: string,
+  title: string,
+): boolean {
+  const firstAssistantReply = deps.db
+    .select({
+      text: sql<string | null>`json_extract(${events.data}, '$.item.text')`,
+    })
+    .from(events)
+    .where(
+      and(
+        eq(events.threadId, threadId),
+        eq(events.type, "item/completed"),
+        eq(events.itemKind, "agentMessage"),
+        sql`COALESCE(json_extract(${events.data}, '$.item.text'), '') <> ''`,
+      ),
+    )
+    .orderBy(events.sequence)
+    .limit(1)
+    .get()?.text;
+  return firstAssistantReply?.startsWith(title) ?? false;
+}
+
+export function applyFallbackThreadTitle(
+  deps: Pick<AppDeps, "db" | "hub">,
+  args: ApplyGeneratedThreadTitleArgs,
+): boolean {
+  const title = sanitizeGeneratedTitle(args.title);
+  if (title === null) return false;
+
+  return writeThreadTitleIfEmpty(deps, args.threadId, title);
+}
+
+export function applyProviderThreadTitle(
+  deps: Pick<AppDeps, "db" | "hub">,
+  args: ApplyGeneratedThreadTitleArgs,
+): boolean {
+  const title = sanitizeGeneratedTitle(args.title);
+  if (
+    title === null ||
+    title.length <= 3 ||
+    isPrefixOfFirstAssistantReply(deps, args.threadId, title)
+  ) {
+    return false;
+  }
+
+  return writeThreadTitleIfEmpty(deps, args.threadId, title);
+}
+
+export function generateFromProviderThreadName(
+  deps: LoggedWorkSessionDeps,
+  args: ApplyGeneratedThreadTitleArgs,
+): Promise<void> {
+  const thread = getThread(deps.db, args.threadId);
+  const candidate = sanitizeGeneratedTitle(args.title);
+  if (!thread || thread.title || candidate === null) return Promise.resolve();
+
+  providerTitleFallbacksForDb(deps.db).set(args.threadId, candidate);
+  const input = thread.titleFallback
+    ? [{ type: "text" as const, text: thread.titleFallback, mentions: [] }]
+    : [];
+  return generateAndApplyThreadTitle(deps, {
+    input,
+    threadId: args.threadId,
+  })
+    .then(({ outcome }) => {
+      if (outcome.metadata !== null) return;
+      const fallback = providerTitleFallbacksForDb(deps.db).get(args.threadId);
+      if (fallback !== undefined) {
+        applyProviderThreadTitle(deps, {
+          threadId: args.threadId,
+          title: fallback,
+        });
+      }
+    })
+    .catch((error: unknown) => {
+      deps.logger.warn(
+        {
+          threadId: args.threadId,
+          ...runtimeErrorLogFields(deps.config, error),
+        },
+        "Failed to generate thread title",
+      );
+    })
+    .finally(() => {
+      providerTitleFallbacksForDb(deps.db).delete(args.threadId);
+    });
 }
 
 export function generateAndApplyThreadTitle(
   deps: LoggedWorkSessionDeps,
   args: ThreadMetadataGenerationArgs,
 ): Promise<AppliedThreadTitleOutcome> {
-  if (getThread(deps.db, args.threadId)?.title != null) {
+  const existingThread = getThread(deps.db, args.threadId);
+  if (
+    existingThread?.title != null &&
+    !providerTitleFallbacksForDb(deps.db).has(args.threadId)
+  ) {
     return Promise.resolve({
       outcome: { durationMs: 0, metadata: null, reason: "already-titled" },
       titleApplied: false,
@@ -273,7 +388,13 @@ export function generateAndApplyThreadTitle(
   }
   const pending = titlesInFlight.get(args.threadId);
   if (pending !== undefined) return pending;
-  const generating = generateThreadMetadataWithOutcome(deps, args)
+  const firstAttempt = generateThreadMetadataWithOutcome(deps, args);
+  const retried = firstAttempt.then((outcome) =>
+    outcome.reason === "failed" || outcome.reason === "timeout"
+      ? generateThreadMetadataWithOutcome(deps, args)
+      : outcome,
+  );
+  const generating = retried
     .then((outcome) => {
       let titleApplied = false;
       if (outcome.metadata?.title) {
@@ -290,6 +411,32 @@ export function generateAndApplyThreadTitle(
             },
             "Failed to apply generated thread title",
           );
+        }
+      }
+      if (!titleApplied) {
+        const providerTitle = providerTitleFallbacksForDb(deps.db).get(
+          args.threadId,
+        );
+        if (providerTitle !== undefined) {
+          titleApplied = applyProviderThreadTitle(deps, {
+            threadId: args.threadId,
+            title: providerTitle,
+          });
+        }
+        if (
+          !titleApplied &&
+          (providerTitle !== undefined ||
+            outcome.metadata !== null ||
+            outcome.reason !== "too-short")
+        ) {
+          const fallback = getThread(deps.db, args.threadId)?.titleFallback;
+          const title = fallback ? sanitizeGeneratedTitle(fallback) : null;
+          if (title !== null) {
+            titleApplied = applyFallbackThreadTitle(deps, {
+              threadId: args.threadId,
+              title,
+            });
+          }
         }
       }
       return { outcome, titleApplied };

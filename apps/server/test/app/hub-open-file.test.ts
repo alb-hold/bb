@@ -100,6 +100,7 @@ describe("NotificationHub device handoff routing", () => {
       sink,
       false,
       false,
+      false,
     );
     const appViewer = createMockHubSocket();
     const token = hub.issueDeviceHandoffClientToken(appViewer);

@@ -76,6 +76,7 @@ export {
   clearNativeTerminalThreadEvidence,
   rebindNativeTerminalThreadSessionId,
   stampNativeTerminalThreadActivity,
+  stampNativeTerminalTranscriptEvidence,
   stampNativeTerminalThreadToolCall,
   setNativeTerminalThreadTerminal,
   type NativeTerminalThreadRecord,

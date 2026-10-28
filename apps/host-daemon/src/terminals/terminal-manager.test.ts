@@ -2027,6 +2027,40 @@ describe("TerminalManager", () => {
     });
   });
 
+  it("starts replay after an OSC 52 continuation at the retained boundary", async () => {
+    const harness = createHarness();
+    const pty = await openTerminal(harness);
+    const prefix = `\u001b]52;c;${"x".repeat(1017)}`;
+    const continuation = `${"Q".repeat(1590)}\u0007`;
+
+    pty.emitData(prefix);
+    await harness.manager.handleMessage({
+      type: "terminal.attach",
+      requestId: "flush-osc52-prefix",
+      terminalId: "term-1",
+      sinceSeq: 0,
+      tailBytes: 64 * 1024,
+    });
+    pty.emitData(continuation);
+    await harness.manager.handleMessage({
+      type: "terminal.attach",
+      requestId: "attach-osc52-tail",
+      terminalId: "term-1",
+      sinceSeq: 0,
+      tailBytes: Buffer.byteLength(continuation),
+    });
+
+    expect(harness.messages).toContainEqual(
+      expect.objectContaining({
+        type: "terminal.replay",
+        requestId: "attach-osc52-tail",
+        chunks: [],
+        replayStartSeq: 2,
+        nextSeq: 2,
+      }),
+    );
+  });
+
   it("starts replay after a UTF-8 code point that crosses the tail boundary", async () => {
     const harness = createHarness();
     const pty = await openTerminal(harness);

@@ -2251,17 +2251,15 @@ export function ThreadTerminalView({
             message.type === "session-updated"
           ) {
             if (message.type === "attached") {
-              const reconnectingWhileHidden =
-                hasReceivedInitialAttach && terminalVisible !== true;
               hasReceivedInitialAttach = true;
-              lastParsedOutputNextSeq = reconnectingWhileHidden
-                ? Math.min(lastParsedOutputNextSeq, message.replayStartSeq)
-                : message.replayStartSeq;
             }
             const { cols, rows } = message.session;
             const isOwnNudgeEcho =
               message.type === "session-updated" &&
-              activeTransport.consumeRepaintNudgeEcho({ cols, rows });
+              activeTransport.consumeRepaintNudgeEcho(
+                { cols, rows },
+                message.resizeSeq,
+              );
             latestPtyGrid = { cols, rows };
             updateGridVisibility();
             const nextSize = nextSharedTerminalSize(
@@ -2400,7 +2398,8 @@ export function ThreadTerminalView({
             replayCheckpointSequence,
             outputBoundaryToken,
             allowAttachedGrid: !markerGridActive,
-            shouldProcessOutput: () => terminalVisible === true && isPanelOpenRef.current,
+            shouldProcessOutput: () =>
+              terminalVisible === true && isPanelOpenRef.current,
           });
         },
         onSequenceGap: () => {

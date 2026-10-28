@@ -8,6 +8,7 @@ import {
   inspectEnvironmentCleanup,
 } from "./command-handlers/environment-hook.js";
 import {
+  TERMINAL_DATA_PLANE_PROBE_IPC_VERSION,
   providerCliInstallEventSchema,
   type DesktopBrowserCommand,
   type DesktopBrowserResult,
@@ -46,6 +47,7 @@ import {
   listHostSkills,
   writeHostSkill,
 } from "./command-handlers/list-skills.js";
+import { readTranscriptTail } from "./command-handlers/native-transcript.js";
 import {
   browseHostDirectory,
   checkHostPathsExist,
@@ -651,13 +653,17 @@ const onlineRpcHandlers: OnlineRpcHandlerMap = {
     readGlobalSkillsStatus(command, {}),
   "host.inspect_git_source": inspectHostGitSource,
   "host.list_branch_options": listHostBranchOptions,
+  "native_terminal.read_transcript_tail": (command, options) =>
+    readTranscriptTail(command, {
+      shellEnv: options.runtimeManager.getShellEnv(),
+    }),
   "host.read_file": readHostFile,
   "host.read_file_chunk": readHostFileChunk,
   "host.read_file_relative": readHostRelativeFile,
   "host.write_file": writeHostFile,
   "terminal-data-plane.probe": async (_command, options) => ({
     dataSocket: options.terminalDataSocket !== undefined,
-    ipcVersion: 1,
+    ipcVersion: TERMINAL_DATA_PLANE_PROBE_IPC_VERSION,
   }),
   "terminal-data-plane.connect": async (command, options) => ({
     connected:

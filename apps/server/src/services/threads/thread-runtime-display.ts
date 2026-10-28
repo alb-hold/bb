@@ -93,6 +93,7 @@ type NativeActivityThreadRecord = Pick<
   NativeTerminalThreadRecord,
   | "providerId"
   | "lastEvidenceAt"
+  | "lastEvidenceKind"
   | "lastToolCallAt"
   | "lastToolCallSessionId"
   | "nativeSessionId"
@@ -354,7 +355,7 @@ function addNativeActivityDiagnostic(
       freshForMs: NATIVE_TERMINAL_ACTIVITY_FRESH_FOR_MS,
       confirmation: isFresh ? "confirmed" : "unconfirmed",
       evidenceKind: isFresh
-        ? "holder-report"
+        ? (nativeThread.lastEvidenceKind ?? "holder-report")
         : toolCallIsFresh
           ? "tool-call"
           : "unknown",
