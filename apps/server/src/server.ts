@@ -17,12 +17,14 @@ import {
   INSTALL_MACHINE_WINDOWS_SCRIPT_PATH,
 } from "./install-machine-asset.js";
 import { createNodeWebSocket } from "@hono/node-ws";
+import { TERMINAL_RESIZE_ECHO_WEBSOCKET_PROTOCOL } from "@bb/server-contract";
 import { createGateKeyStore } from "./services/connect-next/gate-keys.js";
 import {
   createTunnelIngressManager,
   type TunnelIngressManager,
 } from "./services/connect-next/tunnel-ingress.js";
 import { createHash, randomUUID } from "node:crypto";
+import type { IncomingMessage } from "node:http";
 import { readFile, stat } from "node:fs/promises";
 import { performance } from "node:perf_hooks";
 import { extname, join, resolve } from "node:path";
@@ -49,6 +51,7 @@ import { registerDeviceHandoffRoutes } from "./routes/device-handoff.js";
 import { registerThreadRoutes } from "./routes/threads/index.js";
 import { registerQueueRoutes } from "./routes/queue.js";
 import { registerSpendRoutes } from "./routes/spend.js";
+import { registerWritingAssistanceRoutes } from "./routes/writing-assistance.js";
 import { registerNativeTerminalThreadRoutes } from "./routes/native-terminal-threads.js";
 import { registerPluginRoutes } from "./routes/plugins.js";
 import { registerPluginCatalogRoutes } from "./routes/plugin-catalog.js";
@@ -137,9 +140,7 @@ import {
 const PLUGIN_WIRE_HTTP_PATH = /^\/api\/v1\/plugins\/[^/]+\/http(?:\/|$)/u;
 import { rankAcceptedAssetEncodings } from "./asset-content-encoding.js";
 import { apiJsonCompression } from "./api-response-compression.js";
-import { planUnclaimedAnswerDelivery } from "./services/interactions/deliver-unclaimed-answer.js";
-import { createQueuedMessageForThread } from "./services/threads/queued-messages.js";
-import { getThread } from "@bb/db";
+import { handleUnclaimedPluginAnswer } from "./services/interactions/deliver-unclaimed-answer.js";
 import { APP_SURFACE_WEB, type AppSurface } from "@bb/config/app-surface";
 import type { ServerBindHost } from "@bb/config/server";
 import { registerServerMoveRoutes } from "./routes/server-move.js";
@@ -166,7 +167,27 @@ import {
 
 type CloseWebSockets = () => Promise<void>;
 type NodeWebSocketServer = ReturnType<typeof createNodeWebSocket>["wss"];
+type WebSocketProtocolOptions = {
+  options: {
+    handleProtocols?: (
+      protocols: Set<string>,
+      request: IncomingMessage,
+    ) => string | false;
+  };
+};
 type WebSocketCloseError = Error | undefined;
+
+function assertWebSocketProtocolOptions(
+  wss: NodeWebSocketServer,
+): asserts wss is NodeWebSocketServer & WebSocketProtocolOptions {
+  if (
+    !("options" in wss) ||
+    typeof wss.options !== "object" ||
+    wss.options === null
+  ) {
+    throw new Error("WebSocket server does not expose protocol options");
+  }
+}
 
 interface ServerApp {
   app: Hono;
@@ -498,6 +519,14 @@ export function createApp(
   const { injectWebSocket, upgradeWebSocket, wss } = createNodeWebSocket({
     app,
   });
+  assertWebSocketProtocolOptions(wss);
+  wss.options.handleProtocols = (
+    protocols: Set<string>,
+    _request: IncomingMessage,
+  ): string | false =>
+    protocols.has(TERMINAL_RESIZE_ECHO_WEBSOCKET_PROTOCOL)
+      ? TERMINAL_RESIZE_ECHO_WEBSOCKET_PROTOCOL
+      : (protocols.values().next().value ?? false);
   const tunnelIngressNow = options?.tunnelIngressNow ?? Date.now;
   const tunnelIngress = createTunnelIngressManager({
     app,
@@ -847,31 +876,8 @@ export function createApp(
       threadId,
     });
   });
-  deps.pendingInteractions.setUnclaimedPluginAnswerListener(
-    ({ interaction, value }) => {
-      const delivery = planUnclaimedAnswerDelivery({ interaction, value });
-      if (delivery === null) return;
-      const thread = getThread(deps.db, delivery.threadId);
-      if (!thread) return;
-      void createQueuedMessageForThread(deps, {
-        payload: {
-          input: [{ type: "text", text: delivery.text, mentions: [] }],
-        } as never,
-        thread,
-      })
-        .then(() => {
-          requestQueuedMessageDispatch(deps, {
-            kind: "interaction-settled",
-            threadId: delivery.threadId,
-          });
-        })
-        .catch((error: unknown) => {
-          deps.logger.warn(
-            { err: error, threadId: interaction.threadId },
-            "Could not queue an answer that arrived after its tool call ended",
-          );
-        });
-    },
+  deps.pendingInteractions.setUnclaimedPluginAnswerListener((answer) =>
+    handleUnclaimedPluginAnswer(deps, answer),
   );
   setTurnTelemetryDeps(deps);
   setPluginThreadEventEmitter(pluginService.events);
@@ -961,6 +967,7 @@ export function createApp(
   registerThreadRoutes(publicApi, deps, pluginService);
   registerQueueRoutes(publicApi, deps);
   registerSpendRoutes(publicApi, deps);
+  registerWritingAssistanceRoutes(publicApi, deps);
   registerNativeTerminalThreadRoutes(publicApi, deps);
   registerSystemRoutes(publicApi, deps, pluginService);
   registerUiPreferenceRoutes(publicApi, deps);
@@ -1068,6 +1075,8 @@ export function createApp(
             outputAcks: query.data.outputAcks,
             handoffOwnerToken: query.data.handoffOwnerToken,
             resizeAcks: query.data.resizeAcks,
+            resizeSeqEcho:
+              socket.protocol === TERMINAL_RESIZE_ECHO_WEBSOCKET_PROTOCOL,
             socket,
             sinceSeq: query.data.sinceSeq,
             terminalId,

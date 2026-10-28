@@ -92,6 +92,7 @@ function createFixture() {
       handoffOwnerToken,
       outputAcks: true,
       resizeAcks: false,
+      resizeSeqEcho: false,
       request,
       sequenceBase: 0,
       sinceSeq: 0,
@@ -164,6 +165,7 @@ describe("TerminalDataPlaneRouter", () => {
         daemonSessionId: "ds_1",
         outputAcks: false,
         resizeAcks: false,
+        resizeSeqEcho: false,
         sequenceBase: 0,
         request:
           fixture.sent[0]?.message.type === "browser.attach"
@@ -194,7 +196,7 @@ describe("TerminalDataPlaneRouter", () => {
     );
   });
 
-  it("sends session updates after the replay and only once for several browsers", async () => {
+  it("sends session updates after the replay only to browsers that received them", async () => {
     const fixture = createFixture();
     fixture.attach();
     fixture.attach();
@@ -204,9 +206,11 @@ describe("TerminalDataPlaneRouter", () => {
       socket.send(updated);
     }
     const updates = fixture.sent.filter(
-      (entry) => entry.message.type === "browser.send",
+      (entry) =>
+        entry.message.type === "browser.reply" &&
+        entry.message.message.type === "session-updated",
     );
-    expect(updates).toHaveLength(1);
+    expect(updates).toHaveLength(2);
   });
 
   it("sends resize acknowledgements to the one browser they name, after the session update that caused them", async () => {
@@ -226,10 +230,14 @@ describe("TerminalDataPlaneRouter", () => {
           message.type === "browser.send" || message.type === "browser.reply",
       );
     expect(afterReplay.map((message) => message.type)).toEqual([
-      "browser.send",
+      "browser.reply",
       "browser.reply",
       "browser.reply",
     ]);
+    expect(afterReplay[0]).toMatchObject({
+      attachId: first.attachId,
+      message: { type: "session-updated", session },
+    });
     expect(afterReplay[1]).toMatchObject({
       attachId: first.attachId,
       message: { type: "resize-applied", seq: 3 },
@@ -238,6 +246,43 @@ describe("TerminalDataPlaneRouter", () => {
       attachId: first.attachId,
       message: { type: "features", resizeAcks: true },
     });
+  });
+
+  it("keeps a tagged resize echo and its peer update on their intended browser sockets", async () => {
+    const fixture = createFixture();
+    const origin = fixture.attach();
+    const peer = fixture.attach();
+    await Promise.resolve();
+
+    fixture.attached[0]?.send(
+      JSON.stringify({ type: "session-updated", session, resizeSeq: 1 }),
+    );
+    fixture.attached[1]?.send(
+      JSON.stringify({ type: "session-updated", session }),
+    );
+
+    const updates = fixture.sent
+      .map((entry) => entry.message)
+      .filter(
+        (message) =>
+          message.type === "browser.send" ||
+          (message.type === "browser.reply" &&
+            message.message.type === "session-updated"),
+      );
+    expect(updates).toEqual([
+      {
+        v: V,
+        type: "browser.reply",
+        attachId: origin.attachId,
+        message: { type: "session-updated", session, resizeSeq: 1 },
+      },
+      {
+        v: V,
+        type: "browser.reply",
+        attachId: peer.attachId,
+        message: { type: "session-updated", session },
+      },
+    ]);
   });
 
   it("relays live output once per sequence number across browsers on one terminal", async () => {

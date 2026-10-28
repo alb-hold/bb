@@ -1,4 +1,5 @@
 import type { PromptInput, ProvisioningTranscriptEntry } from "@bb/domain";
+import { getThread } from "@bb/db";
 import type { LoggedWorkSessionDeps } from "../../types.js";
 import { appendThreadProvisioningEvent } from "./thread-events.js";
 import {
@@ -81,7 +82,10 @@ export async function inferThreadMetadata(
   }
 
   return {
-    title: outcome.metadata?.title ?? null,
+    title:
+      (titleApplied ? getThread(deps.db, args.threadId)?.title : null) ??
+      outcome.metadata?.title ??
+      null,
     titleApplied,
   };
 }

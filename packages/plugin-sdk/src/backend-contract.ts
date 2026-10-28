@@ -1698,7 +1698,12 @@ export interface PluginProviderDeclaration {
    *   `transcripts` file (`{yyyy}`, `{mm}`, `{dd}` cover the launch day and the
    *   day before) whose `header.match` fields equal the given strings, and
    *   binds the one whose `header.cwd` is the thread workspace and whose
-   *   `header.startedAt` follows the launch. Later launches use `resumeArgs`.
+   *   `header.startedAt` follows the launch. Optional `header.discoveryMatch`
+   *   fields must also equal the given strings, but only when binding a new
+   *   launch's session; a session is still found by its id without them, so a
+   *   session another client of the CLI created can be resumed. Declare it to
+   *   keep a session some other process started in the same workspace from
+   *   being bound. Later launches use `resumeArgs`.
    * - `activity` (optional): how bb learns that the CLI is working on a turn,
    *   so the thread shows as working, then as done, and gets a title from its
    *   first prompt. `hooks` adds `args` (with `{settings}` replaced by a JSON
@@ -2111,8 +2116,10 @@ export interface PluginAiServiceDeclaration {
   /** Shown in the picker; 1-64 characters. */
   readonly displayName: string;
   /**
-   * Answer one prompt with plain text. Offered for thread titles and commit
-   * messages. Declare `complete`, `transcribe`, or both.
+   * Answer one prompt with plain text. Offered for thread titles, commit
+   * messages, and writing assistance (JSON edit proposals and dictation
+   * formatting, validated by bb before use). Declare `complete`,
+   * `transcribe`, or both.
    */
   readonly complete?: (
     prompt: string,

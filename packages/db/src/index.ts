@@ -25,11 +25,13 @@ export {
 export {
   clearThreadRowState,
   getThreadRowState,
+  listThreadRowStatesByScope,
   putThreadRowState,
   type ThreadRowProgress,
   type ThreadRowState,
   type ThreadRowStatus,
 } from "./fork-thread-row-state.js";
+export type { ThreadListEnrichmentScope } from "./thread-list-enrichment-scope.js";
 export {
   clearTerminalAttention,
   clearPersistedDeviceHandoffAttention,
@@ -57,6 +59,7 @@ export {
   HOST_RETAINED_TERMINAL_LIMIT,
   TERMINAL_OUTPUT_RETENTION_MS,
   type RetainedTerminalOutputChunk,
+  type RetainedTerminalOutputAppendTimings,
 } from "./fork-terminal-output.js";
 export {
   consumeNativeTerminalThreadLaunchInput,
@@ -67,9 +70,15 @@ export {
   isNativeTerminalThread,
   listNativeTerminalThreadIds,
   listNativeTerminalThreadsByIds,
+  listNativeTerminalThreadsNeedingStatusCheck,
   listNativeTerminalThreadsWithDisconnectedTerminal,
   recordNativeTerminalThreadSessionId,
+  clearNativeTerminalThreadActivityEvidence,
+  clearNativeTerminalThreadEvidence,
+  rebindNativeTerminalThreadSessionId,
   stampNativeTerminalThreadActivity,
+  stampNativeTerminalTranscriptEvidence,
+  stampNativeTerminalThreadToolCall,
   setNativeTerminalThreadTerminal,
   type NativeTerminalThreadRecord,
   type RecordNativeSessionIdResult,

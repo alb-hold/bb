@@ -18,6 +18,7 @@ import {
   projectAttachmentThreads,
   queuedThreadMessages,
   setNativeTerminalThreadTerminal,
+  setQueuedThreadMessageFailureReason,
   terminalSessions,
   threads,
   unarchiveThread,
@@ -44,6 +45,7 @@ import { queueParentSystemMessage } from "../../src/services/threads/parent-syst
 import { sendThreadMessage } from "../../src/services/threads/thread-send.js";
 import {
   NATIVE_TERMINAL_ENDED_MESSAGE,
+  NATIVE_TOOL_CREDENTIAL_ENV,
   nativeTerminalLaunchCommand,
   reopenNativeTerminalsAfterDaemonReconnect,
   resumeNativeTerminalAfterUnarchive,
@@ -65,6 +67,7 @@ import {
   seedHostSession,
   seedPrimaryHost,
   seedProjectWithSource,
+  seedQueuedMessage,
   seedSession,
   seedThread,
 } from "../helpers/seed.js";
@@ -170,10 +173,14 @@ async function postJson(
   fixture: Fixture,
   path: string,
   body: unknown,
+  authorization?: string,
 ): Promise<Response> {
   return fixture.harness.app.request(`/api/v1${path}`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: {
+      "content-type": "application/json",
+      ...(authorization === undefined ? {} : { authorization }),
+    },
     body: JSON.stringify(body),
   });
 }
@@ -353,6 +360,11 @@ function startFakeCli(
 
 function scrolledPastScreen(line: string): string {
   return `${line}\r\n${"• Ran a step\r\n".repeat(120)}› `;
+}
+
+function claudeComposerScreen(pasted: string): string {
+  const words = pasted.split(" ");
+  return `\u001b[2K\u001b[1G\u276f ${words.join("\u001b[1C")}\u001b[0m`;
 }
 
 function composerScreen(pasted: string): string {
@@ -2024,8 +2036,7 @@ describe("native terminal threads", () => {
     const cli = startFakeCli(
       fixture,
       open.terminalId,
-      () =>
-        "\u001b[2;1H\u2022 You could say: run the tests\u001b[6;1H\u001b[2K\u203a [Image #1]",
+      () => "\u001b[6;1H\u001b[2K\u203a [Image #1] run the tests",
     );
     try {
       const response = await postJson(fixture, `/threads/${thread.id}/send`, {
@@ -2136,7 +2147,7 @@ describe("native terminal threads", () => {
     10_000,
   );
 
-  it("sends nothing when the CLI redraws the same text from its history", async () => {
+  it("sends nothing when the CLI redraws the same text unsent in its input box", async () => {
     const fixture = await createFixture();
     const { open, thread } = await openRunningNativeThread(fixture, {
       providerId: "codex",
@@ -2145,7 +2156,7 @@ describe("native terminal threads", () => {
       fixture,
       open.terminalId,
       composerScreen,
-      "\u001b[H\u001b[2J\u203a run the tests\r\n\u2022 Ran pnpm test\r\n\u203a ",
+      "\u001b[H\u001b[2J\u2022 Ran pnpm test\r\n\u203a run the tests",
     );
     try {
       const response = await postJson(fixture, `/threads/${thread.id}/send`, {
@@ -2161,6 +2172,98 @@ describe("native terminal threads", () => {
     } finally {
       cli.stop();
     }
+  });
+
+  describe("an idle Claude Code session", () => {
+    const rule = "\u2500".repeat(60);
+    const idleScreen = (input: string) =>
+      [
+        "> Reply with exactly: repeat-probe",
+        "",
+        "\u23fa repeat-probe",
+        "",
+        "\u273b Cooked for 3s \u00b7 done 7:12 AM",
+        rule,
+        `\u276f\u00a0${input}`,
+        rule,
+      ].join("\r\n");
+    const clearedScreen = [
+      "> /clear",
+      "",
+      "\u23bf (no content)",
+      rule,
+      "\u276f\u00a0",
+      rule,
+    ].join("\r\n");
+
+    it.each([
+      [
+        "history above an empty prompt",
+        "Reply with exactly: repeat-probe",
+        idleScreen(""),
+      ],
+      ["history above an empty prompt", "/clear", clearedScreen],
+      [
+        "a faint suggestion",
+        "Reply with exactly: repeat-probe",
+        idleScreen("\u001b[2mReply with exactly: repeat-probe\u001b[22m"),
+      ],
+    ])(
+      "accepts a message when only %s shows it: %s",
+      async (_label, message, screen) => {
+        const fixture = await createFixture();
+        const { open, thread } = await openRunningNativeThread(fixture, {
+          providerId: "claude-code",
+        });
+        const cli = startFakeCli(
+          fixture,
+          open.terminalId,
+          claudeComposerScreen,
+          screen,
+        );
+        try {
+          const response = await postJson(
+            fixture,
+            `/threads/${thread.id}/send`,
+            { input: textInput(message), mode: "auto" },
+          );
+          expect(response.status).toBe(200);
+          expect(cli.inputs()).toEqual([
+            `\u001b[200~${message}\u001b[201~`,
+            "\r",
+          ]);
+        } finally {
+          cli.stop();
+        }
+      },
+    );
+
+    it("refuses the same text while it sits unsent in the input box", async () => {
+      const fixture = await createFixture();
+      const { open, thread } = await openRunningNativeThread(fixture, {
+        providerId: "claude-code",
+      });
+      const cli = startFakeCli(
+        fixture,
+        open.terminalId,
+        claudeComposerScreen,
+        idleScreen("Reply with exactly: repeat-probe"),
+      );
+      try {
+        const response = await postJson(fixture, `/threads/${thread.id}/send`, {
+          input: textInput("Reply with exactly: repeat-probe"),
+          mode: "auto",
+        });
+        expect(response.status).toBe(409);
+        expect(apiErrorSchema.parse(await readJson(response)).code).toBe(
+          "native_terminal_input_ambiguous",
+        );
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        expect(cli.inputs()).toEqual([]);
+      } finally {
+        cli.stop();
+      }
+    });
   });
 
   it("does not take a redrawn earlier placeholder for the echo", async () => {
@@ -2284,6 +2387,49 @@ describe("native terminal threads", () => {
     );
   });
 
+  it("rejects a queued message for a native thread at enqueue and leaves existing queue rows untouched", async () => {
+    const fixture = await createFixture();
+    const { thread } = await openRunningNativeThread(fixture, {
+      providerId: "claude-code",
+    });
+    const existing = seedQueuedMessage(fixture.harness.deps, {
+      content: textInput("queued before the guard"),
+      threadId: thread.id,
+    });
+    setQueuedThreadMessageFailureReason(fixture.harness.db, noopNotifier, {
+      id: existing.id,
+      threadId: thread.id,
+      failureReason: "This thread runs its agent in a native terminal",
+      now: Date.now(),
+      retryDelaysMs: [],
+    });
+    const rowsBefore = fixture.harness.db
+      .select()
+      .from(queuedThreadMessages)
+      .where(eq(queuedThreadMessages.threadId, thread.id))
+      .all();
+
+    const response = await postJson(
+      fixture,
+      `/threads/${thread.id}/queued-messages`,
+      { input: textInput("will never deliver") },
+    );
+    expect(response.status).toBe(409);
+    expect(apiErrorSchema.parse(await readJson(response))).toEqual({
+      code: "native_terminal_thread",
+      message:
+        "This thread runs its agent in a native terminal; send input through the terminal",
+    });
+
+    const rowsAfter = fixture.harness.db
+      .select()
+      .from(queuedThreadMessages)
+      .where(eq(queuedThreadMessages.threadId, thread.id))
+      .all();
+    expect(rowsAfter).toEqual(rowsBefore);
+    expect(rowsAfter).toHaveLength(1);
+  });
+
   it("rejects providers without a native harness", async () => {
     const fixture = await createFixture();
     const response = await postJson(fixture, "/threads", {
@@ -2377,13 +2523,37 @@ describe("native terminal threads", () => {
     const first = await openRunningNativeThread(fixture, {
       providerId: "codex",
     });
-    const second = await createNativeThread(fixture, { providerId: "codex" });
+    const secondThread = await createNativeThread(fixture, {
+      providerId: "codex",
+    });
+    const secondOpen = await waitForTerminalOpen(fixture.socket, 1);
+    acknowledgeOpen(fixture, secondOpen);
+    for (let attempt = 0; attempt < 600; attempt += 1) {
+      const record = getNativeTerminalThread(
+        fixture.harness.db,
+        secondThread.id,
+      );
+      if (record?.terminalSessionId === secondOpen.terminalId) break;
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    const second = { thread: secondThread };
+    const credentialOf = (threadId: string) => {
+      const open = daemonMessages(fixture.socket).find(
+        (message): message is TerminalOpenMessage =>
+          message.type === "terminal.open" && message.threadId === threadId,
+      );
+      const entry = open?.contributedEnv.find(
+        (candidate) => candidate.name === NATIVE_TOOL_CREDENTIAL_ENV,
+      );
+      return `Bearer ${entry?.value}`;
+    };
     const sessionId = "01a1246a-b896-7b71-9895-ce5345f5f623";
 
     const recorded = await postJson(
       fixture,
       `/threads/${first.thread.id}/native-terminal/session`,
       { nativeSessionId: sessionId },
+      credentialOf(first.thread.id),
     );
     expect(recorded.status).toBe(200);
     expect(
@@ -2393,8 +2563,9 @@ describe("native terminal threads", () => {
 
     const stolen = await postJson(
       fixture,
-      `/threads/${second.id}/native-terminal/session`,
+      `/threads/${second.thread.id}/native-terminal/session`,
       { nativeSessionId: sessionId },
+      credentialOf(second.thread.id),
     );
     expect(stolen.status).toBe(409);
 
@@ -2402,6 +2573,7 @@ describe("native terminal threads", () => {
       fixture,
       `/threads/${first.thread.id}/native-terminal/session`,
       { nativeSessionId: "11111111-2222-3333-4444-555555555555" },
+      credentialOf(first.thread.id),
     );
     expect(rebound.status).toBe(409);
   });
@@ -3641,7 +3813,12 @@ describe("native terminal threads", () => {
               ?.terminalSessionId,
         )
         .toBe(reopen.terminalId);
+      const reopenedCredential = reopen.contributedEnv.find(
+        (entry) => entry.name === NATIVE_TOOL_CREDENTIAL_ENV,
+      )?.value;
       recordNativeTerminalActivity(fixture.harness.deps, {
+        confirms: true,
+        authorization: `Bearer ${reopenedCredential}`,
         threadId: running.thread.id,
         state: "working",
       });

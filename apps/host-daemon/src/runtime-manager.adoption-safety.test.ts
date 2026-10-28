@@ -331,6 +331,74 @@ describe("bridge worker adoption safety", () => {
     }
   }, 60_000);
 
+  it("keeps an adopted worker and the fresh worker started beside it across a second restart", async () => {
+    const { createManager, dir, registered } =
+      await startTurnThenDetach("second-restart");
+    const adopting = createManager([]);
+    await adopting.reconcileBridgeWorkers();
+    expect(
+      adopting.listAdoptedBridgeThreads().map((thread) => thread.threadId),
+    ).toEqual(["t1"]);
+    await adopting.completeBridgeWorkerAdoption(async () => new Map());
+    const unusedWorkspace = await fs.mkdtemp(
+      path.join(os.tmpdir(), "bb-adopt-2nd-ws-"),
+    );
+    tempDirs.push(unusedWorkspace);
+    const environment = await adopting.ensureEnvironment({
+      environmentId: "env-1",
+      workspacePath: unusedWorkspace,
+    });
+    await environment.runtime.startThread({
+      bridgeLaunch: createScriptedEchoLaunch({
+        modulePath: fileURLToPath(
+          new URL(
+            "../../../tests/scripted-echo-provider/src/provider-bridge.ts",
+            import.meta.url,
+          ),
+        ),
+      }),
+      environmentId: "env-1",
+      threadId: "t2",
+      projectId: "p1",
+      providerId: "fake",
+      options: runtimeOptions,
+    });
+    await adopting.shutdownAll("detach");
+    const names = await registryFileNames(dir);
+    const entries = await Promise.all(
+      names.map(
+        async (name) =>
+          JSON.parse(await fs.readFile(path.join(dir, name), "utf8")) as {
+            pid: number;
+            processKey: string;
+            threads: Record<string, unknown>;
+          },
+      ),
+    );
+    for (const entry of entries) livePids.push(entry.pid);
+    expect(entries.map((entry) => Object.keys(entry.threads))).toEqual(
+      expect.arrayContaining([["t1"], ["t2"]]),
+    );
+    expect(new Set(entries.map((entry) => entry.processKey)).size).toBe(2);
+    const adoptedEntry = entries.find((entry) => "t1" in entry.threads);
+    expect(adoptedEntry?.pid).toBe(registered.pid);
+
+    const second = createManager([]);
+    try {
+      await second.reconcileBridgeWorkers();
+      expect(
+        second
+          .listAdoptedBridgeThreads()
+          .map((thread) => thread.threadId)
+          .sort(),
+      ).toEqual(["t1", "t2"]);
+      expect(isProcessAlive(registered.pid)).toBe(true);
+      expect(await registryFileNames(dir)).toHaveLength(2);
+    } finally {
+      await second.shutdownAll("detach");
+    }
+  }, 60_000);
+
   it("retires an entry written in another registry format instead of adopting it", async () => {
     const { dir, entryFile, logger, manager, shutdowns, worker } =
       await plantEntryWithListener("format", (entry) => ({

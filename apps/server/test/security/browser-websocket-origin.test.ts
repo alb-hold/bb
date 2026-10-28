@@ -1,7 +1,11 @@
 import { createNodeBbSdk } from "@bb/sdk/node";
 import { createNodeWebsocketFactory } from "@bb/sdk/node-websocket";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
+import {
+  TERMINAL_LEGACY_WEBSOCKET_PROTOCOL,
+  TERMINAL_RESIZE_ECHO_WEBSOCKET_PROTOCOL,
+} from "@bb/server-contract";
 import {
   startTestServer,
   type RunningTestServer,
@@ -9,6 +13,37 @@ import {
 
 const sockets = new Set<WebSocket>();
 let server: RunningTestServer | null = null;
+const { webSocketServerRef } = vi.hoisted(() => ({
+  webSocketServerRef: { current: null as unknown },
+}));
+
+vi.mock("@hono/node-ws", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@hono/node-ws")>();
+  return {
+    ...actual,
+    createNodeWebSocket: (
+      init: Parameters<typeof actual.createNodeWebSocket>[0],
+    ) => {
+      const adapter = actual.createNodeWebSocket(init);
+      webSocketServerRef.current = adapter.wss;
+      return adapter;
+    },
+  };
+});
+
+function hasWebSocketProtocolHandler(server: unknown): boolean {
+  if (
+    server === null ||
+    typeof server !== "object" ||
+    !("options" in server) ||
+    server.options === null ||
+    typeof server.options !== "object" ||
+    !("handleProtocols" in server.options)
+  ) {
+    return false;
+  }
+  return typeof server.options.handleProtocols === "function";
+}
 
 function websocketUrl(baseUrl: string, path: string): string {
   const url = new URL(path, baseUrl);
@@ -23,6 +58,18 @@ function openWebSocket(
 ): Promise<WebSocket> {
   return new Promise((resolve, reject) => {
     const socket = new WebSocket(url, { origin, headers });
+    sockets.add(socket);
+    socket.once("open", () => resolve(socket));
+    socket.once("error", reject);
+  });
+}
+
+function openWebSocketWithProtocols(
+  url: string,
+  protocols: string[],
+): Promise<WebSocket> {
+  return new Promise((resolve, reject) => {
+    const socket = new WebSocket(url, protocols);
     sockets.add(socket);
     socket.once("open", () => resolve(socket));
     socket.once("error", reject);
@@ -77,6 +124,33 @@ afterEach(async () => {
 });
 
 describe("browser WebSocket origin boundary", () => {
+  it("selects the resize echo protocol when a client offers it", async () => {
+    server = await startTestServer();
+    const socket = await openWebSocketWithProtocols(
+      websocketUrl(server.baseUrl, "/ws/terminals/missing-terminal"),
+      [
+        TERMINAL_LEGACY_WEBSOCKET_PROTOCOL,
+        TERMINAL_RESIZE_ECHO_WEBSOCKET_PROTOCOL,
+      ],
+    );
+
+    expect(socket.protocol).toBe(TERMINAL_RESIZE_ECHO_WEBSOCKET_PROTOCOL);
+    expect(hasWebSocketProtocolHandler(webSocketServerRef.current)).toBe(true);
+    await closeSocket(socket);
+  });
+
+  it("selects the legacy protocol for legacy clients", async () => {
+    server = await startTestServer();
+    const socket = await openWebSocketWithProtocols(
+      websocketUrl(server.baseUrl, "/ws/terminals/missing-terminal"),
+      [TERMINAL_LEGACY_WEBSOCKET_PROTOCOL],
+    );
+
+    expect(socket.protocol).toBe(TERMINAL_LEGACY_WEBSOCKET_PROTOCOL);
+    expect(hasWebSocketProtocolHandler(webSocketServerRef.current)).toBe(true);
+    await closeSocket(socket);
+  });
+
   it("rejects hostile browser origins on realtime and terminal sockets", async () => {
     server = await startTestServer();
     const realtimeUrl = websocketUrl(server.baseUrl, "/ws");

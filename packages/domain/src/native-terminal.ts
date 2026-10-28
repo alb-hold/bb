@@ -155,6 +155,13 @@ export const providerNativeTerminalActivitySchema = z
               .strict(),
           )
           .max(8),
+        continuation: z
+          .object({
+            match: providerNativeTerminalRecordMatchSchema,
+            nextSessionId: recordFieldPathSchema,
+          })
+          .strict()
+          .optional(),
         questions: z
           .object({
             open: z
@@ -236,6 +243,9 @@ export const providerNativeTerminalDiscoveredSessionSchema = z
     header: z
       .object({
         match: z.record(headerFieldPathSchema, z.string().min(1)),
+        discoveryMatch: z
+          .record(headerFieldPathSchema, z.string().min(1))
+          .optional(),
         id: headerFieldPathSchema,
         cwd: headerFieldPathSchema,
         startedAt: headerFieldPathSchema,

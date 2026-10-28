@@ -64,7 +64,7 @@ export function buildTimelineErrorDisplay(
   }
   return {
     title: genericErrorTitle(message.rawType),
-    detail: detail ?? title,
+    detail: detail === null ? title : `${title}\n${detail}`,
   };
 }
 

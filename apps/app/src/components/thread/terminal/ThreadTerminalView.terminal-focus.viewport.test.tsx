@@ -12,10 +12,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import {
-  REPAINT_RESTORE_DELAY_MS,
-  TerminalWebSocketTransport,
-} from "@bb/client-core";
+import { waitForReadinessCondition } from "./ThreadTerminalView.terminal-focus-test-utils";
 import { decodeBase64Bytes } from "@/lib/base64-bytes";
 import { makeTerminalSession } from "@/test/fixtures/terminal-sessions";
 import { wsManager } from "@/lib/ws";
@@ -28,6 +25,7 @@ import { ThreadTerminalView } from "./ThreadTerminalView";
 const testState = vi.hoisted(() => ({
   calls: [] as string[],
   clearAttention: vi.fn(),
+  deferSocketOpen: false,
   mediaQueryListeners: new Set<() => void>(),
   touchEnabled: false,
   toastError: vi.fn(),
@@ -35,9 +33,11 @@ const testState = vi.hoisted(() => ({
   socketCreated: null as (() => void) | null,
   socketMessages: [] as string[],
   socketUrls: [] as string[],
+  screen: vi.fn(),
 }));
 
 class TestTerminalSocket {
+  readonly protocol = "bb.terminal.resize-echo.v1";
   static readonly CLOSED = 3;
   static readonly CONNECTING = 0;
   static readonly OPEN = 1;
@@ -48,6 +48,7 @@ class TestTerminalSocket {
   onopen: ((event: Event) => void) | null = null;
   readyState = TestTerminalSocket.CONNECTING;
   readonly opened: Promise<void>;
+  readonly sent: string[] = [];
   private resolveOpened!: () => void;
 
   constructor(url: string) {
@@ -58,11 +59,15 @@ class TestTerminalSocket {
     this.opened = new Promise((resolve) => {
       this.resolveOpened = resolve;
     });
-    queueMicrotask(() => {
-      this.readyState = TestTerminalSocket.OPEN;
-      this.onopen?.(new Event("open"));
-      this.resolveOpened();
-    });
+    if (!testState.deferSocketOpen) {
+      queueMicrotask(() => this.open());
+    }
+  }
+
+  open(): void {
+    this.readyState = TestTerminalSocket.OPEN;
+    this.onopen?.(new Event("open"));
+    this.resolveOpened();
   }
 
   close(): void {
@@ -75,6 +80,7 @@ class TestTerminalSocket {
   }
 
   send(data: string): void {
+    this.sent.push(data);
     testState.socketMessages.push(data);
   }
 
@@ -88,6 +94,7 @@ class TestTerminalSocket {
 vi.mock("@/lib/sdk", () => ({
   sdk: {
     terminals: {
+      experimental_screen: testState.screen,
       experimental_attention: {
         clear: testState.clearAttention,
       },
@@ -176,37 +183,15 @@ afterEach(() => {
   testState.calls.length = 0;
   testState.sockets.length = 0;
   testState.socketCreated = null;
+  testState.deferSocketOpen = false;
   testState.socketMessages.length = 0;
   testState.socketUrls.length = 0;
   testState.clearAttention.mockReset();
+  testState.screen.mockReset();
   testState.toastError.mockReset();
   testState.touchEnabled = false;
   testState.mediaQueryListeners.clear();
 });
-
-function waitForReadiness<T>(
-  promise: Promise<T>,
-  failureMessage: string,
-): Promise<T> {
-  let timeout: ReturnType<typeof setTimeout> | undefined;
-  const deadline = new Promise<T>((_, reject) => {
-    timeout = setTimeout(() => reject(new Error(failureMessage)), 5_000);
-  });
-  return Promise.race([promise, deadline]).finally(() => {
-    if (timeout !== undefined) clearTimeout(timeout);
-  });
-}
-
-async function waitForReadinessCondition<T>(
-  callback: () => T,
-  failureMessage: string,
-): Promise<T> {
-  try {
-    return await waitFor(callback, { timeout: 5_000 });
-  } catch {
-    throw new Error(failureMessage);
-  }
-}
 
 const originalClipboardDescriptor = Object.getOwnPropertyDescriptor(
   navigator,
@@ -294,73 +279,7 @@ function scrollTerminalAsUser(terminal: Terminal, line: number): void {
   terminal.scrollToLine(line);
 }
 
-describe("ThreadTerminalView terminal focus boundary", () => {
-  it("mounts and records output boundaries without crypto.randomUUID", async () => {
-    prepareMobileTerminal();
-    const originalRandomUUID = crypto.randomUUID;
-    Object.defineProperty(crypto, "randomUUID", {
-      configurable: true,
-      value: undefined,
-    });
-    let uuidBytes: Uint8Array | undefined;
-    const originalGetRandomValues = crypto.getRandomValues.bind(crypto);
-    vi.spyOn(crypto, "getRandomValues").mockImplementation((array) => {
-      const result = originalGetRandomValues(array);
-      if (result.byteLength === 16) {
-        uuidBytes = new Uint8Array(
-          result.buffer,
-          result.byteOffset,
-          result.byteLength,
-        ).slice();
-      }
-      return result;
-    });
-    let outputBoundaryHandler:
-      | ((payload: string) => boolean | Promise<boolean>)
-      | undefined;
-    const open = Terminal.prototype.open;
-    vi.spyOn(Terminal.prototype, "open").mockImplementation(function (
-      this: Terminal,
-      parent: HTMLElement,
-    ) {
-      open.call(this, parent);
-      const registerOscHandler = this.parser.registerOscHandler.bind(
-        this.parser,
-      );
-      vi.spyOn(this.parser, "registerOscHandler").mockImplementation(
-        (identifier, callback) => {
-          if (identifier === 7778) outputBoundaryHandler = callback;
-          return registerOscHandler(identifier, callback);
-        },
-      );
-    });
-    try {
-      renderMobileTerminal();
-      await waitForReadinessCondition(
-        () => expect(document.querySelector(".xterm")).not.toBeNull(),
-        "terminal did not mount within 5000 ms",
-      );
-      expect(document.querySelector(".xterm")).not.toBeNull();
-      const generatedBytes = uuidBytes;
-      if (!generatedBytes) throw new Error("UUID bytes were not generated");
-      generatedBytes[6] = (generatedBytes[6]! & 0x0f) | 0x40;
-      generatedBytes[8] = (generatedBytes[8]! & 0x3f) | 0x80;
-      const hex = Array.from(generatedBytes, (byte) =>
-        byte.toString(16).padStart(2, "0"),
-      );
-      const token = `${hex.slice(0, 4).join("")}-${hex.slice(4, 6).join("")}-${hex.slice(6, 8).join("")}-${hex.slice(8, 10).join("")}-${hex.slice(10).join("")}`;
-      if (!outputBoundaryHandler) {
-        throw new Error("terminal output boundary handler was not registered");
-      }
-      expect(await outputBoundaryHandler(`${token}:0`)).toBe(true);
-    } finally {
-      Object.defineProperty(crypto, "randomUUID", {
-        configurable: true,
-        value: originalRandomUUID,
-      });
-    }
-  });
-
+describe("ThreadTerminalView terminal viewport and focus", () => {
   it("keeps a bottom-following client at the bottom after output and a shared resize", async () => {
     prepareMobileTerminal();
     let fitCols = 40;
@@ -1267,582 +1186,6 @@ describe("ThreadTerminalView terminal focus boundary", () => {
         .filter((message) => message.type === "input"),
     ).toHaveLength(0);
   });
-
-  it("keeps the app identity when the server echoes it after terminal attach", async () => {
-    vi.stubGlobal("WebSocket", TestTerminalSocket);
-    vi.stubGlobal(
-      "ResizeObserver",
-      class {
-        constructor(private readonly callback: ResizeObserverCallback) {}
-        disconnect(): void {}
-        observe(target: Element): void {
-          this.callback(
-            [
-              {
-                target,
-                contentRect: { width: 390, height: 700 },
-              } as ResizeObserverEntry,
-            ],
-            this as unknown as ResizeObserver,
-          );
-        }
-        unobserve(): void {}
-      },
-    );
-    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({
-      measureText: (text: string) => ({ width: text.length * 8 }),
-    } as unknown as CanvasRenderingContext2D);
-    vi.spyOn(FitAddon.prototype, "proposeDimensions").mockReturnValue({
-      cols: 40,
-      rows: 20,
-    });
-
-    render(
-      <MemoryRouter>
-        <AppCommandProvider>
-          <ThreadTerminalView
-            autoFocus={false}
-            isPanelOpen
-            session={makeTerminalSession({
-              id: "term-late-app-token",
-              threadId: null,
-              status: "running",
-            })}
-          />
-        </AppCommandProvider>
-      </MemoryRouter>,
-    );
-    await waitForReadinessCondition(
-      () => expect(testState.socketUrls).toHaveLength(1),
-      "initial terminal socket URL was not created within 5000 ms",
-    );
-    const initialToken = new URL(
-      testState.socketUrls[0] ?? "ws://localhost",
-    ).searchParams.get("handoffOwnerToken");
-    expect(initialToken).toMatch(/^[A-Za-z0-9_-]{22}$/u);
-
-    wsManager.handleIncomingMessage(
-      JSON.stringify({
-        type: "device-handoff-client-token",
-        token: initialToken,
-      }),
-    );
-
-    expect(testState.socketUrls).toHaveLength(1);
-
-    testState.sockets[0]?.disconnect();
-    await waitForReadinessCondition(
-      () => expect(testState.socketUrls).toHaveLength(2),
-      "terminal socket did not reconnect within 5000 ms",
-    );
-    expect(
-      new URL(testState.socketUrls[1] ?? "ws://localhost").searchParams.get(
-        "handoffOwnerToken",
-      ),
-    ).toBe(initialToken);
-  });
-
-  it.each([
-    {
-      path: "desktop terminal tab",
-      threadId: null,
-      compact: false,
-    },
-    {
-      path: "split-pane terminal",
-      threadId: "thr_split_terminal",
-      compact: false,
-    },
-    {
-      path: "phone right-panel terminal tab",
-      threadId: null,
-      compact: true,
-    },
-    {
-      path: "thread terminal with a threadless origin",
-      threadId: null,
-      compact: false,
-    },
-  ])("attaches the $path with its owning app token", async (view) => {
-    wsManager.handleIncomingMessage(
-      JSON.stringify({
-        type: "device-handoff-client-token",
-        token: "0123456789abcdefghij_-",
-      }),
-    );
-    vi.stubGlobal("WebSocket", TestTerminalSocket);
-    vi.stubGlobal(
-      "ResizeObserver",
-      class {
-        constructor(private readonly callback: ResizeObserverCallback) {}
-        disconnect(): void {}
-        observe(target: Element): void {
-          this.callback(
-            [
-              {
-                target,
-                contentRect: { width: 390, height: 700 },
-              } as ResizeObserverEntry,
-            ],
-            this as unknown as ResizeObserver,
-          );
-        }
-        unobserve(): void {}
-      },
-    );
-    vi.stubGlobal("matchMedia", (query: string) => ({
-      matches: view.compact && query === "(pointer: coarse)",
-      media: query,
-      addEventListener: vi.fn(),
-      removeEventListener: vi.fn(),
-      addListener: vi.fn(),
-      removeListener: vi.fn(),
-      onchange: null,
-      dispatchEvent: vi.fn(),
-    }));
-    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({
-      measureText: (text: string) => ({ width: text.length * 8 }),
-    } as unknown as CanvasRenderingContext2D);
-    vi.spyOn(FitAddon.prototype, "proposeDimensions").mockReturnValue({
-      cols: 40,
-      rows: 20,
-    });
-    const token = `view-path-owner-${view.path.replaceAll(" ", "-")}`;
-    wsManager.handleIncomingMessage(
-      JSON.stringify({ type: "device-handoff-client-token", token }),
-    );
-
-    render(
-      <MemoryRouter>
-        <AppCommandProvider>
-          <ThreadTerminalView
-            autoFocus={false}
-            isPanelOpen
-            session={makeTerminalSession({
-              id: `term-${view.path.replaceAll(" ", "-")}`,
-              threadId: view.threadId,
-              status: "running",
-            })}
-          />
-        </AppCommandProvider>
-      </MemoryRouter>,
-    );
-
-    await waitForReadinessCondition(
-      () => expect(testState.socketUrls).toHaveLength(1),
-      "terminal socket URL was not created within 5000 ms",
-    );
-    const url = new URL(testState.socketUrls[0] ?? "ws://localhost");
-    expect(url.pathname).toBe(
-      `/ws/terminals/term-${view.path.replaceAll(" ", "-")}`,
-    );
-    expect(url.searchParams.get("handoffOwnerToken")).toBe(token);
-    await waitForReadinessCondition(() => {
-      expect(
-        testState.socketMessages
-          .map((message) => JSON.parse(message))
-          .some(
-            (message) =>
-              message.type === "visibility" && message.visible === true,
-          ),
-      ).toBe(true);
-    }, "terminal visibility was not reported within 5000 ms");
-  });
-
-  it("clears attention when its terminal panel becomes visible", async () => {
-    const session = makeTerminalSession({
-      id: "term_attention",
-      attention: { at: 10, kind: "bell", seq: 3 },
-    });
-    const updatedSession = { ...session, attention: null };
-    const onSessionChange = vi.fn();
-    testState.clearAttention.mockResolvedValue(updatedSession);
-
-    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({
-      measureText: (text: string) => ({ width: text.length * 9 }),
-    } as unknown as CanvasRenderingContext2D);
-    vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockImplementation(
-      function offsetWidth(this: HTMLElement) {
-        return this.classList.contains("xterm-char-measure-element")
-          ? 288
-          : 108;
-      },
-    );
-    vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockImplementation(
-      function offsetHeight(this: HTMLElement) {
-        return this.classList.contains("xterm-char-measure-element") ? 18 : 90;
-      },
-    );
-
-    render(
-      <MemoryRouter>
-        <AppCommandProvider>
-          <ThreadTerminalView
-            autoFocus={false}
-            isPanelOpen
-            onSessionChange={onSessionChange}
-            session={session}
-          />
-        </AppCommandProvider>
-      </MemoryRouter>,
-    );
-
-    await waitForReadinessCondition(() => {
-      expect(testState.clearAttention).toHaveBeenCalledWith({
-        terminalId: session.id,
-      });
-      expect(onSessionChange).toHaveBeenCalledWith(updatedSession);
-    }, "terminal attention was not cleared within 5000 ms");
-  });
-
-  it("waits for fit dimensions before settling the initial main-pane layout", async () => {
-    vi.stubGlobal("WebSocket", TestTerminalSocket);
-    vi.stubGlobal(
-      "ResizeObserver",
-      class {
-        constructor(private readonly callback: ResizeObserverCallback) {}
-
-        disconnect(): void {}
-
-        observe(target: Element): void {
-          this.callback(
-            [
-              {
-                target,
-                contentRect: { width: 354, height: 504 },
-              } as ResizeObserverEntry,
-            ],
-            this as unknown as ResizeObserver,
-          );
-        }
-
-        unobserve(): void {}
-      },
-    );
-    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({
-      measureText: (text: string) => ({ width: text.length * 9 }),
-    } as unknown as CanvasRenderingContext2D);
-    vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockImplementation(
-      function offsetWidth(this: HTMLElement) {
-        return this.classList.contains("xterm-char-measure-element") ? 9 : 354;
-      },
-    );
-    vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockImplementation(
-      function offsetHeight(this: HTMLElement) {
-        return this.classList.contains("xterm-char-measure-element") ? 18 : 504;
-      },
-    );
-    vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockImplementation(
-      function clientWidth(this: HTMLElement) {
-        return this.classList.contains("xterm-char-measure-element") ? 9 : 354;
-      },
-    );
-    vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockImplementation(
-      function clientHeight(this: HTMLElement) {
-        return this.classList.contains("xterm-char-measure-element") ? 18 : 504;
-      },
-    );
-    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
-      function getBoundingClientRect(this: HTMLElement) {
-        return new DOMRect(0, 0, this.clientWidth, this.clientHeight);
-      },
-    );
-    const originalProposeDimensions = FitAddon.prototype.proposeDimensions;
-    let fitDimensionsAvailable = false;
-    let unavailableFitMeasurements = 0;
-    let resolveUnavailableFitMeasurements!: () => void;
-    const unavailableFitMeasurementsReady = new Promise<void>((resolve) => {
-      resolveUnavailableFitMeasurements = resolve;
-    });
-    vi.spyOn(FitAddon.prototype, "proposeDimensions").mockImplementation(
-      function proposeDimensions(this: FitAddon) {
-        if (fitDimensionsAvailable) {
-          return originalProposeDimensions.call(this);
-        }
-        unavailableFitMeasurements += 1;
-        if (unavailableFitMeasurements === 2) {
-          resolveUnavailableFitMeasurements();
-        }
-        return undefined;
-      },
-    );
-
-    render(
-      <MemoryRouter>
-        <AppCommandProvider>
-          <ThreadTerminalView
-            autoFocus={false}
-            isPanelOpen
-            session={makeTerminalSession({
-              id: "term_initial_main_fit_unmeasured",
-              status: "running",
-              cols: 120,
-              rows: 36,
-            })}
-          />
-        </AppCommandProvider>
-      </MemoryRouter>,
-    );
-
-    await waitForReadinessCondition(() => {
-      expect(
-        testState.socketMessages.map((message) => JSON.parse(message)),
-      ).toContainEqual({ type: "visibility", visible: true });
-    }, "terminal visibility was not reported within 5000 ms");
-    await waitForReadiness(
-      unavailableFitMeasurementsReady,
-      "initial fit dimensions were not measured while unavailable within 5000 ms",
-    );
-    expect(
-      testState.socketMessages
-        .map((message) => JSON.parse(message) as { type?: string })
-        .some((message) => message.type === "resize"),
-    ).toBe(false);
-    fitDimensionsAvailable = true;
-
-    await waitForReadinessCondition(() => {
-      const resize = testState.socketMessages
-        .map(
-          (message) => JSON.parse(message) as { cols?: number; type?: string },
-        )
-        .find((message) => message.type === "resize");
-      expect(resize).toBeDefined();
-      expect(resize?.cols).toBeLessThan(120);
-    }, "initial fitted resize was not sent within 5000 ms");
-
-    const resizeFrames = () =>
-      testState.socketMessages
-        .map(
-          (message) =>
-            JSON.parse(message) as {
-              cols?: number;
-              rows?: number;
-              type?: string;
-            },
-        )
-        .filter((message) => message.type === "resize");
-    const fittedSize = resizeFrames()[0];
-    if (fittedSize?.cols === undefined || fittedSize.rows === undefined) {
-      throw new Error("Expected a fitted terminal size");
-    }
-    const visibilityState = vi.spyOn(document, "visibilityState", "get");
-    visibilityState.mockReturnValue("hidden");
-    document.dispatchEvent(new Event("visibilitychange"));
-    await waitForReadinessCondition(() => {
-      expect(
-        testState.socketMessages.map((message) => JSON.parse(message)),
-      ).toContainEqual({ type: "visibility", visible: false });
-    }, "terminal hidden visibility was not reported within 5000 ms");
-
-    visibilityState.mockReturnValue("visible");
-    document.dispatchEvent(new Event("visibilitychange"));
-    window.dispatchEvent(new Event("focus"));
-    await waitForReadinessCondition(() => {
-      const messages = testState.socketMessages.map(
-        (message) =>
-          JSON.parse(message) as {
-            cols?: number;
-            rows?: number;
-            type?: string;
-            visible?: boolean;
-          },
-      );
-      const hiddenIndex = messages.findIndex(
-        (message) => message.type === "visibility" && !message.visible,
-      );
-      const visibleIndex = messages.findIndex(
-        (message, index) =>
-          index > hiddenIndex &&
-          message.type === "visibility" &&
-          message.visible,
-      );
-      expect(hiddenIndex).toBeGreaterThanOrEqual(0);
-      expect(visibleIndex).toBeGreaterThan(hiddenIndex);
-      expect(
-        messages
-          .slice(visibleIndex + 1)
-          .find(
-            (message) =>
-              message.type === "resize" &&
-              message.cols === fittedSize.cols &&
-              message.rows === fittedSize.rows,
-          ),
-      ).toEqual({
-        type: "resize",
-        cols: fittedSize.cols,
-        rows: fittedSize.rows,
-      });
-    }, "terminal visible visibility was not restored after focus within 5000 ms");
-  });
-
-  it("does not repaint-nudge the initial terminal replay", async () => {
-    vi.stubGlobal("WebSocket", TestTerminalSocket);
-    vi.stubGlobal(
-      "ResizeObserver",
-      class {
-        constructor(private readonly callback: ResizeObserverCallback) {}
-
-        disconnect(): void {}
-
-        observe(target: Element): void {
-          this.callback(
-            [
-              {
-                target,
-                contentRect: { width: 354, height: 504 },
-              } as ResizeObserverEntry,
-            ],
-            this as unknown as ResizeObserver,
-          );
-        }
-
-        unobserve(): void {}
-      },
-    );
-    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({
-      measureText: (text: string) => ({ width: text.length * 7 }),
-    } as unknown as CanvasRenderingContext2D);
-    vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockImplementation(
-      function offsetWidth(this: HTMLElement) {
-        return this.classList.contains("xterm-char-measure-element") ? 7 : 354;
-      },
-    );
-    vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockImplementation(
-      function offsetHeight(this: HTMLElement) {
-        return this.classList.contains("xterm-char-measure-element") ? 14 : 504;
-      },
-    );
-    vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockImplementation(
-      function clientWidth(this: HTMLElement) {
-        return this.classList.contains("xterm-char-measure-element") ? 7 : 354;
-      },
-    );
-    vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockImplementation(
-      function clientHeight(this: HTMLElement) {
-        return this.classList.contains("xterm-char-measure-element") ? 14 : 504;
-      },
-    );
-    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
-      function getBoundingClientRect(this: HTMLElement) {
-        return new DOMRect(0, 0, this.clientWidth, this.clientHeight);
-      },
-    );
-    vi.spyOn(FitAddon.prototype, "proposeDimensions").mockImplementation(
-      function proposeDimensions() {
-        return { cols: 51, rows: 47 };
-      },
-    );
-    const markLayoutSettled =
-      TerminalWebSocketTransport.prototype.markLayoutSettled;
-    let resolveLayoutSettled!: () => void;
-    const layoutSettled = new Promise<void>((resolve) => {
-      resolveLayoutSettled = resolve;
-    });
-    vi.spyOn(
-      TerminalWebSocketTransport.prototype,
-      "markLayoutSettled",
-    ).mockImplementation(function (this: TerminalWebSocketTransport) {
-      markLayoutSettled.call(this);
-      resolveLayoutSettled();
-    });
-    let resolveSocketCreated!: () => void;
-    const socketCreated = new Promise<void>((resolve) => {
-      resolveSocketCreated = resolve;
-    });
-    testState.socketCreated = resolveSocketCreated;
-
-    render(
-      <MemoryRouter>
-        <AppCommandProvider>
-          <ThreadTerminalView
-            autoFocus={false}
-            isPanelOpen
-            session={makeTerminalSession({
-              id: "term_first_attach_font_metrics",
-              status: "running",
-              cols: 120,
-              rows: 36,
-            })}
-          />
-        </AppCommandProvider>
-      </MemoryRouter>,
-    );
-
-    await waitForReadiness(
-      socketCreated,
-      "socket was not created within 5000 ms",
-    );
-    const socket = testState.sockets[0]!;
-    await Promise.all([
-      waitForReadiness(socket.opened, "socket did not open within 5000 ms"),
-      waitForReadiness(layoutSettled, "layout did not settle within 5000 ms"),
-    ]);
-    vi.useFakeTimers({ shouldAdvanceTime: true });
-    const resizeFrames = () =>
-      testState.socketMessages
-        .map(
-          (message) =>
-            JSON.parse(message) as {
-              cols?: number;
-              rows?: number;
-              type?: string;
-            },
-        )
-        .filter((message) => message.type === "resize");
-    expect(resizeFrames()).toEqual([{ type: "resize", cols: 51, rows: 47 }]);
-    const session = makeTerminalSession({
-      id: "term_first_attach_font_metrics",
-      status: "running",
-      cols: 120,
-      rows: 36,
-    });
-    testState.sockets[0]?.receive({
-      type: "attached",
-      session,
-      replayStartSeq: 0,
-      nextSeq: 0,
-    });
-    expect(resizeFrames()).toEqual([{ type: "resize", cols: 51, rows: 47 }]);
-    await vi.advanceTimersByTimeAsync(REPAINT_RESTORE_DELAY_MS + 1);
-    expect(
-      testState.socketMessages
-        .map(
-          (message) =>
-            JSON.parse(message) as {
-              cols?: number;
-              rows?: number;
-              type?: string;
-            },
-        )
-        .filter((message) => message.type === "resize"),
-    ).toEqual([{ type: "resize", cols: 51, rows: 47 }]);
-
-    testState.sockets[0]?.disconnect();
-    await vi.advanceTimersByTimeAsync(100);
-    const reconnectedSocket = testState.sockets[1];
-    if (!reconnectedSocket) {
-      throw new Error("terminal socket was not recreated after disconnect");
-    }
-    await waitForReadiness(
-      reconnectedSocket.opened,
-      "reconnected socket did not open within 5000 ms",
-    );
-    reconnectedSocket.receive({
-      type: "attached",
-      session,
-      replayStartSeq: 0,
-      nextSeq: 0,
-    });
-    await vi.advanceTimersByTimeAsync(REPAINT_RESTORE_DELAY_MS + 1);
-    await waitForReadinessCondition(
-      () =>
-        expect(resizeFrames().slice(-2)).toEqual([
-          { type: "resize", cols: 50, rows: 47 },
-          { type: "resize", cols: 51, rows: 47 },
-        ]),
-      "reconnected terminal resize was not restored within 5000 ms",
-    );
-  }, 30_000);
 
   it("suppresses terminal-scoped shortcuts from the real xterm input", async () => {
     vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({

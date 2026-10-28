@@ -74,10 +74,7 @@ import {
 import { applyLoggedThreadLifecycleEvent } from "../services/threads/lifecycle-outcome.js";
 import { dropSettledThreadSessionOptionSelections } from "../services/threads/thread-session-options.js";
 import { applyTurnCompletedEvent } from "./turn-completed-events.js";
-import {
-  applyGeneratedThreadTitle,
-  sanitizeGeneratedTitle,
-} from "../services/threads/title-generation.js";
+import { generateFromProviderThreadName } from "../services/threads/title-generation.js";
 import {
   getInactiveSessionLogFields,
   requireAuthenticatedDaemonSession,
@@ -503,13 +500,10 @@ async function applyEventEffects(
 
       if (event.type === "thread/name/updated") {
         if (event.source === "agent") {
-          const title = sanitizeGeneratedTitle(event.threadName);
-          if (title !== null) {
-            applyGeneratedThreadTitle(deps, {
-              threadId: entry.threadId,
-              title,
-            });
-          }
+          void generateFromProviderThreadName(deps, {
+            threadId: entry.threadId,
+            title: event.threadName,
+          });
         }
         continue;
       }

@@ -2,6 +2,7 @@ import type { ThreadEvent } from "@bb/domain";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import {
+  pathExists,
   sanitizeInheritedChildProcessEnv,
   spawnManagedProcess,
   type ManagedProcess,
@@ -32,6 +33,15 @@ import type {
   AgentRuntimeProcessExitThreadState,
   AgentRuntimeSkillRoot,
 } from "./types.js";
+
+export class ProviderWorkspaceMissingError extends Error {
+  readonly code = "path_not_found";
+
+  constructor(readonly workspacePath: string) {
+    super(`Unmanaged workspace path does not exist: ${workspacePath}`);
+    this.name = "ProviderWorkspaceMissingError";
+  }
+}
 
 export interface RuntimeProviderProcess {
   adapter: BridgeProtocolAdapter;
@@ -133,7 +143,6 @@ interface AdoptProviderProcessArgs {
   bridgeLaunch: AgentRuntimeBridgeLaunch;
   capabilities: BridgeCapabilities;
   entry: BridgeWorkerRegistryEntry;
-  processKey: string;
   providerId: string;
   workerDir: string;
 }
@@ -177,6 +186,16 @@ export function isProviderProcessExitedError(
   return error instanceof ProviderProcessExitedError;
 }
 
+const ADOPTED_PROCESS_KEY_MARKER = "#adopted:";
+
+export function adoptedBridgeWorkerProcessKey(
+  entry: Pick<BridgeWorkerRegistryEntry, "id" | "processKey">,
+): string {
+  return entry.processKey.includes(ADOPTED_PROCESS_KEY_MARKER)
+    ? entry.processKey
+    : `${entry.processKey}${ADOPTED_PROCESS_KEY_MARKER}${entry.id}`;
+}
+
 export class RuntimeProviderProcessManager {
   private readonly args: RuntimeProviderProcessManagerArgs;
   private readonly processes = new Map<string, RuntimeProviderProcess>();
@@ -218,6 +237,9 @@ export class RuntimeProviderProcessManager {
     }
 
     const startPromise = (async () => {
+      if (!(await pathExists(this.args.workspacePath))) {
+        throw new ProviderWorkspaceMissingError(this.args.workspacePath);
+      }
       const adapter = this.getAdapter(args.providerId, args.bridgeLaunch);
       const providerProcess = this.spawnProvider({
         adapter,
@@ -503,16 +525,16 @@ export class RuntimeProviderProcessManager {
   adoptProviderProcess(args: AdoptProviderProcessArgs): RuntimeProviderProcess {
     const adapter = this.getAdapter(args.providerId, args.bridgeLaunch);
     adapter.adoptHandshake(args.capabilities);
-    this.currentProcessKeyByProviderId.set(args.providerId, args.processKey);
+    const processKey = adoptedBridgeWorkerProcessKey(args.entry);
     return this.attachProviderProcess({
       adapter,
       child: new SocketBridgeWorker({
         kind: "adopt",
-        entry: args.entry,
+        entry: { ...args.entry, processKey },
         workerDir: args.workerDir,
         connectTimeoutMs: BRIDGE_WORKER_CONNECT_TIMEOUT_MS,
       }),
-      processKey: args.processKey,
+      processKey,
       providerId: args.providerId,
     });
   }

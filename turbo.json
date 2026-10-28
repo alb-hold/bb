@@ -400,6 +400,7 @@
       // clean worktree must build that runtime before the server starts.
       "dependsOn": [
         "@bb/server#generate:bb-official-marketplace",
+        "@bb/server#generate:terminal-screen-worker",
         "@bb/templates#generate:templates",
         "@bb/plugin-build#generate",
         "@get-bb/plugin-sdk#build:runtime"
@@ -749,6 +750,7 @@
         "$TURBO_ROOT$/examples/plugins/echo-provider/*.ts",
         "$TURBO_ROOT$/examples/plugins/echo-provider/package.json",
         "$TURBO_ROOT$/examples/plugins/echo-provider/src/**",
+        "$TURBO_ROOT$/apps/cli/src/**",
         "$TURBO_ROOT$/vitest*.ts"
       ]
     },
@@ -1591,6 +1593,7 @@
       "dependsOn": [
         "//#ensure-native-modules",
         "@get-bb/plugin-sdk#build",
+        "bb-plugin-thread-list#prepare:bundled",
         "topo"
       ],
       "inputs": [

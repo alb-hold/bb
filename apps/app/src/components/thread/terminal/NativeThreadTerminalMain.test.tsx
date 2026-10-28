@@ -7,7 +7,14 @@ import { NativeThreadTerminalMain } from "./NativeThreadTerminalMain";
 
 const hooks = vi.hoisted(() => ({
   listTerminals: vi.fn(),
+  preloadTerminalPanel: vi.fn(),
   refetchNative: vi.fn(),
+}));
+
+vi.mock("@/components/secondary-panel/lazySecondaryPanelComponents", () => ({
+  LazyThreadTerminalPanel: Object.assign(() => null, {
+    preload: hooks.preloadTerminalPanel,
+  }),
 }));
 
 vi.mock("@/hooks/queries/thread-terminal-queries", () => ({
@@ -28,6 +35,12 @@ vi.mock("@/hooks/queries/thread-queries", () => ({
 
 vi.mock("@/hooks/useNativeActivityUnconfirmed", () => ({
   useNativeActivityUnconfirmed: () => false,
+  useNativeActivityNotice: () => ({
+    evidenceKind: "unknown",
+    lastToolCallAt: null,
+    now: 0,
+    unconfirmed: false,
+  }),
 }));
 
 vi.mock("@bb/shared-ui/hooks/use-media-query", () => ({
@@ -73,6 +86,7 @@ describe("NativeThreadTerminalMain", () => {
 
     expect(screen.getByRole("status").textContent).toBe("Loading terminals...");
     expect(screen.queryByText("Claude Code session ended")).toBeNull();
+    expect(hooks.preloadTerminalPanel).toHaveBeenCalledOnce();
   });
 
   it("shows the ended state only after the empty terminal list is known", () => {

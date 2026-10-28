@@ -21,6 +21,7 @@ import {
   listNonDeletedChildThreads,
   listSpendRollupRows,
   listThreadsWithPendingInteractionState,
+  buildThreadListEnrichmentScope,
   markThreadDeleted,
   listThreadDeletionTree,
   listPluginThreadMetadata,
@@ -110,6 +111,9 @@ import {
 import { emitPluginThreadDeleted } from "../../services/plugins/plugin-thread-events.js";
 import { NotificationBuffer } from "../../services/lib/notification-buffer.js";
 import { getActiveTurnId } from "../../services/threads/thread-events.js";
+import { reconcileNativeThreadStatus } from "../../services/threads/native-thread-status.js";
+
+const NATIVE_STATUS_LIST_LIMIT = 8;
 
 function parseThreadIncludes(query: ThreadGetQuery): Set<ThreadIncludeOption> {
   const includes = new Set<ThreadIncludeOption>();
@@ -236,6 +240,10 @@ function buildThreadSearchGroupResponse(
 ): ThreadSearchResultGroupResponse {
   const threadEntries = toThreadListEntryResponses(deps, {
     threads: args.group.results.map((result) => result.thread),
+    scope: {
+      kind: "ids",
+      ids: args.group.results.map((result) => result.thread.id),
+    },
   });
   const threadEntriesById = new Map(
     threadEntries.map((thread) => [thread.id, thread]),
@@ -341,7 +349,7 @@ export function registerThreadBaseRoutes(
     );
   });
 
-  get(routes.list, (context, query) => {
+  get(routes.list, async (context, query) => {
     const { limit, offset } = parsePaginationQuery({
       limit: query.limit,
       offset: query.offset,
@@ -367,7 +375,7 @@ export function registerThreadBaseRoutes(
       if (query.sectionId) {
         requireThreadSection(deps, query.sectionId);
       }
-      const threads = listThreadsWithPendingInteractionState(deps.db, {
+      const options = {
         ...(query.projectId ? { projectId: query.projectId } : {}),
         ...(query.environmentId ? { environmentId: query.environmentId } : {}),
         ...(query.hostId ? { hostId: query.hostId } : {}),
@@ -395,10 +403,22 @@ export function registerThreadBaseRoutes(
             : query.hasParent === "true",
         ...(limit !== undefined ? { limit } : {}),
         ...(offset !== undefined ? { offset } : {}),
+      };
+      const threads = listThreadsWithPendingInteractionState(deps.db, options);
+      void Promise.all(
+        threads
+          .slice(0, NATIVE_STATUS_LIST_LIMIT)
+          .map((thread) => reconcileNativeThreadStatus(deps, thread.id)),
+      ).catch((error) => {
+        deps.logger.debug(
+          { error },
+          "Native status list reconciliation failed",
+        );
       });
       return context.json(
         toThreadListEntryResponses(deps, {
           threads,
+          scope: buildThreadListEnrichmentScope(deps.db, options),
         }) satisfies ThreadListEntry[],
       );
     } finally {
@@ -505,8 +525,10 @@ export function registerThreadBaseRoutes(
     return context.json(toThreadResponseFromThread(deps, { thread }), 201);
   });
 
-  get(routes.get, (context, query) => {
-    const thread = requirePublicThread(deps.db, context.req.param("id"));
+  get(routes.get, async (context, query) => {
+    const threadId = context.req.param("id");
+    await reconcileNativeThreadStatus(deps, threadId);
+    const thread = requirePublicThread(deps.db, threadId);
     return context.json(
       buildThreadResponse(deps, {
         includes: parseThreadIncludes(query),

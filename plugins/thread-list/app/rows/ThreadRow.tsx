@@ -4,6 +4,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
@@ -30,6 +31,8 @@ import { cn } from "@/lib/utils";
 import { LIST_HOVER_TRANSITION } from "@/components/ui/motion";
 import {
   hasThreadListWorkingActivity,
+  nativeActivityGuidanceText,
+  nativeActivityNoticeText,
   resolveThreadListIndicator,
   resolveThreadStatus,
   threadListIndicatorStateForThread,
@@ -55,6 +58,7 @@ import {
   type PluginSidebarSplitPane,
   type PluginThreadActionsInlineItem,
   type PluginThreadActionsTriggerProps,
+  type PluginSidebarThread,
   type PluginSidebarThreadRowStatus,
   type PluginProvidersState,
 } from "@get-bb/plugin-sdk/app";
@@ -213,6 +217,20 @@ export const REORDER_PLACEMENT_CLASS: Record<SidebarReorderPlacement, string> =
 const HOVER_CAPABLE_ACTIONS_OVERLAY_CLASS =
   "[@media(hover:hover)]:absolute [@media(hover:hover)]:inset-y-0 [@media(hover:hover)]:right-1 [@media(hover:hover)]:z-30";
 
+const ROW_STATE_ACTIONS_OVERLAY_CLASS =
+  "[@media(hover:hover)]:absolute [@media(hover:hover)]:top-0 [@media(hover:hover)]:right-1 [@media(hover:hover)]:z-30";
+
+const ROW_STATE_ROW_HEIGHT_CLASS =
+  "min-h-(--bb-sidebar-row-height) max-md:pointer-coarse:min-h-(--bb-sidebar-row-height-coarse)";
+
+const ROW_STATE_COMPACT_ROW_HEIGHT_CLASS =
+  "min-h-7 max-md:pointer-coarse:min-h-9";
+
+const ROW_STATE_ACTIONS_HEIGHT_CLASS =
+  "h-(--bb-sidebar-row-height) max-md:pointer-coarse:h-(--bb-sidebar-row-height-coarse)";
+
+const ROW_STATE_COMPACT_ACTIONS_HEIGHT_CLASS = "h-7 max-md:pointer-coarse:h-9";
+
 function getHoverActionsInsetStyle(actionCount: number): CSSProperties {
   return {
     "--bb-sidebar-hover-actions-inset": `calc(var(--spacing) * ${7.5 * actionCount})`,
@@ -291,6 +309,8 @@ export function CollapsedThreadStatusGlyph({
     isBackgroundAgentActive: activity.backgroundAgent,
     isBackgroundCommandActive: activity.backgroundCommand,
     isGoalActive: activity.goal,
+    isActivityUnreported: false,
+    queuedFailedCount: 0,
     queuedWork: "none",
     isPlanModeActive: activity.planMode,
     isRuntimeActive: activity.runtimeWorking,
@@ -309,6 +329,8 @@ function ThreadTrailingIndicator({
   hideIdleDraftLabel,
   rowStatus,
   nativeActivityUnconfirmed,
+  nativeActivityNotice,
+  nativeActivityGuidance,
   automationStartedAt,
   elapsedMinutes,
 }: {
@@ -316,9 +338,12 @@ function ThreadTrailingIndicator({
   hideIdleDraftLabel: boolean;
   rowStatus: PluginSidebarThreadRowStatus | null;
   nativeActivityUnconfirmed: boolean;
+  nativeActivityNotice: string;
+  nativeActivityGuidance: string | null;
   automationStartedAt: number | null;
   elapsedMinutes: number | null;
 }) {
+  const guidanceId = useId();
   const resolvedState = {
     ...state,
     isAutomationWoken: automationStartedAt !== null,
@@ -345,17 +370,25 @@ function ThreadTrailingIndicator({
           ? `Woke${elapsedMinutes === null ? "" : ` ${elapsedMinutes}m`}`
           : indicatorKind === "done-unread"
             ? "Done"
-            : nativeActivityUnconfirmed
-              ? "Activity unconfirmed"
+            : indicatorKind === "activity-unreported"
+              ? nativeActivityNotice
               : null;
 
+  const activityNoticeApplies =
+    nativeActivityUnconfirmed &&
+    indicatorKind !== "needs-input" &&
+    indicatorKind !== "queued-failed";
+  const hasGuidance =
+    indicatorKind === "activity-unreported" && nativeActivityGuidance !== null;
   const indicator = (
     <span
+      aria-describedby={hasGuidance ? guidanceId : undefined}
       data-sidebar-thread-trailing-indicator=""
       data-sidebar-status-slot={statusText === null ? undefined : ""}
       className={cn(
         "inline-flex h-5 shrink-0 items-center gap-1.5 rounded-full px-1.5 font-medium text-xs",
         statusText !== null && "justify-end gap-1 whitespace-nowrap px-0",
+        statusText === null && "px-0",
         indicatorKind === "needs-input" && "text-destructive-text",
         indicatorKind === "working" && SIDEBAR_WORKING_STATUS_COLOR_CLASS,
         indicatorKind === "woke" && "text-warning",
@@ -365,36 +398,65 @@ function ThreadTrailingIndicator({
       )}
       role={statusText === null ? undefined : "img"}
       aria-label={statusText ?? undefined}
+      title={
+        statusText === null && activityNoticeApplies && !hasGuidance
+          ? nativeActivityNotice
+          : undefined
+      }
     >
       <ThreadStatusGlyph
         indicator={indicatorKind}
         rowStatus={rowStatus}
         hideIdleDraftLabel={hideIdleDraftLabel}
         hideAccessibleLabel={statusText !== null}
+        experimental_queuedFailedCount={state.queuedFailedCount}
       />
       {statusText === null ? null : (
         <span data-sidebar-status-full="" className="text-right">
           {statusText}
         </span>
       )}
-      {nativeActivityUnconfirmed && statusText !== "Activity unconfirmed" ? (
+      {activityNoticeApplies && indicatorKind !== "activity-unreported" ? (
         <span
           data-sidebar-native-activity-warning=""
-          className="text-muted-foreground"
+          className={statusText === null ? "sr-only" : "text-muted-foreground"}
           role="status"
         >
-          Activity unconfirmed
+          {nativeActivityNotice}
+        </span>
+      ) : null}
+      {hasGuidance ? (
+        <span
+          data-sidebar-native-activity-guidance=""
+          id={guidanceId}
+          className="sr-only"
+        >
+          {nativeActivityGuidance}
         </span>
       ) : null}
     </span>
   );
-  if (statusText === null) return indicator;
+  if (statusText === null && !hasGuidance) return indicator;
   return (
     <Tooltip>
       <TooltipTrigger asChild>{indicator}</TooltipTrigger>
-      <TooltipContent side="top">{statusText}</TooltipContent>
+      <TooltipContent side="top">
+        {[
+          statusText ?? nativeActivityNotice,
+          hasGuidance ? nativeActivityGuidance : null,
+        ]
+          .filter((text) => text !== null)
+          .join(". ")}
+      </TooltipContent>
     </Tooltip>
   );
+}
+
+function isNativeActivityNotConfirmed(
+  thread: Pick<PluginSidebarThread, "experimental_nativeActivity">,
+): boolean {
+  const activity = thread.experimental_nativeActivity;
+  return activity !== undefined && activity.confirmation !== "confirmed";
 }
 
 const ARCHIVED_ROW_ACTION_KEYS = ["bb--core/archive"];
@@ -649,6 +711,8 @@ function ThreadRowComponent({
     isGoalActive:
       threadStatus.isGoalActive || (hasHiddenChildren && childActivity.goal),
     queuedWork: threadStatus.queuedWork,
+    queuedFailedCount: threadStatus.queuedFailedCount,
+    isActivityUnreported: threadStatus.isActivityUnreported,
     isPlanModeActive:
       threadStatus.isPlanModeActive ||
       (hasHiddenChildren && childActivity.planMode),
@@ -674,7 +738,7 @@ function ThreadRowComponent({
   const hasVisibleStatus =
     trailingIndicatorKind !== "none" ||
     trailingIndicatorResolution.rowStatusIsVisible ||
-    thread.experimental_nativeActivity?.confirmation === "unconfirmed" ||
+    isNativeActivityNotConfirmed(thread) ||
     miniMap !== null ||
     automationStartedAt !== null;
   const splitIndicatorIsWorking = hasThreadListWorkingActivity(
@@ -696,15 +760,38 @@ function ThreadRowComponent({
     options.nestDrop?.setNodeRef,
   );
   const isActionsOpen = isDropdownActionsOpen || isContextActionsOpen;
+  const rowState = thread.experimental_rowState ?? null;
+  const rowProgress =
+    rowState !== null &&
+    rowState.progress !== null &&
+    rowState.progress.value > 0
+      ? rowState.progress
+      : null;
+  const hasRowState =
+    rowState !== null &&
+    (Object.keys(rowState.statuses).length > 0 || rowProgress !== null);
+  const rowFirstLineHeightClass = options.isCompact
+    ? ROW_STATE_COMPACT_ROW_HEIGHT_CLASS
+    : ROW_STATE_ROW_HEIGHT_CLASS;
+  const rowActionsOverlayClass = hasRowState
+    ? cn(
+        ROW_STATE_ACTIONS_OVERLAY_CLASS,
+        options.isCompact
+          ? ROW_STATE_COMPACT_ACTIONS_HEIGHT_CLASS
+          : ROW_STATE_ACTIONS_HEIGHT_CLASS,
+      )
+    : HOVER_CAPABLE_ACTIONS_OVERLAY_CLASS;
   const rowClassName = cn(
     SIDEBAR_HOVER_ACTIONS_ROW_CLASS,
     "group/thread-row cursor-pointer",
     SIDEBAR_ROW_BASE_CLASS,
     LIST_HOVER_TRANSITION,
     parentOptions?.stickyLevel === undefined && "relative",
-    options.isCompact
-      ? COARSE_POINTER_COMPACT_ROW_HEIGHT_CLASS
-      : COARSE_POINTER_ROW_HEIGHT_CLASS,
+    hasRowState
+      ? "flex-wrap"
+      : options.isCompact
+        ? COARSE_POINTER_COMPACT_ROW_HEIGHT_CLASS
+        : COARSE_POINTER_ROW_HEIGHT_CLASS,
     showActive
       ? SIDEBAR_ROW_SELECTED_STATE_CLASS
       : SIDEBAR_ROW_INTERACTIVE_STATE_CLASS,
@@ -775,6 +862,7 @@ function ThreadRowComponent({
       <span
         className={cn(
           "relative flex min-w-0 flex-1 items-center gap-1.5 self-stretch",
+          hasRowState && rowFirstLineHeightClass,
           hasVisibleStatus && "gap-1",
           !isActionsOpen &&
             "group-data-[sidebar-touch-armed=true]/thread-row:hidden",
@@ -953,10 +1041,11 @@ function ThreadRowComponent({
               ) : (
                 <ThreadTrailingIndicator
                   state={trailingIndicatorState}
-                  nativeActivityUnconfirmed={
-                    thread.experimental_nativeActivity?.confirmation ===
-                    "unconfirmed"
-                  }
+                  nativeActivityUnconfirmed={isNativeActivityNotConfirmed(
+                    thread,
+                  )}
+                  nativeActivityNotice={nativeActivityNoticeText(thread)}
+                  nativeActivityGuidance={nativeActivityGuidanceText(thread)}
                   automationStartedAt={automationStartedAt}
                   elapsedMinutes={elapsedMinutes}
                   hideIdleDraftLabel={
@@ -1021,7 +1110,7 @@ function ThreadRowComponent({
             className={cn(
               SIDEBAR_HOVER_ACTIONS_CLASS,
               "flex shrink-0 items-center justify-end gap-1",
-              HOVER_CAPABLE_ACTIONS_OVERLAY_CLASS,
+              rowActionsOverlayClass,
               isEditing && "invisible pointer-events-none",
             )}
           >
@@ -1049,14 +1138,12 @@ function ThreadRowComponent({
           </div>
         )}
       </span>
-      {thread.experimental_rowState &&
-      (Object.keys(thread.experimental_rowState.statuses).length > 0 ||
-        thread.experimental_rowState.progress !== null) ? (
+      {rowState !== null && hasRowState ? (
         <div
           data-sidebar-thread-row-state=""
-          className="pointer-events-none relative z-[1] flex min-w-0 flex-col gap-1 pl-6 pr-2 pb-1"
+          className="pointer-events-none relative z-[1] flex w-full min-w-0 basis-full flex-col gap-1 pl-6 pr-2 pb-1"
         >
-          {Object.entries(thread.experimental_rowState.statuses)
+          {Object.entries(rowState.statuses)
             .sort(
               ([, left], [, right]) =>
                 (right.priority ?? 0) - (left.priority ?? 0),
@@ -1067,43 +1154,37 @@ function ThreadRowComponent({
                 key={key}
                 data-sidebar-thread-status-chip={key}
                 title={`${key}: ${status.value}`}
-                className="max-w-full truncate rounded-sm bg-sidebar-accent px-1.5 py-0.5 font-medium text-xs text-sidebar-accent-foreground"
+                className="max-w-full self-start truncate rounded-sm bg-sidebar-accent px-1.5 py-0.5 font-medium text-xs text-sidebar-accent-foreground"
                 style={status.color ? { color: status.color } : undefined}
               >
                 {status.icon ? `${status.icon} ` : ""}
                 {status.value}
               </span>
             ))}
-          {Object.keys(thread.experimental_rowState.statuses).length > 2 ? (
+          {Object.keys(rowState.statuses).length > 2 ? (
             <span className="text-muted-foreground text-xs">
-              +{Object.keys(thread.experimental_rowState.statuses).length - 2}{" "}
-              more
+              +{Object.keys(rowState.statuses).length - 2} more
             </span>
           ) : null}
-          {thread.experimental_rowState.progress ? (
+          {rowProgress !== null ? (
             <div className="flex min-w-0 flex-col gap-0.5">
-              {thread.experimental_rowState.progress.label ? (
+              {rowProgress.label ? (
                 <span className="truncate text-muted-foreground text-xs">
-                  {thread.experimental_rowState.progress.label}
+                  {rowProgress.label}
                 </span>
               ) : null}
               <div
                 role="progressbar"
-                aria-label={
-                  thread.experimental_rowState.progress.label ??
-                  "Thread progress"
-                }
+                aria-label={rowProgress.label ?? "Thread progress"}
                 aria-valuemin={0}
                 aria-valuemax={100}
-                aria-valuenow={Math.round(
-                  thread.experimental_rowState.progress.value * 100,
-                )}
+                aria-valuenow={Math.round(rowProgress.value * 100)}
                 className="h-1 overflow-hidden rounded-full bg-sidebar-accent"
               >
                 <div
-                  className="h-full rounded-full bg-sidebar-primary transition-[width]"
+                  className="h-full rounded-full bg-timeline-accent transition-[width]"
                   style={{
-                    width: `${thread.experimental_rowState.progress.value * 100}%`,
+                    width: `${rowProgress.value * 100}%`,
                   }}
                 />
               </div>

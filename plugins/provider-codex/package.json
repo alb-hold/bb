@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./native-session": "./src/native-session.ts",
     "./pool-launch": "./src/pool-launch.ts"
   },
   "description": "Run bb threads with Codex.",

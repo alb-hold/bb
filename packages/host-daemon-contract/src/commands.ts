@@ -29,6 +29,8 @@ import {
   jsonObjectSchema,
   jsonValueSchema,
   providerNativeRootSetSchema,
+  providerNativeTerminalAssignedSessionSchema,
+  providerNativeTerminalSessionRootSchema,
   providerNativeRootsSchema,
   BRANCH_LIST_LIMIT_MAX,
   BRANCH_LIST_QUERY_MAX_LENGTH,
@@ -445,6 +447,33 @@ const hostReadFileIfNoneMatchSchema = z.discriminatedUnion("kind", [
 export type HostReadFileIfNoneMatch = z.infer<
   typeof hostReadFileIfNoneMatchSchema
 >;
+
+export const NATIVE_TRANSCRIPT_TAIL_MAX_BYTES = 64 * 1024;
+
+const nativeTranscriptTailCommandSchema = z
+  .object({
+    type: z.literal("native_terminal.read_transcript_tail"),
+    sessionId: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/u),
+    sessionRoot: providerNativeTerminalSessionRootSchema,
+    transcriptPattern:
+      providerNativeTerminalAssignedSessionSchema.shape.transcript,
+    cwd: z.string().min(1).max(4096),
+  })
+  .strict();
+
+const nativeTranscriptTailResultSchema = z.discriminatedUnion("outcome", [
+  z
+    .object({
+      outcome: z.literal("available"),
+      contentBase64: z
+        .string()
+        .max(4 * Math.ceil(NATIVE_TRANSCRIPT_TAIL_MAX_BYTES / 3)),
+      sizeBytes: z.number().int().nonnegative(),
+      truncated: z.boolean(),
+    })
+    .strict(),
+  z.object({ outcome: z.literal("missing") }).strict(),
+]);
 
 const hostReadFileCommandSchema = z
   .object({
@@ -1909,6 +1938,15 @@ export const hostDaemonCommandRegistry = {
     type: "host.list_branch_options",
     schema: hostListBranchOptionsCommandSchema,
     resultSchema: gitBranchOptionsSchema,
+    transport: "onlineRpc",
+    retryable: true,
+    flushEventsBeforeResult: false,
+    envLane: null,
+  }),
+  "native_terminal.read_transcript_tail": defineHostDaemonCommandDescriptor({
+    type: "native_terminal.read_transcript_tail",
+    schema: nativeTranscriptTailCommandSchema,
+    resultSchema: nativeTranscriptTailResultSchema,
     transport: "onlineRpc",
     retryable: true,
     flushEventsBeforeResult: false,

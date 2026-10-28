@@ -57,6 +57,7 @@ function threadEventKeepRecent(thread: {
 
 const BATCH_SIZE = 500;
 const LIVE_BATCH_SIZE = 3;
+const MAX_COLLAPSED_EMPTY_STEPS = 4;
 
 export function getNextThreadPruningPolicy(
   db: DbConnection,
@@ -318,26 +319,24 @@ function advanceThreadPruningTransaction(
               candidateIds: rows.map((row) => row.id),
             };
             const relevantIds = rows.map((row) => row.id);
-            const bytesQuery = sql`SELECT COALESCE(SUM(octet_length(data)), 0) AS bytes FROM events WHERE ${inArray(events.id, relevantIds)} AND ${events.type} = ${type}`;
-            const before =
-              relevantIds.length === 0 ||
-              threadScope !== undefined ||
-              (policy === "usage" && (cursor.step === 0 || cursor.step === 2))
-                ? 0
-                : (tx.get<{ bytes: number }>(bytesQuery)?.bytes ?? 0);
             if (policy === "turn-diffs") {
-              removed = tx
+              const deletedRows = tx
                 .delete(events)
                 .where(
                   and(
-                    inArray(
-                      events.id,
-                      rows.map((row) => row.id),
-                    ),
+                    inArray(events.id, relevantIds),
                     isBeforeLatestThreadEvent(threadId),
                   ),
                 )
-                .run().changes;
+                .returning({
+                  bytes: sql<number>`octet_length(${events.data})`,
+                })
+                .all();
+              removed = deletedRows.length;
+              removedBytes = deletedRows.reduce(
+                (sum, row) => sum + row.bytes,
+                0,
+              );
             } else {
               const args = {
                 ...window,
@@ -374,21 +373,16 @@ function advanceThreadPruningTransaction(
                   break;
                 }
                 case 1:
-                  removed = pruneContextWindowUsageEventsInTransaction(
-                    tx,
-                    args,
-                  );
+                  ({ removed, removedBytes } =
+                    pruneContextWindowUsageEventsInTransaction(tx, args));
                   break;
                 case 3:
-                  removed = pruneTokenUsageEventsInTransaction(tx, args);
+                  ({ removed, removedBytes } =
+                    pruneTokenUsageEventsInTransaction(tx, args));
                   break;
                 default:
                   throw new Error("Invalid usage pruning step");
               }
-            }
-            if (removed > 0) {
-              const after = tx.get<{ bytes: number }>(bytesQuery)?.bytes ?? 0;
-              removedBytes = before - after;
             }
             cursor.sequence = throughSequence;
           }
@@ -481,7 +475,16 @@ export function advanceThreadPruning(
         ? target
         : getNextThreadPruningPolicy(db, new Set(), target.threadId);
     if (policy === null) throw new Error("Missing live pruning policy");
-    return advanceThreadPruningTransaction(db, policy, threadScope);
+    let result = advanceThreadPruningTransaction(db, policy, threadScope);
+    for (
+      let collapsed = 0;
+      collapsed < MAX_COLLAPSED_EMPTY_STEPS &&
+      result.action === "advanced" &&
+      result.scanned === 0;
+      collapsed += 1
+    )
+      result = advanceThreadPruningTransaction(db, policy, threadScope);
+    return result;
   } finally {
     db.$client.pragma(`busy_timeout = ${timeout}`);
   }

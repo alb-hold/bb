@@ -81,6 +81,7 @@ import {
   getLastProviderThreadId,
   requireDispatchableProviderThreadId,
 } from "./thread-events.js";
+import { describeMissingWorkspace } from "./missing-workspace.js";
 import {
   applyLoggedThreadLifecycleEvent,
   applyLoggedThreadLifecycleEventInTransaction,
@@ -788,6 +789,11 @@ function settleThreadCommandFailure(
   if (hasTerminalClientTurnRequestEvent(args.deps, args.command)) {
     return emptyCommandResultSideEffects();
   }
+  const missingWorkspaceMessage = describeMissingWorkspace(args.deps.db, {
+    environmentId: thread.environmentId,
+    errorCode: args.report.errorCode,
+    errorMessage: args.report.errorMessage,
+  });
   if (args.command.type === "turn.submit") {
     appendThreadEventInTransaction(args.deps.db, {
       threadId: thread.id,
@@ -797,7 +803,7 @@ function settleThreadCommandFailure(
       data: {
         requestId: args.command.requestId,
         reason: args.report.errorCode,
-        message: args.report.errorMessage,
+        message: missingWorkspaceMessage ?? args.report.errorMessage,
       },
     });
     if (
@@ -814,7 +820,7 @@ function settleThreadCommandFailure(
     threadId: thread.id,
     environmentId: thread.environmentId,
     code: "thread_command_failed",
-    message: `Command ${args.report.type} failed`,
+    message: missingWorkspaceMessage ?? `Command ${args.report.type} failed`,
     detail: args.report.errorMessage,
     scope: getThreadFailureCommandErrorScope(args.command),
   });

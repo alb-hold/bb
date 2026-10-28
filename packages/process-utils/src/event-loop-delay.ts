@@ -4,6 +4,7 @@ interface EventLoopStall {
   intervalMs: number;
   maxDelayMs: number;
   rawMaxDelayMs: number;
+  timerLagMs: number;
   meanDelayMs: number;
   p99DelayMs: number;
   resolutionMs: number;
@@ -13,7 +14,19 @@ interface EventLoopStall {
 interface StartEventLoopDelaySamplerArgs {
   thresholdMs?: number | (() => number);
   now?: () => number;
+  histogram?: EventLoopDelayHistogram;
+  intervalMs?: number;
+  defer?: (callback: () => void) => void;
   onSample: (sample: { stall: EventLoopStall | null }) => void;
+}
+
+interface EventLoopDelayHistogram {
+  disable: () => void;
+  enable: () => void;
+  max: number;
+  mean: number;
+  percentile: (percentile: number) => number;
+  reset: () => void;
 }
 
 interface EventLoopDelaySampler {
@@ -44,50 +57,59 @@ export function isLikelySystemSuspensionDelay(args: {
 export function startEventLoopDelaySampler(
   args: StartEventLoopDelaySamplerArgs,
 ): EventLoopDelaySampler {
-  const now = args.now ?? (() => Date.now());
-  const histogram = monitorEventLoopDelay({
-    resolution: EVENT_LOOP_DELAY_RESOLUTION_MS,
-  });
+  const now = args.now ?? (() => performance.now());
+  const intervalMs = args.intervalMs ?? EVENT_LOOP_DELAY_SAMPLE_INTERVAL_MS;
+  const defer = args.defer ?? ((callback) => setImmediate(callback));
+  const histogram =
+    args.histogram ??
+    monitorEventLoopDelay({ resolution: EVENT_LOOP_DELAY_RESOLUTION_MS });
   histogram.enable();
   let lastSampleAt = now();
+  let stopped = false;
 
   const interval = setInterval(() => {
     const sampledAt = now();
     const gapMs = sampledAt - lastSampleAt;
     lastSampleAt = sampledAt;
-    const maxDelayMs = nanosecondsToMilliseconds(histogram.max);
+    const timerLagMs = Math.max(0, gapMs - intervalMs);
     const thresholdMs =
       typeof args.thresholdMs === "function"
         ? args.thresholdMs()
         : (args.thresholdMs ?? EVENT_LOOP_STALL_THRESHOLD_MS);
-    const stalled =
-      !isLikelySystemSuspensionDelay({
-        gapMs,
-        intervalMs: EVENT_LOOP_DELAY_SAMPLE_INTERVAL_MS,
-      }) && maxDelayMs >= thresholdMs;
-    args.onSample({
-      stall: stalled
-        ? {
-            intervalMs: EVENT_LOOP_DELAY_SAMPLE_INTERVAL_MS,
-            maxDelayMs: roundDurationMs(maxDelayMs),
-            rawMaxDelayMs: maxDelayMs,
-            meanDelayMs: roundDurationMs(
-              nanosecondsToMilliseconds(histogram.mean),
-            ),
-            p99DelayMs: roundDurationMs(
-              nanosecondsToMilliseconds(histogram.percentile(99)),
-            ),
-            resolutionMs: EVENT_LOOP_DELAY_RESOLUTION_MS,
-            thresholdMs,
-          }
-        : null,
-    });
-    histogram.reset();
-  }, EVENT_LOOP_DELAY_SAMPLE_INTERVAL_MS);
+    const suspended = isLikelySystemSuspensionDelay({ gapMs, intervalMs });
+    const readAndReport = () => {
+      if (stopped) return;
+      const histogramMaxDelayMs = nanosecondsToMilliseconds(histogram.max);
+      const maxDelayMs = Math.max(histogramMaxDelayMs, timerLagMs);
+      const stalled = !suspended && maxDelayMs >= thresholdMs;
+      args.onSample({
+        stall: stalled
+          ? {
+              intervalMs,
+              maxDelayMs: roundDurationMs(maxDelayMs),
+              rawMaxDelayMs: maxDelayMs,
+              timerLagMs: roundDurationMs(timerLagMs),
+              meanDelayMs: roundDurationMs(
+                nanosecondsToMilliseconds(histogram.mean),
+              ),
+              p99DelayMs: roundDurationMs(
+                nanosecondsToMilliseconds(histogram.percentile(99)),
+              ),
+              resolutionMs: EVENT_LOOP_DELAY_RESOLUTION_MS,
+              thresholdMs,
+            }
+          : null,
+      });
+      histogram.reset();
+    };
+    if (!suspended && timerLagMs >= thresholdMs) defer(readAndReport);
+    else readAndReport();
+  }, intervalMs);
   interval.unref();
 
   return {
     stop: () => {
+      stopped = true;
       clearInterval(interval);
       histogram.disable();
     },

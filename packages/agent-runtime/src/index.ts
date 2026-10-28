@@ -1,4 +1,5 @@
 export { CompetingTurnError, createAgentRuntime } from "./runtime.js";
+export { ProviderWorkspaceMissingError } from "./runtime-provider-process.js";
 export { bridgeLaunchProcessKey } from "./bridge-launch-process-key.js";
 export type { BridgeLineDelivery } from "./bridge-line-ack-tracker.js";
 export {

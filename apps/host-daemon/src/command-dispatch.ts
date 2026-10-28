@@ -8,6 +8,7 @@ import {
   inspectEnvironmentCleanup,
 } from "./command-handlers/environment-hook.js";
 import {
+  TERMINAL_DATA_PLANE_PROBE_IPC_VERSION,
   providerCliInstallEventSchema,
   type DesktopBrowserCommand,
   type DesktopBrowserResult,
@@ -20,7 +21,10 @@ import {
   type ProviderCliInstallEvent,
   type WorkspaceResolutionFailure,
 } from "@bb/host-daemon-contract";
-import type { AgentRuntimeBridgeLaunch } from "@bb/agent-runtime";
+import {
+  ProviderWorkspaceMissingError,
+  type AgentRuntimeBridgeLaunch,
+} from "@bb/agent-runtime";
 import semver from "semver";
 import {
   ExpectedCommandDispatchError,
@@ -46,6 +50,7 @@ import {
   listHostSkills,
   writeHostSkill,
 } from "./command-handlers/list-skills.js";
+import { readTranscriptTail } from "./command-handlers/native-transcript.js";
 import {
   browseHostDirectory,
   checkHostPathsExist,
@@ -131,7 +136,9 @@ async function stopThreadRuntime(
         timeoutMs: THREAD_STOP_ACTIVE_TURN_WAIT_MS,
       });
     }
-    const result = await entry.runtime.stopThread({ threadId: command.threadId });
+    const result = await entry.runtime.stopThread({
+      threadId: command.threadId,
+    });
     providerCheckpointId = result.providerCheckpointId ?? providerCheckpointId;
   }
   await options.eventSink.flush();
@@ -159,7 +166,10 @@ type OnlineRpcHandlerMap = {
 };
 
 function throwExpectedWorkspacePathNotFoundOrRethrow(error: unknown): never {
-  if (error instanceof WorkspaceError && error.code === "path_not_found") {
+  if (
+    (error instanceof WorkspaceError && error.code === "path_not_found") ||
+    error instanceof ProviderWorkspaceMissingError
+  ) {
     throw new ExpectedCommandDispatchError(error.code, error.message);
   }
   throw error;
@@ -651,13 +661,17 @@ const onlineRpcHandlers: OnlineRpcHandlerMap = {
     readGlobalSkillsStatus(command, {}),
   "host.inspect_git_source": inspectHostGitSource,
   "host.list_branch_options": listHostBranchOptions,
+  "native_terminal.read_transcript_tail": (command, options) =>
+    readTranscriptTail(command, {
+      shellEnv: options.runtimeManager.getShellEnv(),
+    }),
   "host.read_file": readHostFile,
   "host.read_file_chunk": readHostFileChunk,
   "host.read_file_relative": readHostRelativeFile,
   "host.write_file": writeHostFile,
   "terminal-data-plane.probe": async (_command, options) => ({
     dataSocket: options.terminalDataSocket !== undefined,
-    ipcVersion: 1,
+    ipcVersion: TERMINAL_DATA_PLANE_PROBE_IPC_VERSION,
   }),
   "terminal-data-plane.connect": async (command, options) => ({
     connected:

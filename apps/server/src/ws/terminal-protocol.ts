@@ -11,6 +11,7 @@ type TerminalProtocolDeps = Pick<AppDeps, "terminalSessions">;
 
 interface TerminalSocket {
   close(code?: number, reason?: string): void;
+  protocol?: string | null;
   send(data: string): void;
 }
 
@@ -18,6 +19,7 @@ interface TerminalSocketOpenArgs {
   handoffOwnerToken?: string;
   outputAcks: boolean;
   resizeAcks: boolean;
+  resizeSeqEcho?: boolean;
   socket: TerminalSocket;
   sinceSeq: number;
   terminalId: string;
@@ -88,6 +90,7 @@ export function onTerminalSocketOpen(
       handoffOwnerToken: args.handoffOwnerToken,
       outputAcks: args.outputAcks,
       resizeAcks: args.resizeAcks,
+      resizeSeqEcho: args.resizeSeqEcho,
       socket: args.socket,
       sinceSeq: args.sinceSeq,
       terminalId: args.terminalId,

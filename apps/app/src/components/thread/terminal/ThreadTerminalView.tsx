@@ -44,6 +44,8 @@ import { TimelineSelectionMenu } from "@/components/thread/timeline/TimelineSele
 import { buildTerminalWebSocketUrl } from "./terminal-websocket-url";
 import {
   importTerminalModules,
+  importTerminalSearchAddon,
+  importTerminalWebLinksAddon,
   importTerminalWebglAddon,
 } from "./terminal-modules";
 import { TerminalWebSocketTransport } from "@bb/client-core";
@@ -115,6 +117,7 @@ import {
   registerTerminalOsc52Handler,
   terminalPromptLine,
 } from "./terminal-shell-state";
+import { parseTerminalProgressOsc } from "./terminal-progress";
 import { createTerminalOutputPipeline } from "./terminal-output-pipeline";
 import {
   mountTerminalReplayPreview,
@@ -493,6 +496,7 @@ interface ThreadTerminalViewProps {
   onSelectionAddToChat?: (text: string) => void;
   onSessionChange?: (session: TerminalSession) => void;
   onTitleChange?: TerminalTitleChangeHandler;
+  onProgressChange?: (progress: number | null) => void;
   onCwdChange?: (cwd: string) => void;
   onUserInput?: () => void;
   session: TerminalSession;
@@ -528,6 +532,7 @@ interface TerminalOutputWriteArgs {
   isReplay: boolean;
   terminalId?: string;
   outputSequence?: number;
+  replayCheckpointSequence?: number | null;
   outputBoundaryToken?: string;
   onOutputParsed?: () => void;
   onParsed: () => void;
@@ -595,8 +600,10 @@ interface HandleTerminalServerMessageArgs {
     ReturnType<typeof createTerminalOutputPipeline>,
     "push"
   >;
+  replayCheckpointSequence?: number | null;
   allowAttachedGrid?: boolean;
   onReplayStart?: (session: TerminalSession) => void;
+  shouldProcessOutput?: () => boolean;
 }
 
 function encodeBytesBase64(bytes: Uint8Array): string {
@@ -968,6 +975,7 @@ export function writeTerminalOutput({
   terminal,
   pipeline,
   replayPipeline,
+  replayCheckpointSequence,
 }: TerminalOutputWriteArgs): void {
   const sourceBytes =
     typeof data === "string" ? new TextEncoder().encode(data) : data;
@@ -988,7 +996,17 @@ export function writeTerminalOutput({
     write(() => {
       recordTerminalOutputParsed(terminalId, frameId, performance.now());
       onOutputParsed?.();
-      onParsed();
+      if (
+        replayCheckpointSequence !== null &&
+        replayCheckpointSequence !== undefined &&
+        outputSequence !== undefined &&
+        outputSequence >= replayCheckpointSequence &&
+        replayPipeline
+      ) {
+        replayPipeline.push(sourceBytes, onParsed);
+      } else {
+        onParsed();
+      }
     }, true);
     return;
   }
@@ -996,6 +1014,18 @@ export function writeTerminalOutput({
   replayWriteState.suppressedWriteCount += 1;
   write(() => {
     if (!replayPipeline) {
+      replayWriteState.suppressedWriteCount -= 1;
+      recordTerminalOutputParsed(terminalId, frameId, performance.now());
+      onOutputParsed?.();
+      onParsed();
+      return;
+    }
+    if (
+      replayCheckpointSequence !== null &&
+      replayCheckpointSequence !== undefined &&
+      outputSequence !== undefined &&
+      outputSequence < replayCheckpointSequence
+    ) {
       replayWriteState.suppressedWriteCount -= 1;
       recordTerminalOutputParsed(terminalId, frameId, performance.now());
       onOutputParsed?.();
@@ -1029,9 +1059,14 @@ export function handleTerminalServerMessage({
   terminal,
   pipeline,
   replayPipeline,
+  replayCheckpointSequence,
   allowAttachedGrid = true,
   onReplayStart,
+  shouldProcessOutput,
 }: HandleTerminalServerMessageArgs): void {
+  if (message.type === "output" && shouldProcessOutput?.() === false) {
+    return;
+  }
   switch (message.type) {
     case "attached":
       if (message.replayStartSeq < message.nextSeq) {
@@ -1080,6 +1115,7 @@ export function handleTerminalServerMessage({
         terminal,
         pipeline,
         replayPipeline,
+        replayCheckpointSequence,
         outputSequence: message.chunk.seq,
         outputBoundaryToken,
       });
@@ -1112,6 +1148,7 @@ export function ThreadTerminalView({
   onSelectionAddToChat,
   onSessionChange,
   onTitleChange,
+  onProgressChange,
   onCwdChange,
   onUserInput,
   session,
@@ -1204,6 +1241,7 @@ export function ThreadTerminalView({
   const onTitleChangeRef = useRef<TerminalTitleChangeHandler | undefined>(
     onTitleChange,
   );
+  const onProgressChangeRef = useRef(onProgressChange);
   const onCwdChangeRef = useRef(onCwdChange);
   const onUserInputRef = useRef<(() => void) | undefined>(onUserInput);
   const onAutoFocusHandledRef = useRef<(() => void) | undefined>(
@@ -1211,10 +1249,13 @@ export function ThreadTerminalView({
   );
   const autoFocusRef = useRef(autoFocus);
   const isPanelOpenRef = useRef(isPanelOpen);
+  const previousPanelOpenRef = useRef(isPanelOpen);
+  const reportDocumentVisibilityRef = useRef<(() => void) | null>(null);
   const sessionStatusRef = useRef<TerminalSession["status"]>(session.status);
   const sessionRef = useRef(session);
   const lastStatusNoticeRef = useRef<TerminalSessionStatusNotice | null>(null);
   const scheduleFitRef = useRef<TerminalFitScheduler | null>(null);
+  const terminalVisibilityReporterRef = useRef<(() => void) | null>(null);
   const systemConfig = useSystemConfig();
   const copyOnSelectRef = useRef(false);
   copyOnSelectRef.current =
@@ -1248,6 +1289,7 @@ export function ThreadTerminalView({
   onOpenLinkRef.current = effectiveOnOpenLink;
   onSessionChangeRef.current = onSessionChange;
   onTitleChangeRef.current = onTitleChange;
+  onProgressChangeRef.current = onProgressChange;
   onCwdChangeRef.current = onCwdChange;
   onUserInputRef.current = onUserInput;
 
@@ -1513,6 +1555,7 @@ export function ThreadTerminalView({
     let terminalKeyDisposable: { dispose: () => void } | null = null;
     let terminalInputForwarding: { dispose: () => void } | null = null;
     let shellOscDisposable: { dispose: () => void } | null = null;
+    let terminalProgressDisposable: { dispose: () => void } | null = null;
     let osc52Disposable: { dispose: () => void } | null = null;
     let outputBoundaryDisposable: { dispose: () => void } | null = null;
     let stopObservingFonts: (() => void) | null = null;
@@ -1588,6 +1631,7 @@ export function ThreadTerminalView({
     let sharedSize: TerminalGridSize | null = null;
     let markerGridActive = false;
     let replayCompleted = false;
+    let replayCheckpointSequence: number | null = null;
     let localFitGrid: TerminalGridSize | null = null;
     let latestPtyGrid: TerminalGridSize = {
       cols: sessionRef.current.cols,
@@ -1600,7 +1644,9 @@ export function ThreadTerminalView({
       dispose(): void;
       resize(cols: number, rows: number): Promise<void>;
       setFitGrid(cols: number, rows: number): void;
+      setLatestPtyGrid(cols: number, rows: number): void;
       setPtyGrid(cols: number, rows: number): void;
+      processExited(): void;
       push(bytes: Uint8Array, callback: () => void): void;
     } | null = null;
     let outputPipeline: ReturnType<typeof createTerminalOutputPipeline> | null =
@@ -1608,6 +1654,9 @@ export function ThreadTerminalView({
     let containerHasSize = hasVisibleTerminalSize({
       containerElement: container,
     });
+    let terminalVisible: boolean | null = null;
+    let hasReceivedInitialAttach = false;
+    let lastParsedOutputNextSeq = 0;
     const reportDocumentVisibility = () => {
       if (
         document.visibilityState !== "visible" ||
@@ -1616,10 +1665,21 @@ export function ThreadTerminalView({
       ) {
         cancelTerminalOutputNextRenders(session.id);
       }
-      transport?.setVisible(
-        document.visibilityState === "visible" && containerHasSize,
-      );
+      const nextVisible =
+        document.visibilityState === "visible" &&
+        containerHasSize &&
+        isPanelOpenRef.current;
+      if (transport === null) return;
+      const wasVisible = terminalVisible;
+      if (wasVisible === nextVisible) return;
+      terminalVisible = nextVisible;
+      transport?.setVisible(nextVisible);
+      if (wasVisible === false && nextVisible && hasReceivedInitialAttach) {
+        transport?.replayOutputFrom(lastParsedOutputNextSeq);
+      }
     };
+    terminalVisibilityReporterRef.current = reportDocumentVisibility;
+    reportDocumentVisibilityRef.current = reportDocumentVisibility;
 
     let liveBottomBeforeGridResize = false;
     let liveBottomResizeClearFrame: number | null = null;
@@ -1690,20 +1750,8 @@ export function ThreadTerminalView({
         }
       };
       const requiredModulesPromise = importTerminalModules();
-      const webglAddonModulePromise = loadOptionalTerminalWebglAddon(
-        importTerminalWebglAddon,
-      );
-      const searchAddonModulePromise = loadOptionalTerminalSearchAddon(
-        () => import("@xterm/addon-search"),
-      );
-      const [
-        { Terminal },
-        { FitAddon: LoadedFitAddon },
-        { WebLinksAddon },
-        { Unicode11Addon },
-      ] = await requiredModulesPromise;
-      const webglAddonModule = await webglAddonModulePromise;
-      const searchAddonModule = await searchAddonModulePromise;
+      const [{ Terminal }, { FitAddon: LoadedFitAddon }, { Unicode11Addon }] =
+        await requiredModulesPromise;
       if (disposed) {
         return;
       }
@@ -1727,6 +1775,15 @@ export function ThreadTerminalView({
         scrollback: 10_000,
         theme: buildTerminalTheme(),
       });
+      terminalProgressDisposable = terminal.parser.registerOscHandler(
+        9,
+        (payload) => {
+          const progress = parseTerminalProgressOsc(payload);
+          if (progress === undefined) return false;
+          onProgressChangeRef.current?.(progress);
+          return true;
+        },
+      );
       terminalRenderSubscription = terminal.onRender(() => {
         if (
           document.visibilityState === "visible" &&
@@ -1812,25 +1869,61 @@ export function ThreadTerminalView({
       terminal.loadAddon(fitAddon);
       terminal.loadAddon(new Unicode11Addon());
       terminal.unicode.activeVersion = TERMINAL_UNICODE_VERSION;
-      terminal.loadAddon(
-        new WebLinksAddon(
-          (event, uri) => {
-            if (event.button !== 0) {
-              return;
-            }
-            requestOpenTerminalLink({ source: "detected-url", uri });
-          },
-          {
-            hover: (_event, uri) => {
-              updateHoveredTerminalLink({ source: "detected-url", uri });
-            },
-            leave: () => {
-              updateHoveredTerminalLink(null);
-            },
-          },
-        ),
-      );
       terminal.open(containerElement);
+      void loadOptionalTerminalSearchAddon(importTerminalSearchAddon)
+        .then((searchAddonModule) => {
+          if (disposed || searchAddonModule === null || terminal === null) {
+            return;
+          }
+          try {
+            const searchAddon = new searchAddonModule.SearchAddon();
+            terminal.loadAddon(searchAddon);
+            setTerminalSearchAddon(searchAddon);
+          } catch {
+            setTerminalSearchAddon(null);
+          }
+        })
+        .catch(() => undefined);
+      void importTerminalWebLinksAddon()
+        .then(({ WebLinksAddon }) => {
+          if (disposed || terminal === null) return;
+          try {
+            terminal.loadAddon(
+              new WebLinksAddon(
+                (event, uri) => {
+                  if (event.button !== 0) return;
+                  requestOpenTerminalLink({ source: "detected-url", uri });
+                },
+                {
+                  hover: (_event, uri) => {
+                    updateHoveredTerminalLink({ source: "detected-url", uri });
+                  },
+                  leave: () => updateHoveredTerminalLink(null),
+                },
+              ),
+            );
+          } catch {
+            return;
+          }
+        })
+        .catch(() => undefined);
+      void loadOptionalTerminalWebglAddon(importTerminalWebglAddon)
+        .then((webglAddonModule) => {
+          if (disposed || webglAddonModule === null || terminal === null) {
+            return;
+          }
+          webglRenderer = loadTerminalWebglRenderer(
+            terminal,
+            () => new webglAddonModule.WebglAddon(),
+            { root: containerElement, visible: false },
+          );
+          webglVisibilityRef.current = observeTerminalWebglVisibility({
+            root: containerElement,
+            renderer: webglRenderer,
+            isPanelOpen: () => isPanelOpenRef.current,
+          });
+        })
+        .catch(() => undefined);
       viewportLineAnchor = createTerminalViewportLineAnchor(terminal);
       outputLineAnchorTracker.reset();
       const outputBoundaryToken = randomUuid();
@@ -1990,24 +2083,7 @@ export function ThreadTerminalView({
       }
       containerElement.dataset.renderGridCols = String(terminal.cols);
       containerElement.dataset.renderGridRows = String(terminal.rows);
-      if (searchAddonModule !== null) {
-        const searchAddon = new searchAddonModule.SearchAddon();
-        terminal.loadAddon(searchAddon);
-        setTerminalSearchAddon(searchAddon);
-      }
       attachTerminalWheelLines(terminal);
-      if (webglAddonModule !== null) {
-        webglRenderer = loadTerminalWebglRenderer(
-          terminal,
-          () => new webglAddonModule.WebglAddon(),
-          { root: containerElement, visible: false },
-        );
-        webglVisibilityRef.current = observeTerminalWebglVisibility({
-          root: containerElement,
-          renderer: webglRenderer,
-          isPanelOpen: () => isPanelOpenRef.current,
-        });
-      }
       if (sessionRef.current.status !== "exited") {
         writeTerminalSessionStatusNotice({
           lastNotice: lastStatusNoticeRef,
@@ -2174,10 +2250,16 @@ export function ThreadTerminalView({
             message.type === "attached" ||
             message.type === "session-updated"
           ) {
+            if (message.type === "attached") {
+              hasReceivedInitialAttach = true;
+            }
             const { cols, rows } = message.session;
             const isOwnNudgeEcho =
               message.type === "session-updated" &&
-              activeTransport.consumeRepaintNudgeEcho({ cols, rows });
+              activeTransport.consumeRepaintNudgeEcho(
+                { cols, rows },
+                message.resizeSeq,
+              );
             latestPtyGrid = { cols, rows };
             updateGridVisibility();
             const nextSize = nextSharedTerminalSize(
@@ -2191,6 +2273,9 @@ export function ThreadTerminalView({
               scheduleFit();
             } else {
               replayPreview?.resize(cols, rows);
+            }
+            if (message.session.status === "exited") {
+              replayPreview?.processExited();
             }
             if (message.type === "session-updated" && !markerGridActive) {
               if (outputPipeline) {
@@ -2210,7 +2295,13 @@ export function ThreadTerminalView({
           }
           handleTerminalServerMessage({
             acknowledgeOutput: (nextSeq) =>
-              activeTransport.acknowledgeOutput(nextSeq),
+              {
+                lastParsedOutputNextSeq = Math.max(
+                  lastParsedOutputNextSeq,
+                  nextSeq,
+                );
+                activeTransport.acknowledgeOutput(nextSeq);
+              },
             message,
             terminalId: session.id,
             onOutputFrameParsed: () => {
@@ -2261,26 +2352,32 @@ export function ThreadTerminalView({
             outputFrameId: currentOutputFrameId ?? undefined,
             onReplayStart: () => {
               viewportReplaySaveGate.beginReplay();
-              replayPreview?.dispose();
               replayCompleted = false;
-              const replayGrid = latestPtyGrid;
-              const previewTerminal = new Terminal({
-                cols: replayGrid.cols,
-                rows: replayGrid.rows,
-                fontFamily: readTerminalFontFamily(),
-                fontSize: 12,
-                theme: buildTerminalTheme(),
-              });
-              replayPreview = mountTerminalReplayPreview({
-                container: containerElement,
-                initialFitGrid: localFitGrid,
-                isOwner: () =>
-                  terminalInputClaimed &&
-                  document.hasFocus() &&
-                  activeTerminal.element?.contains(document.activeElement) ===
-                    true,
-                terminal: previewTerminal,
-              });
+              if (replayCheckpointSequence === null || replayPreview === null) {
+                replayPreview?.dispose();
+                const replayGrid = latestPtyGrid;
+                const previewTerminal = new Terminal({
+                  allowProposedApi: TERMINAL_ALLOW_PROPOSED_API,
+                  cols: replayGrid.cols,
+                  rows: replayGrid.rows,
+                  fontFamily: readTerminalFontFamily(),
+                  fontSize: 12,
+                  theme: buildTerminalTheme(),
+                });
+                previewTerminal.loadAddon(new Unicode11Addon());
+                previewTerminal.unicode.activeVersion =
+                  TERMINAL_UNICODE_VERSION;
+                replayPreview = mountTerminalReplayPreview({
+                  container: containerElement,
+                  initialFitGrid: localFitGrid,
+                  isOwner: () =>
+                    terminalInputClaimed &&
+                    document.hasFocus() &&
+                    activeTerminal.element?.contains(document.activeElement) ===
+                      true,
+                  terminal: previewTerminal,
+                });
+              }
             },
             setReplayNextSeq: (nextSeq) => {
               replayNextSeq = nextSeq;
@@ -2298,14 +2395,20 @@ export function ThreadTerminalView({
             terminal: activeTerminal,
             pipeline: outputPipeline ?? undefined,
             replayPipeline: replayPreview ?? undefined,
+            replayCheckpointSequence,
             outputBoundaryToken,
             allowAttachedGrid: !markerGridActive,
+            shouldProcessOutput: () =>
+              terminalVisible === true && isPanelOpenRef.current,
           });
         },
         onSequenceGap: () => {
           outputLineAnchorTracker.reset();
           outputLineAnchors.length = 0;
           savedOutputLineAnchor = null;
+          replayCheckpointSequence = null;
+          replayPreview?.dispose();
+          replayPreview = null;
           activeTerminal.reset();
           outputLineAnchorTracker.reset();
           writeTerminalStatus({
@@ -2356,6 +2459,52 @@ export function ThreadTerminalView({
           restoreViewport();
         }
       } else {
+        try {
+          const snapshot = await sdk.terminals.experimental_screen({
+            terminalId: session.id,
+            threadId: session.threadId ?? undefined,
+          });
+          if (
+            !disposed &&
+            snapshot.complete &&
+            !snapshot.truncated &&
+            snapshot.dataBase64 !== undefined &&
+            snapshot.checkpointSeq !== undefined &&
+            snapshot.cols === latestPtyGrid.cols &&
+            snapshot.gridRows === latestPtyGrid.rows
+          ) {
+            const previewTerminal = new Terminal({
+              allowProposedApi: TERMINAL_ALLOW_PROPOSED_API,
+              cols: snapshot.cols,
+              rows: snapshot.gridRows,
+              fontFamily: readTerminalFontFamily(),
+              fontSize: 12,
+              theme: buildTerminalTheme(),
+            });
+            previewTerminal.loadAddon(new Unicode11Addon());
+            previewTerminal.unicode.activeVersion = TERMINAL_UNICODE_VERSION;
+            replayPreview = mountTerminalReplayPreview({
+              container: containerElement,
+              initialFitGrid: localFitGrid,
+              isOwner: () =>
+                terminalInputClaimed &&
+                document.hasFocus() &&
+                activeTerminal.element?.contains(document.activeElement) ===
+                  true,
+              terminal: previewTerminal,
+            });
+            replayCheckpointSequence = snapshot.checkpointSeq;
+            const snapshotFrame = decodeBase64Bytes(snapshot.dataBase64);
+            await new Promise<void>((resolve) =>
+              replayPreview?.push(snapshotFrame, resolve),
+            );
+          }
+        } catch {
+          replayCheckpointSequence = null;
+          replayPreview?.dispose();
+          replayPreview = null;
+        }
+        if (disposed) return;
         activeTransport.start();
       }
       stopWatchingLayout = watchTerminalLayoutSettled({
@@ -2542,6 +2691,7 @@ export function ThreadTerminalView({
       terminalInputForwarding?.dispose();
       terminalInputForwarding = null;
       shellOscDisposable?.dispose();
+      terminalProgressDisposable?.dispose();
       osc52Disposable?.dispose();
       outputBoundaryDisposable?.dispose();
       terminalInteractions?.dispose();
@@ -2551,6 +2701,9 @@ export function ThreadTerminalView({
       terminalResizeSubscription = null;
       cancelTerminalOutputNextRenders(session.id);
       handleFileDropRef.current = null;
+      if (reportDocumentVisibilityRef.current === reportDocumentVisibility) {
+        reportDocumentVisibilityRef.current = null;
+      }
       document.removeEventListener(
         "visibilitychange",
         reportDocumentVisibility,
@@ -2562,6 +2715,9 @@ export function ThreadTerminalView({
       terminal?.dispose();
       terminalRef.current = null;
       scheduleFitRef.current = null;
+      if (terminalVisibilityReporterRef.current === reportDocumentVisibility) {
+        terminalVisibilityReporterRef.current = null;
+      }
     };
   }, [
     copyTerminalContextValue,
@@ -2575,10 +2731,18 @@ export function ThreadTerminalView({
     jumpToPrompt,
     requestOpenTerminalLink,
     session.id,
+    session.threadId,
     handoffOwnerToken,
     session.title,
     updateHoveredTerminalLink,
   ]);
+
+  useEffect(() => {
+    const panelWasOpen = previousPanelOpenRef.current;
+    previousPanelOpenRef.current = isPanelOpen;
+    if (panelWasOpen === isPanelOpen) return;
+    reportDocumentVisibilityRef.current?.();
+  }, [isPanelOpen]);
 
   useEffect(() => {
     const terminal = terminalRef.current;
@@ -2642,6 +2806,7 @@ export function ThreadTerminalView({
           : null;
   useEffect(() => {
     webglVisibilityRef.current?.sync();
+    terminalVisibilityReporterRef.current?.();
   }, [isPanelOpen]);
 
   const gestureTouches = (

@@ -6,6 +6,7 @@ import {
   getThread,
   isNativeTerminalThread,
   listActiveVisiblePinnedThreadRootsWithPendingInteractionState,
+  buildPinnedRootThreadListEnrichmentScope,
   pinThread,
   reorderPinnedThread,
   reorderQueuedThreadMessage,
@@ -179,6 +180,7 @@ function buildActivePinnedThreadRootListResponse(
     threads: listActiveVisiblePinnedThreadRootsWithPendingInteractionState(
       deps.db,
     ),
+    scope: buildPinnedRootThreadListEnrichmentScope(deps.db),
   });
 }
 

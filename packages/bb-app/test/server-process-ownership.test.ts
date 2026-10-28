@@ -40,16 +40,44 @@ const scratchDirs: string[] = [];
 const activeChildren = new Set<number>();
 const childErrors = new WeakMap<ChildProcess, { stderr: string }>();
 
-afterEach(() => {
+async function cleanupScratchDirs(): Promise<void> {
   for (const pid of activeChildren) {
     try {
       process.kill(pid, "SIGKILL");
     } catch {}
   }
   activeChildren.clear();
-  for (const dir of scratchDirs.splice(0))
+  for (const dir of scratchDirs.splice(0)) {
+    await stopStdioLogWriters(dir);
     rmSync(dir, { recursive: true, force: true });
-});
+  }
+}
+
+afterEach(cleanupScratchDirs);
+
+function findStdioLogWriterPids(dir: string): number[] {
+  const logsPrefix = `${join(dir, "logs")}/`;
+  return execFileSync("ps", ["-axo", "pid=,args="], {
+    encoding: "utf8",
+    maxBuffer: 256 * 1024 * 1024,
+  })
+    .split("\n")
+    .filter((line) => line.includes(logsPrefix))
+    .map((line) => Number(line.trim().split(/\s+/)[0]))
+    .filter((pid) => Number.isInteger(pid) && pid !== process.pid);
+}
+
+async function stopStdioLogWriters(dir: string): Promise<void> {
+  const pids = findStdioLogWriterPids(dir);
+  for (const pid of pids) {
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch {}
+  }
+  for (const pid of pids) {
+    await waitForProcessExitByPid(pid, SERVER_SHUTDOWN_BOUND_MS);
+  }
+}
 
 function scratchDir(): string {
   const dir = mkdtempSync(join(tmpdir(), "bb-server-ownership-"));
@@ -193,6 +221,41 @@ async function waitForProcessExitByPid(
 }
 
 describe("server process ownership", () => {
+  it("waits for a stdio log writer that is still writing before removing its scratch directory", async () => {
+    const dir = scratchDir();
+    const logsDir = join(dir, "logs");
+    const readyFile = join(dir, "writer.ready");
+    const writer = spawn(
+      process.execPath,
+      [
+        "-e",
+        `const fs = require("node:fs");
+const logsDir = require("node:path").dirname(process.argv[1]);
+let sequence = 0;
+for (;;) {
+  try {
+    fs.mkdirSync(logsDir, { recursive: true });
+    fs.writeFileSync(logsDir + "/segment-" + sequence++, "x");
+    if (sequence === 20000) fs.writeFileSync(process.argv[2], "ready");
+  } catch {}
+}`,
+        join(logsDir, "server-stdio.log"),
+        readyFile,
+      ],
+      { detached: true, stdio: "ignore" },
+    );
+    writer.unref();
+    const writerPid = writer.pid!;
+    try {
+      await waitForFile(readyFile, 30_000);
+      await cleanupScratchDirs();
+      expect(isProcessRunning(writerPid)).toBe(false);
+      expect(existsSync(dir)).toBe(false);
+    } finally {
+      try { process.kill(writerPid, "SIGKILL"); } catch {}
+    }
+  });
+
   it("waits successfully when the child exited before the wait begins", async () => {
     const child = spawn(process.execPath, ["-e", "process.exit(0)"], {
       stdio: "ignore",
