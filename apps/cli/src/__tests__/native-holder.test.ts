@@ -1,4 +1,5 @@
 import { spawn as spawnProcess } from "node:child_process";
+import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
 import {
   chmodSync,
@@ -512,6 +513,63 @@ try {
     expect(changes).toBe(2);
 
     second.type("\u0004");
+    await expect(held).resolves.toBe(7);
+  });
+
+  it("logs each credential change and a repeated frame at most once per window, by fingerprint and never by value", async () => {
+    const socketPath = socketIn();
+    const logPath = socketPath.replace(/\.sock$/u, ".log");
+    const held = runNativeHolder({
+      socketPath,
+      cwd: os.tmpdir(),
+      env: { ...process.env, PS1: "" },
+      prepare: async () => ECHO_LOOP,
+      spawnPty: (process, options) =>
+        spawnPty(process.command, process.args, {
+          name: "xterm-256color",
+          cols: options.cols,
+          rows: options.rows,
+          cwd: options.cwd,
+          env: options.env,
+        }),
+    });
+    const socket = await waitForNativeHolder(socketPath, 30_000);
+    if (socket === null) throw new Error("holder did not listen");
+    const send = (value: string): void => {
+      socket.write(
+        encodeNativeHolderFrame(
+          NativeHolderFrame.credential,
+          Buffer.from(value),
+        ),
+      );
+    };
+    const fingerprint = (value: string): string =>
+      createHash("sha256").update(value).digest("hex").slice(0, 8);
+    send("secret-credential-one");
+    send("secret-credential-one");
+    send("secret-credential-two");
+    const client = new Client(socket);
+    await client.waitFor(/started:\d+/u);
+    const received = (): Array<Record<string, unknown>> =>
+      readFileSync(logPath, "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as Record<string, unknown>)
+        .filter((entry) => entry.event === "credential-frame-received");
+    await expect.poll(() => received().length).toBe(2);
+    expect(received()).toEqual([
+      expect.objectContaining({
+        changed: 1,
+        fingerprint: fingerprint("secret-credential-one"),
+      }),
+      expect.objectContaining({
+        changed: 1,
+        fingerprint: fingerprint("secret-credential-two"),
+      }),
+    ]);
+    expect(readFileSync(logPath, "utf8")).not.toContain("secret-credential");
+
+    client.type("\u0004");
     await expect(held).resolves.toBe(7);
   });
 

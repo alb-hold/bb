@@ -25,6 +25,16 @@ const NATIVE_HOLDER_REAP_CHECK_MS = 30_000;
 const UNIX_SOCKET_PATH_MAX_BYTES = 100;
 const NATIVE_HOLDER_LOG_MAX_BYTES = 256 * 1024;
 const NATIVE_HOLDER_OUTPUT_MAX_BYTES = 4 * 1024 * 1024;
+const NATIVE_HOLDER_CREDENTIAL_REPEAT_LOG_MS = 10 * 60_000;
+
+const NATIVE_TOOL_CREDENTIAL_FINGERPRINT_CHARS = 8;
+
+export function nativeToolCredentialFingerprint(credential: string): string {
+  return createHash("sha256")
+    .update(credential)
+    .digest("hex")
+    .slice(0, NATIVE_TOOL_CREDENTIAL_FINGERPRINT_CHARS);
+}
 
 export function writeNativeHolderAttachMarker(
   output: { write(chunk: string): unknown },
@@ -382,6 +392,7 @@ export async function runNativeHolder(
   let pendingOutputBytes = 0;
   let redrawOnResize = false;
   let credential: string | null = null;
+  let credentialFrameLoggedAt: number | null = null;
   let starting = false;
   let finished = false;
   let ptyExited = false;
@@ -573,9 +584,29 @@ export async function runNativeHolder(
           else pty.write(input);
         } else if (message.type === NativeHolderFrame.credential) {
           const next = message.payload.toString("utf8");
-          if (next.length > 0 && next !== credential) {
-            credential = next;
-            options.onCredentialChanged?.();
+          if (next.length > 0) {
+            const changed = next !== credential;
+            const at = Date.now();
+            if (
+              changed ||
+              credentialFrameLoggedAt === null ||
+              at - credentialFrameLoggedAt >=
+                NATIVE_HOLDER_CREDENTIAL_REPEAT_LOG_MS
+            ) {
+              credentialFrameLoggedAt = at;
+              logNativeHolderEvent(
+                options.socketPath,
+                "credential-frame-received",
+                {
+                  changed: changed ? 1 : 0,
+                  fingerprint: nativeToolCredentialFingerprint(next),
+                },
+              );
+            }
+            if (changed) {
+              credential = next;
+              options.onCredentialChanged?.();
+            }
           }
         } else if (message.type === NativeHolderFrame.resize) {
           const next = parseSize(message.payload);

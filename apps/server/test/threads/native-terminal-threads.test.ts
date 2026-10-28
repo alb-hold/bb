@@ -362,6 +362,11 @@ function scrolledPastScreen(line: string): string {
   return `${line}\r\n${"• Ran a step\r\n".repeat(120)}› `;
 }
 
+function claudeComposerScreen(pasted: string): string {
+  const words = pasted.split(" ");
+  return `\u001b[2K\u001b[1G\u276f ${words.join("\u001b[1C")}\u001b[0m`;
+}
+
 function composerScreen(pasted: string): string {
   const words = pasted.split(" ");
   return `\u001b[2K\u001b[1G\u203a ${words.join("\u001b[1C")}\u001b[0m`;
@@ -2031,8 +2036,7 @@ describe("native terminal threads", () => {
     const cli = startFakeCli(
       fixture,
       open.terminalId,
-      () =>
-        "\u001b[2;1H\u2022 You could say: run the tests\u001b[6;1H\u001b[2K\u203a [Image #1]",
+      () => "\u001b[6;1H\u001b[2K\u203a [Image #1] run the tests",
     );
     try {
       const response = await postJson(fixture, `/threads/${thread.id}/send`, {
@@ -2143,7 +2147,7 @@ describe("native terminal threads", () => {
     10_000,
   );
 
-  it("sends nothing when the CLI redraws the same text from its history", async () => {
+  it("sends nothing when the CLI redraws the same text unsent in its input box", async () => {
     const fixture = await createFixture();
     const { open, thread } = await openRunningNativeThread(fixture, {
       providerId: "codex",
@@ -2152,7 +2156,7 @@ describe("native terminal threads", () => {
       fixture,
       open.terminalId,
       composerScreen,
-      "\u001b[H\u001b[2J\u203a run the tests\r\n\u2022 Ran pnpm test\r\n\u203a ",
+      "\u001b[H\u001b[2J\u2022 Ran pnpm test\r\n\u203a run the tests",
     );
     try {
       const response = await postJson(fixture, `/threads/${thread.id}/send`, {
@@ -2168,6 +2172,98 @@ describe("native terminal threads", () => {
     } finally {
       cli.stop();
     }
+  });
+
+  describe("an idle Claude Code session", () => {
+    const rule = "\u2500".repeat(60);
+    const idleScreen = (input: string) =>
+      [
+        "> Reply with exactly: repeat-probe",
+        "",
+        "\u23fa repeat-probe",
+        "",
+        "\u273b Cooked for 3s \u00b7 done 7:12 AM",
+        rule,
+        `\u276f\u00a0${input}`,
+        rule,
+      ].join("\r\n");
+    const clearedScreen = [
+      "> /clear",
+      "",
+      "\u23bf (no content)",
+      rule,
+      "\u276f\u00a0",
+      rule,
+    ].join("\r\n");
+
+    it.each([
+      [
+        "history above an empty prompt",
+        "Reply with exactly: repeat-probe",
+        idleScreen(""),
+      ],
+      ["history above an empty prompt", "/clear", clearedScreen],
+      [
+        "a faint suggestion",
+        "Reply with exactly: repeat-probe",
+        idleScreen("\u001b[2mReply with exactly: repeat-probe\u001b[22m"),
+      ],
+    ])(
+      "accepts a message when only %s shows it: %s",
+      async (_label, message, screen) => {
+        const fixture = await createFixture();
+        const { open, thread } = await openRunningNativeThread(fixture, {
+          providerId: "claude-code",
+        });
+        const cli = startFakeCli(
+          fixture,
+          open.terminalId,
+          claudeComposerScreen,
+          screen,
+        );
+        try {
+          const response = await postJson(
+            fixture,
+            `/threads/${thread.id}/send`,
+            { input: textInput(message), mode: "auto" },
+          );
+          expect(response.status).toBe(200);
+          expect(cli.inputs()).toEqual([
+            `\u001b[200~${message}\u001b[201~`,
+            "\r",
+          ]);
+        } finally {
+          cli.stop();
+        }
+      },
+    );
+
+    it("refuses the same text while it sits unsent in the input box", async () => {
+      const fixture = await createFixture();
+      const { open, thread } = await openRunningNativeThread(fixture, {
+        providerId: "claude-code",
+      });
+      const cli = startFakeCli(
+        fixture,
+        open.terminalId,
+        claudeComposerScreen,
+        idleScreen("Reply with exactly: repeat-probe"),
+      );
+      try {
+        const response = await postJson(fixture, `/threads/${thread.id}/send`, {
+          input: textInput("Reply with exactly: repeat-probe"),
+          mode: "auto",
+        });
+        expect(response.status).toBe(409);
+        expect(apiErrorSchema.parse(await readJson(response)).code).toBe(
+          "native_terminal_input_ambiguous",
+        );
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        expect(cli.inputs()).toEqual([]);
+      } finally {
+        cli.stop();
+      }
+    });
   });
 
   it("does not take a redrawn earlier placeholder for the echo", async () => {

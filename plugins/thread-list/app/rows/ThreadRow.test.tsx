@@ -7,7 +7,12 @@ import {
   screen,
   waitFor,
 } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { execFile } from "node:child_process";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { promisify } from "node:util";
+import { afterEach, describe, expect, inject, it, vi } from "vitest";
 import { getDefaultStore } from "jotai";
 import { DndContext, useDraggable } from "@dnd-kit/core";
 import { CompactViewportOverrideProvider } from "@/components/ui/hooks/use-compact-viewport";
@@ -2542,5 +2547,246 @@ describe("ThreadRow", () => {
     expect(
       await screen.findByRole("textbox", { name: "Thread name" }),
     ).toHaveProperty("value", "Thread");
+  });
+});
+
+const execFileAsync = promisify(execFile);
+
+const chromiumPath = inject("threadListChromiumPath");
+const pluginCss = inject("threadListPluginCss");
+const CHROMIUM_QUIET_FLAGS = [
+  "--disable-dev-shm-usage",
+  "--disable-extensions",
+  "--disable-background-networking",
+  "--no-first-run",
+];
+
+interface RowLayout {
+  innerWidth: number;
+  row: {
+    width: number;
+    height: number;
+    bottom: number;
+    left: number;
+    right: number;
+  };
+  link: { width: number };
+  chip: { width: number; left: number; right: number } | null;
+  bar: {
+    width: number;
+    height: number;
+    bottom: number;
+    fill: number;
+    fillBackground: string;
+  } | null;
+}
+
+const MEASURE_SCRIPT = `
+const box = (element) => {
+  const rect = element.getBoundingClientRect();
+  return {
+    width: rect.width,
+    height: rect.height,
+    bottom: rect.bottom,
+    left: rect.left,
+    right: rect.right,
+  };
+};
+const bar = document.querySelector("[role=progressbar]");
+const chip = document.querySelector("[data-sidebar-thread-status-chip]");
+const layout = {
+  innerWidth: window.innerWidth,
+  row: box(document.querySelector("[data-sidebar-rename-row]")),
+  link: box(document.querySelector("[data-sidebar-thread-id]")),
+  chip: chip ? box(chip) : null,
+  bar: bar
+    ? {
+        ...box(bar),
+        fill: box(bar.firstElementChild).width,
+        fillBackground: getComputedStyle(bar.firstElementChild).backgroundColor,
+      }
+    : null,
+};
+document.getElementById("layout").textContent = JSON.stringify(layout);
+`;
+
+async function measureRowLayout(
+  rowHtml: string,
+  viewportWidth: number,
+): Promise<RowLayout> {
+  const dir = await mkdtemp(join(tmpdir(), "bb-row-layout-"));
+  try {
+    const page = join(dir, "row.html");
+    await writeFile(
+      page,
+      `<!doctype html><html><head><meta name="viewport" content="width=device-width"><style>
+:root{--bb-sidebar-row-height:1.75rem;--bb-sidebar-row-height-coarse:2.5rem;--sidebar-accent:#e4e4e7;--timeline-accent:#2563eb}
+*,::before,::after{box-sizing:border-box}
+body{margin:0}
+${pluginCss ?? ""}
+</style></head><body>
+<div data-bb-plugin-root style="width:${viewportWidth}px">${rowHtml}</div>
+<pre id="layout"></pre>
+<script>${MEASURE_SCRIPT}</script>
+</body></html>`,
+    );
+    const { stdout } = await execFileAsync(chromiumPath ?? "", [
+      "--headless",
+      "--no-sandbox",
+      "--disable-gpu",
+      ...CHROMIUM_QUIET_FLAGS,
+      "--hide-scrollbars",
+      `--window-size=${viewportWidth},900`,
+      "--virtual-time-budget=2000",
+      "--dump-dom",
+      `file://${page}`,
+    ]);
+    const match = /<pre id="layout">([^<]*)<\/pre>/.exec(stdout);
+    if (match?.[1] === undefined) throw new Error(stdout.slice(0, 500));
+    return JSON.parse(match[1].replaceAll("&quot;", '"')) as RowLayout;
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+describe.skipIf(
+  pluginCss === null || (chromiumPath === null && !process.env.CI),
+)("ThreadRow row-state layout", () => {
+  it("has a Chromium binary to measure layout with", () => {
+    expect(chromiumPath).not.toBeNull();
+  });
+
+  const VIEWPORTS = [
+    { name: "desktop", width: 280, isCompact: false },
+    { name: "compact 390px", width: 390, isCompact: true },
+  ];
+
+  async function layoutFor(
+    progress: { value: number; label?: string } | null,
+    viewport: (typeof VIEWPORTS)[number],
+  ): Promise<RowLayout> {
+    const { container } = renderThreadRow({
+      thread: createThread({
+        experimental_rowState: { statuses: {}, progress },
+      }),
+      isCompactViewport: viewport.isCompact,
+      options: { ...DEFAULT_OPTIONS, isCompact: viewport.isCompact },
+    });
+    return measureRowLayout(container.innerHTML, viewport.width);
+  }
+
+  it.each(VIEWPORTS)(
+    "renders the 60% progress bar at a real width on $name",
+    async (viewport) => {
+      const layout = await layoutFor({ value: 0.6 }, viewport);
+
+      expect(layout.innerWidth).toBeGreaterThan(0);
+      expect(layout.link.width).toBeGreaterThan(0);
+      expect(layout.bar).not.toBeNull();
+      expect(layout.bar?.width).toBeGreaterThan(viewport.width / 2);
+      expect(layout.bar?.height).toBeGreaterThan(0);
+      expect((layout.bar?.fill ?? 0) / (layout.bar?.width ?? 1)).toBeCloseTo(
+        0.6,
+        1,
+      );
+      expect(layout.bar?.bottom).toBeLessThanOrEqual(layout.row.bottom);
+      expect(layout.bar?.fillBackground).not.toBe("rgba(0, 0, 0, 0)");
+    },
+  );
+
+  it.each(VIEWPORTS)(
+    "keeps the row title readable beside a status chip and label on $name",
+    async (viewport) => {
+      const { container } = renderThreadRow({
+        thread: createThread({
+          experimental_rowState: {
+            statuses: { task: { value: "Running" } },
+            progress: { value: 0.6, label: "Writing tests" },
+          },
+        }),
+        isCompactViewport: viewport.isCompact,
+        options: { ...DEFAULT_OPTIONS, isCompact: viewport.isCompact },
+      });
+      const layout = await measureRowLayout(
+        container.innerHTML,
+        viewport.width,
+      );
+
+      expect(layout.link.width).toBeGreaterThan(viewport.width / 3);
+      expect(layout.bar?.width).toBeGreaterThan(viewport.width / 2);
+    },
+  );
+
+  it.each(VIEWPORTS)(
+    "keeps a short status chip content-sized on $name",
+    async (viewport) => {
+      const { container } = renderThreadRow({
+        thread: createThread({
+          experimental_rowState: {
+            statuses: { task: { value: "Running" } },
+            progress: { value: 0.6 },
+          },
+        }),
+        isCompactViewport: viewport.isCompact,
+        options: { ...DEFAULT_OPTIONS, isCompact: viewport.isCompact },
+      });
+      const layout = await measureRowLayout(
+        container.innerHTML,
+        viewport.width,
+      );
+
+      expect(layout.chip?.width).toBeGreaterThan(0);
+      expect(layout.chip?.width).toBeLessThan(layout.row.width / 2);
+      expect(layout.bar?.width).toBeGreaterThan(viewport.width / 2);
+    },
+  );
+
+  it.each(VIEWPORTS)(
+    "truncates a long status chip inside the row on $name",
+    async (viewport) => {
+      const { container } = renderThreadRow({
+        thread: createThread({
+          experimental_rowState: {
+            statuses: {
+              task: { value: "A very long status value ".repeat(8) },
+            },
+            progress: null,
+          },
+        }),
+        isCompactViewport: viewport.isCompact,
+        options: { ...DEFAULT_OPTIONS, isCompact: viewport.isCompact },
+      });
+      const layout = await measureRowLayout(
+        container.innerHTML,
+        viewport.width,
+      );
+
+      expect(layout.chip?.width).toBeGreaterThan(layout.row.width / 2);
+      expect(layout.chip?.left).toBeGreaterThanOrEqual(layout.row.left);
+      expect(layout.chip?.right).toBeLessThanOrEqual(layout.row.right);
+    },
+  );
+
+  it("renders no progress bar for 0.0 or null progress", () => {
+    const zero = renderThreadRow({
+      thread: createThread({
+        experimental_rowState: { statuses: {}, progress: { value: 0 } },
+      }),
+    });
+    expect(zero.container.querySelector("[role=progressbar]")).toBeNull();
+    expect(
+      zero.container.querySelector("[data-sidebar-thread-row-state]"),
+    ).toBeNull();
+    cleanup();
+
+    const none = renderThreadRow({
+      thread: createThread({
+        experimental_rowState: { statuses: {}, progress: null },
+      }),
+    });
+    expect(none.container.querySelector("[role=progressbar]")).toBeNull();
+    expect(
+      none.container.querySelector("[data-sidebar-thread-row-state]"),
+    ).toBeNull();
   });
 });

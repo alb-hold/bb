@@ -11,6 +11,8 @@ const ECHO_IGNORED_CHARACTERS = /[\s─-╿]/gu;
 const ECHO_TAIL_LENGTH = 32;
 const ECHO_DRAWN_SHARE = 0.75;
 const PLACEHOLDER_DETAIL_LENGTH = 32;
+const INPUT_PROMPT_MARKERS: ReadonlySet<EchoToken> = new Set(["❯", "›"]);
+const REDRAWN_INPUT_PROMPT_MARKERS: ReadonlySet<EchoToken> = new Set(["❯"]);
 
 type EchoToken = string | null;
 
@@ -40,10 +42,33 @@ function csiNumbers(params: string): number[] {
 interface ReplayedRow {
   index: number;
   tokens: EchoToken[];
+  solidTokens: EchoToken[];
+}
+
+interface ReplayedCell {
+  character: string;
+  faint: boolean;
+}
+
+function applyGraphicRendition(numbers: readonly number[], faint: boolean) {
+  if (numbers.length === 0) return false;
+  let next = faint;
+  for (let index = 0; index < numbers.length; index += 1) {
+    const code = numbers[index]!;
+    if (code === 38 || code === 48 || code === 58) {
+      index += numbers[index + 1] === 2 ? 4 : 2;
+    } else if (code === 0 || code === 22) {
+      next = false;
+    } else if (code === 2) {
+      next = true;
+    }
+  }
+  return next;
 }
 
 function replayTerminalRows(output: string): ReplayedRow[] {
-  const rows = new Map<number, Map<number, string>>();
+  const rows = new Map<number, Map<number, ReplayedCell>>();
+  let faint = false;
   let row = 0;
   let column = 0;
   let saved = { row: 0, column: 0 };
@@ -102,6 +127,9 @@ function replayTerminalRows(output: string): ReplayedRow[] {
         case "d":
           row = count - 1;
           break;
+        case "m":
+          faint = applyGraphicRendition(numbers, faint);
+          break;
         case "K": {
           const mode = numbers[0] ?? 0;
           const from = column;
@@ -150,7 +178,7 @@ function replayTerminalRows(output: string): ReplayedRow[] {
     else if (character === "\b") column = Math.max(0, column - 1);
     else if (character === "\t") column = (Math.floor(column / 8) + 1) * 8;
     else if (character.codePointAt(0)! >= 0x20 && character !== "\u007f") {
-      rowCells(row).set(column, character);
+      rowCells(row).set(column, { character, faint });
       column += 1;
     }
   }
@@ -159,13 +187,19 @@ function replayTerminalRows(output: string): ReplayedRow[] {
     const cells = rows.get(index)!;
     if (cells.size === 0) continue;
     const tokens: EchoToken[] = [];
+    const solidTokens: EchoToken[] = [];
     const last = Math.max(...cells.keys());
     for (let cell = 0; cell <= last; cell += 1) {
       const value = cells.get(cell);
-      if (value === undefined) tokens.push(null);
-      else if (!ECHO_IGNORED_CHARACTER.test(value)) tokens.push(value);
+      if (value === undefined) {
+        tokens.push(null);
+        solidTokens.push(null);
+      } else if (!ECHO_IGNORED_CHARACTER.test(value.character)) {
+        tokens.push(value.character);
+        if (!value.faint) solidTokens.push(value.character);
+      }
     }
-    replayed.push({ index, tokens });
+    replayed.push({ index, tokens, solidTokens });
   }
   return replayed;
 }
@@ -174,13 +208,36 @@ function replayTerminalOutput(output: string): EchoToken[] {
   return replayTerminalRows(output).flatMap((row) => row.tokens);
 }
 
-function replayTerminalScreen(output: string, screenRows: number): EchoToken[] {
+function inputLineTokens(
+  rows: readonly ReplayedRow[],
+  markers: ReadonlySet<EchoToken>,
+): EchoToken[] | null {
+  let promptAt = -1;
+  for (let index = rows.length - 1; index >= 0; index -= 1) {
+    if (markers.has(rows[index]!.tokens[0] ?? null)) {
+      promptAt = index;
+      break;
+    }
+  }
+  if (promptAt < 0) return null;
+  return [
+    ...rows[promptAt]!.solidTokens.slice(1),
+    ...rows.slice(promptAt + 1).flatMap((row) => row.solidTokens),
+  ];
+}
+
+function replayTerminalInputLine(
+  output: string,
+  screenRows: number,
+): EchoToken[] {
   const rows = replayTerminalRows(output);
   const bottom = rows.at(-1)?.index;
   if (bottom === undefined) return [];
-  return rows
-    .filter((row) => row.index > bottom - screenRows)
-    .flatMap((row) => row.tokens);
+  const screen = rows.filter((row) => row.index > bottom - screenRows);
+  return (
+    inputLineTokens(screen, INPUT_PROMPT_MARKERS) ??
+    screen.flatMap((row) => row.tokens)
+  );
 }
 
 function occurrenceCount(tokens: EchoToken[], needle: string[]): number {
@@ -269,8 +326,10 @@ export function terminalScreenAlreadyShowsText(args: {
 }): boolean {
   const needle = echoNeedle(args.text).slice(-ECHO_TAIL_LENGTH);
   return (
-    looseMatchEnds(replayTerminalScreen(args.output, args.screenRows), needle)
-      .length > 0
+    looseMatchEnds(
+      replayTerminalInputLine(args.output, args.screenRows),
+      needle,
+    ).length > 0
   );
 }
 
@@ -301,18 +360,8 @@ export function terminalOutputShowsPasteAgain(args: {
     if (occurrenceCount(replayTerminalOutput(redraw), needle) <= beforeCopies) {
       return false;
     }
-    let inputRow = -1;
-    for (let index = redrawn.length - 1; index >= 0; index -= 1) {
-      if (redrawn[index]!.tokens[0] === "❯") {
-        inputRow = index;
-        break;
-      }
-    }
-    if (inputRow < 0) return false;
-    const input = [
-      ...redrawn[inputRow]!.tokens.slice(1),
-      ...redrawn.slice(inputRow + 1).flatMap((row) => row.tokens),
-    ];
+    const input = inputLineTokens(redrawn, REDRAWN_INPUT_PROMPT_MARKERS);
+    if (input === null) return false;
     const head = fullNeedle.slice(0, ECHO_TAIL_LENGTH);
     const drawnHead = input.slice(0, head.length);
     const tail = fullNeedle.slice(-ECHO_TAIL_LENGTH);

@@ -1593,6 +1593,7 @@
       "dependsOn": [
         "//#ensure-native-modules",
         "@get-bb/plugin-sdk#build",
+        "bb-plugin-thread-list#prepare:bundled",
         "topo"
       ],
       "inputs": [

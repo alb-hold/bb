@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { BbHttpError, BbRequestTimeoutError } from "@bb/sdk";
 import { describe, expect, it } from "vitest";
 import { createNativeActivityReporter } from "../native-activity-reporter.js";
@@ -111,6 +112,75 @@ describe("native activity reporter", () => {
         },
       };
     }
+
+    it("logs the first refusal by fingerprint, repeats at most once per window with the count, and logs the recovery", async () => {
+      const logged: Array<{
+        event: string;
+        fields: Record<string, number | string | null>;
+      }> = [];
+      let clock = 1_000;
+      let refuse = true;
+      const reporter = createNativeActivityReporter({
+        currentCredential: () => "secret-holder-credential",
+        log: (event, fields) => logged.push({ event, fields }),
+        now: () => clock,
+        send: async () => {
+          if (refuse) throw rejection();
+          return { ok: true };
+        },
+        threadId: "thr_1",
+      });
+      const fingerprint = createHash("sha256")
+        .update("secret-holder-credential")
+        .digest("hex")
+        .slice(0, 8);
+
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        reporter.report({ state: "working", prompt: null });
+        await reporter.settled();
+      }
+      expect(logged).toEqual([
+        {
+          event: "activity-credential-rejected",
+          fields: { fingerprint, rejected: 1 },
+        },
+      ]);
+
+      clock += 11 * 60_000;
+      reporter.report({ state: "working", prompt: null });
+      await reporter.settled();
+      expect(logged.at(-1)).toEqual({
+        event: "activity-credential-rejected",
+        fields: { fingerprint, rejected: 4 },
+      });
+
+      refuse = false;
+      reporter.report({ state: "working", prompt: null });
+      await reporter.settled();
+      expect(logged.at(-1)).toEqual({
+        event: "activity-credential-accepted",
+        fields: { fingerprint, afterRejected: 4 },
+      });
+      reporter.report({ state: "working", prompt: null });
+      await reporter.settled();
+      expect(logged).toHaveLength(3);
+      expect(JSON.stringify(logged)).not.toContain("secret-holder-credential");
+    });
+
+    it("logs a refusal with no fingerprint when the holder has no credential yet", async () => {
+      const logged: string[] = [];
+      const reporter = createNativeActivityReporter({
+        currentCredential: () => null,
+        log: (event, fields) => logged.push(`${event}:${fields.fingerprint}`),
+        send: async () => {
+          throw rejection();
+        },
+        threadId: "thr_1",
+      });
+      reporter.report({ state: "working", prompt: null });
+      await reporter.settled();
+      expect(logged).toEqual(["activity-credential-rejected:null"]);
+    });
 
     it("is kept and resent once, with the credential current then, when the holder retries", async () => {
       const { reporter, sent, setCredential } = rejecting(1);
@@ -843,7 +913,11 @@ describe("native activity reporter", () => {
       reporter.report(marked);
       await reporter.settled();
       expect(calls).toHaveLength(1);
-      expect(logged).toEqual([]);
+      expect(
+        logged.filter(
+          (entry) => !entry.event.startsWith("activity-credential-"),
+        ),
+      ).toEqual([]);
     });
 
     it("does not retry for a field it did not send", async () => {

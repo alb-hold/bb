@@ -4077,3 +4077,262 @@ describe("a native activity report that does not confirm activity", () => {
     expect(await readApiErrorCode(response)).toBe("invalid_request");
   });
 });
+
+describe("a native holder that still reports with a credential bb has since replaced", () => {
+  const WORKING_TRANSCRIPT = `${JSON.stringify({ type: "assistant", isSidechain: false })}\n`;
+  const IDLE_TRANSCRIPT = `${JSON.stringify({ type: "system", subtype: "turn_duration", isSidechain: false })}\n`;
+
+  async function holderKeepingTheFirstCredential(fixture: Fixture) {
+    const thread = seedChatThread(fixture, {
+      providerId: "claude-code",
+      providerThreadId: SESSION_ID,
+    });
+    const { open } = await enterTerminal(fixture, thread.id);
+    const stale = terminalCredential(open);
+    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+      hostId: fixture.hostId,
+      sessionId: fixture.sessionId,
+      message: {
+        type: "terminal.exited",
+        terminalId: open.terminalId,
+        exitCode: null,
+        closeReason: "daemon-disconnect",
+      },
+    });
+    const opens = countDaemonMessages(fixture, "terminal.open");
+    const reopening = postJson(
+      fixture,
+      `/threads/${thread.id}/native-terminal/open`,
+      {},
+    );
+    const reopened = await waitForDaemonMessage(fixture, "terminal.open", opens);
+    acknowledgeOpen(fixture, reopened);
+    expect((await reopening).status).toBe(200);
+    const current = terminalCredential(reopened);
+    expect(current).not.toBe(stale);
+    return { current, stale, thread };
+  }
+
+  function transcriptTailRequests(fixture: Fixture) {
+    return fixture.socket.sentMessages
+      .map((message) =>
+        hostDaemonServerWsMessageSchema.parse(JSON.parse(message)),
+      )
+      .filter(
+        (message): message is DaemonMessage<"host-rpc.request"> =>
+          message.type === "host-rpc.request" &&
+          message.command.type === "native_terminal.read_transcript_tail",
+      );
+  }
+
+  async function waitForTranscriptTailRequest(fixture: Fixture, skip: number) {
+    for (let attempt = 0; attempt < 200; attempt += 1) {
+      const request = transcriptTailRequests(fixture)[skip];
+      if (request !== undefined) return request;
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    throw new Error("Timed out waiting for a transcript tail request");
+  }
+
+  function answerTranscriptTail(
+    fixture: Fixture,
+    requestId: string,
+    transcript: string,
+  ): void {
+    fixture.harness.hub.recordHostOnlineRpcResponse({
+      message: hostDaemonOnlineRpcResponseMessageSchema.parse({
+        type: "host-rpc.response",
+        requestId,
+        commandType: "native_terminal.read_transcript_tail",
+        ok: true,
+        result: {
+          outcome: "available",
+          contentBase64: Buffer.from(transcript).toString("base64"),
+          sizeBytes: Buffer.byteLength(transcript),
+          truncated: false,
+        },
+      }),
+      sessionId: fixture.sessionId,
+    });
+  }
+
+  async function staleReport(
+    fixture: Fixture,
+    threadId: string,
+    credential: string,
+    state: "idle" | "working",
+  ) {
+    return postJson(
+      fixture,
+      `/threads/${threadId}/native-terminal/activity`,
+      { state },
+      `Bearer ${credential}`,
+    );
+  }
+
+  async function waitForStatus(
+    fixture: Fixture,
+    threadId: string,
+    expected: string,
+  ) {
+    for (let attempt = 0; attempt < 200; attempt += 1) {
+      if (threadStatus(fixture, threadId) === expected) return;
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    throw new Error(
+      `Thread stayed ${String(threadStatus(fixture, threadId))}, expected ${expected}`,
+    );
+  }
+
+  it("answers 401, reads the transcript instead of the claim, and shows the transcript's state", async () => {
+    const fixture = await createFixture();
+    const { stale, thread } = await holderKeepingTheFirstCredential(fixture);
+    expect(threadStatus(fixture, thread.id)).toBe("idle");
+
+    const response = await staleReport(fixture, thread.id, stale, "idle");
+    expect(response.status).toBe(401);
+    expect(await readApiErrorCode(response)).toBe(
+      "native_terminal_credential_invalid",
+    );
+    expect(threadStatus(fixture, thread.id)).toBe("idle");
+
+    const request = await waitForTranscriptTailRequest(fixture, 0);
+    answerTranscriptTail(fixture, request.requestId, WORKING_TRANSCRIPT);
+    await waitForStatus(fixture, thread.id, "active");
+    expect(
+      getNativeTerminalThread(fixture.harness.db, thread.id)?.lastEvidenceKind,
+    ).toBe("transcript");
+  });
+
+  it("lets the transcript settle a thread whose stale holder claims it is still working", async () => {
+    const fixture = await createFixture();
+    const { stale, thread } = await holderKeepingTheFirstCredential(fixture);
+    applyLoggedThreadLifecycleEvent(fixture.harness.deps, {
+      event: { type: "run.started" },
+      threadId: thread.id,
+    });
+    expect(threadStatus(fixture, thread.id)).toBe("active");
+
+    expect((await staleReport(fixture, thread.id, stale, "working")).status).toBe(
+      401,
+    );
+    const request = await waitForTranscriptTailRequest(fixture, 0);
+    answerTranscriptTail(fixture, request.requestId, IDLE_TRANSCRIPT);
+    await waitForStatus(fixture, thread.id, "idle");
+  });
+
+  it("reads the transcript once per window however many stale reports arrive", async () => {
+    const fixture = await createFixture();
+    const { stale, thread } = await holderKeepingTheFirstCredential(fixture);
+    const clock = vi.spyOn(Date, "now").mockReturnValue(5_000_000);
+    try {
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        expect(
+          (await staleReport(fixture, thread.id, stale, "working")).status,
+        ).toBe(401);
+      }
+      await waitForTranscriptTailRequest(fixture, 0);
+      clock.mockReturnValue(5_010_000);
+      await staleReport(fixture, thread.id, stale, "working");
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(transcriptTailRequests(fixture)).toHaveLength(1);
+
+      clock.mockReturnValue(5_031_000);
+      await staleReport(fixture, thread.id, stale, "working");
+      await waitForTranscriptTailRequest(fixture, 1);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it("never lets a forged or foreign credential set the status from its own claim", async () => {
+    const fixture = await createFixture();
+    const { current, thread } = await holderKeepingTheFirstCredential(fixture);
+    for (const authorization of [
+      "Bearer forged-credential-value",
+      `Bearer ${current}x`,
+      `Basic ${current}`,
+      current,
+    ]) {
+      const response = await postJson(
+        fixture,
+        `/threads/${thread.id}/native-terminal/activity`,
+        { state: "working", prompt: "forged prompt" },
+        authorization,
+      );
+      expect(response.status).toBe(401);
+      expect(threadStatus(fixture, thread.id)).toBe("idle");
+    }
+    expect(
+      getNativeTerminalThread(fixture.harness.db, thread.id)?.lastEvidenceAt,
+    ).toBeNull();
+
+    expect(
+      (
+        await postJson(
+          fixture,
+          `/threads/${thread.id}/native-terminal/activity`,
+          { state: "working" },
+          `Bearer ${current}`,
+        )
+      ).status,
+    ).toBe(200);
+    expect(threadStatus(fixture, thread.id)).toBe("active");
+    const requestsBefore = transcriptTailRequests(fixture).length;
+    expect(
+      (
+        await postJson(
+          fixture,
+          `/threads/${thread.id}/native-terminal/activity`,
+          { state: "idle" },
+          "Bearer forged-credential-value",
+        )
+      ).status,
+    ).toBe(401);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(threadStatus(fixture, thread.id)).toBe("active");
+    expect(transcriptTailRequests(fixture)).toHaveLength(requestsBefore);
+  });
+
+  it("logs a refused holder once per window with fingerprints, never the credential", async () => {
+    const fixture = await createFixture();
+    const { current, stale, thread } =
+      await holderKeepingTheFirstCredential(fixture);
+    const warn = vi.spyOn(fixture.harness.deps.logger, "warn");
+    const clock = vi.spyOn(Date, "now").mockReturnValue(7_000_000);
+    try {
+      for (let attempt = 0; attempt < 4; attempt += 1) {
+        await staleReport(fixture, thread.id, stale, "working");
+      }
+      const refusals = warn.mock.calls.filter(([fields]) =>
+        JSON.stringify(fields).includes("suppliedFingerprint"),
+      );
+      expect(refusals).toHaveLength(1);
+      const logged = JSON.stringify(warn.mock.calls);
+      expect(logged).not.toContain(stale);
+      expect(logged).not.toContain(current);
+      const [fields] = refusals[0] ?? [];
+      expect(fields).toMatchObject({
+        currentFingerprint: createHash("sha256")
+          .update(current)
+          .digest("hex")
+          .slice(0, 8),
+        suppliedFingerprint: createHash("sha256")
+          .update(stale)
+          .digest("hex")
+          .slice(0, 8),
+        threadId: thread.id,
+      });
+
+      clock.mockReturnValue(7_000_000 + 11 * 60_000);
+      await staleReport(fixture, thread.id, stale, "working");
+      expect(
+        warn.mock.calls.filter(([logged]) =>
+          JSON.stringify(logged).includes("suppliedFingerprint"),
+        ),
+      ).toHaveLength(2);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+});
