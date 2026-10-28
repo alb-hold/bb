@@ -137,3 +137,113 @@ export function advanceTerminalReplayParserByte(
     state.utf8Remaining = 3;
   }
 }
+
+const GROUND_INERT = new Uint8Array(256).fill(1);
+for (const byte of [0x18, 0x1a, 0x1b, 0x90, 0x98, 0x9b, 0x9d, 0x9e, 0x9f]) {
+  GROUND_INERT[byte] = 0;
+}
+GROUND_INERT.fill(0, 0xc2, 0xf5);
+
+const OSC_STRING_INERT = new Uint8Array(256).fill(1);
+for (const byte of [0x07, 0x18, 0x1a, 0x1b, 0x9c]) {
+  OSC_STRING_INERT[byte] = 0;
+}
+const OTHER_STRING_INERT = new Uint8Array(OSC_STRING_INERT);
+OTHER_STRING_INERT[0x07] = 1;
+
+function skipGroundBytes(bytes: Uint8Array, start: number): number {
+  const end = bytes.length;
+  let index = start;
+  while (index < end) {
+    const byte = bytes[index] ?? 0;
+    if (GROUND_INERT[byte] === 1) {
+      index += 1;
+      continue;
+    }
+    if (byte === 0x1b && index + 1 < end) {
+      const next = bytes[index + 1] ?? 0;
+      if (next === 0x5b) {
+        if (index + 2 < end && bytes[index + 2] === 0x3f) return index;
+        let final = index + 2;
+        while (
+          final < end &&
+          (bytes[final] ?? 0) >= 0x20 &&
+          (bytes[final] ?? 0) <= 0x3f
+        ) {
+          final += 1;
+        }
+        const finalByte = bytes[final] ?? 0;
+        if (
+          final < end &&
+          finalByte >= 0x40 &&
+          finalByte <= 0x7e &&
+          final - (index + 2) < MAX_TERMINAL_REPLAY_CSI_PARAMETER_BYTES
+        ) {
+          index = final + 1;
+          continue;
+        }
+        return index;
+      }
+      if (
+        next >= 0x30 &&
+        next <= 0x7e &&
+        next !== 0x5d &&
+        next !== 0x50 &&
+        next !== 0x58 &&
+        next !== 0x5e &&
+        next !== 0x5f
+      ) {
+        index += 2;
+        continue;
+      }
+      return index;
+    }
+    if (byte >= 0xc2 && byte <= 0xf4) {
+      const continuation = byte <= 0xdf ? 1 : byte <= 0xef ? 2 : 3;
+      if (index + continuation >= end) return index;
+      for (let offset = 1; offset <= continuation; offset += 1) {
+        const next = bytes[index + offset] ?? 0;
+        if (next < 0x80 || next > 0xbf) return index;
+      }
+      index += continuation + 1;
+      continue;
+    }
+    return index;
+  }
+  return index;
+}
+
+function skipStringBytes(
+  bytes: Uint8Array,
+  start: number,
+  inert: Uint8Array,
+): number {
+  let index = start;
+  while (index < bytes.length && inert[bytes[index] ?? 0] === 1) index += 1;
+  return index;
+}
+
+export function advanceTerminalReplayParserBytes(
+  state: TerminalReplayParserState,
+  bytes: Uint8Array,
+  start = 0,
+): void {
+  let index = start;
+  while (index < bytes.length) {
+    if (state.escape === "none" && state.utf8Remaining === 0) {
+      index =
+        state.controlString === null
+          ? skipGroundBytes(bytes, index)
+          : skipStringBytes(
+              bytes,
+              index,
+              state.controlString === "osc"
+                ? OSC_STRING_INERT
+                : OTHER_STRING_INERT,
+            );
+      if (index >= bytes.length) return;
+    }
+    advanceTerminalReplayParserByte(state, bytes[index] ?? 0);
+    index += 1;
+  }
+}
