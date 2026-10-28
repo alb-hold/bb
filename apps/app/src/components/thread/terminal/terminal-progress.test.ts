@@ -8,6 +8,8 @@ describe("terminal progress OSC", () => {
 
   it("clears progress for OSC 9;4 state zero", () => {
     expect(parseTerminalProgressOsc("4;0")).toBeNull();
+    expect(parseTerminalProgressOsc("4;0;")).toBeNull();
+    expect(parseTerminalProgressOsc("4;0;0")).toBeNull();
   });
 
   it("ignores unrelated and invalid progress payloads", () => {

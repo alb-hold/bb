@@ -1,5 +1,5 @@
 export function parseTerminalProgressOsc(payload: string): number | null | undefined {
-  if (payload === "4;0") {
+  if (/^4;0(;\d*)?$/u.test(payload)) {
     return null;
   }
   const match = /^4;[124];(\d{1,3})$/u.exec(payload);

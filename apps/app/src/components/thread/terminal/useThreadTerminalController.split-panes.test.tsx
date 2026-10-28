@@ -248,6 +248,70 @@ describe("two split panes each holding a terminal", () => {
     });
   });
 
+  it("sends no progress write when a terminal that never reported progress unmounts", async () => {
+    vi.mocked(sdk.terminals.list).mockResolvedValue({
+      sessions: [session("term_a", "running")],
+    });
+    const { wrapper } = createQueryClientTestHarness();
+    const { result, unmount } = renderHook(
+      () => useThreadTerminalController(paneArgs("term_a")),
+      { wrapper },
+    );
+
+    await waitFor(() =>
+      expect(result.current.activeSession?.id).toBe("term_a"),
+    );
+    unmount();
+
+    expect(sdk.threads.experimental_updateRowState).not.toHaveBeenCalled();
+  });
+
+  it("does not clear progress set by another pane when a pane that never set progress unmounts", async () => {
+    vi.mocked(sdk.terminals.list).mockResolvedValue({
+      sessions: [session("term_a", "running"), session("term_b", "running")],
+    });
+    const { wrapper } = createQueryClientTestHarness();
+    const paneA = renderHook(
+      () => useThreadTerminalController(paneArgs("term_a")),
+      { wrapper },
+    );
+    const paneB = renderHook(
+      () => useThreadTerminalController(paneArgs("term_b")),
+      { wrapper },
+    );
+
+    await waitFor(() => {
+      expect(paneA.result.current.activeSession?.id).toBe("term_a");
+      expect(paneB.result.current.activeSession?.id).toBe("term_b");
+    });
+    act(() => paneA.result.current.handleActiveTerminalProgressChange(0.6));
+    expect(sdk.threads.experimental_updateRowState).toHaveBeenCalledTimes(1);
+
+    paneB.unmount();
+    act(() =>
+      paneB.result.current.handleActiveTerminalSessionChange(
+        session("term_b", "exited"),
+      ),
+    );
+
+    expect(sdk.threads.experimental_updateRowState).toHaveBeenCalledTimes(1);
+    expect(sdk.threads.experimental_updateRowState).not.toHaveBeenCalledWith({
+      threadId: "thr_1",
+      action: "progress-clear",
+    });
+    expect(sdk.threads.experimental_updateRowState).toHaveBeenLastCalledWith({
+      threadId: "thr_1",
+      action: "progress-set",
+      progress: { value: 0.6 },
+    });
+
+    paneA.unmount();
+    expect(sdk.threads.experimental_updateRowState).toHaveBeenLastCalledWith({
+      threadId: "thr_1",
+      action: "progress-clear",
+    });
+  });
+
   it("does not let program titles block cwd title updates", async () => {
     const current = session("term_a", "running");
     current.title = "bash";

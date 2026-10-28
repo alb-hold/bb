@@ -409,10 +409,13 @@ export function useThreadTerminalController({
         window.clearTimeout(progressUpdateTimeoutRef.current);
         progressUpdateTimeoutRef.current = null;
       }
+      const hadPendingUpdate =
+        pendingProgressUpdateRef.current?.threadId === threadId;
       pendingProgressUpdateRef.current = null;
       const lastUpdate = lastProgressUpdateRef.current;
-      if (lastUpdate?.threadId === threadId && lastUpdate.value === null)
-        return;
+      const hasSentProgress =
+        lastUpdate?.threadId === threadId && lastUpdate.value !== null;
+      if (!hasSentProgress && !hadPendingUpdate) return;
       sendTerminalProgressUpdate(threadId, null);
     },
     [sendTerminalProgressUpdate],
