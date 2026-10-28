@@ -1,4 +1,3 @@
-import { Buffer } from "node:buffer";
 import { countUnarchivedThreadDescendants } from "../../services/threads/thread-archive.js";
 import { eq } from "drizzle-orm";
 import { cancelAbandonedProviderCreations } from "../../services/threads/thread-environment-providers.js";
@@ -13,15 +12,12 @@ import {
   getHost,
   getThread,
   getThreadExecutionOverride,
-  getNativeTerminalThread,
-  stampNativeTerminalTranscriptEvidence,
   getThreadSpawner,
   isNativeTerminalThread,
   setThreadExecutionOverride,
   getThreadSectionById,
   ensureSpendTables,
   listThreadMentionRowsByIds,
-  listStoredEventRows,
   listNonDeletedChildThreads,
   listSpendRollupRows,
   listThreadsWithPendingInteractionState,
@@ -44,8 +40,6 @@ import {
   type Environment,
   type Thread,
   type ThreadListEntry,
-  NATIVE_TERMINAL_ACTIVITY_FRESH_FOR_MS,
-  classifyNativeTranscriptRecord,
 } from "@bb/domain";
 import { toEnvironmentResponse } from "../../services/environments/environment-response.js";
 import {
@@ -117,130 +111,9 @@ import {
 import { emitPluginThreadDeleted } from "../../services/plugins/plugin-thread-events.js";
 import { NotificationBuffer } from "../../services/lib/notification-buffer.js";
 import { getActiveTurnId } from "../../services/threads/thread-events.js";
-import { callHostOnlineRpcForWork } from "../../services/hosts/online-rpc.js";
-import { applyLoggedThreadLifecycleEvent } from "../../services/threads/lifecycle-outcome.js";
+import { reconcileNativeThreadStatus } from "../../services/threads/native-thread-status.js";
 
-const nativeStatusReads = new WeakMap<object, Map<string, number>>();
-const NATIVE_STATUS_READ_CACHE_MS = 4_000;
 const NATIVE_STATUS_LIST_LIMIT = 8;
-const NATIVE_STATUS_CACHE_LIMIT = 512;
-
-async function reconcileNativeStatusOnRead(
-  deps: AppDeps,
-  threadId: string,
-): Promise<void> {
-  const thread = getThread(deps.db, threadId);
-  if (
-    thread === null ||
-    (thread.status !== "active" && thread.status !== "idle")
-  )
-    return;
-  const native = getNativeTerminalThread(deps.db, threadId);
-  if (native === null || native.providerId !== thread.providerId) return;
-  const now = Date.now();
-  if (
-    native.lastEvidenceAt !== null &&
-    now >= native.lastEvidenceAt &&
-    now - native.lastEvidenceAt <= NATIVE_TERMINAL_ACTIVITY_FRESH_FOR_MS
-  )
-    return;
-  let states = nativeStatusReads.get(deps.hub);
-  if (states === undefined) {
-    states = new Map();
-    nativeStatusReads.set(deps.hub, states);
-  }
-  const cachedAt = states.get(threadId);
-  if (cachedAt !== undefined && now - cachedAt < NATIVE_STATUS_READ_CACHE_MS)
-    return;
-  if (states.size >= NATIVE_STATUS_CACHE_LIMIT) {
-    const oldestThreadId = states.keys().next().value;
-    if (oldestThreadId !== undefined) states.delete(oldestThreadId);
-  }
-  states.set(threadId, now);
-  let state: "idle" | "working" | null = null;
-  const nativeTerminal = deps.providerRegistry.get(
-    thread.providerId,
-  )?.nativeTerminal;
-  const session = nativeTerminal?.session;
-  const transcript = nativeTerminal?.activity?.transcript;
-  if (
-    nativeTerminal != null &&
-    native.nativeSessionId !== null &&
-    session?.kind === "assigned" &&
-    transcript !== undefined
-  ) {
-    const environment =
-      thread.environmentId === null
-        ? null
-        : getEnvironment(deps.db, thread.environmentId);
-    if (environment !== null && environment.path !== null) {
-      try {
-        const result = await callHostOnlineRpcForWork(deps, {
-          hostId: environment.hostId,
-          command: {
-            type: "native_terminal.read_transcript_tail",
-            sessionId: native.nativeSessionId,
-            sessionRoot: nativeTerminal.sessionRoot,
-            transcriptPattern: session.transcript,
-            cwd: environment.path,
-          },
-          timeoutMs: 2_000,
-        });
-        states.set(threadId, Date.now());
-        if (result.outcome === "available") {
-          const content = Buffer.from(result.contentBase64, "base64").toString(
-            "utf8",
-          );
-          const records = content.split("\n").filter((line) => line.length > 0);
-          for (let index = records.length - 1; index >= 0; index -= 1) {
-            try {
-              state = classifyNativeTranscriptRecord(
-                transcript,
-                JSON.parse(records[index]),
-              );
-            } catch {
-              continue;
-            }
-            if (state !== null) break;
-          }
-          if (state !== null) {
-            stampNativeTerminalTranscriptEvidence(deps.db, {
-              at: now,
-              nativeSessionId: native.nativeSessionId,
-              threadId,
-            });
-          }
-        }
-      } catch (error) {
-        states.set(threadId, Date.now());
-        deps.logger.debug(
-          { threadId, error },
-          "Native status transcript lookup failed",
-        );
-      }
-    }
-  }
-  if (
-    state === null &&
-    thread.status === "active" &&
-    native.nativeSessionId !== null &&
-    native.initialPrompt === null &&
-    getActiveTurnId({ db: deps.db }, threadId) === null &&
-    listStoredEventRows(deps.db, {
-      threadId,
-      types: ["turn/started", "client/turn/requested"],
-      limit: 1,
-    }).length === 0
-  ) {
-    state = "idle";
-  }
-  if (state === null || (state === "working") === (thread.status === "active"))
-    return;
-  applyLoggedThreadLifecycleEvent(deps, {
-    event: { type: state === "idle" ? "run.succeeded" : "run.started" },
-    threadId,
-  });
-}
 
 function parseThreadIncludes(query: ThreadGetQuery): Set<ThreadIncludeOption> {
   const includes = new Set<ThreadIncludeOption>();
@@ -535,7 +408,7 @@ export function registerThreadBaseRoutes(
       void Promise.all(
         threads
           .slice(0, NATIVE_STATUS_LIST_LIMIT)
-          .map((thread) => reconcileNativeStatusOnRead(deps, thread.id)),
+          .map((thread) => reconcileNativeThreadStatus(deps, thread.id)),
       ).catch((error) => {
         deps.logger.debug(
           { error },
@@ -654,7 +527,7 @@ export function registerThreadBaseRoutes(
 
   get(routes.get, async (context, query) => {
     const threadId = context.req.param("id");
-    await reconcileNativeStatusOnRead(deps, threadId);
+    await reconcileNativeThreadStatus(deps, threadId);
     const thread = requirePublicThread(deps.db, threadId);
     return context.json(
       buildThreadResponse(deps, {
