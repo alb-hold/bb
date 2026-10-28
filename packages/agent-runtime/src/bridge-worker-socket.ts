@@ -184,12 +184,22 @@ class AdoptedProcessHandle extends EventEmitter implements WorkerProcessHandle {
     this.polling = true;
     try {
       const identity = await readProcessIdentityAsync(this.recordedPid);
+      if (identity === null && isPidRunning(this.recordedPid)) return;
       this.identityMatches = identity === this.processIdentity;
       this.identityCheckedAt = Date.now();
       if (!this.identityMatches) this.markGone();
     } finally {
       this.polling = false;
     }
+  }
+}
+
+function isPidRunning(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return !(error instanceof Error && Reflect.get(error, "code") === "ESRCH");
   }
 }
 

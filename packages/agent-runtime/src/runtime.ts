@@ -846,7 +846,6 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
         bridgeLaunch: first.config.bridgeLaunch,
         capabilities: entry.capabilities,
         entry,
-        processKey: entry.processKey,
         providerId: entry.providerId,
         workerDir: args.dir,
       });
@@ -859,7 +858,10 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
         if (thread.providerThreadId !== null) {
           recordProviderThreadIdentity(proc, threadId, thread.providerThreadId);
         }
-        threadRuntimeConfigs.set(threadId, config);
+        threadRuntimeConfigs.set(threadId, {
+          ...config,
+          processKey: proc.processKey,
+        });
         pendingAdoptions.push({
           proc,
           threadId,
