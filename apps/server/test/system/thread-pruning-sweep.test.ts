@@ -141,6 +141,7 @@ describe("thread pruning sweep", () => {
         .run();
       await runThreadPruningSweep(harness.deps, UNTIMED_SWEEP_LIMITS);
       expect(harness.db.select().from(threadPruningCursors).all()).toEqual([]);
+      expect(harness.db.select().from(events).all()).toHaveLength(1200);
       harness.db
         .update(threads)
         .set({ status: "idle" })
