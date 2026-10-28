@@ -1,5 +1,11 @@
 import { execFileSync } from "node:child_process";
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
@@ -41,6 +47,7 @@ import {
   threadResponseSchema,
 } from "@bb/server-contract";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { z } from "zod";
 import { queueParentSystemMessage } from "../../src/services/threads/parent-system-messages.js";
 import { sendThreadMessage } from "../../src/services/threads/thread-send.js";
 import {
@@ -370,6 +377,111 @@ function claudeComposerScreen(pasted: string): string {
 function composerScreen(pasted: string): string {
   const words = pasted.split(" ");
   return `\u001b[2K\u001b[1G\u203a ${words.join("\u001b[1C")}\u001b[0m`;
+}
+
+const recordedChunksSchema = z.object({
+  chunks: z.array(z.object({ seq: z.number(), dataBase64: z.string() })),
+});
+
+interface RecordedChunk {
+  seq: number;
+  dataBase64: string;
+}
+
+function recordedClaudeSession(): RecordedChunk[] {
+  return recordedChunksSchema.parse(
+    JSON.parse(
+      readFileSync(
+        new URL(
+          "../fixtures/native-terminal/claude-fullscreen-after-clear.json",
+          import.meta.url,
+        ),
+        "utf8",
+      ),
+    ),
+  ).chunks;
+}
+
+function recordedText(chunk: RecordedChunk): string {
+  return Buffer.from(chunk.dataBase64, "base64").toString("utf8");
+}
+
+interface RecordedCli {
+  inputs(): string[];
+  stop(): void;
+}
+
+function startRecordedCli(
+  fixture: Fixture,
+  terminalId: string,
+  history: readonly RecordedChunk[],
+  react: {
+    paste(pasted: string): readonly string[];
+    enter(): readonly string[];
+  },
+): RecordedCli {
+  const output: RecordedChunk[] = [];
+  let nextSeq = (history.at(-1)?.seq ?? -1) + 1;
+  let handled = 0;
+  const emit = (chunk: RecordedChunk) => {
+    output.push(chunk);
+    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+      hostId: fixture.hostId,
+      sessionId: fixture.sessionId,
+      message: { type: "terminal.output", terminalId, chunk },
+    });
+  };
+  const draw = (texts: readonly string[]) => {
+    for (const text of texts) {
+      emit({
+        seq: nextSeq,
+        dataBase64: Buffer.from(text, "utf8").toString("base64"),
+      });
+      nextSeq += 1;
+    }
+  };
+  for (const chunk of history) emit(chunk);
+  const timer = setInterval(() => {
+    const messages = daemonMessages(fixture.socket);
+    for (const message of messages.slice(handled)) {
+      if (
+        message.type === "terminal.input" &&
+        message.terminalId === terminalId
+      ) {
+        const text = Buffer.from(message.dataBase64, "base64").toString("utf8");
+        const pasted = /^\u001b\[200~([\s\S]*)\u001b\[201~$/u.exec(text);
+        if (pasted !== null) draw(react.paste(pasted[1] ?? ""));
+        else if (text === "\r") draw(react.enter());
+      }
+      if (
+        message.type === "terminal.attach" &&
+        message.terminalId === terminalId
+      ) {
+        fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+          hostId: fixture.hostId,
+          sessionId: fixture.sessionId,
+          message: {
+            type: "terminal.replay",
+            requestId: message.requestId,
+            terminalId,
+            chunks: output.filter((chunk) => chunk.seq >= message.sinceSeq),
+            replayStartSeq: message.sinceSeq,
+            nextSeq,
+          },
+        });
+      }
+    }
+    handled = messages.length;
+  }, 5);
+  return {
+    inputs: () =>
+      daemonMessages(fixture.socket).flatMap((message) =>
+        message.type === "terminal.input" && message.terminalId === terminalId
+          ? [Buffer.from(message.dataBase64, "base64").toString("utf8")]
+          : [],
+      ),
+    stop: () => clearInterval(timer),
+  };
 }
 
 describe("native terminal threads", () => {
@@ -2238,7 +2350,7 @@ describe("native terminal threads", () => {
       },
     );
 
-    it("refuses the same text while it sits unsent in the input box", async () => {
+    it("refuses the text when it sits unsent behind other typed text", async () => {
       const fixture = await createFixture();
       const { open, thread } = await openRunningNativeThread(fixture, {
         providerId: "claude-code",
@@ -2247,7 +2359,7 @@ describe("native terminal threads", () => {
         fixture,
         open.terminalId,
         claudeComposerScreen,
-        idleScreen("Reply with exactly: repeat-probe"),
+        idleScreen("draft Reply with exactly: repeat-probe"),
       );
       try {
         const response = await postJson(fixture, `/threads/${thread.id}/send`, {
@@ -4815,5 +4927,147 @@ describe("native terminal threads", () => {
         terminalId: open.terminalId,
       })?.status,
     ).toBe("running");
+  });
+  describe("a fullscreen Claude Code session recorded after /clear", () => {
+    const sendSayOk = (fixture: Fixture, threadId: string) =>
+      postJson(fixture, `/threads/${threadId}/send`, {
+        input: textInput("say ok"),
+        mode: "auto",
+      });
+    const split = () => {
+      const chunks = recordedClaudeSession();
+      return {
+        idle: chunks.filter((chunk) => chunk.seq < 429),
+        typed: chunks.filter((chunk) => chunk.seq >= 429),
+      };
+    };
+
+    it("submits a repeated message the screen already shows in its history", async () => {
+      const fixture = await createFixture();
+      const { open, thread } = await openRunningNativeThread(fixture, {
+        providerId: "claude-code",
+      });
+      const { idle, typed } = split();
+      const cli = startRecordedCli(fixture, open.terminalId, idle, {
+        paste: () => typed.map(recordedText),
+        enter: () => [],
+      });
+      try {
+        const response = await sendSayOk(fixture, thread.id);
+        expect(response.status).toBe(200);
+        expect(cli.inputs()).toEqual(["\u001b[200~say ok\u001b[201~", "\r"]);
+      } finally {
+        cli.stop();
+      }
+    });
+
+    it("reads only the output since the requested sequence while earlier output is retained", async () => {
+      const fixture = await createFixture();
+      const { open } = await openRunningNativeThread(fixture, {
+        providerId: "claude-code",
+      });
+      const { typed } = split();
+      const cli = startRecordedCli(
+        fixture,
+        open.terminalId,
+        recordedClaudeSession(),
+        { paste: () => [], enter: () => [] },
+      );
+      try {
+        const delta =
+          await fixture.harness.deps.terminalSessions.readTerminalOutput({
+            terminalId: open.terminalId,
+            query: { sinceSeq: typed[0]!.seq },
+          });
+        expect(delta.chunks.map((chunk) => chunk.seq)).toEqual(
+          typed.map((chunk) => chunk.seq),
+        );
+      } finally {
+        cli.stop();
+      }
+    });
+
+    it("presses Enter when exactly the requested text sits unsent in the input box", async () => {
+      const fixture = await createFixture();
+      const { open, thread } = await openRunningNativeThread(fixture, {
+        providerId: "claude-code",
+      });
+      const cli = startRecordedCli(
+        fixture,
+        open.terminalId,
+        recordedClaudeSession(),
+        { paste: () => [], enter: () => [] },
+      );
+      try {
+        const response = await sendSayOk(fixture, thread.id);
+        expect(response.status).toBe(200);
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        expect(cli.inputs()).toEqual(["\r"]);
+      } finally {
+        cli.stop();
+      }
+    });
+
+    it("refuses when the requested text is only part of what the input box holds", async () => {
+      const fixture = await createFixture();
+      const { open, thread } = await openRunningNativeThread(fixture, {
+        providerId: "claude-code",
+      });
+      const cli = startRecordedCli(
+        fixture,
+        open.terminalId,
+        recordedClaudeSession(),
+        { paste: () => [], enter: () => [] },
+      );
+      try {
+        const response = await postJson(fixture, `/threads/${thread.id}/send`, {
+          input: textInput("say"),
+          mode: "auto",
+        });
+        expect(response.status).toBe(409);
+        expect(apiErrorSchema.parse(await readJson(response)).code).toBe(
+          "native_terminal_input_ambiguous",
+        );
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        expect(cli.inputs()).toEqual([]);
+      } finally {
+        cli.stop();
+      }
+    });
+
+    it("submits each of several identical tells exactly once while a faint suggestion repeats the text", async () => {
+      const fixture = await createFixture();
+      const { open, thread } = await openRunningNativeThread(fixture, {
+        providerId: "claude-code",
+      });
+      const { idle, typed } = split();
+      const ghost =
+        "\u001b[?2026h\u001b[?25l\u001b[H\r\u001b[2C\u001b[32B\u001b[2msay ok\u001b[22m\u001b[36;1H\u001b[33;3H\u001b[?25h\u001b[?2026l";
+      const submitted = [
+        "\u001b[?2026h\u001b[?25l\u001b[H\r\u001b[2B\u001b[48;2;55;55;55m\u001b[38;2;153;153;153m\u276f \u001b[38;2;255;255;255msay ok\u001b[39m\u001b[49m\u001b[36;1H\u001b[33;3H\u001b[?25h\u001b[?2026l",
+        "\u001b[?2026h\u001b[?25l\u001b[H\r\u001b[2C\u001b[32B\u001b[K\u001b[36;1H\u001b[33;3H\u001b[?25h\u001b[?2026l",
+        ghost,
+      ];
+      const cli = startRecordedCli(fixture, open.terminalId, idle, {
+        paste: () => typed.map(recordedText),
+        enter: () => submitted,
+      });
+      const tells = 6;
+      try {
+        for (let tell = 0; tell < tells; tell += 1) {
+          const response = await sendSayOk(fixture, thread.id);
+          if (response.status !== 200)
+            throw new Error(`tell ${tell}: ${await response.text()}`);
+        }
+        expect(cli.inputs()).toEqual(
+          Array.from({ length: tells }, () => [
+            "\u001b[200~say ok\u001b[201~",
+            "\r",
+          ]).flat(),
+        );
+      } finally {
+        cli.stop();
+      }
+    }, 20_000);
   });
 });

@@ -5,6 +5,7 @@ import {
   terminalOutputShowsPaste,
   terminalOutputShowsPasteAgain,
   terminalScreenAlreadyShowsText,
+  terminalScreenInputBoxHoldsText,
 } from "../../src/services/threads/native-terminal-echo.js";
 import { createTerminalGridMarker } from "@bb/domain";
 
@@ -346,6 +347,32 @@ describe("terminalOutputShowsPasteAgain", () => {
     ).toBe(true);
   });
 
+  it("accepts the repeated paste drawn over a faint suggestion of the same text", () => {
+    const history = "\u001b[1;1H\u276f say ok\r\n\u23fa ok";
+    const ghost = "\u001b[10;3H\u001b[2msay ok\u001b[22m";
+    expect(
+      terminalOutputShowsPasteAgain({
+        before: history + ghost,
+        output: "\u001b[10;3Hsay\u001b[10;7Gok",
+        pastePlaceholders: [],
+        text: "say ok",
+      }),
+    ).toBe(true);
+  });
+
+  it("does not take a faint suggestion drawn again in place for the paste", () => {
+    const history = "\u001b[1;1H\u276f say ok\r\n\u23fa ok";
+    const ghost = "\u001b[10;3H\u001b[2msay ok\u001b[22m";
+    expect(
+      terminalOutputShowsPasteAgain({
+        before: history + ghost,
+        output: "\u001b[10;3H\u001b[2msay ok\u001b[22m",
+        pastePlaceholders: [],
+        text: "say ok",
+      }),
+    ).toBe(false);
+  });
+
   it("does not count the older line drawn again in place", () => {
     expect(
       terminalOutputShowsPasteAgain({
@@ -476,5 +503,65 @@ describe("decodeTerminalOutputChunks", () => {
     expect(terminalOutputAlreadyShowsText({ output, text: "bb-grid" })).toBe(
       false,
     );
+  });
+});
+
+describe("terminalScreenInputBoxHoldsText", () => {
+  const rule = "\u2500".repeat(40);
+  const screen = (...box: string[]) => [
+    "\u23fa ok",
+    rule,
+    ...box,
+    rule,
+    "  Sonnet 5.5 | ctx 64K",
+  ];
+
+  it("holds exactly the requested text typed in the box", () => {
+    expect(
+      terminalScreenInputBoxHoldsText({
+        rows: screen("\u276f\u00a0say ok"),
+        text: "say ok",
+      }),
+    ).toBe(true);
+  });
+
+  it("holds a wrapped message across the rows of the box", () => {
+    expect(
+      terminalScreenInputBoxHoldsText({
+        rows: screen("\u276f\u00a0Use your tool now and", "  report back"),
+        text: "Use your tool now and report back",
+      }),
+    ).toBe(true);
+  });
+
+  it.each([
+    ["more typed text", "\u276f\u00a0please say ok", "say ok"],
+    ["less typed text", "\u276f\u00a0say ok", "say ok please"],
+    ["an empty box", "\u276f\u00a0", "say ok"],
+  ])("does not hold the text beside %s", (_label, box, text) => {
+    expect(terminalScreenInputBoxHoldsText({ rows: screen(box), text })).toBe(
+      false,
+    );
+  });
+
+  it("does not hold the text when no border closes the box", () => {
+    expect(
+      terminalScreenInputBoxHoldsText({
+        rows: ["\u203a say ok", "  gpt-5 \u00b7 100% context left"],
+        text: "say ok",
+      }),
+    ).toBe(false);
+  });
+
+  it("does not take a menu entry below the box for the box", () => {
+    expect(
+      terminalScreenInputBoxHoldsText({
+        rows: [
+          ...screen("\u276f\u00a0/cl"),
+          "\u276f /clear  Start a new session",
+        ],
+        text: "/clear",
+      }),
+    ).toBe(false);
   });
 });
