@@ -834,7 +834,9 @@ describe("createAgentRuntime process lifecycle", () => {
     });
 
     providerProcess?.child.emit("error", new Error("worker pipe failed"));
-    await expect(pendingRequest).rejects.toThrow(/exited unexpectedly/i);
+    await expect(pendingRequest).rejects.toThrow(
+      /stopped unexpectedly; its exit status could not be read/i,
+    );
     expect(isProviderProcessExitedError(rejectedError)).toBe(true);
     expect(exitInfo).toHaveBeenCalledWith(
       expect.objectContaining({

@@ -1975,6 +1975,59 @@ describe("RuntimeManager", () => {
     expect(emittedEvents).toEqual([]);
   });
 
+  it("says so when a provider's exit status could not be read", async () => {
+    const emittedEvents: Array<{
+      environmentId: string;
+      event: ThreadEvent;
+    }> = [];
+    let onProcessExit:
+      | NonNullable<AgentRuntimeOptions["onProcessExit"]>
+      | undefined;
+    const manager = new RuntimeManager({
+      provisionWorkspace: createProvisionWorkspaceMock(
+        "/tmp/env-unreadable-exit",
+      ).mockResolvedValue(createFakeWorkspace("/tmp/env-unreadable-exit")),
+      createRuntime: vi.fn((options) => {
+        onProcessExit = options.onProcessExit;
+        return createFakeRuntime();
+      }),
+      onEvent: (event) => {
+        emittedEvents.push(event);
+      },
+    });
+    await manager.ensureEnvironment({
+      environmentId: "env-unreadable-exit",
+      workspacePath: "/tmp/env-unreadable-exit",
+    });
+    if (!onProcessExit) {
+      throw new Error("Expected runtime callbacks to be captured");
+    }
+
+    onProcessExit({
+      bridgeWorker: null,
+      providerId: "claude-code",
+      threads: [
+        {
+          threadId: "thread-unreadable",
+          activeTurnId: "turn-1",
+          pendingTurnStart: false,
+          providerThreadId: "provider-unreadable",
+        },
+      ],
+      code: null,
+      expected: false,
+      signal: null,
+      stderr: null,
+    });
+
+    const messages = emittedEvents.flatMap(({ event }) =>
+      event.type === "system/error" ? [event.message] : [],
+    );
+    expect(messages).toEqual([
+      'Provider "claude-code" stopped unexpectedly; its exit status could not be read',
+    ]);
+  });
+
   it("emits a thread failure when a provider exits before turn/started", async () => {
     const emittedEvents: Array<{
       environmentId: string;

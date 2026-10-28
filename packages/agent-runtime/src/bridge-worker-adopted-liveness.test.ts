@@ -78,9 +78,13 @@ describe("an adopted bridge worker whose process identity cannot be read", () =>
     const pid = child.pid ?? 0;
     await new Promise((resolve) => child.once("exit", resolve));
     const worker = adopt(pid);
+    const exits: unknown[][] = [];
+    worker.on("exit", (...status) => exits.push(status));
     await new Promise((resolve) => setTimeout(resolve, 200));
 
     expect(worker.exitCode).toBe(-1);
+    expect(worker.exitStatusUnreadable).toBe(true);
+    expect(exits).toEqual([[null, null]]);
   });
 
   it("is reported as exited when the pid now belongs to a different process", async () => {
