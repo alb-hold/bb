@@ -5,7 +5,12 @@ const MAX_NEIGHBOURS = 16;
 const CACHE_TTL_MS = 500;
 
 export const SHARED_WORKSPACE_ISOLATION_INSTRUCTION =
-  "Before changing files, create or choose a dedicated worktree outside this shared path, call update_environment_directory with its absolute path, and end this turn. Do not write in this shared workspace.";
+  "Do not write files inside this shared checkout while another thread is active in it. " +
+  "This restriction applies only to files under the shared checkout path; writes outside it, " +
+  "including /tmp, thread storage, and $HOME configuration, do not require a worktree move. " +
+  "If you plan to change files inside the shared checkout, first create or choose a dedicated " +
+  "worktree outside this path, call update_environment_directory with its absolute path, and " +
+  "end this turn before editing.";
 
 interface WorkspaceNeighbour {
   id: string;
