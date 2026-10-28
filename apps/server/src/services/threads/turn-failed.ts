@@ -34,6 +34,10 @@ const rateLimitsDataSchema = z.object({
   rateLimits: providerRateLimitStateSchema,
 });
 
+const failedCompletionDataSchema = z.object({
+  status: z.literal("failed"),
+});
+
 const rejectedReasonDataSchema = z.object({
   reason: z.string(),
 });
@@ -161,12 +165,24 @@ function processExitErrorInfo(
   db: DbConnection,
   args: { threadId: string; failed: FailedTurnRecord },
 ): ProviderErrorInfo | null {
+  const completion = getLatestStoredThreadEventOfTypes(db, {
+    threadId: args.threadId,
+    types: ["turn/completed"],
+    afterSequence: args.failed.requestSequence,
+  });
+  if (
+    completion === null ||
+    completion.turnId === null ||
+    !failedCompletionDataSchema.safeParse(parseRowData(completion)).success
+  ) {
+    return null;
+  }
   const row = getLatestStoredThreadEventOfTypes(db, {
     threadId: args.threadId,
     types: ["system/error"],
     afterSequence: args.failed.requestSequence,
   });
-  if (row === null) return null;
+  if (row === null || row.turnId !== completion.turnId) return null;
   const code = systemErrorEventDataSchema.safeParse(parseRowData(row)).data
     ?.code;
   if (code !== PROVIDER_PROCESS_EXITED_ERROR_CODE) return null;

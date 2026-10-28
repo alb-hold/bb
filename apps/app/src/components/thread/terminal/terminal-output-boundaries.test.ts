@@ -47,6 +47,19 @@ const FRAGMENTS: ReadonlyArray<(random: () => number) => Buffer> = [
   () => Buffer.from("\x1b[31"),
   () => Buffer.from("\x1b]52;c;YWJjZGVm\x07"),
   () => Buffer.from("\x1b]0;title\x1b\\"),
+  () => Buffer.from("\x1b]0;cŜur “quoted” ’ …\x07", "utf8"),
+  () => Buffer.from("\x1b]2;title Ŝ\x1b\\", "utf8"),
+  () =>
+    Buffer.from(
+      "\x1b]8;id=Ŝ;https://example.test/“x”\x1b\\link\x1b]8;;\x1b\\",
+      "utf8",
+    ),
+  () => Buffer.from("\x1bP1$rŜ“\x1b\\", "utf8"),
+  () => Buffer.from([0x1b, 0x5d, 0x30, 0x3b, 0xe2, 0x80, 0x9c]),
+  () => Buffer.from([0x1b, 0x5d, 0x30, 0x3b, 0xc5]),
+  () => Buffer.from([0xc5, 0x9c, 0x07]),
+  () =>
+    Buffer.from([0x1b, 0x50, 0xc2, 0x9c, 0x9c, 0xe2, 0x9c, 0x93, 0x1b, 0x5c]),
   () => Buffer.from("\x1b]52;c;YWJj"),
   () => Buffer.from("\x1b7\x1b8\x1bM\x1b(B"),
   () => Buffer.from("\x1b"),

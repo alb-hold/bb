@@ -232,7 +232,11 @@ const LONG_TURN_BRIDGE = [
   "};",
 ].join("\n");
 
-function spawnSocketWorker(args: string[], socketPath: string) {
+function spawnSocketWorker(
+  args: string[],
+  socketPath: string,
+  pipeStdout = false,
+) {
   const child = spawn(
     process.execPath,
     [
@@ -243,18 +247,27 @@ function spawnSocketWorker(args: string[], socketPath: string) {
       ...args,
     ],
     {
-      stdio: ["ignore", "ignore", "pipe"],
+      stdio: pipeStdout
+        ? ["ignore", "pipe", "pipe"]
+        : ["ignore", "ignore", "pipe"],
       env: { ...process.env, BB_BRIDGE_SOCKET: socketPath },
     },
   );
   let stderr = "";
-  child.stderr.setEncoding("utf8").on("data", (chunk: string) => {
+  const stderrStream = child.stderr;
+  if (stderrStream === null) throw new Error("Expected a stderr pipe");
+  stderrStream.setEncoding("utf8").on("data", (chunk: string) => {
     stderr += chunk;
   });
   const exited = new Promise<number | null>((resolve) => {
     child.on("exit", (code) => resolve(code));
   });
-  return { child, exited, stderr: () => stderr };
+  return {
+    child,
+    closeStderr: () => stderrStream.destroy(),
+    exited,
+    stderr: () => stderr,
+  };
 }
 
 function tickNumber(line: string): number | null {
@@ -387,7 +400,7 @@ it("keeps serving after the process that spawned it is gone and it writes to std
     client.send({ id: 1, method: "ping", params: {} });
     await client.waitForLine((line) => line.includes('"id":1'));
 
-    worker.child.stderr.destroy();
+    worker.closeStderr();
     await new Promise((resolve) => setTimeout(resolve, 100));
     client.send({ id: 2, method: "noise", params: {} });
     await client.waitForLine((line) => line.includes('"id":2'));
@@ -396,6 +409,58 @@ it("keeps serving after the process that spawned it is gone and it writes to std
     expect(worker.child.exitCode).toBeNull();
     client.send({ id: 3, method: "ping", params: {} });
     await client.waitForLine((line) => line.includes('"id":3'));
+  } finally {
+    worker.child.kill("SIGKILL");
+  }
+}, 20_000);
+
+it("keeps serving after writes to closed stdout and stderr pipes in socket mode", async () => {
+  const fixture = await createFixture(
+    [
+      "import { writeSync } from 'node:fs';",
+      "export const experimental_providerBridge = {",
+      "  experimental_apiVersion: 1,",
+      "  handleLine(line) {",
+      "    const request = JSON.parse(line);",
+      "    let stdoutCode = null;",
+      "    let stderrCode = null;",
+      "    process.stderr.write('warning from the provider\\n');",
+      "    try { writeSync(2, 'raw stderr write\\n'); } catch (error) { stderrCode = error.code ?? String(error); }",
+      "    try { writeSync(1, 'raw stdout write\\n'); } catch (error) { stdoutCode = error.code ?? String(error); }",
+      "    process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { stdoutCode, stderrCode } }) + '\\n');",
+      "  },",
+      "};",
+    ].join("\n"),
+  );
+  const socketDir = await createShortSocketDir();
+  tempDirs.push(socketDir);
+  const socketPath = join(socketDir, "w.sock");
+  const worker = spawnSocketWorker(
+    [fixture.bridgeModulePath, "provider-fixture", fixture.dataDir],
+    socketPath,
+    true,
+  );
+  try {
+    const client = await connectBridgeSocket(socketPath);
+    const stdout = worker.child.stdout;
+    if (stdout === null) throw new Error("Expected a stdout pipe");
+    stdout.destroy();
+    worker.closeStderr();
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    client.send({ id: 1, method: "noise", params: {} });
+    const reply = await client.waitForLine((line) => line.includes('"id":1'));
+    expect(JSON.parse(reply)).toMatchObject({
+      id: 1,
+      result: { stdoutCode: "EPIPE", stderrCode: "EPIPE" },
+    });
+    expect(worker.child.exitCode).toBeNull();
+
+    client.send({ id: 2, method: "ping", params: {} });
+    const nextReply = await client.waitForLine((line) =>
+      line.includes('"id":2'),
+    );
+    expect(JSON.parse(nextReply)).toMatchObject({ id: 2 });
   } finally {
     worker.child.kill("SIGKILL");
   }
