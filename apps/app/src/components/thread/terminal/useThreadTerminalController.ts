@@ -40,7 +40,11 @@ import {
   terminalCwdTitle,
   terminalSpawnCwd,
 } from "./terminal-shell-state";
-import { queueThreadProgressUpdate } from "@/lib/terminal-progress-updates";
+import {
+  cancelPendingTerminalProgressTimeouts,
+  queueThreadProgressUpdate,
+  registerPendingTerminalProgressTimeout,
+} from "@/lib/terminal-progress-updates";
 
 export const DEFAULT_TERMINAL_COLS = 100;
 export const DEFAULT_TERMINAL_ROWS = 30;
@@ -238,6 +242,8 @@ export function useThreadTerminalController({
     value: number;
   } | null>(null);
   const progressUpdateTimeoutRef = useRef<number | null>(null);
+  const cancelPendingProgressTimeoutRef = useRef<(() => void) | null>(null);
+  const unregisterPendingProgressTimeoutRef = useRef<(() => void) | null>(null);
   const dirtyTerminalIdsRef = useRef<Set<string>>(new Set());
   const closingCleanTerminalIdsRef = useRef<Set<string>>(new Set());
   const closingDisconnectedTerminalIdsRef = useRef<Set<string>>(new Set());
@@ -406,6 +412,19 @@ export function useThreadTerminalController({
     [],
   );
 
+  const cancelPendingProgressTimeout = useCallback(() => {
+    const cancel = cancelPendingProgressTimeoutRef.current;
+    if (cancel !== null) {
+      cancel();
+      return;
+    }
+    if (progressUpdateTimeoutRef.current !== null) {
+      window.clearTimeout(progressUpdateTimeoutRef.current);
+      progressUpdateTimeoutRef.current = null;
+    }
+    pendingProgressUpdateRef.current = null;
+  }, []);
+
   const clearTerminalProgress = useCallback(
     (threadId: string | null, terminalId: string | null) => {
       const pendingUpdate = pendingProgressUpdateRef.current;
@@ -418,16 +437,13 @@ export function useThreadTerminalController({
       const pendingMatches =
         pendingUpdate !== null && matchesTarget(pendingUpdate);
       if (pendingMatches) {
-        pendingProgressUpdateRef.current = null;
-        if (progressUpdateTimeoutRef.current !== null) {
-          window.clearTimeout(progressUpdateTimeoutRef.current);
-          progressUpdateTimeoutRef.current = null;
-        }
+        cancelPendingProgressTimeout();
       }
+      cancelPendingTerminalProgressTimeouts(threadId, terminalId);
       if (threadId === null || terminalId === null) return;
       sendTerminalProgressUpdate(threadId, terminalId, null);
     },
-    [sendTerminalProgressUpdate],
+    [cancelPendingProgressTimeout, sendTerminalProgressUpdate],
   );
 
   const queueTerminalProgressUpdate = useCallback(
@@ -447,11 +463,7 @@ export function useThreadTerminalController({
         lastUpdate.value === value
       ) {
         if (pendingUpdate?.threadId === threadId) {
-          pendingProgressUpdateRef.current = null;
-          if (progressUpdateTimeoutRef.current !== null) {
-            window.clearTimeout(progressUpdateTimeoutRef.current);
-            progressUpdateTimeoutRef.current = null;
-          }
+          cancelPendingProgressTimeout();
         }
         return;
       }
@@ -461,19 +473,45 @@ export function useThreadTerminalController({
           ? Date.now() - lastUpdate.sentAt
           : TERMINAL_PROGRESS_UPDATE_INTERVAL_MS;
       if (elapsed >= TERMINAL_PROGRESS_UPDATE_INTERVAL_MS) {
-        if (progressUpdateTimeoutRef.current !== null) {
-          window.clearTimeout(progressUpdateTimeoutRef.current);
-          progressUpdateTimeoutRef.current = null;
-        }
-        pendingProgressUpdateRef.current = null;
+        cancelPendingProgressTimeout();
         sendTerminalProgressUpdate(threadId, terminalId, value);
         return;
       }
 
       pendingProgressUpdateRef.current = { threadId, terminalId, value };
-      if (progressUpdateTimeoutRef.current !== null) return;
-      progressUpdateTimeoutRef.current = window.setTimeout(() => {
+      if (progressUpdateTimeoutRef.current !== null) {
+        const cancel = cancelPendingProgressTimeoutRef.current;
+        if (cancel !== null) {
+          unregisterPendingProgressTimeoutRef.current?.();
+          unregisterPendingProgressTimeoutRef.current =
+            registerPendingTerminalProgressTimeout(
+              threadId,
+              terminalId,
+              cancel,
+            );
+        }
+        return;
+      }
+      let timeoutId = 0;
+      const cancel = () => {
+        window.clearTimeout(timeoutId);
+        if (progressUpdateTimeoutRef.current === timeoutId) {
+          progressUpdateTimeoutRef.current = null;
+        }
+        pendingProgressUpdateRef.current = null;
+        if (cancelPendingProgressTimeoutRef.current === cancel) {
+          cancelPendingProgressTimeoutRef.current = null;
+        }
+        unregisterPendingProgressTimeoutRef.current?.();
+        unregisterPendingProgressTimeoutRef.current = null;
+      };
+      timeoutId = window.setTimeout(() => {
         progressUpdateTimeoutRef.current = null;
+        if (cancelPendingProgressTimeoutRef.current === cancel) {
+          cancelPendingProgressTimeoutRef.current = null;
+        }
+        unregisterPendingProgressTimeoutRef.current?.();
+        unregisterPendingProgressTimeoutRef.current = null;
         const nextUpdate = pendingProgressUpdateRef.current;
         pendingProgressUpdateRef.current = null;
         if (nextUpdate === null) return;
@@ -491,8 +529,12 @@ export function useThreadTerminalController({
           nextUpdate.value,
         );
       }, TERMINAL_PROGRESS_UPDATE_INTERVAL_MS - elapsed);
+      progressUpdateTimeoutRef.current = timeoutId;
+      cancelPendingProgressTimeoutRef.current = cancel;
+      unregisterPendingProgressTimeoutRef.current =
+        registerPendingTerminalProgressTimeout(threadId, terminalId, cancel);
     },
-    [sendTerminalProgressUpdate],
+    [cancelPendingProgressTimeout, sendTerminalProgressUpdate],
   );
 
   const activeSessionId = activeSession?.id;

@@ -64,8 +64,7 @@ export function registerThreadRowStateRoutes(app: Hono, deps: AppDeps): void {
     );
     if (
       request.action === "progress-clear" &&
-      request.terminalId !== undefined &&
-      request.terminalId !== currentSourceTerminalId
+      (request.terminalId ?? null) !== currentSourceTerminalId
     ) {
       return context.json(current);
     }

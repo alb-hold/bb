@@ -239,4 +239,44 @@ describe("public thread row state", () => {
       ]);
     });
   });
+
+  it("keeps a legacy clear from erasing terminal-owned progress", async () => {
+    await withTestHarness(async (harness) => {
+      const { thread } = seedThreadFixture(harness);
+      await updateState(harness, thread.id, {
+        action: "progress-set",
+        progress: { value: 0.6 },
+        terminalId: "terminal-a",
+      });
+      await updateState(harness, thread.id, {
+        action: "progress-set",
+        progress: { value: 0.4 },
+        terminalId: "terminal-b",
+      });
+
+      const legacyClear = await updateState(harness, thread.id, {
+        action: "progress-clear",
+      });
+      expect(legacyClear.status).toBe(200);
+      expect(
+        threadRowStateSchema.parse(await readJson(legacyClear)).progress,
+      ).toEqual({ value: 0.4 });
+      expect(
+        threadRowStateSchema.parse(
+          await readJson(await readState(harness, thread.id)),
+        ).progress,
+      ).toEqual({ value: 0.4 });
+
+      await updateState(harness, thread.id, {
+        action: "progress-set",
+        progress: { value: 0.2 },
+      });
+      const ownerlessClear = await updateState(harness, thread.id, {
+        action: "progress-clear",
+      });
+      expect(
+        threadRowStateSchema.parse(await readJson(ownerlessClear)).progress,
+      ).toBeNull();
+    });
+  });
 });

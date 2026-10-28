@@ -33,6 +33,8 @@ let terminalThreadById: Map<string, string>;
 let requests: Array<{ body: unknown; method: string; pathname: string }>;
 let completedProgressWrites: number[];
 let holdNextProgressSet: (() => Promise<void>) | null;
+let onProgressSetCompleted: (() => void) | null;
+let onProgressClearCompleted: (() => void) | null;
 
 function terminal(
   id: string,
@@ -136,6 +138,8 @@ beforeEach(async () => {
   terminalThreadById = new Map();
   completedProgressWrites = [];
   holdNextProgressSet = null;
+  onProgressSetCompleted = null;
+  onProgressClearCompleted = null;
   const terminalSessions = {
     closeTerminal: async ({ terminalId }: { terminalId: string }) => {
       closedTerminalIds.add(terminalId);
@@ -188,6 +192,18 @@ beforeEach(async () => {
         typeof body.progress.value === "number"
       ) {
         completedProgressWrites.push(body.progress.value);
+        onProgressSetCompleted?.();
+        onProgressSetCompleted = null;
+      }
+      if (
+        request.method === "PATCH" &&
+        typeof body === "object" &&
+        body !== null &&
+        "action" in body &&
+        body.action === "progress-clear"
+      ) {
+        onProgressClearCompleted?.();
+        onProgressClearCompleted = null;
       }
       return response;
     },
@@ -195,6 +211,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  vi.useRealTimers();
   cleanup();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
@@ -274,6 +291,67 @@ describe("thread terminal tab close progress integration", () => {
     );
     expect(closeRequestIndex).toBeGreaterThanOrEqual(0);
     expect(clearRequestIndex).toBeGreaterThan(closeRequestIndex);
+  });
+
+  it("cancels pending owner progress before a closed terminal can restore it", async () => {
+    const { environment, host, sessionA, sessionB, thread } =
+      createThreadWithTerminals();
+    vi.spyOn(sdk.terminals, "list").mockResolvedValue({
+      sessions: [
+        terminal(sessionA.id, thread.id, environment.id, host.id),
+        terminal(sessionB.id, thread.id, environment.id, host.id),
+      ],
+    });
+
+    const { wrapper } = createQueryClientTestHarness();
+    const controller = renderHook(
+      () => useThreadTerminalController(controllerArgs(thread.id, sessionA.id)),
+      { wrapper },
+    );
+    await waitFor(() =>
+      expect(controller.result.current.activeSession?.id).toBe(sessionA.id),
+    );
+
+    vi.useFakeTimers();
+    const firstWriteCompleted = new Promise<void>((resolve) => {
+      onProgressSetCompleted = resolve;
+    });
+    act(() => controller.result.current.handleActiveTerminalProgressChange(0.6));
+    await act(async () => {
+      await firstWriteCompleted;
+    });
+    expect(await readProgress(thread.id)).toEqual({ value: 0.6 });
+
+    act(() => controller.result.current.handleActiveTerminalProgressChange(0.7));
+    controller.unmount();
+
+    const panel = renderHook(
+      () =>
+        usePanelTerminals({
+          acceptsSession: (session) => session.threadId === thread.id,
+          createTarget: { kind: "thread", threadId: thread.id },
+          isFocused: true,
+          panelStateId: thread.id,
+          reveal: () => undefined,
+          syncThreadId: thread.id,
+          tabsCarryTarget: false,
+        }),
+      { wrapper },
+    );
+    const clearCompleted = new Promise<void>((resolve) => {
+      onProgressClearCompleted = resolve;
+    });
+    act(() => panel.result.current.close(sessionA.id));
+    await act(async () => {
+      await clearCompleted;
+    });
+    expect(await readProgress(thread.id)).toBeNull();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(250);
+    });
+    expect(await readProgress(thread.id)).toBeNull();
+    expect(completedProgressWrites).toEqual([0.6]);
   });
 
   it("keeps the newer terminal write when older network delivery is delayed", async () => {
