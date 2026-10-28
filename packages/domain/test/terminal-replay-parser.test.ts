@@ -46,6 +46,17 @@ const FRAGMENTS: ReadonlyArray<(random: () => number) => Uint8Array> = [
   () => text("\x1b]52;c;YWJjZGVm\x07"),
   () => text("\x1b]0;title\x1b\\"),
   () => text("\x1b]133;A\x07\x1bP1$r0m\x1b\\"),
+  () => text("\x1b]0;cŜur “quoted” ’ …\x07"),
+  () => text("\x1b]2;title Ŝ\x1b\\"),
+  () => text("\x1b]8;id=Ŝ;https://example.test/“x”\x1b\\link\x1b]8;;\x1b\\"),
+  () => text("\x1bP1$rŜ“\x1b\\"),
+  () => Uint8Array.from([0x1b, 0x5d, 0x30, 0x3b, 0xe2, 0x80, 0x9c]),
+  () => Uint8Array.from([0x1b, 0x5d, 0x30, 0x3b, 0xc5]),
+  () => Uint8Array.from([0xc5, 0x9c, 0x07]),
+  () =>
+    Uint8Array.from([
+      0x1b, 0x50, 0xc2, 0x9c, 0x9c, 0xe2, 0x9c, 0x93, 0x1b, 0x5c,
+    ]),
   () => text("\x1b]52;c;YWJj"),
   () => text("\x1b7\x1b8\x1bM\x1b=\x1b>\x1b(B\x1b)0\x1b#8"),
   () => text("\x1b"),

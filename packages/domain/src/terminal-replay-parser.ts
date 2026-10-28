@@ -28,6 +28,13 @@ export function isTerminalReplaySafeBoundary(
   );
 }
 
+function utf8ContinuationBytes(byte: number): number {
+  if (byte >= 0xc2 && byte <= 0xdf) return 1;
+  if (byte >= 0xe0 && byte <= 0xef) return 2;
+  if (byte >= 0xf0 && byte <= 0xf4) return 3;
+  return 0;
+}
+
 export function advanceTerminalReplayParserByte(
   state: TerminalReplayParserState,
   byte: number,
@@ -59,6 +66,8 @@ export function advanceTerminalReplayParserByte(
             : "none";
       if (state.controlString === "osc" && byte === 0x07) {
         state.controlString = null;
+      } else {
+        state.utf8Remaining = utf8ContinuationBytes(byte);
       }
     }
     return;
@@ -129,12 +138,8 @@ export function advanceTerminalReplayParserByte(
     state.controlString = "osc";
   } else if (byte === 0x90 || byte === 0x98 || byte === 0x9e || byte === 0x9f) {
     state.controlString = "string";
-  } else if (byte >= 0xc2 && byte <= 0xdf) {
-    state.utf8Remaining = 1;
-  } else if (byte >= 0xe0 && byte <= 0xef) {
-    state.utf8Remaining = 2;
-  } else if (byte >= 0xf0 && byte <= 0xf4) {
-    state.utf8Remaining = 3;
+  } else {
+    state.utf8Remaining = utf8ContinuationBytes(byte);
   }
 }
 
@@ -148,8 +153,19 @@ const OSC_STRING_INERT = new Uint8Array(256).fill(1);
 for (const byte of [0x07, 0x18, 0x1a, 0x1b, 0x9c]) {
   OSC_STRING_INERT[byte] = 0;
 }
+OSC_STRING_INERT.fill(0, 0xc2, 0xf5);
 const OTHER_STRING_INERT = new Uint8Array(OSC_STRING_INERT);
 OTHER_STRING_INERT[0x07] = 1;
+
+function completeUtf8SequenceEnd(bytes: Uint8Array, index: number): number {
+  const continuation = utf8ContinuationBytes(bytes[index] ?? 0);
+  if (continuation === 0 || index + continuation >= bytes.length) return -1;
+  for (let offset = 1; offset <= continuation; offset += 1) {
+    const next = bytes[index + offset] ?? 0;
+    if (next < 0x80 || next > 0xbf) return -1;
+  }
+  return index + continuation + 1;
+}
 
 function skipGroundBytes(bytes: Uint8Array, start: number): number {
   const end = bytes.length;
@@ -198,14 +214,9 @@ function skipGroundBytes(bytes: Uint8Array, start: number): number {
       }
       return index;
     }
-    if (byte >= 0xc2 && byte <= 0xf4) {
-      const continuation = byte <= 0xdf ? 1 : byte <= 0xef ? 2 : 3;
-      if (index + continuation >= end) return index;
-      for (let offset = 1; offset <= continuation; offset += 1) {
-        const next = bytes[index + offset] ?? 0;
-        if (next < 0x80 || next > 0xbf) return index;
-      }
-      index += continuation + 1;
+    const sequenceEnd = completeUtf8SequenceEnd(bytes, index);
+    if (sequenceEnd >= 0) {
+      index = sequenceEnd;
       continue;
     }
     return index;
@@ -219,7 +230,16 @@ function skipStringBytes(
   inert: Uint8Array,
 ): number {
   let index = start;
-  while (index < bytes.length && inert[bytes[index] ?? 0] === 1) index += 1;
+  while (index < bytes.length) {
+    const byte = bytes[index] ?? 0;
+    if (inert[byte] === 1) {
+      index += 1;
+      continue;
+    }
+    const sequenceEnd = completeUtf8SequenceEnd(bytes, index);
+    if (sequenceEnd < 0) return index;
+    index = sequenceEnd;
+  }
   return index;
 }
 
