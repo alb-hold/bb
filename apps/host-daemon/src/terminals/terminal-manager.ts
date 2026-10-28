@@ -6,10 +6,14 @@ import os from "node:os";
 import path from "node:path";
 import { spawn as spawnPty } from "node-pty";
 import {
+  advanceTerminalReplayParserByte,
   createTerminalGridMarker,
   createTerminalGridMarkerScanner,
+  createTerminalReplayParserState,
   findLastTerminalGridMarker,
+  isTerminalReplaySafeBoundary,
   type HostDaemonTerminalCloseReason,
+  type TerminalReplayParserState,
 } from "@bb/domain";
 import type { HostDaemonDaemonWsMessage } from "@bb/host-daemon-contract";
 import { HOST_DAEMON_TERMINAL_EXIT_RETENTION_MS } from "@bb/host-daemon-contract/protocol";
@@ -50,20 +54,14 @@ const DEFAULT_MAX_EXITED_SCROLLBACK_BYTES = 16 * 1024 * 1024;
 const PRIMARY_DEVICE_ATTRIBUTES_QUERY_PATTERN = /\u001b\[(?:0)?c/g;
 const PRIMARY_DEVICE_ATTRIBUTES_RESPONSE = "\u001b[?1;2c";
 const MAX_PRIMARY_DEVICE_ATTRIBUTES_REPLIES_PER_CHUNK = 8;
-const MAX_TERMINAL_REPLAY_CSI_PARAMETER_BYTES = 1024;
 const MAX_RETAINED_REPLAY_PARSER_STATE_BYTES = 4 * 1024 * 1024;
 const REPLAY_PARSER_STATE_FIXED_BYTES = 64;
 const EMPTY_CSI_REPLAY_PARSER_STATES = new Map<
   string,
   Readonly<TerminalReplayParserState>
 >();
-const INITIAL_TERMINAL_REPLAY_PARSER_STATE: TerminalReplayParserState = {
-  alternateScreen: false,
-  controlString: null,
-  csiParameters: "",
-  escape: "none",
-  utf8Remaining: 0,
-};
+const INITIAL_TERMINAL_REPLAY_PARSER_STATE: TerminalReplayParserState =
+  createTerminalReplayParserState();
 const NODE_PTY_NATIVE_DIRS: readonly string[] = [
   path.join("build", "Release"),
   path.join("build", "Debug"),
@@ -155,14 +153,6 @@ interface ScrollbackEntry {
   >["chunk"];
   parserStateBefore: Readonly<TerminalReplayParserState>;
   retentionSeq: number;
-}
-
-interface TerminalReplayParserState {
-  alternateScreen: boolean;
-  controlString: "osc" | "string" | null;
-  csiParameters: string;
-  escape: "none" | "escape" | "intermediate" | "csi" | "csi-ignore";
-  utf8Remaining: number;
 }
 
 interface ExitedTerminalSession {
@@ -636,126 +626,6 @@ function findTerminalReplaySafePosition(
   return null;
 }
 
-function isTerminalReplaySafeBoundary(
-  state: TerminalReplayParserState,
-): boolean {
-  return (
-    state.controlString === null &&
-    state.escape === "none" &&
-    state.utf8Remaining === 0
-  );
-}
-
-function advanceTerminalReplayParserByte(
-  state: TerminalReplayParserState,
-  byte: number,
-): void {
-  if (byte === 0x18 || byte === 0x1a) {
-    state.controlString = null;
-    state.csiParameters = "";
-    state.escape = "none";
-    state.utf8Remaining = 0;
-    return;
-  }
-  if (state.utf8Remaining > 0) {
-    if (byte >= 0x80 && byte <= 0xbf) {
-      state.utf8Remaining -= 1;
-      return;
-    }
-    state.utf8Remaining = 0;
-  }
-  if (state.controlString !== null) {
-    if (byte === 0x9c || (state.escape === "escape" && byte === 0x5c)) {
-      state.controlString = null;
-      state.escape = "none";
-    } else {
-      state.escape =
-        state.controlString === "osc" && byte === 0x07
-          ? "none"
-          : byte === 0x1b
-            ? "escape"
-            : "none";
-      if (state.controlString === "osc" && byte === 0x07) {
-        state.controlString = null;
-      }
-    }
-    return;
-  }
-  if (state.escape === "csi" || state.escape === "csi-ignore") {
-    if (byte === 0x1b) {
-      state.escape = "escape";
-      state.csiParameters = "";
-    } else if (byte >= 0x40 && byte <= 0x7e) {
-      if (
-        state.escape === "csi" &&
-        (byte === 0x68 || byte === 0x6c) &&
-        /^\?(?:47|1047|1049)(?:;|$)/u.test(state.csiParameters)
-      ) {
-        state.alternateScreen = byte === 0x68;
-      }
-      state.escape = "none";
-      state.csiParameters = "";
-    } else if (state.escape === "csi" && byte >= 0x20 && byte <= 0x3f) {
-      if (
-        state.csiParameters.length < MAX_TERMINAL_REPLAY_CSI_PARAMETER_BYTES
-      ) {
-        state.csiParameters += String.fromCharCode(byte);
-      } else {
-        state.csiParameters = "";
-        state.escape = "csi-ignore";
-      }
-    }
-    return;
-  }
-  if (state.escape === "intermediate") {
-    if (byte === 0x1b) {
-      state.escape = "escape";
-    } else if (byte < 0x20 || byte > 0x2f) {
-      state.escape = "none";
-    }
-    return;
-  }
-  if (state.escape === "escape") {
-    if (byte === 0x1b) {
-      state.escape = "escape";
-    } else if (byte === 0x5b) {
-      state.escape = "csi";
-      state.csiParameters = "";
-    } else if (byte === 0x5d) {
-      state.controlString = "osc";
-      state.escape = "none";
-    } else if (
-      byte === 0x50 ||
-      byte === 0x58 ||
-      byte === 0x5e ||
-      byte === 0x5f
-    ) {
-      state.controlString = "string";
-      state.escape = "none";
-    } else if (byte >= 0x20 && byte <= 0x2f) {
-      state.escape = "intermediate";
-    } else {
-      state.escape = "none";
-    }
-    return;
-  }
-  if (byte === 0x1b) {
-    state.escape = "escape";
-  } else if (byte === 0x9b) {
-    state.escape = "csi";
-  } else if (byte === 0x9d) {
-    state.controlString = "osc";
-  } else if (byte === 0x90 || byte === 0x98 || byte === 0x9e || byte === 0x9f) {
-    state.controlString = "string";
-  } else if (byte >= 0xc2 && byte <= 0xdf) {
-    state.utf8Remaining = 1;
-  } else if (byte >= 0xe0 && byte <= 0xef) {
-    state.utf8Remaining = 2;
-  } else if (byte >= 0xf0 && byte <= 0xf4) {
-    state.utf8Remaining = 3;
-  }
-}
-
 export class TerminalManager {
   private readonly closeGracePeriodMs: number;
   private readonly exitedRetentionMs: number;
@@ -893,7 +763,8 @@ export class TerminalManager {
       let pty: TerminalPtyProcess;
       try {
         const shellArgs =
-          integration?.args ?? terminalShellArgs({ shell, start: message.start });
+          integration?.args ??
+          terminalShellArgs({ shell, start: message.start });
         const bbCli = integration?.env.BB_CLI ?? baseEnv.BB_CLI;
         const holderArgs =
           message.start.mode === "shell" && bbCli !== undefined

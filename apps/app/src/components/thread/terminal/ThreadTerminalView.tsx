@@ -89,11 +89,14 @@ import {
   readTerminalViewportAnchor,
   registerTerminalOutputBoundaryHandler,
   resolveTerminalViewportRestore,
-  terminalOutputBoundaryPrefix,
   terminalViewportStorageKey,
   terminalViewportStorageForClient,
 } from "./terminal-viewport";
 import type { TerminalOutputLineAnchor } from "./terminal-viewport";
+import {
+  createTerminalOutputBoundaries,
+  type TerminalOutputBoundaries,
+} from "./terminal-output-boundaries";
 import {
   createTerminalClipboardKeyHandler,
   pasteTerminalClipboard,
@@ -533,7 +536,7 @@ interface TerminalOutputWriteArgs {
   terminalId?: string;
   outputSequence?: number;
   replayCheckpointSequence?: number | null;
-  outputBoundaryToken?: string;
+  outputBoundaries?: TerminalOutputBoundaries;
   onOutputParsed?: () => void;
   onParsed: () => void;
   replayWriteState: TerminalReplayWriteState;
@@ -591,7 +594,7 @@ interface HandleTerminalServerMessageArgs {
   replayNextSeq: number | null;
   replayWriteState: TerminalReplayWriteState;
   outputFrameId?: number;
-  outputBoundaryToken?: string;
+  outputBoundaries?: TerminalOutputBoundaries;
   setReplayNextSeq: (nextSeq: number | null) => void;
   setReplayStartSequence?: (sequence: number) => void;
   terminal: XTermTerminal;
@@ -968,7 +971,7 @@ export function writeTerminalOutput({
   isReplay,
   terminalId = "",
   outputSequence,
-  outputBoundaryToken,
+  outputBoundaries,
   onOutputParsed,
   onParsed,
   replayWriteState,
@@ -980,13 +983,8 @@ export function writeTerminalOutput({
   const sourceBytes =
     typeof data === "string" ? new TextEncoder().encode(data) : data;
   let bytes = sourceBytes;
-  if (outputSequence !== undefined && outputBoundaryToken !== undefined) {
-    const prefix = new TextEncoder().encode(
-      terminalOutputBoundaryPrefix(outputBoundaryToken, outputSequence),
-    );
-    bytes = new Uint8Array(prefix.length + sourceBytes.length);
-    bytes.set(prefix);
-    bytes.set(sourceBytes, prefix.length);
+  if (outputSequence !== undefined && outputBoundaries !== undefined) {
+    bytes = outputBoundaries.insert(sourceBytes, outputSequence);
   }
   const write = (callback: () => void, applyMarkerGrids: boolean) => {
     if (pipeline) pipeline.push(bytes, callback, applyMarkerGrids);
@@ -1053,7 +1051,7 @@ export function handleTerminalServerMessage({
   replayNextSeq,
   replayWriteState,
   outputFrameId,
-  outputBoundaryToken,
+  outputBoundaries,
   setReplayNextSeq,
   setReplayStartSequence,
   terminal,
@@ -1100,7 +1098,7 @@ export function handleTerminalServerMessage({
         onOutputParsed: onOutputFrameParsed,
         onParsed: () => {
           onOutputParsed?.(message.chunk.seq);
-          if (outputBoundaryToken === undefined) onOutputStart?.(nextSeq);
+          if (outputBoundaries === undefined) onOutputStart?.(nextSeq);
           acknowledgeOutput(nextSeq);
           if (
             replayNextSeq !== null &&
@@ -1117,7 +1115,7 @@ export function handleTerminalServerMessage({
         replayPipeline,
         replayCheckpointSequence,
         outputSequence: message.chunk.seq,
-        outputBoundaryToken,
+        outputBoundaries,
       });
       return;
     }
@@ -1939,6 +1937,9 @@ export function ThreadTerminalView({
       viewportLineAnchor = createTerminalViewportLineAnchor(terminal);
       outputLineAnchorTracker.reset();
       const outputBoundaryToken = randomUuid();
+      const outputBoundaries = createTerminalOutputBoundaries(
+        outputBoundaryToken,
+      );
       outputBoundaryDisposable = registerTerminalOutputBoundaryHandler(
         terminal.parser,
         outputBoundaryToken,
@@ -2408,7 +2409,7 @@ export function ThreadTerminalView({
             pipeline: outputPipeline ?? undefined,
             replayPipeline: replayPreview ?? undefined,
             replayCheckpointSequence,
-            outputBoundaryToken,
+            outputBoundaries,
             allowAttachedGrid: !markerGridActive,
             shouldProcessOutput: () =>
               terminalVisible === true && isPanelOpenRef.current,
@@ -2422,6 +2423,7 @@ export function ThreadTerminalView({
           replayPreview?.dispose();
           replayPreview = null;
           activeTerminal.reset();
+          outputBoundaries.reset();
           outputLineAnchorTracker.reset();
           writeTerminalStatus({
             terminal: activeTerminal,

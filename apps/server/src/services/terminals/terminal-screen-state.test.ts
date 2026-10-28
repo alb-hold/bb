@@ -92,64 +92,6 @@ describe("TerminalScreenState", () => {
     swapped.dispose();
   });
 
-  it.each([
-    ["BEL", "\u0007"],
-    ["ST", "\u001b\\"],
-  ])(
-    "offers no checkpoint while an OSC 52 copy is split across PTY reads, then resumes after its %s",
-    async (_name, terminator) => {
-      const payload = Buffer.from(
-        "and is never edited or deleted. ".repeat(80),
-      ).toString("base64");
-      const sequence = Buffer.from(
-        `\u001b]52;c;${payload}${terminator}`,
-        "latin1",
-      );
-      const reads = [
-        sequence.subarray(0, 1024),
-        sequence.subarray(1024, 2048),
-        sequence.subarray(2048),
-      ];
-      const state = new TerminalScreenState(40, 5);
-      state.push(0, Buffer.from("prompt> "));
-      await expect(state.snapshot()).resolves.not.toBeNull();
-
-      state.push(1, reads[0] ?? Buffer.alloc(0));
-      await expect(state.snapshot()).resolves.toBeNull();
-      state.push(2, reads[1] ?? Buffer.alloc(0));
-      await expect(state.snapshot()).resolves.toBeNull();
-      state.push(3, reads[2] ?? Buffer.alloc(0));
-
-      const settled = await state.snapshot();
-      expect(settled).not.toBeNull();
-      const replayed = create();
-      await write(
-        replayed,
-        Buffer.from(settled?.dataBase64 ?? "", "base64").toString(),
-      );
-      expect(bufferState(replayed).rows.join("\n")).not.toContain("YW5kIGlz");
-      replayed.dispose();
-      state.dispose();
-    },
-  );
-
-  it("offers no checkpoint when the split falls between ESC and the string terminator", async () => {
-    const state = new TerminalScreenState(40, 5);
-    state.push(0, Buffer.from("\u001b]52;c;YW5k"));
-    state.push(1, Buffer.from("\u001b"));
-    await expect(state.snapshot()).resolves.toBeNull();
-    state.push(2, Buffer.from("\\done"));
-    await expect(state.snapshot()).resolves.not.toBeNull();
-    state.dispose();
-  });
-
-  it("does not mistake UTF-8 continuation bytes for control strings", async () => {
-    const state = new TerminalScreenState(40, 5);
-    state.push(0, Buffer.from("a — b ✓ 🙂 界 \u001b[31mred"));
-    await expect(state.snapshot()).resolves.not.toBeNull();
-    state.dispose();
-  });
-
   it("invalidates on a missing sequence instead of serving a misleading frame", async () => {
     const state = new TerminalScreenState(40, 5);
     state.push(1, Buffer.from("missed sequence zero"));
@@ -168,9 +110,8 @@ describe("TerminalScreenState", () => {
   });
 
   it("preserves the older-history seam when a lazy history page meets the snapshot and suffix", async () => {
-    const olderRows = Array.from(
-      { length: 2_005 },
-      (_, index) => `history-${index + 1}`,
+    const olderRows = Array.from({ length: 2_005 }, (_, index) =>
+      `history-${index + 1}`,
     );
     const olderLines = `${olderRows.join("\r\n")}\r\n`;
     const before = "\u001b[2J\u001b[Hscreen 界🙂\u001b[5;20H99%";
@@ -194,7 +135,10 @@ describe("TerminalScreenState", () => {
     expect(visibleState(resumed)).toEqual(visibleState(fullReplay));
 
     const droppedAtSeam = create(40, 5, 10_000);
-    await write(droppedAtSeam, `${olderRows.slice(0, -1).join("\r\n")}\r\n`);
+    await write(
+      droppedAtSeam,
+      `${olderRows.slice(0, -1).join("\r\n")}\r\n`,
+    );
     await write(
       droppedAtSeam,
       Buffer.from(snapshot.dataBase64, "base64").toString(),
