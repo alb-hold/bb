@@ -21,7 +21,10 @@ import {
   type ProviderCliInstallEvent,
   type WorkspaceResolutionFailure,
 } from "@bb/host-daemon-contract";
-import type { AgentRuntimeBridgeLaunch } from "@bb/agent-runtime";
+import {
+  ProviderWorkspaceMissingError,
+  type AgentRuntimeBridgeLaunch,
+} from "@bb/agent-runtime";
 import semver from "semver";
 import {
   ExpectedCommandDispatchError,
@@ -133,7 +136,9 @@ async function stopThreadRuntime(
         timeoutMs: THREAD_STOP_ACTIVE_TURN_WAIT_MS,
       });
     }
-    const result = await entry.runtime.stopThread({ threadId: command.threadId });
+    const result = await entry.runtime.stopThread({
+      threadId: command.threadId,
+    });
     providerCheckpointId = result.providerCheckpointId ?? providerCheckpointId;
   }
   await options.eventSink.flush();
@@ -161,7 +166,10 @@ type OnlineRpcHandlerMap = {
 };
 
 function throwExpectedWorkspacePathNotFoundOrRethrow(error: unknown): never {
-  if (error instanceof WorkspaceError && error.code === "path_not_found") {
+  if (
+    (error instanceof WorkspaceError && error.code === "path_not_found") ||
+    error instanceof ProviderWorkspaceMissingError
+  ) {
     throw new ExpectedCommandDispatchError(error.code, error.message);
   }
   throw error;
