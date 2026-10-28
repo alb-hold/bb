@@ -12,6 +12,8 @@ const TERMINAL_SCREEN_STATE_SCROLLBACK = 2_000;
 export const TERMINAL_SCREEN_STATE_PENDING_BYTES_LIMIT = 8 * 1024 * 1024;
 const ESC = "\u001b";
 const TERMINAL_SCREEN_STATE_PARTIAL_SEQUENCE_LIMIT = 64 * 1024;
+const HYPERLINK_URI_LIMIT = 2048;
+const HYPERLINK_ID_LIMIT = 256;
 const require = createRequire(import.meta.url);
 const Terminal = require("@xterm/headless")
   .Terminal as typeof import("@xterm/headless").Terminal;
@@ -118,10 +120,16 @@ function hyperlinkFor(
   const data: unknown = getLinkData.call(linkService, urlId);
   const uri = readObject(data, "uri");
   const id = readObject(data, "id");
-  if (typeof uri !== "string" || /[\u0000-\u001f\u007f-\u009f]/u.test(uri)) {
+  if (
+    typeof uri !== "string" ||
+    uri.length > HYPERLINK_URI_LIMIT ||
+    /[\u0000-\u001f\u007f-\u009f]/u.test(uri)
+  ) {
     return null;
   }
-  return typeof id === "string" && !/[\u0000-\u001f\u007f-\u009f;:]/u.test(id)
+  return typeof id === "string" &&
+    id.length <= HYPERLINK_ID_LIMIT &&
+    !/[\u0000-\u001f\u007f-\u009f;:]/u.test(id)
     ? { id, uri }
     : { uri };
 }
@@ -306,7 +314,6 @@ export class TerminalScreenState {
       return;
     }
     this.nextSeq += 1;
-    this.trackPartialSequence(data);
     this.enqueue({ kind: "bytes", data });
   }
 
@@ -317,7 +324,6 @@ export class TerminalScreenState {
       return;
     }
     this.nextSeq += 1;
-    this.trackPartialSequence(Buffer.from(data, "base64"));
     this.enqueue({ kind: "base64", data });
   }
 
@@ -328,25 +334,35 @@ export class TerminalScreenState {
       this.partialSequenceOverflow = false;
       return;
     }
-    if (
-      this.partialSequenceOverflow ||
-      this.partialSequence.length + data.length >
-        TERMINAL_SCREEN_STATE_PARTIAL_SEQUENCE_LIMIT
-    ) {
+    if (this.partialSequenceOverflow) return;
+    const previous = this.partialSequence;
+    const scan = createTerminalReplayParserState();
+    let lastSafe = 0;
+    for (let index = 0; index < previous.length; index += 1) {
+      advanceTerminalReplayParserByte(scan, previous[index] ?? 0);
+      if (isTerminalReplaySafeBoundary(scan)) lastSafe = index + 1;
+    }
+    for (let index = 0; index < data.length; index += 1) {
+      advanceTerminalReplayParserByte(scan, data[index] ?? 0);
+      if (isTerminalReplaySafeBoundary(scan)) {
+        lastSafe = previous.length + index + 1;
+      }
+    }
+    const openLength = previous.length + data.length - lastSafe;
+    if (openLength > TERMINAL_SCREEN_STATE_PARTIAL_SEQUENCE_LIMIT) {
       this.partialSequence = new Uint8Array(0);
       this.partialSequenceOverflow = true;
       return;
     }
-    const combined = new Uint8Array(this.partialSequence.length + data.length);
-    combined.set(this.partialSequence);
-    combined.set(data, this.partialSequence.length);
-    const scan = createTerminalReplayParserState();
-    let lastSafe = 0;
-    for (let index = 0; index < combined.length; index += 1) {
-      advanceTerminalReplayParserByte(scan, combined[index] ?? 0);
-      if (isTerminalReplaySafeBoundary(scan)) lastSafe = index + 1;
+    const open = new Uint8Array(openLength);
+    for (let offset = 0; offset < openLength; offset += 1) {
+      const position = lastSafe + offset;
+      open[offset] =
+        (position < previous.length
+          ? previous[position]
+          : data[position - previous.length]) ?? 0;
     }
-    this.partialSequence = combined.slice(lastSafe);
+    this.partialSequence = open;
   }
 
   private invalidate(): void {
@@ -420,6 +436,7 @@ export class TerminalScreenState {
                   next.kind === "base64"
                     ? Buffer.from(next.data, "base64")
                     : next.data;
+                this.trackPartialSequence(data);
                 this.terminal.write(data, () => {
                   setImmediate(drain);
                 });
