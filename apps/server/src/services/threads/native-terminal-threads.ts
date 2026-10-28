@@ -56,6 +56,7 @@ import {
   terminalOutputShowsPaste,
   terminalOutputShowsPasteAgain,
   terminalScreenAlreadyShowsText,
+  terminalScreenInputBoxHoldsText,
 } from "./native-terminal-echo.js";
 import { resolveThreadDynamicTools } from "./thread-runtime-config.js";
 import { UPDATE_ENVIRONMENT_DIRECTORY_TOOL_NAME } from "./thread-environment-directory.js";
@@ -1315,16 +1316,23 @@ async function deliverNativeTerminalMessage(
   });
   if (before.status !== "running") throw nativeTerminalNotRunning();
   const shown = decodeTerminalOutputChunks(before.chunks);
-  for (const text of args.pastes) {
-    if (
-      terminalScreenAlreadyShowsText({
-        output: shown,
-        screenRows: view.terminal.rows,
-        text,
-      })
-    ) {
+  const screenRows = view.terminal.rows;
+  const unsent = args.pastes.some((text) =>
+    terminalScreenAlreadyShowsText({ output: shown, screenRows, text }),
+  );
+  if (unsent) {
+    const [only] = args.pastes;
+    if (args.pastes.length !== 1 || only === undefined) {
       throw nativeTerminalInputAmbiguous(provider, 0);
     }
+    const screen = await deps.terminalSessions.readTerminalScreen({
+      terminalId,
+      query: {},
+    });
+    if (!terminalScreenInputBoxHoldsText({ rows: screen.rows, text: only })) {
+      throw nativeTerminalInputAmbiguous(provider, 0);
+    }
+    return submitNativeTerminalInput(deps, terminalId);
   }
   for (const [pastedBefore, text] of args.pastes.entries()) {
     await pasteIntoNativeTerminal(deps, {
@@ -1335,6 +1343,13 @@ async function deliverNativeTerminalMessage(
       text,
     });
   }
+  return submitNativeTerminalInput(deps, terminalId);
+}
+
+function submitNativeTerminalInput(
+  deps: NativeTerminalDeps,
+  terminalId: string,
+): TerminalSession {
   return deps.terminalSessions.sendTerminalInput({
     terminalId,
     payload: { dataBase64: Buffer.from("\r", "utf8").toString("base64") },
