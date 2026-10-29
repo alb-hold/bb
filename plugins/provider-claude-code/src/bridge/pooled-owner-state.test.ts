@@ -57,13 +57,29 @@ const REAL_CLAUDE = resolveClaudeCodeExecutable({ env: process.env });
 
 const cleanups: Array<() => unknown> = [];
 
-afterEach(async () => {
-  while (cleanups.length > 0) await cleanups.pop()?.();
+afterEach(() => runCleanups(cleanups));
+
+async function runCleanups(list: Array<() => unknown>): Promise<void> {
+  const errors: unknown[] = [];
+  while (list.length > 0) {
+    const cleanup = list.pop();
+    try {
+      await cleanup?.();
+    } catch (error) {
+      errors.push(error);
+    }
+  }
   const leftovers = [...scratchDirectories].filter((directory) =>
     existsSync(directory),
   );
-  expect(leftovers).toEqual([]);
-});
+  if (leftovers.length > 0) {
+    errors.push(new Error(`scratch directories left behind: ${leftovers.join(", ")}`));
+  }
+  if (errors.length === 1) throw errors[0];
+  if (errors.length > 1) {
+    throw new AggregateError(errors, `${errors.length} cleanups failed`);
+  }
+}
 
 function stopSessionOnCleanup(session: SdkSession): void {
   cleanups.push(() => waitForCliExit(REAL_CLAUDE));
@@ -760,5 +776,43 @@ describe("waiting for the Claude CLI to exit before cleanup", () => {
 
   it("fails instead of passing when no executable was resolved", async () => {
     await expect(waitForCliExit(null)).rejects.toThrow(/no Claude executable/u);
+  });
+
+  it("runs every later cleanup and still fails with the timeout when the wait for the CLI throws", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "bb-pooled-owner-state-test-"));
+    scratchDirectories.add(directory);
+    scratchDirectories.add(realpathSync(directory));
+    const executable = join(directory, "claude");
+    await startSleeper(executable);
+    const ran: string[] = [];
+    const list: Array<() => unknown> = [
+      () => rmSync(directory, { force: true, recursive: true }),
+      () => ran.push("session.stop"),
+      () => ran.push("server.close"),
+      () => waitForCliExit(executable, 200),
+    ];
+    await expect(runCleanups(list)).rejects.toThrow(/did not exit/u);
+    expect(ran).toEqual(["server.close", "session.stop"]);
+    expect(existsSync(directory)).toBe(false);
+    expect(list).toEqual([]);
+  });
+
+  it("reports every failed cleanup together", async () => {
+    const list: Array<() => unknown> = [
+      () => {
+        throw new Error("first");
+      },
+      () => Promise.reject(new Error("second")),
+    ];
+    const failure = await runCleanups(list).then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    if (!(failure instanceof AggregateError)) throw new Error("expected an AggregateError");
+    expect(failure.errors.map(String)).toEqual([
+      "Error: second",
+      "Error: first",
+    ]);
+    expect(list).toEqual([]);
   });
 });
