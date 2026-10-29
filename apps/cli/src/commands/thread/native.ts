@@ -314,6 +314,7 @@ async function holdNativeHarness(
           : source;
       const settings = prepareNativeSettings({
         env: process.env,
+        executable: spec.cli.executable,
         hooks,
         hookTarget,
       });

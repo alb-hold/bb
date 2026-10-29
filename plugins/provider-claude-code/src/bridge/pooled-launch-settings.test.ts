@@ -168,6 +168,7 @@ describe("pooled launch settings", () => {
       ANTHROPIC_AUTH_TOKEN: "",
       ANTHROPIC_API_KEY: "",
     });
+    expect(settings.apiKeyHelper).toBe("");
     expect(settings.sandbox).toMatchObject({
       enabled: true,
       failIfUnavailable: false,
@@ -286,6 +287,8 @@ function startHub(): Promise<{
 const REAL_CLAUDE = resolveClaudeCodeExecutable({ env: process.env });
 
 interface Layers {
+  userApiKeyHelper?: string;
+  projectApiKeyHelper?: string;
   user?: Record<string, string>;
   project?: Record<string, string>;
   local?: Record<string, string>;
@@ -304,12 +307,21 @@ function writeLayers(layers: Layers): string {
     if (previous === null) rmSync(settingsFile, { force: true });
     else writeFileSync(settingsFile, previous);
   });
-  if (layers.user)
-    writeFileSync(settingsFile, JSON.stringify({ env: layers.user }));
-  if (layers.project)
+  if (layers.user || layers.userApiKeyHelper)
+    writeFileSync(
+      settingsFile,
+      JSON.stringify({
+        env: layers.user ?? {},
+        apiKeyHelper: layers.userApiKeyHelper,
+      }),
+    );
+  if (layers.project || layers.projectApiKeyHelper)
     writeFileSync(
       join(project, ".claude", "settings.json"),
-      JSON.stringify({ env: layers.project }),
+      JSON.stringify({
+        env: layers.project ?? {},
+        apiKeyHelper: layers.projectApiKeyHelper,
+      }),
     );
   if (layers.local)
     writeFileSync(
@@ -401,5 +413,25 @@ describe.skipIf(REAL_CLAUDE === null)("settings layers on the real CLI", () => {
       expect(record.apiKey).not.toContain(HOST_PREFIX);
     }
     expect(elsewhere).toEqual([]);
+  }, 90_000);
+
+  it("leak: a host apiKeyHelper key is never sent to the hub", async () => {
+    const helper = join(scratch(), "helper.sh");
+    writeFileSync(helper, `#!/bin/sh\nprintf %s ${dummy("helper")}\n`);
+    chmodSync(helper, 0o755);
+    const { hub } = await presentedCredentials(() => ({
+      userApiKeyHelper: helper,
+      projectApiKeyHelper: helper,
+    }));
+    const sent = credentialed(hub);
+    expect(sent.length).toBeGreaterThan(0);
+    for (const record of sent) {
+      expect(record.authorization, record.request).toBe(`Bearer ${POOL_TOKEN}`);
+      expect(record.apiKey, record.request).toBe("");
+    }
+    for (const record of hub) {
+      expect(record.authorization).not.toContain(HOST_PREFIX);
+      expect(record.apiKey).not.toContain(HOST_PREFIX);
+    }
   }, 90_000);
 });

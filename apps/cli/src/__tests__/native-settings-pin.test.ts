@@ -40,6 +40,7 @@ afterEach(() => {
 describe("prepareNativeSettings", () => {
   it("writes hooks and the pinned env into one 0600 file whose path replaces {settings}", () => {
     const settings = prepareNativeSettings({
+      executable: "claude",
       env: POOLED_ENV,
       hooks: CLAUDE_HOOKS,
       hookTarget: "/tmp/spool",
@@ -51,6 +52,7 @@ describe("prepareNativeSettings", () => {
     expect(settings.value).not.toContain(POOL_TOKEN);
     expect(statSync(settings.value).mode & 0o777).toBe(0o600);
     const contents = JSON.parse(readFileSync(settings.value, "utf8"));
+    expect(contents.apiKeyHelper).toBe("");
     expect(contents.env).toEqual({
       ANTHROPIC_BASE_URL: POOLED_ENV.ANTHROPIC_BASE_URL,
       CLAUDE_CODE_OAUTH_TOKEN: POOL_TOKEN,
@@ -65,6 +67,7 @@ describe("prepareNativeSettings", () => {
 
   it("still pins the env when hook capture is unavailable", () => {
     const settings = prepareNativeSettings({
+      executable: "claude",
       env: POOLED_ENV,
       hooks: CLAUDE_HOOKS,
       hookTarget: null,
@@ -79,6 +82,7 @@ describe("prepareNativeSettings", () => {
 
   it("keeps the inline hook settings when the launch is not pooled", () => {
     const settings = prepareNativeSettings({
+      executable: "claude",
       env: {},
       hooks: CLAUDE_HOOKS,
       hookTarget: "/tmp/spool",
@@ -87,12 +91,18 @@ describe("prepareNativeSettings", () => {
     expect(settings?.value.startsWith("{")).toBe(true);
     expect(JSON.parse(settings?.value ?? "{}")).not.toHaveProperty("env");
     expect(
-      prepareNativeSettings({ env: {}, hooks: CLAUDE_HOOKS, hookTarget: null }),
+      prepareNativeSettings({
+        executable: "claude",
+        env: {},
+        hooks: CLAUDE_HOOKS,
+        hookTarget: null,
+      }),
     ).toBeNull();
   });
 
-  it("ignores the marker for a provider whose hook arguments do not take {settings}", () => {
+  it("ignores the Claude marker for another provider's native launch", () => {
     const settings = prepareNativeSettings({
+      executable: "codex",
       env: POOLED_ENV,
       hooks: { ...CLAUDE_HOOKS, args: ["-c", "hooks=1"] },
       hookTarget: "/tmp/spool",
@@ -100,8 +110,28 @@ describe("prepareNativeSettings", () => {
     expect(settings?.directory).toBeNull();
   });
 
+  it("refuses to launch a pooled Claude without a {settings} argument instead of launching unpinned", () => {
+    expect(() =>
+      prepareNativeSettings({
+        executable: "claude",
+        env: POOLED_ENV,
+        hooks: { ...CLAUDE_HOOKS, args: ["-c", "hooks=1"] },
+        hookTarget: "/tmp/spool",
+      }),
+    ).toThrow(/not started/u);
+    expect(() =>
+      prepareNativeSettings({
+        executable: "claude",
+        env: POOLED_ENV,
+        hooks: undefined,
+        hookTarget: null,
+      }),
+    ).toThrow(/not started/u);
+  });
+
   it("removes the file with its directory", () => {
     const settings = prepareNativeSettings({
+      executable: "claude",
       env: POOLED_ENV,
       hooks: CLAUDE_HOOKS,
       hookTarget: null,

@@ -59,6 +59,7 @@ export function applyPinnedSettings(options: Options): PinnedLaunchOptions {
   const contents: Settings = {
     ...base,
     ...(sandbox ? { sandbox: withDefaultFailIfUnavailable(sandbox) } : {}),
+    apiKeyHelper: "",
     env: { ...base.env, ...pins },
   };
   const directory = mkdtempSync(join(tmpdir(), PIN_DIRECTORY_PREFIX));
