@@ -10,6 +10,7 @@ import { ensureThreadSpawnersTable } from "./fork-thread-spawners.js";
 import { ensureNativeTerminalThreadsTable } from "./fork-native-terminal-threads.js";
 import { ensureTerminalAttentionTable } from "./fork-terminal-attention.js";
 import { ensureTerminalHolderSessionsTable } from "./fork-terminal-holder-sessions.js";
+import { ensureTerminalPendingDaemonClosesTable } from "./fork-terminal-pending-daemon-closes.js";
 import { restoreNativeThreadDraftsToDraftsQueue } from "./fork-restore-native-drafts.js";
 import {
   compatibleMigrationHashes,
@@ -1659,4 +1660,5 @@ export function migrate(db: DbConnection, options: MigrateOptions = {}): void {
   ensureNativeTerminalThreadsTable(db);
   ensureTerminalAttentionTable(db);
   ensureTerminalHolderSessionsTable(db);
+  ensureTerminalPendingDaemonClosesTable(db);
 }

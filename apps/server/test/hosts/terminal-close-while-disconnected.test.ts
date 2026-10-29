@@ -1,4 +1,9 @@
-import { createTerminalSession, updateTerminalSession } from "@bb/db";
+import {
+  createTerminalSession,
+  listPendingTerminalDaemonCloses,
+  queueTerminalDaemonClose,
+  updateTerminalSession,
+} from "@bb/db";
 import { describe, expect, it, vi } from "vitest";
 import { seedHostSession, seedSession } from "../helpers/seed.js";
 import { withTestHarness } from "../helpers/test-app.js";
@@ -74,6 +79,111 @@ describe("closing a terminal while its daemon session is disconnected", () => {
           (message) => message.terminalId === kept.id,
         ),
       ).toBe(false);
+    });
+  });
+
+  it("delivers the close for a terminal that was already marked exited by the disconnect and is then closed by the user", async () => {
+    await withTestHarness(async (harness) => {
+      const { host, session } = seedHostSession(harness.deps, {
+        id: "host-close-after-disconnect-exit",
+      });
+      const send = vi.spyOn(harness.hub, "sendDaemonSessionMessage");
+      send.mockReturnValue(true);
+      const terminal = createTerminalSession(harness.db, {
+        cols: 80,
+        daemonSessionId: session.id,
+        environmentId: null,
+        hostId: host.id,
+        initialCwd: "/tmp",
+        rows: 24,
+        status: "running",
+        threadId: null,
+        title: "exited by disconnect",
+      });
+      updateTerminalSession(harness.db, {
+        scope: { kind: "terminal", terminalId: terminal.id },
+        update: {
+          closeReason: "daemon-disconnect",
+          exitCode: null,
+          kind: "exit",
+        },
+      });
+      await harness.deps.terminalSessions.closeTerminal({
+        terminalId: terminal.id,
+        payload: { mode: "always", reason: "user" },
+      });
+      send.mockClear();
+
+      const next = seedSession(harness.deps, host.id);
+      send.mockReturnValue(true);
+      await harness.deps.terminalSessions.reconcileDisconnectedHostTerminals({
+        daemonSessionId: next.id,
+        hostId: host.id,
+      });
+
+      expect(terminalCloseMessages(send, next.id)).toEqual([
+        { type: "terminal.close", terminalId: terminal.id, reason: "user" },
+      ]);
+    });
+  });
+
+  it("keeps the close queued while the daemon cannot be reached, and never closes a terminal the database shows as running", async () => {
+    await withTestHarness(async (harness) => {
+      const { host, session } = seedHostSession(harness.deps, {
+        id: "host-close-queue-guard",
+      });
+      const send = vi.spyOn(harness.hub, "sendDaemonSessionMessage");
+      const open = (title: string) =>
+        createTerminalSession(harness.db, {
+          cols: 80,
+          daemonSessionId: session.id,
+          environmentId: null,
+          hostId: host.id,
+          initialCwd: "/tmp",
+          rows: 24,
+          status: "running",
+          threadId: null,
+          title,
+        });
+      const closed = open("closed");
+      const running = open("running");
+      harness.deps.terminalSessions.handleDaemonSessionClosed({
+        sessionId: session.id,
+      });
+      send.mockReturnValue(true);
+      await harness.deps.terminalSessions.closeTerminal({
+        terminalId: closed.id,
+        payload: { mode: "always", reason: "user" },
+      });
+      queueTerminalDaemonClose(harness.db, {
+        hostId: host.id,
+        now: Date.now(),
+        terminalSessionId: running.id,
+      });
+      send.mockClear();
+
+      const next = seedSession(harness.deps, host.id);
+      send.mockReturnValue(false);
+      await harness.deps.terminalSessions.reconcileDisconnectedHostTerminals({
+        daemonSessionId: next.id,
+        hostId: host.id,
+      });
+      expect(
+        listPendingTerminalDaemonCloses(harness.db, host.id).map(
+          (pending) => pending.terminalSessionId,
+        ),
+      ).toContain(closed.id);
+
+      send.mockClear();
+      send.mockReturnValue(true);
+      await harness.deps.terminalSessions.reconcileDisconnectedHostTerminals({
+        daemonSessionId: next.id,
+        hostId: host.id,
+      });
+      expect(terminalCloseMessages(send, next.id)).toEqual([
+        { type: "terminal.close", terminalId: closed.id, reason: "user" },
+      ]);
+      expect(listPendingTerminalDaemonCloses(harness.db, host.id)).toEqual([]);
     });
   });
 });
