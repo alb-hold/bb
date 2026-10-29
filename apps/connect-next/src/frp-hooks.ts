@@ -155,6 +155,7 @@ export function createFrpHooks(options: FrpHookOptions) {
   const proxies = new Map<string, ProxyRecord>();
   const pendingRoutes = new Map<string, NodeJS.Timeout>();
   const runBindings = new Map<string, { label: string; boundAt: number }>();
+  const runClaims = new Map<string, number>();
 
   type Verdict = "linked" | "refused" | "unknown";
 
@@ -200,12 +201,29 @@ export function createFrpHooks(options: FrpHookOptions) {
     return proxies.has(`${clientId}\n${record.name}`) ? "remove" : "unknown";
   }
 
-  function bindRun(runId: string, label: string): "bound" | "kept" | "refused" {
-    if (runId === "") return "kept";
+  interface RunClaim {
+    finish(keep: boolean): void;
+    owned(): boolean;
+  }
+
+  function claimRun(runId: string, label: string): RunClaim | null {
+    if (runId === "") return { finish: () => {}, owned: () => true };
     const held = runBindings.get(runId);
-    if (held !== undefined && held.label !== label) return "refused";
+    if (held !== undefined && held.label !== label) return null;
     runBindings.set(runId, { label, boundAt: Date.now() });
-    return held === undefined ? "bound" : "kept";
+    runClaims.set(runId, (runClaims.get(runId) ?? 0) + 1);
+    let done = false;
+    return {
+      owned: () => runBindings.get(runId)?.label === label,
+      finish(keep) {
+        if (done) return;
+        done = true;
+        const left = (runClaims.get(runId) ?? 1) - 1;
+        if (left > 0) runClaims.set(runId, left);
+        else runClaims.delete(runId);
+        if (!keep && held === undefined) releaseRun(runId);
+      },
+    };
   }
 
   function holdsRun(runId: string): boolean {
@@ -216,7 +234,7 @@ export function createFrpHooks(options: FrpHookOptions) {
   }
 
   function releaseRun(runId: string): void {
-    if (!holdsRun(runId)) runBindings.delete(runId);
+    if (!holdsRun(runId) && !runClaims.has(runId)) runBindings.delete(runId);
   }
 
   function proxyKey(record: ProxyRecord): string {
@@ -333,21 +351,26 @@ export function createFrpHooks(options: FrpHookOptions) {
     if (RESERVED_HANDLES.has(user.label)) return reject(unknownServer);
     if (call.op === "Login") {
       if (user.credential === null) return reject(FRP_LOGIN_REFUSED_REASON);
-      const binding =
+      const claim =
         call.clientId !== null &&
         call.clientId !== "" &&
         call.clientId !== user.runId
-          ? "refused"
-          : bindRun(user.runId, user.label);
-      if (binding === "refused") {
+          ? null
+          : claimRun(user.runId, user.label);
+      if (claim === null) {
         log("warn", "frp_login_identity_refused", { label: user.label });
         return reject(FRP_LOGIN_REFUSED_REASON);
       }
       const verdict = await verify(user);
-      if (verdict !== "linked" && binding === "bound") releaseRun(user.runId);
+      const stillOwned = claim.owned();
+      claim.finish(verdict === "linked" && stillOwned);
       if (verdict === "unknown") return reject("the gate could not check this");
       if (verdict === "refused") {
         log("warn", "frp_login_refused", { label: user.label });
+        return reject(FRP_LOGIN_REFUSED_REASON);
+      }
+      if (!stillOwned) {
+        log("warn", "frp_login_identity_refused", { label: user.label });
         return reject(FRP_LOGIN_REFUSED_REASON);
       }
       log("info", "frp_login", { label: user.label });
@@ -368,18 +391,25 @@ export function createFrpHooks(options: FrpHookOptions) {
       }
       const key = `${user.runId}\n${call.proxyName ?? ""}`;
       const taken = proxies.get(key);
-      const binding =
+      const claim =
         taken !== undefined && taken.label !== user.label
-          ? "refused"
-          : bindRun(user.runId, user.label);
-      if (binding === "refused") {
+          ? null
+          : claimRun(user.runId, user.label);
+      if (claim === null) {
         log("warn", "frp_proxy_identity_refused", { label: user.label });
         return reject("not this server's address");
       }
       const verdict = await verify(user);
-      if (verdict !== "linked" && binding === "bound") releaseRun(user.runId);
+      const holder = proxies.get(key);
+      const stillOwned =
+        claim.owned() && (holder === undefined || holder.label === user.label);
+      claim.finish(verdict === "linked" && stillOwned);
       if (verdict === "unknown") return reject("the gate could not check this");
       if (verdict === "refused") return reject("credential refused");
+      if (!stillOwned) {
+        log("warn", "frp_proxy_identity_refused", { label: user.label });
+        return reject("not this server's address");
+      }
       const proxy: ProxyRecord = {
         name: call.proxyName ?? "",
         runId: user.runId,

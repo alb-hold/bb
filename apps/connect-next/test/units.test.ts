@@ -1061,6 +1061,88 @@ describe("frp hooks", () => {
       expect(harness.directory.locate("wasp").kind).not.toBe("here");
     });
 
+    function gatedAccounts() {
+      const held = new Map<string, Promise<void>>();
+      const open = new Map<string, () => void>();
+      const accounts: AccountApi = {
+        resolve: async (request) => {
+          await held.get(request.label ?? "");
+          return { ...OWNED, credential: true };
+        },
+        forget: () => {},
+        presence: async () => [],
+      };
+      return {
+        accounts,
+        hold(label: string) {
+          held.set(
+            label,
+            new Promise<void>((resolve) => {
+              open.set(label, resolve);
+            }),
+          );
+        },
+        release(label: string) {
+          open.get(label)?.();
+        },
+      };
+    }
+
+    it("keeps a reconnecting run id bound while an older close settles and another label asks for it", async () => {
+      const gate = gatedAccounts();
+      const harness = await startHooks(gate.accounts);
+      await connectFirst(harness);
+
+      gate.hold("bee");
+      const reconnect = proxyAs(harness, "bee", "run-1");
+      await sleep(30);
+      harness.frps.unregister(PROXY_NAME);
+      await harness.proxyCall("CloseProxy", "run-1");
+      await sleep(TIMINGS.registerGraceMs + 200);
+
+      expect(await loginAs(harness, "wasp", "run-1")).toMatchObject({
+        reject: true,
+      });
+      expect(await proxyAs(harness, "wasp", "run-1")).toMatchObject({
+        reject: true,
+      });
+
+      gate.release("bee");
+      expect(await reconnect).toMatchObject({ reject: false });
+      harness.frps.register(PROXY_NAME, "run-1");
+      await sleep(300);
+      expect(harness.directory.locate(SUBDOMAIN).kind).toBe("here");
+      expect(harness.directory.locate("wasp").kind).not.toBe("here");
+    });
+
+    it.each([
+      { first: "bee", second: "wasp" },
+      { first: "wasp", second: "bee" },
+    ])(
+      "never lets $second take over a run id that $first claimed first, whichever check finishes first",
+      async ({ first, second }) => {
+        const gate = gatedAccounts();
+        const harness = await startHooks(gate.accounts);
+        gate.hold(first);
+        gate.hold(second);
+
+        const early = proxyAs(harness, first, "run-9");
+        await sleep(30);
+        const late = proxyAs(harness, second, "run-9");
+        gate.release(second);
+        expect(await late).toMatchObject({ reject: true });
+        gate.release(first);
+        expect(await early).toMatchObject({ reject: false });
+
+        harness.frps.register(PROXY_NAME, "run-9");
+        await sleep(300);
+        const firstSubdomain = first === "bee" ? SUBDOMAIN : first;
+        const secondSubdomain = second === "bee" ? SUBDOMAIN : second;
+        expect(harness.directory.locate(firstSubdomain).kind).toBe("here");
+        expect(harness.directory.locate(secondSubdomain).kind).not.toBe("here");
+      },
+    );
+
     it("refuses another label's proxy under a registered key and keeps the first route", async () => {
       const harness = await startHooks();
       await connectFirst(harness);
