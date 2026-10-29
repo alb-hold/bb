@@ -70,8 +70,6 @@ class CliStillRunningError extends Error {
   }
 }
 
-class CliTerminatedError extends Error {}
-
 const exitWaitCleanups = new WeakSet<object>();
 
 function exitWaitCleanup(wait: () => Promise<void>): () => Promise<void> {
@@ -91,11 +89,7 @@ async function runCleanups(
       await cleanup?.();
     } catch (error) {
       errors.push(error);
-      if (
-        cleanup !== undefined &&
-        exitWaitCleanups.has(cleanup) &&
-        !(error instanceof CliTerminatedError)
-      ) {
+      if (cleanup !== undefined && exitWaitCleanups.has(cleanup)) {
         unconfirmed.push(error);
       }
     }
@@ -152,16 +146,32 @@ function resolvedPath(path: string): string {
   }
 }
 
-function liveCliProcessIds(executable: string): number[] {
-  const wanted = new Set([executable, resolvedPath(executable)]);
-  const table = execFileSync("/bin/ps", ["-axo", "pid=,ppid=,command="], {
+type PsRunner = () => string;
+
+const runPs: PsRunner = () =>
+  execFileSync("/bin/ps", ["-axo", "pid=,ppid=,command="], {
     encoding: "utf8",
   });
+
+function liveCliProcessIds(
+  executable: string,
+  ps: PsRunner = runPs,
+): number[] {
+  const wanted = new Set([executable, resolvedPath(executable)]);
+  const table = ps();
   const parentOf = new Map<number, number>();
   const cliPids: number[] = [];
+  let rowCount = 0;
   for (const line of table.split("\n")) {
+    if (line.trim() === "") continue;
     const match = /^\s*(\d+)\s+(\d+)\s+(.*)$/u.exec(line);
-    if (match === null) continue;
+    if (match === null) {
+      if (rowCount === 0) {
+        throw new Error(`unparsable ps output: ${line.slice(0, 80)}`);
+      }
+      continue;
+    }
+    rowCount += 1;
     const pid = Number(match[1]);
     parentOf.set(pid, Number(match[2]));
     const program = (match[3] ?? "").split(" ", 1)[0] ?? "";
@@ -169,32 +179,38 @@ function liveCliProcessIds(executable: string): number[] {
       cliPids.push(pid);
     }
   }
+  if (!parentOf.has(process.pid)) {
+    throw new Error("unparsable ps output: this process is not listed");
+  }
   return cliPids.filter((pid) => {
-    for (
-      let ancestor = parentOf.get(pid);
-      ancestor !== undefined && ancestor > 1;
-      ancestor = parentOf.get(ancestor)
-    ) {
+    let ancestor = parentOf.get(pid);
+    while (ancestor !== undefined && ancestor > 1) {
       if (ancestor === process.pid) return true;
+      ancestor = parentOf.get(ancestor);
     }
-    return false;
+    return ancestor === undefined;
   });
 }
 
 async function cliGoneWithin(
   executable: string,
   timeoutMs: number,
+  ps: PsRunner,
 ): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
-  while (liveCliProcessIds(executable).length > 0) {
+  while (liveCliProcessIds(executable, ps).length > 0) {
     if (Date.now() > deadline) return false;
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
   return true;
 }
 
-function signalCliProcesses(executable: string, signal: NodeJS.Signals): void {
-  for (const pid of liveCliProcessIds(executable)) {
+function signalCliProcesses(
+  executable: string,
+  signal: NodeJS.Signals,
+  ps: PsRunner,
+): void {
+  for (const pid of liveCliProcessIds(executable, ps)) {
     try {
       process.kill(pid, signal);
     } catch {
@@ -206,30 +222,30 @@ function signalCliProcesses(executable: string, signal: NodeJS.Signals): void {
 async function terminateCliProcesses(
   executable: string,
   graceMs: number,
+  ps: PsRunner,
 ): Promise<number[]> {
-  signalCliProcesses(executable, "SIGTERM");
-  if (await cliGoneWithin(executable, graceMs)) return [];
-  signalCliProcesses(executable, "SIGKILL");
-  await cliGoneWithin(executable, graceMs);
-  return liveCliProcessIds(executable);
+  signalCliProcesses(executable, "SIGTERM", ps);
+  if (await cliGoneWithin(executable, graceMs, ps)) return [];
+  signalCliProcesses(executable, "SIGKILL", ps);
+  await cliGoneWithin(executable, graceMs, ps);
+  return liveCliProcessIds(executable, ps);
 }
 
 async function waitForCliExit(
   executable: string | null,
   timeoutMs = 20_000,
   graceMs = 2_000,
+  ps: PsRunner = runPs,
 ): Promise<void> {
   if (executable === null) {
     throw new Error(
       "no Claude executable resolved: cannot confirm the CLI exited before cleanup",
     );
   }
-  if (await cliGoneWithin(executable, timeoutMs)) return;
-  const survivors = await terminateCliProcesses(executable, graceMs);
+  if (await cliGoneWithin(executable, timeoutMs, ps)) return;
+  const survivors = await terminateCliProcesses(executable, graceMs, ps);
   const message = `the Claude CLI did not exit within ${timeoutMs} ms of stop()`;
-  if (survivors.length === 0) {
-    throw new CliTerminatedError(`${message}; it was terminated`);
-  }
+  if (survivors.length === 0) throw new Error(`${message}; it was terminated`);
   throw new CliStillRunningError(
     survivors,
     `${message}; process ${survivors.join(", ")} survived SIGKILL`,
@@ -882,7 +898,28 @@ describe("waiting for the Claude CLI to exit before cleanup", () => {
     await expect(waitForCliExit(null)).rejects.toThrow(/no Claude executable/u);
   });
 
-  it("runs every later cleanup and still fails with the timeout when the wait for the CLI throws", async () => {
+  function failureOf(promise: Promise<unknown>): Promise<unknown> {
+    return promise.then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+  }
+
+  function aggregateOf(failure: unknown): AggregateError {
+    if (!(failure instanceof AggregateError)) {
+      throw new Error("expected an AggregateError");
+    }
+    return failure;
+  }
+
+  function tableRow(pid: number, ppid: number, command: string): string {
+    return `${pid} ${ppid} ${command}`;
+  }
+
+  const OWN_ROW = tableRow(process.pid, 1, "node");
+  const FAKE_PID = 2_000_000_000;
+
+  it("runs every later cleanup and still fails with the timeout when the wait for the CLI throws, keeping the directories even though the CLI was killed", async () => {
     const directory = mkdtempSync(join(tmpdir(), "bb-pooled-owner-state-test-"));
     const executable = join(directory, "claude");
     const stubborn = await startProcess(executable, "/bin/sh", [
@@ -897,17 +934,22 @@ describe("waiting for the Claude CLI to exit before cleanup", () => {
       exitWaitCleanup(() => waitForCliExit(executable, 200, 300)),
     ];
     try {
-      await expect(runCleanups(list, new Set([directory]))).rejects.toThrow(
-        /did not exit/u,
+      const failure = aggregateOf(
+        await failureOf(runCleanups(list, new Set([directory]))),
       );
       await Promise.race([
         exited,
         new Promise((resolve) => setTimeout(resolve, 2_000)),
       ]);
+      expect(String(failure.errors[0])).toMatch(/did not exit/u);
+      expect(String(failure.errors[1])).toContain(
+        `kept: CLI exit not confirmed`,
+      );
+      expect(String(failure.errors[1])).toContain(directory);
       expect(stubborn.signalCode).toBe("SIGKILL");
       expect(liveCliProcessIds(executable)).toEqual([]);
       expect(ran).toEqual(["server.close", "session.stop"]);
-      expect(existsSync(directory)).toBe(false);
+      expect(existsSync(directory)).toBe(true);
       expect(list).toEqual([]);
     } finally {
       stubborn.kill("SIGKILL");
@@ -915,73 +957,99 @@ describe("waiting for the Claude CLI to exit before cleanup", () => {
     }
   });
 
-  it("keeps the directories and names the process when the CLI survived SIGKILL, and still runs every other cleanup", async () => {
-    const directory = mkdtempSync(join(tmpdir(), "bb-pooled-owner-state-test-"));
-    const ran: string[] = [];
-    const list: Array<() => unknown> = [
-      () => ran.push("session.stop"),
-      () => ran.push("server.close"),
-      exitWaitCleanup(() => {
-        throw new CliStillRunningError(
-          [4242],
-          "the Claude CLI did not exit within 1 ms of stop(); process 4242 survived SIGKILL",
+  it.each([
+    {
+      name: "the process survives SIGKILL",
+      table: (executable: string) => () =>
+        [OWN_ROW, tableRow(FAKE_PID, process.pid, `${executable} -c x`)].join(
+          "\n",
+        ),
+      error: /process 2000000000 survived SIGKILL/u,
+      kept: (directory: string) =>
+        `kept: process ${FAKE_PID} still running: ${directory}`,
+    },
+    {
+      name: "ps throws",
+      table: () => () => {
+        throw new Error("ps failed");
+      },
+      error: /^ps failed$/u,
+      kept: (directory: string) =>
+        `kept: CLI exit not confirmed (ps failed): ${directory}`,
+    },
+    {
+      name: "ps returns output that is not a process table",
+      table: () => () => "this is not a process table",
+      error: /unparsable ps output: this is not a process table/u,
+      kept: (directory: string) =>
+        `kept: CLI exit not confirmed (unparsable ps output: this is not a process table): ${directory}`,
+    },
+    {
+      name: "ps output does not list this process",
+      table: () => () => tableRow(1, 0, "launchd"),
+      error: /unparsable ps output: this process is not listed/u,
+      kept: (directory: string) =>
+        `kept: CLI exit not confirmed (unparsable ps output: this process is not listed): ${directory}`,
+    },
+    {
+      name: "the ancestry of a matching process cannot be resolved",
+      table: (executable: string) => () =>
+        [OWN_ROW, tableRow(FAKE_PID, 777_777_777, executable)].join("\n"),
+      error: /process 2000000000 survived SIGKILL/u,
+      kept: (directory: string) =>
+        `kept: process ${FAKE_PID} still running: ${directory}`,
+    },
+  ])(
+    "keeps the directories, names them and still runs every other cleanup when $name",
+    async ({ table, error, kept }) => {
+      const directory = mkdtempSync(
+        join(tmpdir(), "bb-pooled-owner-state-test-"),
+      );
+      const executable = join(directory, "claude");
+      const ran: string[] = [];
+      const list: Array<() => unknown> = [
+        () => ran.push("session.stop"),
+        () => ran.push("server.close"),
+        exitWaitCleanup(() =>
+          waitForCliExit(executable, 100, 100, table(executable)),
+        ),
+      ];
+      try {
+        const failure = aggregateOf(
+          await failureOf(runCleanups(list, new Set([directory]))),
         );
-      }),
-    ];
-    try {
-      const failure = await runCleanups(list, new Set([directory])).then(
-        () => undefined,
-        (error: unknown) => error,
-      );
-      if (!(failure instanceof AggregateError)) {
-        throw new Error("expected an AggregateError");
+        expect(failure.errors).toHaveLength(2);
+        expect(String(failure.errors[0])).toMatch(error);
+        expect(String(failure.errors[1])).toBe(`Error: ${kept(directory)}`);
+        expect(ran).toEqual(["server.close", "session.stop"]);
+        expect(existsSync(directory)).toBe(true);
+        expect(list).toEqual([]);
+      } finally {
+        rmSync(directory, { force: true, recursive: true });
       }
-      expect(failure.errors.map(String)).toEqual([
-        "Error: the Claude CLI did not exit within 1 ms of stop(); process 4242 survived SIGKILL",
-        `Error: kept: process 4242 still running: ${directory}`,
-      ]);
-      expect(ran).toEqual(["server.close", "session.stop"]);
-      expect(existsSync(directory)).toBe(true);
-      expect(list).toEqual([]);
-    } finally {
-      rmSync(directory, { force: true, recursive: true });
-    }
-  });
+    },
+  );
 
-  it("keeps the directories and gives the reason when the exit of the CLI could not be confirmed, for example when ps fails", async () => {
-    const directory = mkdtempSync(join(tmpdir(), "bb-pooled-owner-state-test-"));
-    const ran: string[] = [];
-    const list: Array<() => unknown> = [
-      () => ran.push("session.stop"),
-      () => ran.push("server.close"),
-      exitWaitCleanup(() => Promise.reject(new Error("ps failed"))),
-    ];
-    try {
-      const failure = await runCleanups(list, new Set([directory])).then(
-        () => undefined,
-        (error: unknown) => error,
-      );
-      if (!(failure instanceof AggregateError)) {
-        throw new Error("expected an AggregateError");
-      }
-      expect(failure.errors.map(String)).toEqual([
-        "Error: ps failed",
-        `Error: kept: CLI exit not confirmed (ps failed): ${directory}`,
-      ]);
-      expect(ran).toEqual(["server.close", "session.stop"]);
-      expect(existsSync(directory)).toBe(true);
-      expect(list).toEqual([]);
-    } finally {
-      rmSync(directory, { force: true, recursive: true });
-    }
+  it("confirms the exit when the process table lists no matching process, including rows continued over several lines", async () => {
+    const executable = join(tmpdir(), "bb-pooled-owner-state-test-none", "claude");
+    await waitForCliExit(executable, 100, 100, () => OWN_ROW);
+    await waitForCliExit(
+      executable,
+      100,
+      100,
+      () => `${OWN_ROW}\n${tableRow(4321, 1, "sh -c echo\ncontinued line")}`,
+    );
   });
 
   it("still removes the directories when only an unrelated cleanup throws and the exit was confirmed", async () => {
     const directory = mkdtempSync(join(tmpdir(), "bb-pooled-owner-state-test-"));
+    const executable = join(directory, "claude");
     const ran: string[] = [];
     const list: Array<() => unknown> = [
       () => ran.push("session.stop"),
-      exitWaitCleanup(() => Promise.resolve()),
+      exitWaitCleanup(() =>
+        waitForCliExit(executable, 100, 100, () => OWN_ROW),
+      ),
       () => {
         throw new Error("server.close failed");
       },
