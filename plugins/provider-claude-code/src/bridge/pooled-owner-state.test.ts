@@ -57,24 +57,58 @@ const REAL_CLAUDE = resolveClaudeCodeExecutable({ env: process.env });
 
 const cleanups: Array<() => unknown> = [];
 
-afterEach(() => runCleanups(cleanups));
+const ownedDirectories = new Set<string>();
 
-async function runCleanups(list: Array<() => unknown>): Promise<void> {
+afterEach(() => runCleanups(cleanups, ownedDirectories));
+
+class CliStillRunningError extends Error {
+  constructor(
+    readonly pids: number[],
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
+async function runCleanups(
+  list: Array<() => unknown>,
+  directories: Set<string>,
+): Promise<void> {
   const errors: unknown[] = [];
+  const stuck: CliStillRunningError[] = [];
   while (list.length > 0) {
     const cleanup = list.pop();
     try {
       await cleanup?.();
     } catch (error) {
       errors.push(error);
+      if (error instanceof CliStillRunningError) stuck.push(error);
     }
   }
-  const leftovers = [...scratchDirectories].filter((directory) =>
-    existsSync(directory),
-  );
-  if (leftovers.length > 0) {
-    errors.push(new Error(`scratch directories left behind: ${leftovers.join(", ")}`));
+  if (stuck.length > 0) {
+    for (const error of stuck) {
+      for (const pid of error.pids) {
+        for (const directory of directories) {
+          errors.push(new Error(`kept: process ${pid} still running: ${directory}`));
+        }
+      }
+    }
+  } else {
+    for (const directory of directories) {
+      try {
+        rmSync(directory, { force: true, recursive: true });
+      } catch (error) {
+        errors.push(error);
+      }
+    }
+    const leftovers = [...directories].filter((directory) =>
+      existsSync(directory),
+    );
+    if (leftovers.length > 0) {
+      errors.push(new Error(`scratch directories left behind: ${leftovers.join(", ")}`));
+    }
   }
+  directories.clear();
   if (errors.length === 1) throw errors[0];
   if (errors.length > 1) {
     throw new AggregateError(errors, `${errors.length} cleanups failed`);
@@ -148,11 +182,12 @@ function signalCliProcesses(executable: string, signal: NodeJS.Signals): void {
 async function terminateCliProcesses(
   executable: string,
   graceMs: number,
-): Promise<boolean> {
+): Promise<number[]> {
   signalCliProcesses(executable, "SIGTERM");
-  if (await cliGoneWithin(executable, graceMs)) return true;
+  if (await cliGoneWithin(executable, graceMs)) return [];
   signalCliProcesses(executable, "SIGKILL");
-  return cliGoneWithin(executable, graceMs);
+  await cliGoneWithin(executable, graceMs);
+  return liveCliProcessIds(executable);
 }
 
 async function waitForCliExit(
@@ -166,11 +201,12 @@ async function waitForCliExit(
     );
   }
   if (await cliGoneWithin(executable, timeoutMs)) return;
-  const reaped = await terminateCliProcesses(executable, graceMs);
-  throw new Error(
-    `the Claude CLI did not exit within ${timeoutMs} ms of stop(); ${
-      reaped ? "it was terminated" : "it survived SIGKILL"
-    }`,
+  const survivors = await terminateCliProcesses(executable, graceMs);
+  const message = `the Claude CLI did not exit within ${timeoutMs} ms of stop()`;
+  if (survivors.length === 0) throw new Error(`${message}; it was terminated`);
+  throw new CliStillRunningError(
+    survivors,
+    `${message}; process ${survivors.join(", ")} survived SIGKILL`,
   );
 }
 
@@ -180,7 +216,7 @@ function scratch(): string {
   const directory = mkdtempSync(join(tmpdir(), "bb-pooled-owner-state-test-"));
   scratchDirectories.add(directory);
   scratchDirectories.add(realpathSync(directory));
-  cleanups.push(() => rmSync(directory, { force: true, recursive: true }));
+  ownedDirectories.add(directory);
   return directory;
 }
 
@@ -822,8 +858,6 @@ describe("waiting for the Claude CLI to exit before cleanup", () => {
 
   it("runs every later cleanup and still fails with the timeout when the wait for the CLI throws", async () => {
     const directory = mkdtempSync(join(tmpdir(), "bb-pooled-owner-state-test-"));
-    scratchDirectories.add(directory);
-    scratchDirectories.add(realpathSync(directory));
     const executable = join(directory, "claude");
     const stubborn = await startProcess(executable, "/bin/sh", [
       "-c",
@@ -832,13 +866,14 @@ describe("waiting for the Claude CLI to exit before cleanup", () => {
     const exited = new Promise((resolve) => stubborn.once("exit", resolve));
     const ran: string[] = [];
     const list: Array<() => unknown> = [
-      () => rmSync(directory, { force: true, recursive: true }),
       () => ran.push("session.stop"),
       () => ran.push("server.close"),
       () => waitForCliExit(executable, 200, 300),
     ];
     try {
-      await expect(runCleanups(list)).rejects.toThrow(/did not exit/u);
+      await expect(runCleanups(list, new Set([directory]))).rejects.toThrow(
+        /did not exit/u,
+      );
       await Promise.race([
         exited,
         new Promise((resolve) => setTimeout(resolve, 2_000)),
@@ -850,6 +885,40 @@ describe("waiting for the Claude CLI to exit before cleanup", () => {
       expect(list).toEqual([]);
     } finally {
       stubborn.kill("SIGKILL");
+      rmSync(directory, { force: true, recursive: true });
+    }
+  });
+
+  it("keeps the directories and names the process when the CLI survived SIGKILL, and still runs every other cleanup", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "bb-pooled-owner-state-test-"));
+    const ran: string[] = [];
+    const list: Array<() => unknown> = [
+      () => ran.push("session.stop"),
+      () => ran.push("server.close"),
+      () => {
+        throw new CliStillRunningError(
+          [4242],
+          "the Claude CLI did not exit within 1 ms of stop(); process 4242 survived SIGKILL",
+        );
+      },
+    ];
+    try {
+      const failure = await runCleanups(list, new Set([directory])).then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+      if (!(failure instanceof AggregateError)) {
+        throw new Error("expected an AggregateError");
+      }
+      expect(failure.errors.map(String)).toEqual([
+        "Error: the Claude CLI did not exit within 1 ms of stop(); process 4242 survived SIGKILL",
+        `Error: kept: process 4242 still running: ${directory}`,
+      ]);
+      expect(ran).toEqual(["server.close", "session.stop"]);
+      expect(existsSync(directory)).toBe(true);
+      expect(list).toEqual([]);
+    } finally {
+      rmSync(directory, { force: true, recursive: true });
     }
   });
 
@@ -860,7 +929,7 @@ describe("waiting for the Claude CLI to exit before cleanup", () => {
       },
       () => Promise.reject(new Error("second")),
     ];
-    const failure = await runCleanups(list).then(
+    const failure = await runCleanups(list, new Set()).then(
       () => undefined,
       (error: unknown) => error,
     );
