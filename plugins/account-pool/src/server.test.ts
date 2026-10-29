@@ -12867,23 +12867,48 @@ describe("Account Pool Artifact proxy", () => {
       expect(logged).not.toContain(secret);
   });
 
-  it("logs a relayed path without its query values", async () => {
-    const fixture = await artifactFixture(
-      async () => Response.json({}),
-      () => hostRpcResult,
-    );
-    const response = await oauthProxyRequest(fixture, {
-      method: "GET",
-      path: "/api/frame/session?code=query-secret",
-    });
-    expect(response.status).toBe(200);
-    await response.text();
-    const logged = JSON.stringify(fixture.host.harness.inspection.logEntries);
-    expect(logged).toMatch(
-      /Account Pooler relayed GET \/api\/frame\/session -> 200 in \d+ms/u,
-    );
-    expect(logged).not.toContain("query-secret");
-  });
+  it.each([
+    [
+      "a token-like frame path segment",
+      "GET",
+      "/api/frame/sk-ant-oat01-FAKE0123456789abcdef/render",
+      "sk-ant-oat01-FAKE0123456789abcdef",
+      "/api/frame/*",
+    ],
+    [
+      "a frame path segment and query value",
+      "GET",
+      "/api/frame/session?code=query-secret",
+      "query-secret",
+      "/api/frame/*",
+    ],
+    [
+      "an eval path suffix",
+      "POST",
+      "/api/eval/sdk-FAKEEVALTOKEN0123",
+      "FAKEEVALTOKEN0123",
+      "/api/eval/sdk-*",
+    ],
+  ])(
+    "logs only the matched route for %s",
+    async (_name, method, path, secret, route) => {
+      const fixture = await artifactFixture(
+        async () => Response.json({}),
+        () => hostRpcResult,
+      );
+      const response = await oauthProxyRequest(fixture, { method, path });
+      expect(response.status).toBe(200);
+      await response.text();
+      const logged = JSON.stringify(
+        fixture.host.harness.inspection.logEntries,
+      );
+      expect(logged).toContain(
+        `Account Pooler relayed ${method} ${route} -> 200 in `,
+      );
+      expect(logged).not.toContain(secret);
+      expect(logged).not.toContain("sk-ant-");
+    },
+  );
 
   it.each([
     [

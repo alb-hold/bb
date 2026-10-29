@@ -58,6 +58,7 @@ import {
   TARGET_METHOD_HEADER,
   TARGET_PATH_HEADER,
   classifyOAuthProxyRequest,
+  oauthProxyRouteLabel,
 } from "./oauth-proxy-policy.js";
 
 const ROUTE = "/api/v1/plugins/account-pool/http";
@@ -126,7 +127,7 @@ interface HubOptions {
 
 export interface OAuthRelay {
   method: string;
-  path: string;
+  route: string;
   status: number;
   durationMs: number;
 }
@@ -417,7 +418,7 @@ export class AccountPoolHub {
     const relayed = (status: number) =>
       this.options.onOAuthRelay({
         method,
-        path: target.split("?", 1)[0] ?? target,
+        route: oauthProxyRouteLabel(target),
         status,
         durationMs: this.options.now() - startedAt,
       });
