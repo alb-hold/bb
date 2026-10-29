@@ -570,19 +570,6 @@ export function registerThreadActionRoutes(app: Hono, deps: AppDeps): void {
         ? {}
         : { terminalLayoutAction: payload.terminalLayoutAction }),
     };
-    const callerScoped =
-      payload.terminalAction?.action === "focus" ||
-      payload.terminalLayoutAction?.action === "split";
-    if (
-      !callerScoped &&
-      (payload.callerThreadId !== undefined || payload.all !== undefined)
-    ) {
-      throw new ApiError(
-        400,
-        "invalid_request",
-        "callerThreadId and all apply only to terminal focus and split",
-      );
-    }
     if (payload.all === true && payload.callerThreadId !== undefined) {
       throw new ApiError(
         400,
@@ -590,7 +577,7 @@ export function registerThreadActionRoutes(app: Hono, deps: AppDeps): void {
         "callerThreadId cannot be combined with all",
       );
     }
-    if (!callerScoped || payload.all === true) {
+    if (payload.all === true) {
       return context.json({
         deliveredClients: deps.hub.notifyThreadOpen(openTarget, notification),
         skipReason: null,

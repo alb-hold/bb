@@ -140,10 +140,16 @@ Opening threads and files in the app:
   bb thread open <thread-id> [path]        Open a thread, optionally with a panel file
     --line <number>                        Line number to focus
     --split <placement>                    right, down, left, top, or replace (default)
+    --all                                  Send to every open app client instead of only clients viewing this thread
   bb thread pane <action> [thread-id]      Maximize, restore, toggle, spotlight, or clear spotlight
 
   Inside a BB thread, BB_THREAD_ID selects the current thread automatically and
-  the thread ID argument is omitted for file-only opens. Outside a BB thread,
+  the thread ID argument is omitted for file-only opens. Without --all the
+  request reaches only app clients viewing the calling thread (also when it
+  opens a different thread); outside a thread, or with no such client, nothing
+  is sent and the command exits non-zero with no_caller_thread or
+  no_client_viewing_caller_thread (SDK: threads.open({ threadId, file, callerThreadId? | all? })).
+ Outside a BB thread,
   pass the thread ID as the first argument. A thread already open in a pane is focused instead of
   duplicated. Edge placement creates panes through the eighth pane; at eight
   panes, it replaces the focused pane.

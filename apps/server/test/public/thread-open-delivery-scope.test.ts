@@ -61,11 +61,33 @@ const SPLIT = (terminalId: string) => ({
   file: null,
   terminalLayoutAction: { action: "split", terminalId, side: "right" },
 });
+const OPEN_LINK = (terminalId: string) => ({
+  file: null,
+  terminalAction: {
+    action: "openBrowser",
+    terminalId,
+    url: "http://localhost:3000",
+  },
+});
+const MOVE = (terminalId: string) => ({
+  file: null,
+  terminalLayoutAction: {
+    action: "move",
+    terminalId,
+    targetTerminalId: terminalId,
+  },
+});
+const FILE_OPEN = () => ({
+  file: { source: "workspace", path: "notes.md", lineNumber: null },
+});
 
 describe.each([
   ["focus", FOCUS],
   ["split", SPLIT],
-])("terminal %s delivery scope", (_name, buildBody) => {
+  ["open-link", OPEN_LINK],
+  ["move", MOVE],
+  ["file open", FILE_OPEN],
+])("thread open %s delivery scope", (_name, buildBody) => {
   it("sends nothing to any client when the request names no caller", async () => {
     await withTestHarness(async (harness) => {
       const fixture = seedScopeFixture(harness, `none-${_name}`);
@@ -243,25 +265,3 @@ describe.each([
   });
 });
 
-describe("terminal actions outside focus and split", () => {
-  it("rejects delivery scope fields instead of ignoring them", async () => {
-    await withTestHarness(async (harness) => {
-      const fixture = seedScopeFixture(harness, "other-actions");
-      const terminal = fixture.terminalOf(fixture.callerThread.id);
-      const socket = fixture.viewer(fixture.callerThread.id);
-
-      const response = await postOpen(harness, fixture.callerThread.id, {
-        file: null,
-        terminalAction: {
-          action: "openBrowser",
-          terminalId: terminal.id,
-          url: "http://localhost:3000",
-        },
-        callerThreadId: fixture.callerThread.id,
-      });
-
-      expect(response.status).toBe(400);
-      expect(socket.messages).toEqual([]);
-    });
-  });
-});

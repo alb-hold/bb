@@ -24,9 +24,14 @@ import {
   runNativeHolder,
   writeNativeHolderAttachMarker,
 } from "../native-holder.js";
-import { resolveContextThreadId } from "../context-env.js";
 import { terminalScopeHint } from "../context-hints.js";
 import { durationHelp, parseDurationMs } from "../duration.js";
+import {
+  ALL_CLIENTS_OPTION_DESCRIPTION,
+  openDeliveryScope,
+  SKIP_REASON_MESSAGES,
+  type OpenDeliveryOptions,
+} from "../open-delivery.js";
 import { columnWidths, printBorderlessTable } from "../table.js";
 import { outputJson } from "./helpers.js";
 import { resolveMachineHostId, resolveMachineTargetOption } from "./machine.js";
@@ -35,16 +40,7 @@ const DEFAULT_COLS = 80;
 const DEFAULT_ROWS = 24;
 const TERMINAL_ATTACH_HEARTBEAT_MS = 15_000;
 const TERMINAL_WAIT_TIMEOUT_EXIT_CODE = 124;
-const ALL_CLIENTS_OPTION_DESCRIPTION =
-  "Send to every open bb app client instead of only clients viewing this thread";
 const NO_APP_CLIENT_MESSAGE = "No bb app is open to apply this; open bb and retry";
-
-const SKIP_REASON_MESSAGES: Record<ThreadOpenSkipReason, string> = {
-  no_caller_thread:
-    "Not run from a bb thread (BB_THREAD_ID is unset), so no open bb app client belongs to the caller; nothing was sent. Pass --all to send to every open bb app client",
-  no_client_viewing_caller_thread:
-    "No open bb app client is viewing this thread; nothing was sent. Pass --all to send to every open bb app client",
-};
 
 function reportTerminalActionDelivery(
   deliveredClients: number,
@@ -89,18 +85,9 @@ function reportTerminalActionResult(
   reportTerminalActionDelivery(result.deliveredClients, skipReason);
 }
 
-interface TerminalDeliveryOptions extends TerminalJsonOptions {
-  all?: boolean;
-}
-
-function terminalDeliveryScope(opts: TerminalDeliveryOptions): {
-  all?: boolean;
-  callerThreadId?: string;
-} {
-  if (opts.all === true) return { all: true };
-  const callerThreadId = resolveContextThreadId();
-  return callerThreadId === undefined ? {} : { callerThreadId };
-}
+interface TerminalDeliveryOptions
+  extends TerminalJsonOptions,
+    OpenDeliveryOptions {}
 
 interface TerminalJsonOptions {
   json?: boolean;
@@ -348,7 +335,7 @@ export function registerTerminalCommands(
           getUrl(),
         ).terminals.experimental_focus({
           terminalId,
-          ...terminalDeliveryScope(opts),
+          ...openDeliveryScope(opts),
         });
         reportTerminalActionResult(
           opts,
@@ -360,14 +347,23 @@ export function registerTerminalCommands(
 
   terminal
     .command("open-link <terminalId> <url>")
-    .description("Open a URL in the terminal thread's browser")
+    .description("Open a URL in the browser tab of the app clients viewing this thread")
+    .option("--all", ALL_CLIENTS_OPTION_DESCRIPTION)
     .option("--json", "Print machine-readable JSON output")
     .action(
-      action(async (terminalId: string, url: string, opts: TerminalJsonOptions) => {
+      action(async (terminalId: string, url: string, opts: TerminalDeliveryOptions) => {
         const result = await createCliBbSdk(
           getUrl(),
-        ).terminals.experimental_openBrowser({ terminalId, url });
-        reportTerminalActionResult(opts, { terminalId, url, deliveredClients: result.deliveredClients });
+        ).terminals.experimental_openBrowser({
+          terminalId,
+          url,
+          ...openDeliveryScope(opts),
+        });
+        reportTerminalActionResult(
+          opts,
+          { terminalId, url, deliveredClients: result.deliveredClients },
+          result.skipReason,
+        );
       }),
     );
 
@@ -391,7 +387,7 @@ export function registerTerminalCommands(
         ).terminals.experimental_layout.split({
           terminalId,
           side: opts.side as "right" | "left" | "up" | "down",
-          ...terminalDeliveryScope(opts),
+          ...openDeliveryScope(opts),
         });
         reportTerminalActionResult(
           opts,
@@ -407,22 +403,28 @@ export function registerTerminalCommands(
 
   terminal
     .command("move <terminalId>")
-    .description("Move a terminal tab to the pane containing another terminal")
+    .description("Move a terminal tab to the pane containing another terminal in the app clients viewing this thread")
     .requiredOption("--to-pane-of <terminalId>", "Terminal whose pane receives this tab")
+    .option("--all", ALL_CLIENTS_OPTION_DESCRIPTION)
     .option("--json", "Print machine-readable JSON output")
     .action(
-      action(async (terminalId: string, opts: { toPaneOf: string; json?: boolean }) => {
+      action(async (terminalId: string, opts: TerminalDeliveryOptions & { toPaneOf: string }) => {
         const result = await createCliBbSdk(
           getUrl(),
         ).terminals.experimental_layout.move({
           terminalId,
           targetTerminalId: opts.toPaneOf,
+          ...openDeliveryScope(opts),
         });
-        reportTerminalActionResult(opts, {
+        reportTerminalActionResult(
+          opts,
+          {
             terminalId,
             targetTerminalId: opts.toPaneOf,
             deliveredClients: result.deliveredClients,
-          });
+          },
+          result.skipReason,
+        );
       }),
     );
 

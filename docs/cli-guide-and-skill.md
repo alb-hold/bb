@@ -2,14 +2,14 @@
 
 Thread terminal actions are available through `bb terminal surfaces --thread
 <id> [--json]`, `bb terminal focus <terminalId> [--all] [--json]`, `bb terminal open-link
-<terminalId> <url> [--json]`, `bb terminal split <terminalId> --side right|left|up|down
+<terminalId> <url> [--all] [--json]`, `bb terminal split <terminalId> --side right|left|up|down
 [--all] [--json]`, and `bb terminal move <terminalId> --to-pane-of <otherTerminalId>
-[--json]`. The SDK exposes these as
+[--all] [--json]`. The SDK exposes these as
 `terminals.experimental_surfaces.list({ threadId })`,
 `terminals.experimental_focus({ terminalId, callerThreadId?, all? })`, and
-`terminals.experimental_openBrowser({ terminalId, url })`,
+`terminals.experimental_openBrowser({ terminalId, url, callerThreadId?, all? })`,
 `terminals.experimental_layout.split({ terminalId, side, callerThreadId?, all? })`, and
-`terminals.experimental_layout.move({ terminalId, targetTerminalId })`. The first lists
+`terminals.experimental_layout.move({ terminalId, targetTerminalId, callerThreadId?, all? })`. The first lists
 server-known terminal surfaces; `deliveredClients` is the number of open app
 sockets the request was sent to. A zero-client response exits non-zero with a
 message to open bb and retry; a positive count does not confirm receipt or
@@ -17,11 +17,14 @@ application. A client without an in-app browser offers the URL
 through an Open action instead of creating an unavailable browser tab. Pane
 limits and compact layouts are client state, so split and move can still be
 rejected by the app after the request is sent; the CLI cannot confirm whether
-the client received or applied them. `focus` and `split` send only to app
+the client received or applied them. `focus`, `open-link`, `split`, and `move` send only to app
 clients whose current view is the calling thread (`BB_THREAD_ID`; the SDK takes
 `callerThreadId`), and fail with `no_caller_thread` or
 `no_client_viewing_caller_thread` when there is none; `--all` (SDK `all: true`)
-sends to every open app client. `open-link` and `move` are unchanged.
+sends to every open app client. `bb thread open [id] [path]` follows the same
+rule (SDK `threads.open({ threadId, file, callerThreadId?, all? })`): it reaches
+only app clients viewing the calling thread, including when it opens a different
+thread, and `--all` sends to every open app client.
 
 `bb terminal output <id> --lines <n>` prints the latest lines, including from
 recently exited terminals. The server retains at most 64 KiB per terminal,

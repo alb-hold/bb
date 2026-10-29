@@ -90,7 +90,12 @@ import type {
   UpdateThreadRequest,
   UpdateQueuedMessageRequest,
 } from "@bb/server-contract";
-import { signalRequestArgs, type CreateSdkAreaArgs } from "./common.js";
+import {
+  signalRequestArgs,
+  threadOpenDeliveryScopeBody,
+  type CreateSdkAreaArgs,
+  type ThreadOpenDeliveryScope,
+} from "./common.js";
 
 export const DEFAULT_THREAD_WAIT_TIMEOUT_MS = 20 * 60 * 1000;
 export const DEFAULT_THREAD_WAIT_POLL_INTERVAL_MS = 250;
@@ -369,7 +374,7 @@ export interface ThreadTabsUpdateArgs extends UpdateThreadTabsRequest {
   threadId: string;
 }
 
-export interface ThreadOpenArgs {
+export interface ThreadOpenArgs extends ThreadOpenDeliveryScope {
   threadId: string;
   split?: ThreadOpenSplit;
   file: ThreadOpenFile | null;
@@ -1413,6 +1418,7 @@ export function createThreadsArea(args: CreateSdkAreaArgs): ThreadsArea {
           json: {
             ...(input.split === undefined ? {} : { split: input.split }),
             file: input.file,
+            ...threadOpenDeliveryScopeBody(input),
           },
         }),
       );
