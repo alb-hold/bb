@@ -6,6 +6,7 @@ import {
   listEvents,
   threads,
 } from "@bb/db";
+import type { HostDaemonRpcCommand } from "@bb/host-daemon-contract";
 import { describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
 import { advanceEnvironmentProvisioning } from "../../src/services/environments/environment-engine.js";
@@ -107,14 +108,12 @@ describe("environment reprovisioning", () => {
   });
 });
 
-const idleCleanupInspection = {
-  supported: true,
-  active: false,
-  pids: [],
-  unreadablePids: [],
-};
+const isAttach = (
+  command: HostDaemonRpcCommand,
+): command is Extract<HostDaemonRpcCommand, { type: "environment.attach" }> =>
+  command.type === "environment.attach";
 
-it("does not replace an unresolved RuntimeManager setup with a new successful attempt", async () => {
+it("resumes an unresolved RuntimeManager setup without rerunning it and keeps the outcome unknown when the daemon cannot", async () => {
   await withTestHarness(async (harness) => {
     const { host, session } = seedHostSession(harness.deps, {
       id: "host-setup-retry",
@@ -145,10 +144,11 @@ it("does not replace an unresolved RuntimeManager setup with a new successful at
     const responder = registerHostRpcResponder(harness, {
       hostId: host.id,
       sessionId: session.id,
-      handle: (request) =>
-        request.command.type === "environment.inspect_cleanup"
-          ? { ok: true as const, result: idleCleanupInspection }
-          : { ok: true as const, result: {} },
+      handle: () => ({
+        ok: false as const,
+        errorCode: "command_failed",
+        errorMessage: "The setup outcome is unknown after interruption",
+      }),
     });
     await advanceEnvironmentProvisioning(harness.deps, {
       environmentId: environment.id,
@@ -158,6 +158,7 @@ it("does not replace an unresolved RuntimeManager setup with a new successful at
           environmentId: environment.id,
           path: environment.path!,
           setupScriptTimeoutMs: 1000,
+          setupOperation: { id: "setup-op", resumeOnly: false },
           contributedEnv: [],
           initiator: null,
         },
@@ -167,17 +168,15 @@ it("does not replace an unresolved RuntimeManager setup with a new successful at
       .poll(() => getEnvironment(harness.db, environment.id)?.status)
       .toBe("error");
     expect(
-      responder.requests.filter(
-        (request) => request.command.type === "environment.attach",
-      ),
-    ).toHaveLength(0);
+      responder.requests.map(({ command }) => command).filter(isAttach),
+    ).toMatchObject([{ setupOperation: { id, resumeOnly: true } }]);
     expect(
       harness.db.select().from(environmentHookOperations).get(),
     ).toMatchObject({ id, startedAt: 1, finishedAt: null });
   });
 });
 
-it("rejoins a setup the reconnected daemon still holds instead of failing the thread", async () => {
+it("resumes an unresolved setup on the daemon that still holds it instead of failing the thread", async () => {
   await withTestHarness(async (harness) => {
     const { host, session } = seedHostSession(harness.deps, {
       id: "host-setup-rejoin",
@@ -208,22 +207,16 @@ it("rejoins a setup the reconnected daemon still holds instead of failing the th
     const responder = registerHostRpcResponder(harness, {
       hostId: host.id,
       sessionId: session.id,
-      handle: (request) =>
-        request.command.type === "environment.inspect_cleanup"
-          ? {
-              ok: true as const,
-              result: { ...idleCleanupInspection, active: true },
-            }
-          : {
-              ok: true as const,
-              result: {
-                path: environment.path!,
-                isGitRepo: false,
-                isWorktree: false,
-                branchName: null,
-                defaultBranch: null,
-              },
-            },
+      handle: () => ({
+        ok: true as const,
+        result: {
+          path: environment.path!,
+          isGitRepo: false,
+          isWorktree: false,
+          branchName: null,
+          defaultBranch: null,
+        },
+      }),
     });
     await advanceEnvironmentProvisioning(harness.deps, {
       environmentId: environment.id,
@@ -233,6 +226,7 @@ it("rejoins a setup the reconnected daemon still holds instead of failing the th
           environmentId: environment.id,
           path: environment.path!,
           setupScriptTimeoutMs: 1000,
+          setupOperation: { id: "setup-op", resumeOnly: false },
           contributedEnv: [],
           initiator: null,
         },
@@ -242,10 +236,8 @@ it("rejoins a setup the reconnected daemon still holds instead of failing the th
       .poll(() => getEnvironment(harness.db, environment.id)?.status)
       .toBe("ready");
     expect(
-      responder.requests.filter(
-        (request) => request.command.type === "environment.attach",
-      ),
-    ).toHaveLength(1);
+      responder.requests.map(({ command }) => command).filter(isAttach),
+    ).toMatchObject([{ setupOperation: { id, resumeOnly: true } }]);
     expect(
       harness.db.select().from(environmentHookOperations).get(),
     ).toMatchObject({ id, startedAt: 1, finishedAt: expect.any(Number) });
@@ -276,9 +268,14 @@ it.each([
       const responder = registerHostRpcResponder(harness, {
         hostId: host.id,
         sessionId: session.id,
-        handle: (request) =>
-          request.command.type === "environment.inspect_cleanup"
-            ? { ok: true as const, result: idleCleanupInspection }
+        handle: ({ command }) =>
+          command.type === "environment.attach" &&
+          command.setupOperation?.resumeOnly
+            ? {
+                ok: false,
+                errorCode: "command_failed",
+                errorMessage: "The setup outcome is unknown after interruption",
+              }
             : fail
               ? { ok: false, errorCode, errorMessage: "Setup failed" }
               : {
@@ -298,6 +295,7 @@ it.each([
           environmentId: environment.id,
           path: environment.path!,
           setupScriptTimeoutMs: 1000,
+          setupOperation: { id: "setup-op", resumeOnly: false },
           contributedEnv: [],
           initiator: null,
         },
@@ -328,10 +326,11 @@ it.each([
         .poll(() => getEnvironment(harness.db, environment.id)?.status)
         .toBe(retryable ? "ready" : "error");
       expect(
-        responder.requests.filter(
-          (request) => request.command.type === "environment.attach",
-        ),
-      ).toHaveLength(retryable ? 2 : 1);
+        responder.requests
+          .map(({ command }) => command)
+          .filter(isAttach)
+          .map((command) => command.setupOperation?.resumeOnly),
+      ).toEqual([false, !retryable]);
       if (retryable)
         expect(operation()).toMatchObject({
           finishedAt: expect.any(Number),
