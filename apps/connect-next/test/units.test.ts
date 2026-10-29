@@ -1055,6 +1055,7 @@ describe("frp hooks", () => {
 
       slow.release();
       expect(await first).toMatchObject({ reject: false });
+      harness.frps.register(PROXY_NAME, "run-shared");
       await sleep(300);
       expect(harness.directory.locate(SUBDOMAIN).kind).toBe("here");
       expect(harness.directory.locate("wasp").kind).not.toBe("here");
