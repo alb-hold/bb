@@ -362,6 +362,20 @@ describe("ThreadScreen panel ongoing indicator", () => {
     };
   }
 
+  it.each([
+    ["active", true],
+    ["idle", false],
+  ] as const)(
+    "tells the timeline a %s panel thread's activity (%s)",
+    (status, expected) => {
+      renderScreen(SIDE_CHAT_PRESENTATION, {
+        thread: panelThread({ status, runtime: { displayStatus: status } }),
+      });
+
+      expect(mocks.surfaceProps.at(-1)!.threadIsActive).toBe(expected);
+    },
+  );
+
   it("shows a background-only working indicator while runtime is idle", () => {
     renderScreen(SIDE_CHAT_PRESENTATION, {
       thread: panelThread({}),
