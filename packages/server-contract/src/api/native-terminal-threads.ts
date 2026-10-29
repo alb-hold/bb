@@ -37,6 +37,7 @@ export type NativeTerminalLaunchQuery = z.infer<
 
 export const nativeTerminalLaunchSpecSchema = z.object({
   threadId: z.string().min(1),
+  providerId: z.string().min(1),
   cli: providerNativeTerminalSchema,
   nativeSessionId: z.string().min(1).nullable(),
   initialPrompt: z.string().min(1).nullable(),

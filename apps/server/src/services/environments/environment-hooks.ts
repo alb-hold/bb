@@ -22,6 +22,13 @@ const reports = new WeakMap<
   >
 >();
 
+export function environmentSetupOperationId(environment: {
+  id: string;
+  environmentProviderInstanceKey: string | null;
+}): string {
+  return `environment:${environment.id}:${environment.environmentProviderInstanceKey}:setup`;
+}
+
 export function registerEnvironmentProgressReport(
   deps: Pick<WorkSessionDeps, "db">,
   args: {

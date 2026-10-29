@@ -11,6 +11,7 @@ import { createNodeWebsocketFactory } from "@bb/sdk/node-websocket";
 import {
   terminalServerMessageSchema,
   type TerminalSession,
+  type ThreadOpenSkipReason,
 } from "@bb/server-contract";
 import { action, CliExitError, CliUsageError } from "../action.js";
 import { createCliBbSdk } from "../client.js";
@@ -23,6 +24,7 @@ import {
   runNativeHolder,
   writeNativeHolderAttachMarker,
 } from "../native-holder.js";
+import { resolveContextThreadId } from "../context-env.js";
 import { terminalScopeHint } from "../context-hints.js";
 import { durationHelp, parseDurationMs } from "../duration.js";
 import { columnWidths, printBorderlessTable } from "../table.js";
@@ -33,14 +35,27 @@ const DEFAULT_COLS = 80;
 const DEFAULT_ROWS = 24;
 const TERMINAL_ATTACH_HEARTBEAT_MS = 15_000;
 const TERMINAL_WAIT_TIMEOUT_EXIT_CODE = 124;
+const ALL_CLIENTS_OPTION_DESCRIPTION =
+  "Send to every open bb app client instead of only clients viewing this thread";
 const NO_APP_CLIENT_MESSAGE = "No bb app is open to apply this; open bb and retry";
 
-function reportTerminalActionDelivery(deliveredClients: number): void {
+const SKIP_REASON_MESSAGES: Record<ThreadOpenSkipReason, string> = {
+  no_caller_thread:
+    "Not run from a bb thread (BB_THREAD_ID is unset), so no open bb app client belongs to the caller; nothing was sent. Pass --all to send to every open bb app client",
+  no_client_viewing_caller_thread:
+    "No open bb app client is viewing this thread; nothing was sent. Pass --all to send to every open bb app client",
+};
+
+function reportTerminalActionDelivery(
+  deliveredClients: number,
+  skipReason: ThreadOpenSkipReason | null,
+): void {
   if (deliveredClients === 0) {
-    throw new CliExitError(NO_APP_CLIENT_MESSAGE, 1, {
-      code: "no_app_clients",
-      hint: null,
-    });
+    throw new CliExitError(
+      skipReason === null ? NO_APP_CLIENT_MESSAGE : SKIP_REASON_MESSAGES[skipReason],
+      1,
+      { code: skipReason ?? "no_app_clients", hint: null },
+    );
   }
   console.log(
     `Request sent to ${deliveredClients} open bb app client${deliveredClients === 1 ? "" : "s"}; receipt and application are not confirmed.`,
@@ -50,18 +65,41 @@ function reportTerminalActionDelivery(deliveredClients: number): void {
 function reportTerminalActionResult(
   opts: TerminalJsonOptions,
   result: Record<string, unknown> & { deliveredClients: number },
+  skipReason: ThreadOpenSkipReason | null = null,
 ): void {
   if (opts.json) {
     outputJson(opts, {
       ...result,
+      ...(skipReason === null ? {} : { skipReason }),
       ...(result.deliveredClients === 0
-        ? { error: { code: "no_app_clients", message: NO_APP_CLIENT_MESSAGE } }
+        ? {
+            error: {
+              code: skipReason ?? "no_app_clients",
+              message:
+                skipReason === null
+                  ? NO_APP_CLIENT_MESSAGE
+                  : SKIP_REASON_MESSAGES[skipReason],
+            },
+          }
         : {}),
     });
-    if (result.deliveredClients === 0) reportTerminalActionDelivery(0);
+    if (result.deliveredClients === 0) reportTerminalActionDelivery(0, skipReason);
     return;
   }
-  reportTerminalActionDelivery(result.deliveredClients);
+  reportTerminalActionDelivery(result.deliveredClients, skipReason);
+}
+
+interface TerminalDeliveryOptions extends TerminalJsonOptions {
+  all?: boolean;
+}
+
+function terminalDeliveryScope(opts: TerminalDeliveryOptions): {
+  all?: boolean;
+  callerThreadId?: string;
+} {
+  if (opts.all === true) return { all: true };
+  const callerThreadId = resolveContextThreadId();
+  return callerThreadId === undefined ? {} : { callerThreadId };
 }
 
 interface TerminalJsonOptions {
@@ -301,14 +339,22 @@ export function registerTerminalCommands(
 
   terminal
     .command("focus <terminalId>")
-    .description("Focus a terminal tab in the app")
+    .description("Focus a terminal tab in the app clients viewing this thread")
+    .option("--all", ALL_CLIENTS_OPTION_DESCRIPTION)
     .option("--json", "Print machine-readable JSON output")
     .action(
-      action(async (terminalId: string, opts: TerminalJsonOptions) => {
+      action(async (terminalId: string, opts: TerminalDeliveryOptions) => {
         const result = await createCliBbSdk(
           getUrl(),
-        ).terminals.experimental_focus({ terminalId });
-        reportTerminalActionResult(opts, { terminalId, deliveredClients: result.deliveredClients });
+        ).terminals.experimental_focus({
+          terminalId,
+          ...terminalDeliveryScope(opts),
+        });
+        reportTerminalActionResult(
+          opts,
+          { terminalId, deliveredClients: result.deliveredClients },
+          result.skipReason,
+        );
       }),
     );
 
@@ -327,11 +373,12 @@ export function registerTerminalCommands(
 
   terminal
     .command("split <terminalId>")
-    .description("Place a terminal in a new side panel pane")
+    .description("Place a terminal in a new side panel pane in the app clients viewing this thread")
     .requiredOption("--side <side>", "Pane side: right, left, up, or down")
+    .option("--all", ALL_CLIENTS_OPTION_DESCRIPTION)
     .option("--json", "Print machine-readable JSON output")
     .action(
-      action(async (terminalId: string, opts: { side: string; json?: boolean }) => {
+      action(async (terminalId: string, opts: TerminalDeliveryOptions & { side: string }) => {
         if (!["right", "left", "up", "down"].includes(opts.side)) {
           throw new CliUsageError({
             code: "invalid_terminal_split_side",
@@ -344,12 +391,17 @@ export function registerTerminalCommands(
         ).terminals.experimental_layout.split({
           terminalId,
           side: opts.side as "right" | "left" | "up" | "down",
+          ...terminalDeliveryScope(opts),
         });
-        reportTerminalActionResult(opts, {
+        reportTerminalActionResult(
+          opts,
+          {
             terminalId,
             side: opts.side,
             deliveredClients: result.deliveredClients,
-          });
+          },
+          result.skipReason,
+        );
       }),
     );
 
