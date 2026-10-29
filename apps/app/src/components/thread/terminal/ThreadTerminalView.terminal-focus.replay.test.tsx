@@ -640,7 +640,53 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
       { type: "resize", cols: 51, rows: 47 },
     ]);
   });
-});
+
+  it("flags the backstop for a replay attempt that outlasts it and holds again for the next attempt", async () => {
+    const { preview, session, socket } =
+      await mountReplayWithUnusableSnapshot();
+    testState.deferSocketOpen = true;
+    let current = socket;
+    const holdDeadlineMs =
+      terminalReplayPreview.TERMINAL_REPLAY_PREVIEW_HOLD_TIMEOUT_MS + 1;
+    for (const attempt of [1, 2]) {
+      current.disconnect();
+      await waitForReadinessCondition(
+        () => expect(testState.sockets).toHaveLength(attempt + 1),
+        "terminal did not reconnect",
+      );
+      expect(preview()?.dataset.terminalReplayHeld).toBeDefined();
+      expect(preview()?.dataset.terminalReplayHoldExpired).toBeUndefined();
+      expect(preview()?.style.visibility).toBe("hidden");
+
+      const reconnectSocket = testState.sockets[attempt];
+      if (!reconnectSocket) throw new Error("reconnect socket is missing");
+      try {
+        vi.useFakeTimers();
+        reconnectSocket.open();
+        reconnectSocket.receive({
+          type: "attached",
+          session,
+          replayStartSeq: 2,
+          nextSeq: 5,
+        });
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(holdDeadlineMs);
+        });
+        await act(async () => {
+          await Promise.resolve();
+        });
+      } finally {
+        vi.clearAllTimers();
+        vi.useRealTimers();
+      }
+      expect(preview()?.dataset.terminalReplayHoldExpired).toBeDefined();
+      expect(preview()?.dataset.terminalReplayHeld).toBeDefined();
+      expect(preview()?.style.visibility).toBe("hidden");
+      expect(pageText()).toContain("Still loading terminal");
+      current = reconnectSocket;
+    }
+  });
+
 
   it("replays output received while the terminal panel is closed", async () => {
     prepareMobileTerminal();
@@ -1071,45 +1117,6 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
     );
   });
 
-  it("flags the backstop for a replay attempt that outlasts it and holds again for the next attempt", async () => {
-    const { preview, session, socket } =
-      await mountReplayWithUnusableSnapshot();
-    shortenReplayHoldTimeout(300);
-    testState.deferSocketOpen = true;
-    let current = socket;
-    for (const attempt of [1, 2]) {
-      current.disconnect();
-      await waitForReadinessCondition(
-        () => expect(testState.sockets).toHaveLength(attempt + 1),
-        "terminal did not reconnect",
-      );
-      expect(preview()?.dataset.terminalReplayHeld).toBeDefined();
-      expect(preview()?.dataset.terminalReplayHoldExpired).toBeUndefined();
-      expect(preview()?.style.visibility).toBe("hidden");
-
-      const reconnectSocket = testState.sockets[attempt];
-      if (!reconnectSocket) throw new Error("reconnect socket is missing");
-      reconnectSocket.open();
-      reconnectSocket.receive({
-        type: "attached",
-        session,
-        replayStartSeq: 2,
-        nextSeq: 5,
-      });
-      await waitForReadinessCondition(
-        () =>
-          expect(preview()?.dataset.terminalReplayHoldExpired).toBeDefined(),
-        "hold backstop did not fire for the stalled attempt",
-      );
-      expect(preview()?.dataset.terminalReplayHeld).toBeDefined();
-      expect(preview()?.style.visibility).toBe("hidden");
-      await waitForReadinessCondition(
-        () => expect(pageText()).toContain("Still loading terminal"),
-        "loading notice did not appear after hold backstop",
-      );
-      current = reconnectSocket;
-    }
-  });
 
   it("keeps a stalled replay hidden behind a loading state and reveals it only on completion", async () => {
     shortenReplayHoldTimeout(600);
@@ -1862,3 +1869,4 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
     }
   });
 
+});
