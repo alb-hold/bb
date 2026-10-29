@@ -24,6 +24,7 @@ export {
 } from "./fork-thread-spawners.js";
 export {
   clearThreadRowState,
+  getThreadRowProgressSourceTerminalId,
   getThreadRowState,
   listThreadRowStatesByScope,
   putThreadRowState,

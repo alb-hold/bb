@@ -18,9 +18,13 @@ export const updateThreadRowStateRequestSchema = z.discriminatedUnion("action", 
   }).strict(),
   z.object({
     action: z.literal("progress-set"),
+    terminalId: z.string().min(1).max(128).optional(),
     progress: threadRowProgressSchema,
   }).strict(),
-  z.object({ action: z.literal("progress-clear") }).strict(),
+  z.object({
+    action: z.literal("progress-clear"),
+    terminalId: z.string().min(1).max(128).optional(),
+  }).strict(),
   z.object({ action: z.literal("clear") }).strict(),
 ]);
 

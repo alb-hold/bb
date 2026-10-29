@@ -7,6 +7,7 @@ import {
   type ThreadListEnrichmentScope,
 } from "./thread-list-enrichment-scope.js";
 import {
+  threadRowProgressSchema,
   threadRowStateSchema,
   type ThreadRowProgress,
   type ThreadRowState,
@@ -22,6 +23,40 @@ interface StoredThreadRowState {
   statusesJson: string;
   progressJson: string | null;
   updatedAt: number;
+}
+
+function parseStoredThreadRowProgress(progressJson: string): {
+  progress: ThreadRowProgress;
+  sourceTerminalId: string | null;
+} {
+  const parsed: unknown = JSON.parse(progressJson);
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    return {
+      progress: threadRowProgressSchema.parse(parsed),
+      sourceTerminalId: null,
+    };
+  }
+  const entries = Object.entries(parsed);
+  const sourceTerminalIdEntry = entries.find(
+    ([key]) => key === "sourceTerminalId",
+  );
+  if (
+    sourceTerminalIdEntry !== undefined &&
+    typeof sourceTerminalIdEntry[1] !== "string"
+  ) {
+    throw new TypeError("Invalid stored thread row progress source");
+  }
+  return {
+    progress: threadRowProgressSchema.parse(
+      Object.fromEntries(
+        entries.filter(([key]) => key !== "sourceTerminalId"),
+      ),
+    ),
+    sourceTerminalId:
+      typeof sourceTerminalIdEntry?.[1] === "string"
+        ? sourceTerminalIdEntry[1]
+        : null,
+  };
 }
 
 export const THREAD_ROW_STATE_TTL_MS = 60 * 60 * 1000;
@@ -46,11 +81,28 @@ export function getThreadRowState(
             ThreadRowStatus
           >,
           progress: row.progressJson
-            ? (JSON.parse(row.progressJson) as ThreadRowProgress)
+            ? parseStoredThreadRowProgress(row.progressJson).progress
             : null,
         }
       : { statuses: {}, progress: null },
   );
+}
+
+export function getThreadRowProgressSourceTerminalId(
+  db: DbConnection,
+  threadId: string,
+  nowMs = Date.now(),
+): string | null {
+  const row = db.$client
+    .prepare(
+      "SELECT progress_json AS progressJson FROM fork_thread_row_states WHERE thread_id = ? AND updated_at >= ?",
+    )
+    .get(threadId, nowMs - THREAD_ROW_STATE_TTL_MS) as
+    | Pick<StoredThreadRowState, "progressJson">
+    | undefined;
+  return row?.progressJson
+    ? parseStoredThreadRowProgress(row.progressJson).sourceTerminalId
+    : null;
 }
 
 export function listThreadRowStatesByScope(
@@ -74,7 +126,7 @@ export function listThreadRowStatesByScope(
           ThreadRowStatus
         >,
         progress: row.progressJson
-          ? (JSON.parse(row.progressJson) as ThreadRowProgress)
+          ? parseStoredThreadRowProgress(row.progressJson).progress
           : null,
       }),
     ]),
@@ -85,6 +137,7 @@ export function putThreadRowState(
   db: DbConnection,
   threadId: string,
   state: ThreadRowState,
+  sourceTerminalId: string | null = null,
 ): void {
   const hasState =
     Object.keys(state.statuses).length > 0 || state.progress !== null;
@@ -106,7 +159,12 @@ export function putThreadRowState(
     .run(
       threadId,
       JSON.stringify(state.statuses),
-      state.progress === null ? null : JSON.stringify(state.progress),
+      state.progress === null
+        ? null
+        : JSON.stringify({
+            ...state.progress,
+            ...(sourceTerminalId === null ? {} : { sourceTerminalId }),
+          }),
       Date.now(),
     );
 }

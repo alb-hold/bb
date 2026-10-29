@@ -24,6 +24,64 @@ async function updateState(
 }
 
 describe("public thread row state", () => {
+  it("clears progress only when the source terminal matches", async () => {
+    await withTestHarness(async (harness) => {
+      const { thread } = seedThreadFixture(harness);
+      expect(
+        (
+          await updateState(harness, thread.id, {
+            action: "progress-set",
+            progress: { value: 0.6 },
+            terminalId: "terminal-a",
+          })
+        ).status,
+      ).toBe(200);
+      expect(
+        (
+          await updateState(harness, thread.id, {
+            action: "status-set",
+            key: "review",
+            status: { value: "In progress" },
+          })
+        ).status,
+      ).toBe(200);
+      await updateState(harness, thread.id, {
+        action: "progress-clear",
+        terminalId: "terminal-b",
+      });
+      expect(
+        threadRowStateSchema.parse(
+          await readJson(await readState(harness, thread.id)),
+        ).progress,
+      ).toEqual({ value: 0.6 });
+
+      await updateState(harness, thread.id, {
+        action: "progress-set",
+        progress: { value: 0.4 },
+        terminalId: "terminal-b",
+      });
+      await updateState(harness, thread.id, {
+        action: "progress-clear",
+        terminalId: "terminal-a",
+      });
+      expect(
+        threadRowStateSchema.parse(
+          await readJson(await readState(harness, thread.id)),
+        ).progress,
+      ).toEqual({ value: 0.4 });
+
+      await updateState(harness, thread.id, {
+        action: "progress-clear",
+        terminalId: "terminal-b",
+      });
+      expect(
+        threadRowStateSchema.parse(
+          await readJson(await readState(harness, thread.id)),
+        ).progress,
+      ).toBeNull();
+    });
+  });
+
   it("persists changes, notifies sidebar subscribers, validates bounds, and clears", async () => {
     await withTestHarness(async (harness) => {
       const { thread } = seedThreadFixture(harness);
@@ -179,6 +237,46 @@ describe("public thread row state", () => {
       expect(notifyProject).toHaveBeenLastCalledWith(thread.projectId, [
         "threads-changed",
       ]);
+    });
+  });
+
+  it("keeps a legacy clear from erasing terminal-owned progress", async () => {
+    await withTestHarness(async (harness) => {
+      const { thread } = seedThreadFixture(harness);
+      await updateState(harness, thread.id, {
+        action: "progress-set",
+        progress: { value: 0.6 },
+        terminalId: "terminal-a",
+      });
+      await updateState(harness, thread.id, {
+        action: "progress-set",
+        progress: { value: 0.4 },
+        terminalId: "terminal-b",
+      });
+
+      const legacyClear = await updateState(harness, thread.id, {
+        action: "progress-clear",
+      });
+      expect(legacyClear.status).toBe(200);
+      expect(
+        threadRowStateSchema.parse(await readJson(legacyClear)).progress,
+      ).toEqual({ value: 0.4 });
+      expect(
+        threadRowStateSchema.parse(
+          await readJson(await readState(harness, thread.id)),
+        ).progress,
+      ).toEqual({ value: 0.4 });
+
+      await updateState(harness, thread.id, {
+        action: "progress-set",
+        progress: { value: 0.2 },
+      });
+      const ownerlessClear = await updateState(harness, thread.id, {
+        action: "progress-clear",
+      });
+      expect(
+        threadRowStateSchema.parse(await readJson(ownerlessClear)).progress,
+      ).toBeNull();
     });
   });
 });
