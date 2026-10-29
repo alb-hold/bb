@@ -16,6 +16,7 @@ import { ensureHostSessionReadyForWork } from "../hosts/host-lifecycle.js";
 import { foreignProjectOwnedPathRefusal } from "../threads/workspace-path-claims.js";
 import {
   cancelPendingEnvironmentHook,
+  environmentSetupOperationId,
   runEnvironmentHook,
   ENVIRONMENT_HOOK_TIMEOUT_MS,
 } from "./environment-hooks.js";
@@ -956,12 +957,7 @@ async function sweepProviderEnvironmentInSlot(
     const setupOperation = deps.db
       .select({ finishedAt: environmentHookOperations.finishedAt })
       .from(environmentHookOperations)
-      .where(
-        eq(
-          environmentHookOperations.id,
-          `environment:${row.id}:${row.environmentProviderInstanceKey}:setup`,
-        ),
-      )
+      .where(eq(environmentHookOperations.id, environmentSetupOperationId(row)))
       .get();
     const setupUnresolved =
       (setupOperation !== undefined && setupOperation.finishedAt === null) ||
@@ -979,7 +975,7 @@ async function sweepProviderEnvironmentInSlot(
           .get() === undefined);
     if (setupUnresolved && row.providerOwnsPath && row.path !== null) {
       await cancelPendingEnvironmentHook(deps, {
-        id: `environment:${row.id}:${row.environmentProviderInstanceKey}:setup`,
+        id: environmentSetupOperationId(row),
         hostId: row.hostId,
       });
     }
@@ -1536,7 +1532,7 @@ function settleEnvironmentProvisionOutcome(
         .where(
           eq(
             environmentHookOperations.id,
-            `environment:${environment.id}:${environment.environmentProviderInstanceKey}:setup`,
+            environmentSetupOperationId(environment),
           ),
         )
         .run();
@@ -1874,40 +1870,38 @@ async function runEnvironmentProvisionCommand(
   deps: CommandResultSideEffectsDeps,
   args: StartTrackedEnvironmentProvisionCommandArgs,
 ): Promise<void> {
-  if (args.request.command.setupScriptTimeoutMs !== null) {
+  let command = args.request.command;
+  if (command.setupScriptTimeoutMs !== null) {
     const environment = args.environment;
-    const id = `environment:${environment.id}:${environment.environmentProviderInstanceKey}:setup`;
+    const id = environmentSetupOperationId(environment);
     const existing = deps.db
       .select({ finishedAt: environmentHookOperations.finishedAt })
       .from(environmentHookOperations)
       .where(eq(environmentHookOperations.id, id))
       .get();
-    if (existing !== undefined && existing.finishedAt === null) {
-      interruptUnrecoverableEnvironmentProvisioning(deps, {
-        environmentId: environment.id,
-        reason: `An earlier setup has an unknown outcome. Archive its threads, inspect the workspace, then run bb environment cleanup ${environment.id} --recover.`,
-      });
-      return;
+    const unfinished = existing !== undefined && existing.finishedAt === null;
+    command = { ...command, setupOperation: { id, resumeOnly: unfinished } };
+    if (!unfinished) {
+      deps.db
+        .insert(environmentHookOperations)
+        .values({
+          id,
+          operationId: id,
+          hostId: environment.hostId,
+          path: command.path,
+          kind: "setup",
+          startedAt: Date.now(),
+        })
+        .onConflictDoUpdate({
+          target: environmentHookOperations.id,
+          set: { startedAt: Date.now(), finishedAt: null, error: null },
+        })
+        .run();
     }
-    deps.db
-      .insert(environmentHookOperations)
-      .values({
-        id,
-        operationId: id,
-        hostId: environment.hostId,
-        path: args.request.command.path,
-        kind: "setup",
-        startedAt: Date.now(),
-      })
-      .onConflictDoUpdate({
-        target: environmentHookOperations.id,
-        set: { startedAt: Date.now(), finishedAt: null, error: null },
-      })
-      .run();
   }
   const execution = createLiveHostCommandExecution(args.environment.hostId);
   await runLiveHostCommand(deps, {
-    command: args.request.command,
+    command,
     execution,
     hostId: args.environment.hostId,
     preserveOnHostUnavailable: true,
@@ -1989,6 +1983,9 @@ function recoverEnvironmentProvisionRequest(
         path: environment.path,
         setupScriptTimeoutMs: environment.providerOwnsPath
           ? ENVIRONMENT_HOOK_TIMEOUT_MS
+          : null,
+        setupOperationId: environment.providerOwnsPath
+          ? environmentSetupOperationId(environment)
           : null,
       }),
     };
