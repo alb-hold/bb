@@ -174,7 +174,9 @@ class WorkspaceSocketIndex {
     workspaceArg: string,
     relativeName: string,
   ): Promise<"yes" | "no" | "unreadable"> {
-    const suffix = relativeUnixPathSuffix(relativeName);
+    const resolved = resolveRelativeUnixBindSuffix(relativeName);
+    if (resolved.kind === "unreadable") return "unreadable";
+    const suffix = resolved.suffix;
     const roots = new Set<string>([
       path.normalize(workspaceCanonical),
       path.normalize(workspaceArg),
@@ -190,12 +192,26 @@ class WorkspaceSocketIndex {
   }
 }
 
-function relativeUnixPathSuffix(relativeName: string): string {
+export type RelativeUnixBindSuffixResolution =
+  | { kind: "suffix"; suffix: string }
+  | { kind: "unreadable" };
+
+export function resolveRelativeUnixBindSuffix(
+  relativeName: string,
+): RelativeUnixBindSuffixResolution {
   const trimmed = stripDeletedSuffix(relativeName)
     .trim()
     .replace(/^\.\//, "");
-  const parts = trimmed.split(/[/\\]/).filter((part) => part.length > 0);
-  return `/${parts.join("/")}`;
+  if (trimmed.length === 0) return { kind: "unreadable" };
+  if (trimmed.includes("\0")) return { kind: "unreadable" };
+  if (trimmed.includes("\\")) return { kind: "unreadable" };
+  const parts = trimmed.split("/").filter((part) => part.length > 0);
+  for (const part of parts) {
+    if (part === "..") return { kind: "unreadable" };
+  }
+  const normalizedParts = parts.filter((part) => part !== ".");
+  if (normalizedParts.length === 0) return { kind: "unreadable" };
+  return { kind: "suffix", suffix: `/${normalizedParts.join("/")}` };
 }
 
 function socketPathMatchesSuffix(

@@ -5,7 +5,11 @@ import { realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { inspectWorkspaceProcesses, readInspectWorkspaceProcessFindDiagnostics } from "./workspace-processes.js";
+import {
+  inspectWorkspaceProcesses,
+  readInspectWorkspaceProcessFindDiagnostics,
+  resolveRelativeUnixBindSuffix,
+} from "./workspace-processes.js";
 
 vi.mock("@bb/process-utils", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@bb/process-utils")>();
@@ -20,6 +24,22 @@ vi.mock("node:fs/promises", async (importOriginal) => {
     ...actual,
     realpath: vi.fn(actual.realpath),
   };
+});
+
+describe("resolveRelativeUnixBindSuffix", () => {
+  it("treats dot-dot segments as unreadable", () => {
+    expect(resolveRelativeUnixBindSuffix("sub/../c.sock")).toEqual({
+      kind: "unreadable",
+    });
+    expect(resolveRelativeUnixBindSuffix("..")).toEqual({ kind: "unreadable" });
+  });
+
+  it("drops dot segments and builds a slash suffix", () => {
+    expect(resolveRelativeUnixBindSuffix("./a/./c.sock")).toEqual({
+      kind: "suffix",
+      suffix: "/a/c.sock",
+    });
+  });
 });
 
 describe("relative unix bind suffix search", () => {
@@ -99,6 +119,55 @@ describe("relative unix bind suffix search", () => {
       expect(findCalls).toBe(1);
       expect(readInspectWorkspaceProcessFindDiagnostics().socketFindCalls).toBe(1);
     } finally {
+      await rm(ws, { recursive: true, force: true });
+    }
+  });
+
+  it("treats sub/../c.sock bind as unreadable when cwd is outside the workspace", async () => {
+    const ws = await mkdtemp(join(tmpdir(), "bb-r12-dotdot-"));
+    let findCalls = 0;
+    vi.mocked(execHostFile).mockImplementation((async (
+      cmd: string,
+      args: readonly string[],
+    ) => {
+      if (cmd === "find") {
+        findCalls += 1;
+        return { stdout: `${join(ws, "c.sock")}\n`, stderr: "" };
+      }
+      const stdout = args.includes("cwd")
+        ? "p533\nfcwd\ntDIR\nn/\n"
+        : "p533\nf1\ntunix\nnsub/../c.sock\n";
+      return { stdout, stderr: "" };
+    }) as never);
+    try {
+      expect(await inspectWorkspaceProcesses(ws)).toEqual({
+        supported: true,
+        pids: [],
+        unreadablePids: [533],
+      });
+      expect(findCalls).toBe(0);
+    } finally {
+      await rm(ws, { recursive: true, force: true });
+    }
+  });
+
+  it("matches ./a/./c.sock suffix against a normalized workspace socket path", async () => {
+    const ws = await mkdtemp(join(tmpdir(), "bb-r12-dots-"));
+    await mkdir(join(ws, "a"), { recursive: true });
+    const sockPath = join(ws, "a", "c.sock");
+    const stop = await listenUnix(sockPath);
+    try {
+      await mockLsofPassThroughFind(
+        "p534\nfcwd\ntDIR\nn/\n",
+        "p534\nf1\ntunix\nn./a/./c.sock\n",
+      );
+      expect(await inspectWorkspaceProcesses(ws)).toEqual({
+        supported: true,
+        pids: [],
+        unreadablePids: [534],
+      });
+    } finally {
+      await stop();
       await rm(ws, { recursive: true, force: true });
     }
   });
