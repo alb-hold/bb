@@ -153,8 +153,8 @@ describe("server-to-browser timeline payload sizes", () => {
         budget,
       );
       expect(measurement.streamResult).toEqual(measurement.streamed);
-      expect(measurement.streamResult?.rows.at(-1)?.detail).toBe(
-        "streamed update ".repeat(20),
+      expect(measurement.streamResult?.rows.at(-1)).toEqual(
+        row(measurement.rowCount - 1, "streamed update ".repeat(20)),
       );
     }
   });
