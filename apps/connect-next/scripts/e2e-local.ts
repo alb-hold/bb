@@ -2272,6 +2272,7 @@ async function startGate(
     FRP_BIND_PORT: String(await freePort()),
     FRP_VHOST_PORT: String(await freePort()),
     FRP_HOOKS_PORT: String(await freePort()),
+    FRP_ADMIN_PORT: String(await freePort()),
     FLY_REGION: `local-${name}`,
     FLY_MACHINE_ID: `e2e-${name}`,
     PRESENCE_REFRESH_MS: "15000",

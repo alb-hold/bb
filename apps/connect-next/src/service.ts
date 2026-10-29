@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { once } from "node:events";
 import type { Server } from "node:http";
 import * as net from "node:net";
@@ -16,6 +17,7 @@ import {
   type FrpConnections,
 } from "./frp-connections.js";
 import { createFrpHooks } from "./frp-hooks.js";
+import { createFrpState } from "./frp-state.js";
 import { startFrps, type Frps } from "./frps.js";
 import { createGate, type GateDeadlines } from "./gate.js";
 import { errorText, type Log } from "./log.js";
@@ -70,6 +72,13 @@ async function listen(server: net.Server, port: number, host: string) {
   return (server.address() as AddressInfo).port;
 }
 
+async function reservePort(host: string): Promise<number> {
+  const probe = net.createServer();
+  const reserved = await listen(probe, 0, host);
+  await closeServer(probe);
+  return reserved;
+}
+
 function closeServer(server: Server | net.Server): Promise<void> {
   return new Promise((resolve) => {
     if (!server.listening) {
@@ -121,10 +130,21 @@ export async function startConnectNext(
   const directory = regions?.directory ?? local;
   const signingKey = await importGateSigningKey(config.signingKeyJwk);
   const secure = config.scheme === "https";
+  const adminPort =
+    config.ports.frpAdmin === 0
+      ? await reservePort(LOOPBACK)
+      : config.ports.frpAdmin;
+  const adminUser = "gate";
+  const adminPassword = randomBytes(24).toString("hex");
   const hooks = createFrpHooks({
     accounts,
     directory,
     log,
+    frpState: createFrpState({
+      port: adminPort,
+      user: adminUser,
+      password: adminPassword,
+    }),
     onLogin: (clientAddress, label, runId) =>
       frpConnections.loggedIn(clientAddress, label, runId),
     claimConnection: (label, runId) => frpConnections.claim(label, runId),
@@ -136,6 +156,9 @@ export async function startConnectNext(
     bindPort: config.ports.frpBind,
     vhostPort: config.ports.vhost,
     hooksPort,
+    adminPort,
+    adminUser,
+    adminPassword,
     subdomainHost: config.baseDomain,
     logLevel: config.frpLogLevel,
     log,

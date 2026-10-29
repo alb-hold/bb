@@ -157,6 +157,7 @@ describe.skipIf(!availability.ok)("connect-next across regions", () => {
           frpBind: await freePort(),
           vhost: await freePort(),
           hooks: 0,
+          frpAdmin: 0,
           frpTcp: null,
         },
         frps: binaries.frps,
