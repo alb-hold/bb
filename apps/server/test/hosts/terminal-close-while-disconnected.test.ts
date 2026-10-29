@@ -8,17 +8,23 @@ import { describe, expect, it, vi } from "vitest";
 import { seedHostSession, seedSession } from "../helpers/seed.js";
 import { withTestHarness } from "../helpers/test-app.js";
 
+interface SentDaemonMessage {
+  reason?: string;
+  terminalId?: string;
+  type: string;
+}
+
 function terminalCloseMessages(
-  send: ReturnType<typeof vi.spyOn>,
+  send: { mock: { calls: unknown[][] } },
   sessionId: string,
-) {
+): SentDaemonMessage[] {
   return send.mock.calls
     .filter(
-      ([target, message]) =>
-        target === sessionId &&
-        (message as { type?: string }).type === "terminal.close",
+      (call) =>
+        call[0] === sessionId &&
+        (call[1] as SentDaemonMessage).type === "terminal.close",
     )
-    .map(([, message]) => message as { terminalId: string; reason: string });
+    .map((call) => call[1] as SentDaemonMessage);
 }
 
 describe("closing a terminal while its daemon session is disconnected", () => {
@@ -55,7 +61,7 @@ describe("closing a terminal while its daemon session is disconnected", () => {
       });
       await harness.deps.terminalSessions.closeTerminal({
         terminalId: closed.id,
-        payload: { mode: "always", reason: "user" },
+        payload: { mode: "force", reason: "user" },
       });
       send.mockClear();
 
@@ -76,7 +82,7 @@ describe("closing a terminal while its daemon session is disconnected", () => {
       expect(terminalCloseMessages(send, next.id)).toHaveLength(1);
       expect(
         terminalCloseMessages(send, next.id).some(
-          (message) => message.terminalId === kept.id,
+          (message: SentDaemonMessage) => message.terminalId === kept.id,
         ),
       ).toBe(false);
     });
@@ -110,7 +116,7 @@ describe("closing a terminal while its daemon session is disconnected", () => {
       });
       await harness.deps.terminalSessions.closeTerminal({
         terminalId: terminal.id,
-        payload: { mode: "always", reason: "user" },
+        payload: { mode: "force", reason: "user" },
       });
       send.mockClear();
 
@@ -153,7 +159,7 @@ describe("closing a terminal while its daemon session is disconnected", () => {
       send.mockReturnValue(true);
       await harness.deps.terminalSessions.closeTerminal({
         terminalId: closed.id,
-        payload: { mode: "always", reason: "user" },
+        payload: { mode: "force", reason: "user" },
       });
       queueTerminalDaemonClose(harness.db, {
         hostId: host.id,

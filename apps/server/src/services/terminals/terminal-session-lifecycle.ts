@@ -1892,7 +1892,6 @@ export class TerminalSessionLifecycle {
   }
 
   private queueDaemonCloseForReconnect(session: TerminalSessionRow): void {
-    if (session.daemonSessionId === null) return;
     queueTerminalDaemonClose(this.options.db, {
       hostId: session.hostId,
       now: Date.now(),
