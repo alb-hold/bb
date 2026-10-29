@@ -58,6 +58,7 @@ import {
   TARGET_METHOD_HEADER,
   TARGET_PATH_HEADER,
   classifyOAuthProxyRequest,
+  oauthProxyRouteLabel,
 } from "./oauth-proxy-policy.js";
 
 const ROUTE = "/api/v1/plugins/account-pool/http";
@@ -121,6 +122,16 @@ interface HubOptions {
     outcome: "succeeded" | "failed",
     message: string,
   ) => void;
+  onOAuthRelay: (relay: OAuthRelay) => void;
+}
+
+export interface OAuthRelay {
+  method: string;
+  route: string;
+  upstream:
+    | { kind: "status"; status: number }
+    | { kind: "error"; errorClass: string };
+  durationMs: number;
 }
 
 interface SelectedAccount {
@@ -405,6 +416,14 @@ export class AccountPoolHub {
     const url =
       this.options.getSettings().anthropicUpstreamBaseUrl.replace(/\/+$/u, "") +
       target;
+    const startedAt = this.options.now();
+    const relayed = (upstream: OAuthRelay["upstream"]) =>
+      this.options.onOAuthRelay({
+        method,
+        route: oauthProxyRouteLabel(target),
+        upstream,
+        durationMs: this.options.now() - startedAt,
+      });
     const { controller, release } = this.trackRequest(request);
     let handedOff = false;
     try {
@@ -445,6 +464,13 @@ export class AccountPoolHub {
         } catch (cause) {
           if (!controller.signal.aborted)
             this.options.onUpstreamError("claude", cause);
+          relayed({
+            kind: "error",
+            errorClass:
+              cause instanceof Error && /^[A-Za-z0-9_$]{1,64}$/u.test(cause.name)
+                ? cause.name
+                : "Error",
+          });
           return adapter.errorResponse(
             502,
             "Account Pooler could not reach Anthropic.",
@@ -472,6 +498,7 @@ export class AccountPoolHub {
         }
         const forwarded = new Headers(response.headers);
         forwarded.delete("set-cookie");
+        relayed({ kind: "status", status: response.status });
         handedOff = true;
         return this.clientResponse({
           response: new Response(response.body, {
@@ -1976,6 +2003,7 @@ export function createHub(options: {
   onAccountsChanged?: () => void;
   onUpstreamError?: (provider: PoolProvider, error: unknown) => void;
   onOAuthRefresh?: HubOptions["onOAuthRefresh"];
+  onOAuthRelay?: HubOptions["onOAuthRelay"];
 }): AccountPoolHub {
   const adapters: ReadonlyMap<PoolProvider, ProviderAdapter> = new Map([
     [
@@ -2013,6 +2041,7 @@ export function createHub(options: {
     onAccountsChanged: options.onAccountsChanged ?? (() => {}),
     onUpstreamError: options.onUpstreamError ?? (() => {}),
     onOAuthRefresh: options.onOAuthRefresh ?? (() => {}),
+    onOAuthRelay: options.onOAuthRelay ?? (() => {}),
   });
 }
 

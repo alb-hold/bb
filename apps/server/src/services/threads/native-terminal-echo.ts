@@ -338,7 +338,10 @@ export function terminalScreenAlreadyShowsText(args: {
   );
 }
 
+export const SOLID_WHITESPACE_CELL = "·";
+
 export function terminalScreenInputBoxIsEmpty(args: {
+  cursor?: { col: number; row: number };
   rows: readonly string[];
   solidRows?: readonly string[];
 }): boolean {
@@ -359,11 +362,20 @@ export function terminalScreenInputBoxIsEmpty(args: {
   if (next !== undefined && next.trim() !== "" && !ECHO_BORDER_ROW.test(next)) {
     return false;
   }
-  if (remainder.trim() === "") return true;
-  const solid = args.solidRows?.[promptAt];
-  if (solid === undefined) return false;
   const promptStart = row.length - prompt.length;
-  return solid.slice(promptStart + marker.length).trim() === "";
+  const contentStart = promptStart + marker.length;
+  if (
+    args.cursor !== undefined &&
+    args.cursor.row === promptAt &&
+    args.cursor.col > contentStart + 1
+  ) {
+    return false;
+  }
+  const solid = args.solidRows?.[promptAt];
+  if (solid === undefined) return remainder.trim() === "";
+  const padded = solid.slice(contentStart);
+  const typed = /^[  ·]/u.test(padded) ? padded.slice(1) : padded;
+  return /^ *$/u.test(typed);
 }
 
 export function terminalScreenInputBoxHoldsText(args: {

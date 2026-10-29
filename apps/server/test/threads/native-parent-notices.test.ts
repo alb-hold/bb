@@ -526,6 +526,41 @@ describe("child notices for a native terminal parent", () => {
     30_000,
   );
 
+  it.each([
+    ["Claude-layout draft of typed spaces, cursor at its start", "❯    ", 3],
+    ["Claude-layout draft of typed spaces, cursor at its end", "❯    ", 6],
+    [
+      "Codex-shaped draft of typed spaces that Codex does not write into cells",
+      "\u001b[1m›\u001b[22m",
+      6,
+    ],
+  ])(
+    "sends no paste and no Enter into a %s",
+    async (_label, promptRow, cursorColumn) => {
+      const fixture = await createFixture();
+      const { open, thread } = await openRunningClaudeParent(fixture);
+      const tui = startFakeClaudeTui(
+        fixture,
+        open.terminalId,
+        EMPTY_PROMPT_SCREEN,
+      );
+      try {
+        tui.draw(`\u001b[3;1H\u001b[2K${promptRow}\u001b[3;${cursorColumn}H`);
+        const seeded = seedChild(fixture, thread.id, 1);
+        await failChild(fixture, seeded);
+        await sleep(6_000);
+        expect(tui.inputs()).toEqual([]);
+        tui.draw("\u001b[3;1H\u001b[2K❯ \u001b[3;3H");
+        await waitFor(() => tui.pastes().length > 0, 10_000);
+        expect(tui.pastes()).toHaveLength(1);
+        expect(tui.pastes()[0]).toContain(`@thread:${seeded.child.id}`);
+      } finally {
+        tui.stop();
+      }
+    },
+    30_000,
+  );
+
   it("delivers into a Codex-shaped idle prompt whose placeholder is dim", async () => {
     const fixture = await createFixture();
     const { open, thread } = await openRunningClaudeParent(fixture);

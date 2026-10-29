@@ -386,6 +386,14 @@ export function createAccountPoolPlugin(
         ),
       onAccountsChanged: () =>
         bb.realtime.publish(ACCOUNT_POOL_ACCOUNTS_CHANGED, {}),
+      onOAuthRelay: ({ method, route, upstream, durationMs }) =>
+        bb.log.info(
+          `Account Pooler relayed ${method} ${route} -> ${
+            upstream.kind === "status"
+              ? `upstream ${upstream.status}`
+              : `upstream=error ${upstream.errorClass}`
+          } in ${durationMs}ms`,
+        ),
       onOAuthRefresh: (provider, accountId, outcome, detail) => {
         const message = `Account Pooler ${provider} account ${accountId} OAuth refresh ${outcome}: ${detail}`;
         if (outcome === "succeeded") bb.log.info(message);
