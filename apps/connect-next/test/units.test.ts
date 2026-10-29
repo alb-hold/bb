@@ -573,12 +573,12 @@ describe("frp hooks", () => {
       return stub;
     }
 
-    async function startHooks() {
+    async function startHooks(accounts: AccountApi = LINKED_ACCOUNTS) {
       const connections = createFrpConnections();
       const directory = createLocalDirectory({ graceMs: 60_000 });
       const frps = createFrpsStub();
       const hooks = createFrpHooks({
-        accounts: LINKED_ACCOUNTS,
+        accounts,
         directory,
         log: silentLog,
         onLogin: (address, label, runId) =>
@@ -997,6 +997,125 @@ describe("frp hooks", () => {
       });
       expect(stolen).toMatchObject({ reject: true });
       expect(harness.directory.locate(SUBDOMAIN).kind).toBe("here");
+    });
+
+    function slowAccounts() {
+      let release: () => void = () => {};
+      const opened = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const accounts: AccountApi = {
+        resolve: async () => {
+          await opened;
+          return { ...OWNED, credential: true };
+        },
+        forget: () => {},
+        presence: async () => [],
+      };
+      return { accounts, release };
+    }
+
+    const loginAs = (harness: Harness, user: string, runId: string) =>
+      harness.ask("Login", {
+        user,
+        metas: harness.metas,
+        run_id: runId,
+        client_address: `${user}:1`,
+      });
+
+    const proxyAs = (harness: Harness, user: string, runId: string) =>
+      harness.ask("NewProxy", {
+        user: { user, metas: harness.metas, run_id: runId },
+        proxy_name: PROXY_NAME,
+        proxy_type: "http",
+        subdomain: user === "bee" ? SUBDOMAIN : user,
+      });
+
+    it("refuses the second of two logins that name one run id before either registered a proxy", async () => {
+      const slow = slowAccounts();
+      const harness = await startHooks(slow.accounts);
+
+      const first = loginAs(harness, "bee", "run-shared");
+      await sleep(30);
+      const second = await loginAs(harness, "wasp", "run-shared");
+      expect(second).toMatchObject({ reject: true });
+
+      slow.release();
+      expect(await first).toMatchObject({ reject: false });
+    });
+
+    it("refuses the second of two concurrent proxies that name one run id", async () => {
+      const slow = slowAccounts();
+      const harness = await startHooks(slow.accounts);
+
+      const first = proxyAs(harness, "bee", "run-shared");
+      await sleep(30);
+      const second = await proxyAs(harness, "wasp", "run-shared");
+      expect(second).toMatchObject({ reject: true });
+
+      slow.release();
+      expect(await first).toMatchObject({ reject: false });
+      await sleep(300);
+      expect(harness.directory.locate(SUBDOMAIN).kind).toBe("here");
+      expect(harness.directory.locate("wasp").kind).not.toBe("here");
+    });
+
+    it("refuses another label's proxy under a registered key and keeps the first route", async () => {
+      const harness = await startHooks();
+      await connectFirst(harness);
+
+      const refused = await proxyAs(harness, "wasp", "run-1");
+      expect(refused).toMatchObject({ reject: true });
+      await sleep(300);
+      expect(harness.directory.locate(SUBDOMAIN).kind).toBe("here");
+      expect(harness.directory.locate("wasp").kind).not.toBe("here");
+    });
+
+    it("lets the owner reconnect under its own run id", async () => {
+      const harness = await startHooks();
+      await connectFirst(harness);
+
+      expect(await loginAs(harness, "bee", "run-1")).toMatchObject({
+        reject: false,
+      });
+      expect(await proxyAs(harness, "bee", "run-1")).toMatchObject({
+        reject: false,
+      });
+      await sleep(300);
+      expect(harness.directory.locate(SUBDOMAIN).kind).toBe("here");
+    });
+
+    it("releases a run id once its last proxy is gone", async () => {
+      const harness = await startHooks();
+      await connectFirst(harness);
+      expect(await loginAs(harness, "wasp", "run-1")).toMatchObject({
+        reject: true,
+      });
+
+      harness.frps.unregister(PROXY_NAME);
+      await harness.proxyCall("CloseProxy", "run-1");
+      await sleep(TIMINGS.registerGraceMs + 200);
+
+      expect(await loginAs(harness, "wasp", "run-1")).toMatchObject({
+        reject: false,
+      });
+    });
+
+    it("releases a run id whose login was refused by the account check", async () => {
+      const harness = await startHooks({
+        resolve: async (request) => ({
+          ...OWNED,
+          credential: request.label !== "bee",
+        }),
+        forget: () => {},
+        presence: async () => [],
+      });
+      expect(await loginAs(harness, "bee", "run-x")).toMatchObject({
+        reject: true,
+      });
+      expect(await loginAs(harness, "wasp", "run-x")).toMatchObject({
+        reject: false,
+      });
     });
 
     it("drops an older run's record when frps lists the proxy under another run's record", async () => {

@@ -21,6 +21,7 @@ const REGISTER_GRACE_MS = 1_000;
 const STATE_RETRY_MS = 1_000;
 const STATE_MAX_ATTEMPTS = 10;
 const RECONCILE_MS = 30_000;
+const RUN_BINDING_IDLE_MS = 300_000;
 export const HOOK_RESOLVE_DEADLINE_MS = 7_000;
 
 type HookAnswer =
@@ -128,6 +129,7 @@ export interface FrpHookTimings {
   registerGraceMs: number;
   stateRetryMs: number;
   reconcileMs: number;
+  runBindingIdleMs: number;
 }
 
 interface ProxyRecord {
@@ -147,10 +149,12 @@ export function createFrpHooks(options: FrpHookOptions) {
     registerGraceMs: REGISTER_GRACE_MS,
     stateRetryMs: STATE_RETRY_MS,
     reconcileMs: RECONCILE_MS,
+    runBindingIdleMs: RUN_BINDING_IDLE_MS,
     ...options.timings,
   };
   const proxies = new Map<string, ProxyRecord>();
   const pendingRoutes = new Map<string, NodeJS.Timeout>();
+  const runBindings = new Map<string, { label: string; boundAt: number }>();
 
   type Verdict = "linked" | "refused" | "unknown";
 
@@ -196,11 +200,23 @@ export function createFrpHooks(options: FrpHookOptions) {
     return proxies.has(`${clientId}\n${record.name}`) ? "remove" : "unknown";
   }
 
-  function runBelongsToAnotherLabel(runId: string, label: string): boolean {
+  function bindRun(runId: string, label: string): "bound" | "kept" | "refused" {
+    if (runId === "") return "kept";
+    const held = runBindings.get(runId);
+    if (held !== undefined && held.label !== label) return "refused";
+    runBindings.set(runId, { label, boundAt: Date.now() });
+    return held === undefined ? "bound" : "kept";
+  }
+
+  function holdsRun(runId: string): boolean {
     for (const record of proxies.values()) {
-      if (record.runId === runId && record.label !== label) return true;
+      if (record.runId === runId) return true;
     }
     return false;
+  }
+
+  function releaseRun(runId: string): void {
+    if (!holdsRun(runId)) runBindings.delete(runId);
   }
 
   function proxyKey(record: ProxyRecord): string {
@@ -212,6 +228,7 @@ export function createFrpHooks(options: FrpHookOptions) {
     clearTimeout(pendingRoutes.get(key));
     pendingRoutes.delete(key);
     proxies.delete(key);
+    releaseRun(record.runId);
     directory.disconnected({
       label: record.label,
       subdomain: record.subdomain,
@@ -282,6 +299,14 @@ export function createFrpHooks(options: FrpHookOptions) {
 
   async function reconcile(): Promise<void> {
     const startedAt = Date.now();
+    for (const [runId, binding] of [...runBindings]) {
+      if (
+        binding.boundAt + timings.runBindingIdleMs <= startedAt &&
+        !holdsRun(runId)
+      ) {
+        runBindings.delete(runId);
+      }
+    }
     const online = await options.frpState.online();
     if (online === null) return;
     for (const record of [...proxies.values()]) {
@@ -308,16 +333,18 @@ export function createFrpHooks(options: FrpHookOptions) {
     if (RESERVED_HANDLES.has(user.label)) return reject(unknownServer);
     if (call.op === "Login") {
       if (user.credential === null) return reject(FRP_LOGIN_REFUSED_REASON);
-      if (
-        (call.clientId !== null &&
-          call.clientId !== "" &&
-          call.clientId !== user.runId) ||
-        (user.runId !== "" && runBelongsToAnotherLabel(user.runId, user.label))
-      ) {
+      const binding =
+        call.clientId !== null &&
+        call.clientId !== "" &&
+        call.clientId !== user.runId
+          ? "refused"
+          : bindRun(user.runId, user.label);
+      if (binding === "refused") {
         log("warn", "frp_login_identity_refused", { label: user.label });
         return reject(FRP_LOGIN_REFUSED_REASON);
       }
       const verdict = await verify(user);
+      if (verdict !== "linked" && binding === "bound") releaseRun(user.runId);
       if (verdict === "unknown") return reject("the gate could not check this");
       if (verdict === "refused") {
         log("warn", "frp_login_refused", { label: user.label });
@@ -339,7 +366,18 @@ export function createFrpHooks(options: FrpHookOptions) {
         log("warn", "frp_proxy_refused", { label: user.label });
         return reject("not this server's address");
       }
+      const key = `${user.runId}\n${call.proxyName ?? ""}`;
+      const taken = proxies.get(key);
+      const binding =
+        taken !== undefined && taken.label !== user.label
+          ? "refused"
+          : bindRun(user.runId, user.label);
+      if (binding === "refused") {
+        log("warn", "frp_proxy_identity_refused", { label: user.label });
+        return reject("not this server's address");
+      }
       const verdict = await verify(user);
+      if (verdict !== "linked" && binding === "bound") releaseRun(user.runId);
       if (verdict === "unknown") return reject("the gate could not check this");
       if (verdict === "refused") return reject("credential refused");
       const proxy: ProxyRecord = {
@@ -352,7 +390,6 @@ export function createFrpHooks(options: FrpHookOptions) {
         closes: 0,
         settling: false,
       };
-      const key = proxyKey(proxy);
       const previous = proxies.get(key);
       if (previous !== undefined) {
         directory.disconnected({
