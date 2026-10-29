@@ -733,12 +733,54 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
     );
   });
 
-  it("releases the held preview when the socket drops mid-replay", async () => {
-    const { preview, socket } = await mountReplayWithUnusableSnapshot();
+  it("keeps the preview hidden while the socket is down and holds it again for the replay a reconnect starts", async () => {
+    const { bufferText, preview, session, socket } =
+      await mountReplayWithUnusableSnapshot();
     socket.disconnect();
     await waitForReadinessCondition(
+      () => expect(testState.sockets).toHaveLength(2),
+      "terminal did not reconnect",
+    );
+    expect(preview()?.dataset.terminalReplayHeld).toBeDefined();
+    expect(preview()?.style.visibility).toBe("hidden");
+    const reconnectSocket = testState.sockets[1];
+    if (!reconnectSocket) throw new Error("reconnect socket is missing");
+    await waitForReadiness(
+      reconnectSocket.opened,
+      "reconnect socket did not open",
+    );
+    reconnectSocket.receive({
+      type: "attached",
+      session,
+      replayStartSeq: 2,
+      nextSeq: 5,
+    });
+    reconnectSocket.receive({
+      type: "output",
+      chunk: { seq: 2, dataBase64: btoa("retried history\r\n") },
+    });
+    await waitForReadinessCondition(
+      () => expect(bufferText()).toContain("retried history"),
+      "retried replay output was not parsed",
+    );
+    expect(preview()?.dataset.terminalReplayHeld).toBeDefined();
+    expect(preview()?.style.visibility).toBe("hidden");
+
+    reconnectSocket.receive({
+      type: "output",
+      chunk: { seq: 3, dataBase64: btoa("more retried history\r\n") },
+    });
+    reconnectSocket.receive({
+      type: "output",
+      chunk: { seq: 4, dataBase64: btoa("current frame\r\n") },
+    });
+    await waitForReadinessCondition(
+      () => expect(bufferText()).toContain("current frame"),
+      "final retried output was not parsed",
+    );
+    await waitForReadinessCondition(
       () => expect(preview()?.dataset.terminalReplayHeld).toBeUndefined(),
-      "replay preview stayed held after the socket dropped",
+      "replay preview stayed held after the retried replay completed",
     );
   });
 

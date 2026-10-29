@@ -38,6 +38,7 @@ export function mountTerminalReplayPreview({
 }): {
   dispose(): void;
   release(): void;
+  rearmHold(): void;
   resize(cols: number, rows: number): Promise<void>;
   setPtyGrid(cols: number, rows: number): void;
   setLatestPtyGrid(cols: number, rows: number): void;
@@ -241,11 +242,17 @@ export function mountTerminalReplayPreview({
     delete preview.dataset.terminalReplayHeld;
     updateVisibility();
   };
-  if (held) {
+  const armHoldTimeout = () => {
+    clearHoldTimeout();
     holdTimeout = window.setTimeout(release, TERMINAL_REPLAY_PREVIEW_HOLD_TIMEOUT_MS);
-  }
+  };
+  if (held) armHoldTimeout();
   return {
     release,
+    rearmHold() {
+      if (disposed || !held) return;
+      armHoldTimeout();
+    },
     resize(cols, rows) {
       if (disposed) return Promise.resolve();
       clearHandoffDeadline();

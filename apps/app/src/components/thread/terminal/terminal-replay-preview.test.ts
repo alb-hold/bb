@@ -184,6 +184,39 @@ describe("terminal replay preview", () => {
     parent.remove();
   });
 
+  it("restarts the hold timeout for each replay attempt", async () => {
+    vi.useFakeTimers();
+    try {
+      installPreviewCanvasContext();
+      const parent = document.createElement("div");
+      const container = document.createElement("div");
+      parent.append(container);
+      document.body.append(parent);
+      const terminal = new Terminal({ cols: 120, rows: 36 });
+      const cover = mountTerminalReplayPreview({
+        container,
+        holdUntilReleased: true,
+        initialFitGrid: { cols: 120, rows: 36 },
+        isOwner: () => true,
+        terminal,
+      });
+      const element = parent.querySelector<HTMLElement>(
+        "[data-terminal-replay-preview]",
+      )!;
+      cover.setPtyGrid(120, 36);
+      vi.advanceTimersByTime(TERMINAL_REPLAY_PREVIEW_HOLD_TIMEOUT_MS - 1);
+      cover.rearmHold();
+      vi.advanceTimersByTime(TERMINAL_REPLAY_PREVIEW_HOLD_TIMEOUT_MS - 1);
+      expect(element.dataset.terminalReplayHeld).toBeDefined();
+      vi.advanceTimersByTime(1);
+      expect(element.dataset.terminalReplayHeld).toBeUndefined();
+      cover.dispose();
+      parent.remove();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("releases a held preview on its own once the hold timeout passes", async () => {
     vi.useFakeTimers();
     try {
