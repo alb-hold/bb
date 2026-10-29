@@ -91,6 +91,35 @@ describe("screen snapshot partial-sequence bookkeeping", () => {
     clean.dispose();
   });
 
+  it("offers a snapshot when an OSC over 64 KiB closes in the same chunk that starts a short new open sequence", async () => {
+    const first = text(`before\r\n\x1b]0;${"t".repeat(70 * 1024)}`);
+    const second = text("\x07after\r\n\x1b[?2");
+    const third = text("026l and more");
+    const clean = newTerminal();
+    await write(clean, first);
+    await write(clean, second);
+    await write(clean, third);
+
+    const state = new TerminalScreenState(40, 8);
+    state.push(0, first);
+    await expect(state.snapshot()).resolves.toBeNull();
+    state.push(1, second);
+    const snapshot = await state.snapshot();
+    state.dispose();
+    expect(snapshot).not.toBeNull();
+    const client = newTerminal();
+    await write(client, Buffer.from(snapshot?.dataBase64 ?? "", "base64"));
+    await write(client, third);
+
+    expect(screenText(client)).toEqual(screenText(clean));
+    expect(screenText(client).join("\n")).not.toContain("026l");
+    expect(client.modes.synchronizedOutputMode).toBe(
+      clean.modes.synchronizedOutputMode,
+    );
+    clean.dispose();
+    client.dispose();
+  });
+
   it("keeps a short open sequence that spans several small chunks", async () => {
     const state = new TerminalScreenState(40, 8);
     const pieces = ["plain\r\n", "\x1b", "[", "?20", "26"];

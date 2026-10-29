@@ -228,6 +228,13 @@ function restoreModes(terminal: HeadlessTerminal): string {
   return sequences.join("");
 }
 
+function concatenateBytes(first: Uint8Array, second: Uint8Array): Uint8Array {
+  const joined = new Uint8Array(first.length + second.length);
+  joined.set(first);
+  joined.set(second, first.length);
+  return joined;
+}
+
 function encodeUtf8(value: string): Buffer {
   const buffer = Buffer.allocUnsafe(Buffer.byteLength(value, "utf8"));
   buffer.write(value, 0, "utf8");
@@ -352,41 +359,30 @@ export class TerminalScreenState {
   }
 
   private trackPartialSequence(data: Uint8Array): void {
+    const scan = { ...this.parserState };
     advanceTerminalReplayParserBytes(this.parserState, data);
     if (isTerminalReplaySafeBoundary(this.parserState)) {
       this.partialSequence = new Uint8Array(0);
       this.partialSequenceOverflow = false;
       return;
     }
-    if (this.partialSequenceOverflow) return;
-    const previous = this.partialSequence;
-    const scan = createTerminalReplayParserState();
-    let lastSafe = 0;
-    for (let index = 0; index < previous.length; index += 1) {
-      advanceTerminalReplayParserByte(scan, previous[index] ?? 0);
-      if (isTerminalReplaySafeBoundary(scan)) lastSafe = index + 1;
-    }
+    let lastSafe = -1;
     for (let index = 0; index < data.length; index += 1) {
       advanceTerminalReplayParserByte(scan, data[index] ?? 0);
-      if (isTerminalReplaySafeBoundary(scan)) {
-        lastSafe = previous.length + index + 1;
-      }
+      if (isTerminalReplaySafeBoundary(scan)) lastSafe = index + 1;
     }
-    const openLength = previous.length + data.length - lastSafe;
-    if (openLength > TERMINAL_SCREEN_STATE_PARTIAL_SEQUENCE_LIMIT) {
+    if (lastSafe < 0 && this.partialSequenceOverflow) return;
+    const open =
+      lastSafe >= 0
+        ? data.subarray(lastSafe)
+        : concatenateBytes(this.partialSequence, data);
+    if (open.length > TERMINAL_SCREEN_STATE_PARTIAL_SEQUENCE_LIMIT) {
       this.partialSequence = new Uint8Array(0);
       this.partialSequenceOverflow = true;
       return;
     }
-    const open = new Uint8Array(openLength);
-    for (let offset = 0; offset < openLength; offset += 1) {
-      const position = lastSafe + offset;
-      open[offset] =
-        (position < previous.length
-          ? previous[position]
-          : data[position - previous.length]) ?? 0;
-    }
-    this.partialSequence = open;
+    this.partialSequence = open.slice();
+    this.partialSequenceOverflow = false;
   }
 
   private invalidate(): void {
