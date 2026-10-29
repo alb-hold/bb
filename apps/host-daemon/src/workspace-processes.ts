@@ -75,22 +75,22 @@ function nonFilesystemEntryIsOutsideWithoutInspection(
   lsofType: string | undefined,
 ): boolean {
   if (!isNonFilesystemLsofType(lsofType)) return false;
-  const normalized = stripDeletedSuffix(value).trim();
-  if (normalized.length === 0) return true;
-  if (normalized.startsWith("/")) return false;
-  if (normalized.startsWith("->")) return true;
-  if (/^0x[0-9a-fA-F]+$/.test(normalized)) return true;
+  const name = stripDeletedSuffix(value);
+  if (name.length === 0) return true;
+  if (name.startsWith("/")) return false;
+  if (name.startsWith("->")) return true;
+  if (/^0x[0-9a-fA-F]+$/.test(name)) return true;
   if (lsofType === "unix") return false;
   return true;
 }
 
 function isIgnorableUnixLsofName(value: string): boolean {
-  const normalized = stripDeletedSuffix(value).trim();
-  if (normalized.length === 0) return true;
-  if (normalized.startsWith("->")) return true;
-  if (/^0x[0-9a-fA-F]+$/.test(normalized)) return true;
-  if (normalized.startsWith("[ctl")) return true;
-  if (/^count=/.test(normalized)) return true;
+  const name = stripDeletedSuffix(value);
+  if (name.length === 0) return true;
+  if (name.startsWith("->")) return true;
+  if (/^0x[0-9a-fA-F]+$/.test(name)) return true;
+  if (name.startsWith("[ctl")) return true;
+  if (/^count=/.test(name)) return true;
   return false;
 }
 
@@ -99,9 +99,9 @@ function isRelativeUnixBindPath(
   lsofType: string | undefined,
 ): boolean {
   if (lsofType !== "unix") return false;
-  const normalized = stripDeletedSuffix(value).trim();
-  if (isIgnorableUnixLsofName(normalized)) return false;
-  if (normalized.startsWith("/")) return false;
+  const name = stripDeletedSuffix(value);
+  if (isIgnorableUnixLsofName(value)) return false;
+  if (name.startsWith("/")) return false;
   return true;
 }
 
@@ -196,16 +196,22 @@ export type RelativeUnixBindSuffixResolution =
   | { kind: "suffix"; suffix: string }
   | { kind: "unreadable" };
 
+function relativeUnixBindHasEdgeWhitespace(name: string): boolean {
+  return name !== name.trim();
+}
+
 export function resolveRelativeUnixBindSuffix(
   relativeName: string,
 ): RelativeUnixBindSuffixResolution {
-  const trimmed = stripDeletedSuffix(relativeName)
-    .trim()
-    .replace(/^\.\//, "");
-  if (trimmed.length === 0) return { kind: "unreadable" };
-  if (trimmed.includes("\0")) return { kind: "unreadable" };
-  if (trimmed.includes("\\")) return { kind: "unreadable" };
-  const parts = trimmed.split("/").filter((part) => part.length > 0);
+  const name = stripDeletedSuffix(relativeName);
+  if (name.length === 0) return { kind: "unreadable" };
+  if (relativeUnixBindHasEdgeWhitespace(name)) return { kind: "unreadable" };
+  if (name.includes("\0")) return { kind: "unreadable" };
+  if (name.includes("\\")) return { kind: "unreadable" };
+  let rest = name;
+  if (rest.startsWith("./")) rest = rest.slice(2);
+  if (rest.length === 0) return { kind: "unreadable" };
+  const parts = rest.split("/").filter((part) => part.length > 0);
   for (const part of parts) {
     if (part === "..") return { kind: "unreadable" };
   }
@@ -359,7 +365,7 @@ async function classifyPathForWorkspace(
 ): Promise<"matched" | "outside" | "unreadable"> {
   if (isRelativeUnixBindPath(value, lsofType)) {
     if (processCwd === undefined) return "unreadable";
-    const relativeName = stripDeletedSuffix(value).trim();
+    const relativeName = stripDeletedSuffix(value);
     const pathName = normalizeLsofPathName(
       path.resolve(processCwd, relativeName),
     );
@@ -618,7 +624,7 @@ async function inspectDarwinWorkspaceProcesses(
           type,
           processCwd === undefined
             ? undefined
-            : normalizeLsofPathName(processCwd),
+            : stripDeletedSuffix(processCwd),
         );
         if (kind === "matched") matched = true;
         else if (kind === "unreadable") unreadablePids.add(pid);
