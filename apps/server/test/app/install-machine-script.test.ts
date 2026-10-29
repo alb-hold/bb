@@ -349,8 +349,8 @@ function isRunning(pid: number): boolean {
   }
 }
 
-function isFixtureStub(pid: number, root: string): boolean {
-  const command = spawnSync("ps", ["-p", String(pid), "-o", "command="], {
+function isFixtureStub(pid: number, root: string, ps = "ps"): boolean {
+  const command = spawnSync(ps, ["-p", String(pid), "-o", "command="], {
     encoding: "utf8",
   }).stdout.trim();
   const [launcher, script] = command.split(/\s+/u);
@@ -366,8 +366,9 @@ function signalFixtureStub(
   pid: number,
   root: string,
   signal: "SIGTERM" | "SIGKILL",
+  ps = "ps",
 ): boolean {
-  if (!isFixtureStub(pid, root)) return false;
+  if (!isFixtureStub(pid, root, ps)) return false;
   try {
     process.kill(pid, signal);
     return true;
@@ -407,21 +408,25 @@ function remainingFixtureProcesses(roots: string[]): number[] {
 
 async function stopFixtureDaemons(
   roots: string[],
-  afterTerm?: () => void,
+  options: { afterTerm?: () => void; ps?: string } = {},
 ): Promise<number[]> {
   const recorded = roots.flatMap((root) =>
     recordedDaemons(root).map((pid) => ({ pid, root })),
   );
   const stopped = recorded
-    .filter(({ pid, root }) => signalFixtureStub(pid, root, "SIGTERM"))
+    .filter(({ pid, root }) =>
+      signalFixtureStub(pid, root, "SIGTERM", options.ps),
+    )
     .map(({ pid }) => pid);
   const deadline = Date.now() + DAEMON_EXIT_TIMEOUT_MS;
   while (stopped.some((pid) => isRunning(pid)) && Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
-  afterTerm?.();
+  options.afterTerm?.();
   for (const { pid, root } of recorded) {
-    if (isRunning(pid)) signalFixtureStub(pid, root, "SIGKILL");
+    if (isRunning(pid)) {
+      signalFixtureStub(pid, root, "SIGKILL", options.ps);
+    }
   }
   return stopped;
 }
@@ -808,11 +813,12 @@ exec '${process.execPath}' "$@"
           .find((candidate) => existsSync(candidate));
         const directory = join(root, "fakeps");
         mkdirSync(directory, { recursive: true });
+        const fakePs = join(directory, "ps");
         writeExecutable(
-          join(directory, "ps"),
+          fakePs,
           `#!/bin/sh\nif [ -e "${flag}" ]; then echo "sleep 30"; else exec "${realPs}" "$@"; fi\n`,
         );
-        return directory;
+        return fakePs;
       }
 
       it("escalates to SIGKILL and ends a stub whose command still matches", async () => {
@@ -826,8 +832,10 @@ exec '${process.execPath}' "$@"
             `${pid}\n`,
           );
           let aliveAtEscalation = false;
-          const stopped = await stopFixtureDaemons([root], () => {
-            aliveAtEscalation = isRunning(pid);
+          const stopped = await stopFixtureDaemons([root], {
+            afterTerm: () => {
+              aliveAtEscalation = isRunning(pid);
+            },
           });
           await exited(stub);
           expect(stopped).toEqual([pid]);
@@ -845,17 +853,18 @@ exec '${process.execPath}' "$@"
         const stub = await startTermIgnoringStub(root);
         const pid = stub.pid ?? 0;
         const flag = join(root, "identity-changed");
-        const originalPath = process.env.PATH;
         try {
           writeFileSync(
             join(fixture.dataDir, "install-daemon.pid"),
             `${pid}\n`,
           );
           const fakePs = fakePsReporting(root, flag);
-          process.env.PATH = `${fakePs}${delimiter}${originalPath ?? ""}`;
-          expect(isFixtureStub(pid, root)).toBe(true);
-          const stopped = await stopFixtureDaemons([root], () => {
-            writeFileSync(flag, "");
+          expect(isFixtureStub(pid, root, fakePs)).toBe(true);
+          const stopped = await stopFixtureDaemons([root], {
+            afterTerm: () => {
+              writeFileSync(flag, "");
+            },
+            ps: fakePs,
           });
           await Promise.race([
             exited(stub),
@@ -866,7 +875,6 @@ exec '${process.execPath}' "$@"
           expect(stub.exitCode).toBeNull();
           expect(isRunning(pid)).toBe(true);
         } finally {
-          process.env.PATH = originalPath;
           stub.kill("SIGKILL");
           await exited(stub);
         }
