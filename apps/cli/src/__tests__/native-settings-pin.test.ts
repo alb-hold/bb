@@ -1,0 +1,126 @@
+import { existsSync, readFileSync, statSync } from "node:fs";
+import { afterEach, describe, expect, it } from "vitest";
+import type { ProviderNativeTerminalActivity } from "@bb/domain";
+import {
+  prepareNativeSettings,
+  removePinnedNativeSettings,
+  selectPinnedSettingsEnv,
+} from "../native-settings-pin.js";
+
+type ActivityHooks = NonNullable<ProviderNativeTerminalActivity["hooks"]>;
+
+const POOL_TOKEN = "poolTokenAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+
+const CLAUDE_HOOKS: ActivityHooks = {
+  args: ["--settings", "{settings}"],
+  working: ["UserPromptSubmit", "PreToolUse"],
+  idle: [],
+  pending: ["Stop"],
+  promptField: "prompt",
+  sessionIdField: "session_id",
+};
+
+const POOLED_ENV = {
+  BB_CLAUDE_SETTINGS_ENV_PIN:
+    "ANTHROPIC_BASE_URL,CLAUDE_CODE_OAUTH_TOKEN,ANTHROPIC_AUTH_TOKEN",
+  ANTHROPIC_BASE_URL: "http://127.0.0.1:38886/api/v1/plugins/account-pool/http",
+  CLAUDE_CODE_OAUTH_TOKEN: POOL_TOKEN,
+  ANTHROPIC_AUTH_TOKEN: "",
+};
+
+const directories: string[] = [];
+
+afterEach(() => {
+  while (directories.length > 0) {
+    const directory = directories.pop();
+    if (directory !== undefined) removePinnedNativeSettings(directory);
+  }
+});
+
+describe("prepareNativeSettings", () => {
+  it("writes hooks and the pinned env into one 0600 file whose path replaces {settings}", () => {
+    const settings = prepareNativeSettings({
+      env: POOLED_ENV,
+      hooks: CLAUDE_HOOKS,
+      hookTarget: "/tmp/spool",
+    });
+    if (settings === null || settings.directory === null)
+      throw new Error("expected a settings file");
+    directories.push(settings.directory);
+    expect(settings.value.startsWith("{")).toBe(false);
+    expect(settings.value).not.toContain(POOL_TOKEN);
+    expect(statSync(settings.value).mode & 0o777).toBe(0o600);
+    const contents = JSON.parse(readFileSync(settings.value, "utf8"));
+    expect(contents.env).toEqual({
+      ANTHROPIC_BASE_URL: POOLED_ENV.ANTHROPIC_BASE_URL,
+      CLAUDE_CODE_OAUTH_TOKEN: POOL_TOKEN,
+      ANTHROPIC_AUTH_TOKEN: "",
+    });
+    expect(Object.keys(contents.hooks)).toEqual([
+      "UserPromptSubmit",
+      "PreToolUse",
+      "Stop",
+    ]);
+  });
+
+  it("still pins the env when hook capture is unavailable", () => {
+    const settings = prepareNativeSettings({
+      env: POOLED_ENV,
+      hooks: CLAUDE_HOOKS,
+      hookTarget: null,
+    });
+    if (settings === null || settings.directory === null)
+      throw new Error("expected a settings file");
+    directories.push(settings.directory);
+    const contents = JSON.parse(readFileSync(settings.value, "utf8"));
+    expect(contents.env.CLAUDE_CODE_OAUTH_TOKEN).toBe(POOL_TOKEN);
+    expect(contents).not.toHaveProperty("hooks");
+  });
+
+  it("keeps the inline hook settings when the launch is not pooled", () => {
+    const settings = prepareNativeSettings({
+      env: {},
+      hooks: CLAUDE_HOOKS,
+      hookTarget: "/tmp/spool",
+    });
+    expect(settings?.directory).toBeNull();
+    expect(settings?.value.startsWith("{")).toBe(true);
+    expect(JSON.parse(settings?.value ?? "{}")).not.toHaveProperty("env");
+    expect(
+      prepareNativeSettings({ env: {}, hooks: CLAUDE_HOOKS, hookTarget: null }),
+    ).toBeNull();
+  });
+
+  it("ignores the marker for a provider whose hook arguments do not take {settings}", () => {
+    const settings = prepareNativeSettings({
+      env: POOLED_ENV,
+      hooks: { ...CLAUDE_HOOKS, args: ["-c", "hooks=1"] },
+      hookTarget: "/tmp/spool",
+    });
+    expect(settings?.directory).toBeNull();
+  });
+
+  it("removes the file with its directory", () => {
+    const settings = prepareNativeSettings({
+      env: POOLED_ENV,
+      hooks: CLAUDE_HOOKS,
+      hookTarget: null,
+    });
+    if (settings === null || settings.directory === null)
+      throw new Error("expected a settings file");
+    removePinnedNativeSettings(settings.directory);
+    expect(existsSync(settings.value)).toBe(false);
+  });
+});
+
+describe("selectPinnedSettingsEnv", () => {
+  it("blanks listed names the env lacks and ignores invalid names", () => {
+    expect(
+      selectPinnedSettingsEnv({
+        BB_CLAUDE_SETTINGS_ENV_PIN: "A_ONE,B-TWO,C_THREE",
+        A_ONE: "1",
+      }),
+    ).toEqual({ A_ONE: "1", C_THREE: "" });
+    expect(selectPinnedSettingsEnv({})).toBeNull();
+  });
+});

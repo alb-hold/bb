@@ -19,7 +19,10 @@ import {
   createNativeActivityWiring,
 } from "../../native-activity-wiring.js";
 import { createNativeActivityReporter } from "../../native-activity-reporter.js";
-import { nativeActivityHookSettings } from "../../native-activity.js";
+import {
+  prepareNativeSettings,
+  removePinnedNativeSettings,
+} from "../../native-settings-pin.js";
 import {
   hookSpoolCandidates,
   openHookCapture,
@@ -220,6 +223,7 @@ async function holdNativeHarness(
   const discover = discoverer.discover;
   let reader: NativeActivityReader | null = null;
   let hookSpoolDirectory: string | null = null;
+  let pinnedSettingsDirectory: string | null = null;
   const activityTimers: NodeJS.Timeout[] = [];
   let currentCredential: () => string | null = () => null;
   const reporter = createNativeActivityReporter({
@@ -308,13 +312,17 @@ async function holdNativeHarness(
         (typeof source === "object" && "unavailable" in source)
           ? null
           : source;
+      const settings = prepareNativeSettings({
+        env: process.env,
+        hooks,
+        hookTarget,
+      });
+      pinnedSettingsDirectory = settings?.directory ?? null;
       const activityArgs =
-        hooks === undefined || hookTarget === null
+        hooks === undefined || settings === null
           ? []
           : hooks.args.map((arg) =>
-              fillNativeTerminalTemplate(arg, {
-                settings: nativeActivityHookSettings(hooks, hookTarget),
-              }),
+              fillNativeTerminalTemplate(arg, { settings: settings.value }),
             );
       const script = process.argv[1];
       const mcpArgs =
@@ -415,6 +423,9 @@ async function holdNativeHarness(
     new Promise((resolve) => setTimeout(resolve, ACTIVITY_FLUSH_TIMEOUT_MS)),
   ]);
   if (hookSpoolDirectory !== null) removeHookSpool(hookSpoolDirectory);
+  if (pinnedSettingsDirectory !== null) {
+    removePinnedNativeSettings(pinnedSettingsDirectory);
+  }
   return exitCode;
 }
 

@@ -61,6 +61,13 @@ export function nativeActivityHookSettings(
   hooks: ActivityHooks,
   capture: string | { appendFile: string },
 ): string {
+  return JSON.stringify(nativeActivityHookSettingsObject(hooks, capture));
+}
+
+export function nativeActivityHookSettingsObject(
+  hooks: ActivityHooks,
+  capture: string | { appendFile: string },
+): { hooks: Record<string, unknown> } {
   const command = hookCommandFor(capture);
   const entries = [
     ...new Set([
@@ -73,7 +80,7 @@ export function nativeActivityHookSettings(
   ].map(
     (event) => [event, [{ hooks: [{ type: "command", command }] }]] as const,
   );
-  return JSON.stringify({ hooks: Object.fromEntries(entries) });
+  return { hooks: Object.fromEntries(entries) };
 }
 
 function canonicalJson(value: unknown): string {
