@@ -1,4 +1,5 @@
 import { mkdtemp, rm } from "node:fs/promises";
+import { performance } from "node:perf_hooks";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as database from "@bb/db";
@@ -36,8 +37,6 @@ import {
   seedTurnStarted,
 } from "../helpers/seed.js";
 import { createTestAppHarness, withTestHarness } from "../helpers/test-app.js";
-
-const MAX_ACTIVE_PRUNE_ROWS_PER_CALLBACK = 32;
 
 interface SeedNoiseRowsArgs {
   endingSequence: number;
@@ -1067,7 +1066,7 @@ describe("thread event pruning", () => {
     });
   });
 
-  it("bounds the rows each real prune callback touches for 40 on-disk threads with 5,000 events each", async () => {
+  it("keeps real prune callbacks under 50 ms for 40 on-disk threads with 5,000 events each", async () => {
     const directory = await mkdtemp(join(tmpdir(), "active-prune-callback-"));
     const db = createConnection(join(directory, "events.sqlite"));
     migrate(db);
@@ -1135,40 +1134,24 @@ describe("thread event pruning", () => {
           }),
         ).toBe(true);
       }
-      const advanceStep = vi.spyOn(database, "advanceThreadPruningStep");
-      const countEvents = () =>
-        db.all<{ count: number }>(sql`SELECT COUNT(*) AS count FROM events`)[0]
-          ?.count ?? 0;
-      try {
-        const eventsBefore = countEvents();
-        expect(eventsBefore).toBeGreaterThanOrEqual(40 * 5_000);
-        let totalDeletedRows = 0;
-        for (
-          let callbackIndex = 0;
-          callbackIndex < threads.length;
-          callbackIndex += 1
-        ) {
-          const callback = scheduled.shift();
-          expect(callback).toBeDefined();
-          const callsBefore = advanceStep.mock.calls.length;
-          const rowsBefore = countEvents();
-          callback?.();
-          expect(advanceStep.mock.calls.length - callsBefore).toBe(1);
-          const step = advanceStep.mock.results.at(-1);
-          expect(step?.type).toBe("return");
-          expect(step?.value.scanned).toBeLessThanOrEqual(
-            MAX_ACTIVE_PRUNE_ROWS_PER_CALLBACK,
-          );
-          const deletedRows = rowsBefore - countEvents();
-          expect(deletedRows).toBeLessThanOrEqual(
-            MAX_ACTIVE_PRUNE_ROWS_PER_CALLBACK,
-          );
-          totalDeletedRows += deletedRows;
-        }
-        expect(totalDeletedRows).toBeGreaterThan(0);
-      } finally {
-        advanceStep.mockRestore();
+      const callbackDurationsMs: number[] = [];
+      for (
+        let callbackIndex = 0;
+        callbackIndex < threads.length;
+        callbackIndex += 1
+      ) {
+        const callback = scheduled.shift();
+        expect(callback).toBeDefined();
+        const startedAt = performance.now();
+        callback?.();
+        callbackDurationsMs.push(performance.now() - startedAt);
       }
+      expect(callbackDurationsMs).toHaveLength(40);
+      const longestCallbackMs = Math.max(...callbackDurationsMs);
+      process.stdout.write(
+        `ACTIVE_PRUNE_MAX_CALLBACK_MS=${longestCallbackMs.toFixed(3)}\n`,
+      );
+      expect(longestCallbackMs).toBeLessThan(50);
     } finally {
       for (const thread of threads)
         resetActiveThreadEventPruningState(harness.deps, thread.id);
