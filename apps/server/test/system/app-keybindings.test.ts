@@ -264,6 +264,16 @@ describe("app keybindings", () => {
     expect(bindings[0]?.shortcut).toEqual(custom);
   });
 
+  it("keeps Go back and Go forward away from a focused browser surface", () => {
+    for (const command of ["history.back", "history.forward"] as const) {
+      const binding = DEFAULT_APP_KEYBINDINGS.find(
+        (candidate) => candidate.command === command,
+      );
+      expect(binding?.when.all).toEqual(["mainSurface"]);
+      expect(binding?.when.none).toEqual(["modalOpen", "browserFocus"]);
+    }
+  });
+
   it("lets a user's own Mod+[ binding win over Go back", () => {
     const bindings = applyAppKeybindingOverrides(
       DEFAULT_APP_KEYBINDINGS,
@@ -532,7 +542,10 @@ describe("app keybindings", () => {
             mod: true,
             control: false,
             shift: false,
-            when: { all: ["mainSurface"], none: ["modalOpen"] },
+            when: {
+              all: ["mainSurface"],
+              none: ["modalOpen", "browserFocus"],
+            },
           },
         ]);
       }
