@@ -857,9 +857,14 @@ exec '${process.execPath}' "$@"
           const stopped = await stopFixtureDaemons([root], () => {
             writeFileSync(flag, "");
           });
+          await Promise.race([
+            exited(stub),
+            new Promise((resolve) => setTimeout(resolve, 500)),
+          ]);
           expect(stopped).toEqual([pid]);
-          expect(isRunning(pid)).toBe(true);
           expect(stub.signalCode).toBeNull();
+          expect(stub.exitCode).toBeNull();
+          expect(isRunning(pid)).toBe(true);
         } finally {
           process.env.PATH = originalPath;
           stub.kill("SIGKILL");
