@@ -80,7 +80,27 @@ function nonFilesystemEntryIsOutsideWithoutInspection(
   if (normalized.startsWith("/")) return false;
   if (normalized.startsWith("->")) return true;
   if (/^0x[0-9a-fA-F]+$/.test(normalized)) return true;
+  if (lsofType === "unix") return false;
   return true;
+}
+
+function relativeUnixBindIsUnreadable(
+  value: string,
+  lsofType: string | undefined,
+): boolean {
+  if (lsofType !== "unix") return false;
+  const normalized = stripDeletedSuffix(value).trim();
+  if (normalized.length === 0) return false;
+  if (normalized.startsWith("/")) return false;
+  if (normalized.startsWith("->")) return false;
+  if (/^0x[0-9a-fA-F]+$/.test(normalized)) return false;
+  return true;
+}
+
+function normalizeLsofPathName(value: string): string {
+  const stripped = stripDeletedSuffix(value);
+  if (!stripped.startsWith("/")) return stripped;
+  return path.normalize(stripped);
 }
 
 function isSocketStylePathName(value: string): boolean {
@@ -90,13 +110,13 @@ function isSocketStylePathName(value: string): boolean {
 }
 
 function lexicalPathNames(value: string, lsofType: string | undefined): string[] {
-  const normalized = stripDeletedSuffix(value);
+  const normalized = normalizeLsofPathName(value);
   const names = new Set<string>([normalized]);
   const failClosed =
     lsofType === undefined || !isKnownFilesystemLsofType(lsofType);
   if (failClosed && isSocketStylePathName(value)) {
     const before = normalized.split("->")[0] ?? "";
-    if (before.length > 0) names.add(before);
+    if (before.length > 0) names.add(normalizeLsofPathName(before));
   }
   return [...names];
 }
@@ -136,8 +156,9 @@ function pathLexicallyCouldBeInWorkspace(
     return false;
   const roots = new Set<string>();
   for (const root of [workspaceCanonical, workspaceArg]) {
-    roots.add(root);
-    for (const alias of expandPathAliases(root)) roots.add(alias);
+    const normalizedRoot = path.normalize(root);
+    roots.add(normalizedRoot);
+    for (const alias of expandPathAliases(normalizedRoot)) roots.add(alias);
   }
   return lexicalPathNames(value, lsofType).some((name) => {
     if (!name.startsWith("/")) return false;
@@ -153,7 +174,7 @@ function pathLexicallyCouldBeInWorkspace(
 async function resolveThroughExistingAncestor(
   value: string,
 ): Promise<AncestorResolve> {
-  let dir = stripDeletedSuffix(value);
+  let dir = normalizeLsofPathName(value);
   const tail: string[] = [];
   while (true) {
     try {
@@ -177,26 +198,25 @@ async function classifyPathForWorkspace(
   workspaceArg: string,
   lsofType?: string,
 ): Promise<"matched" | "outside" | "unreadable"> {
+  if (relativeUnixBindIsUnreadable(value, lsofType)) return "unreadable";
   if (nonFilesystemEntryIsOutsideWithoutInspection(value, lsofType))
     return "outside";
+  const pathName = normalizeLsofPathName(value);
   if (
     !pathLexicallyCouldBeInWorkspace(
-      value,
+      pathName,
       workspaceCanonical,
       workspaceArg,
       lsofType,
     )
   )
     return "outside";
-  const ancestor = await resolveThroughExistingAncestor(value);
+  const ancestor = await resolveThroughExistingAncestor(pathName);
   if (ancestor.ok && underWorkspace(ancestor.path, workspaceCanonical))
     return "matched";
   try {
     if (
-      underWorkspace(
-        await canonicalPath(stripDeletedSuffix(value)),
-        workspaceCanonical,
-      )
+      underWorkspace(await canonicalPath(pathName), workspaceCanonical)
     )
       return "matched";
   } catch {

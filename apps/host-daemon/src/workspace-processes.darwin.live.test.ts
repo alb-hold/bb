@@ -166,6 +166,27 @@ it.skipIf(
   expect(inspection.unreadablePids).not.toContain(holderPid);
 });
 
+it.skipIf(
+  process.platform !== "darwin" ||
+    process.env.BB_R9_WS === undefined ||
+    process.env.BB_R9_PID === undefined,
+)("r9 socket-only holder", async () => {
+  const workspace = process.env.BB_R9_WS!;
+  const holderPid = Number(process.env.BB_R9_PID);
+  expect(Number.isInteger(holderPid)).toBe(true);
+  const inspection = await inspectWorkspaceProcesses(workspace);
+  const payload = JSON.stringify(inspection);
+  if (process.env.BB_R9_LOG_FILE) {
+    await writeFile(process.env.BB_R9_LOG_FILE, payload + "\n");
+  }
+  console.log(payload);
+  expect(inspection.supported).toBe(true);
+  expect(
+    inspection.pids.includes(holderPid) ||
+      inspection.unreadablePids.includes(holderPid),
+  ).toBe(true);
+});
+
 function pathsForUnreadablePids(
   stdout: string,
   unreadablePids: number[],

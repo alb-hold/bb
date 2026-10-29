@@ -315,6 +315,75 @@ describe("darwin workspace process inspection", () => {
     });
   });
 
+  it.each([
+    {
+      pid: 516,
+      lsof: "p516\nf1\ntunix\nn/tmp//ws/a.sock\n",
+      lsofPath: "/tmp/ws/a.sock",
+    },
+    {
+      pid: 517,
+      lsof: "p517\nf1\ntunix\nn/tmp/ws/./a.sock\n",
+      lsofPath: "/tmp/ws/a.sock",
+    },
+    {
+      pid: 518,
+      lsof: "p518\nf1\ntunix\nn/tmp/ws/sub/../b.sock\n",
+      lsofPath: "/tmp/ws/b.sock",
+    },
+  ])(
+    "matches workspace unix socket when lsof path normalizes ($pid)",
+    async ({ pid, lsof, lsofPath }) => {
+      vi.mocked(execHostFile).mockImplementation((async () => ({
+        stdout: lsof,
+        stderr: "",
+      })) as never);
+      vi.mocked(realpath).mockImplementation(async (value) => {
+        const key = String(value);
+        if (key === "/tmp/ws") return "/tmp/ws";
+        if (key === lsofPath) return lsofPath;
+        return key;
+      });
+      expect(await inspectWorkspaceProcesses("/tmp/ws")).toEqual({
+        supported: true,
+        pids: [pid],
+        unreadablePids: [],
+      });
+    },
+  );
+
+  it("treats normalized unix socket path as unreadable when resolution fails", async () => {
+    const denied = Object.assign(new Error("denied"), { code: "EACCES" });
+    vi.mocked(execHostFile).mockImplementation((async () => ({
+      stdout: "p519\nf1\ntunix\nn/tmp//ws/a.sock\n",
+      stderr: "",
+    })) as never);
+    vi.mocked(realpath).mockImplementation(async (value) => {
+      const key = String(value);
+      if (key === "/tmp/ws") return "/tmp/ws";
+      if (key === "/tmp/ws/a.sock") throw denied;
+      return key;
+    });
+    expect(await inspectWorkspaceProcesses("/tmp/ws")).toEqual({
+      supported: true,
+      pids: [],
+      unreadablePids: [519],
+    });
+  });
+
+  it("treats relative unix bind paths as unreadable", async () => {
+    vi.mocked(execHostFile).mockImplementation((async () => ({
+      stdout: "p520\nf1\ntunix\nn./c.sock\n",
+      stderr: "",
+    })) as never);
+    vi.mocked(realpath).mockResolvedValue("/tmp/ws");
+    expect(await inspectWorkspaceProcesses("/tmp/ws")).toEqual({
+      supported: true,
+      pids: [],
+      unreadablePids: [520],
+    });
+  });
+
   it("treats data volume lsof path as unreadable when ancestor realpath hits ELOOP", async () => {
     const loop = Object.assign(new Error("loop"), { code: "ELOOP" });
     vi.mocked(execHostFile).mockImplementation((async () => ({
