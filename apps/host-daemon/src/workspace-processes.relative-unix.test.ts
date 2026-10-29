@@ -27,11 +27,19 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 });
 
 describe("resolveRelativeUnixBindSuffix", () => {
-  it("treats leading or trailing whitespace in relative names as unreadable", () => {
+  it("preserves trailing whitespace in suffix probes", () => {
     expect(resolveRelativeUnixBindSuffix("c.sock ")).toEqual({
-      kind: "unreadable",
+      kind: "suffix",
+      suffix: "/c.sock ",
     });
     expect(resolveRelativeUnixBindSuffix(" c.sock")).toEqual({
+      kind: "suffix",
+      suffix: "/ c.sock",
+    });
+  });
+
+  it("treats embedded newlines in relative names as unreadable", () => {
+    expect(resolveRelativeUnixBindSuffix("c\n.sock")).toEqual({
       kind: "unreadable",
     });
   });
@@ -132,8 +140,28 @@ describe("relative unix bind suffix search", () => {
     }
   });
 
-  it("treats relative c.sock with trailing space as unreadable when cwd is outside", async () => {
-    const ws = await mkdtemp(join(tmpdir(), "bb-r13-trail-"));
+  it("treats workspace c.sock with trailing space as unreadable when cwd is outside", async () => {
+    const ws = await mkdtemp(join(tmpdir(), "bb-r14-ws-trail-"));
+    const sockPath = join(ws, "c.sock ");
+    const stop = await listenUnix(sockPath);
+    try {
+      await mockLsofPassThroughFind(
+        "p536\nfcwd\ntDIR\nn/\n",
+        ["p536\nf1\ntunix\n", "nc.sock \n"].join(""),
+      );
+      expect(await inspectWorkspaceProcesses(ws)).toEqual({
+        supported: true,
+        pids: [],
+        unreadablePids: [536],
+      });
+    } finally {
+      await stop();
+      await rm(ws, { recursive: true, force: true });
+    }
+  });
+
+  it("treats foreign.sock with trailing space as outside when cwd is outside", async () => {
+    const ws = await mkdtemp(join(tmpdir(), "bb-r14-foreign-"));
     let findCalls = 0;
     vi.mocked(execHostFile).mockImplementation((async (
       cmd: string,
@@ -141,20 +169,20 @@ describe("relative unix bind suffix search", () => {
     ) => {
       if (cmd === "find") {
         findCalls += 1;
-        return { stdout: `${join(ws, "c.sock ")}\n`, stderr: "" };
+        return { stdout: "", stderr: "" };
       }
       const stdout = args.includes("cwd")
-        ? "p535\nfcwd\ntDIR\nn/\n"
-        : ["p535\nf1\ntunix\n", "nc.sock \n"].join("");
+        ? "p537\nfcwd\ntDIR\nn/\n"
+        : ["p537\nf1\ntunix\n", "nforeign.sock \n"].join("");
       return { stdout, stderr: "" };
     }) as never);
     try {
       expect(await inspectWorkspaceProcesses(ws)).toEqual({
         supported: true,
         pids: [],
-        unreadablePids: [535],
+        unreadablePids: [],
       });
-      expect(findCalls).toBe(0);
+      expect(findCalls).toBe(1);
     } finally {
       await rm(ws, { recursive: true, force: true });
     }

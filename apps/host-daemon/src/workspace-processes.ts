@@ -196,16 +196,12 @@ export type RelativeUnixBindSuffixResolution =
   | { kind: "suffix"; suffix: string }
   | { kind: "unreadable" };
 
-function relativeUnixBindHasEdgeWhitespace(name: string): boolean {
-  return name !== name.trim();
-}
-
 export function resolveRelativeUnixBindSuffix(
   relativeName: string,
 ): RelativeUnixBindSuffixResolution {
   const name = stripDeletedSuffix(relativeName);
   if (name.length === 0) return { kind: "unreadable" };
-  if (relativeUnixBindHasEdgeWhitespace(name)) return { kind: "unreadable" };
+  if (name.includes("\n")) return { kind: "unreadable" };
   if (name.includes("\0")) return { kind: "unreadable" };
   if (name.includes("\\")) return { kind: "unreadable" };
   let rest = name;
@@ -225,10 +221,14 @@ function socketPathMatchesSuffix(
   root: string,
   suffix: string,
 ): boolean {
-  const normalized = path.normalize(candidate);
-  if (!normalized.startsWith(root + path.sep) && normalized !== root)
+  const normalizedRoot = path.normalize(root);
+  const normalizedCandidate = path.normalize(candidate);
+  if (
+    !normalizedCandidate.startsWith(normalizedRoot + path.sep) &&
+    normalizedCandidate !== normalizedRoot
+  )
     return false;
-  return normalized.endsWith(suffix);
+  return candidate.endsWith(suffix);
 }
 
 function normalizeLsofPathName(value: string): string {

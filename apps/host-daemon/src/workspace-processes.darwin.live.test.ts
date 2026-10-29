@@ -285,6 +285,23 @@ it.skipIf(
   expect(inspection.unreadablePids).not.toContain(59228);
 });
 
+it.skipIf(
+  process.platform !== "darwin" ||
+    process.env.BB_R14_FOREIGN_WS === undefined ||
+    process.env.BB_R14_FOREIGN_PID === undefined,
+)("r14 foreign trailing space outside workspace", async () => {
+  const workspace = process.env.BB_R14_FOREIGN_WS!;
+  const holderPid = Number(process.env.BB_R14_FOREIGN_PID);
+  const inspection = await inspectWorkspaceProcesses(workspace);
+  const payload = JSON.stringify(inspection);
+  if (process.env.BB_R14_FOREIGN_LOG_FILE) {
+    await writeFile(process.env.BB_R14_FOREIGN_LOG_FILE, payload + "\n");
+  }
+  console.log(payload);
+  expect(inspection.supported).toBe(true);
+  expect(inspection.unreadablePids).not.toContain(holderPid);
+});
+
 it.skipIf(process.platform !== "darwin")(
   "finds no pids in an empty workspace directory",
   async () => {
