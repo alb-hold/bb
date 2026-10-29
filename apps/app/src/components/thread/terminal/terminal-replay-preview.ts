@@ -9,6 +9,8 @@ import {
   terminalSurfaceScale,
 } from "./terminal-grid-presentation";
 
+export const TERMINAL_REPLAY_PREVIEW_HOLD_TIMEOUT_MS = 5_000;
+
 export function updateTerminalReplayPreviewPtyGrid(
   preview: {
     setLatestPtyGrid(cols: number, rows: number): void;
@@ -82,6 +84,7 @@ export function mountTerminalReplayPreview({
   let latestPtyGrid = { cols: terminal.cols, rows: terminal.rows };
   let shown = false;
   let held = holdUntilReleased;
+  let holdTimeout: number | null = null;
   let snapshotWriteFinished = false;
   let authoritativeGridAvailable = false;
   let handoffRequested = false;
@@ -226,13 +229,23 @@ export function mountTerminalReplayPreview({
     updateVisibility();
     flushPendingWrites();
   };
+  const clearHoldTimeout = () => {
+    if (holdTimeout === null) return;
+    window.clearTimeout(holdTimeout);
+    holdTimeout = null;
+  };
+  const release = () => {
+    clearHoldTimeout();
+    if (disposed || !held) return;
+    held = false;
+    delete preview.dataset.terminalReplayHeld;
+    updateVisibility();
+  };
+  if (held) {
+    holdTimeout = window.setTimeout(release, TERMINAL_REPLAY_PREVIEW_HOLD_TIMEOUT_MS);
+  }
   return {
-    release() {
-      if (disposed || !held) return;
-      held = false;
-      delete preview.dataset.terminalReplayHeld;
-      updateVisibility();
-    },
+    release,
     resize(cols, rows) {
       if (disposed) return Promise.resolve();
       clearHandoffDeadline();
@@ -288,6 +301,7 @@ export function mountTerminalReplayPreview({
     dispose() {
       if (disposed) return;
       disposed = true;
+      clearHoldTimeout();
       clearHandoffDeadline();
       for (const write of pendingWrites.splice(0)) write.callback();
       pendingBytes = 0;

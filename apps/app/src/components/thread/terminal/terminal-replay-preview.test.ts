@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createTerminalGridMarker } from "@bb/domain";
 import { createTerminalOutputPipeline } from "./terminal-output-pipeline";
 import {
+  TERMINAL_REPLAY_PREVIEW_HOLD_TIMEOUT_MS,
   mountTerminalReplayPreview,
   updateTerminalReplayPreviewPtyGrid,
 } from "./terminal-replay-preview";
@@ -181,6 +182,37 @@ describe("terminal replay preview", () => {
 
     cover.dispose();
     parent.remove();
+  });
+
+  it("releases a held preview on its own once the hold timeout passes", async () => {
+    vi.useFakeTimers();
+    try {
+      installPreviewCanvasContext();
+      const parent = document.createElement("div");
+      const container = document.createElement("div");
+      parent.append(container);
+      document.body.append(parent);
+      const terminal = new Terminal({ cols: 120, rows: 36 });
+      const cover = mountTerminalReplayPreview({
+        container,
+        holdUntilReleased: true,
+        initialFitGrid: { cols: 120, rows: 36 },
+        isOwner: () => true,
+        terminal,
+      });
+      const element = parent.querySelector<HTMLElement>(
+        "[data-terminal-replay-preview]",
+      )!;
+      cover.setPtyGrid(120, 36);
+      vi.advanceTimersByTime(TERMINAL_REPLAY_PREVIEW_HOLD_TIMEOUT_MS - 1);
+      expect(element.dataset.terminalReplayHeld).toBeDefined();
+      vi.advanceTimersByTime(1);
+      expect(element.dataset.terminalReplayHeld).toBeUndefined();
+      cover.dispose();
+      parent.remove();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("keeps the attached grid visible while replay hides historical grids", async () => {

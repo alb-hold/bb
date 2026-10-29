@@ -656,17 +656,15 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
     expect(replaySinceSeq).toBe("0");
   });
 
-  it("keeps the preview of a replay without a usable snapshot hidden until the replay completes", async () => {
+  async function mountReplayWithUnusableSnapshot() {
     prepareMobileTerminal();
     testState.screen.mockResolvedValue({
-      rows: ["snapshot text"],
+      rows: [],
       cursor: { col: 0, row: 0 },
       cols: 40,
       gridRows: 15,
-      truncated: false,
-      complete: true,
-      checkpointSeq: 0,
-      dataBase64: btoa("snapshot text"),
+      truncated: true,
+      complete: false,
     });
     let mountedTerminal: Terminal | null = null;
     const openTerminal = Terminal.prototype.open;
@@ -698,6 +696,7 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
       () => expect(testState.screen).toHaveBeenCalledOnce(),
       "screen snapshot was not requested",
     );
+    expect(preview()).toBeNull();
     socket.receive({ type: "attached", session, replayStartSeq: 0, nextSeq: 3 });
     socket.receive({
       type: "output",
@@ -714,7 +713,12 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
     expect(preview()).not.toBeNull();
     expect(preview()?.dataset.terminalReplayHeld).toBeDefined();
     expect(preview()?.style.visibility).toBe("hidden");
+    return { bufferText, preview, session, socket };
+  }
 
+  it("keeps the preview of a replay without a usable snapshot hidden until the replay completes", async () => {
+    const { bufferText, preview, socket } =
+      await mountReplayWithUnusableSnapshot();
     socket.receive({
       type: "output",
       chunk: { seq: 2, dataBase64: btoa("current frame\r\n") },
@@ -726,6 +730,43 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
     await waitForReadinessCondition(
       () => expect(preview()?.dataset.terminalReplayHeld).toBeUndefined(),
       "replay preview stayed held after the replay completed",
+    );
+  });
+
+  it("releases the held preview when the socket drops mid-replay", async () => {
+    const { preview, socket } = await mountReplayWithUnusableSnapshot();
+    socket.disconnect();
+    await waitForReadinessCondition(
+      () => expect(preview()?.dataset.terminalReplayHeld).toBeUndefined(),
+      "replay preview stayed held after the socket dropped",
+    );
+  });
+
+  it("releases the held preview when the terminal process exits mid-replay", async () => {
+    const { preview, session, socket } =
+      await mountReplayWithUnusableSnapshot();
+    await act(async () => {
+      socket.receive({
+        type: "exited",
+        session: { ...session, status: "exited", exitCode: 1 },
+      });
+      await Promise.resolve();
+    });
+    await waitForReadinessCondition(
+      () => expect(preview()?.dataset.terminalReplayHeld).toBeUndefined(),
+      "replay preview stayed held after the process exited",
+    );
+  });
+
+  it("releases the held preview when the server reports a terminal error mid-replay", async () => {
+    const { preview, socket } = await mountReplayWithUnusableSnapshot();
+    await act(async () => {
+      socket.receive({ type: "error", message: "replay failed" });
+      await Promise.resolve();
+    });
+    await waitForReadinessCondition(
+      () => expect(preview()?.dataset.terminalReplayHeld).toBeUndefined(),
+      "replay preview stayed held after a terminal error",
     );
   });
 

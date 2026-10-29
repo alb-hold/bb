@@ -1670,6 +1670,7 @@ export function ThreadTerminalView({
       processExited(): void;
       push(bytes: Uint8Array, callback: () => void): void;
     } | null = null;
+    const releaseReplayPreview = () => replayPreview?.release();
     let outputPipeline: ReturnType<typeof createTerminalOutputPipeline> | null =
       null;
     let containerHasSize = hasVisibleTerminalSize({
@@ -2242,6 +2243,7 @@ export function ThreadTerminalView({
           if (disposed) {
             return;
           }
+          if (state !== "attached") releaseReplayPreview();
           if (state === "reconnecting") {
             repaintAfterReconnect = true;
             if (reconnecting) {
@@ -2283,6 +2285,9 @@ export function ThreadTerminalView({
           });
         },
         onMessage: (message) => {
+          if (message.type === "error" || message.type === "exited") {
+            releaseReplayPreview();
+          }
           if (message.type === "output") {
             latestOutputSequence = Math.max(
               latestOutputSequence,
@@ -2321,6 +2326,7 @@ export function ThreadTerminalView({
               replayPreview?.resize(cols, rows);
             }
             if (message.session.status === "exited") {
+              releaseReplayPreview();
               replayPreview?.processExited();
             }
             if (message.type === "session-updated" && !markerGridActive) {
@@ -2360,7 +2366,7 @@ export function ThreadTerminalView({
               }
             },
             onReplayComplete: () => {
-              replayPreview?.release();
+              releaseReplayPreview();
               replayCompleted = true;
               const fitGrid = fitAddon?.proposeDimensions();
               applyTerminalGridBeforeViewportRestore({
