@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import {
@@ -6,11 +7,12 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   statSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
+import { tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
@@ -22,8 +24,8 @@ import {
 } from "./session-options.js";
 
 const POOL_TOKEN = "poolTokenAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
-const RULES_MARKER = "POOLED-ISOLATION-RULES-MARKER-7f3a9c";
-const GUARDED_FRAGMENT = "pooled-isolation-guarded-fixture";
+const RULES_MARKER = "POOLED-OWNER-RULES-MARKER-7f3a9c";
+const GUARDED_FRAGMENT = "pooled-owner-guarded-fixture";
 
 const POOL_ENV: Record<string, string> = {
   CLAUDE_CODE_OAUTH_TOKEN: POOL_TOKEN,
@@ -55,7 +57,7 @@ afterEach(() => {
 });
 
 function scratch(): string {
-  const directory = mkdtempSync(join(tmpdir(), "bb-pooled-store-test-"));
+  const directory = mkdtempSync(join(tmpdir(), "bb-pooled-owner-state-test-"));
   cleanups.push(() => rmSync(directory, { force: true, recursive: true }));
   return directory;
 }
@@ -180,13 +182,15 @@ function textResponse(): string {
   ]);
 }
 
+type HubReply = { tool: string } | "text" | "unauthorized";
+
 interface ScriptedHub {
   url: string;
   bodies: string[];
   server: Server;
 }
 
-function startScriptedHub(toolCommand: string | null): Promise<ScriptedHub> {
+function startScriptedHub(reply: HubReply): Promise<ScriptedHub> {
   const bodies: string[] = [];
   const server = createServer((request, response) => {
     const chunks: Buffer[] = [];
@@ -199,7 +203,7 @@ function startScriptedHub(toolCommand: string | null): Promise<ScriptedHub> {
         return;
       }
       bodies.push(body);
-      if (toolCommand === null) {
+      if (reply === "unauthorized") {
         response.statusCode = 401;
         response.setHeader("content-type", "application/json");
         response.end(
@@ -213,7 +217,11 @@ function startScriptedHub(toolCommand: string | null): Promise<ScriptedHub> {
       const answered = body.includes('"tool_result"');
       response.statusCode = 200;
       response.setHeader("content-type", "text/event-stream");
-      response.end(answered ? textResponse() : toolUseResponse(toolCommand));
+      response.end(
+        reply === "text" || answered
+          ? textResponse()
+          : toolUseResponse(reply.tool),
+      );
     });
   });
   return new Promise((resolve) => {
@@ -221,6 +229,51 @@ function startScriptedHub(toolCommand: string | null): Promise<ScriptedHub> {
       const { port } = server.address() as AddressInfo;
       cleanups.push(() => server.close());
       resolve({ url: `http://127.0.0.1:${port}`, bodies, server });
+    });
+  });
+}
+
+function startOauthMcpChallengeServer(): Promise<string> {
+  const server = createServer((request, response) => {
+    request.resume();
+    request.on("end", () => {
+      const origin = `http://${request.headers.host}`;
+      const path = request.url?.split("?")[0] ?? "";
+      response.setHeader("content-type", "application/json");
+      if (path.startsWith("/.well-known/oauth-protected-resource")) {
+        response.end(
+          JSON.stringify({
+            resource: `${origin}/mcp`,
+            authorization_servers: [origin],
+          }),
+        );
+        return;
+      }
+      if (path.startsWith("/.well-known/oauth-authorization-server")) {
+        response.end(
+          JSON.stringify({
+            issuer: origin,
+            authorization_endpoint: `${origin}/authorize`,
+            token_endpoint: `${origin}/token`,
+            response_types_supported: ["code"],
+            code_challenge_methods_supported: ["S256"],
+          }),
+        );
+        return;
+      }
+      response.statusCode = 401;
+      response.setHeader(
+        "www-authenticate",
+        `Bearer resource_metadata="${origin}/.well-known/oauth-protected-resource"`,
+      );
+      response.end("{}");
+    });
+  });
+  return new Promise((resolve) => {
+    server.listen(0, "127.0.0.1", () => {
+      const { port } = server.address() as AddressInfo;
+      cleanups.push(() => server.close());
+      resolve(`http://127.0.0.1:${port}/mcp`);
     });
   });
 }
@@ -320,11 +373,11 @@ async function runPooledThread(
 }
 
 describe.skipIf(REAL_CLAUDE === null)(
-  "a pooled thread on the real CLI with a private credential store",
+  "a pooled thread on the real CLI keeps the owner's rules, guards and stored login",
   () => {
     it("still runs the owner's PreToolUse guard, which blocks a guarded command before it executes", async () => {
       const owner = writeOwnerConfig();
-      const hub = await startScriptedHub(`touch ${owner.guardedMarker}`);
+      const hub = await startScriptedHub({ tool: `touch ${owner.guardedMarker}` });
       await runPooledThread(hub, scratch());
       await waitFor(
         () =>
@@ -341,7 +394,7 @@ describe.skipIf(REAL_CLAUDE === null)(
 
     it("still loads the owner's global rules into the model request", async () => {
       writeOwnerConfig();
-      const hub = await startScriptedHub(null);
+      const hub = await startScriptedHub("unauthorized");
       await runPooledThread(hub, scratch());
       await waitFor(() => (hub.bodies.length > 0 ? true : undefined), 60_000);
       expect(hub.bodies.some((body) => body.includes(RULES_MARKER))).toBe(true);
@@ -354,15 +407,177 @@ describe.skipIf(REAL_CLAUDE === null)(
         size: statSync(owner.credentialsFile).size,
         mtimeMs: statSync(owner.credentialsFile).mtimeMs,
       };
-      const hub = await startScriptedHub(null);
-      const dataDir = scratch();
-      const session = await runPooledThread(hub, dataDir);
+      const hub = await startScriptedHub("unauthorized");
+      const session = await runPooledThread(hub, scratch());
       await waitFor(() => (hub.bodies.length > 1 ? true : undefined), 60_000);
       session.stop();
       expect(digest(owner.credentialsFile)).toBe(before.digest);
       expect(statSync(owner.credentialsFile).size).toBe(before.size);
       expect(statSync(owner.credentialsFile).mtimeMs).toBe(before.mtimeMs);
-      expect(existsSync(join(dataDir, "pooled-claude-credentials"))).toBe(true);
+    }, 90_000);
+  },
+);
+
+interface DisposableKeychain {
+  home: string;
+  configDir: string;
+  service: string;
+  read(): { claudeAiOauth?: unknown } | undefined;
+  modified(): string;
+}
+
+function runSecurity(home: string, args: string[]): string {
+  return execFileSync("/usr/bin/security", args, {
+    encoding: "utf8",
+    env: { PATH: "/usr/bin:/bin", HOME: home, USER: userInfo().username },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+}
+
+function createDisposableKeychain(seed: unknown): DisposableKeychain {
+  const home = realpathSync(scratch());
+  const configDir = join(home, "config");
+  mkdirSync(configDir, { recursive: true });
+  const keychains = join(home, "Library", "Keychains");
+  mkdirSync(keychains, { recursive: true });
+  const file = join(keychains, "login.keychain-db");
+  runSecurity(home, ["create-keychain", "-p", "disposable", file]);
+  cleanups.push(() => {
+    try {
+      runSecurity(home, ["delete-keychain", file]);
+    } catch {}
+  });
+  runSecurity(home, ["set-keychain-settings", file]);
+  const service = `Claude Code-credentials-${createHash("sha256")
+    .update(configDir)
+    .digest("hex")
+    .slice(0, 8)}`;
+  runSecurity(home, [
+    "add-generic-password",
+    "-s",
+    service,
+    "-a",
+    userInfo().username,
+    "-w",
+    JSON.stringify(seed),
+    "-U",
+  ]);
+  return {
+    home,
+    configDir,
+    service,
+    read: () => {
+      try {
+        return JSON.parse(
+          runSecurity(home, ["find-generic-password", "-s", service, "-w"]),
+        ) as { claudeAiOauth?: unknown };
+      } catch {
+        return undefined;
+      }
+    },
+    modified: () =>
+      /"mdat"<timedate>=0x[0-9A-F]+\s+"([^"\\]+)/u.exec(
+        runSecurity(home, ["find-generic-password", "-s", service]),
+      )?.[1] ?? "",
+  };
+}
+
+const SEEDED_LOGIN = {
+  accessToken: "FAKE-OWNER-ACCESS-0000000000000000000000000000000000",
+  refreshToken: "FAKE-OWNER-REFRESH-000000000000000000000000000000000",
+  expiresAt: 4_102_444_800_000,
+  scopes: ["user:inference", "user:profile"],
+  subscriptionType: "max",
+};
+
+async function runPooledThreadAgainstKeychain(
+  keychain: DisposableKeychain,
+  hub: ScriptedHub,
+  mcpUrl: string,
+): Promise<void> {
+  writeFileSync(
+    join(keychain.configDir, ".claude.json"),
+    JSON.stringify({
+      hasCompletedOnboarding: true,
+      mcpServers: { standin: { type: "http", url: mcpUrl } },
+    }),
+  );
+  const before = keychain.modified();
+  const options = buildSessionOptions(
+    { ...SESSION_PARAMS, cwd: scratch() },
+    {
+      ...cleanBaseEnv(),
+      ...POOL_ENV,
+      HOME: keychain.home,
+      CLAUDE_CONFIG_DIR: keychain.configDir,
+      ANTHROPIC_BASE_URL: hub.url,
+      BB_CLAUDE_CODE_EXECUTABLE: REAL_CLAUDE ?? "",
+    },
+  );
+  const session = new SdkSession(
+    options,
+    () => {},
+    () => {},
+  );
+  cleanups.push(() => session.stop());
+  session.start();
+  await session.pushInput("hello");
+  await waitFor(() => (hub.bodies.length > 0 ? true : undefined), 60_000);
+  await waitFor(
+    () => (keychain.modified() !== before ? true : undefined),
+    60_000,
+  );
+  session.stop();
+}
+
+describe.skipIf(REAL_CLAUDE === null || process.platform !== "darwin")(
+  "a pooled thread on the real CLI against a disposable macOS keychain",
+  () => {
+    it("rewrites the stored item when it connects an OAuth MCP server but never changes the stored login", async () => {
+      const keychain = createDisposableKeychain({
+        claudeAiOauth: SEEDED_LOGIN,
+        mcpOAuth: {},
+      });
+      await new Promise((resolve) => setTimeout(resolve, 1_100));
+      const hub = await startScriptedHub("text");
+      await runPooledThreadAgainstKeychain(
+        keychain,
+        hub,
+        await startOauthMcpChallengeServer(),
+      );
+      expect(keychain.read()?.claudeAiOauth).toEqual(SEEDED_LOGIN);
+    }, 150_000);
+
+    it("never changes the stored login when the hub answers 401", async () => {
+      const keychain = createDisposableKeychain({
+        claudeAiOauth: SEEDED_LOGIN,
+        mcpOAuth: {},
+      });
+      await new Promise((resolve) => setTimeout(resolve, 1_100));
+      const hub = await startScriptedHub("unauthorized");
+      await runPooledThreadAgainstKeychain(
+        keychain,
+        hub,
+        await startOauthMcpChallengeServer(),
+      );
+      expect(keychain.read()?.claudeAiOauth).toEqual(SEEDED_LOGIN);
+    }, 150_000);
+
+    it("would notice a real login change: a CLI logout changes the same item", async () => {
+      const keychain = createDisposableKeychain({
+        claudeAiOauth: SEEDED_LOGIN,
+        mcpOAuth: {},
+      });
+      execFileSync(REAL_CLAUDE ?? "", ["auth", "logout"], {
+        env: {
+          ...cleanBaseEnv(),
+          HOME: keychain.home,
+          CLAUDE_CONFIG_DIR: keychain.configDir,
+        },
+        stdio: "ignore",
+        timeout: 60_000,
+      });
+      expect(keychain.read()?.claudeAiOauth).not.toEqual(SEEDED_LOGIN);
     }, 90_000);
   },
 );
