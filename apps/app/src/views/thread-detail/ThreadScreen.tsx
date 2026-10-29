@@ -807,7 +807,8 @@ function ThreadScreenPanelShell({
 }) {
   const { layout, measure, tone } = presentation;
   const surfaceClassName = tone === "sidebar" ? "bg-sidebar" : "bg-background";
-  const maxWidthClassName = measure === "page" ? CONTENT_MEASURE_MAX_WIDTH_CLASS : "max-w-none";
+  const maxWidthClassName =
+    measure === "page" ? CONTENT_MEASURE_MAX_WIDTH_CLASS : "max-w-none";
   const footer = (
     <div className={cn("relative", surfaceClassName)}>
       <OverflowFade placement="above" tone={tone} />

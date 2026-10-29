@@ -272,6 +272,44 @@ describe.skipIf(process.platform === "win32")("host toolchain recovery", () => {
     expect(toolchain.environment().PATH?.split(delimiter)[0]).toBe("/slow-bin");
   });
 
+  it("waits for a login shell that needs several seconds to start", async () => {
+    const root = await scratch();
+    const shell = join(root, "slow-login-shell");
+    await script(
+      shell,
+      "#!/bin/sh\nsleep 4\nprintf '__BB_SHELL_ENV_START__\\nPATH=/slow-login-bin\\n__BB_SHELL_ENV_END__\\n'\n",
+    );
+    const toolchain = new HostToolchain({
+      HOME: root,
+      PATH: "/usr/bin:/bin",
+      SHELL: shell,
+    });
+    await toolchain.refresh();
+    expect(toolchain.environment().PATH?.split(delimiter)[0]).toBe(
+      "/slow-login-bin",
+    );
+  }, 20000);
+
+  it("gives the shell no stdin to wait on", async () => {
+    const root = await scratch();
+    const shell = join(root, "stdin-shell");
+    await script(
+      shell,
+      "#!/bin/sh\ncat > /dev/null\nprintf '__BB_SHELL_ENV_START__\\nPATH=/stdin-bin\\n__BB_SHELL_ENV_END__\\n'\n",
+    );
+    const toolchain = new HostToolchain({
+      HOME: root,
+      PATH: "/usr/bin:/bin",
+      SHELL: shell,
+    });
+    const started = Date.now();
+    await toolchain.refresh();
+    expect(toolchain.environment().PATH?.split(delimiter)[0]).toBe(
+      "/stdin-bin",
+    );
+    expect(Date.now() - started).toBeLessThan(5000);
+  });
+
   it("keeps a caller's PATH entries first and adds the standard folders after them", () => {
     const toolchain = new HostToolchain({ HOME: "/home/me", PATH: "/usr/bin" });
     const path = toolchain

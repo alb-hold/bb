@@ -148,6 +148,9 @@ interface RenderPromptAreaOptions {
   modelFallback?: ThreadTimelineModelFallback | null;
   pendingInteractions?: readonly PendingInteraction[];
   pendingInteractionsInitialLoading?: boolean;
+  pendingInteractionsGate?: ComponentProps<
+    typeof ThreadDetailPromptArea
+  >["pendingInteractionsGate"];
   permissionPolicy?: ComponentProps<
     typeof ThreadDetailPromptArea
   >["permissionPolicy"];
@@ -171,6 +174,7 @@ function buildPromptAreaElement({
   modelFallback = null,
   pendingInteractions = [],
   pendingInteractionsInitialLoading = false,
+  pendingInteractionsGate = null,
   permissionPolicy = "editable",
   environmentGoneStatus = null,
   queuedMessageCount = 0,
@@ -199,7 +203,7 @@ function buildPromptAreaElement({
         modelFallback={modelFallback}
         parentThreadSection={null}
         pendingInteractions={pendingInteractions}
-        pendingInteractionsGate={null}
+        pendingInteractionsGate={pendingInteractionsGate}
         pendingInteractionsInitialLoading={pendingInteractionsInitialLoading}
         queuedMessageCount={queuedMessageCount}
         pendingTodos={null}
@@ -283,6 +287,65 @@ it.each(["removed", "removing", "cleanup-failed"] as const)(
     expect(screen.getByTestId("composer-hidden").textContent).toBe("true");
   },
 );
+
+describe("pending-interactions gate", () => {
+  it("shows a status in place of the composer and queued messages while interactions are unknown", () => {
+    mocks.queuedMessages = [makeQueuedMessage()];
+
+    renderPromptArea({
+      pendingInteractionsGate: { state: "loading" },
+      pendingInteractionsInitialLoading: true,
+    });
+
+    expect(screen.getByRole("status").textContent).toContain(
+      "Checking pending interactions",
+    );
+    expect(screen.getByTestId("composer-hidden").textContent).toBe("true");
+    expect(screen.queryByTestId("queued-message-list")).toBeNull();
+  });
+
+  it("shows an alert with a working Retry in place of the composer when the check fails", () => {
+    mocks.queuedMessages = [makeQueuedMessage()];
+    const onRetry = vi.fn();
+
+    renderPromptArea({
+      pendingInteractionsGate: { state: "error", isRetrying: false, onRetry },
+    });
+
+    expect(screen.getByRole("alert").textContent).toContain(
+      "Couldn't check pending interactions",
+    );
+    expect(screen.getByTestId("composer-hidden").textContent).toBe("true");
+    expect(screen.queryByTestId("queued-message-list")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(onRetry).toHaveBeenCalledOnce();
+  });
+
+  it("disables Retry while the check is being retried", () => {
+    renderPromptArea({
+      pendingInteractionsGate: {
+        state: "error",
+        isRetrying: true,
+        onRetry: vi.fn(),
+      },
+    });
+
+    expect(
+      (screen.getByRole("button", { name: "Retrying…" }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(true);
+  });
+
+  it("keeps the composer and queued messages when there is no gate", () => {
+    mocks.queuedMessages = [makeQueuedMessage()];
+
+    renderPromptArea();
+
+    expect(screen.queryByRole("status")).toBeNull();
+    expect(screen.getByTestId("composer-hidden").textContent).toBe("false");
+    expect(screen.getByTestId("queued-message-list")).toBeTruthy();
+  });
+});
 
 describe("environment follow-up summary", () => {
   it("renders for a thread with an environment even when it has no environment label", () => {

@@ -1,11 +1,13 @@
 // @vitest-environment jsdom
 
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PendingInteraction } from "@bb/domain";
 import type { TimelineWorkflowWorkRow } from "@bb/server-contract";
 import type { UseThreadTimelineControllerResult } from "@/components/thread/timeline";
 import { getPromptDraftAccessor } from "@/hooks/usePromptDraftStorage";
+import { CONTENT_MEASURE_MAX_WIDTH_CLASS } from "@/lib/content-measure";
 import { makeThreadResponse } from "@/test/fixtures/thread-responses";
 import { createQueryClientTestHarness } from "@/test/queryClientTestHarness";
 import { ThreadScreen, type ThreadScreenPresentation } from "./ThreadScreen";
@@ -16,6 +18,7 @@ const mocks = vi.hoisted(() => ({
   pendingInteractionsIsError: false,
   pendingInteractionsIsFetching: false,
   pendingInteractionsRefetch: vi.fn(),
+  pageShellProps: [] as Array<Record<string, unknown>>,
   promptAreaProps: [] as Array<Record<string, unknown>>,
   surfaceProps: [] as Array<Record<string, unknown>>,
 }));
@@ -70,6 +73,21 @@ vi.mock("@/components/thread/timeline", async (importOriginal) => {
     },
   };
 });
+
+vi.mock("@/components/ui/page-shell.js", () => ({
+  PageShell: (props: {
+    children?: ReactNode;
+    footer?: ReactNode;
+  }) => {
+    mocks.pageShellProps.push(props as Record<string, unknown>);
+    return (
+      <div>
+        {props.children}
+        {props.footer}
+      </div>
+    );
+  },
+}));
 
 vi.mock("./ThreadDetailPromptArea", () => ({
   ThreadDetailPromptArea: (props: Record<string, unknown>) => {
@@ -142,6 +160,7 @@ function workflowRow(): TimelineWorkflowWorkRow {
 function renderScreen(
   presentation: ThreadScreenPresentation,
   overrides: {
+    hasUnseenTimelineEvents?: boolean;
     thread?: ThreadResponse;
     timeline?: UseThreadTimelineControllerResult;
   } = {},
@@ -165,7 +184,7 @@ function renderScreen(
         timelineHost={{
           environmentHostName: null,
           includePluginMessageActions: false,
-          hasUnseenTimelineEvents: false,
+          hasUnseenTimelineEvents: overrides.hasUnseenTimelineEvents ?? false,
           unreadDividerPlacement: null,
         }}
         workspaceRootPath={undefined}
@@ -197,6 +216,7 @@ beforeEach(() => {
   mocks.pendingInteractionsIsError = false;
   mocks.pendingInteractionsIsFetching = false;
   mocks.pendingInteractionsRefetch.mockClear();
+  mocks.pageShellProps = [];
   mocks.promptAreaProps = [];
   mocks.surfaceProps = [];
 });
@@ -262,6 +282,44 @@ describe("ThreadScreen", () => {
     renderScreen({ kind: "page" });
 
     expect(mocks.promptAreaProps.at(-1)!.pendingInteractionsGate).toBeNull();
+  });
+
+  it("opens the page at the latest content when the thread has unseen events", () => {
+    renderScreen({ kind: "page" }, { hasUnseenTimelineEvents: true });
+
+    expect(mocks.pageShellProps.at(-1)!.scrollAnchorMode).toBe("latest");
+  });
+
+  it("restores the saved reading position when the thread has no unseen events", () => {
+    renderScreen({ kind: "page" }, { hasUnseenTimelineEvents: false });
+
+    expect(mocks.pageShellProps.at(-1)!.scrollAnchorMode).toBe("restore");
+  });
+
+  it("sizes a page-measure panel to the content measure and a panel-measure one to its container", () => {
+    const view = renderScreen({
+      kind: "panel",
+      layout: "document",
+      measure: "page",
+      tone: "background",
+    });
+    const column = () =>
+      screen.getByRole("button", { name: "Add selection to chat" })
+        .parentElement!;
+
+    expect(column().className).toContain(CONTENT_MEASURE_MAX_WIDTH_CLASS);
+    expect(column().className).not.toContain("max-w-none");
+
+    view.unmount();
+    renderScreen({
+      kind: "panel",
+      layout: "document",
+      measure: "panel",
+      tone: "background",
+    });
+
+    expect(column().className).toContain("max-w-none");
+    expect(column().className).not.toContain(CONTENT_MEASURE_MAX_WIDTH_CLASS);
   });
 
   it("quotes a timeline selection into the thread draft and focuses the composer", () => {
