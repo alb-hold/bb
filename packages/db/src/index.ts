@@ -36,7 +36,9 @@ export {
 } from "./fork-thread-row-state.js";
 export {
   clearThreadRowStateAtOutputSeqs,
+  forgetForwardedTerminalOutputSeq,
   listThreadTerminalLatestOutputSeqs,
+  noteForwardedTerminalOutputSeq,
 } from "./fork-thread-terminal-output-seqs.js";
 export type { ThreadListEnrichmentScope } from "./thread-list-enrichment-scope.js";
 export {

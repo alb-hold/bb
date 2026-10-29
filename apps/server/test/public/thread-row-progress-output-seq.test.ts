@@ -176,6 +176,70 @@ describe("thread row progress output sequences", () => {
     });
   });
 
+  it("raises the marks past output still buffered in memory when a turn outcome clears the row inside a transaction", async () => {
+    await withTestHarness(async (harness) => {
+      const fixture = seedThreadFixture(harness);
+      const { thread } = fixture;
+      const terminal = createTerminalSession(harness.db, {
+        cols: 80,
+        daemonSessionId: fixture.session.id,
+        environmentId: fixture.environment.id,
+        hostId: fixture.host.id,
+        initialCwd: fixture.environment.path ?? "/tmp/terminal-workspace",
+        rows: 24,
+        status: "running",
+        threadId: thread.id,
+        title: "progress",
+      });
+      for (let seq = 0; seq <= 9; seq += 1) {
+        await harness.deps.terminalSessions.handleDaemonTerminalMessage({
+          hostId: fixture.host.id,
+          sessionId: fixture.session.id,
+          message: {
+            type: "terminal.output",
+            terminalId: terminal.id,
+            chunk: {
+              seq,
+              dataBase64: Buffer.from(`chunk ${seq}\n`).toString("base64"),
+            },
+          },
+        });
+      }
+      expect(
+        harness.db.$client
+          .prepare(
+            "SELECT COUNT(*) AS rows FROM fork_terminal_output WHERE terminal_session_id = ?",
+          )
+          .get(terminal.id),
+      ).toEqual({ rows: 0 });
+      await report(harness, thread.id, set(terminal.id, 0.3, 3));
+      expect(await readProgress(harness, thread.id)).toEqual({ value: 0.3 });
+
+      harness.db.transaction((tx) => {
+        for (const type of ["run.started", "run.succeeded"] as const) {
+          applyLoggedThreadLifecycleEventInTransaction(
+            { db: tx, logger: testLogger },
+            { event: { type }, threadId: thread.id },
+          );
+        }
+      });
+      expect(await readProgress(harness, thread.id)).toBeNull();
+
+      harness.deps.terminalSessions.latestThreadOutputSeqs(thread.id);
+      expect(
+        harness.db.$client
+          .prepare(
+            "SELECT COUNT(*) AS rows FROM fork_terminal_output WHERE terminal_session_id = ?",
+          )
+          .get(terminal.id),
+      ).toEqual({ rows: 1 });
+      await report(harness, thread.id, set(terminal.id, 0.6, 9));
+      expect(await readProgress(harness, thread.id)).toBeNull();
+      await report(harness, thread.id, set(terminal.id, 0.2, 10));
+      expect(await readProgress(harness, thread.id)).toEqual({ value: 0.2 });
+    });
+  });
+
   it("tracks marks per terminal and keeps them across status updates and the thread list", async () => {
     await withTestHarness(async (harness) => {
       const { thread } = seedThreadFixture(harness);

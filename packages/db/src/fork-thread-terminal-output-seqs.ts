@@ -6,6 +6,21 @@ import {
   raiseThreadRowProgressOutputSeqs,
 } from "./fork-thread-row-state.js";
 
+const forwardedOutputSeqs = new Map<string, number>();
+
+export function noteForwardedTerminalOutputSeq(
+  terminalId: string,
+  seq: number,
+): void {
+  if (seq > (forwardedOutputSeqs.get(terminalId) ?? -1)) {
+    forwardedOutputSeqs.set(terminalId, seq);
+  }
+}
+
+export function forgetForwardedTerminalOutputSeq(terminalId: string): void {
+  forwardedOutputSeqs.delete(terminalId);
+}
+
 export function listThreadTerminalLatestOutputSeqs(
   db: DbQueryConnection,
   threadId: string,
@@ -23,7 +38,8 @@ export function listThreadTerminalLatestOutputSeqs(
       terminalSessionId: session.id,
       now,
     });
-    if (seq !== null) latest[session.id] = seq;
+    const newest = Math.max(seq ?? -1, forwardedOutputSeqs.get(session.id) ?? -1);
+    if (newest >= 0) latest[session.id] = newest;
   }
   return latest;
 }
