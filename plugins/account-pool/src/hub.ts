@@ -128,7 +128,9 @@ interface HubOptions {
 export interface OAuthRelay {
   method: string;
   route: string;
-  status: number;
+  upstream:
+    | { kind: "status"; status: number }
+    | { kind: "error"; errorClass: string };
   durationMs: number;
 }
 
@@ -415,11 +417,11 @@ export class AccountPoolHub {
       this.options.getSettings().anthropicUpstreamBaseUrl.replace(/\/+$/u, "") +
       target;
     const startedAt = this.options.now();
-    const relayed = (status: number) =>
+    const relayed = (upstream: OAuthRelay["upstream"]) =>
       this.options.onOAuthRelay({
         method,
         route: oauthProxyRouteLabel(target),
-        status,
+        upstream,
         durationMs: this.options.now() - startedAt,
       });
     const { controller, release } = this.trackRequest(request);
@@ -462,7 +464,13 @@ export class AccountPoolHub {
         } catch (cause) {
           if (!controller.signal.aborted)
             this.options.onUpstreamError("claude", cause);
-          relayed(502);
+          relayed({
+            kind: "error",
+            errorClass:
+              cause instanceof Error && /^[A-Za-z0-9_$]{1,64}$/u.test(cause.name)
+                ? cause.name
+                : "Error",
+          });
           return adapter.errorResponse(
             502,
             "Account Pooler could not reach Anthropic.",
@@ -490,7 +498,7 @@ export class AccountPoolHub {
         }
         const forwarded = new Headers(response.headers);
         forwarded.delete("set-cookie");
-        relayed(response.status);
+        relayed({ kind: "status", status: response.status });
         handedOff = true;
         return this.clientResponse({
           response: new Response(response.body, {
