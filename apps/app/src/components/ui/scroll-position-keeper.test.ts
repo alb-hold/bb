@@ -193,16 +193,20 @@ describe("ScrollPositionKeeper", () => {
     timeline.layout.flushResizeObservers();
     timeline.layout.layoutScrollTo(timeline.layout.maxScrollTop());
     const readWrites = countScrollTopWrites(timeline.scrollElement);
-    const reconcile = vi.spyOn(timeline.keeper, "reconcile");
+    let deferredReconcileFrames = 0;
+    vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+      deferredReconcileFrames += 1;
+      return deferredReconcileFrames;
+    });
 
     timeline.layout.setViewportHeight(VIEWPORT_HEIGHT + 225);
     void timeline.scrollElement.scrollTop;
     expect(timeline.layout.takeClamp()).toBe(true);
     timeline.scrollElement.dispatchEvent(new Event("scroll"));
-    vi.advanceTimersToNextFrame();
 
-    expect(reconcile).not.toHaveBeenCalled();
+    expect(deferredReconcileFrames).toBe(0);
     expect(readWrites()).toBeLessThanOrEqual(1);
+    vi.advanceTimersToNextFrame();
     expect(timeline.keeper.isAttached()).toBe(true);
     expect(timeline.layout.scrollTop).toBe(timeline.layout.maxScrollTop());
   });
