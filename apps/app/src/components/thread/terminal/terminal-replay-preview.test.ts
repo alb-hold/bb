@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createTerminalGridMarker } from "@bb/domain";
 import { createTerminalOutputPipeline } from "./terminal-output-pipeline";
 import {
+  TERMINAL_REPLAY_PREVIEW_HOLD_TIMEOUT_MS,
   mountTerminalReplayPreview,
   updateTerminalReplayPreviewPtyGrid,
 } from "./terminal-replay-preview";
@@ -145,6 +146,117 @@ describe("terminal replay preview", () => {
     cover.dispose();
     history.dispose();
     parent.remove();
+  });
+
+  it("keeps a held preview hidden while history replays and shows it once released", async () => {
+    installPreviewCanvasContext();
+    const parent = document.createElement("div");
+    const container = document.createElement("div");
+    parent.append(container);
+    document.body.append(parent);
+    const terminal = new Terminal({ cols: 120, rows: 36 });
+    const cover = mountTerminalReplayPreview({
+      container,
+      holdUntilReleased: true,
+      initialFitGrid: { cols: 120, rows: 36 },
+      isOwner: () => true,
+      terminal,
+    });
+    const element = parent.querySelector<HTMLElement>(
+      "[data-terminal-replay-preview]",
+    )!;
+    expect(element.dataset.terminalReplayHeld).toBeDefined();
+    expect(getComputedStyle(element).visibility).toBe("hidden");
+    expect(container.style.opacity).toBe("0");
+
+    cover.setPtyGrid(120, 36);
+    await new Promise<void>((resolve) =>
+      cover.push(Buffer.from("oldest historical frame\r\n"), resolve),
+    );
+    cover.setFitGrid(120, 36);
+    expect(getComputedStyle(element).visibility).toBe("hidden");
+
+    cover.release();
+    expect(element.dataset.terminalReplayHeld).toBeUndefined();
+    expect(getComputedStyle(element).visibility).toBe("visible");
+
+    cover.dispose();
+    parent.remove();
+  });
+
+  function mountHeldPreview(onHoldExpired?: () => void) {
+    installPreviewCanvasContext();
+    const parent = document.createElement("div");
+    const container = document.createElement("div");
+    parent.append(container);
+    document.body.append(parent);
+    const cover = mountTerminalReplayPreview({
+      container,
+      holdUntilReleased: true,
+      initialFitGrid: { cols: 120, rows: 36 },
+      isOwner: () => true,
+      ...(onHoldExpired === undefined ? {} : { onHoldExpired }),
+      terminal: new Terminal({ cols: 120, rows: 36 }),
+    });
+    const element = parent.querySelector<HTMLElement>(
+      "[data-terminal-replay-preview]",
+    )!;
+    cover.setPtyGrid(120, 36);
+    return {
+      cover,
+      element,
+      cleanup: () => {
+        cover.dispose();
+        parent.remove();
+      },
+    };
+  }
+
+  it("keeps a preview hidden when the backstop fires, flags it, and clears the flag when held again", () => {
+    vi.useFakeTimers();
+    try {
+      const onHoldExpired = vi.fn();
+      const { cover, element, cleanup } = mountHeldPreview(onHoldExpired);
+      vi.advanceTimersByTime(TERMINAL_REPLAY_PREVIEW_HOLD_TIMEOUT_MS - 1);
+      expect(onHoldExpired).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(1);
+      expect(onHoldExpired).toHaveBeenCalledTimes(1);
+      expect(element.dataset.terminalReplayHeld).toBeDefined();
+      expect(element.dataset.terminalReplayHoldExpired).toBeDefined();
+      expect(element.style.visibility).toBe("hidden");
+      vi.advanceTimersByTime(TERMINAL_REPLAY_PREVIEW_HOLD_TIMEOUT_MS * 3);
+      expect(onHoldExpired).toHaveBeenCalledTimes(1);
+      expect(element.style.visibility).toBe("hidden");
+
+      cover.hold({ countdown: true });
+      expect(element.dataset.terminalReplayHoldExpired).toBeUndefined();
+      vi.advanceTimersByTime(TERMINAL_REPLAY_PREVIEW_HOLD_TIMEOUT_MS);
+      expect(onHoldExpired).toHaveBeenCalledTimes(2);
+
+      cover.release();
+      expect(element.dataset.terminalReplayHeld).toBeUndefined();
+      expect(element.dataset.terminalReplayHoldExpired).toBeUndefined();
+      cleanup();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not count down while held without a countdown, and a normal release is not flagged", () => {
+    vi.useFakeTimers();
+    try {
+      const { cover, element, cleanup } = mountHeldPreview();
+      cover.hold({ countdown: false });
+      vi.advanceTimersByTime(TERMINAL_REPLAY_PREVIEW_HOLD_TIMEOUT_MS * 10);
+      expect(element.dataset.terminalReplayHeld).toBeDefined();
+      expect(element.dataset.terminalReplayHoldExpired).toBeUndefined();
+      cover.release();
+      expect(element.dataset.terminalReplayHeld).toBeUndefined();
+      expect(element.dataset.terminalReplayHoldExpired).toBeUndefined();
+      cleanup();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("keeps the attached grid visible while replay hides historical grids", async () => {
