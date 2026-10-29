@@ -337,16 +337,52 @@ function writeUnreachableUserBus(fixture: Fixture, init: string): void {
   writeExecutable(join(fixture.binDir, "loginctl"), "#!/bin/sh\nexit 1\n");
 }
 
-afterEach(() => {
-  for (const directory of createdDirectories.splice(0)) {
-    try {
-      const servicePid = Number(
-        readFileSync(join(directory, "data/service-daemon.pid"), "utf8"),
-      );
-      process.kill(servicePid, "SIGTERM");
-    } catch {}
+const DAEMON_EXIT_TIMEOUT_MS = 3_000;
+
+function isRunning(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function fixtureProcesses(directories: string[]): number[] {
+  const listing = spawnSync("ps", ["-axo", "pid=,command="], {
+    encoding: "utf8",
+  }).stdout;
+  const pids: number[] = [];
+  for (const line of listing.split("\n")) {
+    const match = /^\s*(\d+)\s(.*)$/u.exec(line);
+    if (match === null) continue;
+    const pid = Number(match[1]);
+    if (pid === process.pid) continue;
+    if (directories.some((directory) => match[2]?.includes(directory))) {
+      pids.push(pid);
+    }
+  }
+  return pids;
+}
+
+afterEach(async () => {
+  const directories = createdDirectories.splice(0);
+  const stopped = fixtureProcesses(directories);
+  for (const pid of stopped) process.kill(pid, "SIGTERM");
+  const deadline = Date.now() + DAEMON_EXIT_TIMEOUT_MS;
+  while (stopped.some(isRunning) && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  const survivors = stopped.filter(isRunning);
+  for (const pid of survivors) process.kill(pid, "SIGKILL");
+  for (const directory of directories) {
     rmSync(directory, { force: true, recursive: true });
   }
+  console.info(
+    `install-script test daemons stopped: ${stopped.join(",") || "none"}`,
+  );
+  expect(survivors).toEqual([]);
+  expect(fixtureProcesses(directories)).toEqual([]);
 });
 
 const describeOnPosix = process.platform === "win32" ? describe.skip : describe;
