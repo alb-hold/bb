@@ -31,6 +31,8 @@ const FORWARDED_REQUEST_HEADERS = new Set([
   "user-agent",
   "anthropic-beta",
   "x-app",
+  "mcp-session-id",
+  "mcp-protocol-version",
 ]);
 const DROPPED_RESPONSE_HEADERS = new Set([
   "connection",
