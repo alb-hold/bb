@@ -27,100 +27,118 @@ function stripDeletedSuffix(value: string): string {
   return value.replace(/ \(deleted\)$/, "");
 }
 
-async function resolveThroughExistingAncestor(
-  value: string,
-): Promise<string | null> {
-  let dir = stripDeletedSuffix(value);
-  const tail: string[] = [];
-  while (true) {
-    try {
-      const root = await realpath(dir);
-      return tail.length === 0 ? root : path.join(root, ...tail.reverse());
-    } catch (error) {
-      if (!missing(error)) return null;
-      tail.push(path.basename(dir));
-      const parent = path.dirname(dir);
-      if (parent === dir) return null;
-      dir = parent;
-    }
-  }
-}
-
-function pathProvablyOutsideWorkspace(
-  value: string,
-  workspaceCanonical: string,
-  workspaceArg: string,
-): boolean {
-  const normalized = stripDeletedSuffix(value);
-  const roots = [workspaceCanonical, workspaceArg];
-  if (roots.some((root) => normalized === root || normalized.startsWith(root + path.sep)))
-    return false;
-  if (/^\/tmp\//.test(normalized) && workspaceCanonical.startsWith("/private/tmp/"))
-    return false;
-  if (/^\/var\//.test(normalized) && workspaceCanonical.startsWith("/private/var/"))
-    return false;
-  if (normalized.startsWith("/private/")) {
-    return !roots.some(
-      (root) =>
-        root.startsWith("/private/") &&
-        (normalized === root || normalized.startsWith(root + path.sep)),
-    );
-  }
-  return normalized.startsWith("/") && !normalized.startsWith("/private/");
-}
-
-async function pathMaybeInWorkspace(
-  value: string,
-  workspaceCanonical: string,
-  workspaceArg: string,
-): Promise<boolean> {
-  const deletedSuffix = stripDeletedSuffix(value);
-  if (
-    underWorkspace(value, workspaceCanonical) ||
-    underWorkspace(deletedSuffix, workspaceCanonical) ||
-    underWorkspace(deletedSuffix, workspaceArg)
-  )
-    return true;
-  if (
-    deletedSuffix.startsWith(workspaceCanonical + path.sep) ||
-    deletedSuffix.startsWith(workspaceArg + path.sep) ||
-    deletedSuffix === workspaceCanonical ||
-    deletedSuffix === workspaceArg
-  )
-    return true;
-  const resolved = await resolveThroughExistingAncestor(value);
-  if (resolved !== null) return underWorkspace(resolved, workspaceCanonical);
-  return !pathProvablyOutsideWorkspace(
-    deletedSuffix,
-    workspaceCanonical,
-    workspaceArg,
-  );
-}
-
-async function pathMatchesWorkspace(
-  value: string,
-  workspaceCanonical: string,
-): Promise<boolean> {
-  try {
-    const resolved = await resolveThroughExistingAncestor(value);
-    if (resolved !== null && underWorkspace(resolved, workspaceCanonical))
-      return true;
-    return underWorkspace(
-      await canonicalPath(stripDeletedSuffix(value)),
-      workspaceCanonical,
-    );
-  } catch (error) {
-    if (missing(error)) return false;
-    return false;
-  }
-}
-
 function underWorkspace(value: string, workspace: string): boolean {
   const normalized = value.replace(/ \(deleted\)$/, "");
   return [value, normalized].some(
     (candidate) =>
       candidate === workspace || candidate.startsWith(workspace + path.sep),
   );
+}
+
+type AncestorResolve =
+  | { ok: true; path: string }
+  | { ok: false; reason: "missing" | "unreadable" };
+
+const DATA_VOLUME_PREFIX = "/System/Volumes/Data";
+
+function isPseudoProcessPath(value: string): boolean {
+  const normalized = stripDeletedSuffix(value);
+  if (!normalized.startsWith("/")) return true;
+  if (normalized.includes("->")) return true;
+  return false;
+}
+
+function expandPathAliases(value: string): string[] {
+  const aliases = new Set<string>([value]);
+  if (value.startsWith(DATA_VOLUME_PREFIX + path.sep)) {
+    aliases.add(value.slice(DATA_VOLUME_PREFIX.length) || "/");
+  } else if (value === DATA_VOLUME_PREFIX) {
+    aliases.add("/");
+  }
+  if (value.startsWith("/private/tmp" + path.sep)) {
+    aliases.add("/tmp" + value.slice("/private/tmp".length));
+  } else if (value === "/private/tmp") {
+    aliases.add("/tmp");
+  }
+  if (value.startsWith("/tmp" + path.sep)) {
+    aliases.add("/private/tmp" + value.slice("/tmp".length));
+  } else if (value === "/tmp") {
+    aliases.add("/private/tmp");
+  }
+  if (value.startsWith("/private/var" + path.sep)) {
+    aliases.add("/var" + value.slice("/private/var".length));
+  } else if (value.startsWith("/var" + path.sep)) {
+    aliases.add("/private/var" + value.slice("/var".length));
+  }
+  return [...aliases];
+}
+
+function pathLexicallyCouldBeInWorkspace(
+  value: string,
+  workspaceCanonical: string,
+  workspaceArg: string,
+): boolean {
+  const normalized = stripDeletedSuffix(value);
+  if (isPseudoProcessPath(normalized)) return false;
+  const pathAliases = expandPathAliases(normalized);
+  const roots = new Set<string>();
+  for (const root of [workspaceCanonical, workspaceArg]) {
+    roots.add(root);
+    for (const alias of expandPathAliases(root)) roots.add(alias);
+  }
+  return pathAliases.some((candidate) =>
+    [...roots].some(
+      (root) =>
+        candidate === root || candidate.startsWith(root + path.sep),
+    ),
+  );
+}
+
+async function resolveThroughExistingAncestor(
+  value: string,
+): Promise<AncestorResolve> {
+  let dir = stripDeletedSuffix(value);
+  const tail: string[] = [];
+  while (true) {
+    try {
+      const root = await realpath(dir);
+      const resolved =
+        tail.length === 0 ? root : path.join(root, ...tail.reverse());
+      return { ok: true, path: resolved };
+    } catch (error) {
+      if (!missing(error)) return { ok: false, reason: "unreadable" };
+      tail.push(path.basename(dir));
+      const parent = path.dirname(dir);
+      if (parent === dir) return { ok: false, reason: "missing" };
+      dir = parent;
+    }
+  }
+}
+
+async function classifyPathForWorkspace(
+  value: string,
+  workspaceCanonical: string,
+  workspaceArg: string,
+): Promise<"matched" | "outside" | "unreadable"> {
+  if (
+    !pathLexicallyCouldBeInWorkspace(value, workspaceCanonical, workspaceArg)
+  )
+    return "outside";
+  const ancestor = await resolveThroughExistingAncestor(value);
+  if (ancestor.ok && underWorkspace(ancestor.path, workspaceCanonical))
+    return "matched";
+  try {
+    if (
+      underWorkspace(
+        await canonicalPath(stripDeletedSuffix(value)),
+        workspaceCanonical,
+      )
+    )
+      return "matched";
+  } catch {
+    undefined;
+  }
+  return "unreadable";
 }
 
 function parseLsofOutput(output: string):
@@ -321,16 +339,13 @@ async function inspectDarwinWorkspaceProcesses(
     [...pathsByPid.entries()].map(async ([pid, paths]) => {
       let matched = false;
       for (const value of paths) {
-        const maybeWorkspace = await pathMaybeInWorkspace(
+        const kind = await classifyPathForWorkspace(
           value,
           workspace,
           workspaceArg,
         );
-        if (await pathMatchesWorkspace(value, workspace)) {
-          matched = true;
-          continue;
-        }
-        if (maybeWorkspace) unreadablePids.add(pid);
+        if (kind === "matched") matched = true;
+        else if (kind === "unreadable") unreadablePids.add(pid);
       }
       if (matched) pids.add(pid);
     }),

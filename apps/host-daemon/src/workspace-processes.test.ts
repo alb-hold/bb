@@ -208,6 +208,44 @@ describe("darwin workspace process inspection", () => {
     expect(await inspectWorkspaceProcesses(workspace)).toEqual(expected);
   });
 
+  it("treats data volume lsof path as unreadable when ancestor realpath hits EACCES", async () => {
+    const denied = Object.assign(new Error("denied"), { code: "EACCES" });
+    vi.mocked(execHostFile).mockImplementation((async () => ({
+      stdout: "p509\nn/System/Volumes/Data/Users/x/ws/f\n",
+      stderr: "",
+    })) as never);
+    vi.mocked(realpath).mockImplementation(async (value) => {
+      const key = String(value);
+      if (key === "/Users/x/ws") return "/Users/x/ws";
+      if (key.startsWith("/System/Volumes/Data/Users/x/ws")) throw denied;
+      return key;
+    });
+    expect(await inspectWorkspaceProcesses("/Users/x/ws")).toEqual({
+      supported: true,
+      pids: [],
+      unreadablePids: [509],
+    });
+  });
+
+  it("treats data volume lsof path as unreadable when ancestor realpath hits ELOOP", async () => {
+    const loop = Object.assign(new Error("loop"), { code: "ELOOP" });
+    vi.mocked(execHostFile).mockImplementation((async () => ({
+      stdout: "p510\nn/System/Volumes/Data/Users/x/ws/f\n",
+      stderr: "",
+    })) as never);
+    vi.mocked(realpath).mockImplementation(async (value) => {
+      const key = String(value);
+      if (key === "/Users/x/ws") return "/Users/x/ws";
+      if (key.startsWith("/System/Volumes/Data/Users/x/ws")) throw loop;
+      return key;
+    });
+    expect(await inspectWorkspaceProcesses("/Users/x/ws")).toEqual({
+      supported: true,
+      pids: [],
+      unreadablePids: [510],
+    });
+  });
+
   it("reports a holder when lsof uses a tmp alias for a deleted workspace file", async () => {
     vi.mocked(execHostFile).mockImplementation((async () => ({
       stdout: "p508\nn/tmp/ws/file (deleted)\n",

@@ -147,6 +147,77 @@ it.skipIf(process.platform !== "darwin")(
   },
 );
 
+function pathsForUnreadablePids(
+  stdout: string,
+  unreadablePids: number[],
+): Map<number, string[]> {
+  const byPid = new Map<number, string[]>();
+  let pid: number | undefined;
+  for (const line of stdout.split("\n")) {
+    if (line.startsWith("p")) {
+      const parsed = Number(line.slice(1));
+      pid = Number.isFinite(parsed) ? parsed : undefined;
+      continue;
+    }
+    if (line.startsWith("n") && pid !== undefined && unreadablePids.includes(pid)) {
+      const path = line.slice(1);
+      const bucket = byPid.get(pid);
+      if (bucket === undefined) byPid.set(pid, [path]);
+      else bucket.push(path);
+    }
+  }
+  return byPid;
+}
+
+it.skipIf(process.platform !== "darwin" || !process.env.BB_R6_LOG)(
+  "logs false-refusal evidence for empty workspaces",
+  async () => {
+    const uid = String(process.getuid!());
+    const passes = darwinLsofPasses(uid);
+    const tmpEmpty = await mkdtemp(join(tmpdir(), "bb-r6-empty-tmp-"));
+    const homeEmpty = await mkdtemp(
+      join(process.env.HOME ?? tmpdir(), "bb-r6-empty-home-"),
+    );
+    const cases = [
+      { label: "b_tmp_empty", workspace: tmpEmpty },
+      { label: "users_empty", workspace: homeEmpty },
+    ];
+    try {
+      const lines: string[] = [`HEAD=${process.env.BB_R6_HEAD ?? "unknown"}`];
+      for (const { label, workspace } of cases) {
+        const cwdRun = await execLsofLikeDaemon(passes.cwd);
+        const filesRun = await execLsofLikeDaemon(passes.files);
+        const inspection = await inspectWorkspaceProcesses(workspace);
+        lines.push(`=== ${label} workspace=${workspace} ===`);
+        lines.push(
+          JSON.stringify({
+            supported: inspection.supported,
+            pids: inspection.pids,
+            unreadablePids: inspection.unreadablePids,
+          }),
+        );
+        if (inspection.unreadablePids.length > 0) {
+          const stdout = `${cwdRun.stdout}\n${filesRun.stdout}`;
+          const paths = pathsForUnreadablePids(stdout, inspection.unreadablePids);
+          for (const pid of inspection.unreadablePids) {
+            lines.push(
+              `unreadable_pid=${pid} paths=${JSON.stringify(paths.get(pid) ?? [])}`,
+            );
+          }
+        }
+      }
+      const payload = lines.join("\n") + "\n";
+      if (process.env.BB_R6_LOG_FILE) {
+        await writeFile(process.env.BB_R6_LOG_FILE, payload);
+      }
+      console.log(payload);
+    } finally {
+      await rm(tmpEmpty, { recursive: true, force: true });
+      await rm(homeEmpty, { recursive: true, force: true });
+    }
+  },
+);
+
 it.skipIf(process.platform !== "darwin")(
   "finds no pids in an empty workspace directory",
   async () => {
