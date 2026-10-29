@@ -131,6 +131,34 @@ describe("thread-activity", () => {
       }
     });
 
+    it("ages a receipt by the real clock when the tick has stalled", () => {
+      vi.useFakeTimers();
+      try {
+        vi.setSystemTime(300_000);
+        const stalledTick = 100_000;
+        expect(
+          isNativeActivityUnconfirmed(
+            nativeActivityRuntime(150_000),
+            stalledTick,
+          ),
+        ).toBe(true);
+        expect(
+          isNativeActivityUnconfirmed(
+            nativeActivityRuntime(210_000),
+            stalledTick,
+          ),
+        ).toBe(false);
+        expect(
+          isNativeActivityUnconfirmed(
+            nativeActivityRuntime(209_999),
+            stalledTick,
+          ),
+        ).toBe(true);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it("still counts a receipt ahead of the real clock as unconfirmed, by one millisecond or by a minute", () => {
       vi.useFakeTimers();
       try {
