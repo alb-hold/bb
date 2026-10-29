@@ -1,4 +1,9 @@
-import { execFileSync, spawnSync } from "node:child_process";
+import {
+  execFileSync,
+  spawn,
+  spawnSync,
+  type ChildProcess,
+} from "node:child_process";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import {
@@ -61,12 +66,20 @@ afterEach(async () => {
 });
 
 function stopSessionOnCleanup(session: SdkSession): void {
-  cleanups.push(waitForCliExit);
+  cleanups.push(() => waitForCliExit(REAL_CLAUDE));
   cleanups.push(() => session.stop());
 }
 
-function liveCliProcessIds(): number[] {
-  if (REAL_CLAUDE === null) return [];
+function resolvedPath(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return path;
+  }
+}
+
+function liveCliProcessIds(executable: string): number[] {
+  const wanted = new Set([executable, resolvedPath(executable)]);
   const table = execFileSync("/bin/ps", ["-axo", "pid=,ppid=,command="], {
     encoding: "utf8",
   });
@@ -77,7 +90,10 @@ function liveCliProcessIds(): number[] {
     if (match === null) continue;
     const pid = Number(match[1]);
     parentOf.set(pid, Number(match[2]));
-    if (match[3]?.startsWith(REAL_CLAUDE)) cliPids.push(pid);
+    const program = (match[3] ?? "").split(" ", 1)[0] ?? "";
+    if (wanted.has(program) || wanted.has(resolvedPath(program))) {
+      cliPids.push(pid);
+    }
   }
   return cliPids.filter((pid) => {
     for (
@@ -91,11 +107,21 @@ function liveCliProcessIds(): number[] {
   });
 }
 
-async function waitForCliExit(): Promise<void> {
-  const deadline = Date.now() + 20_000;
-  while (liveCliProcessIds().length > 0) {
+async function waitForCliExit(
+  executable: string | null,
+  timeoutMs = 20_000,
+): Promise<void> {
+  if (executable === null) {
+    throw new Error(
+      "no Claude executable resolved: cannot confirm the CLI exited before cleanup",
+    );
+  }
+  const deadline = Date.now() + timeoutMs;
+  while (liveCliProcessIds(executable).length > 0) {
     if (Date.now() > deadline) {
-      throw new Error("the Claude CLI did not exit within 20 s of stop()");
+      throw new Error(
+        `the Claude CLI did not exit within ${timeoutMs} ms of stop()`,
+      );
     }
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
@@ -697,3 +723,42 @@ describe.skipIf(REAL_CLAUDE === null || process.platform !== "darwin")(
     }, 90_000);
   },
 );
+
+describe("waiting for the Claude CLI to exit before cleanup", () => {
+  async function startSleeper(argv0: string): Promise<ChildProcess> {
+    const child = spawn("/bin/sleep", ["30"], { argv0, stdio: "ignore" });
+    cleanups.push(() => child.kill("SIGKILL"));
+    const deadline = Date.now() + 5_000;
+    for (;;) {
+      const shown = spawnSync("/bin/ps", ["-p", String(child.pid), "-o", "command="], {
+        encoding: "utf8",
+      }).stdout.trim();
+      if (shown.startsWith(argv0)) return child;
+      if (Date.now() > deadline) throw new Error(`sleeper never showed ${argv0}`);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+  }
+
+  it("does not wait for a descendant whose path only shares the executable's prefix", async () => {
+    const executable = join(scratch(), "claude");
+    await startSleeper(`${executable}-x`);
+    await startSleeper(`${executable}.bak`);
+    await waitForCliExit(executable, 1_000);
+  });
+
+  it("waits for a descendant that runs exactly the executable, and returns once it exits", async () => {
+    const executable = join(scratch(), "claude");
+    const sleeper = await startSleeper(executable);
+    await expect(waitForCliExit(executable, 300)).rejects.toThrow(
+      /did not exit/u,
+    );
+    const exited = new Promise((resolve) => sleeper.once("exit", resolve));
+    sleeper.kill("SIGKILL");
+    await exited;
+    await waitForCliExit(executable, 2_000);
+  });
+
+  it("fails instead of passing when no executable was resolved", async () => {
+    await expect(waitForCliExit(null)).rejects.toThrow(/no Claude executable/u);
+  });
+});
