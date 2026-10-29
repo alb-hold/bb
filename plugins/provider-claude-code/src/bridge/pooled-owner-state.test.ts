@@ -50,11 +50,56 @@ const SESSION_PARAMS: BuildSessionOptionsArgs = {
 
 const REAL_CLAUDE = resolveClaudeCodeExecutable({ env: process.env });
 
-const cleanups: Array<() => void> = [];
+const cleanups: Array<() => void | Promise<void>> = [];
 
-afterEach(() => {
-  while (cleanups.length > 0) cleanups.pop()?.();
+afterEach(async () => {
+  while (cleanups.length > 0) await cleanups.pop()?.();
+  const leftovers = [...scratchDirectories].filter((directory) =>
+    existsSync(directory),
+  );
+  expect(leftovers).toEqual([]);
 });
+
+function stopSessionOnCleanup(session: SdkSession): void {
+  cleanups.push(waitForCliExit);
+  cleanups.push(() => session.stop());
+}
+
+function liveCliProcessIds(): number[] {
+  if (REAL_CLAUDE === null) return [];
+  const table = execFileSync("/bin/ps", ["-axo", "pid=,ppid=,command="], {
+    encoding: "utf8",
+  });
+  const parentOf = new Map<number, number>();
+  const cliPids: number[] = [];
+  for (const line of table.split("\n")) {
+    const match = /^\s*(\d+)\s+(\d+)\s+(.*)$/u.exec(line);
+    if (match === null) continue;
+    const pid = Number(match[1]);
+    parentOf.set(pid, Number(match[2]));
+    if (match[3]?.startsWith(REAL_CLAUDE)) cliPids.push(pid);
+  }
+  return cliPids.filter((pid) => {
+    for (
+      let ancestor = parentOf.get(pid);
+      ancestor !== undefined && ancestor > 1;
+      ancestor = parentOf.get(ancestor)
+    ) {
+      if (ancestor === process.pid) return true;
+    }
+    return false;
+  });
+}
+
+async function waitForCliExit(): Promise<void> {
+  const deadline = Date.now() + 20_000;
+  while (liveCliProcessIds().length > 0) {
+    if (Date.now() > deadline) {
+      throw new Error("the Claude CLI did not exit within 20 s of stop()");
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+}
 
 const scratchDirectories = new Set<string>();
 
@@ -392,7 +437,7 @@ async function runPooledThread(
     () => {},
     () => {},
   );
-  cleanups.push(() => session.stop());
+  stopSessionOnCleanup(session);
   session.start();
   await session.pushInput("hello");
   return session;
@@ -587,7 +632,7 @@ async function runPooledThreadAgainstKeychain(
     () => {},
     () => {},
   );
-  cleanups.push(() => session.stop());
+  stopSessionOnCleanup(session);
   session.start();
   await session.pushInput("hello");
   await waitFor(() => (hub.bodies.length > 0 ? true : undefined), 60_000);
