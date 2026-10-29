@@ -50,7 +50,7 @@ const SESSION_PARAMS: BuildSessionOptionsArgs = {
 
 const REAL_CLAUDE = resolveClaudeCodeExecutable({ env: process.env });
 
-const cleanups: Array<() => void | Promise<void>> = [];
+const cleanups: Array<() => unknown> = [];
 
 afterEach(async () => {
   while (cleanups.length > 0) await cleanups.pop()?.();
