@@ -25,15 +25,38 @@ interface StoredThreadRowState {
   updatedAt: number;
 }
 
-function parseStoredThreadRowProgress(progressJson: string): {
-  progress: ThreadRowProgress;
+const MAX_PROGRESS_OUTPUT_SEQ_TERMINALS = 64;
+
+interface ParsedStoredThreadRowProgress {
+  progress: ThreadRowProgress | null;
   sourceTerminalId: string | null;
-} {
+  outputSeqs: Record<string, number>;
+}
+
+function parseStoredOutputSeqs(value: unknown): Record<string, number> {
+  if (value === undefined) return {};
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new TypeError("Invalid stored thread row progress output sequences");
+  }
+  const outputSeqs: Record<string, number> = {};
+  for (const [terminalId, seq] of Object.entries(value)) {
+    if (typeof seq !== "number" || !Number.isSafeInteger(seq) || seq < 0) {
+      throw new TypeError("Invalid stored thread row progress output sequence");
+    }
+    outputSeqs[terminalId] = seq;
+  }
+  return outputSeqs;
+}
+
+function parseStoredThreadRowProgress(
+  progressJson: string,
+): ParsedStoredThreadRowProgress {
   const parsed: unknown = JSON.parse(progressJson);
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
     return {
       progress: threadRowProgressSchema.parse(parsed),
       sourceTerminalId: null,
+      outputSeqs: {},
     };
   }
   const entries = Object.entries(parsed);
@@ -46,17 +69,69 @@ function parseStoredThreadRowProgress(progressJson: string): {
   ) {
     throw new TypeError("Invalid stored thread row progress source");
   }
+  const progressEntries = entries.filter(
+    ([key]) => key !== "sourceTerminalId" && key !== "outputSeqs",
+  );
   return {
-    progress: threadRowProgressSchema.parse(
-      Object.fromEntries(
-        entries.filter(([key]) => key !== "sourceTerminalId"),
-      ),
-    ),
+    progress:
+      progressEntries.length === 0
+        ? null
+        : threadRowProgressSchema.parse(Object.fromEntries(progressEntries)),
     sourceTerminalId:
       typeof sourceTerminalIdEntry?.[1] === "string"
         ? sourceTerminalIdEntry[1]
         : null,
+    outputSeqs: parseStoredOutputSeqs(
+      entries.find(([key]) => key === "outputSeqs")?.[1],
+    ),
   };
+}
+
+function serializeStoredThreadRowProgress(
+  parsed: ParsedStoredThreadRowProgress,
+): string | null {
+  const terminalIds = Object.keys(parsed.outputSeqs).slice(
+    -MAX_PROGRESS_OUTPUT_SEQ_TERMINALS,
+  );
+  if (parsed.progress === null && terminalIds.length === 0) return null;
+  return JSON.stringify({
+    ...(parsed.progress ?? {}),
+    ...(parsed.progress === null || parsed.sourceTerminalId === null
+      ? {}
+      : { sourceTerminalId: parsed.sourceTerminalId }),
+    ...(terminalIds.length === 0
+      ? {}
+      : {
+          outputSeqs: Object.fromEntries(
+            terminalIds.map((terminalId) => [
+              terminalId,
+              parsed.outputSeqs[terminalId],
+            ]),
+          ),
+        }),
+  });
+}
+
+function readStoredProgressJson(
+  db: DbQueryConnection,
+  threadId: string,
+): string | null {
+  const row = db
+    .select({ progressJson: forkThreadRowStates.progressJson })
+    .from(forkThreadRowStates)
+    .where(eq(forkThreadRowStates.threadId, threadId))
+    .get();
+  return row?.progressJson ?? null;
+}
+
+function readStoredOutputSeqs(
+  db: DbQueryConnection,
+  threadId: string,
+): Record<string, number> {
+  const progressJson = readStoredProgressJson(db, threadId);
+  return progressJson === null
+    ? {}
+    : parseStoredThreadRowProgress(progressJson).outputSeqs;
 }
 
 export const THREAD_ROW_STATE_TTL_MS = 60 * 60 * 1000;
@@ -105,6 +180,46 @@ export function getThreadRowProgressSourceTerminalId(
     : null;
 }
 
+export function getThreadRowProgressOutputSeqs(
+  db: DbQueryConnection,
+  threadId: string,
+): Record<string, number> {
+  return readStoredOutputSeqs(db, threadId);
+}
+
+export function raiseThreadRowProgressOutputSeqs(
+  db: DbConnection,
+  threadId: string,
+  raises: Readonly<Record<string, number>>,
+): void {
+  const stored = readStoredProgressJson(db, threadId);
+  const parsed: ParsedStoredThreadRowProgress =
+    stored === null
+      ? { progress: null, sourceTerminalId: null, outputSeqs: {} }
+      : parseStoredThreadRowProgress(stored);
+  const outputSeqs = { ...parsed.outputSeqs };
+  let changed = false;
+  for (const [terminalId, seq] of Object.entries(raises)) {
+    const current = outputSeqs[terminalId];
+    if (current !== undefined && current >= seq) continue;
+    delete outputSeqs[terminalId];
+    outputSeqs[terminalId] = seq;
+    changed = true;
+  }
+  if (!changed) return;
+  db.$client
+    .prepare(
+      `INSERT INTO fork_thread_row_states (thread_id, statuses_json, progress_json, updated_at)
+       VALUES (?, '{}', ?, ?)
+       ON CONFLICT(thread_id) DO UPDATE SET progress_json = excluded.progress_json`,
+    )
+    .run(
+      threadId,
+      serializeStoredThreadRowProgress({ ...parsed, outputSeqs }),
+      Date.now(),
+    );
+}
+
 export function listThreadRowStatesByScope(
   db: DbQueryConnection,
   scope: ThreadListEnrichmentScope,
@@ -117,20 +232,20 @@ export function listThreadRowStatesByScope(
     WHERE ${threadListEnrichmentScopePredicate(sql`thread_id`, scope)}
       AND updated_at >= ${nowMs - THREAD_ROW_STATE_TTL_MS}
   `);
-  return new Map(
-    rows.map((row) => [
-      row.threadId,
-      threadRowStateSchema.parse({
-        statuses: JSON.parse(row.statusesJson) as Record<
-          string,
-          ThreadRowStatus
-        >,
-        progress: row.progressJson
-          ? parseStoredThreadRowProgress(row.progressJson).progress
-          : null,
-      }),
-    ]),
-  );
+  const states = new Map<string, ThreadRowState>();
+  for (const row of rows) {
+    const state = threadRowStateSchema.parse({
+      statuses: JSON.parse(row.statusesJson) as Record<string, ThreadRowStatus>,
+      progress: row.progressJson
+        ? parseStoredThreadRowProgress(row.progressJson).progress
+        : null,
+    });
+    if (Object.keys(state.statuses).length === 0 && state.progress === null) {
+      continue;
+    }
+    states.set(row.threadId, state);
+  }
+  return states;
 }
 
 export function putThreadRowState(
@@ -139,8 +254,14 @@ export function putThreadRowState(
   state: ThreadRowState,
   sourceTerminalId: string | null = null,
 ): void {
+  const outputSeqs = readStoredOutputSeqs(db, threadId);
+  const progressJson = serializeStoredThreadRowProgress({
+    progress: state.progress,
+    sourceTerminalId,
+    outputSeqs,
+  });
   const hasState =
-    Object.keys(state.statuses).length > 0 || state.progress !== null;
+    Object.keys(state.statuses).length > 0 || progressJson !== null;
   if (!hasState) {
     db.$client
       .prepare("DELETE FROM fork_thread_row_states WHERE thread_id = ?")
@@ -156,24 +277,30 @@ export function putThreadRowState(
          progress_json = excluded.progress_json,
          updated_at = excluded.updated_at`,
     )
-    .run(
-      threadId,
-      JSON.stringify(state.statuses),
-      state.progress === null
-        ? null
-        : JSON.stringify({
-            ...state.progress,
-            ...(sourceTerminalId === null ? {} : { sourceTerminalId }),
-          }),
-      Date.now(),
-    );
+    .run(threadId, JSON.stringify(state.statuses), progressJson, Date.now());
 }
 
 export function clearThreadRowState(
   db: DbQueryConnection,
   threadId: string,
 ): void {
-  db.delete(forkThreadRowStates)
+  const outputSeqs = readStoredOutputSeqs(db, threadId);
+  if (Object.keys(outputSeqs).length === 0) {
+    db.delete(forkThreadRowStates)
+      .where(eq(forkThreadRowStates.threadId, threadId))
+      .run();
+    return;
+  }
+  db.update(forkThreadRowStates)
+    .set({
+      statusesJson: "{}",
+      progressJson: serializeStoredThreadRowProgress({
+        progress: null,
+        sourceTerminalId: null,
+        outputSeqs,
+      }),
+      updatedAt: Date.now(),
+    })
     .where(eq(forkThreadRowStates.threadId, threadId))
     .run();
 }

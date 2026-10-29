@@ -503,7 +503,11 @@ interface ThreadTerminalViewProps {
   onSelectionAddToChat?: (text: string) => void;
   onSessionChange?: (session: TerminalSession) => void;
   onTitleChange?: TerminalTitleChangeHandler;
-  onProgressChange?: (progress: number | null) => void;
+  onProgressChange?: (
+    progress: number | null,
+    outputSeq?: number,
+    terminalId?: string,
+  ) => void;
   onCwdChange?: (cwd: string) => void;
   onUserInput?: () => void;
   session: TerminalSession;
@@ -1796,13 +1800,11 @@ export function ThreadTerminalView({
         (payload) => {
           const progress = parseTerminalProgressOsc(payload);
           if (progress === undefined) return false;
-          if (
-            parsingOutputSequence !== null &&
-            parsingOutputSequence < replayNextSequence
-          ) {
-            return true;
-          }
-          onProgressChangeRef.current?.(progress);
+          onProgressChangeRef.current?.(
+            progress,
+            parsingOutputSequence ?? undefined,
+            session.id,
+          );
           return true;
         },
       );
@@ -2479,7 +2481,6 @@ export function ThreadTerminalView({
           tailBytes: 64 * 1024,
         });
         if (!disposed) {
-          replayNextSequence = output.nextSeq;
           await writeRetainedTerminalOutput({
             chunks: output.chunks.map((chunk) => ({
               seq: chunk.seq,
@@ -2501,6 +2502,7 @@ export function ThreadTerminalView({
           });
           replayStartSequence = output.chunks[0]?.seq ?? output.nextSeq;
           latestOutputSequence = output.chunks.at(-1)?.seq ?? output.nextSeq;
+          replayNextSequence = output.nextSeq;
           restoreViewport();
         }
       } else {

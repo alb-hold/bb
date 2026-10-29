@@ -773,3 +773,47 @@ describe("two split panes each holding a terminal", () => {
     },
   );
 });
+
+describe("terminal progress output sequences", () => {
+  it("sends the output sequence of each report and ignores reports from another terminal", async () => {
+    vi.mocked(sdk.terminals.list).mockResolvedValue({
+      sessions: [session("terminal-a", "running")],
+    });
+    const { wrapper } = createQueryClientTestHarness();
+    const { result } = renderHook(
+      () => useThreadTerminalController(paneArgs("terminal-a")),
+      { wrapper },
+    );
+    await waitFor(() =>
+      expect(result.current.activeSession?.id).toBe("terminal-a"),
+    );
+
+    act(() =>
+      result.current.handleActiveTerminalProgressChange(0.75, 4, "terminal-a"),
+    );
+    await waitFor(() =>
+      expect(sdk.threads.experimental_updateRowState).toHaveBeenCalledWith({
+        threadId: "thread-a",
+        terminalId: "terminal-a",
+        action: "progress-set",
+        progress: { value: 0.75 },
+        outputSeq: 4,
+      }),
+    );
+    act(() =>
+      result.current.handleActiveTerminalProgressChange(0.5, 6, "terminal-b"),
+    );
+    act(() =>
+      result.current.handleActiveTerminalProgressChange(null, 9, "terminal-a"),
+    );
+    await waitFor(() =>
+      expect(sdk.threads.experimental_updateRowState).toHaveBeenLastCalledWith({
+        threadId: "thread-a",
+        terminalId: "terminal-a",
+        action: "progress-clear",
+        outputSeq: 9,
+      }),
+    );
+    expect(sdk.threads.experimental_updateRowState).toHaveBeenCalledTimes(2);
+  });
+});

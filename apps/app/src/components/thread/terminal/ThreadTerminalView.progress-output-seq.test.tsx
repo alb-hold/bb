@@ -162,7 +162,14 @@ function prepareTerminalDom(): void {
 
 function renderTerminal(status: "running" | "exited") {
   prepareTerminalDom();
-  const onProgressChange = vi.fn<(progress: number | null) => void>();
+  const onProgressChange =
+    vi.fn<
+      (
+        progress: number | null,
+        outputSeq?: number,
+        terminalId?: string,
+      ) => void
+    >();
   const session = makeTerminalSession({
     id: "term_progress_replay",
     status,
@@ -205,7 +212,7 @@ function ackedThrough(nextSeq: number): void {
 const osc = (body: string) => btoa(`\x1b]9;4;${body}\x07`);
 
 describe("ThreadTerminalView progress and replay", () => {
-  it("does not re-apply replayed progress when a terminal is remounted, but applies live progress", async () => {
+  it("reports the output sequence of replayed and live progress", async () => {
     const { onProgressChange, session, socket } = await mountTerminal(
       "running",
     );
@@ -231,28 +238,30 @@ describe("ThreadTerminalView progress and replay", () => {
       () => ackedThrough(3),
       "replayed output was not acknowledged",
     );
-    expect(onProgressChange).not.toHaveBeenCalled();
+    expect(onProgressChange.mock.calls).toEqual([
+      [0.6, 1, "term_progress_replay"],
+    ]);
 
     socket.receive({
       type: "output",
       chunk: { seq: 3, dataBase64: osc("1;40") },
     });
-    await waitForReadinessCondition(
-      () => expect(onProgressChange).toHaveBeenLastCalledWith(0.4),
-      "live progress was not applied",
-    );
     socket.receive({
       type: "output",
       chunk: { seq: 4, dataBase64: osc("0") },
     });
     await waitForReadinessCondition(
-      () => expect(onProgressChange).toHaveBeenLastCalledWith(null),
-      "live progress clear was not applied",
+      () =>
+        expect(onProgressChange.mock.calls).toEqual([
+          [0.6, 1, "term_progress_replay"],
+          [0.4, 3, "term_progress_replay"],
+          [null, 4, "term_progress_replay"],
+        ]),
+      "live progress was not reported with its output sequence",
     );
-    expect(onProgressChange).toHaveBeenCalledTimes(2);
   });
 
-  it("does not resurrect progress from a replay after the terminal exited", async () => {
+  it("reports the output sequence of the retained output of an exited terminal", async () => {
     vi.mocked(sdk.terminals.output).mockResolvedValue({
       chunks: [
         { seq: 0, dataBase64: osc("1;70") },
@@ -268,6 +277,8 @@ describe("ThreadTerminalView progress and replay", () => {
         ).toContain("Terminal exited"),
       "retained output was not written within 5000 ms",
     );
-    expect(onProgressChange).not.toHaveBeenCalled();
+    expect(onProgressChange.mock.calls).toEqual([
+      [0.7, 0, "term_progress_replay"],
+    ]);
   });
 });

@@ -23,6 +23,7 @@ import {
   getRetainedTerminalOutput,
   countTerminalSessions,
   listTerminalSessions,
+  listThreadTerminalLatestOutputSeqs,
   markRetainedTerminalOutputExited,
   setDeviceHandoffAttentionMarker,
   upsertTerminalAttention,
@@ -1107,6 +1108,36 @@ export class TerminalSessionLifecycle {
       return;
     }
     this.terminalScreenStates.resize(session.id, session.cols, session.rows);
+  }
+
+  latestThreadOutputSeqs(
+    threadId: string,
+    terminalId?: string,
+  ): Record<string, number> {
+    for (const session of listTerminalSessions(this.options.db, {
+      scope: { kind: "thread", threadId },
+      visible: false,
+    })) {
+      if (terminalId !== undefined && session.id !== terminalId) continue;
+      try {
+        this.flushRetainedOutput(session.id);
+      } catch {
+        continue;
+      }
+    }
+    const latest = listThreadTerminalLatestOutputSeqs(
+      this.options.db,
+      threadId,
+      terminalId,
+    );
+    for (const [id, nextSeq] of this.forwardedNextSeqByTerminalId) {
+      if (terminalId !== undefined && id !== terminalId) continue;
+      if (!(id in latest) && getTerminalById(this.options.db, id)?.threadId !== threadId) {
+        continue;
+      }
+      if (nextSeq - 1 > (latest[id] ?? -1)) latest[id] = nextSeq - 1;
+    }
+    return latest;
   }
 
   listTerminals(args: ListTerminalsArgs): TerminalSession[] {

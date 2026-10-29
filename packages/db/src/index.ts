@@ -24,14 +24,20 @@ export {
 } from "./fork-thread-spawners.js";
 export {
   clearThreadRowState,
+  getThreadRowProgressOutputSeqs,
   getThreadRowProgressSourceTerminalId,
   getThreadRowState,
   listThreadRowStatesByScope,
   putThreadRowState,
+  raiseThreadRowProgressOutputSeqs,
   type ThreadRowProgress,
   type ThreadRowState,
   type ThreadRowStatus,
 } from "./fork-thread-row-state.js";
+export {
+  clearThreadRowStateAtOutputSeqs,
+  listThreadTerminalLatestOutputSeqs,
+} from "./fork-thread-terminal-output-seqs.js";
 export type { ThreadListEnrichmentScope } from "./thread-list-enrichment-scope.js";
 export {
   clearTerminalAttention,
