@@ -12,6 +12,8 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { readIsolatedClaudeContextUsage } from "./context-usage-probe.js";
+import { probeClaudeInitialization } from "./initialization-probe.js";
 import { SdkSession } from "./sdk-session.js";
 import {
   buildSessionOptions,
@@ -103,6 +105,7 @@ function fakeCli(directory: string): { executable: string; record: string } {
       '  contents: isFile ? fs.readFileSync(value, "utf8") : value,',
       "};",
       `fs.writeFileSync(${JSON.stringify(record)}, JSON.stringify(entry));`,
+      "if (process.env.FAKE_CLI_EXIT) process.exit(1);",
       "setInterval(() => {}, 1000);",
     ].join("\n"),
   );
@@ -179,6 +182,66 @@ describe("pooled launch settings", () => {
     const { launch } = await launchFake({ ...cleanBaseEnv() });
     expect(launch.value?.startsWith("{")).toBe(true);
     expect(JSON.parse(launch.contents)).not.toHaveProperty("env");
+  });
+
+  function expectPinnedProbeLaunch(launch: FakeLaunch): void {
+    expect(launch.value?.startsWith("{")).toBe(false);
+    expect(launch.argv.join(" ")).not.toContain(POOL_TOKEN);
+    expect(launch.mode).toBe(0o600);
+    const settings = JSON.parse(launch.contents) as { env?: unknown };
+    expect(settings.env).toMatchObject({
+      CLAUDE_CODE_OAUTH_TOKEN: POOL_TOKEN,
+      ANTHROPIC_AUTH_TOKEN: "",
+      ANTHROPIC_API_KEY: "",
+    });
+  }
+
+  it("pins the routing into the initialization probe's flag settings", async () => {
+    const directory = scratch();
+    const { executable, record } = fakeCli(directory);
+    await probeClaudeInitialization({
+      cwd: directory,
+      env: {
+        ...cleanBaseEnv(),
+        ...POOL_ENV,
+        ANTHROPIC_BASE_URL: "http://127.0.0.1:9/hub",
+        BB_CLAUDE_CODE_EXECUTABLE: executable,
+        FAKE_CLI_EXIT: "1",
+      },
+    }).catch(() => undefined);
+    expectPinnedProbeLaunch(
+      JSON.parse(readFileSync(record, "utf8")) as FakeLaunch,
+    );
+  });
+
+  it("pins the routing into the context-usage probe's flag settings", async () => {
+    const directory = scratch();
+    const { executable, record } = fakeCli(directory);
+    const abort = new AbortController();
+    const probe = readIsolatedClaudeContextUsage({
+      sessionOptions: buildSessionOptions(SESSION_PARAMS, {
+        ...cleanBaseEnv(),
+        ...POOL_ENV,
+        ANTHROPIC_BASE_URL: "http://127.0.0.1:9/hub",
+        BB_CLAUDE_CODE_EXECUTABLE: executable,
+      }),
+      providerSessionId: "00000000-0000-4000-8000-000000000000",
+      dynamicTools: [],
+      signal: abort.signal,
+    }).catch(() => undefined);
+    const launch = await waitFor(
+      () =>
+        existsSync(record)
+          ? (JSON.parse(readFileSync(record, "utf8")) as FakeLaunch)
+          : undefined,
+      20_000,
+    );
+    abort.abort();
+    await probe;
+    expectPinnedProbeLaunch(launch);
+    expect(JSON.parse(launch.contents)).toMatchObject({
+      disableAllHooks: true,
+    });
   });
 });
 
