@@ -12725,6 +12725,51 @@ describe("Account Pool Artifact proxy", () => {
     );
   });
 
+  it("forwards the Artifact MCP request with its session headers and the account token", async () => {
+    const seen: Array<{ url: string; method: string; headers: Headers }> = [];
+    const fixture = await artifactFixture(
+      async (input, init) => {
+        seen.push({
+          url: String(input),
+          method: init?.method ?? "",
+          headers: new Headers(init?.headers),
+        });
+        return Response.json({ jsonrpc: "2.0", id: 1, result: {} });
+      },
+      () => hostRpcResult,
+    );
+    const response = await fixture.host.harness.behavior.fetchHttp(
+      "POST",
+      "/claude-oauth",
+      {
+        headers: {
+          authorization: `Bearer ${fixture.key}`,
+          "x-pool-target-host": "api.anthropic.com",
+          "x-pool-target-method": "POST",
+          "x-pool-target-path": "/api/artifacts/mcp",
+          accept: "application/json, text/event-stream",
+          "content-type": "application/json",
+          "mcp-session-id": "session-one",
+          "mcp-protocol-version": "2025-06-18",
+          "x-unrelated": "dropped",
+        },
+        body: '{"jsonrpc":"2.0","id":1,"method":"tools/list"}',
+      },
+    );
+    expect(response.status).toBe(200);
+    await response.text();
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.url).toBe("https://upstream.example/api/artifacts/mcp");
+    expect(seen[0]?.method).toBe("POST");
+    expect(seen[0]?.headers.get("authorization")).toBe("Bearer oauth-old");
+    expect(seen[0]?.headers.get("mcp-session-id")).toBe("session-one");
+    expect(seen[0]?.headers.get("mcp-protocol-version")).toBe("2025-06-18");
+    expect(seen[0]?.headers.get("x-unrelated")).toBeNull();
+    expect(JSON.stringify([...(seen[0]?.headers ?? [])])).not.toContain(
+      fixture.key,
+    );
+  });
+
   it.each([
     [
       "a path outside the allowlist",
@@ -12741,6 +12786,10 @@ describe("Account Pool Artifact proxy", () => {
     [
       "an encoded traversal",
       { method: "GET", path: "/api/frame/%2e%2e/oauth/profile" },
+    ],
+    [
+      "an Artifact MCP upload path",
+      { method: "POST", path: "/api/artifacts/mcp/upload/file.png" },
     ],
     [
       "another host",
