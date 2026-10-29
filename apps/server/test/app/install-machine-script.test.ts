@@ -22,11 +22,37 @@ const SCRIPT_PATH = new URL(
   import.meta.url,
 );
 const createdDirectories: string[] = [];
+let fixtureDaemonPort: number | undefined;
 const FIXTURE_ARTIFACT_DIGEST = createHash("sha256")
   .update("fixture-tarball")
   .digest("hex");
 
-function createFixture(): { binDir: string; dataDir: string; homeDir: string } {
+function reserveFreePort(): number {
+  const probe = spawnSync(
+    process.execPath,
+    [
+      "-e",
+      'const server = require("node:net").createServer(); server.listen(0, "127.0.0.1", () => { process.stdout.write(String(server.address().port)); server.close(); });',
+    ],
+    { encoding: "utf8" },
+  );
+  const port = Number(probe.stdout);
+  if (!Number.isInteger(port) || port <= 0) {
+    throw new Error(`could not reserve a free port: ${probe.stderr}`);
+  }
+  return port;
+}
+
+function getFixtureDaemonPort(): number {
+  fixtureDaemonPort ??= reserveFreePort();
+  return fixtureDaemonPort;
+}
+
+function createFixture(options: { privatePort?: boolean } = {}): {
+  binDir: string;
+  dataDir: string;
+  homeDir: string;
+} {
   const root = mkdtempSync(join(tmpdir(), "bb-install-script-test-"));
   createdDirectories.push(root);
   const binDir = join(root, "bin");
@@ -41,6 +67,9 @@ function createFixture(): { binDir: string; dataDir: string; homeDir: string } {
     join(binDir, "sleep"),
     '#!/bin/sh\ncase "$1" in 1) exec /bin/sleep 0.1 ;; *) exec /bin/sleep "$@" ;; esac\n',
   );
+  if (options.privatePort !== false) {
+    writeFileSync(join(dataDir, "host-daemon-port"), `${reserveFreePort()}\n`);
+  }
   return { binDir, dataDir, homeDir };
 }
 
@@ -347,6 +376,7 @@ exec '${process.execPath}' "$@"
       );
       writeExecutable(join(fixture.binDir, "id"), `#!/bin/sh\necho ${uid}\n`);
       writeCurlArtifactMock(fixture, 404);
+      writeExecutable(join(fixture.binDir, "npm"), "#!/bin/sh\nexit 19\n");
       const result = runScript(BOOTSTRAP_ARGS, fixture, {
         HOME: unset ? undefined : fixture.homeDir,
       });
@@ -377,7 +407,10 @@ exec '${process.execPath}' "$@"
       join(fixture.homeDir, ".bb-machines", "owned"),
     );
     writeJoinedState({ ...fixture, dataDir });
-    writeFileSync(join(dataDir, "host-daemon-port"), "40000\n");
+    writeFileSync(
+      join(dataDir, "host-daemon-port"),
+      `${getFixtureDaemonPort()}\n`,
+    );
     const invocationPath = join(dataDir, "invocation");
     mkdirSync(join(dataDir, "npm", "bin"), { recursive: true });
     writeExecutable(
@@ -398,7 +431,7 @@ exec '${process.execPath}' "$@"
         "--auto-update",
         "--supervise",
         "--host-daemon-port",
-        "40000",
+        String(getFixtureDaemonPort()),
         "--server-url",
         "https://machine.getbb.app",
       ]);
@@ -418,7 +451,10 @@ exec '${process.execPath}' "$@"
       join(fixture.homeDir, ".bb-machines", "owned"),
     );
     writeJoinedState({ ...fixture, dataDir });
-    writeFileSync(join(dataDir, "host-daemon-port"), "40000\n");
+    writeFileSync(
+      join(dataDir, "host-daemon-port"),
+      `${getFixtureDaemonPort()}\n`,
+    );
     const serviceDir = join(fixture.homeDir, ".config", "systemd", "user");
     const serviceName = "bb-host-daemon-machine-getbb-app-host-test.service";
     const servicePath = join(serviceDir, serviceName);
@@ -468,7 +504,10 @@ exec '${process.execPath}' "$@"
       { ...fixture, dataDir },
       "https://desk.tailnet.example:38886",
     );
-    writeFileSync(join(dataDir, "host-daemon-port"), "40000\n");
+    writeFileSync(
+      join(dataDir, "host-daemon-port"),
+      `${getFixtureDaemonPort()}\n`,
+    );
     const serviceDir = join(fixture.homeDir, ".config", "systemd", "user");
     const serviceName = "bb-host-daemon-machine-getbb-app-host-test.service";
     const servicePath = join(serviceDir, serviceName);
@@ -523,7 +562,10 @@ exec '${process.execPath}' "$@"
       join(fixture.homeDir, ".bb-machines", "machine.getbb.app"),
     );
     writeJoinedState({ ...fixture, dataDir }, "https://desk.tailnet.example");
-    writeFileSync(join(dataDir, "host-daemon-port"), "40000\n");
+    writeFileSync(
+      join(dataDir, "host-daemon-port"),
+      `${getFixtureDaemonPort()}\n`,
+    );
     const agentDir = join(fixture.homeDir, "Library", "LaunchAgents");
     const agentPath = join(
       agentDir,
@@ -561,7 +603,10 @@ exec '${process.execPath}' "$@"
       join(fixture.homeDir, ".bb-machines", "machine.getbb.app"),
     );
     writeJoinedState({ ...fixture, dataDir }, "https://desk.tailnet.example");
-    writeFileSync(join(dataDir, "host-daemon-port"), "40000\n");
+    writeFileSync(
+      join(dataDir, "host-daemon-port"),
+      `${getFixtureDaemonPort()}\n`,
+    );
     const serviceDir = join(fixture.homeDir, ".config", "systemd", "user");
     mkdirSync(serviceDir, { recursive: true });
     for (const serviceName of [
@@ -1118,6 +1163,13 @@ fs.writeFileSync(path.join(process.env.BB_DATA_DIR, "config.json"), JSON.stringi
   it("defaults the data dir to a per-server directory under ~/.bb-machines", () => {
     const fixture = createFixture();
     writeServerInstallTools(fixture, 200);
+    mkdirSync(join(fixture.homeDir, ".bb-machines/machine.getbb.app"), {
+      recursive: true,
+    });
+    writeFileSync(
+      join(fixture.homeDir, ".bb-machines/machine.getbb.app/host-daemon-port"),
+      `${getFixtureDaemonPort()}\n`,
+    );
     const result = runScript(BOOTSTRAP_ARGS, fixture, {
       BB_DATA_DIR: "",
       BB_INSTALL_SKIP_SERVICE: "1",
@@ -1322,7 +1374,7 @@ fi
         resolve();
       });
     });
-    const fixture = createFixture();
+    const fixture = createFixture({ privatePort: false });
     const invocationPath = join(fixture.dataDir, "invocation");
     writeCurlArtifactMock(fixture, 404);
     writeEnrollingBbApp(fixture, invocationPath);
@@ -1488,7 +1540,10 @@ fi
       serviceDir,
       "app.getbb.host-daemon.other-getbb-app.plist",
     );
-    writeFileSync(join(fixture.dataDir, "host-daemon-port"), "45123\n");
+    writeFileSync(
+      join(fixture.dataDir, "host-daemon-port"),
+      `${getFixtureDaemonPort()}\n`,
+    );
     writeFileSync(
       unrelatedServiceFile,
       "<plist><dict><key>BB_DATA_DIR</key><string>/other/machine</string></dict></plist>\n",
@@ -1497,7 +1552,7 @@ fi
       legacyServiceFile,
       `<plist><dict>
 <key>Label</key><string>app.getbb.host-daemon.machine-getbb-app</string>
-<key>ProgramArguments</key><array><string>host-daemon</string><string>--host-daemon-port</string><string>45122</string></array>
+<key>ProgramArguments</key><array><string>host-daemon</string><string>--host-daemon-port</string><string>${getFixtureDaemonPort() + 1}</string></array>
 <key>EnvironmentVariables</key><dict><key>BB_DATA_DIR</key><string>${fixture.dataDir}</string></dict>
 </dict></plist>
 `,
@@ -1508,7 +1563,7 @@ fi
 printf '%s\n' "$*" >>"${join(fixture.dataDir, "launchctl.log")}"
 if [ "$1" = print ]; then exit 1; fi
 if [ "$1" = bootstrap ]; then
-  BB_DATA_DIR="${fixture.dataDir}" "${join(fixture.dataDir, "npm/bin/bb-app")}" host-daemon --host-daemon-port 45123 --server-url https://machine.getbb.app >/dev/null 2>&1 &
+  BB_DATA_DIR="${fixture.dataDir}" "${join(fixture.dataDir, "npm/bin/bb-app")}" host-daemon --host-daemon-port ${getFixtureDaemonPort()} --server-url https://machine.getbb.app >/dev/null 2>&1 &
   echo $! >"${join(fixture.dataDir, "service-daemon.pid")}"
 fi
 `,
@@ -1875,11 +1930,14 @@ fi
       serviceDir,
       "bb-host-daemon-machine-getbb-app.service",
     );
-    writeFileSync(join(fixture.dataDir, "host-daemon-port"), "45123\n");
+    writeFileSync(
+      join(fixture.dataDir, "host-daemon-port"),
+      `${getFixtureDaemonPort()}\n`,
+    );
     writeFileSync(
       legacyServiceFile,
       `[Service]
-ExecStart="node" "bb-app" host-daemon --auto-update --host-daemon-port "45123" --server-url "https://machine.getbb.app"
+ExecStart="node" "bb-app" host-daemon --auto-update --host-daemon-port "${getFixtureDaemonPort()}" --server-url "https://machine.getbb.app"
 Environment="BB_DATA_DIR=${fixture.dataDir}"
 `,
     );
@@ -1888,7 +1946,7 @@ Environment="BB_DATA_DIR=${fixture.dataDir}"
       `#!/bin/sh
 printf '%s\n' "$*" >>"${join(fixture.dataDir, "systemctl.log")}"
 if [ "$*" = "--user restart bb-host-daemon-machine-getbb-app-host-test.service" ]; then
-  BB_DATA_DIR="${fixture.dataDir}" "${join(fixture.dataDir, "npm/bin/bb-app")}" host-daemon --host-daemon-port 45123 --server-url https://machine.getbb.app >/dev/null 2>&1 &
+  BB_DATA_DIR="${fixture.dataDir}" "${join(fixture.dataDir, "npm/bin/bb-app")}" host-daemon --host-daemon-port ${getFixtureDaemonPort()} --server-url https://machine.getbb.app >/dev/null 2>&1 &
   echo $! >"${join(fixture.dataDir, "service-daemon.pid")}"
 fi
 `,
