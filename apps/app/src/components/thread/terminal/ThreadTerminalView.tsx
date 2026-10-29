@@ -1665,7 +1665,8 @@ export function ThreadTerminalView({
     let detachGridVisibilityListeners: (() => void) | null = null;
     let replayPreview: {
       dispose(): void;
-      release(): void;
+      readonly fallback: boolean;
+    release(): void;
     hold(options: { countdown: boolean }): void;
       resize(cols: number, rows: number): Promise<void>;
       setFitGrid(cols: number, rows: number): void;
@@ -1679,16 +1680,12 @@ export function ThreadTerminalView({
       setReplayNotice(null);
     };
     const abandonReplayPreview = () => {
-      if (
-        replayPreview !== null &&
-        !replayCompleted &&
-        replayCheckpointSequence === null
-      ) {
-        replayPreview.hold({ countdown: false });
-        setReplayNotice("unavailable");
+      if (replayPreview === null || replayCompleted) {
+        releaseReplayPreview();
         return;
       }
-      releaseReplayPreview();
+      if (replayPreview.fallback) replayPreview.hold({ countdown: false });
+      setReplayNotice("unavailable");
     };
     let outputPipeline: ReturnType<typeof createTerminalOutputPipeline> | null =
       null;
@@ -2266,9 +2263,9 @@ export function ThreadTerminalView({
           if (
             state === "reconnecting" &&
             !replayCompleted &&
-            replayCheckpointSequence === null
+            replayPreview?.fallback === true
           ) {
-            replayPreview?.hold({ countdown: false });
+            replayPreview.hold({ countdown: false });
             setReplayNotice(null);
           }
           if (state === "reconnecting") {
@@ -2433,8 +2430,9 @@ export function ThreadTerminalView({
               viewportReplaySaveGate.beginReplay();
               replayCompleted = false;
               setReplayNotice(null);
-              if (replayCheckpointSequence === null || replayPreview === null) {
+              if (replayPreview === null || replayPreview.fallback) {
                 replayPreview?.dispose();
+                replayCheckpointSequence = null;
                 const replayGrid = latestPtyGrid;
                 const previewTerminal = new Terminal({
                   allowProposedApi: TERMINAL_ALLOW_PROPOSED_API,

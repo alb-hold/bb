@@ -988,6 +988,106 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
     expect(preview()?.style.visibility).toBe("hidden");
   });
 
+  async function mountReplayAfterCheckpointedOpen() {
+    prepareMobileTerminal();
+    stubVisibleIntersectionObserver();
+    vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    vi.spyOn(FitAddon.prototype, "proposeDimensions").mockReturnValue({
+      cols: 40,
+      rows: 12,
+    });
+    testState.screen.mockResolvedValue({
+      rows: ["snapshot text"],
+      cursor: { col: 0, row: 0 },
+      cols: 40,
+      gridRows: 12,
+      truncated: false,
+      complete: true,
+      checkpointSeq: 2,
+      dataBase64: btoa("snapshot text"),
+    });
+    const preview = () =>
+      document.querySelector<HTMLElement>("[data-terminal-replay-preview]");
+    const session = renderMobileTerminal();
+    await waitFor(() => expect(testState.sockets).toHaveLength(1), {
+      timeout: 20_000,
+    });
+    const socket = testState.sockets[0];
+    if (!socket) throw new Error("terminal socket is missing");
+    await waitForReadiness(socket.opened, "terminal socket did not open");
+    await waitFor(() => expect(preview()).not.toBeNull(), { timeout: 20_000 });
+    socket.receive({ type: "attached", session, replayStartSeq: 0, nextSeq: 3 });
+    for (const seq of [0, 1, 2]) {
+      socket.receive({
+        type: "output",
+        chunk: { seq, dataBase64: btoa(`open frame ${seq}\r\n`) },
+      });
+    }
+    await waitForReadinessCondition(
+      () => expect(preview()).toBeNull(),
+      "snapshot preview was not disposed after the replay completed",
+    );
+
+    socket.disconnect();
+    await waitForReadinessCondition(
+      () => expect(testState.sockets).toHaveLength(2),
+      "terminal did not reconnect",
+    );
+    const reconnectSocket = testState.sockets[1];
+    if (!reconnectSocket) throw new Error("reconnect socket is missing");
+    await waitForReadiness(
+      reconnectSocket.opened,
+      "reconnect socket did not open",
+    );
+    reconnectSocket.receive({
+      type: "attached",
+      session,
+      replayStartSeq: 3,
+      nextSeq: 6,
+    });
+    reconnectSocket.receive({
+      type: "output",
+      chunk: { seq: 3, dataBase64: btoa("partial replay\r\n") },
+    });
+    await waitForReadinessCondition(
+      () => expect(preview()?.dataset.terminalReplayHeld).toBeDefined(),
+      "replay after the checkpointed open was not held",
+    );
+    expect(preview()?.style.visibility).toBe("hidden");
+    return { preview, reconnectSocket, session };
+  }
+
+  it("keeps a checkpoint-backed replay hidden and shows the unavailable state on a terminal error before completion", async () => {
+    const { preview, reconnectSocket } = await mountReplayAfterCheckpointedOpen();
+    await act(async () => {
+      reconnectSocket.receive({
+        type: "error",
+        code: "replay_failed",
+        message: "replay failed",
+      });
+      await Promise.resolve();
+    });
+    await waitForReadinessCondition(
+      () => expect(pageText()).toContain("Terminal output unavailable"),
+      "unavailable state was not shown after a terminal error",
+    );
+    expect(preview()?.dataset.terminalReplayHeld).toBeDefined();
+    expect(preview()?.style.visibility).toBe("hidden");
+  });
+
+  it("keeps a checkpoint-backed replay hidden and shows the closed state when the transport closes before completion", async () => {
+    const { preview, reconnectSocket, session } =
+      await mountReplayAfterCheckpointedOpen();
+    rerenderMobileTerminal({ ...session, status: "disconnected" });
+    reconnectSocket.disconnect();
+    await waitForReadinessCondition(
+      () => expect(pageText()).toContain("Terminal disconnected"),
+      "closed state was not shown",
+    );
+    expect(preview()?.dataset.terminalReplayHeld).toBeDefined();
+    expect(preview()?.style.visibility).toBe("hidden");
+  });
+
   it("notifies the replay preview when a session update reports process exit", async () => {
     prepareMobileTerminal();
     vi.spyOn(FitAddon.prototype, "proposeDimensions").mockReturnValue({

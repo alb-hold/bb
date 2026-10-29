@@ -38,6 +38,7 @@ export function mountTerminalReplayPreview({
   onHoldExpired?: () => void;
   terminal: XTermTerminal;
 }): {
+  readonly fallback: boolean;
   dispose(): void;
   release(): void;
   hold(options: { countdown: boolean }): void;
@@ -260,6 +261,7 @@ export function mountTerminalReplayPreview({
   };
   if (held) armHoldTimeout();
   return {
+    fallback: holdUntilReleased,
     release,
     hold({ countdown }) {
       if (disposed) return;
