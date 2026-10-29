@@ -349,8 +349,8 @@ function isRunning(pid: number): boolean {
   }
 }
 
-function isFixtureStub(pid: number, root: string): boolean {
-  const command = spawnSync("ps", ["-p", String(pid), "-o", "command="], {
+function isFixtureStub(pid: number, root: string, ps = "ps"): boolean {
+  const command = spawnSync(ps, ["-p", String(pid), "-o", "command="], {
     encoding: "utf8",
   }).stdout.trim();
   const [launcher, script] = command.split(/\s+/u);
@@ -366,8 +366,9 @@ function signalFixtureStub(
   pid: number,
   root: string,
   signal: "SIGTERM" | "SIGKILL",
+  ps = "ps",
 ): boolean {
-  if (!isFixtureStub(pid, root)) return false;
+  if (!isFixtureStub(pid, root, ps)) return false;
   try {
     process.kill(pid, signal);
     return true;
@@ -405,19 +406,27 @@ function remainingFixtureProcesses(roots: string[]): number[] {
   return pids;
 }
 
-async function stopFixtureDaemons(roots: string[]): Promise<number[]> {
+async function stopFixtureDaemons(
+  roots: string[],
+  options: { afterTerm?: () => void; ps?: string } = {},
+): Promise<number[]> {
   const recorded = roots.flatMap((root) =>
     recordedDaemons(root).map((pid) => ({ pid, root })),
   );
   const stopped = recorded
-    .filter(({ pid, root }) => signalFixtureStub(pid, root, "SIGTERM"))
+    .filter(({ pid, root }) =>
+      signalFixtureStub(pid, root, "SIGTERM", options.ps),
+    )
     .map(({ pid }) => pid);
   const deadline = Date.now() + DAEMON_EXIT_TIMEOUT_MS;
   while (stopped.some((pid) => isRunning(pid)) && Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
+  options.afterTerm?.();
   for (const { pid, root } of recorded) {
-    if (isRunning(pid)) signalFixtureStub(pid, root, "SIGKILL");
+    if (isRunning(pid)) {
+      signalFixtureStub(pid, root, "SIGKILL", options.ps);
+    }
   }
   return stopped;
 }
@@ -771,6 +780,105 @@ exec '${process.execPath}' "$@"
       } finally {
         stub.kill("SIGKILL");
       }
+    });
+
+    describe("when the stub ignores SIGTERM", () => {
+      async function startTermIgnoringStub(root: string) {
+        const script = join(root, "bin", "bb-app");
+        mkdirSync(dirname(script), { recursive: true });
+        writeFileSync(
+          script,
+          'process.on("SIGTERM", () => {});\nprocess.stdout.write("ready\\n");\nsetInterval(() => {}, 1000);\n',
+        );
+        const stub = spawn(process.execPath, [script], {
+          stdio: ["ignore", "pipe", "ignore"],
+        });
+        await new Promise<void>((resolve) =>
+          stub.stdout?.once("data", () => resolve()),
+        );
+        return stub;
+      }
+
+      function exited(stub: ReturnType<typeof spawn>): Promise<void> {
+        if (stub.exitCode !== null || stub.signalCode !== null) {
+          return Promise.resolve();
+        }
+        return new Promise((resolve) => stub.once("exit", () => resolve()));
+      }
+
+      function fakePsReporting(root: string, flag: string): string {
+        const realPs = (process.env.PATH ?? "")
+          .split(delimiter)
+          .map((entry) => join(entry, "ps"))
+          .find((candidate) => existsSync(candidate));
+        const directory = join(root, "fakeps");
+        mkdirSync(directory, { recursive: true });
+        const fakePs = join(directory, "ps");
+        writeExecutable(
+          fakePs,
+          `#!/bin/sh\nif [ -e "${flag}" ]; then echo "sleep 30"; else exec "${realPs}" "$@"; fi\n`,
+        );
+        return fakePs;
+      }
+
+      it("escalates to SIGKILL and ends a stub whose command still matches", async () => {
+        const fixture = createFixture();
+        const root = dirname(fixture.binDir);
+        const stub = await startTermIgnoringStub(root);
+        const pid = stub.pid ?? 0;
+        try {
+          writeFileSync(
+            join(fixture.dataDir, "install-daemon.pid"),
+            `${pid}\n`,
+          );
+          let aliveAtEscalation = false;
+          const stopped = await stopFixtureDaemons([root], {
+            afterTerm: () => {
+              aliveAtEscalation = isRunning(pid);
+            },
+          });
+          await exited(stub);
+          expect(stopped).toEqual([pid]);
+          expect(aliveAtEscalation).toBe(true);
+          expect(stub.signalCode).toBe("SIGKILL");
+          expect(isRunning(pid)).toBe(false);
+        } finally {
+          stub.kill("SIGKILL");
+        }
+      });
+
+      it("does not send SIGKILL once the recorded pid no longer reads as the stub", async () => {
+        const fixture = createFixture();
+        const root = dirname(fixture.binDir);
+        const stub = await startTermIgnoringStub(root);
+        const pid = stub.pid ?? 0;
+        const flag = join(root, "identity-changed");
+        try {
+          writeFileSync(
+            join(fixture.dataDir, "install-daemon.pid"),
+            `${pid}\n`,
+          );
+          const fakePs = fakePsReporting(root, flag);
+          expect(isFixtureStub(pid, root, fakePs)).toBe(true);
+          const stopped = await stopFixtureDaemons([root], {
+            afterTerm: () => {
+              writeFileSync(flag, "");
+            },
+            ps: fakePs,
+          });
+          await Promise.race([
+            exited(stub),
+            new Promise((resolve) => setTimeout(resolve, 500)),
+          ]);
+          expect(stopped).toEqual([pid]);
+          expect(stub.signalCode).toBeNull();
+          expect(stub.exitCode).toBeNull();
+          expect(isRunning(pid)).toBe(true);
+        } finally {
+          stub.kill("SIGKILL");
+          await exited(stub);
+        }
+      });
     });
   });
 
