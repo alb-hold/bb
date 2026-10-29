@@ -17,6 +17,9 @@ import {
   getDeviceHandoffAttentionMarker,
   deleteDeviceHandoffAttentionMarker,
   listTerminalAttention,
+  listPendingTerminalDaemonCloses,
+  queueTerminalDaemonClose,
+  takePendingTerminalDaemonClose,
   getSessionById,
   getTerminalSession,
   HOST_RETAINED_OUTPUT_BYTES,
@@ -1804,6 +1807,7 @@ export class TerminalSessionLifecycle {
         current.closeReason === "daemon-disconnect" &&
         args.payload.reason === "user"
       ) {
+        this.queueDaemonCloseForReconnect(current);
         return this.toTerminalSession(
           updateTerminalById(this.options.db, current.id, {
             closeReason: "user",
@@ -1870,6 +1874,9 @@ export class TerminalSessionLifecycle {
     current: TerminalSessionRow;
     reason: TerminalSessionCloseReason;
   }): TerminalSession {
+    if (args.current.status === "disconnected") {
+      this.queueDaemonCloseForReconnect(args.current);
+    }
     const closed = updateTerminalById(this.options.db, args.current.id, {
       closeReason: args.reason,
       exitCode: args.current.exitCode,
@@ -1882,6 +1889,49 @@ export class TerminalSessionLifecycle {
       message: "Terminal session closed",
     });
     return this.toTerminalSession(session);
+  }
+
+  private queueDaemonCloseForReconnect(session: TerminalSessionRow): void {
+    queueTerminalDaemonClose(this.options.db, {
+      hostId: session.hostId,
+      now: Date.now(),
+      terminalSessionId: session.id,
+    });
+  }
+
+  private deliverPendingDaemonCloses(args: {
+    daemonSessionId: string;
+    hostId: string;
+  }): void {
+    for (const pending of listPendingTerminalDaemonCloses(
+      this.options.db,
+      args.hostId,
+    )) {
+      const row = getTerminalById(this.options.db, pending.terminalSessionId);
+      if (!row || row.status !== "exited") {
+        takePendingTerminalDaemonClose(
+          this.options.db,
+          pending.terminalSessionId,
+        );
+        continue;
+      }
+      const sent = this.options.hub.sendDaemonSessionMessage(
+        args.daemonSessionId,
+        {
+          type: "terminal.close",
+          terminalId: row.id,
+          reason:
+            row.closeReason === null || row.closeReason === "host-removed"
+              ? "daemon-disconnect"
+              : row.closeReason,
+        },
+      );
+      if (!sent) continue;
+      this.options.logger.info(
+        { terminalId: row.id, sessionId: args.daemonSessionId },
+        "Asked the reconnected daemon to close a terminal that was closed while it was disconnected",
+      );
+    }
   }
 
   sendTerminalInput(args: SendTerminalInputArgs): TerminalSession {
@@ -2705,6 +2755,7 @@ export class TerminalSessionLifecycle {
     args: ReconcileDisconnectedHostTerminalsArgs,
   ): Promise<void> {
     if (this.terminalOutputWritesStopped) return;
+    this.deliverPendingDaemonCloses(args);
     const openedInstanceId =
       getSessionById(this.options.db, { sessionId: args.daemonSessionId })
         ?.instanceId ?? null;
@@ -3317,11 +3368,21 @@ export class TerminalSessionLifecycle {
           args.message.terminalId,
         );
         if (
+          current &&
+          current.status === "exited" &&
+          current.hostId === args.hostId
+        ) {
+          takePendingTerminalDaemonClose(this.options.db, current.id);
+        }
+        if (
           !current ||
           current.hostId !== args.hostId ||
           current.daemonSessionId !== args.sessionId
         ) {
-          if (current) {
+          if (
+            current &&
+            (current.status !== "exited" || current.hostId !== args.hostId)
+          ) {
             this.options.logger.warn(
               {
                 hostId: args.hostId,
@@ -3815,13 +3876,22 @@ export class TerminalSessionLifecycle {
     for (const session of args.sessions) {
       const target = getTerminalDaemonCloseTarget(session);
       if (!target) {
+        if (session.status === "disconnected") {
+          this.queueDaemonCloseForReconnect(session);
+        }
         continue;
       }
-      this.options.hub.sendDaemonSessionMessage(target.daemonSessionId, {
-        type: "terminal.close",
-        terminalId: target.terminalId,
-        reason: args.closeReason,
-      });
+      const sent = this.options.hub.sendDaemonSessionMessage(
+        target.daemonSessionId,
+        {
+          type: "terminal.close",
+          terminalId: target.terminalId,
+          reason: args.closeReason,
+        },
+      );
+      if (!sent) {
+        this.queueDaemonCloseForReconnect(session);
+      }
     }
   }
 

@@ -11,6 +11,7 @@ import { ensureNativeParentNoticeTables } from "./fork-native-parent-notices.js"
 import { ensureNativeTerminalThreadsTable } from "./fork-native-terminal-threads.js";
 import { ensureTerminalAttentionTable } from "./fork-terminal-attention.js";
 import { ensureTerminalHolderSessionsTable } from "./fork-terminal-holder-sessions.js";
+import { ensureTerminalPendingDaemonClosesTable } from "./fork-terminal-pending-daemon-closes.js";
 import { restoreNativeThreadDraftsToDraftsQueue } from "./fork-restore-native-drafts.js";
 import {
   compatibleMigrationHashes,
@@ -1661,4 +1662,5 @@ export function migrate(db: DbConnection, options: MigrateOptions = {}): void {
   ensureNativeParentNoticeTables(db);
   ensureTerminalAttentionTable(db);
   ensureTerminalHolderSessionsTable(db);
+  ensureTerminalPendingDaemonClosesTable(db);
 }

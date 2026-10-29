@@ -2939,6 +2939,48 @@ describe("TerminalManager", () => {
     ]);
   });
 
+  it("treats a repeated close as a no-op that never touches another terminal", async () => {
+    const harness = createHarness();
+    const first = await openTerminalWithId(harness, "term-1");
+    const second = await openTerminalWithId(harness, "term-2");
+
+    await harness.manager.handleMessage({
+      type: "terminal.close",
+      terminalId: "term-1",
+      reason: "user",
+    });
+    await harness.manager.handleMessage({
+      type: "terminal.close",
+      terminalId: "term-1",
+      reason: "user",
+    });
+    first.emitExit(0);
+    await harness.manager.handleMessage({
+      type: "terminal.close",
+      terminalId: "term-1",
+      reason: "user",
+    });
+
+    expect(first.killCalls).toEqual([null]);
+    expect(second.killCalls).toEqual([]);
+    expect(
+      harness.messages.filter((message) => message.type === "terminal.exited"),
+    ).toEqual([
+      {
+        type: "terminal.exited",
+        terminalId: "term-1",
+        exitCode: 0,
+        closeReason: "user",
+      },
+      {
+        type: "terminal.exited",
+        terminalId: "term-1",
+        exitCode: null,
+        closeReason: "user",
+      },
+    ]);
+  });
+
   it("force kills and cleans up a terminal when node-pty never emits exit", async () => {
     vi.useFakeTimers();
     const harness = createHarnessWithOptions({

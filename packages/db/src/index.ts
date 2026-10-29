@@ -67,6 +67,12 @@ export {
   type TerminalAttentionRecord,
 } from "./fork-terminal-attention.js";
 export {
+  listPendingTerminalDaemonCloses,
+  queueTerminalDaemonClose,
+  takePendingTerminalDaemonClose,
+  type PendingTerminalDaemonClose,
+} from "./fork-terminal-pending-daemon-closes.js";
+export {
   appendRetainedTerminalOutputChunk,
   appendRetainedTerminalOutputChunks,
   dismissRetainedTerminalOutput,
