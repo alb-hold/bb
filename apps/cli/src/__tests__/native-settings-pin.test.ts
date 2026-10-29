@@ -42,6 +42,7 @@ describe("prepareNativeSettings", () => {
   it("writes hooks and the pinned env into one 0600 file whose path replaces {settings}", () => {
     const settings = prepareNativeSettings({
       providerId: "claude-code",
+      sessionRootEnv: "CLAUDE_CONFIG_DIR",
       env: POOLED_ENV,
       hooks: CLAUDE_HOOKS,
       hookTarget: "/tmp/spool",
@@ -69,6 +70,7 @@ describe("prepareNativeSettings", () => {
   it("still pins the env when hook capture is unavailable", () => {
     const settings = prepareNativeSettings({
       providerId: "claude-code",
+      sessionRootEnv: "CLAUDE_CONFIG_DIR",
       env: POOLED_ENV,
       hooks: CLAUDE_HOOKS,
       hookTarget: null,
@@ -84,6 +86,7 @@ describe("prepareNativeSettings", () => {
   it("keeps the inline hook settings when the launch is not pooled", () => {
     const settings = prepareNativeSettings({
       providerId: "claude-code",
+      sessionRootEnv: "CLAUDE_CONFIG_DIR",
       env: {},
       hooks: CLAUDE_HOOKS,
       hookTarget: "/tmp/spool",
@@ -94,6 +97,7 @@ describe("prepareNativeSettings", () => {
     expect(
       prepareNativeSettings({
         providerId: "claude-code",
+        sessionRootEnv: "CLAUDE_CONFIG_DIR",
         env: {},
         hooks: CLAUDE_HOOKS,
         hookTarget: null,
@@ -104,6 +108,7 @@ describe("prepareNativeSettings", () => {
   it("ignores the Claude marker for another provider's native launch", () => {
     const settings = prepareNativeSettings({
       providerId: "codex",
+      sessionRootEnv: "CODEX_HOME",
       env: POOLED_ENV,
       hooks: { ...CLAUDE_HOOKS, args: ["-c", "hooks=1"] },
       hookTarget: "/tmp/spool",
@@ -119,6 +124,7 @@ describe("prepareNativeSettings", () => {
     ]) {
       const settings = prepareNativeSettings({
         providerId: "claude-code",
+        sessionRootEnv: "CLAUDE_CONFIG_DIR",
         env: { ...POOLED_ENV, BB_CLAUDE_CODE_EXECUTABLE: executable },
         hooks: CLAUDE_HOOKS,
         hookTarget: "/tmp/spool",
@@ -133,7 +139,7 @@ describe("prepareNativeSettings", () => {
     }
   });
 
-  it("applies a marker that names no provider to every launch instead of ignoring it", () => {
+  it("pins or refuses a Claude launch whose marker names no provider", () => {
     const unnamed = Object.fromEntries(
       Object.entries(POOLED_ENV).filter(
         ([name]) => name !== "BB_CLAUDE_SETTINGS_ENV_PIN_PROVIDER",
@@ -142,6 +148,7 @@ describe("prepareNativeSettings", () => {
     expect(() =>
       prepareNativeSettings({
         providerId: "claude-renamed",
+        sessionRootEnv: "CLAUDE_CONFIG_DIR",
         env: unnamed,
         hooks: { ...CLAUDE_HOOKS, args: ["-c", "hooks=1"] },
         hookTarget: "/tmp/spool",
@@ -149,6 +156,7 @@ describe("prepareNativeSettings", () => {
     ).toThrow(/not started/u);
     const settings = prepareNativeSettings({
       providerId: "claude-renamed",
+      sessionRootEnv: "CLAUDE_CONFIG_DIR",
       env: unnamed,
       hooks: CLAUDE_HOOKS,
       hookTarget: "/tmp/spool",
@@ -159,10 +167,39 @@ describe("prepareNativeSettings", () => {
     expect(settings.value.startsWith("{")).toBe(false);
   });
 
+  it("ignores a marker that names no provider for a launch that takes no Claude settings", () => {
+    const unnamed = Object.fromEntries(
+      Object.entries(POOLED_ENV).filter(
+        ([name]) => name !== "BB_CLAUDE_SETTINGS_ENV_PIN_PROVIDER",
+      ),
+    );
+    const codexHooks = { ...CLAUDE_HOOKS, args: ["-c", "hooks=1"] };
+    const settings = prepareNativeSettings({
+      providerId: "codex",
+      sessionRootEnv: "CODEX_HOME",
+      env: unnamed,
+      hooks: codexHooks,
+      hookTarget: "/tmp/spool",
+    });
+    expect(settings?.directory).toBeNull();
+    expect(settings?.value.startsWith("{")).toBe(true);
+    expect(settings?.value).not.toContain(POOL_TOKEN);
+    expect(
+      prepareNativeSettings({
+        providerId: "codex",
+        sessionRootEnv: "CODEX_HOME",
+        env: unnamed,
+        hooks: undefined,
+        hookTarget: null,
+      }),
+    ).toBeNull();
+  });
+
   it("refuses to launch a pooled Claude without a {settings} argument instead of launching unpinned", () => {
     expect(() =>
       prepareNativeSettings({
         providerId: "claude-code",
+        sessionRootEnv: "CLAUDE_CONFIG_DIR",
         env: POOLED_ENV,
         hooks: { ...CLAUDE_HOOKS, args: ["-c", "hooks=1"] },
         hookTarget: "/tmp/spool",
@@ -171,6 +208,7 @@ describe("prepareNativeSettings", () => {
     expect(() =>
       prepareNativeSettings({
         providerId: "claude-code",
+        sessionRootEnv: "CLAUDE_CONFIG_DIR",
         env: POOLED_ENV,
         hooks: undefined,
         hookTarget: null,
@@ -181,6 +219,7 @@ describe("prepareNativeSettings", () => {
   it("removes the file with its directory", () => {
     const settings = prepareNativeSettings({
       providerId: "claude-code",
+      sessionRootEnv: "CLAUDE_CONFIG_DIR",
       env: POOLED_ENV,
       hooks: CLAUDE_HOOKS,
       hookTarget: null,

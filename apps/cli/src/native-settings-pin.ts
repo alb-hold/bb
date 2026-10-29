@@ -12,6 +12,7 @@ export const CLAUDE_SETTINGS_ENV_PIN = "BB_CLAUDE_SETTINGS_ENV_PIN";
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/u;
 const SETTINGS_TOKEN = "{settings}";
 const PIN_PROVIDER_VARIABLE = "BB_CLAUDE_SETTINGS_ENV_PIN_PROVIDER";
+const CLAUDE_CONFIG_ROOT_ENV = "CLAUDE_CONFIG_DIR";
 
 function takesSettings(arg: string): boolean {
   return arg.includes(SETTINGS_TOKEN);
@@ -63,15 +64,18 @@ function writePinnedSettingsFile(
 export function prepareNativeSettings(args: {
   env: Readonly<Record<string, string | undefined>>;
   providerId: string;
+  sessionRootEnv: string | null;
   hooks: ActivityHooks | undefined;
   hookTarget: string | { appendFile: string } | null;
 }): NativeSettings | null {
   const { hooks, hookTarget } = args;
   const pinProvider = args.env[PIN_PROVIDER_VARIABLE];
-  const pins =
-    pinProvider === undefined || pinProvider === args.providerId
-      ? selectPinnedSettingsEnv(args.env)
-      : null;
+  const appliesToLaunch =
+    pinProvider === undefined
+      ? args.sessionRootEnv === CLAUDE_CONFIG_ROOT_ENV ||
+        (hooks?.args.some(takesSettings) ?? false)
+      : pinProvider === args.providerId;
+  const pins = appliesToLaunch ? selectPinnedSettingsEnv(args.env) : null;
   if (pins !== null) {
     if (hooks === undefined || !hooks.args.some(takesSettings)) {
       throw new Error(
