@@ -6,6 +6,7 @@ import type {
 } from "@bb/domain";
 import {
   isNativeTerminalThread,
+  getNativeTerminalThread,
   listActiveBackgroundTaskCountsByThreadIds,
 } from "@bb/db";
 import { renderTemplate } from "@bb/templates";
@@ -260,19 +261,37 @@ function buildChildThreadBatchStatusLineSegments(
   ];
 }
 
-function getChildThreadCompletionOutput(
+async function getChildThreadCompletionOutput(
   deps: LoggedPendingInteractionWorkSessionDeps,
   args: QueueChildThreadTurnNotificationArgs,
-): string | null {
+): Promise<string | null> {
   if (args.turnStatus !== "completed") {
     return null;
   }
-  return (
-    getLastThreadOutput(deps.db, args.childThread.id) ??
-    (isNativeTerminalThread(deps.db, args.childThread.id)
-      ? `${args.childThread.title ?? "Child thread"} turn ended.`
-      : null)
-  );
+  const output = getLastThreadOutput(deps.db, args.childThread.id);
+  if (output !== null) return output;
+  const native = getNativeTerminalThread(deps.db, args.childThread.id);
+  if (native === null) return null;
+  if (native.terminalSessionId !== null) {
+    try {
+      const screen = await deps.terminalSessions.readTerminalScreen({
+        terminalId: native.terminalSessionId,
+        query: { threadId: args.childThread.id },
+      });
+      const excerpt = screen.rows
+        .map((row) => row.trim().slice(0, 240))
+        .filter((row) => row.length > 0)
+        .slice(-6)
+        .join("\n");
+      if (excerpt.length > 0) return excerpt;
+    } catch (error) {
+      deps.logger.debug(
+        { err: error, threadId: args.childThread.id },
+        "Native child completion screen was unavailable",
+      );
+    }
+  }
+  return `${args.childThread.title ?? "Child thread"} turn ended.`;
 }
 
 function getChildThreadActiveWorkflowCount(
@@ -487,14 +506,14 @@ function scheduleChildThreadTurnNotificationBatchFlush(
   }, CHILD_THREAD_TURN_NOTIFICATION_BATCH_DELAY_MS);
 }
 
-function queueChildThreadTurnNotificationBatchItem(
+async function queueChildThreadTurnNotificationBatchItem(
   deps: LoggedPendingInteractionWorkSessionDeps,
   args: QueueChildThreadTurnNotificationArgs,
-): void {
+): Promise<void> {
   const item: ChildThreadTurnNotificationBatchItem = {
     activeWorkflowCount: getChildThreadActiveWorkflowCount(deps, args),
     childThread: args.childThread,
-    terminalOutput: getChildThreadCompletionOutput(deps, args),
+    terminalOutput: await getChildThreadCompletionOutput(deps, args),
     turnStatus: args.turnStatus,
     ...(args.failureContext ? { failureContext: args.failureContext } : {}),
     ...(args.interruption ? { interruption: args.interruption } : {}),
@@ -545,7 +564,7 @@ export async function queueChildThreadTurnNotificationBestEffort(
   args: QueueChildThreadTurnNotificationArgs,
 ): Promise<void> {
   try {
-    queueChildThreadTurnNotificationBatchItem(deps, args);
+    await queueChildThreadTurnNotificationBatchItem(deps, args);
   } catch (error) {
     deps.logger.error(
       {
