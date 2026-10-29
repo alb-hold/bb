@@ -419,7 +419,6 @@ describe("account API client", () => {
       secret: "s",
       random: () => 0,
       fetch: async () => Response.json({ answers: [null] }),
-      random: () => 1,
     });
     const uncheckedResult = expect(
       unchecked.resolve(ASK, { deadlineMs: 300 }),
