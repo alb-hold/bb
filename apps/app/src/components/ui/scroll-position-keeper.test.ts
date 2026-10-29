@@ -127,13 +127,20 @@ function createTimeline(
 }
 
 describe("ScrollPositionKeeper", () => {
-  it("stays pinned when a no-input scroll follows a 225 px extent shrink", () => {
-    const rows = [...rowsOf(9), { id: "row-9", height: 425 }];
-    const timeline = createTimeline(rows, { attached: true });
+  it("stays pinned when a no-input scroll follows a 225 px viewport extent change", () => {
+    vi.useFakeTimers({
+      toFake: ["requestAnimationFrame", "cancelAnimationFrame", "performance"],
+    });
+    const timeline = createTimeline(rowsOf(10), { attached: true });
+    timeline.layout.flushResizeObservers();
     timeline.layout.layoutScrollTo(timeline.layout.maxScrollTop());
-    timeline.resize("row-9", 200);
-    timeline.layout.layoutScrollTo(timeline.layout.maxScrollTop());
+
+    timeline.layout.setViewportHeight(VIEWPORT_HEIGHT + 225);
+    void timeline.scrollElement.scrollTop;
+    expect(timeline.layout.takeClamp()).toBe(true);
     timeline.scrollElement.dispatchEvent(new Event("scroll"));
+    vi.advanceTimersToNextFrame();
+
     expect(timeline.keeper.isAttached()).toBe(true);
     expect(timeline.layout.scrollTop).toBe(timeline.layout.maxScrollTop());
   });

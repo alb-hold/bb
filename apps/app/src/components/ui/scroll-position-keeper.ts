@@ -258,6 +258,17 @@ export class ScrollPositionKeeper {
         });
         return;
       }
+      if (!this.isInputSession()) {
+        const cachedMax = this.maxScrollTop;
+        const extentChanged =
+          Math.abs(this.refreshExtent(scrollElement) - cachedMax) >= 1;
+        if (extentChanged || this.isFloorStale()) {
+          this.syncFloor();
+          this.ownScrollTop = scrollElement.scrollTop;
+          this.apply(scrollElement, true);
+          return;
+        }
+      }
       if (!this.isAtEnd(scrollElement.scrollTop)) {
         this.apply(scrollElement, true, true, true);
       }
