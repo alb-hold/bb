@@ -67,7 +67,7 @@ function isArchivedCredentialRevocation(
   }
   return (
     turnStart !== undefined &&
-    turnStart.createdAt < archivedAt &&
+    turnStart.createdAt <= archivedAt &&
     latestProviderError !== undefined &&
     latestProviderError.createdAt >= archivedAt &&
     isUnauthorized

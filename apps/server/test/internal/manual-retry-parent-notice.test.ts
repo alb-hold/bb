@@ -1,8 +1,8 @@
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { getThread, listQueuedThreadMessages, threads } from "@bb/db";
-import { eq } from "drizzle-orm";
+import { events, getThread, listQueuedThreadMessages, threads } from "@bb/db";
+import { and, eq } from "drizzle-orm";
 import {
   encodeClientTurnRequestIdNumber,
   threadScope,
@@ -231,6 +231,71 @@ async function failFirstTurn(
 }
 
 describe("a child whose turn fails with a non-retryable error and is retried by hand", () => {
+  it("settles a terminal archived auth failure cleanly when turn start and archive share a millisecond", async () => {
+    await withTestHarness(async (harness) => {
+      const scenario = seedScenario(harness);
+      const archivedAt = 1_700_000_000_000;
+      harness.db
+        .update(events)
+        .set({ createdAt: archivedAt })
+        .where(
+          and(
+            eq(events.threadId, scenario.child.id),
+            eq(events.turnId, FIRST_TURN_ID),
+            eq(events.type, "turn/started"),
+          ),
+        )
+        .run();
+      harness.db
+        .update(threads)
+        .set({ archivedAt })
+        .where(eq(threads.id, scenario.child.id))
+        .run();
+      seedEvent(harness.deps, {
+        threadId: scenario.child.id,
+        environmentId: scenario.child.environmentId,
+        providerThreadId: PROVIDER_THREAD_ID,
+        sequence: 5,
+        type: "provider/error",
+        scope: turnScope(FIRST_TURN_ID),
+        createdAt: archivedAt + 1,
+        data: {
+          message: "Provider error",
+          detail: UNAUTHORIZED_DETAIL,
+          willRetry: false,
+          errorInfo: {
+            category: "unauthorized",
+            providerCode: null,
+            httpStatusCode: 401,
+          },
+        },
+      });
+      const response = await postEvents(harness, scenario.sessionId, [
+        {
+          threadId: scenario.child.id,
+          event: {
+            threadId: scenario.child.id,
+            providerThreadId: PROVIDER_THREAD_ID,
+            scope: turnScope(FIRST_TURN_ID),
+            type: "turn/completed",
+            status: "failed",
+          },
+        },
+      ]);
+      expect(response.status).toBe(200);
+      expect(getThread(harness.db, scenario.child.id)).toMatchObject({
+        status: "idle",
+        archivedAt,
+      });
+      await new Promise((resolve) => setTimeout(resolve, NOTICE_SETTLE_MS));
+      expect(
+        parentNoticeTexts(harness, scenario.parent.id).filter((text) =>
+          text.includes("failed."),
+        ),
+      ).toHaveLength(0);
+    });
+  }, 20_000);
+
   it("does not mark an archived in-flight turn failed after its credential is revoked", async () => {
     await withTestHarness(async (harness) => {
       const scenario = seedScenario(harness);
