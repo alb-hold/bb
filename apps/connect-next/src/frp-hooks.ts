@@ -448,6 +448,10 @@ export function createFrpHooks(options: FrpHookOptions) {
     }
     if (call.op === "CloseProxy") {
       const proxy = proxies.get(`${user.runId}\n${call.proxyName ?? ""}`);
+      if (proxy !== undefined && proxy.label !== user.label) {
+        log("warn", "frp_close_identity_mismatch", { label: user.label });
+        return ACCEPT;
+      }
       if (proxy !== undefined) {
         proxy.closes += 1;
         void settleClose(proxy);

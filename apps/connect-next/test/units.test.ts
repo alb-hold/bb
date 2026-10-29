@@ -535,6 +535,7 @@ describe("frp hooks", () => {
       const stub = {
         down: false,
         unknownAnswers: 0,
+        offlineAnswers: 0,
         queries: 0,
         gate: null as Promise<void> | null,
         register(name: string, clientId: string) {
@@ -555,6 +556,10 @@ describe("frp hooks", () => {
             if (stub.unknownAnswers > 0) {
               stub.unknownAnswers -= 1;
               return { kind: "unknown" };
+            }
+            if (stub.offlineAnswers > 0) {
+              stub.offlineAnswers -= 1;
+              return { kind: "offline" };
             }
             return clientId === undefined
               ? { kind: "offline" }
@@ -1091,6 +1096,32 @@ describe("frp hooks", () => {
         },
       };
     }
+
+    it("ignores a delayed close from the label that used to hold a run id another label has since claimed", async () => {
+      const harness = await startHooks();
+      await connectFirst(harness);
+
+      harness.frps.unregister(PROXY_NAME);
+      await harness.proxyCall("CloseProxy", "run-1");
+      await sleep(TIMINGS.registerGraceMs + 200);
+      expect(await loginAs(harness, "wasp", "run-1")).toMatchObject({
+        reject: false,
+      });
+      expect(await proxyAs(harness, "wasp", "run-1")).toMatchObject({
+        reject: false,
+      });
+      harness.frps.register(PROXY_NAME, "run-1");
+
+      harness.frps.offlineAnswers = 1;
+      await harness.proxyCall("CloseProxy", "run-1");
+      await sleep(TIMINGS.registerGraceMs + 200);
+
+      expect(harness.directory.locate("wasp").kind).toBe("here");
+      expect(await loginAs(harness, "bee", "run-1")).toMatchObject({
+        reject: true,
+      });
+      expect(harness.frps.offlineAnswers).toBe(1);
+    });
 
     it("keeps a reconnecting run id bound while an older close settles and another label asks for it", async () => {
       const gate = gatedAccounts();
