@@ -371,6 +371,77 @@ describe("darwin workspace process inspection", () => {
     });
   });
 
+  it.each([
+    {
+      pid: 521,
+      name: "c.sock",
+      cwdOut: "p521\nfcwd\ntDIR\nn/\n",
+      filesOut: "p521\nf1\ntunix\nnc.sock\n",
+    },
+    {
+      pid: 522,
+      name: "sub/c.sock",
+      cwdOut: "p522\nfcwd\ntDIR\nn/\n",
+      filesOut: "p522\nf1\ntunix\nnsub/c.sock\n",
+    },
+  ])(
+    "treats relative unix bind as unreadable when cwd is outside the workspace ($name)",
+    async ({ pid, cwdOut, filesOut }) => {
+      vi.mocked(execHostFile).mockImplementation((async (cmd, args) => {
+        const flags = (args as string[] | undefined) ?? [];
+        const stdout = flags.includes("cwd") ? cwdOut : filesOut;
+        return { stdout, stderr: "" };
+      }) as never);
+      vi.mocked(realpath).mockImplementation(async (value) => {
+        const key = String(value);
+        if (key === "/tmp/ws") return "/tmp/ws";
+        return key;
+      });
+      expect(await inspectWorkspaceProcesses("/tmp/ws")).toEqual({
+        supported: true,
+        pids: [],
+        unreadablePids: [pid],
+      });
+    },
+  );
+
+  it.each([
+    {
+      pid: 523,
+      sock: "c.sock",
+      cwdOut: "p523\nfcwd\ntDIR\nn/tmp/ws\n",
+      filesOut: "p523\nf1\ntunix\nnc.sock\n",
+      sockPath: "/tmp/ws/c.sock",
+    },
+    {
+      pid: 524,
+      sock: "sub/c.sock",
+      cwdOut: "p524\nfcwd\ntDIR\nn/tmp/ws\n",
+      filesOut: "p524\nf1\ntunix\nnsub/c.sock\n",
+      sockPath: "/tmp/ws/sub/c.sock",
+    },
+  ])(
+    "matches relative unix bind when cwd is the workspace ($sock)",
+    async ({ pid, cwdOut, filesOut, sockPath }) => {
+      vi.mocked(execHostFile).mockImplementation((async (_cmd, args) => {
+        const flags = (args as string[] | undefined) ?? [];
+        const stdout = flags.includes("cwd") ? cwdOut : filesOut;
+        return { stdout, stderr: "" };
+      }) as never);
+      vi.mocked(realpath).mockImplementation(async (value) => {
+        const key = String(value);
+        if (key === "/tmp/ws") return "/tmp/ws";
+        if (key === sockPath) return sockPath;
+        return key;
+      });
+      expect(await inspectWorkspaceProcesses("/tmp/ws")).toEqual({
+        supported: true,
+        pids: [pid],
+        unreadablePids: [],
+      });
+    },
+  );
+
   it("treats relative unix bind paths as unreadable", async () => {
     vi.mocked(execHostFile).mockImplementation((async () => ({
       stdout: "p520\nf1\ntunix\nn./c.sock\n",

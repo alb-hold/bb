@@ -97,14 +97,6 @@ function isRelativeUnixBindPath(
   return true;
 }
 
-function relativeUnixBindNeedsUnreadableWithoutCwd(
-  value: string,
-  lsofType: string | undefined,
-): boolean {
-  if (!isRelativeUnixBindPath(value, lsofType)) return false;
-  return stripDeletedSuffix(value).trim().startsWith("./");
-}
-
 function normalizeLsofPathName(value: string): string {
   const stripped = stripDeletedSuffix(value);
   if (!stripped.startsWith("/")) return stripped;
@@ -200,24 +192,12 @@ async function resolveThroughExistingAncestor(
   }
 }
 
-async function classifyPathForWorkspace(
-  value: string,
+async function classifyAbsolutePathForWorkspace(
+  pathName: string,
   workspaceCanonical: string,
   workspaceArg: string,
   lsofType?: string,
-  processCwd?: string,
 ): Promise<"matched" | "outside" | "unreadable"> {
-  if (relativeUnixBindNeedsUnreadableWithoutCwd(value, lsofType))
-    return "unreadable";
-  let pathName = normalizeLsofPathName(value);
-  let bindWasDotRelativeUnix = false;
-  if (isRelativeUnixBindPath(value, lsofType)) {
-    if (processCwd === undefined) return "unreadable";
-    bindWasDotRelativeUnix = stripDeletedSuffix(value).trim().startsWith("./");
-    pathName = normalizeLsofPathName(
-      path.resolve(processCwd, stripDeletedSuffix(value).trim()),
-    );
-  }
   if (nonFilesystemEntryIsOutsideWithoutInspection(pathName, lsofType))
     return "outside";
   if (
@@ -227,10 +207,8 @@ async function classifyPathForWorkspace(
       workspaceArg,
       lsofType,
     )
-  ) {
-    if (bindWasDotRelativeUnix) return "unreadable";
+  )
     return "outside";
-  }
   const ancestor = await resolveThroughExistingAncestor(pathName);
   if (ancestor.ok && underWorkspace(ancestor.path, workspaceCanonical))
     return "matched";
@@ -241,6 +219,43 @@ async function classifyPathForWorkspace(
     undefined;
   }
   return "unreadable";
+}
+
+async function classifyPathForWorkspace(
+  value: string,
+  workspaceCanonical: string,
+  workspaceArg: string,
+  lsofType?: string,
+  processCwd?: string,
+): Promise<"matched" | "outside" | "unreadable"> {
+  if (isRelativeUnixBindPath(value, lsofType)) {
+    if (processCwd === undefined) return "unreadable";
+    const pathName = normalizeLsofPathName(
+      path.resolve(processCwd, stripDeletedSuffix(value).trim()),
+    );
+    if (
+      !pathLexicallyCouldBeInWorkspace(
+        pathName,
+        workspaceCanonical,
+        workspaceArg,
+        lsofType,
+      )
+    )
+      return "unreadable";
+    return classifyAbsolutePathForWorkspace(
+      pathName,
+      workspaceCanonical,
+      workspaceArg,
+      lsofType,
+    );
+  }
+  const pathName = normalizeLsofPathName(value);
+  return classifyAbsolutePathForWorkspace(
+    pathName,
+    workspaceCanonical,
+    workspaceArg,
+    lsofType,
+  );
 }
 
 function parseLsofOutput(output: string):
