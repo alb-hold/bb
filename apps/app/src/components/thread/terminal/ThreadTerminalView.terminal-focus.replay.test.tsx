@@ -1103,7 +1103,10 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
       );
       expect(preview()?.dataset.terminalReplayHeld).toBeDefined();
       expect(preview()?.style.visibility).toBe("hidden");
-      expect(pageText()).toContain("Still loading terminal");
+      await waitForReadinessCondition(
+        () => expect(pageText()).toContain("Still loading terminal"),
+        "loading notice did not appear after hold backstop",
+      );
       current = reconnectSocket;
     }
   });
