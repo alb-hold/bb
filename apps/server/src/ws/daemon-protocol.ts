@@ -38,7 +38,11 @@ import {
   reopenNativeTerminalsAfterDaemonReconnect,
 } from "../services/threads/native-terminal-threads.js";
 import { runEventLoopWorkSync } from "../services/system/event-loop-work.js";
-import { parseSocketMessage } from "./decode-payload.js";
+import {
+  decodeSocketMessage,
+  socketMessageType,
+  type SocketMessageDecodeFailure,
+} from "./decode-payload.js";
 import type { PluginService } from "../services/plugins/plugin-service.js";
 import type { ServerMoveCoordinator } from "../services/server-move/coordinator.js";
 import {
@@ -107,21 +111,89 @@ export const SERVER_MOVE_FENCED_DAEMON_MESSAGE_TYPES: ReadonlySet<
   "terminal.exited",
 ]);
 
+export type DaemonFrameRejection = SocketMessageDecodeFailure & {
+  messageType: string | null;
+};
+
 export function decodeDaemonSocketMessage(
-  socket: DaemonSocket,
   raw: unknown,
+  onInvalid: (rejection: DaemonFrameRejection) => void,
 ): HostDaemonDaemonWsMessage | null {
-  return parseSocketMessage(socket, raw, hostDaemonDaemonWsMessageSchema);
+  const decoded = decodeSocketMessage(raw, hostDaemonDaemonWsMessageSchema);
+  if (decoded.ok) return decoded.message;
+  onInvalid({ ...decoded.failure, messageType: socketMessageType(raw) });
+  return null;
 }
 
 export function prepareDaemonSocketFrame(
-  socket: DaemonSocket,
   raw: unknown,
+  onInvalid: (rejection: DaemonFrameRejection) => void,
   decode: typeof decodeDaemonSocketMessage = decodeDaemonSocketMessage,
 ): { message: HostDaemonDaemonWsMessage; priority: boolean } | null {
-  const message = decode(socket, raw);
+  const message = decode(raw, onInvalid);
   if (message === null) return null;
   return { message, priority: isDaemonSocketMessageQueuePriority(message) };
+}
+
+const DAEMON_MESSAGE_FAILURE_LOG_INTERVAL_MS = 5_000;
+const daemonMessageFailureLogState = new Map<
+  string,
+  { loggedAt: number; suppressed: number }
+>();
+
+function takeDaemonMessageFailureLogSlot(
+  sessionId: string,
+  failureKey: string,
+): { suppressed: number } | null {
+  const key = `${sessionId}\u0000${failureKey}`;
+  const now = Date.now();
+  const state = daemonMessageFailureLogState.get(key);
+  if (
+    state !== undefined &&
+    now - state.loggedAt < DAEMON_MESSAGE_FAILURE_LOG_INTERVAL_MS
+  ) {
+    state.suppressed += 1;
+    return null;
+  }
+  daemonMessageFailureLogState.set(key, { loggedAt: now, suppressed: 0 });
+  return { suppressed: state?.suppressed ?? 0 };
+}
+
+function forgetDaemonMessageFailureLogState(sessionId: string): void {
+  const prefix = `${sessionId}\u0000`;
+  for (const key of daemonMessageFailureLogState.keys()) {
+    if (key.startsWith(prefix)) daemonMessageFailureLogState.delete(key);
+  }
+}
+
+export function logDroppedDaemonFrame(
+  logger: Pick<AppDeps["logger"], "warn">,
+  args: { hostId: string; sessionId: string },
+  rejection: DaemonFrameRejection,
+): void {
+  const slot = takeDaemonMessageFailureLogSlot(
+    args.sessionId,
+    `invalid:${rejection.messageType ?? ""}`,
+  );
+  if (slot === null) return;
+  logger.warn(
+    {
+      hostId: args.hostId,
+      issuePaths:
+        rejection.reason === "invalid-schema" ? rejection.issuePaths : [],
+      messageType: rejection.messageType,
+      reason: rejection.reason,
+      sessionId: args.sessionId,
+      suppressed: slot.suppressed,
+    },
+    "Daemon message failed validation, dropping the message and keeping the socket open",
+  );
+}
+
+class DaemonSessionRejection extends Error {
+  constructor(readonly apiError: ApiError) {
+    super(apiError.message);
+  }
 }
 
 export function enqueueDaemonSocketFrame(args: {
@@ -132,11 +204,15 @@ export function enqueueDaemonSocketFrame(args: {
     priority: boolean,
     acceptedAtArrival: true,
   ) => void;
+  onInvalid: (rejection: DaemonFrameRejection) => void;
   raw: unknown;
   recordActivity: () => void;
-  socket: DaemonSocket;
 }): void {
-  const prepared = prepareDaemonSocketFrame(args.socket, args.raw, args.decode);
+  const prepared = prepareDaemonSocketFrame(
+    args.raw,
+    args.onInvalid,
+    args.decode,
+  );
   if (prepared === null) return;
   if (!args.authorize(prepared.message.type)) return;
   args.recordActivity();
@@ -203,13 +279,32 @@ export function onDaemonSocketMessage(
   serverMove?: Pick<ServerMoveCoordinator, "handleProgress">,
 ): void | Promise<void> {
   const message =
-    args.message ?? decodeDaemonSocketMessage(args.socket, args.raw);
+    args.message ??
+    decodeDaemonSocketMessage(args.raw, (rejection) =>
+      logDroppedDaemonFrame(
+        deps.logger,
+        { hostId: args.hostId, sessionId: args.sessionId },
+        rejection,
+      ),
+    );
   if (message === null) {
     return;
   }
 
   const handleError = (error: unknown): void => {
-    if (error instanceof ApiError && error.body.code === "inactive_session") {
+    if (error instanceof DaemonSessionRejection) {
+      const rejection = error.apiError;
+      if (rejection.status === 403) {
+        deps.logger.warn(
+          {
+            sessionId: args.sessionId,
+            ...runtimeErrorLogFields(deps.config, rejection),
+          },
+          "Daemon heartbeat for unauthorized session, closing socket",
+        );
+        args.socket.close(1008, "unauthorized-session");
+        return;
+      }
       deps.logger.info(
         getInactiveSessionLogFields(deps.db, {
           authenticatedHostId: args.hostId,
@@ -222,30 +317,24 @@ export function onDaemonSocketMessage(
       return;
     }
 
-    if (error instanceof ApiError && error.status === 403) {
-      deps.logger.warn(
-        {
-          sessionId: args.sessionId,
-          ...runtimeErrorLogFields(deps.config, error),
-        },
-        "Daemon heartbeat for unauthorized session, closing socket",
-      );
-      args.socket.close(1008, "unauthorized-session");
-      return;
-    }
-
+    const slot = takeDaemonMessageFailureLogSlot(
+      args.sessionId,
+      `handler:${message.type}`,
+    );
+    if (slot === null) return;
     deps.logger.warn(
       {
-        sessionId: args.sessionId,
+        hostId: args.hostId,
         messageType: message.type,
+        sessionId: args.sessionId,
+        suppressed: slot.suppressed,
         ...runtimeErrorLogFields(deps.config, error),
       },
-      "Daemon message rejected, closing socket",
+      "Daemon message handler failed, keeping the socket open",
     );
-    args.socket.close(1008, "inactive-session");
   };
 
-  const getSessionForDispatch = () => {
+  const resolveSessionForDispatch = () => {
     if (!args.acceptedAtArrival) {
       return requireAuthorizedOpenSession(deps.db, {
         hostId: args.hostId,
@@ -276,6 +365,15 @@ export function onDaemonSocketMessage(
       return session;
     }
     throw new ApiError(401, "inactive_session", "Inactive daemon session");
+  };
+
+  const getSessionForDispatch = () => {
+    try {
+      return resolveSessionForDispatch();
+    } catch (error) {
+      if (error instanceof ApiError) throw new DaemonSessionRejection(error);
+      throw error;
+    }
   };
 
   try {
@@ -569,6 +667,7 @@ export function onDaemonSocketClose(
   deps: LoggedPendingInteractionWorkSessionDeps & Pick<AppDeps, "sharedPorts">,
   sessionId: string,
 ): void {
+  forgetDaemonMessageFailureLogState(sessionId);
   handleDaemonSocketClosed(deps, {
     sessionId,
   });

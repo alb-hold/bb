@@ -106,6 +106,7 @@ import {
 import {
   createDaemonSocketMessageQueue,
   enqueueDaemonSocketFrame,
+  logDroppedDaemonFrame,
   onDaemonSocketClose,
   onDaemonSocketMessage,
   onDaemonSocketOpen,
@@ -1148,10 +1149,18 @@ export function createApp(
                 });
                 return true;
               } catch (error) {
-                if (
-                  error instanceof ApiError &&
-                  error.body.code === "inactive_session"
-                ) {
+                if (!(error instanceof ApiError)) {
+                  deps.logger.warn(
+                    {
+                      sessionId: websocketContext.sessionId,
+                      messageType,
+                      ...runtimeErrorLogFields(deps.config, error),
+                    },
+                    "Daemon message authorization failed, dropping the message and keeping the socket open",
+                  );
+                  return false;
+                }
+                if (error.body.code === "inactive_session") {
                   deps.logger.info(
                     getInactiveSessionLogFields(deps.db, {
                       authenticatedHostId: websocketContext.hostId,
@@ -1160,7 +1169,7 @@ export function createApp(
                     }),
                     "Daemon heartbeat for inactive session, closing socket",
                   );
-                } else if (error instanceof ApiError && error.status === 403) {
+                } else if (error.status === 403) {
                   deps.logger.warn(
                     {
                       sessionId: websocketContext.sessionId,
@@ -1180,7 +1189,7 @@ export function createApp(
                 }
                 socket.close(
                   1008,
-                  error instanceof ApiError && error.status === 403
+                  error.status === 403
                     ? "unauthorized-session"
                     : "inactive-session",
                 );
@@ -1205,10 +1214,18 @@ export function createApp(
                   ),
                 priority,
               ),
+            onInvalid: (rejection) =>
+              logDroppedDaemonFrame(
+                deps.logger,
+                {
+                  hostId: websocketContext.hostId,
+                  sessionId: websocketContext.sessionId,
+                },
+                rejection,
+              ),
             raw: event.data,
             recordActivity: () =>
               deps.hub.recordDaemonActivity(websocketContext.sessionId),
-            socket,
           }),
         onClose: () => {
           daemonMessageQueue.close();
