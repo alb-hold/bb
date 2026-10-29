@@ -31,34 +31,104 @@ function underWorkspace(value: string, workspace: string): boolean {
   );
 }
 
-function parseLsofOutput(output: string): {
-  paths: Array<{ pid: number; path: string }>;
-  unreadablePids: number[];
-} {
+function parseLsofOutput(output: string):
+  | {
+      ok: true;
+      paths: Array<{ pid: number; path: string }>;
+      unreadablePids: number[];
+    }
+  | { ok: false } {
   const paths: Array<{ pid: number; path: string }> = [];
   const unreadablePids: number[] = [];
   let pid: number | null = null;
   let sawDescriptor = false;
   let sawName = false;
-  const flush = () => {
-    if (pid !== null && sawDescriptor && !sawName) unreadablePids.push(pid);
+  const flush = (): boolean => {
+    if (pid !== null && sawDescriptor && !sawName) return false;
+    return true;
   };
   for (const line of output.split("\n")) {
     if (line.length === 0) continue;
-    if (line[0] === "p") {
-      flush();
-      pid = Number(line.slice(1));
+    const tag = line[0];
+    if (tag === "p") {
+      if (!flush()) return { ok: false };
+      const next = Number(line.slice(1));
+      if (!Number.isInteger(next) || next < 0) return { ok: false };
+      pid = next;
       sawDescriptor = false;
       sawName = false;
-    } else if (line[0] === "f") {
+    } else if (tag === "f") {
+      if (pid === null) return { ok: false };
       sawDescriptor = true;
-    } else if (line[0] === "n" && pid !== null) {
+    } else if (tag === "n") {
+      if (pid === null) return { ok: false };
       sawName = true;
       paths.push({ pid, path: line.slice(1) });
+    } else {
+      return { ok: false };
     }
   }
-  flush();
-  return { paths, unreadablePids };
+  if (!flush()) return { ok: false };
+  return { ok: true, paths, unreadablePids };
+}
+
+type LsofRun = {
+  stdout: string;
+  stderr: string;
+  exitCode: number;
+};
+
+function lsofStderrIsBenign(stderr: string): boolean {
+  return stderr.trim().length === 0;
+}
+
+function lsofRunIsTrustworthy(run: LsofRun): boolean {
+  if (run.exitCode === 0) {
+    return lsofStderrIsBenign(run.stderr);
+  }
+  if (run.exitCode === 1) {
+    return run.stdout.length === 0 && lsofStderrIsBenign(run.stderr);
+  }
+  return false;
+}
+
+async function execLsof(
+  args: readonly string[],
+): Promise<LsofRun | "missing" | "failed"> {
+  try {
+    const result = await execHostFile("lsof", args, {
+      maxBuffer: LSOF_MAX_BUFFER,
+    });
+    return {
+      stdout: result.stdout,
+      stderr: result.stderr,
+      exitCode: 0,
+    };
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      "code" in error &&
+      error.code === "ENOENT"
+    )
+      return "missing";
+    if (!(error instanceof Error)) return "failed";
+    const stdout =
+      "stdout" in error && typeof error.stdout === "string"
+        ? error.stdout
+        : "";
+    const stderr =
+      "stderr" in error && typeof error.stderr === "string"
+        ? error.stderr
+        : "";
+    const exitCode =
+      typeof error.code === "number"
+        ? error.code
+        : typeof error.code === "string" && /^\d+$/.test(error.code)
+          ? Number(error.code)
+          : -1;
+    if (exitCode < 0) return "failed";
+    return { stdout, stderr, exitCode };
+  }
 }
 
 async function inspectLinuxWorkspaceProcesses(
@@ -122,30 +192,31 @@ async function inspectDarwinWorkspaceProcesses(
   const workspace = await canonicalPath(path.resolve(workspacePath));
   const uid = String(process.getuid!());
   const lsofFlags = ["-w", "-n", "-Fpn"] as const;
-  const lsofOptions = { maxBuffer: LSOF_MAX_BUFFER };
-  let combinedOutput: string;
-  try {
-    const cwd = await execHostFile(
-      "lsof",
-      ["-a", "-u", uid, "-d", "cwd", ...lsofFlags],
-      lsofOptions,
-    );
-    const files = await execHostFile(
-      "lsof",
-      ["-u", uid, ...lsofFlags],
-      lsofOptions,
-    );
-    combinedOutput = `${cwd.stdout}\n${files.stdout}`;
-  } catch (error) {
-    if (
-      error instanceof Error &&
-      "code" in error &&
-      error.code === "ENOENT"
-    )
-      return { supported: false, pids: [], unreadablePids: [] };
+  const cwdRun = await execLsof([
+    "-a",
+    "-u",
+    uid,
+    "-d",
+    "cwd",
+    ...lsofFlags,
+  ]);
+  if (cwdRun === "missing" || cwdRun === "failed") {
     return { supported: false, pids: [], unreadablePids: [] };
   }
-  const parsed = parseLsofOutput(combinedOutput);
+  if (!lsofRunIsTrustworthy(cwdRun)) {
+    return { supported: false, pids: [], unreadablePids: [] };
+  }
+  const filesRun = await execLsof(["-u", uid, ...lsofFlags]);
+  if (filesRun === "missing" || filesRun === "failed") {
+    return { supported: false, pids: [], unreadablePids: [] };
+  }
+  if (!lsofRunIsTrustworthy(filesRun)) {
+    return { supported: false, pids: [], unreadablePids: [] };
+  }
+  const parsed = parseLsofOutput(`${cwdRun.stdout}\n${filesRun.stdout}`);
+  if (!parsed.ok) {
+    return { supported: false, pids: [], unreadablePids: [] };
+  }
   const pids = new Set<number>();
   const unreadablePids = new Set<number>();
   for (const pid of parsed.unreadablePids) {

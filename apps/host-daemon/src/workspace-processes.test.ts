@@ -189,10 +189,10 @@ describe("darwin workspace process inspection", () => {
       expected: { supported: true, pids: [], unreadablePids: [507] },
     },
   ])("$name", async ({ lsof, workspace, paths, realpathError, realpathErrorPath, expected }) => {
-    vi.mocked(execHostFile).mockResolvedValue({
+    vi.mocked(execHostFile).mockImplementation(async () => ({
       stdout: lsof,
       stderr: "",
-    } as never);
+    }));
     vi.mocked(realpath).mockImplementation(async (value) => {
       const key = String(value);
       const mapped = (paths as Record<string, string | undefined>)[key];
@@ -212,6 +212,50 @@ describe("darwin workspace process inspection", () => {
     vi.mocked(execHostFile).mockRejectedValue(new Error("lsof failed"));
     expect(await inspectWorkspaceProcesses("/ws/project")).toEqual({
       supported: false,
+      pids: [],
+      unreadablePids: [],
+    });
+  });
+
+  it("returns unsupported when lsof prints permission warnings on stderr", async () => {
+    vi.mocked(execHostFile).mockImplementation(async () => {
+      throw Object.assign(new Error("lsof exit 1"), {
+        code: 1,
+        stdout: "p501\nfcwd\nn/ws/project\n",
+        stderr: "lsof: can't access /proc/123/cwd: Permission denied\n",
+      });
+    });
+    expect(await inspectWorkspaceProcesses("/ws/project")).toEqual({
+      supported: false,
+      pids: [],
+      unreadablePids: [],
+    });
+  });
+
+  it("returns unsupported when lsof field output is garbled", async () => {
+    vi.mocked(execHostFile).mockImplementation(async () => ({
+      stdout: "p501\nfcwd\n",
+      stderr: "",
+    }));
+    vi.mocked(realpath).mockResolvedValue("/ws/project");
+    expect(await inspectWorkspaceProcesses("/ws/project")).toEqual({
+      supported: false,
+      pids: [],
+      unreadablePids: [],
+    });
+  });
+
+  it("treats exit 1 with empty stdout and stderr as no matching processes", async () => {
+    vi.mocked(execHostFile).mockImplementation(async () => {
+      throw Object.assign(new Error("lsof exit 1"), {
+        code: 1,
+        stdout: "",
+        stderr: "",
+      });
+    });
+    vi.mocked(realpath).mockResolvedValue("/ws/project");
+    expect(await inspectWorkspaceProcesses("/ws/project")).toEqual({
+      supported: true,
       pids: [],
       unreadablePids: [],
     });
