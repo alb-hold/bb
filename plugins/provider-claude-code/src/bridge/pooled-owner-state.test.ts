@@ -973,7 +973,7 @@ describe("waiting for the Claude CLI to exit before cleanup", () => {
       table: () => () => {
         throw new Error("ps failed");
       },
-      error: /^ps failed$/u,
+      error: /^Error: ps failed$/u,
       kept: (directory: string) =>
         `kept: CLI exit not confirmed (ps failed): ${directory}`,
     },
