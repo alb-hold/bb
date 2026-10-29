@@ -7,6 +7,7 @@ import {
   isTerminalReplaySafeBoundary,
 } from "@bb/domain";
 import type { TerminalScreenResponse } from "@bb/server-contract";
+import { SOLID_WHITESPACE_CELL } from "../threads/native-terminal-echo.js";
 
 const TERMINAL_SCREEN_STATE_SCROLLBACK = 2_000;
 export const TERMINAL_SCREEN_STATE_PENDING_BYTES_LIMIT = 8 * 1024 * 1024;
@@ -239,6 +240,29 @@ function encodeUtf8(value: string): Buffer {
   const buffer = Buffer.allocUnsafe(Buffer.byteLength(value, "utf8"));
   buffer.write(value, 0, "utf8");
   return buffer;
+}
+
+function visibleSolidRows(terminal: HeadlessTerminal): string[] {
+  const buffer = terminal.buffer.active;
+  const rows: string[] = [];
+  for (let row = 0; row < terminal.rows; row += 1) {
+    const line = buffer.getLine(buffer.baseY + row);
+    let text = "";
+    for (let col = 0; col < terminal.cols; col += 1) {
+      const cell = line?.getCell(col);
+      if (cell === undefined || cell.getWidth() === 0) continue;
+      const chars = cell.getChars();
+      if (chars === "" || cell.isDim()) {
+        text += " ".repeat(Array.from(chars || " ").length);
+      } else if (chars.trim() === "") {
+        text += SOLID_WHITESPACE_CELL.repeat(Array.from(chars).length);
+      } else {
+        text += chars;
+      }
+    }
+    rows.push(text.trimEnd());
+  }
+  return rows;
 }
 
 function serializeVisibleScreen(terminal: HeadlessTerminal): {
@@ -492,6 +516,22 @@ export class TerminalScreenState {
     };
   }
 
+  async promptScreen(): Promise<{
+    cursor: { col: number; row: number };
+    rows: string[];
+    solidRows: string[];
+  } | null> {
+    await this.pending;
+    if (this.disposed || !this.valid) return null;
+    if (this.partialSequenceOverflow) return null;
+    const { response } = serializeVisibleScreen(this.terminal);
+    return {
+      cursor: response.cursor,
+      rows: response.rows,
+      solidRows: visibleSolidRows(this.terminal),
+    };
+  }
+
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
@@ -554,6 +594,10 @@ export class TerminalScreenStateCache {
 
   resize(terminalId: string, cols: number, rows: number): void {
     this.states.get(terminalId)?.resize(cols, rows);
+  }
+
+  promptScreen(terminalId: string) {
+    return this.states.get(terminalId)?.promptScreen() ?? Promise.resolve(null);
   }
 
   snapshot(terminalId: string) {

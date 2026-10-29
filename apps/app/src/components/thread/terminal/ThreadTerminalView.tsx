@@ -3,6 +3,7 @@ import {
   useEffect,
   useRef,
   useState,
+  type KeyboardEvent as ReactKeyboardEvent,
   type TouchEvent as ReactTouchEvent,
 } from "react";
 import "@xterm/xterm/css/xterm.css";
@@ -49,6 +50,14 @@ import {
   importTerminalWebglAddon,
 } from "./terminal-modules";
 import { TerminalWebSocketTransport } from "@bb/client-core";
+import {
+  useAppCommandHandler,
+  useAppCommandRunner,
+} from "@/components/commands/AppCommandProvider";
+import {
+  createTerminalFileLinkProvider,
+  parseTerminalReportedCwd,
+} from "./terminal-file-links";
 import {
   hasRunningLayoutAnimation,
   observeLayoutSignals,
@@ -108,6 +117,7 @@ import {
 } from "./terminal-mobile-input";
 import {
   createTerminalOsc8LinkHandler,
+  isTerminalLinkActivation,
   requestTerminalLinkOpen,
   type TerminalLinkTarget,
 } from "./terminal-links";
@@ -405,6 +415,7 @@ export function buildTerminalThemeFromCssColors(
     cursor: get("--foreground"),
     cursorAccent: get("--sidebar"),
     selectionBackground: get("--muted"),
+    selectionInactiveBackground: get("--muted"),
     black: get("--ansi-0"),
     red: get("--ansi-1"),
     green: get("--ansi-2"),
@@ -503,7 +514,11 @@ interface ThreadTerminalViewProps {
   onSelectionAddToChat?: (text: string) => void;
   onSessionChange?: (session: TerminalSession) => void;
   onTitleChange?: TerminalTitleChangeHandler;
-  onProgressChange?: (progress: number | null) => void;
+  onProgressChange?: (
+    progress: number | null,
+    outputSeq?: number,
+    terminalId?: string,
+  ) => void;
   onCwdChange?: (cwd: string) => void;
   onUserInput?: () => void;
   session: TerminalSession;
@@ -1191,6 +1206,8 @@ export function ThreadTerminalView({
   const [terminalSearchAddon, setTerminalSearchAddon] =
     useState<TerminalSearchAddonInstance | null>(null);
   const [terminalSearchOpen, setTerminalSearchOpen] = useState(false);
+  const terminalSearchOpenRef = useRef(false);
+  terminalSearchOpenRef.current = terminalSearchOpen;
   const [textSnapshot, setTextSnapshot] = useState<string | null>(null);
   const [textSnapshotInitialLine, setTextSnapshotInitialLine] = useState<
     number | null
@@ -1215,6 +1232,7 @@ export function ThreadTerminalView({
       link: null,
       selectionText: "",
     });
+  const viewRef = useRef<HTMLDivElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const webglVisibilityRef = useRef<ReturnType<
     typeof observeTerminalWebglVisibility
@@ -1267,6 +1285,11 @@ export function ThreadTerminalView({
   const preferredTheme = usePreferredTheme();
   const appThemeEpoch = useAppThemeEpoch();
   const appNavigation = useAppNavigationHost();
+  const appNavigationRef = useRef(appNavigation);
+  useEffect(() => {
+    appNavigationRef.current = appNavigation;
+  }, [appNavigation]);
+  const commandRunner = useAppCommandRunner();
   const handleOpenLinkByPreference = useCallback<MarkdownPreviewLinkHandler>(
     ({ href }) => appNavigation.openUrl({ url: href }),
     [appNavigation],
@@ -1347,6 +1370,36 @@ export function ThreadTerminalView({
     }
     clearTerminalSelection();
   }, [clearTerminalSelection]);
+
+  const isTerminalCommandAvailable = ({
+    target,
+  }: {
+    target: EventTarget | null;
+  }) =>
+    terminalRef.current !== null &&
+    (target === null ||
+      (target instanceof Node && viewRef.current?.contains(target) === true));
+  useAppCommandHandler(
+    "terminal.find",
+    () => {
+      setActiveSelection(null);
+      setTerminalSearchOpen(true);
+      return true;
+    },
+    0,
+    isPanelOpen,
+    isTerminalCommandAvailable,
+  );
+  const handleTerminalCommandKeyDown = (event: ReactKeyboardEvent) => {
+    const command = commandRunner.getShortcutCommand(event.nativeEvent, [
+      "terminal.find",
+    ]);
+    if (command === null || !commandRunner.dispatch(command, event.target)) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+  };
 
   const updateHoveredTerminalLink = useCallback(
     (target: TerminalLinkTarget | null) => {
@@ -1585,7 +1638,9 @@ export function ThreadTerminalView({
         return buffer ? buffer.baseY + buffer.cursorY : 0;
       },
     });
+    let parsingOutputSequence: number | null = null;
     const recordOutputStart = (sequence: number) => {
+      parsingOutputSequence = sequence;
       const outputAnchor = outputLineAnchorTracker.recordOutputStart(sequence);
       if (!outputAnchor) return;
       outputLineAnchors.push(outputAnchor);
@@ -1794,7 +1849,11 @@ export function ThreadTerminalView({
         (payload) => {
           const progress = parseTerminalProgressOsc(payload);
           if (progress === undefined) return false;
-          onProgressChangeRef.current?.(progress);
+          onProgressChangeRef.current?.(
+            progress,
+            parsingOutputSequence ?? undefined,
+            session.id,
+          );
           return true;
         },
       );
@@ -1898,6 +1957,21 @@ export function ThreadTerminalView({
           afterResize: () => clearLiveViewportBeforeGridResize(),
         },
       );
+      let reportedCwd: string | null = null;
+      terminal.parser.registerOscHandler(7, (data) => {
+        reportedCwd = parseTerminalReportedCwd(data) ?? reportedCwd;
+        return false;
+      });
+      terminal.registerLinkProvider(
+        createTerminalFileLinkProvider({
+          terminal,
+          getCwd: () => reportedCwd ?? sessionRef.current.initialCwd,
+          hostId: sessionRef.current.hostId,
+          openFile: (intent) => {
+            appNavigationRef.current.openFilePreview(intent);
+          },
+        }),
+      );
       fitAddon = new LoadedFitAddon();
       terminal.loadAddon(fitAddon);
       terminal.loadAddon(new Unicode11Addon());
@@ -1924,7 +1998,7 @@ export function ThreadTerminalView({
             terminal.loadAddon(
               new WebLinksAddon(
                 (event, uri) => {
-                  if (event.button !== 0) return;
+                  if (!isTerminalLinkActivation(event)) return;
                   requestOpenTerminalLink({ source: "detected-url", uri });
                 },
                 {
@@ -2446,6 +2520,7 @@ export function ThreadTerminalView({
           replayPreview = null;
           activeTerminal.reset();
           outputBoundaries.reset();
+          parsingOutputSequence = null;
           outputLineAnchorTracker.reset();
           writeTerminalStatus({
             terminal: activeTerminal,
@@ -2626,10 +2701,12 @@ export function ThreadTerminalView({
           handleTerminalPointerRelease(event);
         },
         onPointerCancel: handleTerminalPointerCancel,
-        onSelection: (text) =>
-          reportTerminalSelection(lastPointerReleaseAnchorRef.current, text),
+        onSelection: (text) => {
+          if (terminalSearchOpenRef.current) return;
+          reportTerminalSelection(lastPointerReleaseAnchorRef.current, text);
+        },
         copySelection: (text) => {
-          if (copyOnSelectRef.current) {
+          if (copyOnSelectRef.current && !terminalSearchOpenRef.current) {
             copyTerminalSelectionOnSelect(text);
           }
         },
@@ -2927,7 +3004,12 @@ export function ThreadTerminalView({
   const contextMenuLink = contextMenuState.link;
   const contextMenuSelectionText = contextMenuState.selectionText;
   return (
-    <div className="flex h-full min-h-0 flex-col" data-app-terminal="">
+    <div
+      ref={viewRef}
+      className="flex h-full min-h-0 flex-col"
+      data-app-terminal=""
+      onKeyDownCapture={handleTerminalCommandKeyDown}
+    >
       <ContextMenu
         onOpenChange={(open) => {
           if (!open) {

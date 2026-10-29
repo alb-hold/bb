@@ -174,8 +174,8 @@ This index lists every command path that the core CLI registers, including alias
 
 For `focus`, `open-link`, `split`, and `move`, `deliveredClients` counts open
 app sockets the request was sent to; it does not confirm receipt or application.
-`focus` and `split` send only to app clients viewing the calling thread unless
-`--all` is passed.
+`focus`, `open-link`, `split`, `move`, and `bb thread open` send only to app
+clients viewing the calling thread unless `--all` is passed.
 
 ## thread
 
@@ -264,21 +264,7 @@ app sockets the request was sent to; it does not confirm receipt or application.
 - `bb environment cleanup`
 - `bb environment show`
 - `bb environment get`
-- `bb environment status`
-- `bb environment branches`
 - `bb environment paths`
-- `bb environment diff`
-- `bb environment diff-files`
-- `bb environment diff-file`
-- `bb environment diff-patch`
-- `bb environment diff-viewed`
-- `bb environment diff-viewed list`
-
-  Repeat `--path` for a bounded lookup.
-
-- `bb environment diff-viewed mark`
-- `bb environment diff-viewed unmark`
-- `bb environment diff-viewed clear`
 - `bb environment update`
 - `bb environment commit`
 - `bb environment archive-threads`

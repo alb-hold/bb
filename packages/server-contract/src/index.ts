@@ -11,6 +11,7 @@ export * from "./device-handoff-identity.js";
 export * from "./errors.js";
 export * from "./public-api.js";
 export * from "./thread-timeline.js";
+export * from "./thread-timeline-delta.js";
 
 export { typedRoutes } from "@bb/hono-typed-routes";
 
@@ -28,5 +29,3 @@ export type {
 } from "@bb/domain";
 
 export * from "./api/machine-environment.js";
-
-export * from "./client-route-descriptors.js";

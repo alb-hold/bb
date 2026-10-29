@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { setupMigratedConnectionTemplate } from "@bb/db/testing";
 import { readPositivePidFile } from "@bb/test-helpers";
 import { removePathWithRetry } from "./helpers/remove-path.js";
 import {
@@ -10,6 +11,7 @@ import {
   isProcessAlive,
   killProcessesHoldingFilesUnder,
 } from "./helpers/tmp-root-processes.js";
+import { setupBuiltinHostBuildRecords } from "./helpers/builtin-plugin-fixture.js";
 
 const STALE_TMP_ROOT_AGE_MS = 60 * 60_000;
 
@@ -51,5 +53,22 @@ async function sweepIntegrationTmpRoots(minAgeMs: number): Promise<void> {
 
 export default async function globalSetup(): Promise<() => Promise<void>> {
   await sweepIntegrationTmpRoots(STALE_TMP_ROOT_AGE_MS);
-  return () => sweepIntegrationTmpRoots(0);
+  const cleanupDatabaseTemplate = setupMigratedConnectionTemplate();
+  try {
+    const cleanupBuiltinRecords = await setupBuiltinHostBuildRecords();
+    return async () => {
+      try {
+        await sweepIntegrationTmpRoots(0);
+      } finally {
+        try {
+          cleanupDatabaseTemplate();
+        } finally {
+          await cleanupBuiltinRecords();
+        }
+      }
+    };
+  } catch (error) {
+    cleanupDatabaseTemplate();
+    throw error;
+  }
 }

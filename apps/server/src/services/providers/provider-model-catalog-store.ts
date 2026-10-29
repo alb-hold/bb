@@ -38,8 +38,7 @@ import {
 
 export const PROVIDER_MODEL_CATALOG_PUSH_COALESCE_MS = 250;
 export const PROVIDER_MODEL_CATALOG_MEMORY_ENTRY_LIMIT = 256;
-const FRESH_MS = 10 * 60_000;
-const VALIDATION_MIN_AGE_MS = 60_000;
+const FRESH_MS = 60_000;
 const FAILURE_TTL_MS = 30_000;
 const FAILURE_DETAIL_MAX_LENGTH = 300;
 const PREWARM_MIN_AGE_MS = 4 * 60 * 60_000;
@@ -67,6 +66,16 @@ type ProviderModelCatalogReadResult =
     };
 
 export interface ProviderModelCatalogStore {
+  remember(
+    deps: WorkSessionDeps,
+    args: {
+      hostId: string;
+      provider: ProviderInfo;
+      cwd: string | null;
+      models: AvailableModel[];
+      selectedOnlyModels: AvailableModel[];
+    },
+  ): Promise<void>;
   read(
     deps: WorkSessionDeps,
     args: {
@@ -244,12 +253,10 @@ function evaluate(
   const { failure, servable } = currentState(entry, fingerprint);
   const active = failure !== null && now - failure.failedAt < FAILURE_TTL_MS;
   if (servable !== null) {
-    const age = now - servable.fetchedAt;
+    const stale = !refreshed && !active && now - servable.fetchedAt >= FRESH_MS;
     if (
+      stale &&
       access.kind === "validation" &&
-      !refreshed &&
-      !active &&
-      age >= VALIDATION_MIN_AGE_MS &&
       lacksRequiredModel(servable, access.requiredModel)
     ) {
       return { kind: "wait" };
@@ -261,7 +268,7 @@ function evaluate(
         models: servable.models,
         selectedOnlyModels: servable.selectedOnlyModels,
       },
-      backgroundRefresh: !refreshed && !active && age >= FRESH_MS,
+      backgroundRefresh: stale,
     };
   }
   if (refreshed) {
@@ -537,6 +544,41 @@ export function createProviderModelCatalogStore(options: {
   }
 
   return {
+    async remember(deps, args) {
+      const launch = await resolveCatalogLaunch({
+        hostId: args.hostId,
+        providerId: args.provider.id,
+        bridgeLaunch: requireBridgeLaunchForProviderId(deps, args.provider.id),
+      });
+      const entry = loadEntry(deps, {
+        hostId: args.hostId,
+        providerId: args.provider.id,
+        scopeKey:
+          args.cwd !== null &&
+          providerModelCatalogDependsOnWorkspace(
+            args.provider.capabilities.modelCatalogScope,
+          )
+            ? args.cwd
+            : "",
+      });
+      const before = pickerView(entry, launch.fingerprint);
+      entry.refresh = null;
+      entry.failure = null;
+      entry.unavailableDetail = null;
+      entry.good = {
+        fingerprint: launch.fingerprint,
+        models: args.models,
+        selectedOnlyModels: args.selectedOnlyModels,
+        modelsJson: JSON.stringify(args.models),
+        selectedOnlyModelsJson: JSON.stringify(args.selectedOnlyModels),
+        fetchedAt: options.now(),
+      };
+      persistGood(deps, entry.key, entry.good);
+      if (before !== pickerView(entry, launch.fingerprint)) {
+        schedulePush(deps, args.hostId);
+      }
+    },
+
     async read(deps, args) {
       const launch = await resolveCatalogLaunch({
         hostId: args.hostId,

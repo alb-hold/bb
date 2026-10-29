@@ -223,9 +223,18 @@ export function createFrpHooks(options: FrpHookOptions) {
     });
     const connectionOpen = options.connectionOpen;
     const owner = record.owner;
-    if (connectionOpen !== undefined && owner !== null) {
+    if (
+      record.subdomain !== record.label &&
+      connectionOpen !== undefined &&
+      owner !== null
+    ) {
       setTimeout(() => {
-        if (connectionOpen(owner)) {
+        if (
+          connectionOpen(owner) &&
+          ![...proxies.values()].some(
+            (current) => current.subdomain === record.subdomain,
+          )
+        ) {
           directory.removed(record.subdomain);
         }
       }, REMOVAL_SETTLE_MS).unref();

@@ -70,8 +70,10 @@ tiers per model, in which case the model accepts every tier the provider
 lists). Pass a tier id to `--service-tier`; a tier the provider does not list
 is rejected.
 
-Model lists answer from the machine's last stored list while a background
-refresh runs, so a list can be hours old. A provider whose refresh keeps
+Model lists answer from the machine's last stored list. A request for a list
+more than a minute old starts a background refresh, and open model pickers
+update when it changes the list. The first request after a quiet period can
+therefore return a list that is hours old. A provider whose refresh keeps
 failing or timing out keeps answering from its last stored list.
 
 When no list can be served, bb provider models prints the failing provider,
@@ -128,7 +130,8 @@ browser there.
 Claude Code's native Workflow tool can be disabled separately on its provider
 page. This preference also defaults off and applies to newly started, resumed,
 or forked provider sessions. Claude Code plugin settings (`disable1MContext`,
-`chromeEnabled`, `artifactsEnabled`, `sandboxEnabled`) are set with
+`chromeEnabled`, `artifactsEnabled`, `sandboxEnabled`,
+`fullAccessApprovalsEnabled`) are set with
 `bb plugin config provider-claude-code set <key> <value>` and documented in the
 claude-code-provider skill.
 

@@ -205,6 +205,28 @@ describe("bb terminal command output", () => {
         },
       },
     ],
+    [
+      "open-link",
+      ["terminal", "open-link", "term-1", "http://localhost:3000"],
+      {
+        terminalAction: {
+          action: "openBrowser",
+          terminalId: "term-1",
+          url: "http://localhost:3000",
+        },
+      },
+    ],
+    [
+      "move",
+      ["terminal", "move", "term-1", "--to-pane-of", "term-2"],
+      {
+        terminalLayoutAction: {
+          action: "move",
+          terminalId: "term-1",
+          targetTerminalId: "term-2",
+        },
+      },
+    ],
   ] as const)(
     "scopes %s to the caller thread unless --all is passed",
     async (_name, args, action) => {
@@ -214,7 +236,8 @@ describe("bb terminal command output", () => {
         skipReason: null,
       }));
       stubServerApi({
-        "v1.terminals.:terminalId.$get": async () => makeTerminalSession(),
+        "v1.terminals.:terminalId.$get": async ({ param }: { param: { terminalId: string } }) =>
+          makeTerminalSession({ id: param.terminalId }),
         "v1.threads.:id.open.$post": open,
       });
 
@@ -267,8 +290,49 @@ describe("bb terminal command output", () => {
     },
   );
 
+  it.each([
+    [
+      "open-link",
+      ["terminal", "open-link", "term-1", "http://localhost:3000", "--json"],
+      { terminalId: "term-1", url: "http://localhost:3000" },
+    ],
+    [
+      "move",
+      ["terminal", "move", "term-1", "--to-pane-of", "term-2", "--json"],
+      { terminalId: "term-1", targetTerminalId: "term-2" },
+    ],
+  ] as const)(
+    "fails %s with the skip reason and points to --all",
+    async (_name, args, payload) => {
+      stubServerApi({
+        "v1.terminals.:terminalId.$get": async () => makeTerminalSession(),
+        "v1.threads.:id.open.$post": async () => ({
+          deliveredClients: 0,
+          skipReason: "no_caller_thread",
+        }),
+      });
+
+      await expect(runCommand([...args], register)).rejects.toThrow(
+        "process.exit:1",
+      );
+
+      expect(
+        JSON.parse(collectLogPayloads(vi.mocked(console.log))[0]!),
+      ).toEqual({
+        ...payload,
+        deliveredClients: 0,
+        skipReason: "no_caller_thread",
+        error: {
+          code: "no_caller_thread",
+          message:
+            "Not run from a bb thread (BB_THREAD_ID is unset), so no open bb app client belongs to the caller; nothing was sent. Pass --all to send to every open bb app client",
+        },
+      });
+    },
+  );
+
   it("opens a URL through the app thread-open browser request", async () => {
-    const open = vi.fn(async () => ({ deliveredClients: 1 }));
+    const open = vi.fn(async () => ({ deliveredClients: 1, skipReason: null }));
     stubServerApi({
       "v1.terminals.:terminalId.$get": async () => makeTerminalSession(),
       "v1.threads.:id.open.$post": open,
@@ -322,7 +386,7 @@ describe("bb terminal command output", () => {
       .fn()
       .mockResolvedValueOnce(makeTerminalSession({ id: "term-1" }))
       .mockResolvedValueOnce(makeTerminalSession({ id: "term-2" }));
-    const open = vi.fn(async () => ({ deliveredClients: 1 }));
+    const open = vi.fn(async () => ({ deliveredClients: 1, skipReason: null }));
     stubServerApi({
       "v1.terminals.:terminalId.$get": get,
       "v1.threads.:id.open.$post": open,

@@ -6,16 +6,22 @@ import {
   type PanelFileSource,
   type ThreadOpenFile,
 } from "@bb/server-contract";
-import { action } from "../../action.js";
+import { action, CliExitError } from "../../action.js";
 import { createCliBbSdk } from "../../client.js";
 import { requireThreadId, resolveContextThreadId } from "../../context-env.js";
+import {
+  ALL_CLIENTS_OPTION_DESCRIPTION,
+  openDeliveryScope,
+  SKIP_REASON_MESSAGES,
+  type OpenDeliveryOptions,
+} from "../../open-delivery.js";
 import {
   outputJson,
   printThreadContextLabel,
   type ResolvedId,
 } from "../helpers.js";
 
-interface ThreadOpenCommandOptions {
+interface ThreadOpenCommandOptions extends OpenDeliveryOptions {
   line?: string;
   json?: boolean;
   split?: string;
@@ -40,7 +46,9 @@ export function registerOpenCommand(
 ): void {
   parent
     .command("open")
-    .description("Open a BB thread, optionally with a file in its panel")
+    .description(
+      "Open a BB thread, optionally with a file in its panel, in the app clients viewing the current thread",
+    )
     .usage("[id] [path] [options]")
     .argument(
       "[id]",
@@ -52,6 +60,7 @@ export function registerOpenCommand(
       "--split <placement>",
       "Open in right, down, left, top, or replace placement; edge placements add panes through pane 8, then replace the focused pane",
     )
+    .option("--all", ALL_CLIENTS_OPTION_DESCRIPTION)
     .option("--json", "Print machine-readable JSON output")
     .action(
       action(
@@ -86,7 +95,16 @@ export function registerOpenCommand(
             threadId: target.threadId,
             ...(requestedSplit === undefined ? {} : { split: requestedSplit }),
             file,
+            ...openDeliveryScope(opts),
           });
+          const skipReason = result.skipReason;
+          const skipError =
+            skipReason === null
+              ? null
+              : new CliExitError(SKIP_REASON_MESSAGES[skipReason], 1, {
+                  code: skipReason,
+                  hint: null,
+                });
 
           if (
             outputJson(opts, {
@@ -95,10 +113,18 @@ export function registerOpenCommand(
               file,
               deliveredClients: result.deliveredClients,
               inputPath: target.inputPath,
+              ...(skipReason === null || skipError === null
+                ? {}
+                : {
+                    skipReason,
+                    error: { code: skipReason, message: skipError.message },
+                  }),
             })
           ) {
+            if (skipError !== null) throw skipError;
             return;
           }
+          if (skipError !== null) throw skipError;
 
           printThreadContextLabel(target.resolved);
           console.log(`Thread: ${target.threadId}`);

@@ -35,6 +35,7 @@ import {
   getThreadEventScopeTurnId,
   maskResolvedProviderEnvironment,
   THREAD_SESSION_OPTIONS_STATE_KIND,
+  THREAD_PROVIDER_MODEL_CATALOG_STATE_KIND,
   requireThreadEventScopeTurnId,
   systemThreadInterruptedEventDataSchema,
   type ChildThreadOutcome,
@@ -77,6 +78,7 @@ import { applyLoggedThreadLifecycleEvent } from "../services/threads/lifecycle-o
 import { waitForPluginTurnFailed } from "../services/plugins/plugin-thread-events.js";
 import { loadFailedTurn, retryChain } from "../services/threads/turn-failed.js";
 import { dropSettledThreadSessionOptionSelections } from "../services/threads/thread-session-options.js";
+import { rememberSessionModelCatalog } from "../services/providers/session-model-catalog.js";
 import { applyTurnCompletedEvent } from "./turn-completed-events.js";
 import { generateFromProviderThreadName } from "../services/threads/title-generation.js";
 import {
@@ -561,6 +563,9 @@ async function applyEventEffects(
       }
 
       if (event.type === "thread/extensionState/updated") {
+        if (event.kind === THREAD_PROVIDER_MODEL_CATALOG_STATE_KIND) {
+          await rememberSessionModelCatalog(deps, entry);
+        }
         if (event.kind === THREAD_SESSION_OPTIONS_STATE_KIND) {
           dropSettledThreadSessionOptionSelections(deps, {
             threadId: entry.threadId,

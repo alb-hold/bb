@@ -100,6 +100,8 @@ function fakeCli(directory: string): { executable: string; record: string } {
       'const isFile = value !== null && !value.startsWith("{");',
       "const entry = {",
       "  argv,",
+      "  store: process.env.CLAUDE_SECURESTORAGE_CONFIG_DIR ?? null,",
+      "  configDir: process.env.CLAUDE_CONFIG_DIR ?? null,",
       "  value,",
       "  mode: isFile ? fs.statSync(value).mode & 0o777 : null,",
       '  contents: isFile ? fs.readFileSync(value, "utf8") : value,',
@@ -115,6 +117,8 @@ function fakeCli(directory: string): { executable: string; record: string } {
 
 interface FakeLaunch {
   argv: string[];
+  store: string | null;
+  configDir: string | null;
   value: string | null;
   mode: number | null;
   contents: string;
@@ -177,6 +181,29 @@ describe("pooled launch settings", () => {
     const file = launch.value ?? "";
     session.stop();
     await waitFor(() => (existsSync(file) ? undefined : true), 10_000);
+  });
+
+  it("leaves the owner's config dir and credential store variables as inherited", async () => {
+    const { launch, session } = await launchFake({
+      ...cleanBaseEnv(),
+      ...POOL_ENV,
+      CLAUDE_CONFIG_DIR: "/owner/config",
+      ANTHROPIC_BASE_URL: "http://127.0.0.1:9/hub",
+    });
+    expect(launch.configDir).toBe("/owner/config");
+    expect(launch.store).toBeNull();
+    session.stop();
+  });
+
+  it("leaves a configured credential store variable as inherited", async () => {
+    const { launch, session } = await launchFake({
+      ...cleanBaseEnv(),
+      ...POOL_ENV,
+      CLAUDE_SECURESTORAGE_CONFIG_DIR: "/owner/store",
+      ANTHROPIC_BASE_URL: "http://127.0.0.1:9/hub",
+    });
+    expect(launch.store).toBe("/owner/store");
+    session.stop();
   });
 
   it("keeps inline flag settings for a launch that is not pooled", async () => {

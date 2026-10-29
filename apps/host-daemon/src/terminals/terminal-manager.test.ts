@@ -10,12 +10,7 @@ import {
   stripTerminalGridMarkers,
 } from "@bb/domain";
 import type { HostWorkspace } from "@bb/host-workspace";
-import {
-  createDeferredPromise,
-  makeTempDir,
-  makeWorkspaceMergeBase,
-  makeWorkspaceStatus,
-} from "@bb/test-helpers";
+import { createDeferredPromise, makeTempDir } from "@bb/test-helpers";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { HostDaemonLogger } from "../logger.js";
 import { RuntimeManager } from "../runtime-manager.js";
@@ -303,26 +298,7 @@ function createFakeWorkspace(path: string): HostWorkspace {
       defaultBranch: "main",
     })),
     getAdditionalWorkspaceWriteRoots: vi.fn(async () => []),
-    getStatus: vi.fn(async () =>
-      makeWorkspaceStatus({
-        mergeBase: makeWorkspaceMergeBase(),
-      }),
-    ),
     getDefaultBranch: vi.fn(async () => "main"),
-    getDiff: vi.fn(async () => ({
-      diff: "",
-      files: "",
-      mergeBaseRef: null,
-      shortstat: "",
-      truncated: false,
-    })),
-    diffFiles: vi.fn(async () => ({
-      files: [],
-      shortstat: "",
-      mergeBaseRef: null,
-      truncated: false,
-    })),
-    diffPatch: vi.fn(async () => []),
     commit: vi.fn(async () => ({
       commitSha: "commit-1",
       commitSubject: "commit",
@@ -2933,6 +2909,48 @@ describe("TerminalManager", () => {
       {
         type: "terminal.exited",
         terminalId: "term-missing",
+        exitCode: null,
+        closeReason: "user",
+      },
+    ]);
+  });
+
+  it("treats a repeated close as a no-op that never touches another terminal", async () => {
+    const harness = createHarness();
+    const first = await openTerminalWithId(harness, "term-1");
+    const second = await openTerminalWithId(harness, "term-2");
+
+    await harness.manager.handleMessage({
+      type: "terminal.close",
+      terminalId: "term-1",
+      reason: "user",
+    });
+    await harness.manager.handleMessage({
+      type: "terminal.close",
+      terminalId: "term-1",
+      reason: "user",
+    });
+    first.emitExit(0);
+    await harness.manager.handleMessage({
+      type: "terminal.close",
+      terminalId: "term-1",
+      reason: "user",
+    });
+
+    expect(first.killCalls).toEqual([null]);
+    expect(second.killCalls).toEqual([]);
+    expect(
+      harness.messages.filter((message) => message.type === "terminal.exited"),
+    ).toEqual([
+      {
+        type: "terminal.exited",
+        terminalId: "term-1",
+        exitCode: 0,
+        closeReason: "user",
+      },
+      {
+        type: "terminal.exited",
+        terminalId: "term-1",
         exitCode: null,
         closeReason: "user",
       },

@@ -58,6 +58,7 @@ function target(id: string): PluginThreadActionTarget {
     archivedAt: null,
     pinnedAt: null,
     sectionId: null,
+    parentNotifications: "auto",
     isUnread: false,
     status: "idle",
     environment: { id: "env_a", path: "/workspace" },
@@ -153,6 +154,7 @@ describe("thread menu mode for threads the app has not loaded", () => {
             thread: target(id),
             data: result.current,
             navigate: {} as BbNavigate,
+            experimental_panel: {} as never,
             sdk: {} as never,
           })?.label ?? null,
         ]),
@@ -211,6 +213,7 @@ describe("thread menu mode for threads the app has not loaded", () => {
         thread: target("thr_terminal"),
         data: result.current,
         navigate: {} as BbNavigate,
+        experimental_panel: {} as never,
         sdk: {} as never,
       })?.label ?? null;
     await waitFor(() => expect(label()).toBe("Back to chat"));

@@ -187,6 +187,12 @@ export const experimental_useQuestionFormHost = runtimeFunction(
   "experimental_useQuestionFormHost",
 );
 export const useBbNavigate = runtimeFunction("useBbNavigate");
+export const experimental_useCanOpenFileExternally = runtimeFunction(
+  "experimental_useCanOpenFileExternally",
+);
+export const experimental_useTabVisible = runtimeFunction(
+  "experimental_useTabVisible",
+);
 export const experimental_useAppPanel = runtimeFunction(
   "experimental_useAppPanel",
 );
@@ -314,6 +320,9 @@ export const ThreadTitle = runtimeComponent("ThreadTitle");
 export const experimental_ThreadStatusGlyph = runtimeComponent(
   "experimental_ThreadStatusGlyph",
 );
+export const experimental_ThreadRowMetadata = runtimeComponent(
+  "experimental_ThreadRowMetadata",
+);
 export const useEnvironmentProviders = runtimeFunction(
   "useEnvironmentProviders",
 );
@@ -334,3 +343,10 @@ export const experimental_copyToClipboard = runtimeFunction(
   "experimental_copyToClipboard",
 );
 export const experimental_saveFile = runtimeFunction("experimental_saveFile");
+
+export const experimental_getApplicationLinkApprovals = runtimeFunction(
+  "experimental_getApplicationLinkApprovals",
+);
+export const experimental_revokeApplicationLinkApproval = runtimeFunction(
+  "experimental_revokeApplicationLinkApproval",
+);

@@ -74,3 +74,17 @@ export function classifyOAuthProxyRequest(
     return { kind: "local", status: 204, body: null };
   return DENY;
 }
+
+export function oauthProxyRouteLabel(target: string): string {
+  const queryStart = target.indexOf("?");
+  const pathname = queryStart === -1 ? target : target.slice(0, queryStart);
+  if (pathname.startsWith("/api/frame/")) return "/api/frame/*";
+  if (EVAL_PATH.test(pathname)) return "/api/eval/sdk-*";
+  if (
+    pathname === ARTIFACT_MCP_PATH ||
+    pathname === "/api/claude_code/policy_limits" ||
+    pathname === "/api/claude_cli/bootstrap"
+  )
+    return pathname;
+  return "unclassified";
+}

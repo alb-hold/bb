@@ -1,7 +1,9 @@
 import {
+  getThreadRowProgressOutputSeqs,
   getThreadRowProgressSourceTerminalId,
   getThreadRowState,
   putThreadRowState,
+  raiseThreadRowProgressOutputSeqs,
 } from "@bb/db";
 import {
   publicApiRoutes,
@@ -62,11 +64,49 @@ export function registerThreadRowStateRoutes(app: Hono, deps: AppDeps): void {
       deps.db,
       thread.id,
     );
+    const reportedSeq =
+      (request.action === "progress-set" ||
+        request.action === "progress-clear") &&
+      request.terminalId !== undefined &&
+      request.outputSeq !== undefined
+        ? { terminalId: request.terminalId, outputSeq: request.outputSeq }
+        : null;
+    if (reportedSeq !== null) {
+      const mark = getThreadRowProgressOutputSeqs(deps.db, thread.id)[
+        reportedSeq.terminalId
+      ];
+      if (mark !== undefined && reportedSeq.outputSeq <= mark) {
+        return context.json(current);
+      }
+    }
+    const raiseOutputSeqs = () => {
+      if (reportedSeq !== null) {
+        raiseThreadRowProgressOutputSeqs(deps.db, thread.id, {
+          [reportedSeq.terminalId]: reportedSeq.outputSeq,
+        });
+        return;
+      }
+      if (
+        request.action === "progress-set" ||
+        request.action === "progress-clear" ||
+        request.action === "clear"
+      ) {
+        raiseThreadRowProgressOutputSeqs(
+          deps.db,
+          thread.id,
+          deps.terminalSessions.latestThreadOutputSeqs(
+            thread.id,
+            request.action === "clear" ? undefined : request.terminalId,
+          ),
+        );
+      }
+    };
     if (
       request.action === "progress-clear" &&
       request.force !== true &&
       (request.terminalId ?? null) !== currentSourceTerminalId
     ) {
+      raiseOutputSeqs();
       return context.json(current);
     }
     const next = threadRowStateSchema.safeParse(applyUpdate(current, request));
@@ -84,6 +124,7 @@ export function registerThreadRowStateRoutes(app: Hono, deps: AppDeps): void {
           ? null
           : currentSourceTerminalId;
     putThreadRowState(deps.db, thread.id, next.data, sourceTerminalId);
+    raiseOutputSeqs();
     deps.hub.notifyThread(thread.id, ["status-changed"]);
     deps.hub.notifyProject(thread.projectId, ["threads-changed"]);
     return context.json(next.data);
