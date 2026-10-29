@@ -1663,7 +1663,7 @@ export function ThreadTerminalView({
     let replayPreview: {
       dispose(): void;
       release(): void;
-    rearmHold(): void;
+    hold(options: { countdown: boolean }): void;
       resize(cols: number, rows: number): Promise<void>;
       setFitGrid(cols: number, rows: number): void;
       setLatestPtyGrid(cols: number, rows: number): void;
@@ -2245,7 +2245,13 @@ export function ThreadTerminalView({
             return;
           }
           if (state === "closed") releaseReplayPreview();
-          if (state === "reconnecting") replayPreview?.rearmHold();
+          if (
+            state === "reconnecting" &&
+            !replayCompleted &&
+            replayCheckpointSequence === null
+          ) {
+            replayPreview?.hold({ countdown: false });
+          }
           if (state === "reconnecting") {
             repaintAfterReconnect = true;
             if (reconnecting) {
@@ -2408,7 +2414,6 @@ export function ThreadTerminalView({
             onReplayStart: () => {
               viewportReplaySaveGate.beginReplay();
               replayCompleted = false;
-              replayPreview?.rearmHold();
               if (replayCheckpointSequence === null || replayPreview === null) {
                 replayPreview?.dispose();
                 const replayGrid = latestPtyGrid;

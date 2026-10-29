@@ -38,7 +38,7 @@ export function mountTerminalReplayPreview({
 }): {
   dispose(): void;
   release(): void;
-  rearmHold(): void;
+  hold(options: { countdown: boolean }): void;
   resize(cols: number, rows: number): Promise<void>;
   setPtyGrid(cols: number, rows: number): void;
   setLatestPtyGrid(cols: number, rows: number): void;
@@ -244,14 +244,27 @@ export function mountTerminalReplayPreview({
   };
   const armHoldTimeout = () => {
     clearHoldTimeout();
-    holdTimeout = window.setTimeout(release, TERMINAL_REPLAY_PREVIEW_HOLD_TIMEOUT_MS);
+    holdTimeout = window.setTimeout(
+      expireHold,
+      TERMINAL_REPLAY_PREVIEW_HOLD_TIMEOUT_MS,
+    );
+  };
+  const expireHold = () => {
+    if (disposed || !held) return;
+    preview.dataset.terminalReplayHoldExpired = "";
+    release();
   };
   if (held) armHoldTimeout();
   return {
     release,
-    rearmHold() {
-      if (disposed || !held) return;
-      armHoldTimeout();
+    hold({ countdown }) {
+      if (disposed) return;
+      held = true;
+      preview.dataset.terminalReplayHeld = "";
+      delete preview.dataset.terminalReplayHoldExpired;
+      if (countdown) armHoldTimeout();
+      else clearHoldTimeout();
+      updateVisibility();
     },
     resize(cols, rows) {
       if (disposed) return Promise.resolve();

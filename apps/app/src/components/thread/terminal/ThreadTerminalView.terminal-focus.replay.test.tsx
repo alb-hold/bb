@@ -784,6 +784,111 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
     );
   });
 
+  function shortenReplayHoldTimeout(ms: number) {
+    const realSetTimeout = window.setTimeout.bind(window);
+    vi.spyOn(window, "setTimeout").mockImplementation(((
+      handler: TimerHandler,
+      delay?: number,
+      ...args: unknown[]
+    ) =>
+      realSetTimeout(
+        handler,
+        delay === terminalReplayPreview.TERMINAL_REPLAY_PREVIEW_HOLD_TIMEOUT_MS
+          ? ms
+          : delay,
+        ...args,
+      )) as typeof window.setTimeout);
+  }
+
+  const pause = (ms: number) =>
+    act(async () => {
+      await new Promise((resolve) => window.setTimeout(resolve, ms));
+    });
+
+  it("keeps the preview hidden through a reconnect that outlasts the hold timeout and holds again for the retry", async () => {
+    const { bufferText, preview, session, socket } =
+      await mountReplayWithUnusableSnapshot();
+    shortenReplayHoldTimeout(1000);
+    testState.deferSocketOpen = true;
+    socket.disconnect();
+    await waitForReadinessCondition(
+      () => expect(testState.sockets).toHaveLength(2),
+      "terminal did not reconnect",
+    );
+    await pause(1600);
+    expect(preview()?.dataset.terminalReplayHeld).toBeDefined();
+    expect(preview()?.dataset.terminalReplayHoldExpired).toBeUndefined();
+    expect(preview()?.style.visibility).toBe("hidden");
+
+    const reconnectSocket = testState.sockets[1];
+    if (!reconnectSocket) throw new Error("reconnect socket is missing");
+    reconnectSocket.open();
+    reconnectSocket.receive({
+      type: "attached",
+      session,
+      replayStartSeq: 2,
+      nextSeq: 5,
+    });
+    reconnectSocket.receive({
+      type: "output",
+      chunk: { seq: 2, dataBase64: btoa("retried history\r\n") },
+    });
+    await waitForReadinessCondition(
+      () => expect(bufferText()).toContain("retried history"),
+      "retried replay output was not parsed",
+    );
+    expect(preview()?.dataset.terminalReplayHeld).toBeDefined();
+    expect(preview()?.style.visibility).toBe("hidden");
+
+    reconnectSocket.receive({
+      type: "output",
+      chunk: { seq: 3, dataBase64: btoa("more retried history\r\n") },
+    });
+    reconnectSocket.receive({
+      type: "output",
+      chunk: { seq: 4, dataBase64: btoa("current frame\r\n") },
+    });
+    await waitForReadinessCondition(
+      () => expect(preview()?.dataset.terminalReplayHeld).toBeUndefined(),
+      "replay preview stayed held after the retried replay completed",
+    );
+  });
+
+  it("flags the backstop for a replay attempt that outlasts it and holds again for the next attempt", async () => {
+    const { preview, session, socket } =
+      await mountReplayWithUnusableSnapshot();
+    shortenReplayHoldTimeout(300);
+    testState.deferSocketOpen = true;
+    let current = socket;
+    for (const attempt of [1, 2]) {
+      current.disconnect();
+      await waitForReadinessCondition(
+        () => expect(testState.sockets).toHaveLength(attempt + 1),
+        "terminal did not reconnect",
+      );
+      expect(preview()?.dataset.terminalReplayHeld).toBeDefined();
+      expect(preview()?.dataset.terminalReplayHoldExpired).toBeUndefined();
+      expect(preview()?.style.visibility).toBe("hidden");
+
+      const reconnectSocket = testState.sockets[attempt];
+      if (!reconnectSocket) throw new Error("reconnect socket is missing");
+      reconnectSocket.open();
+      reconnectSocket.receive({
+        type: "attached",
+        session,
+        replayStartSeq: 2,
+        nextSeq: 5,
+      });
+      await waitForReadinessCondition(
+        () =>
+          expect(preview()?.dataset.terminalReplayHoldExpired).toBeDefined(),
+        "hold backstop did not fire for the stalled attempt",
+      );
+      expect(preview()?.dataset.terminalReplayHeld).toBeUndefined();
+      current = reconnectSocket;
+    }
+  });
+
   it("releases the held preview when the terminal process exits mid-replay", async () => {
     const { preview, session, socket } =
       await mountReplayWithUnusableSnapshot();
