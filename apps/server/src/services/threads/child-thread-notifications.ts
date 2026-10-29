@@ -273,22 +273,30 @@ async function getChildThreadCompletionOutput(
   const native = getNativeTerminalThread(deps.db, args.childThread.id);
   if (native === null) return null;
   if (native.terminalSessionId !== null) {
+    let deadline: ReturnType<typeof setTimeout> | undefined;
     try {
-      const screen = await deps.terminalSessions.readTerminalScreen({
-        terminalId: native.terminalSessionId,
-        query: { threadId: args.childThread.id },
-      });
-      const excerpt = screen.rows
+      const screen = await Promise.race([
+        deps.terminalSessions.readTerminalScreen({
+          terminalId: native.terminalSessionId,
+          query: { threadId: args.childThread.id },
+        }),
+        new Promise<null>((resolve) => {
+          deadline = setTimeout(() => resolve(null), 1_000);
+        }),
+      ]);
+      const excerpt = screen?.rows
         .map((row) => row.trim().slice(0, 240))
         .filter((row) => row.length > 0)
         .slice(-6)
         .join("\n");
-      if (excerpt.length > 0) return excerpt;
+      if (excerpt && excerpt.length > 0) return excerpt;
     } catch (error) {
       deps.logger.debug(
         { err: error, threadId: args.childThread.id },
         "Native child completion screen was unavailable",
       );
+    } finally {
+      if (deadline !== undefined) clearTimeout(deadline);
     }
   }
   return `${args.childThread.title ?? "Child thread"} turn ended.`;
