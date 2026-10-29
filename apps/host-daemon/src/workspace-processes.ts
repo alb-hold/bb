@@ -184,7 +184,7 @@ async function inspectDarwinWorkspaceProcesses(
 }> {
   const workspace = await canonicalPath(path.resolve(workspacePath));
   const uid = String(process.getuid!());
-  const lsofFlags = ["-w", "-n", "-Fpn"] as const;
+  const lsofFlags = ["-n", "-Fpn"] as const;
   const cwdRun = await execLsof([
     "-a",
     "-u",

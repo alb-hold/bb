@@ -245,7 +245,7 @@ describe("darwin workspace process inspection", () => {
     });
   });
 
-  it("treats a pid-only lsof record as unreadable", async () => {
+  it("treats a pid-only lsof record as unreadable for recovery refusal", async () => {
     vi.mocked(execHostFile).mockImplementation((async () => ({
       stdout: "p501\n",
       stderr: "",
@@ -273,6 +273,37 @@ describe("darwin workspace process inspection", () => {
       pids: [502],
       unreadablePids: [501],
     });
+  });
+
+  it("returns unsupported when lsof warns on stderr with no stdout", async () => {
+    vi.mocked(execHostFile).mockImplementation((async () => {
+      throw Object.assign(new Error("lsof exit 1"), {
+        code: 1,
+        stdout: "",
+        stderr: "lsof: can't access task for pid 123: Operation not permitted\n",
+      });
+    }) as never);
+    expect(await inspectWorkspaceProcesses("/ws/project")).toEqual({
+      supported: false,
+      pids: [],
+      unreadablePids: [],
+    });
+  });
+
+  it("does not pass -w so lsof warnings fail inspection", async () => {
+    vi.mocked(execHostFile).mockImplementation((async () => {
+      throw Object.assign(new Error("lsof exit 1"), {
+        code: 1,
+        stdout: "",
+        stderr: "",
+      });
+    }) as never);
+    vi.mocked(realpath).mockResolvedValue("/ws/project");
+    await inspectWorkspaceProcesses("/ws/project");
+    for (const call of vi.mocked(execHostFile).mock.calls) {
+      expect(call[0]).toBe("lsof");
+      expect(call[1]).not.toContain("-w");
+    }
   });
 
   it("treats exit 1 with empty stdout and stderr as no matching processes", async () => {
