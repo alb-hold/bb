@@ -164,6 +164,7 @@ export interface EnsureEnvironmentArgs {
   environmentId: string;
   injectedSkillSources?: readonly HostDaemonInjectedSkillSource[];
   setupScriptTimeoutMs?: number | null;
+  setupOperation?: { id: string; resumeOnly: boolean } | null;
   setupContributedEnv?: readonly HostDaemonContributedEnvEntry[];
   targetThreadId?: string;
   workspacePath?: string;
@@ -293,6 +294,7 @@ export class RuntimeManager {
     Promise<RuntimeEntry>
   >();
   private readonly pendingCatalogHashes = new Map<string, string>();
+  private readonly setupOperationIds = new Map<string, string>();
   private readonly pendingEnvironmentProvisions = new Map<
     string,
     PendingEnvironmentProvision
@@ -988,6 +990,13 @@ export class RuntimeManager {
     if (this.runtimesClosed) {
       throw new Error("Host daemon runtimes are shutting down");
     }
+    const resumed = args.setupOperation?.resumeOnly === true;
+    if (
+      resumed &&
+      this.setupOperationIds.get(args.environmentId) !== args.setupOperation?.id
+    ) {
+      throw this.unknownSetupOutcome(args.environmentId);
+    }
     const pending = this.pendingEnvironmentEnsures.get(args.environmentId);
     if (pending) {
       await pending;
@@ -1036,6 +1045,12 @@ export class RuntimeManager {
       }
     }
 
+    if (args.setupOperation?.resumeOnly === true) {
+      throw this.unknownSetupOutcome(args.environmentId);
+    }
+    if (args.setupOperation != null) {
+      this.setupOperationIds.set(args.environmentId, args.setupOperation.id);
+    }
     const pendingProvision = this.createPendingEnvironmentProvision(
       args.environmentId,
     );
@@ -1170,7 +1185,14 @@ export class RuntimeManager {
     return entry;
   }
 
+  private unknownSetupOutcome(environmentId: string): Error {
+    return new Error(
+      `The setup outcome of environment ${environmentId} is unknown after interruption. Archive its threads, inspect the workspace, then run bb environment cleanup ${environmentId} --recover.`,
+    );
+  }
+
   async forgetEnvironment(environmentId: string): Promise<void> {
+    this.setupOperationIds.delete(environmentId);
     const entry = await this.shutDownEntry(environmentId);
     if (!entry) {
       return;

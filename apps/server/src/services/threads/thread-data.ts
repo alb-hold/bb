@@ -195,6 +195,9 @@ export function getLastThreadErrorMessage(
   if (!row) return null;
   const eventRow = parseStoredEventRow(row);
   if (eventRow.type === "system/error") return eventRow.data.message;
+  if (eventRow.type === "provider/error") {
+    return eventRow.data.detail || eventRow.data.message;
+  }
   return eventRow.type === "turn/completed"
     ? (eventRow.data.error?.message ?? null)
     : null;

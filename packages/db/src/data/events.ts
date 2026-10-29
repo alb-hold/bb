@@ -4001,6 +4001,12 @@ export function getLatestThreadErrorEventRow(
               eq(sql`json_extract(${events.data}, '$.status')`, "failed"),
               sql`COALESCE(json_extract(${events.data}, '$.error.message'), '') <> ''`,
             ),
+            and(
+              eq(events.type, "provider/error"),
+              sql`COALESCE(json_extract(${events.data}, '$.willRetry'), 0) = 0`,
+              sql`COALESCE(NULLIF(json_extract(${events.data}, '$.detail'), ''), json_extract(${events.data}, '$.message'), '') <> ''`,
+              sql`${events.sequence} > COALESCE((SELECT MAX(requested.sequence) FROM events AS requested WHERE requested.thread_id = ${args.threadId} AND requested.type = 'client/turn/requested'), 0)`,
+            ),
           ),
         ),
       )

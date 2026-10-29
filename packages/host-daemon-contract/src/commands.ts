@@ -1017,6 +1017,10 @@ const unmanagedEnvironmentProvisionCommandSchema =
     .extend({
       path: z.string().min(1),
       setupScriptTimeoutMs: z.number().int().positive().nullable(),
+      setupOperation: z
+        .object({ id: z.string().min(1), resumeOnly: z.boolean() })
+        .strict()
+        .nullable(),
       contributedEnv: z.array(hostDaemonContributedEnvEntrySchema),
     })
     .strict();

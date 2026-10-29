@@ -33,6 +33,7 @@ describe("environment command dispatch", () => {
         initiator: null,
         path: sourcePath,
         setupScriptTimeoutMs: null,
+        setupOperation: null,
       },
       harness.dispatchOptions(),
     );
@@ -80,6 +81,7 @@ describe("environment command dispatch", () => {
         },
         path: sourcePath,
         setupScriptTimeoutMs: 10_000,
+        setupOperation: { id: "setup-op", resumeOnly: false },
       },
       makeDispatchOptions({
         runtimeManager: harness.manager,
@@ -120,6 +122,7 @@ describe("environment command dispatch", () => {
           initiator: null,
           path: sourcePath,
           setupScriptTimeoutMs: 10_000,
+          setupOperation: { id: "setup-op", resumeOnly: false },
         },
         harness.dispatchOptions(),
       ),
@@ -175,6 +178,7 @@ describe("environment command dispatch", () => {
         initiator: null,
         path: "/tmp/cancelled",
         setupScriptTimeoutMs: null,
+        setupOperation: null,
       },
       dispatchOptions,
     );
@@ -229,6 +233,7 @@ describe("environment command dispatch", () => {
         initiator: null,
         path: "/tmp/cancelled-no-settle",
         setupScriptTimeoutMs: null,
+        setupOperation: null,
       },
       dispatchOptions,
     ).finally(() => {
@@ -268,6 +273,7 @@ describe("environment command dispatch", () => {
         },
         path: sourcePath,
         setupScriptTimeoutMs: null,
+        setupOperation: null,
       },
       makeDispatchOptions({
         runtimeManager: harness.manager,
@@ -349,6 +355,7 @@ describe("environment command dispatch", () => {
         },
         path: "/tmp/batched-progress",
         setupScriptTimeoutMs: null,
+        setupOperation: null,
       },
       makeDispatchOptions({
         runtimeManager: manager,
@@ -408,6 +415,7 @@ describe("environment command dispatch", () => {
           },
           path: "/tmp/failure",
           setupScriptTimeoutMs: null,
+          setupOperation: null,
         },
         makeDispatchOptions({
           runtimeManager: manager,
@@ -445,6 +453,7 @@ describe("environment command dispatch", () => {
         initiator: null,
         path: sourcePath,
         setupScriptTimeoutMs: null,
+        setupOperation: null,
       },
       harness.dispatchOptions(),
     );
@@ -460,6 +469,7 @@ describe("environment command dispatch", () => {
         },
         path: sourcePath,
         setupScriptTimeoutMs: null,
+        setupOperation: null,
       },
       makeDispatchOptions({
         runtimeManager: harness.manager,
@@ -507,6 +517,7 @@ it("cancels setup with contributions even when another attach is waiting", async
     initiator: null,
     path: sourcePath,
     setupScriptTimeoutMs: 5000,
+    setupOperation: { id: "setup-op", resumeOnly: false },
   };
   const options = harness.dispatchOptions();
   const first = dispatchCommand(command, options);

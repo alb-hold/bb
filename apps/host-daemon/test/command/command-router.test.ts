@@ -191,6 +191,7 @@ function createEnvironmentProvisionCommand(): EnvironmentProvisionCommand {
     initiator: null,
     path: "/tmp/env-router",
     setupScriptTimeoutMs: null,
+    setupOperation: null,
   };
 }
 
