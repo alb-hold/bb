@@ -45,6 +45,7 @@ import {
   NATIVE_QUESTION_ANSWERED_REASON,
   rejectedQuestions,
 } from "./native-terminal-questions.js";
+import { flushNativeParentNotices } from "./native-parent-notices.js";
 import { reconcileNativeThreadStatus } from "./native-thread-status.js";
 import { buildThreadStatusChangeMetadata } from "./thread-runtime-display.js";
 
@@ -590,11 +591,13 @@ export function settleNativeTerminalTurn(
   deps: Pick<AppDeps, "db" | "hub" | "logger" | "providerRegistry">,
   threadId: string,
 ): void {
-  if (getThread(deps.db, threadId)?.status !== "active") return;
-  applyLoggedThreadLifecycleEvent(deps, {
-    event: { type: "run.succeeded" },
-    threadId,
-  });
+  if (getThread(deps.db, threadId)?.status === "active") {
+    applyLoggedThreadLifecycleEvent(deps, {
+      event: { type: "run.succeeded" },
+      threadId,
+    });
+  }
+  flushNativeParentNotices(deps, threadId);
 }
 
 function titleNativeThreadFromPrompt(
