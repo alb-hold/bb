@@ -556,20 +556,65 @@ export function registerThreadActionRoutes(app: Hono, deps: AppDeps): void {
     if (payload.file !== null) {
       parseSafeRelativeRoutePath(payload.file.path);
     }
-    const deliveredClients = deps.hub.notifyThreadOpen(
-      { projectId: publicThread.projectId, threadId: publicThread.id },
-      {
-        split: payload.split ?? "replace",
-        file: payload.file,
-        ...(payload.terminalAction === undefined
-          ? {}
-          : { terminalAction: payload.terminalAction }),
-        ...(payload.terminalLayoutAction === undefined
-          ? {}
-          : { terminalLayoutAction: payload.terminalLayoutAction }),
-      },
+    const openTarget = {
+      projectId: publicThread.projectId,
+      threadId: publicThread.id,
+    };
+    const notification = {
+      split: payload.split ?? ("replace" as const),
+      file: payload.file,
+      ...(payload.terminalAction === undefined
+        ? {}
+        : { terminalAction: payload.terminalAction }),
+      ...(payload.terminalLayoutAction === undefined
+        ? {}
+        : { terminalLayoutAction: payload.terminalLayoutAction }),
+    };
+    const callerScoped =
+      payload.terminalAction?.action === "focus" ||
+      payload.terminalLayoutAction?.action === "split";
+    if (
+      !callerScoped &&
+      (payload.callerThreadId !== undefined || payload.all !== undefined)
+    ) {
+      throw new ApiError(
+        400,
+        "invalid_request",
+        "callerThreadId and all apply only to terminal focus and split",
+      );
+    }
+    if (payload.all === true && payload.callerThreadId !== undefined) {
+      throw new ApiError(
+        400,
+        "invalid_request",
+        "callerThreadId cannot be combined with all",
+      );
+    }
+    if (!callerScoped || payload.all === true) {
+      return context.json({
+        deliveredClients: deps.hub.notifyThreadOpen(openTarget, notification),
+        skipReason: null,
+      });
+    }
+    if (payload.callerThreadId === undefined) {
+      return context.json({
+        deliveredClients: 0,
+        skipReason: "no_caller_thread" as const,
+      });
+    }
+    const callerThread = requirePublicThread(deps.db, payload.callerThreadId);
+    const deliveredClients = deps.hub.notifyThreadOpenToViewers(
+      openTarget,
+      notification,
+      callerThread.id,
     );
-    return context.json({ deliveredClients });
+    return context.json({
+      deliveredClients,
+      skipReason:
+        deliveredClients === 0
+          ? ("no_client_viewing_caller_thread" as const)
+          : null,
+    });
   });
 
   post(routes.paneAction, (context, payload) => {

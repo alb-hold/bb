@@ -92,7 +92,7 @@ describe("bb terminal command output", () => {
   });
 
   it("focuses a terminal through the app thread-open request", async () => {
-    const open = vi.fn(async () => ({ deliveredClients: 1 }));
+    const open = vi.fn(async () => ({ deliveredClients: 1, skipReason: null }));
     stubServerApi({
       "v1.terminals.:terminalId.$get": async () => makeTerminalSession(),
       "v1.threads.:id.open.$post": open,
@@ -115,7 +115,10 @@ describe("bb terminal command output", () => {
   it("fails terminal focus when no app client is open to apply the request", async () => {
     stubServerApi({
       "v1.terminals.:terminalId.$get": async () => makeTerminalSession(),
-      "v1.threads.:id.open.$post": async () => ({ deliveredClients: 0 }),
+      "v1.threads.:id.open.$post": async () => ({
+        deliveredClients: 0,
+        skipReason: null,
+      }),
     });
 
     await expect(
@@ -135,7 +138,10 @@ describe("bb terminal command output", () => {
   ] as const)("reports zero delivery in %s JSON", async (_name, args) => {
     stubServerApi({
       "v1.terminals.:terminalId.$get": async () => makeTerminalSession(),
-      "v1.threads.:id.open.$post": async () => ({ deliveredClients: 0 }),
+      "v1.threads.:id.open.$post": async () => ({
+        deliveredClients: 0,
+        skipReason: null,
+      }),
     });
 
     await expect(runCommand([...args], register)).rejects.toThrow(
@@ -165,7 +171,10 @@ describe("bb terminal command output", () => {
     async (_name, args, payload) => {
       stubServerApi({
         "v1.terminals.:terminalId.$get": async () => makeTerminalSession(),
-        "v1.threads.:id.open.$post": async () => ({ deliveredClients: 1 }),
+        "v1.threads.:id.open.$post": async () => ({
+          deliveredClients: 1,
+          skipReason: null,
+        }),
       });
 
       await runCommand([...args], register);
@@ -175,6 +184,85 @@ describe("bb terminal command output", () => {
       ).toEqual({
         ...payload,
         deliveredClients: 1,
+      });
+    },
+  );
+
+  it.each([
+    [
+      "focus",
+      ["terminal", "focus", "term-1"],
+      { terminalAction: { action: "focus", terminalId: "term-1" } },
+    ],
+    [
+      "split",
+      ["terminal", "split", "term-1", "--side", "down"],
+      {
+        terminalLayoutAction: {
+          action: "split",
+          terminalId: "term-1",
+          side: "down",
+        },
+      },
+    ],
+  ] as const)(
+    "scopes %s to the caller thread unless --all is passed",
+    async (_name, args, action) => {
+      vi.stubEnv("BB_THREAD_ID", "thr-caller");
+      const open = vi.fn(async () => ({
+        deliveredClients: 1,
+        skipReason: null,
+      }));
+      stubServerApi({
+        "v1.terminals.:terminalId.$get": async () => makeTerminalSession(),
+        "v1.threads.:id.open.$post": open,
+      });
+
+      await runCommand([...args], register);
+      await runCommand([...args, "--all"], register);
+
+      expect(open).toHaveBeenNthCalledWith(1, {
+        param: { id: "thr-1" },
+        json: { file: null, ...action, callerThreadId: "thr-caller" },
+      });
+      expect(open).toHaveBeenNthCalledWith(2, {
+        param: { id: "thr-1" },
+        json: { file: null, ...action, all: true },
+      });
+    },
+  );
+
+  it.each([
+    [
+      "no_caller_thread",
+      "Not run from a bb thread (BB_THREAD_ID is unset), so no open bb app client belongs to the caller; nothing was sent. Pass --all to send to every open bb app client",
+    ],
+    [
+      "no_client_viewing_caller_thread",
+      "No open bb app client is viewing this thread; nothing was sent. Pass --all to send to every open bb app client",
+    ],
+  ] as const)(
+    "fails with the %s reason and points to --all",
+    async (skipReason, message) => {
+      stubServerApi({
+        "v1.terminals.:terminalId.$get": async () => makeTerminalSession(),
+        "v1.threads.:id.open.$post": async () => ({
+          deliveredClients: 0,
+          skipReason,
+        }),
+      });
+
+      await expect(
+        runCommand(["terminal", "focus", "term-1", "--json"], register),
+      ).rejects.toThrow("process.exit:1");
+
+      expect(
+        JSON.parse(collectLogPayloads(vi.mocked(console.log))[0]!),
+      ).toEqual({
+        terminalId: "term-1",
+        deliveredClients: 0,
+        skipReason,
+        error: { code: skipReason, message },
       });
     },
   );
@@ -205,7 +293,7 @@ describe("bb terminal command output", () => {
   });
 
   it("splits a terminal to a requested sidebar side", async () => {
-    const open = vi.fn(async () => ({ deliveredClients: 1 }));
+    const open = vi.fn(async () => ({ deliveredClients: 1, skipReason: null }));
     stubServerApi({
       "v1.terminals.:terminalId.$get": async () => makeTerminalSession(),
       "v1.threads.:id.open.$post": open,
@@ -272,7 +360,10 @@ describe("bb terminal command output", () => {
       );
       stubServerApi({
         "v1.terminals.:terminalId.$get": get,
-        "v1.threads.:id.open.$post": async () => ({ deliveredClients }),
+        "v1.threads.:id.open.$post": async () => ({
+          deliveredClients,
+          skipReason: null,
+        }),
       });
       const result = runCommand([...args], register);
       if (deliveredClients === 0) {

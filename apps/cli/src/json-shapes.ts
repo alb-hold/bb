@@ -31,11 +31,11 @@ export const JSON_SHAPE_BY_COMMAND_PATH: Readonly<Record<string, string>> = {
   "terminal surfaces":
     "{threadId, surfaces: [{threadId, terminalId, title, status, kind}]}    (thread-scoped terminal surfaces)",
   "terminal focus":
-    "{terminalId, deliveredClients, error?: {code, message} when deliveredClients is 0}",
+    "{terminalId, deliveredClients, skipReason?: \"no_caller_thread\" | \"no_client_viewing_caller_thread\", error?: {code, message} when deliveredClients is 0}",
   "terminal open-link":
     "{terminalId, url, deliveredClients, error?: {code, message} when deliveredClients is 0}",
   "terminal split":
-    "{terminalId, side, deliveredClients, error?: {code, message} when deliveredClients is 0}",
+    "{terminalId, side, deliveredClients, skipReason?: \"no_caller_thread\" | \"no_client_viewing_caller_thread\", error?: {code, message} when deliveredClients is 0}",
   "terminal move":
     "{terminalId, targetTerminalId, deliveredClients, error?: {code, message} when deliveredClients is 0}",
   "thread open": "{threadId, split, file, deliveredClients, inputPath}",
