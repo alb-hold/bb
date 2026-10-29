@@ -23,6 +23,23 @@ const sessions = recorded.parse(
   ),
 );
 
+const claudeSessions = z
+  .object({
+    idle: z.object({ chunks: z.array(chunkSchema) }),
+    spaces: z.object({ chunks: z.array(chunkSchema) }),
+  })
+  .parse(
+    JSON.parse(
+      readFileSync(
+        new URL(
+          "../fixtures/native-terminal/claude-prompt-sessions.json",
+          import.meta.url,
+        ),
+        "utf8",
+      ),
+    ),
+  );
+
 const toBase64 = (bytes: string) =>
   Buffer.from(bytes, "utf8").toString("base64");
 
@@ -100,6 +117,35 @@ describe("the input-box check on recorded Codex screens", () => {
   it("cannot call a Codex prompt empty from rendered rows alone", async () => {
     const screen = await promptScreenAfter(codexIdle);
     expect(terminalScreenInputBoxIsEmpty({ rows: screen.rows })).toBe(false);
+  });
+});
+
+describe("the input-box check on recorded Claude screens", () => {
+  const idle = claudeSessions.idle.chunks.map((chunk) => chunk.dataBase64);
+  const spaces = claudeSessions.spaces.chunks.map((chunk) => chunk.dataBase64);
+
+  it("reads the real idle Claude prompt as empty", async () => {
+    const screen = await promptScreenAfter(idle);
+    expect(screen.rows[32]).toBe("❯");
+    expect(screen.cursor).toEqual({ col: 2, row: 32 });
+    expect(terminalScreenInputBoxIsEmpty(screen)).toBe(true);
+  });
+
+  it("reads three typed spaces, which Claude never writes into a cell, as occupied through the cursor", async () => {
+    const screen = await promptScreenAfter(spaces);
+    expect(screen.rows[32]).toBe("❯");
+    expect(screen.solidRows[32]?.slice(2).trim()).toBe("");
+    expect(screen.cursor).toEqual({ col: 5, row: 32 });
+    expect(terminalScreenInputBoxIsEmpty(screen)).toBe(false);
+  });
+
+  it("known limit: a spaces-only Claude draft with the cursor back at its start is indistinguishable from an empty box", async () => {
+    const screen = await promptScreenAfter([
+      ...spaces,
+      toBase64("\u001b[33;3H"),
+    ]);
+    expect(screen.cursor).toEqual({ col: 2, row: 32 });
+    expect(terminalScreenInputBoxIsEmpty(screen)).toBe(true);
   });
 });
 
