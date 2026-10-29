@@ -1,7 +1,16 @@
-import { existsSync, readFileSync, statSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+} from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { ProviderNativeTerminalActivity } from "@bb/domain";
 import {
+  pooledNativeCredentialStoreEnv,
   prepareNativeSettings,
   removePinnedNativeSettings,
   selectPinnedSettingsEnv,
@@ -228,6 +237,60 @@ describe("prepareNativeSettings", () => {
       throw new Error("expected a settings file");
     removePinnedNativeSettings(settings.directory);
     expect(existsSync(settings.value)).toBe(false);
+  });
+});
+
+describe("pooledNativeCredentialStoreEnv", () => {
+  const roots: string[] = [];
+
+  function dataDir(): string {
+    const root = mkdtempSync(path.join(os.tmpdir(), "bb-native-store-"));
+    roots.push(root);
+    return root;
+  }
+
+  afterEach(() => {
+    while (roots.length > 0) {
+      const root = roots.pop();
+      if (root !== undefined) rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("points a pooled Claude launch at a private credential store under the bb data dir, apart from the owner's", () => {
+    const root = dataDir();
+    const env = pooledNativeCredentialStoreEnv({
+      env: { ...POOLED_ENV, BB_DATA_DIR: root },
+      providerId: "claude-code",
+      sessionRootEnv: "CLAUDE_CONFIG_DIR",
+      hooks: CLAUDE_HOOKS,
+    });
+    const store = path.join(root, "pooled-claude-credentials");
+    expect(env).toEqual({ CLAUDE_SECURESTORAGE_CONFIG_DIR: store });
+    expect(statSync(store).mode & 0o777).toBe(0o700);
+    expect(store).not.toBe(path.join(os.homedir(), ".claude"));
+  });
+
+  it("leaves an unpooled launch and another provider's launch on their own stores", () => {
+    const root = dataDir();
+    expect(
+      pooledNativeCredentialStoreEnv({
+        env: { BB_DATA_DIR: root },
+        providerId: "claude-code",
+        sessionRootEnv: "CLAUDE_CONFIG_DIR",
+        hooks: CLAUDE_HOOKS,
+      }),
+    ).toEqual({});
+    expect(
+      pooledNativeCredentialStoreEnv({
+        env: { ...POOLED_ENV, BB_DATA_DIR: root },
+        providerId: "codex",
+        sessionRootEnv: "CODEX_HOME",
+        hooks: { ...CLAUDE_HOOKS, args: ["-c", "hooks=1"] },
+      }),
+    ).toEqual({});
+    expect(existsSync(path.join(root, "pooled-claude-credentials"))).toBe(
+      false,
+    );
   });
 });
 

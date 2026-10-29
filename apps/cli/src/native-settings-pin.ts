@@ -1,4 +1,10 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { ProviderNativeTerminalActivity } from "@bb/domain";
@@ -13,6 +19,8 @@ const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/u;
 const SETTINGS_TOKEN = "{settings}";
 const PIN_PROVIDER_VARIABLE = "BB_CLAUDE_SETTINGS_ENV_PIN_PROVIDER";
 const CLAUDE_CONFIG_ROOT_ENV = "CLAUDE_CONFIG_DIR";
+const CLAUDE_CREDENTIAL_STORE_ENV = "CLAUDE_SECURESTORAGE_CONFIG_DIR";
+const POOLED_CREDENTIAL_STORE_DIRECTORY = "pooled-claude-credentials";
 
 function takesSettings(arg: string): boolean {
   return arg.includes(SETTINGS_TOKEN);
@@ -61,6 +69,38 @@ function writePinnedSettingsFile(
   return { directory, value: file };
 }
 
+function pinsForLaunch(args: {
+  env: Readonly<Record<string, string | undefined>>;
+  providerId: string;
+  sessionRootEnv: string | null;
+  hooks: ActivityHooks | undefined;
+}): Record<string, string> | null {
+  const pinProvider = args.env[PIN_PROVIDER_VARIABLE];
+  const appliesToLaunch =
+    pinProvider === undefined
+      ? args.sessionRootEnv === CLAUDE_CONFIG_ROOT_ENV ||
+        (args.hooks?.args.some(takesSettings) ?? false)
+      : pinProvider === args.providerId;
+  return appliesToLaunch ? selectPinnedSettingsEnv(args.env) : null;
+}
+
+export function pooledNativeCredentialStoreEnv(args: {
+  env: Readonly<Record<string, string | undefined>>;
+  providerId: string;
+  sessionRootEnv: string | null;
+  hooks: ActivityHooks | undefined;
+}): Record<string, string> {
+  if (pinsForLaunch(args) === null) return {};
+  const root =
+    args.env.BB_DATA_DIR !== undefined && args.env.BB_DATA_DIR !== ""
+      ? args.env.BB_DATA_DIR
+      : path.join(os.homedir(), ".bb");
+  const directory = path.join(root, POOLED_CREDENTIAL_STORE_DIRECTORY);
+  mkdirSync(directory, { recursive: true, mode: 0o700 });
+  chmodSync(directory, 0o700);
+  return { [CLAUDE_CREDENTIAL_STORE_ENV]: directory };
+}
+
 export function prepareNativeSettings(args: {
   env: Readonly<Record<string, string | undefined>>;
   providerId: string;
@@ -69,13 +109,7 @@ export function prepareNativeSettings(args: {
   hookTarget: string | { appendFile: string } | null;
 }): NativeSettings | null {
   const { hooks, hookTarget } = args;
-  const pinProvider = args.env[PIN_PROVIDER_VARIABLE];
-  const appliesToLaunch =
-    pinProvider === undefined
-      ? args.sessionRootEnv === CLAUDE_CONFIG_ROOT_ENV ||
-        (hooks?.args.some(takesSettings) ?? false)
-      : pinProvider === args.providerId;
-  const pins = appliesToLaunch ? selectPinnedSettingsEnv(args.env) : null;
+  const pins = pinsForLaunch(args);
   if (pins !== null) {
     if (hooks === undefined || !hooks.args.some(takesSettings)) {
       throw new Error(

@@ -7,6 +7,7 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -100,6 +101,8 @@ function fakeCli(directory: string): { executable: string; record: string } {
       'const isFile = value !== null && !value.startsWith("{");',
       "const entry = {",
       "  argv,",
+      "  store: process.env.CLAUDE_SECURESTORAGE_CONFIG_DIR ?? null,",
+      "  configDir: process.env.CLAUDE_CONFIG_DIR ?? null,",
       "  value,",
       "  mode: isFile ? fs.statSync(value).mode & 0o777 : null,",
       '  contents: isFile ? fs.readFileSync(value, "utf8") : value,',
@@ -115,6 +118,8 @@ function fakeCli(directory: string): { executable: string; record: string } {
 
 interface FakeLaunch {
   argv: string[];
+  store: string | null;
+  configDir: string | null;
   value: string | null;
   mode: number | null;
   contents: string;
@@ -177,6 +182,53 @@ describe("pooled launch settings", () => {
     const file = launch.value ?? "";
     session.stop();
     await waitFor(() => (existsSync(file) ? undefined : true), 10_000);
+  });
+
+  it("gives a pooled launch a private credential store and leaves its config dir alone", async () => {
+    const dataDir = scratch();
+    const { launch, session } = await launchFake({
+      ...cleanBaseEnv(),
+      ...POOL_ENV,
+      BB_DATA_DIR: dataDir,
+      ANTHROPIC_BASE_URL: "http://127.0.0.1:9/hub",
+    });
+    const store = join(dataDir, "pooled-claude-credentials");
+    expect(launch.store).toBe(store);
+    expect(statSync(store).mode & 0o777).toBe(0o700);
+    expect(launch.store).not.toBe(launch.configDir);
+    expect(launch.configDir).toBe(process.env.CLAUDE_CONFIG_DIR);
+    session.stop();
+  });
+
+  it("gives the initialization and context-usage probes the same private credential store", async () => {
+    const dataDir = scratch();
+    const directory = scratch();
+    const { executable, record } = fakeCli(directory);
+    await probeClaudeInitialization({
+      cwd: directory,
+      env: {
+        ...cleanBaseEnv(),
+        ...POOL_ENV,
+        BB_DATA_DIR: dataDir,
+        ANTHROPIC_BASE_URL: "http://127.0.0.1:9/hub",
+        BB_CLAUDE_CODE_EXECUTABLE: executable,
+        FAKE_CLI_EXIT: "1",
+      },
+    }).catch(() => undefined);
+    expect((JSON.parse(readFileSync(record, "utf8")) as FakeLaunch).store).toBe(
+      join(dataDir, "pooled-claude-credentials"),
+    );
+  });
+
+  it("keeps the owner's credential store for a launch that is not pooled", async () => {
+    const dataDir = scratch();
+    const { launch, session } = await launchFake({
+      ...cleanBaseEnv(),
+      BB_DATA_DIR: dataDir,
+    });
+    expect(launch.store).toBeNull();
+    expect(existsSync(join(dataDir, "pooled-claude-credentials"))).toBe(false);
+    session.stop();
   });
 
   it("keeps inline flag settings for a launch that is not pooled", async () => {

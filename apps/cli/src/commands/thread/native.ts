@@ -20,6 +20,7 @@ import {
 } from "../../native-activity-wiring.js";
 import { createNativeActivityReporter } from "../../native-activity-reporter.js";
 import {
+  pooledNativeCredentialStoreEnv,
   prepareNativeSettings,
   removePinnedNativeSettings,
 } from "../../native-settings-pin.js";
@@ -254,6 +255,7 @@ async function holdNativeHarness(
     report(reader?.finish() ?? null);
   };
   let pty: ReturnType<typeof nodePty.spawn> | null = null;
+  let credentialStoreEnv: Record<string, string> = {};
   const exitCode = await runNativeHolder({
     socketPath,
     holderPid: process.pid,
@@ -320,6 +322,12 @@ async function holdNativeHarness(
         hookTarget,
       });
       pinnedSettingsDirectory = settings?.directory ?? null;
+      credentialStoreEnv = pooledNativeCredentialStoreEnv({
+        env: process.env,
+        providerId: spec.providerId,
+        sessionRootEnv: spec.cli.sessionRoot.env,
+        hooks,
+      });
       const activityArgs =
         hooks === undefined || settings === null
           ? []
@@ -402,7 +410,7 @@ async function holdNativeHarness(
         cols: options.cols,
         rows: options.rows,
         cwd: options.cwd,
-        env: options.env,
+        env: { ...options.env, ...credentialStoreEnv },
       });
       return pty;
     },
