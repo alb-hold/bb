@@ -1251,16 +1251,28 @@ describe("frp hooks", () => {
       expect(harness.directory.locate(SUBDOMAIN).kind).toBe("here");
     });
 
-    it("releases a run id once its last proxy is gone", async () => {
-      const harness = await startHooks();
-      await connectFirst(harness);
+    it("keeps a run id bound after its last proxy is gone while its control is open, and releases it once the control closes", async () => {
+      const harness = await startHooks(LINKED_ACCOUNTS, {
+        runBindingIdleMs: 150,
+      });
+      const control = await connectFirst(harness);
       expect(await loginAs(harness, "wasp", "run-1")).toMatchObject({
         reject: true,
       });
 
       harness.frps.unregister(PROXY_NAME);
       await harness.proxyCall("CloseProxy", "run-1");
-      await sleep(TIMINGS.registerGraceMs + 200);
+      await sleep(TIMINGS.reconcileMs * 3);
+
+      expect(await loginAs(harness, "wasp", "run-1")).toMatchObject({
+        reject: true,
+      });
+      expect(await proxyAs(harness, "wasp", "run-1")).toMatchObject({
+        reject: true,
+      });
+
+      control.destroy();
+      await sleep(TIMINGS.reconcileMs * 3);
 
       expect(await loginAs(harness, "wasp", "run-1")).toMatchObject({
         reject: false,

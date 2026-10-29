@@ -234,8 +234,15 @@ export function createFrpHooks(options: FrpHookOptions) {
     return false;
   }
 
+  function freeRun(runId: string): boolean {
+    const binding = runBindings.get(runId);
+    if (binding === undefined) return false;
+    if (holdsRun(runId) || runClaims.has(runId)) return false;
+    return options.runConnected?.(binding.label, runId) !== true;
+  }
+
   function releaseRun(runId: string): void {
-    if (!holdsRun(runId) && !runClaims.has(runId)) runBindings.delete(runId);
+    if (freeRun(runId)) runBindings.delete(runId);
   }
 
   function proxyKey(record: ProxyRecord): string {
@@ -319,13 +326,8 @@ export function createFrpHooks(options: FrpHookOptions) {
   async function reconcile(): Promise<void> {
     const startedAt = Date.now();
     for (const [runId, binding] of [...runBindings]) {
-      if (
-        binding.boundAt + timings.runBindingIdleMs <= startedAt &&
-        !holdsRun(runId) &&
-        !runClaims.has(runId) &&
-        options.runConnected?.(binding.label, runId) !== true
-      ) {
-        runBindings.delete(runId);
+      if (binding.boundAt + timings.runBindingIdleMs <= startedAt) {
+        releaseRun(runId);
       }
     }
     const online = await options.frpState.online();
