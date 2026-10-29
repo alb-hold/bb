@@ -405,7 +405,10 @@ function remainingFixtureProcesses(roots: string[]): number[] {
   return pids;
 }
 
-async function stopFixtureDaemons(roots: string[]): Promise<number[]> {
+async function stopFixtureDaemons(
+  roots: string[],
+  afterTerm?: () => void,
+): Promise<number[]> {
   const recorded = roots.flatMap((root) =>
     recordedDaemons(root).map((pid) => ({ pid, root })),
   );
@@ -416,6 +419,7 @@ async function stopFixtureDaemons(roots: string[]): Promise<number[]> {
   while (stopped.some((pid) => isRunning(pid)) && Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
+  afterTerm?.();
   for (const { pid, root } of recorded) {
     if (isRunning(pid)) signalFixtureStub(pid, root, "SIGKILL");
   }
@@ -771,6 +775,97 @@ exec '${process.execPath}' "$@"
       } finally {
         stub.kill("SIGKILL");
       }
+    });
+
+    describe("when the stub ignores SIGTERM", () => {
+      async function startTermIgnoringStub(root: string) {
+        const script = join(root, "bin", "bb-app");
+        mkdirSync(dirname(script), { recursive: true });
+        writeFileSync(
+          script,
+          'process.on("SIGTERM", () => {});\nprocess.stdout.write("ready\\n");\nsetInterval(() => {}, 1000);\n',
+        );
+        const stub = spawn(process.execPath, [script], {
+          stdio: ["ignore", "pipe", "ignore"],
+        });
+        await new Promise<void>((resolve) =>
+          stub.stdout?.once("data", () => resolve()),
+        );
+        return stub;
+      }
+
+      function exited(stub: ReturnType<typeof spawn>): Promise<void> {
+        if (stub.exitCode !== null || stub.signalCode !== null) {
+          return Promise.resolve();
+        }
+        return new Promise((resolve) => stub.once("exit", () => resolve()));
+      }
+
+      function fakePsReporting(root: string, flag: string): string {
+        const realPs = (process.env.PATH ?? "")
+          .split(delimiter)
+          .map((entry) => join(entry, "ps"))
+          .find((candidate) => existsSync(candidate));
+        const directory = join(root, "fakeps");
+        mkdirSync(directory, { recursive: true });
+        writeExecutable(
+          join(directory, "ps"),
+          `#!/bin/sh\nif [ -e "${flag}" ]; then echo "sleep 30"; else exec "${realPs}" "$@"; fi\n`,
+        );
+        return directory;
+      }
+
+      it("escalates to SIGKILL and ends a stub whose command still matches", async () => {
+        const fixture = createFixture();
+        const root = dirname(fixture.binDir);
+        const stub = await startTermIgnoringStub(root);
+        const pid = stub.pid ?? 0;
+        try {
+          writeFileSync(
+            join(fixture.dataDir, "install-daemon.pid"),
+            `${pid}\n`,
+          );
+          let aliveAtEscalation = false;
+          const stopped = await stopFixtureDaemons([root], () => {
+            aliveAtEscalation = isRunning(pid);
+          });
+          await exited(stub);
+          expect(stopped).toEqual([pid]);
+          expect(aliveAtEscalation).toBe(true);
+          expect(stub.signalCode).toBe("SIGKILL");
+          expect(isRunning(pid)).toBe(false);
+        } finally {
+          stub.kill("SIGKILL");
+        }
+      });
+
+      it("does not send SIGKILL once the recorded pid no longer reads as the stub", async () => {
+        const fixture = createFixture();
+        const root = dirname(fixture.binDir);
+        const stub = await startTermIgnoringStub(root);
+        const pid = stub.pid ?? 0;
+        const flag = join(root, "identity-changed");
+        const originalPath = process.env.PATH;
+        try {
+          writeFileSync(
+            join(fixture.dataDir, "install-daemon.pid"),
+            `${pid}\n`,
+          );
+          const fakePs = fakePsReporting(root, flag);
+          process.env.PATH = `${fakePs}${delimiter}${originalPath ?? ""}`;
+          expect(isFixtureStub(pid, root)).toBe(true);
+          const stopped = await stopFixtureDaemons([root], () => {
+            writeFileSync(flag, "");
+          });
+          expect(stopped).toEqual([pid]);
+          expect(isRunning(pid)).toBe(true);
+          expect(stub.signalCode).toBeNull();
+        } finally {
+          process.env.PATH = originalPath;
+          stub.kill("SIGKILL");
+          await exited(stub);
+        }
+      });
     });
   });
 
