@@ -409,6 +409,7 @@ describe("account API client", () => {
       baseUrl: "https://connect.test",
       secret: "s",
       fetch: async () => Response.json({ answers: [null] }),
+      random: () => 1,
     });
     await expect(unchecked.resolve(ASK, { deadlineMs: 300 })).rejects.toThrow(
       "could not check",
