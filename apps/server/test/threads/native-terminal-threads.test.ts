@@ -59,6 +59,7 @@ import {
 } from "../../src/services/threads/native-terminal-threads.js";
 import { handleDaemonSocketClosed } from "../../src/internal/session-owner-side-effects.js";
 import { applyLoggedThreadLifecycleEvent } from "../../src/services/threads/lifecycle-outcome.js";
+import { terminalScreenInputBoxHoldsText } from "../../src/services/threads/native-terminal-echo.js";
 import { internalAuthHeaders } from "../helpers/commands.js";
 import { createProviderRegistryService } from "../../src/services/providers/provider-registry.js";
 import { createTestProviderRegistry } from "../helpers/provider-registry.js";
@@ -285,6 +286,33 @@ async function waitForThreadStatus(
   throw new Error(`Thread ${threadId} never reached ${status}`);
 }
 
+async function waitForTerminalInputBox(
+  fixture: Fixture,
+  terminalId: string,
+  text: string,
+): Promise<void> {
+  for (let attempt = 0; attempt < 600; attempt += 1) {
+    const screen =
+      await fixture.harness.deps.terminalSessions.readTerminalScreen({
+        terminalId,
+        query: {},
+      });
+    if (
+      terminalScreenInputBoxHoldsText({
+        cols: screen.cols,
+        cursor: screen.cursor,
+        requestText: text,
+        rows: screen.rows,
+        text,
+      })
+    ) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  throw new Error("Recorded terminal input did not reach the input box");
+}
+
 async function openRunningNativeThread(
   fixture: Fixture,
   args: { providerId: string; prompt?: string; input?: PromptInput[] },
@@ -402,8 +430,28 @@ function recordedClaudeSession(): RecordedChunk[] {
   ).chunks;
 }
 
-function recordedText(chunk: RecordedChunk): string {
-  return Buffer.from(chunk.dataBase64, "base64").toString("utf8");
+function syntheticTypedInput(text: string): string {
+  return `\u001b[?2026h\u001b[?25l\u001b[2J\u001b[22;1H\u001b[2K❯ ${text}\u001b[?25h\u001b[?2026l`;
+}
+
+function syntheticInputBoxBorder(): string {
+  return `\u001b[?2026h\u001b[?25l\u001b[23;1H─\u001b[22;9H\u001b[?25h\u001b[?2026l`;
+}
+
+function recordedClaudeSessionWithUnsentText(text: string): RecordedChunk[] {
+  return recordedClaudeSession().map((chunk) =>
+    chunk.seq === 430 || chunk.seq === 431
+      ? {
+          ...chunk,
+          dataBase64: Buffer.from(
+            chunk.seq === 430
+              ? syntheticTypedInput(text)
+              : syntheticInputBoxBorder(),
+            "utf8",
+          ).toString("base64"),
+        }
+      : chunk,
+  );
 }
 
 interface RecordedCli {
@@ -4981,9 +5029,9 @@ describe("native terminal threads", () => {
       const { open, thread } = await openRunningNativeThread(fixture, {
         providerId: "claude-code",
       });
-      const { idle, typed } = split();
+      const { idle } = split();
       const cli = startRecordedCli(fixture, open.terminalId, idle, {
-        paste: () => typed.map(recordedText),
+        paste: (pasted) => [syntheticTypedInput(pasted)],
         enter: () => [],
       });
       try {
@@ -5004,7 +5052,7 @@ describe("native terminal threads", () => {
       const cli = startRecordedCli(
         fixture,
         open.terminalId,
-        recordedClaudeSession(),
+        recordedClaudeSessionWithUnsentText("say ok"),
         { paste: () => [], enter: () => [] },
       );
       try {
@@ -5029,10 +5077,11 @@ describe("native terminal threads", () => {
       const cli = startRecordedCli(
         fixture,
         open.terminalId,
-        recordedClaudeSession(),
+        recordedClaudeSessionWithUnsentText("say ok"),
         { paste: () => [], enter: () => [] },
       );
       try {
+        await waitForTerminalInputBox(fixture, open.terminalId, "say ok");
         const response = await sendSayOk(fixture, thread.id);
         expect(response.status).toBe(200);
         await new Promise((resolve) => setTimeout(resolve, 200));
@@ -5295,7 +5344,7 @@ describe("native terminal threads", () => {
       const cli = startRecordedCli(
         fixture,
         open.terminalId,
-        recordedClaudeSession(),
+        recordedClaudeSessionWithUnsentText("say ok"),
         { paste: () => [], enter: () => [] },
       );
       try {
@@ -5319,17 +5368,12 @@ describe("native terminal threads", () => {
       const { open, thread } = await openRunningNativeThread(fixture, {
         providerId: "claude-code",
       });
-      const { idle, typed } = split();
-      const ghost =
-        "\u001b[?2026h\u001b[?25l\u001b[H\r\u001b[2C\u001b[32B\u001b[2msay ok\u001b[22m\u001b[36;1H\u001b[33;3H\u001b[?25h\u001b[?2026l";
-      const submitted = [
-        "\u001b[?2026h\u001b[?25l\u001b[H\r\u001b[2B\u001b[48;2;55;55;55m\u001b[38;2;153;153;153m\u276f \u001b[38;2;255;255;255msay ok\u001b[39m\u001b[49m\u001b[36;1H\u001b[33;3H\u001b[?25h\u001b[?2026l",
-        "\u001b[?2026h\u001b[?25l\u001b[H\r\u001b[2C\u001b[32B\u001b[K\u001b[36;1H\u001b[33;3H\u001b[?25h\u001b[?2026l",
-        ghost,
-      ];
+      const { idle } = split();
+      const faintSuggestion =
+        "\u001b[?2026h\u001b[?25l\u001b[2J\u001b[19;1H\u001b[2msay ok\u001b[22m\u001b[22;1H❯ \u001b[23;1H─\u001b[?25h\u001b[?2026l";
       const cli = startRecordedCli(fixture, open.terminalId, idle, {
-        paste: () => typed.map(recordedText),
-        enter: () => submitted,
+        paste: (pasted) => [syntheticTypedInput(pasted)],
+        enter: () => [faintSuggestion],
       });
       const tells = 6;
       try {

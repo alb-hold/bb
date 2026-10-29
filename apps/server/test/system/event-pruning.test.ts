@@ -1,9 +1,27 @@
-import { getThread, listEvents } from "@bb/db";
-import { turnScope } from "@bb/domain";
+import { mkdtemp, rm } from "node:fs/promises";
+import { performance } from "node:perf_hooks";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import * as database from "@bb/db";
+import {
+  advanceThreadPruning,
+  createConnection,
+  events,
+  getThread,
+  listEvents,
+  migrate,
+} from "@bb/db";
+import { sql } from "drizzle-orm";
+import { threadScope, turnScope } from "@bb/domain";
+import type { ThreadEventType } from "@bb/domain";
 import { groupHostDaemonEvents } from "@bb/host-daemon-contract";
 import { describe, expect, it, vi } from "vitest";
 import { applyTurnCompletedEvent } from "../../src/internal/turn-completed-events.js";
-import { pruneThreadEventHistoryBestEffort } from "../../src/services/system/event-pruning.js";
+import {
+  maybePruneActiveThreadEventHistory,
+  pruneThreadEventHistoryBestEffort,
+  resetActiveThreadEventPruningState,
+} from "../../src/services/system/event-pruning.js";
 import { buildThreadTimelineWithProfile } from "../../src/services/threads/timeline.js";
 import {
   createTestDaemonEventEnvelope,
@@ -16,6 +34,7 @@ import {
   seedProjectWithSource,
   seedStoredEvent,
   seedThread,
+  seedTurnStarted,
 } from "../helpers/seed.js";
 import { createTestAppHarness, withTestHarness } from "../helpers/test-app.js";
 
@@ -173,6 +192,193 @@ function seedResolvedAssistantMessage(
 }
 
 describe("thread event pruning", () => {
+  it("yields between candidate slices and preserves each thread's deletion set", async () => {
+    const scheduled: Array<() => void> = [];
+    const harness = await createTestAppHarness({
+      activeThreadPruneRuntime: {
+        schedule: (callback) => scheduled.push(callback),
+      },
+    });
+    try {
+      const { host, session } = seedHostSession(harness.deps);
+      const { project } = seedProjectWithSource(harness.deps, { hostId: host.id });
+      const environment = seedEnvironment(harness.deps, {
+        hostId: host.id,
+        projectId: project.id,
+      });
+      const threads = Array.from({ length: 3 }, () =>
+        seedThread(harness.deps, {
+          projectId: project.id,
+          environmentId: environment.id,
+          status: "active",
+        }),
+      );
+      for (const thread of threads) {
+        harness.db.transaction(() => {
+          for (let sequence = 1; sequence <= 300; sequence += 1) {
+            seedStoredEvent(harness.deps, {
+              threadId: thread.id,
+              providerThreadId: `provider-${thread.id}`,
+              sequence,
+              scope: turnScope(`turn-${sequence}`),
+              type: "provider/rateLimits/updated",
+              itemId: null,
+              itemKind: null,
+              data: { rateLimits: { providerId: "codex" } },
+            });
+          }
+        });
+        seedTurnStarted(harness.deps, {
+          threadId: thread.id,
+          turnId: `trigger-${thread.id}`,
+          providerThreadId: `provider-${thread.id}`,
+          sequence: 301,
+        });
+        resetActiveThreadEventPruningState(harness.deps, thread.id);
+      }
+      const order: string[] = [];
+      harness.db.run(
+        sql`CREATE TABLE prune_slice_observations (thread_id TEXT NOT NULL, policy TEXT NOT NULL)`,
+      );
+      harness.db.run(
+        sql`CREATE TRIGGER observe_prune_slices AFTER UPDATE ON thread_pruning_cursors WHEN NEW.thread_id IS NOT NULL BEGIN INSERT INTO prune_slice_observations (thread_id, policy) VALUES (NEW.thread_id, NEW.policy); END`,
+      );
+      const response = await harness.app.request("/internal/session/events", {
+        method: "POST",
+        headers: internalAuthHeaders(harness),
+        body: JSON.stringify({
+          sessionId: session.id,
+          eventGroups: groupHostDaemonEvents(
+            threads.flatMap((thread) => [
+              {
+                threadId: thread.id,
+                event: {
+                  type: "thread/identity" as const,
+                  threadId: thread.id,
+                  providerThreadId: `provider-${thread.id}`,
+                  scope: threadScope(),
+                },
+              },
+              ...Array.from({ length: 250 }, (_, index) => ({
+                threadId: thread.id,
+                event: {
+                  type: "thread/tokenUsage/updated" as const,
+                  threadId: thread.id,
+                  providerThreadId: `provider-${thread.id}`,
+                  scope: turnScope(`trigger-${thread.id}`),
+                  tokenUsage: {
+                    total: {
+                      totalTokens: index + 1,
+                      inputTokens: index + 1,
+                      cachedInputTokens: 0,
+                      outputTokens: 0,
+                      reasoningOutputTokens: 0,
+                    },
+                    last: {
+                      totalTokens: index + 1,
+                      inputTokens: index + 1,
+                      cachedInputTokens: 0,
+                      outputTokens: 0,
+                      reasoningOutputTokens: 0,
+                    },
+                    modelContextWindow: 200_000,
+                  },
+                },
+              })),
+            ]),
+          ),
+        }),
+      });
+      expect(response.status).toBe(200);
+      const responseBody = (await response.json()) as {
+        acceptedEvents: Array<{ sequence: number }>;
+      };
+      expect(responseBody.acceptedEvents).toHaveLength(753);
+      expect(
+        harness.db.all(sql`SELECT thread_id FROM prune_slice_observations`),
+      ).toEqual([]);
+      expect(scheduled).toHaveLength(0);
+      for (let attempt = 0; attempt < 20 && scheduled.length === 0; attempt++)
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(
+        harness.db.all(sql`SELECT thread_id FROM prune_slice_observations`),
+      ).toEqual([]);
+      expect(scheduled).toHaveLength(1);
+
+      const referenceDb = createConnection(harness.db.$client.serialize());
+      const referenceIds = new Map<string, string[]>();
+      try {
+        for (const thread of threads) {
+          const completed = new Set<string>();
+          for (let attempt = 0; attempt < 10_000 && completed.size < 4; attempt++) {
+            const result = advanceThreadPruning(referenceDb, {
+              threadId: thread.id,
+            });
+            if (result.action === "cycle-complete" || result.action === "thread-complete")
+              completed.add(result.policy);
+          }
+          expect(completed.size).toBe(4);
+          referenceIds.set(
+            thread.id,
+            listEvents(referenceDb, { threadId: thread.id })
+              .map((event) => event.id)
+              .sort(),
+          );
+        }
+      } finally {
+        referenceDb.$client.close();
+      }
+
+      let firstSliceSeen = false;
+      let markerTask: (() => void) | undefined;
+      while (scheduled.length > 0) {
+        const callback = scheduled.shift();
+        const before = harness.db.all(
+          sql`SELECT thread_id, policy FROM prune_slice_observations`,
+        ).length;
+        callback?.();
+        const observations = harness.db.all(
+          sql`SELECT thread_id, policy FROM prune_slice_observations`,
+        ) as Array<{ policy: string; thread_id: string }>;
+        if (observations.length > before) {
+          expect(observations.length - before).toBeLessThanOrEqual(5);
+          const latest = observations.at(-1);
+          expect(latest).toBeDefined();
+          order.push(`slice:${latest?.thread_id}`);
+        } else {
+          expect(callback).toBe(markerTask);
+        }
+        if (!firstSliceSeen) {
+          firstSliceSeen = true;
+          markerTask = () => order.push("marker");
+          scheduled.unshift(markerTask);
+        }
+      }
+      const firstCandidateIndex = order.findIndex((entry) => entry.startsWith("slice:"));
+      expect(order[firstCandidateIndex + 1]).toBe("marker");
+      expect(order[firstCandidateIndex + 2]).toBe(`slice:${threads[1]?.id}`);
+      expect(
+        new Set(
+          (
+            harness.db.all(
+              sql`SELECT DISTINCT thread_id FROM prune_slice_observations`,
+            ) as Array<{ thread_id: string }>
+          ).map((row) => row.thread_id),
+        ),
+      ).toEqual(new Set(threads.map((thread) => thread.id)));
+      for (const thread of threads) {
+        expect(
+          listEvents(harness.db, { threadId: thread.id })
+            .map((event) => event.id)
+            .sort(),
+        ).toEqual(referenceIds.get(thread.id));
+        resetActiveThreadEventPruningState(harness.deps, thread.id);
+      }
+    } finally {
+      await harness.cleanup();
+    }
+  }, 60_000);
+
   it("prunes idle-thread noise rows and resolved item deltas", async () => {
     await withTestHarness(async (harness) => {
       const host = seedHost(harness.deps);
@@ -605,6 +811,7 @@ describe("thread event pruning", () => {
         });
       }
 
+      resetActiveThreadEventPruningState(harness.deps, thread.id);
       const response = await harness.app.request("/internal/session/events", {
         method: "POST",
         headers: internalAuthHeaders(harness),
@@ -665,6 +872,490 @@ describe("thread event pruning", () => {
           itemId: "msg-active",
         }),
       ).toEqual([1_004, 1_005]);
+    });
+  });
+
+  it("sends the event response before deferred active pruning deletes rows", async () => {
+    await withTestHarness(async (harness) => {
+      const { host, session } = seedHostSession(harness.deps);
+      const { project } = seedProjectWithSource(harness.deps, {
+        hostId: host.id,
+      });
+      const environment = seedEnvironment(harness.deps, {
+        hostId: host.id,
+        projectId: project.id,
+      });
+      const thread = seedThread(harness.deps, {
+        projectId: project.id,
+        environmentId: environment.id,
+        status: "active",
+      });
+      harness.db.transaction(() => {
+        for (let sequence = 1; sequence <= 1_300; sequence += 1) {
+          seedStoredEvent(harness.deps, {
+            threadId: thread.id,
+            providerThreadId: "provider-thread-1",
+            sequence,
+            scope: turnScope(`turn-${sequence}`),
+            type: "provider/rateLimits/updated",
+            itemId: null,
+            itemKind: null,
+            data: { rateLimits: { providerId: "codex" } },
+          });
+        }
+      });
+      seedTurnStarted(harness.deps, {
+        threadId: thread.id,
+        turnId: "trigger-1",
+        providerThreadId: "provider-thread-1",
+        sequence: 1_301,
+      });
+      harness.db.run(
+        sql`CREATE TABLE prune_delete_observations (event_id TEXT NOT NULL)`,
+      );
+      harness.db.run(
+        sql`CREATE TRIGGER observe_prune_deletes AFTER DELETE ON events BEGIN INSERT INTO prune_delete_observations (event_id) VALUES (OLD.id); END`,
+      );
+      resetActiveThreadEventPruningState(harness.deps, thread.id);
+      const response = await harness.app.request("/internal/session/events", {
+        method: "POST",
+        headers: internalAuthHeaders(harness),
+        body: JSON.stringify({
+          sessionId: session.id,
+          eventGroups: groupHostDaemonEvents([
+            {
+              threadId: thread.id,
+              event: {
+                type: "thread/identity",
+                threadId: thread.id,
+                providerThreadId: "provider-thread-1",
+                scope: threadScope(),
+              },
+            },
+            ...Array.from({ length: 250 }, (_, index) => {
+              const sequence = index + 1;
+              return createTestDaemonEventEnvelope({
+                event: {
+                  type: "thread/tokenUsage/updated",
+                  threadId: thread.id,
+                  providerThreadId: "provider-thread-1",
+                  scope: turnScope("trigger-1"),
+                  tokenUsage: {
+                    total: {
+                      totalTokens: sequence,
+                      inputTokens: sequence,
+                      cachedInputTokens: 0,
+                      outputTokens: 0,
+                      reasoningOutputTokens: 0,
+                    },
+                    last: {
+                      totalTokens: sequence,
+                      inputTokens: sequence,
+                      cachedInputTokens: 0,
+                      outputTokens: 0,
+                      reasoningOutputTokens: 0,
+                    },
+                    modelContextWindow: 200_000,
+                  },
+                },
+              });
+            }),
+          ]),
+        }),
+      });
+      expect(response.status).toBe(200);
+      const responseBody = (await response.json()) as {
+        acceptedEvents: Array<{ sequence: number }>;
+      };
+      expect(responseBody.acceptedEvents).toHaveLength(251);
+      expect(responseBody.acceptedEvents[0]?.sequence).toBeGreaterThan(250);
+      expect(
+        harness.db.all(sql`SELECT event_id FROM prune_delete_observations`),
+      ).toEqual([]);
+      for (let attempt = 0; attempt < 20; attempt += 1) {
+        if (
+          harness.db.all(sql`SELECT event_id FROM prune_delete_observations`)
+            .length > 0
+        )
+          break;
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
+      expect(
+        harness.db.all(
+          sql`SELECT policy FROM thread_pruning_cursors WHERE scope = ${thread.id}`,
+        ),
+      ).not.toEqual([]);
+      expect(
+        harness.db.all(sql`SELECT event_id FROM prune_delete_observations`)
+          .length,
+      ).toBeGreaterThan(0);
+      resetActiveThreadEventPruningState(harness.deps, thread.id);
+    });
+  });
+
+  it("runs one prune step and deletes at most 32 rows per scheduled callback", async () => {
+    await withTestHarness(async (harness) => {
+      const { host } = seedHostSession(harness.deps);
+      const { project } = seedProjectWithSource(harness.deps, {
+        hostId: host.id,
+      });
+      const thread = seedThread(harness.deps, {
+        projectId: project.id,
+        status: "active",
+      });
+      for (let sequence = 1; sequence <= 1_200; sequence += 1) {
+        seedStoredEvent(harness.deps, {
+          threadId: thread.id,
+          providerThreadId: "provider-synthetic",
+          sequence,
+          scope: turnScope(`turn-${sequence}`),
+          type: "provider/rateLimits/updated",
+          itemId: null,
+          itemKind: null,
+          data: { rateLimits: { providerId: "codex" } },
+        });
+      }
+      seedStoredEvent(harness.deps, {
+        threadId: thread.id,
+        providerThreadId: "provider-synthetic",
+        sequence: 1_500,
+        scope: turnScope("tail"),
+        type: "provider/warning",
+        itemId: null,
+        itemKind: null,
+        data: { marker: "synthetic tail" },
+      });
+      resetActiveThreadEventPruningState(harness.deps, thread.id);
+      const scheduled: Array<() => void> = [];
+      const advanceStep = vi.spyOn(database, "advanceThreadPruningStep");
+      try {
+        const enqueued = maybePruneActiveThreadEventHistory(harness.deps, {
+          latestPrunableSequence: 1_500,
+          threadId: thread.id,
+          schedule: (callback) => scheduled.push(callback),
+        });
+        expect(enqueued).toBe(true);
+        expect(scheduled).toHaveLength(1);
+        let totalDeletedRows = 0;
+        for (let callbackIndex = 0; callbackIndex < 3; callbackIndex += 1) {
+          const callback = scheduled.shift();
+          expect(callback).toBeDefined();
+          const callsBefore = advanceStep.mock.calls.length;
+          const rowsBefore = harness.db.all<{ count: number }>(sql`
+            SELECT COUNT(*) AS count FROM events WHERE thread_id = ${thread.id}
+          `)[0]?.count;
+          expect(rowsBefore).toBeDefined();
+          callback?.();
+          expect(advanceStep.mock.calls.length - callsBefore).toBe(1);
+          const rowsAfter = harness.db.all<{ count: number }>(sql`
+            SELECT COUNT(*) AS count FROM events WHERE thread_id = ${thread.id}
+          `)[0]?.count;
+          expect(rowsAfter).toBeDefined();
+          const deletedRows = (rowsBefore ?? 0) - (rowsAfter ?? 0);
+          expect(deletedRows).toBeGreaterThanOrEqual(0);
+          expect(deletedRows).toBeLessThanOrEqual(32);
+          totalDeletedRows += deletedRows;
+          expect(scheduled).toHaveLength(1);
+        }
+        expect(totalDeletedRows).toBeGreaterThan(0);
+      } finally {
+        advanceStep.mockRestore();
+        resetActiveThreadEventPruningState(harness.deps, thread.id);
+        scheduled.length = 0;
+      }
+    });
+  });
+
+  it("keeps real prune callbacks under 50 ms for 40 on-disk threads with 5,000 events each", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "active-prune-callback-"));
+    const db = createConnection(join(directory, "events.sqlite"));
+    migrate(db);
+    const harness = await createTestAppHarness({ db });
+    const scheduled: Array<() => void> = [];
+    const threads: Array<ReturnType<typeof seedThread>> = [];
+    try {
+      const { host, session } = seedHostSession(harness.deps);
+      const { project } = seedProjectWithSource(harness.deps, {
+        hostId: host.id,
+      });
+      const environment = seedEnvironment(harness.deps, {
+        hostId: host.id,
+        projectId: project.id,
+      });
+      threads.push(
+        ...Array.from({ length: 40 }, () =>
+          seedThread(harness.deps, {
+            projectId: project.id,
+            environmentId: environment.id,
+            status: "active",
+          }),
+        ),
+      );
+      db.transaction(() => {
+        for (const thread of threads) {
+          for (let start = 0; start < 5_000; start += 500) {
+            db.insert(events)
+              .values(
+                Array.from({ length: 500 }, (_, offset) => {
+                  const sequence = start + offset + 1;
+                  return {
+                    id: `${thread.id}-${sequence}`,
+                    threadId: thread.id,
+                    sequence,
+                    scopeKind: "turn" as const,
+                    turnId: `synthetic-${sequence}`,
+                    type: "provider/rateLimits/updated" as const,
+                    data: JSON.stringify({
+                      rateLimits: { providerId: "codex" },
+                    }),
+                    createdAt: sequence,
+                  };
+                }),
+              )
+              .run();
+          }
+        }
+      });
+      for (const thread of threads)
+        seedTurnStarted(harness.deps, {
+          threadId: thread.id,
+          turnId: `trigger-${thread.id}`,
+          providerThreadId: `provider-${thread.id}`,
+          sequence: 5_001,
+        });
+      expect(session.id).toBeTruthy();
+      for (const thread of threads) {
+        resetActiveThreadEventPruningState(harness.deps, thread.id);
+        expect(
+          maybePruneActiveThreadEventHistory(harness.deps, {
+            latestPrunableSequence: 5_001,
+            threadId: thread.id,
+            schedule: (callback) => scheduled.push(callback),
+          }),
+        ).toBe(true);
+      }
+      const callbackDurationsMs: number[] = [];
+      for (
+        let callbackIndex = 0;
+        callbackIndex < threads.length;
+        callbackIndex += 1
+      ) {
+        const callback = scheduled.shift();
+        expect(callback).toBeDefined();
+        const startedAt = performance.now();
+        callback?.();
+        callbackDurationsMs.push(performance.now() - startedAt);
+      }
+      expect(callbackDurationsMs).toHaveLength(40);
+      const longestCallbackMs = Math.max(...callbackDurationsMs);
+      process.stdout.write(
+        `ACTIVE_PRUNE_MAX_CALLBACK_MS=${longestCallbackMs.toFixed(3)}\n`,
+      );
+      expect(longestCallbackMs).toBeLessThan(50);
+    } finally {
+      for (const thread of threads)
+        resetActiveThreadEventPruningState(harness.deps, thread.id);
+      scheduled.length = 0;
+      await harness.cleanup();
+      db.$client.close();
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("runs an event-loop task between active pruning slices", async () => {
+    await withTestHarness(async (harness) => {
+      const { host } = seedHostSession(harness.deps);
+      const { project } = seedProjectWithSource(harness.deps, {
+        hostId: host.id,
+      });
+      const thread = seedThread(harness.deps, {
+        projectId: project.id,
+        status: "active",
+      });
+      seedNoiseRows(harness, { endingSequence: 300, threadId: thread.id });
+      resetActiveThreadEventPruningState(harness.deps, thread.id);
+      const scheduled: Array<() => void> = [];
+      const order: string[] = [];
+      let scheduleCount = 0;
+      const schedule = (callback: () => void) => {
+        scheduleCount += 1;
+        if (scheduleCount === 1) scheduled.push(() => order.push("marker"));
+        scheduled.push(() => {
+          callback();
+          order.push("slice");
+        });
+      };
+      const result = maybePruneActiveThreadEventHistory(harness.deps, {
+        latestPrunableSequence: 300,
+        schedule,
+        threadId: thread.id,
+      });
+      expect(result).toBe(true);
+      expect(scheduleCount).toBe(1);
+      scheduled.shift()?.();
+      expect(order).toEqual(["marker"]);
+      scheduled.shift()?.();
+      expect(order).toEqual(["marker", "slice"]);
+      expect(scheduleCount).toBe(2);
+      resetActiveThreadEventPruningState(harness.deps, thread.id);
+    });
+  });
+
+  it("skips a second active pruning trigger while its chain is pending", async () => {
+    await withTestHarness(async (harness) => {
+      const { host } = seedHostSession(harness.deps);
+      const { project } = seedProjectWithSource(harness.deps, {
+        hostId: host.id,
+      });
+      const thread = seedThread(harness.deps, {
+        projectId: project.id,
+        status: "active",
+      });
+      seedNoiseRows(harness, { endingSequence: 300, threadId: thread.id });
+      resetActiveThreadEventPruningState(harness.deps, thread.id);
+      const scheduled: Array<() => void> = [];
+      let throttleTime = 50_000;
+      const first = maybePruneActiveThreadEventHistory(harness.deps, {
+        latestPrunableSequence: 300,
+        schedule: (callback) => scheduled.push(callback),
+        threadId: thread.id,
+        throttleNow: () => throttleTime,
+      });
+      expect(first).toBe(true);
+      expect(scheduled).toHaveLength(1);
+      throttleTime += 30_001;
+      const second = maybePruneActiveThreadEventHistory(harness.deps, {
+        latestPrunableSequence: 600,
+        schedule: (callback) => scheduled.push(callback),
+        threadId: thread.id,
+        throttleNow: () => throttleTime,
+      });
+      expect(second).toBe(false);
+      expect(scheduled).toHaveLength(1);
+      resetActiveThreadEventPruningState(harness.deps, thread.id);
+      scheduled.shift()?.();
+      expect(scheduled).toHaveLength(0);
+    });
+  });
+
+  it("continues active pruning through the scoped policy cycle", async () => {
+    await withTestHarness(async (harness) => {
+      const { host } = seedHostSession(harness.deps);
+      const { project } = seedProjectWithSource(harness.deps, {
+        hostId: host.id,
+      });
+      const thread = seedThread(harness.deps, {
+        projectId: project.id,
+        status: "active",
+      });
+      resetActiveThreadEventPruningState(harness.deps, thread.id);
+      const scheduled: Array<() => void> = [];
+      const result = maybePruneActiveThreadEventHistory(harness.deps, {
+        latestPrunableSequence: 300,
+        threadId: thread.id,
+        schedule: (callback) => scheduled.push(callback),
+      });
+      expect(result).toBe(true);
+      while (scheduled.length > 0) scheduled.shift()?.();
+      expect(
+        harness.db.all(
+          sql`SELECT policy FROM thread_pruning_cursors WHERE scope = ${thread.id}`,
+        ),
+      ).toHaveLength(4);
+      resetActiveThreadEventPruningState(harness.deps, thread.id);
+    });
+  });
+
+  it("preserves the eventual active-pruning deletion set across budgeted slices", async () => {
+    await withTestHarness(async (harness) => {
+      const { host } = seedHostSession(harness.deps);
+      const { project } = seedProjectWithSource(harness.deps, {
+        hostId: host.id,
+      });
+      const thread = seedThread(harness.deps, {
+        projectId: project.id,
+        status: "active",
+      });
+      harness.db
+        .insert(events)
+        .values(
+          Array.from({ length: 1_400 }, (_, index) => {
+            const sequence = index + 1;
+            const type: ThreadEventType =
+              sequence <= 400
+                ? sequence % 2 === 0
+                  ? "thread/tokenUsage/updated"
+                  : "turn/diff/updated"
+                : "provider/warning";
+            return {
+              id: `${thread.id}-${sequence}`,
+              threadId: thread.id,
+              sequence,
+              scopeKind: "turn" as const,
+              turnId: `turn-${sequence}`,
+              type,
+              data: JSON.stringify(
+                type === "thread/tokenUsage/updated"
+                  ? createTokenUsageData({
+                      totalTokens: sequence,
+                      modelContextWindow: null,
+                    })
+                  : { marker: sequence },
+              ),
+              createdAt: sequence,
+            };
+          }),
+        )
+        .run();
+      const legacyDb = createConnection(harness.db.$client.serialize());
+      const baseline = [
+        ...listEvents(legacyDb, { threadId: thread.id }).map(
+          (event) => event.id,
+        ),
+      ].sort();
+      try {
+        const completed = new Set<string>();
+        for (let i = 0; i < 10_000 && completed.size < 4; i += 1) {
+          const result = advanceThreadPruning(legacyDb, {
+            threadId: thread.id,
+          });
+          if (
+            result.action === "cycle-complete" ||
+            result.action === "thread-complete"
+          )
+            completed.add(result.policy);
+        }
+        expect(completed.size).toBe(4);
+        const legacyIds = listEvents(legacyDb, { threadId: thread.id })
+          .map((event) => event.id)
+          .sort();
+        expect(legacyIds.length).toBeLessThan(baseline.length);
+
+        resetActiveThreadEventPruningState(harness.deps, thread.id);
+        const scheduledSlices: Array<() => void> = [];
+        const enqueued = maybePruneActiveThreadEventHistory(harness.deps, {
+          latestPrunableSequence: 1_400,
+          threadId: thread.id,
+          schedule: (callback) => scheduledSlices.push(callback),
+        });
+        expect(enqueued).toBe(true);
+        expect(scheduledSlices).toHaveLength(1);
+        for (
+          let slice = 0;
+          slice < 10_000 && scheduledSlices.length > 0;
+          slice++
+        )
+          scheduledSlices.shift()?.();
+        expect(scheduledSlices).toHaveLength(0);
+        const budgetedIds = listEvents(harness.db, { threadId: thread.id })
+          .map((event) => event.id)
+          .sort();
+        expect(budgetedIds).toEqual(legacyIds);
+        resetActiveThreadEventPruningState(harness.deps, thread.id);
+      } finally {
+        legacyDb.$client.close();
+      }
+      expect(baseline.length).toBeGreaterThan(1_000);
     });
   });
 });

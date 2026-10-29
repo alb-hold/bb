@@ -51,6 +51,7 @@ import type {
 import {
   isActivePruneTriggerThreadEventType,
   maybePruneActiveThreadEventHistory,
+  type ActiveThreadEventPruneRuntimeOptions,
 } from "../services/system/event-pruning.js";
 import {
   recordSpendForInsertedEvents,
@@ -1343,7 +1344,11 @@ function dropReplayedEntries(
   );
 }
 
-export function registerInternalEventRoutes(app: Hono, deps: AppDeps): void {
+export function registerInternalEventRoutes(
+  app: Hono,
+  deps: AppDeps,
+  activeThreadPruneRuntime?: ActiveThreadEventPruneRuntimeOptions,
+): void {
   const { post } = typedRoutes<HostDaemonInternalSchema>(app, {
     onValidationError: (msg) => new ApiError(400, "invalid_request", msg),
   });
@@ -1545,13 +1550,11 @@ export function registerInternalEventRoutes(app: Hono, deps: AppDeps): void {
           insertedEventIndexes: appendResult.insertedInputIndexes,
         }),
       );
-      for (const candidate of resolveActivePruneCandidates({
+      const activePruneCandidates = resolveActivePruneCandidates({
         acceptedEvents: appendResult.acceptedEvents,
         events: postableEvents,
         insertedEventIndexes: appendResult.insertedInputIndexes,
-      })) {
-        maybePruneActiveThreadEventHistory(deps, candidate);
-      }
+      });
 
       deferEventFollowUpBatch(deps, followUps);
       const responseBody = {
@@ -1581,6 +1584,19 @@ export function registerInternalEventRoutes(app: Hono, deps: AppDeps): void {
         "content-length",
         String(Buffer.byteLength(JSON.stringify(responseBody))),
       );
+      deferAfterResponse({
+        config: deps.config,
+        logger: deps.logger,
+        name: "Active thread event pruning",
+        work: async () => {
+          for (const candidate of activePruneCandidates) {
+            maybePruneActiveThreadEventHistory(deps, {
+              ...candidate,
+              schedule: activeThreadPruneRuntime?.schedule,
+            });
+          }
+        },
+      });
       return response;
     },
   );

@@ -80,6 +80,7 @@ import { setPluginMachineProviderBridge } from "./services/plugins/plugin-machin
 import { invalidateEnvironmentProviderMachineAvailability } from "./services/environments/provider-machine-availability.js";
 import { requestQueuedMessageDispatch } from "./services/threads/queued-message-dispatch.js";
 import { registerInternalEventRoutes } from "./internal/events.js";
+import type { ActiveThreadEventPruneRuntimeOptions } from "./services/system/event-pruning.js";
 import { registerInternalHostRoutes } from "./internal/hosts.js";
 import { registerInternalInteractiveRequestRoutes } from "./internal/interactive-requests.js";
 import { registerInternalPluginHostArtifactRoutes } from "./internal/plugin-host-artifacts.js";
@@ -232,6 +233,7 @@ export interface ServerMoveAppOptions {
 }
 
 interface CreateAppOptions {
+  activeThreadPruneRuntime?: ActiveThreadEventPruneRuntimeOptions;
   bbAppArtifactService?: BbAppArtifactService;
   serverMove?: ServerMoveAppOptions;
   slowApiRequestLogThresholdMs?: number;
@@ -1015,7 +1017,11 @@ export function createApp(
   });
   registerInternalSkillRoutes(internalApi, deps);
   registerInternalPluginHostArtifactRoutes(internalApi, deps);
-  registerInternalEventRoutes(internalApi, deps);
+  registerInternalEventRoutes(
+    internalApi,
+    deps,
+    options?.activeThreadPruneRuntime,
+  );
   registerInternalToolCallRoutes(internalApi, deps);
   registerInternalInteractiveRequestRoutes(internalApi, deps);
   registerInternalForkAdoptionRoutes(internalApi, deps);

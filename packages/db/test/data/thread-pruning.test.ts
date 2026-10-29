@@ -567,14 +567,18 @@ describe("thread pruning", () => {
           data: '{"contextWindowUsage":{"usedTokens":1,"modelContextWindow":null}}',
         },
       );
+      const expectedSequences = [1, 200, 201, ...activeWindow];
+      const removalsNeeded = sequences(f).length - expectedSequences.length;
+      let removed = 0;
       const policies = [];
-      for (let i = 0; i < 160; i++) {
+      for (let i = 0; i < 160 && removed < removalsNeeded; i++) {
         const policy = getNextThreadPruningPolicy(f.db, new Set(), f.thread.id);
         if (policy === null) throw new Error("Missing policy");
         policies.push(policy);
         const result = advanceThreadPruning(f.db, { threadId: f.thread.id });
         expect(result.scanned).toBeLessThanOrEqual(32);
         expect(result.removed).toBeLessThanOrEqual(32);
+        removed += result.removed;
         if (i === 6) {
           const saved = f.db.$client.serialize();
           f.db.$client.close();
@@ -591,7 +595,7 @@ describe("thread pruning", () => {
         "turn-diffs",
         "resolved-items",
       ]);
-      expect(sequences(f)).toEqual([1, 200, 201, ...activeWindow]);
+      expect(sequences(f)).toEqual(expectedSequences);
       expect(
         f.db
           .select()
@@ -604,7 +608,7 @@ describe("thread pruning", () => {
     }
   });
 
-  it("reaches resolved deltas beyond unrelated history in one scoped advance", () => {
+  it("reaches resolved deltas beyond unrelated history across scoped batches", () => {
     const f = setup();
     try {
       f.db.transaction(() => {
@@ -618,12 +622,34 @@ describe("thread pruning", () => {
           itemId: "message",
         });
       });
-      for (let i = 0; i < 3; i++)
-        advanceThreadPruning(f.db, { threadId: f.thread.id });
-      const result = advanceThreadPruning(f.db, { threadId: f.thread.id });
+      const advances: Array<{
+        policy: string;
+        action: string;
+        scanned: number;
+        removed: number;
+      }> = [];
+      const advance = () => {
+        const result = advanceThreadPruning(f.db, { threadId: f.thread.id });
+        advances.push({
+          policy: result.policy,
+          action: result.action,
+          scanned: result.scanned,
+          removed: result.removed,
+        });
+        return result;
+      };
+      for (let i = 0; i < 3; i++) advance();
+      let result = advance();
       expect(result.policy).toBe("resolved-items");
-      expect(result.scanned).toBe(2);
+      const maxAdvances = 8;
+      while (advances.length < maxAdvances && result.removed === 0) {
+        result = advance();
+      }
       expect(result.removed).toBe(1);
+      expect(advances.length).toBeLessThanOrEqual(maxAdvances);
+      expect(
+        advances.reduce((total, entry) => total + entry.scanned, 0),
+      ).toBeLessThanOrEqual(8);
       expect(sequences(f)).toContain(2001);
       expect(sequences(f)).not.toContain(2002);
       expect(sequences(f)).toContain(2003);

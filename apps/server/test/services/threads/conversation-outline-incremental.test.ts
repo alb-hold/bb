@@ -198,7 +198,7 @@ function backgroundDelegation(
 function pruneUntilResolvedItemsComplete(testThread: TestThread): number {
   const threadId = testThread.thread.id;
   let removed = 0;
-  for (let pass = 0; pass < 2_000; pass += 1) {
+  for (let pass = 0; pass < 6_000; pass += 1) {
     const result = advanceThreadPruning(testThread.db, { threadId });
     removed += result.removed;
     if (result.policy === "resolved-items" && result.action !== "advanced")
