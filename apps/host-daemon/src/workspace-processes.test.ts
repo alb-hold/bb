@@ -264,7 +264,7 @@ describe("darwin workspace process inspection", () => {
     });
   });
 
-  it("ignores unix socket lsof entries", async () => {
+  it("ignores unix socket descriptor names without a path", async () => {
     vi.mocked(execHostFile).mockImplementation((async () => ({
       stdout: "p513\nf1\ntunix\nn->0xdeadbeef\n",
       stderr: "",
@@ -274,6 +274,44 @@ describe("darwin workspace process inspection", () => {
       supported: true,
       pids: [],
       unreadablePids: [],
+    });
+  });
+
+  it("treats a workspace unix socket path as a holder", async () => {
+    vi.mocked(execHostFile).mockImplementation((async () => ({
+      stdout: "p514\nf1\ntunix\nn/ws/project/.devserver.sock\n",
+      stderr: "",
+    })) as never);
+    vi.mocked(realpath).mockImplementation(async (value) => {
+      const key = String(value);
+      if (key === "/ws/project") return "/ws/project";
+      if (key === "/ws/project/.devserver.sock")
+        return "/ws/project/.devserver.sock";
+      return key;
+    });
+    expect(await inspectWorkspaceProcesses("/ws/project")).toEqual({
+      supported: true,
+      pids: [514],
+      unreadablePids: [],
+    });
+  });
+
+  it("treats a workspace unix socket path as unreadable when resolution fails", async () => {
+    const denied = Object.assign(new Error("denied"), { code: "EACCES" });
+    vi.mocked(execHostFile).mockImplementation((async () => ({
+      stdout: "p515\nf1\ntunix\nn/ws/project/.devserver.sock\n",
+      stderr: "",
+    })) as never);
+    vi.mocked(realpath).mockImplementation(async (value) => {
+      const key = String(value);
+      if (key === "/ws/project") return "/ws/project";
+      if (key === "/ws/project/.devserver.sock") throw denied;
+      return key;
+    });
+    expect(await inspectWorkspaceProcesses("/ws/project")).toEqual({
+      supported: true,
+      pids: [],
+      unreadablePids: [515],
     });
   });
 

@@ -70,6 +70,19 @@ function isKnownFilesystemLsofType(type: string | undefined): boolean {
   return type !== undefined && LSOF_FILESYSTEM_TYPES.has(type);
 }
 
+function nonFilesystemEntryIsOutsideWithoutInspection(
+  value: string,
+  lsofType: string | undefined,
+): boolean {
+  if (!isNonFilesystemLsofType(lsofType)) return false;
+  const normalized = stripDeletedSuffix(value).trim();
+  if (normalized.length === 0) return true;
+  if (normalized.startsWith("/")) return false;
+  if (normalized.startsWith("->")) return true;
+  if (/^0x[0-9a-fA-F]+$/.test(normalized)) return true;
+  return true;
+}
+
 function isSocketStylePathName(value: string): boolean {
   const normalized = stripDeletedSuffix(value);
   if (normalized.startsWith("/")) return false;
@@ -119,7 +132,8 @@ function pathLexicallyCouldBeInWorkspace(
   workspaceArg: string,
   lsofType?: string,
 ): boolean {
-  if (isNonFilesystemLsofType(lsofType)) return false;
+  if (nonFilesystemEntryIsOutsideWithoutInspection(value, lsofType))
+    return false;
   const roots = new Set<string>();
   for (const root of [workspaceCanonical, workspaceArg]) {
     roots.add(root);
@@ -163,7 +177,8 @@ async function classifyPathForWorkspace(
   workspaceArg: string,
   lsofType?: string,
 ): Promise<"matched" | "outside" | "unreadable"> {
-  if (isNonFilesystemLsofType(lsofType)) return "outside";
+  if (nonFilesystemEntryIsOutsideWithoutInspection(value, lsofType))
+    return "outside";
   if (
     !pathLexicallyCouldBeInWorkspace(
       value,

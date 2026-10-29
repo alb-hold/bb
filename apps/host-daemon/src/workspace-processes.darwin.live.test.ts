@@ -147,6 +147,25 @@ it.skipIf(process.platform !== "darwin")(
   },
 );
 
+it.skipIf(
+  process.platform !== "darwin" ||
+    process.env.BB_R8_WS === undefined ||
+    process.env.BB_R8_PID === undefined,
+)("r8 lsof field order holder", async () => {
+  const workspace = process.env.BB_R8_WS!;
+  const holderPid = Number(process.env.BB_R8_PID);
+  expect(Number.isInteger(holderPid)).toBe(true);
+  const inspection = await inspectWorkspaceProcesses(workspace);
+  const payload = JSON.stringify(inspection);
+  if (process.env.BB_R8_LOG_FILE) {
+    await writeFile(process.env.BB_R8_LOG_FILE, payload + "\n");
+  }
+  console.log(payload);
+  expect(inspection.supported).toBe(true);
+  expect(inspection.pids).toContain(holderPid);
+  expect(inspection.unreadablePids).not.toContain(holderPid);
+});
+
 function pathsForUnreadablePids(
   stdout: string,
   unreadablePids: number[],
