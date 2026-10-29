@@ -627,6 +627,7 @@ interface HandleTerminalServerMessageArgs {
   allowAttachedGrid?: boolean;
   onReplayStart?: (session: TerminalSession) => void;
   shouldProcessOutput?: () => boolean;
+  writeExitNotice?: (text: string) => boolean;
 }
 
 function encodeBytesBase64(bytes: Uint8Array): string {
@@ -1081,6 +1082,7 @@ export function handleTerminalServerMessage({
   allowAttachedGrid = true,
   onReplayStart,
   shouldProcessOutput,
+  writeExitNotice,
 }: HandleTerminalServerMessageArgs): void {
   if (message.type === "output" && shouldProcessOutput?.() === false) {
     return;
@@ -1147,13 +1149,14 @@ export function handleTerminalServerMessage({
       return;
     case "exited":
       onSessionChange?.(message.session);
-      writeTerminalStatus({
-        terminal,
-        text:
+      {
+        const text =
           message.session.exitCode === null
             ? "Terminal exited"
-            : `Terminal exited with code ${message.session.exitCode}`,
-      });
+            : `Terminal exited with code ${message.session.exitCode}`;
+        if (writeExitNotice?.(text)) return;
+        writeTerminalStatus({ terminal, text });
+      }
       return;
   }
 }
@@ -2558,6 +2561,16 @@ export function ThreadTerminalView({
             pipeline: outputPipeline ?? undefined,
             replayPipeline: replayPreview ?? undefined,
             replayCheckpointSequence,
+            writeExitNotice: (text) => {
+              if (replayPreview?.fallback !== true || replayCompleted) {
+                return false;
+              }
+              replayPreview.push(
+                new TextEncoder().encode(`\r\n\x1b[2m${text}\x1b[0m\r\n`),
+                () => undefined,
+              );
+              return true;
+            },
             outputBoundaries,
             allowAttachedGrid: !markerGridActive,
             shouldProcessOutput: () =>
