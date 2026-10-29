@@ -1,7 +1,8 @@
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { getThread, listQueuedThreadMessages } from "@bb/db";
+import { events, getThread, listQueuedThreadMessages, threads } from "@bb/db";
+import { and, eq } from "drizzle-orm";
 import {
   encodeClientTurnRequestIdNumber,
   threadScope,
@@ -115,6 +116,8 @@ function seedScenario(harness: TestAppHarness): Scenario {
 function unauthorizedFailureEvents(args: {
   threadId: string;
   turnId: string;
+  category?: "unauthorized" | "internal";
+  trailingCategory?: "unauthorized" | "internal";
 }): HostDaemonEventEnvelope[] {
   const scope = turnScope(args.turnId);
   const base = {
@@ -122,7 +125,7 @@ function unauthorizedFailureEvents(args: {
     providerThreadId: PROVIDER_THREAD_ID,
     scope,
   };
-  return [
+  const events: HostDaemonEventEnvelope[] = [
     {
       threadId: args.threadId,
       event: {
@@ -141,17 +144,34 @@ function unauthorizedFailureEvents(args: {
         message: "Provider error",
         detail: UNAUTHORIZED_DETAIL,
         errorInfo: {
-          category: "unauthorized",
+          category: args.category ?? "unauthorized",
           providerCode: null,
           httpStatusCode: 401,
         },
       },
     },
-    {
-      threadId: args.threadId,
-      event: { ...base, type: "turn/completed", status: "failed" },
-    },
   ];
+  if (args.trailingCategory !== undefined) {
+    events.push({
+      threadId: args.threadId,
+      event: {
+        ...base,
+        type: "provider/error",
+        message: "Provider error",
+        detail: "Provider failed after retrying the unauthorized request",
+        errorInfo: {
+          category: args.trailingCategory,
+          providerCode: null,
+          httpStatusCode: null,
+        },
+      },
+    });
+  }
+  events.push({
+    threadId: args.threadId,
+    event: { ...base, type: "turn/completed", status: "failed" },
+  });
+  return events;
 }
 
 async function postEvents(
@@ -211,6 +231,305 @@ async function failFirstTurn(
 }
 
 describe("a child whose turn fails with a non-retryable error and is retried by hand", () => {
+  it("settles a terminal archived auth failure cleanly when turn start and archive share a millisecond", async () => {
+    await withTestHarness(async (harness) => {
+      const scenario = seedScenario(harness);
+      const archivedAt = 1_700_000_000_000;
+      harness.db
+        .update(events)
+        .set({ createdAt: archivedAt })
+        .where(
+          and(
+            eq(events.threadId, scenario.child.id),
+            eq(events.turnId, FIRST_TURN_ID),
+            eq(events.type, "turn/started"),
+          ),
+        )
+        .run();
+      harness.db
+        .update(threads)
+        .set({ archivedAt })
+        .where(eq(threads.id, scenario.child.id))
+        .run();
+      seedEvent(harness.deps, {
+        threadId: scenario.child.id,
+        environmentId: scenario.child.environmentId,
+        providerThreadId: PROVIDER_THREAD_ID,
+        sequence: 5,
+        type: "provider/error",
+        scope: turnScope(FIRST_TURN_ID),
+        createdAt: archivedAt + 1,
+        data: {
+          message: "Provider error",
+          detail: UNAUTHORIZED_DETAIL,
+          willRetry: false,
+          errorInfo: {
+            category: "unauthorized",
+            providerCode: null,
+            httpStatusCode: 401,
+          },
+        },
+      });
+      const response = await postEvents(harness, scenario.sessionId, [
+        {
+          threadId: scenario.child.id,
+          event: {
+            threadId: scenario.child.id,
+            providerThreadId: PROVIDER_THREAD_ID,
+            scope: turnScope(FIRST_TURN_ID),
+            type: "turn/completed",
+            status: "failed",
+          },
+        },
+      ]);
+      expect(response.status).toBe(200);
+      expect(getThread(harness.db, scenario.child.id)).toMatchObject({
+        status: "idle",
+        archivedAt,
+      });
+      await new Promise((resolve) => setTimeout(resolve, NOTICE_SETTLE_MS));
+      expect(
+        parentNoticeTexts(harness, scenario.parent.id).filter((text) =>
+          text.includes("failed."),
+        ),
+      ).toHaveLength(0);
+    });
+  }, 20_000);
+
+  it("does not mark an archived in-flight turn failed after its credential is revoked", async () => {
+    await withTestHarness(async (harness) => {
+      const scenario = seedScenario(harness);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      harness.db
+        .update(threads)
+        .set({ archivedAt: Date.now() })
+        .where(eq(threads.id, scenario.child.id))
+        .run();
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      const response = await postEvents(
+        harness,
+        scenario.sessionId,
+        unauthorizedFailureEvents({
+          threadId: scenario.child.id,
+          turnId: FIRST_TURN_ID,
+        }),
+      );
+      expect(response.status).toBe(200);
+      expect(getThread(harness.db, scenario.child.id)?.status).not.toBe(
+        "error",
+      );
+      await new Promise((resolve) => setTimeout(resolve, NOTICE_SETTLE_MS));
+      expect(
+        parentNoticeTexts(harness, scenario.parent.id).filter((text) =>
+          text.includes("failed."),
+        ),
+      ).toHaveLength(0);
+    });
+  }, 20_000);
+
+  it("keeps an archived turn failed and notifies its parent for non-auth failures", async () => {
+    await withTestHarness(async (harness) => {
+      const scenario = seedScenario(harness);
+      harness.db
+        .update(threads)
+        .set({ archivedAt: Date.now() })
+        .where(eq(threads.id, scenario.child.id))
+        .run();
+      const response = await postEvents(
+        harness,
+        scenario.sessionId,
+        unauthorizedFailureEvents({
+          threadId: scenario.child.id,
+          turnId: FIRST_TURN_ID,
+          category: "internal",
+        }),
+      );
+      expect(response.status).toBe(200);
+      expect(getThread(harness.db, scenario.child.id)?.status).toBe("error");
+      await new Promise((resolve) => setTimeout(resolve, NOTICE_SETTLE_MS));
+      expect(
+        parentNoticeTexts(harness, scenario.parent.id).filter((text) =>
+          text.includes("failed."),
+        ),
+      ).toHaveLength(1);
+    });
+  }, 20_000);
+
+  it("keeps a non-archived auth failure failed and notifies its parent", async () => {
+    await withTestHarness(async (harness) => {
+      const scenario = seedScenario(harness);
+      const response = await postEvents(
+        harness,
+        scenario.sessionId,
+        unauthorizedFailureEvents({
+          threadId: scenario.child.id,
+          turnId: FIRST_TURN_ID,
+        }),
+      );
+      expect(response.status).toBe(200);
+      expect(getThread(harness.db, scenario.child.id)?.status).toBe("error");
+      await new Promise((resolve) => setTimeout(resolve, NOTICE_SETTLE_MS));
+      expect(
+        parentNoticeTexts(harness, scenario.parent.id).filter((text) =>
+          text.includes("failed."),
+        ),
+      ).toHaveLength(1);
+    });
+  }, 20_000);
+
+  it("keeps an auth failure failed when the thread was archived before the turn started", async () => {
+    await withTestHarness(async (harness) => {
+      const scenario = seedScenario(harness);
+      harness.db
+        .update(threads)
+        .set({ archivedAt: Date.now() - 30_000 })
+        .where(eq(threads.id, scenario.child.id))
+        .run();
+      const response = await postEvents(
+        harness,
+        scenario.sessionId,
+        unauthorizedFailureEvents({
+          threadId: scenario.child.id,
+          turnId: FIRST_TURN_ID,
+        }),
+      );
+      expect(response.status).toBe(200);
+      expect(getThread(harness.db, scenario.child.id)?.status).toBe("error");
+      await new Promise((resolve) => setTimeout(resolve, NOTICE_SETTLE_MS));
+      expect(
+        parentNoticeTexts(harness, scenario.parent.id).filter((text) =>
+          text.includes("failed."),
+        ),
+      ).toHaveLength(1);
+    });
+  }, 20_000);
+
+  it("keeps the archived turn failed when a later non-auth error caused completion", async () => {
+    await withTestHarness(async (harness) => {
+      const scenario = seedScenario(harness);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      harness.db
+        .update(threads)
+        .set({ archivedAt: Date.now() })
+        .where(eq(threads.id, scenario.child.id))
+        .run();
+      const archivedAt = getThread(harness.db, scenario.child.id)?.archivedAt;
+      if (archivedAt === null || archivedAt === undefined)
+        throw new Error("expected archive timestamp");
+      seedEvent(harness.deps, {
+        threadId: scenario.child.id,
+        environmentId: scenario.child.environmentId,
+        providerThreadId: PROVIDER_THREAD_ID,
+        sequence: 5,
+        type: "provider/error",
+        scope: turnScope(FIRST_TURN_ID),
+        createdAt: archivedAt + 1,
+        data: {
+          message: "Provider error",
+          detail: UNAUTHORIZED_DETAIL,
+          errorInfo: {
+            category: "unauthorized",
+            providerCode: null,
+            httpStatusCode: 401,
+          },
+        },
+      });
+      seedEvent(harness.deps, {
+        threadId: scenario.child.id,
+        environmentId: scenario.child.environmentId,
+        providerThreadId: PROVIDER_THREAD_ID,
+        sequence: 6,
+        type: "provider/error",
+        scope: turnScope(FIRST_TURN_ID),
+        createdAt: archivedAt + 2,
+        data: {
+          message: "Provider error",
+          detail: "Provider failed after retrying the unauthorized request",
+          errorInfo: {
+            category: "internal",
+            providerCode: null,
+            httpStatusCode: null,
+          },
+        },
+      });
+      const response = await postEvents(harness, scenario.sessionId, [
+        {
+          threadId: scenario.child.id,
+          event: {
+            threadId: scenario.child.id,
+            providerThreadId: PROVIDER_THREAD_ID,
+            scope: turnScope(FIRST_TURN_ID),
+            type: "turn/completed",
+            status: "failed",
+          },
+        },
+      ]);
+      expect(response.status).toBe(200);
+      expect(getThread(harness.db, scenario.child.id)?.status).toBe("error");
+      await new Promise((resolve) => setTimeout(resolve, NOTICE_SETTLE_MS));
+      expect(
+        parentNoticeTexts(harness, scenario.parent.id).filter((text) =>
+          text.includes("failed."),
+        ),
+      ).toHaveLength(1);
+    });
+  }, 20_000);
+
+  it("keeps retryable archived auth failures failed when the turn later fails without another provider error", async () => {
+    await withTestHarness(async (harness) => {
+      const scenario = seedScenario(harness);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      harness.db
+        .update(threads)
+        .set({ archivedAt: Date.now() })
+        .where(eq(threads.id, scenario.child.id))
+        .run();
+      const archivedAt = getThread(harness.db, scenario.child.id)?.archivedAt;
+      if (archivedAt === null || archivedAt === undefined)
+        throw new Error("expected archive timestamp");
+      seedEvent(harness.deps, {
+        threadId: scenario.child.id,
+        environmentId: scenario.child.environmentId,
+        providerThreadId: PROVIDER_THREAD_ID,
+        sequence: 5,
+        type: "provider/error",
+        scope: turnScope(FIRST_TURN_ID),
+        createdAt: archivedAt + 1,
+        data: {
+          message: "Provider error",
+          detail: UNAUTHORIZED_DETAIL,
+          willRetry: true,
+          errorInfo: {
+            category: "unauthorized",
+            providerCode: null,
+            httpStatusCode: 401,
+          },
+        },
+      });
+      const response = await postEvents(harness, scenario.sessionId, [
+        {
+          threadId: scenario.child.id,
+          event: {
+            threadId: scenario.child.id,
+            providerThreadId: PROVIDER_THREAD_ID,
+            scope: turnScope(FIRST_TURN_ID),
+            type: "turn/completed",
+            status: "failed",
+          },
+        },
+      ]);
+      expect(response.status).toBe(200);
+      expect(getThread(harness.db, scenario.child.id)?.status).toBe("error");
+      await new Promise((resolve) => setTimeout(resolve, NOTICE_SETTLE_MS));
+      expect(
+        parentNoticeTexts(harness, scenario.parent.id).filter((text) =>
+          text.includes("failed."),
+        ),
+      ).toHaveLength(1);
+    });
+  }, 20_000);
+
   it("tells the parent about the first failure once and about the final failure once", async () => {
     await withTestHarness(async (harness) => {
       const scenario = seedScenario(harness);
