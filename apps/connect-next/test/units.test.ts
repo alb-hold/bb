@@ -511,6 +511,7 @@ describe("frp hooks", () => {
       const registered = new Map<string, string>();
       const stub = {
         down: false,
+        unknownAnswers: 0,
         queries: 0,
         gate: null as Promise<void> | null,
         register(name: string, clientId: string) {
@@ -528,12 +529,20 @@ describe("frp hooks", () => {
             const clientId = registered.get(name);
             await stub.gate;
             if (stub.down) return { kind: "unknown" };
+            if (stub.unknownAnswers > 0) {
+              stub.unknownAnswers -= 1;
+              return { kind: "unknown" };
+            }
             return clientId === undefined
               ? { kind: "offline" }
               : { kind: "online", clientId };
           },
           async online() {
             if (stub.down) return null;
+            if (stub.unknownAnswers > 0) {
+              stub.unknownAnswers -= 1;
+              return null;
+            }
             return new Map(registered);
           },
         } satisfies FrpState,
@@ -574,6 +583,13 @@ describe("frp hooks", () => {
         expect(response.status).toBe(200);
         expect(await response.json()).toMatchObject({ reject: false });
       };
+      const ask = async (op: string, content: Record<string, unknown>) => {
+        const response = await fetch(`http://127.0.0.1:${address.port}/frp`, {
+          method: "POST",
+          body: JSON.stringify({ op, content }),
+        });
+        return response.json();
+      };
       const metas = { [FRP_CREDENTIAL_META]: "credential" };
       const login = async (clientAddress: string, runId?: string) => {
         const socket = new PassThrough();
@@ -601,7 +617,7 @@ describe("frp hooks", () => {
         await proxyCall("NewProxy", runId);
         frps.register(PROXY_NAME, runId);
       };
-      return { directory, frps, login, proxyCall, newProxy };
+      return { directory, frps, login, proxyCall, newProxy, ask, metas };
     }
 
     type Harness = Awaited<ReturnType<typeof startHooks>>;
@@ -878,6 +894,83 @@ describe("frp hooks", () => {
       expect(await harness.directory.awaitReturn("bee", signal)).toEqual({
         kind: "offline",
       });
+    });
+
+    it("never removes a record because frps could not answer, however many times", async () => {
+      const harness = await startHooks();
+      await connectFirst(harness);
+
+      harness.frps.unknownAnswers = 15;
+      await harness.proxyCall("CloseProxy", "run-1");
+      await waitUntil(() => harness.frps.unknownAnswers === 0);
+      await sleep(TIMINGS.reconcileMs * 2);
+      expect(harness.directory.locate("bee").kind).toBe("here");
+    });
+
+    it("removes a record after unanswered questions once a listing shows frps dropped it", async () => {
+      const harness = await startHooks();
+      const signal = new AbortController().signal;
+      await connectFirst(harness);
+
+      harness.frps.unregister(PROXY_NAME);
+      harness.frps.unknownAnswers = 15;
+      await harness.proxyCall("CloseProxy", "run-1");
+      await waitUntil(() => harness.frps.unknownAnswers === 0);
+      await waitUntil(() => harness.directory.locate("bee").kind !== "here");
+      expect(await harness.directory.awaitReturn("bee", signal)).toEqual({
+        kind: "offline",
+      });
+    });
+
+    it("keeps a record whose proxy frps lists under an id no record owns", async () => {
+      const harness = await startHooks();
+      await connectFirst(harness);
+
+      harness.frps.unregister(PROXY_NAME);
+      harness.frps.register(PROXY_NAME, "stranger");
+      await harness.proxyCall("CloseProxy", "run-1");
+      await sleep(TIMINGS.reconcileMs * 3);
+      expect(harness.directory.locate("bee").kind).toBe("here");
+    });
+
+    it("refuses a login that names a client id other than its run id", async () => {
+      const harness = await startHooks();
+      const login = (content: Record<string, unknown>) =>
+        harness.ask("Login", {
+          user: "bee",
+          metas: harness.metas,
+          client_address: "x:1",
+          ...content,
+        });
+
+      expect(await login({ client_id: "run-1" })).toMatchObject({
+        reject: true,
+      });
+      expect(
+        await login({ client_id: "run-2", run_id: "run-1" }),
+      ).toMatchObject({
+        reject: true,
+      });
+      expect(
+        await login({ client_id: "run-1", run_id: "run-1" }),
+      ).toMatchObject({
+        reject: false,
+      });
+      expect(await login({})).toMatchObject({ reject: false });
+    });
+
+    it("refuses a login that reuses a run id another label holds", async () => {
+      const harness = await startHooks();
+      await connectFirst(harness);
+
+      const stolen = await harness.ask("Login", {
+        user: "wasp",
+        metas: harness.metas,
+        run_id: "run-1",
+        client_address: "x:2",
+      });
+      expect(stolen).toMatchObject({ reject: true });
+      expect(harness.directory.locate("bee").kind).toBe("here");
     });
 
     it("drops an older run's record when frps lists the proxy under another run's record", async () => {

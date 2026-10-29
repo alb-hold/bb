@@ -47,6 +47,7 @@ interface HookCall {
   subdomain: string | null;
   customDomains: string[];
   clientAddress: string | null;
+  clientId: string | null;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -100,6 +101,7 @@ export function parseHookCall(value: unknown): HookCall | null {
     subdomain: optionalString(content.subdomain),
     customDomains,
     clientAddress: optionalString(content.client_address),
+    clientId: optionalString(content.client_id),
   };
 }
 
@@ -183,12 +185,22 @@ export function createFrpHooks(options: FrpHookOptions) {
   const sleep = (ms: number) =>
     new Promise<void>((resolve) => setTimeout(resolve, ms).unref());
 
-  function ownedByAnotherRun(record: ProxyRecord, clientId: string): boolean {
-    return (
-      clientId !== "" &&
-      clientId !== record.runId &&
-      proxies.has(`${clientId}\n${record.name}`)
-    );
+  type RemovalVerdict = "keep" | "remove" | "unknown";
+
+  function judge(
+    record: ProxyRecord,
+    clientId: string | undefined,
+  ): RemovalVerdict {
+    if (clientId === undefined) return "remove";
+    if (clientId === record.runId) return "keep";
+    return proxies.has(`${clientId}\n${record.name}`) ? "remove" : "unknown";
+  }
+
+  function runBelongsToAnotherLabel(runId: string, label: string): boolean {
+    for (const record of proxies.values()) {
+      if (record.runId === runId && record.label !== label) return true;
+    }
+    return false;
   }
 
   function proxyKey(record: ProxyRecord): string {
@@ -236,10 +248,15 @@ export function createFrpHooks(options: FrpHookOptions) {
           await sleep(timings.stateRetryMs);
           continue;
         }
-        if (
-          state.kind === "online" &&
-          !ownedByAnotherRun(record, state.clientId)
-        ) {
+        const verdict = judge(
+          record,
+          state.kind === "online" ? state.clientId : undefined,
+        );
+        if (verdict === "unknown") {
+          await sleep(timings.stateRetryMs);
+          continue;
+        }
+        if (verdict === "keep") {
           log("info", "frp_proxy_close_stale", {
             label: record.label,
             subdomain: record.subdomain,
@@ -249,7 +266,6 @@ export function createFrpHooks(options: FrpHookOptions) {
         removeRecord(record);
         return;
       }
-      if (proxies.get(proxyKey(record)) === record) removeRecord(record);
     } finally {
       record.settling = false;
     }
@@ -263,8 +279,7 @@ export function createFrpHooks(options: FrpHookOptions) {
       if (record.settling) continue;
       if (record.createdAt + timings.registerGraceMs > startedAt) continue;
       if (proxies.get(proxyKey(record)) !== record) continue;
-      const clientId = online.get(record.name);
-      if (clientId === undefined || ownedByAnotherRun(record, clientId)) {
+      if (judge(record, online.get(record.name)) === "remove") {
         log("warn", "frp_proxy_unlisted", {
           label: record.label,
           subdomain: record.subdomain,
@@ -284,6 +299,15 @@ export function createFrpHooks(options: FrpHookOptions) {
     if (RESERVED_HANDLES.has(user.label)) return reject(unknownServer);
     if (call.op === "Login") {
       if (user.credential === null) return reject(FRP_LOGIN_REFUSED_REASON);
+      if (
+        (call.clientId !== null &&
+          call.clientId !== "" &&
+          call.clientId !== user.runId) ||
+        (user.runId !== "" && runBelongsToAnotherLabel(user.runId, user.label))
+      ) {
+        log("warn", "frp_login_identity_refused", { label: user.label });
+        return reject(FRP_LOGIN_REFUSED_REASON);
+      }
       const verdict = await verify(user);
       if (verdict === "unknown") return reject("the gate could not check this");
       if (verdict === "refused") {

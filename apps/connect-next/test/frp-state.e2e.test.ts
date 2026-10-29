@@ -4,7 +4,10 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { FRP_CREDENTIAL_META } from "@bb/tunnel-contract/next";
+import {
+  FRP_CREDENTIAL_META,
+  FRP_LOGIN_REFUSED_REASON,
+} from "@bb/tunnel-contract/next";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { AccountApi } from "../src/account-api.js";
 import { createLocalDirectory } from "../src/directory.js";
@@ -49,31 +52,42 @@ describe.skipIf(!availability.ok)("frps proxy state end to end", () => {
   let bindPort: number;
   let frpc: ChildProcess | null = null;
   let configDir = "";
+  const outputs = new Map<ChildProcess, string>();
 
-  async function startClient(): Promise<ChildProcess> {
+  async function startClient(
+    who: { label: string; clientId?: string } = { label: "bee" },
+  ): Promise<ChildProcess> {
     if (!availability.ok) throw new Error("frp is not available");
     const config = {
       serverAddr: "127.0.0.1",
       serverPort: bindPort,
-      user: "bee",
+      user: who.label,
+      ...(who.clientId === undefined ? {} : { clientID: who.clientId }),
       loginFailExit: true,
       metadatas: { [FRP_CREDENTIAL_META]: "cred-bee" },
       log: { level: "info", disablePrintColor: true },
       proxies: [
         {
-          name: "bee",
+          name: who.label,
           type: "http",
           localIP: "127.0.0.1",
           localPort: 9,
-          subdomain: "bee",
+          subdomain: who.label,
         },
       ],
     };
-    const file = join(configDir, "frpc.json");
+    const file = join(configDir, `${who.label}.json`);
     await writeFile(file, JSON.stringify(config));
-    return spawn(availability.binaries.frpc, ["-c", file], {
-      stdio: "ignore",
+    const child = spawn(availability.binaries.frpc, ["-c", file], {
+      stdio: ["ignore", "pipe", "pipe"],
     });
+    outputs.set(child, "");
+    for (const stream of [child.stdout, child.stderr]) {
+      stream?.on("data", (chunk: Buffer) =>
+        outputs.set(child, `${outputs.get(child) ?? ""}${chunk.toString()}`),
+      );
+    }
+    return child;
   }
 
   beforeAll(async () => {
@@ -143,6 +157,42 @@ describe.skipIf(!availability.ok)("frps proxy state end to end", () => {
       "bee to drop",
     );
     expect(await state.proxy(name ?? "")).toEqual({ kind: "offline" });
+  });
+
+  it("refuses a second client that names the first client's run id as its client id", async () => {
+    const state = createFrpState({
+      port: adminPort,
+      user: adminUser,
+      password: adminPassword,
+    });
+    frpc = await startClient();
+    await waitFor(() => directory.locate("bee").kind === "here", 15_000, "bee");
+    const online = await state.online();
+    const [runId] = [...(online?.values() ?? [])];
+    expect(runId).toBeTruthy();
+
+    const intruder = await startClient({ label: "wasp", clientId: runId });
+    const exited = await Promise.race([
+      once(intruder, "exit").then(() => true),
+      new Promise<boolean>((resolve) =>
+        setTimeout(() => resolve(false), 10_000),
+      ),
+    ]);
+    intruder.kill("SIGKILL");
+    expect(exited).toBe(true);
+    expect(outputs.get(intruder)).toContain(FRP_LOGIN_REFUSED_REASON);
+    expect(directory.locate("wasp").kind).not.toBe("here");
+
+    await new Promise((resolve) => setTimeout(resolve, 1_200));
+    expect(directory.locate("bee").kind).toBe("here");
+    expect([...((await state.online())?.values() ?? [])]).toEqual([runId]);
+
+    frpc.kill("SIGKILL");
+    await waitFor(
+      () => directory.locate("bee").kind !== "here",
+      15_000,
+      "bee to drop",
+    );
   });
 
   it("answers unknown, not offline, when the admin API is unreachable", async () => {

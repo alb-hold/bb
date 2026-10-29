@@ -306,7 +306,7 @@ The gate is `apps/connect-next` (`@bb/connect-next`). One Node 24 process owns:
   and Fly restarts the machine.
 
 Admission: `Login` needs `metas.credential` and checks it for the frp `user` (the label) with the
-account API; `NewProxy` accepts only `http` proxies on `<label>` or `<label>--<port>` without custom
+account API, and refuses a login whose `client_id` is not its `run_id` (frps reports a proxy's `clientID` as the client's own `client_id`, which the gate trusts only when it is the run id) or whose `run_id` another label holds; `NewProxy` accepts only `http` proxies on `<label>` or `<label>--<port>` without custom
 domains; `Ping` (sent only when frpc enables `transport.heartbeatInterval`) closes a client whose
 credential the account API now refuses. Server traffic goes to the `<label>` proxy with `target: null`
 in the assertion; a share host `<label>--<port>` goes only to a `<label>--<port>` proxy (`target` =
@@ -321,9 +321,9 @@ therefore never removes a proxy from hook order. On a `CloseProxy` it asks `frps
 (`GET /api/proxy/http/<name>` on the loopback admin port `FRP_ADMIN_PORT`, basic auth with a
 password made at start): a proxy `frps` still lists as online under that run stays routed, one it
 lists as offline or never saw is removed, and an unanswered question is retried (10 times, 1 s
-apart, then the proxy is treated as gone). A proxy's first question waits until it is 1 s old so
+apart) and then left to the reconcile; an unreachable `frps` never removes a route. A proxy's first question waits until it is 1 s old so
 `frps` has registered it. A 30 s reconcile against `GET /api/proxy/http` removes any proxy `frps`
-no longer lists, which also covers a lost `CloseProxy`. When the label's frp connection that opened
+no longer lists (only from a successful listing), which also covers a lost `CloseProxy`. When the label's frp connection that opened
 the proxy is still open 500 ms after the proxy was removed (a hot reload removed the proxy, not a
 dropped tunnel), that address stops waiting and answers 503 at once instead of after the 15 s kept
 for a dropped tunnel.
