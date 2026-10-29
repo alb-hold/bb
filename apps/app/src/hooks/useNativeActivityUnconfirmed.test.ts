@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act, renderHook } from "@testing-library/react";
+import { act, cleanup, renderHook } from "@testing-library/react";
 import type { ThreadRuntimeState } from "@bb/domain";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useNativeActivityUnconfirmed } from "./useNativeActivityUnconfirmed";
@@ -43,6 +43,7 @@ function renderUnconfirmed(initial: ThreadRuntimeState) {
 
 describe("useNativeActivityUnconfirmed", () => {
   afterEach(() => {
+    cleanup();
     vi.useRealTimers();
     Reflect.deleteProperty(document, "visibilityState");
   });
