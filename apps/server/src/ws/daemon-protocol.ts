@@ -183,10 +183,17 @@ export function authorizeDaemonArrival(
     return true;
   } catch (error) {
     if (!(error instanceof ApiError)) {
+      const slot = takeDaemonMessageFailureLogSlot(
+        args.sessionId,
+        `arrival:${args.messageType}`,
+      );
+      if (slot === null) return false;
       deps.logger.warn(
         {
-          sessionId: args.sessionId,
+          hostId: args.hostId,
           messageType: args.messageType,
+          sessionId: args.sessionId,
+          suppressed: slot.suppressed,
           ...runtimeErrorLogFields(deps.config, error),
         },
         "Daemon message authorization failed, dropping the message and keeping the socket open",
