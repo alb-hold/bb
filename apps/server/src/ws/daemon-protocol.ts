@@ -166,6 +166,68 @@ function forgetDaemonMessageFailureLogState(sessionId: string): void {
   }
 }
 
+export function authorizeDaemonArrival(
+  deps: Pick<AppDeps, "config" | "db" | "logger">,
+  args: {
+    hostId: string;
+    messageType: HostDaemonDaemonWsMessage["type"];
+    sessionId: string;
+    socket: DaemonSocket;
+  },
+): boolean {
+  try {
+    requireAuthorizedOpenSession(deps.db, {
+      hostId: args.hostId,
+      sessionId: args.sessionId,
+    });
+    return true;
+  } catch (error) {
+    if (!(error instanceof ApiError)) {
+      deps.logger.warn(
+        {
+          sessionId: args.sessionId,
+          messageType: args.messageType,
+          ...runtimeErrorLogFields(deps.config, error),
+        },
+        "Daemon message authorization failed, dropping the message and keeping the socket open",
+      );
+      return false;
+    }
+    if (error.body.code === "inactive_session") {
+      deps.logger.info(
+        getInactiveSessionLogFields(deps.db, {
+          authenticatedHostId: args.hostId,
+          now: Date.now(),
+          sessionId: args.sessionId,
+        }),
+        "Daemon heartbeat for inactive session, closing socket",
+      );
+    } else if (error.status === 403) {
+      deps.logger.warn(
+        {
+          sessionId: args.sessionId,
+          ...runtimeErrorLogFields(deps.config, error),
+        },
+        "Daemon heartbeat for unauthorized session, closing socket",
+      );
+    } else {
+      deps.logger.warn(
+        {
+          sessionId: args.sessionId,
+          messageType: args.messageType,
+          ...runtimeErrorLogFields(deps.config, error),
+        },
+        "Daemon message rejected, closing socket",
+      );
+    }
+    args.socket.close(
+      1008,
+      error.status === 403 ? "unauthorized-session" : "inactive-session",
+    );
+    return false;
+  }
+}
+
 export function logDroppedDaemonFrame(
   logger: Pick<AppDeps["logger"], "warn">,
   args: { hostId: string; sessionId: string },

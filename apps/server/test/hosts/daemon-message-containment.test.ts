@@ -1,7 +1,10 @@
 import { closeSession } from "@bb/db";
 import { describe, expect, it, vi } from "vitest";
 import { ApiError } from "../../src/errors.js";
-import { onDaemonSocketMessage } from "../../src/ws/daemon-protocol.js";
+import {
+  authorizeDaemonArrival,
+  onDaemonSocketMessage,
+} from "../../src/ws/daemon-protocol.js";
 import { seedHostSession } from "../helpers/seed.js";
 import { withTestHarness } from "../helpers/test-app.js";
 
@@ -174,6 +177,51 @@ describe("daemon socket message containment", () => {
       expect(failureLogs.length).toBeGreaterThanOrEqual(1);
       expect(failureLogs.length).toBeLessThan(5);
       expect(socket.close).not.toHaveBeenCalled();
+    });
+  });
+
+  it("logs one warning when the arrival check keeps failing outside the session lookup, and still handles a later valid message", async () => {
+    await withTestHarness(async (harness) => {
+      const { host, session } = seedHostSession(harness.deps, {
+        id: "host-containment-arrival-throttle",
+      });
+      const socket = createTestDaemonSocket();
+      const warn = vi.spyOn(harness.deps.logger, "warn");
+      const failingDeps = {
+        config: harness.deps.config,
+        db: new Proxy(
+          {},
+          {
+            get() {
+              throw new Error("database is busy");
+            },
+          },
+        ) as never,
+        logger: harness.deps.logger,
+      };
+      const arrival = {
+        hostId: host.id,
+        messageType: "heartbeat" as const,
+        sessionId: session.id,
+        socket,
+      };
+
+      for (let index = 0; index < 50; index += 1) {
+        expect(authorizeDaemonArrival(failingDeps, arrival)).toBe(false);
+      }
+
+      const arrivalLogs = warn.mock.calls.filter(
+        ([, message]) =>
+          typeof message === "string" &&
+          message.includes("authorization failed"),
+      );
+      expect(arrivalLogs).toHaveLength(1);
+      expect(arrivalLogs[0]?.[0]).toMatchObject({
+        messageType: "heartbeat",
+        sessionId: session.id,
+      });
+      expect(socket.close).not.toHaveBeenCalled();
+      expect(authorizeDaemonArrival(harness.deps, arrival)).toBe(true);
     });
   });
 
