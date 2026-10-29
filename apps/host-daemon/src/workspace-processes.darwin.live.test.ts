@@ -44,8 +44,8 @@ async function execLsofLikeDaemon(
 
 function darwinLsofPasses(uid: string) {
   return {
-    cwd: ["-a", "-u", uid, "-d", "cwd", "-n", "-Fpn"] as const,
-    files: ["-u", uid, "-n", "-Fpn"] as const,
+    cwd: ["-a", "-u", uid, "-d", "cwd", "-n", "-Fpnt"] as const,
+    files: ["-u", uid, "-n", "-Fpnt"] as const,
   };
 }
 
@@ -231,7 +231,7 @@ it.skipIf(process.platform !== "darwin")(
         "+D",
         workspace,
         "-n",
-        "-Fpn",
+        "-Fpnt",
       ]);
       expect(scopedEmpty.exitCode).toBe(1);
       expect(scopedEmpty.stdout).toBe("");

@@ -41,11 +41,51 @@ type AncestorResolve =
 
 const DATA_VOLUME_PREFIX = "/System/Volumes/Data";
 
-function isPseudoProcessPath(value: string): boolean {
+const LSOF_NON_FILESYSTEM_TYPES = new Set([
+  "unix",
+  "IPv4",
+  "IPv6",
+  "PIPE",
+  "KQUEUE",
+  "systm",
+]);
+
+const LSOF_FILESYSTEM_TYPES = new Set([
+  "REG",
+  "DIR",
+  "LINK",
+  "VREG",
+  "VDIR",
+  "VLINK",
+  "FIFO",
+  "CHR",
+  "BLK",
+]);
+
+function isNonFilesystemLsofType(type: string | undefined): boolean {
+  return type !== undefined && LSOF_NON_FILESYSTEM_TYPES.has(type);
+}
+
+function isKnownFilesystemLsofType(type: string | undefined): boolean {
+  return type !== undefined && LSOF_FILESYSTEM_TYPES.has(type);
+}
+
+function isSocketStylePathName(value: string): boolean {
   const normalized = stripDeletedSuffix(value);
-  if (!normalized.startsWith("/")) return true;
-  if (normalized.includes("->")) return true;
-  return false;
+  if (normalized.startsWith("/")) return false;
+  return normalized.startsWith("->") || normalized.includes("->");
+}
+
+function lexicalPathNames(value: string, lsofType: string | undefined): string[] {
+  const normalized = stripDeletedSuffix(value);
+  const names = new Set<string>([normalized]);
+  const failClosed =
+    lsofType === undefined || !isKnownFilesystemLsofType(lsofType);
+  if (failClosed && isSocketStylePathName(value)) {
+    const before = normalized.split("->")[0] ?? "";
+    if (before.length > 0) names.add(before);
+  }
+  return [...names];
 }
 
 function expandPathAliases(value: string): string[] {
@@ -77,21 +117,23 @@ function pathLexicallyCouldBeInWorkspace(
   value: string,
   workspaceCanonical: string,
   workspaceArg: string,
+  lsofType?: string,
 ): boolean {
-  const normalized = stripDeletedSuffix(value);
-  if (isPseudoProcessPath(normalized)) return false;
-  const pathAliases = expandPathAliases(normalized);
+  if (isNonFilesystemLsofType(lsofType)) return false;
   const roots = new Set<string>();
   for (const root of [workspaceCanonical, workspaceArg]) {
     roots.add(root);
     for (const alias of expandPathAliases(root)) roots.add(alias);
   }
-  return pathAliases.some((candidate) =>
-    [...roots].some(
-      (root) =>
-        candidate === root || candidate.startsWith(root + path.sep),
-    ),
-  );
+  return lexicalPathNames(value, lsofType).some((name) => {
+    if (!name.startsWith("/")) return false;
+    return expandPathAliases(name).some((candidate) =>
+      [...roots].some(
+        (root) =>
+          candidate === root || candidate.startsWith(root + path.sep),
+      ),
+    );
+  });
 }
 
 async function resolveThroughExistingAncestor(
@@ -119,9 +161,16 @@ async function classifyPathForWorkspace(
   value: string,
   workspaceCanonical: string,
   workspaceArg: string,
+  lsofType?: string,
 ): Promise<"matched" | "outside" | "unreadable"> {
+  if (isNonFilesystemLsofType(lsofType)) return "outside";
   if (
-    !pathLexicallyCouldBeInWorkspace(value, workspaceCanonical, workspaceArg)
+    !pathLexicallyCouldBeInWorkspace(
+      value,
+      workspaceCanonical,
+      workspaceArg,
+      lsofType,
+    )
   )
     return "outside";
   const ancestor = await resolveThroughExistingAncestor(value);
@@ -144,14 +193,15 @@ async function classifyPathForWorkspace(
 function parseLsofOutput(output: string):
   | {
       ok: true;
-      paths: Array<{ pid: number; path: string }>;
+      paths: Array<{ pid: number; path: string; type?: string }>;
       unreadablePids: number[];
     }
   | { ok: false } {
-  const paths: Array<{ pid: number; path: string }> = [];
+  const paths: Array<{ pid: number; path: string; type?: string }> = [];
   const unreadablePids: number[] = [];
   let pid: number | null = null;
   let sawName = false;
+  let currentType: string | undefined;
   const flush = () => {
     if (pid !== null && !sawName) unreadablePids.push(pid);
   };
@@ -164,12 +214,15 @@ function parseLsofOutput(output: string):
       if (!Number.isInteger(next) || next < 0) return { ok: false };
       pid = next;
       sawName = false;
+      currentType = undefined;
+    } else if (tag === "f") {
+      currentType = undefined;
+    } else if (tag === "t") {
+      currentType = line.slice(1);
     } else if (tag === "n") {
       if (pid === null) return { ok: false };
       sawName = true;
-      paths.push({ pid, path: line.slice(1) });
-    } else if (tag === "f") {
-      continue;
+      paths.push({ pid, path: line.slice(1), type: currentType });
     } else {
       return { ok: false };
     }
@@ -297,7 +350,7 @@ async function inspectDarwinWorkspaceProcesses(
   const workspaceArg = path.resolve(workspacePath);
   const workspace = await canonicalPath(workspaceArg);
   const uid = String(process.getuid!());
-  const lsofFlags = ["-n", "-Fpn"] as const;
+  const lsofFlags = ["-n", "-Fpnt"] as const;
   const cwdRun = await execLsof([
     "-a",
     "-u",
@@ -328,21 +381,23 @@ async function inspectDarwinWorkspaceProcesses(
   for (const pid of parsed.unreadablePids) {
     if (pid !== process.pid) unreadablePids.add(pid);
   }
-  const pathsByPid = new Map<number, string[]>();
+  const pathsByPid = new Map<number, Array<{ path: string; type?: string }>>();
   for (const entry of parsed.paths) {
     if (entry.pid === process.pid) continue;
     const bucket = pathsByPid.get(entry.pid);
-    if (bucket === undefined) pathsByPid.set(entry.pid, [entry.path]);
-    else bucket.push(entry.path);
+    const item = { path: entry.path, type: entry.type };
+    if (bucket === undefined) pathsByPid.set(entry.pid, [item]);
+    else bucket.push(item);
   }
   await Promise.all(
     [...pathsByPid.entries()].map(async ([pid, paths]) => {
       let matched = false;
-      for (const value of paths) {
+      for (const { path: value, type } of paths) {
         const kind = await classifyPathForWorkspace(
           value,
           workspace,
           workspaceArg,
+          type,
         );
         if (kind === "matched") matched = true;
         else if (kind === "unreadable") unreadablePids.add(pid);

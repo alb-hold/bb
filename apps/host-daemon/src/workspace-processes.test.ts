@@ -227,6 +227,56 @@ describe("darwin workspace process inspection", () => {
     });
   });
 
+  it("treats APFS filename with arrow as a workspace holder", async () => {
+    vi.mocked(execHostFile).mockImplementation((async () => ({
+      stdout: "p511\nf1\ntREG\nn/Users/x/ws/cache->source\n",
+      stderr: "",
+    })) as never);
+    vi.mocked(realpath).mockImplementation(async (value) => {
+      const key = String(value);
+      if (key === "/Users/x/ws") return "/Users/x/ws";
+      if (key === "/Users/x/ws/cache->source") return "/Users/x/ws/cache->source";
+      return key;
+    });
+    expect(await inspectWorkspaceProcesses("/Users/x/ws")).toEqual({
+      supported: true,
+      pids: [511],
+      unreadablePids: [],
+    });
+  });
+
+  it("treats APFS filename with arrow as unreadable when resolution fails", async () => {
+    const denied = Object.assign(new Error("denied"), { code: "EACCES" });
+    vi.mocked(execHostFile).mockImplementation((async () => ({
+      stdout: "p512\nf1\ntREG\nn/Users/x/ws/cache->source\n",
+      stderr: "",
+    })) as never);
+    vi.mocked(realpath).mockImplementation(async (value) => {
+      const key = String(value);
+      if (key === "/Users/x/ws") return "/Users/x/ws";
+      if (key === "/Users/x/ws/cache->source") throw denied;
+      return key;
+    });
+    expect(await inspectWorkspaceProcesses("/Users/x/ws")).toEqual({
+      supported: true,
+      pids: [],
+      unreadablePids: [512],
+    });
+  });
+
+  it("ignores unix socket lsof entries", async () => {
+    vi.mocked(execHostFile).mockImplementation((async () => ({
+      stdout: "p513\nf1\ntunix\nn->0xdeadbeef\n",
+      stderr: "",
+    })) as never);
+    vi.mocked(realpath).mockResolvedValue("/Users/x/ws");
+    expect(await inspectWorkspaceProcesses("/Users/x/ws")).toEqual({
+      supported: true,
+      pids: [],
+      unreadablePids: [],
+    });
+  });
+
   it("treats data volume lsof path as unreadable when ancestor realpath hits ELOOP", async () => {
     const loop = Object.assign(new Error("loop"), { code: "ELOOP" });
     vi.mocked(execHostFile).mockImplementation((async () => ({
