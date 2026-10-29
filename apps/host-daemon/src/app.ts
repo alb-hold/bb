@@ -3,6 +3,7 @@ import { HOST_DAEMON_RESTART_EXIT_CODE } from "@bb/config/machine-service";
 import { startDesktopBrowserBroker } from "./desktop-browser-broker.js";
 import { MachineEnvironment } from "./machine-environment.js";
 import { CommandRouter } from "./command-router.js";
+import { cancelEnvironmentHooks } from "./command-handlers/environment-hook.js";
 import { createDaemon, type HostDaemon } from "./daemon.js";
 import {
   createEventSink,
@@ -51,7 +52,10 @@ import {
 } from "./server-connection.js";
 import { runtimeErrorLogFields, summarizeError } from "./error-utils.js";
 import { ensureThreadStorageRoot } from "./thread-storage-root.js";
-import { createRuntimeShellEnvCache } from "./runtime-shell-env-cache.js";
+import {
+  createRuntimeShellEnvCache,
+  type RuntimeShellEnvRefreshArgs,
+} from "./runtime-shell-env-cache.js";
 import type { AgentRuntime, AgentRuntimeOptions } from "@bb/agent-runtime";
 import { createProtocolSelfUpdater } from "./protocol-self-update.js";
 import {
@@ -59,6 +63,7 @@ import {
   type HostWatcher,
 } from "@bb/host-watcher";
 import { PluginHostManager } from "./plugin-host-manager.js";
+import type { SkillTreeTransport } from "./skill-trees.js";
 import { writeMachineSuspensionMarker } from "./suspension-marker.js";
 import {
   defaultServerMoveServiceOptions,
@@ -543,16 +548,24 @@ export async function createHostDaemonApp(
       sendServerMessage({ type: "connect-next.status", status });
     },
   });
+  const skillTreeTransport: SkillTreeTransport = {
+    fetchManifest: (treeHash) =>
+      runSessionRequest({
+        source: "fetchSkillTree",
+        request: () => serverClient.fetchSkillTreeManifest(treeHash),
+      }),
+    fetchContent: (treeHash, paths) =>
+      runSessionRequest({
+        source: "fetchSkillTree",
+        request: () => serverClient.fetchSkillTreeContent(treeHash, paths),
+      }),
+  };
   runtimeManager = new RuntimeManager({
     bridgeBundleDir: options.bridgeBundleDir,
     createRuntime: options.createRuntime,
     dataDir: options.dataDir,
     dataDirSkillsRootPath,
-    fetchSkillTree: (treeHash) =>
-      runSessionRequest({
-        source: "fetchSkillTree",
-        request: () => serverClient.fetchSkillTree(treeHash),
-      }),
+    skillTreeTransport,
     hostWatcher: options.hostWatcher,
     logger: options.logger,
     shellEnv: options.runtimeShellEnv,
@@ -738,9 +751,10 @@ export async function createHostDaemonApp(
       : { resolvedAtMs: options.runtimeShellEnvResolvedAtMs }),
   });
   const withMaintenanceRuntime = async <TResult>(
+    shellEnv: RuntimeShellEnvRefreshArgs,
     request: (runtime: AgentRuntime) => Promise<TResult>,
   ): Promise<TResult> => {
-    await runtimeShellEnvCache.refresh({ allowStale: false });
+    await runtimeShellEnvCache.refresh(shellEnv);
     return runtimeManager.withProviderMaintenanceRuntime(
       { dataDir: options.dataDir },
       request,
@@ -853,11 +867,7 @@ export async function createHostDaemonApp(
         source: "fetchProjectAttachment",
         request: () => serverClient.fetchProjectAttachment(args),
       }),
-    fetchSkillTree: (treeHash) =>
-      runSessionRequest({
-        source: "fetchSkillTree",
-        request: () => serverClient.fetchSkillTree(treeHash),
-      }),
+    skillTreeTransport,
     fetchPluginHostArtifact: (args) =>
       runSessionRequest({
         source: "fetchPluginHostArtifact",
@@ -865,19 +875,27 @@ export async function createHostDaemonApp(
       }),
     runtimeManager,
     listModels: (args) =>
-      withMaintenanceRuntime((runtime) => runtime.listModels(args)),
+      withMaintenanceRuntime({ allowStale: false }, (runtime) =>
+        runtime.listModels(args),
+      ),
     listCommands: (args) =>
-      withMaintenanceRuntime((runtime) => runtime.listCommands(args)),
+      withMaintenanceRuntime({ allowStale: true }, (runtime) =>
+        runtime.listCommands(args),
+      ),
     providerHealth: (args) =>
-      withMaintenanceRuntime((runtime) => runtime.providerHealth(args)),
+      withMaintenanceRuntime({ allowStale: false }, (runtime) =>
+        runtime.providerHealth(args),
+      ),
     providerUsage: (args) =>
-      withMaintenanceRuntime((runtime) => runtime.providerUsage(args)),
+      withMaintenanceRuntime({ allowStale: true }, (runtime) =>
+        runtime.providerUsage(args),
+      ),
     providerInstallationStatus: (args) =>
-      withMaintenanceRuntime((runtime) =>
+      withMaintenanceRuntime({ allowStale: false }, (runtime) =>
         runtime.providerInstallationStatus(args),
       ),
     providerInstallationRun: (args) =>
-      withMaintenanceRuntime((runtime) =>
+      withMaintenanceRuntime({ allowStale: false }, (runtime) =>
         runtime.providerInstallationRun(args),
       ),
     refreshShellEnv: async (args) => {
@@ -1078,6 +1096,7 @@ export async function createHostDaemonApp(
           "Could not tell the server which threads to expect back",
         );
       });
+      await cancelEnvironmentHooks(runtimeManager);
       await runtimeManager.shutdownAll("detach");
       await eventSink.flush();
       await eventSink.dispose();

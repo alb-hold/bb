@@ -31,6 +31,7 @@ import {
   bindThreadAction,
   useDefaultRequestRename,
   useThreadActionEntries,
+  useThreadBulkActionEntries,
 } from "@/lib/thread-actions/thread-action-registry";
 
 export type ThreadActionMenuSurface = "context" | "dropdown";
@@ -86,6 +87,25 @@ export function useThreadActionMenuGroups({
   const defaultRequestRename = useDefaultRequestRename();
   const rename = requestRename ?? defaultRequestRename;
   const entries = useThreadActionEntries(thread, { requestRename: rename });
+  return groupThreadActionMenuEntries(
+    entries,
+    inline.map((item) => ({
+      key: item.key,
+      group: item.group,
+      action: bindThreadAction(item.key, item.action, rename),
+    })),
+  );
+}
+
+export function useThreadBulkActionMenuGroups({
+  threads,
+  inline = [],
+}: {
+  threads: readonly PluginThreadActionTarget[];
+  inline?: readonly PluginThreadActionsInlineItem[];
+}): ThreadActionMenuEntry[][] {
+  const rename = useDefaultRequestRename();
+  const entries = useThreadBulkActionEntries(threads);
   return groupThreadActionMenuEntries(
     entries,
     inline.map((item) => ({

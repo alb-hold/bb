@@ -433,7 +433,7 @@ export async function runMessageDispatchHookPass(
 
     for (const hook of hooks) {
       const invocation = await provider.invokeHook(
-        hook.pluginId,
+        hook,
         "message.dispatch hook",
         () =>
           decideWithinBox(
@@ -503,7 +503,7 @@ export async function configureThreadPlugins(
     const ownData = data[hook.pluginId];
     if (ownData === undefined) continue;
     const invocation = await provider.invokeHook(
-      hook.pluginId,
+      hook,
       "thread configuration",
       () =>
         decideWithinBox(

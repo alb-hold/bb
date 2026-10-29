@@ -1,7 +1,10 @@
 import { registerInternalForkAdoptionRoutes } from "./internal/fork-adoption.js";
 import { createPluginUpdateJobs } from "./services/plugins/plugin-update-jobs.js";
 import { registerPluginUpdateJobRoutes } from "./routes/plugin-update-jobs.js";
-import { recheckEnvironmentProvisioning } from "./services/threads/thread-environment-providers.js";
+import {
+  recheckEnvironmentProvisioning,
+  recheckEnvironmentProviderCreations,
+} from "./services/threads/thread-environment-providers.js";
 import { clearNativeTerminalStateOnExit } from "./services/threads/native-terminal-activity.js";
 import {
   enrolledInstallerScript,
@@ -16,8 +19,13 @@ import {
   INSTALL_MACHINE_SCRIPT_PATH,
   INSTALL_MACHINE_WINDOWS_SCRIPT_PATH,
 } from "./install-machine-asset.js";
+import { getExperiments } from "@bb/db";
 import { createNodeWebSocket } from "@hono/node-ws";
 import { TERMINAL_RESIZE_ECHO_WEBSOCKET_PROTOCOL } from "@bb/server-contract";
+import {
+  declineWebSocketCompression,
+  WEB_SOCKET_COMPRESSION,
+} from "./ws/compression.js";
 import { createGateKeyStore } from "./services/connect-next/gate-keys.js";
 import {
   createTunnelIngressManager,
@@ -66,7 +74,6 @@ import {
   setEnvironmentProvisioningRecheckHandler,
   setPluginEnvironmentProviderBridge,
 } from "./services/plugins/plugin-environment-provider-registry.js";
-import { recheckEnvironmentProviderCreations } from "./services/threads/thread-environment-providers.js";
 import {
   setServerAccessBridge,
   setServerAccessRecheckHandler,
@@ -78,6 +85,7 @@ import { registerInternalEventRoutes } from "./internal/events.js";
 import type { ActiveThreadEventPruneRuntimeOptions } from "./services/system/event-pruning.js";
 import { registerInternalHostRoutes } from "./internal/hosts.js";
 import { registerInternalInteractiveRequestRoutes } from "./internal/interactive-requests.js";
+import { hostArtifactFileResponse } from "./internal/host-artifact-response.js";
 import { registerInternalPluginHostArtifactRoutes } from "./internal/plugin-host-artifacts.js";
 import { registerInternalSessionRoutes } from "./internal/session.js";
 import { registerInternalSkillRoutes } from "./internal/skills.js";
@@ -526,6 +534,7 @@ export function createApp(
     protocols.has(TERMINAL_RESIZE_ECHO_WEBSOCKET_PROTOCOL)
       ? TERMINAL_RESIZE_ECHO_WEBSOCKET_PROTOCOL
       : (protocols.values().next().value ?? false);
+  wss.options.perMessageDeflate = WEB_SOCKET_COMPRESSION;
   const tunnelIngressNow = options?.tunnelIngressNow ?? Date.now;
   const tunnelIngress = createTunnelIngressManager({
     app,
@@ -744,10 +753,15 @@ export function createApp(
       if (context.req.header("if-none-match") === etag) {
         return new Response(null, { headers, status: 304 });
       }
-      const tarball = await readFile(artifact.path);
-      return new Response(tarball, {
-        headers: { ...headers, "content-length": String(artifact.size) },
+      const response = await hostArtifactFileResponse({
+        path: artifact.path,
+        byteLength: artifact.size,
+        headers,
       });
+      if (response === null) {
+        throw new Error(`Host package ${artifact.path} is missing or changed`);
+      }
+      return response;
     } catch (error) {
       const diagnosticId = randomUUID();
       const code =
@@ -962,7 +976,7 @@ export function createApp(
   registerDesktopBrowserRoutes(publicApi, deps);
   registerTerminalRoutes(publicApi, deps);
   registerDeviceHandoffRoutes(publicApi, deps);
-  registerEnvironmentRoutes(publicApi, deps);
+  registerEnvironmentRoutes(publicApi, deps, pluginService);
   registerThreadRoutes(publicApi, deps, pluginService);
   registerQueueRoutes(publicApi, deps);
   registerSpendRoutes(publicApi, deps);
@@ -1042,6 +1056,9 @@ export function createApp(
     "/ws",
     upgradeWebSocket((context) => {
       assertBrowserWebSocketAllowed(context);
+      if (!getExperiments(deps.db).websocketCompression) {
+        declineWebSocketCompression(context);
+      }
       const origin = context.req.header("origin");
       const isAppClient = origin !== undefined;
       return {
@@ -1058,6 +1075,7 @@ export function createApp(
     "/ws/terminals/:terminalId",
     upgradeWebSocket((context) => {
       assertBrowserWebSocketAllowed(context);
+      declineWebSocketCompression(context);
       const terminalId = context.req.param("terminalId");
       const query = terminalWebSocketQuerySchema.safeParse({
         outputAcks: context.req.query("outputAcks"),
@@ -1102,6 +1120,7 @@ export function createApp(
   app.get(
     "/internal/ws",
     upgradeWebSocket(async (context) => {
+      declineWebSocketCompression(context);
       const websocketContext = await validateDaemonWebSocket(deps, {
         authorizationHeader: context.req.header("authorization"),
         protocolHeader: context.req.header("sec-websocket-protocol"),

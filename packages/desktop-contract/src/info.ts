@@ -118,6 +118,7 @@ export interface BbDesktopApi extends BbDesktopInfo {
     request: BbDesktopSignInWindowRequest,
   ): Promise<BbDesktopSignInWindowResult>;
   closeSignInWindow?(id: string): void;
+  openApplicationUrl?(url: string): Promise<void>;
   openServerDaemonLogs?(): Promise<void>;
   reloadWindow?(): void;
   setSplitNavigationEnabled?(
