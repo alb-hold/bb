@@ -123,24 +123,55 @@ function liveCliProcessIds(executable: string): number[] {
   });
 }
 
+async function cliGoneWithin(
+  executable: string,
+  timeoutMs: number,
+): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (liveCliProcessIds(executable).length > 0) {
+    if (Date.now() > deadline) return false;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  return true;
+}
+
+function signalCliProcesses(executable: string, signal: NodeJS.Signals): void {
+  for (const pid of liveCliProcessIds(executable)) {
+    try {
+      process.kill(pid, signal);
+    } catch {
+      continue;
+    }
+  }
+}
+
+async function terminateCliProcesses(
+  executable: string,
+  graceMs: number,
+): Promise<boolean> {
+  signalCliProcesses(executable, "SIGTERM");
+  if (await cliGoneWithin(executable, graceMs)) return true;
+  signalCliProcesses(executable, "SIGKILL");
+  return cliGoneWithin(executable, graceMs);
+}
+
 async function waitForCliExit(
   executable: string | null,
   timeoutMs = 20_000,
+  graceMs = 2_000,
 ): Promise<void> {
   if (executable === null) {
     throw new Error(
       "no Claude executable resolved: cannot confirm the CLI exited before cleanup",
     );
   }
-  const deadline = Date.now() + timeoutMs;
-  while (liveCliProcessIds(executable).length > 0) {
-    if (Date.now() > deadline) {
-      throw new Error(
-        `the Claude CLI did not exit within ${timeoutMs} ms of stop()`,
-      );
-    }
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
+  if (await cliGoneWithin(executable, timeoutMs)) return;
+  const reaped = await terminateCliProcesses(executable, graceMs);
+  throw new Error(
+    `the Claude CLI did not exit within ${timeoutMs} ms of stop(); ${
+      reaped ? "it was terminated" : "it survived SIGKILL"
+    }`,
+  );
 }
 
 const scratchDirectories = new Set<string>();
@@ -741,9 +772,14 @@ describe.skipIf(REAL_CLAUDE === null || process.platform !== "darwin")(
 );
 
 describe("waiting for the Claude CLI to exit before cleanup", () => {
-  async function startSleeper(argv0: string): Promise<ChildProcess> {
-    const child = spawn("/bin/sleep", ["30"], { argv0, stdio: "ignore" });
-    cleanups.push(() => child.kill("SIGKILL"));
+  const IGNORES_SIGTERM = "trap '' TERM; while :; do sleep 1; done";
+
+  async function startProcess(
+    argv0: string,
+    command: string,
+    args: string[],
+  ): Promise<ChildProcess> {
+    const child = spawn(command, args, { argv0, stdio: "ignore" });
     const deadline = Date.now() + 5_000;
     for (;;) {
       const shown = spawnSync("/bin/ps", ["-p", String(child.pid), "-o", "command="], {
@@ -753,6 +789,12 @@ describe("waiting for the Claude CLI to exit before cleanup", () => {
       if (Date.now() > deadline) throw new Error(`sleeper never showed ${argv0}`);
       await new Promise((resolve) => setTimeout(resolve, 20));
     }
+  }
+
+  async function startSleeper(argv0: string): Promise<ChildProcess> {
+    const child = await startProcess(argv0, "/bin/sleep", ["30"]);
+    cleanups.push(() => child.kill("SIGKILL"));
+    return child;
   }
 
   it("does not wait for a descendant whose path only shares the executable's prefix", async () => {
@@ -765,12 +807,12 @@ describe("waiting for the Claude CLI to exit before cleanup", () => {
   it("waits for a descendant whose argv[0] is exactly the executable, and returns once it exits", async () => {
     const executable = join(scratch(), "claude");
     const sleeper = await startSleeper(executable);
+    const exited = new Promise((resolve) => sleeper.once("exit", resolve));
     await expect(waitForCliExit(executable, 300)).rejects.toThrow(
       /did not exit/u,
     );
-    const exited = new Promise((resolve) => sleeper.once("exit", resolve));
-    sleeper.kill("SIGKILL");
     await exited;
+    expect(sleeper.signalCode).toBe("SIGTERM");
     await waitForCliExit(executable, 2_000);
   });
 
@@ -783,18 +825,32 @@ describe("waiting for the Claude CLI to exit before cleanup", () => {
     scratchDirectories.add(directory);
     scratchDirectories.add(realpathSync(directory));
     const executable = join(directory, "claude");
-    await startSleeper(executable);
+    const stubborn = await startProcess(executable, "/bin/sh", [
+      "-c",
+      IGNORES_SIGTERM,
+    ]);
+    const exited = new Promise((resolve) => stubborn.once("exit", resolve));
     const ran: string[] = [];
     const list: Array<() => unknown> = [
       () => rmSync(directory, { force: true, recursive: true }),
       () => ran.push("session.stop"),
       () => ran.push("server.close"),
-      () => waitForCliExit(executable, 200),
+      () => waitForCliExit(executable, 200, 300),
     ];
-    await expect(runCleanups(list)).rejects.toThrow(/did not exit/u);
-    expect(ran).toEqual(["server.close", "session.stop"]);
-    expect(existsSync(directory)).toBe(false);
-    expect(list).toEqual([]);
+    try {
+      await expect(runCleanups(list)).rejects.toThrow(/did not exit/u);
+      await Promise.race([
+        exited,
+        new Promise((resolve) => setTimeout(resolve, 2_000)),
+      ]);
+      expect(stubborn.signalCode).toBe("SIGKILL");
+      expect(liveCliProcessIds(executable)).toEqual([]);
+      expect(ran).toEqual(["server.close", "session.stop"]);
+      expect(existsSync(directory)).toBe(false);
+      expect(list).toEqual([]);
+    } finally {
+      stubborn.kill("SIGKILL");
+    }
   });
 
   it("reports every failed cleanup together", async () => {
