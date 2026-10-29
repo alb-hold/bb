@@ -1123,12 +1123,15 @@ describe("frp hooks", () => {
     });
 
     it("ignores a delayed close from the label that used to hold a run id another label has since claimed", async () => {
-      const harness = await startHooks();
-      await connectFirst(harness);
+      const harness = await startHooks(LINKED_ACCOUNTS, {
+        runBindingIdleMs: 150,
+      });
+      const control = await connectFirst(harness);
 
       harness.frps.unregister(PROXY_NAME);
       await harness.proxyCall("CloseProxy", "run-1");
-      await sleep(TIMINGS.registerGraceMs + 200);
+      control.destroy();
+      await sleep(TIMINGS.reconcileMs * 3);
       expect(await loginAs(harness, "wasp", "run-1")).toMatchObject({
         reject: false,
       });
