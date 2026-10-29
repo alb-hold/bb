@@ -1,13 +1,13 @@
-import type { DbConnection } from "./connection.js";
+import type { DbQueryConnection } from "./connection.js";
 import { listTerminalSessions } from "./data/terminal-sessions.js";
-import { getRetainedTerminalOutput } from "./fork-terminal-output.js";
+import { getRetainedTerminalOutputLatestSeq } from "./fork-terminal-output.js";
 import {
   clearThreadRowState,
   raiseThreadRowProgressOutputSeqs,
 } from "./fork-thread-row-state.js";
 
 export function listThreadTerminalLatestOutputSeqs(
-  db: DbConnection,
+  db: DbQueryConnection,
   threadId: string,
   terminalId?: string,
   now = Date.now(),
@@ -18,19 +18,18 @@ export function listThreadTerminalLatestOutputSeqs(
     visible: false,
   })) {
     if (terminalId !== undefined && session.id !== terminalId) continue;
-    const chunks = getRetainedTerminalOutput(db, {
+    const seq = getRetainedTerminalOutputLatestSeq(db, {
       hostId: session.hostId,
       terminalSessionId: session.id,
       now,
     });
-    const last = chunks?.at(-1);
-    if (last !== undefined) latest[session.id] = last.seq;
+    if (seq !== null) latest[session.id] = seq;
   }
   return latest;
 }
 
 export function clearThreadRowStateAtOutputSeqs(
-  db: DbConnection,
+  db: DbQueryConnection,
   threadId: string,
 ): void {
   raiseThreadRowProgressOutputSeqs(

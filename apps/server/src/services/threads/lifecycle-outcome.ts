@@ -2,7 +2,6 @@ import {
   getThread,
   applyThreadLifecycleEvent,
   applyThreadLifecycleEventInTransaction,
-  clearThreadRowState,
   clearThreadRowStateAtOutputSeqs,
   isNativeTerminalThread,
   type ApplyThreadLifecycleEventArgs,
@@ -118,7 +117,7 @@ export function applyLoggedThreadLifecycleEventInTransaction(
     (outcome.thread.status === "idle" || outcome.thread.status === "error") &&
     !isNativeTerminalThread(deps.db, args.threadId)
   ) {
-    clearThreadRowState(deps.db, args.threadId);
+    clearThreadRowStateAtOutputSeqs(deps.db, args.threadId);
     releaseWorkspaceForThread(deps, outcome.thread);
   }
   logUnappliedThreadLifecycleEvent(deps.logger, args, outcome);

@@ -10,7 +10,12 @@ import {
 import { describe, expect, it } from "vitest";
 import { readJson } from "../helpers/json.js";
 import { seedThreadFixture } from "../helpers/seed.js";
-import { withTestHarness, type TestAppHarness } from "../helpers/test-app.js";
+import {
+  testLogger,
+  withTestHarness,
+  type TestAppHarness,
+} from "../helpers/test-app.js";
+import { applyLoggedThreadLifecycleEventInTransaction } from "../../src/services/threads/lifecycle-outcome.js";
 
 async function readProgress(harness: TestAppHarness, threadId: string) {
   const response = await harness.app.request(
@@ -140,6 +145,34 @@ describe("thread row progress output sequences", () => {
 
       await report(harness, thread.id, set(terminal.id, 0.6, 2));
       expect(await readProgress(harness, thread.id)).toBeNull();
+    });
+  });
+
+  it("raises the marks to the latest output when a turn outcome clears the row inside a transaction", async () => {
+    await withTestHarness(async (harness) => {
+      const fixture = seedThreadFixture(harness);
+      const { thread } = fixture;
+      const terminal = seedTerminalWithOutput(harness, fixture, 9);
+      await report(harness, thread.id, set(terminal.id, 0.3, 3));
+      expect(await readProgress(harness, thread.id)).toEqual({ value: 0.3 });
+
+      harness.db.transaction((tx) => {
+        for (const type of ["run.started", "run.succeeded"] as const) {
+          applyLoggedThreadLifecycleEventInTransaction(
+            { db: tx, logger: testLogger },
+            { event: { type }, threadId: thread.id },
+          );
+        }
+      });
+      expect(await readProgress(harness, thread.id)).toBeNull();
+      expect(getThreadRowProgressOutputSeqs(harness.db, thread.id)).toEqual({
+        [terminal.id]: 9,
+      });
+
+      await report(harness, thread.id, set(terminal.id, 0.6, 9));
+      expect(await readProgress(harness, thread.id)).toBeNull();
+      await report(harness, thread.id, set(terminal.id, 0.2, 10));
+      expect(await readProgress(harness, thread.id)).toEqual({ value: 0.2 });
     });
   });
 

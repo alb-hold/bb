@@ -188,7 +188,7 @@ export function getThreadRowProgressOutputSeqs(
 }
 
 export function raiseThreadRowProgressOutputSeqs(
-  db: DbConnection,
+  db: DbQueryConnection,
   threadId: string,
   raises: Readonly<Record<string, number>>,
 ): void {
@@ -207,17 +207,11 @@ export function raiseThreadRowProgressOutputSeqs(
     changed = true;
   }
   if (!changed) return;
-  db.$client
-    .prepare(
-      `INSERT INTO fork_thread_row_states (thread_id, statuses_json, progress_json, updated_at)
-       VALUES (?, '{}', ?, ?)
-       ON CONFLICT(thread_id) DO UPDATE SET progress_json = excluded.progress_json`,
-    )
-    .run(
-      threadId,
-      serializeStoredThreadRowProgress({ ...parsed, outputSeqs }),
-      Date.now(),
-    );
+  db.run(sql`
+    INSERT INTO fork_thread_row_states (thread_id, statuses_json, progress_json, updated_at)
+    VALUES (${threadId}, '{}', ${serializeStoredThreadRowProgress({ ...parsed, outputSeqs })}, ${Date.now()})
+    ON CONFLICT(thread_id) DO UPDATE SET progress_json = excluded.progress_json
+  `);
 }
 
 export function listThreadRowStatesByScope(
