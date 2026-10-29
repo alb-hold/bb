@@ -192,4 +192,78 @@ describe("closing a terminal while its daemon session is disconnected", () => {
       expect(listPendingTerminalDaemonCloses(harness.db, host.id)).toEqual([]);
     });
   });
+
+  it.each([
+    {
+      name: "the exit is written",
+      trigger: `CREATE TRIGGER crash_on_exit BEFORE UPDATE ON terminal_sessions
+        WHEN NEW.status = 'exited'
+        BEGIN SELECT RAISE(ABORT, 'simulated crash'); END`,
+    },
+    {
+      name: "the daemon close is queued",
+      trigger: `CREATE TRIGGER crash_on_queue
+        BEFORE INSERT ON fork_terminal_pending_daemon_closes
+        BEGIN SELECT RAISE(ABORT, 'simulated crash'); END`,
+    },
+  ])(
+    "leaves a consistent state when the server stops before $name: the terminal is closed once on reconnect or reattached",
+    async ({ trigger }) => {
+      await withTestHarness(async (harness) => {
+        const { host, session } = seedHostSession(harness.deps, {
+          id: "host-close-crash-window",
+        });
+        const send = vi.spyOn(harness.hub, "sendDaemonSessionMessage");
+        send.mockReturnValue(true);
+        const terminal = createTerminalSession(harness.db, {
+          cols: 80,
+          daemonSessionId: session.id,
+          environmentId: null,
+          hostId: host.id,
+          initialCwd: "/tmp",
+          rows: 24,
+          status: "running",
+          threadId: null,
+          title: "crash window",
+        });
+        updateTerminalSession(harness.db, {
+          scope: { kind: "terminal", terminalId: terminal.id },
+          update: { kind: "holder-backed" },
+        });
+        harness.deps.terminalSessions.handleDaemonSessionClosed({
+          sessionId: session.id,
+        });
+
+        harness.db.$client.exec(trigger);
+        await expect(
+          harness.deps.terminalSessions.closeTerminal({
+            terminalId: terminal.id,
+            payload: { mode: "force", reason: "user" },
+          }),
+        ).rejects.toThrow("simulated crash");
+        harness.db.$client.exec(
+          "DROP TRIGGER IF EXISTS crash_on_exit; DROP TRIGGER IF EXISTS crash_on_queue;",
+        );
+        send.mockClear();
+
+        const next = seedSession(harness.deps, host.id);
+        send.mockReturnValue(true);
+        await harness.deps.terminalSessions.reconcileDisconnectedHostTerminals({
+          daemonSessionId: next.id,
+          hostId: host.id,
+        });
+
+        const row = harness.deps.db.$client
+          .prepare("SELECT status FROM terminal_sessions WHERE id = ?")
+          .get(terminal.id) as { status: string };
+        const closes = terminalCloseMessages(send, next.id);
+        if (row.status === "exited") {
+          expect(closes).toHaveLength(1);
+        } else {
+          expect(row.status).toBe("running");
+          expect(closes).toHaveLength(0);
+        }
+      });
+    },
+  );
 });
