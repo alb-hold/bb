@@ -37,7 +37,7 @@ async function resolveThroughExistingAncestor(
       const root = await realpath(dir);
       return tail.length === 0 ? root : path.join(root, ...tail.reverse());
     } catch (error) {
-      if (!missing(error)) throw error;
+      if (!missing(error)) return null;
       tail.push(path.basename(dir));
       const parent = path.dirname(dir);
       if (parent === dir) return null;
