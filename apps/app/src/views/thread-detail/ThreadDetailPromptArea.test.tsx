@@ -55,6 +55,10 @@ import {
   type ThreadDetailSentMessageEdit,
 } from "./ThreadDetailPromptArea";
 import { makePluginRegistrationSet } from "@/test/fixtures/plugins";
+import {
+  GitSegmentFixtureProvider,
+  type GitSegmentFixture,
+} from "@/test/fixtures/git-segment-plugin";
 
 vi.mock("@/hooks/usePromptDraftStorage", () => ({
   usePromptDraftStorage: () => mocks.promptDraft,
@@ -144,6 +148,9 @@ interface RenderPromptAreaOptions {
   modelFallback?: ThreadTimelineModelFallback | null;
   pendingInteractions?: readonly PendingInteraction[];
   pendingInteractionsInitialLoading?: boolean;
+  permissionPolicy?: ComponentProps<
+    typeof ThreadDetailPromptArea
+  >["permissionPolicy"];
   environmentGoneStatus?: ComponentProps<
     typeof ThreadDetailPromptArea
   >["environmentGoneStatus"];
@@ -151,9 +158,7 @@ interface RenderPromptAreaOptions {
   sentMessageEdit?: ThreadDetailSentMessageEdit;
   sessionOptions?: readonly ThreadTimelineSessionOption[] | null;
   thread?: ThreadWithRuntime;
-  workspaceChangedFilesSection?: ComponentProps<
-    typeof ThreadDetailPromptArea
-  >["workspaceChangedFilesSection"];
+  gitSegment?: GitSegmentFixture | null;
 }
 
 let testQueryClient: QueryClient;
@@ -166,33 +171,35 @@ function buildPromptAreaElement({
   modelFallback = null,
   pendingInteractions = [],
   pendingInteractionsInitialLoading = false,
+  permissionPolicy = "editable",
   environmentGoneStatus = null,
   queuedMessageCount = 0,
   sentMessageEdit,
   sessionOptions = null,
   thread = makeThread(),
-  workspaceChangedFilesSection = null,
+  gitSegment = null,
 }: RenderPromptAreaOptions = {}) {
   return (
     <QueryClientProvider client={testQueryClient}>
+      <GitSegmentFixtureProvider value={gitSegment}>
       <ThreadDetailPromptArea
-        showGitChanges={true}
         activeBackgroundCommands={[]}
         activePromptMode={activePromptMode}
         activeWorkflows={activeWorkflows}
-        canUseGitUi={false}
         childThreadsSection={childThreadsSection}
-        composerFocusRequestNonce={0}
-        contextBannerMergeBase={null}
+        composerFocusRequestKey={0}
+        composerId="thread-detail-follow-up-composer"
+        isPrimaryComposer
+        permissionPolicy={permissionPolicy}
         canRestoreEnvironment={false}
         environmentGoneStatus={environmentGoneStatus}
         goal={goal}
         providerCommands={null}
         sessionOptions={sessionOptions}
         modelFallback={modelFallback}
-        onChangedFileClick={vi.fn()}
         parentThreadSection={null}
         pendingInteractions={pendingInteractions}
+        pendingInteractionsGate={null}
         pendingInteractionsInitialLoading={pendingInteractionsInitialLoading}
         queuedMessageCount={queuedMessageCount}
         pendingTodos={null}
@@ -206,9 +213,8 @@ function buildPromptAreaElement({
         sentMessageEdit={sentMessageEdit}
         steerActiveThreadOnEnter={false}
         thread={thread}
-        workspaceChangedFilesSection={workspaceChangedFilesSection}
-        workspaceStatusPending={false}
       />
+      </GitSegmentFixtureProvider>
     </QueryClientProvider>
   );
 }
@@ -433,12 +439,36 @@ describe("ThreadDetailPromptArea", () => {
       await mocks.composerSubmit?.({ pluginSubmission });
     });
 
-    expect(mocks.createQueuedMessageMutateAsync).not.toHaveBeenCalled();
     expect(mocks.sendMessageMutateAsync).toHaveBeenCalledWith(
       expect.objectContaining({
         id: "thr_1",
         mode: "queue-if-active",
         pluginSubmission,
+      }),
+    );
+  });
+
+  it("lets the server decide whether an Enter submitted while the thread looks busy queues", async () => {
+    mocks.promptDraft.text = "Try again";
+    renderPromptArea({
+      thread: makeThread({
+        runtime: { displayStatus: "stopping" },
+        status: "stopping",
+      }),
+    });
+    fireEvent.click(
+      screen.getByRole("button", { name: "Capture plugin host" }),
+    );
+
+    await act(async () => {
+      await mocks.composerSubmit?.();
+    });
+
+    expect(mocks.sendMessageMutateAsync).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: "thr_1",
+        mode: "queue-if-active",
+        input: [{ type: "text", text: "Try again", mentions: [] }],
       }),
     );
   });
@@ -628,7 +658,6 @@ describe("ThreadDetailPromptArea", () => {
       input: [{ type: "text", text: "Edited request", mentions: [] }],
     });
     expect(mocks.promptDraft.clearIfCurrentMatches).not.toHaveBeenCalled();
-    expect(mocks.createQueuedMessageMutateAsync).not.toHaveBeenCalled();
 
     fireEvent.click(
       inlineEditor.getByRole("button", {
@@ -1478,7 +1507,10 @@ describe("ThreadDetailPromptArea", () => {
       ],
       pendingInteractions: [],
     };
-    const options = { childThreadsSection, workspaceChangedFilesSection };
+    const options = {
+      childThreadsSection,
+      gitSegment: { section: workspaceChangedFilesSection, mergeBase: null },
+    };
     const { rerender } = renderPromptArea(options);
 
     fireEvent.click(screen.getByRole("button", { name: /Changed files/ }));
@@ -1552,7 +1584,10 @@ describe("ThreadDetailPromptArea", () => {
       ],
       pendingInteractions: [],
     };
-    const options = { childThreadsSection, workspaceChangedFilesSection };
+    const options = {
+      childThreadsSection,
+      gitSegment: { section: workspaceChangedFilesSection, mergeBase: null },
+    };
     const { rerender } = renderPromptArea(options);
 
     fireEvent.click(screen.getByRole("button", { name: /Changed files/ }));
@@ -1739,6 +1774,35 @@ describe("ThreadDetailPromptArea", () => {
     return result as unknown as ExperimentalComposerSelection;
   }
 
+  it("pins a snapshot-policy composer to the thread's permission mode", async () => {
+    mocks.defaultExecutionOptions = {
+      model: "gpt-5",
+      permissionMode: "full",
+      reasoningLevel: "medium",
+      serviceTier: "default",
+      source: "client/turn/requested",
+    };
+    mocks.promptDraft.text = "Keep going";
+    renderPromptArea({ permissionPolicy: "snapshot" });
+    expect(screen.getByTestId("permission-read-only").textContent).toBe("true");
+    fireEvent.click(
+      screen.getByRole("button", { name: "Capture plugin host" }),
+    );
+
+    const result = await settledSelection(
+      mocks.pluginComposerHost!.setSelection!({ permissionMode: "auto" }),
+    );
+
+    expect(result.permissionMode).toBe("full");
+    expect(mocks.setPermissionMode).not.toHaveBeenCalled();
+    await act(async () => {
+      await mocks.composerSubmit?.();
+    });
+    expect(mocks.sendMessageMutateAsync).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "thr_1", permissionMode: "full" }),
+    );
+  });
+
   it("starts a handoff when a plugin sets another provider, and drops the fields a thread has no picker for", async () => {
     mocks.promptDraft.text = "Keep going";
     mocks.createThreadMutateAsync.mockResolvedValue({
@@ -1873,7 +1937,6 @@ describe("ThreadDetailPromptArea", () => {
       ),
     );
     expect(mocks.sendMessageMutateAsync).not.toHaveBeenCalled();
-    expect(mocks.createQueuedMessageMutateAsync).not.toHaveBeenCalled();
   });
 
   it("creates a same-provider handoff with unchanged execution marked explicit", async () => {
@@ -1901,7 +1964,6 @@ describe("ThreadDetailPromptArea", () => {
       ),
     );
     expect(mocks.sendMessageMutateAsync).not.toHaveBeenCalled();
-    expect(mocks.createQueuedMessageMutateAsync).not.toHaveBeenCalled();
   });
 
   it("marks a supported handoff service tier explicit", async () => {
@@ -2130,7 +2192,6 @@ describe("ThreadDetailPromptArea", () => {
       }),
     );
     expect(mocks.sendMessageMutateAsync).not.toHaveBeenCalled();
-    expect(mocks.createQueuedMessageMutateAsync).not.toHaveBeenCalled();
     expect(mocks.promptDraft.clearIfCurrentMatches).toHaveBeenCalledTimes(1);
   });
 });

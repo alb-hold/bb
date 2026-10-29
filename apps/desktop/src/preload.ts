@@ -61,6 +61,7 @@ import {
   BB_DESKTOP_CLOSE_SIGN_IN_WINDOW_CHANNEL,
   BB_DESKTOP_OPEN_EXTERNAL_URL_CHANNEL,
   BB_DESKTOP_OPEN_SIGN_IN_WINDOW_CHANNEL,
+  BB_DESKTOP_OPEN_APPLICATION_URL_CHANNEL,
   BB_DESKTOP_SET_THEME_CHANNEL,
   BB_DESKTOP_ZOOM_CHANGED_CHANNEL,
   BB_DESKTOP_ZOOM_COMMAND_CHANNEL,
@@ -512,6 +513,9 @@ const bbDesktopApi: BbDesktopApi = {
   },
   async openDataDirectory(): Promise<void> {
     await ipcRenderer.invoke(BB_DESKTOP_OPEN_DATA_DIRECTORY_CHANNEL);
+  },
+  async openApplicationUrl(url: string): Promise<void> {
+    await ipcRenderer.invoke(BB_DESKTOP_OPEN_APPLICATION_URL_CHANNEL, url);
   },
   openExternalUrl(url: string): void {
     ipcRenderer.send(BB_DESKTOP_OPEN_EXTERNAL_URL_CHANNEL, url);

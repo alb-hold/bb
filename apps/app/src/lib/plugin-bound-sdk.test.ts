@@ -450,7 +450,12 @@ describe("bindSdkToPlugin", () => {
         createDeferredPromise<ReturnType<typeof makeThreadResponse>>();
       threads.unpin.mockReturnValueOnce(pending.promise);
       threads.update.mockResolvedValueOnce(
-        makeThreadResponse({ id: entry.id, pinnedAt: null, sectionId: "new" }),
+        makeThreadResponse({
+          id: entry.id,
+          pinnedAt: null,
+          sectionId: "new",
+          updatedAt: entry.updatedAt + 2,
+        }),
       );
       const bound = bindSdkToPlugin(sdk, "thread-list", queryClient);
       const moved = Promise.all([
@@ -475,6 +480,7 @@ describe("bindSdkToPlugin", () => {
             id: entry.id,
             pinnedAt: null,
             sectionId: "old",
+            updatedAt: entry.updatedAt + 1,
           }),
         );
         await moved;

@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { experimental_spawnHostProcess as spawn } from "@get-bb/plugin-sdk/process";
 import { isDeepStrictEqual } from "node:util";
 import {
   query,
@@ -38,6 +38,7 @@ export interface SdkSessionOptions {
   hooks?: Options["hooks"];
   mcpServers?: Record<string, McpServerConfig>;
   allowedTools?: string[];
+  disallowedTools?: string[];
   canUseTool?: CanUseTool;
   onElicitation?: Options["onElicitation"];
   env?: NodeJS.ProcessEnv;
@@ -408,6 +409,9 @@ export class SdkSession {
         : {}),
       ...(this.options.allowedTools
         ? { allowedTools: this.options.allowedTools }
+        : {}),
+      ...(this.options.disallowedTools
+        ? { disallowedTools: this.options.disallowedTools }
         : {}),
       ...(this.options.canUseTool
         ? { canUseTool: this.options.canUseTool }

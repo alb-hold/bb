@@ -4,7 +4,12 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { serve } from "@hono/node-server";
-import { listRunningThreads, type DbConnection } from "@bb/db";
+import {
+  ensurePersonalProject,
+  listRunningThreads,
+  type DbConnection,
+} from "@bb/db";
+import { createMigratedConnection } from "@bb/db/testing";
 import { defaultFeatureFlags } from "@bb/domain";
 import {
   acquireDaemonLock,
@@ -16,7 +21,6 @@ import {
 } from "@bb/host-daemon/test";
 import { killProcessesHoldingFilesUnder } from "./tmp-root-processes.js";
 import { HARNESS_TMP_ROOT_PREFIX, integrationTmpBase } from "./tmp-base.js";
-import { initDb } from "../../../apps/server/src/db.js";
 import { createLifecycleDedupers } from "../../../apps/server/src/lifecycle-dedupers.js";
 import { createApp } from "../../../apps/server/src/server.js";
 import { createAiServiceRegistry } from "../../../apps/server/src/services/ai/ai-service-registry.js";
@@ -41,6 +45,7 @@ import { createAppUpdateService } from "../../../apps/server/src/services/system
 import { createCliCommandService } from "../../../apps/server/src/services/system/cli-command.js";
 import { createAppVersionService } from "../../../apps/server/src/services/system/app-version.js";
 import { createProviderNativeRootsCache } from "../../../apps/server/src/services/providers/native-roots.js";
+import { createProviderLiveCommandsCache } from "../../../apps/server/src/services/providers/provider-live-commands.js";
 import { createBbAppManagedConfigReloader } from "../../../apps/server/src/services/system/bb-app-managed-config.js";
 import { createNoopTelemetryService } from "../../../apps/server/src/services/system/telemetry.js";
 import { TerminalSessionLifecycle } from "../../../apps/server/src/services/terminals/terminal-session-lifecycle.js";
@@ -51,13 +56,19 @@ import type {
 import { HostSharedPortCoordinator } from "../../../apps/server/src/ws/host-shared-ports.js";
 import { NotificationHub } from "../../../apps/server/src/ws/hub.js";
 import { WatchInterestCoordinator } from "../../../apps/server/src/ws/watch-interests.js";
-import { WorkspaceReadCaches } from "../../../apps/server/src/services/environments/workspace-read-cache.js";
 import { createPublicApiClient } from "@bb/server-contract";
 import { resolveProjectEnvCandidates } from "@bb/test-helpers";
 import { waitForHostConnected } from "./assertions.js";
 import { createIntegrationFetch } from "./fetch.js";
 import { isNodeError, removePathWithRetry } from "./remove-path.js";
 import { createTestGitRepo } from "./seed.js";
+import {
+  copyBuiltinHostBuildRecords,
+  INTEGRATION_APP_VERSION,
+  INTEGRATION_BUILTIN_PLUGINS,
+} from "./builtin-plugin-fixture.js";
+
+export { PROJECT_CHECKOUT_BUILTIN_PLUGIN } from "./builtin-plugin-fixture.js";
 
 const repoRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -105,8 +116,6 @@ export interface IntegrationHarness {
   shutdownDaemon(reason?: string): Promise<void>;
   startDaemon(): Promise<void>;
 }
-
-export const PROJECT_CHECKOUT_BUILTIN_PLUGIN = "environment-project-checkout";
 
 interface CreateHarnessOptions {
   serverPort?: number;
@@ -176,19 +185,20 @@ async function startIntegrationServer(
 ): Promise<RunningTestServer> {
   const serverDataDir = path.join(tmpRoot, "server-data");
   await fs.mkdir(serverDataDir, { recursive: true });
+  await copyBuiltinHostBuildRecords(serverDataDir);
   const builtinSkillsRootPath = path.join(serverDataDir, "builtin-skills");
   await copyBuiltinSkills({
     skillsRootPath: resolveBuiltinSkillsRootPath(),
     targetPath: builtinSkillsRootPath,
   });
 
-  const db = initDb(":memory:");
+  const db = createMigratedConnection();
+  ensurePersonalProject(db);
   const hub = new NotificationHub();
   const sharedPorts = new HostSharedPortCoordinator({ db, hub });
   const watchInterests = new WatchInterestCoordinator({ db, hub });
-  const workspaceReadCaches = new WorkspaceReadCaches({ hub });
   const config: ServerRuntimeConfig = {
-    appVersion: "0.0.0-dev",
+    appVersion: INTEGRATION_APP_VERSION,
     builtinSkillsRootPath,
     customModels: [],
     dataDir: serverDataDir,
@@ -280,6 +290,7 @@ async function startIntegrationServer(
     bbAppManagedConfig,
     providerRegistry,
     providerNativeRoots: createProviderNativeRootsCache(),
+    providerLiveCommands: createProviderLiveCommandsCache(),
     pluginHostArtifacts,
     aiServices,
     config,
@@ -294,7 +305,6 @@ async function startIntegrationServer(
     telemetry,
     terminalSessions,
     watchInterests,
-    workspaceReadCaches,
   };
   const { app, closeWebSockets, injectWebSocket, pluginService } = createApp(
     serverDeps,
@@ -326,7 +336,7 @@ async function startIntegrationServer(
 
   pluginService.bindSdk({ baseUrl });
   const builtinPlugins = new Set([
-    PROJECT_CHECKOUT_BUILTIN_PLUGIN,
+    ...INTEGRATION_BUILTIN_PLUGINS,
     ...(options.builtinPlugins ?? []),
   ]);
   for (const name of builtinPlugins) {

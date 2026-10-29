@@ -1,3 +1,9 @@
+import {
+  prepareHostPtyCommand,
+  hostToolchain,
+  killProcessGroup,
+  sanitizeInheritedChildProcessEnv,
+} from "@bb/process-utils";
 import { operationEnvironment } from "../operation-environment.js";
 import { accessSync, chmodSync, constants, existsSync } from "node:fs";
 import { access, stat } from "node:fs/promises";
@@ -17,10 +23,6 @@ import {
 } from "@bb/domain";
 import type { HostDaemonDaemonWsMessage } from "@bb/host-daemon-contract";
 import { HOST_DAEMON_TERMINAL_EXIT_RETENTION_MS } from "@bb/host-daemon-contract/protocol";
-import {
-  killProcessGroup,
-  sanitizeInheritedChildProcessEnv,
-} from "@bb/process-utils";
 import { displayWidth, truncateToWidth } from "@bb/text-utils";
 import type { HostDaemonServerTerminalMessage } from "../server-connection-support.js";
 import type { HostDaemonLogger } from "../logger.js";
@@ -302,13 +304,18 @@ function disposeNodePty(pty: ReturnType<typeof spawnPty>): void {
 const nodePtyAdapter: TerminalPtyAdapter = {
   spawn(args) {
     ensureNodePtySpawnHelperExecutable(args.logger);
-    const pty = spawnPty(args.file, args.args, {
-      cols: args.cols,
+    const launch = prepareHostPtyCommand(args.file, args.args, {
       cwd: args.cwd,
       env: args.env,
+    });
+    const pty = spawnPty(launch.command, launch.args, {
+      cols: args.cols,
+      cwd: args.cwd,
+      env: launch.env,
       name: "xterm-256color",
       rows: args.rows,
     });
+    pty.onExit(({ exitCode }) => hostToolchain.invalidateFailure(exitCode));
     return {
       dispose: () => disposeNodePty(pty),
       kill: (signal) => {

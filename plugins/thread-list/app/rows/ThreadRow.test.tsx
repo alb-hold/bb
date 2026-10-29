@@ -35,6 +35,7 @@ import {
   type PluginSdkTestFakes,
   type RenderedSlot,
   type TestThreadActionsResolver,
+  type TestThreadBulkActionsResolver,
 } from "@get-bb/plugin-sdk/testing/app";
 import { NO_COLLAPSED_CHILD_ACTIVITY } from "../model/thread-activity.js";
 import {
@@ -45,8 +46,12 @@ import { useAutomationWokeAt } from "../model/automation-woke.js";
 import {
   makeSidebarEnvironment,
   makeSidebarThread,
+  makePluginProject,
 } from "../model/fixtures.js";
-import { sidebarShowProviderIconsAtom } from "../preferences/atoms.js";
+import {
+  sidebarShowProviderIconsAtom,
+  sidebarShowRowMetadataAtom,
+} from "../preferences/atoms.js";
 import { SidebarProjectsContext } from "../model/use-sidebar-data.js";
 import type { ThreadRowOptions } from "./ThreadRow.js";
 import {
@@ -140,10 +145,12 @@ interface HarnessProps {
   onRowEvent?: () => void;
   onCustomizeRowActions?: (threadId: string) => void;
   onFinishCustomizingRowActions?: (restoreFocus: boolean) => void;
+  siblings?: PluginSidebarThread[];
 }
 
 function ThreadRowHarness({
   thread,
+  siblings = [],
   projects = [],
   providers = [],
   isCompactViewport,
@@ -181,7 +188,7 @@ function ThreadRowHarness({
                             onDone: onFinishCustomizingRowActions,
                           }
                         : null
-                    }
+                          }
                   >
                     <div
                       onPointerDown={onRowEvent}
@@ -189,6 +196,15 @@ function ThreadRowHarness({
                       onClick={onRowEvent}
                     >
                       {row}
+                      {siblings.map((sibling) => (
+                        <ThreadRow
+                          key={sibling.id}
+                          thread={sibling}
+                          crossProjectId={crossProjectId}
+                          isActive={false}
+                          options={options}
+                        />
+                      ))}
                     </div>
                   </ThreadRowActionsCustomizingContext.Provider>
                 </CustomizeRowActionsContext.Provider>
@@ -249,6 +265,7 @@ interface RenderThreadRowArgs extends Omit<HarnessProps, "thread"> {
   openUrl?: (url: string) => boolean;
   sdk?: PluginSdkTestFakes;
   threadActions?: TestThreadActionsResolver;
+  threadBulkActions?: TestThreadBulkActionsResolver;
   experiments?: string[];
 }
 
@@ -265,6 +282,7 @@ function renderThreadRow({
   openUrl,
   sdk,
   threadActions = hostThreadActions(),
+  threadBulkActions,
   experiments,
   ...harness
 }: RenderThreadRowArgs = {}): RenderedSlot & {
@@ -288,7 +306,10 @@ function renderThreadRow({
     { component: ThreadRowHarness },
     { thread: rowThread, projects, providers, ...harness },
     {
-      sidebarThreads: { threads: [rowThread], projects },
+      sidebarThreads: {
+        threads: [rowThread, ...(harness.siblings ?? [])],
+        projects,
+      },
       providers: { providers },
       sidebarDraftThreadIds: [
         ...(hasComposerDraft ? [thread.id] : []),
@@ -326,6 +347,7 @@ function renderThreadRow({
       openUrl,
       sdk,
       threadActions,
+      threadBulkActions,
       experiments,
     },
   );
@@ -1315,23 +1337,79 @@ describe("ThreadRow", () => {
     },
   );
 
-  it("clears the selection on a press outside the sidebar but keeps it for menus", () => {
-    renderThreadRow({ experiments: ["sidebarMultiSelect"] });
-    const link = screen.getByRole("link", { name: "Open Thread" });
-    const row = link.closest("[data-sidebar-rename-row]");
-    const menu = document.createElement("div");
-    menu.setAttribute("role", "menu");
-    document.body.append(menu);
-    try {
-      fireEvent.click(link, { metaKey: true, shiftKey: true });
-      fireEvent.pointerDown(menu);
-      expect(row?.hasAttribute("data-sidebar-thread-selected")).toBe(true);
-      fireEvent.pointerDown(document.body);
-      expect(row?.hasAttribute("data-sidebar-thread-selected")).toBe(false);
-    } finally {
-      menu.remove();
+  it("opens the bulk menu for a selected row and its own menu for an unselected one", async () => {
+    const first = createThread({ id: "thr_first", title: "First" });
+    const second = createThread({ id: "thr_second", title: "Second" });
+    const third = createThread({ id: "thr_third", title: "Third" });
+    const bulkTargets: string[][] = [];
+    renderThreadRow({
+      thread: first,
+      siblings: [second, third],
+      projects: [makePluginProject()],
+      experiments: ["sidebarMultiSelect"],
+      threadBulkActions: (threads) => {
+        bulkTargets.push(threads.map((target) => target.id));
+        return [];
+      },
+    });
+    for (const title of ["First", "Second"]) {
+      fireEvent.click(screen.getByRole("link", { name: `Open ${title}` }), {
+        metaKey: true,
+        shiftKey: true,
+      });
     }
+    fireEvent.contextMenu(screen.getByRole("link", { name: "Open Second" }));
+    await screen.findByRole("menu", { name: "Actions for 2 threads" });
+    expect(bulkTargets.at(-1)).toEqual(["thr_first", "thr_second"]);
+    expect(
+      screen.getByRole("menuitem", { name: "Clear selection" }),
+    ).toBeTruthy();
+    fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
+    fireEvent.click(screen.getByRole("link", { name: "Open First" }), {
+      metaKey: true,
+      shiftKey: true,
+    });
+    fireEvent.click(screen.getByRole("link", { name: "Open Second" }), {
+      metaKey: true,
+      shiftKey: true,
+    });
+    fireEvent.contextMenu(screen.getByRole("link", { name: "Open Third" }));
+    expect(
+      await screen.findByRole("menu", { name: "Thread actions" }),
+    ).toBeTruthy();
   });
+
+  it.each(["sidebar", "outside"])(
+    "clears selection on empty %s space but keeps it for rows and menus",
+    (target) => {
+      const { container } = renderThreadRow({
+        experiments: ["sidebarMultiSelect"],
+      });
+      container.setAttribute("data-sidebar", "sidebar");
+      const link = screen.getByRole("link", { name: "Open Thread" });
+      const row = link.closest("[data-sidebar-rename-row]")!;
+      const menu = document.createElement("div");
+      menu.setAttribute("role", "menu");
+      document.body.append(menu);
+      try {
+        fireEvent.click(link, { metaKey: true, shiftKey: true });
+        for (const keepingTarget of [
+          row,
+          link,
+          screen.getByRole("button", { name: "Thread actions" }),
+          menu,
+        ]) {
+          fireEvent.pointerDown(keepingTarget);
+          expect(row.hasAttribute("data-sidebar-thread-selected")).toBe(true);
+        }
+        fireEvent.pointerDown(target === "sidebar" ? container : document.body);
+        expect(row.hasAttribute("data-sidebar-thread-selected")).toBe(false);
+      } finally {
+        menu.remove();
+      }
+    },
+  );
 
   it("keeps desktop restore available, hides it on mobile, and blocks row event propagation", async () => {
     const thread = createThread({ archivedAt: 1, isArchived: true });
@@ -1865,9 +1943,7 @@ describe("ThreadRow", () => {
     expect(marker?.getAttribute("aria-label")).toBe("In project Web App");
     expect(marker?.querySelector('[data-icon="FolderExport"]')).not.toBeNull();
     expect(
-      marker?.parentElement?.previousElementSibling?.querySelector(
-        ".bb-thread-title",
-      ),
+      marker?.parentElement?.querySelector(".bb-thread-title"),
     ).not.toBeNull();
     expect(
       marker?.closest("[data-sidebar-thread-trailing-indicator]"),
@@ -2006,12 +2082,12 @@ describe("ThreadRow", () => {
       const toggle = screen.getByRole("button", {
         name: /(?:Expand|Collapse) Nested discussion/,
       });
-      const titleContainer = toggle.parentElement;
       const link = screen.getByRole("link", {
         name: "Open Nested discussion with enough text to fill the sidebar width",
       });
+      const titleContainer = link.parentElement;
       const navigationTarget = link.parentElement;
-      const titleWrapper = link.nextElementSibling;
+      const titleWrapper = link.nextElementSibling?.firstElementChild;
       expect(titleContainer?.classList.contains("flex-1")).toBe(true);
       expect(titleContainer?.classList.contains("min-w-0")).toBe(true);
       expect(navigationTarget?.classList.contains("flex-1")).toBe(true);
@@ -2051,6 +2127,43 @@ describe("ThreadRow", () => {
 
     fireEvent.click(link);
     expect(clickLink).toHaveBeenCalledTimes(2);
+  });
+
+  it("draws other plugins' metadata only while Metadata is on", () => {
+    const slot = renderThreadRow({ experiments: ["threadRowMetadata"] });
+    expect(slot.container.querySelector("[data-thread-row-metadata]")).toBeNull();
+
+    act(() => getDefaultStore().set(sidebarShowRowMetadataAtom, true));
+    expect(
+      slot.container.querySelector("[data-thread-row-metadata]"),
+    ).not.toBeNull();
+  });
+
+  it("ignores the Metadata preference while its experiment is off", () => {
+    getDefaultStore().set(sidebarShowRowMetadataAtom, true);
+    const slot = renderThreadRow();
+    expect(slot.container.querySelector("[data-thread-row-metadata]")).toBeNull();
+  });
+
+  it("routes a click on other plugins' metadata like the rest of the row", () => {
+    getDefaultStore().set(sidebarShowRowMetadataAtom, true);
+    const slot = renderThreadRow({
+      experiments: ["sidebarMultiSelect", "threadRowMetadata"],
+    });
+    const link = screen.getByRole("link", { name: "Open Thread" });
+    const row = link.closest("[data-sidebar-rename-row]");
+    const items = row?.querySelector("[data-thread-row-metadata]");
+    expect(items).not.toBeNull();
+    const clickLink = vi.spyOn(link, "click");
+
+    fireEvent.click(items!, { metaKey: true, shiftKey: true });
+    expect(row?.hasAttribute("data-sidebar-thread-selected")).toBe(true);
+    expect(clickLink).not.toHaveBeenCalled();
+    expect(slot.inspection.navigateCalls).toEqual([]);
+
+    fireEvent.click(items!);
+    expect(row?.hasAttribute("data-sidebar-thread-selected")).toBe(false);
+    expect(clickLink).toHaveBeenCalledOnce();
   });
 
   it("does not route a suppressed drag click on the trailing area", () => {

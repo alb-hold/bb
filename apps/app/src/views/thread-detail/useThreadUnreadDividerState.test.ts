@@ -15,6 +15,7 @@ function renderDividerState(initialThread: DividerThread) {
   const view = renderHook(
     ({ thread }: { thread: DividerThread }) => {
       const state = useThreadUnreadDividerState({
+        anchor: "first-unread-row",
         bootstrapQuery: { dataUpdatedAt: 0, isFetchedAfterMount: false, isSuccess: false },
         threadQuery: { isFetchedAfterMount: true, isError: false, isPlaceholderData: false },
         hasUnseenTimelineEvents: false,
@@ -49,9 +50,11 @@ describe("useThreadUnreadDividerState", () => {
     });
 
     expect(renders[0]).toEqual({
+      ready: false,
       autoScroll: true,
       hasUnseenTimelineEvents: true,
-      placement: { kind: "after-cutoff", cutoffAt: 100 },
+      landOnDivider: false,
+      placement: { anchor: "first-unread-row", cutoffAt: 100 },
     });
   });
 
@@ -65,9 +68,11 @@ describe("useThreadUnreadDividerState", () => {
     show({ id: "thr_b", lastReadAt: null, latestAttentionAt: 300 });
 
     expect(renders[0]).toEqual({
+      ready: false,
       autoScroll: true,
       hasUnseenTimelineEvents: true,
-      placement: { kind: "before-first" },
+      landOnDivider: false,
+      placement: null,
     });
   });
 
@@ -80,15 +85,19 @@ describe("useThreadUnreadDividerState", () => {
 
     show({ id: "thr_a", lastReadAt: 250, latestAttentionAt: 200 });
     expect(result.current).toEqual({
+      ready: true,
       autoScroll: true,
       hasUnseenTimelineEvents: true,
-      placement: { kind: "after-cutoff", cutoffAt: 100 },
+      landOnDivider: true,
+      placement: { anchor: "first-unread-row", cutoffAt: 100 },
     });
 
     show({ id: "thr_a", lastReadAt: 400, latestAttentionAt: 300 });
     expect(result.current).toEqual({
+      ready: true,
       autoScroll: true,
       hasUnseenTimelineEvents: true,
+      landOnDivider: false,
       placement: null,
     });
   });
@@ -101,8 +110,10 @@ describe("useThreadUnreadDividerState", () => {
     });
 
     expect(renders[0]).toEqual({
+      ready: false,
       autoScroll: false,
       hasUnseenTimelineEvents: false,
+      landOnDivider: false,
       placement: null,
     });
   });

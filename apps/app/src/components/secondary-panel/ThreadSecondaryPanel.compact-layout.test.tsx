@@ -58,7 +58,6 @@ describe("compact terminal layout requests", () => {
         <PanelGroup direction="horizontal">
           <ThreadSecondaryPanel
             activeTab={activeTab}
-            canUseGitUi={false}
             fixedTabs={[]}
             tabs={[terminalDescriptor]}
             isConversationCollapsed={false}
@@ -142,7 +141,6 @@ describe("compact terminal layout requests", () => {
           <ThreadSecondaryPanel
             activeTab={createThreadInfoFixedPanelTab()}
             areFixedTabsReady={ready}
-            canUseGitUi={false}
             fixedTabs={ready ? [infoFixedTab] : []}
             tabs={[terminalDescriptor]}
             isConversationCollapsed={false}
@@ -278,7 +276,6 @@ describe("compact terminal layout requests", () => {
           <PanelGroup direction="horizontal">
             <ThreadSecondaryPanel
               activeTab={activeTab}
-              canUseGitUi={false}
               fixedTabs={[]}
               tabs={[terminalDescriptor]}
               isConversationCollapsed={false}
@@ -330,7 +327,6 @@ describe("compact terminal layout requests", () => {
           <PanelGroup direction="horizontal">
             <ThreadSecondaryPanel
               activeTab={createThreadInfoFixedPanelTab()}
-              canUseGitUi={false}
               fixedTabs={[]}
               tabs={[]}
               isConversationCollapsed={false}
@@ -380,7 +376,6 @@ describe("compact terminal layout requests", () => {
           <PanelGroup direction="horizontal">
             <ThreadSecondaryPanel
               activeTab={createThreadInfoFixedPanelTab()}
-              canUseGitUi={false}
               fixedTabs={[]}
               tabs={[]}
               isConversationCollapsed={false}
