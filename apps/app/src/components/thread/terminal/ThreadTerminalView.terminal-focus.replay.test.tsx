@@ -11,6 +11,8 @@ import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import { MemoryRouter } from "react-router-dom";
 import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   waitForReadiness,
@@ -252,6 +254,65 @@ function prepareMobileTerminal(): void {
   );
 }
 
+function prepareFirstAttachFontMetricsHarness(): void {
+  vi.stubGlobal("WebSocket", TestTerminalSocket);
+  vi.stubGlobal(
+    "ResizeObserver",
+    class {
+      constructor(private readonly callback: ResizeObserverCallback) {}
+
+      disconnect(): void {}
+
+      observe(target: Element): void {
+        this.callback(
+          [
+            {
+              target,
+              contentRect: { width: 354, height: 504 },
+            } as ResizeObserverEntry,
+          ],
+          this as unknown as ResizeObserver,
+        );
+      }
+
+      unobserve(): void {}
+    },
+  );
+  vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({
+    measureText: (text: string) => ({ width: text.length * 7 }),
+  } as unknown as CanvasRenderingContext2D);
+  vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockImplementation(
+    function offsetWidth(this: HTMLElement) {
+      return this.classList.contains("xterm-char-measure-element") ? 7 : 354;
+    },
+  );
+  vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockImplementation(
+    function offsetHeight(this: HTMLElement) {
+      return this.classList.contains("xterm-char-measure-element") ? 14 : 504;
+    },
+  );
+  vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockImplementation(
+    function clientWidth(this: HTMLElement) {
+      return this.classList.contains("xterm-char-measure-element") ? 7 : 354;
+    },
+  );
+  vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockImplementation(
+    function clientHeight(this: HTMLElement) {
+      return this.classList.contains("xterm-char-measure-element") ? 14 : 504;
+    },
+  );
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
+    function getBoundingClientRect(this: HTMLElement) {
+      return new DOMRect(0, 0, this.clientWidth, this.clientHeight);
+    },
+  );
+  vi.spyOn(FitAddon.prototype, "proposeDimensions").mockImplementation(
+    function proposeDimensions() {
+      return { cols: 51, rows: 47 };
+    },
+  );
+}
+
 function stubVisibleIntersectionObserver(): void {
   vi.stubGlobal(
     "IntersectionObserver",
@@ -438,6 +499,149 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
     }, "hidden output was not replayed when the terminal became visible");
   });
 
+  it("does not repaint-nudge the initial terminal replay", async () => {
+    prepareFirstAttachFontMetricsHarness();
+    const markLayoutSettled =
+      TerminalWebSocketTransport.prototype.markLayoutSettled;
+    let resolveLayoutSettled!: () => void;
+    const layoutSettled = new Promise<void>((resolve) => {
+      resolveLayoutSettled = resolve;
+    });
+    vi.spyOn(
+      TerminalWebSocketTransport.prototype,
+      "markLayoutSettled",
+    ).mockImplementation(function (this: TerminalWebSocketTransport) {
+      markLayoutSettled.call(this);
+      resolveLayoutSettled();
+    });
+    let resolveSocketCreated!: () => void;
+    const socketCreated = new Promise<void>((resolve) => {
+      resolveSocketCreated = resolve;
+    });
+    testState.socketCreated = resolveSocketCreated;
+
+    render(
+      <MemoryRouter>
+        <AppCommandProvider>
+          <ThreadTerminalView
+            autoFocus={false}
+            isPanelOpen
+            session={makeTerminalSession({
+              id: "term_first_attach_font_metrics",
+              status: "running",
+              cols: 120,
+              rows: 36,
+            })}
+          />
+        </AppCommandProvider>
+      </MemoryRouter>,
+    );
+
+    await waitForReadiness(
+      socketCreated,
+      "socket was not created within 5000 ms",
+    );
+    const socket = testState.sockets[0]!;
+    await Promise.all([socket.opened, layoutSettled]);
+    const resizeMessages = () =>
+      testState.socketMessages
+        .map(
+          (message) =>
+            JSON.parse(message) as {
+              cols?: number;
+              rows?: number;
+              type?: string;
+            },
+        )
+        .filter((message) => message.type === "resize");
+    expect(resizeMessages()).toEqual([{ type: "resize", cols: 51, rows: 47 }]);
+
+    const session = makeTerminalSession({
+      id: "term_first_attach_font_metrics",
+      status: "running",
+      cols: 120,
+      rows: 36,
+    });
+    vi.useFakeTimers();
+    socket.receive({
+      type: "attached",
+      session,
+      replayStartSeq: 0,
+      nextSeq: 0,
+    });
+    expect(resizeMessages()).toEqual([{ type: "resize", cols: 51, rows: 47 }]);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(REPAINT_RESTORE_DELAY_MS + 1);
+    });
+    expect(resizeMessages()).toEqual([{ type: "resize", cols: 51, rows: 47 }]);
+    vi.useRealTimers();
+
+    testState.deferSocketOpen = true;
+    testState.sockets[0]?.disconnect();
+    await waitForReadinessCondition(
+      () => expect(testState.sockets).toHaveLength(2),
+      "terminal did not reconnect",
+    );
+    const reconnectedSocket = testState.sockets[1]!;
+    vi.useFakeTimers();
+    reconnectedSocket.open();
+    await reconnectedSocket.opened;
+    reconnectedSocket.receive({ type: "features", resizeAcks: true });
+    reconnectedSocket.receive({
+      type: "attached",
+      session,
+      replayStartSeq: 0,
+      nextSeq: 0,
+    });
+
+    const socketResizes = () =>
+      reconnectedSocket.sent
+        .map(
+          (message) =>
+            JSON.parse(message) as {
+              cols?: number;
+              rows?: number;
+              seq?: number;
+              type?: string;
+            },
+        )
+        .filter((message) => message.type === "resize");
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(socketResizes()).toContainEqual({
+      type: "resize",
+      cols: 50,
+      rows: 47,
+      seq: 1,
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(REPAINT_RESTORE_DELAY_MS);
+    });
+    expect(socketResizes().at(-1)).toEqual({
+      type: "resize",
+      cols: 50,
+      rows: 47,
+      seq: 1,
+    });
+    reconnectedSocket.receive({ type: "resize-applied", seq: 1 });
+    expect(socketResizes().at(-1)).toEqual({
+      type: "resize",
+      cols: 51,
+      rows: 47,
+      seq: 2,
+    });
+    expect(
+      socketResizes()
+        .slice(-2)
+        .map(({ type, cols, rows }) => ({ type, cols, rows })),
+    ).toEqual([
+      { type: "resize", cols: 50, rows: 47 },
+      { type: "resize", cols: 51, rows: 47 },
+    ]);
+  });
+});
+
   it("replays output received while the terminal panel is closed", async () => {
     prepareMobileTerminal();
     let mountedTerminal: Terminal | null = null;
@@ -551,7 +755,10 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
     visibilityState.mockReturnValue("hidden");
     const fixture = JSON.parse(
       readFileSync(
-        "src/components/thread/terminal/fixtures/osc52-chunks.json",
+        join(
+          dirname(fileURLToPath(import.meta.url)),
+          "fixtures/osc52-chunks.json",
+        ),
         "utf8",
       ),
     ) as {
@@ -1652,232 +1859,3 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
     }
   });
 
-  it("does not repaint-nudge the initial terminal replay", async () => {
-    vi.stubGlobal("WebSocket", TestTerminalSocket);
-    vi.stubGlobal(
-      "ResizeObserver",
-      class {
-        constructor(private readonly callback: ResizeObserverCallback) {}
-
-        disconnect(): void {}
-
-        observe(target: Element): void {
-          this.callback(
-            [
-              {
-                target,
-                contentRect: { width: 354, height: 504 },
-              } as ResizeObserverEntry,
-            ],
-            this as unknown as ResizeObserver,
-          );
-        }
-
-        unobserve(): void {}
-      },
-    );
-    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({
-      measureText: (text: string) => ({ width: text.length * 7 }),
-    } as unknown as CanvasRenderingContext2D);
-    vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockImplementation(
-      function offsetWidth(this: HTMLElement) {
-        return this.classList.contains("xterm-char-measure-element") ? 7 : 354;
-      },
-    );
-    vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockImplementation(
-      function offsetHeight(this: HTMLElement) {
-        return this.classList.contains("xterm-char-measure-element") ? 14 : 504;
-      },
-    );
-    vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockImplementation(
-      function clientWidth(this: HTMLElement) {
-        return this.classList.contains("xterm-char-measure-element") ? 7 : 354;
-      },
-    );
-    vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockImplementation(
-      function clientHeight(this: HTMLElement) {
-        return this.classList.contains("xterm-char-measure-element") ? 14 : 504;
-      },
-    );
-    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
-      function getBoundingClientRect(this: HTMLElement) {
-        return new DOMRect(0, 0, this.clientWidth, this.clientHeight);
-      },
-    );
-    vi.spyOn(FitAddon.prototype, "proposeDimensions").mockImplementation(
-      function proposeDimensions() {
-        return { cols: 51, rows: 47 };
-      },
-    );
-    const markLayoutSettled =
-      TerminalWebSocketTransport.prototype.markLayoutSettled;
-    let resolveLayoutSettled!: () => void;
-    const layoutSettled = new Promise<void>((resolve) => {
-      resolveLayoutSettled = resolve;
-    });
-    vi.spyOn(
-      TerminalWebSocketTransport.prototype,
-      "markLayoutSettled",
-    ).mockImplementation(function (this: TerminalWebSocketTransport) {
-      markLayoutSettled.call(this);
-      resolveLayoutSettled();
-    });
-    let resolveSocketCreated!: () => void;
-    const socketCreated = new Promise<void>((resolve) => {
-      resolveSocketCreated = resolve;
-    });
-    testState.socketCreated = resolveSocketCreated;
-
-    render(
-      <MemoryRouter>
-        <AppCommandProvider>
-          <ThreadTerminalView
-            autoFocus={false}
-            isPanelOpen
-            session={makeTerminalSession({
-              id: "term_first_attach_font_metrics",
-              status: "running",
-              cols: 120,
-              rows: 36,
-            })}
-          />
-        </AppCommandProvider>
-      </MemoryRouter>,
-    );
-
-    await waitForReadiness(
-      socketCreated,
-      "socket was not created within 5000 ms",
-    );
-    const socket = testState.sockets[0]!;
-    await Promise.all([socket.opened, layoutSettled]);
-    const initialResizes = testState.socketMessages
-      .map(
-        (message) =>
-          JSON.parse(message) as {
-            cols?: number;
-            rows?: number;
-            type?: string;
-          },
-      )
-      .filter((message) => message.type === "resize");
-    expect(initialResizes).toEqual([{ type: "resize", cols: 51, rows: 47 }]);
-    await waitFor(
-      () =>
-        expect(
-          testState.socketMessages
-            .map(
-              (message) =>
-                JSON.parse(message) as {
-                  cols?: number;
-                  rows?: number;
-                  type?: string;
-                },
-            )
-            .filter((message) => message.type === "resize"),
-        ).toEqual([{ type: "resize", cols: 51, rows: 47 }]),
-      { timeout: 6_000 },
-    );
-    vi.useFakeTimers({ shouldAdvanceTime: true });
-    const resizeFrames = () =>
-      testState.socketMessages
-        .map(
-          (message) =>
-            JSON.parse(message) as {
-              cols?: number;
-              rows?: number;
-              type?: string;
-            },
-        )
-        .filter((message) => message.type === "resize");
-    expect(resizeFrames()).toEqual([{ type: "resize", cols: 51, rows: 47 }]);
-    const session = makeTerminalSession({
-      id: "term_first_attach_font_metrics",
-      status: "running",
-      cols: 120,
-      rows: 36,
-    });
-    testState.sockets[0]?.receive({
-      type: "attached",
-      session,
-      replayStartSeq: 0,
-      nextSeq: 0,
-    });
-    expect(resizeFrames()).toEqual([{ type: "resize", cols: 51, rows: 47 }]);
-    await vi.advanceTimersByTimeAsync(REPAINT_RESTORE_DELAY_MS + 1);
-    expect(
-      testState.socketMessages
-        .map(
-          (message) =>
-            JSON.parse(message) as {
-              cols?: number;
-              rows?: number;
-              type?: string;
-            },
-        )
-        .filter((message) => message.type === "resize"),
-    ).toEqual([{ type: "resize", cols: 51, rows: 47 }]);
-
-    testState.deferSocketOpen = true;
-    testState.sockets[0]?.disconnect();
-
-    await waitFor(() => expect(testState.sockets).toHaveLength(2));
-    const reconnectedSocket = testState.sockets[1]!;
-    vi.useFakeTimers();
-    reconnectedSocket.open();
-    await reconnectedSocket.opened;
-    reconnectedSocket.receive({ type: "features", resizeAcks: true });
-
-    reconnectedSocket.receive({
-      type: "attached",
-      session,
-      replayStartSeq: 0,
-      nextSeq: 0,
-    });
-
-    const socketResizes = () =>
-      reconnectedSocket.sent
-        .map(
-          (message) =>
-            JSON.parse(message) as {
-              cols?: number;
-              rows?: number;
-              seq?: number;
-              type?: string;
-            },
-        )
-        .filter((message) => message.type === "resize");
-    await vi.waitFor(() => {
-      expect(socketResizes()).toContainEqual({
-        type: "resize",
-        cols: 50,
-        rows: 47,
-        seq: 1,
-      });
-    });
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(400);
-    });
-    expect(socketResizes().at(-1)).toEqual({
-      type: "resize",
-      cols: 50,
-      rows: 47,
-      seq: 1,
-    });
-    reconnectedSocket.receive({ type: "resize-applied", seq: 1 });
-    expect(socketResizes().at(-1)).toEqual({
-      type: "resize",
-      cols: 51,
-      rows: 47,
-      seq: 2,
-    });
-    expect(
-      socketResizes()
-        .slice(-2)
-        .map(({ type, cols, rows }) => ({ type, cols, rows })),
-    ).toEqual([
-      { type: "resize", cols: 50, rows: 47 },
-      { type: "resize", cols: 51, rows: 47 },
-    ]);
-  }, 15_000);
-});
