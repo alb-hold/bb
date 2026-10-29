@@ -14,6 +14,7 @@ export interface FrpConnections {
   loggedIn(clientAddress: string, label: string, runId: string): void;
   claim(label: string, runId: string): number | null;
   isOpen(connectionId: number): boolean;
+  holds(label: string, runId: string): boolean;
   close(label: string): number;
   closeAll(): number;
   count(label: string): number;
@@ -78,6 +79,12 @@ export function createFrpConnections(): FrpConnections {
     isOpen(connectionId) {
       return [...open.values()].some(
         (connection) => connection.id === connectionId,
+      );
+    },
+    holds(label, runId) {
+      return [...open.values()].some(
+        (connection) =>
+          connection.label === label && connection.runId === runId,
       );
     },
     close(label) {

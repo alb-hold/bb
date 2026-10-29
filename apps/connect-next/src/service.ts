@@ -149,6 +149,7 @@ export async function startConnectNext(
       frpConnections.loggedIn(clientAddress, label, runId),
     claimConnection: (label, runId) => frpConnections.claim(label, runId),
     connectionOpen: (connectionId) => frpConnections.isOpen(connectionId),
+    runConnected: (label, runId) => frpConnections.holds(label, runId),
   });
   const hooksPort = await listen(hooks.server, config.ports.hooks, LOOPBACK);
   const frps = await startFrps({

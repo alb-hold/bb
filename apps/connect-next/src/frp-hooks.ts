@@ -121,6 +121,7 @@ export interface FrpHookOptions {
   onLogin?: (clientAddress: string, label: string, runId: string) => void;
   claimConnection?: (label: string, runId: string) => number | null;
   connectionOpen?: (connectionId: number) => boolean;
+  runConnected?: (label: string, runId: string) => boolean;
   frpState: FrpState;
   timings?: Partial<FrpHookTimings>;
 }
@@ -320,7 +321,9 @@ export function createFrpHooks(options: FrpHookOptions) {
     for (const [runId, binding] of [...runBindings]) {
       if (
         binding.boundAt + timings.runBindingIdleMs <= startedAt &&
-        !holdsRun(runId)
+        !holdsRun(runId) &&
+        !runClaims.has(runId) &&
+        options.runConnected?.(binding.label, runId) !== true
       ) {
         runBindings.delete(runId);
       }

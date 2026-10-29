@@ -578,7 +578,10 @@ describe("frp hooks", () => {
       return stub;
     }
 
-    async function startHooks(accounts: AccountApi = LINKED_ACCOUNTS) {
+    async function startHooks(
+      accounts: AccountApi = LINKED_ACCOUNTS,
+      extraTimings: { runBindingIdleMs?: number } = {},
+    ) {
       const connections = createFrpConnections();
       const directory = createLocalDirectory({ graceMs: 60_000 });
       const frps = createFrpsStub();
@@ -590,8 +593,9 @@ describe("frp hooks", () => {
           connections.loggedIn(address, label, runId),
         claimConnection: (label, runId) => connections.claim(label, runId),
         connectionOpen: (connectionId) => connections.isOpen(connectionId),
+        runConnected: (label, runId) => connections.holds(label, runId),
         frpState: frps.state,
-        timings: TIMINGS,
+        timings: { ...TIMINGS, ...extraTimings },
       });
       await new Promise<void>((resolve) =>
         hooks.server.listen(0, "127.0.0.1", resolve),
@@ -1096,6 +1100,27 @@ describe("frp hooks", () => {
         },
       };
     }
+
+    it("keeps a login-only run id bound while its control connection is open, however old, and frees it once the connection closes", async () => {
+      const harness = await startHooks(LINKED_ACCOUNTS, {
+        runBindingIdleMs: 150,
+      });
+      const control = await harness.login("control-7:1", "run-7");
+
+      await sleep(TIMINGS.reconcileMs * 3);
+      expect(await loginAs(harness, "wasp", "run-7")).toMatchObject({
+        reject: true,
+      });
+      expect(await proxyAs(harness, "wasp", "run-7")).toMatchObject({
+        reject: true,
+      });
+
+      control.destroy();
+      await sleep(TIMINGS.reconcileMs * 3);
+      expect(await loginAs(harness, "wasp", "run-7")).toMatchObject({
+        reject: false,
+      });
+    });
 
     it("ignores a delayed close from the label that used to hold a run id another label has since claimed", async () => {
       const harness = await startHooks();
