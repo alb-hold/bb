@@ -1178,7 +1178,7 @@ describe("frp hooks", () => {
     it("frees the run id when the pending claim that kept it is refused after its record closed", async () => {
       const gate = gatedAccounts();
       const harness = await startHooks(gate.accounts);
-      await connectFirst(harness);
+      const control = await connectFirst(harness);
 
       gate.hold("bee");
       gate.refuse("bee");
@@ -1191,6 +1191,8 @@ describe("frp hooks", () => {
         reject: true,
       });
 
+      control.destroy();
+      await sleep(50);
       gate.release("bee");
       expect(await reconnect).toMatchObject({ reject: true });
       expect(await loginAs(harness, "wasp", "run-1")).toMatchObject({
