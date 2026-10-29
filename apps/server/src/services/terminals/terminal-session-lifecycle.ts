@@ -23,6 +23,9 @@ import {
   getRetainedTerminalOutput,
   countTerminalSessions,
   listTerminalSessions,
+  forgetForwardedTerminalOutputSeq,
+  listThreadTerminalLatestOutputSeqs,
+  noteForwardedTerminalOutputSeq,
   markRetainedTerminalOutputExited,
   setDeviceHandoffAttentionMarker,
   upsertTerminalAttention,
@@ -1107,6 +1110,38 @@ export class TerminalSessionLifecycle {
       return;
     }
     this.terminalScreenStates.resize(session.id, session.cols, session.rows);
+  }
+
+  private setForwardedNextSeq(terminalId: string, nextSeq: number): void {
+    this.forwardedNextSeqByTerminalId.set(terminalId, nextSeq);
+    noteForwardedTerminalOutputSeq(terminalId, nextSeq - 1);
+  }
+
+  private forgetForwardedNextSeq(terminalId: string): void {
+    this.forwardedNextSeqByTerminalId.delete(terminalId);
+    forgetForwardedTerminalOutputSeq(terminalId);
+  }
+
+  latestThreadOutputSeqs(
+    threadId: string,
+    terminalId?: string,
+  ): Record<string, number> {
+    for (const session of listTerminalSessions(this.options.db, {
+      scope: { kind: "thread", threadId },
+      visible: false,
+    })) {
+      if (terminalId !== undefined && session.id !== terminalId) continue;
+      try {
+        this.flushRetainedOutput(session.id);
+      } catch {
+        continue;
+      }
+    }
+    return listThreadTerminalLatestOutputSeqs(
+      this.options.db,
+      threadId,
+      terminalId,
+    );
   }
 
   listTerminals(args: ListTerminalsArgs): TerminalSession[] {
@@ -3115,7 +3150,7 @@ export class TerminalSessionLifecycle {
       args.socket,
     );
     this.addOutputFlowClient(args.session.id, args.socket, args.sinceSeq);
-    this.forwardedNextSeqByTerminalId.set(
+    this.setForwardedNextSeq(
       args.session.id,
       Math.max(
         this.forwardedNextSeqByTerminalId.get(args.session.id) ?? 0,
@@ -3695,7 +3730,7 @@ export class TerminalSessionLifecycle {
       return;
     }
     this.clearDeviceHandoffAttention(exited.id);
-    this.forwardedNextSeqByTerminalId.delete(exited.id);
+    this.forgetForwardedNextSeq(exited.id);
     this.outputFlow.forgetTerminal(exited.id);
     this.flushRetainedOutput(exited.id);
     markRetainedTerminalOutputExited(
@@ -3831,7 +3866,7 @@ export class TerminalSessionLifecycle {
       args.session.hostId,
       Date.now(),
     );
-    this.forwardedNextSeqByTerminalId.delete(args.session.id);
+    this.forgetForwardedNextSeq(args.session.id);
     this.outputFlow.forgetTerminal(args.session.id);
     this.notifyTerminalSessionChanged(args.session);
     this.options.hub.sendTerminalClientMessage(args.session.id, {
@@ -4499,7 +4534,7 @@ export class TerminalSessionLifecycle {
     if (chunk.seq < nextSeq) {
       return;
     }
-    this.forwardedNextSeqByTerminalId.set(terminalId, chunk.seq + 1);
+    this.setForwardedNextSeq(terminalId, chunk.seq + 1);
     this.options.hub.sendTerminalClientMessage(terminalId, {
       type: "output",
       chunk: toTerminalOutputChunk(chunk),
@@ -4538,7 +4573,7 @@ export class TerminalSessionLifecycle {
       pending.socket,
     );
     this.addOutputFlowClient(current.id, pending.socket, message.nextSeq);
-    this.forwardedNextSeqByTerminalId.set(
+    this.setForwardedNextSeq(
       current.id,
       Math.max(
         this.forwardedNextSeqByTerminalId.get(current.id) ?? 0,
