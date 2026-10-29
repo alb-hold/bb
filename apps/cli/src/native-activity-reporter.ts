@@ -23,6 +23,7 @@ interface RetainedReport {
 type ClosureField = "closes" | "confirms";
 
 const CREDENTIAL_REFUSAL_LOG_INTERVAL_MS = 10 * 60_000;
+const ACTIVITY_REPORT_TIMEOUT_MS = 10_000;
 
 function credentialRefused(error: unknown): boolean {
   return (
@@ -45,6 +46,7 @@ export function createNativeActivityReporter(options: {
   currentCredential(): string | null;
   log?(event: string, fields: Record<string, number | string | null>): void;
   now?(): number;
+  requestTimeoutMs?: number;
   send(args: NativeTerminalReportActivityArgs): Promise<unknown>;
   threadId: string;
 }): NativeActivityReporter {
@@ -70,7 +72,9 @@ export function createNativeActivityReporter(options: {
     refusalLoggedAt = at;
     options.log?.("activity-credential-rejected", {
       fingerprint:
-        credential === null ? null : nativeToolCredentialFingerprint(credential),
+        credential === null
+          ? null
+          : nativeToolCredentialFingerprint(credential),
       rejected: refused,
     });
   };
@@ -80,7 +84,9 @@ export function createNativeActivityReporter(options: {
     options.log?.("activity-credential-accepted", {
       afterRejected: refused,
       fingerprint:
-        credential === null ? null : nativeToolCredentialFingerprint(credential),
+        credential === null
+          ? null
+          : nativeToolCredentialFingerprint(credential),
     });
     refused = 0;
     refusalLoggedAt = null;
@@ -111,6 +117,9 @@ export function createNativeActivityReporter(options: {
       includeConfirms: boolean,
       includeCloses: boolean,
     ): NativeTerminalReportActivityArgs => ({
+      signal: AbortSignal.timeout(
+        options.requestTimeoutMs ?? ACTIVITY_REPORT_TIMEOUT_MS,
+      ),
       threadId: options.threadId,
       ...(credential === null ? {} : { authorization: `Bearer ${credential}` }),
       state: next.state,

@@ -82,6 +82,56 @@ describe("native activity reporter", () => {
     expect(sent).toEqual([]);
   });
 
+  describe("a report the server never answers", () => {
+    function hanging(requestTimeoutMs: number) {
+      const states: string[] = [];
+      const reporter = createNativeActivityReporter({
+        currentCredential: () => "credential",
+        requestTimeoutMs,
+        send: (args) => {
+          states.push(args.state);
+          if (states.length > 1) return Promise.resolve({ ok: true });
+          return new Promise((_resolve, reject) => {
+            args.signal?.addEventListener("abort", () =>
+              reject(args.signal?.reason),
+            );
+          });
+        },
+        threadId: "thr_1",
+      });
+      return { reporter, states };
+    }
+
+    it("lets the next heartbeat go out instead of queueing it behind the stalled one", async () => {
+      const { reporter, states } = hanging(20);
+      reporter.report({ state: "working", prompt: null }, { transient: true });
+      reporter.report({ state: "working", prompt: null }, { transient: true });
+      const outcome = await Promise.race([
+        reporter.settled().then(() => "settled"),
+        new Promise((resolve) => setTimeout(() => resolve("stalled"), 500)),
+      ]);
+      expect(outcome).toBe("settled");
+      expect(states).toEqual(["working", "working"]);
+    });
+
+    it("sends every attempt with a deadline signal", async () => {
+      const signals: Array<AbortSignal | undefined> = [];
+      const reporter = createNativeActivityReporter({
+        currentCredential: () => null,
+        send: async (args) => {
+          signals.push(args.signal);
+          return { ok: true };
+        },
+        threadId: "thr_1",
+      });
+      reporter.report({ state: "working", prompt: null });
+      await reporter.settled();
+      expect(signals).toHaveLength(1);
+      expect(signals[0]).toBeInstanceOf(AbortSignal);
+      expect(signals[0]?.aborted).toBe(false);
+    });
+  });
+
   describe("a report the server rejects for its credential", () => {
     const rejection = () =>
       new BbHttpError({
@@ -699,12 +749,7 @@ describe("native activity reporter", () => {
       expect(calls).toHaveLength(3);
       reporter.report(working);
       await reporter.settled();
-      expect(closesOf(calls)).toEqual([
-        [],
-        ["q1", "q2"],
-        undefined,
-        undefined,
-      ]);
+      expect(closesOf(calls)).toEqual([[], ["q1", "q2"], undefined, undefined]);
       expect(calls.at(-1)?.state).toBe("working");
     });
 
