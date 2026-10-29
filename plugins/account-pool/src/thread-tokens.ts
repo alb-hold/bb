@@ -185,6 +185,7 @@ export class ThreadTokenStore {
   >();
   private tail: Promise<void> = Promise.resolve();
   private readonly pendingPriorDrops = new WeakSet<object>();
+  private changeListener: (() => void) | null = null;
 
   constructor(
     private readonly directory: string,
@@ -195,6 +196,31 @@ export class ThreadTokenStore {
     private readonly warn: (message: string) => void = () => {},
     private readonly deletions?: DeletionRecords,
   ) {}
+
+  onCredentialsChanged(listener: () => void): void {
+    this.changeListener = listener;
+  }
+
+  private credentialsChanged(): void {
+    try {
+      this.changeListener?.();
+    } catch {
+      return;
+    }
+  }
+
+  async activeTokenDigests(hostId: string): Promise<string[]> {
+    const digests = new Set<string>();
+    for (const record of this.routes.values()) {
+      if (record.hostId !== hostId || record.provider !== "claude") continue;
+      if (await this.isArchived(record.threadId)) continue;
+      if (!this.expired(record)) digests.add(record.tokenDigest);
+      for (const prior of record.priors ?? [])
+        if (!this.credentialExpired({ record, prior }))
+          digests.add(prior.tokenDigest);
+    }
+    return [...digests];
+  }
 
   async initialize(hostIds: readonly string[]): Promise<void> {
     await fs.mkdir(this.directory, { recursive: true, mode: 0o700 });
@@ -532,6 +558,7 @@ export class ThreadTokenStore {
       this.routes.set(key, record);
       indexCredential(this.tokenIndex, record);
       await this.reclaimDead(record);
+      this.credentialsChanged();
       return record.token;
     });
   }
@@ -1081,6 +1108,7 @@ export class ThreadTokenStore {
     const version = this.archiveVersion(threadId) + 1;
     this.archiveVersions.set(threadId, version);
     if (suspends) this.lastSuspensions.set(threadId, version);
+    this.credentialsChanged();
     return version;
   }
 
@@ -1710,6 +1738,7 @@ export class ThreadTokenStore {
       const index = use.nested ? this.nestedTokenIndex : this.tokenIndex;
       for (const prior of record.priors ?? []) index.delete(prior.tokenDigest);
       record.priors = undefined;
+      this.credentialsChanged();
       this.pendingPriorDrops.add(record);
       await this.persistCredential(
         use.nested ? this.nestedFile(use.record) : this.file(use.record),

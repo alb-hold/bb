@@ -52,6 +52,13 @@ import type {
 } from "./store.js";
 import type { ThreadTokenStore, ThreadRoute } from "./thread-tokens.js";
 import { parentRequestHeaders, type ParentPool } from "./parent-pool.js";
+import {
+  OAUTH_PROXY_HOST,
+  TARGET_HOST_HEADER,
+  TARGET_METHOD_HEADER,
+  TARGET_PATH_HEADER,
+  classifyOAuthProxyRequest,
+} from "./oauth-proxy-policy.js";
 
 const ROUTE = "/api/v1/plugins/account-pool/http";
 const DEFAULT_REFRESH_URL = "https://platform.claude.com/v1/oauth/token";
@@ -67,6 +74,16 @@ const MAX_FAILURE_DETAIL_BYTES = 1_024;
 const FAILURE_DISPOSAL_TIMEOUT_MS = 250;
 const AFFINITY_IDLE_TTL_MS = 65 * 60 * 1_000;
 const MAX_AFFINITY_BINDINGS = 4_096;
+const OAUTH_PROXY_MAX_BODY_BYTES = 32 * 1_024 * 1_024;
+const OAUTH_PROXY_REQUEST_HEADERS = new Set([
+  "accept",
+  "content-type",
+  "content-encoding",
+  "user-agent",
+  "anthropic-beta",
+  "x-app",
+]);
+const OAUTH_BETA_FLAG = "oauth-2025-04-20";
 const DROPPED_RESPONSE_HEADERS = new Set([
   "content-encoding",
   "content-length",
@@ -171,6 +188,33 @@ interface FailureSummary {
 }
 
 class UpstreamConnectionError extends Error {}
+
+async function readBoundedBody(
+  request: Request,
+  limit: number,
+): Promise<Uint8Array | "too-large"> {
+  if (request.body === null) return new Uint8Array(0);
+  const reader = request.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > limit) {
+      await reader.cancel().catch(() => undefined);
+      return "too-large";
+    }
+    chunks.push(value);
+  }
+  const body = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) {
+    body.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return body;
+}
 
 export class AccountPoolHub {
   private accepting = false;
@@ -312,6 +356,186 @@ export class AccountPoolHub {
       hostId,
       threadRoute,
     );
+  }
+
+  async handleOAuthProxy(request: Request): Promise<Response> {
+    const adapter = this.adapter("claude");
+    const { threadRoute, hostId } = await this.authenticateRoute(
+      request,
+      "claude",
+    );
+    if (hostId === null)
+      return adapter.errorResponse(401, "Invalid Account Pooler bearer token.");
+    if (!this.accepting)
+      return adapter.errorResponse(
+        503,
+        "Account Pooler is not accepting requests.",
+      );
+    const method = request.headers.get(TARGET_METHOD_HEADER) ?? "";
+    const target = request.headers.get(TARGET_PATH_HEADER) ?? "";
+    if (
+      threadRoute === null ||
+      this.options.getParentRoute() !== null ||
+      request.headers.get(TARGET_HOST_HEADER) !== OAUTH_PROXY_HOST ||
+      classifyOAuthProxyRequest(method, target).kind !== "forward"
+    )
+      return adapter.errorResponse(
+        403,
+        "This Artifact request is not allowed through the Account Pooler.",
+      );
+    const declared = request.headers.get("content-length");
+    if (declared !== null && !/^\d+$/u.test(declared.trim()))
+      return adapter.errorResponse(400, "Invalid Content-Length.");
+    if (declared !== null && Number(declared) > OAUTH_PROXY_MAX_BODY_BYTES)
+      return adapter.errorResponse(413, "The Artifact request is too large.");
+    const account = await this.oauthAccountForThread(threadRoute, hostId);
+    if (account === null)
+      return adapter.errorResponse(
+        403,
+        "Artifacts need a subscription account in the Account Pooler.",
+      );
+    const body =
+      method === "GET" || method === "DELETE"
+        ? null
+        : await readBoundedBody(request, OAUTH_PROXY_MAX_BODY_BYTES);
+    if (body === "too-large")
+      return adapter.errorResponse(413, "The Artifact request is too large.");
+    const url =
+      this.options.getSettings().anthropicUpstreamBaseUrl.replace(/\/+$/u, "") +
+      target;
+    const { controller, release } = this.trackRequest(request);
+    let handedOff = false;
+    try {
+      let secret = await abortable(
+        this.freshSecret(account, adapter, { kind: "normal" }),
+        controller.signal,
+      );
+      for (let attempt = 0; ; attempt += 1) {
+        if (secret.kind !== "oauth")
+          return adapter.errorResponse(
+            403,
+            "Artifacts need a subscription account in the Account Pooler.",
+          );
+        const headers = new Headers();
+        for (const [name, value] of request.headers) {
+          if (
+            OAUTH_PROXY_REQUEST_HEADERS.has(name) ||
+            name.startsWith("x-frame-")
+          )
+            headers.set(name, value);
+        }
+        const beta = headers.get("anthropic-beta");
+        if (beta === null) headers.set("anthropic-beta", OAUTH_BETA_FLAG);
+        else if (
+          !beta.split(",").some((flag) => flag.trim() === OAUTH_BETA_FLAG)
+        )
+          headers.set("anthropic-beta", `${beta},${OAUTH_BETA_FLAG}`);
+        headers.set("authorization", `Bearer ${secret.accessToken}`);
+        let response: Response;
+        try {
+          response = await this.options.fetch(url, {
+            method,
+            headers,
+            ...(body === null ? {} : { body: body as BodyInit }),
+            redirect: "manual",
+            signal: controller.signal,
+          });
+        } catch (cause) {
+          if (!controller.signal.aborted)
+            this.options.onUpstreamError("claude", cause);
+          return adapter.errorResponse(
+            502,
+            "Account Pooler could not reach Anthropic.",
+          );
+        }
+        if (response.status === 401 && attempt === 0) {
+          await response.body?.cancel().catch(() => undefined);
+          try {
+            secret = await abortable(
+              this.freshSecret(account, adapter, {
+                kind: "rejected",
+                accessToken: secret.accessToken,
+              }),
+              controller.signal,
+            );
+          } catch (error) {
+            if (error instanceof TransientOAuthRefreshError)
+              return adapter.errorResponse(503, error.message);
+            return adapter.errorResponse(
+              401,
+              "Anthropic rejected the pooled account's sign-in.",
+            );
+          }
+          continue;
+        }
+        const forwarded = new Headers(response.headers);
+        forwarded.delete("set-cookie");
+        handedOff = true;
+        return this.clientResponse({
+          response: new Response(response.body, {
+            status: response.status,
+            statusText: response.statusText,
+            headers: forwarded,
+          }),
+          controller,
+          release,
+        });
+      }
+    } catch (error) {
+      if (request.signal.aborted)
+        return adapter.errorResponse(
+          499,
+          "Account Pooler request was canceled.",
+        );
+      throw error;
+    } finally {
+      if (!handedOff) release();
+    }
+  }
+
+  private async oauthAccountForThread(
+    threadRoute: ThreadRoute,
+    hostId: string,
+  ): Promise<Account | null> {
+    const claudeAccounts = (await this.options.accounts.list()).filter(
+      (account) => account.provider === "claude" && account.enabled,
+    );
+    if (threadRoute.accountId !== null && threadRoute.accountId !== undefined) {
+      const pinned = claudeAccounts.find(
+        (account) => account.id === threadRoute.accountId,
+      );
+      return pinned?.kind === "oauth" ? pinned : null;
+    }
+    const oauth = claudeAccounts.filter((account) => account.kind === "oauth");
+    const byId = new Map(oauth.map((account) => [account.id, account]));
+    let bound: Account | null = null;
+    let boundAt = -1;
+    for (const [key, binding] of this.affinityBindings) {
+      const account = byId.get(binding.accountId);
+      if (account === undefined || binding.lastUsedAt <= boundAt) continue;
+      let parts: unknown;
+      try {
+        parts = JSON.parse(key);
+      } catch {
+        continue;
+      }
+      if (
+        Array.isArray(parts) &&
+        parts[0] === "claude" &&
+        parts[1] === hostId &&
+        parts[2] === threadRoute.threadId
+      ) {
+        bound = account;
+        boundAt = binding.lastUsedAt;
+      }
+    }
+    if (bound !== null) return bound;
+    const active = this.activeAccounts.get("claude");
+    const activeAccount =
+      active === undefined ? undefined : byId.get(active.accountId);
+    if (activeAccount !== undefined) return activeAccount;
+    const next = (await this.previewAccountChoice("claude")).nextAccountId;
+    return (next === null ? undefined : byId.get(next)) ?? oauth[0] ?? null;
   }
 
   private trackRequest(
