@@ -1,4 +1,59 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { createNativeTerminalThread, createTerminalSession, setNativeTerminalThreadTerminal, listNativeParentNotices, getThread } from "@bb/db";
+import { seedThread, seedThreadFixture } from "../../helpers/seed.js";
+import { withTestHarness, type TestAppHarness } from "../../helpers/test-app.js";
+import { recordNativeTerminalActivity } from "../../../src/services/threads/native-terminal-activity.js";
+
+function nativeChildFixture(harness: TestAppHarness, policy: "auto" | "off" | "stuck") {
+  const { thread: parent, host, session, project, environment } = seedThreadFixture(harness, { thread: { status: "active" } });
+  const child = seedThread(harness.deps, { projectId: project.id, environmentId: environment.id, parentThreadId: parent.id, parentNotifications: policy, title: "Native worker" });
+  for (const thread of [parent, child]) {
+    createNativeTerminalThread(harness.db, { threadId: thread.id, providerId: thread.providerId, nativeSessionId: `native-${thread.id}`, initialPrompt: null, initialImages: [], model: null });
+    const terminal = createTerminalSession(harness.db, { cols: 80, rows: 24, environmentId: environment.id, hostId: host.id, daemonSessionId: session.id, initialCwd: "/tmp", status: "running", threadId: thread.id, title: "Native" });
+    setNativeTerminalThreadTerminal(harness.db, { threadId: thread.id, terminalSessionId: terminal.id });
+  }
+  return { parent, child };
+}
+
+afterEach(() => vi.useRealTimers());
+
+describe("native child turn notifications", () => {
+  it.each(["auto", "off", "stuck"] as const)("respects %s and reports each completed native turn once", async (policy) => {
+    await withTestHarness(async (harness) => {
+      const { parent, child } = nativeChildFixture(harness, policy);
+      vi.useFakeTimers();
+      const report = (state: "working" | "idle") => recordNativeTerminalActivity(harness.deps, { threadId: child.id, confirms: true, state });
+      report("idle");
+      await vi.advanceTimersByTimeAsync(2_100);
+      expect(listNativeParentNotices(harness.db, parent.id)).toHaveLength(0);
+      report("working");
+      report("working");
+      expect(getThread(harness.db, child.id)?.status).toBe("active");
+      report("idle");
+      await vi.advanceTimersByTimeAsync(2_100);
+      const notices = listNativeParentNotices(harness.db, parent.id);
+      expect(notices).toHaveLength(policy === "auto" ? 1 : 0);
+      if (policy === "auto") expect(notices[0]?.text).toContain("Native worker turn ended.");
+      report("idle");
+      await vi.advanceTimersByTimeAsync(31_000);
+      report("idle");
+      await vi.advanceTimersByTimeAsync(2_100);
+      expect(listNativeParentNotices(harness.db, parent.id)).toHaveLength(policy === "auto" ? 1 : 0);
+    });
+  });
+
+  it.each(["auto", "stuck", "off"] as const)("preserves native question attention notifications for %s", async (policy) => {
+    await withTestHarness(async (harness) => {
+      const { parent, child } = nativeChildFixture(harness, policy);
+      vi.useFakeTimers();
+      recordNativeTerminalActivity(harness.deps, { threadId: child.id, confirms: true, state: "waiting", questions: [{ id: "decision", prompt: "Which target should I use?" }] });
+      await vi.advanceTimersByTimeAsync(2_100);
+      const notices = listNativeParentNotices(harness.db, parent.id);
+      expect(notices).toHaveLength(policy === "off" ? 0 : 1);
+      if (policy !== "off") expect(notices[0]?.text).toContain("Which target should I use?");
+    });
+  });
+});
 import {
   buildChildThreadNeedsAttentionInput,
   buildChildThreadTurnStatusBatchInput,
