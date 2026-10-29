@@ -4,7 +4,7 @@ import { seedThread, seedThreadFixture } from "../../helpers/seed.js";
 import { withTestHarness, type TestAppHarness } from "../../helpers/test-app.js";
 import { recordNativeTerminalActivity } from "../../../src/services/threads/native-terminal-activity.js";
 
-function nativeChildFixture(harness: TestAppHarness, policy: "auto" | "off" | "stuck") {
+async function nativeChildFixture(harness: TestAppHarness, policy: "auto" | "off" | "stuck") {
   const { thread: parent, host, session, project, environment } = seedThreadFixture(harness, { thread: { status: "active" } });
   const child = seedThread(harness.deps, { projectId: project.id, environmentId: environment.id, parentThreadId: parent.id, parentNotifications: policy, title: "Native worker" });
   for (const thread of [parent, child]) {
@@ -12,6 +12,8 @@ function nativeChildFixture(harness: TestAppHarness, policy: "auto" | "off" | "s
     if (thread.id === parent.id) continue;
     const terminal = createTerminalSession(harness.db, { cols: 80, rows: 24, environmentId: environment.id, hostId: host.id, daemonSessionId: session.id, initialCwd: "/tmp", status: "running", threadId: thread.id, title: "Native" });
     setNativeTerminalThreadTerminal(harness.db, { threadId: thread.id, terminalSessionId: terminal.id });
+    harness.deps.terminalSessions.handleDaemonTerminalMessage({ hostId: host.id, sessionId: session.id, message: { type: "terminal.output", terminalId: terminal.id, chunk: { seq: 0, dataBase64: Buffer.from("\u001b[2J").toString("base64") } } });
+    await harness.deps.terminalSessions.readTerminalScreen({ terminalId: terminal.id, query: {} });
   }
   return { parent, child, host, session };
 }
@@ -21,11 +23,11 @@ afterEach(() => vi.useRealTimers());
 describe("native child turn notifications", () => {
   it("includes the last six nonempty visible screen lines", async () => {
     await withTestHarness(async (harness) => {
-      const { parent, child, host, session } = nativeChildFixture(harness, "auto");
+      const { parent, child, host, session } = await nativeChildFixture(harness, "auto");
       const terminalId = getNativeTerminalThread(harness.db, child.id)?.terminalSessionId;
       if (!terminalId) throw new Error("Missing child terminal");
       recordNativeTerminalActivity(harness.deps, { threadId: child.id, confirms: true, state: "working" });
-      harness.deps.terminalSessions.handleDaemonTerminalMessage({ hostId: host.id, sessionId: session.id, message: { type: "terminal.output", terminalId, chunk: { seq: 0, dataBase64: Buffer.from("Old output\r\n1\r\n2\r\n3\r\n4\r\n5\r\nNeed target selection\r\n").toString("base64") } } });
+      harness.deps.terminalSessions.handleDaemonTerminalMessage({ hostId: host.id, sessionId: session.id, message: { type: "terminal.output", terminalId, chunk: { seq: 1, dataBase64: Buffer.from("Old output\r\n1\r\n2\r\n3\r\n4\r\n5\r\nNeed target selection\r\n").toString("base64") } } });
       await harness.deps.terminalSessions.readTerminalScreen({ terminalId, query: {} });
       vi.useFakeTimers();
       recordNativeTerminalActivity(harness.deps, { threadId: child.id, confirms: true, state: "idle" });
@@ -39,7 +41,7 @@ describe("native child turn notifications", () => {
 
   it("notifies exactly once when an active native terminal exits", async () => {
     await withTestHarness(async (harness) => {
-      const { parent, child, host, session } = nativeChildFixture(harness, "auto");
+      const { parent, child, host, session } = await nativeChildFixture(harness, "auto");
       const terminalId = getNativeTerminalThread(harness.db, child.id)?.terminalSessionId;
       if (!terminalId) throw new Error("Missing child terminal");
       vi.useFakeTimers();
@@ -57,7 +59,7 @@ describe("native child turn notifications", () => {
 
   it.each(["auto", "off", "stuck"] as const)("respects %s and reports each completed native turn once", async (policy) => {
     await withTestHarness(async (harness) => {
-      const { parent, child } = nativeChildFixture(harness, policy);
+      const { parent, child } = await nativeChildFixture(harness, policy);
       vi.useFakeTimers();
       const report = (state: "working" | "idle") => recordNativeTerminalActivity(harness.deps, { threadId: child.id, confirms: true, state });
       report("idle");
@@ -81,7 +83,7 @@ describe("native child turn notifications", () => {
 
   it.each(["auto", "stuck", "off"] as const)("preserves native question attention notifications for %s", async (policy) => {
     await withTestHarness(async (harness) => {
-      const { parent, child } = nativeChildFixture(harness, policy);
+      const { parent, child } = await nativeChildFixture(harness, policy);
       vi.useFakeTimers();
       recordNativeTerminalActivity(harness.deps, { threadId: child.id, confirms: true, state: "waiting", questions: [{ id: "decision", prompt: "Which target should I use?" }] });
       await vi.advanceTimersByTimeAsync(2_100);
