@@ -168,9 +168,10 @@ Making your repo work with bb:
   setup without a recorded hook operation. A teardown hook that never started
   still runs. A daemon reboot alone never proves a detached hook has stopped.
 
-  Recovery currently requires Linux. It refuses while a setup/hook is still
-  active, while any process owned by the daemon UID has its cwd or a mapped
-  file path under the workspace, or while any such process cannot be inspected.
+  Recovery requires host process inspection (Linux `/proc` or macOS `lsof`). It
+  refuses while a setup/hook is still active, while any process owned by the
+  daemon UID has its cwd or an open file path under the workspace, or while any
+  such process cannot be inspected.
   The guard compares paths, including deleted paths, rather than shared inode
   identity. It does not kill processes. Processes owned by other users require
   separate inspection before recovery. Stop or move your own workspace users

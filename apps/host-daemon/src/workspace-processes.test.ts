@@ -1,6 +1,11 @@
+import { execHostFile } from "@bb/process-utils";
 import { readFile, readdir, readlink, realpath, stat } from "node:fs/promises";
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { inspectWorkspaceProcesses } from "./workspace-processes.js";
+
+vi.mock("@bb/process-utils", () => ({
+  execHostFile: vi.fn(),
+}));
 
 vi.mock("node:fs/promises", () => ({
   readFile: vi.fn(),
@@ -9,6 +14,7 @@ vi.mock("node:fs/promises", () => ({
   realpath: vi.fn(),
   stat: vi.fn(),
 }));
+
 afterEach(() => vi.resetAllMocks());
 
 it.skipIf(process.platform !== "linux")(
@@ -83,7 +89,7 @@ it.skipIf(process.platform !== "linux")(
   },
 );
 
-it.skipIf(process.platform === "linux")(
+it.skipIf(process.platform === "linux" || process.platform === "darwin")(
   "refuses recovery where process inspection is unsupported",
   async () => {
     expect(await inspectWorkspaceProcesses("/workspace")).toEqual({
@@ -118,3 +124,96 @@ it.skipIf(process.platform !== "linux").each([
     });
   },
 );
+
+describe("darwin workspace process inspection", () => {
+  let platform: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    platform = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+  });
+
+  afterEach(() => {
+    platform.mockRestore();
+  });
+
+  it.each([
+    {
+      name: "cwd inside workspace",
+      lsof: "p501\nfcwd\nn/ws/project\n",
+      workspace: "/ws/project",
+      paths: { "/ws/project": "/ws/project" },
+      expected: { supported: true, pids: [501], unreadablePids: [] },
+    },
+    {
+      name: "open file inside workspace",
+      lsof: "p502\nf1\nn/ws/project/data.txt\n",
+      workspace: "/ws/project",
+      paths: { "/ws/project/data.txt": "/ws/project/data.txt" },
+      expected: { supported: true, pids: [502], unreadablePids: [] },
+    },
+    {
+      name: "outside workspace",
+      lsof: "p503\nfcwd\nn/tmp/other\n",
+      workspace: "/ws/project",
+      paths: { "/tmp/other": "/tmp/other" },
+      expected: { supported: true, pids: [], unreadablePids: [] },
+    },
+    {
+      name: "prefix collision",
+      lsof: "p504\nfcwd\nn/a/bc/file\n",
+      workspace: "/a/b",
+      paths: { "/a/bc/file": "/a/bc/file", "/a/b": "/a/b" },
+      expected: { supported: true, pids: [], unreadablePids: [] },
+    },
+    {
+      name: "tmp symlink alias",
+      lsof: "p505\nfcwd\nn/tmp/ws\n",
+      workspace: "/private/tmp/ws",
+      paths: { "/tmp/ws": "/private/tmp/ws", "/private/tmp/ws": "/private/tmp/ws" },
+      expected: { supported: true, pids: [505], unreadablePids: [] },
+    },
+    {
+      name: "daemon pid excluded",
+      lsof: `p${process.pid}\nfcwd\nn/ws/project\np506\nfcwd\nn/ws/project\n`,
+      workspace: "/ws/project",
+      paths: { "/ws/project": "/ws/project" },
+      expected: { supported: true, pids: [506], unreadablePids: [] },
+    },
+    {
+      name: "unreadable path",
+      lsof: "p507\nf1\nn/ws/project/secret\n",
+      workspace: "/ws/project",
+      paths: { "/ws/project": "/ws/project" },
+      realpathError: Object.assign(new Error("denied"), { code: "EACCES" }),
+      realpathErrorPath: "/ws/project/secret",
+      expected: { supported: true, pids: [], unreadablePids: [507] },
+    },
+  ])("$name", async ({ lsof, workspace, paths, realpathError, realpathErrorPath, expected }) => {
+    vi.mocked(execHostFile).mockResolvedValue({
+      stdout: lsof,
+      stderr: "",
+    } as never);
+    vi.mocked(realpath).mockImplementation(async (value) => {
+      const key = String(value);
+      const mapped = (paths as Record<string, string | undefined>)[key];
+      if (mapped !== undefined) return mapped;
+      if (
+        realpathError !== undefined &&
+        realpathErrorPath !== undefined &&
+        key === realpathErrorPath
+      )
+        throw realpathError;
+      return key;
+    });
+    expect(await inspectWorkspaceProcesses(workspace)).toEqual(expected);
+  });
+
+  it("returns unsupported when lsof fails", async () => {
+    vi.mocked(execHostFile).mockRejectedValue(new Error("lsof failed"));
+    expect(await inspectWorkspaceProcesses("/ws/project")).toEqual({
+      supported: false,
+      pids: [],
+      unreadablePids: [],
+    });
+  });
+});
