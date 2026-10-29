@@ -76,6 +76,7 @@ import {
 } from "../threads/queued-message-dispatch.js";
 import { releaseOrphanedQueuedMessageDispatchClaims } from "../threads/queued-messages.js";
 import { deliverLegacyDeferredThreadMessages } from "../threads/legacy-deferred-messages.js";
+import { sweepNativeParentNotices } from "../threads/native-parent-notices.js";
 import { sweepNativeThreadStatus } from "../threads/native-thread-status.js";
 import { runEventLoopWork, runEventLoopWorkSync } from "./event-loop-work.js";
 
@@ -655,6 +656,12 @@ const PERIODIC_SWEEP_JOBS: PeriodicSweepJob[] = [
   {
     cadenceMs: 0,
     category: "durable-intent-retry",
+    name: "native-parent-notices",
+    run: sweepNativeParentNotices,
+  },
+  {
+    cadenceMs: 0,
+    category: "durable-intent-retry",
     name: "project-deletion",
     run: runProjectDeletionSweep,
   },
@@ -699,9 +706,7 @@ const PERIODIC_SWEEP_JOBS: PeriodicSweepJob[] = [
 export async function runStartupRecoverySweep(
   deps: LoggedPendingInteractionWorkSessionDeps,
 ): Promise<void> {
-  const releasedClaims = releaseOrphanedQueuedMessageDispatchClaims(
-    deps,
-  );
+  const releasedClaims = releaseOrphanedQueuedMessageDispatchClaims(deps);
   if (releasedClaims > 0) {
     deps.logger.info(
       { releasedClaims },

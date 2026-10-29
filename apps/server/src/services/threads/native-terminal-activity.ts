@@ -4,7 +4,7 @@ import {
   getNativeTerminalThread,
   getPendingInteractionByProviderRequest,
   getThread,
-  clearThreadRowState,
+  clearThreadRowStateAtOutputSeqs,
   retagInterruptedPendingInteraction,
   stampNativeTerminalThreadActivity,
   stampNativeTerminalThreadToolCall,
@@ -580,7 +580,7 @@ export function clearNativeTerminalStateOnExit(
   const record = getNativeTerminalThread(deps.db, session.threadId);
   if (record === null || record.terminalSessionId !== session.id) return;
   interruptNativeTerminalQuestions(deps, session.threadId);
-  clearThreadRowState(deps.db, session.threadId);
+  clearThreadRowStateAtOutputSeqs(deps.db, session.threadId);
   deps.hub.notifyThread(session.threadId, ["status-changed"]);
   if (session.closeReason === "process-exit") {
     settleNativeTerminalTurn(deps, session.threadId);

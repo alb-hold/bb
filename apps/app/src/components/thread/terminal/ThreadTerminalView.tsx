@@ -503,7 +503,11 @@ interface ThreadTerminalViewProps {
   onSelectionAddToChat?: (text: string) => void;
   onSessionChange?: (session: TerminalSession) => void;
   onTitleChange?: TerminalTitleChangeHandler;
-  onProgressChange?: (progress: number | null) => void;
+  onProgressChange?: (
+    progress: number | null,
+    outputSeq?: number,
+    terminalId?: string,
+  ) => void;
   onCwdChange?: (cwd: string) => void;
   onUserInput?: () => void;
   session: TerminalSession;
@@ -1585,7 +1589,9 @@ export function ThreadTerminalView({
         return buffer ? buffer.baseY + buffer.cursorY : 0;
       },
     });
+    let parsingOutputSequence: number | null = null;
     const recordOutputStart = (sequence: number) => {
+      parsingOutputSequence = sequence;
       const outputAnchor = outputLineAnchorTracker.recordOutputStart(sequence);
       if (!outputAnchor) return;
       outputLineAnchors.push(outputAnchor);
@@ -1794,7 +1800,11 @@ export function ThreadTerminalView({
         (payload) => {
           const progress = parseTerminalProgressOsc(payload);
           if (progress === undefined) return false;
-          onProgressChangeRef.current?.(progress);
+          onProgressChangeRef.current?.(
+            progress,
+            parsingOutputSequence ?? undefined,
+            session.id,
+          );
           return true;
         },
       );
@@ -2446,6 +2456,7 @@ export function ThreadTerminalView({
           replayPreview = null;
           activeTerminal.reset();
           outputBoundaries.reset();
+          parsingOutputSequence = null;
           outputLineAnchorTracker.reset();
           writeTerminalStatus({
             terminal: activeTerminal,

@@ -1,7 +1,9 @@
 import {
   createNativeTerminalThread,
+  getNativeParentNoticeDeliveredAt,
   getNativeTerminalThread,
   getThread,
+  listNativeParentNotices,
 } from "@bb/db";
 import {
   encodeClientTurnRequestIdNumber,
@@ -16,6 +18,8 @@ import {
 } from "@bb/host-daemon-contract";
 import { threadResponseSchema } from "@bb/server-contract";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { runPeriodicSweeps } from "../../src/services/system/periodic-sweeps.js";
+import { enqueueNativeParentNotice } from "../../src/services/threads/native-parent-notices.js";
 import { recordNativeTerminalActivity } from "../../src/services/threads/native-terminal-activity.js";
 import { internalAuthHeaders } from "../helpers/commands.js";
 import { readJson } from "../helpers/json.js";
@@ -584,5 +588,144 @@ describe("child notices for a native terminal parent", () => {
         message.includes("terminal.input"),
       ),
     ).toEqual([]);
+  }, 30_000);
+});
+
+describe("child notices survive a server restart", () => {
+  function enqueueAsPreviousServer(
+    fixture: Fixture,
+    parentThreadId: string,
+    text: string,
+  ): void {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      enqueueNativeParentNotice(fixture.harness.deps, {
+        input: [{ type: "text", text, mentions: [] }],
+        parentThreadId,
+      });
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  }
+
+  function runSweeps(fixture: Fixture): Promise<void> {
+    return runPeriodicSweeps({
+      ...fixture.harness.deps,
+      pluginSchedules: fixture.harness.pluginService,
+      plugins: fixture.harness.pluginService,
+    });
+  }
+
+  async function restartServer(fixture: Fixture): Promise<Fixture> {
+    const harness = await createTestAppHarness({ db: fixture.harness.db });
+    harnesses.push(harness);
+    const sentMessages: string[] = [];
+    const socket: FakeDaemonSocket = {
+      close: vi.fn(),
+      send: vi.fn((data: string) => {
+        sentMessages.push(data);
+      }),
+      sentMessages,
+    };
+    harness.hub.registerDaemon(fixture.sessionId, fixture.hostId, socket);
+    return { ...fixture, harness, socket };
+  }
+
+  it("redelivers a notice queued before the restart exactly once", async () => {
+    const before = await createFixture();
+    const { open, thread } = await openRunningClaudeParent(before);
+    enqueueAsPreviousServer(
+      before,
+      thread.id,
+      "@thread:thr_child failed.\n\nError details:\n- @thread:thr_child: out of credit",
+    );
+    expect(listNativeParentNotices(before.harness.db, thread.id)).toHaveLength(
+      1,
+    );
+    await sleep(300);
+    expect(before.socket.sentMessages.join("")).not.toContain("terminal.input");
+
+    const after = await restartServer(before);
+    const tui = startFakeClaudeTui(after, open.terminalId, EMPTY_PROMPT_SCREEN);
+    try {
+      await runSweeps(after);
+      await waitFor(() => tui.pastes().length > 0, 20_000);
+      await runSweeps(after);
+      await sleep(1_500);
+      await runSweeps(after);
+      await sleep(500);
+      const [notice, ...rest] = tui.pastes();
+      expect(rest).toEqual([]);
+      expect(notice?.startsWith("[bb notice]")).toBe(true);
+      expect(notice).toContain("out of credit");
+      expect(notice).toMatch(NOTICE_TAIL);
+      expect(tui.inputs().filter((input) => input === "\r")).toHaveLength(1);
+      expect(listNativeParentNotices(after.harness.db, thread.id)).toEqual([]);
+      expect(
+        getNativeParentNoticeDeliveredAt(after.harness.db, thread.id),
+      ).not.toBeNull();
+      expect(before.socket.sentMessages.join("")).not.toContain(
+        "terminal.input",
+      );
+    } finally {
+      tui.stop();
+    }
+  }, 60_000);
+
+  it("keeps a held notice across the restart until the parent is idle", async () => {
+    const before = await createFixture();
+    const { open, thread } = await openRunningClaudeParent(before);
+    recordNativeTerminalActivity(before.harness.deps, {
+      confirms: false,
+      state: "working",
+      threadId: thread.id,
+    });
+    enqueueAsPreviousServer(before, thread.id, "@thread:thr_child completed.");
+
+    const after = await restartServer(before);
+    const tui = startFakeClaudeTui(after, open.terminalId, EMPTY_PROMPT_SCREEN);
+    try {
+      await runSweeps(after);
+      await sleep(4_500);
+      expect(tui.inputs()).toEqual([]);
+      expect(listNativeParentNotices(after.harness.db, thread.id)).toHaveLength(
+        1,
+      );
+      recordNativeTerminalActivity(after.harness.deps, {
+        confirms: false,
+        state: "idle",
+        threadId: thread.id,
+      });
+      await waitFor(() => tui.pastes().length > 0, 20_000);
+      await sleep(1_000);
+      expect(tui.pastes()).toHaveLength(1);
+      expect(tui.pastes()[0]).toContain("@thread:thr_child completed.");
+    } finally {
+      tui.stop();
+    }
+  }, 60_000);
+
+  it("drops notices of a parent that was archived while the server was down", async () => {
+    const before = await createFixture();
+    const { open, thread } = await openRunningClaudeParent(before);
+    enqueueAsPreviousServer(before, thread.id, "@thread:thr_child failed.");
+    before.harness.db.$client
+      .prepare("UPDATE threads SET archived_at = ? WHERE id = ?")
+      .run(Date.now(), thread.id);
+
+    const after = await restartServer(before);
+    const tui = startFakeClaudeTui(after, open.terminalId, EMPTY_PROMPT_SCREEN);
+    try {
+      await runSweeps(after);
+      await waitFor(
+        () => listNativeParentNotices(after.harness.db, thread.id).length === 0,
+        10_000,
+      );
+      await sleep(500);
+      expect(tui.inputs()).toEqual([]);
+    } finally {
+      tui.stop();
+    }
   }, 30_000);
 });

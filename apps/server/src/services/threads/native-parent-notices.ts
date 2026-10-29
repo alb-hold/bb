@@ -1,4 +1,15 @@
-import { getThread, isNativeTerminalThread } from "@bb/db";
+import {
+  deleteNativeParentNotices,
+  getNativeParentNoticeDeliveredAt,
+  getThread,
+  insertNativeParentNotice,
+  isNativeTerminalThread,
+  listNativeParentNotices,
+  listParentsWithNativeParentNotices,
+  markNativeParentNoticesBlocked,
+  recordNativeParentNoticeDelivery,
+  type NativeParentNoticeRow,
+} from "@bb/db";
 import type { PromptInput } from "@bb/domain";
 import { ApiError } from "../../errors.js";
 import type {
@@ -21,17 +32,9 @@ const SYSTEM_MESSAGE_PREFIX = /^\[bb system\]\s*/u;
 
 type NativeParentNoticeDeps = LoggedPendingInteractionWorkSessionDeps;
 
-interface PendingNativeParentNotice {
-  blockedSince: number | null;
-  childThreadIds: string[];
-  text: string;
-}
-
 interface NativeParentMailbox {
   attempting: boolean;
   deps: NativeParentNoticeDeps;
-  entries: PendingNativeParentNotice[];
-  lastDeliveredAt: number | null;
   timer: ReturnType<typeof setTimeout> | null;
 }
 
@@ -49,16 +52,27 @@ function mailboxes(hub: AppDeps["hub"]): Map<string, NativeParentMailbox> {
   return existing;
 }
 
+function mailboxFor(
+  deps: NativeParentNoticeDeps,
+  parentThreadId: string,
+): NativeParentMailbox {
+  const byParent = mailboxes(deps.hub);
+  let mailbox = byParent.get(parentThreadId);
+  if (mailbox === undefined) {
+    mailbox = { attempting: false, deps, timer: null };
+    byParent.set(parentThreadId, mailbox);
+  }
+  mailbox.deps = deps;
+  return mailbox;
+}
+
 function clockTail(now: Date): string {
   const pad = (value: number) => String(value).padStart(2, "0");
   return `-- bb, ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
 }
 
 export function composeNativeParentNotice(args: {
-  entries: readonly Pick<
-    PendingNativeParentNotice,
-    "childThreadIds" | "text"
-  >[];
+  entries: readonly Pick<NativeParentNoticeRow, "childThreadIds" | "text">[];
   now: Date;
 }): string {
   const body = args.entries.map((entry) => entry.text).join("\n\n");
@@ -103,27 +117,35 @@ function schedule(
   mailbox.timer.unref?.();
 }
 
-function rateCapRemainingMs(mailbox: NativeParentMailbox): number {
-  if (mailbox.lastDeliveredAt === null) return 0;
+function rateCapRemainingMs(
+  deps: NativeParentNoticeDeps,
+  parentThreadId: string,
+): number {
+  const deliveredAt = getNativeParentNoticeDeliveredAt(deps.db, parentThreadId);
+  if (deliveredAt === null) return 0;
   return Math.max(
     0,
-    mailbox.lastDeliveredAt + NATIVE_PARENT_NOTICE_MIN_INTERVAL_MS - Date.now(),
+    deliveredAt + NATIVE_PARENT_NOTICE_MIN_INTERVAL_MS - Date.now(),
   );
 }
 
-function dropEntries(
-  mailbox: NativeParentMailbox,
-  dropped: readonly PendingNativeParentNotice[],
+function dropNotices(
+  deps: NativeParentNoticeDeps,
+  dropped: readonly NativeParentNoticeRow[],
 ): void {
-  mailbox.entries = mailbox.entries.filter((entry) => !dropped.includes(entry));
+  deleteNativeParentNotices(
+    deps.db,
+    dropped.map((entry) => entry.id),
+  );
 }
 
 async function attempt(
   mailbox: NativeParentMailbox,
   parentThreadId: string,
 ): Promise<void> {
-  if (mailbox.attempting || mailbox.entries.length === 0) return;
+  if (mailbox.attempting) return;
   const { deps } = mailbox;
+  if (listNativeParentNotices(deps.db, parentThreadId).length === 0) return;
   mailbox.attempting = true;
   try {
     await reconcileNativeThreadStatus(deps, parentThreadId).catch(() => {});
@@ -134,19 +156,20 @@ async function attempt(
       parent.deletedAt !== null ||
       !isNativeTerminalThread(deps.db, parentThreadId)
     ) {
-      dropEntries(mailbox, [...mailbox.entries]);
+      dropNotices(deps, listNativeParentNotices(deps.db, parentThreadId));
       return;
     }
     if (parent.status === "active") {
       schedule(mailbox, parentThreadId, NATIVE_PARENT_NOTICE_RETRY_MS);
       return;
     }
-    const wait = rateCapRemainingMs(mailbox);
+    const wait = rateCapRemainingMs(deps, parentThreadId);
     if (wait > 0) {
       schedule(mailbox, parentThreadId, wait);
       return;
     }
-    const snapshot = [...mailbox.entries];
+    const snapshot = listNativeParentNotices(deps.db, parentThreadId);
+    if (snapshot.length === 0) return;
     const text = composeNativeParentNotice({
       entries: snapshot,
       now: new Date(),
@@ -162,8 +185,11 @@ async function attempt(
         requireEmptyInputBox: true,
         threadId: parentThreadId,
       });
-      mailbox.lastDeliveredAt = Date.now();
-      dropEntries(mailbox, snapshot);
+      recordNativeParentNoticeDelivery(deps.db, {
+        deliveredAt: Date.now(),
+        parentThreadId,
+      });
+      dropNotices(deps, snapshot);
     } catch (error) {
       const code = error instanceof ApiError ? error.body.code : null;
       if (
@@ -171,8 +197,11 @@ async function attempt(
         code === "native_terminal_input_ambiguous"
       ) {
         const now = Date.now();
-        for (const entry of snapshot) entry.blockedSince ??= now;
-        const expired = snapshot.filter(
+        markNativeParentNoticesBlocked(deps.db, {
+          ids: snapshot.map((entry) => entry.id),
+          now,
+        });
+        const expired = listNativeParentNotices(deps.db, parentThreadId).filter(
           (entry) =>
             now - (entry.blockedSince ?? now) >
             NATIVE_PARENT_NOTICE_MAX_BLOCKED_MS,
@@ -182,7 +211,7 @@ async function attempt(
             { parentThreadId, dropped: expired.length },
             "Dropped child notices: the native parent's input box stayed occupied",
           );
-          dropEntries(mailbox, expired);
+          dropNotices(deps, expired);
         }
         schedule(mailbox, parentThreadId, NATIVE_PARENT_NOTICE_RETRY_MS);
         return;
@@ -193,15 +222,21 @@ async function attempt(
           ? "Dropped child notices: the native parent is not running"
           : "Dropped child notices: delivery to the native parent failed",
       );
-      dropEntries(mailbox, snapshot);
+      dropNotices(deps, snapshot);
     }
   } finally {
     mailbox.attempting = false;
-    if (mailbox.entries.length > 0 && mailbox.timer === null) {
+    if (
+      mailbox.timer === null &&
+      listNativeParentNotices(deps.db, parentThreadId).length > 0
+    ) {
       schedule(
         mailbox,
         parentThreadId,
-        Math.max(rateCapRemainingMs(mailbox), NATIVE_PARENT_NOTICE_RETRY_MS),
+        Math.max(
+          rateCapRemainingMs(deps, parentThreadId),
+          NATIVE_PARENT_NOTICE_RETRY_MS,
+        ),
       );
     }
   }
@@ -217,25 +252,17 @@ export function enqueueNativeParentNotice(
 ): void {
   const text = noticeText(args.input);
   if (text.length === 0) return;
-  const byParent = mailboxes(deps.hub);
-  let mailbox = byParent.get(args.parentThreadId);
-  if (mailbox === undefined) {
-    mailbox = {
-      attempting: false,
-      deps,
-      entries: [],
-      lastDeliveredAt: null,
-      timer: null,
-    };
-    byParent.set(args.parentThreadId, mailbox);
-  }
-  mailbox.deps = deps;
-  mailbox.entries.push({
-    blockedSince: null,
+  insertNativeParentNotice(deps.db, {
     childThreadIds: noticeChildThreadIds(args.input),
+    now: Date.now(),
+    parentThreadId: args.parentThreadId,
     text: args.detail === undefined ? text : `${text}\n\n${args.detail}`,
   });
-  schedule(mailbox, args.parentThreadId, rateCapRemainingMs(mailbox));
+  schedule(
+    mailboxFor(deps, args.parentThreadId),
+    args.parentThreadId,
+    rateCapRemainingMs(deps, args.parentThreadId),
+  );
 }
 
 export function flushNativeParentNotices(
@@ -243,6 +270,21 @@ export function flushNativeParentNotices(
   parentThreadId: string,
 ): void {
   const mailbox = mailboxes(deps.hub).get(parentThreadId);
-  if (mailbox === undefined || mailbox.entries.length === 0) return;
-  schedule(mailbox, parentThreadId, rateCapRemainingMs(mailbox));
+  if (mailbox === undefined) return;
+  if (listNativeParentNotices(mailbox.deps.db, parentThreadId).length === 0) {
+    return;
+  }
+  schedule(
+    mailbox,
+    parentThreadId,
+    rateCapRemainingMs(mailbox.deps, parentThreadId),
+  );
+}
+
+export function sweepNativeParentNotices(deps: NativeParentNoticeDeps): void {
+  for (const parentThreadId of listParentsWithNativeParentNotices(deps.db)) {
+    const mailbox = mailboxFor(deps, parentThreadId);
+    if (mailbox.timer !== null || mailbox.attempting) continue;
+    schedule(mailbox, parentThreadId, rateCapRemainingMs(deps, parentThreadId));
+  }
 }

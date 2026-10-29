@@ -19,19 +19,37 @@ export {
 
 export { countAppliedMigrations, migrate } from "./migrate.js";
 export {
+  deleteNativeParentNotices,
+  getNativeParentNoticeDeliveredAt,
+  insertNativeParentNotice,
+  listNativeParentNotices,
+  listParentsWithNativeParentNotices,
+  markNativeParentNoticesBlocked,
+  recordNativeParentNoticeDelivery,
+  type NativeParentNoticeRow,
+} from "./fork-native-parent-notices.js";
+export {
   getThreadSpawner,
   recordThreadSpawner,
 } from "./fork-thread-spawners.js";
 export {
   clearThreadRowState,
+  getThreadRowProgressOutputSeqs,
   getThreadRowProgressSourceTerminalId,
   getThreadRowState,
   listThreadRowStatesByScope,
   putThreadRowState,
+  raiseThreadRowProgressOutputSeqs,
   type ThreadRowProgress,
   type ThreadRowState,
   type ThreadRowStatus,
 } from "./fork-thread-row-state.js";
+export {
+  clearThreadRowStateAtOutputSeqs,
+  forgetForwardedTerminalOutputSeq,
+  listThreadTerminalLatestOutputSeqs,
+  noteForwardedTerminalOutputSeq,
+} from "./fork-thread-terminal-output-seqs.js";
 export type { ThreadListEnrichmentScope } from "./thread-list-enrichment-scope.js";
 export {
   clearTerminalAttention,

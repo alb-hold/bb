@@ -68,6 +68,7 @@ import {
   onTerminalSocketOpen,
 } from "../../src/ws/terminal-protocol.js";
 import { TERMINAL_CLIENT_STALE_MS } from "../../src/ws/hub.js";
+import { ChildTerminalSocket } from "../../src/services/terminals/data-plane/child-terminal-socket.js";
 import { TERMINAL_SCREEN_MAX_IN_FLIGHT_READS } from "../../src/services/terminals/terminal-screen.js";
 
 interface FakeDaemonSocket {
@@ -1294,6 +1295,80 @@ describe("public terminal routes", () => {
     ).toMatchObject({
       lastUserInputAt: expect.any(Number),
     });
+  });
+
+  it("keeps the daemon socket open when a replay chunk is only the holder marker and the attach is a data-plane socket", async () => {
+    const fixture = await createTerminalRouteFixture();
+    harnesses.push(fixture.harness);
+    const stored = createTerminalSession(fixture.harness.db, {
+      cols: 120,
+      daemonSessionId: fixture.session.id,
+      environmentId: fixture.environment.id,
+      hostId: fixture.host.id,
+      initialCwd: fixture.environment.path ?? "/tmp/terminal-workspace",
+      rows: 32,
+      status: "running",
+      threadId: null,
+      title: "Terminal 1",
+    });
+    const sink = {
+      broadcast: vi.fn(),
+      close: vi.fn(),
+      relayOutput: vi.fn(),
+      reply: vi.fn(),
+      replay: vi.fn(),
+    };
+    const dataPlaneSocket = new ChildTerminalSocket(
+      "attach_1",
+      stored.id,
+      sink,
+      false,
+      false,
+      false,
+    );
+    fixture.harness.deps.terminalSessions.attachBrowserTerminal({
+      outputAcks: false,
+      resizeAcks: false,
+      socket: dataPlaneSocket,
+      sinceSeq: 0,
+      terminalId: stored.id,
+    });
+    const attachMessage = await waitForDaemonMessage(fixture.socket);
+    if (attachMessage.type !== "terminal.attach") {
+      throw new Error(
+        `Expected terminal.attach, received ${attachMessage.type}`,
+      );
+    }
+    const markerOnly = Buffer.from(
+      `\u001b]7717;bb-holder;${stored.id}\u0007`,
+    );
+
+    await onDaemonSocketMessage(fixture.harness.deps, {
+      hostId: fixture.host.id,
+      raw: JSON.stringify({
+        type: "terminal.replay",
+        requestId: attachMessage.requestId,
+        terminalId: stored.id,
+        chunks: [
+          { seq: 0, dataBase64: markerOnly.toString("base64") },
+          { seq: 1, dataBase64: Buffer.from("prompt$ ").toString("base64") },
+        ],
+        replayStartSeq: 0,
+        nextSeq: 2,
+      }),
+      sessionId: fixture.session.id,
+      socket: fixture.socket,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(fixture.socket.close).not.toHaveBeenCalled();
+    expect(sink.replay).toHaveBeenCalledTimes(1);
+    const frame = sink.replay.mock.calls[0]?.[1];
+    expect(frame?.chunks.map((chunk: { seq: number }) => chunk.seq)).toEqual([
+      0, 1,
+    ]);
+    expect(frame?.nextSeq).toBe(2);
+    expect(frame?.replayStartSeq).toBe(0);
   });
 
   it("rejects terminal creation when the thread has no environment", async () => {

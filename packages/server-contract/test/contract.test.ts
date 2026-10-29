@@ -1034,6 +1034,13 @@ describe("public terminal contracts", () => {
       }).success,
     ).toBe(true);
     expect(
+      terminalOutputChunkSchema.safeParse({ seq: 0, dataBase64: "" }).success,
+    ).toBe(true);
+    expect(
+      terminalClientMessageSchema.safeParse({ type: "input", dataBase64: "" })
+        .success,
+    ).toBe(false);
+    expect(
       terminalClientMessageSchema.safeParse({
         type: "input",
         dataBase64: oversizedDecodedPayload,

@@ -356,7 +356,9 @@ export function terminalScreenInputBoxIsEmpty(args: {
   const marker = Array.from(prompt)[0]!;
   const remainder = prompt.slice(marker.length);
   const next = args.rows[promptAt + 1];
-  if (next !== undefined && !ECHO_BORDER_ROW.test(next)) return false;
+  if (next !== undefined && next.trim() !== "" && !ECHO_BORDER_ROW.test(next)) {
+    return false;
+  }
   if (remainder.trim() === "") return true;
   const promptEnd = row.length - prompt.length + marker.length;
   return (

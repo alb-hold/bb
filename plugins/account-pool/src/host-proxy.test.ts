@@ -112,6 +112,7 @@ async function intercepted(
     method: string;
     path: string;
     authorization?: string;
+    headers?: Record<string, string>;
     body?: string;
   },
 ): Promise<{ status: number; headers: string; body: string }> {
@@ -137,6 +138,9 @@ async function intercepted(
       (request.authorization === undefined
         ? ""
         : `Authorization: ${request.authorization}\r\n`) +
+      Object.entries(request.headers ?? {})
+        .map(([name, value]) => `${name}: ${value}\r\n`)
+        .join("") +
       `Cookie: thread=secret\r\nContent-Length: ${Buffer.byteLength(body)}\r\nConnection: close\r\n\r\n${body}`,
   );
   let raw = "";
@@ -263,6 +267,36 @@ describe("host Artifact proxy", () => {
     expect(call?.body).toBe('{"a":1}');
   });
 
+  it("relays the Artifact MCP session headers to the hub and nothing else of the thread", async () => {
+    const hub = await startHub(() => ({
+      status: 200,
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, result: {} }),
+    }));
+    const { port } = await start(hub.url);
+    const result = await intercepted(port, caPem, {
+      method: "POST",
+      path: "/api/artifacts/mcp",
+      authorization: `Bearer ${POOL_TOKEN}`,
+      headers: {
+        accept: "application/json, text/event-stream",
+        "content-type": "application/json",
+        "mcp-session-id": "session-one",
+        "mcp-protocol-version": "2025-06-18",
+        "x-unrelated": "dropped",
+      },
+      body: '{"jsonrpc":"2.0","id":1,"method":"tools/list"}',
+    });
+    expect(result.status).toBe(200);
+    expect(hub.calls).toHaveLength(1);
+    const call = hub.calls[0];
+    expect(call?.headers["x-pool-target-method"]).toBe("POST");
+    expect(call?.headers["x-pool-target-path"]).toBe("/api/artifacts/mcp");
+    expect(call?.headers["mcp-session-id"]).toBe("session-one");
+    expect(call?.headers["mcp-protocol-version"]).toBe("2025-06-18");
+    expect(call?.headers["x-unrelated"]).toBeUndefined();
+    expect(call?.headers.cookie).toBeUndefined();
+  });
+
   it("refuses, answers locally, or authenticates without touching the hub", async () => {
     const hub = await startHub(() => ({ status: 200, body: "{}" }));
     const { port } = await start(hub.url);
@@ -273,6 +307,14 @@ describe("host Artifact proxy", () => {
     });
     expect(denied.status).toBe(403);
     expect(denied.headers).toMatch(/x-proxy-error: path-not-allowed/iu);
+    const neighbour = await intercepted(port, caPem, {
+      method: "POST",
+      path: "/api/artifacts/mcp/upload/file.png",
+      authorization: `Bearer ${POOL_TOKEN}`,
+      body: "{}",
+    });
+    expect(neighbour.status).toBe(403);
+    expect(neighbour.headers).toMatch(/x-proxy-error: path-not-allowed/iu);
     const telemetry = await intercepted(port, caPem, {
       method: "POST",
       path: "/api/event_logging/v2/batch",

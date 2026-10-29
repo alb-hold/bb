@@ -184,7 +184,7 @@ export type UpdateTerminalRequest = z.infer<typeof updateTerminalRequestSchema>;
 export const terminalOutputChunkSchema = z
   .object({
     seq: z.number().int().nonnegative(),
-    dataBase64: terminalDataBase64Schema,
+    dataBase64: z.union([z.literal(""), terminalDataBase64Schema]),
   })
   .strict();
 export type TerminalOutputChunk = z.infer<typeof terminalOutputChunkSchema>;
