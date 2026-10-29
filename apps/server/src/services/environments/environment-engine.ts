@@ -1882,28 +1882,54 @@ async function runEnvironmentProvisionCommand(
       .from(environmentHookOperations)
       .where(eq(environmentHookOperations.id, id))
       .get();
-    if (existing !== undefined && existing.finishedAt === null) {
-      interruptUnrecoverableEnvironmentProvisioning(deps, {
-        environmentId: environment.id,
-        reason: `An earlier setup has an unknown outcome. Archive its threads, inspect the workspace, then run bb environment cleanup ${environment.id} --recover.`,
-      });
-      return;
+    const unfinished = existing !== undefined && existing.finishedAt === null;
+    if (unfinished) {
+      let daemonHoldsSetup = false;
+      try {
+        daemonHoldsSetup = (
+          await callHostOnlineRpc(deps, {
+            hostId: environment.hostId,
+            timeoutMs: 30_000,
+            command: {
+              type: "environment.inspect_cleanup",
+              environmentId: environment.id,
+              path: args.request.command.path,
+            },
+          })
+        ).active;
+      } catch (error) {
+        if (error instanceof Error && isHostUnavailableApiError(error)) {
+          deps.logger.info(
+            { environmentId: environment.id, hostId: environment.hostId },
+            "Environment provisioning waiting for host reconnect to inspect setup",
+          );
+          return;
+        }
+      }
+      if (!daemonHoldsSetup) {
+        interruptUnrecoverableEnvironmentProvisioning(deps, {
+          environmentId: environment.id,
+          reason: `An earlier setup has an unknown outcome. Archive its threads, inspect the workspace, then run bb environment cleanup ${environment.id} --recover.`,
+        });
+        return;
+      }
+    } else {
+      deps.db
+        .insert(environmentHookOperations)
+        .values({
+          id,
+          operationId: id,
+          hostId: environment.hostId,
+          path: args.request.command.path,
+          kind: "setup",
+          startedAt: Date.now(),
+        })
+        .onConflictDoUpdate({
+          target: environmentHookOperations.id,
+          set: { startedAt: Date.now(), finishedAt: null, error: null },
+        })
+        .run();
     }
-    deps.db
-      .insert(environmentHookOperations)
-      .values({
-        id,
-        operationId: id,
-        hostId: environment.hostId,
-        path: args.request.command.path,
-        kind: "setup",
-        startedAt: Date.now(),
-      })
-      .onConflictDoUpdate({
-        target: environmentHookOperations.id,
-        set: { startedAt: Date.now(), finishedAt: null, error: null },
-      })
-      .run();
   }
   const execution = createLiveHostCommandExecution(args.environment.hostId);
   await runLiveHostCommand(deps, {
