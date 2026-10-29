@@ -42,7 +42,7 @@ export function isNativeActivityUnconfirmed(
   return (
     activity.confirmation !== "confirmed" ||
     activity.lastEvidenceAt === null ||
-    now < activity.lastEvidenceAt ||
+    Math.max(now, Date.now()) < activity.lastEvidenceAt ||
     now - activity.lastEvidenceAt > activity.freshForMs
   );
 }
