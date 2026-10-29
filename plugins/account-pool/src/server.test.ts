@@ -12822,6 +12822,138 @@ describe("Account Pool Artifact proxy", () => {
     );
   });
 
+  it("relays an upstream 404 for the Artifact MCP unchanged and logs one line without headers, query values or tokens", async () => {
+    const upstreamBody = {
+      type: "error",
+      error: { type: "not_found_error", message: "Not found" },
+    };
+    const fixture = await artifactFixture(
+      async () => Response.json(upstreamBody, { status: 404 }),
+      () => hostRpcResult,
+    );
+    const response = await fixture.host.harness.behavior.fetchHttp(
+      "POST",
+      "/claude-oauth",
+      {
+        headers: {
+          authorization: `Bearer ${fixture.key}`,
+          "x-pool-target-host": "api.anthropic.com",
+          "x-pool-target-method": "POST",
+          "x-pool-target-path": "/api/artifacts/mcp",
+          accept: "application/json, text/event-stream",
+          "content-type": "application/json",
+          cookie: "session=thread-cookie",
+        },
+        body: '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"secret":"body-secret"}}',
+      },
+    );
+    expect(response.status).toBe(404);
+    expect(await response.json()).toEqual(upstreamBody);
+    const relayLines = fixture.host.harness.inspection.logEntries.filter(
+      (entry) => entry.message.startsWith("Account Pooler relayed "),
+    );
+    expect(relayLines).toHaveLength(1);
+    expect(relayLines[0]?.level).toBe("info");
+    expect(relayLines[0]?.message).toMatch(
+      /^Account Pooler relayed POST \/api\/artifacts\/mcp -> upstream 404 in \d+ms$/u,
+    );
+    const logged = JSON.stringify(fixture.host.harness.inspection.logEntries);
+    for (const secret of [
+      fixture.key,
+      "oauth-old",
+      "thread-cookie",
+      "body-secret",
+    ])
+      expect(logged).not.toContain(secret);
+  });
+
+  it.each([
+    [
+      "a token-like frame path segment",
+      "GET",
+      "/api/frame/sk-ant-oat01-FAKE0123456789abcdef/render",
+      "sk-ant-oat01-FAKE0123456789abcdef",
+      "/api/frame/*",
+    ],
+    [
+      "a frame path segment and query value",
+      "GET",
+      "/api/frame/session?code=query-secret",
+      "query-secret",
+      "/api/frame/*",
+    ],
+    [
+      "an eval path suffix",
+      "POST",
+      "/api/eval/sdk-FAKEEVALTOKEN0123",
+      "FAKEEVALTOKEN0123",
+      "/api/eval/sdk-*",
+    ],
+  ])(
+    "logs only the matched route for %s",
+    async (_name, method, path, secret, route) => {
+      const fixture = await artifactFixture(
+        async () => Response.json({}),
+        () => hostRpcResult,
+      );
+      const response = await oauthProxyRequest(fixture, { method, path });
+      expect(response.status).toBe(200);
+      await response.text();
+      const logged = JSON.stringify(
+        fixture.host.harness.inspection.logEntries,
+      );
+      expect(logged).not.toContain(secret);
+      expect(logged).not.toContain("sk-ant-");
+      expect(logged).toContain(
+        `Account Pooler relayed ${method} ${route} -> upstream 200 in `,
+      );
+    },
+  );
+
+  it("logs a thrown upstream fetch as an error form with no upstream status", async () => {
+    const fixture = await artifactFixture(
+      async () => {
+        throw new TypeError("fetch failed https://upstream.example/secret-url");
+      },
+      () => hostRpcResult,
+    );
+    const response = await oauthProxyRequest(fixture, {
+      method: "GET",
+      path: "/api/frame/session",
+    });
+    expect(response.status).toBe(502);
+    await response.text();
+    const relayLines = fixture.host.harness.inspection.logEntries.filter(
+      (entry) => entry.message.startsWith("Account Pooler relayed "),
+    );
+    expect(relayLines).toHaveLength(1);
+    expect(relayLines[0]?.message).toMatch(
+      /^Account Pooler relayed GET \/api\/frame\/\* -> upstream=error TypeError in \d+ms$/u,
+    );
+    expect(relayLines[0]?.message).not.toMatch(/upstream \d{3}/u);
+    expect(relayLines[0]?.message).not.toContain("secret-url");
+  });
+
+  it("logs a real upstream 502 as an upstream status", async () => {
+    const fixture = await artifactFixture(
+      async () => new Response("bad gateway", { status: 502 }),
+      () => hostRpcResult,
+    );
+    const response = await oauthProxyRequest(fixture, {
+      method: "GET",
+      path: "/api/frame/session",
+    });
+    expect(response.status).toBe(502);
+    await response.text();
+    const relayLines = fixture.host.harness.inspection.logEntries.filter(
+      (entry) => entry.message.startsWith("Account Pooler relayed "),
+    );
+    expect(relayLines).toHaveLength(1);
+    expect(relayLines[0]?.message).toMatch(
+      /^Account Pooler relayed GET \/api\/frame\/\* -> upstream 502 in \d+ms$/u,
+    );
+  });
+
   it.each([
     [
       "a path outside the allowlist",
