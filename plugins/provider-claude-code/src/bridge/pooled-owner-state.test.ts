@@ -134,7 +134,10 @@ async function runCleanups(
 }
 
 function stopSessionOnCleanup(session: SdkSession): void {
-  cleanups.push(exitWaitCleanup(() => waitForCliExit(REAL_CLAUDE)));
+  const baseline = descendantPids(realProcessTable);
+  cleanups.push(
+    exitWaitCleanup(() => waitForCliExit(REAL_CLAUDE, baseline)),
+  );
   cleanups.push(() => session.stop());
 }
 
@@ -146,59 +149,95 @@ function resolvedPath(path: string): string {
   }
 }
 
-type PsRunner = () => string;
+interface ProcessTable {
+  tree(): { output: string; psPid: number };
+  commands(): string;
+}
 
-const runPs: PsRunner = () =>
-  execFileSync("/bin/ps", ["-axo", "pid=,ppid=,command="], {
-    encoding: "utf8",
-  });
+const realProcessTable: ProcessTable = {
+  tree: () => {
+    const result = spawnSync("/bin/ps", ["-A", "-o", "pid=,ppid="], {
+      encoding: "utf8",
+    });
+    if (result.error !== undefined) throw result.error;
+    if (result.status !== 0) throw new Error(`ps exited with ${result.status}`);
+    return { output: result.stdout, psPid: result.pid };
+  },
+  commands: () =>
+    execFileSync("/bin/ps", ["-A", "-o", "pid=,command="], {
+      encoding: "utf8",
+    }),
+};
 
-function liveCliProcessIds(
-  executable: string,
-  ps: PsRunner = runPs,
-): number[] {
-  const wanted = new Set([executable, resolvedPath(executable)]);
-  const table = ps();
+function descendantPids(table: ProcessTable): Set<number> {
+  const { output, psPid } = table.tree();
   const parentOf = new Map<number, number>();
-  const cliPids: number[] = [];
-  let rowCount = 0;
-  for (const line of table.split("\n")) {
+  for (const line of output.split("\n")) {
     if (line.trim() === "") continue;
-    const match = /^\s*(\d+)\s+(\d+)\s+(.*)$/u.exec(line);
+    const match = /^\s*(\d+)\s+(\d+)\s*$/u.exec(line);
     if (match === null) {
-      if (rowCount === 0) {
-        throw new Error(`unparsable ps output: ${line.slice(0, 80)}`);
-      }
-      continue;
+      throw new Error(`unparsable ps output: ${line.slice(0, 80)}`);
     }
-    rowCount += 1;
-    const pid = Number(match[1]);
-    parentOf.set(pid, Number(match[2]));
-    const program = (match[3] ?? "").split(" ", 1)[0] ?? "";
-    if (wanted.has(program) || wanted.has(resolvedPath(program))) {
-      cliPids.push(pid);
-    }
+    parentOf.set(Number(match[1]), Number(match[2]));
   }
   if (!parentOf.has(process.pid)) {
     throw new Error("unparsable ps output: this process is not listed");
   }
-  return cliPids.filter((pid) => {
+  const descendants = new Set<number>();
+  for (const pid of parentOf.keys()) {
+    if (pid === psPid || pid === process.pid) continue;
+    const seen = new Set<number>([pid]);
     let ancestor = parentOf.get(pid);
-    while (ancestor !== undefined && ancestor > 1) {
-      if (ancestor === process.pid) return true;
+    while (ancestor !== undefined && ancestor > 1 && !seen.has(ancestor)) {
+      if (ancestor === process.pid) {
+        descendants.add(pid);
+        break;
+      }
+      seen.add(ancestor);
       ancestor = parentOf.get(ancestor);
     }
-    return ancestor === undefined;
-  });
+    if (ancestor === undefined) descendants.add(pid);
+  }
+  return descendants;
 }
 
-async function cliGoneWithin(
+function liveSessionPids(
+  baseline: ReadonlySet<number>,
+  table: ProcessTable,
+): number[] {
+  return [...descendantPids(table)].filter((pid) => !baseline.has(pid));
+}
+
+function cliPidsToSignal(
   executable: string,
+  baseline: ReadonlySet<number>,
+  table: ProcessTable,
+): number[] {
+  const wanted = new Set([executable, resolvedPath(executable)]);
+  const live = new Set(liveSessionPids(baseline, table));
+  const matching: number[] = [];
+  for (const line of table.commands().split("\n")) {
+    const match = /^\s*(\d+)\s+(.*)$/u.exec(line);
+    if (match === null) continue;
+    const pid = Number(match[1]);
+    const program = (match[2] ?? "").split(" ", 1)[0] ?? "";
+    if (
+      live.has(pid) &&
+      (wanted.has(program) || wanted.has(resolvedPath(program)))
+    ) {
+      matching.push(pid);
+    }
+  }
+  return matching;
+}
+
+async function sessionGoneWithin(
+  baseline: ReadonlySet<number>,
   timeoutMs: number,
-  ps: PsRunner,
+  table: ProcessTable,
 ): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
-  while (liveCliProcessIds(executable, ps).length > 0) {
+  while (liveSessionPids(baseline, table).length > 0) {
     if (Date.now() > deadline) return false;
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
@@ -207,10 +246,11 @@ async function cliGoneWithin(
 
 function signalCliProcesses(
   executable: string,
+  baseline: ReadonlySet<number>,
   signal: NodeJS.Signals,
-  ps: PsRunner,
+  table: ProcessTable,
 ): void {
-  for (const pid of liveCliProcessIds(executable, ps)) {
+  for (const pid of cliPidsToSignal(executable, baseline, table)) {
     try {
       process.kill(pid, signal);
     } catch {
@@ -221,29 +261,36 @@ function signalCliProcesses(
 
 async function terminateCliProcesses(
   executable: string,
+  baseline: ReadonlySet<number>,
   graceMs: number,
-  ps: PsRunner,
+  table: ProcessTable,
 ): Promise<number[]> {
-  signalCliProcesses(executable, "SIGTERM", ps);
-  if (await cliGoneWithin(executable, graceMs, ps)) return [];
-  signalCliProcesses(executable, "SIGKILL", ps);
-  await cliGoneWithin(executable, graceMs, ps);
-  return liveCliProcessIds(executable, ps);
+  signalCliProcesses(executable, baseline, "SIGTERM", table);
+  if (await sessionGoneWithin(baseline, graceMs, table)) return [];
+  signalCliProcesses(executable, baseline, "SIGKILL", table);
+  await sessionGoneWithin(baseline, graceMs, table);
+  return liveSessionPids(baseline, table);
 }
 
 async function waitForCliExit(
   executable: string | null,
+  baseline: ReadonlySet<number>,
   timeoutMs = 20_000,
   graceMs = 2_000,
-  ps: PsRunner = runPs,
+  table: ProcessTable = realProcessTable,
 ): Promise<void> {
   if (executable === null) {
     throw new Error(
       "no Claude executable resolved: cannot confirm the CLI exited before cleanup",
     );
   }
-  if (await cliGoneWithin(executable, timeoutMs, ps)) return;
-  const survivors = await terminateCliProcesses(executable, graceMs, ps);
+  if (await sessionGoneWithin(baseline, timeoutMs, table)) return;
+  const survivors = await terminateCliProcesses(
+    executable,
+    baseline,
+    graceMs,
+    table,
+  );
   const message = `the Claude CLI did not exit within ${timeoutMs} ms of stop()`;
   if (survivors.length === 0) throw new Error(`${message}; it was terminated`);
   throw new CliStillRunningError(
@@ -875,29 +922,6 @@ describe("waiting for the Claude CLI to exit before cleanup", () => {
     return child;
   }
 
-  it("does not wait for a descendant whose path only shares the executable's prefix", async () => {
-    const executable = join(scratch(), "claude");
-    await startSleeper(`${executable}-x`);
-    await startSleeper(`${executable}.bak`);
-    await waitForCliExit(executable, 1_000);
-  });
-
-  it("waits for a descendant whose argv[0] is exactly the executable, and returns once it exits", async () => {
-    const executable = join(scratch(), "claude");
-    const sleeper = await startSleeper(executable);
-    const exited = new Promise((resolve) => sleeper.once("exit", resolve));
-    await expect(waitForCliExit(executable, 300)).rejects.toThrow(
-      /did not exit/u,
-    );
-    await exited;
-    expect(sleeper.signalCode).toBe("SIGTERM");
-    await waitForCliExit(executable, 2_000);
-  });
-
-  it("fails instead of passing when no executable was resolved", async () => {
-    await expect(waitForCliExit(null)).rejects.toThrow(/no Claude executable/u);
-  });
-
   function failureOf(promise: Promise<unknown>): Promise<unknown> {
     return promise.then(
       () => undefined,
@@ -912,16 +936,68 @@ describe("waiting for the Claude CLI to exit before cleanup", () => {
     return failure;
   }
 
-  function tableRow(pid: number, ppid: number, command: string): string {
-    return `${pid} ${ppid} ${command}`;
+  const FAKE_PID = 2_000_000_000;
+  const CLI_PID = 2_000_000_001;
+  const GRANDCHILD_PID = 2_000_000_002;
+  const PS_PID = 2_000_000_003;
+  const OWN_ROW = `${process.pid} 1`;
+  const NO_BASELINE: ReadonlySet<number> = new Set();
+
+  function fakeTable(
+    tree: string | (() => never),
+    commands = "",
+  ): ProcessTable {
+    return {
+      tree: () => {
+        if (typeof tree !== "string") return tree();
+        return { output: tree, psPid: PS_PID };
+      },
+      commands: () => commands,
+    };
   }
 
-  const OWN_ROW = tableRow(process.pid, 1, "node");
-  const FAKE_PID = 2_000_000_000;
+  it("signals only descendants whose argv[0] is exactly the executable, and does not confirm the exit while another descendant lives", async () => {
+    const executable = join(scratch(), "claude");
+    const baseline = descendantPids(realProcessTable);
+    const prefixed = await startSleeper(`${executable}-x`);
+    const exact = await startSleeper(executable);
+    const exited = new Promise((resolve) => exact.once("exit", resolve));
+    const failure = await failureOf(
+      waitForCliExit(executable, baseline, 200, 300),
+    );
+    await exited;
+    expect(failure).toBeInstanceOf(CliStillRunningError);
+    expect(failure instanceof CliStillRunningError && failure.pids).toEqual([
+      prefixed.pid,
+    ]);
+    expect(exact.signalCode).toBe("SIGTERM");
+    expect(prefixed.signalCode).toBeNull();
+    expect(prefixed.exitCode).toBeNull();
+  });
+
+  it("waits for a descendant whose argv[0] is exactly the executable, and returns once it exits", async () => {
+    const executable = join(scratch(), "claude");
+    const baseline = descendantPids(realProcessTable);
+    const sleeper = await startSleeper(executable);
+    const exited = new Promise((resolve) => sleeper.once("exit", resolve));
+    await expect(waitForCliExit(executable, baseline, 300)).rejects.toThrow(
+      /did not exit/u,
+    );
+    await exited;
+    expect(sleeper.signalCode).toBe("SIGTERM");
+    await waitForCliExit(executable, baseline, 2_000);
+  });
+
+  it("fails instead of passing when no executable was resolved", async () => {
+    await expect(waitForCliExit(null, NO_BASELINE)).rejects.toThrow(
+      /no Claude executable/u,
+    );
+  });
 
   it("runs every later cleanup and still fails with the timeout when the wait for the CLI throws, keeping the directories even though the CLI was killed", async () => {
     const directory = mkdtempSync(join(tmpdir(), "bb-pooled-owner-state-test-"));
     const executable = join(directory, "claude");
+    const baseline = descendantPids(realProcessTable);
     const stubborn = await startProcess(executable, "/bin/sh", [
       "-c",
       IGNORES_SIGTERM,
@@ -931,7 +1007,7 @@ describe("waiting for the Claude CLI to exit before cleanup", () => {
     const list: Array<() => unknown> = [
       () => ran.push("session.stop"),
       () => ran.push("server.close"),
-      exitWaitCleanup(() => waitForCliExit(executable, 200, 300)),
+      exitWaitCleanup(() => waitForCliExit(executable, baseline, 200, 300)),
     ];
     try {
       const failure = aggregateOf(
@@ -947,7 +1023,7 @@ describe("waiting for the Claude CLI to exit before cleanup", () => {
       );
       expect(String(failure.errors[1])).toContain(directory);
       expect(stubborn.signalCode).toBe("SIGKILL");
-      expect(liveCliProcessIds(executable)).toEqual([]);
+      expect(liveSessionPids(baseline, realProcessTable)).toEqual([]);
       expect(ran).toEqual(["server.close", "session.stop"]);
       expect(existsSync(directory)).toBe(true);
       expect(list).toEqual([]);
@@ -960,44 +1036,99 @@ describe("waiting for the Claude CLI to exit before cleanup", () => {
   it.each([
     {
       name: "the process survives SIGKILL",
-      table: (executable: string) => () =>
-        [OWN_ROW, tableRow(FAKE_PID, process.pid, `${executable} -c x`)].join(
-          "\n",
+      table: (executable: string) =>
+        fakeTable(
+          `${OWN_ROW}\n${FAKE_PID} ${process.pid}`,
+          `${FAKE_PID} ${executable} -c x`,
         ),
       error: /process 2000000000 survived SIGKILL/u,
-      kept: (directory: string) =>
+      kept: (directory: string) => [
         `kept: process ${FAKE_PID} still running: ${directory}`,
+      ],
+    },
+    {
+      name: "a descendant that is not the CLI is still alive",
+      table: () =>
+        fakeTable(
+          `${OWN_ROW}\n${FAKE_PID} ${process.pid}`,
+          `${FAKE_PID} /usr/bin/other-tool`,
+        ),
+      error: /process 2000000000 survived SIGKILL/u,
+      kept: (directory: string) => [
+        `kept: process ${FAKE_PID} still running: ${directory}`,
+      ],
+    },
+    {
+      name: "a grandchild of the CLI outlives it",
+      table: (executable: string) =>
+        fakeTable(
+          `${OWN_ROW}\n${CLI_PID} ${process.pid}\n${GRANDCHILD_PID} ${CLI_PID}`,
+          `${CLI_PID} ${executable}\n${GRANDCHILD_PID} /usr/bin/helper`,
+        ),
+      error: /process 2000000001, 2000000002 survived SIGKILL/u,
+      kept: (directory: string) => [
+        `kept: process ${CLI_PID} still running: ${directory}`,
+        `kept: process ${GRANDCHILD_PID} still running: ${directory}`,
+      ],
     },
     {
       name: "ps throws",
-      table: () => () => {
-        throw new Error("ps failed");
-      },
+      table: () =>
+        fakeTable(() => {
+          throw new Error("ps failed");
+        }),
       error: /^Error: ps failed$/u,
-      kept: (directory: string) =>
+      kept: (directory: string) => [
         `kept: CLI exit not confirmed (ps failed): ${directory}`,
+      ],
     },
     {
       name: "ps returns output that is not a process table",
-      table: () => () => "this is not a process table",
+      table: () => fakeTable("this is not a process table"),
       error: /unparsable ps output: this is not a process table/u,
-      kept: (directory: string) =>
+      kept: (directory: string) => [
         `kept: CLI exit not confirmed (unparsable ps output: this is not a process table): ${directory}`,
+      ],
     },
     {
       name: "ps output does not list this process",
-      table: () => () => tableRow(1, 0, "launchd"),
+      table: () => fakeTable("1 0"),
       error: /unparsable ps output: this process is not listed/u,
-      kept: (directory: string) =>
+      kept: (directory: string) => [
         `kept: CLI exit not confirmed (unparsable ps output: this process is not listed): ${directory}`,
+      ],
     },
     {
-      name: "the ancestry of a matching process cannot be resolved",
-      table: (executable: string) => () =>
-        [OWN_ROW, tableRow(FAKE_PID, 777_777_777, executable)].join("\n"),
+      name: "the process table is empty",
+      table: () => fakeTable(""),
+      error: /unparsable ps output: this process is not listed/u,
+      kept: (directory: string) => [
+        `kept: CLI exit not confirmed (unparsable ps output: this process is not listed): ${directory}`,
+      ],
+    },
+    {
+      name: "a valid row for this process is followed by a malformed line",
+      table: () => fakeTable(`${OWN_ROW}\nthis line is garbage`),
+      error: /unparsable ps output: this line is garbage/u,
+      kept: (directory: string) => [
+        `kept: CLI exit not confirmed (unparsable ps output: this line is garbage): ${directory}`,
+      ],
+    },
+    {
+      name: "valid rows are followed by a truncated last line",
+      table: () => fakeTable(`${OWN_ROW}\n4321 1\n${FAKE_PID}`),
+      error: /unparsable ps output: 2000000000/u,
+      kept: (directory: string) => [
+        `kept: CLI exit not confirmed (unparsable ps output: ${FAKE_PID}): ${directory}`,
+      ],
+    },
+    {
+      name: "the ancestry of a process cannot be resolved",
+      table: () => fakeTable(`${OWN_ROW}\n${FAKE_PID} 777777777`),
       error: /process 2000000000 survived SIGKILL/u,
-      kept: (directory: string) =>
+      kept: (directory: string) => [
         `kept: process ${FAKE_PID} still running: ${directory}`,
+      ],
     },
   ])(
     "keeps the directories, names them and still runs every other cleanup when $name",
@@ -1011,16 +1142,17 @@ describe("waiting for the Claude CLI to exit before cleanup", () => {
         () => ran.push("session.stop"),
         () => ran.push("server.close"),
         exitWaitCleanup(() =>
-          waitForCliExit(executable, 100, 100, table(executable)),
+          waitForCliExit(executable, NO_BASELINE, 100, 100, table(executable)),
         ),
       ];
       try {
         const failure = aggregateOf(
           await failureOf(runCleanups(list, new Set([directory]))),
         );
-        expect(failure.errors).toHaveLength(2);
         expect(String(failure.errors[0])).toMatch(error);
-        expect(String(failure.errors[1])).toBe(`Error: ${kept(directory)}`);
+        expect(failure.errors.slice(1).map(String)).toEqual(
+          kept(directory).map((line) => `Error: ${line}`),
+        );
         expect(ran).toEqual(["server.close", "session.stop"]);
         expect(existsSync(directory)).toBe(true);
         expect(list).toEqual([]);
@@ -1030,15 +1162,30 @@ describe("waiting for the Claude CLI to exit before cleanup", () => {
     },
   );
 
-  it("confirms the exit when the process table lists no matching process, including rows continued over several lines", async () => {
-    const executable = join(tmpdir(), "bb-pooled-owner-state-test-none", "claude");
-    await waitForCliExit(executable, 100, 100, () => OWN_ROW);
-    await waitForCliExit(
-      executable,
-      100,
-      100,
-      () => `${OWN_ROW}\n${tableRow(4321, 1, "sh -c echo\ncontinued line")}`,
+  it("confirms the exit when only processes outside this session remain, and removes the directories", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "bb-pooled-owner-state-test-"));
+    const executable = join(directory, "claude");
+    const preExisting = new Set([FAKE_PID]);
+    const table = fakeTable(
+      [
+        OWN_ROW,
+        `${FAKE_PID} ${process.pid}`,
+        `${PS_PID} ${process.pid}`,
+        "4321 1",
+      ].join("\n"),
     );
+    const list: Array<() => unknown> = [
+      exitWaitCleanup(() =>
+        waitForCliExit(executable, preExisting, 100, 100, table),
+      ),
+    ];
+    try {
+      await runCleanups(list, new Set([directory]));
+      expect(existsSync(directory)).toBe(false);
+      expect(list).toEqual([]);
+    } finally {
+      rmSync(directory, { force: true, recursive: true });
+    }
   });
 
   it("still removes the directories when only an unrelated cleanup throws and the exit was confirmed", async () => {
@@ -1048,7 +1195,7 @@ describe("waiting for the Claude CLI to exit before cleanup", () => {
     const list: Array<() => unknown> = [
       () => ran.push("session.stop"),
       exitWaitCleanup(() =>
-        waitForCliExit(executable, 100, 100, () => OWN_ROW),
+        waitForCliExit(executable, NO_BASELINE, 100, 100, fakeTable(OWN_ROW)),
       ),
       () => {
         throw new Error("server.close failed");
@@ -1073,11 +1220,7 @@ describe("waiting for the Claude CLI to exit before cleanup", () => {
       },
       () => Promise.reject(new Error("second")),
     ];
-    const failure = await runCleanups(list, new Set()).then(
-      () => undefined,
-      (error: unknown) => error,
-    );
-    if (!(failure instanceof AggregateError)) throw new Error("expected an AggregateError");
+    const failure = aggregateOf(await failureOf(runCleanups(list, new Set())));
     expect(failure.errors.map(String)).toEqual([
       "Error: second",
       "Error: first",
