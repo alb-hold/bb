@@ -422,6 +422,7 @@ interface DisposableKeychain {
   home: string;
   configDir: string;
   service: string;
+  assertIsolated(): void;
   read(): { claudeAiOauth?: unknown } | undefined;
   modified(): string;
 }
@@ -447,6 +448,17 @@ function createDisposableKeychain(seed: unknown): DisposableKeychain {
       runSecurity(home, ["delete-keychain", file]);
     } catch {}
   });
+  const assertIsolated = (): void => {
+    const resolved = runSecurity(home, ["default-keychain", "-d", "user"])
+      .trim()
+      .replace(/^"|"$/gu, "");
+    if (resolved !== file) {
+      throw new Error(
+        `default keychain under the disposable HOME is ${resolved}, expected ${file}`,
+      );
+    }
+  };
+  assertIsolated();
   runSecurity(home, ["set-keychain-settings", file]);
   const service = `Claude Code-credentials-${createHash("sha256")
     .update(configDir)
@@ -461,15 +473,23 @@ function createDisposableKeychain(seed: unknown): DisposableKeychain {
     "-w",
     JSON.stringify(seed),
     "-U",
+    file,
   ]);
   return {
     home,
     configDir,
     service,
+    assertIsolated,
     read: () => {
       try {
         return JSON.parse(
-          runSecurity(home, ["find-generic-password", "-s", service, "-w"]),
+          runSecurity(home, [
+            "find-generic-password",
+            "-s",
+            service,
+            "-w",
+            file,
+          ]),
         ) as { claudeAiOauth?: unknown };
       } catch {
         return undefined;
@@ -477,7 +497,7 @@ function createDisposableKeychain(seed: unknown): DisposableKeychain {
     },
     modified: () =>
       /"mdat"<timedate>=0x[0-9A-F]+\s+"([^"\\]+)/u.exec(
-        runSecurity(home, ["find-generic-password", "-s", service]),
+        runSecurity(home, ["find-generic-password", "-s", service, file]),
       )?.[1] ?? "",
   };
 }
@@ -502,6 +522,7 @@ async function runPooledThreadAgainstKeychain(
       mcpServers: { standin: { type: "http", url: mcpUrl } },
     }),
   );
+  keychain.assertIsolated();
   const before = keychain.modified();
   const options = buildSessionOptions(
     { ...SESSION_PARAMS, cwd: scratch() },
@@ -568,6 +589,7 @@ describe.skipIf(REAL_CLAUDE === null || process.platform !== "darwin")(
         claudeAiOauth: SEEDED_LOGIN,
         mcpOAuth: {},
       });
+      keychain.assertIsolated();
       execFileSync(REAL_CLAUDE ?? "", ["auth", "logout"], {
         env: {
           ...cleanBaseEnv(),
