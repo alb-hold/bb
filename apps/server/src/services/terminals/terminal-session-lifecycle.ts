@@ -1742,6 +1742,16 @@ export class TerminalSessionLifecycle {
     args: CloseTerminalSessionArgs,
   ): Promise<TerminalSession> {
     const current = args.current;
+    this.options.logger.info(
+      {
+        closeReason: current.closeReason,
+        mode: args.payload.mode,
+        reason: args.payload.reason,
+        status: current.status,
+        terminalId: current.id,
+      },
+      "Terminal close requested",
+    );
     if (current.status === "exited") {
       if (args.payload.reason === "user") {
         await this.waitForTerminalReplay(current.id);
