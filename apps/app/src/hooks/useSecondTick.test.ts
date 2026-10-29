@@ -80,7 +80,7 @@ describe("useSecondTick", () => {
 
     rerender({ enabled: true });
     expect(vi.getTimerCount()).toBe(1);
-    const enabledAt = Math.ceil(Date.now() / 1_000) * 1_000;
+    const enabledAt = Date.now();
     act(() => {
       vi.advanceTimersByTime(1_000);
     });

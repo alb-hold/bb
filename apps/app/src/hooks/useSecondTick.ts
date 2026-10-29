@@ -4,19 +4,19 @@ import {
   subscribeToDocumentVisibility,
 } from "@/lib/document-visibility";
 
-const TICK_MS = 1_000;
-
 const listeners = new Set<() => void>();
+let lastTickMs = 0;
 let intervalId: ReturnType<typeof setInterval> | null = null;
 let unsubscribeVisibility: (() => void) | null = null;
 
 function tick(): void {
+  lastTickMs = Date.now();
   for (const listener of listeners) listener();
 }
 
 function startInterval(): void {
   if (intervalId === null && isDocumentVisible()) {
-    intervalId = setInterval(tick, TICK_MS);
+    intervalId = setInterval(tick, 1_000);
   }
 }
 
@@ -40,6 +40,7 @@ function handleVisibilityChange(): void {
 
 function subscribe(listener: () => void): () => void {
   if (listeners.size === 0) {
+    lastTickMs = Date.now();
     unsubscribeVisibility = subscribeToDocumentVisibility(
       handleVisibilityChange,
     );
@@ -61,7 +62,8 @@ function subscribeWithoutTick(): () => void {
 }
 
 function getSnapshot(): number {
-  return Math.ceil(Date.now() / TICK_MS) * TICK_MS;
+  if (lastTickMs === 0) lastTickMs = Date.now();
+  return lastTickMs;
 }
 
 export function useSecondTick(enabled = true): number {
