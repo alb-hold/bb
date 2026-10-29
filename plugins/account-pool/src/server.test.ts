@@ -12822,6 +12822,69 @@ describe("Account Pool Artifact proxy", () => {
     );
   });
 
+  it("relays an upstream 404 for the Artifact MCP unchanged and logs one line without headers, query values or tokens", async () => {
+    const upstreamBody = {
+      type: "error",
+      error: { type: "not_found_error", message: "Not found" },
+    };
+    const fixture = await artifactFixture(
+      async () => Response.json(upstreamBody, { status: 404 }),
+      () => hostRpcResult,
+    );
+    const response = await fixture.host.harness.behavior.fetchHttp(
+      "POST",
+      "/claude-oauth",
+      {
+        headers: {
+          authorization: `Bearer ${fixture.key}`,
+          "x-pool-target-host": "api.anthropic.com",
+          "x-pool-target-method": "POST",
+          "x-pool-target-path": "/api/artifacts/mcp",
+          accept: "application/json, text/event-stream",
+          "content-type": "application/json",
+          cookie: "session=thread-cookie",
+        },
+        body: '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"secret":"body-secret"}}',
+      },
+    );
+    expect(response.status).toBe(404);
+    expect(await response.json()).toEqual(upstreamBody);
+    const relayLines = fixture.host.harness.inspection.logEntries.filter(
+      (entry) => entry.message.startsWith("Account Pooler relayed "),
+    );
+    expect(relayLines).toHaveLength(1);
+    expect(relayLines[0]?.level).toBe("info");
+    expect(relayLines[0]?.message).toMatch(
+      /^Account Pooler relayed POST \/api\/artifacts\/mcp -> 404 in \d+ms$/u,
+    );
+    const logged = JSON.stringify(fixture.host.harness.inspection.logEntries);
+    for (const secret of [
+      fixture.key,
+      "oauth-old",
+      "thread-cookie",
+      "body-secret",
+    ])
+      expect(logged).not.toContain(secret);
+  });
+
+  it("logs a relayed path without its query values", async () => {
+    const fixture = await artifactFixture(
+      async () => Response.json({}),
+      () => hostRpcResult,
+    );
+    const response = await oauthProxyRequest(fixture, {
+      method: "GET",
+      path: "/api/frame/session?code=query-secret",
+    });
+    expect(response.status).toBe(200);
+    await response.text();
+    const logged = JSON.stringify(fixture.host.harness.inspection.logEntries);
+    expect(logged).toMatch(
+      /Account Pooler relayed GET \/api\/frame\/session -> 200 in \d+ms/u,
+    );
+    expect(logged).not.toContain("query-secret");
+  });
+
   it.each([
     [
       "a path outside the allowlist",

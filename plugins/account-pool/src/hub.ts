@@ -121,6 +121,14 @@ interface HubOptions {
     outcome: "succeeded" | "failed",
     message: string,
   ) => void;
+  onOAuthRelay: (relay: OAuthRelay) => void;
+}
+
+export interface OAuthRelay {
+  method: string;
+  path: string;
+  status: number;
+  durationMs: number;
 }
 
 interface SelectedAccount {
@@ -405,6 +413,14 @@ export class AccountPoolHub {
     const url =
       this.options.getSettings().anthropicUpstreamBaseUrl.replace(/\/+$/u, "") +
       target;
+    const startedAt = this.options.now();
+    const relayed = (status: number) =>
+      this.options.onOAuthRelay({
+        method,
+        path: target.split("?", 1)[0] ?? target,
+        status,
+        durationMs: this.options.now() - startedAt,
+      });
     const { controller, release } = this.trackRequest(request);
     let handedOff = false;
     try {
@@ -445,6 +461,7 @@ export class AccountPoolHub {
         } catch (cause) {
           if (!controller.signal.aborted)
             this.options.onUpstreamError("claude", cause);
+          relayed(502);
           return adapter.errorResponse(
             502,
             "Account Pooler could not reach Anthropic.",
@@ -472,6 +489,7 @@ export class AccountPoolHub {
         }
         const forwarded = new Headers(response.headers);
         forwarded.delete("set-cookie");
+        relayed(response.status);
         handedOff = true;
         return this.clientResponse({
           response: new Response(response.body, {
@@ -1976,6 +1994,7 @@ export function createHub(options: {
   onAccountsChanged?: () => void;
   onUpstreamError?: (provider: PoolProvider, error: unknown) => void;
   onOAuthRefresh?: HubOptions["onOAuthRefresh"];
+  onOAuthRelay?: HubOptions["onOAuthRelay"];
 }): AccountPoolHub {
   const adapters: ReadonlyMap<PoolProvider, ProviderAdapter> = new Map([
     [
@@ -2013,6 +2032,7 @@ export function createHub(options: {
     onAccountsChanged: options.onAccountsChanged ?? (() => {}),
     onUpstreamError: options.onUpstreamError ?? (() => {}),
     onOAuthRefresh: options.onOAuthRefresh ?? (() => {}),
+    onOAuthRelay: options.onOAuthRelay ?? (() => {}),
   });
 }
 
