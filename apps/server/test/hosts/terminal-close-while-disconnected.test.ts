@@ -75,6 +75,22 @@ describe("closing a terminal while its daemon session is disconnected", () => {
       expect(terminalCloseMessages(send, next.id)).toEqual([
         { type: "terminal.close", terminalId: closed.id, reason: "user" },
       ]);
+      expect(
+        listPendingTerminalDaemonCloses(harness.db, host.id).map(
+          (pending) => pending.terminalSessionId,
+        ),
+      ).toEqual([closed.id]);
+      await harness.deps.terminalSessions.handleDaemonTerminalMessage({
+        hostId: host.id,
+        message: {
+          type: "terminal.exited",
+          terminalId: closed.id,
+          exitCode: null,
+          closeReason: "user",
+        },
+        sessionId: next.id,
+      });
+      expect(listPendingTerminalDaemonCloses(harness.db, host.id)).toEqual([]);
       await harness.deps.terminalSessions.reconcileDisconnectedHostTerminals({
         daemonSessionId: next.id,
         hostId: host.id,
@@ -189,11 +205,15 @@ describe("closing a terminal while its daemon session is disconnected", () => {
       expect(terminalCloseMessages(send, next.id)).toEqual([
         { type: "terminal.close", terminalId: closed.id, reason: "user" },
       ]);
-      expect(listPendingTerminalDaemonCloses(harness.db, host.id)).toEqual([]);
+      expect(
+        listPendingTerminalDaemonCloses(harness.db, host.id).map(
+          (pending) => pending.terminalSessionId,
+        ),
+      ).toEqual([closed.id]);
     });
   });
 
-  it("replays a close harmlessly when the server stops after the send and before the entry is removed", async () => {
+  it("keeps the close queued until the daemon acknowledges it, resends it after a disconnect before the reply, and stops once the reply arrives", async () => {
     await withTestHarness(async (harness) => {
       const { host, session } = seedHostSession(harness.deps, {
         id: "host-close-replay-window",
@@ -232,11 +252,6 @@ describe("closing a terminal while its daemon session is disconnected", () => {
           .get(terminal.id);
       const settled = exitedRow();
 
-      harness.db.$client.exec(
-        `CREATE TRIGGER crash_on_dequeue
-          BEFORE DELETE ON fork_terminal_pending_daemon_closes
-          BEGIN SELECT RAISE(ABORT, 'simulated crash'); END`,
-      );
       send.mockClear();
       const first = seedSession(harness.deps, host.id);
       send.mockReturnValue(true);
@@ -250,8 +265,10 @@ describe("closing a terminal while its daemon session is disconnected", () => {
           (pending) => pending.terminalSessionId,
         ),
       ).toEqual([terminal.id]);
-      harness.db.$client.exec("DROP TRIGGER crash_on_dequeue");
 
+      harness.deps.terminalSessions.handleDaemonSessionClosed({
+        sessionId: first.id,
+      });
       send.mockClear();
       const second = seedSession(harness.deps, host.id);
       send.mockReturnValue(true);
@@ -260,7 +277,9 @@ describe("closing a terminal while its daemon session is disconnected", () => {
         hostId: host.id,
       });
       expect(terminalCloseMessages(send, second.id)).toHaveLength(1);
-      expect(listPendingTerminalDaemonCloses(harness.db, host.id)).toEqual([]);
+      expect(listPendingTerminalDaemonCloses(harness.db, host.id)).toHaveLength(
+        1,
+      );
 
       warn.mockClear();
       clientMessages.mockClear();
@@ -277,6 +296,14 @@ describe("closing a terminal while its daemon session is disconnected", () => {
       expect(exitedRow()).toEqual(settled);
       expect(warn).not.toHaveBeenCalled();
       expect(clientMessages).not.toHaveBeenCalled();
+      expect(listPendingTerminalDaemonCloses(harness.db, host.id)).toEqual([]);
+
+      send.mockClear();
+      await harness.deps.terminalSessions.reconcileDisconnectedHostTerminals({
+        daemonSessionId: second.id,
+        hostId: host.id,
+      });
+      expect(terminalCloseMessages(send, second.id)).toHaveLength(0);
     });
   });
 
