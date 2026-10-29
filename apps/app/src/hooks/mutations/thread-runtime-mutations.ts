@@ -23,7 +23,6 @@ import type {
 } from "./mutation-request-types";
 import {
   applyCreateThreadResult,
-  applyQueuedMessageCreateResult,
   applyQueuedMessageDeleteResult,
   applyQueuedMessagesResult,
   applyQueuedMessageSendResult,
@@ -31,7 +30,6 @@ import {
   applySendThreadMessageSuccess,
   applyThreadGoalClearResult,
   applyThreadPlanCancellationResult,
-  beginCreateQueuedMessageTransaction,
   beginCreateThreadTransaction,
   beginRemoveQueuedMessageTransaction,
   beginReorderQueuedMessageTransaction,
@@ -41,14 +39,12 @@ import {
   beginStopThreadTransaction,
   beginUpdateQueuedMessageTransaction,
   prefetchThreadQueuedMessages,
-  rollbackCreateQueuedMessageTransaction,
   rollbackRemoveQueuedMessageTransaction,
   rollbackReorderQueuedMessageTransaction,
   rollbackSendThreadMessageTransaction,
   rollbackStopThreadTransaction,
   rollbackUpdateQueuedMessageTransaction,
   settleStopThreadTransaction,
-  type CreateQueuedMessageTransaction,
   type RemoveQueuedMessageTransaction,
   type ReorderQueuedMessageTransaction,
   type SendThreadMessageTransaction,
@@ -58,6 +54,7 @@ import {
 import {
   invalidateThreadBannerQueries,
   invalidateThreadHistoryRewriteQueries,
+  invalidateThreadQueuedMessageListQuery,
 } from "../cache-owners/mutation-cache-effects";
 
 interface CreateThreadQueuedMessageMutationRequest extends CreateQueuedMessageRequest {
@@ -247,44 +244,18 @@ export function createThreadQueuedMessageMutationOptions(
     mutationFn: ({
       id,
       input,
-      model,
-      serviceTier,
-      reasoningLevel,
-      permissionMode,
       senderThreadId,
-      executionInputSources,
     }: CreateThreadQueuedMessageMutationRequest): Promise<ThreadQueuedMessage> =>
       sdk.threads.queuedMessages.create({
         threadId: id,
         input,
-        model,
-        serviceTier,
-        reasoningLevel,
-        permissionMode,
-        executionInputSources,
         ...(senderThreadId !== undefined ? { senderThreadId } : {}),
       }),
-    onMutate: async (variables): Promise<CreateQueuedMessageTransaction> =>
-      beginCreateQueuedMessageTransaction({
+    onSuccess: (_queuedMessage, variables) =>
+      invalidateThreadQueuedMessageListQuery({
         queryClient,
-        request: variables,
-      }),
-    onError: (_error, variables, context) => {
-      rollbackCreateQueuedMessageTransaction({
-        queryClient,
-        request: variables,
-        transaction: context,
-      });
-    },
-    onSuccess: (queuedMessage, variables, context) => {
-      notifyComposerSubmitted({ kind: "thread", threadId: variables.id });
-      applyQueuedMessageCreateResult({
-        queryClient,
-        queuedMessage,
         threadId: variables.id,
-        transaction: context,
-      });
-    },
+      }),
   });
 }
 
@@ -536,12 +507,8 @@ export function useStopThread() {
         transaction: context,
       });
     },
-    onSettled: (_data, _error, threadId, context) => {
-      settleStopThreadTransaction({
-        queryClient,
-        threadId,
-        transaction: context,
-      });
+    onSettled: (_data, _error, _threadId, context) => {
+      settleStopThreadTransaction({ queryClient, transaction: context });
     },
   });
 }

@@ -5,6 +5,11 @@ declare module "ws" {
 
   export type RawData = string | Buffer | ArrayBuffer | Buffer[];
 
+  export interface PerMessageDeflateOptions {
+    threshold?: number;
+    zlibDeflateOptions?: { level?: number };
+  }
+
   export interface ClientOptions {
     handshakeTimeout?: number;
     headers?: Record<string, string>;
@@ -45,6 +50,7 @@ declare module "ws" {
 
   export class WebSocketServer extends EventEmitter {
     clients: Set<WebSocket>;
+    options: { perMessageDeflate?: boolean | PerMessageDeflateOptions };
     constructor(options?: {
       autoPong?: boolean;
       noServer?: boolean;

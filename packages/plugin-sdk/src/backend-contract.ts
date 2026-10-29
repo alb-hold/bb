@@ -1,9 +1,5 @@
-import type { EnvironmentRemoval } from "@bb/domain";
-import type { MachineBootstrapApi } from "./machine-bootstrap.js";
-import type Database from "better-sqlite3";
-import type { Context } from "hono";
-import type * as z from "zod";
 import type {
+  EnvironmentRemoval,
   Environment,
   Host,
   PermissionMode,
@@ -22,6 +18,10 @@ import type {
   ThreadTurnInitiator,
   WorkspaceProvisionType,
 } from "@bb/domain";
+import type { MachineBootstrapApi } from "./machine-bootstrap.js";
+import type Database from "better-sqlite3";
+import type { Context } from "hono";
+import type * as z from "zod";
 import type { ProviderFork } from "@bb/domain/provider-fork";
 import type {
   BbSdk,
@@ -901,7 +901,9 @@ export interface PluginRpc {
    * serialization. The response is `{ ok: true, result }` or
    * `{ ok: false, error: { code, message, issues? } }`. Each handler gets
    * the call's context as its second argument; `experimental_caller` names
-   * the plugin that called through `bb.sdk.plugins.callRpc`, or `client`.
+   * the plugin that called through `bb.sdk.plugins.callRpc`, or `client`,
+   * and `experimental_signal` aborts when the caller stops waiting or this
+   * plugin instance is reloaded, disabled or removed.
    */
   register<Contract extends PluginRpcContract>(
     contract: Contract,
@@ -968,7 +970,10 @@ export interface PluginCliContext {
   threadId?: string;
   projectId?: string;
   experimental_stdinInputs?: Readonly<Record<string, string>>;
-  /** Aborted when the invoking CLI HTTP request disconnects. */
+  /**
+   * Aborted when the invoking CLI HTTP request disconnects or this plugin
+   * instance is reloaded, disabled or removed.
+   */
   signal?: AbortSignal;
 }
 
@@ -1037,7 +1042,7 @@ export interface PluginCliResult {
  * Maximum combined UTF-8 bytes accepted from plugin CLI stdout and stderr.
  * This is the shared source of truth for production and the testing harness.
  */
-export const PLUGIN_CLI_OUTPUT_MAX_BYTES = 1024 * 1024;
+export const PLUGIN_CLI_OUTPUT_MAX_BYTES = 32 * 1024 * 1024;
 
 export interface PluginCliOutputLimitError {
   code: "plugin_cli_output_too_large";

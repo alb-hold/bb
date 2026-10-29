@@ -19,31 +19,21 @@ const state = vi.hoisted(() => ({
   fileReads: 0,
 }));
 
-vi.mock("node:child_process", () => ({
-  execFile: (
-    file: string,
-    _args: readonly string[],
-    _options: object,
-    callback: (
-      error: Error | null,
-      result: { stdout: string; stderr: string },
-    ) => void,
-  ) => {
+vi.mock("@get-bb/plugin-sdk/process", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@get-bb/plugin-sdk/process")>()),
+  experimental_execHostFile: (file: string) => {
     if (file !== "security") {
-      callback(null, { stdout: "2.1.270 (Claude Code)", stderr: "" });
-      return;
+      return Promise.resolve({ stdout: "2.1.270 (Claude Code)", stderr: "" });
     }
     const outcome =
       state.keychain[Math.min(state.keychainCalls, state.keychain.length - 1)];
     state.keychainCalls += 1;
     if (outcome === undefined || outcome.kind === "value") {
-      callback(null, { stdout: outcome?.stdout ?? "", stderr: "" });
-      return;
+      return Promise.resolve({ stdout: outcome?.stdout ?? "", stderr: "" });
     }
-    callback(Object.assign(new Error("security failed"), { code: outcome.code }), {
-      stdout: "",
-      stderr: "",
-    });
+    return Promise.reject(
+      Object.assign(new Error("security failed"), { code: outcome.code }),
+    );
   },
 }));
 

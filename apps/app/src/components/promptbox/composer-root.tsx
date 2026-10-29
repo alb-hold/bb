@@ -28,7 +28,6 @@ import {
   ComposerCommand,
   ComposerCommandOwnerProvider,
 } from "./composer-commands";
-import { useComposerCommandPrefetch } from "./composer-search";
 
 type PublishedEditor = Pick<
   ExperimentalComposerEditor,
@@ -168,17 +167,6 @@ export function ComposerRoot({
       reportMenuLayout({ height: 0, isOpen: false });
     };
   }, [menuOpen, menuRef, reportMenuLayout]);
-
-  const prefetchCommands = useComposerCommandPrefetch();
-  useEffect(() => {
-    const element = rootRef.current;
-    if (element === null) return;
-    if (element.contains(element.ownerDocument.activeElement)) {
-      prefetchCommands();
-    }
-    element.addEventListener("focusin", prefetchCommands);
-    return () => element.removeEventListener("focusin", prefetchCommands);
-  }, [prefetchCommands, rootRef]);
 
   useEffect(() => {
     const element = rootRef.current;

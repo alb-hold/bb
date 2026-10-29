@@ -271,7 +271,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 interface ApprovalExchange {
   payload: unknown;
   turnId: string | null;
-  providerNativeIds: boolean;
   result: PermissionResult;
 }
 
@@ -338,7 +337,6 @@ async function replay(args: { workspaceDir: string }): Promise<ReplayResult> {
     }
     return {
       payload: request.params.payload,
-      providerNativeIds: request.params.providerNativeIds === true,
       result,
       turnId: typeof turnId === "string" ? turnId : null,
     };
@@ -520,6 +518,5 @@ it("replays one scripted claude session onto the golden event stream", async () 
     reason: "Automatic review requires user escalation",
   });
   expect(canonical.approval.turnId).toBeNull();
-  expect(canonical.approval.providerNativeIds).toBe(true);
   expect(canonical.approval.result.behavior).toBe("allow");
 }, 60_000);

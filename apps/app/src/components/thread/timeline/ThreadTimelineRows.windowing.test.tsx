@@ -186,7 +186,6 @@ describe("ThreadTimelineRows windowing", () => {
         getScrollElement: () => scrollElement,
         isAtBottom: false,
         scrollElementIntoView: vi.fn(),
-        scrollElementIntoViewClampedToMaxScroll: vi.fn(),
         captureScrollAnchor: vi.fn(),
         scrollToBottom: vi.fn(),
       };
@@ -248,7 +247,6 @@ describe("ThreadTimelineRows windowing", () => {
       getScrollElement: () => scrollElement,
       isAtBottom: false,
       scrollElementIntoView,
-      scrollElementIntoViewClampedToMaxScroll: vi.fn(),
       captureScrollAnchor: vi.fn(),
       scrollToBottom: vi.fn(),
     };
@@ -305,7 +303,6 @@ describe("ThreadTimelineRows windowing", () => {
       getScrollElement: () => scrollElement,
       isAtBottom: false,
       scrollElementIntoView,
-      scrollElementIntoViewClampedToMaxScroll: vi.fn(),
       captureScrollAnchor: vi.fn(),
       scrollToBottom: vi.fn(),
     };

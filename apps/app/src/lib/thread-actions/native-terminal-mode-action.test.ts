@@ -23,6 +23,7 @@ function target(
     archivedAt: null,
     pinnedAt: null,
     sectionId: null,
+    parentNotifications: "auto",
     isUnread: false,
     status: "idle",
     environment: { id: "env_a", path: "/workspace" },
@@ -56,6 +57,7 @@ function itemFor(
     thread,
     data,
     navigate,
+    experimental_panel: {} as never,
     sdk: {} as never,
   });
   return { item, navigate };

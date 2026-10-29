@@ -1,5 +1,6 @@
+import { spawnHostProcess as spawn, hostToolchain } from "@bb/process-utils";
+import { openApplicationUrl } from "./application-url.js";
 import { createDesktopLogger } from "./desktop-logger.js";
-import { spawn } from "node:child_process";
 import { attachServerUpdateControl } from "./server-update-control.js";
 import { registerServerChoiceIpc } from "./server-choice-ipc.js";
 import { randomUUID } from "node:crypto";
@@ -219,6 +220,7 @@ import {
   BB_DESKTOP_CLOSE_SIGN_IN_WINDOW_CHANNEL,
   BB_DESKTOP_OPEN_EXTERNAL_URL_CHANNEL,
   BB_DESKTOP_OPEN_SIGN_IN_WINDOW_CHANNEL,
+  BB_DESKTOP_OPEN_APPLICATION_URL_CHANNEL,
   BB_DESKTOP_SET_THEME_CHANNEL,
   BB_DESKTOP_ZOOM_COMMAND_CHANNEL,
 } from "./desktop-update-ipc.js";
@@ -274,7 +276,6 @@ import {
   BB_DESKTOP_BROWSER_OPEN_FULL_DISK_ACCESS_SETTINGS_CHANNEL,
 } from "./desktop-browser-ipc.js";
 import { parseDesktopSystemConfig } from "./desktop-system-config.js";
-import { ensurePackagedUserShellPath } from "./desktop-shell-path.js";
 import { resolveDesktopReloadShortcut } from "./desktop-reload-shortcut.js";
 import {
   createLogTailer,
@@ -2490,6 +2491,20 @@ function registerDesktopUpdateIpc(): void {
       signInWindows.close(id, event.sender.id);
     }
   });
+  ipcMain.handle(
+    BB_DESKTOP_OPEN_APPLICATION_URL_CHANNEL,
+    async (event, value: unknown) => {
+      const owner = resolveApplicationWindow(event.sender);
+      if (
+        owner === null ||
+        owner.webContents !== event.sender ||
+        event.senderFrame !== event.sender.mainFrame
+      )
+        throw new Error("Application window is unavailable.");
+      await openApplicationUrl(value);
+    },
+  );
+
   ipcMain.on(
     BB_DESKTOP_OPEN_EXTERNAL_URL_CHANNEL,
     (_event, payload: unknown) => {
@@ -2902,13 +2917,6 @@ async function loadCachedConnectCredential(): Promise<void> {
 }
 
 async function runDesktopApp(): Promise<void> {
-  ensurePackagedUserShellPath({
-    env: process.env,
-    isPackaged: app.isPackaged,
-    logger: desktopLogger,
-    platform: process.platform,
-  });
-
   const applicationName = app.isPackaged
     ? DESKTOP_RELEASE_INFO.applicationName
     : "bb-dev";
@@ -2972,14 +2980,17 @@ async function runDesktopApp(): Promise<void> {
     },
   });
 
+  if (app.isPackaged) {
+    await hostToolchain.refresh();
+    Object.assign(process.env, hostToolchain.environment());
+  }
   await app.whenReady();
   if (app.isPackaged) {
     await session.defaultSession.clearCache();
   }
 
   const paths = createDesktopPathContext();
-  const devIcon =
-    !paths.isPackaged || process.env.BB_DESKTOP_DEV_ICON === "1";
+  const devIcon = !paths.isPackaged || process.env.BB_DESKTOP_DEV_ICON === "1";
   const iconPath = resolveDesktopIconPath({
     devIcon,
     packagedIconFileName: DESKTOP_RELEASE_INFO.iconFileName,

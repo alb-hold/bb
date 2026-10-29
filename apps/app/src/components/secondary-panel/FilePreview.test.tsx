@@ -15,7 +15,7 @@ import {
   getCsvTruncationNote,
 } from "./FilePreview";
 import { SOURCE_CODE_MAX_LINES } from "@/components/code/source-code-budget";
-import { BbSourceCodeSplit } from "@/components/code/SourceCodeHost";
+import { BbSourceCodeSplit } from "@/components/code/BbSourceCodeSplit";
 import { SecondaryPanelFilePreview } from "./ThreadStorageFilePreview";
 import { CompactViewportOverrideProvider } from "@bb/shared-ui/hooks/use-compact-viewport";
 import { HttpError } from "@/lib/api";

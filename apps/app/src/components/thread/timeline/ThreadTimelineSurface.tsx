@@ -27,7 +27,6 @@ import type {
   ThreadTimelineConsumerMessageAction,
   ThreadTimelineLinkHandler,
   ThreadTimelineLocalFileLinkHandler,
-  ThreadTimelineOpenPluginPanelHandler,
   ThreadTimelineUnreadDividerPlacement,
 } from "./types.js";
 
@@ -58,7 +57,6 @@ export interface ThreadTimelineSurfaceProps {
   onLoadOlderRows?: () => Promise<void> | void;
   onOpenLink?: ThreadTimelineLinkHandler;
   onOpenLocalFileLink?: ThreadTimelineLocalFileLinkHandler;
-  onOpenPluginPanel?: ThreadTimelineOpenPluginPanelHandler;
   onTitleAction?: TimelineTitleActionResolver;
   projectId?: string;
   resolveMentionLink?: PromptMentionLinkResolver;
@@ -72,6 +70,7 @@ export interface ThreadTimelineSurfaceProps {
   threadId: string;
   threadIsActive: boolean;
   threadRuntimeDisplayStatus: ThreadRuntimeDisplayStatus;
+  unreadDividerAutoScroll?: boolean;
   unreadDividerPlacement?: ThreadTimelineUnreadDividerPlacement | null;
   workspaceRootPath: string | undefined;
 }
@@ -160,7 +159,6 @@ export function ThreadTimelineSurface({
   onLoadOlderRows,
   onOpenLink,
   onOpenLocalFileLink,
-  onOpenPluginPanel,
   onTitleAction,
   projectId,
   resolveMentionLink,
@@ -174,6 +172,7 @@ export function ThreadTimelineSurface({
   threadId,
   threadIsActive,
   threadRuntimeDisplayStatus,
+  unreadDividerAutoScroll,
   unreadDividerPlacement,
   workspaceRootPath,
 }: ThreadTimelineSurfaceProps) {
@@ -243,7 +242,6 @@ export function ThreadTimelineSurface({
             includePluginMessageActions={includePluginMessageActions}
             onOpenLink={onOpenLink}
             onOpenLocalFileLink={onOpenLocalFileLink}
-            onOpenPluginPanel={onOpenPluginPanel}
             onTitleAction={onTitleAction}
             projectId={projectId}
             resolveMentionLink={resolveMentionLink}
@@ -257,6 +255,9 @@ export function ThreadTimelineSurface({
             threadId={threadId}
             threadIsActive={threadIsActive}
             threadRuntimeDisplayStatus={threadRuntimeDisplayStatus}
+            {...(unreadDividerAutoScroll === undefined
+              ? {}
+              : { unreadDividerAutoScroll })}
             unreadDividerPlacement={unreadDividerPlacement}
             workspaceRootPath={workspaceRootPath}
           />

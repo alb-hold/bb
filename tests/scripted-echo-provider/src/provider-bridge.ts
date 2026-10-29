@@ -643,7 +643,6 @@ function beginTurn(args: {
           plan.approvalKind,
           `approval-${providerTurnId}`,
         ),
-        providerNativeIds: true,
       },
     );
     pendingReplies.set(requestId, {
@@ -666,7 +665,6 @@ function beginTurn(args: {
         threadId: session.threadId,
         turnId: providerTurnId,
         payload: userQuestionPayload(requestId),
-        providerNativeIds: true,
       },
     });
     pendingReplies.set(requestId, {
@@ -684,7 +682,6 @@ function beginTurn(args: {
       callId: `call-${session.turnCount}`,
       tool: plan.toolName,
       arguments: {},
-      providerNativeIds: true,
     });
     pendingReplies.set(requestId, {
       kind: "tool",

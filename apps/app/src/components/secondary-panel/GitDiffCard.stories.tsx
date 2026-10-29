@@ -1,6 +1,6 @@
 import { useCallback, useMemo, useState, type ReactNode } from "react";
 import type { FileContents } from "@pierre/diffs";
-import type { DiffPresentation } from "@/components/code/code-rendering";
+import type { DiffPresentation } from "@bb/shared-ui/git-diff/renderers";
 import { GitDiffCard } from "../git-diff/GitDiffCard";
 import {
   DEFAULT_CODE_OVERFLOW_MODE,
@@ -8,17 +8,17 @@ import {
 } from "@/lib/code-overflow-mode";
 import {
   GitDiffToolbar,
-  type GitDiffDisplayMode,
   type GitDiffSelectionOption,
-} from "./GitDiffToolbar";
-import { filterDiffFilesByPath } from "./git-diff/filter-diff-files";
-import { DEFAULT_DIFF_FILE_FILTERS } from "./git-diff/diff-file-filters";
-import type { DiffFileFilters } from "./git-diff/diff-file-filters";
+} from "../../../../../plugins/git/ui/diff/GitDiffToolbar";
+import type { GitDiffDisplayMode } from "../../../../../plugins/git/ui/diff/git-diff-view-preferences";
+import { filterDiffFilesByPath } from "../../../../../plugins/git/ui/diff/filter-diff-files";
+import { DEFAULT_DIFF_FILE_FILTERS } from "../../../../../plugins/git/ui/diff/diff-file-filters";
+import type { DiffFileFilters } from "../../../../../plugins/git/ui/diff/diff-file-filters";
 import {
   parseGitDiffFiles,
   summarizeGitDiffFile,
   type ParsedGitDiffFile,
-} from "../git-diff/git-diff-parsing";
+} from "@bb/shared-ui/git-diff/parsing";
 import { StoryCard, StoryRow } from "../../../.ladle/story-card";
 
 export default {

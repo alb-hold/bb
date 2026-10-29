@@ -1543,7 +1543,7 @@ async function selectAcpNativeModel(args: {
       models?.currentModelId !== selection.modelId);
   if (shouldSetModel) {
     let configState: AcpConfigStateResult | null = null;
-    let setModel = true;
+    let setModel = !modelOption;
     if (modelOption) {
       try {
         configState = await session.connection.request({
@@ -1556,8 +1556,10 @@ async function selectAcpNativeModel(args: {
           resultSchema: z.union([acpConfigStateResultSchema, z.null()]),
           timeoutMs: ACP_SESSION_CONFIG_TIMEOUT_MS,
         });
-        setModel = false;
-      } catch {
+      } catch (error) {
+        if (!sessionModelsIncludeSelection) {
+          throw error;
+        }
         setModel = true;
       }
     }
@@ -2198,6 +2200,7 @@ type AcpSessionStartRequest =
       kind: "resume";
       params: AcpSessionParams;
       resumeProviderThreadId: string;
+      continuesTurn: boolean;
     }
   | {
       kind: "fork";
@@ -2238,6 +2241,18 @@ function dialectLaunchEnv(
       external_directory: outsideEdits,
     }),
   };
+}
+
+function additionalSessionDirectories(
+  params: AcpSessionParams,
+  capabilities: AcpAgentCapabilities,
+): { additionalDirectories?: string[] } {
+  const directories = params.workspaceWriteRoots.filter(
+    (root) => root !== params.cwd,
+  );
+  return directories.length > 0 && capabilities.session.additionalDirectories
+    ? { additionalDirectories: directories }
+    : {};
 }
 
 async function startAgentSession(
@@ -2429,6 +2444,7 @@ async function startAgentSession(
           sessionId: request.sourceProviderThreadId,
           cwd: params.cwd,
           mcpServers,
+          ...additionalSessionDirectories(params, capabilities),
         },
         resultSchema: acpSessionForkResultSchema,
         timeoutMs: ACP_SESSION_SETUP_TIMEOUT_MS,
@@ -2463,6 +2479,7 @@ async function startAgentSession(
             sessionId: request.resumeProviderThreadId,
             cwd: params.cwd,
             mcpServers,
+            ...additionalSessionDirectories(params, capabilities),
           },
           resultSchema: z.union([acpConfigStateResultSchema, z.null()]),
           timeoutMs: ACP_SESSION_SETUP_TIMEOUT_MS,
@@ -2490,7 +2507,11 @@ async function startAgentSession(
       session.pendingLoadUsageUpdate = undefined;
       const newSession = await connection.request({
         method: "session/new",
-        params: { cwd: params.cwd, mcpServers },
+        params: {
+          cwd: params.cwd,
+          mcpServers,
+          ...additionalSessionDirectories(params, capabilities),
+        },
         resultSchema: acpSessionNewResultSchema,
         timeoutMs: ACP_SESSION_SETUP_TIMEOUT_MS,
       });
@@ -2549,7 +2570,9 @@ async function startAgentSession(
       providerThreadId: sessionId,
       sessionRestorable: session.supportsLoadSession,
     });
-    sendThreadDeltas(bbThreadId, [{ kind: "session.reset" }]);
+    if (request.kind !== "resume" || !request.continuesTurn) {
+      sendThreadDeltas(bbThreadId, [{ kind: "session.reset" }]);
+    }
     publishSessionSnapshot(session);
     if (createdFreshSession) {
       emitGrokContextWindow(session, 0);
@@ -3068,12 +3091,7 @@ function runTurn(
         }
         setActivePromptKind(session, "turn");
         session.turnSettled = previousSession.turnSettled;
-        if (session !== previousSession) {
-          emitForSession(session, ACP_TURN_STARTED_METHOD, {
-            threadId: session.bbThreadId,
-          });
-          session.awaitingFirstPrompt = false;
-        }
+        session.awaitingFirstPrompt = false;
         const prompt = buildPromptContentBlocks(session, pending.input);
         let inputAccepted = false;
         let busyRetries = 0;
@@ -3303,20 +3321,31 @@ async function rebuildAgentSession(
       : "Execution settings changed; the ACP session was rebuilt to apply them.";
   const queuedInputs = session.queuedInputs.splice(0);
   const continuingTurn = session.activePromptKind === "turn";
-  finishTurn(session, "cancelled");
+  if (continuingTurn) {
+    emitForSession(session, ACP_PROMPT_INTERRUPTED_METHOD, {
+      threadId: session.bbThreadId,
+    });
+    for (const controller of session.pendingToolCalls) controller.abort();
+    setActivePromptKind(session, null);
+    session.promptRequestPending = false;
+    session.cancelRequested = false;
+  }
   let replacement: AcpThreadSession;
   try {
     replacement = await startAgentSession({
       kind: "resume",
       params: construction,
       resumeProviderThreadId: previousProviderThreadId,
+      continuesTurn: continuingTurn,
     });
   } catch (error) {
     if (continuingTurn) {
-      emitSessionError(
-        session,
-        error instanceof Error ? error.message : String(error),
-      );
+      const message = error instanceof Error ? error.message : String(error);
+      emitForSession(session, "error", {
+        threadId: session.bbThreadId,
+        message,
+      });
+      emitSessionError(session, message);
     }
     throw error;
   }
@@ -3846,6 +3875,7 @@ async function handleRequest(
               kind: "resume",
               params: sessionParams,
               resumeProviderThreadId: request.params.providerThreadId,
+              continuesTurn: false,
             }
           : request.method === "thread/fork"
             ? {

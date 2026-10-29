@@ -230,7 +230,7 @@ describe("the Claude CLI that writing assistance runs", () => {
       expect(await claudeExecutable()).toBe("/opt/claude/bin/claude");
       delete process.env.BB_CLAUDE_CODE_EXECUTABLE;
       if (process.platform !== "win32") {
-        expect(await claudeExecutable()).toBe("claude");
+        expect(await claudeExecutable()).toMatch(/(^|\/)claude$/u);
       }
     } finally {
       if (previous === undefined) delete process.env.BB_CLAUDE_CODE_EXECUTABLE;

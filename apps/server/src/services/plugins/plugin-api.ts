@@ -1,5 +1,7 @@
-import { rpcInvalidationTags } from "@get-bb/plugin-sdk/internal/rpc-tags";
-import type { ContractTagDeclarations } from "@bb/domain";
+import {
+  rpcInvalidationTags,
+  type ContractTagDeclarations,
+} from "@get-bb/plugin-sdk/internal/rpc-tags";
 import {
   environmentCompositionSchema,
   validateServerAccessProviderDeclaration,
@@ -150,7 +152,7 @@ export type {
   PluginThreadEventPayloads,
 } from "@get-bb/plugin-sdk";
 
-class PluginContextStaleError extends Error {
+export class PluginContextStaleError extends Error {
   constructor(pluginId: string, apiMember: string) {
     super(
       `plugin "${pluginId}" used a stale API handle — it was reloaded or disabled; ` +
@@ -681,13 +683,18 @@ export function createPluginApi(options: {
   const backgroundServices: PluginBackgroundServiceRecord[] = [];
   const schedules: PluginScheduleRecord[] = [];
 
-  function assertLive(apiMember?: string): void {
-    if (invalidated) {
-      throw new PluginContextStaleError(
-        pluginId,
-        apiMember ?? inferPluginApiMember(),
-      );
+  const staleErrors = new Map<string, PluginContextStaleError>();
+  function stale(apiMember: string): PluginContextStaleError {
+    let error = staleErrors.get(apiMember);
+    if (error === undefined) {
+      error = new PluginContextStaleError(pluginId, apiMember);
+      staleErrors.set(apiMember, error);
     }
+    return error;
+  }
+
+  function assertLive(apiMember?: string): void {
+    if (invalidated) throw stale(apiMember ?? inferPluginApiMember());
   }
 
   const prefix = `[plugin:${pluginId}]`;
@@ -1117,10 +1124,7 @@ export function createPluginApi(options: {
       };
       if (invalidated) {
         await lease.close();
-        throw new PluginContextStaleError(
-          pluginId,
-          "internal_DO_NOT_USE_openTunnelIngress",
-        );
+        throw stale("internal_DO_NOT_USE_openTunnelIngress");
       }
       openTunnelIngresses.add(close);
       disposeHooks.push(close);
