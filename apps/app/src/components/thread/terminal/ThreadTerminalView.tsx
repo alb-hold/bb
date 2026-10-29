@@ -1585,7 +1585,9 @@ export function ThreadTerminalView({
         return buffer ? buffer.baseY + buffer.cursorY : 0;
       },
     });
+    let parsingOutputSequence: number | null = null;
     const recordOutputStart = (sequence: number) => {
+      parsingOutputSequence = sequence;
       const outputAnchor = outputLineAnchorTracker.recordOutputStart(sequence);
       if (!outputAnchor) return;
       outputLineAnchors.push(outputAnchor);
@@ -1794,6 +1796,12 @@ export function ThreadTerminalView({
         (payload) => {
           const progress = parseTerminalProgressOsc(payload);
           if (progress === undefined) return false;
+          if (
+            parsingOutputSequence !== null &&
+            parsingOutputSequence < replayNextSequence
+          ) {
+            return true;
+          }
           onProgressChangeRef.current?.(progress);
           return true;
         },
@@ -2446,6 +2454,7 @@ export function ThreadTerminalView({
           replayPreview = null;
           activeTerminal.reset();
           outputBoundaries.reset();
+          parsingOutputSequence = null;
           outputLineAnchorTracker.reset();
           writeTerminalStatus({
             terminal: activeTerminal,
@@ -2470,6 +2479,7 @@ export function ThreadTerminalView({
           tailBytes: 64 * 1024,
         });
         if (!disposed) {
+          replayNextSequence = output.nextSeq;
           await writeRetainedTerminalOutput({
             chunks: output.chunks.map((chunk) => ({
               seq: chunk.seq,
@@ -2491,7 +2501,6 @@ export function ThreadTerminalView({
           });
           replayStartSequence = output.chunks[0]?.seq ?? output.nextSeq;
           latestOutputSequence = output.chunks.at(-1)?.seq ?? output.nextSeq;
-          replayNextSequence = output.nextSeq;
           restoreViewport();
         }
       } else {
