@@ -1929,16 +1929,8 @@ export class TerminalSessionLifecycle {
       if (!sent) continue;
       this.options.logger.info(
         { terminalId: row.id, sessionId: args.daemonSessionId },
-        "Closed a terminal on the reconnected daemon that was closed while it was disconnected",
+        "Asked the reconnected daemon to close a terminal that was closed while it was disconnected",
       );
-      try {
-        takePendingTerminalDaemonClose(this.options.db, row.id);
-      } catch (error) {
-        this.options.logger.warn(
-          { err: error, terminalId: row.id },
-          "Could not remove a delivered daemon close; it will be sent again on the next reconnect, which is harmless",
-        );
-      }
     }
   }
 
@@ -3368,6 +3360,13 @@ export class TerminalSessionLifecycle {
           this.options.db,
           args.message.terminalId,
         );
+        if (
+          current &&
+          current.status === "exited" &&
+          current.hostId === args.hostId
+        ) {
+          takePendingTerminalDaemonClose(this.options.db, current.id);
+        }
         if (
           !current ||
           current.hostId !== args.hostId ||
