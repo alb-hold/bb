@@ -84,7 +84,7 @@ function nonFilesystemEntryIsOutsideWithoutInspection(
   return true;
 }
 
-function relativeUnixBindIsUnreadable(
+function isRelativeUnixBindPath(
   value: string,
   lsofType: string | undefined,
 ): boolean {
@@ -95,6 +95,14 @@ function relativeUnixBindIsUnreadable(
   if (normalized.startsWith("->")) return false;
   if (/^0x[0-9a-fA-F]+$/.test(normalized)) return false;
   return true;
+}
+
+function relativeUnixBindNeedsUnreadableWithoutCwd(
+  value: string,
+  lsofType: string | undefined,
+): boolean {
+  if (!isRelativeUnixBindPath(value, lsofType)) return false;
+  return stripDeletedSuffix(value).trim().startsWith("./");
 }
 
 function normalizeLsofPathName(value: string): string {
@@ -197,11 +205,21 @@ async function classifyPathForWorkspace(
   workspaceCanonical: string,
   workspaceArg: string,
   lsofType?: string,
+  processCwd?: string,
 ): Promise<"matched" | "outside" | "unreadable"> {
-  if (relativeUnixBindIsUnreadable(value, lsofType)) return "unreadable";
-  if (nonFilesystemEntryIsOutsideWithoutInspection(value, lsofType))
+  if (relativeUnixBindNeedsUnreadableWithoutCwd(value, lsofType))
+    return "unreadable";
+  let pathName = normalizeLsofPathName(value);
+  let bindWasDotRelativeUnix = false;
+  if (isRelativeUnixBindPath(value, lsofType)) {
+    if (processCwd === undefined) return "unreadable";
+    bindWasDotRelativeUnix = stripDeletedSuffix(value).trim().startsWith("./");
+    pathName = normalizeLsofPathName(
+      path.resolve(processCwd, stripDeletedSuffix(value).trim()),
+    );
+  }
+  if (nonFilesystemEntryIsOutsideWithoutInspection(pathName, lsofType))
     return "outside";
-  const pathName = normalizeLsofPathName(value);
   if (
     !pathLexicallyCouldBeInWorkspace(
       pathName,
@@ -209,15 +227,15 @@ async function classifyPathForWorkspace(
       workspaceArg,
       lsofType,
     )
-  )
+  ) {
+    if (bindWasDotRelativeUnix) return "unreadable";
     return "outside";
+  }
   const ancestor = await resolveThroughExistingAncestor(pathName);
   if (ancestor.ok && underWorkspace(ancestor.path, workspaceCanonical))
     return "matched";
   try {
-    if (
-      underWorkspace(await canonicalPath(pathName), workspaceCanonical)
-    )
+    if (underWorkspace(await canonicalPath(pathName), workspaceCanonical))
       return "matched";
   } catch {
     undefined;
@@ -230,13 +248,16 @@ function parseLsofOutput(output: string):
       ok: true;
       paths: Array<{ pid: number; path: string; type?: string }>;
       unreadablePids: number[];
+      cwdByPid: Map<number, string>;
     }
   | { ok: false } {
   const paths: Array<{ pid: number; path: string; type?: string }> = [];
   const unreadablePids: number[] = [];
+  const cwdByPid = new Map<number, string>();
   let pid: number | null = null;
   let sawName = false;
   let currentType: string | undefined;
+  let currentFd: string | undefined;
   const flush = () => {
     if (pid !== null && !sawName) unreadablePids.push(pid);
   };
@@ -250,20 +271,25 @@ function parseLsofOutput(output: string):
       pid = next;
       sawName = false;
       currentType = undefined;
+      currentFd = undefined;
     } else if (tag === "f") {
       currentType = undefined;
+      currentFd = line.slice(1);
     } else if (tag === "t") {
       currentType = line.slice(1);
     } else if (tag === "n") {
       if (pid === null) return { ok: false };
       sawName = true;
-      paths.push({ pid, path: line.slice(1), type: currentType });
+      const name = line.slice(1);
+      if (currentFd === "cwd") cwdByPid.set(pid, name);
+      paths.push({ pid, path: name, type: currentType });
+      currentFd = undefined;
     } else {
       return { ok: false };
     }
   }
   flush();
-  return { ok: true, paths, unreadablePids };
+  return { ok: true, paths, unreadablePids, cwdByPid };
 }
 
 type LsofRun = {
@@ -428,11 +454,15 @@ async function inspectDarwinWorkspaceProcesses(
     [...pathsByPid.entries()].map(async ([pid, paths]) => {
       let matched = false;
       for (const { path: value, type } of paths) {
+        const processCwd = parsed.cwdByPid.get(pid);
         const kind = await classifyPathForWorkspace(
           value,
           workspace,
           workspaceArg,
           type,
+          processCwd === undefined
+            ? undefined
+            : normalizeLsofPathName(processCwd),
         );
         if (kind === "matched") matched = true;
         else if (kind === "unreadable") unreadablePids.add(pid);
