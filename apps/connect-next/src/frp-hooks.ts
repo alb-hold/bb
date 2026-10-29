@@ -111,12 +111,14 @@ export interface FrpHookOptions {
   directory: TunnelDirectory;
   log: Log;
   onLogin?: (clientAddress: string, label: string, runId: string) => void;
-  clientConnected?: (label: string, runId: string) => boolean;
+  claimConnection?: (label: string, runId: string) => number | null;
+  connectionOpen?: (connectionId: number) => boolean;
 }
 
 export function createFrpHooks(options: FrpHookOptions) {
   const { accounts, directory, log } = options;
   const proxies = new Map<string, { label: string; subdomain: string }>();
+  const owners = new Map<string, number | null>();
   const pendingRoutes = new Map<string, NodeJS.Timeout>();
 
   type Verdict = "linked" | "refused" | "unknown";
@@ -191,6 +193,10 @@ export function createFrpHooks(options: FrpHookOptions) {
         directory.disconnected({ ...previous, clientId: proxyKey });
       }
       proxies.set(proxyKey, proxy);
+      owners.set(
+        proxyKey,
+        options.claimConnection?.(user.label, user.runId) ?? null,
+      );
       const routed = setTimeout(() => {
         pendingRoutes.delete(proxyKey);
         if (proxies.get(proxyKey) === proxy) {
@@ -207,19 +213,21 @@ export function createFrpHooks(options: FrpHookOptions) {
     if (call.op === "CloseProxy") {
       const proxyKey = `${user.runId}\n${call.proxyName ?? ""}`;
       const proxy = proxies.get(proxyKey);
+      const owner = owners.get(proxyKey) ?? null;
       clearTimeout(pendingRoutes.get(proxyKey));
       pendingRoutes.delete(proxyKey);
       if (proxy !== undefined) {
         proxies.delete(proxyKey);
+        owners.delete(proxyKey);
         directory.disconnected({ ...proxy, clientId: proxyKey });
         log("info", "frp_proxy_closed", {
           label: proxy.label,
           subdomain: proxy.subdomain,
         });
-        const clientConnected = options.clientConnected;
-        if (clientConnected !== undefined) {
+        const connectionOpen = options.connectionOpen;
+        if (connectionOpen !== undefined && owner !== null) {
           setTimeout(() => {
-            if (clientConnected(proxy.label, user.runId)) {
+            if (connectionOpen(owner)) {
               directory.removed(proxy.subdomain);
             }
           }, REMOVAL_SETTLE_MS).unref();

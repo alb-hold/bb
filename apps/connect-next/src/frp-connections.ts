@@ -1,9 +1,10 @@
 import type { Duplex } from "node:stream";
 
 interface FrpConnection {
+  id: number;
   sockets: Duplex[];
   label: string | null;
-  runId: string | null;
+  runId: string;
   goodbye: (() => void) | null;
 }
 
@@ -11,13 +12,16 @@ export interface FrpConnections {
   websocketOrigin(): string;
   track(clientAddress: string, sockets: Duplex[], goodbye?: () => void): void;
   loggedIn(clientAddress: string, label: string, runId: string): void;
+  claim(label: string, runId: string): number | null;
+  isOpen(connectionId: number): boolean;
   close(label: string): number;
   closeAll(): number;
-  count(label: string, runId?: string): number;
+  count(label: string): number;
 }
 
 export function createFrpConnections(): FrpConnections {
   let next = 0;
+  let nextConnectionId = 0;
   const open = new Map<string, FrpConnection>();
 
   function end(connection: FrpConnection): void {
@@ -28,12 +32,8 @@ export function createFrpConnections(): FrpConnections {
     for (const socket of connection.sockets) socket.destroy();
   }
 
-  function matching(label: string, runId?: string): [string, FrpConnection][] {
-    return [...open].filter(
-      ([, connection]) =>
-        connection.label === label &&
-        (runId === undefined || connection.runId === runId),
-    );
+  function matching(label: string): [string, FrpConnection][] {
+    return [...open].filter(([, connection]) => connection.label === label);
   }
 
   return {
@@ -42,10 +42,12 @@ export function createFrpConnections(): FrpConnections {
       return `http://frpc-${next}.gate.invalid`;
     },
     track(clientAddress, sockets, goodbye) {
+      nextConnectionId += 1;
       const connection: FrpConnection = {
+        id: nextConnectionId,
         sockets,
         label: null,
-        runId: null,
+        runId: "",
         goodbye: goodbye ?? null,
       };
       open.set(clientAddress, connection);
@@ -62,6 +64,22 @@ export function createFrpConnections(): FrpConnections {
       connection.label = label;
       connection.runId = runId;
     },
+    claim(label, runId) {
+      if (runId === "") return null;
+      const candidates = matching(label).filter(
+        ([, connection]) =>
+          connection.runId === "" || connection.runId === runId,
+      );
+      const only = candidates.length === 1 ? candidates[0]?.[1] : undefined;
+      if (only === undefined) return null;
+      only.runId = runId;
+      return only.id;
+    },
+    isOpen(connectionId) {
+      return [...open.values()].some(
+        (connection) => connection.id === connectionId,
+      );
+    },
     close(label) {
       const found = matching(label);
       for (const [clientAddress, connection] of found) {
@@ -76,6 +94,6 @@ export function createFrpConnections(): FrpConnections {
       for (const connection of all) end(connection);
       return all.length;
     },
-    count: (label, runId) => matching(label, runId).length,
+    count: (label) => matching(label).length,
   };
 }

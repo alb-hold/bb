@@ -513,7 +513,8 @@ describe("frp hooks", () => {
         log: silentLog,
         onLogin: (address, label, runId) =>
           connections.loggedIn(address, label, runId),
-        clientConnected: (label, runId) => connections.count(label, runId) > 0,
+        claimConnection: (label, runId) => connections.claim(label, runId),
+        connectionOpen: (connectionId) => connections.isOpen(connectionId),
       });
       await new Promise<void>((resolve) =>
         hooks.server.listen(0, "127.0.0.1", resolve),
@@ -534,20 +535,24 @@ describe("frp hooks", () => {
         expect(await response.json()).toMatchObject({ reject: false });
       };
       const metas = { [FRP_CREDENTIAL_META]: "credential" };
-      const login = async (runId: string, clientAddress: string) => {
+      const login = async (clientAddress: string, runId?: string) => {
         const socket = new PassThrough();
         connections.track(clientAddress, [socket]);
         await post("Login", {
           user: "bee",
           metas,
-          run_id: runId,
+          ...(runId === undefined ? {} : { run_id: runId }),
           client_address: clientAddress,
         });
         return socket;
       };
-      const proxyCall = (op: string, runId: string) =>
+      const proxyCall = (op: string, runId?: string) =>
         post(op, {
-          user: { user: "bee", metas, run_id: runId },
+          user: {
+            user: "bee",
+            metas,
+            ...(runId === undefined ? {} : { run_id: runId }),
+          },
           proxy_name: "bee.bb",
           proxy_type: "http",
           subdomain: "bee",
@@ -558,10 +563,16 @@ describe("frp hooks", () => {
     const sleep = (ms: number) =>
       new Promise<void>((resolve) => setTimeout(resolve, ms));
 
+    const STILL_WAITING = "still waiting";
+
+    function pending(waiting: Promise<unknown>) {
+      return Promise.race([waiting, sleep(0).then(() => STILL_WAITING)]);
+    }
+
     it("keeps a waiting request when a new client logs in before the old proxy's removal check", async () => {
       const { directory, login, proxyCall } = await startHooks();
       const signal = new AbortController().signal;
-      const first = await login("run-1", "first:1");
+      const first = await login("first:1");
       await proxyCall("NewProxy", "run-1");
       await sleep(300);
       expect(directory.locate("bee").kind).toBe("here");
@@ -570,26 +581,61 @@ describe("frp hooks", () => {
       await sleep(20);
       await proxyCall("CloseProxy", "run-1");
       const waiting = directory.awaitReturn("bee", signal);
-      await login("run-2", "second:1");
+      await login("second:1");
       await sleep(REMOVAL_SETTLE_MS + 200);
-      expect(
-        await Promise.race([waiting, sleep(0).then(() => "still waiting")]),
-      ).toBe("still waiting");
+      expect(await pending(waiting)).toBe(STILL_WAITING);
 
       await proxyCall("NewProxy", "run-2");
+      expect(await waiting).toEqual({ kind: "here" });
+    });
+
+    it("keeps a waiting request when the same run reconnects before the removal check", async () => {
+      const { directory, login, proxyCall } = await startHooks();
+      const signal = new AbortController().signal;
+      const first = await login("first:1");
+      await proxyCall("NewProxy", "run-1");
+      await sleep(300);
+      expect(directory.locate("bee").kind).toBe("here");
+
+      first.destroy();
+      await sleep(20);
+      await proxyCall("CloseProxy", "run-1");
+      const waiting = directory.awaitReturn("bee", signal);
+      await login("second:1", "run-1");
+      await sleep(REMOVAL_SETTLE_MS + 200);
+      expect(await pending(waiting)).toBe(STILL_WAITING);
+
+      await proxyCall("NewProxy", "run-1");
       expect(await waiting).toEqual({ kind: "here" });
     });
 
     it("stops waiting for a proxy its still-connected client closed", async () => {
       const { directory, login, proxyCall } = await startHooks();
       const signal = new AbortController().signal;
-      await login("run-1", "first:1");
+      await login("first:1");
       await proxyCall("NewProxy", "run-1");
       await sleep(300);
       expect(directory.locate("bee").kind).toBe("here");
 
       await proxyCall("CloseProxy", "run-1");
-      const waiting = directory.awaitReturn("bee", signal);
+      expect(await directory.awaitReturn("bee", signal)).toEqual({
+        kind: "offline",
+      });
+    });
+
+    it("does not end the wait when a hook payload carries no run id", async () => {
+      const { directory, login, proxyCall } = await startHooks();
+      const abort = new AbortController();
+      await login("first:1");
+      await proxyCall("NewProxy");
+      await sleep(300);
+      expect(directory.locate("bee").kind).toBe("here");
+
+      await proxyCall("CloseProxy");
+      const waiting = directory.awaitReturn("bee", abort.signal);
+      await sleep(REMOVAL_SETTLE_MS + 200);
+      expect(await pending(waiting)).toBe(STILL_WAITING);
+      abort.abort();
       expect(await waiting).toEqual({ kind: "offline" });
     });
   });
