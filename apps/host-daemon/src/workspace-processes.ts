@@ -84,17 +84,93 @@ function nonFilesystemEntryIsOutsideWithoutInspection(
   return true;
 }
 
+function isIgnorableUnixLsofName(value: string): boolean {
+  const normalized = stripDeletedSuffix(value).trim();
+  if (normalized.length === 0) return true;
+  if (normalized.startsWith("->")) return true;
+  if (/^0x[0-9a-fA-F]+$/.test(normalized)) return true;
+  if (normalized.startsWith("[ctl")) return true;
+  if (/^count=/.test(normalized)) return true;
+  return false;
+}
+
 function isRelativeUnixBindPath(
   value: string,
   lsofType: string | undefined,
 ): boolean {
   if (lsofType !== "unix") return false;
   const normalized = stripDeletedSuffix(value).trim();
-  if (normalized.length === 0) return false;
+  if (isIgnorableUnixLsofName(normalized)) return false;
   if (normalized.startsWith("/")) return false;
-  if (normalized.startsWith("->")) return false;
-  if (/^0x[0-9a-fA-F]+$/.test(normalized)) return false;
   return true;
+}
+
+const WORKSPACE_SOCKET_FIND_MAX_DEPTH = 12;
+
+function workspaceSocketFindTimeoutMs(): number {
+  const raw = process.env.BB_WS_SOCKET_FIND_TIMEOUT_MS;
+  if (raw != null && raw !== "") {
+    const parsed = Number(raw);
+    if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  }
+  return 2000;
+}
+
+function relativeUnixPathSuffix(relativeName: string): string {
+  const trimmed = stripDeletedSuffix(relativeName)
+    .trim()
+    .replace(/^\.\//, "");
+  const parts = trimmed.split(/[/\\]/).filter((part) => part.length > 0);
+  return `/${parts.join("/")}`;
+}
+
+function socketPathMatchesSuffix(
+  candidate: string,
+  root: string,
+  suffix: string,
+): boolean {
+  const normalized = path.normalize(candidate);
+  if (!normalized.startsWith(root + path.sep) && normalized !== root)
+    return false;
+  return normalized.endsWith(suffix);
+}
+
+async function workspaceHasSocketWithSuffix(
+  workspaceCanonical: string,
+  workspaceArg: string,
+  relativeName: string,
+): Promise<"yes" | "no" | "unreadable"> {
+  const suffix = relativeUnixPathSuffix(relativeName);
+  const roots = new Set<string>([
+    path.normalize(workspaceCanonical),
+    path.normalize(workspaceArg),
+  ]);
+  for (const root of roots) {
+    try {
+      const result = await execHostFile(
+        "find",
+        [
+          "-P",
+          root,
+          "-maxdepth",
+          String(WORKSPACE_SOCKET_FIND_MAX_DEPTH),
+          "-type",
+          "s",
+        ],
+        {
+          maxBuffer: 1024 * 1024,
+          timeout: workspaceSocketFindTimeoutMs(),
+        },
+      );
+      for (const line of result.stdout.split("\n")) {
+        if (line.length === 0) continue;
+        if (socketPathMatchesSuffix(line, root, suffix)) return "yes";
+      }
+    } catch {
+      return "unreadable";
+    }
+  }
+  return "no";
 }
 
 function normalizeLsofPathName(value: string): string {
@@ -230,24 +306,33 @@ async function classifyPathForWorkspace(
 ): Promise<"matched" | "outside" | "unreadable"> {
   if (isRelativeUnixBindPath(value, lsofType)) {
     if (processCwd === undefined) return "unreadable";
+    const relativeName = stripDeletedSuffix(value).trim();
     const pathName = normalizeLsofPathName(
-      path.resolve(processCwd, stripDeletedSuffix(value).trim()),
+      path.resolve(processCwd, relativeName),
     );
     if (
-      !pathLexicallyCouldBeInWorkspace(
+      pathLexicallyCouldBeInWorkspace(
         pathName,
         workspaceCanonical,
         workspaceArg,
         lsofType,
       )
-    )
-      return "unreadable";
-    return classifyAbsolutePathForWorkspace(
-      pathName,
+    ) {
+      return classifyAbsolutePathForWorkspace(
+        pathName,
+        workspaceCanonical,
+        workspaceArg,
+        lsofType,
+      );
+    }
+    const suffixMatch = await workspaceHasSocketWithSuffix(
       workspaceCanonical,
       workspaceArg,
-      lsofType,
+      relativeName,
     );
+    if (suffixMatch === "yes") return "unreadable";
+    if (suffixMatch === "no") return "outside";
+    return "unreadable";
   }
   const pathName = normalizeLsofPathName(value);
   return classifyAbsolutePathForWorkspace(
