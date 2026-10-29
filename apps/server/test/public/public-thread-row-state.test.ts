@@ -1,3 +1,4 @@
+import { getThreadRowProgressSourceTerminalId } from "@bb/db";
 import {
   threadListResponseSchema,
   threadRowStateSchema,
@@ -24,6 +25,32 @@ async function updateState(
 }
 
 describe("public thread row state", () => {
+  it("lets an explicit progress clear override terminal ownership", async () => {
+    await withTestHarness(async (harness) => {
+      const { thread } = seedThreadFixture(harness);
+      await updateState(harness, thread.id, {
+        action: "progress-set",
+        progress: { value: 0.6 },
+        terminalId: "terminal-a",
+      });
+
+      const response = await updateState(harness, thread.id, {
+        action: "progress-clear",
+        force: true,
+      });
+
+      expect(response.status).toBe(200);
+      expect(
+        threadRowStateSchema.parse(await readJson(response)).progress,
+      ).toBeNull();
+      expect(
+        threadRowStateSchema.parse(
+          await readJson(await readState(harness, thread.id)),
+        ).progress,
+      ).toBeNull();
+    });
+  });
+
   it("clears progress only when the source terminal matches", async () => {
     await withTestHarness(async (harness) => {
       const { thread } = seedThreadFixture(harness);
@@ -224,6 +251,15 @@ describe("public thread row state", () => {
         "threads-changed",
       ]);
 
+      await updateState(harness, thread.id, {
+        action: "progress-set",
+        progress: { value: 0.85 },
+        terminalId: "terminal-owner",
+      });
+      expect(getThreadRowProgressSourceTerminalId(harness.db, thread.id)).toBe(
+        "terminal-owner",
+      );
+
       const cleared = await updateState(harness, thread.id, {
         action: "clear",
       });
@@ -231,6 +267,9 @@ describe("public thread row state", () => {
         statuses: {},
         progress: null,
       });
+      expect(
+        getThreadRowProgressSourceTerminalId(harness.db, thread.id),
+      ).toBeNull();
       expect(notifyThread).toHaveBeenLastCalledWith(thread.id, [
         "status-changed",
       ]);

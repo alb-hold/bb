@@ -89,7 +89,7 @@ describe("bb thread row-status and progress", () => {
     expect(update.mock.calls.map(([request]) => request.json)).toEqual([
       { action: "status-clear", key: "review" },
       { action: "status-clear" },
-      { action: "progress-clear" },
+      { action: "progress-clear", force: true },
     ]);
   });
 

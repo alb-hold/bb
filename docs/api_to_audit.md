@@ -18,9 +18,13 @@ when a managed turn settles to idle or error, or when a native terminal session
 closes with process exit or user close. A daemon disconnect does not clear
 native state because the terminal may reattach. Explicit clear commands remove
 the selected state, and a targeted read hides state after 60 minutes without
-an update as a backstop. Stabilization requires auditing turn completion across
-providers, count and text bounds, and live sidebar refresh on desktop and
-compact layouts.
+an update as a backstop. `action: "clear"` is the global reset for statuses,
+progress, and progress ownership. Ordinary `action: "progress-clear"` requests
+can clear only ownerless progress when `terminalId` is absent; `force: true`
+overrides ownership for explicit user-requested clearing. See the [thread
+row-state API](api/thread-row-state.md). Stabilization requires auditing turn
+completion across providers, count and text bounds, and live sidebar refresh
+on desktop and compact layouts.
 
 `PluginSidebarThread.experimental_rowState` exposes this state to the core
 thread-list renderer. The CLI and renderer both use the shared persisted thread
