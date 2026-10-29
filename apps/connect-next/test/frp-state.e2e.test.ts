@@ -200,9 +200,6 @@ describe.skipIf(!availability.ok)("frps proxy state end to end", () => {
     expect(login).toMatchObject({ user: "bee" });
     expect(login).not.toHaveProperty("client_id");
     expect(login).not.toHaveProperty("run_id");
-    console.info(
-      `frpc first Login payload keys: ${Object.keys(login ?? {}).sort().join(",")}`,
-    );
     frpc.kill("SIGKILL");
     await waitFor(
       () => directory.locate("bee").kind !== "here",
