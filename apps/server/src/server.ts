@@ -34,11 +34,6 @@ import { compress } from "hono/compress";
 import { cors } from "hono/cors";
 import type { ServerAppDeps } from "./types.js";
 import { ApiError, createServerErrorHandler } from "./errors.js";
-import {
-  getInactiveSessionLogFields,
-  requireAuthorizedOpenSession,
-} from "./internal/session-state.js";
-import { runtimeErrorLogFields } from "./services/lib/error-log-fields.js";
 import { registerEnvironmentRoutes } from "./routes/environments.js";
 import { registerFileRoutes } from "./routes/files.js";
 import { registerHostRoutes } from "./routes/hosts.js";
@@ -104,8 +99,10 @@ import {
   onClientSocketOpen,
 } from "./ws/client-protocol.js";
 import {
+  authorizeDaemonArrival,
   createDaemonSocketMessageQueue,
   enqueueDaemonSocketFrame,
+  logDroppedDaemonFrame,
   onDaemonSocketClose,
   onDaemonSocketMessage,
   onDaemonSocketOpen,
@@ -1140,53 +1137,13 @@ export function createApp(
         },
         onMessage: (event, socket) =>
           enqueueDaemonSocketFrame({
-            authorize: (messageType) => {
-              try {
-                requireAuthorizedOpenSession(deps.db, {
-                  hostId: websocketContext.hostId,
-                  sessionId: websocketContext.sessionId,
-                });
-                return true;
-              } catch (error) {
-                if (
-                  error instanceof ApiError &&
-                  error.body.code === "inactive_session"
-                ) {
-                  deps.logger.info(
-                    getInactiveSessionLogFields(deps.db, {
-                      authenticatedHostId: websocketContext.hostId,
-                      now: Date.now(),
-                      sessionId: websocketContext.sessionId,
-                    }),
-                    "Daemon heartbeat for inactive session, closing socket",
-                  );
-                } else if (error instanceof ApiError && error.status === 403) {
-                  deps.logger.warn(
-                    {
-                      sessionId: websocketContext.sessionId,
-                      ...runtimeErrorLogFields(deps.config, error),
-                    },
-                    "Daemon heartbeat for unauthorized session, closing socket",
-                  );
-                } else {
-                  deps.logger.warn(
-                    {
-                      sessionId: websocketContext.sessionId,
-                      messageType,
-                      ...runtimeErrorLogFields(deps.config, error),
-                    },
-                    "Daemon message rejected, closing socket",
-                  );
-                }
-                socket.close(
-                  1008,
-                  error instanceof ApiError && error.status === 403
-                    ? "unauthorized-session"
-                    : "inactive-session",
-                );
-                return false;
-              }
-            },
+            authorize: (messageType) =>
+              authorizeDaemonArrival(deps, {
+                hostId: websocketContext.hostId,
+                messageType,
+                sessionId: websocketContext.sessionId,
+                socket,
+              }),
             enqueue: (message, priority, acceptedAtArrival) =>
               daemonMessageQueue.enqueue(
                 () =>
@@ -1205,10 +1162,18 @@ export function createApp(
                   ),
                 priority,
               ),
+            onInvalid: (rejection) =>
+              logDroppedDaemonFrame(
+                deps.logger,
+                {
+                  hostId: websocketContext.hostId,
+                  sessionId: websocketContext.sessionId,
+                },
+                rejection,
+              ),
             raw: event.data,
             recordActivity: () =>
               deps.hub.recordDaemonActivity(websocketContext.sessionId),
-            socket,
           }),
         onClose: () => {
           daemonMessageQueue.close();

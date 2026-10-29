@@ -568,7 +568,7 @@ describe("host online RPC retry semantics", () => {
     });
   });
 
-  it("rejects malformed host RPC responses at the daemon websocket boundary without resolving the waiter", async () => {
+  it("drops malformed host RPC responses at the daemon websocket boundary without resolving the waiter or closing the socket", async () => {
     await withTestHarness(async (harness) => {
       const { host, session } = seedHostSession(harness.deps, {
         id: "host-online-rpc-boundary-rejects-malformed-response",
@@ -629,7 +629,7 @@ describe("host online RPC retry semantics", () => {
           path: filePath,
         },
       ]);
-      expect(closes).toEqual([{ code: 1008, reason: "invalid-message" }]);
+      expect(closes).toEqual([]);
     });
   });
 
