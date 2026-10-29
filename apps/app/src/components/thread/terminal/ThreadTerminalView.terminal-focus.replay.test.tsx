@@ -948,8 +948,24 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
     expect(preview()?.style.visibility).toBe("hidden");
   });
 
-  it("releases the held preview when the terminal process exits mid-replay", async () => {
-    const { preview, session, socket } =
+  function spyOnPreviewProcessExited() {
+    const originalMountPreview =
+      terminalReplayPreview.mountTerminalReplayPreview;
+    const processExited = vi.fn();
+    vi.spyOn(
+      terminalReplayPreview,
+      "mountTerminalReplayPreview",
+    ).mockImplementation((options) => {
+      const preview = originalMountPreview(options);
+      vi.spyOn(preview, "processExited").mockImplementation(processExited);
+      return preview;
+    });
+    return processExited;
+  }
+
+  it("keeps the preview hidden when the terminal process exits mid-replay and reveals it with the exit marker once the replay completes", async () => {
+    const processExited = spyOnPreviewProcessExited();
+    const { bufferText, preview, session, socket } =
       await mountReplayWithUnusableSnapshot();
     await act(async () => {
       socket.receive({
@@ -958,10 +974,52 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
       });
       await Promise.resolve();
     });
+    await pause(200);
+    expect(preview()?.dataset.terminalReplayHeld).toBeDefined();
+    expect(preview()?.style.visibility).toBe("hidden");
+    expect(processExited).not.toHaveBeenCalled();
+
+    socket.receive({
+      type: "output",
+      chunk: { seq: 2, dataBase64: btoa("final frame\r\n") },
+    });
+    await waitForReadinessCondition(
+      () => expect(bufferText()).toContain("final frame"),
+      "final replay output was not parsed",
+    );
     await waitForReadinessCondition(
       () => expect(preview()?.dataset.terminalReplayHeld).toBeUndefined(),
-      "replay preview stayed held after the process exited",
+      "replay preview stayed held after the replay completed",
     );
+    expect(processExited).toHaveBeenCalledOnce();
+  });
+
+  it("keeps the preview hidden and shows the unavailable state when the replay errors after the process exited", async () => {
+    const processExited = spyOnPreviewProcessExited();
+    const { preview, session, socket } =
+      await mountReplayWithUnusableSnapshot();
+    await act(async () => {
+      socket.receive({
+        type: "session-updated",
+        session: { ...session, status: "exited", exitCode: 1 },
+      });
+      await Promise.resolve();
+    });
+    await act(async () => {
+      socket.receive({
+        type: "error",
+        code: "replay_failed",
+        message: "replay failed",
+      });
+      await Promise.resolve();
+    });
+    await waitForReadinessCondition(
+      () => expect(pageText()).toContain("Terminal output unavailable"),
+      "unavailable state was not shown after the exit and the error",
+    );
+    expect(preview()?.dataset.terminalReplayHeld).toBeDefined();
+    expect(preview()?.style.visibility).toBe("hidden");
+    expect(processExited).not.toHaveBeenCalled();
   });
 
   it("shows an unavailable state for a terminal error mid-replay and never reveals partial output", async () => {

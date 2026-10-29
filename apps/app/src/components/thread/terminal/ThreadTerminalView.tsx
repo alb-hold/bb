@@ -1665,9 +1665,9 @@ export function ThreadTerminalView({
     let detachGridVisibilityListeners: (() => void) | null = null;
     let replayPreview: {
       dispose(): void;
-      readonly fallback: boolean;
-    release(): void;
-    hold(options: { countdown: boolean }): void;
+        readonly fallback: boolean;
+      release(): void;
+      hold(options: { countdown: boolean }): void;
       resize(cols: number, rows: number): Promise<void>;
       setFitGrid(cols: number, rows: number): void;
       setLatestPtyGrid(cols: number, rows: number): void;
@@ -1678,6 +1678,15 @@ export function ThreadTerminalView({
     const releaseReplayPreview = () => {
       replayPreview?.release();
       setReplayNotice(null);
+    };
+    let exitedBeforeReplayCompleted = false;
+    const handleReplayPreviewExit = () => {
+      if (replayPreview?.fallback === true && !replayCompleted) {
+        exitedBeforeReplayCompleted = true;
+        return;
+      }
+      releaseReplayPreview();
+      replayPreview?.processExited();
     };
     const abandonReplayPreview = () => {
       if (replayPreview === null || replayCompleted) {
@@ -2310,7 +2319,7 @@ export function ThreadTerminalView({
         },
         onMessage: (message) => {
           if (message.type === "error") abandonReplayPreview();
-          if (message.type === "exited") releaseReplayPreview();
+          if (message.type === "exited") handleReplayPreviewExit();
           if (message.type === "output") {
             latestOutputSequence = Math.max(
               latestOutputSequence,
@@ -2349,8 +2358,7 @@ export function ThreadTerminalView({
               replayPreview?.resize(cols, rows);
             }
             if (message.session.status === "exited") {
-              releaseReplayPreview();
-              replayPreview?.processExited();
+              handleReplayPreviewExit();
             }
             if (message.type === "session-updated" && !markerGridActive) {
               if (outputPipeline) {
@@ -2391,6 +2399,10 @@ export function ThreadTerminalView({
             onReplayComplete: () => {
               releaseReplayPreview();
               replayCompleted = true;
+              if (exitedBeforeReplayCompleted) {
+                exitedBeforeReplayCompleted = false;
+                replayPreview?.processExited();
+              }
               const fitGrid = fitAddon?.proposeDimensions();
               applyTerminalGridBeforeViewportRestore({
                 pipeline: outputPipeline,
