@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
+import { createServer, type Server } from "node:http";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -48,6 +49,8 @@ describe.skipIf(!availability.ok)("frps proxy state end to end", () => {
   const adminPassword = "admin-password-for-tests";
   let frps: Frps;
   let hooksServer: ReturnType<typeof createFrpHooks>["server"];
+  let relay: Server;
+  const logins: Record<string, unknown>[] = [];
   let adminPort: number;
   let bindPort: number;
   let frpc: ChildProcess | null = null;
@@ -107,11 +110,39 @@ describe.skipIf(!availability.ok)("frps proxy state end to end", () => {
     }).server;
     hooksServer.listen(0, "127.0.0.1");
     await once(hooksServer, "listening");
+    const hooksPort = (hooksServer.address() as AddressInfo).port;
+    relay = createServer((request, response) => {
+      const chunks: Buffer[] = [];
+      request.on("data", (chunk: Buffer) => chunks.push(chunk));
+      request.on("end", () => {
+        const body = Buffer.concat(chunks).toString();
+        try {
+          const call = JSON.parse(body) as {
+            op?: string;
+            content?: Record<string, unknown>;
+          };
+          if (call.op === "Login" && call.content !== undefined) {
+            logins.push(call.content);
+          }
+        } catch {}
+        void fetch(`http://127.0.0.1:${hooksPort}${request.url ?? "/"}`, {
+          method: "POST",
+          body,
+        }).then(async (answer) => {
+          response.writeHead(answer.status, {
+            "content-type": "application/json",
+          });
+          response.end(await answer.text());
+        });
+      });
+    });
+    relay.listen(0, "127.0.0.1");
+    await once(relay, "listening");
     frps = await startFrps({
       binary: availability.binaries.frps,
       bindPort: (bindPort = await freePort()),
       vhostPort: await freePort(),
-      hooksPort: (hooksServer.address() as AddressInfo).port,
+      hooksPort: (relay.address() as AddressInfo).port,
       adminPort,
       adminUser,
       adminPassword,
@@ -124,6 +155,7 @@ describe.skipIf(!availability.ok)("frps proxy state end to end", () => {
   afterAll(async () => {
     frpc?.kill("SIGKILL");
     await frps?.stop();
+    relay?.close();
     hooksServer?.close();
     await rm(configDir, { recursive: true, force: true });
   });
@@ -157,6 +189,26 @@ describe.skipIf(!availability.ok)("frps proxy state end to end", () => {
       "bee to drop",
     );
     expect(await state.proxy(name ?? "")).toEqual({ kind: "offline" });
+  });
+
+  it("accepts the Login a stock frpc sends, which carries neither a client id nor a run id", async () => {
+    logins.length = 0;
+    frpc = await startClient();
+    await waitFor(() => directory.locate("bee").kind === "here", 15_000, "bee");
+    expect(logins).toHaveLength(1);
+    const [login] = logins;
+    expect(login).toMatchObject({ user: "bee" });
+    expect(login).not.toHaveProperty("client_id");
+    expect(login).not.toHaveProperty("run_id");
+    console.info(
+      `frpc first Login payload keys: ${Object.keys(login ?? {}).sort().join(",")}`,
+    );
+    frpc.kill("SIGKILL");
+    await waitFor(
+      () => directory.locate("bee").kind !== "here",
+      15_000,
+      "bee to drop",
+    );
   });
 
   it("refuses a second client that names the first client's run id as its client id", async () => {

@@ -980,6 +980,9 @@ describe("frp hooks", () => {
         reject: false,
       });
       expect(await login({})).toMatchObject({ reject: false });
+      expect(await login({ run_id: "run-9" })).toMatchObject({
+        reject: false,
+      });
     });
 
     it("refuses a login that reuses a run id another label holds", async () => {
