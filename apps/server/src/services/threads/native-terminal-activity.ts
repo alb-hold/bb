@@ -567,10 +567,7 @@ function reconcileNativeQuestions(
 }
 
 export function clearNativeTerminalStateOnExit(
-  deps: Pick<
-    AppDeps,
-    "db" | "hub" | "logger" | "pendingInteractions" | "providerRegistry"
-  >,
+  deps: LoggedPendingInteractionWorkSessionDeps,
   session: Pick<TerminalSessionRow, "closeReason" | "id" | "threadId">,
 ): void {
   if (
