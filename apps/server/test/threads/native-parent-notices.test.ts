@@ -191,7 +191,7 @@ function startFakeClaudeTui(
   terminalId: string,
   initialScreen: string,
 ): FakeClaudeTui {
-  let nextSeq = 1;
+  let nextSeq = 0;
   let handled = 0;
   let pasteCount = 0;
   const output: { seq: number; dataBase64: string }[] = [];
@@ -536,7 +536,7 @@ describe("child notices for a native terminal parent", () => {
     );
     try {
       tui.draw(
-        "\u001b[2J\u001b[1;1H• done\u001b[3;1H\u001b[1m›\u001b[22m \u001b[2mAsk Codex to do anything\u001b[22m\u001b[3;3H\u001b[5;1H  GPT Ready",
+        "\u001b[2J\u001b[1;1H• done\u001b[3;1H\u001b[1m›\u001b[22m \u001b[2mAsk Codex to do anything\u001b[22m\u001b[5;1H  GPT Ready\u001b[3;3H",
       );
       const seeded = seedChild(fixture, thread.id, 1);
       await failChild(fixture, seeded);
