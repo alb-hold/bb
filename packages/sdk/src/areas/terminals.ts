@@ -166,6 +166,8 @@ export interface ExperimentalTerminalSurfacesArea {
   list(args: { threadId: string }): Promise<ExperimentalTerminalSurface[]>;
 }
 
+export type ExperimentalTerminalDeliveryScope = ThreadOpenDeliveryScope;
+
 export interface ExperimentalTerminalFocusArgs
   extends ThreadOpenDeliveryScope {
   terminalId: string;
