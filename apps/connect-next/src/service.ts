@@ -125,9 +125,9 @@ export async function startConnectNext(
     accounts,
     directory,
     log,
-    onLogin: (clientAddress, label) =>
-      frpConnections.loggedIn(clientAddress, label),
-    clientConnected: (label) => frpConnections.count(label) > 0,
+    onLogin: (clientAddress, label, runId) =>
+      frpConnections.loggedIn(clientAddress, label, runId),
+    clientConnected: (label, runId) => frpConnections.count(label, runId) > 0,
   });
   const hooksPort = await listen(hooks.server, config.ports.hooks, LOOPBACK);
   const frps = await startFrps({

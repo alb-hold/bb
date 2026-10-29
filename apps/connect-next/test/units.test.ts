@@ -1,6 +1,8 @@
 import { createMachineLabelProxy } from "../src/machine-label.js";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
+import { PassThrough } from "node:stream";
 import {
+  FRP_CREDENTIAL_META,
   GATE_PRESENCE_BATCH_MAX,
   GATE_RESOLVE_BATCH_MAX,
   type GatePresenceRequest,
@@ -27,7 +29,13 @@ import { startPresence } from "../src/presence.js";
 import { trackServerFrames, WEBSOCKET_GOING_AWAY } from "../src/ws-frames.js";
 import { configFromEnv } from "../src/config.js";
 import { createLocalDirectory } from "../src/directory.js";
-import { isOwnSubdomain, parseHookCall } from "../src/frp-hooks.js";
+import { createFrpConnections } from "../src/frp-connections.js";
+import {
+  createFrpHooks,
+  isOwnSubdomain,
+  parseHookCall,
+  REMOVAL_SETTLE_MS,
+} from "../src/frp-hooks.js";
 import { isTenantSetCookie, tenantCookies } from "../src/forwarding.js";
 import { Lru } from "../src/lru.js";
 import { isMcpLocalPath } from "../src/mcp.js";
@@ -487,6 +495,103 @@ describe("frp hooks", () => {
       customDomains: [],
     });
     expect(parseHookCall({ op: "Login", content: { user: 5 } })).toBeNull();
+  });
+
+  describe("proxy removal", () => {
+    const LINKED_ACCOUNTS: AccountApi = {
+      resolve: async () => ({ ...OWNED, credential: true }),
+      forget: () => {},
+      presence: async () => [],
+    };
+
+    async function startHooks() {
+      const connections = createFrpConnections();
+      const directory = createLocalDirectory({ graceMs: 60_000 });
+      const hooks = createFrpHooks({
+        accounts: LINKED_ACCOUNTS,
+        directory,
+        log: silentLog,
+        onLogin: (address, label, runId) =>
+          connections.loggedIn(address, label, runId),
+        clientConnected: (label, runId) => connections.count(label, runId) > 0,
+      });
+      await new Promise<void>((resolve) =>
+        hooks.server.listen(0, "127.0.0.1", resolve),
+      );
+      onTestFinished(() => {
+        hooks.server.close();
+      });
+      const address = hooks.server.address();
+      if (address === null || typeof address === "string") {
+        throw new Error("hook server has no port");
+      }
+      const post = async (op: string, content: Record<string, unknown>) => {
+        const response = await fetch(`http://127.0.0.1:${address.port}/frp`, {
+          method: "POST",
+          body: JSON.stringify({ op, content }),
+        });
+        expect(response.status).toBe(200);
+        expect(await response.json()).toMatchObject({ reject: false });
+      };
+      const metas = { [FRP_CREDENTIAL_META]: "credential" };
+      const login = async (runId: string, clientAddress: string) => {
+        const socket = new PassThrough();
+        connections.track(clientAddress, [socket]);
+        await post("Login", {
+          user: "bee",
+          metas,
+          run_id: runId,
+          client_address: clientAddress,
+        });
+        return socket;
+      };
+      const proxyCall = (op: string, runId: string) =>
+        post(op, {
+          user: { user: "bee", metas, run_id: runId },
+          proxy_name: "bee.bb",
+          proxy_type: "http",
+          subdomain: "bee",
+        });
+      return { directory, login, proxyCall };
+    }
+
+    const sleep = (ms: number) =>
+      new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+    it("keeps a waiting request when a new client logs in before the old proxy's removal check", async () => {
+      const { directory, login, proxyCall } = await startHooks();
+      const signal = new AbortController().signal;
+      const first = await login("run-1", "first:1");
+      await proxyCall("NewProxy", "run-1");
+      await sleep(300);
+      expect(directory.locate("bee").kind).toBe("here");
+
+      first.destroy();
+      await sleep(20);
+      await proxyCall("CloseProxy", "run-1");
+      const waiting = directory.awaitReturn("bee", signal);
+      await login("run-2", "second:1");
+      await sleep(REMOVAL_SETTLE_MS + 200);
+      expect(
+        await Promise.race([waiting, sleep(0).then(() => "still waiting")]),
+      ).toBe("still waiting");
+
+      await proxyCall("NewProxy", "run-2");
+      expect(await waiting).toEqual({ kind: "here" });
+    });
+
+    it("stops waiting for a proxy its still-connected client closed", async () => {
+      const { directory, login, proxyCall } = await startHooks();
+      const signal = new AbortController().signal;
+      await login("run-1", "first:1");
+      await proxyCall("NewProxy", "run-1");
+      await sleep(300);
+      expect(directory.locate("bee").kind).toBe("here");
+
+      await proxyCall("CloseProxy", "run-1");
+      const waiting = directory.awaitReturn("bee", signal);
+      expect(await waiting).toEqual({ kind: "offline" });
+    });
   });
 });
 

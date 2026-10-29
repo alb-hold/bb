@@ -110,8 +110,8 @@ export interface FrpHookOptions {
   accounts: AccountApi;
   directory: TunnelDirectory;
   log: Log;
-  onLogin?: (clientAddress: string, label: string) => void;
-  clientConnected?: (label: string) => boolean;
+  onLogin?: (clientAddress: string, label: string, runId: string) => void;
+  clientConnected?: (label: string, runId: string) => boolean;
 }
 
 export function createFrpHooks(options: FrpHookOptions) {
@@ -167,7 +167,7 @@ export function createFrpHooks(options: FrpHookOptions) {
       }
       log("info", "frp_login", { label: user.label });
       if (call.clientAddress !== null) {
-        options.onLogin?.(call.clientAddress, user.label);
+        options.onLogin?.(call.clientAddress, user.label, user.runId);
       }
       return ACCEPT;
     }
@@ -219,7 +219,7 @@ export function createFrpHooks(options: FrpHookOptions) {
         const clientConnected = options.clientConnected;
         if (clientConnected !== undefined) {
           setTimeout(() => {
-            if (clientConnected(proxy.label)) {
+            if (clientConnected(proxy.label, user.runId)) {
               directory.removed(proxy.subdomain);
             }
           }, REMOVAL_SETTLE_MS).unref();

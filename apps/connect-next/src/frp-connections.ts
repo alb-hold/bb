@@ -3,16 +3,17 @@ import type { Duplex } from "node:stream";
 interface FrpConnection {
   sockets: Duplex[];
   label: string | null;
+  runId: string | null;
   goodbye: (() => void) | null;
 }
 
 export interface FrpConnections {
   websocketOrigin(): string;
   track(clientAddress: string, sockets: Duplex[], goodbye?: () => void): void;
-  loggedIn(clientAddress: string, label: string): void;
+  loggedIn(clientAddress: string, label: string, runId: string): void;
   close(label: string): number;
   closeAll(): number;
-  count(label: string): number;
+  count(label: string, runId?: string): number;
 }
 
 export function createFrpConnections(): FrpConnections {
@@ -27,8 +28,12 @@ export function createFrpConnections(): FrpConnections {
     for (const socket of connection.sockets) socket.destroy();
   }
 
-  function matching(label: string): [string, FrpConnection][] {
-    return [...open].filter(([, connection]) => connection.label === label);
+  function matching(label: string, runId?: string): [string, FrpConnection][] {
+    return [...open].filter(
+      ([, connection]) =>
+        connection.label === label &&
+        (runId === undefined || connection.runId === runId),
+    );
   }
 
   return {
@@ -40,6 +45,7 @@ export function createFrpConnections(): FrpConnections {
       const connection: FrpConnection = {
         sockets,
         label: null,
+        runId: null,
         goodbye: goodbye ?? null,
       };
       open.set(clientAddress, connection);
@@ -50,9 +56,11 @@ export function createFrpConnections(): FrpConnections {
         });
       }
     },
-    loggedIn(clientAddress, label) {
+    loggedIn(clientAddress, label, runId) {
       const connection = open.get(clientAddress);
-      if (connection !== undefined) connection.label = label;
+      if (connection === undefined) return;
+      connection.label = label;
+      connection.runId = runId;
     },
     close(label) {
       const found = matching(label);
@@ -68,6 +76,6 @@ export function createFrpConnections(): FrpConnections {
       for (const connection of all) end(connection);
       return all.length;
     },
-    count: (label) => matching(label).length,
+    count: (label, runId) => matching(label, runId).length,
   };
 }
