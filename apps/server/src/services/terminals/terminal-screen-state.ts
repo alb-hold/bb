@@ -241,6 +241,23 @@ function encodeUtf8(value: string): Buffer {
   return buffer;
 }
 
+function visibleSolidRows(terminal: HeadlessTerminal): string[] {
+  const buffer = terminal.buffer.active;
+  const rows: string[] = [];
+  for (let row = 0; row < terminal.rows; row += 1) {
+    const line = buffer.getLine(buffer.baseY + row);
+    let text = "";
+    for (let col = 0; col < terminal.cols; col += 1) {
+      const cell = line?.getCell(col);
+      if (cell === undefined || cell.getWidth() === 0) continue;
+      const chars = cell.getChars() || " ";
+      text += cell.isDim() ? " ".repeat(Array.from(chars).length) : chars;
+    }
+    rows.push(text.trimEnd());
+  }
+  return rows;
+}
+
 function serializeVisibleScreen(terminal: HeadlessTerminal): {
   data: Buffer;
   response: TerminalScreenResponse;
@@ -492,6 +509,22 @@ export class TerminalScreenState {
     };
   }
 
+  async promptScreen(): Promise<{
+    cursor: { col: number; row: number };
+    rows: string[];
+    solidRows: string[];
+  } | null> {
+    await this.pending;
+    if (this.disposed || !this.valid) return null;
+    if (this.partialSequenceOverflow) return null;
+    const { response } = serializeVisibleScreen(this.terminal);
+    return {
+      cursor: response.cursor,
+      rows: response.rows,
+      solidRows: visibleSolidRows(this.terminal),
+    };
+  }
+
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
@@ -554,6 +587,10 @@ export class TerminalScreenStateCache {
 
   resize(terminalId: string, cols: number, rows: number): void {
     this.states.get(terminalId)?.resize(cols, rows);
+  }
+
+  promptScreen(terminalId: string) {
+    return this.states.get(terminalId)?.promptScreen() ?? Promise.resolve(null);
   }
 
   snapshot(terminalId: string) {

@@ -4,7 +4,10 @@ import type {
   ThreadEventTurnStatus,
   ChildThreadOutcome,
 } from "@bb/domain";
-import { listActiveBackgroundTaskCountsByThreadIds } from "@bb/db";
+import {
+  isNativeTerminalThread,
+  listActiveBackgroundTaskCountsByThreadIds,
+} from "@bb/db";
 import { renderTemplate } from "@bb/templates";
 import type { LoggedPendingInteractionWorkSessionDeps } from "../../types.js";
 import {
@@ -21,7 +24,11 @@ import {
   childOutcomeSystemMessageKind,
   systemMessageKindForTemplate,
 } from "./system-message-kind.js";
-import { getLastThreadOutput } from "./thread-data.js";
+import { enqueueNativeParentNotice } from "./native-parent-notices.js";
+import {
+  getLastThreadErrorMessage,
+  getLastThreadOutput,
+} from "./thread-data.js";
 
 export type ChildThreadNotificationSource = ParentSystemThreadMentionSource;
 
@@ -82,6 +89,7 @@ const CHILD_THREAD_OUTCOME_BATCH_UPDATES_SLOT =
   "__BB_CHILD_THREAD_OUTCOME_BATCH_UPDATES__";
 const CHILD_THREAD_MENTION_SLOT = "__BB_CHILD_THREAD_MENTION__";
 const CHILD_THREAD_TERMINAL_OUTPUT_EXCERPT_CHAR_LIMIT = 4_000;
+const CHILD_THREAD_ERROR_DETAIL_CHAR_LIMIT = 500;
 const CHILD_THREAD_OUTPUT_TRUNCATION_MARKER = "\n\n[... output truncated ...]";
 const CHILD_THREAD_INSPECTION_GUIDANCE =
   "Review the thread before deciding next steps.";
@@ -400,6 +408,28 @@ function childThreadTurnNotificationLogMessage(
   }
 }
 
+function failedChildErrorDetail(
+  deps: LoggedPendingInteractionWorkSessionDeps,
+  items: readonly ChildThreadTurnNotificationBatchItem[],
+): string | undefined {
+  const lines = items.flatMap((item) => {
+    if (item.turnStatus !== "failed" || item.retryScheduledAt !== undefined) {
+      return [];
+    }
+    const message = getLastThreadErrorMessage(
+      deps.db,
+      item.childThread.id,
+    )?.trim();
+    if (!message) return [];
+    const bounded =
+      message.length > CHILD_THREAD_ERROR_DETAIL_CHAR_LIMIT
+        ? `${message.slice(0, CHILD_THREAD_ERROR_DETAIL_CHAR_LIMIT).trimEnd()}...`
+        : message;
+    return [`- @thread:${item.childThread.id}: ${bounded}`];
+  });
+  return lines.length === 0 ? undefined : `Error details:\n${lines.join("\n")}`;
+}
+
 async function flushChildThreadTurnNotificationBatch(
   deps: LoggedPendingInteractionWorkSessionDeps,
   parentThreadId: string,
@@ -411,10 +441,20 @@ async function flushChildThreadTurnNotificationBatch(
   childThreadTurnNotificationBatches.delete(parentThreadId);
 
   try {
+    const input = buildChildThreadTurnStatusBatchInput({
+      items: batch.items,
+    });
+    if (isNativeTerminalThread(deps.db, parentThreadId)) {
+      const detail = failedChildErrorDetail(deps, batch.items);
+      enqueueNativeParentNotice(deps, {
+        input,
+        parentThreadId,
+        ...(detail === undefined ? {} : { detail }),
+      });
+      return;
+    }
     await queueParentSystemMessage(deps, {
-      input: buildChildThreadTurnStatusBatchInput({
-        items: batch.items,
-      }),
+      input,
       parentThreadId,
       ...childThreadTurnStatusBatchTaxonomy(batch.items),
     });
@@ -519,11 +559,19 @@ export async function queueChildThreadNeedsAttentionNotificationBestEffort(
   args: QueueChildThreadNeedsAttentionNotificationArgs,
 ): Promise<void> {
   try {
+    const input = buildChildThreadNeedsAttentionInput({
+      blockerSummary: args.blockerSummary,
+      childThread: args.childThread,
+    });
+    if (isNativeTerminalThread(deps.db, args.parentThreadId)) {
+      enqueueNativeParentNotice(deps, {
+        input,
+        parentThreadId: args.parentThreadId,
+      });
+      return;
+    }
     await queueParentSystemMessage(deps, {
-      input: buildChildThreadNeedsAttentionInput({
-        blockerSummary: args.blockerSummary,
-        childThread: args.childThread,
-      }),
+      input,
       parentThreadId: args.parentThreadId,
       systemMessageKind: systemMessageKindForTemplate(
         "systemMessageChildThreadNeedsAttention",

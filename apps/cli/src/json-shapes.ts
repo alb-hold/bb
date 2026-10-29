@@ -33,12 +33,12 @@ export const JSON_SHAPE_BY_COMMAND_PATH: Readonly<Record<string, string>> = {
   "terminal focus":
     "{terminalId, deliveredClients, skipReason?: \"no_caller_thread\" | \"no_client_viewing_caller_thread\", error?: {code, message} when deliveredClients is 0}",
   "terminal open-link":
-    "{terminalId, url, deliveredClients, error?: {code, message} when deliveredClients is 0}",
+    "{terminalId, url, deliveredClients, skipReason?: \"no_caller_thread\" | \"no_client_viewing_caller_thread\", error?: {code, message} when deliveredClients is 0}",
   "terminal split":
     "{terminalId, side, deliveredClients, skipReason?: \"no_caller_thread\" | \"no_client_viewing_caller_thread\", error?: {code, message} when deliveredClients is 0}",
   "terminal move":
-    "{terminalId, targetTerminalId, deliveredClients, error?: {code, message} when deliveredClients is 0}",
-  "thread open": "{threadId, split, file, deliveredClients, inputPath}",
+    "{terminalId, targetTerminalId, deliveredClients, skipReason?: \"no_caller_thread\" | \"no_client_viewing_caller_thread\", error?: {code, message} when deliveredClients is 0}",
+  "thread open": "{threadId, split, file, deliveredClients, inputPath, skipReason?: \"no_caller_thread\" | \"no_client_viewing_caller_thread\", error?: {code, message} when skipReason is set}",
   "terminal output":
     '{chunks: [{seq, dataBase64}], nextSeq, truncated, status, exitCode, closeReason}    (chunk data is base64; status is "exited" once the command has finished)',
   "terminal wait": "{terminalId, matched, nextSeq, exitCode}",

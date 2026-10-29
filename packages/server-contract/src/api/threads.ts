@@ -972,13 +972,13 @@ export const threadOpenRequestSchema = z
       .min(1)
       .optional()
       .describe(
-        "Thread making the request. A terminal focus or split reaches only app clients currently viewing this thread unless all is true.",
+        "Thread making the request. The request reaches only app clients currently viewing this thread unless all is true.",
       ),
     all: z
       .boolean()
       .optional()
       .describe(
-        "Send a terminal focus or split to every open app client instead of only clients viewing callerThreadId.",
+        "Send the request to every open app client instead of only clients viewing callerThreadId.",
       ),
   })
   .strict();
@@ -1001,7 +1001,7 @@ export const threadOpenResponseSchema = z.object({
   skipReason: threadOpenSkipReasonSchema
     .nullable()
     .describe(
-      "Why a terminal focus or split reached no client: the request named no caller thread, or no app client is viewing the caller thread. Null otherwise.",
+      "Why the request reached no client: it named no caller thread, or no app client is viewing the caller thread. Null otherwise.",
     ),
 });
 export type ThreadOpenResponse = z.infer<typeof threadOpenResponseSchema>;

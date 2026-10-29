@@ -19,6 +19,16 @@ export {
 
 export { countAppliedMigrations, migrate } from "./migrate.js";
 export {
+  deleteNativeParentNotices,
+  getNativeParentNoticeDeliveredAt,
+  insertNativeParentNotice,
+  listNativeParentNotices,
+  listParentsWithNativeParentNotices,
+  markNativeParentNoticesBlocked,
+  recordNativeParentNoticeDelivery,
+  type NativeParentNoticeRow,
+} from "./fork-native-parent-notices.js";
+export {
   getThreadSpawner,
   recordThreadSpawner,
 } from "./fork-thread-spawners.js";

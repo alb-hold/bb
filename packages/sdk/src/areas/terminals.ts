@@ -15,7 +15,12 @@ import type {
   UpdateTerminalRequest,
 } from "@bb/server-contract";
 import { BbHttpError } from "../response.js";
-import { signalRequestArgs, type CreateSdkAreaArgs } from "./common.js";
+import {
+  signalRequestArgs,
+  threadOpenDeliveryScopeBody,
+  type CreateSdkAreaArgs,
+  type ThreadOpenDeliveryScope,
+} from "./common.js";
 
 const TERMINAL_SCREEN_READ_DEADLINE_MS = 30_000;
 
@@ -161,28 +166,28 @@ export interface ExperimentalTerminalSurfacesArea {
   list(args: { threadId: string }): Promise<ExperimentalTerminalSurface[]>;
 }
 
-export interface ExperimentalTerminalDeliveryScope {
-  all?: boolean;
-  callerThreadId?: string;
-}
+export type ExperimentalTerminalDeliveryScope = ThreadOpenDeliveryScope;
 
 export interface ExperimentalTerminalFocusArgs
-  extends ExperimentalTerminalDeliveryScope {
+  extends ThreadOpenDeliveryScope {
   terminalId: string;
 }
 
-export interface ExperimentalTerminalOpenBrowserArgs {
+export interface ExperimentalTerminalOpenBrowserArgs
+  extends ThreadOpenDeliveryScope {
   terminalId: string;
   url: string;
 }
 
 export interface ExperimentalTerminalLayoutArea {
-  move(args: {
-    targetTerminalId: string;
-    terminalId: string;
-  }): Promise<ThreadOpenResponse>;
+  move(
+    args: ThreadOpenDeliveryScope & {
+      targetTerminalId: string;
+      terminalId: string;
+    },
+  ): Promise<ThreadOpenResponse>;
   split(
-    args: ExperimentalTerminalDeliveryScope & {
+    args: ThreadOpenDeliveryScope & {
       side: "right" | "left" | "up" | "down";
       terminalId: string;
     },
@@ -240,17 +245,6 @@ function assertUnambiguousScope(
         );
       }
   }
-}
-
-function deliveryScopeBody(
-  scope: ExperimentalTerminalDeliveryScope,
-): ExperimentalTerminalDeliveryScope {
-  return {
-    ...(scope.callerThreadId === undefined
-      ? {}
-      : { callerThreadId: scope.callerThreadId }),
-    ...(scope.all === undefined ? {} : { all: scope.all }),
-  };
 }
 
 function terminalListQuery(scope: TerminalListScope): TerminalListQuery {
@@ -396,7 +390,7 @@ export function createTerminalsArea(args: CreateSdkAreaArgs): TerminalsArea {
           json: {
             file: null,
             terminalAction: { action: "focus", terminalId: session.id },
-            ...deliveryScopeBody(input),
+            ...threadOpenDeliveryScopeBody(input),
           },
         }),
       );
@@ -416,6 +410,7 @@ export function createTerminalsArea(args: CreateSdkAreaArgs): TerminalsArea {
               terminalId: session.id,
               url: input.url,
             },
+            ...threadOpenDeliveryScopeBody(input),
           },
         }),
       );
@@ -589,7 +584,7 @@ export function createTerminalsArea(args: CreateSdkAreaArgs): TerminalsArea {
                 terminalId: session.id,
                 side: input.side,
               },
-              ...deliveryScopeBody(input),
+              ...threadOpenDeliveryScopeBody(input),
             },
           }),
         );
@@ -612,6 +607,7 @@ export function createTerminalsArea(args: CreateSdkAreaArgs): TerminalsArea {
                 terminalId: session.id,
                 targetTerminalId: target.id,
               },
+              ...threadOpenDeliveryScopeBody(input),
             },
           }),
         );

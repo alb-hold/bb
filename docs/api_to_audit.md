@@ -90,16 +90,18 @@ layouts are client state.
 Audit each split side, pane limits, compact layouts, reload persistence,
 same-thread and stale terminal IDs, and old-client parsing before stabilizing.
 
-`experimental_focus` and `experimental_layout.split` take `callerThreadId` or
+`experimental_focus`, `experimental_openBrowser`, `experimental_layout.split`,
+`experimental_layout.move`, and `threads.open` take `callerThreadId` or
 `all: true`. The server sends the signal only to app sockets whose reported
 active view (the same `device-handoff-view` state device handoff uses) is
 `callerThreadId`; `all: true` keeps the former broadcast. With neither, or with
 no matching socket, nothing is sent and the response carries
 `skipReason: "no_caller_thread" | "no_client_viewing_caller_thread"`. The
 split-pane secondary thread is not an active view, so a client counts only for
-the thread in its route. `experimental_openBrowser` and `experimental_layout.move`
-still broadcast to every app client and reject the two fields; audit them
-before stabilizing.
+the thread in its route. Every request on the thread-open route is scoped this
+way, so a client viewing a different thread, including the thread being opened,
+is not reached unless `all: true`. `threads.pane` actions still broadcast to
+every app client; audit them before stabilizing.
 
 ## `sdk.terminals.experimental_surfaces`, `experimental_focus`, and `experimental_openBrowser`
 
