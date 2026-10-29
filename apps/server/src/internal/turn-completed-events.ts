@@ -1,5 +1,10 @@
-import { getThread, hasRootStoredTurnStarted } from "@bb/db";
 import {
+  getLatestStoredThreadEventOfTypes,
+  getThread,
+  hasRootStoredTurnStarted,
+} from "@bb/db";
+import {
+  providerErrorInfoSchema,
   requireThreadEventScopeTurnId,
   type ThreadEvent,
   type ThreadLifecycleEvent,
@@ -12,8 +17,30 @@ import {
 } from "../services/system/event-pruning.js";
 import { applyLoggedThreadLifecycleEvent } from "../services/threads/lifecycle-outcome.js";
 
+function isArchivedCredentialRevocation(
+  db: AppDeps["db"],
+  threadId: string,
+  turnId: string,
+): boolean {
+  const row = getLatestStoredThreadEventOfTypes(db, {
+    threadId,
+    types: ["provider/error"],
+    afterSequence: 0,
+  });
+  if (row === null || row.turnId !== turnId) return false;
+  try {
+    const parsed = providerErrorInfoSchema.safeParse(
+      (JSON.parse(row.data) as { errorInfo?: unknown }).errorInfo,
+    );
+    return parsed.success && parsed.data.category === "unauthorized";
+  } catch {
+    return false;
+  }
+}
+
 interface ApplyTurnCompletedEventResult {
   isRootTurnCompletion: boolean;
+  suppressFailureNotice: boolean;
   nextStatus: ThreadStatus | null;
   thread: ReturnType<typeof getThread>;
 }
@@ -36,7 +63,12 @@ export function applyTurnCompletedEvent(
 ): ApplyTurnCompletedEventResult {
   const thread = getThread(deps.db, payload.threadId);
   if (!thread) {
-    return { isRootTurnCompletion: false, nextStatus: null, thread: null };
+    return {
+      isRootTurnCompletion: false,
+      suppressFailureNotice: false,
+      nextStatus: null,
+      thread: null,
+    };
   }
 
   const turnId = requireThreadEventScopeTurnId({
@@ -48,11 +80,22 @@ export function applyTurnCompletedEvent(
     turnId,
   });
   if (!isRootTurnCompletion) {
-    return { isRootTurnCompletion, nextStatus: null, thread };
+    return {
+      isRootTurnCompletion,
+      suppressFailureNotice: false,
+      nextStatus: null,
+      thread,
+    };
   }
 
+  const suppressFailureNotice =
+    payload.status === "failed" &&
+    thread.archivedAt !== null &&
+    isArchivedCredentialRevocation(deps.db, thread.id, turnId);
   const outcome = applyLoggedThreadLifecycleEvent(deps, {
-    event: lifecycleEventForTurnCompletion(payload.status),
+    event: suppressFailureNotice
+      ? { type: "run.succeeded" }
+      : lifecycleEventForTurnCompletion(payload.status),
     threadId: payload.threadId,
   });
   const nextStatus = outcome.applied ? outcome.thread.status : null;
@@ -68,5 +111,5 @@ export function applyTurnCompletedEvent(
     });
   }
 
-  return { isRootTurnCompletion, nextStatus, thread };
+  return { isRootTurnCompletion, suppressFailureNotice, nextStatus, thread };
 }
