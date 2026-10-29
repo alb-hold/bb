@@ -139,49 +139,49 @@ describe("darwin workspace process inspection", () => {
   it.each([
     {
       name: "cwd inside workspace",
-      lsof: "p501\nfcwd\nn/ws/project\n",
+      lsof: "p501\nn/ws/project\n",
       workspace: "/ws/project",
       paths: { "/ws/project": "/ws/project" },
       expected: { supported: true, pids: [501], unreadablePids: [] },
     },
     {
       name: "open file inside workspace",
-      lsof: "p502\nf1\nn/ws/project/data.txt\n",
+      lsof: "p502\nn/ws/project/data.txt\n",
       workspace: "/ws/project",
       paths: { "/ws/project/data.txt": "/ws/project/data.txt" },
       expected: { supported: true, pids: [502], unreadablePids: [] },
     },
     {
       name: "outside workspace",
-      lsof: "p503\nfcwd\nn/tmp/other\n",
+      lsof: "p503\nn/tmp/other\n",
       workspace: "/ws/project",
       paths: { "/tmp/other": "/tmp/other" },
       expected: { supported: true, pids: [], unreadablePids: [] },
     },
     {
       name: "prefix collision",
-      lsof: "p504\nfcwd\nn/a/bc/file\n",
+      lsof: "p504\nn/a/bc/file\n",
       workspace: "/a/b",
       paths: { "/a/bc/file": "/a/bc/file", "/a/b": "/a/b" },
       expected: { supported: true, pids: [], unreadablePids: [] },
     },
     {
       name: "tmp symlink alias",
-      lsof: "p505\nfcwd\nn/tmp/ws\n",
+      lsof: "p505\nn/tmp/ws\n",
       workspace: "/private/tmp/ws",
       paths: { "/tmp/ws": "/private/tmp/ws", "/private/tmp/ws": "/private/tmp/ws" },
       expected: { supported: true, pids: [505], unreadablePids: [] },
     },
     {
       name: "daemon pid excluded",
-      lsof: `p${process.pid}\nfcwd\nn/ws/project\np506\nfcwd\nn/ws/project\n`,
+      lsof: `p${process.pid}\nn/ws/project\np506\nn/ws/project\n`,
       workspace: "/ws/project",
       paths: { "/ws/project": "/ws/project" },
       expected: { supported: true, pids: [506], unreadablePids: [] },
     },
     {
       name: "unreadable path",
-      lsof: "p507\nf1\nn/ws/project/secret\n",
+      lsof: "p507\nn/ws/project/secret\n",
       workspace: "/ws/project",
       paths: { "/ws/project": "/ws/project" },
       realpathError: Object.assign(new Error("denied"), { code: "EACCES" }),
@@ -242,6 +242,36 @@ describe("darwin workspace process inspection", () => {
       supported: false,
       pids: [],
       unreadablePids: [],
+    });
+  });
+
+  it("treats a pid-only lsof record as unreadable", async () => {
+    vi.mocked(execHostFile).mockImplementation((async () => ({
+      stdout: "p501\n",
+      stderr: "",
+    })) as never);
+    vi.mocked(realpath).mockResolvedValue("/ws/project");
+    expect(await inspectWorkspaceProcesses("/ws/project")).toEqual({
+      supported: true,
+      pids: [],
+      unreadablePids: [501],
+    });
+  });
+
+  it("treats an earlier pid without path lines as unreadable", async () => {
+    vi.mocked(execHostFile).mockImplementation((async () => ({
+      stdout: "p501\np502\nn/ws/project\n",
+      stderr: "",
+    })) as never);
+    vi.mocked(realpath).mockImplementation(async (value) => {
+      const key = String(value);
+      if (key === "/ws/project") return "/ws/project";
+      return key;
+    });
+    expect(await inspectWorkspaceProcesses("/ws/project")).toEqual({
+      supported: true,
+      pids: [502],
+      unreadablePids: [501],
     });
   });
 

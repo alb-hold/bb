@@ -41,25 +41,19 @@ function parseLsofOutput(output: string):
   const paths: Array<{ pid: number; path: string }> = [];
   const unreadablePids: number[] = [];
   let pid: number | null = null;
-  let sawDescriptor = false;
   let sawName = false;
-  const flush = (): boolean => {
-    if (pid !== null && sawDescriptor && !sawName) return false;
-    return true;
+  const flush = () => {
+    if (pid !== null && !sawName) unreadablePids.push(pid);
   };
   for (const line of output.split("\n")) {
     if (line.length === 0) continue;
     const tag = line[0];
     if (tag === "p") {
-      if (!flush()) return { ok: false };
+      flush();
       const next = Number(line.slice(1));
       if (!Number.isInteger(next) || next < 0) return { ok: false };
       pid = next;
-      sawDescriptor = false;
       sawName = false;
-    } else if (tag === "f") {
-      if (pid === null) return { ok: false };
-      sawDescriptor = true;
     } else if (tag === "n") {
       if (pid === null) return { ok: false };
       sawName = true;
@@ -68,7 +62,7 @@ function parseLsofOutput(output: string):
       return { ok: false };
     }
   }
-  if (!flush()) return { ok: false };
+  flush();
   return { ok: true, paths, unreadablePids };
 }
 
