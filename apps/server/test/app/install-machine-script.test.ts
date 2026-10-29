@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   chmodSync,
@@ -14,8 +14,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { createServer as createNetServer } from "node:net";
-import { delimiter, dirname, join } from "node:path";
-import { killProcessesReferencingPath } from "@bb/test-helpers";
+import { basename, delimiter, dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 const SCRIPT_PATH = new URL(
@@ -338,11 +337,99 @@ function writeUnreachableUserBus(fixture: Fixture, init: string): void {
   writeExecutable(join(fixture.binDir, "loginctl"), "#!/bin/sh\nexit 1\n");
 }
 
-afterEach(async () => {
-  for (const directory of createdDirectories.splice(0)) {
-    await killProcessesReferencingPath(directory);
-    rmSync(directory, { force: true, recursive: true });
+const DAEMON_EXIT_TIMEOUT_MS = 3_000;
+const DAEMON_PID_FILES = ["install-daemon.pid", "service-daemon.pid"];
+
+function isRunning(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
   }
+}
+
+function isFixtureStub(pid: number, root: string): boolean {
+  const command = spawnSync("ps", ["-p", String(pid), "-o", "command="], {
+    encoding: "utf8",
+  }).stdout.trim();
+  const [launcher, script] = command.split(/\s+/u);
+  return (
+    launcher !== undefined &&
+    basename(launcher) === "node" &&
+    (script === join(root, "bin", "bb-app") ||
+      script === join(root, "data", "npm", "bin", "bb-app"))
+  );
+}
+
+function signalFixtureStub(
+  pid: number,
+  root: string,
+  signal: "SIGTERM" | "SIGKILL",
+): boolean {
+  if (!isFixtureStub(pid, root)) return false;
+  try {
+    process.kill(pid, signal);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function recordedDaemons(root: string): number[] {
+  const pids: number[] = [];
+  for (const name of DAEMON_PID_FILES) {
+    try {
+      const pid = Number.parseInt(
+        readFileSync(join(root, "data", name), "utf8").trim(),
+        10,
+      );
+      if (Number.isInteger(pid) && pid > 1) pids.push(pid);
+    } catch {}
+  }
+  return pids;
+}
+
+function remainingFixtureProcesses(roots: string[]): number[] {
+  const listing = spawnSync("ps", ["-axo", "pid=,command="], {
+    encoding: "utf8",
+  }).stdout;
+  const pids: number[] = [];
+  for (const line of listing.split("\n")) {
+    const match = /^\s*(\d+)\s(.*)$/u.exec(line);
+    if (match === null || Number(match[1]) === process.pid) continue;
+    if (roots.some((root) => match[2]?.includes(root))) {
+      pids.push(Number(match[1]));
+    }
+  }
+  return pids;
+}
+
+async function stopFixtureDaemons(roots: string[]): Promise<number[]> {
+  const recorded = roots.flatMap((root) =>
+    recordedDaemons(root).map((pid) => ({ pid, root })),
+  );
+  const stopped = recorded
+    .filter(({ pid, root }) => signalFixtureStub(pid, root, "SIGTERM"))
+    .map(({ pid }) => pid);
+  const deadline = Date.now() + DAEMON_EXIT_TIMEOUT_MS;
+  while (stopped.some((pid) => isRunning(pid)) && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  for (const { pid, root } of recorded) {
+    if (isRunning(pid)) signalFixtureStub(pid, root, "SIGKILL");
+  }
+  return stopped;
+}
+
+afterEach(async () => {
+  const roots = createdDirectories.splice(0);
+  await stopFixtureDaemons(roots);
+  const remaining = remainingFixtureProcesses(roots);
+  for (const root of roots) {
+    rmSync(root, { force: true, recursive: true });
+  }
+  expect(remaining).toEqual([]);
 });
 
 const describeOnPosix = process.platform === "win32" ? describe.skip : describe;
@@ -635,6 +722,56 @@ exec '${process.execPath}' "$@"
     );
     expect(existsSync(dataDir)).toBe(true);
     expect(existsSync(systemctlLog)).toBe(false);
+  });
+
+  describe("fixture daemon cleanup", () => {
+    it("does not signal a recorded pid that is not a fixture stub", async () => {
+      const fixture = createFixture();
+      const root = dirname(fixture.binDir);
+      const bystander = spawn("sleep", ["30"], { stdio: "ignore" });
+      try {
+        for (const name of DAEMON_PID_FILES) {
+          writeFileSync(join(fixture.dataDir, name), `${bystander.pid}\n`);
+        }
+        const stopped = await stopFixtureDaemons([root]);
+        expect(stopped).toEqual([]);
+        expect(bystander.pid !== undefined && isRunning(bystander.pid)).toBe(
+          true,
+        );
+      } finally {
+        bystander.kill("SIGKILL");
+      }
+    });
+
+    it("skips a recorded pid that exited before the signal", async () => {
+      const fixture = createFixture();
+      const root = dirname(fixture.binDir);
+      const exited = spawn(process.execPath, ["-e", "0"], { stdio: "ignore" });
+      await new Promise((resolve) => exited.once("exit", resolve));
+      const pid = exited.pid ?? 0;
+      writeFileSync(join(fixture.dataDir, "install-daemon.pid"), `${pid}\n`);
+      expect(signalFixtureStub(pid, root, "SIGTERM")).toBe(false);
+      expect(signalFixtureStub(pid, root, "SIGKILL")).toBe(false);
+      expect(await stopFixtureDaemons([root])).toEqual([]);
+    });
+
+    it("signals a recorded fixture stub, re-reading its command right before each signal", async () => {
+      const fixture = createFixture();
+      const root = dirname(fixture.binDir);
+      const script = join(root, "bin", "bb-app");
+      mkdirSync(dirname(script), { recursive: true });
+      writeFileSync(script, "setInterval(() => {}, 1000);\n");
+      const stub = spawn(process.execPath, [script], { stdio: "ignore" });
+      try {
+        const pid = stub.pid ?? 0;
+        writeFileSync(join(fixture.dataDir, "install-daemon.pid"), `${pid}\n`);
+        expect(isFixtureStub(pid, root)).toBe(true);
+        expect(await stopFixtureDaemons([root])).toEqual([pid]);
+        expect(isRunning(pid)).toBe(false);
+      } finally {
+        stub.kill("SIGKILL");
+      }
+    });
   });
 
   it("rejects an invalid explicit host-daemon port", () => {
