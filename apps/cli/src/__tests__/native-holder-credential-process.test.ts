@@ -21,7 +21,7 @@ const SECRET = "process-level-secret-ABC123xyz";
 const cleanups: Array<() => void> = [];
 
 afterEach(() => {
-  for (const cleanup of cleanups.splice(0).reverse()) cleanup();
+  for (const cleanup of cleanups.splice(0)) cleanup();
 });
 
 function credentialDirsIn(dir: string): string[] {
@@ -80,14 +80,7 @@ async function startRealHolder(
   startupDelayMs = 0,
 ): Promise<RealHolder> {
   const dir = mkdtempSync(path.join(os.tmpdir(), "bb-nc-proc-"));
-  cleanups.push(() =>
-    rmSync(dir, {
-      recursive: true,
-      force: true,
-      maxRetries: 5,
-      retryDelay: 50,
-    }),
-  );
+  cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
   const socket = path.join(dir, "thr_proc-1.sock");
   const holderModule = pathToFileURL(
     path.join(import.meta.dirname, "..", "native-holder.ts"),
