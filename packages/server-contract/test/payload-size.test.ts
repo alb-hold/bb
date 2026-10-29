@@ -1,7 +1,10 @@
 import { gzipSync } from "node:zlib";
 import { describe, expect, it } from "vitest";
 import type { ThreadTimelineResponse } from "../src/api-types.js";
-import { computeThreadTimelineDelta } from "../src/thread-timeline-delta.js";
+import {
+  applyThreadTimelineDelta,
+  computeThreadTimelineDelta,
+} from "../src/thread-timeline-delta.js";
 import type { TimelineRow } from "../src/thread-timeline.js";
 
 interface PayloadSize {
@@ -11,9 +14,13 @@ interface PayloadSize {
 
 interface WindowMeasurement {
   appendDelta: PayloadSize;
+  appendResult: ThreadTimelineResponse | null;
+  appended: ThreadTimelineResponse;
   full: PayloadSize;
   rowCount: number;
   streamDelta: PayloadSize;
+  streamResult: ThreadTimelineResponse | null;
+  streamed: ThreadTimelineResponse;
 }
 
 const GZIP_TOLERANCE = 0.05;
@@ -90,11 +97,17 @@ function measureWindow(rowCount: number): WindowMeasurement {
     `tag-${rowCount}-appended`,
     rowCount + 1,
   );
+  const appendDelta = computeThreadTimelineDelta(previous, appended);
+  const streamDelta = computeThreadTimelineDelta(previous, streamed);
   return {
-    appendDelta: payloadSize(computeThreadTimelineDelta(previous, appended)),
+    appendDelta: payloadSize(appendDelta),
+    appendResult: applyThreadTimelineDelta(previous, appendDelta),
+    appended,
     full: payloadSize(streamed),
     rowCount,
-    streamDelta: payloadSize(computeThreadTimelineDelta(previous, streamed)),
+    streamDelta: payloadSize(streamDelta),
+    streamResult: applyThreadTimelineDelta(previous, streamDelta),
+    streamed,
   };
 }
 
@@ -139,6 +152,10 @@ describe("server-to-browser timeline payload sizes", () => {
         measurement.streamDelta,
         budget,
       );
+      expect(measurement.streamResult).toEqual(measurement.streamed);
+      expect(measurement.streamResult?.rows.at(-1)?.detail).toBe(
+        "streamed update ".repeat(20),
+      );
     }
   });
 
@@ -150,6 +167,13 @@ describe("server-to-browser timeline payload sizes", () => {
         `append delta of ${measurement.rowCount} rows`,
         measurement.appendDelta,
         budget,
+      );
+      expect(measurement.appendResult).toEqual(measurement.appended);
+      expect(measurement.appendResult?.rows.map((item) => item.id)).toEqual(
+        measurement.appended.rows.map((item) => item.id),
+      );
+      expect(measurement.appendResult?.rows.at(-1)?.id).toBe(
+        row(measurement.rowCount).id,
       );
     }
   });
