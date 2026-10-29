@@ -147,6 +147,42 @@ describe("terminal replay preview", () => {
     parent.remove();
   });
 
+  it("keeps a held preview hidden while history replays and shows it once released", async () => {
+    installPreviewCanvasContext();
+    const parent = document.createElement("div");
+    const container = document.createElement("div");
+    parent.append(container);
+    document.body.append(parent);
+    const terminal = new Terminal({ cols: 120, rows: 36 });
+    const cover = mountTerminalReplayPreview({
+      container,
+      holdUntilReleased: true,
+      initialFitGrid: { cols: 120, rows: 36 },
+      isOwner: () => true,
+      terminal,
+    });
+    const element = parent.querySelector<HTMLElement>(
+      "[data-terminal-replay-preview]",
+    )!;
+    expect(element.dataset.terminalReplayHeld).toBeDefined();
+    expect(getComputedStyle(element).visibility).toBe("hidden");
+    expect(container.style.opacity).toBe("0");
+
+    cover.setPtyGrid(120, 36);
+    await new Promise<void>((resolve) =>
+      cover.push(Buffer.from("oldest historical frame\r\n"), resolve),
+    );
+    cover.setFitGrid(120, 36);
+    expect(getComputedStyle(element).visibility).toBe("hidden");
+
+    cover.release();
+    expect(element.dataset.terminalReplayHeld).toBeUndefined();
+    expect(getComputedStyle(element).visibility).toBe("visible");
+
+    cover.dispose();
+    parent.remove();
+  });
+
   it("keeps the attached grid visible while replay hides historical grids", async () => {
     const context = new Proxy(
       {

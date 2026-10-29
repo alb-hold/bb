@@ -656,6 +656,79 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
     expect(replaySinceSeq).toBe("0");
   });
 
+  it("keeps the preview of a replay without a usable snapshot hidden until the replay completes", async () => {
+    prepareMobileTerminal();
+    testState.screen.mockResolvedValue({
+      rows: ["snapshot text"],
+      cursor: { col: 0, row: 0 },
+      cols: 40,
+      gridRows: 15,
+      truncated: false,
+      complete: true,
+      checkpointSeq: 0,
+      dataBase64: btoa("snapshot text"),
+    });
+    let mountedTerminal: Terminal | null = null;
+    const openTerminal = Terminal.prototype.open;
+    vi.spyOn(Terminal.prototype, "open").mockImplementation(function (
+      this: Terminal,
+      element: HTMLElement,
+    ) {
+      mountedTerminal ??= this;
+      openTerminal.call(this, element);
+    });
+    const bufferText = () =>
+      Array.from(
+        { length: mountedTerminal?.buffer.active.length ?? 0 },
+        (_, index) =>
+          mountedTerminal?.buffer.active.getLine(index)?.translateToString(true),
+      ).join("\n");
+    const preview = () =>
+      document.querySelector<HTMLElement>("[data-terminal-replay-preview]");
+
+    const session = renderMobileTerminal();
+    await waitForReadinessCondition(
+      () => expect(testState.sockets).toHaveLength(1),
+      "terminal socket was not created",
+    );
+    const socket = testState.sockets[0];
+    if (!socket) throw new Error("terminal socket is missing");
+    await waitForReadiness(socket.opened, "terminal socket did not open");
+    await waitForReadinessCondition(
+      () => expect(testState.screen).toHaveBeenCalledOnce(),
+      "screen snapshot was not requested",
+    );
+    socket.receive({ type: "attached", session, replayStartSeq: 0, nextSeq: 3 });
+    socket.receive({
+      type: "output",
+      chunk: { seq: 0, dataBase64: btoa("stale frame one\r\n") },
+    });
+    socket.receive({
+      type: "output",
+      chunk: { seq: 1, dataBase64: btoa("stale frame two\r\n") },
+    });
+    await waitForReadinessCondition(
+      () => expect(bufferText()).toContain("stale frame two"),
+      "historical replay output was not parsed",
+    );
+    expect(preview()).not.toBeNull();
+    expect(preview()?.dataset.terminalReplayHeld).toBeDefined();
+    expect(preview()?.style.visibility).toBe("hidden");
+
+    socket.receive({
+      type: "output",
+      chunk: { seq: 2, dataBase64: btoa("current frame\r\n") },
+    });
+    await waitForReadinessCondition(
+      () => expect(bufferText()).toContain("current frame"),
+      "final replay output was not parsed",
+    );
+    await waitForReadinessCondition(
+      () => expect(preview()?.dataset.terminalReplayHeld).toBeUndefined(),
+      "replay preview stayed held after the replay completed",
+    );
+  });
+
   it("notifies the replay preview when a session update reports process exit", async () => {
     prepareMobileTerminal();
     vi.spyOn(FitAddon.prototype, "proposeDimensions").mockReturnValue({

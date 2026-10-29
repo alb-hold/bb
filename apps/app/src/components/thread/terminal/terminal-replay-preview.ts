@@ -23,16 +23,19 @@ export function updateTerminalReplayPreviewPtyGrid(
 
 export function mountTerminalReplayPreview({
   container,
+  holdUntilReleased = false,
   initialFitGrid,
   isOwner,
   terminal,
 }: {
   container: HTMLDivElement;
+  holdUntilReleased?: boolean;
   initialFitGrid: { cols: number; rows: number } | null;
   isOwner: () => boolean;
   terminal: XTermTerminal;
 }): {
   dispose(): void;
+  release(): void;
   resize(cols: number, rows: number): Promise<void>;
   setPtyGrid(cols: number, rows: number): void;
   setLatestPtyGrid(cols: number, rows: number): void;
@@ -52,7 +55,9 @@ export function mountTerminalReplayPreview({
   preview.dataset.terminalReplayPreview = "";
   preview.dataset.gridCols = String(terminal.cols);
   preview.dataset.gridRows = String(terminal.rows);
+  if (holdUntilReleased) preview.dataset.terminalReplayHeld = "";
   Object.assign(preview.style, {
+    visibility: holdUntilReleased ? "hidden" : "",
     position: "absolute",
     inset: "0 16px 0 0",
     overflow: "hidden",
@@ -76,6 +81,7 @@ export function mountTerminalReplayPreview({
   let fitGrid = initialFitGrid;
   let latestPtyGrid = { cols: terminal.cols, rows: terminal.rows };
   let shown = false;
+  let held = holdUntilReleased;
   let snapshotWriteFinished = false;
   let authoritativeGridAvailable = false;
   let handoffRequested = false;
@@ -128,6 +134,10 @@ export function mountTerminalReplayPreview({
   window.addEventListener("resize", updateSurfaceScale);
   const updateVisibility = () => {
     updateSurfaceScale();
+    if (held) {
+      preview.style.visibility = "hidden";
+      return;
+    }
     const localGridReady =
       fitGrid !== null &&
       terminal.cols === snapshotGrid.cols &&
@@ -217,6 +227,12 @@ export function mountTerminalReplayPreview({
     flushPendingWrites();
   };
   return {
+    release() {
+      if (disposed || !held) return;
+      held = false;
+      delete preview.dataset.terminalReplayHeld;
+      updateVisibility();
+    },
     resize(cols, rows) {
       if (disposed) return Promise.resolve();
       clearHandoffDeadline();

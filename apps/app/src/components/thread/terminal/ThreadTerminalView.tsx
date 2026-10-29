@@ -1656,6 +1656,7 @@ export function ThreadTerminalView({
     let detachGridVisibilityListeners: (() => void) | null = null;
     let replayPreview: {
       dispose(): void;
+      release(): void;
       resize(cols: number, rows: number): Promise<void>;
       setFitGrid(cols: number, rows: number): void;
       setLatestPtyGrid(cols: number, rows: number): void;
@@ -2349,6 +2350,7 @@ export function ThreadTerminalView({
               }
             },
             onReplayComplete: () => {
+              replayPreview?.release();
               replayCompleted = true;
               const fitGrid = fitAddon?.proposeDimensions();
               applyTerminalGridBeforeViewportRestore({
@@ -2404,6 +2406,7 @@ export function ThreadTerminalView({
                   TERMINAL_UNICODE_VERSION;
                 replayPreview = mountTerminalReplayPreview({
                   container: containerElement,
+                  holdUntilReleased: true,
                   initialFitGrid: localFitGrid,
                   isOwner: () =>
                     terminalInputClaimed &&
