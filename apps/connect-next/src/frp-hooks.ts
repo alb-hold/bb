@@ -16,6 +16,7 @@ const SHARE_PORT = /^[1-9]\d{0,4}$/u;
 const MAX_HOOK_BODY_BYTES = 64 * 1024;
 const ROUTE_SETTLE_MS = 150;
 export const REMOVAL_SETTLE_MS = 500;
+const STALE_CLOSE_EXPIRY_MS = 60_000;
 export const HOOK_RESOLVE_DEADLINE_MS = 7_000;
 
 type HookAnswer =
@@ -117,8 +118,13 @@ export interface FrpHookOptions {
 
 export function createFrpHooks(options: FrpHookOptions) {
   const { accounts, directory, log } = options;
-  const proxies = new Map<string, { label: string; subdomain: string }>();
+  const proxies = new Map<
+    string,
+    { label: string; subdomain: string; generation: number }
+  >();
   const owners = new Map<string, number | null>();
+  const generations = new Map<string, number>();
+  const staleCloses = new Map<string, NodeJS.Timeout>();
   const pendingRoutes = new Map<string, NodeJS.Timeout>();
 
   type Verdict = "linked" | "refused" | "unknown";
@@ -151,6 +157,20 @@ export function createFrpHooks(options: FrpHookOptions) {
     }
   }
 
+  function supersedeRun(runId: string): void {
+    generations.set(runId, (generations.get(runId) ?? 0) + 1);
+    for (const key of proxies.keys()) {
+      if (!key.startsWith(`${runId}\n`)) continue;
+      clearTimeout(staleCloses.get(key));
+      const expiry = setTimeout(
+        () => staleCloses.delete(key),
+        STALE_CLOSE_EXPIRY_MS,
+      );
+      expiry.unref();
+      staleCloses.set(key, expiry);
+    }
+  }
+
   async function handle(call: HookCall): Promise<HookAnswer> {
     const { user } = call;
     const unknownServer =
@@ -171,6 +191,7 @@ export function createFrpHooks(options: FrpHookOptions) {
       if (call.clientAddress !== null) {
         options.onLogin?.(call.clientAddress, user.label, user.runId);
       }
+      if (user.runId !== "") supersedeRun(user.runId);
       return ACCEPT;
     }
     if (call.op === "NewProxy") {
@@ -187,7 +208,11 @@ export function createFrpHooks(options: FrpHookOptions) {
       if (verdict === "unknown") return reject("the gate could not check this");
       if (verdict === "refused") return reject("credential refused");
       const proxyKey = `${user.runId}\n${call.proxyName ?? ""}`;
-      const proxy = { label: user.label, subdomain: call.subdomain };
+      const proxy = {
+        label: user.label,
+        subdomain: call.subdomain,
+        generation: generations.get(user.runId) ?? 0,
+      };
       const previous = proxies.get(proxyKey);
       if (previous !== undefined) {
         directory.disconnected({ ...previous, clientId: proxyKey });
@@ -214,11 +239,28 @@ export function createFrpHooks(options: FrpHookOptions) {
       const proxyKey = `${user.runId}\n${call.proxyName ?? ""}`;
       const proxy = proxies.get(proxyKey);
       const owner = owners.get(proxyKey) ?? null;
+      clearTimeout(staleCloses.get(proxyKey));
+      const supersededClose = staleCloses.delete(proxyKey);
+      if (
+        supersededClose &&
+        proxy !== undefined &&
+        proxy.generation >= (generations.get(user.runId) ?? 0)
+      ) {
+        log("info", "frp_proxy_close_superseded", {
+          label: proxy.label,
+          subdomain: proxy.subdomain,
+        });
+        return ACCEPT;
+      }
       clearTimeout(pendingRoutes.get(proxyKey));
       pendingRoutes.delete(proxyKey);
       if (proxy !== undefined) {
         proxies.delete(proxyKey);
         owners.delete(proxyKey);
+        const runPrefix = `${user.runId}\n`;
+        if (![...proxies.keys()].some((key) => key.startsWith(runPrefix))) {
+          generations.delete(user.runId);
+        }
         directory.disconnected({ ...proxy, clientId: proxyKey });
         log("info", "frp_proxy_closed", {
           label: proxy.label,

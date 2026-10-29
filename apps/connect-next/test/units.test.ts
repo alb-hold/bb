@@ -623,6 +623,56 @@ describe("frp hooks", () => {
       });
     });
 
+    async function replaceControl(
+      harness: Awaited<ReturnType<typeof startHooks>>,
+    ) {
+      const first = await harness.login("first:1");
+      await harness.proxyCall("NewProxy", "run-1");
+      await sleep(300);
+      expect(harness.directory.locate("bee").kind).toBe("here");
+      first.destroy();
+      await sleep(20);
+      await harness.login("second:1", "run-1");
+      await harness.proxyCall("NewProxy", "run-1");
+    }
+
+    it("keeps the replacement routed when the replaced control's close arrives after its new proxy", async () => {
+      const harness = await startHooks();
+      const signal = new AbortController().signal;
+      await replaceControl(harness);
+      const waiting = harness.directory.awaitReturn("bee", signal);
+
+      await harness.proxyCall("CloseProxy", "run-1");
+      await sleep(REMOVAL_SETTLE_MS + 200);
+      expect(await waiting).toEqual({ kind: "here" });
+      expect(harness.directory.locate("bee").kind).toBe("here");
+    });
+
+    it("keeps an already routed replacement when the replaced control's close arrives late", async () => {
+      const harness = await startHooks();
+      await replaceControl(harness);
+      await sleep(300);
+      expect(harness.directory.locate("bee").kind).toBe("here");
+
+      await harness.proxyCall("CloseProxy", "run-1");
+      await sleep(REMOVAL_SETTLE_MS + 200);
+      expect(harness.directory.locate("bee").kind).toBe("here");
+    });
+
+    it("still ends a replacement's own close after the replaced control's close was absorbed", async () => {
+      const harness = await startHooks();
+      const signal = new AbortController().signal;
+      await replaceControl(harness);
+      await sleep(300);
+      await harness.proxyCall("CloseProxy", "run-1");
+      expect(harness.directory.locate("bee").kind).toBe("here");
+
+      await harness.proxyCall("CloseProxy", "run-1");
+      expect(await harness.directory.awaitReturn("bee", signal)).toEqual({
+        kind: "offline",
+      });
+    });
+
     it("does not end the wait when a hook payload carries no run id", async () => {
       const { directory, login, proxyCall } = await startHooks();
       const abort = new AbortController();
