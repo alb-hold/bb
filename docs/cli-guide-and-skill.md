@@ -56,4 +56,23 @@ so it can receive pending handoffs after reconnect. Handoffs are not sent to
 other viewers. Terminal-bearing handoffs require a linked, visible terminal
 attachment on the target device.
 
-`bb thread row-status set <key> <value> [--icon <icon>] [--color <color>] [--priority <number>]`, `bb thread row-status clear [<key>]`, and `bb thread row-status list` manage up to eight status chips on the current thread's sidebar row. `bb thread progress <0..1> [--label <text>]` sets its progress bar; `bb thread progress clear` removes it. These commands use `BB_THREAD_ID` and fail outside a thread. `bb thread status <id>` remains an alias for `bb thread show <id>`. Row state clears when a managed turn settles to idle or error, or when a native terminal session closes with process exit or user close. A daemon disconnect does not clear native row state because the terminal may reattach. Explicit clear commands remove the selected state, and a targeted read hides state after 60 minutes without an update as a backstop. The SDK equivalents are `threads.experimental_rowState` and `threads.experimental_updateRowState`.
+`bb thread row-status set <key> <value> [--icon <icon>] [--color <color>] [--priority <number>]`,
+`bb thread row-status clear [<key>]`, and `bb thread row-status list` manage up
+to eight status chips on the current thread's sidebar row.
+`bb thread progress <0..1> [--label <text>]` sets its progress bar;
+`bb thread progress clear` explicitly removes it even when a terminal owns it.
+These commands use
+`BB_THREAD_ID` and fail outside a thread. `bb thread status <id>` remains an
+alias for `bb thread show <id>`.
+
+Row state clears when a managed turn settles to idle or error, or when a native
+terminal session closes with process exit or user close. A daemon disconnect
+does not clear native row state because the terminal may reattach. A targeted
+read hides state after 60 minutes without an update as a backstop. The row-state
+PATCH route's `action: "clear"` resets all statuses, progress, and progress
+ownership. An ordinary `action: "progress-clear"` clears only ownerless
+progress when `terminalId` is omitted; `force: true` is the explicit override
+for user-requested progress clearing. SDK callers can pass `force: true` to
+`threads.experimental_updateRowState` when they intend that override. The SDK
+equivalents are `threads.experimental_rowState` and
+`threads.experimental_updateRowState`; see the [thread row-state API](api/thread-row-state.md).

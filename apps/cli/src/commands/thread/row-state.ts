@@ -87,7 +87,11 @@ export function registerRowStateCommands(
   }));
   progress.command("clear").description("Clear sidebar progress").option("--json").action(action(async (options: OutputOptions) => {
     const threadId = currentThreadId();
-    const state = await createCliBbSdk(getUrl()).threads.experimental_updateRowState({ threadId, action: "progress-clear" });
+    const state = await createCliBbSdk(getUrl()).threads.experimental_updateRowState({
+      threadId,
+      action: "progress-clear",
+      force: true,
+    });
     printState(threadId, state, options.json);
   }));
 }

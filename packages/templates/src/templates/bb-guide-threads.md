@@ -21,8 +21,15 @@ clears when a managed turn settles to idle or error, or when a native terminal
 session closes with process exit or user close. A daemon disconnect does not
 clear native row state because the terminal may reattach. Explicit clear
 commands remove the selected state, and a targeted read hides state after 60
-minutes without an update as a backstop. The SDK equivalents are
-threads.experimental_rowState and threads.experimental_updateRowState.
+minutes without an update as a backstop. `bb thread progress clear` explicitly
+clears progress even when a terminal owns it. The row-state PATCH route's
+`action: "clear"` resets all statuses, progress, and progress ownership.
+An ordinary `action: "progress-clear"` clears only ownerless progress when
+`terminalId` is omitted; `force: true` is the explicit override for
+user-requested progress clearing. SDK callers can pass `force: true` to
+threads.experimental_updateRowState when they intend that override. The SDK
+equivalents are threads.experimental_rowState and
+threads.experimental_updateRowState.
 
 Every command supports --json for machine-readable output. Read-only commands
 take a thread ID or --self where supported; mutating lifecycle and messaging
