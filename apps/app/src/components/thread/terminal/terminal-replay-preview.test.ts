@@ -184,7 +184,7 @@ describe("terminal replay preview", () => {
     parent.remove();
   });
 
-  function mountHeldPreview() {
+  function mountHeldPreview(onHoldExpired?: () => void) {
     installPreviewCanvasContext();
     const parent = document.createElement("div");
     const container = document.createElement("div");
@@ -195,6 +195,7 @@ describe("terminal replay preview", () => {
       holdUntilReleased: true,
       initialFitGrid: { cols: 120, rows: 36 },
       isOwner: () => true,
+      ...(onHoldExpired === undefined ? {} : { onHoldExpired }),
       terminal: new Terminal({ cols: 120, rows: 36 }),
     });
     const element = parent.querySelector<HTMLElement>(
@@ -211,23 +212,30 @@ describe("terminal replay preview", () => {
     };
   }
 
-  it("flags a hold that the backstop released and holds again with a fresh countdown", () => {
+  it("keeps a preview hidden when the backstop fires, flags it, and clears the flag when held again", () => {
     vi.useFakeTimers();
     try {
-      const { cover, element, cleanup } = mountHeldPreview();
-      vi.advanceTimersByTime(TERMINAL_REPLAY_PREVIEW_HOLD_TIMEOUT_MS);
-      expect(element.dataset.terminalReplayHeld).toBeUndefined();
+      const onHoldExpired = vi.fn();
+      const { cover, element, cleanup } = mountHeldPreview(onHoldExpired);
+      vi.advanceTimersByTime(TERMINAL_REPLAY_PREVIEW_HOLD_TIMEOUT_MS - 1);
+      expect(onHoldExpired).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(1);
+      expect(onHoldExpired).toHaveBeenCalledTimes(1);
+      expect(element.dataset.terminalReplayHeld).toBeDefined();
       expect(element.dataset.terminalReplayHoldExpired).toBeDefined();
+      expect(element.style.visibility).toBe("hidden");
+      vi.advanceTimersByTime(TERMINAL_REPLAY_PREVIEW_HOLD_TIMEOUT_MS * 3);
+      expect(onHoldExpired).toHaveBeenCalledTimes(1);
+      expect(element.style.visibility).toBe("hidden");
 
       cover.hold({ countdown: true });
-      expect(element.dataset.terminalReplayHeld).toBeDefined();
       expect(element.dataset.terminalReplayHoldExpired).toBeUndefined();
-      expect(element.style.visibility).toBe("hidden");
-      vi.advanceTimersByTime(TERMINAL_REPLAY_PREVIEW_HOLD_TIMEOUT_MS - 1);
-      expect(element.dataset.terminalReplayHeld).toBeDefined();
-      vi.advanceTimersByTime(1);
+      vi.advanceTimersByTime(TERMINAL_REPLAY_PREVIEW_HOLD_TIMEOUT_MS);
+      expect(onHoldExpired).toHaveBeenCalledTimes(2);
+
+      cover.release();
       expect(element.dataset.terminalReplayHeld).toBeUndefined();
-      expect(element.dataset.terminalReplayHoldExpired).toBeDefined();
+      expect(element.dataset.terminalReplayHoldExpired).toBeUndefined();
       cleanup();
     } finally {
       vi.useRealTimers();
@@ -246,37 +254,6 @@ describe("terminal replay preview", () => {
       expect(element.dataset.terminalReplayHeld).toBeUndefined();
       expect(element.dataset.terminalReplayHoldExpired).toBeUndefined();
       cleanup();
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("releases a held preview on its own once the hold timeout passes", async () => {
-    vi.useFakeTimers();
-    try {
-      installPreviewCanvasContext();
-      const parent = document.createElement("div");
-      const container = document.createElement("div");
-      parent.append(container);
-      document.body.append(parent);
-      const terminal = new Terminal({ cols: 120, rows: 36 });
-      const cover = mountTerminalReplayPreview({
-        container,
-        holdUntilReleased: true,
-        initialFitGrid: { cols: 120, rows: 36 },
-        isOwner: () => true,
-        terminal,
-      });
-      const element = parent.querySelector<HTMLElement>(
-        "[data-terminal-replay-preview]",
-      )!;
-      cover.setPtyGrid(120, 36);
-      vi.advanceTimersByTime(TERMINAL_REPLAY_PREVIEW_HOLD_TIMEOUT_MS - 1);
-      expect(element.dataset.terminalReplayHeld).toBeDefined();
-      vi.advanceTimersByTime(1);
-      expect(element.dataset.terminalReplayHeld).toBeUndefined();
-      cover.dispose();
-      parent.remove();
     } finally {
       vi.useRealTimers();
     }

@@ -28,12 +28,14 @@ export function mountTerminalReplayPreview({
   holdUntilReleased = false,
   initialFitGrid,
   isOwner,
+  onHoldExpired,
   terminal,
 }: {
   container: HTMLDivElement;
   holdUntilReleased?: boolean;
   initialFitGrid: { cols: number; rows: number } | null;
   isOwner: () => boolean;
+  onHoldExpired?: () => void;
   terminal: XTermTerminal;
 }): {
   dispose(): void;
@@ -240,6 +242,7 @@ export function mountTerminalReplayPreview({
     if (disposed || !held) return;
     held = false;
     delete preview.dataset.terminalReplayHeld;
+    delete preview.dataset.terminalReplayHoldExpired;
     updateVisibility();
   };
   const armHoldTimeout = () => {
@@ -251,8 +254,9 @@ export function mountTerminalReplayPreview({
   };
   const expireHold = () => {
     if (disposed || !held) return;
+    holdTimeout = null;
     preview.dataset.terminalReplayHoldExpired = "";
-    release();
+    onHoldExpired?.();
   };
   if (held) armHoldTimeout();
   return {

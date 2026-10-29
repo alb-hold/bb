@@ -516,6 +516,7 @@ interface ThreadTerminalViewProps {
 type TerminalTitleChangeHandler = (title: string) => void;
 
 type TerminalConnectionNotice = "reconnecting" | "reconnected";
+type TerminalReplayNotice = "loading" | "unavailable";
 
 const TERMINAL_RECONNECTING_NOTICE_DELAY_MS = 1_000;
 const TERMINAL_RECONNECTED_NOTICE_DURATION_MS = 1_500;
@@ -1214,6 +1215,8 @@ export function ThreadTerminalView({
     useState<TerminalLinkTarget | null>(null);
   const [connectionNotice, setConnectionNotice] =
     useState<TerminalConnectionNotice | null>(null);
+  const [replayNotice, setReplayNotice] =
+    useState<TerminalReplayNotice | null>(null);
   const [contextMenuState, setContextMenuState] =
     useState<TerminalContextMenuState>({
       link: null,
@@ -1671,7 +1674,22 @@ export function ThreadTerminalView({
       processExited(): void;
       push(bytes: Uint8Array, callback: () => void): void;
     } | null = null;
-    const releaseReplayPreview = () => replayPreview?.release();
+    const releaseReplayPreview = () => {
+      replayPreview?.release();
+      setReplayNotice(null);
+    };
+    const abandonReplayPreview = () => {
+      if (
+        replayPreview !== null &&
+        !replayCompleted &&
+        replayCheckpointSequence === null
+      ) {
+        replayPreview.hold({ countdown: false });
+        setReplayNotice("unavailable");
+        return;
+      }
+      releaseReplayPreview();
+    };
     let outputPipeline: ReturnType<typeof createTerminalOutputPipeline> | null =
       null;
     let containerHasSize = hasVisibleTerminalSize({
@@ -2244,13 +2262,14 @@ export function ThreadTerminalView({
           if (disposed) {
             return;
           }
-          if (state === "closed") releaseReplayPreview();
+          if (state === "closed") abandonReplayPreview();
           if (
             state === "reconnecting" &&
             !replayCompleted &&
             replayCheckpointSequence === null
           ) {
             replayPreview?.hold({ countdown: false });
+            setReplayNotice(null);
           }
           if (state === "reconnecting") {
             repaintAfterReconnect = true;
@@ -2293,9 +2312,8 @@ export function ThreadTerminalView({
           });
         },
         onMessage: (message) => {
-          if (message.type === "error" || message.type === "exited") {
-            releaseReplayPreview();
-          }
+          if (message.type === "error") abandonReplayPreview();
+          if (message.type === "exited") releaseReplayPreview();
           if (message.type === "output") {
             latestOutputSequence = Math.max(
               latestOutputSequence,
@@ -2414,6 +2432,7 @@ export function ThreadTerminalView({
             onReplayStart: () => {
               viewportReplaySaveGate.beginReplay();
               replayCompleted = false;
+              setReplayNotice(null);
               if (replayCheckpointSequence === null || replayPreview === null) {
                 replayPreview?.dispose();
                 const replayGrid = latestPtyGrid;
@@ -2431,6 +2450,7 @@ export function ThreadTerminalView({
                 replayPreview = mountTerminalReplayPreview({
                   container: containerElement,
                   holdUntilReleased: true,
+                  onHoldExpired: () => setReplayNotice("loading"),
                   initialFitGrid: localFitGrid,
                   isOwner: () =>
                     terminalInputClaimed &&
@@ -2872,7 +2892,11 @@ export function ThreadTerminalView({
         ? "Reconnecting…"
         : connectionNotice === "reconnected"
           ? "Reconnected"
-          : null;
+          : replayNotice === "loading"
+            ? "Still loading terminal…"
+            : replayNotice === "unavailable"
+              ? "Terminal output unavailable"
+              : null;
   useEffect(() => {
     webglVisibilityRef.current?.sync();
     terminalVisibilityReporterRef.current?.();

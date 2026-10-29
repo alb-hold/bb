@@ -281,6 +281,10 @@ function stubVisibleIntersectionObserver(): void {
   );
 }
 
+let rerenderMobileTerminal: (
+  session: ReturnType<typeof makeTerminalSession>,
+) => void = () => undefined;
+
 function renderMobileTerminal(): ReturnType<typeof makeTerminalSession> {
   const session = makeTerminalSession({
     id: "term_mobile_paste",
@@ -288,15 +292,19 @@ function renderMobileTerminal(): ReturnType<typeof makeTerminalSession> {
     cols: 40,
     rows: 12,
   });
-  render(
+  const tree = (current: ReturnType<typeof makeTerminalSession>) => (
     <MemoryRouter>
       <AppCommandProvider>
-        <ThreadTerminalView autoFocus={false} isPanelOpen session={session} />
+        <ThreadTerminalView autoFocus={false} isPanelOpen session={current} />
       </AppCommandProvider>
-    </MemoryRouter>,
+    </MemoryRouter>
   );
+  const { rerender } = render(tree(session));
+  rerenderMobileTerminal = (next) => rerender(tree(next));
   return session;
 }
+
+const pageText = () => document.body.textContent ?? "";
 
 function writeReplay(terminal: Terminal, data: string): Promise<void> {
   return new Promise((resolve) => {
@@ -793,7 +801,9 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
     ) =>
       realSetTimeout(
         handler,
-        delay === terminalReplayPreview.TERMINAL_REPLAY_PREVIEW_HOLD_TIMEOUT_MS
+        delay === terminalReplayPreview.TERMINAL_REPLAY_PREVIEW_HOLD_TIMEOUT_MS &&
+          typeof handler === "function" &&
+          (handler.name === "expireHold" || handler.name === "release")
           ? ms
           : delay,
         ...args,
@@ -884,9 +894,58 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
           expect(preview()?.dataset.terminalReplayHoldExpired).toBeDefined(),
         "hold backstop did not fire for the stalled attempt",
       );
-      expect(preview()?.dataset.terminalReplayHeld).toBeUndefined();
+      expect(preview()?.dataset.terminalReplayHeld).toBeDefined();
+      expect(preview()?.style.visibility).toBe("hidden");
+      expect(pageText()).toContain("Still loading terminal");
       current = reconnectSocket;
     }
+  });
+
+  it("keeps a stalled replay hidden behind a loading state and reveals it only on completion", async () => {
+    shortenReplayHoldTimeout(600);
+    const { bufferText, preview, socket } =
+      await mountReplayWithUnusableSnapshot();
+    await waitForReadinessCondition(
+      () => expect(preview()?.dataset.terminalReplayHoldExpired).toBeDefined(),
+      "hold backstop did not fire for the stalled replay",
+    );
+    expect(preview()?.dataset.terminalReplayHeld).toBeDefined();
+    expect(preview()?.style.visibility).toBe("hidden");
+    expect(pageText()).toContain("Still loading terminal");
+
+    socket.receive({
+      type: "output",
+      chunk: { seq: 2, dataBase64: btoa("current frame\r\n") },
+    });
+    await waitForReadinessCondition(
+      () => expect(bufferText()).toContain("current frame"),
+      "final replay output was not parsed",
+    );
+    await waitForReadinessCondition(
+      () => expect(preview()?.dataset.terminalReplayHeld).toBeUndefined(),
+      "replay preview stayed held after the replay completed",
+    );
+    expect(preview()?.dataset.terminalReplayHoldExpired).toBeUndefined();
+    expect(pageText()).not.toContain("Still loading terminal");
+  });
+
+  it("shows the transport closed state for a stalled replay and never reveals partial output", async () => {
+    shortenReplayHoldTimeout(600);
+    const { preview, session, socket } =
+      await mountReplayWithUnusableSnapshot();
+    await waitForReadinessCondition(
+      () => expect(pageText()).toContain("Still loading terminal"),
+      "loading state was not shown for the stalled replay",
+    );
+    rerenderMobileTerminal({ ...session, status: "disconnected" });
+    socket.disconnect();
+    await waitForReadinessCondition(
+      () => expect(pageText()).toContain("Terminal disconnected"),
+      "closed state was not shown",
+    );
+    expect(pageText()).not.toContain("Still loading terminal");
+    expect(preview()?.dataset.terminalReplayHeld).toBeDefined();
+    expect(preview()?.style.visibility).toBe("hidden");
   });
 
   it("releases the held preview when the terminal process exits mid-replay", async () => {
@@ -905,16 +964,28 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
     );
   });
 
-  it("releases the held preview when the server reports a terminal error mid-replay", async () => {
+  it("shows an unavailable state for a terminal error mid-replay and never reveals partial output", async () => {
+    shortenReplayHoldTimeout(600);
     const { preview, socket } = await mountReplayWithUnusableSnapshot();
+    await waitForReadinessCondition(
+      () => expect(pageText()).toContain("Still loading terminal"),
+      "loading state was not shown for the stalled replay",
+    );
     await act(async () => {
-      socket.receive({ type: "error", message: "replay failed" });
+      socket.receive({
+        type: "error",
+        code: "replay_failed",
+        message: "replay failed",
+      });
       await Promise.resolve();
     });
     await waitForReadinessCondition(
-      () => expect(preview()?.dataset.terminalReplayHeld).toBeUndefined(),
-      "replay preview stayed held after a terminal error",
+      () => expect(pageText()).toContain("Terminal output unavailable"),
+      "unavailable state was not shown after a terminal error",
     );
+    expect(pageText()).not.toContain("Still loading terminal");
+    expect(preview()?.dataset.terminalReplayHeld).toBeDefined();
+    expect(preview()?.style.visibility).toBe("hidden");
   });
 
   it("notifies the replay preview when a session update reports process exit", async () => {
