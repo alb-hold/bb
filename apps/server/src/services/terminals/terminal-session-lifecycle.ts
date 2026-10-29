@@ -1874,15 +1874,15 @@ export class TerminalSessionLifecycle {
     current: TerminalSessionRow;
     reason: TerminalSessionCloseReason;
   }): TerminalSession {
+    if (args.current.status === "disconnected") {
+      this.queueDaemonCloseForReconnect(args.current);
+    }
     const closed = updateTerminalById(this.options.db, args.current.id, {
       closeReason: args.reason,
       exitCode: args.current.exitCode,
       kind: "exit",
     });
     const session = closed ?? args.current;
-    if (args.current.status === "disconnected") {
-      this.queueDaemonCloseForReconnect(args.current);
-    }
     this.notifyExitedTerminalSession({
       session,
       code: "terminal_closed",
