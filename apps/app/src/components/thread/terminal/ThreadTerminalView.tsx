@@ -527,6 +527,7 @@ interface ThreadTerminalViewProps {
 type TerminalTitleChangeHandler = (title: string) => void;
 
 type TerminalConnectionNotice = "reconnecting" | "reconnected";
+type TerminalReplayNotice = "loading" | "unavailable";
 
 const TERMINAL_RECONNECTING_NOTICE_DELAY_MS = 1_000;
 const TERMINAL_RECONNECTED_NOTICE_DURATION_MS = 1_500;
@@ -1227,6 +1228,8 @@ export function ThreadTerminalView({
     useState<TerminalLinkTarget | null>(null);
   const [connectionNotice, setConnectionNotice] =
     useState<TerminalConnectionNotice | null>(null);
+  const [replayNotice, setReplayNotice] =
+    useState<TerminalReplayNotice | null>(null);
   const [contextMenuState, setContextMenuState] =
     useState<TerminalContextMenuState>({
       link: null,
@@ -1711,6 +1714,9 @@ export function ThreadTerminalView({
     let detachGridVisibilityListeners: (() => void) | null = null;
     let replayPreview: {
       dispose(): void;
+        readonly fallback: boolean;
+      release(): void;
+      hold(options: { countdown: boolean }): void;
       resize(cols: number, rows: number): Promise<void>;
       setFitGrid(cols: number, rows: number): void;
       setLatestPtyGrid(cols: number, rows: number): void;
@@ -1718,6 +1724,30 @@ export function ThreadTerminalView({
       processExited(): void;
       push(bytes: Uint8Array, callback: () => void): void;
     } | null = null;
+    const releaseReplayPreview = () => {
+      replayPreview?.release();
+      setReplayNotice(null);
+    };
+    let exitedBeforeReplayCompleted = false;
+    let replayPreviewExitApplied = false;
+    const handleReplayPreviewExit = () => {
+      if (replayPreviewExitApplied || exitedBeforeReplayCompleted) return;
+      if (replayPreview?.fallback === true && !replayCompleted) {
+        exitedBeforeReplayCompleted = true;
+        return;
+      }
+      replayPreviewExitApplied = true;
+      releaseReplayPreview();
+      replayPreview?.processExited();
+    };
+    const abandonReplayPreview = () => {
+      if (replayPreview === null || replayCompleted) {
+        releaseReplayPreview();
+        return;
+      }
+      if (replayPreview.fallback) replayPreview.hold({ countdown: false });
+      setReplayNotice("unavailable");
+    };
     let outputPipeline: ReturnType<typeof createTerminalOutputPipeline> | null =
       null;
     let containerHasSize = hasVisibleTerminalSize({
@@ -2305,6 +2335,15 @@ export function ThreadTerminalView({
           if (disposed) {
             return;
           }
+          if (state === "closed") abandonReplayPreview();
+          if (
+            state === "reconnecting" &&
+            !replayCompleted &&
+            replayPreview?.fallback === true
+          ) {
+            replayPreview.hold({ countdown: false });
+            setReplayNotice(null);
+          }
           if (state === "reconnecting") {
             repaintAfterReconnect = true;
             if (reconnecting) {
@@ -2346,6 +2385,8 @@ export function ThreadTerminalView({
           });
         },
         onMessage: (message) => {
+          if (message.type === "error") abandonReplayPreview();
+          if (message.type === "exited") handleReplayPreviewExit();
           if (message.type === "output") {
             latestOutputSequence = Math.max(
               latestOutputSequence,
@@ -2384,7 +2425,7 @@ export function ThreadTerminalView({
               replayPreview?.resize(cols, rows);
             }
             if (message.session.status === "exited") {
-              replayPreview?.processExited();
+              handleReplayPreviewExit();
             }
             if (message.type === "session-updated" && !markerGridActive) {
               if (outputPipeline) {
@@ -2423,7 +2464,13 @@ export function ThreadTerminalView({
               }
             },
             onReplayComplete: () => {
+              releaseReplayPreview();
               replayCompleted = true;
+              if (exitedBeforeReplayCompleted) {
+                exitedBeforeReplayCompleted = false;
+                replayPreviewExitApplied = true;
+                replayPreview?.processExited();
+              }
               const fitGrid = fitAddon?.proposeDimensions();
               applyTerminalGridBeforeViewportRestore({
                 pipeline: outputPipeline,
@@ -2462,8 +2509,12 @@ export function ThreadTerminalView({
             onReplayStart: () => {
               viewportReplaySaveGate.beginReplay();
               replayCompleted = false;
-              if (replayCheckpointSequence === null || replayPreview === null) {
+              exitedBeforeReplayCompleted = false;
+              replayPreviewExitApplied = false;
+              setReplayNotice(null);
+              if (replayPreview === null || replayPreview.fallback) {
                 replayPreview?.dispose();
+                replayCheckpointSequence = null;
                 const replayGrid = latestPtyGrid;
                 const previewTerminal = new Terminal({
                   allowProposedApi: TERMINAL_ALLOW_PROPOSED_API,
@@ -2478,6 +2529,8 @@ export function ThreadTerminalView({
                   TERMINAL_UNICODE_VERSION;
                 replayPreview = mountTerminalReplayPreview({
                   container: containerElement,
+                  holdUntilReleased: true,
+                  onHoldExpired: () => setReplayNotice("loading"),
                   initialFitGrid: localFitGrid,
                   isOwner: () =>
                     terminalInputClaimed &&
@@ -2921,7 +2974,11 @@ export function ThreadTerminalView({
         ? "Reconnecting…"
         : connectionNotice === "reconnected"
           ? "Reconnected"
-          : null;
+          : replayNotice === "loading"
+            ? "Still loading terminal…"
+            : replayNotice === "unavailable"
+              ? "Terminal output unavailable"
+              : null;
   useEffect(() => {
     webglVisibilityRef.current?.sync();
     terminalVisibilityReporterRef.current?.();

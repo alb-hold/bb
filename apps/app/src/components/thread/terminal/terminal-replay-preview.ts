@@ -9,6 +9,8 @@ import {
   terminalSurfaceScale,
 } from "./terminal-grid-presentation";
 
+export const TERMINAL_REPLAY_PREVIEW_HOLD_TIMEOUT_MS = 5_000;
+
 export function updateTerminalReplayPreviewPtyGrid(
   preview: {
     setLatestPtyGrid(cols: number, rows: number): void;
@@ -23,16 +25,23 @@ export function updateTerminalReplayPreviewPtyGrid(
 
 export function mountTerminalReplayPreview({
   container,
+  holdUntilReleased = false,
   initialFitGrid,
   isOwner,
+  onHoldExpired,
   terminal,
 }: {
   container: HTMLDivElement;
+  holdUntilReleased?: boolean;
   initialFitGrid: { cols: number; rows: number } | null;
   isOwner: () => boolean;
+  onHoldExpired?: () => void;
   terminal: XTermTerminal;
 }): {
+  readonly fallback: boolean;
   dispose(): void;
+  release(): void;
+  hold(options: { countdown: boolean }): void;
   resize(cols: number, rows: number): Promise<void>;
   setPtyGrid(cols: number, rows: number): void;
   setLatestPtyGrid(cols: number, rows: number): void;
@@ -52,7 +61,9 @@ export function mountTerminalReplayPreview({
   preview.dataset.terminalReplayPreview = "";
   preview.dataset.gridCols = String(terminal.cols);
   preview.dataset.gridRows = String(terminal.rows);
+  if (holdUntilReleased) preview.dataset.terminalReplayHeld = "";
   Object.assign(preview.style, {
+    visibility: holdUntilReleased ? "hidden" : "",
     position: "absolute",
     inset: "0 16px 0 0",
     overflow: "hidden",
@@ -76,6 +87,8 @@ export function mountTerminalReplayPreview({
   let fitGrid = initialFitGrid;
   let latestPtyGrid = { cols: terminal.cols, rows: terminal.rows };
   let shown = false;
+  let held = holdUntilReleased;
+  let holdTimeout: number | null = null;
   let snapshotWriteFinished = false;
   let authoritativeGridAvailable = false;
   let handoffRequested = false;
@@ -128,6 +141,10 @@ export function mountTerminalReplayPreview({
   window.addEventListener("resize", updateSurfaceScale);
   const updateVisibility = () => {
     updateSurfaceScale();
+    if (held) {
+      preview.style.visibility = "hidden";
+      return;
+    }
     const localGridReady =
       fitGrid !== null &&
       terminal.cols === snapshotGrid.cols &&
@@ -216,7 +233,45 @@ export function mountTerminalReplayPreview({
     updateVisibility();
     flushPendingWrites();
   };
+  const clearHoldTimeout = () => {
+    if (holdTimeout === null) return;
+    window.clearTimeout(holdTimeout);
+    holdTimeout = null;
+  };
+  const release = () => {
+    clearHoldTimeout();
+    if (disposed || !held) return;
+    held = false;
+    delete preview.dataset.terminalReplayHeld;
+    delete preview.dataset.terminalReplayHoldExpired;
+    updateVisibility();
+  };
+  const armHoldTimeout = () => {
+    clearHoldTimeout();
+    holdTimeout = window.setTimeout(
+      expireHold,
+      TERMINAL_REPLAY_PREVIEW_HOLD_TIMEOUT_MS,
+    );
+  };
+  const expireHold = () => {
+    if (disposed || !held) return;
+    holdTimeout = null;
+    preview.dataset.terminalReplayHoldExpired = "";
+    onHoldExpired?.();
+  };
+  if (held) armHoldTimeout();
   return {
+    fallback: holdUntilReleased,
+    release,
+    hold({ countdown }) {
+      if (disposed) return;
+      held = true;
+      preview.dataset.terminalReplayHeld = "";
+      delete preview.dataset.terminalReplayHoldExpired;
+      if (countdown) armHoldTimeout();
+      else clearHoldTimeout();
+      updateVisibility();
+    },
     resize(cols, rows) {
       if (disposed) return Promise.resolve();
       clearHandoffDeadline();
@@ -272,6 +327,7 @@ export function mountTerminalReplayPreview({
     dispose() {
       if (disposed) return;
       disposed = true;
+      clearHoldTimeout();
       clearHandoffDeadline();
       for (const write of pendingWrites.splice(0)) write.callback();
       pendingBytes = 0;

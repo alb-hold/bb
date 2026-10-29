@@ -524,55 +524,61 @@ describe("thread runtime display", () => {
       environmentHostId: hostId,
       thread: nativeTwo.thread,
     });
-    const oneNativeLookupStatements = countNativeActivityLookupStatements(
-      db,
-      () =>
-        toThreadListEntryResponsesForTest(
-          { db, hub, providerRegistry },
-          { now: 190_000, threads: [nativeEntry, ordinaryEntry] },
-        ),
-    );
-    const twoNativeLookupStatements = countNativeActivityLookupStatements(
-      db,
-      () =>
-        toThreadListEntryResponsesForTest(
-          { db, hub, providerRegistry },
-          {
-            now: 190_000,
-            threads: [nativeEntry, nativeTwoEntry, ordinaryEntry],
-          },
-        ),
-    );
+    const clock = vi.spyOn(Date, "now").mockReturnValue(190_000);
+    try {
+      const oneNativeLookupStatements = countNativeActivityLookupStatements(
+        db,
+        () =>
+          toThreadListEntryResponsesForTest(
+            { db, hub, providerRegistry },
+            { now: 190_000, threads: [nativeEntry, ordinaryEntry] },
+          ),
+      );
+      const twoNativeLookupStatements = countNativeActivityLookupStatements(
+        db,
+        () =>
+          toThreadListEntryResponsesForTest(
+            { db, hub, providerRegistry },
+            {
+              now: 190_000,
+              threads: [nativeEntry, nativeTwoEntry, ordinaryEntry],
+            },
+          ),
+      );
 
-    const fresh = toThreadListEntryResponsesForTest(
-      { db, hub, providerRegistry },
-      { now: 190_000, threads: [nativeEntry, nativeTwoEntry, ordinaryEntry] },
-    );
-    const stale = toThreadListEntryResponsesForTest(
-      { db, hub, providerRegistry },
-      { now: 190_001, threads: [nativeEntry, nativeTwoEntry, ordinaryEntry] },
-    );
-    const detail = toThreadResponseFromThread(
-      { db, hub, providerRegistry },
-      { now: 190_001, thread: native.thread },
-    );
+      const fresh = toThreadListEntryResponsesForTest(
+        { db, hub, providerRegistry },
+        { now: 190_000, threads: [nativeEntry, nativeTwoEntry, ordinaryEntry] },
+      );
+      clock.mockReturnValue(190_001);
+      const stale = toThreadListEntryResponsesForTest(
+        { db, hub, providerRegistry },
+        { now: 190_001, threads: [nativeEntry, nativeTwoEntry, ordinaryEntry] },
+      );
+      const detail = toThreadResponseFromThread(
+        { db, hub, providerRegistry },
+        { now: 190_001, thread: native.thread },
+      );
 
-    expect(fresh[0]?.runtime.nativeActivity?.confirmation).toBe("confirmed");
-    expect(fresh[0]?.nativeTerminal).toBe(true);
-    expect(fresh[0]?.listIndicator).toBe("working");
-    expect(fresh[1]?.runtime.nativeActivity?.confirmation).toBe("confirmed");
-    expect(fresh[1]?.listIndicator).toBe("working");
-    expect(stale[0]?.runtime.nativeActivity?.confirmation).toBe("unconfirmed");
-    expect(stale[0]?.listIndicator).toBe("activity-unreported");
-    expect(stale[1]?.runtime.nativeActivity?.confirmation).toBe("unconfirmed");
-    expect(stale[1]?.listIndicator).toBe("activity-unreported");
-    expect(detail.runtime.nativeActivity?.confirmation).toBe("unconfirmed");
-    expect(detail.nativeTerminal).toBe(true);
-    expect(stale[2]?.runtime.nativeActivity).toBeUndefined();
-    expect(stale[2]?.nativeTerminal).toBe(false);
-    expect(stale[2]?.listIndicator).toBe("working");
-    expect(oneNativeLookupStatements).toBe(1);
-    expect(twoNativeLookupStatements).toBe(oneNativeLookupStatements);
+      expect(fresh[0]?.runtime.nativeActivity?.confirmation).toBe("confirmed");
+      expect(fresh[0]?.nativeTerminal).toBe(true);
+      expect(fresh[0]?.listIndicator).toBe("working");
+      expect(fresh[1]?.runtime.nativeActivity?.confirmation).toBe("confirmed");
+      expect(fresh[1]?.listIndicator).toBe("working");
+      expect(stale[0]?.runtime.nativeActivity?.confirmation).toBe("unconfirmed");
+      expect(stale[0]?.listIndicator).toBe("activity-unreported");
+      expect(stale[1]?.runtime.nativeActivity?.confirmation).toBe("unconfirmed");
+      expect(stale[1]?.listIndicator).toBe("activity-unreported");
+      expect(detail.runtime.nativeActivity?.confirmation).toBe("unconfirmed");
+      expect(detail.nativeTerminal).toBe(true);
+      expect(stale[2]?.runtime.nativeActivity).toBeUndefined();
+      expect(stale[2]?.nativeTerminal).toBe(false);
+      expect(stale[2]?.listIndicator).toBe("working");
+      expect(oneNativeLookupStatements).toBe(1);
+      expect(twoNativeLookupStatements).toBe(oneNativeLookupStatements);
+    } finally {
+      clock.mockRestore();
+    }
   });
 
   it("projects native receipt freshness and edit policy through the plugin DTO", () => {

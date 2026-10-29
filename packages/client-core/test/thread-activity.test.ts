@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { makeThreadListEntry } from "@bb/test-helpers/domain-fixtures";
 import {
   getCollapsedChildActivity,
@@ -76,9 +76,17 @@ describe("thread-activity", () => {
         evidenceKind: "holder-report" as const,
       },
     };
-    expect(isNativeActivityUnconfirmed(runtime, 1_090_000)).toBe(false);
-    expect(isNativeActivityUnconfirmed(runtime, 1_090_001)).toBe(true);
-    expect(isNativeActivityUnconfirmed(runtime, 999_999)).toBe(true);
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(1_090_000);
+      expect(isNativeActivityUnconfirmed(runtime, 1_090_000)).toBe(false);
+      vi.setSystemTime(1_090_001);
+      expect(isNativeActivityUnconfirmed(runtime, 1_090_001)).toBe(true);
+      vi.setSystemTime(999_999);
+      expect(isNativeActivityUnconfirmed(runtime, 999_999)).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
     expect(
       isNativeActivityUnconfirmed(
         {
@@ -88,6 +96,90 @@ describe("thread-activity", () => {
         1_000_000,
       ),
     ).toBe(true);
+  });
+
+  describe("a receipt ahead of a lagging tick clock", () => {
+    const nativeActivityRuntime = (lastEvidenceAt: number) => ({
+      displayStatus: "active" as const,
+      nativeActivity: {
+        lastEvidenceAt,
+        freshForMs: 90_000,
+        confirmation: "confirmed" as const,
+        evidenceKind: "holder-report" as const,
+      },
+    });
+
+    it("counts a receipt stamped after the tick but before the real clock as confirmed", () => {
+      vi.useFakeTimers();
+      try {
+        vi.setSystemTime(5_000_500);
+        const tickNow = 5_000_000;
+        expect(
+          isNativeActivityUnconfirmed(
+            nativeActivityRuntime(5_000_500),
+            tickNow,
+          ),
+        ).toBe(false);
+        expect(
+          isNativeActivityUnconfirmed(
+            nativeActivityRuntime(5_000_100),
+            tickNow,
+          ),
+        ).toBe(false);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("ages a receipt by the real clock when the tick has stalled", () => {
+      vi.useFakeTimers();
+      try {
+        vi.setSystemTime(300_000);
+        const stalledTick = 100_000;
+        expect(
+          isNativeActivityUnconfirmed(
+            nativeActivityRuntime(150_000),
+            stalledTick,
+          ),
+        ).toBe(true);
+        expect(
+          isNativeActivityUnconfirmed(
+            nativeActivityRuntime(210_000),
+            stalledTick,
+          ),
+        ).toBe(false);
+        expect(
+          isNativeActivityUnconfirmed(
+            nativeActivityRuntime(209_999),
+            stalledTick,
+          ),
+        ).toBe(true);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("still counts a receipt ahead of the real clock as unconfirmed, by one millisecond or by a minute", () => {
+      vi.useFakeTimers();
+      try {
+        vi.setSystemTime(5_000_500);
+        const tickNow = 5_000_000;
+        expect(
+          isNativeActivityUnconfirmed(
+            nativeActivityRuntime(5_000_501),
+            tickNow,
+          ),
+        ).toBe(true);
+        expect(
+          isNativeActivityUnconfirmed(
+            nativeActivityRuntime(5_000_500 + 60_000),
+            tickNow,
+          ),
+        ).toBe(true);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
   });
 
   describe("resolveThreadListIndicator", () => {
@@ -491,13 +583,24 @@ describe("thread-activity", () => {
           evidenceKind: "holder-report" as const,
         },
       });
-      expect(
-        isNativeActivityUnconfirmed(runtimeWith("confirmed", now), now),
-      ).toBe(false);
-      for (const confirmation of ["unconfirmed", "tool-call", "unknown", ""]) {
+      vi.useFakeTimers();
+      try {
+        vi.setSystemTime(now);
         expect(
-          isNativeActivityUnconfirmed(runtimeWith(confirmation, now), now),
-        ).toBe(true);
+          isNativeActivityUnconfirmed(runtimeWith("confirmed", now), now),
+        ).toBe(false);
+        for (const confirmation of [
+          "unconfirmed",
+          "tool-call",
+          "unknown",
+          "",
+        ]) {
+          expect(
+            isNativeActivityUnconfirmed(runtimeWith(confirmation, now), now),
+          ).toBe(true);
+        }
+      } finally {
+        vi.useRealTimers();
       }
     });
 
