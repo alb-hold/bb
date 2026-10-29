@@ -1122,6 +1122,38 @@ describe("frp hooks", () => {
       });
     });
 
+    it("keeps a run id bound while any of the label's controls has no run id assigned, and frees it once all have closed", async () => {
+      const harness = await startHooks(LINKED_ACCOUNTS, {
+        runBindingIdleMs: 150,
+      });
+      const first = await harness.login("control-a:1");
+      const second = await harness.login("control-b:1");
+      await harness.newProxy("run-r");
+      await sleep(300);
+
+      harness.frps.unregister(PROXY_NAME);
+      await harness.proxyCall("CloseProxy", "run-r");
+      await sleep(TIMINGS.reconcileMs * 3);
+      expect(await loginAs(harness, "wasp", "run-r")).toMatchObject({
+        reject: true,
+      });
+      expect(await proxyAs(harness, "wasp", "run-r")).toMatchObject({
+        reject: true,
+      });
+
+      first.destroy();
+      await sleep(TIMINGS.reconcileMs * 3);
+      expect(await loginAs(harness, "wasp", "run-r")).toMatchObject({
+        reject: true,
+      });
+
+      second.destroy();
+      await sleep(TIMINGS.reconcileMs * 3);
+      expect(await loginAs(harness, "wasp", "run-r")).toMatchObject({
+        reject: false,
+      });
+    });
+
     it("ignores a delayed close from the label that used to hold a run id another label has since claimed", async () => {
       const harness = await startHooks(LINKED_ACCOUNTS, {
         runBindingIdleMs: 150,

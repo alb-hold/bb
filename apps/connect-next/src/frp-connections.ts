@@ -84,7 +84,8 @@ export function createFrpConnections(): FrpConnections {
     holds(label, runId) {
       return [...open.values()].some(
         (connection) =>
-          connection.label === label && connection.runId === runId,
+          connection.label === label &&
+          (connection.runId === "" || connection.runId === runId),
       );
     },
     close(label) {
