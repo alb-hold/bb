@@ -105,13 +105,12 @@ async function execLsof(
       exitCode: 0,
     };
   } catch (error) {
-    if (
-      error instanceof Error &&
-      "code" in error &&
-      error.code === "ENOENT"
-    )
-      return "missing";
     if (!(error instanceof Error)) return "failed";
+    const code =
+      "code" in error
+        ? (error as NodeJS.ErrnoException).code
+        : undefined;
+    if (code === "ENOENT") return "missing";
     const stdout =
       "stdout" in error && typeof error.stdout === "string"
         ? error.stdout
@@ -121,10 +120,10 @@ async function execLsof(
         ? error.stderr
         : "";
     const exitCode =
-      typeof error.code === "number"
-        ? error.code
-        : typeof error.code === "string" && /^\d+$/.test(error.code)
-          ? Number(error.code)
+      typeof code === "number"
+        ? code
+        : typeof code === "string" && /^\d+$/.test(code)
+          ? Number(code)
           : -1;
     if (exitCode < 0) return "failed";
     return { stdout, stderr, exitCode };
