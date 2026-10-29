@@ -1,10 +1,6 @@
+import { and, eq, inArray, sql } from "drizzle-orm";
+import { events, getThread, hasRootStoredTurnStarted } from "@bb/db";
 import {
-  getLatestStoredThreadEventOfTypes,
-  getThread,
-  hasRootStoredTurnStarted,
-} from "@bb/db";
-import {
-  providerErrorInfoSchema,
   requireThreadEventScopeTurnId,
   type ThreadEvent,
   type ThreadLifecycleEvent,
@@ -21,21 +17,33 @@ function isArchivedCredentialRevocation(
   db: AppDeps["db"],
   threadId: string,
   turnId: string,
+  archivedAt: number,
 ): boolean {
-  const row = getLatestStoredThreadEventOfTypes(db, {
-    threadId,
-    types: ["provider/error"],
-    afterSequence: 0,
-  });
-  if (row === null || row.turnId !== turnId) return false;
-  try {
-    const parsed = providerErrorInfoSchema.safeParse(
-      (JSON.parse(row.data) as { errorInfo?: unknown }).errorInfo,
-    );
-    return parsed.success && parsed.data.category === "unauthorized";
-  } catch {
-    return false;
-  }
+  const result = db
+    .select({
+      turnStartedAt: sql<
+        number | null
+      >`MAX(CASE WHEN ${events.type} = 'turn/started' THEN ${events.createdAt} END)`,
+      authFailureAt: sql<
+        number | null
+      >`MAX(CASE WHEN ${events.type} = 'provider/error' AND json_extract(${events.data}, '$.errorInfo.category') = 'unauthorized' THEN ${events.createdAt} END)`,
+    })
+    .from(events)
+    .where(
+      and(
+        eq(events.threadId, threadId),
+        eq(events.turnId, turnId),
+        inArray(events.type, ["turn/started", "provider/error"]),
+      ),
+    )
+    .get();
+  return (
+    result?.turnStartedAt !== null &&
+    result?.turnStartedAt !== undefined &&
+    result.turnStartedAt < archivedAt &&
+    result.authFailureAt !== null &&
+    result.authFailureAt >= archivedAt
+  );
 }
 
 interface ApplyTurnCompletedEventResult {
@@ -91,7 +99,12 @@ export function applyTurnCompletedEvent(
   const suppressFailureNotice =
     payload.status === "failed" &&
     thread.archivedAt !== null &&
-    isArchivedCredentialRevocation(deps.db, thread.id, turnId);
+    isArchivedCredentialRevocation(
+      deps.db,
+      thread.id,
+      turnId,
+      thread.archivedAt,
+    );
   const outcome = applyLoggedThreadLifecycleEvent(deps, {
     event: suppressFailureNotice
       ? { type: "run.succeeded" }

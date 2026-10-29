@@ -221,6 +221,7 @@ describe("a child whose turn fails with a non-retryable error and is retried by 
         .set({ archivedAt: Date.now() })
         .where(eq(threads.id, scenario.child.id))
         .run();
+      await new Promise((resolve) => setTimeout(resolve, 10));
 
       const response = await postEvents(
         harness,
@@ -274,6 +275,33 @@ describe("a child whose turn fails with a non-retryable error and is retried by 
   it("keeps a non-archived auth failure failed and notifies its parent", async () => {
     await withTestHarness(async (harness) => {
       const scenario = seedScenario(harness);
+      const response = await postEvents(
+        harness,
+        scenario.sessionId,
+        unauthorizedFailureEvents({
+          threadId: scenario.child.id,
+          turnId: FIRST_TURN_ID,
+        }),
+      );
+      expect(response.status).toBe(200);
+      expect(getThread(harness.db, scenario.child.id)?.status).toBe("error");
+      await new Promise((resolve) => setTimeout(resolve, NOTICE_SETTLE_MS));
+      expect(
+        parentNoticeTexts(harness, scenario.parent.id).filter((text) =>
+          text.includes("failed."),
+        ),
+      ).toHaveLength(1);
+    });
+  }, 20_000);
+
+  it("keeps an auth failure failed when the thread was archived before the turn started", async () => {
+    await withTestHarness(async (harness) => {
+      const scenario = seedScenario(harness);
+      harness.db
+        .update(threads)
+        .set({ archivedAt: Date.now() - 30_000 })
+        .where(eq(threads.id, scenario.child.id))
+        .run();
       const response = await postEvents(
         harness,
         scenario.sessionId,
