@@ -1680,11 +1680,14 @@ export function ThreadTerminalView({
       setReplayNotice(null);
     };
     let exitedBeforeReplayCompleted = false;
+    let replayPreviewExitApplied = false;
     const handleReplayPreviewExit = () => {
+      if (replayPreviewExitApplied || exitedBeforeReplayCompleted) return;
       if (replayPreview?.fallback === true && !replayCompleted) {
         exitedBeforeReplayCompleted = true;
         return;
       }
+      replayPreviewExitApplied = true;
       releaseReplayPreview();
       replayPreview?.processExited();
     };
@@ -2401,6 +2404,7 @@ export function ThreadTerminalView({
               replayCompleted = true;
               if (exitedBeforeReplayCompleted) {
                 exitedBeforeReplayCompleted = false;
+                replayPreviewExitApplied = true;
                 replayPreview?.processExited();
               }
               const fitGrid = fitAddon?.proposeDimensions();
@@ -2441,6 +2445,8 @@ export function ThreadTerminalView({
             onReplayStart: () => {
               viewportReplaySaveGate.beginReplay();
               replayCompleted = false;
+              exitedBeforeReplayCompleted = false;
+              replayPreviewExitApplied = false;
               setReplayNotice(null);
               if (replayPreview === null || replayPreview.fallback) {
                 replayPreview?.dispose();

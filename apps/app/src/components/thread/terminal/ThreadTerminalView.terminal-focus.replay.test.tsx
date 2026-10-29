@@ -1022,6 +1022,91 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
     expect(processExited).not.toHaveBeenCalled();
   });
 
+  function mountSnapshotPreviewSpyingOnProcessExited() {
+    prepareMobileTerminal();
+    vi.spyOn(FitAddon.prototype, "proposeDimensions").mockReturnValue({
+      cols: 40,
+      rows: 12,
+    });
+    testState.screen.mockResolvedValue({
+      rows: ["snapshot text"],
+      cursor: { col: 0, row: 0 },
+      cols: 40,
+      gridRows: 12,
+      truncated: false,
+      complete: true,
+      checkpointSeq: 0,
+      dataBase64: btoa("snapshot text"),
+    });
+    const spy = spyOnPreviewProcessExited();
+    const mounted = (async () => {
+      const session = renderMobileTerminal();
+      await waitForReadinessCondition(
+        () =>
+          expect(
+            document.querySelector("[data-terminal-replay-preview]"),
+          ).not.toBeNull(),
+        "screen snapshot did not mount a replay preview",
+      );
+      const socket = testState.sockets[0];
+      if (!socket) throw new Error("terminal socket was not created");
+      return { session, socket };
+    })();
+    return { spy, mounted };
+  }
+
+  it("marks a fallback preview exited once when the process exit is reported by a session update and an exited message mid-replay", async () => {
+    const processExited = spyOnPreviewProcessExited();
+    const { bufferText, preview, session, socket } =
+      await mountReplayWithUnusableSnapshot();
+    const exitedSession = { ...session, status: "exited" as const, exitCode: 1 };
+    await act(async () => {
+      socket.receive({ type: "session-updated", session: exitedSession });
+      socket.receive({ type: "exited", session: exitedSession });
+      await Promise.resolve();
+    });
+    expect(processExited).not.toHaveBeenCalled();
+    socket.receive({
+      type: "output",
+      chunk: { seq: 2, dataBase64: btoa("final frame\r\n") },
+    });
+    await waitForReadinessCondition(
+      () => expect(bufferText()).toContain("final frame"),
+      "final replay output was not parsed",
+    );
+    await waitForReadinessCondition(
+      () => expect(preview()?.dataset.terminalReplayHeld).toBeUndefined(),
+      "replay preview stayed held after the replay completed",
+    );
+    await pause(200);
+    expect(processExited).toHaveBeenCalledOnce();
+  });
+
+  it("marks a snapshot preview exited once when a session update and an exited message both report the exit", async () => {
+    const processExited = mountSnapshotPreviewSpyingOnProcessExited();
+    const { session, socket } = await processExited.mounted;
+    const exitedSession = { ...session, status: "exited" as const, exitCode: 1 };
+    await act(async () => {
+      socket.receive({ type: "session-updated", session: exitedSession });
+      socket.receive({ type: "exited", session: exitedSession });
+      await Promise.resolve();
+    });
+    expect(processExited.spy).toHaveBeenCalledOnce();
+  });
+
+  it("marks a snapshot preview exited once for a single exited message", async () => {
+    const processExited = mountSnapshotPreviewSpyingOnProcessExited();
+    const { session, socket } = await processExited.mounted;
+    await act(async () => {
+      socket.receive({
+        type: "exited",
+        session: { ...session, status: "exited", exitCode: 1 },
+      });
+      await Promise.resolve();
+    });
+    expect(processExited.spy).toHaveBeenCalledOnce();
+  });
+
   it("shows an unavailable state for a terminal error mid-replay and never reveals partial output", async () => {
     shortenReplayHoldTimeout(600);
     const { preview, socket } = await mountReplayWithUnusableSnapshot();
