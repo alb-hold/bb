@@ -46,6 +46,8 @@ import {
   rejectedQuestions,
 } from "./native-terminal-questions.js";
 import { flushNativeParentNotices } from "./native-parent-notices.js";
+import { queueChildThreadTurnNotificationBestEffort } from "./child-thread-notifications.js";
+import { isParentNotifiableChildThread } from "./thread-parent.js";
 import { reconcileNativeThreadStatus } from "./native-thread-status.js";
 import { buildThreadStatusChangeMetadata } from "./thread-runtime-display.js";
 
@@ -588,14 +590,22 @@ export function clearNativeTerminalStateOnExit(
 }
 
 export function settleNativeTerminalTurn(
-  deps: Pick<AppDeps, "db" | "hub" | "logger" | "providerRegistry">,
+  deps: LoggedPendingInteractionWorkSessionDeps,
   threadId: string,
 ): void {
-  if (getThread(deps.db, threadId)?.status === "active") {
-    applyLoggedThreadLifecycleEvent(deps, {
+  const thread = getThread(deps.db, threadId);
+  if (thread?.status === "active") {
+    const outcome = applyLoggedThreadLifecycleEvent(deps, {
       event: { type: "run.succeeded" },
       threadId,
     });
+    if (outcome.applied && isParentNotifiableChildThread(thread, "completed")) {
+      void queueChildThreadTurnNotificationBestEffort(deps, {
+        childThread: thread,
+        parentThreadId: thread.parentThreadId,
+        turnStatus: "completed",
+      });
+    }
   }
   flushNativeParentNotices(deps, threadId);
 }

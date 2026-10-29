@@ -267,7 +267,12 @@ function getChildThreadCompletionOutput(
   if (args.turnStatus !== "completed") {
     return null;
   }
-  return getLastThreadOutput(deps.db, args.childThread.id);
+  return (
+    getLastThreadOutput(deps.db, args.childThread.id) ??
+    (isNativeTerminalThread(deps.db, args.childThread.id)
+      ? `${args.childThread.title ?? "Child thread"} turn ended.`
+      : null)
+  );
 }
 
 function getChildThreadActiveWorkflowCount(
