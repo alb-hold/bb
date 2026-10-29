@@ -2938,6 +2938,12 @@ it.each([false, true])(
       for (const inspection of [
         { supported: true, active: false, pids: [123], unreadablePids: [] },
         { supported: true, active: false, pids: [], unreadablePids: [456] },
+        {
+          supported: true,
+          active: false,
+          pids: [],
+          unreadablePids: [536],
+        },
         { supported: true, active: true, pids: [], unreadablePids: [] },
         { supported: false, active: false, pids: [], unreadablePids: [] },
         { supported: true, active: false, pids: [], unreadablePids: [] },
