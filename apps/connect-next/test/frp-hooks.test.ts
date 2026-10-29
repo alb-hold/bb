@@ -2,6 +2,7 @@ import { expect, it, onTestFinished, vi } from "vitest";
 import type { AccountApi } from "../src/account-api.js";
 import { createLocalDirectory } from "../src/directory.js";
 import { createFrpHooks, REMOVAL_SETTLE_MS } from "../src/frp-hooks.js";
+import type { FrpState } from "../src/frp-state.js";
 import { silentLog } from "../src/log.js";
 import { closeServer, listen, visit } from "./harness.js";
 
@@ -35,11 +36,25 @@ it.each(["bee", "bee--3000"])(
         return [];
       },
     };
+    const registered = new Map<string, string>();
+    const frpState: FrpState = {
+      async proxy(name) {
+        const clientId = registered.get(name);
+        return clientId === undefined
+          ? { kind: "offline" }
+          : { kind: "online", clientId };
+      },
+      async online() {
+        return new Map(registered);
+      },
+    };
     const hooks = createFrpHooks({
       accounts,
       directory,
       log: silentLog,
-      clientConnected: () => true,
+      frpState,
+      claimConnection: () => 1,
+      connectionOpen: () => true,
     });
     const port = await listen(hooks.server);
     onTestFinished(() => closeServer(hooks.server));
@@ -61,31 +76,29 @@ it.each(["bee", "bee--3000"])(
         unchange: true,
       });
     }
+    registered.set(subdomain, "original");
     await hook("NewProxy", "original");
     await vi.advanceTimersByTimeAsync(150);
     expect(directory.locate(subdomain)).toEqual({ kind: "here" });
+
+    registered.delete(subdomain);
     await hook("CloseProxy", "original");
-    let returned = false;
-    const waiting = directory
-      .awaitReturn(subdomain, new AbortController().signal)
-      .then((location) => {
-        returned = true;
-        return location;
-      });
     await vi.advanceTimersByTimeAsync(REMOVAL_SETTLE_MS - 1);
-    if (subdomain !== "bee") await hook("NewProxy", "replacement");
-    await vi.advanceTimersByTimeAsync(1);
-    expect(returned).toBe(false);
-    if (subdomain === "bee") await hook("NewProxy", "replacement");
-    await vi.advanceTimersByTimeAsync(150);
-    expect(await waiting).toEqual({ kind: "here" });
+    registered.set(subdomain, "replacement");
+    await hook("NewProxy", "replacement");
+    await vi.advanceTimersByTimeAsync(1_500);
+    expect(
+      await directory.awaitReturn(subdomain, new AbortController().signal),
+    ).toEqual({ kind: "here" });
+
     if (subdomain !== "bee") {
+      registered.delete(subdomain);
       await hook("CloseProxy", "replacement");
       const removed = directory.awaitReturn(
         subdomain,
         new AbortController().signal,
       );
-      await vi.advanceTimersByTimeAsync(REMOVAL_SETTLE_MS);
+      await vi.advanceTimersByTimeAsync(1_000 + REMOVAL_SETTLE_MS);
       expect(await removed).toEqual({ kind: "offline" });
     }
   },

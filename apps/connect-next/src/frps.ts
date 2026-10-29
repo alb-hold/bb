@@ -14,6 +14,9 @@ export interface FrpsOptions {
   bindPort: number;
   vhostPort: number;
   hooksPort: number;
+  adminPort: number;
+  adminUser: string;
+  adminPassword: string;
   subdomainHost: string;
   logLevel: string;
   log: Log;
@@ -41,6 +44,12 @@ export function frpsConfig(
     vhostHTTPTimeout: 120,
     subdomainHost: options.subdomainHost,
     transport: { maxPoolCount: 10 },
+    webServer: {
+      addr: LOOPBACK,
+      port: options.adminPort,
+      user: options.adminUser,
+      password: options.adminPassword,
+    },
     custom404Page,
     log: { level: options.logLevel, disablePrintColor: true },
     httpPlugins: [

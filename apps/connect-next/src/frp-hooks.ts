@@ -6,6 +6,7 @@ import {
 } from "@bb/tunnel-contract/next";
 import type { AccountApi } from "./account-api.js";
 import type { TunnelDirectory } from "./directory.js";
+import type { FrpState } from "./frp-state.js";
 import { errorText, type Log } from "./log.js";
 
 export const FRP_HOOK_PATH = "/frp";
@@ -16,6 +17,11 @@ const SHARE_PORT = /^[1-9]\d{0,4}$/u;
 const MAX_HOOK_BODY_BYTES = 64 * 1024;
 const ROUTE_SETTLE_MS = 150;
 export const REMOVAL_SETTLE_MS = 500;
+const REGISTER_GRACE_MS = 1_000;
+const STATE_RETRY_MS = 1_000;
+const STATE_MAX_ATTEMPTS = 10;
+const RECONCILE_MS = 30_000;
+const RUN_BINDING_IDLE_MS = 300_000;
 export const HOOK_RESOLVE_DEADLINE_MS = 7_000;
 
 type HookAnswer =
@@ -42,6 +48,7 @@ interface HookCall {
   subdomain: string | null;
   customDomains: string[];
   clientAddress: string | null;
+  clientId: string | null;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -95,6 +102,7 @@ export function parseHookCall(value: unknown): HookCall | null {
     subdomain: optionalString(content.subdomain),
     customDomains,
     clientAddress: optionalString(content.client_address),
+    clientId: optionalString(content.client_id),
   };
 }
 
@@ -110,14 +118,45 @@ export interface FrpHookOptions {
   accounts: AccountApi;
   directory: TunnelDirectory;
   log: Log;
-  onLogin?: (clientAddress: string, label: string) => void;
-  clientConnected?: (label: string) => boolean;
+  onLogin?: (clientAddress: string, label: string, runId: string) => void;
+  claimConnection?: (label: string, runId: string) => number | null;
+  connectionOpen?: (connectionId: number) => boolean;
+  runConnected?: (label: string, runId: string) => boolean;
+  frpState: FrpState;
+  timings?: Partial<FrpHookTimings>;
+}
+
+export interface FrpHookTimings {
+  registerGraceMs: number;
+  stateRetryMs: number;
+  reconcileMs: number;
+  runBindingIdleMs: number;
+}
+
+interface ProxyRecord {
+  name: string;
+  runId: string;
+  label: string;
+  subdomain: string;
+  createdAt: number;
+  owner: number | null;
+  closes: number;
+  settling: boolean;
 }
 
 export function createFrpHooks(options: FrpHookOptions) {
   const { accounts, directory, log } = options;
-  const proxies = new Map<string, { label: string; subdomain: string }>();
+  const timings: FrpHookTimings = {
+    registerGraceMs: REGISTER_GRACE_MS,
+    stateRetryMs: STATE_RETRY_MS,
+    reconcileMs: RECONCILE_MS,
+    runBindingIdleMs: RUN_BINDING_IDLE_MS,
+    ...options.timings,
+  };
+  const proxies = new Map<string, ProxyRecord>();
   const pendingRoutes = new Map<string, NodeJS.Timeout>();
+  const runBindings = new Map<string, { label: string; boundAt: number }>();
+  const runClaims = new Map<string, number>();
 
   type Verdict = "linked" | "refused" | "unknown";
 
@@ -149,6 +188,164 @@ export function createFrpHooks(options: FrpHookOptions) {
     }
   }
 
+  const sleep = (ms: number) =>
+    new Promise<void>((resolve) => setTimeout(resolve, ms).unref());
+
+  type RemovalVerdict = "keep" | "remove" | "unknown";
+
+  function judge(
+    record: ProxyRecord,
+    clientId: string | undefined,
+  ): RemovalVerdict {
+    if (clientId === undefined) return "remove";
+    if (clientId === record.runId) return "keep";
+    return proxies.has(`${clientId}\n${record.name}`) ? "remove" : "unknown";
+  }
+
+  interface RunClaim {
+    finish(keep: boolean): void;
+    owned(): boolean;
+  }
+
+  function claimRun(runId: string, label: string): RunClaim | null {
+    if (runId === "") return { finish: () => {}, owned: () => true };
+    const held = runBindings.get(runId);
+    if (held !== undefined && held.label !== label) return null;
+    runBindings.set(runId, { label, boundAt: Date.now() });
+    runClaims.set(runId, (runClaims.get(runId) ?? 0) + 1);
+    let done = false;
+    return {
+      owned: () => runBindings.get(runId)?.label === label,
+      finish(keep) {
+        if (done) return;
+        done = true;
+        const left = (runClaims.get(runId) ?? 1) - 1;
+        if (left > 0) runClaims.set(runId, left);
+        else runClaims.delete(runId);
+        if (!keep) releaseRun(runId);
+      },
+    };
+  }
+
+  function holdsRun(runId: string): boolean {
+    for (const record of proxies.values()) {
+      if (record.runId === runId) return true;
+    }
+    return false;
+  }
+
+  function freeRun(runId: string): boolean {
+    const binding = runBindings.get(runId);
+    if (binding === undefined) return false;
+    if (holdsRun(runId) || runClaims.has(runId)) return false;
+    return options.runConnected?.(binding.label, runId) !== true;
+  }
+
+  function releaseRun(runId: string): void {
+    if (freeRun(runId)) runBindings.delete(runId);
+  }
+
+  function proxyKey(record: ProxyRecord): string {
+    return `${record.runId}\n${record.name}`;
+  }
+
+  function removeRecord(record: ProxyRecord): void {
+    const key = proxyKey(record);
+    clearTimeout(pendingRoutes.get(key));
+    pendingRoutes.delete(key);
+    proxies.delete(key);
+    releaseRun(record.runId);
+    directory.disconnected({
+      label: record.label,
+      subdomain: record.subdomain,
+      clientId: key,
+    });
+    log("info", "frp_proxy_closed", {
+      label: record.label,
+      subdomain: record.subdomain,
+    });
+    const connectionOpen = options.connectionOpen;
+    const owner = record.owner;
+    if (
+      record.subdomain !== record.label &&
+      connectionOpen !== undefined &&
+      owner !== null
+    ) {
+      setTimeout(() => {
+        if (
+          connectionOpen(owner) &&
+          ![...proxies.values()].some(
+            (current) => current.subdomain === record.subdomain,
+          )
+        ) {
+          directory.removed(record.subdomain);
+        }
+      }, REMOVAL_SETTLE_MS).unref();
+    }
+  }
+
+  async function settleClose(record: ProxyRecord): Promise<void> {
+    if (record.settling) return;
+    record.settling = true;
+    try {
+      for (let attempt = 0; attempt < STATE_MAX_ATTEMPTS; attempt += 1) {
+        const wait = record.createdAt + timings.registerGraceMs - Date.now();
+        if (wait > 0) await sleep(wait);
+        if (proxies.get(proxyKey(record)) !== record) return;
+        const seen = record.closes;
+        const state = await options.frpState.proxy(record.name);
+        if (proxies.get(proxyKey(record)) !== record) return;
+        if (record.closes !== seen) continue;
+        if (state.kind === "unknown") {
+          await sleep(timings.stateRetryMs);
+          continue;
+        }
+        const verdict = judge(
+          record,
+          state.kind === "online" ? state.clientId : undefined,
+        );
+        if (verdict === "unknown") {
+          await sleep(timings.stateRetryMs);
+          continue;
+        }
+        if (verdict === "keep") {
+          log("info", "frp_proxy_close_stale", {
+            label: record.label,
+            subdomain: record.subdomain,
+          });
+          return;
+        }
+        removeRecord(record);
+        return;
+      }
+    } finally {
+      record.settling = false;
+    }
+  }
+
+  async function reconcile(): Promise<void> {
+    const startedAt = Date.now();
+    for (const [runId, binding] of [...runBindings]) {
+      if (binding.boundAt + timings.runBindingIdleMs <= startedAt) {
+        releaseRun(runId);
+      }
+    }
+    const online = await options.frpState.online();
+    if (online === null) return;
+    for (const record of [...proxies.values()]) {
+      if (record.settling) continue;
+      if (record.createdAt + timings.registerGraceMs > startedAt) continue;
+      if (proxies.get(proxyKey(record)) !== record) continue;
+      if (judge(record, online.get(record.name)) === "remove") {
+        log("warn", "frp_proxy_unlisted", {
+          label: record.label,
+          subdomain: record.subdomain,
+        });
+        removeRecord(record);
+      }
+    }
+  }
+
   async function handle(call: HookCall): Promise<HookAnswer> {
     const { user } = call;
     const unknownServer =
@@ -159,15 +356,31 @@ export function createFrpHooks(options: FrpHookOptions) {
     if (RESERVED_HANDLES.has(user.label)) return reject(unknownServer);
     if (call.op === "Login") {
       if (user.credential === null) return reject(FRP_LOGIN_REFUSED_REASON);
+      const claim =
+        call.clientId !== null &&
+        call.clientId !== "" &&
+        call.clientId !== user.runId
+          ? null
+          : claimRun(user.runId, user.label);
+      if (claim === null) {
+        log("warn", "frp_login_identity_refused", { label: user.label });
+        return reject(FRP_LOGIN_REFUSED_REASON);
+      }
       const verdict = await verify(user);
+      const stillOwned = claim.owned();
+      claim.finish(verdict === "linked" && stillOwned);
       if (verdict === "unknown") return reject("the gate could not check this");
       if (verdict === "refused") {
         log("warn", "frp_login_refused", { label: user.label });
         return reject(FRP_LOGIN_REFUSED_REASON);
       }
+      if (!stillOwned) {
+        log("warn", "frp_login_identity_refused", { label: user.label });
+        return reject(FRP_LOGIN_REFUSED_REASON);
+      }
       log("info", "frp_login", { label: user.label });
       if (call.clientAddress !== null) {
-        options.onLogin?.(call.clientAddress, user.label);
+        options.onLogin?.(call.clientAddress, user.label, user.runId);
       }
       return ACCEPT;
     }
@@ -181,23 +394,57 @@ export function createFrpHooks(options: FrpHookOptions) {
         log("warn", "frp_proxy_refused", { label: user.label });
         return reject("not this server's address");
       }
+      const key = `${user.runId}\n${call.proxyName ?? ""}`;
+      const taken = proxies.get(key);
+      const claim =
+        taken !== undefined && taken.label !== user.label
+          ? null
+          : claimRun(user.runId, user.label);
+      if (claim === null) {
+        log("warn", "frp_proxy_identity_refused", { label: user.label });
+        return reject("not this server's address");
+      }
       const verdict = await verify(user);
+      const holder = proxies.get(key);
+      const stillOwned =
+        claim.owned() && (holder === undefined || holder.label === user.label);
+      claim.finish(verdict === "linked" && stillOwned);
       if (verdict === "unknown") return reject("the gate could not check this");
       if (verdict === "refused") return reject("credential refused");
-      const proxyKey = `${user.runId}\n${call.proxyName ?? ""}`;
-      const proxy = { label: user.label, subdomain: call.subdomain };
-      const previous = proxies.get(proxyKey);
-      if (previous !== undefined) {
-        directory.disconnected({ ...previous, clientId: proxyKey });
+      if (!stillOwned) {
+        log("warn", "frp_proxy_identity_refused", { label: user.label });
+        return reject("not this server's address");
       }
-      proxies.set(proxyKey, proxy);
+      const proxy: ProxyRecord = {
+        name: call.proxyName ?? "",
+        runId: user.runId,
+        label: user.label,
+        subdomain: call.subdomain,
+        createdAt: Date.now(),
+        owner: options.claimConnection?.(user.label, user.runId) ?? null,
+        closes: 0,
+        settling: false,
+      };
+      const previous = proxies.get(key);
+      if (previous !== undefined) {
+        directory.disconnected({
+          label: previous.label,
+          subdomain: previous.subdomain,
+          clientId: key,
+        });
+      }
+      proxies.set(key, proxy);
       const routed = setTimeout(() => {
-        pendingRoutes.delete(proxyKey);
-        if (proxies.get(proxyKey) === proxy) {
-          directory.connected({ ...proxy, clientId: proxyKey });
+        pendingRoutes.delete(key);
+        if (proxies.get(key) === proxy) {
+          directory.connected({
+            label: proxy.label,
+            subdomain: proxy.subdomain,
+            clientId: key,
+          });
         }
       }, ROUTE_SETTLE_MS);
-      pendingRoutes.set(proxyKey, routed);
+      pendingRoutes.set(key, routed);
       log("info", "frp_proxy_open", {
         label: user.label,
         subdomain: call.subdomain,
@@ -205,30 +452,14 @@ export function createFrpHooks(options: FrpHookOptions) {
       return ACCEPT;
     }
     if (call.op === "CloseProxy") {
-      const proxyKey = `${user.runId}\n${call.proxyName ?? ""}`;
-      const proxy = proxies.get(proxyKey);
-      clearTimeout(pendingRoutes.get(proxyKey));
-      pendingRoutes.delete(proxyKey);
+      const proxy = proxies.get(`${user.runId}\n${call.proxyName ?? ""}`);
+      if (proxy !== undefined && proxy.label !== user.label) {
+        log("warn", "frp_close_identity_mismatch", { label: user.label });
+        return ACCEPT;
+      }
       if (proxy !== undefined) {
-        proxies.delete(proxyKey);
-        directory.disconnected({ ...proxy, clientId: proxyKey });
-        log("info", "frp_proxy_closed", {
-          label: proxy.label,
-          subdomain: proxy.subdomain,
-        });
-        const clientConnected = options.clientConnected;
-        if (proxy.subdomain !== proxy.label && clientConnected !== undefined) {
-          setTimeout(() => {
-            if (
-              clientConnected(proxy.label) &&
-              ![...proxies.values()].some(
-                (current) => current.subdomain === proxy.subdomain,
-              )
-            ) {
-              directory.removed(proxy.subdomain);
-            }
-          }, REMOVAL_SETTLE_MS).unref();
-        }
+        proxy.closes += 1;
+        void settleClose(proxy);
       }
       return ACCEPT;
     }
@@ -280,6 +511,12 @@ export function createFrpHooks(options: FrpHookOptions) {
       });
     });
   });
+
+  const reconciler = setInterval(() => {
+    void reconcile();
+  }, timings.reconcileMs);
+  reconciler.unref();
+  server.once("close", () => clearInterval(reconciler));
 
   return { server };
 }

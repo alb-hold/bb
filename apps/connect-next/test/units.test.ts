@@ -1,6 +1,8 @@
 import { createMachineLabelProxy } from "../src/machine-label.js";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
+import { PassThrough } from "node:stream";
 import {
+  FRP_CREDENTIAL_META,
   GATE_PRESENCE_BATCH_MAX,
   GATE_RESOLVE_BATCH_MAX,
   type GatePresenceRequest,
@@ -27,7 +29,14 @@ import { startPresence } from "../src/presence.js";
 import { trackServerFrames, WEBSOCKET_GOING_AWAY } from "../src/ws-frames.js";
 import { configFromEnv } from "../src/config.js";
 import { createLocalDirectory } from "../src/directory.js";
-import { isOwnSubdomain, parseHookCall } from "../src/frp-hooks.js";
+import { createFrpConnections } from "../src/frp-connections.js";
+import {
+  createFrpHooks,
+  isOwnSubdomain,
+  parseHookCall,
+  REMOVAL_SETTLE_MS,
+} from "../src/frp-hooks.js";
+import type { FrpProxyState, FrpState } from "../src/frp-state.js";
 import { isTenantSetCookie, tenantCookies } from "../src/forwarding.js";
 import { Lru } from "../src/lru.js";
 import { isMcpLocalPath } from "../src/mcp.js";
@@ -509,6 +518,844 @@ describe("frp hooks", () => {
       customDomains: [],
     });
     expect(parseHookCall({ op: "Login", content: { user: 5 } })).toBeNull();
+  });
+
+  describe("proxy removal", () => {
+    const LINKED_ACCOUNTS: AccountApi = {
+      resolve: async () => ({ ...OWNED, credential: true }),
+      forget: () => {},
+      presence: async () => [],
+    };
+    const TIMINGS = { registerGraceMs: 60, stateRetryMs: 20, reconcileMs: 250 };
+    const PROXY_NAME = "bee.bb";
+    const SUBDOMAIN = "bee--3000";
+
+    function createFrpsStub() {
+      const registered = new Map<string, string>();
+      const stub = {
+        down: false,
+        unknownAnswers: 0,
+        offlineAnswers: 0,
+        queries: 0,
+        gate: null as Promise<void> | null,
+        register(name: string, clientId: string) {
+          registered.set(name, clientId);
+        },
+        unregister(name: string) {
+          registered.delete(name);
+        },
+        registered(name: string) {
+          return registered.has(name);
+        },
+        state: {
+          async proxy(name: string): Promise<FrpProxyState> {
+            stub.queries += 1;
+            const clientId = registered.get(name);
+            await stub.gate;
+            if (stub.down) return { kind: "unknown" };
+            if (stub.unknownAnswers > 0) {
+              stub.unknownAnswers -= 1;
+              return { kind: "unknown" };
+            }
+            if (stub.offlineAnswers > 0) {
+              stub.offlineAnswers -= 1;
+              return { kind: "offline" };
+            }
+            return clientId === undefined
+              ? { kind: "offline" }
+              : { kind: "online", clientId };
+          },
+          async online() {
+            if (stub.down) return null;
+            if (stub.unknownAnswers > 0) {
+              stub.unknownAnswers -= 1;
+              return null;
+            }
+            return new Map(registered);
+          },
+        } satisfies FrpState,
+      };
+      return stub;
+    }
+
+    async function startHooks(
+      accounts: AccountApi = LINKED_ACCOUNTS,
+      extraTimings: { runBindingIdleMs?: number } = {},
+    ) {
+      const connections = createFrpConnections();
+      const directory = createLocalDirectory({ graceMs: 60_000 });
+      const frps = createFrpsStub();
+      const hooks = createFrpHooks({
+        accounts,
+        directory,
+        log: silentLog,
+        onLogin: (address, label, runId) =>
+          connections.loggedIn(address, label, runId),
+        claimConnection: (label, runId) => connections.claim(label, runId),
+        connectionOpen: (connectionId) => connections.isOpen(connectionId),
+        runConnected: (label, runId) => connections.holds(label, runId),
+        frpState: frps.state,
+        timings: { ...TIMINGS, ...extraTimings },
+      });
+      await new Promise<void>((resolve) =>
+        hooks.server.listen(0, "127.0.0.1", resolve),
+      );
+      onTestFinished(() => {
+        hooks.server.close();
+      });
+      const address = hooks.server.address();
+      if (address === null || typeof address === "string") {
+        throw new Error("hook server has no port");
+      }
+      const post = async (op: string, content: Record<string, unknown>) => {
+        const response = await fetch(`http://127.0.0.1:${address.port}/frp`, {
+          method: "POST",
+          body: JSON.stringify({ op, content }),
+        });
+        expect(response.status).toBe(200);
+        expect(await response.json()).toMatchObject({ reject: false });
+      };
+      const ask = async (op: string, content: Record<string, unknown>) => {
+        const response = await fetch(`http://127.0.0.1:${address.port}/frp`, {
+          method: "POST",
+          body: JSON.stringify({ op, content }),
+        });
+        return response.json();
+      };
+      const metas = { [FRP_CREDENTIAL_META]: "credential" };
+      const login = async (clientAddress: string, runId?: string) => {
+        const socket = new PassThrough();
+        connections.track(clientAddress, [socket]);
+        await post("Login", {
+          user: "bee",
+          metas,
+          ...(runId === undefined ? {} : { run_id: runId }),
+          client_address: clientAddress,
+        });
+        return socket;
+      };
+      const proxyCall = (op: string, runId?: string) =>
+        post(op, {
+          user: {
+            user: "bee",
+            metas,
+            ...(runId === undefined ? {} : { run_id: runId }),
+          },
+          proxy_name: PROXY_NAME,
+          proxy_type: "http",
+          subdomain: SUBDOMAIN,
+        });
+      const newProxy = async (runId: string) => {
+        await proxyCall("NewProxy", runId);
+        frps.register(PROXY_NAME, runId);
+      };
+      return { directory, frps, login, proxyCall, newProxy, ask, metas };
+    }
+
+    type Harness = Awaited<ReturnType<typeof startHooks>>;
+
+    const sleep = (ms: number) =>
+      new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+    const STILL_WAITING = "still waiting";
+    const SETTLED_MS = TIMINGS.registerGraceMs + 150;
+
+    function pending(waiting: Promise<unknown>) {
+      return Promise.race([waiting, sleep(0).then(() => STILL_WAITING)]);
+    }
+
+    async function connectFirst(harness: Harness) {
+      const first = await harness.login("control-1:1");
+      await harness.newProxy("run-1");
+      await sleep(300);
+      expect(harness.directory.locate(SUBDOMAIN).kind).toBe("here");
+      return first;
+    }
+
+    async function replaceControl(
+      harness: Harness,
+      previous: PassThrough,
+      index: number,
+    ) {
+      previous.destroy();
+      harness.frps.unregister(PROXY_NAME);
+      await sleep(20);
+      const next = await harness.login(`control-${index}:1`, "run-1");
+      await harness.newProxy("run-1");
+      return next;
+    }
+
+    async function chainOfControls(harness: Harness, controls: number) {
+      let current = await connectFirst(harness);
+      for (let index = 2; index <= controls; index += 1) {
+        current = await replaceControl(harness, current, index);
+      }
+    }
+
+    it("keeps a waiting request when a new client logs in before the old proxy's removal check", async () => {
+      const harness = await startHooks();
+      const signal = new AbortController().signal;
+      const first = await connectFirst(harness);
+
+      first.destroy();
+      harness.frps.unregister(PROXY_NAME);
+      await sleep(20);
+      await harness.proxyCall("CloseProxy", "run-1");
+      const waiting = harness.directory.awaitReturn(SUBDOMAIN, signal);
+      await harness.login("second:1");
+      await sleep(REMOVAL_SETTLE_MS + 200);
+      expect(await pending(waiting)).toBe(STILL_WAITING);
+
+      await harness.newProxy("run-2");
+      expect(await waiting).toEqual({ kind: "here" });
+    });
+
+    it("keeps a waiting request when the same run reconnects before the removal check", async () => {
+      const harness = await startHooks();
+      const signal = new AbortController().signal;
+      const first = await connectFirst(harness);
+
+      first.destroy();
+      harness.frps.unregister(PROXY_NAME);
+      await sleep(20);
+      await harness.proxyCall("CloseProxy", "run-1");
+      const waiting = harness.directory.awaitReturn(SUBDOMAIN, signal);
+      await harness.login("second:1", "run-1");
+      await sleep(REMOVAL_SETTLE_MS + 200);
+      expect(await pending(waiting)).toBe(STILL_WAITING);
+
+      await harness.newProxy("run-1");
+      expect(await waiting).toEqual({ kind: "here" });
+    });
+
+    it("stops waiting for a proxy its still-connected client closed", async () => {
+      const harness = await startHooks();
+      const signal = new AbortController().signal;
+      await connectFirst(harness);
+
+      harness.frps.unregister(PROXY_NAME);
+      await harness.proxyCall("CloseProxy", "run-1");
+      expect(await harness.directory.awaitReturn(SUBDOMAIN, signal)).toEqual({
+        kind: "offline",
+      });
+    });
+
+    it("does not end the wait when a hook payload carries no run id", async () => {
+      const harness = await startHooks();
+      const abort = new AbortController();
+      await harness.login("control-1:1");
+      await harness.proxyCall("NewProxy");
+      harness.frps.register(PROXY_NAME, "");
+      await sleep(300);
+      expect(harness.directory.locate(SUBDOMAIN).kind).toBe("here");
+
+      harness.frps.unregister(PROXY_NAME);
+      await harness.proxyCall("CloseProxy");
+      const waiting = harness.directory.awaitReturn(SUBDOMAIN, abort.signal);
+      await sleep(REMOVAL_SETTLE_MS + 200);
+      expect(await pending(waiting)).toBe(STILL_WAITING);
+      abort.abort();
+      expect(await waiting).toEqual({ kind: "offline" });
+    });
+
+    it("keeps the replacement routed when the replaced control's close arrives after its new proxy", async () => {
+      const harness = await startHooks();
+      const signal = new AbortController().signal;
+      const first = await connectFirst(harness);
+      await replaceControl(harness, first, 2);
+      const waiting = harness.directory.awaitReturn(SUBDOMAIN, signal);
+
+      await harness.proxyCall("CloseProxy", "run-1");
+      await sleep(REMOVAL_SETTLE_MS + 200);
+      expect(await waiting).toEqual({ kind: "here" });
+      expect(harness.directory.locate(SUBDOMAIN).kind).toBe("here");
+    });
+
+    it("keeps an already routed replacement when the replaced control's close arrives late", async () => {
+      const harness = await startHooks();
+      const first = await connectFirst(harness);
+      await replaceControl(harness, first, 2);
+      await sleep(300);
+
+      await harness.proxyCall("CloseProxy", "run-1");
+      await sleep(REMOVAL_SETTLE_MS + 200);
+      expect(harness.directory.locate(SUBDOMAIN).kind).toBe("here");
+    });
+
+    it("still ends the replacement's own close after a replaced control's close was kept out", async () => {
+      const harness = await startHooks();
+      const signal = new AbortController().signal;
+      const first = await connectFirst(harness);
+      await replaceControl(harness, first, 2);
+      await sleep(300);
+      await harness.proxyCall("CloseProxy", "run-1");
+      await sleep(SETTLED_MS);
+      expect(harness.directory.locate(SUBDOMAIN).kind).toBe("here");
+
+      harness.frps.unregister(PROXY_NAME);
+      await harness.proxyCall("CloseProxy", "run-1");
+      expect(await harness.directory.awaitReturn(SUBDOMAIN, signal)).toEqual({
+        kind: "offline",
+      });
+    });
+
+    for (const controls of [3, 4]) {
+      for (const delivery of [
+        "after the newest proxy",
+        "after each next proxy",
+      ]) {
+        it(`keeps the newest of ${controls} same-run controls routed when the older closes arrive ${delivery}`, async () => {
+          const harness = await startHooks();
+          const signal = new AbortController().signal;
+          let current = await connectFirst(harness);
+          for (let index = 2; index <= controls; index += 1) {
+            current = await replaceControl(harness, current, index);
+            if (delivery === "after each next proxy") {
+              await harness.proxyCall("CloseProxy", "run-1");
+            }
+          }
+          const waiting = harness.directory.awaitReturn(SUBDOMAIN, signal);
+          if (delivery === "after the newest proxy") {
+            for (let late = 1; late < controls; late += 1) {
+              await harness.proxyCall("CloseProxy", "run-1");
+            }
+          }
+          await sleep(REMOVAL_SETTLE_MS + 200);
+          expect(await waiting).toEqual({ kind: "here" });
+          expect(harness.directory.locate(SUBDOMAIN).kind).toBe("here");
+
+          harness.frps.unregister(PROXY_NAME);
+          await harness.proxyCall("CloseProxy", "run-1");
+          expect(
+            await harness.directory.awaitReturn(SUBDOMAIN, signal),
+          ).toEqual({
+            kind: "offline",
+          });
+        });
+      }
+    }
+
+    it("keeps the newest control routed when one older close is lost and another arrives", async () => {
+      const harness = await startHooks();
+      const signal = new AbortController().signal;
+      await chainOfControls(harness, 3);
+      const waiting = harness.directory.awaitReturn(SUBDOMAIN, signal);
+
+      await harness.proxyCall("CloseProxy", "run-1");
+      await sleep(REMOVAL_SETTLE_MS + 200);
+      expect(await waiting).toEqual({ kind: "here" });
+      expect(harness.directory.locate(SUBDOMAIN).kind).toBe("here");
+
+      harness.frps.unregister(PROXY_NAME);
+      await harness.proxyCall("CloseProxy", "run-1");
+      expect(await harness.directory.awaitReturn(SUBDOMAIN, signal)).toEqual({
+        kind: "offline",
+      });
+    });
+
+    it("removes the record when the newest control's close arrives before the older ones", async () => {
+      const harness = await startHooks();
+      const signal = new AbortController().signal;
+      await chainOfControls(harness, 3);
+      await sleep(300);
+
+      harness.frps.unregister(PROXY_NAME);
+      await harness.proxyCall("CloseProxy", "run-1");
+      await sleep(SETTLED_MS);
+      expect(harness.directory.locate(SUBDOMAIN).kind).not.toBe("here");
+
+      await harness.proxyCall("CloseProxy", "run-1");
+      await harness.proxyCall("CloseProxy", "run-1");
+      expect(await harness.directory.awaitReturn(SUBDOMAIN, signal)).toEqual({
+        kind: "offline",
+      });
+    });
+
+    it("removes a record whose close was lost once frps no longer lists the proxy", async () => {
+      const harness = await startHooks();
+      const signal = new AbortController().signal;
+      await connectFirst(harness);
+
+      harness.frps.unregister(PROXY_NAME);
+      await sleep(TIMINGS.reconcileMs + TIMINGS.registerGraceMs + 200);
+      expect(await harness.directory.awaitReturn(SUBDOMAIN, signal)).toEqual({
+        kind: "offline",
+      });
+    });
+
+    it("keeps a record frps still lists when its close was a stale one, across reconciles", async () => {
+      const harness = await startHooks();
+      await connectFirst(harness);
+
+      await sleep(TIMINGS.reconcileMs * 2 + 100);
+      expect(harness.directory.locate(SUBDOMAIN).kind).toBe("here");
+    });
+
+    it("keeps the record while frps cannot be asked, and removes it once frps says it is gone", async () => {
+      const harness = await startHooks();
+      const signal = new AbortController().signal;
+      await connectFirst(harness);
+
+      harness.frps.down = true;
+      await harness.proxyCall("CloseProxy", "run-1");
+      await sleep(TIMINGS.stateRetryMs * 3);
+      expect(harness.directory.locate(SUBDOMAIN).kind).toBe("here");
+
+      harness.frps.unregister(PROXY_NAME);
+      harness.frps.down = false;
+      await sleep(TIMINGS.stateRetryMs * 3);
+      expect(await harness.directory.awaitReturn(SUBDOMAIN, signal)).toEqual({
+        kind: "offline",
+      });
+    });
+
+    it("asks again when another close arrives while frps is being asked", async () => {
+      const harness = await startHooks();
+      const signal = new AbortController().signal;
+      await connectFirst(harness);
+
+      let release = () => {};
+      harness.frps.gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      await harness.proxyCall("CloseProxy", "run-1");
+      await sleep(SETTLED_MS);
+      harness.frps.unregister(PROXY_NAME);
+      await harness.proxyCall("CloseProxy", "run-1");
+      harness.frps.gate = null;
+      release();
+      await sleep(SETTLED_MS);
+      expect(await harness.directory.awaitReturn(SUBDOMAIN, signal)).toEqual({
+        kind: "offline",
+      });
+    });
+
+    it("never removes a record because frps could not answer, however many times", async () => {
+      const harness = await startHooks();
+      await connectFirst(harness);
+
+      harness.frps.unknownAnswers = 15;
+      await harness.proxyCall("CloseProxy", "run-1");
+      await waitUntil(() => harness.frps.unknownAnswers === 0);
+      await sleep(TIMINGS.reconcileMs * 2);
+      expect(harness.directory.locate(SUBDOMAIN).kind).toBe("here");
+    });
+
+    it("removes a record after unanswered questions once a listing shows frps dropped it", async () => {
+      const harness = await startHooks();
+      const signal = new AbortController().signal;
+      await connectFirst(harness);
+
+      harness.frps.unregister(PROXY_NAME);
+      harness.frps.unknownAnswers = 15;
+      await harness.proxyCall("CloseProxy", "run-1");
+      await waitUntil(() => harness.frps.unknownAnswers === 0);
+      await waitUntil(
+        () => harness.directory.locate(SUBDOMAIN).kind !== "here",
+      );
+      expect(await harness.directory.awaitReturn(SUBDOMAIN, signal)).toEqual({
+        kind: "offline",
+      });
+    });
+
+    it("keeps a record whose proxy frps lists under an id no record owns", async () => {
+      const harness = await startHooks();
+      await connectFirst(harness);
+
+      harness.frps.unregister(PROXY_NAME);
+      harness.frps.register(PROXY_NAME, "stranger");
+      await harness.proxyCall("CloseProxy", "run-1");
+      await sleep(TIMINGS.reconcileMs * 3);
+      expect(harness.directory.locate(SUBDOMAIN).kind).toBe("here");
+    });
+
+    it("refuses a login that names a client id other than its run id", async () => {
+      const harness = await startHooks();
+      const login = (content: Record<string, unknown>) =>
+        harness.ask("Login", {
+          user: "bee",
+          metas: harness.metas,
+          client_address: "x:1",
+          ...content,
+        });
+
+      expect(await login({ client_id: "run-1" })).toMatchObject({
+        reject: true,
+      });
+      expect(
+        await login({ client_id: "run-2", run_id: "run-1" }),
+      ).toMatchObject({
+        reject: true,
+      });
+      expect(
+        await login({ client_id: "run-1", run_id: "run-1" }),
+      ).toMatchObject({
+        reject: false,
+      });
+      expect(await login({})).toMatchObject({ reject: false });
+      expect(await login({ run_id: "run-9" })).toMatchObject({
+        reject: false,
+      });
+    });
+
+    it("refuses a login that reuses a run id another label holds", async () => {
+      const harness = await startHooks();
+      await connectFirst(harness);
+
+      const stolen = await harness.ask("Login", {
+        user: "wasp",
+        metas: harness.metas,
+        run_id: "run-1",
+        client_address: "x:2",
+      });
+      expect(stolen).toMatchObject({ reject: true });
+      expect(harness.directory.locate(SUBDOMAIN).kind).toBe("here");
+    });
+
+    function slowAccounts() {
+      let release: () => void = () => {};
+      const opened = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const accounts: AccountApi = {
+        resolve: async () => {
+          await opened;
+          return { ...OWNED, credential: true };
+        },
+        forget: () => {},
+        presence: async () => [],
+      };
+      return { accounts, release };
+    }
+
+    const loginAs = (harness: Harness, user: string, runId: string) =>
+      harness.ask("Login", {
+        user,
+        metas: harness.metas,
+        run_id: runId,
+        client_address: `${user}:1`,
+      });
+
+    const proxyAs = (harness: Harness, user: string, runId: string) =>
+      harness.ask("NewProxy", {
+        user: { user, metas: harness.metas, run_id: runId },
+        proxy_name: PROXY_NAME,
+        proxy_type: "http",
+        subdomain: user === "bee" ? SUBDOMAIN : user,
+      });
+
+    it("refuses the second of two logins that name one run id before either registered a proxy", async () => {
+      const slow = slowAccounts();
+      const harness = await startHooks(slow.accounts);
+
+      const first = loginAs(harness, "bee", "run-shared");
+      await sleep(30);
+      const second = await loginAs(harness, "wasp", "run-shared");
+      expect(second).toMatchObject({ reject: true });
+
+      slow.release();
+      expect(await first).toMatchObject({ reject: false });
+    });
+
+    it("refuses the second of two concurrent proxies that name one run id", async () => {
+      const slow = slowAccounts();
+      const harness = await startHooks(slow.accounts);
+
+      const first = proxyAs(harness, "bee", "run-shared");
+      await sleep(30);
+      const second = await proxyAs(harness, "wasp", "run-shared");
+      expect(second).toMatchObject({ reject: true });
+
+      slow.release();
+      expect(await first).toMatchObject({ reject: false });
+      harness.frps.register(PROXY_NAME, "run-shared");
+      await sleep(300);
+      expect(harness.directory.locate(SUBDOMAIN).kind).toBe("here");
+      expect(harness.directory.locate("wasp").kind).not.toBe("here");
+    });
+
+    function gatedAccounts() {
+      const held = new Map<string, Promise<void>>();
+      const open = new Map<string, () => void>();
+      const refusing = new Set<string>();
+      const accounts: AccountApi = {
+        resolve: async (request) => {
+          await held.get(request.label ?? "");
+          return { ...OWNED, credential: !refusing.has(request.label ?? "") };
+        },
+        forget: () => {},
+        presence: async () => [],
+      };
+      return {
+        accounts,
+        hold(label: string) {
+          held.set(
+            label,
+            new Promise<void>((resolve) => {
+              open.set(label, resolve);
+            }),
+          );
+        },
+        release(label: string) {
+          open.get(label)?.();
+        },
+        refuse(label: string) {
+          refusing.add(label);
+        },
+      };
+    }
+
+    it("keeps a login-only run id bound while its control connection is open, however old, and frees it once the connection closes", async () => {
+      const harness = await startHooks(LINKED_ACCOUNTS, {
+        runBindingIdleMs: 150,
+      });
+      const control = await harness.login("control-7:1", "run-7");
+
+      await sleep(TIMINGS.reconcileMs * 3);
+      expect(await loginAs(harness, "wasp", "run-7")).toMatchObject({
+        reject: true,
+      });
+      expect(await proxyAs(harness, "wasp", "run-7")).toMatchObject({
+        reject: true,
+      });
+
+      control.destroy();
+      await sleep(TIMINGS.reconcileMs * 3);
+      expect(await loginAs(harness, "wasp", "run-7")).toMatchObject({
+        reject: false,
+      });
+    });
+
+    it("keeps a run id bound while any of the label's controls has no run id assigned, and frees it once all have closed", async () => {
+      const harness = await startHooks(LINKED_ACCOUNTS, {
+        runBindingIdleMs: 150,
+      });
+      const first = await harness.login("control-a:1");
+      const second = await harness.login("control-b:1");
+      await harness.newProxy("run-r");
+      await sleep(300);
+
+      harness.frps.unregister(PROXY_NAME);
+      await harness.proxyCall("CloseProxy", "run-r");
+      await sleep(TIMINGS.reconcileMs * 3);
+      expect(await loginAs(harness, "wasp", "run-r")).toMatchObject({
+        reject: true,
+      });
+      expect(await proxyAs(harness, "wasp", "run-r")).toMatchObject({
+        reject: true,
+      });
+
+      first.destroy();
+      await sleep(TIMINGS.reconcileMs * 3);
+      expect(await loginAs(harness, "wasp", "run-r")).toMatchObject({
+        reject: true,
+      });
+
+      second.destroy();
+      await sleep(TIMINGS.reconcileMs * 3);
+      expect(await loginAs(harness, "wasp", "run-r")).toMatchObject({
+        reject: false,
+      });
+    });
+
+    it("ignores a delayed close from the label that used to hold a run id another label has since claimed", async () => {
+      const harness = await startHooks(LINKED_ACCOUNTS, {
+        runBindingIdleMs: 150,
+      });
+      const control = await connectFirst(harness);
+
+      harness.frps.unregister(PROXY_NAME);
+      await harness.proxyCall("CloseProxy", "run-1");
+      control.destroy();
+      await sleep(TIMINGS.reconcileMs * 3);
+      expect(await loginAs(harness, "wasp", "run-1")).toMatchObject({
+        reject: false,
+      });
+      expect(await proxyAs(harness, "wasp", "run-1")).toMatchObject({
+        reject: false,
+      });
+      harness.frps.register(PROXY_NAME, "run-1");
+
+      harness.frps.offlineAnswers = 1;
+      await harness.proxyCall("CloseProxy", "run-1");
+      await sleep(TIMINGS.registerGraceMs + 200);
+
+      expect(harness.directory.locate("wasp").kind).toBe("here");
+      expect(await loginAs(harness, "bee", "run-1")).toMatchObject({
+        reject: true,
+      });
+      expect(harness.frps.offlineAnswers).toBe(1);
+    });
+
+    it("keeps a reconnecting run id bound while an older close settles and another label asks for it", async () => {
+      const gate = gatedAccounts();
+      const harness = await startHooks(gate.accounts);
+      await connectFirst(harness);
+
+      gate.hold("bee");
+      const reconnect = proxyAs(harness, "bee", "run-1");
+      await sleep(30);
+      harness.frps.unregister(PROXY_NAME);
+      await harness.proxyCall("CloseProxy", "run-1");
+      await sleep(TIMINGS.registerGraceMs + 200);
+
+      expect(await loginAs(harness, "wasp", "run-1")).toMatchObject({
+        reject: true,
+      });
+      expect(await proxyAs(harness, "wasp", "run-1")).toMatchObject({
+        reject: true,
+      });
+
+      gate.release("bee");
+      expect(await reconnect).toMatchObject({ reject: false });
+      harness.frps.register(PROXY_NAME, "run-1");
+      await sleep(300);
+      expect(harness.directory.locate(SUBDOMAIN).kind).toBe("here");
+      expect(harness.directory.locate("wasp").kind).not.toBe("here");
+    });
+
+    it("frees the run id when the pending claim that kept it is refused after its record closed", async () => {
+      const gate = gatedAccounts();
+      const harness = await startHooks(gate.accounts);
+      const control = await connectFirst(harness);
+
+      gate.hold("bee");
+      gate.refuse("bee");
+      const reconnect = proxyAs(harness, "bee", "run-1");
+      await sleep(30);
+      harness.frps.unregister(PROXY_NAME);
+      await harness.proxyCall("CloseProxy", "run-1");
+      await sleep(TIMINGS.registerGraceMs + 200);
+      expect(await loginAs(harness, "wasp", "run-1")).toMatchObject({
+        reject: true,
+      });
+
+      control.destroy();
+      await sleep(50);
+      gate.release("bee");
+      expect(await reconnect).toMatchObject({ reject: true });
+      expect(await loginAs(harness, "wasp", "run-1")).toMatchObject({
+        reject: false,
+      });
+    });
+
+    it.each([
+      { first: "bee", second: "wasp" },
+      { first: "wasp", second: "bee" },
+    ])(
+      "never lets $second take over a run id that $first claimed first, whichever check finishes first",
+      async ({ first, second }) => {
+        const gate = gatedAccounts();
+        const harness = await startHooks(gate.accounts);
+        gate.hold(first);
+        gate.hold(second);
+
+        const early = proxyAs(harness, first, "run-9");
+        await sleep(30);
+        const late = proxyAs(harness, second, "run-9");
+        gate.release(second);
+        expect(await late).toMatchObject({ reject: true });
+        gate.release(first);
+        expect(await early).toMatchObject({ reject: false });
+
+        harness.frps.register(PROXY_NAME, "run-9");
+        await sleep(300);
+        const firstSubdomain = first === "bee" ? SUBDOMAIN : first;
+        const secondSubdomain = second === "bee" ? SUBDOMAIN : second;
+        expect(harness.directory.locate(firstSubdomain).kind).toBe("here");
+        expect(harness.directory.locate(secondSubdomain).kind).not.toBe("here");
+      },
+    );
+
+    it("refuses another label's proxy under a registered key and keeps the first route", async () => {
+      const harness = await startHooks();
+      await connectFirst(harness);
+
+      const refused = await proxyAs(harness, "wasp", "run-1");
+      expect(refused).toMatchObject({ reject: true });
+      await sleep(300);
+      expect(harness.directory.locate(SUBDOMAIN).kind).toBe("here");
+      expect(harness.directory.locate("wasp").kind).not.toBe("here");
+    });
+
+    it("lets the owner reconnect under its own run id", async () => {
+      const harness = await startHooks();
+      await connectFirst(harness);
+
+      expect(await loginAs(harness, "bee", "run-1")).toMatchObject({
+        reject: false,
+      });
+      expect(await proxyAs(harness, "bee", "run-1")).toMatchObject({
+        reject: false,
+      });
+      await sleep(300);
+      expect(harness.directory.locate(SUBDOMAIN).kind).toBe("here");
+    });
+
+    it("keeps a run id bound after its last proxy is gone while its control is open, and releases it once the control closes", async () => {
+      const harness = await startHooks(LINKED_ACCOUNTS, {
+        runBindingIdleMs: 150,
+      });
+      const control = await connectFirst(harness);
+      expect(await loginAs(harness, "wasp", "run-1")).toMatchObject({
+        reject: true,
+      });
+
+      harness.frps.unregister(PROXY_NAME);
+      await harness.proxyCall("CloseProxy", "run-1");
+      await sleep(TIMINGS.reconcileMs * 3);
+
+      expect(await loginAs(harness, "wasp", "run-1")).toMatchObject({
+        reject: true,
+      });
+      expect(await proxyAs(harness, "wasp", "run-1")).toMatchObject({
+        reject: true,
+      });
+
+      control.destroy();
+      await sleep(TIMINGS.reconcileMs * 3);
+
+      expect(await loginAs(harness, "wasp", "run-1")).toMatchObject({
+        reject: false,
+      });
+    });
+
+    it("releases a run id whose login was refused by the account check", async () => {
+      const harness = await startHooks({
+        resolve: async (request) => ({
+          ...OWNED,
+          credential: request.label !== "bee",
+        }),
+        forget: () => {},
+        presence: async () => [],
+      });
+      expect(await loginAs(harness, "bee", "run-x")).toMatchObject({
+        reject: true,
+      });
+      expect(await loginAs(harness, "wasp", "run-x")).toMatchObject({
+        reject: false,
+      });
+    });
+
+    it("drops an older run's record when frps lists the proxy under another run's record", async () => {
+      const harness = await startHooks();
+      await harness.login("control-1:1");
+      await harness.newProxy("run-1");
+      await sleep(300);
+
+      harness.frps.unregister(PROXY_NAME);
+      await harness.login("control-2:1");
+      await harness.newProxy("run-2");
+      await sleep(300);
+      await harness.proxyCall("CloseProxy", "run-1");
+      await sleep(SETTLED_MS);
+      expect(harness.directory.locate(SUBDOMAIN).kind).toBe("here");
+
+      harness.frps.unregister(PROXY_NAME);
+      await harness.proxyCall("CloseProxy", "run-2");
+      await sleep(SETTLED_MS);
+      expect(harness.directory.locate(SUBDOMAIN).kind).not.toBe("here");
+    });
   });
 });
 

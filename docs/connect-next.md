@@ -301,20 +301,32 @@ The gate is `apps/connect-next` (`@bb/connect-next`). One Node 24 process owns:
   byte for byte to `frps`, which serves frp's `websocket`/`wss` transport on its bind port;
 - `frps` 0.71.0 as a child, bound to loopback only: bind port `FRP_BIND_PORT`, HTTP vhost port
   `FRP_VHOST_PORT` (routes on `Host: <subdomain>.<BASE_DOMAIN>`), and server plugin hooks
-  (`Login`, `NewProxy`, `CloseProxy`, `Ping`) on `FRP_HOOKS_PORT`. If `frps` exits the process exits
+  (`Login`, `NewProxy`, `CloseProxy`, `Ping`) on `FRP_HOOKS_PORT`, and its admin API on
+  `FRP_ADMIN_PORT` (loopback, basic auth). If `frps` exits the process exits
   and Fly restarts the machine.
 
 Admission: `Login` needs `metas.credential` and checks it for the frp `user` (the label) with the
-account API; `NewProxy` accepts only `http` proxies on `<label>` or `<label>--<port>` without custom
+account API, and refuses a login whose `client_id` is not its `run_id` (frps reports a proxy's `clientID` as the client's own `client_id`, which the gate trusts only when it is the run id) or whose `run_id` another label holds; `NewProxy` accepts only `http` proxies on `<label>` or `<label>--<port>` without custom
 domains; `Ping` (sent only when frpc enables `transport.heartbeatInterval`) closes a client whose
 credential the account API now refuses. Server traffic goes to the `<label>` proxy with `target: null`
 in the assertion; a share host `<label>--<port>` goes only to a `<label>--<port>` proxy (`target` =
 the port), and is offline (503) when the client does not hold one. The labels this machine holds
 live behind `TunnelDirectory` (`src/directory.ts`). A label is held (for presence, peer
 announcements and the 15 s reconnect wait) while any of its proxies is open, so a machine label
-with only share proxies counts too. When the label's frp connection is still open 500 ms after a
-`CloseProxy` (a hot reload removed the proxy, not a dropped tunnel), that address stops waiting
-and answers 503 at once instead of after the 15 s kept for a dropped tunnel.
+with only share proxies counts too.
+
+A `CloseProxy` hook cannot say which control sent it, and `frps` fires it from a detached goroutine,
+so it can arrive after the same run's reconnect has registered the replacement proxy. The gate
+therefore never removes a proxy from hook order. On a `CloseProxy` it asks `frps` itself
+(`GET /api/proxy/http/<name>` on the loopback admin port `FRP_ADMIN_PORT`, basic auth with a
+password made at start): a proxy `frps` still lists as online under that run stays routed, one it
+lists as offline or never saw is removed, and an unanswered question is retried (10 times, 1 s
+apart) and then left to the reconcile; an unreachable `frps` never removes a route. A proxy's first question waits until it is 1 s old so
+`frps` has registered it. A 30 s reconcile against `GET /api/proxy/http` removes any proxy `frps`
+no longer lists (only from a successful listing), which also covers a lost `CloseProxy`. When the label's frp connection that opened
+the proxy is still open 500 ms after the proxy was removed (a hot reload removed the proxy, not a
+dropped tunnel), that address stops waiting and answers 503 at once instead of after the 15 s kept
+for a dropped tunnel.
 
 Visitor rules follow `apps/connect/src/worker.ts`. Differences: a visitor without a session gets the
 sign-in page only when it asks for HTML (`accept: text/html`); API callers get a plain `401`. The
@@ -346,6 +358,7 @@ Environment (`fly.toml` sets the non-secret ones):
 | `PUBLIC_SCHEME`                                     | `https`                | `http` only for local runs; it also switches to the non-`__Secure-` cookie names                                   |
 | `PORT`, `BIND_HOST`                                 | `8080`, `0.0.0.0`      | Gate listener                                                                                                      |
 | `FRP_BIND_PORT`, `FRP_VHOST_PORT`, `FRP_HOOKS_PORT` | `7001`, `7080`, `7090` | Loopback ports of `frps` and its hooks                                                                             |
+| `FRP_ADMIN_PORT`                                    | `7091`                 | Loopback port of the `frps` admin API the gate asks which proxies are online                                       |
 | `FRP_TCP_PORT`                                      | unset                  | Also accept frp's plain TCP transport on this port (for a Fly `tls` service on 7000, which needs a dedicated IPv4) |
 | `FRPS`, `FRP_LOG_LEVEL`                             | `frps`, `info`         | `frps` binary and log level                                                                                        |
 | `FLY_REGION`, `FLY_MACHINE_ID`                      | `local`                | Set by Fly; reported with presence and used as this machine's identity between peers                               |

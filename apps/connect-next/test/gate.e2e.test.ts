@@ -188,6 +188,7 @@ describe.skipIf(!availability.ok)("connect-next gate end to end", () => {
           frpBind: await freePort(),
           vhost: await freePort(),
           hooks: 0,
+          frpAdmin: 0,
           frpTcp: null,
         },
         frps: binaries.frps,
