@@ -826,7 +826,9 @@ describe("frp hooks", () => {
 
           harness.frps.unregister(PROXY_NAME);
           await harness.proxyCall("CloseProxy", "run-1");
-          expect(await harness.directory.awaitReturn(SUBDOMAIN, signal)).toEqual({
+          expect(
+            await harness.directory.awaitReturn(SUBDOMAIN, signal),
+          ).toEqual({
             kind: "offline",
           });
         });
@@ -948,7 +950,9 @@ describe("frp hooks", () => {
       harness.frps.unknownAnswers = 15;
       await harness.proxyCall("CloseProxy", "run-1");
       await waitUntil(() => harness.frps.unknownAnswers === 0);
-      await waitUntil(() => harness.directory.locate(SUBDOMAIN).kind !== "here");
+      await waitUntil(
+        () => harness.directory.locate(SUBDOMAIN).kind !== "here",
+      );
       expect(await harness.directory.awaitReturn(SUBDOMAIN, signal)).toEqual({
         kind: "offline",
       });

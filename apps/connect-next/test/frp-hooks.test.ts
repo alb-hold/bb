@@ -87,8 +87,9 @@ it.each(["bee", "bee--3000"])(
     registered.set(subdomain, "replacement");
     await hook("NewProxy", "replacement");
     await vi.advanceTimersByTimeAsync(1_500);
-    expect(await directory.awaitReturn(subdomain, new AbortController().signal))
-      .toEqual({ kind: "here" });
+    expect(
+      await directory.awaitReturn(subdomain, new AbortController().signal),
+    ).toEqual({ kind: "here" });
 
     if (subdomain !== "bee") {
       registered.delete(subdomain);
