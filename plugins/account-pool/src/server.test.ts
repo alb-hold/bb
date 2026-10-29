@@ -12902,11 +12902,11 @@ describe("Account Pool Artifact proxy", () => {
       const logged = JSON.stringify(
         fixture.host.harness.inspection.logEntries,
       );
+      expect(logged).not.toContain(secret);
+      expect(logged).not.toContain("sk-ant-");
       expect(logged).toContain(
         `Account Pooler relayed ${method} ${route} -> 200 in `,
       );
-      expect(logged).not.toContain(secret);
-      expect(logged).not.toContain("sk-ant-");
     },
   );
 
