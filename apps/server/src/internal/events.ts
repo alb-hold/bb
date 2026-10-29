@@ -618,6 +618,7 @@ async function applyEventEffects(
           [];
         if (
           turnCompleted.thread &&
+          !turnCompleted.suppressFailureNotice &&
           turnCompleted.isRootTurnCompletion &&
           isParentNotifiableChildThread(turnCompleted.thread, event.status)
         ) {

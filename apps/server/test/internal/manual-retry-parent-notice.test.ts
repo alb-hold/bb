@@ -1,7 +1,8 @@
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { getThread, listQueuedThreadMessages } from "@bb/db";
+import { getThread, listQueuedThreadMessages, threads } from "@bb/db";
+import { eq } from "drizzle-orm";
 import {
   encodeClientTurnRequestIdNumber,
   threadScope,
@@ -115,6 +116,7 @@ function seedScenario(harness: TestAppHarness): Scenario {
 function unauthorizedFailureEvents(args: {
   threadId: string;
   turnId: string;
+  category?: "unauthorized" | "internal";
 }): HostDaemonEventEnvelope[] {
   const scope = turnScope(args.turnId);
   const base = {
@@ -141,7 +143,7 @@ function unauthorizedFailureEvents(args: {
         message: "Provider error",
         detail: UNAUTHORIZED_DETAIL,
         errorInfo: {
-          category: "unauthorized",
+          category: args.category ?? "unauthorized",
           providerCode: null,
           httpStatusCode: 401,
         },
@@ -211,6 +213,86 @@ async function failFirstTurn(
 }
 
 describe("a child whose turn fails with a non-retryable error and is retried by hand", () => {
+  it("does not mark an archived in-flight turn failed after its credential is revoked", async () => {
+    await withTestHarness(async (harness) => {
+      const scenario = seedScenario(harness);
+      harness.db
+        .update(threads)
+        .set({ archivedAt: Date.now() })
+        .where(eq(threads.id, scenario.child.id))
+        .run();
+
+      const response = await postEvents(
+        harness,
+        scenario.sessionId,
+        unauthorizedFailureEvents({
+          threadId: scenario.child.id,
+          turnId: FIRST_TURN_ID,
+        }),
+      );
+      expect(response.status).toBe(200);
+      expect(getThread(harness.db, scenario.child.id)?.status).not.toBe(
+        "error",
+      );
+      await new Promise((resolve) => setTimeout(resolve, NOTICE_SETTLE_MS));
+      expect(
+        parentNoticeTexts(harness, scenario.parent.id).filter((text) =>
+          text.includes("failed."),
+        ),
+      ).toHaveLength(0);
+    });
+  }, 20_000);
+
+  it("keeps an archived turn failed and notifies its parent for non-auth failures", async () => {
+    await withTestHarness(async (harness) => {
+      const scenario = seedScenario(harness);
+      harness.db
+        .update(threads)
+        .set({ archivedAt: Date.now() })
+        .where(eq(threads.id, scenario.child.id))
+        .run();
+      const response = await postEvents(
+        harness,
+        scenario.sessionId,
+        unauthorizedFailureEvents({
+          threadId: scenario.child.id,
+          turnId: FIRST_TURN_ID,
+          category: "internal",
+        }),
+      );
+      expect(response.status).toBe(200);
+      expect(getThread(harness.db, scenario.child.id)?.status).toBe("error");
+      await new Promise((resolve) => setTimeout(resolve, NOTICE_SETTLE_MS));
+      expect(
+        parentNoticeTexts(harness, scenario.parent.id).filter((text) =>
+          text.includes("failed."),
+        ),
+      ).toHaveLength(1);
+    });
+  }, 20_000);
+
+  it("keeps a non-archived auth failure failed and notifies its parent", async () => {
+    await withTestHarness(async (harness) => {
+      const scenario = seedScenario(harness);
+      const response = await postEvents(
+        harness,
+        scenario.sessionId,
+        unauthorizedFailureEvents({
+          threadId: scenario.child.id,
+          turnId: FIRST_TURN_ID,
+        }),
+      );
+      expect(response.status).toBe(200);
+      expect(getThread(harness.db, scenario.child.id)?.status).toBe("error");
+      await new Promise((resolve) => setTimeout(resolve, NOTICE_SETTLE_MS));
+      expect(
+        parentNoticeTexts(harness, scenario.parent.id).filter((text) =>
+          text.includes("failed."),
+        ),
+      ).toHaveLength(1);
+    });
+  }, 20_000);
+
   it("tells the parent about the first failure once and about the final failure once", async () => {
     await withTestHarness(async (harness) => {
       const scenario = seedScenario(harness);
