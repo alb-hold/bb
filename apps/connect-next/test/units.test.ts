@@ -528,6 +528,7 @@ describe("frp hooks", () => {
     };
     const TIMINGS = { registerGraceMs: 60, stateRetryMs: 20, reconcileMs: 250 };
     const PROXY_NAME = "bee.bb";
+    const SUBDOMAIN = "bee--3000";
 
     function createFrpsStub() {
       const registered = new Map<string, string>();
@@ -633,7 +634,7 @@ describe("frp hooks", () => {
           },
           proxy_name: PROXY_NAME,
           proxy_type: "http",
-          subdomain: "bee",
+          subdomain: SUBDOMAIN,
         });
       const newProxy = async (runId: string) => {
         await proxyCall("NewProxy", runId);
@@ -658,7 +659,7 @@ describe("frp hooks", () => {
       const first = await harness.login("control-1:1");
       await harness.newProxy("run-1");
       await sleep(300);
-      expect(harness.directory.locate("bee").kind).toBe("here");
+      expect(harness.directory.locate(SUBDOMAIN).kind).toBe("here");
       return first;
     }
 
@@ -691,7 +692,7 @@ describe("frp hooks", () => {
       harness.frps.unregister(PROXY_NAME);
       await sleep(20);
       await harness.proxyCall("CloseProxy", "run-1");
-      const waiting = harness.directory.awaitReturn("bee", signal);
+      const waiting = harness.directory.awaitReturn(SUBDOMAIN, signal);
       await harness.login("second:1");
       await sleep(REMOVAL_SETTLE_MS + 200);
       expect(await pending(waiting)).toBe(STILL_WAITING);
@@ -709,7 +710,7 @@ describe("frp hooks", () => {
       harness.frps.unregister(PROXY_NAME);
       await sleep(20);
       await harness.proxyCall("CloseProxy", "run-1");
-      const waiting = harness.directory.awaitReturn("bee", signal);
+      const waiting = harness.directory.awaitReturn(SUBDOMAIN, signal);
       await harness.login("second:1", "run-1");
       await sleep(REMOVAL_SETTLE_MS + 200);
       expect(await pending(waiting)).toBe(STILL_WAITING);
@@ -725,7 +726,7 @@ describe("frp hooks", () => {
 
       harness.frps.unregister(PROXY_NAME);
       await harness.proxyCall("CloseProxy", "run-1");
-      expect(await harness.directory.awaitReturn("bee", signal)).toEqual({
+      expect(await harness.directory.awaitReturn(SUBDOMAIN, signal)).toEqual({
         kind: "offline",
       });
     });
@@ -737,11 +738,11 @@ describe("frp hooks", () => {
       await harness.proxyCall("NewProxy");
       harness.frps.register(PROXY_NAME, "");
       await sleep(300);
-      expect(harness.directory.locate("bee").kind).toBe("here");
+      expect(harness.directory.locate(SUBDOMAIN).kind).toBe("here");
 
       harness.frps.unregister(PROXY_NAME);
       await harness.proxyCall("CloseProxy");
-      const waiting = harness.directory.awaitReturn("bee", abort.signal);
+      const waiting = harness.directory.awaitReturn(SUBDOMAIN, abort.signal);
       await sleep(REMOVAL_SETTLE_MS + 200);
       expect(await pending(waiting)).toBe(STILL_WAITING);
       abort.abort();
@@ -753,12 +754,12 @@ describe("frp hooks", () => {
       const signal = new AbortController().signal;
       const first = await connectFirst(harness);
       await replaceControl(harness, first, 2);
-      const waiting = harness.directory.awaitReturn("bee", signal);
+      const waiting = harness.directory.awaitReturn(SUBDOMAIN, signal);
 
       await harness.proxyCall("CloseProxy", "run-1");
       await sleep(REMOVAL_SETTLE_MS + 200);
       expect(await waiting).toEqual({ kind: "here" });
-      expect(harness.directory.locate("bee").kind).toBe("here");
+      expect(harness.directory.locate(SUBDOMAIN).kind).toBe("here");
     });
 
     it("keeps an already routed replacement when the replaced control's close arrives late", async () => {
@@ -769,7 +770,7 @@ describe("frp hooks", () => {
 
       await harness.proxyCall("CloseProxy", "run-1");
       await sleep(REMOVAL_SETTLE_MS + 200);
-      expect(harness.directory.locate("bee").kind).toBe("here");
+      expect(harness.directory.locate(SUBDOMAIN).kind).toBe("here");
     });
 
     it("still ends the replacement's own close after a replaced control's close was kept out", async () => {
@@ -780,11 +781,11 @@ describe("frp hooks", () => {
       await sleep(300);
       await harness.proxyCall("CloseProxy", "run-1");
       await sleep(SETTLED_MS);
-      expect(harness.directory.locate("bee").kind).toBe("here");
+      expect(harness.directory.locate(SUBDOMAIN).kind).toBe("here");
 
       harness.frps.unregister(PROXY_NAME);
       await harness.proxyCall("CloseProxy", "run-1");
-      expect(await harness.directory.awaitReturn("bee", signal)).toEqual({
+      expect(await harness.directory.awaitReturn(SUBDOMAIN, signal)).toEqual({
         kind: "offline",
       });
     });
@@ -804,7 +805,7 @@ describe("frp hooks", () => {
               await harness.proxyCall("CloseProxy", "run-1");
             }
           }
-          const waiting = harness.directory.awaitReturn("bee", signal);
+          const waiting = harness.directory.awaitReturn(SUBDOMAIN, signal);
           if (delivery === "after the newest proxy") {
             for (let late = 1; late < controls; late += 1) {
               await harness.proxyCall("CloseProxy", "run-1");
@@ -812,11 +813,11 @@ describe("frp hooks", () => {
           }
           await sleep(REMOVAL_SETTLE_MS + 200);
           expect(await waiting).toEqual({ kind: "here" });
-          expect(harness.directory.locate("bee").kind).toBe("here");
+          expect(harness.directory.locate(SUBDOMAIN).kind).toBe("here");
 
           harness.frps.unregister(PROXY_NAME);
           await harness.proxyCall("CloseProxy", "run-1");
-          expect(await harness.directory.awaitReturn("bee", signal)).toEqual({
+          expect(await harness.directory.awaitReturn(SUBDOMAIN, signal)).toEqual({
             kind: "offline",
           });
         });
@@ -827,16 +828,16 @@ describe("frp hooks", () => {
       const harness = await startHooks();
       const signal = new AbortController().signal;
       await chainOfControls(harness, 3);
-      const waiting = harness.directory.awaitReturn("bee", signal);
+      const waiting = harness.directory.awaitReturn(SUBDOMAIN, signal);
 
       await harness.proxyCall("CloseProxy", "run-1");
       await sleep(REMOVAL_SETTLE_MS + 200);
       expect(await waiting).toEqual({ kind: "here" });
-      expect(harness.directory.locate("bee").kind).toBe("here");
+      expect(harness.directory.locate(SUBDOMAIN).kind).toBe("here");
 
       harness.frps.unregister(PROXY_NAME);
       await harness.proxyCall("CloseProxy", "run-1");
-      expect(await harness.directory.awaitReturn("bee", signal)).toEqual({
+      expect(await harness.directory.awaitReturn(SUBDOMAIN, signal)).toEqual({
         kind: "offline",
       });
     });
@@ -850,11 +851,11 @@ describe("frp hooks", () => {
       harness.frps.unregister(PROXY_NAME);
       await harness.proxyCall("CloseProxy", "run-1");
       await sleep(SETTLED_MS);
-      expect(harness.directory.locate("bee").kind).not.toBe("here");
+      expect(harness.directory.locate(SUBDOMAIN).kind).not.toBe("here");
 
       await harness.proxyCall("CloseProxy", "run-1");
       await harness.proxyCall("CloseProxy", "run-1");
-      expect(await harness.directory.awaitReturn("bee", signal)).toEqual({
+      expect(await harness.directory.awaitReturn(SUBDOMAIN, signal)).toEqual({
         kind: "offline",
       });
     });
@@ -866,7 +867,7 @@ describe("frp hooks", () => {
 
       harness.frps.unregister(PROXY_NAME);
       await sleep(TIMINGS.reconcileMs + TIMINGS.registerGraceMs + 200);
-      expect(await harness.directory.awaitReturn("bee", signal)).toEqual({
+      expect(await harness.directory.awaitReturn(SUBDOMAIN, signal)).toEqual({
         kind: "offline",
       });
     });
@@ -876,7 +877,7 @@ describe("frp hooks", () => {
       await connectFirst(harness);
 
       await sleep(TIMINGS.reconcileMs * 2 + 100);
-      expect(harness.directory.locate("bee").kind).toBe("here");
+      expect(harness.directory.locate(SUBDOMAIN).kind).toBe("here");
     });
 
     it("keeps the record while frps cannot be asked, and removes it once frps says it is gone", async () => {
@@ -887,12 +888,12 @@ describe("frp hooks", () => {
       harness.frps.down = true;
       await harness.proxyCall("CloseProxy", "run-1");
       await sleep(TIMINGS.stateRetryMs * 3);
-      expect(harness.directory.locate("bee").kind).toBe("here");
+      expect(harness.directory.locate(SUBDOMAIN).kind).toBe("here");
 
       harness.frps.unregister(PROXY_NAME);
       harness.frps.down = false;
       await sleep(TIMINGS.stateRetryMs * 3);
-      expect(await harness.directory.awaitReturn("bee", signal)).toEqual({
+      expect(await harness.directory.awaitReturn(SUBDOMAIN, signal)).toEqual({
         kind: "offline",
       });
     });
@@ -913,7 +914,7 @@ describe("frp hooks", () => {
       harness.frps.gate = null;
       release();
       await sleep(SETTLED_MS);
-      expect(await harness.directory.awaitReturn("bee", signal)).toEqual({
+      expect(await harness.directory.awaitReturn(SUBDOMAIN, signal)).toEqual({
         kind: "offline",
       });
     });
@@ -926,7 +927,7 @@ describe("frp hooks", () => {
       await harness.proxyCall("CloseProxy", "run-1");
       await waitUntil(() => harness.frps.unknownAnswers === 0);
       await sleep(TIMINGS.reconcileMs * 2);
-      expect(harness.directory.locate("bee").kind).toBe("here");
+      expect(harness.directory.locate(SUBDOMAIN).kind).toBe("here");
     });
 
     it("removes a record after unanswered questions once a listing shows frps dropped it", async () => {
@@ -938,8 +939,8 @@ describe("frp hooks", () => {
       harness.frps.unknownAnswers = 15;
       await harness.proxyCall("CloseProxy", "run-1");
       await waitUntil(() => harness.frps.unknownAnswers === 0);
-      await waitUntil(() => harness.directory.locate("bee").kind !== "here");
-      expect(await harness.directory.awaitReturn("bee", signal)).toEqual({
+      await waitUntil(() => harness.directory.locate(SUBDOMAIN).kind !== "here");
+      expect(await harness.directory.awaitReturn(SUBDOMAIN, signal)).toEqual({
         kind: "offline",
       });
     });
@@ -952,7 +953,7 @@ describe("frp hooks", () => {
       harness.frps.register(PROXY_NAME, "stranger");
       await harness.proxyCall("CloseProxy", "run-1");
       await sleep(TIMINGS.reconcileMs * 3);
-      expect(harness.directory.locate("bee").kind).toBe("here");
+      expect(harness.directory.locate(SUBDOMAIN).kind).toBe("here");
     });
 
     it("refuses a login that names a client id other than its run id", async () => {
@@ -992,7 +993,7 @@ describe("frp hooks", () => {
         client_address: "x:2",
       });
       expect(stolen).toMatchObject({ reject: true });
-      expect(harness.directory.locate("bee").kind).toBe("here");
+      expect(harness.directory.locate(SUBDOMAIN).kind).toBe("here");
     });
 
     it("drops an older run's record when frps lists the proxy under another run's record", async () => {
@@ -1007,12 +1008,12 @@ describe("frp hooks", () => {
       await sleep(300);
       await harness.proxyCall("CloseProxy", "run-1");
       await sleep(SETTLED_MS);
-      expect(harness.directory.locate("bee").kind).toBe("here");
+      expect(harness.directory.locate(SUBDOMAIN).kind).toBe("here");
 
       harness.frps.unregister(PROXY_NAME);
       await harness.proxyCall("CloseProxy", "run-2");
       await sleep(SETTLED_MS);
-      expect(harness.directory.locate("bee").kind).not.toBe("here");
+      expect(harness.directory.locate(SUBDOMAIN).kind).not.toBe("here");
     });
   });
 });
