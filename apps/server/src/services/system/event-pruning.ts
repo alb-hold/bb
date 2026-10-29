@@ -28,14 +28,12 @@ interface ThreadEventPruningResult {
 
 interface MaybePruneActiveThreadEventHistoryArgs {
   latestPrunableSequence: number;
-  now?: () => number;
   schedule?: ActiveThreadPruneScheduler;
   threadId: string;
   throttleNow?: () => number;
 }
 
 export interface ActiveThreadEventPruneRuntimeOptions {
-  now?: () => number;
   schedule?: ActiveThreadPruneScheduler;
 }
 
@@ -48,7 +46,6 @@ type ActiveThreadPruneScheduler = (callback: () => void) => void;
 
 interface ActiveThreadPruneChain {
   deps: Pick<AppDeps, "db" | "logger" | "hub">;
-  clock: () => number;
   completedPolicies: Set<string>;
   mode: "active" | "idle";
   schedule: ActiveThreadPruneScheduler;
@@ -77,7 +74,6 @@ const ACTIVE_PRUNE_TRIGGER_THREAD_EVENT_TYPES: readonly ThreadEventType[] = [
 
 export const KEEP_RECENT_BY_MODE: Record<ThreadEventPruningMode, number> =
   THREAD_EVENT_KEEP_RECENT_BY_MODE;
-export const ACTIVE_THREAD_EVENT_PRUNE_SYNC_BLOCK_CAP_MS = 16;
 
 const activePruneTriggerThreadEventTypeSet = new Set<ThreadEventType>(
   ACTIVE_PRUNE_TRIGGER_THREAD_EVENT_TYPES,
@@ -247,7 +243,6 @@ export function maybePruneActiveThreadEventHistory(
 
   return pruneActiveThreadEventHistoryWithinBudget(deps, {
     mode: thread.status === "active" ? "active" : "idle",
-    now: args.now,
     schedule: args.schedule,
     threadId: args.threadId,
   });
@@ -257,7 +252,6 @@ export function pruneActiveThreadEventHistoryWithinBudget(
   deps: Pick<AppDeps, "db" | "logger" | "hub">,
   args: {
     mode: "active" | "idle";
-    now?: () => number;
     schedule?: ActiveThreadPruneScheduler;
     threadId: string;
   },
@@ -266,7 +260,6 @@ export function pruneActiveThreadEventHistoryWithinBudget(
   if (state.chainsByThreadId.has(args.threadId)) return false;
   const chain: ActiveThreadPruneChain = {
     deps,
-    clock: args.now ?? (() => performance.now()),
     completedPolicies: new Set<string>(),
     mode: args.mode,
     schedule: args.schedule ?? ((callback) => setImmediate(callback)),
@@ -315,12 +308,10 @@ function runActiveThreadPruneSlice(
   chain: ActiveThreadPruneChain,
 ): void {
   const deps = chain.deps;
-  chain.clock();
   const latest = pruneActiveThreadEventHistoryStepBestEffort(deps, {
     mode: chain.mode,
     threadId: chain.threadId,
   });
-  chain.clock();
   if (latest === null) {
     state.chainsByThreadId.delete(chain.threadId);
     return;

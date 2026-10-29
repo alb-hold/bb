@@ -1592,7 +1592,6 @@ export function registerInternalEventRoutes(
           for (const candidate of activePruneCandidates) {
             maybePruneActiveThreadEventHistory(deps, {
               ...candidate,
-              now: activeThreadPruneRuntime?.now,
               schedule: activeThreadPruneRuntime?.schedule,
             });
           }
