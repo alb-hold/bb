@@ -127,6 +127,17 @@ function createTimeline(
 }
 
 describe("ScrollPositionKeeper", () => {
+  it("stays pinned when a no-input scroll follows a 225 px extent shrink", () => {
+    const rows = [...rowsOf(9), { id: "row-9", height: 425 }];
+    const timeline = createTimeline(rows, { attached: true });
+    timeline.layout.layoutScrollTo(timeline.layout.maxScrollTop());
+    timeline.resize("row-9", 200);
+    timeline.layout.layoutScrollTo(timeline.layout.maxScrollTop());
+    timeline.scrollElement.dispatchEvent(new Event("scroll"));
+    expect(timeline.keeper.isAttached()).toBe(true);
+    expect(timeline.layout.scrollTop).toBe(timeline.layout.maxScrollTop());
+  });
+
   it("keeps the reading row in place when an older page is prepended", () => {
     const rows = rowsOf(10);
     const timeline = createTimeline(rows);

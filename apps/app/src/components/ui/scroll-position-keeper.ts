@@ -607,10 +607,18 @@ export class ScrollPositionKeeper {
       this.apply(scrollElement, true, true, true);
       return;
     }
-    if (
-      !this.isInputSession() &&
-      (this.isFloorStale() || !this.followsUnexplainedScroll())
-    ) {
+    if (!this.isInputSession()) {
+      const cachedMax = this.maxScrollTop;
+      const extentChanged =
+        Math.abs(this.refreshExtent(scrollElement) - cachedMax) >= 1;
+      if (extentChanged || this.isFloorStale()) {
+        this.syncFloor();
+        this.ownScrollTop = scrollTop;
+        this.apply(scrollElement, true);
+        return;
+      }
+    }
+    if (!this.isInputSession() && !this.followsUnexplainedScroll()) {
       this.syncFloor();
       this.ownScrollTop = scrollTop;
       this.apply(scrollElement, true);
