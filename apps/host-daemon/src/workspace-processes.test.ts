@@ -222,7 +222,7 @@ describe("darwin workspace process inspection", () => {
       if (key === "/private/tmp/ws") return "/private/tmp/ws";
       return key;
     });
-    expect(await inspectWorkspaceProcesses("/tmp/ws")).toEqual({
+    expect(await inspectWorkspaceProcesses("/private/tmp/ws")).toEqual({
       supported: true,
       pids: [508],
       unreadablePids: [],
