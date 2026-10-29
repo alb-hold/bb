@@ -6,7 +6,7 @@ import net from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import tls from "node:tls";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createHostProxy, type HostProxy } from "./host-proxy.js";
 import { createProxyCertificateAuthority } from "./proxy-ca.js";
 
@@ -425,6 +425,75 @@ describe("host Artifact proxy", () => {
     await closed;
     survivor.socket.write("ping");
     expect(await readUntil(survivor.socket, "ping")).toBe("ping");
+  });
+
+  describe("credential lease", () => {
+    const LEASE_MS = 3 * 60_000;
+    const REVOKED = "R".repeat(43);
+    const KEPT = "K".repeat(43);
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    async function leased() {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+      const echo = net.createServer((socket) => socket.pipe(socket));
+      const echoPort = await listen(echo);
+      const proxy = createHostProxy({ dataDir: path.join(dataDir, "host") });
+      cleanups.push(() => proxy.close());
+      const ensure = (digests: string[]) =>
+        proxy.ensure({
+          ...material,
+          proxyCredentialSha256s: digests,
+          serverUrl: "http://127.0.0.1:1",
+        });
+      const { port } = await ensure([sha256(REVOKED), sha256(KEPT)]);
+      return { port, ensure, target: `127.0.0.1:${echoPort}` };
+    }
+
+    it("refuses a revoked credential at the lease bound when every sync fails", async () => {
+      const { port, target } = await leased();
+      const tunnel = await connect(port, target, basic(REVOKED));
+      expect(tunnel.status).toBe(200);
+      const closed = new Promise<void>((resolve) =>
+        tunnel.socket.once("close", () => resolve()),
+      );
+      await vi.advanceTimersByTimeAsync(LEASE_MS - 1);
+      const justBefore = await connect(port, target, basic(REVOKED));
+      expect(justBefore.status).toBe(200);
+      justBefore.socket.destroy();
+      await vi.advanceTimersByTimeAsync(1);
+      await closed;
+      const atBound = await connect(port, target, basic(REVOKED));
+      expect(atBound.status).toBe(407);
+    });
+
+    it("refuses every credential once the lease runs out and a fresh sync restores the active ones", async () => {
+      const { port, ensure, target } = await leased();
+      await vi.advanceTimersByTimeAsync(LEASE_MS);
+      for (const token of [REVOKED, KEPT])
+        expect((await connect(port, target, basic(token))).status).toBe(407);
+      await ensure([sha256(KEPT)]);
+      const restored = await connect(port, target, basic(KEPT));
+      expect(restored.status).toBe(200);
+      restored.socket.destroy();
+      expect((await connect(port, target, basic(REVOKED))).status).toBe(407);
+    });
+
+    it("keeps an active credential's tunnel open when a sync arrives before the lease ends", async () => {
+      const { port, ensure, target } = await leased();
+      const tunnel = await connect(port, target, basic(KEPT));
+      expect(tunnel.status).toBe(200);
+      await vi.advanceTimersByTimeAsync(2 * 60_000);
+      await ensure([sha256(KEPT)]);
+      await vi.advanceTimersByTimeAsync(2 * 60_000);
+      tunnel.socket.write("ping");
+      expect(await readUntil(tunnel.socket, "ping")).toBe("ping");
+      const fresh = await connect(port, target, basic(KEPT));
+      expect(fresh.status).toBe(200);
+      fresh.socket.destroy();
+    });
   });
 
   it("keeps its port and registered tokens across a restart", async () => {

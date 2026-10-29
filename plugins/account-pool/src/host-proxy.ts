@@ -18,6 +18,7 @@ export const HUB_ROUTE_PREFIX = "/api/v1/plugins/account-pool/http";
 
 const LOOPBACK = "127.0.0.1";
 const MAX_CREDENTIALS = 4_096;
+export const CREDENTIAL_LEASE_MS = 3 * 60_000;
 const MAX_TUNNELS_PER_TOKEN = 256;
 const CONNECT_TIMEOUT_MS = 10_000;
 const IDLE_TIMEOUT_MS = 10 * 60 * 1_000;
@@ -114,6 +115,7 @@ async function readText(file: string): Promise<string | null> {
 export function createHostProxy(options: {
   dataDir: string;
   fetch?: typeof fetch;
+  leaseMs?: number;
 }): HostProxy {
   const { dataDir } = options;
   const upstreamFetch = options.fetch ?? fetch;
@@ -137,8 +139,25 @@ export function createHostProxy(options: {
   });
   interceptServer.on("clientError", (_error, socket) => socket.destroy());
 
+  const leaseMs = options.leaseMs ?? CREDENTIAL_LEASE_MS;
+  let leaseExpiresAt = 0;
+  let leaseTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function expireLease(): void {
+    leaseExpiresAt = 0;
+    credentials = null;
+    for (const socket of sockets) socket.destroy();
+  }
+
+  function renewLease(): void {
+    leaseExpiresAt = Date.now() + leaseMs;
+    if (leaseTimer !== null) clearTimeout(leaseTimer);
+    leaseTimer = setTimeout(expireLease, leaseMs);
+    leaseTimer.unref();
+  }
+
   function knownDigest(digest: string): boolean {
-    return credentials?.has(digest) === true;
+    return Date.now() < leaseExpiresAt && credentials?.has(digest) === true;
   }
 
   function fail(
@@ -409,6 +428,7 @@ export function createHostProxy(options: {
     serverUrl = input.serverUrl.replace(/\/+$/u, "");
     const active = new Set(input.proxyCredentialSha256s);
     credentials = active;
+    renewLease();
     for (const [digest, open] of socketsByCredential)
       if (!active.has(digest)) for (const socket of open) socket.destroy();
     starting ??= start();
@@ -428,6 +448,9 @@ export function createHostProxy(options: {
       listener = null;
       starting = null;
       credentials = null;
+      leaseExpiresAt = 0;
+      if (leaseTimer !== null) clearTimeout(leaseTimer);
+      leaseTimer = null;
       for (const socket of sockets) socket.destroy();
       sockets.clear();
       if (server === null) return;

@@ -104,6 +104,7 @@ const THREAD_SWEEP_RETRY_MS = 60_000;
 const HUB_BASE_PATH = "/api/v1/plugins/account-pool/http";
 const HOST_PROXY_CALL_TIMEOUT_MS = 8_000;
 const HOST_PROXY_SYNC_DEBOUNCE_MS = 100;
+const HOST_PROXY_RETRY_MS = 2_000;
 const HOST_PROXY_RECONCILE_INTERVAL_MS = 60_000;
 const HOST_PROXY_HOSTS_KEY = "artifact-proxy-hosts";
 const HOST_PROXY_WARN_INTERVAL_MS = 10 * 60_000;
@@ -245,8 +246,10 @@ export function createAccountPoolPlugin(
     const sha256Hex = (value: string): string =>
       createHash("sha256").update(value).digest("hex");
     const proxyQueues = new Map<string, Promise<unknown>>();
+    const proxyRetryTimers = new Set<ReturnType<typeof setTimeout>>();
     const syncArtifactProxy = (
       hostId: string,
+      retry = true,
     ): Promise<{ port: number; caPath: string; noProxy: string } | null> => {
       const run = (proxyQueues.get(hostId) ?? Promise.resolve()).then(
         async () => {
@@ -279,6 +282,14 @@ export function createAccountPoolPlugin(
             return result;
           } catch (error) {
             warnArtifactProxy(hostId, error);
+            if (retry) {
+              const timer = setTimeout(() => {
+                proxyRetryTimers.delete(timer);
+                void syncArtifactProxy(hostId, false);
+              }, HOST_PROXY_RETRY_MS);
+              timer.unref();
+              proxyRetryTimers.add(timer);
+            }
             return null;
           }
         },
@@ -332,6 +343,7 @@ export function createAccountPoolPlugin(
     bb.onDispose(() => {
       clearInterval(reconcileTimer);
       if (proxySyncTimer !== null) clearTimeout(proxySyncTimer);
+      for (const timer of proxyRetryTimers) clearTimeout(timer);
     });
     void reconcileArtifactProxies().catch(() => undefined);
     const db = bb.storage.database();

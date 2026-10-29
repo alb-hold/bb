@@ -12991,6 +12991,21 @@ describe("Account Pool Artifact proxy", () => {
     });
   });
 
+  it("retries a failed host sync once, quickly", async () => {
+    let calls = 0;
+    await artifactFixture(
+      async () => Response.json({}),
+      () => {
+        calls += 1;
+        if (calls === 1) throw new Error("host unreachable");
+        return hostRpcResult;
+      },
+    );
+    await vi.waitFor(() => expect(calls).toBeGreaterThanOrEqual(2), {
+      timeout: 4_000,
+    });
+  });
+
   it("rejects the oauth route without a valid pool token", async () => {
     const upstream = vi.fn(async () => Response.json({}));
     const fixture = await artifactFixture(upstream, () => hostRpcResult);
