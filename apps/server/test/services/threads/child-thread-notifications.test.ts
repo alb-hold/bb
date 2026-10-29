@@ -21,6 +21,24 @@ async function nativeChildFixture(harness: TestAppHarness, policy: "auto" | "off
 afterEach(() => vi.useRealTimers());
 
 describe("native child turn notifications", () => {
+  it.each(["auto", "off", "stuck"] as const)("bounds a stalled screen read under %s policy", async (policy) => {
+    await withTestHarness(async (harness) => {
+      const { parent, child } = await nativeChildFixture(harness, policy);
+      const read = vi.spyOn(harness.deps.terminalSessions, "readTerminalScreen").mockImplementation(() => new Promise(() => {}));
+      vi.useFakeTimers();
+      recordNativeTerminalActivity(harness.deps, { threadId: child.id, confirms: true, state: "working" });
+      recordNativeTerminalActivity(harness.deps, { threadId: child.id, confirms: true, state: "idle" });
+      await vi.advanceTimersByTimeAsync(3_100);
+      const notices = listNativeParentNotices(harness.db, parent.id);
+      expect(notices).toHaveLength(policy === "auto" ? 1 : 0);
+      if (policy === "auto") expect(notices[0]?.text).toContain("Native worker turn ended.");
+      recordNativeTerminalActivity(harness.deps, { threadId: child.id, confirms: true, state: "idle" });
+      await vi.advanceTimersByTimeAsync(3_100);
+      expect(listNativeParentNotices(harness.db, parent.id)).toHaveLength(policy === "auto" ? 1 : 0);
+      read.mockRestore();
+    });
+  });
+
   it("includes the last six nonempty visible screen lines", async () => {
     await withTestHarness(async (harness) => {
       const { parent, child, host, session } = await nativeChildFixture(harness, "auto");
@@ -48,10 +66,10 @@ describe("native child turn notifications", () => {
       recordNativeTerminalActivity(harness.deps, { threadId: child.id, confirms: true, state: "working" });
       const exit = () => harness.deps.terminalSessions.handleDaemonTerminalMessage({ hostId: host.id, sessionId: session.id, message: { type: "terminal.exited", terminalId, exitCode: 0, closeReason: "process-exit" } });
       exit();
-      await vi.advanceTimersByTimeAsync(2_100);
+      await vi.advanceTimersByTimeAsync(3_100);
       expect(listNativeParentNotices(harness.db, parent.id)).toHaveLength(1);
       exit();
-      await vi.advanceTimersByTimeAsync(2_100);
+      await vi.advanceTimersByTimeAsync(3_100);
       expect(listNativeParentNotices(harness.db, parent.id)).toHaveLength(1);
       expect(getThread(harness.db, child.id)?.status).toBe("idle");
     });
