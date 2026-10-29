@@ -746,7 +746,7 @@ describe("waiting for the Claude CLI to exit before cleanup", () => {
     await waitForCliExit(executable, 1_000);
   });
 
-  it("waits for a descendant that runs exactly the executable, and returns once it exits", async () => {
+  it("waits for a descendant whose argv[0] is exactly the executable, and returns once it exits", async () => {
     const executable = join(scratch(), "claude");
     const sleeper = await startSleeper(executable);
     await expect(waitForCliExit(executable, 300)).rejects.toThrow(
