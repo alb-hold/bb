@@ -37,28 +37,31 @@ describe("terminalScreenInputBoxIsEmpty", () => {
   const screen = (...box: string[]) => ["⏺ ok", rule, ...box, rule, "  Sonnet"];
 
   it("is empty for a bare prompt", () => {
+    expect(terminalScreenInputBoxIsEmpty({ rows: screen("❯ ") })).toBe(true);
+  });
+
+  it("is empty when only dim placeholder text follows the prompt", () => {
     expect(
       terminalScreenInputBoxIsEmpty({
-        cursor: { col: 2, row: 2 },
-        rows: screen("❯ "),
+        rows: screen('❯ Try "fix lint errors"'),
+        solidRows: screen("❯"),
       }),
     ).toBe(true);
   });
 
-  it("is empty when only a placeholder follows the cursor", () => {
+  it("is occupied by placeholder-looking text it cannot prove is dim", () => {
     expect(
       terminalScreenInputBoxIsEmpty({
-        cursor: { col: 2, row: 2 },
-        rows: screen('❯ Try "fix lint errors"'),
+        rows: screen('❯ Try "fix lint errors"'),
       }),
-    ).toBe(true);
+    ).toBe(false);
   });
 
-  it("is not empty when the owner typed text", () => {
+  it("is not empty when the owner typed text, wherever the cursor is", () => {
     expect(
       terminalScreenInputBoxIsEmpty({
-        cursor: { col: 14, row: 2 },
-        rows: screen("❯ half a thought"),
+        rows: screen("❯ half a thought"),
+        solidRows: screen("❯ half a thought"),
       }),
     ).toBe(false);
   });
@@ -66,14 +69,14 @@ describe("terminalScreenInputBoxIsEmpty", () => {
   it("is not empty for a menu or a wrapped draft", () => {
     expect(
       terminalScreenInputBoxIsEmpty({
-        cursor: { col: 2, row: 2 },
         rows: screen("❯ 1. Yes", "  2. No"),
+        solidRows: screen("❯ 1. Yes", "  2. No"),
       }),
     ).toBe(false);
     expect(
       terminalScreenInputBoxIsEmpty({
-        cursor: { col: 5, row: 3 },
-        rows: screen("❯ ", "  continued draft"),
+        rows: screen("❯ ", "  continued draft"),
+        solidRows: screen("❯ ", "  continued draft"),
       }),
     ).toBe(false);
   });
@@ -81,7 +84,6 @@ describe("terminalScreenInputBoxIsEmpty", () => {
   it("is not empty when no prompt is on screen", () => {
     expect(
       terminalScreenInputBoxIsEmpty({
-        cursor: { col: 0, row: 0 },
         rows: ["Choose an option", "  1. Yes"],
       }),
     ).toBe(false);

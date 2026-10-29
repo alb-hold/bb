@@ -1057,7 +1057,7 @@ export class TerminalSessionLifecycle {
         rebuild.nextSeq = Math.max(rebuild.nextSeq, chunk.seq + 1);
         await yieldToEventLoop();
       }
-      if (await state.snapshot() === null) return;
+      if ((await state.snapshot()) === null) return;
       for (;;) {
         if (!this.isTerminalScreenStateRebuildActive(rebuild)) return;
         const buffered = rebuild.bufferedChunks.splice(0);
@@ -1068,7 +1068,7 @@ export class TerminalSessionLifecycle {
           rebuild.nextSeq = Math.max(rebuild.nextSeq, chunk.seq + 1);
           await yieldToEventLoop();
         }
-        if (await state.snapshot() === null) return;
+        if ((await state.snapshot()) === null) return;
         if (rebuild.bufferedChunks.length === 0) {
           if (!this.isTerminalScreenStateRebuildActive(rebuild)) return;
           this.terminalScreenStates.install(session.id, state);
@@ -2031,6 +2031,10 @@ export class TerminalSessionLifecycle {
     });
   }
 
+  readTerminalPromptScreen(terminalId: string) {
+    return this.terminalScreenStates.promptScreen(terminalId);
+  }
+
   async readTerminalScreen(args: {
     terminalId: string;
     query: TerminalScreenQuery;
@@ -2136,7 +2140,10 @@ export class TerminalSessionLifecycle {
       );
     } else if (!rebuild.cancelled) {
       const bytes = Buffer.byteLength(chunk.dataBase64, "utf8");
-      if (rebuild.bufferedBytes + bytes > TERMINAL_SCREEN_STATE_PENDING_BYTES_LIMIT) {
+      if (
+        rebuild.bufferedBytes + bytes >
+        TERMINAL_SCREEN_STATE_PENDING_BYTES_LIMIT
+      ) {
         rebuild.cancelled = true;
         rebuild.bufferedChunks.length = 0;
         rebuild.bufferedBytes = 0;
@@ -3972,10 +3979,7 @@ export class TerminalSessionLifecycle {
       return;
     }
     const current = getTerminalById(this.options.db, args.terminalId);
-    if (
-      !current ||
-      !isRunningBrowserTerminalSession(current)
-    ) {
+    if (!current || !isRunningBrowserTerminalSession(current)) {
       return;
     }
     if (current.cols === size.cols && current.rows === size.rows) {

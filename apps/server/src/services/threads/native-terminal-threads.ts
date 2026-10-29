@@ -1330,10 +1330,12 @@ async function deliverNativeTerminalMessage(
   const terminalId = view.terminal.id;
   const provider = requireNativeTerminalProvider(deps, view.providerId);
   if (args.requireEmptyInputBox === true) {
-    const screen = await deps.terminalSessions.readTerminalScreen({
-      terminalId,
-      query: {},
-    });
+    const screen =
+      (await deps.terminalSessions.readTerminalPromptScreen(terminalId)) ??
+      (await deps.terminalSessions.readTerminalScreen({
+        terminalId,
+        query: {},
+      }));
     if (!terminalScreenInputBoxIsEmpty(screen)) {
       throw nativeTerminalInputOccupied(provider);
     }

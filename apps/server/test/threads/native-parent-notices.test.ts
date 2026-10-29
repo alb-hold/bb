@@ -491,6 +491,64 @@ describe("child notices for a native terminal parent", () => {
     }
   }, 30_000);
 
+  it.each([
+    ["Claude draft, cursor at its start", "❯ half a thought", 3],
+    ["Claude draft, cursor in its middle", "❯ half a thought", 9],
+    [
+      "Codex-shaped draft, cursor at its start",
+      "\u001b[1m›\u001b[22m half a thought",
+      3,
+    ],
+  ])(
+    "sends no paste and no Enter into a %s",
+    async (_label, promptRow, cursorColumn) => {
+      const fixture = await createFixture();
+      const { open, thread } = await openRunningClaudeParent(fixture);
+      const tui = startFakeClaudeTui(
+        fixture,
+        open.terminalId,
+        EMPTY_PROMPT_SCREEN,
+      );
+      try {
+        tui.draw(`\u001b[3;1H\u001b[2K${promptRow}\u001b[3;${cursorColumn}H`);
+        const seeded = seedChild(fixture, thread.id, 1);
+        await failChild(fixture, seeded);
+        await sleep(6_000);
+        expect(tui.inputs()).toEqual([]);
+        tui.draw("\u001b[3;1H\u001b[2K❯ ");
+        await waitFor(() => tui.pastes().length > 0, 10_000);
+        expect(tui.pastes()).toHaveLength(1);
+        expect(tui.pastes()[0]).toContain(`@thread:${seeded.child.id}`);
+      } finally {
+        tui.stop();
+      }
+    },
+    30_000,
+  );
+
+  it("delivers into a Codex-shaped idle prompt whose placeholder is dim", async () => {
+    const fixture = await createFixture();
+    const { open, thread } = await openRunningClaudeParent(fixture);
+    const tui = startFakeClaudeTui(
+      fixture,
+      open.terminalId,
+      EMPTY_PROMPT_SCREEN,
+    );
+    try {
+      tui.draw(
+        "\u001b[2J\u001b[1;1H• done\u001b[3;1H\u001b[1m›\u001b[22m \u001b[2mAsk Codex to do anything\u001b[22m\u001b[3;3H\u001b[5;1H  GPT Ready",
+      );
+      const seeded = seedChild(fixture, thread.id, 1);
+      await failChild(fixture, seeded);
+      await waitFor(() => tui.pastes().length > 0, 20_000);
+      await sleep(1_000);
+      expect(tui.pastes()).toHaveLength(1);
+      expect(tui.pastes()[0]).toContain(`@thread:${seeded.child.id}`);
+    } finally {
+      tui.stop();
+    }
+  }, 40_000);
+
   it("batches children that fail together into one delivery naming all of them", async () => {
     const fixture = await createFixture();
     const { open, thread } = await openRunningClaudeParent(fixture);

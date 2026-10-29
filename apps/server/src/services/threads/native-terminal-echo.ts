@@ -339,8 +339,8 @@ export function terminalScreenAlreadyShowsText(args: {
 }
 
 export function terminalScreenInputBoxIsEmpty(args: {
-  cursor: { col: number; row: number };
   rows: readonly string[];
+  solidRows?: readonly string[];
 }): boolean {
   let promptAt = -1;
   for (let index = args.rows.length - 1; index >= 0; index -= 1) {
@@ -360,12 +360,10 @@ export function terminalScreenInputBoxIsEmpty(args: {
     return false;
   }
   if (remainder.trim() === "") return true;
-  const promptEnd = row.length - prompt.length + marker.length;
-  return (
-    args.cursor.row === promptAt &&
-    args.cursor.col <= promptEnd + 1 &&
-    /^[\s ]/u.test(remainder)
-  );
+  const solid = args.solidRows?.[promptAt];
+  if (solid === undefined) return false;
+  const promptStart = row.length - prompt.length;
+  return solid.slice(promptStart + marker.length).trim() === "";
 }
 
 export function terminalScreenInputBoxHoldsText(args: {
