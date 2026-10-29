@@ -11,7 +11,7 @@ export const CLAUDE_SETTINGS_ENV_PIN = "BB_CLAUDE_SETTINGS_ENV_PIN";
 
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/u;
 const SETTINGS_TOKEN = "{settings}";
-const PINNED_EXECUTABLE = "claude";
+const PIN_PROVIDER_VARIABLE = "BB_CLAUDE_SETTINGS_ENV_PIN_PROVIDER";
 
 function takesSettings(arg: string): boolean {
   return arg.includes(SETTINGS_TOKEN);
@@ -62,13 +62,14 @@ function writePinnedSettingsFile(
 
 export function prepareNativeSettings(args: {
   env: Readonly<Record<string, string | undefined>>;
-  executable: string;
+  providerId: string;
   hooks: ActivityHooks | undefined;
   hookTarget: string | { appendFile: string } | null;
 }): NativeSettings | null {
   const { hooks, hookTarget } = args;
+  const pinProvider = args.env[PIN_PROVIDER_VARIABLE];
   const pins =
-    args.executable === PINNED_EXECUTABLE
+    pinProvider === undefined || pinProvider === args.providerId
       ? selectPinnedSettingsEnv(args.env)
       : null;
   if (pins !== null) {

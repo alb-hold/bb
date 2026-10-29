@@ -23,6 +23,7 @@ const CLAUDE_HOOKS: ActivityHooks = {
 const POOLED_ENV = {
   BB_CLAUDE_SETTINGS_ENV_PIN:
     "ANTHROPIC_BASE_URL,CLAUDE_CODE_OAUTH_TOKEN,ANTHROPIC_AUTH_TOKEN",
+  BB_CLAUDE_SETTINGS_ENV_PIN_PROVIDER: "claude-code",
   ANTHROPIC_BASE_URL: "http://127.0.0.1:38886/api/v1/plugins/account-pool/http",
   CLAUDE_CODE_OAUTH_TOKEN: POOL_TOKEN,
   ANTHROPIC_AUTH_TOKEN: "",
@@ -40,7 +41,7 @@ afterEach(() => {
 describe("prepareNativeSettings", () => {
   it("writes hooks and the pinned env into one 0600 file whose path replaces {settings}", () => {
     const settings = prepareNativeSettings({
-      executable: "claude",
+      providerId: "claude-code",
       env: POOLED_ENV,
       hooks: CLAUDE_HOOKS,
       hookTarget: "/tmp/spool",
@@ -67,7 +68,7 @@ describe("prepareNativeSettings", () => {
 
   it("still pins the env when hook capture is unavailable", () => {
     const settings = prepareNativeSettings({
-      executable: "claude",
+      providerId: "claude-code",
       env: POOLED_ENV,
       hooks: CLAUDE_HOOKS,
       hookTarget: null,
@@ -82,7 +83,7 @@ describe("prepareNativeSettings", () => {
 
   it("keeps the inline hook settings when the launch is not pooled", () => {
     const settings = prepareNativeSettings({
-      executable: "claude",
+      providerId: "claude-code",
       env: {},
       hooks: CLAUDE_HOOKS,
       hookTarget: "/tmp/spool",
@@ -92,7 +93,7 @@ describe("prepareNativeSettings", () => {
     expect(JSON.parse(settings?.value ?? "{}")).not.toHaveProperty("env");
     expect(
       prepareNativeSettings({
-        executable: "claude",
+        providerId: "claude-code",
         env: {},
         hooks: CLAUDE_HOOKS,
         hookTarget: null,
@@ -102,7 +103,7 @@ describe("prepareNativeSettings", () => {
 
   it("ignores the Claude marker for another provider's native launch", () => {
     const settings = prepareNativeSettings({
-      executable: "codex",
+      providerId: "codex",
       env: POOLED_ENV,
       hooks: { ...CLAUDE_HOOKS, args: ["-c", "hooks=1"] },
       hookTarget: "/tmp/spool",
@@ -110,10 +111,58 @@ describe("prepareNativeSettings", () => {
     expect(settings?.directory).toBeNull();
   });
 
+  it("pins a launch by its provider, whatever the provider CLI executable is called", () => {
+    for (const executable of [
+      "/opt/x/bin/claude",
+      "claude-wrapper",
+      "claude",
+    ]) {
+      const settings = prepareNativeSettings({
+        providerId: "claude-code",
+        env: { ...POOLED_ENV, BB_CLAUDE_CODE_EXECUTABLE: executable },
+        hooks: CLAUDE_HOOKS,
+        hookTarget: "/tmp/spool",
+      });
+      if (settings === null || settings.directory === null)
+        throw new Error(`${executable} was not pinned`);
+      directories.push(settings.directory);
+      expect(
+        JSON.parse(readFileSync(settings.value, "utf8")).env
+          .CLAUDE_CODE_OAUTH_TOKEN,
+      ).toBe(POOL_TOKEN);
+    }
+  });
+
+  it("applies a marker that names no provider to every launch instead of ignoring it", () => {
+    const unnamed = Object.fromEntries(
+      Object.entries(POOLED_ENV).filter(
+        ([name]) => name !== "BB_CLAUDE_SETTINGS_ENV_PIN_PROVIDER",
+      ),
+    );
+    expect(() =>
+      prepareNativeSettings({
+        providerId: "claude-renamed",
+        env: unnamed,
+        hooks: { ...CLAUDE_HOOKS, args: ["-c", "hooks=1"] },
+        hookTarget: "/tmp/spool",
+      }),
+    ).toThrow(/not started/u);
+    const settings = prepareNativeSettings({
+      providerId: "claude-renamed",
+      env: unnamed,
+      hooks: CLAUDE_HOOKS,
+      hookTarget: "/tmp/spool",
+    });
+    if (settings === null || settings.directory === null)
+      throw new Error("expected a settings file");
+    directories.push(settings.directory);
+    expect(settings.value.startsWith("{")).toBe(false);
+  });
+
   it("refuses to launch a pooled Claude without a {settings} argument instead of launching unpinned", () => {
     expect(() =>
       prepareNativeSettings({
-        executable: "claude",
+        providerId: "claude-code",
         env: POOLED_ENV,
         hooks: { ...CLAUDE_HOOKS, args: ["-c", "hooks=1"] },
         hookTarget: "/tmp/spool",
@@ -121,7 +170,7 @@ describe("prepareNativeSettings", () => {
     ).toThrow(/not started/u);
     expect(() =>
       prepareNativeSettings({
-        executable: "claude",
+        providerId: "claude-code",
         env: POOLED_ENV,
         hooks: undefined,
         hookTarget: null,
@@ -131,7 +180,7 @@ describe("prepareNativeSettings", () => {
 
   it("removes the file with its directory", () => {
     const settings = prepareNativeSettings({
-      executable: "claude",
+      providerId: "claude-code",
       env: POOLED_ENV,
       hooks: CLAUDE_HOOKS,
       hookTarget: null,

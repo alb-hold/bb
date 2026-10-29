@@ -116,6 +116,8 @@ const ARTIFACT_PROXY_ENV = [
 ] as const;
 
 const CLAUDE_SETTINGS_ENV_PIN = "BB_CLAUDE_SETTINGS_ENV_PIN";
+const CLAUDE_SETTINGS_ENV_PIN_PROVIDER = "BB_CLAUDE_SETTINGS_ENV_PIN_PROVIDER";
+const CLAUDE_PROVIDER_ID = "claude-code";
 const OUTRANKING_CLAUDE_CREDENTIALS = [
   "ANTHROPIC_AUTH_TOKEN",
   "ANTHROPIC_API_KEY",
@@ -746,7 +748,7 @@ export function createAccountPoolPlugin(
           }
         : null;
     bb.providers.experimental_contributeEnv(
-      "claude-code",
+      CLAUDE_PROVIDER_ID,
       contributeFor("claude", async (token, scope, context) => {
         const proxy =
           context === undefined ||
@@ -834,6 +836,12 @@ export function createAccountPoolPlugin(
             value: entries.map((entry) => entry.name).join(","),
             reason:
               "Names the variables Claude Code must also take from its highest-precedence settings layer, because a host settings.json env block would otherwise replace the Account Pooler routing",
+          },
+          {
+            name: CLAUDE_SETTINGS_ENV_PIN_PROVIDER,
+            value: CLAUDE_PROVIDER_ID,
+            reason:
+              "Names the provider whose launches must apply that pin, so a native launch of another provider that inherits the marker ignores it",
           },
         ];
       }),

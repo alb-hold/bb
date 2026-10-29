@@ -2258,6 +2258,11 @@ describe("Account Pool plugin", () => {
         reason: expect.stringContaining("settings layer"),
       },
       {
+        name: "BB_CLAUDE_SETTINGS_ENV_PIN_PROVIDER",
+        value: "claude-code",
+        reason: expect.stringContaining("another provider"),
+      },
+      {
         name: "BB_ACCOUNT_POOL_PARENT_URL",
         value: { serverPath: "/api/v1/plugins/account-pool/http" },
         reason: "Account Pooler hub for nested bb servers on this machine",
@@ -9497,6 +9502,7 @@ describe("Account Pool nested proxy", () => {
       "NO_PROXY",
       "NODE_EXTRA_CA_CERTS",
       "BB_CLAUDE_SETTINGS_ENV_PIN",
+      "BB_CLAUDE_SETTINGS_ENV_PIN_PROVIDER",
       "BB_ACCOUNT_POOL_PARENT_URL",
       "BB_ACCOUNT_POOL_PARENT_TOKEN",
     ]);
@@ -12684,6 +12690,9 @@ describe("Account Pool Artifact proxy", () => {
       "ANTHROPIC_API_KEY",
     ]);
     for (const name of pinned) expect(byName.has(name)).toBe(true);
+    expect(byName.get("BB_CLAUDE_SETTINGS_ENV_PIN_PROVIDER")).toBe(
+      "claude-code",
+    );
     expect(String(byName.get("BB_CLAUDE_SETTINGS_ENV_PIN"))).not.toContain(
       fixture.key,
     );
@@ -12706,6 +12715,7 @@ describe("Account Pool Artifact proxy", () => {
       "ENABLE_TOOL_SEARCH",
       "_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL",
       "BB_CLAUDE_SETTINGS_ENV_PIN",
+      "BB_CLAUDE_SETTINGS_ENV_PIN_PROVIDER",
       "BB_ACCOUNT_POOL_PARENT_URL",
       "BB_ACCOUNT_POOL_PARENT_TOKEN",
     ]);
