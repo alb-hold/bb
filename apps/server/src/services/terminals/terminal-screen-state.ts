@@ -7,6 +7,7 @@ import {
   isTerminalReplaySafeBoundary,
 } from "@bb/domain";
 import type { TerminalScreenResponse } from "@bb/server-contract";
+import { SOLID_WHITESPACE_CELL } from "../threads/native-terminal-echo.js";
 
 const TERMINAL_SCREEN_STATE_SCROLLBACK = 2_000;
 export const TERMINAL_SCREEN_STATE_PENDING_BYTES_LIMIT = 8 * 1024 * 1024;
@@ -250,8 +251,14 @@ function visibleSolidRows(terminal: HeadlessTerminal): string[] {
     for (let col = 0; col < terminal.cols; col += 1) {
       const cell = line?.getCell(col);
       if (cell === undefined || cell.getWidth() === 0) continue;
-      const chars = cell.getChars() || " ";
-      text += cell.isDim() ? " ".repeat(Array.from(chars).length) : chars;
+      const chars = cell.getChars();
+      if (chars === "" || cell.isDim()) {
+        text += " ".repeat(Array.from(chars || " ").length);
+      } else if (chars.trim() === "") {
+        text += SOLID_WHITESPACE_CELL.repeat(Array.from(chars).length);
+      } else {
+        text += chars;
+      }
     }
     rows.push(text.trimEnd());
   }
