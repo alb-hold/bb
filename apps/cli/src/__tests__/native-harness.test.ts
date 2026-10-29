@@ -73,6 +73,7 @@ function spec(
 ): NativeTerminalLaunchSpec {
   return {
     threadId: "thr_native",
+    providerId: "codex",
     cli: ASSIGNED_CLI,
     nativeSessionId: "6f1c2a8e-7d1b-4a55-9f0e-1c2d3e4f5a6b",
     initialPrompt: null,

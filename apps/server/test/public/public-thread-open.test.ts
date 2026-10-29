@@ -61,11 +61,13 @@ describe("public thread open", () => {
       const response = await postOpen(harness, thread.id, {
         file: null,
         terminalAction: { action: "focus", terminalId: terminal.id },
+        all: true,
       });
 
       expect(response.status).toBe(200);
       expect(threadOpenResponseSchema.parse(await readJson(response))).toEqual({
         deliveredClients: 0,
+        skipReason: null,
       });
     });
   });
@@ -97,11 +99,13 @@ describe("public thread open", () => {
       const response = await postOpen(harness, thread.id, {
         file: null,
         terminalAction: { action: "focus", terminalId: terminal.id },
+        all: true,
       });
 
       expect(response.status).toBe(200);
       expect(threadOpenResponseSchema.parse(await readJson(response))).toEqual({
         deliveredClients: 0,
+        skipReason: null,
       });
       expect(socket.messages).toHaveLength(1);
     });
@@ -133,7 +137,7 @@ describe("public thread open", () => {
 
       expect(response.status).toBe(200);
       const body = threadOpenResponseSchema.parse(await readJson(response));
-      expect(body).toEqual({ deliveredClients: 1 });
+      expect(body).toEqual({ deliveredClients: 1, skipReason: null });
 
       expect(socket.messages).toHaveLength(1);
       expect(JSON.parse(socket.messages[0])).toEqual({
@@ -305,10 +309,12 @@ describe("public thread open", () => {
       const focus = await postOpen(harness, thread.id, {
         file: null,
         terminalAction: { action: "focus", terminalId: terminal.id },
+        all: true,
       });
       expect(focus.status).toBe(200);
       expect(threadOpenResponseSchema.parse(await readJson(focus))).toEqual({
         deliveredClients: 1,
+        skipReason: null,
       });
       expect(JSON.parse(socket.messages[0]!)).toMatchObject({
         type: "thread-open",
@@ -340,6 +346,7 @@ describe("public thread open", () => {
           terminalId: terminal.id,
           side: "right",
         },
+        all: true,
       });
       const move = await postOpen(harness, thread.id, {
         file: null,

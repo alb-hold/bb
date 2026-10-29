@@ -129,4 +129,43 @@ describe("native activity over a blocked Stop followed by a long foreground tool
     reader.read();
     expect(reader.heartbeat()).toEqual({ state: "working", prompt: null });
   });
+
+  it("keeps the thread working for as long as a tool call is open, and once it closes", () => {
+    const home = mkdtempSync(path.join(os.tmpdir(), "bb-native-live-"));
+    roots.push(home);
+    const dir = path.join(home, ".claude", "projects", "work");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(path.join(dir, `${SESSION_ID}.jsonl`), "");
+    const eventsFile = path.join(home, "hooks.jsonl");
+    const hook = (event: string, extra: Record<string, unknown> = {}) =>
+      jsonl([
+        {
+          hook_event_name: event,
+          session_id: SESSION_ID,
+          prompt_id: "00000000-0000-4000-8000-000000000009",
+          ...extra,
+        },
+      ]);
+    publishHooks(eventsFile, hook("UserPromptSubmit", { prompt: "run it" }));
+    const reader = new NativeActivityReader(
+      claudeDeclaration(),
+      { HOME: home },
+      eventsFile,
+      { kind: "start", id: SESSION_ID },
+    );
+    reader.read();
+    const tool = {
+      tool_name: "Bash",
+      tool_use_id: "toolu_long",
+      tool_input: { command: "python3 -c 'import time; time.sleep(170)'" },
+    };
+    publishHooks(eventsFile, hook("PreToolUse", tool));
+    reader.read();
+    for (let tick = 0; tick < 6; tick += 1) {
+      expect(reader.heartbeat()).toEqual({ state: "working", prompt: null });
+    }
+    publishHooks(eventsFile, hook("PostToolUse", tool));
+    reader.read();
+    expect(reader.heartbeat()).toEqual({ state: "working", prompt: null });
+  });
 });

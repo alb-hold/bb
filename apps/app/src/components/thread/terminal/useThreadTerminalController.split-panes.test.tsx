@@ -704,11 +704,11 @@ describe("two split panes each holding a terminal", () => {
     expect(result.current.shouldRetainActiveTerminalView).toBe(true);
   });
 
-  it("still closes a disconnected session no pane is showing", async () => {
+  it("does not close a terminal no pane is showing when a daemon blip disconnects it", async () => {
     const state = new Map<string, TerminalSession["status"]>([
       ["terminal-a", "running"],
       ["terminal-b", "running"],
-      ["terminal-orphan", "disconnected"],
+      ["terminal-orphan", "running"],
     ]);
     vi.mocked(sdk.terminals.list).mockImplementation(async () => ({
       sessions: [...state.entries()].map(([id, status]) => session(id, status)),
@@ -720,7 +720,7 @@ describe("two split panes each holding a terminal", () => {
       },
     );
 
-    const { wrapper } = createQueryClientTestHarness();
+    const { queryClient, wrapper } = createQueryClientTestHarness();
     const { result } = renderHook(
       () => ({
         paneA: useThreadTerminalController(paneArgs("terminal-a")),
@@ -733,18 +733,21 @@ describe("two split panes each holding a terminal", () => {
       expect(result.current.paneA.activeSession?.id).toBe("terminal-a");
       expect(result.current.paneB.activeSession?.id).toBe("terminal-b");
     });
+
+    for (const id of state.keys()) state.set(id, "disconnected");
+    await act(async () => {
+      await queryClient.invalidateQueries();
+    });
     await waitFor(() => {
-      expect(state.get("terminal-orphan")).toBe("exited");
+      expect(result.current.paneA.activeSession?.status).toBe("disconnected");
+      expect(result.current.paneB.activeSession?.status).toBe("disconnected");
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
     });
 
-    const closedIds = [
-      ...new Set(
-        vi
-          .mocked(sdk.terminals.close)
-          .mock.calls.map(([request]) => request.terminalId),
-      ),
-    ];
-    expect(closedIds).toEqual(["terminal-orphan"]);
+    expect(vi.mocked(sdk.terminals.close)).not.toHaveBeenCalled();
+    expect(state.get("terminal-orphan")).toBe("disconnected");
   });
 
   it.each(["/tmp/q?x", "/tmp/h#x", "/tmp/p%20x", "/tmp/s p", "/tmp/café"])(
@@ -772,4 +775,48 @@ describe("two split panes each holding a terminal", () => {
       );
     },
   );
+});
+
+describe("terminal progress output sequences", () => {
+  it("sends the output sequence of each report and ignores reports from another terminal", async () => {
+    vi.mocked(sdk.terminals.list).mockResolvedValue({
+      sessions: [session("terminal-a", "running")],
+    });
+    const { wrapper } = createQueryClientTestHarness();
+    const { result } = renderHook(
+      () => useThreadTerminalController(paneArgs("terminal-a")),
+      { wrapper },
+    );
+    await waitFor(() =>
+      expect(result.current.activeSession?.id).toBe("terminal-a"),
+    );
+
+    act(() =>
+      result.current.handleActiveTerminalProgressChange(0.75, 4, "terminal-a"),
+    );
+    await waitFor(() =>
+      expect(sdk.threads.experimental_updateRowState).toHaveBeenCalledWith({
+        threadId: "thread-a",
+        terminalId: "terminal-a",
+        action: "progress-set",
+        progress: { value: 0.75 },
+        outputSeq: 4,
+      }),
+    );
+    act(() =>
+      result.current.handleActiveTerminalProgressChange(0.5, 6, "terminal-b"),
+    );
+    act(() =>
+      result.current.handleActiveTerminalProgressChange(null, 9, "terminal-a"),
+    );
+    await waitFor(() =>
+      expect(sdk.threads.experimental_updateRowState).toHaveBeenLastCalledWith({
+        threadId: "thread-a",
+        terminalId: "terminal-a",
+        action: "progress-clear",
+        outputSeq: 9,
+      }),
+    );
+    expect(sdk.threads.experimental_updateRowState).toHaveBeenCalledTimes(2);
+  });
 });

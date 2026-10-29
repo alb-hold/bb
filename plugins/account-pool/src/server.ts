@@ -115,6 +115,14 @@ const ARTIFACT_PROXY_ENV = [
   "NODE_EXTRA_CA_CERTS",
 ] as const;
 
+const CLAUDE_SETTINGS_ENV_PIN = "BB_CLAUDE_SETTINGS_ENV_PIN";
+const CLAUDE_SETTINGS_ENV_PIN_PROVIDER = "BB_CLAUDE_SETTINGS_ENV_PIN_PROVIDER";
+const CLAUDE_PROVIDER_ID = "claude-code";
+const OUTRANKING_CLAUDE_CREDENTIALS = [
+  "ANTHROPIC_AUTH_TOKEN",
+  "ANTHROPIC_API_KEY",
+] as const;
+
 const PROVIDER_ROUTING_ENV: Record<PoolProvider, readonly string[]> = {
   claude: [
     "ANTHROPIC_BASE_URL",
@@ -740,7 +748,7 @@ export function createAccountPoolPlugin(
           }
         : null;
     bb.providers.experimental_contributeEnv(
-      "claude-code",
+      CLAUDE_PROVIDER_ID,
       contributeFor("claude", async (token, scope, context) => {
         const proxy =
           context === undefined ||
@@ -749,7 +757,7 @@ export function createAccountPoolPlugin(
           (await operations.routesOnlyApiKeys("claude"))
             ? null
             : await ensureArtifactProxy(context.hostId, token);
-        return [
+        const entries: PoolEnvEntry[] = [
           {
             name: "ANTHROPIC_BASE_URL",
             value: { serverPath: HUB_BASE_PATH },
@@ -813,7 +821,28 @@ export function createAccountPoolPlugin(
                   reason:
                     "Claude Code leaves Artifacts off in SDK sessions unless this is set",
                 },
+                ...OUTRANKING_CLAUDE_CREDENTIALS.map((name) => ({
+                  name,
+                  value: "",
+                  reason:
+                    "Claude Code prefers this credential over the Account Pooler token, so a host value is cleared",
+                })),
               ]),
+        ];
+        return [
+          ...entries,
+          {
+            name: CLAUDE_SETTINGS_ENV_PIN,
+            value: entries.map((entry) => entry.name).join(","),
+            reason:
+              "Names the variables Claude Code must also take from its highest-precedence settings layer, because a host settings.json env block would otherwise replace the Account Pooler routing",
+          },
+          {
+            name: CLAUDE_SETTINGS_ENV_PIN_PROVIDER,
+            value: CLAUDE_PROVIDER_ID,
+            reason:
+              "Names the provider whose launches must apply that pin, so a native launch of another provider that inherits the marker ignores it",
+          },
         ];
       }),
     );
