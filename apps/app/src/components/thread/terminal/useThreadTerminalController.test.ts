@@ -7,7 +7,6 @@ import {
   shouldAutoCloseCleanTerminalSessionsForPanel,
 } from "./useThreadTerminalController";
 import {
-  shouldCloseUnretainedDisconnectedTerminalSession,
   shouldShowRetainedTerminalSession,
 } from "@/lib/terminal-session-visibility";
 import {
@@ -67,32 +66,6 @@ describe("pickActiveTerminalId", () => {
         session: exited,
       }),
     ).toBe(true);
-  });
-
-  it("cleans up a disconnected session only when no pane still mounts it", () => {
-    const disconnected = terminalSession({
-      id: "term_disconnected",
-      status: "disconnected",
-    });
-
-    expect(
-      shouldCloseUnretainedDisconnectedTerminalSession({
-        retainedTerminalIds: new Set<string>(),
-        session: disconnected,
-      }),
-    ).toBe(true);
-    expect(
-      shouldCloseUnretainedDisconnectedTerminalSession({
-        retainedTerminalIds: new Set(["term_other_pane", "term_disconnected"]),
-        session: disconnected,
-      }),
-    ).toBe(false);
-    expect(
-      shouldCloseUnretainedDisconnectedTerminalSession({
-        retainedTerminalIds: new Set<string>(),
-        session: terminalSession({ status: "running" }),
-      }),
-    ).toBe(false);
   });
 
   it("auto-closes only clean UI-created terminal sessions", () => {

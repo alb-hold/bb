@@ -20,11 +20,9 @@ import { applyTerminalSessionUpsert } from "@/hooks/cache-owners/terminal-cache-
 import {
   isVisibleTerminalSession,
   omitSupersededDisconnectedSessions,
-  shouldCloseUnretainedDisconnectedTerminalSession,
   shouldShowRetainedTerminalSession,
 } from "@/lib/terminal-session-visibility";
 import {
-  useMountedTerminalIds,
   useMountedTerminalRegistration,
 } from "./mounted-terminals";
 import {
@@ -246,7 +244,6 @@ export function useThreadTerminalController({
   const unregisterPendingProgressTimeoutRef = useRef<(() => void) | null>(null);
   const dirtyTerminalIdsRef = useRef<Set<string>>(new Set());
   const closingCleanTerminalIdsRef = useRef<Set<string>>(new Set());
-  const closingDisconnectedTerminalIdsRef = useRef<Set<string>>(new Set());
   const latestRequestedTitleRenameRef =
     useRef<TerminalTitleRenameRequest | null>(null);
   const pendingTitleRenameTimeoutRef =
@@ -326,7 +323,6 @@ export function useThreadTerminalController({
     scopeKey: terminalTargetId,
     terminalId: activeTerminalId,
   });
-  const mountedTerminalIds = useMountedTerminalIds(terminalTargetId);
   const shouldRetainActiveTerminalView =
     activeSession?.status === "disconnected" &&
     activeSession.id === retainedTerminalViewId;
@@ -627,48 +623,6 @@ export function useThreadTerminalController({
     },
     [closeTerminalMutation],
   );
-
-  useEffect(() => {
-    if (!isPanelOpen || terminalsQuery.isLoading || terminalsQuery.error) {
-      return;
-    }
-    for (const session of sessions) {
-      if (
-        !shouldCloseUnretainedDisconnectedTerminalSession({
-          retainedTerminalIds: mountedTerminalIds,
-          session,
-        }) ||
-        closingDisconnectedTerminalIdsRef.current.has(session.id)
-      ) {
-        continue;
-      }
-      closingDisconnectedTerminalIdsRef.current.add(session.id);
-      closeTerminal({
-        mode: "force",
-        terminalId: session.id,
-        onSuccess: (closedSession) => {
-          if (closedSession.status !== "exited") {
-            return;
-          }
-          uiCreatedTerminalIdsRef.current.delete(closedSession.id);
-          dirtyTerminalIdsRef.current.delete(closedSession.id);
-          closingCleanTerminalIdsRef.current.delete(closedSession.id);
-          removeFixedTerminalTab(closedSession.id);
-        },
-        onSettled: () => {
-          closingDisconnectedTerminalIdsRef.current.delete(session.id);
-        },
-      });
-    }
-  }, [
-    closeTerminal,
-    isPanelOpen,
-    mountedTerminalIds,
-    removeFixedTerminalTab,
-    sessions,
-    terminalsQuery.error,
-    terminalsQuery.isLoading,
-  ]);
 
   const replaceDisconnectedTerminal = useCallback(
     (terminalId: string) => {
