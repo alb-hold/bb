@@ -1,4 +1,4 @@
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import { events, getThread, hasRootStoredTurnStarted } from "@bb/db";
 import {
   requireThreadEventScopeTurnId,
@@ -19,30 +19,50 @@ function isArchivedCredentialRevocation(
   turnId: string,
   archivedAt: number,
 ): boolean {
-  const result = db
+  const turnStart = db
     .select({
-      turnStartedAt: sql<
-        number | null
-      >`MAX(CASE WHEN ${events.type} = 'turn/started' THEN ${events.createdAt} END)`,
-      authFailureAt: sql<
-        number | null
-      >`MAX(CASE WHEN ${events.type} = 'provider/error' AND json_extract(${events.data}, '$.errorInfo.category') = 'unauthorized' THEN ${events.createdAt} END)`,
+      createdAt: events.createdAt,
     })
     .from(events)
     .where(
       and(
         eq(events.threadId, threadId),
         eq(events.turnId, turnId),
-        inArray(events.type, ["turn/started", "provider/error"]),
+        eq(events.type, "turn/started"),
       ),
     )
+    .limit(1)
     .get();
+  const latestProviderError = db
+    .select({ createdAt: events.createdAt, data: events.data })
+    .from(events)
+    .where(
+      and(
+        eq(events.threadId, threadId),
+        eq(events.turnId, turnId),
+        eq(events.type, "provider/error"),
+      ),
+    )
+    .orderBy(desc(events.sequence))
+    .limit(1)
+    .get();
+  let isUnauthorized = false;
+  try {
+    isUnauthorized =
+      (
+        JSON.parse(latestProviderError?.data ?? "null") as {
+          errorInfo?: { category?: string };
+        } | null
+      )?.errorInfo?.category === "unauthorized";
+  } catch {
+    isUnauthorized = false;
+  }
   return (
-    result?.turnStartedAt !== null &&
-    result?.turnStartedAt !== undefined &&
-    result.turnStartedAt < archivedAt &&
-    result.authFailureAt !== null &&
-    result.authFailureAt >= archivedAt
+    turnStart !== undefined &&
+    turnStart.createdAt < archivedAt &&
+    latestProviderError !== undefined &&
+    latestProviderError.createdAt >= archivedAt &&
+    isUnauthorized
   );
 }
 
