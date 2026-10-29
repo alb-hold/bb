@@ -5,7 +5,7 @@ import { realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { inspectWorkspaceProcesses } from "./workspace-processes.js";
+import { inspectWorkspaceProcesses, readInspectWorkspaceProcessFindDiagnostics } from "./workspace-processes.js";
 
 vi.mock("@bb/process-utils", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@bb/process-utils")>();
@@ -73,6 +73,35 @@ describe("relative unix bind suffix search", () => {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     };
   }
+
+  it("runs find at most once per workspace root for multiple relative unix names", async () => {
+    const ws = await mkdtemp(join(tmpdir(), "bb-r11b-find-once-"));
+    let findCalls = 0;
+    vi.mocked(execHostFile).mockImplementation((async (
+      cmd: string,
+      args: readonly string[],
+    ) => {
+      if (cmd === "find") {
+        findCalls += 1;
+        return { stdout: "", stderr: "" };
+      }
+      const stdout = args.includes("cwd")
+        ? "p540\nfcwd\ntDIR\nn/\n\np541\nfcwd\ntDIR\nn/\n"
+        : "p540\nf1\ntunix\nnc.sock\n\np541\nf1\ntunix\nndocker-desktop-build.sock\n";
+      return { stdout, stderr: "" };
+    }) as never);
+    try {
+      expect(await inspectWorkspaceProcesses(ws)).toEqual({
+        supported: true,
+        pids: [],
+        unreadablePids: [],
+      });
+      expect(findCalls).toBe(1);
+      expect(readInspectWorkspaceProcessFindDiagnostics().socketFindCalls).toBe(1);
+    } finally {
+      await rm(ws, { recursive: true, force: true });
+    }
+  });
 
   it("treats docker-style relative unix name as outside when no workspace socket exists", async () => {
     const ws = await mkdtemp(join(tmpdir(), "bb-r10b-out-"));

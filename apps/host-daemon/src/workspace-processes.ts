@@ -105,13 +105,89 @@ function isRelativeUnixBindPath(
   return true;
 }
 
+const WORKSPACE_SOCKET_FIND_MAX_BUFFER_BYTES = 1024 * 1024;
+const WORKSPACE_SOCKET_FIND_TIMEOUT_MS = 15_000;
+
 function workspaceSocketFindTimeoutMs(): number {
   const raw = process.env.BB_WS_SOCKET_FIND_TIMEOUT_MS;
   if (raw != null && raw !== "") {
     const parsed = Number(raw);
     if (Number.isFinite(parsed) && parsed > 0) return parsed;
   }
-  return 2000;
+  return WORKSPACE_SOCKET_FIND_TIMEOUT_MS;
+}
+
+let inspectSocketFindCalls = 0;
+let inspectSocketFindMs: number | null = null;
+
+function resetInspectSocketFindDiagnostics(): void {
+  inspectSocketFindCalls = 0;
+  inspectSocketFindMs = null;
+}
+
+type WorkspaceSocketList =
+  | { status: "ok"; paths: readonly string[] }
+  | { status: "unreadable" };
+
+class WorkspaceSocketIndex {
+  private readonly lists = new Map<string, Promise<WorkspaceSocketList>>();
+
+  private async loadRoot(root: string): Promise<WorkspaceSocketList> {
+    inspectSocketFindCalls += 1;
+    const started = Date.now();
+    try {
+      const result = await execHostFile(
+        "find",
+        ["-P", root, "-type", "s"],
+        {
+          maxBuffer: WORKSPACE_SOCKET_FIND_MAX_BUFFER_BYTES,
+          timeout: workspaceSocketFindTimeoutMs(),
+        },
+      );
+      const elapsed = Date.now() - started;
+      inspectSocketFindMs =
+        inspectSocketFindMs === null ? elapsed : inspectSocketFindMs + elapsed;
+      const paths = result.stdout
+        .split("\n")
+        .filter((line) => line.length > 0);
+      return { status: "ok", paths };
+    } catch {
+      const elapsed = Date.now() - started;
+      inspectSocketFindMs =
+        inspectSocketFindMs === null ? elapsed : inspectSocketFindMs + elapsed;
+      return { status: "unreadable" };
+    }
+  }
+
+  private listForRoot(root: string): Promise<WorkspaceSocketList> {
+    const normalized = path.normalize(root);
+    let pending = this.lists.get(normalized);
+    if (pending === undefined) {
+      pending = this.loadRoot(normalized);
+      this.lists.set(normalized, pending);
+    }
+    return pending;
+  }
+
+  async suffixMatch(
+    workspaceCanonical: string,
+    workspaceArg: string,
+    relativeName: string,
+  ): Promise<"yes" | "no" | "unreadable"> {
+    const suffix = relativeUnixPathSuffix(relativeName);
+    const roots = new Set<string>([
+      path.normalize(workspaceCanonical),
+      path.normalize(workspaceArg),
+    ]);
+    for (const root of roots) {
+      const list = await this.listForRoot(root);
+      if (list.status === "unreadable") return "unreadable";
+      for (const line of list.paths) {
+        if (socketPathMatchesSuffix(line, root, suffix)) return "yes";
+      }
+    }
+    return "no";
+  }
 }
 
 function relativeUnixPathSuffix(relativeName: string): string {
@@ -131,37 +207,6 @@ function socketPathMatchesSuffix(
   if (!normalized.startsWith(root + path.sep) && normalized !== root)
     return false;
   return normalized.endsWith(suffix);
-}
-
-async function workspaceHasSocketWithSuffix(
-  workspaceCanonical: string,
-  workspaceArg: string,
-  relativeName: string,
-): Promise<"yes" | "no" | "unreadable"> {
-  const suffix = relativeUnixPathSuffix(relativeName);
-  const roots = new Set<string>([
-    path.normalize(workspaceCanonical),
-    path.normalize(workspaceArg),
-  ]);
-  for (const root of roots) {
-    try {
-      const result = await execHostFile(
-        "find",
-        ["-P", root, "-type", "s"],
-        {
-          maxBuffer: 1024 * 1024,
-          timeout: workspaceSocketFindTimeoutMs(),
-        },
-      );
-      for (const line of result.stdout.split("\n")) {
-        if (line.length === 0) continue;
-        if (socketPathMatchesSuffix(line, root, suffix)) return "yes";
-      }
-    } catch {
-      return "unreadable";
-    }
-  }
-  return "no";
 }
 
 function normalizeLsofPathName(value: string): string {
@@ -292,6 +337,7 @@ async function classifyPathForWorkspace(
   value: string,
   workspaceCanonical: string,
   workspaceArg: string,
+  socketIndex: WorkspaceSocketIndex,
   lsofType?: string,
   processCwd?: string,
 ): Promise<"matched" | "outside" | "unreadable"> {
@@ -316,7 +362,7 @@ async function classifyPathForWorkspace(
         lsofType,
       );
     }
-    const suffixMatch = await workspaceHasSocketWithSuffix(
+    const suffixMatch = await socketIndex.suffixMatch(
       workspaceCanonical,
       workspaceArg,
       relativeName,
@@ -499,8 +545,10 @@ async function inspectDarwinWorkspaceProcesses(
   pids: number[];
   unreadablePids: number[];
 }> {
+  resetInspectSocketFindDiagnostics();
   const workspaceArg = path.resolve(workspacePath);
   const workspace = await canonicalPath(workspaceArg);
+  const socketIndex = new WorkspaceSocketIndex();
   const uid = String(process.getuid!());
   const lsofFlags = ["-n", "-Fpnt"] as const;
   const cwdRun = await execLsof([
@@ -550,6 +598,7 @@ async function inspectDarwinWorkspaceProcesses(
           value,
           workspace,
           workspaceArg,
+          socketIndex,
           type,
           processCwd === undefined
             ? undefined
@@ -582,4 +631,17 @@ export async function inspectWorkspaceProcesses(
   if (process.platform === "darwin")
     return inspectDarwinWorkspaceProcesses(workspacePath);
   return { supported: false, pids: [], unreadablePids: [] };
+}
+export function readWorkspaceSocketFindTimeoutMs(): number {
+  return workspaceSocketFindTimeoutMs();
+}
+
+export function readInspectWorkspaceProcessFindDiagnostics(): {
+  socketFindCalls: number;
+  socketFindMs: number | null;
+} {
+  return {
+    socketFindCalls: inspectSocketFindCalls,
+    socketFindMs: inspectSocketFindMs,
+  };
 }

@@ -258,6 +258,33 @@ it.skipIf(process.platform !== "darwin" || !process.env.BB_R6_LOG)(
   },
 );
 
+it.skipIf(
+  process.platform !== "darwin" || process.env.BB_R11B_WT === undefined,
+)("r11b real worktree inspect", async () => {
+  const workspace = process.env.BB_R11B_WT!;
+  const {
+    readInspectWorkspaceProcessFindDiagnostics,
+    readWorkspaceSocketFindTimeoutMs,
+  } = await import("./workspace-processes.js");
+  const inspection = await inspectWorkspaceProcesses(workspace);
+  const diagnostics = readInspectWorkspaceProcessFindDiagnostics();
+  const lines = [
+    `HEAD=${process.env.BB_R11B_HEAD ?? "unknown"}`,
+    `find_timeout_ms=${readWorkspaceSocketFindTimeoutMs()}`,
+    `find_calls=${diagnostics.socketFindCalls}`,
+    `find_wall_ms=${diagnostics.socketFindMs ?? "null"}`,
+    JSON.stringify(inspection),
+    `docker_59228_unreadable=${inspection.unreadablePids.includes(59228)}`,
+  ];
+  const payload = lines.join("\n") + "\n";
+  if (process.env.BB_R11B_LOG_FILE) {
+    await writeFile(process.env.BB_R11B_LOG_FILE, payload);
+  }
+  console.log(payload);
+  expect(inspection.supported).toBe(true);
+  expect(inspection.unreadablePids).not.toContain(59228);
+});
+
 it.skipIf(process.platform !== "darwin")(
   "finds no pids in an empty workspace directory",
   async () => {
