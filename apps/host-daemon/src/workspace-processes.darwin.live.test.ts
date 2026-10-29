@@ -285,6 +285,75 @@ it.skipIf(
   expect(inspection.unreadablePids).not.toContain(59228);
 });
 
+it.skipIf(process.platform !== "darwin")(
+  "collision: suffix match cannot distinguish foreign bind from workspace socket",
+  async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "bb-ws-collision-"));
+    const foreignDir = await mkdtemp(join(tmpdir(), "bb-ws-collision-f-"));
+    const socketName = "c.sock ";
+    const holderScript = (bindDir: string) =>
+      [
+        "import os,socket,time",
+        `os.chdir(${JSON.stringify(bindDir)})`,
+        "s=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM)",
+        `p=${JSON.stringify(socketName)}`,
+        "os.unlink(p) if os.path.exists(p) else None",
+        "s.bind(p)",
+        "os.chdir('/')",
+        "time.sleep(300)",
+      ].join("; ");
+    const workspaceHolder = spawn(
+      "python3",
+      ["-u", "-c", holderScript(workspace)],
+      { detached: true, stdio: "ignore" },
+    );
+    workspaceHolder.unref();
+    const foreignHolder = spawn(
+      "python3",
+      ["-u", "-c", holderScript(foreignDir)],
+      { detached: true, stdio: "ignore" },
+    );
+    foreignHolder.unref();
+    try {
+      await waitForLsof();
+      const inspection = await inspectWorkspaceProcesses(workspace);
+      expect(inspection.supported).toBe(true);
+      const workspacePid = workspaceHolder.pid!;
+      const foreignPid = foreignHolder.pid!;
+      expect(inspection.unreadablePids).toContain(foreignPid);
+      expect(inspection.unreadablePids).toContain(workspacePid);
+      if (process.env.BB_COLLISION_LOG_FILE) {
+        const head = process.env.BB_COLLISION_HEAD ?? "unknown";
+        await writeFile(
+          process.env.BB_COLLISION_LOG_FILE,
+          [
+            `HEAD=${head}`,
+            `workspace=${workspace}`,
+            `foreign_dir=${foreignDir}`,
+            `pid_workspace=${workspacePid}`,
+            `pid_foreign=${foreignPid}`,
+            JSON.stringify(inspection),
+            "decision=no_mac_signal_separates_foreign_from_workspace_suffix_hit",
+            "foreign_holder_fail_closed=true",
+          ].join("\n") + "\n",
+        );
+      }
+    } finally {
+      for (const pid of [workspaceHolder.pid, foreignHolder.pid]) {
+        if (pid !== undefined) {
+          try {
+            process.kill(pid, "SIGTERM");
+          } catch {
+            undefined;
+          }
+        }
+      }
+      await rm(foreignDir, { recursive: true, force: true });
+      await rm(workspace, { recursive: true, force: true });
+    }
+  },
+);
+
 it.skipIf(
   process.platform !== "darwin" ||
     process.env.BB_R14_FOREIGN_WS === undefined ||

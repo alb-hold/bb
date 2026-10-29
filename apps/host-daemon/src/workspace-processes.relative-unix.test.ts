@@ -160,6 +160,36 @@ describe("relative unix bind suffix search", () => {
     }
   });
 
+  it("suffix collision marks both binders unreadable when workspace holds matching socket", async () => {
+    const ws = await mkdtemp(join(tmpdir(), "bb-r15-collision-"));
+    const sockPath = join(ws, "c.sock ");
+    const stop = await listenUnix(sockPath);
+    try {
+      await mockLsofPassThroughFind(
+        [
+          "p55057\nfcwd\ntDIR\nn/",
+          "",
+          "p55064\nfcwd\ntDIR\nn/",
+          "",
+        ].join("\n"),
+        [
+          "p55057\nf5\ntunix\nnc.sock ",
+          "",
+          "p55064\nf5\ntunix\nnc.sock ",
+          "",
+        ].join("\n"),
+      );
+      expect(await inspectWorkspaceProcesses(ws)).toEqual({
+        supported: true,
+        pids: [],
+        unreadablePids: [55057, 55064],
+      });
+    } finally {
+      await stop();
+      await rm(ws, { recursive: true, force: true });
+    }
+  });
+
   it("treats foreign.sock with trailing space as outside when cwd is outside", async () => {
     const ws = await mkdtemp(join(tmpdir(), "bb-r14-foreign-"));
     let findCalls = 0;
