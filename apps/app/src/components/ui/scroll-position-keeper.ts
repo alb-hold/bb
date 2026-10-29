@@ -1,3 +1,5 @@
+import { WINDOW_FIND_OPEN_EVENT } from "@/lib/window-find";
+
 export type ScrollHoldEdge = "top" | "bottom";
 
 export type ReadingPosition =
@@ -32,6 +34,7 @@ interface ScrollPositionKeeperOptions {
   bottomThresholdPx: number;
   deferWritesWhileScrolling: boolean;
   getContentElement: () => HTMLElement | null;
+  getFloorElement: () => HTMLElement | null;
   getFooterElement: () => HTMLElement | null;
   getScrollElement: () => HTMLElement | null;
   getTopLevelRows: (scrollElement: HTMLElement) => ArrayLike<HTMLElement>;
@@ -50,7 +53,9 @@ interface PendingRestore {
 }
 
 const ROW_ID_ATTRIBUTE = "data-timeline-row-id";
+const LANDMARK_ID_ATTRIBUTE = "data-scroll-landmark-id";
 const ROW_SELECTOR = `[${ROW_ID_ATTRIBUTE}]`;
+const ANCHORABLE_SELECTOR = `${ROW_SELECTOR}, [${LANDMARK_ID_ATTRIBUTE}]`;
 const DIRECT_ROW_SELECTOR = [
   `:scope > ${ROW_SELECTOR}`,
   `:scope > [data-timeline-items] > ${ROW_SELECTOR}`,
@@ -63,31 +68,34 @@ const SCROLL_SETTLE_MS = 150;
 const RESTORE_WAIT_MS = 1_000;
 const PASSIVE_CAPTURE = { capture: true, passive: true } as const;
 const ATTACH_KEYS = new Set(["End", "PageDown", " ", "ArrowDown"]);
-const SCROLL_KEYS = new Set([
-  ...ATTACH_KEYS,
-  "Home",
-  "PageUp",
-  "ArrowUp",
-  "Tab",
-]);
+const SCROLL_KEYS = new Set([...ATTACH_KEYS, "Home", "PageUp", "ArrowUp"]);
+const TOUCH_ATTACH_DRAG_PX = 8;
 const WHEEL_SESSION_MS = 150;
 const KEY_SESSION_MS = 500;
 const PROGRAMMATIC_SMOOTH_SESSION_MS = 1_000;
 const SESSION_EXTENSION_MS = 150;
 const MOMENTUM_SESSION_MS = 3_000;
-const TOUCH_ATTACH_DRAG_PX = 8;
 const FREE: ReadingPosition = { kind: "free" };
 
 export function getDirectTimelineRows(list: Element): NodeListOf<HTMLElement> {
   return list.querySelectorAll<HTMLElement>(DIRECT_ROW_SELECTOR);
 }
 
+function anchorKey(element: HTMLElement): string | null {
+  return (
+    element.getAttribute(ROW_ID_ATTRIBUTE) ??
+    element.getAttribute(LANDMARK_ID_ATTRIBUTE)
+  );
+}
+
 function findMountedRow(
   scrollElement: HTMLElement,
-  rowId: string,
+  key: string,
 ): HTMLElement | null {
-  for (const row of scrollElement.querySelectorAll<HTMLElement>(ROW_SELECTOR)) {
-    if (row.getAttribute(ROW_ID_ATTRIBUTE) === rowId) return row;
+  for (const element of scrollElement.querySelectorAll<HTMLElement>(
+    ANCHORABLE_SELECTOR,
+  )) {
+    if (anchorKey(element) === key) return element;
   }
   return null;
 }
@@ -123,7 +131,6 @@ export class ScrollPositionKeeper {
   private maxScrollTop = 0;
   private viewportHeight = 0;
   private reconciledWidth = 0;
-  private reconciledViewportHeight = 0;
   private reconciledScrollHeight = 0;
   private topRow: TopRow | null = null;
   private deferred = 0;
@@ -135,6 +142,9 @@ export class ScrollPositionKeeper {
   private pointerStartX = 0;
   private pointerStartY = 0;
   private shrinkClampPending = false;
+  private attachHold = false;
+  private restoreHoldUntil = Number.NEGATIVE_INFINITY;
+  private restoreHoldTimeout: number | null = null;
   private layoutScrollPending = false;
   private heightTransitionCount = 0;
   private gestureScrolled = false;
@@ -147,6 +157,9 @@ export class ScrollPositionKeeper {
   private clampFrame: number | null = null;
   private scrollFrame: number | null = null;
   private layoutPendingFrame: number | null = null;
+  private attachFrame: number | null = null;
+  private floorHeight = 0;
+  private windowFindOpen = false;
   private readonly lists = new Set<ScrollWindowList>();
   private readonly listeners = new Set<() => void>();
   private readonly positionListeners = new Set<() => void>();
@@ -245,6 +258,17 @@ export class ScrollPositionKeeper {
         });
         return;
       }
+      if (!this.isInputSession()) {
+        const cachedMax = this.maxScrollTop;
+        const extentChanged =
+          Math.abs(this.refreshExtent(scrollElement) - cachedMax) >= 1;
+        if (extentChanged || this.isFloorStale()) {
+          this.syncFloor();
+          this.ownScrollTop = scrollElement.scrollTop;
+          this.apply(scrollElement, true);
+          return;
+        }
+      }
       if (!this.isAtEnd(scrollElement.scrollTop)) {
         this.apply(scrollElement, true, true, true);
       }
@@ -255,11 +279,11 @@ export class ScrollPositionKeeper {
       });
     };
     const onTouchStart = (event: TouchEvent) => {
+      this.touchStartY = event.touches[0]?.clientY ?? null;
       this.pointerPressReleasedWithoutMove = false;
       if (!this.touching) {
         this.gestureScrolled = false;
         this.touchStartScrollTop = scrollElement.scrollTop;
-        this.touchStartY = event.touches[0]?.clientY ?? null;
       }
       this.touching = true;
       this.attachIfAtEnd();
@@ -273,9 +297,9 @@ export class ScrollPositionKeeper {
     const activeTouchPointers = new Set<number>();
     const endTouch = () => {
       if (!this.touching) return;
+      this.touchStartY = null;
       activeTouchPointers.clear();
       this.touching = false;
-      this.touchStartY = null;
       if (Math.abs(scrollElement.scrollTop - this.touchStartScrollTop) >= 1) {
         this.gestureScrolled = true;
         this.scrollMovedAt = window.performance.now();
@@ -328,6 +352,11 @@ export class ScrollPositionKeeper {
       if (event.deltaY > 0) this.attachIfAtEnd();
     };
     const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Tab") {
+        this.extendInput(KEY_SESSION_MS);
+        this.pointerPressReleasedWithoutMove = false;
+        return;
+      }
       if (!SCROLL_KEYS.has(event.key) || isEditableTarget(event.target)) {
         return;
       }
@@ -343,6 +372,12 @@ export class ScrollPositionKeeper {
       this.pointerPressReleasedWithoutMove = false;
       if (ATTACH_KEYS.has(event.key)) this.attachIfAtEnd();
     };
+    const onWindowFindOpen = () => {
+      this.windowFindOpen = true;
+    };
+    const onWindowFocus = () => {
+      this.windowFindOpen = false;
+    };
     scrollElement.addEventListener("scroll", onScroll, { passive: true });
     scrollElement.addEventListener("wheel", onWheel, { passive: true });
     scrollElement.addEventListener("touchstart", onTouchStart, PASSIVE_CAPTURE);
@@ -356,9 +391,13 @@ export class ScrollPositionKeeper {
     window.addEventListener("pointerup", onPointerUp, true);
     window.addEventListener("pointercancel", onPointerUp, true);
     window.addEventListener("keydown", onKeyDown);
+    window.addEventListener(WINDOW_FIND_OPEN_EVENT, onWindowFindOpen);
+    window.addEventListener("focus", onWindowFocus);
     let observer: ResizeObserver | undefined;
     if (typeof ResizeObserver !== "undefined") {
-      observer = new ResizeObserver(() => this.reconcile());
+      observer = new ResizeObserver(() => {
+        this.remeasure();
+      });
       observer.observe(scrollElement);
       const content = this.options.getContentElement();
       if (content !== null) {
@@ -369,9 +408,11 @@ export class ScrollPositionKeeper {
         }
       }
     }
+    this.syncFloor();
     this.reconcile();
     return () => {
       observer?.disconnect();
+      this.clearFloor();
       scrollElement.removeEventListener("scroll", onScroll);
       scrollElement.removeEventListener("wheel", onWheel);
       scrollElement.removeEventListener(
@@ -399,6 +440,9 @@ export class ScrollPositionKeeper {
       window.removeEventListener("pointerup", onPointerUp, true);
       window.removeEventListener("pointercancel", onPointerUp, true);
       window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener(WINDOW_FIND_OPEN_EVENT, onWindowFindOpen);
+      window.removeEventListener("focus", onWindowFocus);
+      this.windowFindOpen = false;
       this.touching = false;
       this.pointerDown = false;
       if (this.settleTimeout !== null) window.clearTimeout(this.settleTimeout);
@@ -408,10 +452,17 @@ export class ScrollPositionKeeper {
         window.cancelAnimationFrame(this.scrollFrame);
       if (this.layoutPendingFrame !== null)
         window.cancelAnimationFrame(this.layoutPendingFrame);
+      if (this.attachFrame !== null)
+        window.cancelAnimationFrame(this.attachFrame);
+      if (this.restoreHoldTimeout !== null)
+        window.clearTimeout(this.restoreHoldTimeout);
+      this.restoreHoldTimeout = null;
+      this.restoreHoldUntil = Number.NEGATIVE_INFINITY;
       this.settleTimeout = null;
       this.clampFrame = null;
       this.scrollFrame = null;
       this.layoutPendingFrame = null;
+      this.attachFrame = null;
       this.setDeferred(0);
     };
   }
@@ -436,11 +487,8 @@ export class ScrollPositionKeeper {
     if (scrollElement === null) return;
     this.ownScrollTop = scrollElement.scrollTop;
     this.refreshExtent(scrollElement);
-    this.setPosition(
-      this.isAtEnd(scrollElement.scrollTop)
-        ? { kind: "bottom" }
-        : (this.capture(scrollElement) ?? FREE),
-    );
+    this.setPosition(this.capture(scrollElement) ?? FREE);
+    this.attachDetachedAtEnd(scrollElement);
     this.notifyLists();
   }
 
@@ -459,11 +507,8 @@ export class ScrollPositionKeeper {
     }
     this.write(scrollElement, top);
     this.refreshExtent(scrollElement);
-    this.setPosition(
-      this.isAtEnd(scrollElement.scrollTop)
-        ? { kind: "bottom" }
-        : (this.capture(scrollElement) ?? FREE),
-    );
+    this.setPosition(this.capture(scrollElement) ?? FREE);
+    this.attachDetachedAtEnd(scrollElement);
     this.notifyLists();
   }
 
@@ -573,6 +618,23 @@ export class ScrollPositionKeeper {
       this.apply(scrollElement, true, true, true);
       return;
     }
+    if (!this.isInputSession()) {
+      const cachedMax = this.maxScrollTop;
+      const extentChanged =
+        Math.abs(this.refreshExtent(scrollElement) - cachedMax) >= 1;
+      if (extentChanged || this.isFloorStale()) {
+        this.syncFloor();
+        this.ownScrollTop = scrollTop;
+        this.apply(scrollElement, true);
+        return;
+      }
+    }
+    if (!this.isInputSession() && !this.followsUnexplainedScroll()) {
+      this.syncFloor();
+      this.ownScrollTop = scrollTop;
+      this.apply(scrollElement, true);
+      return;
+    }
     this.extendInput(SESSION_EXTENSION_MS);
     if (this.touching || this.pointerDown) this.gestureScrolled = true;
     this.ownScrollTop = scrollTop;
@@ -584,14 +646,19 @@ export class ScrollPositionKeeper {
     if (position.kind === "anchor" && previous !== null) {
       position.offset -= scrollTop - previous;
     }
+    if (movedDown) {
+      this.attachHold = false;
+    } else if (position.kind !== "bottom") {
+      this.refreshExtent(scrollElement);
+      if (this.isAtEnd(scrollTop)) this.attachHold = true;
+    }
     if (position.kind === "bottom") {
       if (!movedDown && !this.isAtEnd(scrollTop)) {
+        this.refreshExtent(scrollElement);
         if (!this.isAtEnd(scrollTop)) {
           this.setPosition(this.capture(scrollElement) ?? FREE);
         }
       }
-    } else if (movedDown && this.isAtEnd(scrollTop)) {
-      this.setPosition({ kind: "bottom" });
     } else {
       if (position.kind === "anchor")
         this.apply(scrollElement, false, true, true);
@@ -605,7 +672,13 @@ export class ScrollPositionKeeper {
       this.setPosition(this.capture(scrollElement) ?? FREE);
     }
     if (this.deferred !== 0) this.scheduleDeferredWrite();
+    if (movedDown) this.attachDetachedAtEnd(scrollElement);
     this.notifyLists();
+  }
+
+  remeasure(): void {
+    this.syncFloor();
+    this.reconcile();
   }
 
   reconcile(urgent = true): void {
@@ -633,24 +706,37 @@ export class ScrollPositionKeeper {
     const widthChanged =
       this.reconciledWidth > 0 && Math.abs(this.reconciledWidth - width) >= 1;
     if (widthChanged) this.keepAnchorVisible(scrollElement);
-    const resized =
-      widthChanged ||
-      (this.reconciledViewportHeight > 0 &&
-        Math.abs(this.reconciledViewportHeight - this.viewportHeight) >= 1);
     this.reconciledWidth = width;
-    this.reconciledViewportHeight = this.viewportHeight;
     const previous = this.ownScrollTop;
-    if (
+    const movement =
+      previous !== null && Math.abs(scrollTop - previous) >= MIN_WRITE_PX
+        ? scrollTop - previous
+        : 0;
+    const clampedToEnd =
       previous !== null &&
-      Math.abs(scrollTop - previous) >= MIN_WRITE_PX &&
+      previous > max + 0.5 &&
+      Math.abs(scrollTop - max) < 1;
+    const navigated =
+      movement !== 0 &&
+      !this.isInputSession() &&
+      this.followsUnexplainedScroll() &&
+      !clampedToEnd;
+    if (navigated) {
+      this.userScrolled = true;
+      this.pendingRestore = null;
+      this.scrollMovedAt = window.performance.now();
+      this.setPosition(this.capture(scrollElement) ?? FREE);
+    } else if (
+      movement !== 0 &&
       this.position.kind === "anchor" &&
       this.isInputSession()
     ) {
-      this.position.offset -= scrollTop - previous;
+      this.position.offset -= movement;
       this.scrollMovedAt = window.performance.now();
     }
     this.ownScrollTop = scrollTop;
     const restored = this.advancePendingRestore(scrollElement);
+    if (restored) this.holdAttachAfterRestore();
     const scrollHeight = useCachedExtent
       ? this.reconciledScrollHeight
       : scrollElement.scrollHeight;
@@ -685,21 +771,15 @@ export class ScrollPositionKeeper {
       previous > max + this.options.bottomThresholdPx;
     if (shrinkClampedToEnd) {
       this.shrinkClampPending = true;
+      if (this.position.kind !== "bottom") this.attachHold = true;
       if (this.touching) {
         this.shrinkClampPending = false;
         this.setPosition({ kind: "bottom" });
         target = max;
       }
     }
-    if (
-      target !== null &&
-      max > 0 &&
-      (resized || restored) &&
-      this.position.kind === "anchor" &&
-      target >= max - this.options.bottomThresholdPx
-    ) {
-      this.setPosition({ kind: "bottom" });
-      target = max;
+    if (this.attachHold && !this.isAtEnd(scrollTop)) {
+      this.attachHold = false;
     }
     if (target !== null) {
       const clamped = defer
@@ -719,6 +799,8 @@ export class ScrollPositionKeeper {
         this.scheduleClampSettle();
       }
     }
+    if (navigated) this.attachDetachedAtEnd(scrollElement);
+    else this.scheduleAttachAtEnd(scrollElement);
     if (notify) this.notifyLists(urgent);
   }
 
@@ -791,7 +873,7 @@ export class ScrollPositionKeeper {
     if (
       element === null ||
       !element.isConnected ||
-      element.getAttribute(ROW_ID_ATTRIBUTE) !== position.key
+      anchorKey(element) !== position.key
     ) {
       element = findMountedRow(scrollElement, position.key);
       if (element !== null) position.element = element;
@@ -954,10 +1036,14 @@ export class ScrollPositionKeeper {
     if (Math.abs(scrollTop - previous) < MIN_WRITE_PX) return;
     this.ownScrollTop = scrollTop;
     this.refreshExtent(scrollElement);
-    this.setPosition(
-      this.isAtEnd(scrollTop)
-        ? { kind: "bottom" }
-        : (this.capture(scrollElement) ?? FREE),
+    this.setPosition(this.capture(scrollElement) ?? FREE);
+    this.attachDetachedAtEnd(scrollElement);
+  }
+
+  private followsUnexplainedScroll(): boolean {
+    return (
+      this.windowFindOpen ||
+      (this.position.kind !== "bottom" && this.pendingRestore === null)
     );
   }
 
@@ -1053,6 +1139,82 @@ export class ScrollPositionKeeper {
     });
   }
 
+  private isDetachedAtEnd(scrollElement: HTMLElement): boolean {
+    return (
+      this.position.kind !== "bottom" &&
+      !this.shrinkClampPending &&
+      !this.attachHold &&
+      window.performance.now() >= this.restoreHoldUntil &&
+      this.pendingRestore === null &&
+      this.isAtEnd(scrollElement.scrollTop)
+    );
+  }
+
+  private holdAttachAfterRestore(): void {
+    this.restoreHoldUntil = window.performance.now() + RESTORE_WAIT_MS;
+    if (this.restoreHoldTimeout !== null) {
+      window.clearTimeout(this.restoreHoldTimeout);
+    }
+    this.restoreHoldTimeout = window.setTimeout(() => {
+      this.restoreHoldTimeout = null;
+      const scrollElement = this.options.getScrollElement();
+      if (scrollElement === null) return;
+      this.refreshExtent(scrollElement);
+      this.attachDetachedAtEnd(scrollElement);
+    }, RESTORE_WAIT_MS);
+  }
+
+  private attachDetachedAtEnd(scrollElement: HTMLElement): void {
+    if (!this.isDetachedAtEnd(scrollElement)) return;
+    this.setPosition({ kind: "bottom" });
+    this.reconcile();
+  }
+
+  private scheduleAttachAtEnd(scrollElement: HTMLElement): void {
+    if (
+      this.attachFrame !== null ||
+      this.position.kind === "free" ||
+      !this.isDetachedAtEnd(scrollElement)
+    ) {
+      return;
+    }
+    this.attachFrame = window.requestAnimationFrame(() => {
+      this.attachFrame = null;
+      const current = this.options.getScrollElement();
+      if (current === null) return;
+      this.refreshExtent(current);
+      this.attachDetachedAtEnd(current);
+    });
+  }
+
+  private naturalFloorHeight(): number | null {
+    const container = this.options.getFloorElement()?.parentElement;
+    if (container === null || container === undefined) return null;
+    return container.getBoundingClientRect().height;
+  }
+
+  private isFloorStale(): boolean {
+    const height = this.naturalFloorHeight();
+    return height !== null && Math.abs(height - this.floorHeight) >= 1;
+  }
+
+  private syncFloor(): void {
+    const floor = this.options.getFloorElement();
+    const height = this.naturalFloorHeight();
+    if (floor === null || height === null) return;
+    this.floorHeight = height;
+    floor.style.height = `${height}px`;
+    floor.style.marginBottom = `${-height}px`;
+  }
+
+  private clearFloor(): void {
+    const floor = this.options.getFloorElement();
+    this.floorHeight = 0;
+    if (floor === null) return;
+    floor.style.height = "";
+    floor.style.marginBottom = "";
+  }
+
   private write(scrollElement: HTMLElement, target: number): void {
     if (Math.abs(scrollElement.scrollTop - target) >= MIN_WRITE_PX) {
       scrollElement.scrollTop = target;
@@ -1074,6 +1236,7 @@ export class ScrollPositionKeeper {
 
   private setPosition(next: ReadingPosition): void {
     const wasAttached = this.position.kind === "bottom";
+    if (next.kind === "bottom") this.attachHold = false;
     this.position = next;
     if (wasAttached !== (next.kind === "bottom")) {
       for (const listener of this.listeners) listener();

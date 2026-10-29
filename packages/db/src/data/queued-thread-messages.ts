@@ -1183,6 +1183,12 @@ export function claimQueuedThreadMessageGroup(
         return null;
       }
 
+      if (
+        policy.kind === "automatic" &&
+        hasClaimedQueuedThreadMessages(tx, existing.threadId)
+      ) {
+        return null;
+      }
       const queuedMessages = listQueuedThreadMessages(tx, existing.threadId);
       const group =
         partitionQueuedMessageGroups(queuedMessages).find((rows) =>
@@ -1230,6 +1236,9 @@ export function claimNextQueuedThreadMessageGroup(
 ): ClaimedQueuedThreadMessageRow[] | null {
   const claimedQueuedMessages = db.transaction(
     (tx) => {
+      if (hasClaimedQueuedThreadMessages(tx, threadId)) {
+        return null;
+      }
       const queuedMessages = listQueuedThreadMessages(tx, threadId);
       const pauseOrdinaryMessages = isThreadQueueAutoSendPaused(tx, threadId);
       const now = Date.now();

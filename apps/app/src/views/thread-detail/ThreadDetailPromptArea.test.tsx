@@ -55,6 +55,10 @@ import {
   type ThreadDetailSentMessageEdit,
 } from "./ThreadDetailPromptArea";
 import { makePluginRegistrationSet } from "@/test/fixtures/plugins";
+import {
+  GitSegmentFixtureProvider,
+  type GitSegmentFixture,
+} from "@/test/fixtures/git-segment-plugin";
 
 vi.mock("@/hooks/usePromptDraftStorage", () => ({
   usePromptDraftStorage: () => mocks.promptDraft,
@@ -144,6 +148,12 @@ interface RenderPromptAreaOptions {
   modelFallback?: ThreadTimelineModelFallback | null;
   pendingInteractions?: readonly PendingInteraction[];
   pendingInteractionsInitialLoading?: boolean;
+  pendingInteractionsGate?: ComponentProps<
+    typeof ThreadDetailPromptArea
+  >["pendingInteractionsGate"];
+  permissionPolicy?: ComponentProps<
+    typeof ThreadDetailPromptArea
+  >["permissionPolicy"];
   environmentGoneStatus?: ComponentProps<
     typeof ThreadDetailPromptArea
   >["environmentGoneStatus"];
@@ -151,9 +161,7 @@ interface RenderPromptAreaOptions {
   sentMessageEdit?: ThreadDetailSentMessageEdit;
   sessionOptions?: readonly ThreadTimelineSessionOption[] | null;
   thread?: ThreadWithRuntime;
-  workspaceChangedFilesSection?: ComponentProps<
-    typeof ThreadDetailPromptArea
-  >["workspaceChangedFilesSection"];
+  gitSegment?: GitSegmentFixture | null;
 }
 
 let testQueryClient: QueryClient;
@@ -166,33 +174,36 @@ function buildPromptAreaElement({
   modelFallback = null,
   pendingInteractions = [],
   pendingInteractionsInitialLoading = false,
+  pendingInteractionsGate = null,
+  permissionPolicy = "editable",
   environmentGoneStatus = null,
   queuedMessageCount = 0,
   sentMessageEdit,
   sessionOptions = null,
   thread = makeThread(),
-  workspaceChangedFilesSection = null,
+  gitSegment = null,
 }: RenderPromptAreaOptions = {}) {
   return (
     <QueryClientProvider client={testQueryClient}>
+      <GitSegmentFixtureProvider value={gitSegment}>
       <ThreadDetailPromptArea
-        showGitChanges={true}
         activeBackgroundCommands={[]}
         activePromptMode={activePromptMode}
         activeWorkflows={activeWorkflows}
-        canUseGitUi={false}
         childThreadsSection={childThreadsSection}
-        composerFocusRequestNonce={0}
-        contextBannerMergeBase={null}
+        composerFocusRequestKey={0}
+        composerId="thread-detail-follow-up-composer"
+        isPrimaryComposer
+        permissionPolicy={permissionPolicy}
         canRestoreEnvironment={false}
         environmentGoneStatus={environmentGoneStatus}
         goal={goal}
         providerCommands={null}
         sessionOptions={sessionOptions}
         modelFallback={modelFallback}
-        onChangedFileClick={vi.fn()}
         parentThreadSection={null}
         pendingInteractions={pendingInteractions}
+        pendingInteractionsGate={pendingInteractionsGate}
         pendingInteractionsInitialLoading={pendingInteractionsInitialLoading}
         queuedMessageCount={queuedMessageCount}
         pendingTodos={null}
@@ -206,9 +217,8 @@ function buildPromptAreaElement({
         sentMessageEdit={sentMessageEdit}
         steerActiveThreadOnEnter={false}
         thread={thread}
-        workspaceChangedFilesSection={workspaceChangedFilesSection}
-        workspaceStatusPending={false}
       />
+      </GitSegmentFixtureProvider>
     </QueryClientProvider>
   );
 }
@@ -277,6 +287,65 @@ it.each(["removed", "removing", "cleanup-failed"] as const)(
     expect(screen.getByTestId("composer-hidden").textContent).toBe("true");
   },
 );
+
+describe("pending-interactions gate", () => {
+  it("shows a status in place of the composer and queued messages while interactions are unknown", () => {
+    mocks.queuedMessages = [makeQueuedMessage()];
+
+    renderPromptArea({
+      pendingInteractionsGate: { state: "loading" },
+      pendingInteractionsInitialLoading: true,
+    });
+
+    expect(screen.getByRole("status").textContent).toContain(
+      "Checking pending interactions",
+    );
+    expect(screen.getByTestId("composer-hidden").textContent).toBe("true");
+    expect(screen.queryByTestId("queued-message-list")).toBeNull();
+  });
+
+  it("shows an alert with a working Retry in place of the composer when the check fails", () => {
+    mocks.queuedMessages = [makeQueuedMessage()];
+    const onRetry = vi.fn();
+
+    renderPromptArea({
+      pendingInteractionsGate: { state: "error", isRetrying: false, onRetry },
+    });
+
+    expect(screen.getByRole("alert").textContent).toContain(
+      "Couldn't check pending interactions",
+    );
+    expect(screen.getByTestId("composer-hidden").textContent).toBe("true");
+    expect(screen.queryByTestId("queued-message-list")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(onRetry).toHaveBeenCalledOnce();
+  });
+
+  it("disables Retry while the check is being retried", () => {
+    renderPromptArea({
+      pendingInteractionsGate: {
+        state: "error",
+        isRetrying: true,
+        onRetry: vi.fn(),
+      },
+    });
+
+    expect(
+      (screen.getByRole("button", { name: "Retrying…" }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(true);
+  });
+
+  it("keeps the composer and queued messages when there is no gate", () => {
+    mocks.queuedMessages = [makeQueuedMessage()];
+
+    renderPromptArea();
+
+    expect(screen.queryByRole("status")).toBeNull();
+    expect(screen.getByTestId("composer-hidden").textContent).toBe("false");
+    expect(screen.getByTestId("queued-message-list")).toBeTruthy();
+  });
+});
 
 describe("environment follow-up summary", () => {
   it("renders for a thread with an environment even when it has no environment label", () => {
@@ -433,12 +502,36 @@ describe("ThreadDetailPromptArea", () => {
       await mocks.composerSubmit?.({ pluginSubmission });
     });
 
-    expect(mocks.createQueuedMessageMutateAsync).not.toHaveBeenCalled();
     expect(mocks.sendMessageMutateAsync).toHaveBeenCalledWith(
       expect.objectContaining({
         id: "thr_1",
         mode: "queue-if-active",
         pluginSubmission,
+      }),
+    );
+  });
+
+  it("lets the server decide whether an Enter submitted while the thread looks busy queues", async () => {
+    mocks.promptDraft.text = "Try again";
+    renderPromptArea({
+      thread: makeThread({
+        runtime: { displayStatus: "stopping" },
+        status: "stopping",
+      }),
+    });
+    fireEvent.click(
+      screen.getByRole("button", { name: "Capture plugin host" }),
+    );
+
+    await act(async () => {
+      await mocks.composerSubmit?.();
+    });
+
+    expect(mocks.sendMessageMutateAsync).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: "thr_1",
+        mode: "queue-if-active",
+        input: [{ type: "text", text: "Try again", mentions: [] }],
       }),
     );
   });
@@ -628,7 +721,6 @@ describe("ThreadDetailPromptArea", () => {
       input: [{ type: "text", text: "Edited request", mentions: [] }],
     });
     expect(mocks.promptDraft.clearIfCurrentMatches).not.toHaveBeenCalled();
-    expect(mocks.createQueuedMessageMutateAsync).not.toHaveBeenCalled();
 
     fireEvent.click(
       inlineEditor.getByRole("button", {
@@ -1478,7 +1570,10 @@ describe("ThreadDetailPromptArea", () => {
       ],
       pendingInteractions: [],
     };
-    const options = { childThreadsSection, workspaceChangedFilesSection };
+    const options = {
+      childThreadsSection,
+      gitSegment: { section: workspaceChangedFilesSection, mergeBase: null },
+    };
     const { rerender } = renderPromptArea(options);
 
     fireEvent.click(screen.getByRole("button", { name: /Changed files/ }));
@@ -1552,7 +1647,10 @@ describe("ThreadDetailPromptArea", () => {
       ],
       pendingInteractions: [],
     };
-    const options = { childThreadsSection, workspaceChangedFilesSection };
+    const options = {
+      childThreadsSection,
+      gitSegment: { section: workspaceChangedFilesSection, mergeBase: null },
+    };
     const { rerender } = renderPromptArea(options);
 
     fireEvent.click(screen.getByRole("button", { name: /Changed files/ }));
@@ -1739,6 +1837,35 @@ describe("ThreadDetailPromptArea", () => {
     return result as unknown as ExperimentalComposerSelection;
   }
 
+  it("pins a snapshot-policy composer to the thread's permission mode", async () => {
+    mocks.defaultExecutionOptions = {
+      model: "gpt-5",
+      permissionMode: "full",
+      reasoningLevel: "medium",
+      serviceTier: "default",
+      source: "client/turn/requested",
+    };
+    mocks.promptDraft.text = "Keep going";
+    renderPromptArea({ permissionPolicy: "snapshot" });
+    expect(screen.getByTestId("permission-read-only").textContent).toBe("true");
+    fireEvent.click(
+      screen.getByRole("button", { name: "Capture plugin host" }),
+    );
+
+    const result = await settledSelection(
+      mocks.pluginComposerHost!.setSelection!({ permissionMode: "auto" }),
+    );
+
+    expect(result.permissionMode).toBe("full");
+    expect(mocks.setPermissionMode).not.toHaveBeenCalled();
+    await act(async () => {
+      await mocks.composerSubmit?.();
+    });
+    expect(mocks.sendMessageMutateAsync).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "thr_1", permissionMode: "full" }),
+    );
+  });
+
   it("starts a handoff when a plugin sets another provider, and drops the fields a thread has no picker for", async () => {
     mocks.promptDraft.text = "Keep going";
     mocks.createThreadMutateAsync.mockResolvedValue({
@@ -1873,7 +2000,6 @@ describe("ThreadDetailPromptArea", () => {
       ),
     );
     expect(mocks.sendMessageMutateAsync).not.toHaveBeenCalled();
-    expect(mocks.createQueuedMessageMutateAsync).not.toHaveBeenCalled();
   });
 
   it("creates a same-provider handoff with unchanged execution marked explicit", async () => {
@@ -1901,7 +2027,6 @@ describe("ThreadDetailPromptArea", () => {
       ),
     );
     expect(mocks.sendMessageMutateAsync).not.toHaveBeenCalled();
-    expect(mocks.createQueuedMessageMutateAsync).not.toHaveBeenCalled();
   });
 
   it("marks a supported handoff service tier explicit", async () => {
@@ -2130,7 +2255,6 @@ describe("ThreadDetailPromptArea", () => {
       }),
     );
     expect(mocks.sendMessageMutateAsync).not.toHaveBeenCalled();
-    expect(mocks.createQueuedMessageMutateAsync).not.toHaveBeenCalled();
     expect(mocks.promptDraft.clearIfCurrentMatches).toHaveBeenCalledTimes(1);
   });
 });

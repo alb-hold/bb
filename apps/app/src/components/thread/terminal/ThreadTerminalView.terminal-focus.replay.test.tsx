@@ -11,6 +11,8 @@ import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import { MemoryRouter } from "react-router-dom";
 import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   waitForReadiness,
@@ -252,6 +254,65 @@ function prepareMobileTerminal(): void {
   );
 }
 
+function prepareFirstAttachFontMetricsHarness(): void {
+  vi.stubGlobal("WebSocket", TestTerminalSocket);
+  vi.stubGlobal(
+    "ResizeObserver",
+    class {
+      constructor(private readonly callback: ResizeObserverCallback) {}
+
+      disconnect(): void {}
+
+      observe(target: Element): void {
+        this.callback(
+          [
+            {
+              target,
+              contentRect: { width: 354, height: 504 },
+            } as ResizeObserverEntry,
+          ],
+          this as unknown as ResizeObserver,
+        );
+      }
+
+      unobserve(): void {}
+    },
+  );
+  vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({
+    measureText: (text: string) => ({ width: text.length * 7 }),
+  } as unknown as CanvasRenderingContext2D);
+  vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockImplementation(
+    function offsetWidth(this: HTMLElement) {
+      return this.classList.contains("xterm-char-measure-element") ? 7 : 354;
+    },
+  );
+  vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockImplementation(
+    function offsetHeight(this: HTMLElement) {
+      return this.classList.contains("xterm-char-measure-element") ? 14 : 504;
+    },
+  );
+  vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockImplementation(
+    function clientWidth(this: HTMLElement) {
+      return this.classList.contains("xterm-char-measure-element") ? 7 : 354;
+    },
+  );
+  vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockImplementation(
+    function clientHeight(this: HTMLElement) {
+      return this.classList.contains("xterm-char-measure-element") ? 14 : 504;
+    },
+  );
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
+    function getBoundingClientRect(this: HTMLElement) {
+      return new DOMRect(0, 0, this.clientWidth, this.clientHeight);
+    },
+  );
+  vi.spyOn(FitAddon.prototype, "proposeDimensions").mockImplementation(
+    function proposeDimensions() {
+      return { cols: 51, rows: 47 };
+    },
+  );
+}
+
 function stubVisibleIntersectionObserver(): void {
   vi.stubGlobal(
     "IntersectionObserver",
@@ -281,6 +342,10 @@ function stubVisibleIntersectionObserver(): void {
   );
 }
 
+let rerenderMobileTerminal: (
+  session: ReturnType<typeof makeTerminalSession>,
+) => void = () => undefined;
+
 function renderMobileTerminal(): ReturnType<typeof makeTerminalSession> {
   const session = makeTerminalSession({
     id: "term_mobile_paste",
@@ -288,15 +353,19 @@ function renderMobileTerminal(): ReturnType<typeof makeTerminalSession> {
     cols: 40,
     rows: 12,
   });
-  render(
+  const tree = (current: ReturnType<typeof makeTerminalSession>) => (
     <MemoryRouter>
       <AppCommandProvider>
-        <ThreadTerminalView autoFocus={false} isPanelOpen session={session} />
+        <ThreadTerminalView autoFocus={false} isPanelOpen session={current} />
       </AppCommandProvider>
-    </MemoryRouter>,
+    </MemoryRouter>
   );
+  const { rerender } = render(tree(session));
+  rerenderMobileTerminal = (next) => rerender(tree(next));
   return session;
 }
+
+const pageText = () => document.body.textContent ?? "";
 
 function writeReplay(terminal: Terminal, data: string): Promise<void> {
   return new Promise((resolve) => {
@@ -430,6 +499,195 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
     }, "hidden output was not replayed when the terminal became visible");
   });
 
+  it("does not repaint-nudge the initial terminal replay", async () => {
+    prepareFirstAttachFontMetricsHarness();
+    const markLayoutSettled =
+      TerminalWebSocketTransport.prototype.markLayoutSettled;
+    let resolveLayoutSettled!: () => void;
+    const layoutSettled = new Promise<void>((resolve) => {
+      resolveLayoutSettled = resolve;
+    });
+    vi.spyOn(
+      TerminalWebSocketTransport.prototype,
+      "markLayoutSettled",
+    ).mockImplementation(function (this: TerminalWebSocketTransport) {
+      markLayoutSettled.call(this);
+      resolveLayoutSettled();
+    });
+    let resolveSocketCreated!: () => void;
+    const socketCreated = new Promise<void>((resolve) => {
+      resolveSocketCreated = resolve;
+    });
+    testState.socketCreated = resolveSocketCreated;
+
+    render(
+      <MemoryRouter>
+        <AppCommandProvider>
+          <ThreadTerminalView
+            autoFocus={false}
+            isPanelOpen
+            session={makeTerminalSession({
+              id: "term_first_attach_font_metrics",
+              status: "running",
+              cols: 120,
+              rows: 36,
+            })}
+          />
+        </AppCommandProvider>
+      </MemoryRouter>,
+    );
+
+    await waitForReadiness(
+      socketCreated,
+      "socket was not created within 5000 ms",
+    );
+    const socket = testState.sockets[0]!;
+    await Promise.all([socket.opened, layoutSettled]);
+    const resizeMessages = () =>
+      testState.socketMessages
+        .map(
+          (message) =>
+            JSON.parse(message) as {
+              cols?: number;
+              rows?: number;
+              type?: string;
+            },
+        )
+        .filter((message) => message.type === "resize");
+    expect(resizeMessages()).toEqual([{ type: "resize", cols: 51, rows: 47 }]);
+
+    const session = makeTerminalSession({
+      id: "term_first_attach_font_metrics",
+      status: "running",
+      cols: 120,
+      rows: 36,
+    });
+    vi.useFakeTimers();
+    socket.receive({
+      type: "attached",
+      session,
+      replayStartSeq: 0,
+      nextSeq: 0,
+    });
+    expect(resizeMessages()).toEqual([{ type: "resize", cols: 51, rows: 47 }]);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(REPAINT_RESTORE_DELAY_MS + 1);
+    });
+    expect(resizeMessages()).toEqual([{ type: "resize", cols: 51, rows: 47 }]);
+    vi.useRealTimers();
+
+    testState.deferSocketOpen = true;
+    testState.sockets[0]?.disconnect();
+    await waitForReadinessCondition(
+      () => expect(testState.sockets).toHaveLength(2),
+      "terminal did not reconnect",
+    );
+    const reconnectedSocket = testState.sockets[1]!;
+    vi.useFakeTimers();
+    reconnectedSocket.open();
+    await reconnectedSocket.opened;
+    reconnectedSocket.receive({ type: "features", resizeAcks: true });
+    reconnectedSocket.receive({
+      type: "attached",
+      session,
+      replayStartSeq: 0,
+      nextSeq: 0,
+    });
+
+    const socketResizes = () =>
+      reconnectedSocket.sent
+        .map(
+          (message) =>
+            JSON.parse(message) as {
+              cols?: number;
+              rows?: number;
+              seq?: number;
+              type?: string;
+            },
+        )
+        .filter((message) => message.type === "resize");
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(socketResizes()).toContainEqual({
+      type: "resize",
+      cols: 50,
+      rows: 47,
+      seq: 1,
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(REPAINT_RESTORE_DELAY_MS);
+    });
+    expect(socketResizes().at(-1)).toEqual({
+      type: "resize",
+      cols: 50,
+      rows: 47,
+      seq: 1,
+    });
+    reconnectedSocket.receive({ type: "resize-applied", seq: 1 });
+    expect(socketResizes().at(-1)).toEqual({
+      type: "resize",
+      cols: 51,
+      rows: 47,
+      seq: 2,
+    });
+    expect(
+      socketResizes()
+        .slice(-2)
+        .map(({ type, cols, rows }) => ({ type, cols, rows })),
+    ).toEqual([
+      { type: "resize", cols: 50, rows: 47 },
+      { type: "resize", cols: 51, rows: 47 },
+    ]);
+  });
+
+  it("flags the backstop for a replay attempt that outlasts it and holds again for the next attempt", async () => {
+    const { preview, session, socket } =
+      await mountReplayWithUnusableSnapshot();
+    testState.deferSocketOpen = true;
+    let current = socket;
+    const holdDeadlineMs =
+      terminalReplayPreview.TERMINAL_REPLAY_PREVIEW_HOLD_TIMEOUT_MS + 1;
+    for (const attempt of [1, 2]) {
+      current.disconnect();
+      await waitForReadinessCondition(
+        () => expect(testState.sockets).toHaveLength(attempt + 1),
+        "terminal did not reconnect",
+      );
+      expect(preview()?.dataset.terminalReplayHeld).toBeDefined();
+      expect(preview()?.dataset.terminalReplayHoldExpired).toBeUndefined();
+      expect(preview()?.style.visibility).toBe("hidden");
+
+      const reconnectSocket = testState.sockets[attempt];
+      if (!reconnectSocket) throw new Error("reconnect socket is missing");
+      try {
+        vi.useFakeTimers();
+        reconnectSocket.open();
+        reconnectSocket.receive({
+          type: "attached",
+          session,
+          replayStartSeq: 2,
+          nextSeq: 5,
+        });
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(holdDeadlineMs);
+        });
+        await act(async () => {
+          await Promise.resolve();
+        });
+      } finally {
+        vi.clearAllTimers();
+        vi.useRealTimers();
+      }
+      expect(preview()?.dataset.terminalReplayHoldExpired).toBeDefined();
+      expect(preview()?.dataset.terminalReplayHeld).toBeDefined();
+      expect(preview()?.style.visibility).toBe("hidden");
+      expect(pageText()).toContain("Still loading terminal");
+      current = reconnectSocket;
+    }
+  });
+
+
   it("replays output received while the terminal panel is closed", async () => {
     prepareMobileTerminal();
     let mountedTerminal: Terminal | null = null;
@@ -543,7 +801,10 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
     visibilityState.mockReturnValue("hidden");
     const fixture = JSON.parse(
       readFileSync(
-        "src/components/thread/terminal/fixtures/osc52-chunks.json",
+        join(
+          dirname(fileURLToPath(import.meta.url)),
+          "fixtures/osc52-chunks.json",
+        ),
         "utf8",
       ),
     ) as {
@@ -654,6 +915,537 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
     ).join("\n");
     expect(terminalText).not.toContain("Q".repeat(24));
     expect(replaySinceSeq).toBe("0");
+  });
+
+  async function mountReplayWithUnusableSnapshot() {
+    prepareMobileTerminal();
+    testState.screen.mockResolvedValue({
+      rows: [],
+      cursor: { col: 0, row: 0 },
+      cols: 40,
+      gridRows: 15,
+      truncated: true,
+      complete: false,
+    });
+    let mountedTerminal: Terminal | null = null;
+    const openTerminal = Terminal.prototype.open;
+    vi.spyOn(Terminal.prototype, "open").mockImplementation(function (
+      this: Terminal,
+      element: HTMLElement,
+    ) {
+      mountedTerminal ??= this;
+      openTerminal.call(this, element);
+    });
+    const bufferText = () =>
+      Array.from(
+        { length: mountedTerminal?.buffer.active.length ?? 0 },
+        (_, index) =>
+          mountedTerminal?.buffer.active.getLine(index)?.translateToString(true),
+      ).join("\n");
+    const preview = () =>
+      document.querySelector<HTMLElement>("[data-terminal-replay-preview]");
+
+    const session = renderMobileTerminal();
+    await waitForReadinessCondition(
+      () => expect(testState.sockets).toHaveLength(1),
+      "terminal socket was not created",
+    );
+    const socket = testState.sockets[0];
+    if (!socket) throw new Error("terminal socket is missing");
+    await waitForReadiness(socket.opened, "terminal socket did not open");
+    await waitForReadinessCondition(
+      () => expect(testState.screen).toHaveBeenCalledOnce(),
+      "screen snapshot was not requested",
+    );
+    expect(preview()).toBeNull();
+    socket.receive({ type: "attached", session, replayStartSeq: 0, nextSeq: 3 });
+    socket.receive({
+      type: "output",
+      chunk: { seq: 0, dataBase64: btoa("stale frame one\r\n") },
+    });
+    socket.receive({
+      type: "output",
+      chunk: { seq: 1, dataBase64: btoa("stale frame two\r\n") },
+    });
+    await waitForReadinessCondition(
+      () => expect(bufferText()).toContain("stale frame two"),
+      "historical replay output was not parsed",
+    );
+    expect(preview()).not.toBeNull();
+    expect(preview()?.dataset.terminalReplayHeld).toBeDefined();
+    expect(preview()?.style.visibility).toBe("hidden");
+    return { bufferText, preview, session, socket };
+  }
+
+  it("keeps the preview of a replay without a usable snapshot hidden until the replay completes", async () => {
+    const { bufferText, preview, socket } =
+      await mountReplayWithUnusableSnapshot();
+    socket.receive({
+      type: "output",
+      chunk: { seq: 2, dataBase64: btoa("current frame\r\n") },
+    });
+    await waitForReadinessCondition(
+      () => expect(bufferText()).toContain("current frame"),
+      "final replay output was not parsed",
+    );
+    await waitForReadinessCondition(
+      () => expect(preview()?.dataset.terminalReplayHeld).toBeUndefined(),
+      "replay preview stayed held after the replay completed",
+    );
+  });
+
+  it("keeps the preview hidden while the socket is down and holds it again for the replay a reconnect starts", async () => {
+    const { bufferText, preview, session, socket } =
+      await mountReplayWithUnusableSnapshot();
+    socket.disconnect();
+    await waitForReadinessCondition(
+      () => expect(testState.sockets).toHaveLength(2),
+      "terminal did not reconnect",
+    );
+    expect(preview()?.dataset.terminalReplayHeld).toBeDefined();
+    expect(preview()?.style.visibility).toBe("hidden");
+    const reconnectSocket = testState.sockets[1];
+    if (!reconnectSocket) throw new Error("reconnect socket is missing");
+    await waitForReadiness(
+      reconnectSocket.opened,
+      "reconnect socket did not open",
+    );
+    reconnectSocket.receive({
+      type: "attached",
+      session,
+      replayStartSeq: 2,
+      nextSeq: 5,
+    });
+    reconnectSocket.receive({
+      type: "output",
+      chunk: { seq: 2, dataBase64: btoa("retried history\r\n") },
+    });
+    await waitForReadinessCondition(
+      () => expect(bufferText()).toContain("retried history"),
+      "retried replay output was not parsed",
+    );
+    expect(preview()?.dataset.terminalReplayHeld).toBeDefined();
+    expect(preview()?.style.visibility).toBe("hidden");
+
+    reconnectSocket.receive({
+      type: "output",
+      chunk: { seq: 3, dataBase64: btoa("more retried history\r\n") },
+    });
+    reconnectSocket.receive({
+      type: "output",
+      chunk: { seq: 4, dataBase64: btoa("current frame\r\n") },
+    });
+    await waitForReadinessCondition(
+      () => expect(bufferText()).toContain("current frame"),
+      "final retried output was not parsed",
+    );
+    await waitForReadinessCondition(
+      () => expect(preview()?.dataset.terminalReplayHeld).toBeUndefined(),
+      "replay preview stayed held after the retried replay completed",
+    );
+  });
+
+  function shortenReplayHoldTimeout(ms: number) {
+    const realSetTimeout = window.setTimeout.bind(window);
+    vi.spyOn(window, "setTimeout").mockImplementation(((
+      handler: TimerHandler,
+      delay?: number,
+      ...args: unknown[]
+    ) =>
+      realSetTimeout(
+        handler,
+        delay === terminalReplayPreview.TERMINAL_REPLAY_PREVIEW_HOLD_TIMEOUT_MS &&
+          typeof handler === "function" &&
+          (handler.name === "expireHold" || handler.name === "release")
+          ? ms
+          : delay,
+        ...args,
+      )) as typeof window.setTimeout);
+  }
+
+  const pause = (ms: number) =>
+    act(async () => {
+      await new Promise((resolve) => window.setTimeout(resolve, ms));
+    });
+
+  it("keeps the preview hidden through a reconnect that outlasts the hold timeout and holds again for the retry", async () => {
+    const { bufferText, preview, session, socket } =
+      await mountReplayWithUnusableSnapshot();
+    shortenReplayHoldTimeout(1000);
+    testState.deferSocketOpen = true;
+    socket.disconnect();
+    await waitForReadinessCondition(
+      () => expect(testState.sockets).toHaveLength(2),
+      "terminal did not reconnect",
+    );
+    await pause(1600);
+    expect(preview()?.dataset.terminalReplayHeld).toBeDefined();
+    expect(preview()?.dataset.terminalReplayHoldExpired).toBeUndefined();
+    expect(preview()?.style.visibility).toBe("hidden");
+
+    const reconnectSocket = testState.sockets[1];
+    if (!reconnectSocket) throw new Error("reconnect socket is missing");
+    reconnectSocket.open();
+    reconnectSocket.receive({
+      type: "attached",
+      session,
+      replayStartSeq: 2,
+      nextSeq: 5,
+    });
+    reconnectSocket.receive({
+      type: "output",
+      chunk: { seq: 2, dataBase64: btoa("retried history\r\n") },
+    });
+    await waitForReadinessCondition(
+      () => expect(bufferText()).toContain("retried history"),
+      "retried replay output was not parsed",
+    );
+    expect(preview()?.dataset.terminalReplayHeld).toBeDefined();
+    expect(preview()?.style.visibility).toBe("hidden");
+
+    reconnectSocket.receive({
+      type: "output",
+      chunk: { seq: 3, dataBase64: btoa("more retried history\r\n") },
+    });
+    reconnectSocket.receive({
+      type: "output",
+      chunk: { seq: 4, dataBase64: btoa("current frame\r\n") },
+    });
+    await waitForReadinessCondition(
+      () => expect(preview()?.dataset.terminalReplayHeld).toBeUndefined(),
+      "replay preview stayed held after the retried replay completed",
+    );
+  });
+
+
+  it("keeps a stalled replay hidden behind a loading state and reveals it only on completion", async () => {
+    shortenReplayHoldTimeout(600);
+    const { bufferText, preview, socket } =
+      await mountReplayWithUnusableSnapshot();
+    await waitForReadinessCondition(
+      () => expect(preview()?.dataset.terminalReplayHoldExpired).toBeDefined(),
+      "hold backstop did not fire for the stalled replay",
+    );
+    expect(preview()?.dataset.terminalReplayHeld).toBeDefined();
+    expect(preview()?.style.visibility).toBe("hidden");
+    expect(pageText()).toContain("Still loading terminal");
+
+    socket.receive({
+      type: "output",
+      chunk: { seq: 2, dataBase64: btoa("current frame\r\n") },
+    });
+    await waitForReadinessCondition(
+      () => expect(bufferText()).toContain("current frame"),
+      "final replay output was not parsed",
+    );
+    await waitForReadinessCondition(
+      () => expect(preview()?.dataset.terminalReplayHeld).toBeUndefined(),
+      "replay preview stayed held after the replay completed",
+    );
+    expect(preview()?.dataset.terminalReplayHoldExpired).toBeUndefined();
+    expect(pageText()).not.toContain("Still loading terminal");
+  });
+
+  it("shows the transport closed state for a stalled replay and never reveals partial output", async () => {
+    shortenReplayHoldTimeout(600);
+    const { preview, session, socket } =
+      await mountReplayWithUnusableSnapshot();
+    await waitForReadinessCondition(
+      () => expect(pageText()).toContain("Still loading terminal"),
+      "loading state was not shown for the stalled replay",
+    );
+    rerenderMobileTerminal({ ...session, status: "disconnected" });
+    socket.disconnect();
+    await waitForReadinessCondition(
+      () => expect(pageText()).toContain("Terminal disconnected"),
+      "closed state was not shown",
+    );
+    expect(pageText()).not.toContain("Still loading terminal");
+    expect(preview()?.dataset.terminalReplayHeld).toBeDefined();
+    expect(preview()?.style.visibility).toBe("hidden");
+  });
+
+  function spyOnPreviewProcessExited() {
+    const originalMountPreview =
+      terminalReplayPreview.mountTerminalReplayPreview;
+    const processExited = vi.fn();
+    vi.spyOn(
+      terminalReplayPreview,
+      "mountTerminalReplayPreview",
+    ).mockImplementation((options) => {
+      const preview = originalMountPreview(options);
+      vi.spyOn(preview, "processExited").mockImplementation(processExited);
+      return preview;
+    });
+    return processExited;
+  }
+
+  it("keeps the preview hidden when the terminal process exits mid-replay and reveals it with the exit marker once the replay completes", async () => {
+    const processExited = spyOnPreviewProcessExited();
+    const { bufferText, preview, session, socket } =
+      await mountReplayWithUnusableSnapshot();
+    await act(async () => {
+      socket.receive({
+        type: "exited",
+        session: { ...session, status: "exited", exitCode: 1 },
+      });
+      await Promise.resolve();
+    });
+    await pause(200);
+    expect(preview()?.dataset.terminalReplayHeld).toBeDefined();
+    expect(preview()?.style.visibility).toBe("hidden");
+    expect(processExited).not.toHaveBeenCalled();
+
+    socket.receive({
+      type: "output",
+      chunk: { seq: 2, dataBase64: btoa("final frame\r\n") },
+    });
+    await waitForReadinessCondition(
+      () => expect(bufferText()).toContain("final frame"),
+      "final replay output was not parsed",
+    );
+    await waitForReadinessCondition(
+      () => expect(preview()?.dataset.terminalReplayHeld).toBeUndefined(),
+      "replay preview stayed held after the replay completed",
+    );
+    expect(processExited).toHaveBeenCalledOnce();
+  });
+
+  it("keeps the preview hidden and shows the unavailable state when the replay errors after the process exited", async () => {
+    const processExited = spyOnPreviewProcessExited();
+    const { preview, session, socket } =
+      await mountReplayWithUnusableSnapshot();
+    await act(async () => {
+      socket.receive({
+        type: "session-updated",
+        session: { ...session, status: "exited", exitCode: 1 },
+      });
+      await Promise.resolve();
+    });
+    await act(async () => {
+      socket.receive({
+        type: "error",
+        code: "replay_failed",
+        message: "replay failed",
+      });
+      await Promise.resolve();
+    });
+    await waitForReadinessCondition(
+      () => expect(pageText()).toContain("Terminal output unavailable"),
+      "unavailable state was not shown after the exit and the error",
+    );
+    expect(preview()?.dataset.terminalReplayHeld).toBeDefined();
+    expect(preview()?.style.visibility).toBe("hidden");
+    expect(processExited).not.toHaveBeenCalled();
+  });
+
+  function mountSnapshotPreviewSpyingOnProcessExited() {
+    prepareMobileTerminal();
+    vi.spyOn(FitAddon.prototype, "proposeDimensions").mockReturnValue({
+      cols: 40,
+      rows: 12,
+    });
+    testState.screen.mockResolvedValue({
+      rows: ["snapshot text"],
+      cursor: { col: 0, row: 0 },
+      cols: 40,
+      gridRows: 12,
+      truncated: false,
+      complete: true,
+      checkpointSeq: 0,
+      dataBase64: btoa("snapshot text"),
+    });
+    const spy = spyOnPreviewProcessExited();
+    const mounted = (async () => {
+      const session = renderMobileTerminal();
+      await waitForReadinessCondition(
+        () =>
+          expect(
+            document.querySelector("[data-terminal-replay-preview]"),
+          ).not.toBeNull(),
+        "screen snapshot did not mount a replay preview",
+      );
+      const socket = testState.sockets[0];
+      if (!socket) throw new Error("terminal socket was not created");
+      return { session, socket };
+    })();
+    return { spy, mounted };
+  }
+
+  it("marks a fallback preview exited once when the process exit is reported by a session update and an exited message mid-replay", async () => {
+    const processExited = spyOnPreviewProcessExited();
+    const { bufferText, preview, session, socket } =
+      await mountReplayWithUnusableSnapshot();
+    const exitedSession = { ...session, status: "exited" as const, exitCode: 1 };
+    await act(async () => {
+      socket.receive({ type: "session-updated", session: exitedSession });
+      socket.receive({ type: "exited", session: exitedSession });
+      await Promise.resolve();
+    });
+    expect(processExited).not.toHaveBeenCalled();
+    socket.receive({
+      type: "output",
+      chunk: { seq: 2, dataBase64: btoa("final frame\r\n") },
+    });
+    await waitForReadinessCondition(
+      () => expect(bufferText()).toContain("final frame"),
+      "final replay output was not parsed",
+    );
+    await waitForReadinessCondition(
+      () => expect(preview()?.dataset.terminalReplayHeld).toBeUndefined(),
+      "replay preview stayed held after the replay completed",
+    );
+    await pause(200);
+    expect(processExited).toHaveBeenCalledOnce();
+  });
+
+  it("marks a snapshot preview exited once when a session update and an exited message both report the exit", async () => {
+    const processExited = mountSnapshotPreviewSpyingOnProcessExited();
+    const { session, socket } = await processExited.mounted;
+    const exitedSession = { ...session, status: "exited" as const, exitCode: 1 };
+    await act(async () => {
+      socket.receive({ type: "session-updated", session: exitedSession });
+      socket.receive({ type: "exited", session: exitedSession });
+      await Promise.resolve();
+    });
+    expect(processExited.spy).toHaveBeenCalledOnce();
+  });
+
+  it("marks a snapshot preview exited once for a single exited message", async () => {
+    const processExited = mountSnapshotPreviewSpyingOnProcessExited();
+    const { session, socket } = await processExited.mounted;
+    await act(async () => {
+      socket.receive({
+        type: "exited",
+        session: { ...session, status: "exited", exitCode: 1 },
+      });
+      await Promise.resolve();
+    });
+    expect(processExited.spy).toHaveBeenCalledOnce();
+  });
+
+  it("shows an unavailable state for a terminal error mid-replay and never reveals partial output", async () => {
+    shortenReplayHoldTimeout(600);
+    const { preview, socket } = await mountReplayWithUnusableSnapshot();
+    await waitForReadinessCondition(
+      () => expect(pageText()).toContain("Still loading terminal"),
+      "loading state was not shown for the stalled replay",
+    );
+    await act(async () => {
+      socket.receive({
+        type: "error",
+        code: "replay_failed",
+        message: "replay failed",
+      });
+      await Promise.resolve();
+    });
+    await waitForReadinessCondition(
+      () => expect(pageText()).toContain("Terminal output unavailable"),
+      "unavailable state was not shown after a terminal error",
+    );
+    expect(pageText()).not.toContain("Still loading terminal");
+    expect(preview()?.dataset.terminalReplayHeld).toBeDefined();
+    expect(preview()?.style.visibility).toBe("hidden");
+  });
+
+  async function mountReplayAfterCheckpointedOpen() {
+    prepareMobileTerminal();
+    stubVisibleIntersectionObserver();
+    vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    vi.spyOn(FitAddon.prototype, "proposeDimensions").mockReturnValue({
+      cols: 40,
+      rows: 12,
+    });
+    testState.screen.mockResolvedValue({
+      rows: ["snapshot text"],
+      cursor: { col: 0, row: 0 },
+      cols: 40,
+      gridRows: 12,
+      truncated: false,
+      complete: true,
+      checkpointSeq: 2,
+      dataBase64: btoa("snapshot text"),
+    });
+    const preview = () =>
+      document.querySelector<HTMLElement>("[data-terminal-replay-preview]");
+    const session = renderMobileTerminal();
+    await waitFor(() => expect(testState.sockets).toHaveLength(1), {
+      timeout: 20_000,
+    });
+    const socket = testState.sockets[0];
+    if (!socket) throw new Error("terminal socket is missing");
+    await waitForReadiness(socket.opened, "terminal socket did not open");
+    await waitFor(() => expect(preview()).not.toBeNull(), { timeout: 20_000 });
+    socket.receive({ type: "attached", session, replayStartSeq: 0, nextSeq: 3 });
+    for (const seq of [0, 1, 2]) {
+      socket.receive({
+        type: "output",
+        chunk: { seq, dataBase64: btoa(`open frame ${seq}\r\n`) },
+      });
+    }
+    await waitForReadinessCondition(
+      () => expect(preview()).toBeNull(),
+      "snapshot preview was not disposed after the replay completed",
+    );
+
+    socket.disconnect();
+    await waitForReadinessCondition(
+      () => expect(testState.sockets).toHaveLength(2),
+      "terminal did not reconnect",
+    );
+    const reconnectSocket = testState.sockets[1];
+    if (!reconnectSocket) throw new Error("reconnect socket is missing");
+    await waitForReadiness(
+      reconnectSocket.opened,
+      "reconnect socket did not open",
+    );
+    reconnectSocket.receive({
+      type: "attached",
+      session,
+      replayStartSeq: 3,
+      nextSeq: 6,
+    });
+    reconnectSocket.receive({
+      type: "output",
+      chunk: { seq: 3, dataBase64: btoa("partial replay\r\n") },
+    });
+    await waitForReadinessCondition(
+      () => expect(preview()?.dataset.terminalReplayHeld).toBeDefined(),
+      "replay after the checkpointed open was not held",
+    );
+    expect(preview()?.style.visibility).toBe("hidden");
+    return { preview, reconnectSocket, session };
+  }
+
+  it("keeps a checkpoint-backed replay hidden and shows the unavailable state on a terminal error before completion", async () => {
+    const { preview, reconnectSocket } = await mountReplayAfterCheckpointedOpen();
+    await act(async () => {
+      reconnectSocket.receive({
+        type: "error",
+        code: "replay_failed",
+        message: "replay failed",
+      });
+      await Promise.resolve();
+    });
+    await waitForReadinessCondition(
+      () => expect(pageText()).toContain("Terminal output unavailable"),
+      "unavailable state was not shown after a terminal error",
+    );
+    expect(preview()?.dataset.terminalReplayHeld).toBeDefined();
+    expect(preview()?.style.visibility).toBe("hidden");
+  });
+
+  it("keeps a checkpoint-backed replay hidden and shows the closed state when the transport closes before completion", async () => {
+    const { preview, reconnectSocket, session } =
+      await mountReplayAfterCheckpointedOpen();
+    rerenderMobileTerminal({ ...session, status: "disconnected" });
+    reconnectSocket.disconnect();
+    await waitForReadinessCondition(
+      () => expect(pageText()).toContain("Terminal disconnected"),
+      "closed state was not shown",
+    );
+    expect(preview()?.dataset.terminalReplayHeld).toBeDefined();
+    expect(preview()?.style.visibility).toBe("hidden");
   });
 
   it("notifies the replay preview when a session update reports process exit", async () => {
@@ -1077,232 +1869,4 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
     }
   });
 
-  it("does not repaint-nudge the initial terminal replay", async () => {
-    vi.stubGlobal("WebSocket", TestTerminalSocket);
-    vi.stubGlobal(
-      "ResizeObserver",
-      class {
-        constructor(private readonly callback: ResizeObserverCallback) {}
-
-        disconnect(): void {}
-
-        observe(target: Element): void {
-          this.callback(
-            [
-              {
-                target,
-                contentRect: { width: 354, height: 504 },
-              } as ResizeObserverEntry,
-            ],
-            this as unknown as ResizeObserver,
-          );
-        }
-
-        unobserve(): void {}
-      },
-    );
-    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({
-      measureText: (text: string) => ({ width: text.length * 7 }),
-    } as unknown as CanvasRenderingContext2D);
-    vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockImplementation(
-      function offsetWidth(this: HTMLElement) {
-        return this.classList.contains("xterm-char-measure-element") ? 7 : 354;
-      },
-    );
-    vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockImplementation(
-      function offsetHeight(this: HTMLElement) {
-        return this.classList.contains("xterm-char-measure-element") ? 14 : 504;
-      },
-    );
-    vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockImplementation(
-      function clientWidth(this: HTMLElement) {
-        return this.classList.contains("xterm-char-measure-element") ? 7 : 354;
-      },
-    );
-    vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockImplementation(
-      function clientHeight(this: HTMLElement) {
-        return this.classList.contains("xterm-char-measure-element") ? 14 : 504;
-      },
-    );
-    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
-      function getBoundingClientRect(this: HTMLElement) {
-        return new DOMRect(0, 0, this.clientWidth, this.clientHeight);
-      },
-    );
-    vi.spyOn(FitAddon.prototype, "proposeDimensions").mockImplementation(
-      function proposeDimensions() {
-        return { cols: 51, rows: 47 };
-      },
-    );
-    const markLayoutSettled =
-      TerminalWebSocketTransport.prototype.markLayoutSettled;
-    let resolveLayoutSettled!: () => void;
-    const layoutSettled = new Promise<void>((resolve) => {
-      resolveLayoutSettled = resolve;
-    });
-    vi.spyOn(
-      TerminalWebSocketTransport.prototype,
-      "markLayoutSettled",
-    ).mockImplementation(function (this: TerminalWebSocketTransport) {
-      markLayoutSettled.call(this);
-      resolveLayoutSettled();
-    });
-    let resolveSocketCreated!: () => void;
-    const socketCreated = new Promise<void>((resolve) => {
-      resolveSocketCreated = resolve;
-    });
-    testState.socketCreated = resolveSocketCreated;
-
-    render(
-      <MemoryRouter>
-        <AppCommandProvider>
-          <ThreadTerminalView
-            autoFocus={false}
-            isPanelOpen
-            session={makeTerminalSession({
-              id: "term_first_attach_font_metrics",
-              status: "running",
-              cols: 120,
-              rows: 36,
-            })}
-          />
-        </AppCommandProvider>
-      </MemoryRouter>,
-    );
-
-    await waitForReadiness(
-      socketCreated,
-      "socket was not created within 5000 ms",
-    );
-    const socket = testState.sockets[0]!;
-    await Promise.all([socket.opened, layoutSettled]);
-    const initialResizes = testState.socketMessages
-      .map(
-        (message) =>
-          JSON.parse(message) as {
-            cols?: number;
-            rows?: number;
-            type?: string;
-          },
-      )
-      .filter((message) => message.type === "resize");
-    expect(initialResizes).toEqual([{ type: "resize", cols: 51, rows: 47 }]);
-    await waitFor(
-      () =>
-        expect(
-          testState.socketMessages
-            .map(
-              (message) =>
-                JSON.parse(message) as {
-                  cols?: number;
-                  rows?: number;
-                  type?: string;
-                },
-            )
-            .filter((message) => message.type === "resize"),
-        ).toEqual([{ type: "resize", cols: 51, rows: 47 }]),
-      { timeout: 6_000 },
-    );
-    vi.useFakeTimers({ shouldAdvanceTime: true });
-    const resizeFrames = () =>
-      testState.socketMessages
-        .map(
-          (message) =>
-            JSON.parse(message) as {
-              cols?: number;
-              rows?: number;
-              type?: string;
-            },
-        )
-        .filter((message) => message.type === "resize");
-    expect(resizeFrames()).toEqual([{ type: "resize", cols: 51, rows: 47 }]);
-    const session = makeTerminalSession({
-      id: "term_first_attach_font_metrics",
-      status: "running",
-      cols: 120,
-      rows: 36,
-    });
-    testState.sockets[0]?.receive({
-      type: "attached",
-      session,
-      replayStartSeq: 0,
-      nextSeq: 0,
-    });
-    expect(resizeFrames()).toEqual([{ type: "resize", cols: 51, rows: 47 }]);
-    await vi.advanceTimersByTimeAsync(REPAINT_RESTORE_DELAY_MS + 1);
-    expect(
-      testState.socketMessages
-        .map(
-          (message) =>
-            JSON.parse(message) as {
-              cols?: number;
-              rows?: number;
-              type?: string;
-            },
-        )
-        .filter((message) => message.type === "resize"),
-    ).toEqual([{ type: "resize", cols: 51, rows: 47 }]);
-
-    testState.deferSocketOpen = true;
-    testState.sockets[0]?.disconnect();
-
-    await waitFor(() => expect(testState.sockets).toHaveLength(2));
-    const reconnectedSocket = testState.sockets[1]!;
-    vi.useFakeTimers();
-    reconnectedSocket.open();
-    await reconnectedSocket.opened;
-    reconnectedSocket.receive({ type: "features", resizeAcks: true });
-
-    reconnectedSocket.receive({
-      type: "attached",
-      session,
-      replayStartSeq: 0,
-      nextSeq: 0,
-    });
-
-    const socketResizes = () =>
-      reconnectedSocket.sent
-        .map(
-          (message) =>
-            JSON.parse(message) as {
-              cols?: number;
-              rows?: number;
-              seq?: number;
-              type?: string;
-            },
-        )
-        .filter((message) => message.type === "resize");
-    await vi.waitFor(() => {
-      expect(socketResizes()).toContainEqual({
-        type: "resize",
-        cols: 50,
-        rows: 47,
-        seq: 1,
-      });
-    });
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(400);
-    });
-    expect(socketResizes().at(-1)).toEqual({
-      type: "resize",
-      cols: 50,
-      rows: 47,
-      seq: 1,
-    });
-    reconnectedSocket.receive({ type: "resize-applied", seq: 1 });
-    expect(socketResizes().at(-1)).toEqual({
-      type: "resize",
-      cols: 51,
-      rows: 47,
-      seq: 2,
-    });
-    expect(
-      socketResizes()
-        .slice(-2)
-        .map(({ type, cols, rows }) => ({ type, cols, rows })),
-    ).toEqual([
-      { type: "resize", cols: 50, rows: 47 },
-      { type: "resize", cols: 51, rows: 47 },
-    ]);
-  }, 15_000);
 });

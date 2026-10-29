@@ -12,9 +12,15 @@ import {
   type ThreadPromptArchivedSection,
   type ThreadPromptChildThreadsSection,
   type ThreadPromptEnvironmentGoneSection,
-  type ThreadPromptGitSection,
   type ThreadPromptParentThreadSection,
 } from "./ThreadPromptContextBanner";
+import { removePluginSlotRegistrations } from "@/lib/plugin-slots";
+import {
+  GIT_SEGMENT_FIXTURE_PLUGIN_ID,
+  GitSegmentFixtureProvider,
+  type GitSegmentFixture,
+} from "@/test/fixtures/git-segment-plugin";
+import type { WorkspaceChangedFilesSection } from "@bb/shared-ui/workspace-change-summary";
 
 const noop = () => {};
 const CHILD_THREADS = "child-threads";
@@ -29,8 +35,9 @@ function Banner({
   expandedSection,
   onToggleSection,
   queuedWorkspaceWait,
+  workspaceSharingThreadCount,
 }: {
-  gitSection: ThreadPromptGitSection | null;
+  gitSection: GitSegmentFixture | null;
   gitSectionPending: boolean;
   archivedSection: ThreadPromptArchivedSection | null;
   environmentGoneSection: ThreadPromptEnvironmentGoneSection | null;
@@ -39,11 +46,14 @@ function Banner({
   expandedSection: string | null;
   onToggleSection: (key: string) => void;
   queuedWorkspaceWait?: string | null;
+  workspaceSharingThreadCount?: number | null;
 }) {
   const isReadOnly =
     archivedSection !== null || environmentGoneSection !== null;
   return (
-    <>
+    <GitSegmentFixtureProvider
+      value={gitSectionPending ? null : gitSection}
+    >
       <ThreadChildThreadsBanner
         childThreads={isReadOnly ? null : childThreadsSection}
         isExpanded={expandedSection === CHILD_THREADS}
@@ -53,17 +63,16 @@ function Banner({
       <ThreadPromptContextBanner
         input={{ threadId: "thr_1", projectId: "proj_1", environment: null }}
         core={{
-          git: gitSection,
-          gitPending: gitSectionPending,
           parentThread: parentThreadSection,
           queuedWorkspaceWait,
+          workspaceSharingThreadCount,
         }}
         archivedSection={archivedSection}
         environmentGoneSection={environmentGoneSection}
         expandedSegment={expandedSection}
         onToggleSegment={onToggleSection}
       />
-    </>
+    </GitSegmentFixtureProvider>
   );
 }
 
@@ -82,11 +91,10 @@ const changedFile = {
 };
 
 function makeGitSection(
-  kind: ThreadPromptGitSection["changedFiles"]["kind"] = "uncommitted",
-  mergeBase: ThreadPromptGitSection["mergeBase"] = null,
-): ThreadPromptGitSection {
+  kind: WorkspaceChangedFilesSection["kind"] = "uncommitted",
+): GitSegmentFixture {
   return {
-    changedFiles: {
+    section: {
       kind,
       label: kind === "committed" ? "Committed" : "Uncommitted",
       files: [changedFile],
@@ -99,12 +107,14 @@ function makeGitSection(
         files: [changedFile],
       },
     },
-    mergeBase,
-    onPromptBannerFileClick: noop,
+    mergeBase: null,
   };
 }
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  removePluginSlotRegistrations(GIT_SEGMENT_FIXTURE_PLUGIN_ID);
+});
 
 function childThreadItem(
   id: string,
@@ -189,10 +199,8 @@ describe("ThreadPromptContextBanner", () => {
   it("shows shared workspace ownership only when multiple threads are attached", () => {
     const shared = render(
       <Banner
-        gitSection={{
-          ...makeGitSection(),
-          workspaceSharingThreadCount: 17,
-        }}
+        gitSection={makeGitSection()}
+        workspaceSharingThreadCount={17}
         gitSectionPending={false}
         archivedSection={null}
         environmentGoneSection={null}
@@ -211,7 +219,8 @@ describe("ThreadPromptContextBanner", () => {
     shared.unmount();
     const privateMarkup = renderToMarkup(
       <Banner
-        gitSection={{ ...makeGitSection(), workspaceSharingThreadCount: 1 }}
+        gitSection={makeGitSection()}
+        workspaceSharingThreadCount={1}
         gitSectionPending={false}
         archivedSection={null}
         environmentGoneSection={null}
@@ -642,7 +651,7 @@ describe("ThreadPromptContextBanner", () => {
     const onToggleSection = vi.fn();
     const renderBanner = (
       items: ReturnType<typeof childThreadItem>[],
-      expandedSection: "bb--core/changed-files" | null,
+      expandedSection: "bb--git/changed-files" | null,
     ) => (
       <MemoryRouter>
         <Banner
@@ -668,10 +677,10 @@ describe("ThreadPromptContextBanner", () => {
       pending: true,
     });
     const { rerender } = render(
-      renderBanner([working], "bb--core/changed-files"),
+      renderBanner([working], "bb--git/changed-files"),
     );
     expect(onToggleSection).not.toHaveBeenCalled();
-    rerender(renderBanner([blocked, working], "bb--core/changed-files"));
+    rerender(renderBanner([blocked, working], "bb--git/changed-files"));
     expect(onToggleSection).not.toHaveBeenCalled();
     expect(
       screen
@@ -682,7 +691,7 @@ describe("ThreadPromptContextBanner", () => {
 });
 
 describe("ThreadPromptContextBanner git section body", () => {
-  function renderBanner(expandedSection: "bb--core/changed-files" | null) {
+  function renderBanner(expandedSection: "bb--git/changed-files" | null) {
     return (
       <MemoryRouter>
         <Banner
@@ -703,7 +712,7 @@ describe("ThreadPromptContextBanner git section body", () => {
     const { rerender } = render(renderBanner(null));
     expect(screen.queryByRole("list", { hidden: true })).toBeNull();
 
-    rerender(renderBanner("bb--core/changed-files"));
+    rerender(renderBanner("bb--git/changed-files"));
     expect(screen.getByRole("list")).toBeTruthy();
     expect(
       screen.getByRole("button", { name: `Open ${changedFile.path}` }),

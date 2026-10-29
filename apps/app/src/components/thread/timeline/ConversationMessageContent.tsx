@@ -86,7 +86,6 @@ interface ConversationMessageContentBaseProps {
   attachments: TimelineConversationAttachments | null;
   onCopyLink?: () => void;
   onOpenLocalFileLink?: ThreadTimelineLocalFileLinkHandler;
-  onOpenPluginPanel?: MarkdownMessageDirectives["openThreadPanel"];
   pluginActions?: readonly ThreadTimelinePluginMessageAction[];
   projectId?: string;
   resolveUserAttachmentImageSrc?: UserAttachmentImageSrcResolver;
@@ -194,7 +193,6 @@ interface AssistantConversationMessageProps extends AssistantMessageRowIdentity 
   onSelectProse?: (selection: MessageProseSelection | null) => void;
   onOpenLink?: ThreadTimelineLinkHandler;
   onOpenLocalFileLink?: ThreadTimelineLocalFileLinkHandler;
-  onOpenPluginPanel?: MarkdownMessageDirectives["openThreadPanel"];
   projectId?: string;
   showActions: boolean;
   mobileActionDisplay: "inline" | "overflow";
@@ -523,7 +521,6 @@ function AssistantConversationMessage({
   onSelectProse,
   onOpenLink,
   onOpenLocalFileLink,
-  onOpenPluginPanel,
   pluginActions,
   projectId,
   showActions,
@@ -602,7 +599,6 @@ function AssistantConversationMessage({
         projectId: projectId ?? null,
       },
       openWorkspaceFile: openDirectiveWorkspaceFile,
-      openThreadPanel: onOpenPluginPanel ?? null,
     };
   }, [
     messageDirectiveRegistry,
@@ -611,7 +607,6 @@ function AssistantConversationMessage({
     turnId,
     projectId,
     openDirectiveWorkspaceFile,
-    onOpenPluginPanel,
   ]);
 
   const codeFenceRendererRegistry = useCodeFenceRendererRegistry();
@@ -666,7 +661,6 @@ function AssistantConversationMessage({
           <CodeFenceRendererHost
             registry={codeFenceRendererRegistry}
             message={codeFenceMessage}
-            openThreadPanel={onOpenPluginPanel ?? null}
             streaming={streaming}
           >
             {markdown}
@@ -710,7 +704,6 @@ export function ConversationMessageContent(
   const {
     attachments,
     onOpenLocalFileLink,
-    onOpenPluginPanel,
     projectId,
     resolveUserAttachmentImageSrc,
     text,
@@ -774,7 +767,6 @@ export function ConversationMessageContent(
       onSelectProse={props.onSelectProse}
       onOpenLink={props.onOpenLink}
       onOpenLocalFileLink={onOpenLocalFileLink}
-      onOpenPluginPanel={onOpenPluginPanel}
       projectId={projectId}
       showActions={props.showActions}
       mobileActionDisplay={props.mobileActionDisplay}

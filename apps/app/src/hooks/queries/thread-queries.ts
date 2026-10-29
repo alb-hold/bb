@@ -1,3 +1,5 @@
+import { useThreadDefaultExecutionOptions } from "./thread-default-execution-options-query";
+import { useThreadQueuedMessages } from "./thread-panel-queries";
 import {
   infiniteQueryOptions,
   queryOptions,
@@ -5,7 +7,6 @@ import {
   useQuery,
   useQueryClient,
   type QueryClient,
-  type QueryKey,
 } from "@tanstack/react-query";
 import { useCallback, useMemo } from "react";
 import type { PendingInteraction, ThreadListEntry } from "@bb/domain";
@@ -15,12 +16,15 @@ import type {
   ThreadResponse,
   ThreadSearchResponse,
   ThreadWithIncludesResponse,
+  ThreadTimelineReadResponse,
   ThreadTimelineResponse,
   ThreadSpendSummaryResponse,
 } from "@bb/server-contract";
 import { useDebouncedValue } from "../useDebouncedValue";
-import { routeTaggedPages, routeTaggedRead } from "./route-tags";
-import { applyTimelineDelta, publicApiRoutes } from "@bb/server-contract";
+import {
+  applyThreadTimelineDelta,
+  isThreadTimelineDelta,
+} from "@bb/server-contract";
 import type { ThreadListFilters } from "@bb/client-core";
 import { sdk } from "@/lib/sdk";
 import {
@@ -68,6 +72,7 @@ import { clearThreadTimelineUnseenEvents } from "../cache-owners/thread-timeline
 import {
   isCachedThreadTimelinePushEnabled,
   resolveThreadTimelineSegmentLimit,
+  syncThreadTimelineSubscriptionTag,
 } from "../cache-owners/thread-timeline-push-owner";
 import { markStreamTrace } from "@/lib/stream-trace";
 
@@ -289,31 +294,12 @@ export interface UseArchivedThreadsFilters {
   kind?: ArchivedThreadsKindFilter;
 }
 
-export function threadListRead(
-  queryClient: QueryClient,
-  queryKey: QueryKey,
-  read: (signal: AbortSignal) => Promise<ThreadListResponse>,
-) {
-  return routeTaggedRead(
-    queryClient,
-    queryKey,
-    publicApiRoutes.threads.list,
-    { params: {}, input: {} },
-    read,
-  );
-}
-
 export function archivedThreadsQueryOptions(
-  queryClient: QueryClient,
   filters: UseArchivedThreadsFilters,
   options?: QueryOptions,
 ) {
   const { projectId, kind = "all" } = filters;
   const hasParent = kind === "all" ? undefined : kind === "child";
-  const queryKey = archivedThreadsListQueryKey({
-    ...(projectId ? { projectId } : {}),
-    ...(kind !== "all" ? { kind } : {}),
-  });
   return infiniteQueryOptions<
     ThreadListResponse,
     Error,
@@ -321,22 +307,19 @@ export function archivedThreadsQueryOptions(
     ReturnType<typeof archivedThreadsListQueryKey>,
     number
   >({
-    queryKey,
-    ...routeTaggedPages(
-      queryClient,
-      queryKey,
-      publicApiRoutes.threads.list,
-      { params: {}, input: {} },
-      (pageParam: number, signal) =>
-        sdk.threads.list({
-          ...(projectId ? { projectId } : {}),
-          ...(hasParent !== undefined ? { hasParent } : {}),
-          archived: true,
-          limit: ARCHIVED_THREADS_PAGE_SIZE,
-          offset: pageParam,
-          signal,
-        }),
-    ),
+    queryKey: archivedThreadsListQueryKey({
+      ...(projectId ? { projectId } : {}),
+      ...(kind !== "all" ? { kind } : {}),
+    }),
+    queryFn: ({ pageParam, signal }) =>
+      sdk.threads.list({
+        ...(projectId ? { projectId } : {}),
+        ...(hasParent !== undefined ? { hasParent } : {}),
+        archived: true,
+        limit: ARCHIVED_THREADS_PAGE_SIZE,
+        offset: pageParam,
+        signal,
+      }),
     initialPageParam: 0,
     getNextPageParam: (lastPage, allPages) => {
       if (lastPage.length < ARCHIVED_THREADS_PAGE_SIZE) {
@@ -353,15 +336,11 @@ export function useArchivedThreads(
   filters: UseArchivedThreadsFilters,
   options?: QueryOptions,
 ) {
-  const queryClient = useQueryClient();
   useThreadListRealtimeSubscription({ enabled: options?.enabled ?? true });
-  return useInfiniteQuery(
-    archivedThreadsQueryOptions(queryClient, filters, options),
-  );
+  return useInfiniteQuery(archivedThreadsQueryOptions(filters, options));
 }
 
 export function useThreads(filters: UseThreadsFilters, options?: QueryOptions) {
-  const queryClient = useQueryClient();
   const { projectId, ...rest } = filters;
   const enabled = (options?.enabled ?? true) && Boolean(projectId);
   useThreadListRealtimeSubscription({ enabled });
@@ -372,13 +351,12 @@ export function useThreads(filters: UseThreadsFilters, options?: QueryOptions) {
 
   return useQuery<ThreadListResponse>({
     queryKey,
-    ...threadListRead(queryClient, queryKey, (signal) =>
+    queryFn: ({ signal }) =>
       sdk.threads.list({
         ...rest,
         projectId: requireThreadId(projectId ?? "", "useThreads"),
         signal,
       }),
-    ),
     enabled,
     staleTime: THREAD_LIST_STALE_TIME_MS,
   });
@@ -480,20 +458,17 @@ export function resolveSidebarDerivedThreadList({
 
 export function childThreadsFallbackQueryOptions({
   parentThreadId,
-  queryClient,
   shouldFetch,
 }: {
   parentThreadId: string | undefined;
-  queryClient: QueryClient;
   shouldFetch: boolean;
 }) {
-  const queryKey =
-    shouldFetch && parentThreadId
-      ? threadListQueryKey({ archived: false, parentThreadId })
-      : disabledThreadListQueryKey({ archived: false });
   return queryOptions<ThreadListResponse>({
-    queryKey,
-    ...threadListRead(queryClient, queryKey, (signal) =>
+    queryKey:
+      shouldFetch && parentThreadId
+        ? threadListQueryKey({ archived: false, parentThreadId })
+        : disabledThreadListQueryKey({ archived: false }),
+    queryFn: ({ signal }) =>
       sdk.threads.list({
         archived: false,
         parentThreadId: requireThreadId(
@@ -502,7 +477,6 @@ export function childThreadsFallbackQueryOptions({
         ),
         signal,
       }),
-    ),
     enabled: shouldFetch,
     staleTime: THREAD_LIST_STALE_TIME_MS,
   });
@@ -512,7 +486,6 @@ export function useChildThreads({
   enabled: enabledOption,
   parentThreadId,
 }: UseChildThreadsArgs): UseChildThreadsResult {
-  const queryClient = useQueryClient();
   const enabled = enabledOption && Boolean(parentThreadId);
   useThreadListRealtimeSubscription({ enabled });
   const selectChildren = useCallback(
@@ -523,7 +496,6 @@ export function useChildThreads({
   const fallbackQuery = useQuery(
     childThreadsFallbackQueryOptions({
       parentThreadId,
-      queryClient,
       shouldFetch: shouldFetchSidebarThreadListFallback({ enabled, sidebar }),
     }),
   );
@@ -557,13 +529,12 @@ export function useProjectThreadSubset({
     ) !== undefined;
   const activeProjectThreadsQuery = useQuery<ThreadListResponse>({
     queryKey: activeProjectThreadListQueryKey,
-    ...threadListRead(queryClient, activeProjectThreadListQueryKey, (signal) =>
+    queryFn: ({ signal }) =>
       sdk.threads.list({
         archived: false,
         projectId: requireThreadId(projectId ?? "", "useProjectThreadSubset"),
         signal,
       }),
-    ),
     enabled: enabled && activeProjectThreadListIsCached,
     staleTime: THREAD_LIST_STALE_TIME_MS,
   });
@@ -619,14 +590,12 @@ export function threadMentionCandidatesFallbackQueryOptions({
   queryClient: QueryClient;
   shouldFetch: boolean;
 }) {
-  const queryKey = shouldFetch
-    ? threadListQueryKey(THREAD_MENTION_CANDIDATE_FILTERS)
-    : disabledThreadListQueryKey(THREAD_MENTION_CANDIDATE_FILTERS);
   return queryOptions<ThreadListResponse>({
-    queryKey,
-    ...threadListRead(queryClient, queryKey, (signal) =>
+    queryKey: shouldFetch
+      ? threadListQueryKey(THREAD_MENTION_CANDIDATE_FILTERS)
+      : disabledThreadListQueryKey(THREAD_MENTION_CANDIDATE_FILTERS),
+    queryFn: ({ signal }) =>
       sdk.threads.list({ ...THREAD_MENTION_CANDIDATE_FILTERS, signal }),
-    ),
     enabled: shouldFetch,
     placeholderData: (previousData) =>
       previousData ??
@@ -704,20 +673,13 @@ export function threadQueryOptions(
   id: string,
   options?: QueryOptions,
 ) {
-  const queryKey = threadQueryKey(id);
   return queryOptions<ThreadResponse>({
-    queryKey,
-    ...routeTaggedRead(
-      queryClient,
-      queryKey,
-      publicApiRoutes.threads.get,
-      { params: { id }, input: {} },
-      (signal) =>
-        sdk.threads.get({
-          threadId: requireThreadId(id, "useThread"),
-          signal,
-        }),
-    ),
+    queryKey: threadQueryKey(id),
+    queryFn: ({ signal }) =>
+      sdk.threads.get({
+        threadId: requireThreadId(id, "useThread"),
+        signal,
+      }),
     enabled: (options?.enabled ?? true) && Boolean(id),
     staleTime: THREAD_DETAIL_STALE_TIME_MS,
     refetchOnMount: options?.refetchOnMount ?? true,
@@ -805,6 +767,8 @@ export function useThreadDetailBootstrap(
   const queryClient = useQueryClient();
   const enabled = (options?.enabled ?? true) && Boolean(id);
   useThreadDetailRealtimeSubscription(id, { enabled });
+  useThreadDefaultExecutionOptions(id, { enabled });
+  useThreadQueuedMessages(id, { enabled });
   return useQuery(threadDetailBootstrapQueryOptions(queryClient, id, options));
 }
 
@@ -841,19 +805,17 @@ export function useThreadPendingInteractions(
 
 async function mergeThreadTimelineDelta(
   previous: ThreadTimelineResponse | undefined,
-  response: ThreadTimelineResponse,
+  response: ThreadTimelineReadResponse,
   fetchFull: () => Promise<ThreadTimelineResponse>,
 ): Promise<ThreadTimelineResponse> {
-  if (response.delta === undefined) {
+  if (!isThreadTimelineDelta(response)) {
     return response;
   }
-  const merged = previous
-    ? applyTimelineDelta(previous.rows, response.delta)
-    : null;
-  if (merged !== null) {
-    return { ...response, rows: merged, delta: undefined };
-  }
-  return fetchFull();
+  const merged =
+    previous === undefined
+      ? null
+      : applyThreadTimelineDelta(previous, response);
+  return merged ?? fetchFull();
 }
 
 interface FetchThreadTimelineArgs {
@@ -880,9 +842,7 @@ export async function fetchThreadTimeline({
     threadId,
     signal,
     ...pageArgs,
-    ...(previous?.maxSeq !== undefined
-      ? { afterSequence: String(previous.maxSeq) }
-      : {}),
+    ...(previous === undefined ? {} : { afterTag: previous.tag }),
   });
   const merged = await mergeThreadTimelineDelta(previous, response, () =>
     sdk.threads.timeline({ threadId, signal, ...pageArgs }),
@@ -893,10 +853,11 @@ export async function fetchThreadTimeline({
   const timeline =
     pushed !== undefined && pushed.maxSeq > merged.maxSeq ? pushed : merged;
   clearThreadTimelineUnseenEvents(queryClient, threadId, timeline.maxSeq);
+  syncThreadTimelineSubscriptionTag(queryClient, threadId, timeline.tag);
   markStreamTrace("bb:timeline-applied", {
     threadId,
     maxSeq: timeline.maxSeq,
-    source: response.delta === undefined ? "fetch" : "fetch-delta",
+    source: isThreadTimelineDelta(response) ? "fetch-delta" : "fetch",
   });
   return timeline;
 }

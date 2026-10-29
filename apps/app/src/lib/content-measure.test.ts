@@ -38,9 +38,8 @@ const MEASURE_SITES = [
   "components/ui/page-shell.tsx",
   "components/ui/page-shell-content-style.ts",
   "components/ui/route-loading-skeleton.tsx",
-  "components/thread/embedded-chat/EmbeddedThreadChat.tsx",
-  "views/RootComposeSecondaryContent.tsx",
-  "views/RootComposeCompactHome.tsx",
+  "views/thread-detail/ThreadScreen.tsx",
+  "views/RootComposeHome.tsx",
 ];
 
 describe("content measure", () => {

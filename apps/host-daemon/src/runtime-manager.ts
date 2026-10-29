@@ -17,12 +17,13 @@ import {
 } from "@bb/agent-runtime";
 import type { Logger } from "@bb/logger";
 import { sliceUtf16Tail } from "@bb/text-utils";
-import type {
-  PendingInteractionCreate,
-  PendingInteractionResolution,
-  ThreadEvent,
+import {
+  type PendingInteractionCreate,
+  type PendingInteractionResolution,
+  type ThreadEvent,
+  threadScope,
+  turnScope,
 } from "@bb/domain";
-import { threadScope, turnScope } from "@bb/domain";
 import type {
   HostDaemonActiveThread,
   HostDaemonContributedEnvEntry,
@@ -36,7 +37,6 @@ import type {
 } from "@bb/host-watcher";
 import {
   provisionWorkspace,
-  WorkspaceError,
   type HostWorkspace,
   type ProvisionWorkspaceArgs,
 } from "@bb/host-workspace";
@@ -58,12 +58,13 @@ import {
   PROVIDER_INSTALLATION_GATE_TTL_MS,
   type ProviderInstallationGate,
 } from "./provider-installation-gate.js";
-import type { FetchSkillTree } from "./skill-trees.js";
+import type { SkillTreeTransport } from "./skill-trees.js";
 import { userExecutableProcessOptions } from "./user-executable-env.js";
 import { runSetupScript } from "./environment-lifecycle-script.js";
 import { runInSerialLane } from "./serial-lane.js";
 import { waitWhileProviderSignInRenews } from "./provider-sign-in-renewal.js";
 import { z } from "zod";
+import { WorkspaceError } from "bb-environment-provider-host/workspace-git";
 
 type StopWatching = () => void | Promise<void>;
 
@@ -190,7 +191,7 @@ export interface RuntimeManagerOptions {
   createRuntime?: (options: AgentRuntimeOptions) => AgentRuntime;
   dataDir?: string;
   dataDirSkillsRootPath?: string | null;
-  fetchSkillTree?: FetchSkillTree;
+  skillTreeTransport?: SkillTreeTransport;
   hostWatcher?: HostWatcher;
   logger?: Pick<Logger, "debug" | "info" | "warn">;
   provisionWorkspace?: (
@@ -641,8 +642,8 @@ export class RuntimeManager {
         null,
       dataDir: this.options.dataDir,
       injectedSkillSources: args.injectedSkillSources,
-      ...(this.options.fetchSkillTree !== undefined
-        ? { fetchSkillTree: this.options.fetchSkillTree }
+      ...(this.options.skillTreeTransport !== undefined
+        ? { skillTreeTransport: this.options.skillTreeTransport }
         : {}),
       logger: this.getInjectedSkillsLogger(),
     });
@@ -1409,6 +1410,14 @@ export class RuntimeManager {
 
   async shutdownAll(mode: RuntimeShutdownMode): Promise<void> {
     this.runtimesClosed = true;
+    for (const pending of this.pendingEnvironmentProvisions.values()) {
+      pending.abortController.abort(
+        new WorkspaceError(
+          "provision_cancelled",
+          "Environment provisioning was cancelled because the host daemon is shutting down",
+        ),
+      );
+    }
     const entries = [...this.entries.values()];
     for (const pending of this.pendingEntries.values()) {
       try {
