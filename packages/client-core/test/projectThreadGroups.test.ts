@@ -1,6 +1,6 @@
 import type { ThreadListEntry } from "@bb/domain";
 import { makeThreadListEntry } from "@bb/test-helpers/domain-fixtures";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   buildChronologicalThreadList,
   resolveSidebarProjectId,
@@ -84,18 +84,27 @@ describe("buildChronologicalThreadList", () => {
         },
       },
     });
-    const atBoundary = buildChronologicalThreadList(
-      [parent, child],
-      compareByAttentionDescending,
-      new Set(),
-      1_090_000,
-    );
-    const afterBoundary = buildChronologicalThreadList(
-      [parent, child],
-      compareByAttentionDescending,
-      new Set(),
-      1_090_001,
-    );
+    vi.useFakeTimers();
+    let atBoundary: ProjectThreadItem[];
+    let afterBoundary: ProjectThreadItem[];
+    try {
+      vi.setSystemTime(1_090_000);
+      atBoundary = buildChronologicalThreadList(
+        [parent, child],
+        compareByAttentionDescending,
+        new Set(),
+        1_090_000,
+      );
+      vi.setSystemTime(1_090_001);
+      afterBoundary = buildChronologicalThreadList(
+        [parent, child],
+        compareByAttentionDescending,
+        new Set(),
+        1_090_001,
+      );
+    } finally {
+      vi.useRealTimers();
+    }
 
     expect(
       findNode(atBoundary, parent.id)?.stats.childActivity.runtimeWorking,

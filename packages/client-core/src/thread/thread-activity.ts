@@ -39,11 +39,12 @@ export function isNativeActivityUnconfirmed(
 ): boolean {
   const activity = runtime.nativeActivity;
   if (activity === undefined) return false;
+  const current = Math.max(now, Date.now());
   return (
     activity.confirmation !== "confirmed" ||
     activity.lastEvidenceAt === null ||
-    now < activity.lastEvidenceAt ||
-    now - activity.lastEvidenceAt > activity.freshForMs
+    current < activity.lastEvidenceAt ||
+    current - activity.lastEvidenceAt > activity.freshForMs
   );
 }
 
