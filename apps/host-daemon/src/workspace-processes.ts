@@ -58,6 +58,8 @@ function parseLsofOutput(output: string):
       if (pid === null) return { ok: false };
       sawName = true;
       paths.push({ pid, path: line.slice(1) });
+    } else if (tag === "f") {
+      continue;
     } else {
       return { ok: false };
     }
@@ -76,7 +78,7 @@ function lsofStderrIsBenign(stderr: string): boolean {
   return stderr.trim().length === 0;
 }
 
-function lsofRunIsTrustworthy(run: LsofRun): boolean {
+export function lsofRunIsTrustworthy(run: LsofRun): boolean {
   if (run.exitCode === 0) {
     return lsofStderrIsBenign(run.stderr);
   }
@@ -224,19 +226,26 @@ async function inspectDarwinWorkspaceProcesses(
   }
   await Promise.all(
     [...pathsByPid.entries()].map(async ([pid, paths]) => {
-      let inspected = false;
       let matched = false;
       for (const value of paths) {
+        const deletedSuffix = value.replace(/ \(deleted\)$/, "");
+        const maybeWorkspace =
+          underWorkspace(value, workspace) ||
+          underWorkspace(deletedSuffix, workspace) ||
+          value.startsWith(workspace + path.sep) ||
+          deletedSuffix.startsWith(workspace + path.sep);
         try {
           const canonical = await canonicalPath(value);
-          inspected = true;
           if (underWorkspace(canonical, workspace)) matched = true;
         } catch (error) {
-          if (!missing(error)) unreadablePids.add(pid);
+          if (missing(error)) {
+            if (underWorkspace(deletedSuffix, workspace)) matched = true;
+            continue;
+          }
+          if (maybeWorkspace) unreadablePids.add(pid);
         }
       }
       if (matched) pids.add(pid);
-      else if (!inspected && paths.length > 0) unreadablePids.add(pid);
     }),
   );
   return {

@@ -234,7 +234,7 @@ describe("darwin workspace process inspection", () => {
 
   it("returns unsupported when lsof field output is garbled", async () => {
     vi.mocked(execHostFile).mockImplementation((async () => ({
-      stdout: "p501\nfcwd\n",
+      stdout: "p501\nzgarbled\n",
       stderr: "",
     })) as never);
     vi.mocked(realpath).mockResolvedValue("/ws/project");
