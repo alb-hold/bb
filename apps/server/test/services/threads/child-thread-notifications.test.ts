@@ -8,7 +8,7 @@ function nativeChildFixture(harness: TestAppHarness, policy: "auto" | "off" | "s
   const { thread: parent, host, session, project, environment } = seedThreadFixture(harness, { thread: { status: "active" } });
   const child = seedThread(harness.deps, { projectId: project.id, environmentId: environment.id, parentThreadId: parent.id, parentNotifications: policy, title: "Native worker" });
   for (const thread of [parent, child]) {
-    createNativeTerminalThread(harness.db, { threadId: thread.id, providerId: thread.providerId, nativeSessionId: `native-${thread.id}`, initialPrompt: null, initialImages: [], model: null });
+    createNativeTerminalThread(harness.db, { threadId: thread.id, providerId: thread.providerId, nativeSessionId: `native-${thread.id}`, initialPrompt: thread.id === parent.id ? "Coordinate children" : null, initialImages: [], model: null });
     if (thread.id === parent.id) continue;
     const terminal = createTerminalSession(harness.db, { cols: 80, rows: 24, environmentId: environment.id, hostId: host.id, daemonSessionId: session.id, initialCwd: "/tmp", status: "running", threadId: thread.id, title: "Native" });
     setNativeTerminalThreadTerminal(harness.db, { threadId: thread.id, terminalSessionId: terminal.id });
