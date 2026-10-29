@@ -583,13 +583,24 @@ describe("thread-activity", () => {
           evidenceKind: "holder-report" as const,
         },
       });
-      expect(
-        isNativeActivityUnconfirmed(runtimeWith("confirmed", now), now),
-      ).toBe(false);
-      for (const confirmation of ["unconfirmed", "tool-call", "unknown", ""]) {
+      vi.useFakeTimers();
+      try {
+        vi.setSystemTime(now);
         expect(
-          isNativeActivityUnconfirmed(runtimeWith(confirmation, now), now),
-        ).toBe(true);
+          isNativeActivityUnconfirmed(runtimeWith("confirmed", now), now),
+        ).toBe(false);
+        for (const confirmation of [
+          "unconfirmed",
+          "tool-call",
+          "unknown",
+          "",
+        ]) {
+          expect(
+            isNativeActivityUnconfirmed(runtimeWith(confirmation, now), now),
+          ).toBe(true);
+        }
+      } finally {
+        vi.useRealTimers();
       }
     });
 
