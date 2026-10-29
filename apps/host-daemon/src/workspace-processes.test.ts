@@ -387,7 +387,7 @@ describe("darwin workspace process inspection", () => {
   ])(
     "treats relative unix bind as unreadable when cwd is outside the workspace ($name)",
     async ({ pid, cwdOut, filesOut }) => {
-      vi.mocked(execHostFile).mockImplementation((async (cmd, args) => {
+      vi.mocked(execHostFile).mockImplementation((async (_cmd, args: readonly string[]) => {
         const flags = (args as string[] | undefined) ?? [];
         const stdout = flags.includes("cwd") ? cwdOut : filesOut;
         return { stdout, stderr: "" };
@@ -423,7 +423,7 @@ describe("darwin workspace process inspection", () => {
   ])(
     "matches relative unix bind when cwd is the workspace ($sock)",
     async ({ pid, cwdOut, filesOut, sockPath }) => {
-      vi.mocked(execHostFile).mockImplementation((async (_cmd, args) => {
+      vi.mocked(execHostFile).mockImplementation((async (_cmd, args: readonly string[]) => {
         const flags = (args as string[] | undefined) ?? [];
         const stdout = flags.includes("cwd") ? cwdOut : filesOut;
         return { stdout, stderr: "" };
