@@ -57,6 +57,7 @@ import {
   terminalOutputShowsPasteAgain,
   terminalScreenAlreadyShowsText,
   terminalScreenInputBoxHoldsText,
+  terminalScreenInputBoxIsEmpty,
 } from "./native-terminal-echo.js";
 import { resolveThreadDynamicTools } from "./thread-runtime-config.js";
 import { UPDATE_ENVIRONMENT_DIRECTORY_TOOL_NAME } from "./thread-environment-directory.js";
@@ -1261,9 +1262,16 @@ export function recordNativeTerminalSession(
   return getNativeTerminalThreadView(deps, args.threadId);
 }
 
+interface NativeTerminalSendArgs {
+  requestText?: string;
+  requireEmptyInputBox?: boolean;
+  threadId: string;
+  pastes: readonly string[];
+}
+
 export function sendNativeTerminalMessage(
   deps: NativeTerminalDeps,
-  args: { requestText?: string; threadId: string; pastes: readonly string[] },
+  args: NativeTerminalSendArgs,
 ): Promise<TerminalSession> {
   const previous = pendingSends.get(args.threadId) ?? Promise.resolve();
   const sending = previous.then(() => deliverNativeTerminalMessage(deps, args));
@@ -1301,9 +1309,19 @@ function nativeTerminalInputAmbiguous(
   );
 }
 
+function nativeTerminalInputOccupied(
+  provider: NativeTerminalProvider,
+): ApiError {
+  return new ApiError(
+    409,
+    "native_terminal_input_occupied",
+    `${provider.displayName} has text in its input box or is not at an idle prompt, so nothing was sent.`,
+  );
+}
+
 async function deliverNativeTerminalMessage(
   deps: NativeTerminalDeps,
-  args: { requestText?: string; threadId: string; pastes: readonly string[] },
+  args: NativeTerminalSendArgs,
 ): Promise<TerminalSession> {
   const view = getNativeTerminalThreadView(deps, args.threadId);
   if (view.terminal === null || view.terminal.status !== "running") {
@@ -1311,6 +1329,17 @@ async function deliverNativeTerminalMessage(
   }
   const terminalId = view.terminal.id;
   const provider = requireNativeTerminalProvider(deps, view.providerId);
+  if (args.requireEmptyInputBox === true) {
+    const screen =
+      (await deps.terminalSessions.readTerminalPromptScreen(terminalId)) ??
+      (await deps.terminalSessions.readTerminalScreen({
+        terminalId,
+        query: {},
+      }));
+    if (!terminalScreenInputBoxIsEmpty(screen)) {
+      throw nativeTerminalInputOccupied(provider);
+    }
+  }
   const before = await deps.terminalSessions.readTerminalOutput({
     terminalId,
     query: { tailBytes: NATIVE_TERMINAL_ECHO_CONTEXT_BYTES },

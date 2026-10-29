@@ -338,6 +338,34 @@ export function terminalScreenAlreadyShowsText(args: {
   );
 }
 
+export function terminalScreenInputBoxIsEmpty(args: {
+  rows: readonly string[];
+  solidRows?: readonly string[];
+}): boolean {
+  let promptAt = -1;
+  for (let index = args.rows.length - 1; index >= 0; index -= 1) {
+    const first = Array.from(args.rows[index]!.trimStart())[0] ?? null;
+    if (INPUT_PROMPT_MARKERS.has(first)) {
+      promptAt = index;
+      break;
+    }
+  }
+  if (promptAt < 0) return false;
+  const row = args.rows[promptAt]!;
+  const prompt = row.trimStart();
+  const marker = Array.from(prompt)[0]!;
+  const remainder = prompt.slice(marker.length);
+  const next = args.rows[promptAt + 1];
+  if (next !== undefined && next.trim() !== "" && !ECHO_BORDER_ROW.test(next)) {
+    return false;
+  }
+  if (remainder.trim() === "") return true;
+  const solid = args.solidRows?.[promptAt];
+  if (solid === undefined) return false;
+  const promptStart = row.length - prompt.length;
+  return solid.slice(promptStart + marker.length).trim() === "";
+}
+
 export function terminalScreenInputBoxHoldsText(args: {
   cols: number;
   cursor: { col: number; row: number };
