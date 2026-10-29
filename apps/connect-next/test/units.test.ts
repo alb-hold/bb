@@ -1064,10 +1064,11 @@ describe("frp hooks", () => {
     function gatedAccounts() {
       const held = new Map<string, Promise<void>>();
       const open = new Map<string, () => void>();
+      const refusing = new Set<string>();
       const accounts: AccountApi = {
         resolve: async (request) => {
           await held.get(request.label ?? "");
-          return { ...OWNED, credential: true };
+          return { ...OWNED, credential: !refusing.has(request.label ?? "") };
         },
         forget: () => {},
         presence: async () => [],
@@ -1084,6 +1085,9 @@ describe("frp hooks", () => {
         },
         release(label: string) {
           open.get(label)?.();
+        },
+        refuse(label: string) {
+          refusing.add(label);
         },
       };
     }
@@ -1113,6 +1117,29 @@ describe("frp hooks", () => {
       await sleep(300);
       expect(harness.directory.locate(SUBDOMAIN).kind).toBe("here");
       expect(harness.directory.locate("wasp").kind).not.toBe("here");
+    });
+
+    it("frees the run id when the pending claim that kept it is refused after its record closed", async () => {
+      const gate = gatedAccounts();
+      const harness = await startHooks(gate.accounts);
+      await connectFirst(harness);
+
+      gate.hold("bee");
+      gate.refuse("bee");
+      const reconnect = proxyAs(harness, "bee", "run-1");
+      await sleep(30);
+      harness.frps.unregister(PROXY_NAME);
+      await harness.proxyCall("CloseProxy", "run-1");
+      await sleep(TIMINGS.registerGraceMs + 200);
+      expect(await loginAs(harness, "wasp", "run-1")).toMatchObject({
+        reject: true,
+      });
+
+      gate.release("bee");
+      expect(await reconnect).toMatchObject({ reject: true });
+      expect(await loginAs(harness, "wasp", "run-1")).toMatchObject({
+        reject: false,
+      });
     });
 
     it.each([

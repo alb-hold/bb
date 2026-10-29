@@ -221,7 +221,7 @@ export function createFrpHooks(options: FrpHookOptions) {
         const left = (runClaims.get(runId) ?? 1) - 1;
         if (left > 0) runClaims.set(runId, left);
         else runClaims.delete(runId);
-        if (!keep && held === undefined) releaseRun(runId);
+        if (!keep) releaseRun(runId);
       },
     };
   }
