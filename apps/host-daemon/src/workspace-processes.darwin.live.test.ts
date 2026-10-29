@@ -101,6 +101,53 @@ it.skipIf(process.platform !== "darwin")(
 );
 
 it.skipIf(process.platform !== "darwin")(
+  "deleted workspace file through tmp alias",
+  async () => {
+    const workspace =
+      process.env.BB_R5_WS ?? (await mkdtemp(join(tmpdir(), "bb-r5-ws-")));
+    const holdFile = join(workspace, "hold.dat");
+    const created = process.env.BB_R5_WS === undefined;
+    if (created) {
+      await writeFile(holdFile, "hold\n");
+    }
+    const holder = spawn(
+      "bash",
+      ["-c", 'exec 3<>"$1"; sleep 300', "_", holdFile],
+      { detached: true, stdio: "ignore" },
+    );
+    holder.unref();
+    try {
+      if (created) {
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        await rm(holdFile, { force: true });
+        await new Promise((resolve) => setTimeout(resolve, 300));
+      }
+      const uid = String(process.getuid!());
+      const passes = darwinLsofPasses(uid);
+      const cwdRun = await execLsofLikeDaemon(passes.cwd);
+      const filesRun = await execLsofLikeDaemon(passes.files);
+      const alias = workspace.startsWith("/private/")
+        ? workspace.replace(/^\/private\/tmp\//, "/tmp/")
+        : workspace;
+      const inspection = await inspectWorkspaceProcesses(alias);
+      expect(cwdRun.stderr).toBe("");
+      expect(filesRun.stderr).toBe("");
+      expect(
+        inspection.pids.includes(holder.pid!) ||
+          inspection.unreadablePids.includes(holder.pid!),
+      ).toBe(true);
+    } finally {
+      try {
+        process.kill(holder.pid!, "SIGTERM");
+      } catch {
+        undefined;
+      }
+      if (created) await rm(workspace, { recursive: true, force: true });
+    }
+  },
+);
+
+it.skipIf(process.platform !== "darwin")(
   "finds no pids in an empty workspace directory",
   async () => {
     const workspace = await mkdtemp(join(tmpdir(), "bb-ws-inspect-empty-"));

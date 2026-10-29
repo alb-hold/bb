@@ -208,6 +208,27 @@ describe("darwin workspace process inspection", () => {
     expect(await inspectWorkspaceProcesses(workspace)).toEqual(expected);
   });
 
+  it("reports a holder when lsof uses a tmp alias for a deleted workspace file", async () => {
+    vi.mocked(execHostFile).mockImplementation((async () => ({
+      stdout: "p508\nn/tmp/ws/file (deleted)\n",
+      stderr: "",
+    })) as never);
+    vi.mocked(realpath).mockImplementation(async (value) => {
+      const key = String(value);
+      if (key === "/tmp/ws/file (deleted)" || key === "/tmp/ws/file" || key === "/tmp/ws") {
+        throw Object.assign(new Error("missing"), { code: "ENOENT" });
+      }
+      if (key === "/tmp") return "/private/tmp";
+      if (key === "/private/tmp/ws") return "/private/tmp/ws";
+      return key;
+    });
+    expect(await inspectWorkspaceProcesses("/tmp/ws")).toEqual({
+      supported: true,
+      pids: [508],
+      unreadablePids: [],
+    });
+  });
+
   it("returns unsupported when lsof fails", async () => {
     vi.mocked(execHostFile).mockRejectedValue(new Error("lsof failed"));
     expect(await inspectWorkspaceProcesses("/ws/project")).toEqual({

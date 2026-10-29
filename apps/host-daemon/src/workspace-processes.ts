@@ -23,6 +23,98 @@ async function canonicalPath(value: string): Promise<string> {
   }
 }
 
+function stripDeletedSuffix(value: string): string {
+  return value.replace(/ \(deleted\)$/, "");
+}
+
+async function resolveThroughExistingAncestor(
+  value: string,
+): Promise<string | null> {
+  let dir = stripDeletedSuffix(value);
+  const tail: string[] = [];
+  while (true) {
+    try {
+      const root = await realpath(dir);
+      return tail.length === 0 ? root : path.join(root, ...tail.reverse());
+    } catch (error) {
+      if (!missing(error)) throw error;
+      tail.push(path.basename(dir));
+      const parent = path.dirname(dir);
+      if (parent === dir) return null;
+      dir = parent;
+    }
+  }
+}
+
+function pathProvablyOutsideWorkspace(
+  value: string,
+  workspaceCanonical: string,
+  workspaceArg: string,
+): boolean {
+  const normalized = stripDeletedSuffix(value);
+  const roots = [workspaceCanonical, workspaceArg];
+  if (roots.some((root) => normalized === root || normalized.startsWith(root + path.sep)))
+    return false;
+  if (/^\/tmp\//.test(normalized) && workspaceCanonical.startsWith("/private/tmp/"))
+    return false;
+  if (/^\/var\//.test(normalized) && workspaceCanonical.startsWith("/private/var/"))
+    return false;
+  if (normalized.startsWith("/private/")) {
+    return !roots.some(
+      (root) =>
+        root.startsWith("/private/") &&
+        (normalized === root || normalized.startsWith(root + path.sep)),
+    );
+  }
+  return normalized.startsWith("/") && !normalized.startsWith("/private/");
+}
+
+async function pathMaybeInWorkspace(
+  value: string,
+  workspaceCanonical: string,
+  workspaceArg: string,
+): Promise<boolean> {
+  const deletedSuffix = stripDeletedSuffix(value);
+  if (
+    underWorkspace(value, workspaceCanonical) ||
+    underWorkspace(deletedSuffix, workspaceCanonical) ||
+    underWorkspace(deletedSuffix, workspaceArg)
+  )
+    return true;
+  if (
+    deletedSuffix.startsWith(workspaceCanonical + path.sep) ||
+    deletedSuffix.startsWith(workspaceArg + path.sep) ||
+    deletedSuffix === workspaceCanonical ||
+    deletedSuffix === workspaceArg
+  )
+    return true;
+  const resolved = await resolveThroughExistingAncestor(value);
+  if (resolved !== null) return underWorkspace(resolved, workspaceCanonical);
+  return !pathProvablyOutsideWorkspace(
+    deletedSuffix,
+    workspaceCanonical,
+    workspaceArg,
+  );
+}
+
+async function pathMatchesWorkspace(
+  value: string,
+  workspaceCanonical: string,
+): Promise<boolean> {
+  try {
+    const resolved = await resolveThroughExistingAncestor(value);
+    if (resolved !== null && underWorkspace(resolved, workspaceCanonical))
+      return true;
+    return underWorkspace(
+      await canonicalPath(stripDeletedSuffix(value)),
+      workspaceCanonical,
+    );
+  } catch (error) {
+    if (missing(error)) return false;
+    return false;
+  }
+}
+
 function underWorkspace(value: string, workspace: string): boolean {
   const normalized = value.replace(/ \(deleted\)$/, "");
   return [value, normalized].some(
@@ -184,7 +276,8 @@ async function inspectDarwinWorkspaceProcesses(
   pids: number[];
   unreadablePids: number[];
 }> {
-  const workspace = await canonicalPath(path.resolve(workspacePath));
+  const workspaceArg = path.resolve(workspacePath);
+  const workspace = await canonicalPath(workspaceArg);
   const uid = String(process.getuid!());
   const lsofFlags = ["-n", "-Fpn"] as const;
   const cwdRun = await execLsof([
@@ -228,22 +321,16 @@ async function inspectDarwinWorkspaceProcesses(
     [...pathsByPid.entries()].map(async ([pid, paths]) => {
       let matched = false;
       for (const value of paths) {
-        const deletedSuffix = value.replace(/ \(deleted\)$/, "");
-        const maybeWorkspace =
-          underWorkspace(value, workspace) ||
-          underWorkspace(deletedSuffix, workspace) ||
-          value.startsWith(workspace + path.sep) ||
-          deletedSuffix.startsWith(workspace + path.sep);
-        try {
-          const canonical = await canonicalPath(value);
-          if (underWorkspace(canonical, workspace)) matched = true;
-        } catch (error) {
-          if (missing(error)) {
-            if (underWorkspace(deletedSuffix, workspace)) matched = true;
-            continue;
-          }
-          if (maybeWorkspace) unreadablePids.add(pid);
+        const maybeWorkspace = await pathMaybeInWorkspace(
+          value,
+          workspace,
+          workspaceArg,
+        );
+        if (await pathMatchesWorkspace(value, workspace)) {
+          matched = true;
+          continue;
         }
+        if (maybeWorkspace) unreadablePids.add(pid);
       }
       if (matched) pids.add(pid);
     }),
