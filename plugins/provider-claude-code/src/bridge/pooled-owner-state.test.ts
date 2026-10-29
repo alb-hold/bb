@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import {
@@ -435,6 +435,17 @@ function runSecurity(home: string, args: string[]): string {
   });
 }
 
+const SECURITY_ITEM_NOT_FOUND = 44;
+
+function isMissingKeychainItem(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "status" in error &&
+    error.status === SECURITY_ITEM_NOT_FOUND
+  );
+}
+
 function createDisposableKeychain(seed: unknown): DisposableKeychain {
   const home = realpathSync(scratch());
   const configDir = join(home, "config");
@@ -481,24 +492,30 @@ function createDisposableKeychain(seed: unknown): DisposableKeychain {
     service,
     assertIsolated,
     read: () => {
+      let stored: string;
       try {
-        return JSON.parse(
-          runSecurity(home, [
-            "find-generic-password",
-            "-s",
-            service,
-            "-w",
-            file,
-          ]),
-        ) as { claudeAiOauth?: unknown };
-      } catch {
-        return undefined;
+        stored = runSecurity(home, [
+          "find-generic-password",
+          "-s",
+          service,
+          "-w",
+          file,
+        ]);
+      } catch (error) {
+        if (isMissingKeychainItem(error)) return undefined;
+        throw error;
       }
+      return JSON.parse(stored) as { claudeAiOauth?: unknown };
     },
-    modified: () =>
-      /"mdat"<timedate>=0x[0-9A-F]+\s+"([^"\\]+)/u.exec(
+    modified: () => {
+      const stamp = /"mdat"<timedate>=0x[0-9A-F]+\s+"([^"\\]+)/u.exec(
         runSecurity(home, ["find-generic-password", "-s", service, file]),
-      )?.[1] ?? "",
+      )?.[1];
+      if (stamp === undefined) {
+        throw new Error(`no mdat in the keychain item ${service}`);
+      }
+      return stamp;
+    },
   };
 }
 
@@ -523,7 +540,9 @@ async function runPooledThreadAgainstKeychain(
     }),
   );
   keychain.assertIsolated();
+  expect(keychain.read()?.claudeAiOauth).toEqual(SEEDED_LOGIN);
   const before = keychain.modified();
+  expect(before).not.toBe("");
   const options = buildSessionOptions(
     { ...SESSION_PARAMS, cwd: scratch() },
     {
@@ -589,17 +608,19 @@ describe.skipIf(REAL_CLAUDE === null || process.platform !== "darwin")(
         claudeAiOauth: SEEDED_LOGIN,
         mcpOAuth: {},
       });
+      expect(keychain.read()?.claudeAiOauth).toEqual(SEEDED_LOGIN);
       keychain.assertIsolated();
-      execFileSync(REAL_CLAUDE ?? "", ["auth", "logout"], {
+      const logout = spawnSync(REAL_CLAUDE ?? "", ["auth", "logout"], {
         env: {
           ...cleanBaseEnv(),
           HOME: keychain.home,
           CLAUDE_CONFIG_DIR: keychain.configDir,
         },
-        stdio: "ignore",
+        encoding: "utf8",
         timeout: 60_000,
       });
-      expect(keychain.read()?.claudeAiOauth).not.toEqual(SEEDED_LOGIN);
+      expect(logout.status).toBe(0);
+      expect(keychain.read()).toBeUndefined();
     }, 90_000);
   },
 );
