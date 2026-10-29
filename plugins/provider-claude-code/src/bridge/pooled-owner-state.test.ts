@@ -13,7 +13,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
-import { join } from "node:path";
+import { join, resolve, sep } from "node:path";
 import { createHash } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
 import { SdkSession } from "./sdk-session.js";
@@ -56,10 +56,27 @@ afterEach(() => {
   while (cleanups.length > 0) cleanups.pop()?.();
 });
 
+const scratchDirectories = new Set<string>();
+
 function scratch(): string {
   const directory = mkdtempSync(join(tmpdir(), "bb-pooled-owner-state-test-"));
+  scratchDirectories.add(directory);
+  scratchDirectories.add(realpathSync(directory));
   cleanups.push(() => rmSync(directory, { force: true, recursive: true }));
   return directory;
+}
+
+function assertInsideScratch(path: string): void {
+  const resolved = resolve(path);
+  const inside = [...scratchDirectories].some(
+    (directory) =>
+      resolved === directory || resolved.startsWith(`${directory}${sep}`),
+  );
+  if (!inside) {
+    throw new Error(
+      `refusing to use ${resolved}: not inside a directory this test created`,
+    );
+  }
 }
 
 function cleanBaseEnv(): NodeJS.ProcessEnv {
@@ -283,6 +300,7 @@ function digest(path: string): string {
 }
 
 interface OwnerConfig {
+  home: string;
   configDir: string;
   hookLog: string;
   guardedMarker: string;
@@ -290,7 +308,9 @@ interface OwnerConfig {
 }
 
 function writeOwnerConfig(): OwnerConfig {
-  const configDir = process.env.CLAUDE_CONFIG_DIR ?? "";
+  const home = scratch();
+  const configDir = join(home, ".claude");
+  assertInsideScratch(configDir);
   mkdirSync(configDir, { recursive: true });
   const work = scratch();
   const hookLog = join(work, "hook.log");
@@ -339,6 +359,7 @@ function writeOwnerConfig(): OwnerConfig {
   );
   chmodSync(credentialsFile, 0o600);
   return {
+    home,
     configDir,
     hookLog,
     guardedMarker: join(work, GUARDED_FRAGMENT),
@@ -349,13 +370,18 @@ function writeOwnerConfig(): OwnerConfig {
 async function runPooledThread(
   hub: ScriptedHub,
   dataDir: string,
+  owner: OwnerConfig,
 ): Promise<SdkSession> {
   const project = scratch();
+  assertInsideScratch(owner.home);
+  assertInsideScratch(owner.configDir);
   const options = buildSessionOptions(
     { ...SESSION_PARAMS, cwd: project },
     {
       ...cleanBaseEnv(),
       ...POOL_ENV,
+      HOME: owner.home,
+      CLAUDE_CONFIG_DIR: owner.configDir,
       BB_DATA_DIR: dataDir,
       ANTHROPIC_BASE_URL: hub.url,
       BB_CLAUDE_CODE_EXECUTABLE: REAL_CLAUDE ?? "",
@@ -378,7 +404,7 @@ describe.skipIf(REAL_CLAUDE === null)(
     it("still runs the owner's PreToolUse guard, which blocks a guarded command before it executes", async () => {
       const owner = writeOwnerConfig();
       const hub = await startScriptedHub({ tool: `touch ${owner.guardedMarker}` });
-      await runPooledThread(hub, scratch());
+      await runPooledThread(hub, scratch(), owner);
       await waitFor(
         () =>
           hub.bodies.some((body) => body.includes('"tool_result"'))
@@ -393,9 +419,9 @@ describe.skipIf(REAL_CLAUDE === null)(
     }, 90_000);
 
     it("still loads the owner's global rules into the model request", async () => {
-      writeOwnerConfig();
+      const owner = writeOwnerConfig();
       const hub = await startScriptedHub("unauthorized");
-      await runPooledThread(hub, scratch());
+      await runPooledThread(hub, scratch(), owner);
       await waitFor(() => (hub.bodies.length > 0 ? true : undefined), 60_000);
       expect(hub.bodies.some((body) => body.includes(RULES_MARKER))).toBe(true);
     }, 90_000);
@@ -408,7 +434,7 @@ describe.skipIf(REAL_CLAUDE === null)(
         mtimeMs: statSync(owner.credentialsFile).mtimeMs,
       };
       const hub = await startScriptedHub("unauthorized");
-      const session = await runPooledThread(hub, scratch());
+      const session = await runPooledThread(hub, scratch(), owner);
       await waitFor(() => (hub.bodies.length > 1 ? true : undefined), 60_000);
       session.stop();
       expect(digest(owner.credentialsFile)).toBe(before.digest);
@@ -449,6 +475,8 @@ function isMissingKeychainItem(error: unknown): boolean {
 function createDisposableKeychain(seed: unknown): DisposableKeychain {
   const home = realpathSync(scratch());
   const configDir = join(home, "config");
+  assertInsideScratch(home);
+  assertInsideScratch(configDir);
   mkdirSync(configDir, { recursive: true });
   const keychains = join(home, "Library", "Keychains");
   mkdirSync(keychains, { recursive: true });
