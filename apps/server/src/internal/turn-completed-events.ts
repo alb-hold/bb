@@ -1,6 +1,7 @@
 import { and, desc, eq } from "drizzle-orm";
 import { events, getThread, hasRootStoredTurnStarted } from "@bb/db";
 import {
+  providerErrorInfoSchema,
   requireThreadEventScopeTurnId,
   type ThreadEvent,
   type ThreadLifecycleEvent,
@@ -12,6 +13,12 @@ import {
   resetActiveThreadEventPruningState,
 } from "../services/system/event-pruning.js";
 import { applyLoggedThreadLifecycleEvent } from "../services/threads/lifecycle-outcome.js";
+import { z } from "zod";
+
+const terminalProviderErrorDataSchema = z.object({
+  willRetry: z.boolean().optional(),
+  errorInfo: providerErrorInfoSchema.optional(),
+});
 
 function isArchivedCredentialRevocation(
   db: AppDeps["db"],
@@ -48,12 +55,13 @@ function isArchivedCredentialRevocation(
     .get();
   let isUnauthorized = false;
   try {
+    const terminalError = terminalProviderErrorDataSchema.safeParse(
+      JSON.parse(latestProviderError?.data ?? "null"),
+    );
     isUnauthorized =
-      (
-        JSON.parse(latestProviderError?.data ?? "null") as {
-          errorInfo?: { category?: string };
-        } | null
-      )?.errorInfo?.category === "unauthorized";
+      terminalError.success &&
+      terminalError.data.willRetry !== true &&
+      terminalError.data.errorInfo?.category === "unauthorized";
   } catch {
     isUnauthorized = false;
   }

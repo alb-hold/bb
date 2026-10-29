@@ -411,6 +411,60 @@ describe("a child whose turn fails with a non-retryable error and is retried by 
     });
   }, 20_000);
 
+  it("keeps retryable archived auth failures failed when the turn later fails without another provider error", async () => {
+    await withTestHarness(async (harness) => {
+      const scenario = seedScenario(harness);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      harness.db
+        .update(threads)
+        .set({ archivedAt: Date.now() })
+        .where(eq(threads.id, scenario.child.id))
+        .run();
+      const archivedAt = getThread(harness.db, scenario.child.id)?.archivedAt;
+      if (archivedAt === null || archivedAt === undefined)
+        throw new Error("expected archive timestamp");
+      seedEvent(harness.deps, {
+        threadId: scenario.child.id,
+        environmentId: scenario.child.environmentId,
+        providerThreadId: PROVIDER_THREAD_ID,
+        sequence: 5,
+        type: "provider/error",
+        scope: turnScope(FIRST_TURN_ID),
+        createdAt: archivedAt + 1,
+        data: {
+          message: "Provider error",
+          detail: UNAUTHORIZED_DETAIL,
+          willRetry: true,
+          errorInfo: {
+            category: "unauthorized",
+            providerCode: null,
+            httpStatusCode: 401,
+          },
+        },
+      });
+      const response = await postEvents(harness, scenario.sessionId, [
+        {
+          threadId: scenario.child.id,
+          event: {
+            threadId: scenario.child.id,
+            providerThreadId: PROVIDER_THREAD_ID,
+            scope: turnScope(FIRST_TURN_ID),
+            type: "turn/completed",
+            status: "failed",
+          },
+        },
+      ]);
+      expect(response.status).toBe(200);
+      expect(getThread(harness.db, scenario.child.id)?.status).toBe("error");
+      await new Promise((resolve) => setTimeout(resolve, NOTICE_SETTLE_MS));
+      expect(
+        parentNoticeTexts(harness, scenario.parent.id).filter((text) =>
+          text.includes("failed."),
+        ),
+      ).toHaveLength(1);
+    });
+  }, 20_000);
+
   it("tells the parent about the first failure once and about the final failure once", async () => {
     await withTestHarness(async (harness) => {
       const scenario = seedScenario(harness);
