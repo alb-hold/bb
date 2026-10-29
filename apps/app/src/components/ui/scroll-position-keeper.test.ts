@@ -145,6 +145,68 @@ describe("ScrollPositionKeeper", () => {
     expect(timeline.layout.scrollTop).toBe(timeline.layout.maxScrollTop());
   });
 
+  function countScrollTopWrites(scrollElement: HTMLElement): () => number {
+    let writes = 0;
+    const descriptor = Object.getOwnPropertyDescriptor(
+      Element.prototype,
+      "scrollTop",
+    );
+    const originalSet = descriptor?.set;
+    if (originalSet === undefined) {
+      throw new Error("scrollTop setter missing");
+    }
+    vi.spyOn(Element.prototype, "scrollTop", "set").mockImplementation(function (
+      this: Element,
+      value: number,
+    ) {
+      if (this === scrollElement) writes += 1;
+      return originalSet.call(this, value);
+    });
+    return () => writes;
+  }
+
+  it("stays detached during an input session when the viewport grows and clamps", () => {
+    vi.useFakeTimers({
+      toFake: ["requestAnimationFrame", "cancelAnimationFrame", "performance"],
+    });
+    const timeline = createTimeline(rowsOf(10));
+    timeline.layout.flushResizeObservers();
+    timeline.userScrollTo(1_400);
+    expect(timeline.keeper.isAttached()).toBe(false);
+
+    timeline.scrollElement.dispatchEvent(new WheelEvent("wheel", { deltaY: 1 }));
+    timeline.layout.setViewportHeight(VIEWPORT_HEIGHT + 225);
+    void timeline.scrollElement.scrollTop;
+    expect(timeline.layout.takeClamp()).toBe(true);
+    timeline.scrollElement.dispatchEvent(new Event("scroll"));
+    vi.advanceTimersToNextFrame();
+
+    expect(timeline.keeper.isAttached()).toBe(false);
+    expect(timeline.keeper.getPosition().kind).not.toBe("bottom");
+  });
+
+  it("applies one scroll write for a bottom extent change before deferred reconcile", () => {
+    vi.useFakeTimers({
+      toFake: ["requestAnimationFrame", "cancelAnimationFrame", "performance"],
+    });
+    const timeline = createTimeline(rowsOf(10), { attached: true });
+    timeline.layout.flushResizeObservers();
+    timeline.layout.layoutScrollTo(timeline.layout.maxScrollTop());
+    const readWrites = countScrollTopWrites(timeline.scrollElement);
+    const reconcile = vi.spyOn(timeline.keeper, "reconcile");
+
+    timeline.layout.setViewportHeight(VIEWPORT_HEIGHT + 225);
+    void timeline.scrollElement.scrollTop;
+    expect(timeline.layout.takeClamp()).toBe(true);
+    timeline.scrollElement.dispatchEvent(new Event("scroll"));
+    vi.advanceTimersToNextFrame();
+
+    expect(reconcile).not.toHaveBeenCalled();
+    expect(readWrites()).toBeLessThanOrEqual(1);
+    expect(timeline.keeper.isAttached()).toBe(true);
+    expect(timeline.layout.scrollTop).toBe(timeline.layout.maxScrollTop());
+  });
+
   it("keeps the reading row in place when an older page is prepended", () => {
     const rows = rowsOf(10);
     const timeline = createTimeline(rows);
