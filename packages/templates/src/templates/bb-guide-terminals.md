@@ -50,18 +50,26 @@ and browser requests open the terminal's thread in connected bb app clients.
 The browser action uses the same thread panel placement as terminal links.
 
   bb terminal surfaces --thread <thread-id> [--json]
-  bb terminal focus <terminal-id>
+  bb terminal focus <terminal-id> [--all]
   bb terminal open-link <terminal-id> <http-or-https-url>
-  bb terminal split <terminal-id> --side right|left|up|down
+  bb terminal split <terminal-id> --side right|left|up|down [--all]
   bb terminal move <terminal-id> --to-pane-of <other-terminal-id>
 
+`focus` and `split` reach only the app clients currently viewing the calling
+thread (`BB_THREAD_ID`), so an agent never moves another window or another
+agent's browser. If the terminal belongs to a different thread, the calling
+thread's clients are moved to it. Outside a thread, or with no client viewing
+the calling thread, nothing is sent and the command exits non-zero with
+`no_caller_thread` or `no_client_viewing_caller_thread`. `--all` sends to every
+open app client. `open-link` and `move` still go to every open app client.
+
 The SDK exposes `sdk.terminals.experimental_surfaces.list({ threadId })`,
-`sdk.terminals.experimental_focus({ terminalId })`, and
+`sdk.terminals.experimental_focus({ terminalId, callerThreadId? | all? })`, and
 `sdk.terminals.experimental_openBrowser({ terminalId, url })`. A surface
 includes its thread and terminal IDs, title, status, and whether it is a
 regular or native terminal. Archived threads and terminal IDs outside the
 requested thread fail closed.
-`sdk.terminals.experimental_layout.split({ terminalId, side })` and
+`sdk.terminals.experimental_layout.split({ terminalId, side, callerThreadId? | all? })` and
 `sdk.terminals.experimental_layout.move({ terminalId, targetTerminalId })`
 arrange terminal tabs in persisted sidebar panes and return `deliveredClients`,
 the number of open app sockets the request was sent to. A zero-client response

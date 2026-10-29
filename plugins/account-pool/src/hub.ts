@@ -82,6 +82,8 @@ const OAUTH_PROXY_REQUEST_HEADERS = new Set([
   "user-agent",
   "anthropic-beta",
   "x-app",
+  "mcp-session-id",
+  "mcp-protocol-version",
 ]);
 const OAUTH_BETA_FLAG = "oauth-2025-04-20";
 const DROPPED_RESPONSE_HEADERS = new Set([

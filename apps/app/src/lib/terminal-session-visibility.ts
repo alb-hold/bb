@@ -72,15 +72,6 @@ export function shouldShowRetainedTerminalSession({
   );
 }
 
-export function shouldCloseUnretainedDisconnectedTerminalSession({
-  retainedTerminalIds,
-  session,
-}: RetainedTerminalSessionArgs): boolean {
-  return (
-    session.status === "disconnected" && !retainedTerminalIds.has(session.id)
-  );
-}
-
 export function omitSupersededDisconnectedSessions(
   sessions: readonly TerminalSession[],
 ): readonly TerminalSession[] {

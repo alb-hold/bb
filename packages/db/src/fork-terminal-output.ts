@@ -1,4 +1,5 @@
-import type { DbConnection } from "./connection.js";
+import { sql } from "drizzle-orm";
+import type { DbConnection, DbQueryConnection } from "./connection.js";
 import { findLastTerminalGridMarker } from "@bb/domain";
 
 export const TERMINAL_RETAINED_OUTPUT_BYTES = 64 * 1024;
@@ -488,6 +489,21 @@ export function getRetainedTerminalOutput(
       };
     },
   );
+}
+
+export function getRetainedTerminalOutputLatestSeq(
+  db: DbQueryConnection,
+  args: { hostId: string; terminalSessionId: string; now: number },
+): number | null {
+  const row = db.get<{ chunksJson: string } | undefined>(sql`
+    SELECT chunks_json AS chunksJson FROM fork_terminal_output
+    WHERE terminal_session_id = ${args.terminalSessionId}
+      AND host_id = ${args.hostId}
+      AND (expires_at IS NULL OR expires_at > ${args.now})
+  `);
+  if (!row) return null;
+  const last = parseChunks(row.chunksJson).at(-1);
+  return last === undefined ? null : last.chunk.seq;
 }
 
 export function pruneRetainedTerminalOutput(

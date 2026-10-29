@@ -12,6 +12,8 @@ describe("classifyOAuthProxyRequest", () => {
     ["GET", "/api/frame/0b6a7c1e-3f2d-4c11-9a52-0f1e2d3c4b5a?v=2"],
     ["PATCH", "/api/frame/0b6a7c1e-3f2d-4c11-9a52-0f1e2d3c4b5a"],
     ["DELETE", "/api/frame/blob/slug/file.png/agent-delete"],
+    ["POST", "/api/artifacts/mcp"],
+    ["GET", "/api/artifacts/mcp"],
   ])("forwards %s %s", (method, target) => {
     expect(classifyOAuthProxyRequest(method, target)).toEqual({
       kind: "forward",
@@ -47,6 +49,20 @@ describe("classifyOAuthProxyRequest", () => {
     ["GET", "//evil.example/api/frame/x"],
     ["GET", "/api/frame/x?" + "a".repeat(3000)],
     ["TRACE", "/api/frame/x"],
+    ["DELETE", "/api/artifacts/mcp"],
+    ["PUT", "/api/artifacts/mcp"],
+    ["PATCH", "/api/artifacts/mcp"],
+    ["POST", "/api/artifacts"],
+    ["POST", "/api/artifacts/"],
+    ["POST", "/api/artifacts/mcp/"],
+    ["POST", "/api/artifacts/mcp/upload/file.png"],
+    ["POST", "/api/artifacts/mcp?x=1"],
+    ["POST", "/api/artifacts/mcp/../oauth/profile"],
+    ["POST", "/api/artifacts/mcp/%2e%2e/oauth/profile"],
+    ["POST", "/api/artifacts/mcpx"],
+    ["POST", "/api/artifacts/Mcp"],
+    ["POST", "/v1/code/mcp/ccr-artifacts"],
+    ["POST", "/api/oauth/profile"],
   ])("denies %s %s", (method, target) => {
     expect(classifyOAuthProxyRequest(method, target)).toEqual({
       kind: "deny",

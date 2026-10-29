@@ -967,9 +967,28 @@ export const threadOpenRequestSchema = z
     file: threadOpenFileSchema.nullable(),
     terminalAction: threadOpenTerminalActionSchema.optional(),
     terminalLayoutAction: threadOpenTerminalLayoutActionSchema.optional(),
+    callerThreadId: z
+      .string()
+      .min(1)
+      .optional()
+      .describe(
+        "Thread making the request. A terminal focus or split reaches only app clients currently viewing this thread unless all is true.",
+      ),
+    all: z
+      .boolean()
+      .optional()
+      .describe(
+        "Send a terminal focus or split to every open app client instead of only clients viewing callerThreadId.",
+      ),
   })
   .strict();
 export type ThreadOpenRequest = z.infer<typeof threadOpenRequestSchema>;
+
+export const threadOpenSkipReasonSchema = z.enum([
+  "no_caller_thread",
+  "no_client_viewing_caller_thread",
+]);
+export type ThreadOpenSkipReason = z.infer<typeof threadOpenSkipReasonSchema>;
 
 export const threadOpenResponseSchema = z.object({
   deliveredClients: z
@@ -978,6 +997,11 @@ export const threadOpenResponseSchema = z.object({
     .nonnegative()
     .describe(
       "Number of open app sockets the request was sent to; this does not confirm receipt or application.",
+    ),
+  skipReason: threadOpenSkipReasonSchema
+    .nullable()
+    .describe(
+      "Why a terminal focus or split reached no client: the request named no caller thread, or no app client is viewing the caller thread. Null otherwise.",
     ),
 });
 export type ThreadOpenResponse = z.infer<typeof threadOpenResponseSchema>;

@@ -24,6 +24,7 @@ import {
   missingClaudeCliGuidance,
   translateMissingClaudeCliError,
 } from "./missing-cli-error.js";
+import { applyPinnedSettings } from "./pinned-settings.js";
 
 export interface SdkSessionOptions {
   cwd: string;
@@ -198,6 +199,7 @@ export class SdkSession {
   private mcpReconciliationPending = false;
   private complete: (() => void) | null = null;
   private stderrTail = "";
+  private releasePinnedSettings: (() => void) | undefined;
 
   constructor(
     private readonly options: SdkSessionOptions,
@@ -444,12 +446,17 @@ export class SdkSession {
       },
     };
 
+    const pinned = applyPinnedSettings(sdkOptions);
+    this.releasePinnedSettings?.();
+    this.releasePinnedSettings = pinned.release;
     try {
       this.query = query({
         prompt: this.createInputIterable(),
-        options: sdkOptions,
+        options: pinned.options,
       });
     } catch (error) {
+      this.releasePinnedSettings();
+      this.releasePinnedSettings = undefined;
       throw translateMissingClaudeCliError(error);
     }
 
@@ -636,6 +643,8 @@ export class SdkSession {
       this.rejectQueuedInputs("Claude SDK stream ended before input consumed");
       this.resolveInputDone();
       this.query = undefined;
+      this.releasePinnedSettings?.();
+      this.releasePinnedSettings = undefined;
       if (this.complete) {
         this.complete();
         this.complete = null;

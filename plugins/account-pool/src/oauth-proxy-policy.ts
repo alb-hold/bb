@@ -22,6 +22,8 @@ const FRAME_METHODS: ReadonlySet<string> = new Set([
   "DELETE",
 ]);
 const EVAL_PATH = /^\/api\/eval\/sdk-[A-Za-z0-9]+$/u;
+const ARTIFACT_MCP_PATH = "/api/artifacts/mcp";
+const ARTIFACT_MCP_METHODS: ReadonlySet<string> = new Set(["GET", "POST"]);
 
 function safeSegments(pathname: string): boolean {
   const segments = pathname.split("/").slice(1);
@@ -55,6 +57,12 @@ export function classifyOAuthProxyRequest(
   if (!safeSegments(pathname)) return DENY;
   if (pathname.startsWith("/api/frame/"))
     return FRAME_METHODS.has(method) ? FORWARD : DENY;
+  if (
+    queryStart === -1 &&
+    pathname === ARTIFACT_MCP_PATH &&
+    ARTIFACT_MCP_METHODS.has(method)
+  )
+    return FORWARD;
   if (method === "GET" && pathname === "/api/claude_code/policy_limits")
     return FORWARD;
   if (method === "GET" && pathname === "/api/claude_cli/bootstrap")

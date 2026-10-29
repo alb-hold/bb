@@ -228,6 +228,34 @@ function scheduleTimer(
   timers.set(sessionId, timeout);
 }
 
+interface ThreadOpenNotification {
+  split: ThreadOpenSplit;
+  file: ThreadOpenFile | null;
+  terminalAction?: ThreadOpenTerminalAction;
+  terminalLayoutAction?: ThreadOpenTerminalLayoutAction;
+}
+
+function threadOpenPayload(
+  thread: { projectId: string; threadId: string },
+  request: ThreadOpenNotification,
+): string {
+  return JSON.stringify(
+    threadOpenSignalSchema.parse({
+      type: "thread-open",
+      projectId: thread.projectId,
+      threadId: thread.threadId,
+      split: request.split,
+      file: request.file,
+      ...(request.terminalAction
+        ? { terminalAction: request.terminalAction }
+        : {}),
+      ...(request.terminalLayoutAction
+        ? { terminalLayoutAction: request.terminalLayoutAction }
+        : {}),
+    }),
+  );
+}
+
 interface ThreadEventWaiter {
   resolve: (notified: boolean) => void;
   timeout: ReturnType<typeof setTimeout>;
@@ -1623,30 +1651,25 @@ export class NotificationHub implements DbNotifier {
 
   notifyThreadOpen(
     thread: { projectId: string; threadId: string },
-    request: {
-      split: ThreadOpenSplit;
-      file: ThreadOpenFile | null;
-      terminalAction?: ThreadOpenTerminalAction;
-      terminalLayoutAction?: ThreadOpenTerminalLayoutAction;
-    },
+    request: ThreadOpenNotification,
   ): number {
-    return this.broadcastToAppClients(
-      JSON.stringify(
-        threadOpenSignalSchema.parse({
-          type: "thread-open",
-          projectId: thread.projectId,
-          threadId: thread.threadId,
-          split: request.split,
-          file: request.file,
-          ...(request.terminalAction
-            ? { terminalAction: request.terminalAction }
-            : {}),
-          ...(request.terminalLayoutAction
-            ? { terminalLayoutAction: request.terminalLayoutAction }
-            : {}),
-        }),
-      ),
-    );
+    return this.broadcastToAppClients(threadOpenPayload(thread, request));
+  }
+
+  notifyThreadOpenToViewers(
+    thread: { projectId: string; threadId: string },
+    request: ThreadOpenNotification,
+    viewerThreadId: string,
+  ): number {
+    const payload = threadOpenPayload(thread, request);
+    let delivered = 0;
+    for (const [socket, view] of this.activeDeviceHandoffViewByClientSocket) {
+      if (!this.appClientSockets.has(socket)) continue;
+      if (view.threadId !== viewerThreadId) continue;
+      socket.send(payload);
+      delivered += 1;
+    }
+    return delivered;
   }
 
   notifyThreadPaneAction(

@@ -161,7 +161,13 @@ export interface ExperimentalTerminalSurfacesArea {
   list(args: { threadId: string }): Promise<ExperimentalTerminalSurface[]>;
 }
 
-export interface ExperimentalTerminalFocusArgs {
+export interface ExperimentalTerminalDeliveryScope {
+  all?: boolean;
+  callerThreadId?: string;
+}
+
+export interface ExperimentalTerminalFocusArgs
+  extends ExperimentalTerminalDeliveryScope {
   terminalId: string;
 }
 
@@ -175,10 +181,12 @@ export interface ExperimentalTerminalLayoutArea {
     targetTerminalId: string;
     terminalId: string;
   }): Promise<ThreadOpenResponse>;
-  split(args: {
-    side: "right" | "left" | "up" | "down";
-    terminalId: string;
-  }): Promise<ThreadOpenResponse>;
+  split(
+    args: ExperimentalTerminalDeliveryScope & {
+      side: "right" | "left" | "up" | "down";
+      terminalId: string;
+    },
+  ): Promise<ThreadOpenResponse>;
 }
 
 export interface TerminalsArea {
@@ -232,6 +240,17 @@ function assertUnambiguousScope(
         );
       }
   }
+}
+
+function deliveryScopeBody(
+  scope: ExperimentalTerminalDeliveryScope,
+): ExperimentalTerminalDeliveryScope {
+  return {
+    ...(scope.callerThreadId === undefined
+      ? {}
+      : { callerThreadId: scope.callerThreadId }),
+    ...(scope.all === undefined ? {} : { all: scope.all }),
+  };
 }
 
 function terminalListQuery(scope: TerminalListScope): TerminalListQuery {
@@ -377,6 +396,7 @@ export function createTerminalsArea(args: CreateSdkAreaArgs): TerminalsArea {
           json: {
             file: null,
             terminalAction: { action: "focus", terminalId: session.id },
+            ...deliveryScopeBody(input),
           },
         }),
       );
@@ -569,6 +589,7 @@ export function createTerminalsArea(args: CreateSdkAreaArgs): TerminalsArea {
                 terminalId: session.id,
                 side: input.side,
               },
+              ...deliveryScopeBody(input),
             },
           }),
         );

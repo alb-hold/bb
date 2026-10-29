@@ -202,6 +202,52 @@ describe("@bb/sdk", () => {
     });
   });
 
+  it("sends the caller thread or all with a focus and split request", async () => {
+    const queue = createFetchQueue([
+      { body: makeTerminalSession({ id: "term_scope" }) },
+      { body: { deliveredClients: 0, skipReason: "no_client_viewing_caller_thread" } },
+      { body: makeTerminalSession({ id: "term_scope" }) },
+      { body: { deliveredClients: 2, skipReason: null } },
+    ]);
+    const sdk = createBbSdk({
+      transport: createHttpTransport({
+        baseUrl: "http://bb.test",
+        fetch: queue.fetch,
+        runtime: "node",
+      }),
+    });
+
+    await expect(
+      sdk.terminals.experimental_focus({
+        terminalId: "term_scope",
+        callerThreadId: "thr_caller",
+      }),
+    ).resolves.toEqual({
+      deliveredClients: 0,
+      skipReason: "no_client_viewing_caller_thread",
+    });
+    await sdk.terminals.experimental_layout.split({
+      terminalId: "term_scope",
+      side: "left",
+      all: true,
+    });
+
+    expect(JSON.parse(queue.requests[1]!.bodyText!)).toEqual({
+      file: null,
+      terminalAction: { action: "focus", terminalId: "term_scope" },
+      callerThreadId: "thr_caller",
+    });
+    expect(JSON.parse(queue.requests[3]!.bodyText!)).toEqual({
+      file: null,
+      terminalLayoutAction: {
+        action: "split",
+        terminalId: "term_scope",
+        side: "left",
+      },
+      all: true,
+    });
+  });
+
   it("opens a URL through the thread-open browser action", async () => {
     const queue = createFetchQueue([
       { body: makeTerminalSession({ id: "term_browser" }) },

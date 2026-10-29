@@ -1027,6 +1027,7 @@ export function takeNativeTerminalLaunchSpec(
   const input = consumeNativeTerminalThreadLaunchInput(deps.db, args.threadId);
   return {
     threadId: record.threadId,
+    providerId: record.providerId,
     cli: provider.cli,
     nativeSessionId: record.nativeSessionId,
     ...(args.imagesAsArgv ? input : launchInputWithImagesInPrompt(input)),

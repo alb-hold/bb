@@ -293,6 +293,10 @@ describe("reopenNativeTerminalsAfterDaemonReconnect", () => {
         takeNativeTerminalLaunchSpec(h.deps, { imagesAsArgv: true, threadId })
           .nativeSessionId,
       ).toBe("session-existing-1");
+      expect(
+        takeNativeTerminalLaunchSpec(h.deps, { imagesAsArgv: true, threadId })
+          .providerId,
+      ).toBe("codex");
       const start = createTerminal.mock.calls[0]?.[0].payload.start;
       if (start?.mode !== "command") {
         throw new Error("Expected a command terminal launch");

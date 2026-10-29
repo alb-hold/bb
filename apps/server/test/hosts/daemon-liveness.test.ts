@@ -215,10 +215,10 @@ describe("daemon liveness checks", () => {
                   }),
                 priority,
               ),
+            onInvalid: vi.fn(),
             raw: JSON.stringify({ type: "heartbeat" }),
             recordActivity: () =>
               harness.hub.recordDaemonActivity(daemon.sessionId),
-            socket: daemon.socket,
           });
           vi.advanceTimersByTime(1);
         }

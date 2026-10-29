@@ -2252,6 +2252,17 @@ describe("Account Pool plugin", () => {
           "Claude Code limits Opus to a 200k context window behind a custom base URL; the hub forwards to Anthropic's API",
       },
       {
+        name: "BB_CLAUDE_SETTINGS_ENV_PIN",
+        value:
+          "ANTHROPIC_BASE_URL,ANTHROPIC_AUTH_TOKEN,ENABLE_TOOL_SEARCH,_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL",
+        reason: expect.stringContaining("settings layer"),
+      },
+      {
+        name: "BB_CLAUDE_SETTINGS_ENV_PIN_PROVIDER",
+        value: "claude-code",
+        reason: expect.stringContaining("another provider"),
+      },
+      {
         name: "BB_ACCOUNT_POOL_PARENT_URL",
         value: { serverPath: "/api/v1/plugins/account-pool/http" },
         reason: "Account Pooler hub for nested bb servers on this machine",
@@ -9490,6 +9501,8 @@ describe("Account Pool nested proxy", () => {
       "HTTPS_PROXY",
       "NO_PROXY",
       "NODE_EXTRA_CA_CERTS",
+      "BB_CLAUDE_SETTINGS_ENV_PIN",
+      "BB_CLAUDE_SETTINGS_ENV_PIN_PROVIDER",
       "BB_ACCOUNT_POOL_PARENT_URL",
       "BB_ACCOUNT_POOL_PARENT_TOKEN",
     ]);
@@ -12612,7 +12625,8 @@ describe("Account Pool Artifact proxy", () => {
     );
     const entries = await claudeEnv(fixture);
     const byName = new Map(entries.map((entry) => [entry.name, entry.value]));
-    expect(byName.has("ANTHROPIC_AUTH_TOKEN")).toBe(false);
+    expect(byName.get("ANTHROPIC_AUTH_TOKEN")).toBe("");
+    expect(byName.get("ANTHROPIC_API_KEY")).toBe("");
     expect(byName.get("CLAUDE_CODE_OAUTH_TOKEN")).toBe(fixture.key);
     expect(byName.get("ANTHROPIC_BASE_URL")).toEqual({
       serverPath: "/api/v1/plugins/account-pool/http",
@@ -12654,6 +12668,36 @@ describe("Account Pool Artifact proxy", () => {
     expect((await fs.stat(caDir)).mode & 0o777).toBe(0o700);
   });
 
+  it("pins the new-mode routing variables into Claude's settings layer so a host settings env block cannot replace them", async () => {
+    const fixture = await artifactFixture(
+      async () => Response.json({}),
+      () => hostRpcResult,
+    );
+    const entries = await claudeEnv(fixture);
+    const byName = new Map(entries.map((entry) => [entry.name, entry.value]));
+    const pinned = String(byName.get("BB_CLAUDE_SETTINGS_ENV_PIN")).split(",");
+    expect(pinned).toEqual([
+      "ANTHROPIC_BASE_URL",
+      "CLAUDE_CODE_OAUTH_TOKEN",
+      "ENABLE_TOOL_SEARCH",
+      "_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL",
+      "ENABLE_PROMPT_CACHING_1H",
+      "HTTPS_PROXY",
+      "NO_PROXY",
+      "NODE_EXTRA_CA_CERTS",
+      "CLAUDE_CODE_ARTIFACT",
+      "ANTHROPIC_AUTH_TOKEN",
+      "ANTHROPIC_API_KEY",
+    ]);
+    for (const name of pinned) expect(byName.has(name)).toBe(true);
+    expect(byName.get("BB_CLAUDE_SETTINGS_ENV_PIN_PROVIDER")).toBe(
+      "claude-code",
+    );
+    expect(String(byName.get("BB_CLAUDE_SETTINGS_ENV_PIN"))).not.toContain(
+      fixture.key,
+    );
+  });
+
   it("leaves api-key-only pools and the codex environment unchanged", async () => {
     const calls: ExperimentalFakeHostRpcCall[] = [];
     const fixture = await artifactFixture(
@@ -12670,9 +12714,17 @@ describe("Account Pool Artifact proxy", () => {
       "ANTHROPIC_AUTH_TOKEN",
       "ENABLE_TOOL_SEARCH",
       "_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL",
+      "BB_CLAUDE_SETTINGS_ENV_PIN",
+      "BB_CLAUDE_SETTINGS_ENV_PIN_PROVIDER",
       "BB_ACCOUNT_POOL_PARENT_URL",
       "BB_ACCOUNT_POOL_PARENT_TOKEN",
     ]);
+    expect(
+      entries.find((entry) => entry.name === "BB_CLAUDE_SETTINGS_ENV_PIN")
+        ?.value,
+    ).toBe(
+      "ANTHROPIC_BASE_URL,ANTHROPIC_AUTH_TOKEN,ENABLE_TOOL_SEARCH,_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL",
+    );
     expect(calls).toEqual([]);
   });
 
@@ -12725,6 +12777,51 @@ describe("Account Pool Artifact proxy", () => {
     );
   });
 
+  it("forwards the Artifact MCP request with its session headers and the account token", async () => {
+    const seen: Array<{ url: string; method: string; headers: Headers }> = [];
+    const fixture = await artifactFixture(
+      async (input, init) => {
+        seen.push({
+          url: String(input),
+          method: init?.method ?? "",
+          headers: new Headers(init?.headers),
+        });
+        return Response.json({ jsonrpc: "2.0", id: 1, result: {} });
+      },
+      () => hostRpcResult,
+    );
+    const response = await fixture.host.harness.behavior.fetchHttp(
+      "POST",
+      "/claude-oauth",
+      {
+        headers: {
+          authorization: `Bearer ${fixture.key}`,
+          "x-pool-target-host": "api.anthropic.com",
+          "x-pool-target-method": "POST",
+          "x-pool-target-path": "/api/artifacts/mcp",
+          accept: "application/json, text/event-stream",
+          "content-type": "application/json",
+          "mcp-session-id": "session-one",
+          "mcp-protocol-version": "2025-06-18",
+          "x-unrelated": "dropped",
+        },
+        body: '{"jsonrpc":"2.0","id":1,"method":"tools/list"}',
+      },
+    );
+    expect(response.status).toBe(200);
+    await response.text();
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.url).toBe("https://upstream.example/api/artifacts/mcp");
+    expect(seen[0]?.method).toBe("POST");
+    expect(seen[0]?.headers.get("authorization")).toBe("Bearer oauth-old");
+    expect(seen[0]?.headers.get("mcp-session-id")).toBe("session-one");
+    expect(seen[0]?.headers.get("mcp-protocol-version")).toBe("2025-06-18");
+    expect(seen[0]?.headers.get("x-unrelated")).toBeNull();
+    expect(JSON.stringify([...(seen[0]?.headers ?? [])])).not.toContain(
+      fixture.key,
+    );
+  });
+
   it.each([
     [
       "a path outside the allowlist",
@@ -12741,6 +12838,10 @@ describe("Account Pool Artifact proxy", () => {
     [
       "an encoded traversal",
       { method: "GET", path: "/api/frame/%2e%2e/oauth/profile" },
+    ],
+    [
+      "an Artifact MCP upload path",
+      { method: "POST", path: "/api/artifacts/mcp/upload/file.png" },
     ],
     [
       "another host",
