@@ -132,6 +132,38 @@ describe("relative unix bind suffix search", () => {
     }
   });
 
+  it("never treats deep workspace socket suffix as outside when bind cwd is /", async () => {
+    const ws = await mkdtemp(join(tmpdir(), "bb-r11-deep-"));
+    const segments = Array.from({ length: 13 }, (_, index) => `d${index}`);
+    const deepDir = join(ws, ...segments);
+    await mkdir(deepDir, { recursive: true });
+    const deepSocket = join(deepDir, "c.sock");
+    vi.mocked(execHostFile).mockImplementation((async (
+      cmd: string,
+      args: readonly string[],
+    ) => {
+      if (cmd === "find") {
+        const truncated = args.includes("-maxdepth");
+        const stdout = truncated ? "" : `${deepSocket}\n`;
+        return { stdout, stderr: "" };
+      }
+      const stdout = args.includes("cwd")
+        ? "p532\nfcwd\ntDIR\nn/\n"
+        : "p532\nf1\ntunix\nnc.sock\n";
+      return { stdout, stderr: "" };
+    }) as never);
+    try {
+      const result = await inspectWorkspaceProcesses(ws);
+      expect(result).toEqual({
+        supported: true,
+        pids: [],
+        unreadablePids: [532],
+      });
+    } finally {
+      await rm(ws, { recursive: true, force: true });
+    }
+  });
+
   it("treats relative unix as unreadable when workspace socket search times out", async () => {
     const ws = await mkdtemp(join(tmpdir(), "bb-r10b-timeout-"));
     const prior = process.env.BB_WS_SOCKET_FIND_TIMEOUT_MS;

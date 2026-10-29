@@ -105,8 +105,6 @@ function isRelativeUnixBindPath(
   return true;
 }
 
-const WORKSPACE_SOCKET_FIND_MAX_DEPTH = 12;
-
 function workspaceSocketFindTimeoutMs(): number {
   const raw = process.env.BB_WS_SOCKET_FIND_TIMEOUT_MS;
   if (raw != null && raw !== "") {
@@ -149,14 +147,7 @@ async function workspaceHasSocketWithSuffix(
     try {
       const result = await execHostFile(
         "find",
-        [
-          "-P",
-          root,
-          "-maxdepth",
-          String(WORKSPACE_SOCKET_FIND_MAX_DEPTH),
-          "-type",
-          "s",
-        ],
+        ["-P", root, "-type", "s"],
         {
           maxBuffer: 1024 * 1024,
           timeout: workspaceSocketFindTimeoutMs(),
