@@ -107,22 +107,25 @@ the most-parsed commands ends with the same shape.
     deliveredClients counts open app sockets the request was sent to; it does not confirm receipt or application.
     Without --all the request reaches only app clients viewing the calling thread (BB_THREAD_ID); skipReason and error.code name why none did.
 
-  bb terminal open-link <terminalId> <url> --json
-    {terminalId, url, deliveredClients, error?: {code, message} when deliveredClients is 0}
+  bb terminal open-link <terminalId> <url> [--all] --json
+    {terminalId, url, deliveredClients, skipReason?: "no_caller_thread" | "no_client_viewing_caller_thread", error?: {code, message} when deliveredClients is 0}
     deliveredClients counts open app sockets the request was sent to; it does not confirm receipt or application.
+    Without --all the request reaches only app clients viewing the calling thread (BB_THREAD_ID); skipReason and error.code name why none did.
 
   bb terminal split <terminalId> --side <side> [--all] --json
     {terminalId, side, deliveredClients, skipReason?: "no_caller_thread" | "no_client_viewing_caller_thread", error?: {code, message} when deliveredClients is 0}
     deliveredClients counts open app sockets the request was sent to; it does not confirm receipt or application.
     Without --all the request reaches only app clients viewing the calling thread (BB_THREAD_ID); skipReason and error.code name why none did.
 
-  bb terminal move <terminalId> --to-pane-of <terminalId> --json
-    {terminalId, targetTerminalId, deliveredClients, error?: {code, message} when deliveredClients is 0}
+  bb terminal move <terminalId> --to-pane-of <terminalId> [--all] --json
+    {terminalId, targetTerminalId, deliveredClients, skipReason?: "no_caller_thread" | "no_client_viewing_caller_thread", error?: {code, message} when deliveredClients is 0}
     deliveredClients counts open app sockets the request was sent to; it does not confirm receipt or application.
+    Without --all the request reaches only app clients viewing the calling thread (BB_THREAD_ID); skipReason and error.code name why none did.
 
-  bb thread open [id] [path] --json
-    {threadId, split, file, deliveredClients, inputPath}
+  bb thread open [id] [path] [--all] --json
+    {threadId, split, file, deliveredClients, inputPath, skipReason?: "no_caller_thread" | "no_client_viewing_caller_thread", error?: {code, message} when skipReason is set}
     deliveredClients counts open app sockets the request was sent to; it does not confirm receipt or application.
+    Without --all the request reaches only app clients viewing the calling thread (BB_THREAD_ID); skipReason and error.code name why none did.
 
   bb terminal output <terminalId> --json
     {chunks: [{seq, dataBase64}], nextSeq, truncated, status, exitCode, closeReason}    (chunk data is base64; status is "exited" once the command has finished)

@@ -248,6 +248,68 @@ describe("@bb/sdk", () => {
     });
   });
 
+  it("sends the caller thread or all with open-link, move, and thread open", async () => {
+    const queue = createFetchQueue([
+      { body: makeTerminalSession({ id: "term_scope" }) },
+      { body: { deliveredClients: 1, skipReason: null } },
+      { body: makeTerminalSession({ id: "term_scope" }) },
+      { body: makeTerminalSession({ id: "term_target" }) },
+      { body: { deliveredClients: 2, skipReason: null } },
+      { body: { deliveredClients: 0, skipReason: "no_caller_thread" } },
+      { body: { deliveredClients: 3, skipReason: null } },
+    ]);
+    const sdk = createBbSdk({
+      transport: createHttpTransport({
+        baseUrl: "http://bb.test",
+        fetch: queue.fetch,
+        runtime: "node",
+      }),
+    });
+
+    await sdk.terminals.experimental_openBrowser({
+      terminalId: "term_scope",
+      url: "http://localhost:3000",
+      callerThreadId: "thr_caller",
+    });
+    await sdk.terminals.experimental_layout.move({
+      terminalId: "term_scope",
+      targetTerminalId: "term_target",
+      all: true,
+    });
+    await expect(
+      sdk.threads.open({ threadId: "thr_test", file: null }),
+    ).resolves.toEqual({ deliveredClients: 0, skipReason: "no_caller_thread" });
+    await sdk.threads.open({
+      threadId: "thr_test",
+      file: null,
+      callerThreadId: "thr_caller",
+    });
+
+    expect(JSON.parse(queue.requests[1]!.bodyText!)).toEqual({
+      file: null,
+      terminalAction: {
+        action: "openBrowser",
+        terminalId: "term_scope",
+        url: "http://localhost:3000",
+      },
+      callerThreadId: "thr_caller",
+    });
+    expect(JSON.parse(queue.requests[4]!.bodyText!)).toEqual({
+      file: null,
+      terminalLayoutAction: {
+        action: "move",
+        terminalId: "term_scope",
+        targetTerminalId: "term_target",
+      },
+      all: true,
+    });
+    expect(JSON.parse(queue.requests[5]!.bodyText!)).toEqual({ file: null });
+    expect(JSON.parse(queue.requests[6]!.bodyText!)).toEqual({
+      file: null,
+      callerThreadId: "thr_caller",
+    });
+  });
+
   it("opens a URL through the thread-open browser action", async () => {
     const queue = createFetchQueue([
       { body: makeTerminalSession({ id: "term_browser" }) },

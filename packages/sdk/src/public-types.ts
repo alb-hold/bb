@@ -36,6 +36,7 @@ export type * from "./areas/native-terminals.js";
 export type * from "./areas/status.js";
 export type * from "./areas/system.js";
 export type * from "./areas/terminals.js";
+export type { ThreadOpenDeliveryScope } from "./areas/common.js";
 export type * from "./areas/theme.js";
 export type * from "./areas/thread-sections.js";
 export type * from "./areas/threads.js";
