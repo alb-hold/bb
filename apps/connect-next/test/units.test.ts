@@ -673,6 +673,69 @@ describe("frp hooks", () => {
       });
     });
 
+    async function replaceControlsInChain(
+      harness: Awaited<ReturnType<typeof startHooks>>,
+      controls: number,
+    ) {
+      let previous = await harness.login("control-1:1");
+      await harness.proxyCall("NewProxy", "run-1");
+      await sleep(300);
+      expect(harness.directory.locate("bee").kind).toBe("here");
+      for (let index = 2; index <= controls; index += 1) {
+        previous.destroy();
+        await sleep(20);
+        previous = await harness.login(`control-${index}:1`, "run-1");
+        await harness.proxyCall("NewProxy", "run-1");
+      }
+    }
+
+    for (const controls of [3, 4]) {
+      it(`keeps the newest of ${controls} same-run controls routed when every older control's close arrives after its proxy`, async () => {
+        const harness = await startHooks();
+        const signal = new AbortController().signal;
+        await replaceControlsInChain(harness, controls);
+        const waiting = harness.directory.awaitReturn("bee", signal);
+
+        for (let late = 1; late < controls; late += 1) {
+          await harness.proxyCall("CloseProxy", "run-1");
+        }
+        await sleep(REMOVAL_SETTLE_MS + 200);
+        expect(await waiting).toEqual({ kind: "here" });
+        expect(harness.directory.locate("bee").kind).toBe("here");
+
+        await harness.proxyCall("CloseProxy", "run-1");
+        expect(await harness.directory.awaitReturn("bee", signal)).toEqual({
+          kind: "offline",
+        });
+      });
+    }
+
+    it("removes the old proxy for a close that arrives before the replacement's proxy, even in a chain", async () => {
+      const harness = await startHooks();
+      const signal = new AbortController().signal;
+      const first = await harness.login("control-1:1");
+      await harness.proxyCall("NewProxy", "run-1");
+      await sleep(300);
+      first.destroy();
+      await sleep(20);
+      const second = await harness.login("control-2:1", "run-1");
+      await harness.proxyCall("CloseProxy", "run-1");
+      second.destroy();
+      await sleep(20);
+      await harness.login("control-3:1", "run-1");
+      await harness.proxyCall("NewProxy", "run-1");
+      const waiting = harness.directory.awaitReturn("bee", signal);
+
+      await sleep(REMOVAL_SETTLE_MS + 200);
+      expect(await waiting).toEqual({ kind: "here" });
+      expect(harness.directory.locate("bee").kind).toBe("here");
+
+      await harness.proxyCall("CloseProxy", "run-1");
+      expect(await harness.directory.awaitReturn("bee", signal)).toEqual({
+        kind: "offline",
+      });
+    });
+
     it("does not end the wait when a hook payload carries no run id", async () => {
       const { directory, login, proxyCall } = await startHooks();
       const abort = new AbortController();

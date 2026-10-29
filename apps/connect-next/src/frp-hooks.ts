@@ -124,7 +124,7 @@ export function createFrpHooks(options: FrpHookOptions) {
   >();
   const owners = new Map<string, number | null>();
   const generations = new Map<string, number>();
-  const staleCloses = new Map<string, NodeJS.Timeout>();
+  const owedCloses = new Map<string, NodeJS.Timeout[]>();
   const pendingRoutes = new Map<string, NodeJS.Timeout>();
 
   type Verdict = "linked" | "refused" | "unknown";
@@ -158,17 +158,31 @@ export function createFrpHooks(options: FrpHookOptions) {
   }
 
   function supersedeRun(runId: string): void {
-    generations.set(runId, (generations.get(runId) ?? 0) + 1);
-    for (const key of proxies.keys()) {
+    const superseded = generations.get(runId) ?? 0;
+    generations.set(runId, superseded + 1);
+    for (const [key, proxy] of proxies) {
       if (!key.startsWith(`${runId}\n`)) continue;
-      clearTimeout(staleCloses.get(key));
-      const expiry = setTimeout(
-        () => staleCloses.delete(key),
-        STALE_CLOSE_EXPIRY_MS,
-      );
+      if (proxy.generation !== superseded) continue;
+      const owed = owedCloses.get(key) ?? [];
+      const expiry = setTimeout(() => {
+        owed.splice(owed.indexOf(expiry), 1);
+        if (owed.length === 0 && owedCloses.get(key) === owed) {
+          owedCloses.delete(key);
+        }
+      }, STALE_CLOSE_EXPIRY_MS);
       expiry.unref();
-      staleCloses.set(key, expiry);
+      owed.push(expiry);
+      owedCloses.set(key, owed);
     }
+  }
+
+  function takeOwedClose(key: string): boolean {
+    const owed = owedCloses.get(key);
+    const expiry = owed?.shift();
+    if (owed === undefined || expiry === undefined) return false;
+    clearTimeout(expiry);
+    if (owed.length === 0) owedCloses.delete(key);
+    return true;
   }
 
   async function handle(call: HookCall): Promise<HookAnswer> {
@@ -239,8 +253,7 @@ export function createFrpHooks(options: FrpHookOptions) {
       const proxyKey = `${user.runId}\n${call.proxyName ?? ""}`;
       const proxy = proxies.get(proxyKey);
       const owner = owners.get(proxyKey) ?? null;
-      clearTimeout(staleCloses.get(proxyKey));
-      const supersededClose = staleCloses.delete(proxyKey);
+      const supersededClose = takeOwedClose(proxyKey);
       if (
         supersededClose &&
         proxy !== undefined &&
@@ -258,9 +271,10 @@ export function createFrpHooks(options: FrpHookOptions) {
         proxies.delete(proxyKey);
         owners.delete(proxyKey);
         const runPrefix = `${user.runId}\n`;
-        if (![...proxies.keys()].some((key) => key.startsWith(runPrefix))) {
-          generations.delete(user.runId);
-        }
+        const runInUse = [...proxies.keys(), ...owedCloses.keys()].some((key) =>
+          key.startsWith(runPrefix),
+        );
+        if (!runInUse) generations.delete(user.runId);
         directory.disconnected({ ...proxy, clientId: proxyKey });
         log("info", "frp_proxy_closed", {
           label: proxy.label,
