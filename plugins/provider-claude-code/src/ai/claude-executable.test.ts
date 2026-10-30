@@ -23,10 +23,12 @@ afterEach(async () => {
 });
 
 async function scratch(): Promise<string> {
+  const root = process.platform === "win32" ? os.tmpdir() : "/tmp";
   const dir = await fs.realpath(
-    await fs.mkdtemp(path.join(os.tmpdir(), "bb-claude-exec-")),
+    await fs.mkdtemp(path.join(root, "bb-claude-exec-")),
   );
   tempDirs.push(dir);
+  await fs.chmod(dir, 0o700);
   return dir;
 }
 
