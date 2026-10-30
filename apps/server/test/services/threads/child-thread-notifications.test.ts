@@ -539,6 +539,8 @@ describe("completion screen fallback", () => {
   it("prefers the answer over the exit resume hint", () => {
     expect(
       nativeCompletionScreenExcerpt([
+        "❯ user prompt",
+        "",
         "ALPHA",
         "BRAVO",
         "CHARLIE",

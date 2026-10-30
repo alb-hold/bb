@@ -283,10 +283,12 @@ export function nativeCompletionScreenExcerpt(rows: string[]): string | null {
       break;
     }
   }
-  for (let index = end - 1; index >= 0; index -= 1) {
-    if (prompt(lines[index] ?? "")) {
-      end = index;
-      break;
+  if (end === lines.length) {
+    for (let index = end - 1; index >= 0; index -= 1) {
+      if (prompt(lines[index] ?? "")) {
+        end = index;
+        break;
+      }
     }
   }
   while (end > 0) {
