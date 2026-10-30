@@ -5,7 +5,12 @@ import { createTerminalGridMarker } from "@bb/domain";
 import { createTerminalOutputPipeline } from "./terminal-output-pipeline";
 import {
   TERMINAL_REPLAY_PREVIEW_HOLD_TIMEOUT_MS,
+  completeTerminalReplayPreview,
+  createTerminalExitNoticeHandler,
+  createTerminalReplayPreviewExitHandler,
   mountTerminalReplayPreview,
+  resetTerminalExitNoticeForSession,
+  routeTerminalExitNotice,
   updateTerminalReplayPreviewPtyGrid,
 } from "./terminal-replay-preview";
 import { writeTerminalOutput } from "./ThreadTerminalView";
@@ -89,7 +94,297 @@ async function createPreviewHarness({
   };
 }
 
+function createExitHandler(
+  options: Omit<
+    Parameters<typeof createTerminalExitNoticeHandler>[0],
+    "getLastStatusNotice" | "setLastStatusNotice"
+  >,
+) {
+  let lastStatusNotice: string | null = null;
+  return createTerminalExitNoticeHandler({
+    ...options,
+    getLastStatusNotice: () => lastStatusNotice,
+    setLastStatusNotice: (status) => {
+      lastStatusNotice = status;
+    },
+  });
+}
+
 describe("terminal replay preview", () => {
+  it("defers a snapshot-preview exit and keeps the preview visible after replay", () => {
+    const replayState = {
+      hasReplaySurface: true,
+      replayStarted: false,
+      replayCompleted: false,
+    };
+    let exitPending = false;
+    let exitApplied = false;
+    const releasePreview = vi.fn();
+    const processExited = vi.fn();
+    const handleExit = createTerminalReplayPreviewExitHandler({
+      getReplayState: () => replayState,
+      isApplied: () => exitApplied,
+      isPending: () => exitPending,
+      markApplied: () => {
+        exitApplied = true;
+      },
+      markPending: () => {
+        exitPending = true;
+      },
+      releasePreview,
+      processExited,
+    });
+
+    handleExit();
+    expect(exitPending).toBe(true);
+    expect(releasePreview).not.toHaveBeenCalled();
+    expect(processExited).not.toHaveBeenCalled();
+
+    replayState.replayStarted = true;
+    replayState.replayCompleted = true;
+    completeTerminalReplayPreview({
+      hasPendingExit: exitPending,
+      markExitApplied: () => {
+        exitApplied = true;
+      },
+      clearPendingExit: () => {
+        exitPending = false;
+      },
+      releasePreview,
+      processExited,
+    });
+    expect(exitApplied).toBe(true);
+    expect(exitPending).toBe(false);
+    expect(releasePreview).not.toHaveBeenCalled();
+    expect(processExited).toHaveBeenCalledOnce();
+
+    handleExit();
+    expect(processExited).toHaveBeenCalledOnce();
+  });
+
+  it("reads replay completion when the component callback is invoked", () => {
+    const replayState = {
+      hasReplaySurface: true,
+      replayCompleted: false,
+    };
+    let exitApplied = false;
+    const releasePreview = vi.fn();
+    const processExited = vi.fn();
+    const handleExit = createTerminalReplayPreviewExitHandler({
+      getReplayState: () => replayState,
+      isApplied: () => exitApplied,
+      isPending: () => false,
+      markApplied: () => {
+        exitApplied = true;
+      },
+      markPending: vi.fn(),
+      releasePreview,
+      processExited,
+    });
+
+    replayState.replayCompleted = true;
+    handleExit();
+
+    expect(releasePreview).toHaveBeenCalledOnce();
+    expect(processExited).toHaveBeenCalledOnce();
+  });
+
+  it("applies an exit immediately when no replay preview exists", () => {
+    let exitApplied = false;
+    const releasePreview = vi.fn();
+    const processExited = vi.fn();
+    const handleExit = createTerminalReplayPreviewExitHandler({
+      getReplayState: () => ({
+        hasReplaySurface: false,
+        replayCompleted: false,
+      }),
+      isApplied: () => exitApplied,
+      isPending: () => false,
+      markApplied: () => {
+        exitApplied = true;
+      },
+      markPending: vi.fn(),
+      releasePreview,
+      processExited,
+    });
+
+    handleExit();
+
+    expect(exitApplied).toBe(true);
+    expect(releasePreview).toHaveBeenCalledOnce();
+    expect(processExited).toHaveBeenCalledOnce();
+  });
+
+  it("clears exit-notice dedupe when the active terminal session changes", () => {
+    const lastNotice = { current: "exited" as string | null };
+    const lastSessionId = { current: "term_previous" };
+
+    resetTerminalExitNoticeForSession({
+      lastNotice,
+      lastSessionId,
+      sessionId: "term_previous",
+    });
+    expect(lastNotice.current).toBe("exited");
+
+    resetTerminalExitNoticeForSession({
+      lastNotice,
+      lastSessionId,
+      sessionId: "term_next",
+    });
+    expect(lastNotice.current).toBeNull();
+    expect(lastSessionId.current).toBe("term_next");
+  });
+
+  it("orders fallback exit notices after replay history and routes later exits to xterm", () => {
+    const replayState = {
+      hasReplaySurface: false,
+      replayStarted: false,
+      replayCompleted: false,
+      needsHistoryRestore: false,
+    };
+    const replayWrites = ["replayed terminal history"];
+    const pendingNotices: string[] = [];
+    const terminalWrites: string[] = [];
+    const route = createExitHandler({
+      getReplayState: () => replayState,
+      pushReplay: (bytes) =>
+        replayWrites.push(new TextDecoder().decode(bytes)),
+      queueNotice: (text) => pendingNotices.push(text),
+      restoreTerminalHistory: async () => undefined,
+      writeTerminal: (status) => terminalWrites.push(status),
+    });
+
+    replayState.hasReplaySurface = true;
+    replayState.replayStarted = true;
+    expect(route("Terminal exited with code 7")).toBe(true);
+    expect(replayWrites).toEqual([
+      "replayed terminal history",
+      "\r\n\u001b[2mTerminal exited with code 7\u001b[0m\r\n",
+    ]);
+    expect(terminalWrites).toEqual([]);
+    expect(pendingNotices).toEqual(["Terminal exited with code 7"]);
+
+    replayState.replayCompleted = true;
+    replayState.replayStarted = false;
+    const completedRoute = createExitHandler({
+      getReplayState: () => replayState,
+      pushReplay: (bytes) =>
+        replayWrites.push(new TextDecoder().decode(bytes)),
+      queueNotice: (text) => pendingNotices.push(text),
+      restoreTerminalHistory: async () => undefined,
+      writeTerminal: (status) => terminalWrites.push(status),
+    });
+    completedRoute("Terminal exited with code 9");
+    expect(replayWrites).toHaveLength(2);
+    expect(terminalWrites).toEqual(["Terminal exited with code 9"]);
+  });
+
+  it("restores snapshot history before writing an exit after replay completes", async () => {
+    const replayState = {
+      hasReplaySurface: true,
+      replayStarted: true,
+      replayCompleted: false,
+      needsHistoryRestore: false,
+    };
+    const writes: string[] = [];
+    const route = createExitHandler({
+      getReplayState: () => replayState,
+      pushReplay: (bytes) => writes.push(new TextDecoder().decode(bytes)),
+      queueNotice: (notice) => writes.push(notice),
+      restoreTerminalHistory: async () => {
+        writes.push("replayed terminal history");
+      },
+      writeTerminal: (text) => writes.push(text),
+    });
+
+    replayState.replayCompleted = true;
+    replayState.needsHistoryRestore = true;
+    expect(route("Terminal exited with code 7")).toBe(true);
+    await vi.waitFor(() => expect(writes).toEqual([
+      "replayed terminal history",
+      "Terminal exited with code 7",
+    ]));
+  });
+
+  it("holds an exit received before replay starts until replay history is complete", async () => {
+    const replayState = {
+      hasReplaySurface: false,
+      replayStarted: false,
+      replayCompleted: false,
+      needsHistoryRestore: false,
+    };
+    const pendingNotices: string[] = [];
+    const replayWrites: string[] = [];
+    const terminalWrites: string[] = [];
+    const deliveryOrder: string[] = [];
+    const routePendingNotice = (text: string) =>
+      routeTerminalExitNotice({
+        hasReplaySurface: () => replayState.hasReplaySurface,
+        isReplayStarted: () => replayState.replayStarted,
+        isReplayComplete: () => replayState.replayCompleted,
+        needsHistoryRestore: () => replayState.needsHistoryRestore,
+        restoreTerminalHistory: async () => {
+          deliveryOrder.push("history");
+        },
+        pushReplay: (bytes) => replayWrites.push(new TextDecoder().decode(bytes)),
+        queueNotice: (notice) => pendingNotices.push(notice),
+        text,
+        writeTerminal: (notice) => {
+          deliveryOrder.push("exit");
+          terminalWrites.push(notice);
+        },
+      });
+    const route = createExitHandler({
+      getReplayState: () => replayState,
+      pushReplay: () => {
+        throw new Error("replay has not started");
+      },
+      queueNotice: (notice) => pendingNotices.push(notice),
+      restoreTerminalHistory: async () => undefined,
+      writeTerminal: (text) => terminalWrites.push(text),
+    });
+    route("Terminal exited with code 7");
+    expect(pendingNotices).toEqual(["Terminal exited with code 7"]);
+    expect(terminalWrites).toEqual([]);
+
+    replayState.replayStarted = true;
+    replayWrites.push("replayed terminal history");
+    replayState.replayCompleted = true;
+    replayState.needsHistoryRestore = true;
+    for (const notice of pendingNotices.splice(0)) routePendingNotice(notice);
+
+    expect(replayWrites).toEqual(["replayed terminal history"]);
+    await vi.waitFor(() =>
+      expect(terminalWrites).toEqual(["Terminal exited with code 7"]),
+    );
+    expect(deliveryOrder).toEqual(["history", "exit"]);
+  });
+
+  it("orders snapshot replay exits after snapshot history on the replay surface", () => {
+    const replayWrites = ["snapshot terminal history"];
+    const pendingNotices: string[] = [];
+    const terminalWrites: string[] = [];
+    const replayState = {
+      hasReplaySurface: true,
+      replayStarted: false,
+      replayCompleted: false,
+      needsHistoryRestore: false,
+    };
+    const route = createExitHandler({
+      getReplayState: () => replayState,
+      pushReplay: (bytes) => replayWrites.push(new TextDecoder().decode(bytes)),
+      queueNotice: (text) => pendingNotices.push(text),
+      restoreTerminalHistory: async () => undefined,
+      writeTerminal: (text) => terminalWrites.push(text),
+    });
+    route("Terminal exited with code 7");
+    expect(replayWrites[1]).toContain(
+      "Terminal exited with code 7",
+    );
+    expect(terminalWrites).toEqual([]);
+    expect(pendingNotices).toEqual(["Terminal exited with code 7"]);
+  });
+
   it("preserves xterm focus when mounting the snapshot preview surface", () => {
     const context = new Proxy(
       {

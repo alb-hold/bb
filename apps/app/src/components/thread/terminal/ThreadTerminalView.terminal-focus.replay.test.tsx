@@ -41,6 +41,7 @@ const testState = vi.hoisted(() => ({
   socketMessages: [] as string[],
   socketUrls: [] as string[],
   screen: vi.fn(),
+  output: vi.fn(),
 }));
 
 class TestTerminalSocket {
@@ -102,6 +103,7 @@ vi.mock("@/lib/sdk", () => ({
   sdk: {
     terminals: {
       experimental_screen: testState.screen,
+      output: testState.output,
       experimental_attention: {
         clear: testState.clearAttention,
       },
@@ -187,6 +189,7 @@ afterEach(() => {
   testState.socketUrls.length = 0;
   testState.clearAttention.mockReset();
   testState.screen.mockReset();
+  testState.output.mockReset();
   testState.toastError.mockReset();
   testState.touchEnabled = false;
   testState.mediaQueryListeners.clear();
@@ -346,12 +349,15 @@ let rerenderMobileTerminal: (
   session: ReturnType<typeof makeTerminalSession>,
 ) => void = () => undefined;
 
-function renderMobileTerminal(): ReturnType<typeof makeTerminalSession> {
+function renderMobileTerminal(
+  overrides: Partial<ReturnType<typeof makeTerminalSession>> = {},
+): ReturnType<typeof makeTerminalSession> {
   const session = makeTerminalSession({
     id: "term_mobile_paste",
     status: "running",
     cols: 40,
     rows: 12,
+    ...overrides,
   });
   const tree = (current: ReturnType<typeof makeTerminalSession>) => (
     <MemoryRouter>
@@ -380,6 +386,115 @@ function writeReplay(terminal: Terminal, data: string): Promise<void> {
 }
 
 describe("ThreadTerminalView terminal replay and reconnect", () => {
+  it("restores history and one exit notice from exited props without WebSocket messages", async () => {
+    prepareMobileTerminal();
+    testState.output.mockResolvedValue({
+      chunks: [
+        {
+          seq: 0,
+          dataBase64: btoa("retained history one\r\nretained history two\r\n"),
+        },
+      ],
+      nextSeq: 1,
+    });
+    let mountedTerminal: Terminal | null = null;
+    const openTerminal = Terminal.prototype.open;
+    vi.spyOn(Terminal.prototype, "open").mockImplementation(function (
+      this: Terminal,
+      element: HTMLElement,
+    ) {
+      mountedTerminal ??= this;
+      openTerminal.call(this, element);
+    });
+    renderMobileTerminal({ status: "exited", exitCode: 7 });
+    const readBuffer = () =>
+      Array.from(
+        { length: mountedTerminal?.buffer.active.length ?? 0 },
+        (_, index) =>
+          mountedTerminal?.buffer.active
+            .getLine(index)
+            ?.translateToString(true),
+      ).join("\n");
+    await waitForReadinessCondition(() => {
+      expect(readBuffer()).toContain("Terminal exited with code 7");
+    }, "exited session did not render its notice without WebSocket messages");
+    expect(readBuffer().match(/retained history one/g)).toHaveLength(1);
+    expect(readBuffer().match(/retained history two/g)).toHaveLength(1);
+    expect(readBuffer().match(/Terminal exited with code 7/g)).toHaveLength(1);
+    expect(readBuffer().indexOf("retained history two")).toBeLessThan(
+      readBuffer().indexOf("Terminal exited"),
+    );
+  });
+
+  it("keeps replayed history exactly once when the process exits after replay", async () => {
+    prepareMobileTerminal();
+    testState.output.mockResolvedValue({
+      chunks: [
+        {
+          seq: 0,
+          dataBase64: btoa("replay history one\r\nreplay history two\r\n"),
+        },
+      ],
+      nextSeq: 1,
+    });
+    let mountedTerminal: Terminal | null = null;
+    const openTerminal = Terminal.prototype.open;
+    vi.spyOn(Terminal.prototype, "open").mockImplementation(function (
+      this: Terminal,
+      element: HTMLElement,
+    ) {
+      mountedTerminal ??= this;
+      openTerminal.call(this, element);
+    });
+    const session = renderMobileTerminal();
+    await waitForReadinessCondition(
+      () => expect(testState.sockets).toHaveLength(1),
+      "socket did not mount",
+    );
+    const socket = testState.sockets[0]!;
+    await waitForReadiness(socket.opened, "socket did not open");
+    socket.receive({
+      type: "attached",
+      session,
+      replayStartSeq: 0,
+      nextSeq: 1,
+    });
+    socket.receive({
+      type: "output",
+      chunk: {
+        seq: 0,
+        dataBase64: btoa("replay history one\r\nreplay history two\r\n"),
+      },
+    });
+    await waitForReadinessCondition(
+      () =>
+        expect(
+          testState.socketMessages.map((message) => JSON.parse(message)),
+        ).toContainEqual({ type: "ack", nextSeq: 1 }),
+      "history was not parsed",
+    );
+    socket.receive({
+      type: "exited",
+      session: { ...session, status: "exited", exitCode: 7 },
+    });
+    const readBuffer = () =>
+      Array.from(
+        { length: mountedTerminal?.buffer.active.length ?? 0 },
+        (_, index) =>
+          mountedTerminal?.buffer.active
+            .getLine(index)
+            ?.translateToString(true),
+      ).join("\n");
+    await waitForReadinessCondition(
+      () => expect(readBuffer()).toContain("Terminal exited with code 7"),
+      "exit notice was not rendered",
+    );
+    expect(readBuffer().match(/replay history one/g)).toHaveLength(1);
+    expect(readBuffer().match(/replay history two/g)).toHaveLength(1);
+    expect(readBuffer().match(/Terminal exited with code 7/g)).toHaveLength(1);
+    expect(testState.output).not.toHaveBeenCalled();
+  });
+
   it("replays hidden output across a reconnect before showing the terminal", async () => {
     prepareMobileTerminal();
     let mountedTerminal: Terminal | null = null;
@@ -687,7 +802,6 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
     }
   });
 
-
   it("replays output received while the terminal panel is closed", async () => {
     prepareMobileTerminal();
     let mountedTerminal: Terminal | null = null;
@@ -940,7 +1054,9 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
       Array.from(
         { length: mountedTerminal?.buffer.active.length ?? 0 },
         (_, index) =>
-          mountedTerminal?.buffer.active.getLine(index)?.translateToString(true),
+          mountedTerminal?.buffer.active
+            .getLine(index)
+            ?.translateToString(true),
       ).join("\n");
     const preview = () =>
       document.querySelector<HTMLElement>("[data-terminal-replay-preview]");
@@ -958,7 +1074,12 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
       "screen snapshot was not requested",
     );
     expect(preview()).toBeNull();
-    socket.receive({ type: "attached", session, replayStartSeq: 0, nextSeq: 3 });
+    socket.receive({
+      type: "attached",
+      session,
+      replayStartSeq: 0,
+      nextSeq: 3,
+    });
     socket.receive({
       type: "output",
       chunk: { seq: 0, dataBase64: btoa("stale frame one\r\n") },
@@ -1054,7 +1175,8 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
     ) =>
       realSetTimeout(
         handler,
-        delay === terminalReplayPreview.TERMINAL_REPLAY_PREVIEW_HOLD_TIMEOUT_MS &&
+        delay ===
+          terminalReplayPreview.TERMINAL_REPLAY_PREVIEW_HOLD_TIMEOUT_MS &&
           typeof handler === "function" &&
           (handler.name === "expireHold" || handler.name === "release")
           ? ms
@@ -1116,7 +1238,6 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
       "replay preview stayed held after the retried replay completed",
     );
   });
-
 
   it("keeps a stalled replay hidden behind a loading state and reveals it only on completion", async () => {
     shortenReplayHoldTimeout(600);
@@ -1276,7 +1397,11 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
     const processExited = spyOnPreviewProcessExited();
     const { bufferText, preview, session, socket } =
       await mountReplayWithUnusableSnapshot();
-    const exitedSession = { ...session, status: "exited" as const, exitCode: 1 };
+    const exitedSession = {
+      ...session,
+      status: "exited" as const,
+      exitCode: 1,
+    };
     await act(async () => {
       socket.receive({ type: "session-updated", session: exitedSession });
       socket.receive({ type: "exited", session: exitedSession });
@@ -1302,12 +1427,24 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
   it("marks a snapshot preview exited once when a session update and an exited message both report the exit", async () => {
     const processExited = mountSnapshotPreviewSpyingOnProcessExited();
     const { session, socket } = await processExited.mounted;
-    const exitedSession = { ...session, status: "exited" as const, exitCode: 1 };
+    const exitedSession = {
+      ...session,
+      status: "exited" as const,
+      exitCode: 1,
+    };
     await act(async () => {
       socket.receive({ type: "session-updated", session: exitedSession });
       socket.receive({ type: "exited", session: exitedSession });
       await Promise.resolve();
     });
+    expect(processExited.spy).not.toHaveBeenCalled();
+    socket.receive({
+      type: "attached",
+      session: exitedSession,
+      replayStartSeq: 0,
+      nextSeq: 0,
+    });
+    await pause(200);
     expect(processExited.spy).toHaveBeenCalledOnce();
   });
 
@@ -1321,6 +1458,14 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
       });
       await Promise.resolve();
     });
+    expect(processExited.spy).not.toHaveBeenCalled();
+    socket.receive({
+      type: "attached",
+      session: { ...session, status: "exited", exitCode: 1 },
+      replayStartSeq: 0,
+      nextSeq: 0,
+    });
+    await pause(200);
     expect(processExited.spy).toHaveBeenCalledOnce();
   });
 
@@ -1376,7 +1521,12 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
     if (!socket) throw new Error("terminal socket is missing");
     await waitForReadiness(socket.opened, "terminal socket did not open");
     await waitFor(() => expect(preview()).not.toBeNull(), { timeout: 20_000 });
-    socket.receive({ type: "attached", session, replayStartSeq: 0, nextSeq: 3 });
+    socket.receive({
+      type: "attached",
+      session,
+      replayStartSeq: 0,
+      nextSeq: 3,
+    });
     for (const seq of [0, 1, 2]) {
       socket.receive({
         type: "output",
@@ -1418,7 +1568,8 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
   }
 
   it("keeps a checkpoint-backed replay hidden and shows the unavailable state on a terminal error before completion", async () => {
-    const { preview, reconnectSocket } = await mountReplayAfterCheckpointedOpen();
+    const { preview, reconnectSocket } =
+      await mountReplayAfterCheckpointedOpen();
     await act(async () => {
       reconnectSocket.receive({
         type: "error",
@@ -1490,6 +1641,14 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
       await Promise.resolve();
     });
 
+    expect(processExited).not.toHaveBeenCalled();
+    socket.receive({
+      type: "attached",
+      session: { ...session, status: "exited" },
+      replayStartSeq: 0,
+      nextSeq: 0,
+    });
+    await pause(200);
     expect(processExited).toHaveBeenCalledOnce();
   });
 
@@ -1868,5 +2027,4 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
       });
     }
   });
-
 });

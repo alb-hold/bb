@@ -137,7 +137,12 @@ import {
 import { parseTerminalProgressOsc } from "./terminal-progress";
 import { createTerminalOutputPipeline } from "./terminal-output-pipeline";
 import {
+  completeTerminalReplayPreview,
+  createTerminalExitNoticeHandler,
+  createTerminalReplayPreviewExitHandler,
   mountTerminalReplayPreview,
+  resetTerminalExitNoticeForSession,
+  routeTerminalExitNotice,
   updateTerminalReplayPreviewPtyGrid,
 } from "./terminal-replay-preview";
 import {
@@ -627,6 +632,7 @@ interface HandleTerminalServerMessageArgs {
   allowAttachedGrid?: boolean;
   onReplayStart?: (session: TerminalSession) => void;
   shouldProcessOutput?: () => boolean;
+  writeExitNotice?: (text: string) => boolean;
 }
 
 function encodeBytesBase64(bytes: Uint8Array): string {
@@ -1081,6 +1087,7 @@ export function handleTerminalServerMessage({
   allowAttachedGrid = true,
   onReplayStart,
   shouldProcessOutput,
+  writeExitNotice,
 }: HandleTerminalServerMessageArgs): void {
   if (message.type === "output" && shouldProcessOutput?.() === false) {
     return;
@@ -1096,6 +1103,13 @@ export function handleTerminalServerMessage({
         else terminal.resize(message.session.cols, message.session.rows);
       }
       onSessionChange?.(message.session);
+      if (message.session.status === "exited") {
+        writeExitNotice?.(
+          message.session.exitCode === null
+            ? "Terminal exited"
+            : `Terminal exited with code ${message.session.exitCode}`,
+        );
+      }
       setReplayNextSeq(message.nextSeq);
       setReplayStartSequence?.(message.replayStartSeq);
       if (message.replayStartSeq === message.nextSeq) {
@@ -1107,6 +1121,13 @@ export function handleTerminalServerMessage({
       return;
     case "session-updated":
       onSessionChange?.(message.session);
+      if (message.session.status === "exited") {
+        writeExitNotice?.(
+          message.session.exitCode === null
+            ? "Terminal exited"
+            : `Terminal exited with code ${message.session.exitCode}`,
+        );
+      }
       return;
     case "output": {
       const nextSeq = message.chunk.seq + 1;
@@ -1147,13 +1168,13 @@ export function handleTerminalServerMessage({
       return;
     case "exited":
       onSessionChange?.(message.session);
-      writeTerminalStatus({
-        terminal,
-        text:
+      {
+        const text =
           message.session.exitCode === null
             ? "Terminal exited"
-            : `Terminal exited with code ${message.session.exitCode}`,
-      });
+            : `Terminal exited with code ${message.session.exitCode}`;
+        if (!writeExitNotice?.(text)) writeTerminalStatus({ terminal, text });
+      }
       return;
   }
 }
@@ -1278,6 +1299,12 @@ export function ThreadTerminalView({
   const sessionStatusRef = useRef<TerminalSession["status"]>(session.status);
   const sessionRef = useRef(session);
   const lastStatusNoticeRef = useRef<TerminalSessionStatusNotice | null>(null);
+  const lastStatusNoticeSessionRef = useRef(session.id);
+  resetTerminalExitNoticeForSession({
+    lastNotice: lastStatusNoticeRef,
+    lastSessionId: lastStatusNoticeSessionRef,
+    sessionId: session.id,
+  });
   const scheduleFitRef = useRef<TerminalFitScheduler | null>(null);
   const terminalVisibilityReporterRef = useRef<(() => void) | null>(null);
   const systemConfig = useSystemConfig();
@@ -1703,6 +1730,8 @@ export function ThreadTerminalView({
     let sharedSize: TerminalGridSize | null = null;
     let markerGridActive = false;
     let replayCompleted = false;
+    let replayStarted = false;
+    const pendingExitNotices: string[] = [];
     let replayCheckpointSequence: number | null = null;
     let localFitGrid: TerminalGridSize | null = null;
     let latestPtyGrid: TerminalGridSize = {
@@ -1724,23 +1753,36 @@ export function ThreadTerminalView({
       processExited(): void;
       push(bytes: Uint8Array, callback: () => void): void;
     } | null = null;
+    const flushPendingExitNotices = () => {
+      if (terminal === null || pendingExitNotices.length === 0) return;
+      for (const text of pendingExitNotices.splice(0)) {
+        writeTerminalStatus({ terminal, text });
+      }
+    };
     const releaseReplayPreview = () => {
       replayPreview?.release();
       setReplayNotice(null);
     };
     let exitedBeforeReplayCompleted = false;
     let replayPreviewExitApplied = false;
-    const handleReplayPreviewExit = () => {
-      if (replayPreviewExitApplied || exitedBeforeReplayCompleted) return;
-      if (replayPreview?.fallback === true && !replayCompleted) {
+    const handleReplayPreviewExit = createTerminalReplayPreviewExitHandler({
+      getReplayState: () => ({
+        hasReplaySurface: replayPreview !== null,
+        replayCompleted,
+      }),
+      isApplied: () => replayPreviewExitApplied,
+      isPending: () => exitedBeforeReplayCompleted,
+      markApplied: () => {
+        replayPreviewExitApplied = true;
+      },
+      markPending: () => {
         exitedBeforeReplayCompleted = true;
-        return;
-      }
-      replayPreviewExitApplied = true;
-      releaseReplayPreview();
-      replayPreview?.processExited();
-    };
+      },
+      releasePreview: releaseReplayPreview,
+      processExited: () => replayPreview?.processExited(),
+    });
     const abandonReplayPreview = () => {
+      flushPendingExitNotices();
       if (replayPreview === null || replayCompleted) {
         releaseReplayPreview();
         return;
@@ -2290,6 +2332,61 @@ export function ThreadTerminalView({
       }
 
       const activeTerminal = terminal!;
+      const getReplayState = () => ({
+        hasReplaySurface: replayPreview !== null,
+        replayStarted,
+        replayCompleted,
+        needsHistoryRestore: lastParsedOutputNextSeq === 0,
+      });
+      const routeQueuedExitNotice = (text: string) => {
+        const state = getReplayState();
+        routeTerminalExitNotice({
+          hasReplaySurface: () => state.hasReplaySurface,
+          isReplayStarted: () => state.replayStarted,
+          isReplayComplete: () => state.replayCompleted,
+          needsHistoryRestore: () => state.needsHistoryRestore,
+          restoreTerminalHistory,
+          pushReplay: (bytes) => replayPreview?.push(bytes, () => undefined),
+          queueNotice: (notice) => pendingExitNotices.push(notice),
+          text,
+          writeTerminal: (notice) =>
+            writeTerminalStatus({ terminal: activeTerminal, text: notice }),
+        });
+      };
+      const restoreTerminalHistory = async () => {
+        const output = await sdk.terminals.output({
+          terminalId: sessionRef.current.id,
+          tailBytes: 64 * 1024,
+        });
+        for (const chunk of output.chunks) {
+          await new Promise<void>((resolve) => {
+            const bytes = decodeBase64Bytes(chunk.dataBase64);
+            if (outputPipeline) outputPipeline.push(bytes, resolve);
+            else activeTerminal.write(bytes, resolve);
+          });
+          lastParsedOutputNextSeq = Math.max(
+            lastParsedOutputNextSeq,
+            chunk.seq + 1,
+          );
+        }
+      };
+      const routeExitNotice = createTerminalExitNoticeHandler({
+        getLastStatusNotice: () => lastStatusNoticeRef.current,
+        setLastStatusNotice: (status) => {
+          lastStatusNoticeRef.current = status;
+        },
+        getReplayState: () => ({
+          hasReplaySurface: replayPreview !== null,
+          replayStarted,
+          replayCompleted,
+          needsHistoryRestore: lastParsedOutputNextSeq === 0,
+        }),
+        pushReplay: (bytes) => replayPreview?.push(bytes, () => undefined),
+        queueNotice: (notice) => pendingExitNotices.push(notice),
+        restoreTerminalHistory,
+        writeTerminal: (text) =>
+          writeTerminalStatus({ terminal: activeTerminal, text }),
+      });
       let reconnecting = false;
       let repaintAfterReconnect = false;
       let reconnectingNoticeVisible = false;
@@ -2464,13 +2561,21 @@ export function ThreadTerminalView({
               }
             },
             onReplayComplete: () => {
-              releaseReplayPreview();
               replayCompleted = true;
-              if (exitedBeforeReplayCompleted) {
-                exitedBeforeReplayCompleted = false;
-                replayPreviewExitApplied = true;
-                replayPreview?.processExited();
+              for (const text of pendingExitNotices.splice(0)) {
+                routeQueuedExitNotice(text);
               }
+              completeTerminalReplayPreview({
+                hasPendingExit: exitedBeforeReplayCompleted,
+                markExitApplied: () => {
+                  replayPreviewExitApplied = true;
+                },
+                clearPendingExit: () => {
+                  exitedBeforeReplayCompleted = false;
+                },
+                releasePreview: releaseReplayPreview,
+                processExited: () => replayPreview?.processExited(),
+              });
               const fitGrid = fitAddon?.proposeDimensions();
               applyTerminalGridBeforeViewportRestore({
                 pipeline: outputPipeline,
@@ -2507,9 +2612,9 @@ export function ThreadTerminalView({
             replayWriteState,
             outputFrameId: currentOutputFrameId ?? undefined,
             onReplayStart: () => {
+              replayStarted = true;
               viewportReplaySaveGate.beginReplay();
               replayCompleted = false;
-              exitedBeforeReplayCompleted = false;
               replayPreviewExitApplied = false;
               setReplayNotice(null);
               if (replayPreview === null || replayPreview.fallback) {
@@ -2558,6 +2663,7 @@ export function ThreadTerminalView({
             pipeline: outputPipeline ?? undefined,
             replayPipeline: replayPreview ?? undefined,
             replayCheckpointSequence,
+            writeExitNotice: routeExitNotice,
             outputBoundaries,
             allowAttachedGrid: !markerGridActive,
             shouldProcessOutput: () =>
@@ -2592,7 +2698,10 @@ export function ThreadTerminalView({
       fitTerminal();
       reportDocumentVisibility();
       document.addEventListener("visibilitychange", reportDocumentVisibility);
-      if (sessionRef.current.status === "exited") {
+      if (
+        sessionRef.current.status === "exited" ||
+        pendingExitNotices.length > 0
+      ) {
         const output = await sdk.terminals.output({
           terminalId: sessionRef.current.id,
           tailBytes: 64 * 1024,
@@ -2617,6 +2726,7 @@ export function ThreadTerminalView({
               }
             },
           });
+          flushPendingExitNotices();
           replayStartSequence = output.chunks[0]?.seq ?? output.nextSeq;
           latestOutputSequence = output.chunks.at(-1)?.seq ?? output.nextSeq;
           replayNextSequence = output.nextSeq;
@@ -2947,6 +3057,9 @@ export function ThreadTerminalView({
   useEffect(() => {
     const terminal = terminalRef.current;
     if (!terminal) {
+      return;
+    }
+    if (session.status === "exited") {
       return;
     }
     writeTerminalSessionStatusNotice({

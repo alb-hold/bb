@@ -11,6 +11,155 @@ import {
 
 export const TERMINAL_REPLAY_PREVIEW_HOLD_TIMEOUT_MS = 5_000;
 
+export function createTerminalReplayPreviewExitHandler({
+  getReplayState,
+  isApplied,
+  isPending,
+  markApplied,
+  markPending,
+  releasePreview,
+  processExited,
+}: {
+  getReplayState: () => {
+    hasReplaySurface: boolean;
+    replayCompleted: boolean;
+  };
+  isApplied: () => boolean;
+  isPending: () => boolean;
+  markApplied: () => void;
+  markPending: () => void;
+  releasePreview: () => void;
+  processExited: () => void;
+}): () => void {
+  return () => {
+    if (isApplied() || isPending()) return;
+    const state = getReplayState();
+    if (state.hasReplaySurface && !state.replayCompleted) {
+      markPending();
+      return;
+    }
+    markApplied();
+    releasePreview();
+    processExited();
+  };
+}
+
+export function completeTerminalReplayPreview({
+  hasPendingExit,
+  markExitApplied,
+  clearPendingExit,
+  releasePreview,
+  processExited,
+}: {
+  hasPendingExit: boolean;
+  markExitApplied: () => void;
+  clearPendingExit: () => void;
+  releasePreview: () => void;
+  processExited: () => void;
+}): void {
+  if (!hasPendingExit) {
+    releasePreview();
+    return;
+  }
+  clearPendingExit();
+  markExitApplied();
+  processExited();
+}
+
+export function resetTerminalExitNoticeForSession({
+  lastNotice,
+  lastSessionId,
+  sessionId,
+}: {
+  lastNotice: { current: string | null };
+  lastSessionId: { current: string };
+  sessionId: string;
+}): void {
+  if (lastSessionId.current === sessionId) return;
+  lastSessionId.current = sessionId;
+  lastNotice.current = null;
+}
+
+export function createTerminalExitNoticeHandler({
+  getReplayState,
+  getLastStatusNotice,
+  setLastStatusNotice,
+  pushReplay,
+  queueNotice,
+  restoreTerminalHistory,
+  writeTerminal,
+}: {
+  getLastStatusNotice: () => string | null;
+  setLastStatusNotice: (status: "exited") => void;
+  getReplayState: () => {
+    hasReplaySurface: boolean;
+    replayStarted: boolean;
+    replayCompleted: boolean;
+    needsHistoryRestore: boolean;
+  };
+  pushReplay: (bytes: Uint8Array) => void;
+  queueNotice: (text: string) => void;
+  restoreTerminalHistory: () => Promise<void>;
+  writeTerminal: (text: string) => void;
+}): (text: string) => boolean {
+  return (text) => {
+    if (getLastStatusNotice() === "exited") return true;
+    setLastStatusNotice("exited");
+    const state = getReplayState();
+    routeTerminalExitNotice({
+      hasReplaySurface: () => state.hasReplaySurface,
+      isReplayStarted: () => state.replayStarted,
+      isReplayComplete: () => state.replayCompleted,
+      needsHistoryRestore: () => state.needsHistoryRestore,
+      restoreTerminalHistory,
+      pushReplay,
+      queueNotice,
+      text,
+      writeTerminal,
+    });
+    return true;
+  };
+}
+
+export function routeTerminalExitNotice({
+  hasReplaySurface,
+  isReplayStarted,
+  isReplayComplete,
+  needsHistoryRestore,
+  restoreTerminalHistory,
+  pushReplay,
+  queueNotice,
+  text,
+  writeTerminal,
+}: {
+  hasReplaySurface: () => boolean;
+  isReplayStarted: () => boolean;
+  isReplayComplete: () => boolean;
+  needsHistoryRestore: () => boolean;
+  restoreTerminalHistory: () => Promise<void>;
+  pushReplay: (bytes: Uint8Array) => void;
+  queueNotice: (text: string) => void;
+  text: string;
+  writeTerminal: (text: string) => void;
+}): void {
+  if (isReplayComplete() && needsHistoryRestore()) {
+    void restoreTerminalHistory()
+      .catch(() => undefined)
+      .then(() => writeTerminal(text));
+    return;
+  }
+  if (hasReplaySurface() && !isReplayComplete()) {
+    pushReplay(new TextEncoder().encode(`\r\n\x1b[2m${text}\x1b[0m\r\n`));
+    queueNotice(text);
+    return;
+  }
+  if (!isReplayStarted() && !isReplayComplete()) {
+    queueNotice(text);
+    return;
+  }
+  writeTerminal(text);
+}
+
 export function updateTerminalReplayPreviewPtyGrid(
   preview: {
     setLatestPtyGrid(cols: number, rows: number): void;
