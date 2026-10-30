@@ -1024,6 +1024,23 @@ it("carries the reply unchanged and omits it when there is no transcript reply",
   expect(sent[1]).not.toHaveProperty("lastAssistantText");
 });
 
+it("truncates an oversized native reply before sending without splitting a character", async () => {
+  const sent: Array<string | undefined> = [];
+  const reporter = createNativeActivityReporter({
+    currentCredential: () => null,
+    threadId: "thr_reply",
+    send: async (args) => { sent.push(args.lastAssistantText); },
+  });
+  const oversized = "x".repeat(1024 * 1024) + "🙂€".repeat(900) + "\nALPHA\nBRAVO\nCHARLIE";
+  reporter.report({ state: "idle", prompt: null, lastAssistantText: oversized });
+  await reporter.settled();
+  expect(sent).toHaveLength(1);
+  expect(sent[0]).toContain("\nALPHA\nBRAVO\nCHARLIE");
+  expect(oversized.endsWith(sent[0] ?? "")).toBe(true);
+  expect(sent[0]).not.toContain("\uFFFD");
+  expect(Buffer.byteLength(sent[0] ?? "", "utf8")).toBeLessThanOrEqual(4096);
+});
+
 it("delivers state, questions and closes to a strict c9c9a3de server by dropping only the unsupported reply", async () => {
   const shape = reportNativeTerminalActivityRequestSchema.shape;
   const oldSchema = z

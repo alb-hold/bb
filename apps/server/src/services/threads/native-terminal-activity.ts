@@ -14,6 +14,7 @@ import {
   isNativeTerminalQuestion,
   NATIVE_TERMINAL_ACTIVITY_HEARTBEAT_INTERVAL_MS,
   NATIVE_TERMINAL_QUESTION_REQUEST_PREFIX,
+  truncateNativeAssistantText,
   type Thread,
 } from "@bb/domain";
 import type {
@@ -377,7 +378,7 @@ export function recordNativeTerminalActivity(
       const oldest = replies.keys().next().value;
       if (oldest !== undefined) replies.delete(oldest);
     }
-    replies.set(thread.id, args.lastAssistantText);
+    replies.set(thread.id, truncateNativeAssistantText(args.lastAssistantText));
   }
   if (args.state === "idle") settleNativeTerminalTurn(deps, thread.id);
   const resolvedQuestions = reconcileNativeQuestions(deps, {

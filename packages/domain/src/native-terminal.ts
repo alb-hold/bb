@@ -1,9 +1,17 @@
 import { z } from "zod";
 
 export const PROVIDER_NATIVE_TERMINAL_MAX_ARGS = 16;
+export const NATIVE_ASSISTANT_TEXT_MAX = 4 * 1024;
 export const NATIVE_TERMINAL_ACTIVITY_HEARTBEAT_INTERVAL_MS = 30_000;
 export const NATIVE_TERMINAL_ACTIVITY_FRESH_FOR_MS =
   NATIVE_TERMINAL_ACTIVITY_HEARTBEAT_INTERVAL_MS * 3;
+
+export function truncateNativeAssistantText(text: string): string {
+  const bytes = new TextEncoder().encode(text.slice(-NATIVE_ASSISTANT_TEXT_MAX));
+  let start = Math.max(0, bytes.length - NATIVE_ASSISTANT_TEXT_MAX);
+  while (((bytes[start] ?? 0) & 0xc0) === 0x80) start += 1;
+  return new TextDecoder("utf-8", { ignoreBOM: true }).decode(bytes.subarray(start));
+}
 
 const TEMPLATE_TOKEN = /\{([A-Za-z]+)\}/gu;
 

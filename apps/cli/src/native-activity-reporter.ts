@@ -1,4 +1,5 @@
 import { BbHttpError, type NativeTerminalReportActivityArgs } from "@bb/sdk";
+import { truncateNativeAssistantText } from "@bb/domain";
 import { NATIVE_TERMINAL_MAX_OPEN_QUESTIONS } from "@bb/server-contract";
 import type { NativeActivityReport } from "./native-activity.js";
 import { nativeToolCredentialFingerprint } from "./native-holder.js";
@@ -144,7 +145,7 @@ export function createNativeActivityReporter(options: {
       state: next.state,
       ...(next.state === "waiting" || next.lastAssistantText === undefined
         ? {}
-        : { lastAssistantText: next.lastAssistantText }),
+        : { lastAssistantText: truncateNativeAssistantText(next.lastAssistantText) }),
       ...(next.prompt === null ? {} : { prompt: next.prompt }),
       ...(next.state === "waiting" ? { questions: next.questions } : {}),
       ...(includeCloses ? { closes: closeIds } : {}),

@@ -1,8 +1,13 @@
-import { recordNativeTerminalActivity } from "../../../src/services/threads/native-terminal-activity.js";
+import {
+  getNativeTerminalLastAssistantText,
+  recordNativeTerminalActivity,
+} from "../../../src/services/threads/native-terminal-activity.js";
 import {
   createNativeTerminalThread,
   createTerminalSession,
   getLatestThreadSequence,
+  getThread,
+  listPendingInteractionsByThread,
   setNativeTerminalThreadTerminal,
   stampNativeTerminalThreadActivity,
 } from "@bb/db";
@@ -425,6 +430,67 @@ describe("plugin thread lifecycle events", () => {
       });
       await vi.waitFor(() => expect(recorded).toHaveLength(2));
       expect(recorded[1]?.lastAssistantText).toBeNull();
+    } finally {
+      delete globals.__idleEvents;
+      await cleanup();
+    }
+  });
+
+  it("accepts an oversized native reply with state, questions and closes intact and bounds stored and idle text", async () => {
+    const recorded: RecordedThreadPayload[] = [];
+    globals.__idleEvents = recorded;
+    const { harness, cleanup } = await setUpPluginHarness(`
+      export default function plugin(bb: any) {
+        bb.events.on("thread.idle", (payload: any) => { (globalThis as any).__idleEvents.push(payload); });
+      }
+    `);
+    try {
+      const { thread, environment, host } = seedThreadFixture(harness);
+      recordNativeReceipt(harness.db, {
+        environmentId: environment.id,
+        hostId: host.id,
+        thread,
+      });
+      const oversized = "x".repeat(1024 * 1024) + "🙂€".repeat(900) + "\nALPHA\nBRAVO\nCHARLIE";
+      const report = async (body: Record<string, unknown>) => {
+        const response = await harness.app.request(
+          `/api/v1/threads/${thread.id}/native-terminal/activity`,
+          {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(body),
+          },
+        );
+        expect(response.status).toBe(200);
+      };
+      await report({ state: "waiting", questions: [{ id: "old", prompt: "First?" }] });
+      await report({
+        state: "waiting",
+        questions: [{ id: "next", prompt: "Next?" }],
+        closes: ["old"],
+        lastAssistantText: oversized,
+      });
+      expect(getThread(harness.db, thread.id)?.status).toBe("active");
+      const questions = listPendingInteractionsByThread(harness.db, { threadId: thread.id });
+      expect(questions).toEqual(expect.arrayContaining([
+        expect.objectContaining({ providerRequestId: "native:old", status: "interrupted" }),
+        expect.objectContaining({ providerRequestId: "native:next", status: "pending" }),
+      ]));
+      const waitingText = getNativeTerminalLastAssistantText(harness.deps, thread.id);
+      await report({ state: "idle", closes: ["next"], lastAssistantText: oversized });
+      expect(getThread(harness.db, thread.id)?.status).toBe("idle");
+      expect(listPendingInteractionsByThread(harness.db, {
+        threadId: thread.id,
+        statuses: ["pending"],
+      })).toHaveLength(0);
+      await vi.waitFor(() => expect(recorded).toHaveLength(1));
+      const stored = getNativeTerminalLastAssistantText(harness.deps, thread.id);
+      expect(stored).toBe(waitingText);
+      expect(recorded[0]?.lastAssistantText).toBe(stored);
+      expect(stored).toContain("\nALPHA\nBRAVO\nCHARLIE");
+      expect(oversized.endsWith(stored ?? "")).toBe(true);
+      expect(stored).not.toContain("\uFFFD");
+      expect(Buffer.byteLength(stored ?? "", "utf8")).toBeLessThanOrEqual(4096);
     } finally {
       delete globals.__idleEvents;
       await cleanup();
