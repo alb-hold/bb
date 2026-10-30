@@ -32,6 +32,7 @@ import {
   archiveUndoGraceKeepsTurnRunning,
 } from "./archive-undo-grace.js";
 import { archiveThreadAndReleaseChildren } from "./thread-ownership.js";
+import { interruptNativeTerminalTurn } from "./native-terminal-activity.js";
 import { resolveThreadHostCommandEnvironment } from "./thread-command-environment.js";
 
 interface ArchiveThreadEnvironment {
@@ -72,7 +73,10 @@ function archiveThreadWithLifecycleEffects(
       threadId: archivedThread.id,
     });
   }
-  if (!archiveUndoGraceKeepsTurnRunning(archivedThread, now)) {
+  if (
+    args.thread.status !== "active" &&
+    !archiveUndoGraceKeepsTurnRunning(archivedThread, now)
+  ) {
     requestThreadStopForCurrentState(deps, archivedThread, args.environment);
   }
   dispatchSettledArchivedThreadProviderArchiveCommand(deps, {
@@ -143,6 +147,30 @@ function archiveThreadTrees(
   ) => ArchiveThreadEnvironment | null,
 ): string[] {
   const threads = listArchiveCandidates(deps.db, roots);
+  for (const thread of threads) {
+    if (
+      thread.deletedAt !== null ||
+      thread.archivedAt !== null ||
+      thread.status !== "active"
+    )
+      continue;
+    try {
+      if (getNativeTerminalThread(deps.db, thread.id) !== null) {
+        interruptNativeTerminalTurn(deps, thread.id);
+      } else {
+        requestThreadStopForCurrentState(
+          deps,
+          thread,
+          resolveEnvironment(thread),
+        );
+      }
+    } catch (error) {
+      deps.logger.warn(
+        { error, threadId: thread.id },
+        "Thread interrupt before archive failed",
+      );
+    }
+  }
   for (const root of roots) archiveThread(deps.db, deps.hub, root.id);
   const archivedThreadIds: string[] = [];
 
