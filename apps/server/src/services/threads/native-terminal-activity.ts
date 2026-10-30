@@ -101,6 +101,13 @@ export function getNativeTerminalLastAssistantText(
 ): string | null {
   return nativeReplies.get(deps.db)?.get(threadId) ?? null;
 }
+
+export function clearNativeTerminalLastAssistantText(
+  deps: Pick<NativeTerminalActivityDeps, "db">,
+  threadId: string,
+): void {
+  nativeReplies.get(deps.db)?.delete(threadId);
+}
 const REFUSED_HOLDER_STATE_LIMIT = 512;
 
 interface RefusedHolderState {
@@ -364,11 +371,7 @@ export function recordNativeTerminalActivity(
     replies = new Map();
     nativeReplies.set(deps.db, replies);
   }
-  if (
-    (args.state !== "idle" && thread.status !== "active") ||
-    (args.state === "working" && args.prompt !== undefined)
-  )
-    replies.delete(thread.id);
+  if (args.state !== "idle") replies.delete(thread.id);
   if (args.lastAssistantText !== undefined) {
     if (replies.size >= 512) {
       const oldest = replies.keys().next().value;

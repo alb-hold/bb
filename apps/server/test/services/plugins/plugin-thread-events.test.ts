@@ -352,7 +352,13 @@ describe("plugin thread lifecycle events", () => {
     }
   });
 
-  it.each(["working", "waiting"] as const)("uses the current native turn reply and clears it for a turn without a reply (%s)", async (secondState) => {
+  it.each([
+    { state: "working", prestarted: false },
+    { state: "waiting", prestarted: false },
+    { state: "working", prestarted: true },
+    { state: "waiting", prestarted: true },
+    { state: "unreported", prestarted: true },
+  ] as const)("uses the current native turn reply and clears it for a turn without a reply ($state, prestarted $prestarted)", async ({ state: secondState, prestarted }) => {
     const recorded: RecordedThreadPayload[] = [];
     globals.__idleEvents = recorded;
     const { harness, cleanup } = await setUpPluginHarness(`
@@ -399,13 +405,18 @@ describe("plugin thread lifecycle events", () => {
       });
       await vi.waitFor(() => expect(recorded).toHaveLength(1));
       expect(recorded[0]?.lastAssistantText).toBe("ALPHA\nBRAVO\nCHARLIE");
-      recordNativeTerminalActivity(harness.deps, {
+      if (prestarted)
+        applyLoggedThreadLifecycleEvent(lifecycleDeps(harness), {
+          threadId: thread.id,
+          event: { type: "run.started" },
+        });
+      if (secondState !== "unreported") recordNativeTerminalActivity(harness.deps, {
         threadId: thread.id,
         confirms: true,
         state: secondState,
         ...(secondState === "waiting"
           ? { questions: [{ id: "q-second", prompt: "Choose" }] }
-          : { prompt: "second" }),
+          : prestarted ? {} : { prompt: "second" }),
       });
       recordNativeTerminalActivity(harness.deps, {
         threadId: thread.id,

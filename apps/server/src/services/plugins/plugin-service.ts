@@ -105,7 +105,10 @@ import {
   getLastThreadOutput,
 } from "../threads/thread-data.js";
 import { buildTurnFailedEvent } from "../threads/turn-failed.js";
-import { getNativeTerminalLastAssistantText } from "../threads/native-terminal-activity.js";
+import {
+  clearNativeTerminalLastAssistantText,
+  getNativeTerminalLastAssistantText,
+} from "../threads/native-terminal-activity.js";
 import {
   pluginAppAsset,
   type PluginAppAsset,
@@ -1396,6 +1399,7 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
         }));
       },
       emitThreadActive(thread) {
+        clearNativeTerminalLastAssistantText(deps, thread.id);
         emitThreadEvent("thread.active", () => ({
           thread: buildThreadDto(thread),
         }));

@@ -6,6 +6,7 @@ import { createNativeTerminalThread, createTerminalSession, setNativeTerminalThr
 import { seedThread, seedThreadFixture } from "../../helpers/seed.js";
 import { withTestHarness, type TestAppHarness } from "../../helpers/test-app.js";
 import { recordNativeTerminalActivity } from "../../../src/services/threads/native-terminal-activity.js";
+import { applyLoggedThreadLifecycleEvent } from "../../../src/services/threads/lifecycle-outcome.js";
 
 async function nativeChildFixture(harness: TestAppHarness, policy: "auto" | "off" | "stuck") {
   const { thread: parent, host, session, project, environment } = seedThreadFixture(harness, { thread: { status: "active" } });
@@ -611,6 +612,25 @@ describe("completion screen fallback", () => {
       expect(text).not.toContain("discard");
       expect(text).not.toContain("z".repeat(241));
       expect(read).not.toHaveBeenCalled();
+      read.mockResolvedValue({ rows: [], cursor: { row: 0, col: 0 }, cols: 120, gridRows: 36, truncated: false, complete: true });
+      applyLoggedThreadLifecycleEvent(harness.deps, {
+        threadId: child.id,
+        event: { type: "run.started" },
+      });
+      recordNativeTerminalActivity(harness.deps, {
+        confirms: true,
+        state: "working",
+        threadId: child.id,
+      });
+      recordNativeTerminalActivity(harness.deps, {
+        confirms: true,
+        state: "idle",
+        threadId: child.id,
+      });
+      await vi.advanceTimersByTimeAsync(2100);
+      const next = listNativeParentNotices(harness.db, parent.id).at(-1)?.text;
+      expect(next).toContain("Native worker turn ended.");
+      expect(next).not.toContain("ALPHA");
     });
   });
 });
