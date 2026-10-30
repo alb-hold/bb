@@ -6,12 +6,8 @@ import {
   TERMINAL_DATA_PLANE_IPC_VERSION as V,
   type TerminalDataPlaneMainMessage,
 } from "../../src/terminal-data-plane/ipc-contract.js";
-import {
-  createConnection,
-  createTerminalSession,
-  migrate,
-  updateTerminalSession,
-} from "@bb/db";
+import { createTerminalSession, updateTerminalSession } from "@bb/db";
+import { createMigratedConnection } from "@bb/db/testing";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { HostDaemonServerWsMessage } from "@bb/host-daemon-contract";
 import { onTerminalSocketOpen } from "../../src/ws/terminal-protocol.js";
@@ -35,8 +31,7 @@ function attributedFailures(lifecycle: object) {
 }
 
 async function setup(terminalAttachTimeoutMs?: number) {
-  const db = createConnection(":memory:");
-  migrate(db);
+  const db = createMigratedConnection();
   const harness = await createTestAppHarness({ db, terminalAttachTimeoutMs });
   harnesses.push(harness);
   const { host, session } = seedHostSession(harness.deps);
