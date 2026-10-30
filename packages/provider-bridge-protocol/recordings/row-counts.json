@@ -84,9 +84,9 @@
     "grammarDrops": 0
   },
   "claude-code/compaction": {
-    "events": 79,
+    "events": 77,
     "rows": 3,
-    "unhandled": 2,
+    "unhandled": 0,
     "grammarDrops": 0
   },
   "claude-code/fork": {
@@ -114,9 +114,9 @@
     "grammarDrops": 0
   },
   "claude-code/steer": {
-    "events": 79,
+    "events": 77,
     "rows": 3,
-    "unhandled": 2,
+    "unhandled": 0,
     "grammarDrops": 0
   },
   "claude-code/stop-interrupt": {
