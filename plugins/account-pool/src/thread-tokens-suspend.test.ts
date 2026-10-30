@@ -26,7 +26,9 @@ type Lifetime = "durable" | "process";
 
 const directories: string[] = [];
 afterEach(async () => {
+  reusedFaults?.reset();
   vi.restoreAllMocks();
+  reusedFaults = null;
   for (const directory of directories.splice(0))
     await fs.rm(directory, { recursive: true, force: true });
 });
@@ -347,6 +349,52 @@ function checkRemoval(
   );
 }
 
+function reusableFaults() {
+  const originals = {
+    open: fs.open.bind(fs),
+    rename: fs.rename.bind(fs),
+    rm: fs.rm.bind(fs),
+    unlink: fs.unlink.bind(fs),
+    mkdir: fs.mkdir.bind(fs),
+    chmod: fs.chmod.bind(fs),
+  };
+  const spies = {
+    open: vi.spyOn(fs, "open"),
+    rename: vi.spyOn(fs, "rename"),
+    rm: vi.spyOn(fs, "rm"),
+    unlink: vi.spyOn(fs, "unlink"),
+    mkdir: vi.spyOn(fs, "mkdir"),
+    chmod: vi.spyOn(fs, "chmod"),
+  };
+  const kvRestores: (() => void)[] = [];
+  return {
+    originals,
+    spies,
+    kvRestores,
+    reset: () => {
+      for (const method of [
+        "open",
+        "rename",
+        "rm",
+        "unlink",
+        "mkdir",
+        "chmod",
+      ] as const)
+        spies[method]
+          .mockReset()
+          .mockImplementation(originals[method] as never);
+      for (const restore of kvRestores.splice(0)) restore();
+    },
+  };
+}
+
+let reusedFaults: ReturnType<typeof reusableFaults> | null = null;
+
+function restoreFaults(): void {
+  if (reusedFaults === null) vi.restoreAllMocks();
+  else reusedFaults.reset();
+}
+
 function injectFaults(
   faults: ReadonlySet<FaultClass>,
   crashAfter = Number.POSITIVE_INFINITY,
@@ -390,11 +438,19 @@ function injectFaults(
     isRecord(file) && point === at ? "content" : null;
   if (watch !== null) {
     const originalSet = watch.kv.set.bind(watch.kv);
-    vi.spyOn(watch.kv, "set").mockImplementation(async (key, value) =>
-      attempt("kv", key, "kv", () => originalSet(key, value)),
-    );
+    const set: DeletionRecords["set"] = async (key, value) =>
+      attempt("kv", key, "kv", () => originalSet(key, value));
+    if (reusedFaults === null)
+      vi.spyOn(watch.kv, "set").mockImplementation(set);
+    else {
+      const kv = watch.kv;
+      kv.set = set;
+      reusedFaults.kvRestores.push(() => {
+        kv.set = originalSet;
+      });
+    }
   }
-  const originalOpen = fs.open.bind(fs);
+  const originalOpen = reusedFaults?.originals.open ?? fs.open.bind(fs);
   const handled = (
     file: unknown,
     handle: Awaited<ReturnType<typeof fs.open>>,
@@ -430,24 +486,26 @@ function injectFaults(
       },
     });
   };
-  vi.spyOn(fs, "open").mockImplementation(async (file, flags, mode) => {
-    if (flags === undefined || flags === "r")
-      return handled(file, await originalOpen(file, flags, mode), false);
-    const existed = existsSync(String(file));
-    return attempt("open", file, contentFault(file, "open"), async () => {
-      const handle = await originalOpen(file, flags, mode);
-      if (watch !== null && watched(file)) {
-        watch.unsynced.add(path.basename(String(file)));
-        if (!existed)
-          watch.undurable.push({
-            from: null,
-            to: path.basename(String(file)),
-            previous: null,
-          });
-      }
-      return handled(file, handle, true);
-    });
-  });
+  (reusedFaults?.spies.open ?? vi.spyOn(fs, "open")).mockImplementation(
+    async (file, flags, mode) => {
+      if (flags === undefined || flags === "r")
+        return handled(file, await originalOpen(file, flags, mode), false);
+      const existed = existsSync(String(file));
+      return attempt("open", file, contentFault(file, "open"), async () => {
+        const handle = await originalOpen(file, flags, mode);
+        if (watch !== null && watched(file)) {
+          watch.unsynced.add(path.basename(String(file)));
+          if (!existed)
+            watch.undurable.push({
+              from: null,
+              to: path.basename(String(file)),
+              previous: null,
+            });
+        }
+        return handled(file, handle, true);
+      });
+    },
+  );
   const track = (method: string, args: readonly unknown[]) => {
     if (watch === null || !watched(args[0])) return;
     const name = path.basename(String(args[0]));
@@ -460,41 +518,42 @@ function injectFaults(
     ["mkdir", "mkdir"],
     ["chmod", null],
   ] as const) {
-    const original = (
-      fs[method] as (...args: unknown[]) => Promise<unknown>
-    ).bind(fs);
-    vi.spyOn(fs, method).mockImplementation((async (...args: unknown[]) =>
-      attempt(
-        method,
-        method === "rename" ? args[1] : args[0],
-        method === "mkdir" &&
-          !path.basename(String(args[0])).startsWith("deleted-thread-")
-          ? null
-          : fault,
-        async () => {
-          const target = String(method === "rename" ? args[1] : args[0]);
-          const existed = existsSync(target);
-          const previous =
-            method === "rename" && existed && statSync(target).isFile()
-              ? readFileSync(target, "utf8")
-              : null;
-          const result = await original(...args);
-          track(method, args);
-          if (watch !== null && watched(target)) {
-            const to = path.basename(target);
-            if (method === "rename") {
-              const from = path.basename(String(args[0]));
-              if (watch.unsynced.delete(from)) watch.unsynced.add(to);
-              else watch.unsynced.delete(to);
-              watch.undurable.push({ from, to, previous });
+    const original = (reusedFaults?.originals[method] ??
+      fs[method].bind(fs)) as (...args: unknown[]) => Promise<unknown>;
+    (reusedFaults?.spies[method] ?? vi.spyOn(fs, method)).mockImplementation(
+      (async (...args: unknown[]) =>
+        attempt(
+          method,
+          method === "rename" ? args[1] : args[0],
+          method === "mkdir" &&
+            !path.basename(String(args[0])).startsWith("deleted-thread-")
+            ? null
+            : fault,
+          async () => {
+            const target = String(method === "rename" ? args[1] : args[0]);
+            const existed = existsSync(target);
+            const previous =
+              method === "rename" && existed && statSync(target).isFile()
+                ? readFileSync(target, "utf8")
+                : null;
+            const result = await original(...args);
+            track(method, args);
+            if (watch !== null && watched(target)) {
+              const to = path.basename(target);
+              if (method === "rename") {
+                const from = path.basename(String(args[0]));
+                if (watch.unsynced.delete(from)) watch.unsynced.add(to);
+                else watch.unsynced.delete(to);
+                watch.undurable.push({ from, to, previous });
+              }
+              if (method === "mkdir" && !existed)
+                watch.undurable.push({ from: null, to, previous: null });
             }
-            if (method === "mkdir" && !existed)
-              watch.undurable.push({ from: null, to, previous: null });
-          }
-          return result;
-        },
-        args,
-      )) as never);
+            return result;
+          },
+          args,
+        )) as never,
+    );
   }
   return mutations;
 }
@@ -516,7 +575,7 @@ async function deletionOutcome(
     files === 2
       ? await store.forNested(nestedRoute, w.hostToken, lifetime)
       : null;
-  vi.restoreAllMocks();
+  restoreFaults();
   w.setBb("gone");
   const deleteMutations = injectFaults(
     faults,
@@ -525,7 +584,7 @@ async function deletionOutcome(
     point,
   );
   await store.removeThread(route.threadId).catch(() => undefined);
-  vi.restoreAllMocks();
+  restoreFaults();
   const durable = durableRecords(watch);
   losePower(watch);
   injectFaults(new Set(), undefined, watch);
@@ -551,17 +610,17 @@ async function deletionOutcome(
   const firstToken =
     (await first.authenticate(token)) !== null ||
     (nested !== null && (await first.authenticateNested(nested)) !== null);
-  vi.restoreAllMocks();
+  restoreFaults();
   losePower(watch);
   if (crash?.during === "restart") {
     injectFaults(new Set(), crash.after, watch);
     await w.open().catch(() => undefined);
-    vi.restoreAllMocks();
+    restoreFaults();
     losePower(watch);
   }
   const restartMutations = injectFaults(new Set(), undefined, watch);
   const restarted = await w.open();
-  vi.restoreAllMocks();
+  restoreFaults();
   injectFaults(new Set());
   const oldTokenAccepted =
     (await restarted.authenticate(token)) !== null ||
@@ -575,7 +634,7 @@ async function deletionOutcome(
       () => true,
       () => false,
     ));
-  vi.restoreAllMocks();
+  restoreFaults();
   await fs.rm(w.directory, { recursive: true, force: true });
   return {
     outcome: { token: firstToken || oldTokenAccepted, mint: firstMint || mint },
@@ -2248,6 +2307,7 @@ describe.each(["durable", "process"] as const)("%s credentials", (lifetime) => {
   );
 
   it("computes the deletion residual for every subset of refused bb-database, content, rename, rm and directory mutations, with content refused at its open, its write, its file sync or the directory sync, one and two credential files, and every crash point from the first mutation of the delete through the next start, losing every unsynced change at each restart, minting first on a start that has not swept yet, with a lookup stub answering gone after every restart in place of bb's committed thread row, which the server deletion matrix reads for real", async () => {
+    reusedFaults = reusableFaults();
     const shared = await sharedHosts();
     const rows: string[] = [];
     const runs: number[] = [];
