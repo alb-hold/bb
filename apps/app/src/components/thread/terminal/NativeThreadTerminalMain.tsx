@@ -152,6 +152,49 @@ export function NativeThreadTerminalMain({
     );
   }
 
+  if (session?.status === "exited") {
+    return (
+      <div
+        className="flex h-full min-h-0 min-w-0 flex-col"
+        data-native-terminal-thread={view.providerId}
+      >
+        <div className="flex min-w-0 flex-wrap items-center justify-between gap-2 border-b border-border-seam px-3 py-2 text-sm">
+          <div className="min-w-0">
+            <span className="font-medium">
+              {providerLabel} session ended
+              {state.exitCode !== null && state.exitCode !== 0
+                ? ` (exit ${state.exitCode})`
+                : ""}
+            </span>
+            {view.nativeSessionId === null ? null : (
+              <span className="ml-2 text-muted-foreground">
+                Session {view.nativeSessionId}
+              </span>
+            )}
+          </div>
+          <Button
+            disabled={openNative.isPending}
+            onClick={() => openNative.mutate({ threadId })}
+          >
+            {view.nativeSessionId === null ? "Start session" : "Resume session"}
+          </Button>
+        </div>
+        <div className="min-h-0 flex-1">
+          <LazyThreadTerminalPanel
+            autoFocus={false}
+            isPanelOpen
+            isPanelPersistedOpen
+            onOpenLink={onOpenLink}
+            onCloseStart={() => {}}
+            onRetryStart={() => openNative.mutate({ threadId })}
+            target={{ kind: "thread", threadId }}
+            terminalId={session.id}
+          />
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div
       className="flex h-full flex-col items-center justify-center gap-3 px-4 text-center text-sm"
