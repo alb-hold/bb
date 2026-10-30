@@ -866,7 +866,11 @@ export class TerminalSessionLifecycle {
     TerminalReplayMessage
   >;
   private readonly directOutputSessionIds = new Set<string>();
-  private readonly attributedAttachFailures = new Set<string>();
+  private readonly attachReplayAttributionWindowMs: number;
+  private readonly attributedAttachFailures = new Map<
+    string,
+    ReturnType<typeof setTimeout>
+  >();
   private readonly directOutputSockets = new WeakSet<TerminalClientSocket>();
   private readonly catchingUpTerminalIds = new Set<string>();
   private readonly forwardedNextSeqByTerminalId = new Map<string, number>();
@@ -926,6 +930,7 @@ export class TerminalSessionLifecycle {
     });
     const attachTimeoutMs =
       options.attachTimeoutMs ?? DEFAULT_TERMINAL_OPEN_TIMEOUT_MS;
+    this.attachReplayAttributionWindowMs = attachTimeoutMs;
     const closeTimeoutMs =
       options.closeTimeoutMs ?? DEFAULT_TERMINAL_CLOSE_TIMEOUT_MS;
     const openTimeoutMs =
@@ -2473,7 +2478,7 @@ export class TerminalSessionLifecycle {
       );
     }
     this.pendingRetainedOutput.clear();
-    this.attributedAttachFailures.clear();
+    this.clearAttributedAttachFailures();
   }
 
   private stopTerminalOutputWritesForShutdown(
@@ -2481,7 +2486,7 @@ export class TerminalSessionLifecycle {
   ): void {
     if (this.terminalOutputWritesStopped) return;
     this.terminalOutputWritesStopped = true;
-    this.attributedAttachFailures.clear();
+    this.clearAttributedAttachFailures();
     if (this.retainedOutputFlushTimer !== null) {
       clearTimeout(this.retainedOutputFlushTimer);
       this.retainedOutputFlushTimer = null;
@@ -3529,6 +3534,9 @@ export class TerminalSessionLifecycle {
     replayOffset: number,
   ): Promise<void> {
     const sourceMessage = args.message;
+    const attributionAlreadyRecorded = this.forgetAttributedAttachFailure(
+      terminalResponseRpcKey(args.sessionId, sourceMessage),
+    );
     const current = replaySession;
     const pendingBatches = current
       ? (this.pendingRetainedOutput.get(current.id) ?? []).map((batch) => ({
@@ -3787,7 +3795,11 @@ export class TerminalSessionLifecycle {
       this.pendingOutputReads.settle(rpcKey, message) ? "output-read" : null,
       this.pendingCatchUps.settle(rpcKey, message) ? "catch-up" : null,
     ].filter((caller): caller is string => caller !== null);
-    if (this.attributedAttachFailures.delete(rpcKey)) return;
+    if (
+      attributionAlreadyRecorded ||
+      this.forgetAttributedAttachFailure(rpcKey)
+    )
+      return;
     this.logReplayAttribution({
       path,
       callers: callers.length > 0 ? callers : ["unmatched"],
@@ -4824,13 +4836,33 @@ export class TerminalSessionLifecycle {
     });
   }
 
+  private forgetAttributedAttachFailure(rpcKey: string): boolean {
+    const timeout = this.attributedAttachFailures.get(rpcKey);
+    if (timeout === undefined) return false;
+    clearTimeout(timeout);
+    return this.attributedAttachFailures.delete(rpcKey);
+  }
+
+  private clearAttributedAttachFailures(): void {
+    for (const rpcKey of this.attributedAttachFailures.keys()) {
+      this.forgetAttributedAttachFailure(rpcKey);
+    }
+  }
+
   private attributeFailedAttach(
     pending: PendingTerminalAttachKey,
     outcome: string,
   ): void {
     if (this.attributedAttachFailures.has(pending.rpcKey)) return;
     const session = getTerminalById(this.options.db, pending.terminalId);
-    if (outcome !== "send-failed") this.attributedAttachFailures.add(pending.rpcKey);
+    if (outcome !== "send-failed") {
+      const rpcKey = pending.rpcKey;
+      const timeout = setTimeout(() => {
+        this.attributedAttachFailures.delete(rpcKey);
+      }, this.attachReplayAttributionWindowMs);
+      timeout.unref();
+      this.attributedAttachFailures.set(rpcKey, timeout);
+    }
     this.attributeEmptyAttach(
       {
         id: pending.terminalId,

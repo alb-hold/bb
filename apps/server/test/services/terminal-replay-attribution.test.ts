@@ -27,6 +27,13 @@ afterEach(async () => {
   vi.restoreAllMocks();
 });
 
+function attributedFailures(lifecycle: object) {
+  const failures: unknown = Reflect.get(lifecycle, "attributedAttachFailures");
+  if (!(failures instanceof Set || failures instanceof Map))
+    throw new Error("Attach attribution failure storage is unavailable");
+  return failures;
+}
+
 async function setup(terminalAttachTimeoutMs?: number) {
   const db = createConnection(":memory:");
   migrate(db);
@@ -220,6 +227,7 @@ describe("terminal replay attribution paths", () => {
         });
       expect(f.lines()).toHaveLength(1);
       await f.reply();
+      expect(attributedFailures(f.harness.deps.terminalSessions).size).toBe(0);
       expect(f.lines()).toHaveLength(1);
       expect(f.lines()[0]?.[0]).toMatchObject({
         path: `websocket/${outcome}`,
@@ -373,7 +381,7 @@ describe("terminal replay attribution paths", () => {
       outputAcks: false,
       resizeAcks: false,
     });
-    await vi.waitFor(() => expect(f.lines()).toHaveLength(1));
+    await vi.waitFor(() => expect(f.lines()).toHaveLength(1), { interval: 1 });
     await f.reply();
     expect(f.lines()).toHaveLength(1);
     expect(f.lines()[0]?.[0]).toMatchObject({
@@ -425,5 +433,29 @@ describe("terminal replay attribution paths", () => {
       callers: ["unmatched"],
       replayBytes: 0,
     });
+  });
+  it("expires repeated cancelled attach attributions when no replay arrives", async () => {
+    const f = await setup(30);
+    const lifecycle = f.harness.deps.terminalSessions;
+    const failures = attributedFailures(lifecycle);
+    const attempts = 32;
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      const socket = { close() {}, send() {} };
+      onTerminalSocketOpen(f.harness.deps, {
+        terminalId: f.terminal.id,
+        socket,
+        sinceSeq: 0,
+        outputAcks: false,
+        resizeAcks: false,
+      });
+      lifecycle.detachBrowserTerminal({ terminalId: f.terminal.id, socket });
+    }
+    expect(f.lines()).toHaveLength(attempts);
+    expect(failures.size).toBe(attempts);
+    await vi.waitFor(() => expect(failures.size).toBe(0), {
+      timeout: 2_000,
+      interval: 5,
+    });
+    expect(f.lines()).toHaveLength(attempts);
   });
 });
