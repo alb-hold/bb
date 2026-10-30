@@ -408,11 +408,13 @@ function parseLsofOutput(output: string):
       paths: Array<{ pid: number; path: string; type?: string }>;
       unreadablePids: number[];
       cwdByPid: Map<number, string>;
+      processCommands: Record<string, string>;
     }
   | { ok: false } {
   const paths: Array<{ pid: number; path: string; type?: string }> = [];
   const unreadablePids: number[] = [];
   const cwdByPid = new Map<number, string>();
+  const processCommands: Record<string, string> = {};
   let pid: number | null = null;
   let sawName = false;
   let currentType: string | undefined;
@@ -431,6 +433,10 @@ function parseLsofOutput(output: string):
       sawName = false;
       currentType = undefined;
       currentFd = undefined;
+    } else if (tag === "c") {
+      if (pid === null) return { ok: false };
+      const command = line.slice(1);
+      if (command.length > 0) processCommands[pid] = command;
     } else if (tag === "f") {
       currentType = undefined;
       currentFd = line.slice(1);
@@ -448,7 +454,7 @@ function parseLsofOutput(output: string):
     }
   }
   flush();
-  return { ok: true, paths, unreadablePids, cwdByPid };
+  return { ok: true, paths, unreadablePids, cwdByPid, processCommands };
 }
 
 type LsofRun = {
@@ -515,9 +521,11 @@ async function inspectLinuxWorkspaceProcesses(
   supported: boolean;
   pids: number[];
   unreadablePids: number[];
+  processCommands?: Record<string, string>;
 }> {
   const workspace = await canonicalPath(path.resolve(workspacePath));
   const uid = process.getuid!();
+  const processCommands: Record<string, string> = {};
   const pids: number[] = [];
   const unreadablePids: number[] = [];
   for (const entry of await readdir("/proc")) {
@@ -526,6 +534,8 @@ async function inspectLinuxWorkspaceProcesses(
     const directory = `/proc/${entry}`;
     try {
       const status = await readFile(`${directory}/status`, "utf8");
+      const command = status.match(/^Name:\s+(.+)$/m)?.[1];
+      if (command) processCommands[pid] = command;
       const uids = status.match(/^Uid:\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)/m);
       if (uids === null) {
         unreadablePids.push(pid);
@@ -557,7 +567,19 @@ async function inspectLinuxWorkspaceProcesses(
       unreadablePids.push(pid);
     }
   }
-  return { supported: true, pids, unreadablePids };
+  const unreadableCommands = Object.fromEntries(
+    unreadablePids.flatMap((pid) =>
+      processCommands[pid] ? [[pid, processCommands[pid]!]] : [],
+    ),
+  );
+  return {
+    supported: true,
+    pids,
+    unreadablePids,
+    ...(Object.keys(unreadableCommands).length > 0
+      ? { processCommands: unreadableCommands }
+      : {}),
+  };
 }
 
 async function inspectDarwinWorkspaceProcesses(
@@ -566,13 +588,14 @@ async function inspectDarwinWorkspaceProcesses(
   supported: boolean;
   pids: number[];
   unreadablePids: number[];
+  processCommands?: Record<string, string>;
 }> {
   resetInspectSocketFindDiagnostics();
   const workspaceArg = path.resolve(workspacePath);
   const workspace = await canonicalPath(workspaceArg);
   const socketIndex = new WorkspaceSocketIndex();
   const uid = String(process.getuid!());
-  const lsofFlags = ["-n", "-Fpnt"] as const;
+  const lsofFlags = ["-n", "-Fpcnt"] as const;
   const cwdRun = await execLsof([
     "-a",
     "-u",
@@ -632,10 +655,18 @@ async function inspectDarwinWorkspaceProcesses(
       if (matched) pids.add(pid);
     }),
   );
+  const unreadableCommands = Object.fromEntries(
+    [...unreadablePids].flatMap((pid) =>
+      parsed.processCommands[pid] ? [[pid, parsed.processCommands[pid]!]] : [],
+    ),
+  );
   return {
     supported: true,
     pids: [...pids].sort((left, right) => left - right),
     unreadablePids: [...unreadablePids].sort((left, right) => left - right),
+    ...(Object.keys(unreadableCommands).length > 0
+      ? { processCommands: unreadableCommands }
+      : {}),
   };
 }
 
@@ -645,6 +676,7 @@ export async function inspectWorkspaceProcesses(
   supported: boolean;
   pids: number[];
   unreadablePids: number[];
+  processCommands?: Record<string, string>;
 }> {
   if (process.getuid === undefined)
     return { supported: false, pids: [], unreadablePids: [] };

@@ -1,4 +1,5 @@
 import { createBbSdk } from "@bb/sdk/core";
+import type { HostDaemonOnlineRpcResult } from "@bb/host-daemon-contract";
 import { createHttpTransport } from "@bb/sdk/node";
 import { appendThreadProvisioningEvent } from "../../../src/services/threads/thread-events.js";
 import { requestThreadStopForCurrentState } from "../../../src/services/threads/thread-lifecycle.js";
@@ -2935,9 +2936,22 @@ it.each([false, true])(
         .set({ protocolVersion: fixture.session.protocolVersion })
         .where(eq(hostDaemonSessions.id, fixture.session.id))
         .run();
-      for (const inspection of [
+      const inspections: HostDaemonOnlineRpcResult<"environment.inspect_cleanup">[] = [
         { supported: true, active: false, pids: [123], unreadablePids: [] },
-        { supported: true, active: false, pids: [], unreadablePids: [456] },
+        {
+          supported: true,
+          active: false,
+          pids: [],
+          unreadablePids: [456],
+          processCommands: { "456": "python3" },
+        },
+        {
+          supported: true,
+          active: false,
+          pids: [],
+          unreadablePids: [456, 457, 458],
+          processCommands: { "456": "python3", "457": "node" },
+        },
         {
           supported: true,
           active: false,
@@ -2947,7 +2961,8 @@ it.each([false, true])(
         { supported: true, active: true, pids: [], unreadablePids: [] },
         { supported: false, active: false, pids: [], unreadablePids: [] },
         { supported: true, active: false, pids: [], unreadablePids: [] },
-      ]) {
+      ];
+      for (const inspection of inspections) {
         let teardownRan = false;
         registerHostRpcResponder(harness, {
           hostId: fixture.host.id,
@@ -2972,6 +2987,16 @@ it.each([false, true])(
           inspection.pids.length === 0 &&
           inspection.unreadablePids.length === 0;
         expect(response.status).toBe(clear ? 200 : 409);
+        if (inspection.unreadablePids.length > 0) {
+          const processes = inspection.unreadablePids.map((pid) => {
+            if (pid === 456) return "456 (python3)";
+            if (pid === 457) return "457 (node)";
+            return String(pid);
+          });
+          expect(await response.text()).toContain(
+            `Recovery refused: process ${processes.join(", ")} may be using this workspace; stop it and retry`,
+          );
+        }
         const hook = harness.db
           .select()
           .from(environmentHookOperations)

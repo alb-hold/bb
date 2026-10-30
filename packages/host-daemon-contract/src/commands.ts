@@ -1689,6 +1689,7 @@ export const hostDaemonCommandRegistry = {
         active: z.boolean(),
         pids: z.array(z.number().int().positive()),
         unreadablePids: z.array(z.number().int().positive()),
+        processCommands: z.record(z.string(), z.string()).optional(),
       })
       .strict(),
     transport: "onlineRpc",
