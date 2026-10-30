@@ -681,6 +681,9 @@ it("keeps exited native output visible on a phone after touch focus and remount"
       ).not.toBeNull(),
     );
     await waitFor(() => expect(testState.output).toHaveBeenCalledTimes(i + 1));
+    await waitFor(() =>
+      expect(view.container.querySelector(".xterm-rows")?.textContent).toContain("LAST-ANSWER"),
+    );
     const textarea =
       view.container.querySelector<HTMLTextAreaElement>("textarea")!;
     textarea.focus();

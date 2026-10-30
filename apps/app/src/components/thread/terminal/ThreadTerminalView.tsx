@@ -2123,7 +2123,12 @@ export function ThreadTerminalView({
         .catch(() => undefined);
       void loadOptionalTerminalWebglAddon(importTerminalWebglAddon)
         .then((webglAddonModule) => {
-          if (disposed || webglAddonModule === null || terminal === null) {
+          if (
+            disposed ||
+            webglAddonModule === null ||
+            terminal === null ||
+            retainNativeOutput
+          ) {
             return;
           }
           webglRenderer = loadTerminalWebglRenderer(
