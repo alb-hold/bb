@@ -999,3 +999,25 @@ describe("native activity reporter", () => {
     });
   });
 });
+
+it("carries the reply unchanged and omits it when there is no transcript reply", async () => {
+  const sent: unknown[] = [];
+  const reporter = createNativeActivityReporter({
+    currentCredential: () => null,
+    threadId: "thr_reply",
+    send: async (args) => {
+      sent.push(args);
+      return { ok: true };
+    },
+  });
+  reporter.report({
+    state: "idle",
+    prompt: null,
+    lastAssistantText: "ALPHA\nBRAVO\nCHARLIE",
+  });
+  await reporter.settled();
+  reporter.report({ state: "working", prompt: "next" });
+  await reporter.settled();
+  expect(sent[0]).toMatchObject({ lastAssistantText: "ALPHA\nBRAVO\nCHARLIE" });
+  expect(sent[1]).not.toHaveProperty("lastAssistantText");
+});

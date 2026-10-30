@@ -118,6 +118,18 @@ export default function plugin(bb: BbPluginApi) {
           turnId: "prompt_id",
         },
         transcript: {
+          reply: [
+            {
+              match: {
+                equals: {
+                  type: "assistant",
+                  isSidechain: false,
+                  "message.role": "assistant",
+                },
+              },
+              text: "message.content",
+            },
+          ],
           identity: {
             recordId: "uuid",
             parentId: "parentUuid",

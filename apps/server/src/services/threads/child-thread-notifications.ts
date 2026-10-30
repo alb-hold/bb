@@ -71,6 +71,7 @@ interface BuildChildThreadNeedsAttentionInputArgs {
 }
 
 interface QueueChildThreadTurnNotificationArgs {
+  lastAssistantText?: string;
   childThread: ChildThreadNotificationSource;
   parentThreadId: string;
   turnStatus: ThreadEventTurnStatus;
@@ -256,9 +257,48 @@ function buildChildThreadBatchStatusLineSegments(
     { kind: "mention", mention: line.mention },
     {
       kind: "text",
-      text: ` ${childThreadTurnStatusLabel(line.item)}${workflowClause}.`,
+      text: ` ${childThreadTurnStatusLabel(line.item)}${workflowClause}.${line.item.turnStatus === "completed" && line.item.terminalOutput ? `\n${formatChildThreadCompletionOutputExcerpt(line.item.terminalOutput)}` : ""}`,
     },
   ];
+}
+
+function completionExcerpt(text: string): string | null {
+  const excerpt = text
+    .split("\n")
+    .map((row) => row.trim().slice(0, 240))
+    .filter(Boolean)
+    .slice(-6)
+    .join("\n");
+  return excerpt || null;
+}
+
+export function nativeCompletionScreenExcerpt(rows: string[]): string | null {
+  const lines = rows.map((row) => row.trim());
+  const rule = (line: string) => /^[─━═╌╍\-_=]{3,}$/u.test(line);
+  const prompt = (line: string) => /^[❯›>❱]\s*$/u.test(line);
+  let end = lines.length;
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    if (prompt(lines[index] ?? "")) {
+      end = index;
+      break;
+    }
+  }
+  while (end > 0) {
+    const line = lines[end - 1] ?? "";
+    if (
+      !line ||
+      rule(line) ||
+      prompt(line) ||
+      /[│]|^Resume .*session.*:|^[✻✽✶·].*(?:done|tokens|\d+s)|^.*(?:shift\+tab|ctrl\+|paste again to expand)/iu.test(
+        line,
+      )
+    ) {
+      end -= 1;
+    } else break;
+  }
+  let start = end;
+  while (start > 0 && lines[start - 1]) start -= 1;
+  return completionExcerpt(lines.slice(start, end).join("\n"));
 }
 
 async function getChildThreadCompletionOutput(
@@ -272,6 +312,10 @@ async function getChildThreadCompletionOutput(
   if (output !== null) return output;
   const native = getNativeTerminalThread(deps.db, args.childThread.id);
   if (native === null) return null;
+  if (args.lastAssistantText) {
+    const reply = completionExcerpt(args.lastAssistantText);
+    if (reply !== null) return reply;
+  }
   if (native.terminalSessionId !== null) {
     let deadline: ReturnType<typeof setTimeout> | undefined;
     try {
@@ -284,11 +328,8 @@ async function getChildThreadCompletionOutput(
           deadline = setTimeout(() => resolve(null), 1_000);
         }),
       ]);
-      const excerpt = screen?.rows
-        .map((row) => row.trim().slice(0, 240))
-        .filter((row) => row.length > 0)
-        .slice(-6)
-        .join("\n");
+      const excerpt =
+        screen === null ? null : nativeCompletionScreenExcerpt(screen.rows);
       if (excerpt && excerpt.length > 0) return excerpt;
     } catch (error) {
       deps.logger.debug(

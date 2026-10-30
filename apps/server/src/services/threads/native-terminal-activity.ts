@@ -90,6 +90,17 @@ function reportStates(deps: Pick<AppDeps, "hub">) {
 }
 
 const REFUSED_HOLDER_LOG_INTERVAL_MS = 10 * 60_000;
+const nativeReplies = new WeakMap<
+  NativeTerminalActivityDeps["hub"],
+  Map<string, string>
+>();
+
+export function getNativeTerminalLastAssistantText(
+  deps: Pick<NativeTerminalActivityDeps, "hub">,
+  threadId: string,
+): string | null {
+  return nativeReplies.get(deps.hub)?.get(threadId) ?? null;
+}
 const REFUSED_HOLDER_STATE_LIMIT = 512;
 
 interface RefusedHolderState {
@@ -348,6 +359,23 @@ export function recordNativeTerminalActivity(
     });
     working = outcome.applied && outcome.thread.status === "active";
   }
+  let replies = nativeReplies.get(deps.hub);
+  if (replies === undefined) {
+    replies = new Map();
+    nativeReplies.set(deps.hub, replies);
+  }
+  if (
+    args.state === "working" &&
+    (thread.status !== "active" || args.prompt !== undefined)
+  )
+    replies.delete(thread.id);
+  if (args.lastAssistantText !== undefined) {
+    if (replies.size >= 512) {
+      const oldest = replies.keys().next().value;
+      if (oldest !== undefined) replies.delete(oldest);
+    }
+    replies.set(thread.id, args.lastAssistantText);
+  }
   if (args.state === "idle") settleNativeTerminalTurn(deps, thread.id);
   const resolvedQuestions = reconcileNativeQuestions(deps, {
     closes: args.closes,
@@ -601,6 +629,9 @@ export function settleNativeTerminalTurn(
         childThread: thread,
         parentThreadId: thread.parentThreadId,
         turnStatus: "completed",
+        ...(nativeReplies.get(deps.hub)?.get(threadId) === undefined
+          ? {}
+          : { lastAssistantText: nativeReplies.get(deps.hub)?.get(threadId) }),
       });
     }
   }

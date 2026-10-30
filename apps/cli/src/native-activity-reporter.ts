@@ -123,6 +123,9 @@ export function createNativeActivityReporter(options: {
       threadId: options.threadId,
       ...(credential === null ? {} : { authorization: `Bearer ${credential}` }),
       state: next.state,
+      ...(next.state === "waiting" || next.lastAssistantText === undefined
+        ? {}
+        : { lastAssistantText: next.lastAssistantText }),
       ...(next.prompt === null ? {} : { prompt: next.prompt }),
       ...(next.state === "waiting" ? { questions: next.questions } : {}),
       ...(includeCloses ? { closes: closeIds } : {}),

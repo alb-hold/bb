@@ -205,7 +205,12 @@ describe("@bb/sdk", () => {
   it("sends the caller thread or all with a focus and split request", async () => {
     const queue = createFetchQueue([
       { body: makeTerminalSession({ id: "term_scope" }) },
-      { body: { deliveredClients: 0, skipReason: "no_client_viewing_caller_thread" } },
+      {
+        body: {
+          deliveredClients: 0,
+          skipReason: "no_client_viewing_caller_thread",
+        },
+      },
       { body: makeTerminalSession({ id: "term_scope" }) },
       { body: { deliveredClients: 2, skipReason: null } },
     ]);
@@ -450,6 +455,26 @@ describe("@bb/sdk", () => {
         url: "http://bb.test/api/v1/threads/thr_test/native-terminal/activity",
       },
     ]);
+  });
+
+  it("sends the optional native assistant reply", async () => {
+    const queue = createFetchQueue([{ body: { ok: true } }]);
+    const sdk = createBbSdk({
+      transport: createHttpTransport({
+        baseUrl: "http://bb.test",
+        fetch: queue.fetch,
+        runtime: "node",
+      }),
+    });
+    await sdk.nativeTerminals.reportActivity({
+      threadId: "thr_test",
+      state: "idle",
+      lastAssistantText: "ALPHA\nBRAVO\nCHARLIE",
+    });
+    expect(JSON.parse(queue.requests[0]!.bodyText!)).toEqual({
+      state: "idle",
+      lastAssistantText: "ALPHA\nBRAVO\nCHARLIE",
+    });
   });
 
   it("sends confirms and closes only when the caller sets them, and keeps an empty list", async () => {

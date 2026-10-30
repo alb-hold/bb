@@ -1,3 +1,4 @@
+import { recordNativeTerminalActivity } from "../../../src/services/threads/native-terminal-activity.js";
 import {
   createNativeTerminalThread,
   createTerminalSession,
@@ -347,6 +348,72 @@ describe("plugin thread lifecycle events", () => {
       });
     } finally {
       delete globals.__activeEvents;
+      await cleanup();
+    }
+  });
+
+  it("uses the current native turn reply and clears it for a turn without a reply", async () => {
+    const recorded: RecordedThreadPayload[] = [];
+    globals.__idleEvents = recorded;
+    const { harness, cleanup } = await setUpPluginHarness(`
+      export default function plugin(bb: any) {
+        bb.events.on("thread.idle", (payload: any) => { (globalThis as any).__idleEvents.push(payload); });
+      }
+    `);
+    try {
+      const { thread, environment, host, session } = seedThreadFixture(harness);
+      createNativeTerminalThread(harness.db, {
+        threadId: thread.id,
+        providerId: thread.providerId,
+        nativeSessionId: "reply-session",
+        initialPrompt: null,
+        initialImages: [],
+        model: null,
+      });
+      const terminal = createTerminalSession(harness.db, {
+        threadId: thread.id,
+        environmentId: environment.id,
+        hostId: host.id,
+        daemonSessionId: session.id,
+        initialCwd: "/tmp",
+        cols: 80,
+        rows: 24,
+        status: "running",
+        title: "Reply test",
+      });
+      setNativeTerminalThreadTerminal(harness.db, {
+        threadId: thread.id,
+        terminalSessionId: terminal.id,
+      });
+      recordNativeTerminalActivity(harness.deps, {
+        threadId: thread.id,
+        confirms: true,
+        state: "working",
+        prompt: "first",
+      });
+      recordNativeTerminalActivity(harness.deps, {
+        threadId: thread.id,
+        confirms: true,
+        state: "idle",
+        lastAssistantText: "ALPHA\nBRAVO\nCHARLIE",
+      });
+      await vi.waitFor(() => expect(recorded).toHaveLength(1));
+      expect(recorded[0]?.lastAssistantText).toBe("ALPHA\nBRAVO\nCHARLIE");
+      recordNativeTerminalActivity(harness.deps, {
+        threadId: thread.id,
+        confirms: true,
+        state: "working",
+        prompt: "second",
+      });
+      recordNativeTerminalActivity(harness.deps, {
+        threadId: thread.id,
+        confirms: true,
+        state: "idle",
+      });
+      await vi.waitFor(() => expect(recorded).toHaveLength(2));
+      expect(recorded[1]?.lastAssistantText).toBeNull();
+    } finally {
+      delete globals.__idleEvents;
       await cleanup();
     }
   });

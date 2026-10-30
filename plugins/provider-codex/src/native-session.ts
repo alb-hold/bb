@@ -21,6 +21,18 @@ export const CODEX_NATIVE_ACTIVITY: NonNullable<
   CodexNativeTerminal["activity"]
 > = {
   transcript: {
+    reply: [
+      {
+        match: {
+          equals: {
+            type: "response_item",
+            "payload.type": "message",
+            "payload.role": "assistant",
+          },
+        },
+        text: "payload.content",
+      },
+    ],
     questions: {
       open: [
         {

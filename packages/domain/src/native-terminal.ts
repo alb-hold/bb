@@ -155,6 +155,17 @@ export const providerNativeTerminalActivitySchema = z
               .strict(),
           )
           .max(8),
+        reply: z
+          .array(
+            z
+              .object({
+                match: providerNativeTerminalRecordMatchSchema,
+                text: recordFieldPathSchema,
+              })
+              .strict(),
+          )
+          .max(8)
+          .optional(),
         continuation: z
           .object({
             match: providerNativeTerminalRecordMatchSchema,

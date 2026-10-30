@@ -1,3 +1,4 @@
+import { CODEX_NATIVE_ACTIVITY } from "bb-plugin-provider-codex/native-session";
 import {
   appendFileSync,
   closeSync,
@@ -5,6 +6,7 @@ import {
   mkdtempSync,
   openSync,
   rmSync,
+  readFileSync,
   statSync,
   writeFileSync,
   writeSync,
@@ -2951,4 +2953,42 @@ describe("NativeActivityReader without any hook capture", () => {
       false,
     );
   });
+});
+
+it("reports the latest assistant reply from a real Codex rollout shape, clearing it for the next turn", () => {
+  const home = tempHome();
+  const record = JSON.parse(
+    readFileSync(
+      new URL("./fixtures/codex-assistant-reply.jsonl", import.meta.url),
+      "utf8",
+    ),
+  );
+  const file = writeRollout(home, [
+    { type: "event_msg", payload: { type: "user_message", message: "first" } },
+    {
+      ...record,
+      payload: {
+        ...record.payload,
+        content: [{ type: "output_text", text: "earlier reply" }],
+      },
+    },
+    record,
+    { type: "event_msg", payload: { type: "task_complete" } },
+  ]);
+  const reader = new NativeActivityReader(
+    { ...CODEX_CLI, activity: CODEX_NATIVE_ACTIVITY },
+    { HOME: home },
+    null,
+    { kind: "start", id: SESSION_ID },
+  );
+  const expected = record.payload.content
+    .map((part: { text: string }) => part.text)
+    .join("\n");
+  expect(reader.read().at(-1)).toEqual({
+    state: "idle",
+    prompt: null,
+    lastAssistantText: expected,
+  });
+  appendFileSync(file, jsonl(codexTurn("second")));
+  expect(reader.read().at(-1)).toEqual({ state: "idle", prompt: null });
 });

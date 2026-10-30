@@ -82,6 +82,7 @@ export type NativeTerminalOpenQuestion = z.infer<
 export const reportNativeTerminalActivityRequestSchema = z
   .object({
     state: nativeTerminalActivityStateSchema,
+    lastAssistantText: z.string().trim().min(1).optional(),
     prompt: z.string().trim().min(1).max(4_000).optional(),
     questions: z
       .array(nativeTerminalOpenQuestionSchema)
