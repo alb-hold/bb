@@ -132,6 +132,10 @@ export function createNativeActivityReporter(options: {
       closes: true,
       confirms: next.state !== "waiting" && next.confirms === false,
     };
+    const lastAssistantText =
+      next.state === "waiting" || next.lastAssistantText === undefined
+        ? undefined
+        : truncateNativeAssistantText(next.lastAssistantText);
     const request = (
       closeIds: string[],
       includeConfirms: boolean,
@@ -143,9 +147,7 @@ export function createNativeActivityReporter(options: {
       threadId: options.threadId,
       ...(credential === null ? {} : { authorization: `Bearer ${credential}` }),
       state: next.state,
-      ...(next.state === "waiting" || next.lastAssistantText === undefined
-        ? {}
-        : { lastAssistantText: truncateNativeAssistantText(next.lastAssistantText) }),
+      ...(lastAssistantText === undefined ? {} : { lastAssistantText }),
       ...(next.prompt === null ? {} : { prompt: next.prompt }),
       ...(next.state === "waiting" ? { questions: next.questions } : {}),
       ...(includeCloses ? { closes: closeIds } : {}),

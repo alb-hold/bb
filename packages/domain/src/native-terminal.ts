@@ -6,11 +6,13 @@ export const NATIVE_TERMINAL_ACTIVITY_HEARTBEAT_INTERVAL_MS = 30_000;
 export const NATIVE_TERMINAL_ACTIVITY_FRESH_FOR_MS =
   NATIVE_TERMINAL_ACTIVITY_HEARTBEAT_INTERVAL_MS * 3;
 
-export function truncateNativeAssistantText(text: string): string {
-  const bytes = new TextEncoder().encode(text.slice(-NATIVE_ASSISTANT_TEXT_MAX));
+export function truncateNativeAssistantText(text: string): string | undefined {
+  const bytes = new TextEncoder().encode(text.trim().slice(-NATIVE_ASSISTANT_TEXT_MAX));
   let start = Math.max(0, bytes.length - NATIVE_ASSISTANT_TEXT_MAX);
   while (((bytes[start] ?? 0) & 0xc0) === 0x80) start += 1;
-  return new TextDecoder("utf-8", { fatal: false, ignoreBOM: true }).decode(bytes.subarray(start));
+  return new TextDecoder("utf-8", { fatal: false, ignoreBOM: true })
+    .decode(bytes.subarray(start))
+    .trim() || undefined;
 }
 
 const TEMPLATE_TOKEN = /\{([A-Za-z]+)\}/gu;

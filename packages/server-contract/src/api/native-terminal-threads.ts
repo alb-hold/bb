@@ -5,6 +5,7 @@ import {
   terminalColsSchema,
   terminalRowsSchema,
   toolCallResponseSchema,
+  truncateNativeAssistantText,
 } from "@bb/domain";
 import { terminalSessionSchema } from "./terminals.js";
 
@@ -82,7 +83,10 @@ export type NativeTerminalOpenQuestion = z.infer<
 export const reportNativeTerminalActivityRequestSchema = z
   .object({
     state: nativeTerminalActivityStateSchema,
-    lastAssistantText: z.string().trim().min(1).optional(),
+    lastAssistantText: z.preprocess(
+      (value) => typeof value === "string" ? truncateNativeAssistantText(value) : value,
+      z.string().optional(),
+    ),
     prompt: z.string().trim().min(1).max(4_000).optional(),
     questions: z
       .array(nativeTerminalOpenQuestionSchema)

@@ -1024,21 +1024,32 @@ it("carries the reply unchanged and omits it when there is no transcript reply",
   expect(sent[1]).not.toHaveProperty("lastAssistantText");
 });
 
-it("truncates an oversized native reply before sending without splitting a character", async () => {
-  const sent: Array<string | undefined> = [];
+it.each([
+  { label: "Unicode tail", reply: "x".repeat(1024 * 1024) + "🙂€".repeat(900) + "\nALPHA\nBRAVO\nCHARLIE" },
+  { label: "trailing whitespace", reply: "x".repeat(1024 * 1024) + " \n".repeat(4096) },
+  { label: "whitespace only", reply: "   " },
+  { label: "empty", reply: "" },
+])("normalizes native reply whitespace before sending ($label)", async ({ reply }) => {
+  const sent: Array<{ lastAssistantText?: string }> = [];
   const reporter = createNativeActivityReporter({
     currentCredential: () => null,
     threadId: "thr_reply",
-    send: async (args) => { sent.push(args.lastAssistantText); },
+    send: async (args) => { sent.push(args); },
   });
-  const oversized = "x".repeat(1024 * 1024) + "🙂€".repeat(900) + "\nALPHA\nBRAVO\nCHARLIE";
-  reporter.report({ state: "idle", prompt: null, lastAssistantText: oversized });
+  reporter.report({ state: "idle", prompt: null, lastAssistantText: reply });
   await reporter.settled();
   expect(sent).toHaveLength(1);
-  expect(sent[0]).toContain("\nALPHA\nBRAVO\nCHARLIE");
-  expect(oversized.endsWith(sent[0] ?? "")).toBe(true);
-  expect(sent[0]).not.toContain("\uFFFD");
-  expect(Buffer.byteLength(sent[0] ?? "", "utf8")).toBeLessThanOrEqual(4096);
+  const text = sent[0]?.lastAssistantText;
+  if (reply.trim().length === 0) {
+    expect(sent[0]).not.toHaveProperty("lastAssistantText");
+  } else {
+    expect(text).toBeTruthy();
+    expect(text).toBe(text?.trim());
+    expect(text?.trim().length).toBeGreaterThan(0);
+    expect(reply.trim().endsWith(text ?? "")).toBe(true);
+  }
+  expect(text ?? "").not.toContain("\uFFFD");
+  expect(Buffer.byteLength(text ?? "", "utf8")).toBeLessThanOrEqual(4096);
 });
 
 it("delivers state, questions and closes to a strict c9c9a3de server by dropping only the unsupported reply", async () => {

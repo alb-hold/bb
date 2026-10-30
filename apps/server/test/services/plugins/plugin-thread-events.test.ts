@@ -436,7 +436,12 @@ describe("plugin thread lifecycle events", () => {
     }
   });
 
-  it("accepts an oversized native reply with state, questions and closes intact and bounds stored and idle text", async () => {
+  it.each([
+    { label: "Unicode tail", reply: "x".repeat(1024 * 1024) + "🙂€".repeat(900) + "\nALPHA\nBRAVO\nCHARLIE", suffix: "\nALPHA\nBRAVO\nCHARLIE" },
+    { label: "trailing whitespace", reply: "x".repeat(1024 * 1024) + " \n".repeat(4096), suffix: "x" },
+    { label: "whitespace only", reply: "   ", suffix: null },
+    { label: "empty", reply: "", suffix: null },
+  ])("accepts native reply whitespace over HTTP with state and closes intact ($label)", async ({ reply, suffix }) => {
     const recorded: RecordedThreadPayload[] = [];
     globals.__idleEvents = recorded;
     const { harness, cleanup } = await setUpPluginHarness(`
@@ -451,7 +456,6 @@ describe("plugin thread lifecycle events", () => {
         hostId: host.id,
         thread,
       });
-      const oversized = "x".repeat(1024 * 1024) + "🙂€".repeat(900) + "\nALPHA\nBRAVO\nCHARLIE";
       const report = async (body: Record<string, unknown>) => {
         const response = await harness.app.request(
           `/api/v1/threads/${thread.id}/native-terminal/activity`,
@@ -468,7 +472,7 @@ describe("plugin thread lifecycle events", () => {
         state: "waiting",
         questions: [{ id: "next", prompt: "Next?" }],
         closes: ["old"],
-        lastAssistantText: oversized,
+        ...(suffix === null ? {} : { lastAssistantText: reply }),
       });
       expect(getThread(harness.db, thread.id)?.status).toBe("active");
       const questions = listPendingInteractionsByThread(harness.db, { threadId: thread.id });
@@ -477,7 +481,7 @@ describe("plugin thread lifecycle events", () => {
         expect.objectContaining({ providerRequestId: "native:next", status: "pending" }),
       ]));
       const waitingText = getNativeTerminalLastAssistantText(harness.deps, thread.id);
-      await report({ state: "idle", closes: ["next"], lastAssistantText: oversized });
+      await report({ state: "idle", closes: ["next"], lastAssistantText: reply });
       expect(getThread(harness.db, thread.id)?.status).toBe("idle");
       expect(listPendingInteractionsByThread(harness.db, {
         threadId: thread.id,
@@ -487,9 +491,14 @@ describe("plugin thread lifecycle events", () => {
       const stored = getNativeTerminalLastAssistantText(harness.deps, thread.id);
       expect(stored).toBe(waitingText);
       expect(recorded[0]?.lastAssistantText).toBe(stored);
-      expect(stored).toContain("\nALPHA\nBRAVO\nCHARLIE");
-      expect(oversized.endsWith(stored ?? "")).toBe(true);
-      expect(stored).not.toContain("\uFFFD");
+      if (suffix === null) {
+        expect(stored).toBeNull();
+      } else {
+        expect(stored).toContain(suffix);
+        expect(stored).toBe(stored?.trim());
+        expect(reply.trim().endsWith(stored ?? "")).toBe(true);
+      }
+      expect(stored ?? "").not.toContain("\uFFFD");
       expect(Buffer.byteLength(stored ?? "", "utf8")).toBeLessThanOrEqual(4096);
     } finally {
       delete globals.__idleEvents;

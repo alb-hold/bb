@@ -373,12 +373,15 @@ export function recordNativeTerminalActivity(
     nativeReplies.set(deps.db, replies);
   }
   if (args.state !== "idle") replies.delete(thread.id);
-  if (args.lastAssistantText !== undefined) {
+  const lastAssistantText = args.lastAssistantText === undefined
+    ? undefined
+    : truncateNativeAssistantText(args.lastAssistantText);
+  if (lastAssistantText !== undefined) {
     if (replies.size >= 512) {
       const oldest = replies.keys().next().value;
       if (oldest !== undefined) replies.delete(oldest);
     }
-    replies.set(thread.id, truncateNativeAssistantText(args.lastAssistantText));
+    replies.set(thread.id, lastAssistantText);
   }
   if (args.state === "idle") settleNativeTerminalTurn(deps, thread.id);
   const resolvedQuestions = reconcileNativeQuestions(deps, {
