@@ -62,6 +62,10 @@ export class PendingRpcRegistry<TKey extends PendingRpcKey, TResult> {
     return { created: true, promise };
   }
 
+  keyFor(rpcKey: string): TKey | null {
+    return this.entries.get(rpcKey)?.key ?? null;
+  }
+
   settle(rpcKey: string, result: TResult): boolean {
     const entry = this.take(rpcKey);
     if (!entry) return false;

@@ -2641,11 +2641,13 @@ describe("public terminal routes", () => {
     expect(readBrowserMessages(attachSocket)).toContainEqual(
       expect.objectContaining({ type: "error", code: "terminal_replaced" }),
     );
-    expect(
-      replayInfo.mock.calls.some(
-        ([, message]) => message === "Terminal replay attributed",
-      ),
-    ).toBe(false);
+    const failedAttributions = replayInfo.mock.calls.filter(
+      ([, message]) => message === "Terminal replay attributed",
+    );
+    expect(failedAttributions).toHaveLength(1);
+    expect(failedAttributions[0]?.[0]).toMatchObject({
+      path: "websocket/failed", replayBytes: 0, retainedWriteBytes: 0,
+    });
     const discard = replayInfo.mock.calls.find(
       ([, message]) =>
         message === "Terminal replay discarded after ownership change",
