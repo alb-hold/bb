@@ -1048,6 +1048,7 @@ it("delivers state, questions and closes to a strict c9c9a3de server by dropping
       if (!parsed.success)
         throw new BbHttpError({
           status: 400,
+          body: null,
           code: "invalid_request",
           message: parsed.error.issues.map((issue) => issue.message).join("\n"),
         });

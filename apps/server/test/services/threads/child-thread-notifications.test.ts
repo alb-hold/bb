@@ -65,12 +65,15 @@ describe("native child turn notifications", () => {
       const { parent, child, host, session } = await nativeChildFixture(harness, "auto");
       const terminalId = getNativeTerminalThread(harness.db, child.id)?.terminalSessionId;
       if (!terminalId) throw new Error("Missing child terminal");
+      vi.spyOn(harness.deps.terminalSessions, "readTerminalScreen").mockResolvedValue({ rows: ["ALPHA", "BRAVO", "CHARLIE", "", "Resume this session with: agent --resume id"], cursor: { row: 4, col: 0 }, cols: 120, gridRows: 36, truncated: false, complete: true });
       vi.useFakeTimers();
       recordNativeTerminalActivity(harness.deps, { threadId: child.id, confirms: true, state: "working" });
       const exit = () => harness.deps.terminalSessions.handleDaemonTerminalMessage({ hostId: host.id, sessionId: session.id, message: { type: "terminal.exited", terminalId, exitCode: 0, closeReason: "process-exit" } });
       exit();
       await vi.advanceTimersByTimeAsync(3_100);
       expect(listNativeParentNotices(harness.db, parent.id)).toHaveLength(1);
+      expect(listNativeParentNotices(harness.db, parent.id)[0]?.text).toContain("ALPHA\nBRAVO\nCHARLIE");
+      expect(listNativeParentNotices(harness.db, parent.id)[0]?.text).not.toContain("Resume");
       exit();
       await vi.advanceTimersByTimeAsync(3_100);
       expect(listNativeParentNotices(harness.db, parent.id)).toHaveLength(1);
@@ -610,4 +613,13 @@ describe("completion screen fallback", () => {
       expect(read).not.toHaveBeenCalled();
     });
   });
+});
+
+it("includes the text of both completed children in a batch", () => {
+  const message = renderBatchMessage({ items: [
+    { activeWorkflowCount: 0, childThread: testThread({ id: "thr_alpha" }), terminalOutput: "ALPHA child one", turnStatus: "completed" },
+    { activeWorkflowCount: 0, childThread: testThread({ id: "thr_bravo" }), terminalOutput: "BRAVO child two", turnStatus: "completed" },
+  ] });
+  expect(message).toContain("ALPHA child one");
+  expect(message).toContain("BRAVO child two");
 });
