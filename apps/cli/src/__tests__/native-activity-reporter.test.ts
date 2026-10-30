@@ -1,3 +1,4 @@
+import { z } from "zod";
 import { reportNativeTerminalActivityRequestSchema } from "@bb/server-contract";
 import { createHash } from "node:crypto";
 import { BbHttpError, BbRequestTimeoutError } from "@bb/sdk";
@@ -1024,9 +1025,16 @@ it("carries the reply unchanged and omits it when there is no transcript reply",
 });
 
 it("delivers state, questions and closes to a strict c9c9a3de server by dropping only the unsupported reply", async () => {
-  const oldSchema = reportNativeTerminalActivityRequestSchema.omit({
-    lastAssistantText: true,
-  });
+  const shape = reportNativeTerminalActivityRequestSchema.shape;
+  const oldSchema = z
+    .object({
+      state: shape.state,
+      prompt: shape.prompt,
+      questions: shape.questions,
+      confirms: shape.confirms,
+      closes: shape.closes,
+    })
+    .strict();
   const delivered: unknown[] = [];
   let attempts = 0;
   const reporter = createNativeActivityReporter({
