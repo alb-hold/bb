@@ -214,6 +214,45 @@ describe("ScrollPositionKeeper", () => {
     expect(timeline.layout.scrollTop).toBe(timeline.layout.maxScrollTop());
   });
 
+  it("re-applies a pending extent change without extending input during an unexplained find scroll", () => {
+    vi.useFakeTimers({
+      toFake: ["setTimeout", "clearTimeout", "performance"],
+    });
+    const timeline = createTimeline(rowsOf(10), { attached: true });
+    timeline.layout.flushResizeObservers();
+    timeline.layout.layoutScrollTo(timeline.layout.maxScrollTop());
+    timeline.scrollElement.dispatchEvent(new WheelEvent("wheel", { deltaY: 1 }));
+    vi.advanceTimersByTime(500);
+    window.dispatchEvent(new Event(WINDOW_FIND_OPEN_EVENT));
+    const cachedMax = timeline.keeper["maxScrollTop"];
+    const readWrites = countScrollTopWrites(timeline.scrollElement);
+    timeline.resize("row-9", 201);
+    timeline.layout.bounceTo(cachedMax - 20);
+
+    const preconditions = {
+      inputSessionExpired: !timeline.keeper["isInputSession"](),
+      followsUnexplainedScroll: timeline.keeper["followsUnexplainedScroll"](),
+      extentChanged:
+        Math.abs(timeline.layout.maxScrollTop() - cachedMax) >= 1,
+    };
+    console.info("handleScroll extent guard preconditions", preconditions);
+    expect(preconditions).toEqual({
+      inputSessionExpired: true,
+      followsUnexplainedScroll: true,
+      extentChanged: true,
+    });
+    expect(readWrites()).toBe(0);
+    expect(timeline.keeper["ownScrollTop"]).not.toBe(timeline.layout.scrollTop);
+
+    timeline.keeper.handleScroll();
+
+    expect(readWrites()).toBeGreaterThan(0);
+    expect(timeline.layout.scrollTop).toBe(timeline.layout.maxScrollTop());
+    expect(timeline.keeper.isAttached()).toBe(true);
+    expect(timeline.keeper.hasUserScrolled()).toBe(false);
+    expect(timeline.keeper["isInputSession"]()).toBe(false);
+  });
+
   it("keeps the reading row in place when an older page is prepended", () => {
     const rows = rowsOf(10);
     const timeline = createTimeline(rows);
