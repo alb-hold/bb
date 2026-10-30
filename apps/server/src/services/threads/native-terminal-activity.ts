@@ -91,15 +91,15 @@ function reportStates(deps: Pick<AppDeps, "hub">) {
 
 const REFUSED_HOLDER_LOG_INTERVAL_MS = 10 * 60_000;
 const nativeReplies = new WeakMap<
-  NativeTerminalActivityDeps["hub"],
+  NativeTerminalActivityDeps["db"],
   Map<string, string>
 >();
 
 export function getNativeTerminalLastAssistantText(
-  deps: Pick<NativeTerminalActivityDeps, "hub">,
+  deps: Pick<NativeTerminalActivityDeps, "db">,
   threadId: string,
 ): string | null {
-  return nativeReplies.get(deps.hub)?.get(threadId) ?? null;
+  return nativeReplies.get(deps.db)?.get(threadId) ?? null;
 }
 const REFUSED_HOLDER_STATE_LIMIT = 512;
 
@@ -359,10 +359,10 @@ export function recordNativeTerminalActivity(
     });
     working = outcome.applied && outcome.thread.status === "active";
   }
-  let replies = nativeReplies.get(deps.hub);
+  let replies = nativeReplies.get(deps.db);
   if (replies === undefined) {
     replies = new Map();
-    nativeReplies.set(deps.hub, replies);
+    nativeReplies.set(deps.db, replies);
   }
   if (
     args.state === "working" &&
@@ -629,9 +629,9 @@ export function settleNativeTerminalTurn(
         childThread: thread,
         parentThreadId: thread.parentThreadId,
         turnStatus: "completed",
-        ...(nativeReplies.get(deps.hub)?.get(threadId) === undefined
+        ...(nativeReplies.get(deps.db)?.get(threadId) === undefined
           ? {}
-          : { lastAssistantText: nativeReplies.get(deps.hub)?.get(threadId) }),
+          : { lastAssistantText: nativeReplies.get(deps.db)?.get(threadId) }),
       });
     }
   }

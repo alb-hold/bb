@@ -617,8 +617,8 @@ describe("completion screen fallback", () => {
 
 it("includes the text of both completed children in a batch", () => {
   const message = renderBatchMessage({ items: [
-    { activeWorkflowCount: 0, childThread: testThread({ id: "thr_alpha" }), terminalOutput: "ALPHA child one", turnStatus: "completed" },
-    { activeWorkflowCount: 0, childThread: testThread({ id: "thr_bravo" }), terminalOutput: "BRAVO child two", turnStatus: "completed" },
+    { activeWorkflowCount: 0, childThread: testThread({ id: "thr_alpha", title: "Alpha child" }), terminalOutput: "ALPHA child one", turnStatus: "completed" },
+    { activeWorkflowCount: 0, childThread: testThread({ id: "thr_bravo", title: "Bravo child" }), terminalOutput: "BRAVO child two", turnStatus: "completed" },
   ] });
   expect(message).toContain("ALPHA child one");
   expect(message).toContain("BRAVO child two");
