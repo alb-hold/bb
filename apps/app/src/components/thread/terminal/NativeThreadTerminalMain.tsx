@@ -182,6 +182,7 @@ export function NativeThreadTerminalMain({
         </div>
         <div className="min-h-0 flex-1">
           <LazyThreadTerminalPanel
+            retainNativeOutput
             autoFocus={false}
             isPanelOpen
             isPanelPersistedOpen

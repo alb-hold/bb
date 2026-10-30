@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, render, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 import { FitAddon } from "@xterm/addon-fit";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -25,6 +25,7 @@ const testState = vi.hoisted(() => ({
   socketMessages: [] as string[],
   socketUrls: [] as string[],
   screen: vi.fn(),
+  output: vi.fn(),
 }));
 
 class TestTerminalSocket {
@@ -86,6 +87,7 @@ vi.mock("@/lib/sdk", () => ({
   sdk: {
     terminals: {
       experimental_screen: testState.screen,
+      output: testState.output,
       experimental_attention: {
         clear: testState.clearAttention,
       },
@@ -633,4 +635,64 @@ describe("ThreadTerminalView terminal visibility and panel", () => {
       });
     }, "terminal visible visibility was not restored after focus within 5000 ms");
   });
+});
+
+it("keeps exited native output visible on a phone after touch focus and remount", async () => {
+  vi.stubGlobal("WebSocket", TestTerminalSocket);
+  vi.spyOn(document, "hasFocus").mockReturnValue(true);
+  vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({
+    measureText: (text: string) => ({ width: text.length * 8 }),
+  } as unknown as CanvasRenderingContext2D);
+  vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(374);
+  vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockReturnValue(526);
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue(
+    new DOMRect(0, 0, 357, 281),
+  );
+  vi.spyOn(FitAddon.prototype, "proposeDimensions").mockReturnValue({
+    cols: 51,
+    rows: 37,
+  });
+  testState.output.mockResolvedValue({
+    chunks: [{ seq: 0, dataBase64: btoa("LAST-ANSWER\r\n") }],
+    nextSeq: 1,
+  });
+  const props = {
+    autoFocus: false,
+    isPanelOpen: true,
+    retainNativeOutput: true,
+    session: makeTerminalSession({
+      status: "exited",
+      exitCode: 0,
+      cols: 80,
+      rows: 24,
+    }),
+  };
+  for (let i = 0; i < 2; i++) {
+    const view = render(
+      <MemoryRouter>
+        <AppCommandProvider>
+          <ThreadTerminalView {...props} />
+        </AppCommandProvider>
+      </MemoryRouter>,
+    );
+    await waitFor(() =>
+      expect(
+        view.container.querySelector("[data-terminal-renderer] .xterm"),
+      ).not.toBeNull(),
+    );
+    await waitFor(() => expect(testState.output).toHaveBeenCalledTimes(i + 1));
+    const textarea =
+      view.container.querySelector<HTMLTextAreaElement>("textarea")!;
+    textarea.focus();
+    fireEvent.pointerDown(textarea, { pointerType: "touch" });
+    fireEvent.pointerUp(textarea, { pointerType: "touch" });
+    fireEvent(window, new Event("resize"));
+    await waitFor(() =>
+      expect(
+        view.container.querySelector<HTMLElement>("[data-terminal-renderer]")
+          ?.style.opacity,
+      ).not.toBe("0"),
+    );
+    view.unmount();
+  }
 });
