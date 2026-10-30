@@ -316,10 +316,8 @@ async function getChildThreadCompletionOutput(
   if (args.turnStatus !== "completed") {
     return null;
   }
-  const output = getLastThreadOutput(deps.db, args.childThread.id);
-  if (output !== null) return output;
   const native = getNativeTerminalThread(deps.db, args.childThread.id);
-  if (native === null) return null;
+  if (native === null) return getLastThreadOutput(deps.db, args.childThread.id);
   if (args.lastAssistantText) {
     const reply = completionExcerpt(args.lastAssistantText);
     if (reply !== null) return reply;

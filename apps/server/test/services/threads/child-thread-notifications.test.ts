@@ -3,14 +3,24 @@ import { nativeCompletionScreenExcerpt } from "../../../src/services/threads/chi
 import { reportNativeTerminalActivityRequestSchema } from "@bb/server-contract";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createNativeTerminalThread, createTerminalSession, setNativeTerminalThreadTerminal, listNativeParentNotices, getThread, getNativeTerminalThread } from "@bb/db";
-import { seedThread, seedThreadFixture } from "../../helpers/seed.js";
+import { seedEvent, seedThread, seedThreadFixture } from "../../helpers/seed.js";
+import { turnScope } from "@bb/domain";
 import { withTestHarness, type TestAppHarness } from "../../helpers/test-app.js";
 import { recordNativeTerminalActivity } from "../../../src/services/threads/native-terminal-activity.js";
 import { applyLoggedThreadLifecycleEvent } from "../../../src/services/threads/lifecycle-outcome.js";
 
-async function nativeChildFixture(harness: TestAppHarness, policy: "auto" | "off" | "stuck") {
+async function nativeChildFixture(harness: TestAppHarness, policy: "auto" | "off" | "stuck", oldOutput?: string) {
   const { thread: parent, host, session, project, environment } = seedThreadFixture(harness, { thread: { status: "active" } });
   const child = seedThread(harness.deps, { projectId: project.id, environmentId: environment.id, parentThreadId: parent.id, parentNotifications: policy, title: "Native worker" });
+  if (oldOutput !== undefined) seedEvent(harness.deps, {
+    threadId: child.id,
+    environmentId: environment.id,
+    providerThreadId: "old-chat",
+    scope: turnScope("old-turn"),
+    sequence: 1,
+    type: "item/completed",
+    data: { item: { type: "agentMessage", id: "old-answer", text: oldOutput } },
+  });
   for (const thread of [parent, child]) {
     createNativeTerminalThread(harness.db, { threadId: thread.id, providerId: thread.providerId, nativeSessionId: `native-${thread.id}`, initialPrompt: thread.id === parent.id ? "Coordinate children" : null, initialImages: [], model: null });
     if (thread.id === parent.id) continue;
@@ -25,6 +35,31 @@ async function nativeChildFixture(harness: TestAppHarness, policy: "auto" | "off
 afterEach(() => vi.useRealTimers());
 
 describe("native child turn notifications", () => {
+  it.each([
+    { reply: "NEW-REPLY", rows: ["SCREEN-REPLY"], expected: "NEW-REPLY" },
+    { reply: undefined, rows: ["SCREEN-REPLY"], expected: "SCREEN-REPLY" },
+    { reply: undefined, rows: [], expected: "Native worker turn ended." },
+  ])("ignores persisted chat output for native completion ($expected)", async ({ reply, rows, expected }) => {
+    await withTestHarness(async (harness) => {
+      const { parent, child } = await nativeChildFixture(harness, "auto", "OLD-OUTPUT");
+      const read = vi.spyOn(harness.deps.terminalSessions, "readTerminalScreen").mockResolvedValue({
+        rows, cursor: { row: 0, col: 0 }, cols: 80, gridRows: 24, truncated: false, complete: true,
+      });
+      vi.useFakeTimers();
+      recordNativeTerminalActivity(harness.deps, { confirms: true, state: "working", threadId: child.id });
+      recordNativeTerminalActivity(harness.deps, {
+        confirms: true, state: "idle", threadId: child.id,
+        ...(reply === undefined ? {} : { lastAssistantText: reply }),
+      });
+      await vi.advanceTimersByTimeAsync(2100);
+      const notices = listNativeParentNotices(harness.db, parent.id);
+      expect(notices).toHaveLength(1);
+      expect(notices[0]?.text).toContain(expected);
+      expect(notices[0]?.text).not.toContain("OLD-OUTPUT");
+      if (reply !== undefined) expect(read).not.toHaveBeenCalled();
+    });
+  });
+
   it.each(["auto", "off", "stuck"] as const)("bounds a stalled screen read under %s policy", async (policy) => {
     await withTestHarness(async (harness) => {
       const { parent, child } = await nativeChildFixture(harness, policy);

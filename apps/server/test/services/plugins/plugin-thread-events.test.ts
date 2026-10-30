@@ -363,7 +363,7 @@ describe("plugin thread lifecycle events", () => {
     { state: "working", prestarted: true },
     { state: "waiting", prestarted: true },
     { state: "unreported", prestarted: true },
-  ] as const)("uses the current native turn reply and clears it for a turn without a reply ($state, prestarted $prestarted)", async ({ state: secondState, prestarted }) => {
+  ] as const)("uses the current native turn reply over persisted chat output and clears it for a turn without a reply ($state, prestarted $prestarted)", async ({ state: secondState, prestarted }) => {
     const recorded: RecordedThreadPayload[] = [];
     globals.__idleEvents = recorded;
     const { harness, cleanup } = await setUpPluginHarness(`
@@ -373,6 +373,15 @@ describe("plugin thread lifecycle events", () => {
     `);
     try {
       const { thread, environment, host, session } = seedThreadFixture(harness);
+      seedEvent(harness.deps, {
+        threadId: thread.id,
+        environmentId: environment.id,
+        providerThreadId: "old-chat",
+        scope: turnScope("old-turn"),
+        sequence: 1,
+        type: "item/completed",
+        data: { item: { type: "agentMessage", id: "old-answer", text: "OLD-OUTPUT" } },
+      });
       createNativeTerminalThread(harness.db, {
         threadId: thread.id,
         providerId: thread.providerId,
@@ -406,10 +415,10 @@ describe("plugin thread lifecycle events", () => {
         threadId: thread.id,
         confirms: true,
         state: "idle",
-        lastAssistantText: "ALPHA\nBRAVO\nCHARLIE",
+        lastAssistantText: "NEW-REPLY",
       });
       await vi.waitFor(() => expect(recorded).toHaveLength(1));
-      expect(recorded[0]?.lastAssistantText).toBe("ALPHA\nBRAVO\nCHARLIE");
+      expect(recorded[0]?.lastAssistantText).toBe("NEW-REPLY");
       if (prestarted)
         applyLoggedThreadLifecycleEvent(lifecycleDeps(harness), {
           threadId: thread.id,

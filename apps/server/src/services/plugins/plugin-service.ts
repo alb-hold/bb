@@ -73,6 +73,7 @@ import {
   getInstalledPluginRegistration,
   getPluginSafeMode,
   getThread,
+  getNativeTerminalThread,
   getLatestThreadSequence,
   listDuePluginSchedules,
   listInstalledPlugins,
@@ -1408,8 +1409,9 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
         emitThreadEvent("thread.idle", () => ({
           thread: buildThreadDto(thread),
           lastAssistantText:
-            getNativeTerminalLastAssistantText(deps, thread.id) ??
-            getLastThreadOutput(deps.db, thread.id),
+            getNativeTerminalThread(deps.db, thread.id) === null
+              ? getLastThreadOutput(deps.db, thread.id)
+              : getNativeTerminalLastAssistantText(deps, thread.id),
         }));
       },
       emitThreadFailed(thread) {
