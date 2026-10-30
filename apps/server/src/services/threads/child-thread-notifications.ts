@@ -275,9 +275,12 @@ function completionExcerpt(text: string): string | null {
 export function nativeCompletionScreenExcerpt(rows: string[]): string | null {
   const lines = rows.map((row) => row.trim());
   const rule = (line: string) => /^[─━═╌╍\-_=]{3,}$/u.test(line);
-  const prompt = (line: string) => /^[❯›>❱]\s*$/u.test(line);
-  let end = lines.length;
-  for (let index = lines.length - 1; index >= 0; index -= 1) {
+  const prompt = (line: string) => /^[❯›>❱](?:\s|$)/u.test(line);
+  const resumeHint = lines.findLastIndex((line) =>
+    /^Resume .*session.*:/iu.test(line),
+  );
+  let end = resumeHint === -1 ? lines.length : resumeHint;
+  for (let index = end - 1; index >= 0; index -= 1) {
     if (prompt(lines[index] ?? "")) {
       end = index;
       break;

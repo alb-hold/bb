@@ -65,7 +65,7 @@ describe("native child turn notifications", () => {
       const { parent, child, host, session } = await nativeChildFixture(harness, "auto");
       const terminalId = getNativeTerminalThread(harness.db, child.id)?.terminalSessionId;
       if (!terminalId) throw new Error("Missing child terminal");
-      vi.spyOn(harness.deps.terminalSessions, "readTerminalScreen").mockResolvedValue({ rows: ["ALPHA", "BRAVO", "CHARLIE", "", "Resume this session with: agent --resume id"], cursor: { row: 4, col: 0 }, cols: 120, gridRows: 36, truncated: false, complete: true });
+      vi.spyOn(harness.deps.terminalSessions, "readTerminalScreen").mockResolvedValue({ rows: ["ALPHA", "BRAVO", "CHARLIE", "", "Resume this session with:", "agent --resume id"], cursor: { row: 4, col: 0 }, cols: 120, gridRows: 36, truncated: false, complete: true });
       vi.useFakeTimers();
       recordNativeTerminalActivity(harness.deps, { threadId: child.id, confirms: true, state: "working" });
       const exit = () => harness.deps.terminalSessions.handleDaemonTerminalMessage({ hostId: host.id, sessionId: session.id, message: { type: "terminal.exited", terminalId, exitCode: 0, closeReason: "process-exit" } });
@@ -542,18 +542,18 @@ describe("completion screen fallback", () => {
         "BRAVO",
         "CHARLIE",
         "",
-        "Resume this session with: agent --resume id",
+        "Resume this session with:", "agent --resume id",
       ]),
     ).toBe("ALPHA\nBRAVO\nCHARLIE");
   });
-  it("accepts the older CLI report without reply and uses the screen fallback", async () => {
+  it.each([false, true])("accepts the older CLI report without reply and uses the screen fallback (footer only: %s)", async (footerOnly) => {
     await withTestHarness(async (harness) => {
       const { parent, child } = await nativeChildFixture(harness, "auto");
       vi.spyOn(
         harness.deps.terminalSessions,
         "readTerminalScreen",
       ).mockResolvedValue({
-        rows: screen.split("\n"),
+        rows: (footerOnly ? screen.slice(screen.indexOf("✻ Sautéed")) : screen).split("\n"),
         cursor: { row: 40, col: 0 },
         cols: 120,
         gridRows: 48,
@@ -574,7 +574,7 @@ describe("completion screen fallback", () => {
       }
       await vi.advanceTimersByTimeAsync(2100);
       expect(listNativeParentNotices(harness.db, parent.id)[0]?.text).toContain(
-        "CHARLIE-373-203906",
+        footerOnly ? "Native worker turn ended." : "CHARLIE-373-203906",
       );
     });
   });
