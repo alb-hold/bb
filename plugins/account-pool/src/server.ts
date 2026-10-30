@@ -10,7 +10,6 @@ import {
   transportErrorCode,
 } from "./upstream-transport.js";
 import { createHash } from "node:crypto";
-import { ARCHIVE_UNDO_GRACE_MS, type Thread } from "@bb/domain";
 import path from "node:path";
 import { z } from "zod";
 import type {
@@ -96,6 +95,9 @@ export interface AccountPoolPluginOptions {
   codexAuthBaseUrl?: string;
 }
 
+type Thread = Awaited<ReturnType<BbPluginApi["sdk"]["threads"]["get"]>>;
+
+const ARCHIVE_UNDO_GRACE_MS = 30_000;
 const DISPOSE_INSPECTION_TIMEOUT_MS = 2_000;
 const DISPOSE_INSPECTION_TIMEOUT = Symbol("dispose-inspection-timeout");
 const THREAD_SWEEP_INTERVAL_MS = 15 * 60_000;

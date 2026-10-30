@@ -3427,9 +3427,6 @@ importers:
 
   plugins/account-pool:
     dependencies:
-      '@bb/domain':
-        specifier: workspace:*
-        version: link:../../packages/domain
       '@bb/shared-ui':
         specifier: workspace:*
         version: link:../../packages/shared-ui
@@ -3449,9 +3446,6 @@ importers:
         specifier: 4.6.5
         version: 4.6.5
     devDependencies:
-      '@bb/db':
-        specifier: workspace:*
-        version: link:../../packages/db
       '@bb/plugin-build':
         specifier: workspace:*
         version: link:../../packages/plugin-build

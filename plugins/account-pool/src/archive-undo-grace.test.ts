@@ -1,16 +1,4 @@
 import {
-  archiveThread,
-  createConnection,
-  createThread,
-  ensurePersonalProject,
-  getThread,
-  markThreadDeleted,
-  migrate,
-  noopNotifier,
-  unarchiveThread,
-} from "@bb/db";
-import { ARCHIVE_UNDO_GRACE_MS } from "@bb/domain";
-import {
   createFakePluginHost,
   makeThreadResponse,
 } from "@get-bb/plugin-sdk/testing";
@@ -21,6 +9,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { statusReportSchema } from "./contracts.js";
 import { createAccountPoolPlugin } from "./server.js";
 
+const ARCHIVE_UNDO_GRACE_MS = 30_000;
+
 const cleanups: Array<() => Promise<void>> = [];
 
 afterEach(async () => {
@@ -28,20 +18,16 @@ afterEach(async () => {
 });
 
 async function fixture() {
-  const db = createConnection(":memory:");
-  migrate(db);
-  const project = ensurePersonalProject(db);
-  const thread = createThread(db, noopNotifier, {
-    projectId: project.id,
+  let thread = makeThreadResponse({
+    id: "thread-one",
     providerId: "claude-code",
     status: "active",
   });
   let clock = Date.now();
   const dataDir = await mkdtemp(path.join(tmpdir(), "pool-archive-grace-"));
-  const readThread = () => {
-    const current = getThread(db, thread.id);
-    if (current === null) throw new Error("Missing thread fixture");
-    return makeThreadResponse(current);
+  const readThread = () => thread;
+  const setThread = (update: Partial<typeof thread>) => {
+    thread = makeThreadResponse({ ...thread, ...update });
   };
   const host = createFakePluginHost({
     pluginId: "account-pool",
@@ -71,7 +57,6 @@ async function fixture() {
     service.controller.abort();
     await service.done;
     await host.harness.lifecycle.dispose();
-    db.$client.close();
     await rm(dataDir, { recursive: true, force: true });
   });
   await vi.waitFor(async () => {
@@ -84,7 +69,7 @@ async function fixture() {
     "claude-code",
     {
       threadId: thread.id,
-      projectId: project.id,
+      projectId: thread.projectId,
       hostId: "host-one",
     },
   );
@@ -113,10 +98,7 @@ async function fixture() {
     return response.status;
   };
   const archive = async () => {
-    const archived = archiveThread(db, noopNotifier, thread.id);
-    if (archived?.archivedAt === null || archived === null)
-      throw new Error("Archive failed");
-    clock = archived.archivedAt;
+    setThread({ archivedAt: clock });
     expect(
       await host.harness.behavior.emitThreadEvent("thread.archived", {
         thread: readThread(),
@@ -124,7 +106,7 @@ async function fixture() {
     ).toEqual({ errors: [] });
   };
   return {
-    db,
+    setThread,
     host,
     thread,
     readThread,
@@ -159,7 +141,7 @@ describe("Account Pooler archive undo grace", () => {
     const f = await fixture();
     await f.archive();
     f.advance(ARCHIVE_UNDO_GRACE_MS - 1);
-    expect(unarchiveThread(f.db, noopNotifier, f.thread.id)).not.toBeNull();
+    f.setThread({ archivedAt: null });
     expect(
       await f.host.harness.behavior.emitThreadEvent("thread.unarchived", {
         thread: f.readThread(),
@@ -171,9 +153,7 @@ describe("Account Pooler archive undo grace", () => {
 
   it("revokes an archived idle thread's credential immediately", async () => {
     const f = await fixture();
-    f.db.$client
-      .prepare("UPDATE threads SET status = ? WHERE id = ?")
-      .run("idle", f.thread.id);
+    f.setThread({ status: "idle" });
     await f.archive();
     expect(await f.request()).toBe(401);
     expect(f.upstream).not.toHaveBeenCalled();
@@ -183,9 +163,7 @@ describe("Account Pooler archive undo grace", () => {
     const f = await fixture();
     await f.archive();
     expect(await f.request()).toBe(200);
-    f.db.$client
-      .prepare("UPDATE threads SET status = ? WHERE id = ?")
-      .run("idle", f.thread.id);
+    f.setThread({ status: "idle" });
     expect(await f.request()).toBe(401);
     expect(f.upstream).toHaveBeenCalledTimes(1);
   });
@@ -193,7 +171,7 @@ describe("Account Pooler archive undo grace", () => {
   it("revokes when the thread is deleted inside the grace", async () => {
     const f = await fixture();
     await f.archive();
-    markThreadDeleted(f.db, noopNotifier, { threadId: f.thread.id });
+    f.setThread({ deletedAt: Date.now() });
     expect(await f.request()).toBe(401);
     expect(f.upstream).not.toHaveBeenCalled();
   });
