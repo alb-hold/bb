@@ -402,9 +402,10 @@ function parseClaudeRawEvent(event: JsonRpcMessage): ClaudeRawEvent {
     case "user":
       return {
         kind: "sdk/user",
-        contentTypes: getMessageContentTypes(message).map(
-          toClaudeMessageContentType,
-        ),
+        contentTypes:
+          typeof getRecordProperty(message, "message")?.["content"] === "string"
+            ? ["text"]
+            : getMessageContentTypes(message).map(toClaudeMessageContentType),
       };
 
     case "tool_progress":
