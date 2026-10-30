@@ -1648,57 +1648,6 @@ describe("terminal touch focus", () => {
 });
 
 describe("terminal output encoding", () => {
-  it("routes an exit notice into the replay stream while replay is pending", () => {
-    const terminal = new Terminal({ cols: 80, rows: 24 });
-    const replayWrites: string[] = [];
-    const replayPipeline = {
-      push(bytes: Uint8Array, callback: () => void) {
-        replayWrites.push(new TextDecoder().decode(bytes));
-        callback();
-      },
-    };
-    const session = {
-      id: "term_exit_replay",
-      threadId: "thr_1",
-      environmentId: "env_1",
-      hostId: "host_1",
-      title: "Terminal",
-      initialCwd: "/workspace",
-      cols: 80,
-      rows: 24,
-      status: "exited",
-      exitCode: 7,
-      closeReason: "process-exit",
-      createdAt: 1,
-      updatedAt: 2,
-      lastUserInputAt: null,
-    } satisfies TerminalSession;
-
-    handleTerminalServerMessage({
-      acknowledgeOutput: vi.fn(),
-      message: { type: "exited", session },
-      onReplayComplete: vi.fn(),
-      replayNextSeq: 1,
-      replayPipeline,
-      replayWriteState: { suppressedWriteCount: 0 },
-      setReplayNextSeq: vi.fn(),
-      terminal,
-      writeExitNotice: (text) => {
-        replayPipeline.push(
-          new TextEncoder().encode(`\r\n${text}\r\n`),
-          () => undefined,
-        );
-        return true;
-      },
-    });
-
-    expect(replayWrites).toEqual(["\r\nTerminal exited with code 7\r\n"]);
-    expect(terminal.buffer.active.getLine(0)?.translateToString()).not.toContain(
-      "Terminal exited",
-    );
-    terminal.dispose();
-  });
-
   it("matches visible output after replaying output received while hidden", async () => {
     const visibleTerminal = new Terminal({ cols: 30, rows: 6 });
     const hiddenTerminal = new Terminal({ cols: 30, rows: 6 });

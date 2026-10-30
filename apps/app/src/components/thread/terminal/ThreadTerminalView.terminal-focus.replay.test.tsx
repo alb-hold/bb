@@ -1308,6 +1308,14 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
       socket.receive({ type: "exited", session: exitedSession });
       await Promise.resolve();
     });
+    expect(processExited.spy).not.toHaveBeenCalled();
+    socket.receive({
+      type: "attached",
+      session: exitedSession,
+      replayStartSeq: 0,
+      nextSeq: 0,
+    });
+    await pause(200);
     expect(processExited.spy).toHaveBeenCalledOnce();
   });
 
@@ -1321,6 +1329,14 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
       });
       await Promise.resolve();
     });
+    expect(processExited.spy).not.toHaveBeenCalled();
+    socket.receive({
+      type: "attached",
+      session: { ...session, status: "exited", exitCode: 1 },
+      replayStartSeq: 0,
+      nextSeq: 0,
+    });
+    await pause(200);
     expect(processExited.spy).toHaveBeenCalledOnce();
   });
 
@@ -1490,6 +1506,14 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
       await Promise.resolve();
     });
 
+    expect(processExited).not.toHaveBeenCalled();
+    socket.receive({
+      type: "attached",
+      session: { ...session, status: "exited" },
+      replayStartSeq: 0,
+      nextSeq: 0,
+    });
+    await pause(200);
     expect(processExited).toHaveBeenCalledOnce();
   });
 
