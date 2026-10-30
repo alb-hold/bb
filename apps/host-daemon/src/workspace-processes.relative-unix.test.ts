@@ -284,19 +284,20 @@ describe("relative unix bind suffix search", () => {
     }
   });
 
-  it("treats bare c.sock as unreadable when workspace holds that socket suffix", async () => {
+  it.each([null, "python3"])("keeps bare c.sock unreadable with command %s", async (command) => {
     const ws = await mkdtemp(join(tmpdir(), "bb-r10b-unr-"));
     const sockPath = join(ws, "c.sock");
     const stop = await listenUnix(sockPath);
     try {
       await mockLsofPassThroughFind(
         "p521\nfcwd\ntDIR\nn/\n",
-        "p521\nf1\ntunix\nnc.sock\n",
+        `p521\n${command === null ? "" : `c${command}\n`}f1\ntunix\nnc.sock\n`,
       );
       expect(await inspectWorkspaceProcesses(ws)).toEqual({
         supported: true,
         pids: [],
         unreadablePids: [521],
+        ...(command === null ? {} : { processCommands: { "521": command } }),
       });
     } finally {
       await stop();

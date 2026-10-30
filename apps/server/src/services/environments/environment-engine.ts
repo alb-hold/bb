@@ -1066,7 +1066,24 @@ export async function recoverEnvironmentCleanup(
             throw new ApiError(
               409,
               "invalid_request",
-              `Recovery refused: ${!inspection.supported ? "process inspection requires Linux" : inspection.active ? "setup or a hook is still running" : inspection.pids.length > 0 ? `workspace processes remain (${inspection.pids.join(", ")})` : `cannot inspect same-user processes (${inspection.unreadablePids.join(", ")})`}`,
+              `Recovery refused: ${
+                !inspection.supported
+                  ? "process inspection requires Linux"
+                  : inspection.active
+                    ? "setup or a hook is still running"
+                    : inspection.pids.length > 0
+                      ? `workspace processes remain (${inspection.pids.join(", ")})`
+                      : `process ${inspection.unreadablePids
+                          .map((pid) => {
+                            const command = inspection.processCommands?.[pid];
+                            return command
+                              ? `${pid} (${command})`
+                              : String(pid);
+                          })
+                          .join(
+                            ", ",
+                          )} may be using this workspace; stop it and retry`
+              }`,
             );
         }
         const current = getEnvironment(deps.db, environmentId);
