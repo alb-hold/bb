@@ -157,6 +157,7 @@ export function NativeThreadTerminalMain({
       <div
         className="flex h-full min-h-0 min-w-0 flex-col"
         data-native-terminal-thread={view.providerId}
+        data-no-sidebar-swipe=""
       >
         <div className="flex min-w-0 flex-wrap items-center justify-between gap-2 border-b border-border-seam px-3 py-2 text-sm">
           <div className="min-w-0">

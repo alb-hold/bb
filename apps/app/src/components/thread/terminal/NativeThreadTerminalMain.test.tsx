@@ -117,6 +117,12 @@ describe("NativeThreadTerminalMain", () => {
     expect(screen.getByText("Session session-native")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Resume session" })).toBeTruthy();
     expect(screen.getByTestId("terminal-panel")).toBeTruthy();
+    expect(
+      screen
+        .getByText("Claude Code session ended (exit 2)")
+        .closest("[data-native-terminal-thread]")
+        ?.hasAttribute("data-no-sidebar-swipe"),
+    ).toBe(true);
   });
 
   it("resumes by opening the native session", async () => {
