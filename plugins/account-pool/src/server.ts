@@ -10,6 +10,7 @@ import {
   transportErrorCode,
 } from "./upstream-transport.js";
 import { createHash } from "node:crypto";
+import { ARCHIVE_UNDO_GRACE_MS, type Thread } from "@bb/domain";
 import path from "node:path";
 import { z } from "zod";
 import type {
@@ -184,6 +185,13 @@ export function createAccountPoolPlugin(
     const accounts = new AccountStore(bb.storage.kv, secretDir);
     await accounts.initialize();
     const now = options.now ?? Date.now;
+    const archiveUndoGraceKeepsCredential = (
+      thread: Pick<Thread, "archivedAt" | "deletedAt" | "status">,
+    ): boolean =>
+      thread.deletedAt === null &&
+      thread.status === "active" &&
+      thread.archivedAt !== null &&
+      thread.archivedAt + ARCHIVE_UNDO_GRACE_MS > now();
     const hubTokens = new HubTokenStore(secretDir, now);
     await hubTokens.initialize();
     const enrolledHosts = await bb.sdk.hosts.list();
@@ -192,7 +200,10 @@ export function createAccountPoolPlugin(
       try {
         const thread = await bb.sdk.threads.get({ threadId, signal });
         if (thread.deletedAt !== null) return "gone";
-        return thread.archivedAt === null ? "live" : "archived";
+        return thread.archivedAt === null ||
+          archiveUndoGraceKeepsCredential(thread)
+          ? "live"
+          : "archived";
       } catch (error) {
         if (isThreadNotFound(error)) return "gone";
         throw error;
@@ -480,7 +491,8 @@ export function createAccountPoolPlugin(
       },
     );
     bb.events.on("thread.archived", async ({ thread }) => {
-      await threadTokens.suspendThread(thread.id);
+      if (!archiveUndoGraceKeepsCredential(thread))
+        await threadTokens.suspendThread(thread.id);
     });
     bb.events.on("thread.unarchived", async ({ thread }) => {
       await threadTokens.unarchiveThread(thread.id);

@@ -14,24 +14,14 @@ import {
   listQueuedThreadCommands,
   waitForQueuedCommand,
 } from "../helpers/commands.js";
-import {
-  expireArchiveUndoGrace,
-  seedThreadFixture,
-  seedTurnStarted,
-} from "../helpers/seed.js";
+import { expireArchiveUndoGrace, seedThreadFixture } from "../helpers/seed.js";
 import { withTestHarness, type TestAppHarness } from "../helpers/test-app.js";
 
 function seedArchivableActiveThread(harness: TestAppHarness) {
-  const fixture = seedThreadFixture(harness, {
+  return seedThreadFixture(harness, {
     environment: { path: "/tmp/archive-undo-grace", status: "ready" },
     thread: { status: "active" },
   });
-  seedTurnStarted(harness.deps, {
-    environmentId: fixture.environment.id,
-    threadId: fixture.thread.id,
-    turnId: `turn-${fixture.thread.id}`,
-  });
-  return fixture;
 }
 
 function seedRunningTerminal(
@@ -63,7 +53,7 @@ async function archiveThread(
 }
 
 describe("archive undo grace", () => {
-  it("interrupts a running turn without waiting for the archive undo grace", async () => {
+  it("leaves a running turn alone while the archive undo grace has not elapsed", async () => {
     await withTestHarness(async (harness) => {
       const { thread } = seedArchivableActiveThread(harness);
 
@@ -71,18 +61,18 @@ describe("archive undo grace", () => {
 
       expect(getThread(harness.db, thread.id)).toMatchObject({
         archivedAt: expect.any(Number),
-        status: "stopping",
+        status: "active",
       });
       expect(
         listQueuedThreadCommands(harness, "thread.stop", thread.id),
-      ).toHaveLength(1);
+      ).toEqual([]);
 
       await runThreadLifecycleSweep(harness.deps);
 
-      expect(getThread(harness.db, thread.id)?.status).toBe("stopping");
+      expect(getThread(harness.db, thread.id)?.status).toBe("active");
       expect(
         listQueuedThreadCommands(harness, "thread.stop", thread.id),
-      ).toHaveLength(1);
+      ).toEqual([]);
     });
   });
 
@@ -108,7 +98,7 @@ describe("archive undo grace", () => {
     });
   });
 
-  it("does not repeat the interrupt when unarchived inside the grace", async () => {
+  it("never stops a thread unarchived inside the grace", async () => {
     await withTestHarness(async (harness) => {
       const { thread } = seedArchivableActiveThread(harness);
 
@@ -122,11 +112,11 @@ describe("archive undo grace", () => {
 
       expect(getThread(harness.db, thread.id)).toMatchObject({
         archivedAt: null,
-        status: "stopping",
+        status: "active",
       });
       expect(
         listQueuedThreadCommands(harness, "thread.stop", thread.id),
-      ).toHaveLength(1);
+      ).toEqual([]);
     });
   });
 
