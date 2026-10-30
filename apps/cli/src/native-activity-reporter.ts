@@ -33,7 +33,10 @@ function credentialRefused(error: unknown): boolean {
   );
 }
 
-function unrecognizedField(error: unknown, field: ClosureField): boolean {
+function unrecognizedField(
+  error: unknown,
+  field: ClosureField | "lastAssistantText",
+): boolean {
   return (
     error instanceof BbHttpError &&
     error.status === 400 &&
@@ -55,9 +58,25 @@ export function createNativeActivityReporter(options: {
   let retained: RetainedReport | null = null;
   let possiblyOpen = new Set<string>();
   let closesSupported = true;
+  let replySupported = true;
   let refused = 0;
   let refusalLoggedAt: number | null = null;
   const now = options.now ?? Date.now;
+
+  const send = async (
+    args: NativeTerminalReportActivityArgs,
+  ): Promise<unknown> => {
+    const { lastAssistantText, ...core } = args;
+    if (!replySupported || lastAssistantText === undefined)
+      return options.send(core);
+    try {
+      return await options.send(args);
+    } catch (error) {
+      if (!unrecognizedField(error, "lastAssistantText")) throw error;
+      replySupported = false;
+      return options.send(core);
+    }
+  };
 
   const noteRefusal = (error: unknown, credential: string | null): void => {
     if (!credentialRefused(error)) return;
@@ -167,7 +186,7 @@ export function createNativeActivityReporter(options: {
       includeCloses: boolean,
     ): Promise<"accepted" | "failed"> => {
       try {
-        await options.send(request(closeIds, includeConfirms, includeCloses));
+        await send(request(closeIds, includeConfirms, includeCloses));
         noteAccepted(credential);
         acknowledge(closeIds);
         return "accepted";
@@ -197,7 +216,7 @@ export function createNativeActivityReporter(options: {
             closes: closeIds.length,
           });
           try {
-            await options.send(request(closeIds, includeConfirms, false));
+            await send(request(closeIds, includeConfirms, false));
             noteAccepted(credential);
             acknowledge(closeIds);
             return "accepted";

@@ -1,3 +1,4 @@
+import { reportNativeTerminalActivityRequestSchema } from "@bb/server-contract";
 import { createHash } from "node:crypto";
 import { BbHttpError, BbRequestTimeoutError } from "@bb/sdk";
 import { describe, expect, it } from "vitest";
@@ -1020,4 +1021,58 @@ it("carries the reply unchanged and omits it when there is no transcript reply",
   await reporter.settled();
   expect(sent[0]).toMatchObject({ lastAssistantText: "ALPHA\nBRAVO\nCHARLIE" });
   expect(sent[1]).not.toHaveProperty("lastAssistantText");
+});
+
+it("delivers state, questions and closes to a strict c9c9a3de server by dropping only the unsupported reply", async () => {
+  const oldSchema = reportNativeTerminalActivityRequestSchema.omit({
+    lastAssistantText: true,
+  });
+  const delivered: unknown[] = [];
+  let attempts = 0;
+  const reporter = createNativeActivityReporter({
+    currentCredential: () => null,
+    threadId: "thr_old",
+    send: async (args) => {
+      attempts += 1;
+      const { state, prompt, questions, confirms, closes, lastAssistantText } =
+        args;
+      const body = {
+        state,
+        ...(prompt === undefined ? {} : { prompt }),
+        ...(questions === undefined ? {} : { questions }),
+        ...(confirms === undefined ? {} : { confirms }),
+        ...(closes === undefined ? {} : { closes }),
+        ...(lastAssistantText === undefined ? {} : { lastAssistantText }),
+      };
+      const parsed = oldSchema.safeParse(body);
+      if (!parsed.success)
+        throw new BbHttpError({
+          status: 400,
+          code: "invalid_request",
+          message: parsed.error.issues.map((issue) => issue.message).join("\n"),
+        });
+      delivered.push(parsed.data);
+      return { ok: true };
+    },
+  });
+  reporter.report({ state: "idle", prompt: null, lastAssistantText: "ALPHA" });
+  await reporter.settled();
+  reporter.report({
+    state: "waiting",
+    prompt: null,
+    questions: [{ id: "q1", prompt: "Choose" }],
+  });
+  await reporter.settled();
+  reporter.report({ state: "idle", prompt: null, lastAssistantText: "BRAVO" });
+  await reporter.settled();
+  expect(attempts).toBe(4);
+  expect(delivered).toEqual([
+    { state: "idle", closes: [] },
+    {
+      state: "waiting",
+      questions: [{ id: "q1", prompt: "Choose" }],
+      closes: [],
+    },
+    { state: "idle", closes: ["q1"] },
+  ]);
 });

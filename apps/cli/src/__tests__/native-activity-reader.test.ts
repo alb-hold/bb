@@ -2992,3 +2992,41 @@ it("reports the latest assistant reply from a real Codex rollout shape, clearing
   appendFileSync(file, jsonl(codexTurn("second")));
   expect(reader.read().at(-1)).toEqual({ state: "idle", prompt: null });
 });
+
+it("reads the last assistant answer from P19 pooled Claude transcript", () => {
+  const fixture = claudeFixture();
+  const record = JSON.parse(
+    readFileSync(
+      new URL("./fixtures/claude-assistant-reply.jsonl", import.meta.url),
+      "utf8",
+    ),
+  );
+  fixture.append([
+    {
+      ...record,
+      uuid: "p19-answer",
+      parentUuid: "answer-1",
+      promptId: "turn-1",
+    },
+    {
+      type: "system",
+      subtype: "stop_hook_summary",
+      hasOutput: false,
+      isSidechain: false,
+      uuid: "p19-stop",
+      parentUuid: "p19-answer",
+      promptId: "turn-1",
+    },
+  ]);
+  const report = fixture.reader.read().at(-1);
+  expect(report).toMatchObject({
+    state: "idle",
+    lastAssistantText: expect.stringContaining("ALPHA-373-203906"),
+  });
+  expect(report).toMatchObject({
+    lastAssistantText: expect.stringContaining("BRAVO-373-203906"),
+  });
+  expect(report).toMatchObject({
+    lastAssistantText: expect.stringContaining("CHARLIE-373-203906"),
+  });
+});
