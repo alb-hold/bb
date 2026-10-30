@@ -2,6 +2,7 @@
 
 import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 import { FitAddon } from "@xterm/addon-fit";
+import { TerminalWebSocketTransport } from "@bb/client-core";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -173,6 +174,7 @@ afterEach(() => {
   testState.socketUrls.length = 0;
   testState.clearAttention.mockReset();
   testState.screen.mockReset();
+  testState.output.mockReset();
   testState.toastError.mockReset();
   testState.touchEnabled = false;
   testState.mediaQueryListeners.clear();
@@ -637,65 +639,116 @@ describe("ThreadTerminalView terminal visibility and panel", () => {
   });
 });
 
-it("keeps exited native output visible on a phone after touch focus and remount", async () => {
-  vi.stubGlobal("WebSocket", TestTerminalSocket);
-  vi.spyOn(document, "hasFocus").mockReturnValue(true);
-  vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({
-    measureText: (text: string) => ({ width: text.length * 8 }),
-  } as unknown as CanvasRenderingContext2D);
-  vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(374);
-  vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockReturnValue(526);
-  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue(
-    new DOMRect(0, 0, 357, 281),
-  );
-  vi.spyOn(FitAddon.prototype, "proposeDimensions").mockReturnValue({
+it.each([
+  {
+    device: "phone",
+    width: 390,
     cols: 51,
     rows: 37,
-  });
-  testState.output.mockResolvedValue({
-    chunks: [{ seq: 0, dataBase64: btoa("LAST-ANSWER\r\n") }],
-    nextSeq: 1,
-  });
-  const props = {
-    autoFocus: false,
-    isPanelOpen: true,
-    retainNativeOutput: true,
-    session: makeTerminalSession({
-      status: "exited",
-      exitCode: 0,
-      cols: 80,
-      rows: 24,
-    }),
-  };
-  for (let i = 0; i < 2; i++) {
-    const view = render(
-      <MemoryRouter>
-        <AppCommandProvider>
-          <ThreadTerminalView {...props} />
-        </AppCommandProvider>
-      </MemoryRouter>,
+    renderCols: 51,
+    renderRows: 37,
+    scale: "1",
+  },
+  {
+    device: "desktop",
+    width: 1280,
+    cols: 76,
+    rows: 40,
+    renderCols: 80,
+    renderRows: 24,
+    scale: "0.95",
+  },
+])(
+  "keeps exited native output readable on $device after touch focus and remount",
+  async ({ width, cols, rows, renderCols, renderRows, scale }) => {
+    vi.stubGlobal("innerWidth", width);
+    const sendResize = vi.spyOn(
+      TerminalWebSocketTransport.prototype,
+      "sendResize",
     );
-    await waitFor(() =>
-      expect(
-        view.container.querySelector("[data-terminal-renderer] .xterm"),
-      ).not.toBeNull(),
+    vi.stubGlobal("WebSocket", TestTerminalSocket);
+    vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({
+      measureText: (text: string) => ({ width: text.length * 8 }),
+    } as unknown as CanvasRenderingContext2D);
+    vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(374);
+    vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockReturnValue(526);
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue(
+      new DOMRect(0, 0, 357, 281),
     );
-    await waitFor(() => expect(testState.output).toHaveBeenCalledTimes(i + 1));
-    await waitFor(() =>
-      expect(view.container.querySelector(".xterm-rows")?.textContent).toContain("LAST-ANSWER"),
-    );
-    const textarea =
-      view.container.querySelector<HTMLTextAreaElement>("textarea")!;
-    textarea.focus();
-    fireEvent.pointerDown(textarea, { pointerType: "touch" });
-    fireEvent.pointerUp(textarea, { pointerType: "touch" });
-    fireEvent(window, new Event("resize"));
-    await waitFor(() =>
+    vi.spyOn(FitAddon.prototype, "proposeDimensions").mockReturnValue({
+      cols,
+      rows,
+    });
+    testState.output.mockResolvedValue({
+      chunks: [{ seq: 0, dataBase64: btoa("LAST-ANSWER\r\n") }],
+      nextSeq: 1,
+    });
+    const props = {
+      autoFocus: false,
+      isPanelOpen: true,
+      retainNativeOutput: true,
+      session: makeTerminalSession({
+        status: "exited",
+        exitCode: 0,
+        cols: 80,
+        rows: 24,
+      }),
+    };
+    for (let i = 0; i < 2; i++) {
+      const view = render(
+        <MemoryRouter>
+          <AppCommandProvider>
+            <ThreadTerminalView {...props} />
+          </AppCommandProvider>
+        </MemoryRouter>,
+      );
+      await waitFor(() =>
+        expect(
+          view.container.querySelector("[data-terminal-renderer] .xterm"),
+        ).not.toBeNull(),
+      );
+      await waitFor(() =>
+        expect(testState.output).toHaveBeenCalledTimes(i + 1),
+      );
+      await waitFor(() =>
+        expect(
+          view.container.querySelector(".xterm-rows")?.textContent,
+        ).toContain("LAST-ANSWER"),
+      );
+      await waitFor(() =>
+        expect(
+          view.container.querySelector<HTMLElement>("[data-terminal-renderer]")
+            ?.dataset.renderGridCols,
+        ).toBe(String(renderCols)),
+      );
       expect(
         view.container.querySelector<HTMLElement>("[data-terminal-renderer]")
-          ?.style.opacity,
-      ).not.toBe("0"),
-    );
-    view.unmount();
-  }
-});
+          ?.dataset.renderGridRows,
+      ).toBe(String(renderRows));
+      expect(
+        view.container.querySelector<HTMLElement>(".xterm")?.dataset
+          .surfaceScale,
+      ).toBe(scale);
+      const textarea =
+        view.container.querySelector<HTMLTextAreaElement>("textarea")!;
+      textarea.focus();
+      fireEvent.pointerDown(textarea, { pointerType: "touch" });
+      fireEvent.pointerUp(textarea, { pointerType: "touch" });
+      fireEvent(window, new Event("resize"));
+      await waitFor(() =>
+        expect(
+          view.container.querySelector<HTMLElement>("[data-terminal-renderer]")
+            ?.style.opacity,
+        ).not.toBe("0"),
+      );
+      expect(sendResize).not.toHaveBeenCalled();
+      expect(
+        testState.socketMessages.some(
+          (message) => JSON.parse(message).type === "resize",
+        ),
+      ).toBe(false);
+      view.unmount();
+    }
+  },
+);

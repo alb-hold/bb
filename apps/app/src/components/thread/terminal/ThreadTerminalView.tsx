@@ -1769,6 +1769,8 @@ export function ThreadTerminalView({
     const pendingExitNotices: string[] = [];
     let replayCheckpointSequence: number | null = null;
     let localFitGrid: TerminalGridSize | null = null;
+    let retainedOutputReplayed = false;
+    let retainedOutputGrid: TerminalGridSize | null = null;
     let latestPtyGrid: TerminalGridSize = {
       cols: sessionRef.current.cols,
       rows: sessionRef.current.rows,
@@ -1891,18 +1893,19 @@ export function ThreadTerminalView({
           terminalInputClaimed &&
           document.hasFocus() &&
           terminal.element?.contains(document.activeElement) === true;
+        const displayGrid = retainedOutputGrid ?? latestPtyGrid;
         const canReveal =
           localFitGrid !== null &&
           canRevealTerminalSurface({
             fitGrid: localFitGrid,
             isOwner: ownsTerminal && !retainNativeOutput,
-            ptyGrid: latestPtyGrid,
+            ptyGrid: displayGrid,
             rendererGrid: { cols: terminal.cols, rows: terminal.rows },
           });
         containerElement.style.opacity = "0";
         const scale =
           localFitGrid !== null
-            ? terminalSurfaceScale(latestPtyGrid, localFitGrid)
+            ? terminalSurfaceScale(displayGrid, localFitGrid)
             : 1;
         if (terminal.element) {
           applyTerminalSurfaceScale(terminal.element, scale);
@@ -2084,6 +2087,10 @@ export function ThreadTerminalView({
       terminal.loadAddon(new Unicode11Addon());
       terminal.unicode.activeVersion = TERMINAL_UNICODE_VERSION;
       terminal.open(containerElement);
+      const viewport = terminal.element?.querySelector<HTMLElement>(".xterm-viewport");
+      if (retainNativeOutput && viewport) {
+        viewport.style.backgroundColor = "inherit";
+      }
       void loadOptionalTerminalSearchAddon(importTerminalSearchAddon)
         .then((searchAddonModule) => {
           if (disposed || searchAddonModule === null || terminal === null) {
@@ -2331,6 +2338,17 @@ export function ThreadTerminalView({
         containerElement.dataset.fitGridCols = String(fitted.cols);
         containerElement.dataset.fitGridRows = String(fitted.rows);
         replayPreview?.setFitGrid(fitted.cols, fitted.rows);
+        if (retainNativeOutput && sessionStatusRef.current === "exited") {
+          if (retainedOutputReplayed) {
+            retainedOutputGrid =
+              window.innerWidth < 768 && fitted.cols < latestPtyGrid.cols
+                ? localFitGrid
+                : latestPtyGrid;
+            terminal.resize(retainedOutputGrid.cols, retainedOutputGrid.rows);
+          }
+          updateGridVisibility();
+          return;
+        }
         updateGridVisibility();
         transport?.sendResize(fitted.cols, fitted.rows);
       };
@@ -2767,6 +2785,10 @@ export function ThreadTerminalView({
               }
             },
           });
+          if (retainNativeOutput) {
+            retainedOutputReplayed = true;
+            fitTerminal();
+          }
           flushPendingExitNotices();
           replayStartSequence = output.chunks[0]?.seq ?? output.nextSeq;
           latestOutputSequence = output.chunks.at(-1)?.seq ?? output.nextSeq;
