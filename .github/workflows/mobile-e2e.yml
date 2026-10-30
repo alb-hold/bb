@@ -15,7 +15,7 @@ name: Mobile E2E
 # exposes the e2e-only affordances, exactly like the local Metro setup.
 on:
   pull_request:
-    types: [opened, synchronize, reopened, labeled]
+    types: [labeled]
   workflow_dispatch:
     inputs:
       flows:
