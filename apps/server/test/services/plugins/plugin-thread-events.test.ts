@@ -1,7 +1,13 @@
 import {
+  getNativeTerminalLastAssistantText,
+  recordNativeTerminalActivity,
+} from "../../../src/services/threads/native-terminal-activity.js";
+import {
   createNativeTerminalThread,
   createTerminalSession,
   getLatestThreadSequence,
+  getThread,
+  listPendingInteractionsByThread,
   setNativeTerminalThreadTerminal,
   stampNativeTerminalThreadActivity,
 } from "@bb/db";
@@ -347,6 +353,164 @@ describe("plugin thread lifecycle events", () => {
       });
     } finally {
       delete globals.__activeEvents;
+      await cleanup();
+    }
+  });
+
+  it.each([
+    { state: "working", prestarted: false },
+    { state: "waiting", prestarted: false },
+    { state: "working", prestarted: true },
+    { state: "waiting", prestarted: true },
+    { state: "unreported", prestarted: true },
+  ] as const)("uses the current native turn reply over persisted chat output and clears it for a turn without a reply ($state, prestarted $prestarted)", async ({ state: secondState, prestarted }) => {
+    const recorded: RecordedThreadPayload[] = [];
+    globals.__idleEvents = recorded;
+    const { harness, cleanup } = await setUpPluginHarness(`
+      export default function plugin(bb: any) {
+        bb.events.on("thread.idle", (payload: any) => { (globalThis as any).__idleEvents.push(payload); });
+      }
+    `);
+    try {
+      const { thread, environment, host, session } = seedThreadFixture(harness);
+      seedEvent(harness.deps, {
+        threadId: thread.id,
+        environmentId: environment.id,
+        providerThreadId: "old-chat",
+        scope: turnScope("old-turn"),
+        sequence: 1,
+        type: "item/completed",
+        data: { item: { type: "agentMessage", id: "old-answer", text: "OLD-OUTPUT" } },
+      });
+      createNativeTerminalThread(harness.db, {
+        threadId: thread.id,
+        providerId: thread.providerId,
+        nativeSessionId: "reply-session",
+        initialPrompt: null,
+        initialImages: [],
+        model: null,
+      });
+      const terminal = createTerminalSession(harness.db, {
+        threadId: thread.id,
+        environmentId: environment.id,
+        hostId: host.id,
+        daemonSessionId: session.id,
+        initialCwd: "/tmp",
+        cols: 80,
+        rows: 24,
+        status: "running",
+        title: "Reply test",
+      });
+      setNativeTerminalThreadTerminal(harness.db, {
+        threadId: thread.id,
+        terminalSessionId: terminal.id,
+      });
+      recordNativeTerminalActivity(harness.deps, {
+        threadId: thread.id,
+        confirms: true,
+        state: "working",
+        prompt: "first",
+      });
+      recordNativeTerminalActivity(harness.deps, {
+        threadId: thread.id,
+        confirms: true,
+        state: "idle",
+        lastAssistantText: "NEW-REPLY",
+      });
+      await vi.waitFor(() => expect(recorded).toHaveLength(1));
+      expect(recorded[0]?.lastAssistantText).toBe("NEW-REPLY");
+      if (prestarted)
+        applyLoggedThreadLifecycleEvent(lifecycleDeps(harness), {
+          threadId: thread.id,
+          event: { type: "run.started" },
+        });
+      if (secondState !== "unreported") recordNativeTerminalActivity(harness.deps, {
+        threadId: thread.id,
+        confirms: true,
+        state: secondState,
+        ...(secondState === "waiting"
+          ? { questions: [{ id: "q-second", prompt: "Choose" }] }
+          : prestarted ? {} : { prompt: "second" }),
+      });
+      recordNativeTerminalActivity(harness.deps, {
+        threadId: thread.id,
+        confirms: true,
+        state: "idle",
+      });
+      await vi.waitFor(() => expect(recorded).toHaveLength(2));
+      expect(recorded[1]?.lastAssistantText).toBeNull();
+    } finally {
+      delete globals.__idleEvents;
+      await cleanup();
+    }
+  });
+
+  it.each([
+    { label: "Unicode tail", reply: "x".repeat(1024 * 1024) + "🙂€".repeat(900) + "\nALPHA\nBRAVO\nCHARLIE", suffix: "\nALPHA\nBRAVO\nCHARLIE" },
+    { label: "trailing whitespace", reply: "x".repeat(1024 * 1024) + " \n".repeat(4096), suffix: "x" },
+    { label: "whitespace only", reply: "   ", suffix: null },
+    { label: "empty", reply: "", suffix: null },
+  ])("accepts native reply whitespace over HTTP with state and closes intact ($label)", async ({ reply, suffix }) => {
+    const recorded: RecordedThreadPayload[] = [];
+    globals.__idleEvents = recorded;
+    const { harness, cleanup } = await setUpPluginHarness(`
+      export default function plugin(bb: any) {
+        bb.events.on("thread.idle", (payload: any) => { (globalThis as any).__idleEvents.push(payload); });
+      }
+    `);
+    try {
+      const { thread, environment, host } = seedThreadFixture(harness);
+      recordNativeReceipt(harness.db, {
+        environmentId: environment.id,
+        hostId: host.id,
+        thread,
+      });
+      const report = async (body: Record<string, unknown>) => {
+        const response = await harness.app.request(
+          `/api/v1/threads/${thread.id}/native-terminal/activity`,
+          {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(body),
+          },
+        );
+        expect(response.status).toBe(200);
+      };
+      await report({ state: "waiting", questions: [{ id: "old", prompt: "First?" }] });
+      await report({
+        state: "waiting",
+        questions: [{ id: "next", prompt: "Next?" }],
+        closes: ["old"],
+        ...(suffix === null ? {} : { lastAssistantText: reply }),
+      });
+      expect(getThread(harness.db, thread.id)?.status).toBe("active");
+      const questions = listPendingInteractionsByThread(harness.db, { threadId: thread.id });
+      expect(questions).toEqual(expect.arrayContaining([
+        expect.objectContaining({ providerRequestId: "native:old", status: "interrupted" }),
+        expect.objectContaining({ providerRequestId: "native:next", status: "pending" }),
+      ]));
+      const waitingText = getNativeTerminalLastAssistantText(harness.deps, thread.id);
+      await report({ state: "idle", closes: ["next"], lastAssistantText: reply });
+      expect(getThread(harness.db, thread.id)?.status).toBe("idle");
+      expect(listPendingInteractionsByThread(harness.db, {
+        threadId: thread.id,
+        statuses: ["pending"],
+      })).toHaveLength(0);
+      await vi.waitFor(() => expect(recorded).toHaveLength(1));
+      const stored = getNativeTerminalLastAssistantText(harness.deps, thread.id);
+      expect(stored).toBe(waitingText);
+      expect(recorded[0]?.lastAssistantText).toBe(stored);
+      if (suffix === null) {
+        expect(stored).toBeNull();
+      } else {
+        expect(stored).toContain(suffix);
+        expect(stored).toBe(stored?.trim());
+        expect(reply.trim().endsWith(stored ?? "")).toBe(true);
+      }
+      expect(stored ?? "").not.toContain("\uFFFD");
+      expect(Buffer.byteLength(stored ?? "", "utf8")).toBeLessThanOrEqual(4096);
+    } finally {
+      delete globals.__idleEvents;
       await cleanup();
     }
   });

@@ -36,6 +36,7 @@ export interface NativeTerminalSwitchModeArgs extends NativeTerminalThreadArgs {
 export interface NativeTerminalReportActivityArgs extends NativeTerminalThreadArgs {
   authorization?: string;
   state: NativeTerminalActivityState;
+  lastAssistantText?: string;
   prompt?: string;
   questions?: NativeTerminalOpenQuestion[];
   confirms?: boolean;
@@ -153,6 +154,9 @@ export function createNativeTerminalsArea(
             param: { id: input.threadId },
             json: {
               state: input.state,
+              ...(input.lastAssistantText === undefined
+                ? {}
+                : { lastAssistantText: input.lastAssistantText }),
               ...(input.prompt === undefined ? {} : { prompt: input.prompt }),
               ...(input.questions === undefined
                 ? {}

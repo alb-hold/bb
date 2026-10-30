@@ -1,3 +1,4 @@
+import { CODEX_NATIVE_ACTIVITY } from "bb-plugin-provider-codex/native-session";
 import {
   appendFileSync,
   closeSync,
@@ -5,6 +6,7 @@ import {
   mkdtempSync,
   openSync,
   rmSync,
+  readFileSync,
   statSync,
   writeFileSync,
   writeSync,
@@ -17,7 +19,7 @@ import {
 } from "@bb/domain";
 import { BbHttpError, BbRequestTimeoutError } from "@bb/sdk";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { JsonlTail } from "../native-activity.js";
+import { JsonlTail, NativeActivityTracker } from "../native-activity.js";
 import { publishHooks } from "./helpers/hook-spool.js";
 import { createNativeActivityReporter } from "../native-activity-reporter.js";
 import { createNativeActivityWiring } from "../native-activity-wiring.js";
@@ -2950,5 +2952,98 @@ describe("NativeActivityReader without any hook capture", () => {
     expect(reader.read().some((report) => report.state === "working")).toBe(
       false,
     );
+  });
+});
+
+it("reports the latest assistant reply from a real Codex rollout shape, clearing it for the next turn", () => {
+  const home = tempHome();
+  const record = JSON.parse(
+    readFileSync(
+      new URL("./fixtures/codex-assistant-reply.jsonl", import.meta.url),
+      "utf8",
+    ),
+  );
+  const file = writeRollout(home, [
+    { type: "event_msg", payload: { type: "user_message", message: "first" } },
+    {
+      ...record,
+      payload: {
+        ...record.payload,
+        content: [{ type: "output_text", text: "earlier reply" }],
+      },
+    },
+    record,
+    { type: "event_msg", payload: { type: "task_complete" } },
+  ]);
+  const reader = new NativeActivityReader(
+    { ...CODEX_CLI, activity: CODEX_NATIVE_ACTIVITY },
+    { HOME: home },
+    null,
+    { kind: "start", id: SESSION_ID },
+  );
+  const expected = record.payload.content
+    .map((part: { text: string }) => part.text)
+    .join("\n");
+  expect(reader.read().at(-1)).toEqual({
+    state: "idle",
+    prompt: null,
+    lastAssistantText: expected,
+  });
+  appendFileSync(file, jsonl(codexTurn("second")));
+  expect(reader.read().at(-1)).toEqual({ state: "idle", prompt: null });
+});
+
+it("omits the previous reply when a new turn first opens a question", () => {
+  const tracker = new NativeActivityTracker();
+  tracker.apply({ state: "working", prompt: "first" });
+  tracker.apply({ state: null, prompt: null, lastAssistantText: "ALPHA" });
+  expect(tracker.apply({ state: "idle", prompt: null })).toHaveProperty(
+    "lastAssistantText", "ALPHA",
+  );
+  tracker.apply({
+    state: null,
+    prompt: null,
+    question: { id: "q-next", prompt: "Choose" },
+  });
+  expect(tracker.apply({ state: "idle", prompt: null })).not.toHaveProperty(
+    "lastAssistantText",
+  );
+});
+
+it("reads the last assistant answer from P19 pooled Claude transcript", () => {
+  const fixture = claudeFixture();
+  const record = JSON.parse(
+    readFileSync(
+      new URL("./fixtures/claude-assistant-reply.jsonl", import.meta.url),
+      "utf8",
+    ),
+  );
+  fixture.append([
+    {
+      ...record,
+      uuid: "p19-answer",
+      parentUuid: "answer-1",
+      promptId: "turn-1",
+    },
+    {
+      type: "system",
+      subtype: "stop_hook_summary",
+      hasOutput: false,
+      isSidechain: false,
+      uuid: "p19-stop",
+      parentUuid: "p19-answer",
+      promptId: "turn-1",
+    },
+  ]);
+  const report = fixture.reader.read().at(-1);
+  expect(report).toMatchObject({
+    state: "idle",
+    lastAssistantText: expect.stringContaining("ALPHA-373-203906"),
+  });
+  expect(report).toMatchObject({
+    lastAssistantText: expect.stringContaining("BRAVO-373-203906"),
+  });
+  expect(report).toMatchObject({
+    lastAssistantText: expect.stringContaining("CHARLIE-373-203906"),
   });
 });

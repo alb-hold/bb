@@ -29,10 +29,16 @@ export interface NativeActivitySignal {
   call?: NativeToolCall;
   callId?: string;
   inputKey?: string;
+  lastAssistantText?: string;
 }
 
 export type NativeActivityReport =
-  | { state: NativeActivityState; prompt: string | null; confirms?: false }
+  | {
+      state: NativeActivityState;
+      prompt: string | null;
+      confirms?: false;
+      lastAssistantText?: string;
+    }
   | { state: "waiting"; prompt: null; questions: NativeQuestion[] };
 
 type ActivityHooks = NonNullable<ProviderNativeTerminalActivity["hooks"]>;
@@ -226,6 +232,23 @@ export function classifyTranscriptRecord(
     }
   }
   const state = classifyNativeTranscriptRecord(transcript, record);
+  for (const rule of transcript.reply ?? []) {
+    if (!recordMatches(rule.match, record)) continue;
+    const value = readRecordField(record, rule.text);
+    const text =
+      typeof value === "string"
+        ? value
+        : Array.isArray(value)
+          ? value
+              .flatMap((part) => {
+                const text = readRecordField(part, "text");
+                return typeof text === "string" ? [text] : [];
+              })
+              .join("\n")
+          : "";
+    if (text.trim().length > 0)
+      return { state, prompt: null, lastAssistantText: text };
+  }
   return state === null
     ? { state: null, prompt: null }
     : { state, prompt: null };
@@ -375,6 +398,7 @@ export class NativeActivityTracker {
   private readonly announcedCalls = new Map<string, AnnouncedCall>();
   private readonly lastOrphanCloseSequence = new Map<string, number>();
   private candidateGroupCounter = 0;
+  private lastAssistantText: string | undefined;
   private lastClearSequence = 0;
   private lastObservedHookSequence = 0;
   private hasUnsequencedClear = false;
@@ -391,6 +415,14 @@ export class NativeActivityTracker {
         hookSequence,
       );
     }
+    if (
+      (signal.state === "working" && signal.prompt !== null) ||
+      (this.state === "idle" &&
+        (signal.state === "working" || signal.question !== undefined))
+    )
+      this.lastAssistantText = undefined;
+    if (signal.lastAssistantText !== undefined)
+      this.lastAssistantText = signal.lastAssistantText;
     if (signal.call !== undefined) this.announceCall(signal.call);
     if (signal.question !== undefined) {
       return this.openQuestion(
@@ -422,7 +454,13 @@ export class NativeActivityTracker {
       if (this.state === "idle") return null;
       this.state = "idle";
       this.reportedPrompt = null;
-      return { state: "idle", prompt: null };
+      return {
+        state: "idle",
+        prompt: null,
+        ...(this.lastAssistantText === undefined
+          ? {}
+          : { lastAssistantText: this.lastAssistantText }),
+      };
     }
     if (signal.state !== "working") return null;
     const newPrompt =

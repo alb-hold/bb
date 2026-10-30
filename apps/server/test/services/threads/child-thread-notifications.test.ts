@@ -1,12 +1,26 @@
+import { readFileSync } from "node:fs";
+import { nativeCompletionScreenExcerpt } from "../../../src/services/threads/child-thread-notifications.js";
+import { reportNativeTerminalActivityRequestSchema } from "@bb/server-contract";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createNativeTerminalThread, createTerminalSession, setNativeTerminalThreadTerminal, listNativeParentNotices, getThread, getNativeTerminalThread } from "@bb/db";
-import { seedThread, seedThreadFixture } from "../../helpers/seed.js";
+import { seedEvent, seedThread, seedThreadFixture } from "../../helpers/seed.js";
+import { turnScope } from "@bb/domain";
 import { withTestHarness, type TestAppHarness } from "../../helpers/test-app.js";
 import { recordNativeTerminalActivity } from "../../../src/services/threads/native-terminal-activity.js";
+import { applyLoggedThreadLifecycleEvent } from "../../../src/services/threads/lifecycle-outcome.js";
 
-async function nativeChildFixture(harness: TestAppHarness, policy: "auto" | "off" | "stuck") {
+async function nativeChildFixture(harness: TestAppHarness, policy: "auto" | "off" | "stuck", oldOutput?: string) {
   const { thread: parent, host, session, project, environment } = seedThreadFixture(harness, { thread: { status: "active" } });
   const child = seedThread(harness.deps, { projectId: project.id, environmentId: environment.id, parentThreadId: parent.id, parentNotifications: policy, title: "Native worker" });
+  if (oldOutput !== undefined) seedEvent(harness.deps, {
+    threadId: child.id,
+    environmentId: environment.id,
+    providerThreadId: "old-chat",
+    scope: turnScope("old-turn"),
+    sequence: 1,
+    type: "item/completed",
+    data: { item: { type: "agentMessage", id: "old-answer", text: oldOutput } },
+  });
   for (const thread of [parent, child]) {
     createNativeTerminalThread(harness.db, { threadId: thread.id, providerId: thread.providerId, nativeSessionId: `native-${thread.id}`, initialPrompt: thread.id === parent.id ? "Coordinate children" : null, initialImages: [], model: null });
     if (thread.id === parent.id) continue;
@@ -21,6 +35,31 @@ async function nativeChildFixture(harness: TestAppHarness, policy: "auto" | "off
 afterEach(() => vi.useRealTimers());
 
 describe("native child turn notifications", () => {
+  it.each([
+    { reply: "NEW-REPLY", rows: ["SCREEN-REPLY"], expected: "NEW-REPLY" },
+    { reply: undefined, rows: ["SCREEN-REPLY"], expected: "SCREEN-REPLY" },
+    { reply: undefined, rows: [], expected: "Native worker turn ended." },
+  ])("ignores persisted chat output for native completion ($expected)", async ({ reply, rows, expected }) => {
+    await withTestHarness(async (harness) => {
+      const { parent, child } = await nativeChildFixture(harness, "auto", "OLD-OUTPUT");
+      const read = vi.spyOn(harness.deps.terminalSessions, "readTerminalScreen").mockResolvedValue({
+        rows, cursor: { row: 0, col: 0 }, cols: 80, gridRows: 24, truncated: false, complete: true,
+      });
+      vi.useFakeTimers();
+      recordNativeTerminalActivity(harness.deps, { confirms: true, state: "working", threadId: child.id });
+      recordNativeTerminalActivity(harness.deps, {
+        confirms: true, state: "idle", threadId: child.id,
+        ...(reply === undefined ? {} : { lastAssistantText: reply }),
+      });
+      await vi.advanceTimersByTimeAsync(2100);
+      const notices = listNativeParentNotices(harness.db, parent.id);
+      expect(notices).toHaveLength(1);
+      expect(notices[0]?.text).toContain(expected);
+      expect(notices[0]?.text).not.toContain("OLD-OUTPUT");
+      if (reply !== undefined) expect(read).not.toHaveBeenCalled();
+    });
+  });
+
   it.each(["auto", "off", "stuck"] as const)("bounds a stalled screen read under %s policy", async (policy) => {
     await withTestHarness(async (harness) => {
       const { parent, child } = await nativeChildFixture(harness, policy);
@@ -62,12 +101,15 @@ describe("native child turn notifications", () => {
       const { parent, child, host, session } = await nativeChildFixture(harness, "auto");
       const terminalId = getNativeTerminalThread(harness.db, child.id)?.terminalSessionId;
       if (!terminalId) throw new Error("Missing child terminal");
+      vi.spyOn(harness.deps.terminalSessions, "readTerminalScreen").mockResolvedValue({ rows: ["ALPHA", "BRAVO", "CHARLIE", "", "Resume this session with:", "agent --resume id"], cursor: { row: 4, col: 0 }, cols: 120, gridRows: 36, truncated: false, complete: true });
       vi.useFakeTimers();
       recordNativeTerminalActivity(harness.deps, { threadId: child.id, confirms: true, state: "working" });
       const exit = () => harness.deps.terminalSessions.handleDaemonTerminalMessage({ hostId: host.id, sessionId: session.id, message: { type: "terminal.exited", terminalId, exitCode: 0, closeReason: "process-exit" } });
       exit();
       await vi.advanceTimersByTimeAsync(3_100);
       expect(listNativeParentNotices(harness.db, parent.id)).toHaveLength(1);
+      expect(listNativeParentNotices(harness.db, parent.id)[0]?.text).toContain("ALPHA\nBRAVO\nCHARLIE");
+      expect(listNativeParentNotices(harness.db, parent.id)[0]?.text).not.toContain("Resume");
       exit();
       await vi.advanceTimersByTimeAsync(3_100);
       expect(listNativeParentNotices(harness.db, parent.id)).toHaveLength(1);
@@ -220,7 +262,7 @@ describe("child thread notifications", () => {
     );
   });
 
-  it("renders multiple child outcomes as status-only bullet lines", () => {
+  it("includes each completed child answer in a batch", () => {
     const message = renderBatchMessage({
       items: [
         {
@@ -251,10 +293,11 @@ describe("child thread notifications", () => {
         "Child thread updates:",
         "",
         "- @thread:thr_child_one completed.",
+        "Checkout flow is fixed.",
         "- @thread:thr_child_two failed.",
       ].join("\n"),
     );
-    expect(message).not.toContain("Checkout flow is fixed.");
+    expect(message).toContain("Checkout flow is fixed.");
     expect(message).not.toContain("Deploy script failed on preflight.");
   });
 
@@ -445,6 +488,7 @@ describe("child thread notifications", () => {
         "Child thread updates:",
         "",
         "- @thread:thr_child_one completed, with 2 workflows still running.",
+        "Kicked off two workflows.",
         "- @thread:thr_child_two failed.",
         "",
         "Threads with a workflow still running have not finished; they will report again when their workflow does.",
@@ -506,4 +550,133 @@ describe("child thread notifications", () => {
       "It is blocked on a pending interaction.",
     );
   });
+});
+
+describe("completion screen fallback", () => {
+  const screen = readFileSync(
+    new URL("../../fixtures/screen-C1-t2-204006.txt", import.meta.url),
+    "utf8",
+  );
+  it("keeps P19 answer lines above the input footer", () => {
+    const text = nativeCompletionScreenExcerpt(screen.split("\n"));
+    expect(text).toContain("ALPHA-373-203906");
+    expect(text).toContain("BRAVO-373-203906");
+    expect(text).toContain("CHARLIE-373-203906");
+    expect(text).not.toMatch(/53k|─|Sonnet|permissions|Sautéed/u);
+  });
+  it("rejects a footer-only screen", () => {
+    expect(
+      nativeCompletionScreenExcerpt(
+        screen.slice(screen.indexOf("✻ Sautéed")).split("\n"),
+      ),
+    ).toBeNull();
+  });
+  it("prefers the answer over the exit resume hint", () => {
+    expect(
+      nativeCompletionScreenExcerpt([
+        "❯ user prompt",
+        "",
+        "ALPHA",
+        "BRAVO",
+        "CHARLIE",
+        "",
+        "Resume this session with:", "agent --resume id",
+      ]),
+    ).toBe("ALPHA\nBRAVO\nCHARLIE");
+  });
+  it.each([false, true])("accepts the older CLI report without reply and uses the screen fallback (footer only: %s)", async (footerOnly) => {
+    await withTestHarness(async (harness) => {
+      const { parent, child } = await nativeChildFixture(harness, "auto");
+      vi.spyOn(
+        harness.deps.terminalSessions,
+        "readTerminalScreen",
+      ).mockResolvedValue({
+        rows: (footerOnly ? screen.slice(screen.indexOf("✻ Sautéed")) : screen).split("\n"),
+        cursor: { row: 40, col: 0 },
+        cols: 120,
+        gridRows: 48,
+        truncated: false,
+        complete: true,
+      });
+      vi.useFakeTimers();
+      for (const state of ["working", "idle"]) {
+        const report = reportNativeTerminalActivityRequestSchema.parse({
+          state,
+        });
+        expect(report).not.toHaveProperty("lastAssistantText");
+        recordNativeTerminalActivity(harness.deps, {
+          ...report,
+          confirms: true,
+          threadId: child.id,
+        });
+      }
+      await vi.advanceTimersByTimeAsync(2100);
+      expect(listNativeParentNotices(harness.db, parent.id)[0]?.text).toContain(
+        footerOnly ? "Native worker turn ended." : "CHARLIE-373-203906",
+      );
+    });
+  });
+  it("prefers and caps the transcript reply before reading a screen", async () => {
+    await withTestHarness(async (harness) => {
+      const { parent, child } = await nativeChildFixture(harness, "auto");
+      const read = vi.spyOn(
+        harness.deps.terminalSessions,
+        "readTerminalScreen",
+      );
+      vi.useFakeTimers();
+      recordNativeTerminalActivity(harness.deps, {
+        confirms: true,
+        state: "working",
+        threadId: child.id,
+      });
+      recordNativeTerminalActivity(harness.deps, {
+        confirms: true,
+        state: "idle",
+        threadId: child.id,
+        lastAssistantText: [
+          "discard",
+          "ALPHA",
+          "BRAVO",
+          "CHARLIE",
+          "four",
+          "five",
+          "z".repeat(300),
+        ].join("\n"),
+      });
+      await vi.advanceTimersByTimeAsync(2100);
+      const text = listNativeParentNotices(harness.db, parent.id)[0]?.text;
+      expect(text).toContain("ALPHA\nBRAVO\nCHARLIE");
+      expect(text).not.toContain("discard");
+      expect(text).not.toContain("z".repeat(241));
+      expect(read).not.toHaveBeenCalled();
+      read.mockResolvedValue({ rows: [], cursor: { row: 0, col: 0 }, cols: 120, gridRows: 36, truncated: false, complete: true });
+      applyLoggedThreadLifecycleEvent(harness.deps, {
+        threadId: child.id,
+        event: { type: "run.started" },
+      });
+      recordNativeTerminalActivity(harness.deps, {
+        confirms: true,
+        state: "working",
+        threadId: child.id,
+      });
+      recordNativeTerminalActivity(harness.deps, {
+        confirms: true,
+        state: "idle",
+        threadId: child.id,
+      });
+      await vi.advanceTimersByTimeAsync(2100);
+      const next = listNativeParentNotices(harness.db, parent.id).at(-1)?.text;
+      expect(next).toContain("Native worker turn ended.");
+      expect(next).not.toContain("ALPHA");
+    });
+  });
+});
+
+it("includes the text of both completed children in a batch", () => {
+  const message = renderBatchMessage({ items: [
+    { activeWorkflowCount: 0, childThread: testThread({ id: "thr_alpha", title: "Alpha child" }), terminalOutput: "ALPHA child one", turnStatus: "completed" },
+    { activeWorkflowCount: 0, childThread: testThread({ id: "thr_bravo", title: "Bravo child" }), terminalOutput: "BRAVO child two", turnStatus: "completed" },
+  ] });
+  expect(message).toContain("ALPHA child one");
+  expect(message).toContain("BRAVO child two");
 });

@@ -1,3 +1,5 @@
+import { z } from "zod";
+import { reportNativeTerminalActivityRequestSchema } from "@bb/server-contract";
 import { createHash } from "node:crypto";
 import { BbHttpError, BbRequestTimeoutError } from "@bb/sdk";
 import { describe, expect, it } from "vitest";
@@ -998,4 +1000,116 @@ describe("native activity reporter", () => {
       expect(closesOf(calls)).toEqual([[], [], []]);
     });
   });
+});
+
+it("carries the reply unchanged and omits it when there is no transcript reply", async () => {
+  const sent: unknown[] = [];
+  const reporter = createNativeActivityReporter({
+    currentCredential: () => null,
+    threadId: "thr_reply",
+    send: async (args) => {
+      sent.push(args);
+      return { ok: true };
+    },
+  });
+  reporter.report({
+    state: "idle",
+    prompt: null,
+    lastAssistantText: "ALPHA\nBRAVO\nCHARLIE",
+  });
+  await reporter.settled();
+  reporter.report({ state: "working", prompt: "next" });
+  await reporter.settled();
+  expect(sent[0]).toMatchObject({ lastAssistantText: "ALPHA\nBRAVO\nCHARLIE" });
+  expect(sent[1]).not.toHaveProperty("lastAssistantText");
+});
+
+it.each([
+  { label: "Unicode tail", reply: "x".repeat(1024 * 1024) + "🙂€".repeat(900) + "\nALPHA\nBRAVO\nCHARLIE" },
+  { label: "trailing whitespace", reply: "x".repeat(1024 * 1024) + " \n".repeat(4096) },
+  { label: "whitespace only", reply: "   " },
+  { label: "empty", reply: "" },
+])("normalizes native reply whitespace before sending ($label)", async ({ reply }) => {
+  const sent: Array<{ lastAssistantText?: string }> = [];
+  const reporter = createNativeActivityReporter({
+    currentCredential: () => null,
+    threadId: "thr_reply",
+    send: async (args) => { sent.push(args); },
+  });
+  reporter.report({ state: "idle", prompt: null, lastAssistantText: reply });
+  await reporter.settled();
+  expect(sent).toHaveLength(1);
+  const text = sent[0]?.lastAssistantText;
+  if (reply.trim().length === 0) {
+    expect(sent[0]).not.toHaveProperty("lastAssistantText");
+  } else {
+    expect(text).toBeTruthy();
+    expect(text).toBe(text?.trim());
+    expect(text?.trim().length).toBeGreaterThan(0);
+    expect(reply.trim().endsWith(text ?? "")).toBe(true);
+  }
+  expect(text ?? "").not.toContain("\uFFFD");
+  expect(Buffer.byteLength(text ?? "", "utf8")).toBeLessThanOrEqual(4096);
+});
+
+it("delivers state, questions and closes to a strict c9c9a3de server by dropping only the unsupported reply", async () => {
+  const shape = reportNativeTerminalActivityRequestSchema.shape;
+  const oldSchema = z
+    .object({
+      state: shape.state,
+      prompt: shape.prompt,
+      questions: shape.questions,
+      confirms: shape.confirms,
+      closes: shape.closes,
+    })
+    .strict();
+  const delivered: unknown[] = [];
+  let attempts = 0;
+  const reporter = createNativeActivityReporter({
+    currentCredential: () => null,
+    threadId: "thr_old",
+    send: async (args) => {
+      attempts += 1;
+      const { state, prompt, questions, confirms, closes, lastAssistantText } =
+        args;
+      const body = {
+        state,
+        ...(prompt === undefined ? {} : { prompt }),
+        ...(questions === undefined ? {} : { questions }),
+        ...(confirms === undefined ? {} : { confirms }),
+        ...(closes === undefined ? {} : { closes }),
+        ...(lastAssistantText === undefined ? {} : { lastAssistantText }),
+      };
+      const parsed = oldSchema.safeParse(body);
+      if (!parsed.success)
+        throw new BbHttpError({
+          status: 400,
+          body: null,
+          code: "invalid_request",
+          message: parsed.error.issues.map((issue) => issue.message).join("\n"),
+        });
+      delivered.push(parsed.data);
+      return { ok: true };
+    },
+  });
+  reporter.report({ state: "idle", prompt: null, lastAssistantText: "ALPHA" });
+  await reporter.settled();
+  reporter.report({
+    state: "waiting",
+    prompt: null,
+    questions: [{ id: "q1", prompt: "Choose" }],
+  });
+  await reporter.settled();
+  reporter.report({ state: "idle", prompt: null, lastAssistantText: "BRAVO" });
+  await reporter.settled();
+  expect(attempts).toBe(4);
+  expect(delivered).toEqual([
+    { state: "idle", closes: [] },
+    {
+      state: "waiting",
+      questions: [{ id: "q1", prompt: "Choose" }],
+      closes: [],
+    },
+    { state: "idle", closes: ["q1"] },
+  ]);
 });

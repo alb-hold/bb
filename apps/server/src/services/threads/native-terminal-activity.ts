@@ -14,6 +14,7 @@ import {
   isNativeTerminalQuestion,
   NATIVE_TERMINAL_ACTIVITY_HEARTBEAT_INTERVAL_MS,
   NATIVE_TERMINAL_QUESTION_REQUEST_PREFIX,
+  truncateNativeAssistantText,
   type Thread,
 } from "@bb/domain";
 import type {
@@ -90,6 +91,24 @@ function reportStates(deps: Pick<AppDeps, "hub">) {
 }
 
 const REFUSED_HOLDER_LOG_INTERVAL_MS = 10 * 60_000;
+const nativeReplies = new WeakMap<
+  NativeTerminalActivityDeps["db"],
+  Map<string, string>
+>();
+
+export function getNativeTerminalLastAssistantText(
+  deps: Pick<NativeTerminalActivityDeps, "db">,
+  threadId: string,
+): string | null {
+  return nativeReplies.get(deps.db)?.get(threadId) ?? null;
+}
+
+export function clearNativeTerminalLastAssistantText(
+  deps: Pick<NativeTerminalActivityDeps, "db">,
+  threadId: string,
+): void {
+  nativeReplies.get(deps.db)?.delete(threadId);
+}
 const REFUSED_HOLDER_STATE_LIMIT = 512;
 
 interface RefusedHolderState {
@@ -348,6 +367,22 @@ export function recordNativeTerminalActivity(
     });
     working = outcome.applied && outcome.thread.status === "active";
   }
+  let replies = nativeReplies.get(deps.db);
+  if (replies === undefined) {
+    replies = new Map();
+    nativeReplies.set(deps.db, replies);
+  }
+  if (args.state !== "idle") replies.delete(thread.id);
+  const lastAssistantText = args.lastAssistantText === undefined
+    ? undefined
+    : truncateNativeAssistantText(args.lastAssistantText);
+  if (lastAssistantText !== undefined) {
+    if (replies.size >= 512) {
+      const oldest = replies.keys().next().value;
+      if (oldest !== undefined) replies.delete(oldest);
+    }
+    replies.set(thread.id, lastAssistantText);
+  }
   if (args.state === "idle") settleNativeTerminalTurn(deps, thread.id);
   const resolvedQuestions = reconcileNativeQuestions(deps, {
     closes: args.closes,
@@ -601,6 +636,9 @@ export function settleNativeTerminalTurn(
         childThread: thread,
         parentThreadId: thread.parentThreadId,
         turnStatus: "completed",
+        ...(nativeReplies.get(deps.db)?.get(threadId) === undefined
+          ? {}
+          : { lastAssistantText: nativeReplies.get(deps.db)?.get(threadId) }),
       });
     }
   }

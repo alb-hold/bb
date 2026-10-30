@@ -1,4 +1,5 @@
 import { BbHttpError, type NativeTerminalReportActivityArgs } from "@bb/sdk";
+import { truncateNativeAssistantText } from "@bb/domain";
 import { NATIVE_TERMINAL_MAX_OPEN_QUESTIONS } from "@bb/server-contract";
 import type { NativeActivityReport } from "./native-activity.js";
 import { nativeToolCredentialFingerprint } from "./native-holder.js";
@@ -33,7 +34,10 @@ function credentialRefused(error: unknown): boolean {
   );
 }
 
-function unrecognizedField(error: unknown, field: ClosureField): boolean {
+function unrecognizedField(
+  error: unknown,
+  field: ClosureField | "lastAssistantText",
+): boolean {
   return (
     error instanceof BbHttpError &&
     error.status === 400 &&
@@ -55,9 +59,25 @@ export function createNativeActivityReporter(options: {
   let retained: RetainedReport | null = null;
   let possiblyOpen = new Set<string>();
   let closesSupported = true;
+  let replySupported = true;
   let refused = 0;
   let refusalLoggedAt: number | null = null;
   const now = options.now ?? Date.now;
+
+  const send = async (
+    args: NativeTerminalReportActivityArgs,
+  ): Promise<unknown> => {
+    const { lastAssistantText, ...core } = args;
+    if (!replySupported || lastAssistantText === undefined)
+      return options.send(core);
+    try {
+      return await options.send(args);
+    } catch (error) {
+      if (!unrecognizedField(error, "lastAssistantText")) throw error;
+      replySupported = false;
+      return options.send(core);
+    }
+  };
 
   const noteRefusal = (error: unknown, credential: string | null): void => {
     if (!credentialRefused(error)) return;
@@ -112,6 +132,10 @@ export function createNativeActivityReporter(options: {
       closes: true,
       confirms: next.state !== "waiting" && next.confirms === false,
     };
+    const lastAssistantText =
+      next.state === "waiting" || next.lastAssistantText === undefined
+        ? undefined
+        : truncateNativeAssistantText(next.lastAssistantText);
     const request = (
       closeIds: string[],
       includeConfirms: boolean,
@@ -123,6 +147,7 @@ export function createNativeActivityReporter(options: {
       threadId: options.threadId,
       ...(credential === null ? {} : { authorization: `Bearer ${credential}` }),
       state: next.state,
+      ...(lastAssistantText === undefined ? {} : { lastAssistantText }),
       ...(next.prompt === null ? {} : { prompt: next.prompt }),
       ...(next.state === "waiting" ? { questions: next.questions } : {}),
       ...(includeCloses ? { closes: closeIds } : {}),
@@ -164,7 +189,7 @@ export function createNativeActivityReporter(options: {
       includeCloses: boolean,
     ): Promise<"accepted" | "failed"> => {
       try {
-        await options.send(request(closeIds, includeConfirms, includeCloses));
+        await send(request(closeIds, includeConfirms, includeCloses));
         noteAccepted(credential);
         acknowledge(closeIds);
         return "accepted";
@@ -194,7 +219,7 @@ export function createNativeActivityReporter(options: {
             closes: closeIds.length,
           });
           try {
-            await options.send(request(closeIds, includeConfirms, false));
+            await send(request(closeIds, includeConfirms, false));
             noteAccepted(credential);
             acknowledge(closeIds);
             return "accepted";
