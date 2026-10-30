@@ -416,8 +416,9 @@ export class NativeActivityTracker {
       );
     }
     if (
-      signal.state === "working" &&
-      (signal.prompt !== null || this.state === "idle")
+      (signal.state === "working" && signal.prompt !== null) ||
+      (this.state === "idle" &&
+        (signal.state === "working" || signal.question !== undefined))
     )
       this.lastAssistantText = undefined;
     if (signal.lastAssistantText !== undefined)

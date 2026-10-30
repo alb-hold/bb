@@ -365,8 +365,8 @@ export function recordNativeTerminalActivity(
     nativeReplies.set(deps.db, replies);
   }
   if (
-    args.state === "working" &&
-    (thread.status !== "active" || args.prompt !== undefined)
+    (args.state !== "idle" && thread.status !== "active") ||
+    (args.state === "working" && args.prompt !== undefined)
   )
     replies.delete(thread.id);
   if (args.lastAssistantText !== undefined) {

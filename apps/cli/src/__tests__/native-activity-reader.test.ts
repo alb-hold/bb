@@ -19,7 +19,7 @@ import {
 } from "@bb/domain";
 import { BbHttpError, BbRequestTimeoutError } from "@bb/sdk";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { JsonlTail } from "../native-activity.js";
+import { JsonlTail, NativeActivityTracker } from "../native-activity.js";
 import { publishHooks } from "./helpers/hook-spool.js";
 import { createNativeActivityReporter } from "../native-activity-reporter.js";
 import { createNativeActivityWiring } from "../native-activity-wiring.js";
@@ -2991,6 +2991,23 @@ it("reports the latest assistant reply from a real Codex rollout shape, clearing
   });
   appendFileSync(file, jsonl(codexTurn("second")));
   expect(reader.read().at(-1)).toEqual({ state: "idle", prompt: null });
+});
+
+it("omits the previous reply when a new turn first opens a question", () => {
+  const tracker = new NativeActivityTracker();
+  tracker.apply({ state: "working", prompt: "first" });
+  tracker.apply({ state: null, prompt: null, lastAssistantText: "ALPHA" });
+  expect(tracker.apply({ state: "idle", prompt: null })).toHaveProperty(
+    "lastAssistantText", "ALPHA",
+  );
+  tracker.apply({
+    state: null,
+    prompt: null,
+    question: { id: "q-next", prompt: "Choose" },
+  });
+  expect(tracker.apply({ state: "idle", prompt: null })).not.toHaveProperty(
+    "lastAssistantText",
+  );
 });
 
 it("reads the last assistant answer from P19 pooled Claude transcript", () => {

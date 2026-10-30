@@ -352,7 +352,7 @@ describe("plugin thread lifecycle events", () => {
     }
   });
 
-  it("uses the current native turn reply and clears it for a turn without a reply", async () => {
+  it.each(["working", "waiting"] as const)("uses the current native turn reply and clears it for a turn without a reply (%s)", async (secondState) => {
     const recorded: RecordedThreadPayload[] = [];
     globals.__idleEvents = recorded;
     const { harness, cleanup } = await setUpPluginHarness(`
@@ -402,8 +402,10 @@ describe("plugin thread lifecycle events", () => {
       recordNativeTerminalActivity(harness.deps, {
         threadId: thread.id,
         confirms: true,
-        state: "working",
-        prompt: "second",
+        state: secondState,
+        ...(secondState === "waiting"
+          ? { questions: [{ id: "q-second", prompt: "Choose" }] }
+          : { prompt: "second" }),
       });
       recordNativeTerminalActivity(harness.deps, {
         threadId: thread.id,
