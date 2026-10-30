@@ -12,7 +12,7 @@
       "delegation": 3
     },
     "planSnapshots": 0,
-    "unhandled": 6,
+    "unhandled": 0,
     "turns": {
       "completed": 1,
       "failed": 0,
@@ -83,7 +83,7 @@
       "fileRead": 7
     },
     "planSnapshots": 0,
-    "unhandled": 1,
+    "unhandled": 0,
     "turns": {
       "completed": 1,
       "failed": 1,
@@ -128,7 +128,7 @@
       "toolCall": 3
     },
     "planSnapshots": 0,
-    "unhandled": 1,
+    "unhandled": 0,
     "turns": {
       "completed": 2,
       "failed": 0,
@@ -262,7 +262,7 @@
       "toolCall": 6
     },
     "planSnapshots": 0,
-    "unhandled": 15,
+    "unhandled": 0,
     "turns": {
       "completed": 16,
       "failed": 0,
