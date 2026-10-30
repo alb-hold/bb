@@ -866,6 +866,11 @@ export class TerminalSessionLifecycle {
     TerminalReplayMessage
   >;
   private readonly directOutputSessionIds = new Set<string>();
+  private readonly attachReplayAttributionWindowMs: number;
+  private readonly attributedAttachFailures = new Map<
+    string,
+    ReturnType<typeof setTimeout>
+  >();
   private readonly directOutputSockets = new WeakSet<TerminalClientSocket>();
   private readonly catchingUpTerminalIds = new Set<string>();
   private readonly forwardedNextSeqByTerminalId = new Map<string, number>();
@@ -925,6 +930,7 @@ export class TerminalSessionLifecycle {
     });
     const attachTimeoutMs =
       options.attachTimeoutMs ?? DEFAULT_TERMINAL_OPEN_TIMEOUT_MS;
+    this.attachReplayAttributionWindowMs = attachTimeoutMs;
     const closeTimeoutMs =
       options.closeTimeoutMs ?? DEFAULT_TERMINAL_CLOSE_TIMEOUT_MS;
     const openTimeoutMs =
@@ -2154,6 +2160,24 @@ export class TerminalSessionLifecycle {
     session: TerminalSessionRow;
   }): TerminalOutputResponse {
     const chunks = args.chunks;
+    this.logReplayAttribution({
+      path: "output-read/retained",
+      callers: ["output-read"],
+      daemonSessionId: args.session.daemonSessionId,
+      hostId: args.session.hostId,
+      processId: process.pid,
+      replayBytes: chunks.reduce(
+        (bytes, chunk) => bytes + Buffer.byteLength(chunk.dataBase64, "base64"),
+        0,
+      ),
+      replayChunks: chunks.length,
+      retainedWriteBytes: 0,
+      retainedWriteChunks: 0,
+      maxRetainedWriteBatchBytes: 0,
+      maxRetainedWriteBatchChunks: 0,
+      requestId: null,
+      terminalId: args.session.id,
+    });
     const nextSeq = (chunks.at(-1)?.seq ?? -1) + 1;
     const bounded = applyTerminalOutputBounds({
       chunks,
@@ -2454,6 +2478,7 @@ export class TerminalSessionLifecycle {
       );
     }
     this.pendingRetainedOutput.clear();
+    this.clearAttributedAttachFailures();
   }
 
   private stopTerminalOutputWritesForShutdown(
@@ -2461,6 +2486,7 @@ export class TerminalSessionLifecycle {
   ): void {
     if (this.terminalOutputWritesStopped) return;
     this.terminalOutputWritesStopped = true;
+    this.clearAttributedAttachFailures();
     if (this.retainedOutputFlushTimer !== null) {
       clearTimeout(this.retainedOutputFlushTimer);
       this.retainedOutputFlushTimer = null;
@@ -3129,6 +3155,7 @@ export class TerminalSessionLifecycle {
 
     const session = this.toTerminalSession(current);
     if (current.status === "disconnected") {
+      this.attributeEmptyAttach(current, args.socket, "disconnected");
       this.holdBrowserTerminalForReattach({
         handoffOwnerToken: args.handoffOwnerToken,
         session,
@@ -3138,6 +3165,7 @@ export class TerminalSessionLifecycle {
       return;
     }
     if (current.status !== "running" || current.daemonSessionId === null) {
+      this.attributeEmptyAttach(current, args.socket, "inactive");
       this.options.hub.sendTerminalSocketMessage(args.socket, {
         type: "attached",
         session,
@@ -3183,6 +3211,7 @@ export class TerminalSessionLifecycle {
     );
     if (!sent) {
       this.pendingAttaches.cancel(pendingAttach.rpcKey);
+      this.attributeFailedAttach(pendingAttach, "send-failed");
       this.holdBrowserTerminalForReattach({
         handoffOwnerToken: args.handoffOwnerToken,
         session,
@@ -3505,6 +3534,9 @@ export class TerminalSessionLifecycle {
     replayOffset: number,
   ): Promise<void> {
     const sourceMessage = args.message;
+    const attributionAlreadyRecorded = this.forgetAttributedAttachFailure(
+      terminalResponseRpcKey(args.sessionId, sourceMessage),
+    );
     const current = replaySession;
     const pendingBatches = current
       ? (this.pendingRetainedOutput.get(current.id) ?? []).map((batch) => ({
@@ -3748,32 +3780,45 @@ export class TerminalSessionLifecycle {
       }
     }
     const message = { ...replayHeader, chunks: rebasedChunks };
+    const pendingAttach = this.pendingAttaches.keyFor(rpcKey);
+    const path = pendingAttach
+      ? this.directOutputSockets.has(pendingAttach.socket)
+        ? "data-plane"
+        : "websocket"
+      : this.pendingOutputReads.keyFor(rpcKey)
+        ? "output-read"
+        : this.pendingCatchUps.keyFor(rpcKey)
+          ? "catch-up"
+          : "unmatched";
     const callers = [
       this.pendingAttaches.settle(rpcKey, message) ? "terminal-attach" : null,
       this.pendingOutputReads.settle(rpcKey, message) ? "output-read" : null,
       this.pendingCatchUps.settle(rpcKey, message) ? "catch-up" : null,
     ].filter((caller): caller is string => caller !== null);
-    this.options.logger.info(
-      {
-        callers: callers.length > 0 ? callers : ["unmatched"],
-        daemonSessionId: args.sessionId,
-        hostId: args.hostId,
-        processId: process.pid,
-        replayBytes,
-        replayChunks: sourceChunks.length,
-        retainedWriteBytes: retainedAppendPerformed ? retainedTailBytes : 0,
-        retainedWriteChunks: retainedAppendPerformed ? retainedTail.length : 0,
-        maxRetainedWriteBatchBytes: retainedAppendPerformed
-          ? retainedTailBytes
-          : 0,
-        maxRetainedWriteBatchChunks: retainedAppendPerformed
-          ? retainedTail.length
-          : 0,
-        requestId: sourceMessage.requestId,
-        terminalId: sourceMessage.terminalId,
-      },
-      "Terminal replay attributed",
-    );
+    if (
+      attributionAlreadyRecorded ||
+      this.forgetAttributedAttachFailure(rpcKey)
+    )
+      return;
+    this.logReplayAttribution({
+      path,
+      callers: callers.length > 0 ? callers : ["unmatched"],
+      daemonSessionId: args.sessionId,
+      hostId: args.hostId,
+      processId: process.pid,
+      replayBytes,
+      replayChunks: sourceChunks.length,
+      retainedWriteBytes: retainedAppendPerformed ? retainedTailBytes : 0,
+      retainedWriteChunks: retainedAppendPerformed ? retainedTail.length : 0,
+      maxRetainedWriteBatchBytes: retainedAppendPerformed
+        ? retainedTailBytes
+        : 0,
+      maxRetainedWriteBatchChunks: retainedAppendPerformed
+        ? retainedTail.length
+        : 0,
+      requestId: sourceMessage.requestId,
+      terminalId: sourceMessage.terminalId,
+    });
   }
 
   private finalizeTerminalExit(args: HandleDaemonTerminalMessageArgs): void {
@@ -4746,10 +4791,98 @@ export class TerminalSessionLifecycle {
     );
   }
 
+  private logReplayAttribution(fields: {
+    path: string;
+    callers: string[];
+    daemonSessionId: string | null;
+    hostId: string | null;
+    processId: number;
+    replayBytes: number;
+    replayChunks: number;
+    retainedWriteBytes: number;
+    retainedWriteChunks: number;
+    maxRetainedWriteBatchBytes: number;
+    maxRetainedWriteBatchChunks: number;
+    requestId: string | null | undefined;
+    terminalId: string;
+  }): void {
+    this.options.logger.info(fields, "Terminal replay attributed");
+  }
+
+  private attributeEmptyAttach(
+    session: {
+      id: string;
+      hostId: string | null;
+      daemonSessionId: string | null;
+    },
+    socket: TerminalClientSocket,
+    outcome: string,
+    requestId: string | null = null,
+  ): void {
+    this.logReplayAttribution({
+      path: `${this.directOutputSockets.has(socket) ? "data-plane" : "websocket"}/${outcome}`,
+      callers: ["terminal-attach"],
+      daemonSessionId: session.daemonSessionId,
+      hostId: session.hostId,
+      processId: process.pid,
+      replayBytes: 0,
+      replayChunks: 0,
+      retainedWriteBytes: 0,
+      retainedWriteChunks: 0,
+      maxRetainedWriteBatchBytes: 0,
+      maxRetainedWriteBatchChunks: 0,
+      requestId,
+      terminalId: session.id,
+    });
+  }
+
+  private forgetAttributedAttachFailure(rpcKey: string): boolean {
+    const timeout = this.attributedAttachFailures.get(rpcKey);
+    if (timeout === undefined) return false;
+    clearTimeout(timeout);
+    return this.attributedAttachFailures.delete(rpcKey);
+  }
+
+  private clearAttributedAttachFailures(): void {
+    for (const rpcKey of this.attributedAttachFailures.keys()) {
+      this.forgetAttributedAttachFailure(rpcKey);
+    }
+  }
+
+  private attributeFailedAttach(
+    pending: PendingTerminalAttachKey,
+    outcome: string,
+  ): void {
+    if (this.attributedAttachFailures.has(pending.rpcKey)) return;
+    const session = getTerminalById(this.options.db, pending.terminalId);
+    if (outcome !== "send-failed") {
+      const rpcKey = pending.rpcKey;
+      const timeout = setTimeout(() => {
+        this.attributedAttachFailures.delete(rpcKey);
+      }, this.attachReplayAttributionWindowMs);
+      timeout.unref();
+      this.attributedAttachFailures.set(rpcKey, timeout);
+    }
+    this.attributeEmptyAttach(
+      {
+        id: pending.terminalId,
+        hostId: session?.hostId ?? null,
+        daemonSessionId: pending.daemonSessionId,
+      },
+      pending.socket,
+      outcome,
+      pending.requestId,
+    );
+  }
+
   private failTerminalAttach(
     pending: PendingTerminalAttachKey,
     error: Error,
   ): void {
+    this.attributeFailedAttach(
+      pending,
+      error === TERMINAL_ATTACH_CANCELLED ? "cancelled" : "failed",
+    );
     if (error === TERMINAL_ATTACH_CANCELLED) {
       return;
     }
