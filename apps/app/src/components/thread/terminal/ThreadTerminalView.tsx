@@ -512,6 +512,7 @@ export function observeTerminalFontLoading(
 }
 
 interface ThreadTerminalViewProps {
+  retainNativeOutput?: boolean;
   autoFocus: boolean;
   isPanelOpen: boolean;
   onAutoFocusHandled?: () => void;
@@ -803,6 +804,7 @@ function writeTerminalSessionStatusNotice({
 }
 
 export async function writeRetainedTerminalOutput({
+  retainNativeOutput = false,
   chunks,
   lastNotice,
   session,
@@ -811,6 +813,7 @@ export async function writeRetainedTerminalOutput({
   onOutputStart,
   onOutputParsed,
 }: {
+  retainNativeOutput?: boolean;
   chunks: readonly { seq: number; data: Uint8Array }[];
   lastNotice: TerminalSessionStatusNoticeRef;
   session: TerminalSession;
@@ -819,6 +822,29 @@ export async function writeRetainedTerminalOutput({
   onOutputStart?: (sequence: number) => void;
   onOutputParsed?: (sequence: number) => void;
 }): Promise<void> {
+  const readBuffer = () => {
+    const buffer = terminal.buffer.active;
+    const lines = Array.from(
+      { length: buffer.length },
+      (_, index) => buffer.getLine(index)?.translateToString(true) ?? "",
+    );
+    while (lines.at(-1) === "") lines.pop();
+    return lines.join("\r\n");
+  };
+  let alternateFrame: string | null = null;
+  const alternateExit = retainNativeOutput
+    ? terminal.parser.registerCsiHandler(
+        { prefix: "?", final: "l" },
+        (params) => {
+          if (
+            terminal.buffer.active.type === "alternate" &&
+            params.some((mode) => mode === 47 || mode === 1047 || mode === 1049)
+          )
+            alternateFrame = readBuffer();
+          return false;
+        },
+      )
+    : null;
   await new Promise<void>((resolve) => {
     const writeChunk = (index: number) => {
       const chunk = chunks[index];
@@ -836,6 +862,14 @@ export async function writeRetainedTerminalOutput({
     };
     writeChunk(0);
   });
+  alternateExit?.dispose();
+  if (alternateFrame !== null) {
+    const primaryFrame = readBuffer();
+    terminal.reset();
+    await new Promise<void>((resolve) =>
+      terminal.write(`${alternateFrame}\r\n${primaryFrame}\r\n`, resolve),
+    );
+  }
   writeTerminalSessionStatusNotice({ lastNotice, session, terminal });
   await new Promise<void>((resolve) => terminal.write("", resolve));
 }
@@ -1180,6 +1214,7 @@ export function handleTerminalServerMessage({
 }
 
 export function ThreadTerminalView({
+  retainNativeOutput = false,
   autoFocus,
   isPanelOpen,
   onAutoFocusHandled,
@@ -1734,6 +1769,8 @@ export function ThreadTerminalView({
     const pendingExitNotices: string[] = [];
     let replayCheckpointSequence: number | null = null;
     let localFitGrid: TerminalGridSize | null = null;
+    let retainedOutputReplayed = false;
+    let retainedOutputGrid: TerminalGridSize | null = null;
     let latestPtyGrid: TerminalGridSize = {
       cols: sessionRef.current.cols,
       rows: sessionRef.current.rows,
@@ -1856,18 +1893,19 @@ export function ThreadTerminalView({
           terminalInputClaimed &&
           document.hasFocus() &&
           terminal.element?.contains(document.activeElement) === true;
+        const displayGrid = retainedOutputGrid ?? latestPtyGrid;
         const canReveal =
           localFitGrid !== null &&
           canRevealTerminalSurface({
             fitGrid: localFitGrid,
-            isOwner: ownsTerminal,
-            ptyGrid: latestPtyGrid,
+            isOwner: ownsTerminal && !retainNativeOutput,
+            ptyGrid: displayGrid,
             rendererGrid: { cols: terminal.cols, rows: terminal.rows },
           });
         containerElement.style.opacity = "0";
         const scale =
           localFitGrid !== null
-            ? terminalSurfaceScale(latestPtyGrid, localFitGrid)
+            ? terminalSurfaceScale(displayGrid, localFitGrid)
             : 1;
         if (terminal.element) {
           applyTerminalSurfaceScale(terminal.element, scale);
@@ -2049,6 +2087,10 @@ export function ThreadTerminalView({
       terminal.loadAddon(new Unicode11Addon());
       terminal.unicode.activeVersion = TERMINAL_UNICODE_VERSION;
       terminal.open(containerElement);
+      const viewport = terminal.element?.querySelector<HTMLElement>(".xterm-viewport");
+      if (retainNativeOutput && viewport) {
+        viewport.style.backgroundColor = "inherit";
+      }
       void loadOptionalTerminalSearchAddon(importTerminalSearchAddon)
         .then((searchAddonModule) => {
           if (disposed || searchAddonModule === null || terminal === null) {
@@ -2088,7 +2130,12 @@ export function ThreadTerminalView({
         .catch(() => undefined);
       void loadOptionalTerminalWebglAddon(importTerminalWebglAddon)
         .then((webglAddonModule) => {
-          if (disposed || webglAddonModule === null || terminal === null) {
+          if (
+            disposed ||
+            webglAddonModule === null ||
+            terminal === null ||
+            retainNativeOutput
+          ) {
             return;
           }
           webglRenderer = loadTerminalWebglRenderer(
@@ -2291,6 +2338,17 @@ export function ThreadTerminalView({
         containerElement.dataset.fitGridCols = String(fitted.cols);
         containerElement.dataset.fitGridRows = String(fitted.rows);
         replayPreview?.setFitGrid(fitted.cols, fitted.rows);
+        if (retainNativeOutput && sessionStatusRef.current === "exited") {
+          if (retainedOutputReplayed) {
+            retainedOutputGrid =
+              window.innerWidth < 768 && fitted.cols < latestPtyGrid.cols
+                ? localFitGrid
+                : latestPtyGrid;
+            terminal.resize(retainedOutputGrid.cols, retainedOutputGrid.rows);
+          }
+          updateGridVisibility();
+          return;
+        }
         updateGridVisibility();
         transport?.sendResize(fitted.cols, fitted.rows);
       };
@@ -2712,6 +2770,7 @@ export function ThreadTerminalView({
               seq: chunk.seq,
               data: decodeBase64Bytes(chunk.dataBase64),
             })),
+            retainNativeOutput,
             lastNotice: lastStatusNoticeRef,
             session: sessionRef.current,
             terminal: activeTerminal,
@@ -2726,6 +2785,10 @@ export function ThreadTerminalView({
               }
             },
           });
+          if (retainNativeOutput) {
+            retainedOutputReplayed = true;
+            fitTerminal();
+          }
           flushPendingExitNotices();
           replayStartSequence = output.chunks[0]?.seq ?? output.nextSeq;
           latestOutputSequence = output.chunks.at(-1)?.seq ?? output.nextSeq;
@@ -3011,6 +3074,7 @@ export function ThreadTerminalView({
     handleTerminalPointerCancel,
     jumpToPrompt,
     requestOpenTerminalLink,
+    retainNativeOutput,
     session.id,
     session.threadId,
     handoffOwnerToken,

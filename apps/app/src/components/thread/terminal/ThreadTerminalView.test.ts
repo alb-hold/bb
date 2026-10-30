@@ -6,6 +6,7 @@ import type {
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { Terminal } from "@xterm/xterm";
 import { describe, expect, it, vi } from "vitest";
+import { makeTerminalSession } from "@/test/fixtures/terminal-sessions";
 import { decodeBase64Bytes } from "@/lib/base64-bytes";
 import { registerTerminalGridOscHandler } from "./terminal-grid-osc";
 import { createTerminalOutputPipeline } from "./terminal-output-pipeline";
@@ -3013,4 +3014,36 @@ describe("loadTerminalWebglRenderer", () => {
     );
     expect(addon.dispose).toHaveBeenCalledOnce();
   });
+});
+
+describe("exited native retained output", () => {
+  it.each([true, false])(
+    "retains the last alternate frame only for native output: %s",
+    async (retainNativeOutput) => {
+      const terminal = new Terminal({ cols: 80, rows: 24 });
+      const bytes = new TextEncoder().encode(
+        "\x1b[?1049h\x1b[2J\x1b[HLAST-ANSWER\r\n\x1b[?1049lResume this session with: claude --resume example\r\n",
+      );
+      const options = {
+        chunks: [
+          { seq: 1, data: bytes.slice(0, 39) },
+          { seq: 2, data: bytes.slice(39) },
+        ],
+        session: makeTerminalSession({ status: "exited", exitCode: 0 }),
+        terminal,
+        lastNotice: { current: null },
+        retainNativeOutput,
+      };
+      await writeRetainedTerminalOutput(options);
+      const text = Array.from(
+        { length: terminal.buffer.active.length },
+        (_, i) =>
+          terminal.buffer.active.getLine(i)?.translateToString(true) ?? "",
+      ).join("\n");
+      expect(text.includes("LAST-ANSWER")).toBe(retainNativeOutput);
+      expect(text).toContain("Resume this session with:");
+      expect(text).toContain("Terminal exited with code 0");
+      terminal.dispose();
+    },
+  );
 });
