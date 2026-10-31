@@ -13,6 +13,7 @@ import { makeTerminalSession } from "@/test/fixtures/terminal-sessions";
 import { wsManager } from "@/lib/ws";
 import { AppCommandProvider } from "@/components/commands/AppCommandProvider";
 import { ThreadTerminalView } from "./ThreadTerminalView";
+import { COMPACT_VIEWPORT_QUERY } from "@bb/shared-ui/hooks/use-compact-viewport";
 
 const testState = vi.hoisted(() => ({
   calls: [] as string[],
@@ -662,6 +663,13 @@ it.each([
   "preserves exited native output layout on $device after touch focus and remount",
   async ({ width, cols, rows, renderCols, renderRows, scale }) => {
     vi.stubGlobal("innerWidth", width);
+    const matchMedia = window.matchMedia.bind(window);
+    vi.spyOn(window, "matchMedia").mockImplementation((query) => ({
+      ...matchMedia(query),
+      matches: query === COMPACT_VIEWPORT_QUERY
+        ? width <= 767
+        : matchMedia(query).matches,
+    }));
     const sendResize = vi.spyOn(
       TerminalWebSocketTransport.prototype,
       "sendResize",
