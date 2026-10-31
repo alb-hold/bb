@@ -11816,7 +11816,14 @@ describe("Account Pool credential scoping", () => {
       await host.harness.behavior.callRpc("status.get", null),
     );
     expect(before.accepting).toBe(false);
-    expect(await statusOf(host, stale, "/v1/messages")).not.toBe(200);
+    const beforeAuth = clock.timeout.mock.calls.length;
+    const denied = statusOf(host, stale, "/v1/messages");
+    await waitForSweep(() =>
+      expect(clock.timeout.mock.calls.length).toBeGreaterThan(beforeAuth),
+    );
+    expect(clock.timeout.mock.calls.at(-1)).toEqual([100]);
+    await vi.advanceTimersByTimeAsync(100);
+    expect(await denied).not.toBe(200);
     release();
     await waitForSweep(async () => {
       const status = statusSchema.parse(
