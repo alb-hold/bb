@@ -18,6 +18,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { resolveAppServerLaunch } from "./bridge.js";
+import { killTestProcessGroup, trackTestProcess } from "./test-processes.js";
 import { parseModelCatalog } from "../models.js";
 
 const POOL_TOKEN = "pool-token-for-no-local-auth-test";
@@ -63,6 +64,8 @@ function expiredChatgptAuthFile(): string {
     last_refresh: "2020-01-01T00:00:00Z",
   });
 }
+
+const processCleanups: Array<() => Promise<void>> = [];
 
 let codexHome: string;
 let server: Server;
@@ -135,6 +138,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  while (processCleanups.length > 0) await processCleanups.pop()?.();
   await new Promise<void>((resolve) => server.close(() => resolve()));
   rmSync(codexHome, { recursive: true, force: true });
 });
@@ -159,12 +163,20 @@ function runPooledTurn(): Promise<{ status: number | null; output: string }> {
         "pool-test-model",
         "go",
       ],
-      { env, stdio: ["ignore", "pipe", "pipe"] },
+      {
+        env,
+        detached: process.platform !== "win32",
+        stdio: ["ignore", "pipe", "pipe"],
+      },
     );
+    processCleanups.push(trackTestProcess(child));
     let output = "";
     child.stdout.on("data", (chunk: Buffer) => (output += chunk.toString()));
     child.stderr.on("data", (chunk: Buffer) => (output += chunk.toString()));
-    const timer = setTimeout(() => child.kill("SIGKILL"), 60_000);
+    const timer = setTimeout(
+      () => killTestProcessGroup(child, "SIGKILL"),
+      60_000,
+    );
     child.on("error", reject);
     child.on("close", (status) => {
       clearTimeout(timer);
@@ -224,10 +236,12 @@ describe.skipIf(!codexAvailable)("pooled Codex without a local login", () => {
     const result = await new Promise<unknown>((resolve, reject) => {
       const child = spawn(launch.command, launch.args, {
         env,
+        detached: process.platform !== "win32",
         stdio: ["pipe", "pipe", "ignore"],
       });
+      processCleanups.push(trackTestProcess(child));
       const timer = setTimeout(() => {
-        child.kill("SIGKILL");
+        killTestProcessGroup(child, "SIGKILL");
         reject(new Error("model/list timed out"));
       }, 60_000);
       let buffered = "";
@@ -248,7 +262,7 @@ describe.skipIf(!codexAvailable)("pooled Codex without a local login", () => {
           }
           if (message.id === 2) {
             clearTimeout(timer);
-            child.kill("SIGKILL");
+            killTestProcessGroup(child, "SIGKILL");
             resolve(message.result);
           }
         }
