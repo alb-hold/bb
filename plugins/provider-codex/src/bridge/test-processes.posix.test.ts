@@ -19,16 +19,25 @@ describe.runIf(process.platform !== "win32")(
         const directory = mkdtempSync(join(tmpdir(), "bb-test-pipe-writer-"));
         const marker = join(directory, "writes");
         const stop = join(directory, "stop");
+        const finish = join(directory, "finish");
         const descendant = `
       const fs = require("node:fs");
       let count = 0;
+      let finishing = false;
       const write = () => {
         if (fs.existsSync(${JSON.stringify(stop)})) process.exit(0);
         fs.writeFileSync(${JSON.stringify(marker)}, String(++count));
+        ${
+          lifetime === null
+            ? ""
+            : `if (!finishing && fs.existsSync(${JSON.stringify(finish)})) {
+          finishing = true;
+          setTimeout(() => process.exit(0), ${lifetime});
+        }`
+        }
       };
       write();
       setInterval(write, 10);
-      ${lifetime === null ? "" : `setTimeout(() => process.exit(0), ${lifetime});`}
     `;
         const child = spawn(
           process.execPath,
@@ -61,6 +70,7 @@ describe.runIf(process.platform !== "win32")(
         expect(child.exitCode).toBe(0);
         expect(child.stdout?.destroyed).toBe(false);
         let removed = false;
+        if (lifetime !== null) writeFileSync(finish, "finish");
         const started = Date.now();
         const result = cleanup().then(() => {
           rmSync(directory, { recursive: true, force: true });
