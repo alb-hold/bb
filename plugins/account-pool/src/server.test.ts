@@ -634,6 +634,7 @@ async function createFixture(args: {
       ? {}
       : { experimental_callHostRpc: args.hostRpc }),
   });
+  host.bb.storage.database().pragma("synchronous = OFF");
   await host.bb.storage.kv.set("config", {
     anthropicUpstreamBaseUrl: args.upstreamUrl,
     codexUpstreamBaseUrl: args.upstreamUrl,
@@ -698,11 +699,9 @@ async function createOAuthRequestFixture(
   upstreamFetch: typeof fetch,
   now: () => number,
   usagePayload: Record<string, unknown> = {},
-  beforePlugin?: (host: Fixture["host"]) => void,
 ): Promise<Fixture> {
   return createFixture({
     upstreamUrl: "https://upstream.example",
-    beforePlugin,
     provider,
     source: "import",
     options: {
@@ -3612,10 +3611,6 @@ describe("Account Pool plugin", () => {
             );
           },
           () => now,
-          {},
-          (host) => {
-            host.bb.storage.database().pragma("synchronous = OFF");
-          },
         );
         const response = await fixture.host.harness.behavior.fetchHttp(
           "POST",
