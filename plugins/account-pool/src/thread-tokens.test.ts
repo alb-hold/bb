@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { tmpdir } from "node:os";
+import { setTimeout as waitForIo } from "node:timers/promises";
 import { afterEach, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { HubTokenStore } from "./store.js";
@@ -15,10 +16,51 @@ import {
 } from "./thread-tokens.js";
 
 const directories: string[] = [];
+const sweepClockCleanups: Array<() => void> = [];
 afterEach(async () => {
+  while (sweepClockCleanups.length > 0) sweepClockCleanups.pop()?.();
   for (const directory of directories.splice(0))
     await fs.rm(directory, { recursive: true, force: true });
 });
+
+function controlSweepClock() {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  const deadlines: AbortController[] = [];
+  const timeout = vi.spyOn(AbortSignal, "timeout").mockImplementation((ms) => {
+    const deadline = new AbortController();
+    deadlines.push(deadline);
+    setTimeout(
+      () => deadline.abort(new DOMException("timed out", "TimeoutError")),
+      ms,
+    );
+    return deadline.signal;
+  });
+  let restored = false;
+  const restore = () => {
+    if (restored) return;
+    restored = true;
+    for (const deadline of deadlines) deadline.abort();
+    vi.clearAllTimers();
+    timeout.mockRestore();
+    vi.useRealTimers();
+  };
+  sweepClockCleanups.push(restore);
+  return { deadlines, timeout, restore };
+}
+
+async function settledSweep<T>(pending: Promise<T>): Promise<T> {
+  const timeout = new AbortController();
+  try {
+    return await Promise.race([
+      pending,
+      waitForIo(1_000, undefined, { signal: timeout.signal }).then(() => {
+        throw new Error("Sweep did not settle after its deadline");
+      }),
+    ]);
+  } finally {
+    timeout.abort();
+  }
+}
 
 async function fixture() {
   const directory = await fs.mkdtemp(path.join(tmpdir(), "bb-thread-token-"));
@@ -2136,17 +2178,8 @@ it("counts a thread archived by its event during the lookup as revoked without a
 
 it("gives up on a lookup that never settles once the sweep deadline passes and keeps the credential", async () => {
   const { threads, tokenOf } = await legacyFixture(["thr_hung"]);
-  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-  const deadlines: AbortController[] = [];
-  const timeout = vi.spyOn(AbortSignal, "timeout").mockImplementation((ms) => {
-    const deadline = new AbortController();
-    deadlines.push(deadline);
-    setTimeout(
-      () => deadline.abort(new DOMException("timed out", "TimeoutError")),
-      ms,
-    );
-    return deadline.signal;
-  });
+  const clock = controlSweepClock();
+  const { deadlines, timeout } = clock;
   let signalStarted!: () => void;
   const started = new Promise<void>((resolve) => {
     signalStarted = resolve;
@@ -2166,13 +2199,13 @@ it("gives up on a lookup that never settles once the sweep deadline passes and k
       return result;
     });
   try {
-    await started;
+    await settledSweep(started);
     expect(timeout.mock.calls).toEqual([[60]]);
     await vi.advanceTimersByTimeAsync(59);
     expect(settled).toBe(false);
     expect(global.aborted).toBe(false);
     await vi.advanceTimersByTimeAsync(1);
-    expect(await pending).toEqual({
+    expect(await settledSweep(pending)).toEqual({
       checked: 1,
       revoked: 0,
       failed: 0,
@@ -2181,10 +2214,8 @@ it("gives up on a lookup that never settles once the sweep deadline passes and k
     expect(global.aborted).toBe(true);
   } finally {
     for (const deadline of deadlines) deadline.abort();
-    await pending;
     vi.clearAllTimers();
-    timeout.mockRestore();
-    vi.useRealTimers();
+    clock.restore();
   }
   expect(
     await threads.authenticate(tokenOf("thr_hung").provider),
@@ -2211,17 +2242,8 @@ it("does not let threads whose lookups hang starve a later archived thread, and 
   const [hangA, hangB, archived] = await loadOrder(directory, names);
   if (hangA === undefined || hangB === undefined || archived === undefined)
     throw new Error("missing thread");
-  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-  const deadlines: AbortController[] = [];
-  const timeout = vi.spyOn(AbortSignal, "timeout").mockImplementation((ms) => {
-    const deadline = new AbortController();
-    deadlines.push(deadline);
-    setTimeout(
-      () => deadline.abort(new DOMException("timed out", "TimeoutError")),
-      ms,
-    );
-    return deadline.signal;
-  });
+  const clock = controlSweepClock();
+  const { deadlines, timeout } = clock;
   const sweep = async (expected: number) => {
     deadlines.length = 0;
     timeout.mockClear();
@@ -2248,7 +2270,7 @@ it("does not let threads whose lookups hang starve a later archived thread, and 
         return result;
       });
     try {
-      await started;
+      await settledSweep(started);
       expect(timeout.mock.calls).toEqual([
         [60],
         ...Array.from({ length: expected }, () => [50]),
@@ -2257,13 +2279,12 @@ it("does not let threads whose lookups hang starve a later archived thread, and 
       expect(settled).toBe(false);
       expect(global.aborted).toBe(false);
       await vi.advanceTimersByTimeAsync(1);
-      const result = await pending;
+      const result = await settledSweep(pending);
       expect(settled).toBe(true);
       expect(global.aborted).toBe(false);
       return result;
     } finally {
       for (const deadline of deadlines) deadline.abort();
-      await pending;
       vi.clearAllTimers();
     }
   };
@@ -2281,8 +2302,7 @@ it("does not let threads whose lookups hang starve a later archived thread, and 
       deferred: 0,
     });
   } finally {
-    timeout.mockRestore();
-    vi.useRealTimers();
+    clock.restore();
   }
   expect(await threads.authenticate(tokenOf(archived).provider)).toBeNull();
   expect(await threads.authenticate(tokenOf(hangA).provider)).not.toBeNull();
@@ -2313,17 +2333,8 @@ it("revokes a later archived thread even when every thread failed a prior sweep 
   const [hangA, hangB, archived] = await loadOrder(directory, names);
   if (hangA === undefined || hangB === undefined || archived === undefined)
     throw new Error("missing thread");
-  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-  const deadlines: AbortController[] = [];
-  const timeout = vi.spyOn(AbortSignal, "timeout").mockImplementation((ms) => {
-    const deadline = new AbortController();
-    deadlines.push(deadline);
-    setTimeout(
-      () => deadline.abort(new DOMException("timed out", "TimeoutError")),
-      ms,
-    );
-    return deadline.signal;
-  });
+  const clock = controlSweepClock();
+  const { deadlines, timeout } = clock;
   let archivedRecovered = false;
   let dispatched = 0;
   let signalStarted: () => void = () => undefined;
@@ -2345,7 +2356,7 @@ it("revokes a later archived thread even when every thread failed a prior sweep 
       lookupTimeoutMs,
     });
     try {
-      await started;
+      await settledSweep(started);
       expect(timeout.mock.calls).toEqual([
         [budget],
         [lookupTimeoutMs],
@@ -2353,12 +2364,11 @@ it("revokes a later archived thread even when every thread failed a prior sweep 
         [lookupTimeoutMs],
       ]);
       await vi.advanceTimersByTimeAsync(lookupTimeoutMs);
-      const result = await pending;
+      const result = await settledSweep(pending);
       expect(global.aborted).toBe(false);
       return result;
     } finally {
       for (const deadline of deadlines.splice(0)) deadline.abort();
-      await pending;
       vi.clearAllTimers();
     }
   };
@@ -2376,8 +2386,7 @@ it("revokes a later archived thread even when every thread failed a prior sweep 
       revoked += (await sweep(40, 30)).revoked;
     expect(revoked).toBe(1);
   } finally {
-    timeout.mockRestore();
-    vi.useRealTimers();
+    clock.restore();
   }
   expect(await threads.authenticate(tokenOf(archived).provider)).toBeNull();
   expect(await threads.authenticate(tokenOf(hangA).provider)).not.toBeNull();

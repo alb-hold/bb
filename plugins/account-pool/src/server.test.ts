@@ -78,6 +78,7 @@ interface Fixture {
 }
 
 const cleanups: Array<() => Promise<void>> = [];
+const sweepClockCleanups: Array<() => void> = [];
 const bbThreadStates = new Map<string, "archived" | "deleted">();
 
 function bbThread(threadId: string) {
@@ -547,6 +548,7 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+  while (sweepClockCleanups.length > 0) sweepClockCleanups.pop()?.();
   vi.unstubAllEnvs();
   while (cleanups.length > 0) await cleanups.pop()?.();
   bbThreadStates.clear();
@@ -810,18 +812,29 @@ async function waitForSweep(assertion: () => void | Promise<void>) {
   const deadline = Date.now() + 1_000;
   for (;;) {
     await vi.advanceTimersByTimeAsync(0);
+    const timeout = new AbortController();
     try {
-      await assertion();
+      await Promise.race([
+        Promise.resolve().then(assertion),
+        waitForIo(Math.max(0, deadline - Date.now()), undefined, {
+          signal: timeout.signal,
+        }).then(() => {
+          throw new Error("Sweep assertion did not settle");
+        }),
+      ]);
       return;
     } catch (error) {
       if (Date.now() >= deadline) throw error;
       await waitForIo(1);
+    } finally {
+      timeout.abort();
     }
   }
 }
 
 function controlSweepClock() {
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  const timers = vi.spyOn(globalThis, "setTimeout");
   const deadlines: AbortController[] = [];
   const timeout = vi.spyOn(AbortSignal, "timeout").mockImplementation((ms) => {
     const deadline = new AbortController();
@@ -832,19 +845,26 @@ function controlSweepClock() {
     );
     return deadline.signal;
   });
+  let restored = false;
+  const restore = () => {
+    if (restored) return;
+    restored = true;
+    for (const deadline of deadlines) deadline.abort();
+    vi.clearAllTimers();
+    timers.mockRestore();
+    timeout.mockRestore();
+    vi.useRealTimers();
+  };
+  sweepClockCleanups.push(restore);
   return {
     timeout,
+    timers,
     now() {
       const time = vi.getMockedSystemTime();
       if (time === null) throw new Error("Sweep clock is not controlled");
       return time.getTime();
     },
-    restore() {
-      for (const deadline of deadlines) deadline.abort();
-      vi.clearAllTimers();
-      timeout.mockRestore();
-      vi.useRealTimers();
-    },
+    restore,
   };
 }
 
@@ -11808,6 +11828,7 @@ describe("Account Pool credential scoping", () => {
     const clock = controlSweepClock();
     const service = host.harness.behavior.runService("hub");
     cleanups.push(async () => {
+      clock.restore();
       try {
         release();
         service.controller.abort();
@@ -11884,6 +11905,7 @@ describe("Account Pool credential scoping", () => {
     const clock = controlSweepClock();
     const service = host.harness.behavior.runService("hub");
     cleanups.push(async () => {
+      clock.restore();
       try {
         service.controller.abort();
         await service.done;
@@ -11950,7 +11972,7 @@ describe("Account Pool credential scoping", () => {
       },
     );
     const clock = controlSweepClock();
-    const timers = vi.spyOn(globalThis, "setTimeout");
+    const timers = clock.timers;
     const service = host.harness.behavior.runService("hub");
     try {
       await waitForSweep(() => expect(lookups).toBeGreaterThan(0));
@@ -12017,12 +12039,12 @@ describe("Account Pool credential scoping", () => {
         "could not look up",
       );
     } finally {
+      clock.restore();
       try {
         service.controller.abort();
         await service.done;
         await host.harness.lifecycle.dispose();
       } finally {
-        timers.mockRestore();
         clock.restore();
       }
     }
@@ -12074,6 +12096,7 @@ describe("Account Pool credential scoping", () => {
     const clock = controlSweepClock();
     const service = host.harness.behavior.runService("hub");
     cleanups.push(async () => {
+      clock.restore();
       try {
         service.controller.abort();
         await service.done;
