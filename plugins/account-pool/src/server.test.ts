@@ -7202,7 +7202,10 @@ describe("Account Pool plugin", () => {
         fixture.service.controller.abort();
         await fixture.service.done;
         expect(observed.signal?.aborted).toBe(true);
-        if (restart) next = fixture.host.harness.behavior.runService("hub");
+        if (restart) {
+          next = fixture.host.harness.behavior.runService("hub");
+          await vi.waitFor(() => expect(calls).toBeGreaterThan(1));
+        }
         await waitForIo(30);
         expect(active).toBe(1);
       } finally {
