@@ -463,4 +463,13 @@ it("bounds retry work to eight IDs per sweep and rotates failed IDs fairly acros
     expect(live.size).toBe(80);
   }
   expect(retried.size).toBe(16);
+  const restarted = new ThreadTokenStore(directory, hosts);
+  await restarted.initialize(["host-one"]);
+  const budget = new AbortController();
+  budget.abort();
+  const lookup = vi.fn(async () => "live" as const);
+  expect(
+    await restarted.sweepThreads(lookup, { signal: budget.signal }),
+  ).toEqual({ checked: 0, revoked: 0, failed: 0, deferred: 96 });
+  expect(lookup).not.toHaveBeenCalled();
 });

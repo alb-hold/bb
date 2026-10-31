@@ -1073,11 +1073,11 @@ export class ThreadTokenStore {
       result.failed += 1;
     };
     const check = async (threadId: string, retry = false): Promise<boolean> => {
+      attempted.add(threadId);
       if (cancelled()) {
         result.deferred += 1;
         return false;
       }
-      attempted.add(threadId);
       result.checked += 1;
       const timeoutMs = retry
         ? (options.lookupTimeoutMs ?? this.lookupTimeoutMs)
