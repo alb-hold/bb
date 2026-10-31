@@ -5,12 +5,17 @@ import {
   getThread,
   migrate,
   setNativeTerminalThreadTerminal,
+  setNativeTerminalToolCredential,
   terminalSessions,
+  threads,
 } from "@bb/db";
+import { createHash } from "node:crypto";
+import { createNodeBbSdk } from "@bb/sdk/node";
 import { eq } from "drizzle-orm";
 import { describe, expect, it, vi } from "vitest";
 import { recordNativeTerminalActivity } from "../../../src/services/threads/native-terminal-activity.js";
 import {
+  NATIVE_TOOL_CREDENTIAL_ENV,
   openNativeTerminal,
   reopenNativeTerminalsAfterDaemonReconnect,
 } from "../../../src/services/threads/native-terminal-threads.js";
@@ -26,17 +31,27 @@ const activity = await import(
   new URL("../../../../cli/src/native-activity.ts", import.meta.url).href
 );
 
+const reporterModule = await import(
+  new URL("../../../../cli/src/native-activity-reporter.ts", import.meta.url)
+    .href
+);
+
 const cases = [
   { provider: "claude-code", tool: "AskUserQuestion" },
   { provider: "claude-code", tool: "ExitPlanMode" },
   { provider: "claude-code", tool: "Bash" },
   { provider: "codex", tool: "request_user_input" },
-];
+].flatMap((flow) =>
+  [false, true].map((answeredDuringOutage) => ({
+    ...flow,
+    answeredDuringOutage,
+  })),
+);
 
 describe("unanswered native questions across holder reattachment", () => {
   it.each(cases)(
-    "preserves $provider $tool until its answer",
-    async ({ provider, tool }) => {
+    "$provider $tool, answered during outage: $answeredDuringOutage",
+    async ({ provider, tool, answeredDuringOutage }) => {
       const db = createConnection(":memory:");
       migrate(db);
       await withTestHarness({ db }, async (h) => {
@@ -118,20 +133,51 @@ describe("unanswered native questions across holder reattachment", () => {
               );
         const waiting = tracker.apply(opening);
         expect(waiting?.state).toBe("waiting");
-        recordNativeTerminalActivity(h.deps, {
-          ...waiting,
-          confirms: true,
+        let credential = "synthetic-reattach-test-credential";
+        setNativeTerminalToolCredential(db, {
+          threadId: thread.id,
+          terminalSessionId: terminal.id,
+          credentialHash: createHash("sha256").update(credential).digest("hex"),
+        });
+        let connected = true;
+        const sdk = createNodeBbSdk({
+          baseUrl: "http://127.0.0.1:3000",
+          fetch: async (input, init) => {
+            if (!connected) {
+              throw new TypeError("fetch failed", {
+                cause: Object.assign(new Error("connect ECONNREFUSED"), {
+                  code: "ECONNREFUSED",
+                }),
+              });
+            }
+            return h.app.fetch(new Request(input, init));
+          },
+        });
+        const reporter = reporterModule.createNativeActivityReporter({
+          currentCredential: () => credential,
+          send: (
+            args: Parameters<typeof sdk.nativeTerminals.reportActivity>[0],
+          ) => sdk.nativeTerminals.reportActivity(args),
           threadId: thread.id,
         });
-        const indicator = async () => {
+        const report = async (next: ReturnType<typeof tracker.apply>) => {
+          reporter.report(next);
+          await reporter.settled();
+        };
+        await report(waiting);
+        const listedThread = async () => {
           const response = await h.app.request(
             `/api/v1/threads?projectId=${project.id}`,
           );
+          expect(response.status).toBe(200);
           const body = await response.json();
-          return body.find((entry: { id: string }) => entry.id === thread.id)
-            ?.listIndicator;
+          return body.find((entry: { id: string }) => entry.id === thread.id);
         };
-        expect(await indicator()).toBe("needs-input");
+        expect(await listedThread()).toMatchObject({
+          hasPendingInteraction: true,
+          listIndicator: "needs-input",
+          runtime: { displayStatus: "active" },
+        });
         const pending =
           h.deps.pendingInteractions.listPendingThreadInteractions(thread.id);
         expect(pending).toHaveLength(1);
@@ -140,8 +186,14 @@ describe("unanswered native questions across holder reattachment", () => {
           .where(eq(terminalSessions.id, terminal.id))
           .run();
         vi.spyOn(h.deps.terminalSessions, "createTerminal").mockImplementation(
-          async () =>
-            createTerminalSession(db, {
+          async (args) => {
+            const nextCredential = args.extraContributedEnv?.find(
+              (entry) => entry.name === NATIVE_TOOL_CREDENTIAL_ENV,
+            )?.value;
+            if (nextCredential === undefined)
+              throw new Error("missing credential");
+            credential = nextCredential;
+            return createTerminalSession(db, {
               threadId: thread.id,
               environmentId: environment.id,
               hostId: host.id,
@@ -151,23 +203,9 @@ describe("unanswered native questions across holder reattachment", () => {
               cols: 80,
               rows: 24,
               status: "running",
-            }),
+            });
+          },
         );
-        await reopenNativeTerminalsAfterDaemonReconnect(h.deps, {
-          hostId: host.id,
-          threadIds: [thread.id],
-        });
-        expect(
-          h.deps.pendingInteractions
-            .listPendingThreadInteractions(thread.id)
-            .map((row) => row.id),
-        ).toEqual(pending.map((row) => row.id));
-        recordNativeTerminalActivity(h.deps, {
-          ...tracker.heartbeat(),
-          confirms: true,
-          threadId: thread.id,
-        });
-        expect(await indicator()).toBe("needs-input");
         const closing =
           tool === "Bash"
             ? activity.classifyHookRecord(cli.activity.hooks, {
@@ -201,20 +239,62 @@ describe("unanswered native questions across holder reattachment", () => {
                       },
                     },
               );
-        const answered = tracker.apply(closing);
-        expect(answered?.state).toBe("working");
-        recordNativeTerminalActivity(h.deps, {
-          ...answered,
-          closes: waiting.questions.map(
-            (question: { id: string }) => question.id,
-          ),
-          confirms: true,
-          threadId: thread.id,
+        if (answeredDuringOutage) {
+          connected = false;
+          const answered = tracker.apply(closing);
+          expect(answered?.state).toBe("working");
+          await report(answered);
+          expect(
+            h.deps.pendingInteractions.listPendingThreadInteractions(thread.id),
+          ).toHaveLength(1);
+        }
+        db.update(threads)
+          .set({ status: "error" })
+          .where(eq(threads.id, thread.id))
+          .run();
+        await reopenNativeTerminalsAfterDaemonReconnect(h.deps, {
+          hostId: host.id,
+          threadIds: [thread.id],
         });
+        expect(
+          h.deps.pendingInteractions
+            .listPendingThreadInteractions(thread.id)
+            .map((row) => row.id),
+        ).toEqual(pending.map((row) => row.id));
+        expect(await listedThread()).toMatchObject({
+          hasPendingInteraction: true,
+          listIndicator: "needs-input",
+          runtime: { displayStatus: "idle" },
+        });
+        connected = true;
+        if (answeredDuringOutage) {
+          reporter.retry();
+          await reporter.settled();
+        } else {
+          await report(tracker.heartbeat());
+          expect(await listedThread()).toMatchObject({
+            hasPendingInteraction: true,
+            listIndicator: "needs-input",
+            runtime: {
+              displayStatus: "active",
+              nativeActivity: {
+                confirmation: "confirmed",
+                evidenceKind: "holder-report",
+              },
+            },
+          });
+          const answered = tracker.apply(closing);
+          expect(answered?.state).toBe("working");
+          await report(answered);
+        }
         expect(
           h.deps.pendingInteractions.listPendingThreadInteractions(thread.id),
         ).toEqual([]);
-        expect(await indicator()).toBe("working");
+        expect(await listedThread()).toMatchObject({
+          hasPendingInteraction: false,
+          listIndicator: "working",
+          runtime: { displayStatus: "active" },
+        });
         expect(getThread(db, thread.id)?.status).toBe("active");
         recordNativeTerminalActivity(h.deps, {
           state: "waiting",
@@ -222,7 +302,7 @@ describe("unanswered native questions across holder reattachment", () => {
           confirms: true,
           threadId: thread.id,
         });
-        expect(await indicator()).toBe("needs-input");
+        expect((await listedThread()).listIndicator).toBe("needs-input");
         db.update(terminalSessions)
           .set({ status: "exited", closeReason: "process-exit" })
           .where(eq(terminalSessions.threadId, thread.id))
@@ -234,7 +314,7 @@ describe("unanswered native questions across holder reattachment", () => {
         expect(
           h.deps.pendingInteractions.listPendingThreadInteractions(thread.id),
         ).toEqual([]);
-        expect(await indicator()).not.toBe("needs-input");
+        expect((await listedThread()).listIndicator).not.toBe("needs-input");
       });
     },
   );
