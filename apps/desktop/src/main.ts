@@ -18,6 +18,7 @@ import {
   nativeImage,
   nativeTheme,
   net,
+  powerMonitor,
   safeStorage,
   session,
   shell,
@@ -170,6 +171,7 @@ import {
   type ConnectSessionRenewal,
 } from "./connect-session-renewal.js";
 import { registerDesktopShutdownSignalHandlers } from "./desktop-shutdown.js";
+import { createQuitGuard, queryQuitActivity } from "./quit-guard.js";
 import { stopOwnedRuntimeProcess } from "./owned-runtime-shutdown.js";
 import {
   createDesktopWindowFactory,
@@ -432,7 +434,6 @@ let bbAppLoaded = false;
 let startupErrorPage: StartupErrorPage | null = null;
 let startupActionPending = false;
 let connectSignInWindow: BrowserWindow | null = null;
-let stoppingForQuit = false;
 let appImageRelaunchPath: string | null = null;
 let quitting = false;
 let serverTargetStore: ServerTargetStore | null = null;
@@ -836,6 +837,7 @@ function refreshApplicationMenu(): void {
   installApplicationMenu({
     ...buildServerMenuArgs(),
     accelerators: currentApplicationMenuAccelerators,
+    quit: () => quitGuard.requestUserQuit(),
     isMac: process.platform === "darwin",
     createNewWindow() {
       void createApplicationWindow({
@@ -2292,26 +2294,63 @@ async function stopOwnedRuntime(): Promise<void> {
   await stopOwnedRuntimeProcess(runtime);
 }
 
-function handleBeforeQuit(event: Event): void {
-  quitting = true;
-  if (stoppingForQuit) {
-    return;
-  }
-
-  event.preventDefault();
-  stoppingForQuit = true;
-  void finishQuit().finally(() => {
-    if (appImageRelaunchPath !== null) {
-      app.releaseSingleInstanceLock();
-      const replacement = spawn(appImageRelaunchPath, process.argv.slice(1), {
-        detached: true,
-        stdio: "ignore",
-      });
-      replacement.on("error", (error) => desktopLogger.error(error.message));
-      replacement.unref();
+const quitGuard = createQuitGuard({
+  queryActivity(signal) {
+    const target = serverTargetStore?.getTarget();
+    const serverUrl =
+      currentRuntime?.serverUrl ??
+      (target?.kind === "connect"
+        ? target.server.url
+        : target?.kind === "custom"
+          ? target.url
+          : builtinServerUrl);
+    return queryQuitActivity({
+      serverUrl,
+      signal,
+      fetchImpl: (input, init) =>
+        net.fetch(input instanceof URL ? input.toString() : input, init),
+    });
+  },
+  async confirm(activity, signal) {
+    const result = await dialog.showMessageBox({
+      type: "warning",
+      title: "Quit bb?",
+      message:
+        activity === null
+          ? "The active-thread count is unknown. Quit bb?"
+          : `${activity.activeThreads} active thread${activity.activeThreads === 1 ? "" : "s"} and ${activity.nativeTerminals} attached native terminal${activity.nativeTerminals === 1 ? "" : "s"}. Quit bb?`,
+      detail:
+        "Choose Quit bb to stop local sessions, or Cancel to keep them running.",
+      buttons: ["Quit bb", "Cancel"],
+      defaultId: 1,
+      cancelId: 1,
+      signal,
+    });
+    return result.response === 0;
+  },
+  async finishQuit() {
+    quitting = true;
+    try {
+      await finishQuit();
+    } finally {
+      if (appImageRelaunchPath !== null) {
+        app.releaseSingleInstanceLock();
+        const replacement = spawn(appImageRelaunchPath, process.argv.slice(1), {
+          detached: true,
+          stdio: "ignore",
+        });
+        replacement.on("error", (error) => desktopLogger.error(error.message));
+        replacement.unref();
+      }
     }
+  },
+  quitApplication() {
     app.quit();
-  });
+  },
+});
+
+function handleBeforeQuit(event: Event): void {
+  quitGuard.handleBeforeQuit(event);
 }
 
 async function finishQuit(): Promise<void> {
@@ -2985,6 +3024,9 @@ async function runDesktopApp(): Promise<void> {
     Object.assign(process.env, hostToolchain.environment());
   }
   await app.whenReady();
+  if (process.platform === "darwin") {
+    powerMonitor.on("shutdown", () => app.quit());
+  }
   if (app.isPackaged) {
     await session.defaultSession.clearCache();
   }

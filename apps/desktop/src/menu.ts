@@ -50,6 +50,7 @@ interface ApplicationMenuServerItem {
 export interface InstallApplicationMenuArgs {
   accelerators: ApplicationMenuAccelerators;
   isMac: boolean;
+  quit(): void;
   showBuiltinServer: boolean;
   toggleBuiltinServer(): void;
   openAbout(): void;
@@ -205,7 +206,11 @@ export function buildApplicationMenuTemplate(
               { type: "separator" as const },
             ]
           : []),
-        { role: "quit" },
+        {
+          label: "Quit bb",
+          accelerator: "CommandOrControl+Q",
+          click: () => args.quit(),
+        },
       ],
     },
     {
