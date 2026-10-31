@@ -395,6 +395,7 @@ it("completes rotations and revokes threads below and above a permanent state fa
       throw Object.assign(new Error("archive unavailable"), { code: "EROFS" });
     return rename(source, target);
   });
+  let completed = 0;
   for (let sweep = 0; sweep < 8; sweep += 1) {
     const budget = new AbortController();
     let calls = 0;
@@ -425,7 +426,12 @@ it("completes rotations and revokes threads below and above a permanent state fa
           await hosts.forHost("host-one"),
         ),
       );
+    const state = JSON.parse(
+      await fs.readFile(path.join(directory, "thread-sweep.json"), "utf8"),
+    );
+    if (state.rotation === null && ++completed === 2) break;
   }
+  expect(completed).toBe(2);
   expect(checked.size).toBe(193);
   for (const [id, token] of tokens)
     if (id !== failedId)
