@@ -149,7 +149,7 @@ function walk(dir, root, out, trackedDirectories) {
     if (entry.isDirectory()) {
       if (EXCLUDED_SEGMENTS.has(entry.name)) continue;
       if (
-        entry.name.startsWith(".") &&
+        entry.name.startsWith(".managed-json-cli-") &&
         trackedDirectories !== null &&
         !trackedDirectories.has(relative(root, abs).split(sep).join("/"))
       )

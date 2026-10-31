@@ -46,13 +46,16 @@ function write(rel, content) {
 
 describe("scanTree (pure)", () => {
   it("counts tracked hidden source and ordinary untracked source", () => {
-    const tracked = "packages/core/.source/entry.mjs";
+    const tracked = "packages/core/.managed-json-cli-source/entry.mjs";
     const untracked = "packages/core/new.mjs";
     write(tracked, 'const ids = ["codex", "claude-code"];\n');
     write(untracked, 'const id = "pi";\n');
     execFileSync("git", ["init", "-q"], { cwd: dir });
     execFileSync("git", ["add", tracked], { cwd: dir });
-    write("packages/core/.temp/entry.mjs", 'const id = "codex";\n');
+    write(
+      "packages/core/.managed-json-cli-TEST/entry.mjs",
+      'const id = "codex";\n',
+    );
     expect(scanTree(dir).files).toEqual({ [tracked]: 2, [untracked]: 1 });
   });
 
@@ -313,6 +316,29 @@ describe("ratchet CLI refusal paths (fixture root)", () => {
 });
 
 describe("ratchet CLI (against the real repo baseline)", () => {
+  it("counts untracked hidden source while ignoring managed JSON CLI temp directories", () => {
+    const source = join(ROOT, "packages/bb-app/.local-tools");
+    const temp = join(ROOT, "packages/bb-app/.managed-json-cli-TEST");
+    mkdirSync(source);
+    try {
+      mkdirSync(temp);
+      try {
+        writeFileSync(join(source, "index.ts"), 'const id = "codex";\n');
+        writeFileSync(join(temp, "bb-app.mjs"), 'const id = "codex";\n');
+        const result = run();
+        expect(result.code, result.out).toBe(1);
+        expect(result.out).toContain(
+          "packages/bb-app/.local-tools/index.ts: 1",
+        );
+        expect(result.out).not.toContain(".managed-json-cli-TEST");
+      } finally {
+        rmSync(temp, { recursive: true, force: true });
+      }
+    } finally {
+      rmSync(source, { recursive: true, force: true });
+    }
+  }, 30_000);
+
   it("fails closed when Git cannot read the index", () => {
     const index = join(dir, "invalid-index");
     writeFileSync(index, "invalid");
