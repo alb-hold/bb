@@ -4609,3 +4609,6 @@ removing the prefix.
 Anthropic OAuth profile boundary between Account Pooler and Claude Code provider.
 These are internal plumbing for those two first-party plugins only. Provider
 plan display names take precedence over legacy subscription and rate-limit flags.
+The plan-label helper is also exported from the side-effect-free SDK root for
+Account Pooler app display. Explicit Max names retain the provider-reported tier
+multiplier; other provider plan names are preserved.

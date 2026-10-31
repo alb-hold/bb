@@ -29,7 +29,13 @@ export const claudeProfileSchema = z
 export type ClaudeProfile = z.infer<typeof claudeProfileSchema>;
 
 export function claudeProfilePlanLabel(profile: ClaudeProfile): string | null {
-  return (
-    profile.organization?.plan_display_name?.replace(/^Claude\s+/iu, "") ?? null
-  );
+  const name =
+    profile.organization?.plan_display_name?.replace(/^Claude\s+/iu, "") ??
+    null;
+  const max =
+    profile.account.rate_limit_tier?.match(/max_(\d+)x/u) ??
+    profile.organization?.rate_limit_tier?.match(/max_(\d+)x/u);
+  return name !== null && /^max$/iu.test(name) && max
+    ? `Max (${max[1]}x)`
+    : name;
 }

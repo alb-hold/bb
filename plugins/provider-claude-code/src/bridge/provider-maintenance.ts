@@ -1,5 +1,6 @@
 import { experimental_execHostFile } from "@get-bb/plugin-sdk/process";
 import fs from "node:fs/promises";
+import { createHash } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import {
@@ -425,6 +426,48 @@ function planLabel(credentials: ClaudeCredentials): string {
   return subscription.charAt(0).toUpperCase() + subscription.slice(1);
 }
 
+const profilePlanLabels = new Map<
+  string,
+  { label: string; expiresAt: number }
+>();
+const PROFILE_PLAN_LABEL_TTL_MS = 60_000;
+const PROFILE_PLAN_LABEL_CACHE_SIZE = 64;
+
+function profilePlanKey(credentials: ClaudeCredentials): string {
+  return createHash("sha256").update(credentials.accessToken).digest("hex");
+}
+
+function cachedPlanLabel(credentials: ClaudeCredentials): string | null {
+  const key = profilePlanKey(credentials);
+  const cached = profilePlanLabels.get(key);
+  if (cached === undefined) return null;
+  if (cached.expiresAt <= Date.now()) {
+    profilePlanLabels.delete(key);
+    return null;
+  }
+  return cached.label;
+}
+
+function rememberPlanLabel(
+  credentials: ClaudeCredentials,
+  label: string | null,
+): void {
+  const key = profilePlanKey(credentials);
+  profilePlanLabels.delete(key);
+  for (const [cachedKey, entry] of profilePlanLabels) {
+    if (entry.expiresAt <= Date.now()) profilePlanLabels.delete(cachedKey);
+  }
+  if (label === null) return;
+  if (profilePlanLabels.size >= PROFILE_PLAN_LABEL_CACHE_SIZE) {
+    const oldest = profilePlanLabels.keys().next().value;
+    if (oldest !== undefined) profilePlanLabels.delete(oldest);
+  }
+  profilePlanLabels.set(key, {
+    label,
+    expiresAt: Date.now() + PROFILE_PLAN_LABEL_TTL_MS,
+  });
+}
+
 async function readPlanLabel(credentials: ClaudeCredentials): Promise<string> {
   try {
     const response = await fetch(
@@ -441,14 +484,16 @@ async function readPlanLabel(credentials: ClaudeCredentials): Promise<string> {
     );
     if (!response.ok) {
       await response.body?.cancel();
-      return planLabel(credentials);
+      return cachedPlanLabel(credentials) ?? planLabel(credentials);
     }
     const parsed = claudeProfileSchema.safeParse(await response.json());
-    return parsed.success
-      ? (claudeProfilePlanLabel(parsed.data) ?? planLabel(credentials))
-      : planLabel(credentials);
+    if (!parsed.success)
+      return cachedPlanLabel(credentials) ?? planLabel(credentials);
+    const label = claudeProfilePlanLabel(parsed.data);
+    rememberPlanLabel(credentials, label);
+    return label ?? planLabel(credentials);
   } catch {
-    return planLabel(credentials);
+    return cachedPlanLabel(credentials) ?? planLabel(credentials);
   }
 }
 
@@ -506,9 +551,7 @@ export async function getClaudeProviderHealth(): Promise<ProviderHealthResult> {
     const known = {
       accountEmail: email,
       planLabel:
-        read.kind === "signed_in" && !read.renewsOnNextUse
-          ? await readPlanLabel(read.credentials)
-          : planLabel(read.credentials),
+        cachedPlanLabel(read.credentials) ?? planLabel(read.credentials),
       installedVersion: version,
     };
     return read.kind === "access_expired"

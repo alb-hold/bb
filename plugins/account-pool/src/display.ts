@@ -1,3 +1,4 @@
+import { internal_DO_NOT_USE_claudeProfilePlanLabel as claudeProfilePlanLabel } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import { familyQuotaSchema } from "./contracts.js";
 import type { AccountSummary } from "./contracts.js";
@@ -20,9 +21,10 @@ export function displayPlanLabel(
   displayName: string | null = null,
 ): string | null {
   if (displayName !== null) {
-    const name = displayName.replace(/^Claude\s+/iu, "");
-    const max = account.rateLimitTier?.match(/max_(\d+)x/u);
-    return /^max$/iu.test(name) && max ? `Max (${max[1]}x)` : name;
+    return claudeProfilePlanLabel({
+      account: { rate_limit_tier: account.rateLimitTier },
+      organization: { plan_display_name: displayName },
+    });
   }
   const plan = account.subscriptionType;
   if (/^(?:claude_)?max$/iu.test(plan ?? "")) return "Claude subscription";
