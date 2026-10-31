@@ -7100,9 +7100,13 @@ describe("Account Pool plugin", () => {
     });
   });
 
-  async function profileLifecycleFixture(upstreamFetch: typeof fetch) {
+  async function profileLifecycleFixture(
+    upstreamFetch: typeof fetch,
+    beforePlugin?: (host: Fixture["host"]) => void,
+  ) {
     const fixture = await createFixture({
       upstreamUrl: "https://upstream.example",
+      beforePlugin,
       options: {
         drainTimeoutMs: 20,
         oauthProfileUrl: "https://upstream.example/profile",
@@ -7226,6 +7230,130 @@ describe("Account Pool plugin", () => {
         expect(await store.planDisplayNames()).toEqual({});
       }
       expect(accounts).toHaveLength(4);
+    },
+  );
+
+  it.each([false, true])(
+    "drains a started plan write before restart with foreground refresh %s",
+    async (foreground) => {
+      const arrived = deferred();
+      const held = deferred();
+      const committed = deferred();
+      const events: string[] = [];
+      let holdNext = true;
+      let activeWrites = 0;
+      let profileCalls = 0;
+      let planWrites = 0;
+      const { fixture, store, accounts, display } =
+        await profileLifecycleFixture(
+          async (_input, init) => {
+            profileCalls += 1;
+            return Response.json({
+              account: {
+                uuid: new Headers(init?.headers).get("authorization")!.slice(7),
+                subscription_type: profileCalls === 1 ? "old-pass" : "new-pass",
+              },
+              organization: {
+                plan_display_name:
+                  profileCalls === 1
+                    ? "Ultra before stop"
+                    : "Ultra after restart",
+              },
+            });
+          },
+          (host) => {
+            const set = host.bb.storage.kv.set.bind(host.bb.storage.kv);
+            host.bb.storage.kv.set = async (key, value) => {
+              if (key !== "plan-display-names:v1") return set(key, value);
+              if (!holdNext || Object.keys(value ?? {}).length === 0) {
+                await set(key, value);
+                planWrites += 1;
+                return;
+              }
+              holdNext = false;
+              activeWrites += 1;
+              arrived.resolve();
+              try {
+                await held.promise;
+                await set(key, value);
+                planWrites += 1;
+                events.push("commit");
+              } finally {
+                activeWrites -= 1;
+                committed.resolve();
+              }
+            };
+          },
+        );
+      planWrites = 0;
+      let stopped = false;
+      let next: Fixture["service"] | null = null;
+      try {
+        await display();
+        await arrived.promise;
+        vi.useFakeTimers();
+        fixture.service.controller.abort();
+        const stopping = fixture.service.done.then(() => {
+          stopped = true;
+          events.push("stop");
+        });
+        await vi.advanceTimersByTimeAsync(100);
+        expect(stopped).toBe(false);
+        expect(activeWrites).toBe(1);
+        held.resolve();
+        await stopping;
+        expect(activeWrites).toBe(0);
+        expect(planWrites).toBe(1);
+        expect(events).toEqual(["commit", "stop"]);
+        expect(await store.planDisplayNames()).toEqual({
+          [accounts[0]!.id]: "Ultra before stop",
+        });
+        expect((await store.get(accounts[0]!.id))?.subscriptionType).toBe(
+          "max",
+        );
+        vi.useRealTimers();
+        next = fixture.host.harness.behavior.runService("hub");
+        await vi.waitFor(async () => {
+          const status = await fixture.host.harness.behavior.runCli([
+            "status",
+            "--json",
+          ]);
+          expect(
+            statusReportSchema.parse(JSON.parse(status.stdout)).accepting,
+          ).toBe(true);
+        });
+        if (foreground) {
+          const refreshed = usageMeasurementSchema.parse(
+            await fixture.host.harness.behavior.callRpc(usageFetchMethod, {
+              resourceId: accounts[0]!.id,
+              refresh: true,
+            }),
+          );
+          expect(refreshed.usage.status).toBe("ok");
+          expect(refreshed.observedAt).not.toBeNull();
+        }
+        await vi.waitFor(async () =>
+          expect(Object.values(await store.planDisplayNames())).toEqual(
+            Array(4).fill("Ultra after restart"),
+          ),
+        );
+        expect(profileCalls).toBe(5);
+        expect(planWrites).toBe(5);
+        expect(
+          (await store.list()).some(
+            (account) => account.subscriptionType === "old-pass",
+          ),
+        ).toBe(false);
+      } finally {
+        vi.useRealTimers();
+        held.resolve();
+        await committed.promise;
+        await fixture.service.done;
+        if (next !== null) {
+          next.controller.abort();
+          await next.done;
+        }
+      }
     },
   );
 

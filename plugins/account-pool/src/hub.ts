@@ -743,28 +743,31 @@ export class AccountPoolHub {
     this.accepting = false;
     this.stopped.abort(new Error("Account Pooler stopped accepting requests."));
     const backfill = this.planBackfill;
-    if (this.inFlightCount() === 0 && backfill === null) return;
-    let timeout: ReturnType<typeof setTimeout> | null = null;
-    await Promise.race([
-      Promise.all([
-        backfill?.catch(() => {}),
-        this.inFlightCount() === 0
-          ? Promise.resolve()
-          : new Promise<void>((resolve) => this.drainWaiters.add(resolve)),
-      ]),
-      new Promise<void>((resolve) => {
-        timeout = setTimeout(resolve, this.options.drainTimeoutMs);
-      }),
-    ]);
-    if (timeout !== null) clearTimeout(timeout);
-    if (this.inFlightCount() === 0) return;
-    for (const controller of this.activeControllers) {
-      controller.abort(
-        new Error(
-          "Account Pooler stopped before the upstream response completed.",
-        ),
-      );
+    if (this.inFlightCount() > 0 || backfill !== null) {
+      let timeout: ReturnType<typeof setTimeout> | null = null;
+      await Promise.race([
+        Promise.all([
+          backfill?.catch(() => {}),
+          this.inFlightCount() === 0
+            ? Promise.resolve()
+            : new Promise<void>((resolve) => this.drainWaiters.add(resolve)),
+        ]),
+        new Promise<void>((resolve) => {
+          timeout = setTimeout(resolve, this.options.drainTimeoutMs);
+        }),
+      ]);
+      if (timeout !== null) clearTimeout(timeout);
+      if (this.inFlightCount() > 0) {
+        for (const controller of this.activeControllers) {
+          controller.abort(
+            new Error(
+              "Account Pooler stopped before the upstream response completed.",
+            ),
+          );
+        }
+      }
     }
+    await this.options.accounts.drainMutations();
   }
 
   private planBackfill: Promise<void> | null = null;

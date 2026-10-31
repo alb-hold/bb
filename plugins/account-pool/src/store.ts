@@ -366,6 +366,10 @@ export class AccountStore {
     return path.join(this.secretsDir, `account-${id}.json`);
   }
 
+  async drainMutations(): Promise<void> {
+    await this.mutationLock;
+  }
+
   private async serialized<T>(action: () => Promise<T>): Promise<T> {
     const previous = this.mutationLock ?? Promise.resolve();
     let release = () => {};
