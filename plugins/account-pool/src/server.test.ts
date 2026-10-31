@@ -809,6 +809,7 @@ const CODEX_USAGE_STUB_URL = "https://usage.example/wham/usage";
 async function waitForSweep(assertion: () => void | Promise<void>) {
   const deadline = Date.now() + 1_000;
   for (;;) {
+    await vi.advanceTimersByTimeAsync(0);
     try {
       await assertion();
       return;
@@ -820,7 +821,7 @@ async function waitForSweep(assertion: () => void | Promise<void>) {
 }
 
 function controlSweepClock() {
-  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   const deadlines: AbortController[] = [];
   const timeout = vi.spyOn(AbortSignal, "timeout").mockImplementation((ms) => {
     const deadline = new AbortController();
@@ -833,6 +834,11 @@ function controlSweepClock() {
   });
   return {
     timeout,
+    now() {
+      const time = vi.getMockedSystemTime();
+      if (time === null) throw new Error("Sweep clock is not controlled");
+      return time.getTime();
+    },
     restore() {
       for (const deadline of deadlines) deadline.abort();
       vi.clearAllTimers();
@@ -11938,7 +11944,7 @@ describe("Account Pool credential scoping", () => {
       "threads.get",
       ({ threadId }: { threadId: string }) => {
         lookups += 1;
-        if (threadId === "thread-deferred") lookupTimes.push(performance.now());
+        if (threadId === "thread-deferred") lookupTimes.push(clock.now());
         if (hanging) return new Promise(() => undefined);
         return makeThreadResponse({ id: "thread-deferred", archivedAt: null });
       },
@@ -12102,7 +12108,12 @@ describe("Account Pool credential scoping", () => {
     await waitForSweep(async () => {
       expect(await statusOf(host, stale, "/v1/messages")).toBe(401);
     });
-    expect(await statusOf(host, live, "/v1/messages")).toBe(200);
+    let liveStatus: number | null = null;
+    const liveRequest = statusOf(host, live, "/v1/messages").then((status) => {
+      liveStatus = status;
+    });
+    await waitForSweep(() => expect(liveStatus).toBe(200));
+    await liveRequest;
   });
 
   it("exports nothing for an archived thread and suspends any token it already held until unarchive", async () => {
