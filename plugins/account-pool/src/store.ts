@@ -363,12 +363,7 @@ export class AccountStore {
       signal?.throwIfAborted();
       if (stored !== undefined && stored.checkedAt >= checkedAt) return;
       this.activePlanWrites.add(id);
-      try {
-        await this.kv.set(
-          `${PLAN_CHECKS_PREFIX}${id}:${checkedAt}`,
-          planCheckSchema.parse({ name, checkedAt }),
-        );
-        signal?.throwIfAborted();
+      const prune = async (minimum: number) => {
         const keys = (await this.kv.list(`${PLAN_CHECKS_PREFIX}${id}:`)).map(
           (key) => {
             const [, stamp] = planCheckKeySchema.parse(
@@ -378,7 +373,7 @@ export class AccountStore {
           },
         );
         signal?.throwIfAborted();
-        const newest = Math.max(checkedAt, ...keys.map(({ stamp }) => stamp));
+        const newest = Math.max(minimum, ...keys.map(({ stamp }) => stamp));
         for (const { key, stamp } of keys) {
           signal?.throwIfAborted();
           if (stamp < newest) {
@@ -386,6 +381,16 @@ export class AccountStore {
             signal?.throwIfAborted();
           }
         }
+      };
+      try {
+        await prune(stored?.checkedAt ?? 0);
+        signal?.throwIfAborted();
+        await this.kv.set(
+          `${PLAN_CHECKS_PREFIX}${id}:${checkedAt}`,
+          planCheckSchema.parse({ name, checkedAt }),
+        );
+        signal?.throwIfAborted();
+        await prune(checkedAt);
       } finally {
         this.activePlanWrites.delete(id);
       }

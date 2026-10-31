@@ -8093,6 +8093,7 @@ describe("Account Pool plugin", () => {
       let expired = false;
       let lateMutations = 0;
       let target = "";
+      let stampStarted = false;
       const { fixture, store, accounts } = await profileLifecycleFixture(
         async (_input, init) => {
           profileFetched = true;
@@ -8110,7 +8111,12 @@ describe("Account Pool plugin", () => {
           const list = kv.list.bind(kv);
           const remove = kv.delete.bind(kv);
           const delay = async (operation: typeof stage, key: string) => {
-            if (armed && operation === stage && key.startsWith(target)) {
+            if (
+              armed &&
+              operation === stage &&
+              key.startsWith(target) &&
+              (operation === "set" || stampStarted)
+            ) {
               armed = false;
               arrived.resolve();
               await held.promise;
@@ -8125,6 +8131,7 @@ describe("Account Pool plugin", () => {
           };
           kv.set = async (key, value) => {
             if (expired) lateMutations += 1;
+            if (armed && key.startsWith(target)) stampStarted = true;
             await delay("set", key);
             return set(key, value);
           };
@@ -8179,6 +8186,168 @@ describe("Account Pool plugin", () => {
       }
     },
   );
+
+  it("bounds stamps through ten consecutive timed out plan saves", async () => {
+    let held = deferred();
+    let arrived = deferred();
+    let displayHeld = deferred();
+    let armed = false;
+    let profileFetched = false;
+    let expired = false;
+    let lateMutations = 0;
+    let target = "";
+    let name = "";
+    const { fixture, store, accounts } = await profileLifecycleFixture(
+      async (_input, init) => {
+        profileFetched = true;
+        return Response.json({
+          account: {
+            uuid: new Headers(init?.headers).get("authorization")!.slice(7),
+          },
+          organization: { plan_display_name: name },
+        });
+      },
+      (host) => {
+        const kv = host.bb.storage.kv;
+        const get = kv.get.bind(kv);
+        const set = kv.set.bind(kv);
+        const remove = kv.delete.bind(kv);
+        kv.get = async <T>(key: string): Promise<T | undefined> => {
+          if (profileFetched && key === "organizations:v1") {
+            await arrived.promise;
+            await displayHeld.promise;
+          }
+          return get<T>(key);
+        };
+        kv.set = async (key, value) => {
+          if (expired) lateMutations += 1;
+          if (armed && key.startsWith(target)) {
+            armed = false;
+            arrived.resolve();
+            await held.promise;
+          }
+          return set(key, value);
+        };
+        kv.delete = async (key) => {
+          if (expired) lateMutations += 1;
+          return remove(key);
+        };
+      },
+      { now: () => Date.now() },
+    );
+    const id = accounts[0]!.id;
+    target = `plan-display-names:v2:${id}:`;
+    vi.useFakeTimers();
+    try {
+      for (let iteration = 0; iteration < 10; iteration += 1) {
+        held = deferred();
+        arrived = deferred();
+        displayHeld = deferred();
+        profileFetched = false;
+        expired = false;
+        armed = true;
+        name = `Claude Ultra ${iteration}`;
+        const refreshing = fixture.host.harness.behavior
+          .callRpc(usageFetchMethod, { resourceId: id, refresh: true })
+          .then(
+            () => null,
+            (error: unknown) => error,
+          );
+        await arrived.promise;
+        await vi.advanceTimersByTimeAsync(30_001);
+        expect(await refreshing).toEqual(
+          expect.objectContaining({
+            message: "Account usage read timed out. Try again.",
+          }),
+        );
+        expired = true;
+        held.resolve();
+        displayHeld.resolve();
+        await waitForIo(20);
+        expect(lateMutations).toBe(0);
+        expect((await store.planDisplayNames())[id]).toBe(name);
+        expect(
+          (await fixture.host.bb.storage.kv.list(target)).length,
+        ).toBeLessThanOrEqual(2);
+        await vi.advanceTimersByTimeAsync(300_001);
+      }
+    } finally {
+      expired = false;
+      held.resolve();
+      displayHeld.resolve();
+      vi.useRealTimers();
+    }
+  });
+
+  it("bounds stamps with two overlapping canceled store saves", async () => {
+    let armed = false;
+    let expired = false;
+    let lateMutations = 0;
+    let target = "";
+    const held = [deferred(), deferred()];
+    const arrived = [deferred(), deferred()];
+    const { fixture, store, accounts } = await profileLifecycleFixture(
+      async () => Response.json(null),
+      (host) => {
+        const kv = host.bb.storage.kv;
+        const set = kv.set.bind(kv);
+        const remove = kv.delete.bind(kv);
+        kv.set = async (key, value) => {
+          if (expired) lateMutations += 1;
+          if (armed && key.startsWith(target)) {
+            const index = key.endsWith(":100") ? 1 : 0;
+            arrived[index]!.resolve();
+            await held[index]!.promise;
+          }
+          return set(key, value);
+        };
+        kv.delete = async (key) => {
+          if (expired) lateMutations += 1;
+          return remove(key);
+        };
+      },
+    );
+    const id = accounts[0]!.id;
+    target = `plan-display-names:v2:${id}:`;
+    for (const checkedAt of [5, 10])
+      await fixture.host.bb.storage.kv.set(`${target}${checkedAt}`, {
+        name: "Claude Max",
+        checkedAt,
+      });
+    const second = new AccountStore(
+      fixture.host.bb.storage.kv,
+      fixture.dataDir,
+    );
+    const controller = new AbortController();
+    armed = true;
+    const saves = [
+      store.setPlanDisplayName(id, "older", controller.signal, 50),
+      second.setPlanDisplayName(id, "newest", controller.signal, 100),
+    ].map((save) =>
+      save.then(
+        () => false,
+        () => true,
+      ),
+    );
+    try {
+      await Promise.all(arrived.map(({ promise }) => promise));
+      controller.abort(new Error("RPC deadline"));
+      expired = true;
+      held[1]!.resolve();
+      expect(await saves[1]).toBe(true);
+      held[0]!.resolve();
+      expect(await saves[0]).toBe(true);
+      expect(lateMutations).toBe(0);
+      expect((await store.planDisplayNames())[id]).toBe("newest");
+      expect(
+        (await fixture.host.bb.storage.kv.list(target)).length,
+      ).toBeLessThanOrEqual(3);
+    } finally {
+      expired = false;
+      for (const item of held) item.resolve();
+      await Promise.all(saves);
+    }
+  });
 
   it("hard bounds an abort-ignoring profile request", async () => {
     const { fixture, store, accounts } = await profileLifecycleFixture(
