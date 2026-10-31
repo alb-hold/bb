@@ -438,3 +438,8 @@ export {
   type SkillScanRoot as ExperimentalSkillScanRoot,
   type IndexedSkillFile as ExperimentalIndexedSkillFile,
 } from "@bb/skill-index";
+
+export {
+  claudeProfileSchema as internal_DO_NOT_USE_claudeProfileSchema,
+  claudeProfilePlanLabel as internal_DO_NOT_USE_claudeProfilePlanLabel,
+} from "./claude-profile.js";

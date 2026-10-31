@@ -10,7 +10,7 @@ export function normalizeUsageMeasurement(
     go: "Go",
     plus: "Plus",
     pro: "Pro",
-    max: "Max",
+    max: "Claude subscription",
     team: "Team",
     business: "Business",
     enterprise: "Enterprise",
@@ -29,9 +29,11 @@ export function normalizeUsageMeasurement(
     ...measurement,
     usage: {
       ...usage,
-      planLabel: planName
-        ? `${planName}${plan?.multiplier == null ? "" : ` (${plan.multiplier}x)`}`
-        : usage.planLabel,
+      planLabel:
+        usage.planLabel ??
+        (planName
+          ? `${planName}${plan?.multiplier == null || plan.id === "max" ? "" : ` (${plan.multiplier}x)`}`
+          : null),
       windows: usage.windows.map((window) => ({
         ...window,
         label:

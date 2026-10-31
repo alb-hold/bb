@@ -26,6 +26,12 @@ describe("usage presentation labels", () => {
       usagePlanLabel({ subscriptionType: "max", rateLimitTier: "max_20x" }),
     ).toBe("Claude subscription");
     expect(
+      usagePlanLabel({
+        subscriptionType: "claude_max",
+        rateLimitTier: "max_20x",
+      }),
+    ).toBe("Claude subscription");
+    expect(
       usagePlanLabel({ subscriptionType: "pro", rateLimitTier: null }),
     ).toBe("Pro");
     expect(

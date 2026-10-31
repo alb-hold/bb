@@ -104,7 +104,9 @@ afterAll(() => {
 });
 
 beforeEach(() => {
-  state.keychain = [keychainValue(credentialsJson(KEYCHAIN_ACCESS_TOKEN, null))];
+  state.keychain = [
+    keychainValue(credentialsJson(KEYCHAIN_ACCESS_TOKEN, null)),
+  ];
   state.keychainCalls = 0;
   state.file = credentialsJson(FILE_ACCESS_TOKEN, null);
   state.fileReads = 0;
@@ -119,6 +121,46 @@ beforeEach(() => {
 });
 
 describe("Claude Code credential loading", () => {
+  it.each(["Ultra", "Claude Ultra", "Future plan", null])(
+    "uses the profile plan name %s over legacy max flags",
+    async (displayName) => {
+      state.keychain = [
+        keychainValue(
+          JSON.stringify({
+            claudeAiOauth: {
+              accessToken: KEYCHAIN_ACCESS_TOKEN,
+              subscriptionType: "claude_max",
+              rateLimitTier: "max_20x",
+            },
+          }),
+        ),
+      ];
+      const fetchMock = vi.fn(async (url: string) => ({
+        ok: true,
+        status: 200,
+        json: async () =>
+          url.endsWith("/profile")
+            ? {
+                account: { has_claude_max: true },
+                organization: { plan_display_name: displayName },
+              }
+            : { limits: [] },
+      }));
+      vi.stubGlobal("fetch", fetchMock);
+      const expected =
+        displayName?.replace(/^Claude /u, "") ?? "Claude subscription";
+      expect(await getClaudeProviderUsage()).toMatchObject({
+        usage: { status: "ok", planLabel: expected },
+      });
+      expect(await getClaudeProviderHealth()).toMatchObject({
+        health: { status: "ready", planLabel: expected },
+      });
+      expect(
+        fetchMock.mock.calls.some(([url]) => url.endsWith("/profile")),
+      ).toBe(true);
+    },
+  );
+
   it("loads a hex-encoded Keychain credential", async () => {
     const result = await getClaudeProviderUsage();
 
@@ -272,7 +314,9 @@ describe("Claude Code credential loading", () => {
 
   it("reports a lapsed access token with nothing to renew it as expired", async () => {
     state.keychain = [
-      keychainValue(credentialsJson(KEYCHAIN_ACCESS_TOKEN, Date.now() - 60_000)),
+      keychainValue(
+        credentialsJson(KEYCHAIN_ACCESS_TOKEN, Date.now() - 60_000),
+      ),
     ];
 
     const health = await getClaudeProviderHealth();
@@ -291,14 +335,22 @@ describe("Claude Code credential loading", () => {
 
     state.keychain = [
       keychainValue(
-        credentialsJson(KEYCHAIN_ACCESS_TOKEN, Date.now() + 10 * 60_000, renewal),
+        credentialsJson(
+          KEYCHAIN_ACCESS_TOKEN,
+          Date.now() + 10 * 60_000,
+          renewal,
+        ),
       ),
     ];
     await expect(isClaudeSignInRenewalDue(windowMs)).resolves.toBe(false);
 
     state.keychain = [
       keychainValue(
-        credentialsJson(KEYCHAIN_ACCESS_TOKEN, Date.now() + 3 * 60_000, renewal),
+        credentialsJson(
+          KEYCHAIN_ACCESS_TOKEN,
+          Date.now() + 3 * 60_000,
+          renewal,
+        ),
       ),
     ];
     await expect(isClaudeSignInRenewalDue(windowMs)).resolves.toBe(true);
@@ -348,3 +400,37 @@ describe("Claude Code credential loading", () => {
     });
   });
 });
+
+it.each(["unavailable", "malformed"])(
+  "keeps usage available when the profile is %s",
+  async (outcome) => {
+    state.keychain = [
+      keychainValue(
+        JSON.stringify({
+          claudeAiOauth: {
+            accessToken: KEYCHAIN_ACCESS_TOKEN,
+            subscriptionType: "max",
+            rateLimitTier: "max_20x",
+          },
+        }),
+      ),
+    ];
+    const cancel = vi.fn();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => ({
+        ok: !url.endsWith("/profile") || outcome !== "unavailable",
+        status: url.endsWith("/profile") ? 503 : 200,
+        body: { cancel },
+        json: async () => ({ limits: [] }),
+      })),
+    );
+    const result = await getClaudeProviderUsage();
+    expect(result).toMatchObject({
+      usage: { status: "ok", planLabel: "Claude subscription" },
+    });
+    expect(JSON.stringify(result)).not.toContain(KEYCHAIN_ACCESS_TOKEN);
+    expect(fetch).toHaveBeenCalledTimes(2);
+    if (outcome === "unavailable") expect(cancel).toHaveBeenCalledOnce();
+  },
+);

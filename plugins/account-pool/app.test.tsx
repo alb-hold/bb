@@ -720,6 +720,12 @@ describe("Account Pool settings", () => {
     next.resolve({ nextAccountId: GMAIL_ID, reason: "Most headroom." });
     await waitFor(() => expect(nextRow?.textContent).toContain("Next"));
     expect(slot.getByText("· most headroom")).toBeTruthy();
+    expect(nextRow?.classList.contains("flex")).toBe(false);
+    expect(
+      slot
+        .getByText("· most headroom")
+        .parentElement?.classList.contains("max-w-full"),
+    ).toBe(true);
   });
 
   it("shows Ready when the next Claude binding lookup fails", async () => {

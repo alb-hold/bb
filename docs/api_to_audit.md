@@ -4601,3 +4601,11 @@ precedence, bounded discovery failure, and module-ABI preservation after Node
 replacement. Settle the shared process-local instance lifecycle across SDK
 bundle versions and whether `bundledNpmCli` belongs on the public surface before
 removing the prefix.
+
+## Internal Claude profile parser
+
+`internal_DO_NOT_USE_claudeProfileSchema` and
+`internal_DO_NOT_USE_claudeProfilePlanLabel` in the provider bridge SDK share the
+Anthropic OAuth profile boundary between Account Pooler and Claude Code provider.
+These are internal plumbing for those two first-party plugins only. Provider
+plan display names take precedence over legacy subscription and rate-limit flags.

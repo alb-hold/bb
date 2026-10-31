@@ -50,7 +50,7 @@ it("normalizes structured plans and windows while retaining custom provider labe
     usage: {
       status: "ok",
       accountEmail: null,
-      planLabel: "max",
+      planLabel: null,
       plan: { id: "max", multiplier: 20 },
       windows: [
         {
@@ -85,12 +85,28 @@ it("normalizes structured plans and windows while retaining custom provider labe
   expect(normalizeUsageMeasurement(raw)).toMatchObject({
     accountKey: null,
     usage: {
-      planLabel: "Max (20x)",
+      planLabel: "Claude subscription",
       windows: [
         { label: "Weekly limit" },
         { label: "Weekly · Fable" },
         { label: "Monthly tokens" },
       ],
     },
+  });
+});
+
+it("preserves provider plan names over legacy structured tiers", () => {
+  const raw = usageMeasurementSchema.parse({
+    observedAt: 123,
+    usage: {
+      status: "ok",
+      accountEmail: null,
+      planLabel: "Ultra",
+      plan: { id: "max", multiplier: 20 },
+      windows: [],
+    },
+  });
+  expect(normalizeUsageMeasurement(raw).usage).toMatchObject({
+    planLabel: "Ultra",
   });
 });

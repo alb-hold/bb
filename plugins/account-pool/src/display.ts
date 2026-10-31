@@ -25,7 +25,7 @@ export function displayPlanLabel(
     return /^max$/iu.test(name) && max ? `Max (${max[1]}x)` : name;
   }
   const plan = account.subscriptionType;
-  if (plan?.toLowerCase() === "max") return "Claude subscription";
+  if (/^(?:claude_)?max$/iu.test(plan ?? "")) return "Claude subscription";
   return plan ? plan.charAt(0).toUpperCase() + plan.slice(1) : null;
 }
 

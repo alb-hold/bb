@@ -308,7 +308,7 @@ function StateWord({ state }: { state: SubscriptionState }) {
   return (
     <span
       className={cn(
-        "inline-flex min-w-0 items-center gap-1.5 text-xs",
+        "inline-flex min-w-0 max-w-full items-center gap-1.5 text-xs",
         state.tone,
       )}
     >
@@ -442,7 +442,7 @@ function SubscriptionRow({
       style={{ transform: CSS.Translate.toString(transform), transition }}
       className={cn(
         LEDGER_ROW_CLASS,
-        "@container/account-row flex items-center gap-3 text-sm",
+        "@container/account-row",
         isDragging && "relative z-10 rounded-md bg-card opacity-90 shadow-lift",
       )}
     >
