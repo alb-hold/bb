@@ -35,7 +35,7 @@ it.skipIf(process.platform !== "linux")(
     vi.mocked(readFile).mockImplementation(async (file) => {
       const name = String(file);
       if (name.endsWith("/status"))
-        return `State:\tS (sleeping)\nUid:\t${name.includes("/106/") ? uid + 1 : uid}\t${uid + 1}\t${uid + 1}\t${uid + 1}\n`;
+        return `Name:\tworker\nState:\tS (sleeping)\nUid:\t${name.includes("/106/") ? uid + 1 : uid}\t${uid + 1}\t${uid + 1}\t${uid + 1}\n`;
       const mapped = name.includes("/102/")
         ? "/workspace/lib.so (deleted)"
         : name.includes("/107/")
@@ -56,6 +56,12 @@ it.skipIf(process.platform !== "linux")(
       supported: true,
       pids: [101, 102, 105, 107],
       unreadablePids: [],
+      processCommands: {
+        "101": "worker",
+        "102": "worker",
+        "105": "worker",
+        "107": "worker",
+      },
     });
   },
 );
@@ -139,17 +145,27 @@ describe("darwin workspace process inspection", () => {
   it.each([
     {
       name: "cwd inside workspace",
-      lsof: "p501\nn/ws/project\n",
+      lsof: "p501\nccwd-holder\nfcwd\ntDIR\nn/ws/project\n",
       workspace: "/ws/project",
       paths: { "/ws/project": "/ws/project" },
-      expected: { supported: true, pids: [501], unreadablePids: [] },
+      expected: {
+        supported: true,
+        pids: [501],
+        unreadablePids: [],
+        processCommands: { "501": "cwd-holder" },
+      },
     },
     {
       name: "open file inside workspace",
-      lsof: "p502\nn/ws/project/data.txt\n",
+      lsof: "p502\ncfile-holder\nf3\ntREG\nn/ws/project/data.txt\n",
       workspace: "/ws/project",
       paths: { "/ws/project/data.txt": "/ws/project/data.txt" },
-      expected: { supported: true, pids: [502], unreadablePids: [] },
+      expected: {
+        supported: true,
+        pids: [502],
+        unreadablePids: [],
+        processCommands: { "502": "file-holder" },
+      },
     },
     {
       name: "outside workspace",

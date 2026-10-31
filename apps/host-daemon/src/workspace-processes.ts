@@ -567,8 +567,8 @@ async function inspectLinuxWorkspaceProcesses(
       unreadablePids.push(pid);
     }
   }
-  const unreadableCommands = Object.fromEntries(
-    unreadablePids.flatMap((pid) =>
+  const blockingCommands = Object.fromEntries(
+    [...pids, ...unreadablePids].flatMap((pid) =>
       processCommands[pid] ? [[pid, processCommands[pid]!]] : [],
     ),
   );
@@ -576,8 +576,8 @@ async function inspectLinuxWorkspaceProcesses(
     supported: true,
     pids,
     unreadablePids,
-    ...(Object.keys(unreadableCommands).length > 0
-      ? { processCommands: unreadableCommands }
+    ...(Object.keys(blockingCommands).length > 0
+      ? { processCommands: blockingCommands }
       : {}),
   };
 }
@@ -655,8 +655,8 @@ async function inspectDarwinWorkspaceProcesses(
       if (matched) pids.add(pid);
     }),
   );
-  const unreadableCommands = Object.fromEntries(
-    [...unreadablePids].flatMap((pid) =>
+  const blockingCommands = Object.fromEntries(
+    [...pids, ...unreadablePids].flatMap((pid) =>
       parsed.processCommands[pid] ? [[pid, parsed.processCommands[pid]!]] : [],
     ),
   );
@@ -664,8 +664,8 @@ async function inspectDarwinWorkspaceProcesses(
     supported: true,
     pids: [...pids].sort((left, right) => left - right),
     unreadablePids: [...unreadablePids].sort((left, right) => left - right),
-    ...(Object.keys(unreadableCommands).length > 0
-      ? { processCommands: unreadableCommands }
+    ...(Object.keys(blockingCommands).length > 0
+      ? { processCommands: blockingCommands }
       : {}),
   };
 }
