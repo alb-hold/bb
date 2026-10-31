@@ -252,14 +252,28 @@ export class AccountPoolHub {
     );
     this.activeAccounts = this.options.affinity.loadActiveAccounts();
     this.pacingByAccount.clear();
-    this.stopped = new AbortController();
+    this.stopped.abort();
+    const lifecycle = new AbortController();
+    this.stopped = lifecycle;
+    this.planBackfill = null;
+    const stop = () => lifecycle.abort(signal.reason);
+    signal.addEventListener("abort", stop, { once: true });
+    if (signal.aborted) stop();
     this.accepting = true;
     void this.backfillPlanNames();
-    while (!signal.aborted) {
-      await this.refreshUsage();
-      await waitForDelay(DEFAULT_USAGE_REFRESH_INTERVAL_MS, signal);
+    try {
+      while (!lifecycle.signal.aborted) {
+        await abortable(this.refreshUsage(), lifecycle.signal).catch(
+          (error: unknown) => {
+            if (!lifecycle.signal.aborted) throw error;
+          },
+        );
+        await waitForDelay(DEFAULT_USAGE_REFRESH_INTERVAL_MS, lifecycle.signal);
+      }
+    } finally {
+      signal.removeEventListener("abort", stop);
+      if (this.stopped === lifecycle) await this.stop();
     }
-    await this.stop();
   }
 
   async authenticateProvider(
@@ -701,6 +715,7 @@ export class AccountPoolHub {
       recoverError && this.options.quotas.get(account.id).error !== null;
     const refresh = adapter
       .refreshUsage({
+        signal: this.stopped.signal,
         account,
         freshSecret: () =>
           this.freshSecret(account, adapter, { kind: "normal" }, recover).catch(
@@ -727,10 +742,16 @@ export class AccountPoolHub {
   async stop(): Promise<void> {
     this.accepting = false;
     this.stopped.abort(new Error("Account Pooler stopped accepting requests."));
-    if (this.inFlightCount() === 0) return;
+    const backfill = this.planBackfill;
+    if (this.inFlightCount() === 0 && backfill === null) return;
     let timeout: ReturnType<typeof setTimeout> | null = null;
     await Promise.race([
-      new Promise<void>((resolve) => this.drainWaiters.add(resolve)),
+      Promise.all([
+        backfill?.catch(() => {}),
+        this.inFlightCount() === 0
+          ? Promise.resolve()
+          : new Promise<void>((resolve) => this.drainWaiters.add(resolve)),
+      ]),
       new Promise<void>((resolve) => {
         timeout = setTimeout(resolve, this.options.drainTimeoutMs);
       }),
@@ -749,21 +770,23 @@ export class AccountPoolHub {
   private planBackfill: Promise<void> | null = null;
 
   backfillPlanNames(): Promise<void> {
+    if (this.stopped.signal.aborted) return Promise.resolve();
     if (this.planBackfill !== null) return this.planBackfill;
-    const pass = this.fillPlanNames().finally(() => {
+    const pass = this.fillPlanNames(this.stopped.signal).finally(() => {
       if (this.planBackfill === pass) this.planBackfill = null;
     });
     this.planBackfill = pass;
     return pass;
   }
 
-  private async fillPlanNames(): Promise<void> {
+  private async fillPlanNames(signal: AbortSignal): Promise<void> {
     const plans = await this.options.accounts.planDisplayNames();
     const accounts = (await this.options.accounts.list()).sort(
       (left, right) =>
         left.priority - right.priority || left.id.localeCompare(right.id),
     );
     for (const account of accounts) {
+      if (signal.aborted) return;
       if (
         account.provider !== "claude" ||
         account.kind !== "oauth" ||
@@ -774,8 +797,9 @@ export class AccountPoolHub {
       await adapter
         .refreshProfile?.({
           account,
-          freshSecret: () =>
-            this.freshSecret(account, adapter, { kind: "normal" }),
+          signal,
+          background: true,
+          freshSecret: () => this.options.accounts.readSecret(account.id),
           accounts: this.options.accounts,
           quotas: this.options.quotas,
           fetch: this.options.fetch,

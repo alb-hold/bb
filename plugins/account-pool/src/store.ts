@@ -140,10 +140,19 @@ export class AccountStore {
     );
   }
 
-  async setOrganization(id: string, organizationUuid: string): Promise<void> {
+  async setOrganization(
+    id: string,
+    organizationUuid: string,
+    signal?: AbortSignal,
+  ): Promise<void> {
     return this.serialized(async () => {
       const organizations = await this.organizations();
-      if (organizations.get(id) === organizationUuid) return;
+      if (
+        (await this.get(id)) === null ||
+        signal?.aborted ||
+        organizations.get(id) === organizationUuid
+      )
+        return;
       organizations.set(id, organizationUuid);
       await this.kv.set(ORGANIZATIONS_KEY, Object.fromEntries(organizations));
     });
@@ -195,10 +204,15 @@ export class AccountStore {
     return planNamesSchema.parse((await this.kv.get(PLAN_NAMES_KEY)) ?? {});
   }
 
-  async setPlanDisplayName(id: string, name: string | null): Promise<void> {
+  async setPlanDisplayName(
+    id: string,
+    name: string | null,
+    signal?: AbortSignal,
+  ): Promise<void> {
     await this.serialized(async () => {
       if ((await this.get(id)) === null) return;
       const names = await this.planDisplayNames();
+      if (signal?.aborted) return;
       if (name === null) delete names[id];
       else names[id] = name;
       await this.kv.set(PLAN_NAMES_KEY, planNamesSchema.parse(names));
@@ -216,8 +230,9 @@ export class AccountStore {
   async setPlan(
     id: string,
     plan: { subscriptionType: string | null; rateLimitTier: string | null },
+    signal?: AbortSignal,
   ): Promise<Account | null> {
-    return this.update(id, (account) => ({ ...account, ...plan }));
+    return this.update(id, (account) => ({ ...account, ...plan }), signal);
   }
 
   async reorder(provider: PoolProvider, accountIds: string[]): Promise<void> {
@@ -278,8 +293,9 @@ export class AccountStore {
   async setAccountUuid(
     id: string,
     accountUuid: string,
+    signal?: AbortSignal,
   ): Promise<Account | null> {
-    return this.update(id, (account) => ({ ...account, accountUuid }));
+    return this.update(id, (account) => ({ ...account, accountUuid }), signal);
   }
 
   async replaceCredentials(
@@ -313,12 +329,14 @@ export class AccountStore {
   private async update(
     id: string,
     change: (account: Account) => Account,
+    signal?: AbortSignal,
   ): Promise<Account | null> {
     return this.serialized(async () => {
       const accounts = await this.list();
       const index = accounts.findIndex((account) => account.id === id);
       const current = accounts[index];
       if (index < 0 || current === undefined) return null;
+      if (signal?.aborted) return null;
       const updated = accountSchema.parse(change(current));
       accounts[index] = updated;
       await this.kv.set(ACCOUNTS_KEY, accounts);

@@ -51,6 +51,7 @@ import {
   QuotaStore,
 } from "./store.js";
 import { createHostProxy } from "./host-proxy.js";
+import { createClaudeAdapter } from "./claude-adapter.js";
 import {
   createAccountPoolPlugin,
   helloResponse,
@@ -7098,6 +7099,218 @@ describe("Account Pool plugin", () => {
       usage: { planLabel: "Claude subscription" },
     });
   });
+
+  async function profileLifecycleFixture(upstreamFetch: typeof fetch) {
+    const fixture = await createFixture({
+      upstreamUrl: "https://upstream.example",
+      options: {
+        drainTimeoutMs: 20,
+        oauthProfileUrl: "https://upstream.example/profile",
+        usageUrl: "data:application/json,{}",
+        fetch: (input, init) =>
+          String(input).includes("/profile")
+            ? upstreamFetch(input, init)
+            : Promise.resolve(
+                Response.json({ seven_day: { utilization: 13 } }),
+              ),
+      },
+    });
+    const store = new AccountStore(
+      fixture.host.bb.storage.kv,
+      path.join(
+        fixture.host.bb.server.experimental_dataDir,
+        "plugins",
+        "account-pool",
+        "secrets",
+        "accounts",
+      ),
+    );
+    await fixture.host.harness.behavior.callRpc("account.remove", {
+      id: fixture.account.id,
+    });
+    const accounts = [];
+    for (let priority = 0; priority < 4; priority += 1) {
+      const uuid = `${priority + 1}1111111-1111-4111-8111-111111111111`;
+      accounts.push(
+        await store.add(
+          {
+            provider: "claude",
+            kind: "oauth",
+            label: uuid,
+            email: null,
+            accountUuid: uuid,
+            subscriptionType: "max",
+            rateLimitTier: "max_20x",
+            enabled: true,
+            priority,
+          },
+          {
+            kind: "oauth",
+            accessToken: uuid,
+            refreshToken: "test-refresh",
+            expiresAt: Date.now() + 3600000,
+          },
+        ),
+      );
+    }
+    return {
+      fixture,
+      store,
+      accounts,
+      display: () => fixture.host.harness.behavior.callRpc("display.get", null),
+    };
+  }
+
+  it.each([false, true])(
+    "stops a held profile pass without late writes across restart %s",
+    async (restart) => {
+      const held = deferred();
+      const arrived = deferred();
+      let active = 0;
+      let maximum = 0;
+      let calls = 0;
+      const observed: { signal: AbortSignal | null } = { signal: null };
+      const { fixture, store, accounts, display } =
+        await profileLifecycleFixture(async (_input, init) => {
+          calls += 1;
+          active += 1;
+          maximum = Math.max(maximum, active);
+          const first = calls === 1;
+          if (first) {
+            observed.signal = init?.signal ?? null;
+            arrived.resolve();
+            await held.promise;
+          }
+          active -= 1;
+          return Response.json({
+            account: {
+              uuid: new Headers(init?.headers).get("authorization")!.slice(7),
+            },
+            organization: { plan_display_name: first ? "Old Ultra" : "Ultra" },
+          });
+        });
+      let next: Fixture["service"] | null = null;
+      try {
+        await display();
+        await arrived.promise;
+        fixture.service.controller.abort();
+        await fixture.service.done;
+        expect(observed.signal?.aborted).toBe(true);
+        if (restart) next = fixture.host.harness.behavior.runService("hub");
+        await waitForIo(30);
+        expect(active).toBe(1);
+      } finally {
+        held.resolve();
+        if (next !== null) {
+          try {
+            await vi.waitFor(async () =>
+              expect(Object.values(await store.planDisplayNames())).toEqual([
+                "Ultra",
+                "Ultra",
+                "Ultra",
+                "Ultra",
+              ]),
+            );
+          } finally {
+            next.controller.abort();
+            await next.done;
+          }
+        } else await waitForIo(30);
+      }
+      expect(maximum).toBe(1);
+      expect(Object.values(await store.planDisplayNames())).not.toContain(
+        "Old Ultra",
+      );
+      if (!restart) {
+        expect(calls).toBe(1);
+        expect(await store.planDisplayNames()).toEqual({});
+      }
+      expect(accounts).toHaveLength(4);
+    },
+  );
+
+  it("stops and clears the profile failure jitter timer", async () => {
+    let calls = 0;
+    const arrived = deferred();
+    const held = deferred();
+    const { fixture, display } = await profileLifecycleFixture(async () => {
+      calls += 1;
+      arrived.resolve();
+      await held.promise;
+      return Response.json({}, { status: 503 });
+    });
+    const random = vi.spyOn(Math, "random").mockReturnValue(0.5);
+    await display();
+    await arrived.promise;
+    vi.useFakeTimers();
+    try {
+      held.resolve();
+      await waitForIo(30);
+      expect(calls).toBe(1);
+      expect(vi.getTimerCount()).toBeGreaterThan(0);
+      fixture.service.controller.abort();
+      await vi.advanceTimersByTimeAsync(20);
+      await fixture.service.done;
+      expect(vi.getTimerCount()).toBe(0);
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(calls).toBe(1);
+    } finally {
+      vi.useRealTimers();
+      random.mockRestore();
+    }
+  });
+
+  it("prioritizes a normal profile refresh over three queued backfills", async () => {
+    const held = deferred();
+    const arrived = deferred();
+    const calls: string[] = [];
+    const upstreamFetch: typeof fetch = async (_input, init) => {
+      calls.push(new Headers(init?.headers).get("authorization")!.slice(7));
+      if (calls.length === 1) {
+        arrived.resolve();
+        await held.promise;
+      }
+      return Response.json({}, { status: 503 });
+    };
+    const { fixture, store, accounts } =
+      await profileLifecycleFixture(upstreamFetch);
+    const adapter = createClaudeAdapter({
+      usageUrl: "https://upstream.example/usage",
+      profileUrl: "https://upstream.example/profile",
+      refreshUrl: "https://upstream.example/token",
+    });
+    const pending = accounts.slice(0, 3).map((account) =>
+      adapter.refreshProfile!({
+        account,
+        accounts: store,
+        quotas: new QuotaStore(fixture.host.bb.storage.database()),
+        freshSecret: () => store.readSecret(account.id),
+        fetch: upstreamFetch,
+        now: Date.now,
+        background: true,
+      }),
+    );
+    await arrived.promise;
+    pending.push(
+      adapter.refreshProfile!({
+        account: accounts[3]!,
+        accounts: store,
+        quotas: new QuotaStore(fixture.host.bb.storage.database()),
+        freshSecret: () => store.readSecret(accounts[3]!.id),
+        fetch: upstreamFetch,
+        now: Date.now,
+      }),
+    );
+    held.resolve();
+    try {
+      await vi.waitFor(() => expect(calls.length).toBeGreaterThanOrEqual(2), {
+        timeout: 5000,
+      });
+      expect(calls[1]).toBe(accounts[3]!.accountUuid);
+    } finally {
+      await Promise.all(pending);
+    }
+  }, 20000);
 
   it("serializes four unnamed accounts through an outage and recovery", async () => {
     let now = Date.now();

@@ -48,6 +48,60 @@ const refreshResponseSchema = z
   })
   .passthrough();
 
+interface ProfileJob {
+  context: AdapterUsageContext;
+  run: () => Promise<void>;
+  resolve: () => void;
+  reject: (error: unknown) => void;
+}
+
+const profileJobs: ProfileJob[] = [];
+let profileRunning = false;
+
+async function drainProfiles(): Promise<void> {
+  if (profileRunning) return;
+  profileRunning = true;
+  try {
+    while (profileJobs.length > 0) {
+      const foreground = profileJobs.findIndex(
+        (job) => !job.context.background,
+      );
+      const job = profileJobs.splice(foreground < 0 ? 0 : foreground, 1)[0]!;
+      try {
+        if (!job.context.signal?.aborted) await job.run();
+        job.resolve();
+      } catch (error) {
+        job.reject(error);
+      }
+    }
+  } finally {
+    profileRunning = false;
+  }
+}
+
+function scheduleProfile(
+  context: AdapterUsageContext,
+  run: () => Promise<void>,
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    profileJobs.push({ context, run, resolve, reject });
+    void drainProfiles();
+  });
+}
+
+function profileJitter(signal: AbortSignal | undefined): Promise<void> {
+  if (signal?.aborted) return Promise.resolve();
+  return new Promise((resolve) => {
+    const finish = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", finish);
+      resolve();
+    };
+    const timer = setTimeout(finish, Math.floor(Math.random() * 2_001));
+    signal?.addEventListener("abort", finish, { once: true });
+  });
+}
+
 export function createClaudeAdapter(options: {
   refreshUrl: string;
   usageUrl: string;
@@ -55,92 +109,116 @@ export function createClaudeAdapter(options: {
   importCredentials?: () => Promise<ImportedClaudeCredentials>;
 }): ProviderAdapter {
   const profileCheckedAt = new Map<string, number>();
-  const profileInFlight = new Set<string>();
+  const profileInFlight = new Map<string, AdapterUsageContext>();
   const profileRetryAt = new Map<string, number>();
-  let profileQueue = Promise.resolve();
   async function refreshProfile(context: AdapterUsageContext): Promise<void> {
     const id = context.account.id;
+    if (profileInFlight.get(id)?.signal?.aborted) profileRetryAt.delete(id);
     if (
       context.account.kind !== "oauth" ||
-      profileInFlight.has(id) ||
+      context.signal?.aborted ||
+      (profileInFlight.has(id) && !profileInFlight.get(id)?.signal?.aborted) ||
       context.now() < (profileRetryAt.get(id) ?? 0)
     )
       return;
-    profileInFlight.add(id);
+    profileInFlight.set(id, context);
     profileRetryAt.set(id, context.now() + 5 * 60 * 1_000);
-    const previous = profileQueue;
-    let release = () => {};
-    profileQueue = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    await previous;
     let failed = true;
     try {
-      const secret = await context.freshSecret();
-      if (secret.kind !== "oauth") return;
-      const account = context.account;
-      const checkedAt = profileCheckedAt.get(account.id);
-      if (
-        account.accountUuid !== null &&
-        (await context.accounts.planDisplayNames())[account.id] !== undefined &&
-        checkedAt !== undefined &&
-        context.now() - checkedAt < PROFILE_REFRESH_INTERVAL_MS
-      ) {
-        failed = false;
-        return;
-      }
-      const profile = await context
-        .fetch(options.profileUrl, {
-          headers: {
-            authorization: `Bearer ${secret.accessToken}`,
-            "anthropic-beta": OAUTH_BETA,
-            accept: "application/json",
-          },
-          signal: AbortSignal.timeout(USAGE_REQUEST_TIMEOUT_MS),
-        })
-        .catch(() => null);
-      if (profile === null) return;
-      if (!profile.ok) {
-        await profile.body?.cancel();
-        return;
-      }
-      const parsed = claudeProfileSchema.safeParse(
-        await profile.json().catch(() => null),
-      );
-      if (!parsed.success) return;
-      const accountUuid = parsed.data.account.uuid ?? null;
-      if (account.accountUuid === null) {
-        if (accountUuid === null) return;
-        await context.accounts.setAccountUuid(account.id, accountUuid);
-      } else if (accountUuid !== account.accountUuid) {
-        return;
-      }
-      const organizationUuid = parsed.data.organization?.uuid ?? null;
-      if (organizationUuid !== null)
-        await context.accounts.setOrganization(account.id, organizationUuid);
-      await context.accounts.setPlanDisplayName(
-        account.id,
-        parsed.data.organization?.plan_display_name ?? null,
-      );
-      const reported = claudePlanFromProfile(parsed.data);
-      const plan = {
-        subscriptionType: reported.subscriptionType ?? account.subscriptionType,
-        rateLimitTier: reported.rateLimitTier ?? account.rateLimitTier,
-      };
-      if (
-        plan.subscriptionType !== account.subscriptionType ||
-        plan.rateLimitTier !== account.rateLimitTier
-      )
-        await context.accounts.setPlan(account.id, plan);
-      profileCheckedAt.set(account.id, context.now());
-      failed = parsed.data.organization?.plan_display_name == null;
+      await scheduleProfile(context, async () => {
+        if (context.signal?.aborted) return;
+        const secret = await context.freshSecret();
+        if (secret.kind !== "oauth" || context.signal?.aborted) return;
+        const account = context.account;
+        const checkedAt = profileCheckedAt.get(account.id);
+        if (
+          account.accountUuid !== null &&
+          (await context.accounts.planDisplayNames())[account.id] !==
+            undefined &&
+          checkedAt !== undefined &&
+          context.now() - checkedAt < PROFILE_REFRESH_INTERVAL_MS
+        ) {
+          failed = false;
+          return;
+        }
+        if (context.signal?.aborted) return;
+        const profile = await context
+          .fetch(options.profileUrl, {
+            headers: {
+              authorization: `Bearer ${secret.accessToken}`,
+              "anthropic-beta": OAUTH_BETA,
+              accept: "application/json",
+            },
+            signal:
+              context.signal === undefined
+                ? AbortSignal.timeout(USAGE_REQUEST_TIMEOUT_MS)
+                : AbortSignal.any([
+                    context.signal,
+                    AbortSignal.timeout(USAGE_REQUEST_TIMEOUT_MS),
+                  ]),
+          })
+          .catch(() => null);
+        if (profile === null) return;
+        if (context.signal?.aborted) {
+          await profile.body?.cancel();
+          return;
+        }
+        if (!profile.ok) {
+          await profile.body?.cancel();
+          return;
+        }
+        const parsed = claudeProfileSchema.safeParse(
+          await profile.json().catch(() => null),
+        );
+        if (!parsed.success || context.signal?.aborted) return;
+        const accountUuid = parsed.data.account.uuid ?? null;
+        if (account.accountUuid === null) {
+          if (accountUuid === null) return;
+          await context.accounts.setAccountUuid(
+            account.id,
+            accountUuid,
+            context.signal,
+          );
+        } else if (accountUuid !== account.accountUuid) {
+          return;
+        }
+        const organizationUuid = parsed.data.organization?.uuid ?? null;
+        if (organizationUuid !== null)
+          await context.accounts.setOrganization(
+            account.id,
+            organizationUuid,
+            context.signal,
+          );
+        await context.accounts.setPlanDisplayName(
+          account.id,
+          parsed.data.organization?.plan_display_name ?? null,
+          context.signal,
+        );
+        const reported = claudePlanFromProfile(parsed.data);
+        const plan = {
+          subscriptionType:
+            reported.subscriptionType ?? account.subscriptionType,
+          rateLimitTier: reported.rateLimitTier ?? account.rateLimitTier,
+        };
+        if (
+          plan.subscriptionType !== account.subscriptionType ||
+          plan.rateLimitTier !== account.rateLimitTier
+        )
+          await context.accounts.setPlan(account.id, plan, context.signal);
+        if (context.signal?.aborted) return;
+        profileCheckedAt.set(account.id, context.now());
+        failed = parsed.data.organization?.plan_display_name == null;
+      });
     } finally {
-      profileRetryAt.set(id, context.now() + 5 * 60 * 1_000);
-      profileInFlight.delete(id);
-      if (failed) setTimeout(release, Math.floor(Math.random() * 2_001));
-      else release();
+      if (profileInFlight.get(id) === context) {
+        if (context.signal?.aborted) profileRetryAt.delete(id);
+        else profileRetryAt.set(id, context.now() + 5 * 60 * 1_000);
+        profileInFlight.delete(id);
+      }
+      if (failed && context.background) await profileJitter(context.signal);
     }
   }
+
   return {
     provider: "claude",
     refreshProfile,

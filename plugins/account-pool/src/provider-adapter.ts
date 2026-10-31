@@ -68,6 +68,8 @@ export interface AdapterSecretContext {
 }
 
 export interface AdapterUsageContext {
+  signal?: AbortSignal;
+  background?: boolean;
   account: Account;
   freshSecret: () => Promise<AccountSecret>;
   accounts: AccountStore;
