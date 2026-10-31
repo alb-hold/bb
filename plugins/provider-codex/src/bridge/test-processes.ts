@@ -13,6 +13,27 @@ function hasLiveGroupMembers(pid: number): boolean {
     });
 }
 
+export function killTestProcessGroup(
+  child: ChildProcess,
+  signal: NodeJS.Signals | number = "SIGTERM",
+): boolean {
+  const pid = child.pid;
+  if (pid === undefined) return false;
+  if (process.platform === "win32") return child.kill(signal);
+  if (child.exitCode !== null || child.signalCode !== null) return false;
+  try {
+    return process.kill(-pid, signal);
+  } catch (error) {
+    if (
+      !(error instanceof Error) ||
+      !("code" in error) ||
+      error.code !== "ESRCH"
+    )
+      throw error;
+    return false;
+  }
+}
+
 export function trackTestProcess(child: ChildProcess): () => Promise<void> {
   const closed = new Promise<void>((resolve) => {
     child.once("close", () => resolve());
@@ -25,17 +46,8 @@ export function trackTestProcess(child: ChildProcess): () => Promise<void> {
       if (child.exitCode === null && child.signalCode === null) {
         execFileSync("taskkill", ["/pid", String(pid), "/T", "/F"]);
       }
-    } else if (hasLiveGroupMembers(pid)) {
-      try {
-        process.kill(-pid, "SIGKILL");
-      } catch (error) {
-        if (
-          !(error instanceof Error) ||
-          !("code" in error) ||
-          error.code !== "ESRCH"
-        )
-          throw error;
-      }
+    } else {
+      killTestProcessGroup(child, "SIGKILL");
     }
     await closed;
     if (process.platform === "win32") return;

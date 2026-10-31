@@ -22,7 +22,7 @@ import {
   type BuildSessionOptionsArgs,
 } from "./session-options.js";
 
-import { trackTestProcess } from "./test-processes.js";
+import { killTestProcessGroup, trackTestProcess } from "./test-processes.js";
 
 vi.mock("@anthropic-ai/claude-agent-sdk", async (importOriginal) => {
   const original =
@@ -42,6 +42,9 @@ vi.mock("@anthropic-ai/claude-agent-sdk", async (importOriginal) => {
               detached: process.platform !== "win32",
               stdio: ["pipe", "pipe", "pipe"],
             });
+            if (process.platform !== "win32") {
+              child.kill = (signal) => killTestProcessGroup(child, signal);
+            }
             cleanups.push(trackTestProcess(child));
             return child;
           },
