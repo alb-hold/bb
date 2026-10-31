@@ -190,7 +190,7 @@ describe("unanswered native questions across holder reattachment", () => {
             const nextCredential = args.extraContributedEnv?.find(
               (entry) => entry.name === NATIVE_TOOL_CREDENTIAL_ENV,
             )?.value;
-            if (nextCredential === undefined)
+            if (typeof nextCredential !== "string")
               throw new Error("missing credential");
             credential = nextCredential;
             return createTerminalSession(db, {
