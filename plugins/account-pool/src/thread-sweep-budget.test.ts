@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import { createHash } from "node:crypto";
 import path from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, expect, it, vi } from "vitest";
@@ -316,4 +317,150 @@ it("rechecks failed archive persistence before advancing a rotation after restar
   const again = new ThreadTokenStore(directory, hosts);
   await again.initialize(["host-one"]);
   expect(await again.authenticate(tokens.get("thr_0048") ?? "")).toBeNull();
+});
+
+it("retries an early failed lookup first after a later cutoff and restart, then persists its revocation", async () => {
+  const { directory, hosts, store, tokens } = await fixture(96);
+  const budget = new AbortController();
+  let calls = 0;
+  await store.sweepThreads(
+    async (id) => {
+      if (++calls > 64) {
+        budget.abort();
+        return new Promise(() => undefined);
+      }
+      if (id === "thr_0016") throw new Error("lookup unavailable");
+      return "live";
+    },
+    { signal: budget.signal },
+  );
+  const restarted = new ThreadTokenStore(directory, hosts);
+  await restarted.initialize(["host-one"]);
+  const checked: string[] = [];
+  await restarted.sweepThreads(async (id) => {
+    checked.push(id);
+    return id === "thr_0016" ? "archived" : "live";
+  });
+  expect(checked[0]).toBe("thr_0016");
+  const again = new ThreadTokenStore(directory, hosts);
+  await again.initialize(["host-one"]);
+  expect(await again.authenticate(tokens.get("thr_0016") ?? "")).toBeNull();
+});
+
+it("completes rotations and revokes threads below and above a permanent state failure without starving new lower IDs", async () => {
+  const { directory, hosts, store, tokens } = await fixture(192);
+  const failedId = "thr_0048";
+  const hash = createHash("sha256").update(failedId).digest("hex");
+  const rename = fs.rename.bind(fs);
+  vi.spyOn(fs, "rename").mockImplementation(async (source, target) => {
+    const name = path.basename(String(target));
+    if (
+      name.includes(hash) &&
+      (name.startsWith("archived-thread-") ||
+        name.startsWith("archive-revocation-"))
+    )
+      throw Object.assign(new Error("archive unavailable"), { code: "EROFS" });
+    return rename(source, target);
+  });
+  for (let sweep = 0; sweep < 8; sweep += 1) {
+    const budget = new AbortController();
+    let calls = 0;
+    let failedCalls = 0;
+    await store.sweepThreads(
+      async (id) => {
+        if (++calls > 64) {
+          budget.abort();
+          return new Promise(() => undefined);
+        }
+        if (id === failedId) failedCalls += 1;
+        return "archived";
+      },
+      { signal: budget.signal },
+    );
+    expect(failedCalls).toBe(1);
+    if (sweep === 0)
+      tokens.set(
+        "thr_0000_new",
+        await store.forThread(
+          {
+            hostId: "host-one",
+            threadId: "thr_0000_new",
+            provider: "claude",
+            accountId: null,
+          },
+          await hosts.forHost("host-one"),
+        ),
+      );
+  }
+  for (const [id, token] of tokens)
+    if (id !== failedId) expect(await store.authenticate(token)).toBeNull();
+  expect(
+    JSON.parse(
+      await fs.readFile(path.join(directory, "thread-sweep.json"), "utf8"),
+    ),
+  ).toMatchObject({ rotation: null, retries: [{ threadId: failedId }] });
+});
+
+it("retains persisted retry IDs across restart while progress writes fail", async () => {
+  const { directory, hosts, store, tokens } = await fixture(96);
+  const partial = async (target: ThreadTokenStore) => {
+    const budget = new AbortController();
+    let calls = 0;
+    await target.sweepThreads(
+      async (id) => {
+        if (++calls > 64) {
+          budget.abort();
+          return new Promise(() => undefined);
+        }
+        if (id === "thr_0016") throw new Error("lookup unavailable");
+        return "live";
+      },
+      { signal: budget.signal },
+    );
+  };
+  await partial(store);
+  const rename = fs.rename.bind(fs);
+  vi.spyOn(fs, "rename").mockImplementation(async (source, target) => {
+    if (path.basename(String(target)) === "thread-sweep.json")
+      throw new Error("progress unavailable");
+    return rename(source, target);
+  });
+  await partial(store);
+  vi.restoreAllMocks();
+  const restarted = new ThreadTokenStore(directory, hosts);
+  await restarted.initialize(["host-one"]);
+  const checked: string[] = [];
+  await restarted.sweepThreads(async (id) => {
+    checked.push(id);
+    return id === "thr_0016" ? "archived" : "live";
+  });
+  expect(checked[0]).toBe("thr_0016");
+  expect(await restarted.authenticate(tokens.get("thr_0016") ?? "")).toBeNull();
+});
+
+it("bounds retry work to eight IDs per sweep and rotates failed IDs fairly across restarts", async () => {
+  const { directory, hosts, store } = await fixture(96);
+  await store.sweepThreads(async (id) => {
+    if (id < "thr_0016") throw new Error("lookup unavailable");
+    return "live";
+  });
+  const retried = new Set<string>();
+  for (let sweep = 0; sweep < 2; sweep += 1) {
+    const restarted = new ThreadTokenStore(directory, hosts);
+    await restarted.initialize(["host-one"]);
+    const failures: string[] = [];
+    const live = new Set<string>();
+    await restarted.sweepThreads(async (id) => {
+      if (id < "thr_0016") {
+        failures.push(id);
+        retried.add(id);
+        throw new Error("lookup unavailable");
+      }
+      live.add(id);
+      return "live";
+    });
+    expect(failures).toHaveLength(8);
+    expect(live.size).toBe(80);
+  }
+  expect(retried.size).toBe(16);
 });
