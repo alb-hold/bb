@@ -134,7 +134,7 @@ export const ExecutionControls = memo(function ExecutionControls({
     handoff !== undefined;
 
   return (
-    <>
+    <div className="flex min-w-0 max-w-full flex-wrap items-center gap-1">
       {showModelPicker ? (
         <ModelReasoningPicker
           providerOptions={provider.options ?? []}
@@ -164,6 +164,7 @@ export const ExecutionControls = memo(function ExecutionControls({
           agentSections={agentOptions?.sections}
           onAgentOptionChange={agentOptions?.onChange}
           muted
+          className="overflow-hidden"
           disabled={disabled}
           handoff={handoff}
         />
@@ -199,6 +200,6 @@ export const ExecutionControls = memo(function ExecutionControls({
           ))}
         </ToggleGroup>
       )}
-    </>
+    </div>
   );
 });

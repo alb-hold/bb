@@ -59,6 +59,33 @@ afterEach(() => {
 });
 
 describe("ExecutionControls", () => {
+  it("keeps the model chip bounded beside a terminal control that can wrap", () => {
+    const props = makeExecutionControlsProps();
+    renderExecutionControls({
+      ...props,
+      model: {
+        ...props.model,
+        selected: "claude-opus-4-6",
+        options: [{ value: "claude-opus-4-6", label: "Opus 4.6 (1M)" }],
+      },
+      nativeTerminal: { enabled: false, onChange: vi.fn() },
+    });
+
+    const chip = screen.getByRole("button", {
+      name: "Provider, model and reasoning",
+    });
+    const control = screen.getByRole("radiogroup", {
+      name: "Run this thread in",
+    });
+    const wrappingRow = chip.closest(".flex-wrap");
+    expect(wrappingRow).not.toBeNull();
+    expect(wrappingRow?.contains(control)).toBe(true);
+    expect(wrappingRow?.classList.contains("min-w-0")).toBe(true);
+    expect(wrappingRow?.classList.contains("max-w-full")).toBe(true);
+    expect(chip.classList.contains("overflow-hidden")).toBe(true);
+    expect(chip.textContent).toContain("1M");
+  });
+
   it("shows whether the thread runs in chat or its terminal and switches between them", () => {
     const onChange = vi.fn();
     const { rerender } = renderExecutionControls({
