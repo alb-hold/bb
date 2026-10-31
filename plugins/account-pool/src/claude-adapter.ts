@@ -57,7 +57,15 @@ interface ProfileJob {
 }
 
 const profileJobs: ProfileJob[] = [];
+const physicalProfiles = new Set<string>();
+const MAX_PHYSICAL_PROFILES = 2;
 let profileRunning = false;
+
+function profileBlocked(id: string): boolean {
+  return (
+    physicalProfiles.has(id) || physicalProfiles.size >= MAX_PHYSICAL_PROFILES
+  );
+}
 
 async function drainProfiles(): Promise<void> {
   if (profileRunning) return;
@@ -108,6 +116,9 @@ async function requestProfile(
   url: string,
   accessToken: string,
 ): Promise<ClaudeProfile | null> {
+  const id = context.account.id;
+  if (profileBlocked(id)) return null;
+  physicalProfiles.add(id);
   const deadline = new AbortController();
   const signal = AbortSignal.any([
     deadline.signal,
@@ -141,7 +152,7 @@ async function requestProfile(
       await response.json().catch(() => null),
     );
     return signal.aborted || !parsed.success ? null : parsed.data;
-  })();
+  })().finally(() => physicalProfiles.delete(id));
   try {
     return await Promise.race([operation, canceled]);
   } finally {
@@ -165,6 +176,7 @@ export function createClaudeAdapter(options: {
     if (
       context.account.kind !== "oauth" ||
       context.signal?.aborted ||
+      profileBlocked(id) ||
       (profileInFlight.has(id) && !profileInFlight.get(id)?.signal?.aborted) ||
       context.now() < (profileRetryAt.get(id) ?? 0)
     )
@@ -172,10 +184,15 @@ export function createClaudeAdapter(options: {
     profileInFlight.set(id, context);
     profileRetryAt.set(id, context.now() + 5 * 60 * 1_000);
     let failed = true;
+    let skipped = false;
     const result: { profile: ClaudeProfile | null } = { profile: null };
     try {
       await scheduleProfile(context, async () => {
         if (context.signal?.aborted) return;
+        if (profileBlocked(id)) {
+          skipped = true;
+          return;
+        }
         const secret = await context.freshSecret();
         if (secret.kind !== "oauth" || context.signal?.aborted) return;
         const account = context.account;
@@ -238,11 +255,12 @@ export function createClaudeAdapter(options: {
       failed = profile.organization?.plan_display_name == null;
     } finally {
       if (profileInFlight.get(id) === context) {
-        if (context.signal?.aborted) profileRetryAt.delete(id);
+        if (context.signal?.aborted || skipped) profileRetryAt.delete(id);
         else profileRetryAt.set(id, context.now() + 5 * 60 * 1_000);
         profileInFlight.delete(id);
       }
-      if (failed && context.background) await profileJitter(context.signal);
+      if (failed && !skipped && context.background)
+        await profileJitter(context.signal);
     }
   }
 
