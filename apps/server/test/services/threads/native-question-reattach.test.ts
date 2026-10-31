@@ -10,7 +10,10 @@ import {
 import { eq } from "drizzle-orm";
 import { describe, expect, it, vi } from "vitest";
 import { recordNativeTerminalActivity } from "../../../src/services/threads/native-terminal-activity.js";
-import { reopenNativeTerminalsAfterDaemonReconnect } from "../../../src/services/threads/native-terminal-threads.js";
+import {
+  openNativeTerminal,
+  reopenNativeTerminalsAfterDaemonReconnect,
+} from "../../../src/services/threads/native-terminal-threads.js";
 import {
   seedEnvironment,
   seedHostSession,
@@ -213,6 +216,25 @@ describe("unanswered native questions across holder reattachment", () => {
         ).toEqual([]);
         expect(await indicator()).toBe("working");
         expect(getThread(db, thread.id)?.status).toBe("active");
+        recordNativeTerminalActivity(h.deps, {
+          state: "waiting",
+          questions: [{ id: "replacement-question", prompt: "Choose again" }],
+          confirms: true,
+          threadId: thread.id,
+        });
+        expect(await indicator()).toBe("needs-input");
+        db.update(terminalSessions)
+          .set({ status: "disconnected" })
+          .where(eq(terminalSessions.threadId, thread.id))
+          .run();
+        await openNativeTerminal(h.deps, {
+          threadId: thread.id,
+          request: {},
+        });
+        expect(
+          h.deps.pendingInteractions.listPendingThreadInteractions(thread.id),
+        ).toEqual([]);
+        expect(await indicator()).not.toBe("needs-input");
       });
     },
   );
