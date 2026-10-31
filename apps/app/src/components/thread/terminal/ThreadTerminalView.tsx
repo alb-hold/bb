@@ -144,6 +144,7 @@ import {
   resetTerminalExitNoticeForSession,
   routeTerminalExitNotice,
   updateTerminalReplayPreviewPtyGrid,
+  TERMINAL_REPLAY_PREVIEW_HOLD_TIMEOUT_MS,
 } from "./terminal-replay-preview";
 import {
   applyTerminalSurfaceScale,
@@ -1674,6 +1675,7 @@ export function ThreadTerminalView({
     };
     let resizeAnimationFrame: number | null = null;
     let connectionNoticeTimeout: ReturnType<typeof setTimeout> | null = null;
+    let retainedReplayTimeout: ReturnType<typeof setTimeout> | null = null;
     let terminalInteractions: ReturnType<
       typeof attachTerminalInteractions
     > | null = null;
@@ -1769,7 +1771,7 @@ export function ThreadTerminalView({
     const pendingExitNotices: string[] = [];
     let replayCheckpointSequence: number | null = null;
     let localFitGrid: TerminalGridSize | null = null;
-    let retainedOutputReplayed = false;
+    let retainedOutputReplayed = sessionStatusRef.current !== "exited";
     let retainedOutputGrid: TerminalGridSize | null = null;
     let latestPtyGrid: TerminalGridSize = {
       cols: sessionRef.current.cols,
@@ -1898,7 +1900,7 @@ export function ThreadTerminalView({
         const canReveal =
           localFitGrid !== null &&
           (!retainNativeOutput ||
-            session.status !== "exited" ||
+            sessionStatusRef.current !== "exited" ||
             retainedOutputGrid !== null) &&
           canRevealTerminalSurface({
             fitGrid: localFitGrid,
@@ -2324,6 +2326,7 @@ export function ThreadTerminalView({
         });
       }
       const fitTerminal = () => {
+        updateGridVisibility();
         if (!fitAddon || !terminal) {
           return;
         }
@@ -2377,6 +2380,19 @@ export function ThreadTerminalView({
         });
       }
       scheduleFitRef.current = scheduleFit;
+      resizeObserver = new ResizeObserver((entries) => {
+        updateGridVisibility();
+        const hasSize = hasVisibleTerminalSize({ containerElement, entries });
+        if (hasSize !== containerHasSize) {
+          containerHasSize = hasSize;
+          reportDocumentVisibility();
+        }
+        if (!hasSize) {
+          return;
+        }
+        scheduleFit();
+      });
+      resizeObserver.observe(containerElement);
       const currentActiveElement = document.activeElement;
       if (
         shouldFocusTerminalAfterAsyncMount({
@@ -2764,40 +2780,70 @@ export function ThreadTerminalView({
         sessionRef.current.status === "exited" ||
         pendingExitNotices.length > 0
       ) {
-        const output = await sdk.terminals.output({
-          terminalId: sessionRef.current.id,
-          tailBytes: 64 * 1024,
-        });
-        if (!disposed) {
-          await writeRetainedTerminalOutput({
-            chunks: output.chunks.map((chunk) => ({
-              seq: chunk.seq,
-              data: decodeBase64Bytes(chunk.dataBase64),
-            })),
-            retainNativeOutput,
+        let retainedReplayFailed = false;
+        const revealRetainedFallback = () => {
+          if (disposed || retainedReplayFailed) return;
+          retainedReplayFailed = true;
+          retainedOutputReplayed = true;
+          fitTerminal();
+          writeTerminalStatus({
+            terminal: activeTerminal,
+            text: "Terminal history unavailable",
+          });
+          writeTerminalSessionStatusNotice({
             lastNotice: lastStatusNoticeRef,
             session: sessionRef.current,
             terminal: activeTerminal,
-            pipeline: outputPipeline ?? undefined,
-            onOutputStart: recordOutputStart,
-            onOutputParsed: (sequence) => {
-              const outputAnchor = outputLineAnchors.find(
-                (candidate) => candidate.sequence === sequence,
-              );
-              if (sequence === savedViewportAnchor?.outputSequence) {
-                updateSavedOutputLineAnchor(outputAnchor ?? null);
-              }
-            },
           });
-          if (retainNativeOutput) {
-            retainedOutputReplayed = true;
-            fitTerminal();
+        };
+        try {
+          const outputPromise = sdk.terminals.output({
+            terminalId: sessionRef.current.id,
+            tailBytes: 64 * 1024,
+          });
+          retainedReplayTimeout = setTimeout(() => {
+            retainedReplayTimeout = null;
+            revealRetainedFallback();
+          }, TERMINAL_REPLAY_PREVIEW_HOLD_TIMEOUT_MS);
+          const output = await outputPromise;
+          if (!disposed) {
+            await writeRetainedTerminalOutput({
+              chunks: output.chunks.map((chunk) => ({
+                seq: chunk.seq,
+                data: decodeBase64Bytes(chunk.dataBase64),
+              })),
+              retainNativeOutput,
+              lastNotice: lastStatusNoticeRef,
+              session: sessionRef.current,
+              terminal: activeTerminal,
+              pipeline: outputPipeline ?? undefined,
+              onOutputStart: recordOutputStart,
+              onOutputParsed: (sequence) => {
+                const outputAnchor = outputLineAnchors.find(
+                  (candidate) => candidate.sequence === sequence,
+                );
+                if (sequence === savedViewportAnchor?.outputSequence) {
+                  updateSavedOutputLineAnchor(outputAnchor ?? null);
+                }
+              },
+            });
+            if (retainNativeOutput) {
+              retainedOutputReplayed = true;
+              fitTerminal();
+            }
+            flushPendingExitNotices();
+            replayStartSequence = output.chunks[0]?.seq ?? output.nextSeq;
+            latestOutputSequence = output.chunks.at(-1)?.seq ?? output.nextSeq;
+            replayNextSequence = output.nextSeq;
+            restoreViewport();
           }
-          flushPendingExitNotices();
-          replayStartSequence = output.chunks[0]?.seq ?? output.nextSeq;
-          latestOutputSequence = output.chunks.at(-1)?.seq ?? output.nextSeq;
-          replayNextSequence = output.nextSeq;
-          restoreViewport();
+        } catch {
+          revealRetainedFallback();
+        } finally {
+          if (retainedReplayTimeout !== null) {
+            clearTimeout(retainedReplayTimeout);
+            retainedReplayTimeout = null;
+          }
         }
       } else {
         try {
@@ -2980,20 +3026,6 @@ export function ThreadTerminalView({
       selectionChangeDisposable = activeTerminal.onSelectionChange(
         terminalInteractions.onSelectionChange,
       );
-
-      resizeObserver = new ResizeObserver((entries) => {
-        updateGridVisibility();
-        const hasSize = hasVisibleTerminalSize({ containerElement, entries });
-        if (hasSize !== containerHasSize) {
-          containerHasSize = hasSize;
-          reportDocumentVisibility();
-        }
-        if (!hasSize) {
-          return;
-        }
-        scheduleFit();
-      });
-      resizeObserver.observe(containerElement);
     }
 
     void mountTerminal(container).catch((error) => {
@@ -3024,6 +3056,9 @@ export function ThreadTerminalView({
       }
       if (connectionNoticeTimeout !== null) {
         clearTimeout(connectionNoticeTimeout);
+      }
+      if (retainedReplayTimeout !== null) {
+        clearTimeout(retainedReplayTimeout);
       }
       setConnectionNotice(null);
       resizeObserver?.disconnect();
@@ -3127,6 +3162,7 @@ export function ThreadTerminalView({
     if (!terminal) {
       return;
     }
+    scheduleFitRef.current?.();
     if (session.status === "exited") {
       return;
     }

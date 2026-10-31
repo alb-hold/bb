@@ -2127,3 +2127,135 @@ describe("terminal first paint", () => {
     ).toBe("0");
   });
 });
+
+describe("terminal first paint recovery", () => {
+  it("reveals an exit and error state when retained output rejects", async () => {
+    prepareFirstAttachFontMetricsHarness();
+    vi.stubGlobal("innerWidth", 390);
+    testState.output.mockRejectedValue(
+      new Error("retained output fetch failed"),
+    );
+    renderMobileTerminal(
+      { status: "exited", exitCode: 7, cols: 135, rows: 56 },
+      true,
+    );
+    await waitForReadinessCondition(() => {
+      const surface = document.querySelector<HTMLElement>(
+        "[data-terminal-renderer]",
+      )!;
+      expect(surface.style.opacity).toBe("");
+      expect(surface.dataset.renderGridCols).toBe("51");
+      expect(pageText()).toContain("Terminal history unavailable");
+      expect(pageText()).toContain("Terminal exited with code 7");
+    }, "failed retained output left no visible exit state");
+  });
+
+  it("reveals an exit state when retained output never settles", async () => {
+    prepareFirstAttachFontMetricsHarness();
+    vi.stubGlobal("innerWidth", 390);
+    let requested!: () => void;
+    const outputRequested = new Promise<void>((resolve) => {
+      requested = resolve;
+    });
+    testState.output.mockImplementation(() => {
+      vi.useFakeTimers();
+      requested();
+      return new Promise(() => undefined);
+    });
+    renderMobileTerminal(
+      { status: "exited", exitCode: 7, cols: 135, rows: 56 },
+      true,
+    );
+    try {
+      await waitForReadiness(
+        outputRequested,
+        "retained output was not requested",
+      );
+      const surface = document.querySelector<HTMLElement>(
+        "[data-terminal-renderer]",
+      )!;
+      expect(surface.style.opacity).toBe("0");
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(
+          terminalReplayPreview.TERMINAL_REPLAY_PREVIEW_HOLD_TIMEOUT_MS + 100,
+        );
+      });
+      expect(surface.style.opacity).toBe("");
+      expect(surface.dataset.renderGridCols).toBe("51");
+      expect(pageText()).toContain("Terminal history unavailable");
+      expect(pageText()).toContain("Terminal exited with code 7");
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it("uses current status when an exited session becomes running without remount", async () => {
+    prepareFirstAttachFontMetricsHarness();
+    testState.output.mockImplementation(() => new Promise(() => undefined));
+    const open = vi.spyOn(Terminal.prototype, "open");
+    const session = renderMobileTerminal(
+      { status: "exited", cols: 80, rows: 24 },
+      true,
+    );
+    await waitForReadinessCondition(
+      () => expect(testState.output).toHaveBeenCalled(),
+      "retained output was not requested",
+    );
+    const surface = document.querySelector<HTMLElement>(
+      "[data-terminal-renderer]",
+    )!;
+    expect(surface.style.opacity).toBe("0");
+    rerenderMobileTerminal({ ...session, status: "running" });
+    fireEvent(window, new Event("resize"));
+    await waitForReadinessCondition(
+      () => expect(surface.style.opacity).toBe(""),
+      "current running status was not revealed",
+    );
+    rerenderMobileTerminal(session);
+    fireEvent(window, new Event("resize"));
+    expect(surface.style.opacity).toBe("0");
+    expect(
+      open.mock.calls.filter(([container]) => container === surface),
+    ).toHaveLength(1);
+  });
+
+  it("fits a running session that exits without remount before revealing it", async () => {
+    prepareFirstAttachFontMetricsHarness();
+    testState.deferSocketOpen = true;
+    vi.stubGlobal("innerWidth", 390);
+    const open = vi.spyOn(Terminal.prototype, "open");
+    const session = renderMobileTerminal({ cols: 80, rows: 24 }, true);
+    await waitForReadinessCondition(
+      () => expect(testState.sockets).toHaveLength(1),
+      "running terminal did not mount",
+    );
+    const surface = document.querySelector<HTMLElement>(
+      "[data-terminal-renderer]",
+    )!;
+    await waitForReadinessCondition(
+      () => expect(surface.style.opacity).toBe(""),
+      "running terminal was not visible",
+    );
+    vi.mocked(FitAddon.prototype.proposeDimensions).mockReturnValue(undefined);
+    rerenderMobileTerminal({ ...session, status: "exited", exitCode: 0 });
+    fireEvent(window, new Event("resize"));
+    expect(surface.style.opacity).toBe("0");
+    vi.mocked(FitAddon.prototype.proposeDimensions).mockReturnValue({
+      cols: 51,
+      rows: 47,
+    });
+    rerenderMobileTerminal({
+      ...session,
+      status: "exited",
+      exitCode: 0,
+    });
+    await waitForReadinessCondition(() => {
+      expect(surface.style.opacity).toBe("");
+      expect(surface.dataset.renderGridCols).toBe("51");
+    }, "newly exited terminal was not fitted and revealed");
+    expect(
+      open.mock.calls.filter(([container]) => container === surface),
+    ).toHaveLength(1);
+  });
+});
