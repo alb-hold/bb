@@ -1,5 +1,6 @@
 import {
   getThread,
+  getNativeTerminalThread,
   applyThreadLifecycleEvent,
   applyThreadLifecycleEventInTransaction,
   clearThreadRowStateAtOutputSeqs,
@@ -74,7 +75,21 @@ export function applyLoggedThreadLifecycleEvent(
   args: ApplyThreadLifecycleEventArgs,
 ): ApplyThreadLifecycleEventOutcome {
   const previousStatus = getThread(deps.db, args.threadId)?.status;
+  const clearedExitReason =
+    args.event.type === "run.failed" &&
+    getNativeTerminalThread(deps.db, args.threadId)
+      ?.lostIdleTerminalSessionId != null;
   const outcome = applyThreadLifecycleEvent(deps.db, args);
+  if (!outcome.applied && clearedExitReason) {
+    const thread = getThread(deps.db, args.threadId);
+    if (thread !== null) {
+      deps.hub.notifyThread(
+        args.threadId,
+        ["status-changed"],
+        buildThreadStatusChangeMetadata(deps, thread),
+      );
+    }
+  }
   if (outcome.applied && previousStatus !== undefined) {
     recordFinishedTurn(deps.db, args.threadId, args.event, previousStatus);
   }
