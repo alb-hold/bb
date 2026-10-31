@@ -746,9 +746,23 @@ export class AccountPoolHub {
     }
   }
 
-  async backfillPlanNames(): Promise<void> {
+  private planBackfill: Promise<void> | null = null;
+
+  backfillPlanNames(): Promise<void> {
+    if (this.planBackfill !== null) return this.planBackfill;
+    const pass = this.fillPlanNames().finally(() => {
+      if (this.planBackfill === pass) this.planBackfill = null;
+    });
+    this.planBackfill = pass;
+    return pass;
+  }
+
+  private async fillPlanNames(): Promise<void> {
     const plans = await this.options.accounts.planDisplayNames();
-    const accounts = await this.options.accounts.list();
+    const accounts = (await this.options.accounts.list()).sort(
+      (left, right) =>
+        left.priority - right.priority || left.id.localeCompare(right.id),
+    );
     for (const account of accounts) {
       if (
         account.provider !== "claude" ||
@@ -757,7 +771,7 @@ export class AccountPoolHub {
       )
         continue;
       const adapter = this.adapter(account.provider);
-      void adapter
+      await adapter
         .refreshProfile?.({
           account,
           freshSecret: () =>

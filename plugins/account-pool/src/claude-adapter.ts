@@ -57,6 +57,7 @@ export function createClaudeAdapter(options: {
   const profileCheckedAt = new Map<string, number>();
   const profileInFlight = new Set<string>();
   const profileRetryAt = new Map<string, number>();
+  let profileQueue = Promise.resolve();
   async function refreshProfile(context: AdapterUsageContext): Promise<void> {
     const id = context.account.id;
     if (
@@ -67,6 +68,13 @@ export function createClaudeAdapter(options: {
       return;
     profileInFlight.add(id);
     profileRetryAt.set(id, context.now() + 5 * 60 * 1_000);
+    const previous = profileQueue;
+    let release = () => {};
+    profileQueue = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await previous;
+    let failed = true;
     try {
       const secret = await context.freshSecret();
       if (secret.kind !== "oauth") return;
@@ -77,8 +85,10 @@ export function createClaudeAdapter(options: {
         (await context.accounts.planDisplayNames())[account.id] !== undefined &&
         checkedAt !== undefined &&
         context.now() - checkedAt < PROFILE_REFRESH_INTERVAL_MS
-      )
+      ) {
+        failed = false;
         return;
+      }
       const profile = await context
         .fetch(options.profileUrl, {
           headers: {
@@ -123,9 +133,12 @@ export function createClaudeAdapter(options: {
       )
         await context.accounts.setPlan(account.id, plan);
       profileCheckedAt.set(account.id, context.now());
+      failed = parsed.data.organization?.plan_display_name == null;
     } finally {
       profileRetryAt.set(id, context.now() + 5 * 60 * 1_000);
       profileInFlight.delete(id);
+      if (failed) setTimeout(release, Math.floor(Math.random() * 2_001));
+      else release();
     }
   }
   return {

@@ -7099,7 +7099,114 @@ describe("Account Pool plugin", () => {
     });
   });
 
-  it.each(["success", "failure"])(
+  it("serializes four unnamed accounts through an outage and recovery", async () => {
+    let now = Date.now();
+    let recovered = false;
+    let active = 0;
+    let maximum = 0;
+    const calls: string[] = [];
+    const fixture = await createFixture({
+      upstreamUrl: "https://upstream.example",
+      options: {
+        now: () => now,
+        oauthProfileUrl: "https://upstream.example/profile",
+        fetch: async (_input, init) => {
+          const token = new Headers(init?.headers)
+            .get("authorization")!
+            .slice(7);
+          active += 1;
+          maximum = Math.max(maximum, active);
+          calls.push(token);
+          try {
+            await waitForIo(20);
+            return recovered
+              ? Response.json({
+                  account: { uuid: token },
+                  organization: { plan_display_name: `Ultra ${token}` },
+                })
+              : Response.json({}, { status: 503 });
+          } finally {
+            active -= 1;
+          }
+        },
+      },
+    });
+    await fixture.host.harness.behavior.callRpc("account.remove", {
+      id: fixture.account.id,
+    });
+    const store = new AccountStore(
+      fixture.host.bb.storage.kv,
+      path.join(
+        fixture.host.bb.server.experimental_dataDir,
+        "plugins",
+        "account-pool",
+        "secrets",
+        "accounts",
+      ),
+    );
+    const ids: string[] = [];
+    const tokens = [
+      "11111111-1111-4111-8111-111111111111",
+      "22222222-2222-4222-8222-222222222222",
+      "33333333-3333-4333-8333-333333333333",
+      "44444444-4444-4444-8444-444444444444",
+    ];
+    for (const [priority, token] of tokens.entries()) {
+      const added = await store.add(
+        {
+          provider: "claude",
+          kind: "oauth",
+          label: token,
+          email: null,
+          accountUuid: token,
+          subscriptionType: "max",
+          rateLimitTier: "max_20x",
+          enabled: true,
+          priority,
+        },
+        {
+          kind: "oauth",
+          accessToken: token,
+          refreshToken: "test-refresh",
+          expiresAt: now + 60 * 60 * 1000,
+        },
+      );
+      ids.push(added.id);
+    }
+    const display = () =>
+      fixture.host.harness.behavior.callRpc("display.get", null);
+    await display();
+    await vi.waitFor(
+      () => {
+        expect(calls).toHaveLength(4);
+        expect(active).toBe(0);
+      },
+      { timeout: 12_000 },
+    );
+    expect(maximum).toBe(1);
+    expect(calls).toEqual(tokens);
+    await display();
+    now += 5 * 60 * 1000 - 1;
+    await display();
+    expect(calls).toHaveLength(4);
+    recovered = true;
+    now += 1;
+    await vi.waitFor(
+      async () => {
+        const value = await display();
+        expect(value).toMatchObject({
+          plans: Object.fromEntries(
+            ids.map((id, index) => [id, `Ultra ${tokens[index]}`]),
+          ),
+        });
+      },
+      { timeout: 12_000 },
+    );
+    expect(calls).toEqual([...tokens, ...tokens]);
+    expect(maximum).toBe(1);
+  }, 30_000);
+
+  it.each(["success", "failure", "max"])(
     "backfills a cold plan with bounded retries after %s",
     async (outcome) => {
       const arrived = deferred();
@@ -7114,7 +7221,8 @@ describe("Account Pool plugin", () => {
           now: () => now,
           usageUrl: "https://upstream.example/usage",
           oauthProfileUrl: "https://upstream.example/profile",
-          importCredentials: async () => importedCredentials(),
+          importCredentials: async () =>
+            importedCredentials({ rateLimitTier: "max_20x" }),
           fetch: async (input) => {
             if (new URL(String(input)).pathname === "/profile") {
               if (!armed) return Response.json({}, { status: 503 });
@@ -7125,7 +7233,10 @@ describe("Account Pool plugin", () => {
                 ? Response.json({}, { status: 503 })
                 : Response.json({
                     account: { uuid: "11111111-1111-4111-8111-111111111111" },
-                    organization: { plan_display_name: "Claude Ultra" },
+                    organization: {
+                      plan_display_name:
+                        outcome === "max" ? "Claude Max" : "Claude Ultra",
+                    },
                   });
             }
             return Response.json({ seven_day: { utilization: 13 } });
@@ -7159,25 +7270,34 @@ describe("Account Pool plugin", () => {
       await fixture.host.harness.behavior.callRpc("account.refreshUsage", {
         accountId: fixture.account.id,
       });
-      if (outcome === "success") {
+      if (outcome !== "failure") {
         await vi.waitFor(async () =>
           expect(await display()).toMatchObject({
-            plans: { [fixture.account.id]: "Claude Ultra" },
+            plans: {
+              [fixture.account.id]:
+                outcome === "max" ? "Claude Max" : "Claude Ultra",
+            },
           }),
         );
-        expect((await table()).stdout).toContain("Ultra");
+        expect((await table()).stdout).toContain(
+          outcome === "max" ? "Max (20x)" : "Ultra",
+        );
       } else {
         expect((await table()).stdout).toContain("Claude subscription");
         expect((await table()).stdout).not.toContain("Max (");
         expect(calls).toBe(1);
         now += 5 * 60 * 1000;
         await display();
-        await vi.waitFor(async () => {
-          await display();
-          expect(calls).toBe(2);
-        });
+        await vi.waitFor(
+          async () => {
+            await display();
+            expect(calls).toBe(2);
+          },
+          { timeout: 5_000 },
+        );
       }
     },
+    15_000,
   );
 
   it("preserves a future model API name in weekly rows without changing the legacy quota shape", async () => {
