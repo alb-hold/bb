@@ -1,5 +1,6 @@
 import {
   maskResolvedProviderEnvironmentRow,
+  withEffectiveDisplayStatus,
   type PromptInput,
   type PendingInteraction,
   type PendingInteractionResolution,
@@ -954,17 +955,19 @@ function isThreadWaitTargetUnreachable(
 export function createThreadsArea(args: CreateSdkAreaArgs): ThreadsArea {
   const { transport } = args;
   const getThread = (input: ThreadGetArgs) =>
-    transport.readJson(
-      transport.api.v1.threads[":id"].$get(
-        {
-          param: { id: input.threadId },
-          ...(input.include === undefined
-            ? {}
-            : { query: { include: input.include } }),
-        },
-        ...signalRequestArgs(input.signal),
-      ),
-    );
+    transport
+      .readJson(
+        transport.api.v1.threads[":id"].$get(
+          {
+            param: { id: input.threadId },
+            ...(input.include === undefined
+              ? {}
+              : { query: { include: input.include } }),
+          },
+          ...signalRequestArgs(input.signal),
+        ),
+      )
+      .then(withEffectiveDisplayStatus);
   function timeline(
     input: ThreadTimelineArgs & { afterTag?: undefined },
   ): Promise<ThreadTimelineResult>;
@@ -1410,32 +1413,38 @@ export function createThreadsArea(args: CreateSdkAreaArgs): ThreadsArea {
     queue,
     interactions,
     async list(input) {
-      return transport.readJson(
-        transport.api.v1.threads.$get(
-          { query: listQuery(input) },
-          ...signalRequestArgs(input?.signal),
-        ),
-      );
+      return transport
+        .readJson(
+          transport.api.v1.threads.$get(
+            { query: listQuery(input) },
+            ...signalRequestArgs(input?.signal),
+          ),
+        )
+        .then((threads) => threads.map(withEffectiveDisplayStatus));
     },
     async markRead(input) {
-      return transport.readJson(
-        transport.api.v1.threads[":id"].read.$post(
-          {
-            param: { id: input.threadId },
-          },
-          ...signalRequestArgs(input.signal),
-        ),
-      );
+      return transport
+        .readJson(
+          transport.api.v1.threads[":id"].read.$post(
+            {
+              param: { id: input.threadId },
+            },
+            ...signalRequestArgs(input.signal),
+          ),
+        )
+        .then(withEffectiveDisplayStatus);
     },
     async markUnread(input) {
-      return transport.readJson(
-        transport.api.v1.threads[":id"].unread.$post(
-          {
-            param: { id: input.threadId },
-          },
-          ...signalRequestArgs(input.signal),
-        ),
-      );
+      return transport
+        .readJson(
+          transport.api.v1.threads[":id"].unread.$post(
+            {
+              param: { id: input.threadId },
+            },
+            ...signalRequestArgs(input.signal),
+          ),
+        )
+        .then(withEffectiveDisplayStatus);
     },
     async message(input) {
       return transport.readJson(
@@ -1484,11 +1493,13 @@ export function createThreadsArea(args: CreateSdkAreaArgs): ThreadsArea {
       );
     },
     async pin(input) {
-      return transport.readJson(
-        transport.api.v1.threads[":id"].pin.$post({
-          param: { id: input.threadId },
-        }),
-      );
+      return transport
+        .readJson(
+          transport.api.v1.threads[":id"].pin.$post({
+            param: { id: input.threadId },
+          }),
+        )
+        .then(withEffectiveDisplayStatus);
     },
     async promptHistory(input) {
       return transport.readJson(
@@ -1515,15 +1526,17 @@ export function createThreadsArea(args: CreateSdkAreaArgs): ThreadsArea {
     },
     queuedMessages,
     async reorderPinned(input) {
-      return transport.readJson(
-        transport.api.v1.threads[":id"]["pin-order"].$patch({
-          param: { id: input.threadId },
-          json: {
-            previousThreadId: input.previousThreadId,
-            nextThreadId: input.nextThreadId,
-          },
-        }),
-      );
+      return transport
+        .readJson(
+          transport.api.v1.threads[":id"]["pin-order"].$patch({
+            param: { id: input.threadId },
+            json: {
+              previousThreadId: input.previousThreadId,
+              nextThreadId: input.nextThreadId,
+            },
+          }),
+        )
+        .then((threads) => threads.map(withEffectiveDisplayStatus));
     },
     async resolveMentions(input) {
       return transport.readJson(
@@ -1534,12 +1547,30 @@ export function createThreadsArea(args: CreateSdkAreaArgs): ThreadsArea {
       );
     },
     async search(input) {
-      return transport.readJson(
-        transport.api.v1.threads.search.$get(
-          { query: searchQuery(input) },
-          ...signalRequestArgs(input.signal),
-        ),
-      );
+      return transport
+        .readJson(
+          transport.api.v1.threads.search.$get(
+            { query: searchQuery(input) },
+            ...signalRequestArgs(input.signal),
+          ),
+        )
+        .then((result) => ({
+          ...result,
+          active: {
+            ...result.active,
+            results: result.active.results.map((entry) => ({
+              ...entry,
+              thread: withEffectiveDisplayStatus(entry.thread),
+            })),
+          },
+          archived: {
+            ...result.archived,
+            results: result.archived.results.map((entry) => ({
+              ...entry,
+              thread: withEffectiveDisplayStatus(entry.thread),
+            })),
+          },
+        }));
     },
     async send(input) {
       return transport.readJson(
@@ -1689,19 +1720,23 @@ export function createThreadsArea(args: CreateSdkAreaArgs): ThreadsArea {
       return { ok: true };
     },
     async unpin(input) {
-      return transport.readJson(
-        transport.api.v1.threads[":id"].unpin.$post({
-          param: { id: input.threadId },
-        }),
-      );
+      return transport
+        .readJson(
+          transport.api.v1.threads[":id"].unpin.$post({
+            param: { id: input.threadId },
+          }),
+        )
+        .then(withEffectiveDisplayStatus);
     },
     async update(input) {
-      return transport.readJson(
-        transport.api.v1.threads[":id"].$patch({
-          param: { id: input.threadId },
-          json: updateJson(input),
-        }),
-      );
+      return transport
+        .readJson(
+          transport.api.v1.threads[":id"].$patch({
+            param: { id: input.threadId },
+            json: updateJson(input),
+          }),
+        )
+        .then(withEffectiveDisplayStatus);
     },
     async wait(input) {
       const { pollIntervalMs, target, timeoutMs } =

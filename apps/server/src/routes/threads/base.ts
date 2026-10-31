@@ -1,3 +1,4 @@
+import { nativeThreadExitRuntime } from "../../services/threads/thread-runtime-display.js";
 import { countUnarchivedThreadDescendants } from "../../services/threads/thread-archive.js";
 import { eq } from "drizzle-orm";
 import { listThreadCascades } from "../../services/threads/thread-cascade.js";
@@ -20,6 +21,7 @@ import {
   ensureSpendTables,
   listThreadMentionRowsByIds,
   listNonDeletedChildThreads,
+  listNativeTerminalThreadsByIds,
   listSpendRollupRows,
   listThreadsWithPendingInteractionState,
   buildThreadListEnrichmentScope,
@@ -36,6 +38,7 @@ import {
   type UpdateThreadInput,
 } from "@bb/db";
 import {
+  effectiveDisplayStatus,
   PROMPT_HISTORY_SEARCH_LIMIT_DEFAULT,
   PROMPT_HISTORY_SEARCH_LIMIT_MAX,
   type Environment,
@@ -550,8 +553,19 @@ export function registerThreadBaseRoutes(
     const children = listNonDeletedChildThreads(deps.db, {
       parentThreadId: thread.id,
     });
+    const nativeThreads = new Map(
+      listNativeTerminalThreadsByIds(
+        deps.db,
+        children.map((child) => child.id),
+      ).map((native) => [native.threadId, native]),
+    );
+    const displayChildren = children.map((child) => {
+      const native = nativeThreads.get(child.id);
+      const runtime = nativeThreadExitRuntime(child, native ?? null);
+      return { ...child, status: effectiveDisplayStatus(child, runtime) };
+    });
     const counts = { failed: 0, idle: 0, waiting: 0, working: 0 };
-    for (const child of children) {
+    for (const child of displayChildren) {
       if (child.status === "error") counts.failed += 1;
       else if (child.status === "idle") counts.idle += 1;
       else if (child.status === "pending") counts.waiting += 1;
@@ -572,7 +586,7 @@ export function registerThreadBaseRoutes(
       nonDeletedChildCount,
       ...counts,
       totalTokens,
-      children: children.map(({ id, status, title }) => ({
+      children: displayChildren.map(({ id, status, title }) => ({
         id,
         status,
         title,

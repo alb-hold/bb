@@ -1,4 +1,4 @@
-import { archiveThread } from "@bb/db";
+import { archiveThread, createNativeTerminalThread } from "@bb/db";
 import { threadCountResponseSchema } from "@bb/server-contract";
 import { describe, expect, it } from "vitest";
 import { readJson } from "../helpers/json.js";
@@ -73,3 +73,68 @@ describe("GET /threads/count", () => {
     });
   });
 });
+
+it.each(["count", "summary"])(
+  "%s treats a clean native child as idle and a genuine failure as failed",
+  async (surface) => {
+    await withTestHarness(async (harness) => {
+      const { host } = seedHostSession(harness.deps, {
+        id: "host-native-count",
+      });
+      const { project } = seedProjectWithSource(harness.deps, {
+        hostId: host.id,
+        path: "/tmp/native-count",
+      });
+      const parent = seedThread(harness.deps, {
+        projectId: project.id,
+        status: "idle",
+      });
+      const clean = seedThread(harness.deps, {
+        projectId: project.id,
+        parentThreadId: parent.id,
+        status: "error",
+      });
+      const failed = seedThread(harness.deps, {
+        projectId: project.id,
+        parentThreadId: parent.id,
+        status: "error",
+      });
+      createNativeTerminalThread(harness.db, {
+        threadId: clean.id,
+        providerId: clean.providerId,
+        nativeSessionId: "clean-session",
+        initialPrompt: null,
+        initialImages: [],
+        model: null,
+      });
+      harness.db.$client
+        .prepare(
+          "UPDATE fork_native_terminal_threads SET terminal_session_id = 'terminal-clean', lost_idle_terminal_session_id = 'terminal-clean' WHERE thread_id = ?",
+        )
+        .run(clean.id);
+      if (surface === "count") {
+        expect(
+          await count(harness, `?status=error&parentThreadId=${parent.id}`),
+        ).toEqual({ total: 1 });
+        expect(
+          await count(
+            harness,
+            `?status=idle&parentThreadId=${parent.id}&groupBy=project`,
+          ),
+        ).toEqual({ total: 1, groups: [{ key: project.id, count: 1 }] });
+      } else {
+        const response = await harness.app.request(
+          `/api/v1/threads/${parent.id}/child-summary`,
+        );
+        const summary = await readJson(response);
+        expect(summary).toMatchObject({ failed: 1, idle: 1 });
+        expect(summary).toMatchObject({
+          children: expect.arrayContaining([
+            { id: clean.id, status: "idle", title: clean.title },
+            { id: failed.id, status: "error", title: failed.title },
+          ]),
+        });
+      }
+    });
+  },
+);

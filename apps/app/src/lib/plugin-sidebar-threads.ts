@@ -1,4 +1,4 @@
-import type { ThreadListEntry } from "@bb/domain";
+import { withEffectiveDisplayStatus, type ThreadListEntry } from "@bb/domain";
 import type { PluginSidebarThread } from "@get-bb/plugin-sdk";
 import {
   getThreadListIndicatorLabel,
@@ -23,13 +23,7 @@ export function toPluginSidebarThread(
   now = Date.now(),
   nativeActivityUnconfirmed = isNativeActivityUnconfirmed(entry.runtime, now),
 ): PluginSidebarThread {
-  if (entry.runtime.nativeSessionExit === "clean") {
-    entry = {
-      ...entry,
-      status: "idle",
-      runtime: { ...entry.runtime, displayStatus: "idle" },
-    };
-  }
+  entry = withEffectiveDisplayStatus(entry);
   const indicatorState = threadListIndicatorStateForThread(
     entry,
     false,
