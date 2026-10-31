@@ -335,8 +335,13 @@ describe("Tasks live reads", () => {
 describe("listAllTasks and listTaskCardMeta", () => {
   it("returns every matching task past one page", async () => {
     const { harness, project, store } = setup();
-    for (let index = 0; index < 600; index += 1)
-      store.tasks.createTask({ projectId: project.id, title: `Bulk ${index}` });
+    store.transaction(() => {
+      for (let index = 0; index < 600; index += 1)
+        store.tasks.createTask({
+          projectId: project.id,
+          title: `Bulk ${index}`,
+        });
+    });
 
     const result = tasksRpcContract.listAllTasks.output.parse(
       await harness.callRpc("listAllTasks", { projectId: project.id }),

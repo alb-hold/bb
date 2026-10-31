@@ -367,30 +367,38 @@ describe("empty-fork sweep", () => {
       throw new Error("unavailable");
     });
     const archive = vi.fn(async () => ({ ok: true }));
-    const { harness } = await loadPlugin({
+    const { bb, harness } = await loadPlugin({
       list: async ({ offset = 0, limit = EMPTY_FORK_SWEEP_PAGE_SIZE }) =>
         threads.slice(offset, offset + limit),
       fork,
       timeline,
       archive,
     });
-    await harness.runSchedule("empty-fork-cleanup");
-    for (let i = 0; i <= EMPTY_FORK_SWEEP_PAGE_SIZE; i++) {
-      await harness.callRpc("createSideChat", {
-        sourceThreadId: "thr_source",
-        anchorText: "answer",
-      });
+    const db = bb.storage.database();
+    db.exec("BEGIN");
+    try {
+      await harness.runSchedule("empty-fork-cleanup");
+      for (let i = 0; i <= EMPTY_FORK_SWEEP_PAGE_SIZE; i++) {
+        await harness.callRpc("createSideChat", {
+          sourceThreadId: "thr_source",
+          anchorText: "answer",
+        });
+      }
+      await harness.runSchedule("empty-fork-cleanup");
+      expect(timeline).toHaveBeenCalledTimes(EMPTY_FORK_SWEEP_PAGE_SIZE);
+      await harness.runSchedule("empty-fork-cleanup");
+      expect(timeline).toHaveBeenCalledTimes(EMPTY_FORK_SWEEP_PAGE_SIZE + 1);
+      await harness.runSchedule("empty-fork-cleanup");
+      expect(timeline).toHaveBeenCalledTimes(EMPTY_FORK_SWEEP_PAGE_SIZE + 1);
+      expect(archive).not.toHaveBeenCalled();
+      vi.setSystemTime(now + 3_600_000);
+      await harness.runSchedule("empty-fork-cleanup");
+      expect(timeline).toHaveBeenCalledTimes(
+        2 * EMPTY_FORK_SWEEP_PAGE_SIZE + 1,
+      );
+    } finally {
+      db.exec("ROLLBACK");
     }
-    await harness.runSchedule("empty-fork-cleanup");
-    expect(timeline).toHaveBeenCalledTimes(EMPTY_FORK_SWEEP_PAGE_SIZE);
-    await harness.runSchedule("empty-fork-cleanup");
-    expect(timeline).toHaveBeenCalledTimes(EMPTY_FORK_SWEEP_PAGE_SIZE + 1);
-    await harness.runSchedule("empty-fork-cleanup");
-    expect(timeline).toHaveBeenCalledTimes(EMPTY_FORK_SWEEP_PAGE_SIZE + 1);
-    expect(archive).not.toHaveBeenCalled();
-    vi.setSystemTime(now + 3_600_000);
-    await harness.runSchedule("empty-fork-cleanup");
-    expect(timeline).toHaveBeenCalledTimes(2 * EMPTY_FORK_SWEEP_PAGE_SIZE + 1);
   });
 
   it.each(["thread.archived", "thread.deleted"] as const)(
