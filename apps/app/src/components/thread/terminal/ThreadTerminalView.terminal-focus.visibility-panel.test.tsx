@@ -645,9 +645,9 @@ it.each([
     width: 390,
     cols: 51,
     rows: 37,
-    renderCols: 51,
-    renderRows: 37,
-    scale: "1",
+    renderCols: 80,
+    renderRows: 24,
+    scale: String(51 / 80),
   },
   {
     device: "desktop",
@@ -659,7 +659,7 @@ it.each([
     scale: "0.95",
   },
 ])(
-  "keeps exited native output readable on $device after touch focus and remount",
+  "preserves exited native output layout on $device after touch focus and remount",
   async ({ width, cols, rows, renderCols, renderRows, scale }) => {
     vi.stubGlobal("innerWidth", width);
     const sendResize = vi.spyOn(
