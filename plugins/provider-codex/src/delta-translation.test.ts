@@ -172,6 +172,27 @@ describe("codex turn lifecycle translation", () => {
     );
   });
 
+  it("suppresses Codex 0.166 thread read-state notifications without rows", () => {
+    const harness = createHarness();
+    const notification = {
+      jsonrpc: "2.0" as const,
+      method: "thread/readState/changed",
+      params: {
+        threadId: "019a3031-6e47-7632-89d5-27e3ca060eb2",
+        readState: {
+          firstUnread: {
+            type: "turn",
+            turnId: "019a3032-91da-7c42-a88b-b8a7b729c195",
+          },
+          revision: "019a3033-4145-7d91-a5bd-7199412bd212",
+        },
+      },
+    };
+
+    expect(harness.translator.translateEvent(notification)).toEqual([]);
+    expect(harness.translate(notification)).toEqual([]);
+  });
+
   it("suppresses automatic review lifecycle notifications", () => {
     const harness = createHarness();
 
