@@ -1071,10 +1071,13 @@ export async function recoverEnvironmentCleanup(
                   ? "process inspection requires Linux"
                   : inspection.active
                     ? "setup or a hook is still running"
-                    : `process ${(inspection.pids.length > 0
-                        ? inspection.pids
-                        : inspection.unreadablePids
-                      )
+                    : `process ${[
+                        ...new Set([
+                          ...inspection.pids,
+                          ...inspection.unreadablePids,
+                        ]),
+                      ]
+                        .sort((left, right) => left - right)
                         .map((pid) => {
                           const command = inspection.processCommands?.[pid];
                           return command ? `${pid} (${command})` : String(pid);
