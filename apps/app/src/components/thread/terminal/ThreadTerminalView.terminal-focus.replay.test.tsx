@@ -2133,25 +2133,28 @@ describe("terminal first paint", () => {
       ],
       nextSeq: 1,
     });
-    renderMobileTerminal({ status: "exited", cols: 51, rows: 48 }, true);
+    renderMobileTerminal({ status: "exited", exitCode: 0, cols: 51, rows: 48 }, true);
     await waitForReadinessCondition(() => {
       expect(pageText()).toContain("Terminal exited with code");
-      const surface = document.querySelector<HTMLElement>(
-        "[data-terminal-renderer]",
-      )!;
-      expect(surface.style.opacity).toBe("");
-      expect(surface.dataset.fitGridCols).toBe("49");
-      expect(surface.dataset.renderGridCols).toBe("51");
-      expect(
-        surface.querySelector<HTMLElement>(".xterm")?.dataset.surfaceScale,
-      ).toBe(String(49 / 51));
-      expect(
-        actualTerminal!.buffer.active.getLine(0)?.translateToString(true),
-      ).toBe(prompt);
-      expect(
-        actualTerminal!.buffer.active.getLine(1)?.translateToString(true),
-      ).toBe("AFTER-BAND");
-    }, "phone replay split the prompt band at the fitted width");
+    }, "retained replay did not finish");
+    await act(async () => {
+      await writeReplay(actualTerminal!, "");
+    });
+    const surface = document.querySelector<HTMLElement>(
+      "[data-terminal-renderer]",
+    )!;
+    expect(surface.style.opacity).toBe("");
+    expect(surface.dataset.fitGridCols).toBe("49");
+    expect(surface.dataset.renderGridCols).toBe("51");
+    expect(
+      surface.querySelector<HTMLElement>(".xterm")?.dataset.surfaceScale,
+    ).toBe(String(49 / 51));
+    expect(
+      actualTerminal!.buffer.active.getLine(0)?.translateToString(true),
+    ).toBe(prompt);
+    expect(
+      actualTerminal!.buffer.active.getLine(1)?.translateToString(true),
+    ).toBe("AFTER-BAND");
   });
 
   it("keeps the terminal hidden when its first fit has no dimensions", async () => {
