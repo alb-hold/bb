@@ -430,7 +430,7 @@ describe("application menu", () => {
       (item) => item.label === "Close Window",
     );
 
-    expect(appMenu.map((item) => item.role).filter(Boolean)).toEqual(["quit"]);
+    expect(appMenu.map((item) => item.role).filter(Boolean)).toEqual([]);
     expect(windowSubmenu.map((item) => item.role).filter(Boolean)).toEqual([
       "minimize",
     ]);
