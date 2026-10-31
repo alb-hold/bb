@@ -7276,17 +7276,25 @@ describe("Account Pool plugin", () => {
           expect(
             statusReportSchema.parse(
               JSON.parse(
-                (await fixture.host.harness.behavior.runCli(["status", "--json"]))
-                  .stdout,
+                (
+                  await fixture.host.harness.behavior.runCli([
+                    "status",
+                    "--json",
+                  ])
+                ).stdout,
               ),
             ).accepting,
           ).toBe(true),
         );
-        if (cycle === 0) await vi.waitFor(() => expect(calls).toBeGreaterThan(1));
-        const refresh = fixture.host.harness.behavior.callRpc(usageFetchMethod, {
-          resourceId: accounts[0]!.id,
-          refresh: true,
-        });
+        if (cycle === 0)
+          await vi.waitFor(() => expect(calls).toBeGreaterThan(1));
+        const refresh = fixture.host.harness.behavior.callRpc(
+          usageFetchMethod,
+          {
+            resourceId: accounts[0]!.id,
+            refresh: true,
+          },
+        );
         const result = await Promise.race([
           refresh,
           waitForIo(300).then(() => null),
@@ -7453,7 +7461,10 @@ describe("Account Pool plugin", () => {
         usageUrl: "https://upstream.example/usage",
         refreshUrl: "https://upstream.example/token",
       });
-      const refresh = (account: (typeof accounts)[number], signal?: AbortSignal) =>
+      const refresh = (
+        account: (typeof accounts)[number],
+        signal?: AbortSignal,
+      ) =>
         adapter.refreshProfile!({
           account,
           signal,
@@ -7480,8 +7491,10 @@ describe("Account Pool plugin", () => {
       await vi.waitFor(() => expect(active.get(uuidA)).toBe(0));
       await refresh(accounts[0]!);
       expect(calls.get(uuidA)).toBe(2);
-      expect((await store.planDisplayNames())[accounts[0]!.id]).toBe(
-        "Ultra after reload",
+      await vi.waitFor(async () =>
+        expect((await store.planDisplayNames())[accounts[0]!.id]).toBe(
+          "Ultra after reload",
+        ),
       );
     } finally {
       stopB.abort();
@@ -7494,6 +7507,149 @@ describe("Account Pool plugin", () => {
       if (replacement !== null) await replacement.harness.lifecycle.dispose();
       vi.resetModules();
     }
+  });
+
+  it("returns a foreground profile name before saving and bounds its write drain", async () => {
+    let armed = false;
+    let arrived = deferred();
+    let held = deferred();
+    const { fixture, store, accounts } = await profileLifecycleFixture(
+      async (_input, init) =>
+        Response.json({
+          account: {
+            uuid: new Headers(init?.headers).get("authorization")!.slice(7),
+          },
+          organization: { plan_display_name: "Claude Ultra" },
+        }),
+      (host) => {
+        const set = host.bb.storage.kv.set.bind(host.bb.storage.kv);
+        host.bb.storage.kv.set = async (key, value) => {
+          if (armed && key === "plan-display-names:v1") {
+            armed = false;
+            const release = held;
+            arrived.resolve();
+            await release.promise;
+          }
+          return set(key, value);
+        };
+      },
+      { mutationDrainTimeoutMs: 1000 },
+    );
+    try {
+      for (const account of accounts)
+        await store.setPlanDisplayName(account.id, "Claude Max");
+      armed = true;
+      const refresh = (id: string) =>
+        fixture.host.harness.behavior.callRpc(usageFetchMethod, {
+          resourceId: id,
+          refresh: true,
+        });
+      const first = refresh(accounts[0]!.id);
+      await arrived.promise;
+      const measurement = await Promise.race([
+        first,
+        waitForIo(300).then(() => null),
+      ]);
+      expect(usageMeasurementSchema.parse(measurement).usage).toMatchObject({
+        status: "ok",
+        planLabel: "Ultra",
+      });
+      expect((await store.planDisplayNames())[accounts[0]!.id]).toBe(
+        "Claude Max",
+      );
+      held.resolve();
+      await first;
+      await vi.waitFor(async () =>
+        expect((await store.planDisplayNames())[accounts[0]!.id]).toBe(
+          "Claude Ultra",
+        ),
+      );
+      held = deferred();
+      arrived = deferred();
+      armed = true;
+      const second = refresh(accounts[1]!.id);
+      await arrived.promise;
+      expect(
+        usageMeasurementSchema.parse(
+          await Promise.race([second, waitForIo(300).then(() => null)]),
+        ).usage,
+      ).toMatchObject({ status: "ok", planLabel: "Ultra" });
+      vi.useFakeTimers();
+      let stopped = false;
+      fixture.service.controller.abort();
+      const stopping = fixture.service.done.then(() => {
+        stopped = true;
+      });
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(stopped).toBe(true);
+      expect(
+        fixture.host.harness.inspection.logEntries.filter(
+          (entry) =>
+            JSON.stringify(entry).includes("mutation drain timed out") &&
+            JSON.stringify(entry).includes(accounts[1]!.id),
+        ),
+      ).toHaveLength(1);
+      await stopping;
+      vi.useRealTimers();
+      held.resolve();
+      await second;
+      await vi.waitFor(async () =>
+        expect((await store.planDisplayNames())[accounts[1]!.id]).toBe(
+          "Claude Ultra",
+        ),
+      );
+    } finally {
+      vi.useRealTimers();
+      held.resolve();
+    }
+  });
+
+  it("returns the fetched plan and logs a rejected profile write once", async () => {
+    let armed = false;
+    const { fixture, store, accounts } = await profileLifecycleFixture(
+      async (_input, init) =>
+        Response.json({
+          account: {
+            uuid: new Headers(init?.headers).get("authorization")!.slice(7),
+          },
+          organization: { plan_display_name: "Claude Ultra" },
+        }),
+      (host) => {
+        const set = host.bb.storage.kv.set.bind(host.bb.storage.kv);
+        host.bb.storage.kv.set = async (key, value) => {
+          if (armed && key === "plan-display-names:v1") {
+            armed = false;
+            throw new Error("test write failure");
+          }
+          return set(key, value);
+        };
+      },
+    );
+    for (const account of accounts)
+      await store.setPlanDisplayName(account.id, "Claude Max");
+    armed = true;
+    const measurement = usageMeasurementSchema.parse(
+      await fixture.host.harness.behavior.callRpc(usageFetchMethod, {
+        resourceId: accounts[0]!.id,
+        refresh: true,
+      }),
+    );
+    expect(measurement.usage).toMatchObject({
+      status: "ok",
+      planLabel: "Ultra",
+    });
+    expect((await store.planDisplayNames())[accounts[0]!.id]).toBe(
+      "Claude Max",
+    );
+    await vi.waitFor(() =>
+      expect(
+        fixture.host.harness.inspection.logEntries.filter(
+          (entry) =>
+            JSON.stringify(entry).includes("could not save profile metadata") &&
+            JSON.stringify(entry).includes(accounts[0]!.id),
+        ),
+      ).toHaveLength(1),
+    );
   });
 
   it("hard bounds an abort-ignoring profile request", async () => {

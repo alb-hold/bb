@@ -834,8 +834,10 @@ export class AccountPoolHub {
 
   async display() {
     void this.backfillPlanNames();
-    const plans = await this.options.accounts.planDisplayNames();
     const accounts = await this.options.accounts.list();
+    const plans = await this.options.accounts.displayPlanNames(
+      new Set(accounts.map(({ id }) => id)),
+    );
     return {
       plans: Object.fromEntries(
         accounts.flatMap(({ id }) =>

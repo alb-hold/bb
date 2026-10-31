@@ -185,7 +185,11 @@ export function createAccountPoolPlugin(
       "secrets",
       "accounts",
     );
-    const accounts = new AccountStore(bb.storage.kv, secretDir);
+    const accounts = new AccountStore(bb.storage.kv, secretDir, (id) => {
+      bb.log.warn(
+        `Account Pooler could not save profile metadata for account ${id}.`,
+      );
+    });
     await accounts.initialize();
     const now = options.now ?? Date.now;
     const archiveUndoGraceKeepsCredential = (

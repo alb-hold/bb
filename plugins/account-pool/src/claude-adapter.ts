@@ -225,40 +225,52 @@ export function createClaudeAdapter(options: {
       if (profile === null || context.signal?.aborted) return;
       const account = context.account;
       const accountUuid = profile.account.uuid ?? null;
-      if (account.accountUuid === null) {
-        if (accountUuid === null) return;
-        await context.accounts.setAccountUuid(
-          account.id,
-          accountUuid,
-          context.signal,
-        );
-      } else if (accountUuid !== account.accountUuid) {
+      if (
+        account.accountUuid === null
+          ? accountUuid === null
+          : accountUuid !== account.accountUuid
+      ) {
         return;
       }
-      const organizationUuid = profile.organization?.uuid ?? null;
-      if (organizationUuid !== null)
-        await context.accounts.setOrganization(
+      const write = (async () => {
+        if (account.accountUuid === null && accountUuid !== null)
+          await context.accounts.setAccountUuid(
+            account.id,
+            accountUuid,
+            context.signal,
+          );
+        const organizationUuid = profile.organization?.uuid ?? null;
+        if (organizationUuid !== null)
+          await context.accounts.setOrganization(
+            account.id,
+            organizationUuid,
+            context.signal,
+          );
+        await context.accounts.setPlanDisplayName(
           account.id,
-          organizationUuid,
+          profile.organization?.plan_display_name ?? null,
           context.signal,
         );
-      await context.accounts.setPlanDisplayName(
+        const reported = claudePlanFromProfile(profile);
+        const plan = {
+          subscriptionType:
+            reported.subscriptionType ?? account.subscriptionType,
+          rateLimitTier: reported.rateLimitTier ?? account.rateLimitTier,
+        };
+        if (
+          plan.subscriptionType !== account.subscriptionType ||
+          plan.rateLimitTier !== account.rateLimitTier
+        )
+          await context.accounts.setPlan(account.id, plan, context.signal);
+        if (!context.signal?.aborted)
+          profileCheckedAt.set(account.id, context.now());
+      })();
+      context.accounts.trackProfileWrite(
         account.id,
         profile.organization?.plan_display_name ?? null,
-        context.signal,
+        write,
       );
-      const reported = claudePlanFromProfile(profile);
-      const plan = {
-        subscriptionType: reported.subscriptionType ?? account.subscriptionType,
-        rateLimitTier: reported.rateLimitTier ?? account.rateLimitTier,
-      };
-      if (
-        plan.subscriptionType !== account.subscriptionType ||
-        plan.rateLimitTier !== account.rateLimitTier
-      )
-        await context.accounts.setPlan(account.id, plan, context.signal);
-      if (context.signal?.aborted) return;
-      profileCheckedAt.set(account.id, context.now());
+      if (context.background) await write;
       failed = profile.organization?.plan_display_name == null;
     } finally {
       if (profileInFlight.get(id) === context) {

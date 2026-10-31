@@ -69,10 +69,16 @@ export type RoutedThread = z.infer<typeof routedThreadSchema> & {
 export class AccountStore {
   private mutationLock: Promise<void> | null = null;
   private readonly activePlanWrites = new Set<string>();
+  private readonly profileWrites = new Map<Promise<void>, string>();
+  private readonly fetchedPlanNames = new Map<
+    string,
+    { name: string | null }
+  >();
 
   constructor(
     private readonly kv: PluginKvStorage,
     private readonly secretsDir: string,
+    private readonly onProfileWriteError: (id: string) => void = () => {},
   ) {}
 
   async initialize(): Promise<void> {
@@ -121,6 +127,7 @@ export class AccountStore {
       const next = accounts.filter((account) => account.id !== id);
       if (next.length === accounts.length) return false;
       await this.kv.set(ACCOUNTS_KEY, next);
+      this.fetchedPlanNames.delete(id);
       await fs.rm(this.accountSecretPath(id), { force: true });
       const organizations = await this.organizations();
       if (organizations.delete(id))
@@ -203,6 +210,37 @@ export class AccountStore {
 
   async planDisplayNames(): Promise<Record<string, string>> {
     return planNamesSchema.parse((await this.kv.get(PLAN_NAMES_KEY)) ?? {});
+  }
+
+  async displayPlanNames(
+    ids: ReadonlySet<string>,
+  ): Promise<Record<string, string>> {
+    const names = await this.planDisplayNames();
+    for (const [id, entry] of this.fetchedPlanNames) {
+      if (!ids.has(id)) this.fetchedPlanNames.delete(id);
+      else if (entry.name === null) delete names[id];
+      else names[id] = entry.name;
+    }
+    return names;
+  }
+
+  trackProfileWrite(
+    id: string,
+    name: string | null,
+    write: Promise<void>,
+  ): void {
+    const entry = { name };
+    this.fetchedPlanNames.set(id, entry);
+    const pending = write
+      .then(
+        () => {
+          if (this.fetchedPlanNames.get(id) === entry)
+            this.fetchedPlanNames.delete(id);
+        },
+        () => this.onProfileWriteError(id),
+      )
+      .finally(() => this.profileWrites.delete(pending));
+    this.profileWrites.set(pending, id);
   }
 
   async setPlanDisplayName(
@@ -373,11 +411,13 @@ export class AccountStore {
   }
 
   pendingPlanWrites(): string[] {
-    return [...this.activePlanWrites];
+    return [
+      ...new Set([...this.activePlanWrites, ...this.profileWrites.values()]),
+    ];
   }
 
   async drainMutations(): Promise<void> {
-    await this.mutationLock;
+    await Promise.all([this.mutationLock, ...this.profileWrites.keys()]);
   }
 
   private async serialized<T>(action: () => Promise<T>): Promise<T> {
