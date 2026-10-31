@@ -1,10 +1,10 @@
+import { createAccountPoolTestHost } from "./test-host.js";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { tmpdir } from "node:os";
 import { mkdtemp } from "node:fs/promises";
 import Database from "better-sqlite3";
 import type { PluginKvStorage } from "@get-bb/plugin-sdk";
-import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Account } from "./contracts.js";
 import { AccountStore, QUOTA_MIGRATIONS, QuotaStore } from "./store.js";
@@ -33,7 +33,7 @@ function delayedAccountReads(kv: PluginKvStorage): PluginKvStorage {
 describe("AccountStore", () => {
   it("loads account metadata written before account UUIDs were stored", async () => {
     const dataDir = await mkdtemp(path.join(tmpdir(), "bb-account-store-"));
-    const host = createFakePluginHost({ pluginId: "account-pool", dataDir });
+    const host = createAccountPoolTestHost({ pluginId: "account-pool", dataDir });
     const store = new AccountStore(
       host.bb.storage.kv,
       path.join(dataDir, "secrets"),
@@ -64,7 +64,7 @@ describe("AccountStore", () => {
 
   it("preserves both accounts added concurrently", async () => {
     const dataDir = await mkdtemp(path.join(tmpdir(), "bb-account-store-"));
-    const host = createFakePluginHost({ pluginId: "account-pool", dataDir });
+    const host = createAccountPoolTestHost({ pluginId: "account-pool", dataDir });
     const secretsDir = path.join(dataDir, "secrets");
     const store = new AccountStore(
       delayedAccountReads(host.bb.storage.kv),
@@ -101,7 +101,7 @@ describe("AccountStore", () => {
 
   it("forgets a removed account's organization and keeps the others", async () => {
     const dataDir = await mkdtemp(path.join(tmpdir(), "bb-account-store-"));
-    const host = createFakePluginHost({ pluginId: "account-pool", dataDir });
+    const host = createAccountPoolTestHost({ pluginId: "account-pool", dataDir });
     const store = new AccountStore(
       host.bb.storage.kv,
       path.join(dataDir, "secrets"),
@@ -151,7 +151,7 @@ describe("AccountStore", () => {
 
   it("checks a turn-off selector against a write that held the store when it was called, and a refusal writes nothing", async () => {
     const dataDir = await mkdtemp(path.join(tmpdir(), "bb-account-store-"));
-    const host = createFakePluginHost({ pluginId: "account-pool", dataDir });
+    const host = createAccountPoolTestHost({ pluginId: "account-pool", dataDir });
     cleanups.push(async () => {
       await host.harness.lifecycle.dispose();
       await fs.rm(dataDir, { recursive: true, force: true });
