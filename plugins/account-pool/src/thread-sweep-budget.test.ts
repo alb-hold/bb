@@ -510,6 +510,23 @@ it("caps durable retries at 256 while overflow remains covered by the main rotat
     await fs.readFile(path.join(directory, "thread-sweep.json"), "utf8"),
   );
   expect(state.retries).toHaveLength(256);
+  const rename = fs.rename.bind(fs);
+  vi.spyOn(fs, "rename").mockImplementation(async (source, target) => {
+    const name = path.basename(String(target));
+    if (
+      name.startsWith("archived-thread-") ||
+      name.startsWith("archive-revocation-")
+    )
+      throw new Error("archive persistence unavailable");
+    return rename(source, target);
+  });
+  await store.sweepThreads(async () => "archived");
+  vi.restoreAllMocks();
+  const failed = JSON.parse(
+    await fs.readFile(path.join(directory, "thread-sweep.json"), "utf8"),
+  );
+  expect(failed.retries).toHaveLength(256);
+  expect(failed.retryOverflow).toBe(true);
   const restarted = new ThreadTokenStore(directory, hosts);
   await restarted.initialize(["host-one"]);
   const checked = new Set<string>();
@@ -539,7 +556,7 @@ it("recovers 200 outage retries through the main rotation within four bounded sw
     let calls = 0;
     await restarted.sweepThreads(
       async (id) => {
-        if (++calls > 64) {
+        if (++calls > 72) {
           budget.abort();
           return new Promise(() => undefined);
         }
