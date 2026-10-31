@@ -981,7 +981,10 @@ describe("ThreadTerminalView terminal viewport and focus", () => {
         )
         .filter((message) => message.type === "resize");
 
-    await waitFor(() => expect(resizeMessages()).toHaveLength(1));
+    await waitForReadinessCondition(
+      () => expect(resizeMessages()).toHaveLength(1),
+      "initial pinch grid was not resized",
+    );
     const originalGrid = resizeMessages().at(-1);
     dispatchTouches("touchstart", 100);
     for (const ratio of [
