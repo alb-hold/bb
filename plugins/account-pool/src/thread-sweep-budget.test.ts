@@ -1,5 +1,5 @@
 import fs from "node:fs/promises";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import path from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, expect, it, vi } from "vitest";
@@ -19,19 +19,45 @@ async function fixture(count = 3000) {
   const hosts = new HubTokenStore(directory);
   await hosts.initialize();
   const hostToken = await hosts.forHost("host-one");
-  const store = new ThreadTokenStore(directory, hosts);
-  await store.initialize(["host-one"]);
+  const mint = new ThreadTokenStore(directory, hosts);
+  await mint.initialize(["host-one"]);
   const tokens = new Map<string, string>();
-  for (let i = 0; i < count; i += 1) {
-    const threadId = `thr_${String(i).padStart(4, "0")}`;
+  if (count > 0)
     tokens.set(
-      threadId,
-      await store.forThread(
-        { hostId: "host-one", threadId, provider: "claude", accountId: null },
+      "thr_0000",
+      await mint.forThread(
+        {
+          hostId: "host-one",
+          threadId: "thr_0000",
+          provider: "claude",
+          accountId: null,
+        },
         hostToken,
       ),
     );
+  const hostTokenDigest = createHash("sha256").update(hostToken).digest("hex");
+  for (let i = 1; i < count; i += 1) {
+    const threadId = `thr_${String(i).padStart(4, "0")}`;
+    const token = randomBytes(32).toString("base64url");
+    tokens.set(threadId, token);
+    await fs.writeFile(
+      path.join(
+        directory,
+        `scoped-route-host-one-claude-${threadId}-automatic-${hostTokenDigest}-v0.json`,
+      ),
+      JSON.stringify({
+        hostId: "host-one",
+        threadId,
+        provider: "claude",
+        accountId: null,
+        hostTokenDigest,
+        tokenDigest: createHash("sha256").update(token).digest("hex"),
+      }),
+      { mode: 0o600 },
+    );
   }
+  const store = new ThreadTokenStore(directory, hosts);
+  await store.initialize(["host-one"]);
   return { store, tokens, directory, hosts };
 }
 
@@ -520,7 +546,10 @@ it("caps durable retries at 256 while overflow remains covered by the main rotat
       throw new Error("archive persistence unavailable");
     return rename(source, target);
   });
-  await store.sweepThreads(async () => "archived");
+  await store.sweepThreads(async (id) => {
+    if (id === "thr_0319") return "archived";
+    throw new Error("lookup unavailable");
+  });
   vi.restoreAllMocks();
   const failed = JSON.parse(
     await fs.readFile(path.join(directory, "thread-sweep.json"), "utf8"),
@@ -532,11 +561,13 @@ it("caps durable retries at 256 while overflow remains covered by the main rotat
   const checked = new Set<string>();
   await restarted.sweepThreads(async (id) => {
     checked.add(id);
-    return "archived";
+    return id === "thr_0319" ? "archived" : "live";
   });
   expect(checked.size).toBe(320);
-  for (const token of tokens.values())
-    expect(await restarted.authenticate(token)).toBeNull();
+  for (const [id, token] of tokens)
+    expect((await restarted.authenticate(token))?.threadId ?? null).toBe(
+      id === "thr_0319" ? null : id,
+    );
   const recovered = JSON.parse(
     await fs.readFile(path.join(directory, "thread-sweep.json"), "utf8"),
   );
@@ -561,7 +592,7 @@ it("recovers 200 outage retries through the main rotation within four bounded sw
           return new Promise(() => undefined);
         }
         checked.add(id);
-        return "archived";
+        return id === "thr_0199" ? "archived" : "live";
       },
       { signal: budget.signal },
     );
@@ -569,8 +600,10 @@ it("recovers 200 outage retries through the main rotation within four bounded sw
   expect(checked.size).toBe(200);
   const restarted = new ThreadTokenStore(directory, hosts);
   await restarted.initialize(["host-one"]);
-  for (const token of tokens.values())
-    expect(await restarted.authenticate(token)).toBeNull();
+  for (const [id, token] of tokens)
+    expect((await restarted.authenticate(token))?.threadId ?? null).toBe(
+      id === "thr_0199" ? null : id,
+    );
 });
 
 it("rechecks a failed thread after a crash loses the retry write before its atomic commit", async () => {

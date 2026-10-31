@@ -2136,10 +2136,18 @@ it("counts a thread archived by its event during the lookup as revoked without a
 
 it("gives up on a lookup that never settles once the sweep deadline passes and keeps the credential", async () => {
   const { threads, tokenOf } = await legacyFixture(["thr_hung"]);
-  const result = await threads.sweepThreads(
-    () => new Promise<never>(() => undefined),
-    { signal: AbortSignal.timeout(30) },
+  const deadline = new AbortController();
+  const started = Promise.withResolvers<void>();
+  const pending = threads.sweepThreads(
+    () => {
+      started.resolve();
+      return new Promise<never>(() => undefined);
+    },
+    { signal: deadline.signal },
   );
+  await started.promise;
+  deadline.abort();
+  const result = await pending;
   expect(result).toEqual({ checked: 1, revoked: 0, failed: 0, deferred: 1 });
   expect(
     await threads.authenticate(tokenOf("thr_hung").provider),
@@ -2166,20 +2174,55 @@ it("does not let threads whose lookups hang starve a later archived thread, and 
   const [hangA, hangB, archived] = await loadOrder(directory, names);
   if (hangA === undefined || hangB === undefined || archived === undefined)
     throw new Error("missing thread");
-  const lookup: ThreadLookup = (threadId) =>
-    threadId === archived
-      ? Promise.resolve("gone")
-      : new Promise<never>(() => undefined);
-  const started = Date.now();
-  const sweepOptions = () => ({
-    signal: AbortSignal.timeout(60),
-    lookupTimeoutMs: 50,
+  const deadlines: AbortController[] = [];
+  const timeout = vi.spyOn(AbortSignal, "timeout").mockImplementation(() => {
+    const deadline = new AbortController();
+    deadlines.push(deadline);
+    return deadline.signal;
   });
-  const one = await threads.sweepThreads(lookup, sweepOptions());
-  expect(Date.now() - started).toBeLessThan(2_000);
-  expect(one).toEqual({ checked: 3, revoked: 1, failed: 2, deferred: 0 });
-  const two = await threads.sweepThreads(lookup, sweepOptions());
-  expect(two).toEqual({ checked: 2, revoked: 0, failed: 2, deferred: 0 });
+  const sweep = async () => {
+    let dispatched = 0;
+    const expected = deadlines.length === 0 ? 3 : 2;
+    const started = Promise.withResolvers<void>();
+    const hanging: AbortController[] = [];
+    const lookup: ThreadLookup = (threadId) => {
+      const deadline = deadlines[firstLookup + dispatched];
+      if (threadId !== archived && deadline !== undefined)
+        hanging.push(deadline);
+      if (++dispatched === expected) started.resolve();
+      return threadId === archived
+        ? Promise.resolve("gone")
+        : new Promise<never>(() => undefined);
+    };
+    const global = AbortSignal.timeout(60);
+    const firstLookup = deadlines.length;
+    const pending = threads.sweepThreads(lookup, {
+      signal: global,
+      lookupTimeoutMs: 50,
+    });
+    await started.promise;
+    for (const deadline of hanging)
+      deadline.abort(new DOMException("lookup timed out", "TimeoutError"));
+    const result = await pending;
+    expect(global.aborted).toBe(false);
+    return result;
+  };
+  try {
+    expect(await sweep()).toEqual({
+      checked: 3,
+      revoked: 1,
+      failed: 2,
+      deferred: 0,
+    });
+    expect(await sweep()).toEqual({
+      checked: 2,
+      revoked: 0,
+      failed: 2,
+      deferred: 0,
+    });
+  } finally {
+    timeout.mockRestore();
+  }
   expect(await threads.authenticate(tokenOf(archived).provider)).toBeNull();
   expect(await threads.authenticate(tokenOf(hangA).provider)).not.toBeNull();
   expect(await threads.authenticate(tokenOf(hangB).provider)).not.toBeNull();
