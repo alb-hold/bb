@@ -389,9 +389,11 @@ The retry plugin remains responsible for queueing, maximum waits, and attempt li
 
 Claude plan badges and the CLI Plan column prefer Anthropic's
 `organization.plan_display_name` (for example Ultra) over legacy Max flags and
-rate-limit tier identifiers. The name is collected on the next profile refresh;
-account names remain unchanged. Without a provider display name, the pool shows
-Max with its reported multiplier, or the capitalised subscription type.
+rate-limit tier identifiers. Missing names are backfilled in the background at startup and on display reads.
+Refreshes are single-flight per account, use the profile request timeout, and
+retry after at least five minutes on failure. Account names remain unchanged.
+Without a provider display name, legacy Max records show Claude subscription.
+Max multipliers appear only when the stored provider name says Max.
 The additive `display.get` RPC returns display names in `plans`, keyed by account
 ID. Legacy account records and `status.get` retain their existing shape.
 

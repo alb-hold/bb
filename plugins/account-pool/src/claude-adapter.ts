@@ -8,7 +8,10 @@ import {
   importClaudeCredentials,
   type ImportedClaudeCredentials,
 } from "./credentials.js";
-import type { ProviderAdapter } from "./provider-adapter.js";
+import type {
+  ProviderAdapter,
+  AdapterUsageContext,
+} from "./provider-adapter.js";
 import {
   fetchOAuthRefresh,
   filterRequestHeaders,
@@ -52,8 +55,82 @@ export function createClaudeAdapter(options: {
   importCredentials?: () => Promise<ImportedClaudeCredentials>;
 }): ProviderAdapter {
   const profileCheckedAt = new Map<string, number>();
+  const profileInFlight = new Set<string>();
+  const profileRetryAt = new Map<string, number>();
+  async function refreshProfile(context: AdapterUsageContext): Promise<void> {
+    const id = context.account.id;
+    if (
+      context.account.kind !== "oauth" ||
+      profileInFlight.has(id) ||
+      context.now() < (profileRetryAt.get(id) ?? 0)
+    )
+      return;
+    profileInFlight.add(id);
+    profileRetryAt.set(id, context.now() + 5 * 60 * 1_000);
+    try {
+      const secret = await context.freshSecret();
+      if (secret.kind !== "oauth") return;
+      const account = context.account;
+      const checkedAt = profileCheckedAt.get(account.id);
+      if (
+        account.accountUuid !== null &&
+        (await context.accounts.planDisplayNames())[account.id] !== undefined &&
+        checkedAt !== undefined &&
+        context.now() - checkedAt < PROFILE_REFRESH_INTERVAL_MS
+      )
+        return;
+      const profile = await context
+        .fetch(options.profileUrl, {
+          headers: {
+            authorization: `Bearer ${secret.accessToken}`,
+            "anthropic-beta": OAUTH_BETA,
+            accept: "application/json",
+          },
+          signal: AbortSignal.timeout(USAGE_REQUEST_TIMEOUT_MS),
+        })
+        .catch(() => null);
+      if (profile === null) return;
+      if (!profile.ok) {
+        await profile.body?.cancel();
+        return;
+      }
+      const parsed = claudeProfileSchema.safeParse(
+        await profile.json().catch(() => null),
+      );
+      if (!parsed.success) return;
+      const accountUuid = parsed.data.account.uuid ?? null;
+      if (account.accountUuid === null) {
+        if (accountUuid === null) return;
+        await context.accounts.setAccountUuid(account.id, accountUuid);
+      } else if (accountUuid !== account.accountUuid) {
+        return;
+      }
+      const organizationUuid = parsed.data.organization?.uuid ?? null;
+      if (organizationUuid !== null)
+        await context.accounts.setOrganization(account.id, organizationUuid);
+      await context.accounts.setPlanDisplayName(
+        account.id,
+        parsed.data.organization?.plan_display_name ?? null,
+      );
+      const reported = claudePlanFromProfile(parsed.data);
+      const plan = {
+        subscriptionType: reported.subscriptionType ?? account.subscriptionType,
+        rateLimitTier: reported.rateLimitTier ?? account.rateLimitTier,
+      };
+      if (
+        plan.subscriptionType !== account.subscriptionType ||
+        plan.rateLimitTier !== account.rateLimitTier
+      )
+        await context.accounts.setPlan(account.id, plan);
+      profileCheckedAt.set(account.id, context.now());
+    } finally {
+      profileRetryAt.set(id, context.now() + 5 * 60 * 1_000);
+      profileInFlight.delete(id);
+    }
+  }
   return {
     provider: "claude",
+    refreshProfile,
     upstreamName: "Anthropic",
     async localLogin() {
       return null;
@@ -170,58 +247,7 @@ export function createClaudeAdapter(options: {
         },
       );
       if (!stored) return;
-      const account = context.account;
-      const checkedAt = profileCheckedAt.get(account.id);
-      if (
-        account.accountUuid !== null &&
-        checkedAt !== undefined &&
-        context.now() - checkedAt < PROFILE_REFRESH_INTERVAL_MS
-      )
-        return;
-      const profile = await context
-        .fetch(options.profileUrl, {
-          headers: {
-            authorization: `Bearer ${secret.accessToken}`,
-            "anthropic-beta": OAUTH_BETA,
-            accept: "application/json",
-          },
-          signal: AbortSignal.timeout(USAGE_REQUEST_TIMEOUT_MS),
-        })
-        .catch(() => null);
-      if (profile === null) return;
-      if (!profile.ok) {
-        await profile.body?.cancel();
-        return;
-      }
-      const parsed = claudeProfileSchema.safeParse(
-        await profile.json().catch(() => null),
-      );
-      if (!parsed.success) return;
-      const accountUuid = parsed.data.account.uuid ?? null;
-      if (account.accountUuid === null) {
-        if (accountUuid === null) return;
-        await context.accounts.setAccountUuid(account.id, accountUuid);
-      } else if (accountUuid !== account.accountUuid) {
-        return;
-      }
-      const organizationUuid = parsed.data.organization?.uuid ?? null;
-      if (organizationUuid !== null)
-        await context.accounts.setOrganization(account.id, organizationUuid);
-      await context.accounts.setPlanDisplayName(
-        account.id,
-        parsed.data.organization?.plan_display_name ?? null,
-      );
-      const reported = claudePlanFromProfile(parsed.data);
-      const plan = {
-        subscriptionType: reported.subscriptionType ?? account.subscriptionType,
-        rateLimitTier: reported.rateLimitTier ?? account.rateLimitTier,
-      };
-      if (
-        plan.subscriptionType !== account.subscriptionType ||
-        plan.rateLimitTier !== account.rateLimitTier
-      )
-        await context.accounts.setPlan(account.id, plan);
-      profileCheckedAt.set(account.id, context.now());
+      await refreshProfile(context);
     },
     errorResponse(status, message, headers) {
       const type =

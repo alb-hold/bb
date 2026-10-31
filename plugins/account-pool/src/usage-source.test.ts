@@ -9,16 +9,22 @@ describe("usage presentation labels", () => {
     expect(usageWindowLabel(2_880, "primary")).toBe("2 day limit");
     expect(usageWindowLabel(null, "Custom limit")).toBe("Custom limit");
   });
-  it("retains known Max multipliers without inventing a missing tier", () => {
+  it("uses a Max multiplier only with a stored provider Max name", () => {
     expect(
-      usagePlanLabel({
-        subscriptionType: "max",
-        rateLimitTier: "default_claude_max_20x",
-      }),
+      usagePlanLabel(
+        {
+          subscriptionType: "max",
+          rateLimitTier: "default_claude_max_20x",
+        },
+        "Max",
+      ),
     ).toBe("Max (20x)");
     expect(
-      usagePlanLabel({ subscriptionType: "max", rateLimitTier: null }),
+      usagePlanLabel({ subscriptionType: "max", rateLimitTier: null }, "Max"),
     ).toBe("Max");
+    expect(
+      usagePlanLabel({ subscriptionType: "max", rateLimitTier: "max_20x" }),
+    ).toBe("Claude subscription");
     expect(
       usagePlanLabel({ subscriptionType: "pro", rateLimitTier: null }),
     ).toBe("Pro");

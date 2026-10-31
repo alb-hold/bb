@@ -7015,10 +7015,12 @@ describe("Account Pool plugin", () => {
     usage: object = { seven_day: { utilization: 13 } },
   ) {
     const profileCalls: string[] = [];
+    let now = Date.now();
     const fixture = await createFixture({
       upstreamUrl: "https://upstream.example",
       source: "import",
       options: {
+        now: () => now,
         usageUrl: "https://upstream.example/usage",
         oauthProfileUrl: "https://upstream.example/profile",
         importCredentials: async () =>
@@ -7061,8 +7063,122 @@ describe("Account Pool plugin", () => {
           await fixture.host.harness.behavior.callRpc("account.list", null),
         )
         .find((account) => account.id === fixture.account.id);
-    return { fixture, listed, profileCalls };
+    return {
+      fixture,
+      listed,
+      profileCalls,
+      advance: () => {
+        now += 5 * 60 * 1000;
+      },
+    };
   }
+
+  it("uses neutral labels on cold CLI and usage-source reads", async () => {
+    const { fixture } = await claudePlanFixture(
+      { account: { uuid: "11111111-1111-4111-8111-111111111111" } },
+      "http",
+    );
+    const table = await fixture.host.harness.behavior.runCli([
+      "account",
+      "list",
+    ]);
+    const usage = usageMeasurementSchema.parse(
+      await fixture.host.harness.behavior.callRpc(usageFetchMethod, {
+        resourceId: fixture.account.id,
+        refresh: false,
+      }),
+    );
+    expect({
+      neutralCli: table.stdout.includes("Claude subscription"),
+      maxCli: table.stdout.includes("Max ("),
+      usage: usage.usage,
+    }).toMatchObject({
+      neutralCli: true,
+      maxCli: false,
+      usage: { planLabel: "Claude subscription" },
+    });
+  });
+
+  it.each(["success", "failure"])(
+    "backfills a cold plan with bounded retries after %s",
+    async (outcome) => {
+      const arrived = deferred();
+      const release = deferred();
+      let calls = 0;
+      let armed = false;
+      let now = Date.now();
+      const fixture = await createFixture({
+        upstreamUrl: "https://upstream.example",
+        source: "import",
+        options: {
+          now: () => now,
+          usageUrl: "https://upstream.example/usage",
+          oauthProfileUrl: "https://upstream.example/profile",
+          importCredentials: async () => importedCredentials(),
+          fetch: async (input) => {
+            if (new URL(String(input)).pathname === "/profile") {
+              if (!armed) return Response.json({}, { status: 503 });
+              calls += 1;
+              arrived.resolve();
+              await release.promise;
+              return outcome === "failure"
+                ? Response.json({}, { status: 503 })
+                : Response.json({
+                    account: { uuid: "11111111-1111-4111-8111-111111111111" },
+                    organization: { plan_display_name: "Claude Ultra" },
+                  });
+            }
+            return Response.json({ seven_day: { utilization: 13 } });
+          },
+        },
+      });
+      const display = () =>
+        fixture.host.harness.behavior.callRpc("display.get", null);
+      const table = () =>
+        fixture.host.harness.behavior.runCli(["account", "list"]);
+      try {
+        armed = true;
+        now += 5 * 60 * 1000;
+        await display();
+        await arrived.promise;
+        expect(await display()).toMatchObject({ plans: {} });
+        expect(await display()).toMatchObject({ plans: {} });
+        expect((await table()).stdout).toContain("Claude subscription");
+        const usage = usageMeasurementSchema.parse(
+          await fixture.host.harness.behavior.callRpc(usageFetchMethod, {
+            resourceId: fixture.account.id,
+            refresh: false,
+          }),
+        );
+        expect(usage.usage).toMatchObject({ planLabel: "Claude subscription" });
+        expect(calls).toBe(1);
+      } finally {
+        release.resolve();
+      }
+      await waitForIo(0);
+      await fixture.host.harness.behavior.callRpc("account.refreshUsage", {
+        accountId: fixture.account.id,
+      });
+      if (outcome === "success") {
+        await vi.waitFor(async () =>
+          expect(await display()).toMatchObject({
+            plans: { [fixture.account.id]: "Claude Ultra" },
+          }),
+        );
+        expect((await table()).stdout).toContain("Ultra");
+      } else {
+        expect((await table()).stdout).toContain("Claude subscription");
+        expect((await table()).stdout).not.toContain("Max (");
+        expect(calls).toBe(1);
+        now += 5 * 60 * 1000;
+        await display();
+        await vi.waitFor(async () => {
+          await display();
+          expect(calls).toBe(2);
+        });
+      }
+    },
+  );
 
   it("preserves a future model API name in weekly rows without changing the legacy quota shape", async () => {
     const { fixture, listed } = await claudePlanFixture(
@@ -7165,10 +7281,12 @@ describe("Account Pool plugin", () => {
       const arrived = deferred();
       const release = deferred();
       let armed = false;
+      let now = Date.now();
       const fixture = await createFixture({
         upstreamUrl: "https://upstream.example",
         source: "import",
         options: {
+          now: () => now,
           usageUrl: "https://upstream.example/usage",
           oauthProfileUrl: "https://upstream.example/profile",
           importCredentials: async () => importedCredentials(),
@@ -7206,6 +7324,7 @@ describe("Account Pool plugin", () => {
       await fixture.host.harness.behavior.callRpc("account.refreshUsage", {
         accountId: fixture.account.id,
       });
+      now += 5 * 60 * 1000;
       armed = true;
       const refresh = fixture.host.harness.behavior.callRpc(
         "account.refreshUsage",
@@ -7222,7 +7341,10 @@ describe("Account Pool plugin", () => {
       }
       const quotas = new QuotaStore(fixture.host.bb.storage.database());
       expect({
-        display: await fixture.host.harness.behavior.callRpc("display.get", null),
+        display: await fixture.host.harness.behavior.callRpc(
+          "display.get",
+          null,
+        ),
         storedPlans:
           (await fixture.host.bb.storage.kv.get("plan-display-names:v1")) ?? {},
         storedWeekly: quotas.modelWeekly(fixture.account.id),
@@ -7262,6 +7384,7 @@ describe("Account Pool plugin", () => {
       },
       organization: {
         organization_type: "claude_max",
+        plan_display_name: "Max",
         rate_limit_tier: "default_claude_max_20x",
       },
     });
@@ -7301,22 +7424,23 @@ describe("Account Pool plugin", () => {
   });
 
   it.each(["network", "http", "json", "payload", "identity"] as const)(
-    "retries a failed Claude profile lookup on the next usage refresh after %s failure",
+    "retries a failed Claude profile lookup after backoff following %s failure",
     async (failure) => {
       const organizationUuid = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
-      const { fixture, listed, profileCalls } = await claudePlanFixture(
-        {
-          account: {
-            uuid: "11111111-1111-4111-8111-111111111111",
-            has_claude_max: true,
+      const { fixture, listed, profileCalls, advance } =
+        await claudePlanFixture(
+          {
+            account: {
+              uuid: "11111111-1111-4111-8111-111111111111",
+              has_claude_max: true,
+            },
+            organization: {
+              uuid: organizationUuid,
+              rate_limit_tier: "default_claude_max_20x",
+            },
           },
-          organization: {
-            uuid: organizationUuid,
-            rate_limit_tier: "default_claude_max_20x",
-          },
-        },
-        failure,
-      );
+          failure,
+        );
       const refresh = () =>
         fixture.host.harness.behavior.callRpc("account.refreshUsage", {
           accountId: fixture.account.id,
@@ -7328,6 +7452,7 @@ describe("Account Pool plugin", () => {
         rateLimitTier: "default_claude_max_5x",
       });
 
+      advance();
       await refresh();
       expect(profileCalls.length).toBe(2);
       expect(await listed()).toMatchObject({
@@ -8980,8 +9105,11 @@ describe("sequential pool recovery", () => {
     let upstreamCalls = 0;
     const options: AccountPoolPluginOptions = {
       usageUrl: "https://upstream.example/usage",
+      oauthProfileUrl: "https://upstream.example/profile",
       importCredentials: async () => importedCredentials(),
       fetch: async (input) => {
+        if (new URL(String(input)).pathname === "/profile")
+          return Response.json(null);
         if (new URL(String(input)).pathname === "/usage")
           return Response.json({});
         upstreamCalls++;

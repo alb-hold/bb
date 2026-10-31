@@ -122,6 +122,7 @@ export interface ProviderAdapter {
     context: AdapterSecretContext,
   ): Promise<{ secret: AccountSecret; refreshed: boolean }>;
   refreshUsage(context: AdapterUsageContext): Promise<void>;
+  refreshProfile?(context: AdapterUsageContext): Promise<void>;
   errorResponse(
     status: number,
     message: string,

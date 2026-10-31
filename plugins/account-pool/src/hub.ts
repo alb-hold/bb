@@ -254,6 +254,7 @@ export class AccountPoolHub {
     this.pacingByAccount.clear();
     this.stopped = new AbortController();
     this.accepting = true;
+    void this.backfillPlanNames();
     while (!signal.aborted) {
       await this.refreshUsage();
       await waitForDelay(DEFAULT_USAGE_REFRESH_INTERVAL_MS, signal);
@@ -745,7 +746,33 @@ export class AccountPoolHub {
     }
   }
 
+  async backfillPlanNames(): Promise<void> {
+    const plans = await this.options.accounts.planDisplayNames();
+    const accounts = await this.options.accounts.list();
+    for (const account of accounts) {
+      if (
+        account.provider !== "claude" ||
+        account.kind !== "oauth" ||
+        plans[account.id] !== undefined
+      )
+        continue;
+      const adapter = this.adapter(account.provider);
+      void adapter
+        .refreshProfile?.({
+          account,
+          freshSecret: () =>
+            this.freshSecret(account, adapter, { kind: "normal" }),
+          accounts: this.options.accounts,
+          quotas: this.options.quotas,
+          fetch: this.options.fetch,
+          now: this.options.now,
+        })
+        .catch(() => {});
+    }
+  }
+
   async display() {
+    void this.backfillPlanNames();
     const plans = await this.options.accounts.planDisplayNames();
     const accounts = await this.options.accounts.list();
     return {
