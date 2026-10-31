@@ -7381,6 +7381,121 @@ describe("Account Pool plugin", () => {
     }
   });
 
+  it("preserves physical reservations across a plugin module reload", async () => {
+    const heldA = deferred();
+    const heldB = deferred();
+    const arrivedA = deferred();
+    const arrivedB = deferred();
+    const uuidA = "11111111-1111-4111-8111-111111111111";
+    const uuidB = "21111111-1111-4111-8111-111111111111";
+    const calls = new Map<string, number>();
+    const active = new Map<string, number>();
+    let peak = 0;
+    let accountPeak = 0;
+    const upstreamFetch: typeof fetch = async (_input, init) => {
+      const uuid = new Headers(init?.headers).get("authorization")!.slice(7);
+      calls.set(uuid, (calls.get(uuid) ?? 0) + 1);
+      active.set(uuid, (active.get(uuid) ?? 0) + 1);
+      peak = Math.max(
+        peak,
+        [...active.values()].reduce((a, b) => a + b, 0),
+      );
+      accountPeak = Math.max(accountPeak, active.get(uuid)!);
+      if (uuid === uuidA && calls.get(uuid) === 1) {
+        arrivedA.resolve();
+        await heldA.promise;
+      }
+      if (uuid === uuidB && calls.get(uuid) === 1) {
+        arrivedB.resolve();
+        await heldB.promise;
+      }
+      active.set(uuid, active.get(uuid)! - 1);
+      return Response.json({
+        account: { uuid },
+        organization: { plan_display_name: "Ultra after reload" },
+      });
+    };
+    const { fixture, accounts, display } =
+      await profileLifecycleFixture(upstreamFetch);
+    let replacement: Fixture["host"] | null = null;
+    const stopB = new AbortController();
+    let pendingB: Promise<void> | null = null;
+    try {
+      await display();
+      await arrivedA.promise;
+      vi.resetModules();
+      const reloaded = await import("./server.js");
+      const reloadedAdapter = await import("./claude-adapter.js");
+      const reloadedStore = await import("./store.js");
+      replacement = await fixture.host.harness.lifecycle.reload(
+        reloaded.createAccountPoolPlugin({
+          drainTimeoutMs: 20,
+          oauthProfileUrl: "https://upstream.example/profile",
+          usageUrl: "data:application/json,{}",
+          fetch: upstreamFetch,
+        }),
+      );
+      const store = new reloadedStore.AccountStore(
+        replacement.bb.storage.kv,
+        path.join(
+          fixture.dataDir,
+          "plugins",
+          "account-pool",
+          "secrets",
+          "accounts",
+        ),
+      );
+      const quotas = new reloadedStore.QuotaStore(
+        replacement.bb.storage.database(),
+      );
+      const adapter = reloadedAdapter.createClaudeAdapter({
+        profileUrl: "https://upstream.example/profile",
+        usageUrl: "https://upstream.example/usage",
+        refreshUrl: "https://upstream.example/token",
+      });
+      const refresh = (account: (typeof accounts)[number], signal?: AbortSignal) =>
+        adapter.refreshProfile!({
+          account,
+          signal,
+          accounts: store,
+          quotas,
+          freshSecret: () => store.readSecret(account.id),
+          fetch: upstreamFetch,
+          now: Date.now,
+        });
+      await refresh(accounts[0]!);
+      pendingB = refresh(accounts[1]!, stopB.signal);
+      await arrivedB.promise;
+      stopB.abort();
+      await pendingB;
+      await refresh(accounts[2]!);
+      expect({
+        a: calls.get(uuidA),
+        b: calls.get(uuidB),
+        c: calls.get(accounts[2]!.accountUuid!),
+        peak,
+        accountPeak,
+      }).toEqual({ a: 1, b: 1, c: undefined, peak: 2, accountPeak: 1 });
+      heldA.resolve();
+      await vi.waitFor(() => expect(active.get(uuidA)).toBe(0));
+      await refresh(accounts[0]!);
+      expect(calls.get(uuidA)).toBe(2);
+      expect((await store.planDisplayNames())[accounts[0]!.id]).toBe(
+        "Ultra after reload",
+      );
+    } finally {
+      stopB.abort();
+      heldA.resolve();
+      heldB.resolve();
+      await pendingB;
+      await vi.waitFor(() =>
+        expect([...active.values()].every((count) => count === 0)).toBe(true),
+      );
+      if (replacement !== null) await replacement.harness.lifecycle.dispose();
+      vi.resetModules();
+    }
+  });
+
   it("hard bounds an abort-ignoring profile request", async () => {
     const { fixture, store, accounts } = await profileLifecycleFixture(
       async () => Response.json(null),
