@@ -1,9 +1,10 @@
 import { type ChildProcess, execFileSync } from "node:child_process";
-import { setTimeout } from "node:timers/promises";
+import { setTimeout as delay } from "node:timers/promises";
 
-function hasLiveGroupMembers(pid: number): boolean {
+function hasLiveGroupMembers(pid: number, deadline: number): boolean {
   return execFileSync("ps", ["-axo", "pgid=,stat="], {
     encoding: "utf8",
+    timeout: Math.max(1, deadline - Date.now()),
   })
     .trim()
     .split("\n")
@@ -35,29 +36,53 @@ export function killTestProcessGroup(
 }
 
 export function trackTestProcess(child: ChildProcess): () => Promise<void> {
-  const closed = new Promise<void>((resolve) => {
-    child.once("close", () => resolve());
+  const exited = new Promise<void>((resolve) => {
+    child.once("exit", () => resolve());
     child.once("error", () => resolve());
   });
   const pid = child.pid;
   return async () => {
     if (pid === undefined) return;
-    if (process.platform === "win32") {
-      if (child.exitCode === null && child.signalCode === null) {
-        execFileSync("taskkill", ["/pid", String(pid), "/T", "/F"]);
-      }
-    } else {
-      killTestProcessGroup(child, "SIGKILL");
-    }
-    await closed;
-    if (process.platform === "win32") return;
     const deadline = Date.now() + 5_000;
-    for (;;) {
-      const live = hasLiveGroupMembers(pid);
-      if (!live) return;
-      if (Date.now() >= deadline)
-        throw new Error(`Test process group ${pid} still has live writers`);
-      await setTimeout(10);
+    const stillWriting = () =>
+      new Error(`Test process group ${pid} still has live writers`);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      if (process.platform === "win32") {
+        if (child.exitCode === null && child.signalCode === null) {
+          execFileSync("taskkill", ["/pid", String(pid), "/T", "/F"], {
+            timeout: Math.max(1, deadline - Date.now()),
+          });
+        }
+      } else {
+        killTestProcessGroup(child, "SIGKILL");
+      }
+      if (child.exitCode === null && child.signalCode === null) {
+        await Promise.race([
+          exited,
+          new Promise<never>((_, reject) => {
+            timer = setTimeout(
+              () => reject(stillWriting()),
+              Math.max(0, deadline - Date.now()),
+            );
+          }),
+        ]);
+      }
+      if (process.platform === "win32") return;
+      for (;;) {
+        if (Date.now() >= deadline) throw stillWriting();
+        let live: boolean;
+        try {
+          live = hasLiveGroupMembers(pid, deadline);
+        } catch (error) {
+          if (Date.now() >= deadline) throw stillWriting();
+          throw error;
+        }
+        if (!live) return;
+        await delay(10);
+      }
+    } finally {
+      clearTimeout(timer);
     }
   };
 }

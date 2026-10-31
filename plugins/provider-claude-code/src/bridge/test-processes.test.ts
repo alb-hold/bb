@@ -18,6 +18,7 @@ beforeEach(() => {
 afterEach(() => {
   Object.defineProperty(process, "platform", { value: originalPlatform });
   vi.restoreAllMocks();
+  vi.useRealTimers();
 });
 
 function leader(): ChildProcess {
@@ -28,7 +29,7 @@ function leader(): ChildProcess {
 
 function exited(child: ChildProcess): void {
   child.exitCode = 0;
-  child.emit("close", 0, null);
+  child.emit("exit", 0, null);
 }
 
 describe("test process group teardown", () => {
@@ -90,6 +91,19 @@ describe("test process group teardown", () => {
     expect(helper.killTestProcessGroup(child, "SIGKILL")).toBe(true);
     expect(helper.killTestProcessGroup(child, "SIGKILL")).toBe(false);
     await cleanup();
+    expect(kill).toHaveBeenCalledExactlyOnceWith(-pid, "SIGKILL");
+  });
+
+  it("bounds waiting for a leader that never reports exit", async () => {
+    vi.useFakeTimers();
+    const child = leader();
+    const cleanup = helper.trackTestProcess(child);
+    const kill = vi.spyOn(process, "kill").mockReturnValue(true);
+    const result = expect(cleanup()).rejects.toThrow(
+      `Test process group ${pid} still has live writers`,
+    );
+    await vi.advanceTimersByTimeAsync(5_000);
+    await result;
     expect(kill).toHaveBeenCalledExactlyOnceWith(-pid, "SIGKILL");
   });
 });
