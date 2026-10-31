@@ -11844,7 +11844,7 @@ describe("Account Pool credential scoping", () => {
     expect(await statusOf(host, live, "/v1/messages")).toBe(200);
   });
 
-  it("budget-deferred sweeps use the normal interval without warning or a 60-second retry", async () => {
+  it("logs deferred progress and continues incomplete rotations at the retry cadence before returning to the normal interval", async () => {
     const fixture = await scopedFixture();
     await claudeToken(fixture.host, "thread-deferred");
     const host = await fixture.host.harness.lifecycle.reload(
@@ -11858,9 +11858,11 @@ describe("Account Pool credential scoping", () => {
       }),
     );
     let lookups = 0;
+    let hanging = true;
     host.harness.sdk.stub("threads.get", () => {
       lookups += 1;
-      return new Promise(() => undefined);
+      if (hanging) return new Promise(() => undefined);
+      return makeThreadResponse({ id: "thread-deferred", archivedAt: null });
     });
     const service = host.harness.behavior.runService("hub");
     try {
@@ -11874,7 +11876,23 @@ describe("Account Pool credential scoping", () => {
       const startupLookups = lookups;
       expect(startupLookups).toBeGreaterThan(0);
       await new Promise((resolve) => setTimeout(resolve, 180));
-      expect(lookups).toBe(startupLookups);
+      expect(lookups).toBeGreaterThan(startupLookups);
+      expect(lookups - startupLookups).toBeLessThanOrEqual(5);
+      expect(JSON.stringify(host.harness.inspection.logEntries)).toContain(
+        "deferred 1",
+      );
+      const completedSweeps = () =>
+        host.harness.inspection.logEntries.filter((entry) =>
+          JSON.stringify(entry).includes("failed 0, and deferred 0."),
+        ).length;
+      const beforeCompletion = completedSweeps();
+      hanging = false;
+      await vi.waitFor(() => {
+        expect(completedSweeps()).toBeGreaterThan(beforeCompletion);
+      });
+      const completedLookups = lookups;
+      await new Promise((resolve) => setTimeout(resolve, 180));
+      expect(lookups).toBe(completedLookups);
       expect(JSON.stringify(host.harness.inspection.logEntries)).not.toContain(
         "could not look up",
       );

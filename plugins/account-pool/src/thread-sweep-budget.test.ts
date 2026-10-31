@@ -1,12 +1,13 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { tmpdir } from "node:os";
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { HubTokenStore } from "./store.js";
 import { ThreadTokenStore } from "./thread-tokens.js";
 
 const directories: string[] = [];
 afterEach(async () => {
+  vi.restoreAllMocks();
   for (const directory of directories.splice(0))
     await fs.rm(directory, { recursive: true, force: true });
 });
@@ -30,7 +31,7 @@ async function fixture(count = 3000) {
       ),
     );
   }
-  return { store, tokens };
+  return { store, tokens, directory, hosts };
 }
 
 it.each([2697, 3000])(
@@ -91,7 +92,7 @@ it("revokes every missed archived thread beyond the old cutoff in one sweep, omi
   expect((await store.authenticate(tokens.get(id) ?? ""))?.threadId).toBe(id);
 }, 60000);
 
-it("defers budget cutoffs without lookup failures and resumes after the last dispatched thread", async () => {
+it("rechecks budget-deferred in-flight threads before unreached threads", async () => {
   const { store } = await fixture();
   const budget = new AbortController();
   const first: string[] = [];
@@ -115,5 +116,89 @@ it("defers budget cutoffs without lookup failures and resumes after the last dis
     return "live";
   });
   expect(next).toBeDefined();
-  expect(first).not.toContain(next);
+  expect(next).toBe(first[0]);
 }, 60000);
+
+it("persists completed progress so repeated restarts reach and revoke late archived threads within three sweeps", async () => {
+  const { directory, hosts, tokens } = await fixture();
+  const reached = new Set<string>();
+  let expectedFirst = "thr_0000";
+  for (let sweep = 0; sweep < 3; sweep += 1) {
+    const store = new ThreadTokenStore(directory, hosts);
+    await store.initialize(["host-one"]);
+    const budget = new AbortController();
+    const calls: string[] = [];
+    await store.sweepThreads(
+      async (id) => {
+        calls.push(id);
+        if (calls.length > 1024) {
+          budget.abort();
+          return new Promise(() => undefined);
+        }
+        reached.add(id);
+        return id >= "thr_2900" ? "archived" : "live";
+      },
+      { signal: budget.signal },
+    );
+    expect(calls[0]).toBe(expectedFirst);
+    expectedFirst = calls[1024] ?? "thr_0000";
+  }
+  expect(reached.size).toBe(3000);
+  const restarted = new ThreadTokenStore(directory, hosts);
+  await restarted.initialize(["host-one"]);
+  for (const [id, token] of tokens)
+    if (id >= "thr_2900")
+      expect(await restarted.authenticate(token)).toBeNull();
+}, 60000);
+
+it("counts archive persistence errors as failed even when the sweep budget expires after lookup completion", async () => {
+  const { store } = await fixture(1);
+  const budget = new AbortController();
+  const rename = fs.rename.bind(fs);
+  vi.spyOn(fs, "rename").mockImplementation(async (source, target) => {
+    const name = path.basename(String(target));
+    if (
+      name.startsWith("archived-thread-") ||
+      name.startsWith("archive-revocation-")
+    ) {
+      budget.abort();
+      throw new Error("archive persistence unavailable");
+    }
+    return rename(source, target);
+  });
+  const result = await store.sweepThreads(async () => "archived", {
+    signal: budget.signal,
+  });
+  expect(result).toMatchObject({ checked: 1, failed: 1, deferred: 0 });
+});
+
+it("warns when a persisted incomplete rotation exceeds one hour without warning again after a restart", async () => {
+  const { directory, hosts } = await fixture(96);
+  let now = 1000;
+  const warnings: string[] = [];
+  for (let sweep = 0; sweep < 3; sweep += 1) {
+    const store = new ThreadTokenStore(
+      directory,
+      hosts,
+      () => now,
+      undefined,
+      5000,
+      (message) => warnings.push(message),
+    );
+    await store.initialize(["host-one"]);
+    const budget = new AbortController();
+    await store.sweepThreads(
+      async () => {
+        budget.abort();
+        return new Promise(() => undefined);
+      },
+      { signal: budget.signal },
+    );
+    now += 3600001;
+  }
+  expect(
+    warnings.filter(
+      (message) => message.includes("rotation") && message.includes("one hour"),
+    ),
+  ).toHaveLength(1);
+});

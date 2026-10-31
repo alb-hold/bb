@@ -30,7 +30,20 @@ const DELETED_PENDING_PREFIX = "deleted-pending-";
 const DELETED_PENDING_NAME = /^deleted-pending-([a-f0-9]{64})-/u;
 const DELETED_THREAD_KEY = "deleted-thread:";
 
+const THREAD_SWEEP_STATE = "thread-sweep.json";
+
 const identifierSchema = z.string().regex(/^[A-Za-z0-9_-]+$/u);
+const sweepRotationSchema = z
+  .object({
+    nextThreadId: identifierSchema,
+    endThreadId: identifierSchema,
+    startedAt: z.number().finite().nonnegative(),
+    warned: z.boolean(),
+  })
+  .strict();
+const sweepStateSchema = z
+  .object({ rotation: sweepRotationSchema.nullable() })
+  .strict();
 const tokenSchema = z.string().regex(/^[A-Za-z0-9_-]{43}$/u);
 const digestSchema = z.string().regex(/^[a-f0-9]{64}$/u);
 const archiveStateSchema = z
@@ -170,7 +183,7 @@ export class ThreadTokenStore {
   private readonly corruptArchiveMarkers = new Set<string>();
   private readonly archiveDurabilityFailures = new Set<string>();
   private archiveMarkersLoaded = false;
-  private sweepCursor: string | null = null;
+  private sweepRotation: z.infer<typeof sweepRotationSchema> | null = null;
   private readonly archiveVersions = new Map<string, number>();
   private readonly lastSuspensions = new Map<string, number>();
   private readonly unansweredWarnings = new Map<string, number>();
@@ -260,6 +273,13 @@ export class ThreadTokenStore {
         if (error instanceof CredentialScrubError) throw error;
       });
     }
+    this.sweepRotation =
+      (
+        await readRecord(
+          path.join(this.directory, THREAD_SWEEP_STATE),
+          sweepStateSchema,
+        )
+      )?.rotation ?? null;
   }
 
   private async loadDeletionRecords(): Promise<boolean> {
@@ -1019,61 +1039,125 @@ export class ThreadTokenStore {
       if (!this.archivedThreads.has(record.threadId))
         threadIds.add(record.threadId);
     const sorted = [...threadIds].sort();
-    const cursor = this.sweepCursor;
-    const start = cursor === null ? 0 : sorted.findIndex((id) => id > cursor);
-    const offset = start < 0 ? 0 : start;
-    const ordered = [...sorted.slice(offset), ...sorted.slice(0, offset)];
+    if (this.sweepRotation === null && sorted.length > 0) {
+      await this.saveSweepRotation({
+        nextThreadId: sorted[0]!,
+        endThreadId: sorted[sorted.length - 1]!,
+        startedAt: this.now(),
+        warned: false,
+      });
+    }
+    const rotation = this.sweepRotation;
+    const ordered =
+      rotation === null
+        ? []
+        : sorted.filter(
+            (id) => id >= rotation.nextThreadId && id <= rotation.endThreadId,
+          );
     const result: ThreadSweepResult = {
       checked: 0,
       revoked: 0,
       failed: 0,
       deferred: 0,
     };
-    let next = 0;
     const cancelled = () => options.signal?.aborted === true;
-    const worker = async () => {
-      while (next < ordered.length && !cancelled()) {
-        const threadId = ordered[next++];
-        if (threadId === undefined) return;
-        this.sweepCursor = threadId;
-        result.checked += 1;
-        const lookupSignals = [
-          ...(options.signal === undefined ? [] : [options.signal]),
-          ...(options.lookupTimeoutMs === undefined
-            ? []
-            : [AbortSignal.timeout(options.lookupTimeoutMs)]),
-        ];
-        const lookupSignal =
-          lookupSignals.length === 0
-            ? undefined
-            : AbortSignal.any(lookupSignals);
-        const version = this.archiveVersion(threadId);
-        try {
-          const status = await untilAborted(
-            lookup(threadId, lookupSignal),
-            lookupSignal,
-          );
-          if (status === "live") {
-            await this.restoreThread(threadId, version);
-            continue;
-          }
-          if (status === "archived") {
-            await this.suspendThreadIfVersion(threadId, version);
-            continue;
-          }
-          if (await this.removeThreadIfVersion(threadId, version))
-            result.revoked += 1;
-        } catch {
-          if (cancelled()) result.deferred += 1;
-          else result.failed += 1;
-        }
+    const check = async (threadId: string): Promise<boolean> => {
+      if (cancelled()) {
+        result.deferred += 1;
+        return false;
       }
+      result.checked += 1;
+      const lookupSignals = [
+        ...(options.signal === undefined ? [] : [options.signal]),
+        ...(options.lookupTimeoutMs === undefined
+          ? []
+          : [AbortSignal.timeout(options.lookupTimeoutMs)]),
+      ];
+      const lookupSignal =
+        lookupSignals.length === 0 ? undefined : AbortSignal.any(lookupSignals);
+      const version = this.archiveVersion(threadId);
+      let settled = false;
+      let status: Awaited<ReturnType<ThreadLookup>>;
+      try {
+        const operation = Promise.resolve()
+          .then(() => lookup(threadId, lookupSignal))
+          .then(
+            (value) => {
+              settled = true;
+              return value;
+            },
+            (error: unknown) => {
+              settled = true;
+              throw error;
+            },
+          );
+        status = await untilAborted(operation, lookupSignal);
+      } catch {
+        if (cancelled() && !settled) {
+          result.deferred += 1;
+          return false;
+        }
+        result.failed += 1;
+        return true;
+      }
+      try {
+        if (status === "live") await this.restoreThread(threadId, version);
+        else if (status === "archived")
+          await this.suspendThreadIfVersion(threadId, version);
+        else if (await this.removeThreadIfVersion(threadId, version))
+          result.revoked += 1;
+      } catch {
+        result.failed += 1;
+      }
+      return true;
     };
-    await Promise.all(
-      Array.from({ length: Math.min(32, ordered.length) }, worker),
-    );
+    let next = 0;
+    while (next < ordered.length && !cancelled()) {
+      const batch = ordered.slice(next, next + 32);
+      const completed = await Promise.all(batch.map(check));
+      const deferred = completed.indexOf(false);
+      const resume = deferred < 0 ? next + batch.length : next + deferred;
+      next += batch.length;
+      if (rotation !== null) {
+        const nextThreadId = ordered[resume];
+        await this.saveSweepRotation(
+          nextThreadId === undefined ? null : { ...rotation, nextThreadId },
+        );
+      }
+      if (deferred >= 0) break;
+    }
     result.deferred += ordered.length - next;
+    if (ordered.length === 0 && rotation !== null)
+      await this.saveSweepRotation(null);
+
     return result;
+  }
+
+  private async saveSweepRotation(
+    rotation: z.infer<typeof sweepRotationSchema> | null,
+  ): Promise<void> {
+    const previous = this.sweepRotation;
+    const warning =
+      previous !== null &&
+      !previous.warned &&
+      this.now() - previous.startedAt > 60 * 60 * 1000;
+    const saved =
+      rotation === null
+        ? null
+        : {
+            ...rotation,
+            warned: rotation.warned || warning || previous?.warned === true,
+          };
+    await this.serialize(async () => {
+      await this.persist(path.join(this.directory, THREAD_SWEEP_STATE), {
+        rotation: saved,
+      });
+      this.sweepRotation = saved;
+    });
+    if (warning)
+      this.warn(
+        "Account Pooler thread credential sweep rotation has taken more than one hour.",
+      );
   }
 
   async removeThreadIfVersion(

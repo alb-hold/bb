@@ -615,9 +615,8 @@ export function createAccountPoolPlugin(
       serviceSignal: AbortSignal,
     ): Promise<boolean> => {
       try {
-        const { checked, revoked, failed } = await threadTokens.sweepThreads(
-          lookupThread,
-          {
+        const { checked, revoked, failed, deferred } =
+          await threadTokens.sweepThreads(lookupThread, {
             signal: AbortSignal.any([
               serviceSignal,
               AbortSignal.timeout(
@@ -627,18 +626,16 @@ export function createAccountPoolPlugin(
             lookupTimeoutMs:
               options.threadSweepLookupTimeoutMs ??
               THREAD_SWEEP_LOOKUP_TIMEOUT_MS,
-          },
-        );
+          });
         if (failed > 0) {
           bb.log.warn(
             `Account Pooler thread credential sweep checked ${checked} threads, revoked ${revoked}, and could not look up ${failed}.`,
           );
         }
-        if (revoked > 0 && failed === 0)
-          bb.log.info(
-            `Account Pooler thread credential sweep checked ${checked} threads and revoked ${revoked}.`,
-          );
-        return failed === 0;
+        bb.log.info(
+          `Account Pooler thread credential sweep checked ${checked} threads, revoked ${revoked}, failed ${failed}, and deferred ${deferred}.`,
+        );
+        return failed === 0 && deferred === 0;
       } catch {
         bb.log.warn("Account Pooler thread credential sweep failed.");
         return false;
