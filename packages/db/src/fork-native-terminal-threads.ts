@@ -6,6 +6,7 @@ export interface NativeTerminalThreadRecord {
   providerId: string;
   nativeSessionId: string | null;
   terminalSessionId: string | null;
+  lostIdleTerminalSessionId: string | null;
   lastEvidenceAt: number | null;
   lastEvidenceKind: "holder-report" | "transcript" | null;
   lastToolCallAt: number | null;
@@ -17,7 +18,7 @@ export interface NativeTerminalThreadRecord {
 }
 
 const SELECT_COLUMNS = `thread_id AS threadId, provider_id AS providerId, native_session_id AS nativeSessionId,
-  terminal_session_id AS terminalSessionId, last_evidence_at AS lastEvidenceAt,
+  terminal_session_id AS terminalSessionId, lost_idle_terminal_session_id AS lostIdleTerminalSessionId, last_evidence_at AS lastEvidenceAt,
   last_evidence_kind AS lastEvidenceKind,
   last_tool_call_at AS lastToolCallAt, last_tool_call_session_id AS lastToolCallSessionId,
   initial_prompt AS initialPrompt, model,
@@ -114,6 +115,7 @@ export function createNativeTerminalThread(
     providerId: args.providerId,
     nativeSessionId: args.nativeSessionId,
     terminalSessionId: null,
+    lostIdleTerminalSessionId: null,
     lastEvidenceAt: null,
     lastEvidenceKind: null,
     lastToolCallAt: null,
@@ -193,6 +195,8 @@ export function listNativeTerminalThreadsByIds(
   NativeTerminalThreadRecord,
   | "threadId"
   | "providerId"
+  | "terminalSessionId"
+  | "lostIdleTerminalSessionId"
   | "lastEvidenceAt"
   | "lastEvidenceKind"
   | "lastToolCallAt"
@@ -205,6 +209,8 @@ export function listNativeTerminalThreadsByIds(
     .prepare(
       `SELECT thread_id AS threadId, provider_id AS providerId,
          native_session_id AS nativeSessionId,
+         terminal_session_id AS terminalSessionId,
+         lost_idle_terminal_session_id AS lostIdleTerminalSessionId,
          last_evidence_at AS lastEvidenceAt,
          last_evidence_kind AS lastEvidenceKind,
          last_tool_call_at AS lastToolCallAt,
@@ -217,6 +223,8 @@ export function listNativeTerminalThreadsByIds(
     NativeTerminalThreadRecord,
     | "threadId"
     | "providerId"
+    | "terminalSessionId"
+    | "lostIdleTerminalSessionId"
     | "lastEvidenceAt"
     | "lastEvidenceKind"
     | "lastToolCallAt"
@@ -282,7 +290,7 @@ export function setNativeTerminalThreadTerminal(
 ): void {
   db.$client
     .prepare(
-      `UPDATE fork_native_terminal_threads SET terminal_session_id = ?, last_evidence_at = NULL, last_tool_call_at = NULL, last_tool_call_session_id = NULL, updated_at = ? WHERE thread_id = ?`,
+      `UPDATE fork_native_terminal_threads SET terminal_session_id = ?, lost_idle_terminal_session_id = NULL, last_evidence_at = NULL, last_tool_call_at = NULL, last_tool_call_session_id = NULL, updated_at = ? WHERE thread_id = ?`,
     )
     .run(args.terminalSessionId, Date.now(), args.threadId);
 }

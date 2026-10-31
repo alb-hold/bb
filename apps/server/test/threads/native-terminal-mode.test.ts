@@ -15,6 +15,7 @@ import {
   listPendingInteractionsByThread,
   putThreadRowState,
   setNativeTerminalToolCredential,
+  setNativeTerminalThreadTerminal,
   stampNativeTerminalThreadActivity,
   type DbConnection,
 } from "@bb/db";
@@ -355,6 +356,101 @@ async function enterTerminal(fixture: Fixture, threadId: string) {
     view: nativeTerminalThreadSchema.parse(await readJson(response)),
   };
 }
+
+describe("archiving an exited native Codex thread", () => {
+  it.each(
+    [
+      { outcome: "completed", exitCode: 0 },
+      { outcome: "failed", exitCode: 0 },
+      { outcome: "completed", exitCode: 1 },
+    ].flatMap((entry) =>
+      [false, true].map((unarchive) => ({ ...entry, unarchive })),
+    ),
+  )(
+    "preserves exit provenance for $outcome exit $exitCode (unarchive: $unarchive)",
+    async ({ outcome, exitCode, unarchive }) => {
+      const fixture = await createFixture();
+      const thread = seedChatThread(fixture, {
+        providerId: "codex",
+        providerThreadId: SESSION_ID,
+      });
+      const { open } = await enterTerminal(fixture, thread.id);
+      applyLoggedThreadLifecycleEvent(fixture.harness.deps, {
+        threadId: thread.id,
+        event: { type: "run.started" },
+      });
+      applyLoggedThreadLifecycleEvent(fixture.harness.deps, {
+        threadId: thread.id,
+        event: { type: outcome === "failed" ? "run.failed" : "run.succeeded" },
+      });
+      expect(getThread(fixture.harness.db, thread.id)?.status).toBe(
+        outcome === "failed" ? "error" : "idle",
+      );
+      fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+        hostId: fixture.hostId,
+        sessionId: fixture.sessionId,
+        message: {
+          type: "terminal.exited",
+          terminalId: open.terminalId,
+          exitCode,
+          closeReason: "process-exit",
+        },
+      });
+      const readThread = async () => {
+        const response = await fixture.harness.app.request(
+          `/api/v1/threads/${thread.id}`,
+        );
+        expect(response.status).toBe(200);
+        return threadResponseSchema.parse(await readJson(response));
+      };
+      const clean = outcome === "completed" && exitCode === 0;
+      const beforeArchive = await readThread();
+      expect(beforeArchive.status).toBe("error");
+      expect(beforeArchive.runtime.nativeSessionExit).toBe(
+        clean ? "clean" : undefined,
+      );
+      const send = await postJson(fixture, `/threads/${thread.id}/send`, {
+        mode: "start",
+        input: [{ type: "text", text: "continue", mentions: [] }],
+      });
+      expect(send.status).toBe(409);
+      const archived = await postJson(
+        fixture,
+        `/threads/${thread.id}/archive-all`,
+        {},
+      );
+      expect(archived.status).toBe(200);
+      const afterArchive = await readThread();
+      expect(afterArchive.archivedAt).not.toBeNull();
+      expect(afterArchive.runtime.nativeSessionExit).toBe(
+        clean ? "clean" : undefined,
+      );
+      if (unarchive) {
+        const response = await postJson(
+          fixture,
+          `/threads/${thread.id}/unarchive`,
+          {},
+        );
+        expect(response.status).toBe(200);
+        const restored = await readThread();
+        expect(restored.status).toBe("error");
+        expect(restored.runtime.nativeSessionExit).toBe(
+          clean ? "clean" : undefined,
+        );
+      }
+      if (clean) {
+        expect(getNativeTerminalThread(fixture.harness.db, thread.id)?.lostIdleTerminalSessionId).toBe(open.terminalId);
+        if (unarchive) {
+          setNativeTerminalThreadTerminal(fixture.harness.db, { threadId: thread.id, terminalSessionId: open.terminalId });
+        } else {
+          applyLoggedThreadLifecycleEvent(fixture.harness.deps, { threadId: thread.id, event: { type: "run.failed" } });
+        }
+        expect(getNativeTerminalThread(fixture.harness.db, thread.id)?.lostIdleTerminalSessionId).toBeNull();
+        expect((await readThread()).runtime.nativeSessionExit).toBeUndefined();
+      }
+    },
+  );
+});
 
 describe("switching a chat thread to its native terminal", () => {
   it("resumes the chat's session in the terminal and returns to chat on it", async () => {

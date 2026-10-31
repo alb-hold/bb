@@ -278,3 +278,51 @@ describe("NativeThreadTerminalMain", () => {
     expect(screen.queryByRole("status")).toBeNull();
   });
 });
+
+it("offers Resume with expired history instead of a terminal panel", () => {
+  hooks.listTerminals.mockReturnValue({
+    data: { sessions: [] },
+    dataUpdatedAt: 2,
+    isLoading: false,
+  });
+  render(
+    <NativeThreadTerminalMain
+      projectId="proj_test"
+      threadId="thr_native"
+      runtime={{ displayStatus: "error" }}
+      threadIsProvisioning={false}
+      view={{
+        ...nativeView,
+        terminal: {
+          id: "expired",
+          status: "exited",
+          exitCode: 0,
+          closeReason: "process-exit",
+        } as NativeTerminalThread["terminal"],
+      }}
+    />,
+  );
+  expect(screen.getByText(/history expired/i)).toBeTruthy();
+  expect(screen.queryByTestId("terminal-panel")).toBeNull();
+  screen.getByRole("button", { name: "Resume session" }).click();
+  expect(hooks.openNative).toHaveBeenCalledWith({ threadId: "thr_native" });
+});
+
+it("labels a proven clean exit as resumable", () => {
+  hooks.listTerminals.mockReturnValue({
+    data: { sessions: [] },
+    dataUpdatedAt: 1,
+    isLoading: false,
+  });
+  render(
+    <NativeThreadTerminalMain
+      projectId="proj_test"
+      threadId="thr_native"
+      runtime={{ displayStatus: "error", nativeSessionExit: "clean" }}
+      threadIsProvisioning={false}
+      view={nativeView}
+    />,
+  );
+  expect(screen.getByText("Exited, resume to continue")).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Resume session" })).toBeTruthy();
+});

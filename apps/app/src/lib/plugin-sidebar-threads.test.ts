@@ -256,3 +256,27 @@ describe("toPluginSidebarThread", () => {
     expect(toPluginSidebarThread(makeThread()).host).toBeNull();
   });
 });
+
+it.each([null, 100])(
+  "presents a clean exit without a red error (archivedAt %s)",
+  (archivedAt) => {
+    const entry = makeThread({
+      status: "error",
+      archivedAt,
+      runtime: { displayStatus: "error", nativeSessionExit: "clean" },
+      lastReadAt: 0,
+    });
+    const mapped = toPluginSidebarThread(entry);
+    expect(mapped.status).toBe("idle");
+    expect(mapped.runtimeStatus).toBe("idle");
+    expect(mapped.indicator).not.toBe("unread-error");
+    const failed = toPluginSidebarThread(
+      makeThread({
+        status: "error",
+        archivedAt,
+        runtime: { displayStatus: "error" },
+      }),
+    );
+    expect(failed.status).toBe("error");
+  },
+);

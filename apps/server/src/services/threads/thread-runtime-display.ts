@@ -92,6 +92,8 @@ type ThreadPromptBannerDeps = NativeActivityDisplayDeps;
 type NativeActivityThreadRecord = Pick<
   NativeTerminalThreadRecord,
   | "providerId"
+  | "terminalSessionId"
+  | "lostIdleTerminalSessionId"
   | "lastEvidenceAt"
   | "lastEvidenceKind"
   | "lastToolCallAt"
@@ -293,9 +295,10 @@ function supportsNativeActivity(
   thread: Thread,
 ): boolean {
   return (
-    thread.status === "active" &&
-    deps.providerRegistry.get(thread.providerId)?.nativeTerminal?.activity !==
-      undefined
+    thread.status === "error" ||
+    (thread.status === "active" &&
+      deps.providerRegistry.get(thread.providerId)?.nativeTerminal?.activity !==
+        undefined)
   );
 }
 
@@ -326,6 +329,14 @@ function addNativeActivityDiagnostic(
   nativeThread: NativeActivityThreadRecord | null,
   now = Date.now(),
 ): ThreadRuntimeState {
+  if (
+    thread.status === "error" &&
+    nativeThread?.providerId === thread.providerId &&
+    nativeThread.lostIdleTerminalSessionId !== null &&
+    nativeThread.lostIdleTerminalSessionId === nativeThread.terminalSessionId
+  ) {
+    return { ...runtime, nativeSessionExit: "clean" };
+  }
   if (
     thread.status !== "active" ||
     nativeThread?.providerId !== thread.providerId

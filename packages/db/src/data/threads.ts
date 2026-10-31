@@ -2427,6 +2427,9 @@ export function applyThreadLifecycleEventInTransaction(
     };
   }
 
+  if (args.event.type === "run.failed") {
+    db.run(sql`UPDATE fork_native_terminal_threads SET lost_idle_terminal_session_id = NULL WHERE thread_id = ${args.threadId}`);
+  }
   const evaluation = evaluateThreadLifecycleEvent({
     event: args.event,
     thread,
@@ -2471,6 +2474,15 @@ export function applyThreadLifecycleEventInTransaction(
       detail: `status changed from ${thread.status} while applying ${args.event.type}`,
       reason: "cas-conflict",
     };
+  }
+  if (args.event.type === "session.lost" && thread.status === "idle") {
+    db.run(sql`UPDATE fork_native_terminal_threads
+      SET lost_idle_terminal_session_id = (
+        SELECT id FROM terminal_sessions WHERE id = fork_native_terminal_threads.terminal_session_id
+          AND status = 'exited' AND close_reason = 'process-exit' AND exit_code = 0
+      ) WHERE thread_id = ${args.threadId}`);
+  } else {
+    db.run(sql`UPDATE fork_native_terminal_threads SET lost_idle_terminal_session_id = NULL WHERE thread_id = ${args.threadId}`);
   }
   return { applied: true, thread: updated };
 }

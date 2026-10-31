@@ -1,0 +1,1 @@
+ALTER TABLE `fork_native_terminal_threads` ADD `lost_idle_terminal_session_id` text;

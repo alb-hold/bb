@@ -152,7 +152,18 @@ export function NativeThreadTerminalMain({
     );
   }
 
-  if (session?.status === "exited") {
+  const historyExpired =
+    !terminalsQuery.isLoading &&
+    terminalsQuery.data !== undefined &&
+    !terminalsQuery.data.sessions.some(
+      (terminal) => terminal.id === session?.id,
+    );
+  const endedLabel =
+    runtime.nativeSessionExit === "clean"
+      ? "Exited, resume to continue"
+      : `${providerLabel} session ended`;
+
+  if (session?.status === "exited" && !historyExpired) {
     return (
       <div
         className="flex h-full min-h-0 min-w-0 flex-col"
@@ -162,7 +173,7 @@ export function NativeThreadTerminalMain({
         <div className="flex min-w-0 flex-wrap items-center justify-between gap-2 border-b border-border-seam px-3 py-2 text-sm">
           <div className="min-w-0">
             <span className="font-medium">
-              {providerLabel} session ended
+              {endedLabel}
               {state.exitCode !== null && state.exitCode !== 0
                 ? ` (exit ${state.exitCode})`
                 : ""}
@@ -203,11 +214,16 @@ export function NativeThreadTerminalMain({
       data-native-terminal-thread={view.providerId}
     >
       <p className="font-medium text-foreground">
-        {providerLabel} session ended
+        {endedLabel}
         {state.exitCode !== null && state.exitCode !== 0
           ? ` (exit ${state.exitCode})`
           : ""}
       </p>
+      {historyExpired ? (
+        <p className="text-muted-foreground">
+          Terminal history expired. Resume to continue.
+        </p>
+      ) : null}
       {view.nativeSessionId === null ? null : (
         <p className="text-muted-foreground">Session {view.nativeSessionId}</p>
       )}
