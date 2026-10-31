@@ -404,6 +404,8 @@ function readResolvedCssColor(
 
 type TerminalCssVariableReader = (name: string) => string | undefined;
 
+export const TERMINAL_THEME_OPTIONS = { minimumContrastRatio: 4.5 };
+
 export function resolveTerminalFontFamily(
   get: TerminalCssVariableReader,
 ): string {
@@ -1945,6 +1947,7 @@ export function ThreadTerminalView({
       });
 
       terminal = new Terminal({
+        ...TERMINAL_THEME_OPTIONS,
         allowProposedApi: TERMINAL_ALLOW_PROPOSED_API,
         convertEol: true,
         cursorBlink: true,
@@ -2680,6 +2683,7 @@ export function ThreadTerminalView({
                 replayCheckpointSequence = null;
                 const replayGrid = latestPtyGrid;
                 const previewTerminal = new Terminal({
+                  ...TERMINAL_THEME_OPTIONS,
                   allowProposedApi: TERMINAL_ALLOW_PROPOSED_API,
                   cols: replayGrid.cols,
                   rows: replayGrid.rows,
@@ -2811,6 +2815,7 @@ export function ThreadTerminalView({
             snapshot.gridRows === latestPtyGrid.rows
           ) {
             const previewTerminal = new Terminal({
+              ...TERMINAL_THEME_OPTIONS,
               allowProposedApi: TERMINAL_ALLOW_PROPOSED_API,
               cols: snapshot.cols,
               rows: snapshot.gridRows,
