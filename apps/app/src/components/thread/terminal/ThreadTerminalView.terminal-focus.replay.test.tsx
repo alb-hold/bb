@@ -2053,6 +2053,7 @@ describe("terminal first paint", () => {
     "keeps phone history at the normal text size for %i recorded columns",
     async (cols) => {
       prepareFirstAttachFontMetricsHarness();
+      testState.touchEnabled = true;
       vi.stubGlobal("innerWidth", 390);
       vi.mocked(FitAddon.prototype.proposeDimensions).mockReturnValue({
         cols: 49,
@@ -2099,6 +2100,8 @@ describe("terminal first paint", () => {
       expect(surface.style.transform).toBe("scale(1)");
       expect(host.style.overflowX).toBe("auto");
       expect(host.style.overflowY).toBe("auto");
+      expect(host.parentElement?.classList.contains("touch-pan-x")).toBe(true);
+      expect(host.parentElement?.classList.contains("touch-pan-y")).toBe(true);
       expect(
         actualTerminal!.buffer.active.getLine(0)?.translateToString(true),
       ).toBe(prompt);
