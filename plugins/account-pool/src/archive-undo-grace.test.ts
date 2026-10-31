@@ -1,7 +1,5 @@
-import {
-  createFakePluginHost,
-  makeThreadResponse,
-} from "@get-bb/plugin-sdk/testing";
+import { createAccountPoolTestHost } from "./test-host.js";
+import { makeThreadResponse } from "@get-bb/plugin-sdk/testing";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -29,7 +27,7 @@ async function fixture() {
   const setThread = (update: Partial<typeof thread>) => {
     thread = makeThreadResponse({ ...thread, ...update });
   };
-  const host = createFakePluginHost({
+  const host = createAccountPoolTestHost({
     pluginId: "account-pool",
     dataDir,
     sdk: {

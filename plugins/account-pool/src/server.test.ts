@@ -1,3 +1,4 @@
+import { createAccountPoolTestHost } from "./test-host.js";
 import { createHash } from "node:crypto";
 import {
   retryAvailabilityMethod,
@@ -17,7 +18,6 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { setTimeout as waitForIo } from "node:timers/promises";
 import {
-  createFakePluginHost,
   makeThreadResponse,
   type ExperimentalFakeHostRpcCall,
 } from "@get-bb/plugin-sdk/testing";
@@ -69,9 +69,9 @@ interface Upstream {
 
 interface Fixture {
   dataDir: string;
-  host: ReturnType<typeof createFakePluginHost>;
+  host: ReturnType<typeof createAccountPoolTestHost>;
   service: ReturnType<
-    ReturnType<typeof createFakePluginHost>["harness"]["behavior"]["runService"]
+    ReturnType<typeof createAccountPoolTestHost>["harness"]["behavior"]["runService"]
   >;
   key: string;
   account: AccountSummary;
@@ -133,7 +133,7 @@ function sdkStubs() {
 }
 
 async function resolveToken(
-  host: ReturnType<typeof createFakePluginHost>,
+  host: ReturnType<typeof createAccountPoolTestHost>,
   hostId = "host-one",
   threadId = "thread-one",
   runtimeKind?: "native",
@@ -161,7 +161,7 @@ async function resolveToken(
 }
 
 async function resolveCodexToken(
-  host: ReturnType<typeof createFakePluginHost>,
+  host: ReturnType<typeof createAccountPoolTestHost>,
   hostId = "host-one",
 ): Promise<{ token: string; baseUrl: string }> {
   const entries = await host.harness.behavior.resolveProviderEnv("codex", {
@@ -626,7 +626,7 @@ async function createFixture(args: {
   hostRpc?: (call: ExperimentalFakeHostRpcCall) => unknown | Promise<unknown>;
 }): Promise<Fixture> {
   const dataDir = await mkdtemp(path.join(tmpdir(), "bb-account-pool-"));
-  const host = createFakePluginHost({
+  const host = createAccountPoolTestHost({
     pluginId: "account-pool",
     dataDir,
     sdk: sdkStubs(),
@@ -634,7 +634,6 @@ async function createFixture(args: {
       ? {}
       : { experimental_callHostRpc: args.hostRpc }),
   });
-  host.bb.storage.database().pragma("synchronous = OFF");
   await host.bb.storage.kv.set("config", {
     anthropicUpstreamBaseUrl: args.upstreamUrl,
     codexUpstreamBaseUrl: args.upstreamUrl,
@@ -945,7 +944,7 @@ describe("Account Pool plugin", () => {
     const dataDir = await mkdtemp(
       path.join(tmpdir(), "bb-account-pool-config-upgrade-"),
     );
-    const host = createFakePluginHost({
+    const host = createAccountPoolTestHost({
       pluginId: "account-pool",
       dataDir,
       sdk: sdkStubs(),
@@ -980,7 +979,7 @@ describe("Account Pool plugin", () => {
     const dataDir = await mkdtemp(
       path.join(tmpdir(), "bb-account-pool-config-"),
     );
-    const host = createFakePluginHost({
+    const host = createAccountPoolTestHost({
       pluginId: "account-pool",
       dataDir,
       sdk: sdkStubs(),
@@ -1227,7 +1226,7 @@ describe("Account Pool plugin", () => {
           expiresAt: Date.now() - 1,
         };
       };
-    const host = createFakePluginHost({
+    const host = createAccountPoolTestHost({
       pluginId: "account-pool",
       dataDir,
       sdk: sdkStubs(),
@@ -1509,7 +1508,7 @@ describe("Account Pool plugin", () => {
         headers: { "content-type": "text/event-stream" },
       });
     };
-    const host = createFakePluginHost({
+    const host = createAccountPoolTestHost({
       pluginId: "account-pool",
       dataDir,
       sdk: sdkStubs(),
@@ -1595,7 +1594,7 @@ describe("Account Pool plugin", () => {
     await seededTokens.forHost("host-gone");
     const goneTokenFile = path.join(secretDir, "hub-token-host-gone.json");
     await expect(fs.access(goneTokenFile)).resolves.toBeUndefined();
-    const host = createFakePluginHost({
+    const host = createAccountPoolTestHost({
       pluginId: "account-pool",
       dataDir,
       sdk: sdkStubs(),
@@ -1670,7 +1669,7 @@ describe("Account Pool plugin", () => {
     const dataDir = await mkdtemp(
       path.join(tmpdir(), "bb-account-pool-empty-"),
     );
-    const host = createFakePluginHost({
+    const host = createAccountPoolTestHost({
       pluginId: "account-pool",
       dataDir,
       sdk: sdkStubs(),
@@ -1877,7 +1876,7 @@ describe("Account Pool plugin", () => {
 
   it("refuses unusable pool invocations instead of guessing", async () => {
     const dataDir = await mkdtemp(path.join(tmpdir(), "bb-account-pool-cli-"));
-    const host = createFakePluginHost({
+    const host = createAccountPoolTestHost({
       pluginId: "account-pool",
       dataDir,
       sdk: sdkStubs(),
@@ -2006,7 +2005,7 @@ describe("Account Pool plugin", () => {
     });
     cleanups.push(oauth.close);
     const dataDir = await mkdtemp(path.join(tmpdir(), "bb-pool-login-rpc-"));
-    const host = createFakePluginHost({
+    const host = createAccountPoolTestHost({
       pluginId: "account-pool",
       dataDir,
       sdk: sdkStubs(),
@@ -2166,7 +2165,7 @@ describe("Account Pool plugin", () => {
     });
     cleanups.push(auth.close);
     const dataDir = await mkdtemp(path.join(tmpdir(), "bb-pool-codex-login-"));
-    const host = createFakePluginHost({
+    const host = createAccountPoolTestHost({
       pluginId: "account-pool",
       dataDir,
       sdk: sdkStubs(),
@@ -9217,7 +9216,7 @@ it("publishes pooled usage without a display plugin and does not invent unobserv
 
 it("publishes an empty shared usage group before any accounts or settings are configured", async () => {
   const dataDir = await mkdtemp(path.join(tmpdir(), "bb-empty-usage-pool-"));
-  const host = createFakePluginHost({
+  const host = createAccountPoolTestHost({
     pluginId: "account-pool",
     dataDir,
     sdk: sdkStubs(),
@@ -9389,11 +9388,11 @@ describe("Account Pool nested proxy", () => {
     loopbackBaseUrl?: string;
     inheritedServerUrl?: string;
     fetch?: typeof fetch;
-  }): Promise<ReturnType<typeof createFakePluginHost>> {
+  }): Promise<ReturnType<typeof createAccountPoolTestHost>> {
     const dataDir = await mkdtemp(
       path.join(tmpdir(), "bb-account-pool-child-"),
     );
-    const host = createFakePluginHost({
+    const host = createAccountPoolTestHost({
       pluginId: "account-pool",
       dataDir,
       ...(args.loopbackBaseUrl === undefined
@@ -9875,7 +9874,7 @@ describe("Account Pool subscription sign-in repair", () => {
     });
     cleanups.push(oauth.close);
     const dataDir = await mkdtemp(path.join(tmpdir(), "bb-pool-reauth-"));
-    const host = createFakePluginHost({
+    const host = createAccountPoolTestHost({
       pluginId: "account-pool",
       dataDir,
       sdk: sdkStubs(),
@@ -10066,7 +10065,7 @@ describe("Account Pool subscription sign-in repair", () => {
     ]);
     const imports = ["personal-access", "team-access"];
     const dataDir = await mkdtemp(path.join(tmpdir(), "bb-pool-profile-org-"));
-    const host = createFakePluginHost({
+    const host = createAccountPoolTestHost({
       pluginId: "account-pool",
       dataDir,
       sdk: sdkStubs(),
@@ -10390,7 +10389,7 @@ describe("Account Pool subscription sign-in repair", () => {
   it("stores the organization of an imported Claude login", async () => {
     const personal = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
     const dataDir = await mkdtemp(path.join(tmpdir(), "bb-pool-import-org-"));
-    const host = createFakePluginHost({
+    const host = createAccountPoolTestHost({
       pluginId: "account-pool",
       dataDir,
       sdk: sdkStubs(),
@@ -10621,7 +10620,7 @@ describe("Account Pool subscription sign-in repair", () => {
     });
     cleanups.push(auth.close);
     const dataDir = await mkdtemp(path.join(tmpdir(), "bb-pool-codex-reauth-"));
-    const host = createFakePluginHost({
+    const host = createAccountPoolTestHost({
       pluginId: "account-pool",
       dataDir,
       sdk: sdkStubs(),
@@ -12606,7 +12605,7 @@ describe("Account Pool credential scoping", () => {
       );
     };
     const dataDir = await mkdtemp(path.join(tmpdir(), "bb-account-pool-nest-"));
-    const child = createFakePluginHost({
+    const child = createAccountPoolTestHost({
       pluginId: "account-pool",
       dataDir,
       sdk: sdkStubs(),

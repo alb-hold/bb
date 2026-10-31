@@ -97,13 +97,16 @@ it.each([2697, 3000])(
 it("revokes every missed archived thread beyond the old cutoff in one sweep, omits suspended routes from later sweeps, and preserves undo", async () => {
   const { store, tokens } = await fixture();
   const archived = [...tokens.keys()].slice(-100);
-  await store.sweepThreads(
-    async (id) => {
-      await new Promise((resolve) => setTimeout(resolve, 25));
-      return archived.includes(id) ? "archived" : "live";
-    },
-    { signal: AbortSignal.timeout(15000), lookupTimeoutMs: 5000 },
+  const budget = new AbortController();
+  const result = await store.sweepThreads(
+    async (id) => (archived.includes(id) ? "archived" : "live"),
+    { signal: budget.signal, lookupTimeoutMs: 5000 },
   );
+  expect(result).toMatchObject({
+    checked: tokens.size,
+    failed: 0,
+    deferred: 0,
+  });
   for (const id of archived)
     expect(await store.authenticate(tokens.get(id) ?? "")).toBeNull();
   const checked = new Set<string>();
