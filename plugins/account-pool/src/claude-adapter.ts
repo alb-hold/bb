@@ -1,5 +1,6 @@
 import { z } from "zod";
 import {
+  type ClaudeProfile,
   claudePlanFromProfile,
   claudeProfileSchema,
 } from "./claude-profile.js";
@@ -8,7 +9,10 @@ import {
   importClaudeCredentials,
   type ImportedClaudeCredentials,
 } from "./credentials.js";
-import type { ProviderAdapter } from "./provider-adapter.js";
+import type {
+  ProviderAdapter,
+  AdapterUsageContext,
+} from "./provider-adapter.js";
 import {
   fetchOAuthRefresh,
   filterRequestHeaders,
@@ -22,7 +26,7 @@ import {
   quotaFromHeaders,
 } from "./quota.js";
 import { parseRequestBody } from "./request-body.js";
-import { quotaFromUsage } from "./usage.js";
+import { modelWeeklyFromUsage, quotaFromUsage } from "./usage.js";
 
 const OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 const OAUTH_BETA = "oauth-2025-04-20";
@@ -45,6 +49,118 @@ const refreshResponseSchema = z
   })
   .passthrough();
 
+interface ProfileJob {
+  context: AdapterUsageContext;
+  run: () => Promise<void>;
+  resolve: () => void;
+  reject: (error: unknown) => void;
+}
+
+const profileJobs: ProfileJob[] = [];
+const physicalProfilesKey = Symbol.for("bb.account-pool.physicalProfiles");
+const physicalProfiles = z
+  .custom<
+    Set<string>
+  >((value) => value instanceof Set && [...value].every((id) => typeof id === "string"))
+  .parse(Reflect.get(globalThis, physicalProfilesKey) ?? new Set<string>());
+Reflect.set(globalThis, physicalProfilesKey, physicalProfiles);
+const MAX_PHYSICAL_PROFILES = 2;
+let profileRunning = false;
+
+function profileBlocked(id: string): boolean {
+  return (
+    physicalProfiles.has(id) || physicalProfiles.size >= MAX_PHYSICAL_PROFILES
+  );
+}
+
+async function drainProfiles(): Promise<void> {
+  if (profileRunning) return;
+  profileRunning = true;
+  try {
+    while (profileJobs.length > 0) {
+      const foreground = profileJobs.findIndex(
+        (job) => !job.context.background,
+      );
+      const job = profileJobs.splice(foreground < 0 ? 0 : foreground, 1)[0]!;
+      try {
+        if (!job.context.signal?.aborted) await job.run();
+        job.resolve();
+      } catch (error) {
+        job.reject(error);
+      }
+    }
+  } finally {
+    profileRunning = false;
+  }
+}
+
+function scheduleProfile(
+  context: AdapterUsageContext,
+  run: () => Promise<void>,
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    profileJobs.push({ context, run, resolve, reject });
+    void drainProfiles().catch(reject);
+  });
+}
+
+function profileJitter(signal: AbortSignal | undefined): Promise<void> {
+  if (signal?.aborted) return Promise.resolve();
+  return new Promise((resolve) => {
+    const finish = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", finish);
+      resolve();
+    };
+    const timer = setTimeout(finish, Math.floor(Math.random() * 2_001));
+    signal?.addEventListener("abort", finish, { once: true });
+  });
+}
+
+async function requestProfile(
+  context: AdapterUsageContext,
+  url: string,
+  accessToken: string,
+  signal: AbortSignal,
+): Promise<ClaudeProfile | null> {
+  const id = context.account.id;
+  if (profileBlocked(id)) return null;
+  physicalProfiles.add(id);
+  let abort = () => {};
+  const canceled = new Promise<null>((resolve) => {
+    abort = () => resolve(null);
+    signal.addEventListener("abort", abort, { once: true });
+    if (signal.aborted) abort();
+  });
+  const operation = (async () => {
+    if (signal.aborted) return null;
+    const response = await context
+      .fetch(url, {
+        headers: {
+          authorization: `Bearer ${accessToken}`,
+          "anthropic-beta": OAUTH_BETA,
+          accept: "application/json",
+        },
+        signal,
+      })
+      .catch(() => null);
+    if (response === null) return null;
+    if (signal.aborted || !response.ok) {
+      void response.body?.cancel().catch(() => {});
+      return null;
+    }
+    const parsed = claudeProfileSchema.safeParse(
+      await response.json().catch(() => null),
+    );
+    return signal.aborted || !parsed.success ? null : parsed.data;
+  })().finally(() => physicalProfiles.delete(id));
+  try {
+    return await Promise.race([operation, canceled]);
+  } finally {
+    signal.removeEventListener("abort", abort);
+  }
+}
+
 export function createClaudeAdapter(options: {
   refreshUrl: string;
   usageUrl: string;
@@ -52,8 +168,154 @@ export function createClaudeAdapter(options: {
   importCredentials?: () => Promise<ImportedClaudeCredentials>;
 }): ProviderAdapter {
   const profileCheckedAt = new Map<string, number>();
+  const profileInFlight = new Map<string, AdapterUsageContext>();
+  const profileRetryAt = new Map<string, number>();
+  async function refreshProfile(context: AdapterUsageContext): Promise<void> {
+    const id = context.account.id;
+    if (profileInFlight.get(id)?.signal?.aborted) profileRetryAt.delete(id);
+    if (
+      context.account.kind !== "oauth" ||
+      context.signal?.aborted ||
+      profileBlocked(id) ||
+      (profileInFlight.has(id) && !profileInFlight.get(id)?.signal?.aborted) ||
+      context.now() < (profileRetryAt.get(id) ?? 0)
+    )
+      return;
+    const deadline = new AbortController();
+    const signal = AbortSignal.any([
+      deadline.signal,
+      ...(context.signal === undefined ? [] : [context.signal]),
+    ]);
+    const timer = setTimeout(() => deadline.abort(), USAGE_REQUEST_TIMEOUT_MS);
+    let abort = () => {};
+    const canceled = new Promise<null>((resolve) => {
+      abort = () => resolve(null);
+      signal.addEventListener("abort", abort, { once: true });
+      if (signal.aborted) abort();
+    });
+    const profileContext = { ...context, signal };
+    profileInFlight.set(id, context);
+    profileRetryAt.set(id, context.now() + 5 * 60 * 1_000);
+    let failed = true;
+    let skipped = false;
+    const result: { profile: ClaudeProfile | null; checkedAt: number } = {
+      profile: null,
+      checkedAt: 0,
+    };
+    try {
+      await Promise.race([
+        scheduleProfile(profileContext, async () => {
+          if (signal.aborted) return;
+          if (profileBlocked(id)) {
+            skipped = true;
+            return;
+          }
+          const secret = await Promise.race([
+            context.freshSecret(signal),
+            canceled,
+          ]);
+          if (secret === null || secret.kind !== "oauth" || signal.aborted)
+            return;
+          const account = context.account;
+          const checkedAt = profileCheckedAt.get(account.id);
+          const plans = await Promise.race([
+            context.accounts.planDisplayNames(signal),
+            canceled,
+          ]);
+          if (plans === null || signal.aborted) return;
+          if (
+            account.accountUuid !== null &&
+            plans[account.id] !== undefined &&
+            checkedAt !== undefined &&
+            context.now() - checkedAt < PROFILE_REFRESH_INTERVAL_MS
+          ) {
+            failed = false;
+            return;
+          }
+          if (signal.aborted) return;
+          result.checkedAt = context.accounts.nextProfileCheck(
+            id,
+            context.now(),
+          );
+          result.profile = await requestProfile(
+            profileContext,
+            options.profileUrl,
+            secret.accessToken,
+            signal,
+          );
+        }),
+        canceled,
+      ]);
+      clearTimeout(timer);
+      const profile = result.profile;
+      if (profile === null || signal.aborted) return;
+      const account = context.account;
+      const accountUuid = profile.account.uuid ?? null;
+      if (
+        account.accountUuid === null
+          ? accountUuid === null
+          : accountUuid !== account.accountUuid
+      ) {
+        return;
+      }
+      const write = (async () => {
+        if (account.accountUuid === null && accountUuid !== null)
+          await context.accounts.setAccountUuid(
+            account.id,
+            accountUuid,
+            context.signal,
+          );
+        const organizationUuid = profile.organization?.uuid ?? null;
+        if (organizationUuid !== null)
+          await context.accounts.setOrganization(
+            account.id,
+            organizationUuid,
+            context.signal,
+          );
+        await context.accounts.setPlanDisplayName(
+          account.id,
+          profile.organization?.plan_display_name ?? null,
+          context.signal,
+          result.checkedAt,
+        );
+        const reported = claudePlanFromProfile(profile);
+        const plan = {
+          subscriptionType:
+            reported.subscriptionType ?? account.subscriptionType,
+          rateLimitTier: reported.rateLimitTier ?? account.rateLimitTier,
+        };
+        if (
+          plan.subscriptionType !== account.subscriptionType ||
+          plan.rateLimitTier !== account.rateLimitTier
+        )
+          await context.accounts.setPlan(account.id, plan, context.signal);
+        if (!context.signal?.aborted)
+          profileCheckedAt.set(account.id, context.now());
+      })();
+      context.accounts.trackProfileWrite(
+        account.id,
+        profile.organization?.plan_display_name ?? null,
+        write,
+        result.checkedAt,
+      );
+      if (context.background) await write;
+      failed = profile.organization?.plan_display_name == null;
+    } finally {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", abort);
+      if (profileInFlight.get(id) === context) {
+        if (context.signal?.aborted || skipped) profileRetryAt.delete(id);
+        else profileRetryAt.set(id, context.now() + 5 * 60 * 1_000);
+        profileInFlight.delete(id);
+      }
+      if (failed && !skipped && context.background)
+        await profileJitter(context.signal);
+    }
+  }
+
   return {
     provider: "claude",
+    refreshProfile,
     upstreamName: "Anthropic",
     async localLogin() {
       return null;
@@ -108,6 +370,7 @@ export function createClaudeAdapter(options: {
     quotaFromHeaders,
     isQuotaRejection,
     async refreshSecret(context) {
+      context.signal?.throwIfAborted();
       const secret = oauthSecretDueForRefresh(context);
       if (secret === null) return { secret: context.secret, refreshed: false };
       const parsed = parseOAuthRefreshResponse(
@@ -130,26 +393,40 @@ export function createClaudeAdapter(options: {
         expiresAt: epochMilliseconds(rawExpiresAt),
         ...(secret.idToken === undefined ? {} : { idToken: secret.idToken }),
       };
-      await context.accounts.writeSecret(context.account.id, refreshed);
+      context.signal?.throwIfAborted();
+      await context.accounts.writeSecret(
+        context.account.id,
+        refreshed,
+        context.signal,
+      );
       return { secret: refreshed, refreshed: true };
     },
     async refreshUsage(context) {
+      context.signal?.throwIfAborted();
       if (context.account.kind !== "oauth") return;
-      const secret = await context.freshSecret();
+      const secret = await context.freshSecret(context.signal);
+      context.signal?.throwIfAborted();
       if (secret.kind !== "oauth") return;
+      const signal = AbortSignal.any([
+        AbortSignal.timeout(USAGE_REQUEST_TIMEOUT_MS),
+        ...(context.signal === undefined ? [] : [context.signal]),
+      ]);
+      signal.throwIfAborted();
       const response = await context.fetch(options.usageUrl, {
         headers: {
           authorization: `Bearer ${secret.accessToken}`,
           "anthropic-beta": OAUTH_BETA,
           accept: "application/json",
         },
-        signal: AbortSignal.timeout(USAGE_REQUEST_TIMEOUT_MS),
+        signal,
       });
+      signal.throwIfAborted();
       if (!response.ok) {
         await response.body?.cancel();
         throw new Error("Usage refresh failed.");
       }
       const payload: unknown = await response.json().catch(() => null);
+      signal.throwIfAborted();
       if (typeof payload !== "object" || payload === null)
         throw new Error("Usage refresh returned unreadable data.");
       const quota = quotaFromUsage(
@@ -160,55 +437,23 @@ export function createClaudeAdapter(options: {
       );
       if (quota === null)
         throw new Error("Usage refresh returned unreadable data.");
-      context.quotas.put(quota);
-      const account = context.account;
-      const checkedAt = profileCheckedAt.get(account.id);
-      if (
-        account.accountUuid !== null &&
-        checkedAt !== undefined &&
-        context.now() - checkedAt < PROFILE_REFRESH_INTERVAL_MS
-      )
-        return;
-      const profile = await context
-        .fetch(options.profileUrl, {
-          headers: {
-            authorization: `Bearer ${secret.accessToken}`,
-            "anthropic-beta": OAUTH_BETA,
-            accept: "application/json",
-          },
-          signal: AbortSignal.timeout(USAGE_REQUEST_TIMEOUT_MS),
-        })
-        .catch(() => null);
-      if (profile === null) return;
-      if (!profile.ok) {
-        await profile.body?.cancel();
-        return;
-      }
-      const parsed = claudeProfileSchema.safeParse(
-        await profile.json().catch(() => null),
+      const models = modelWeeklyFromUsage(payload, context.now());
+      const stored = await context.accounts.withExistingAccount(
+        context.account.id,
+        () => {
+          context.quotas.put(quota);
+          if (models !== null)
+            context.quotas.putModelWeekly(context.account.id, models);
+        },
+        signal,
       );
-      if (!parsed.success) return;
-      const accountUuid = parsed.data.account.uuid ?? null;
-      if (account.accountUuid === null) {
-        if (accountUuid === null) return;
-        await context.accounts.setAccountUuid(account.id, accountUuid);
-      } else if (accountUuid !== account.accountUuid) {
-        return;
-      }
-      const organizationUuid = parsed.data.organization?.uuid ?? null;
-      if (organizationUuid !== null)
-        await context.accounts.setOrganization(account.id, organizationUuid);
-      const reported = claudePlanFromProfile(parsed.data);
-      const plan = {
-        subscriptionType: reported.subscriptionType ?? account.subscriptionType,
-        rateLimitTier: reported.rateLimitTier ?? account.rateLimitTier,
-      };
-      if (
-        plan.subscriptionType !== account.subscriptionType ||
-        plan.rateLimitTier !== account.rateLimitTier
-      )
-        await context.accounts.setPlan(account.id, plan);
-      profileCheckedAt.set(account.id, context.now());
+      context.signal?.throwIfAborted();
+      if (!stored) return;
+      if (profileRunning)
+        void refreshProfile(context).catch(() =>
+          context.accounts.profileRefreshFailed(context.account.id),
+        );
+      else await refreshProfile(context);
     },
     errorResponse(status, message, headers) {
       const type =
