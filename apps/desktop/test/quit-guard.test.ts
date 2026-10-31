@@ -140,8 +140,13 @@ describe("handleBeforeQuit", () => {
   );
 });
 
-it("reads hidden/archived threads and live native terminals through existing APIs", async () => {
+it("counts only non-archived threads without scanning archived native terminals", async () => {
   const urls: string[] = [];
+  const archivedThreads = Array.from({ length: 5000 }, (_, i) => ({
+    id: `archived-${i}`,
+    status: "active",
+    nativeTerminal: true,
+  }));
   const result = await queryQuitActivity({
     serverUrl: "http://localhost:3000",
     signal: new AbortController().signal,
@@ -149,18 +154,25 @@ it("reads hidden/archived threads and live native terminals through existing API
       const url = String(input);
       urls.push(url);
       const data = url.endsWith("native-terminal")
-        ? { terminal: { status: "running" } }
+        ? {
+            terminal: {
+              status: url.includes("thread3") ? "exited" : "running",
+            },
+          }
         : url.endsWith("archived=true")
-          ? []
+          ? archivedThreads
           : [
               { id: "thread1", status: "idle", nativeTerminal: true },
               { id: "thread2", status: "active" },
+              { id: "thread3", status: "idle", nativeTerminal: true },
             ];
       return new Response(JSON.stringify(data));
     },
   });
+  expect(urls).toEqual([
+    "http://localhost:3000/api/v1/threads?includeHidden=true&archived=false",
+    "http://localhost:3000/api/v1/threads/thread1/native-terminal",
+    "http://localhost:3000/api/v1/threads/thread3/native-terminal",
+  ]);
   expect(result).toEqual({ activeThreads: 1, nativeTerminals: 1 });
-  expect(urls).toContain(
-    "http://localhost:3000/api/v1/threads?includeHidden=true&archived=true",
-  );
 });

@@ -2320,7 +2320,7 @@ const quitGuard = createQuitGuard({
           ? "The active-thread count is unknown. Quit bb?"
           : `${activity.activeThreads} active thread${activity.activeThreads === 1 ? "" : "s"} and ${activity.nativeTerminals} attached native terminal${activity.nativeTerminals === 1 ? "" : "s"}. Quit bb?`,
       detail:
-        "Quitting stops local sessions. Press Cmd+Q again within 2 seconds to confirm.",
+        "Choose Quit bb to stop local sessions, or Cancel to keep them running.",
       buttons: ["Quit bb", "Cancel"],
       defaultId: 1,
       cancelId: 1,

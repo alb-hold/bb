@@ -146,14 +146,9 @@ export async function queryQuitActivity(args: {
       throw new Error(`Quit activity query failed: ${response.status}`);
     return response.json();
   }
-  const groups = await Promise.all(
-    [false, true].map(async (archived) =>
-      z
-        .array(threadSchema)
-        .parse(await read(`threads?includeHidden=true&archived=${archived}`)),
-    ),
-  );
-  const threads = groups.flat();
+  const threads = z
+    .array(threadSchema)
+    .parse(await read("threads?includeHidden=true&archived=false"));
   const terminals = await Promise.all(
     threads
       .filter((thread) => thread.nativeTerminal)
