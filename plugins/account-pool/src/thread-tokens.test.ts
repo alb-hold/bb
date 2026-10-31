@@ -2137,15 +2137,18 @@ it("counts a thread archived by its event during the lookup as revoked without a
 it("gives up on a lookup that never settles once the sweep deadline passes and keeps the credential", async () => {
   const { threads, tokenOf } = await legacyFixture(["thr_hung"]);
   const deadline = new AbortController();
-  const started = Promise.withResolvers<void>();
+  let signalStarted!: () => void;
+  const started = new Promise<void>((resolve) => {
+    signalStarted = resolve;
+  });
   const pending = threads.sweepThreads(
     () => {
-      started.resolve();
+      signalStarted();
       return new Promise<never>(() => undefined);
     },
     { signal: deadline.signal },
   );
-  await started.promise;
+  await started;
   deadline.abort();
   const result = await pending;
   expect(result).toEqual({ checked: 1, revoked: 0, failed: 0, deferred: 1 });
@@ -2183,13 +2186,16 @@ it("does not let threads whose lookups hang starve a later archived thread, and 
   const sweep = async () => {
     let dispatched = 0;
     const expected = deadlines.length === 0 ? 3 : 2;
-    const started = Promise.withResolvers<void>();
+    let signalStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      signalStarted = resolve;
+    });
     const hanging: AbortController[] = [];
     const lookup: ThreadLookup = (threadId) => {
       const deadline = deadlines[firstLookup + dispatched];
       if (threadId !== archived && deadline !== undefined)
         hanging.push(deadline);
-      if (++dispatched === expected) started.resolve();
+      if (++dispatched === expected) signalStarted();
       return threadId === archived
         ? Promise.resolve("gone")
         : new Promise<never>(() => undefined);
@@ -2200,7 +2206,7 @@ it("does not let threads whose lookups hang starve a later archived thread, and 
       signal: global,
       lookupTimeoutMs: 50,
     });
-    await started.promise;
+    await started;
     for (const deadline of hanging)
       deadline.abort(new DOMException("lookup timed out", "TimeoutError"));
     const result = await pending;
