@@ -384,3 +384,23 @@ Known upstream limitation: the `claude-artifacts` MCP server that Claude Code 2.
 Provider Retry discovers Account Pooler’s `provider-retry.v1.availability` RPC. It accepts `{ threadId, requestId }` and reports `not-routed`, `ready`, `blocked` with `retryAt` in epoch milliseconds, or `unavailable` with a reason. Pool routing must have been recorded when the provider environment was prepared. The request must still be the thread’s latest request; its recorded model determines which quota windows apply. The pool uses the same recovery calculation for its HTTP 429 response and this RPC. Parent pools expose the authenticated `/retry-availability?provider=claude|codex&family=<family>` endpoint.
 
 The retry plugin remains responsible for queueing, maximum waits, and attempt limits. Inspect a skipped decision with `bb provider-retry explain <thread-id>` and pending work with `bb provider-retry status <thread-id>`.
+
+## Plan and model labels
+
+Claude plan badges and the CLI Plan column prefer Anthropic's
+`organization.plan_display_name` (for example Ultra) over legacy Max flags and
+rate-limit tier identifiers. Missing names are backfilled in the background at startup and on display reads.
+Refreshes are single-flight per account, use the profile request timeout, and
+retry after at least five minutes on failure. Account names remain unchanged.
+Without a provider display name, legacy Max records show Claude subscription.
+Max multipliers appear only when the stored provider name says Max.
+The additive `display.get` RPC returns display names in `plans`, keyed by account
+ID. Legacy account records and `status.get` retain their existing shape.
+
+The `weekly` map in `display.get` preserves each API-reported model display name
+and weekly quota, keyed by account ID and model name. Usage details, the usage
+card and CLI show one weekly row per reported name, including future models.
+Servers without this method fall back to the legacy family rows. Model display
+quotas use an additive SQLite table; existing routing-family quotas and stored
+account records remain readable. An empty model map means the latest usage
+response reported no scoped limits; an absent map uses legacy observations.
