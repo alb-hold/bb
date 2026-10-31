@@ -1012,9 +1012,12 @@ export class ThreadTokenStore {
   ): Promise<ThreadSweepResult> {
     await this.retryDeletionRecords();
     const threadIds = new Set<string>();
-    for (const record of this.routes.values()) threadIds.add(record.threadId);
+    for (const record of this.routes.values())
+      if (!this.archivedThreads.has(record.threadId))
+        threadIds.add(record.threadId);
     for (const record of this.nestedRoutes.values())
-      threadIds.add(record.threadId);
+      if (!this.archivedThreads.has(record.threadId))
+        threadIds.add(record.threadId);
     const sorted = [...threadIds].sort();
     const cursor = this.sweepCursor;
     const start = cursor === null ? 0 : sorted.findIndex((id) => id > cursor);
@@ -1055,20 +1058,7 @@ export class ThreadTokenStore {
             continue;
           }
           if (status === "archived") {
-            if (await this.suspendThreadIfVersion(threadId, version))
-              await this.serialize(async () => {
-                if (!this.archivedThreads.has(threadId)) return;
-                for (const [key, record] of this.routes) {
-                  if (record.threadId !== threadId) continue;
-                  this.routes.delete(key);
-                  unindexCredential(this.tokenIndex, record);
-                }
-                for (const [key, record] of this.nestedRoutes) {
-                  if (record.threadId !== threadId) continue;
-                  this.nestedRoutes.delete(key);
-                  unindexCredential(this.nestedTokenIndex, record);
-                }
-              });
+            await this.suspendThreadIfVersion(threadId, version);
             continue;
           }
           if (await this.removeThreadIfVersion(threadId, version))

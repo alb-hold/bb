@@ -66,7 +66,7 @@ it.each([2697, 3000])(
   60000,
 );
 
-it("revokes every missed archived thread beyond the old cutoff in one sweep, prunes its routes, and preserves undo", async () => {
+it("revokes every missed archived thread beyond the old cutoff in one sweep, omits suspended routes from later sweeps, and preserves undo", async () => {
   const { store, tokens } = await fixture();
   const archived = [...tokens.keys()].slice(-100);
   await store.sweepThreads(
