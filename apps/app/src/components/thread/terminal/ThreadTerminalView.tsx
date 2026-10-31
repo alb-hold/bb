@@ -1916,6 +1916,9 @@ export function ThreadTerminalView({
         containerElement.style.overflowX = scrollRetainedOutput ? "auto" : "";
         containerElement.style.overflowY = scrollRetainedOutput ? "auto" : "";
         containerElement.style.paddingLeft = scrollRetainedOutput ? "0" : "";
+        containerElement.style.touchAction = scrollRetainedOutput
+          ? "pan-x pan-y"
+          : "";
         const scale =
           localFitGrid !== null && !scrollRetainedOutput
             ? terminalSurfaceScale(displayGrid, localFitGrid)

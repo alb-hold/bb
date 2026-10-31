@@ -2086,6 +2086,7 @@ describe("terminal first paint", () => {
     expect(host.style.overflowX).toBe("");
     expect(host.style.overflowY).toBe("");
     expect(host.style.paddingLeft).toBe("");
+    expect(host.style.touchAction).toBe("");
     expect(host.querySelector<HTMLElement>(".xterm")?.dataset.surfaceScale).toBe("1");
   });
 
@@ -2140,6 +2141,7 @@ describe("terminal first paint", () => {
       expect(surface.style.transform).toBe("scale(1)");
       expect(host.style.overflowX).toBe("auto");
       expect(host.style.overflowY).toBe("auto");
+      expect(host.style.touchAction).toBe("pan-x pan-y");
       expect(host.parentElement?.classList.contains("touch-pan-x")).toBe(true);
       expect(host.parentElement?.classList.contains("touch-pan-y")).toBe(true);
       expect(
