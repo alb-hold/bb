@@ -1,6 +1,18 @@
 import { type ChildProcess, execFileSync } from "node:child_process";
 import { setTimeout } from "node:timers/promises";
 
+function hasLiveGroupMembers(pid: number): boolean {
+  return execFileSync("ps", ["-axo", "pgid=,stat="], {
+    encoding: "utf8",
+  })
+    .trim()
+    .split("\n")
+    .some((line) => {
+      const [group, state] = line.trim().split(/\s+/u);
+      return Number(group) === pid && !state?.startsWith("Z");
+    });
+}
+
 export function trackTestProcess(child: ChildProcess): () => Promise<void> {
   const closed = new Promise<void>((resolve) => {
     child.once("close", () => resolve());
@@ -13,7 +25,7 @@ export function trackTestProcess(child: ChildProcess): () => Promise<void> {
       if (child.exitCode === null && child.signalCode === null) {
         execFileSync("taskkill", ["/pid", String(pid), "/T", "/F"]);
       }
-    } else {
+    } else if (hasLiveGroupMembers(pid)) {
       try {
         process.kill(-pid, "SIGKILL");
       } catch (error) {
@@ -29,15 +41,7 @@ export function trackTestProcess(child: ChildProcess): () => Promise<void> {
     if (process.platform === "win32") return;
     const deadline = Date.now() + 5_000;
     for (;;) {
-      const live = execFileSync("ps", ["-axo", "pgid=,stat="], {
-        encoding: "utf8",
-      })
-        .trim()
-        .split("\n")
-        .some((line) => {
-          const [group, state] = line.trim().split(/\s+/u);
-          return Number(group) === pid && !state?.startsWith("Z");
-        });
+      const live = hasLiveGroupMembers(pid);
       if (!live) return;
       if (Date.now() >= deadline)
         throw new Error(`Test process group ${pid} still has live writers`);
