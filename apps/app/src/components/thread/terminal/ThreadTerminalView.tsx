@@ -1914,6 +1914,7 @@ export function ThreadTerminalView({
         const scrollRetainedOutput =
           retainedOutputGrid !== null && window.innerWidth < 768;
         containerElement.style.overflowX = scrollRetainedOutput ? "auto" : "";
+        containerElement.style.overflowY = scrollRetainedOutput ? "auto" : "";
         const scale =
           localFitGrid !== null && !scrollRetainedOutput
             ? terminalSurfaceScale(displayGrid, localFitGrid)

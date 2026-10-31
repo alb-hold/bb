@@ -2098,6 +2098,7 @@ describe("terminal first paint", () => {
       expect(surface.dataset.surfaceScale).toBe("1");
       expect(surface.style.transform).toBe("scale(1)");
       expect(host.style.overflowX).toBe("auto");
+      expect(host.style.overflowY).toBe("auto");
       expect(
         actualTerminal!.buffer.active.getLine(0)?.translateToString(true),
       ).toBe(prompt);
