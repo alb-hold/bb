@@ -2475,6 +2475,18 @@ export function ThreadTerminalView({
           connectionNoticeTimeout = null;
         }
       };
+      const resetTerminalOutput = () => {
+        outputLineAnchorTracker.reset();
+        outputLineAnchors.length = 0;
+        savedOutputLineAnchor = null;
+        replayCheckpointSequence = null;
+        replayPreview?.dispose();
+        replayPreview = null;
+        activeTerminal.reset();
+        outputBoundaries.reset();
+        parsingOutputSequence = null;
+        outputLineAnchorTracker.reset();
+      };
       const activeTransport = new TerminalWebSocketTransport({
         terminalId: session.id,
         now: () => performance.now(),
@@ -2749,16 +2761,7 @@ export function ThreadTerminalView({
           });
         },
         onSequenceGap: () => {
-          outputLineAnchorTracker.reset();
-          outputLineAnchors.length = 0;
-          savedOutputLineAnchor = null;
-          replayCheckpointSequence = null;
-          replayPreview?.dispose();
-          replayPreview = null;
-          activeTerminal.reset();
-          outputBoundaries.reset();
-          parsingOutputSequence = null;
-          outputLineAnchorTracker.reset();
+          resetTerminalOutput();
           writeTerminalStatus({
             terminal: activeTerminal,
             text: "Some terminal output was unavailable after reconnect",
@@ -2807,6 +2810,12 @@ export function ThreadTerminalView({
           }, TERMINAL_REPLAY_PREVIEW_HOLD_TIMEOUT_MS);
           const output = await outputPromise;
           if (!disposed) {
+            if (retainedReplayFailed) {
+              resetTerminalOutput();
+              lastStatusNoticeRef.current = null;
+              pendingExitNotices.length = 0;
+              retainedReplayFailed = false;
+            }
             await writeRetainedTerminalOutput({
               chunks: output.chunks.map((chunk) => ({
                 seq: chunk.seq,

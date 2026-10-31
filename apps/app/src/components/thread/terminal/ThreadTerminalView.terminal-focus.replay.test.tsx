@@ -26,6 +26,7 @@ import { makeTerminalSession } from "@/test/fixtures/terminal-sessions";
 import { wsManager } from "@/lib/ws";
 import * as terminalModules from "./terminal-modules";
 import * as terminalReplayPreview from "./terminal-replay-preview";
+import * as terminalViewport from "./terminal-viewport";
 import { AppCommandProvider } from "@/components/commands/AppCommandProvider";
 import { ThreadTerminalView, writeTerminalOutput } from "./ThreadTerminalView";
 
@@ -2129,6 +2130,112 @@ describe("terminal first paint", () => {
 });
 
 describe("terminal first paint recovery", () => {
+  it("reconciles retained history arriving after the timeout", async () => {
+    prepareFirstAttachFontMetricsHarness();
+    vi.stubGlobal("innerWidth", 390);
+    const restore = vi.spyOn(terminalViewport, "resolveTerminalViewportRestore");
+    const mounted: { current: Terminal | null } = { current: null };
+    const open = Terminal.prototype.open;
+    vi.spyOn(Terminal.prototype, "open").mockImplementation(function (
+      this: Terminal,
+      container,
+    ) {
+      mounted.current ??= this;
+      open.call(this, container);
+    });
+    let resolveOutput!: (output: {
+      chunks: { seq: number; dataBase64: string }[];
+      nextSeq: number;
+    }) => void;
+    let requested!: () => void;
+    const outputRequested = new Promise<void>((resolve) => {
+      requested = resolve;
+    });
+    testState.output.mockImplementation(() => {
+      vi.useFakeTimers();
+      requested();
+      return new Promise((resolve) => {
+        resolveOutput = resolve;
+      });
+    });
+    renderMobileTerminal(
+      { status: "exited", exitCode: 7, cols: 135, rows: 56 },
+      true,
+    );
+    try {
+      await waitForReadiness(
+        outputRequested,
+        "retained output was not requested",
+      );
+      const terminal = mounted.current;
+      if (!terminal) throw new Error("terminal did not mount");
+      const transcript = () =>
+        Array.from({ length: terminal.buffer.active.length }, (_, index) =>
+          terminal.buffer.active.getLine(index)?.translateToString(true),
+        ).join("\n");
+      const surface = document.querySelector<HTMLElement>(
+        "[data-terminal-renderer]",
+      )!;
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(
+          terminalReplayPreview.TERMINAL_REPLAY_PREVIEW_HOLD_TIMEOUT_MS + 100,
+        );
+      });
+      expect(transcript()).toContain("Terminal history unavailable");
+      expect(surface.style.opacity).toBe("");
+      await act(async () => {
+        resolveOutput({
+          chunks: [
+            {
+              seq: 40,
+              dataBase64: btoa(
+                Array.from(
+                  { length: 100 },
+                  (_, i) => `Late history ${i}\r\n`,
+                ).join(""),
+              ),
+            },
+            { seq: 77, dataBase64: btoa("Late history tail\r\n") },
+          ],
+          nextSeq: 99,
+        });
+        await vi.advanceTimersByTimeAsync(500);
+      });
+      expect(transcript()).toContain("Late history 0");
+      expect(transcript()).toContain("Late history tail");
+      expect(transcript()).not.toContain("Terminal history unavailable");
+      expect(transcript().match(/Terminal exited with code 7/g)).toHaveLength(1);
+      expect(transcript().trimEnd()).toMatch(
+        /Late history tail\n+Terminal exited with code 7$/,
+      );
+      expect(surface.style.opacity).toBe("");
+      expect(restore).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          replayStartSequence: 40,
+          replayNextSequence: 99,
+        }),
+        expect.any(Function),
+      );
+      vi.spyOn(
+        terminalViewport,
+        "findTerminalOutputLineAnchor",
+      ).mockReturnValue(undefined);
+      fireEvent.wheel(surface, { deltaY: -120 });
+      terminal.scrollToLine(0);
+      terminal.scrollToLine(1);
+      fireEvent(window, new Event("pagehide"));
+      expect(
+        terminalViewport.readTerminalViewportAnchor(
+          sessionStorage,
+          "bb:terminal-viewport:term_mobile_paste",
+        )?.outputSequence,
+      ).toBe(77);
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
   it("reveals an exit and error state when retained output rejects", async () => {
     prepareFirstAttachFontMetricsHarness();
     vi.stubGlobal("innerWidth", 390);
