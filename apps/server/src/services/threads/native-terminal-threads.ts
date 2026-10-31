@@ -535,7 +535,7 @@ async function openNativeTerminalOnce(
       threadId: thread.id,
       terminalSessionId: terminal.id,
     });
-    interruptNativeTerminalQuestions(deps, thread.id);
+    if (!args.reattachOnly) interruptNativeTerminalQuestions(deps, thread.id);
     forgetRejectedNativeQuestions(deps, thread.id);
     returnResumedNativeThreadToIdle(deps, thread.id);
     return toNativeTerminalThread(deps, record, terminal);
