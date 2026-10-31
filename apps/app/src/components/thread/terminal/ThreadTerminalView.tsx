@@ -17,7 +17,11 @@ import {
   ContextMenuTrigger,
 } from "@bb/shared-ui/context-menu";
 import { TERMINAL_DATA_MAX_BYTES } from "@bb/domain";
-import { useMediaQuery } from "@bb/shared-ui/hooks/use-media-query";
+import { COMPACT_VIEWPORT_QUERY } from "@bb/shared-ui/hooks/use-compact-viewport";
+import {
+  getMediaQuerySnapshot,
+  useMediaQuery,
+} from "@bb/shared-ui/hooks/use-media-query";
 import { appToast } from "@/components/ui/app-toast";
 import { randomUuid } from "@/lib/random-uuid";
 import type {
@@ -1912,7 +1916,8 @@ export function ThreadTerminalView({
           });
         containerElement.style.opacity = "0";
         const scrollRetainedOutput =
-          retainedOutputGrid !== null && window.innerWidth < 768;
+          retainedOutputGrid !== null &&
+          getMediaQuerySnapshot(COMPACT_VIEWPORT_QUERY);
         containerElement.style.overflowX = scrollRetainedOutput ? "auto" : "";
         containerElement.style.overflowY = scrollRetainedOutput ? "auto" : "";
         containerElement.style.paddingLeft = scrollRetainedOutput ? "0" : "";
@@ -3243,7 +3248,7 @@ export function ThreadTerminalView({
     if (
       retainNativeOutput &&
       session.status === "exited" &&
-      window.innerWidth < 768
+      getMediaQuerySnapshot(COMPACT_VIEWPORT_QUERY)
     ) {
       event.stopPropagation();
     }

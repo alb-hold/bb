@@ -24,6 +24,7 @@ import {
 } from "@bb/client-core";
 import { makeTerminalSession } from "@/test/fixtures/terminal-sessions";
 import { wsManager } from "@/lib/ws";
+import { COMPACT_VIEWPORT_QUERY } from "@bb/shared-ui/hooks/use-compact-viewport";
 import * as terminalModules from "./terminal-modules";
 import * as terminalReplayPreview from "./terminal-replay-preview";
 import * as terminalViewport from "./terminal-viewport";
@@ -271,6 +272,14 @@ function prepareMobileTerminal(): void {
 }
 
 function prepareFirstAttachFontMetricsHarness(): void {
+  const matchMedia = window.matchMedia.bind(window);
+  vi.spyOn(window, "matchMedia").mockImplementation((query) => ({
+    ...matchMedia(query),
+    matches:
+      query === COMPACT_VIEWPORT_QUERY
+        ? window.innerWidth <= 767
+        : matchMedia(query).matches,
+  }));
   vi.stubGlobal("WebSocket", TestTerminalSocket);
   vi.stubGlobal(
     "ResizeObserver",
@@ -2079,7 +2088,9 @@ describe("terminal first paint", () => {
         testState.socketMessages.map((message) => JSON.parse(message)),
       ).toContainEqual({ type: "ack", nextSeq: 1 });
     }, "live terminal replay did not finish");
-    const host = document.querySelector<HTMLElement>("[data-terminal-renderer]")!;
+    const host = document.querySelector<HTMLElement>(
+      "[data-terminal-renderer]",
+    )!;
     expect(host.dataset.fitGridCols).toBe("51");
     expect(host.dataset.renderGridCols).toBe("51");
     expect(host.style.opacity).toBe("");
@@ -2095,7 +2106,9 @@ describe("terminal first paint", () => {
     } finally {
       document.removeEventListener("touchcancel", documentTouch);
     }
-    expect(host.querySelector<HTMLElement>(".xterm")?.dataset.surfaceScale).toBe("1");
+    expect(
+      host.querySelector<HTMLElement>(".xterm")?.dataset.surfaceScale,
+    ).toBe("1");
   });
 
   it.each([80, 120, 200])(
@@ -2161,6 +2174,45 @@ describe("terminal first paint", () => {
     },
   );
 
+  it.each([
+    { width: 767, compact: true },
+    { width: 768, compact: false },
+    { width: 768, compact: true },
+    { width: 767, compact: false },
+  ])(
+    "uses compact media-query result $compact at viewport width $width for history gestures",
+    async ({ width, compact }) => {
+      prepareFirstAttachFontMetricsHarness();
+      vi.stubGlobal("innerWidth", width);
+      const mediaQuery = window.matchMedia(COMPACT_VIEWPORT_QUERY);
+      vi.mocked(window.matchMedia).mockImplementation((query) => ({
+        ...mediaQuery,
+        media: query,
+        matches: query === COMPACT_VIEWPORT_QUERY ? compact : false,
+      }));
+      renderMobileTerminal(
+        { status: "exited", exitCode: 0, cols: 120, rows: 96 },
+        true,
+      );
+      await waitForReadinessCondition(() => {
+        expect(pageText()).toContain("Terminal exited with code");
+      }, "retained replay did not finish");
+      const host = document.querySelector<HTMLElement>(
+        "[data-terminal-renderer]",
+      )!;
+      expect(host.style.touchAction).toBe(compact ? "pan-x pan-y" : "");
+      expect(host.style.overflowX).toBe(compact ? "auto" : "");
+      const documentTouch = vi.fn();
+      document.addEventListener("touchcancel", documentTouch);
+      try {
+        fireEvent.touchCancel(host, { touches: [], changedTouches: [] });
+        expect(documentTouch).toHaveBeenCalledTimes(compact ? 0 : 1);
+      } finally {
+        document.removeEventListener("touchcancel", documentTouch);
+      }
+    },
+  );
+
   it("leaves exited phone-history swipes to the browser instead of xterm's document handlers", async () => {
     prepareFirstAttachFontMetricsHarness();
     testState.touchEnabled = true;
@@ -2172,10 +2224,16 @@ describe("terminal first paint", () => {
     await waitForReadinessCondition(() => {
       expect(pageText()).toContain("Terminal exited with code");
     }, "retained replay did not finish");
-    const host = document.querySelector<HTMLElement>("[data-terminal-renderer]")!;
+    const host = document.querySelector<HTMLElement>(
+      "[data-terminal-renderer]",
+    )!;
     const documentTouch = vi.fn();
+    const captureTouch = vi.fn();
     const types = ["touchstart", "touchmove", "touchend", "touchcancel"];
-    for (const type of types) document.addEventListener(type, documentTouch);
+    for (const type of types) {
+      document.addEventListener(type, documentTouch);
+      document.addEventListener(type, captureTouch, true);
+    }
     try {
       const point = {
         identifier: 1,
@@ -2186,22 +2244,28 @@ describe("terminal first paint", () => {
         target: host,
       };
       const active = Object.assign([point], {
-        item: (index: number) => index === 0 ? point : null,
+        item: (index: number) => (index === 0 ? point : null),
       });
       const empty = Object.assign([], { item: () => null });
       for (const type of types) {
         const event = new Event(type, { bubbles: true, cancelable: true });
         Object.assign(event, {
-          touches: type === "touchstart" || type === "touchmove" ? active : empty,
-          targetTouches: type === "touchstart" || type === "touchmove" ? active : empty,
+          touches:
+            type === "touchstart" || type === "touchmove" ? active : empty,
+          targetTouches:
+            type === "touchstart" || type === "touchmove" ? active : empty,
           changedTouches: active,
         });
         fireEvent(host, event);
         expect(event.defaultPrevented).toBe(false);
       }
       expect(documentTouch).not.toHaveBeenCalled();
+      expect(captureTouch).toHaveBeenCalledTimes(4);
     } finally {
-      for (const type of types) document.removeEventListener(type, documentTouch);
+      for (const type of types) {
+        document.removeEventListener(type, documentTouch);
+        document.removeEventListener(type, captureTouch, true);
+      }
     }
   });
 
@@ -2289,7 +2353,10 @@ describe("terminal first paint", () => {
       ],
       nextSeq: 1,
     });
-    renderMobileTerminal({ status: "exited", exitCode: 0, cols: 51, rows: 48 }, true);
+    renderMobileTerminal(
+      { status: "exited", exitCode: 0, cols: 51, rows: 48 },
+      true,
+    );
     await waitForReadinessCondition(() => {
       expect(pageText()).toContain("Terminal exited with code");
     }, "retained replay did not finish");
@@ -2342,7 +2409,10 @@ describe("terminal first paint recovery", () => {
   it("reconciles retained history arriving after the timeout", async () => {
     prepareFirstAttachFontMetricsHarness();
     vi.stubGlobal("innerWidth", 390);
-    const restore = vi.spyOn(terminalViewport, "resolveTerminalViewportRestore");
+    const restore = vi.spyOn(
+      terminalViewport,
+      "resolveTerminalViewportRestore",
+    );
     const mounted: { current: Terminal | null } = { current: null };
     const open = Terminal.prototype.open;
     vi.spyOn(Terminal.prototype, "open").mockImplementation(function (
@@ -2413,7 +2483,9 @@ describe("terminal first paint recovery", () => {
       expect(transcript()).toContain("Late history 0");
       expect(transcript()).toContain("Late history tail");
       expect(transcript()).not.toContain("Terminal history unavailable");
-      expect(transcript().match(/Terminal exited with code 7/g)).toHaveLength(1);
+      expect(transcript().match(/Terminal exited with code 7/g)).toHaveLength(
+        1,
+      );
       expect(transcript().trimEnd()).toMatch(
         /Late history tail\n+Terminal exited with code 7$/,
       );
