@@ -2330,7 +2330,19 @@ const quitGuard = createQuitGuard({
   },
   async finishQuit() {
     quitting = true;
-    await finishQuit();
+    try {
+      await finishQuit();
+    } finally {
+      if (appImageRelaunchPath !== null) {
+        app.releaseSingleInstanceLock();
+        const replacement = spawn(appImageRelaunchPath, process.argv.slice(1), {
+          detached: true,
+          stdio: "ignore",
+        });
+        replacement.on("error", (error) => desktopLogger.error(error.message));
+        replacement.unref();
+      }
+    }
   },
   quitApplication() {
     app.quit();
@@ -2359,15 +2371,6 @@ async function finishQuit(): Promise<void> {
       ),
     );
   await stopOwnedRuntime();
-  if (appImageRelaunchPath !== null) {
-    app.releaseSingleInstanceLock();
-    const replacement = spawn(appImageRelaunchPath, process.argv.slice(1), {
-      detached: true,
-      stdio: "ignore",
-    });
-    replacement.on("error", (error) => desktopLogger.error(error.message));
-    replacement.unref();
-  }
 }
 
 async function checkDesktopUpdates(): Promise<void> {
