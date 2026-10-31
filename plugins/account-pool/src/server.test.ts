@@ -11974,80 +11974,71 @@ describe("Account Pool credential scoping", () => {
     const clock = controlSweepClock();
     const timers = clock.timers;
     const service = host.harness.behavior.runService("hub");
-    try {
-      await waitForSweep(() => expect(lookups).toBeGreaterThan(0));
-      expect(clock.timeout.mock.calls).toContainEqual([30]);
-      const startupLookups = lookups;
-      await vi.advanceTimersByTimeAsync(29);
+    cleanups.push(async () => {
+      clock.restore();
+      service.controller.abort();
+      await service.done;
+      await host.harness.lifecycle.dispose();
+    });
+    await waitForSweep(() => expect(lookups).toBeGreaterThan(0));
+    expect(clock.timeout.mock.calls).toContainEqual([30]);
+    const startupLookups = lookups;
+    await vi.advanceTimersByTimeAsync(29);
+    expect(
+      statusSchema.parse(
+        await host.harness.behavior.callRpc("status.get", null),
+      ).accepting,
+    ).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    await waitForSweep(async () => {
       expect(
         statusSchema.parse(
           await host.harness.behavior.callRpc("status.get", null),
         ).accepting,
-      ).toBe(false);
-      await vi.advanceTimersByTimeAsync(1);
-      await waitForSweep(async () => {
-        expect(
-          statusSchema.parse(
-            await host.harness.behavior.callRpc("status.get", null),
-          ).accepting,
-        ).toBe(true);
-      });
-      expect(startupLookups).toBeGreaterThan(0);
-      await waitForSweep(() =>
-        expect(timers.mock.calls.some(([, ms]) => ms === 40)).toBe(true),
-      );
-      await vi.advanceTimersByTimeAsync(39);
-      expect(lookups).toBe(startupLookups);
-      await vi.advanceTimersByTimeAsync(1);
-      await waitForSweep(() => expect(lookups).toBeGreaterThan(startupLookups));
-      expect(lookupTimes.length).toBeGreaterThan(1);
-      for (let i = 1; i < lookupTimes.length; i += 1)
-        expect(lookupTimes[i]! - lookupTimes[i - 1]!).toBeGreaterThanOrEqual(
-          39,
-        );
-      expect(JSON.stringify(host.harness.inspection.logEntries)).toMatch(
-        /checked \d+ threads, revoked \d+, failed 0, and deferred [1-9]\d*\./u,
-      );
-      const completedSweeps = () =>
-        host.harness.inspection.logEntries.filter((entry) =>
-          JSON.stringify(entry).includes("failed 0, and deferred 0."),
-        ).length;
-      const beforeCompletion = completedSweeps();
-      const retries = () =>
-        timers.mock.calls.filter(([, ms]) => ms === 40).length;
-      const beforeRetry = retries();
-      await vi.advanceTimersByTimeAsync(30);
-      await waitForSweep(() => expect(retries()).toBeGreaterThan(beforeRetry));
-      hanging = false;
-      await vi.advanceTimersByTimeAsync(40);
-      await waitForSweep(() => {
-        expect(completedSweeps()).toBeGreaterThan(beforeCompletion);
-      });
-      await waitForSweep(() =>
-        expect(timers.mock.calls.some(([, ms]) => ms === 1_000)).toBe(true),
-      );
-      const completedLookups = lookups;
-      await vi.advanceTimersByTimeAsync(180);
-      expect(lookups).toBe(completedLookups);
-      await vi.advanceTimersByTimeAsync(819);
-      expect(lookups).toBe(completedLookups);
-      await vi.advanceTimersByTimeAsync(1);
-      await waitForSweep(() =>
-        expect(lookups).toBeGreaterThan(completedLookups),
-      );
-      expect(JSON.stringify(host.harness.inspection.logEntries)).not.toContain(
-        "could not look up",
-      );
-    } finally {
-      clock.restore();
-      try {
-        service.controller.abort();
-        await service.done;
-        await host.harness.lifecycle.dispose();
-      } finally {
-        clock.restore();
-      }
-    }
+      ).toBe(true);
+    });
+    expect(startupLookups).toBeGreaterThan(0);
+    await waitForSweep(() =>
+      expect(timers.mock.calls.some(([, ms]) => ms === 40)).toBe(true),
+    );
+    await vi.advanceTimersByTimeAsync(39);
+    expect(lookups).toBe(startupLookups);
+    await vi.advanceTimersByTimeAsync(1);
+    await waitForSweep(() => expect(lookups).toBeGreaterThan(startupLookups));
+    expect(lookupTimes.length).toBeGreaterThan(1);
+    for (let i = 1; i < lookupTimes.length; i += 1)
+      expect(lookupTimes[i]! - lookupTimes[i - 1]!).toBeGreaterThanOrEqual(39);
+    expect(JSON.stringify(host.harness.inspection.logEntries)).toMatch(
+      /checked \d+ threads, revoked \d+, failed 0, and deferred [1-9]\d*\./u,
+    );
+    const completedSweeps = () =>
+      host.harness.inspection.logEntries.filter((entry) =>
+        JSON.stringify(entry).includes("failed 0, and deferred 0."),
+      ).length;
+    const beforeCompletion = completedSweeps();
+    const retries = () =>
+      timers.mock.calls.filter(([, ms]) => ms === 40).length;
+    const beforeRetry = retries();
+    await vi.advanceTimersByTimeAsync(30);
+    await waitForSweep(() => expect(retries()).toBeGreaterThan(beforeRetry));
+    hanging = false;
+    await vi.advanceTimersByTimeAsync(40);
+    await waitForSweep(() => {
+      expect(completedSweeps()).toBeGreaterThan(beforeCompletion);
+    });
+    await waitForSweep(() =>
+      expect(timers.mock.calls.some(([, ms]) => ms === 1_000)).toBe(true),
+    );
+    const completedLookups = lookups;
+    await vi.advanceTimersByTimeAsync(180);
+    expect(lookups).toBe(completedLookups);
+    await vi.advanceTimersByTimeAsync(819);
+    expect(lookups).toBe(completedLookups);
+    await vi.advanceTimersByTimeAsync(1);
+    await waitForSweep(() => expect(lookups).toBeGreaterThan(completedLookups));
+    expect(JSON.stringify(host.harness.inspection.logEntries)).not.toContain(
+      "could not look up",
+    );
   });
 
   it("bounds a periodic sweep whose lookup hangs and revokes the stale credential once the lookup recovers", async () => {
