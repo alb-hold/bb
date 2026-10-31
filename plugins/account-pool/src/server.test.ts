@@ -7800,6 +7800,118 @@ describe("Account Pool plugin", () => {
     ).toEqual({ [id]: "Claude Max" });
   });
 
+  it.each(["freshSecret", "planDisplayNames"] as const)(
+    "bounds the whole foreground profile path while %s is held",
+    async (prerequisite) => {
+      let profileCalls = 0;
+      const { fixture, store, accounts } = await profileLifecycleFixture(
+        async () => {
+          profileCalls += 1;
+          return Response.json(null);
+        },
+      );
+      for (const account of accounts)
+        await store.setPlanDisplayName(account.id, "Claude Ultra");
+      const arrived = deferred();
+      const held = deferred();
+      const readSecret = AccountStore.prototype.readSecret;
+      const planDisplayNames = AccountStore.prototype.planDisplayNames;
+      let secretReads = 0;
+      let armed = true;
+      AccountStore.prototype.readSecret = async function (id) {
+        if (prerequisite === "freshSecret" && ++secretReads === 2) {
+          arrived.resolve();
+          await held.promise;
+        }
+        return readSecret.call(this, id);
+      };
+      AccountStore.prototype.planDisplayNames = async function () {
+        if (prerequisite === "planDisplayNames" && armed) {
+          armed = false;
+          arrived.resolve();
+          await held.promise;
+        }
+        return planDisplayNames.call(this);
+      };
+      vi.useFakeTimers();
+      const refreshing = fixture.host.harness.behavior.callRpc(
+        usageFetchMethod,
+        { resourceId: accounts[0]!.id, refresh: true },
+      );
+      try {
+        await arrived.promise;
+        await vi.advanceTimersByTimeAsync(10_001);
+        const measurement = await Promise.race([
+          refreshing,
+          waitForIo(300).then(() => null),
+        ]);
+        expect(usageMeasurementSchema.parse(measurement).usage).toMatchObject({
+          status: "ok",
+          planLabel: "Ultra",
+        });
+        expect(profileCalls).toBe(0);
+        held.resolve();
+        await refreshing;
+        await waitForIo(0);
+        expect(profileCalls).toBe(0);
+      } finally {
+        held.resolve();
+        AccountStore.prototype.readSecret = readSecret;
+        AccountStore.prototype.planDisplayNames = planDisplayNames;
+        vi.useRealTimers();
+        await refreshing;
+      }
+    },
+  );
+
+  it("bounds a usage RPC when its account read never settles", async () => {
+    let armed = false;
+    const held = deferred();
+    const arrived = deferred();
+    const { fixture, accounts } = await profileLifecycleFixture(
+      async () => Response.json(null),
+      (host) => {
+        const get = host.bb.storage.kv.get.bind(host.bb.storage.kv);
+        host.bb.storage.kv.get = async <T>(
+          key: string,
+        ): Promise<T | undefined> => {
+          if (armed && key === "accounts:v1") {
+            armed = false;
+            arrived.resolve();
+            await held.promise;
+          }
+          return get<T>(key);
+        };
+      },
+    );
+    armed = true;
+    vi.useFakeTimers();
+    const refreshing = fixture.host.harness.behavior
+      .callRpc(usageFetchMethod, {
+        resourceId: accounts[0]!.id,
+        refresh: true,
+      })
+      .then(
+        () => null,
+        (error: unknown) => error,
+      );
+    try {
+      await arrived.promise;
+      await vi.advanceTimersByTimeAsync(30_001);
+      expect(
+        await Promise.race([refreshing, waitForIo(300).then(() => null)]),
+      ).toEqual(
+        expect.objectContaining({
+          message: "Account usage read timed out. Try again.",
+        }),
+      );
+    } finally {
+      held.resolve();
+      vi.useRealTimers();
+      await refreshing;
+    }
+  });
+
   it("hard bounds an abort-ignoring profile request", async () => {
     const { fixture, store, accounts } = await profileLifecycleFixture(
       async () => Response.json(null),

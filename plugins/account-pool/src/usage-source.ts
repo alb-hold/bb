@@ -77,137 +77,153 @@ export function registerUsageSource(
         };
       },
       async [usageFetchMethod]({ resourceId, refresh }) {
-        if (
-          !(await hub.status()).accounts.some(
-            (account) => account.id === resourceId,
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const timedOut = new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(
+            () => reject(new Error("Account usage read timed out. Try again.")),
+            30_000,
+          );
+        });
+        const read = async () => {
+          if (
+            !(await hub.status()).accounts.some(
+              (account) => account.id === resourceId,
+            )
           )
-        )
-          throw new Error("Usage resource no longer exists.");
-        if (!(await hub.refreshUsage(resourceId, refresh)) && refresh)
-          throw new Error("Could not refresh account usage. Try again.");
-        const { accounts: allAccounts } = await hub.status();
-        const accounts = allAccounts.filter(
-          (account) => account.id === resourceId,
-        );
-        if (accounts.length === 0)
-          throw new Error("Usage resource no longer exists.");
-        const display = await hub.display();
-        const resources: UsageResource[] = accounts.map((account) => {
-          const windows: Extract<
-            UsageResource["usage"],
-            { status: "ok" }
-          >["windows"] = [];
-          let expiredWindows = 0;
-          const add = (
-            id: string,
-            label: string,
-            utilization: number | null,
-            reset: number | null,
-            model: string | null,
-          ) => {
-            if (utilization === null) return;
-            if (reset !== null && reset <= Date.now()) {
-              expiredWindows += 1;
-              return;
-            }
-            windows.push({
-              kind:
-                label === "Five-hour limit"
-                  ? "five-hour"
-                  : label === "Daily limit"
-                    ? "daily"
-                    : label.startsWith("Weekly")
-                      ? "weekly"
-                      : "custom",
-              id,
-              label,
-              usedPercent: Math.round(utilization * 100),
-              resetsAt: reset === null ? null : new Date(reset).toISOString(),
-              model,
-              cost: null,
-            });
-          };
-          if (account.limitWindows.length > 0) {
-            for (const window of account.limitWindows) {
+            throw new Error("Usage resource no longer exists.");
+          if (!(await hub.refreshUsage(resourceId, refresh)) && refresh)
+            throw new Error("Could not refresh account usage. Try again.");
+          const { accounts: allAccounts } = await hub.status();
+          const accounts = allAccounts.filter(
+            (account) => account.id === resourceId,
+          );
+          if (accounts.length === 0)
+            throw new Error("Usage resource no longer exists.");
+          const display = await hub.display();
+          const resources: UsageResource[] = accounts.map((account) => {
+            const windows: Extract<
+              UsageResource["usage"],
+              { status: "ok" }
+            >["windows"] = [];
+            let expiredWindows = 0;
+            const add = (
+              id: string,
+              label: string,
+              utilization: number | null,
+              reset: number | null,
+              model: string | null,
+            ) => {
+              if (utilization === null) return;
+              if (reset !== null && reset <= Date.now()) {
+                expiredWindows += 1;
+                return;
+              }
+              windows.push({
+                kind:
+                  label === "Five-hour limit"
+                    ? "five-hour"
+                    : label === "Daily limit"
+                      ? "daily"
+                      : label.startsWith("Weekly")
+                        ? "weekly"
+                        : "custom",
+                id,
+                label,
+                usedPercent: Math.round(utilization * 100),
+                resetsAt: reset === null ? null : new Date(reset).toISOString(),
+                model,
+                cost: null,
+              });
+            };
+            if (account.limitWindows.length > 0) {
+              for (const window of account.limitWindows) {
+                add(
+                  window.slot,
+                  usageWindowLabel(window.windowMinutes, window.slot),
+                  window.utilization,
+                  window.resetAt,
+                  null,
+                );
+              }
+            } else {
               add(
-                window.slot,
-                usageWindowLabel(window.windowMinutes, window.slot),
-                window.utilization,
-                window.resetAt,
+                "five-hour",
+                "Five-hour limit",
+                account.fiveHourUtilization,
+                account.fiveHourResetAt,
+                null,
+              );
+              add(
+                "weekly",
+                "Weekly limit",
+                account.sevenDayUtilization,
+                account.sevenDayResetAt,
                 null,
               );
             }
-          } else {
-            add(
-              "five-hour",
-              "Five-hour limit",
-              account.fiveHourUtilization,
-              account.fiveHourResetAt,
-              null,
-            );
-            add(
-              "weekly",
-              "Weekly limit",
-              account.sevenDayUtilization,
-              account.sevenDayResetAt,
-              null,
-            );
-          }
-          for (const { name, quota } of modelWeeklyRows(
-            account,
-            display.weekly[account.id],
-          )) {
-            add(
-              `weekly:${name}`,
-              `Weekly · ${name}`,
-              quota.utilization,
-              quota.resetAt,
-              name,
-            );
-          }
-          const accountFields = {
-            plan: account.subscriptionType
-              ? {
-                  id: account.subscriptionType.toLowerCase(),
-                  multiplier:
-                    Number(account.rateLimitTier?.match(/max_(\d+)x/u)?.[1]) ||
-                    null,
-                }
-              : null,
-            accountEmail: account.email,
-            planLabel: displayPlanLabel(
+            for (const { name, quota } of modelWeeklyRows(
               account,
-              display.plans[account.id] ?? null,
-            ),
-          };
-          const error =
-            (account.error === null
-              ? null
-              : "Usage could not be collected for this account. Try refreshing usage.") ??
-            (account.observedAt === null
-              ? "Usage has not been observed for this account."
-              : expiredWindows > 0 && windows.length === 0
-                ? "Usage data is stale. Refresh usage."
-                : null);
+              display.weekly[account.id],
+            )) {
+              add(
+                `weekly:${name}`,
+                `Weekly · ${name}`,
+                quota.utilization,
+                quota.resetAt,
+                name,
+              );
+            }
+            const accountFields = {
+              plan: account.subscriptionType
+                ? {
+                    id: account.subscriptionType.toLowerCase(),
+                    multiplier:
+                      Number(
+                        account.rateLimitTier?.match(/max_(\d+)x/u)?.[1],
+                      ) || null,
+                  }
+                : null,
+              accountEmail: account.email,
+              planLabel: displayPlanLabel(
+                account,
+                display.plans[account.id] ?? null,
+              ),
+            };
+            const error =
+              (account.error === null
+                ? null
+                : "Usage could not be collected for this account. Try refreshing usage.") ??
+              (account.observedAt === null
+                ? "Usage has not been observed for this account."
+                : expiredWindows > 0 && windows.length === 0
+                  ? "Usage data is stale. Refresh usage."
+                  : null);
+            return {
+              id: account.id,
+              accountKey: accountKey(account),
+              providerId:
+                account.provider === "claude" ? "claude-code" : "codex",
+              label: account.label,
+              scope: { kind: "shared" },
+              observedAt: account.observedAt,
+              usage:
+                error === null
+                  ? { status: "ok", ...accountFields, windows }
+                  : { status: "error", ...accountFields, message: error },
+            };
+          });
+          const resource = resources[0]!;
           return {
-            id: account.id,
-            accountKey: accountKey(account),
-            providerId: account.provider === "claude" ? "claude-code" : "codex",
-            label: account.label,
-            scope: { kind: "shared" },
-            observedAt: account.observedAt,
-            usage:
-              error === null
-                ? { status: "ok", ...accountFields, windows }
-                : { status: "error", ...accountFields, message: error },
+            accountKey: resource.accountKey,
+            observedAt: resource.observedAt,
+            usage: resource.usage,
           };
-        });
-        const resource = resources[0]!;
-        return {
-          accountKey: resource.accountKey,
-          observedAt: resource.observedAt,
-          usage: resource.usage,
         };
+        try {
+          return await Promise.race([read(), timedOut]);
+        } finally {
+          clearTimeout(timer);
+        }
       },
     },
     {
