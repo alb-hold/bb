@@ -402,7 +402,7 @@ it("completes rotations and revokes threads below and above a permanent state fa
     let failedCalls = 0;
     await store.sweepThreads(
       async (id) => {
-        if (++calls > 64) {
+        if (++calls > 72) {
           budget.abort();
           return new Promise(() => undefined);
         }
