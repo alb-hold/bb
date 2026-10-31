@@ -1027,8 +1027,9 @@ export class ThreadTokenStore {
       deferred: 0,
     };
     let next = 0;
+    const cancelled = () => options.signal?.aborted === true;
     const worker = async () => {
-      while (next < ordered.length && options.signal?.aborted !== true) {
+      while (next < ordered.length && !cancelled()) {
         const threadId = ordered[next++];
         if (threadId === undefined) return;
         this.sweepCursor = threadId;
@@ -1073,7 +1074,7 @@ export class ThreadTokenStore {
           if (await this.removeThreadIfVersion(threadId, version))
             result.revoked += 1;
         } catch {
-          if (options.signal?.aborted === true) result.deferred += 1;
+          if (cancelled()) result.deferred += 1;
           else result.failed += 1;
         }
       }
