@@ -81,6 +81,7 @@ export interface AccountPoolPluginOptions {
   codexUsageUrl?: string;
   usageUrl?: string;
   drainTimeoutMs?: number;
+  mutationDrainTimeoutMs?: number;
   threadSweepTimeoutMs?: number;
   threadSweepLookupTimeoutMs?: number;
   threadSweepIntervalMs?: number;
@@ -184,7 +185,11 @@ export function createAccountPoolPlugin(
       "secrets",
       "accounts",
     );
-    const accounts = new AccountStore(bb.storage.kv, secretDir);
+    const accounts = new AccountStore(bb.storage.kv, secretDir, (id) => {
+      bb.log.warn(
+        `Account Pooler could not save profile metadata for account ${id}.`,
+      );
+    });
     await accounts.initialize();
     const now = options.now ?? Date.now;
     const archiveUndoGraceKeepsCredential = (
@@ -391,6 +396,13 @@ export function createAccountPoolPlugin(
       importClaudeCredentials: options.importCredentials,
       importCodexCredentials: options.importCodexCredentials,
       drainTimeoutMs: options.drainTimeoutMs,
+      mutationDrainTimeoutMs: options.mutationDrainTimeoutMs,
+      onPlanBackfillError: () =>
+        bb.log.warn("Account Pooler plan backfill failed."),
+      onMutationDrainTimeout: (ids) =>
+        bb.log.warn(
+          `Account Pooler mutation drain timed out for account ${ids.join(", ")}.`,
+        ),
       maxAffinityBindings: options.maxAffinityBindings,
       getParentRoute: proxyingParent,
       onUpstreamError: (provider, error) =>
