@@ -499,6 +499,41 @@ describe("native thread status liveness", () => {
     });
   });
 
+  it("does not let completed CLI exits starve the bounded status sweep", async () => {
+    await withHarness(async (harness) => {
+      const context = seedNativeContext(harness);
+      for (let index = 0; index < 64; index += 1) {
+        seedNativeThread(
+          harness,
+          {
+            initialStatus: "idle",
+            terminal: "exited-process-exit",
+          },
+          context,
+        );
+      }
+      const { threadId } = seedNativeThread(
+        harness,
+        {
+          initialStatus: "active",
+          terminal: "exited-process-exit-code-1",
+        },
+        context,
+      );
+      stampNativeTerminalTranscriptEvidence(harness.db, {
+        at: Date.now() - 600_000,
+        nativeSessionId: `session-${threadId}`,
+        threadId,
+      });
+      await runPeriodicSweeps({
+        ...harness.deps,
+        pluginSchedules: harness.pluginService,
+        plugins: harness.pluginService,
+      });
+      expect(getThread(harness.db, threadId)?.status).toBe("error");
+    });
+  });
+
   it("tells the parent when a native child is settled because its terminal exited", async () => {
     await withHarness(async (harness) => {
       const context = seedNativeContext(harness);

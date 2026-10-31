@@ -267,7 +267,10 @@ export function listNativeTerminalThreadsNeedingStatusCheck(
          AND NOT (
            th.status = 'idle'
            AND COALESCE(t.status, '') = 'exited'
-           AND COALESCE(t.close_reason, '') NOT IN ('daemon-disconnect', 'thread-archived', 'process-exit')
+           AND (
+             COALESCE(t.close_reason, '') NOT IN ('daemon-disconnect', 'thread-archived', 'process-exit')
+             OR (COALESCE(t.close_reason, '') = 'process-exit' AND COALESCE(t.exit_code, -1) = 0)
+           )
          )
        ORDER BY n.last_evidence_at IS NOT NULL, n.last_evidence_at, n.thread_id
        LIMIT ?`,
