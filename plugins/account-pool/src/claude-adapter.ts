@@ -101,7 +101,7 @@ function scheduleProfile(
 ): Promise<void> {
   return new Promise((resolve, reject) => {
     profileJobs.push({ context, run, resolve, reject });
-    void drainProfiles();
+    void drainProfiles().catch(reject);
   });
 }
 
@@ -192,7 +192,10 @@ export function createClaudeAdapter(options: {
     profileRetryAt.set(id, context.now() + 5 * 60 * 1_000);
     let failed = true;
     let skipped = false;
-    const result: { profile: ClaudeProfile | null } = { profile: null };
+    const result: { profile: ClaudeProfile | null; checkedAt: number } = {
+      profile: null,
+      checkedAt: 0,
+    };
     try {
       await scheduleProfile(context, async () => {
         if (context.signal?.aborted) return;
@@ -215,6 +218,7 @@ export function createClaudeAdapter(options: {
           return;
         }
         if (context.signal?.aborted) return;
+        result.checkedAt = context.accounts.nextProfileCheck(id, context.now());
         result.profile = await requestProfile(
           context,
           options.profileUrl,
@@ -250,6 +254,7 @@ export function createClaudeAdapter(options: {
           account.id,
           profile.organization?.plan_display_name ?? null,
           context.signal,
+          result.checkedAt,
         );
         const reported = claudePlanFromProfile(profile);
         const plan = {
@@ -269,6 +274,7 @@ export function createClaudeAdapter(options: {
         account.id,
         profile.organization?.plan_display_name ?? null,
         write,
+        result.checkedAt,
       );
       if (context.background) await write;
       failed = profile.organization?.plan_display_name == null;
@@ -402,7 +408,10 @@ export function createClaudeAdapter(options: {
         },
       );
       if (!stored) return;
-      if (profileRunning) void refreshProfile(context).catch(() => {});
+      if (profileRunning)
+        void refreshProfile(context).catch(() =>
+          context.accounts.profileRefreshFailed(context.account.id),
+        );
       else await refreshProfile(context);
     },
     errorResponse(status, message, headers) {

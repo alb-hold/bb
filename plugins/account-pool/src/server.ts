@@ -397,6 +397,8 @@ export function createAccountPoolPlugin(
       importCodexCredentials: options.importCodexCredentials,
       drainTimeoutMs: options.drainTimeoutMs,
       mutationDrainTimeoutMs: options.mutationDrainTimeoutMs,
+      onPlanBackfillError: () =>
+        bb.log.warn("Account Pooler plan backfill failed."),
       onMutationDrainTimeout: (ids) =>
         bb.log.warn(
           `Account Pooler mutation drain timed out for account ${ids.join(", ")}.`,

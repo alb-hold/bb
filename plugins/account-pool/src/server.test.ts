@@ -7524,7 +7524,7 @@ describe("Account Pool plugin", () => {
       (host) => {
         const set = host.bb.storage.kv.set.bind(host.bb.storage.kv);
         host.bb.storage.kv.set = async (key, value) => {
-          if (armed && key === "plan-display-names:v1") {
+          if (armed && key.startsWith("plan-display-names:")) {
             armed = false;
             const release = held;
             arrived.resolve();
@@ -7557,8 +7557,15 @@ describe("Account Pool plugin", () => {
       expect((await store.planDisplayNames())[accounts[0]!.id]).toBe(
         "Claude Max",
       );
+      const repeated = refresh(accounts[0]!.id);
+      expect(
+        usageMeasurementSchema.parse(
+          await Promise.race([repeated, waitForIo(300).then(() => null)]),
+        ).usage,
+      ).toMatchObject({ status: "ok", planLabel: "Ultra" });
       held.resolve();
       await first;
+      await repeated;
       await vi.waitFor(async () =>
         expect((await store.planDisplayNames())[accounts[0]!.id]).toBe(
           "Claude Ultra",
@@ -7617,7 +7624,7 @@ describe("Account Pool plugin", () => {
       (host) => {
         const set = host.bb.storage.kv.set.bind(host.bb.storage.kv);
         host.bb.storage.kv.set = async (key, value) => {
-          if (armed && key === "plan-display-names:v1") {
+          if (armed && key.startsWith("plan-display-names:")) {
             armed = false;
             throw new Error("test write failure");
           }
@@ -7650,6 +7657,147 @@ describe("Account Pool plugin", () => {
         ),
       ).toHaveLength(1),
     );
+  });
+
+  it("keeps a newer plan name after an old instance save commits late", async () => {
+    const held = deferred();
+    const arrived = deferred();
+    const committed = deferred();
+    let armed = false;
+    const { fixture, store, accounts, display } = await profileLifecycleFixture(
+      async (_input, init) =>
+        Response.json({
+          account: {
+            uuid: new Headers(init?.headers).get("authorization")!.slice(7),
+          },
+          organization: { plan_display_name: "Old Ultra" },
+        }),
+      (host) => {
+        const set = host.bb.storage.kv.set.bind(host.bb.storage.kv);
+        host.bb.storage.kv.set = async (key, value) => {
+          if (armed && key.startsWith("plan-display-names:")) {
+            armed = false;
+            arrived.resolve();
+            await held.promise;
+            await set(key, value);
+            committed.resolve();
+            return;
+          }
+          return set(key, value);
+        };
+      },
+      { mutationDrainTimeoutMs: 1000 },
+    );
+    try {
+      armed = true;
+      await display();
+      await arrived.promise;
+      vi.useFakeTimers();
+      let stopped = false;
+      fixture.service.controller.abort();
+      const stopping = fixture.service.done.then(() => {
+        stopped = true;
+      });
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(stopped).toBe(true);
+      await stopping;
+      vi.useRealTimers();
+      const newer = new AccountStore(
+        fixture.host.bb.storage.kv,
+        path.join(
+          fixture.dataDir,
+          "plugins",
+          "account-pool",
+          "secrets",
+          "accounts",
+        ),
+      );
+      await newer.setPlanDisplayName(
+        accounts[0]!.id,
+        "New Ultra",
+        undefined,
+        Date.now() + 10000,
+      );
+      expect((await newer.planDisplayNames())[accounts[0]!.id]).toBe(
+        "New Ultra",
+      );
+      held.resolve();
+      await committed.promise;
+      await waitForIo(20);
+      expect((await store.planDisplayNames())[accounts[0]!.id]).toBe(
+        "New Ultra",
+      );
+    } finally {
+      vi.useRealTimers();
+      held.resolve();
+    }
+  });
+
+  it("catches a detached plan backfill read failure and logs once", async () => {
+    let armed = false;
+    const { fixture, display } = await profileLifecycleFixture(
+      async () => Response.json({}, { status: 503 }),
+      (host) => {
+        const get = host.bb.storage.kv.get.bind(host.bb.storage.kv);
+        host.bb.storage.kv.get = async <T>(
+          key: string,
+        ): Promise<T | undefined> => {
+          if (armed && key.startsWith("plan-display-names:")) {
+            armed = false;
+            throw new Error("test backfill read failure");
+          }
+          return get<T>(key);
+        };
+      },
+    );
+    const unhandled: unknown[] = [];
+    const listener = (reason: unknown) => {
+      unhandled.push(reason);
+    };
+    process.on("unhandledRejection", listener);
+    try {
+      armed = true;
+      await display();
+      await waitForIo(50);
+      expect(unhandled).toEqual([]);
+      expect(
+        fixture.host.harness.inspection.logEntries.filter((entry) =>
+          JSON.stringify(entry).includes("plan backfill failed"),
+        ),
+      ).toHaveLength(1);
+    } finally {
+      process.off("unhandledRejection", listener);
+    }
+  });
+
+  it("reads version zero plans and prunes stamps without accepting an older or equal check", async () => {
+    const { fixture, store, accounts } = await profileLifecycleFixture(
+      async () => Response.json({}, { status: 503 }),
+    );
+    const id = accounts[0]!.id;
+    await fixture.host.bb.storage.kv.set("plan-display-names:v1", {
+      [id]: "Claude Max",
+    });
+    expect((await store.planDisplayNames())[id]).toBe("Claude Max");
+    for (const [name, stamp] of [
+      ["First Ultra", 10],
+      ["New Ultra", 20],
+      ["Stale Max", 10],
+      ["Equal Max", 20],
+    ] as const)
+      await store.setPlanDisplayName(id, name, undefined, stamp);
+    expect((await store.planDisplayNames())[id]).toBe("New Ultra");
+    const keys = await fixture.host.bb.storage.kv.list(
+      `plan-display-names:v2:${id}:`,
+    );
+    expect(keys).toHaveLength(1);
+    expect(await fixture.host.bb.storage.kv.get(keys[0]!)).toEqual({
+      name: "New Ultra",
+      checkedAt: 20,
+    });
+    expect(
+      await fixture.host.bb.storage.kv.get("plan-display-names:v1"),
+    ).toEqual({ [id]: "Claude Max" });
   });
 
   it("hard bounds an abort-ignoring profile request", async () => {
@@ -7774,7 +7922,7 @@ describe("Account Pool plugin", () => {
         host.bb.storage.kv.set = async (key, value) => {
           if (
             first &&
-            key === "plan-display-names:v1" &&
+            key.startsWith("plan-display-names:") &&
             Object.keys(value ?? {}).length > 0
           ) {
             first = false;
@@ -7857,7 +8005,8 @@ describe("Account Pool plugin", () => {
           (host) => {
             const set = host.bb.storage.kv.set.bind(host.bb.storage.kv);
             host.bb.storage.kv.set = async (key, value) => {
-              if (key !== "plan-display-names:v1") return set(key, value);
+              if (!key.startsWith("plan-display-names:"))
+                return set(key, value);
               if (!holdNext || Object.keys(value ?? {}).length === 0) {
                 await set(key, value);
                 planWrites += 1;

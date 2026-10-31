@@ -30,7 +30,31 @@ import { modelWeeklySchema, type ModelWeekly } from "./display.js";
 const ACCOUNTS_KEY = "accounts:v1";
 const ORGANIZATIONS_KEY = "organizations:v1";
 const PLAN_NAMES_KEY = "plan-display-names:v1";
+const PLAN_CHECKS_PREFIX = "plan-display-names:v2:";
 const planNamesSchema = z.record(z.string().uuid(), z.string().min(1));
+const planCheckSchema = z
+  .object({
+    name: z.string().min(1).nullable(),
+    checkedAt: z.number().int().nonnegative(),
+  })
+  .strict();
+type PlanCheck = z.infer<typeof planCheckSchema>;
+const planCheckKeySchema = z.tuple([
+  z.string().uuid(),
+  z.coerce.number().int().nonnegative(),
+]);
+const planClockKey = Symbol.for("bb.account-pool.planClock");
+const planClock = z
+  .custom<Map<string, number>>(
+    (value) =>
+      value instanceof Map &&
+      [...value].every(
+        ([id, time]) =>
+          typeof id === "string" && Number.isSafeInteger(time) && time >= 0,
+      ),
+  )
+  .parse(Reflect.get(globalThis, planClockKey) ?? new Map<string, number>());
+Reflect.set(globalThis, planClockKey, planClock);
 const ACCOUNT_LAST_USED_PERSIST_MS = 60 * 1_000;
 const accountsSchema = z.array(accountSchema);
 const organizationsSchema = z.record(z.string(), z.string().uuid());
@@ -70,10 +94,8 @@ export class AccountStore {
   private mutationLock: Promise<void> | null = null;
   private readonly activePlanWrites = new Set<string>();
   private readonly profileWrites = new Map<Promise<void>, string>();
-  private readonly fetchedPlanNames = new Map<
-    string,
-    { name: string | null }
-  >();
+  private readonly removedAccounts = new Set<string>();
+  private readonly fetchedPlanNames = new Map<string, PlanCheck>();
 
   constructor(
     private readonly kv: PluginKvStorage,
@@ -127,14 +149,19 @@ export class AccountStore {
       const next = accounts.filter((account) => account.id !== id);
       if (next.length === accounts.length) return false;
       await this.kv.set(ACCOUNTS_KEY, next);
+      this.removedAccounts.add(id);
       this.fetchedPlanNames.delete(id);
       await fs.rm(this.accountSecretPath(id), { force: true });
       const organizations = await this.organizations();
       if (organizations.delete(id))
         await this.kv.set(ORGANIZATIONS_KEY, Object.fromEntries(organizations));
-      const names = await this.planDisplayNames();
+      const names = planNamesSchema.parse(
+        (await this.kv.get(PLAN_NAMES_KEY)) ?? {},
+      );
       delete names[id];
       await this.kv.set(PLAN_NAMES_KEY, names);
+      for (const key of await this.kv.list(`${PLAN_CHECKS_PREFIX}${id}:`))
+        await this.kv.delete(key);
       return true;
     });
   }
@@ -209,15 +236,66 @@ export class AccountStore {
   }
 
   async planDisplayNames(): Promise<Record<string, string>> {
-    return planNamesSchema.parse((await this.kv.get(PLAN_NAMES_KEY)) ?? {});
+    return Object.fromEntries(
+      Object.entries(await this.planChecks()).flatMap(([id, entry]) =>
+        entry.name === null ? [] : [[id, entry.name]],
+      ),
+    );
+  }
+
+  private async planChecks(retries = 2): Promise<Record<string, PlanCheck>> {
+    const legacy = planNamesSchema.parse(
+      (await this.kv.get(PLAN_NAMES_KEY)) ?? {},
+    );
+    const checks: Record<string, PlanCheck> = Object.fromEntries(
+      Object.entries(legacy).map(([id, name]) => [id, { name, checkedAt: 0 }]),
+    );
+    const latest = new Map<string, { key: string; checkedAt: number }>();
+    for (const key of await this.kv.list(PLAN_CHECKS_PREFIX)) {
+      const [id, checkedAt] = planCheckKeySchema.parse(
+        key.slice(PLAN_CHECKS_PREFIX.length).split(":"),
+      );
+      if (checkedAt > (latest.get(id)?.checkedAt ?? -1))
+        latest.set(id, { key, checkedAt });
+    }
+    let missing = false;
+    for (const [id, { key, checkedAt }] of latest) {
+      const value = await this.kv.get(key);
+      if (value === undefined) {
+        delete checks[id];
+        missing = true;
+        continue;
+      }
+      const check = planCheckSchema.parse(value);
+      if (check.checkedAt !== checkedAt)
+        throw new Error("Invalid plan check timestamp.");
+      checks[id] = check;
+      planClock.set(id, Math.max(planClock.get(id) ?? -1, checkedAt));
+    }
+    if (missing && retries > 0) return this.planChecks(retries - 1);
+    return checks;
+  }
+
+  nextProfileCheck(id: string, now: number): number {
+    const checkedAt = Math.max(now, (planClock.get(id) ?? -1) + 1);
+    planClock.set(id, checkedAt);
+    return checkedAt;
   }
 
   async displayPlanNames(
     ids: ReadonlySet<string>,
   ): Promise<Record<string, string>> {
-    const names = await this.planDisplayNames();
-    for (const [id, entry] of this.fetchedPlanNames) {
+    const fetched = new Map(this.fetchedPlanNames);
+    const checks = await this.planChecks();
+    const names = Object.fromEntries(
+      Object.entries(checks).flatMap(([id, entry]) =>
+        entry.name === null ? [] : [[id, entry.name]],
+      ),
+    );
+    for (const [id, entry] of this.fetchedPlanNames) fetched.set(id, entry);
+    for (const [id, entry] of fetched) {
       if (!ids.has(id)) this.fetchedPlanNames.delete(id);
+      else if (entry.checkedAt <= (checks[id]?.checkedAt ?? -1)) continue;
       else if (entry.name === null) delete names[id];
       else names[id] = entry.name;
     }
@@ -228,9 +306,11 @@ export class AccountStore {
     id: string,
     name: string | null,
     write: Promise<void>,
+    checkedAt: number,
   ): void {
-    const entry = { name };
-    this.fetchedPlanNames.set(id, entry);
+    const entry = { name, checkedAt };
+    if (checkedAt > (this.fetchedPlanNames.get(id)?.checkedAt ?? -1))
+      this.fetchedPlanNames.set(id, entry);
     const pending = write
       .then(
         () => {
@@ -243,20 +323,39 @@ export class AccountStore {
     this.profileWrites.set(pending, id);
   }
 
+  profileRefreshFailed(id: string): void {
+    this.onProfileWriteError(id);
+  }
+
   async setPlanDisplayName(
     id: string,
     name: string | null,
     signal?: AbortSignal,
+    checkedAt = this.nextProfileCheck(id, Date.now()),
   ): Promise<void> {
+    planClock.set(id, Math.max(planClock.get(id) ?? -1, checkedAt));
     await this.serialized(async () => {
       if ((await this.get(id)) === null) return;
-      const names = await this.planDisplayNames();
+      const stored = (await this.planChecks())[id];
       if (signal?.aborted) return;
-      if (name === null) delete names[id];
-      else names[id] = name;
+      if (stored !== undefined && stored.checkedAt >= checkedAt) return;
       this.activePlanWrites.add(id);
       try {
-        await this.kv.set(PLAN_NAMES_KEY, planNamesSchema.parse(names));
+        await this.kv.set(
+          `${PLAN_CHECKS_PREFIX}${id}:${checkedAt}`,
+          planCheckSchema.parse({ name, checkedAt }),
+        );
+        const keys = (await this.kv.list(`${PLAN_CHECKS_PREFIX}${id}:`)).map(
+          (key) => {
+            const [, stamp] = planCheckKeySchema.parse(
+              key.slice(PLAN_CHECKS_PREFIX.length).split(":"),
+            );
+            return { key, stamp };
+          },
+        );
+        const newest = Math.max(checkedAt, ...keys.map(({ stamp }) => stamp));
+        for (const { key, stamp } of keys)
+          if (stamp < newest) await this.kv.delete(key);
       } finally {
         this.activePlanWrites.delete(id);
       }
@@ -264,11 +363,10 @@ export class AccountStore {
   }
 
   async withExistingAccount(id: string, action: () => void): Promise<boolean> {
-    return this.serialized(async () => {
-      if ((await this.get(id)) === null) return false;
-      action();
-      return true;
-    });
+    if ((await this.get(id)) === null || this.removedAccounts.has(id))
+      return false;
+    action();
+    return true;
   }
 
   async setPlan(

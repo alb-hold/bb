@@ -115,6 +115,7 @@ interface HubOptions {
   drainTimeoutMs: number;
   mutationDrainTimeoutMs: number;
   onMutationDrainTimeout: (accountIds: string[]) => void;
+  onPlanBackfillError: () => void;
   getParentRoute: () => ParentPool | null;
   onAccountsChanged: () => void;
   onUpstreamError: (provider: PoolProvider, error: unknown) => void;
@@ -795,9 +796,13 @@ export class AccountPoolHub {
   backfillPlanNames(): Promise<void> {
     if (this.stopped.signal.aborted) return Promise.resolve();
     if (this.planBackfill !== null) return this.planBackfill;
-    const pass = this.fillPlanNames(this.stopped.signal).finally(() => {
-      if (this.planBackfill === pass) this.planBackfill = null;
-    });
+    const pass = this.fillPlanNames(this.stopped.signal)
+      .catch(() => {
+        this.options.onPlanBackfillError();
+      })
+      .finally(() => {
+        if (this.planBackfill === pass) this.planBackfill = null;
+      });
     this.planBackfill = pass;
     return pass;
   }
@@ -2109,6 +2114,7 @@ export function createHub(options: {
   drainTimeoutMs?: number;
   mutationDrainTimeoutMs?: number;
   onMutationDrainTimeout?: (accountIds: string[]) => void;
+  onPlanBackfillError?: () => void;
   maxAffinityBindings?: number;
   getParentRoute?: () => ParentPool | null;
   onAccountsChanged?: () => void;
@@ -2150,6 +2156,7 @@ export function createHub(options: {
     drainTimeoutMs: options.drainTimeoutMs ?? 60_000,
     mutationDrainTimeoutMs: options.mutationDrainTimeoutMs ?? 3_000,
     onMutationDrainTimeout: options.onMutationDrainTimeout ?? (() => {}),
+    onPlanBackfillError: options.onPlanBackfillError ?? (() => {}),
     getParentRoute: options.getParentRoute ?? (() => null),
     onAccountsChanged: options.onAccountsChanged ?? (() => {}),
     onUpstreamError: options.onUpstreamError ?? (() => {}),
