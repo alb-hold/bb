@@ -56,7 +56,18 @@ describe("native clean exit schema", () => {
           join(directory, `${entry.tag}.sql`),
         );
       }
+      db.$client.exec(
+        "CREATE TEMP TABLE bb_migration_local_host (id TEXT PRIMARY KEY)",
+      );
+      db.$client.exec(
+        "CREATE TEMP TABLE bb_migration_existing_installation (existing INTEGER NOT NULL)",
+      );
+      db.$client.exec(
+        "INSERT INTO bb_migration_existing_installation VALUES (0)",
+      );
+      db.$client.pragma("foreign_keys = OFF");
       migrateHistorical(db, { migrationsFolder: directory });
+      db.$client.pragma("foreign_keys = ON");
       const host = upsertHost(db, noopNotifier, { name: "migration-host" });
       const { project } = createProject(db, noopNotifier, {
         name: "migration-project",
