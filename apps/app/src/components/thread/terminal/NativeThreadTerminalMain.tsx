@@ -154,7 +154,11 @@ export function NativeThreadTerminalMain({
 
   const historyExpired =
     !terminalsQuery.isLoading &&
+    !terminalsQuery.isFetching &&
+    !terminalsQuery.isError &&
     terminalsQuery.data !== undefined &&
+    terminalsQuery.dataUpdatedAt >= nativeQuery.dataUpdatedAt &&
+    (session?.status === "exited" || view.nativeSessionId !== null) &&
     !terminalsQuery.data.sessions.some(
       (terminal) => terminal.id === session?.id,
     );

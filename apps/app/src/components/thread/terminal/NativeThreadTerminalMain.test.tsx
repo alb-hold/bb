@@ -326,3 +326,39 @@ it("labels a proven clean exit as resumable", () => {
   expect(screen.getByText("Exited, resume to continue")).toBeTruthy();
   expect(screen.getByRole("button", { name: "Resume session" })).toBeTruthy();
 });
+
+it("keeps retained output while an omitted cached session is being refetched", () => {
+  const terminal = {
+    id: "retained",
+    status: "exited",
+    exitCode: 0,
+    closeReason: "process-exit",
+  } as NativeTerminalThread["terminal"];
+  hooks.listTerminals.mockReturnValue({
+    data: { sessions: [] },
+    dataUpdatedAt: 1,
+    isLoading: false,
+    isFetching: true,
+    isError: false,
+  });
+  const props = {
+    projectId: "proj_test",
+    threadId: "thr_native",
+    runtime: { displayStatus: "error" as const },
+    threadIsProvisioning: false,
+    view: { ...nativeView, terminal },
+  };
+  const rendered = render(<NativeThreadTerminalMain {...props} />);
+  expect(screen.queryByText(/history expired/i)).toBeNull();
+  expect(screen.getByTestId("terminal-panel")).toBeTruthy();
+  hooks.listTerminals.mockReturnValue({
+    data: { sessions: [terminal] },
+    dataUpdatedAt: 2,
+    isLoading: false,
+    isFetching: false,
+    isError: false,
+  });
+  rendered.rerender(<NativeThreadTerminalMain {...props} />);
+  expect(screen.queryByText(/history expired/i)).toBeNull();
+  expect(screen.getByTestId("terminal-panel")).toBeTruthy();
+});
