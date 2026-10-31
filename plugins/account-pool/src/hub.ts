@@ -746,9 +746,14 @@ export class AccountPoolHub {
   }
 
   async display() {
+    const plans = await this.options.accounts.planDisplayNames();
     const accounts = await this.options.accounts.list();
     return {
-      plans: await this.options.accounts.planDisplayNames(),
+      plans: Object.fromEntries(
+        accounts.flatMap(({ id }) =>
+          plans[id] === undefined ? [] : [[id, plans[id]]],
+        ),
+      ),
       weekly: Object.fromEntries(
         accounts.flatMap(({ id }) => {
           const windows = this.options.quotas.modelWeekly(id);

@@ -7159,6 +7159,101 @@ describe("Account Pool plugin", () => {
     expect(display).toMatchObject({ plans: { [fixture.account.id]: "Ultra" } });
   });
 
+  it.each(["profile", "usage"])(
+    "does not restore removed account display metadata after a held %s refresh",
+    async (heldEndpoint) => {
+      const arrived = deferred();
+      const release = deferred();
+      let armed = false;
+      const fixture = await createFixture({
+        upstreamUrl: "https://upstream.example",
+        source: "import",
+        options: {
+          usageUrl: "https://upstream.example/usage",
+          oauthProfileUrl: "https://upstream.example/profile",
+          importCredentials: async () => importedCredentials(),
+          fetch: async (input) => {
+            const endpoint = new URL(String(input)).pathname.slice(1);
+            if (armed && endpoint === heldEndpoint) {
+              arrived.resolve();
+              await release.promise;
+            }
+            if (endpoint === "profile")
+              return Response.json(
+                armed
+                  ? {
+                      account: {
+                        uuid: "11111111-1111-4111-8111-111111111111",
+                      },
+                      organization: { plan_display_name: "Ultra" },
+                    }
+                  : null,
+              );
+            return Response.json({
+              limits: [
+                {
+                  kind: "weekly_scoped",
+                  group: "weekly",
+                  percent: 45,
+                  resets_at: "2099-01-01T00:00:00Z",
+                  scope: { model: { display_name: "Claude Future 42" } },
+                },
+              ],
+            });
+          },
+        },
+      });
+      await fixture.host.harness.behavior.callRpc("account.refreshUsage", {
+        accountId: fixture.account.id,
+      });
+      armed = true;
+      const refresh = fixture.host.harness.behavior.callRpc(
+        "account.refreshUsage",
+        { accountId: fixture.account.id },
+      );
+      try {
+        await arrived.promise;
+        await fixture.host.harness.behavior.callRpc("account.remove", {
+          id: fixture.account.id,
+        });
+      } finally {
+        release.resolve();
+        await refresh;
+      }
+      const quotas = new QuotaStore(fixture.host.bb.storage.database());
+      expect({
+        display: await fixture.host.harness.behavior.callRpc("display.get", null),
+        storedPlans:
+          (await fixture.host.bb.storage.kv.get("plan-display-names:v1")) ?? {},
+        storedWeekly: quotas.modelWeekly(fixture.account.id),
+      }).toEqual({
+        display: { plans: {}, weekly: {} },
+        storedPlans: {},
+        storedWeekly: undefined,
+      });
+    },
+  );
+
+  it("filters orphaned display metadata while retaining current accounts", async () => {
+    const fixture = await createFixture({
+      upstreamUrl: "https://upstream.example",
+    });
+    const orphan = "99999999-9999-4999-8999-999999999999";
+    await fixture.host.bb.storage.kv.set("plan-display-names:v1", {
+      [fixture.account.id]: "Ultra",
+      [orphan]: "Ultra",
+    });
+    const quotas = new QuotaStore(fixture.host.bb.storage.database());
+    quotas.putModelWeekly(fixture.account.id, {});
+    quotas.putModelWeekly(orphan, {});
+    expect(
+      await fixture.host.harness.behavior.callRpc("display.get", null),
+    ).toEqual({
+      plans: { [fixture.account.id]: "Ultra" },
+      weekly: { [fixture.account.id]: {} },
+    });
+  });
+
   it("refreshes a Claude account's plan when Anthropic reports a new tier", async () => {
     const { fixture, listed, profileCalls } = await claudePlanFixture({
       account: {

@@ -160,10 +160,16 @@ export function createClaudeAdapter(options: {
       );
       if (quota === null)
         throw new Error("Usage refresh returned unreadable data.");
-      context.quotas.put(quota);
       const models = modelWeeklyFromUsage(payload, context.now());
-      if (models !== null)
-        context.quotas.putModelWeekly(context.account.id, models);
+      const stored = await context.accounts.withExistingAccount(
+        context.account.id,
+        () => {
+          context.quotas.put(quota);
+          if (models !== null)
+            context.quotas.putModelWeekly(context.account.id, models);
+        },
+      );
+      if (!stored) return;
       const account = context.account;
       const checkedAt = profileCheckedAt.get(account.id);
       if (

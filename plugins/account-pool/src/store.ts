@@ -197,10 +197,19 @@ export class AccountStore {
 
   async setPlanDisplayName(id: string, name: string | null): Promise<void> {
     await this.serialized(async () => {
+      if ((await this.get(id)) === null) return;
       const names = await this.planDisplayNames();
       if (name === null) delete names[id];
       else names[id] = name;
       await this.kv.set(PLAN_NAMES_KEY, planNamesSchema.parse(names));
+    });
+  }
+
+  async withExistingAccount(id: string, action: () => void): Promise<boolean> {
+    return this.serialized(async () => {
+      if ((await this.get(id)) === null) return false;
+      action();
+      return true;
     });
   }
 
