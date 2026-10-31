@@ -334,7 +334,12 @@ function startHub(): Promise<{
   return new Promise((resolve) => {
     server.listen(0, "127.0.0.1", () => {
       const { port } = server.address() as AddressInfo;
-      cleanups.push(() => server.close());
+      cleanups.push(
+        () =>
+          new Promise<void>((resolve, reject) => {
+            server.close((error) => (error ? reject(error) : resolve()));
+          }),
+      );
       resolve({ url: `http://127.0.0.1:${port}`, records, server });
     });
   });
