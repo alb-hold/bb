@@ -58,6 +58,7 @@ export class TransientOAuthRefreshError extends OAuthRefreshError {
 }
 
 export interface AdapterSecretContext {
+  signal?: AbortSignal;
   account: Account;
   secret: AccountSecret;
   accounts: AccountStore;
@@ -71,7 +72,7 @@ export interface AdapterUsageContext {
   signal?: AbortSignal;
   background?: boolean;
   account: Account;
-  freshSecret: () => Promise<AccountSecret>;
+  freshSecret: (signal?: AbortSignal) => Promise<AccountSecret>;
   accounts: AccountStore;
   quotas: QuotaStore;
   fetch: typeof fetch;
@@ -148,11 +149,15 @@ export function oauthSecretDueForRefresh(
 }
 
 export async function fetchOAuthRefresh(
-  context: Pick<AdapterSecretContext, "fetch" | "now">,
+  context: Pick<AdapterSecretContext, "fetch" | "now" | "signal">,
   url: string,
   body: Record<string, string>,
 ): Promise<string> {
-  const signal = AbortSignal.timeout(OAUTH_REFRESH_TIMEOUT_MS);
+  context.signal?.throwIfAborted();
+  const signal = AbortSignal.any([
+    AbortSignal.timeout(OAUTH_REFRESH_TIMEOUT_MS),
+    ...(context.signal === undefined ? [] : [context.signal]),
+  ]);
   let onTimeout = () => {};
   const timedOut = new Promise<never>((_resolve, reject) => {
     onTimeout = () => reject(signal.reason);

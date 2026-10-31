@@ -77,29 +77,36 @@ export function registerUsageSource(
         };
       },
       async [usageFetchMethod]({ resourceId, refresh }) {
+        const controller = new AbortController();
+        const { signal } = controller;
         let timer: ReturnType<typeof setTimeout> | undefined;
         const timedOut = new Promise<never>((_resolve, reject) => {
-          timer = setTimeout(
-            () => reject(new Error("Account usage read timed out. Try again.")),
-            30_000,
-          );
+          timer = setTimeout(() => {
+            const error = new Error("Account usage read timed out. Try again.");
+            controller.abort(error);
+            reject(error);
+          }, 30_000);
         });
         const read = async () => {
           if (
-            !(await hub.status()).accounts.some(
+            !(await hub.status(signal)).accounts.some(
               (account) => account.id === resourceId,
             )
           )
             throw new Error("Usage resource no longer exists.");
-          if (!(await hub.refreshUsage(resourceId, refresh)) && refresh)
+          signal.throwIfAborted();
+          if (!(await hub.refreshUsage(resourceId, refresh, signal)) && refresh)
             throw new Error("Could not refresh account usage. Try again.");
-          const { accounts: allAccounts } = await hub.status();
+          signal.throwIfAborted();
+          const { accounts: allAccounts } = await hub.status(signal);
+          signal.throwIfAborted();
           const accounts = allAccounts.filter(
             (account) => account.id === resourceId,
           );
           if (accounts.length === 0)
             throw new Error("Usage resource no longer exists.");
-          const display = await hub.display();
+          const display = await hub.display(signal);
+          signal.throwIfAborted();
           const resources: UsageResource[] = accounts.map((account) => {
             const windows: Extract<
               UsageResource["usage"],

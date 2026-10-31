@@ -657,19 +657,26 @@ export class AccountPoolHub {
     }
   }
 
-  async refreshUsage(accountId?: string, force = false): Promise<boolean> {
-    const accounts = (await this.options.accounts.list()).filter(
+  async refreshUsage(
+    accountId?: string,
+    force = false,
+    signal?: AbortSignal,
+  ): Promise<boolean> {
+    signal?.throwIfAborted();
+    const accounts = (await this.options.accounts.list(signal)).filter(
       (account) =>
         account.enabled &&
         account.kind === "oauth" &&
         (accountId === undefined || account.id === accountId),
     );
+    signal?.throwIfAborted();
     const refreshed = await Promise.all(
       accounts.map((account) =>
         this.refreshAccountUsage(
           account,
           force ? 0 : DEFAULT_USAGE_REFRESH_INTERVAL_MS,
           force,
+          signal,
         ),
       ),
     );
@@ -707,7 +714,13 @@ export class AccountPoolHub {
     account: Account,
     minIntervalMs: number,
     recoverError = false,
+    callerSignal?: AbortSignal,
   ): Promise<boolean> {
+    const signal = AbortSignal.any([
+      this.stopped.signal,
+      ...(callerSignal === undefined ? [] : [callerSignal]),
+    ]);
+    signal.throwIfAborted();
     const adapter = this.adapter(account.provider);
     if ((this.inFlightByAccount.get(account.id) ?? 0) > 0) return true;
     const running = this.usageRefreshes.get(account.id);
@@ -720,16 +733,24 @@ export class AccountPoolHub {
       recoverError && this.options.quotas.get(account.id).error !== null;
     const refresh = adapter
       .refreshUsage({
-        signal: this.stopped.signal,
+        signal,
         account,
-        freshSecret: () =>
-          this.freshSecret(account, adapter, { kind: "normal" }, recover).catch(
-            (error: unknown) => {
-              if (recover && !(error instanceof TransientOAuthRefreshError))
-                this.markError(account.id, errorMessage(error));
-              throw error;
-            },
-          ),
+        freshSecret: (profileSignal = signal) =>
+          this.freshSecret(
+            account,
+            adapter,
+            { kind: "normal" },
+            recover,
+            profileSignal,
+          ).catch((error: unknown) => {
+            if (
+              !profileSignal.aborted &&
+              recover &&
+              !(error instanceof TransientOAuthRefreshError)
+            )
+              this.markError(account.id, errorMessage(error));
+            throw error;
+          }),
         accounts: this.options.accounts,
         quotas: this.options.quotas,
         fetch: this.options.fetch,
@@ -827,7 +848,8 @@ export class AccountPoolHub {
           account,
           signal,
           background: true,
-          freshSecret: () => this.options.accounts.readSecret(account.id),
+          freshSecret: (profileSignal = signal) =>
+            this.options.accounts.readSecret(account.id, profileSignal),
           accounts: this.options.accounts,
           quotas: this.options.quotas,
           fetch: this.options.fetch,
@@ -837,12 +859,16 @@ export class AccountPoolHub {
     }
   }
 
-  async display() {
-    void this.backfillPlanNames();
-    const accounts = await this.options.accounts.list();
+  async display(signal?: AbortSignal) {
+    signal?.throwIfAborted();
+    if (signal === undefined) void this.backfillPlanNames();
+    const accounts = await this.options.accounts.list(signal);
+    signal?.throwIfAborted();
     const plans = await this.options.accounts.displayPlanNames(
       new Set(accounts.map(({ id }) => id)),
+      signal,
     );
+    signal?.throwIfAborted();
     return {
       plans: Object.fromEntries(
         accounts.flatMap(({ id }) =>
@@ -858,20 +884,27 @@ export class AccountPoolHub {
     };
   }
 
-  async status(): Promise<Omit<PoolStatus, "routing" | "parent">> {
+  async status(
+    signal?: AbortSignal,
+  ): Promise<Omit<PoolStatus, "routing" | "parent">> {
+    signal?.throwIfAborted();
     const settings = this.options.getSettings();
     const now = this.options.now();
     const automaticChoices = this.options.affinity.loadAutomaticChoices();
-    const accounts = (await this.options.accounts.list()).sort(
+    const accounts = (await this.options.accounts.list(signal)).sort(
       (left, right) => left.priority - right.priority,
     );
-    const organizations = await this.options.accounts.organizations();
+    signal?.throwIfAborted();
+    const organizations = await this.options.accounts.organizations(signal);
+    signal?.throwIfAborted();
+    const hosts = await this.options.hubTokens.list();
+    signal?.throwIfAborted();
     return {
       route: ROUTE,
       enabledAccountCount: accounts.filter((account) => account.enabled).length,
       inFlight: this.inFlightCount(),
       accepting: this.accepting,
-      hosts: await this.options.hubTokens.list(),
+      hosts,
       accounts: accounts.map((account) => {
         const quota = this.options.quotas.get(account.id);
         const { accountId: _accountId, ...quotaFields } = quota;
@@ -1686,18 +1719,23 @@ export class AccountPoolHub {
     adapter: ProviderAdapter,
     use: SecretUse,
     recover = false,
+    signal?: AbortSignal,
   ): Promise<AccountSecret> {
     while (true) {
+      signal?.throwIfAborted();
       const existing = this.refreshes.get(account.id);
       if (existing !== undefined) {
         if (existing.kind === "rejection-check") {
           await existing.result;
+          signal?.throwIfAborted();
           continue;
         }
         let secret: AccountSecret;
         try {
           secret = await existing.result;
+          signal?.throwIfAborted();
         } catch (error) {
+          signal?.throwIfAborted();
           const current = this.refreshes.get(account.id);
           if (current !== undefined && current !== existing) continue;
           throw error;
@@ -1726,8 +1764,9 @@ export class AccountPoolHub {
         kind: "refresh",
         use,
         result: this.options.accounts
-          .readSecret(account.id)
+          .readSecret(account.id, signal)
           .then(async (secret) => {
+            signal?.throwIfAborted();
             let backoff = this.refreshBackoffs.get(account.id);
             if (
               secret.kind !== "oauth" ||
@@ -1768,7 +1807,9 @@ export class AccountPoolHub {
               throw backoff.error;
             }
             try {
+              signal?.throwIfAborted();
               const result = await adapter.refreshSecret({
+                signal,
                 account,
                 secret,
                 accounts: this.options.accounts,
@@ -1777,6 +1818,7 @@ export class AccountPoolHub {
                 now: this.options.now,
                 forceRefresh,
               });
+              signal?.throwIfAborted();
               this.refreshBackoffs.delete(account.id);
               if (result.refreshed) {
                 this.options.onOAuthRefresh(
@@ -1790,6 +1832,7 @@ export class AccountPoolHub {
               }
               return result.secret;
             } catch (error) {
+              signal?.throwIfAborted();
               this.options.onOAuthRefresh(
                 account.provider,
                 account.id,

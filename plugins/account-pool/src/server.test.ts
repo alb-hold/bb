@@ -7113,12 +7113,14 @@ describe("Account Pool plugin", () => {
         ...options,
         oauthProfileUrl: "https://upstream.example/profile",
         usageUrl: "data:application/json,{}",
-        fetch: (input, init) =>
-          String(input).includes("/profile")
-            ? upstreamFetch(input, init)
-            : Promise.resolve(
-                Response.json({ seven_day: { utilization: 13 } }),
-              ),
+        fetch:
+          options.fetch ??
+          ((input, init) =>
+            String(input).includes("/profile")
+              ? upstreamFetch(input, init)
+              : Promise.resolve(
+                  Response.json({ seven_day: { utilization: 13 } }),
+                )),
       },
     });
     const store = new AccountStore(
@@ -7864,14 +7866,22 @@ describe("Account Pool plugin", () => {
     },
   );
 
-  it("bounds a usage RPC when its account read never settles", async () => {
+  it("fences a timed out usage RPC before a held account read resumes", async () => {
     let armed = false;
     const held = deferred();
     const arrived = deferred();
-    const { fixture, accounts } = await profileLifecycleFixture(
+    let fetches = 0;
+    let writes = 0;
+    let watched = false;
+    const { fixture, store, accounts } = await profileLifecycleFixture(
       async () => Response.json(null),
       (host) => {
         const get = host.bb.storage.kv.get.bind(host.bb.storage.kv);
+        const set = host.bb.storage.kv.set.bind(host.bb.storage.kv);
+        host.bb.storage.kv.set = async (key, value) => {
+          if (watched) writes += 1;
+          return set(key, value);
+        };
         host.bb.storage.kv.get = async <T>(
           key: string,
         ): Promise<T | undefined> => {
@@ -7883,8 +7893,28 @@ describe("Account Pool plugin", () => {
           return get<T>(key);
         };
       },
+      {
+        fetch: async (input, init) => {
+          if (watched) fetches += 1;
+          return Response.json(
+            String(input).includes("/profile")
+              ? {
+                  account: {
+                    uuid: new Headers(init?.headers)
+                      .get("authorization")!
+                      .slice(7),
+                  },
+                  organization: { plan_display_name: "Claude Ultra" },
+                }
+              : { seven_day: { utilization: 13 } },
+          );
+        },
+      },
     );
+    for (const account of accounts)
+      await store.setPlanDisplayName(account.id, "Claude Ultra");
     armed = true;
+    watched = true;
     vi.useFakeTimers();
     const refreshing = fixture.host.harness.behavior
       .callRpc(usageFetchMethod, {
@@ -7905,12 +7935,152 @@ describe("Account Pool plugin", () => {
           message: "Account usage read timed out. Try again.",
         }),
       );
+      held.resolve();
+      await vi.advanceTimersByTimeAsync(20_000);
+      await waitForIo(20);
+      expect({ fetches, writes }).toEqual({ fetches: 0, writes: 0 });
+      expect(
+        new QuotaStore(fixture.host.bb.storage.database()).get(accounts[0]!.id)
+          .observedAt,
+      ).toBeNull();
     } finally {
+      watched = false;
       held.resolve();
       vi.useRealTimers();
       await refreshing;
     }
   });
+
+  it.each([
+    "credentials",
+    "usage headers",
+    "usage body",
+    "quota account read",
+  ] as const)(
+    "fences late side effects after a usage RPC times out during %s",
+    async (stage) => {
+      const held = deferred();
+      const arrived = deferred();
+      let armed = false;
+      let expired = false;
+      let reads = 0;
+      let lateFetches = 0;
+      let lateWrites = 0;
+      const { fixture, store, accounts } = await profileLifecycleFixture(
+        async () => Response.json(null),
+        (host) => {
+          const get = host.bb.storage.kv.get.bind(host.bb.storage.kv);
+          const set = host.bb.storage.kv.set.bind(host.bb.storage.kv);
+          host.bb.storage.kv.get = async <T>(
+            key: string,
+          ): Promise<T | undefined> => {
+            if (
+              armed &&
+              stage === "quota account read" &&
+              key === "accounts:v1" &&
+              ++reads === 3
+            ) {
+              arrived.resolve();
+              await held.promise;
+            }
+            return get<T>(key);
+          };
+          host.bb.storage.kv.set = async (key, value) => {
+            if (expired) lateWrites += 1;
+            return set(key, value);
+          };
+        },
+        {
+          fetch: async (input, init) => {
+            if (expired) lateFetches += 1;
+            if (String(input).includes("/profile"))
+              return Response.json({
+                account: {
+                  uuid: new Headers(init?.headers)
+                    .get("authorization")!
+                    .slice(7),
+                },
+                organization: { plan_display_name: "Claude Ultra" },
+              });
+            if (armed && stage === "usage headers") {
+              arrived.resolve();
+              await held.promise;
+            }
+            if (armed && stage === "usage body") {
+              return new Response(
+                new ReadableStream({
+                  start(controller) {
+                    arrived.resolve();
+                    void held.promise.then(() => {
+                      controller.enqueue(
+                        new TextEncoder().encode(
+                          '{"seven_day":{"utilization":13}}',
+                        ),
+                      );
+                      controller.close();
+                    });
+                  },
+                }),
+              );
+            }
+            return Response.json({ seven_day: { utilization: 13 } });
+          },
+        },
+      );
+      for (const account of accounts)
+        await store.setPlanDisplayName(account.id, "Claude Ultra");
+      const readSecret = AccountStore.prototype.readSecret;
+      AccountStore.prototype.readSecret = async function (id, signal) {
+        if (armed && stage === "credentials") {
+          arrived.resolve();
+          await held.promise;
+        }
+        return readSecret.call(this, id, signal);
+      };
+      armed = true;
+      vi.useFakeTimers();
+      const refreshing = fixture.host.harness.behavior
+        .callRpc(usageFetchMethod, {
+          resourceId: accounts[0]!.id,
+          refresh: true,
+        })
+        .then(
+          () => null,
+          (error: unknown) => error,
+        );
+      try {
+        await arrived.promise;
+        await vi.advanceTimersByTimeAsync(30_001);
+        expect(
+          await Promise.race([refreshing, waitForIo(300).then(() => null)]),
+        ).toEqual(
+          expect.objectContaining({
+            message: "Account usage read timed out. Try again.",
+          }),
+        );
+        expired = true;
+        held.resolve();
+        await vi.advanceTimersByTimeAsync(20_000);
+        await waitForIo(20);
+        expect({ lateFetches, lateWrites }).toEqual({
+          lateFetches: 0,
+          lateWrites: 0,
+        });
+        expect(
+          new QuotaStore(fixture.host.bb.storage.database()).get(
+            accounts[0]!.id,
+          ).observedAt,
+        ).toBeNull();
+      } finally {
+        armed = false;
+        expired = false;
+        held.resolve();
+        AccountStore.prototype.readSecret = readSecret;
+        vi.useRealTimers();
+        await refreshing;
+      }
+    },
+  );
 
   it("hard bounds an abort-ignoring profile request", async () => {
     const { fixture, store, accounts } = await profileLifecycleFixture(

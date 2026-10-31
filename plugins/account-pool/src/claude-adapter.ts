@@ -210,13 +210,16 @@ export function createClaudeAdapter(options: {
             skipped = true;
             return;
           }
-          const secret = await Promise.race([context.freshSecret(), canceled]);
+          const secret = await Promise.race([
+            context.freshSecret(signal),
+            canceled,
+          ]);
           if (secret === null || secret.kind !== "oauth" || signal.aborted)
             return;
           const account = context.account;
           const checkedAt = profileCheckedAt.get(account.id);
           const plans = await Promise.race([
-            context.accounts.planDisplayNames(),
+            context.accounts.planDisplayNames(signal),
             canceled,
           ]);
           if (plans === null || signal.aborted) return;
@@ -367,6 +370,7 @@ export function createClaudeAdapter(options: {
     quotaFromHeaders,
     isQuotaRejection,
     async refreshSecret(context) {
+      context.signal?.throwIfAborted();
       const secret = oauthSecretDueForRefresh(context);
       if (secret === null) return { secret: context.secret, refreshed: false };
       const parsed = parseOAuthRefreshResponse(
@@ -389,26 +393,40 @@ export function createClaudeAdapter(options: {
         expiresAt: epochMilliseconds(rawExpiresAt),
         ...(secret.idToken === undefined ? {} : { idToken: secret.idToken }),
       };
-      await context.accounts.writeSecret(context.account.id, refreshed);
+      context.signal?.throwIfAborted();
+      await context.accounts.writeSecret(
+        context.account.id,
+        refreshed,
+        context.signal,
+      );
       return { secret: refreshed, refreshed: true };
     },
     async refreshUsage(context) {
+      context.signal?.throwIfAborted();
       if (context.account.kind !== "oauth") return;
-      const secret = await context.freshSecret();
+      const secret = await context.freshSecret(context.signal);
+      context.signal?.throwIfAborted();
       if (secret.kind !== "oauth") return;
+      const signal = AbortSignal.any([
+        AbortSignal.timeout(USAGE_REQUEST_TIMEOUT_MS),
+        ...(context.signal === undefined ? [] : [context.signal]),
+      ]);
+      signal.throwIfAborted();
       const response = await context.fetch(options.usageUrl, {
         headers: {
           authorization: `Bearer ${secret.accessToken}`,
           "anthropic-beta": OAUTH_BETA,
           accept: "application/json",
         },
-        signal: AbortSignal.timeout(USAGE_REQUEST_TIMEOUT_MS),
+        signal,
       });
+      signal.throwIfAborted();
       if (!response.ok) {
         await response.body?.cancel();
         throw new Error("Usage refresh failed.");
       }
       const payload: unknown = await response.json().catch(() => null);
+      signal.throwIfAborted();
       if (typeof payload !== "object" || payload === null)
         throw new Error("Usage refresh returned unreadable data.");
       const quota = quotaFromUsage(
@@ -427,7 +445,9 @@ export function createClaudeAdapter(options: {
           if (models !== null)
             context.quotas.putModelWeekly(context.account.id, models);
         },
+        signal,
       );
+      context.signal?.throwIfAborted();
       if (!stored) return;
       if (profileRunning)
         void refreshProfile(context).catch(() =>

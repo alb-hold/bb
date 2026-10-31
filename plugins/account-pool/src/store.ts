@@ -45,14 +45,9 @@ const planCheckKeySchema = z.tuple([
 ]);
 const planClockKey = Symbol.for("bb.account-pool.planClock");
 const planClock = z
-  .custom<Map<string, number>>(
-    (value) =>
-      value instanceof Map &&
-      [...value].every(
-        ([id, time]) =>
-          typeof id === "string" && Number.isSafeInteger(time) && time >= 0,
-      ),
-  )
+  .custom<
+    Map<string, number>
+  >((value) => value instanceof Map && [...value].every(([id, time]) => typeof id === "string" && Number.isSafeInteger(time) && time >= 0))
   .parse(Reflect.get(globalThis, planClockKey) ?? new Map<string, number>());
 Reflect.set(globalThis, planClockKey, planClock);
 const ACCOUNT_LAST_USED_PERSIST_MS = 60 * 1_000;
@@ -94,6 +89,7 @@ export class AccountStore {
   private mutationLock: Promise<void> | null = null;
   private readonly activePlanWrites = new Set<string>();
   private readonly profileWrites = new Map<Promise<void>, string>();
+  private readonly credentialWrites = new Map<Promise<void>, string>();
   private readonly removedAccounts = new Set<string>();
   private readonly fetchedPlanNames = new Map<string, PlanCheck>();
 
@@ -103,19 +99,25 @@ export class AccountStore {
     private readonly onProfileWriteError: (id: string) => void = () => {},
   ) {}
 
-  async initialize(): Promise<void> {
+  async initialize(signal?: AbortSignal): Promise<void> {
+    signal?.throwIfAborted();
     await fs.mkdir(this.secretsDir, { recursive: true, mode: 0o700 });
+    signal?.throwIfAborted();
     await fs.chmod(this.secretsDir, 0o700);
   }
 
-  async list(): Promise<Account[]> {
+  async list(signal?: AbortSignal): Promise<Account[]> {
+    signal?.throwIfAborted();
     const value = await this.kv.get(ACCOUNTS_KEY);
+    signal?.throwIfAborted();
     if (value === undefined) return [];
     return accountsSchema.parse(value);
   }
 
-  async get(id: string): Promise<Account | null> {
-    return (await this.list()).find((account) => account.id === id) ?? null;
+  async get(id: string, signal?: AbortSignal): Promise<Account | null> {
+    return (
+      (await this.list(signal)).find((account) => account.id === id) ?? null
+    );
   }
 
   async add(
@@ -166,8 +168,10 @@ export class AccountStore {
     });
   }
 
-  async organizations(): Promise<Map<string, string>> {
+  async organizations(signal?: AbortSignal): Promise<Map<string, string>> {
+    signal?.throwIfAborted();
     const value = await this.kv.get(ORGANIZATIONS_KEY);
+    signal?.throwIfAborted();
     return new Map(
       Object.entries(
         value === undefined ? {} : organizationsSchema.parse(value),
@@ -231,36 +235,52 @@ export class AccountStore {
   async setSubscriptionType(
     id: string,
     subscriptionType: string,
+    signal?: AbortSignal,
   ): Promise<Account | null> {
-    return this.update(id, (account) => ({ ...account, subscriptionType }));
+    return this.update(
+      id,
+      (account) => ({ ...account, subscriptionType }),
+      signal,
+    );
   }
 
-  async planDisplayNames(): Promise<Record<string, string>> {
+  async planDisplayNames(
+    signal?: AbortSignal,
+  ): Promise<Record<string, string>> {
     return Object.fromEntries(
-      Object.entries(await this.planChecks()).flatMap(([id, entry]) =>
+      Object.entries(await this.planChecks(2, signal)).flatMap(([id, entry]) =>
         entry.name === null ? [] : [[id, entry.name]],
       ),
     );
   }
 
-  private async planChecks(retries = 2): Promise<Record<string, PlanCheck>> {
+  private async planChecks(
+    retries = 2,
+    signal?: AbortSignal,
+  ): Promise<Record<string, PlanCheck>> {
+    signal?.throwIfAborted();
     const legacy = planNamesSchema.parse(
       (await this.kv.get(PLAN_NAMES_KEY)) ?? {},
     );
+    signal?.throwIfAborted();
     const checks: Record<string, PlanCheck> = Object.fromEntries(
       Object.entries(legacy).map(([id, name]) => [id, { name, checkedAt: 0 }]),
     );
     const latest = new Map<string, { key: string; checkedAt: number }>();
     for (const key of await this.kv.list(PLAN_CHECKS_PREFIX)) {
+      signal?.throwIfAborted();
       const [id, checkedAt] = planCheckKeySchema.parse(
         key.slice(PLAN_CHECKS_PREFIX.length).split(":"),
       );
       if (checkedAt > (latest.get(id)?.checkedAt ?? -1))
         latest.set(id, { key, checkedAt });
     }
+    signal?.throwIfAborted();
     let missing = false;
     for (const [id, { key, checkedAt }] of latest) {
+      signal?.throwIfAborted();
       const value = await this.kv.get(key);
+      signal?.throwIfAborted();
       if (value === undefined) {
         delete checks[id];
         missing = true;
@@ -272,7 +292,7 @@ export class AccountStore {
       checks[id] = check;
       planClock.set(id, Math.max(planClock.get(id) ?? -1, checkedAt));
     }
-    if (missing && retries > 0) return this.planChecks(retries - 1);
+    if (missing && retries > 0) return this.planChecks(retries - 1, signal);
     return checks;
   }
 
@@ -284,9 +304,11 @@ export class AccountStore {
 
   async displayPlanNames(
     ids: ReadonlySet<string>,
+    signal?: AbortSignal,
   ): Promise<Record<string, string>> {
+    signal?.throwIfAborted();
     const fetched = new Map(this.fetchedPlanNames);
-    const checks = await this.planChecks();
+    const checks = await this.planChecks(2, signal);
     const names = Object.fromEntries(
       Object.entries(checks).flatMap(([id, entry]) =>
         entry.name === null ? [] : [[id, entry.name]],
@@ -362,8 +384,17 @@ export class AccountStore {
     });
   }
 
-  async withExistingAccount(id: string, action: () => void): Promise<boolean> {
-    if ((await this.get(id)) === null || this.removedAccounts.has(id))
+  async withExistingAccount(
+    id: string,
+    action: () => void,
+    signal?: AbortSignal,
+  ): Promise<boolean> {
+    if (signal?.aborted) return false;
+    if (
+      (await this.get(id, signal)) === null ||
+      this.removedAccounts.has(id) ||
+      signal?.aborted
+    )
       return false;
     action();
     return true;
@@ -486,21 +517,48 @@ export class AccountStore {
     });
   }
 
-  async readSecret(id: string): Promise<AccountSecret> {
+  async readSecret(id: string, signal?: AbortSignal): Promise<AccountSecret> {
+    signal?.throwIfAborted();
     const parsed = JSON.parse(
       await fs.readFile(this.accountSecretPath(id), "utf8"),
     );
+    signal?.throwIfAborted();
     return accountSecretSchema.parse(parsed);
   }
 
-  async writeSecret(id: string, secret: AccountSecret): Promise<void> {
-    await this.initialize();
-    const value = `${JSON.stringify(accountSecretSchema.parse(secret))}\n`;
-    const destination = this.accountSecretPath(id);
-    const temporary = `${destination}.${randomUUID()}.tmp`;
-    await fs.writeFile(temporary, value, { encoding: "utf8", mode: 0o600 });
-    await fs.rename(temporary, destination);
-    await fs.chmod(destination, 0o600);
+  async writeSecret(
+    id: string,
+    secret: AccountSecret,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const write = (async () => {
+      signal?.throwIfAborted();
+      await this.initialize(signal);
+      signal?.throwIfAborted();
+      const value = `${JSON.stringify(accountSecretSchema.parse(secret))}\n`;
+      const destination = this.accountSecretPath(id);
+      const temporary = `${destination}.${randomUUID()}.tmp`;
+      try {
+        await fs.writeFile(temporary, value, { encoding: "utf8", mode: 0o600 });
+        signal?.throwIfAborted();
+        await fs.rename(temporary, destination);
+        signal?.throwIfAborted();
+        await fs.chmod(destination, 0o600);
+      } catch (error) {
+        await fs.rm(temporary, { force: true });
+        throw error;
+      }
+    })();
+    const pending = write.then(
+      () => {},
+      () => {},
+    );
+    this.credentialWrites.set(pending, id);
+    try {
+      await write;
+    } finally {
+      this.credentialWrites.delete(pending);
+    }
   }
 
   private accountSecretPath(id: string): string {
@@ -510,12 +568,20 @@ export class AccountStore {
 
   pendingPlanWrites(): string[] {
     return [
-      ...new Set([...this.activePlanWrites, ...this.profileWrites.values()]),
+      ...new Set([
+        ...this.activePlanWrites,
+        ...this.profileWrites.values(),
+        ...this.credentialWrites.values(),
+      ]),
     ];
   }
 
   async drainMutations(): Promise<void> {
-    await Promise.all([this.mutationLock, ...this.profileWrites.keys()]);
+    await Promise.all([
+      this.mutationLock,
+      ...this.profileWrites.keys(),
+      ...this.credentialWrites.keys(),
+    ]);
   }
 
   private async serialized<T>(action: () => Promise<T>): Promise<T> {
