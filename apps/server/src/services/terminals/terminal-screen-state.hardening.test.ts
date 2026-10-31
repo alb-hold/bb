@@ -254,7 +254,7 @@ describe("xterm internals that are not there", () => {
       ),
     );
     const terminal = headless(state);
-    await write(terminal, "");
+    await state.snapshot();
     sabotage(terminal);
     const snapshot = await state.snapshot();
     state.dispose();
