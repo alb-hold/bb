@@ -10,6 +10,7 @@ import {
 } from "@tanstack/react-query";
 import { useCallback, useMemo } from "react";
 import type { PendingInteraction, ThreadListEntry } from "@bb/domain";
+import { withEffectiveDisplayStatus } from "@bb/domain";
 import type {
   ThreadListResponse,
   ThreadPendingInteractionsResponse,
@@ -707,7 +708,7 @@ function liftThreadListPlaceholder(
   if (thread === undefined) {
     return undefined;
   }
-  return {
+  return withEffectiveDisplayStatus({
     ...thread,
     activeBackgroundAgentCount: thread.activity.activeBackgroundAgentCount,
     canRestoreEnvironment: false,
@@ -715,7 +716,7 @@ function liftThreadListPlaceholder(
     canSpawnChild: false,
     queuedMessageCount: 0,
     workspaceSharing: null,
-  };
+  });
 }
 
 export function threadDetailBootstrapQueryOptions(
@@ -876,7 +877,6 @@ export function useThreadSpendSummary(threadId: string) {
     retryDelay: TRANSIENT_READ_RETRY_DELAY_MS,
   });
 }
-
 
 const EMPTY_PENDING_INTERACTIONS: readonly PendingInteraction[] = [];
 

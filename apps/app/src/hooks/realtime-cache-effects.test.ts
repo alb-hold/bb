@@ -2629,6 +2629,66 @@ describe("createRealtimeCacheEffects", () => {
     },
   );
 
+  it.each([true, false])(
+    "keeps active and archived search queries consistent after a raw native search notification (clean: %s)",
+    async (clean) => {
+      vi.useFakeTimers();
+      const { effects, queryClient } = createRealtimeEffectsTestContext();
+      const searchKey = threadSearchQueryKey({
+        query: "native exit",
+        limitPerGroup: 20,
+      });
+      const rows = [false, true].map((archived) =>
+        makeThreadListEntry({
+          id: archived ? "thr_archived" : "thr_active",
+          projectId: "project-1",
+          archivedAt: archived ? 50 : null,
+          status: "idle",
+          runtime: { displayStatus: "idle" },
+          updatedAt: 100,
+        }),
+      );
+      queryClient.setQueryData(searchKey, {
+        active: { results: [{ thread: rows[0], matches: [] }], total: 1 },
+        archived: { results: [{ thread: rows[1], matches: [] }], total: 1 },
+      });
+      for (const row of rows)
+        effects.handleChanged({
+          type: "changed",
+          entity: "thread",
+          id: row.id,
+          changes: ["status-changed"],
+          metadata: {
+            projectId: "project-1",
+            statusChange: {
+              activity: row.activity,
+              latestAttentionAt: row.latestAttentionAt,
+              status: "error",
+              runtime: {
+                displayStatus: "error",
+                ...(clean ? { nativeSessionExit: "clean" } : {}),
+              },
+              updatedAt: 200,
+            },
+          },
+        });
+      await vi.advanceTimersByTimeAsync(50);
+      const expected = clean ? "idle" : "error";
+      const group = {
+        results: [
+          {
+            thread: { status: expected, runtime: { displayStatus: expected } },
+          },
+        ],
+      };
+      expect(queryClient.getQueryData(searchKey)).toMatchObject({
+        active: group,
+        archived: group,
+      });
+      effects.dispose();
+    },
+  );
+
   it("throttles the metadata-less status fallback to one active refetch per second", async () => {
     vi.useFakeTimers();
     const { effects, queryClient } = createRealtimeEffectsTestContext();
