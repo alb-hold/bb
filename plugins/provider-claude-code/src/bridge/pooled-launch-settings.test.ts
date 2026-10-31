@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import {
@@ -11,7 +12,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { readIsolatedClaudeContextUsage } from "./context-usage-probe.js";
 import { probeClaudeInitialization } from "./initialization-probe.js";
 import { SdkSession } from "./sdk-session.js";
@@ -20,6 +21,34 @@ import {
   resolveClaudeCodeExecutable,
   type BuildSessionOptionsArgs,
 } from "./session-options.js";
+
+import { trackTestProcess } from "./test-processes.js";
+
+vi.mock("@anthropic-ai/claude-agent-sdk", async (importOriginal) => {
+  const original =
+    await importOriginal<typeof import("@anthropic-ai/claude-agent-sdk")>();
+  return {
+    ...original,
+    query: (args: Parameters<typeof original.query>[0]) =>
+      original.query({
+        ...args,
+        options: {
+          ...args.options,
+          spawnClaudeCodeProcess: (options) => {
+            const child = spawn(options.command, options.args, {
+              cwd: options.cwd,
+              env: options.env,
+              signal: options.signal,
+              detached: process.platform !== "win32",
+              stdio: ["pipe", "pipe", "pipe"],
+            });
+            cleanups.push(trackTestProcess(child));
+            return child;
+          },
+        },
+      }),
+  };
+});
 
 const POOL_TOKEN = "poolTokenAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 const HOST_PREFIX = "sk-ant-dummy-";
@@ -61,10 +90,10 @@ function cleanBaseEnv(): NodeJS.ProcessEnv {
   return env;
 }
 
-const cleanups: Array<() => void> = [];
+const cleanups: Array<() => void | Promise<void>> = [];
 
-afterEach(() => {
-  while (cleanups.length > 0) cleanups.pop()?.();
+afterEach(async () => {
+  while (cleanups.length > 0) await cleanups.pop()?.();
 });
 
 function scratch(): string {
