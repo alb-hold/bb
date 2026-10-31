@@ -273,13 +273,13 @@ export class ThreadTokenStore {
         if (error instanceof CredentialScrubError) throw error;
       });
     }
-    this.sweepRotation =
-      (
-        await readRecord(
+    const sweepState = names.includes(THREAD_SWEEP_STATE)
+      ? await readRecord(
           path.join(this.directory, THREAD_SWEEP_STATE),
           sweepStateSchema,
         )
-      )?.rotation ?? null;
+      : null;
+    this.sweepRotation = sweepState?.rotation ?? null;
   }
 
   private async loadDeletionRecords(): Promise<boolean> {
