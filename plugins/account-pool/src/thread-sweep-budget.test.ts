@@ -202,3 +202,118 @@ it("warns when a persisted incomplete rotation exceeds one hour without warning 
     ),
   ).toHaveLength(1);
 });
+
+it.each(["initial", "batch"] as const)(
+  "keeps sweeping and revokes late archived tokens when %s progress writes fail, warning once per failure streak",
+  async (failurePoint) => {
+    const { directory, hosts, tokens } = await fixture(96);
+    const warnings: string[] = [];
+    const store = new ThreadTokenStore(
+      directory,
+      hosts,
+      Date.now,
+      undefined,
+      5000,
+      (message) => warnings.push(message),
+    );
+    await store.initialize(["host-one"]);
+    const rename = fs.rename.bind(fs);
+    let writes = 0;
+    let writable = false;
+    vi.spyOn(fs, "rename").mockImplementation(async (source, target) => {
+      if (path.basename(String(target)) === "thread-sweep.json") {
+        writes += 1;
+        if (!writable && (failurePoint === "initial" || writes > 1))
+          throw Object.assign(new Error("progress write unavailable"), {
+            code: "ENOSPC",
+          });
+      }
+      return rename(source, target);
+    });
+    const checked = new Set<string>();
+    await store.sweepThreads(async (id) => {
+      checked.add(id);
+      return id === "thr_0095" ? "archived" : "live";
+    });
+    expect(checked.size).toBe(96);
+    expect(await store.authenticate(tokens.get("thr_0095") ?? "")).toBeNull();
+    await store.sweepThreads(async () => "live");
+    expect(
+      warnings.filter((message) => message.includes("save sweep progress")),
+    ).toHaveLength(1);
+    writable = true;
+    await store.sweepThreads(async () => "live");
+    writable = false;
+    await store.sweepThreads(async () => "live");
+    expect(
+      warnings.filter((message) => message.includes("save sweep progress")),
+    ).toHaveLength(2);
+  },
+);
+
+it("starts a fresh rotation and warns when the progress path cannot be read", async () => {
+  const { directory, hosts, tokens } = await fixture(96);
+  await fs.mkdir(path.join(directory, "thread-sweep.json"));
+  const warnings: string[] = [];
+  const restarted = new ThreadTokenStore(
+    directory,
+    hosts,
+    Date.now,
+    undefined,
+    5000,
+    (message) => warnings.push(message),
+  );
+  await restarted.initialize(["host-one"]);
+  expect(
+    warnings.some((message) => message.includes("read sweep progress")),
+  ).toBe(true);
+  await fs.rmdir(path.join(directory, "thread-sweep.json"));
+  const result = await restarted.sweepThreads(async (id) =>
+    id === "thr_0095" ? "archived" : "live",
+  );
+  expect(result.checked).toBe(96);
+  expect(await restarted.authenticate(tokens.get("thr_0095") ?? "")).toBeNull();
+});
+
+it("rechecks failed archive persistence before advancing a rotation after restart and completes revocation", async () => {
+  const { directory, hosts, store, tokens } = await fixture(96);
+  const rename = fs.rename.bind(fs);
+  vi.spyOn(fs, "rename").mockImplementation(async (source, target) => {
+    const name = path.basename(String(target));
+    if (
+      name.startsWith("archived-thread-") ||
+      name.startsWith("archive-revocation-")
+    )
+      throw Object.assign(new Error("archive write unavailable"), {
+        code: "EROFS",
+      });
+    return rename(source, target);
+  });
+  const budget = new AbortController();
+  let calls = 0;
+  const first = await store.sweepThreads(
+    async (id) => {
+      calls += 1;
+      if (calls > 64) {
+        budget.abort();
+        return new Promise(() => undefined);
+      }
+      return id === "thr_0048" ? "archived" : "live";
+    },
+    { signal: budget.signal },
+  );
+  expect(first.failed).toBe(1);
+  vi.restoreAllMocks();
+  const restarted = new ThreadTokenStore(directory, hosts);
+  await restarted.initialize(["host-one"]);
+  const checked: string[] = [];
+  const second = await restarted.sweepThreads(async (id) => {
+    checked.push(id);
+    return id === "thr_0048" ? "archived" : "live";
+  });
+  expect(checked[0]).toBe("thr_0048");
+  expect(second.failed).toBe(0);
+  const again = new ThreadTokenStore(directory, hosts);
+  await again.initialize(["host-one"]);
+  expect(await again.authenticate(tokens.get("thr_0048") ?? "")).toBeNull();
+});

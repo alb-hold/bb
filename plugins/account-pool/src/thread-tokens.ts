@@ -184,6 +184,7 @@ export class ThreadTokenStore {
   private readonly archiveDurabilityFailures = new Set<string>();
   private archiveMarkersLoaded = false;
   private sweepRotation: z.infer<typeof sweepRotationSchema> | null = null;
+  private sweepPersistenceFailed = false;
   private readonly archiveVersions = new Map<string, number>();
   private readonly lastSuspensions = new Map<string, number>();
   private readonly unansweredWarnings = new Map<string, number>();
@@ -277,7 +278,12 @@ export class ThreadTokenStore {
       ? await readRecord(
           path.join(this.directory, THREAD_SWEEP_STATE),
           sweepStateSchema,
-        )
+        ).catch(() => {
+          this.warn(
+            "Account Pooler could not read sweep progress; starting a fresh rotation.",
+          );
+          return null;
+        })
       : null;
     this.sweepRotation = sweepState?.rotation ?? null;
   }
@@ -1032,12 +1038,16 @@ export class ThreadTokenStore {
   ): Promise<ThreadSweepResult> {
     await this.retryDeletionRecords();
     const threadIds = new Set<string>();
+    const pending = this.sweepRotation;
+    const needsSweep = (id: string) =>
+      !this.archivedThreads.has(id) ||
+      (pending !== null &&
+        id >= pending.nextThreadId &&
+        id <= pending.endThreadId);
     for (const record of this.routes.values())
-      if (!this.archivedThreads.has(record.threadId))
-        threadIds.add(record.threadId);
+      if (needsSweep(record.threadId)) threadIds.add(record.threadId);
     for (const record of this.nestedRoutes.values())
-      if (!this.archivedThreads.has(record.threadId))
-        threadIds.add(record.threadId);
+      if (needsSweep(record.threadId)) threadIds.add(record.threadId);
     const sorted = [...threadIds].sort();
     if (this.sweepRotation === null && sorted.length > 0) {
       await this.saveSweepRotation({
@@ -1108,15 +1118,18 @@ export class ThreadTokenStore {
           result.revoked += 1;
       } catch {
         result.failed += 1;
+        return false;
       }
       return true;
     };
     let next = 0;
+    let firstIncomplete: number | null = null;
     while (next < ordered.length && !cancelled()) {
       const batch = ordered.slice(next, next + 32);
       const completed = await Promise.all(batch.map(check));
-      const deferred = completed.indexOf(false);
-      const resume = deferred < 0 ? next + batch.length : next + deferred;
+      const incomplete = completed.indexOf(false);
+      if (incomplete >= 0) firstIncomplete ??= next + incomplete;
+      const resume = firstIncomplete ?? next + batch.length;
       next += batch.length;
       if (rotation !== null) {
         const nextThreadId = ordered[resume];
@@ -1124,7 +1137,6 @@ export class ThreadTokenStore {
           nextThreadId === undefined ? null : { ...rotation, nextThreadId },
         );
       }
-      if (deferred >= 0) break;
     }
     result.deferred += ordered.length - next;
     if (ordered.length === 0 && rotation !== null)
@@ -1149,9 +1161,18 @@ export class ThreadTokenStore {
             warned: rotation.warned || warning || previous?.warned === true,
           };
     await this.serialize(async () => {
-      await this.persist(path.join(this.directory, THREAD_SWEEP_STATE), {
-        rotation: saved,
-      });
+      try {
+        await this.persist(path.join(this.directory, THREAD_SWEEP_STATE), {
+          rotation: saved,
+        });
+        this.sweepPersistenceFailed = false;
+      } catch {
+        if (!this.sweepPersistenceFailed)
+          this.warn(
+            "Account Pooler could not save sweep progress; continuing with in-memory progress until storage recovers.",
+          );
+        this.sweepPersistenceFailed = true;
+      }
       this.sweepRotation = saved;
     });
     if (warning)
