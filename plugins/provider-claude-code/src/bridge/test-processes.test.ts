@@ -28,7 +28,7 @@ function leader(): ChildProcess {
 }
 
 function exited(child: ChildProcess): void {
-  child.exitCode = 0;
+  Object.defineProperty(child, "exitCode", { value: 0 });
   child.emit("exit", 0, null);
 }
 
