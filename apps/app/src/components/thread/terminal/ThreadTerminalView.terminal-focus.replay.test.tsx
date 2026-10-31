@@ -2087,6 +2087,14 @@ describe("terminal first paint", () => {
     expect(host.style.overflowY).toBe("");
     expect(host.style.paddingLeft).toBe("");
     expect(host.style.touchAction).toBe("");
+    const documentTouch = vi.fn();
+    document.addEventListener("touchcancel", documentTouch);
+    try {
+      fireEvent.touchCancel(host, { touches: [], changedTouches: [] });
+      expect(documentTouch).toHaveBeenCalledOnce();
+    } finally {
+      document.removeEventListener("touchcancel", documentTouch);
+    }
     expect(host.querySelector<HTMLElement>(".xterm")?.dataset.surfaceScale).toBe("1");
   });
 
@@ -2152,6 +2160,50 @@ describe("terminal first paint", () => {
       ).toBe("AFTER-BAND");
     },
   );
+
+  it("leaves exited phone-history swipes to the browser instead of xterm's document handlers", async () => {
+    prepareFirstAttachFontMetricsHarness();
+    testState.touchEnabled = true;
+    vi.stubGlobal("innerWidth", 390);
+    renderMobileTerminal(
+      { status: "exited", exitCode: 0, cols: 120, rows: 96 },
+      true,
+    );
+    await waitForReadinessCondition(() => {
+      expect(pageText()).toContain("Terminal exited with code");
+    }, "retained replay did not finish");
+    const host = document.querySelector<HTMLElement>("[data-terminal-renderer]")!;
+    const documentTouch = vi.fn();
+    const types = ["touchstart", "touchmove", "touchend", "touchcancel"];
+    for (const type of types) document.addEventListener(type, documentTouch);
+    try {
+      const point = {
+        identifier: 1,
+        clientX: 100,
+        clientY: 100,
+        pageX: 100,
+        pageY: 100,
+        target: host,
+      };
+      const active = Object.assign([point], {
+        item: (index: number) => index === 0 ? point : null,
+      });
+      const empty = Object.assign([], { item: () => null });
+      for (const type of types) {
+        const event = new Event(type, { bubbles: true, cancelable: true });
+        Object.assign(event, {
+          touches: type === "touchstart" || type === "touchmove" ? active : empty,
+          targetTouches: type === "touchstart" || type === "touchmove" ? active : empty,
+          changedTouches: active,
+        });
+        fireEvent(host, event);
+        expect(event.defaultPrevented).toBe(false);
+      }
+      expect(documentTouch).not.toHaveBeenCalled();
+    } finally {
+      for (const type of types) document.removeEventListener(type, documentTouch);
+    }
+  });
 
   it("hides exited native replay until the first fitted resize", async () => {
     prepareFirstAttachFontMetricsHarness();

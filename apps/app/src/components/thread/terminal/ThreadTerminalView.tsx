@@ -3237,6 +3237,17 @@ export function ThreadTerminalView({
       x: touch.clientX,
       y: touch.clientY,
     }));
+  const stopRetainedHistoryTouchPropagation = (
+    event: ReactTouchEvent<HTMLDivElement>,
+  ) => {
+    if (
+      retainNativeOutput &&
+      session.status === "exited" &&
+      window.innerWidth < 768
+    ) {
+      event.stopPropagation();
+    }
+  };
   const ensurePinchGesture = () => {
     pinchGestureRef.current ??= createTerminalPinchGesture({
       getFontSize: () => terminalFontSizeRef.current,
@@ -3321,12 +3332,14 @@ export function ThreadTerminalView({
             className={`group/terminal-pane relative min-h-0 w-full flex-1 overflow-hidden bg-sidebar p-2 ${isTouchDevice ? (retainNativeOutput && session.status === "exited" ? "touch-pan-x touch-pan-y" : "touch-pan-y") : ""}`}
             onContextMenuCapture={captureTerminalContextMenu}
             onTouchStart={(event) => {
+              stopRetainedHistoryTouchPropagation(event);
               beginTerminalLongPress(event.touches);
               ensurePinchGesture().start(gestureTouches(event.touches));
               touchHandlers().start(event);
               handleTerminalTouchStart(event);
             }}
             onTouchMove={(event) => {
+              stopRetainedHistoryTouchPropagation(event);
               const points = gestureTouches(event.touches);
               longPressGestureRef.current?.move(points);
               ensurePinchGesture().move(points);
@@ -3334,12 +3347,14 @@ export function ThreadTerminalView({
               handleTerminalTouchMove(event);
             }}
             onTouchEnd={(event) => {
+              stopRetainedHistoryTouchPropagation(event);
               longPressGestureRef.current?.cancel();
               ensurePinchGesture().end();
               touchHandlers().end(event);
               handleTerminalTouchEnd(event);
             }}
-            onTouchCancel={() => {
+            onTouchCancel={(event) => {
+              stopRetainedHistoryTouchPropagation(event);
               longPressGestureRef.current?.cancel();
               ensurePinchGesture().cancel();
               touchHandlers().cancel();
