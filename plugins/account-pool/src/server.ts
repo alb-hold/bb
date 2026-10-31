@@ -629,11 +629,15 @@ export function createAccountPoolPlugin(
               THREAD_SWEEP_LOOKUP_TIMEOUT_MS,
           },
         );
-        if (revoked > 0 || failed > 0) {
+        if (failed > 0) {
           bb.log.warn(
             `Account Pooler thread credential sweep checked ${checked} threads, revoked ${revoked}, and could not look up ${failed}.`,
           );
         }
+        if (revoked > 0 && failed === 0)
+          bb.log.info(
+            `Account Pooler thread credential sweep checked ${checked} threads and revoked ${revoked}.`,
+          );
         return failed === 0;
       } catch {
         bb.log.warn("Account Pooler thread credential sweep failed.");

@@ -2054,6 +2054,7 @@ it("revokes legacy credentials of an archived thread that never had a marker and
     checked: 2,
     revoked: 1,
     failed: 0,
+    deferred: 0,
   });
   expect(await threads.authenticate(archived.provider)).toBeNull();
   expect(await threads.authenticateNested(archived.nested)).toBeNull();
@@ -2073,13 +2074,13 @@ it("keeps every credential and does not throw when the thread lookup fails", asy
     if (threadId === "thr_a") throw new Error("lookup failed");
     return "live";
   });
-  expect(failed).toEqual({ checked: 2, revoked: 0, failed: 1 });
+  expect(failed).toEqual({ checked: 2, revoked: 0, failed: 1, deferred: 0 });
   expect(await threads.authenticate(tokenOf("thr_a").provider)).not.toBeNull();
   expect(await threads.authenticate(tokenOf("thr_b").provider)).not.toBeNull();
   const allFail = await threads.sweepThreads(async () => {
     throw new Error("lookup failed");
   });
-  expect(allFail).toEqual({ checked: 2, revoked: 0, failed: 2 });
+  expect(allFail).toEqual({ checked: 2, revoked: 0, failed: 2, deferred: 0 });
   expect(await threads.authenticate(tokenOf("thr_a").provider)).not.toBeNull();
   expect(
     await threads.authenticateNested(tokenOf("thr_b").nested),
@@ -2139,7 +2140,7 @@ it("gives up on a lookup that never settles once the sweep deadline passes and k
     () => new Promise<never>(() => undefined),
     { signal: AbortSignal.timeout(30) },
   );
-  expect(result).toEqual({ checked: 1, revoked: 0, failed: 1 });
+  expect(result).toEqual({ checked: 1, revoked: 0, failed: 0, deferred: 1 });
   expect(
     await threads.authenticate(tokenOf("thr_hung").provider),
   ).not.toBeNull();
@@ -2176,9 +2177,9 @@ it("does not let threads whose lookups hang starve a later archived thread, and 
   });
   const one = await threads.sweepThreads(lookup, sweepOptions());
   expect(Date.now() - started).toBeLessThan(2_000);
-  expect(one).toEqual({ checked: 3, revoked: 0, failed: 3 });
+  expect(one).toEqual({ checked: 3, revoked: 1, failed: 2, deferred: 0 });
   const two = await threads.sweepThreads(lookup, sweepOptions());
-  expect(two).toEqual({ checked: 3, revoked: 1, failed: 2 });
+  expect(two).toEqual({ checked: 2, revoked: 0, failed: 2, deferred: 0 });
   expect(await threads.authenticate(tokenOf(archived).provider)).toBeNull();
   expect(await threads.authenticate(tokenOf(hangA).provider)).not.toBeNull();
   expect(await threads.authenticate(tokenOf(hangB).provider)).not.toBeNull();
@@ -2197,7 +2198,7 @@ it("checks later threads when an earlier lookup times out on its own", async () 
         : new Promise<never>(() => undefined),
     { signal: AbortSignal.timeout(5_000), lookupTimeoutMs: 30 },
   );
-  expect(result).toEqual({ checked: 2, revoked: 1, failed: 1 });
+  expect(result).toEqual({ checked: 2, revoked: 1, failed: 1, deferred: 0 });
   expect(await threads.authenticate(tokenOf(archived).provider)).toBeNull();
   expect(await threads.authenticate(tokenOf(hang).provider)).not.toBeNull();
 });
@@ -2217,7 +2218,7 @@ it("revokes a later archived thread even when every thread failed a prior sweep 
     signal: AbortSignal.timeout(5_000),
     lookupTimeoutMs: 20,
   });
-  expect(allFailed).toEqual({ checked: 3, revoked: 0, failed: 3 });
+  expect(allFailed).toEqual({ checked: 3, revoked: 0, failed: 3, deferred: 0 });
   archivedRecovered = true;
   let revoked = 0;
   for (let sweeps = 0; revoked === 0 && sweeps < 4; sweeps += 1)

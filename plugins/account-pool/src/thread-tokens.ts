@@ -137,6 +137,7 @@ export type ThreadSweepResult = {
   checked: number;
   revoked: number;
   failed: number;
+  deferred: number;
 };
 
 export class ThreadTokenStore {
@@ -169,7 +170,7 @@ export class ThreadTokenStore {
   private readonly corruptArchiveMarkers = new Set<string>();
   private readonly archiveDurabilityFailures = new Set<string>();
   private archiveMarkersLoaded = false;
-  private readonly lookupFailures = new Map<string, number>();
+  private sweepCursor: string | null = null;
   private readonly archiveVersions = new Map<string, number>();
   private readonly lastSuspensions = new Map<string, number>();
   private readonly unansweredWarnings = new Map<string, number>();
@@ -1014,58 +1015,73 @@ export class ThreadTokenStore {
     for (const record of this.routes.values()) threadIds.add(record.threadId);
     for (const record of this.nestedRoutes.values())
       threadIds.add(record.threadId);
-    for (const threadId of this.lookupFailures.keys())
-      if (!threadIds.has(threadId)) this.lookupFailures.delete(threadId);
-    const ordered = [...threadIds].sort(
-      (left, right) =>
-        (this.lookupFailures.get(left) ?? 0) -
-          (this.lookupFailures.get(right) ?? 0) ||
-        Number(this.archivedThreads.has(left)) -
-          Number(this.archivedThreads.has(right)),
-    );
+    const sorted = [...threadIds].sort();
+    const cursor = this.sweepCursor;
+    const start = cursor === null ? 0 : sorted.findIndex((id) => id > cursor);
+    const offset = start < 0 ? 0 : start;
+    const ordered = [...sorted.slice(offset), ...sorted.slice(0, offset)];
     const result: ThreadSweepResult = {
-      checked: ordered.length,
+      checked: 0,
       revoked: 0,
       failed: 0,
+      deferred: 0,
     };
-    for (const threadId of ordered) {
-      if (options.signal?.aborted === true) {
-        result.failed += 1;
-        continue;
-      }
-      const lookupSignals = [
-        ...(options.signal === undefined ? [] : [options.signal]),
-        ...(options.lookupTimeoutMs === undefined
-          ? []
-          : [AbortSignal.timeout(options.lookupTimeoutMs)]),
-      ];
-      const lookupSignal =
-        lookupSignals.length === 0 ? undefined : AbortSignal.any(lookupSignals);
-      const version = this.archiveVersion(threadId);
-      try {
-        const status = await untilAborted(
-          lookup(threadId, lookupSignal),
-          lookupSignal,
-        );
-        this.lookupFailures.delete(threadId);
-        if (status === "live") {
-          await this.restoreThread(threadId, version);
-          continue;
+    let next = 0;
+    const worker = async () => {
+      while (next < ordered.length && options.signal?.aborted !== true) {
+        const threadId = ordered[next++];
+        if (threadId === undefined) return;
+        this.sweepCursor = threadId;
+        result.checked += 1;
+        const lookupSignals = [
+          ...(options.signal === undefined ? [] : [options.signal]),
+          ...(options.lookupTimeoutMs === undefined
+            ? []
+            : [AbortSignal.timeout(options.lookupTimeoutMs)]),
+        ];
+        const lookupSignal =
+          lookupSignals.length === 0
+            ? undefined
+            : AbortSignal.any(lookupSignals);
+        const version = this.archiveVersion(threadId);
+        try {
+          const status = await untilAborted(
+            lookup(threadId, lookupSignal),
+            lookupSignal,
+          );
+          if (status === "live") {
+            await this.restoreThread(threadId, version);
+            continue;
+          }
+          if (status === "archived") {
+            if (await this.suspendThreadIfVersion(threadId, version))
+              await this.serialize(async () => {
+                if (!this.archivedThreads.has(threadId)) return;
+                for (const [key, record] of this.routes) {
+                  if (record.threadId !== threadId) continue;
+                  this.routes.delete(key);
+                  unindexCredential(this.tokenIndex, record);
+                }
+                for (const [key, record] of this.nestedRoutes) {
+                  if (record.threadId !== threadId) continue;
+                  this.nestedRoutes.delete(key);
+                  unindexCredential(this.nestedTokenIndex, record);
+                }
+              });
+            continue;
+          }
+          if (await this.removeThreadIfVersion(threadId, version))
+            result.revoked += 1;
+        } catch {
+          if (options.signal?.aborted === true) result.deferred += 1;
+          else result.failed += 1;
         }
-        if (status === "archived") {
-          await this.suspendThreadIfVersion(threadId, version);
-          continue;
-        }
-        if (await this.removeThreadIfVersion(threadId, version))
-          result.revoked += 1;
-      } catch {
-        this.lookupFailures.set(
-          threadId,
-          (this.lookupFailures.get(threadId) ?? 0) + 1,
-        );
-        result.failed += 1;
       }
-    }
+    };
+    await Promise.all(
+      Array.from({ length: Math.min(32, ordered.length) }, worker),
+    );
+    result.deferred += ordered.length - next;
     return result;
   }
 

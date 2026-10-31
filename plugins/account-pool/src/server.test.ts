@@ -11844,6 +11844,47 @@ describe("Account Pool credential scoping", () => {
     expect(await statusOf(host, live, "/v1/messages")).toBe(200);
   });
 
+  it("budget-deferred sweeps use the normal interval without warning or a 60-second retry", async () => {
+    const fixture = await scopedFixture();
+    await claudeToken(fixture.host, "thread-deferred");
+    const host = await fixture.host.harness.lifecycle.reload(
+      createAccountPoolPlugin({
+        threadSweepLookupTimeoutMs: 500,
+        threadSweepTimeoutMs: 30,
+        threadSweepIntervalMs: 1000,
+        threadSweepRetryMs: 40,
+        usageUrl: EMPTY_USAGE_URL,
+        codexUsageUrl: EMPTY_USAGE_URL,
+      }),
+    );
+    let lookups = 0;
+    host.harness.sdk.stub("threads.get", () => {
+      lookups += 1;
+      return new Promise(() => undefined);
+    });
+    const service = host.harness.behavior.runService("hub");
+    try {
+      await vi.waitFor(async () => {
+        expect(
+          statusSchema.parse(
+            await host.harness.behavior.callRpc("status.get", null),
+          ).accepting,
+        ).toBe(true);
+      });
+      const startupLookups = lookups;
+      expect(startupLookups).toBeGreaterThan(0);
+      await new Promise((resolve) => setTimeout(resolve, 180));
+      expect(lookups).toBe(startupLookups);
+      expect(JSON.stringify(host.harness.inspection.logEntries)).not.toContain(
+        "could not look up",
+      );
+    } finally {
+      service.controller.abort();
+      await service.done;
+      await host.harness.lifecycle.dispose();
+    }
+  });
+
   it("bounds a periodic sweep whose lookup hangs and revokes the stale credential once the lookup recovers", async () => {
     const fixture = await scopedFixture();
     const stale = await claudeToken(fixture.host, "thread-stale");
@@ -12899,9 +12940,7 @@ describe("Account Pool Artifact proxy", () => {
       const response = await oauthProxyRequest(fixture, { method, path });
       expect(response.status).toBe(200);
       await response.text();
-      const logged = JSON.stringify(
-        fixture.host.harness.inspection.logEntries,
-      );
+      const logged = JSON.stringify(fixture.host.harness.inspection.logEntries);
       expect(logged).not.toContain(secret);
       expect(logged).not.toContain("sk-ant-");
       expect(logged).toContain(
