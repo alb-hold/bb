@@ -224,7 +224,7 @@ describe("unanswered native questions across holder reattachment", () => {
         });
         expect(await indicator()).toBe("needs-input");
         db.update(terminalSessions)
-          .set({ status: "disconnected" })
+          .set({ status: "exited", closeReason: "process-exit" })
           .where(eq(terminalSessions.threadId, thread.id))
           .run();
         await openNativeTerminal(h.deps, {
