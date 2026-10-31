@@ -62,16 +62,11 @@ function settleThreadWithDeadTerminal(
     return;
   const terminal = readRecordTerminal(deps, native);
   if (
+    thread.status === "idle" &&
     terminal?.status === "exited" &&
     terminal.closeReason === "process-exit" &&
     terminal.exitCode === 0
   ) {
-    if (thread.status === "active") {
-      applyLoggedThreadLifecycleEvent(deps, {
-        event: { type: "run.succeeded" },
-        threadId,
-      });
-    }
     return;
   }
   const environment = getEnvironment(deps.db, thread.environmentId);

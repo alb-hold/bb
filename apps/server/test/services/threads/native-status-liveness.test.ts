@@ -276,12 +276,12 @@ describe("native thread status liveness", () => {
         vi.useRealTimers();
       }
 
-      expect(getThread(harness.db, threadId)?.status).toBe("error");
+      expect(getThread(harness.db, threadId)?.status).toBe("idle");
       expect(parentSystemRequests(harness, parent.id)).toHaveLength(0);
     });
   });
 
-  it("settles an idle thread whose CLI exited cleanly as error instead of showing it idle", async () => {
+  it("keeps an idle thread idle after its CLI exits cleanly", async () => {
     await withHarness(async (harness) => {
       const { threadId } = seedNativeThread(harness, {
         initialStatus: "idle",
@@ -289,7 +289,7 @@ describe("native thread status liveness", () => {
       });
 
       expect(await readThreadStatus(harness, threadId, "not-expected")).toBe(
-        "error",
+        "idle",
       );
       expect(
         getNativeTerminalThread(harness.db, threadId)?.lastEvidenceAt,
@@ -297,7 +297,7 @@ describe("native thread status liveness", () => {
     });
   });
 
-  it("reports an error display status in the thread list for an idle thread whose CLI exited cleanly", async () => {
+  it("reports an idle display status in the thread list for an idle thread whose CLI exited cleanly", async () => {
     await withHarness(async (harness) => {
       const { threadId } = seedNativeThread(harness, {
         initialStatus: "idle",
@@ -318,12 +318,12 @@ describe("native thread status liveness", () => {
       };
       await listDisplayStatus();
       await vi.waitFor(async () =>
-        expect(await listDisplayStatus()).toBe("error"),
+        expect(await listDisplayStatus()).toBe("idle"),
       );
     });
   });
 
-  it("settles an idle thread straight to error without a working state, a timeline item, a parent message or any plugin failed, idle or active event", async () => {
+  it("keeps a completed thread idle without a working state, a timeline item, a parent message or any plugin failed, idle or active event", async () => {
     await withHarness(async (harness) => {
       const context = seedNativeContext(harness);
       const parent = seedThread(harness.deps, {
@@ -379,7 +379,7 @@ describe("native thread status liveness", () => {
       try {
         await listDisplayStatus();
         await vi.waitFor(async () =>
-          expect(await listDisplayStatus()).toBe("error"),
+          expect(await listDisplayStatus()).toBe("idle"),
         );
         await vi.advanceTimersByTimeAsync(5_000);
       } finally {
@@ -387,12 +387,12 @@ describe("native thread status liveness", () => {
         setPluginThreadEventEmitter(undefined);
       }
 
-      expect(getThread(harness.db, threadId)?.status).toBe("error");
+      expect(getThread(harness.db, threadId)?.status).toBe("idle");
       expect(listedDisplayStatuses.every((status) => status !== "active")).toBe(
         true,
       );
       expect(listedDisplayStatuses.at(0)).toBe("idle");
-      expect(broadcastStatuses).toEqual(["error"]);
+      expect(broadcastStatuses).toEqual([]);
       expect(
         listEvents(harness.db, { threadId }).map((row) => row.type),
       ).toEqual(eventTypesBefore);
@@ -474,7 +474,7 @@ describe("native thread status liveness", () => {
     });
   });
 
-  it("settles every idle thread whose CLI exited in the periodic sweep", async () => {
+  it("preserves idle threads whose CLI exited cleanly in the periodic sweep", async () => {
     await withHarness(async (harness) => {
       const context = seedNativeContext(harness);
       const exited = seedNativeThread(
@@ -494,7 +494,7 @@ describe("native thread status liveness", () => {
         plugins: harness.pluginService,
       });
 
-      expect(getThread(harness.db, exited.threadId)?.status).toBe("error");
+      expect(getThread(harness.db, exited.threadId)?.status).toBe("idle");
       expect(getThread(harness.db, reconnecting.threadId)?.status).toBe("idle");
     });
   });
