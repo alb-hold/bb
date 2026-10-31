@@ -1071,18 +1071,17 @@ export async function recoverEnvironmentCleanup(
                   ? "process inspection requires Linux"
                   : inspection.active
                     ? "setup or a hook is still running"
-                    : inspection.pids.length > 0
-                      ? `workspace processes remain (${inspection.pids.join(", ")})`
-                      : `process ${inspection.unreadablePids
-                          .map((pid) => {
-                            const command = inspection.processCommands?.[pid];
-                            return command
-                              ? `${pid} (${command})`
-                              : String(pid);
-                          })
-                          .join(
-                            ", ",
-                          )} may be using this workspace; stop it and retry`
+                    : `process ${(inspection.pids.length > 0
+                        ? inspection.pids
+                        : inspection.unreadablePids
+                      )
+                        .map((pid) => {
+                          const command = inspection.processCommands?.[pid];
+                          return command ? `${pid} (${command})` : String(pid);
+                        })
+                        .join(
+                          ", ",
+                        )} may be using this workspace; stop it and retry`
               }`,
             );
         }
