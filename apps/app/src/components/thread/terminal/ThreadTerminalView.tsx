@@ -2350,10 +2350,7 @@ export function ThreadTerminalView({
         replayPreview?.setFitGrid(fitted.cols, fitted.rows);
         if (retainNativeOutput && sessionStatusRef.current === "exited") {
           if (retainedOutputReplayed) {
-            retainedOutputGrid =
-              window.innerWidth < 768 && fitted.cols < latestPtyGrid.cols
-                ? localFitGrid
-                : latestPtyGrid;
+            retainedOutputGrid = latestPtyGrid;
             terminal.resize(retainedOutputGrid.cols, retainedOutputGrid.rows);
           }
           updateGridVisibility();

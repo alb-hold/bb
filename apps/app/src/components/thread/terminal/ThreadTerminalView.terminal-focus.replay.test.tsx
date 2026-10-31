@@ -2098,11 +2098,60 @@ describe("terminal first paint", () => {
       });
     });
     await waitForReadinessCondition(() => {
-      expect(surface.dataset.renderGridCols).toBe("51");
+      expect(surface.dataset.renderGridCols).toBe("135");
       expect(surface.style.opacity).toBe("");
     }, "fitted retained output was not revealed");
     expect(paintOpacities.length).toBeGreaterThan(0);
     expect(paintOpacities.every((opacity) => opacity === "0")).toBe(true);
+  });
+
+  it("preserves a full prompt band when phone fit is narrower than retained output", async () => {
+    prepareFirstAttachFontMetricsHarness();
+    vi.stubGlobal("innerWidth", 390);
+    vi.mocked(FitAddon.prototype.proposeDimensions).mockReturnValue({
+      cols: 49,
+      rows: 48,
+    });
+    let actualTerminal: Terminal | null = null;
+    const open = Terminal.prototype.open;
+    vi.spyOn(Terminal.prototype, "open").mockImplementation(function (
+      this: Terminal,
+      element: HTMLElement,
+    ) {
+      actualTerminal = this;
+      open.call(this, element);
+    });
+    const prompt = "  thr_i8bb9fauv2.[child of @thread:thr_i8bb9fauv2]";
+    testState.output.mockResolvedValue({
+      chunks: [
+        {
+          seq: 0,
+          dataBase64: btoa(
+            `\x1b]7791;bb-grid;51;48\x07\x1b[48;5;8m\x1b[K${prompt}\x1b[0m\r\nAFTER-BAND`,
+          ),
+        },
+      ],
+      nextSeq: 1,
+    });
+    renderMobileTerminal({ status: "exited", cols: 51, rows: 48 }, true);
+    await waitForReadinessCondition(() => {
+      expect(pageText()).toContain("Terminal exited with code");
+      const surface = document.querySelector<HTMLElement>(
+        "[data-terminal-renderer]",
+      )!;
+      expect(surface.style.opacity).toBe("");
+      expect(surface.dataset.fitGridCols).toBe("49");
+      expect(surface.dataset.renderGridCols).toBe("51");
+      expect(
+        surface.querySelector<HTMLElement>(".xterm")?.dataset.surfaceScale,
+      ).toBe(String(49 / 51));
+      expect(
+        actualTerminal!.buffer.active.getLine(0)?.translateToString(true),
+      ).toBe(prompt);
+      expect(
+        actualTerminal!.buffer.active.getLine(1)?.translateToString(true),
+      ).toBe("AFTER-BAND");
+    }, "phone replay split the prompt band at the fitted width");
   });
 
   it("keeps the terminal hidden when its first fit has no dimensions", async () => {
@@ -2251,7 +2300,7 @@ describe("terminal first paint recovery", () => {
         "[data-terminal-renderer]",
       )!;
       expect(surface.style.opacity).toBe("");
-      expect(surface.dataset.renderGridCols).toBe("51");
+      expect(surface.dataset.renderGridCols).toBe("135");
       expect(pageText()).toContain("Terminal history unavailable");
       expect(pageText()).toContain("Terminal exited with code 7");
     }, "failed retained output left no visible exit state");
@@ -2288,7 +2337,7 @@ describe("terminal first paint recovery", () => {
         );
       });
       expect(surface.style.opacity).toBe("");
-      expect(surface.dataset.renderGridCols).toBe("51");
+      expect(surface.dataset.renderGridCols).toBe("135");
       expect(pageText()).toContain("Terminal history unavailable");
       expect(pageText()).toContain("Terminal exited with code 7");
     } finally {
@@ -2359,7 +2408,7 @@ describe("terminal first paint recovery", () => {
     });
     await waitForReadinessCondition(() => {
       expect(surface.style.opacity).toBe("");
-      expect(surface.dataset.renderGridCols).toBe("51");
+      expect(surface.dataset.renderGridCols).toBe("80");
     }, "newly exited terminal was not fitted and revealed");
     expect(
       open.mock.calls.filter(([container]) => container === surface),
