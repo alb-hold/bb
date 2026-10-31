@@ -1883,6 +1883,7 @@ export function ThreadTerminalView({
     async function mountTerminal(
       containerElement: HTMLDivElement,
     ): Promise<void> {
+      containerElement.style.opacity = "0";
       const updateGridVisibility = () => {
         if (terminal === null || (replayPreview !== null && !replayCompleted)) {
           return;
@@ -1896,6 +1897,9 @@ export function ThreadTerminalView({
         const displayGrid = retainedOutputGrid ?? latestPtyGrid;
         const canReveal =
           localFitGrid !== null &&
+          (!retainNativeOutput ||
+            session.status !== "exited" ||
+            retainedOutputGrid !== null) &&
           canRevealTerminalSurface({
             fitGrid: localFitGrid,
             isOwner: ownsTerminal && !retainNativeOutput,

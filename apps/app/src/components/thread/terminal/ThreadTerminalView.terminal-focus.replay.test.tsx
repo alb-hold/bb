@@ -363,6 +363,7 @@ let rerenderMobileTerminal: (
 
 function renderMobileTerminal(
   overrides: Partial<ReturnType<typeof makeTerminalSession>> = {},
+  retainNativeOutput = false,
 ): ReturnType<typeof makeTerminalSession> {
   const session = makeTerminalSession({
     id: "term_mobile_paste",
@@ -374,7 +375,12 @@ function renderMobileTerminal(
   const tree = (current: ReturnType<typeof makeTerminalSession>) => (
     <MemoryRouter>
       <AppCommandProvider>
-        <ThreadTerminalView autoFocus={false} isPanelOpen session={current} />
+        <ThreadTerminalView
+          autoFocus={false}
+          isPanelOpen
+          session={current}
+          retainNativeOutput={retainNativeOutput}
+        />
       </AppCommandProvider>
     </MemoryRouter>
   );
@@ -2038,5 +2044,86 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
         value: originalRandomUUID,
       });
     }
+  });
+});
+
+describe("terminal first paint", () => {
+  it("hides exited native replay until the first fitted resize", async () => {
+    prepareFirstAttachFontMetricsHarness();
+    vi.stubGlobal("innerWidth", 390);
+    const paintOpacities: string[] = [];
+    const write = Terminal.prototype.write;
+    vi.spyOn(Terminal.prototype, "write").mockImplementation(function (
+      this: Terminal,
+      data,
+      callback,
+    ) {
+      paintOpacities.push(
+        document.querySelector<HTMLElement>("[data-terminal-renderer]")!.style
+          .opacity,
+      );
+      write.call(this, data, callback);
+    });
+    let finishOutput!: (value: {
+      chunks: { seq: number; dataBase64: string }[];
+      nextSeq: number;
+    }) => void;
+    testState.output.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finishOutput = resolve;
+        }),
+    );
+    renderMobileTerminal({ status: "exited", cols: 135, rows: 56 }, true);
+    await waitForReadinessCondition(
+      () => expect(testState.output).toHaveBeenCalled(),
+      "retained output was not requested",
+    );
+    const surface = document.querySelector<HTMLElement>(
+      "[data-terminal-renderer]",
+    )!;
+    expect(surface.style.opacity).toBe("0");
+    await act(async () => {
+      finishOutput({
+        chunks: [
+          {
+            seq: 0,
+            dataBase64: btoa(
+              "\x1b]7791;bb-grid;135;56\x07PHONE-FIRST-PAINT-MARKER\r\n",
+            ),
+          },
+        ],
+        nextSeq: 1,
+      });
+    });
+    await waitForReadinessCondition(() => {
+      expect(surface.dataset.renderGridCols).toBe("51");
+      expect(surface.style.opacity).toBe("");
+    }, "fitted retained output was not revealed");
+    expect(paintOpacities.length).toBeGreaterThan(0);
+    expect(paintOpacities.every((opacity) => opacity === "0")).toBe(true);
+  });
+
+  it("keeps the terminal hidden when its first fit has no dimensions", async () => {
+    prepareFirstAttachFontMetricsHarness();
+    vi.mocked(FitAddon.prototype.proposeDimensions).mockReturnValue(undefined);
+    let opened = false;
+    const open = Terminal.prototype.open;
+    vi.spyOn(Terminal.prototype, "open").mockImplementation(function (
+      this: Terminal,
+      element: HTMLElement,
+    ) {
+      open.call(this, element);
+      opened = true;
+    });
+    renderMobileTerminal();
+    await waitForReadinessCondition(
+      () => expect(opened).toBe(true),
+      "terminal did not open",
+    );
+    expect(
+      document.querySelector<HTMLElement>("[data-terminal-renderer]")!.style
+        .opacity,
+    ).toBe("0");
   });
 });
