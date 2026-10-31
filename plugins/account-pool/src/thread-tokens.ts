@@ -30,7 +30,33 @@ const DELETED_PENDING_PREFIX = "deleted-pending-";
 const DELETED_PENDING_NAME = /^deleted-pending-([a-f0-9]{64})-/u;
 const DELETED_THREAD_KEY = "deleted-thread:";
 
+const THREAD_SWEEP_STATE = "thread-sweep.json";
+const MAX_SWEEP_RETRIES = 256;
+
 const identifierSchema = z.string().regex(/^[A-Za-z0-9_-]+$/u);
+const sweepRotationSchema = z
+  .object({
+    nextThreadId: identifierSchema,
+    endThreadId: identifierSchema,
+    startedAt: z.number().finite().nonnegative(),
+    warned: z.boolean(),
+    includeSuspended: z.boolean().default(false),
+  })
+  .strict();
+const sweepRetrySchema = z
+  .object({
+    threadId: identifierSchema,
+    attempts: z.number().int().positive(),
+    lastFailureAt: z.number().finite().nonnegative(),
+  })
+  .strict();
+const sweepStateSchema = z
+  .object({
+    rotation: sweepRotationSchema.nullable(),
+    retries: z.array(sweepRetrySchema).default([]),
+    retryOverflow: z.boolean().default(false),
+  })
+  .strict();
 const tokenSchema = z.string().regex(/^[A-Za-z0-9_-]{43}$/u);
 const digestSchema = z.string().regex(/^[a-f0-9]{64}$/u);
 const archiveStateSchema = z
@@ -137,6 +163,7 @@ export type ThreadSweepResult = {
   checked: number;
   revoked: number;
   failed: number;
+  deferred: number;
 };
 
 export class ThreadTokenStore {
@@ -169,7 +196,13 @@ export class ThreadTokenStore {
   private readonly corruptArchiveMarkers = new Set<string>();
   private readonly archiveDurabilityFailures = new Set<string>();
   private archiveMarkersLoaded = false;
-  private readonly lookupFailures = new Map<string, number>();
+  private sweepRotation: z.infer<typeof sweepRotationSchema> | null = null;
+  private sweepPersistenceFailed = false;
+  private sweepRetryOverflow = false;
+  private readonly sweepRetries = new Map<
+    string,
+    z.infer<typeof sweepRetrySchema>
+  >();
   private readonly archiveVersions = new Map<string, number>();
   private readonly lastSuspensions = new Map<string, number>();
   private readonly unansweredWarnings = new Map<string, number>();
@@ -259,6 +292,24 @@ export class ThreadTokenStore {
         if (error instanceof CredentialScrubError) throw error;
       });
     }
+    const sweepState = names.includes(THREAD_SWEEP_STATE)
+      ? await readRecord(
+          path.join(this.directory, THREAD_SWEEP_STATE),
+          sweepStateSchema,
+        ).catch(() => {
+          this.warn(
+            "Account Pooler could not read sweep progress; starting a fresh rotation.",
+          );
+          return null;
+        })
+      : null;
+    this.sweepRotation = sweepState?.rotation ?? null;
+    this.sweepRetryOverflow =
+      sweepState?.retryOverflow === true ||
+      (sweepState?.retries.length ?? 0) > MAX_SWEEP_RETRIES;
+    this.sweepRetries.clear();
+    for (const retry of (sweepState?.retries ?? []).slice(0, MAX_SWEEP_RETRIES))
+      this.sweepRetries.set(retry.threadId, retry);
   }
 
   private async loadDeletionRecords(): Promise<boolean> {
@@ -1010,63 +1061,185 @@ export class ThreadTokenStore {
     options: ThreadSweepOptions = {},
   ): Promise<ThreadSweepResult> {
     await this.retryDeletionRecords();
-    const threadIds = new Set<string>();
-    for (const record of this.routes.values()) threadIds.add(record.threadId);
-    for (const record of this.nestedRoutes.values())
-      threadIds.add(record.threadId);
-    for (const threadId of this.lookupFailures.keys())
-      if (!threadIds.has(threadId)) this.lookupFailures.delete(threadId);
-    const ordered = [...threadIds].sort(
-      (left, right) =>
-        (this.lookupFailures.get(left) ?? 0) -
-          (this.lookupFailures.get(right) ?? 0) ||
-        Number(this.archivedThreads.has(left)) -
-          Number(this.archivedThreads.has(right)),
-    );
+    const routed = new Set<string>();
+    for (const record of this.routes.values()) routed.add(record.threadId);
+    for (const record of this.nestedRoutes.values()) routed.add(record.threadId);
+    let pruned = false;
+    for (const id of this.sweepRetries.keys())
+      if (!routed.has(id)) {
+        this.sweepRetries.delete(id);
+        pruned = true;
+      }
+    if (pruned) await this.saveSweepRotation(this.sweepRotation);
     const result: ThreadSweepResult = {
-      checked: ordered.length,
+      checked: 0,
       revoked: 0,
       failed: 0,
+      deferred: 0,
     };
-    for (const threadId of ordered) {
-      if (options.signal?.aborted === true) {
-        result.failed += 1;
-        continue;
+    const cancelled = () => options.signal?.aborted === true;
+    const attempted = new Set<string>();
+    const failed = (threadId: string, retry: boolean) => {
+      const previous = this.sweepRetries.get(threadId);
+      if (previous !== undefined || this.sweepRetries.size < MAX_SWEEP_RETRIES) {
+        if (retry) this.sweepRetries.delete(threadId);
+        this.sweepRetries.set(threadId, {
+          threadId,
+          attempts: (previous?.attempts ?? 0) + 1,
+          lastFailureAt: this.now(),
+        });
+      } else this.sweepRetryOverflow = true;
+      result.failed += 1;
+    };
+    const check = async (threadId: string, retry = false): Promise<boolean> => {
+      attempted.add(threadId);
+      if (cancelled()) {
+        result.deferred += 1;
+        return false;
       }
+      result.checked += 1;
+      const timeoutMs = retry
+        ? (options.lookupTimeoutMs ?? this.lookupTimeoutMs)
+        : options.lookupTimeoutMs;
       const lookupSignals = [
         ...(options.signal === undefined ? [] : [options.signal]),
-        ...(options.lookupTimeoutMs === undefined
-          ? []
-          : [AbortSignal.timeout(options.lookupTimeoutMs)]),
+        ...(timeoutMs === undefined ? [] : [AbortSignal.timeout(timeoutMs)]),
       ];
       const lookupSignal =
         lookupSignals.length === 0 ? undefined : AbortSignal.any(lookupSignals);
       const version = this.archiveVersion(threadId);
+      let settled = false;
+      let status: Awaited<ReturnType<ThreadLookup>>;
       try {
-        const status = await untilAborted(
-          lookup(threadId, lookupSignal),
-          lookupSignal,
-        );
-        this.lookupFailures.delete(threadId);
-        if (status === "live") {
-          await this.restoreThread(threadId, version);
-          continue;
+        const operation = Promise.resolve()
+          .then(() => lookup(threadId, lookupSignal))
+          .then(
+            (value) => {
+              settled = true;
+              return value;
+            },
+            (error: unknown) => {
+              settled = true;
+              throw error;
+            },
+          );
+        status = await untilAborted(operation, lookupSignal);
+      } catch {
+        if (cancelled() && !settled) {
+          result.deferred += 1;
+          return false;
         }
-        if (status === "archived") {
+        failed(threadId, retry);
+        return true;
+      }
+      try {
+        if (status === "live") await this.restoreThread(threadId, version);
+        else if (status === "archived")
           await this.suspendThreadIfVersion(threadId, version);
-          continue;
-        }
-        if (await this.removeThreadIfVersion(threadId, version))
+        else if (await this.removeThreadIfVersion(threadId, version))
           result.revoked += 1;
       } catch {
-        this.lookupFailures.set(
-          threadId,
-          (this.lookupFailures.get(threadId) ?? 0) + 1,
+        failed(threadId, retry);
+        return true;
+      }
+      this.sweepRetries.delete(threadId);
+      return true;
+    };
+    const retries = [...this.sweepRetries.keys()].slice(0, 8);
+    await Promise.all(retries.map((id) => check(id, true)));
+    if (retries.length > 0) await this.saveSweepRotation(this.sweepRotation);
+    const pending = this.sweepRotation;
+    const needsSweep = (id: string) =>
+      this.sweepRetryOverflow ||
+      pending?.includeSuspended === true ||
+      this.sweepRetries.has(id) ||
+      !this.archivedThreads.has(id) ||
+      (pending !== null &&
+        id >= pending.nextThreadId &&
+        id <= pending.endThreadId);
+    const sorted = [...routed]
+      .filter((id) => needsSweep(id) && !attempted.has(id))
+      .sort();
+    if (this.sweepRotation === null && sorted.length > 0) {
+      const includeSuspended = this.sweepRetryOverflow;
+      this.sweepRetryOverflow = false;
+      await this.saveSweepRotation({
+        nextThreadId: sorted[0]!,
+        endThreadId: sorted[sorted.length - 1]!,
+        startedAt: this.now(),
+        warned: false,
+        includeSuspended,
+      });
+    }
+    const rotation = this.sweepRotation;
+    const ordered =
+      rotation === null
+        ? []
+        : sorted.filter(
+            (id) => id >= rotation.nextThreadId && id <= rotation.endThreadId,
+          );
+    let next = 0;
+    while (next < ordered.length && !cancelled()) {
+      const batch = ordered.slice(next, next + 32);
+      const completed = await Promise.all(batch.map((id) => check(id)));
+      const incomplete = completed.indexOf(false);
+      const resume = incomplete < 0 ? next + batch.length : next + incomplete;
+      next += batch.length;
+      if (rotation !== null) {
+        const nextThreadId = ordered[resume];
+        await this.saveSweepRotation(
+          nextThreadId === undefined ? null : { ...rotation, nextThreadId },
         );
-        result.failed += 1;
       }
     }
+    const unreached = new Set(ordered.slice(next));
+    for (const id of this.sweepRetries.keys())
+      if (!attempted.has(id)) unreached.add(id);
+    if (this.sweepRetryOverflow)
+      for (const id of routed) unreached.add(id);
+    result.deferred += unreached.size;
+    if (ordered.length === 0 && rotation !== null)
+      await this.saveSweepRotation(null);
+
     return result;
+  }
+
+  private async saveSweepRotation(
+    rotation: z.infer<typeof sweepRotationSchema> | null,
+  ): Promise<void> {
+    const previous = this.sweepRotation;
+    const warning =
+      previous !== null &&
+      !previous.warned &&
+      this.now() - previous.startedAt > 60 * 60 * 1000;
+    const saved =
+      rotation === null
+        ? null
+        : {
+            ...rotation,
+            warned: rotation.warned || warning || previous?.warned === true,
+          };
+    await this.serialize(async () => {
+      try {
+        await this.persist(path.join(this.directory, THREAD_SWEEP_STATE), {
+          rotation: saved,
+          retries: [...this.sweepRetries.values()],
+          retryOverflow: this.sweepRetryOverflow,
+        });
+        this.sweepPersistenceFailed = false;
+      } catch {
+        if (!this.sweepPersistenceFailed)
+          this.warn(
+            "Account Pooler could not save sweep progress; continuing with in-memory progress until storage recovers.",
+          );
+        this.sweepPersistenceFailed = true;
+      }
+      this.sweepRotation = saved;
+    });
+    if (warning)
+      this.warn(
+        "Account Pooler thread credential sweep rotation has taken more than one hour.",
+      );
   }
 
   async removeThreadIfVersion(

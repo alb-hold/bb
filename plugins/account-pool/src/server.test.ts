@@ -11844,6 +11844,74 @@ describe("Account Pool credential scoping", () => {
     expect(await statusOf(host, live, "/v1/messages")).toBe(200);
   });
 
+  it("logs deferred progress and continues incomplete rotations at the retry cadence before returning to the normal interval", async () => {
+    const fixture = await scopedFixture();
+    await claudeToken(fixture.host, "thread-deferred");
+    const host = await fixture.host.harness.lifecycle.reload(
+      createAccountPoolPlugin({
+        threadSweepLookupTimeoutMs: 500,
+        threadSweepTimeoutMs: 30,
+        threadSweepIntervalMs: 1000,
+        threadSweepRetryMs: 40,
+        usageUrl: EMPTY_USAGE_URL,
+        codexUsageUrl: EMPTY_USAGE_URL,
+      }),
+    );
+    let lookups = 0;
+    let hanging = true;
+    const lookupTimes: number[] = [];
+    host.harness.sdk.stub(
+      "threads.get",
+      ({ threadId }: { threadId: string }) => {
+        lookups += 1;
+        if (threadId === "thread-deferred") lookupTimes.push(performance.now());
+        if (hanging) return new Promise(() => undefined);
+        return makeThreadResponse({ id: "thread-deferred", archivedAt: null });
+      },
+    );
+    const service = host.harness.behavior.runService("hub");
+    try {
+      await vi.waitFor(async () => {
+        expect(
+          statusSchema.parse(
+            await host.harness.behavior.callRpc("status.get", null),
+          ).accepting,
+        ).toBe(true);
+      });
+      const startupLookups = lookups;
+      expect(startupLookups).toBeGreaterThan(0);
+      await new Promise((resolve) => setTimeout(resolve, 180));
+      expect(lookups).toBeGreaterThan(startupLookups);
+      expect(lookupTimes.length).toBeGreaterThan(1);
+      for (let i = 1; i < lookupTimes.length; i += 1)
+        expect(lookupTimes[i]! - lookupTimes[i - 1]!).toBeGreaterThanOrEqual(
+          39,
+        );
+      expect(JSON.stringify(host.harness.inspection.logEntries)).toMatch(
+        /checked \d+ threads, revoked \d+, failed 0, and deferred [1-9]\d*\./u,
+      );
+      const completedSweeps = () =>
+        host.harness.inspection.logEntries.filter((entry) =>
+          JSON.stringify(entry).includes("failed 0, and deferred 0."),
+        ).length;
+      const beforeCompletion = completedSweeps();
+      hanging = false;
+      await vi.waitFor(() => {
+        expect(completedSweeps()).toBeGreaterThan(beforeCompletion);
+      });
+      const completedLookups = lookups;
+      await new Promise((resolve) => setTimeout(resolve, 180));
+      expect(lookups).toBe(completedLookups);
+      expect(JSON.stringify(host.harness.inspection.logEntries)).not.toContain(
+        "could not look up",
+      );
+    } finally {
+      service.controller.abort();
+      await service.done;
+      await host.harness.lifecycle.dispose();
+    }
+  });
+
   it("bounds a periodic sweep whose lookup hangs and revokes the stale credential once the lookup recovers", async () => {
     const fixture = await scopedFixture();
     const stale = await claudeToken(fixture.host, "thread-stale");
@@ -12899,9 +12967,7 @@ describe("Account Pool Artifact proxy", () => {
       const response = await oauthProxyRequest(fixture, { method, path });
       expect(response.status).toBe(200);
       await response.text();
-      const logged = JSON.stringify(
-        fixture.host.harness.inspection.logEntries,
-      );
+      const logged = JSON.stringify(fixture.host.harness.inspection.logEntries);
       expect(logged).not.toContain(secret);
       expect(logged).not.toContain("sk-ant-");
       expect(logged).toContain(

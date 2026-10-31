@@ -1118,7 +1118,7 @@ async function staleAnswer(
   const stored = await threadFiles(w.directory);
   if (answer === "archived") {
     w.setBb("archived");
-    await store.suspendThread(route.threadId);
+    if (source === "admit") await store.suspendThread(route.threadId);
   }
   if (answer === "gone") w.setBb("gone");
   held.arm();
