@@ -137,7 +137,7 @@ function isIncluded(rel) {
   return true;
 }
 
-function walk(dir, root, out) {
+function walk(dir, root, out, trackedDirectories) {
   let entries;
   try {
     entries = readdirSync(dir, { withFileTypes: true });
@@ -148,7 +148,13 @@ function walk(dir, root, out) {
     const abs = join(dir, entry.name);
     if (entry.isDirectory()) {
       if (EXCLUDED_SEGMENTS.has(entry.name)) continue;
-      walk(abs, root, out);
+      if (
+        entry.name.startsWith(".managed-json-cli-") &&
+        trackedDirectories !== null &&
+        !trackedDirectories.has(relative(root, abs).split(sep).join("/"))
+      )
+        continue;
+      walk(abs, root, out, trackedDirectories);
     } else if (entry.isFile()) {
       const rel = relative(root, abs);
       if (isIncluded(rel)) out.push({ abs, rel: rel.split(sep).join("/") });
@@ -198,9 +204,39 @@ export function checkAllowlist(scan, allowlist) {
   return problems;
 }
 
-export function scanTree(root, roots = SCAN_ROOTS) {
+function trackedDirectoriesIn(root) {
+  const directories = new Set();
+  let tracked;
+  try {
+    tracked = execFileSync("git", ["ls-files", "-z", "--", ...SCAN_ROOTS], {
+      cwd: root,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+      maxBuffer: 16 * 1024 * 1024,
+    });
+  } catch (error) {
+    if (
+      error.status === 128 &&
+      error.stderr?.toString().includes("not a git repository")
+    )
+      return null;
+    throw error;
+  }
+  for (const path of tracked.split("\0")) {
+    const parts = path.split("/");
+    for (let i = 1; i < parts.length; i++)
+      directories.add(parts.slice(0, i).join("/"));
+  }
+  return directories;
+}
+
+export function scanTree(
+  root,
+  roots = SCAN_ROOTS,
+  trackedDirectories = trackedDirectoriesIn(root),
+) {
   const files = [];
-  for (const r of roots) walk(join(root, r), root, files);
+  for (const r of roots) walk(join(root, r), root, files, trackedDirectories);
   const counts = {};
   const hits = [];
   for (const { abs, rel } of files) {
@@ -244,7 +280,7 @@ function scanGitTree(root, ref) {
   const extracted = mkdtempSync(join(tmpdir(), "bb-provider-ratchet-"));
   try {
     execFileSync("tar", ["-x", "-C", extracted], { input: archive });
-    return scanTree(extracted);
+    return scanTree(extracted, SCAN_ROOTS, null);
   } finally {
     rmSync(extracted, { recursive: true, force: true });
   }
