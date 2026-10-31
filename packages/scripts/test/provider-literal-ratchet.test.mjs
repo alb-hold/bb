@@ -45,6 +45,17 @@ function write(rel, content) {
 }
 
 describe("scanTree (pure)", () => {
+  it("counts tracked hidden source and ordinary untracked source", () => {
+    const tracked = "packages/core/.source/entry.mjs";
+    const untracked = "packages/core/new.mjs";
+    write(tracked, 'const ids = ["codex", "claude-code"];\n');
+    write(untracked, 'const id = "pi";\n');
+    execFileSync("git", ["init", "-q"], { cwd: dir });
+    execFileSync("git", ["add", tracked], { cwd: dir });
+    write("packages/core/.temp/entry.mjs", 'const id = "codex";\n');
+    expect(scanTree(dir).files).toEqual({ [tracked]: 2, [untracked]: 1 });
+  });
+
   it.each([
     [
       "apps/cli/.packaged-plugin-build-IZlVup/cli-chunks/server.js",
@@ -302,6 +313,23 @@ describe("ratchet CLI refusal paths (fixture root)", () => {
 });
 
 describe("ratchet CLI (against the real repo baseline)", () => {
+  it("ignores an untracked managed JSON CLI temp directory", () => {
+    const temp = join(ROOT, "packages/bb-app/.managed-json-cli-TEST");
+    mkdirSync(temp);
+    try {
+      writeFileSync(
+        join(temp, "bb-app.mjs"),
+        'const ids = ["codex", "claude-code", "pi", "acp-cursor"];\n',
+      );
+      const result = run();
+      expect(result.code, result.out).toBe(0);
+      expect(result.out).toMatch(/ratchet OK/);
+      expect(run(["--list"]).out).not.toContain(".managed-json-cli-TEST");
+    } finally {
+      rmSync(temp, { recursive: true, force: true });
+    }
+  }, 30_000);
+
   // These two scan the whole repo tree: ~0.3s locally, ~6s on a slow CI
   // runner, so vitest's 5s default is not enough headroom.
   it("passes against the committed baseline", () => {
