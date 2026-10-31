@@ -358,8 +358,9 @@ export class AccountStore {
     planClock.set(id, Math.max(planClock.get(id) ?? -1, checkedAt));
     await this.serialized(async () => {
       if ((await this.get(id)) === null) return;
+      signal?.throwIfAborted();
       const stored = (await this.planChecks())[id];
-      if (signal?.aborted) return;
+      signal?.throwIfAborted();
       if (stored !== undefined && stored.checkedAt >= checkedAt) return;
       this.activePlanWrites.add(id);
       try {
@@ -367,6 +368,7 @@ export class AccountStore {
           `${PLAN_CHECKS_PREFIX}${id}:${checkedAt}`,
           planCheckSchema.parse({ name, checkedAt }),
         );
+        signal?.throwIfAborted();
         const keys = (await this.kv.list(`${PLAN_CHECKS_PREFIX}${id}:`)).map(
           (key) => {
             const [, stamp] = planCheckKeySchema.parse(
@@ -375,9 +377,15 @@ export class AccountStore {
             return { key, stamp };
           },
         );
+        signal?.throwIfAborted();
         const newest = Math.max(checkedAt, ...keys.map(({ stamp }) => stamp));
-        for (const { key, stamp } of keys)
-          if (stamp < newest) await this.kv.delete(key);
+        for (const { key, stamp } of keys) {
+          signal?.throwIfAborted();
+          if (stamp < newest) {
+            await this.kv.delete(key);
+            signal?.throwIfAborted();
+          }
+        }
       } finally {
         this.activePlanWrites.delete(id);
       }
