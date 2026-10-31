@@ -438,7 +438,7 @@ it("retains persisted retry IDs across restart while progress writes fail", asyn
   expect(await restarted.authenticate(tokens.get("thr_0016") ?? "")).toBeNull();
 });
 
-it("bounds retry work to eight IDs per sweep and rotates failed IDs fairly across restarts", async () => {
+it("bounds priority retry work to eight IDs per sweep and rotates failed IDs fairly across restarts", async () => {
   const { directory, hosts, store } = await fixture(96);
   await store.sweepThreads(async (id) => {
     if (id < "thr_0016") throw new Error("lookup unavailable");
@@ -453,13 +453,14 @@ it("bounds retry work to eight IDs per sweep and rotates failed IDs fairly acros
     await restarted.sweepThreads(async (id) => {
       if (id < "thr_0016") {
         failures.push(id);
-        retried.add(id);
         throw new Error("lookup unavailable");
       }
       live.add(id);
       return "live";
     });
-    expect(failures).toHaveLength(8);
+    expect(failures).toHaveLength(16);
+    for (const id of failures.slice(0, 8)) retried.add(id);
+    expect(new Set(failures).size).toBe(16);
     expect(live.size).toBe(80);
   }
   expect(retried.size).toBe(16);
@@ -472,4 +473,129 @@ it("bounds retry work to eight IDs per sweep and rotates failed IDs fairly acros
     await restarted.sweepThreads(lookup, { signal: budget.signal }),
   ).toEqual({ checked: 0, revoked: 0, failed: 0, deferred: 96 });
   expect(lookup).not.toHaveBeenCalled();
+});
+
+it("prunes orphan retry IDs after route removal and restart while retaining active failures", async () => {
+  const { directory, hosts, store } = await fixture(16);
+  await store.sweepThreads(async (id) => {
+    if (id === "thr_0002" || id === "thr_0003")
+      throw new Error("lookup unavailable");
+    return "live";
+  });
+  await store.removeThread("thr_0002");
+  const restarted = new ThreadTokenStore(directory, hosts);
+  await restarted.initialize(["host-one"]);
+  const checked: string[] = [];
+  await restarted.sweepThreads(async (id) => {
+    checked.push(id);
+    if (id === "thr_0002" || id === "thr_0003")
+      throw new Error("lookup unavailable");
+    return "live";
+  });
+  const state = JSON.parse(
+    await fs.readFile(path.join(directory, "thread-sweep.json"), "utf8"),
+  );
+  expect(checked).not.toContain("thr_0002");
+  expect(state.retries).toEqual([
+    expect.objectContaining({ threadId: "thr_0003" }),
+  ]);
+});
+
+it("caps durable retries at 256 while overflow remains covered by the main rotation after restart", async () => {
+  const { directory, hosts, store, tokens } = await fixture(320);
+  await store.sweepThreads(async () => {
+    throw new Error("lookup unavailable");
+  });
+  const state = JSON.parse(
+    await fs.readFile(path.join(directory, "thread-sweep.json"), "utf8"),
+  );
+  expect(state.retries).toHaveLength(256);
+  const restarted = new ThreadTokenStore(directory, hosts);
+  await restarted.initialize(["host-one"]);
+  const checked = new Set<string>();
+  await restarted.sweepThreads(async (id) => {
+    checked.add(id);
+    return "archived";
+  });
+  expect(checked.size).toBe(320);
+  for (const token of tokens.values())
+    expect(await restarted.authenticate(token)).toBeNull();
+  const recovered = JSON.parse(
+    await fs.readFile(path.join(directory, "thread-sweep.json"), "utf8"),
+  );
+  expect(recovered.retries).toEqual([]);
+});
+
+it("recovers 200 outage retries through the main rotation within four bounded sweeps", async () => {
+  const { directory, hosts, store, tokens } = await fixture(200);
+  await store.sweepThreads(async () => {
+    throw new Error("lookup unavailable");
+  });
+  const checked = new Set<string>();
+  for (let sweep = 0; sweep < 4; sweep += 1) {
+    const restarted = new ThreadTokenStore(directory, hosts);
+    await restarted.initialize(["host-one"]);
+    const budget = new AbortController();
+    let calls = 0;
+    await restarted.sweepThreads(
+      async (id) => {
+        if (++calls > 64) {
+          budget.abort();
+          return new Promise(() => undefined);
+        }
+        checked.add(id);
+        return "archived";
+      },
+      { signal: budget.signal },
+    );
+  }
+  expect(checked.size).toBe(200);
+  const restarted = new ThreadTokenStore(directory, hosts);
+  await restarted.initialize(["host-one"]);
+  for (const token of tokens.values())
+    expect(await restarted.authenticate(token)).toBeNull();
+});
+
+it("rechecks a failed thread after a crash loses the retry write before its atomic commit", async () => {
+  const { directory, hosts, store, tokens } = await fixture(96);
+  const budget = new AbortController();
+  const rename = fs.rename.bind(fs);
+  let lost = false;
+  vi.spyOn(fs, "rename").mockImplementation(async (source, target) => {
+    if (path.basename(String(target)) === "thread-sweep.json") {
+      const state = JSON.parse(await fs.readFile(source, "utf8"));
+      if (
+        state.retries.some(
+          (entry: { threadId: string }) => entry.threadId === "thr_0016",
+        )
+      ) {
+        lost = true;
+        budget.abort();
+        throw new Error("crash before progress rename");
+      }
+    }
+    return rename(source, target);
+  });
+  await store.sweepThreads(
+    async (id) => {
+      if (id === "thr_0016") throw new Error("lookup unavailable");
+      return "live";
+    },
+    { signal: budget.signal },
+  );
+  expect(lost).toBe(true);
+  vi.restoreAllMocks();
+  const durable = JSON.parse(
+    await fs.readFile(path.join(directory, "thread-sweep.json"), "utf8"),
+  );
+  expect(durable.rotation.nextThreadId <= "thr_0016").toBe(true);
+  const restarted = new ThreadTokenStore(directory, hosts);
+  await restarted.initialize(["host-one"]);
+  const checked: string[] = [];
+  await restarted.sweepThreads(async (id) => {
+    checked.push(id);
+    return id === "thr_0016" ? "archived" : "live";
+  });
+  expect(checked).toContain("thr_0016");
+  expect(await restarted.authenticate(tokens.get("thr_0016") ?? "")).toBeNull();
 });
