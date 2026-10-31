@@ -3,6 +3,7 @@ CREATE TABLE IF NOT EXISTS `fork_native_terminal_threads` (
 	`provider_id` text NOT NULL,
 	`native_session_id` text,
 	`terminal_session_id` text,
+	`lost_idle_terminal_session_id` text,
 	`last_evidence_at` integer,
 	`last_evidence_kind` text,
 	`last_tool_call_at` integer,

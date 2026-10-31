@@ -50,6 +50,13 @@ export function ensureNativeTerminalThreadsTable(db: DbConnection): void {
   const columns = db.$client
     .prepare(`PRAGMA table_info(fork_native_terminal_threads)`)
     .all() as Array<{ name: string }>;
+  if (
+    !columns.some((column) => column.name === "lost_idle_terminal_session_id")
+  ) {
+    db.$client.exec(
+      "ALTER TABLE fork_native_terminal_threads ADD COLUMN lost_idle_terminal_session_id TEXT",
+    );
+  }
   if (!columns.some((column) => column.name === "initial_images")) {
     db.$client.exec(
       `ALTER TABLE fork_native_terminal_threads ADD COLUMN initial_images TEXT`,

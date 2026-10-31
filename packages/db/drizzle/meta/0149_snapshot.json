@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "4c724c96-dd01-464a-882b-a5916b22f74c",
+  "id": "7327c6b7-c09b-4579-9af5-4e1954b256b9",
   "prevId": "9bad898c-49a7-4dd2-8f91-26e641630872",
   "tables": {
     "app_settings": {
@@ -1311,6 +1311,13 @@
         },
         "terminal_session_id": {
           "name": "terminal_session_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "lost_idle_terminal_session_id": {
+          "name": "lost_idle_terminal_session_id",
           "type": "text",
           "primaryKey": false,
           "notNull": false,
