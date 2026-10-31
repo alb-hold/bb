@@ -58,6 +58,8 @@ import {
   makeThreadListEntry,
 } from "@bb/test-helpers/domain-fixtures";
 import { createAppQueryClient } from "@/lib/query-client";
+import { makeThreadResponse } from "@/test/fixtures/thread-responses";
+import { getFollowUpPromptPlaceholder } from "@/components/promptbox/follow-up-placeholder";
 import { makeSystemConfig } from "@/test/fixtures/system-config";
 import { hasThreadTimelineUnseenEvents } from "./cache-owners/thread-timeline-unseen-events";
 import { systemEnvironmentProvidersQueryKey } from "./queries/environment-provider-queries";
@@ -2557,6 +2559,75 @@ describe("createRealtimeCacheEffects", () => {
     }
     effects.dispose();
   });
+
+  it.each([true, false])(
+    "keeps detail and list queries consistent after a raw native exit notification (clean: %s)",
+    async (clean) => {
+      vi.useFakeTimers();
+      const { effects, queryClient } = createRealtimeEffectsTestContext();
+      const initial = makeThreadResponse({
+        id: "thr_1",
+        projectId: "project-1",
+        status: "active",
+        runtime: { displayStatus: "active" },
+        updatedAt: 100,
+      });
+      const detailKey = threadQueryKey(initial.id);
+      const listKey = threadListQueryKey({
+        projectId: "project-1",
+        archived: false,
+      });
+      queryClient.setQueryData(detailKey, initial);
+      queryClient.setQueryData(listKey, [makeThreadListEntry(initial)]);
+      const observer = new QueryObserver(queryClient, {
+        queryKey: detailKey,
+        queryFn: async () => initial,
+        staleTime: Infinity,
+      });
+      const rendered: string[] = [];
+      const stop = observer.subscribe((result) => {
+        if (result.data)
+          rendered.push(
+            getFollowUpPromptPlaceholder(result.data.runtime.displayStatus),
+          );
+      });
+      effects.handleChanged({
+        type: "changed",
+        entity: "thread",
+        id: initial.id,
+        changes: ["status-changed"],
+        metadata: {
+          projectId: "project-1",
+          statusChange: {
+            activity: makeThreadListEntry(initial).activity,
+            latestAttentionAt: initial.latestAttentionAt,
+            status: "error",
+            runtime: {
+              displayStatus: "error",
+              ...(clean ? { nativeSessionExit: "clean" } : {}),
+            },
+            updatedAt: 200,
+          },
+        },
+      });
+      await vi.advanceTimersByTimeAsync(50);
+      const expected = clean ? "idle" : "error";
+      expect(queryClient.getQueryData(detailKey)).toMatchObject({
+        status: expected,
+        runtime: { displayStatus: expected },
+      });
+      expect(queryClient.getQueryData(listKey)).toMatchObject([
+        { status: expected, runtime: { displayStatus: expected } },
+      ]);
+      expect(rendered.at(-1)).toBe(
+        clean
+          ? "Ask for a follow-up. @ to mention files, folders, sections, or threads"
+          : "Retry by sending a follow-up message",
+      );
+      stop();
+      effects.dispose();
+    },
+  );
 
   it("throttles the metadata-less status fallback to one active refetch per second", async () => {
     vi.useFakeTimers();
