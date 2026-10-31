@@ -15,6 +15,7 @@ import net from "node:net";
 import path from "node:path";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { setTimeout as waitForIo } from "node:timers/promises";
 import {
   createFakePluginHost,
   makeThreadResponse,
@@ -77,6 +78,7 @@ interface Fixture {
 }
 
 const cleanups: Array<() => Promise<void>> = [];
+const sweepClockCleanups: Array<() => void> = [];
 const bbThreadStates = new Map<string, "archived" | "deleted">();
 
 function bbThread(threadId: string) {
@@ -546,6 +548,7 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+  while (sweepClockCleanups.length > 0) sweepClockCleanups.pop()?.();
   vi.unstubAllEnvs();
   while (cleanups.length > 0) await cleanups.pop()?.();
   bbThreadStates.clear();
@@ -804,6 +807,66 @@ async function movePoolToOtherAccount(
 const EMPTY_USAGE_URL = "data:application/json,{}";
 const UNUSED_PROFILE_URL = "data:application/json,null";
 const CODEX_USAGE_STUB_URL = "https://usage.example/wham/usage";
+
+async function waitForSweep(assertion: () => void | Promise<void>) {
+  const deadline = Date.now() + 1_000;
+  for (;;) {
+    await vi.advanceTimersByTimeAsync(0);
+    const timeout = new AbortController();
+    try {
+      await Promise.race([
+        Promise.resolve().then(assertion),
+        waitForIo(Math.max(0, deadline - Date.now()), undefined, {
+          signal: timeout.signal,
+        }).then(() => {
+          throw new Error("Sweep assertion did not settle");
+        }),
+      ]);
+      return;
+    } catch (error) {
+      if (Date.now() >= deadline) throw error;
+      await waitForIo(1);
+    } finally {
+      timeout.abort();
+    }
+  }
+}
+
+function controlSweepClock() {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  const timers = vi.spyOn(globalThis, "setTimeout");
+  const deadlines: AbortController[] = [];
+  const timeout = vi.spyOn(AbortSignal, "timeout").mockImplementation((ms) => {
+    const deadline = new AbortController();
+    deadlines.push(deadline);
+    setTimeout(
+      () => deadline.abort(new DOMException("timed out", "TimeoutError")),
+      ms,
+    );
+    return deadline.signal;
+  });
+  let restored = false;
+  const restore = () => {
+    if (restored) return;
+    restored = true;
+    for (const deadline of deadlines) deadline.abort();
+    vi.clearAllTimers();
+    timers.mockRestore();
+    timeout.mockRestore();
+    vi.useRealTimers();
+  };
+  sweepClockCleanups.push(restore);
+  return {
+    timeout,
+    timers,
+    now() {
+      const time = vi.getMockedSystemTime();
+      if (time === null) throw new Error("Sweep clock is not controlled");
+      return time.getTime();
+    },
+    restore,
+  };
+}
 
 describe("Account Pool config schema", () => {
   it("fills defaults and rejects invalid URLs and thresholds", () => {
@@ -11762,21 +11825,34 @@ describe("Account Pool credential scoping", () => {
         archivedAt: threadId === "thread-stale" ? 1_000 : null,
       });
     });
+    const clock = controlSweepClock();
     const service = host.harness.behavior.runService("hub");
     cleanups.push(async () => {
-      release();
-      service.controller.abort();
-      await service.done;
-      await host.harness.lifecycle.dispose();
+      clock.restore();
+      try {
+        release();
+        service.controller.abort();
+        await service.done;
+        await host.harness.lifecycle.dispose();
+      } finally {
+        clock.restore();
+      }
     });
-    await vi.waitFor(() => expect(entered).toBeGreaterThan(0));
+    await waitForSweep(() => expect(entered).toBeGreaterThan(0));
     const before = statusSchema.parse(
       await host.harness.behavior.callRpc("status.get", null),
     );
     expect(before.accepting).toBe(false);
-    expect(await statusOf(host, stale, "/v1/messages")).not.toBe(200);
+    const beforeAuth = clock.timeout.mock.calls.length;
+    const denied = statusOf(host, stale, "/v1/messages");
+    await waitForSweep(() =>
+      expect(clock.timeout.mock.calls.length).toBeGreaterThan(beforeAuth),
+    );
+    expect(clock.timeout.mock.calls.at(-1)).toEqual([100]);
+    await vi.advanceTimersByTimeAsync(100);
+    expect(await denied).not.toBe(200);
     release();
-    await vi.waitFor(async () => {
+    await waitForSweep(async () => {
       const status = statusSchema.parse(
         await host.harness.behavior.callRpc("status.get", null),
       );
@@ -11811,34 +11887,60 @@ describe("Account Pool credential scoping", () => {
       }),
     );
     let recovered = false;
+    let lookups = 0;
     host.harness.sdk.stub(
       "threads.get",
-      ({ threadId }: { threadId: string }) =>
-        recovered
+      ({ threadId }: { threadId: string }) => {
+        lookups += 1;
+        return recovered
           ? Promise.resolve(
               makeThreadResponse({
                 id: threadId,
                 archivedAt: threadId === "thread-stale" ? 1_000 : null,
               }),
             )
-          : new Promise(() => undefined),
+          : new Promise(() => undefined);
+      },
     );
+    const clock = controlSweepClock();
     const service = host.harness.behavior.runService("hub");
     cleanups.push(async () => {
-      service.controller.abort();
-      await service.done;
-      await host.harness.lifecycle.dispose();
+      clock.restore();
+      try {
+        service.controller.abort();
+        await service.done;
+        await host.harness.lifecycle.dispose();
+      } finally {
+        clock.restore();
+      }
     });
-    await vi.waitFor(async () => {
+    await waitForSweep(() => expect(lookups).toBeGreaterThan(0));
+    expect(clock.timeout.mock.calls).toContainEqual([50]);
+    await vi.advanceTimersByTimeAsync(49);
+    expect(
+      statusSchema.parse(
+        await host.harness.behavior.callRpc("status.get", null),
+      ).accepting,
+    ).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    await waitForSweep(async () => {
       const status = statusSchema.parse(
         await host.harness.behavior.callRpc("status.get", null),
       );
       expect(status.accepting).toBe(true);
     });
-    expect(await statusOf(host, stale, "/v1/messages")).toBe(401);
-    expect(await statusOf(host, live, "/v1/messages")).toBe(401);
+    const beforeAuth = lookups;
+    const denied = Promise.all([
+      statusOf(host, stale, "/v1/messages"),
+      statusOf(host, live, "/v1/messages"),
+    ]);
+    await waitForSweep(() =>
+      expect(lookups).toBeGreaterThanOrEqual(beforeAuth + 2),
+    );
+    await vi.advanceTimersByTimeAsync(50);
+    expect(await denied).toEqual([401, 401]);
     recovered = true;
-    await vi.waitFor(async () => {
+    await waitForSweep(async () => {
       expect(await statusOf(host, stale, "/v1/messages")).toBe(401);
     });
     expect(await statusOf(host, live, "/v1/messages")).toBe(200);
@@ -11864,52 +11966,79 @@ describe("Account Pool credential scoping", () => {
       "threads.get",
       ({ threadId }: { threadId: string }) => {
         lookups += 1;
-        if (threadId === "thread-deferred") lookupTimes.push(performance.now());
+        if (threadId === "thread-deferred") lookupTimes.push(clock.now());
         if (hanging) return new Promise(() => undefined);
         return makeThreadResponse({ id: "thread-deferred", archivedAt: null });
       },
     );
+    const clock = controlSweepClock();
+    const timers = clock.timers;
     const service = host.harness.behavior.runService("hub");
-    try {
-      await vi.waitFor(async () => {
-        expect(
-          statusSchema.parse(
-            await host.harness.behavior.callRpc("status.get", null),
-          ).accepting,
-        ).toBe(true);
-      });
-      const startupLookups = lookups;
-      expect(startupLookups).toBeGreaterThan(0);
-      await new Promise((resolve) => setTimeout(resolve, 180));
-      expect(lookups).toBeGreaterThan(startupLookups);
-      expect(lookupTimes.length).toBeGreaterThan(1);
-      for (let i = 1; i < lookupTimes.length; i += 1)
-        expect(lookupTimes[i]! - lookupTimes[i - 1]!).toBeGreaterThanOrEqual(
-          39,
-        );
-      expect(JSON.stringify(host.harness.inspection.logEntries)).toMatch(
-        /checked \d+ threads, revoked \d+, failed 0, and deferred [1-9]\d*\./u,
-      );
-      const completedSweeps = () =>
-        host.harness.inspection.logEntries.filter((entry) =>
-          JSON.stringify(entry).includes("failed 0, and deferred 0."),
-        ).length;
-      const beforeCompletion = completedSweeps();
-      hanging = false;
-      await vi.waitFor(() => {
-        expect(completedSweeps()).toBeGreaterThan(beforeCompletion);
-      });
-      const completedLookups = lookups;
-      await new Promise((resolve) => setTimeout(resolve, 180));
-      expect(lookups).toBe(completedLookups);
-      expect(JSON.stringify(host.harness.inspection.logEntries)).not.toContain(
-        "could not look up",
-      );
-    } finally {
+    cleanups.push(async () => {
+      clock.restore();
       service.controller.abort();
       await service.done;
       await host.harness.lifecycle.dispose();
-    }
+    });
+    await waitForSweep(() => expect(lookups).toBeGreaterThan(0));
+    expect(clock.timeout.mock.calls).toContainEqual([30]);
+    const startupLookups = lookups;
+    await vi.advanceTimersByTimeAsync(29);
+    expect(
+      statusSchema.parse(
+        await host.harness.behavior.callRpc("status.get", null),
+      ).accepting,
+    ).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    await waitForSweep(async () => {
+      expect(
+        statusSchema.parse(
+          await host.harness.behavior.callRpc("status.get", null),
+        ).accepting,
+      ).toBe(true);
+    });
+    expect(startupLookups).toBeGreaterThan(0);
+    await waitForSweep(() =>
+      expect(timers.mock.calls.some(([, ms]) => ms === 40)).toBe(true),
+    );
+    await vi.advanceTimersByTimeAsync(39);
+    expect(lookups).toBe(startupLookups);
+    await vi.advanceTimersByTimeAsync(1);
+    await waitForSweep(() => expect(lookups).toBeGreaterThan(startupLookups));
+    expect(lookupTimes.length).toBeGreaterThan(1);
+    for (let i = 1; i < lookupTimes.length; i += 1)
+      expect(lookupTimes[i]! - lookupTimes[i - 1]!).toBeGreaterThanOrEqual(39);
+    expect(JSON.stringify(host.harness.inspection.logEntries)).toMatch(
+      /checked \d+ threads, revoked \d+, failed 0, and deferred [1-9]\d*\./u,
+    );
+    const completedSweeps = () =>
+      host.harness.inspection.logEntries.filter((entry) =>
+        JSON.stringify(entry).includes("failed 0, and deferred 0."),
+      ).length;
+    const beforeCompletion = completedSweeps();
+    const retries = () =>
+      timers.mock.calls.filter(([, ms]) => ms === 40).length;
+    const beforeRetry = retries();
+    await vi.advanceTimersByTimeAsync(30);
+    await waitForSweep(() => expect(retries()).toBeGreaterThan(beforeRetry));
+    hanging = false;
+    await vi.advanceTimersByTimeAsync(40);
+    await waitForSweep(() => {
+      expect(completedSweeps()).toBeGreaterThan(beforeCompletion);
+    });
+    await waitForSweep(() =>
+      expect(timers.mock.calls.some(([, ms]) => ms === 1_000)).toBe(true),
+    );
+    const completedLookups = lookups;
+    await vi.advanceTimersByTimeAsync(180);
+    expect(lookups).toBe(completedLookups);
+    await vi.advanceTimersByTimeAsync(819);
+    expect(lookups).toBe(completedLookups);
+    await vi.advanceTimersByTimeAsync(1);
+    await waitForSweep(() => expect(lookups).toBeGreaterThan(completedLookups));
+    expect(JSON.stringify(host.harness.inspection.logEntries)).not.toContain(
+      "could not look up",
+    );
   });
 
   it("bounds a periodic sweep whose lookup hangs and revokes the stale credential once the lookup recovers", async () => {
@@ -11955,13 +12084,19 @@ describe("Account Pool credential scoping", () => {
         );
       },
     );
+    const clock = controlSweepClock();
     const service = host.harness.behavior.runService("hub");
     cleanups.push(async () => {
-      service.controller.abort();
-      await service.done;
-      await host.harness.lifecycle.dispose();
+      clock.restore();
+      try {
+        service.controller.abort();
+        await service.done;
+        await host.harness.lifecycle.dispose();
+      } finally {
+        clock.restore();
+      }
     });
-    await vi.waitFor(async () => {
+    await waitForSweep(async () => {
       const status = statusSchema.parse(
         await host.harness.behavior.callRpc("status.get", null),
       );
@@ -11969,14 +12104,30 @@ describe("Account Pool credential scoping", () => {
     });
     expect(await statusOf(host, stale, "/v1/messages")).toBe(200);
     mode = "hang";
-    await vi.waitFor(() => expect(hangs).toBeGreaterThan(1));
-    expect(await statusOf(host, stale, "/v1/messages")).toBe(401);
-    expect(await statusOf(host, live, "/v1/messages")).toBe(401);
+    await vi.advanceTimersByTimeAsync(49);
+    expect(hangs).toBe(0);
+    await vi.advanceTimersByTimeAsync(1);
+    await waitForSweep(() => expect(hangs).toBeGreaterThan(1));
+    const beforeAuth = hangs;
+    const denied = Promise.all([
+      statusOf(host, stale, "/v1/messages"),
+      statusOf(host, live, "/v1/messages"),
+    ]);
+    await waitForSweep(() =>
+      expect(hangs).toBeGreaterThanOrEqual(beforeAuth + 2),
+    );
+    await vi.advanceTimersByTimeAsync(50);
+    expect(await denied).toEqual([401, 401]);
     mode = "archived";
-    await vi.waitFor(async () => {
+    await waitForSweep(async () => {
       expect(await statusOf(host, stale, "/v1/messages")).toBe(401);
     });
-    expect(await statusOf(host, live, "/v1/messages")).toBe(200);
+    let liveStatus: number | null = null;
+    const liveRequest = statusOf(host, live, "/v1/messages").then((status) => {
+      liveStatus = status;
+    });
+    await waitForSweep(() => expect(liveStatus).toBe(200));
+    await liveRequest;
   });
 
   it("exports nothing for an archived thread and suspends any token it already held until unarchive", async () => {
