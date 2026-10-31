@@ -1911,12 +1911,19 @@ export function ThreadTerminalView({
             rendererGrid: { cols: terminal.cols, rows: terminal.rows },
           });
         containerElement.style.opacity = "0";
+        const scrollRetainedOutput =
+          retainedOutputGrid !== null && window.innerWidth < 768;
+        containerElement.style.overflowX = scrollRetainedOutput ? "auto" : "";
         const scale =
-          localFitGrid !== null
+          localFitGrid !== null && !scrollRetainedOutput
             ? terminalSurfaceScale(displayGrid, localFitGrid)
             : 1;
         if (terminal.element) {
-          applyTerminalSurfaceScale(terminal.element, scale);
+          applyTerminalSurfaceScale(
+            terminal.element,
+            scale,
+            !scrollRetainedOutput,
+          );
         }
         const rendererWidth = containerElement.getBoundingClientRect().width;
         const paintedWidth =
@@ -1924,7 +1931,8 @@ export function ThreadTerminalView({
             ?.querySelector<HTMLElement>(".xterm-screen")
             ?.getBoundingClientRect().width ?? 0;
         const widthFits =
-          rendererWidth > 0 && paintedWidth <= rendererWidth + 1;
+          rendererWidth > 0 &&
+          (scrollRetainedOutput || paintedWidth <= rendererWidth + 1);
         containerElement.dataset.ptyGridCols = String(latestPtyGrid.cols);
         containerElement.dataset.ptyGridRows = String(latestPtyGrid.rows);
         if (canReveal && widthFits) {
@@ -3305,7 +3313,7 @@ export function ThreadTerminalView({
         <ContextMenuTrigger asChild>
           <TerminalAttentionPane
             attention={session.attention}
-            className={`group/terminal-pane relative min-h-0 w-full flex-1 overflow-hidden bg-sidebar p-2 ${isTouchDevice ? "touch-pan-y" : ""}`}
+            className={`group/terminal-pane relative min-h-0 w-full flex-1 overflow-hidden bg-sidebar p-2 ${isTouchDevice ? (retainNativeOutput && session.status === "exited" ? "touch-auto" : "touch-pan-y") : ""}`}
             onContextMenuCapture={captureTerminalContextMenu}
             onTouchStart={(event) => {
               beginTerminalLongPress(event.touches);

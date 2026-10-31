@@ -647,7 +647,7 @@ it.each([
     rows: 37,
     renderCols: 80,
     renderRows: 24,
-    scale: String(51 / 80),
+    scale: "1",
   },
   {
     device: "desktop",

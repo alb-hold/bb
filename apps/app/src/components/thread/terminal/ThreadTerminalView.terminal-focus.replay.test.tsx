@@ -2049,6 +2049,64 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
 });
 
 describe("terminal first paint", () => {
+  it.each([80, 120, 200])(
+    "keeps phone history at the normal text size for %i recorded columns",
+    async (cols) => {
+      prepareFirstAttachFontMetricsHarness();
+      vi.stubGlobal("innerWidth", 390);
+      vi.mocked(FitAddon.prototype.proposeDimensions).mockReturnValue({
+        cols: 49,
+        rows: 48,
+      });
+      let actualTerminal: Terminal | null = null;
+      const open = Terminal.prototype.open;
+      vi.spyOn(Terminal.prototype, "open").mockImplementation(function (
+        this: Terminal,
+        element: HTMLElement,
+      ) {
+        actualTerminal = this;
+        open.call(this, element);
+      });
+      const prompt = `Hgjpq${"x".repeat(cols - 6)}]`;
+      testState.output.mockResolvedValue({
+        chunks: [
+          {
+            seq: 0,
+            dataBase64: btoa(
+              `\x1b]7791;bb-grid;${cols};36\x07\x1b[48;5;8m${prompt}\x1b[0m\r\nAFTER-BAND`,
+            ),
+          },
+        ],
+        nextSeq: 1,
+      });
+      renderMobileTerminal(
+        { status: "exited", exitCode: 0, cols, rows: 36 },
+        true,
+      );
+      await waitForReadinessCondition(() => {
+        expect(pageText()).toContain("Terminal exited with code");
+      }, "retained replay did not finish");
+      await act(async () => {
+        await writeReplay(actualTerminal!, "");
+      });
+      const host = document.querySelector<HTMLElement>(
+        "[data-terminal-renderer]",
+      )!;
+      const surface = host.querySelector<HTMLElement>(".xterm")!;
+      expect(host.dataset.renderGridCols).toBe(String(cols));
+      expect(host.style.opacity).toBe("");
+      expect(surface.dataset.surfaceScale).toBe("1");
+      expect(surface.style.transform).toBe("scale(1)");
+      expect(host.style.overflowX).toBe("auto");
+      expect(
+        actualTerminal!.buffer.active.getLine(0)?.translateToString(true),
+      ).toBe(prompt);
+      expect(
+        actualTerminal!.buffer.active.getLine(1)?.translateToString(true),
+      ).toBe("AFTER-BAND");
+    },
+  );
+
   it("hides exited native replay until the first fitted resize", async () => {
     prepareFirstAttachFontMetricsHarness();
     vi.stubGlobal("innerWidth", 390);
@@ -2148,7 +2206,7 @@ describe("terminal first paint", () => {
     expect(surface.dataset.renderGridCols).toBe("51");
     expect(
       surface.querySelector<HTMLElement>(".xterm")?.dataset.surfaceScale,
-    ).toBe(String(49 / 51));
+    ).toBe("1");
     expect(
       actualTerminal!.buffer.active.getLine(0)?.translateToString(true),
     ).toBe(prompt);
