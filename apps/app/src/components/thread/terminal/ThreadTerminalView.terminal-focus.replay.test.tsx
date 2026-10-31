@@ -2049,6 +2049,46 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
 });
 
 describe("terminal first paint", () => {
+  it("fits a live native session at phone width without retained-history scrolling", async () => {
+    prepareFirstAttachFontMetricsHarness();
+    testState.touchEnabled = true;
+    vi.stubGlobal("innerWidth", 390);
+    const session = renderMobileTerminal({ cols: 120, rows: 36 }, true);
+    await waitForReadinessCondition(() => {
+      expect(testState.sockets).toHaveLength(1);
+    }, "live terminal socket did not mount");
+    const socket = testState.sockets[0]!;
+    await waitForReadiness(socket.opened, "live terminal socket did not open");
+    await waitForReadinessCondition(() => {
+      expect(
+        testState.socketMessages.map((message) => JSON.parse(message)),
+      ).toContainEqual({ type: "resize", cols: 51, rows: 47 });
+    }, "live terminal did not send the phone fit");
+    socket.receive({
+      type: "attached",
+      session: { ...session, cols: 51, rows: 47 },
+      replayStartSeq: 0,
+      nextSeq: 1,
+    });
+    socket.receive({
+      type: "output",
+      chunk: { seq: 0, dataBase64: btoa("LIVE-PHONE-FIT\r\n") },
+    });
+    await waitForReadinessCondition(() => {
+      expect(
+        testState.socketMessages.map((message) => JSON.parse(message)),
+      ).toContainEqual({ type: "ack", nextSeq: 1 });
+    }, "live terminal replay did not finish");
+    const host = document.querySelector<HTMLElement>("[data-terminal-renderer]")!;
+    expect(host.dataset.fitGridCols).toBe("51");
+    expect(host.dataset.renderGridCols).toBe("51");
+    expect(host.style.opacity).toBe("");
+    expect(host.style.overflowX).toBe("");
+    expect(host.style.overflowY).toBe("");
+    expect(host.style.paddingLeft).toBe("");
+    expect(host.querySelector<HTMLElement>(".xterm")?.dataset.surfaceScale).toBe("1");
+  });
+
   it.each([80, 120, 200])(
     "keeps phone history at the normal text size for %i recorded columns",
     async (cols) => {
@@ -2208,6 +2248,7 @@ describe("terminal first paint", () => {
     expect(surface.style.opacity).toBe("");
     expect(surface.dataset.fitGridCols).toBe("49");
     expect(surface.dataset.renderGridCols).toBe("51");
+    expect(surface.style.paddingLeft).toBe("0px");
     expect(
       surface.querySelector<HTMLElement>(".xterm")?.dataset.surfaceScale,
     ).toBe("1");
