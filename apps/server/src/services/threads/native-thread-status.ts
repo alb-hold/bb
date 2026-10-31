@@ -51,6 +51,7 @@ function classifyNativeTerminalLiveness(
 function settleThreadWithDeadTerminal(
   deps: NativeThreadStatusDeps,
   threadId: string,
+  native: NativeTerminalThreadRecord,
 ): void {
   const thread = getThread(deps.db, threadId);
   if (
@@ -59,6 +60,20 @@ function settleThreadWithDeadTerminal(
     thread.environmentId === null
   )
     return;
+  const terminal = readRecordTerminal(deps, native);
+  if (
+    terminal?.status === "exited" &&
+    terminal.closeReason === "process-exit" &&
+    terminal.exitCode === 0
+  ) {
+    if (thread.status === "active") {
+      applyLoggedThreadLifecycleEvent(deps, {
+        event: { type: "run.succeeded" },
+        threadId,
+      });
+    }
+    return;
+  }
   const environment = getEnvironment(deps.db, thread.environmentId);
   if (environment === null) return;
   deps.logger.info(
@@ -119,7 +134,7 @@ export async function reconcileNativeThreadStatus(
       !isNativeTerminalRebindInFlight(threadId) &&
       (thread.status === "active" || terminalExitedOnItsOwn(deps, native))
     ) {
-      settleThreadWithDeadTerminal(deps, threadId);
+      settleThreadWithDeadTerminal(deps, threadId, native);
     }
     return;
   }

@@ -356,6 +356,59 @@ async function enterTerminal(fixture: Fixture, threadId: string) {
   };
 }
 
+describe("archiving an exited native Codex thread", () => {
+  it.each([false, true])(
+    "preserves the outcome after clean exit and archive (already failed: %s)",
+    async (alreadyFailed) => {
+      const fixture = await createFixture();
+      const thread = seedChatThread(fixture, {
+        providerId: "codex",
+        providerThreadId: SESSION_ID,
+      });
+      const { open } = await enterTerminal(fixture, thread.id);
+      applyLoggedThreadLifecycleEvent(fixture.harness.deps, {
+        threadId: thread.id,
+        event: { type: "run.started" },
+      });
+      applyLoggedThreadLifecycleEvent(fixture.harness.deps, {
+        threadId: thread.id,
+        event: { type: alreadyFailed ? "run.failed" : "run.succeeded" },
+      });
+      expect(getThread(fixture.harness.db, thread.id)?.status).toBe(
+        alreadyFailed ? "error" : "idle",
+      );
+      fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+        hostId: fixture.hostId,
+        sessionId: fixture.sessionId,
+        message: {
+          type: "terminal.exited",
+          terminalId: open.terminalId,
+          exitCode: 0,
+          closeReason: "process-exit",
+        },
+      });
+      const readThread = async () => {
+        const response = await fixture.harness.app.request(
+          `/api/v1/threads/${thread.id}`,
+        );
+        expect(response.status).toBe(200);
+        return threadResponseSchema.parse(await readJson(response));
+      };
+      const beforeArchive = await readThread();
+      const archived = await postJson(
+        fixture,
+        `/threads/${thread.id}/archive-all`,
+        {},
+      );
+      expect(archived.status).toBe(200);
+      const afterArchive = await readThread();
+      expect(afterArchive.archivedAt).not.toBeNull();
+      expect(afterArchive.status).toBe(alreadyFailed ? "error" : "idle");
+      expect(beforeArchive.status).toBe(alreadyFailed ? "error" : "idle");
+    },
+  );
+});
+
 describe("switching a chat thread to its native terminal", () => {
   it("resumes the chat's session in the terminal and returns to chat on it", async () => {
     const fixture = await createFixture();
