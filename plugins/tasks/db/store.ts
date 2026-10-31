@@ -961,7 +961,9 @@ export function createTasksStore(db: PluginDatabase) {
       cursor === null
         ? ""
         : sort === "manual"
-          ? "WHERE (cursor_project_id, cursor_status, cursor_position, cursor_id) > (@cursorProjectId, @cursorStatus, @cursorPosition, @cursorId)"
+          ? filters.projectId === undefined
+            ? "WHERE (cursor_project_id, cursor_status, cursor_position, cursor_id) > (@cursorProjectId, @cursorStatus, @cursorPosition, @cursorId)"
+            : "WHERE (cursor_status, cursor_position, cursor_id) > (@cursorStatus, @cursorPosition, @cursorId)"
           : sort === "priority"
             ? "WHERE (cursor_priority, cursor_due_null, cursor_due_date, cursor_project_id, cursor_status, cursor_position, cursor_id) > (@cursorPriority, @cursorDueNull, @cursorDueDate, @cursorProjectId, @cursorStatus, @cursorPosition, @cursorId)"
             : "WHERE (cursor_due_null, cursor_due_date, cursor_priority, cursor_project_id, cursor_status, cursor_position, cursor_id) > (@cursorDueNull, @cursorDueDate, @cursorPriority, @cursorProjectId, @cursorStatus, @cursorPosition, @cursorId)";
