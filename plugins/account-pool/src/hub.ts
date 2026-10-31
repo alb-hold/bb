@@ -113,6 +113,8 @@ interface HubOptions {
   fetch: typeof fetch;
   now: () => number;
   drainTimeoutMs: number;
+  mutationDrainTimeoutMs: number;
+  onMutationDrainTimeout: (accountIds: string[]) => void;
   getParentRoute: () => ParentPool | null;
   onAccountsChanged: () => void;
   onUpstreamError: (provider: PoolProvider, error: unknown) => void;
@@ -231,6 +233,7 @@ async function readBoundedBody(
 
 export class AccountPoolHub {
   private accepting = false;
+  private mutationDrainWarned = false;
   private stopped = new AbortController();
   private readonly inFlightByAccount = new Map<string, number>();
   private readonly activeControllers = new Set<AbortController>();
@@ -256,6 +259,7 @@ export class AccountPoolHub {
     const lifecycle = new AbortController();
     this.stopped = lifecycle;
     this.planBackfill = null;
+    this.mutationDrainWarned = false;
     const stop = () => lifecycle.abort(signal.reason);
     signal.addEventListener("abort", stop, { once: true });
     if (signal.aborted) stop();
@@ -767,7 +771,23 @@ export class AccountPoolHub {
         }
       }
     }
-    await this.options.accounts.drainMutations();
+    let mutationTimer: ReturnType<typeof setTimeout> | null = null;
+    const drained = await Promise.race([
+      this.options.accounts.drainMutations().then(() => true),
+      new Promise<false>((resolve) => {
+        mutationTimer = setTimeout(
+          () => resolve(false),
+          this.options.mutationDrainTimeoutMs,
+        );
+      }),
+    ]);
+    if (mutationTimer !== null) clearTimeout(mutationTimer);
+    if (!drained && !this.mutationDrainWarned) {
+      this.mutationDrainWarned = true;
+      this.options.onMutationDrainTimeout(
+        this.options.accounts.pendingPlanWrites(),
+      );
+    }
   }
 
   private planBackfill: Promise<void> | null = null;
@@ -2085,6 +2105,8 @@ export function createHub(options: {
   usageUrl?: string;
   profileUrl?: string;
   drainTimeoutMs?: number;
+  mutationDrainTimeoutMs?: number;
+  onMutationDrainTimeout?: (accountIds: string[]) => void;
   maxAffinityBindings?: number;
   getParentRoute?: () => ParentPool | null;
   onAccountsChanged?: () => void;
@@ -2124,6 +2146,8 @@ export function createHub(options: {
     fetch: options.fetch ?? fetch,
     now: options.now ?? Date.now,
     drainTimeoutMs: options.drainTimeoutMs ?? 60_000,
+    mutationDrainTimeoutMs: options.mutationDrainTimeoutMs ?? 3_000,
+    onMutationDrainTimeout: options.onMutationDrainTimeout ?? (() => {}),
     getParentRoute: options.getParentRoute ?? (() => null),
     onAccountsChanged: options.onAccountsChanged ?? (() => {}),
     onUpstreamError: options.onUpstreamError ?? (() => {}),

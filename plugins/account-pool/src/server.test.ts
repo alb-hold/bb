@@ -7103,12 +7103,14 @@ describe("Account Pool plugin", () => {
   async function profileLifecycleFixture(
     upstreamFetch: typeof fetch,
     beforePlugin?: (host: Fixture["host"]) => void,
+    options: AccountPoolPluginOptions = {},
   ) {
     const fixture = await createFixture({
       upstreamUrl: "https://upstream.example",
       beforePlugin,
       options: {
         drainTimeoutMs: 20,
+        ...options,
         oauthProfileUrl: "https://upstream.example/profile",
         usageUrl: "data:application/json,{}",
         fetch: (input, init) =>
@@ -7221,7 +7223,7 @@ describe("Account Pool plugin", () => {
           }
         } else await waitForIo(30);
       }
-      expect(maximum).toBe(1);
+      expect(maximum).toBe(restart ? 2 : 1);
       expect(Object.values(await store.planDisplayNames())).not.toContain(
         "Old Ultra",
       );
@@ -7232,6 +7234,180 @@ describe("Account Pool plugin", () => {
       expect(accounts).toHaveLength(4);
     },
   );
+
+  it("hard bounds an abort-ignoring profile request", async () => {
+    const { fixture, store, accounts } = await profileLifecycleFixture(
+      async () => Response.json(null),
+    );
+    const arrived = deferred();
+    const held = deferred();
+    const observed: { signal: AbortSignal | null } = { signal: null };
+    const adapter = createClaudeAdapter({
+      profileUrl: "https://upstream.example/profile",
+      usageUrl: "https://upstream.example/usage",
+      refreshUrl: "https://upstream.example/token",
+    });
+    vi.useFakeTimers();
+    let finished = false;
+    const pending = adapter.refreshProfile!({
+      account: accounts[0]!,
+      accounts: store,
+      quotas: new QuotaStore(fixture.host.bb.storage.database()),
+      now: Date.now,
+      freshSecret: async () => ({
+        kind: "oauth",
+        accessToken: "test",
+        refreshToken: "test",
+        expiresAt: Date.now() + 3600000,
+      }),
+      fetch: async (_input, init) => {
+        observed.signal = init?.signal ?? null;
+        arrived.resolve();
+        await held.promise;
+        return Response.json(null);
+      },
+    }).then(() => {
+      finished = true;
+    });
+    try {
+      await arrived.promise;
+      await vi.advanceTimersByTimeAsync(10001);
+      expect(finished).toBe(true);
+      expect(observed.signal?.aborted).toBe(true);
+    } finally {
+      held.resolve();
+      await pending;
+      vi.useRealTimers();
+    }
+  });
+
+  it("refreshes another account while an old generation ignores abort", async () => {
+    const arrived = deferred();
+    const held = deferred();
+    let calls = 0;
+    const { fixture, accounts, display } = await profileLifecycleFixture(
+      async (_input, init) => {
+        calls += 1;
+        if (calls === 1) {
+          arrived.resolve();
+          await held.promise;
+        }
+        return Response.json({
+          account: {
+            uuid: new Headers(init?.headers).get("authorization")!.slice(7),
+          },
+          organization: { plan_display_name: "Ultra" },
+        });
+      },
+    );
+    let next: Fixture["service"] | null = null;
+    try {
+      await display();
+      await arrived.promise;
+      fixture.service.controller.abort();
+      await fixture.service.done;
+      next = fixture.host.harness.behavior.runService("hub");
+      await vi.waitFor(async () =>
+        expect(
+          statusReportSchema.parse(
+            JSON.parse(
+              (await fixture.host.harness.behavior.runCli(["status", "--json"]))
+                .stdout,
+            ),
+          ).accepting,
+        ).toBe(true),
+      );
+      const refresh = fixture.host.harness.behavior.callRpc(usageFetchMethod, {
+        resourceId: accounts[1]!.id,
+        refresh: true,
+      });
+      const completed = await Promise.race([
+        refresh.then(() => true),
+        waitForIo(300).then(() => false),
+      ]);
+      expect(completed).toBe(true);
+    } finally {
+      held.resolve();
+      if (next !== null) {
+        next.controller.abort();
+        await next.done;
+      }
+    }
+  });
+
+  it("bounds shutdown when a plan KV write stalls and orders the restart after it", async () => {
+    const arrived = deferred();
+    const held = deferred();
+    let first = true;
+    let calls = 0;
+    const { fixture, store, accounts, display } = await profileLifecycleFixture(
+      async (_input, init) => {
+        calls += 1;
+        return Response.json({
+          account: {
+            uuid: new Headers(init?.headers).get("authorization")!.slice(7),
+          },
+          organization: {
+            plan_display_name: calls === 1 ? "Old Ultra" : "New Ultra",
+          },
+        });
+      },
+      (host) => {
+        const set = host.bb.storage.kv.set.bind(host.bb.storage.kv);
+        host.bb.storage.kv.set = async (key, value) => {
+          if (
+            first &&
+            key === "plan-display-names:v1" &&
+            Object.keys(value ?? {}).length > 0
+          ) {
+            first = false;
+            arrived.resolve();
+            await held.promise;
+          }
+          return set(key, value);
+        };
+      },
+      { mutationDrainTimeoutMs: 30 },
+    );
+    let next: Fixture["service"] | null = null;
+    try {
+      await display();
+      await arrived.promise;
+      vi.useFakeTimers();
+      let stopped = false;
+      fixture.service.controller.abort();
+      const stop = fixture.service.done.then(() => {
+        stopped = true;
+      });
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(stopped).toBe(true);
+      expect(
+        fixture.host.harness.inspection.logEntries.filter(
+          (entry) =>
+            JSON.stringify(entry).includes("mutation drain timed out") &&
+            JSON.stringify(entry).includes(accounts[0]!.id),
+        ),
+      ).toHaveLength(1);
+      await stop;
+      vi.useRealTimers();
+      next = fixture.host.harness.behavior.runService("hub");
+      await vi.waitFor(() => expect(calls).toBeGreaterThan(1));
+      held.resolve();
+      await vi.waitFor(async () =>
+        expect(Object.values(await store.planDisplayNames())).toEqual(
+          Array(4).fill("New Ultra"),
+        ),
+      );
+    } finally {
+      vi.useRealTimers();
+      held.resolve();
+      await fixture.service.done;
+      if (next !== null) {
+        next.controller.abort();
+        await next.done;
+      }
+    }
+  });
 
   it.each([false, true])(
     "drains a started plan write before restart with foreground refresh %s",

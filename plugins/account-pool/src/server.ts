@@ -81,6 +81,7 @@ export interface AccountPoolPluginOptions {
   codexUsageUrl?: string;
   usageUrl?: string;
   drainTimeoutMs?: number;
+  mutationDrainTimeoutMs?: number;
   threadSweepTimeoutMs?: number;
   threadSweepLookupTimeoutMs?: number;
   threadSweepIntervalMs?: number;
@@ -391,6 +392,11 @@ export function createAccountPoolPlugin(
       importClaudeCredentials: options.importCredentials,
       importCodexCredentials: options.importCodexCredentials,
       drainTimeoutMs: options.drainTimeoutMs,
+      mutationDrainTimeoutMs: options.mutationDrainTimeoutMs,
+      onMutationDrainTimeout: (ids) =>
+        bb.log.warn(
+          `Account Pooler mutation drain timed out for account ${ids.join(", ")}.`,
+        ),
       maxAffinityBindings: options.maxAffinityBindings,
       getParentRoute: proxyingParent,
       onUpstreamError: (provider, error) =>

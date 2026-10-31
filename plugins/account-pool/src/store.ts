@@ -68,6 +68,7 @@ export type RoutedThread = z.infer<typeof routedThreadSchema> & {
 
 export class AccountStore {
   private mutationLock: Promise<void> | null = null;
+  private readonly activePlanWrites = new Set<string>();
 
   constructor(
     private readonly kv: PluginKvStorage,
@@ -215,7 +216,12 @@ export class AccountStore {
       if (signal?.aborted) return;
       if (name === null) delete names[id];
       else names[id] = name;
-      await this.kv.set(PLAN_NAMES_KEY, planNamesSchema.parse(names));
+      this.activePlanWrites.add(id);
+      try {
+        await this.kv.set(PLAN_NAMES_KEY, planNamesSchema.parse(names));
+      } finally {
+        this.activePlanWrites.delete(id);
+      }
     });
   }
 
@@ -364,6 +370,10 @@ export class AccountStore {
   private accountSecretPath(id: string): string {
     z.string().uuid().parse(id);
     return path.join(this.secretsDir, `account-${id}.json`);
+  }
+
+  pendingPlanWrites(): string[] {
+    return [...this.activePlanWrites];
   }
 
   async drainMutations(): Promise<void> {
