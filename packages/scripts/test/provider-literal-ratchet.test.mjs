@@ -313,6 +313,14 @@ describe("ratchet CLI refusal paths (fixture root)", () => {
 });
 
 describe("ratchet CLI (against the real repo baseline)", () => {
+  it("fails closed when Git cannot read the index", () => {
+    const index = join(dir, "invalid-index");
+    writeFileSync(index, "invalid");
+    const result = run([], { GIT_INDEX_FILE: index });
+    expect(result.code).not.toBe(0);
+    expect(result.out).toContain("index file smaller than expected");
+  }, 30_000);
+
   it("ignores an untracked managed JSON CLI temp directory", () => {
     const temp = join(ROOT, "packages/bb-app/.managed-json-cli-TEST");
     mkdirSync(temp);

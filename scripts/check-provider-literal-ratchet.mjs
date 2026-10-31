@@ -215,8 +215,12 @@ function trackedDirectoriesIn(root) {
       maxBuffer: 16 * 1024 * 1024,
     });
   } catch (error) {
-    if (error.status !== 128) throw error;
-    return directories;
+    if (
+      error.status === 128 &&
+      error.stderr?.toString().includes("not a git repository")
+    )
+      return null;
+    throw error;
   }
   for (const path of tracked.split("\0")) {
     const parts = path.split("/");
