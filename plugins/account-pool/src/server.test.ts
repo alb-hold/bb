@@ -11859,11 +11859,16 @@ describe("Account Pool credential scoping", () => {
     );
     let lookups = 0;
     let hanging = true;
-    host.harness.sdk.stub("threads.get", () => {
-      lookups += 1;
-      if (hanging) return new Promise(() => undefined);
-      return makeThreadResponse({ id: "thread-deferred", archivedAt: null });
-    });
+    const lookupTimes: number[] = [];
+    host.harness.sdk.stub(
+      "threads.get",
+      ({ threadId }: { threadId: string }) => {
+        lookups += 1;
+        if (threadId === "thread-deferred") lookupTimes.push(performance.now());
+        if (hanging) return new Promise(() => undefined);
+        return makeThreadResponse({ id: "thread-deferred", archivedAt: null });
+      },
+    );
     const service = host.harness.behavior.runService("hub");
     try {
       await vi.waitFor(async () => {
@@ -11877,9 +11882,13 @@ describe("Account Pool credential scoping", () => {
       expect(startupLookups).toBeGreaterThan(0);
       await new Promise((resolve) => setTimeout(resolve, 180));
       expect(lookups).toBeGreaterThan(startupLookups);
-      expect(lookups - startupLookups).toBeLessThanOrEqual(5);
-      expect(JSON.stringify(host.harness.inspection.logEntries)).toContain(
-        "deferred 1",
+      expect(lookupTimes.length).toBeGreaterThan(1);
+      for (let i = 1; i < lookupTimes.length; i += 1)
+        expect(lookupTimes[i]! - lookupTimes[i - 1]!).toBeGreaterThanOrEqual(
+          39,
+        );
+      expect(JSON.stringify(host.harness.inspection.logEntries)).toMatch(
+        /checked \d+ threads, revoked \d+, failed 0, and deferred [1-9]\d*\./u,
       );
       const completedSweeps = () =>
         host.harness.inspection.logEntries.filter((entry) =>
