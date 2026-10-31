@@ -2313,26 +2313,72 @@ it("revokes a later archived thread even when every thread failed a prior sweep 
   const [hangA, hangB, archived] = await loadOrder(directory, names);
   if (hangA === undefined || hangB === undefined || archived === undefined)
     throw new Error("missing thread");
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  const deadlines: AbortController[] = [];
+  const timeout = vi.spyOn(AbortSignal, "timeout").mockImplementation((ms) => {
+    const deadline = new AbortController();
+    deadlines.push(deadline);
+    setTimeout(
+      () => deadline.abort(new DOMException("timed out", "TimeoutError")),
+      ms,
+    );
+    return deadline.signal;
+  });
   let archivedRecovered = false;
-  const lookup: ThreadLookup = (threadId) =>
-    threadId === archived && archivedRecovered
+  let dispatched = 0;
+  let signalStarted: () => void = () => undefined;
+  const lookup: ThreadLookup = (threadId) => {
+    if (++dispatched === 3) signalStarted();
+    return threadId === archived && archivedRecovered
       ? Promise.resolve("gone")
       : new Promise<never>(() => undefined);
-  const allFailed = await threads.sweepThreads(lookup, {
-    signal: AbortSignal.timeout(5_000),
-    lookupTimeoutMs: 20,
-  });
-  expect(allFailed).toEqual({ checked: 3, revoked: 0, failed: 3, deferred: 0 });
-  archivedRecovered = true;
-  let revoked = 0;
-  for (let sweeps = 0; revoked === 0 && sweeps < 4; sweeps += 1)
-    revoked += (
-      await threads.sweepThreads(lookup, {
-        signal: AbortSignal.timeout(40),
-        lookupTimeoutMs: 30,
-      })
-    ).revoked;
-  expect(revoked).toBe(1);
+  };
+  const sweep = async (budget: number, lookupTimeoutMs: number) => {
+    dispatched = 0;
+    timeout.mockClear();
+    const started = new Promise<void>((resolve) => {
+      signalStarted = resolve;
+    });
+    const global = AbortSignal.timeout(budget);
+    const pending = threads.sweepThreads(lookup, {
+      signal: global,
+      lookupTimeoutMs,
+    });
+    try {
+      await started;
+      expect(timeout.mock.calls).toEqual([
+        [budget],
+        [lookupTimeoutMs],
+        [lookupTimeoutMs],
+        [lookupTimeoutMs],
+      ]);
+      await vi.advanceTimersByTimeAsync(lookupTimeoutMs);
+      const result = await pending;
+      expect(global.aborted).toBe(false);
+      return result;
+    } finally {
+      for (const deadline of deadlines.splice(0)) deadline.abort();
+      await pending;
+      vi.clearAllTimers();
+    }
+  };
+  try {
+    const allFailed = await sweep(5_000, 20);
+    expect(allFailed).toEqual({
+      checked: 3,
+      revoked: 0,
+      failed: 3,
+      deferred: 0,
+    });
+    archivedRecovered = true;
+    let revoked = 0;
+    for (let sweeps = 0; revoked === 0 && sweeps < 4; sweeps += 1)
+      revoked += (await sweep(40, 30)).revoked;
+    expect(revoked).toBe(1);
+  } finally {
+    timeout.mockRestore();
+    vi.useRealTimers();
+  }
   expect(await threads.authenticate(tokenOf(archived).provider)).toBeNull();
   expect(await threads.authenticate(tokenOf(hangA).provider)).not.toBeNull();
   expect(await threads.authenticate(tokenOf(hangB).provider)).not.toBeNull();
