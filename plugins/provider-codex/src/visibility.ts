@@ -10,7 +10,9 @@ import {
 } from "@get-bb/plugin-sdk/provider-bridge";
 import type { ServerNotification } from "./generated/codex-app-server/schema/ServerNotification.js";
 
-type CodexServerNotificationMethod = ServerNotification["method"];
+type CodexServerNotificationMethod =
+  | ServerNotification["method"]
+  | "thread/readState/changed";
 
 interface CodexNotificationRawEvent {
   kind: "notification";
@@ -98,6 +100,7 @@ const CODEX_SERVER_NOTIFICATION_METHODS = {
   "thread/name/updated": true,
   "thread/project/updated": true,
   "thread/queue/changed": true,
+  "thread/readState/changed": true,
   "thread/settings/updated": true,
   "thread/realtime/closed": true,
   "thread/realtime/error": true,
@@ -186,6 +189,7 @@ const CODEX_NOTIFICATION_COVERAGE = {
   "thread/name/updated": "normalized",
   "thread/project/updated": "unknown",
   "thread/queue/changed": "unknown",
+  "thread/readState/changed": "noise",
   "thread/settings/updated": "noise",
   "thread/realtime/closed": "unknown",
   "thread/realtime/error": "unknown",
