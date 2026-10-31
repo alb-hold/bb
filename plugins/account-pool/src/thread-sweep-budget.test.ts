@@ -376,6 +376,13 @@ it("retries an early failed lookup first after a later cutoff and restart, then 
 it("completes rotations and revokes threads below and above a permanent state failure without starving new lower IDs", async () => {
   const { directory, hosts, store, tokens } = await fixture(192);
   const failedId = "thr_0048";
+  const archived = new Set([
+    "thr_0000",
+    "thr_0096",
+    "thr_0191",
+    "thr_0000_new",
+  ]);
+  const checked = new Set<string>();
   const hash = createHash("sha256").update(failedId).digest("hex");
   const rename = fs.rename.bind(fs);
   vi.spyOn(fs, "rename").mockImplementation(async (source, target) => {
@@ -398,8 +405,9 @@ it("completes rotations and revokes threads below and above a permanent state fa
           budget.abort();
           return new Promise(() => undefined);
         }
+        checked.add(id);
         if (id === failedId) failedCalls += 1;
-        return "archived";
+        return id === failedId || archived.has(id) ? "archived" : "live";
       },
       { signal: budget.signal },
     );
@@ -418,8 +426,12 @@ it("completes rotations and revokes threads below and above a permanent state fa
         ),
       );
   }
+  expect(checked.size).toBe(193);
   for (const [id, token] of tokens)
-    if (id !== failedId) expect(await store.authenticate(token)).toBeNull();
+    if (id !== failedId)
+      expect((await store.authenticate(token))?.threadId ?? null).toBe(
+        archived.has(id) ? null : id,
+      );
   expect(
     JSON.parse(
       await fs.readFile(path.join(directory, "thread-sweep.json"), "utf8"),
