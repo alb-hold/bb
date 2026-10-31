@@ -70,7 +70,7 @@ export function createUpstreamTransport(
   };
   const dispatcher = new EnvHttpProxyAgent({
     allowH2: false,
-    factory: (origin, options) =>
+    factory: (origin, options: Pool.Options) =>
       options.connections === 1
         ? new Client(origin, connectionOptions(options))
         : new Pool(origin, connectionOptions(options)),
