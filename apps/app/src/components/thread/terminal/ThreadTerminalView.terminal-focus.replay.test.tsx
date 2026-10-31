@@ -172,6 +172,18 @@ vi.mock("@/hooks/usePluginCommandBindings", () => ({
 afterEach(() => {
   vi.useRealTimers();
   cleanup();
+  for (const sheet of Array.from(document.styleSheets)) {
+    const owner = sheet.ownerNode;
+    if (owner instanceof HTMLStyleElement && !owner.isConnected) {
+      document.head.append(owner);
+      owner.remove();
+    }
+  }
+  expect(
+    Array.from(document.styleSheets).filter(
+      (sheet) => sheet.ownerNode !== null && !sheet.ownerNode.isConnected,
+    ),
+  ).toEqual([]);
   sessionStorage.removeItem("bb:terminal-viewport:term_mobile_paste");
   Reflect.set(wsManager, "deviceHandoffClientToken", null);
   vi.unstubAllGlobals();
