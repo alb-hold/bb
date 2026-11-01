@@ -1,4 +1,5 @@
-import { ChildProcess, execFileSync } from "node:child_process";
+import { ChildProcess, execFileSync, spawn } from "node:child_process";
+import { once } from "node:events";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as helper from "./test-processes.js";
 
@@ -106,4 +107,53 @@ describe("test process group teardown", () => {
     await result;
     expect(kill).toHaveBeenCalledExactlyOnceWith(-pid, "SIGKILL");
   });
+});
+
+describe.runIf(originalPlatform === "win32")("Windows descendant teardown", () => {
+  it("drains a recorded descendant after its leader exits", async () => {
+    Object.defineProperty(process, "platform", { value: originalPlatform });
+    const actual = await vi.importActual<typeof import("node:child_process")>(
+      "node:child_process",
+    );
+    vi.mocked(execFileSync).mockImplementation(actual.execFileSync);
+    const child = spawn(
+      process.execPath,
+      [
+        "-e",
+        `const { spawn } = require("node:child_process");
+        const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+          detached: true, stdio: "ignore"
+        });
+        child.unref();
+        console.log(child.pid);
+        process.stdin.once("data", () => process.exit(0));`,
+      ],
+      { stdio: ["pipe", "pipe", "ignore"] },
+    );
+    let descendant: number | undefined;
+    try {
+      const [data] = await once(child.stdout!, "data");
+      descendant = Number(String(data).trim());
+      expect(Number.isSafeInteger(descendant) && descendant > 0).toBe(true);
+      const cleanup = helper.trackTestProcess(child);
+      const exit = once(child, "exit");
+      child.stdin!.end("exit");
+      await exit;
+      expect(process.kill(descendant, 0)).toBe(true);
+      const started = Date.now();
+      await cleanup();
+      expect(Date.now() - started).toBeLessThan(5_000);
+      expect(() => process.kill(descendant!, 0)).toThrow();
+    } finally {
+      for (const owned of [descendant, child.pid]) {
+        if (owned === undefined) continue;
+        try {
+          actual.execFileSync("taskkill", ["/PID", String(owned), "/F"], {
+            stdio: "pipe",
+            timeout: 5_000,
+          });
+        } catch {}
+      }
+    }
+  }, 20_000);
 });
