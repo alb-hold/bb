@@ -8363,7 +8363,7 @@ describe("Account Pool plugin", () => {
       usageUrl: "https://upstream.example/usage",
       refreshUrl: "https://upstream.example/token",
     });
-    vi.useFakeTimers();
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     let finished = false;
     const pending = adapter.refreshProfile!({
       account: accounts[0]!,
@@ -8387,7 +8387,10 @@ describe("Account Pool plugin", () => {
     });
     try {
       await arrived.promise;
-      await vi.advanceTimersByTimeAsync(10001);
+      await vi.advanceTimersByTimeAsync(9999);
+      expect(finished).toBe(false);
+      expect(observed.signal?.aborted).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
       expect(finished).toBe(true);
       expect(observed.signal?.aborted).toBe(true);
     } finally {
@@ -8420,7 +8423,10 @@ describe("Account Pool plugin", () => {
     try {
       await display();
       await arrived.promise;
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
       fixture.service.controller.abort();
+      await vi.advanceTimersByTimeAsync(20);
+      vi.useRealTimers();
       await fixture.service.done;
       next = fixture.host.harness.behavior.runService("hub");
       await vi.waitFor(async () =>
@@ -8437,12 +8443,12 @@ describe("Account Pool plugin", () => {
         resourceId: accounts[1]!.id,
         refresh: true,
       });
-      const completed = await Promise.race([
-        refresh.then(() => true),
-        waitForIo(300).then(() => false),
-      ]);
-      expect(completed).toBe(true);
+      expect(usageMeasurementSchema.parse(await refresh).usage).toMatchObject({
+        status: "ok",
+        planLabel: "Ultra",
+      });
     } finally {
+      vi.useRealTimers();
       held.resolve();
       if (next !== null) {
         next.controller.abort();
