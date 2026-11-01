@@ -95,21 +95,73 @@ it("normalizes structured plans and windows while retaining custom provider labe
   });
 });
 
-it("preserves provider plan names over legacy structured tiers", () => {
-  const raw = usageMeasurementSchema.parse({
-    observedAt: 123,
-    usage: {
-      status: "ok",
-      accountEmail: null,
-      planLabel: "Ultra",
-      plan: { id: "max", multiplier: 20 },
-      windows: [],
-    },
-  });
-  expect(normalizeUsageMeasurement(raw, "claude-code").usage).toMatchObject({
+it.each([
+  {
+    providerId: "claude-code",
     planLabel: "Ultra",
-  });
-});
+    multiplier: 20,
+    expected: "Ultra",
+  },
+  {
+    providerId: "claude-code",
+    planLabel: "Max",
+    multiplier: 20,
+    expected: "Max (20x)",
+  },
+  {
+    providerId: "codex",
+    planLabel: "Max",
+    multiplier: 20,
+    expected: "Max (20x)",
+  },
+  {
+    providerId: "codex",
+    planLabel: "max",
+    multiplier: 5,
+    expected: "Max (5x)",
+  },
+  {
+    providerId: "claude-code",
+    planLabel: "Max",
+    multiplier: null,
+    expected: "Max",
+  },
+  {
+    providerId: "claude-code",
+    planLabel: "Custom Max",
+    multiplier: 20,
+    expected: "Custom Max",
+  },
+  {
+    providerId: "claude-code",
+    planLabel: "Max (5x)",
+    multiplier: 20,
+    expected: "Max (5x)",
+  },
+  {
+    providerId: "claude-code",
+    planLabel: "Claude subscription",
+    multiplier: 20,
+    expected: "Claude subscription",
+  },
+])(
+  "normalizes $providerId plan $planLabel with tier $multiplier to $expected",
+  ({ providerId, planLabel, multiplier, expected }) => {
+    const raw = usageMeasurementSchema.parse({
+      observedAt: 123,
+      usage: {
+        status: "ok",
+        accountEmail: null,
+        planLabel,
+        plan: multiplier === null ? null : { id: "max", multiplier },
+        windows: [],
+      },
+    });
+    expect(normalizeUsageMeasurement(raw, providerId).usage).toMatchObject({
+      planLabel: expected,
+    });
+  },
+);
 
 it.each([
   {

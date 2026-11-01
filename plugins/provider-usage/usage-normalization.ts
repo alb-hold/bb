@@ -19,6 +19,12 @@ export function normalizeUsageMeasurement(
     edu: "Education",
   };
   const plan = usage.plan;
+  const planLabel =
+    usage.planLabel !== null &&
+    /^max$/iu.test(usage.planLabel) &&
+    plan?.multiplier != null
+      ? `Max (${plan.multiplier}x)`
+      : usage.planLabel;
   const claudeMax = providerId === "claude-code" && plan?.id === "max";
   const planName = claudeMax
     ? "Claude subscription"
@@ -36,7 +42,7 @@ export function normalizeUsageMeasurement(
     usage: {
       ...usage,
       planLabel:
-        usage.planLabel ??
+        planLabel ??
         (planName
           ? `${planName}${plan?.multiplier == null || claudeMax ? "" : ` (${plan.multiplier}x)`}`
           : null),
