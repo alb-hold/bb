@@ -3,11 +3,9 @@ export function claudeLocalPlanLabel(credentials: {
   rateLimitTier?: string | null;
 }): string {
   const subscription = credentials.subscriptionType;
-  if (
-    !subscription ||
-    /max/iu.test(subscription) ||
-    /max_\d+x/iu.test(credentials.rateLimitTier ?? "")
-  ) {
+  const tier = credentials.rateLimitTier?.match(/max_(\d+)x/iu)?.[1];
+  if (tier === "20") return "Ultra";
+  if (!subscription || /max/iu.test(subscription) || tier !== undefined) {
     return "Claude subscription";
   }
   return subscription.charAt(0).toUpperCase() + subscription.slice(1);
@@ -26,7 +24,6 @@ export function claudeProfilePlanLabel(profile: {
   const max =
     profile.account.rate_limit_tier?.match(/max_(\d+)x/u) ??
     profile.organization?.rate_limit_tier?.match(/max_(\d+)x/u);
-  return name !== null && /^max$/iu.test(name) && max
-    ? `Max (${max[1]}x)`
-    : name;
+  if (max) return max[1] === "20" ? "Ultra" : "Claude subscription";
+  return name !== null && /max/iu.test(name) ? "Claude subscription" : name;
 }

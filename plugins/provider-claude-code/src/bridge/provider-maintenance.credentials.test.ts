@@ -124,10 +124,10 @@ describe("Claude Code credential loading", () => {
   it.each([
     ["Ultra", "max_20x", "organization", "Ultra"],
     ["Claude Ultra", "max_20x", "account", "Ultra"],
-    ["Future plan", "max_20x", "organization", "Future plan"],
-    ["Max", "max_20x", "organization", "Max (20x)"],
-    ["Claude Max", "max_5x", "account", "Max (5x)"],
-    [null, "max_20x", "organization", "Claude subscription"],
+    ["Future plan", "max_20x", "organization", "Ultra"],
+    ["Max", "max_20x", "organization", "Ultra"],
+    ["Claude Max", "max_5x", "account", "Claude subscription"],
+    [null, "max_20x", "organization", "Ultra"],
   ])(
     "uses the profile plan name %s over legacy max flags",
     async (displayName, tier, tierSource, expected) => {
@@ -443,7 +443,7 @@ it.each(["unavailable", "malformed"])(
     );
     const result = await getClaudeProviderUsage();
     expect(result).toMatchObject({
-      usage: { status: "ok", planLabel: "Claude subscription" },
+      usage: { status: "ok", planLabel: "Ultra" },
     });
     expect(JSON.stringify(result)).not.toContain(KEYCHAIN_ACCESS_TOKEN);
     expect(fetch).toHaveBeenCalledTimes(2);
@@ -471,7 +471,7 @@ it("keeps health local before usage and isolates cached profile labels by token"
   });
   vi.stubGlobal("fetch", noFetch);
   expect(await getClaudeProviderHealth()).toMatchObject({
-    health: { planLabel: "Claude subscription" },
+    health: { planLabel: "Ultra" },
   });
   expect(noFetch).not.toHaveBeenCalled();
   vi.stubGlobal(
@@ -481,20 +481,20 @@ it("keeps health local before usage and isolates cached profile labels by token"
       status: 200,
       json: async () =>
         url.endsWith("/profile")
-          ? { account: {}, organization: { plan_display_name: "Ultra" } }
+          ? { account: {}, organization: { plan_display_name: "Team" } }
           : { limits: [] },
     })),
   );
   expect(await getClaudeProviderUsage()).toMatchObject({
-    usage: { planLabel: "Ultra" },
+    usage: { planLabel: "Team" },
   });
   vi.stubGlobal("fetch", noFetch);
   expect(await getClaudeProviderHealth()).toMatchObject({
-    health: { planLabel: "Ultra" },
+    health: { planLabel: "Team" },
   });
   setToken("cache-isolation-second-token");
   expect(await getClaudeProviderHealth()).toMatchObject({
-    health: { planLabel: "Claude subscription" },
+    health: { planLabel: "Ultra" },
   });
   expect(noFetch).not.toHaveBeenCalled();
 });

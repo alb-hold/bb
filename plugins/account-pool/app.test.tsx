@@ -859,8 +859,8 @@ describe("Account Pool settings", () => {
     expect(
       slot.queryByRole("button", { name: /^Sign in again to / }),
     ).toBeNull();
-    expect(slot.getAllByText("Claude subscription")).toHaveLength(2);
-    for (const badge of slot.getAllByText("Claude subscription")) {
+    expect(slot.getAllByText("Ultra")).toHaveLength(2);
+    for (const badge of slot.getAllByText("Ultra")) {
       expect(badge.className).toContain("whitespace-nowrap");
       expect(badge.parentElement?.className).toContain("shrink-0");
     }
@@ -995,17 +995,17 @@ describe("Account Pool settings", () => {
     expect(slot.queryByText("7d · Other")).toBeNull();
   });
 
-  it("shows a neutral plan on a cold read without provider metadata", async () => {
+  it("shows Ultra for the legacy 20x tier on a cold read without provider metadata", async () => {
     const current = account({
       label: "Cold subscription",
       rateLimitTier: "default_claude_max_20x",
     });
     const slot = render([current], { "display.get": () => ({ plans: {} }) });
-    expect(await slot.findByText("Claude subscription")).toBeTruthy();
+    expect(await slot.findByText("Ultra")).toBeTruthy();
     expect(slot.queryByText("Max (20x)")).toBeNull();
     await openActions(slot, current.label);
     fireEvent.click(await slot.findByText("Usage details"));
-    expect(slot.getAllByText("Claude subscription").length).toBeGreaterThan(1);
+    expect(slot.getAllByText("Ultra").length).toBeGreaterThan(1);
   });
 
   it("shows Ultra badges and usage details from display metadata over a legacy Max record", async () => {
@@ -1021,6 +1021,38 @@ describe("Account Pool settings", () => {
     await openActions(slot, current.label);
     fireEvent.click(await slot.findByText("Usage details"));
     expect(slot.getAllByText("Ultra").length).toBeGreaterThan(1);
+  });
+
+  it("keeps reported Max off Claude API-key badges and retains non-Claude Max tiers", async () => {
+    const apiKey = account({
+      label: "Claude API-key fixture",
+      kind: "api-key",
+      subscriptionType: null,
+      rateLimitTier: null,
+      email: null,
+    });
+    const codex = account({
+      id: "22222222-2222-4222-8222-222222222222",
+      provider: "codex",
+      label: "Codex Max fixture",
+      subscriptionType: "max",
+      rateLimitTier: "max_20x",
+    });
+    const slot = render([apiKey, codex], {
+      "display.get": () => ({
+        plans: { [apiKey.id]: "Max", [codex.id]: "Max" },
+      }),
+    });
+    expect(await slot.findByText("Max (20x)")).toBeTruthy();
+    const claude = within(
+      slot.getByRole("group", { name: "Claude subscriptions" }),
+    );
+    expect(claude.getByText("API key")).toBeTruthy();
+    expect(claude.queryByText(/^Max(?: \(.*\))?$/u)).toBeNull();
+    const nonClaude = within(
+      slot.getByRole("group", { name: "Codex subscriptions" }),
+    );
+    expect(nonClaude.getByText("Max (20x)")).toBeTruthy();
   });
 
   it("shows the plan from the tier and opens usage details for a Codex subscription", async () => {

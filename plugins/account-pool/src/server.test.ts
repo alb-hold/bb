@@ -72,7 +72,9 @@ interface Fixture {
   dataDir: string;
   host: ReturnType<typeof createAccountPoolTestHost>;
   service: ReturnType<
-    ReturnType<typeof createAccountPoolTestHost>["harness"]["behavior"]["runService"]
+    ReturnType<
+      typeof createAccountPoolTestHost
+    >["harness"]["behavior"]["runService"]
   >;
   key: string;
   account: AccountSummary;
@@ -8886,14 +8888,14 @@ describe("Account Pool plugin", () => {
         await arrived.promise;
         expect(await display()).toMatchObject({ plans: {} });
         expect(await display()).toMatchObject({ plans: {} });
-        expect((await table()).stdout).toContain("Claude subscription");
+        expect((await table()).stdout).toContain("Ultra");
         const usage = usageMeasurementSchema.parse(
           await fixture.host.harness.behavior.callRpc(usageFetchMethod, {
             resourceId: fixture.account.id,
             refresh: false,
           }),
         );
-        expect(usage.usage).toMatchObject({ planLabel: "Claude subscription" });
+        expect(usage.usage).toMatchObject({ planLabel: "Ultra" });
         expect(calls).toBe(1);
       } finally {
         release.resolve();
@@ -8911,11 +8913,9 @@ describe("Account Pool plugin", () => {
             },
           }),
         );
-        expect((await table()).stdout).toContain(
-          outcome === "max" ? "Max (20x)" : "Ultra",
-        );
+        expect((await table()).stdout).toContain("Ultra");
       } else {
-        expect((await table()).stdout).toContain("Claude subscription");
+        expect((await table()).stdout).toContain("Ultra");
         expect((await table()).stdout).not.toContain("Max (");
         expect(calls).toBe(1);
         now += 5 * 60 * 1000;
@@ -9154,7 +9154,7 @@ describe("Account Pool plugin", () => {
         refresh: false,
       }),
     );
-    expect(fetched.usage).toMatchObject({ planLabel: "Max (20x)" });
+    expect(fetched.usage).toMatchObject({ planLabel: "Ultra" });
     expect(profileCalls.length).toBeGreaterThan(0);
     expect(profileCalls.every((value) => value === "Bearer oauth-access")).toBe(
       true,

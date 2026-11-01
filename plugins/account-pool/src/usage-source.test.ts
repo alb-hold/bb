@@ -1,7 +1,22 @@
 import { describe, expect, it } from "vitest";
 import { usagePlanLabel, usageWindowLabel } from "./usage-source.js";
+import { displayPlanLabel } from "./display.js";
 
 describe("usage presentation labels", () => {
+  it.each([
+    ["claude", "api-key", null, null, "Claude subscription"],
+    ["codex", "oauth", "max", "max_20x", "Max (20x)"],
+  ] as const)(
+    "normalizes reported Max for %s %s accounts without changing other providers",
+    (provider, kind, subscriptionType, rateLimitTier, expected) => {
+      expect(
+        displayPlanLabel(
+          { provider, kind, subscriptionType, rateLimitTier },
+          "Max",
+        ),
+      ).toBe(expected);
+    },
+  );
   it("names known windows consistently and retains other durations", () => {
     expect(usageWindowLabel(10_080, "primary")).toBe("Weekly limit");
     expect(usageWindowLabel(300, "secondary")).toBe("Five-hour limit");
@@ -20,7 +35,7 @@ describe("usage presentation labels", () => {
         },
         "Max",
       ),
-    ).toBe("Max (20x)");
+    ).toBe("Ultra");
     expect(
       usagePlanLabel(
         {
@@ -31,7 +46,7 @@ describe("usage presentation labels", () => {
         },
         "Max",
       ),
-    ).toBe("Max");
+    ).toBe("Claude subscription");
     expect(
       usagePlanLabel({
         provider: "claude",
@@ -39,7 +54,7 @@ describe("usage presentation labels", () => {
         subscriptionType: "max",
         rateLimitTier: "max_20x",
       }),
-    ).toBe("Claude subscription");
+    ).toBe("Ultra");
     expect(
       usagePlanLabel({
         provider: "claude",
@@ -47,7 +62,7 @@ describe("usage presentation labels", () => {
         subscriptionType: "claude_max",
         rateLimitTier: "max_20x",
       }),
-    ).toBe("Claude subscription");
+    ).toBe("Ultra");
     expect(
       usagePlanLabel({
         provider: "claude",
@@ -73,7 +88,7 @@ describe("usage presentation labels", () => {
         subscriptionType: "pro",
         rateLimitTier: "max_20x",
       }),
-    ).toBe("Claude subscription");
+    ).toBe("Ultra");
     expect(
       usagePlanLabel({
         provider: "codex",
@@ -100,6 +115,17 @@ describe("usage presentation labels", () => {
     ).toBeNull();
   });
   it("retains known subscription labels for Claude API-key accounts", () => {
+    expect(
+      usagePlanLabel(
+        {
+          provider: "codex",
+          kind: "oauth",
+          subscriptionType: "max",
+          rateLimitTier: "max_20x",
+        },
+        "Max",
+      ),
+    ).toBe("Max (20x)");
     expect(
       usagePlanLabel({
         provider: "claude",

@@ -392,7 +392,7 @@ it.each([
     providerId: "claude-code",
     planLabel: null,
     multiplier: 20,
-    expected: "Claude subscription",
+    expected: "Ultra",
   },
   { providerId: "codex", planLabel: null, multiplier: 5, expected: "Max (5x)" },
   {
