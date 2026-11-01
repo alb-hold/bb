@@ -16,7 +16,10 @@ import net from "node:net";
 import path from "node:path";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { setTimeout as waitForIo } from "node:timers/promises";
+import {
+  setImmediate as yieldToIo,
+  setTimeout as waitForIo,
+} from "node:timers/promises";
 import {
   makeThreadResponse,
   type ExperimentalFakeHostRpcCall,
@@ -8363,7 +8366,7 @@ describe("Account Pool plugin", () => {
       usageUrl: "https://upstream.example/usage",
       refreshUrl: "https://upstream.example/token",
     });
-    vi.useFakeTimers();
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     let finished = false;
     const pending = adapter.refreshProfile!({
       account: accounts[0]!,
@@ -8387,7 +8390,10 @@ describe("Account Pool plugin", () => {
     });
     try {
       await arrived.promise;
-      await vi.advanceTimersByTimeAsync(10001);
+      await vi.advanceTimersByTimeAsync(9999);
+      expect(finished).toBe(false);
+      expect(observed.signal?.aborted).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
       expect(finished).toBe(true);
       expect(observed.signal?.aborted).toBe(true);
     } finally {
@@ -8417,10 +8423,36 @@ describe("Account Pool plugin", () => {
       },
     );
     let next: Fixture["service"] | null = null;
+    let pendingIo = 0;
+    const readSecret = AccountStore.prototype.readSecret;
+    const list = HubTokenStore.prototype.list;
+    const reads = vi
+      .spyOn(AccountStore.prototype, "readSecret")
+      .mockImplementation(async function (this: AccountStore, ...args) {
+        pendingIo += 1;
+        try {
+          return await readSecret.apply(this, args);
+        } finally {
+          pendingIo -= 1;
+        }
+      });
+    const lists = vi
+      .spyOn(HubTokenStore.prototype, "list")
+      .mockImplementation(async function (this: HubTokenStore) {
+        pendingIo += 1;
+        try {
+          return await list.call(this);
+        } finally {
+          pendingIo -= 1;
+        }
+      });
     try {
       await display();
       await arrived.promise;
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
       fixture.service.controller.abort();
+      await vi.advanceTimersByTimeAsync(20);
+      vi.useRealTimers();
       await fixture.service.done;
       next = fixture.host.harness.behavior.runService("hub");
       await vi.waitFor(async () =>
@@ -8433,16 +8465,31 @@ describe("Account Pool plugin", () => {
           ).accepting,
         ).toBe(true),
       );
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
       const refresh = fixture.host.harness.behavior.callRpc(usageFetchMethod, {
         resourceId: accounts[1]!.id,
         refresh: true,
       });
-      const completed = await Promise.race([
-        refresh.then(() => true),
-        waitForIo(300).then(() => false),
-      ]);
+      let completed = false;
+      void refresh.then(() => {
+        completed = true;
+      });
+      for (let elapsed = 0; elapsed < 300 && !completed; ) {
+        await yieldToIo();
+        if (pendingIo === 0) {
+          await vi.advanceTimersByTimeAsync(1);
+          elapsed += 1;
+        }
+      }
       expect(completed).toBe(true);
+      expect(usageMeasurementSchema.parse(await refresh).usage).toMatchObject({
+        status: "ok",
+        planLabel: "Ultra",
+      });
     } finally {
+      reads.mockRestore();
+      lists.mockRestore();
+      vi.useRealTimers();
       held.resolve();
       if (next !== null) {
         next.controller.abort();
