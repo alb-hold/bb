@@ -52,6 +52,36 @@ describe("bb thread show command output", () => {
   }
 
   it.each(
+    [false, true].flatMap((pending) =>
+      [false, true].map((json) => ({ pending, json })),
+    ),
+  )("shows pending input=$pending in json=$json", async ({ pending, json }) => {
+    const thread = {
+        ...fixtures.makeThread({
+          id: "thr-question",
+          projectId: "project-question",
+          providerId: "codex",
+          status: "active",
+        }),
+      hasPendingInteraction: pending,
+      runtime: { displayStatus: "active" },
+    };
+    stubThreadApi({
+      "v1.threads.:id.$get": async () => thread,
+      "v1.threads.:id.timeline.$get": fixtures.makeEmptyTimelineGetMock(),
+    });
+    await runCommand(
+      ["thread", "show", thread.id, ...(json ? ["--json"] : [])],
+      register,
+    );
+    const output = collectLogLines(vi.mocked(console.log)).join("\n");
+    if (json)
+      expect(JSON.parse(output).thread.hasPendingInteraction).toBe(pending);
+    else
+      expect(output).toContain(`Status: ${pending ? "needs-input" : "active"}`);
+  });
+
+  it.each(
     [false, true].flatMap((clean) =>
       [false, true].map((json) => ({ clean, json })),
     ),

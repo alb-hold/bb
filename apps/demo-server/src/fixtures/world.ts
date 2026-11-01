@@ -96,7 +96,6 @@ export function threadResponse(
   const {
     activity: _activity,
     pinSortKey: _pinSortKey,
-    hasPendingInteraction: _hasPendingInteraction,
     environmentHostId: _environmentHostId,
     environmentName: _environmentName,
     environmentBranchName: _environmentBranchName,

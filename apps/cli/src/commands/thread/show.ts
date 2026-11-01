@@ -6,7 +6,6 @@ import {
   estimateCompactionSavings,
   summarizeTokenWeather,
   type Environment,
-  type Thread,
   type ThreadEventRow,
   type ThreadTimelinePendingTodos,
 } from "@bb/domain";
@@ -25,6 +24,7 @@ import {
 import {
   BbHttpError,
   type BbSdk,
+  type ThreadGetResult,
   type ThreadExecutionProfileResult,
   type ThreadChildSummaryResult,
   type ThreadSpendSummaryResult,
@@ -87,7 +87,7 @@ interface ThreadOutputCommandOptions {
 
 interface ThreadStatusPayload {
   lastError?: string | null;
-  thread: Thread;
+  thread: ThreadGetResult;
 }
 
 type ThreadShowEnvironmentJsonPayload = Environment & {
@@ -823,7 +823,9 @@ function printThreadStatus(
 ): void {
   const { thread } = payload;
   console.log(`Thread: ${thread.id}`);
-  console.log(`  Status: ${thread.status}`);
+  console.log(
+    `  Status: ${thread.hasPendingInteraction ? "needs-input" : thread.status}`,
+  );
   if (payload.lastError != null) {
     console.log(`  Error: ${payload.lastError}`);
   }

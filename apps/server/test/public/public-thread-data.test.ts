@@ -1,6 +1,7 @@
 import { and, eq } from "drizzle-orm";
 import {
   claimQueuedThreadMessageGroup,
+  createPendingInteraction,
   createQueuedThreadMessageId,
   createThreadSection,
   deleteQueuedThreadMessage,
@@ -95,6 +96,39 @@ const clientTurnRequestedDataSchema = z.object({
 type TimelineTurnRow = Extract<TimelineRow, { kind: "turn" }>;
 
 describe("public thread data routes", () => {
+  it("reports pending interaction state through thread GET", async () => {
+    await withTestHarness(async (harness) => {
+      const { project, environment, thread } = seedThreadFixture(harness, {
+        thread: { status: "active" },
+      });
+      const withoutInteraction = seedThread(harness.deps, {
+        projectId: project.id,
+        environmentId: environment.id,
+        status: "active",
+      });
+      createPendingInteraction(harness.db, {
+        threadId: thread.id,
+        providerId: thread.providerId,
+        providerThreadId: "native-session",
+        providerRequestId: "native-question",
+        turnId: "turn-question",
+        payload: JSON.stringify({ method: "AskUserQuestion" }),
+      });
+
+      for (const [id, hasPendingInteraction] of [
+        [thread.id, true],
+        [withoutInteraction.id, false],
+      ] as const) {
+        const response = await harness.app.request(`/api/v1/threads/${id}`);
+        expect(response.status).toBe(200);
+        expect(await readJson(response)).toMatchObject({
+          id,
+          hasPendingInteraction,
+        });
+      }
+    });
+  });
+
   it("manages sections through the canonical public route lifecycle", async () => {
     await withTestHarness(async (harness) => {
       const initialList = await harness.app.request("/api/v1/thread-sections");

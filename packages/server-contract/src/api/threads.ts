@@ -555,6 +555,7 @@ export const threadSearchResponseSchema = z
 export type ThreadSearchResponse = z.infer<typeof threadSearchResponseSchema>;
 
 export const threadResponseSchema = threadWithRuntimeSchema.extend({
+  hasPendingInteraction: z.boolean(),
   nativeTerminal: z.boolean().optional(),
   activeBackgroundAgentCount: z.number().int().nonnegative(),
   /**
