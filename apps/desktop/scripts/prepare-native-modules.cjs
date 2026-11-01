@@ -297,8 +297,6 @@ async function preparePackagedNativeModules(appOutDir, options = {}) {
   }
   await Promise.all(nodePtyDirectories.map(prepareNodePtyPackageDirectory));
 
-  // The Electron target is only known on the real afterPack path. Standalone
-  // invocations (e.g. tests, manual node-pty repair) omit it and skip the fetch.
   if (options.electronVersion === undefined) {
     return { betterSqlite3Directories: [], nodePtyDirectories };
   }
@@ -357,8 +355,6 @@ function resolveArchName(context) {
       return archName;
     }
   } catch {
-    // electron-builder is only resolvable inside the build process; fall back to
-    // the host architecture, which matches single-arch builds on a native host.
   }
   return process.arch;
 }
