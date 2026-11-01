@@ -85,7 +85,7 @@ it("normalizes structured plans and windows while retaining custom provider labe
   expect(normalizeUsageMeasurement(raw, "claude-code")).toMatchObject({
     accountKey: null,
     usage: {
-      planLabel: "Claude subscription",
+      planLabel: "Ultra",
       windows: [
         { label: "Weekly limit" },
         { label: "Weekly · Fable" },
@@ -98,6 +98,18 @@ it("normalizes structured plans and windows while retaining custom provider labe
 it.each([
   {
     providerId: "claude-code",
+    planLabel: "Max",
+    multiplier: 5,
+    expected: "Claude subscription",
+  },
+  {
+    providerId: "claude-code",
+    planLabel: "Max",
+    multiplier: 2,
+    expected: "Claude subscription",
+  },
+  {
+    providerId: "claude-code",
     planLabel: "Ultra",
     multiplier: 20,
     expected: "Ultra",
@@ -106,7 +118,7 @@ it.each([
     providerId: "claude-code",
     planLabel: "Max",
     multiplier: 20,
-    expected: "Max (20x)",
+    expected: "Ultra",
   },
   {
     providerId: "codex",
@@ -124,25 +136,25 @@ it.each([
     providerId: "claude-code",
     planLabel: "Max",
     multiplier: null,
-    expected: "Max",
+    expected: "Claude subscription",
   },
   {
     providerId: "claude-code",
     planLabel: "Custom Max",
     multiplier: 20,
-    expected: "Custom Max",
+    expected: "Ultra",
   },
   {
     providerId: "claude-code",
     planLabel: "Max (5x)",
     multiplier: 20,
-    expected: "Max (5x)",
+    expected: "Ultra",
   },
   {
     providerId: "claude-code",
     planLabel: "Claude subscription",
     multiplier: 20,
-    expected: "Claude subscription",
+    expected: "Ultra",
   },
 ])(
   "normalizes $providerId plan $planLabel with tier $multiplier to $expected",
@@ -167,7 +179,7 @@ it.each([
   {
     providerId: "claude-code",
     multiplier: 20,
-    expected: "Claude subscription",
+    expected: "Ultra",
   },
   { providerId: "custom", multiplier: 5, expected: "Max (5x)" },
 ])(

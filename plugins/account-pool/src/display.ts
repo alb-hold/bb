@@ -32,7 +32,10 @@ export function displayPlanLabel(
       organization: { plan_display_name: displayName },
     });
   }
-  if (account.provider === "claude" && account.kind === "oauth") {
+  if (
+    account.provider === "claude" &&
+    (account.kind === "oauth" || account.subscriptionType !== null)
+  ) {
     return claudeLocalPlanLabel(account);
   }
   const subscription = account.subscriptionType;

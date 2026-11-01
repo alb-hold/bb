@@ -6,6 +6,18 @@ import {
 
 it.each([
   {
+    name: "Max",
+    subscriptionType: "max",
+    rateLimitTier: "max_5x",
+    expected: "Claude subscription",
+  },
+  {
+    name: null,
+    subscriptionType: "max",
+    rateLimitTier: "max_5x",
+    expected: "Claude subscription",
+  },
+  {
     name: "Ultra",
     subscriptionType: "max",
     rateLimitTier: "max_20x",
@@ -15,13 +27,13 @@ it.each([
     name: "Max",
     subscriptionType: "max",
     rateLimitTier: "max_20x",
-    expected: "Max (20x)",
+    expected: "Ultra",
   },
   {
     name: "Max",
     subscriptionType: "max",
     rateLimitTier: null,
-    expected: "Max",
+    expected: "Claude subscription",
   },
   {
     name: "Claude Ultra",
@@ -33,19 +45,19 @@ it.each([
     name: null,
     subscriptionType: "max",
     rateLimitTier: "max_20x",
-    expected: "Claude subscription",
+    expected: "Ultra",
   },
   {
     name: null,
     subscriptionType: "claude_max",
     rateLimitTier: "max_20x",
-    expected: "Claude subscription",
+    expected: "Ultra",
   },
   {
     name: null,
     subscriptionType: "pro",
     rateLimitTier: "max_20x",
-    expected: "Claude subscription",
+    expected: "Ultra",
   },
   { name: null, subscriptionType: "pro", rateLimitTier: null, expected: "Pro" },
   {
@@ -67,7 +79,9 @@ it.each([
       account: { rate_limit_tier: rateLimitTier },
       organization: { plan_display_name: name },
     });
-    expect(profileLabel).toBe(name === null ? null : expected);
+    expect(profileLabel).toBe(
+      name === null && rateLimitTier === null ? null : expected,
+    );
     expect(
       profileLabel ?? claudeLocalPlanLabel({ subscriptionType, rateLimitTier }),
     ).toBe(expected);

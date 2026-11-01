@@ -124,6 +124,7 @@ behavior, URL restrictions, and stale/foreign ID failures before stabilizing.
 
 Plugin Guide surface: `The bb SDK` in
 `plugins/plugin-api-docs/src/surfaces.ts`.
+
 ## Application link approvals (`@get-bb/plugin-sdk/app`)
 
 `experimental_getApplicationLinkApprovals()` lists approved URL schemes on the
@@ -4609,11 +4610,10 @@ removing the prefix.
 `internal_DO_NOT_USE_claudeLocalPlanLabel`, in the provider bridge SDK share the
 Anthropic OAuth profile boundary between Account Pooler and Claude Code provider.
 These are internal plumbing for those two first-party plugins only. Provider
-plan display names take precedence over legacy subscription and rate-limit flags.
+plan labels share the same legacy-tier interpretation.
 The plan-label helpers are also exported from the side-effect-free SDK root for
-Account Pooler app display. Explicit Max names retain the provider-reported tier
-multiplier; other provider plan names are preserved.
-Without a provider name, both plugins use the same local fallback: missing
-subscriptions, subscriptions containing Max, or legacy Max rate-limit tiers
-produce Claude subscription; other subscriptions are capitalized. Keep both
+Account Pooler app display. Legacy max_20x tiers display Ultra; other Max tiers
+or names display Claude subscription. Without a provider name, missing
+subscriptions also display Claude subscription; other subscriptions are
+capitalized. Keep both
 helpers free of schema imports so app display does not eagerly load the parser.

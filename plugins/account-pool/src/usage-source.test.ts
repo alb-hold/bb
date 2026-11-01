@@ -20,7 +20,7 @@ describe("usage presentation labels", () => {
         },
         "Max",
       ),
-    ).toBe("Max (20x)");
+    ).toBe("Ultra");
     expect(
       usagePlanLabel(
         {
@@ -31,7 +31,7 @@ describe("usage presentation labels", () => {
         },
         "Max",
       ),
-    ).toBe("Max");
+    ).toBe("Claude subscription");
     expect(
       usagePlanLabel({
         provider: "claude",
@@ -39,7 +39,7 @@ describe("usage presentation labels", () => {
         subscriptionType: "max",
         rateLimitTier: "max_20x",
       }),
-    ).toBe("Claude subscription");
+    ).toBe("Ultra");
     expect(
       usagePlanLabel({
         provider: "claude",
@@ -47,7 +47,7 @@ describe("usage presentation labels", () => {
         subscriptionType: "claude_max",
         rateLimitTier: "max_20x",
       }),
-    ).toBe("Claude subscription");
+    ).toBe("Ultra");
     expect(
       usagePlanLabel({
         provider: "claude",
@@ -73,7 +73,7 @@ describe("usage presentation labels", () => {
         subscriptionType: "pro",
         rateLimitTier: "max_20x",
       }),
-    ).toBe("Claude subscription");
+    ).toBe("Ultra");
     expect(
       usagePlanLabel({
         provider: "codex",
