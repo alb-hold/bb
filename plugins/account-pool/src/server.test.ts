@@ -8423,6 +8423,29 @@ describe("Account Pool plugin", () => {
       },
     );
     let next: Fixture["service"] | null = null;
+    let pendingIo = 0;
+    const readSecret = AccountStore.prototype.readSecret;
+    const list = HubTokenStore.prototype.list;
+    const reads = vi
+      .spyOn(AccountStore.prototype, "readSecret")
+      .mockImplementation(async function (this: AccountStore, ...args) {
+        pendingIo += 1;
+        try {
+          return await readSecret.apply(this, args);
+        } finally {
+          pendingIo -= 1;
+        }
+      });
+    const lists = vi
+      .spyOn(HubTokenStore.prototype, "list")
+      .mockImplementation(async function (this: HubTokenStore) {
+        pendingIo += 1;
+        try {
+          return await list.call(this);
+        } finally {
+          pendingIo -= 1;
+        }
+      });
     try {
       await display();
       await arrived.promise;
@@ -8451,9 +8474,12 @@ describe("Account Pool plugin", () => {
       void refresh.then(() => {
         completed = true;
       });
-      for (let elapsed = 0; elapsed < 300 && !completed; elapsed += 1) {
+      for (let elapsed = 0; elapsed < 300 && !completed; ) {
         await yieldToIo();
-        await vi.advanceTimersByTimeAsync(1);
+        if (pendingIo === 0) {
+          await vi.advanceTimersByTimeAsync(1);
+          elapsed += 1;
+        }
       }
       expect(completed).toBe(true);
       expect(usageMeasurementSchema.parse(await refresh).usage).toMatchObject({
@@ -8461,6 +8487,8 @@ describe("Account Pool plugin", () => {
         planLabel: "Ultra",
       });
     } finally {
+      reads.mockRestore();
+      lists.mockRestore();
       vi.useRealTimers();
       held.resolve();
       if (next !== null) {
