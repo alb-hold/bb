@@ -16,7 +16,10 @@ import net from "node:net";
 import path from "node:path";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { setTimeout as waitForIo } from "node:timers/promises";
+import {
+  setImmediate as yieldToIo,
+  setTimeout as waitForIo,
+} from "node:timers/promises";
 import {
   makeThreadResponse,
   type ExperimentalFakeHostRpcCall,
@@ -8439,10 +8442,20 @@ describe("Account Pool plugin", () => {
           ).accepting,
         ).toBe(true),
       );
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
       const refresh = fixture.host.harness.behavior.callRpc(usageFetchMethod, {
         resourceId: accounts[1]!.id,
         refresh: true,
       });
+      let completed = false;
+      void refresh.then(() => {
+        completed = true;
+      });
+      for (let elapsed = 0; elapsed < 300 && !completed; elapsed += 1) {
+        await yieldToIo();
+        await vi.advanceTimersByTimeAsync(1);
+      }
+      expect(completed).toBe(true);
       expect(usageMeasurementSchema.parse(await refresh).usage).toMatchObject({
         status: "ok",
         planLabel: "Ultra",
