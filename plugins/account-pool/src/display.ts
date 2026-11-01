@@ -32,13 +32,13 @@ export function displayPlanLabel(
       organization: { plan_display_name: displayName },
     });
   }
-  if (account.provider !== "claude") {
-    const subscription = account.subscriptionType;
-    return subscription
-      ? subscription.charAt(0).toUpperCase() + subscription.slice(1)
-      : null;
+  if (account.provider === "claude" && account.kind === "oauth") {
+    return claudeLocalPlanLabel(account);
   }
-  return account.kind === "oauth" ? claudeLocalPlanLabel(account) : null;
+  const subscription = account.subscriptionType;
+  return subscription
+    ? subscription.charAt(0).toUpperCase() + subscription.slice(1)
+    : null;
 }
 
 export function modelWeeklyRows(

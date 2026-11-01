@@ -99,4 +99,30 @@ describe("usage presentation labels", () => {
       }),
     ).toBeNull();
   });
+  it("retains known subscription labels for Claude API-key accounts", () => {
+    expect(
+      usagePlanLabel({
+        provider: "claude",
+        kind: "api-key",
+        subscriptionType: "pro",
+        rateLimitTier: null,
+      }),
+    ).toBe("Pro");
+    expect(
+      usagePlanLabel({
+        provider: "claude",
+        kind: "api-key",
+        subscriptionType: null,
+        rateLimitTier: null,
+      }),
+    ).toBeNull();
+    expect(
+      usagePlanLabel({
+        provider: "codex",
+        kind: "oauth",
+        subscriptionType: "pro",
+        rateLimitTier: null,
+      }),
+    ).toBe("Pro");
+  });
 });
