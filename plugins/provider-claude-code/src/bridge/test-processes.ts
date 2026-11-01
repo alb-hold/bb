@@ -1,4 +1,4 @@
-import { type ChildProcess, execFileSync } from "node:child_process";
+import { type ChildProcess, execFile, execFileSync } from "node:child_process";
 import { setTimeout as delay } from "node:timers/promises";
 
 function hasLiveGroupMembers(pid: number, deadline: number): boolean {
@@ -14,22 +14,20 @@ function hasLiveGroupMembers(pid: number, deadline: number): boolean {
     });
 }
 
+const windowsSnapshotArguments = [
+  "-NoLogo",
+  "-NoProfile",
+  "-NonInteractive",
+  "-Command",
+  'Get-CimInstance Win32_Process | ForEach-Object { "$($_.ProcessId) $($_.ParentProcessId) $($_.CreationDate.ToFileTimeUtc())" }',
+];
+
 function recordWindowsDescendants(
   pid: number,
   descendants: Map<number, string>,
-  deadline: number,
+  snapshot: string,
 ): void {
-  const rows = execFileSync(
-    "powershell.exe",
-    [
-      "-NoLogo",
-      "-NoProfile",
-      "-NonInteractive",
-      "-Command",
-      'Get-CimInstance Win32_Process | ForEach-Object { "$($_.ProcessId) $($_.ParentProcessId) $($_.CreationDate.ToFileTimeUtc())" }',
-    ],
-    { encoding: "utf8", timeout: Math.max(1, deadline - Date.now()) },
-  )
+  const rows = snapshot
     .trim()
     .split(/\r?\n/u)
     .map((line) => line.trim().split(/\s+/u));
@@ -109,7 +107,7 @@ function killWindowsProcess(
       );
       return;
     }
-    execFileSync("taskkill", ["/PID", String(pid), "/F"], {
+    execFileSync("taskkill", ["/PID", String(pid), "/T", "/F"], {
       stdio: "pipe",
       timeout: Math.max(1, deadline - Date.now()),
     });
@@ -148,23 +146,37 @@ export function trackTestProcess(child: ChildProcess): () => Promise<void> {
   const descendants = new Map<number, string>();
   let discoveryError: Error | undefined;
   let discoveryTimer: ReturnType<typeof setInterval> | undefined;
-  const record = (deadline: number) => {
+  let discovery: Promise<void> | undefined;
+  let stopping = false;
+  const record = () => {
     if (
+      stopping ||
+      discovery !== undefined ||
       pid === undefined ||
       child.exitCode !== null ||
       child.signalCode !== null
     )
       return;
-    try {
-      recordWindowsDescendants(pid, descendants, deadline);
-    } catch (error) {
-      discoveryError =
-        error instanceof Error ? error : new Error(String(error));
-    }
+    const pending = new Promise<void>((resolve) => {
+      execFile(
+        "powershell.exe",
+        windowsSnapshotArguments,
+        { encoding: "utf8", timeout: 5_000 },
+        (error, stdout) => {
+          if (error) discoveryError = error;
+          else recordWindowsDescendants(pid, descendants, stdout);
+          resolve();
+        },
+      );
+    });
+    discovery = pending;
+    void pending.then(() => {
+      if (discovery === pending) discovery = undefined;
+    });
   };
   if (process.platform === "win32" && pid !== undefined) {
-    record(Date.now() + 5_000);
-    discoveryTimer = setInterval(() => record(Date.now() + 5_000), 250);
+    record();
+    discoveryTimer = setInterval(record, 250);
     discoveryTimer.unref();
     void exited.then(() => clearInterval(discoveryTimer));
   }
@@ -176,10 +188,35 @@ export function trackTestProcess(child: ChildProcess): () => Promise<void> {
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       if (process.platform === "win32") {
+        stopping = true;
         clearInterval(discoveryTimer);
-        record(deadline);
-        if (child.exitCode === null && child.signalCode === null)
+        if (discovery) {
+          try {
+            await Promise.race([
+              discovery,
+              new Promise<never>((_, reject) => {
+                timer = setTimeout(
+                  () => reject(stillWriting()),
+                  Math.max(0, deadline - Date.now()),
+                );
+              }),
+            ]);
+          } finally {
+            clearTimeout(timer);
+          }
+        }
+        if (Date.now() >= deadline) throw stillWriting();
+        if (child.exitCode === null && child.signalCode === null) {
+          recordWindowsDescendants(
+            pid,
+            descendants,
+            execFileSync("powershell.exe", windowsSnapshotArguments, {
+              encoding: "utf8",
+              timeout: Math.max(1, deadline - Date.now()),
+            }),
+          );
           killWindowsProcess(pid, deadline);
+        }
         for (const [descendant, identity] of descendants) {
           if (Date.now() >= deadline) throw stillWriting();
           killWindowsProcess(descendant, deadline, identity);
