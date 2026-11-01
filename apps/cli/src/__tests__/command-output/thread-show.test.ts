@@ -57,7 +57,12 @@ describe("bb thread show command output", () => {
     ),
   )("shows pending input=$pending in json=$json", async ({ pending, json }) => {
     const thread = {
-      ...fixtures.makeThread({ id: "thr-question", status: "active" }),
+        ...fixtures.makeThread({
+          id: "thr-question",
+          projectId: "project-question",
+          providerId: "codex",
+          status: "active",
+        }),
       hasPendingInteraction: pending,
       runtime: { displayStatus: "active" },
     };

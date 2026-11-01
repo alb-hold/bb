@@ -6,7 +6,6 @@ import {
   estimateCompactionSavings,
   summarizeTokenWeather,
   type Environment,
-  type Thread,
   type ThreadEventRow,
   type ThreadTimelinePendingTodos,
 } from "@bb/domain";
