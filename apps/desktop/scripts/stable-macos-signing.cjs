@@ -45,9 +45,6 @@ async function afterSign(context) {
   const appPath = path.join(context.appOutDir, `${productFilename}.app`);
   const signature = await codesignOutput(appPath);
 
-  // Developer ID / Apple Development signatures already have a stable
-  // certificate-backed requirement. Only repair unsigned or ad-hoc local
-  // bundles, which otherwise get a changing cdhash requirement per build.
   if (!isAdhocSignature(signature)) return;
 
   const appId = context.packager.appInfo.id || DEFAULT_APP_ID;

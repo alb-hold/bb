@@ -594,9 +594,6 @@ async function smokeLinuxAppImageLifecycle() {
       throw new Error("Expected both AppImage FUSE mounts to be active");
     }
 
-    // The GUI is an anchored group of its own. The runtime supervisor starts a
-    // separate session, so killing this exact group models an unclean desktop
-    // crash without touching the owned server/daemon/watcher tree.
     process.kill(-child.pid, "SIGKILL");
     await waitForChildExit(child, exitTimeoutMs);
     await killProcessesExecutingFromMount(guiMount);

@@ -11,6 +11,7 @@
   ],
   "scripts": {
     "build": "node scripts/build.mjs",
+    "lint": "oxlint src scripts test *.ts",
     "clean": "rimraf dist release",
     "desktop:build": "pnpm run build && node scripts/run-electron-builder.mjs --mac --arm64 --publish always",
     "desktop:build:linux": "pnpm run build && node scripts/run-electron-builder.mjs --linux --x64 --publish never",

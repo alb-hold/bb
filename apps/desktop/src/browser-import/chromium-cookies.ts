@@ -10,7 +10,7 @@ import {
   BrowserImportError,
   bareHost,
   cookieScope,
-  withCookieDatabaseSnapshot,
+  readCookieDatabaseSnapshot,
   type CookieReadResult,
   type ImportedCookie,
 } from "./cookie-database.js";
@@ -200,7 +200,7 @@ export async function readChromiumCookies(
   run: SecretCommandRunner = runSecretCommand,
 ): Promise<CookieReadResult> {
   try {
-    return await withCookieDatabaseSnapshot(
+    return await readCookieDatabaseSnapshot(
       source.cookieDatabasePath,
       async (database) => {
         const encrypted = database

@@ -35,15 +35,10 @@ function createElectronAppEnv(env, config) {
   return childEnv;
 }
 
-// Detect whether `pnpm dev` is already serving the Vite app on its port. When it
-// is, the desktop shell loads that URL (live source + HMR) instead of the built
-// UI; when it is not, the desktop falls back to starting its own bb-app runtime.
 async function isViteDevServerReachable(appUrl) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), VITE_PROBE_TIMEOUT_MS);
   try {
-    // Any HTTP response (even a non-2xx) means something is listening; only a
-    // network error (nothing bound to the port) counts as unreachable.
     await fetch(appUrl, { method: "GET", signal: controller.signal });
     return true;
   } catch {
@@ -79,8 +74,6 @@ process.stdout.write(
 );
 process.stdout.write(`@bb/desktop: user-data ${desktopUserDataDir}\n`);
 
-// Extra Chromium/Electron switches for dev automation (e.g.
-// BB_DESKTOP_ELECTRON_ARGS="--remote-debugging-port=9223" for CDP-driven QA).
 const extraElectronArgs = (process.env.BB_DESKTOP_ELECTRON_ARGS ?? "")
   .split(" ")
   .map((arg) => arg.trim())
