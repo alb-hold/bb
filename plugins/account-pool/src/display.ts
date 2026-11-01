@@ -1,4 +1,7 @@
-import { internal_DO_NOT_USE_claudeProfilePlanLabel as claudeProfilePlanLabel } from "@get-bb/plugin-sdk";
+import {
+  internal_DO_NOT_USE_claudeLocalPlanLabel as claudeLocalPlanLabel,
+  internal_DO_NOT_USE_claudeProfilePlanLabel as claudeProfilePlanLabel,
+} from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import { familyQuotaSchema } from "./contracts.js";
 import type { AccountSummary } from "./contracts.js";
@@ -17,7 +20,10 @@ export const poolDisplaySchema = z.object({
 export type PoolDisplay = z.infer<typeof poolDisplaySchema>;
 
 export function displayPlanLabel(
-  account: Pick<AccountSummary, "subscriptionType" | "rateLimitTier">,
+  account: Pick<
+    AccountSummary,
+    "provider" | "kind" | "subscriptionType" | "rateLimitTier"
+  >,
   displayName: string | null = null,
 ): string | null {
   if (displayName !== null) {
@@ -26,9 +32,13 @@ export function displayPlanLabel(
       organization: { plan_display_name: displayName },
     });
   }
-  const plan = account.subscriptionType;
-  if (/^(?:claude_)?max$/iu.test(plan ?? "")) return "Claude subscription";
-  return plan ? plan.charAt(0).toUpperCase() + plan.slice(1) : null;
+  if (account.provider !== "claude") {
+    const subscription = account.subscriptionType;
+    return subscription
+      ? subscription.charAt(0).toUpperCase() + subscription.slice(1)
+      : null;
+  }
+  return account.kind === "oauth" ? claudeLocalPlanLabel(account) : null;
 }
 
 export function modelWeeklyRows(

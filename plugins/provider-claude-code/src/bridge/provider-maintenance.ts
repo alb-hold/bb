@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import {
   internal_DO_NOT_USE_claudeProfileSchema as claudeProfileSchema,
+  internal_DO_NOT_USE_claudeLocalPlanLabel as claudeLocalPlanLabel,
   internal_DO_NOT_USE_claudeProfilePlanLabel as claudeProfilePlanLabel,
   type ProviderHealthResult,
   type ProviderInstallationRunResult,
@@ -415,15 +416,7 @@ async function readAccountEmail(): Promise<string | null> {
 }
 
 function planLabel(credentials: ClaudeCredentials): string {
-  const subscription = credentials.subscriptionType;
-  if (
-    !subscription ||
-    /max/iu.test(subscription) ||
-    /max_\d+x/iu.test(credentials.rateLimitTier ?? "")
-  ) {
-    return "Claude subscription";
-  }
-  return subscription.charAt(0).toUpperCase() + subscription.slice(1);
+  return claudeLocalPlanLabel(credentials);
 }
 
 const profilePlanLabels = new Map<

@@ -13,6 +13,8 @@ describe("usage presentation labels", () => {
     expect(
       usagePlanLabel(
         {
+          provider: "claude",
+          kind: "oauth",
           subscriptionType: "max",
           rateLimitTier: "default_claude_max_20x",
         },
@@ -20,22 +22,81 @@ describe("usage presentation labels", () => {
       ),
     ).toBe("Max (20x)");
     expect(
-      usagePlanLabel({ subscriptionType: "max", rateLimitTier: null }, "Max"),
+      usagePlanLabel(
+        {
+          provider: "claude",
+          kind: "oauth",
+          subscriptionType: "max",
+          rateLimitTier: null,
+        },
+        "Max",
+      ),
     ).toBe("Max");
     expect(
-      usagePlanLabel({ subscriptionType: "max", rateLimitTier: "max_20x" }),
+      usagePlanLabel({
+        provider: "claude",
+        kind: "oauth",
+        subscriptionType: "max",
+        rateLimitTier: "max_20x",
+      }),
     ).toBe("Claude subscription");
     expect(
       usagePlanLabel({
+        provider: "claude",
+        kind: "oauth",
         subscriptionType: "claude_max",
         rateLimitTier: "max_20x",
       }),
     ).toBe("Claude subscription");
     expect(
-      usagePlanLabel({ subscriptionType: "pro", rateLimitTier: null }),
+      usagePlanLabel({
+        provider: "claude",
+        kind: "oauth",
+        subscriptionType: "pro",
+        rateLimitTier: null,
+      }),
     ).toBe("Pro");
     expect(
-      usagePlanLabel({ subscriptionType: null, rateLimitTier: null }),
+      usagePlanLabel({
+        provider: "claude",
+        kind: "oauth",
+        subscriptionType: null,
+        rateLimitTier: null,
+      }),
+    ).toBe("Claude subscription");
+  });
+  it("uses the shared Claude OAuth fallback without labeling other account types", () => {
+    expect(
+      usagePlanLabel({
+        provider: "claude",
+        kind: "oauth",
+        subscriptionType: "pro",
+        rateLimitTier: "max_20x",
+      }),
+    ).toBe("Claude subscription");
+    expect(
+      usagePlanLabel({
+        provider: "codex",
+        kind: "oauth",
+        subscriptionType: "pro",
+        rateLimitTier: null,
+      }),
+    ).toBe("Pro");
+    expect(
+      usagePlanLabel({
+        provider: "codex",
+        kind: "oauth",
+        subscriptionType: null,
+        rateLimitTier: null,
+      }),
+    ).toBeNull();
+    expect(
+      usagePlanLabel({
+        provider: "claude",
+        kind: "api-key",
+        subscriptionType: null,
+        rateLimitTier: null,
+      }),
     ).toBeNull();
   });
 });

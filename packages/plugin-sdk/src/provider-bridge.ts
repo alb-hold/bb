@@ -440,4 +440,7 @@ export {
 } from "@bb/skill-index";
 
 export { claudeProfileSchema as internal_DO_NOT_USE_claudeProfileSchema } from "./claude-profile.js";
-export { claudeProfilePlanLabel as internal_DO_NOT_USE_claudeProfilePlanLabel } from "./claude-plan-label.js";
+export {
+  claudeLocalPlanLabel as internal_DO_NOT_USE_claudeLocalPlanLabel,
+  claudeProfilePlanLabel as internal_DO_NOT_USE_claudeProfilePlanLabel,
+} from "./claude-plan-label.js";

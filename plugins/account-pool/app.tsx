@@ -333,7 +333,10 @@ import {
 } from "./src/display.js";
 
 function planBadge(
-  account: Pick<AccountSummary, "kind" | "subscriptionType" | "rateLimitTier">,
+  account: Pick<
+    AccountSummary,
+    "provider" | "kind" | "subscriptionType" | "rateLimitTier"
+  >,
   displayName: string | null = null,
 ): string | null {
   if (account.kind === "api-key") return "API key";

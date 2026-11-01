@@ -1,3 +1,18 @@
+export function claudeLocalPlanLabel(credentials: {
+  subscriptionType?: string | null;
+  rateLimitTier?: string | null;
+}): string {
+  const subscription = credentials.subscriptionType;
+  if (
+    !subscription ||
+    /max/iu.test(subscription) ||
+    /max_\d+x/iu.test(credentials.rateLimitTier ?? "")
+  ) {
+    return "Claude subscription";
+  }
+  return subscription.charAt(0).toUpperCase() + subscription.slice(1);
+}
+
 export function claudeProfilePlanLabel(profile: {
   account: { rate_limit_tier?: string | null };
   organization?: {
