@@ -164,7 +164,8 @@ export function trackTestProcess(child: ChildProcess): () => Promise<void> {
         { encoding: "utf8", timeout: 5_000 },
         (error, stdout) => {
           if (error) discoveryError = error;
-          else recordWindowsDescendants(pid, descendants, stdout);
+          else if (child.exitCode === null && child.signalCode === null)
+            recordWindowsDescendants(pid, descendants, stdout);
           resolve();
         },
       );
