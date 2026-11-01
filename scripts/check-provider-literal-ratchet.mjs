@@ -137,7 +137,7 @@ function isIncluded(rel) {
   return true;
 }
 
-function walk(dir, root, out, trackedDirectories) {
+function walk(dir, root, out) {
   let entries;
   try {
     entries = readdirSync(dir, { withFileTypes: true });
@@ -148,13 +148,7 @@ function walk(dir, root, out, trackedDirectories) {
     const abs = join(dir, entry.name);
     if (entry.isDirectory()) {
       if (EXCLUDED_SEGMENTS.has(entry.name)) continue;
-      if (
-        entry.name.startsWith(".managed-json-cli-") &&
-        trackedDirectories !== null &&
-        !trackedDirectories.has(relative(root, abs).split(sep).join("/"))
-      )
-        continue;
-      walk(abs, root, out, trackedDirectories);
+      walk(abs, root, out);
     } else if (entry.isFile()) {
       const rel = relative(root, abs);
       if (isIncluded(rel)) out.push({ abs, rel: rel.split(sep).join("/") });
@@ -204,16 +198,14 @@ export function checkAllowlist(scan, allowlist) {
   return problems;
 }
 
-function trackedDirectoriesIn(root) {
-  const directories = new Set();
-  let tracked;
+function trackedFilesIn(root, roots) {
   try {
-    tracked = execFileSync("git", ["ls-files", "-z", "--", ...SCAN_ROOTS], {
+    return execFileSync("git", ["ls-files", "-z", "--", ...roots], {
       cwd: root,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
       maxBuffer: 16 * 1024 * 1024,
-    });
+    }).split("\0").filter(Boolean);
   } catch (error) {
     if (
       error.status === 128 &&
@@ -222,21 +214,21 @@ function trackedDirectoriesIn(root) {
       return null;
     throw error;
   }
-  for (const path of tracked.split("\0")) {
-    const parts = path.split("/");
-    for (let i = 1; i < parts.length; i++)
-      directories.add(parts.slice(0, i).join("/"));
-  }
-  return directories;
 }
 
 export function scanTree(
   root,
   roots = SCAN_ROOTS,
-  trackedDirectories = trackedDirectoriesIn(root),
+  trackedFiles = trackedFilesIn(root, roots),
 ) {
   const files = [];
-  for (const r of roots) walk(join(root, r), root, files, trackedDirectories);
+  if (trackedFiles === null) {
+    for (const r of roots) walk(join(root, r), root, files);
+  } else {
+    for (const rel of trackedFiles) {
+      if (isIncluded(rel)) files.push({ abs: join(root, rel), rel });
+    }
+  }
   const counts = {};
   const hits = [];
   for (const { abs, rel } of files) {

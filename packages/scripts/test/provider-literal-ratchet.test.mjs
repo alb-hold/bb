@@ -45,7 +45,7 @@ function write(rel, content) {
 }
 
 describe("scanTree (pure)", () => {
-  it("counts tracked hidden source and ordinary untracked source", () => {
+  it("counts tracked hidden source and ignores untracked source", () => {
     const tracked = "packages/core/.managed-json-cli-source/entry.mjs";
     const untracked = "packages/core/new.mjs";
     write(tracked, 'const ids = ["codex", "claude-code"];\n');
@@ -56,7 +56,7 @@ describe("scanTree (pure)", () => {
       "packages/core/.managed-json-cli-TEST/entry.mjs",
       'const id = "codex";\n',
     );
-    expect(scanTree(dir).files).toEqual({ [tracked]: 2, [untracked]: 1 });
+    expect(scanTree(dir).files).toEqual({ [tracked]: 2 });
   });
 
   it.each([
@@ -247,6 +247,31 @@ describe("ratchet CLI refusal paths (fixture root)", () => {
     diesAt: "never",
   });
 
+  it("ignores a gitignored bundled stage directory while checking tracked source", () => {
+    write(".gitignore", "/plugins/.bundled-stage-*/\n");
+    write("packages/core/a.ts", 'const id = "codex";\n');
+    write(
+      "scripts/provider-literal-baseline.json",
+      baseline({ "packages/core/a.ts": 1 }, { "packages/core/a.ts": entry(1) }),
+    );
+    execFileSync("git", ["init", "-q"], { cwd: dir });
+    execFileSync("git", ["add", "."], { cwd: dir });
+    write("plugins/.bundled-stage-x/runtime.ts", 'const id = "claude-code";\n');
+    expect(
+      execFileSync("git", ["check-ignore", "plugins/.bundled-stage-x/runtime.ts"], {
+        cwd: dir,
+        encoding: "utf8",
+      }).trim(),
+    ).toBe("plugins/.bundled-stage-x/runtime.ts");
+    const result = run([], { BB_RATCHET_ROOT: dir });
+    expect(result.code, result.out).toBe(0);
+    expect(result.out).toContain("ratchet OK: 1 references");
+    write("packages/core/a.ts", 'const ids = ["codex", "pi"];\n');
+    const increase = run([], { BB_RATCHET_ROOT: dir });
+    expect(increase.code, increase.out).toBe(1);
+    expect(increase.out).toContain("core gained provider-id references");
+  });
+
   it("refuses --write when the live total rises above the committed baseline", () => {
     write("packages/core/a.ts", 'const id = "codex";\n');
     write("scripts/provider-literal-baseline.json", baseline({}));
@@ -316,7 +341,7 @@ describe("ratchet CLI refusal paths (fixture root)", () => {
 });
 
 describe("ratchet CLI (against the real repo baseline)", () => {
-  it("counts untracked hidden source while ignoring managed JSON CLI temp directories", () => {
+  it("ignores untracked hidden source and managed JSON CLI temp directories", () => {
     const source = join(ROOT, "packages/bb-app/.local-tools");
     const temp = join(ROOT, "packages/bb-app/.managed-json-cli-TEST");
     mkdirSync(source);
@@ -326,10 +351,8 @@ describe("ratchet CLI (against the real repo baseline)", () => {
         writeFileSync(join(source, "index.ts"), 'const id = "codex";\n');
         writeFileSync(join(temp, "bb-app.mjs"), 'const id = "codex";\n');
         const result = run();
-        expect(result.code, result.out).toBe(1);
-        expect(result.out).toContain(
-          "packages/bb-app/.local-tools/index.ts: 1",
-        );
+        expect(result.code, result.out).toBe(0);
+        expect(result.out).not.toContain(".local-tools");
         expect(result.out).not.toContain(".managed-json-cli-TEST");
       } finally {
         rmSync(temp, { recursive: true, force: true });
