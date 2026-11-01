@@ -4609,7 +4609,8 @@ removing the prefix.
 `internal_DO_NOT_USE_claudeProfilePlanLabel`, plus
 `internal_DO_NOT_USE_claudeLocalPlanLabel`, in the provider bridge SDK share the
 Anthropic OAuth profile boundary between Account Pooler and Claude Code provider.
-These are internal plumbing for those two first-party plugins only. Provider
+The schema is internal plumbing for those two first-party plugins only. The
+plan-label helpers also serve Provider usage's Claude normalization. Provider
 plan labels share the same legacy-tier interpretation.
 The plan-label helpers are also exported from the side-effect-free SDK root for
 Account Pooler app display. Legacy max_20x tiers display Ultra; other Max tiers

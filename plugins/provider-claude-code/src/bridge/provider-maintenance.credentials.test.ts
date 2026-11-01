@@ -481,16 +481,16 @@ it("keeps health local before usage and isolates cached profile labels by token"
       status: 200,
       json: async () =>
         url.endsWith("/profile")
-          ? { account: {}, organization: { plan_display_name: "Ultra" } }
+          ? { account: {}, organization: { plan_display_name: "Team" } }
           : { limits: [] },
     })),
   );
   expect(await getClaudeProviderUsage()).toMatchObject({
-    usage: { planLabel: "Ultra" },
+    usage: { planLabel: "Team" },
   });
   vi.stubGlobal("fetch", noFetch);
   expect(await getClaudeProviderHealth()).toMatchObject({
-    health: { planLabel: "Ultra" },
+    health: { planLabel: "Team" },
   });
   setToken("cache-isolation-second-token");
   expect(await getClaudeProviderHealth()).toMatchObject({
