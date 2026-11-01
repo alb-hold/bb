@@ -1,3 +1,4 @@
+import { effectiveDisplayStatus } from "@bb/domain";
 import { assertNever } from "@bb/core-ui";
 import type {
   NativeActivityEvidenceKind,
@@ -198,8 +199,10 @@ export function threadListIndicatorStateForThread(
       activityUnconfirmed &&
       isRunningThreadRuntimeDisplayStatus(thread.runtime.displayStatus),
     hasUnsubmittedDraft,
-    hasUnreadError: unreadDone && thread.status === "error",
-    hasUnreadSuccess: unreadDone && thread.status !== "error",
+    hasUnreadError:
+      unreadDone && effectiveDisplayStatus(thread, thread.runtime) === "error",
+    hasUnreadSuccess:
+      unreadDone && effectiveDisplayStatus(thread, thread.runtime) !== "error",
     isAutomationWoken: false,
     isBackgroundAgentActive: hasActiveBackgroundAgentActivity(thread),
     isBackgroundCommandActive: hasActiveBackgroundCommandActivity(thread),
@@ -272,7 +275,10 @@ export function getCollapsedChildActivity(
       hasUnsubmittedDraft = true;
     }
     const childUnreadDone = isUnreadDoneThread(thread);
-    if (childUnreadDone && thread.status === "error") {
+    if (
+      childUnreadDone &&
+      effectiveDisplayStatus(thread, thread.runtime) === "error"
+    ) {
       unreadError = true;
     } else if (childUnreadDone) {
       unread = true;

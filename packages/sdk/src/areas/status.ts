@@ -1,7 +1,9 @@
-import type {
-  ThreadParentNotifications,
-  ThreadStatus,
-  ThreadTimelinePendingTodos,
+import {
+  effectiveDisplayStatus,
+  withEffectiveDisplayStatus,
+  type ThreadParentNotifications,
+  type ThreadStatus,
+  type ThreadTimelinePendingTodos,
 } from "@bb/domain";
 import {
   isThreadTimelineDelta,
@@ -64,7 +66,7 @@ function summarizeThread(thread: StatusSourceThread): StatusThreadSummary {
     parentThreadId: thread.parentThreadId ?? null,
     pinnedAt: thread.pinnedAt,
     projectId: thread.projectId,
-    status: thread.status,
+    status: effectiveDisplayStatus(thread, thread.runtime),
     title: thread.title ?? null,
   };
 }
@@ -135,7 +137,7 @@ export function createStatusArea(args: CreateSdkAreaArgs): StatusArea {
             );
 
       return {
-        childThreads,
+        childThreads: childThreads?.map(withEffectiveDisplayStatus) ?? null,
         pendingTodos,
         project,
         thread: thread === null ? null : summarizeThread(thread),

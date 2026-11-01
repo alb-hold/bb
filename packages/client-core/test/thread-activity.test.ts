@@ -930,3 +930,24 @@ describe("thread-activity", () => {
     });
   });
 });
+
+it.each([false, true])(
+  "counts clean=%s as a successful unread child, preserving real failures",
+  (clean) => {
+    const thread = makeThreadListEntry({
+      status: "error",
+      lastReadAt: 0,
+      latestAttentionAt: 20,
+      runtime: {
+        displayStatus: "error",
+        ...(clean ? { nativeSessionExit: "clean" as const } : {}),
+      },
+    });
+    const indicator = threadListIndicatorStateForThread(thread, false);
+    expect(indicator.hasUnreadError).toBe(!clean);
+    expect(indicator.hasUnreadSuccess).toBe(clean);
+    const children = getCollapsedChildActivity([thread]);
+    expect(children.unreadError).toBe(!clean);
+    expect(children.unread).toBe(clean);
+  },
+);
