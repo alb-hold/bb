@@ -1,8 +1,12 @@
 import { experimental_execHostFile } from "@get-bb/plugin-sdk/process";
 import fs from "node:fs/promises";
+import { createHash } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import {
+  internal_DO_NOT_USE_claudeProfileSchema as claudeProfileSchema,
+  internal_DO_NOT_USE_claudeLocalPlanLabel as claudeLocalPlanLabel,
+  internal_DO_NOT_USE_claudeProfilePlanLabel as claudeProfilePlanLabel,
   type ProviderHealthResult,
   type ProviderInstallationRunResult,
   type ProviderInstallationStatus,
@@ -26,6 +30,7 @@ import { z } from "zod";
 
 const execFileAsync = experimental_execHostFile;
 const USAGE_FETCH_TIMEOUT_MS = 15_000;
+const PROFILE_FETCH_TIMEOUT_MS = 5_000;
 const CLAUDE_USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
 const CLAUDE_KEYCHAIN_SERVICE = "Claude Code-credentials";
 const CLAUDE_NPM_PACKAGE = "@anthropic-ai/claude-code";
@@ -410,13 +415,79 @@ async function readAccountEmail(): Promise<string | null> {
   }
 }
 
-function planLabel(credentials: ClaudeCredentials): string | null {
-  const maxMatch = (credentials.rateLimitTier ?? "").match(/max_(\d+)x/u);
-  if (maxMatch) return `Max (${maxMatch[1]}x)`;
-  const subscription = credentials.subscriptionType;
-  return subscription
-    ? subscription.charAt(0).toUpperCase() + subscription.slice(1)
-    : null;
+function planLabel(credentials: ClaudeCredentials): string {
+  return claudeLocalPlanLabel(credentials);
+}
+
+const profilePlanLabels = new Map<
+  string,
+  { label: string; expiresAt: number }
+>();
+const PROFILE_PLAN_LABEL_TTL_MS = 60_000;
+const PROFILE_PLAN_LABEL_CACHE_SIZE = 64;
+
+function profilePlanKey(credentials: ClaudeCredentials): string {
+  return createHash("sha256").update(credentials.accessToken).digest("hex");
+}
+
+function cachedPlanLabel(credentials: ClaudeCredentials): string | null {
+  const key = profilePlanKey(credentials);
+  const cached = profilePlanLabels.get(key);
+  if (cached === undefined) return null;
+  if (cached.expiresAt <= Date.now()) {
+    profilePlanLabels.delete(key);
+    return null;
+  }
+  return cached.label;
+}
+
+function rememberPlanLabel(
+  credentials: ClaudeCredentials,
+  label: string | null,
+): void {
+  const key = profilePlanKey(credentials);
+  profilePlanLabels.delete(key);
+  for (const [cachedKey, entry] of profilePlanLabels) {
+    if (entry.expiresAt <= Date.now()) profilePlanLabels.delete(cachedKey);
+  }
+  if (label === null) return;
+  if (profilePlanLabels.size >= PROFILE_PLAN_LABEL_CACHE_SIZE) {
+    const oldest = profilePlanLabels.keys().next().value;
+    if (oldest !== undefined) profilePlanLabels.delete(oldest);
+  }
+  profilePlanLabels.set(key, {
+    label,
+    expiresAt: Date.now() + PROFILE_PLAN_LABEL_TTL_MS,
+  });
+}
+
+async function readPlanLabel(credentials: ClaudeCredentials): Promise<string> {
+  try {
+    const response = await fetch(
+      "https://api.anthropic.com/api/oauth/profile",
+      {
+        headers: {
+          Authorization: `Bearer ${credentials.accessToken}`,
+          Accept: "application/json",
+          "anthropic-beta": "oauth-2025-04-20",
+        },
+        signal: AbortSignal.timeout(PROFILE_FETCH_TIMEOUT_MS),
+        redirect: "error",
+      },
+    );
+    if (!response.ok) {
+      await response.body?.cancel();
+      return cachedPlanLabel(credentials) ?? planLabel(credentials);
+    }
+    const parsed = claudeProfileSchema.safeParse(await response.json());
+    if (!parsed.success)
+      return cachedPlanLabel(credentials) ?? planLabel(credentials);
+    const label = claudeProfilePlanLabel(parsed.data);
+    rememberPlanLabel(credentials, label);
+    return label ?? planLabel(credentials);
+  } catch {
+    return cachedPlanLabel(credentials) ?? planLabel(credentials);
+  }
 }
 
 function healthResult(
@@ -472,7 +543,8 @@ export async function getClaudeProviderHealth(): Promise<ProviderHealthResult> {
     }
     const known = {
       accountEmail: email,
-      planLabel: planLabel(read.credentials),
+      planLabel:
+        cachedPlanLabel(read.credentials) ?? planLabel(read.credentials),
       installedVersion: version,
     };
     return read.kind === "access_expired"
@@ -569,13 +641,14 @@ function normalizeUsage(
   raw: unknown,
   credentials: ClaudeCredentials,
   email: string | null,
+  label: string = planLabel(credentials),
 ): ProviderUsage {
   const parsed = claudeUsageResponseSchema.safeParse(raw);
   if (!parsed.success) {
     return {
       status: "error",
       message: "Claude usage response was malformed.",
-      planLabel: planLabel(credentials),
+      planLabel: label,
       accountEmail: email,
     };
   }
@@ -587,7 +660,7 @@ function normalizeUsage(
   return {
     status: "ok",
     accountEmail: email,
-    planLabel: planLabel(credentials),
+    planLabel: label,
     windows,
   };
 }
@@ -631,16 +704,20 @@ export async function getClaudeProviderUsage(): Promise<ProviderUsageResult> {
     };
   }
   try {
-    const response = await fetch(CLAUDE_USAGE_URL, {
-      headers: {
-        Authorization: `Bearer ${credentials.accessToken}`,
-        Accept: "application/json",
-        "Content-Type": "application/json",
-        "anthropic-beta": "oauth-2025-04-20",
-        "User-Agent": "claude-code/2.1.0",
-      },
-      signal: AbortSignal.timeout(USAGE_FETCH_TIMEOUT_MS),
-    });
+    const [label, response] = await Promise.all([
+      readPlanLabel(credentials),
+      fetch(CLAUDE_USAGE_URL, {
+        headers: {
+          Authorization: `Bearer ${credentials.accessToken}`,
+          Accept: "application/json",
+          "Content-Type": "application/json",
+          "anthropic-beta": "oauth-2025-04-20",
+          "User-Agent": "claude-code/2.1.0",
+        },
+        signal: AbortSignal.timeout(USAGE_FETCH_TIMEOUT_MS),
+      }),
+    ]);
+    known.planLabel = label;
     if (response.status === 401) {
       return { supported: true, usage: { status: "expired" } };
     }
@@ -659,7 +736,12 @@ export async function getClaudeProviderUsage(): Promise<ProviderUsageResult> {
     }
     return {
       supported: true,
-      usage: normalizeUsage(await response.json(), credentials, email),
+      usage: normalizeUsage(
+        await response.json(),
+        credentials,
+        email,
+        known.planLabel,
+      ),
     };
   } catch (error) {
     return {

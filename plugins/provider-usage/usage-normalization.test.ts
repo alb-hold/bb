@@ -50,7 +50,7 @@ it("normalizes structured plans and windows while retaining custom provider labe
     usage: {
       status: "ok",
       accountEmail: null,
-      planLabel: "max",
+      planLabel: null,
       plan: { id: "max", multiplier: 20 },
       windows: [
         {
@@ -82,10 +82,10 @@ it("normalizes structured plans and windows while retaining custom provider labe
       ],
     },
   });
-  expect(normalizeUsageMeasurement(raw)).toMatchObject({
+  expect(normalizeUsageMeasurement(raw, "claude-code")).toMatchObject({
     accountKey: null,
     usage: {
-      planLabel: "Max (20x)",
+      planLabel: "Claude subscription",
       windows: [
         { label: "Weekly limit" },
         { label: "Weekly · Fable" },
@@ -94,3 +94,97 @@ it("normalizes structured plans and windows while retaining custom provider labe
     },
   });
 });
+
+it.each([
+  {
+    providerId: "claude-code",
+    planLabel: "Ultra",
+    multiplier: 20,
+    expected: "Ultra",
+  },
+  {
+    providerId: "claude-code",
+    planLabel: "Max",
+    multiplier: 20,
+    expected: "Max (20x)",
+  },
+  {
+    providerId: "codex",
+    planLabel: "Max",
+    multiplier: 20,
+    expected: "Max (20x)",
+  },
+  {
+    providerId: "codex",
+    planLabel: "max",
+    multiplier: 5,
+    expected: "Max (5x)",
+  },
+  {
+    providerId: "claude-code",
+    planLabel: "Max",
+    multiplier: null,
+    expected: "Max",
+  },
+  {
+    providerId: "claude-code",
+    planLabel: "Custom Max",
+    multiplier: 20,
+    expected: "Custom Max",
+  },
+  {
+    providerId: "claude-code",
+    planLabel: "Max (5x)",
+    multiplier: 20,
+    expected: "Max (5x)",
+  },
+  {
+    providerId: "claude-code",
+    planLabel: "Claude subscription",
+    multiplier: 20,
+    expected: "Claude subscription",
+  },
+])(
+  "normalizes $providerId plan $planLabel with tier $multiplier to $expected",
+  ({ providerId, planLabel, multiplier, expected }) => {
+    const raw = usageMeasurementSchema.parse({
+      observedAt: 123,
+      usage: {
+        status: "ok",
+        accountEmail: null,
+        planLabel,
+        plan: multiplier === null ? null : { id: "max", multiplier },
+        windows: [],
+      },
+    });
+    expect(normalizeUsageMeasurement(raw, providerId).usage).toMatchObject({
+      planLabel: expected,
+    });
+  },
+);
+
+it.each([
+  {
+    providerId: "claude-code",
+    multiplier: 20,
+    expected: "Claude subscription",
+  },
+  { providerId: "custom", multiplier: 5, expected: "Max (5x)" },
+])(
+  "scopes an unnamed Max plan to $providerId",
+  ({ providerId, multiplier, expected }) => {
+    const raw = usageMeasurementSchema.parse({
+      observedAt: 123,
+      usage: {
+        status: "ok",
+        accountEmail: null,
+        planLabel: null,
+        plan: { id: "max", multiplier },
+        windows: [],
+      },
+    });
+    expect(normalizeUsageMeasurement(raw, providerId).usage).toMatchObject({
+      planLabel: expected,
+    });
+  },
+);

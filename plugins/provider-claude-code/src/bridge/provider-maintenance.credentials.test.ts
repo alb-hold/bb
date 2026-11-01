@@ -104,7 +104,9 @@ afterAll(() => {
 });
 
 beforeEach(() => {
-  state.keychain = [keychainValue(credentialsJson(KEYCHAIN_ACCESS_TOKEN, null))];
+  state.keychain = [
+    keychainValue(credentialsJson(KEYCHAIN_ACCESS_TOKEN, null)),
+  ];
   state.keychainCalls = 0;
   state.file = credentialsJson(FILE_ACCESS_TOKEN, null);
   state.fileReads = 0;
@@ -119,6 +121,62 @@ beforeEach(() => {
 });
 
 describe("Claude Code credential loading", () => {
+  it.each([
+    ["Ultra", "max_20x", "organization", "Ultra"],
+    ["Claude Ultra", "max_20x", "account", "Ultra"],
+    ["Future plan", "max_20x", "organization", "Future plan"],
+    ["Max", "max_20x", "organization", "Max (20x)"],
+    ["Claude Max", "max_5x", "account", "Max (5x)"],
+    [null, "max_20x", "organization", "Claude subscription"],
+  ])(
+    "uses the profile plan name %s over legacy max flags",
+    async (displayName, tier, tierSource, expected) => {
+      state.keychain = [
+        keychainValue(
+          JSON.stringify({
+            claudeAiOauth: {
+              accessToken: KEYCHAIN_ACCESS_TOKEN,
+              subscriptionType: "claude_max",
+              rateLimitTier: "max_20x",
+            },
+          }),
+        ),
+      ];
+      const fetchMock = vi.fn(async (url: string) => ({
+        ok: true,
+        status: 200,
+        json: async () =>
+          url.endsWith("/profile")
+            ? {
+                account: {
+                  has_claude_max: true,
+                  rate_limit_tier: tierSource === "account" ? tier : null,
+                },
+                organization: {
+                  plan_display_name: displayName,
+                  rate_limit_tier: tierSource === "organization" ? tier : null,
+                },
+              }
+            : { limits: [] },
+      }));
+      vi.stubGlobal("fetch", fetchMock);
+      expect(await getClaudeProviderUsage()).toMatchObject({
+        usage: { status: "ok", planLabel: expected },
+      });
+      expect(
+        fetchMock.mock.calls.some(([url]) => url.endsWith("/profile")),
+      ).toBe(true);
+      fetchMock.mockClear();
+      fetchMock.mockImplementation(async () => {
+        throw new Error("Health must not fetch");
+      });
+      expect(await getClaudeProviderHealth()).toMatchObject({
+        health: { status: "ready", planLabel: expected },
+      });
+      expect(fetchMock).not.toHaveBeenCalled();
+    },
+  );
+
   it("loads a hex-encoded Keychain credential", async () => {
     const result = await getClaudeProviderUsage();
 
@@ -272,7 +330,9 @@ describe("Claude Code credential loading", () => {
 
   it("reports a lapsed access token with nothing to renew it as expired", async () => {
     state.keychain = [
-      keychainValue(credentialsJson(KEYCHAIN_ACCESS_TOKEN, Date.now() - 60_000)),
+      keychainValue(
+        credentialsJson(KEYCHAIN_ACCESS_TOKEN, Date.now() - 60_000),
+      ),
     ];
 
     const health = await getClaudeProviderHealth();
@@ -291,14 +351,22 @@ describe("Claude Code credential loading", () => {
 
     state.keychain = [
       keychainValue(
-        credentialsJson(KEYCHAIN_ACCESS_TOKEN, Date.now() + 10 * 60_000, renewal),
+        credentialsJson(
+          KEYCHAIN_ACCESS_TOKEN,
+          Date.now() + 10 * 60_000,
+          renewal,
+        ),
       ),
     ];
     await expect(isClaudeSignInRenewalDue(windowMs)).resolves.toBe(false);
 
     state.keychain = [
       keychainValue(
-        credentialsJson(KEYCHAIN_ACCESS_TOKEN, Date.now() + 3 * 60_000, renewal),
+        credentialsJson(
+          KEYCHAIN_ACCESS_TOKEN,
+          Date.now() + 3 * 60_000,
+          renewal,
+        ),
       ),
     ];
     await expect(isClaudeSignInRenewalDue(windowMs)).resolves.toBe(true);
@@ -347,4 +415,86 @@ describe("Claude Code credential loading", () => {
       }),
     });
   });
+});
+
+it.each(["unavailable", "malformed"])(
+  "keeps usage available when the profile is %s",
+  async (outcome) => {
+    state.keychain = [
+      keychainValue(
+        JSON.stringify({
+          claudeAiOauth: {
+            accessToken: KEYCHAIN_ACCESS_TOKEN,
+            subscriptionType: "max",
+            rateLimitTier: "max_20x",
+          },
+        }),
+      ),
+    ];
+    const cancel = vi.fn();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => ({
+        ok: !url.endsWith("/profile") || outcome !== "unavailable",
+        status: url.endsWith("/profile") ? 503 : 200,
+        body: { cancel },
+        json: async () => ({ limits: [] }),
+      })),
+    );
+    const result = await getClaudeProviderUsage();
+    expect(result).toMatchObject({
+      usage: { status: "ok", planLabel: "Claude subscription" },
+    });
+    expect(JSON.stringify(result)).not.toContain(KEYCHAIN_ACCESS_TOKEN);
+    expect(fetch).toHaveBeenCalledTimes(2);
+    if (outcome === "unavailable") expect(cancel).toHaveBeenCalledOnce();
+  },
+);
+
+it("keeps health local before usage and isolates cached profile labels by token", async () => {
+  const setToken = (accessToken: string) => {
+    state.keychain = [
+      keychainValue(
+        JSON.stringify({
+          claudeAiOauth: {
+            accessToken,
+            subscriptionType: "claude_max",
+            rateLimitTier: "max_20x",
+          },
+        }),
+      ),
+    ];
+  };
+  setToken("cache-isolation-first-token");
+  const noFetch = vi.fn(() => {
+    throw new Error("Health must not fetch");
+  });
+  vi.stubGlobal("fetch", noFetch);
+  expect(await getClaudeProviderHealth()).toMatchObject({
+    health: { planLabel: "Claude subscription" },
+  });
+  expect(noFetch).not.toHaveBeenCalled();
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (url: string) => ({
+      ok: true,
+      status: 200,
+      json: async () =>
+        url.endsWith("/profile")
+          ? { account: {}, organization: { plan_display_name: "Ultra" } }
+          : { limits: [] },
+    })),
+  );
+  expect(await getClaudeProviderUsage()).toMatchObject({
+    usage: { planLabel: "Ultra" },
+  });
+  vi.stubGlobal("fetch", noFetch);
+  expect(await getClaudeProviderHealth()).toMatchObject({
+    health: { planLabel: "Ultra" },
+  });
+  setToken("cache-isolation-second-token");
+  expect(await getClaudeProviderHealth()).toMatchObject({
+    health: { planLabel: "Claude subscription" },
+  });
+  expect(noFetch).not.toHaveBeenCalled();
 });

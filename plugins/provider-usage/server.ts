@@ -190,6 +190,7 @@ export default function providerUsagePlugin(bb: BbPluginApi): void {
   const fetchResource = async (
     pluginId: string,
     resourceId: string,
+    providerId: string,
     force: boolean,
   ): Promise<UsageMeasurement> => {
     const key = keyOf(pluginId, resourceId);
@@ -197,7 +198,7 @@ export default function providerUsagePlugin(bb: BbPluginApi): void {
     if (running) {
       if (!force || running.force) return running.promise;
       await running.promise.catch(() => undefined);
-      return fetchResource(pluginId, resourceId, force);
+      return fetchResource(pluginId, resourceId, providerId, force);
     }
     const promise = bb.sdk.plugins
       .callRpc({
@@ -208,7 +209,7 @@ export default function providerUsagePlugin(bb: BbPluginApi): void {
         signal: AbortSignal.timeout(45_000),
       })
       .then((raw) => {
-        const value = normalizeUsageMeasurement(raw);
+        const value = normalizeUsageMeasurement(raw, providerId);
         measurements.set(key, { value, loadedAt: Date.now() });
         failures.delete(key);
         return value;
@@ -314,7 +315,12 @@ export default function providerUsagePlugin(bb: BbPluginApi): void {
           )
             return;
           try {
-            await fetchResource(source.pluginId, resource.id, request.force);
+            await fetchResource(
+              source.pluginId,
+              resource.id,
+              resource.providerId,
+              request.force,
+            );
           } catch {
             failures.add(key);
           }
