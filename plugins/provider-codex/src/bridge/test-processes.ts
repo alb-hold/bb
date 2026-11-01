@@ -83,12 +83,32 @@ function killWindowsProcess(
   identity?: string,
 ): void {
   if (!isWindowsProcessAlive(pid)) return;
-  if (
-    identity !== undefined &&
-    windowsProcessIdentity(pid, deadline) !== identity
-  )
-    return;
   try {
+    if (identity !== undefined) {
+      execFileSync(
+        "powershell.exe",
+        [
+          "-NoLogo",
+          "-NoProfile",
+          "-NonInteractive",
+          "-Command",
+          `$ErrorActionPreference = 'Stop';
+          $target = $null;
+          try {
+            $target = [System.Diagnostics.Process]::GetProcessById(${pid});
+            $null = $target.Handle;
+            $current = Get-CimInstance Win32_Process -Filter 'ProcessId = ${pid}';
+            if ($null -eq $current -or $current.CreationDate.ToFileTimeUtc().ToString() -ne '${identity}') { exit 0 }
+            & taskkill.exe /PID ${pid} /F;
+            if ($LASTEXITCODE -ne 0 -and !$target.HasExited) { exit $LASTEXITCODE }
+          } finally {
+            if ($null -ne $target) { $target.Dispose() }
+          }`,
+        ],
+        { stdio: "pipe", timeout: Math.max(1, deadline - Date.now()) },
+      );
+      return;
+    }
     execFileSync("taskkill", ["/PID", String(pid), "/F"], {
       stdio: "pipe",
       timeout: Math.max(1, deadline - Date.now()),
