@@ -3,12 +3,14 @@ import { createHash, randomBytes } from "node:crypto";
 import path from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, expect, it, vi } from "vitest";
+import { setImmediate as yieldToIo } from "node:timers/promises";
 import { HubTokenStore } from "./store.js";
 import { ThreadTokenStore } from "./thread-tokens.js";
 
 const directories: string[] = [];
 afterEach(async () => {
   vi.restoreAllMocks();
+  vi.useRealTimers();
   for (const directory of directories.splice(0))
     await fs.rm(directory, { recursive: true, force: true });
 });
@@ -61,34 +63,64 @@ async function fixture(count = 3000) {
   return { store, tokens, directory, hosts };
 }
 
-it.each([2697, 3000])(
-  "checks every one of %i routed threads inside the production budget without a full-sweep abort or retry",
-  async (count) => {
+it.each([
+  { count: 2697, lookupMs: 25, calls: 2697, elapsed: 2125, deferred: 0 },
+  { count: 3000, lookupMs: 25, calls: 3000, elapsed: 2350, deferred: 0 },
+  { count: 2697, lookupMs: 200, calls: 2400, elapsed: 15000, deferred: 329 },
+])(
+  "sweeps $count routed threads with $lookupMs ms lookups under the production budget",
+  async ({ count, lookupMs, calls: expectedCalls, elapsed: expectedElapsed, deferred }) => {
     const { store, tokens } = await fixture(count);
     let calls = 0;
     let active = 0;
     let peak = 0;
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
+    vi.spyOn(AbortSignal, "timeout").mockImplementation((ms) => {
+      const controller = new AbortController();
+      setTimeout(
+        () => controller.abort(new DOMException("timed out", "TimeoutError")),
+        ms,
+      );
+      return controller.signal;
+    });
     const signal = AbortSignal.timeout(15000);
     const started = performance.now();
-    const result = await store.sweepThreads(
+    let settled = false;
+    const sweep = store.sweepThreads(
       async () => {
         calls += 1;
         active += 1;
         peak = Math.max(peak, active);
-        await new Promise((resolve) => setTimeout(resolve, 25));
+        await new Promise((resolve) => setTimeout(resolve, lookupMs));
         active -= 1;
         return "live";
       },
       { signal, lookupTimeoutMs: 5000 },
     );
+    void sweep.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+    while (!settled) {
+      await yieldToIo();
+      if (active > 0) await vi.advanceTimersByTimeAsync(25);
+    }
+    const result = await sweep;
     const elapsed = performance.now() - started;
+    expect(elapsed).toBe(expectedElapsed);
     expect(result.failed).toBe(0);
-    expect(calls).toBe(tokens.size);
-    expect(signal.aborted).toBe(false);
+    expect(calls).toBe(expectedCalls);
+    expect(result.deferred).toBe(deferred);
+    expect(result.checked).toBe(expectedCalls);
+    expect(signal.aborted).toBe(deferred > 0);
     expect(peak).toBeGreaterThan(1);
     expect(peak).toBeLessThanOrEqual(32);
     console.log(
-      `sweep routes=${count} threads.get=${calls} elapsed_ms=${elapsed.toFixed(1)} steady_calls_per_minute=${((calls * 60000) / (900000 + elapsed)).toFixed(2)}`,
+      `sweep routes=${tokens.size} threads.get=${calls} virtual_elapsed_ms=${elapsed}`,
     );
   },
   60000,
