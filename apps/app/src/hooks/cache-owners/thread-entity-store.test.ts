@@ -3,7 +3,10 @@ import {
   keyedStoreContract,
   type KeyedStoreSubject,
 } from "@bb/query-tags/testing";
-import type { SidebarBootstrapResponse } from "@bb/server-contract";
+import type {
+  SidebarBootstrapResponse,
+  ThreadResponse,
+} from "@bb/server-contract";
 import { makeThreadListEntry as makeEntry } from "@bb/test-helpers/domain-fixtures";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -11,6 +14,7 @@ import {
   makeSidebarBootstrapResponse,
 } from "@/test/fixtures/projects";
 import { createQueryClientTestHarness } from "@/test/queryClientTestHarness";
+import { makeThreadResponse } from "@/test/fixtures/thread-responses";
 import {
   sidebarNavigationQueryKey,
   threadListQueryKey,
@@ -101,6 +105,36 @@ function setup(rows: ThreadListEntry[]) {
 }
 
 describe("thread entity store", () => {
+  it.each([true, false])(
+    "keeps pending interaction facets independent when list has %s",
+    async (pending) => {
+      const row = entry("t1", { hasPendingInteraction: pending });
+      const s = setup([row]);
+      await s.fetchList(s.listKey, () => [row]);
+      const detailKey = threadQueryKey("t1");
+      await s.queryClient.fetchQuery({
+        queryKey: detailKey,
+        queryFn: async () =>
+          makeThreadResponse({
+            ...row,
+            hasPendingInteraction: !pending,
+            updatedAt: 20,
+          }),
+      });
+      const expectFacets = () => {
+        expect(s.sidebarRows()[0]?.hasPendingInteraction).toBe(pending);
+        expect(s.listRows()[0]?.hasPendingInteraction).toBe(pending);
+        expect(
+          s.queryClient.getQueryData<ThreadResponse>(detailKey)
+            ?.hasPendingInteraction,
+        ).toBe(!pending);
+      };
+      expectFacets();
+      await s.fetchList(s.listKey, () => [{ ...row, updatedAt: 30 }]);
+      expectFacets();
+    },
+  );
+
   it("keeps a pin and a mid-save status patch in every view, including a list that loads while pending, and rolls back only the pin", async () => {
     const server = [entry("t1"), entry("t2")];
     const s = setup(server);

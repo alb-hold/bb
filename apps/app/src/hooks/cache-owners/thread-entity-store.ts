@@ -61,6 +61,7 @@ const LIST_FACET: Record<ListFacetKey, true> = {
   environmentWorkspaceDisplayKind: true,
 };
 const DETAIL_FACET: Record<DetailFacetKey, true> = {
+  hasPendingInteraction: true,
   nativeTerminal: true,
   activeBackgroundAgentCount: true,
   canRestoreEnvironment: true,
