@@ -9,6 +9,7 @@ import {
   buildThreadListEnrichmentScope,
   closeSession,
   createEnvironment,
+  createPendingInteraction,
   createNativeTerminalThread,
   createProject,
   createQueuedThreadMessage,
@@ -319,6 +320,42 @@ function createThreadListEntry(
 }
 
 describe("thread runtime display", () => {
+  it.each([false, true])(
+    "shares pending interaction state with thread reads: %s",
+    (pending) => {
+      const { db, hub, hostId } = setup();
+      try {
+        const { thread } = createThreadWithEnvironment({ db, hostId });
+        if (pending) {
+          createPendingInteraction(db, {
+            threadId: thread.id,
+            providerId: thread.providerId,
+            providerThreadId: "native-session",
+            providerRequestId: "native-question",
+            turnId: "turn-question",
+            payload: JSON.stringify({ method: "AskUserQuestion" }),
+          });
+        }
+        const deps = { db, hub, providerRegistry };
+        const [listed] = toThreadListEntryResponsesForTest(deps, {
+          threads: listThreadsWithPendingInteractionState(db, {
+            threadIds: [thread.id],
+          }),
+        });
+        const read = toThreadResponseFromThread(deps, { thread });
+        expect(listed?.hasPendingInteraction).toBe(pending);
+        expect(read).toHaveProperty(
+          "hasPendingInteraction",
+          listed?.hasPendingInteraction,
+        );
+        expect(listed?.listIndicator === "needs-input").toBe(pending);
+        expect(read.runtime.displayStatus).toBe(listed?.runtime.displayStatus);
+      } finally {
+        db.$client.close();
+      }
+    },
+  );
+
   it("keeps scoped list enrichment byte-identical for archived goal and task events", () => {
     const { db, hostId, hub } = setup();
     const archived = createThreadWithEnvironment({

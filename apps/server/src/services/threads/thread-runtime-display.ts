@@ -3,6 +3,7 @@ import {
   getNativeTerminalThread,
   getThreadRowState,
   listThreadRowStatesByScope,
+  listThreadsWithPendingInteractionState,
   getSessionById,
   listActiveBackgroundTaskCountsByThreadIds,
   listActiveBackgroundTaskCountsByScope,
@@ -526,6 +527,11 @@ function buildThreadResponseFromThread(
   });
   return {
     ...threadWithRuntime,
+    hasPendingInteraction:
+      listThreadsWithPendingInteractionState(deps.db, {
+        threadIds: [args.thread.id],
+        includeHidden: true,
+      })[0]?.hasPendingInteraction ?? false,
     nativeTerminal: getNativeTerminalThread(deps.db, args.thread.id) !== null,
     activeBackgroundAgentCount:
       listActiveBackgroundTaskCountsByThreadIds(deps.db, {

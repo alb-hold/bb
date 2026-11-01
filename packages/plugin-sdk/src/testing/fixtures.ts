@@ -83,6 +83,7 @@ export function makeThreadResponse(
   overrides: Partial<ThreadResponse> = {},
 ): ThreadResponse {
   return {
+    hasPendingInteraction: false,
     id: "thread-1",
     projectId: "project-1",
     environmentId: null,
