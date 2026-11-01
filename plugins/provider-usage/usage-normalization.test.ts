@@ -82,7 +82,7 @@ it("normalizes structured plans and windows while retaining custom provider labe
       ],
     },
   });
-  expect(normalizeUsageMeasurement(raw)).toMatchObject({
+  expect(normalizeUsageMeasurement(raw, "claude-code")).toMatchObject({
     accountKey: null,
     usage: {
       planLabel: "Claude subscription",
@@ -106,7 +106,33 @@ it("preserves provider plan names over legacy structured tiers", () => {
       windows: [],
     },
   });
-  expect(normalizeUsageMeasurement(raw).usage).toMatchObject({
+  expect(normalizeUsageMeasurement(raw, "claude-code").usage).toMatchObject({
     planLabel: "Ultra",
   });
 });
+
+it.each([
+  {
+    providerId: "claude-code",
+    multiplier: 20,
+    expected: "Claude subscription",
+  },
+  { providerId: "custom", multiplier: 5, expected: "Max (5x)" },
+])(
+  "scopes an unnamed Max plan to $providerId",
+  ({ providerId, multiplier, expected }) => {
+    const raw = usageMeasurementSchema.parse({
+      observedAt: 123,
+      usage: {
+        status: "ok",
+        accountEmail: null,
+        planLabel: null,
+        plan: { id: "max", multiplier },
+        windows: [],
+      },
+    });
+    expect(normalizeUsageMeasurement(raw, providerId).usage).toMatchObject({
+      planLabel: expected,
+    });
+  },
+);
