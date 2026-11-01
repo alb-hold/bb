@@ -565,9 +565,13 @@ describe("thread runtime display", () => {
       expect(fresh[0]?.listIndicator).toBe("working");
       expect(fresh[1]?.runtime.nativeActivity?.confirmation).toBe("confirmed");
       expect(fresh[1]?.listIndicator).toBe("working");
-      expect(stale[0]?.runtime.nativeActivity?.confirmation).toBe("unconfirmed");
+      expect(stale[0]?.runtime.nativeActivity?.confirmation).toBe(
+        "unconfirmed",
+      );
       expect(stale[0]?.listIndicator).toBe("activity-unreported");
-      expect(stale[1]?.runtime.nativeActivity?.confirmation).toBe("unconfirmed");
+      expect(stale[1]?.runtime.nativeActivity?.confirmation).toBe(
+        "unconfirmed",
+      );
       expect(stale[1]?.listIndicator).toBe("activity-unreported");
       expect(detail.runtime.nativeActivity?.confirmation).toBe("unconfirmed");
       expect(detail.nativeTerminal).toBe(true);
@@ -1211,3 +1215,53 @@ describe("thread runtime display", () => {
     });
   });
 });
+
+it.each([false, true])(
+  "projects clean=%s in plugin event DTOs and batches error-thread lookup",
+  (clean) => {
+    const { db, hostId, hub } = setup();
+    const threads = [
+      createThreadWithEnvironment({ db, hostId }),
+      createThreadWithEnvironment({ db, hostId }),
+    ].map(({ thread }) => ({ ...thread, status: "error" as const }));
+    for (const thread of threads) {
+      createNativeTerminalThread(db, {
+        threadId: thread.id,
+        providerId: thread.providerId,
+        nativeSessionId: `session-${thread.id}`,
+        initialPrompt: null,
+        initialImages: [],
+        model: null,
+      });
+      if (clean)
+        db.$client
+          .prepare(
+            "UPDATE fork_native_terminal_threads SET terminal_session_id = 'terminal', lost_idle_terminal_session_id = 'terminal' WHERE thread_id = ?",
+          )
+          .run(thread.id);
+    }
+    const entries = threads.map((thread) =>
+      createThreadListEntry({ environmentHostId: hostId, thread }),
+    );
+    expect(
+      countNativeActivityLookupStatements(db, () => {
+        const rows = toThreadListEntryResponsesForTest(
+          { db, hub, providerRegistry },
+          { threads: entries },
+        );
+        expect(rows.map((row) => row.runtime.nativeSessionExit)).toEqual([
+          clean ? "clean" : undefined,
+          clean ? "clean" : undefined,
+        ]);
+      }),
+    ).toBe(1);
+    for (const thread of threads) {
+      expect(
+        toPluginThreadDtoFromThread({ db, hub, providerRegistry }, { thread }),
+      ).toMatchObject({
+        status: clean ? "idle" : "error",
+        runtime: { displayStatus: clean ? "idle" : "error" },
+      });
+    }
+  },
+);

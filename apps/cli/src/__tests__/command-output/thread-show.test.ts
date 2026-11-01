@@ -51,6 +51,45 @@ describe("bb thread show command output", () => {
     });
   }
 
+  it.each(
+    [false, true].flatMap((clean) =>
+      [false, true].map((json) => ({ clean, json })),
+    ),
+  )(
+    "uses non-error display for clean=$clean in show json=$json",
+    async ({ clean, json }) => {
+      const thread = {
+        ...fixtures.makeThread({
+          id: "thr-exit-show",
+          projectId: "project-exit",
+          providerId: "codex",
+          status: "error",
+        }),
+        runtime: {
+          displayStatus: "error",
+          ...(clean ? { nativeSessionExit: "clean" } : {}),
+        },
+      };
+      const events = vi.fn(async () => []);
+      stubThreadApi({
+        "v1.threads.:id.$get": async () => thread,
+        "v1.threads.:id.events.$get": events,
+        "v1.threads.:id.timeline.$get": fixtures.makeEmptyTimelineGetMock(),
+      });
+      await runCommand(
+        ["thread", "show", thread.id, ...(json ? ["--json"] : [])],
+        register,
+      );
+      const output = collectLogLines(vi.mocked(console.log)).join("\n");
+      if (json) {
+        const row = JSON.parse(output).thread;
+        expect(row.status).toBe(clean ? "idle" : "error");
+        expect(row.runtime.nativeSessionExit).toBe(clean ? "clean" : undefined);
+      } else expect(output).toContain(`Status: ${clean ? "idle" : "error"}`);
+      expect(events).toHaveBeenCalledTimes(clean ? 0 : 1);
+    },
+  );
+
   it("prints stored and next-turn models when they differ", () => {
     printExecutionProfile({
       lastRequested: null,
@@ -490,7 +529,10 @@ describe("bb thread show command output", () => {
     );
 
     expect(rpc.bodies).toEqual([
-      { environmentId: "env-uncommitted-diff", target: { type: "uncommitted" } },
+      {
+        environmentId: "env-uncommitted-diff",
+        target: { type: "uncommitted" },
+      },
     ]);
     const output = collectLogLines(vi.mocked(console.log)).join("\n");
     expect(output).toContain("Git diff:");

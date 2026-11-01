@@ -1,4 +1,5 @@
 import type { QueryClient, QueryKey } from "@tanstack/react-query";
+import { withEffectiveDisplayStatus } from "@bb/domain";
 import type {
   EnvironmentChangeKind,
   HostChangeKind,
@@ -1171,7 +1172,13 @@ function patchThreadSearchStatusState({
         results: group.results.map((result) =>
           result.thread.id === threadId &&
           statusChange.updatedAt >= result.thread.updatedAt
-            ? { ...result, thread: { ...result.thread, ...statusChange } }
+            ? {
+                ...result,
+                thread: {
+                  ...result.thread,
+                  ...withEffectiveDisplayStatus(statusChange),
+                },
+              }
             : result,
         ),
       });

@@ -1,4 +1,5 @@
 import type { QueryClient, QueryKey } from "@tanstack/react-query";
+import { withEffectiveDisplayStatus } from "@bb/domain";
 import type {
   Thread,
   ThreadListEntry,
@@ -561,7 +562,7 @@ export function updateCachedThreadListStatusState(
   patchThreadEntity(
     queryClient,
     threadId,
-    statusChange,
+    withEffectiveDisplayStatus(statusChange),
     statusChange.updatedAt,
   );
 }
@@ -574,7 +575,11 @@ export function updateCachedThreadStatusState(
   patchThreadEntity(
     queryClient,
     threadId,
-    { status, runtime, latestAttentionAt, updatedAt },
+    {
+      ...withEffectiveDisplayStatus({ status, runtime }),
+      latestAttentionAt,
+      updatedAt,
+    },
     updatedAt,
   );
 }

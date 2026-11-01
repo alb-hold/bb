@@ -71,12 +71,48 @@ export type NativeActivityDiagnostic = z.infer<
 export const threadRuntimeStateSchema = upstreamThreadRuntimeStateSchema.extend(
   {
     nativeActivity: nativeActivityDiagnosticSchema.optional(),
+    nativeSessionExit: z.literal("clean").optional(),
   },
 );
 export type ThreadRuntimeState = z.infer<typeof threadRuntimeStateSchema>;
 
-export type ThreadActivityState = z.infer<typeof threadActivityStateSchema>;
+export function effectiveDisplayStatus<
+  TStatus extends ThreadRuntimeDisplayStatus,
+>(
+  thread: { status: TStatus },
+  runtime?: Pick<ThreadRuntimeState, "nativeSessionExit">,
+): TStatus | "idle" {
+  return thread.status === "error" && runtime?.nativeSessionExit === "clean"
+    ? "idle"
+    : thread.status;
+}
 
+export function withEffectiveDisplayStatus<
+  TThread extends {
+    status: z.infer<typeof threadStatusSchema>;
+    runtime?: ThreadRuntimeState;
+  },
+>(thread: TThread): TThread {
+  const status = effectiveDisplayStatus(thread, thread.runtime);
+  if (status === thread.status) return thread;
+  return {
+    ...thread,
+    status,
+    ...(thread.runtime === undefined
+      ? {}
+      : {
+          runtime: {
+            ...thread.runtime,
+            displayStatus: effectiveDisplayStatus(
+              { status: thread.runtime.displayStatus },
+              thread.runtime,
+            ),
+          },
+        }),
+  };
+}
+
+export type ThreadActivityState = z.infer<typeof threadActivityStateSchema>;
 
 export const threadQueuedMessageSchema = z.object({
   id: z.string(),

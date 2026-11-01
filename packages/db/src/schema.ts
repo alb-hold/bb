@@ -1438,3 +1438,31 @@ export const forkThreadRowStates = sqliteTable("fork_thread_row_states", {
   progressJson: text("progress_json"),
   updatedAt: integer("updated_at").notNull().default(0),
 });
+
+export const forkNativeTerminalThreads = sqliteTable(
+  "fork_native_terminal_threads",
+  {
+    threadId: text("thread_id")
+      .primaryKey()
+      .notNull()
+      .references(() => threads.id, { onDelete: "cascade" }),
+    providerId: text("provider_id").notNull(),
+    nativeSessionId: text("native_session_id"),
+    terminalSessionId: text("terminal_session_id"),
+    lostIdleTerminalSessionId: text("lost_idle_terminal_session_id"),
+    lastEvidenceAt: integer("last_evidence_at"),
+    lastEvidenceKind: text("last_evidence_kind"),
+    lastToolCallAt: integer("last_tool_call_at"),
+    lastToolCallSessionId: text("last_tool_call_session_id"),
+    initialPrompt: text("initial_prompt"),
+    initialImages: text("initial_images"),
+    model: text("model"),
+    createdAt: integer("created_at").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+  },
+  (table) => [
+    uniqueIndex("fork_native_terminal_threads_session_idx")
+      .on(table.providerId, table.nativeSessionId)
+      .where(sql`${table.nativeSessionId} IS NOT NULL`),
+  ],
+);

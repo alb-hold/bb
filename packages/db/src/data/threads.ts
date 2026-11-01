@@ -35,6 +35,7 @@ import type {
 } from "@bb/domain";
 import {
   evaluateThreadLifecycleEvent,
+  effectiveDisplayStatus,
   threadSearchSourceKindSchema,
 } from "@bb/domain";
 import type { DbConnection, DbTransaction } from "../connection.js";
@@ -45,6 +46,7 @@ import {
   pendingInteractions,
   projects,
   terminalSessions,
+  forkNativeTerminalThreads,
   threadSearchSegments,
   threads,
 } from "../schema.js";
@@ -1332,6 +1334,16 @@ export function countThreads(
 ): CountThreadsResult {
   const needsEnvironmentJoin =
     options.hostId !== undefined || options.groupBy === "host";
+  const cleanExit = sql`EXISTS (
+    SELECT 1 FROM ${forkNativeTerminalThreads}
+    WHERE ${forkNativeTerminalThreads.threadId} = ${threads.id}
+      AND ${forkNativeTerminalThreads.providerId} = ${threads.providerId}
+      AND ${forkNativeTerminalThreads.lostIdleTerminalSessionId} IS NOT NULL
+      AND ${forkNativeTerminalThreads.lostIdleTerminalSessionId} = ${forkNativeTerminalThreads.terminalSessionId}
+  )`;
+  const displayStatus = sql`CASE WHEN ${threads.status} = 'error' AND ${cleanExit}
+    THEN ${effectiveDisplayStatus({ status: "error" }, { nativeSessionExit: "clean" })}
+    ELSE ${threads.status} END`;
   const filters = [
     nonDeletedThreads(),
     options.includeArchived === true ? undefined : isNull(threads.archivedAt),
@@ -1339,7 +1351,9 @@ export function countThreads(
       ? undefined
       : eq(threads.visibility, "visible"),
     options.status !== undefined
-      ? eq(threads.status, options.status)
+      ? (options.status === "idle" || options.status === "error"
+        ? eq(displayStatus, options.status)
+        : eq(threads.status, options.status))
       : undefined,
     options.providerId !== undefined
       ? eq(threads.providerId, options.providerId)
@@ -2427,6 +2441,9 @@ export function applyThreadLifecycleEventInTransaction(
     };
   }
 
+  if (args.event.type === "run.failed") {
+    db.run(sql`UPDATE fork_native_terminal_threads SET lost_idle_terminal_session_id = NULL WHERE thread_id = ${args.threadId}`);
+  }
   const evaluation = evaluateThreadLifecycleEvent({
     event: args.event,
     thread,
@@ -2471,6 +2488,15 @@ export function applyThreadLifecycleEventInTransaction(
       detail: `status changed from ${thread.status} while applying ${args.event.type}`,
       reason: "cas-conflict",
     };
+  }
+  if (args.event.type === "session.lost" && thread.status === "idle") {
+    db.run(sql`UPDATE fork_native_terminal_threads
+      SET lost_idle_terminal_session_id = (
+        SELECT id FROM terminal_sessions WHERE id = fork_native_terminal_threads.terminal_session_id
+          AND status = 'exited' AND close_reason = 'process-exit' AND exit_code = 0
+      ) WHERE thread_id = ${args.threadId}`);
+  } else {
+    db.run(sql`UPDATE fork_native_terminal_threads SET lost_idle_terminal_session_id = NULL WHERE thread_id = ${args.threadId}`);
   }
   return { applied: true, thread: updated };
 }

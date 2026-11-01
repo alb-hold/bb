@@ -22,6 +22,7 @@ import {
   type ThreadListEnrichmentScope,
 } from "@bb/db";
 import {
+  withEffectiveDisplayStatus,
   LEGACY_CODEX_GOAL_EXTENSION_KIND,
   NATIVE_TERMINAL_ACTIVITY_FRESH_FOR_MS,
 } from "@bb/domain";
@@ -92,6 +93,8 @@ type ThreadPromptBannerDeps = NativeActivityDisplayDeps;
 type NativeActivityThreadRecord = Pick<
   NativeTerminalThreadRecord,
   | "providerId"
+  | "terminalSessionId"
+  | "lostIdleTerminalSessionId"
   | "lastEvidenceAt"
   | "lastEvidenceKind"
   | "lastToolCallAt"
@@ -293,9 +296,10 @@ function supportsNativeActivity(
   thread: Thread,
 ): boolean {
   return (
-    thread.status === "active" &&
-    deps.providerRegistry.get(thread.providerId)?.nativeTerminal?.activity !==
-      undefined
+    thread.status === "error" ||
+    (thread.status === "active" &&
+      deps.providerRegistry.get(thread.providerId)?.nativeTerminal?.activity !==
+        undefined)
   );
 }
 
@@ -320,12 +324,29 @@ function getNativeTerminalThreadsById(
   );
 }
 
+export function nativeThreadExitRuntime(
+  thread: Thread,
+  nativeThread: NativeActivityThreadRecord | null,
+): Pick<ThreadRuntimeState, "nativeSessionExit"> | undefined {
+  if (
+    thread.status === "error" &&
+    nativeThread?.providerId === thread.providerId &&
+    nativeThread.lostIdleTerminalSessionId !== null &&
+    nativeThread.lostIdleTerminalSessionId === nativeThread.terminalSessionId
+  ) {
+    return { nativeSessionExit: "clean" };
+  }
+  return undefined;
+}
+
 function addNativeActivityDiagnostic(
   thread: Thread,
   runtime: ThreadRuntimeState,
   nativeThread: NativeActivityThreadRecord | null,
   now = Date.now(),
 ): ThreadRuntimeState {
+  const exitRuntime = nativeThreadExitRuntime(thread, nativeThread);
+  if (exitRuntime !== undefined) return { ...runtime, ...exitRuntime };
   if (
     thread.status !== "active" ||
     nativeThread?.providerId !== thread.providerId
@@ -492,7 +513,7 @@ export function toPluginThreadDtoFromThread(
   deps: PluginThreadResponseDisplayDeps,
   args: ToThreadResponseFromThreadArgs,
 ): ThreadResponse {
-  return buildThreadResponseFromThread(deps, args);
+  return withEffectiveDisplayStatus(buildThreadResponseFromThread(deps, args));
 }
 
 function buildThreadResponseFromThread(

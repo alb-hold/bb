@@ -278,6 +278,36 @@ beforeEach(() => {
   });
 });
 
+it.each([true, false])(
+  "projects native exit display status from the sidebar into detail query placeholders (clean: %s)",
+  (clean) => {
+    const { queryClient } = createQueryClientTestHarness();
+    const row = makeThreadListEntry({
+      id: "thread-native-exit",
+      projectId: "project-1",
+      status: "error",
+      runtime: {
+        displayStatus: "error",
+        ...(clean ? { nativeSessionExit: "clean" } : {}),
+      },
+    });
+    queryClient.setQueryData(
+      sidebarNavigationQueryKey(),
+      makeSidebarNavigation([row]),
+    );
+    const observer = observe(
+      queryClient,
+      threadQueryOptions(queryClient, row.id, { enabled: false }),
+    );
+    const expected = clean ? "idle" : "error";
+    expect(observer.getCurrentResult().data).toMatchObject({
+      status: expected,
+      runtime: { displayStatus: expected },
+    });
+    expect(observer.getCurrentResult().isPlaceholderData).toBe(true);
+  },
+);
+
 describe("useThreadDetailBootstrap", () => {
   it("starts the timeline request before the thread bootstrap settles", async () => {
     let resolveThread:
