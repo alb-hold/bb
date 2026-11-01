@@ -29,4 +29,4 @@ export type {
 
 export type * from "./machine-bootstrap.js";
 
-export { claudeProfilePlanLabel as internal_DO_NOT_USE_claudeProfilePlanLabel } from "./claude-profile.js";
+export { claudeProfilePlanLabel as internal_DO_NOT_USE_claudeProfilePlanLabel } from "./claude-plan-label.js";
