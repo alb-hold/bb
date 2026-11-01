@@ -859,8 +859,8 @@ describe("Account Pool settings", () => {
     expect(
       slot.queryByRole("button", { name: /^Sign in again to / }),
     ).toBeNull();
-    expect(slot.getAllByText("Claude subscription")).toHaveLength(2);
-    for (const badge of slot.getAllByText("Claude subscription")) {
+    expect(slot.getAllByText("Ultra")).toHaveLength(2);
+    for (const badge of slot.getAllByText("Ultra")) {
       expect(badge.className).toContain("whitespace-nowrap");
       expect(badge.parentElement?.className).toContain("shrink-0");
     }
@@ -995,17 +995,17 @@ describe("Account Pool settings", () => {
     expect(slot.queryByText("7d · Other")).toBeNull();
   });
 
-  it("shows a neutral plan on a cold read without provider metadata", async () => {
+  it("shows Ultra for the legacy 20x tier on a cold read without provider metadata", async () => {
     const current = account({
       label: "Cold subscription",
       rateLimitTier: "default_claude_max_20x",
     });
     const slot = render([current], { "display.get": () => ({ plans: {} }) });
-    expect(await slot.findByText("Claude subscription")).toBeTruthy();
+    expect(await slot.findByText("Ultra")).toBeTruthy();
     expect(slot.queryByText("Max (20x)")).toBeNull();
     await openActions(slot, current.label);
     fireEvent.click(await slot.findByText("Usage details"));
-    expect(slot.getAllByText("Claude subscription").length).toBeGreaterThan(1);
+    expect(slot.getAllByText("Ultra").length).toBeGreaterThan(1);
   });
 
   it("shows Ultra badges and usage details from display metadata over a legacy Max record", async () => {
