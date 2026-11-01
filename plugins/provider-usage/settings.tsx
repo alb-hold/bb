@@ -34,7 +34,7 @@ import {
 } from "./usage-schema.js";
 function SettingsBadge({ children }: { children: ReactNode }) {
   return (
-    <span className="shrink-0 rounded-sm border border-border bg-muted/40 px-1.5 py-0.5 text-2xs leading-none text-subtle-foreground">
+    <span className="shrink-0 whitespace-nowrap rounded-sm border border-border bg-muted/40 px-1.5 py-0.5 text-2xs leading-none text-subtle-foreground">
       {children}
     </span>
   );
@@ -278,7 +278,7 @@ function ProviderUsageBlock({
           <div className="min-w-0 flex-1">
             <h3
               id={headingId}
-              className="text-sm font-semibold text-foreground"
+              className="min-w-0 truncate text-sm font-semibold text-foreground"
             >
               {name}
             </h3>

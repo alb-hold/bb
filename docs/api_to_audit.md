@@ -4601,3 +4601,19 @@ precedence, bounded discovery failure, and module-ABI preservation after Node
 replacement. Settle the shared process-local instance lifecycle across SDK
 bundle versions and whether `bundledNpmCli` belongs on the public surface before
 removing the prefix.
+
+## Internal Claude profile parser
+
+`internal_DO_NOT_USE_claudeProfileSchema` and
+`internal_DO_NOT_USE_claudeProfilePlanLabel`, plus
+`internal_DO_NOT_USE_claudeLocalPlanLabel`, in the provider bridge SDK share the
+Anthropic OAuth profile boundary between Account Pooler and Claude Code provider.
+These are internal plumbing for those two first-party plugins only. Provider
+plan display names take precedence over legacy subscription and rate-limit flags.
+The plan-label helpers are also exported from the side-effect-free SDK root for
+Account Pooler app display. Explicit Max names retain the provider-reported tier
+multiplier; other provider plan names are preserved.
+Without a provider name, both plugins use the same local fallback: missing
+subscriptions, subscriptions containing Max, or legacy Max rate-limit tiers
+produce Claude subscription; other subscriptions are capitalized. Keep both
+helpers free of schema imports so app display does not eagerly load the parser.

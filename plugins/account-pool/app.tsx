@@ -308,7 +308,7 @@ function StateWord({ state }: { state: SubscriptionState }) {
   return (
     <span
       className={cn(
-        "inline-flex min-w-0 items-center gap-1.5 text-xs",
+        "inline-flex min-w-0 max-w-full items-center gap-1.5 text-xs",
         state.tone,
       )}
     >
@@ -333,7 +333,10 @@ import {
 } from "./src/display.js";
 
 function planBadge(
-  account: Pick<AccountSummary, "kind" | "subscriptionType" | "rateLimitTier">,
+  account: Pick<
+    AccountSummary,
+    "provider" | "kind" | "subscriptionType" | "rateLimitTier"
+  >,
   displayName: string | null = null,
 ): string | null {
   if (account.kind === "api-key") return "API key";
@@ -442,7 +445,7 @@ function SubscriptionRow({
       style={{ transform: CSS.Translate.toString(transform), transition }}
       className={cn(
         LEDGER_ROW_CLASS,
-        "@container/account-row flex items-center gap-3 text-sm",
+        "@container/account-row",
         isDragging && "relative z-10 rounded-md bg-card opacity-90 shadow-lift",
       )}
     >

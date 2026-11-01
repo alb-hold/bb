@@ -2,6 +2,7 @@ import type { UsageMeasurement } from "./usage-source-contract.js";
 
 export function normalizeUsageMeasurement(
   measurement: UsageMeasurement,
+  providerId: string,
 ): UsageMeasurement {
   if (measurement.usage.status !== "ok") return measurement;
   const usage = measurement.usage;
@@ -18,7 +19,18 @@ export function normalizeUsageMeasurement(
     edu: "Education",
   };
   const plan = usage.plan;
-  const planName = plan ? labels[plan.id] : undefined;
+  const planLabel =
+    usage.planLabel !== null &&
+    /^max$/iu.test(usage.planLabel) &&
+    plan?.multiplier != null
+      ? `Max (${plan.multiplier}x)`
+      : usage.planLabel;
+  const claudeMax = providerId === "claude-code" && plan?.id === "max";
+  const planName = claudeMax
+    ? "Claude subscription"
+    : plan
+      ? labels[plan.id]
+      : undefined;
   const windowLabels = {
     "five-hour": "Five-hour limit",
     daily: "Daily limit",
@@ -29,9 +41,11 @@ export function normalizeUsageMeasurement(
     ...measurement,
     usage: {
       ...usage,
-      planLabel: planName
-        ? `${planName}${plan?.multiplier == null ? "" : ` (${plan.multiplier}x)`}`
-        : usage.planLabel,
+      planLabel:
+        planLabel ??
+        (planName
+          ? `${planName}${plan?.multiplier == null || claudeMax ? "" : ` (${plan.multiplier}x)`}`
+          : null),
       windows: usage.windows.map((window) => ({
         ...window,
         label:
