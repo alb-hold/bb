@@ -1023,6 +1023,38 @@ describe("Account Pool settings", () => {
     expect(slot.getAllByText("Ultra").length).toBeGreaterThan(1);
   });
 
+  it("keeps reported Max off Claude API-key badges and retains non-Claude Max tiers", async () => {
+    const apiKey = account({
+      label: "Claude API-key fixture",
+      kind: "api-key",
+      subscriptionType: null,
+      rateLimitTier: null,
+      email: null,
+    });
+    const codex = account({
+      id: "22222222-2222-4222-8222-222222222222",
+      provider: "codex",
+      label: "Codex Max fixture",
+      subscriptionType: "max",
+      rateLimitTier: "max_20x",
+    });
+    const slot = render([apiKey, codex], {
+      "display.get": () => ({
+        plans: { [apiKey.id]: "Max", [codex.id]: "Max" },
+      }),
+    });
+    expect(await slot.findByText("Max (20x)")).toBeTruthy();
+    const claude = within(
+      slot.getByRole("group", { name: "Claude subscriptions" }),
+    );
+    expect(claude.getByText("API key")).toBeTruthy();
+    expect(claude.queryByText(/^Max(?: \(.*\))?$/u)).toBeNull();
+    const nonClaude = within(
+      slot.getByRole("group", { name: "Codex subscriptions" }),
+    );
+    expect(nonClaude.getByText("Max (20x)")).toBeTruthy();
+  });
+
   it("shows the plan from the tier and opens usage details for a Codex subscription", async () => {
     const blockingResetAt = Date.now() + 6 * 24 * 60 * 60 * 1_000;
     const slot = render([

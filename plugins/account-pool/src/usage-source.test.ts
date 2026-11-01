@@ -1,7 +1,22 @@
 import { describe, expect, it } from "vitest";
 import { usagePlanLabel, usageWindowLabel } from "./usage-source.js";
+import { displayPlanLabel } from "./display.js";
 
 describe("usage presentation labels", () => {
+  it.each([
+    ["claude", "api-key", null, null, "Claude subscription"],
+    ["codex", "oauth", "max", "max_20x", "Max (20x)"],
+  ] as const)(
+    "normalizes reported Max for %s %s accounts without changing other providers",
+    (provider, kind, subscriptionType, rateLimitTier, expected) => {
+      expect(
+        displayPlanLabel(
+          { provider, kind, subscriptionType, rateLimitTier },
+          "Max",
+        ),
+      ).toBe(expected);
+    },
+  );
   it("names known windows consistently and retains other durations", () => {
     expect(usageWindowLabel(10_080, "primary")).toBe("Weekly limit");
     expect(usageWindowLabel(300, "secondary")).toBe("Five-hour limit");
