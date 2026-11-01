@@ -54,11 +54,7 @@ function isWindowsProcessAlive(pid: number): boolean {
   try {
     return process.kill(pid, 0);
   } catch (error) {
-    if (
-      error instanceof Error &&
-      "code" in error &&
-      error.code === "ESRCH"
-    )
+    if (error instanceof Error && "code" in error && error.code === "ESRCH")
       return false;
     throw error;
   }
@@ -107,12 +103,17 @@ export function trackTestProcess(child: ChildProcess): () => Promise<void> {
   let discoveryError: Error | undefined;
   let discoveryTimer: ReturnType<typeof setInterval> | undefined;
   const record = (deadline: number) => {
-    if (pid === undefined || child.exitCode !== null || child.signalCode !== null)
+    if (
+      pid === undefined ||
+      child.exitCode !== null ||
+      child.signalCode !== null
+    )
       return;
     try {
       recordWindowsDescendants(pid, descendants, deadline);
     } catch (error) {
-      discoveryError = error instanceof Error ? error : new Error(String(error));
+      discoveryError =
+        error instanceof Error ? error : new Error(String(error));
     }
   };
   if (process.platform === "win32" && pid !== undefined) {
