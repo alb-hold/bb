@@ -101,6 +101,17 @@ describe("usage presentation labels", () => {
   });
   it("retains known subscription labels for Claude API-key accounts", () => {
     expect(
+      usagePlanLabel(
+        {
+          provider: "codex",
+          kind: "oauth",
+          subscriptionType: "max",
+          rateLimitTier: "max_20x",
+        },
+        "Max",
+      ),
+    ).toBe("Max (20x)");
+    expect(
       usagePlanLabel({
         provider: "claude",
         kind: "api-key",

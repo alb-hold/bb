@@ -27,6 +27,12 @@ export function displayPlanLabel(
   displayName: string | null = null,
 ): string | null {
   if (displayName !== null) {
+    if (account.provider !== "claude") {
+      const max = account.rateLimitTier?.match(/max_(\d+)x/u);
+      return /^max$/iu.test(displayName) && max
+        ? `Max (${max[1]}x)`
+        : displayName;
+    }
     return claudeProfilePlanLabel({
       account: { rate_limit_tier: account.rateLimitTier },
       organization: { plan_display_name: displayName },
