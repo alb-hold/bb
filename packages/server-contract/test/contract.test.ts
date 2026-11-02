@@ -895,6 +895,11 @@ describe("public terminal contracts", () => {
     ).toBe(false);
   });
 
+  it.each([{}, { claim: true }])("accepts resize messages with optional focus claims %j", (claim) => {
+    const message = { type: "resize", cols: 120, rows: 40, ...claim };
+    expect(terminalClientMessageSchema.parse(message)).toEqual(message);
+  });
+
   it("bounds and validates terminal data payloads", () => {
     const maxPayload = terminalDataBase64(TERMINAL_DATA_MAX_BYTES);
     const oversizedDecodedPayload = terminalDataBase64(
