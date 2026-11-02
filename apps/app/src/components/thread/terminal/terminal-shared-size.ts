@@ -7,7 +7,13 @@ export function terminalDisplaySize(
   fitted: TerminalGridSize,
   shared: TerminalGridSize | null,
 ): TerminalGridSize {
-  return shared ?? fitted;
+  if (shared === null) {
+    return fitted;
+  }
+  return {
+    cols: Math.min(fitted.cols, shared.cols),
+    rows: Math.min(fitted.rows, shared.rows),
+  };
 }
 
 export function nextSharedTerminalSize(

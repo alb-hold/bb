@@ -5,16 +5,16 @@ import {
 } from "./terminal-shared-size";
 
 describe("terminalDisplaySize", () => {
-  it("uses the PTY grid even when the client viewport is larger", () => {
+  it("draws a wide screen at the narrower shared PTY size", () => {
     expect(
       terminalDisplaySize({ cols: 160, rows: 48 }, { cols: 44, rows: 20 }),
     ).toEqual({ cols: 44, rows: 20 });
   });
 
-  it("keeps the PTY grid when the client viewport is smaller", () => {
+  it("never draws past the screen when the shared size is still larger", () => {
     expect(
       terminalDisplaySize({ cols: 44, rows: 20 }, { cols: 160, rows: 48 }),
-    ).toEqual({ cols: 160, rows: 48 });
+    ).toEqual({ cols: 44, rows: 20 });
   });
 
   it("uses the fitted size before the server reports one", () => {
