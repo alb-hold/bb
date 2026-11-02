@@ -1367,7 +1367,7 @@ describe("native terminal threads", () => {
     await new Promise((resolve) => setTimeout(resolve, 300));
   });
 
-  it("reattaches an unarchived thread whose terminal exited during daemon disconnect", async () => {
+  it("reattaches a native CLI after client cleanup preserves its daemon disconnect", async () => {
     const fixture = await createMigratedMemoryFixture();
     const { thread } = await openRunningNativeThread(fixture, {
       providerId: "claude-code",
@@ -1387,6 +1387,16 @@ describe("native terminal threads", () => {
       .set({ status: "exited", closeReason: "daemon-disconnect" })
       .where(eq(terminalSessions.id, record.terminalSessionId))
       .run();
+    const cleanup = await postJson(
+      fixture,
+      `/terminals/${record.terminalSessionId}/close`,
+      { mode: "force", reason: "client-cleanup" },
+    );
+    expect(cleanup.status).toBe(200);
+    expect(getTerminalSession(fixture.harness.db, record.terminalSessionId)).toMatchObject({
+      status: "exited",
+      closeReason: "daemon-disconnect",
+    });
     fixture.socket.sentMessages.length = 0;
 
     const reopening = reopenNativeTerminalsAfterDaemonReconnect(
@@ -3110,6 +3120,7 @@ describe("native terminal threads", () => {
       sessionId: fixture.sessionId,
     });
     await fixture.harness.deps.terminalSessions.closeTerminal({
+      caller: "native-terminal-threads.test",
       terminalId: closed.terminalId,
       payload: { mode: "force", reason: "user" },
     });

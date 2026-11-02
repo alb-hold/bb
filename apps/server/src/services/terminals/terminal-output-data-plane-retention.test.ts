@@ -1605,6 +1605,7 @@ describe("terminal output retained from the data plane", () => {
         update: { kind: "disconnect", retainDaemonSession: false },
       });
       await fixture.terminalSessions.closeTerminal({
+        caller: "terminal-output-data-plane-retention.test",
         terminalId: fixture.terminal.id,
         payload: { mode: "force", reason: "user" },
       });
@@ -2346,6 +2347,7 @@ describe("terminal output retained from the data plane", () => {
       });
       await new Promise<void>((resolve) => setImmediate(resolve));
       const dismiss = fixture.terminalSessions.closeTerminal({
+        caller: "terminal-output-data-plane-retention.test",
         terminalId: fixture.terminal.id,
         payload: { mode: "force", reason: "user" },
       });
