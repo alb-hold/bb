@@ -680,7 +680,7 @@ describe("native terminal threads", () => {
     restarted.deps.terminalSessions.handleBrowserTerminalMessage({
       terminalId: open.terminalId,
       socket: browserSocket,
-      message: { type: "resize", cols: 52, rows: 41 },
+      message: { type: "resize", cols: 52, rows: 41, claim: true },
     });
 
     expect(
