@@ -1338,9 +1338,7 @@ describe("public terminal routes", () => {
         `Expected terminal.attach, received ${attachMessage.type}`,
       );
     }
-    const markerOnly = Buffer.from(
-      `\u001b]7717;bb-holder;${stored.id}\u0007`,
-    );
+    const markerOnly = Buffer.from(`\u001b]7717;bb-holder;${stored.id}\u0007`);
 
     await onDaemonSocketMessage(fixture.harness.deps, {
       hostId: fixture.host.id,
@@ -2645,7 +2643,9 @@ describe("public terminal routes", () => {
     );
     expect(failedAttributions).toHaveLength(1);
     expect(failedAttributions[0]?.[0]).toMatchObject({
-      path: "websocket/failed", replayBytes: 0, retainedWriteBytes: 0,
+      path: "websocket/failed",
+      replayBytes: 0,
+      retainedWriteBytes: 0,
     });
     const discard = replayInfo.mock.calls.find(
       ([, message]) =>
@@ -4735,23 +4735,38 @@ describe("public terminal routes", () => {
     await attach(phone);
     send(desktop, { type: "visibility", visible: true });
     send(phone, { type: "visibility", visible: true });
+    send(desktop, { type: "resize", cols: 100, rows: 30 });
+    expect(sizes()).toEqual(["100x30"]);
+    send(phone, { type: "resize", cols: 80, rows: 20 });
+    expect(sizes()).toEqual(["100x30", "80x20"]);
+
     send(desktop, { type: "resize", cols: 160, rows: 48, claim: true });
-    expect(sizes()).toEqual(["160x48"]);
+    expect(sizes()).toEqual(["100x30", "80x20", "160x48"]);
+
+    send(phone, { type: "resize", cols: 75, rows: 18 });
+    expect(sizes()).toEqual(["100x30", "80x20", "160x48"]);
 
     send(phone, { type: "resize", cols: 55, rows: 16, claim: true });
-    expect(sizes()).toEqual(["160x48", "55x16"]);
+    expect(sizes()).toEqual(["100x30", "80x20", "160x48", "55x16"]);
     send(desktop, { type: "resize", cols: 120, rows: 40 });
-    expect(sizes()).toEqual(["160x48", "55x16"]);
+    expect(sizes()).toEqual(["100x30", "80x20", "160x48", "55x16"]);
 
     send(phone, { type: "resize", cols: 55, rows: 41 });
-    expect(sizes()).toEqual(["160x48", "55x16", "55x41"]);
+    expect(sizes()).toEqual(["100x30", "80x20", "160x48", "55x16", "55x41"]);
     expect(terminals.getTerminal({ terminalId: stored.id })).toMatchObject({
       cols: 55,
       rows: 41,
     });
 
     send(phone, { type: "visibility", visible: false });
-    expect(sizes()).toEqual(["160x48", "55x16", "55x41", "120x40"]);
+    expect(sizes()).toEqual([
+      "100x30",
+      "80x20",
+      "160x48",
+      "55x16",
+      "55x41",
+      "120x40",
+    ]);
   });
 
   it("acknowledges each tagged resize after its session update, even when the shared size does not change, and only on sockets that asked", async () => {
@@ -4839,17 +4854,12 @@ describe("public terminal routes", () => {
     expect(kinds(peer)).toEqual([]);
 
     send(owner, { type: "resize", cols: 60, rows: 20, seq: 1, claim: true });
-    expect(kinds(owner)).toEqual([
-      "features",
-      "size 60x20 seq 1",
-      "applied 1",
-    ]);
+    expect(kinds(owner)).toEqual(["features", "size 60x20 seq 1", "applied 1"]);
     expect(kinds(legacy)).toEqual(["features", "size 60x20"]);
     expect(
       readBrowserMessages(legacy).every(
         (message) =>
-          message.type !== "session-updated" ||
-          message.resizeSeq === undefined,
+          message.type !== "session-updated" || message.resizeSeq === undefined,
       ),
     ).toBe(true);
     send(owner, { type: "resize", cols: 60, rows: 20, seq: 2 });
@@ -4862,16 +4872,11 @@ describe("public terminal routes", () => {
     send(peer, { type: "resize", cols: 40, rows: 20 });
     send(peer, { type: "resize", cols: 30, rows: 10, seq: 7 });
     send(legacy, { type: "resize", cols: 50, rows: 12, seq: 8 });
-    expect(kinds(legacy)).toEqual([
-      "features",
-      "size 60x20",
-      "applied 8",
-    ]);
+    expect(kinds(legacy)).toEqual(["features", "size 60x20", "applied 8"]);
     expect(
       readBrowserMessages(legacy).every(
         (message) =>
-          message.type !== "session-updated" ||
-          message.resizeSeq === undefined,
+          message.type !== "session-updated" || message.resizeSeq === undefined,
       ),
     ).toBe(true);
 
