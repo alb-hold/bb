@@ -80,6 +80,14 @@ interface TerminalSize {
   rows: number;
 }
 
+interface TerminalResizeOwnerChange {
+  clientId: string;
+  cols: number | null;
+  reason: "claimed" | "resized" | "hidden" | "disconnected" | "stale";
+  rows: number | null;
+  terminalId: string;
+}
+
 interface TerminalClientState {
   heartbeats: boolean;
   lastSeenAt: number;
@@ -324,6 +332,8 @@ export class HostOnlineRpcUnavailableError extends Error {
 }
 
 export class NotificationHub implements DbNotifier {
+  private nextTerminalClientId = 1;
+  private readonly terminalClientIdBySocket = new WeakMap<HubSocket, string>();
   private readonly clientKeysBySocket = new Map<
     HubSocket,
     Map<string, RealtimeSubscriptionTarget>
@@ -411,6 +421,7 @@ export class NotificationHub implements DbNotifier {
     string,
     Map<HubSocket, TerminalClientState>
   >();
+  private readonly terminalResizeOwnerById = new Map<string, HubSocket>();
   private readonly threadEventWaiters = new Map<
     string,
     Set<ThreadEventWaiter>
@@ -655,6 +666,41 @@ export class NotificationHub implements DbNotifier {
     return true;
   }
 
+  constructor(
+    private readonly onTerminalResizeOwnerChange: (
+      change: TerminalResizeOwnerChange,
+    ) => void = () => undefined,
+  ) {}
+
+  private terminalClientId(socket: HubSocket): string {
+    let id = this.terminalClientIdBySocket.get(socket);
+    if (id === undefined) {
+      id = `terminal-client-${this.nextTerminalClientId}`;
+      this.nextTerminalClientId += 1;
+      this.terminalClientIdBySocket.set(socket, id);
+    }
+    return id;
+  }
+
+  private clearTerminalResizeOwner(
+    terminalId: string,
+    socket: HubSocket,
+    reason: TerminalResizeOwnerChange["reason"],
+  ): void {
+    if (this.terminalResizeOwnerById.get(terminalId) !== socket) return;
+    const size = this.terminalClientStateById
+      .get(terminalId)
+      ?.get(socket)?.size;
+    this.terminalResizeOwnerById.delete(terminalId);
+    this.onTerminalResizeOwnerChange({
+      clientId: this.terminalClientId(socket),
+      cols: size?.cols ?? null,
+      rows: size?.rows ?? null,
+      reason,
+      terminalId,
+    });
+  }
+
   notifyPluginChanged(pluginId: string, tags: readonly string[] | null): void {
     this.notifyClients({
       type: "changed",
@@ -800,10 +846,36 @@ export class NotificationHub implements DbNotifier {
     socket: HubSocket,
     size: TerminalSize,
     now: number,
+    claim = false,
   ): void {
     const state = this.terminalClientState(terminalId, socket, now);
+    const previousSize = state.size;
     state.size = size;
     state.lastSeenAt = now;
+    if (state.visible) {
+      const currentOwner = this.terminalResizeOwnerById.get(terminalId);
+      if (claim && currentOwner !== socket) {
+        this.terminalResizeOwnerById.set(terminalId, socket);
+        this.onTerminalResizeOwnerChange({
+          clientId: this.terminalClientId(socket),
+          cols: size.cols,
+          rows: size.rows,
+          reason: "claimed",
+          terminalId,
+        });
+      } else if (
+        currentOwner === socket &&
+        (previousSize?.cols !== size.cols || previousSize?.rows !== size.rows)
+      ) {
+        this.onTerminalResizeOwnerChange({
+          clientId: this.terminalClientId(socket),
+          cols: size.cols,
+          rows: size.rows,
+          reason: "resized",
+          terminalId,
+        });
+      }
+    }
   }
 
   recordTerminalClientVisibility(
@@ -815,6 +887,9 @@ export class NotificationHub implements DbNotifier {
     const state = this.terminalClientState(terminalId, socket, now);
     state.visible = visible;
     state.lastSeenAt = now;
+    if (!visible) {
+      this.clearTerminalResizeOwner(terminalId, socket, "hidden");
+    }
     if (visible) {
       this.deliverPendingDeviceHandoffs({ terminalSessionId: terminalId }, now);
       for (const clientSocket of this.deviceHandoffRecipients(
@@ -862,26 +937,21 @@ export class NotificationHub implements DbNotifier {
   }
 
   terminalSharedSize(terminalId: string, now: number): TerminalSize | null {
-    let shared: TerminalSize | null = null;
-    for (const state of this.terminalClientStateById
-      .get(terminalId)
-      ?.values() ?? []) {
-      if (
-        state.size === null ||
-        !state.visible ||
-        (state.heartbeats && now - state.lastSeenAt > TERMINAL_CLIENT_STALE_MS)
-      ) {
-        continue;
-      }
-      shared =
-        shared === null
-          ? { ...state.size }
-          : {
-              cols: Math.min(shared.cols, state.size.cols),
-              rows: Math.min(shared.rows, state.size.rows),
-            };
+    const owner = this.terminalResizeOwnerById.get(terminalId);
+    if (owner === undefined) {
+      return null;
     }
-    return shared;
+    const state = this.terminalClientStateById.get(terminalId)?.get(owner);
+    if (
+      state?.size === null ||
+      state === undefined ||
+      !state.visible ||
+      (state.heartbeats && now - state.lastSeenAt > TERMINAL_CLIENT_STALE_MS)
+    ) {
+      this.clearTerminalResizeOwner(terminalId, owner, "stale");
+      return null;
+    }
+    return { ...state.size };
   }
 
   private terminalClientState(
@@ -930,6 +1000,7 @@ export class NotificationHub implements DbNotifier {
         this.terminalClientSocketsById.delete(terminalId);
       }
     }
+    this.clearTerminalResizeOwner(terminalId, socket, "disconnected");
     this.forgetTerminalClientState(terminalId, socket);
 
     const terminalIds = this.terminalIdsByClientSocket.get(socket);
@@ -959,6 +1030,7 @@ export class NotificationHub implements DbNotifier {
       if (sockets.size === 0) {
         this.terminalClientSocketsById.delete(terminalId);
       }
+      this.clearTerminalResizeOwner(terminalId, socket, "disconnected");
       this.forgetTerminalClientState(terminalId, socket);
     }
 

@@ -4068,6 +4068,7 @@ export class TerminalSessionLifecycle {
       args.socket,
       { cols: args.message.cols, rows: args.message.rows },
       Date.now(),
+      args.message.claim === true,
     );
     this.applySharedTerminalSize({ ...args, resizeSeq: args.message.seq });
     if (

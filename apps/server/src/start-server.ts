@@ -384,7 +384,13 @@ export async function runServer(serverConfig: ServerConfig): Promise<void> {
           now: Date.now(),
         })
       : null;
-  const hub = new NotificationHub();
+  const hub = new NotificationHub((change) => {
+    logger.info({
+      component: "terminal",
+      type: "terminal.resize_owner",
+      ...change,
+    });
+  });
   const watchInterests = new WatchInterestCoordinator({ db, hub });
   const sharedPorts = new HostSharedPortCoordinator({ db, hub });
   const lifecycleDedupers = createLifecycleDedupers();

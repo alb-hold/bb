@@ -129,6 +129,7 @@ import {
   nextSharedTerminalSize,
   type TerminalGridSize,
 } from "./terminal-shared-size";
+import { listenForTerminalSizeClaims } from "./terminal-size-claims";
 import { handleTerminalFileDrop } from "./terminal-file-drop";
 import {
   registerTerminalOsc52Handler,
@@ -1770,6 +1771,8 @@ export function ThreadTerminalView({
       }, 250);
     };
     let stopWatchingLayout: (() => void) | null = null;
+    let sizeClaims: ReturnType<typeof listenForTerminalSizeClaims> | null =
+      null;
     let sharedSize: TerminalGridSize | null = null;
     let markerGridActive = false;
     let replayCompleted = false;
@@ -1860,6 +1863,7 @@ export function ThreadTerminalView({
       if (wasVisible === nextVisible) return;
       terminalVisible = nextVisible;
       transport?.setVisible(nextVisible);
+      if (nextVisible) sizeClaims?.claimIfFocused();
       if (wasVisible === false && nextVisible && hasReceivedInitialAttach) {
         transport?.replayOutputFrom(lastParsedOutputNextSeq);
       }
@@ -2091,7 +2095,10 @@ export function ThreadTerminalView({
         },
         {
           beforeResize: () => captureLiveViewportBeforeGridResize(),
-          afterResize: () => clearLiveViewportBeforeGridResize(),
+          afterResize: () => {
+            terminal?.refresh(0, terminal.rows - 1);
+            clearLiveViewportBeforeGridResize();
+          },
         },
       );
       let reportedCwd: string | null = null;
@@ -2797,6 +2804,12 @@ export function ThreadTerminalView({
       transport = activeTransport;
       fitTerminal();
       reportDocumentVisibility();
+      sizeClaims = listenForTerminalSizeClaims({
+        claim: () => activeTransport.claimSize(),
+        element: containerElement,
+        textarea: activeTerminal.textarea,
+      });
+      sizeClaims.claimIfFocused();
       document.addEventListener("visibilitychange", reportDocumentVisibility);
       if (
         sessionRef.current.status === "exited" ||
@@ -3077,6 +3090,8 @@ export function ThreadTerminalView({
       stopObservingFonts?.();
       stopWatchingLayout?.();
       detachViewportListeners?.();
+      sizeClaims?.dispose();
+      sizeClaims = null;
       if (resizeAnimationFrame !== null) {
         window.cancelAnimationFrame(resizeAnimationFrame);
       }
