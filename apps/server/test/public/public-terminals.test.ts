@@ -1338,7 +1338,9 @@ describe("public terminal routes", () => {
         `Expected terminal.attach, received ${attachMessage.type}`,
       );
     }
-    const markerOnly = Buffer.from(`\u001b]7717;bb-holder;${stored.id}\u0007`);
+    const markerOnly = Buffer.from(
+      `\u001b]7717;bb-holder;${stored.id}\u0007`,
+    );
 
     await onDaemonSocketMessage(fixture.harness.deps, {
       hostId: fixture.host.id,
@@ -2643,9 +2645,7 @@ describe("public terminal routes", () => {
     );
     expect(failedAttributions).toHaveLength(1);
     expect(failedAttributions[0]?.[0]).toMatchObject({
-      path: "websocket/failed",
-      replayBytes: 0,
-      retainedWriteBytes: 0,
+      path: "websocket/failed", replayBytes: 0, retainedWriteBytes: 0,
     });
     const discard = replayInfo.mock.calls.find(
       ([, message]) =>
@@ -4854,12 +4854,17 @@ describe("public terminal routes", () => {
     expect(kinds(peer)).toEqual([]);
 
     send(owner, { type: "resize", cols: 60, rows: 20, seq: 1, claim: true });
-    expect(kinds(owner)).toEqual(["features", "size 60x20 seq 1", "applied 1"]);
+    expect(kinds(owner)).toEqual([
+      "features",
+      "size 60x20 seq 1",
+      "applied 1",
+    ]);
     expect(kinds(legacy)).toEqual(["features", "size 60x20"]);
     expect(
       readBrowserMessages(legacy).every(
         (message) =>
-          message.type !== "session-updated" || message.resizeSeq === undefined,
+          message.type !== "session-updated" ||
+          message.resizeSeq === undefined,
       ),
     ).toBe(true);
     send(owner, { type: "resize", cols: 60, rows: 20, seq: 2 });
@@ -4872,11 +4877,16 @@ describe("public terminal routes", () => {
     send(peer, { type: "resize", cols: 40, rows: 20 });
     send(peer, { type: "resize", cols: 30, rows: 10, seq: 7 });
     send(legacy, { type: "resize", cols: 50, rows: 12, seq: 8 });
-    expect(kinds(legacy)).toEqual(["features", "size 60x20", "applied 8"]);
+    expect(kinds(legacy)).toEqual([
+      "features",
+      "size 60x20",
+      "applied 8",
+    ]);
     expect(
       readBrowserMessages(legacy).every(
         (message) =>
-          message.type !== "session-updated" || message.resizeSeq === undefined,
+          message.type !== "session-updated" ||
+          message.resizeSeq === undefined,
       ),
     ).toBe(true);
 
