@@ -219,7 +219,10 @@ describe("NotificationHub", () => {
       desktop,
       { cols: 160, rows: 48 },
       now,
+      true,
     );
+    hub.recordTerminalClientSize("term-1", phone, { cols: 80, rows: 20 }, now);
+    expect(hub.terminalSharedSize("term-1", now)).toEqual({ cols: 160, rows: 48 });
     hub.recordTerminalClientSize(
       "term-1",
       phone,
