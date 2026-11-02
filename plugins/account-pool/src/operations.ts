@@ -353,13 +353,17 @@ export class PoolOperations {
     secret: AccountSecret,
     organizationUuid: string | null,
   ): Promise<Account> {
-    const updated = await this.accounts.replaceCredentials(
-      account.id,
-      identity,
-      secret,
-    );
-    if (updated === null)
-      throw new Error("This subscription no longer exists.");
+    let updated = account;
+    await this.hub.replaceSecret(account.id, secret, async () => {
+      const replacement = await this.accounts.replaceCredentials(
+        account.id,
+        identity,
+        secret,
+      );
+      if (replacement === null)
+        throw new Error("This subscription no longer exists.");
+      updated = replacement;
+    });
     if (organizationUuid !== null)
       await this.accounts.setOrganization(updated.id, organizationUuid);
     this.quotas.put({

@@ -332,7 +332,12 @@ export class AccountPoolHub {
     return this.adapter(provider).importAccount();
   }
 
-  async replaceSecret(accountId: string, secret: AccountSecret): Promise<void> {
+  async replaceSecret(
+    accountId: string,
+    secret: AccountSecret,
+    writeSecret: () => Promise<void> = () =>
+      this.options.accounts.writeSecret(accountId, secret),
+  ): Promise<void> {
     while (true) {
       const existing = this.refreshes.get(accountId);
       if (existing !== undefined) {
@@ -344,8 +349,7 @@ export class AccountPoolHub {
       }
       const flight: SecretFlight = {
         kind: "replacement",
-        result: this.options.accounts
-          .writeSecret(accountId, secret)
+        result: writeSecret()
           .then(() => {
             this.refreshBackoffs.delete(accountId);
             const quota = this.options.quotas.get(accountId);
