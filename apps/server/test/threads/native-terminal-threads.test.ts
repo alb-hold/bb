@@ -1393,10 +1393,12 @@ describe("native terminal threads", () => {
       { mode: "force", reason: "client-cleanup" },
     );
     expect(cleanup.status).toBe(200);
-    expect(getTerminalSession(fixture.harness.db, record.terminalSessionId)).toMatchObject({
-      status: "exited",
-      closeReason: "daemon-disconnect",
-    });
+    expect(
+      getTerminalSession(fixture.harness.db, {
+        kind: "terminal",
+        terminalId: record.terminalSessionId,
+      }),
+    ).toMatchObject({ status: "exited", closeReason: "daemon-disconnect" });
     fixture.socket.sentMessages.length = 0;
 
     const reopening = reopenNativeTerminalsAfterDaemonReconnect(
