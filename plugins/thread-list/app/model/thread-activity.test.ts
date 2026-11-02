@@ -338,7 +338,7 @@ describe("thread-activity", () => {
     );
 
     it.each(["isBackgroundAgentActive", "isBackgroundCommandActive"] as const)(
-      "shows the unread success dot over concurrent %s",
+      "shows active background work over unread completion for %s",
       (flag) => {
         expect(
           resolveThreadListIndicator({
@@ -346,7 +346,7 @@ describe("thread-activity", () => {
             hasUnreadSuccess: true,
             [flag]: true,
           }),
-        ).toBe("unread-success");
+        ).toBe("working");
       },
     );
 
@@ -358,7 +358,7 @@ describe("thread-activity", () => {
           hasUnreadSuccess: true,
           queuedWork: "failed",
         }),
-      ).toBe("workflow");
+      ).toBe("working");
     });
 
     it("keeps Plan and Goal independent and applies Plan precedence", () => {
