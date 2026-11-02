@@ -92,6 +92,7 @@ vi.mock("@bb/client-core", async (importOriginal) => ({
     }
     sendInput = state.input;
     sendResize() {}
+      claimSize() {}
     setVisible() {}
     start() {}
     dispose() {}
