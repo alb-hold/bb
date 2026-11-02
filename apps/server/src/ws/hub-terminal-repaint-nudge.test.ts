@@ -129,7 +129,7 @@ function createRoom(): TwoClientRoom {
       pty = shared;
     }
     if (
-      source === peerSocket ||
+      (source === peerSocket && changed) ||
       (source === ownerSocket &&
         seq === undefined &&
         changed &&
