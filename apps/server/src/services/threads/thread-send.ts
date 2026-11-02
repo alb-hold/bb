@@ -560,7 +560,6 @@ export async function sendThreadMessage(
         if (!current) {
           throw new ApiError(404, "thread_not_found", "Thread not found");
         }
-        args.beforeAppendInTransaction?.({ tx });
       },
     });
     return { refusal: null };

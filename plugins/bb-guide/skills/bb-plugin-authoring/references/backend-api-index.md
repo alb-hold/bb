@@ -1,11 +1,8 @@
 # Backend API symbol index
 
-Use this index to check backend, host, AI-service, and test imports.
-Read the detailed backend references for behavior, fields, and examples.
-Read the installed declarations for exact current signatures.
+Use this index to check backend, host, AI-service, and test imports. Read the detailed backend references for behavior, fields, and examples. Read the installed declarations for exact current signatures.
 
 ## `@get-bb/plugin-sdk`
-
 - `PLUGIN_CLI_OUTPUT_MAX_BYTES`
 - `defineRpcContract`
 - `experimental_defineHostEntry`
