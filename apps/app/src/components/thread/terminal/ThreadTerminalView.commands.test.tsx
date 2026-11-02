@@ -92,7 +92,7 @@ vi.mock("@bb/client-core", async (importOriginal) => ({
     }
     sendInput = state.input;
     sendResize() {}
-      claimSize() {}
+    claimSize() {}
     setVisible() {}
     start() {}
     dispose() {}
@@ -188,7 +188,7 @@ it("finds scrollback without copying matches, navigates them, and returns focus 
   const input = await screen.findByRole("searchbox", {
     name: "Find in terminal",
   });
-  expect(document.activeElement).toBe(input);
+  await waitFor(() => expect(document.activeElement).toBe(input));
   fireEvent.change(input, { target: { value: "needle" } });
   await waitFor(() =>
     expect(screen.getByRole("status").textContent).toBe("1 / 2"),
