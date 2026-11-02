@@ -138,15 +138,12 @@ function activateStylesheet(
       record.stylesheet = link;
       record.pendingStylesheet = null;
       record.loadedUrl = url;
+      pruneHostUtilities(link);
     } else {
       link.remove();
       if (record.pendingStylesheet === link) record.pendingStylesheet = null;
     }
-    previous?.remove();
-    record.stylesheet = link;
-    record.pendingStylesheet = null;
-    record.loadedUrl = url;
-    pruneHostUtilities(link);
+    settle(record, (waiting) => waiting === url);
   };
   link.onerror = () => {
     link.remove();

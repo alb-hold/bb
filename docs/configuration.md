@@ -1036,22 +1036,23 @@ ui_preference_conflict`. Read and write them with `bb settings ui
 list|get|set|reset` or `sdk.system.uiPreferences` (see
 `bb guide customization`).
 
-| Key                                  | Value                                                                                                                                                  |
-| ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `sidebar.organizationMode`           | `project`, `chronological`, or `machine`                                                                                                               |
-| `sidebar.threadGrouping.environment` | `auto`, `true`, or `false`                                                                                                                             |
-| `sidebar.chronologicalSort`          | `updated`, `created`, `alpha`, or `none`                                                                                                               |
-| `sidebar.sectionOrder`               | Section id list for **By project**                                                                                                                     |
-| `sidebar.manualSectionOrder`         | Section id list for **Manually**                                                                                                                       |
-| `sidebar.machineSectionOrder`        | Section id list for **By machine**                                                                                                                     |
-| `sidebar.hiddenGroups`               | Legacy project, custom section, and machine ids migrated once into the Thread list plugin                                                              |
-| `sidebar.threadListProvider`         | Plugin key or `__automatic__` (default): the first installed thread list plugin other than the bundled `thread-list/thread-list`, else the bundled one |
-| `sidebar.navigationProvider`         | Plugin key or `__automatic__` (default): the first navigation from a plugin other than the bundled Navigation plugin, else its `navigation/rail`       |
-| `sidebar.pluginPanelOrder`           | Navigation destination order                                                                                                                           |
-| `sidebar.visiblePluginPanels`        | Navigation destinations shown, or `null` for every destination                                                                                         |
-| `sidebar.footerOrder`                | Footer action order                                                                                                                                    |
-| `sidebar.hiddenFooterItems`          | Footer actions moved into More                                                                                                                         |
-| `infoPanel.collapsedSections`        | Collapsed thread Info panel sections (`commits`, `uncommittedChanges`, `childThreads`, `forks`, `threadStorage`, or `<pluginId>/<sectionId>`)          |
+| Key                                  | Value                                                                                                                                                     |
+| ------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `sidebar.organizationMode`           | `project`, `chronological`, or `machine`                                                                                                                  |
+| `sidebar.threadGrouping.environment` | `auto`, `true`, or `false`                                                                                                                                |
+| `sidebar.chronologicalSort`          | `updated`, `created`, `alpha`, or `none`                                                                                                                  |
+| `sidebar.sectionOrder`               | Section id list for **By project**                                                                                                                        |
+| `sidebar.manualSectionOrder`         | Section id list for **Manually**                                                                                                                          |
+| `sidebar.machineSectionOrder`        | Section id list for **By machine**                                                                                                                        |
+| `sidebar.hiddenGroups`               | Legacy project, custom section, and machine ids migrated once into the Thread list plugin                                                                 |
+| `threadContextCard.pinned`           | `true` (default) keeps a thread pane's thread context card open beside the transcript when the pane is wide enough; `false` opens it only from the header |
+| `sidebar.threadListProvider`         | Plugin key or `__automatic__` (default): the first installed thread list plugin other than the bundled `thread-list/thread-list`, else the bundled one    |
+| `sidebar.navigationProvider`         | Plugin key or `__automatic__` (default): the first navigation from a plugin other than the bundled Navigation plugin, else its `navigation/rail`          |
+| `sidebar.pluginPanelOrder`           | Navigation destination order                                                                                                                              |
+| `sidebar.visiblePluginPanels`        | Navigation destinations shown, or `null` for every destination                                                                                            |
+| `sidebar.footerOrder`                | Footer action order                                                                                                                                       |
+| `sidebar.hiddenFooterItems`          | Footer actions moved into More                                                                                                                            |
+| `infoPanel.collapsedSections`        | Collapsed thread Info panel sections (`commits`, `uncommittedChanges`, `childThreads`, `forks`, `threadStorage`, or `<pluginId>/<sectionId>`)             |
 
 A legacy `__builtin__` thread list selection resolves to the bundled plugin.
 Footer IDs are `builtin:settings` (top list layout only), `builtin:mobile`,

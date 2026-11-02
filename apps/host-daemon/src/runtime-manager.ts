@@ -256,6 +256,16 @@ interface ProviderMaintenanceRuntimeSlot {
   activeRequests: number;
 }
 
+const FNM_MULTISHELL_PATH_ENTRY = /([\\/]fnm_multishells[\\/])[^\\/]+/;
+
+function comparableShellEnvValue(key: string, value: string): string {
+  if (key !== "PATH") return value;
+  return value
+    .split(path.delimiter)
+    .map((entry) => entry.replace(FNM_MULTISHELL_PATH_ENTRY, "$1*"))
+    .join(path.delimiter);
+}
+
 function shellEnvEquals(
   left: NonNullable<AgentRuntimeOptions["shellEnv"]>,
   right: NonNullable<AgentRuntimeOptions["shellEnv"]>,
@@ -265,7 +275,14 @@ function shellEnvEquals(
   if (leftEntries.length !== rightEntries.length) {
     return false;
   }
-  return leftEntries.every(([key, value]) => right[key] === value);
+  return leftEntries.every(([key, value]) => {
+    const rightValue = right[key];
+    return (
+      rightValue !== undefined &&
+      comparableShellEnvValue(key, value) ===
+        comparableShellEnvValue(key, rightValue)
+    );
+  });
 }
 
 function providerProcessEnvFromShellEnv(
