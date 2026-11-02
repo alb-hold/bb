@@ -20,7 +20,7 @@ it("excludes another process and releases a native lock when its owner dies", as
       `import { withFileLock } from ${JSON.stringify(moduleUrl)};
      await withFileLock({ path: ${JSON.stringify(path)}, timeoutMs: 1000, work: async () => {
        process.stdout.write("locked");
-       await new Promise(() => setInterval(() => {}, 1000));
+       await new Promise((resolve) => setInterval(resolve, 60_000));
      }});`,
     ],
     { stdio: ["ignore", "pipe", "pipe"] },

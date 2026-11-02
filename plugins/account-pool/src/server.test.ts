@@ -11686,7 +11686,6 @@ describe("Account Pool nested proxy", () => {
       "_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL",
       "ENABLE_PROMPT_CACHING_1H",
       "CLAUDE_CODE_OAUTH_TOKEN",
-      "CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST",
       "HTTPS_PROXY",
       "NO_PROXY",
       "NODE_EXTRA_CA_CERTS",
@@ -11768,7 +11767,6 @@ describe("Account Pool nested proxy", () => {
     expect(byName.get("ANTHROPIC_AUTH_TOKEN")).toMatch(/^[A-Za-z0-9_-]{43}$/u);
     for (const name of [
       "CLAUDE_CODE_OAUTH_TOKEN",
-      "CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST",
       "HTTPS_PROXY",
       "NO_PROXY",
       "NODE_EXTRA_CA_CERTS",
@@ -15092,7 +15090,6 @@ describe("Account Pool Artifact proxy", () => {
     expect(names).toContain("ANTHROPIC_AUTH_TOKEN");
     for (const name of [
       "CLAUDE_CODE_OAUTH_TOKEN",
-      "CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST",
       "HTTPS_PROXY",
       "NO_PROXY",
       "NODE_EXTRA_CA_CERTS",
