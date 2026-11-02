@@ -961,12 +961,14 @@ describe("Codex requestUserInput", () => {
               { value: "question-1:option-2", label: "Green" },
             ],
             allowFreeText: true,
+            required: true,
           },
           {
             id: "question-2",
             prompt: "What should the component be called?",
             multiSelect: false,
             allowFreeText: true,
+            required: true,
           },
         ],
       },
@@ -984,8 +986,11 @@ describe("Codex requestUserInput", () => {
   it.each([
     ["no questions", []],
     [
-      "five questions",
-      ["a", "b", "c", "d", "e"].map((id) => ({ ...COLOR_QUESTION, id })),
+      "eleven questions",
+      Array.from({ length: 11 }, (_, index) => ({
+        ...COLOR_QUESTION,
+        id: String(index),
+      })),
     ],
     ["duplicate ids", [COLOR_QUESTION, COLOR_QUESTION]],
     ["a blank question", [{ ...COLOR_QUESTION, header: "", question: " " }]],

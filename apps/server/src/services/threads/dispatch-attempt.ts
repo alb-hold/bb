@@ -812,6 +812,9 @@ async function runDispatchAttempt(
               spawnerThreadId: getThreadSpawner(deps.db, thread.id),
             });
           }
+          if (claimed !== null && !hasMessageDispatchHooks()) {
+            throw createQueuedMessageClaimLostError();
+          }
           throw new DispatchThreadScopeChangedError();
         }
         if (claimed !== null) {

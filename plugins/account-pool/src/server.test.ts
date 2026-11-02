@@ -2309,6 +2309,12 @@ describe("Account Pool plugin", () => {
         reason: "Account Pooler token scoped to this thread",
       },
       {
+        name: "CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST",
+        value: "1",
+        reason:
+          "Claude Code otherwise refreshes this machine's own Claude login while routed, which can spend its single-use refresh token and sign it out",
+      },
+      {
         name: "ENABLE_TOOL_SEARCH",
         value: "true",
         reason:
@@ -2323,7 +2329,7 @@ describe("Account Pool plugin", () => {
       {
         name: "BB_CLAUDE_SETTINGS_ENV_PIN",
         value:
-          "ANTHROPIC_BASE_URL,ANTHROPIC_AUTH_TOKEN,ENABLE_TOOL_SEARCH,_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL",
+          "ANTHROPIC_BASE_URL,ANTHROPIC_AUTH_TOKEN,CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST,ENABLE_TOOL_SEARCH,_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL",
         reason: expect.stringContaining("settings layer"),
       },
       {
@@ -8474,7 +8480,7 @@ describe("Account Pool plugin", () => {
       void refresh.then(() => {
         completed = true;
       });
-      for (let elapsed = 0; elapsed < 300 && !completed;) {
+      for (let elapsed = 0; elapsed < 300 && !completed; ) {
         await yieldToIo();
         if (pendingIo === 0) {
           await vi.advanceTimersByTimeAsync(1);
@@ -11598,6 +11604,7 @@ describe("Account Pool nested proxy", () => {
       "ANTHROPIC_BASE_URL",
       "ANTHROPIC_AUTH_TOKEN",
       "CLAUDE_CODE_OAUTH_TOKEN",
+      "CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST",
       "HTTPS_PROXY",
       "NO_PROXY",
       "NODE_EXTRA_CA_CERTS",
@@ -11674,10 +11681,12 @@ describe("Account Pool nested proxy", () => {
     expect(envNames(entries)).toEqual([
       "ANTHROPIC_BASE_URL",
       "ANTHROPIC_AUTH_TOKEN",
+      "CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST",
       "ENABLE_TOOL_SEARCH",
       "_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL",
       "ENABLE_PROMPT_CACHING_1H",
       "CLAUDE_CODE_OAUTH_TOKEN",
+      "CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST",
       "HTTPS_PROXY",
       "NO_PROXY",
       "NODE_EXTRA_CA_CERTS",
@@ -11759,6 +11768,7 @@ describe("Account Pool nested proxy", () => {
     expect(byName.get("ANTHROPIC_AUTH_TOKEN")).toMatch(/^[A-Za-z0-9_-]{43}$/u);
     for (const name of [
       "CLAUDE_CODE_OAUTH_TOKEN",
+      "CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST",
       "HTTPS_PROXY",
       "NO_PROXY",
       "NODE_EXTRA_CA_CERTS",
@@ -14535,6 +14545,7 @@ describe("Account Pool credential scoping", () => {
       ["ANTHROPIC_BASE_URL", ""],
       ["ANTHROPIC_AUTH_TOKEN", ""],
       ["CLAUDE_CODE_OAUTH_TOKEN", ""],
+      ["CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST", ""],
       ["HTTPS_PROXY", ""],
       ["NO_PROXY", ""],
       ["NODE_EXTRA_CA_CERTS", ""],
@@ -14628,6 +14639,7 @@ describe("Account Pool credential scoping", () => {
           ["ANTHROPIC_BASE_URL", ""],
           ["ANTHROPIC_AUTH_TOKEN", ""],
           ["CLAUDE_CODE_OAUTH_TOKEN", ""],
+          ["CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST", ""],
           ["HTTPS_PROXY", ""],
           ["NO_PROXY", ""],
           ["NODE_EXTRA_CA_CERTS", ""],
@@ -14659,6 +14671,7 @@ describe("Account Pool credential scoping", () => {
           ["ANTHROPIC_BASE_URL", ""],
           ["ANTHROPIC_AUTH_TOKEN", ""],
           ["CLAUDE_CODE_OAUTH_TOKEN", ""],
+          ["CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST", ""],
           ["HTTPS_PROXY", ""],
           ["NO_PROXY", ""],
           ["NODE_EXTRA_CA_CERTS", ""],
@@ -14777,6 +14790,7 @@ describe("Account Pool credential scoping", () => {
       ["ANTHROPIC_BASE_URL", ""],
       ["ANTHROPIC_AUTH_TOKEN", ""],
       ["CLAUDE_CODE_OAUTH_TOKEN", ""],
+      ["CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST", ""],
       ["HTTPS_PROXY", ""],
       ["NO_PROXY", ""],
       ["NODE_EXTRA_CA_CERTS", ""],
@@ -15015,6 +15029,7 @@ describe("Account Pool Artifact proxy", () => {
     expect(pinned).toEqual([
       "ANTHROPIC_BASE_URL",
       "CLAUDE_CODE_OAUTH_TOKEN",
+      "CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST",
       "ENABLE_TOOL_SEARCH",
       "_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL",
       "ENABLE_PROMPT_CACHING_1H",
@@ -15048,6 +15063,7 @@ describe("Account Pool Artifact proxy", () => {
     expect(entries.map((entry) => entry.name)).toEqual([
       "ANTHROPIC_BASE_URL",
       "ANTHROPIC_AUTH_TOKEN",
+      "CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST",
       "ENABLE_TOOL_SEARCH",
       "_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL",
       "BB_CLAUDE_SETTINGS_ENV_PIN",
@@ -15059,7 +15075,7 @@ describe("Account Pool Artifact proxy", () => {
       entries.find((entry) => entry.name === "BB_CLAUDE_SETTINGS_ENV_PIN")
         ?.value,
     ).toBe(
-      "ANTHROPIC_BASE_URL,ANTHROPIC_AUTH_TOKEN,ENABLE_TOOL_SEARCH,_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL",
+      "ANTHROPIC_BASE_URL,ANTHROPIC_AUTH_TOKEN,CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST,ENABLE_TOOL_SEARCH,_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL",
     );
     expect(calls).toEqual([]);
   });
@@ -15076,6 +15092,7 @@ describe("Account Pool Artifact proxy", () => {
     expect(names).toContain("ANTHROPIC_AUTH_TOKEN");
     for (const name of [
       "CLAUDE_CODE_OAUTH_TOKEN",
+      "CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST",
       "HTTPS_PROXY",
       "NO_PROXY",
       "NODE_EXTRA_CA_CERTS",

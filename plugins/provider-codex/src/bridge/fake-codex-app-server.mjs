@@ -530,6 +530,12 @@ async function handleRequest(message) {
         thread: { id: threadId },
         ...resolvedSessionSettings(params),
       });
+      if (script?.initialGoalStatus) {
+        notify("thread/goal/updated", {
+          threadId,
+          goal: setFakeGoalStatus(threadId, script.initialGoalStatus),
+        });
+      }
       return;
     }
     case "thread/resume": {
@@ -838,6 +844,22 @@ async function handleRequest(message) {
       }
       respond(id, {});
       runCompaction(params.threadId);
+      return;
+    case "thread/goal/set": {
+      if (!goalsByThreadId.has(params.threadId)) {
+        respondError(id, -32600, "thread has no goal");
+        return;
+      }
+      const goal = setFakeGoalStatus(params.threadId, params.status);
+      respond(id, { goal });
+      notify("thread/goal/updated", { threadId: params.threadId, goal });
+      if (params.status === "active" && !script?.goalResumeStartsNoTurn) {
+        setTimeout(() => runScriptedTurn(params.threadId), 0);
+      }
+      return;
+    }
+    case "thread/goal/get":
+      respond(id, { goal: goalsByThreadId.get(params.threadId) ?? null });
       return;
     case "config/mcpServer/reload":
       if (script?.mcpReloadError) {
