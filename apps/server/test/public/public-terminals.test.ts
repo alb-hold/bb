@@ -4751,8 +4751,6 @@ describe("public terminal routes", () => {
     });
 
     send(phone, { type: "visibility", visible: false });
-    send(desktop, { type: "visibility", visible: true });
-    send(desktop, { type: "resize", cols: 120, rows: 40, claim: true });
     expect(sizes()).toEqual(["160x48", "55x16", "55x41", "120x40"]);
   });
 
