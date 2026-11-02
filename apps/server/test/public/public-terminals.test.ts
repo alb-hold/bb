@@ -1,4 +1,8 @@
 import { replaceMachineEnvironment } from "../../src/services/machines/environment-settings.js";
+import {
+  TerminalWebSocketTransport,
+  type TerminalBrowserSocket,
+} from "@bb/client-core";
 import * as gitCredentials from "../../src/services/machines/git-credentials.js";
 import {
   appendRetainedTerminalOutputChunks,
@@ -28,6 +32,7 @@ import {
 import {
   apiErrorSchema,
   terminalListResponseSchema,
+  terminalClientMessageSchema,
   terminalServerMessageSchema,
   terminalOutputResponseSchema,
   terminalScreenResponseSchema,
@@ -4740,33 +4745,56 @@ describe("public terminal routes", () => {
     send(phone, { type: "resize", cols: 80, rows: 20 });
     expect(sizes()).toEqual(["100x30", "80x20"]);
 
-    send(desktop, { type: "resize", cols: 160, rows: 48, claim: true });
-    expect(sizes()).toEqual(["100x30", "80x20", "160x48"]);
-
-    send(phone, { type: "resize", cols: 75, rows: 18 });
-    expect(sizes()).toEqual(["100x30", "80x20", "160x48"]);
-
-    send(phone, { type: "resize", cols: 55, rows: 16, claim: true });
-    expect(sizes()).toEqual(["100x30", "80x20", "160x48", "55x16"]);
-    send(desktop, { type: "resize", cols: 120, rows: 40 });
-    expect(sizes()).toEqual(["100x30", "80x20", "160x48", "55x16"]);
-
-    send(phone, { type: "resize", cols: 55, rows: 41 });
-    expect(sizes()).toEqual(["100x30", "80x20", "160x48", "55x16", "55x41"]);
-    expect(terminals.getTerminal({ terminalId: stored.id })).toMatchObject({
-      cols: 55,
-      rows: 41,
+    const clientSocket: TerminalBrowserSocket = {
+      readyState: 1,
+      onclose: null,
+      onerror: null,
+      onmessage: null,
+      onopen: null,
+      close: () => {},
+      send: (payload) =>
+        send(desktop, terminalClientMessageSchema.parse(JSON.parse(payload))),
+    };
+    const transport = new TerminalWebSocketTransport({
+      createSocket: () => clientSocket,
+      onMessage: () => {},
+      shouldReconnect: () => false,
+      url: "ws://terminal.test/desktop",
     });
+    try {
+      transport.start();
+      clientSocket.onopen?.(new Event("open"));
+      transport.claimSize();
+      transport.sendResize(160, 48);
+      expect(sizes()).toEqual(["100x30", "80x20", "160x48"]);
 
-    send(phone, { type: "visibility", visible: false });
-    expect(sizes()).toEqual([
-      "100x30",
-      "80x20",
-      "160x48",
-      "55x16",
-      "55x41",
-      "120x40",
-    ]);
+      send(phone, { type: "resize", cols: 75, rows: 18 });
+      expect(sizes()).toEqual(["100x30", "80x20", "160x48"]);
+
+      send(phone, { type: "resize", cols: 55, rows: 16, claim: true });
+      expect(sizes()).toEqual(["100x30", "80x20", "160x48", "55x16"]);
+      send(desktop, { type: "resize", cols: 120, rows: 40 });
+      expect(sizes()).toEqual(["100x30", "80x20", "160x48", "55x16"]);
+
+      send(phone, { type: "resize", cols: 55, rows: 41 });
+      expect(sizes()).toEqual(["100x30", "80x20", "160x48", "55x16", "55x41"]);
+      expect(terminals.getTerminal({ terminalId: stored.id })).toMatchObject({
+        cols: 55,
+        rows: 41,
+      });
+
+      send(phone, { type: "visibility", visible: false });
+      expect(sizes()).toEqual([
+        "100x30",
+        "80x20",
+        "160x48",
+        "55x16",
+        "55x41",
+        "120x40",
+      ]);
+    } finally {
+      transport.dispose();
+    }
   });
 
   it("acknowledges each tagged resize after its session update, even when the shared size does not change, and only on sockets that asked", async () => {

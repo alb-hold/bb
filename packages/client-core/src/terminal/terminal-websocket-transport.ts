@@ -323,6 +323,7 @@ export class TerminalWebSocketTransport {
       return;
     }
     this.lastResize = { cols, rows };
+    if (this.pendingSizeClaim) this.claimSize();
     this.cancelRepaintRestore();
     const socket = this.socket;
     if (
