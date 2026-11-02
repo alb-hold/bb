@@ -2883,9 +2883,6 @@ describe("native terminal threads", () => {
     const lateProviders = options.deferProviders
       ? createProviderRegistryService({ deferRegistrationsSettled: true })
       : null;
-    if (lateProviders !== null) {
-      fixture.harness.deps.providerRegistry = lateProviders;
-    }
     const opened = await fixture.harness.app.request("/internal/session/open", {
       method: "POST",
       headers: internalAuthHeaders(fixture.harness, {
@@ -2906,6 +2903,9 @@ describe("native terminal threads", () => {
     });
     expect(opened.status).toBe(201);
     const { sessionId } = (await readJson(opened)) as { sessionId: string };
+    if (lateProviders !== null) {
+      fixture.harness.deps.providerRegistry = lateProviders;
+    }
     const socket = createFakeDaemonSocket();
     onDaemonSocketOpen(fixture.harness.deps, {
       hostId: fixture.hostId,
