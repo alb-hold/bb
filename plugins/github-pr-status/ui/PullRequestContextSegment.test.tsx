@@ -22,6 +22,7 @@ const sdk = vi.hoisted(() => ({
   mutate: vi.fn(async (_input?: unknown) => ({ message: "Merged" })),
   mutationCalls: [] as Array<{ method: string; input: unknown }>,
   isPending: false,
+  threadContextKind: "banner" as "banner" | "card",
 }));
 
 vi.mock("@get-bb/plugin-sdk/app", () => ({
@@ -39,6 +40,7 @@ vi.mock("@get-bb/plugin-sdk/app", () => ({
   }),
   useBbNavigate: () => ({ openUrl: () => false }),
   useSettings: () => ({ values: sdk.settings, isLoading: false }),
+  experimental_useThreadContextKind: () => sdk.threadContextKind,
 }));
 
 vi.mock("sonner", () => ({
@@ -109,6 +111,7 @@ afterEach(() => {
   sdk.rows = {};
   sdk.settings = { showPullRequest: true };
   sdk.isPending = false;
+  sdk.threadContextKind = "banner";
   sdk.mutate.mockClear();
   sdk.mutationCalls.length = 0;
   window.localStorage.clear();
@@ -136,6 +139,20 @@ describe("pull request context segment", () => {
       renderHook(() =>
         usePullRequestSegmentVisible({
           ...input,
+          environment: { id: "env_1" },
+        }),
+      ).result.current,
+    ).toBe(false);
+  });
+
+  it("hides while the pane shows thread context in the card", () => {
+    show(PULL_REQUEST);
+    sdk.threadContextKind = "card";
+    expect(
+      renderHook(() =>
+        usePullRequestSegmentVisible({
+          threadId: "thr_1",
+          projectId: "proj_1",
           environment: { id: "env_1" },
         }),
       ).result.current,
@@ -201,9 +218,9 @@ describe("pull request context segment", () => {
   it.each([
     ["checks_pending", false, null],
     ["checks_failed", false, null],
-    ["checks_failed", true, null],
-    ["checks_pending", true, null],
-    ["ready_to_merge", true, null],
+    ["checks_failed", true, "Auto-merge"],
+    ["checks_pending", true, "Auto-merge"],
+    ["ready_to_merge", true, "Auto-merge"],
     ["queued", true, "Queued to merge"],
   ] as const)(
     "shows the next step and auto-merge for %s with auto-merge %s",
@@ -229,7 +246,9 @@ describe("pull request context segment", () => {
       } else {
         expect(markup).not.toContain('aria-hidden="true">·</span>');
       }
-      expect(markup.includes('aria-label="Auto-merge on"')).toBe(autoMerge);
+      expect(markup.includes(">Auto-merge</span>")).toBe(
+        label === "Auto-merge",
+      );
       expect(markup).toContain(
         attention === "checks_failed"
           ? 'class="fill-destructive"'

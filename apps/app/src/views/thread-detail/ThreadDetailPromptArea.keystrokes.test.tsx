@@ -82,6 +82,7 @@ function makePendingInteraction(threadId: string): PendingInteraction {
           prompt: "Continue?",
           multiSelect: false,
           allowFreeText: true,
+          required: true,
         },
       ],
     },

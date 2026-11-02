@@ -195,7 +195,7 @@ describe("queued message dispatch hook", () => {
           mode: "auto",
         }),
       ).rejects.toMatchObject({
-        body: { code: "queued_message_claim_lost" },
+        body: { code: "thread_not_writable" },
       });
 
       expect(
@@ -239,7 +239,7 @@ describe("queued message dispatch hook", () => {
           mode: "auto",
         }),
       ).rejects.toMatchObject({
-        body: { code: "queued_message_claim_lost" },
+        body: { code: "thread_not_writable" },
       });
 
       expect(
@@ -308,6 +308,7 @@ describe("user message telemetry", () => {
       });
 
       await sendThreadMessage(harness.deps, {
+        originPluginId: null,
         environment,
         payload: {
           input: textInput("telemetry user send"),
@@ -349,6 +350,7 @@ describe("user message telemetry", () => {
       });
 
       await sendThreadMessage(harness.deps, {
+        originPluginId: null,
         environment,
         payload: {
           input: textInput("automation run into an existing thread"),
@@ -388,6 +390,7 @@ describe("user message telemetry", () => {
       });
 
       await sendThreadMessage(harness.deps, {
+        originPluginId: null,
         environment,
         payload: {
           input: textInput("telemetry agent send"),
@@ -1168,6 +1171,7 @@ describe("turn submit failure settlement", () => {
           value: 70,
         });
         await sendThreadMessage(harness.deps, {
+          originPluginId: null,
           environment,
           payload: {
             input: textInput("retry failure should be visible"),
@@ -1229,6 +1233,7 @@ describe("turn submit failure settlement", () => {
       if (!activeThread) throw new Error("Expected an active thread");
 
       await sendThreadMessage(harness.deps, {
+        originPluginId: null,
         environment,
         payload: {
           input: textInput("failed steer"),
@@ -1285,6 +1290,7 @@ describe("turn submit failure settlement", () => {
       if (!activeThread) throw new Error("Expected an active thread");
 
       await sendThreadMessage(harness.deps, {
+        originPluginId: null,
         environment,
         payload: {
           input: textInput("late failed steer"),
@@ -1349,6 +1355,7 @@ describe("turn submit failure settlement", () => {
       if (!activeThread) throw new Error("Expected an active thread");
 
       await sendThreadMessage(harness.deps, {
+        originPluginId: null,
         environment,
         payload: {
           input: textInput("accepted steer"),
@@ -1403,6 +1410,7 @@ describe("idle cold-start activation", () => {
       });
 
       await sendThreadMessage(harness.deps, {
+        originPluginId: null,
         environment,
         payload: {
           input: textInput("cold start from idle"),
@@ -1484,6 +1492,7 @@ describe("idle cold-start activation", () => {
       }
 
       await sendThreadMessage(harness.deps, {
+        originPluginId: null,
         environment: targetEnvironment,
         payload: {
           input: textInput("start after switch"),
@@ -1878,7 +1887,7 @@ describe("concurrent idle dispatch regression", () => {
             harness.deps,
             {} as never,
             thread,
-            true,
+            { deliveryMode: "steer", reattempted: true },
             scopeChanged,
           );
           expect.fail("expected repeated reattempt to throw");
@@ -2236,6 +2245,7 @@ describe("competing turn refusals", () => {
     fixture: IdleThreadFixture,
   ) {
     await sendThreadMessage(harness.deps, {
+      originPluginId: null,
       environment: fixture.environment,
       payload: {
         input: textInput("send while the daemon runs a turn"),

@@ -236,8 +236,11 @@ describe("bb terminal command output", () => {
         skipReason: null,
       }));
       stubServerApi({
-        "v1.terminals.:terminalId.$get": async ({ param }: { param: { terminalId: string } }) =>
-          makeTerminalSession({ id: param.terminalId }),
+        "v1.terminals.:terminalId.$get": async ({
+          param,
+        }: {
+          param: { terminalId: string };
+        }) => makeTerminalSession({ id: param.terminalId }),
         "v1.threads.:id.open.$post": open,
       });
 

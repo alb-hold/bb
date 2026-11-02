@@ -144,6 +144,7 @@ function enableTimelinePush(queryClient: QueryClient): void {
 
 function createRealtimeEffectsTestContext(
   visibility?: RealtimeCacheEffectsVisibility,
+  refreshSidebarWhileHidden?: boolean,
 ) {
   const queryClient = createAppQueryClient({
     defaultOptions: {
@@ -154,7 +155,11 @@ function createRealtimeEffectsTestContext(
     },
     showMutationErrorToasts: false,
   });
-  const effects = createRealtimeCacheEffects({ queryClient, visibility });
+  const effects = createRealtimeCacheEffects({
+    queryClient,
+    refreshSidebarWhileHidden,
+    visibility,
+  });
   const firstProjectHistoryKey = projectPromptHistoryQueryKey("project-1");
   const secondProjectHistoryKey = projectPromptHistoryQueryKey("project-2");
   const terminalKey = terminalsQueryKey({
@@ -1509,7 +1514,7 @@ describe("createRealtimeCacheEffects", () => {
         metadata: { projectId: "project-1" },
         changes: [change],
       });
-      await vi.advanceTimersByTimeAsync(50);
+      await vi.advanceTimersByTimeAsync(1_000);
     }
 
     expect(activeListQueryFn).toHaveBeenCalledTimes(3);
@@ -1689,7 +1694,7 @@ describe("createRealtimeCacheEffects", () => {
             metadata: { projectId },
             changes: ["read-state-changed"],
           });
-          await vi.advanceTimersByTimeAsync(50);
+          await vi.advanceTimersByTimeAsync(1_000);
 
           expect(threadListObserver.getCurrentResult().data).toEqual([
             { id: "thr_1", lastReadAt: nextLastReadAt },
@@ -3729,6 +3734,42 @@ describe("createRealtimeCacheEffects", () => {
       ).toBe(true);
       effects.dispose();
     });
+
+    it.each([true, false])(
+      "refreshes only the sidebar for hidden thread changes when refreshSidebarWhileHidden is %s",
+      async (refreshSidebarWhileHidden) => {
+        vi.useFakeTimers();
+        const visibility = createFakeVisibility();
+        const { effects, queryClient } = createRealtimeEffectsTestContext(
+          visibility,
+          refreshSidebarWhileHidden,
+        );
+        const sidebarNavigationKey = sidebarNavigationQueryKey();
+        const timelineKey = threadTimelineQueryKey("thr_1");
+        queryClient.setQueryData(sidebarNavigationKey, {
+          projects: [],
+          personalProject: { threads: [] },
+        });
+        queryClient.setQueryData(timelineKey, { rows: [] });
+        visibility.setVisible(false);
+
+        effects.handleChanged({
+          type: "changed",
+          entity: "thread",
+          id: "thr_1",
+          changes: ["events-appended"],
+        });
+        await vi.advanceTimersByTimeAsync(5_000);
+
+        expect(
+          queryClient.getQueryState(sidebarNavigationKey)?.isInvalidated,
+        ).toBe(refreshSidebarWhileHidden);
+        expect(queryClient.getQueryState(timelineKey)?.isInvalidated).toBe(
+          false,
+        );
+        effects.dispose();
+      },
+    );
 
     it("holds a debounce that elapses hidden and non-thread changes until visible", async () => {
       vi.useFakeTimers();

@@ -1,3 +1,8 @@
+import type { ImportedProviderAccount } from "./provider-adapter.js";
+import type {
+  ImportedClaudeCredentials,
+  ImportedCodexCredentials,
+} from "./credentials.js";
 import {
   retryAvailabilitySchema,
   type RetryAvailability,
@@ -22,16 +27,11 @@ import {
   DEFAULT_CODEX_USAGE_URL,
 } from "./codex-adapter.js";
 import type { ProviderAdapter } from "./provider-adapter.js";
-import type { ImportedProviderAccount } from "./provider-adapter.js";
 import {
   isSignInRejection,
   OAuthRefreshError,
   TransientOAuthRefreshError,
 } from "./provider-adapter.js";
-import type {
-  ImportedClaudeCredentials,
-  ImportedCodexCredentials,
-} from "./credentials.js";
 import {
   accountStatus,
   blockingResetAt,
@@ -195,7 +195,7 @@ type SecretUse = { kind: "normal" } | { kind: "rejected"; accessToken: string };
 
 type SecretFlight =
   | { kind: "refresh"; use: SecretUse; result: Promise<AccountSecret> }
-  | { kind: "rejection-check"; result: Promise<void> };
+  | { kind: "rejection-check" | "replacement"; result: Promise<void> };
 
 interface FailureSummary {
   status: number;
@@ -330,6 +330,35 @@ export class AccountPoolHub {
     provider: PoolProvider,
   ): Promise<ImportedProviderAccount> {
     return this.adapter(provider).importAccount();
+  }
+
+  async replaceSecret(accountId: string, secret: AccountSecret): Promise<void> {
+    while (true) {
+      const existing = this.refreshes.get(accountId);
+      if (existing !== undefined) {
+        await existing.result.then(
+          () => undefined,
+          () => undefined,
+        );
+        continue;
+      }
+      const flight: SecretFlight = {
+        kind: "replacement",
+        result: this.options.accounts
+          .writeSecret(accountId, secret)
+          .then(() => {
+            this.refreshBackoffs.delete(accountId);
+            const quota = this.options.quotas.get(accountId);
+            this.options.quotas.put({ ...quota, error: null });
+          })
+          .finally(() => {
+            if (this.refreshes.get(accountId) === flight)
+              this.refreshes.delete(accountId);
+          }),
+      };
+      this.refreshes.set(accountId, flight);
+      return flight.result;
+    }
   }
 
   localLogin(
@@ -1725,7 +1754,7 @@ export class AccountPoolHub {
       signal?.throwIfAborted();
       const existing = this.refreshes.get(account.id);
       if (existing !== undefined) {
-        if (existing.kind === "rejection-check") {
+        if (existing.kind !== "refresh") {
           await existing.result;
           signal?.throwIfAborted();
           continue;
@@ -2170,17 +2199,17 @@ export function createHub(options: {
       "claude",
       createClaudeAdapter({
         refreshUrl: options.refreshUrl ?? DEFAULT_REFRESH_URL,
+        importCredentials: options.importClaudeCredentials,
         usageUrl: options.usageUrl ?? DEFAULT_USAGE_URL,
         profileUrl: options.profileUrl ?? DEFAULT_PROFILE_URL,
-        importCredentials: options.importClaudeCredentials,
       }),
     ],
     [
       "codex",
       createCodexAdapter({
         refreshUrl: options.codexRefreshUrl ?? DEFAULT_CODEX_REFRESH_URL,
-        usageUrl: options.codexUsageUrl ?? DEFAULT_CODEX_USAGE_URL,
         importCredentials: options.importCodexCredentials,
+        usageUrl: options.codexUsageUrl ?? DEFAULT_CODEX_USAGE_URL,
       }),
     ],
   ]);

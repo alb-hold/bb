@@ -11,11 +11,12 @@ import {
 } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createStore, Provider } from "jotai";
-import type { ReactElement } from "react";
+import { useSyncExternalStore, type ReactElement } from "react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   experimental_THREAD_ACTION_GROUPS,
+  type PluginThreadActionEntry,
   type PluginThreadActionRegistration,
   type PluginThreadActionsInlineItem,
 } from "@get-bb/plugin-sdk";
@@ -70,6 +71,7 @@ const sdkThreads = vi.hoisted(() => ({
   unarchive: vi.fn(),
   update: vi.fn(),
   get: vi.fn(),
+  experimental_regenerateTitle: vi.fn(),
 }));
 const openThreadInSplit = vi.hoisted(() => vi.fn());
 const copyToClipboardWithToast = vi.hoisted(() => vi.fn(async () => true));
@@ -364,7 +366,9 @@ function renderSurface(
       <Provider store={store}>
         <MemoryRouter initialEntries={[route]}>
           <SidebarThreadEntriesTestProvider>
-            <CompactViewportOverrideProvider isCompactViewport={surface.compact}>
+            <CompactViewportOverrideProvider
+              isCompactViewport={surface.compact}
+            >
               <ThreadActionCollectors
                 coreRegistrations={CORE_THREAD_ACTIONS}
                 requestRename={defaultRequestRename}
@@ -468,6 +472,7 @@ describe.each(SURFACES)("thread actions on the $name", (surface) => {
         "Mark unread",
         "---",
         "Rename",
+        "Regenerate title",
         "Move to section",
         "Move to project",
         "---",
@@ -486,6 +491,7 @@ describe.each(SURFACES)("thread actions on the $name", (surface) => {
         "Mark unread",
         "---",
         "Rename",
+        "Regenerate title",
         "Move to section",
         "Move to project",
         "---",
@@ -562,6 +568,7 @@ describe.each(SURFACES)("thread actions on the $name", (surface) => {
         "Mark unread",
         "---",
         "Rename",
+        "Regenerate title",
         "Move to section",
         "Move to project",
         "---",
@@ -580,6 +587,7 @@ describe.each(SURFACES)("thread actions on the $name", (surface) => {
         "Mark unread",
         "---",
         "Rename",
+        "Regenerate title",
         "Move to section",
         "Move to project",
         "---",
@@ -604,6 +612,7 @@ describe.each(SURFACES)("thread actions on the $name", (surface) => {
         "Mark unread",
         "---",
         "Rename",
+        "Regenerate title",
         "Move to section",
         "Move to project",
         "---",
@@ -622,6 +631,7 @@ describe.each(SURFACES)("thread actions on the $name", (surface) => {
         "Mark unread",
         "---",
         "Rename",
+        "Regenerate title",
         "Move to section",
         "Move to project",
         "---",
@@ -648,6 +658,7 @@ describe.each(SURFACES)("thread actions on the $name", (surface) => {
         "Mark unread",
         "---",
         "Rename",
+        "Regenerate title",
         "Move to section",
         "Move to project",
         "---",
@@ -666,6 +677,7 @@ describe.each(SURFACES)("thread actions on the $name", (surface) => {
         "Mark unread",
         "---",
         "Rename",
+        "Regenerate title",
         "Move to section",
         "Move to project",
         "---",
@@ -721,6 +733,10 @@ describe.each(SURFACES)("thread actions on the $name", (surface) => {
 
   it("runs each action's effect", async () => {
     sdkThreads.pin.mockResolvedValue({ ...baseThread, pinnedAt: 9 });
+    sdkThreads.experimental_regenerateTitle.mockResolvedValue({
+      ...baseThread,
+      title: "Regenerated",
+    });
     sdkThreads.markUnread.mockResolvedValue({
       ...baseThread,
       lastReadAt: null,
@@ -748,6 +764,16 @@ describe.each(SURFACES)("thread actions on the $name", (surface) => {
     fireEvent.click(await screen.findByRole("menuitem", { name: "Rename" }));
     expect(requestRename).toHaveBeenCalledWith(baseThread.id);
     expect(defaultRequestRename).not.toHaveBeenCalled();
+
+    await surface.open();
+    fireEvent.click(
+      await screen.findByRole("menuitem", { name: "Regenerate title" }),
+    );
+    await waitFor(() =>
+      expect(sdkThreads.experimental_regenerateTitle).toHaveBeenCalledWith({
+        threadId: baseThread.id,
+      }),
+    );
 
     await surface.open();
     fireEvent.click(await screen.findByRole("menuitem", { name: "Archive" }));
@@ -1127,6 +1153,7 @@ describe("thread action registrations", () => {
       "bb--core/read",
       "bb--core/parentNotifications",
       "bb--core/rename",
+      "bb--core/regenerateTitle",
       "fixture/move",
       "bb--core/moveToProject",
       "bb--core/archive",
@@ -1646,5 +1673,115 @@ describe("header thread actions", () => {
         screen.getAllByRole("listitem").map((item) => item.textContent),
       ).toEqual(["Commit"]),
     );
+  });
+});
+
+describe("thread action rows", () => {
+  function createValueStore<T>(initial: T) {
+    let value = initial;
+    const listeners = new Set<() => void>();
+    return {
+      set(next: T) {
+        value = next;
+        for (const listener of listeners) listener();
+      },
+      use: () =>
+        useSyncExternalStore(
+          (listener) => {
+            listeners.add(listener);
+            return () => listeners.delete(listener);
+          },
+          () => value,
+        ),
+    };
+  }
+
+  it("redraws only the rows whose actions change and runs with the latest data", async () => {
+    const focus = createValueStore({ threadId: "thr_a", version: 1 });
+    const header = createValueStore(1);
+    const ran = vi.fn();
+    const focusAction: PluginThreadActionRegistration<{
+      threadId: string;
+      version: number;
+    }> = {
+      id: "focus",
+      title: "Focus",
+      icon: "Columns2",
+      group: "5_plugin",
+      useData: focus.use,
+      item: ({ thread, data }) => ({
+        label: data.threadId === thread.id ? "Focused" : "Focus",
+        icon: "Columns2",
+        run: () => ran(thread.id, data.version),
+      }),
+    };
+    const headerAction: PluginThreadActionRegistration<number> = {
+      id: "counter",
+      title: "Counter",
+      icon: "GitBranch",
+      group: "git",
+      placement: "header",
+      useData: header.use,
+      item: ({ data }) => ({
+        label: `Counter ${data}`,
+        icon: "GitBranch",
+        run: vi.fn(),
+      }),
+    };
+    setPluginSlotRegistrations(
+      "fixture",
+      makePluginRegistrationSet({ threadActions: [focusAction, headerAction] }),
+    );
+    const renders = new Map<string, number>();
+    const entries = new Map<string, readonly PluginThreadActionEntry[]>();
+    function Row({ id }: { id: string }) {
+      renders.set(id, (renders.get(id) ?? 0) + 1);
+      entries.set(
+        id,
+        useThreadActionEntries(
+          threadListEntryActionTarget({ ...baseThread, id }),
+          {},
+        ),
+      );
+      return null;
+    }
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <MemoryRouter>
+          <ThreadActionCollectors
+            coreRegistrations={[]}
+            requestRename={defaultRequestRename}
+          />
+          <Row id="thr_a" />
+          <Row id="thr_b" />
+          <Row id="thr_c" />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+    await waitFor(() =>
+      expect(entries.get("thr_a")?.map((entry) => entry.action.label)).toEqual([
+        "Focused",
+      ]),
+    );
+    const before = new Map(renders);
+    const redrawn = () =>
+      [...renders].flatMap(([id, count]) =>
+        count === before.get(id) ? [] : [id],
+      );
+
+    act(() => header.set(2));
+    act(() => focus.set({ threadId: "thr_a", version: 2 }));
+    expect(redrawn()).toEqual([]);
+
+    act(() => focus.set({ threadId: "thr_b", version: 3 }));
+    expect(redrawn()).toEqual(["thr_a", "thr_b"]);
+    expect(
+      ["thr_a", "thr_b", "thr_c"].map(
+        (id) => entries.get(id)?.[0]?.action.label,
+      ),
+    ).toEqual(["Focus", "Focused", "Focus"]);
+
+    await entries.get("thr_c")?.[0]?.action.run();
+    expect(ran).toHaveBeenCalledWith("thr_c", 3);
   });
 });

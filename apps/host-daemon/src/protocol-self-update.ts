@@ -60,8 +60,8 @@ interface CreateProtocolSelfUpdaterOptions {
   dataDir: string;
   enabled: boolean;
   logger: HostDaemonLogger;
+  serverHeaders: Record<string, string>;
   serverUrl: string;
-  serverHeaders?: Record<string, string>;
   fetchFn?: FetchFn;
   installTarball?: ProtocolSelfUpdateInstaller;
   runProcess?: SelfUpdateProcessRunner;

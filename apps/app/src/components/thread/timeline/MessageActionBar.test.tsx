@@ -403,7 +403,7 @@ describe("MessageActionBar", () => {
       />,
     );
     const trigger = screen.getByRole("button", { name: "Message actions" });
-    const row = trigger.parentElement;
+    const row = trigger.parentElement?.parentElement;
 
     expect(row?.hasAttribute("data-menu-open")).toBe(false);
     fireEvent.pointerDown(trigger);

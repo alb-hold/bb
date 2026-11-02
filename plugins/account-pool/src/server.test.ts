@@ -8474,7 +8474,7 @@ describe("Account Pool plugin", () => {
       void refresh.then(() => {
         completed = true;
       });
-      for (let elapsed = 0; elapsed < 300 && !completed; ) {
+      for (let elapsed = 0; elapsed < 300 && !completed;) {
         await yieldToIo();
         if (pendingIo === 0) {
           await vi.advanceTimersByTimeAsync(1);

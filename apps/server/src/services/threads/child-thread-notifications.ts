@@ -28,7 +28,7 @@ import {
 import { enqueueNativeParentNotice } from "./native-parent-notices.js";
 import {
   getLastThreadErrorMessage,
-  getLastThreadOutput,
+  getTurnFinalOutput,
 } from "./thread-data.js";
 
 export type ChildThreadNotificationSource = ParentSystemThreadMentionSource;
@@ -75,6 +75,7 @@ interface QueueChildThreadTurnNotificationArgs {
   childThread: ChildThreadNotificationSource;
   parentThreadId: string;
   turnStatus: ThreadEventTurnStatus;
+  turnId: string | null;
   failureContext?: string;
   interruption?: ChildThreadOutcome["interruption"];
   retryScheduledAt?: number;
@@ -317,7 +318,13 @@ async function getChildThreadCompletionOutput(
     return null;
   }
   const native = getNativeTerminalThread(deps.db, args.childThread.id);
-  if (native === null) return getLastThreadOutput(deps.db, args.childThread.id);
+  if (native === null)
+    return args.turnId === null
+      ? null
+      : getTurnFinalOutput(deps.db, {
+          threadId: args.childThread.id,
+          turnId: args.turnId,
+        });
   if (args.lastAssistantText) {
     const reply = completionExcerpt(args.lastAssistantText);
     if (reply !== null) return reply;

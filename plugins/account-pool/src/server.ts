@@ -523,7 +523,8 @@ export function createAccountPoolPlugin(
       authorizeUrl: options.oauthAuthorizeUrl,
       tokenUrl: options.oauthTokenUrl,
       profileUrl: options.oauthProfileUrl,
-      addAccount: (authenticated) => operations.addOAuth(authenticated),
+      addAccount: (authenticated, target) =>
+        operations.addOAuth(authenticated, target),
       reauthorizeAccount: (accountId, authenticated, label) =>
         operations.reauthorizeClaude(accountId, authenticated, label),
     });
@@ -531,7 +532,8 @@ export function createAccountPoolPlugin(
       fetch: upstreamFetch,
       now,
       authBaseUrl: options.codexAuthBaseUrl,
-      addAccount: (authenticated) => operations.addCodexOAuth(authenticated),
+      addAccount: (authenticated, target) =>
+        operations.addCodexOAuth(authenticated, target),
       reauthorizeAccount: (accountId, authenticated) =>
         operations.reauthorizeCodex(accountId, authenticated),
     });

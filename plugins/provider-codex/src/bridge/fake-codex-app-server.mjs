@@ -375,6 +375,23 @@ function requestFromClient(method, params) {
 }
 
 const turnCursorPath = script?.turnCursorPath ?? null;
+const goalsByThreadId = new Map();
+
+function setFakeGoalStatus(threadId, status) {
+  const goal = {
+    threadId,
+    objective: "Fake goal",
+    tokenBudget: null,
+    tokensUsed: 0,
+    timeUsedSeconds: 0,
+    createdAt: 0,
+    updatedAt: 0,
+    ...goalsByThreadId.get(threadId),
+    status,
+  };
+  goalsByThreadId.set(threadId, goal);
+  return goal;
+}
 
 function takeScriptedTurnIndex() {
   if (turnCursorPath === null) {
@@ -830,7 +847,12 @@ async function handleRequest(message) {
       respond(id, {});
       return;
     case "thread/goal/clear":
-      respond(id, {});
+      goalsByThreadId.delete(params.threadId);
+      if (script?.goalClearError) {
+        respondError(id, -32600, script.goalClearError);
+      } else {
+        respond(id, script?.goalClearResult ?? { cleared: true });
+      }
       return;
     default:
       respondError(id, -32601, `Unknown method "${method}"`);

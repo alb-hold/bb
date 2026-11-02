@@ -332,7 +332,7 @@ export function MobileActionsAndSelection() {
         threadId={MOBILE_REVIEW_THREAD_ID}
         threadRuntimeDisplayStatus="idle"
         timelineRows={mobileReviewRows}
-        workspaceRootPath={undefined}
+
         threadIsActive={false}
       />
     </div>

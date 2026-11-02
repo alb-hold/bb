@@ -1,3 +1,4 @@
+import type { LoginTarget } from "./contracts.js";
 import type {
   Account,
   AccountSecret,
@@ -177,18 +178,21 @@ export class PoolOperations {
     return account;
   }
 
-  async addOAuth(authenticated: ClaudeOAuthAccount): Promise<Account> {
+  async addOAuth(
+    authenticated: ClaudeOAuthAccount,
+    target: Extract<LoginTarget, { kind: "add" }> | null = null,
+  ): Promise<Account> {
     const account = await this.accounts.add(
       {
         provider: "claude",
         kind: "oauth",
-        label: authenticated.label,
+        label: target?.label ?? authenticated.label,
         email: authenticated.email,
         accountUuid: authenticated.accountUuid,
         subscriptionType: authenticated.subscriptionType,
         rateLimitTier: authenticated.rateLimitTier,
         enabled: true,
-        priority: await this.nextPriority("claude"),
+        priority: target?.priority ?? (await this.nextPriority("claude")),
       },
       {
         kind: "oauth",
@@ -209,19 +213,20 @@ export class PoolOperations {
 
   async addCodexOAuth(
     authenticated: CodexDeviceAccount,
+    target: Extract<LoginTarget, { kind: "add" }> | null = null,
   ): Promise<AccountSummary> {
     const account = await this.accounts.add(
       {
         provider: "codex",
         kind: "oauth",
-        label: authenticated.label,
+        label: target?.label ?? authenticated.label,
         email: authenticated.email,
         accountUuid: null,
         codexAccountId: authenticated.accountId,
         subscriptionType: null,
         rateLimitTier: null,
         enabled: true,
-        priority: await this.nextPriority("codex"),
+        priority: target?.priority ?? (await this.nextPriority("codex")),
       },
       {
         kind: "oauth",

@@ -298,7 +298,7 @@ describe("thread-activity", () => {
       ).toBe("needs-input");
     });
 
-    it("promotes a failed queued row over a waiting one, but not over work", () => {
+    it("promotes a failed queued row over background work, but not over runtime work", () => {
       expect(
         resolveThreadListIndicator({
           ...idleIndicatorState,
@@ -336,6 +336,30 @@ describe("thread-activity", () => {
         ).toBe(expectedIndicator);
       },
     );
+
+    it.each(["isBackgroundAgentActive", "isBackgroundCommandActive"] as const)(
+      "shows the unread success dot over concurrent %s",
+      (flag) => {
+        expect(
+          resolveThreadListIndicator({
+            ...idleIndicatorState,
+            hasUnreadSuccess: true,
+            [flag]: true,
+          }),
+        ).toBe("unread-success");
+      },
+    );
+
+    it("shows a running workflow over unread success and a failed queued send", () => {
+      expect(
+        resolveThreadListIndicator({
+          ...idleIndicatorState,
+          isWorkflowActive: true,
+          hasUnreadSuccess: true,
+          queuedWork: "failed",
+        }),
+      ).toBe("workflow");
+    });
 
     it("keeps Plan and Goal independent and applies Plan precedence", () => {
       expect(
