@@ -357,7 +357,10 @@ export class TerminalWebSocketTransport {
     }
   }
 
+  private pendingSizeClaim = false;
+
   claimSize(): void {
+    this.pendingSizeClaim = true;
     const socket = this.socket;
     if (
       this.lastResize === null ||
@@ -366,6 +369,7 @@ export class TerminalWebSocketTransport {
     ) {
       return;
     }
+    this.pendingSizeClaim = false;
     this.trySend(
       socket,
       JSON.stringify({ type: "resize", ...this.lastResize, claim: true }),
@@ -588,6 +592,7 @@ export class TerminalWebSocketTransport {
       );
     }
     this.beginResizeSettle(socket);
+    if (this.pendingSizeClaim) this.claimSize();
     this.flushInputs();
   }
 

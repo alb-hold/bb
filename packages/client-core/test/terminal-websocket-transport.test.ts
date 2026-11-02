@@ -262,6 +262,19 @@ describe("TerminalWebSocketTransport", () => {
     harness.transport.dispose();
   });
 
+  it("delivers a focus claim made before the socket opens", () => {
+    const harness = createHarness();
+    harness.transport.sendResize(120, 40);
+    harness.transport.claimSize();
+    harness.transport.start();
+    const socket = harness.sockets[0]!;
+    socket.open();
+    expect(socket.sent.map((payload) => JSON.parse(payload))).toContainEqual({
+      type: "resize", cols: 120, rows: 40, claim: true,
+    });
+    harness.transport.dispose();
+  });
+
   it("claims the most recently fitted size when a focused client takes over", () => {
     const harness = createHarness();
     harness.transport.start();
