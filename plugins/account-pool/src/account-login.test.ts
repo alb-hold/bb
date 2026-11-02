@@ -385,17 +385,23 @@ describe("Account Pooler logins", () => {
       throw new Error("CLI login did not print its session.");
     }
     providers.nextClaudeLogin = SPOUSE;
-    const completed = await pool.host.harness.behavior.runCli([
-      "account",
-      "login-complete",
-      "--session",
-      sessionId,
-      "--code",
-      `code#${new URL(authorizeUrl).searchParams.get("state")}`,
-      "--label",
-      "Reserve",
-      "--json",
-    ]);
+    const completed = await pool.host.harness.behavior.runCli(
+      [
+        "account",
+        "login-complete",
+        "--session",
+        sessionId,
+        "--code-stdin",
+        "--label",
+        "Reserve",
+        "--json",
+      ],
+      {
+        experimental_stdinInputs: {
+          code: `code#${new URL(authorizeUrl).searchParams.get("state")}`,
+        },
+      },
+    );
     expect(completed.exitCode).toBe(0);
     const reserve = accountSchema.parse(
       z.object({ account: z.unknown() }).parse(JSON.parse(completed.stdout))
@@ -482,14 +488,14 @@ describe("Account Pooler logins", () => {
       throw new Error("CLI login did not print its session.");
     }
     providers.nextClaudeLogin = SPOUSE;
-    const completed = await pool.host.harness.behavior.runCli([
-      "account",
-      "login-complete",
-      "--session",
-      sessionId,
-      "--code",
-      `code#${new URL(authorizeUrl).searchParams.get("state")}`,
-    ]);
+    const completed = await pool.host.harness.behavior.runCli(
+      ["account", "login-complete", "--session", sessionId, "--code-stdin"],
+      {
+        experimental_stdinInputs: {
+          code: `code#${new URL(authorizeUrl).searchParams.get("state")}`,
+        },
+      },
+    );
     expect(completed.exitCode).toBe(1);
     expect(completed.stderr).toContain(
       "That code belongs to a different Claude account. Sign in as the account behind me@example.com; it was not changed.",
