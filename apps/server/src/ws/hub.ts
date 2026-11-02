@@ -938,20 +938,38 @@ export class NotificationHub implements DbNotifier {
 
   terminalSharedSize(terminalId: string, now: number): TerminalSize | null {
     const owner = this.terminalResizeOwnerById.get(terminalId);
-    if (owner === undefined) {
-      return null;
-    }
-    const state = this.terminalClientStateById.get(terminalId)?.get(owner);
-    if (
-      state?.size === null ||
-      state === undefined ||
-      !state.visible ||
-      (state.heartbeats && now - state.lastSeenAt > TERMINAL_CLIENT_STALE_MS)
-    ) {
+    if (owner !== undefined) {
+      const state = this.terminalClientStateById.get(terminalId)?.get(owner);
+      if (
+        state?.size !== null &&
+        state !== undefined &&
+        state.visible &&
+        (!state.heartbeats || now - state.lastSeenAt <= TERMINAL_CLIENT_STALE_MS)
+      ) {
+        return { ...state.size };
+      }
       this.clearTerminalResizeOwner(terminalId, owner, "stale");
-      return null;
     }
-    return { ...state.size };
+    let shared: TerminalSize | null = null;
+    for (const state of this.terminalClientStateById
+      .get(terminalId)
+      ?.values() ?? []) {
+      if (
+        state.size === null ||
+        !state.visible ||
+        (state.heartbeats && now - state.lastSeenAt > TERMINAL_CLIENT_STALE_MS)
+      ) {
+        continue;
+      }
+      shared =
+        shared === null
+          ? { ...state.size }
+          : {
+              cols: Math.min(shared.cols, state.size.cols),
+              rows: Math.min(shared.rows, state.size.rows),
+            };
+    }
+    return shared;
   }
 
   private terminalClientState(

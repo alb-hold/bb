@@ -204,6 +204,23 @@ describe("NotificationHub", () => {
     ]);
   });
 
+  it("sizes clients without focus claims using the minimum visible live size", () => {
+    const hub = new NotificationHub();
+    const desktop = createMockHubSocket();
+    const phone = createMockHubSocket();
+    hub.registerTerminalClient("term-legacy", desktop);
+    hub.registerTerminalClient("term-legacy", phone);
+    hub.recordTerminalClientSize("term-legacy", desktop, { cols: 120, rows: 40 }, 1000);
+    hub.recordTerminalClientSize("term-legacy", phone, { cols: 80, rows: 20 }, 1000);
+    expect(hub.terminalSharedSize("term-legacy", 1000)).toEqual({ cols: 80, rows: 20 });
+    hub.recordTerminalClientSize("term-legacy", phone, { cols: 70, rows: 15 }, 1001);
+    expect(hub.terminalSharedSize("term-legacy", 1001)).toEqual({ cols: 70, rows: 15 });
+    hub.recordTerminalClientSize("term-legacy", desktop, { cols: 120, rows: 40 }, 1002, true);
+    expect(hub.terminalSharedSize("term-legacy", 1002)).toEqual({ cols: 120, rows: 40 });
+    hub.unregisterTerminalClientSocket(desktop);
+    expect(hub.terminalSharedSize("term-legacy", 1003)).toEqual({ cols: 70, rows: 15 });
+  });
+
   it("gives terminal size to the visible client that claimed focus", () => {
     const hub = new NotificationHub();
     const desktop = createMockHubSocket();
@@ -247,7 +264,7 @@ describe("NotificationHub", () => {
     });
 
     hub.recordTerminalClientVisibility("term-1", phone, false, now + 2);
-    expect(hub.terminalSharedSize("term-1", now + 2)).toBeNull();
+    expect(hub.terminalSharedSize("term-1", now + 2)).toEqual({ cols: 160, rows: 48 });
     hub.recordTerminalClientSize(
       "term-1",
       phone,
@@ -255,7 +272,7 @@ describe("NotificationHub", () => {
       now + 2,
       true,
     );
-    expect(hub.terminalSharedSize("term-1", now + 2)).toBeNull();
+    expect(hub.terminalSharedSize("term-1", now + 2)).toEqual({ cols: 160, rows: 48 });
     hub.recordTerminalClientVisibility("term-1", phone, true, now + 3);
     hub.recordTerminalClientSize(
       "term-1",
@@ -273,7 +290,7 @@ describe("NotificationHub", () => {
     hub.recordTerminalClientHeartbeat("term-1", phone, now + 3);
     const later = now + 3 + TERMINAL_CLIENT_STALE_MS + 1;
     hub.recordTerminalClientHeartbeat("term-1", desktop, later);
-    expect(hub.terminalSharedSize("term-1", later)).toBeNull();
+    expect(hub.terminalSharedSize("term-1", later)).toEqual({ cols: 160, rows: 48 });
 
     hub.recordTerminalClientHeartbeat("term-1", phone, later);
     hub.recordTerminalClientSize(
