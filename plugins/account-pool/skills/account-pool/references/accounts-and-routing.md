@@ -148,7 +148,7 @@ An account enters error only when its OAuth refresh token is rejected (HTTP 400
 or 401 from the token endpoint) or an API key is rejected. A rejected refresh
 token sets `signInExpired` in account JSON and `expired` in the `account list`
 Sign-in column, even while the account is disabled. Repair it with
-`bb pool account sign-in-again <id>` (aliases `reauth`, `reauthorize`): it starts
+`bb pool account sign-in-again <id>` (aliases `login`, `relogin`, `reauth`, `reauthorize`): it starts
 the same Claude or Codex login as `add --login`, and the matching
 `login-complete` or `login-poll` replaces that account's credential in place,
 keeping its ID, label, priority, enabled state, and conversation choices. bb

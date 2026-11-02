@@ -234,7 +234,10 @@ export class ScrollPositionKeeper {
       if (this.shrinkClampPending && !this.isAtEnd(scrollElement.scrollTop)) {
         this.shrinkClampPending = false;
       }
-      if (this.isInputSession() || this.followsUnexplainedScroll()) {
+      if (
+        this.isInputSession() ||
+        scrollElement.querySelector("iframe:hover") !== null
+      ) {
         this.layoutScrollPending = false;
         this.handleScroll();
         return;

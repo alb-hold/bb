@@ -1866,11 +1866,11 @@ describe("Account Pool settings", () => {
     );
     fireEvent.click(await slot.findByText("Sign in again…"));
     expect(
-      await slot.findByRole("dialog", { name: "Sign in again to Reserve" }),
+      await slot.findByRole("dialog", { name: "Sign in again" }),
     ).toBeTruthy();
     expect(slot.rpcCalls).toContainEqual({
       method: "login.start",
-      input: { kind: "relogin", accountId: account().id },
+      input: { accountId: account().id },
     });
     fireEvent.change(slot.getByLabelText("Claude authorization code"), {
       target: { value: "code#state" },
@@ -1901,13 +1901,13 @@ describe("Account Pool settings", () => {
     });
     fireEvent.click(slot.getByRole("button", { name: "Complete" }));
     const dialog = await slot.findByRole("dialog", {
-      name: "Sign in again to person@example.com",
+      name: "Sign in again",
     });
     await waitFor(() => expect(dialog.textContent).toContain(refusal));
     expect(
       slot.getByRole("button", { name: "Complete" }).hasAttribute("disabled"),
     ).toBe(true);
-    expect(slot.getByRole("button", { name: "Start again" })).toBeTruthy();
+    expect(slot.getByRole("button", { name: "Try again" })).toBeTruthy();
   });
 
   it("persists provider routing from the section switch", async () => {
@@ -2265,7 +2265,7 @@ describe("Account Pool settings", () => {
     fireEvent.click(
       await slot.findByRole("button", { name: "Sign in to Codex" }),
     );
-    fireEvent.click(await slot.findByRole("button", { name: "Start again" }));
+    fireEvent.click(await slot.findByRole("button", { name: "Try again" }));
     await waitFor(() => expect(starts).toBe(2));
   });
   it.each(["claude", "codex"] as const)(

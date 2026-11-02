@@ -2,7 +2,10 @@ import fs from "node:fs/promises";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
+import {
+  createFakePluginHost,
+  makeThreadResponse,
+} from "@get-bb/plugin-sdk/testing";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import {
@@ -184,7 +187,11 @@ async function startPool(providers: FakeProviders) {
     dataDir,
     sdk: {
       hosts: { list: async () => [{ id: "host-one", name: "One" }] },
-      threads: { events: { list: async () => [] } },
+      threads: {
+        events: { list: async () => [] },
+        get: async ({ threadId }: { threadId: string }) =>
+          makeThreadResponse({ id: threadId }),
+      },
       system: { providerStates: async () => ({ providers: [] }) },
       plugins: {
         list: async () => ({
@@ -263,7 +270,11 @@ async function sendMessage(pool: Pool, sessionId: string): Promise<number> {
     "claude-code",
     { threadId: "thread-one", projectId: "project-one", hostId: "host-one" },
   );
-  const token = entries.find((entry) => entry.name === "ANTHROPIC_AUTH_TOKEN");
+  const token = entries.find(
+    (entry) =>
+      entry.name === "ANTHROPIC_AUTH_TOKEN" ||
+      entry.name === "CLAUDE_CODE_OAUTH_TOKEN",
+  );
   if (typeof token?.value !== "string") throw new Error("Pool is not routed.");
   const response = await pool.host.harness.behavior.fetchHttp(
     "POST",
@@ -364,13 +375,11 @@ describe("Account Pooler logins", () => {
       "--login",
       "--label",
       "Reserve",
-      "--priority",
-      "8",
     ]);
     expect(started.exitCode).toBe(0);
     const sessionId = started.stdout.match(/Session ID: ([0-9a-f-]+)/u)?.[1];
     const authorizeUrl = started.stdout.match(
-      /sign in to Claude:\n([^\n]+)/u,
+      /sign in to Claude(?: as the account behind [^\n]+)?:\n([^\n]+)/u,
     )?.[1];
     if (sessionId === undefined || authorizeUrl === undefined) {
       throw new Error("CLI login did not print its session.");
@@ -383,6 +392,8 @@ describe("Account Pooler logins", () => {
       sessionId,
       "--code",
       `code#${new URL(authorizeUrl).searchParams.get("state")}`,
+      "--label",
+      "Reserve",
       "--json",
     ]);
     expect(completed.exitCode).toBe(0);
@@ -390,7 +401,18 @@ describe("Account Pooler logins", () => {
       z.object({ account: z.unknown() }).parse(JSON.parse(completed.stdout))
         .account,
     );
-    expect(reserve).toMatchObject({ label: "Reserve", priority: 8 });
+    const prioritized = await pool.host.harness.behavior.runCli([
+      "account",
+      "priority",
+      reserve.id,
+      "8",
+      "--json",
+    ]);
+    expect(prioritized.exitCode).toBe(0);
+    expect(
+      z.object({ account: accountSchema }).parse(JSON.parse(prioritized.stdout))
+        .account,
+    ).toMatchObject({ label: "Reserve", priority: 8 });
     await pool.host.harness.behavior.callRpc("account.disable", {
       id: reserve.id,
     });
@@ -454,7 +476,7 @@ describe("Account Pooler logins", () => {
     expect(started.exitCode).toBe(0);
     const sessionId = started.stdout.match(/Session ID: ([0-9a-f-]+)/u)?.[1];
     const authorizeUrl = started.stdout.match(
-      /sign in to Claude:\n([^\n]+)/u,
+      /sign in to Claude(?: as the account behind [^\n]+)?:\n([^\n]+)/u,
     )?.[1];
     if (sessionId === undefined || authorizeUrl === undefined) {
       throw new Error("CLI login did not print its session.");
@@ -470,7 +492,7 @@ describe("Account Pooler logins", () => {
     ]);
     expect(completed.exitCode).toBe(1);
     expect(completed.stderr).toContain(
-      "This login is for spouse@example.com, not me@example.com.",
+      "That code belongs to a different Claude account. Sign in as the account behind me@example.com; it was not changed.",
     );
     expect(await pool.store.readSecret(main.id)).toEqual(before);
     expect(await summary(pool, main.id)).toMatchObject({
@@ -480,7 +502,7 @@ describe("Account Pooler logins", () => {
 
     await pool.host.harness.behavior.callRpc("account.add", {
       provider: "claude",
-      apiKey: "sk-ant-key",
+      source: { kind: "api-key", apiKey: "sk-ant-key" },
       label: "Metered",
       priority: 200,
     });
@@ -496,7 +518,7 @@ describe("Account Pooler logins", () => {
     ]);
     expect(apiKeyLogin.exitCode).toBe(1);
     expect(apiKeyLogin.stderr).toContain(
-      "Metered uses an API key and has no login to renew.",
+      "An API key can't sign in again. Remove it and add a new key.",
     );
   });
 
@@ -547,7 +569,7 @@ describe("Account Pooler logins", () => {
     });
     expect(refused.exitCode).toBe(1);
     expect(refused.stderr).toContain(
-      "This login is for a different ChatGPT workspace than Work Codex.",
+      "Codex sign-in belongs to a different ChatGPT account. Sign in as the account behind Work Codex; it was not changed.",
     );
     expect(await pool.store.readSecret(account.id)).toMatchObject({
       refreshToken: "stale-refresh",
@@ -559,7 +581,7 @@ describe("Account Pooler logins", () => {
     });
     expect(accepted).toMatchObject({
       exitCode: 0,
-      stdout: expect.stringContaining("Signed in Work Codex"),
+      stdout: expect.stringContaining("Signed in again to Work Codex"),
     });
     expect(await summary(pool, account.id)).toMatchObject({
       id: account.id,

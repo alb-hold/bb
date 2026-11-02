@@ -2408,13 +2408,13 @@ describe("ThreadRow", () => {
     expect(renderedIndicators()).toEqual(["working"]);
   });
 
-  it("shows the unread dot over background work but not over a workflow", () => {
+  it("shows fork working precedence over unread background work and workflows", () => {
     const background = renderThreadRow({
       thread: createThread({
         activity: activity({ backgroundAgents: 1, backgroundCommands: 1 }),
       }),
     });
-    expect(renderedIndicators()).toEqual(["unread-success"]);
+    expect(renderedIndicators()).toEqual(["working"]);
     background.unmount();
 
     renderThreadRow({
@@ -2422,7 +2422,7 @@ describe("ThreadRow", () => {
         activity: activity({ workflows: 1, backgroundCommands: 1 }),
       }),
     });
-    expect(renderedIndicators()).toEqual(["workflow"]);
+    expect(renderedIndicators()).toEqual(["working"]);
   });
 
   it.each([
