@@ -260,6 +260,7 @@ interface AddParentTurnNotificationFollowUpArgs {
   thread: NonNullable<ReturnType<typeof getThread>>;
   turnStatus: ThreadEventTurnStatus;
   retry?: ParentTurnRetryContext;
+  turnId: string | null;
   interruption?: ChildThreadOutcome["interruption"];
 }
 
@@ -284,6 +285,7 @@ interface ParentTurnNotificationFollowUp {
   title: string | null;
   turnStatus: ThreadEventTurnStatus;
   retry?: ParentTurnRetryContext;
+  turnId: string | null;
   interruption?: ChildThreadOutcome["interruption"];
 }
 
@@ -442,6 +444,7 @@ function addParentTurnNotificationFollowUp(
     title: args.thread.title,
     turnStatus: args.turnStatus,
     ...(args.retry ? { retry: args.retry } : {}),
+    turnId: args.turnId,
     ...(args.interruption ? { interruption: args.interruption } : {}),
   });
 }
@@ -653,6 +656,7 @@ async function applyEventEffects(
               thread: turnCompleted.thread,
               turnStatus: event.status,
               ...(retry ? { retry } : {}),
+              turnId,
               ...(interruption ? { interruption } : {}),
             });
           }
@@ -703,6 +707,7 @@ async function applyEventEffects(
             thread,
             turnStatus: "failed",
             ...(retry ? { retry } : {}),
+            turnId: null,
           });
         }
         continue;
@@ -751,6 +756,7 @@ async function executeEventFollowUpBestEffort(
                 title: followUp.title,
               },
               parentThreadId: followUp.parentThreadId,
+              turnId: null,
               turnStatus: followUp.turnStatus,
               retryScheduledAt: retry.sendAt,
             });
@@ -765,6 +771,7 @@ async function executeEventFollowUpBestEffort(
           },
           parentThreadId: followUp.parentThreadId,
           turnStatus: followUp.turnStatus,
+          turnId: followUp.turnId,
           ...(followUp.interruption
             ? { interruption: followUp.interruption }
             : {}),

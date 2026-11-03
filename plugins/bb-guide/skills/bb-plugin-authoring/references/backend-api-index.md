@@ -1,11 +1,8 @@
 # Backend API symbol index
 
-Use this index to check backend, host, AI-service, and test imports.
-Read the detailed backend references for behavior, fields, and examples.
-Read the installed declarations for exact current signatures.
+Use this index to check backend, host, AI-service, and test imports. Read the detailed backend references for behavior, fields, and examples. Read the installed declarations for exact current signatures.
 
 ## `@get-bb/plugin-sdk`
-
 - `PLUGIN_CLI_OUTPUT_MAX_BYTES`
 - `defineRpcContract`
 - `experimental_defineHostEntry`
@@ -246,6 +243,10 @@ Read the installed declarations for exact current signatures.
 - `PluginMentionTrigger`
 - `PluginMessageActionContext`
 - `PluginMessageActionRegistration`
+- `ExperimentalMessageMetadataContext`
+- `ExperimentalMessageMetadataPlacement`
+- `ExperimentalMessageMetadataProps`
+- `ExperimentalMessageMetadataRegistration`
 - `PluginMessageDirectiveMessage`
 - `PluginMessageDirectiveOpenWorkspaceFile`
 - `PluginMessageDirectiveProps`
@@ -335,6 +336,10 @@ Read the installed declarations for exact current signatures.
 - `ExperimentalThreadInfoProps`
 - `ExperimentalThreadInfoRowRegistration`
 - `ExperimentalThreadInfoSectionRegistration`
+- `ExperimentalThreadContextCardRowRegistration`
+- `ExperimentalThreadContextCardSectionRegistration`
+- `ExperimentalThreadContextCardProps`
+- `ExperimentalThreadContextCardRowProps`
 - `ExperimentalInfoSectionProps`
 - `ExperimentalDetailRowProps`
 - `ExperimentalInfoListProps`
@@ -430,6 +435,7 @@ Read the installed declarations for exact current signatures.
 - `ExperimentalNativeRootsResolveInput`
 - `ExperimentalNativeRootsResolveOutput`
 - `ExperimentalProcessIdentity`
+- `ExperimentalQuestionFormAction`
 - `ExperimentalQuestionFormHost`
 - `ExperimentalQuestionShortcut`
 - `ExperimentalSanitizeInheritedChildProcessEnvArgs`
@@ -447,6 +453,7 @@ Read the installed declarations for exact current signatures.
 - `createFakePluginHost`
 - `createFakeSdk`
 - `experimental_scanPublicSdkOnly`
+- `experimental_makePanelController`
 - `makeHostResponse`
 - `makeMessageDispatchHookContext`
 - `makePluginAgentConfigurationContext`

@@ -29,6 +29,7 @@ import {
   queuedMessageStateFor,
 } from "@bb/domain";
 import type {
+  QueuedMessageDeliveryMode,
   QueuedMessageLifecycleEventType,
   QueuedMessageLifecycleFrom,
   QueuedMessageState,
@@ -87,10 +88,20 @@ export interface CreateQueuedThreadMessageInput {
   sendAt: number | null;
   payload: QueuedMessagePayload;
   systemNotice: QueuedMessageSystemNotice | null;
+  deliveryMode?: QueuedMessageDeliveryMode;
+}
+
+export interface QueuedThreadMessageExecution {
+  model: string;
+  reasoningLevel: string;
+  permissionMode: PermissionMode;
+  serviceTier: string;
 }
 
 export interface UpdateQueuedThreadMessageInput {
-  content: PromptInput[];
+  content: PromptInput[] | null;
+  execution: QueuedThreadMessageExecution | null;
+  reschedule: { sendAt: number | null } | null;
   expectedUpdatedAt: number;
   id: string;
   threadId: string;
@@ -349,10 +360,12 @@ export type UpdateQueuedThreadMessageResult =
       kind: "updated";
       queuedMessage: QueuedThreadMessageRow;
       releasedEditHold: boolean;
+      rescheduled: boolean;
     }
   | { kind: "not_found" }
   | { kind: "claimed" }
-  | { kind: "stale" };
+  | { kind: "stale" }
+  | QueuedThreadMessageGroupBoundaryInvalidExecutionOptions;
 
 export interface QueuedThreadMessageEditHoldArgs {
   id: string;
@@ -813,6 +826,7 @@ export function createQueuedThreadMessageInTransaction(
       retryAttempt:
         input.payload.kind === "retry" ? input.payload.attempt : null,
       retryReason: input.payload.kind === "retry" ? input.payload.reason : null,
+      deliveryMode: input.deliveryMode ?? "steer",
       groupWithNext: false,
       claimedAt: null,
       claimToken: null,
@@ -838,6 +852,44 @@ export function createQueuedThreadMessage(
   return row;
 }
 
+function executionFitsQueuedMessageGroup(
+  tx: DbTransaction,
+  row: QueuedThreadMessageRow,
+  execution: QueuedThreadMessageExecution,
+): boolean {
+  const group = partitionQueuedMessageGroups(
+    listQueuedThreadMessages(tx, row.threadId),
+  ).find((members) => members.some((member) => member.id === row.id));
+  const updated = { ...row, ...execution };
+  return (group ?? []).every(
+    (member) =>
+      member.id === row.id ||
+      queuedMessageGroupingEnvelopeMatches(updated, member),
+  );
+}
+
+function rescheduleTransition(
+  row: QueuedThreadMessageRow,
+  sendAt: number | null,
+): QueuedMessageTransition | null {
+  if (sendAt !== null) {
+    return { event: "wait.recorded", sendAt, waitingOn: { kind: "time" } };
+  }
+  return row.sendAt !== null || hasTimeWait(row)
+    ? { event: "wait.cleared" }
+    : null;
+}
+
+function hasTimeWait(row: QueuedThreadMessageRow): boolean {
+  if (row.waitingOn === null) return false;
+  try {
+    const parsed = JSON.parse(row.waitingOn) as { kind?: unknown };
+    return parsed.kind === "time";
+  } catch {
+    return false;
+  }
+}
+
 export function updateQueuedThreadMessage(
   db: DbConnection,
   notifier: DbNotifier,
@@ -856,17 +908,49 @@ export function updateQueuedThreadMessage(
         return { kind: "stale" };
       }
 
-      acquireProjectAttachmentOwnership(
-        tx,
-        input.threadId,
-        projectAttachmentPaths(input.content),
-      );
+      if (
+        input.execution !== null &&
+        !executionFitsQueuedMessageGroup(tx, existing, input.execution)
+      ) {
+        return { kind: "invalid_execution_options" };
+      }
+      const now = Date.now();
+      const contentPatch =
+        input.content === null
+          ? {}
+          : { content: JSON.stringify(input.content), editHeldUntil: null };
+      if (input.content !== null) {
+        acquireProjectAttachmentOwnership(
+          tx,
+          input.threadId,
+          projectAttachmentPaths(input.content),
+        );
+      }
+      const transition =
+        input.reschedule === null
+          ? null
+          : rescheduleTransition(existing, input.reschedule.sendAt);
+      const schedulePatch =
+        transition === null
+          ? {}
+          : queuedMessageTransitionPatch(existing, transition, now);
+      const state =
+        transition === null
+          ? existing.state
+          : requireQueuedMessageTransition({
+              event: transition.event,
+              from: existing.state,
+              id: existing.id,
+              to: queuedMessageStateOf({ ...existing, ...schedulePatch }),
+            });
       const queuedMessage = tx
         .update(queuedThreadMessages)
         .set({
-          content: JSON.stringify(input.content),
-          editHeldUntil: null,
-          updatedAt: Math.max(Date.now(), existing.updatedAt + 1),
+          ...contentPatch,
+          ...(input.execution ?? {}),
+          ...schedulePatch,
+          state,
+          updatedAt: Math.max(now, existing.updatedAt + 1),
         })
         .where(eq(queuedThreadMessages.id, input.id))
         .returning()
@@ -877,7 +961,9 @@ export function updateQueuedThreadMessage(
       return {
         kind: "updated",
         queuedMessage,
-        releasedEditHold: existing.editHeldUntil !== null,
+        releasedEditHold:
+          input.content !== null && existing.editHeldUntil !== null,
+        rescheduled: transition !== null,
       };
     },
     { behavior: "immediate" },
@@ -2102,6 +2188,35 @@ export function hasQueuedRetryOfTurnRequest(
   return getQueuedRetryOfTurnRequest(db, args) !== null;
 }
 
+export function getFirstUnclaimedQueuedRetry(
+  db: DbQueryConnection,
+  threadId: string,
+): QueuedThreadMessageRow | null {
+  return (
+    db
+      .select()
+      .from(queuedThreadMessages)
+      .where(
+        and(
+          eq(queuedThreadMessages.threadId, threadId),
+          eq(queuedThreadMessages.payloadKind, "retry"),
+          ne(queuedThreadMessages.state, "claimed"),
+        ),
+      )
+      .orderBy(asc(queuedThreadMessages.sortKey), asc(queuedThreadMessages.id))
+      .limit(1)
+      .get() ?? null
+  );
+}
+
+/**
+ * Threads on one host with live rows parked on a `host-offline` wait.
+ *
+ * Joined through the thread's environment by host ID rather than matched on
+ * the wait's stored `hostName`: the name on the wait is display text captured
+ * at failure time, and a renamed host would orphan every row that matched on
+ * it.
+ */
 export function listThreadIdsWithHostOfflineQueueWaits(
   db: DbQueryConnection,
   hostId: string,

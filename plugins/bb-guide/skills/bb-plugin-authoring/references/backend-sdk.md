@@ -30,7 +30,9 @@ signatures (see "Looking up the exact API" in distribution.md).
   `interactions` (`get` `list` `cancel` `resolve` `respond`), `queue`
   (`list`), `queuedMessages` (`create` `list` `update` `delete` `send`
   `reorder` `setGroupBoundary` `experimental_holdForEdit`
-  `experimental_releaseEditHold`), `tabs` (`get` `update`)
+  `experimental_releaseEditHold`; `update` takes any of `input`, `sendAt`,
+  `model`, `reasoningLevel`, `permissionMode`, `serviceTier`),
+  `tabs` (`get` `update`)
 - `threadSections`: `list` `create` `update` `delete`
 - `projects`: `list` `get` `create` `update` `delete` `reorder` `paths`
   `files` `fileContent` `branches` `commands` `defaultExecutionOptions`
@@ -89,6 +91,13 @@ signatures (see "Looking up the exact API" in distribution.md).
 Prefer your own `bb.settings` and `bb.storage` over `sdk.system` and
 `sdk.plugins` for your plugin's own configuration. The `system` and `plugins`
 areas write app-wide state that the user owns.
+
+`threads.experimental_regenerateTitle({ threadId })` replaces a thread's title
+with one the thread-title AI service writes from its first task message,
+latest user messages, and the agent's latest replies, in the task's language:
+the thread menu's Regenerate title action. The service may keep the current
+title when it still fits. It rejects and keeps the title when no title service
+is available or generation fails.
 
 ```ts
 const thread = await bb.sdk.threads.spawn({

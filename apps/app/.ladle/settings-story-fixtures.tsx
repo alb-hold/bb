@@ -37,6 +37,7 @@ import { makeProviderInfo } from "@bb/test-helpers/domain-fixtures";
 import {
   BbAppUpdateRows,
   BbUpdatesCard,
+  PluginUpdatesSection,
   ProviderCliUpdatesSection,
 } from "../src/components/settings/UpdatesSettingsSection";
 import {
@@ -324,6 +325,12 @@ export function SettingsUpdatesStory() {
         onRetryDaemonUpdate={noop}
         onRetryAllDaemonUpdates={noop}
         onRecheckClis={noop}
+      />
+      <PluginUpdatesSection
+        plugins={{ trackedCount: 0, items: [] }}
+        updatingPluginIds={noJobs}
+        checking={false}
+        onStartUpdates={noop}
       />
     </div>
   );

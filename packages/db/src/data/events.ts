@@ -1600,52 +1600,133 @@ export function listStoredEventRows(
   return merged;
 }
 
-export function listLatestThreadStateEventRowsByThreadIds(
-  db: DbQueryConnection,
-  args: ListLatestThreadStateEventRowsByThreadIdsArgs,
+interface LatestThreadStateCacheEntry {
+  dataVersion: number;
+  generation: number;
+  latestSequence: number | null;
+  scannedThroughSequence: number;
+}
+
+interface LatestThreadStateScan {
+  afterSequence: number;
+  threadId: string;
+}
+
+interface LatestThreadStateScanRow {
+  matchedSequence: number | null;
+  threadId: string;
+  throughSequence: number | null;
+}
+
+interface LatestThreadStateRead {
+  rows: StoredEventRow[];
+  states: Map<
+    string,
+    Pick<
+      LatestThreadStateCacheEntry,
+      "latestSequence" | "scannedThroughSequence"
+    >
+  >;
+}
+
+const LATEST_THREAD_STATE_CACHE_LIMIT = 50_000;
+const THREAD_STATE_TYPES_PREDICATE = sql.raw(
+  `IN (${(
+    [
+      "thread/goal/updated",
+      "thread/goal/cleared",
+      "thread/extensionState/updated",
+    ] as const satisfies readonly ThreadEventType[]
+  )
+    .map((type) => `'${type}'`)
+    .join(", ")})`,
+);
+const latestThreadStateCaches = new WeakMap<
+  DbConnection,
+  Map<string, LatestThreadStateCacheEntry>
+>();
+
+function threadStateKindPredicate(alias: SQL, kind: string): SQL {
+  return sql`${alias}.type ${THREAD_STATE_TYPES_PREDICATE}
+    AND (
+      ${alias}.type <> 'thread/extensionState/updated'
+      OR json_extract(${alias}.data, '$.kind') = ${kind}
+    )`;
+}
+
+function scanLatestThreadStateSequences(
+  db: DbConnection,
+  kind: string,
+  scans: readonly LatestThreadStateScan[],
+): LatestThreadStateScanRow[] {
+  return queryInSqliteVariableBatches({
+    dedupeKey: (scan) => scan.threadId,
+    fixedVariableCount: 1,
+    queryBatch: (batch) =>
+      db.all<LatestThreadStateScanRow>(sql`
+        SELECT
+          requested.column1 AS threadId,
+          (
+            SELECT candidate.sequence
+            FROM ${events} AS candidate INDEXED BY events_thread_state_thread_sequence_idx
+            WHERE candidate.thread_id = requested.column1
+              AND candidate.sequence > requested.column2
+              AND ${threadStateKindPredicate(sql`candidate`, kind)}
+            ORDER BY candidate.sequence DESC
+            LIMIT 1
+          ) AS matchedSequence,
+          (
+            SELECT candidate.sequence
+            FROM ${events} AS candidate INDEXED BY events_thread_state_thread_sequence_idx
+            WHERE candidate.thread_id = requested.column1
+              AND candidate.type ${THREAD_STATE_TYPES_PREDICATE}
+            ORDER BY candidate.sequence DESC
+            LIMIT 1
+          ) AS throughSequence
+        FROM (VALUES ${sql.join(
+          batch.map((scan) => sql`(${scan.threadId}, ${scan.afterSequence})`),
+          sql`, `,
+        )}) AS requested
+      `),
+    values: scans,
+    variableCountPerValue: 2,
+  });
+}
+
+function listThreadStateRowsAtSequences(
+  db: DbConnection,
+  kind: string,
+  states: LatestThreadStateRead["states"],
 ): StoredEventRow[] {
   return queryInSqliteVariableBatches({
-    dedupeKey: (threadId) => threadId,
+    dedupeKey: ([threadId]) => threadId,
     fixedVariableCount: 1,
-    queryBatch: (threadIds) => {
-      const stateTypes = [
-        "thread/goal/updated",
-        "thread/goal/cleared",
-        "thread/extensionState/updated",
-      ] as const satisfies readonly ThreadEventType[];
-      const stateTypesPredicate = sql.raw(
-        `IN (${stateTypes.map((type) => `'${type}'`).join(", ")})`,
-      );
-      const kindPredicate = sql`(
-        candidate.type <> 'thread/extensionState/updated'
-        OR json_extract(candidate.data, '$.kind') = ${args.kind}
-      )`;
-      const requestedThreads = sql.join(
-        threadIds.map((threadId) => sql`(${threadId})`),
-        sql`, `,
-      );
-      return db
+    queryBatch: (batch) =>
+      db
         .select(storedEventRowFields)
-        .from(events)
-        .where(
-          sql`${events}.rowid IN (
-        SELECT (
-          SELECT candidate.rowid
-          FROM ${events} AS candidate INDEXED BY events_thread_state_thread_sequence_idx
-          WHERE candidate.thread_id = requested.column1
-            AND candidate.type ${stateTypesPredicate}
-            AND ${kindPredicate}
-          ORDER BY candidate.sequence DESC
-          LIMIT 1
+        .from(
+          sql`(VALUES ${sql.join(
+            batch.map(
+              ([threadId, sequence]) => sql`(${threadId}, ${sequence})`,
+            ),
+            sql`, `,
+          )}) AS requested`,
         )
-        FROM (VALUES ${requestedThreads}) AS requested
-      )`,
+        .innerJoin(
+          events,
+          and(
+            eq(events.threadId, sql`requested.column1`),
+            eq(events.sequence, sql`requested.column2`),
+          ),
         )
-        .all();
-    },
-
-    values: args.threadIds,
-    variableCountPerValue: 1,
+        .where(threadStateKindPredicate(sql`${events}`, kind))
+        .all(),
+    values: [...states].flatMap(([threadId, state]) =>
+      state.latestSequence === null
+        ? []
+        : [[threadId, state.latestSequence] as const],
+    ),
+    variableCountPerValue: 2,
   });
 }
 
@@ -1687,6 +1768,103 @@ export function listLatestThreadStateEventRowsByScope(
       FROM (${requestedThreads}) AS requested
     )
   `);
+}
+
+function readLatestThreadStates(
+  db: DbConnection,
+  kind: string,
+  threadIds: readonly string[],
+  cached: ReadonlyMap<string, LatestThreadStateCacheEntry>,
+): LatestThreadStateRead {
+  const states: LatestThreadStateRead["states"] = new Map();
+  const rescanThreadIds: string[] = [];
+  for (const scan of scanLatestThreadStateSequences(
+    db,
+    kind,
+    threadIds.map((threadId) => ({
+      afterSequence: cached.get(threadId)?.scannedThroughSequence ?? -1,
+      threadId,
+    })),
+  )) {
+    const entry = cached.get(scan.threadId);
+    const scannedThroughSequence = scan.throughSequence ?? -1;
+    if (
+      entry !== undefined &&
+      scannedThroughSequence < entry.scannedThroughSequence
+    ) {
+      rescanThreadIds.push(scan.threadId);
+      continue;
+    }
+    states.set(scan.threadId, {
+      latestSequence: scan.matchedSequence ?? entry?.latestSequence ?? null,
+      scannedThroughSequence,
+    });
+  }
+  const rows = listThreadStateRowsAtSequences(db, kind, states);
+  const foundThreadIds = new Set(rows.map((row) => row.threadId));
+  for (const [threadId, state] of states) {
+    if (state.latestSequence !== null && !foundThreadIds.has(threadId)) {
+      states.delete(threadId);
+      rescanThreadIds.push(threadId);
+    }
+  }
+  if (rescanThreadIds.length > 0 && cached.size > 0) {
+    const rescanned = readLatestThreadStates(
+      db,
+      kind,
+      rescanThreadIds,
+      new Map(),
+    );
+    rows.push(...rescanned.rows);
+    for (const [threadId, state] of rescanned.states) {
+      states.set(threadId, state);
+    }
+  }
+  return { rows, states };
+}
+
+export function listLatestThreadStateEventRowsByThreadIds(
+  db: DbConnection,
+  args: ListLatestThreadStateEventRowsByThreadIdsArgs,
+): StoredEventRow[] {
+  const threadIds = [...new Set(args.threadIds)];
+  if (threadIds.length === 0) return [];
+  if (db.$client.inTransaction) {
+    return readLatestThreadStates(db, args.kind, threadIds, new Map()).rows;
+  }
+  let cache = latestThreadStateCaches.get(db);
+  if (cache === undefined) {
+    cache = new Map();
+    latestThreadStateCaches.set(db, cache);
+  }
+  const dataVersion = getDatabaseDataVersion(db);
+  const cacheKey = (threadId: string) => JSON.stringify([threadId, args.kind]);
+  const cached = new Map<string, LatestThreadStateCacheEntry>();
+  for (const threadId of threadIds) {
+    const entry = cache.get(cacheKey(threadId));
+    if (
+      entry !== undefined &&
+      entry.dataVersion === dataVersion &&
+      entry.generation === getThreadEventRewriteGeneration(threadId)
+    ) {
+      cached.set(threadId, entry);
+    }
+  }
+  const read = readLatestThreadStates(db, args.kind, threadIds, cached);
+  for (const [threadId, state] of read.states) {
+    const key = cacheKey(threadId);
+    cache.delete(key);
+    cache.set(key, {
+      ...state,
+      dataVersion,
+      generation: getThreadEventRewriteGeneration(threadId),
+    });
+  }
+  for (const key of cache.keys()) {
+    if (cache.size <= LATEST_THREAD_STATE_CACHE_LIMIT) break;
+    cache.delete(key);
+  }
+  return read.rows;
 }
 
 export function listOpenTurnInputAcceptedRowsByThreadIds(
@@ -3963,6 +4141,68 @@ export function getLatestThreadOutputEventRow(
   );
 }
 
+interface GetTurnFinalAgentMessageEventRowArgs {
+  threadId: string;
+  turnId: string;
+}
+
+export function getTurnFinalAgentMessageEventRow(
+  db: DbConnection,
+  args: GetTurnFinalAgentMessageEventRowArgs,
+): StoredEventRow | null {
+  return (
+    db
+      .select(storedEventRowFields)
+      .from(events)
+      .where(
+        and(
+          eq(events.threadId, args.threadId),
+          eq(events.turnId, args.turnId),
+          eq(events.type, "item/completed"),
+          eq(events.itemKind, "agentMessage"),
+          isNull(events.parentToolCallId),
+        ),
+      )
+      .orderBy(desc(events.sequence))
+      .limit(1)
+      .get() ?? null
+  );
+}
+
+interface ListLatestTurnFinalAgentMessageEventRowsArgs {
+  limit: number;
+  threadId: string;
+}
+
+export function listLatestTurnFinalAgentMessageEventRows(
+  db: DbConnection,
+  args: ListLatestTurnFinalAgentMessageEventRowsArgs,
+): StoredEventRow[] {
+  return db
+    .select(storedEventRowFields)
+    .from(events)
+    .where(
+      sql`${events.threadId} = ${args.threadId}
+      AND ${events.type} = 'item/completed'
+      AND ${events.itemKind} = 'agentMessage'
+      AND ${events.parentToolCallId} IS NULL
+      AND COALESCE(json_extract(${events.data}, '$.item.text'), '') <> ''
+      AND NOT EXISTS (
+        SELECT 1
+        FROM events AS later_reply
+        WHERE later_reply.thread_id = ${events.threadId}
+          AND later_reply.turn_id = ${events.turnId}
+          AND later_reply.type = 'item/completed'
+          AND later_reply.item_kind = 'agentMessage'
+          AND later_reply.parent_tool_call_id IS NULL
+          AND later_reply.sequence > ${events.sequence}
+      )`,
+    )
+    .orderBy(desc(events.sequence))
+    .limit(args.limit)
+    .all();
+}
+
 export function getLatestThreadSystemErrorEventRow(
   db: DbConnection,
   args: GetLatestThreadSystemErrorEventRowArgs,
@@ -4127,8 +4367,8 @@ export function isStoredTurnProviderCompactionRunning(
     eq(events.turnId, args.turnId),
   );
   const latestCompaction = db
-    .select({ type: events.type })
-    .from(events)
+    .select({ type: sql<ThreadEventType>`${events.type}` })
+    .from(sql`${events} INDEXED BY events_thread_turn_type_item_sequence_idx`)
     .where(
       and(
         inTurn,
@@ -4716,6 +4956,49 @@ export function listCompletedTurnsByThreadIds(
             },
           ],
     );
+}
+
+interface ListStoredTaskTurnRequestEventsArgs {
+  limit: number;
+  order: "oldest" | "newest";
+  threadId: string;
+}
+
+export function listStoredTaskTurnRequestEvents(
+  db: DbQueryConnection,
+  args: ListStoredTaskTurnRequestEventsArgs,
+): StoredTurnRequestEventRow[] {
+  return db
+    .select({
+      data: events.data,
+      sequence: events.sequence,
+      threadId: events.threadId,
+      type: events.type,
+    })
+    .from(events)
+    .where(
+      sql`${events.threadId} = ${args.threadId}
+      AND (
+        ${events.type} = 'client/turn/requested'
+        OR (
+          ${events.type} IN ('client/thread/start', 'client/turn/start')
+          AND json_type(${events.data}, '$.input') IS NOT NULL
+        )
+      )
+      AND json_extract(${events.data}, '$.systemMessageKind') IS NULL
+      AND (
+        json_extract(${events.data}, '$.initiator') = 'user'
+        OR json_extract(${events.data}, '$.target.kind') = 'thread-start'
+        OR ${events.type} = 'client/thread/start'
+      )`,
+    )
+    .orderBy(
+      args.order === "oldest"
+        ? sql`${events.sequence} ASC`
+        : sql`${events.sequence} DESC`,
+    )
+    .limit(args.limit)
+    .all();
 }
 
 function pruneUsageSnapshots(

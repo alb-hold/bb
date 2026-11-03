@@ -248,6 +248,8 @@ describe("generated thread titles", () => {
       expect(thread.title).toBeNull();
       const input = textInput("Stop during metadata inference before setup");
       requestThreadProvision(harness.deps, {
+        originPluginId: null,
+        author: { initiator: "user", senderThreadId: null },
         environmentIntent: {
           type: "provider",
           environmentProviderId: "git-worktree",
@@ -583,6 +585,8 @@ describe("generated thread titles", () => {
       });
 
       requestThreadProvision(harness.deps, {
+        originPluginId: null,
+        author: { initiator: "user", senderThreadId: null },
         environmentIntent: {
           type: "reuse",
           environmentId: environment.id,
@@ -694,6 +698,8 @@ describe("generated thread titles", () => {
       });
 
       requestThreadProvision(harness.deps, {
+        originPluginId: null,
+        author: { initiator: "user", senderThreadId: null },
         environmentIntent: {
           type: "reuse",
           environmentId: environment.id,

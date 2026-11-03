@@ -392,10 +392,26 @@ export const accountAddInputSchema = z
 
 export type AccountAddInput = z.infer<typeof accountAddInputSchema>;
 
+export const loginTargetSchema = z.discriminatedUnion("kind", [
+  z
+    .object({
+      kind: z.literal("add"),
+      label: z.string().min(1).nullable(),
+      priority: z.number().int(),
+    })
+    .strict(),
+  z
+    .object({ kind: z.literal("relogin"), accountId: z.string().uuid() })
+    .strict(),
+]);
+
+export type LoginTarget = z.infer<typeof loginTargetSchema>;
+
 export const loginStartInputSchema = z
   .object({ accountId: z.string().uuid() })
   .strict()
-  .nullable();
+  .nullable()
+  .or(loginTargetSchema);
 
 export type LoginStartInput = z.infer<typeof loginStartInputSchema>;
 

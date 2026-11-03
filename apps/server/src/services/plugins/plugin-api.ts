@@ -513,6 +513,7 @@ function createStagedRegistrations<
 const PLUGIN_HOST_CALL_MAX_TIMEOUT_MS = 30 * 60_000;
 
 export function createPluginApi(options: {
+  recordPluginUse: () => void;
   pluginId: string;
   logger: ServerLogger;
   db: DbConnection;
@@ -1448,6 +1449,10 @@ export function createPluginApi(options: {
   };
 
   const api: BbPluginApi = {
+    internal_DO_NOT_USE_recordPluginUse() {
+      assertLive();
+      options.recordPluginUse();
+    },
     pluginId,
     log,
     settings,

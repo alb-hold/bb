@@ -2,11 +2,13 @@ import { z } from "zod";
 
 export const experimentKeys = [
   "applicationLinks",
-  "changelogPreview",
   "compactExpiredCache",
   "serverMove",
   "performanceDiagnostics",
+  "pluginUpdates",
   "sidebarMultiSelect",
+  "skipFocusedThreadNotifications",
+  "threadContextCard",
   "threadRowMetadata",
   "timelinePush",
   "unreadDividerAtAnswer",
@@ -26,11 +28,13 @@ export type ExperimentUpdates = z.infer<typeof experimentUpdatesSchema>;
 
 export const defaultExperiments: Experiments = {
   applicationLinks: false,
-  changelogPreview: false,
   compactExpiredCache: false,
   serverMove: false,
   performanceDiagnostics: false,
+  pluginUpdates: false,
   sidebarMultiSelect: false,
+  skipFocusedThreadNotifications: false,
+  threadContextCard: false,
   threadRowMetadata: false,
   timelinePush: false,
   unreadDividerAtAnswer: false,
@@ -39,12 +43,14 @@ export const defaultExperiments: Experiments = {
 
 export const earlyAdopterExperiments: Experiments = {
   applicationLinks: true,
-  changelogPreview: false,
   compactExpiredCache: true,
   serverMove: false,
   performanceDiagnostics: false,
+  pluginUpdates: true,
   sidebarMultiSelect: true,
-  threadRowMetadata: false,
+  skipFocusedThreadNotifications: true,
+  threadContextCard: false,
+  threadRowMetadata: true,
   timelinePush: true,
   unreadDividerAtAnswer: true,
   websocketCompression: true,

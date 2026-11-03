@@ -236,8 +236,11 @@ describe("bb terminal command output", () => {
         skipReason: null,
       }));
       stubServerApi({
-        "v1.terminals.:terminalId.$get": async ({ param }: { param: { terminalId: string } }) =>
-          makeTerminalSession({ id: param.terminalId }),
+        "v1.terminals.:terminalId.$get": async ({
+          param,
+        }: {
+          param: { terminalId: string };
+        }) => makeTerminalSession({ id: param.terminalId }),
         "v1.threads.:id.open.$post": open,
       });
 
@@ -1192,6 +1195,44 @@ describe("bb terminal command output", () => {
         nextSeq: 2,
         terminalId: "term-1",
       });
+    },
+  );
+
+  it.each(["--contains", "--regex"])(
+    "matches styled text with %s across output polls",
+    async (flag) => {
+      const output = vi
+        .fn()
+        .mockResolvedValueOnce(
+          outputResponse({ nextSeq: 1, text: "\u001b[1mLocal\u001b[2" }),
+        )
+        .mockResolvedValue(
+          outputResponse({
+            nextSeq: 2,
+            text: "2m: http://localhost:5173/\r\n",
+          }),
+        );
+      stubServerApi({ "v1.terminals.:terminalId.output.$get": output });
+
+      await runCommand(
+        [
+          "terminal",
+          "wait",
+          "term-1",
+          "--from-start",
+          flag,
+          "Local:",
+          "--poll-interval",
+          "1ms",
+          "--timeout",
+          "100ms",
+        ],
+        register,
+      );
+
+      expect(collectLogLines(vi.mocked(console.log))).toEqual([
+        "Terminal term-1 matched Local:",
+      ]);
     },
   );
 

@@ -105,6 +105,7 @@ function toUserQuestion(
       ? { shortLabel }
       : {}),
     multiSelect: false,
+    required: true,
     ...(options.length > 0
       ? {
           options: options.map((option, optionIndex) => {
@@ -278,6 +279,7 @@ function buildCodexUserQuestionPayload(params: {
         description: option.description,
       })),
       allowFreeText: true,
+      required: true,
     })),
   });
   if (!payload.success) {

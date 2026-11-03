@@ -776,6 +776,7 @@ function createFakePluginHostInternal(
       assertLive();
       if (!databaseHandle?.open) {
         databaseHandle = new Database(join(storageRoot, "data.db"));
+        databaseHandle.pragma("journal_mode = WAL");
         databaseHandle.pragma("busy_timeout = 5000");
       }
       return databaseHandle;
@@ -1625,6 +1626,9 @@ function createFakePluginHostInternal(
   };
 
   const bb: BbPluginApi = {
+    internal_DO_NOT_USE_recordPluginUse() {
+      assertLive();
+    },
     pluginId,
     log,
     settings,
@@ -1851,7 +1855,7 @@ function createFakePluginHostInternal(
           "warn",
           `provider environment contribution failed: ${error instanceof Error ? error.message : String(error)}`,
         );
-        return [];
+        throw error;
       }
     },
     async resolveProviderEnvHealth(providerId, context) {

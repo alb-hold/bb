@@ -59,9 +59,10 @@ interface ProfileJob {
 const profileJobs: ProfileJob[] = [];
 const physicalProfilesKey = Symbol.for("bb.account-pool.physicalProfiles");
 const physicalProfiles = z
-  .custom<
-    Set<string>
-  >((value) => value instanceof Set && [...value].every((id) => typeof id === "string"))
+  .custom<Set<string>>(
+    (value) =>
+      value instanceof Set && [...value].every((id) => typeof id === "string"),
+  )
   .parse(Reflect.get(globalThis, physicalProfilesKey) ?? new Set<string>());
 Reflect.set(globalThis, physicalProfilesKey, physicalProfiles);
 const MAX_PHYSICAL_PROFILES = 2;

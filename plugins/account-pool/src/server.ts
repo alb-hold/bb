@@ -136,6 +136,7 @@ const PROVIDER_ROUTING_ENV: Record<PoolProvider, readonly string[]> = {
     "ANTHROPIC_BASE_URL",
     "ANTHROPIC_AUTH_TOKEN",
     "CLAUDE_CODE_OAUTH_TOKEN",
+    "CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST",
     "HTTPS_PROXY",
     "NO_PROXY",
     "NODE_EXTRA_CA_CERTS",
@@ -527,7 +528,8 @@ export function createAccountPoolPlugin(
       authorizeUrl: options.oauthAuthorizeUrl,
       tokenUrl: options.oauthTokenUrl,
       profileUrl: options.oauthProfileUrl,
-      addAccount: (authenticated) => operations.addOAuth(authenticated),
+      addAccount: (authenticated, target) =>
+        operations.addOAuth(authenticated, target),
       reauthorizeAccount: (accountId, authenticated, label) =>
         operations.reauthorizeClaude(accountId, authenticated, label),
     });
@@ -535,7 +537,8 @@ export function createAccountPoolPlugin(
       fetch: upstreamFetch,
       now,
       authBaseUrl: options.codexAuthBaseUrl,
-      addAccount: (authenticated) => operations.addCodexOAuth(authenticated),
+      addAccount: (authenticated, target) =>
+        operations.addCodexOAuth(authenticated, target),
       reauthorizeAccount: (accountId, authenticated) =>
         operations.reauthorizeCodex(accountId, authenticated),
     });
@@ -753,6 +756,17 @@ export function createAccountPoolPlugin(
             ...markerEntries(nestedToken),
           ];
         }
+        if (
+          !bypassed &&
+          accountId === null &&
+          proxyingParent() === null &&
+          (await operations.isRoutingEnabled(provider)) &&
+          (await operations.hasEnabledAccount(provider))
+        ) {
+          throw new Error(
+            `Account Pooler has enabled ${provider} accounts but none has a readable credential, so this thread was not started on the local login.`,
+          );
+        }
         await bb.storage.kv.delete(`retry-route:${context.threadId}`);
         return unrouted();
       };
@@ -813,6 +827,12 @@ export function createAccountPoolPlugin(
                 value: token,
                 reason: `Account Pooler token scoped to this ${scope ?? "thread"}; it puts Claude Code in claude.ai account mode so Artifacts work, and the hub swaps it for the selected account's credential`,
               },
+          {
+            name: "CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST",
+            value: "1",
+            reason:
+              "Claude Code otherwise refreshes this machine's own Claude login while routed, which can spend its single-use refresh token and sign it out",
+          },
           {
             name: "ENABLE_TOOL_SEARCH",
             value: "true",
