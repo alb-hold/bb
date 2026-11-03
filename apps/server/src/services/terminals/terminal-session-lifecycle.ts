@@ -14,6 +14,7 @@ import {
   appendRetainedTerminalOutputChunks,
   clearTerminalAttention,
   getTerminalAttention,
+  getNativeTerminalThread,
   getDeviceHandoffAttentionMarker,
   deleteDeviceHandoffAttentionMarker,
   listTerminalAttention,
@@ -408,6 +409,7 @@ interface RenameTerminalArgs {
 }
 
 interface CloseTerminalArgs {
+  caller: string;
   payload: CloseTerminalRequest;
   terminalId: string;
 }
@@ -417,6 +419,7 @@ interface RestartTerminalArgs {
 }
 
 interface CloseTerminalSessionArgs {
+  caller: string;
   current: TerminalSessionRow;
   payload: CloseTerminalRequest;
 }
@@ -1615,6 +1618,13 @@ export class TerminalSessionLifecycle {
       },
     });
     if (!runningSession) {
+      const finished = getTerminalById(this.options.db, startingSession.id);
+      if (
+        finished?.status === "exited" &&
+        finished.closeReason === "process-exit"
+      ) {
+        return this.toTerminalSession(finished);
+      }
       this.closeStaleOpenedTerminal({
         daemonSessionId: daemonSession.id,
         terminalId: startingSession.id,
@@ -1740,6 +1750,7 @@ export class TerminalSessionLifecycle {
 
     try {
       await this.closeTerminalSession({
+        caller: "terminal-restart",
         current,
         payload: { mode: "force", reason: "user" },
       });
@@ -1747,6 +1758,7 @@ export class TerminalSessionLifecycle {
       const replacementRow = getTerminalById(this.options.db, replacement.id);
       if (replacementRow) {
         void this.closeTerminalSession({
+          caller: "terminal-restart-cleanup",
           current: replacementRow,
           payload: { mode: "force", reason: "user" },
         }).catch((cleanupError) => {
@@ -1777,6 +1789,7 @@ export class TerminalSessionLifecycle {
       );
     }
     return this.closeTerminalSession({
+      caller: args.caller,
       current,
       payload: args.payload,
     });
@@ -1788,6 +1801,7 @@ export class TerminalSessionLifecycle {
     const current = args.current;
     this.options.logger.info(
       {
+        caller: args.caller,
         closeReason: current.closeReason,
         mode: args.payload.mode,
         reason: args.payload.reason,
@@ -1796,6 +1810,8 @@ export class TerminalSessionLifecycle {
       },
       "Terminal close requested",
     );
+    const terminalCloseReason =
+      args.payload.reason === "client-cleanup" ? "user" : args.payload.reason;
     if (current.status === "exited") {
       if (args.payload.reason === "user") {
         await this.waitForTerminalReplay(current.id);
@@ -1824,6 +1840,15 @@ export class TerminalSessionLifecycle {
       }
       return this.toTerminalSession(current);
     }
+    if (
+      args.payload.reason === "client-cleanup" &&
+      current.status === "disconnected" &&
+      current.threadId !== null &&
+      getNativeTerminalThread(this.options.db, current.threadId)
+        ?.terminalSessionId === current.id
+    ) {
+      return this.toTerminalSession(current);
+    }
     if (args.payload.mode === "if-clean" && current.lastUserInputAt !== null) {
       return this.toTerminalSession(current);
     }
@@ -1833,12 +1858,12 @@ export class TerminalSessionLifecycle {
     ) {
       return this.finishTerminalCloseWithoutDaemon({
         current,
-        reason: args.payload.reason,
+        reason: terminalCloseReason,
       });
     }
 
     const pending = this.pendingCloses.claim({
-      closeReason: args.payload.reason,
+      closeReason: terminalCloseReason,
       daemonSessionId: current.daemonSessionId,
       rpcKey: terminalRpcKey(current.daemonSessionId, current.id, current.id),
       terminalId: current.id,
@@ -1849,7 +1874,7 @@ export class TerminalSessionLifecycle {
         {
           type: "terminal.close",
           terminalId: current.id,
-          reason: args.payload.reason,
+          reason: terminalCloseReason,
         },
       );
       if (!sent) {
@@ -1868,7 +1893,7 @@ export class TerminalSessionLifecycle {
       const finalized = getTerminalById(this.options.db, current.id);
       if (
         finalized?.status === "exited" &&
-        finalized.closeReason === args.payload.reason
+        finalized.closeReason === terminalCloseReason
       ) {
         return this.toTerminalSession(finalized);
       }
@@ -4068,6 +4093,7 @@ export class TerminalSessionLifecycle {
       args.socket,
       { cols: args.message.cols, rows: args.message.rows },
       Date.now(),
+      args.message.claim === true,
     );
     this.applySharedTerminalSize({ ...args, resizeSeq: args.message.seq });
     if (

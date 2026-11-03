@@ -1,3 +1,4 @@
+import { ApiError } from "../../../src/errors.js";
 import { describe, expect, it, vi } from "vitest";
 import { Buffer } from "node:buffer";
 import {
@@ -502,6 +503,46 @@ describe("reopenNativeTerminalsAfterDaemonReconnect", () => {
     });
   });
 
+  it("opens no terminal when the provider environment cannot be resolved", async () => {
+    await withTestHarness({ seedFirstPartyProviders: false }, async (h) => {
+      const host = upsertHost(h.db, noopNotifier, {
+        id: "host-native-env-unavailable",
+        name: "Native Terminal Host",
+      });
+      const { threadId } = await createDisconnectedNativeThread(h, 6, host.id);
+      h.db
+        .update(terminalSessions)
+        .set({ status: "exited", closeReason: "user" })
+        .where(eq(terminalSessions.threadId, threadId))
+        .run();
+      const sourceRegistry = await createTestProviderRegistry();
+      const registration = sourceRegistry.get("codex");
+      if (registration === null)
+        throw new Error("Codex provider is not seeded");
+      const providerRegistry = createProviderRegistryService();
+      providerRegistry.register(registration);
+      h.deps.providerRegistry = providerRegistry;
+      vi.spyOn(h.pluginService, "resolveProviderEnv").mockRejectedValue(
+        new ApiError(
+          503,
+          "provider_environment_unavailable",
+          "Plugin account-pool could not provide the codex environment",
+        ),
+      );
+      const createTerminal = vi.spyOn(
+        h.deps.terminalSessions,
+        "createTerminal",
+      );
+
+      await expect(
+        openNativeTerminal(h.deps, { threadId, request: {} }),
+      ).rejects.toMatchObject({
+        body: { code: "provider_environment_unavailable" },
+      });
+      expect(createTerminal).not.toHaveBeenCalled();
+    });
+  });
+
   it("does not reopen a terminal closed or archived while provider registration is pending", async () => {
     await withTestHarness({ seedFirstPartyProviders: false }, async (h) => {
       const host = upsertHost(h.db, noopNotifier, {
@@ -533,6 +574,7 @@ describe("reopenNativeTerminalsAfterDaemonReconnect", () => {
         .where(eq(terminalSessions.id, closed.terminalId))
         .run();
       await h.deps.terminalSessions.closeTerminal({
+        caller: "native-terminal-threads.test",
         terminalId: closed.terminalId,
         payload: { mode: "force", reason: "user" },
       });

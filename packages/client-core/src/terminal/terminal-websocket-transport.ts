@@ -323,6 +323,7 @@ export class TerminalWebSocketTransport {
       return;
     }
     this.lastResize = { cols, rows };
+    if (this.pendingSizeClaim) this.claimSize();
     this.cancelRepaintRestore();
     const socket = this.socket;
     if (
@@ -355,6 +356,25 @@ export class TerminalWebSocketTransport {
     if (this.layoutSettled && sent) {
       this.resizeReportedAfterLayoutSettle = true;
     }
+  }
+
+  private pendingSizeClaim = false;
+
+  claimSize(): void {
+    this.pendingSizeClaim = true;
+    const socket = this.socket;
+    if (
+      this.lastResize === null ||
+      socket === null ||
+      socket.readyState !== SOCKET_OPEN
+    ) {
+      return;
+    }
+    this.pendingSizeClaim = false;
+    this.trySend(
+      socket,
+      JSON.stringify({ type: "resize", ...this.lastResize, claim: true }),
+    );
   }
 
   private setRepaintFinalSeq(seq: number | null): void {
@@ -573,6 +593,7 @@ export class TerminalWebSocketTransport {
       );
     }
     this.beginResizeSettle(socket);
+    if (this.pendingSizeClaim) this.claimSize();
     this.flushInputs();
   }
 

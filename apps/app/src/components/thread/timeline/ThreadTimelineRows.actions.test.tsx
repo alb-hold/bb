@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { UNAVAILABLE_APP_PANEL_CONTROLLER } from "@/lib/app-fixed-tab-navigation";
 
 import {
   act,
@@ -106,7 +107,7 @@ function SameThreadSearchNavigationHarness() {
           }),
         ]}
         threadRuntimeDisplayStatus="idle"
-        workspaceRootPath={undefined}
+
         threadIsActive={false}
       />
     </>
@@ -139,7 +140,7 @@ function EditActionAvailabilityHarness({
       timelineRows={rows}
       onEditMessage={onEditMessage}
       threadRuntimeDisplayStatus="active"
-      workspaceRootPath={undefined}
+
       threadIsActive={false}
     />
   );
@@ -192,7 +193,7 @@ function SearchOlderRowsHarness({
         setLoadedOlderRows(true);
       }}
       threadRuntimeDisplayStatus="idle"
-      workspaceRootPath={undefined}
+
       threadIsActive={false}
     />
   );
@@ -233,7 +234,7 @@ function SearchOlderRowsFailedLoadHarness({
           });
         }}
         threadRuntimeDisplayStatus="idle"
-        workspaceRootPath={undefined}
+
         threadIsActive={false}
       />
     </>
@@ -309,7 +310,7 @@ describe("ThreadTimelineRows actions", () => {
         onForkMessage={vi.fn()}
         onMessageAddToChat={vi.fn()}
         threadRuntimeDisplayStatus="idle"
-        workspaceRootPath={undefined}
+
         threadIsActive={false}
       />,
     );
@@ -353,7 +354,7 @@ describe("ThreadTimelineRows actions", () => {
         ]}
         onSelectionAddToChat={vi.fn()}
         threadRuntimeDisplayStatus="idle"
-        workspaceRootPath={undefined}
+
         threadIsActive={false}
       />,
     );
@@ -410,7 +411,7 @@ describe("ThreadTimelineRows actions", () => {
         ]}
         onEditMessage={vi.fn()}
         threadRuntimeDisplayStatus="idle"
-        workspaceRootPath={undefined}
+
         threadIsActive={false}
       />,
     );
@@ -434,7 +435,7 @@ describe("ThreadTimelineRows actions", () => {
         ]}
         onEditMessage={vi.fn()}
         threadRuntimeDisplayStatus="idle"
-        workspaceRootPath={undefined}
+
         threadIsActive={false}
       />,
     );
@@ -470,7 +471,7 @@ describe("ThreadTimelineRows actions", () => {
         ]}
         onEditMessage={onEditMessage}
         threadRuntimeDisplayStatus="idle"
-        workspaceRootPath={undefined}
+
         threadIsActive={false}
       />,
     );
@@ -517,7 +518,7 @@ describe("ThreadTimelineRows actions", () => {
         ]}
         onSelectionAddToChat={vi.fn()}
         threadRuntimeDisplayStatus="idle"
-        workspaceRootPath={undefined}
+
         threadIsActive={false}
       />,
     );
@@ -564,7 +565,7 @@ describe("ThreadTimelineRows actions", () => {
           }),
         ]}
         threadRuntimeDisplayStatus="idle"
-        workspaceRootPath={undefined}
+
         threadIsActive={false}
       />,
     );
@@ -607,7 +608,7 @@ describe("ThreadTimelineRows actions", () => {
           }),
         ]}
         threadRuntimeDisplayStatus="idle"
-        workspaceRootPath={undefined}
+
         threadIsActive={false}
       />,
     );
@@ -634,7 +635,7 @@ describe("ThreadTimelineRows actions", () => {
           }),
         ]}
         threadRuntimeDisplayStatus="idle"
-        workspaceRootPath={undefined}
+
         threadIsActive={false}
       />,
     );
@@ -664,7 +665,7 @@ describe("ThreadTimelineRows actions", () => {
           }),
         ]}
         threadRuntimeDisplayStatus="active"
-        workspaceRootPath={undefined}
+
         threadIsActive={false}
       />,
     );
@@ -701,7 +702,7 @@ describe("ThreadTimelineRows actions", () => {
           }),
         ]}
         threadRuntimeDisplayStatus="active"
-        workspaceRootPath={undefined}
+
         threadIsActive={false}
       />,
     );
@@ -724,7 +725,7 @@ describe("ThreadTimelineRows actions", () => {
         ]}
         onMessageAddToChat={onMessageAddToChat}
         threadRuntimeDisplayStatus="idle"
-        workspaceRootPath={undefined}
+
         threadIsActive={false}
       />,
     );
@@ -756,7 +757,7 @@ describe("ThreadTimelineRows actions", () => {
         ]}
         onMessageAddToChat={onMessageAddToChat}
         threadRuntimeDisplayStatus="idle"
-        workspaceRootPath={undefined}
+
         threadIsActive={false}
       />,
     );
@@ -791,7 +792,7 @@ describe("ThreadTimelineRows actions", () => {
         ]}
         threadRuntimeDisplayStatus="idle"
         onSelectionAddToChat={onSelectionAddToChat}
-        workspaceRootPath={undefined}
+
         threadIsActive={false}
       />,
     );
@@ -823,7 +824,7 @@ describe("ThreadTimelineRows actions", () => {
         ]}
         threadRuntimeDisplayStatus="idle"
         onSelectionAddToChat={onSelectionAddToChat}
-        workspaceRootPath={undefined}
+
         threadIsActive={false}
       />,
     );
@@ -867,7 +868,7 @@ describe("ThreadTimelineRows actions", () => {
         ]}
         threadRuntimeDisplayStatus="idle"
         onSelectionAddToChat={onSelectionAddToChat}
-        workspaceRootPath={undefined}
+
         threadIsActive={false}
       />,
     );
@@ -892,7 +893,7 @@ describe("ThreadTimelineRows actions", () => {
           }),
         ]}
         threadRuntimeDisplayStatus="idle"
-        workspaceRootPath={undefined}
+
         threadIsActive={false}
       />,
     );
@@ -920,7 +921,7 @@ describe("ThreadTimelineRows actions", () => {
           ]}
           threadRuntimeDisplayStatus="idle"
           onSelectionAddToChat={onSelectionAddToChat}
-          workspaceRootPath={undefined}
+
           threadIsActive={false}
         />,
       );
@@ -993,7 +994,7 @@ describe("ThreadTimelineRows actions", () => {
         ]}
         threadRuntimeDisplayStatus="idle"
         onSelectionAddToChat={onSelectionAddToChat}
-        workspaceRootPath={undefined}
+
         threadIsActive={false}
       />,
     );
@@ -1038,7 +1039,7 @@ describe("ThreadTimelineRows actions", () => {
         ]}
         threadRuntimeDisplayStatus="idle"
         onSelectionAddToChat={onSelectionAddToChat}
-        workspaceRootPath={undefined}
+
         threadIsActive={false}
       />,
     );
@@ -1081,7 +1082,7 @@ describe("ThreadTimelineRows actions", () => {
         ]}
         threadRuntimeDisplayStatus="idle"
         onSelectionAddToChat={onSelectionAddToChat}
-        workspaceRootPath={undefined}
+
         threadIsActive={false}
       />,
     );
@@ -1127,7 +1128,7 @@ describe("ThreadTimelineRows actions", () => {
           }),
         ]}
         threadRuntimeDisplayStatus="idle"
-        workspaceRootPath={undefined}
+
         threadIsActive={false}
       />,
       [
@@ -1179,7 +1180,7 @@ describe("ThreadTimelineRows actions", () => {
           }),
         ]}
         threadRuntimeDisplayStatus="idle"
-        workspaceRootPath={undefined}
+
         threadIsActive={false}
       />,
       [
@@ -1245,7 +1246,7 @@ describe("ThreadTimelineRows actions", () => {
           }),
         ]}
         threadRuntimeDisplayStatus="idle"
-        workspaceRootPath={undefined}
+
         threadIsActive={false}
       />,
       [
@@ -1414,6 +1415,7 @@ describe("ThreadTimelineRows actions", () => {
       ]),
     );
     const panel = {
+      ...UNAVAILABLE_APP_PANEL_CONTROLLER,
       openTab: vi.fn(() => true),
       toggleTab: vi.fn(() => true),
       close: vi.fn(() => true),
@@ -1439,7 +1441,7 @@ describe("ThreadTimelineRows actions", () => {
             }),
           ]}
           threadRuntimeDisplayStatus="idle"
-          workspaceRootPath={undefined}
+
           threadIsActive={false}
         />
       </AppNavigationHostProvider>,
@@ -1503,7 +1505,7 @@ describe("ThreadTimelineRows actions", () => {
           conversationRow({ role: "assistant", text: "An answer." }),
         ]}
         threadRuntimeDisplayStatus="idle"
-        workspaceRootPath={undefined}
+
         threadIsActive={false}
       />,
     );
@@ -1540,7 +1542,7 @@ describe("ThreadTimelineRows actions", () => {
           }),
         ]}
         threadRuntimeDisplayStatus="idle"
-        workspaceRootPath={undefined}
+
         threadIsActive={false}
       />,
     );
@@ -1589,7 +1591,7 @@ describe("ThreadTimelineRows actions", () => {
           },
         ]}
         threadRuntimeDisplayStatus="idle"
-        workspaceRootPath={undefined}
+
         threadIsActive={false}
       />,
     );
@@ -1646,7 +1648,7 @@ describe("ThreadTimelineRows actions", () => {
           },
         ]}
         threadRuntimeDisplayStatus="idle"
-        workspaceRootPath={undefined}
+
         threadIsActive={false}
       />,
     );
@@ -1707,7 +1709,7 @@ describe("ThreadTimelineRows actions", () => {
             }),
           ]}
           threadRuntimeDisplayStatus="idle"
-          workspaceRootPath={undefined}
+
           threadIsActive={false}
         />,
       );
@@ -1770,7 +1772,7 @@ describe("ThreadTimelineRows actions", () => {
           },
         ]}
         threadRuntimeDisplayStatus="idle"
-        workspaceRootPath={undefined}
+
         threadIsActive={false}
       />,
     );
@@ -1813,7 +1815,7 @@ describe("ThreadTimelineRows actions", () => {
           }),
         ]}
         threadRuntimeDisplayStatus="idle"
-        workspaceRootPath={undefined}
+
         threadIsActive={false}
       />,
     );
@@ -1931,7 +1933,7 @@ describe("ThreadTimelineRows shared message column width", () => {
         onForkMessage={vi.fn()}
         onMessageAddToChat={vi.fn()}
         threadRuntimeDisplayStatus="idle"
-        workspaceRootPath={undefined}
+
         threadIsActive={false}
       />,
     );
@@ -2011,7 +2013,7 @@ describe("ThreadTimelineRows shared message column width", () => {
         onForkMessage={vi.fn()}
         onMessageAddToChat={vi.fn()}
         threadRuntimeDisplayStatus="idle"
-        workspaceRootPath={undefined}
+
         threadIsActive={false}
       />,
     );

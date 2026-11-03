@@ -1761,6 +1761,33 @@ describe("@bb/sdk", () => {
     ]);
   });
 
+  it("supports an explicit client-cleanup close reason", async () => {
+    const queue = createFetchQueue([
+      { body: makeTerminalSession({ id: "term_cleanup" }), status: 200 },
+    ]);
+    const sdk = createBbSdk({
+      transport: createHttpTransport({
+        baseUrl: "http://bb.test",
+        fetch: queue.fetch,
+        runtime: "node",
+      }),
+    });
+
+    await sdk.terminals.close({
+      terminalId: "term_cleanup",
+      mode: "force",
+      reason: "client-cleanup",
+    });
+
+    expect(queue.requests).toEqual([
+      {
+        bodyText: JSON.stringify({ mode: "force", reason: "client-cleanup" }),
+        method: "POST",
+        url: "http://bb.test/api/v1/terminals/term_cleanup/close",
+      },
+    ]);
+  });
+
   it("rejects mixed terminal scope selectors before transport", async () => {
     const queue = createFetchQueue([]);
     const sdk = createBbSdk({
@@ -2464,8 +2491,8 @@ describe("@bb/sdk", () => {
     const checked = {
       id: "notes",
       outcome: "update-available" as const,
-      installed: { version: "1.2.0", display: "1.2.0" },
-      candidate: { version: "1.3.0", display: "1.3.0" },
+      installed: { version: "1.2.0", label: "1.2.0", display: "1.2.0" },
+      candidate: { version: "1.3.0", label: "1.3.0", display: "1.3.0" },
     };
     const queue = createFetchQueue([
       { body: { plugins: [plugin] } },

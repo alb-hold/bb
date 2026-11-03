@@ -182,11 +182,11 @@ function UnseenThread() {
   });
   return (
     <ThreadScreen
+      resolveMentionLink={() => null}
       composer={null}
       environment={null}
       presentation={{ kind: "page" }}
       projectId="proj_landing"
-      resolveMentionLink={() => null}
       thread={makeThreadResponse({
         id: THREAD_ID,
         projectId: "proj_landing",
@@ -200,7 +200,6 @@ function UnseenThread() {
         includePluginMessageActions: false,
         unreadDividerPlacement: placement,
       }}
-      workspaceRootPath={undefined}
     />
   );
 }

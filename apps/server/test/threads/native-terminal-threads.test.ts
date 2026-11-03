@@ -1367,7 +1367,7 @@ describe("native terminal threads", () => {
     await new Promise((resolve) => setTimeout(resolve, 300));
   });
 
-  it("reattaches an unarchived thread whose terminal exited during daemon disconnect", async () => {
+  it("reattaches a native CLI after client cleanup preserves its daemon disconnect", async () => {
     const fixture = await createMigratedMemoryFixture();
     const { thread } = await openRunningNativeThread(fixture, {
       providerId: "claude-code",
@@ -1387,6 +1387,18 @@ describe("native terminal threads", () => {
       .set({ status: "exited", closeReason: "daemon-disconnect" })
       .where(eq(terminalSessions.id, record.terminalSessionId))
       .run();
+    const cleanup = await postJson(
+      fixture,
+      `/terminals/${record.terminalSessionId}/close`,
+      { mode: "force", reason: "client-cleanup" },
+    );
+    expect(cleanup.status).toBe(200);
+    expect(
+      getTerminalSession(fixture.harness.db, {
+        kind: "terminal",
+        terminalId: record.terminalSessionId,
+      }),
+    ).toMatchObject({ status: "exited", closeReason: "daemon-disconnect" });
     fixture.socket.sentMessages.length = 0;
 
     const reopening = reopenNativeTerminalsAfterDaemonReconnect(
@@ -2522,6 +2534,7 @@ describe("native terminal threads", () => {
     if (row === null) throw new Error("thread missing");
     await expect(
       sendThreadMessage(fixture.harness.deps, {
+        originPluginId: null,
         environment: fixture.environment,
         payload: { input: textInput("hi"), mode: "auto" },
         thread: row,
@@ -2882,9 +2895,6 @@ describe("native terminal threads", () => {
     const lateProviders = options.deferProviders
       ? createProviderRegistryService({ deferRegistrationsSettled: true })
       : null;
-    if (lateProviders !== null) {
-      fixture.harness.deps.providerRegistry = lateProviders;
-    }
     const opened = await fixture.harness.app.request("/internal/session/open", {
       method: "POST",
       headers: internalAuthHeaders(fixture.harness, {
@@ -2905,6 +2915,9 @@ describe("native terminal threads", () => {
     });
     expect(opened.status).toBe(201);
     const { sessionId } = (await readJson(opened)) as { sessionId: string };
+    if (lateProviders !== null) {
+      fixture.harness.deps.providerRegistry = lateProviders;
+    }
     const socket = createFakeDaemonSocket();
     onDaemonSocketOpen(fixture.harness.deps, {
       hostId: fixture.hostId,
@@ -3110,6 +3123,7 @@ describe("native terminal threads", () => {
       sessionId: fixture.sessionId,
     });
     await fixture.harness.deps.terminalSessions.closeTerminal({
+      caller: "native-terminal-threads.test",
       terminalId: closed.terminalId,
       payload: { mode: "force", reason: "user" },
     });
@@ -4996,10 +5010,7 @@ describe("native terminal threads", () => {
         "  Sonnet 5.5 | ctx 64K",
       ];
       const drawn = rows
-        .map(
-          (row, index) =>
-            `\u001b[${index + 1};1H\u001b[2K${row}`,
-        )
+        .map((row, index) => `\u001b[${index + 1};1H\u001b[2K${row}`)
         .join("");
       return `\u001b[?7l\u001b[2J${drawn}\u001b[?7h\u001b[${cursor.row + 1};${cursor.col + 1}H`;
     };

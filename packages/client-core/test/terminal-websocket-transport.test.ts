@@ -262,6 +262,59 @@ describe("TerminalWebSocketTransport", () => {
     harness.transport.dispose();
   });
 
+  it("delivers a focus claim made before the socket opens", () => {
+    const harness = createHarness();
+    harness.transport.sendResize(120, 40);
+    harness.transport.claimSize();
+    harness.transport.start();
+    const socket = harness.sockets[0]!;
+    socket.open();
+    expect(socket.sent.map((payload) => JSON.parse(payload))).toContainEqual({
+      type: "resize", cols: 120, rows: 40, claim: true,
+    });
+    harness.transport.dispose();
+  });
+
+  it("delivers a focus claim before the first resize on an open socket", () => {
+    const harness = createHarness();
+    harness.transport.start();
+    const socket = harness.sockets[0]!;
+    socket.open();
+    harness.transport.claimSize();
+
+    harness.transport.sendResize(120, 40);
+
+    expect(socket.sent.map((payload) => JSON.parse(payload))).toContainEqual({
+      type: "resize",
+      cols: 120,
+      rows: 40,
+      claim: true,
+    });
+    harness.transport.dispose();
+  });
+
+  it("claims the most recently fitted size when a focused client takes over", () => {
+    const harness = createHarness();
+    harness.transport.start();
+    const socket = harness.sockets[0]!;
+    socket.open();
+    socket.receive({ type: "features", resizeAcks: true });
+    harness.transport.markLayoutSettled();
+    harness.transport.sendResize(55, 41);
+
+    harness.transport.claimSize();
+
+    expect(
+      socket.sent
+        .map((payload) => JSON.parse(payload))
+        .filter((message) => message.type === "resize"),
+    ).toEqual([
+      { type: "resize", cols: 55, rows: 41, seq: 1 },
+      { type: "resize", cols: 55, rows: 41, claim: true },
+    ]);
+    harness.transport.dispose();
+  });
+
   it("queues input before open and preserves it across reconnect", () => {
     vi.useFakeTimers();
     const harness = createHarness();

@@ -446,6 +446,7 @@ type SystemExecutionOptionsQueryKey = readonly [
   string | null,
   string | null,
   string | null,
+  selectedModel?: string,
 ];
 type AllSystemExecutionOptionsQueryKeyPrefix = readonly [
   typeof SYSTEM_EXECUTION_OPTIONS_QUERY_KEY,
@@ -458,6 +459,11 @@ type HostPathExistenceQueryKey = readonly [
   typeof HOST_PATH_EXISTENCE_QUERY_KEY,
   string | null,
   readonly string[],
+];
+type HostPathExistsQueryKey = readonly [
+  typeof HOST_PATH_EXISTENCE_QUERY_KEY,
+  string,
+  string,
 ];
 type HostPathExistenceQueryKeyPrefix = readonly [
   typeof HOST_PATH_EXISTENCE_QUERY_KEY,
@@ -1060,6 +1066,7 @@ interface SystemExecutionOptionsQueryKeyArgs {
   hostId: string | null;
   providerId: string | null;
   projectId?: string | null;
+  selectedModel?: string;
 }
 
 export function systemExecutionOptionsQueryKey({
@@ -1067,6 +1074,7 @@ export function systemExecutionOptionsQueryKey({
   hostId,
   providerId,
   projectId = null,
+  selectedModel,
 }: SystemExecutionOptionsQueryKeyArgs): SystemExecutionOptionsQueryKey {
   return [
     SYSTEM_EXECUTION_OPTIONS_QUERY_KEY,
@@ -1074,6 +1082,9 @@ export function systemExecutionOptionsQueryKey({
     hostId,
     providerId,
     projectId,
+    ...(selectedModel === undefined
+      ? ([] as const)
+      : ([selectedModel] as const)),
   ];
 }
 
@@ -1092,6 +1103,13 @@ export function hostPathExistenceQueryKey(
   paths: readonly string[],
 ): HostPathExistenceQueryKey {
   return [HOST_PATH_EXISTENCE_QUERY_KEY, hostId, paths];
+}
+
+export function hostPathExistsQueryKey(
+  hostId: string,
+  path: string,
+): HostPathExistsQueryKey {
+  return [HOST_PATH_EXISTENCE_QUERY_KEY, hostId, path];
 }
 
 export function hostPathExistenceQueryKeyPrefix(): HostPathExistenceQueryKeyPrefix {

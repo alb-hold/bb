@@ -3,6 +3,7 @@ import {
   clearDetachedThreads,
   closeSession,
   getActiveStoredTurnId,
+  getSessionById,
   hostDaemonSessions,
   listActiveHostThreads,
   listHostThreadIds,
@@ -32,6 +33,8 @@ import {
   scheduleAdoptedThreadTurnCheck,
 } from "./fork-adoption.js";
 
+const DAEMON_RESTARTED_ENVIRONMENT_PROVISIONING_REASON =
+  "Host daemon restarted during environment provisioning";
 const DAEMON_RESTARTED_PENDING_INTERACTION_REASON =
   "Host daemon restarted while awaiting user interaction; retry the thread to continue";
 const DAEMON_DISCONNECTED_PENDING_INTERACTION_REASON =
@@ -90,35 +93,46 @@ export async function handleHostSessionOpened(
 
   const sameDaemonInstance =
     args.previousSession?.instanceId === args.openedSession.instanceId;
-  if (
-    args.previousSession &&
-    args.previousSession.id !== args.openedSession.id
-  ) {
-    deps.hub.cancelPendingDaemonDisconnect(args.previousSession.id);
+  const replacedSession =
+    args.previousSession?.id === args.openedSession.id
+      ? null
+      : args.previousSession;
+  if (replacedSession) {
+    deps.hub.cancelPendingDaemonDisconnect(replacedSession.id);
 
-    if (args.previousSession.status === "active") {
+    if (replacedSession.status === "active") {
       if (sameDaemonInstance) {
-        deps.hub.closeDaemonSessionSocket(args.previousSession.id, "replaced");
+        deps.hub.closeDaemonSessionSocket(replacedSession.id, "replaced");
       } else {
-        deps.hub.closeDaemonSession(args.previousSession.id, "replaced");
+        deps.hub.closeDaemonSession(replacedSession.id, "replaced");
       }
       deps.terminalSessions.handleDaemonSessionClosed({
-        sessionId: args.previousSession.id,
+        sessionId: replacedSession.id,
       });
     }
+  }
 
-    if (!sameDaemonInstance) {
-      interruptPendingInteractionsForHostThreads(deps, {
-        hostId: args.hostId,
-        reason: DAEMON_RESTARTED_PENDING_INTERACTION_REASON,
-      });
-      interruptActiveThreadsForHost(deps, {
-        exceptThreadIds: survivors,
-        includeStopping: false,
-        hostId: args.hostId,
-        reason: "host-daemon-restarted",
-      });
-    }
+  await deps.providerRegistry.whenRegistrationsSettled();
+  if (
+    getSessionById(deps.db, { sessionId: args.openedSession.id })?.status !==
+    "active"
+  )
+    return;
+  if (replacedSession && !sameDaemonInstance) {
+    interruptEnvironmentProvisioningForHost(deps, {
+      hostId: args.hostId,
+      reason: DAEMON_RESTARTED_ENVIRONMENT_PROVISIONING_REASON,
+    });
+    interruptPendingInteractionsForHostThreads(deps, {
+      hostId: args.hostId,
+      reason: DAEMON_RESTARTED_PENDING_INTERACTION_REASON,
+    });
+    interruptActiveThreadsForHost(deps, {
+      exceptThreadIds: survivors,
+      includeStopping: false,
+      hostId: args.hostId,
+      reason: "host-daemon-restarted",
+    });
   }
   if (!sameDaemonInstance) {
     settleDanglingBackgroundTasks(deps, {

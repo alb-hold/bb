@@ -35,6 +35,7 @@ function question(
           prompt,
           multiSelect: false,
           allowFreeText: true,
+          required: true,
         },
       ],
     },
@@ -60,7 +61,9 @@ describe("native terminal waiting banner", () => {
       />,
     );
     expect(
-      screen.getByText("Claude Code is waiting for your answer in the terminal"),
+      screen.getByText(
+        "Claude Code is waiting for your answer in the terminal",
+      ),
     ).toBeTruthy();
     expect(screen.getByText("Merge now?")).toBeTruthy();
   });

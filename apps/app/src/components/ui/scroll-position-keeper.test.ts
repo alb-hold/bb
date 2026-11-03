@@ -155,13 +155,12 @@ describe("ScrollPositionKeeper", () => {
     if (originalSet === undefined) {
       throw new Error("scrollTop setter missing");
     }
-    vi.spyOn(Element.prototype, "scrollTop", "set").mockImplementation(function (
-      this: Element,
-      value: number,
-    ) {
-      if (this === scrollElement) writes += 1;
-      return originalSet.call(this, value);
-    });
+    vi.spyOn(Element.prototype, "scrollTop", "set").mockImplementation(
+      function (this: Element, value: number) {
+        if (this === scrollElement) writes += 1;
+        return originalSet.call(this, value);
+      },
+    );
     return () => writes;
   }
 
@@ -174,7 +173,9 @@ describe("ScrollPositionKeeper", () => {
     timeline.userScrollTo(1_400);
     expect(timeline.keeper.isAttached()).toBe(false);
 
-    timeline.scrollElement.dispatchEvent(new WheelEvent("wheel", { deltaY: 1 }));
+    timeline.scrollElement.dispatchEvent(
+      new WheelEvent("wheel", { deltaY: 1 }),
+    );
     timeline.layout.setViewportHeight(VIEWPORT_HEIGHT + 225);
     void timeline.scrollElement.scrollTop;
     expect(timeline.layout.takeClamp()).toBe(true);
@@ -221,7 +222,9 @@ describe("ScrollPositionKeeper", () => {
     const timeline = createTimeline(rowsOf(10), { attached: true });
     timeline.layout.flushResizeObservers();
     timeline.layout.layoutScrollTo(timeline.layout.maxScrollTop());
-    timeline.scrollElement.dispatchEvent(new WheelEvent("wheel", { deltaY: 1 }));
+    timeline.scrollElement.dispatchEvent(
+      new WheelEvent("wheel", { deltaY: 1 }),
+    );
     vi.advanceTimersByTime(500);
     window.dispatchEvent(new Event(WINDOW_FIND_OPEN_EVENT));
     const cachedMax = timeline.keeper["maxScrollTop"];
@@ -232,8 +235,7 @@ describe("ScrollPositionKeeper", () => {
     const preconditions = {
       inputSessionExpired: !timeline.keeper["isInputSession"](),
       followsUnexplainedScroll: timeline.keeper["followsUnexplainedScroll"](),
-      extentChanged:
-        Math.abs(timeline.layout.maxScrollTop() - cachedMax) >= 1,
+      extentChanged: Math.abs(timeline.layout.maxScrollTop() - cachedMax) >= 1,
     };
     console.info("handleScroll extent guard preconditions", preconditions);
     expect(preconditions).toEqual({
@@ -327,7 +329,10 @@ describe("ScrollPositionKeeper", () => {
 
   it("does not publish a passive shrink clamp after a deferred downward scroll", () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
-    const timeline = createTimeline(rowsOf(10), { deferWrites: true, floor: false });
+    const timeline = createTimeline(rowsOf(10), {
+      deferWrites: true,
+      floor: false,
+    });
     timeline.userScrollTo(500);
     vi.advanceTimersByTime(500);
     const frameCallbacks: FrameRequestCallback[] = [];
@@ -721,6 +726,32 @@ describe("ScrollPositionKeeper", () => {
     timeline.keeper.scrollToBottom();
     window.dispatchEvent(new Event("focus"));
     timeline.layout.layoutScrollTo(400);
+    expect(timeline.keeper.isAttached()).toBe(true);
+    expect(timeline.layout.scrollTop).toBe(timeline.layout.maxScrollTop());
+  });
+
+  it("follows a scroll without input while the pointer is over an embedded frame, whose wheel events the timeline never receives", () => {
+    const timeline = createTimeline(rowsOf(10), { attached: true });
+    const frame = document.createElement("iframe");
+    timeline.element("row-9").append(frame);
+
+    frame.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+    timeline.layout.layoutScrollTo(timeline.layout.scrollTop - 300);
+    expect(timeline.keeper.isAttached()).toBe(false);
+    expect(timeline.layout.scrollTop).toBe(
+      timeline.layout.maxScrollTop() - 300,
+    );
+  });
+
+  it("keeps the end again once a hovered frame leaves the timeline, even before the pointer moves", () => {
+    const timeline = createTimeline(rowsOf(10), { attached: true });
+    const frame = document.createElement("iframe");
+    timeline.element("row-9").append(frame);
+
+    frame.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+    frame.remove();
+    timeline.layout.layoutScrollTo(timeline.layout.scrollTop - 300);
+
     expect(timeline.keeper.isAttached()).toBe(true);
     expect(timeline.layout.scrollTop).toBe(timeline.layout.maxScrollTop());
   });
@@ -1243,6 +1274,32 @@ describe("ScrollPositionKeeper", () => {
 
     expect(setter).not.toHaveBeenCalled();
     expect(timeline.layout.scrollTop).toBe(scrollTopBefore);
+    expect(timeline.topOf("row-3")).toBe(before);
+  });
+
+  it("writes a held correction once the finger lifts from a target that left the document, so older rows loaded mid-touch stay reachable", () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
+    const rows = rowsOf(10);
+    const timeline = createTimeline(rows, { deferWrites: true });
+    const loadingStatus = document.createElement("div");
+    timeline.content.prepend(loadingStatus);
+    timeline.userScrollTo(450);
+    vi.advanceTimersByTime(500);
+    const before = timeline.topOf("row-3");
+
+    loadingStatus.dispatchEvent(
+      new TouchEvent("touchstart", { bubbles: true }),
+    );
+    loadingStatus.remove();
+    timeline.setRows([...rowsOf(4, 100, "older"), ...rows]);
+    timeline.keeper.reconcile();
+    expect(timeline.content.style.transform).not.toBe("");
+
+    loadingStatus.dispatchEvent(new TouchEvent("touchend", { bubbles: true }));
+    vi.advanceTimersByTime(400);
+
+    expect(timeline.content.style.transform).toBe("");
+    expect(timeline.layout.scrollTop).toBe(850);
     expect(timeline.topOf("row-3")).toBe(before);
   });
 

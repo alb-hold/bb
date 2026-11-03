@@ -639,7 +639,13 @@ const onlineRpcHandlers: OnlineRpcHandlerMap = {
   }),
   "provider.list_models": (command, options) =>
     withResolvedBridgeLaunch(command, options, (args) =>
-      options.listModels({ ...args, contributedEnv: command.contributedEnv }),
+      options.listModels({
+        ...args,
+        contributedEnv: command.contributedEnv,
+        ...(command.selectedModel === undefined
+          ? {}
+          : { selectedModel: command.selectedModel }),
+      }),
     ),
   "provider.list_commands": async (command, options) => {
     const cwd =

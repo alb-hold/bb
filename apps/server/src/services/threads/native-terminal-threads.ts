@@ -294,6 +294,7 @@ export function beginNativeTerminalThreadProvisioning(
         db: tx,
         threadId: args.thread.id,
         context: createThreadStartup({
+          initiator: "user",
           clientRequestId: createClientTurnRequestId(),
           environmentIntent: args.environmentIntent,
           execution: null,
@@ -928,6 +929,7 @@ function reopenNativeTerminals(
                 .closeTerminal({
                   terminalId: reopened.terminal.id,
                   payload: { mode: "force", reason: "user" },
+                  caller: "native-terminal-reattach-deadline",
                 })
                 .catch((error: unknown) => {
                   deps.logger.warn(

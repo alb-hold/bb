@@ -508,6 +508,7 @@ const OPTIONAL_SERVER_FIELD_GROUPS: readonly OptionalServerFieldGroup[] = [
       "systemExecutionOptionsQuerySchema.hostId",
       "systemExecutionOptionsQuerySchema.projectId",
       "systemExecutionOptionsQuerySchema.providerId",
+      "systemExecutionOptionsQuerySchema.selectedModel",
       "systemProvidersQuerySchema.capability",
       "systemProvidersQuerySchema.environmentId",
       "systemProvidersQuerySchema.hostId",
@@ -893,6 +894,11 @@ describe("public terminal contracts", () => {
         rows: TERMINAL_ROWS_MAX + 1,
       }).success,
     ).toBe(false);
+  });
+
+  it.each([{}, { claim: true }])("accepts resize messages with optional focus claims %j", (claim) => {
+    const message = { type: "resize", cols: 120, rows: 40, ...claim };
+    expect(terminalClientMessageSchema.parse(message)).toEqual(message);
   });
 
   it("bounds and validates terminal data payloads", () => {
