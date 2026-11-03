@@ -294,10 +294,15 @@ describe("scanProcessesWithCwdUnder", () => {
         child.kill("SIGKILL");
         await exited;
       });
+      const io: CwdScanIo = {
+        ...hostCwdScanIo,
+        listProcessIds: async () => [String(child.pid)],
+      };
       await expect
         .poll(
           async () =>
-            (await scanProcessesWithCwdUnder({ directories: [base] })).status,
+            (await scanProcessesWithCwdUnder({ directories: [base] }, io))
+              .status,
         )
         .toBe("held");
       expect(child.exitCode).toBeNull();

@@ -1011,7 +1011,9 @@ time.sleep(120)`,
     const scan = await scanOnly(dir, child.pid ?? 0);
     expect(scan).toMatchObject({
       status: "unknown",
-      reason: expect.stringContaining("started after the worktree was created"),
+      reason: expect.stringContaining(
+        `process ${child.pid} mount namespace (EACCES), process identity could not be established`,
+      ),
     });
   });
 
@@ -1030,7 +1032,7 @@ time.sleep(120)`,
     expect(scan).toMatchObject({
       status: "unknown",
       reason: expect.stringContaining(
-        `process ${child.pid} mount namespace (EACCES), named "renamed-helper"`,
+        `process ${child.pid} mount namespace (EACCES), process identity could not be established`,
       ),
     });
   });
