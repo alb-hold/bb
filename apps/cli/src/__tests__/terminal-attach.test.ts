@@ -45,6 +45,7 @@ afterEach(() => {
   }
   stdinDescriptors.clear();
   stdoutDescriptors.clear();
+  vi.useRealTimers();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
@@ -114,95 +115,120 @@ describe("terminal attach", () => {
     expect(process.stdin.pause).toHaveBeenCalledOnce();
   });
 
-  it("reclaims the real shared PTY on CLI input without resizing again for repeat input", async () => {
-    prepareInteractiveTerminal(120, 40);
-    const ownerChanged = vi.fn();
-    const hub = new NotificationHub(ownerChanged);
-    const terminalId = "term-cli-reclaim";
-    const cli = { close: () => {}, send: () => {} };
-    const phone = { close: () => {}, send: () => {} };
-    const received: Array<{
-      input: string;
-      size: { cols: number; rows: number } | null;
-    }> = [];
-    hub.registerTerminalClient(terminalId, cli);
-    hub.registerTerminalClient(terminalId, phone);
-    socket.send.mockImplementation((payload: string) => {
-      const message = terminalClientMessageSchema.parse(JSON.parse(payload));
-      if (message.type === "resize") {
+  it.each([false, true])(
+    "reclaims the real shared PTY on CLI input without resizing again for repeat input (queued=%s)",
+    async (queued) => {
+      if (queued) {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      }
+      prepareInteractiveTerminal(120, 40);
+      const ownerChanged = vi.fn();
+      const hub = new NotificationHub(ownerChanged);
+      const terminalId = "term-cli-reclaim";
+      const cli = { close: () => {}, send: () => {} };
+      const phone = { close: () => {}, send: () => {} };
+      const received: Array<{
+        input: string;
+        size: { cols: number; rows: number } | null;
+      }> = [];
+      hub.registerTerminalClient(terminalId, cli);
+      hub.registerTerminalClient(terminalId, phone);
+      socket.send.mockImplementation((payload: string) => {
+        const message = terminalClientMessageSchema.parse(JSON.parse(payload));
+        if (message.type === "resize") {
+          hub.recordTerminalClientSize(
+            terminalId,
+            cli,
+            { cols: message.cols, rows: message.rows },
+            Date.now(),
+            message.claim === true,
+          );
+        } else if (message.type === "visibility") {
+          hub.recordTerminalClientVisibility(
+            terminalId,
+            cli,
+            message.visible,
+            Date.now(),
+          );
+        } else if (message.type === "input") {
+          received.push({
+            input: Buffer.from(message.dataBase64, "base64").toString(),
+            size: hub.terminalSharedSize(terminalId, Date.now()),
+          });
+        }
+      });
+      const attached = attachTerminal({
+        baseUrl: "http://localhost:3001",
+        terminalId,
+      });
+      try {
+        openSocket();
+        expect(hub.terminalSharedSize(terminalId, Date.now())).toEqual({
+          cols: 120,
+          rows: 40,
+        });
         hub.recordTerminalClientSize(
           terminalId,
-          cli,
-          { cols: message.cols, rows: message.rows },
+          phone,
+          { cols: 80, rows: 20 },
           Date.now(),
-          message.claim === true,
+          true,
         );
-      } else if (message.type === "visibility") {
-        hub.recordTerminalClientVisibility(
-          terminalId,
-          cli,
-          message.visible,
-          Date.now(),
-        );
-      } else if (message.type === "input") {
-        received.push({
-          input: Buffer.from(message.dataBase64, "base64").toString(),
-          size: hub.terminalSharedSize(terminalId, Date.now()),
+        expect(hub.terminalSharedSize(terminalId, Date.now())).toEqual({
+          cols: 80,
+          rows: 20,
         });
-      }
-    });
-    const attached = attachTerminal({
-      baseUrl: "http://localhost:3001",
-      terminalId,
-    });
-    try {
-      openSocket();
-      expect(hub.terminalSharedSize(terminalId, Date.now())).toEqual({
-        cols: 120,
-        rows: 40,
-      });
-      hub.recordTerminalClientSize(
-        terminalId,
-        phone,
-        { cols: 80, rows: 20 },
-        Date.now(),
-        true,
-      );
-      expect(hub.terminalSharedSize(terminalId, Date.now())).toEqual({
-        cols: 80,
-        rows: 20,
-      });
 
-      process.stdin.emit("data", Buffer.from("a"));
-      expect(received).toEqual([{ input: "a", size: { cols: 120, rows: 40 } }]);
-      const ownershipChanges = ownerChanged.mock.calls.length;
-      process.stdin.emit("data", Buffer.from("b"));
-      expect(received).toEqual([
-        { input: "a", size: { cols: 120, rows: 40 } },
-        { input: "b", size: { cols: 120, rows: 40 } },
-      ]);
-      expect(ownerChanged).toHaveBeenCalledTimes(ownershipChanges);
-      hub.recordTerminalClientSize(
-        terminalId,
-        phone,
-        { cols: 75, rows: 18 },
-        Date.now(),
-      );
-      expect(hub.terminalSharedSize(terminalId, Date.now())).toEqual({
-        cols: 120,
-        rows: 40,
-      });
-      process.stdin.emit("data", Buffer.from([0x02]));
-      process.stdin.emit("data", Buffer.from("d"));
-      expect(socket.close).toHaveBeenCalledOnce();
-      expect(received).toHaveLength(2);
-    } finally {
-      socket.onclose?.();
-      await attached;
-      hub.unregisterTerminalClient(terminalId, cli);
-      hub.unregisterTerminalClient(terminalId, phone);
-    }
-  });
+        if (queued) socket.bufferedAmount = 2 * 1024 * 1024;
+        process.stdin.emit("data", Buffer.from("a"));
+        if (queued) {
+          expect(received).toEqual([]);
+          hub.recordTerminalClientSize(
+            terminalId,
+            phone,
+            { cols: 80, rows: 20 },
+            Date.now(),
+            true,
+          );
+          expect(hub.terminalSharedSize(terminalId, Date.now())).toEqual({
+            cols: 80,
+            rows: 20,
+          });
+          socket.bufferedAmount = 0;
+          await vi.advanceTimersByTimeAsync(10);
+        }
+        expect(received).toEqual([
+          { input: "a", size: { cols: 120, rows: 40 } },
+        ]);
+        const ownershipChanges = ownerChanged.mock.calls.length;
+        process.stdin.emit("data", Buffer.from("b"));
+        expect(received).toEqual([
+          { input: "a", size: { cols: 120, rows: 40 } },
+          { input: "b", size: { cols: 120, rows: 40 } },
+        ]);
+        expect(ownerChanged).toHaveBeenCalledTimes(ownershipChanges);
+        hub.recordTerminalClientSize(
+          terminalId,
+          phone,
+          { cols: 75, rows: 18 },
+          Date.now(),
+        );
+        expect(hub.terminalSharedSize(terminalId, Date.now())).toEqual({
+          cols: 120,
+          rows: 40,
+        });
+        process.stdin.emit("data", Buffer.from([0x02]));
+        process.stdin.emit("data", Buffer.from("d"));
+        expect(socket.close).toHaveBeenCalledOnce();
+        expect(received).toHaveLength(2);
+      } finally {
+        socket.onclose?.();
+        await attached;
+        hub.unregisterTerminalClient(terminalId, cli);
+        hub.unregisterTerminalClient(terminalId, phone);
+      }
+    },
+  );
 
   it("reports input backpressure instead of silently dropping a large paste", async () => {
     prepareInteractiveTerminal();
