@@ -20,10 +20,7 @@ import {
   useLocalPathPicker,
   type LocalPathSubmitParams,
 } from "@/hooks/useLocalPathPicker";
-import {
-  ProjectDeleteDialog,
-  type ProjectDeleteDialogTarget,
-} from "@/components/dialogs/ProjectDeleteDialog";
+import type { ProjectDeleteDialogTarget } from "@/components/dialogs/ProjectDeleteDialog";
 import type { ProjectRenameDialogTarget } from "@/components/dialogs/ProjectRenameDialog";
 import { defineSplit } from "@/lib/define-split";
 import { getRootComposeRoutePath } from "@/lib/route-paths";
@@ -43,6 +40,22 @@ const ProjectRenameDialog = defineSplit<
   load: () =>
     import("@/components/dialogs/ProjectRenameDialog").then(
       (module) => module.ProjectRenameDialog,
+    ),
+  loading: () => null,
+  tier: "intent",
+  mountWhen: ({ target }) => target !== null,
+  keepMounted: true,
+});
+
+const ProjectDeleteDialog = defineSplit<
+  Parameters<
+    typeof import("@/components/dialogs/ProjectDeleteDialog").ProjectDeleteDialog
+  >[0]
+>({
+  id: "project-delete-dialog",
+  load: () =>
+    import("@/components/dialogs/ProjectDeleteDialog").then(
+      (module) => module.ProjectDeleteDialog,
     ),
   loading: () => null,
   tier: "intent",
