@@ -518,6 +518,12 @@ describe("plugin settings + storage", () => {
         );
       try {
         await service.installPath(rootDir);
+        expect(compiler).toHaveBeenCalledWith(
+          expect.objectContaining({ pluginId: "sqler" }),
+        );
+        await expect(compiler).toHaveResolvedWith(
+          expect.objectContaining({ path: entryPath }),
+        );
 
         expect(sqler().journalMode).toBe("wal");
         const countRow = sqler()
