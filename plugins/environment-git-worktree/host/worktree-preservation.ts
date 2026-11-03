@@ -546,39 +546,3 @@ export async function findPreservationReasons(
   if (holderReason !== null) reasons.push(holderReason);
   return reasons;
 }
-
-export async function findQuarantinedPreservationReasons(
-  identity: WorktreeIdentity,
-  signal: AbortSignal | undefined,
-): Promise<string[]> {
-  const reasons = await findStructuralReasons(identity);
-  const status = await runGit(
-    [
-      "--no-optional-locks",
-      "status",
-      "--porcelain=v1",
-      "-z",
-      "--untracked-files=all",
-      "--ignored=matching",
-      "--ignore-submodules=none",
-    ],
-    {
-      cwd: identity.path,
-      env: gitEnvironment(identity.path),
-      allowFailure: true,
-      ...signalOptions(signal),
-    },
-  );
-  if (status.exitCode !== 0) {
-    reasons.push(
-      `could not read its Git status${status.stderr.trim() ? ` (${status.stderr.trim()})` : ""}`,
-    );
-  } else if (hasPreservableStatus(status.stdout)) {
-    reasons.push("has uncommitted changes or untracked files");
-  }
-  const holderReason = describeHolderScan(
-    await scanWorktreeHolders(identity.path),
-  );
-  if (holderReason !== null) reasons.push(holderReason);
-  return reasons;
-}

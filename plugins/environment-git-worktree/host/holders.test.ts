@@ -129,6 +129,7 @@ interface FakeProcess {
   root?: string;
   cwd?: string;
   denied?: boolean;
+  cwdDenied?: boolean;
   fdTargets?: string[];
   mapFiles?: string[];
   exe?: string;
@@ -176,6 +177,7 @@ function fakeProc(options: {
   processes?: Record<number, FakeProcess>;
   createdMs?: number | null;
   noBoot?: boolean;
+  worktreeMode?: number;
 }): ProcReader {
   const self = options.self ?? {};
   const files = new Map<string, string>();
@@ -220,6 +222,7 @@ function fakeProc(options: {
         denied.add(`${base}/${leaf}`);
       continue;
     }
+    if (process.cwdDenied === true) denied.add(`${base}/cwd`);
     links.set(`${base}/ns/mnt`, process.mount ?? options.ownMount ?? "mnt:[1]");
     links.set(`${base}/root`, process.root ?? "/");
     dirs.set(`${base}/task`, [key]);
@@ -266,6 +269,11 @@ function fakeProc(options: {
     readdir: async (path) => dirs.get(path) ?? fail(path),
     lstatId: async (path) => ids.get(path) ?? fail(path),
     statId: async (path) => ids.get(path) ?? fail(path),
+    statAccess: async (path) => ({
+      uid: 0,
+      gid: 0,
+      mode: path === "/work/tree" ? (options.worktreeMode ?? 0o755) : 0o755,
+    }),
     creationMs: async () => {
       if (options.createdMs === null) return null;
       return options.createdMs ?? 1_000_060_000;
@@ -352,15 +360,38 @@ describe("the Linux process-list visibility rule", () => {
     });
   });
 
-  it("is clear when only other users' processes are unreadable, and for a zombie", async () => {
+  it("is uncertain for an unreadable foreign regular-user cwd when it can reach the worktree", async () => {
     const proc = fakeProc({
-      processes: {
-        100: { uid: 0, denied: true, comm: "systemd" },
-        101: { uid: 1001, denied: true },
-        102: { uid: 1000, state: "Z (zombie)", denied: true },
-      },
+      processes: { 101: { uid: 1001, cwdDenied: true } },
     });
-    expect(await scanLinux("/work/tree", proc, 4242)).toEqual({
+    expect(await scanLinux("/work/tree", proc, 4242)).toMatchObject({
+      status: "uncertain",
+      reason: expect.stringContaining("foreign uid 1001"),
+    });
+  });
+
+  it("is clear when an unreadable foreign cwd cannot reach the worktree and skips root and system UIDs", async () => {
+    const inaccessible = fakeProc({
+      worktreeMode: 0o700,
+      processes: { 101: { uid: 1001, cwdDenied: true } },
+    });
+    expect(await scanLinux("/work/tree", inaccessible, 4242)).toEqual({
+      status: "clear",
+    });
+    const root = fakeProc({ processes: { 100: { uid: 0, cwdDenied: true } } });
+    expect(await scanLinux("/work/tree", root, 4242)).toEqual({
+      status: "clear",
+    });
+    const system = fakeProc({
+      processes: { 101: { uid: 999, cwdDenied: true } },
+    });
+    expect(await scanLinux("/work/tree", system, 4242)).toEqual({
+      status: "clear",
+    });
+    const zombie = fakeProc({
+      processes: { 102: { uid: 1000, state: "Z (zombie)", denied: true } },
+    });
+    expect(await scanLinux("/work/tree", zombie, 4242)).toEqual({
       status: "clear",
     });
   });

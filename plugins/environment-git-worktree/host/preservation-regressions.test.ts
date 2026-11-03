@@ -5,13 +5,37 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { hostProc, useProcReaderForTests } from "./holders.js";
+import {
+  hostProc,
+  useProcReaderForTests,
+  type ProcReader,
+} from "./holders.js";
 import { descendantsOnly } from "./descendants-only.js";
 import { removeWorktree } from "./worktree.js";
 
 const execFile = promisify(execFileCallback);
 const roots: string[] = [];
 const workers: ReturnType<typeof spawn>[] = [];
+
+function foreignUnreadableCwdProc(): ProcReader {
+  return {
+    ...hostProc,
+    readlink: async (target) => {
+      if (target === "/proc/100100/cwd")
+        throw Object.assign(new Error("Permission denied"), { code: "EACCES" });
+      return hostProc.readlink(target);
+    },
+    readFile: async (target) => {
+      if (target === "/proc/100100/status")
+        return "Name:\tforeign\nState:\tS (sleeping)\nUid:\t1001\t1001\t1001\t1001\nGid:\t1001\t1001\t1001\t1001\nGroups:\t1001\n";
+      return hostProc.readFile(target);
+    },
+    readdir: async (target) => {
+      if (target === "/proc") return [String(process.pid), "100100"];
+      return hostProc.readdir(target);
+    },
+  };
+}
 
 async function git(cwd: string, ...args: string[]): Promise<string> {
   const result = await execFile("git", args, { cwd });
@@ -119,6 +143,50 @@ describe("real worktree teardown preservation", () => {
     ).toContain(".env");
   });
 
+  it("keeps a detached commit created after preflight", async () => {
+    const worktree = await makeWorktree();
+    let injected = false;
+    const originalRename = fs.rename.bind(fs);
+    vi.spyOn(fs, "rename").mockImplementation(async (from, to) => {
+      await originalRename(from, to);
+      if (String(from) !== worktree.path) return;
+      await git(String(to), "checkout", "--detach", "HEAD");
+      await writeFile(path.join(String(to), "late-commit.txt"), "local\n");
+      await git(String(to), "add", "late-commit.txt");
+      await git(String(to), "commit", "-m", "unpublished after preflight");
+      injected = true;
+    });
+
+    await expect(remove(worktree, true)).rejects.toMatchObject({
+      code: "worktree_preserved",
+    });
+    expect(injected).toBe(true);
+    await expect(
+      readFile(path.join(worktree.path, "late-commit.txt"), "utf8"),
+    ).resolves.toBe("local\n");
+    expect(await git(worktree.path, "status", "--porcelain")).toBe("");
+  });
+
+  it("keeps a stash created after preflight", async () => {
+    const worktree = await makeWorktree();
+    let injected = false;
+    const originalRename = fs.rename.bind(fs);
+    vi.spyOn(fs, "rename").mockImplementation(async (from, to) => {
+      await originalRename(from, to);
+      if (String(from) !== worktree.path) return;
+      await writeFile(path.join(String(to), "late-stash.txt"), "local\n");
+      await git(String(to), "stash", "push", "-m", "late stash");
+      injected = true;
+    });
+
+    await expect(remove(worktree, true)).rejects.toMatchObject({
+      code: "worktree_preserved",
+    });
+    expect(injected).toBe(true);
+    expect(await git(worktree.path, "stash", "list")).toContain("late stash");
+    await expect(access(worktree.path)).resolves.toBeUndefined();
+  });
+
   it("keeps a worktree used as another live process's cwd without signalling it", async () => {
     const worktree = await makeWorktree();
     const signalMarker = path.join(worktree.root, "signalled");
@@ -138,6 +206,24 @@ describe("real worktree teardown preservation", () => {
     await expect(access(worktree.path)).resolves.toBeUndefined();
     expect(await readFile(path.join(worktree.path, "README.md"), "utf8")).toBe("published\n");
   });
+
+  it.skipIf(process.platform !== "linux")(
+    "keeps an uncertain foreign-user holder without signalling any process",
+    async () => {
+      const worktree = await makeWorktree();
+      await fs.chmod(path.dirname(worktree.root), 0o755);
+      useProcReaderForTests(foreignUnreadableCwdProc());
+      const signal = vi.spyOn(process, "kill");
+
+      await expect(remove(worktree, true)).rejects.toMatchObject({
+        code: "worktree_preserved",
+      });
+
+      expect(signal).not.toHaveBeenCalled();
+      await expect(access(worktree.path)).resolves.toBeUndefined();
+      expect(await git(worktree.path, "status", "--porcelain")).toBe("");
+    },
+  );
 
   it.skipIf(
     process.platform !== "linux" ||

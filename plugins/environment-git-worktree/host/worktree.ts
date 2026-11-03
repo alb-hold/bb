@@ -27,7 +27,6 @@ import {
   type SourceFingerprint,
 } from "./created-by.js";
 import {
-  findQuarantinedPreservationReasons,
   WORKTREE_PRESERVED_CODE,
   findPreservationReasons,
   identifyWorktree,
@@ -918,7 +917,7 @@ async function removeRegisteredWorktree(
     let unregistered = false;
     try {
       const quarantineIdentity = { ...identity, path: quarantinedPath };
-      const reasons = await findQuarantinedPreservationReasons(
+      const reasons = await findPreservationReasons(
         quarantineIdentity,
         args.signal,
       );

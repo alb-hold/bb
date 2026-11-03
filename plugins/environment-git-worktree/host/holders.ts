@@ -26,6 +26,7 @@ export type WorktreeHolderScan =
       clearances?: FallbackClearance[];
     }
   | { status: "held"; holders: WorktreeHolder[] }
+  | { status: "uncertain"; reason: string }
   | { status: "unknown"; reason: string };
 
 function errorCode(error: unknown): string | null {
@@ -66,6 +67,7 @@ export interface ProcReader {
   readdir(path: string): Promise<string[]>;
   lstatId(path: string): Promise<string>;
   statId(path: string): Promise<string>;
+  statAccess(path: string): Promise<{ uid: number; gid: number; mode: number }>;
   creationMs(directory: string): Promise<number | null>;
   subdirectories(path: string): Promise<string[]>;
 }
@@ -81,6 +83,10 @@ export const hostProc: ProcReader = {
   statId: async (path) => {
     const info = await fs.stat(path, { bigint: true });
     return `${info.dev}:${info.ino}`;
+  },
+  statAccess: async (path) => {
+    const info = await fs.stat(path);
+    return { uid: info.uid, gid: info.gid, mode: info.mode };
   },
   creationMs: async (directory) => {
     const info = await fs.stat(directory, { bigint: true });
@@ -143,6 +149,7 @@ type ProcessResult =
   | WorktreeHolder
   | ProcessResultUnknown
   | { otherUser: true }
+  | { uncertain: string }
   | { cleared: FallbackClearance[] }
   | null;
 
@@ -211,7 +218,43 @@ async function scanLinuxProcess(
   if (uids === null || uids[0] === undefined)
     return notVouchable(`process ${pid} owner could not be read`);
   if (/^State:\s+Z/mu.test(status.value)) return null;
-  if (self.uid !== 0 && uids[0] !== self.uid) return { otherUser: true };
+  if (uids[0] !== self.uid) {
+    const foreignUid = uids[0];
+    if (foreignUid === undefined || foreignUid < 1000)
+      return { otherUser: true };
+    const gids = [
+      ...(parseStatusNumbers(status.value, "Gid") ?? []),
+      ...(parseStatusNumbers(status.value, "Groups") ?? []),
+    ];
+    const cwd = await readOptional(() => proc.readlink(`${base}/cwd`));
+    if ("value" in cwd)
+      return isUnder(cwd.value, directory)
+        ? { pid, command: null, through: "working folder" }
+        : { otherUser: true };
+    if (!("failed" in cwd) || cwd.failed !== "EACCES") return null;
+    let cursor = path.resolve(directory);
+    while (true) {
+      const access = await readOptional(() => proc.statAccess(cursor));
+      if (!("value" in access))
+        return {
+          uncertain: `process ${pid} cwd reachability could not be determined`,
+        };
+      const permissions = access.value.mode & 0o777;
+      const canSearch =
+        access.value.uid === foreignUid
+          ? (permissions & 0o100) !== 0
+          : gids.includes(access.value.gid)
+            ? (permissions & 0o010) !== 0
+            : (permissions & 0o001) !== 0;
+      if (!canSearch) return { otherUser: true };
+      const parent = path.dirname(cursor);
+      if (parent === cursor) break;
+      cursor = parent;
+    }
+    return {
+      uncertain: `process ${pid} cwd is unreadable for foreign uid ${foreignUid}`,
+    };
+  }
 
   const comm = await readOptional(() => proc.readFile(`${base}/comm`));
   const command = "value" in comm ? comm.value.trim() || null : null;
@@ -682,6 +725,7 @@ export async function scanLinux(
     .filter((pid) => pid !== ownPid);
   const holders: WorktreeHolder[] = [];
   const unknown: string[] = [];
+  const uncertain: string[] = [];
   const clearances: FallbackClearance[] = [];
   let listed: Promise<TreeIds> | null = null;
   const tree: TreeIdsReader = () => {
@@ -710,11 +754,24 @@ export async function scanLinux(
         continue;
       }
       if ("otherUser" in result) continue;
-      if ("unknown" in result) unknown.push(result.unknown);
-      else holders.push(result);
+      if ("uncertain" in result) {
+        uncertain.push(result.uncertain);
+        continue;
+      }
+      if ("unknown" in result) {
+        unknown.push(result.unknown);
+        continue;
+      }
+      holders.push(result);
     }
   }
   if (holders.length > 0) return { status: "held", holders };
+  if (uncertain.length > 0) {
+    return {
+      status: "uncertain",
+      reason: `${uncertain.length} foreign-user processes could not be inspected, such as ${uncertain[0]}`,
+    };
+  }
   if (unknown.length > 0) {
     return {
       status: "unknown",
@@ -806,6 +863,9 @@ export async function scanWorktreeHolders(
 
 export function describeHolderScan(scan: WorktreeHolderScan): string | null {
   if (scan.status === "clear") return null;
+  if (scan.status === "uncertain") {
+    return `could not determine which programs are using it (${scan.reason}), so it was kept`;
+  }
   if (scan.status === "unknown") {
     return `could not check which programs are using it (${scan.reason}), so it was kept`;
   }

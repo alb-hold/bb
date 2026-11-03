@@ -1512,6 +1512,46 @@ describe("core environment orchestration", () => {
       }),
   );
 
+  it("restores the live environment state when provider removal retains its path", async () =>
+    withTestHarness(async (harness) => {
+      const remove = vi.fn(async () => ({
+        status: "retained" as const,
+        message: "a foreign holder could not be inspected",
+      }));
+      const fixture = setup(harness, {
+        policy: { retireGraceMs: 0 },
+        remove,
+      });
+      fixture.ask();
+      await fixture.settled();
+      const environmentId = fixture.attach();
+      harness.db
+        .update(threads)
+        .set({ environmentId: null, status: "active" })
+        .where(eq(threads.id, fixture.thread.id))
+        .run();
+      harness.db
+        .update(environments)
+        .set({
+          ownerThreadId: fixture.thread.id,
+          teardownStatus: "failed",
+          teardownMessage: "previous retention",
+          retireAt: Date.now(),
+        })
+        .where(eq(environments.id, environmentId))
+        .run();
+
+      await sweepProviderEnvironment(harness.deps, environmentId);
+
+      expect(remove).toHaveBeenCalledOnce();
+      expect(getEnvironment(harness.db, environmentId)).toMatchObject({
+        status: "ready",
+        teardownStatus: "failed",
+        teardownMessage: "a foreign holder could not be inspected",
+      });
+      expect(getThread(harness.db, fixture.thread.id)?.status).toBe("active");
+    }));
+
   it("rejects cleanup of an unmanaged checkout", async () =>
     withTestHarness(async (harness) => {
       const fixture = setup(harness);

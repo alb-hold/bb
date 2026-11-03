@@ -273,9 +273,7 @@ export default async function worktreePlugin(bb: BbPluginApi): Promise<void> {
             timeoutMs: REMOVE_TIMEOUT_MS,
           },
         );
-        return result.status === "retained"
-          ? { status: "failed", message: result.message }
-          : result;
+        return result;
       } catch (error) {
         if (context.signal.aborted) throw error;
         return { status: "failed", message: errorMessage(error) };
