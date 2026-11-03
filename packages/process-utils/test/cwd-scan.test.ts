@@ -24,30 +24,31 @@ function fakeLinux(
   effectiveCapabilities(pid: number): Promise<bigint>;
   statAccess(path: string): Promise<{ uid: number; mode: number }>;
 } {
-  return Object.assign(
-    {
-      platform: "linux",
-      uid: 1000,
-      selfPid: 1,
-      listProcessIds: async () => Object.keys(cwds),
-      readCwd: async (pid) => {
-        const value = cwds[pid];
-        if (value === undefined)
-          throw Object.assign(new Error("gone"), { code: "ENOENT" });
-        if (typeof value !== "string") throw value;
-        return value;
-      },
-      effectiveUid: async (pid) => owners[pid] ?? 1000,
-      readComm: async (pid) => comms[pid] ?? "node",
-      runLsof: async () => {
-        throw new Error("unused");
-      },
+  const io: CwdScanIo = {
+    platform: "linux",
+    uid: 1000,
+    selfPid: 1,
+    listProcessIds: async () => Object.keys(cwds),
+    readCwd: async (pid) => {
+      const value = cwds[pid];
+      if (value === undefined)
+        throw Object.assign(new Error("gone"), { code: "ENOENT" });
+      if (typeof value !== "string") throw value;
+      return value;
     },
-    {
-      effectiveCapabilities: async () => 0n,
-      statAccess: async () => ({ uid: 0, mode: 0o711 }),
+    effectiveUid: async (pid) => owners[pid] ?? 1000,
+    readComm: async (pid) => comms[pid] ?? "node",
+    runLsof: async () => {
+      throw new Error("unused");
     },
-  );
+  };
+  return Object.assign(io, {
+    effectiveCapabilities: async () => 0n,
+    statAccess: async () => ({ uid: 0, mode: 0o711 }),
+  }) as CwdScanIo & {
+    effectiveCapabilities(pid: number): Promise<bigint>;
+    statAccess(path: string): Promise<{ uid: number; mode: number }>;
+  };
 }
 
 const denied = () => Object.assign(new Error("denied"), { code: "EACCES" });
