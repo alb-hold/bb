@@ -15400,7 +15400,7 @@ describe("Actor launcher end to end", () => {
   async function harness(
     args: { hubBase?: (base: string) => string; subscription?: boolean } = {},
   ) {
-    let target: ReturnType<typeof createFakePluginHost> | null = null;
+    let target: ReturnType<typeof createAccountPoolTestHost> | null = null;
     const cliRequests: Array<{ argv: string[]; stdinInputs: Record<string, string> }> = [];
     const server = http.createServer((request, response) => {
       const chunks: Buffer[] = [];

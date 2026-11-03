@@ -768,8 +768,11 @@ export class ThreadTokenStore {
     token: string | null,
     provider?: ThreadRoute["provider"],
   ): Promise<ActorRoute | null> {
-    const record = lookup(this.actorTokenIndex, token);
-    if (record === null) return null;
+    const record =
+      token === null || token.length !== 43
+        ? undefined
+        : this.actorTokenIndex.get(digest(token));
+    if (record === undefined) return null;
     if (await this.isArchived(record.threadId)) return null;
     if (provider !== undefined && provider !== record.provider) return null;
     if (
