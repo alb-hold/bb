@@ -1,3 +1,19 @@
+import type { ExperimentalMessageMetadataProps } from "@get-bb/plugin-sdk";
+import { usePointerCoarse } from "@bb/shared-ui/hooks/use-pointer-coarse";
+
+export function InlineMessageTime({
+  message,
+}: ExperimentalMessageMetadataProps) {
+  const isPointerCoarse = usePointerCoarse();
+  if (isPointerCoarse) return null;
+  return (
+    <MessageTime
+      timestamp={message.createdAt}
+      label={formatShortMessageTime(message.createdAt, new Date())}
+    />
+  );
+}
+
 function formatMessageDay(date: Date, now: Date): string {
   if (date.toDateString() === now.toDateString()) {
     return "Today";

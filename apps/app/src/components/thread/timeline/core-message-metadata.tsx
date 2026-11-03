@@ -1,21 +1,16 @@
 import type { ExperimentalMessageMetadataProps } from "@get-bb/plugin-sdk";
-import { usePointerCoarse } from "@bb/shared-ui/hooks/use-pointer-coarse";
+import { defineSplit } from "@/lib/define-split";
 import {
   collectPluginAppRegistrations,
   definePluginApp,
 } from "@/lib/plugin-app-definition";
-import { formatShortMessageTime, MessageTime } from "./message-time.js";
-
-function InlineMessageTime({ message }: ExperimentalMessageMetadataProps) {
-  const isPointerCoarse = usePointerCoarse();
-  if (isPointerCoarse) return null;
-  return (
-    <MessageTime
-      timestamp={message.createdAt}
-      label={formatShortMessageTime(message.createdAt, new Date())}
-    />
-  );
-}
+const InlineMessageTime = defineSplit<ExperimentalMessageMetadataProps>({
+  id: "inline-message-time",
+  load: () =>
+    import("./message-time.js").then((module) => module.InlineMessageTime),
+  loading: () => null,
+  tier: "intent",
+});
 
 export const coreMessageMetadata = collectPluginAppRegistrations(
   definePluginApp((app) => {
