@@ -15213,7 +15213,8 @@ describe("Actor route issuer", () => {
     await fixture.host.harness.behavior.emitThreadEvent("thread.archived", {
       thread: makeThreadResponse({ id: "thread-x", archivedAt: 1_000 }),
     });
-    expect(await send(thread)).toBe(401);
+    expect(await send(actor)).toBe(401);
+    expect(await send(thread)).toBe(200);
   });
 
   it("refuses unknown, archived, hostless, unenrolled, and malformed requests", async () => {
