@@ -325,6 +325,18 @@ export function nonInteractiveFetchEnvironment(
   };
 }
 const STASH_SUBJECT = /^(?:WIP on|On) ([^:]+): /;
+const GENERATED_DEPENDENCY_PATH = /(^|\/)node_modules(?:\/|$)/u;
+
+function hasPreservableStatus(stdout: string): boolean {
+  return stdout.split("\0").some((entry) => {
+    if (entry === "") return false;
+    const status = entry.slice(0, 2);
+    const entryPath = entry.slice(3);
+    return (
+      status !== "!!" || !GENERATED_DEPENDENCY_PATH.test(entryPath)
+    );
+  });
+}
 
 function stashBranch(subject: string): string | null {
   return STASH_SUBJECT.exec(subject)?.[1] ?? null;
@@ -387,9 +399,6 @@ export async function findPreservationReasons(
       "--untracked-files=all",
       "--ignored=matching",
       "--ignore-submodules=none",
-      "--",
-      ".",
-      ":(exclude,glob)**/node_modules/**",
     ],
     gitOptions,
   );
@@ -397,7 +406,7 @@ export async function findPreservationReasons(
     reasons.push(
       `could not read its Git status${status.stderr.trim() ? ` (${status.stderr.trim()})` : ""}`,
     );
-  } else if (status.stdout !== "") {
+  } else if (hasPreservableStatus(status.stdout)) {
     reasons.push("has uncommitted changes or untracked files");
   }
 
@@ -552,9 +561,6 @@ export async function findQuarantinedPreservationReasons(
       "--untracked-files=all",
       "--ignored=matching",
       "--ignore-submodules=none",
-      "--",
-      ".",
-      ":(exclude,glob)**/node_modules/**",
     ],
     {
       cwd: identity.path,
@@ -567,7 +573,7 @@ export async function findQuarantinedPreservationReasons(
     reasons.push(
       `could not read its Git status${status.stderr.trim() ? ` (${status.stderr.trim()})` : ""}`,
     );
-  } else if (status.stdout !== "") {
+  } else if (hasPreservableStatus(status.stdout)) {
     reasons.push("has uncommitted changes or untracked files");
   }
   const holderReason = describeHolderScan(

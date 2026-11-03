@@ -2145,7 +2145,7 @@ setTimeout(() => {}, 300_000);`,
         const message = result.status === "failed" ? result.message : "";
         expect(message).toContain(`Kept ${worktree.path}`);
         expect(message).toContain("could not read its Git status");
-        expect(message).toContain("submodules");
+        expect(message).toContain("submodule libs/sub");
         expect(existsSync(join(worktree.path, "README.md"))).toBe(true);
         expect(existsSync(worktree.completionPath)).toBe(true);
         expect(await registeredWorktrees(worktree.sourcePath)).toContain(
