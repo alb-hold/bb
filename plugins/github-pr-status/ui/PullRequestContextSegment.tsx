@@ -42,7 +42,11 @@ import {
 } from "./display";
 import { PullRequestNextStepLabel } from "./PullRequestNextStepLabel";
 import { PullRequestStatusPill } from "./PullRequestStatusPill";
-import { useEnvironmentPullRequest, usePullRequestActions } from "./queries";
+import {
+  mergeDisplayedPullRequest,
+  useEnvironmentPullRequest,
+  usePullRequestActions,
+} from "./queries";
 
 const CHANGED_FILES_SEGMENT_KEY = "bb--git/changed-files";
 
@@ -325,19 +329,9 @@ function PullRequestAction({
       isPending={actions.isPending}
       mergeMethod={actions.mergeMethod}
       onMarkReady={() => void actions.markReady()}
-      onMerge={(method) => {
-        const displayedUrl = new URL(pullRequest.url);
-        const [owner, repository] = displayedUrl.pathname
-          .split("/")
-          .slice(1, 3);
-        if (!owner || !repository) return;
-        void actions.merge(method, pullRequest.headRefOid, {
-          expectedHost: displayedUrl.host,
-          expectedRepository: `${owner}/${repository.replace(/\.git$/u, "")}`,
-          expectedNumber: pullRequest.number,
-          expectedBaseRef: pullRequest.baseRefName,
-        });
-      }}
+      onMerge={(method) =>
+        mergeDisplayedPullRequest(actions, method, pullRequest)
+      }
       onConvertToDraft={() => void actions.markDraft()}
     />
   );

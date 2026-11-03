@@ -34,7 +34,11 @@ import {
   MERGE_ACTIONS,
   PullRequestSummaryLabel,
 } from "./PullRequestContextSegment";
-import { useEnvironmentPullRequest, usePullRequestActions } from "./queries";
+import {
+  mergeDisplayedPullRequest,
+  useEnvironmentPullRequest,
+  usePullRequestActions,
+} from "./queries";
 
 export interface PullRequestRowHandlers {
   isPending: boolean;
@@ -195,7 +199,8 @@ function PullRequestRow({
         onCopyLink: () => void copyToClipboard({ text: pullRequest.url }),
         onMarkReady: () => void actions.markReady(),
         onMarkDraft: () => void actions.markDraft(),
-        onMerge: (method) => void actions.merge(method),
+        onMerge: (method) =>
+          mergeDisplayedPullRequest(actions, method, pullRequest),
       }}
     />
   );

@@ -147,3 +147,19 @@ export function usePullRequestActions(environmentId: string) {
     },
   };
 }
+
+export function mergeDisplayedPullRequest(
+  actions: ReturnType<typeof usePullRequestActions>,
+  method: PullRequestMergeMethod,
+  pullRequest: PullRequest,
+): void {
+  const displayedUrl = new URL(pullRequest.url);
+  const [owner, repository] = displayedUrl.pathname.split("/").slice(1, 3);
+  if (!owner || !repository) return;
+  void actions.merge(method, pullRequest.headRefOid, {
+    expectedHost: displayedUrl.host,
+    expectedRepository: `${owner}/${repository.replace(/\.git$/u, "")}`,
+    expectedNumber: pullRequest.number,
+    expectedBaseRef: pullRequest.baseRefName,
+  });
+}

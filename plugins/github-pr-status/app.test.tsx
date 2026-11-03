@@ -78,6 +78,7 @@ function pullRequest(overrides: Partial<PullRequest> = {}): PullRequest {
     url: "https://github.com/get-bb/bb/pull/6143",
     baseRefName: "main",
     headRefName: "bb/row",
+    headRefOid: null,
     updatedAt: "2026-10-22T00:00:00Z",
     autoMerge: false,
     inMergeQueue: false,
