@@ -533,6 +533,7 @@ describe("reopenNativeTerminalsAfterDaemonReconnect", () => {
         .where(eq(terminalSessions.id, closed.terminalId))
         .run();
       await h.deps.terminalSessions.closeTerminal({
+        caller: "native-terminal-threads.test",
         terminalId: closed.terminalId,
         payload: { mode: "force", reason: "user" },
       });

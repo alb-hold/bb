@@ -621,6 +621,48 @@ describe("two split panes each holding a terminal", () => {
     expect(screen.queryByText("No terminals")).toBeNull();
   });
 
+  it("marks automatic clean-terminal closure as client cleanup", async () => {
+    const source = session("terminal-a", "running");
+    const created = session("terminal-new", "running");
+    vi.mocked(sdk.terminals.list).mockResolvedValue({ sessions: [source] });
+    vi.mocked(sdk.terminals.create).mockResolvedValue(created);
+    vi.mocked(sdk.terminals.close).mockResolvedValue({
+      ...created,
+      status: "exited",
+      closeReason: "user",
+    });
+    const { queryClient, wrapper } = createQueryClientTestHarness();
+    const { result, rerender } = renderHook(
+      ({ open }) =>
+        useThreadTerminalController({
+          ...paneArgs("terminal-new"),
+          isPanelOpen: open,
+          isPanelPersistedOpen: open,
+        }),
+      { initialProps: { open: true }, wrapper },
+    );
+    await waitFor(() =>
+      expect(result.current.activeSession?.id).toBe(source.id),
+    );
+    act(() => result.current.handleCreateTerminal());
+    await waitFor(() => expect(sdk.terminals.create).toHaveBeenCalled());
+    vi.mocked(sdk.terminals.list).mockResolvedValue({ sessions: [source, created] });
+    await act(async () => {
+      await queryClient.invalidateQueries();
+    });
+    await waitFor(() =>
+      expect(result.current.activeSession?.id).toBe(created.id),
+    );
+    rerender({ open: false });
+    await waitFor(() =>
+      expect(sdk.terminals.close).toHaveBeenCalledWith({
+        mode: "if-clean",
+        reason: "client-cleanup",
+        terminalId: created.id,
+      }),
+    );
+  });
+
   it("does not close the other pane's terminal when both disconnect", async () => {
     const running = [
       session("terminal-a", "running"),

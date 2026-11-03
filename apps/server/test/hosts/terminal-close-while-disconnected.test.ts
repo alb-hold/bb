@@ -60,6 +60,7 @@ describe("closing a terminal while its daemon session is disconnected", () => {
         sessionId: session.id,
       });
       await harness.deps.terminalSessions.closeTerminal({
+        caller: "terminal-close-while-disconnected.test",
         terminalId: closed.id,
         payload: { mode: "force", reason: "user" },
       });
@@ -131,6 +132,7 @@ describe("closing a terminal while its daemon session is disconnected", () => {
         },
       });
       await harness.deps.terminalSessions.closeTerminal({
+        caller: "terminal-close-while-disconnected.test",
         terminalId: terminal.id,
         payload: { mode: "force", reason: "user" },
       });
@@ -174,6 +176,7 @@ describe("closing a terminal while its daemon session is disconnected", () => {
       });
       send.mockReturnValue(true);
       await harness.deps.terminalSessions.closeTerminal({
+        caller: "terminal-close-while-disconnected.test",
         terminalId: closed.id,
         payload: { mode: "force", reason: "user" },
       });
@@ -241,6 +244,7 @@ describe("closing a terminal while its daemon session is disconnected", () => {
         sessionId: session.id,
       });
       await harness.deps.terminalSessions.closeTerminal({
+        caller: "terminal-close-while-disconnected.test",
         terminalId: terminal.id,
         payload: { mode: "force", reason: "user" },
       });
@@ -351,6 +355,7 @@ describe("closing a terminal while its daemon session is disconnected", () => {
         harness.db.$client.exec(trigger);
         await expect(
           harness.deps.terminalSessions.closeTerminal({
+            caller: "terminal-close-while-disconnected.test",
             terminalId: terminal.id,
             payload: { mode: "force", reason: "user" },
           }),
