@@ -212,7 +212,8 @@ describe("real worktree teardown preservation", () => {
   it.skipIf(process.platform !== "linux")(
     "keeps an uncertain foreign-user holder without signalling any process",
     async () => {
-      const worktree = await makeWorktree();
+      const root = await mkdtemp(path.join("/tmp", "bb-preserve-worktree-"));
+      const worktree = await makeWorktree(root);
       await fs.chmod(path.dirname(worktree.root), 0o755);
       await fs.chmod(worktree.root, 0o755);
       useProcReaderForTests(foreignUnreadableCwdProc());

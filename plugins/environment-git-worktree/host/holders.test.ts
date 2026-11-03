@@ -845,7 +845,7 @@ describe("the Linux process-list visibility rule", () => {
     const proc = fakeProc({
       self: { uid: 0 },
       processes: {
-        100: { uid: 1001, denied: true, cwdDenied: true, comm: "node" },
+        100: { uid: 1001, cwdDenied: true, comm: "node" },
       },
     });
     expect(await scanLinux("/work/tree", proc, 4242)).toMatchObject({
