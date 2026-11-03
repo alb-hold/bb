@@ -5,6 +5,7 @@ import { NotificationHub } from "../../../server/src/ws/hub.js";
 const { socket } = vi.hoisted(() => {
   const socket = {
     addEventListener: vi.fn<(type: string, listener: EventListener) => void>(),
+    bufferedAmount: 0,
     close: vi.fn(),
     onclose: undefined as (() => void) | undefined,
     onerror: undefined as (() => void) | undefined,
@@ -23,6 +24,7 @@ const stdoutDescriptors = new Map<string, PropertyDescriptor | undefined>();
 
 beforeEach(() => {
   vi.clearAllMocks();
+  socket.bufferedAmount = 0;
   socket.send.mockReset();
   vi.stubGlobal(
     "WebSocket",
@@ -200,5 +202,23 @@ describe("terminal attach", () => {
       hub.unregisterTerminalClient(terminalId, cli);
       hub.unregisterTerminalClient(terminalId, phone);
     }
+  });
+
+  it("reports input backpressure instead of silently dropping a large paste", async () => {
+    prepareInteractiveTerminal();
+    const attached = attachTerminal({
+      baseUrl: "http://localhost:3001",
+      terminalId: "term-input-pressure",
+    });
+    const rejected = expect(attached).rejects.toThrow(
+      "Terminal input queue is full",
+    );
+    openSocket();
+    socket.bufferedAmount = 2 * 1024 * 1024;
+    process.stdin.emit("data", Buffer.alloc(2 * 1024 * 1024));
+    await rejected;
+    expect(socket.close).toHaveBeenCalledOnce();
+    expect(process.stdin.setRawMode).toHaveBeenLastCalledWith(false);
+    expect(process.stdin.pause).toHaveBeenCalledOnce();
   });
 });

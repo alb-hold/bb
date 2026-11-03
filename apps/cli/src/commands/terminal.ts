@@ -8,7 +8,10 @@ import {
   TERMINAL_DATA_MAX_BYTES,
 } from "@bb/domain";
 import type { TerminalCreateScope, TerminalListScope } from "@bb/sdk";
-import type { TerminalSession, ThreadOpenSkipReason } from "@bb/server-contract";
+import {
+  type TerminalSession,
+  type ThreadOpenSkipReason,
+} from "@bb/server-contract";
 import { action, CliExitError, CliUsageError } from "../action.js";
 import { createCliBbSdk } from "../client.js";
 import {
@@ -1094,6 +1097,7 @@ export async function attachTerminal(args: {
         return socket;
       },
       shouldReconnect: () => false,
+      onInputOverflow: () => reject(new Error("Terminal input queue is full")),
       onConnectionState: (state) => {
         if (state === "closed") resolve();
       },
@@ -1176,7 +1180,7 @@ function sendTerminalInput(
 ) {
   transport.claimSize();
   for (const chunk of chunkTerminalInput(data)) {
-    transport.sendInput(chunk.toString("base64"));
+    if (!transport.sendInput(chunk.toString("base64"))) return;
   }
 }
 
