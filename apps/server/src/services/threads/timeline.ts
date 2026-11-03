@@ -829,25 +829,29 @@ function ensureRejectedRequestTurnContextRows(
 function ensureTimelineSelectedItemLifecycleRows(
   db: DbConnection,
   args: TimelineWindowRowsArgs & {
-    beforeSequence: number | undefined;
     maxInlineOutputChars: InlineOutputCharLimit;
-    sequenceStart: number;
   },
 ): StoredEventRow[] {
   const items = new Map<string, ScopedItemRef>();
+  const lifecycleTypes = new Map<string, Set<string>>();
   for (const row of args.rows) {
     if (row.itemId === null) continue;
     const item = storedEventRowItemRef(row);
-    items.set(scopedItemRefKey(item), item);
+    const key = scopedItemRefKey(item);
+    items.set(key, item);
+    if (row.type === "item/started" || row.type === "item/completed") {
+      const types = lifecycleTypes.get(key) ?? new Set<string>();
+      types.add(row.type);
+      lifecycleTypes.set(key, types);
+    }
   }
-  if (items.size === 0) return [...args.rows];
+  const missingItems = [...items.entries()]
+    .filter(([key]) => lifecycleTypes.get(key)?.size !== 2)
+    .map(([, item]) => item);
+  if (missingItems.length === 0) return [...args.rows];
   const lifecycleRows = listStoredItemLifecycleRowsByItems(db, {
-    items: [...items.values()],
+    items: missingItems,
     maxInlineOutputChars: args.maxInlineOutputChars,
-    sequenceBounds: {
-      sequenceStart: args.sequenceStart,
-      beforeSequence: args.beforeSequence,
-    },
     threadId: args.threadId,
   });
   return mergeStoredEventRowsById([...args.rows, ...lifecycleRows]);
@@ -1194,8 +1198,6 @@ function selectStandardTimelineEventRows(
         maxInlineOutputChars,
         threadId: thread.id,
         rows: selectedRows,
-        sequenceStart,
-        beforeSequence: maxSeq + 1,
       });
       selectedRows = ensureTimelineWindowParentedRows(db, {
         threadId: thread.id,
