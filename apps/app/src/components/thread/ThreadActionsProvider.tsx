@@ -39,10 +39,8 @@ import {
   ThreadDeleteDialog,
   type ThreadDeleteDialogTarget,
 } from "@/components/dialogs/ThreadDeleteDialog";
-import {
-  ThreadArchiveDialog,
-  type ThreadArchiveDialogTarget,
-} from "@/components/dialogs/ThreadArchiveDialog";
+import type { ThreadArchiveDialogTarget } from "@/components/dialogs/ThreadArchiveDialog";
+import { defineSplit } from "@/lib/define-split";
 import { ArchivedThreadToastDescription } from "@/components/thread/ArchivedThreadToastDescription";
 import { destroyPersistedBrowserViewsForThread } from "@/components/secondary-panel/browserViewVisibilityCoordinator";
 import { getThreadReadToggleAction } from "@bb/client-core";
@@ -88,6 +86,22 @@ interface ThreadActionsProviderProps {
 interface ArchiveDialogRequest extends ThreadArchiveDialogTarget {
   roots: readonly Thread[];
 }
+
+const ThreadArchiveDialog = defineSplit<
+  Parameters<
+    typeof import("@/components/dialogs/ThreadArchiveDialog").ThreadArchiveDialog<ArchiveDialogRequest>
+  >[0]
+>({
+  id: "thread-archive-dialog",
+  load: () =>
+    import("@/components/dialogs/ThreadArchiveDialog").then(
+      (module) => module.ThreadArchiveDialog<ArchiveDialogRequest>,
+    ),
+  loading: () => null,
+  tier: "intent",
+  mountWhen: ({ target }) => target !== null,
+  keepMounted: true,
+});
 
 interface DeleteDialogRequest extends ThreadDeleteDialogTarget {
   roots: readonly Thread[];
