@@ -91,7 +91,6 @@ interface CheckoutRowProps {
   isPrimary: boolean;
   source: LocalPathProjectSource | null;
   isPathInvalid: boolean;
-  canEditPath: boolean;
   isOnlySource: boolean;
   pending: boolean;
   onSetUp: () => void;
@@ -104,7 +103,6 @@ function CheckoutRow({
   isPrimary,
   source,
   isPathInvalid,
-  canEditPath,
   isOnlySource,
   pending,
   onSetUp,
@@ -161,10 +159,10 @@ function CheckoutRow({
               {
                 label: "Change folder",
                 icon: "Folder",
-                disabled: !canEditPath || pending,
-                disabledReason: canEditPath
+                disabled: !connected || pending,
+                disabledReason: connected
                   ? undefined
-                  : "Folders on other machines are changed from that machine.",
+                  : "Bring this machine online to change its folder.",
                 onSelect: onChangePath,
               },
               {
@@ -427,7 +425,6 @@ export function ProjectDetailSettingsView() {
                       isPickerHost &&
                       isHostPathMissing(pathExistence, source.path)
                     }
-                    canEditPath={isPickerHost}
                     isOnlySource={sources.length <= 1}
                     pending={localSourcePending || deleteSource.isPending}
                     onSetUp={() => openSetUp(host)}
@@ -438,6 +435,8 @@ export function ProjectDetailSettingsView() {
                         projectId: project.id,
                         projectName,
                         currentPath: source.path,
+                        hostId: host.id,
+                        hostName: host.name,
                       });
                     }}
                     onRemove={() => {

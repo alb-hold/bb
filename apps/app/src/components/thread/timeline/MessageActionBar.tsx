@@ -61,6 +61,7 @@ interface MessageActionBarProps {
   disabled?: boolean;
   pluginActions?: readonly ThreadTimelinePluginMessageAction[];
   footerAdornment?: ReactNode;
+  metadata?: ReactNode;
 }
 
 interface MessageOverflowAction {
@@ -196,7 +197,12 @@ const MENU_CONTENT_WIDTH_CLASS = "max-w-[min(16rem,calc(100vw-1rem))]";
 const ACTION_ROW_CLASS =
   "flex w-full min-w-0 max-w-full flex-wrap items-center gap-2 overflow-visible data-[menu-open]:[&_button]:opacity-100";
 
-const BUBBLE_ALIGN_INSET_CLASS = "pr-[13px] max-md:pointer-coarse:pr-[11px]";
+export const ACTION_ROW_METADATA_CLASS = cn(
+  "hidden items-center gap-2 whitespace-nowrap text-xs text-subtle-foreground has-[>*>*]:flex",
+  HOVER_REVEAL_CLASS,
+);
+export const BUBBLE_ALIGN_INSET_CLASS =
+  "pr-[13px] max-md:pointer-coarse:pr-[11px]";
 const PROSE_ALIGN_INSET_CLASS = "-ml-1 max-md:pointer-coarse:-ml-1.5";
 export const PROSE_COLUMN_INSET_CLASS = "px-2";
 
@@ -323,6 +329,7 @@ export function MessageActionBar({
   disabled,
   pluginActions = [],
   footerAdornment,
+  metadata,
 }: MessageActionBarProps) {
   const isCompactViewport = useIsCompactViewport();
   const isPointerCoarse = usePointerCoarse();
@@ -442,9 +449,7 @@ export function MessageActionBar({
 
   const rowClass = cn(
     ACTION_ROW_CLASS,
-    alignment === "end"
-      ? "justify-end"
-      : PROSE_ALIGN_INSET_CLASS,
+    alignment === "end" ? "justify-end" : PROSE_ALIGN_INSET_CLASS,
   );
   const slotClass = cn(
     "relative w-full",
@@ -482,6 +487,7 @@ export function MessageActionBar({
                 />
               ))
           )}
+          {alignment === "end" ? metadata : null}
           {footerAdornment}
           <DropdownMenu onOpenChange={setIsMenuOpen}>
             <DropdownMenuTrigger asChild>
@@ -509,6 +515,7 @@ export function MessageActionBar({
               <MessageTimestampFooter timestamp={timestamp} />
             </DropdownMenuContent>
           </DropdownMenu>
+          {alignment === "start" ? metadata : null}
         </div>
       </div>
     </TooltipProvider>

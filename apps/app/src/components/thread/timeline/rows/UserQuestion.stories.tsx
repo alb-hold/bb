@@ -24,7 +24,6 @@ function TimelineStage({ children }: TimelineStageProps) {
 const baseProps: TimelineRowsBaseProps = {
   threadIsActive: false,
   threadRuntimeDisplayStatus: "idle",
-  workspaceRootPath: undefined,
 };
 
 const questions: TimelineQuestionRow["questions"] = [
@@ -39,6 +38,7 @@ const questions: TimelineQuestionRow["questions"] = [
       { value: "tests", label: "Tests" },
     ],
     allowFreeText: false,
+    required: true,
   },
   {
     id: "notes",
@@ -46,6 +46,7 @@ const questions: TimelineQuestionRow["questions"] = [
     shortLabel: "Notes",
     multiSelect: false,
     allowFreeText: true,
+    required: true,
   },
 ];
 

@@ -385,6 +385,7 @@ async function archiveDrainUnarchiveAndSendToChatThread(args: ChatResumeArgs) {
   const thread = getThread(harness.db, threadId);
   if (!thread) throw new Error("Thread vanished");
   await sendThreadMessage(harness.deps, {
+    originPluginId: null,
     environment: fixture.environment,
     payload: {
       input: textInput("continue after the archive"),

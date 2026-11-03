@@ -25,8 +25,6 @@ import type {
   ThreadTimelineInlineMessageEditor,
   ThreadTimelineAddToChatHandler,
   ThreadTimelineConsumerMessageAction,
-  ThreadTimelineLinkHandler,
-  ThreadTimelineLocalFileLinkHandler,
   ThreadTimelineUnreadDividerPlacement,
 } from "./types.js";
 
@@ -55,8 +53,6 @@ export interface ThreadTimelineSurfaceProps {
   consumerMessageActions?: readonly ThreadTimelineConsumerMessageAction[];
   includePluginMessageActions?: boolean;
   onLoadOlderRows?: () => Promise<void> | void;
-  onOpenLink?: ThreadTimelineLinkHandler;
-  onOpenLocalFileLink?: ThreadTimelineLocalFileLinkHandler;
   onTitleAction?: TimelineTitleActionResolver;
   projectId?: string;
   resolveMentionLink?: PromptMentionLinkResolver;
@@ -72,7 +68,6 @@ export interface ThreadTimelineSurfaceProps {
   threadRuntimeDisplayStatus: ThreadRuntimeDisplayStatus;
   unreadDividerAutoScroll?: boolean;
   unreadDividerPlacement?: ThreadTimelineUnreadDividerPlacement | null;
-  workspaceRootPath: string | undefined;
 }
 
 interface BuildStopRequestedTimelineRowArgs {
@@ -157,8 +152,6 @@ export function ThreadTimelineSurface({
   consumerMessageActions,
   includePluginMessageActions,
   onLoadOlderRows,
-  onOpenLink,
-  onOpenLocalFileLink,
   onTitleAction,
   projectId,
   resolveMentionLink,
@@ -174,7 +167,6 @@ export function ThreadTimelineSurface({
   threadRuntimeDisplayStatus,
   unreadDividerAutoScroll,
   unreadDividerPlacement,
-  workspaceRootPath,
 }: ThreadTimelineSurfaceProps) {
   const showCatchUpIndicator =
     isCatchingUpTimeline &&
@@ -240,8 +232,6 @@ export function ThreadTimelineSurface({
             onSelectionAddToChat={onSelectionAddToChat}
             consumerMessageActions={consumerMessageActions}
             includePluginMessageActions={includePluginMessageActions}
-            onOpenLink={onOpenLink}
-            onOpenLocalFileLink={onOpenLocalFileLink}
             onTitleAction={onTitleAction}
             projectId={projectId}
             resolveMentionLink={resolveMentionLink}
@@ -259,7 +249,6 @@ export function ThreadTimelineSurface({
               ? {}
               : { unreadDividerAutoScroll })}
             unreadDividerPlacement={unreadDividerPlacement}
-            workspaceRootPath={workspaceRootPath}
           />
         ) : null}
         {hostConnectionNotice ? (

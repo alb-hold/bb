@@ -35,6 +35,7 @@ import type {
   ThreadQueuedWork,
   ThreadRuntimeState,
   ThreadStatus,
+  ThreadTimelineGoal,
   ThreadWithRuntime,
 } from "@bb/domain";
 import {
@@ -694,6 +695,18 @@ function buildThreadPromptBannerActivityByThreadId(
     }
   }
   return result;
+}
+
+export function getThreadTimelineGoal(
+  deps: ThreadPromptBannerDeps,
+  thread: Thread,
+): ThreadTimelineGoal | null {
+  return extractThreadTimelineGoal(
+    listLatestThreadStateEventRowsByThreadIds(deps.db, {
+      threadIds: [thread.id],
+      kind: LEGACY_CODEX_GOAL_EXTENSION_KIND,
+    }).map(toThreadEventWithMeta),
+  );
 }
 
 export function getThreadPromptBannerActivity(

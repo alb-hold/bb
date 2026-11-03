@@ -370,7 +370,6 @@ function ScrollbackTimeline() {
       threadId={THREAD_ID}
       threadIsActive={false}
       threadRuntimeDisplayStatus="idle"
-      workspaceRootPath={undefined}
     />
   );
 }

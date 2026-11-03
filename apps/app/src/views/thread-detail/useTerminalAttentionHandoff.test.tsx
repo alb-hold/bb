@@ -23,7 +23,6 @@ function HandoffHarness() {
     drawerVisibility,
     isCompactViewport: true,
     isPersistedOpen: true,
-    openPersistedHostFile: vi.fn(),
     openPersistedPanel: vi.fn(),
     openPersistedStorageFile: vi.fn(),
     openPersistedWorkspaceFile: vi.fn(),

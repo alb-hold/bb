@@ -1,3 +1,4 @@
+import { seedModelCatalog } from "../helpers/provider-model-catalogs.js";
 import {
   provisionHostMock,
   resumeHostMock,
@@ -53,6 +54,16 @@ describe("public thread default routes", () => {
   it("remembers resolved execution options after thread creation", async () => {
     await withTestHarness(async (harness) => {
       const { host } = seedHostSession(harness.deps);
+      await seedModelCatalog(harness, {
+        hostId: host.id,
+        providerId: "codex",
+        models: [
+          availableModelFixture({
+            model: "gpt-5-mini",
+            reasoningLevels: ["high"],
+          }),
+        ],
+      });
       const { project } = seedProjectWithSource(harness.deps, {
         hostId: host.id,
         path: "/tmp/thread-defaults-create",
@@ -229,6 +240,13 @@ describe("public thread default routes", () => {
   it("inherits the remembered provider and execution defaults when thread creation omits them", async () => {
     await withTestHarness(async (harness) => {
       const { host } = seedHostSession(harness.deps);
+      await seedModelCatalog(harness, {
+        hostId: host.id,
+        providerId: "codex",
+        models: [
+          availableModelFixture({ model: "gpt-5", reasoningLevels: ["high"] }),
+        ],
+      });
       const { project } = seedProjectWithSource(harness.deps, {
         hostId: host.id,
         path: "/tmp/thread-defaults-inherit",
@@ -1404,6 +1422,7 @@ describe("public thread default routes", () => {
               availableModelFixture({ model: "gpt-first" }),
               availableModelFixture({
                 model: "gpt-provider-default",
+                reasoningLevels: ["medium"],
                 isDefault: true,
               }),
             ],
@@ -1473,6 +1492,7 @@ describe("public thread default routes", () => {
             models: [
               availableModelFixture({
                 model: "gpt-provider-default",
+                reasoningLevels: ["medium"],
                 isDefault: true,
               }),
             ],
@@ -1696,6 +1716,16 @@ describe("public thread default routes", () => {
   it("does not overwrite project execution defaults after a thread send", async () => {
     await withTestHarness(async (harness) => {
       const { host } = seedHostSession(harness.deps);
+      await seedModelCatalog(harness, {
+        hostId: host.id,
+        providerId: "codex",
+        models: [
+          availableModelFixture({
+            model: "gpt-5-mini",
+            reasoningLevels: ["high"],
+          }),
+        ],
+      });
       const { project } = seedProjectWithSource(harness.deps, {
         hostId: host.id,
         path: "/tmp/thread-send-defaults",

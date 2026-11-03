@@ -1618,6 +1618,13 @@ export class TerminalSessionLifecycle {
       },
     });
     if (!runningSession) {
+      const finished = getTerminalById(this.options.db, startingSession.id);
+      if (
+        finished?.status === "exited" &&
+        finished.closeReason === "process-exit"
+      ) {
+        return this.toTerminalSession(finished);
+      }
       this.closeStaleOpenedTerminal({
         daemonSessionId: daemonSession.id,
         terminalId: startingSession.id,

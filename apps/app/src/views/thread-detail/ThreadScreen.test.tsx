@@ -187,7 +187,6 @@ function renderScreen(
           hasUnseenTimelineEvents: overrides.hasUnseenTimelineEvents ?? false,
           unreadDividerPlacement: null,
         }}
-        workspaceRootPath={undefined}
       />
     </Wrapper>,
   );

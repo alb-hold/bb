@@ -436,7 +436,12 @@ export function registerPoolCli(
             "Sign in again to a subscription whose sign-in expired, keeping its name and place",
           description:
             "Prints the browser (Claude) or device-code (Codex) step and exits; finish it with `{{BB_CLI}} pool account login-complete` (Claude) or `{{BB_CLI}} pool account login-poll` (Codex).\nThe new sign-in replaces this subscription's saved credentials. bb refuses a sign-in that belongs to a different account and leaves the subscription unchanged.",
-          aliases: ["account reauth", "account reauthorize"],
+          aliases: [
+            "account login",
+            "account relogin",
+            "account reauth",
+            "account reauthorize",
+          ],
           positionals: [ACCOUNT_ID_POSITIONAL],
           options: { json: JSON_OPTION },
           run: (input) =>
