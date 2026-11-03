@@ -1,9 +1,10 @@
 import { execFile as execFileCallback, spawn } from "node:child_process";
+import fs from "node:fs/promises";
 import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { removeWorktree } from "./worktree.js";
 
 const execFile = promisify(execFileCallback);
@@ -49,6 +50,7 @@ async function remove(
 }
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   await Promise.all(
     workers.splice(0).map(async (worker) => {
       if (worker.exitCode !== null || worker.signalCode !== null) return;
@@ -82,6 +84,24 @@ describe("real worktree teardown preservation", () => {
     await writeFile(ignoredFile, "local secret\n");
     await remove(worktree, true).catch(() => undefined);
     await expect(readFile(ignoredFile, "utf8")).resolves.toBe("local secret\n");
+  });
+
+  it("keeps data written as the worktree is quarantined for forced removal", async () => {
+    const worktree = await makeWorktree();
+    const originalRename = fs.rename.bind(fs);
+    vi.spyOn(fs, "rename").mockImplementation(async (from, to) => {
+      await originalRename(from, to);
+      if (String(from) === worktree.path) {
+        await writeFile(path.join(String(to), ".env"), "raced write\n");
+      }
+    });
+    await expect(remove(worktree, true)).rejects.toMatchObject({
+      code: "worktree_preserved",
+    });
+    await expect(
+      readFile(path.join(worktree.path, ".env"), "utf8"),
+    ).resolves.toBe("raced write\n");
+    expect(await git(worktree.path, "status", "--porcelain")).toContain(".env");
   });
 
   it("keeps a worktree used as another live process's cwd without signalling it", async () => {

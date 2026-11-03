@@ -13,6 +13,7 @@ import {
   type GitWorktreeEntry,
 } from "./worktree-list.js";
 import fs from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import path from "node:path";
 import {
   beginCopy,
@@ -26,6 +27,7 @@ import {
   type SourceFingerprint,
 } from "./created-by.js";
 import {
+  findQuarantinedPreservationReasons,
   WORKTREE_PRESERVED_CODE,
   findPreservationReasons,
   identifyWorktree,
@@ -905,41 +907,67 @@ async function removeRegisteredWorktree(
     }
   }
   const parentPath = path.dirname(identity.path);
-  const removal = await withWorktreeMetadataLock(identity.commonDir, () =>
-    runGit(
-      [
-        "--git-dir",
-        identity.commonDir,
-        "worktree",
-        "remove",
-        ...(args.force === true ? ["--force"] : []),
-        identity.path,
-      ],
-      {
-        cwd: parentPath,
-        ...(args.signal !== undefined ? { signal: args.signal } : {}),
-        allowFailure: true,
-      },
-    ),
-  );
   const retained = retention.retained;
   const keptNote = retained !== null ? [describeRetainedCopies(retained)] : [];
-  if (removal.exitCode !== 0) {
-    throw worktreePreservedError(identity.path, [
-      `Git declined to remove it${removal.stderr.trim() ? ` (${removal.stderr.trim()})` : ""}`,
-      ...keptNote,
-    ]);
-  }
-  await removeDirectoryIfEmpty(identity.path);
-  try {
-    await fs.lstat(identity.path);
-  } catch {
-    return { retained };
-  }
-  throw worktreePreservedError(identity.path, [
-    "still has files after Git removed the worktree",
-    ...keptNote,
-  ]);
+  return await withWorktreeMetadataLock(identity.commonDir, async () => {
+    const quarantinedPath = path.join(
+      parentPath,
+      `.${path.basename(identity.path)}.removing-${randomUUID()}`,
+    );
+    await fs.rename(identity.path, quarantinedPath);
+    let unregistered = false;
+    try {
+      const quarantineIdentity = { ...identity, path: quarantinedPath };
+      const reasons = await findQuarantinedPreservationReasons(
+        quarantineIdentity,
+        args.signal,
+      );
+      if (reasons.length > 0) {
+        throw worktreePreservedError(identity.path, reasons);
+      }
+      const removal = await runGit(
+        [
+          "--git-dir",
+          identity.commonDir,
+          "worktree",
+          "remove",
+          ...(args.force === true ? ["--force"] : []),
+          identity.path,
+        ],
+        {
+          cwd: parentPath,
+          ...(args.signal !== undefined ? { signal: args.signal } : {}),
+          allowFailure: true,
+        },
+      );
+      if (removal.exitCode !== 0) {
+        throw worktreePreservedError(identity.path, [
+          `Git declined to remove it${removal.stderr.trim() ? ` (${removal.stderr.trim()})` : ""}`,
+          ...keptNote,
+        ]);
+      }
+      unregistered = true;
+      await fs.rm(quarantinedPath, { recursive: true });
+      return { retained };
+    } catch (error) {
+      if (!unregistered) {
+        try {
+          await fs.rename(quarantinedPath, identity.path);
+        } catch (restoreError) {
+          throw worktreePreservedError(identity.path, [
+            `could not restore its quarantined directory at ${quarantinedPath} (${restoreError instanceof Error ? restoreError.message : String(restoreError)})`,
+            ...keptNote,
+          ]);
+        }
+      } else {
+        throw worktreePreservedError(quarantinedPath, [
+          `Git released the worktree but its clean directory could not be removed (${error instanceof Error ? error.message : String(error)})`,
+          ...keptNote,
+        ]);
+      }
+      throw error;
+    }
+  });
 }
 
 export async function inspectWorktreeRemoval(args: {
