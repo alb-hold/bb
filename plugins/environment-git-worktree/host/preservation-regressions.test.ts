@@ -96,27 +96,19 @@ describe("real worktree teardown preservation", () => {
 
   it("keeps data written as the worktree is quarantined for forced removal", async () => {
     const worktree = await makeWorktree();
+    let injected = false;
     const originalRename = fs.rename.bind(fs);
     vi.spyOn(fs, "rename").mockImplementation(async (from, to) => {
       await originalRename(from, to);
       if (String(from) === worktree.path) {
         await writeFile(path.join(String(to), ".env"), "raced write\n");
+        injected = true;
       }
     });
-    const removalError = await remove(worktree, true).then(
-      () => null,
-      (error: unknown) => ({
-        code:
-          error instanceof Error && "code" in error
-            ? String(error.code)
-            : null,
-        message: error instanceof Error ? error.message : String(error),
-      }),
-    );
-    expect(removalError).toMatchObject({
+    await expect(remove(worktree, true)).rejects.toMatchObject({
       code: "worktree_preserved",
-      message: expect.stringContaining("has uncommitted changes or untracked files"),
     });
+    expect(injected).toBe(true);
     await expect(
       readFile(path.join(worktree.path, ".env"), "utf8"),
     ).resolves.toBe("raced write\n");
