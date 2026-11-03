@@ -812,8 +812,9 @@ export class TerminalWebSocketTransport {
       socketBufferedAmount(socket) <= this.socketHighWaterBytes
     ) {
       const pending = this.pendingInputs[0];
+      if (!pending) break;
+      this.claimSize();
       if (
-        !pending ||
         !this.trySend(
           socket,
           pending.payload,
