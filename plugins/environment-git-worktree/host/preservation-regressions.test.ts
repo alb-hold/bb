@@ -145,6 +145,7 @@ describe("real worktree teardown preservation", () => {
 
   it("keeps a detached commit created after preflight", async () => {
     const worktree = await makeWorktree();
+    useProcReaderForTests(descendantsOnly(hostProc, -1));
     let injected = false;
     const originalRename = fs.rename.bind(fs);
     vi.spyOn(fs, "rename").mockImplementation(async (from, to) => {
@@ -169,6 +170,7 @@ describe("real worktree teardown preservation", () => {
 
   it("keeps a stash created after preflight", async () => {
     const worktree = await makeWorktree();
+    useProcReaderForTests(descendantsOnly(hostProc, -1));
     let injected = false;
     const originalRename = fs.rename.bind(fs);
     vi.spyOn(fs, "rename").mockImplementation(async (from, to) => {
