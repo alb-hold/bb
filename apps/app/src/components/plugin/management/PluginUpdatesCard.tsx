@@ -7,16 +7,15 @@ import { usePluginNotificationAction } from "@/components/plugin/PluginNotificat
 import { appToast } from "@/components/ui/app-toast";
 import { applyPluginUpdateJob } from "@/hooks/cache-owners/plugin-cache-owner";
 import { startPluginUpdate } from "@/hooks/queries/plugin-update-job-queries";
-import type { PluginListItem } from "@/hooks/queries/plugin-settings-queries";
+import {
+  pluginHasUpdateSurfaces,
+  type PluginListItem,
+} from "@/hooks/queries/plugin-settings-queries";
 import { pluginAdminErrorMessage } from "@/lib/plugin-admin-error";
 import { DetailsDisclosure } from "./plugin-ui";
 import { UpdatePluginDialog } from "./UpdatePluginDialog";
 
-export function pluginHasUpdateSurfaces(plugin: PluginListItem): boolean {
-  if (plugin.source.startsWith("builtin:") || plugin.source.startsWith("path:"))
-    return false;
-  return plugin.provenance === "direct" || plugin.provenance === "catalog";
-}
+export { pluginHasUpdateSurfaces } from "@/hooks/queries/plugin-settings-queries";
 
 function pluginCompatibilityBlockedVersion(
   plugin: PluginListItem,

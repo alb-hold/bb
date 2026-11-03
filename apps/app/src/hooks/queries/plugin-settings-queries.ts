@@ -18,6 +18,12 @@ type FetchLike = typeof fetch;
 
 type PluginProvenance = InstalledPlugin["provenance"];
 
+export function pluginHasUpdateSurfaces(plugin: PluginListItem): boolean {
+  if (plugin.source.startsWith("builtin:") || plugin.source.startsWith("path:"))
+    return false;
+  return plugin.provenance === "direct" || plugin.provenance === "catalog";
+}
+
 interface PluginUpdateFailure {
   version: string;
   label: string;
