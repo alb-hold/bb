@@ -144,38 +144,27 @@ describe("machine Git environment", () => {
     await exec("git", ["add", "."], { cwd: source, env });
     await exec("git", ["commit", "-m", "seed"], { cwd: source, env });
     await exec("git", ["clone", "--bare", source, bare], { env });
-    const helper = `#!/usr/bin/env node
-const assert = require("node:assert");
-const { execFileSync, spawnSync } = require("node:child_process");
-const { readSync, writeSync } = require("node:fs");
-assert.strictEqual(process.argv[3], "https://github.com/octocat/private.git");
-const auth = execFileSync("git", ["credential", "fill"], { input: "protocol=https\\nhost=github.com\\n\\n", encoding: "utf8" });
-assert.ok(auth.includes("username=x-access-token\\n"));
-assert.ok(auth.includes("password=" + process.env.GH_TOKEN + "\\n"));
-function readLine() {
-  const byte = Buffer.alloc(1);
-  let line = "";
-  for (;;) {
-    let count = 0;
-    try {
-      count = readSync(0, byte, 0, 1, null);
-    } catch (error) {
-      if (error.code !== "EOF") throw error;
-    }
-    if (count === 0) return line === "" ? null : line;
-    if (byte[0] === 10) return line;
-    line += String.fromCharCode(byte[0]);
-  }
-}
-for (let line = readLine(); line !== null; line = readLine()) {
-  if (line.trim() === "capabilities") {
-    writeSync(1, "connect\\n\\n");
-  } else if (line.startsWith("connect ")) {
-    writeSync(1, "\\n");
-    const result = spawnSync("git", ["upload-pack", process.env.FAKE_BARE], { stdio: "inherit" });
-    process.exit(result.status ?? 1);
-  }
-}
+    const helper = `#!/bin/sh
+[ "$2" = "https://github.com/octocat/private.git" ] || exit 1
+auth=$(printf 'protocol=https\\nhost=github.com\\n\\n' | git credential fill) || exit 1
+username=
+password=
+while IFS= read -r credential; do
+  [ "$credential" != username=x-access-token ] || username=matched
+  [ "$credential" != "password=$GH_TOKEN" ] || password=matched
+done <<AUTH
+$auth
+AUTH
+[ "$username" = matched ] && [ "$password" = matched ] || exit 1
+while IFS= read -r line; do
+  case "$line" in
+    capabilities) printf 'connect\\n\\n' ;;
+    connect\\ *)
+      printf '\\n'
+      exec git upload-pack "$FAKE_BARE"
+      ;;
+  esac
+done
 `;
     await writeFile(join(helpers, "git-remote-https"), helper, { mode: 0o755 });
     const target = join(home, "cloned");

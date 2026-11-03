@@ -12,7 +12,7 @@ import {
   groupHostDaemonEvents,
   type HostDaemonEventEnvelope,
 } from "@bb/host-daemon-contract";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { toThreadQueuedMessage } from "../../src/services/threads/thread-queued-messages.js";
 import { getLastThreadErrorMessage } from "../../src/services/threads/thread-data.js";
 import { retryFailedTurn } from "../../src/services/threads/turn-retry.js";
@@ -359,22 +359,43 @@ describe("a child whose turn fails with a non-retryable error and is retried by 
   it("keeps a non-archived auth failure failed and notifies its parent", async () => {
     await withTestHarness(async (harness) => {
       const scenario = seedScenario(harness);
-      const response = await postEvents(
-        harness,
-        scenario.sessionId,
-        unauthorizedFailureEvents({
-          threadId: scenario.child.id,
-          turnId: FIRST_TURN_ID,
-        }),
-      );
-      expect(response.status).toBe(200);
-      expect(getThread(harness.db, scenario.child.id)?.status).toBe("error");
-      await new Promise((resolve) => setTimeout(resolve, NOTICE_SETTLE_MS));
-      expect(
-        parentNoticeTexts(harness, scenario.parent.id).filter((text) =>
-          text.includes("failed."),
-        ),
-      ).toHaveLength(1);
+      const request = harness.hub.requestHostOnlineRpc.bind(harness.hub);
+      let stopObserving = () => {};
+      const parentNotified = new Promise<void>((resolve) => {
+        const observer = vi
+          .spyOn(harness.hub, "requestHostOnlineRpc")
+          .mockImplementation((args) => {
+            const response = request(args);
+            if (
+              args.message.command.type === "turn.submit" &&
+              args.message.command.threadId === scenario.parent.id
+            ) {
+              resolve();
+            }
+            return response;
+          });
+        stopObserving = () => observer.mockRestore();
+      });
+      try {
+        const response = await postEvents(
+          harness,
+          scenario.sessionId,
+          unauthorizedFailureEvents({
+            threadId: scenario.child.id,
+            turnId: FIRST_TURN_ID,
+          }),
+        );
+        expect(response.status).toBe(200);
+        expect(getThread(harness.db, scenario.child.id)?.status).toBe("error");
+        await parentNotified;
+        expect(
+          parentNoticeTexts(harness, scenario.parent.id).filter((text) =>
+            text.includes("failed."),
+          ),
+        ).toHaveLength(1);
+      } finally {
+        stopObserving();
+      }
     });
   }, 20_000);
 
