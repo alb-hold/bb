@@ -385,6 +385,7 @@ export async function findPreservationReasons(
       "--porcelain=v1",
       "-z",
       "--untracked-files=all",
+      "--ignored=matching",
       "--ignore-submodules=none",
     ],
     gitOptions,

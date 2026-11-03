@@ -68,6 +68,7 @@ import {
   WORKTREE_INCLUDE_FILE_NAME,
   type CopyWorktreeIncludeFilesResult,
 } from "./worktree-include.js";
+import type { ResolvedWorktreeBaseBranch } from "./base-branch.js";
 
 export type BranchMode = "reset" | "reuse-existing";
 
@@ -79,7 +80,7 @@ interface CreateWorktreeArgs {
   retainedRoot: string;
   branchName: string;
   previousAttempt?: PreviousAttemptRequest | undefined;
-  baseBranch: string | null;
+  baseBranch: ResolvedWorktreeBaseBranch | null;
   branchMode: BranchMode;
   onProgress?: ProgressCallback | undefined;
   signal?: AbortSignal | undefined;
@@ -184,6 +185,27 @@ function classifyConcurrentRemoteRefUpdateError(
     return "lock-file-exists";
   }
   return null;
+}
+
+function isFetchFailureWithFallback(error: unknown): boolean {
+  return (
+    error instanceof WorkspaceError &&
+    (error.code === "git_command_failed" ||
+      error.code === "git_command_timeout")
+  );
+}
+
+async function readShortCommit(
+  sourcePath: string,
+  ref: string,
+  signal: AbortSignal | undefined,
+): Promise<string | null> {
+  const result = await runGit(
+    ["rev-parse", "--verify", "--quiet", "--short", `${ref}^{commit}`],
+    { cwd: sourcePath, ...signalOptions(signal), allowFailure: true },
+  );
+  const commit = result.stdout.trim();
+  return result.exitCode === 0 && commit !== "" ? commit : null;
 }
 
 async function ensureExistingWorkspaceMatches(
@@ -303,6 +325,7 @@ async function resolveRemoteBaseBranch(
 export async function fetchRemoteBaseBranch(args: {
   sourcePath: string;
   baseBranch: string;
+  fetchFailureFallback: boolean;
   onProgress: ProgressCallback | undefined;
   signal: AbortSignal | undefined;
 }): Promise<void> {
@@ -409,7 +432,30 @@ export async function fetchRemoteBaseBranch(args: {
       startedAt,
       metadata: { durationMs: Date.now() - startedAt },
     });
-    throw error;
+    if (
+      !args.fetchFailureFallback ||
+      args.signal?.aborted ||
+      !isFetchFailureWithFallback(error)
+    ) {
+      throw error;
+    }
+    const fallbackCommit = await readShortCommit(
+      args.sourcePath,
+      remoteRef,
+      args.signal,
+    );
+    if (fallbackCommit === null) throw error;
+    emitOutput(
+      args.onProgress,
+      "git-fetch",
+      error instanceof Error ? error.message : String(error),
+    );
+    emitStep({
+      onProgress: args.onProgress,
+      key: "git-fetch-fallback",
+      text: `Using the last fetched ${args.baseBranch} (${fallbackCommit}); it may be out of date`,
+      status: "completed",
+    });
   }
 }
 
@@ -703,8 +749,9 @@ export async function createWorktree(
         `Branch ${args.branchName} already exists, so it was not reset to the base branch and its work is kept. Remove or rename that branch yourself, or retry so the create continues on its own attempt branch.`,
       );
     }
+    const resolvedBaseBranch = args.baseBranch;
     const baseBranch =
-      args.baseBranch ?? (await readDefaultBranch(args.sourcePath));
+      resolvedBaseBranch?.ref ?? (await readDefaultBranch(args.sourcePath));
     if (!baseBranch) {
       throw new WorkspaceError(
         "missing_default_branch",
@@ -715,6 +762,7 @@ export async function createWorktree(
     await fetchRemoteBaseBranch({
       sourcePath: args.sourcePath,
       baseBranch,
+      fetchFailureFallback: resolvedBaseBranch?.fetchFailureFallback ?? false,
       onProgress: args.onProgress,
       signal: args.signal,
     });

@@ -976,6 +976,37 @@ describe("worktree host entry", () => {
     await harness.experimental_dispose();
   });
 
+  it("uses a fetched remote named branch when the local branch is behind", async () => {
+    const { root, sourcePath, dataDir } = await createSourceRepository();
+    const remotePath = await publishToBareRemote(root, sourcePath);
+    const updaterPath = join(root, "updater");
+    await git(root, "clone", remotePath, updaterPath);
+    await writeFile(join(updaterPath, "remote-only.txt"), "remote tip\n");
+    await git(updaterPath, "add", "remote-only.txt");
+    await git(updaterPath, "commit", "-m", "advance remote main");
+    await git(updaterPath, "push", "origin", "main");
+    await git(sourcePath, "fetch", "origin", "main");
+
+    const harness = createHarness(dataDir);
+    const result = await harness.experimental_call("create", {
+      operationId: "named-remote-ahead",
+      sourcePath,
+      pathKey: "named-remote-ahead",
+      branchName: "bb/named-remote-ahead",
+      baseBranch: { kind: "named", name: "main" },
+      branchMode: "reset",
+    });
+    expect(result).toMatchObject({
+      status: "created",
+      baseBranch: "origin/main",
+    });
+    if (result.status !== "created") throw new Error(result.message);
+    await expect(
+      readFile(join(result.path, "remote-only.txt"), "utf8"),
+    ).resolves.toBe("remote tip\n");
+    await harness.experimental_dispose();
+  });
+
   it("creates on an explicit base from a detached single-branch checkout", async () => {
     const { sourcePath, dataDir } =
       await createDetachedSingleBranchRepository();

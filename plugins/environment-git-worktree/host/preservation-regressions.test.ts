@@ -28,7 +28,9 @@ async function makeWorktree(): Promise<{ path: string; root: string }> {
   await git(source, "config", "user.name", "Worktree Test");
   await git(source, "config", "user.email", "worktree-test@example.invalid");
   await writeFile(path.join(source, "README.md"), "published\n");
+  await writeFile(path.join(source, ".gitignore"), ".env\n");
   await git(source, "add", "README.md");
+  await git(source, "add", ".gitignore");
   await git(source, "commit", "-m", "published");
   await git(source, "remote", "add", "origin", bare);
   await git(source, "push", "--set-upstream", "origin", "main");
@@ -72,6 +74,14 @@ describe("real worktree teardown preservation", () => {
     await remove(worktree, true).catch(() => undefined);
     await expect(access(worktree.path)).resolves.toBeUndefined();
     expect(await git(worktree.path, "status", "--porcelain")).not.toBe("");
+  });
+
+  it("keeps ignored local data when force removal is requested", async () => {
+    const worktree = await makeWorktree();
+    const ignoredFile = path.join(worktree.path, ".env");
+    await writeFile(ignoredFile, "local secret\n");
+    await remove(worktree, true).catch(() => undefined);
+    await expect(readFile(ignoredFile, "utf8")).resolves.toBe("local secret\n");
   });
 
   it("keeps a worktree used as another live process's cwd without signalling it", async () => {
