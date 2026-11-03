@@ -85,130 +85,120 @@ Slot props contracts (versioned, additive-only):
   only that overlay. Use a content script instead for DOM enhancement that does
   not need React context. Experimental: see `docs/api_to_audit.md`.
 - `navPanel` → `{ subPath: string }` — owns the whole route at
-  `/plugins/<pluginId>/<path>/*` and gets its own sidebar entry. `subPath`
-  is the route remainder after the panel root (`""` at the root), so deep
-  links like `/plugins/notes/notes/work/ideas.md` land with
-  `subPath: "work/ideas.md"`. Navigate within the panel via
-  `useBbNavigate().toPluginPanel(path, { subPath, replace? })` — browser
-  back/forward then walks panel-internal history (prefer this over hash
-  routing).
+  `/plugins/<pluginId>/<path>/*` and gets its own navigation rail destination. `subPath`
+  is the route remainder after the panel root (`""` at the root) as it appears
+  in the URL, with each segment still percent-encoded, so deep links like
+  `/plugins/notes/notes/work/my%20ideas.md` land with
+  `subPath: "work/my%20ideas.md"`; decode each segment with
+  `decodeURIComponent`. Navigate within the panel via
+  `useBbNavigate().toPluginPanel(path, { subPath, replace? })`, passing
+  unencoded segments (bb encodes them) — browser back/forward then walks
+  panel-internal history (prefer this over hash routing).
   Registration:
-  `{ id, title, icon, path, component, fixedTabs?, experimental_sidebarAccessory?, headerContent? }`.
-  BB automatically wraps every plugin page in the same host-owned App panel
-  used by New thread and thread pages. The page component supplies only its
-  main body; it must not mount a second panel layout or register Browser and
+  `{ id, title, icon, path, component, experimental_useBadge?, experimental_usePageTitle?, headerContent?, experimental_sidebar? }`.
+  The host renders your compact plugin icon + `title` into the shared app
+  header (the same title bar as Settings pages) with your optional
+  `headerContent` component as the header actions on the right — so do not
+  repeat the title inside your component. The component owns the full-bleed
+  body below with zero host padding; add your own padding and scrolling when
+  the design needs them. For a classic page, use an outer scroll region with
+  `p-4 md:p-5` and wrap its content in a `mx-auto w-full max-w-3xl space-y-4`
+  div. `headerContent` is contained separately: a throw hides the header
+  content without breaking the title bar or the panel body.
+
+  BB wraps every plugin page in the same host-owned App panel used by New
+  thread and thread pages, with Browser and Terminal tabs (a plugin page has
+  no implicit project, so New tab offers no workspace file search). The page
+  component must not mount a second panel layout or register Browser and
   Terminal itself. BB owns the desktop split, compact drawer, header/panel
   toggle, resizing, tab strip, persistence, and the shared `panel.toggle`,
   `panel.newTab`, `panel.reopenClosedTab`, and `terminal.open` keyboard
   commands.
 
-  New tab is a transient host launcher. On a plugin page it offers Browser
-  (when the desktop browser is available) and Terminal; it does not offer
-  workspace file search because a generic plugin page has no implicit project,
-  environment, or working directory. The Terminal row includes a compact
-  connected-machine selector, initially resolving the server machine and then
-  the first connected fallback. Changing the selector does not launch
-  anything; activating Start terminal uses the selected machine. The selection
-  is page-session UI state, not plugin storage.
+  Add tabs through `experimental_tab` with
+  `context: { kind: "nav-panel", panelId }`, `availability: "fixed"` or
+  `"action"`, and `id`, `title`, `icon`, `component`, optional `tooltip`,
+  `layout`, and `useVisible({ subPath })`. Fixed tabs are non-closable;
+  action tabs receive persisted JSON `params` alongside `subPath`.
+  BB owns their panel, split layout, selection and persistence.
+  For targets and source migration, see [Tab API migration](frontend-registration.md#tab-api-migration).
 
-  Browser and Terminal tabs are normal host content tabs. Closing the final
-  content tab closes an otherwise empty panel; if fixed tabs remain, BB falls
-  back to the first one instead. Hydration closes an open panel when no durable
-  tab survived.
+  `experimental_useBadge` is a React hook that returns the panel's
+  navigation badge, `{ count?, text?, tone?, label }`, or `null` for none.
+  Set at most one of `count` and `text` (at most 8 characters, such as "NEW"
+  or "73%"); `tone` is `neutral` (the default), `warning`, or `critical`, and
+  bb picks the colors. BB calls it once
+  in the plugin's scope for every registered panel, including ones hidden
+  under More, so it can own an RPC query and realtime subscription. Every
+  navigation provider receives the value as the item's `badge`. bb's Rail
+  draws a count (shown as `9+` above 9) or otherwise a dot on the icon and
+  does not draw `text`; its Top list draws the count (`99+`
+  above 99), the text, or a dot at the end of the row; both put a dot on
+  More, in the strongest hidden tone, while the panel is hidden there. `label` is short text such as
+  "3 open tasks" that BB adds to the destination's tooltip and accessible
+  name; the drawn badge is hidden from assistive technology. `count` must be a
+  positive integer, `text` and `label` non-empty; a hook that throws or returns
+  anything else is treated as a crashed slot and shows no badge. SDK 0.6.53
+  replaced the component-based `experimental_sidebarAccessory`; a plugin that
+  still passes it keeps loading, and BB ignores the field and logs a warning
+  naming `experimental_useBadge`. Experimental: see `docs/api_to_audit.md`.
 
-  `fixedTabs` declares ordered, non-closable page views in that
-  same host tab strip:
-  `{ id, panelId, title, icon, component, layout?, experimental_target? }`.
-  BB opens the
-  first fixed tab on the page's first wide-layout visit, but remembers a later
-  user close. One tab is active per visible split pane, so multiple fixed-tab
-  components can be mounted concurrently. A component mounts only while its
-  tab is active in a visible pane; closing the panel unmounts it. It receives
-  the same `{ subPath }` as the main page. `layout: "padded"` (the default) gives it
-  host padding and scrolling; `layout: "flush"` gives it the full panel content
-  region so it can own both. Fixed tabs add content to the shared panel; they
-  do not replace its native chrome, Browser, Terminal, or keyboard commands.
+  `experimental_sidebar` is a component that receives the same `{ subPath }`
+  as the page and replaces the thread list while the panel's route is active,
+  for example a list of the panel's items. BB renders it in the same section
+  sidebar as Settings, Plugins and Skills: it keeps the navigation rail, top
+  chrome and resize handle, and in the Top list layout adds a "Back to app"
+  row and the panel title. Back to app (Escape) returns to the last app page,
+  so call `preventDefault()` on Escape your own UI handles. Navigate with
+  `useBbNavigate()`; on compact screens BB closes the drawer when the sidebar
+  navigates. Other routes keep their usual sidebar. A throw shows a crash
+  notice in the sidebar until `subPath` or the plugin generation changes.
   Experimental: see `docs/api_to_audit.md`.
 
-  Every registration's `panelId` must exactly match its containing nav panel's
-  `id`; the registration is also the stable reference for selecting that
-  plugin-owned tab. A targetable tab declares
-  `experimental_target: { validate(value): value is Target }`; BB checks JSON
-  safety before calling the owner validator. From any component of the same
-  plugin on that page, call
-  `experimental_useAppPanel().openFixedTab({ surface: { kind: "current" }, tab,
-target? })`. Inside the fixed-tab component,
-  `experimental_useFixedTabTarget(tab)` returns `{ sequence, target, clear }`
-  after validation. The per-tab target survives inactive-tab, closed-panel,
-  and route remounts for the current app session; call `clear()` when the tab
-  returns to its untargeted state. Selection persists through the host's
-  ordinary panel state, while targets remain memory-only and disappear on app
-  refresh. Invalid, unavailable, untargeted, or other-plugin references return
-  false without changing valid panel state.
-
-  `experimental_sidebarAccessory` is a no-props, presentational component at
-  the trailing edge of the sidebar row. It can own SDK hooks for a live count
-  or short status without lifting state into the host sidebar. The host does
-  not mount it on compact viewports or in the icon-only rail of the
-  `navigationRail` experiment; on wider viewports it clips the component
-  to one line, 4rem wide by 1.25rem high, and ellipsizes ordinary long text.
-  It shares the trailing action column and fades out for the host options
-  button on row hover or keyboard focus without unmounting. Do not render
-  controls or portalled content there. A throw hides only the accessory.
-  Experimental: see `docs/api_to_audit.md`.
-  The host renders your compact plugin icon + `title` into the SHARED app
-  header (the same title bar as Settings pages) with your optional
-  `headerContent` component as the header actions on the right — so do NOT
-  repeat the title inside your component. The component owns the full-bleed
-  body below with zero host padding; add your own padding and scrolling when
-  the design needs them. `headerContent` is plugin code inside the host title bar and is
-  contained separately: a throw hides the header content without breaking the
-  title bar or the panel body. For a classic page, use an outer scroll region
-  with `p-4 md:p-5` and wrap its content in a
-  `mx-auto w-full max-w-3xl space-y-4` div.
-
-- `threadPanelAction` → an entry in the thread right panel's new-tab
-  Actions list (next to "Start side chat" / "Start terminal"), labeled
-  `title` with your compact plugin icon. This slot is only offered for an
-  existing thread; it never renders on the root New thread screen, and its
-  `threadId` stays required. Registration:
-  `{ id, title, icon?, component, layout?, run? }`. Activating it calls
-  `run({ threadId, openPanel })` — do anything there (rpc, toast), and/or
-  call `openPanel({ title?, params? })` to open a closable panel tab
-  rendering `component` with `{ threadId: string, params: JsonValue | null }`.
-  `openPanel` returns `boolean` — true when the host accepted the open, false
-  when it declined (non-JSON `params`, unavailable action, or a surface with
-  no side panel). A decline is a return value, never a throw, and matches
-  `messageAction`'s `openPanel` and `useBbNavigate().openThreadPanel`, so one
-  open routine can serve every action kind. Because `run` is declared
-  `void | Promise<void>`, call `openPanel` from a braced body
-  (`run: ({ openPanel }) => { openPanel(); }`), not a concise arrow.
-  Omitting `run` opens a tab immediately with defaults. Write parameters are
-  typed as the recursively JSON-safe `JsonValue` exported by both
-  `@get-bb/plugin-sdk` and `@get-bb/plugin-sdk/app`; they persist with the tab across reloads (null when
-  none was passed); identical action+params re-opens focus the existing
-  tab (title refreshed), different params open sibling tabs. The tab pill
-  shows your compact plugin icon + the tab title. Errors thrown from `run`
-  (sync or async) are contained and logged, never breaking the launcher.
-  `layout` frames the tab content: `"padded"` (default) wraps `component`
-  in the panel's scroll container with standard padding — right for
-  document-like content; `"flush"` gives it the full tab area (no padding,
-  definite height, no host scrolling) — right for app-like content that
-  owns its layout, such as `ThreadChat`.
+- `experimental_tab` → a tab in a declared thread or navigation-page context.
+  Thread components receive `{ threadId }`; navigation-page components receive
+  `{ subPath }`. `availability: "fixed"` pins one non-closable destination.
+  `availability: "action"` adds a launcher; its component also receives persisted
+  JSON `params`, and optional `run` receives context plus `experimental_panel`.
+  Without `run`, selection opens with default params. Matching owner/id/params
+  focuses an existing instance; different params open siblings. `useVisible`
+  controls the fixed destination or action launcher, and never closes opened
+  action instances. `tooltip` defaults to title; layout is padded or flush.
+  Open tabs with the [panel controller](frontend-hooks-and-ui.md#panel-controller).
+  See [Tab API migration](frontend-registration.md#tab-api-migration).
 - `experimental_newThreadPanelAction` → the root New thread counterpart to
-  `threadPanelAction`. It appears in that screen's right-panel Actions list
+  thread action tabs. It appears in that screen's right-panel Actions list
   and never appears beside an existing thread. Registration has the same
   `{ id, title, icon?, component, layout?, run? }` shape, but activating it
-  calls `run({ projectId, openPanel })` and its component receives
+  calls `run({ projectId, experimental_panel })` and its component receives
   `{ projectId: string | null, params: JsonValue | null }`; `projectId` is
   null in projectless compose. Panel opening, JSON params, layout, persistence,
   deduplication, the `boolean` return, and error containment otherwise match
-  `threadPanelAction`.
+  thread action tabs.
   Experimental: see `docs/api_to_audit.md`.
-- Removed pre-1.0: `composerAccessory` was the legacy composer footer. Migrate
-  controls to `app.composer.customize({ actions })` or `plusMenu`, larger
-  content to `banners`, and legacy `{ projectId, threadId }` prop reads to
-  `useComposer().scope`.
+- `experimental_environmentProviderInputs` → `{ projectId, target, value,
+onChange }` — the control the New Thread environment picker renders beside
+  one of this plugin's environment providers while it is selected, for the
+  provider's declared `inputs` (backend-events.md). Registration:
+  `{ environmentProviderId, component }`. `projectId` is null in projectless
+  compose; `target` is `{ kind: "existing-host", hostId }` or
+  `{ kind: "new-host" }`; `value` is the inputs the selection will carry
+  (null until `onChange` supplies one). Call
+  `onChange({ status: "ready", value })` with a value the provider's schema
+  accepts, or `onChange({ status: "blocked", reason })` to disable submit with
+  that reason; the server parses the value with the schema at create time. A
+  provider whose schema rejects `{}` cannot be submitted until its control
+  reports ready inputs. Experimental: see `docs/api_to_audit.md`.
+- `experimental_machineProviderInputs` → `{ value, onChange }` — the same
+  contract for a machine provider's `inputs`, rendered by machine creation
+  surfaces and as a compact chip before the environment provider's chip when
+  a composition creates the machine. Registration:
+  `{ machineProviderId, component }`. Report a ready default on mount and open
+  richer configuration in the shared responsive drawer; a blocked or crashed
+  control disables submit with its short reason. Machine inputs are persisted
+  and readable by every plugin, so emit only non-secret configuration or
+  references to credentials held in plugin settings. Experimental: see
+  `docs/api_to_audit.md`.
 - `pendingInteraction` → `{ interaction, submit, cancel }` — replaces the
   thread composer only while a matching plugin interaction is pending.
   Registration: `{ id, component }`; `id` must equal the backend request's
@@ -231,21 +221,20 @@ target? })`. Inside the fixed-tab component,
   `{ openSettings }`. New plugins should use
   `app.experimental_sidebarFooter.register({ kind: "action", ... })` so actions
   and disclosures share one surface.
-- `experimental_sidebarNavigation` → replaces the bounded navigation controls
-  above the thread list. Registration:
-  `{ id, title, description?, component }`. The component receives the
-  compact-viewport state and `experimental_Original`; it reads items, the active item, and host actions
-  with `experimental_useSidebarNavigation()`.
-  Search activation opens the quick palette. No inline search field or query
-  state exists. BB keeps the drawer, thread list, footer, resize handle, and
-  shortcut ownership.
-- `experimental_sidebarHeader` → `{ width, controlSize, isCompactViewport }`
-  — renders controls in the sidebar header row between the sidebar toggle and
-  bb's back and forward buttons. Registration:
-  `{ id, title, description?, component }`. Exclusive; the user picks at most
-  one under Settings → Appearance → Header, and the default is bb's controls
-  only. Content is clipped to the row. Experimental: see
-  `docs/api_to_audit.md`.
+- `experimental_sidebarNavigation` → `{ isCompactViewport, placement,
+experimental_Original }` — draws the sidebar navigation. Registration:
+  `{ id, title, description?, placement?, component, headerComponent? }`,
+  where `placement` is `"rail"` or `"list"` (the default). The optional
+  `headerComponent` receives `{ width, controlSize, isCompactViewport }` and
+  renders in the sidebar header row beside the sidebar toggle while that
+  navigation is active. Read items and host actions
+  with `experimental_useSidebarNavigation()`. Exclusive; see
+  frontend-sidebar-navigation.md. Experimental: see `docs/api_to_audit.md`.
+- `experimental_threadList`, `experimental_threadRowMetadata`,
+  `experimental_threadInfoRow`, `experimental_threadInfoSection`,
+  `experimental_threadContextCardRow`, `experimental_threadContextCardSection`,
+  `experimental_threadAction` (menu entries and header buttons), and
+  `experimental_browserToolbarAction` are covered in frontend-registration.md.
 - `fileOpener` → `{ path: string, source, experimental_lineRange?, Original }` — register as a viewer/editor
   for file extensions: `{ id, title, extensions: ["md"], component }`.
   Matching files use the first applicable opener in deterministic slot order
@@ -261,8 +250,8 @@ projectId, experimental_hostId? }` (nullable fields). The optional host ID
   selects a project-backed workspace host and persists in opener-tab parameters.
   The `path` follows the source (workspace:
   worktree-relative; host: absolute; thread-storage: storage-relative).
-  `experimental_lineRange` (SDK 0.4.56) is a nullable, one-based inclusive
-  `{ startLineNumber, endLineNumber }` target; older hosts may omit it. Observe
+  `experimental_lineRange` is a nullable, one-based inclusive
+  `{ startLineNumber, endLineNumber }` target. Observe
   object identity: each targeted open supplies a new object, including an
   identical range in the active tab. Apply the latest target after loading
   and on subsequent requests without replacing the editor model; null means
@@ -273,3 +262,92 @@ projectId, experimental_hostId? }` (nullable fields). The optional host ID
   always use the built-in preview, and a removed/disabled opener degrades
   back to it. Pair with `bb.sdk.files` (rpc from your server) to load and
   CAS-save the content.
+
+### The provider directory
+
+`experimental_useProviders()` returns `{ status, providers }` — every
+registered agent provider in picker order, as the same `ProviderInfo` the
+host's composer reads (`id`, `pluginId`, `displayName`, `family`, `icon`,
+`logoUrl`, `available`, `capabilities`, `maintenance`, `extensionKinds`,
+`composerActions`, and the declared `strings`, `reasoningLevels`,
+`serviceTiers`). It reads the host's own cached roster, so
+it costs no extra request. Use it whenever a surface shows a thread's or
+automation's provider: never vendor provider names or copy in a plugin.
+
+```tsx
+const { providers } = experimental_useProviders();
+const name =
+  providers.find((provider) => provider.id === thread.providerId)
+    ?.displayName ?? thread.providerId;
+```
+
+`status` is `"loading"` until the roster arrives and `"error"` when the request
+failed; `providers` is empty in both cases, so fall back to the id. The
+backend counterpart is `bb.sdk.providers.list()`. Keep the hook in the plugin
+entry (`app.tsx`) and pass names down as props, so view components stay pure
+and testable outside the plugin runtime.
+
+## Tab API migration
+
+Use `app.slots.experimental_tab` for tabs on thread and plugin navigation pages.
+Declare `context: { kind: "thread" }` for `{ threadId, environment }`, or
+`context: { kind: "nav-panel", panelId: "board" }` for `{ subPath }`.
+`environment` is `{ id }` taken straight from the thread, null only when the
+thread has no environment; read anything else about it (status, path) yourself
+and show the tab's own loading, failure and Retry.
+Choose `availability: "fixed"` for one non-closable destination or `"action"`
+for a launcher opening closable instances with persisted JSON `params`.
+Only actions accept `run`, default `params`, and per-open `params`/`title`.
+`useVisible` receives the context props and controls the fixed tab or launcher;
+hiding a launcher leaves existing instances intact. Components and hooks run
+inside plugin context and crash isolation. `tooltip` defaults to `title` and
+`layout` is `"padded"` or `"flush"`.
+
+For source using the retired `threadPanelAction` registration, replace it with:
+
+```tsx
+app.slots.experimental_tab({
+  context: { kind: "thread" },
+  availability: "action",
+  id: "issue",
+  title: "Issue",
+  icon: "FileText",
+  component: IssuePanel,
+  run: ({ threadId, experimental_panel }) => {
+    experimental_panel.openTab({
+      tab: { id: "issue", context: { kind: "thread" }, availability: "action" },
+      params: { threadId },
+    });
+  },
+});
+```
+
+For source using the retired `navPanel.fixedTabs` field, remove that field and
+register each tab separately, keeping the panel id and tab id unchanged:
+
+```tsx
+app.slots.experimental_tab({
+  context: { kind: "nav-panel", panelId: "board" },
+  availability: "fixed",
+  id: "navigation",
+  title: "Navigation",
+  icon: "PanelRight",
+  component: BoardNavigation,
+  layout: "flush",
+});
+```
+
+Open any registered tab with
+`experimental_useAppPanel().openTab({ tab: { id, context, availability },
+params?, title?, target? })`. Fixed tabs can declare
+`experimental_target: { validate }` and read their session-only target with
+`experimental_useFixedTabTarget(registration)`. Retired `openFixedTab`,
+`experimental_openTab`, `openThreadPanel` and action `openPanel` calls still
+work; see [Panel controller](frontend-hooks-and-ui.md#panel-controller).
+Existing saved tab identities, orders, action params and split layouts survive;
+no plugin data migration is needed when registration ids stay unchanged.
+
+The old registration names are absent from SDK typings. Previously published
+bundles and Git-source installs remain supported by runtime adapters. Builds
+emit migration warnings rather than blocking install/update; bb records them
+in the plugin log.

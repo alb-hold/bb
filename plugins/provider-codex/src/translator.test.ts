@@ -743,14 +743,16 @@ describe("codex subagent activity correlation", () => {
     agentThreadId?: string;
     id: string;
     kind: "started" | "interacted" | "interrupted" | "completed";
+    threadId?: string;
+    turnId?: string;
   }) {
     const agentThreadId = args.agentThreadId ?? "agent-thread-1";
     return {
       jsonrpc: "2.0" as const,
       method: "item/completed",
       params: {
-        threadId: rootProviderThreadId,
-        turnId: "parent-turn",
+        threadId: args.threadId ?? rootProviderThreadId,
+        turnId: args.turnId ?? "parent-turn",
         item: {
           type: "subAgentActivity",
           id: args.id,
@@ -887,7 +889,7 @@ describe("codex subagent activity correlation", () => {
     ]);
   });
 
-  it("re-arms the parent link when a completed subagent is interacted with again", () => {
+  it("opens a new delegation in the follow-up's turn when a completed subagent is interacted with again", () => {
     const harness = createHarness();
     harness.translate(
       subAgentActivity({ id: "subagent-call-1", kind: "started" }),
@@ -904,24 +906,28 @@ describe("codex subagent activity correlation", () => {
 
     expect(
       harness.translate(
-        subAgentActivity({ id: "interaction-1", kind: "interacted" }),
+        subAgentActivity({
+          id: "interaction-1",
+          kind: "interacted",
+          turnId: "parent-turn-2",
+        }),
       ),
     ).toEqual([]);
 
     expect(harness.translate(childTurnStarted("child-turn-2"))).toEqual([
       expect.objectContaining({
         type: "item/started",
-        scope: turnScope(harness.turnId("parent-turn")),
+        scope: turnScope(harness.turnId("parent-turn-2")),
         item: expect.objectContaining({
           type: "delegation",
-          id: harness.itemId("subagent-call-1"),
+          id: harness.itemId("interaction-1"),
           status: "pending",
         }),
       }),
       expect.objectContaining({
         type: "turn/started",
         scope: turnScope(harness.turnId("child-turn-2")),
-        parentToolCallId: harness.itemId("subagent-call-1"),
+        parentToolCallId: harness.itemId("interaction-1"),
       }),
     ]);
 
@@ -935,15 +941,75 @@ describe("codex subagent activity correlation", () => {
       }),
       expect.objectContaining({
         type: "item/completed",
-        scope: turnScope(harness.turnId("parent-turn")),
+        scope: turnScope(harness.turnId("parent-turn-2")),
         item: expect.objectContaining({
           type: "delegation",
-          id: harness.itemId("subagent-call-1"),
+          id: harness.itemId("interaction-1"),
           status: "completed",
         }),
       }),
     ]);
   });
+
+  it.each(["before", "after"] as const)(
+    "keeps a resumed child nested when follow-up activity arrives %s its turn start",
+    (activityOrder) => {
+      const harness = createHarness();
+      const childThreadId = "agent-thread-1";
+      harness.translate(childTurnStarted("parent-turn"));
+      harness.translate(
+        subAgentActivity({ id: "subagent-call-1", kind: "started" }),
+      );
+      harness.translate(childTurnStarted("child-turn-1", childThreadId));
+      harness.translate(childTurnCompleted("child-turn-1", childThreadId));
+      harness.translate(
+        rawCollaborationCall({ callId: "resume-call", name: "followup_task" }),
+      );
+
+      const activity = subAgentActivity({
+        id: "resume-call",
+        kind: "interacted",
+      });
+      if (activityOrder === "before") {
+        harness.translate(activity);
+      }
+      const started = harness.translate(
+        childTurnStarted("child-turn-2", childThreadId),
+      );
+      const activityEvents =
+        activityOrder === "after" ? harness.translate(activity) : [];
+      const completed = harness.translate(
+        childTurnCompleted("child-turn-2", childThreadId),
+      );
+
+      expect(started).toContainEqual(
+        expect.objectContaining({
+          type: "turn/started",
+          scope: turnScope(harness.turnId("child-turn-2")),
+          parentToolCallId: expect.any(String),
+        }),
+      );
+      expect(completed).toEqual([
+        expect.objectContaining({
+          type: "turn/completed",
+          scope: turnScope(harness.turnId("child-turn-2")),
+        }),
+        expect.objectContaining({
+          type: "item/completed",
+          item: expect.objectContaining({
+            type: "delegation",
+            id: harness.itemId("resume-call"),
+            status: "completed",
+          }),
+        }),
+      ]);
+      expect(
+        [...started, ...activityEvents, ...completed].filter(
+          (event) => event.type === "turn/started" && !event.parentToolCallId,
+        ),
+      ).toEqual([]);
+    },
+  );
 
   it("links an unknown resumed subagent from the raw followup intent after translator restart", () => {
     const harness = createHarness();
@@ -1209,29 +1275,34 @@ describe("codex subagent activity correlation", () => {
       ),
     ).toEqual([]);
 
+    const roundIds: string[] = [];
     for (const index of [2, 3]) {
-      expect(
-        harness.translate(childTurnStarted(`child-turn-${index}`)),
-      ).toEqual([
+      const started = harness.translate(
+        childTurnStarted(`child-turn-${index}`),
+      );
+      const roundId =
+        started[0]?.type === "item/started" ? started[0].item.id : "";
+      expect(started).toEqual([
         expect.objectContaining({
           type: "item/started",
-          item: expect.objectContaining({
-            type: "delegation",
-            id: harness.itemId("subagent-call-1"),
-          }),
+          item: expect.objectContaining({ type: "delegation", id: roundId }),
         }),
         expect.objectContaining({
           type: "turn/started",
           scope: turnScope(harness.turnId(`child-turn-${index}`)),
-          parentToolCallId: harness.itemId("subagent-call-1"),
+          parentToolCallId: roundId,
         }),
       ]);
+      roundIds.push(roundId);
       expect(
         harness
           .translate(childTurnCompleted(`child-turn-${index}`))
           .map((event) => event.type),
       ).toEqual(["turn/completed", "item/completed"]);
     }
+    expect(roundIds.sort()).toEqual(
+      [harness.itemId("interaction-1"), harness.itemId("interaction-2")].sort(),
+    );
   });
 
   it("does not attach a resumed subagent parent to a later human turn", () => {
@@ -1267,7 +1338,7 @@ describe("codex subagent activity correlation", () => {
       expect.objectContaining({
         type: "turn/started",
         scope: turnScope(harness.turnId("child-turn-2")),
-        parentToolCallId: harness.itemId("subagent-call-1"),
+        parentToolCallId: harness.itemId("interaction-1"),
       }),
     );
   });
@@ -1321,7 +1392,7 @@ describe("codex subagent activity correlation", () => {
       expect.objectContaining({
         type: "turn/started",
         scope: turnScope(harness.turnId("child-turn-2")),
-        parentToolCallId: harness.itemId("subagent-call-1"),
+        parentToolCallId: harness.itemId("interaction-1"),
       }),
     );
     harness.translate(childTurnCompleted("child-turn-2"));
@@ -1367,7 +1438,7 @@ describe("codex subagent activity correlation", () => {
       expect.objectContaining({
         type: "turn/started",
         scope: turnScope(harness.turnId("resumed-turn-2")),
-        parentToolCallId: harness.itemId("subagent-call-2"),
+        parentToolCallId: harness.itemId("interaction-2"),
       }),
     );
 
@@ -1377,9 +1448,69 @@ describe("codex subagent activity correlation", () => {
       expect.objectContaining({
         type: "turn/started",
         scope: turnScope(harness.turnId("resumed-turn-1")),
-        parentToolCallId: harness.itemId("subagent-call-1"),
+        parentToolCallId: harness.itemId("interaction-1"),
       }),
     );
+  });
+
+  it("parents a nested follow-up under its parent's current delegation", () => {
+    const harness = createHarness();
+    harness.translate(
+      subAgentActivity({
+        agentThreadId: "agent-a",
+        id: "a-spawn",
+        kind: "started",
+      }),
+    );
+    harness.translate(childTurnStarted("a-turn-1", "agent-a"));
+    harness.translate(
+      subAgentActivity({
+        agentThreadId: "agent-b",
+        id: "b-spawn",
+        kind: "started",
+        threadId: "agent-a",
+        turnId: "a-turn-1",
+      }),
+    );
+    harness.translate(childTurnStarted("b-turn-1", "agent-b"));
+    harness.translate(childTurnCompleted("b-turn-1", "agent-b"));
+    harness.translate(childTurnCompleted("a-turn-1", "agent-a"));
+
+    harness.translate(
+      subAgentActivity({
+        agentThreadId: "agent-a",
+        id: "a-followup",
+        kind: "interacted",
+        turnId: "parent-turn-2",
+      }),
+    );
+    harness.translate(childTurnStarted("a-turn-2", "agent-a"));
+    harness.translate(
+      subAgentActivity({
+        agentThreadId: "agent-b",
+        id: "b-followup",
+        kind: "interacted",
+        threadId: "agent-a",
+        turnId: "a-turn-2",
+      }),
+    );
+
+    expect(harness.translate(childTurnStarted("b-turn-2", "agent-b"))).toEqual([
+      expect.objectContaining({
+        type: "item/started",
+        scope: turnScope(harness.turnId("a-turn-2")),
+        item: expect.objectContaining({
+          type: "delegation",
+          id: harness.itemId("b-followup"),
+          parentToolCallId: harness.itemId("a-followup"),
+        }),
+      }),
+      expect.objectContaining({
+        type: "turn/started",
+        scope: turnScope(harness.turnId("b-turn-2")),
+        parentToolCallId: harness.itemId("b-followup"),
+      }),
+    ]);
   });
 
   it("links concurrent subagents to child turns in activity order", () => {

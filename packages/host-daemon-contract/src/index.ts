@@ -9,3 +9,4 @@ export { typedRoutes } from "@bb/hono-typed-routes";
 
 export * from "./desktop-browser.js";
 export * from "./desktop-browser-import.js";
+export * from "./terminal-data-plane.js";

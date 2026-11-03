@@ -8,6 +8,7 @@ import { ServerConnection } from "./server-connection.js";
 import type {
   CreateReconnectingWebSocket,
   ReconnectingWebSocketLike,
+  ServerConnectionOptions,
   ServerMovedNotice,
 } from "./server-connection-support.js";
 
@@ -23,6 +24,7 @@ interface CreateWebSocketFixtureArgs {
 }
 
 interface ConnectionFixtureArgs extends CreateServerClientFixtureArgs {
+  onIdleProviderSessionTimeout?: (minutes: number) => void;
   autoReconnect?: boolean;
   serverHeaders?: Record<string, string>;
   protocolSelfUpdater?: ProtocolSelfUpdater;
@@ -32,6 +34,7 @@ interface ConnectionFixtureArgs extends CreateServerClientFixtureArgs {
   onMachineEnvironment?: (
     environment: HostDaemonSessionOpenResponse["machineEnvironment"],
   ) => void;
+  onHostRpcCancel?: ServerConnectionOptions["onHostRpcCancel"];
   startupTimeoutMs?: number;
 }
 
@@ -54,9 +57,11 @@ function createSession(args: CreateSessionArgs): HostDaemonSessionOpenResponse {
   return {
     heartbeatIntervalMs: args.heartbeatIntervalMs,
     machineEnvironment: { revision: 0, entries: [] },
+    idleProviderSessionTimeoutMinutes: 30,
     leaseTimeoutMs: args.leaseTimeoutMs,
     retiredEnvironmentIds: [],
     connectShares: { generation: 0, ports: [] },
+    connectNext: { generation: 0, config: null },
     pluginHostGenerations: [],
     sessionId: args.sessionId,
     watchSet: {
@@ -91,7 +96,8 @@ function createServerClientFixture(args: CreateServerClientFixtureArgs = {}) {
   const serverClient = {
     openSession,
     fetchProjectAttachment: unused,
-    fetchSkillTree: unused,
+    fetchSkillTreeManifest: unused,
+    fetchSkillTreeContent: unused,
     fetchPluginHostArtifact: unused,
     postEvents: unused,
     fetchActiveTurnIds: unused,
@@ -191,6 +197,8 @@ function createConnectionFixture(args: ConnectionFixtureArgs = {}) {
     onMachineShutdown: args.onMachineShutdown,
     onServerMoved: args.onServerMoved,
     onMachineEnvironment: args.onMachineEnvironment,
+    onIdleProviderSessionTimeout: args.onIdleProviderSessionTimeout,
+    onHostRpcCancel: args.onHostRpcCancel,
     startupTimeoutMs: args.startupTimeoutMs,
     setSession,
     createWebSocket: webSocket.createWebSocket,
@@ -211,6 +219,34 @@ afterEach(() => {
 });
 
 describe("ServerConnection", () => {
+  it("applies the idle timeout on connection, live changes and reconnect", async () => {
+    const onIdleProviderSessionTimeout = vi.fn();
+    const { connection, webSocket } = createConnectionFixture({
+      onIdleProviderSessionTimeout,
+      sessionIds: ["first", "second"],
+    });
+    try {
+      await connection.start();
+      expect(onIdleProviderSessionTimeout).toHaveBeenLastCalledWith(30);
+      const socket = webSocket.sockets[0];
+      if (!socket) throw new Error("Expected test socket");
+      for (const minutes of [5, 0, 60]) {
+        socket.onmessage?.({
+          data: JSON.stringify({
+            type: "provider-session-policy.replace",
+            idleProviderSessionTimeoutMinutes: minutes,
+          }),
+        });
+        expect(onIdleProviderSessionTimeout).toHaveBeenLastCalledWith(minutes);
+      }
+      socket.reconnect();
+      await vi.waitFor(() => expect(connection.sessionId).toBe("second"));
+      expect(onIdleProviderSessionTimeout).toHaveBeenLastCalledWith(30);
+    } finally {
+      await connection.shutdown();
+    }
+  });
+
   it("applies initial and replacement machine environments, ignores stale updates and resets revisions after reconnect", async () => {
     const onMachineEnvironment = vi.fn();
     const { connection, webSocket } = createConnectionFixture({
@@ -529,6 +565,42 @@ describe("ServerConnection", () => {
     }
   });
 
+  it("never logs a native tool credential from an invalid terminal.open frame", async () => {
+    const secret = "native-credential-value-1234567890";
+    const { connection, logger, webSocket } = createConnectionFixture({});
+    try {
+      await connection.start();
+      const socket = webSocket.sockets[0];
+      if (!socket) {
+        throw new Error("Expected test socket");
+      }
+      socket.onmessage?.({
+        data: JSON.stringify({
+          type: "terminal.open",
+          contributedEnv: [
+            {
+              name: "BB_NATIVE_TOOL_CREDENTIAL",
+              value: secret,
+              source: { plugin: "claude-code" },
+              reason: "r",
+            },
+          ],
+          terminalId: 7,
+        }),
+      });
+      const logged = JSON.stringify([
+        ...logger.error.mock.calls,
+        ...logger.warn.mock.calls,
+        ...logger.info.mock.calls,
+        ...logger.debug.mock.calls,
+      ]);
+      expect(logged).toContain("Invalid server websocket message");
+      expect(logged).not.toContain(secret);
+    } finally {
+      await connection.shutdown();
+    }
+  });
+
   it("grants a fresh acknowledgement lease after a shorter heartbeat delay", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(0);
@@ -696,6 +768,34 @@ describe("ServerConnection", () => {
     }
   });
 
+  it("forwards host RPC cancellations to the cancel handler", async () => {
+    const onHostRpcCancel = vi.fn();
+    const { connection, webSocket } = createConnectionFixture({
+      onHostRpcCancel,
+    });
+    try {
+      await connection.start();
+      const socket = webSocket.sockets[0];
+      if (!socket) {
+        throw new Error("Expected test socket");
+      }
+
+      socket.onmessage?.({
+        data: JSON.stringify({
+          type: "host-rpc.cancel",
+          requestId: "rpc-cancelled",
+        }),
+      });
+
+      expect(onHostRpcCancel).toHaveBeenCalledWith({
+        type: "host-rpc.cancel",
+        requestId: "rpc-cancelled",
+      });
+    } finally {
+      await connection.shutdown();
+    }
+  });
+
   it("rejects a malformed host RPC command without disconnecting", async () => {
     const { connection, logger, setSession, webSocket } =
       createConnectionFixture();
@@ -737,6 +837,38 @@ describe("ServerConnection", () => {
           requestId: "invalid-transcription",
         }),
         "Rejected invalid host RPC command",
+      );
+    } finally {
+      await connection.shutdown();
+    }
+  });
+
+  it("closes the socket when an unknown host RPC command arrives", async () => {
+    const { connection, logger, webSocket } = createConnectionFixture();
+    try {
+      await connection.start();
+      const socket = webSocket.sockets[0];
+      if (!socket) throw new Error("Expected test socket");
+
+      socket.onmessage?.({
+        data: JSON.stringify({
+          type: "host-rpc.request",
+          requestId: "unknown-holder-sessions",
+          command: {
+            type: "terminal.holder-sessions",
+            terminalIds: ["term-1"],
+          },
+        }),
+      });
+
+      expect(socket.close).toHaveBeenCalled();
+      expect(logger.error).toHaveBeenCalledWith(
+        expect.objectContaining({
+          payloadPreview: expect.stringContaining(
+            '"type":"terminal.holder-sessions"',
+          ),
+        }),
+        "Invalid server websocket message; closing connection",
       );
     } finally {
       await connection.shutdown();

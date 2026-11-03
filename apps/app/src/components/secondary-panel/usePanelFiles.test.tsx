@@ -1,7 +1,5 @@
-// @vitest-environment jsdom
-
-import { act, cleanup, renderHook } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { renderHookStatically } from "@/test/render-hook-statically";
+import { describe, expect, it, vi } from "vitest";
 import type { ExperimentalLiveFileTarget } from "@get-bb/plugin-sdk";
 import { usePanelFiles, type PanelFileScope } from "./usePanelFiles";
 import type { OpenSecondaryPanelTabRequest } from "./useThreadFileTabs";
@@ -52,7 +50,17 @@ const SURFACES: readonly SurfaceCase[] = [
     scope: { threadId: null, environmentId: "env_1", hostId: "host_1" },
     accepts: {
       ownWorkspace: true,
-      ownHost: false,
+      ownHost: true,
+      ownStorage: false,
+      otherWorkspace: false,
+    },
+  },
+  {
+    name: "New thread screen with a machine terminal",
+    scope: { threadId: null, environmentId: null, hostId: null },
+    accepts: {
+      ownWorkspace: false,
+      ownHost: true,
       ownStorage: false,
       otherWorkspace: false,
     },
@@ -74,13 +82,11 @@ function renderSurface(surface: SurfaceCase, available = true) {
     id: "tab",
   }));
   const reveal = vi.fn();
-  const { result } = renderHook(() =>
+  const panelFiles = renderHookStatically(() =>
     usePanelFiles({ available, openTab, reveal, scope: surface.scope }),
   );
-  return { openTab, result, reveal };
+  return { openTab, panelFiles, reveal };
 }
-
-afterEach(cleanup);
 
 describe.each(SURFACES)("panel files on the $name", (surface) => {
   it.each([
@@ -89,47 +95,46 @@ describe.each(SURFACES)("panel files on the $name", (surface) => {
     ["ownStorage", OWN_STORAGE],
     ["otherWorkspace", OTHER_WORKSPACE],
   ] as const)("applies the surface rule to a %s target", (caseName, target) => {
-    const { openTab, result, reveal } = renderSurface(surface);
-    let accepted = false;
-    act(() => {
-      accepted = result.current.openFilePreview({ target, location: null });
-    });
+    const { openTab, panelFiles, reveal } = renderSurface(surface);
+    const accepted = panelFiles.openFilePreview({ target, location: null });
 
     expect(accepted).toBe(surface.accepts[caseName]);
     expect(openTab).toHaveBeenCalledTimes(accepted ? 1 : 0);
     expect(reveal).toHaveBeenCalledTimes(accepted ? 1 : 0);
   });
 
-  it("opens host files in the same tab shape core uses", () => {
-    if (!surface.accepts.ownHost) return;
-    const { openTab, result } = renderSurface(surface);
-    act(() => {
-      result.current.openFilePreview({ target: OWN_HOST, location: null });
-      result.current.openHostFile({ lineRange: null, path: OWN_HOST.path });
+  it.runIf(surface.accepts.ownWorkspace).each([
+    ["HEAD", { kind: "head" }],
+    ["abc1234", { kind: "merge-base", ref: "abc1234" }],
+  ] as const)("opens the %s revision as a read-only preview", (ref, source) => {
+    const { openTab, panelFiles } = renderSurface(surface);
+    panelFiles.openFilePreview({
+      target: { ...OWN_WORKSPACE, experimental_ref: ref },
+      location: null,
     });
 
-    const [apiRequest, coreRequest] = openTab.mock.calls.map(
-      ([request]) => request,
-    );
-    expect(apiRequest).toEqual(
-      surface.scope === null
-        ? { ...coreRequest, hostId: OWN_HOST.hostId }
-        : coreRequest,
+    expect(openTab).toHaveBeenCalledWith(
+      {
+        kind: "workspace-file-preview",
+        environmentId: "env_1",
+        tab: { lineRange: null, path: "src/a.ts", source, statusLabel: null },
+      },
+      undefined,
     );
   });
 
   it("declines malformed targets and unavailable surfaces", () => {
-    const { result: available } = renderSurface(surface);
-    const { result: unavailable, openTab } = renderSurface(surface, false);
+    const { panelFiles: available } = renderSurface(surface);
+    const { panelFiles: unavailable, openTab } = renderSurface(surface, false);
 
     expect(
-      available.current.openFilePreview({
+      available.openFilePreview({
         target: { ...OWN_WORKSPACE, path: "../escape" },
         location: null,
       }),
     ).toBe(false);
     expect(
-      unavailable.current.openFilePreview({
+      unavailable.openFilePreview({
         target: OWN_WORKSPACE,
         location: null,
       }),

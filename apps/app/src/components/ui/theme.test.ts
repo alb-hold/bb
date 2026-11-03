@@ -374,7 +374,31 @@ describe("theme.css sidebar width registration", () => {
   });
 });
 
-describe("theme.css shimmer and scroll-anchor paint scope", () => {
+describe("thread row trailing space", () => {
+  it("compacts shortcut hints alongside full status text before metadata", () => {
+    expect(css).toMatch(
+      /\[data-sidebar-status-full\],\s*\.bb-sidebar-hover-actions-row \[data-sidebar-shortcut-secondary\]\s*\)\s*\{\s*display: none;/,
+    );
+    expect(css).toMatch(
+      /@container sidebar-thread-row \(min-width: 24rem\)\s*\{\s*:where\([^}]+\[data-sidebar-shortcut-secondary\]\s*\)\s*\{\s*display: inline;/,
+    );
+  });
+
+  it("reveals actions on pointer hover and keyboard focus without hiding metadata", () => {
+    expect(css).toMatch(
+      /\.bb-sidebar-hover-actions-row:is\(:hover, :has\(:focus-visible\)\)\s+\.bb-sidebar-hover-actions,[^{]+\{\s*pointer-events: auto;\s*opacity: 1;/,
+    );
+    expect(css).not.toContain("[data-sidebar-row-trailing-secondary]");
+  });
+
+  it("keeps mobile actions available without hiding metadata", () => {
+    expect(css).toMatch(
+      /\.bb-sidebar-hover-actions\[data-sidebar-hover-actions-mobile="always"\]\s*\{\s*pointer-events: auto;\s*opacity: 1;/,
+    );
+  });
+});
+
+describe("theme.css shimmer paint scope", () => {
   function ruleBody(selector: string, source = css): string {
     const at = source.indexOf(`${selector} {`);
     if (at === -1) throw new Error(`no ${selector} rule in theme.css`);
@@ -422,6 +446,16 @@ describe("theme.css shimmer and scroll-anchor paint scope", () => {
     expect(css).not.toMatch(/@keyframes shine/);
   });
 
+  it("excludes bottom-anchor descendants and scopes native anchoring", () => {
+    expect(css).not.toMatch(/\.scroll-bottom-anchor-content\s*\*/);
+    expect(ruleBody(".scroll-bottom-anchor-content")).toMatch(
+      /overflow-anchor:\s*none;/,
+    );
+    expect(ruleBody(".scroll-bottom-anchor")).toMatch(
+      /overflow-anchor:\s*auto;/,
+    );
+  });
+
   it("ships a looping one-second sweep small enough for Vite to inline", () => {
     const chunks = sweepChunks(sweepPng);
     const control = chunks.find((chunk) => chunk.type === "acTL")?.data;
@@ -463,15 +497,5 @@ describe("theme.css shimmer and scroll-anchor paint scope", () => {
     expect(rule).toBeDefined();
     expect(rule).toMatch(/(?<!-)mask-image:\s*none;/);
     expect(rule).toMatch(/-webkit-mask-image:\s*none;/);
-  });
-
-  it("excludes the bottom-anchored wrapper without a universal descendant rule", () => {
-    expect(css).not.toMatch(/\.scroll-bottom-anchor-content\s*\*/);
-    expect(ruleBody(".scroll-bottom-anchor-content")).toMatch(
-      /overflow-anchor:\s*none;/,
-    );
-    expect(ruleBody(".scroll-bottom-anchor")).toMatch(
-      /overflow-anchor:\s*auto;/,
-    );
   });
 });

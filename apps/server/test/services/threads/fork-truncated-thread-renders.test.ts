@@ -1,14 +1,13 @@
 import { describe, expect, it } from "vitest";
+import { createMigratedConnection } from "@bb/db/testing";
 import { turnScope } from "@bb/domain";
 import type { Thread } from "@bb/domain";
 import {
-  createConnection,
   createProject,
   createThread,
   FILE_CHANGE_DIFF_TRUNCATION_MARKER,
   getLatestThreadSequence,
   insertEvents,
-  migrate,
   noopNotifier,
   upsertHost,
 } from "@bb/db";
@@ -18,8 +17,7 @@ import { buildThreadTimelineWithProfile } from "../../../src/services/threads/ti
 const providerThreadId = "provider-root";
 
 function setup(): { db: DbConnection; thread: Thread } {
-  const db = createConnection(":memory:");
-  migrate(db);
+  const db = createMigratedConnection();
   const host = upsertHost(db, noopNotifier, {
     name: "test-host",
     type: "persistent",

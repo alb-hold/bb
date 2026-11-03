@@ -1,3 +1,4 @@
+import type { EventEmitter } from "node:events";
 import type {
   AppUpdater,
   UpdateCheckResult,
@@ -42,7 +43,7 @@ export interface DesktopAutoUpdaterAdapter {
   onUpdateAvailable(handler: DesktopAutoUpdateAvailableHandler): void;
   onUpdateDownloaded(handler: DesktopAutoUpdateDownloadedHandler): void;
   onUpdateNotAvailable(handler: DesktopAutoUpdateNotAvailableHandler): void;
-  quitAndInstall(): void;
+  quitAndInstall(): Promise<void>;
   setAutoDownload(enabled: boolean): void;
   setAutoInstallOnAppQuit(enabled: boolean): void;
   setFeedURL(config: DesktopAutoUpdateFeedConfig): void;
@@ -81,7 +82,7 @@ interface ApplyUpdateNotAvailableArgs {
 }
 
 export interface DesktopAutoUpdateService extends DesktopUpdateService {
-  installUpdate(): void;
+  installUpdate(): Promise<void>;
 }
 
 function createBaseInfo(
@@ -119,7 +120,10 @@ export function shouldEnableDesktopAutoUpdate(
 
 export function createElectronAutoUpdaterAdapter(
   updater: AppUpdater,
+  nativeUpdater: Pick<EventEmitter, "on" | "off">,
+  appImage: { path: string; relaunch: (path: string) => void } | null,
 ): DesktopAutoUpdaterAdapter {
+  let installInFlight: Promise<void> | null = null;
   return {
     checkForUpdates() {
       return updater.checkForUpdates();
@@ -136,13 +140,65 @@ export function createElectronAutoUpdaterAdapter(
       updater.on("update-available", handler);
     },
     onUpdateDownloaded(handler) {
-      updater.on("update-downloaded", handler);
+      if (process.platform !== "darwin") {
+        updater.on("update-downloaded", handler);
+        return;
+      }
+      let pending: UpdateDownloadedEvent | null = null;
+      updater.on("update-downloaded", (event) => {
+        pending = event;
+      });
+      updater.on("error", () => {
+        pending = null;
+      });
+      nativeUpdater.on("update-downloaded", () => {
+        if (pending === null) return;
+        const event = pending;
+        pending = null;
+        handler(event);
+      });
     },
     onUpdateNotAvailable(handler) {
       updater.on("update-not-available", handler);
     },
     quitAndInstall() {
-      updater.quitAndInstall();
+      if (installInFlight !== null) return installInFlight;
+      installInFlight = new Promise<void>((resolve, reject) => {
+        let replacementPath = appImage?.path ?? null;
+        const onFilename = (path: unknown): void => {
+          if (typeof path === "string") replacementPath = path;
+        };
+        const cleanup = (): void => {
+          updater.off("error", onError);
+          updater.off("appimage-filename-updated", onFilename);
+          nativeUpdater.off("before-quit-for-update", onQuit);
+        };
+        const onError = (error: Error): void => {
+          cleanup();
+          reject(error);
+        };
+        const onQuit = (): void => {
+          cleanup();
+          if (appImage !== null && replacementPath !== null) {
+            appImage.relaunch(replacementPath);
+          }
+          resolve();
+        };
+        updater.on("error", onError);
+        if (appImage !== null)
+          updater.on("appimage-filename-updated", onFilename);
+        nativeUpdater.on("before-quit-for-update", onQuit);
+        try {
+          if (appImage === null) updater.quitAndInstall();
+          else updater.quitAndInstall(true, false);
+        } catch (error) {
+          cleanup();
+          reject(error);
+        }
+      }).finally(() => {
+        installInFlight = null;
+      });
+      return installInFlight;
     },
     setAutoDownload(enabled) {
       updater.autoDownload = enabled;
@@ -167,6 +223,7 @@ export function createDesktopAutoUpdateService(
 ): DesktopAutoUpdateService {
   const now = args.now ?? (() => Date.now());
   let downloadInFlight: Promise<Array<string>> | null = null;
+  let downloadVersion: string | null = null;
   const scheduler = createDesktopUpdateScheduler({
     enabled: args.enabled,
     initialInfo: createBaseInfo(args.currentVersion, args.platform),
@@ -176,7 +233,7 @@ export function createDesktopAutoUpdateService(
   });
 
   function shouldSkipCheck(): boolean {
-    return scheduler.getInfo().updateDownloaded;
+    return downloadInFlight !== null;
   }
 
   function applyUpdateAvailable(applyArgs: ApplyUpdateAvailableArgs): void {
@@ -203,6 +260,13 @@ export function createDesktopAutoUpdateService(
   function applyUpdateNotAvailable(
     applyArgs: ApplyUpdateNotAvailableArgs,
   ): void {
+    if (scheduler.getInfo().updateDownloaded) {
+      scheduler.updateInfo({
+        ...scheduler.getInfo(),
+        lastCheckedAt: applyArgs.checkedAt,
+      });
+      return;
+    }
     scheduler.updateInfo({
       ...scheduler.getInfo(),
       downloadState: "idle",
@@ -214,17 +278,21 @@ export function createDesktopAutoUpdateService(
     });
   }
 
-  function startDownload(): void {
+  function startDownload(version: string): void {
     if (downloadInFlight !== null) {
       return;
     }
+    downloadVersion = version;
     scheduler.updateInfo({
       ...scheduler.getInfo(),
       downloadState: "downloading",
+      pendingVersion: null,
+      updateDownloaded: false,
     });
     try {
       downloadInFlight = args.updater.downloadUpdate();
     } catch (error: unknown) {
+      downloadVersion = null;
       scheduler.updateInfo({
         ...scheduler.getInfo(),
         downloadState: "failed",
@@ -238,6 +306,7 @@ export function createDesktopAutoUpdateService(
     }
     void downloadInFlight
       .catch((error: unknown) => {
+        downloadVersion = null;
         scheduler.updateInfo({
           ...scheduler.getInfo(),
           downloadState: "failed",
@@ -293,14 +362,17 @@ export function createDesktopAutoUpdateService(
     args.updater.setAutoInstallOnAppQuit(true);
     args.updater.setForceDevUpdateConfig(args.forceDevUpdateConfig);
     args.updater.onUpdateAvailable((info) => {
-      args.logger.info(
-        `Desktop auto-update available: ${info.version}; downloading in background.`,
-      );
       applyUpdateAvailable({
         checkedAt: formatCheckedAt(now),
         version: info.version,
       });
-      startDownload();
+      if (info.version === downloadVersion) {
+        return;
+      }
+      args.logger.info(
+        `Desktop auto-update available: ${info.version}; downloading in background.`,
+      );
+      startDownload(info.version);
     });
     args.updater.onUpdateDownloaded((event) => {
       args.logger.info(
@@ -326,6 +398,7 @@ export function createDesktopAutoUpdateService(
         )}`,
       );
       if (scheduler.getInfo().downloadState === "downloading") {
+        downloadVersion = null;
         scheduler.updateInfo({
           ...scheduler.getInfo(),
           downloadState: "failed",
@@ -336,14 +409,14 @@ export function createDesktopAutoUpdateService(
 
   return {
     ...scheduler,
-    installUpdate(): void {
+    async installUpdate(): Promise<void> {
       if (!scheduler.getInfo().updateDownloaded) {
         args.logger.warn(
           "Desktop auto-update install requested before an update was downloaded; ignoring.",
         );
         return;
       }
-      args.updater.quitAndInstall();
+      await args.updater.quitAndInstall();
     },
   };
 }

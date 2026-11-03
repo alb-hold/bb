@@ -1,3 +1,5 @@
+import { isIOSWebKit } from "@/lib/ios-webkit";
+import { selectionClipboard } from "@/lib/markdown-clipboard";
 import { useEffect, useRef, type ReactNode } from "react";
 
 export interface SelectionAnchorPoint {
@@ -28,6 +30,7 @@ interface SelectableMessageProseProps {
 
 export const MULTI_CLICK_SELECTION_REPORT_DELAY_MS = 180;
 const SELECTION_DRAG_DIRECTION_THRESHOLD_PX = 4;
+export const TOUCH_SELECTION_HANDLE_CLEARANCE_PX = 24;
 const CLIPBOARD_REPLACED_CONTENT_SELECTOR =
   "audio, canvas, embed, iframe, img, object, video";
 
@@ -66,6 +69,29 @@ export function firstClientRect(range: Range): DOMRect | null {
   }
   const rect = range.getBoundingClientRect();
   return rect.width > 0 || rect.height > 0 ? rect : null;
+}
+
+function lastClientRect(range: Range): DOMRect | null {
+  const rects = range.getClientRects();
+  for (let index = rects.length - 1; index >= 0; index -= 1) {
+    const rect = rects.item(index);
+    if (rect !== null && (rect.width > 0 || rect.height > 0)) {
+      return rect;
+    }
+  }
+  return null;
+}
+
+function touchSelectionAnchor(range: Range): SelectionAnchor | null {
+  const rect = lastClientRect(range);
+  if (rect === null) return null;
+  return {
+    point: {
+      x: rect.left + rect.width / 2,
+      y: rect.bottom + TOUCH_SELECTION_HANDLE_CLEARANCE_PX,
+    },
+    side: "bottom",
+  };
 }
 
 function normalizeSelectionText(text: string): string {
@@ -205,22 +231,22 @@ function readSelectionWithinNode(
     focusNode: selection.focusNode,
     commonAncestorContainer: range.commonAncestorContainer,
   });
-  if (accepted) {
-    return toMessageProseSelection({
-      anchor,
+  const report = () =>
+    toMessageProseSelection({
+      anchor:
+        anchor ??
+        (lastPointerUsedLiveSelectionRange && !isIOSWebKit(navigator)
+          ? touchSelectionAnchor(range)
+          : null),
       rect: facts.firstClientRect(),
       text: facts.selectionText(),
     });
-  }
+  if (accepted) return report();
 
   if (selection.isCollapsed) return null;
 
   if (isSelectionBoundarySpillWithinNode(node, facts, intersectsNode)) {
-    return toMessageProseSelection({
-      anchor,
-      rect: facts.firstClientRect(),
-      text: facts.selectionText(),
-    });
+    return report();
   }
 
   return null;
@@ -333,6 +359,7 @@ const instanceByNode = new Map<HTMLElement, SelectableProseInstance>();
 let sharedFrame: number | null = null;
 let pointerIsDown = false;
 let pointerUsesLiveSelectionRange = false;
+let lastPointerUsedLiveSelectionRange = false;
 let pointerActiveInstance: SelectableProseInstance | null = null;
 let pointerStartPoint: SelectionAnchorPoint | null = null;
 
@@ -484,6 +511,7 @@ function handleSharedPointerDown(event: PointerEvent): void {
   pointerStartPoint =
     pointerActiveInstance !== null ? anchorPointFromMouseEvent(event) : null;
   pointerUsesLiveSelectionRange = usesLiveSelectionRange(event.pointerType);
+  lastPointerUsedLiveSelectionRange = pointerUsesLiveSelectionRange;
   pointerIsDown = true;
 }
 
@@ -515,11 +543,79 @@ function handleSharedKeyUp(): void {
   scheduleSharedReport();
 }
 
-function handleSharedCopy(): void {
+export function readSelectedMessageMarkdown(): string | null {
   const selection = window.getSelection();
-  if (selection === null || selection.rangeCount !== 1) return;
+  if (!selection || selection.isCollapsed || selection.rangeCount !== 1)
+    return null;
   const range = selection.getRangeAt(0);
+  const instance =
+    findInstanceContaining(range.startContainer) ??
+    findInstanceContaining(range.endContainer);
+  if (!instance) return null;
+  const node = instance.node;
+  const clipped =
+    node.contains(range.startContainer) && node.contains(range.endContainer)
+      ? range
+      : clippedRangeForWhitespaceBoundarySpill(node, range);
+  return clipped === null
+    ? null
+    : selectionClipboard(clipped, node, "markdown").text;
+}
+
+function handleSharedCopy(event: ClipboardEvent): void {
+  if (event.defaultPrevented) return;
+  const selection = window.getSelection();
+  if (selection === null || selection.isCollapsed || selection.rangeCount !== 1)
+    return;
+  const range = selection.getRangeAt(0);
+  const startInstance = findInstanceContaining(range.startContainer);
+  const endInstance = findInstanceContaining(range.endContainer);
+  if (event.clipboardData && startInstance && endInstance) {
+    const instances = Array.from(proseInstances)
+      .filter((instance) => range.intersectsNode(instance.node))
+      .sort((a, b) =>
+        a.node.compareDocumentPosition(b.node) &
+        Node.DOCUMENT_POSITION_FOLLOWING
+          ? -1
+          : 1,
+      );
+    const parts = instances.map((instance) => {
+      const clipped = range.cloneRange();
+      if (!instance.node.contains(range.startContainer))
+        clipped.setStart(instance.node, 0);
+      if (!instance.node.contains(range.endContainer))
+        clipped.setEnd(instance.node, instance.node.childNodes.length);
+      return selectionClipboard(
+        clipped,
+        instance.node,
+        instances.length === 1 ? "text" : "markdown",
+      );
+    });
+    const payload = {
+      text: parts.map((part) => part.text).join("\n\n"),
+      html: parts.map((part) => part.html).join(""),
+    };
+    if (payload.text) {
+      event.clipboardData.setData("text/plain", payload.text);
+      event.clipboardData.setData("text/html", payload.html);
+      event.preventDefault();
+    }
+    return;
+  }
   for (const instance of proseInstances) {
+    if (event.clipboardData) {
+      const clipped = clippedRangeForWhitespaceBoundarySpill(
+        instance.node,
+        range,
+      );
+      if (clipped) {
+        const payload = selectionClipboard(clipped, instance.node, "text");
+        event.clipboardData.setData("text/plain", payload.text);
+        event.clipboardData.setData("text/html", payload.html);
+        event.preventDefault();
+        return;
+      }
+    }
     if (
       typeof range.intersectsNode === "function" &&
       range.intersectsNode(instance.node) &&

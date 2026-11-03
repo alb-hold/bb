@@ -988,19 +988,25 @@ describe("environment providers are asked inside provisioning", () => {
         inputs: z.string().transform(Number),
         provision: (context) => {
           inputs.push(context.inputs);
-          return { action: "wait", reason: "Starting container…" };
+          return { action: "reject", message: "Observed transformed inputs" };
         },
       });
+      const create = vi.spyOn(listEnvironmentProviders()[0].provider, "create");
       const { project } = seedTargetFixture(
         harness,
         "host-target-transformed-inputs",
       );
-      await createTargetThread(harness, {
+      const thread = await createTargetThread(harness, {
         projectId: project.id,
         inputs: "2",
       });
 
-      await expect.poll(() => inputs).toEqual([2]);
+      await expect
+        .poll(() => getThread(harness.db, thread.id)?.status)
+        .toBe("error");
+      expect(create).toHaveBeenCalledOnce();
+      expect(create.mock.calls[0]?.[0].inputs).toBe(2);
+      expect(inputs).toEqual([2]);
     });
   });
 
@@ -1439,6 +1445,74 @@ describe("environment providers are asked inside provisioning", () => {
       });
     });
   });
+
+  it.each([
+    ["records a reported base", "origin/dev", "origin/dev"],
+    ["clears the base when the provider reports none", null, null],
+    ["keeps the base when the provider omits it", undefined, "origin/old"],
+  ] as const)(
+    "on a reused host row it %s",
+    async (_label, reported, expected) => {
+      await withTestHarness(async (harness) => {
+        const { host, project, session } = seedTargetFixture(
+          harness,
+          "host-target-reused-merge-base",
+        );
+        const path = "/tmp/environment-providers-reused-merge-base";
+        const attached = seedEnvironment(harness.deps, {
+          branchName: "main",
+          mergeBaseBranch: "origin/old",
+          environmentProviderId: PROVIDER_ID,
+          environmentProviderPluginId: PLUGIN_ID,
+          hostId: host.id,
+          path,
+          projectId: project.id,
+        });
+        registerTestHostRpcCapture(harness, {
+          hostId: host.id,
+          sessionId: session.id,
+          gitSourceInspectionResult: {
+            isWorktree: false,
+            checkout: {
+              kind: "branch",
+              branchName: "bb/next-thread",
+              headSha: "def456",
+            },
+            defaultBranch: "main",
+            defaultBranchRelation: "local-ahead",
+            hasUncommittedChanges: false,
+            operation: { kind: "none" },
+            originDefaultBranch: "origin/main",
+          },
+        });
+        installTarget({
+          provision: () => ({
+            action: "ready",
+            environment: {
+              type: "host",
+              hostId: host.id,
+              path,
+              ...(reported === undefined ? {} : { mergeBaseBranch: reported }),
+            },
+          }),
+        });
+        const created = await createTargetThread(harness, {
+          projectId: project.id,
+        });
+        await vi.waitFor(() => {
+          expect(getEnvironment(harness.db, attached.id)?.branchName).toBe(
+            "bb/next-thread",
+          );
+        });
+        expect(getThread(harness.db, created.id)?.environmentId).toBe(
+          attached.id,
+        );
+        expect(getEnvironment(harness.db, attached.id)?.mergeBaseBranch).toBe(
+          expected,
+        );
+      });
+    },
+  );
 
   it("fails the thread with the plugin named when provision throws", async () => {
     await withTestHarness(async (harness) => {
@@ -2804,12 +2878,13 @@ describe("a provider-produced environment over its life", () => {
         emitThreadUnarchived: (thread) => {
           unarchived.push(thread.id);
         },
+        emitThreadParentChanged: () => {},
         emitThreadDeleted: () => {},
         emitMessageQueued: () => {},
         emitMessageDispatched: () => {},
         emitMessageCancelled: () => {},
         emitInteractionPending: () => {},
-        emitTurnFailed: () => 0,
+        emitTurnFailed: () => {},
       });
       try {
         const { environment, host, project, session } = seedTargetFixture(

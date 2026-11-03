@@ -66,6 +66,8 @@ function seedPluginInteractionThread(deps: AppDeps, suffix: string) {
   });
 }
 
+const PLUGIN_OWNER = { pluginId: "secrets" };
+
 function requestPluginInteraction(
   deps: AppDeps,
   args: {
@@ -89,6 +91,7 @@ function requestPluginInteraction(
     },
     describeSubmission: null,
     timeoutMs: 10_000,
+    owner: PLUGIN_OWNER,
     ...(args.signal ? { signal: args.signal } : {}),
   });
 }
@@ -251,6 +254,7 @@ describe("pending interaction lifecycle", () => {
           },
           describeSubmission,
           timeoutMs: 10_000,
+          owner: PLUGIN_OWNER,
         },
       );
       const [interaction] =
@@ -321,6 +325,7 @@ describe("pending interaction lifecycle", () => {
           },
           describeSubmission,
           timeoutMs: 10_000,
+          owner: PLUGIN_OWNER,
         },
       );
       const [interaction] =
@@ -372,6 +377,7 @@ describe("pending interaction lifecycle", () => {
             throw new Error("plugin bug");
           },
           timeoutMs: 10_000,
+          owner: PLUGIN_OWNER,
         },
       );
       const [interaction] =
@@ -1926,66 +1932,145 @@ describe("pending interaction lifecycle", () => {
     });
   });
 
-  it("rejects a second active interaction on the same thread", async () => {
+  it("keeps a provider approval blocking alongside open plugin cards", async () => {
     await withTestHarness(async (harness) => {
-      const { host } = seedHostSession(harness.deps, {
-        id: "host-pending-interaction-concurrent-reject",
-      });
-      const { project } = seedProjectWithSource(harness.deps, {
-        hostId: host.id,
-      });
-      const environment = seedEnvironment(harness.deps, {
-        hostId: host.id,
-        projectId: project.id,
-      });
-      const thread = seedThread(harness.deps, {
-        projectId: project.id,
-        environmentId: environment.id,
+      const thread = seedPluginInteractionThread(harness.deps, "alongside");
+      const lifecycle = harness.deps.pendingInteractions;
+      const notifyThread = vi.spyOn(harness.hub, "notifyThread");
+      const olderCard = requestPluginInteraction(harness.deps, {
+        threadId: thread.id,
+        name: "OLDER",
       });
 
-      const created = registerPendingInteraction(
-        harness.deps,
-        harness.deps.pendingInteractions,
-        {
-          threadId: thread.id,
-          turnId: "turn-concurrent-reject-1",
-          providerId: "codex",
-          providerThreadId: "provider-thread-concurrent-reject",
-          providerRequestId: "request-concurrent-reject-1",
-          payload: createCommandApprovalPayload({
-            itemId: "item-concurrent-reject-1",
-            reason: "Needs approval",
-            command: "git push",
-            cwd: "/tmp/project",
-          }),
-        },
-      );
-      if (created.outcome === "rejected") {
-        throw new Error(
-          `Expected interaction registration to succeed: ${created.reason}`,
-        );
+      const approval = registerPendingInteraction(harness.deps, lifecycle, {
+        threadId: thread.id,
+        turnId: "turn-alongside",
+        providerId: "codex",
+        providerThreadId: "provider-thread-alongside",
+        providerRequestId: "request-alongside",
+        payload: createCommandApprovalPayload({
+          itemId: "item-alongside",
+          reason: "Needs approval",
+          command: "git push",
+          cwd: "/tmp/project",
+        }),
+      });
+      if (approval.outcome === "rejected") {
+        throw new Error(`Expected the approval to open: ${approval.reason}`);
       }
+      const newerCard = requestPluginInteraction(harness.deps, {
+        threadId: thread.id,
+        name: "NEWER",
+      });
 
-      expect(
-        registerPendingInteraction(
-          harness.deps,
-          harness.deps.pendingInteractions,
+      expect(lifecycle.listPendingThreadInteractions(thread.id)).toHaveLength(
+        3,
+      );
+      expect(lifecycle.hasTurnBoundPendingThreadInteraction(thread.id)).toBe(
+        true,
+      );
+
+      harness.db.transaction((tx) =>
+        lifecycle.completeResolvingInteractionInTransaction(
+          { db: tx, hub: harness.deps.hub },
           {
-            threadId: thread.id,
-            turnId: "turn-concurrent-reject-2",
-            providerId: "codex",
-            providerThreadId: "provider-thread-concurrent-reject",
-            providerRequestId: "request-concurrent-reject-2",
-            payload: createFileChangeApprovalPayload({
-              itemId: "item-concurrent-reject-2",
-              reason: "Needs file write approval",
-            }),
+            interactionId: approval.interaction.id,
+            resolution: createAllowOnceResolution(),
           },
         ),
-      ).toEqual({
-        outcome: "rejected",
-        reason: `Thread ${thread.id} is already awaiting user interaction`,
+      );
+
+      expect(lifecycle.hasTurnBoundPendingThreadInteraction(thread.id)).toBe(
+        false,
+      );
+      expect(notifyThread).toHaveBeenLastCalledWith(
+        thread.id,
+        ["interactions-changed"],
+        expect.objectContaining({ hasPendingInteraction: true }),
+      );
+
+      lifecycle.interruptPluginInteractions("secrets");
+      await expect(Promise.all([olderCard, newerCard])).resolves.toEqual([
+        { outcome: "cancelled", reason: "plugin-disposed" },
+        { outcome: "cancelled", reason: "plugin-disposed" },
+      ]);
+      expect(notifyThread).toHaveBeenLastCalledWith(
+        thread.id,
+        ["interactions-changed"],
+        expect.objectContaining({ hasPendingInteraction: false }),
+      );
+    });
+  });
+
+  it("revives a restart-interrupted provider request beside another open card instead of duplicating it", async () => {
+    await withTestHarness(async (harness) => {
+      const thread = seedPluginInteractionThread(harness.deps, "revive");
+      const lifecycle = harness.deps.pendingInteractions;
+      const approvalPayload = createCommandApprovalPayload({
+        itemId: "item-revive",
+        reason: "Needs approval",
+        command: "git push",
+        cwd: "/tmp/project",
       });
+      const first = registerPendingInteraction(harness.deps, lifecycle, {
+        threadId: thread.id,
+        turnId: "turn-revive",
+        providerId: "codex",
+        providerThreadId: "provider-thread-revive",
+        providerRequestId: "request-before-restart",
+        payload: approvalPayload,
+      });
+      if (first.outcome === "rejected") {
+        throw new Error(`Expected the approval to open: ${first.reason}`);
+      }
+      const question = lifecycle.registerPendingInteraction({
+        interaction: {
+          threadId: thread.id,
+          turnId: "turn-revive",
+          providerId: "codex",
+          providerThreadId: "provider-thread-revive",
+          providerRequestId: "request-question",
+          payload: createUserQuestionPayload(),
+        },
+      });
+      expect(question.outcome).toBe("created");
+
+      harness.db
+        .update(pendingInteractionTable)
+        .set({
+          status: "interrupted",
+          statusReason:
+            "Host daemon restarted while awaiting user interaction; retry the thread to continue",
+        })
+        .where(eq(pendingInteractionTable.id, first.interaction.id))
+        .run();
+
+      const reemitted = lifecycle.registerPendingInteraction({
+        interaction: {
+          threadId: thread.id,
+          turnId: "turn-revive",
+          providerId: "codex",
+          providerThreadId: "provider-thread-revive",
+          providerRequestId: "request-after-restart",
+          payload: approvalPayload,
+        },
+      });
+
+      expect(reemitted).toMatchObject({
+        outcome: "existing",
+        interaction: { id: first.interaction.id, status: "pending" },
+      });
+      expect(
+        lifecycle
+          .listPendingThreadInteractions(thread.id)
+          .map((interaction) => interaction.id)
+          .sort(),
+      ).toEqual(
+        [
+          first.interaction.id,
+          question.outcome === "rejected" ? "" : question.interaction.id,
+        ].sort(),
+      );
     });
   });
 

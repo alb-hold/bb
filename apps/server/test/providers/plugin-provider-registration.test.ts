@@ -60,6 +60,7 @@ describe("buildPluginProviderRegistration", () => {
         supportsFork: true,
         supportsSessionRewind: true,
         modelCatalogScope: "workspace",
+        supportsNativeTerminal: false,
         permissionModes: ["accept-edits", "full"],
       },
       composerActions: [
@@ -211,6 +212,7 @@ describe("buildPluginProviderRegistration", () => {
         model: "m-1",
         displayName: "Model One",
         description: "The one.",
+        reasoningDiscovery: "known",
         supportedReasoningEfforts: [
           { reasoningEffort: "low", description: "Low." },
           { reasoningEffort: "high", description: "High." },

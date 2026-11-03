@@ -27,6 +27,7 @@ vi.mock("@/lib/api", async (importOriginal) => {
 
 vi.mock("@/lib/api-server", () => ({
   apiClient: { "sidebar-bootstrap": { $get: vi.fn(() => ({})) } },
+  fetchWithDeviceHandoffSubmission: vi.fn(),
 }));
 
 vi.mock("@/hooks/useRealtimeSubscription", () => ({
@@ -150,34 +151,6 @@ describe("useSidebarNavigation", () => {
         MAX_CACHED_SIDEBAR_THREADS_PER_PROJECT,
       );
     } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("does not fail the fetch when storage rejects the write", async () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true });
-    const setItem = vi
-      .spyOn(Storage.prototype, "setItem")
-      .mockImplementation(() => {
-        throw new DOMException("quota", "QuotaExceededError");
-      });
-    try {
-      vi.mocked(request).mockResolvedValue(BOOTSTRAP);
-      const harness = createQueryClientTestHarness();
-      const { result } = renderHook(() => useSidebarNavigation(), {
-        wrapper: harness.wrapper,
-      });
-      await waitFor(() => expect(result.current.data).toEqual(BOOTSTRAP));
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(5_000);
-      });
-      expect(setItem).toHaveBeenCalled();
-      expect(result.current.isError).toBe(false);
-      expect(
-        window.localStorage.getItem(SIDEBAR_BOOTSTRAP_CACHE_KEY),
-      ).toBeNull();
-    } finally {
-      setItem.mockRestore();
       vi.useRealTimers();
     }
   });

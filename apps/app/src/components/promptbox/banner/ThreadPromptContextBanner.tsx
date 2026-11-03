@@ -1,27 +1,45 @@
-import { CONTEXT_CARD_TOGGLE_CLASS } from "@bb/shared-ui/chrome-style-tokens";
+import {
+  experimental_THREAD_CONTEXT_SEGMENT_GROUPS,
+  type ExperimentalThreadContextSegmentInput,
+  type ExperimentalThreadContextSegmentProps,
+} from "@get-bb/plugin-sdk";
+import {
+  CORE_THREAD_CONTEXT_OWNER,
+  ThreadContextSegmentMount,
+  threadContextSegmentKey,
+  threadContextSegmentMountKey,
+  useThreadContextSegments,
+  type CoreThreadContextSegment,
+  type ThreadContextSegmentEntry,
+  type ThreadContextSegmentPart,
+} from "@/components/plugin/PluginThreadContextSegments";
+import {
+  collectPluginAppRegistrations,
+  definePluginApp,
+} from "@/lib/plugin-app-definition";
 import {
   machineRemovalDescriptions,
   machineRemovalLabels,
   type MachineRemovalStatus,
 } from "@/lib/machine-removal-display";
 import {
-  forwardRef,
-  type ButtonHTMLAttributes,
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent,
   type ReactNode,
   type RefObject,
 } from "react";
 import { NavLink } from "react-router-dom";
 import type {
   EnvironmentStatus,
-  GitBranchRefClassification,
-  ThreadPullRequest,
+  PendingInteraction,
   ThreadRuntimeDisplayStatus,
 } from "@bb/domain";
-import type { PullRequestMergeMethod } from "@bb/server-contract";
-import {
-  BranchPicker,
-  getMergeBaseBranchCandidateGroups,
-} from "@/components/pickers/BranchPicker";
 import {
   PromptStackCard,
   PROMPT_STACK_CARD_HEADER_BUTTON_CLASS,
@@ -33,69 +51,33 @@ import {
 import {
   activityIconClass,
   activityRowClass,
+  activityTextClass,
 } from "@bb/shared-ui/activity-row-styles";
-import { WorkspaceChangesList } from "@/components/thread/WorkspaceChangesList";
-import {
-  formatChangeSummary,
-  renderChangeSummary,
-  toChangeTally,
-  type WorkspaceChangedFileSelection,
-  type WorkspaceChangedFilesSection,
-} from "@/components/workspace/workspace-change-summary";
+import { formatPendingInteractionSummary } from "@bb/core-ui";
+import { InlinePendingInteractionContext } from "@/components/thread/pending-interactions/PendingInteractionShell";
+import { ThreadPendingInteractionBanners } from "@/components/thread/pending-interactions/ThreadPendingInteractionBanner";
 import { cn } from "@bb/shared-ui/lib/utils";
+import { useThreadContextKind } from "@/components/plugin/PluginThreadContextCard";
 import { Icon, type IconName } from "@bb/shared-ui/icon";
 import {
-  describePullRequestStatus,
-  getPullRequestNextStep,
-  isPullRequestAutoMergeOn,
-  getPullRequestGithubCheckStatus,
-  PULL_REQUEST_STATE_DISPLAY,
-} from "@/lib/pull-request-display";
-import { PullRequestNextStepLabel } from "@/components/pull-request/PullRequestNextStepLabel";
-import { PullRequestStatusPill } from "@/components/pull-request/PullRequestStatusPill";
-import { AnimatedDisclosureBody } from "@/components/promptbox/banner/AnimatedBody";
-import {
+  AnimatedBody,
+  AnimatedDisclosureBody,
   PROMPT_STACK_DISCLOSURE_TRIGGER_CLASS,
+  PromptStackCollapseRow,
   PromptStackCountSlot,
-  PromptStackHoverChevron,
+  SectionToggleButton,
   useDisclosureFocusHandoff,
 } from "@bb/shared-ui/prompt-stack-disclosure";
 import {
   BannerActionSlot,
-  PROMPT_BANNER_ACTION_FILL_CLASS,
-  PROMPT_BANNER_ACTION_SEGMENT_CLASS,
   PromptBannerActionButton,
-} from "@/components/promptbox/banner/prompt-banner-actions";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@bb/shared-ui/dropdown-menu";
-import { useUrlAnchorClickHandler } from "@/lib/url-open-routing";
+} from "@bb/shared-ui/prompt-banner-actions";
 import {
   ThreadTitle,
   useThreadTitleDisplayText,
 } from "@/components/thread/ThreadTitleMentions";
-
-export interface ContextBannerMergeBaseConfig {
-  branch: string;
-  branchRef?: GitBranchRefClassification | null;
-  options?: readonly string[];
-  remoteOptions?: readonly string[];
-  optionsLoading?: boolean;
-  onChange: (branch: string) => void;
-  onPickerOpenChange?: (open: boolean) => void;
-  onSearchQueryChange?: (query: string) => void;
-}
-
-export interface ThreadPromptGitSection {
-  changedFiles: WorkspaceChangedFilesSection;
-  mergeBase: ContextBannerMergeBaseConfig | null;
-  onPromptBannerFileClick: (selection: WorkspaceChangedFileSelection) => void;
-  workspaceSharingThreadCount?: number | null;
-}
+import { childThreadNoun } from "@/lib/child-thread-copy";
+import { SIDEBAR_WORKING_STATUS_COLOR_CLASS } from "@bb/shared-ui/sidebar-row-classes";
 
 export interface ThreadPromptParentThreadSection {
   parentThreadTitle: string;
@@ -110,19 +92,16 @@ interface ThreadPromptChildThreadItem {
   hasPendingInteraction: boolean;
 }
 
-export interface ThreadPromptChildThreadsSection {
-  items: readonly ThreadPromptChildThreadItem[];
+export interface ChildThreadQuestion {
+  childThreadId: string;
+  childTitle: string;
+  href: string;
+  interaction: PendingInteraction;
 }
 
-export interface ThreadPromptPullRequestSection {
-  pullRequest: ThreadPullRequest;
-  actions?: {
-    isPending?: boolean;
-    onMarkReady?: () => void;
-    onMerge?: (method: PullRequestMergeMethod) => void;
-    onConvertToDraft?: () => void;
-    selectedMergeMethod?: PullRequestMergeMethod;
-  };
+export interface ThreadPromptChildThreadsSection {
+  items: readonly ThreadPromptChildThreadItem[];
+  pendingInteractions: readonly ChildThreadQuestion[];
 }
 
 export interface ThreadPromptArchivedSection {
@@ -146,30 +125,20 @@ export function isThreadDisplayStatusBannerActive(
   return THREAD_BANNER_ACTIVE_CHILD_RUNTIME_STATUSES.has(status);
 }
 
-export type ThreadPromptContextBannerExpandedSection =
-  | "git"
-  | "parentThread"
-  | "childThreads"
-  | "status";
-
-interface ThreadPromptContextBannerProps {
-  gitSection: ThreadPromptGitSection | null;
-  gitSectionPending: boolean;
-  archivedSection: ThreadPromptArchivedSection | null;
-  environmentGoneSection: ThreadPromptEnvironmentGoneSection | null;
-  parentThreadSection: ThreadPromptParentThreadSection | null;
-  childThreadsSection: ThreadPromptChildThreadsSection | null;
-  pullRequestSection: ThreadPromptPullRequestSection | null;
-  expandedSection: ThreadPromptContextBannerExpandedSection | null;
-  onToggleSection: (section: ThreadPromptContextBannerExpandedSection) => void;
+export interface CoreThreadContext {
+  parentThread: ThreadPromptParentThreadSection | null;
   queuedWorkspaceWait?: string | null;
+  workspaceSharingThreadCount?: number | null;
 }
 
-const KIND_PREFIX: Record<WorkspaceChangedFilesSection["kind"], string> = {
-  uncommitted: "Uncommitted",
-  untracked: "Untracked",
-  committed: "Committed",
-};
+interface ThreadPromptContextBannerProps {
+  input: ExperimentalThreadContextSegmentInput;
+  core: CoreThreadContext;
+  archivedSection: ThreadPromptArchivedSection | null;
+  environmentGoneSection: ThreadPromptEnvironmentGoneSection | null;
+  expandedSegment: string | null;
+  onToggleSegment: (key: string) => void;
+}
 
 const ARCHIVED_THREAD_STATUS_LABEL = "Thread is archived";
 const ENVIRONMENT_GONE_STATUS_COPY: Record<
@@ -204,94 +173,11 @@ const SECTION_IDS = {
     toggle: "thread-prompt-banner-child-threads-toggle",
     body: "thread-prompt-banner-child-threads-body",
   },
-  git: {
-    toggle: "thread-prompt-banner-git-toggle",
-    body: "thread-prompt-banner-git-body",
-  },
   status: {
     toggle: "thread-prompt-banner-status-toggle",
     body: "thread-prompt-banner-status-body",
   },
 } as const;
-
-const SEGMENT_SHRINK_CLASS = "min-w-0 overflow-hidden";
-
-function ChildThreadIcon({ className }: { className?: string }) {
-  return (
-    <Icon
-      name="ChevronDown"
-      className={cn("size-3.5 shrink-0 rotate-45", className)}
-      aria-hidden="true"
-    />
-  );
-}
-
-interface SectionToggleButtonProps {
-  buttonRef: RefObject<HTMLButtonElement | null>;
-  fillRow: boolean;
-  id: string;
-  controlsId: string;
-  ariaLabel?: string;
-  icon: ReactNode;
-  label: ReactNode;
-  compactLabel?: ReactNode;
-  hideLabelInCompact?: boolean;
-  isExpanded: boolean;
-  onToggle: () => void;
-}
-
-function SectionToggleButton({
-  buttonRef,
-  fillRow,
-  id,
-  controlsId,
-  ariaLabel,
-  icon,
-  label,
-  compactLabel,
-  hideLabelInCompact = true,
-  isExpanded,
-  onToggle,
-}: SectionToggleButtonProps) {
-  return (
-    <button
-      ref={buttonRef}
-      type="button"
-      id={id}
-      aria-expanded={isExpanded}
-      aria-controls={controlsId}
-      aria-label={ariaLabel}
-      onClick={onToggle}
-      className={cn(
-        CONTEXT_CARD_TOGGLE_CLASS,
-        PROMPT_STACK_INLAY_SEGMENT_CLASS,
-        SEGMENT_SHRINK_CLASS,
-        label !== null && label !== undefined ? "gap-1.5" : "gap-0",
-        fillRow && "flex-1 justify-start text-left",
-        PROMPT_STACK_DISCLOSURE_TRIGGER_CLASS,
-        isExpanded ? "text-foreground" : "text-muted-foreground",
-      )}
-    >
-      {icon}
-      {label !== null && label !== undefined ? (
-        <span
-          className="min-w-0 truncate"
-          data-promptbox-hide-compact={hideLabelInCompact ? "" : undefined}
-        >
-          {label}
-        </span>
-      ) : null}
-      {hideLabelInCompact &&
-      compactLabel !== null &&
-      compactLabel !== undefined ? (
-        <span className="min-w-0 truncate" data-promptbox-compact-label="">
-          {compactLabel}
-        </span>
-      ) : null}
-      {fillRow ? <PromptStackHoverChevron isExpanded={isExpanded} /> : null}
-    </button>
-  );
-}
 
 const PARENT_SECTION_COPY: Record<
   ThreadPromptParentThreadSection["relationship"],
@@ -300,7 +186,7 @@ const PARENT_SECTION_COPY: Record<
   parent: {
     verb: "Parent",
     bodyLead: "This thread is a child of ",
-    ariaPrefix: "Parent thread",
+    ariaPrefix: "Parent",
   },
   fork: {
     verb: "Forked from",
@@ -361,23 +247,11 @@ function ParentThreadInlineSegment({
             title={section.parentThreadTitle}
             className={PARENT_THREAD_TITLE_CLASS}
             inline
+            inlineText
           />
         </NavLink>
       </span>
     </div>
-  );
-}
-
-function shouldShowPullRequestAttentionLabel(
-  pullRequest: ThreadPullRequest,
-): boolean {
-  if (pullRequest.attention === "checks_failed") return false;
-  return (
-    (pullRequest.state === "open" && pullRequest.attention === "queued") ||
-    pullRequest.attention === "changes_requested" ||
-    pullRequest.attention === "review_requested" ||
-    pullRequest.attention === "conflicts" ||
-    pullRequest.attention === "blocked"
   );
 }
 
@@ -442,6 +316,7 @@ function ParentThreadSectionBody({
             title={section.parentThreadTitle}
             className={PARENT_THREAD_TITLE_CLASS}
             inline
+            inlineText
           />
         </NavLink>
         .
@@ -450,72 +325,260 @@ function ParentThreadSectionBody({
   );
 }
 
+const CHILD_THREAD_ROW_CLASS =
+  "flex w-full min-w-0 items-center gap-2 py-0.5 text-left text-foreground/90 underline-offset-2 hover:underline";
+
+const CHILD_QUESTION_STEP_BUTTON_CLASS =
+  "flex size-6 shrink-0 items-center justify-center rounded-md text-subtle-foreground hover:bg-state-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
+
 function ChildThreadsBody({
   items,
+  pendingInteractions,
+  onOpenQuestion,
 }: {
   items: readonly ThreadPromptChildThreadItem[];
+  pendingInteractions: readonly ChildThreadQuestion[];
+  onOpenQuestion: (interactionId: string) => void;
 }) {
   return (
-    <ul className="max-h-40 space-y-0.5 overflow-y-auto px-3 pb-2 pt-1.5">
-      {items.map((item) => (
-        <li key={item.id} className="text-xs">
-          <NavLink
-            to={item.href}
-            className="flex min-w-0 items-center gap-2 py-0.5 text-foreground/90 underline-offset-2 hover:underline"
-          >
+    <ul className="max-h-40 space-y-0.5 overflow-y-auto px-3 pt-1.5">
+      {items.map((item) => {
+        const pending = item.hasPendingInteraction
+          ? pendingInteractions.find(
+              (candidate) => candidate.childThreadId === item.id,
+            )
+          : undefined;
+        const content = (
+          <>
             {item.hasPendingInteraction ? (
               <Icon
                 name="CircleQuestion"
                 className="size-3.5 shrink-0 text-muted-foreground/75 no-underline"
-                aria-hidden="true"
+                aria-label="Needs input"
               />
             ) : (
-              <ChildThreadIcon className="text-subtle-foreground no-underline" />
+              <Icon
+                name="Loading"
+                className={cn(
+                  "size-3.5 shrink-0 animate-spin no-underline motion-reduce:animate-none",
+                  SIDEBAR_WORKING_STATUS_COLOR_CLASS,
+                )}
+                aria-label="Working"
+              />
             )}
-            <ThreadTitle title={item.title} tooltip className="flex-1" />
-            {item.hasPendingInteraction ? (
-              <span className="shrink-0 text-muted-foreground">
-                Needs input
-              </span>
-            ) : null}
-          </NavLink>
-        </li>
-      ))}
+            {pending ? (
+              <ChildQuestionSummary
+                childTitle={<ThreadTitle title={item.title} tooltip />}
+                question={formatPendingInteractionSummary({
+                  interaction: pending.interaction,
+                })}
+              />
+            ) : (
+              <ThreadTitle title={item.title} tooltip className="flex-1" />
+            )}
+          </>
+        );
+        return (
+          <li key={item.id} className="text-xs">
+            {pending ? (
+              <button
+                type="button"
+                data-child-question-row={item.id}
+                onClick={() => onOpenQuestion(pending.interaction.id)}
+                className={CHILD_THREAD_ROW_CLASS}
+              >
+                {content}
+              </button>
+            ) : (
+              <NavLink to={item.href} className={CHILD_THREAD_ROW_CLASS}>
+                {content}
+              </NavLink>
+            )}
+          </li>
+        );
+      })}
     </ul>
   );
 }
 
-const PromptBannerActionGroup = ({ children }: { children: ReactNode }) => (
-  <div
-    className={cn(
-      "inline-flex overflow-hidden rounded border border-border",
-      PROMPT_BANNER_ACTION_FILL_CLASS,
-    )}
-  >
-    {children}
-  </div>
-);
-
-const PromptBannerActionSegmentButton = forwardRef<
-  HTMLButtonElement,
-  ButtonHTMLAttributes<HTMLButtonElement>
->(function PromptBannerActionSegmentButton(
-  { className, type = "button", ...props },
-  ref,
-) {
+function ChildQuestionSummary({
+  childTitle,
+  question,
+}: {
+  childTitle: ReactNode;
+  question: string;
+}) {
   return (
-    <button
-      ref={ref}
-      type={type}
-      className={cn(
-        "px-1.5 py-0.5",
-        PROMPT_BANNER_ACTION_SEGMENT_CLASS,
-        className,
-      )}
-      {...props}
+    <span className="flex min-w-0 flex-1 items-baseline">
+      <span className="min-w-0 max-w-[70%] shrink-0 truncate text-foreground">
+        {childTitle}
+      </span>
+      <span className="shrink-0 whitespace-pre text-foreground">: </span>
+      <span
+        title={question}
+        className="min-w-0 flex-1 truncate text-muted-foreground"
+      >
+        {question}
+      </span>
+    </span>
+  );
+}
+
+function ChildThreadsHeaderIcon({ needsInput }: { needsInput: boolean }) {
+  return needsInput ? (
+    <span className="relative mr-1 inline-flex shrink-0">
+      <Icon
+        name="ChildThread"
+        className="size-3.5 text-muted-foreground"
+        aria-hidden="true"
+      />
+      <span className="absolute -bottom-1.5 -right-1.5 inline-flex rounded-full bg-background">
+        <Icon
+          name="CircleQuestion"
+          className="size-3 text-foreground/80"
+          aria-label="Needs input"
+        />
+      </span>
+    </span>
+  ) : (
+    <Icon
+      name="ChildThread"
+      className={activityIconClass("active", "size-3.5 shrink-0")}
+      aria-hidden="true"
     />
   );
-});
+}
+
+function ChildQuestionBackHeader({
+  backButtonRef,
+  needsInput,
+  onBack,
+}: {
+  backButtonRef: RefObject<HTMLButtonElement | null>;
+  needsInput: boolean;
+  onBack: () => void;
+}) {
+  return (
+    <button
+      ref={backButtonRef}
+      type="button"
+      id={SECTION_IDS.childThreads.toggle}
+      aria-label="Back to active child threads"
+      onClick={onBack}
+      className={activityRowClass(
+        "active",
+        cn(
+          PROMPT_STACK_CARD_HEADER_BUTTON_CLASS,
+          PROMPT_STACK_DISCLOSURE_TRIGGER_CLASS,
+        ),
+      )}
+    >
+      <Icon
+        name="ChevronLeft"
+        className="size-3.5 shrink-0 text-muted-foreground"
+        aria-hidden="true"
+      />
+      <ChildThreadsHeaderIcon needsInput={needsInput} />
+      <span
+        className={activityTextClass(
+          "active",
+          "min-w-0 flex-1 truncate text-left font-normal",
+        )}
+      >
+        Active child threads
+      </span>
+    </button>
+  );
+}
+
+function ChildQuestionBody({
+  titleLinkRef,
+  current,
+  index,
+  total,
+  onStep,
+  onClose,
+}: {
+  titleLinkRef: RefObject<HTMLAnchorElement | null>;
+  current: ChildThreadQuestion;
+  index: number;
+  total: number;
+  onStep: (offset: 1 | -1) => void;
+  onClose: (childThreadId: string) => void;
+}) {
+  const position = `${index + 1} of ${total}`;
+  const childTitle = useThreadTitleDisplayText(current.childTitle);
+  const question = formatPendingInteractionSummary({
+    interaction: current.interaction,
+  });
+  const form = useMemo(
+    () => (
+      <InlinePendingInteractionContext.Provider
+        value={{
+          promptShownAbove: question,
+          close: () => onClose(current.childThreadId),
+        }}
+      >
+        <ThreadPendingInteractionBanners
+          interactions={[current.interaction]}
+          threadId={current.childThreadId}
+        />
+      </InlinePendingInteractionContext.Provider>
+    ),
+    [current.interaction, current.childThreadId, question, onClose],
+  );
+  return (
+    <div className="px-3 pb-2 pt-2">
+      <div className="flex min-w-0 items-start justify-between gap-2">
+        <p className="max-h-[calc(5lh+0.125rem)] min-w-0 flex-1 overflow-y-auto overscroll-contain break-words px-2.5 pt-0.5 text-xs text-foreground">
+          <NavLink
+            ref={titleLinkRef}
+            to={current.href}
+            className="underline underline-offset-2"
+          >
+            {childTitle}
+          </NavLink>
+          : <span className="text-muted-foreground">{question}</span>
+        </p>
+        {total > 1 ? (
+          <div className="-mr-1.5 flex shrink-0 items-center text-xs">
+            <button
+              type="button"
+              aria-label="Previous question"
+              onClick={() => onStep(-1)}
+              className={CHILD_QUESTION_STEP_BUTTON_CLASS}
+            >
+              <Icon
+                name="ChevronLeft"
+                className="size-3.5"
+                aria-hidden="true"
+              />
+            </button>
+            <span className="whitespace-nowrap tabular-nums text-subtle-foreground">
+              {position}
+            </span>
+            <button
+              type="button"
+              aria-label="Next question"
+              onClick={() => onStep(1)}
+              className={CHILD_QUESTION_STEP_BUTTON_CLASS}
+            >
+              <Icon
+                name="ChevronRight"
+                className="size-3.5"
+                aria-hidden="true"
+              />
+            </button>
+          </div>
+        ) : null}
+      </div>
+      <span aria-live="polite" className="sr-only">
+        {total > 1 ? `Question ${position}` : ""}
+      </span>
+      <div className="mt-1.5">{form}</div>
+    </div>
+  );
+}
 
 function PendingBannerActionButton({
   pending,
@@ -535,150 +598,28 @@ function PendingBannerActionButton({
   );
 }
 
-const PULL_REQUEST_MERGE_ACTIONS: readonly {
-  method: PullRequestMergeMethod;
-  label: string;
-}[] = [
-  { method: "merge", label: "Merge" },
-  { method: "squash", label: "Squash merge" },
-  { method: "rebase", label: "Rebase and merge" },
-];
+const NO_CHILD_THREAD_ITEMS: readonly ThreadPromptChildThreadItem[] = [];
 
-function PullRequestMergeSplitButton({
-  disabled,
-  onConvertToDraft,
-  onMerge,
-  selectedMethod,
-}: {
-  disabled?: boolean;
-  onConvertToDraft?: () => void;
-  onMerge: (method: PullRequestMergeMethod) => void;
-  selectedMethod: PullRequestMergeMethod;
-}) {
-  const selectedAction =
-    PULL_REQUEST_MERGE_ACTIONS.find(
-      (action) => action.method === selectedMethod,
-    ) ?? PULL_REQUEST_MERGE_ACTIONS[0];
-  return (
-    <PromptBannerActionGroup>
-      <PromptBannerActionSegmentButton
-        disabled={Boolean(disabled)}
-        onClick={() => onMerge(selectedAction.method)}
-      >
-        {selectedAction.label}
-      </PromptBannerActionSegmentButton>
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild>
-          <PromptBannerActionSegmentButton
-            disabled={Boolean(disabled)}
-            className={cn(
-              "inline-flex items-center border-l border-border px-1 data-[state=open]:bg-state-active data-[state=open]:text-foreground",
-            )}
-            aria-label="Choose pull request merge method"
-          >
-            <Icon name="ChevronDown" className="size-3" aria-hidden="true" />
-          </PromptBannerActionSegmentButton>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent
-          align="end"
-          sideOffset={2}
-          mobileTitle="Merge pull request"
-        >
-          {PULL_REQUEST_MERGE_ACTIONS.map((action) => (
-            <DropdownMenuItem
-              key={action.method}
-              onSelect={() => onMerge(action.method)}
-              textValue={action.label}
-            >
-              {action.label}
-            </DropdownMenuItem>
-          ))}
-          {onConvertToDraft ? (
-            <>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem
-                onSelect={onConvertToDraft}
-                textValue="Convert to draft"
-              >
-                Convert to draft
-              </DropdownMenuItem>
-            </>
-          ) : null}
-        </DropdownMenuContent>
-      </DropdownMenu>
-    </PromptBannerActionGroup>
-  );
-}
-
-function PullRequestBannerLink({
-  pullRequest,
-  hideLabelInCompact,
-  showLabel,
-  showStateLabel,
-}: {
-  pullRequest: ThreadPullRequest;
-  hideLabelInCompact: boolean;
-  showLabel: boolean;
-  showStateLabel: boolean;
-}) {
-  const nextStep = getPullRequestNextStep(pullRequest);
-  const stateDisplay = PULL_REQUEST_STATE_DISPLAY[pullRequest.state];
-  const handlePullRequestClick = useUrlAnchorClickHandler(pullRequest.url);
-  const showAttentionLabel =
-    showLabel && shouldShowPullRequestAttentionLabel(pullRequest);
-  return (
-    <a
-      href={pullRequest.url}
-      target="_blank"
-      rel="noopener noreferrer"
-      onClick={handlePullRequestClick}
-      aria-label={`Pull request ${pullRequest.number}: ${describePullRequestStatus(pullRequest)}`}
-      className={cn(
-        "flex items-center gap-1.5 text-xs text-muted-foreground no-underline transition-colors hover:bg-state-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
-        PROMPT_STACK_INLAY_SEGMENT_CLASS,
-        getPullRequestGithubCheckStatus(pullRequest) !== null
-          ? "min-w-13"
-          : "min-w-8",
-        "overflow-hidden",
-      )}
-    >
-      <PullRequestStatusPill pullRequest={pullRequest} className="h-4" />
-      {showLabel ? (
-        <span
-          className="min-w-0 truncate"
-          data-promptbox-hide-compact={hideLabelInCompact ? "" : undefined}
-        >
-          PR #{pullRequest.number}
-          {showStateLabel && pullRequest.state !== "open"
-            ? ` · ${stateDisplay.label}`
-            : ""}
-        </span>
-      ) : null}
-      {showAttentionLabel && nextStep ? (
-        <>
-          <span aria-hidden>·</span>
-          <PullRequestNextStepLabel nextStep={nextStep} />
-        </>
-      ) : null}
-      {showLabel && isPullRequestAutoMergeOn(pullRequest) ? (
-        <Icon
-          name="Zap"
-          aria-label="Auto-merge on"
-          className="size-3 shrink-0 text-subtle-foreground"
-        />
-      ) : null}
-    </a>
-  );
-}
-
-function childThreadsLabel(args: {
-  count: number;
-  pendingCount: number;
-}): string {
-  if (args.pendingCount > 0) {
-    return `${args.pendingCount} child ${args.pendingCount === 1 ? "thread needs" : "threads need"} input`;
-  }
-  return `${args.count} active child ${args.count === 1 ? "thread" : "threads"}`;
+function useExpandForNewNeedsInput(
+  items: readonly ThreadPromptChildThreadItem[],
+  isExpanded: boolean,
+  onExpand: () => void,
+) {
+  const needsInputKey = items
+    .filter((item) => item.hasPendingInteraction)
+    .map((item) => item.id)
+    .join(" ");
+  const seenNeedsInputKey = useRef("");
+  useEffect(() => {
+    const seen = new Set(seenNeedsInputKey.current.split(" "));
+    seenNeedsInputKey.current = needsInputKey;
+    const hasNewNeedsInput =
+      needsInputKey !== "" &&
+      needsInputKey.split(" ").some((id) => !seen.has(id));
+    if (hasNewNeedsInput && !isExpanded) {
+      onExpand();
+    }
+  }, [needsInputKey, isExpanded, onExpand]);
 }
 
 function ActiveChildThreadsCard({
@@ -690,127 +631,426 @@ function ActiveChildThreadsCard({
   isExpanded: boolean;
   onToggle: () => void;
 }) {
-  const items = [...childThreadsSection.items].sort((left, right) =>
-    left.hasPendingInteraction === right.hasPendingInteraction
-      ? 0
-      : left.hasPendingInteraction
-        ? -1
-        : 1,
-  );
-  const primary = items[0];
-  const primaryTitle = useThreadTitleDisplayText(primary?.title ?? "");
   const focus = useDisclosureFocusHandoff(isExpanded, onToggle);
-  if (!primary) {
+  const cardRef = useRef<HTMLElement>(null);
+  const [openQuestion, setOpenQuestion] = useState<{
+    interactionId: string;
+    index: number;
+  } | null>(null);
+  const returnFocusChildId = useRef<string | null>(null);
+  useEffect(() => {
+    const childId = returnFocusChildId.current;
+    if (openQuestion !== null || childId === null) {
+      return;
+    }
+    returnFocusChildId.current = null;
+    cardRef.current
+      ?.querySelector<HTMLElement>(`[data-child-question-row="${childId}"]`)
+      ?.focus();
+  }, [openQuestion]);
+  const closeQuestion = useCallback((childThreadId: string) => {
+    returnFocusChildId.current = childThreadId;
+    setOpenQuestion(null);
+  }, []);
+  const items = childThreadsSection.items;
+  const pendingInteractions = childThreadsSection.pendingInteractions;
+  const matchedIndex = openQuestion
+    ? pendingInteractions.findIndex(
+        (item) => item.interaction.id === openQuestion.interactionId,
+      )
+    : -1;
+  const questionIndex =
+    matchedIndex >= 0
+      ? matchedIndex
+      : Math.min(openQuestion?.index ?? 0, pendingInteractions.length - 1);
+  const currentQuestion =
+    openQuestion && isExpanded ? pendingInteractions[questionIndex] : undefined;
+  if (openQuestion && !currentQuestion) {
+    setOpenQuestion(null);
+  } else if (
+    currentQuestion &&
+    (openQuestion?.interactionId !== currentQuestion.interaction.id ||
+      openQuestion.index !== questionIndex)
+  ) {
+    setOpenQuestion({
+      interactionId: currentQuestion.interaction.id,
+      index: questionIndex,
+    });
+  }
+  const backButtonRef = useRef<HTMLButtonElement>(null);
+  const titleLinkRef = useRef<HTMLAnchorElement>(null);
+  const focusBackOnOpen = useRef(false);
+  const openChildThreadId = currentQuestion?.childThreadId ?? null;
+  useEffect(() => {
+    if (openChildThreadId !== null && focusBackOnOpen.current) {
+      focusBackOnOpen.current = false;
+      (backButtonRef.current ?? titleLinkRef.current)?.focus();
+    }
+  }, [openChildThreadId]);
+  const focusWasInCard = useRef(false);
+  const hasItems = items.length > 0;
+  useEffect(() => {
+    const card = cardRef.current;
+    if (!card) {
+      return;
+    }
+    const handleFocusIn = () => {
+      focusWasInCard.current = true;
+    };
+    const handleFocusOut = (event: FocusEvent) => {
+      if (
+        event.relatedTarget instanceof Node &&
+        !card.contains(event.relatedTarget)
+      ) {
+        focusWasInCard.current = false;
+      }
+    };
+    const handlePointerDown = (event: PointerEvent) => {
+      if (event.target instanceof Node && !card.contains(event.target)) {
+        focusWasInCard.current = false;
+      }
+    };
+    card.addEventListener("focusin", handleFocusIn);
+    card.addEventListener("focusout", handleFocusOut);
+    document.addEventListener("pointerdown", handlePointerDown, true);
+    return () => {
+      card.removeEventListener("focusin", handleFocusIn);
+      card.removeEventListener("focusout", handleFocusOut);
+      document.removeEventListener("pointerdown", handlePointerDown, true);
+    };
+  }, [hasItems]);
+  const currentInteractionId = currentQuestion?.interaction.id ?? null;
+  const shownInteractionId = useRef<string | null>(null);
+  useEffect(() => {
+    const previous = shownInteractionId.current;
+    shownInteractionId.current = currentInteractionId;
+    if (
+      !focusWasInCard.current ||
+      previous === null ||
+      previous === currentInteractionId ||
+      pendingInteractions.some((item) => item.interaction.id === previous)
+    ) {
+      return;
+    }
+    const active = document.activeElement;
+    if (active !== null && active !== document.body) {
+      return;
+    }
+    (
+      backButtonRef.current ??
+      titleLinkRef.current ??
+      focus.triggerRef.current
+    )?.focus();
+  }, [currentInteractionId, pendingInteractions, focus.triggerRef]);
+  const newestQuestionTitle = useThreadTitleDisplayText(
+    pendingInteractions[0]?.childTitle ?? "",
+  );
+  if (items.length === 0) {
     return null;
   }
-  const pendingCount = items.filter(
-    (item) => item.hasPendingInteraction,
-  ).length;
-  const otherCount = items.length - 1;
-  const groupLabel = childThreadsLabel({
-    count: items.length,
-    pendingCount,
-  });
-  const needsApproval = pendingCount > 0;
+  const closeQuestionOnEscape = (event: KeyboardEvent<HTMLElement>) => {
+    if (
+      event.key !== "Escape" ||
+      event.defaultPrevented ||
+      event.nativeEvent.isComposing ||
+      !currentQuestion
+    ) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    closeQuestion(currentQuestion.childThreadId);
+  };
+  const openQuestionAt = (index: number) => {
+    const next = pendingInteractions[index];
+    if (next) {
+      setOpenQuestion({ interactionId: next.interaction.id, index });
+    }
+  };
+  const newestQuestion = isExpanded ? undefined : pendingInteractions[0];
+  const collapsedQuestion = newestQuestion
+    ? {
+        childTitle: newestQuestion.childTitle,
+        text: formatPendingInteractionSummary({
+          interaction: newestQuestion.interaction,
+        }),
+      }
+    : null;
+  const backToChildThreads = () => {
+    if (currentQuestion) {
+      closeQuestion(currentQuestion.childThreadId);
+    }
+  };
+  const showBackHeader = currentQuestion !== undefined && items.length > 1;
+  const needsInput = items.some((item) => item.hasPendingInteraction);
   return (
     <PromptStackCard
+      rootRef={cardRef}
       ariaLabel="Child threads"
+      onKeyDown={closeQuestionOnEscape}
       className="overflow-hidden"
       style={{ minHeight: PROMPT_STACK_CARD_ROW_HEIGHT }}
     >
-      <div className="flex items-center">
+      {showBackHeader ? (
+        <ChildQuestionBackHeader
+          backButtonRef={backButtonRef}
+          needsInput={needsInput}
+          onBack={backToChildThreads}
+        />
+      ) : (
         <button
           ref={focus.triggerRef}
           type="button"
           id={SECTION_IDS.childThreads.toggle}
           aria-expanded={isExpanded}
           aria-controls={SECTION_IDS.childThreads.body}
-          aria-label={`${groupLabel}: ${primaryTitle}`}
+          aria-label={
+            collapsedQuestion
+              ? `${items.length} active ${childThreadNoun(items.length)}, needs input: ${newestQuestionTitle}: ${collapsedQuestion.text}`
+              : `${items.length} active ${childThreadNoun(items.length)}`
+          }
           onClick={focus.onTriggerClick}
-          className={cn(
-            needsApproval
-              ? PROMPT_STACK_CARD_HEADER_BUTTON_CLASS
-              : activityRowClass(
-                  "active",
-                  PROMPT_STACK_CARD_HEADER_BUTTON_CLASS,
-                ),
-            PROMPT_STACK_DISCLOSURE_TRIGGER_CLASS,
+          className={activityRowClass(
+            "active",
+            cn(
+              PROMPT_STACK_CARD_HEADER_BUTTON_CLASS,
+              PROMPT_STACK_DISCLOSURE_TRIGGER_CLASS,
+            ),
           )}
         >
-          <Icon
-            name={needsApproval ? "CircleQuestion" : "UserRound"}
-            className={
-              needsApproval
-                ? "size-3.5 shrink-0 text-muted-foreground/75"
-                : activityIconClass("active", "size-3.5 shrink-0")
-            }
-            aria-hidden="true"
-          />
-          <span className="flex min-w-0 flex-1 items-center text-left">
-            <span className="shrink-0 text-muted-foreground">
-              {needsApproval ? "Needs your input: " : "Active child thread: "}
+          <ChildThreadsHeaderIcon needsInput={needsInput} />
+          {collapsedQuestion ? (
+            <span className="flex min-w-0 flex-1 text-left">
+              <ChildQuestionSummary
+                childTitle={
+                  <ThreadTitle title={collapsedQuestion.childTitle} tooltip />
+                }
+                question={collapsedQuestion.text}
+              />
             </span>
-            <ThreadTitle
-              title={primary.title}
-              className="min-w-0 flex-1 truncate font-medium text-foreground/80"
-              inline
-            />
-          </span>
-          {otherCount > 0 ? (
-            <PromptStackCountSlot count={otherCount} />
           ) : (
-            <PromptStackHoverChevron isExpanded={isExpanded} />
+            <span
+              className={activityTextClass(
+                "active",
+                "min-w-0 flex-1 truncate text-left font-normal",
+              )}
+            >
+              Active child threads
+            </span>
           )}
+          <PromptStackCountSlot count={items.length} />
         </button>
-      </div>
-      <AnimatedDisclosureBody
+      )}
+      <AnimatedBody
         collapsedBorder="reserve"
         id={SECTION_IDS.childThreads.body}
         labelledBy={SECTION_IDS.childThreads.toggle}
         isExpanded={isExpanded}
-        collapseLabel="Collapse child threads"
-        collapseRef={focus.collapseRef}
-        onCollapse={focus.onCollapseClick}
       >
-        <ChildThreadsBody items={items} />
-      </AnimatedDisclosureBody>
+        {currentQuestion ? (
+          <ChildQuestionBody
+            titleLinkRef={titleLinkRef}
+            current={currentQuestion}
+            index={questionIndex}
+            total={pendingInteractions.length}
+            onStep={(offset) =>
+              openQuestionAt(
+                (questionIndex + offset + pendingInteractions.length) %
+                  pendingInteractions.length,
+              )
+            }
+            onClose={closeQuestion}
+          />
+        ) : (
+          <ChildThreadsBody
+            items={items}
+            pendingInteractions={pendingInteractions}
+            onOpenQuestion={(interactionId) => {
+              focusBackOnOpen.current = true;
+              openQuestionAt(
+                pendingInteractions.findIndex(
+                  (item) => item.interaction.id === interactionId,
+                ),
+              );
+            }}
+          />
+        )}
+        {currentQuestion ? null : (
+          <PromptStackCollapseRow
+            buttonRef={focus.collapseRef}
+            className="rounded-none"
+            controlsId={SECTION_IDS.childThreads.body}
+            label={`Collapse ${items.length} ${childThreadNoun(items.length)}`}
+            onCollapse={focus.onCollapseClick}
+          />
+        )}
+      </AnimatedBody>
     </PromptStackCard>
   );
 }
 
+type DisclosureFocusHandoff = ReturnType<typeof useDisclosureFocusHandoff>;
+
+interface CoreThreadContextValue extends CoreThreadContext {
+  parentFocus: DisclosureFocusHandoff;
+}
+
+const CoreThreadContextContext = createContext<CoreThreadContextValue | null>(
+  null,
+);
+
+function useCoreThreadContext(): CoreThreadContextValue {
+  const value = useContext(CoreThreadContextContext);
+  if (value === null) {
+    throw new Error("Core thread context segments render inside the banner");
+  }
+  return value;
+}
+
+function ParentThreadSummary({
+  segments,
+  isExpanded,
+}: ExperimentalThreadContextSegmentProps) {
+  const { parentThread, parentFocus } = useCoreThreadContext();
+  if (parentThread === null) return null;
+  return segments.length === 1 ? (
+    <ParentThreadInlineSegment section={parentThread} />
+  ) : (
+    <ParentThreadSectionToggle
+      section={parentThread}
+      buttonRef={parentFocus.triggerRef}
+      isExpanded={isExpanded}
+      onToggle={parentFocus.onTriggerClick}
+    />
+  );
+}
+
+function ParentThreadDetails({
+  segments,
+  isExpanded,
+}: ExperimentalThreadContextSegmentProps) {
+  const { parentThread, parentFocus } = useCoreThreadContext();
+  if (parentThread === null || segments.length === 1) return null;
+  return (
+    <ParentThreadSectionBody
+      section={parentThread}
+      isExpanded={isExpanded}
+      collapseRef={parentFocus.collapseRef}
+      onCollapse={parentFocus.onCollapseClick}
+    />
+  );
+}
+
+export function ThreadChildThreadsBanner({
+  childThreads,
+  isExpanded,
+  onExpandedChange,
+  autoExpandDisabled = false,
+}: {
+  childThreads: ThreadPromptChildThreadsSection | null;
+  isExpanded: boolean;
+  onExpandedChange: (isExpanded: boolean) => void;
+  autoExpandDisabled?: boolean;
+}) {
+  const items = childThreads?.items ?? NO_CHILD_THREAD_ITEMS;
+  useExpandForNewNeedsInput(items, isExpanded || autoExpandDisabled, () =>
+    onExpandedChange(true),
+  );
+  if (childThreads === null || items.length === 0) return null;
+  return (
+    <ActiveChildThreadsCard
+      childThreadsSection={childThreads}
+      isExpanded={isExpanded}
+      onToggle={() => onExpandedChange(!isExpanded)}
+    />
+  );
+}
+
+const SEGMENT_GROUPS = experimental_THREAD_CONTEXT_SEGMENT_GROUPS;
+
+const coreThreadContextSegments: readonly CoreThreadContextSegment[] =
+  collectPluginAppRegistrations(
+    definePluginApp((app) => {
+      app.slots.experimental_threadContextSegment({
+        id: "parent-thread",
+        title: "Parent thread",
+        group: SEGMENT_GROUPS.thread,
+        order: 10,
+        summary: ParentThreadSummary,
+        details: ParentThreadDetails,
+        useVisible: () => {
+          const { parentThread } = useCoreThreadContext();
+          const kind = useThreadContextKind();
+          return parentThread !== null && kind === "banner";
+        },
+      });
+    }),
+  ).threadContextSegments.map((slot) => ({
+    ...slot,
+    pluginId: CORE_THREAD_CONTEXT_OWNER,
+  }));
+
+function coreSlot(id: string): CoreThreadContextSegment {
+  const slot = coreThreadContextSegments.find(
+    (candidate) => candidate.id === id,
+  );
+  if (slot === undefined) throw new Error(`Missing core segment ${id}`);
+  return slot;
+}
+
+const PARENT_THREAD_SLOT = coreSlot("parent-thread");
+const PARENT_THREAD_ENTRY: ThreadContextSegmentEntry = {
+  owner: "core",
+  slot: PARENT_THREAD_SLOT,
+};
+const PARENT_THREAD_KEY = threadContextSegmentKey(PARENT_THREAD_SLOT);
+const STATUS_KEY = `${CORE_THREAD_CONTEXT_OWNER}/status`;
+const READ_ONLY_SEGMENTS = [
+  { key: PARENT_THREAD_KEY, pluginId: CORE_THREAD_CONTEXT_OWNER },
+  { key: STATUS_KEY, pluginId: CORE_THREAD_CONTEXT_OWNER },
+];
+
 interface ReadOnlyContextBannerProps {
+  input: ExperimentalThreadContextSegmentInput;
   iconName: IconName;
   statusLabel: string;
   description: string | null;
-  parentThreadSection: ThreadPromptParentThreadSection | null;
+  hasParentThread: boolean;
   statusAction: ReactNode;
-  expandedSection: ThreadPromptContextBannerExpandedSection | null;
-  onToggleSection: (section: ThreadPromptContextBannerExpandedSection) => void;
+  expandedSegment: string | null;
+  onToggleSegment: (key: string) => void;
 }
 
 function ReadOnlyContextBanner({
+  input,
   iconName,
   statusLabel,
   description,
-  parentThreadSection,
+  hasParentThread,
   statusAction,
-  expandedSection,
-  onToggleSection,
+  expandedSegment,
+  onToggleSegment,
 }: ReadOnlyContextBannerProps) {
-  const isParentThreadExpanded =
-    expandedSection === "parentThread" && parentThreadSection !== null;
-  const isStatusExpanded = expandedSection === "status" && description !== null;
-  const parentFocus = useDisclosureFocusHandoff(isParentThreadExpanded, () =>
-    onToggleSection("parentThread"),
-  );
+  const isStatusExpanded =
+    expandedSegment === STATUS_KEY && description !== null;
   const statusFocus = useDisclosureFocusHandoff(isStatusExpanded, () =>
-    onToggleSection("status"),
+    onToggleSegment(STATUS_KEY),
   );
-  const hasMultipleSegments = parentThreadSection !== null;
   const statusIcon = (
     <Icon name={iconName} className="size-3.5 shrink-0" aria-hidden="true" />
   );
-  const showStatusAction = statusAction !== null && !hasMultipleSegments;
+  const showStatusAction = statusAction !== null && !hasParentThread;
+  const parentSegment = (part: ThreadContextSegmentPart) =>
+    hasParentThread ? (
+      <ThreadContextSegmentMount
+        entry={PARENT_THREAD_ENTRY}
+        {...input}
+        part={part}
+        segments={READ_ONLY_SEGMENTS}
+        isExpanded={expandedSegment === PARENT_THREAD_KEY}
+        onToggle={() => onToggleSegment(PARENT_THREAD_KEY)}
+      />
+    ) : null;
   return (
     <PromptStackCard
       ariaLabel="Thread history"
@@ -823,14 +1063,7 @@ function ReadOnlyContextBanner({
           PROMPT_STACK_INLAY_INSET_CLASS,
         )}
       >
-        {parentThreadSection ? (
-          <ParentThreadSectionToggle
-            section={parentThreadSection}
-            buttonRef={parentFocus.triggerRef}
-            isExpanded={isParentThreadExpanded}
-            onToggle={parentFocus.onTriggerClick}
-          />
-        ) : null}
+        {parentSegment("summary")}
         {description === null ? (
           <div
             className={cn(
@@ -877,325 +1110,173 @@ function ReadOnlyContextBanner({
           </p>
         </AnimatedDisclosureBody>
       )}
-      {parentThreadSection ? (
-        <ParentThreadSectionBody
-          section={parentThreadSection}
-          isExpanded={isParentThreadExpanded}
-          collapseRef={parentFocus.collapseRef}
-          onCollapse={parentFocus.onCollapseClick}
-        />
-      ) : null}
+      {parentSegment("details")}
     </PromptStackCard>
   );
 }
 
+function WritableContextBanner({
+  input,
+  expandedSegment,
+  onToggleSegment,
+  queuedWorkspaceWait,
+}: {
+  input: ExperimentalThreadContextSegmentInput;
+  expandedSegment: string | null;
+  onToggleSegment: (key: string) => void;
+  queuedWorkspaceWait?: string | null;
+}) {
+  const { workspaceSharingThreadCount: sharingThreadCount } =
+    useCoreThreadContext();
+  const workspaceSharingThreadCount = sharingThreadCount ?? 0;
+  const { entries, observers } = useThreadContextSegments(
+    input,
+    coreThreadContextSegments,
+  );
+  const segments = [
+    ...entries.map(({ slot }) => ({
+      key: threadContextSegmentKey(slot),
+      pluginId: slot.pluginId,
+    })),
+    ...(queuedWorkspaceWait
+      ? [
+          {
+            key: `${CORE_THREAD_CONTEXT_OWNER}/workspace-wait`,
+            pluginId: CORE_THREAD_CONTEXT_OWNER,
+          },
+        ]
+      : []),
+  ];
+  const mount = (
+    entry: ThreadContextSegmentEntry,
+    part: ThreadContextSegmentPart,
+  ) => {
+    const key = threadContextSegmentKey(entry.slot);
+    return (
+      <ThreadContextSegmentMount
+        key={threadContextSegmentMountKey(entry, input.threadId, part)}
+        entry={entry}
+        part={part}
+        {...input}
+        segments={segments}
+        isExpanded={expandedSegment === key}
+        onToggle={() => onToggleSegment(key)}
+      />
+    );
+  };
+  return (
+    <>
+      {observers}
+      {entries.length > 0 ||
+      queuedWorkspaceWait ||
+      workspaceSharingThreadCount > 1 ? (
+        <PromptStackCard
+          ariaLabel="Thread context before sending"
+          className="overflow-hidden"
+          style={{ minHeight: PROMPT_CONTEXT_BANNER_COLLAPSED_HEIGHT }}
+        >
+          <div
+            className={cn(
+              "flex items-center gap-0.5 text-xs text-muted-foreground",
+              PROMPT_STACK_INLAY_INSET_CLASS,
+            )}
+          >
+            {entries.map((entry) => mount(entry, "summary"))}
+            {workspaceSharingThreadCount > 1 ? (
+              <div
+                className="shrink-0"
+                role="status"
+                aria-label={`Shared workspace with ${workspaceSharingThreadCount} threads`}
+              >
+                Shared · {workspaceSharingThreadCount} threads
+              </div>
+            ) : null}
+            {queuedWorkspaceWait ? (
+              <div
+                className={cn(
+                  "flex min-w-0 items-center gap-1.5 text-xs",
+                  PROMPT_STACK_INLAY_SEGMENT_CLASS,
+                )}
+                role="status"
+                aria-label={queuedWorkspaceWait}
+              >
+                <Icon
+                  name="TimeSchedule"
+                  className="size-3.5 shrink-0"
+                  aria-hidden="true"
+                />
+                <span className="truncate">{queuedWorkspaceWait}</span>
+              </div>
+            ) : null}
+            {entries.map((entry) => mount(entry, "action"))}
+          </div>
+          {entries.map((entry) => mount(entry, "details"))}
+        </PromptStackCard>
+      ) : null}
+    </>
+  );
+}
+
 export function ThreadPromptContextBanner({
-  gitSection,
-  gitSectionPending,
+  input,
+  core,
   archivedSection,
   environmentGoneSection,
-  parentThreadSection,
-  childThreadsSection,
-  pullRequestSection,
-  expandedSection,
-  onToggleSection,
-  queuedWorkspaceWait,
+  expandedSegment,
+  onToggleSegment,
 }: ThreadPromptContextBannerProps) {
-  const gitFocus = useDisclosureFocusHandoff(expandedSection === "git", () =>
-    onToggleSection("git"),
-  );
+  const isReadOnly =
+    archivedSection !== null || environmentGoneSection !== null;
   const parentFocus = useDisclosureFocusHandoff(
-    expandedSection === "parentThread",
-    () => onToggleSection("parentThread"),
+    expandedSegment === PARENT_THREAD_KEY,
+    () => onToggleSegment(PARENT_THREAD_KEY),
   );
-  if (archivedSection || environmentGoneSection) {
-    const environmentGone = environmentGoneSection !== null;
+  const context: CoreThreadContextValue = { ...core, parentFocus };
+  if (isReadOnly) {
     const environmentGoneCopy = environmentGoneSection
       ? ENVIRONMENT_GONE_STATUS_COPY[environmentGoneSection.status]
       : null;
     return (
-      <ReadOnlyContextBanner
-        iconName={environmentGone ? "CircleX" : "Archive"}
-        statusLabel={environmentGoneCopy?.label ?? ARCHIVED_THREAD_STATUS_LABEL}
-        description={environmentGoneCopy?.description ?? null}
-        statusAction={
-          archivedSection?.onUnarchive ? (
-            <PendingBannerActionButton
-              pending={Boolean(archivedSection.unarchivePending)}
-              label="Unarchive"
-              pendingLabel="Unarchiving..."
-              onClick={archivedSection.onUnarchive}
-            />
-          ) : environmentGoneSection?.onRestore ? (
-            <PendingBannerActionButton
-              pending={Boolean(environmentGoneSection.restorePending)}
-              label="Restore workspace"
-              pendingLabel="Restoring..."
-              onClick={environmentGoneSection.onRestore}
-            />
-          ) : null
-        }
-        parentThreadSection={parentThreadSection}
-        expandedSection={expandedSection}
-        onToggleSection={onToggleSection}
-      />
+      <CoreThreadContextContext.Provider value={context}>
+        <ReadOnlyContextBanner
+          input={input}
+          iconName={environmentGoneSection ? "CircleX" : "Archive"}
+          statusLabel={
+            environmentGoneCopy?.label ?? ARCHIVED_THREAD_STATUS_LABEL
+          }
+          description={environmentGoneCopy?.description ?? null}
+          statusAction={
+            archivedSection?.onUnarchive ? (
+              <PendingBannerActionButton
+                pending={Boolean(archivedSection.unarchivePending)}
+                label="Unarchive"
+                pendingLabel="Unarchiving..."
+                onClick={archivedSection.onUnarchive}
+              />
+            ) : environmentGoneSection?.onRestore ? (
+              <PendingBannerActionButton
+                pending={Boolean(environmentGoneSection.restorePending)}
+                label="Restore workspace"
+                pendingLabel="Restoring..."
+                onClick={environmentGoneSection.onRestore}
+              />
+            ) : null
+          }
+          hasParentThread={core.parentThread !== null}
+          expandedSegment={expandedSegment}
+          onToggleSegment={onToggleSegment}
+        />
+      </CoreThreadContextContext.Provider>
     );
   }
-  if (gitSectionPending) {
-    return null;
-  }
-  const showGit = gitSection !== null;
-  const showParentThread = parentThreadSection !== null;
-  const showChildThreads =
-    childThreadsSection !== null && childThreadsSection.items.length > 0;
-  const showPullRequest = pullRequestSection !== null;
-  const showWorkspaceWait =
-    queuedWorkspaceWait !== null && queuedWorkspaceWait !== undefined;
-  if (
-    !showGit &&
-    !showParentThread &&
-    !showChildThreads &&
-    !showPullRequest &&
-    !showWorkspaceWait
-  ) {
-    return null;
-  }
-  const visibleSegmentCount =
-    Number(showParentThread) +
-    Number(showPullRequest) +
-    Number(showGit) +
-    Number(showWorkspaceWait);
-  const hasSingleVisibleSegment = visibleSegmentCount === 1;
-  const isPullRequestAndGitOnly =
-    showPullRequest && showGit && visibleSegmentCount === 2;
-  const isGitExpanded = expandedSection === "git" && showGit;
-  const isParentThreadExpanded =
-    expandedSection === "parentThread" && showParentThread;
-  const isChildThreadsExpanded =
-    expandedSection === "childThreads" && showChildThreads;
-  const activeChildThreadsCard =
-    showChildThreads && childThreadsSection ? (
-      <ActiveChildThreadsCard
-        childThreadsSection={childThreadsSection}
-        isExpanded={isChildThreadsExpanded}
-        onToggle={() => onToggleSection("childThreads")}
+  return (
+    <CoreThreadContextContext.Provider value={context}>
+      <WritableContextBanner
+        input={input}
+        expandedSegment={expandedSegment}
+        onToggleSegment={onToggleSegment}
+        queuedWorkspaceWait={core.queuedWorkspaceWait}
       />
-    ) : null;
-  const gitTally = showGit
-    ? toChangeTally(gitSection.changedFiles.stats)
-    : null;
-  const gitSummaryText = gitTally ? formatChangeSummary(gitTally) : "";
-  const gitSummaryPrefix = showGit
-    ? KIND_PREFIX[gitSection.changedFiles.kind]
-    : "";
-  const gitSummary: ReactNode =
-    showGit && gitTally ? (
-      <>
-        {gitSummaryPrefix} · {renderChangeSummary(gitTally)}
-      </>
-    ) : null;
-
-  const mergeBaseCandidates =
-    showGit && gitSection.mergeBase
-      ? getMergeBaseBranchCandidateGroups({
-          mergeBaseBranch: gitSection.mergeBase.branch,
-          mergeBaseBranchRef: gitSection.mergeBase.branchRef,
-          mergeBaseBranchOptions: gitSection.mergeBase.options,
-          remoteMergeBaseBranchOptions: gitSection.mergeBase.remoteOptions,
-        })
-      : { options: [], remoteOptions: [] };
-  const segmentAction =
-    hasSingleVisibleSegment && showGit && gitSection.mergeBase ? (
-      <BannerActionSlot hideInCompact>
-        <Icon
-          name="GitMerge"
-          className="size-3.5 shrink-0"
-          aria-hidden="true"
-        />
-        <span className="shrink-0">Merge base</span>
-        <BranchPicker
-          value={gitSection.mergeBase.branch}
-          options={mergeBaseCandidates.options}
-          remoteOptions={mergeBaseCandidates.remoteOptions}
-          variant="minimal"
-          emphasizeTriggerValue={false}
-          loading={gitSection.mergeBase.optionsLoading}
-          onChange={gitSection.mergeBase.onChange}
-          onOpenChange={gitSection.mergeBase.onPickerOpenChange}
-          onSearchQueryChange={gitSection.mergeBase.onSearchQueryChange}
-          className="max-w-[10rem]"
-          muted
-          popoverAlign="end"
-        />
-      </BannerActionSlot>
-    ) : null;
-
-  const isParentThreadOnly = showParentThread && !showGit && !showPullRequest;
-
-  const pullRequest = pullRequestSection?.pullRequest ?? null;
-  const showPullRequestLabel =
-    hasSingleVisibleSegment || isPullRequestAndGitOnly;
-  const pullRequestActions = pullRequestSection?.actions;
-  const pullRequestAction =
-    pullRequest && pullRequestActions ? (
-      pullRequest.state === "draft" && pullRequestActions.onMarkReady ? (
-        <BannerActionSlot>
-          <PendingBannerActionButton
-            pending={Boolean(pullRequestActions.isPending)}
-            label="Mark ready"
-            pendingLabel="Marking..."
-            onClick={pullRequestActions.onMarkReady}
-          />
-        </BannerActionSlot>
-      ) : pullRequest.state === "open" &&
-        pullRequest.mergeability.state === "mergeable" &&
-        pullRequestActions.onMerge ? (
-        <BannerActionSlot>
-          <PullRequestMergeSplitButton
-            disabled={pullRequestActions.isPending}
-            onConvertToDraft={pullRequestActions.onConvertToDraft}
-            onMerge={pullRequestActions.onMerge}
-            selectedMethod={pullRequestActions.selectedMergeMethod ?? "merge"}
-          />
-        </BannerActionSlot>
-      ) : null
-    ) : null;
-
-  const compactContextBanner =
-    visibleSegmentCount > 0 ? (
-      <PromptStackCard
-        ariaLabel="Thread context before sending"
-        className="overflow-hidden"
-        style={{ minHeight: PROMPT_CONTEXT_BANNER_COLLAPSED_HEIGHT }}
-      >
-        <div
-          className={cn(
-            "flex items-center gap-0.5 text-xs text-muted-foreground",
-            PROMPT_STACK_INLAY_INSET_CLASS,
-          )}
-        >
-          {showParentThread && parentThreadSection && isParentThreadOnly ? (
-            <ParentThreadInlineSegment section={parentThreadSection} />
-          ) : null}
-          {showParentThread && parentThreadSection && !isParentThreadOnly ? (
-            <ParentThreadSectionToggle
-              section={parentThreadSection}
-              buttonRef={parentFocus.triggerRef}
-              isExpanded={isParentThreadExpanded}
-              onToggle={parentFocus.onTriggerClick}
-            />
-          ) : null}
-          {showPullRequest && pullRequest ? (
-            <PullRequestBannerLink
-              pullRequest={pullRequest}
-              hideLabelInCompact={!hasSingleVisibleSegment}
-              showLabel={showPullRequestLabel}
-              showStateLabel={hasSingleVisibleSegment}
-            />
-          ) : null}
-          {showGit && gitSummary ? (
-            <SectionToggleButton
-              buttonRef={gitFocus.triggerRef}
-              fillRow
-              id={SECTION_IDS.git.toggle}
-              controlsId={SECTION_IDS.git.body}
-              icon={
-                <Icon
-                  name="FileDiff"
-                  className="size-3.5 shrink-0"
-                  aria-hidden="true"
-                />
-              }
-              label={gitSummary}
-              compactLabel={gitTally ? renderChangeSummary(gitTally) : null}
-              hideLabelInCompact={visibleSegmentCount > 2}
-              ariaLabel={`Changed files: ${gitSummaryPrefix}, ${gitSummaryText}`}
-              isExpanded={isGitExpanded}
-              onToggle={gitFocus.onTriggerClick}
-            />
-          ) : null}
-          {showGit &&
-          gitSection.workspaceSharingThreadCount &&
-          gitSection.workspaceSharingThreadCount > 1 ? (
-            <div
-              className={cn(
-                "flex min-w-0 items-center gap-1.5 text-xs",
-                PROMPT_STACK_INLAY_SEGMENT_CLASS,
-              )}
-              role="status"
-              aria-label={`Shared workspace with ${gitSection.workspaceSharingThreadCount} threads`}
-            >
-              <Icon
-                name="UserRound"
-                className="size-3.5 shrink-0"
-                aria-hidden="true"
-              />
-              <span className="truncate">
-                Shared · {gitSection.workspaceSharingThreadCount} threads
-              </span>
-            </div>
-          ) : null}
-          {showWorkspaceWait ? (
-            <div
-              className={cn(
-                "flex min-w-0 items-center gap-1.5 text-xs",
-                PROMPT_STACK_INLAY_SEGMENT_CLASS,
-              )}
-              role="status"
-              aria-label={queuedWorkspaceWait ?? undefined}
-            >
-              <Icon
-                name="TimeSchedule"
-                className="size-3.5 shrink-0"
-                aria-hidden="true"
-              />
-              <span className="truncate">{queuedWorkspaceWait}</span>
-            </div>
-          ) : null}
-          {pullRequestAction}
-          {segmentAction}
-        </div>
-        {showParentThread && parentThreadSection && !isParentThreadOnly ? (
-          <ParentThreadSectionBody
-            section={parentThreadSection}
-            isExpanded={isParentThreadExpanded}
-            collapseRef={parentFocus.collapseRef}
-            onCollapse={parentFocus.onCollapseClick}
-          />
-        ) : null}
-        {showGit ? (
-          <AnimatedDisclosureBody
-            collapsedBorder="reserve"
-            id={SECTION_IDS.git.body}
-            labelledBy={SECTION_IDS.git.toggle}
-            isExpanded={isGitExpanded}
-            collapseLabel="Collapse changed files"
-            collapseRef={gitFocus.collapseRef}
-            onCollapse={gitFocus.onCollapseClick}
-          >
-            <WorkspaceChangesList
-              files={gitSection.changedFiles.files}
-              className="max-h-32 px-3 pb-2 pt-1"
-              onFileClick={(file) =>
-                gitSection.onPromptBannerFileClick({
-                  file,
-                  section: gitSection.changedFiles,
-                })
-              }
-            />
-          </AnimatedDisclosureBody>
-        ) : null}
-      </PromptStackCard>
-    ) : null;
-
-  if (activeChildThreadsCard && compactContextBanner) {
-    return (
-      <div className="min-w-0 space-y-2">
-        {activeChildThreadsCard}
-        {compactContextBanner}
-      </div>
-    );
-  }
-
-  return activeChildThreadsCard ?? compactContextBanner;
+    </CoreThreadContextContext.Provider>
+  );
 }

@@ -10,40 +10,50 @@ import {
 } from "react";
 import { Button } from "@bb/shared-ui/button";
 import { useAtomValue } from "jotai";
+import type {
+  PluginThreadActionEntry,
+  PluginThreadActionTarget,
+} from "@get-bb/plugin-sdk";
 import { COARSE_POINTER_TOOLBAR_ACTION_BUTTON_CLASS } from "@bb/shared-ui/coarse-pointer-sizing";
 import { Icon } from "@bb/shared-ui/icon";
-import { Pill } from "@bb/shared-ui/pill";
 import { SplitButton } from "@/components/ui/split-button.js";
 import {
   AppPageHeader,
   HEADER_ICON_BUTTON_CLASS,
   HEADER_PANE_ACTION_ICON_BUTTON_CLASS,
 } from "@/components/layout/AppPageHeader";
-import type { ThreadGitActionDialogTarget } from "@/components/dialogs/ThreadGitActionDialog";
 import {
   getBbDesktopInfo,
+  MACOS_TITLE_BAR_TRAILING_TOGGLE_CLASS,
   MACOS_WINDOW_NO_DRAG_CLASS,
   shouldUseMacosDesktopChrome,
 } from "@/lib/bb-desktop";
+import { useIsSidebarFramed } from "@/components/ui/sidebar.js";
 import { cn } from "@bb/shared-ui/lib/utils";
-import { useAppCommandShortcut } from "@/components/commands/AppCommandProvider";
-import { AppCommandShortcutHint } from "@/components/commands/AppCommandShortcutHint";
+import {
+  useAppCommandHandler,
+  useAppCommandShortcut,
+} from "@/components/commands/AppCommandProvider";
 import { useSidebarRename } from "@/components/sidebar/SidebarInlineRename";
 import { useThreadActions } from "@/components/thread/ThreadActionsProvider";
 import { ThreadTitle } from "@/components/thread/ThreadTitleMentions";
 import { ThreadUsageAndAgents } from "@/components/thread/ThreadUsageSummary";
+import { useThreadHeaderActionEntries } from "@/lib/thread-actions/thread-action-registry";
 import { SecondaryPanelHostLayoutContext } from "@/components/secondary-panel/SecondaryPanelHostLayoutContext";
-import { RIGHT_PANEL_TOGGLE_ICON_NAME } from "@/components/secondary-panel/panelToggleControlState";
+import {
+  RIGHT_PANEL_TOGGLE_ICON_NAME,
+  RIGHT_PANEL_TOGGLE_SHORTCUT_HINT_CLASS,
+} from "@/components/secondary-panel/panelToggleControlState";
+import { AppCommandShortcutHint } from "@/components/commands/AppCommandShortcutHint";
 import { CHROME_SUBTLE_ICON_BUTTON_FOREGROUND_CLASS } from "@bb/shared-ui/chrome-style-tokens";
 import { useIsCompactViewport } from "@bb/shared-ui/hooks/use-compact-viewport";
 import { dimInactiveSplitsAtom } from "@/lib/split-layout/atoms";
 import {
   CONTEXT_INACTIVE_TEXT_CLASS,
   CONTEXT_SELECTION_SURFACE_CLASS,
-} from "@/components/ui/context-selection";
+} from "@bb/shared-ui/context-selection";
 import { usePaneContext } from "./PaneContext";
 import { PaneMaximizeButton } from "./PaneMaximizeButton";
-import type { ThreadHeaderGitAction } from "./useThreadGitActions";
 
 const THREAD_HEADER_ACTION_BUTTON_CLASS = cn(
   COARSE_POINTER_TOOLBAR_ACTION_BUTTON_CLASS,
@@ -51,41 +61,53 @@ const THREAD_HEADER_ACTION_BUTTON_CLASS = cn(
 );
 const NARROW_SPLIT_HEADER_MAX_WIDTH = 560;
 
+export interface ThreadDetailHeaderActionsMenuArgs {
+  includeResponsiveActions: boolean;
+  headerActions: readonly PluginThreadActionEntry[];
+  requestRename: (threadId: string) => void;
+  onCloseAutoFocus: (event: Event) => void;
+}
+
 interface ThreadDetailHeaderProps {
-  actionsMenu: ((includeResponsiveActions: boolean) => ReactNode) | null;
-  childPillLabel: "child" | "side chat" | null;
+  actionsMenu: ((args: ThreadDetailHeaderActionsMenuArgs) => ReactNode) | null;
+  contextCardButton?: ReactNode;
   isSecondaryPanelOpen: boolean;
   onClosePane?: () => void;
-  onOpenThreadGitAction: (target: ThreadGitActionDialogTarget) => void;
   onToggleSecondaryPanel: () => void;
   pluginActions?: ReactNode;
-  threadHeaderGitActions: ThreadHeaderGitAction[];
-  threadId: string;
+  thread: PluginThreadActionTarget;
   threadTitle: string;
   workspaceOpenButton?: ReactNode;
 }
 
 export function ThreadDetailHeader({
   actionsMenu,
-  childPillLabel,
   isSecondaryPanelOpen,
   onClosePane,
-  onOpenThreadGitAction,
   onToggleSecondaryPanel,
   pluginActions,
-  threadHeaderGitActions,
-  threadId,
+  thread,
   threadTitle,
   workspaceOpenButton,
+  contextCardButton,
 }: ThreadDetailHeaderProps) {
   const isCompactViewport = useIsCompactViewport();
-  const [primaryAction, ...secondaryActions] = threadHeaderGitActions;
+  const threadId = thread.id;
+  const headerActions = useThreadHeaderActionEntries(thread);
+  const [primaryAction, ...secondaryActions] = headerActions;
   const { renameThreadAsync } = useThreadActions();
   const handleRename = useCallback(
     (nextTitle: string) => renameThreadAsync(threadId, nextTitle),
     [renameThreadAsync, threadId],
   );
-  const { editor, isEditing, startEditing } = useSidebarRename({
+  const {
+    editor,
+    isEditing,
+    startEditing,
+    startEditingFromDoubleClick,
+    startEditingFromMenu,
+    onCloseAutoFocus,
+  } = useSidebarRename({
     kind: "thread",
     id: threadId,
     name: threadTitle,
@@ -96,6 +118,7 @@ export function ThreadDetailHeader({
   const dimsInactiveSplits = useAtomValue(dimInactiveSplitsAtom);
   const panelShortcut = useAppCommandShortcut("panel.toggle");
   const usesDesktopChrome = shouldUseMacosDesktopChrome(desktopInfo);
+  const isSidebarFramed = useIsSidebarFramed();
   const headerRef = useRef<HTMLElement>(null!);
   const {
     beginPaneDrag,
@@ -105,6 +128,11 @@ export function ThreadDetailHeader({
     reservesWindowPanelToggle,
     secondaryPanelHost,
   } = usePaneContext();
+  useAppCommandHandler("thread.rename", () => {
+    if (!isFocused) return false;
+    startEditing();
+    return true;
+  });
   const isWindowPanelOpen =
     useContext(SecondaryPanelHostLayoutContext)?.isOpen === true;
   const isSplitPaneHeader = beginPaneDrag !== undefined;
@@ -141,17 +169,16 @@ export function ThreadDetailHeader({
     beginPaneDrag(event, threadTitle);
   };
   const handleTitleDoubleClick = () => {
-    if (isEditing) {
-      return;
-    }
-    startEditing();
+    if (!isEditing) startEditingFromDoubleClick();
   };
-  const rightPanelLabel = isSecondaryPanelOpen
-    ? "Hide right panel"
-    : "Show right panel";
   const rightPanelIconName = RIGHT_PANEL_TOGGLE_ICON_NAME;
+  const mountRightPanelToggle = secondaryPanelHost === null;
   const showRightPanelToggle =
-    secondaryPanelHost === null && (!isSecondaryPanelOpen || isCompactViewport);
+    mountRightPanelToggle && (!isSecondaryPanelOpen || isCompactViewport);
+  const rightPanelLabel =
+    isSecondaryPanelOpen && showRightPanelToggle
+      ? "Hide right panel"
+      : "Show right panel";
 
   const center = (
     <>
@@ -188,11 +215,6 @@ export function ThreadDetailHeader({
           threadId={threadId}
         />
       </div>
-      {childPillLabel ? (
-        <Pill variant="outline" size="sm">
-          {childPillLabel}
-        </Pill>
-      ) : null}
       {actionsMenu == null ? null : (
         <span
           className={cn(
@@ -200,7 +222,12 @@ export function ThreadDetailHeader({
             usesDesktopChrome && MACOS_WINDOW_NO_DRAG_CLASS,
           )}
         >
-          {actionsMenu(usesResponsiveActionOverflow)}
+          {actionsMenu({
+            includeResponsiveActions: usesResponsiveActionOverflow,
+            headerActions,
+            requestRename: startEditingFromMenu,
+            onCloseAutoFocus,
+          })}
         </span>
       )}
     </>
@@ -224,12 +251,15 @@ export function ThreadDetailHeader({
               <SplitButton
                 className={THREAD_HEADER_ACTION_BUTTON_CLASS}
                 primaryAction={{
-                  label: primaryAction.label,
-                  onSelect: () => onOpenThreadGitAction(primaryAction.target),
+                  disabled: primaryAction.action.disabled,
+                  label: primaryAction.action.label,
+                  onSelect: () => void primaryAction.action.run(),
                 }}
-                secondaryActions={secondaryActions.map((action) => ({
+                secondaryActions={secondaryActions.map(({ key, action }) => ({
+                  id: key,
+                  disabled: action.disabled,
                   label: action.label,
-                  onSelect: () => onOpenThreadGitAction(action.target),
+                  onSelect: () => void action.run(),
                 }))}
               />
             ) : (
@@ -238,9 +268,10 @@ export function ThreadDetailHeader({
                 variant="outline"
                 size="sm"
                 className={THREAD_HEADER_ACTION_BUTTON_CLASS}
-                onClick={() => onOpenThreadGitAction(primaryAction.target)}
+                disabled={primaryAction.action.disabled}
+                onClick={() => void primaryAction.action.run()}
               >
-                {primaryAction.label}
+                {primaryAction.action.label}
               </Button>
             )}
           </span>
@@ -266,35 +297,52 @@ export function ThreadDetailHeader({
             <Icon name="CloseThreadPane" />
           </Button>
         ) : null}
-        {showRightPanelToggle ? (
-          <span className="inline-flex items-center gap-1.5">
-            <AppCommandShortcutHint shortcut={panelShortcut} />
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon"
-              className={cn(
-                HEADER_ICON_BUTTON_CLASS,
-                CHROME_SUBTLE_ICON_BUTTON_FOREGROUND_CLASS,
-              )}
-              aria-label={
-                panelShortcut
-                  ? `${rightPanelLabel} (${panelShortcut.label})`
-                  : rightPanelLabel
-              }
-              aria-keyshortcuts={panelShortcut?.ariaKeyshortcuts}
-              aria-expanded={isSecondaryPanelOpen}
-              onPointerEnter={preloadThreadSecondaryPanel}
-              onFocus={preloadThreadSecondaryPanel}
-              onPointerDown={preloadThreadSecondaryPanel}
-              onClick={onToggleSecondaryPanel}
-            >
-              <Icon name={rightPanelIconName} />
-            </Button>
-          </span>
+        {contextCardButton}
+        {mountRightPanelToggle ? (
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className={cn(
+              HEADER_ICON_BUTTON_CLASS,
+              CHROME_SUBTLE_ICON_BUTTON_FOREGROUND_CLASS,
+              "relative",
+              usesDesktopChrome && MACOS_WINDOW_NO_DRAG_CLASS,
+              isTopRow &&
+                isSidebarFramed &&
+                MACOS_TITLE_BAR_TRAILING_TOGGLE_CLASS,
+              !showRightPanelToggle && "hidden",
+            )}
+            inert={!showRightPanelToggle}
+            aria-label={
+              panelShortcut
+                ? `${rightPanelLabel} (${panelShortcut.label})`
+                : rightPanelLabel
+            }
+            aria-keyshortcuts={panelShortcut?.ariaKeyshortcuts}
+            aria-expanded={isSecondaryPanelOpen}
+            onPointerEnter={preloadThreadSecondaryPanel}
+            onFocus={preloadThreadSecondaryPanel}
+            onPointerDown={preloadThreadSecondaryPanel}
+            onClick={onToggleSecondaryPanel}
+          >
+            <Icon name={rightPanelIconName} />
+            <AppCommandShortcutHint
+              shortcut={panelShortcut}
+              className={RIGHT_PANEL_TOGGLE_SHORTCUT_HINT_CLASS}
+            />
+          </Button>
         ) : null}
         {reservesWindowPanelToggle && !isWindowPanelOpen ? (
-          <span aria-hidden className={HEADER_ICON_BUTTON_CLASS} />
+          <span
+            aria-hidden
+            className={cn(
+              HEADER_ICON_BUTTON_CLASS,
+              isTopRow &&
+                isSidebarFramed &&
+                MACOS_TITLE_BAR_TRAILING_TOGGLE_CLASS,
+            )}
+          />
         ) : null}
       </div>
     </>

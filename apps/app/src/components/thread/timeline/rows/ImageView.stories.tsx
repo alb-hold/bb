@@ -146,6 +146,7 @@ export function Overview() {
           <ThreadTimelineRows
             {...baseProps}
             timelineRows={[completedImageView]}
+            threadIsActive={false}
           />
         </TimelineStage>
       </StoryRow>
@@ -158,6 +159,7 @@ export function Overview() {
             {...baseProps}
             initialExpanded={new Set([completedImageView.id])}
             timelineRows={[completedImageView]}
+            threadIsActive={false}
           />
         </TimelineStage>
       </StoryRow>
@@ -170,6 +172,7 @@ export function Overview() {
             {...baseProps}
             initialExpanded={new Set([transparentImageView.id])}
             timelineRows={[transparentImageView]}
+            threadIsActive={false}
           />
         </TimelineStage>
       </StoryRow>
@@ -181,6 +184,7 @@ export function Overview() {
           <ThreadTimelineRows
             {...baseProps}
             timelineRows={[runningImageView]}
+            threadIsActive={false}
           />
         </TimelineStage>
       </StoryRow>
@@ -192,6 +196,7 @@ export function Overview() {
           <ThreadTimelineRows
             {...baseProps}
             timelineRows={[interruptedImageView]}
+            threadIsActive={false}
           />
         </TimelineStage>
       </StoryRow>
@@ -203,6 +208,7 @@ export function Overview() {
           <ThreadTimelineRows
             {...baseProps}
             timelineRows={[longPathImageView]}
+            threadIsActive={false}
           />
         </TimelineStage>
       </StoryRow>
@@ -214,6 +220,7 @@ export function Overview() {
           <ThreadTimelineRows
             {...baseProps}
             timelineRows={[completedImageView, secondCompletedImageView]}
+            threadIsActive={false}
           />
         </TimelineStage>
       </StoryRow>

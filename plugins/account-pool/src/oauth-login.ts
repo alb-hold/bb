@@ -4,7 +4,12 @@ import {
   claudePlanFromProfile,
   claudeProfileSchema,
 } from "./claude-profile.js";
-import type { Account } from "./contracts.js";
+import {
+  CLAUDE_OAUTH_REDIRECT_URI,
+  type Account,
+  type LoginStartInput,
+  type LoginTarget,
+} from "./contracts.js";
 
 const OAUTH_AUTHORIZE_URL = "https://claude.ai/oauth/authorize";
 const OAUTH_TOKEN_URL = "https://platform.claude.com/v1/oauth/token";
@@ -12,7 +17,7 @@ const OAUTH_PROFILE_URL = "https://api.anthropic.com/api/oauth/profile";
 const OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 const OAUTH_SCOPES =
   "org:create_api_key user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload";
-const OAUTH_REDIRECT_URI = "https://console.anthropic.com/oauth/code/callback";
+const OAUTH_REDIRECT_URI = CLAUDE_OAUTH_REDIRECT_URI;
 const OAUTH_BETA = "oauth-2025-04-20";
 const LOGIN_SESSION_TTL_MS = 10 * 60 * 1_000;
 
@@ -30,6 +35,7 @@ interface LoginSession {
   state: string;
   createdAt: number;
   accountId: string | null;
+  addTarget: Extract<LoginTarget, { kind: "add" }> | null;
 }
 
 export interface ClaudeOAuthAccount {
@@ -50,7 +56,10 @@ export interface ClaudeOAuthLoginOptions {
   authorizeUrl?: string;
   tokenUrl?: string;
   profileUrl?: string;
-  addAccount: (authenticated: ClaudeOAuthAccount) => Promise<Account>;
+  addAccount: (
+    authenticated: ClaudeOAuthAccount,
+    target: Extract<LoginTarget, { kind: "add" }> | null,
+  ) => Promise<Account>;
   reauthorizeAccount: (
     accountId: string,
     authenticated: ClaudeOAuthAccount,
@@ -122,7 +131,7 @@ export class ClaudeOAuthLogin {
     this.profileUrl = options.profileUrl ?? OAUTH_PROFILE_URL;
   }
 
-  start(target: { accountId: string } | null = null): OAuthLoginStart {
+  start(target: LoginStartInput = null): OAuthLoginStart {
     const codeVerifier = randomBytes(32).toString("base64url");
     const codeChallenge = createHash("sha256")
       .update(codeVerifier)
@@ -134,7 +143,12 @@ export class ClaudeOAuthLogin {
       codeVerifier,
       state,
       createdAt: this.now(),
-      accountId: target?.accountId ?? null,
+      accountId:
+        target !== null && "accountId" in target ? target.accountId : null,
+      addTarget:
+        target !== null && "kind" in target && target.kind === "add"
+          ? target
+          : null,
     };
     const authorizeUrl = new URL(this.authorizeUrl);
     authorizeUrl.searchParams.set("code", "true");
@@ -229,7 +243,7 @@ export class ClaudeOAuthLogin {
       expiresAt: this.now() + tokens.expires_in * 1_000,
     };
     return session.accountId === null
-      ? this.options.addAccount(authenticated)
+      ? this.options.addAccount(authenticated, session.addTarget)
       : this.options.reauthorizeAccount(
           session.accountId,
           authenticated,

@@ -1,5 +1,3 @@
-// @vitest-environment jsdom
-
 import { getDefaultStore } from "jotai";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -29,6 +27,28 @@ function fakeRpc(
         return { preferences: { ...defaultPreferences(), ...preferences } };
       }
       return input;
+    },
+  };
+}
+
+function deferredRpc(): PreferencesRpc & {
+  writes: { key: string; value: unknown; origin: string }[];
+  settleNextWrite: () => Promise<void>;
+} {
+  const writes: { key: string; value: unknown; origin: string }[] = [];
+  const settlers: (() => void)[] = [];
+  return {
+    writes,
+    async settleNextWrite() {
+      settlers.shift()?.();
+      await vi.advanceTimersByTimeAsync(0);
+    },
+    async call(method: string, input: unknown) {
+      if (method === "listPreferences") {
+        return { preferences: defaultPreferences() };
+      }
+      writes.push(input as { key: string; value: unknown; origin: string });
+      return new Promise((resolve) => settlers.push(() => resolve(input)));
     },
   };
 }
@@ -77,20 +97,26 @@ describe("preferences sync", () => {
     expect(store.get(preferencesReadyAtom())).toBe(true);
     expect(store.get(modeAtom)).toBe("machine");
     expect(
-      JSON.parse(mirror.getItem(MIRROR_KEY) ?? "{}")
-        .organizationMode,
+      JSON.parse(mirror.getItem(MIRROR_KEY) ?? "{}").organizationMode,
     ).toBe("machine");
   });
 
   it("paints from the mirror before the server answers and ignores junk in it", () => {
     mirror.setItem(
       MIRROR_KEY,
-      JSON.stringify({ organizationMode: "project", chronologicalSort: "nonsense" }),
+      JSON.stringify({
+        organizationMode: "project",
+        chronologicalSort: "nonsense",
+      }),
     );
     const store = getDefaultStore();
     expect(hydratePreferencesFromMirror()).toBe(true);
-    expect(store.get(createSyncedPreferenceAtom("organizationMode"))).toBe("project");
-    expect(store.get(createSyncedPreferenceAtom("chronologicalSort"))).toBe("updated");
+    expect(store.get(createSyncedPreferenceAtom("organizationMode"))).toBe(
+      "project",
+    );
+    expect(store.get(createSyncedPreferenceAtom("chronologicalSort"))).toBe(
+      "updated",
+    );
     mirror.setItem(MIRROR_KEY, "{not json");
     expect(hydratePreferencesFromMirror()).toBe(false);
   });
@@ -107,9 +133,9 @@ describe("preferences sync", () => {
       JSON.parse(mirror.getItem("bb.my-sidebar.preferences.v1") ?? "{}")
         .organizationMode,
     ).toBe("machine");
-    expect(JSON.parse(mirror.getItem(MIRROR_KEY) ?? "{}").organizationMode).toBe(
-      "project",
-    );
+    expect(
+      JSON.parse(mirror.getItem(MIRROR_KEY) ?? "{}").organizationMode,
+    ).toBe("project");
   });
 
   it("applies a local write immediately and coalesces the server write", async () => {
@@ -119,14 +145,27 @@ describe("preferences sync", () => {
     const collapsedAtom = createSyncedPreferenceAtom("collapsedProjects");
     store.set(collapsedAtom, ["proj_a"]);
     store.set(collapsedAtom, (current) => [...current, "proj_b"]);
-    store.set(collapsedAtom, (current) => current.filter((id) => id !== "proj_a"));
+    store.set(collapsedAtom, (current) =>
+      current.filter((id) => id !== "proj_a"),
+    );
     expect(store.get(collapsedAtom)).toEqual(["proj_b"]);
-    expect(rpc.calls.filter((call) => call.method === "setPreference")).toHaveLength(0);
+    expect(
+      rpc.calls.filter((call) => call.method === "setPreference"),
+    ).toHaveLength(0);
     vi.advanceTimersByTime(200);
     await flushPreferenceWritesForTest();
-    expect(rpc.calls.filter((call) => call.method === "setPreference")).toEqual([
-      { method: "setPreference", input: { key: "collapsedProjects", value: ["proj_b"] } },
-    ]);
+    expect(rpc.calls.filter((call) => call.method === "setPreference")).toEqual(
+      [
+        {
+          method: "setPreference",
+          input: {
+            key: "collapsedProjects",
+            value: ["proj_b"],
+            origin: expect.any(String),
+          },
+        },
+      ],
+    );
   });
 
   it("takes a remote change from another window unless a local write is pending", async () => {
@@ -134,20 +173,92 @@ describe("preferences sync", () => {
     await hydratePreferences(rpc);
     const store = getDefaultStore();
     const sortAtom = createSyncedPreferenceAtom("chronologicalSort");
-    applyRemotePreferenceSignal({ key: "chronologicalSort", value: "alpha" });
+    applyRemotePreferenceSignal({
+      key: "chronologicalSort",
+      value: "alpha",
+      origin: "other-window",
+    });
     expect(store.get(sortAtom)).toBe("alpha");
-    applyRemotePreferenceSignal({ key: "chronologicalSort", value: "bogus" });
+    applyRemotePreferenceSignal({
+      key: "chronologicalSort",
+      value: "bogus",
+      origin: "other-window",
+    });
     expect(store.get(sortAtom)).toBe("alpha");
-    applyRemotePreferenceSignal({ key: "nope", value: 1 });
+    applyRemotePreferenceSignal({
+      key: "nope",
+      value: 1,
+      origin: "other-window",
+    });
     expect(store.get(sortAtom)).toBe("alpha");
 
     store.set(sortAtom, "created");
-    applyRemotePreferenceSignal({ key: "chronologicalSort", value: "updated" });
+    applyRemotePreferenceSignal({
+      key: "chronologicalSort",
+      value: "updated",
+      origin: "other-window",
+    });
     expect(store.get(sortAtom)).toBe("created");
     vi.advanceTimersByTime(200);
     await flushPreferenceWritesForTest();
-    applyRemotePreferenceSignal({ key: "chronologicalSort", value: "updated" });
+    applyRemotePreferenceSignal({
+      key: "chronologicalSort",
+      value: "updated",
+      origin: "other-window",
+    });
     expect(store.get(sortAtom)).toBe("updated");
+  });
+
+  it("ignores the late echo of its own earlier write after the user toggles again", async () => {
+    const rpc = deferredRpc();
+    await hydratePreferences(rpc);
+    const store = getDefaultStore();
+    const collapsedAtom = createSyncedPreferenceAtom("collapsedProjects");
+    const seen: string[][] = [];
+    store.sub(collapsedAtom, () => seen.push(store.get(collapsedAtom)));
+
+    store.set(collapsedAtom, ["proj_a"]);
+    vi.advanceTimersByTime(150);
+    await rpc.settleNextWrite();
+    store.set(collapsedAtom, []);
+    vi.advanceTimersByTime(150);
+    await rpc.settleNextWrite();
+    for (const write of rpc.writes) {
+      applyRemotePreferenceSignal(write);
+    }
+
+    expect(seen).toEqual([["proj_a"], []]);
+    expect(store.get(collapsedAtom)).toEqual([]);
+  });
+
+  it("sends one write per key at a time and follows up with the latest value", async () => {
+    const rpc = deferredRpc();
+    await hydratePreferences(rpc);
+    const store = getDefaultStore();
+    const collapsedAtom = createSyncedPreferenceAtom("collapsedProjects");
+
+    store.set(collapsedAtom, ["proj_a"]);
+    vi.advanceTimersByTime(150);
+    store.set(collapsedAtom, []);
+    vi.advanceTimersByTime(150);
+    expect(rpc.writes.map((write) => write.value)).toEqual([["proj_a"]]);
+
+    await rpc.settleNextWrite();
+    expect(rpc.writes.map((write) => write.value)).toEqual([["proj_a"], []]);
+    applyRemotePreferenceSignal({
+      key: "collapsedProjects",
+      value: ["proj_b"],
+      origin: "other-window",
+    });
+    expect(store.get(collapsedAtom)).toEqual([]);
+
+    await rpc.settleNextWrite();
+    applyRemotePreferenceSignal({
+      key: "collapsedProjects",
+      value: ["proj_b"],
+      origin: "other-window",
+    });
+    expect(store.get(collapsedAtom)).toEqual(["proj_b"]);
   });
 
   it("does not write back a value that did not change", async () => {
@@ -158,7 +269,9 @@ describe("preferences sync", () => {
     store.set(modeAtom, "chronological");
     vi.advanceTimersByTime(200);
     await flushPreferenceWritesForTest();
-    expect(rpc.calls.filter((call) => call.method === "setPreference")).toHaveLength(0);
+    expect(
+      rpc.calls.filter((call) => call.method === "setPreference"),
+    ).toHaveLength(0);
   });
 });
 

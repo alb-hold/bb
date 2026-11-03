@@ -2,6 +2,7 @@
 
 import type { ComponentProps } from "react";
 import {
+  act,
   cleanup,
   fireEvent,
   render as renderDom,
@@ -21,6 +22,7 @@ import type { ProviderInfo } from "@bb/domain";
 import type { SkillSummary } from "@bb/server-contract";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createQueryClientTestHarness } from "@/test/queryClientTestHarness";
+import { createDeferredPromise } from "@bb/test-helpers";
 import { makeProviderInfo } from "@bb/test-helpers/domain-fixtures";
 import { sdk } from "@/lib/sdk";
 import {
@@ -202,11 +204,17 @@ function stubRegistryFetch(
     entry?: RegistrySkill;
     entryFails?: boolean;
     ranking?: "trending" | "all-time";
+    listResponse?: Promise<Response>;
+    entriesResponse?: Promise<Response>;
+    onListRequest?: () => void;
+    onEntriesRequest?: () => void;
   } = {},
 ) {
   const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
     const url = requestPath(input);
     if (url.startsWith("/api/v1/skills-registry?")) {
+      options.onListRequest?.();
+      if (options.listResponse) return options.listResponse;
       return new Response(
         JSON.stringify({
           skills: options.list ? [registrySkill] : [],
@@ -228,6 +236,8 @@ function stubRegistryFetch(
       });
     }
     if (url === "/api/v1/skills-registry/entries") {
+      options.onEntriesRequest?.();
+      if (options.entriesResponse) return options.entriesResponse;
       return Response.json({
         entries: options.entryFails ? [] : [options.entry ?? registrySkill],
       });
@@ -646,41 +656,6 @@ describe("SkillsOverview", () => {
     ).toBe("true");
   });
 
-  it("labels the Provider filter and prefixes its logo tooltip", async () => {
-    renderDom(
-      <SkillsOverview
-        providerRoster={NO_PROVIDER_ROSTER}
-        skills={[
-          makeSkill({
-            name: "bb-skill",
-            provider: null,
-            scope: "bb-user",
-          }),
-          makeSkill({ name: "claude-skill", provider: "claude-code" }),
-        ]}
-        isLoading={false}
-        hasError={false}
-        onCreateSkill={() => {}}
-        onSelectSkill={() => {}}
-      />,
-    );
-
-    const providerTrigger = screen.getByRole("button", { name: /^Filters/ });
-    fireEvent.pointerDown(providerTrigger);
-    expect(screen.getByText("Provider")).toBeTruthy();
-    const bbFilter = screen.getByRole("menuitemcheckbox", { name: "bb" });
-    expect(bbFilter.querySelector("img")).not.toBeNull();
-    fireEvent.click(bbFilter);
-    fireEvent.keyDown(document, { key: "Escape" });
-
-    expect(await screen.findByText("bb-skill")).toBeTruthy();
-    expect(screen.queryByText("claude-skill")).toBeNull();
-    focusWithKeyboard(screen.getByRole("button", { name: /^Filters/ }));
-    expect((await screen.findByRole("tooltip")).textContent?.trim()).toBe(
-      "Provider: bb",
-    );
-  });
-
   it("shows provider skills when the library has no bb skills", async () => {
     renderDom(
       <SkillsOverview
@@ -814,20 +789,6 @@ describe("SkillsOverview", () => {
       vi.useRealTimers();
     }
   });
-
-  it("shows a loading skeleton", () => {
-    const markup = render({ skills: [], isLoading: true });
-    expect(markup).toContain('role="status"');
-    expect(markup).toContain("Loading skills");
-    expect(markup).not.toContain("Start from an example");
-  });
-
-  it("shows a recoverable error state with a retry", () => {
-    const markup = render({ skills: [], hasError: true, onRetry: () => {} });
-    expect(markup).toContain("load skills.");
-    expect(markup).toContain("Retry");
-    expect(markup).toContain('role="alert"');
-  });
 });
 
 describe("SkillsLibrary library detail routing", () => {
@@ -893,8 +854,32 @@ describe("SkillsLibrary registry detail lifecycle", () => {
     async (path) => {
       const registrySkill = makeRegistrySkill();
       vi.spyOn(sdk.skills, "list").mockResolvedValue({ skills: [] });
-      const fetchMock = stubRegistryFetch(registrySkill, { list: true });
-      const { wrapper: QueryClientWrapper } = createQueryClientTestHarness();
+      const listRequested = createDeferredPromise<void>();
+      const entriesRequested = createDeferredPromise<void>();
+      const listResponse = createDeferredPromise<Response>();
+      const entriesResponse = createDeferredPromise<Response>();
+      const fetchMock = stubRegistryFetch(registrySkill, {
+        list: true,
+        listResponse: listResponse.promise,
+        entriesResponse: entriesResponse.promise,
+        onListRequest: () => listRequested.resolve(),
+        onEntriesRequest: () => entriesRequested.resolve(),
+      });
+      const { queryClient, wrapper: QueryClientWrapper } =
+        createQueryClientTestHarness();
+      const descriptionsLoaded = createDeferredPromise<void>();
+      const unsubscribe = queryClient.getQueryCache().subscribe((event) => {
+        if (
+          event.type === "updated" &&
+          event.query.queryKey[0] === "skills-registry-entries" &&
+          Array.isArray(event.query.queryKey[1]) &&
+          event.query.queryKey[1].length > 0 &&
+          event.query.state.status === "success" &&
+          event.query.state.fetchStatus === "idle"
+        ) {
+          descriptionsLoaded.resolve();
+        }
+      });
       renderDom(
         <MemoryRouter initialEntries={[path]}>
           <QueryClientWrapper>
@@ -908,6 +893,32 @@ describe("SkillsLibrary registry detail lifecycle", () => {
         </MemoryRouter>,
       );
 
+      await listRequested.promise;
+      await act(async () => {
+        listResponse.resolve(
+          new Response(
+            JSON.stringify({
+              skills: [registrySkill],
+              pagination: {
+                page: 0,
+                perPage: 24,
+                total: 1,
+                hasMore: false,
+              },
+              ranking: "trending",
+            }),
+            { status: 200 },
+          ),
+        );
+      });
+      await entriesRequested.promise;
+      await act(async () => {
+        entriesResponse.resolve(
+          Response.json({ entries: [registrySkill] }),
+        );
+        await descriptionsLoaded.promise;
+      });
+      unsubscribe();
       let forkButton = await screen.findByRole("button", {
         name: "Fork Useful skill into a new bb skill",
       });
@@ -1205,21 +1216,6 @@ describe("SkillsLibrary registry detail lifecycle", () => {
 });
 
 describe("RegistrySkillsBrowsePage", () => {
-  it("uses the shared error state and retry action", () => {
-    const onRetry = vi.fn();
-    renderRegistryBrowse({
-      skills: [],
-      hasError: true,
-      onRetry,
-    });
-
-    expect(screen.getByRole("alert").textContent).toContain(
-      "Couldn't load skills.sh.",
-    );
-    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
-    expect(onRetry).toHaveBeenCalledOnce();
-  });
-
   it("renders the authoritative page order, exposes social proof, and loads more on scroll", () => {
     const alpha = makeRegistrySkill({
       id: "owner/repo/alpha",

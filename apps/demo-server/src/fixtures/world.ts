@@ -56,6 +56,7 @@ export function threadListEntry(
     originKind: null,
     originPluginId: null,
     visibility: "visible",
+    parentNotifications: "auto",
     archivedAt: null,
     pinnedAt: null,
     deletedAt: null,
@@ -80,7 +81,10 @@ export function threadListEntry(
     environmentProviderId: null,
     environmentIsWorktree: null,
     environmentWorkspaceDisplayKind: "other",
+    nativeTerminal: false,
     queuedWork: "none",
+    queuedFailedCount: 0,
+    rowState: { statuses: {}, progress: null },
     listIndicator: busy ? "working" : "none",
   };
 }
@@ -92,7 +96,6 @@ export function threadResponse(
   const {
     activity: _activity,
     pinSortKey: _pinSortKey,
-    hasPendingInteraction: _hasPendingInteraction,
     environmentHostId: _environmentHostId,
     environmentName: _environmentName,
     environmentBranchName: _environmentBranchName,
@@ -101,13 +104,17 @@ export function threadResponse(
     environmentIsWorktree: _environmentIsWorktree,
     environmentWorkspaceDisplayKind: _environmentWorkspaceDisplayKind,
     queuedWork: _queuedWork,
+    queuedFailedCount: _queuedFailedCount,
     listIndicator: _listIndicator,
+    rowState: _rowState,
     ...thread
   } = threadListEntry(view, now);
   return {
     ...thread,
+    nativeTerminal: thread.nativeTerminal,
     activeBackgroundAgentCount: 0,
     canRestoreEnvironment: false,
+    canEditMessages: true,
     canSpawnChild: true,
     queuedMessageCount: 0,
     workspaceSharing: null,
@@ -220,6 +227,7 @@ export function queuedMessage(args: {
     serviceTier: THREAD_DEFAULT_EXECUTION_OPTIONS.serviceTier,
     groupWithNext: false,
     sendAt: null,
+    state: "queued",
     waitingOn: null,
     failureReason: null,
     payload: { kind: "inline" },

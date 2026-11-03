@@ -14,7 +14,7 @@ import {
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { TasksEditor } from "../../editor/tasks-editor.js";
-import { useBbNavigate } from "@get-bb/plugin-sdk/app";
+import { experimental_saveFile, useBbNavigate } from "@get-bb/plugin-sdk/app";
 import {
   useMentionItems,
   useTasksQuery,
@@ -70,19 +70,30 @@ export function activityFeedEntries(
   }));
 }
 
+const selectComments = (result: { comments: DisplayComment[] }) =>
+  result.comments;
+const selectAttachments = (result: { attachments: Attachment[] }) =>
+  result.attachments;
+
 function useActivityFeed(taskId: string) {
-  return useTasksQuery<FeedEntry[]>(
-    async (rpc) => {
-      const [{ comments }, { attachments }] = await Promise.all([
-        rpc.call("listComments", { taskId }),
-        rpc.call("listAttachments", { commentsOfTaskId: taskId }),
-      ]);
-      return activityFeedEntries(comments, attachments);
-    },
-    ["comments:changed", "tasks:changed"],
-    [taskId],
-    { relevantTaskIds: [taskId] },
+  const comments = useTasksQuery("listComments", { taskId }, selectComments);
+  const attachments = useTasksQuery(
+    "listAttachments",
+    { commentsOfTaskId: taskId },
+    selectAttachments,
   );
+  const data = useMemo(
+    () =>
+      comments.data === undefined || attachments.data === undefined
+        ? undefined
+        : activityFeedEntries(comments.data, attachments.data),
+    [comments.data, attachments.data],
+  );
+  return {
+    data,
+    error: comments.error ?? attachments.error,
+    isLoading: comments.isLoading || attachments.isLoading,
+  };
 }
 
 type AgentNotificationTarget =
@@ -125,6 +136,13 @@ function FileAttachmentCard({ attachment }: { attachment: Attachment }) {
     <a
       href={attachmentDownloadUrl(attachment.id)}
       download={attachment.fileName}
+      onClick={(event) => {
+        event.preventDefault();
+        void experimental_saveFile({
+          url: attachmentDownloadUrl(attachment.id),
+          fileName: attachment.fileName,
+        });
+      }}
       title={`${attachment.fileName} · ${formatFileSize(attachment.sizeBytes)}`}
       className="inline-flex min-w-0 max-w-60 items-center gap-2 rounded-md border border-border bg-card px-2.5 py-1.5 text-xs shadow-2xs hover:border-input hover:bg-state-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
     >

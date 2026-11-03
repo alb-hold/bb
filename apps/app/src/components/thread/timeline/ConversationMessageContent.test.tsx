@@ -3,7 +3,7 @@
 import { LazyMarkdownHtml } from "@/components/ui/lazy-markdown-html";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import type { ThreadListEntry } from "@bb/domain";
-import { beforeAll, afterEach, describe, expect, it } from "vitest";
+import { beforeAll, afterEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
 import { ThreadTitleMentionResourcesProvider } from "@/components/thread/ThreadTitleMentions";
 import { RouteNavigationProvider } from "@/components/ui/app-route-anchor";
@@ -12,13 +12,18 @@ import {
   type MessageDirectiveRegistry,
 } from "@/components/ui/markdown-message-directives";
 import { ConversationMessageContent } from "./ConversationMessageContent";
+import { ThreadTimelineNavigationProvider } from "./ThreadTimelineNavigationContext";
 import { USER_MESSAGE_CHAR_CAP } from "@bb/client-core";
 import { createQueryClientTestHarness } from "@/test/queryClientTestHarness";
 import { makeThreadListEntry as makeThreadListEntryFixture } from "@bb/test-helpers/domain-fixtures";
 
 beforeAll(() => LazyMarkdownHtml.preload());
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+});
 
 function threadListEntry(
   overrides: Partial<ThreadListEntry> = {},
@@ -70,13 +75,27 @@ describe("ConversationMessageContent assistant images", () => {
 });
 
 describe("ConversationMessageContent user images", () => {
-  it("uses the same local image routing as assistant messages", () => {
+  it("passes original attachment names and sizes through the user message", () => {
     render(
       <MemoryRouter>
         <RouteNavigationProvider>
           <ConversationMessageContent
             role="user"
-            attachments={null}
+            attachments={{
+              webImages: 0,
+              localImages: 0,
+              localFiles: 1,
+              imageUrls: [],
+              localImagePaths: [],
+              localFilePaths: ["uploaded-paste.txt"],
+              localFileDetails: [
+                {
+                  path: "uploaded-paste.txt",
+                  name: "Pasted text.txt",
+                  sizeBytes: 3638577,
+                },
+              ],
+            }}
             initiator="user"
             mentions={[]}
             senderThreadId={null}
@@ -84,16 +103,60 @@ describe("ConversationMessageContent user images", () => {
             senderIsPluginSideChat={false}
             systemMessageKind="unlabeled"
             systemMessageSubject={null}
-            text="![diagram](output/diagram.png)"
+            text="Inspect errors"
             timestamp={0}
-            threadId="thr_image"
+            threadId="thr_paste"
+            projectId="proj_paste"
             turnRequest={{
               isGrouped: false,
               kind: "message",
               status: "accepted",
             }}
-            workspaceRootPath="/workspace"
           />
+        </RouteNavigationProvider>
+      </MemoryRouter>,
+    );
+    expect(
+      screen
+        .getByRole("link", { name: "Pasted text.txt · 3.5 MB" })
+        .getAttribute("href"),
+    ).toBe(
+      "/api/v1/projects/proj_paste/attachments/content?path=uploaded-paste.txt",
+    );
+  });
+
+  it("uses the same local image routing as assistant messages", () => {
+    render(
+      <MemoryRouter>
+        <RouteNavigationProvider>
+          <ThreadTimelineNavigationProvider
+            environmentId={null}
+            hostId={null}
+            onOpenLocalFileLink={() => false}
+            resolveMentionLink={() => null}
+            threadId="thr_image"
+            workspaceRootPath="/workspace"
+          >
+            <ConversationMessageContent
+              role="user"
+              attachments={null}
+              initiator="user"
+              mentions={[]}
+              senderThreadId={null}
+              senderThreadTitle={null}
+              senderIsPluginSideChat={false}
+              systemMessageKind="unlabeled"
+              systemMessageSubject={null}
+              text="![diagram](output/diagram.png)"
+              timestamp={0}
+              threadId="thr_image"
+              turnRequest={{
+                isGrouped: false,
+                kind: "message",
+                status: "accepted",
+              }}
+            />
+          </ThreadTimelineNavigationProvider>
         </RouteNavigationProvider>
       </MemoryRouter>,
     );
@@ -129,7 +192,6 @@ describe("ConversationMessageContent user HTML", () => {
               kind: "message",
               status: "accepted",
             }}
-            workspaceRootPath="/workspace"
           />
         </RouteNavigationProvider>
       </MemoryRouter>,
@@ -586,4 +648,55 @@ describe("ConversationMessageContent undelivered automation messages", () => {
 
     expect(screen.getByText("Steer failed")).toBeTruthy();
   });
+});
+
+describe("user message overflow", () => {
+  it.each([
+    { label: "horizontal", width: 500, height: 40, expandable: false },
+    { label: "vertical", width: 100, height: 400, expandable: true },
+  ])(
+    "uses vertical clipping to decide expansion ($label overflow)",
+    ({ width, height, expandable }) => {
+      vi.stubGlobal("ResizeObserver", undefined);
+      vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(
+        100,
+      );
+      vi.spyOn(HTMLElement.prototype, "scrollWidth", "get").mockReturnValue(
+        width,
+      );
+      vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockReturnValue(
+        40,
+      );
+      vi.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockReturnValue(
+        height,
+      );
+      render(
+        <MemoryRouter>
+          <RouteNavigationProvider>
+            <ConversationMessageContent
+              role="user"
+              initiator="user"
+              attachments={null}
+              mentions={[]}
+              senderThreadId={null}
+              senderThreadTitle={null}
+              senderIsPluginSideChat={false}
+              systemMessageKind="unlabeled"
+              systemMessageSubject={null}
+              text="What does this mean?"
+              timestamp={0}
+              turnRequest={{
+                isGrouped: false,
+                kind: "message",
+                status: "accepted",
+              }}
+            />
+          </RouteNavigationProvider>
+        </MemoryRouter>,
+      );
+      expect(screen.queryByRole("button", { name: "Show more" }) !== null).toBe(
+        expandable,
+      );
+    },
+  );
 });

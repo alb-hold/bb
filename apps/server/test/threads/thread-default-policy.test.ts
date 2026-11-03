@@ -4,9 +4,9 @@ import {
 } from "../helpers/environment-provider.js";
 import {
   PERSONAL_PROJECT_ID,
-  type GitSourceInspection,
   type ProjectExecutionDefaults,
   type Thread,
+  type GitSourceInspection,
 } from "@bb/domain";
 import { createEnvironment } from "@bb/db";
 import { describe, expect, it } from "vitest";
@@ -326,6 +326,47 @@ describe("resolveCreateThreadEnvironment", () => {
     });
   });
 
+  it.each(["project-default", "host"] as const)(
+    "reuses a non-git parent's stored workspace for implicit %s children",
+    async (type) => {
+      await withTestHarness(async (harness) => {
+        installFakeGitWorktreeProvider();
+        const { host } = seedHostSession(harness.deps, {
+          id: "host-plain-parent",
+        });
+        const { project } = seedProjectWithSource(harness.deps, {
+          hostId: host.id,
+          path: "/tmp/Документы",
+        });
+        const environment = createEnvironment(harness.db, harness.hub, {
+          projectId: project.id,
+          hostId: host.id,
+          path: "/tmp/Документы",
+          isGitRepo: false,
+          providerOwnsPath: false,
+          status: "ready",
+        });
+        await expect(
+          resolveCreateThreadEnvironment(harness.deps, {
+            parentThread: makeParentThread({
+              projectId: project.id,
+              environmentId: environment.id,
+            }),
+            projectId: project.id,
+            requestedEnvironment:
+              type === "project-default"
+                ? { type }
+                : {
+                    type,
+                    hostId: host.id,
+                    workspace: { type: "unmanaged", path: null },
+                  },
+          }),
+        ).resolves.toEqual({ type: "reuse", environmentId: environment.id });
+      });
+    },
+  );
+
   it("uses a fresh worktree on the parent's machine for a project child", async () => {
     await withTestHarness(async (harness) => {
       installFakeGitWorktreeProvider();
@@ -382,6 +423,7 @@ describe("resolveCreateThreadEnvironment", () => {
   it.each([
     {
       name: "the personal workspace sugar",
+      reuseParent: true,
       requestedEnvironment: {
         type: "host" as const,
         workspace: { type: "personal" as const },
@@ -389,6 +431,7 @@ describe("resolveCreateThreadEnvironment", () => {
     },
     {
       name: "a selection of the personal provider",
+      reuseParent: true,
       requestedEnvironment: {
         type: "provider" as const,
         environmentProviderId: "personal-workspace",
@@ -398,26 +441,88 @@ describe("resolveCreateThreadEnvironment", () => {
     },
     {
       name: "no environment at all",
+      reuseParent: true,
       requestedEnvironment: { type: "project-default" as const },
     },
+    {
+      name: "the personal workspace on the parent's machine",
+      reuseParent: true,
+      requestedEnvironment: {
+        type: "host" as const,
+        hostId: "host-1",
+        workspace: { type: "personal" as const },
+      },
+    },
+    {
+      name: "the personal provider without a machine",
+      reuseParent: true,
+      requestedEnvironment: {
+        type: "provider" as const,
+        environmentProviderId: "personal-workspace",
+        inputs: null,
+      },
+    },
+    {
+      name: "the personal workspace on another machine",
+      reuseParent: false,
+      requestedEnvironment: {
+        type: "host" as const,
+        hostId: "host-2",
+        workspace: { type: "personal" as const },
+      },
+    },
+    {
+      name: "the personal provider on another machine",
+      reuseParent: false,
+      requestedEnvironment: {
+        type: "provider" as const,
+        environmentProviderId: "personal-workspace",
+        machine: { type: "existing" as const, hostId: "host-2" },
+        inputs: null,
+      },
+    },
+    {
+      name: "the personal provider on a new machine",
+      reuseParent: false,
+      requestedEnvironment: {
+        type: "provider" as const,
+        environmentProviderId: "personal-workspace",
+        machine: {
+          type: "new" as const,
+          machineProviderId: "test-machine-provider",
+          inputs: null,
+        },
+        inputs: null,
+      },
+    },
   ])(
-    "shares personal child threads from $name",
-    async ({ requestedEnvironment }) => {
+    "respects placement for personal child threads from $name",
+    async ({ requestedEnvironment, reuseParent }) => {
       await withTestHarness(async (harness) => {
         installFakeGitWorktreeProvider();
+        const { host } = seedHostSession(harness.deps, { id: "host-1" });
+        const parentEnvironment = createEnvironment(harness.db, harness.hub, {
+          projectId: PERSONAL_PROJECT_ID,
+          hostId: host.id,
+          path: "/tmp/personal-child-parent",
+          providerOwnsPath: true,
+          status: "ready",
+          environmentProvider: null,
+        });
         await expect(
           resolveCreateThreadEnvironment(harness.deps, {
             parentThread: makeParentThread({
-              environmentId: "env-personal-parent",
+              environmentId: parentEnvironment.id,
               projectId: PERSONAL_PROJECT_ID,
             }),
             projectId: PERSONAL_PROJECT_ID,
             requestedEnvironment,
           }),
-        ).resolves.toEqual({
-          type: "reuse",
-          environmentId: "env-personal-parent",
-        });
+        ).resolves.toEqual(
+          reuseParent
+            ? { type: "reuse", environmentId: parentEnvironment.id }
+            : requestedEnvironment,
+        );
       });
     },
   );

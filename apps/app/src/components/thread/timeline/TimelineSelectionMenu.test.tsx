@@ -1,12 +1,14 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { useLayoutEffect, useRef, useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import {
-  setPluginLogoUrls,
-  resetPluginLogoStoreForTest,
-} from "@/lib/plugin-logos";
 import { COMPACT_VIEWPORT_QUERY } from "@bb/shared-ui/hooks/use-compact-viewport";
 import { POINTER_COARSE_QUERY } from "@bb/shared-ui/hooks/use-pointer-coarse";
 import { TimelineSelectionMenu } from "./TimelineSelectionMenu";
@@ -14,7 +16,6 @@ import type { MessageProseSelection } from "./SelectableMessageProse";
 
 afterEach(() => {
   cleanup();
-  resetPluginLogoStoreForTest();
   vi.restoreAllMocks();
 });
 
@@ -55,30 +56,76 @@ function mockPointerCoarse() {
   }));
 }
 
-describe("TimelineSelectionMenu", () => {
-  it("renders only the actions with handlers", () => {
-    render(
-      <TimelineSelectionMenu
-        selection={makeSelection()}
-        onAddToChat={vi.fn()}
-        onDismiss={vi.fn()}
-      />,
-    );
+function mockLiveSelection(rect: DOMRect | null) {
+  vi.spyOn(window, "getSelection").mockReturnValue({
+    rangeCount: rect === null ? 0 : 1,
+    isCollapsed: rect === null,
+    getRangeAt: () => ({
+      getClientRects: () => ({ length: 1, item: () => rect }),
+      getBoundingClientRect: () => rect,
+    }),
+    removeAllRanges: () => {},
+  } as unknown as Selection);
+}
 
-    expect(screen.getByRole("button", { name: "Add to chat" })).toBeTruthy();
-    expect(
-      screen
-        .getByRole("button", { name: "Add to chat" })
-        .closest("[data-bb-portaled-overlay]"),
-    ).not.toBeNull();
+describe("TimelineSelectionMenu", () => {
+  it("stays actionable while a scroll moves the selection", () => {
+    const onAddToChat = vi.fn();
+    const onDismiss = vi.fn();
+    render(
+      <>
+        <div data-testid="scroller" />
+        <TimelineSelectionMenu
+          selection={makeSelection()}
+          onAddToChat={onAddToChat}
+          onDismiss={onDismiss}
+        />
+      </>,
+    );
+    mockLiveSelection(new DOMRect(10, 40, 100, 20));
+
+    fireEvent.scroll(screen.getByTestId("scroller"));
+    fireEvent.click(screen.getByRole("button", { name: "Add to chat" }));
+
+    expect(onAddToChat).toHaveBeenCalledWith("selected text");
   });
 
-  it("does not mount when no action handlers are supplied", () => {
+  it("dismisses once a scroll moves the selection out of view", () => {
+    const onDismiss = vi.fn();
     render(
-      <TimelineSelectionMenu selection={makeSelection()} onDismiss={vi.fn()} />,
+      <>
+        <div data-testid="scroller" />
+        <TimelineSelectionMenu
+          selection={makeSelection()}
+          onAddToChat={vi.fn()}
+          onDismiss={onDismiss}
+        />
+      </>,
     );
+    mockLiveSelection(new DOMRect(10, -40, 100, 20));
 
-    expect(screen.queryByRole("button")).toBeNull();
+    fireEvent.scroll(screen.getByTestId("scroller"));
+
+    expect(onDismiss).toHaveBeenCalledTimes(1);
+  });
+
+  it("dismisses on scroll once the selection is gone", () => {
+    const onDismiss = vi.fn();
+    render(
+      <>
+        <div data-testid="scroller" />
+        <TimelineSelectionMenu
+          selection={makeSelection()}
+          onAddToChat={vi.fn()}
+          onDismiss={onDismiss}
+        />
+      </>,
+    );
+    mockLiveSelection(null);
+
+    fireEvent.scroll(screen.getByTestId("scroller"));
+
+    expect(onDismiss).toHaveBeenCalledTimes(1);
   });
 
   it("renders from a pointer release point without a physical anchor node", () => {
@@ -93,6 +140,56 @@ describe("TimelineSelectionMenu", () => {
     expect(screen.getByRole("button", { name: "Add to chat" })).toBeTruthy();
     expect(container.querySelector('[aria-hidden="true"]')).toBeNull();
   });
+
+  it.each([
+    { edge: "left", release: { x: 300, y: 400 } },
+    { edge: "right", release: { x: 1120, y: 400 } },
+    { edge: "top", release: { x: 600, y: 20 } },
+  ])(
+    "keeps the menu inside the timeline for a release past its $edge edge",
+    async ({ release }) => {
+      const timeline = new DOMRect(320, 48, 780, 752);
+      function ClippedTimeline() {
+        const [layer, setLayer] = useState<HTMLDivElement | null>(null);
+        return (
+          <div data-testid="timeline" style={{ overflow: "hidden" }}>
+            <div ref={setLayer} />
+            <TimelineSelectionMenu
+              selection={makeSelection({ anchorPoint: release })}
+              onAddToChat={vi.fn()}
+              onDismiss={vi.fn()}
+              container={layer}
+            />
+          </div>
+        );
+      }
+      vi.spyOn(
+        HTMLElement.prototype,
+        "getBoundingClientRect",
+      ).mockImplementation(function (this: HTMLElement) {
+        return this.dataset.testid === "timeline"
+          ? timeline
+          : new DOMRect(0, 0, 0, 0);
+      });
+      render(<ClippedTimeline />);
+
+      await waitFor(() => {
+        const wrapper = document.querySelector<HTMLElement>(
+          "[data-radix-popper-content-wrapper]",
+        );
+        const match = /translate\((-?[\d.]+)px, (-?[\d.]+)px\)/u.exec(
+          wrapper?.style.transform ?? "",
+        );
+        expect(match).not.toBeNull();
+        const x = Number(match?.[1]);
+        const y = Number(match?.[2]);
+        expect(x).toBeGreaterThanOrEqual(timeline.left);
+        expect(x).toBeLessThanOrEqual(timeline.right);
+        expect(y).toBeGreaterThanOrEqual(timeline.top);
+        expect(y).toBeLessThanOrEqual(timeline.bottom);
+      });
+    },
+  );
 
   it("uses the selected anchor side when positioning from a pointer release", () => {
     render(
@@ -123,18 +220,21 @@ describe("TimelineSelectionMenu", () => {
     expect(document.body.querySelector('[data-side="top"]')).toBeTruthy();
   });
 
-  it("uses a compact menu that prefers above coarse-pointer selections", () => {
+  it("opens a compact menu below touch selections, away from the native selection toolbar", () => {
     mockPointerCoarse();
     render(
       <TimelineSelectionMenu
-        selection={makeSelection()}
+        selection={makeSelection({
+          anchorPoint: { x: 60, y: 54 },
+          anchorSide: "bottom",
+        })}
         onAddToChat={vi.fn()}
         onDismiss={vi.fn()}
       />,
     );
 
     expect(screen.getByRole("button", { name: "Add to chat" })).toBeTruthy();
-    expect(document.body.querySelector('[data-side="top"]')).toBeTruthy();
+    expect(document.body.querySelector('[data-side="bottom"]')).toBeTruthy();
   });
 
   it("activates a touch action on pointer-up without waiting for click", () => {
@@ -185,49 +285,17 @@ describe("TimelineSelectionMenu", () => {
 
     render(<ComposerFocusHandoff />);
     const action = screen.getByRole("button", { name: "Add to chat" });
+    let focusedWhenGestureEnded: Element | null = null;
+    const recordFocus = () => {
+      focusedWhenGestureEnded = document.activeElement;
+    };
+    document.addEventListener("pointerup", recordFocus);
     fireEvent.pointerDown(action, { pointerType: "touch" });
     fireEvent.pointerUp(action, { pointerType: "touch" });
+    document.removeEventListener("pointerup", recordFocus);
 
-    expect(document.activeElement).toBe(
+    expect(focusedWhenGestureEnded).toBe(
       screen.getByRole("textbox", { name: "Chat composer" }),
     );
   });
-});
-
-it("uses a plugin action's icon instead of branding in the selection menu", () => {
-  setPluginLogoUrls(
-    new Map([
-      [
-        "demo",
-        {
-          displayName: "Demo",
-          icon: "Check",
-          compactIconUrl: "/demo.svg",
-          logoUrl: null,
-          logoDarkUrl: null,
-          icons: new Map(),
-        },
-      ],
-    ]),
-  );
-  render(
-    <TimelineSelectionMenu
-      selection={makeSelection()}
-      onDismiss={() => {}}
-      pluginActions={[
-        {
-          key: "demo/inspect",
-          pluginId: "demo",
-          icon: "Zap",
-          label: "Inspect selection",
-          onSelect: () => {},
-        },
-      ]}
-    />,
-  );
-  expect(
-    screen
-      .getByRole("button", { name: "Inspect selection" })
-      .querySelector('[data-icon="Zap"]'),
-  ).not.toBeNull();
 });

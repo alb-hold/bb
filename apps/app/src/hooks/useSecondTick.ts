@@ -57,11 +57,19 @@ function subscribe(listener: () => void): () => void {
   };
 }
 
+function subscribeWithoutTick(): () => void {
+  return () => {};
+}
+
 function getSnapshot(): number {
   if (lastTickMs === 0) lastTickMs = Date.now();
   return lastTickMs;
 }
 
-export function useSecondTick(): number {
-  return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+export function useSecondTick(enabled = true): number {
+  return useSyncExternalStore(
+    enabled ? subscribe : subscribeWithoutTick,
+    getSnapshot,
+    getSnapshot,
+  );
 }

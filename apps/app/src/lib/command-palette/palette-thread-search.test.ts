@@ -1,6 +1,7 @@
 import { PERSONAL_PROJECT_ID, type ThreadListEntry } from "@bb/domain";
 import type { ThreadSearchResponse } from "@bb/server-contract";
 import { describe, expect, it } from "vitest";
+import { formatRelativeTime } from "@/lib/relative-time";
 import { buildPaletteThreadSearchRows } from "./palette-thread-search";
 
 const NOW = 1_000_000;
@@ -14,6 +15,7 @@ function makeThread(
     projectId: "project-1",
     environmentId: null,
     providerId: "codex",
+    nativeTerminal: false,
     title: `Title ${id}`,
     titleFallback: `Fallback ${id}`,
     sectionId: null,
@@ -24,6 +26,7 @@ function makeThread(
     originKind: null,
     originPluginId: null,
     visibility: "visible",
+    parentNotifications: "auto",
     archivedAt: null,
     pinnedAt: null,
     pinSortKey: null,
@@ -49,6 +52,8 @@ function makeThread(
     environmentWorkspaceDisplayKind: "other",
     runtime: { displayStatus: "idle" },
     queuedWork: "none",
+    queuedFailedCount: 0,
+    rowState: { statuses: {}, progress: null },
     listIndicator: "none",
     ...overrides,
   };
@@ -68,6 +73,8 @@ function build(
       archived: { results: [], total: 0 },
     },
     searchResultsAreCurrent: true,
+    sort: "relevance",
+    sortDirection: "descending",
     ...overrides,
   });
 }
@@ -280,6 +287,82 @@ describe("buildPaletteThreadSearchRows", () => {
     expect(rows[0]?.threadId).toBe("20");
     expect(rows.at(-1)?.threadId).toBe("1");
     expect(recentThreads[0]?.id).toBe("0");
+  });
+
+  describe("sort", () => {
+    it("orders recents by creation time and shows the creation time", () => {
+      const result = build({
+        query: "",
+        recentThreads: [
+          makeThread("old", { createdAt: NOW - 3_600_000, updatedAt: NOW }),
+          makeThread("new", {
+            createdAt: NOW - 60_000,
+            updatedAt: NOW - 120_000,
+          }),
+        ],
+        sort: "created",
+      });
+      expect(result.rows.map((row) => row.threadId)).toEqual(["new", "old"]);
+      expect(result.rows[1]?.relativeTime).toBe(
+        formatRelativeTime({ timestamp: NOW - 3_600_000, now: NOW }),
+      );
+    });
+
+    it("orders archived recents by last update instead of archive time", () => {
+      const result = build({
+        query: "",
+        lifecycles: ["archived"],
+        recentThreads: [
+          makeThread("archived-last", { archivedAt: NOW, updatedAt: NOW - 2 }),
+          makeThread("updated-last", {
+            archivedAt: NOW - 1,
+            updatedAt: NOW - 1,
+          }),
+        ],
+        sort: "updated",
+      });
+      expect(result.rows.map((row) => row.threadId)).toEqual([
+        "updated-last",
+        "archived-last",
+      ]);
+    });
+
+    it("reorders search matches by date instead of title matches first", () => {
+      const messageOnly = makeThread("message-only", {
+        title: "Import pipeline",
+        updatedAt: NOW,
+      });
+      const titleHit = makeThread("title-hit", {
+        title: "Fix login",
+        updatedAt: NOW - 1,
+      });
+      const searchResponse: ThreadSearchResponse = {
+        active: {
+          total: 2,
+          results: [
+            { thread: messageOnly, matches: [] },
+            { thread: titleHit, matches: [] },
+          ],
+        },
+        archived: { total: 0, results: [] },
+      };
+      expect(
+        build({ query: "fix", searchResponse }).rows.map((row) => row.threadId),
+      ).toEqual(["title-hit", "message-only"]);
+      expect(
+        build({ query: "fix", searchResponse, sort: "updated" }).rows.map(
+          (row) => row.threadId,
+        ),
+      ).toEqual(["message-only", "title-hit"]);
+      expect(
+        build({
+          query: "fix",
+          searchResponse,
+          sort: "updated",
+          sortDirection: "ascending",
+        }).rows.map((row) => row.threadId),
+      ).toEqual(["title-hit", "message-only"]);
+    });
   });
 
   describe("loaded title matches", () => {

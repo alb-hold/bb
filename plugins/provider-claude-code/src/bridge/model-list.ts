@@ -1,54 +1,24 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { type AvailableModel } from "@get-bb/plugin-sdk/provider-bridge";
-import {
-  query,
-  type ModelInfo,
-  type Options,
-} from "@anthropic-ai/claude-agent-sdk";
+import { type ModelInfo } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import { buildClaudeCodeModels } from "../model-list.js";
 import { afterClaudeRenewalSettles } from "./claude-refresh-lock.js";
-import { translateMissingClaudeCliCatalogError } from "./missing-cli-error.js";
-import { resolveClaudeCodeExecutable } from "./session-options.js";
-
-function buildModelProbeOptions(env: NodeJS.ProcessEnv): Options {
-  const pathToClaudeCodeExecutable = resolveClaudeCodeExecutable({ env });
-  return {
-    cwd: process.cwd(),
-    env,
-    maxTurns: 0,
-    persistSession: false,
-    settingSources: ["user", "project", "local"],
-    ...(pathToClaudeCodeExecutable ? { pathToClaudeCodeExecutable } : {}),
-  };
-}
+import { probeClaudeInitialization } from "./initialization-probe.js";
 
 export async function probeClaudeCodeDiscoveredModels(
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<ModelInfo[]> {
-  let session: ReturnType<typeof query>;
-  try {
-    session = query({
-      prompt: ".",
-      options: buildModelProbeOptions(env),
-    });
-  } catch (error) {
-    throw translateMissingClaudeCliCatalogError(error);
+  const initialization = await probeClaudeInitialization({
+    env,
+    cwd: process.cwd(),
+  });
+  await afterClaudeRenewalSettles(env);
+  if (initialization.models.length === 0) {
+    throw new Error("Claude Code reported no models.");
   }
-
-  try {
-    const initialization = await session.initializationResult();
-    if (initialization.models.length === 0) {
-      throw new Error("Claude Code reported no models.");
-    }
-    return initialization.models;
-  } catch (error) {
-    throw translateMissingClaudeCliCatalogError(error);
-  } finally {
-    await afterClaudeRenewalSettles(env);
-    session.close();
-  }
+  return initialization.models;
 }
 
 export async function listClaudeCodeBridgeModels(

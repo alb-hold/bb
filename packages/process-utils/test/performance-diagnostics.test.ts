@@ -12,12 +12,76 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { performance } from "node:perf_hooks";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { console as inspectorConsole } from "node:inspector";
 import { setTimeout as delay } from "node:timers/promises";
+import type { TransferListItem, WorkerOptions } from "node:worker_threads";
 import { startPerformanceDiagnostics } from "../src/performance-diagnostics.js";
 
+const workerOverrides = vi.hoisted(() => ({
+  nonErrorFailure: false,
+  uncoercibleFailure: false,
+  failureAckCount: 0,
+  workerExitCount: 0,
+}));
+
+vi.mock("node:worker_threads", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:worker_threads")>();
+  return {
+    ...actual,
+    Worker: class extends actual.Worker {
+      constructor(source: string | URL, options?: WorkerOptions) {
+        if (workerOverrides.nonErrorFailure) {
+          if (typeof source !== "string")
+            throw new Error("Expected profiling worker source");
+          const replaced = source.replace(
+            'const stopping = command.command === "stop";',
+            'const stopping = command.command === "stop";\n        if (stopping) throw "non-Error profile failure";',
+          );
+          if (replaced === source)
+            throw new Error("Expected profiling worker failure handler");
+          source = replaced;
+        }
+        if (workerOverrides.uncoercibleFailure) {
+          if (typeof source !== "string")
+            throw new Error("Expected profiling worker source");
+          const replaced = source.replace(
+            'const stopping = command.command === "stop";',
+            'const stopping = command.command === "stop";' +
+              "\n        if (stopping) throw Object.create(null);",
+          );
+          if (replaced === source)
+            throw new Error("Expected profiling worker failure handler");
+          source = replaced;
+        }
+        super(source, options);
+        if (workerOverrides.uncoercibleFailure)
+          this.on("exit", () => {
+            workerOverrides.workerExitCount++;
+          });
+      }
+
+      override postMessage(
+        value: unknown,
+        transferList?: readonly TransferListItem[],
+      ): void {
+        if (workerOverrides.uncoercibleFailure && value === "failure-ack")
+          workerOverrides.failureAckCount++;
+        super.postMessage(value, transferList);
+      }
+    },
+  };
+});
+
 describe("performance diagnostics", () => {
+  afterEach(() => {
+    workerOverrides.nonErrorFailure = false;
+    workerOverrides.uncoercibleFailure = false;
+    workerOverrides.failureAckCount = 0;
+    workerOverrides.workerExitCount = 0;
+    inspectorConsole.profileEnd("unrelated-user-capture");
+  });
+
   it("saves an actual CPU profile on shutdown and stops idempotently", async () => {
     const dataDir = await mkdtemp(join(tmpdir(), "bb-perf-test-"));
     const warnings: unknown[] = [];
@@ -31,8 +95,11 @@ describe("performance diagnostics", () => {
       },
     });
     try {
-      const until = performance.now() + 40;
-      while (performance.now() < until) Math.sqrt(performance.now());
+      function mainThreadWork() {
+        const until = performance.now() + 80;
+        while (performance.now() < until) Math.sqrt(performance.now());
+      }
+      mainThreadWork();
       await Promise.all([monitor.stop(), monitor.stop()]);
       const directory = join(dataDir, "logs", "performance");
       const files = await readdir(directory);
@@ -40,7 +107,15 @@ describe("performance diagnostics", () => {
       expect(files[0]).toMatch(/^profile-\d+-[0-9a-f-]+\.cpuprofile$/);
       const path = join(directory, files[0]!);
       const profile = JSON.parse(await readFile(path, "utf8"));
-      expect(profile.nodes.length).toBeGreaterThan(0);
+      expect(profile.nodes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            callFrame: expect.objectContaining({
+              functionName: "mainThreadWork",
+            }),
+          }),
+        ]),
+      );
       expect(profile.samples.length).toBeGreaterThan(0);
       expect(profile.endTime).toBeGreaterThan(profile.startTime);
       if (process.platform !== "win32")
@@ -52,7 +127,65 @@ describe("performance diagnostics", () => {
     }
   });
 
-  it("rotates continuous bounded windows and ignores unrelated console captures", async () => {
+  it("logs the sampled blocker without attributing an adjacent short callback", async () => {
+    const dataDir = await mkdtemp(join(tmpdir(), "bb-stall-attribution-"));
+    const records: object[] = [];
+    const warnings: object[] = [];
+    const monitor = await startPerformanceDiagnostics({
+      dataDir,
+      logger: {
+        info: (fields, message) => {
+          if (message === "Event loop stall attribution") records.push(fields);
+        },
+        warn: (fields) => {
+          warnings.push(fields);
+        },
+      },
+    });
+    function unwrappedPluginBlocker() {
+      const until = performance.now() + 200;
+      while (performance.now() < until) Math.sqrt(performance.now());
+    }
+    function shortHeartbeat() {
+      return 1;
+    }
+    try {
+      await delay(40);
+      unwrappedPluginBlocker();
+      shortHeartbeat();
+      await delay(40);
+      await monitor.stop();
+      expect(records).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            stallAttribution: "sampled",
+            stacks: expect.arrayContaining([
+              expect.objectContaining({
+                frames: expect.arrayContaining([
+                  expect.objectContaining({
+                    functionName: "unwrappedPluginBlocker",
+                  }),
+                ]),
+                sampledMs: expect.any(Number),
+              }),
+            ]),
+          }),
+        ]),
+      );
+      const files = await readdir(join(dataDir, "logs", "performance"));
+      expect(files).toHaveLength(1);
+      expect(files[0]).toMatch(/\.cpuprofile$/);
+      expect(warnings).toEqual([]);
+      expect(JSON.stringify(records)).not.toContain(
+        '"functionName":"shortHeartbeat"',
+      );
+    } finally {
+      await monitor.stop();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("rotates bounded main-thread windows and ignores unrelated console captures", async () => {
     const dataDir = await mkdtemp(join(tmpdir(), "bb-perf-rotation-"));
     const savedPaths: string[] = [];
     const warnings: unknown[] = [];
@@ -167,6 +300,126 @@ describe("performance diagnostics", () => {
       );
       expect(warnings).toEqual([]);
     } finally {
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("stops cleanly when saving a capture fails", async () => {
+    const dataDir = await mkdtemp(join(tmpdir(), "bb-perf-save-failure-"));
+    const warnings: { error: unknown; message: string }[] = [];
+    const monitor = await startPerformanceDiagnostics({
+      dataDir,
+      logger: {
+        info: () => {},
+        warn: (fields, message) => {
+          warnings.push({
+            error:
+              typeof fields === "object" && fields !== null && "err" in fields
+                ? fields.err
+                : undefined,
+            message,
+          });
+        },
+      },
+    });
+    try {
+      await rm(join(dataDir, "logs", "performance"), {
+        recursive: true,
+        force: true,
+      });
+      await Promise.all([monitor.stop(), monitor.stop()]);
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]?.message).toBe(
+        "CPU profiling stopped; performance summaries remain enabled",
+      );
+      const error = warnings[0]?.error;
+      expect(error).toBeInstanceOf(Error);
+      if (!(error instanceof Error)) throw new Error("Expected profiler error");
+      expect(error.message).toContain("ENOENT");
+    } finally {
+      await monitor.stop();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("logs and settles a non-Error worker failure", async () => {
+    const dataDir = await mkdtemp(join(tmpdir(), "bb-perf-non-error-failure-"));
+    const warnings: { error: unknown; message: string }[] = [];
+    workerOverrides.nonErrorFailure = true;
+    const monitor = await startPerformanceDiagnostics({
+      dataDir,
+      logger: {
+        info: () => {},
+        warn: (fields, message) => {
+          warnings.push({
+            error:
+              typeof fields === "object" && fields !== null && "err" in fields
+                ? fields.err
+                : undefined,
+            message,
+          });
+        },
+      },
+    });
+    try {
+      await rm(join(dataDir, "logs", "performance"), {
+        recursive: true,
+        force: true,
+      });
+      await monitor.stop();
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]?.message).toBe(
+        "CPU profiling stopped; performance summaries remain enabled",
+      );
+      const error = warnings[0]?.error;
+      expect(error).toBeInstanceOf(Error);
+      if (!(error instanceof Error)) throw new Error("Expected profiler error");
+      expect(error.message).toBe("non-Error profile failure");
+    } finally {
+      await monitor.stop();
+      workerOverrides.nonErrorFailure = false;
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("settles a worker failure whose value cannot be stringified", async () => {
+    const dataDir = await mkdtemp(
+      join(tmpdir(), "bb-perf-uncoercible-failure-"),
+    );
+    const warnings: { error: unknown; message: string }[] = [];
+    workerOverrides.uncoercibleFailure = true;
+    workerOverrides.failureAckCount = 0;
+    workerOverrides.workerExitCount = 0;
+    const monitor = await startPerformanceDiagnostics({
+      dataDir,
+      logger: {
+        info: () => {},
+        warn: (fields, message) => {
+          warnings.push({
+            error:
+              typeof fields === "object" && fields !== null && "err" in fields
+                ? fields.err
+                : undefined,
+            message,
+          });
+        },
+      },
+    });
+    try {
+      await expect(monitor.stop()).resolves.toBeUndefined();
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]?.message).toBe(
+        "CPU profiling stopped; performance summaries remain enabled",
+      );
+      const error = warnings[0]?.error;
+      expect(error).toBeInstanceOf(Error);
+      if (!(error instanceof Error)) throw new Error("Expected profiler error");
+      expect(error.message).toBe("Non-Error profile failure");
+      expect(workerOverrides.failureAckCount).toBe(1);
+      expect(workerOverrides.workerExitCount).toBe(1);
+    } finally {
+      await monitor.stop();
+      workerOverrides.uncoercibleFailure = false;
       await rm(dataDir, { recursive: true, force: true });
     }
   });

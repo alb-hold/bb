@@ -1,5 +1,7 @@
 // @vitest-environment jsdom
 
+
+import { ThreadInfoFixedTabContent } from "@/components/secondary-panel/thread-info-registration";
 import {
   cleanup,
   fireEvent,
@@ -20,6 +22,7 @@ import { SidebarProvider } from "@/components/ui/sidebar";
 import {
   createGitDiffFixedPanelTab,
   createPluginPageFixedPanelTab,
+  createTerminalFixedPanelTab,
   createThreadInfoFixedPanelTab,
   createWorkspaceFilePreviewFixedPanelTab,
   type SecondaryFileFixedPanelTab,
@@ -61,6 +64,8 @@ const diffFixedTab = createGitDiffFixedPanelTab();
 const infoFixedTabDescriptor = {
   ariaLabel: "Show thread info panel",
   label: "Info",
+  contentFillsRegion: true,
+  renderContent: () => <ThreadInfoFixedTabContent />,
   leadingVisual: null,
   onSelect: noop,
   tab: infoFixedTab,
@@ -69,6 +74,8 @@ const infoFixedTabDescriptor = {
 const diffFixedTabDescriptor = {
   ariaLabel: "Show diff panel",
   label: "Diff",
+  contentFillsRegion: true,
+  renderContent: () => null,
   leadingVisual: null,
   onSelect: noop,
   tab: diffFixedTab,
@@ -97,11 +104,13 @@ function createTestRenderableTab(
 }
 
 function renderPanel(args: {
+  activeTab?: SecondaryPanelRenderableTab["tab"];
   isConversationCollapsed: boolean;
   onToggleConversationCollapse: () => void;
   renderAsDrawer?: boolean;
   showFullScreenShortcut?: boolean;
   splitPanelStateId?: string;
+  tabs?: readonly SecondaryPanelRenderableTab[];
 }) {
   const { wrapper: Wrapper } = createQueryClientTestHarness();
   return render(
@@ -110,7 +119,6 @@ function renderPanel(args: {
         <PanelGroup direction="horizontal">
           <ThreadSecondaryPanel
             activeTab={createThreadInfoFixedPanelTab()}
-            canUseGitUi={false}
             fixedTabs={infoFixedTabs}
             tabs={[]}
             isOpen
@@ -129,7 +137,32 @@ function renderPanel(args: {
   );
 }
 
-function renderFixedTabSplit() {
+describe("ThreadSecondaryPanel phone terminal status", () => {
+  it("shows the exited marker on a terminal tab in the drawer", () => {
+    const tab = createTerminalFixedPanelTab({ terminalId: "term_exited" });
+    const terminalTab: SecondaryPanelRenderableTab = {
+      label: "cmux3-walk-project",
+      leadingVisual: null,
+      onClose: noop,
+      onSelect: noop,
+      renderContent: () => null,
+      statusLabel: "exited",
+      tab,
+    };
+
+    renderPanel({
+      activeTab: tab,
+      isConversationCollapsed: false,
+      onToggleConversationCollapse: noop,
+      renderAsDrawer: true,
+      tabs: [terminalTab],
+    });
+
+    expect(screen.getByText("(exited)")).toBeTruthy();
+  });
+});
+
+function renderFixedTabSplit(ready = true) {
   const { wrapper: Wrapper } = createQueryClientTestHarness();
   const panelStateId = "fixed-tab-remove-split";
   const initial = createSidebarSplitState(
@@ -148,15 +181,17 @@ function renderFixedTabSplit() {
     serializeSidebarSplitState(split),
   );
 
-  return render(
+  const content = (areFixedTabsReady: boolean) => (
     <Wrapper>
       <SidebarProvider>
         <TooltipProvider>
           <PanelGroup direction="horizontal">
             <ThreadSecondaryPanel
               activeTab={diffFixedTab}
-              canUseGitUi
-              fixedTabs={infoAndDiffFixedTabs}
+              areFixedTabsReady={areFixedTabsReady}
+              fixedTabs={
+                areFixedTabsReady ? infoAndDiffFixedTabs : infoFixedTabs
+              }
               tabs={[]}
               isConversationCollapsed={false}
               isOpen
@@ -173,8 +208,10 @@ function renderFixedTabSplit() {
           </PanelGroup>
         </TooltipProvider>
       </SidebarProvider>
-    </Wrapper>,
+    </Wrapper>
   );
+  const view = render(content(ready));
+  return { ...view, settle: () => view.rerender(content(true)) };
 }
 
 describe("ThreadSecondaryPanel unavailable content", () => {
@@ -191,7 +228,6 @@ describe("ThreadSecondaryPanel unavailable content", () => {
               </Panel>
               <ThreadSecondaryPanel
                 activeTab={null}
-                canUseGitUi={false}
                 fixedTabs={[]}
                 tabs={[]}
                 isConversationCollapsed={false}
@@ -222,6 +258,19 @@ describe("ThreadSecondaryPanel unavailable content", () => {
 });
 
 describe("ThreadSecondaryPanel compact file content", () => {
+  it("preserves a saved Diff split while fixed-tab visibility is still resolving", () => {
+    const view = renderFixedTabSplit(false);
+    const stored = window.localStorage.getItem(
+      sidebarSplitStorageKey("fixed-tab-remove-split"),
+    );
+    expect(JSON.parse(stored ?? "{}").layout.root.type).toBe("split");
+    view.settle();
+    expect(document.querySelectorAll("[data-split-pane-id]")).toHaveLength(2);
+    const groups = document.querySelectorAll("[data-sidebar-split-tab-group]");
+    expect(groups[0]?.textContent).toContain("Info");
+    expect(groups[1]?.textContent).toContain("Diff");
+  });
+
   it("renders the available tab while persisted active state catches up", () => {
     const { wrapper: Wrapper } = createQueryClientTestHarness();
     const fallbackTab = createWorkspaceFilePreviewFixedPanelTab({
@@ -240,7 +289,6 @@ describe("ThreadSecondaryPanel compact file content", () => {
         <TooltipProvider>
           <ThreadSecondaryPanel
             activeTab={null}
-            canUseGitUi={false}
             fixedTabs={[]}
             tabs={[
               createTestRenderableTab(fallbackTab, () => (
@@ -278,7 +326,6 @@ describe("ThreadSecondaryPanel compact file content", () => {
         <TooltipProvider>
           <ThreadSecondaryPanel
             activeTab={fixedTab}
-            canUseGitUi={false}
             fixedTabs={[
               {
                 ariaLabel: "Show plugin docs",
@@ -353,7 +400,6 @@ describe("ThreadSecondaryPanel compact file content", () => {
             <PanelGroup direction="horizontal">
               <ThreadSecondaryPanel
                 activeTab={activityTab}
-                canUseGitUi={false}
                 fixedTabs={[
                   {
                     ariaLabel: "Show plugin docs",
@@ -446,7 +492,6 @@ describe("ThreadSecondaryPanel compact file content", () => {
             <PanelGroup direction="horizontal">
               <ThreadSecondaryPanel
                 activeTab={secondTab}
-                canUseGitUi={false}
                 fixedTabs={[]}
                 isConversationCollapsed={false}
                 isOpen
@@ -512,7 +557,6 @@ describe("ThreadSecondaryPanel compact file content", () => {
         <TooltipProvider>
           <ThreadSecondaryPanel
             activeTab={activeTab}
-            canUseGitUi={false}
             fixedTabs={[]}
             tabs={[
               createTestRenderableTab(activeTab, () => (
@@ -580,7 +624,6 @@ describe("ThreadSecondaryPanel compact file content", () => {
           <PanelGroup direction="horizontal">
             <ThreadSecondaryPanel
               activeTab={activeTab}
-              canUseGitUi={false}
               fixedTabs={infoFixedTabs}
               tabs={[createTestRenderableTab(activeTab, renderContent)]}
               isConversationCollapsed={false}
@@ -692,7 +735,6 @@ describe("ThreadSecondaryPanel Diff eligibility", () => {
           <PanelGroup direction="horizontal">
             <ThreadSecondaryPanel
               activeTab={createGitDiffFixedPanelTab()}
-              canUseGitUi={false}
               fixedTabs={infoFixedTabs}
               tabs={[]}
               isConversationCollapsed={false}
@@ -719,40 +761,6 @@ describe("ThreadSecondaryPanel Diff eligibility", () => {
     expect(screen.queryByText("This panel view is unavailable.")).toBeNull();
   });
 
-  it("keeps an active Diff tab visible while Git eligibility loads", () => {
-    const { wrapper: Wrapper } = createQueryClientTestHarness();
-    render(
-      <Wrapper>
-        <TooltipProvider>
-          <PanelGroup direction="horizontal">
-            <ThreadSecondaryPanel
-              activeTab={createGitDiffFixedPanelTab()}
-              canUseGitUi={false}
-              fixedTabs={infoAndDiffFixedTabs}
-              tabs={[]}
-              gitDiffTabStatus="loading"
-              isConversationCollapsed={false}
-              isOpen
-              metadataContent={null}
-              onClose={noop}
-              onCollapse={noop}
-              onTabReorder={noop}
-              onOpenNewTab={noop}
-              onPanelFocus={noop}
-              onToggleConversationCollapse={noop}
-              renderAsDrawer={false}
-            />
-          </PanelGroup>
-        </TooltipProvider>
-      </Wrapper>,
-    );
-
-    expect(
-      screen.getByRole("button", { name: "Show diff panel" }),
-    ).toBeTruthy();
-    expect(screen.getByText("Checking Git support…")).toBeTruthy();
-    expect(screen.queryByText("This panel view is unavailable.")).toBeNull();
-  });
 });
 
 describe("ThreadSecondaryPanel hide control glyph", () => {
@@ -862,7 +870,6 @@ describe("ThreadSecondaryPanel full-screen control", () => {
             <PanelGroup direction="horizontal">
               <ThreadSecondaryPanel
                 activeTab={fileTab}
-                canUseGitUi={false}
                 fixedTabs={infoFixedTabs}
                 tabs={[createTestRenderableTab(fileTab)]}
                 isConversationCollapsed={false}
@@ -1008,7 +1015,6 @@ describe("ThreadSecondaryPanel full-screen control", () => {
             <PanelGroup direction="horizontal">
               <ThreadSecondaryPanel
                 activeTab={fileTab}
-                canUseGitUi={false}
                 fixedTabs={infoFixedTabs}
                 tabs={[createTestRenderableTab(fileTab)]}
                 isConversationCollapsed
@@ -1138,7 +1144,6 @@ it("focuses New tab without opening it and resumes cycling from the button", asy
           <PanelGroup direction="horizontal">
             <ThreadSecondaryPanel
               activeTab={infoFixedTab}
-              canUseGitUi={false}
               fixedTabs={infoFixedTabs}
               tabs={[]}
               splitPanelStateId="new-tab-navigation"
@@ -1201,7 +1206,6 @@ it("ignores tab navigation while chat maximize suppresses the panel and resumes 
               <PanelGroup direction="horizontal">
                 <ThreadSecondaryPanel
                   activeTab={infoFixedTab}
-                  canUseGitUi={false}
                   fixedTabs={infoFixedTabs}
                   tabs={[{ ...createTestRenderableTab(file), onSelect }]}
                   splitPanelStateId="suppressed-panel-navigation"

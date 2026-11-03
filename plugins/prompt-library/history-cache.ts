@@ -3,7 +3,7 @@ import { promptFromHistory, type HistoryEntry } from "./history-prompt.js";
 
 type ListHistory = BbPluginApi["sdk"]["experimental_promptHistory"]["list"];
 
-const OLDER_PAGE_LIMIT = "1000";
+const FULL_PAGE_LIMIT = "1000";
 const NEWER_PAGE_LIMIT = "100";
 
 export interface HistoryCandidate {
@@ -12,6 +12,7 @@ export interface HistoryCandidate {
   prompt: ComposerDraftReplacement;
   projectId: string;
   threadId: string;
+  scope: HistoryEntry["scope"];
 }
 
 function candidate(entry: HistoryEntry): HistoryCandidate {
@@ -21,73 +22,75 @@ function candidate(entry: HistoryEntry): HistoryCandidate {
     prompt: promptFromHistory(entry.input),
     projectId: entry.projectId,
     threadId: entry.threadId,
+    scope: entry.scope,
   };
 }
 
-export function createHistoryCache(list: ListHistory) {
+export function createHistoryCache(
+  list: ListHistory,
+  onEntries: (entries: readonly HistoryCandidate[]) => Promise<void>,
+  signal: AbortSignal,
+) {
   let candidates: HistoryCandidate[] = [];
   const knownIds = new Set<string>();
-  let started = false;
+  let loaded = false;
   let olderCursor: string | null = null;
-  let pending: Promise<unknown> = Promise.resolve();
 
-  function serialized<T>(task: () => Promise<T>): Promise<T> {
-    const next = pending.catch(() => {}).then(task);
-    pending = next;
-    return next;
+  async function commit(entries: HistoryCandidate[], prepend: boolean) {
+    signal.throwIfAborted();
+    await onEntries(entries);
+    for (const entry of entries) knownIds.add(entry.id);
+    candidates = prepend
+      ? [...entries, ...candidates]
+      : [...candidates, ...entries];
   }
 
-  async function loadOlderPage(): Promise<void> {
-    const page = await list({
-      limit: OLDER_PAGE_LIMIT,
-      ...(olderCursor !== null ? { cursor: olderCursor } : {}),
-    });
-    const older: HistoryCandidate[] = [];
-    for (const entry of page.entries) {
-      if (knownIds.has(entry.id)) continue;
-      knownIds.add(entry.id);
-      older.push(candidate(entry));
+  async function load() {
+    if (!loaded) {
+      do {
+        signal.throwIfAborted();
+        const page = await list({
+          limit: olderCursor === null ? NEWER_PAGE_LIMIT : FULL_PAGE_LIMIT,
+          ...(olderCursor === null ? {} : { cursor: olderCursor }),
+          signal,
+        });
+        await commit(
+          page.entries
+            .filter((entry) => !knownIds.has(entry.id))
+            .map(candidate),
+          false,
+        );
+        olderCursor = page.nextCursor;
+        loaded = olderCursor === null;
+      } while (!loaded);
+      return;
     }
-    candidates = [...candidates, ...older];
-    olderCursor = page.nextCursor;
-    started = true;
-  }
-
-  async function loadNewer(): Promise<void> {
-    const newer: HistoryCandidate[] = [];
+    const entries: HistoryCandidate[] = [];
+    const seen = new Set<string>();
     let cursor: string | null = null;
-    let reachedKnown = false;
     do {
+      signal.throwIfAborted();
       const page = await list({
         limit: NEWER_PAGE_LIMIT,
-        ...(cursor !== null ? { cursor } : {}),
+        ...(cursor === null ? {} : { cursor }),
+        signal,
       });
       for (const entry of page.entries) {
         if (knownIds.has(entry.id)) {
-          reachedKnown = true;
-          break;
+          await commit(entries, true);
+          return;
         }
-        knownIds.add(entry.id);
-        newer.push(candidate(entry));
+        if (seen.has(entry.id)) continue;
+        seen.add(entry.id);
+        entries.push(candidate(entry));
       }
       cursor = page.nextCursor;
-    } while (!reachedKnown && cursor !== null);
-    if (newer.length > 0) candidates = [...newer, ...candidates];
+    } while (cursor !== null);
+    await commit(entries, true);
   }
 
   return {
-    refresh(): Promise<readonly HistoryCandidate[]> {
-      return serialized(async () => {
-        await (started ? loadNewer() : loadOlderPage());
-        return candidates;
-      });
-    },
-    loadOlder(): Promise<readonly HistoryCandidate[] | null> {
-      return serialized(async () => {
-        if (olderCursor === null) return null;
-        await loadOlderPage();
-        return candidates;
-      });
-    },
+    snapshot: (): readonly HistoryCandidate[] => candidates,
+    refresh: load,
   };
 }

@@ -18,13 +18,19 @@ describe("product-map surfaces", () => {
       "sidebar-navigation",
       "nav-panel",
       "thread-row-status",
+      "thread-row-metadata",
       "thread-list",
       "sidebar-footer",
       "thread-header",
+      "thread-actions",
+      "thread-context-card",
       "timeline-renderers",
       "message-directives",
+      "code-fence-renderers",
       "message-actions",
+      "message-metadata",
       "pending-interaction",
+      "thread-info",
       "code-renderers",
       "browser-toolbar",
       "thread-panel",
@@ -39,8 +45,9 @@ describe("product-map surfaces", () => {
     expect(surfaceIds("command-palette")).toEqual(["command-palette-actions"]);
   });
 
-  it("reads composer annotations from the banner through the draft and action row", () => {
+  it("reads composer annotations from the box, then the banner through the draft and action row", () => {
     const ordered = [
+      "composer-replacement",
       "composer-banners",
       "composer-state",
       "mention-provider",
@@ -177,7 +184,10 @@ describe("surface card copy", () => {
         expect(surface.bullets.length, surface.id).toBeLessThanOrEqual(4);
         for (const bullet of surface.bullets) {
           expect(bullet.trim().length, surface.id).toBeGreaterThan(0);
-          expect(bullet.length, `${surface.id}: "${bullet}"`).toBeLessThanOrEqual(100);
+          expect(
+            bullet.length,
+            `${surface.id}: "${bullet}"`,
+          ).toBeLessThanOrEqual(100);
           expect(bullet, `${surface.id}: "${bullet}"`).not.toMatch(/^Can\b/);
           expect(bullet, `${surface.id}: "${bullet}"`).not.toMatch(
             /experimental_|\b[a-z]+[A-Z]\w*|\w\(/,

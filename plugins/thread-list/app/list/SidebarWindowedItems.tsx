@@ -39,6 +39,10 @@ interface SidebarWindowedItemsProps {
 
 const EMPTY_KEY_SET: ReadonlySet<string> = new Set();
 
+function hasLayoutBox(rect: DOMRectReadOnly): boolean {
+  return rect.width > 0 || rect.height > 0;
+}
+
 function mergeRealizedKeys(
   previous: ReadonlySet<string>,
   {
@@ -185,16 +189,14 @@ export function SidebarWindowedItems({
 
     const scrollElement = resolveScrollElement();
     const promoteAll =
-      !scrollElement ||
-      scrollElement.clientHeight === 0 ||
-      typeof IntersectionObserver === "undefined";
+      !scrollElement || typeof IntersectionObserver === "undefined";
 
     const promoted = new Set<string>();
     if (promoteAll) {
       for (const key of itemKeys) {
         promoted.add(key);
       }
-    } else {
+    } else if (scrollElement.clientHeight > 0) {
       const viewport = scrollElement.getBoundingClientRect();
       const viewportTop = viewport.top - WINDOW_VIEWPORT_MARGIN_PX;
       const viewportBottom = viewport.bottom + WINDOW_VIEWPORT_MARGIN_PX;
@@ -248,7 +250,10 @@ export function SidebarWindowedItems({
             }
             if (entry.isIntersecting) {
               intended.set(key, true);
-            } else if (!alwaysMountedKeysRef.current.has(key)) {
+            } else if (
+              !alwaysMountedKeysRef.current.has(key) &&
+              hasLayoutBox(entry.boundingClientRect)
+            ) {
               intended.set(key, false);
               recordMeasuredHeight(key, entry.boundingClientRect.height);
             }

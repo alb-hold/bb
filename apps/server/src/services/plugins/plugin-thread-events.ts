@@ -5,6 +5,7 @@ import type { ThreadQueuedMessage } from "@bb/domain";
 import type { PluginThreadEventEmitter } from "./plugin-service.js";
 
 const pendingThreadEvents = new Map<string, ReturnType<typeof setTimeout>>();
+const pendingTurnFailedEvents = new Map<string, Promise<void>>();
 
 let emitter: PluginThreadEventEmitter | undefined;
 
@@ -13,6 +14,7 @@ export function setPluginThreadEventEmitter(
 ): void {
   for (const timer of pendingThreadEvents.values()) clearTimeout(timer);
   pendingThreadEvents.clear();
+  pendingTurnFailedEvents.clear();
   emitter = next;
 }
 
@@ -30,6 +32,17 @@ export function emitPluginThreadArchived(thread: Thread): void {
 
 export function emitPluginThreadUnarchived(thread: Thread): void {
   emitter?.emitThreadUnarchived(thread);
+}
+
+/**
+ * Called after a thread's parent changed, from the ownership seam shared by
+ * `threads.update` and the release of an archived thread's children.
+ */
+export function emitPluginThreadParentChanged(
+  thread: Thread,
+  previousParentThreadId: string | null,
+): void {
+  emitter?.emitThreadParentChanged(thread, previousParentThreadId);
 }
 
 export function emitPluginThreadDeleted(thread: Thread): void {
@@ -66,7 +79,36 @@ export function emitPluginMessageCancelled(entry: ThreadQueuedMessage): void {
  * failure stands either way — so neither can block the seam.
  */
 export function emitPluginTurnFailed(threadId: string): void {
-  emitter?.emitTurnFailed(threadId);
+  const emitted = emitter?.emitTurnFailed(threadId);
+  if (emitted === undefined) return;
+  const pending = Promise.resolve(emitted)
+    .then(() => undefined)
+    .catch(() => undefined);
+  pendingTurnFailedEvents.set(threadId, pending);
+  void pending.then(() => {
+    if (pendingTurnFailedEvents.get(threadId) === pending) {
+      pendingTurnFailedEvents.delete(threadId);
+    }
+  });
+}
+
+export async function waitForPluginTurnFailed(
+  threadId: string,
+  timeoutMs: number,
+): Promise<void> {
+  const pending = pendingTurnFailedEvents.get(threadId);
+  if (pending === undefined) return;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      pending,
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
 }
 
 /**

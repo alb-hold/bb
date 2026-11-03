@@ -12,10 +12,11 @@ Hooks:
   origin and the plugin-metadata calls default `pluginId`, exactly like the
   backend client. Thread title, section, and parent updates are optimistic in
   bb's own surfaces, and synchronous calls are applied in one cache transaction;
-  other writes refresh over realtime. Use
-  `experimental_useSidebarThreadActions()` for optimistic pin, read state,
-  rename, and archive actions. The client is stable, so it is safe in dependency
-  lists. Test with `renderSlot({ sdk: { threads: { update: async () => ({ … }) }
+  other writes refresh over realtime, and pin, unpin, mark read, and mark
+  unread are optimistic too. For bb's archive and delete flows (child
+  confirmation, pane cleanup, Undo) render bb's thread menu or run its
+  thread actions; see "An action in every thread menu". The client is stable,
+  so it is safe in dependency lists. Test with `renderSlot({ sdk: { threads: { update: async () => ({ … }) }
 } } })` and read `inspection.sdkCalls`.
 - `useRpc<typeof rpcContract>()` → `{ call(method, input?) }` — exact method,
   input, and result inference from a type-only backend contract import.
@@ -27,6 +28,8 @@ Hooks:
   `"reconnecting"` for the same shared socket used by `useRealtime`. Reconcile
   durable server state on subsequent transitions to `connected` (not the first
   connection) because plugin signals are ephemeral and are not replayed.
+- `experimental_useExperiment(key)` → whether a known bb experiment is enabled, following live changes; false while configuration loads or for unknown keys.
+- `experimental_useThreadContextKind()` → `"banner"` or `"card"`: how the calling component's thread pane shows its thread context; `banner` outside a thread pane. See frontend-thread-context-card.md.
 - `useSettings()` → `{ values, isLoading }` — effective non-secret values
   (secret settings are excluded; read them server-side only).
 - `useBbContext()` → `{ projectId, threadId }` from the current route.
@@ -35,22 +38,23 @@ Hooks:
   it (localStorage entries, log prefixes) so a copy published under another
   package name does not share the original's state. `renderSlot` returns its
   `pluginId` option, `test-plugin` by default.
-- `experimental_useQuestionFormHost()` → `{ shortcuts, registerChoiceHandler }`
-  inside a `pendingInteraction` component: the host-owned answer shortcuts by
-  zero-based option index, and a way to act when the person presses one. The
+- `experimental_useQuestionFormHost()` → `{ shortcuts, actionShortcuts,
+registerChoiceHandler, registerActionHandler }` inside a `pendingInteraction`
+  component: the host-owned answer shortcuts by zero-based option index, the
+  `submit`, `previous`, `next`, and `cancel` action shortcuts, and a way to act
+  when the person presses one. Action shortcuts also
+  fire from text fields inside an element marked `data-question-form`. The
   registry's `question-form` item uses it. Empty outside a pending interaction
   and in `renderSlot`.
 - `useBbNavigate()` → `{ toThread(id), toProject(id), toPluginPanel(path,
 { subPath?, replace? }?), toCompose({ initialPrompt?, focusPrompt? }?),
-openThreadPanel({ actionId, title?, params? }), openUrl(url),
-experimental_openFilePreview(options), experimental_openFileExternally(options),
+openUrl(url), experimental_openFilePreview(options),
+experimental_openFileExternally(options),
+experimental_openSignInWindow({ url, redirectUrlPrefix? }),
 experimental_openTerminal({ terminalId }) }`.
   `toCompose` opens the root compose screen; pass `initialPrompt` to seed the
-  composer draft and `focusPrompt: true` to focus it. The panel
-  opener opens one of the current plugin's registered `threadPanelAction` tabs
-  in a thread, or its `experimental_newThreadPanelAction` tabs on the New
-  thread screen, and returns whether the host accepted it; it returns false on
-  plugin pages, which have no panel actions.
+  composer draft and `focusPrompt: true` to focus it. Open side-panel tabs
+  with the [panel controller](#panel-controller).
   `openUrl` owns HTTP(S) only and returns false for schemes BB
   leaves to normal anchor behavior. The two file methods accept an
   `ExperimentalFileOpenOptions` live-file target.
@@ -98,22 +102,26 @@ experimental_openTerminal({ terminalId }) }`.
     them automatically. Omit attachments to preserve them, or provide a list
     (including `[]`) to replace them. The updater is synchronous; invalid
     results and throws leave the draft unchanged. Returning `current` is a no-op.
+    Replacement preserves source-project attachment references; core copies
+    those files into the destination project on submission.
   - `focus()` focuses the caret. `setTextEffect({ className })` paints the
     draft (`null` clears); `setInputLock(locked)` makes the editor read-only
     and auto-releases when the slot unmounts or changes scope.
   - Save `composer.draft`, then restore it with `composer.replace(saved)`.
     For an LLM rewrite, map preserved mention placeholders to explicit ranges
     in the resulting text and replace text and mentions together.
-  - `setText`, `updateText`, `clear`, `addQuote`, `insertMention`, and
-    `removeMention` are runtime-only compatibility methods and are absent
-    from published types. Use `insert` or `replace` in new code. Legacy text
-    setters retain automatic mention reconciliation; legacy `insertMention` retains its bare-label formatting.
-  - `submit({ sendAt? , experimental_data? })` submits exactly as pressing
-    Enter would (send, or queue while the thread is busy). It waits for
-    uploads in progress, then rejects with `submittingBlockedReason` when the
-    send button would refuse. `experimental_data` reaches dispatch hooks on
-    the initial attempt, namespaced with your plugin id. The queued-message
-    and sent-message editors reject.
+  - `submit({ experimental_mode?, sendAt?, experimental_data? })` submits the
+    draft through the on-screen composer's own queue or steer handler. Omit
+    `experimental_mode` to do what Enter does for this user; pass
+    `"queue-if-active"` or `"steer-if-active"`, the `bb.sdk.threads.send`
+    modes, to queue behind or add to the running turn (both start a turn when
+    none is running). `sendAt` makes that action wait until the given time,
+    and `experimental_data` reaches dispatch hooks on the initial attempt,
+    namespaced with your plugin id. The options combine freely. It rejects an
+    empty draft, waits for uploads in progress, then rejects with the reason
+    when the shortcut could not run; it rejects when the send fails, after bb
+    shows its usual error toast. The queued-message and sent-message editors
+    reject.
   - `setSelection({ projectId?, environment?, providerId?, model?,
 reasoningLevel?, serviceTier?, permissionMode? })` sets the pickers as if
     picked by hand and resolves with the settled selection; omitted fields keep
@@ -125,11 +133,13 @@ reasoningLevel?, serviceTier?, permissionMode? })` sets the pickers as if
     still land there. Once a queued-message or sent-message editor closes,
     `insert`, `replace`, `submit` and `setSelection` throw and the older
     text methods warn and do nothing.
-  - Deprecated, still working for plugins built against older SDKs but gone
-    from the types: `useComposerView()` (use `useComposer()`), the
-    `experimental_submit`, `experimental_setSelection`,
-    `experimental_onSubmitted` and `experimental_removeMention` names, and
-    `richText.onDraftChange` (read `draft` instead).
+  - Older names still work at runtime but are absent from the published
+    types: `useComposerView()` (use `useComposer()`); the handle's `setText`,
+    `updateText`, `clear`, `addQuote`, `insertMention`, and `removeMention`
+    (use `insert` or `replace`); the `experimental_submit`,
+    `experimental_setSelection`, `experimental_onSubmitted`, and
+    `experimental_removeMention` names; and `richText.onDraftChange` (read
+    `draft` instead).
 - `useComposers()` → a handle for every composer on screen that composer
   customizations mount in (thread page, `ThreadChat`, new-thread, open
   queued-message editors), oldest first. Use it from a panel or page that
@@ -162,6 +172,16 @@ reasoningLevel?, serviceTier?, permissionMode? })` sets the pickers as if
   representation next to the plain text. Resolves true once the clipboard holds
   the content and false when every path failed; it never rejects. Show your own
   success or failure feedback. Never call `navigator.clipboard` directly.
+- `experimental_saveFile({ fileName, url } | { fileName, blob })` →
+  `Promise<"started" | "failed">` — saves a file
+  through bb's own download path. Browsers and bb Desktop start an ordinary
+  download; the bb iOS app, where a download link would replace the app,
+  opens the share sheet instead. Pass a URL on the bb server (your plugin's
+  HTTP route works) or bytes you already hold. Keep `href` and `download` on
+  your link and call it from `onClick` after `event.preventDefault()`. It
+  never rejects; bb shows the error toast on `failed`. `started` means the
+  browser or shell took over; completion and share cancellation are not
+  reported to the page.
 
 ```tsx
 const composer = useComposer();
@@ -190,15 +210,34 @@ sendMenu?, banners?, richText? })`. Omitted `scopes` means all thread,
   name from plugin CSS. Decorations are paint-only and never mutate the draft.
 - A `messageAction`'s `run` receives `context.composer`: the composer of the
   message's thread, or null.
+- Composer popups register `[{ id, label, component }]` through `experimental_popups`.
+  Popup ids must be unique across the plugin's composer customizations.
+  Open by popup id with `composer.experimental_openPopup(id)`, from a
+  `plusMenu` row's `composer`, or from a composer command (for example Ctrl+R):
+  `app.composer.experimental_registerCommand({ id, title, defaultShortcut?, run })`.
+  A composer command is listed and rebindable like any plugin command and shares
+  the `app.commands` ID namespace, but `run` receives `{ composer }` for the
+  composer that handles it, through the same path as bb's own "Focus composer"
+  command: the composer holding the caret, or with the caret outside every
+  composer, the focused pane's primary composer. Its shortcut is inactive while
+  a terminal, browser tab or modal has focus, and the palette lists it only when
+  some composer would run it. The host
+  shares mention-menu placement and dismissal, and uses a persistent responsive
+  drawer for compact interactive popups. Inside the component, `useComposer()`
+  is bound to the opening composer; its `experimental_closePopup()` closes only
+  that plugin's popup and restores editor focus. Components own their search
+  input and result navigation. Opening returns false when the target or scoped
+  registration is unavailable; closing returns false if that plugin has no open
+  popup.
 - Use a vendored BB prompt icon-button recipe for native-matching action chrome
   and provide an accessible label. Each component/callback is isolated so one
   failing customization does not degrade the native composer. Complete
   reference: `examples/plugins/composer-customization`.
 
-UI components use vendored shadcn source that you own. The former general host
-component kit is removed. The app module still exports focused BB capability
-components such as `ThreadChat`, `Markdown`, file links, pickers, source and
-diff viewers, and the new-thread composer.
+UI components use vendored shadcn source that you own. The app module exports
+only focused BB capability components (frontend-components.md): `ThreadChat`,
+`Markdown`, file links, pickers, source and diff viewers, and the new-thread
+composer.
 
 - Most builtin plugins in this repo import shared UI from `@bb/shared-ui`
   (the single source of truth the app also consumes and the registry
@@ -228,22 +267,19 @@ diff viewers, and the new-thread composer.
   files, and drop `@hugeicons/core-free-icons` and `@hugeicons/react` from
   `dependencies`. A git install keeps every version's `node_modules` on the
   user's disk, and the full hugeicons set is over 100 MB per copy.
-- `toast`: `import { toast } from "sonner"` — runtime-shimmed to the host's
-  Toaster (`toast.success("Saved")` just works; never mount your own
-  `<Toaster>`).
+- `toast`: `import { toast } from "sonner"` — runtime-shimmed to bb's own
+  toast, so `toast.success("Saved")` looks like bb's toasts and lands in the
+  notification center; `toast.custom` keeps your rendering. Never mount your
+  own `<Toaster>`.
 - Never bundled (runtime-shimmed, import freely): react, the portaling
   radix families (`@radix-ui/react-dialog`, `-alert-dialog`, `-popover`,
   `-select`, `-dropdown-menu`, `-context-menu`, `-menubar`, `-hover-card`,
   `-tooltip`, `-navigation-menu`), `sonner`, `vaul`, `@pierre/diffs` (+
   `/react`). Your vendored overlays therefore share the host's
   dismissable-layer/focus/scroll-lock world — stacking against host
-  overlays behaves correctly. "Import freely" is about the bundle: `tsc`
-  still needs each one's declarations in `node_modules`, so every shimmed
-  package is a **type-only `devDependencies` entry at the host's version**
-  (the scaffold declares all of them; `bb plugin types` repins them; `bb
-plugin types --check` reports drift). Never list one in `dependencies` —
-  the build would not read it, and a git install would bundle a second
-  copy of a singleton.
+  overlays behaves correctly. Each shimmed package you import is a type-only
+  `devDependencies` entry at the host's version, never a dependency (see
+  "Builds, installs, and dependencies" in quickstart.md).
 - Also never bundled, for size rather than singleton reasons: `clsx`,
   `tailwind-merge`, and `class-variance-authority`. Your app bundle uses the
   host's installed copies (tailwind-merge ^3, clsx ^2, cva ^0.7), so keep
@@ -252,7 +288,7 @@ plugin types --check` reports drift). Never list one in `dependencies` —
   `node_modules` in both `app.tsx` and `server.ts`, so keep it in
   `dependencies`.
 - Source and diffs: use the host components
-  `experimental_SourceCode` / `experimental_Diff` (see "Host components"),
+  `experimental_SourceCode` / `experimental_Diff` (frontend-components.md),
   NOT a direct
   `@pierre/diffs` import. The shim stays for compatibility, but hand-rolled
   Pierre usage means owning patch normalization and the code theme yourself,
@@ -261,10 +297,10 @@ plugin types --check` reports drift). Never list one in `dependencies` —
   non-portal radix, zod, form/calendar/chart libs): run `npm install`
   after adding components (`bb plugin new` runs the first one; `shadcn add`
   installs each item's declared deps). Users of your prebuilt artifact need no
-  npm. Managed source installs do.
-- `EmptyState` ships as `npx shadcn add @bb/empty-state`. The other old bb
-  extras (`PageBody`, `Spinner`) are gone — write your own (each is a few
-  lines; see `plugins/github/components/` for reference implementations).
+  npm. Managed source installs run bb's bundled npm.
+- `EmptyState` ships as `npx shadcn add @bb/empty-state`. There is no
+  `PageBody` or `Spinner`; write your own (each is a few lines; see
+  `plugins/github/components/` for reference implementations).
 
 One deviation from stock shadcn: `Dialog` renders as a bottom drawer on
 compact viewports (the host's responsive behavior) — same API.
@@ -272,38 +308,171 @@ compact viewports (the host's responsive behavior) — same API.
 Crash isolation stays local to the slot. Additive slots can show a crash chip
 or nothing. Replacement slots fall back to the native list or renderer.
 `messageDirective` falls back to the original source text.
-
-The `run` pattern (threadPanelAction): `run` is the place to resolve
-server state before deciding what to open — e.g. call a backend rpc, then
-`openPanel({ title: issue.title, params: { issueId: issue.id } })`, or
-`toast.error("No linked issue")` and open nothing. The panel component
-should treat `params` as untrusted input (it round-trips through
-persistence) and re-fetch fresh data by id rather than embedding whole
-payloads in params.
+`experimental_codeFenceRenderer` falls back to BB's code block (`Original`).
 
 Styling: Tailwind classes compile against the host theme's live CSS
 variables — use host token classes (`bg-card`, `text-foreground`,
 `text-muted-foreground`, `border-border`, `text-destructive`, …). Never
 define custom `@theme` colors and never hand-set `oklch(...)`/gray
 literals: the build's Tailwind pass emits default-theme utilities only, and
-hardcoded colors break custom palettes.
+hardcoded colors break custom palettes. `tw-animate-css` utilities also
+compile in plugin builds.
 
-Composer popups register `[{ id, label, component }]` through `experimental_popups`.
-Popup ids must be unique across the plugin's composer customizations.
-Open by popup id with `composer.experimental_openPopup(id)`, from a
-`plusMenu` row's `composer`, or from a composer command (for example Ctrl+R):
-`app.composer.experimental_registerCommand({ id, title, defaultShortcut?, run })`.
-A composer command is listed and rebindable like any plugin command and shares
-the `app.commands` ID namespace, but `run` receives `{ composer }` for the
-composer that handles it, through the same path as bb's own "Focus composer"
-command: the composer holding the caret, or with the caret outside every
-composer, the focused pane's primary composer. Its shortcut is inactive while
-a terminal, browser tab or modal has focus, and the palette lists it only when
-some composer would run it. The host
-shares mention-menu placement and dismissal, and uses a persistent responsive
-drawer for compact interactive popups. Inside the component, `useComposer()`
-is bound to the opening composer; its `experimental_closePopup()` closes only
-that plugin's popup and restores editor focus. Components own their search
-input and result navigation. Opening returns false when the target or scoped
-registration is unavailable; closing returns false if that plugin has no open
-popup.
+## Panel controller
+
+`experimental_useAppPanel()` returns the `ExperimentalPanelController` of the
+surface the component renders in: the thread view, the plugin page, or the New
+thread screen. Every launcher context carries the same controller as
+`experimental_panel`: plugin commands, thread actions, message actions,
+New-thread panel actions, and action tabs' `run`. Commands and thread actions
+use the focused surface's controller.
+
+```tsx
+const panel = experimental_useAppPanel();
+panel.openTab({
+  tab: { id: "chat", context: { kind: "thread" }, availability: "action" },
+  params: { threadId },
+  title: "Chat",
+});
+panel.toggleTab({
+  tab: {
+    id: "details",
+    context: { kind: "nav-panel", panelId },
+    availability: "fixed",
+  },
+  target: { recordId },
+});
+panel.close();
+```
+
+- `openTab({ tab, target?, params?, title? })` selects one of this plugin's
+  registered tabs and reveals the side panel. Fixed tabs take a session-only
+  `target`, validated by the tab's `experimental_target` (thread and
+  nav-panel fixed tabs may both declare one) and read with
+  `experimental_useFixedTabTarget(tab)`. Action tabs take persisted `params`
+  and a `title`; the same params focus the existing tab.
+- `toggleTab(options)` closes the side panel when that tab is showing — a
+  fixed tab selected with the panel open (the target is ignored), or the action
+  tab instance with the same params selected — otherwise it calls `openTab`.
+- `close()` closes the side panel.
+- `selectTab(key)` and `closeTab(key)` act on any open tab, bb's or another
+  plugin's, by the `key` from `experimental_usePanelTabs()`. They run the same
+  select and close the tab strip runs, so closing a terminal's tab ends the
+  terminal; `closeTab` declines tabs without a close button. List the open
+  tabs with `experimental_usePanelTabs()`, or once with `getTabs()` outside
+  components; see frontend-panel-tabs.md.
+- Each call returns true when the host accepted it and false when it declined:
+  no side panel on this surface, a tab this plugin did not register for the
+  surface, or a target or params that are not JSON or fail validation. On the
+  New thread screen a `{ context: { kind: "thread" }, availability: "action" }`
+  tab resolves against `experimental_newThreadPanelAction` with the same id.
+
+bb's own panel shortcuts and controls (panel toggle, Info, tab strip, close
+buttons) and the Git plugin's Mod+D command go through the same controller.
+
+`experimental_useTabVisible()` is true while the panel tab it renders in is
+the selected tab and the side panel is open, false otherwise. bb keeps a
+closed panel's tab mounted, so pause reads that only feed the tab while it is
+false; the Git plugin's Diff tab does.
+
+Retired members keep working for existing plugins, and `bb plugin build` warns
+with the replacement:
+
+| Retired                                                                               | Replacement                                                                                                                         |
+| ------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `ctx.openPanel({ actionId?, params?, title? })`                                       | `ctx.experimental_panel.openTab({ tab: { id, context: { kind: "thread" }, availability: "action" }, params, title })`               |
+| `useBbNavigate().openThreadPanel({ actionId, params?, title? })`                      | `experimental_useAppPanel().openTab({ tab: { id: actionId, context: { kind: "thread" }, availability: "action" }, params, title })` |
+| `experimental_useAppPanel().experimental_openTab({ surface, ...options })`            | `experimental_useAppPanel().openTab(options)`                                                                                       |
+| `experimental_useAppPanel().openFixedTab({ surface, tab: { panelId, id }, target? })` | `experimental_useAppPanel().openTab({ tab: { id, context: { kind: "nav-panel", panelId }, availability: "fixed" }, target })`       |
+
+In `renderSlot`, pass `experimental_panel: { openTab?, toggleTab?, close? }` to
+accept calls (omitted methods decline) and read `inspection.experimental_panelCalls`.
+
+## Optimistic RPC updates
+
+`experimental_useRpcMutation({ contract, method, optimistic(input, cache) { ... } })`
+predicts loaded reads before sending the write. `cache.update(method, readInput,
+updater)` targets a plain read; `cache.updateKey(method, key, updater)` targets
+one keyed row. Failed writes remove their own prediction.
+
+The updater callbacks must be pure and synchronous: they may run many times
+as pending predictions replay over new confirmed data or after another write
+rolls back. Return a new value without mutating cached data or captured inputs,
+performing side effects, or generating IDs, timestamps, or random values.
+Generate any such values once before calling `mutate` and include them in the
+mutation input so every replay uses the same values.
+
+## Live RPC reads and write acknowledgement
+
+All live hooks take `{ contract, method, ... }` and infer their types without
+explicit generic arguments. Plain queries add `input`; mutations add optional
+`optimistic`. Use `experimental_useRpcKeyedQuery({ contract, method, keys, select? })` for
+contract-inferred rows and selection results. Keyed methods accept `{ keys }`
+and return a record containing every requested key. Tags are plain strings:
+reads declare them, and the server marks them stale with
+`bb.rpc.experimental_invalidate` where the data changes (see "Tags and
+invalidation" below).
+
+`data` retains the last successful value and optimistic predictions during
+refreshes and refresh errors. Plain reads start undefined; keyed selections
+receive loaded rows, initially an empty record. `isLoading` means an enabled
+read is fetching never-loaded requested data. `isFetching` includes background
+attempts; keyed views share method activity. `error` is the last completed
+failure, cleared on success; retrying a first load clears its old error while
+loading. `refetch` forces an attempt, waits through retries, and records any
+failure in `error` without rejecting or discarding existing data. Keyed reads
+also return `refetchKeys(keys)`, which reads only those keys again and keeps
+every other row, for a per-row Retry.
+
+Reads stay fresh for two seconds without polling. Focus does not refetch while
+BB's realtime connection is healthy. While disconnected, focus/browser-online
+events recheck stale active reads; BB reconnect invalidates all plugin reads
+regardless of freshness. Page hiding cancels active attempts and resume restarts
+those cancelled reads. Invalidations refresh immediately. Network/abort failures
+retry twice at 250 ms; HTTP failures do not retry. Writes never retry automatically. `mutate`, `isPending`, and `pendingInputs` finish at write
+acknowledgement, while confirmed reads replace shared predictions later.
+
+Live hook errors and rejected mutations use `experimental_PluginRpcCallError`.
+Its `code` is required; use a fallback when switching because error codes may
+grow. Unknown server codes become `unknown_error` with the original `serverCode`.
+Client failures use `transport_error` or `invalid_response`. The CLI preserves
+unrecognized codes in text and JSON output.
+
+## Tags and invalidation
+
+A read declares what it depends on with `tags(input, output)`, or
+`keyTags(key, value)` for each row of a keyed read. Writes declare nothing.
+Call `bb.rpc.experimental_invalidate(tags)` in the server code that changes
+the data, after the change, so a write from the app, the CLI, an agent tool
+or background work refreshes every matching read in every client once.
+`bb.rpc.experimental_invalidateAll()` refreshes all of the plugin's reads,
+including untagged ones.
+
+```ts
+const rpcContract = defineRpcContract({
+  item: {
+    input: z.object({ id: z.string() }).strict(),
+    output: itemSchema,
+    tags: ({ id }) => [`item:${id}`],
+  },
+  rename: {
+    input: z.object({ id: z.string(), title: z.string() }).strict(),
+    output: itemSchema,
+  },
+});
+
+async function rename(bb: BbPluginApi, id: string, title: string) {
+  const item = await saveTitle(id, title);
+  bb.rpc.experimental_invalidate([`item:${id}`]);
+  return item;
+}
+```
+
+Register `rename` as the RPC handler and call the same function from the CLI
+command and agent tool. When core already reports the change, invalidate from
+that event instead, as the Git plugin does for Viewed marks on
+`environment:changed`; invalidating in both places refreshes twice.
+
+Contract `invalidates(input, output)` is retired. It fired only when the write
+came through that RPC method. Existing plugins keep working, and
+`bb plugin build` warns with this replacement.

@@ -73,6 +73,7 @@ interface EnvironmentProvisionCommandArgs {
   initiator: EnvironmentProvisionCommandInitiator;
   path: string;
   setupScriptTimeoutMs: number | null;
+  setupOperationId: string | null;
 }
 
 export function buildEnvironmentProvisionCommand(
@@ -85,6 +86,10 @@ export function buildEnvironmentProvisionCommand(
     initiator: args.initiator,
     path: args.path,
     setupScriptTimeoutMs: args.setupScriptTimeoutMs,
+    setupOperation:
+      args.setupOperationId === null
+        ? null
+        : { id: args.setupOperationId, resumeOnly: false },
   };
 }
 
@@ -92,7 +97,7 @@ export function buildEnvironmentProvisionCommand(
 // only believed when it could be the agent making this call: a live thread in
 // the same project that is mid-turn right now. Anything else is ignored and
 // the new thread keeps its own model.
-function resolveRecordableSpawner(
+export function resolveRecordableSpawner(
   deps: Pick<AppDeps, "db">,
   args: { projectId: string; spawnedByThreadId: string | undefined },
 ) {
@@ -141,6 +146,7 @@ export function createThreadRecord(
       originPluginId: args.request.originPluginId ?? null,
       pluginMetadata: args.request.pluginMetadata,
       visibility: args.request.visibility,
+      parentNotifications: args.request.parentNotifications,
       // Every thread starts `pending`, with no exception to parameterise.
       // Creation is unhooked and provisions nothing; admission happens at the
       // first message's dispatch attempt, and clearing it is what moves the

@@ -1,11 +1,16 @@
 import { createContext, useContext, useMemo, type ReactNode } from "react";
 import type {
-  ExperimentalAppPanelSurface,
+  ExperimentalSignInWindow,
+  ExperimentalSignInWindowOptions,
   ExperimentalFileOpenOptions,
   JsonValue,
 } from "@get-bb/plugin-sdk";
 import type { TerminalSession } from "@bb/server-contract";
 import type { FileOpenerOverride } from "@/lib/plugin-slot-resolvers";
+import {
+  UNAVAILABLE_APP_PANEL_CONTROLLER,
+  type AppPanelController,
+} from "@/lib/app-fixed-tab-navigation";
 
 interface AppUrlOpenIntent {
   url: string;
@@ -20,35 +25,44 @@ export interface AppFixedTabReference {
   tabId: string;
 }
 
-export interface AppFixedTabOpenIntent {
-  surface: ExperimentalAppPanelSurface;
+export interface AppTabOpenIntent {
   tab: AppFixedTabReference;
+  availability: "fixed" | "action";
   target?: JsonValue;
+  params?: JsonValue;
+  title?: string;
 }
 
 interface AppNavigationHostCapabilities {
+  panel?: AppPanelController;
   openFileExternally?: (intent: ExperimentalFileOpenOptions) => boolean;
   openFilePreview?: (intent: AppFilePreviewIntent) => boolean;
-  openFixedTab?: (intent: AppFixedTabOpenIntent) => boolean;
   openTerminal?: (session: TerminalSession) => boolean;
   openUrl?: (intent: AppUrlOpenIntent) => boolean;
+  openSignInWindow?: (
+    intent: ExperimentalSignInWindowOptions,
+  ) => ExperimentalSignInWindow | null;
 }
 
 interface ResolvedAppNavigationHostCapabilities {
+  panel: AppPanelController;
   openFileExternally: (intent: ExperimentalFileOpenOptions) => boolean;
   openFilePreview: (intent: AppFilePreviewIntent) => boolean;
-  openFixedTab: (intent: AppFixedTabOpenIntent) => boolean;
   openTerminal: (session: TerminalSession) => boolean;
   openUrl: (intent: AppUrlOpenIntent) => boolean;
+  openSignInWindow: (
+    intent: ExperimentalSignInWindowOptions,
+  ) => ExperimentalSignInWindow | null;
 }
 
 const rejectNavigationIntent = () => false;
 const DEFAULT_APP_NAVIGATION_HOST: ResolvedAppNavigationHostCapabilities = {
+  panel: UNAVAILABLE_APP_PANEL_CONTROLLER,
   openFileExternally: rejectNavigationIntent,
   openFilePreview: rejectNavigationIntent,
-  openFixedTab: rejectNavigationIntent,
   openTerminal: rejectNavigationIntent,
   openUrl: rejectNavigationIntent,
+  openSignInWindow: () => null,
 };
 
 const AppNavigationHostContext =
@@ -66,24 +80,28 @@ export function AppNavigationHostProvider({
   const parent = useContext(AppNavigationHostContext);
   const value = useMemo<ResolvedAppNavigationHostCapabilities>(
     () => ({
+      panel: capabilities.panel ?? parent.panel,
       openFileExternally:
         capabilities.openFileExternally ?? parent.openFileExternally,
       openFilePreview: capabilities.openFilePreview ?? parent.openFilePreview,
-      openFixedTab: capabilities.openFixedTab ?? parent.openFixedTab,
       openTerminal: capabilities.openTerminal ?? parent.openTerminal,
       openUrl: capabilities.openUrl ?? parent.openUrl,
+      openSignInWindow:
+        capabilities.openSignInWindow ?? parent.openSignInWindow,
     }),
     [
+      capabilities.panel,
+      parent.panel,
       capabilities.openFileExternally,
       capabilities.openFilePreview,
-      capabilities.openFixedTab,
       capabilities.openTerminal,
       capabilities.openUrl,
+      capabilities.openSignInWindow,
       parent.openFileExternally,
       parent.openFilePreview,
-      parent.openFixedTab,
       parent.openTerminal,
       parent.openUrl,
+      parent.openSignInWindow,
     ],
   );
   return (

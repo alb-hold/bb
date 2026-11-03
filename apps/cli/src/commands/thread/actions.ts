@@ -5,6 +5,7 @@ import {
   type PermissionMode,
   type ReasoningLevel,
   type ServiceTier,
+  type ThreadParentNotifications,
   type ThreadVisibility,
 } from "@bb/domain";
 import { threadEnvironmentUnavailableApiErrorSchema } from "@bb/server-contract";
@@ -30,9 +31,11 @@ import {
   resolveExplicitIdFlag,
 } from "../../context-env.js";
 import {
+  parseParentNotifications,
   parsePermissionMode,
   parseServiceTier,
   SERVICE_TIER_HELP,
+  PARENT_NOTIFICATIONS_HELP,
   PERMISSION_MODE_HELP,
   PLAN_HELP,
   buildPromptInputs,
@@ -52,6 +55,7 @@ interface ThreadUpdateCommandOptions {
   model?: string;
   reasoningLevel?: string;
   visibility?: string;
+  parentNotifications?: string;
 }
 
 interface ThreadArchiveCommandOptions {
@@ -74,6 +78,11 @@ interface ThreadPinCommandOptions {
   json?: boolean;
 }
 
+interface ThreadRegenerateTitleCommandOptions {
+  self?: boolean;
+  json?: boolean;
+}
+
 interface ThreadDeleteCommandOptions {
   confirmChildThreads?: boolean;
   yes?: boolean;
@@ -92,6 +101,7 @@ interface ThreadTellCommandOptions {
   file?: string[];
   image?: string[];
   sendAt?: string;
+  compactFirst?: boolean;
 }
 
 interface ThreadActionOptions {
@@ -131,6 +141,7 @@ interface PostThreadMessageArgs {
   files?: readonly string[];
   images?: readonly string[];
   sendAt?: number;
+  compactFirst: boolean;
 }
 
 type PostThreadMessageResult = ThreadSendResult & {
@@ -145,6 +156,7 @@ interface ThreadUpdateBody {
   model?: string;
   reasoningLevel?: ReasoningLevel;
   visibility?: ThreadVisibility;
+  parentNotifications?: ThreadParentNotifications;
 }
 
 export function registerActionsCommands(
@@ -171,6 +183,7 @@ export function registerActionsCommands(
       "Set the sticky reasoning level applied on the thread's next turn: low, medium, high, xhigh, max (provider-dependent)",
     )
     .option("--visibility <visibility>", "Thread visibility: visible or hidden")
+    .option("--parent-notifications <value>", PARENT_NOTIFICATIONS_HELP)
     .action(
       action(
         async (id: string | undefined, opts: ThreadUpdateCommandOptions) => {
@@ -200,6 +213,9 @@ export function registerActionsCommands(
             opts.visibility === undefined
               ? undefined
               : threadVisibilitySchema.parse(opts.visibility);
+          const parentNotifications = parseParentNotifications(
+            opts.parentNotifications,
+          );
           if (
             !opts.parentThread &&
             !opts.clearParentThread &&
@@ -209,10 +225,11 @@ export function registerActionsCommands(
             !opts.project &&
             !opts.model &&
             !reasoningLevel &&
-            !visibility
+            !visibility &&
+            !parentNotifications
           ) {
             throw new Error(
-              "No changes requested. Provide --project, --title, --parent-thread, --clear-parent-thread, --section, --clear-section, --model, --reasoning-level, or --visibility.",
+              "No changes requested. Provide --project, --title, --parent-thread, --clear-parent-thread, --section, --clear-section, --model, --reasoning-level, --visibility, or --parent-notifications.",
             );
           }
 
@@ -246,6 +263,9 @@ export function registerActionsCommands(
           }
           if (visibility) {
             body.visibility = visibility;
+          }
+          if (parentNotifications) {
+            body.parentNotifications = parentNotifications;
           }
 
           const sdk = createCliBbSdk(getUrl());
@@ -297,6 +317,9 @@ export function registerActionsCommands(
           }
           if (visibility) {
             console.log(`Visibility: ${visibility}`);
+          }
+          if (parentNotifications) {
+            console.log(`Parent notifications: ${parentNotifications}`);
           }
         },
       ),
@@ -417,6 +440,38 @@ export function registerActionsCommands(
   }
 
   parent
+    .command("regenerate-title [id]")
+    .description(
+      "Replace a thread's title with one generated from its task and latest messages",
+    )
+    .option("--self", "Target the current thread (from BB_THREAD_ID)")
+    .option("--json", "Print machine-readable JSON output")
+    .action(
+      action(
+        async (
+          id: string | undefined,
+          opts: ThreadRegenerateTitleCommandOptions,
+        ) => {
+          const threadId = requireThreadIdOrSelf(id, opts);
+          const sdk = createCliBbSdk(getUrl());
+          let thread;
+          try {
+            thread = await sdk.threads.experimental_regenerateTitle({
+              threadId,
+            });
+          } catch (err: unknown) {
+            throw prependErrorContext(
+              `Failed to regenerate the title of thread ${threadId}`,
+              err,
+            );
+          }
+          if (outputJson(opts, thread)) return;
+          console.log(`Thread ${thread.id} titled "${thread.title}"`);
+        },
+      ),
+    );
+
+  parent
     .command("delete <id>")
     .description("Delete a thread permanently")
     .option("--yes", "Skip the confirmation prompt")
@@ -527,7 +582,7 @@ export function registerActionsCommands(
     .option("--service-tier <tier>", SERVICE_TIER_HELP)
     .option(
       "--reasoning-level <level>",
-      "Reasoning level: low, medium, high, xhigh, max (provider-dependent)",
+      "Reasoning level id the model lists: low, medium, high, xhigh, max, or a provider-specific id",
     )
     .option("--permission-mode <mode>", PERMISSION_MODE_HELP)
     .option(
@@ -535,6 +590,10 @@ export function registerActionsCommands(
       "Message mode: steer (default), queue, or auto (steer a live turn, else start one)",
     )
     .option("--send-at <when>", SEND_AT_HELP)
+    .option(
+      "--compact-first",
+      "Compact the idle thread's context first, then send this message when compaction finishes",
+    )
     .option("--plan", PLAN_HELP)
     .option(
       "--file <path>",
@@ -577,12 +636,17 @@ export function registerActionsCommands(
             ...(opts.sendAt === undefined
               ? {}
               : { sendAt: parseSendAt(opts.sendAt) }),
+            compactFirst: opts.compactFirst === true,
           });
           if (response.delivery === "sent" && response.refusal) {
             process.exitCode = 1;
           }
           if (outputJson(opts, { threadId: id, ...response })) return;
-          console.log(describeThreadTellOutcome(id, response));
+          console.log(
+            opts.compactFirst === true
+              ? `Thread ${id} compacting; the message sends when compaction finishes`
+              : describeThreadTellOutcome(id, response),
+          );
         },
       ),
     );
@@ -650,7 +714,7 @@ export function registerActionsCommands(
     },
     {
       name: "clear-goal",
-      description: "Ask the provider to clear the active Goal",
+      description: "Ask the provider to clear the thread's Goal",
       method: "clearGoal",
       done: "cleared its Goal",
     },
@@ -704,6 +768,7 @@ async function postThreadMessage(
       ...(args.serviceTier ? { serviceTier: args.serviceTier } : {}),
       ...(args.senderThreadId ? { senderThreadId: args.senderThreadId } : {}),
       ...(args.sendAt === undefined ? {} : { sendAt: args.sendAt }),
+      ...(args.compactFirst ? { compactFirst: true } : {}),
     });
   } catch (error: unknown) {
     throw await withRestoreEnvironmentHint(sdk, args.threadId, error);

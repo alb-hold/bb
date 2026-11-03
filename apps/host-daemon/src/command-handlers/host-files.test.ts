@@ -4,7 +4,8 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import { afterEach, describe, expect, it } from "vitest";
+import { initRepo, makeTempDir } from "@bb/test-helpers";
+import { describe, expect, it } from "vitest";
 import {
   CommandDispatchError,
   type CommandOf,
@@ -14,18 +15,9 @@ import {
   browseHostDirectory,
   readHostFile,
   readHostFileChunk,
-  readHostRelativeFile,
 } from "./host-files.js";
 
 const execFileAsync = promisify(execFile);
-const tempDirs: string[] = [];
-
-async function makeTempDir(prefix: string): Promise<string> {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
-  tempDirs.push(dir);
-  return dir;
-}
-
 async function runGit(
   args: readonly string[],
   options: { cwd: string },
@@ -34,12 +26,18 @@ async function runGit(
   return result.stdout;
 }
 
-async function initRepo(): Promise<string> {
-  const repoPath = await makeTempDir("bb-host-files-test-");
-  await runGit(["init", "-b", "main"], { cwd: repoPath });
-  await runGit(["config", "user.name", "BB Tests"], { cwd: repoPath });
-  await runGit(["config", "user.email", "bb@example.com"], { cwd: repoPath });
-  return repoPath;
+async function mountSubstDrive(target: string): Promise<string> {
+  for (const letter of "ZYXWVUTSRQPONMLKJIHGFED") {
+    const drive = `${letter}:\\`;
+    const inUse = await fs.stat(drive).then(
+      () => true,
+      () => false,
+    );
+    if (inUse) continue;
+    await execFileAsync("subst", [`${letter}:`, target]);
+    return drive;
+  }
+  throw new Error("No free drive letter for subst");
 }
 
 async function captureReadHostFileError(
@@ -54,35 +52,17 @@ async function captureReadHostFileError(
   throw new Error("Expected readHostFile to fail");
 }
 
-async function captureReadHostRelativeFileError(
-  command: CommandOf<"host.read_file_relative">,
-): Promise<unknown> {
-  try {
-    await readHostRelativeFile(command);
-  } catch (error) {
-    return error;
-  }
-
-  throw new Error("Expected readHostRelativeFile to fail");
-}
-
-afterEach(async () => {
-  while (tempDirs.length > 0) {
-    const dir = tempDirs.pop();
-    if (dir) {
-      await fs.rm(dir, { recursive: true, force: true });
-    }
-  }
-});
-
 describe("readHostFile (no ref — disk read)", () => {
   it("reads explicit file contents from disk without a rootPath", async () => {
-    const repoPath = await initRepo();
+    const repoPath = await initRepo(await makeTempDir("bb-host-files-test-"), {
+      commit: false,
+    });
     const filePath = path.join(repoPath, "host-notes.md");
     await fs.writeFile(filePath, "host notes", "utf8");
 
     const result = await readHostFile({
       type: "host.read_file",
+      followRootSymlink: false,
       path: filePath,
     });
 
@@ -93,12 +73,15 @@ describe("readHostFile (no ref — disk read)", () => {
   });
 
   it("reads file contents from disk", async () => {
-    const repoPath = await initRepo();
+    const repoPath = await initRepo(await makeTempDir("bb-host-files-test-"), {
+      commit: false,
+    });
     const filePath = path.join(repoPath, "hello.txt");
     await fs.writeFile(filePath, "hello world", "utf8");
 
     const result = await readHostFile({
       type: "host.read_file",
+      followRootSymlink: false,
       path: filePath,
       rootPath: repoPath,
     });
@@ -109,7 +92,9 @@ describe("readHostFile (no ref — disk read)", () => {
   });
 
   it("omits unchanged file content from conditional reads", async () => {
-    const repoPath = await initRepo();
+    const repoPath = await initRepo(await makeTempDir("bb-host-files-test-"), {
+      commit: false,
+    });
     const filePath = path.join(repoPath, "large.png");
     const contents = Buffer.alloc(1024, "a");
     const sha256 = createHash("sha256").update(contents).digest("hex");
@@ -117,6 +102,7 @@ describe("readHostFile (no ref — disk read)", () => {
 
     const result = await readHostFile({
       type: "host.read_file",
+      followRootSymlink: false,
       path: filePath,
       rootPath: repoPath,
       ifNoneMatch: { kind: "sha256", values: [sha256] },
@@ -132,6 +118,7 @@ describe("readHostFile (no ref — disk read)", () => {
 
     const changed = await readHostFile({
       type: "host.read_file",
+      followRootSymlink: false,
       path: filePath,
       rootPath: repoPath,
       ifNoneMatch: { kind: "sha256", values: ["0".repeat(64)] },
@@ -145,6 +132,7 @@ describe("readHostFile (no ref — disk read)", () => {
     await expect(
       readHostFile({
         type: "host.read_file",
+        followRootSymlink: false,
         path: "relative/file.txt",
         rootPath: "/tmp",
       }),
@@ -155,10 +143,13 @@ describe("readHostFile (no ref — disk read)", () => {
   });
 
   it("marks missing targets under an existing root as expected", async () => {
-    const repoPath = await initRepo();
+    const repoPath = await initRepo(await makeTempDir("bb-host-files-test-"), {
+      commit: false,
+    });
     const missingPath = path.join(repoPath, "notes.md");
     const thrown = await captureReadHostFileError({
       type: "host.read_file",
+      followRootSymlink: false,
       path: missingPath,
       rootPath: repoPath,
     });
@@ -173,10 +164,13 @@ describe("readHostFile (no ref — disk read)", () => {
   });
 
   it("marks missing rootless targets as expected", async () => {
-    const repoPath = await initRepo();
+    const repoPath = await initRepo(await makeTempDir("bb-host-files-test-"), {
+      commit: false,
+    });
     const missingPath = path.join(repoPath, "HOST-NOTES.md");
     const thrown = await captureReadHostFileError({
       type: "host.read_file",
+      followRootSymlink: false,
       path: missingPath,
     });
 
@@ -194,6 +188,7 @@ describe("readHostFile (no ref — disk read)", () => {
     const missingPath = path.join(rootPath, "notes.md");
     const thrown = await captureReadHostFileError({
       type: "host.read_file",
+      followRootSymlink: false,
       path: missingPath,
       rootPath,
     });
@@ -206,30 +201,37 @@ describe("readHostFile (no ref — disk read)", () => {
     expect(isExpectedCommandDispatchError(thrown)).toBe(true);
   });
 
-  it("marks missing relative read roots as expected", async () => {
-    const parentPath = await makeTempDir("bb-host-files-relative-root-");
-    const rootPath = path.join(parentPath, "STATUS");
-    const thrown = await captureReadHostRelativeFileError({
-      type: "host.read_file_relative",
-      rootPath,
-      path: "index.html",
-      dotfiles: "deny",
-    });
-
-    expect(thrown).toMatchObject({
-      code: "ENOENT",
-      message: "Path does not exist: index.html",
-      name: "ExpectedCommandDispatchError",
-    });
-    expect(isExpectedCommandDispatchError(thrown)).toBe(true);
-  });
-
-  it("rejects rootless directory paths", async () => {
-    const repoPath = await initRepo();
+  it("rejects oversized reads under a followed root before loading them", async () => {
+    const parentPath = await makeTempDir("bb-host-files-large-");
+    const realRoot = path.join(parentPath, "real");
+    const linkedRoot = path.join(parentPath, "linked");
+    await fs.mkdir(realRoot);
+    await fs.symlink(realRoot, linkedRoot, "dir");
+    await fs.writeFile(path.join(realRoot, "SKILL.md"), "");
+    await fs.truncate(path.join(realRoot, "SKILL.md"), 25 * 1024 * 1024 + 1);
 
     await expect(
       readHostFile({
         type: "host.read_file",
+        path: path.join(linkedRoot, "SKILL.md"),
+        rootPath: linkedRoot,
+        followRootSymlink: true,
+      }),
+    ).rejects.toMatchObject({
+      code: "file_too_large",
+      message: "File size 26214401 bytes exceeds the 25 MB limit",
+    });
+  });
+
+  it("rejects rootless directory paths", async () => {
+    const repoPath = await initRepo(await makeTempDir("bb-host-files-test-"), {
+      commit: false,
+    });
+
+    await expect(
+      readHostFile({
+        type: "host.read_file",
+        followRootSymlink: false,
         path: repoPath,
       }),
     ).rejects.toMatchObject({
@@ -237,6 +239,22 @@ describe("readHostFile (no ref — disk read)", () => {
       message: "Path is a directory, not a file",
     });
   });
+
+  it.runIf(process.platform !== "win32")(
+    "rejects devices instead of reading them without bound",
+    async () => {
+      await expect(
+        readHostFile({
+          type: "host.read_file",
+          followRootSymlink: false,
+          path: "/dev/zero",
+        }),
+      ).rejects.toMatchObject({
+        code: "invalid_path",
+        message: "Path is not a regular file",
+      });
+    },
+  );
 });
 
 describe("browseHostDirectory", () => {
@@ -274,6 +292,34 @@ describe("browseHostDirectory", () => {
     ]);
   });
 
+  it.runIf(process.platform === "win32")(
+    "lists every mounted drive and stays on the drive the user picked",
+    async () => {
+      const target = await makeTempDir("bb-browse-drive-");
+      const drive = await mountSubstDrive(target);
+      try {
+        await fs.writeFile(path.join(target, "on-drive.txt"), "x", "utf8");
+        const systemDrive = `${process.env.SystemDrive ?? "C:"}\\`;
+
+        const result = await browseHostDirectory({
+          type: "host.browse_directory",
+          path: drive,
+        });
+
+        expect(result.directory).toBe(drive);
+        expect(result.parent).toBeNull();
+        expect(result.entries.map((entry) => entry.path)).toEqual([
+          `${drive}on-drive.txt`,
+        ]);
+        expect(result.roots).toEqual(
+          expect.arrayContaining([systemDrive, drive]),
+        );
+      } finally {
+        await execFileAsync("subst", [drive.slice(0, 2), "/D"]);
+      }
+    },
+  );
+
   it("defaults to the host home directory when no path is given", async () => {
     const result = await browseHostDirectory({
       type: "host.browse_directory",
@@ -310,11 +356,14 @@ describe("browseHostDirectory", () => {
 
 describe("readHostFile (with ref — git history read)", () => {
   it("rejects ref reads without rootPath", async () => {
-    const repoPath = await initRepo();
+    const repoPath = await initRepo(await makeTempDir("bb-host-files-test-"), {
+      commit: false,
+    });
 
     await expect(
       readHostFile({
         type: "host.read_file",
+        followRootSymlink: false,
         path: path.join(repoPath, "tracked.txt"),
         ref: "HEAD",
       }),
@@ -325,13 +374,16 @@ describe("readHostFile (with ref — git history read)", () => {
   });
 
   it("returns empty content when the file does not exist at the ref", async () => {
-    const repoPath = await initRepo();
+    const repoPath = await initRepo(await makeTempDir("bb-host-files-test-"), {
+      commit: false,
+    });
     await fs.writeFile(path.join(repoPath, "seed.txt"), "seed\n", "utf8");
     await runGit(["add", "seed.txt"], { cwd: repoPath });
     await runGit(["commit", "-m", "seed"], { cwd: repoPath });
 
     const result = await readHostFile({
       type: "host.read_file",
+      followRootSymlink: false,
       path: path.join(repoPath, "missing.txt"),
       rootPath: repoPath,
       ref: "HEAD",
@@ -342,7 +394,9 @@ describe("readHostFile (with ref — git history read)", () => {
   });
 
   it("rejects unsafe refs (path traversal)", async () => {
-    const repoPath = await initRepo();
+    const repoPath = await initRepo(await makeTempDir("bb-host-files-test-"), {
+      commit: false,
+    });
     await fs.writeFile(path.join(repoPath, "f.txt"), "x", "utf8");
     await runGit(["add", "."], { cwd: repoPath });
     await runGit(["commit", "-m", "init"], { cwd: repoPath });
@@ -350,6 +404,7 @@ describe("readHostFile (with ref — git history read)", () => {
     await expect(
       readHostFile({
         type: "host.read_file",
+        followRootSymlink: false,
         path: path.join(repoPath, "f.txt"),
         rootPath: repoPath,
         ref: "HEAD/../foo",
@@ -358,10 +413,13 @@ describe("readHostFile (with ref — git history read)", () => {
   });
 
   it("rejects refs with leading dash", async () => {
-    const repoPath = await initRepo();
+    const repoPath = await initRepo(await makeTempDir("bb-host-files-test-"), {
+      commit: false,
+    });
     await expect(
       readHostFile({
         type: "host.read_file",
+        followRootSymlink: false,
         path: path.join(repoPath, "f.txt"),
         rootPath: repoPath,
         ref: "-rf",
@@ -370,7 +428,9 @@ describe("readHostFile (with ref — git history read)", () => {
   });
 
   it("rejects paths outside rootPath", async () => {
-    const repoPath = await initRepo();
+    const repoPath = await initRepo(await makeTempDir("bb-host-files-test-"), {
+      commit: false,
+    });
     await fs.writeFile(path.join(repoPath, "seed.txt"), "x", "utf8");
     await runGit(["add", "."], { cwd: repoPath });
     await runGit(["commit", "-m", "init"], { cwd: repoPath });
@@ -378,6 +438,7 @@ describe("readHostFile (with ref — git history read)", () => {
     await expect(
       readHostFile({
         type: "host.read_file",
+        followRootSymlink: false,
         path: "/etc/passwd",
         rootPath: repoPath,
         ref: "HEAD",
@@ -386,7 +447,9 @@ describe("readHostFile (with ref — git history read)", () => {
   });
 
   it("reads at a commit SHA other than HEAD", async () => {
-    const repoPath = await initRepo();
+    const repoPath = await initRepo(await makeTempDir("bb-host-files-test-"), {
+      commit: false,
+    });
     const filePath = path.join(repoPath, "tracked.txt");
     await fs.writeFile(filePath, "first\n", "utf8");
     await runGit(["add", "."], { cwd: repoPath });
@@ -400,6 +463,7 @@ describe("readHostFile (with ref — git history read)", () => {
 
     const result = await readHostFile({
       type: "host.read_file",
+      followRootSymlink: false,
       path: filePath,
       rootPath: repoPath,
       ref: firstSha,
@@ -447,7 +511,12 @@ describe("readHostFileChunk", () => {
     });
     expect(Buffer.from(eof.content, "base64")).toEqual(Buffer.from([3]));
     await expect(
-      readHostFile({ type: "host.read_file", path: filePath, rootPath }),
+      readHostFile({
+        type: "host.read_file",
+        path: filePath,
+        rootPath,
+        followRootSymlink: false,
+      }),
     ).rejects.toThrow("exceeds");
   });
 

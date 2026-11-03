@@ -35,22 +35,31 @@ describe("ThreadGoalCard", () => {
     expect(onClearGoal).toHaveBeenCalledOnce();
   });
 
-  it("stays visible and disables repeated clear requests while pending", () => {
-    render(
+  it("offers Clear for a paused Goal and hides a completed one", () => {
+    const onClearGoal = vi.fn();
+    const { rerender } = render(
       <ThreadGoalCard
-        goal={goal}
-        isClearPending
+        goal={{ ...goal, status: "paused" }}
         isExpanded={false}
-        onClearGoal={() => {}}
+        onClearGoal={onClearGoal}
         onToggle={() => {}}
       />,
     );
 
-    expect(
-      screen
-        .getByRole("button", { name: "Clear active Goal" })
-        .hasAttribute("disabled"),
-    ).toBe(true);
-    expect(screen.getByText("Goal")).not.toBeNull();
+    expect(screen.getByRole("button", { name: "Goal" }).textContent).toBe(
+      "Goal paused",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Clear Goal" }));
+    expect(onClearGoal).toHaveBeenCalledOnce();
+
+    rerender(
+      <ThreadGoalCard
+        goal={{ ...goal, status: "complete" }}
+        isExpanded={false}
+        onClearGoal={onClearGoal}
+        onToggle={() => {}}
+      />,
+    );
+    expect(screen.queryByRole("group", { name: "Goal controls" })).toBeNull();
   });
 });

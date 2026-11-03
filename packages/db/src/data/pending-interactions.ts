@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull } from "drizzle-orm";
 import type { SQL } from "drizzle-orm";
 import type { PendingInteractionStatus } from "@bb/domain";
 import type { DbConnection, DbTransaction } from "../connection.js";
@@ -39,6 +39,7 @@ export interface PendingInteractionProviderRequestIdentity {
 
 export interface ReviveInterruptedProviderInteractionArgs
   extends PendingInteractionProviderRequestIdentity {
+  interruptedProviderRequestId?: string;
   interruptionReason: string;
   payload: string;
   threadId: string;
@@ -155,6 +156,71 @@ export function createPendingInteraction(
     .get();
 }
 
+export function createInterruptedProviderPendingInteraction(
+  db: PendingInteractionWriteConnection,
+  input: {
+    payload: string;
+    providerId: string;
+    providerRequestId: string;
+    providerThreadId: string;
+    statusReason: string;
+    threadId: string;
+    turnId: string;
+  },
+): PendingInteractionRow {
+  const now = Date.now();
+
+  return db
+    .insert(pendingInteractions)
+    .values({
+      id: createPendingInteractionId(),
+      threadId: input.threadId,
+      originKind: "provider",
+      turnId: input.turnId,
+      providerId: input.providerId,
+      providerThreadId: input.providerThreadId,
+      providerRequestId: input.providerRequestId,
+      pluginId: null,
+      rendererId: null,
+      status: "interrupted",
+      payload: input.payload,
+      resolution: null,
+      statusReason: input.statusReason,
+      createdAt: now,
+      expiresAt: null,
+      resolvedAt: now,
+      updatedAt: now,
+    })
+    .returning()
+    .get();
+}
+
+export function retagInterruptedPendingInteraction(
+  db: PendingInteractionWriteConnection,
+  args: {
+    fromStatusReason: string;
+    id: string;
+    threadId: string;
+    toStatusReason: string;
+  },
+): PendingInteractionRow | null {
+  return (
+    db
+      .update(pendingInteractions)
+      .set({ statusReason: args.toStatusReason, updatedAt: Date.now() })
+      .where(
+        and(
+          eq(pendingInteractions.id, args.id),
+          eq(pendingInteractions.threadId, args.threadId),
+          eq(pendingInteractions.status, "interrupted"),
+          eq(pendingInteractions.statusReason, args.fromStatusReason),
+        ),
+      )
+      .returning()
+      .get() ?? null
+  );
+}
+
 export function getPendingInteraction(
   db: PendingInteractionReadConnection,
   id: string,
@@ -206,6 +272,14 @@ export function reviveInterruptedProviderInteraction(
         eq(pendingInteractions.threadId, args.threadId),
         eq(pendingInteractions.providerId, args.providerId),
         eq(pendingInteractions.providerThreadId, args.providerThreadId),
+        ...(args.interruptedProviderRequestId === undefined
+          ? []
+          : [
+              eq(
+                pendingInteractions.providerRequestId,
+                args.interruptedProviderRequestId,
+              ),
+            ]),
         eq(pendingInteractions.turnId, args.turnId),
         eq(pendingInteractions.payload, args.payload),
         eq(pendingInteractions.status, "interrupted"),
@@ -272,6 +346,25 @@ export function getActivePendingInteractionForThread(
       )
       .orderBy(desc(pendingInteractions.createdAt))
       .get() ?? null
+  );
+}
+
+export function hasTurnBoundActivePendingInteractionForThread(
+  db: PendingInteractionReadConnection,
+  threadId: string,
+): boolean {
+  return (
+    db
+      .select({ id: pendingInteractions.id })
+      .from(pendingInteractions)
+      .where(
+        and(
+          eq(pendingInteractions.threadId, threadId),
+          inArray(pendingInteractions.status, ["pending", "resolving"]),
+          isNotNull(pendingInteractions.turnId),
+        ),
+      )
+      .get() !== undefined
   );
 }
 

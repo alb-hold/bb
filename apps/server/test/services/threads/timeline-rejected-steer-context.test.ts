@@ -87,6 +87,8 @@ function load(
   completedTurnDisplay: "flat" | "collapse" = "flat",
 ) {
   return buildThreadTimelineWithProfile(testThread.db, testThread.thread, {
+    compactionOfferEnabled: false,
+    summarizeShellCommands: true,
     completedTurnDisplay,
     eventBudget,
     includeClearedContextHistory: false,
@@ -327,11 +329,13 @@ describe("rejected steer turn context", () => {
             testThread.db,
             testThread.thread,
             {
+              compactionOfferEnabled: false,
               completedTurnDisplay: display,
               eventBudget: 64,
               includeClearedContextHistory: false,
               includeNestedRows: true,
               includeDiagnosticOperations: false,
+              summarizeShellCommands: true,
               maxInlineOutputChars: null,
               maxSeq: full.response.maxSeq,
               page: { kind: "older", beforeCursor, segmentLimit: 1 },

@@ -54,6 +54,16 @@ export const APP_COMMAND_GROUPS: readonly AppCommandGroup[] = [
         "Archive the focused thread.",
       ),
       command(
+        "thread.markRead",
+        "Mark thread read or unread",
+        "Mark the focused thread read or unread.",
+      ),
+      command(
+        "thread.pin",
+        "Pin or unpin thread",
+        "Pin or unpin the focused thread.",
+      ),
+      command(
         "thread.previous",
         "Previous thread",
         "Open the previous visible sidebar thread.",
@@ -91,6 +101,11 @@ export const APP_COMMAND_GROUPS: readonly AppCommandGroup[] = [
         "Find in window",
         "Search the text shown in the current bb desktop window.",
       ),
+      command(
+        "window.reload",
+        "Reload window",
+        "Reload the current bb desktop window.",
+      ),
       command("history.back", "Go back", "Go back in this window's history."),
       command(
         "history.forward",
@@ -100,7 +115,7 @@ export const APP_COMMAND_GROUPS: readonly AppCommandGroup[] = [
       command(
         "app.back",
         "Back to app",
-        "Return from Settings, Plugins, or Skills to the app.",
+        "Return from Settings, Plugins, Skills, or a plugin page with its own sidebar to the app.",
       ),
       command("settings.open", "Open settings", "Open bb settings."),
       command(
@@ -207,8 +222,8 @@ export const APP_COMMAND_GROUPS: readonly AppCommandGroup[] = [
       ),
       command(
         "logs.openServerDaemon",
-        "Open server and daemon logs",
-        "Open the desktop log viewer for the bb server and host daemon.",
+        "Open local logs",
+        "Open local desktop, server, and host daemon logs.",
       ),
       command(
         "dataDirectory.open",
@@ -246,14 +261,19 @@ export const APP_COMMAND_GROUPS: readonly AppCommandGroup[] = [
         "Search workspace files in a new panel tab.",
       ),
       command(
-        "diff.toggle",
-        "Toggle diff",
-        "Open or close the environment diff.",
-      ),
-      command(
         "terminal.open",
         "Open terminal",
         "Open a terminal in the secondary panel.",
+      ),
+      command(
+        "terminal.find",
+        "Find in terminal",
+        "Search the focused terminal scrollback.",
+      ),
+      command(
+        "terminal.attention.next",
+        "Next terminal needing attention",
+        "Open the oldest terminal with uncleared attention.",
       ),
       command(
         "workspace.openPreferred",
@@ -274,6 +294,11 @@ export const APP_COMMAND_GROUPS: readonly AppCommandGroup[] = [
         "composer.searchPromptHistory",
         "Search prompt history",
         "Search prompts you sent in any thread and put one in the active composer.",
+      ),
+      command(
+        "composer.dictation.toggle",
+        "Start or stop dictation",
+        "Start dictating into the focused native terminal composer, or stop and keep the text.",
       ),
       command(
         "modelPicker.toggle",
@@ -334,12 +359,34 @@ export const APP_COMMAND_GROUPS: readonly AppCommandGroup[] = [
   },
   {
     label: "Questions",
-    commands: QUESTION_SELECT_APP_COMMAND_IDS.map((id, index) =>
-      paletteHiddenCommand(
-        id,
-        `Choose answer ${index + 1}`,
-        `Choose visible answer ${index + 1} when bb asks a question.`,
+    commands: [
+      ...QUESTION_SELECT_APP_COMMAND_IDS.map((id, index) =>
+        paletteHiddenCommand(
+          id,
+          `Choose answer ${index + 1}`,
+          `Choose visible answer ${index + 1} when bb asks a question.`,
+        ),
       ),
-    ),
+      paletteHiddenCommand(
+        "question.submit",
+        "Submit answers or go to the next question",
+        "Press the question card's Next or Submit button.",
+      ),
+      paletteHiddenCommand(
+        "question.previous",
+        "Previous question",
+        "Show the previous question on a card with several questions.",
+      ),
+      paletteHiddenCommand(
+        "question.next",
+        "Next question",
+        "Show the next question without submitting.",
+      ),
+      paletteHiddenCommand(
+        "question.cancel",
+        "Cancel question",
+        "Press the question card's Cancel button.",
+      ),
+    ],
   },
 ];

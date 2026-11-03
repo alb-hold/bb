@@ -22,14 +22,13 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  createConnection,
   deleteInstalledPlugin,
   getInstalledPlugin,
   getInstalledPluginRegistration,
   listPluginArtifacts,
-  migrate,
   type DbConnection,
 } from "@bb/db";
+import { createMigratedConnection } from "@bb/db/testing";
 import { ROOT_PLUGIN_SOURCE_SELECTION } from "@bb/server-contract";
 import type { Logger } from "@bb/logger";
 import { scaffoldPlugin } from "@bb/templates/plugin-scaffold";
@@ -435,8 +434,7 @@ describe("plugin install flows", () => {
   let materializationCount: number;
 
   beforeEach(async () => {
-    db = createConnection(":memory:");
-    migrate(db);
+    db = createMigratedConnection();
     workDir = await mkdtemp(join(tmpdir(), "bb-plugin-install-"));
     dataDir = join(workDir, "data");
     afterArtifactPromoted = undefined;
@@ -447,6 +445,8 @@ describe("plugin install flows", () => {
       db,
       hub: {
         getDaemonSessionIdForHost: () => null,
+        notifyPluginChanged: () => {},
+        onWatchedTargets: () => () => {},
         notifyPluginSignal: () => 0,
         notifySystem: () => {},
       },
@@ -1038,6 +1038,8 @@ describe("plugin install flows", () => {
         db,
         hub: {
           getDaemonSessionIdForHost: () => null,
+          notifyPluginChanged: () => {},
+          onWatchedTargets: () => () => {},
           notifyPluginSignal: () => 0,
           notifySystem: () => {},
         },
@@ -1136,6 +1138,8 @@ describe("plugin install flows", () => {
         db,
         hub: {
           getDaemonSessionIdForHost: () => null,
+          notifyPluginChanged: () => {},
+          onWatchedTargets: () => () => {},
           notifyPluginSignal: () => 0,
           notifySystem: () => {},
         },
@@ -1143,6 +1147,7 @@ describe("plugin install flows", () => {
         dataDir,
         appVersion: "0.9.0",
         loadTimeoutMs: 2000,
+        bundledPlugins: [],
       });
 
       await service.start();

@@ -1,3 +1,5 @@
+import { parseApplicationUrl } from "@bb/domain/application-url";
+import { openApplicationUrl, applicationLinksEnabled } from "./application-url";
 import {
   createContext,
   useCallback,
@@ -13,6 +15,7 @@ import {
   useOpenLinksInAppBrowserPreference,
 } from "@/lib/in-app-browser-link-preference";
 import { AppNavigationHostProvider } from "@/lib/app-navigation-host";
+import { openSignInWindow } from "@/lib/sign-in-window";
 
 type OpenInAppBrowserUrl = (url: string) => void;
 
@@ -30,6 +33,10 @@ const InAppBrowserUrlOpenContext = createContext<OpenInAppBrowserUrl | null>(
 );
 
 export function openUrlInExternalBrowser(url: string): void {
+  if (parseApplicationUrl(url) !== null) {
+    openApplicationUrl(url);
+    return;
+  }
   const desktopInfo = getBbDesktopInfo();
   if (desktopInfo !== null) {
     desktopInfo.openExternalUrl(url);
@@ -55,7 +62,10 @@ export function UrlOpenRoutingProvider({
 export function AppNavigationUrlHost({ children }: { children: ReactNode }) {
   const openUrl = useOpenUrlByPreference();
   const capabilities = useMemo(
-    () => ({ openUrl: ({ url }: { url: string }) => openUrl(url) }),
+    () => ({
+      openUrl: ({ url }: { url: string }) => openUrl(url),
+      openSignInWindow,
+    }),
     [openUrl],
   );
   return (
@@ -72,14 +82,17 @@ function useOpenUrlByPreference(): (url: string) => boolean {
     openInAppBrowser !== null && isDesktopBrowserAvailable();
 
   return useCallback(
-    (url: string) =>
-      openUrlByPreference({
+    (url: string) => {
+      if (parseApplicationUrl(url) !== null && !applicationLinksEnabled())
+        return false;
+      return openUrlByPreference({
         desktopBrowserAvailable,
         openExternalBrowser: openUrlInExternalBrowser,
         openInAppBrowser: openInAppBrowser ?? openUrlInExternalBrowser,
         openLinksInAppBrowser,
         url,
-      }),
+      });
+    },
     [desktopBrowserAvailable, openInAppBrowser, openLinksInAppBrowser],
   );
 }

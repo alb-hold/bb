@@ -33,13 +33,6 @@ function plugin(updateState: Partial<PluginUpdateState>): PluginListItem {
   });
 }
 
-function jsonResponse(body: unknown, status = 200): Response {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { "content-type": "application/json" },
-  });
-}
-
 const queryClients: QueryClient[] = [];
 
 function createDialogTestHarness() {
@@ -78,7 +71,7 @@ describe("UpdatePluginDialog", () => {
     const { wrapper } = createDialogTestHarness();
     render(
       <UpdatePluginDialog
-        plugin={plugin({ availableVersion: "1.7.0" })}
+        plugin={plugin({ availableVersion: "1.7.0", availableLabel: "1.7.0" })}
         open
         onOpenChange={() => {}}
       />,
@@ -103,6 +96,7 @@ describe("UpdatePluginDialog", () => {
       <UpdatePluginDialog
         plugin={plugin({
           blockedVersion: "1.9.0",
+          blockedLabel: "1.9.0",
           blockedReasons: ["needs bb >= 0.15 — you have 0.14.1"],
         })}
         open
@@ -129,7 +123,7 @@ describe("UpdatePluginDialog", () => {
 
   it("opens persisted failure details and retries an available update", async () => {
     const fetchMock = vi.fn(async () =>
-      jsonResponse(
+      Response.json(
         {
           job: {
             id: "update-1",
@@ -139,7 +133,7 @@ describe("UpdatePluginDialog", () => {
             phase: "preparing",
           },
         },
-        202,
+        { status: 202 },
       ),
     );
     vi.stubGlobal("fetch", fetchMock);
@@ -150,8 +144,10 @@ describe("UpdatePluginDialog", () => {
       <UpdatePluginDialog
         plugin={plugin({
           availableVersion: "1.8.0",
+          availableLabel: "1.8.0",
           lastFailure: {
             version: "1.7.0",
+            label: "1.7.0",
             at: failedAt,
             detail: "factory threw during activation",
           },
@@ -187,6 +183,7 @@ describe("UpdatePluginDialog", () => {
         plugin={plugin({
           lastFailure: {
             version: "1.7.0",
+            label: "1.7.0",
             at: null,
             detail: "factory threw during activation",
           },
@@ -209,13 +206,15 @@ describe("UpdatePluginDialog", () => {
       state: "running",
       phase: "checking",
     };
-    const fetchMock = vi.fn(async () => jsonResponse({ job }, 202));
+    const fetchMock = vi.fn(async () =>
+      Response.json({ job }, { status: 202 }),
+    );
     vi.stubGlobal("fetch", fetchMock);
     const { wrapper, queryClient } = createDialogTestHarness();
     const onOpenChange = vi.fn();
     render(
       <UpdatePluginDialog
-        plugin={plugin({ availableVersion: "1.7.0" })}
+        plugin={plugin({ availableVersion: "1.7.0", availableLabel: "1.7.0" })}
         open
         onOpenChange={onOpenChange}
       />,
@@ -232,13 +231,16 @@ describe("UpdatePluginDialog", () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async () =>
-        jsonResponse({ error: "plugin source is unavailable" }, 502),
+        Response.json(
+          { error: "plugin source is unavailable" },
+          { status: 502 },
+        ),
       ),
     );
     const { wrapper } = createDialogTestHarness();
     render(
       <UpdatePluginDialog
-        plugin={plugin({ availableVersion: "1.7.0" })}
+        plugin={plugin({ availableVersion: "1.7.0", availableLabel: "1.7.0" })}
         open
         onOpenChange={() => {}}
       />,
@@ -261,12 +263,12 @@ describe("UpdatePluginDialog", () => {
   it("treats a malformed 2xx update response as an error, never success", async () => {
     vi.stubGlobal(
       "fetch",
-      vi.fn(async () => jsonResponse({ status: "ok" })),
+      vi.fn(async () => Response.json({ status: "ok" })),
     );
     const { wrapper } = createDialogTestHarness();
     render(
       <UpdatePluginDialog
-        plugin={plugin({ availableVersion: "1.7.0" })}
+        plugin={plugin({ availableVersion: "1.7.0", availableLabel: "1.7.0" })}
         open
         onOpenChange={() => {}}
       />,

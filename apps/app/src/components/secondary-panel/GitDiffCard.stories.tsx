@@ -1,6 +1,6 @@
 import { useCallback, useMemo, useState, type ReactNode } from "react";
 import type { FileContents } from "@pierre/diffs";
-import type { DiffPresentation } from "@/components/code/code-rendering";
+import type { DiffPresentation } from "@bb/shared-ui/git-diff/renderers";
 import { GitDiffCard } from "../git-diff/GitDiffCard";
 import {
   DEFAULT_CODE_OVERFLOW_MODE,
@@ -8,15 +8,17 @@ import {
 } from "@/lib/code-overflow-mode";
 import {
   GitDiffToolbar,
-  type GitDiffDisplayMode,
   type GitDiffSelectionOption,
-} from "./GitDiffToolbar";
-import { filterDiffFilesByPath } from "./git-diff/gitDiffPanelHelpers";
+} from "../../../../../plugins/git/ui/diff/GitDiffToolbar";
+import type { GitDiffDisplayMode } from "../../../../../plugins/git/ui/diff/git-diff-view-preferences";
+import { filterDiffFilesByPath } from "../../../../../plugins/git/ui/diff/filter-diff-files";
+import { DEFAULT_DIFF_FILE_FILTERS } from "../../../../../plugins/git/ui/diff/diff-file-filters";
+import type { DiffFileFilters } from "../../../../../plugins/git/ui/diff/diff-file-filters";
 import {
   parseGitDiffFiles,
   summarizeGitDiffFile,
   type ParsedGitDiffFile,
-} from "../git-diff/git-diff-parsing";
+} from "@bb/shared-ui/git-diff/parsing";
 import { StoryCard, StoryRow } from "../../../.ladle/story-card";
 
 export default {
@@ -640,6 +642,8 @@ function InteractiveDiffPanel({
     [diffs],
   );
   const [fileFilter, setFileFilter] = useState<string | null>(null);
+  const [filters, setFilters] = useState<DiffFileFilters>(DEFAULT_DIFF_FILE_FILTERS);
+  const [ignoreWhitespace, setIgnoreWhitespace] = useState(false);
   const visibleFiles = useMemo(
     () =>
       filterDiffFilesByPath(
@@ -697,17 +701,24 @@ function InteractiveDiffPanel({
         onSelectionChange={setSelection}
         isSelectorDisabled={false}
         stats={aggregateStats}
+        isStatsLoading={false}
         totalFilesCount={parsed.length}
         isTruncated={false}
         fileFilter={fileFilter}
+        filters={filters}
+        onFiltersChange={setFilters}
+        extensionCounts={[]}
         onFileFilterChange={setFileFilter}
         areAllFilesCollapsed={allCollapsed}
         isCollapseAllDisabled={parsed.length === 0}
+        collapseAllDisabledReason={parsed.length === 0 ? "No changes" : null}
         onToggleAllCollapsed={toggleAllCollapsed}
         displayMode={displayMode}
         onDisplayModeChange={setDisplayMode}
         lineOverflowMode={lineOverflowMode}
         onLineOverflowModeChange={setLineOverflowMode}
+        ignoreWhitespace={ignoreWhitespace}
+        onIgnoreWhitespaceChange={setIgnoreWhitespace}
       />
       <div className="min-h-0 flex-1 overflow-auto px-4 pb-3">
         <div className="space-y-2">
@@ -720,7 +731,7 @@ function InteractiveDiffPanel({
                 presentation={presentation}
                 stickyHeader
               />
-          ))}
+            ))}
         </div>
       </div>
     </PanelStage>

@@ -53,6 +53,9 @@ function toOptionDescriptors(
     ...(option.description === undefined
       ? {}
       : { description: option.description }),
+    ...(option.experimental_icon === undefined
+      ? {}
+      : { icon: option.experimental_icon }),
   }));
 }
 
@@ -104,6 +107,7 @@ export function projectFallbackModels(
     model: model.id,
     displayName: model.displayName,
     description: model.description,
+    reasoningDiscovery: "known",
     supportedReasoningEfforts: model.supportedReasoningEfforts.map(
       (effort) => ({
         reasoningEffort: effort.reasoningEffort,
@@ -195,6 +199,8 @@ export function buildPluginProviderRegistration(args: {
       supportsFork: capabilities.fork !== "none",
       supportsSessionRewind: capabilities.fork === "checkpoint",
       modelCatalogScope: declaration.models.scope,
+      supportsNativeTerminal:
+        declaration.experimental_nativeTerminal !== undefined,
       ...(capabilities.reportsTokenUsage === undefined
         ? {}
         : { reportsTokenUsage: capabilities.reportsTokenUsage }),
@@ -247,6 +253,7 @@ export function buildPluginProviderRegistration(args: {
       declaration.experimental_nativeCommandRoots ??
       EMPTY_PROVIDER_NATIVE_ROOTS,
     resolvesNativeRoots: declaration.experimental_resolvesNativeRoots,
+    nativeTerminal: declaration.experimental_nativeTerminal ?? null,
     deriveProviderOptions: (context) =>
       deriveValidatedProviderOptions({
         declaration,

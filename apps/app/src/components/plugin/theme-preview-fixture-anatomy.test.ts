@@ -22,7 +22,7 @@ const SHARED_FIXTURE_ANCHORS: readonly FixtureAnchor[] = [
       "The mock sidebar carries `fixed bg-sidebar` so theme blocks scoped to `.fixed.bg-sidebar` (token overrides, noise overlays) apply to it exactly as they do in the app.",
   },
   {
-    file: "plugins/thread-list/app/rows/sidebarRowClasses.ts",
+    file: "packages/shared-ui/src/components/ui/sidebar-row-classes.ts",
     mustContain: [
       "SIDEBAR_ROW_BASE_CLASS =",
       "SIDEBAR_ROW_INTERACTIVE_STATE_CLASS =",
@@ -45,7 +45,7 @@ const SHARED_FIXTURE_ANCHORS: readonly FixtureAnchor[] = [
       "Mock sidebars use BB's shared button primitive, section-label token, padding, and project-row anatomy.",
   },
   {
-    file: "apps/app/src/components/ui/context-selection.ts",
+    file: "packages/shared-ui/src/components/ui/context-selection.ts",
     mustContain: ['CONTEXT_SELECTION_SURFACE_CLASS = "bg-state-active"'],
     because: "The open thread's row in the mock paints state-active.",
   },
@@ -125,15 +125,15 @@ const SHARED_FIXTURE_ANCHORS: readonly FixtureAnchor[] = [
 const VIEW_FIXTURE_ANCHORS: Record<string, readonly FixtureAnchor[]> = {
   thread: [
     {
-      file: "apps/app/src/views/thread-detail/ThreadTimelinePane.tsx",
+      file: "apps/app/src/views/thread-detail/ThreadScreen.tsx",
       mustContain: [
-        'variant="hosted-footer"',
+        'scrollBehavior="bottom-anchor"',
         "scrollOverlay=",
         "<ThreadTableOfContents",
-        "footer={footer}",
+        "footer={promptArea}",
       ],
       because:
-        "The thread projection keeps the real hosted-footer timeline, bottom composer, and held-open table of contents composition.",
+        "The thread projection keeps the real bottom-anchored timeline, bottom composer, and held-open table of contents composition.",
     },
     {
       file: "apps/app/src/components/thread/toc/ThreadTableOfContents.tsx",
@@ -147,26 +147,24 @@ const VIEW_FIXTURE_ANCHORS: Record<string, readonly FixtureAnchor[]> = {
         "The held-open fixture keeps the real message-role tabs and popover surface.",
     },
     {
-      file: "apps/app/src/views/thread-detail/ThreadDetailView.tsx",
-      mustContain: [
-        'label: "Info"',
-        'label: "Diff"',
-        '<Icon name="Info" />',
-        '<Icon name="FileDiff" />',
-      ],
+      file: "apps/app/src/components/secondary-panel/ThreadMetadataContent.tsx",
+      mustContain: ['appearance="flat"', "<EnvironmentRow"],
       because:
-        "The thread projection exposes the same fixed secondary-panel tabs as BB.",
+        "The open Info panel projects BB's flat metadata card and a representative environment row.",
     },
     {
-      file: "apps/app/src/components/secondary-panel/ThreadMetadataContent.tsx",
+      file: "plugins/git/ui/info/GitInfoRows.tsx",
+      mustContain: ['<DetailRow icon="GitBranch"'],
+      because:
+        "The open Info panel's branch row comes from the Git plugin.",
+    },
+    {
+      file: "plugins/github-pr-status/ui/PullRequestInfoRow.tsx",
       mustContain: [
-        'appearance="flat"',
-        "<EnvironmentRow",
-        "<BranchRow",
-        "<PullRequestRow",
+        '<DetailRow icon="GitPullRequestArrow" label="Pull request">',
       ],
       because:
-        "The open Info panel projects BB's flat metadata card and representative environment, branch, and pull-request rows.",
+        "The GitHub PR Status plugin draws the Info panel's pull-request row.",
     },
     {
       file: "apps/app/src/components/promptbox/follow-up-placeholder.ts",
@@ -179,17 +177,26 @@ const VIEW_FIXTURE_ANCHORS: Record<string, readonly FixtureAnchor[]> = {
   ],
   new: [
     {
-      file: "apps/app/src/views/RootComposeEmptyWelcome.tsx",
+      file: "apps/app/src/views/RootComposeView.tsx",
       mustContain: [
-        'title="New thread"',
-        'description="Start a new conversation"',
-        'title="Automatically import my projects"',
-        'title="New project"',
-        'title="Learn what bb can do"',
-        "hover:bg-state-hover",
+        'ROOT_COMPOSE_SIDEBAR_ACTION_ALIGNED_TOP_PADDING_CLASS = "pt-14"',
+        "{promptBox}",
       ],
       because:
-        "The New thread projection uses BB's current empty-welcome actions, hierarchy, and hover state.",
+        "The New thread projection opens on the composer alone, aligned under the sidebar actions.",
+    },
+    {
+      file: "apps/app/src/views/RootComposeHome.tsx",
+      mustContain: [
+        "ROOT_COMPOSE_MAX_WIDTH_CLASS = CONTENT_MEASURE_MAX_WIDTH_CLASS",
+      ],
+      because: "The New thread projection keeps BB's home column width.",
+    },
+    {
+      file: "apps/app/src/components/promptbox/NewThreadPromptBox.tsx",
+      mustContain: ['"Ask anything."'],
+      because:
+        "The empty composer uses the current new-thread prompt language.",
     },
   ],
   split: [
@@ -209,11 +216,7 @@ const VIEW_FIXTURE_ANCHORS: Record<string, readonly FixtureAnchor[]> = {
   settings: [
     {
       file: "apps/app/src/components/settings/SettingsSidebar.tsx",
-      mustContain: [
-        'backLabel="Back to app"',
-        "<SectionSidebarLabel>Settings</SectionSidebarLabel>",
-        "activeSection === section.id",
-      ],
+      mustContain: ["activeSection === section.id"],
       because:
         "The Appearance projection uses BB's settings navigation hierarchy and selected-row state.",
     },

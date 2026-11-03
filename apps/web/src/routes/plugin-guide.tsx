@@ -10,7 +10,7 @@ import pluginGuideCss from "../plugin-guide/plugin-guide.css?url";
 
 const PAGE_TITLE = "Plugin Guide — bb";
 const PAGE_DESCRIPTION =
-  "Every place a bb plugin can extend the app, mapped onto the product.";
+  "Every place a bb plugin can extend the app: the sidebar, threads, prompt box, command palette, home page, settings, and backend APIs, with SDK symbols for each.";
 
 interface PluginGuideSearch {
   slide?: string;
@@ -26,7 +26,6 @@ export const Route = createFileRoute("/plugin-guide")({
     links: [
       { rel: "stylesheet", href: pluginGuideCss },
       ...siteHeadLinks(blogCss),
-      { rel: "canonical", href: "https://getbb.app/plugin-guide" },
     ],
   }),
   component: PluginGuideRoute,

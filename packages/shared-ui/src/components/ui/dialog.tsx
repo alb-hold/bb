@@ -228,6 +228,7 @@ type DialogContentProps = React.ComponentPropsWithoutRef<
 > & {
   onAfterCloseAutoFocus?: () => void;
   hideCloseButton?: boolean;
+  compactContentClassName?: string;
 };
 
 const DialogContent = React.forwardRef<HTMLDivElement, DialogContentProps>(
@@ -236,6 +237,7 @@ const DialogContent = React.forwardRef<HTMLDivElement, DialogContentProps>(
       className,
       children,
       hideCloseButton = false,
+      compactContentClassName,
       onAfterCloseAutoFocus,
       onCloseAutoFocus,
       ...props
@@ -256,6 +258,7 @@ const DialogContent = React.forwardRef<HTMLDivElement, DialogContentProps>(
       return (
         <ResponsiveDrawerShell
           open={open}
+          contentClassName={compactContentClassName}
           onOpenChange={onOpenChange}
           onAfterCloseAutoFocus={onAfterCloseAutoFocus}
           onContentAnimationEnd={(settledOpen) => {
@@ -272,7 +275,7 @@ const DialogContent = React.forwardRef<HTMLDivElement, DialogContentProps>(
             className={cn(
               "grid grid-cols-[minmax(0,1fr)] gap-4 overflow-y-auto px-4 pt-2 pb-4",
               className,
-              "max-w-none",
+              "max-w-none sm:max-w-none",
             )}
             {...domProps}
           >

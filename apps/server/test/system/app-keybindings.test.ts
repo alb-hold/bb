@@ -51,6 +51,78 @@ function commandPair(left: string, right: string): string {
 }
 
 describe("app keybindings", () => {
+  it("binds next terminal attention to Alt+Shift+N across terminal focus", () => {
+    const binding = DEFAULT_APP_KEYBINDINGS.find(
+      (candidate) => candidate.command === "terminal.attention.next",
+    );
+    expect(binding?.shortcut).toEqual({
+      key: "n",
+      mod: false,
+      meta: false,
+      control: false,
+      alt: true,
+      shift: true,
+    });
+    expect(binding?.when.none).not.toContain("terminalFocus");
+    expect(
+      DEFAULT_APP_KEYBINDINGS.filter(
+        (candidate) =>
+          candidate.command !== "terminal.attention.next" &&
+          candidate.shortcut !== null &&
+          isAppKeybindingAvailableForClient(candidate, {
+            isDesktop: false,
+            platform: "linux",
+          }) &&
+          matchesAppShortcut(
+            {
+              key: "n",
+              code: "KeyN",
+              altKey: true,
+              shiftKey: true,
+              metaKey: false,
+              ctrlKey: false,
+            },
+            candidate.shortcut,
+            false,
+          ),
+      ),
+    ).toEqual([]);
+  });
+  it.each(DEFAULT_KEYBINDING_CLIENTS)(
+    "offers local logs only to desktop clients: $name",
+    (client) => {
+      const binding = DEFAULT_APP_KEYBINDINGS.find(
+        (binding) => binding.command === "logs.openServerDaemon",
+      );
+      expect(binding).toBeDefined();
+      if (binding)
+        expect(isAppKeybindingAvailableForClient(binding, client)).toBe(
+          client.isDesktop,
+        );
+    },
+  );
+
+  it.each(DEFAULT_KEYBINDING_CLIENTS)(
+    "binds terminal find to terminal focus without shell control keys: $name",
+    (client) => {
+      const bindings = applyAppKeybindingOverrides(
+        DEFAULT_APP_KEYBINDINGS,
+        [],
+      ).filter(
+        (binding) =>
+          binding.command === "terminal.find" &&
+          isAppKeybindingAvailableForClient(binding, client),
+      );
+      expect(bindings).toHaveLength(1);
+      expect(bindings[0]?.when.all).toContain("terminalFocus");
+      expect(bindings[0]?.shortcut).toMatchObject({
+        key: "f",
+        mod: true,
+        shift: !client.isMac,
+      });
+    },
+  );
+
   it("persists plugin bindings even before the plugin is loaded", async () => {
     await withTestHarness(async (harness) => {
       const overrides = [
@@ -192,6 +264,16 @@ describe("app keybindings", () => {
     expect(bindings[0]?.shortcut).toEqual(custom);
   });
 
+  it("keeps Go back and Go forward away from a focused browser surface", () => {
+    for (const command of ["history.back", "history.forward"] as const) {
+      const binding = DEFAULT_APP_KEYBINDINGS.find(
+        (candidate) => candidate.command === command,
+      );
+      expect(binding?.when.all).toEqual(["mainSurface"]);
+      expect(binding?.when.none).toEqual(["modalOpen", "browserFocus"]);
+    }
+  });
+
   it("lets a user's own Mod+[ binding win over Go back", () => {
     const bindings = applyAppKeybindingOverrides(
       DEFAULT_APP_KEYBINDINGS,
@@ -224,6 +306,69 @@ describe("app keybindings", () => {
         ?.command,
     ).toBe("thread.previous");
   });
+
+  it.each(DEFAULT_KEYBINDING_CLIENTS)(
+    "runs question actions from the card's text field but not other text fields: $name",
+    (client) => {
+      const defaults = applyAppKeybindingOverrides(DEFAULT_APP_KEYBINDINGS, []);
+      const commandsFor = (
+        input: Parameters<typeof matchesAppShortcut>[0],
+        active: readonly string[],
+      ) =>
+        defaults
+          .filter(
+            (binding) =>
+              binding.command.startsWith("question.") &&
+              isAppKeybindingAvailableForClient(binding, client) &&
+              matchesAppShortcut(input, binding.shortcut, client.isMac) &&
+              binding.when.all.every((key) => active.includes(key)) &&
+              !binding.when.none.some((key) => active.includes(key)),
+          )
+          .map((binding) => binding.command);
+      const key = (key: string, mod: boolean) => ({
+        key,
+        code: key,
+        metaKey: mod && client.isMac,
+        ctrlKey: mod && !client.isMac,
+        altKey: false,
+        shiftKey: false,
+      });
+      const presses = [
+        key("Enter", true),
+        key(".", true),
+        key("ArrowLeft", false),
+        key("ArrowRight", false),
+      ];
+      const pressed = (active: readonly string[]) =>
+        presses.map((input) => commandsFor(input, active)[0] ?? null);
+
+      expect(pressed(["mainSurface", "questionOpen", "editableFocus"])).toEqual(
+        [null, null, null, null],
+      );
+      expect(
+        pressed([
+          "mainSurface",
+          "questionOpen",
+          "questionFocus",
+          "editableFocus",
+        ]),
+      ).toEqual(["question.submit", "question.cancel", null, null]);
+      expect(pressed(["mainSurface", "questionOpen", "questionFocus"])).toEqual(
+        [
+          "question.submit",
+          "question.cancel",
+          "question.previous",
+          "question.next",
+        ],
+      );
+      expect(pressed(["mainSurface", "questionOpen"])).toEqual([
+        "question.submit",
+        "question.cancel",
+        null,
+        null,
+      ]);
+    },
+  );
 
   it("limits overlapping default chords to intentional scoped navigation", () => {
     const assignedDefaults = applyAppKeybindingOverrides(
@@ -277,6 +422,8 @@ describe("app keybindings", () => {
       for (const command of [
         "thread.rename",
         "thread.archive",
+        "thread.markRead",
+        "thread.pin",
         "panel.fullScreen.toggle",
       ] as const) {
         expect(
@@ -458,7 +605,10 @@ describe("app keybindings", () => {
             mod: true,
             control: false,
             shift: false,
-            when: { all: ["mainSurface"], none: ["modalOpen"] },
+            when: {
+              all: ["mainSurface"],
+              none: ["modalOpen", "browserFocus"],
+            },
           },
         ]);
       }
@@ -599,6 +749,7 @@ describe("app keybindings", () => {
             shift: binding.shortcut.shift,
           })),
       ).toEqual([
+        { command: "terminal.attention.next", shift: true },
         { command: "modelPicker.cycleModel", shift: false },
         { command: "modelPicker.cycleModelBackward", shift: true },
         { command: "modelPicker.cycleProvider", shift: false },
@@ -733,6 +884,7 @@ describe("app keybindings", () => {
       };
       const overrides = [
         { command: "thread.new" as const, shortcut },
+        { command: "terminal.find" as const, shortcut },
         { command: "modelPicker.toggle" as const, shortcut },
       ];
       const response = await harness.app.request("/api/v1/settings/keyboard", {
@@ -754,6 +906,26 @@ describe("app keybindings", () => {
       expect(
         config.keybindings.find((binding) => binding.command === "thread.new"),
       ).toMatchObject({ shortcut });
+      expect(
+        config.keybindings.filter(
+          (binding) => binding.command === "terminal.find",
+        ),
+      ).toEqual([
+        expect.objectContaining({
+          shortcut,
+          when: {
+            all: ["mainSurface", "terminalFocus", "macPlatform"],
+            none: ["modalOpen"],
+          },
+        }),
+        expect.objectContaining({
+          shortcut,
+          when: {
+            all: ["mainSurface", "terminalFocus"],
+            none: ["modalOpen", "macPlatform"],
+          },
+        }),
+      ]);
       expect(
         config.keybindings.filter(
           (binding) => binding.command === "modelPicker.toggle",
@@ -849,6 +1021,62 @@ describe("app keybindings", () => {
       });
       expect(response.status).toBe(400);
     });
+  });
+
+  it("moves a saved Diff toggle override to the Git plugin's command", async () => {
+    const shortcut = {
+      key: "g",
+      mod: true,
+      meta: false,
+      control: false,
+      alt: false,
+      shift: false,
+    };
+    await withTestHarness(async (harness) => {
+      harness.db.$client
+        .prepare(
+          `INSERT INTO app_settings_values (key, value, updated_at)
+           VALUES (?, ?, ?)
+           ON CONFLICT (key) DO UPDATE SET value = excluded.value`,
+        )
+        .run(
+          "keybindingOverrides",
+          JSON.stringify([{ command: "diff.toggle", shortcut }]),
+          Date.now(),
+        );
+
+      const response = await harness.app.request("/api/v1/system/config");
+      const config = systemConfigResponseSchema.parse(await readJson(response));
+      expect(config.keybindingOverrides).toEqual([
+        { command: "plugin:bb--git/toggle-diff", shortcut },
+      ]);
+
+      harness.db.$client
+        .prepare(
+          `INSERT INTO app_settings_values (key, value, updated_at)
+           VALUES (?, ?, ?)
+           ON CONFLICT (key) DO UPDATE SET value = excluded.value`,
+        )
+        .run(
+          "keybindingOverrides",
+          JSON.stringify([
+            { command: "diff.toggle", shortcut },
+            { command: "plugin:bb--git/toggle-diff", shortcut: null },
+          ]),
+          Date.now(),
+        );
+      const explicit = systemConfigResponseSchema.parse(
+        await readJson(await harness.app.request("/api/v1/system/config")),
+      );
+      expect(explicit.keybindingOverrides).toEqual([
+        { command: "plugin:bb--git/toggle-diff", shortcut: null },
+      ]);
+    });
+    expect(
+      appKeybindingOverridesSchema.safeParse([
+        { command: "diff.toggle", shortcut },
+      ]).success,
+    ).toBe(false);
   });
 
   it("falls back to defaults when stored overrides are corrupt", async () => {

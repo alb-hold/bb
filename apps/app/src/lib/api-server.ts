@@ -1,10 +1,48 @@
 import { createApiClient } from "@bb/server-contract";
+import { DEVICE_HANDOFF_CLIENT_TOKEN_HEADER } from "@bb/server-contract";
 import { fetchWithAppSurface } from "./app-surface";
+import { wsManager } from "./ws";
 
 const BASE_URL =
   typeof window === "undefined" ? "http://localhost" : window.location.origin;
 
-const client = createApiClient(BASE_URL, { fetch: fetchWithAppSurface });
+const turnSubmissionPath =
+  /^\/api\/v1\/threads(?:\/fork|\/[^/]+\/(?:send|edit-message|retry|steer|queued-messages(?:\/[^/]+\/send)?))?$/u;
+
+export async function fetchWithDeviceHandoffSubmission(
+  input: Parameters<typeof fetch>[0],
+  init?: RequestInit,
+): Promise<Response> {
+  const url = new URL(
+    input instanceof Request ? input.url : String(input),
+    BASE_URL,
+  );
+  const method = (
+    init?.method ?? (input instanceof Request ? input.method : "GET")
+  ).toUpperCase();
+  if (
+    url.origin === BASE_URL &&
+    method === "POST" &&
+    turnSubmissionPath.test(url.pathname)
+  ) {
+    const storedToken = wsManager.getDeviceHandoffClientToken();
+    const headers = new Headers(
+      input instanceof Request ? input.headers : undefined,
+    );
+    new Headers(init?.headers).forEach((value, key) => headers.set(key, value));
+    if (storedToken === null) {
+      headers.delete(DEVICE_HANDOFF_CLIENT_TOKEN_HEADER);
+    } else {
+      headers.set(DEVICE_HANDOFF_CLIENT_TOKEN_HEADER, storedToken);
+    }
+    init = { ...init, headers };
+  }
+  return await fetchWithAppSurface(input, init);
+}
+
+const client = createApiClient(BASE_URL, {
+  fetch: fetchWithDeviceHandoffSubmission,
+});
 
 export const apiClient = client.api.v1;
 

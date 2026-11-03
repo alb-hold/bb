@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { stripTerminalGridMarkers } from "./terminal-grid.js";
 
 export const TERMINAL_COLS_MAX = 500;
 export const TERMINAL_ROWS_MAX = 200;
@@ -31,7 +32,7 @@ export function isActiveTerminalSessionStatus(
   }
 }
 
-const terminalSessionCloseReasonValues = [
+const hostDaemonTerminalCloseReasonValues = [
   "user",
   "process-exit",
   "daemon-disconnect",
@@ -39,6 +40,12 @@ const terminalSessionCloseReasonValues = [
   "thread-archived",
   "thread-deleted",
   "open-timeout",
+] as const;
+export type HostDaemonTerminalCloseReason =
+  (typeof hostDaemonTerminalCloseReasonValues)[number];
+const terminalSessionCloseReasonValues = [
+  ...hostDaemonTerminalCloseReasonValues,
+  "host-removed",
 ] as const;
 export const terminalSessionCloseReasonSchema = z.enum(
   terminalSessionCloseReasonValues,
@@ -104,7 +111,8 @@ export function createTerminalOutputLineReader(): TerminalOutputLineReader {
 
 export function readTerminalOutputLines(text: string): string[] {
   const reader = createTerminalOutputLineReader();
-  return [...reader.push(text), ...reader.flush()];
+  const withoutGridMarkers = stripTerminalGridMarkers(text);
+  return [...reader.push(withoutGridMarkers), ...reader.flush()];
 }
 
 export const terminalColsSchema = z

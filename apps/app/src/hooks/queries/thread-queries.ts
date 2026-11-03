@@ -1,38 +1,32 @@
-import { prependOlderTimelineRows } from "@bb/client-core";
+import { useThreadDefaultExecutionOptions } from "./thread-default-execution-options-query";
+import { useThreadQueuedMessages } from "./thread-panel-queries";
 import {
+  infiniteQueryOptions,
+  queryOptions,
   useInfiniteQuery,
   useQuery,
   useQueryClient,
-  type NotifyOnChangeProps,
   type QueryClient,
 } from "@tanstack/react-query";
-import { useCallback, useEffect, useMemo } from "react";
-import { COMPACT_VIEWPORT_QUERY } from "@bb/shared-ui/hooks/use-compact-viewport";
-import { getMediaQuerySnapshot } from "@bb/shared-ui/hooks/use-media-query";
+import { useCallback, useMemo } from "react";
 import type { PendingInteraction, ThreadListEntry } from "@bb/domain";
+import { withEffectiveDisplayStatus } from "@bb/domain";
 import type {
-  PromptHistoryResponse,
-  ThreadQueuedMessageListResponse,
   ThreadListResponse,
   ThreadPendingInteractionsResponse,
   ThreadResponse,
   ThreadSearchResponse,
   ThreadWithIncludesResponse,
-  ThreadConversationOutlineResponse,
-  ThreadStorageFileListResponse,
-  ThreadStorageLocationResponse,
-  ThreadStoragePathListResponse,
+  ThreadTimelineReadResponse,
   ThreadTimelineResponse,
   ThreadSpendSummaryResponse,
-  TimelineTurnSummaryDetailsResponse,
 } from "@bb/server-contract";
 import { useDebouncedValue } from "../useDebouncedValue";
-import { applyTimelineDelta } from "@bb/server-contract";
+import {
+  applyThreadTimelineDelta,
+  isThreadTimelineDelta,
+} from "@bb/server-contract";
 import type { ThreadListFilters } from "@bb/client-core";
-import type { FilePreview } from "@bb/client-core";
-import type { PathListOptions } from "@/lib/path-list-options";
-import type { ThreadStorageFileListOptions } from "@/lib/thread-storage-files";
-import * as api from "@/lib/api";
 import { sdk } from "@/lib/sdk";
 import {
   useThreadDetailRealtimeSubscription,
@@ -43,60 +37,47 @@ import {
   getCachedThreadListPlaceholder,
   findSidebarNavigationThreadPlaceholder,
 } from "../cache-owners/query-cache";
-import { useSidebarNavigationThreadSelection } from "./sidebar-navigation-query";
+import {
+  useSidebarNavigationThreadSelection,
+  type SidebarNavigationThreadSelection,
+} from "./sidebar-navigation-query";
 import {
   getCachedThreadLists,
   iterateThreadListCacheEntries,
 } from "../cache-owners/thread-list-cache-data";
 import type { ArchivedThreadsKindFilter } from "./query-keys";
+import { resolveThreadPlaceholder } from "./query-placeholders";
 import {
-  resolveThreadPlaceholder,
-  resolveThreadTimelinePlaceholder,
-} from "./query-placeholders";
-import {
-  PROMPT_HISTORY_STALE_TIME_MS,
   requireEnabledQueryArg,
   requireThreadId,
   shouldRetryTransientReadQuery,
   TRANSIENT_READ_RETRY_DELAY_MS,
 } from "./query-helpers";
-import {
-  HEAVY_PAYLOAD_QUERY_POLICY,
-  REALTIME_OWNED_MOUNT_BASELINE_QUERY_POLICY,
-  REALTIME_OWNED_NO_FOCUS_QUERY_POLICY,
-  RESUME_REFETCH_QUERY_POLICY,
-} from "./query-policies";
+import { REALTIME_OWNED_NO_FOCUS_QUERY_POLICY } from "./query-policies";
 import {
   archivedThreadsListQueryKey,
   disabledThreadListQueryKey,
   threadDetailBootstrapQueryKey,
-  threadQueuedMessagesQueryKey,
   threadListQueryKey,
   threadPendingInteractionsQueryKey,
-  threadPromptHistoryQueryKey,
   threadQueryKey,
   threadSearchQueryKey,
-  threadStorageFilesQueryKey,
-  threadStorageLocationQueryKey,
-  threadStoragePathsQueryKey,
-  threadStorageFilePreviewQueryKey,
-  threadHostFilePreviewQueryKey,
-  threadConversationOutlineQueryKey,
   threadTimelineQueryKey,
   threadSpendSummaryQueryKey,
-  threadTimelineTurnSummaryDetailsQueryKey,
   threadsQueryKey,
-  type ThreadTimelineTurnSummaryDetailsQueryIdentity,
 } from "./query-keys";
 import { ARCHIVED_THREADS_PAGE_SIZE } from "./archived-threads-page-size";
 import { ingestThreadDetailBootstrap } from "../cache-owners/thread-detail-cache-owner";
+import { THREAD_OPEN_CACHE_GC_MS } from "../cache-owners/thread-open-cache-owner";
 import { clearThreadTimelineUnseenEvents } from "../cache-owners/thread-timeline-unseen-events";
 import {
-  THREAD_OPEN_CACHE_GC_MS,
-  touchThreadOpenCache,
-} from "../cache-owners/thread-open-cache-owner";
+  isCachedThreadTimelinePushEnabled,
+  resolveThreadTimelineSegmentLimit,
+  syncThreadTimelineSubscriptionTag,
+} from "../cache-owners/thread-timeline-push-owner";
+import { markStreamTrace } from "@/lib/stream-trace";
 
-interface QueryOptions {
+export interface QueryOptions {
   enabled?: boolean;
   refetchOnMount?: boolean | "always";
   staleTime?: number;
@@ -126,18 +107,6 @@ export function didThreadDetailBootstrapRefreshAfterMount(query: {
         Date.now() - query.dataUpdatedAt <= THREAD_DETAIL_STALE_TIME_MS))
   );
 }
-
-interface ThreadTimelineQueryOptions extends QueryOptions {
-  notifyOnChangeProps?: NotifyOnChangeProps;
-}
-
-type ThreadConversationOutlineQueryOptions = QueryOptions;
-
-type ThreadTimelineTurnSummaryDetailsQueryOptions = QueryOptions;
-
-type ThreadQueuedMessagesQueryOptions = QueryOptions;
-
-type ThreadPromptHistoryQueryOptions = QueryOptions;
 
 type ThreadPendingInteractionsQueryOptions = QueryOptions;
 
@@ -279,25 +248,16 @@ function addThreadMentionCandidate(
   }
 }
 
-function buildThreadMentionCandidates(
-  threads: readonly ThreadListItem[],
-  { limit }: { limit: number },
+const EMPTY_THREAD_LIST: ThreadListResponse = [];
+
+export function selectThreadMentionCandidates(
+  threads: ThreadListEntry[],
 ): ThreadListResponse {
   const candidatesById = new Map<string, ThreadListItem>();
   for (const thread of threads) {
     addThreadMentionCandidate(candidatesById, thread);
   }
-  return Array.from(candidatesById.values()).slice(0, limit);
-}
-
-const EMPTY_THREAD_LIST: ThreadListResponse = [];
-
-function selectThreadMentionCandidates(
-  threads: ThreadListEntry[],
-): ThreadListResponse {
-  return buildThreadMentionCandidates(threads, {
-    limit: THREAD_MENTION_CANDIDATE_LIMIT,
-  });
+  return Array.from(candidatesById.values());
 }
 
 function getThreadMentionCandidatePlaceholder({
@@ -335,16 +295,13 @@ export interface UseArchivedThreadsFilters {
   kind?: ArchivedThreadsKindFilter;
 }
 
-export function useArchivedThreads(
+export function archivedThreadsQueryOptions(
   filters: UseArchivedThreadsFilters,
   options?: QueryOptions,
 ) {
   const { projectId, kind = "all" } = filters;
-  const enabled = options?.enabled ?? true;
   const hasParent = kind === "all" ? undefined : kind === "child";
-  useThreadListRealtimeSubscription({ enabled });
-
-  return useInfiniteQuery<
+  return infiniteQueryOptions<
     ThreadListResponse,
     Error,
     { pageParams: number[]; pages: ThreadListResponse[] },
@@ -371,9 +328,17 @@ export function useArchivedThreads(
       }
       return allPages.reduce((sum, page) => sum + page.length, 0);
     },
-    enabled,
+    enabled: options?.enabled ?? true,
     staleTime: THREAD_LIST_STALE_TIME_MS,
   });
+}
+
+export function useArchivedThreads(
+  filters: UseArchivedThreadsFilters,
+  options?: QueryOptions,
+) {
+  useThreadListRealtimeSubscription({ enabled: options?.enabled ?? true });
+  return useInfiniteQuery(archivedThreadsQueryOptions(filters, options));
 }
 
 export function useThreads(filters: UseThreadsFilters, options?: QueryOptions) {
@@ -446,24 +411,60 @@ interface UseChildThreadsResult {
   isLoading: boolean;
 }
 
-export function useChildThreads({
-  enabled: enabledOption,
+export function selectChildThreads(
+  threads: ThreadListEntry[],
+  parentThreadId: string | undefined,
+): ThreadListResponse {
+  return parentThreadId === undefined
+    ? EMPTY_THREAD_LIST
+    : filterProjectThreadSubset(threads, { parentThreadId });
+}
+
+export function shouldFetchSidebarThreadListFallback({
+  enabled,
+  sidebar,
+}: {
+  enabled: boolean;
+  sidebar: SidebarNavigationThreadSelection<ThreadListResponse>;
+}): boolean {
+  return enabled && sidebar.data === undefined && !sidebar.isBootstrapPending;
+}
+
+export function resolveSidebarDerivedThreadList({
+  enabled,
+  sidebar,
+  fallback,
+}: {
+  enabled: boolean;
+  sidebar: SidebarNavigationThreadSelection<ThreadListResponse>;
+  fallback: UseChildThreadsResult;
+}): UseChildThreadsResult {
+  const derived = enabled ? sidebar.data : undefined;
+  if (derived !== undefined) {
+    return {
+      data: derived,
+      isError: false,
+      isFetching: false,
+      isLoading: false,
+    };
+  }
+  const waitingForBootstrap = enabled && sidebar.isBootstrapPending;
+  return {
+    data: fallback.data,
+    isError: fallback.isError,
+    isFetching: fallback.isFetching || waitingForBootstrap,
+    isLoading: fallback.isLoading || waitingForBootstrap,
+  };
+}
+
+export function childThreadsFallbackQueryOptions({
   parentThreadId,
-}: UseChildThreadsArgs): UseChildThreadsResult {
-  const enabled = enabledOption && Boolean(parentThreadId);
-  useThreadListRealtimeSubscription({ enabled });
-  const selectChildren = useCallback(
-    (threads: ThreadListEntry[]) =>
-      parentThreadId === undefined
-        ? EMPTY_THREAD_LIST
-        : filterProjectThreadSubset(threads, { parentThreadId }),
-    [parentThreadId],
-  );
-  const { data: sidebarChildren, isBootstrapPending } =
-    useSidebarNavigationThreadSelection(selectChildren);
-  const shouldFetch =
-    enabled && sidebarChildren === undefined && !isBootstrapPending;
-  const fallbackQuery = useQuery<ThreadListResponse>({
+  shouldFetch,
+}: {
+  parentThreadId: string | undefined;
+  shouldFetch: boolean;
+}) {
+  return queryOptions<ThreadListResponse>({
     queryKey:
       shouldFetch && parentThreadId
         ? threadListQueryKey({ archived: false, parentThreadId })
@@ -480,22 +481,30 @@ export function useChildThreads({
     enabled: shouldFetch,
     staleTime: THREAD_LIST_STALE_TIME_MS,
   });
-  const derivedChildren = enabled ? sidebarChildren : undefined;
-  if (derivedChildren !== undefined) {
-    return {
-      data: derivedChildren,
-      isError: false,
-      isFetching: false,
-      isLoading: false,
-    };
-  }
-  const waitingForBootstrap = enabled && isBootstrapPending;
-  return {
-    data: fallbackQuery.data,
-    isError: fallbackQuery.isError,
-    isFetching: fallbackQuery.isFetching || waitingForBootstrap,
-    isLoading: fallbackQuery.isLoading || waitingForBootstrap,
-  };
+}
+
+export function useChildThreads({
+  enabled: enabledOption,
+  parentThreadId,
+}: UseChildThreadsArgs): UseChildThreadsResult {
+  const enabled = enabledOption && Boolean(parentThreadId);
+  useThreadListRealtimeSubscription({ enabled });
+  const selectChildren = useCallback(
+    (threads: ThreadListEntry[]) => selectChildThreads(threads, parentThreadId),
+    [parentThreadId],
+  );
+  const sidebar = useSidebarNavigationThreadSelection(selectChildren);
+  const fallbackQuery = useQuery(
+    childThreadsFallbackQueryOptions({
+      parentThreadId,
+      shouldFetch: shouldFetchSidebarThreadListFallback({ enabled, sidebar }),
+    }),
+  );
+  return resolveSidebarDerivedThreadList({
+    enabled,
+    sidebar,
+    fallback: fallbackQuery,
+  });
 }
 
 export function useProjectThreadSubset({
@@ -575,21 +584,17 @@ export function useProjectThreadSubset({
   };
 }
 
-export function useThreadMentionCandidates({
-  enabled: enabledOption,
-}: UseThreadMentionCandidatesArgs): UseThreadMentionCandidatesResult {
-  const queryClient = useQueryClient();
-  const enabled = enabledOption ?? true;
-  useThreadListRealtimeSubscription({ enabled });
-  const { data: sidebarCandidates, isBootstrapPending } =
-    useSidebarNavigationThreadSelection(selectThreadMentionCandidates);
-  const shouldFetch =
-    enabled && sidebarCandidates === undefined && !isBootstrapPending;
-  const queryKey = shouldFetch
-    ? threadListQueryKey(THREAD_MENTION_CANDIDATE_FILTERS)
-    : disabledThreadListQueryKey(THREAD_MENTION_CANDIDATE_FILTERS);
-  const threadsQuery = useQuery<ThreadListResponse>({
-    queryKey,
+export function threadMentionCandidatesFallbackQueryOptions({
+  queryClient,
+  shouldFetch,
+}: {
+  queryClient: QueryClient;
+  shouldFetch: boolean;
+}) {
+  return queryOptions<ThreadListResponse>({
+    queryKey: shouldFetch
+      ? threadListQueryKey(THREAD_MENTION_CANDIDATE_FILTERS)
+      : disabledThreadListQueryKey(THREAD_MENTION_CANDIDATE_FILTERS),
     queryFn: ({ signal }) =>
       sdk.threads.list({ ...THREAD_MENTION_CANDIDATE_FILTERS, signal }),
     enabled: shouldFetch,
@@ -601,23 +606,28 @@ export function useThreadMentionCandidates({
       }),
     staleTime: THREAD_LIST_STALE_TIME_MS,
   });
-  const derivedCandidates = enabled ? sidebarCandidates : undefined;
+}
 
-  if (derivedCandidates !== undefined) {
-    return {
-      data: derivedCandidates,
-      isError: false,
-      isFetching: false,
-      isLoading: false,
-    };
-  }
-  const waitingForBootstrap = enabled && isBootstrapPending;
-  return {
-    data: threadsQuery.data,
-    isError: threadsQuery.isError,
-    isFetching: threadsQuery.isFetching || waitingForBootstrap,
-    isLoading: threadsQuery.isLoading || waitingForBootstrap,
-  };
+export function useThreadMentionCandidates({
+  enabled: enabledOption,
+}: UseThreadMentionCandidatesArgs): UseThreadMentionCandidatesResult {
+  const queryClient = useQueryClient();
+  const enabled = enabledOption ?? true;
+  useThreadListRealtimeSubscription({ enabled });
+  const sidebar = useSidebarNavigationThreadSelection(
+    selectThreadMentionCandidates,
+  );
+  const threadsQuery = useQuery(
+    threadMentionCandidatesFallbackQueryOptions({
+      queryClient,
+      shouldFetch: shouldFetchSidebarThreadListFallback({ enabled, sidebar }),
+    }),
+  );
+  return resolveSidebarDerivedThreadList({
+    enabled,
+    sidebar,
+    fallback: threadsQuery,
+  });
 }
 
 export function useThreadSearch({
@@ -659,19 +669,19 @@ export function useThreadSearch({
   };
 }
 
-export function useThread(id: string, options?: QueryOptions) {
-  const queryClient = useQueryClient();
-  const enabled = (options?.enabled ?? true) && Boolean(id);
-  useThreadDetailRealtimeSubscription(id, { enabled });
-
-  return useQuery<ThreadResponse>({
+export function threadQueryOptions(
+  queryClient: QueryClient,
+  id: string,
+  options?: QueryOptions,
+) {
+  return queryOptions<ThreadResponse>({
     queryKey: threadQueryKey(id),
     queryFn: ({ signal }) =>
       sdk.threads.get({
         threadId: requireThreadId(id, "useThread"),
         signal,
       }),
-    enabled,
+    enabled: (options?.enabled ?? true) && Boolean(id),
     staleTime: THREAD_DETAIL_STALE_TIME_MS,
     refetchOnMount: options?.refetchOnMount ?? true,
     retry: shouldRetryTransientReadQuery,
@@ -685,31 +695,36 @@ export function useThread(id: string, options?: QueryOptions) {
   });
 }
 
+export function useThread(id: string, options?: QueryOptions) {
+  const queryClient = useQueryClient();
+  const enabled = (options?.enabled ?? true) && Boolean(id);
+  useThreadDetailRealtimeSubscription(id, { enabled });
+  return useQuery(threadQueryOptions(queryClient, id, options));
+}
+
 function liftThreadListPlaceholder(
   thread: ThreadListEntry | undefined,
 ): ThreadResponse | undefined {
   if (thread === undefined) {
     return undefined;
   }
-  return {
+  return withEffectiveDisplayStatus({
     ...thread,
     activeBackgroundAgentCount: thread.activity.activeBackgroundAgentCount,
     canRestoreEnvironment: false,
+    canEditMessages: false,
     canSpawnChild: false,
     queuedMessageCount: 0,
     workspaceSharing: null,
-  };
+  });
 }
 
-export function useThreadDetailBootstrap(
+export function threadDetailBootstrapQueryOptions(
+  queryClient: QueryClient,
   id: string,
   options?: ThreadDetailBootstrapQueryOptions,
 ) {
-  const queryClient = useQueryClient();
-  const enabled = (options?.enabled ?? true) && Boolean(id);
-  useThreadDetailRealtimeSubscription(id, { enabled });
-
-  return useQuery<ThreadWithIncludesResponse>({
+  return queryOptions<ThreadWithIncludesResponse>({
     queryKey: threadDetailBootstrapQueryKey(id),
     queryFn: async ({ signal }) => {
       const threadId = requireThreadId(id, "useThreadDetailBootstrap");
@@ -738,7 +753,7 @@ export function useThreadDetailBootstrap(
       });
       return thread;
     },
-    enabled,
+    enabled: (options?.enabled ?? true) && Boolean(id),
     staleTime: Infinity,
     gcTime: THREAD_OPEN_CACHE_GC_MS,
     retry: shouldRetryTransientReadQuery,
@@ -746,62 +761,30 @@ export function useThreadDetailBootstrap(
   });
 }
 
-export function useThreadQueuedMessages(
+export function useThreadDetailBootstrap(
   id: string,
-  options?: ThreadQueuedMessagesQueryOptions,
+  options?: ThreadDetailBootstrapQueryOptions,
 ) {
+  const queryClient = useQueryClient();
   const enabled = (options?.enabled ?? true) && Boolean(id);
   useThreadDetailRealtimeSubscription(id, { enabled });
-
-  return useQuery<ThreadQueuedMessageListResponse>({
-    queryKey: threadQueuedMessagesQueryKey(id),
-    queryFn: ({ signal }) =>
-      sdk.threads.queuedMessages.list({
-        threadId: requireThreadId(id, "useThreadQueuedMessages"),
-        signal,
-      }),
-    enabled,
-    refetchOnMount: options?.refetchOnMount ?? true,
-    refetchOnWindowFocus: true,
-    staleTime: options?.staleTime,
-  });
+  useThreadDefaultExecutionOptions(id, { enabled });
+  useThreadQueuedMessages(id, { enabled });
+  return useQuery(threadDetailBootstrapQueryOptions(queryClient, id, options));
 }
 
-export function useThreadPromptHistory(
-  id: string,
-  options?: ThreadPromptHistoryQueryOptions,
-) {
-  const enabled = (options?.enabled ?? true) && Boolean(id);
-  useThreadDetailRealtimeSubscription(id, { enabled });
-
-  return useQuery<PromptHistoryResponse>({
-    queryKey: threadPromptHistoryQueryKey(id),
-    queryFn: ({ signal }) =>
-      sdk.threads.promptHistory({
-        threadId: requireThreadId(id, "useThreadPromptHistory"),
-        signal,
-      }),
-    enabled,
-    refetchOnMount: options?.refetchOnMount ?? true,
-    staleTime: options?.staleTime ?? PROMPT_HISTORY_STALE_TIME_MS,
-  });
-}
-
-export function useThreadPendingInteractions(
+export function threadPendingInteractionsQueryOptions(
   id: string,
   options?: ThreadPendingInteractionsQueryOptions,
 ) {
-  const enabled = (options?.enabled ?? true) && Boolean(id);
-  useThreadDetailRealtimeSubscription(id, { enabled });
-
-  return useQuery<ThreadPendingInteractionsResponse>({
+  return queryOptions<ThreadPendingInteractionsResponse>({
     queryKey: threadPendingInteractionsQueryKey(id),
     queryFn: ({ signal }) =>
       sdk.threads.interactions.list({
         threadId: requireThreadId(id, "useThreadPendingInteractions"),
         signal,
       }),
-    enabled,
+    enabled: (options?.enabled ?? true) && Boolean(id),
     refetchOnMount:
       options?.refetchOnMount ??
       ((query) => (query.getObserversCount() === 1 ? "always" : true)),
@@ -812,137 +795,28 @@ export function useThreadPendingInteractions(
   });
 }
 
-export function useThreadStorageFiles(
+export function useThreadPendingInteractions(
   id: string,
-  listOptions: ThreadStorageFileListOptions,
-  options?: QueryOptions,
+  options?: ThreadPendingInteractionsQueryOptions,
 ) {
   const enabled = (options?.enabled ?? true) && Boolean(id);
   useThreadDetailRealtimeSubscription(id, { enabled });
-
-  return useQuery<ThreadStorageFileListResponse>({
-    queryKey: threadStorageFilesQueryKey(id, listOptions),
-    queryFn: ({ signal }) => {
-      const query = listOptions.query?.trim() ?? "";
-      return sdk.threads.storageFiles({
-        limit: String(listOptions.limit),
-        ...(query.length > 0 ? { query } : {}),
-        threadId: requireThreadId(id, "useThreadStorageFiles"),
-        signal,
-      });
-    },
-    enabled,
-    ...REALTIME_OWNED_MOUNT_BASELINE_QUERY_POLICY,
-  });
-}
-
-export function useThreadStorageLocation(id: string, options?: QueryOptions) {
-  const enabled = (options?.enabled ?? true) && Boolean(id);
-  useThreadDetailRealtimeSubscription(id, { enabled });
-
-  return useQuery<ThreadStorageLocationResponse>({
-    queryKey: threadStorageLocationQueryKey(id),
-    queryFn: ({ signal }) =>
-      sdk.threads.storageLocation({
-        threadId: requireThreadId(id, "useThreadStorageLocation"),
-        signal,
-      }),
-    enabled,
-    ...REALTIME_OWNED_MOUNT_BASELINE_QUERY_POLICY,
-  });
-}
-
-export function useThreadStoragePaths(
-  id: string,
-  listOptions: PathListOptions,
-  options?: QueryOptions,
-) {
-  const enabled = (options?.enabled ?? true) && Boolean(id);
-  useThreadDetailRealtimeSubscription(id, { enabled });
-
-  return useQuery<ThreadStoragePathListResponse>({
-    queryKey: threadStoragePathsQueryKey(id, listOptions),
-    queryFn: ({ signal }) => {
-      const query = listOptions.query?.trim() ?? "";
-      return sdk.threads.storagePaths({
-        includeDirectories: listOptions.includeDirectories ? "true" : "false",
-        includeFiles: listOptions.includeFiles ? "true" : "false",
-        limit: String(listOptions.limit),
-        ...(query.length > 0 ? { query } : {}),
-        threadId: requireThreadId(id, "useThreadStoragePaths"),
-        signal,
-      });
-    },
-    enabled,
-    ...REALTIME_OWNED_MOUNT_BASELINE_QUERY_POLICY,
-    placeholderData: (previousData) => previousData,
-  });
-}
-
-export function useThreadStorageFilePreview(
-  id: string,
-  path: string | null,
-  options?: QueryOptions,
-) {
-  const enabled = (options?.enabled ?? true) && Boolean(id) && Boolean(path);
-  useThreadDetailRealtimeSubscription(id, { enabled });
-
-  return useQuery<FilePreview>({
-    queryKey: threadStorageFilePreviewQueryKey(id, path),
-    queryFn: ({ signal }) =>
-      api.getThreadStorageFilePreview(
-        requireThreadId(id, "useThreadStorageFilePreview"),
-        path ?? "",
-        signal,
-      ),
-    enabled,
-    ...REALTIME_OWNED_MOUNT_BASELINE_QUERY_POLICY,
-    ...HEAVY_PAYLOAD_QUERY_POLICY,
-  });
-}
-
-export function useThreadHostFilePreview(
-  id: string,
-  environmentId: string | null | undefined,
-  path: string | null,
-  options?: QueryOptions,
-) {
-  const enabled =
-    (options?.enabled ?? true) &&
-    Boolean(id) &&
-    Boolean(environmentId) &&
-    Boolean(path);
-  useThreadDetailRealtimeSubscription(id, { enabled });
-
-  return useQuery<FilePreview>({
-    queryKey: threadHostFilePreviewQueryKey(id, environmentId, path),
-    queryFn: ({ signal }) =>
-      api.getThreadHostFilePreview(
-        requireThreadId(id, "useThreadHostFilePreview"),
-        path ?? "",
-        signal,
-      ),
-    enabled,
-    ...RESUME_REFETCH_QUERY_POLICY,
-    ...HEAVY_PAYLOAD_QUERY_POLICY,
-  });
+  return useQuery(threadPendingInteractionsQueryOptions(id, options));
 }
 
 async function mergeThreadTimelineDelta(
   previous: ThreadTimelineResponse | undefined,
-  response: ThreadTimelineResponse,
+  response: ThreadTimelineReadResponse,
   fetchFull: () => Promise<ThreadTimelineResponse>,
 ): Promise<ThreadTimelineResponse> {
-  if (response.delta === undefined) {
+  if (!isThreadTimelineDelta(response)) {
     return response;
   }
-  const merged = previous
-    ? applyTimelineDelta(previous.rows, response.delta)
-    : null;
-  if (merged !== null) {
-    return { ...response, rows: merged, delta: undefined };
-  }
-  return fetchFull();
+  const merged =
+    previous === undefined
+      ? null
+      : applyThreadTimelineDelta(previous, response);
+  return merged ?? fetchFull();
 }
 
 interface FetchThreadTimelineArgs {
@@ -951,15 +825,7 @@ interface FetchThreadTimelineArgs {
   threadId: string;
 }
 
-export const COMPACT_THREAD_TIMELINE_SEGMENT_LIMIT = 8;
-
-function resolveThreadTimelineSegmentLimit(): number | undefined {
-  return getMediaQuerySnapshot(COMPACT_VIEWPORT_QUERY)
-    ? COMPACT_THREAD_TIMELINE_SEGMENT_LIMIT
-    : undefined;
-}
-
-async function fetchThreadTimeline({
+export async function fetchThreadTimeline({
   queryClient,
   signal,
   threadId,
@@ -967,132 +833,34 @@ async function fetchThreadTimeline({
   const queryKey = threadTimelineQueryKey(threadId);
   const previous = queryClient.getQueryData<ThreadTimelineResponse>(queryKey);
   const segmentLimit = resolveThreadTimelineSegmentLimit();
-  const pageArgs =
-    segmentLimit === undefined ? {} : { segmentLimit: String(segmentLimit) };
+  const pageArgs = {
+    deferContent: "true" as const,
+    ...(segmentLimit === undefined
+      ? {}
+      : { segmentLimit: String(segmentLimit) }),
+  };
   const response = await sdk.threads.timeline({
     threadId,
     signal,
     ...pageArgs,
-    ...(previous?.maxSeq !== undefined
-      ? { afterSequence: String(previous.maxSeq) }
-      : {}),
+    ...(previous === undefined ? {} : { afterTag: previous.tag }),
   });
-  const timeline = await mergeThreadTimelineDelta(previous, response, () =>
+  const merged = await mergeThreadTimelineDelta(previous, response, () =>
     sdk.threads.timeline({ threadId, signal, ...pageArgs }),
   );
+  const pushed = isCachedThreadTimelinePushEnabled(queryClient)
+    ? queryClient.getQueryData<ThreadTimelineResponse>(queryKey)
+    : undefined;
+  const timeline =
+    pushed !== undefined && pushed.maxSeq > merged.maxSeq ? pushed : merged;
   clearThreadTimelineUnseenEvents(queryClient, threadId, timeline.maxSeq);
+  syncThreadTimelineSubscriptionTag(queryClient, threadId, timeline.tag);
+  markStreamTrace("bb:timeline-applied", {
+    threadId,
+    maxSeq: timeline.maxSeq,
+    source: isThreadTimelineDelta(response) ? "fetch-delta" : "fetch",
+  });
   return timeline;
-}
-
-export function useThreadTimeline(
-  id: string,
-  options?: ThreadTimelineQueryOptions,
-) {
-  const queryClient = useQueryClient();
-  const enabled = (options?.enabled ?? true) && Boolean(id);
-  useThreadDetailRealtimeSubscription(id, { enabled });
-  useEffect(() => {
-    if (enabled) {
-      touchThreadOpenCache(queryClient, id);
-    }
-  }, [enabled, id, queryClient]);
-
-  return useQuery<ThreadTimelineResponse>({
-    queryKey: threadTimelineQueryKey(id),
-    queryFn: async ({ signal }) => {
-      const threadId = requireThreadId(id, "useThreadTimeline");
-      return fetchThreadTimeline({
-        queryClient,
-        signal,
-        threadId,
-      });
-    },
-    enabled,
-    gcTime: THREAD_OPEN_CACHE_GC_MS,
-    ...(options?.notifyOnChangeProps === undefined
-      ? {}
-      : { notifyOnChangeProps: options.notifyOnChangeProps }),
-    refetchOnMount: options?.refetchOnMount ?? true,
-    ...(options?.staleTime === undefined
-      ? {}
-      : { staleTime: options.staleTime }),
-    retry: shouldRetryTransientReadQuery,
-    retryDelay: TRANSIENT_READ_RETRY_DELAY_MS,
-    placeholderData: (previousData, previousQuery) =>
-      resolveThreadTimelinePlaceholder(
-        previousData,
-        previousQuery?.queryKey,
-        id,
-      ),
-  });
-}
-
-export function useThreadConversationOutline(
-  id: string,
-  options?: ThreadConversationOutlineQueryOptions,
-) {
-  const enabled = (options?.enabled ?? true) && Boolean(id);
-  useThreadDetailRealtimeSubscription(id, { enabled });
-
-  return useQuery<ThreadConversationOutlineResponse>({
-    queryKey: threadConversationOutlineQueryKey(id),
-    queryFn: async ({ signal }) => {
-      const threadId = requireThreadId(id, "useThreadConversationOutline");
-      return sdk.threads.conversationOutline({ threadId, signal });
-    },
-    enabled,
-    refetchOnMount: options?.refetchOnMount ?? true,
-    ...(options?.staleTime === undefined
-      ? {}
-      : { staleTime: options.staleTime }),
-  });
-}
-
-export function useThreadTimelineTurnSummaryDetails(
-  identity: ThreadTimelineTurnSummaryDetailsQueryIdentity,
-  options?: ThreadTimelineTurnSummaryDetailsQueryOptions,
-) {
-  return useQuery<TimelineTurnSummaryDetailsResponse>({
-    queryKey: threadTimelineTurnSummaryDetailsQueryKey(identity),
-    queryFn: async ({ signal }) => {
-      const input = {
-        threadId: requireThreadId(
-          identity.threadId,
-          "useThreadTimelineTurnSummaryDetails",
-        ),
-        sourceSeqEnd: String(identity.sourceSeqEnd),
-        sourceSeqStart: String(identity.sourceSeqStart),
-        turnId: identity.turnId,
-        signal,
-      };
-      const response = await sdk.threads.timelineTurnSummaryDetails(input);
-      let rows = response.rows;
-      let cursor = response.olderCursor;
-      while (cursor) {
-        const older = await sdk.threads.timelineTurnSummaryDetails({
-          ...input,
-          beforeCursor: cursor,
-        });
-        rows = prependOlderTimelineRows({
-          olderRows: older.rows,
-          loadedRows: rows,
-        });
-        cursor = older.olderCursor;
-      }
-      return { ...response, rows, olderCursor: null };
-    },
-    enabled:
-      (options?.enabled ?? true) &&
-      Boolean(identity.threadId) &&
-      Boolean(identity.turnId),
-    meta: {
-      errorMessage: "Failed to load turn summary details.",
-      showErrorToast: false,
-    },
-    refetchOnMount: options?.refetchOnMount ?? true,
-    staleTime: options?.staleTime ?? Infinity,
-    ...HEAVY_PAYLOAD_QUERY_POLICY,
-  });
 }
 
 export function useThreadSpendSummary(threadId: string) {
@@ -1110,18 +878,17 @@ export function useThreadSpendSummary(threadId: string) {
   });
 }
 
-export function getLatestPendingInteraction(
-  interactions: readonly PendingInteraction[] | undefined,
-): PendingInteraction | null {
-  if (!interactions || interactions.length === 0) {
-    return null;
-  }
+const EMPTY_PENDING_INTERACTIONS: readonly PendingInteraction[] = [];
 
-  const [firstInteraction, ...restInteractions] = interactions;
-  return restInteractions.reduce<PendingInteraction>(
-    (latest, interaction) =>
-      interaction.createdAt > latest.createdAt ? interaction : latest,
-    firstInteraction,
+export function orderPendingInteractions(
+  interactions: readonly PendingInteraction[] | undefined,
+): readonly PendingInteraction[] {
+  if (!interactions || interactions.length === 0) {
+    return EMPTY_PENDING_INTERACTIONS;
+  }
+  return [...interactions].sort(
+    (left, right) =>
+      left.createdAt - right.createdAt || left.id.localeCompare(right.id),
   );
 }
 
@@ -1129,5 +896,7 @@ export function isPendingInteractionStateUnknown(
   interactions: readonly PendingInteraction[] | undefined,
   isFetching: boolean,
 ): boolean {
-  return getLatestPendingInteraction(interactions) === null && isFetching;
+  return (
+    (interactions === undefined || interactions.length === 0) && isFetching
+  );
 }

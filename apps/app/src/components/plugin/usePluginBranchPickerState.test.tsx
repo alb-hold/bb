@@ -6,21 +6,15 @@ import { readProjectBranchOptions } from "@/lib/project-branch-options";
 import { sdk } from "@/lib/sdk";
 import { createQueryClientTestHarness } from "@/test/queryClientTestHarness";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { usePluginBranches } from "./usePluginBranchPickerState";
+import {
+  usePluginBranches,
+  usePluginCheckoutState,
+} from "./usePluginBranchPickerState";
+
+const mocks = vi.hoisted(() => ({ navigationData: null as unknown }));
 
 vi.mock("@/hooks/queries/sidebar-navigation-query", () => ({
-  useSidebarNavigation: () => ({
-    data: {
-      projects: [
-        {
-          id: "project-1",
-          sources: [
-            { type: "local_path", isDefault: true, hostId: "source-host" },
-          ],
-        },
-      ],
-    },
-  }),
+  useSidebarNavigation: () => ({ data: mocks.navigationData }),
 }));
 
 vi.mock("@/lib/sdk", () => ({
@@ -55,16 +49,43 @@ describe("usePluginBranches", () => {
   afterEach(() => {
     cleanup();
     vi.clearAllMocks();
+    mocks.navigationData = null;
   });
 
-  it("uses the project source for branch suggestions before a host exists", async () => {
+  it("resolves checkout state from the default project source before a host is selected", async () => {
     const { wrapper } = createQueryClientTestHarness();
-    vi.mocked(readProjectBranchOptions).mockResolvedValue(BRANCHES);
+    mocks.navigationData = {
+      projects: [
+        {
+          id: "project-1",
+          sources: [
+            {
+              id: "source-1",
+              projectId: "project-1",
+              type: "local_path",
+              hostId: "source-host",
+              path: "/repo",
+              isDefault: true,
+              createdAt: 0,
+              updatedAt: 0,
+            },
+          ],
+        },
+      ],
+    };
+    vi.mocked(readProjectBranchOptions).mockResolvedValueOnce(BRANCHES);
+
     const { result } = renderHook(
-      () => usePluginBranches({ hostId: null, projectId: "project-1" }),
+      () => usePluginCheckoutState({ hostId: null, projectId: "project-1" }),
       { wrapper },
     );
-    await waitFor(() => expect(result.current.branches).toEqual(["release"]));
+
+    await waitFor(() => {
+      expect(result.current).toMatchObject({
+        currentBranch: "main",
+        isGit: true,
+      });
+    });
     expect(readProjectBranchOptions).toHaveBeenCalledWith(
       expect.objectContaining({
         hostId: "source-host",

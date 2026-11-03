@@ -9,6 +9,10 @@ import {
 } from "./areas/environments.js";
 import { createFilesArea, type FilesArea } from "./areas/files.js";
 import type { GuideArea } from "./areas/guide.js";
+import {
+  createDeviceHandoffArea,
+  type DeviceHandoffArea,
+} from "./areas/device-handoff.js";
 import { createHostsArea, type HostsArea } from "./areas/hosts.js";
 import {
   createServerArea,
@@ -26,6 +30,14 @@ import type { BbRealtime } from "./realtime-types.js";
 import { createStatusArea, type StatusArea } from "./areas/status.js";
 import { createSkillsArea, type SkillsArea } from "./areas/skills.js";
 import { createSpendArea, type SpendArea } from "./areas/spend.js";
+import {
+  createWritingAssistanceArea,
+  type WritingAssistanceArea,
+} from "./areas/writing-assistance.js";
+import {
+  createNativeTerminalsArea,
+  type NativeTerminalsArea,
+} from "./areas/native-terminals.js";
 import { createThemeArea, type ThemeArea } from "./areas/theme.js";
 import { createSystemArea, type SystemArea } from "./areas/system.js";
 import { createTerminalsArea, type TerminalsArea } from "./areas/terminals.js";
@@ -48,6 +60,7 @@ export interface CreateBbSdkWithGuideArgs extends CreateBbSdkArgs {
 }
 
 export interface BbSdkAreas extends BbRealtime {
+  device: DeviceHandoffArea;
   experimental_desktopBrowsers: ExperimentalDesktopBrowsersArea;
   experimental_promptHistory: ExperimentalPromptHistoryArea;
   experimental_server: ExperimentalServerArea;
@@ -55,10 +68,12 @@ export interface BbSdkAreas extends BbRealtime {
   files: FilesArea;
   hosts: HostsArea;
   projects: ProjectsArea;
+  nativeTerminals: NativeTerminalsArea;
   plugins: PluginsArea;
   providers: ProvidersArea;
   skills: SkillsArea;
   spend: SpendArea;
+  writingAssistance: WritingAssistanceArea;
   status: StatusArea;
   system: SystemArea;
   terminals: TerminalsArea;
@@ -81,6 +96,7 @@ export function createBbSdk(
     transport: args.transport,
   });
   const areas: BbSdkAreas = {
+    device: createDeviceHandoffArea(sdkContext),
     experimental_desktopBrowsers: createDesktopBrowsersArea(sdkContext),
     experimental_promptHistory: createPromptHistoryArea(sdkContext),
     experimental_server: createServerArea(sdkContext),
@@ -91,10 +107,12 @@ export function createBbSdk(
       return realtime.subscribe(args);
     },
     projects: createProjectsArea(sdkContext),
+    nativeTerminals: createNativeTerminalsArea(sdkContext),
     plugins: createPluginsArea(sdkContext),
     providers: createProvidersArea(sdkContext),
     skills: createSkillsArea(sdkContext),
     spend: createSpendArea(sdkContext),
+    writingAssistance: createWritingAssistanceArea(sdkContext),
     status: createStatusArea(sdkContext),
     system: createSystemArea(sdkContext),
     terminals: createTerminalsArea(sdkContext),

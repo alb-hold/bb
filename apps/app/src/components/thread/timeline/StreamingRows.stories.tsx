@@ -48,6 +48,7 @@ function PinnedTimelineStage({
             key={`cycle-${cycle}`}
             {...baseProps}
             timelineRows={rows.slice()}
+            threadIsActive={false}
           />
           <HeightTransition visible={showIndicator}>
             {indicator}

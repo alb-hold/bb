@@ -5,7 +5,10 @@ import type {
   SlowDbQueryLogger,
 } from "@bb/db";
 import type { Logger } from "@bb/logger";
-import { getCurrentEventLoopWorkLabel } from "./services/system/event-loop-work.js";
+import {
+  getCurrentEventLoopWorkLabel,
+  getCurrentThreadListSlowQueryFields,
+} from "./services/system/event-loop-work.js";
 import {
   exportLegacyAutomationsForPluginImport,
   hasLegacyAutomationsToExport,
@@ -26,9 +29,24 @@ export function initDb(
   databasePath: string,
   options: InitDbOptions = {},
 ): DbConnection {
+  const logger = options.logger;
+  const slowQueryLogger: SlowDbQueryLogger | undefined =
+    logger === undefined
+      ? undefined
+      : {
+          info(fields, message) {
+            const attribution = getCurrentThreadListSlowQueryFields();
+            logger.info(
+              attribution === undefined
+                ? fields
+                : { ...fields, ...attribution },
+              message,
+            );
+          },
+        };
   const db = createConnection(databasePath, {
     databaseWriteBytesLogger: options.logger,
-    slowQueryLogger: options.logger,
+    slowQueryLogger,
     slowQueryThresholdMs: options.slowQueryThresholdMs,
     slowQueryWorkLabel: getCurrentEventLoopWorkLabel,
     slowQueryDiagnosticsEnabled: options.slowQueryDiagnosticsEnabled,

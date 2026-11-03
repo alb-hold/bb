@@ -1,6 +1,8 @@
+import type { ThreadEvent } from "@bb/domain";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import {
+  pathExists,
   sanitizeInheritedChildProcessEnv,
   spawnManagedProcess,
   type ManagedProcess,
@@ -32,6 +34,15 @@ import type {
   AgentRuntimeSkillRoot,
 } from "./types.js";
 
+export class ProviderWorkspaceMissingError extends Error {
+  readonly code = "path_not_found";
+
+  constructor(readonly workspacePath: string) {
+    super(`Unmanaged workspace path does not exist: ${workspacePath}`);
+    this.name = "ProviderWorkspaceMissingError";
+  }
+}
+
 export interface RuntimeProviderProcess {
   adapter: BridgeProtocolAdapter;
   child: BridgeWorkerProcess;
@@ -53,6 +64,12 @@ interface RuntimeProviderProcessLineArgs {
   wseq: number | null;
 }
 
+interface RuntimeProviderDeferredEventsArgs {
+  events: ThreadEvent[];
+  providerProcess: RuntimeProviderProcess;
+  sourceThreadId: string;
+}
+
 interface RuntimeProviderProcessManagerArgs {
   additionalWorkspaceWriteRoots: readonly string[];
   createAdapter?: (
@@ -72,6 +89,7 @@ interface RuntimeProviderProcessManagerArgs {
   ) => RuntimeProviderIdentityState;
   env: Record<string, string> | undefined;
   getNextRequestId: () => number;
+  handleDeferredEvents: (args: RuntimeProviderDeferredEventsArgs) => void;
   handleStdoutLine: (args: RuntimeProviderProcessLineArgs) => void;
   onProcessExit: AgentRuntimeOptions["onProcessExit"];
   onProviderThreadDetached: (
@@ -125,7 +143,6 @@ interface AdoptProviderProcessArgs {
   bridgeLaunch: AgentRuntimeBridgeLaunch;
   capabilities: BridgeCapabilities;
   entry: BridgeWorkerRegistryEntry;
-  processKey: string;
   providerId: string;
   workerDir: string;
 }
@@ -156,17 +173,35 @@ class ProviderProcessExitedError extends Error {
   constructor(args: ProviderProcessExitedErrorArgs) {
     const stderr = formatProviderStderr(args.stderrTail);
     super(
-      `Provider "${args.providerId}" exited unexpectedly (${formatProviderProcessExitStatus(args.status)})` +
-        (stderr ? `\nstderr: ${stderr}` : ""),
+      describeProviderProcessExit(args) + (stderr ? `\nstderr: ${stderr}` : ""),
     );
     this.name = "ProviderProcessExitedError";
   }
+}
+
+function describeProviderProcessExit(
+  args: ProviderProcessExitedErrorArgs,
+): string {
+  if (args.status.code === null && args.status.signal === null) {
+    return `Provider "${args.providerId}" stopped unexpectedly; its exit status could not be read`;
+  }
+  return `Provider "${args.providerId}" exited unexpectedly (${formatProviderProcessExitStatus(args.status)})`;
 }
 
 export function isProviderProcessExitedError(
   error: unknown,
 ): error is ProviderProcessExitedError {
   return error instanceof ProviderProcessExitedError;
+}
+
+const ADOPTED_PROCESS_KEY_MARKER = "#adopted:";
+
+export function adoptedBridgeWorkerProcessKey(
+  entry: Pick<BridgeWorkerRegistryEntry, "id" | "processKey">,
+): string {
+  return entry.processKey.includes(ADOPTED_PROCESS_KEY_MARKER)
+    ? entry.processKey
+    : `${entry.processKey}${ADOPTED_PROCESS_KEY_MARKER}${entry.id}`;
 }
 
 export class RuntimeProviderProcessManager {
@@ -210,6 +245,9 @@ export class RuntimeProviderProcessManager {
     }
 
     const startPromise = (async () => {
+      if (!(await pathExists(this.args.workspacePath))) {
+        throw new ProviderWorkspaceMissingError(this.args.workspacePath);
+      }
       const adapter = this.getAdapter(args.providerId, args.bridgeLaunch);
       const providerProcess = this.spawnProvider({
         adapter,
@@ -495,16 +533,16 @@ export class RuntimeProviderProcessManager {
   adoptProviderProcess(args: AdoptProviderProcessArgs): RuntimeProviderProcess {
     const adapter = this.getAdapter(args.providerId, args.bridgeLaunch);
     adapter.adoptHandshake(args.capabilities);
-    this.currentProcessKeyByProviderId.set(args.providerId, args.processKey);
+    const processKey = adoptedBridgeWorkerProcessKey(args.entry);
     return this.attachProviderProcess({
       adapter,
       child: new SocketBridgeWorker({
         kind: "adopt",
-        entry: args.entry,
+        entry: { ...args.entry, processKey },
         workerDir: args.workerDir,
         connectTimeoutMs: BRIDGE_WORKER_CONNECT_TIMEOUT_MS,
       }),
-      processKey: args.processKey,
+      processKey,
       providerId: args.providerId,
     });
   }
@@ -537,6 +575,20 @@ export class RuntimeProviderProcessManager {
       stderrLineTail: Buffer.alloc(0),
       stderrTail: Buffer.alloc(0),
     };
+
+    args.adapter.onDeferredEvents((sourceThreadId, events) => {
+      if (
+        this.shuttingDown ||
+        !this.isCurrentProviderProcess({ providerProcess })
+      ) {
+        return;
+      }
+      this.args.handleDeferredEvents({
+        events,
+        providerProcess,
+        sourceThreadId,
+      });
+    });
 
     const handleLine = (line: string, wseq: number | null): void => {
       if (
@@ -789,6 +841,9 @@ export function hasChildProcessExited(child: BridgeWorkerProcess): boolean {
 function getChildProcessExitStatus(
   child: BridgeWorkerProcess,
 ): ProviderProcessExitStatus {
+  if (child instanceof SocketBridgeWorker && child.exitStatusUnreadable) {
+    return { code: null, signal: null };
+  }
   return { code: child.exitCode, signal: child.signalCode };
 }
 

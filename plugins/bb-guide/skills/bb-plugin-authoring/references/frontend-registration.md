@@ -55,33 +55,35 @@ export default definePluginApp((app) => {
     icon: "Columns",
     path: "board",
     component: Board,
-    fixedTabs: [
-      {
-        panelId: "board",
-        id: "navigation",
-        title: "Navigation",
-        icon: "PanelRight",
-        component: BoardNavigation,
-        layout: "flush",
-      },
-    ],
-    experimental_sidebarAccessory: OpenIssueCount,
+    experimental_useBadge: useOpenIssueBadge,
   });
-  app.slots.threadPanelAction({
+  app.slots.experimental_tab({
+    context: { kind: "nav-panel", panelId: "board" },
+    availability: "fixed",
+    id: "navigation",
+    title: "Navigation",
+    icon: "PanelRight",
+    component: BoardNavigation,
+    layout: "flush",
+  });
+  app.slots.experimental_tab({
+    context: { kind: "thread" },
+    availability: "action",
+    icon: "FileText",
     id: "issue",
     title: "Open issue",
     component: IssuePanel,
-    run: async ({ threadId, openPanel }) => {
-      openPanel({ title: `Issue for ${threadId}` });
+    run: async ({ threadId, experimental_panel }) => {
+      experimental_panel.openTab({
+        tab: { id: "issue", context: { kind: "thread" }, availability: "action" },
+        title: `Issue for ${threadId}`,
+      });
     },
   });
   app.slots.experimental_newThreadPanelAction({
     id: "template",
     title: "Apply template",
     component: TemplatePanel,
-    run: ({ projectId, openPanel }) => {
-      openPanel({ title: `Template for ${projectId ?? "projectless"}` });
-    },
   });
   app.composer.customize({
     id: "prompt-tools",
@@ -123,45 +125,161 @@ export default definePluginApp((app) => {
     icon: "Smartphone",
     onActivate: ({ openPluginDetails }) => openPluginDetails(),
   });
-  app.slots.experimental_sidebarNavigation({
-    id: "compact",
-    title: "Compact navigation",
-    component: CompactSidebarNavigation,
-  });
   app.slots.messageDirective({ id: "inline-vis", component: InlineVis });
+  app.slots.experimental_codeFenceRenderer({
+    id: "ui-blocks",
+    languages: ["ui"],
+    component: UiBlock,
+  });
   app.slots.experimental_threadList({
     id: "inbox",
     title: "Inbox",
     description: "One flat list, newest thread on top.",
     component: InboxList,
   });
+  app.slots.experimental_sidebarNavigation({
+    id: "compact",
+    title: "Compact navigation",
+    placement: "list",
+    component: CompactSidebarNavigation,
+  });
 });
 ```
 
-### A control in the thread header
+### A button in the thread header
 
-`app.slots.experimental_threadHeaderAction` renders a component in the thread
-header's action row. Use it for live plugin state.
+A thread action with `placement: "header"` is a button in the open thread's
+header instead of a menu entry. It shows after the workspace's Open button
+with its `label` (several share one split button). On phones and in narrow
+split panes it folds into the header's thread menu, as a row at the top. It
+never appears in other menus, the quick-action picker, or
+`experimental_useThreadActions`. Its `useData` receives only the threads
+whose header is on screen. Return null from `item` whenever the button does
+not apply. Header buttons do not show `choices`. bb's Git plugin registers
+Commit this way.
 
 ```tsx
-app.slots.experimental_threadHeaderAction({
-  id: "subagents",
-  title: "Subagents",
-  component: ({ threadId, projectId, isCompactViewport }) => { ... },
+app.slots.experimental_threadAction({ id: "deploy", title: "Deploy", icon: "Rocket", group: "deploy", placement: "header",
+  useData: ({ threadIds }) => useDeployable(threadIds),
+  item: ({ thread, data }) => data.has(thread.id) ? { label: "Deploy", icon: "Rocket", run: () => openDeploy(thread.id) } : null });
+```
+
+`app.slots.experimental_threadHeaderAction` is retired: existing callers keep
+rendering and `bb plugin build` warns. Use a header thread action instead.
+
+### Rows and sections in the thread Info tab
+
+`app.slots.experimental_threadInfoRow` adds a row to the Info tab's details
+block; `app.slots.experimental_threadInfoSection` adds a section below it. bb's
+own rows and sections are registrations of the same `{ id, group, order?,
+component }` shape, drawn with the SDK's Info components (frontend-components.md).
+
+```tsx
+app.slots.experimental_threadInfoSection({ id: "automations", group: SECTION_GROUPS.related, order: 0, component: Automations });
+function Automations({ threadId }: ExperimentalThreadInfoProps) {
+  const items = useItems(threadId);
+  if (items.length === 0) return null;
+  return (
+    <InfoSection label="Automations" count={items.length}>
+      <InfoList items={items} getKey={(item) => item.id} limit={3}
+        renderItem={(item) => <InfoListRow leading={<Glyph />} name={item.name} onSelect={...} />} />
+    </InfoSection>
+  );
+}
+```
+
+Components receive `{ threadId, projectId, environment }` and mount once per
+visible thread; `environment` is `{ id }` taken from the thread, null only when
+the thread has no environment; read its state yourself. Return
+null to show nothing. A row renders `experimental_DetailRow`.
+Entries sort by `group`, then `order` within it (unset last), then registration
+order, bb's first on a tie, as thread actions do. Join one of bb's groups from
+`experimental_THREAD_INFO_ROW_GROUPS` or `experimental_THREAD_INFO_SECTION_GROUPS`
+(bb's entries use orders 10, 20, 30 within a group), or name your own group to
+sort it where its string falls. Inside a section slot `experimental_InfoSection` collapses and bb
+remembers it per registration. A crash removes only that row or section.
+
+### Context beside a thread's composer
+
+`app.slots.experimental_threadContextSegment({ id, title, group, order?, summary, action?, details?, useVisible? })`
+adds a segment to the context row above an open thread's composer; bb's parent
+thread and the Git plugin's changed files use it too. `group`/`order` sort as for Info rows; bb's
+groups are `experimental_THREAD_CONTEXT_SEGMENT_GROUPS`, and any other string
+sorts in place (GitHub PR Status uses `"2_pullRequest"`). Each component mounts
+in its own crash boundary: `summary` in the row, `action` at its end, `details`
+below it. Props carry `threadId`, `projectId`, `environment` (null without a
+usable environment), the visible `segments`
+as `{ key, pluginId }` in row order (`key` is `<pluginId>/<id>`; bb's own use
+`bb--core`), and `isExpanded`/`onToggle` (one segment is expanded at a time).
+`useVisible(input)` false leaves it out. A segment whose content is also a
+thread context card row or section hides itself while
+`experimental_useThreadContextKind()` is `card`; see
+frontend-thread-context-card.md.
+
+### An action in every thread menu
+
+`app.slots.experimental_threadAction` adds an entry to the thread header's
+actions menu, the sidebar row's menu, its right-click menu, the compact
+long-press drawer, and, when the user picks it in Customize actions, a
+sidebar row's quick-action buttons. bb's own actions are registrations of the
+same shape.
+
+`useData` is a hook the host runs once for the whole app, never per row: read
+your preferences or a realtime channel there. It receives `{ threadIds }`, the
+sorted ids of every thread on screen or in an open menu; for per-thread state,
+keep an id-keyed cache and fetch only the ids not in it, in one batch (for
+example `useSdk().threads.experimental_listPluginMetadata({ threadIds })`).
+`item` is pure: it gets `{ thread, data, sdk, navigate }` (your bound
+`useSdk()` and `useBbNavigate()`) and returns the action for that thread, or
+null to hide it. Menus and the quick-action picker sort registrations by
+their static `group`, a separator between groups, then by `order`. Join one
+of bb's groups through `experimental_THREAD_ACTION_GROUPS` (`open`, `state`,
+`organize`, `settings`, `lifecycle`) or name your own. Within a group, give an
+action with `choices` a higher `order` than plain actions so items that open a
+submenu sit last. `choices` renders as a submenu, a drawer step with Back, or
+a popover; the picked id reaches `run` as `value`. Set `detail` to the
+current value: it shows on a muted line under the label, except on rows with
+`choices`, where only tooltips and screen readers include it. Set
+`choices.hint` for a footnote below the choices.
+
+```tsx
+app.slots.experimental_threadAction({
+  id: "notifications",
+  title: "Notifications",
+  icon: "Notification",
+  group: experimental_THREAD_ACTION_GROUPS.state,
+  useData: ({ threadIds }) => useNotificationLevels(threadIds),
+  item: ({ thread, data, sdk }) => ({
+    label: "Notifications",
+    detail: data.get(thread.id) === "muted" ? "Muted" : "All activity",
+    icon: "Notification",
+    choices: {
+      items: [
+        {
+          id: "all",
+          label: "All activity",
+          selected: data.get(thread.id) === "all",
+        },
+        {
+          id: "muted",
+          label: "Muted",
+          selected: data.get(thread.id) === "muted",
+        },
+      ],
+    },
+    run: ({ value }) => saveLevel(sdk, thread.id, value),
+  }),
 });
 ```
 
-The row is a 48px chrome row with 28px controls. Render one inline control.
-Put taller content in a portalled popover. The host limits the layout box, but
-it does not clip painted overflow. `title`
-names the host's wrapper region — your icon-only button still needs its own
-accessible name. A split layout renders one header
-per pane, so your component mounts once per visible thread — keep per-thread
-state in the component, never in a module-level singleton.
-
-A common pairing with a replaced sidebar: hide child threads from the list and
-surface them here instead, filtering `experimental_useSidebarThreads()` by
-`parentThreadId === threadId`.
+A replacement thread list renders bb's menus with
+`experimental_ThreadActionsMenu` and `experimental_ThreadActionsContextMenu`,
+passing its own rename editor as `requestRename` and list-only entries as
+`inline` (`{ key, group, action }`). `trigger` is a function: spread the props
+and ref it receives onto your button, or the menu never opens. `experimental_useThreadActions(thread, { keys })` returns bound
+actions for quick-action buttons, and
+`experimental_useThreadActionRegistrations()` lists every action's static
+title and icon for a picker. Keys are `bb--core/<id>` and `<pluginId>/<id>`.
 
 ### A control in the Browser toolbar
 
@@ -206,124 +324,11 @@ this plugin and tab. `world: "main"` runs beside page scripts (for example to
 read framework state on DOM nodes) and binds `bb` to `null`. Anything installed
 is lost when the document navigates; check again when `url` changes.
 
-### Replacing the sidebar navigation
+### Sidebar navigation and header
 
-`app.slots.experimental_sidebarNavigation` replaces the navigation controls
-above the thread list. The component receives `isCompactViewport` and
-`experimental_Original`. BB keeps the drawer, thread list, footer, resize
-handle, and hidden-body shortcut policy. BB draws no divider below a replacement; draw your
-own if your layout wants one.
-
-Read the items with `experimental_useSidebarNavigation()`. It returns
-`{ items, activeItemId, isShortcutModifierHeld, actions }`; show item shortcut
-labels while `isShortcutModifierHeld` is true, as bb's rows do. `items` holds New thread, Search threads,
-Plugins, Skills, and plugin panels in the user's saved order, hidden ones
-included. Each item has an `id` (its arrangement key, such as
-`__bb__/new-thread` or `<pluginId>/<panelId>`), `label`, semantic `icon`, host
-`action`, `isDisabled`, `isVisible`, `isLoading`, the contributing `pluginId`
-(null for bb's items), shortcut metadata, and `experimental_Accessory`.
-
-Draw visible items in your row and hidden ones in an overflow menu, so they
-stay reachable. Render icons with `experimental_SidebarNavigationIcon` to
-match bb's artwork and plugin branding. Render `experimental_Accessory` when
-it is not null; the host wraps it in its crash boundary.
-
-```tsx
-function NavButton({ item }: { item: ExperimentalSidebarNavigationItem }) {
-  const { activeItemId, actions } = experimental_useSidebarNavigation();
-  const split = experimental_useSidebarNavigationSplit(item.id);
-  return (
-    <button
-      type="button"
-      aria-label={item.label}
-      aria-current={item.id === activeItemId ? "page" : undefined}
-      disabled={item.isDisabled || item.isLoading}
-      {...split.splitProps}
-      onClick={(event) =>
-        actions.activate(item.id, {
-          openInSplit: event.metaKey || event.ctrlKey,
-        })
-      }
-    >
-      <experimental_SidebarNavigationIcon icon={item.icon} />
-    </button>
-  );
-}
-```
-
-`actions` runs host behavior: `activate(id, { openInSplit })`,
-`setVisible(id, isVisible)`, `setOrder(ids)`, `openCustomize()`,
-`openDetails(id)`, and `disablePlugin(id)`. Visibility and order persist to
-the `sidebar.visiblePluginPanels` and `sidebar.pluginPanelOrder` settings, so
-they carry over when the user switches navigation. `openCustomize()` shows
-bb's customize editor in place of your component, which stays mounted.
-Actions called after your component unmounts do nothing. Search opens the
-host quick palette; there is no inline search field or query state.
-
-In tests, pass `renderSlot(..., { sidebarNavigation: { items, activeItemId } })`;
-actions and split drags are recorded in `inspection.sidebarNavigationCalls`.
-
-`experimental_useSidebarNavigationSplit(id, options?)` works like
-`experimental_useSidebarThreadSplit`: spread `splitProps` onto the item, gate
-any "Open in split" affordance on `isAvailable`, and draw `layout` as a
-mini-map if you want one. For a row inside a menu or popover, pass
-`{ activation: "distance", onDragStart: closeMenu }` so the drag engages
-after a short movement and the menu closes as it starts.
-
-bb ships its own rows as the bundled Navigation plugin, which uses only this
-API; read `plugins/navigation/app/Navigation.tsx` for a complete provider.
-Users pick one provider under Settings → Appearance → Navigation. The default,
-Automatic, uses the first installed navigation plugin other than the bundled
-Navigation (`navigation/navigation`), or Navigation when there is none. While
-plugins load, bb shows skeleton rows at the height your component last had
-(nothing if it rendered nothing). If the picked provider is disabled or
-removed, bb uses Navigation until the user picks again; if it crashes, a
-placeholder offers Reload. `experimental_Original` renders the bundled Navigation plugin,
-or nothing while it is disabled; it is deprecated and scheduled for removal.
-
-### Controls beside the sidebar toggle
-
-`app.slots.experimental_sidebarHeader` renders a component between the
-sidebar toggle (and the macOS window controls) and bb's back and forward
-buttons. It is exclusive and opt-in: the user picks at most one under Settings
-→ Appearance → Header. Registration: `{ id, title, description?, component }`.
-The component receives `width` (px available, updated on resize),
-`controlSize` (bb's header button size, also `--bb-sidebar-control-size`;
-use `--bb-sidebar-control-icon-size` for glyphs), and `isCompactViewport`.
-Content is clipped to the row; on macOS empty space drags the window, while
-buttons, links, inputs, and `role`/`tabindex` elements do not. The header is
-hidden while bb's customize editor is open, and a crash removes it.
-
-To move navigation into the header, render `experimental_useSidebarNavigation()`
-items there and return null from your `experimental_sidebarNavigation`
-component while the header is mounted. A module-level flag is enough, and it
-clears when the header is unpicked or crashes, so the row comes back:
-
-```tsx
-let inHeader = false;
-const listeners = new Set<() => void>();
-const setInHeader = (next: boolean) => {
-  inHeader = next;
-  listeners.forEach((l) => l());
-};
-const subscribe = (l: () => void) => (
-  listeners.add(l),
-  () => void listeners.delete(l)
-);
-
-function HeaderIcons({ width, controlSize }: ExperimentalSidebarHeaderProps) {
-  useLayoutEffect(() => (setInHeader(true), () => setInHeader(false)), []);
-  return <IconRow capacity={Math.floor((width + 4) / (controlSize + 4))} />;
-}
-function Navigation() {
-  return useSyncExternalStore(subscribe, () => inHeader) ? null : <IconRow />;
-}
-```
-
-To turn both on when your plugin is installed, set `sidebar.headerProvider`
-and `sidebar.navigationProvider` to `<plugin-id>/<slot-id>` from
-`bb.onInstall` (see backend-ui-lifecycle.md); later choices in
-Settings → Appearance stick. Users do the same with `bb settings ui set`.
+Drawing the sidebar navigation (`experimental_sidebarNavigation`) and its
+controls beside the sidebar toggle (`headerComponent`) are covered in
+frontend-sidebar-navigation.md.
 
 ### Replacing the sidebar thread list
 
@@ -336,7 +341,7 @@ Sidebar**. The choice is per client. bb ships its own list as the bundled
 `thread-list` plugin; there is no separate built-in list.
 
 Your component gets the scrolling list and nothing else. The New-thread button,
-the search action, the plugin nav rows, and the footer stay host-rendered —
+the navigation, and the footer stay host-rendered —
 other plugins live in two of those, so a replaced list must not remove them.
 Put your own controls at the top of your scroll area instead.
 
@@ -360,12 +365,16 @@ interface PluginThreadListProps {
 }
 ```
 
-**Reading and acting on threads.** Two hooks back a replaced list:
+**Reading and acting on threads.** One hook reads the list; writes go through
+the plugin SDK and navigation:
 
 ```tsx
 const { status, threads, projects, sections } =
   experimental_useSidebarThreads();
-const actions = experimental_useSidebarThreadActions();
+const navigate = useBbNavigate();
+navigate.toThread(thread.id, { split: true });
+navigate.toCompose({ projectId, placement: { sectionId, pinned: false } });
+const archiveEnvironmentThreads = experimental_useArchiveEnvironmentThreads();
 
 // sections: PluginSidebarSection[] — { id, name, createdAt, updatedAt } in
 // server order. A thread's `sectionId` names one of these or is null for the
@@ -378,7 +387,8 @@ await sdk.threads.update({ id: thread.id, sectionId });
 
 // threads: PluginSidebarThread[] — id, projectId, href (put it on the row's
 // anchor; the host routes clicks in place), title, titleFallback,
-// displayTitle, parentThreadId, lifecycleOwnerThreadId, sourceThreadId, sectionId,
+// displayTitle, parentThreadId, parentNotifications ("auto" | "stuck" | "off"),
+// lifecycleOwnerThreadId, sourceThreadId, sectionId,
 // originKind, originPluginId, providerId, status (execution status; busy
 // threads sort first in bb's list), runtimeStatus (status refined by host
 // readiness), queuedWork ("none" | "waiting" | "failed"), hasPendingInteraction,
@@ -419,30 +429,31 @@ const splitLayout = useSidebarSplitLayout(); // { panes: [{ paneId, rect, thread
 // <experimental_ProviderIcon providerKind="environment" provider={entry} />:
 const { providers: environmentProviders } = useEnvironmentProviders();
 
-// Pull requests are per row and opt-in — a lookup hits the git host, so it is
-// deliberately NOT on the thread payload every sidebar loads:
-const { pullRequest } = experimental_useSidebarThreadPullRequest(thread.id);
-// → { isLoading, pullRequest: { number, title, url, state, attention } | null }
+// Pull requests: read the GitHub PR Status plugin by thread.environment?.id
+// (references/frontend-pull-requests.md).
 
-actions.open(id, { split: true }); // bb's split placement rules
-actions.openNewThread({ projectId, focusPrompt: true });
-actions.openNewThread({ projectId, sectionId }); // file it under a section
-actions.openNewThread({ projectId, environmentId }); // reuse an environment
-actions.setPinned(id, true);
-actions.setRead(id, false);
-actions.rename(id, "New title"); // silent; for inline editing
-actions.archive(id); // archives immediately, or confirms first if there are children
-actions.requestDelete(id); // opens bb's delete confirmation
+const navigate = useBbNavigate();
+const sdk = useSdk();
+navigate.toThread(id, { split: true }); // bb's split placement rules
+navigate.toCompose({ projectId, focusPrompt: true });
+navigate.toCompose({ projectId, placement: { sectionId, pinned: false } }); // file it under a section
+navigate.toCompose({ projectId, environmentId }); // reuse an environment
+await sdk.threads.pin({ threadId: id }); // optimistic in bb's surfaces
+await sdk.threads.markUnread({ threadId: id });
+await sdk.threads.update({ threadId: id, title: "New title" }); // silent; for inline editing
 ```
 
-Cascading actions route through the host's own flow. Archiving a thread with
-children opens bb's confirmation, which counts them; archiving a thread without
-children takes effect immediately. Deletion opens bb's confirmation.
+Archive and delete go through bb's thread menu (below), which owns the
+confirmations: archiving a thread with children asks first and counts them,
+and deletion always asks.
 
 Unit-test a list with `renderSlot(...)` from `@get-bb/plugin-sdk/testing/app`:
 seed rows with the `sidebarThreads` option (plus `sidebarDraftThreadIds`,
 `sidebarRowStatuses`, and `sidebarShortcuts` for the per-row hooks) and assert against
-`inspection.sidebarActionCalls`.
+`inspection.navigateCalls` and `inspection.sdkCalls`.
+
+**Pull requests on a row.** Read them from the bundled GitHub PR Status
+plugin; see references/frontend-pull-requests.md.
 
 **Splits.** Rows can drag out to the split area:
 
@@ -460,9 +471,19 @@ The host owns the gesture rules, including the one that matters if your list
 has its own drag-to-reorder: a split drag engages only once the pointer leaves
 the sidebar.
 
-**Your row, your menu.** This API ships no components. Build your own context
-menu from `experimental_useSidebarThreadActions` — it exposes everything bb's
-own menu does, including `requestDelete`, which opens bb's confirmation.
+**bb's menu on your row.** Render `experimental_ThreadActionsMenu` and
+`experimental_ThreadActionsContextMenu` around your row for bb's own thread
+menu (archive and delete confirmation included) plus every plugin's thread
+actions; see "An action in every thread menu".
+For multi-row selections (`experimental_bulkItem`), see frontend-sidebar-navigation.md.
+`experimental_useArchiveEnvironmentThreads()` archives a whole environment
+group with bb's pane cleanup and Undo toast.
+
+**bb's status glyph on your row.** Render `experimental_ThreadStatusGlyph`
+with the row's `indicator` (start from the thread's own, then fold in what
+your row knows, such as collapsed children or `useSidebarThreadDraft`) and
+`useSidebarThreadRowStatus(threadId)` as `rowStatus`; bb draws the same icon,
+color, and accessible label its own lists use.
 
 **Keyboard support is a DOM contract.** bb's thread shortcuts find rows by
 query selector, not by React state. Put both attributes on each row's anchor or
@@ -473,26 +494,7 @@ silently stop working:
 <a data-sidebar-thread-shortcut-target="" data-sidebar-thread-id={thread.id}>
 ```
 
-### The provider directory
+## Tab API migration
 
-`experimental_useProviders()` returns `{ status, providers }` — every
-registered agent provider in picker order, as the same `ProviderInfo` the
-host's composer reads (`id`, `pluginId`, `displayName`, `family`, `icon`,
-`logoUrl`, `available`, `capabilities`, `maintenance`, `extensionKinds`,
-`composerActions`, and the declared `strings`, `reasoningLevels`,
-`serviceTiers`). It reads the host's own cached roster, so
-it costs no extra request. Use it whenever a surface shows a thread's or
-automation's provider: never vendor provider names or copy in a plugin.
-
-```tsx
-const { providers } = experimental_useProviders();
-const name =
-  providers.find((provider) => provider.id === thread.providerId)
-    ?.displayName ?? thread.providerId;
-```
-
-`status` is `"loading"` until the roster arrives and `"error"` when the request
-failed; `providers` is empty in both cases, so fall back to the id. The
-backend counterpart is `bb.sdk.providers.list()`. Keep the hook in the plugin
-entry (`app.tsx`) and pass names down as props, so view components stay pure
-and testable outside the plugin runtime.
+See [the unified tab contract and migration examples](frontend-core-slots.md#tab-api-migration)
+for replacing legacy registrations while preserving published bundles and saved tabs.

@@ -1,5 +1,8 @@
 import { prepareCachedQuery } from "../connection.js";
-import { markThreadPruningPolicyWork } from "./thread-pruning-work.js";
+import {
+  markEveryThreadPruningPolicyWork,
+  markThreadPruningPolicyWork,
+} from "./thread-pruning-work.js";
 import { copyProjectAttachmentOwnership } from "./project-attachments.js";
 import {
   and,
@@ -25,12 +28,14 @@ import type {
   ThreadLifecycleEvent,
   ThreadLifecycleNoopReason,
   ThreadOriginKind,
+  ThreadParentNotifications,
   ThreadSearchSourceKind,
   ThreadStatus,
   ThreadVisibility,
 } from "@bb/domain";
 import {
   evaluateThreadLifecycleEvent,
+  effectiveDisplayStatus,
   threadSearchSourceKindSchema,
 } from "@bb/domain";
 import type { DbConnection, DbTransaction } from "../connection.js";
@@ -41,13 +46,16 @@ import {
   pendingInteractions,
   projects,
   terminalSessions,
+  forkNativeTerminalThreads,
   threadSearchSegments,
   threads,
 } from "../schema.js";
 import { createThreadId } from "../ids.js";
 import { NON_TERMINAL_SESSION_STATUSES } from "./terminal-sessions.js";
+import { bumpThreadEventOwnershipEpoch } from "./event-rewrite-generation.js";
 import { createOrderKeyBetween } from "./order-keys.js";
 import { insertThreadPluginMetadata } from "./thread-plugin-metadata.js";
+import type { ThreadListEnrichmentScope } from "../thread-list-enrichment-scope.js";
 
 type ThreadWriteConnection = DbConnection | DbTransaction;
 
@@ -277,6 +285,7 @@ export interface CreateThreadInput {
   pluginMetadata?: { pluginId: string; metadata: JsonObject } | null;
   startupContext?: string;
   visibility?: ThreadVisibility;
+  parentNotifications?: ThreadParentNotifications;
 }
 
 export class InvalidLifecycleOwnerError extends Error {
@@ -343,6 +352,7 @@ export function createThread(
           originKind,
           originPluginId: input.originPluginId ?? null,
           visibility,
+          parentNotifications: input.parentNotifications ?? "auto",
           lastReadAt: now,
           latestAttentionAt: now,
           createdAt: now,
@@ -444,6 +454,7 @@ export interface ListThreadsOptions {
   sourceThreadId?: string;
   originKind?: ThreadOriginKind;
   originPluginId?: string;
+  threadIds?: readonly string[];
   limit?: number;
   offset?: number;
   includeHidden?: boolean;
@@ -700,13 +711,19 @@ function statusTransitionNeedsAttention(args: StatusTransition): boolean {
   return args.currentStatus === "active" || args.currentStatus === "starting";
 }
 
-function buildListThreadsFilters(options: ListThreadsOptions) {
+function buildListThreadsFilters(
+  options: ListThreadsOptions,
+  threadIdsFilter = options.threadIds === undefined
+    ? undefined
+    : inArray(threads.id, [...options.threadIds]),
+) {
   return [
     options.projectId ? eq(threads.projectId, options.projectId) : undefined,
     options.environmentId
       ? eq(threads.environmentId, options.environmentId)
       : undefined,
     options.hostId ? eq(environments.hostId, options.hostId) : undefined,
+    threadIdsFilter,
     options.sectionId ? eq(threads.sectionId, options.sectionId) : undefined,
     options.unsectioned ? isNull(threads.sectionId) : undefined,
     nonDeletedThreads(),
@@ -734,11 +751,44 @@ function buildListThreadsFilters(options: ListThreadsOptions) {
   ].filter((value) => value !== undefined);
 }
 
+export function buildThreadListEnrichmentScope(
+  db: DbConnection,
+  options: ListThreadsOptions,
+): ThreadListEnrichmentScope {
+  let query = db
+    .select({ id: threads.id })
+    .from(threads)
+    .$dynamic();
+  if (options.hostId) {
+    query = query.leftJoin(
+      environments,
+      eq(threads.environmentId, environments.id),
+    );
+  }
+  query = query.where(
+    and(
+      ...buildListThreadsFilters(
+        options,
+        options.threadIds === undefined
+          ? undefined
+          : sql`${threads.id} IN (SELECT value FROM json_each(${JSON.stringify(options.threadIds)}))`,
+      ),
+    ),
+  );
+  if (options.limit !== undefined || options.offset !== undefined) {
+    query = query.orderBy(...buildListThreadsOrderBy(options));
+  }
+  if (options.limit !== undefined) query = query.limit(options.limit);
+  if (options.offset !== undefined) query = query.offset(options.offset);
+  return { kind: "query", ids: sql`${query}` };
+}
+
 function buildListThreadsForProjectsFilters(
   options: ListThreadsForProjectsOptions,
+  projectIdsFilter = inArray(threads.projectId, [...options.projectIds]),
 ) {
   return [
-    inArray(threads.projectId, [...options.projectIds]),
+    projectIdsFilter,
     eq(threads.visibility, "visible"),
     nonDeletedThreads(),
     options.archived === true
@@ -747,6 +797,34 @@ function buildListThreadsForProjectsFilters(
         ? isNull(threads.archivedAt)
         : undefined,
   ].filter((value) => value !== undefined);
+}
+
+export function buildProjectThreadListEnrichmentScope(
+  db: DbConnection,
+  options: ListThreadsForProjectsOptions,
+): ThreadListEnrichmentScope {
+  const query = db
+    .select({ id: threads.id })
+    .from(threads)
+    .where(
+      and(
+        ...buildListThreadsForProjectsFilters(
+          options,
+          sql`${threads.projectId} IN (SELECT value FROM json_each(${JSON.stringify(options.projectIds)}))`,
+        ),
+      ),
+    );
+  return { kind: "query", ids: sql`${query}` };
+}
+
+export function buildPinnedRootThreadListEnrichmentScope(
+  db: DbConnection,
+): ThreadListEnrichmentScope {
+  const query = db
+    .select({ id: threads.id })
+    .from(threads)
+    .where(liveThreads(pinnedThreadWhere()));
+  return { kind: "query", ids: sql`${query}` };
 }
 
 function buildActiveProjectThreadOrderBy() {
@@ -898,7 +976,7 @@ function normalizeThreadSearchHighlightText(text: string): {
   const originalStarts: number[] = [];
   const originalEnds: number[] = [];
 
-  for (let index = 0; index < text.length;) {
+  for (let index = 0; index < text.length; ) {
     const codePoint = text.codePointAt(index);
     if (codePoint === undefined) {
       break;
@@ -1256,6 +1334,16 @@ export function countThreads(
 ): CountThreadsResult {
   const needsEnvironmentJoin =
     options.hostId !== undefined || options.groupBy === "host";
+  const cleanExit = sql`EXISTS (
+    SELECT 1 FROM ${forkNativeTerminalThreads}
+    WHERE ${forkNativeTerminalThreads.threadId} = ${threads.id}
+      AND ${forkNativeTerminalThreads.providerId} = ${threads.providerId}
+      AND ${forkNativeTerminalThreads.lostIdleTerminalSessionId} IS NOT NULL
+      AND ${forkNativeTerminalThreads.lostIdleTerminalSessionId} = ${forkNativeTerminalThreads.terminalSessionId}
+  )`;
+  const displayStatus = sql`CASE WHEN ${threads.status} = 'error' AND ${cleanExit}
+    THEN ${effectiveDisplayStatus({ status: "error" }, { nativeSessionExit: "clean" })}
+    ELSE ${threads.status} END`;
   const filters = [
     nonDeletedThreads(),
     options.includeArchived === true ? undefined : isNull(threads.archivedAt),
@@ -1263,7 +1351,9 @@ export function countThreads(
       ? undefined
       : eq(threads.visibility, "visible"),
     options.status !== undefined
-      ? eq(threads.status, options.status)
+      ? (options.status === "idle" || options.status === "error"
+        ? eq(displayStatus, options.status)
+        : eq(threads.status, options.status))
       : undefined,
     options.providerId !== undefined
       ? eq(threads.providerId, options.providerId)
@@ -1406,16 +1496,40 @@ export function listArchivedThreadsPendingTeardown(
     id: threads.id,
     status: threads.status,
   };
-  const archived = and(isNotNull(threads.archivedAt), isNull(threads.deletedAt));
+  const archived = and(
+    isNotNull(threads.archivedAt),
+    isNull(threads.deletedAt),
+  );
   return db
     .select(selection)
     .from(threads)
-    .where(and(archived, inArray(threads.status, [...ARCHIVED_TEARDOWN_THREAD_STATUSES])))
+    .where(
+      and(
+        archived,
+        inArray(threads.status, [...ARCHIVED_TEARDOWN_THREAD_STATUSES]),
+      ),
+    )
     .union(
       db
         .select(selection)
         .from(threads)
-        .where(and(archived, inArray(threads.id, db.select({ threadId: terminalSessions.threadId }).from(terminalSessions).where(inArray(terminalSessions.status, NON_TERMINAL_SESSION_STATUSES))))),
+        .where(
+          and(
+            archived,
+            inArray(
+              threads.id,
+              db
+                .select({ threadId: terminalSessions.threadId })
+                .from(terminalSessions)
+                .where(
+                  inArray(
+                    terminalSessions.status,
+                    NON_TERMINAL_SESSION_STATUSES,
+                  ),
+                ),
+            ),
+          ),
+        ),
     )
     .all();
 }
@@ -1424,6 +1538,7 @@ export function listThreadsWithPendingInteractionState(
   db: DbConnection,
   options: ListThreadsOptions,
 ): ThreadWithPendingInteractionState[] {
+  if (options.threadIds?.length === 0) return [];
   let query = threadWithPendingInteractionBaseQuery(db)
     .where(and(...buildListThreadsFilters(options)))
     .orderBy(...buildListThreadsOrderBy(options))
@@ -1811,9 +1926,11 @@ export interface UpdateThreadInput {
   projectId?: string;
   sectionId?: string | null;
   lastReadAt?: number | null;
+  latestAttentionAt?: number;
   parentThreadId?: string | null;
   title?: string | null;
   visibility?: ThreadVisibility;
+  parentNotifications?: ThreadParentNotifications;
 }
 
 export function updateThread(
@@ -1830,7 +1947,14 @@ export function updateThread(
   const changes: ThreadChangeKind[] = [];
   if ("title" in input || "sectionId" in input) changes.push("title-changed");
   if ("lastReadAt" in input) changes.push("read-state-changed");
+  if ("latestAttentionAt" in input) changes.push("read-state-changed");
   if ("visibility" in input && input.visibility !== existing.visibility) {
+    changes.push("title-changed");
+  }
+  if (
+    "parentNotifications" in input &&
+    input.parentNotifications !== existing.parentNotifications
+  ) {
     changes.push("title-changed");
   }
   if (
@@ -1859,8 +1983,14 @@ export function updateThread(
   if ("lastReadAt" in input) {
     set.lastReadAt = input.lastReadAt;
   }
+  if ("latestAttentionAt" in input) {
+    set.latestAttentionAt = input.latestAttentionAt;
+  }
   if ("parentThreadId" in input) set.parentThreadId = input.parentThreadId;
   if ("visibility" in input) set.visibility = input.visibility;
+  if ("parentNotifications" in input) {
+    set.parentNotifications = input.parentNotifications;
+  }
 
   const updated = db
     .update(threads)
@@ -1982,11 +2112,110 @@ export function deleteThread(
   )
     return false;
   db.delete(threads).where(eq(threads.id, id)).run();
+  bumpThreadEventOwnershipEpoch();
   notifier.notifyThread(id, ["thread-deleted"], {
     projectId: existing.projectId,
   });
   notifier.notifyProject(existing.projectId, ["threads-changed"]);
   return true;
+}
+
+export function listThreadAncestors(
+  db: DbQueryConnection,
+  threadIds: readonly string[],
+): Array<{ threadId: string; ancestorIds: string[] }> {
+  if (threadIds.length === 0) return [];
+  const rows = db.all<{ id: string; parentId: string | null }>(sql`
+    WITH RECURSIVE chain(id, parent_id) AS (
+      SELECT id, parent_thread_id FROM threads WHERE ${inArray(threads.id, [...threadIds])}
+      UNION
+      SELECT t.id, t.parent_thread_id FROM threads t JOIN chain c ON t.id = c.parent_id
+    )
+    SELECT id, parent_id AS parentId FROM chain
+  `);
+  const parentById = new Map(rows.map((row) => [row.id, row.parentId]));
+  const result: Array<{ threadId: string; ancestorIds: string[] }> = [];
+  for (const threadId of new Set(threadIds)) {
+    if (!parentById.has(threadId)) continue;
+    const ancestorIds: string[] = [];
+    let parentId = parentById.get(threadId) ?? null;
+    while (
+      parentId !== null &&
+      parentById.has(parentId) &&
+      parentId !== threadId &&
+      !ancestorIds.includes(parentId)
+    ) {
+      ancestorIds.push(parentId);
+      parentId = parentById.get(parentId) ?? null;
+    }
+    result.push({ threadId, ancestorIds });
+  }
+  return result;
+}
+
+export interface ListThreadDescendantsOptions {
+  includeArchived: boolean;
+  includeHidden: boolean;
+}
+
+export function listThreadDescendants(
+  db: DbQueryConnection,
+  threadIds: readonly string[],
+  options: ListThreadDescendantsOptions,
+): Array<{ threadId: string; descendantIds: string[] }> {
+  if (threadIds.length === 0) return [];
+  const rows = db.all<{
+    id: string;
+    parentId: string | null;
+    archived: number;
+    hidden: number;
+  }>(sql`
+    WITH RECURSIVE tree(id, parent_id, archived, hidden) AS (
+      SELECT id, parent_thread_id, archived_at IS NOT NULL, visibility = 'hidden' FROM threads
+      WHERE ${inArray(threads.id, [...threadIds])} AND deleted_at IS NULL
+      UNION
+      SELECT t.id, t.parent_thread_id, t.archived_at IS NOT NULL, t.visibility = 'hidden'
+      FROM threads t JOIN tree ON t.parent_thread_id = tree.id
+      WHERE t.deleted_at IS NULL
+    )
+    SELECT id, parent_id AS parentId, archived, hidden FROM tree
+  `);
+  const omittedIds = new Set(
+    rows
+      .filter(
+        (row) =>
+          (!options.includeArchived && row.archived === 1) ||
+          (!options.includeHidden && row.hidden === 1),
+      )
+      .map((row) => row.id),
+  );
+  const childIdsByParent = new Map<string, string[]>();
+  for (const row of rows) {
+    if (row.parentId === null) continue;
+    const siblings = childIdsByParent.get(row.parentId);
+    if (siblings === undefined) childIdsByParent.set(row.parentId, [row.id]);
+    else if (!siblings.includes(row.id)) siblings.push(row.id);
+  }
+  const knownIds = new Set(rows.map((row) => row.id));
+  const result: Array<{ threadId: string; descendantIds: string[] }> = [];
+  for (const threadId of new Set(threadIds)) {
+    if (!knownIds.has(threadId)) continue;
+    const visited = new Set([threadId]);
+    const descendantIds: string[] = [];
+    for (let index = -1; index < descendantIds.length; index += 1) {
+      const parentId = index < 0 ? threadId : descendantIds[index]!;
+      for (const childId of childIdsByParent.get(parentId) ?? []) {
+        if (visited.has(childId)) continue;
+        visited.add(childId);
+        descendantIds.push(childId);
+      }
+    }
+    result.push({
+      threadId,
+      descendantIds: descendantIds.filter((id) => !omittedIds.has(id)),
+    });
+  }
+  return result;
 }
 
 function lifecycleThreadTreeIds(seed: SQL): SQL {
@@ -1999,8 +2228,19 @@ function lifecycleThreadTreeIdsForThread(threadId: string): SQL {
   return lifecycleThreadTreeIds(sql`SELECT ${threadId}`);
 }
 
-export function lifecycleThreadTreeIdsForProject(projectId: string): SQL {
-  return lifecycleThreadTreeIds(
+function deletionThreadTreeIds(seed: SQL): SQL {
+  return sql`(WITH RECURSIVE descendants(id) AS (
+    ${seed} UNION SELECT t.id FROM threads t JOIN descendants
+      ON t.lifecycle_owner_thread_id = descendants.id OR t.parent_thread_id = descendants.id
+  ) SELECT id FROM descendants)`;
+}
+
+function deletionThreadTreeIdsForThread(threadId: string): SQL {
+  return deletionThreadTreeIds(sql`SELECT ${threadId}`);
+}
+
+export function deletionThreadTreeIdsForProject(projectId: string): SQL {
+  return deletionThreadTreeIds(
     sql`SELECT id FROM threads WHERE project_id = ${projectId}`,
   );
 }
@@ -2016,11 +2256,11 @@ export function listLifecycleThreadDependents(
     .all();
 }
 
-export function listLifecycleThreadTree(db: DbQueryConnection, id: string) {
+export function listThreadDeletionTree(db: DbQueryConnection, id: string) {
   return db
     .select()
     .from(threads)
-    .where(inArray(threads.id, lifecycleThreadTreeIdsForThread(id)))
+    .where(inArray(threads.id, deletionThreadTreeIdsForThread(id)))
     .all();
 }
 
@@ -2037,7 +2277,7 @@ export function markThreadDeleted(
     })
     .where(
       and(
-        inArray(threads.id, lifecycleThreadTreeIdsForThread(args.threadId)),
+        inArray(threads.id, deletionThreadTreeIdsForThread(args.threadId)),
         isNull(threads.deletedAt),
       ),
     )
@@ -2088,7 +2328,10 @@ export function archiveThread(
       )
       .returning()
       .all();
-    markThreadPruningPolicyWork(tx, archived.map((thread) => thread.id), "rate-limits");
+    markEveryThreadPruningPolicyWork(
+      tx,
+      archived.map((thread) => thread.id),
+    );
     return archived;
   });
   for (const thread of updated) {
@@ -2198,6 +2441,9 @@ export function applyThreadLifecycleEventInTransaction(
     };
   }
 
+  if (args.event.type === "run.failed") {
+    db.run(sql`UPDATE fork_native_terminal_threads SET lost_idle_terminal_session_id = NULL WHERE thread_id = ${args.threadId}`);
+  }
   const evaluation = evaluateThreadLifecycleEvent({
     event: args.event,
     thread,
@@ -2215,10 +2461,7 @@ export function applyThreadLifecycleEventInTransaction(
     status: evaluation.to,
     updatedAt: now,
   };
-  if (
-    evaluation.to === "active" ||
-    (evaluation.to === "idle" && thread.environmentId !== null)
-  ) {
+  if (evaluation.to === "idle" && thread.environmentId !== null) {
     set.startupContext = null;
   }
   if (
@@ -2245,6 +2488,15 @@ export function applyThreadLifecycleEventInTransaction(
       detail: `status changed from ${thread.status} while applying ${args.event.type}`,
       reason: "cas-conflict",
     };
+  }
+  if (args.event.type === "session.lost" && thread.status === "idle") {
+    db.run(sql`UPDATE fork_native_terminal_threads
+      SET lost_idle_terminal_session_id = (
+        SELECT id FROM terminal_sessions WHERE id = fork_native_terminal_threads.terminal_session_id
+          AND status = 'exited' AND close_reason = 'process-exit' AND exit_code = 0
+      ) WHERE thread_id = ${args.threadId}`);
+  } else {
+    db.run(sql`UPDATE fork_native_terminal_threads SET lost_idle_terminal_session_id = NULL WHERE thread_id = ${args.threadId}`);
   }
   return { applied: true, thread: updated };
 }

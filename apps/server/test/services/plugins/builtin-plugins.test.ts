@@ -14,15 +14,14 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  createConnection,
   getInstalledPluginRegistration,
   getPluginSettingsValues,
   listPluginSchedules,
-  migrate,
   setPluginSettingsValues,
   upsertPluginSchedule,
   type DbConnection,
 } from "@bb/db";
+import { createMigratedConnection } from "@bb/db/testing";
 import { PLUGIN_SDK_MAJOR, PLUGIN_SDK_VERSION } from "@bb/domain";
 import type { Logger } from "@bb/logger";
 import { createAiServiceRegistry } from "../../../src/services/ai/ai-service-registry.js";
@@ -189,6 +188,8 @@ function createService(args: {
     db: args.db,
     hub: {
       getDaemonSessionIdForHost: () => null,
+      notifyPluginChanged: () => {},
+      onWatchedTargets: () => () => {},
       notifyPluginSignal: () => 0,
       notifySystem: () => {},
     },
@@ -258,8 +259,7 @@ describe("builtin plugin reconciliation", () => {
     delete globals.__builtinFixtureLoads;
     delete globals.__packagedBuiltinLoads;
     delete globals.__hotBuiltinServerVersion;
-    db = createConnection(":memory:");
-    migrate(db);
+    db = createMigratedConnection();
     workDir = await mkdtemp(join(tmpdir(), "bb-builtin-plugins-"));
   });
 
@@ -603,6 +603,7 @@ describe("builtin plugin reconciliation", () => {
       ),
     ).toMatchObject({
       "prompt-library": false,
+      mcp: false,
       "plugin-api-tester": false,
       "monaco-editor": false,
       "plugin-api-docs": false,

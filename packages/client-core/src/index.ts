@@ -1,6 +1,7 @@
 export * from "./api-types.js";
 
 export * from "./thread/thread-read-state.js";
+export * from "./thread/native-activity-guidance.js";
 export * from "./thread/thread-activity.js";
 
 export * from "./codepoint-compare.js";
@@ -24,8 +25,12 @@ export * from "./prompt/permission-mode-options.js";
 export * from "./prompt/mentions/plugin-mention-triggers.js";
 export * from "./prompt/mentions/types.js";
 export * from "./prompt/mentions/mention-candidates.js";
-export * from "./prompt/mentions/find-active-trigger.js";
 export * from "./prompt/mentions/command-trigger.js";
+export * from "./prompt/mentions/composer-mention.js";
+export * from "./prompt/mentions/composer-suggestions.js";
+export * from "./prompt/mentions/prompt-mention-clipboard.js";
+export * from "./prompt/mentions/prompt-mention-link.js";
+export * from "./prompt/mentions/prompt-mention-display.js";
 export * from "./prompt/fork-thread-request.js";
 export * from "./prompt/thread-handoff-request.js";
 
@@ -38,6 +43,7 @@ export * from "./timeline/automation-due-message.js";
 export * from "./timeline/conversation-turn-request-label.js";
 export * from "./timeline/optimistic-timeline-row.js";
 export * from "./timeline/timeline-merge.js";
+export * from "./timeline/deferred-content.js";
 
 export * from "./diff/renderable-patch.js";
 

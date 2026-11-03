@@ -3,7 +3,6 @@
 import { randomUUID } from "node:crypto";
 import {
   appendFileSync,
-  copyFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -45,6 +44,7 @@ const sessionFile = args.includes("--no-session")
 const extensionPath = flag("--extension");
 const processLogPath = process.env.FAKE_PI_PROCESS_LOG;
 const commandLogPath = process.env.FAKE_PI_COMMAND_LOG;
+const supportsSettlement = process.env.FAKE_PI_SETTLEMENT !== "0";
 const promptDumpPath = process.env.FAKE_PI_PROMPT_DUMP;
 if (process.env.FAKE_PI_ENV_LOG) {
   appendFileSync(
@@ -166,6 +166,8 @@ if (requestedModel !== undefined && !ignoreRequestedModel) {
 let thinkingLevel = flag("--thinking") ?? "medium";
 let isStreaming = false;
 let isCompacting = false;
+let compactOnSettle = null;
+let announceCompaction = null;
 let leafCounter = 0;
 let leafId = null;
 let turnCounter = 0;
@@ -203,6 +205,12 @@ function respondError(id, command, error) {
   send({ id, type: "response", command, success: false, error });
 }
 function event(payload) {
+  if (process.env.FAKE_PI_EVENT_LOG) {
+    appendFileSync(
+      process.env.FAKE_PI_EVENT_LOG,
+      `${JSON.stringify(payload)}\n`,
+    );
+  }
   send(payload);
 }
 function queueUpdate() {
@@ -254,11 +262,13 @@ async function emitExtensionEvent(type, payload = {}) {
 }
 
 async function loadExtension(path) {
+  const runtimeUrl = new URL(
+    "./core/session-manager.js",
+    import.meta.resolve("@earendil-works/pi-coding-agent"),
+  ).href;
+  const runtimeShim = `data:text/javascript,${encodeURIComponent(`export { SessionManager } from ${JSON.stringify(runtimeUrl)}; export const VERSION = ${JSON.stringify(supportsSettlement ? (process.env.FAKE_PI_VERSION ?? "0.84.0") : "0.83.0")};`)}`;
   const aliases = new Map([
-    [
-      "@earendil-works/pi-coding-agent",
-      import.meta.resolve("@earendil-works/pi-coding-agent"),
-    ],
+    ["@earendil-works/pi-coding-agent", runtimeShim],
     ["typebox", import.meta.resolve("typebox")],
   ]);
   let hooksRegistered = false;
@@ -284,7 +294,13 @@ async function loadExtension(path) {
   if (!hooksRegistered) {
     const pkgRoot = join(dirname(fileURLToPath(import.meta.url)), "../..");
     const staging = mkdtempSync(join(pkgRoot, "node_modules", ".fake-pi-ext-"));
-    copyFileSync(path, staging + "/extension.mjs");
+    writeFileSync(
+      staging + "/extension.mjs",
+      readFileSync(path, "utf8").replaceAll(
+        '"@earendil-works/pi-coding-agent"',
+        JSON.stringify(runtimeShim),
+      ),
+    );
     loadPath = staging + "/extension.mjs";
     process.on("exit", () => {
       try {
@@ -357,14 +373,41 @@ async function runExtensionTool(name, toolArgs) {
 async function runPrompt(text) {
   isStreaming = true;
   turnCounter += 1;
+  if (text === "/compact-on-settle" || text === "/compact-on-settle-late") {
+    compactOnSettle = text;
+  }
   await emitExtensionEvent("agent_start");
   event({ type: "agent_start" });
   event({ type: "turn_start" });
-  if (text === "/hold") {
+  if (text === "/hold" || text === "/wait-hold") {
+    if (text === "/wait-hold")
+      event({
+        type: "tool_execution_start",
+        toolCallId: "wait-1",
+        toolName: "subagent_wait",
+        args: {},
+      });
     const released = await new Promise((resolve) => {
       holdAbort = resolve;
     });
     holdAbort = null;
+    if (text === "/wait-hold") {
+      event({
+        type: "tool_execution_end",
+        toolCallId: "wait-1",
+        toolName: "subagent_wait",
+        result: {
+          content: [
+            {
+              type: "text",
+              text:
+                released === "steer" ? "Subagent finished" : "Wait interrupted",
+            },
+          ],
+        },
+        isError: released !== "steer",
+      });
+    }
     if (released === "steer") {
       const steerText =
         process.env.FAKE_PI_DROP_STEER_AT_END === "1" ? null : steering.shift();
@@ -498,7 +541,51 @@ async function runPrompt(text) {
       .map((block) => block.text)
       .join("\n");
   }
-  const failed = text === "/fail-run";
+  if (text === "/failed-then-queued") {
+    const messages = [
+      {
+        role: "assistant",
+        content: [],
+        stopReason: "error",
+        errorMessage: "scripted unrecovered failure",
+      },
+    ];
+    await emitExtensionEvent("agent_end", { messages });
+    event({ type: "agent_end", messages, willRetry: false });
+    queueUpdate();
+    await emitExtensionEvent("agent_start");
+    event({ type: "agent_start" });
+  }
+  if (text === "/native-retry" || text === "/native-overflow") {
+    const messages = [
+      {
+        role: "assistant",
+        content: [],
+        stopReason: "error",
+        errorMessage: "scripted recoverable failure",
+      },
+    ];
+    await emitExtensionEvent("agent_end", { messages });
+    event({ type: "agent_end", messages, willRetry: text === "/native-retry" });
+    if (text === "/native-retry") {
+      event({ type: "auto_retry_start", attempt: 1, maxAttempts: 3 });
+      event({ type: "auto_retry_end", success: true, attempt: 1 });
+    } else {
+      event({ type: "compaction_start", reason: "overflow" });
+      event({
+        type: "compaction_end",
+        reason: "overflow",
+        aborted: false,
+        willRetry: true,
+      });
+    }
+    await emitExtensionEvent("agent_start");
+    event({ type: "agent_start" });
+  }
+  const aborted = text === "/unexpected-abort";
+  const overflowFailure =
+    text === "/overflow-failed" || text === "/overflow-aborted";
+  const failed = text === "/fail-run" || text === "/retry-exhausted" || aborted;
   const reply = failed
     ? ""
     : toolMatch
@@ -510,9 +597,11 @@ async function runPrompt(text) {
     provider: model.provider,
     model: model.id,
     usage: { input: 12, output: 5, totalTokens: 17 },
-    ...(failed
-      ? { stopReason: "error", errorMessage: "scripted run failure" }
-      : { stopReason: "stop" }),
+    ...(aborted
+      ? { stopReason: "aborted" }
+      : failed
+        ? { stopReason: "error", errorMessage: "scripted run failure" }
+        : { stopReason: overflowFailure ? "length" : "stop" }),
   };
   event({ type: "message_start", message: { role: "assistant", content: [] } });
   if (!failed) {
@@ -534,7 +623,76 @@ async function runPrompt(text) {
   const messages = [{ role: "user", content: text }, assistant];
   await emitExtensionEvent("agent_end", { messages });
   event({ type: "agent_end", messages });
+  if (text === "/retry-exhausted")
+    event({
+      type: "auto_retry_end",
+      success: false,
+      attempt: 3,
+      finalError: "scripted run failure",
+    });
+  const optionalOverflow =
+    text === "/stop-overflow-cancel" || text === "/stop-overflow-error";
+  const compactionError =
+    text === "/overflow-failed" || text === "/stop-overflow-error";
+  if (overflowFailure || optionalOverflow || text === "/threshold-cancel") {
+    event({
+      type: "compaction_start",
+      reason: overflowFailure || optionalOverflow ? "overflow" : "threshold",
+    });
+    event({
+      type: "compaction_end",
+      reason: overflowFailure || optionalOverflow ? "overflow" : "threshold",
+      willRetry: false,
+      aborted: !compactionError,
+      ...(compactionError
+        ? { errorMessage: "overflow recovery exhausted" }
+        : {}),
+    });
+  }
   isStreaming = false;
+}
+
+async function waitForCompactionRelease() {
+  const releasePath = process.env.FAKE_PI_COMPACTION_RELEASE_FILE;
+  while (releasePath !== undefined && !existsSync(releasePath)) {
+    await sleep(10);
+  }
+}
+
+function startExtensionCompaction(mode) {
+  isCompacting = true;
+  const announce = () => {
+    announceCompaction = null;
+    event({ type: "compaction_start", reason: "manual" });
+  };
+  if (mode === "/compact-on-settle") announce();
+  else announceCompaction = announce;
+  void waitForCompactionRelease().then(() => {
+    announceCompaction?.();
+    event({ type: "compaction_end", reason: "manual", aborted: false });
+    isCompacting = false;
+    leafCounter += 1;
+    leafId = `leaf-${leafCounter}`;
+  });
+}
+
+async function emitSettlement() {
+  if (!supportsSettlement) return;
+  if (compactOnSettle !== null) {
+    startExtensionCompaction(compactOnSettle);
+    compactOnSettle = null;
+  }
+  if (process.env.FAKE_PI_FINAL_LEAF) leafId = process.env.FAKE_PI_FINAL_LEAF;
+  const payload =
+    process.env.FAKE_PI_SETTLED_ABORTED === undefined
+      ? {}
+      : { aborted: JSON.parse(process.env.FAKE_PI_SETTLED_ABORTED) };
+  await emitExtensionEvent("agent_settled", payload);
+  event({ type: "agent_settled", ...payload });
+  if (process.env.FAKE_PI_DUPLICATE_SETTLED === "1") {
+    await emitExtensionEvent("agent_settled", payload);
+    event({ type: "agent_settled", ...payload });
+  }
 }
 
 async function drainFollowUps() {
@@ -624,6 +782,15 @@ async function handle(command) {
       if (promptDumpPath) {
         writeFileSync(promptDumpPath, JSON.stringify(command), "utf8");
       }
+      if (isCompacting) {
+        respondError(
+          id,
+          "prompt",
+          "Cannot submit a prompt while compaction is in progress. Wait for compaction to finish and retry.",
+        );
+        announceCompaction?.();
+        return;
+      }
       if (isStreaming && command.streamingBehavior === "steer") {
         steering.push(command.message);
         queueUpdate();
@@ -651,6 +818,7 @@ async function handle(command) {
       respond(id, "prompt");
       await runPrompt(command.message);
       await drainFollowUps();
+      await emitSettlement();
       return;
     }
     case "steer":
@@ -744,7 +912,8 @@ readLines(process.stdin, (line) => {
     command.type === "abort" ||
     command.type === "get_state" ||
     command.type === "get_session_stats" ||
-    (command.type === "prompt" && command.streamingBehavior === "steer")
+    (command.type === "prompt" &&
+      (supportsSettlement || command.streamingBehavior === "steer"))
   ) {
     void loaded.then(() => handle(command));
     return;

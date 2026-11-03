@@ -1,41 +1,14 @@
-import fs from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import fs from "node:fs/promises";
+import { initRepo, makeTempDir } from "@bb/test-helpers";
+import { describe, expect, it } from "vitest";
 import { provisionWorkspace } from "../src/index.js";
-import { runGit } from "../src/git.js";
-
-const tempDirs: string[] = [];
-
-async function makeTempDir(prefix: string): Promise<string> {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
-  tempDirs.push(dir);
-  return dir;
-}
-
-async function initRepo(): Promise<string> {
-  const repoPath = await makeTempDir("bb-provision-repo-");
-  await runGit(["init", "-b", "main"], { cwd: repoPath });
-  await runGit(["config", "user.name", "BB Tests"], { cwd: repoPath });
-  await runGit(["config", "user.email", "bb@example.com"], { cwd: repoPath });
-  await fs.writeFile(path.join(repoPath, "README.md"), "hello\n", "utf8");
-  await runGit(["add", "."], { cwd: repoPath });
-  await runGit(["commit", "-m", "Initial commit"], { cwd: repoPath });
-  return repoPath;
-}
-
-afterEach(async () => {
-  await Promise.all(
-    tempDirs
-      .splice(0)
-      .map((dir) => fs.rm(dir, { recursive: true, force: true })),
-  );
-});
+import { runGit } from "bb-environment-provider-host/workspace-git";
 
 describe("provisionWorkspace", () => {
   describe("unmanaged", () => {
     it("provisions an unmanaged git repo and discovers properties", async () => {
-      const repoPath = await initRepo();
+      const repoPath = await initRepo(await makeTempDir("bb-provision-repo-"));
 
       const ws = await provisionWorkspace({
         path: repoPath,
@@ -47,35 +20,51 @@ describe("provisionWorkspace", () => {
       expect(await ws.getCurrentBranch()).toBe("main");
     });
 
-    it("provisions an unmanaged non-git directory", async () => {
-      const dirPath = await makeTempDir("bb-provision-nongit-");
+    it.each([false, true])(
+      "reports no checkout for a plain directory or bare repository: %s",
+      async (bare) => {
+        const dirPath = await makeTempDir("bb-provision-nongit-");
+        if (bare) await runGit(["init", "--bare"], { cwd: dirPath });
 
-      const ws = await provisionWorkspace({
-        path: dirPath,
-      });
+        const ws = await provisionWorkspace({
+          path: dirPath,
+        });
 
-      expect(ws.isGitRepo).toBe(false);
-      expect(ws.isWorktree).toBe(false);
-    });
+        expect(ws.isGitRepo).toBe(false);
+        expect(ws.isWorktree).toBe(false);
+      },
+    );
 
-    it("detects a worktree as isWorktree=true", async () => {
-      const repoPath = await initRepo();
-      const parentDir = await makeTempDir("bb-provision-wt-parent-");
-      const wtPath = path.join(parentDir, "wt");
-      await runGit(["worktree", "add", "-B", "feature", wtPath], {
-        cwd: repoPath,
-      });
+    it.each([
+      "repo",
+      "repo with spaces",
+      ...(process.platform === "win32" ? [] : ["repo\nnewline"]),
+    ])(
+      "detects a linked worktree with repository directory %j",
+      async (directory) => {
+        const repoPath = path.join(
+          await makeTempDir("bb-provision-repo-"),
+          directory,
+        );
+        await fs.mkdir(repoPath);
+        await initRepo(repoPath);
+        const parentDir = await makeTempDir("bb-provision-wt-parent-");
+        const wtPath = path.join(parentDir, "wt");
+        await runGit(["worktree", "add", "-B", "feature", wtPath], {
+          cwd: repoPath,
+        });
 
-      const ws = await provisionWorkspace({
-        path: wtPath,
-      });
+        const ws = await provisionWorkspace({
+          path: wtPath,
+        });
 
-      expect(ws.isGitRepo).toBe(true);
-      expect(ws.isWorktree).toBe(true);
-    });
+        expect(ws.isGitRepo).toBe(true);
+        expect(ws.isWorktree).toBe(true);
+      },
+    );
 
     it("resolves external git metadata roots for unmanaged worktrees", async () => {
-      const repoPath = await initRepo();
+      const repoPath = await initRepo(await makeTempDir("bb-provision-repo-"));
       const parentDir = await makeTempDir("bb-provision-unmanaged-wt-roots-");
       const wtPath = path.join(parentDir, "wt");
       await runGit(["worktree", "add", "-B", "feature", wtPath], {

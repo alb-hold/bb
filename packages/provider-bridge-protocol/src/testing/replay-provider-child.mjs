@@ -281,16 +281,19 @@ function readCursor(stateDir) {
   let text;
   try {
     text = readFileSync(join(stateDir, "cursor"), "utf8").trim();
-  } catch {
-    return null;
+  } catch (error) {
+    return error?.code === "ENOENT" ? null : false;
   }
-  if (text === "end" || text === "") return null;
+  if (text === "end") return null;
+  if (!/^\d+ \d+$/u.test(text)) return false;
   const [run, seq] = text.split(" ").map(Number);
+  if (!Number.isSafeInteger(run) || !Number.isSafeInteger(seq)) return false;
   return { run, seq };
 }
 
 function cursorAllows(cursor, entry) {
   if (cursor === null) return true;
+  if (cursor === false) return false;
   return entry.run < cursor.run || (entry.run === cursor.run && entry.seq < cursor.seq);
 }
 
@@ -442,8 +445,12 @@ function main() {
     return;
   }
   const segments = buildSegments(entries, dialect);
-  const segmentIndex = claimSegmentIndex(args.state);
-  let script = segments[segmentIndex] ?? [];
+  const diagnosticFork =
+    args.dialect === "claude-cli" &&
+    process.argv.includes("--fork-session") &&
+    process.argv.includes("--no-session-persistence");
+  const segmentIndex = diagnosticFork ? null : claimSegmentIndex(args.state);
+  let script = segmentIndex === null ? [] : (segments[segmentIndex] ?? []);
   const log = (text) => process.stderr.write(`[replay-child #${segmentIndex}] ${text}\n`);
   if (script.length === 0) {
     log(`no recorded segment ${segmentIndex} (recording has ${segments.length}); answering generically`);

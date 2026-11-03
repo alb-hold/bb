@@ -15,8 +15,8 @@ import {
 } from "node:fs/promises";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import semver from "semver";
-import { resolveBundledNpmCli } from "@bb/plugin-build";
 import {
+  hostToolchain,
   killPortableProcess,
   killProcessGroup,
   omitNpmScriptPolicyEnv,
@@ -280,7 +280,10 @@ export function parsePluginSource(source: string): ParsedPluginSource {
   return { kind: "path", path };
 }
 
-export function normalizePluginSubdirectory(value: string): string {
+export function normalizePluginSubdirectory(
+  value: string,
+  label = "plugin subdirectory",
+): string {
   const trimmed = value.startsWith("./") ? value.slice(2) : value;
   if (
     trimmed.length === 0 ||
@@ -288,11 +291,11 @@ export function normalizePluginSubdirectory(value: string): string {
     trimmed.includes("\\") ||
     /^[a-zA-Z]:/.test(trimmed)
   ) {
-    throw new Error(`invalid plugin subdirectory "${value}"`);
+    throw new Error(`invalid ${label} "${value}"`);
   }
-  assertSafeSegments(trimmed, "plugin subdirectory");
+  assertSafeSegments(trimmed, label);
   if (trimmed.split("/").includes(".git")) {
-    throw new Error(`invalid plugin subdirectory "${value}"`);
+    throw new Error(`invalid ${label} "${value}"`);
   }
   return trimmed;
 }
@@ -619,7 +622,7 @@ export async function runInstallCommand(
   const timeoutMs = 5 * 60_000;
   const cancellation = installCancellationSignal();
   if (cancellation?.aborted) throw new PluginInstallCancelledError();
-  const npmCliPath = command === "npm" ? resolveBundledNpmCli() : null;
+  const npmCliPath = command === "npm" ? hostToolchain.bundledNpmCli() : null;
   const child = spawnPortableOutputProcess({
     command: npmCliPath === null ? command : process.execPath,
     args: npmCliPath === null ? args : [npmCliPath, ...args],

@@ -1,12 +1,19 @@
 import { registerCodexAiService } from "./src/ai-service.js";
+import { registerAsyncQuestions } from "./src/async-questions.js";
 import { registerUsageSource } from "./src/usage-source.js";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { codexExtensionKinds } from "./src/extension-kinds.js";
 import { CODEX_NATIVE_ROOTS_DECLARATION } from "./src/native-roots.js";
+import {
+  CODEX_NATIVE_ACTIVITY,
+  CODEX_NATIVE_SESSION,
+} from "./src/native-session.js";
+import { CODEX_POOL_LAUNCH_ENV_ARGS } from "./src/pool-launch.js";
 
 export default function plugin(bb: BbPluginApi) {
   registerUsageSource(bb);
   registerCodexAiService(bb);
+  registerAsyncQuestions(bb);
 
   bb.settings.define({
     memoryEnabled: {
@@ -75,9 +82,34 @@ export default function plugin(bb: BbPluginApi) {
     serviceTiers: [
       { id: "default", label: "Default" },
       { id: "fast", label: "Fast" },
-      { id: "ultrafast", label: "Ultrafast" },
+      {
+        id: "ultrafast",
+        label: "Ultrafast",
+        experimental_icon: "provider-codex/ultrafast",
+      },
     ],
     composerActions: ["plan", "goal"],
+    experimental_nativeTerminal: {
+      executable: "codex",
+      launchArgs: [
+        "--no-daemon",
+        "--dangerously-bypass-approvals-and-sandbox",
+        "--no-alt-screen",
+      ],
+      modelArgs: ["-c", 'model="{model}"'],
+      experimental_launchEnvArgs: CODEX_POOL_LAUNCH_ENV_ARGS,
+      mcp: [
+        "-c",
+        "mcp_servers.bb-bridge.command={commandJson}",
+        "-c",
+        "mcp_servers.bb-bridge.args={argsJson}",
+      ],
+      imageArgs: ["--image", "{image}"],
+      pastePlaceholders: ["[Pasted Content ", "[Image #"],
+      sessionRoot: { env: "CODEX_HOME", home: ".codex" },
+      session: CODEX_NATIVE_SESSION,
+      activity: CODEX_NATIVE_ACTIVITY,
+    },
     deriveProviderOptions(context) {
       return {
         memoryEnabled: context.settings.memoryEnabled !== false,

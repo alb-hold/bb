@@ -1,4 +1,14 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import { ChildProcess } from "node:child_process";
 import {
   createServer,
   type IncomingMessage,
@@ -9,6 +19,7 @@ import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
   BbAppStartContext,
+  ManagedProcessRun,
   ManagedFullStackProcesses,
 } from "../src/launcher.js";
 import {
@@ -206,6 +217,425 @@ describe("startFullStackServerProcess", () => {
       });
     } finally {
       await serverRun.terminate("SIGTERM");
+    }
+  });
+
+  it("terminates promptly when the stdio writer fails to spawn", async () => {
+    const serverPort = await reserveFreePort();
+    const entry = writeImmediateServerEntry();
+    const context = createStartContext({ serverEntry: entry, serverPort });
+    const processes: ManagedFullStackProcesses = {
+      daemonRun: null,
+      serverRun: null,
+    };
+    const originalExecPath = Object.getOwnPropertyDescriptor(
+      process,
+      "execPath",
+    );
+    if (originalExecPath === undefined) throw new Error("Missing execPath");
+    const realExecPath = String(originalExecPath.value);
+    let execPathReads = 0;
+    let spawnedChild: ChildProcess | undefined;
+    const restoreExecPath = () =>
+      Object.defineProperty(process, "execPath", originalExecPath);
+    Object.defineProperty(process, "execPath", {
+      configurable: true,
+      enumerable: originalExecPath.enumerable,
+      get: () => {
+        execPathReads += 1;
+        return execPathReads === 1
+          ? realExecPath
+          : join(dirname(entry), "missing-writer-runtime");
+      },
+    });
+    const starting: Promise<ManagedProcessRun> = startFullStackServerProcess({
+      context,
+      env: {
+        BB_SERVER_PORT: String(context.serverPort),
+        PATH: process.env.PATH,
+      },
+      onSpawned: (child) => {
+        spawnedChild = child;
+        restoreExecPath();
+      },
+      processes,
+    });
+    const serverRun = await starting.finally(restoreExecPath);
+    expect(execPathReads).toBe(2);
+    expect(spawnedChild).toBeDefined();
+    const writerProcess = (
+      spawnedChild as ChildProcess & { writerProcess: ChildProcess }
+    ).writerProcess;
+    expect(writerProcess.pid).toBeUndefined();
+    const startedAt = Date.now();
+    const termination = serverRun.terminate("SIGTERM").then(
+      () => "resolved" as const,
+      () => "rejected" as const,
+    );
+    let timeout: NodeJS.Timeout | undefined;
+    const result = await Promise.race([
+      termination,
+      new Promise<"timed-out">((resolvePromise) => {
+        timeout = setTimeout(() => resolvePromise("timed-out"), 700);
+      }),
+    ]);
+    if (timeout !== undefined) clearTimeout(timeout);
+    expect(result).toBe("resolved");
+    expect(Date.now() - startedAt).toBeLessThan(700);
+    expect(writerProcess.pid).toBeUndefined();
+  });
+
+  it("waits for stdio log finalization before termination resolves", async () => {
+    const serverPort = await reserveFreePort();
+    const entry = writeImmediateServerEntry();
+    const context = createStartContext({ serverEntry: entry, serverPort });
+    const processes: ManagedFullStackProcesses = {
+      daemonRun: null,
+      serverRun: null,
+    };
+    const finalizationEnteredPath = join(dirname(entry), "writer-finalizing");
+    const finalizationReleasePath = join(dirname(entry), "release-writer");
+    const completionPath = join(dirname(entry), "writer-finished");
+    const serverRun = await startFullStackServerProcess({
+      context,
+      env: {
+        BB_SERVER_PORT: String(context.serverPort),
+        PATH: process.env.PATH,
+      },
+      processes,
+      testWriterBarrier: {
+        completionPath,
+        finalizationEnteredPath,
+        finalizationReleasePath,
+      },
+    });
+    let terminationResolved = false;
+    const termination = serverRun.terminate("SIGTERM").then(() => {
+      terminationResolved = true;
+    });
+
+    try {
+      await vi.waitFor(() =>
+        expect(existsSync(finalizationEnteredPath)).toBe(true),
+      );
+      expect(terminationResolved).toBe(false);
+      writeFileSync(finalizationReleasePath, "release");
+      await termination;
+      expect(existsSync(completionPath)).toBe(true);
+      expect(() =>
+        rmSync(context.logDir, { force: true, recursive: true }),
+      ).not.toThrow();
+    } finally {
+      if (!existsSync(finalizationReleasePath)) {
+        writeFileSync(finalizationReleasePath, "release");
+      }
+      await termination;
+      await vi.waitFor(() => expect(existsSync(completionPath)).toBe(true));
+    }
+  });
+
+  it.skipIf(process.platform === "win32")(
+    "does not wait for inherited stdio handles after the writer process exits",
+    async () => {
+      const realExecPath = process.execPath;
+      const serverPort = await reserveFreePort();
+      const entry = writeImmediateServerEntry();
+      const context = createStartContext({ serverEntry: entry, serverPort });
+      const processes: ManagedFullStackProcesses = {
+        daemonRun: null,
+        serverRun: null,
+      };
+      const holderPidPath = join(dirname(entry), "writer-pipe-holder-pid");
+      const wrapperPath = join(dirname(entry), "writer-exec");
+      writeFileSync(
+        wrapperPath,
+        `#!/bin/sh\n"${realExecPath}" "$@"\nstatus=$?\n"${realExecPath}" -e 'setTimeout(() => {}, 10000)' &\necho $! > "${holderPidPath}"\nexit "$status"\n`,
+      );
+      chmodSync(wrapperPath, 0o700);
+      const originalExecPath = Object.getOwnPropertyDescriptor(
+        process,
+        "execPath",
+      );
+      if (originalExecPath === undefined) throw new Error("Missing execPath");
+      let execPathReads = 0;
+      Object.defineProperty(process, "execPath", {
+        configurable: true,
+        enumerable: originalExecPath.enumerable,
+        get: () => {
+          execPathReads += 1;
+          return execPathReads === 1 ? realExecPath : wrapperPath;
+        },
+      });
+      let serverRun: ManagedProcessRun | undefined;
+      let writerProcess: ChildProcess | undefined;
+      let holderPid: number | undefined;
+      try {
+        serverRun = await startFullStackServerProcess({
+          context,
+          env: {
+            BB_SERVER_PORT: String(context.serverPort),
+            PATH: process.env.PATH,
+          },
+          onSpawned: (child) => {
+            writerProcess = (
+              child as ChildProcess & { writerProcess: ChildProcess }
+            ).writerProcess;
+          },
+          processes,
+        });
+        const termination = serverRun.terminate("SIGTERM");
+        await vi.waitFor(() => expect(existsSync(holderPidPath)).toBe(true));
+        holderPid = Number(readFileSync(holderPidPath, "utf8"));
+        expect(holderPid).toBeGreaterThan(0);
+        expect(writerProcess).toBeDefined();
+        const writerPid = writerProcess?.pid;
+        expect(writerPid).toBeGreaterThan(0);
+        let closeObserved = false;
+        writerProcess?.once("close", () => {
+          closeObserved = true;
+        });
+        await vi.waitFor(() => expect(writerProcess?.exitCode).toBe(0));
+        expect(() => process.kill(writerPid!, 0)).toThrow(
+          expect.objectContaining({ code: "ESRCH" }),
+        );
+        expect(closeObserved).toBe(false);
+        let timeout: NodeJS.Timeout | undefined;
+        const result = await Promise.race([
+          termination.then(
+            () => "resolved" as const,
+            () => "rejected" as const,
+          ),
+          new Promise<"timed-out">((resolvePromise) => {
+            timeout = setTimeout(() => resolvePromise("timed-out"), 4_000);
+          }),
+        ]);
+        if (timeout !== undefined) clearTimeout(timeout);
+        expect(result).toBe("resolved");
+        expect(execPathReads).toBe(2);
+        expect(closeObserved).toBe(false);
+        const snapshot = readdirSync(context.logDir)
+          .sort()
+          .map((name) => {
+            const info = statSync(join(context.logDir, name));
+            return [name, info.ino, info.size, info.mtimeMs];
+          });
+        await new Promise<void>((resolvePromise) => {
+          setTimeout(resolvePromise, 50);
+        });
+        expect(
+          readdirSync(context.logDir)
+            .sort()
+            .map((name) => {
+              const info = statSync(join(context.logDir, name));
+              return [name, info.ino, info.size, info.mtimeMs];
+            }),
+        ).toEqual(snapshot);
+      } finally {
+        Object.defineProperty(process, "execPath", originalExecPath);
+        if (holderPid === undefined && existsSync(holderPidPath)) {
+          holderPid = Number(readFileSync(holderPidPath, "utf8"));
+        }
+        if (holderPid !== undefined) {
+          try {
+            process.kill(holderPid, "SIGKILL");
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+          }
+          await vi.waitFor(() =>
+            expect(() => process.kill(holderPid!, 0)).toThrow(
+              expect.objectContaining({ code: "ESRCH" }),
+            ),
+          );
+        }
+        if (serverRun !== undefined)
+          await serverRun.terminate("SIGTERM").catch(() => undefined);
+      }
+    },
+  );
+
+  it("bounds termination when the stdio log writer does not finish", async () => {
+    const serverPort = await reserveFreePort();
+    const entry = writeImmediateServerEntry();
+    const context = createStartContext({ serverEntry: entry, serverPort });
+    const processes: ManagedFullStackProcesses = {
+      daemonRun: null,
+      serverRun: null,
+    };
+    const finalizationEnteredPath = join(dirname(entry), "writer-finalizing");
+    const finalizationReleasePath = join(dirname(entry), "release-writer");
+    const completionPath = join(dirname(entry), "writer-finished");
+    const serverRun = await startFullStackServerProcess({
+      context,
+      env: {
+        BB_SERVER_PORT: String(context.serverPort),
+        PATH: process.env.PATH,
+      },
+      processes,
+      testWriterBarrier: {
+        completionPath,
+        finalizationEnteredPath,
+        finalizationReleasePath,
+      },
+    });
+    const startedAt = Date.now();
+    const termination = serverRun.terminate("SIGTERM");
+    let writerPid: number | undefined;
+    let writerKill: ReturnType<typeof vi.spyOn> | undefined;
+
+    try {
+      await vi.waitFor(() =>
+        expect(existsSync(finalizationEnteredPath)).toBe(true),
+      );
+      writerPid = Number(readFileSync(finalizationEnteredPath, "utf8"));
+      expect(writerPid).toBeGreaterThan(0);
+      const realKill = ChildProcess.prototype.kill;
+      writerKill = vi
+        .spyOn(ChildProcess.prototype, "kill")
+        .mockImplementation(function (
+          this: ChildProcess,
+          signal?: number | NodeJS.Signals,
+        ) {
+          if (this.pid === writerPid && signal === "SIGKILL") {
+            setTimeout(() => {
+              try {
+                process.kill(writerPid!, "SIGKILL");
+              } catch (error) {
+                if ((error as NodeJS.ErrnoException).code !== "ESRCH")
+                  throw error;
+              }
+            }, 200);
+            return true;
+          }
+          return realKill.call(this, signal);
+        });
+      await termination;
+      expect(Date.now() - startedAt).toBeGreaterThanOrEqual(1_500);
+      expect(Date.now() - startedAt).toBeLessThan(4_500);
+      expect(existsSync(completionPath)).toBe(false);
+      let writerIsGone = false;
+      try {
+        process.kill(writerPid, 0);
+      } catch (error) {
+        writerIsGone = (error as NodeJS.ErrnoException).code === "ESRCH";
+      }
+      expect(writerIsGone).toBe(true);
+      const snapshot = readdirSync(context.logDir)
+        .sort()
+        .map((name) => {
+          const info = statSync(join(context.logDir, name));
+          return [name, info.ino, info.size, info.mtimeMs];
+        });
+      await new Promise<void>((resolvePromise) => {
+        setTimeout(resolvePromise, 50);
+      });
+      expect(
+        readdirSync(context.logDir)
+          .sort()
+          .map((name) => {
+            const info = statSync(join(context.logDir, name));
+            return [name, info.ino, info.size, info.mtimeMs];
+          }),
+      ).toEqual(snapshot);
+      expect(() =>
+        rmSync(context.logDir, { force: true, recursive: true }),
+      ).not.toThrow();
+    } finally {
+      writerKill?.mockRestore();
+      if (writerPid !== undefined && !existsSync(finalizationReleasePath)) {
+        let writerIsAlive = true;
+        try {
+          process.kill(writerPid, 0);
+        } catch (error) {
+          writerIsAlive = (error as NodeJS.ErrnoException).code !== "ESRCH";
+        }
+        if (writerIsAlive) writeFileSync(finalizationReleasePath, "release");
+      }
+      await termination.catch(() => undefined);
+      if (writerPid !== undefined) {
+        await vi.waitFor(() => {
+          let writerIsGone = false;
+          try {
+            process.kill(writerPid!, 0);
+          } catch (error) {
+            writerIsGone = (error as NodeJS.ErrnoException).code === "ESRCH";
+          }
+          expect(writerIsGone).toBe(true);
+        });
+      }
+    }
+  });
+
+  it("does not treat a stdio writer kill error as writer exit", async () => {
+    const serverPort = await reserveFreePort();
+    const entry = writeImmediateServerEntry();
+    const context = createStartContext({ serverEntry: entry, serverPort });
+    const processes: ManagedFullStackProcesses = {
+      daemonRun: null,
+      serverRun: null,
+    };
+    const finalizationEnteredPath = join(dirname(entry), "writer-finalizing");
+    const finalizationReleasePath = join(dirname(entry), "release-writer");
+    const completionPath = join(dirname(entry), "writer-finished");
+    const serverRun = await startFullStackServerProcess({
+      context,
+      env: {
+        BB_SERVER_PORT: String(context.serverPort),
+        PATH: process.env.PATH,
+      },
+      processes,
+      testWriterBarrier: {
+        completionPath,
+        finalizationEnteredPath,
+        finalizationReleasePath,
+      },
+    });
+    const termination = serverRun.terminate("SIGTERM");
+    let writerPid: number | undefined;
+    let writerKill: ReturnType<typeof vi.spyOn> | undefined;
+
+    try {
+      await vi.waitFor(() =>
+        expect(existsSync(finalizationEnteredPath)).toBe(true),
+      );
+      writerPid = Number(readFileSync(finalizationEnteredPath, "utf8"));
+      expect(writerPid).toBeGreaterThan(0);
+      const realKill = ChildProcess.prototype.kill;
+      writerKill = vi
+        .spyOn(ChildProcess.prototype, "kill")
+        .mockImplementation(function (
+          this: ChildProcess,
+          signal?: number | NodeJS.Signals,
+        ) {
+          if (this.pid === writerPid && signal === "SIGKILL") {
+            const error = Object.assign(
+              new Error("simulated SIGKILL delivery failure"),
+              { code: "EPERM" },
+            );
+            this.emit("error", error);
+            return false;
+          }
+          return realKill.call(this, signal);
+        });
+
+      await expect(termination).rejects.toThrow(String(writerPid));
+      expect(() => process.kill(writerPid!, 0)).not.toThrow();
+    } finally {
+      writerKill?.mockRestore();
+      if (!existsSync(finalizationReleasePath)) {
+        writeFileSync(finalizationReleasePath, "release");
+      }
+      await vi.waitFor(() => expect(existsSync(completionPath)).toBe(true));
+      if (writerPid !== undefined) {
+        await vi.waitFor(() => {
+          let writerIsGone = false;
+          try {
+            process.kill(writerPid!, 0);
+          } catch (error) {
+            writerIsGone = (error as NodeJS.ErrnoException).code === "ESRCH";
+          }
+          expect(writerIsGone).toBe(true);
+        });
+      }
     }
   });
 

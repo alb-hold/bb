@@ -83,6 +83,13 @@ export const timelineConversationAttachmentsSchema = z.object({
   imageUrls: z.array(z.string()),
   localImagePaths: z.array(z.string()),
   localFilePaths: z.array(z.string()),
+  localFileDetails: z.array(
+    z.object({
+      path: z.string(),
+      name: z.string(),
+      sizeBytes: z.number().int().nonnegative().nullable(),
+    }),
+  ),
 });
 export type TimelineConversationAttachments = z.infer<
   typeof timelineConversationAttachmentsSchema
@@ -180,6 +187,10 @@ export const timelineParentChangeSchema = z.object({
 });
 export type TimelineParentChange = z.infer<typeof timelineParentChangeSchema>;
 
+const timelineContentDeferredField = {
+  contentDeferred: z.literal(true).optional(),
+};
+
 const timelineSystemRowBaseSchema = timelineRowBaseSchema.extend({
   kind: z.literal("system"),
   title: z.string(),
@@ -201,6 +212,7 @@ export const timelineGenericOperationSystemRowSchema =
     operationKind: timelineGenericSystemOperationKindSchema,
     reasoningId: z.string().optional(),
     completedAt: z.number().nullable(),
+    ...timelineContentDeferredField,
   });
 
 export const timelineParentChangeSystemRowSchema =
@@ -284,6 +296,7 @@ export const timelineCommandWorkRowSchema = timelineWorkRowBaseSchema.extend({
   approvalStatus: timelineApprovalStatusSchema,
   activityIntents: z.array(timelineActivityIntentSchema),
   ...timelineRowPresentationField,
+  ...timelineContentDeferredField,
 });
 export type TimelineCommandWorkRow = z.infer<
   typeof timelineCommandWorkRowSchema
@@ -299,6 +312,7 @@ export const timelineToolWorkRowSchema = timelineWorkRowBaseSchema.extend({
   completedAt: z.number().nullable(),
   approvalStatus: timelineApprovalStatusSchema,
   ...timelineRowPresentationField,
+  ...timelineContentDeferredField,
 });
 export type TimelineToolWorkRow = z.infer<typeof timelineToolWorkRowSchema>;
 
@@ -311,6 +325,7 @@ export const timelineFileChangeWorkRowSchema = timelineWorkRowBaseSchema.extend(
     stderr: z.string().nullable(),
     approvalStatus: timelineApprovalStatusSchema,
     ...timelineRowPresentationField,
+    ...timelineContentDeferredField,
   },
 );
 export type TimelineFileChangeWorkRow = z.infer<
@@ -520,7 +535,7 @@ export interface TimelineDelegationWorkRow extends TimelineWorkRowBase {
   description: string | null;
   output: string;
   completedAt: number | null;
-  childRows: TimelineRow[];
+  childRows: TimelineRow[] | null;
   presentation?: TimelineRowPresentation;
 }
 
@@ -535,7 +550,7 @@ export const timelineDelegationWorkRowSchema: z.ZodType<TimelineDelegationWorkRo
     description: z.string().nullable(),
     output: z.string(),
     completedAt: z.number().nullable(),
-    childRows: z.array(z.lazy(() => timelineRowSchema)),
+    childRows: z.array(z.lazy(() => timelineRowSchema)).nullable(),
     ...timelineRowPresentationField,
   });
 
@@ -633,54 +648,8 @@ export const timelineRowSchema: z.ZodType<TimelineRow> = z.lazy(() =>
 
 export type TimelineToolArgs = JsonObject | null;
 
-export const timelineDeltaSchema = z.object({
-  upsertRows: z.array(timelineRowSchema),
-  rowOrder: z.array(z.string()).optional(),
-});
-export type TimelineDelta = z.infer<typeof timelineDeltaSchema>;
-
-export function computeTimelineRowDelta(
-  prevRows: readonly TimelineRow[],
-  currentRows: readonly TimelineRow[],
-): TimelineDelta {
-  const prevById = new Map<string, string>();
-  for (const row of prevRows) {
-    prevById.set(row.id, JSON.stringify(row));
-  }
-  const upsertRows: TimelineRow[] = [];
-  const rowOrder: string[] = [];
-  let orderChanged = prevRows.length !== currentRows.length;
-  for (const row of currentRows) {
-    rowOrder.push(row.id);
-    if (prevRows[rowOrder.length - 1]?.id !== row.id) {
-      orderChanged = true;
-    }
-    if (prevById.get(row.id) !== JSON.stringify(row)) {
-      upsertRows.push(row);
-    }
-  }
-  return orderChanged ? { upsertRows, rowOrder } : { upsertRows };
-}
-
-export function applyTimelineDelta(
-  prevRows: readonly TimelineRow[],
-  delta: TimelineDelta,
-): TimelineRow[] | null {
-  const byId = new Map<string, TimelineRow>();
-  for (const row of prevRows) {
-    byId.set(row.id, row);
-  }
-  for (const row of delta.upsertRows) {
-    byId.set(row.id, row);
-  }
-  const result: TimelineRow[] = [];
-  const rowOrder = delta.rowOrder ?? prevRows.map((row) => row.id);
-  for (const id of rowOrder) {
-    const row = byId.get(id);
-    if (row === undefined) {
-      return null;
-    }
-    result.push(row);
-  }
-  return result;
-}
+export {
+  timelineRowChildren,
+  withTimelineRowChildren,
+  mapTimelineRowTree,
+} from "./thread-timeline-operations.js";

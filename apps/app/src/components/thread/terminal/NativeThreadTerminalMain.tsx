@@ -1,0 +1,244 @@
+import { useEffect, useState, type FocusEvent } from "react";
+import { isRunningThreadRuntimeDisplayStatus } from "@bb/client-core";
+import { Button } from "@bb/shared-ui/button";
+import { useMediaQuery } from "@bb/shared-ui/hooks/use-media-query";
+import type { NativeTerminalThread } from "@bb/server-contract";
+import type { ThreadRuntimeState } from "@bb/domain";
+import { LazyThreadTerminalPanel } from "@/components/secondary-panel/lazySecondaryPanelComponents";
+import type { MarkdownPreviewLinkHandler } from "@/components/ui/markdown-link";
+import {
+  useNativeTerminalThread,
+  useOpenNativeTerminal,
+} from "@/hooks/queries/native-terminal-queries";
+import { useThreadPendingInteractions } from "@/hooks/queries/thread-queries";
+import { useThreadTerminals } from "@/hooks/queries/thread-terminal-queries";
+import { useOptionalPaneContext } from "@/views/thread-detail/PaneContext";
+import { NativeActivityNotice } from "./NativeActivityNotice";
+import { NativeTerminalPromptBar } from "./NativeTerminalPromptBar";
+import { useNativeActivityNotice } from "@/hooks/useNativeActivityUnconfirmed";
+import {
+  NativeTerminalWaitingBanner,
+  nativeTerminalWaitingPrompts,
+} from "./NativeTerminalWaitingBanner";
+import {
+  resolveNativeTerminalSession,
+  resolveNativeTerminalState,
+} from "./native-terminal-state";
+
+interface NativeThreadTerminalMainProps {
+  onOpenLink?: MarkdownPreviewLinkHandler;
+  projectId: string;
+  runtime: ThreadRuntimeState;
+  threadId: string;
+  threadIsProvisioning: boolean;
+  view: NativeTerminalThread;
+}
+
+export function NativeThreadTerminalMain({
+  onOpenLink,
+  projectId,
+  runtime,
+  threadId,
+  threadIsProvisioning,
+  view,
+}: NativeThreadTerminalMainProps) {
+  const activityNotice = useNativeActivityNotice(runtime);
+  const terminalsQuery = useThreadTerminals(threadId);
+  const interactionsQuery = useThreadPendingInteractions(threadId);
+  const nativeQuery = useNativeTerminalThread(threadId);
+  const openNative = useOpenNativeTerminal();
+  const session = resolveNativeTerminalSession({
+    listedSessions: terminalsQuery.data?.sessions,
+    listUpdatedAt: terminalsQuery.dataUpdatedAt,
+    view,
+    viewUpdatedAt: nativeQuery.dataUpdatedAt,
+  });
+  const state = resolveNativeTerminalState({
+    session,
+    threadIsProvisioning,
+    threadIsRunning: isRunningThreadRuntimeDisplayStatus(runtime.displayStatus),
+  });
+  const providerLabel = view.displayName;
+  const waitingPrompts = nativeTerminalWaitingPrompts(
+    interactionsQuery.data ?? [],
+  );
+  const paneIsFocused = useOptionalPaneContext()?.isFocused ?? true;
+  const isTouchDevice = useMediaQuery("(pointer: coarse)");
+  const { refetch } = nativeQuery;
+  const terminalsUpdatedAt = terminalsQuery.dataUpdatedAt;
+  const [composerEngaged, setComposerEngaged] = useState(false);
+  const onFocusWithin = (event: FocusEvent<HTMLDivElement>) => {
+    if (
+      event.target instanceof Element &&
+      event.target.closest("form[data-native-terminal-prompt]") !== null
+    ) {
+      setComposerEngaged(true);
+    }
+  };
+
+  useEffect(() => {
+    if (!paneIsFocused) setComposerEngaged(false);
+  }, [paneIsFocused]);
+
+  useEffect(() => {
+    void LazyThreadTerminalPanel.preload();
+  }, []);
+
+  useEffect(() => {
+    if (state.kind === "live") return;
+    void refetch();
+  }, [refetch, state.kind, terminalsUpdatedAt]);
+
+  if (state.kind === "live") {
+    return (
+      <div
+        className="flex h-full min-h-0 min-w-0 flex-col"
+        data-native-terminal-thread={view.providerId}
+        data-no-sidebar-swipe=""
+        onFocus={onFocusWithin}
+      >
+        <NativeTerminalWaitingBanner
+          prompts={waitingPrompts}
+          providerLabel={providerLabel}
+        />
+        <NativeActivityNotice
+          hostId={view.terminal?.hostId ?? null}
+          notice={activityNotice}
+          pendingPromptCount={waitingPrompts.length}
+          threadId={threadId}
+        />
+        <LazyThreadTerminalPanel
+          autoFocus={paneIsFocused && !isTouchDevice && !composerEngaged}
+          isPanelOpen
+          isPanelPersistedOpen
+          onOpenLink={onOpenLink}
+          onCloseStart={() => {}}
+          onRetryStart={() => {}}
+          target={{ kind: "thread", threadId }}
+          terminalId={state.terminalId}
+        />
+        <NativeTerminalPromptBar
+          projectId={projectId}
+          providerLabel={providerLabel}
+          threadId={threadId}
+        />
+      </div>
+    );
+  }
+
+  if (state.kind === "preparing" || state.kind === "reconnecting") {
+    return (
+      <div
+        className="flex h-full items-center justify-center px-4 text-center text-sm text-muted-foreground"
+        data-native-terminal-thread={view.providerId}
+      >
+        {state.kind === "preparing"
+          ? `Preparing the workspace for ${providerLabel}…`
+          : `Reconnecting to ${providerLabel}…`}
+      </div>
+    );
+  }
+
+  if (session === null && terminalsQuery.isLoading) {
+    return (
+      <div
+        aria-busy="true"
+        className="flex h-full items-center justify-center px-4 text-center text-sm text-muted-foreground"
+        data-native-terminal-thread={view.providerId}
+        role="status"
+      >
+        Loading terminals...
+      </div>
+    );
+  }
+
+  const historyExpired =
+    !terminalsQuery.isLoading &&
+    !terminalsQuery.isFetching &&
+    !terminalsQuery.isError &&
+    terminalsQuery.data !== undefined &&
+    terminalsQuery.dataUpdatedAt >= nativeQuery.dataUpdatedAt &&
+    (session?.status === "exited" || view.nativeSessionId !== null) &&
+    !terminalsQuery.data.sessions.some(
+      (terminal) => terminal.id === session?.id,
+    );
+  const endedLabel =
+    runtime.nativeSessionExit === "clean"
+      ? "Exited, resume to continue"
+      : `${providerLabel} session ended`;
+
+  if (session?.status === "exited" && !historyExpired) {
+    return (
+      <div
+        className="flex h-full min-h-0 min-w-0 flex-col"
+        data-native-terminal-thread={view.providerId}
+        data-no-sidebar-swipe=""
+      >
+        <div className="flex min-w-0 flex-wrap items-center justify-between gap-2 border-b border-border-seam px-3 py-2 text-sm">
+          <div className="min-w-0">
+            <span className="font-medium">
+              {endedLabel}
+              {state.exitCode !== null && state.exitCode !== 0
+                ? ` (exit ${state.exitCode})`
+                : ""}
+            </span>
+            {view.nativeSessionId === null ? null : (
+              <span className="ml-2 text-muted-foreground">
+                Session {view.nativeSessionId}
+              </span>
+            )}
+          </div>
+          <Button
+            disabled={openNative.isPending}
+            onClick={() => openNative.mutate({ threadId })}
+          >
+            {view.nativeSessionId === null ? "Start session" : "Resume session"}
+          </Button>
+        </div>
+        <div className="min-h-0 flex-1">
+          <LazyThreadTerminalPanel
+            retainNativeOutput
+            autoFocus={false}
+            isPanelOpen
+            isPanelPersistedOpen
+            onOpenLink={onOpenLink}
+            onCloseStart={() => {}}
+            onRetryStart={() => openNative.mutate({ threadId })}
+            target={{ kind: "thread", threadId }}
+            terminalId={session.id}
+          />
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className="flex h-full flex-col items-center justify-center gap-3 px-4 text-center text-sm"
+      data-native-terminal-thread={view.providerId}
+    >
+      <p className="font-medium text-foreground">
+        {endedLabel}
+        {state.exitCode !== null && state.exitCode !== 0
+          ? ` (exit ${state.exitCode})`
+          : ""}
+      </p>
+      {historyExpired ? (
+        <p className="text-muted-foreground">
+          Terminal history expired. Resume to continue.
+        </p>
+      ) : null}
+      {view.nativeSessionId === null ? null : (
+        <p className="text-muted-foreground">Session {view.nativeSessionId}</p>
+      )}
+      <Button
+        disabled={openNative.isPending}
+        onClick={() => {
+          openNative.mutate({ threadId });
+        }}
+      >
+        {view.nativeSessionId === null ? "Start session" : "Resume session"}
+      </Button>
+    </div>
+  );
+}

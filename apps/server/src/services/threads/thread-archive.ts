@@ -11,6 +11,7 @@ import {
   listLifecycleThreadDependents,
   archiveThread,
   getEnvironment,
+  getNativeTerminalThread,
   listNonDeletedChildThreads,
   listNonDeletedHiddenSourceThreads,
 } from "@bb/db";
@@ -63,7 +64,10 @@ function archiveThreadWithLifecycleEffects(
   }
 
   const now = Date.now();
-  if (!archiveUndoGraceKeepsTerminals(archivedThread, now)) {
+  if (
+    getNativeTerminalThread(deps.db, archivedThread.id) !== null ||
+    !archiveUndoGraceKeepsTerminals(archivedThread, now)
+  ) {
     deps.terminalSessions.closeArchivedThreadTerminals({
       threadId: archivedThread.id,
     });
@@ -74,7 +78,7 @@ function archiveThreadWithLifecycleEffects(
   dispatchSettledArchivedThreadProviderArchiveCommand(deps, {
     threadId: archivedThread.id,
   });
-  resetActiveThreadEventPruningState(archivedThread.id);
+  resetActiveThreadEventPruningState(deps, archivedThread.id);
   pruneThreadEventHistoryBestEffort(deps, {
     mode: "archived",
     threadId: archivedThread.id,
@@ -167,17 +171,26 @@ function archiveThreadTrees(
   return archivedThreadIds;
 }
 
+export function listArchiveCascadeThreadIds(
+  db: AppDeps["db"],
+  thread: Thread,
+): string[] {
+  return listArchiveCandidates(db, [thread])
+    .filter(
+      (candidate) =>
+        candidate.id !== thread.id &&
+        candidate.visibility === "visible" &&
+        candidate.deletedAt === null &&
+        candidate.archivedAt === null,
+    )
+    .map((candidate) => candidate.id);
+}
+
 export function countUnarchivedThreadDescendants(
   db: AppDeps["db"],
   thread: Thread,
 ): number {
-  return listArchiveCandidates(db, [thread]).filter(
-    (candidate) =>
-      candidate.id !== thread.id &&
-      candidate.visibility === "visible" &&
-      candidate.deletedAt === null &&
-      candidate.archivedAt === null,
-  ).length;
+  return listArchiveCascadeThreadIds(db, thread).length;
 }
 
 function listArchiveCandidates(db: AppDeps["db"], roots: Thread[]) {

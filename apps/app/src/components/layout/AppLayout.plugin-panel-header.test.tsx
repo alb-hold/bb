@@ -4,7 +4,7 @@ import {
   act,
   cleanup,
   fireEvent,
-  render,
+  render as renderReact,
   screen,
   waitFor,
 } from "@testing-library/react";
@@ -18,11 +18,23 @@ import {
   setCompactSecondaryPanelPresentation,
 } from "@/components/ui/secondary-panel-shelf-visibility";
 
-const viewportState = vi.hoisted(() => ({
-  compact: false,
-  macosChrome: false,
-  navigationRail: false,
-}));
+import { createQueryClientTestHarness } from "@/test/queryClientTestHarness";
+
+function render(ui: ReactNode) {
+  return renderReact(ui, { wrapper: createQueryClientTestHarness().wrapper });
+}
+
+const viewportState = vi.hoisted(
+  (): {
+    compact: boolean;
+    macosChrome: boolean;
+    navigationPlacement: "rail" | "list";
+  } => ({
+    compact: false,
+    macosChrome: false,
+    navigationPlacement: "rail",
+  }),
+);
 
 vi.mock("@bb/shared-ui/hooks/use-compact-viewport", () => ({
   useIsCompactViewport: () => viewportState.compact,
@@ -40,10 +52,9 @@ vi.mock("@/hooks/queries/system-queries", () => ({
   useSystemConfig: () => ({
     data: {
       experiments: {
-        changelogPreview: false,
         serverMove: false,
         performanceDiagnostics: false,
-        navigationRail: viewportState.navigationRail,
+        timelinePush: false,
       },
     },
   }),
@@ -59,9 +70,20 @@ vi.mock("@/hooks/usePluginSafeModeCommands", () => ({
 }));
 
 vi.mock("@/lib/plugin-slots", () => ({
+  useBuiltinPluginIds: () => new Set<string>(),
   usePluginSlots: () => ({
     appOverlays: [],
     commandPaletteActions: [],
+    experimentalSidebarNavigations: [
+      {
+        pluginId: "navigation",
+        id: "test-navigation",
+        title: "Navigation",
+        placement: viewportState.navigationPlacement,
+        component: () => null,
+        generation: 1,
+      },
+    ],
     fileOpeners: [],
     navPanels: [
       {
@@ -88,9 +110,7 @@ vi.mock("@/components/project/ProjectActionsProvider", () => ({
   ),
 }));
 
-vi.mock("@/hooks/mutations/thread-state-mutations", () => ({
-  useMoveThreadToSection: () => vi.fn(),
-}));
+vi.mock("@/hooks/mutations/thread-state-mutations", () => ({}));
 
 vi.mock("@/components/thread/ThreadActionsProvider", () => ({
   ThreadActionsProvider: ({ children }: { children: ReactNode }) => (
@@ -100,6 +120,10 @@ vi.mock("@/components/thread/ThreadActionsProvider", () => ({
 
 vi.mock("@/components/plugin/PluginAppOverlays", () => ({
   PluginAppOverlays: () => <div data-testid="plugin-app-overlays" />,
+}));
+
+vi.mock("@/components/plugin/ThreadRowMetadataCollectors", () => ({
+  ThreadRowMetadataCollectors: () => null,
 }));
 
 vi.mock("@/components/dialogs/ProjectPathDialog", () => ({
@@ -132,6 +156,9 @@ vi.mock("@/lib/bb-desktop", () => ({
   DEFAULT_DESKTOP_WINDOW_STATE: { isFullScreen: false },
   MACOS_CHROME_CONTROL_AXIS_CLASS: "",
   MACOS_CHROME_CONTROL_NO_DRAG_CLASS: "",
+  MACOS_TITLE_BAR_CONTROL_AXIS_CLASS: "",
+  MACOS_TITLE_BAR_CONTROL_SIZE_CLASS: "",
+  MACOS_TITLE_BAR_PINNED_TOGGLE_CLASS: "",
   MACOS_TRAFFIC_LIGHT_RESERVE_OFFSET_CLASS: "",
   MACOS_TRAFFIC_LIGHT_RESERVE_PADDING_CLASS: "",
   MACOS_WINDOW_DRAG_CLASS: "",
@@ -181,11 +208,11 @@ vi.mock("@/hooks/queries/sidebar-navigation-query", () => ({
 }));
 
 vi.mock("@/hooks/queries/thread-queries", () => ({
+  useArchivedThreads: () => ({ data: undefined }),
   didThreadDetailBootstrapRefreshAfterMount: () => true,
   useThread: () => ({ data: undefined }),
   useThreadDetailBootstrap: () => ({ isError: false, isSuccess: true }),
   useThreadPendingInteractions: () => ({ data: undefined }),
-  getLatestPendingInteraction: () => null,
 }));
 
 function renderPluginPanelRoute(): void {
@@ -210,7 +237,7 @@ describe("AppLayout plugin panel header", () => {
   beforeEach(() => {
     viewportState.compact = false;
     viewportState.macosChrome = false;
-    viewportState.navigationRail = false;
+    viewportState.navigationPlacement = "rail";
     setCompactSecondaryPanelPresentation("closed");
   });
 
@@ -285,40 +312,54 @@ describe("AppLayout plugin panel header", () => {
     ).toBeUndefined();
   });
 
-  it("moves the trigger and history controls into a window title bar beside the macOS rail", () => {
-    viewportState.macosChrome = true;
-    viewportState.navigationRail = true;
-    renderPluginPanelRoute();
+  it.each(["rail", "list"] as const)(
+    "keeps the macOS trigger and history controls in the window title bar with %s navigation",
+    (placement) => {
+      viewportState.navigationPlacement = placement;
+      viewportState.macosChrome = true;
+      renderPluginPanelRoute();
 
-    const titleBar = screen.getByTestId("app-window-title-bar");
-    expect(screen.getByTestId("app-layout-root").dataset.framed).toBe("");
-    expect(
-      titleBar.contains(
-        screen.getByRole("button", { name: /^Toggle sidebar/ }),
-      ),
-    ).toBe(true);
-    expect(
-      titleBar.contains(screen.getByRole("button", { name: "Go back" })),
-    ).toBe(true);
-    expect(screen.queryByTestId("app-desktop-sidebar-trigger")).toBeNull();
-  });
+      const titleBar = screen.getByTestId("app-window-title-bar");
+      expect(screen.getByTestId("app-layout-root").dataset.framed).toBe("");
+      expect(
+        titleBar.contains(
+          screen.getByRole("button", { name: /^Toggle sidebar/ }),
+        ),
+      ).toBe(true);
+      expect(
+        titleBar.contains(screen.getByRole("button", { name: "Go back" })),
+      ).toBe(true);
+      expect(screen.queryByTestId("app-desktop-sidebar-trigger")).toBeNull();
+    },
+  );
 
-  it("keeps the floating macOS trigger without the rail and on compact windows", () => {
-    viewportState.macosChrome = true;
-    renderPluginPanelRoute();
+  it.each(["rail", "list"] as const)(
+    "keeps the floating sidebar toggle on wide web, Windows, and Linux windows with %s navigation",
+    (placement) => {
+      viewportState.navigationPlacement = placement;
+      renderPluginPanelRoute();
 
-    expect(screen.queryByTestId("app-window-title-bar")).toBeNull();
-    expect(screen.getByTestId("app-desktop-sidebar-trigger")).toBeTruthy();
-    expect(
-      screen.getByTestId("app-layout-root").dataset.framed,
-    ).toBeUndefined();
+      expect(screen.queryByTestId("app-window-title-bar")).toBeNull();
+      expect(screen.getByTestId("app-sidebar-trigger-overlay")).toBeTruthy();
+      expect(
+        screen.getByTestId("app-layout-root").dataset.framed,
+      ).toBeUndefined();
+    },
+  );
 
-    cleanup();
-    viewportState.compact = true;
-    viewportState.navigationRail = true;
-    renderPluginPanelRoute();
+  it.each(["rail", "list"] as const)(
+    "keeps the floating macOS trigger on compact windows with %s navigation",
+    (placement) => {
+      viewportState.navigationPlacement = placement;
+      viewportState.macosChrome = true;
+      viewportState.compact = true;
+      renderPluginPanelRoute();
 
-    expect(screen.queryByTestId("app-window-title-bar")).toBeNull();
-    expect(screen.getByTestId("app-desktop-sidebar-trigger")).toBeTruthy();
-  });
+      expect(screen.queryByTestId("app-window-title-bar")).toBeNull();
+      expect(screen.getByTestId("app-desktop-sidebar-trigger")).toBeTruthy();
+      expect(
+        screen.getByTestId("app-layout-root").dataset.framed,
+      ).toBeUndefined();
+    },
+  );
 });

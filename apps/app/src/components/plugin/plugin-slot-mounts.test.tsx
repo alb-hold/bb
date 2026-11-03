@@ -1,3 +1,4 @@
+import { useThreadFixedTabs } from "./PluginThreadFixedTabs";
 // @vitest-environment jsdom
 
 import {
@@ -7,7 +8,13 @@ import {
   useNavigate,
   useParams,
 } from "react-router-dom";
-import { useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+  startTransition,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   act,
   cleanup,
@@ -15,7 +22,6 @@ import {
   render,
   screen,
 } from "@testing-library/react";
-import { createStore } from "jotai";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PERSONAL_PROJECT_ID } from "@bb/domain";
 import type {
@@ -24,23 +30,20 @@ import type {
   PluginComposerApi,
   PluginFileOpenerProps,
   PluginNewThreadPanelProps,
-  PluginThreadPanelProps,
+  ExperimentalThreadActionTabProps,
 } from "@get-bb/plugin-sdk";
 import { createPluginPanelFixedPanelTab } from "@/lib/fixed-panel-tabs-state";
 import {
   resetPluginSlotStoreForTest,
   setPluginSlotRegistrations,
+  usePluginSlots,
   type PluginNavPanelSlot,
 } from "@/lib/plugin-slots";
-import {
-  AUTOMATIONS_PLUGIN_ID,
-  PLUGIN_PANEL_ROUTE_PATH,
-} from "@/lib/route-paths";
+import { PLUGIN_PANEL_ROUTE_PATH } from "@/lib/route-paths";
 import {
   markPluginFrontendsSettled,
   resetPluginFrontendBootStateForTest,
 } from "@/lib/plugin-frontend-boot-state";
-import { writeLastKnownPluginNavPanelChrome } from "@/lib/plugin-nav-panel-chrome";
 import { PluginPanelView } from "@/views/PluginPanelView";
 import {
   PluginPanelHeaderActions,
@@ -64,8 +67,6 @@ import {
 } from "./plugin-composer-host";
 import { PluginHomepageSections } from "./PluginHomepageSections";
 import { makePluginRegistrationSet as registrationSet } from "@/test/fixtures/plugins";
-import { registerNavigationPlugin } from "@/test/fixtures/navigation-plugin";
-import { renderNavigationHarness } from "@/test/navigation-harness";
 import {
   getComposerInputLock,
   useComposer,
@@ -79,20 +80,19 @@ import {
   usePromptDraftStorage,
 } from "@/hooks/usePromptDraftStorage";
 import {
+  createPanelActionDestination,
   PluginPanelTabContent,
   usePluginNewThreadPanelActions,
   usePluginPanelActions,
   type OpenPluginPanelArgs,
 } from "./PluginPanelActions";
+import { createAppPanelController } from "@/lib/app-fixed-tab-navigation";
 import {
   NewTabActions,
   useNewTabActions,
 } from "@/components/secondary-panel/NewTabActions";
 import { buildFileOpenerPanelTab } from "./file-opener-tabs";
-import { splitLayoutAtom } from "@/lib/split-layout/atoms";
 import type { PromptDraftState } from "@bb/client-core";
-
-const AUTOMATIONS_PLUGIN_PANEL_PATH = "automations";
 
 function composerTextEffectValues(storageKey: string | null) {
   return getComposerTextEffects(storageKey).map(({ effect }) => effect);
@@ -437,6 +437,64 @@ describe("useComposer", () => {
     fireEvent.click(screen.getByText("quiet-update"));
     expect(draft.getCurrent().text).toBe("abcde!");
     expect(screen.getByTestId("reading-text").textContent).toBe("abcde!");
+  });
+
+  it("mounts a plugin that reads the text during a navigation without re-rendering the rest of the page", () => {
+    const pageRenders = vi.fn();
+    function ReadingProbe() {
+      const composer = useComposer();
+      return <div data-testid="navigated-text">{composer.text}</div>;
+    }
+    function PageContent() {
+      pageRenders();
+      return null;
+    }
+    setPluginSlotRegistrations(
+      "demo",
+      registrationSet({
+        composerCustomizations: [
+          {
+            id: "probe",
+            actions: [{ id: "reading", component: ReadingProbe }],
+          },
+        ],
+      }),
+    );
+    const staticView: ComposerView = {
+      scope: { kind: "thread", threadId: "thr_navigated" },
+      layout: "expanded",
+      draft: { text: "", isEmpty: true, attachmentCount: 0 },
+      run: { isRunning: false, isSubmitting: false },
+    };
+    getPromptDraftAccessor({
+      kind: "thread",
+      projectId: PERSONAL_PROJECT_ID,
+      threadId: "thr_navigated",
+    }).setDraft({ text: "saved draft", mentions: [], attachments: [] });
+    function Page({ isOpen }: { isOpen: boolean }) {
+      return (
+        <MemoryRouter initialEntries={["/threads/thr_navigated"]}>
+          {isOpen ? (
+            <>
+              <PageContent />
+              <ComposerActionsSlot view={staticView} />
+            </>
+          ) : null}
+        </MemoryRouter>
+      );
+    }
+    const { rerender } = render(<Page isOpen={false} />);
+
+    act(() => {
+      startTransition(() => {
+        rerender(<Page isOpen />);
+      });
+    });
+
+    expect(screen.getByTestId("navigated-text").textContent).toBe(
+      "saved draft",
+    );
+    expect(pageRenders).toHaveBeenCalledTimes(1);
   });
 
   it("keeps following the draft once a plugin starts reading it after mount", () => {
@@ -1275,8 +1333,8 @@ describe("useComposer", () => {
     );
   });
 
-  it("routes experimental_submit to the composer that owns the submission, and refuses where none does", async () => {
-    const submit = vi.fn(async () => {});
+  it("routes experimental_submit to the on-screen composer, and refuses off screen", async () => {
+    const submit = vi.fn<ComposerEditorBridge["submit"]>(async () => {});
     let captured: PluginComposerApi | null = null;
     registerComposerProbe("submit", (composer) => {
       captured = composer;
@@ -1287,18 +1345,17 @@ describe("useComposer", () => {
       attachments: [],
     };
 
-    function Harness({ withSubmit }: { withSubmit: boolean }) {
+    function Harness() {
       const host = useMemo<PluginComposerHost>(
         () => ({
-          scope: { kind: "thread", threadId: "thr_submit" },
+          scope: { kind: "thread", threadId: "thr_submit", environment: null },
           textEffectKey: "thread:thr_submit",
           getCurrent: () => draft,
           subscribeDraft: () => () => {},
           setDraft: () => {},
           focus: () => {},
-          ...(withSubmit ? { submit } : {}),
         }),
-        [withSubmit],
+        [],
       );
       return (
         <PluginComposerHostProvider value={host}>
@@ -1330,44 +1387,39 @@ describe("useComposer", () => {
         attachmentError: null,
       },
       insertAtCursor: () => true,
+      submit,
     };
     publishComposerEditorBridge("thread:thr_submit", readyEditor);
-    const view = render(
+    render(
       <MemoryRouter initialEntries={["/threads/thr_submit"]}>
-        <Harness withSubmit />
+        <Harness />
       </MemoryRouter>,
     );
     const sendAt = Date.now() + 3_600_000;
     await act(async () => {
       await captured!.experimental_submit({ sendAt });
     });
-    expect(submit).toHaveBeenCalledWith({ sendAt }, undefined);
+    expect(submit).toHaveBeenCalledWith({ mode: "enter", sendAt });
 
     const experimental_data = { kind: "draft" };
     await act(async () => {
       await captured!.experimental_submit({ experimental_data });
     });
-    expect(submit).toHaveBeenLastCalledWith(
-      { experimental_data },
-      { pluginId: "demo", data: experimental_data },
-    );
+    expect(submit).toHaveBeenLastCalledWith({
+      mode: "enter",
+      pluginSubmission: { pluginId: "demo", data: experimental_data },
+    });
 
     await expect(
       captured!.experimental_submit({ sendAt: Date.now() - 1 }),
     ).rejects.toThrow(/future/);
     expect(submit).toHaveBeenCalledTimes(2);
 
-    view.unmount();
-    render(
-      <MemoryRouter initialEntries={["/threads/thr_submit"]}>
-        <Harness withSubmit={false} />
-      </MemoryRouter>,
-    );
+    clearComposerEditorBridge("thread:thr_submit", readyEditor);
     await expect(captured!.experimental_submit({ sendAt })).rejects.toThrow(
-      /cannot submit/,
+      /isn't on screen/,
     );
     expect(submit).toHaveBeenCalledTimes(2);
-    clearComposerEditorBridge("thread:thr_submit", readyEditor);
   });
 });
 
@@ -1484,6 +1536,7 @@ describe("useComposer().experimental_setSelection", () => {
         attachmentError: null,
       },
       insertAtCursor: () => true,
+      submit: async () => {},
     };
     publishComposerEditorBridge("thread:thr_selection", editor);
     const view = render(
@@ -1534,7 +1587,7 @@ describe("useComposer().experimental_setSelection", () => {
       }),
     );
     const host = {
-      scope: { kind: "thread", threadId: "thr_own_selection" },
+      scope: { kind: "thread", threadId: "thr_own_selection", environment: null },
       textEffectKey: "thread:thr_own_selection",
       getSelection: () => selection,
       subscribeSelection: (listener: () => void) => {
@@ -1600,9 +1653,7 @@ describe("useComposer().experimental_setSelection", () => {
     });
 
     await expect(
-      captured!.experimental_setSelection({
-        reasoningLevel: "extreme" as never,
-      }),
+      captured!.experimental_setSelection({ reasoningLevel: "" }),
     ).rejects.toThrow(/reasoning level/);
     await expect(
       captured!.experimental_setSelection({ permissionMode: "yolo" as never }),
@@ -1639,67 +1690,10 @@ describe("useComposer().experimental_setSelection", () => {
   });
 });
 
-describe("Navigation plugin + PluginPanelView", () => {
+describe("PluginPanelView routes", () => {
   function Board() {
     return <div>board panel body</div>;
   }
-
-  function registerAutomationsPanel() {
-    setPluginSlotRegistrations(
-      AUTOMATIONS_PLUGIN_ID,
-      registrationSet({
-        navPanels: [
-          {
-            id: AUTOMATIONS_PLUGIN_PANEL_PATH,
-            title: "Automations",
-            icon: "Calendar",
-            path: AUTOMATIONS_PLUGIN_PANEL_PATH,
-            component: Board,
-          },
-        ],
-      }),
-    );
-  }
-
-  it("keeps the Automations row in the nav list", async () => {
-    await registerNavigationPlugin();
-    registerAutomationsPanel();
-
-    renderNavigationHarness();
-
-    expect(screen.getByRole("button", { name: "Automations" })).toBeDefined();
-  });
-
-  it("renders a sidebar entry that routes to the plugin panel", async () => {
-    await registerNavigationPlugin();
-    setPluginSlotRegistrations(
-      "demo",
-      registrationSet({
-        navPanels: [
-          {
-            id: "board",
-            title: "Demo board",
-            icon: "columns",
-            path: "board",
-            component: Board,
-          },
-        ],
-      }),
-    );
-    renderNavigationHarness({
-      children: (
-        <Routes>
-          <Route path="/" element={<div>home</div>} />
-          <Route
-            path={PLUGIN_PANEL_ROUTE_PATH}
-            element={<RoutedPluginPanelView />}
-          />
-        </Routes>
-      ),
-    });
-    fireEvent.click(screen.getByText("Demo board"));
-    expect(screen.getByText("board panel body")).toBeDefined();
-  });
 
   it("releases the plugin stylesheet when navigation unmounts the panel route", async () => {
     vi.useFakeTimers();
@@ -1758,146 +1752,6 @@ describe("Navigation plugin + PluginPanelView", () => {
     expect(
       document.head.querySelector('link[data-bb-plugin-css="demo"]'),
     ).toBeNull();
-  });
-
-  it("shows a plugin panel's position when it is open in a split", async () => {
-    await registerNavigationPlugin();
-    setPluginSlotRegistrations(
-      "demo",
-      registrationSet({
-        navPanels: [
-          {
-            id: "board",
-            title: "Demo board",
-            icon: "columns",
-            path: "board",
-            component: Board,
-          },
-        ],
-      }),
-    );
-    const store = createStore();
-    store.set(splitLayoutAtom, {
-      focusedPaneId: "pane-thread",
-      root: {
-        type: "split",
-        dir: "row",
-        sizes: [0.5, 0.5],
-        children: [
-          {
-            type: "pane",
-            paneId: "pane-plugin",
-            content: {
-              kind: "plugin-panel",
-              pluginId: "demo",
-              panelPath: "board",
-              subPath: "card/1",
-            },
-          },
-          {
-            type: "pane",
-            paneId: "pane-thread",
-            content: {
-              kind: "thread",
-              projectId: "proj_test",
-              threadId: "thr_test",
-            },
-          },
-        ],
-      },
-    });
-
-    renderNavigationHarness({ store, splitEnabled: true });
-
-    const splitMap = screen.getByRole("img", {
-      name: "Demo board — open in split",
-    });
-    const label = screen.getByText("Demo board");
-    expect(label.nextElementSibling).toBe(splitMap);
-  });
-
-  it("keeps the sidebar entry active on nested plugin panel routes", async () => {
-    await registerNavigationPlugin();
-    setPluginSlotRegistrations(
-      "simple-notes",
-      registrationSet({
-        navPanels: [
-          {
-            id: "simple-notes",
-            title: "Simple notes",
-            icon: "note",
-            path: "simple-notes",
-            component: Board,
-          },
-        ],
-      }),
-    );
-    renderNavigationHarness({
-      initialEntries: [
-        "/plugins/simple-notes/simple-notes/bb-plugin-marketplaces-and-compatible-updates.md",
-      ],
-    });
-
-    expect(
-      screen
-        .getByRole("button", { name: "Simple notes" })
-        .getAttribute("aria-current"),
-    ).toBe("page");
-  });
-
-  it("draws a remembered plugin row before boot and keeps the same node when the plugin registers", async () => {
-    await registerNavigationPlugin();
-    resetPluginFrontendBootStateForTest();
-    writeLastKnownPluginNavPanelChrome([
-      {
-        pluginId: "demo",
-        id: "board",
-        path: "board",
-        title: "Demo board",
-        icon: "columns",
-      },
-    ]);
-    renderNavigationHarness();
-    const rememberedRow = screen.getByRole("button", { name: "Demo board" });
-
-    act(() => {
-      setPluginSlotRegistrations(
-        "demo",
-        registrationSet({
-          navPanels: [
-            {
-              id: "board",
-              title: "Demo board",
-              icon: "columns",
-              path: "board",
-              component: Board,
-            },
-          ],
-        }),
-      );
-      markPluginFrontendsSettled();
-    });
-    expect(screen.getByRole("button", { name: "Demo board" })).toBe(
-      rememberedRow,
-    );
-  });
-
-  it("drops a remembered plugin row that never registers once frontends have settled", async () => {
-    await registerNavigationPlugin();
-    resetPluginFrontendBootStateForTest();
-    writeLastKnownPluginNavPanelChrome([
-      {
-        pluginId: "ghost",
-        id: "board",
-        path: "board",
-        title: "Ghost board",
-        icon: "columns",
-      },
-    ]);
-    renderNavigationHarness();
-    expect(screen.getByRole("button", { name: "Ghost board" })).toBeDefined();
-    act(() => markPluginFrontendsSettled());
-    expect(screen.queryByRole("button", { name: "Ghost board" })).toBeNull();
   });
 
   it("stays quiet for an unknown panel until plugin frontends have booted", () => {
@@ -2037,7 +1891,7 @@ describe("plugin panel shared title bar and full-bleed body", () => {
 });
 
 describe("plugin thread panel actions", () => {
-  function PanelProbe({ threadId, params }: PluginThreadPanelProps) {
+  function PanelProbe({ threadId, params }: ExperimentalThreadActionTabProps) {
     return (
       <div>
         panel body for {threadId} / {JSON.stringify(params)}
@@ -2056,6 +1910,25 @@ describe("plugin thread panel actions", () => {
     );
   }
 
+  function usePanelFor(
+    actions: readonly Parameters<
+      typeof createPanelActionDestination
+    >[0]["action"][],
+    openPluginPanel: (args: OpenPluginPanelArgs) => void,
+  ) {
+    return useMemo(
+      () =>
+        createAppPanelController(() => ({
+          activeTabId: null,
+          close: () => undefined,
+          destinations: actions.map((action) =>
+            createPanelActionDestination({ action, openPluginPanel }),
+          ),
+        })),
+      [actions, openPluginPanel],
+    );
+  }
+
   function ActionsProbe({
     threadId,
     openPluginPanel,
@@ -2063,7 +1936,13 @@ describe("plugin thread panel actions", () => {
     threadId: string | null;
     openPluginPanel: (args: OpenPluginPanelArgs) => void;
   }) {
-    const entries = usePluginPanelActions({ openPluginPanel, threadId });
+    const { actions } = useThreadFixedTabs({ threadId, environmentId: null });
+    const entries = usePluginPanelActions({
+      panel: usePanelFor(actions, openPluginPanel),
+      threadId,
+      environmentId: null,
+      actions,
+    });
     return (
       <div>
         {entries.map((entry) => (
@@ -2084,8 +1963,13 @@ describe("plugin thread panel actions", () => {
             id: "issue",
             title: "Issue",
             component: PanelProbe,
-            run: ({ threadId, openPanel }) => {
-              openPanel({
+            run: ({ threadId, experimental_panel }) => {
+              experimental_panel.openTab({
+                tab: {
+                  id: "issue",
+                  context: { kind: "thread" },
+                  availability: "action",
+                },
                 title: `Issue for ${threadId}`,
                 params: { n: 1, nested: [true, null, { label: "ok" }] },
               });
@@ -2110,7 +1994,7 @@ describe("plugin thread panel actions", () => {
           {tab ? (
             <PluginPanelTabContent
               tab={tab}
-              context={{ kind: "thread", threadId: "thr_9" }}
+              context={{ kind: "thread", threadId: "thr_9", environment: null }}
             />
           ) : null}
         </>
@@ -2148,17 +2032,33 @@ describe("plugin thread panel actions", () => {
             id: "cyclic",
             title: "Cyclic",
             component: PanelProbe,
-            run: ({ openPanel }) => {
-              declines.push(openPanel({ params: cyclic as never }));
+            run: ({ experimental_panel }) => {
+              declines.push(
+                experimental_panel.openTab({
+                  tab: {
+                    id: "cyclic",
+                    context: { kind: "thread" },
+                    availability: "action",
+                  },
+                  params: cyclic as never,
+                }),
+              );
             },
           },
           {
             id: "coerced",
             title: "Coerced",
             component: PanelProbe,
-            run: ({ openPanel }) => {
+            run: ({ experimental_panel }) => {
               declines.push(
-                openPanel({ params: new Date("2026-01-01") as never }),
+                experimental_panel.openTab({
+                  tab: {
+                    id: "coerced",
+                    context: { kind: "thread" },
+                    availability: "action",
+                  },
+                  params: new Date("2026-01-01") as never,
+                }),
               );
             },
           },
@@ -2172,11 +2072,14 @@ describe("plugin thread panel actions", () => {
     fireEvent.click(screen.getByText("Coerced"));
     expect(openPluginPanel).not.toHaveBeenCalled();
     expect(declines).toEqual([false, false]);
-    expect(warn).toHaveBeenCalledTimes(3);
+    expect(warn).toHaveBeenCalledTimes(1);
   });
 
-  it("reports an accepted open as true from both panel action kinds", () => {
+  it("reports an accepted open as true from both panel action kinds, including the retired openPanel", () => {
     const accepted: boolean[] = [];
+    type RetiredOpenPanel = {
+      openPanel(options: { params: { source: string } }): boolean;
+    };
     setPluginSlotRegistrations(
       "demo",
       registrationSet({
@@ -2185,8 +2088,20 @@ describe("plugin thread panel actions", () => {
             id: "issue",
             title: "Thread action",
             component: PanelProbe,
-            run: ({ openPanel }) => {
-              accepted.push(openPanel({ params: { source: "thread" } }));
+            run: (context) => {
+              accepted.push(
+                context.experimental_panel.openTab({
+                  tab: {
+                    id: "issue",
+                    context: { kind: "thread" },
+                    availability: "action",
+                  },
+                  params: { source: "thread" },
+                }),
+                (context as unknown as RetiredOpenPanel).openPanel({
+                  params: { source: "retired-thread" },
+                }),
+              );
             },
           },
         ],
@@ -2195,21 +2110,41 @@ describe("plugin thread panel actions", () => {
             id: "setup",
             title: "Root action",
             component: NewThreadPanelProbe,
-            run: ({ openPanel }) => {
-              accepted.push(openPanel({ params: { source: "root" } }));
+            run: (context) => {
+              accepted.push(
+                context.experimental_panel.openTab({
+                  tab: {
+                    id: "setup",
+                    context: { kind: "thread" },
+                    availability: "action",
+                  },
+                  params: { source: "root" },
+                }),
+                (context as unknown as RetiredOpenPanel).openPanel({
+                  params: { source: "retired-root" },
+                }),
+              );
             },
           },
         ],
       }),
     );
 
+    const opened: (string | null)[] = [];
+    const recordOpen = (args: OpenPluginPanelArgs) => {
+      opened.push(args.paramsJson);
+    };
     function BothActionsHarness() {
+      const { actions } = useThreadFixedTabs({ threadId: "thr_one", environmentId: null });
+      const { newThreadPanelActions } = usePluginSlots();
       const threadEntries = usePluginPanelActions({
-        openPluginPanel: () => undefined,
+        actions,
+        panel: usePanelFor(actions, recordOpen),
         threadId: "thr_9",
+        environmentId: null,
       });
       const rootEntries = usePluginNewThreadPanelActions({
-        openPluginPanel: () => undefined,
+        panel: usePanelFor(newThreadPanelActions, recordOpen),
         projectId: "proj_1",
       });
       return (
@@ -2227,7 +2162,13 @@ describe("plugin thread panel actions", () => {
     fireEvent.click(screen.getByText("Thread action"));
     fireEvent.click(screen.getByText("Root action"));
 
-    expect(accepted).toEqual([true, true]);
+    expect(accepted).toEqual([true, true, true, true]);
+    expect(opened).toEqual([
+      '{"source":"thread"}',
+      '{"source":"retired-thread"}',
+      '{"source":"root"}',
+      '{"source":"retired-root"}',
+    ]);
   });
 
   it("offers no actions outside a thread context", () => {
@@ -2256,8 +2197,13 @@ describe("plugin thread panel actions", () => {
             title: "Set up thread",
             icon: "Wand",
             component: NewThreadPanelProbe,
-            run: ({ projectId, openPanel }) => {
-              openPanel({
+            run: ({ projectId, experimental_panel }) => {
+              experimental_panel.openTab({
+                tab: {
+                  id: "setup",
+                  context: { kind: "thread" },
+                  availability: "action",
+                },
                 title: `Setup for ${String(projectId)}`,
                 params: { source: "root" },
               });
@@ -2271,8 +2217,11 @@ describe("plugin thread panel actions", () => {
       const [tab, setTab] = useState<ReturnType<
         typeof createPluginPanelFixedPanelTab
       > | null>(null);
+      const { newThreadPanelActions } = usePluginSlots();
       const entries = usePluginNewThreadPanelActions({
-        openPluginPanel: (args) => setTab(createPluginPanelFixedPanelTab(args)),
+        panel: usePanelFor(newThreadPanelActions, (args) =>
+          setTab(createPluginPanelFixedPanelTab(args)),
+        ),
         projectId: "proj_1",
       });
       const actions = useNewTabActions({
@@ -2307,7 +2256,7 @@ describe("plugin thread panel actions", () => {
     expect(screen.queryByText("Set up thread")).toBeNull();
   });
 
-  it("degrades to a placeholder when the tab's action is gone", () => {
+  it("degrades to a placeholder once plugins settle without the tab's action", () => {
     const tab = createPluginPanelFixedPanelTab({
       actionId: "issue",
       paramsJson: null,
@@ -2317,9 +2266,13 @@ describe("plugin thread panel actions", () => {
     render(
       <PluginPanelTabContent
         tab={tab}
-        context={{ kind: "thread", threadId: "thr_9" }}
+        context={{ kind: "thread", threadId: "thr_9", environment: null }}
       />,
     );
+    expect(screen.queryByText(/This plugin tab is not available/)).toBeNull();
+
+    act(() => markPluginFrontendsSettled());
+
     expect(screen.getByText(/This plugin tab is not available/)).toBeDefined();
   });
 
@@ -2342,7 +2295,7 @@ describe("plugin thread panel actions", () => {
     render(
       <PluginPanelTabContent
         tab={tab}
-        context={{ kind: "thread", threadId: "thr_9" }}
+        context={{ kind: "thread", threadId: "thr_9", environment: null }}
       />,
     );
     expect(screen.getByText("panel body for thr_9 / null")).toBeDefined();
@@ -2496,7 +2449,7 @@ describe("plugin file opener tabs", () => {
       const content = () => (
         <PluginPanelTabContent
           tab={tab}
-          context={{ kind: "thread", threadId: "thr_1" }}
+          context={{ kind: "thread", threadId: "thr_1", environment: null }}
           fileOpenerOriginal={<div>native</div>}
         />
       );
@@ -2573,7 +2526,7 @@ describe("plugin file opener tabs", () => {
     render(
       <PluginPanelTabContent
         tab={tab}
-        context={{ kind: "thread", threadId: "thr_1" }}
+        context={{ kind: "thread", threadId: "thr_1", environment: null }}
         fileOpenerOriginal={
           <button type="button">Native line 7 and editor actions</button>
         }

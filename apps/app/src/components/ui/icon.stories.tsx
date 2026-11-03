@@ -72,6 +72,7 @@ const USAGE: Partial<Record<IconName, string>> = {
   Mail: "Mark unread thread action",
   MailOpen: "Mark read thread action",
   Maximize2: "Expand right panel, open Mermaid diagram dialog",
+  Megaphone02: "Notify parent: the thread info row and thread action",
   MessageSquarePlus: "“New chat” button in sidebar",
   Mic: "Voice toggle in prompt",
   Minimize2: "Restore conversation split",
@@ -97,9 +98,10 @@ const USAGE: Partial<Record<IconName, string>> = {
   Square: "Stop button while running, in-progress and pending todo glyphs",
   TextWrap: "Line-wrap toggle for diff cards and source file previews",
   Trash2: "Delete queued message, remove project source",
-  UserRound:
-    "Thread mentions, parent-thread indicators, and active child-thread banner",
-  UserRoundPlus: "unused legacy parent-action icon",
+  ChildThread:
+    "Child thread badges, running child threads, and thread assignment events",
+  UserRound: "Thread mentions, thread links, and the Parent card and row",
+  UserRoundPlus: "Subagent timeline rows",
   Workflow: "Workflow card indicator in the prompt stack",
   X: "Close dialogs/drawers, clear search input, remove attachment, close metadata panel",
   Zap: "Fast-mode indicator in model picker trigger, Fast-mode toggle row",

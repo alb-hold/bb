@@ -1,5 +1,8 @@
 #!/usr/bin/env node
+
+import { experimental_selectedSkillMentions as selectedSkillMentions } from "@get-bb/plugin-sdk/provider-bridge";
 import { ClaudeContextUsageCollector } from "./context-usage.js";
+import { readIsolatedClaudeContextUsage } from "./context-usage-probe.js";
 
 import {
   type PendingInteractionGrantedPermissionProfile,
@@ -34,7 +37,6 @@ import { randomUUID } from "node:crypto";
 import { join as joinPath, resolve as resolvePath } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import {
-  forkSession,
   type CanUseTool,
   type HookCallback,
   type OnElicitation,
@@ -57,14 +59,24 @@ import {
   buildClaudeTurnParams,
   type ClaudeCodeSkillRoot,
 } from "../session-params.js";
-import { SdkSession, type SdkSessionOptions } from "./sdk-session.js";
+import {
+  isBypassPermissionsAvailable,
+  SdkSession,
+  type SdkSessionOptions,
+} from "./sdk-session.js";
 import { MissingClaudeCliError } from "./missing-cli-error.js";
+import { claudeConfigDirectory, forkClaudeSession } from "./session-fork.js";
 import {
   UNSHARED_CLAUDE_CODE_MODEL_CATALOG,
   createClaudeCodeBridgeModelListMemo,
   createSharedClaudeCodeModelCatalogFile,
   probeClaudeCodeDiscoveredModels,
 } from "./model-list.js";
+import {
+  PROVIDER_COMMANDS_STATE_KIND,
+  createClaudeCodeBridgeCommandListMemo,
+  toProviderCommandsState,
+} from "./provider-commands.js";
 import {
   claudeThreadForkParamsSchema,
   claudeThreadResumeParamsSchema,
@@ -89,6 +101,7 @@ import {
 } from "./provider-maintenance.js";
 import {
   buildChromeExtraArgs,
+  buildClaudeFeatureEnv,
   buildReadonlyDenialMessage,
   buildMutableFlagSettings,
   buildSessionOptions,
@@ -100,6 +113,8 @@ import {
 import {
   createClaudeSkillPluginsRoot,
   ensureClaudeSkillPlugin,
+  filterClaudeSkillRoots,
+  claudeSkillsConfigDirectory,
 } from "./skill-plugins.js";
 import {
   buildBridgeMcpServer,
@@ -164,7 +179,19 @@ const promptInputItemSchema = z.discriminatedUnion("type", [
   }),
 ]);
 
-const CLAUDE_PROVIDER_SUBAGENT_TOOL_NAMES = new Set(["Agent", "Task"]);
+const CLAUDE_PROVIDER_SUBAGENT_TOOL_NAMES = new Set([
+  "Agent",
+  "Task",
+  "ListAgents",
+]);
+
+function subagentDisallowedTools(
+  providerSubagentsEnabled: boolean,
+): string[] | undefined {
+  return providerSubagentsEnabled
+    ? undefined
+    : [...CLAUDE_PROVIDER_SUBAGENT_TOOL_NAMES];
+}
 const CLAUDE_WORKFLOW_TOOL_NAME = "Workflow";
 
 interface BridgeEventNotification {
@@ -232,6 +259,7 @@ interface ClaudeSessionRestart {
 }
 
 interface ThreadSession {
+  commandListGeneration: number;
   contextUsageCollector: ClaudeContextUsageCollector;
   session: SdkSession;
   attachment: ThreadAttachment;
@@ -262,6 +290,7 @@ interface ThreadAttachment {
   liveSettings: ClaudeLiveSessionSettings;
   approvedPlanPermissionMode: ClaudePermissionMode;
   providerThreadId?: string;
+  publishedProviderCommands: string | null;
   sessionPermissionGrants: ClaudeSessionPermissionGrant[];
   mcpConfigSignature: string | null;
   mcpConfigRefresh: Promise<void> | null;
@@ -303,6 +332,7 @@ interface SessionConstructionConfig {
 }
 
 interface ClaudeLiveSessionSettings {
+  fullAccessApprovalsEnabled: boolean;
   memoryEnabled: boolean;
   model?: string;
   providerSubagentsEnabled: boolean;
@@ -492,7 +522,7 @@ function cancelPendingElicitationQuestions(
     pending.settle({ ok: false, message });
   }
 }
-let configuredSkillRoots: ClaudeCodeSkillRoot[] | null = null;
+let configuredSkillRoots: { id: string; path: string }[] | null = null;
 let skillPluginsRoot: string | null = null;
 let bridgeTempDir: string | null = null;
 let bridgeDataDir: string | null = null;
@@ -547,6 +577,7 @@ function resolvePendingSessionWork(
   threadSession: ThreadSession,
   message: string,
 ): void {
+  threadSession.contextUsageCollector.cancel();
   toolCallTracker.resolvePendingToolCalls(threadSession, message);
   resolvePendingInteractiveRequests(threadSession, message);
 }
@@ -574,6 +605,34 @@ function applyChromeSetting(
   }
 }
 
+function applySubagentSetting(
+  attachment: ThreadAttachment,
+  enabled: boolean | undefined,
+): void {
+  if (
+    enabled === undefined ||
+    attachment.liveSettings.providerSubagentsEnabled === enabled
+  ) {
+    return;
+  }
+  const disallowedTools = subagentDisallowedTools(enabled);
+  if (disallowedTools === undefined) {
+    delete attachment.sessionOptions.disallowedTools;
+  } else {
+    attachment.sessionOptions.disallowedTools = disallowedTools;
+  }
+  attachment.liveSettings = {
+    ...attachment.liveSettings,
+    providerSubagentsEnabled: enabled,
+  };
+  if (attachment.residentSession) {
+    attachment.residentSession.restartBeforeNextTurn = {
+      reason: "Claude Code subagent setting changed",
+      showRuntimeNote: false,
+    };
+  }
+}
+
 function applyContextWindowSetting(
   attachment: ThreadAttachment,
   disabled: boolean | undefined,
@@ -583,16 +642,42 @@ function applyContextWindowSetting(
     return;
   }
   sessionOptions.disable1MContext = disabled;
-  attachment.sessionOptions.env = {
-    ...attachment.sessionOptions.env,
-    CLAUDE_CODE_DISABLE_1M_CONTEXT: disabled ? "1" : "0",
-  };
+  refreshSessionEnv(attachment);
   if (attachment.residentSession) {
     attachment.residentSession.restartBeforeNextTurn = {
       reason: "Claude Code 1M context setting changed",
       showRuntimeNote: false,
     };
   }
+}
+
+function applyArtifactSetting(
+  attachment: ThreadAttachment,
+  enabled: boolean | undefined,
+): void {
+  const sessionOptions = attachment.sessionConstructionConfig.sessionOptions;
+  if (enabled === undefined || sessionOptions.artifactsEnabled === enabled) {
+    return;
+  }
+  sessionOptions.artifactsEnabled = enabled;
+  refreshSessionEnv(attachment);
+  if (attachment.residentSession) {
+    attachment.residentSession.restartBeforeNextTurn = {
+      reason: "Claude Artifacts setting changed",
+      showRuntimeNote: false,
+    };
+  }
+}
+
+function refreshSessionEnv(attachment: ThreadAttachment): void {
+  attachment.sessionOptions.env = {
+    ...buildSessionEnv(
+      readConfigEnvOverrides(attachment.sessionConstructionConfig.config),
+    ),
+    ...buildClaudeFeatureEnv(
+      attachment.sessionConstructionConfig.sessionOptions,
+    ),
+  };
 }
 
 async function applyPermissionSettings(
@@ -909,6 +994,7 @@ async function applyLiveSessionSettings(
   threadSession.attachment.liveSettings = next;
 }
 
+
 const MODEL_LIST_MEMO_TTL_MS = 2 * 60_000;
 const MODEL_PROBE_RENEWAL_WINDOW_MS = 5 * 60_000;
 const MODEL_CATALOG_FILE_NAME = "claude-code-model-catalog.json";
@@ -923,6 +1009,10 @@ const listModelsMemoized = createClaudeCodeBridgeModelListMemo({
           joinPath(bridgeDataDir, MODEL_CATALOG_FILE_NAME),
         ),
   renewalDue: () => isClaudeSignInRenewalDue(MODEL_PROBE_RENEWAL_WINDOW_MS),
+});
+const PROVIDER_CATALOG_MEMO_TTL_MS = 2 * 60_000;
+const listCommandsMemoized = createClaudeCodeBridgeCommandListMemo({
+  ttlMs: PROVIDER_CATALOG_MEMO_TTL_MS,
 });
 
 function sendThreadDeltas(
@@ -1122,6 +1212,7 @@ function toSessionConstructionConfig(
       baseInstructions: params.baseInstructions,
       chromeEnabled: params.chromeEnabled,
       disable1MContext: params.disable1MContext,
+      artifactsEnabled: params.artifactsEnabled,
       cwd: params.cwd,
       instructionMode: params.instructionMode,
       permissionMode: params.permissionMode,
@@ -1136,6 +1227,7 @@ function toInitialLiveSessionSettings(
   params: SessionConstructionParams,
 ): ClaudeLiveSessionSettings {
   return {
+    fullAccessApprovalsEnabled: params.fullAccessApprovalsEnabled,
     memoryEnabled: params.memoryEnabled ?? true,
     ...(params.model !== undefined ? { model: params.model } : {}),
     providerSubagentsEnabled: params.providerSubagentsEnabled ?? true,
@@ -1154,6 +1246,8 @@ function withTurnLiveSessionSettings(
   const model = params.model ?? current.model;
   const reasoningLevel = params.reasoningLevel ?? current.reasoningLevel;
   return {
+    fullAccessApprovalsEnabled:
+      params.fullAccessApprovalsEnabled ?? current.fullAccessApprovalsEnabled,
     memoryEnabled: params.memoryEnabled ?? current.memoryEnabled,
     ...(model !== undefined ? { model } : {}),
     providerSubagentsEnabled:
@@ -1193,6 +1287,7 @@ function createThreadAttachment(
     ...(args.providerThreadId
       ? { providerThreadId: args.providerThreadId }
       : {}),
+    publishedProviderCommands: null,
     sessionPermissionGrants: [],
     mcpConfigSignature: null,
     mcpConfigRefresh: null,
@@ -1231,6 +1326,7 @@ function createThreadSession(attachment: ThreadAttachment): ThreadSession {
     })),
   );
   const threadSession: ThreadSession = {
+    commandListGeneration: 0,
     contextUsageCollector: new ClaudeContextUsageCollector(),
     session,
     attachment,
@@ -1518,6 +1614,12 @@ function buildTrackedSessionOptions(
     env,
   );
   sessionOptions.permissionMode = params.permissionMode;
+  const disallowedTools = subagentDisallowedTools(
+    params.providerSubagentsEnabled ?? true,
+  );
+  if (disallowedTools !== undefined) {
+    sessionOptions.disallowedTools = disallowedTools;
+  }
   sessionOptions.hooks = buildSessionTrackingHooks(threadIdRef);
   sessionOptions.recordThreadId = () => threadIdRef.current;
   return sessionOptions;
@@ -1626,6 +1728,46 @@ function getCurrentThreadSession(
   return threadSession;
 }
 
+function publishProviderCommands(
+  threadSession: ThreadSession,
+  commands: unknown,
+): void {
+  if (threadSession.closing) {
+    return;
+  }
+  const state = toProviderCommandsState(commands);
+  const serialized = JSON.stringify(state);
+  const { attachment } = threadSession;
+  if (
+    attachment.publishedProviderCommands === serialized ||
+    (attachment.publishedProviderCommands === null &&
+      state.commands.length === 0)
+  ) {
+    return;
+  }
+  attachment.publishedProviderCommands = serialized;
+  sendThreadDeltas(attachment.threadIdRef.current, [
+    {
+      kind: "extension.state",
+      extensionKind: PROVIDER_COMMANDS_STATE_KIND,
+      payload: state,
+    },
+  ]);
+}
+
+function refreshProviderCommands(threadSession: ThreadSession): void {
+  threadSession.commandListGeneration += 1;
+  const generation = threadSession.commandListGeneration;
+  void threadSession.session.supportedCommands().then(
+    (commands) => {
+      if (generation === threadSession.commandListGeneration) {
+        publishProviderCommands(threadSession, commands);
+      }
+    },
+    () => {},
+  );
+}
+
 function createOnSdkMessage(
   args: CreateSdkCallbackArgs,
 ): (message: SDKMessage) => void {
@@ -1663,6 +1805,15 @@ function createOnSdkMessage(
       threadId: args.threadIdRef.current,
       message,
     });
+    if (message.type === "system" && message.subtype === "init") {
+      refreshProviderCommands(threadSession);
+    } else if (
+      message.type === "system" &&
+      message.subtype === "commands_changed"
+    ) {
+      threadSession.commandListGeneration += 1;
+      publishProviderCommands(threadSession, message.commands);
+    }
     if (
       message.type === "result" ||
       (message.type === "system" &&
@@ -1680,7 +1831,15 @@ function createOnSdkMessage(
       }
       if (providerThreadId) {
         void threadSession.contextUsageCollector.capture({
-          read: () => threadSession.session.getContextUsage(),
+          read: (signal) =>
+            readIsolatedClaudeContextUsage({
+              sessionOptions: threadSession.attachment.sessionOptions,
+              providerSessionId: providerThreadId,
+              dynamicTools:
+                threadSession.attachment.sessionConstructionConfig
+                  .dynamicTools ?? [],
+              signal,
+            }),
           providerSessionId: providerThreadId,
           isCurrent: () =>
             getCurrentThreadSession({
@@ -1829,13 +1988,7 @@ function applyTurnEnvironment(
     ...attachment.sessionConstructionConfig,
     config,
   };
-  attachment.sessionOptions.env = {
-    ...buildSessionEnv(envOverrides),
-    CLAUDE_CODE_DISABLE_1M_CONTEXT: attachment.sessionConstructionConfig
-      .sessionOptions.disable1MContext
-      ? "1"
-      : "0",
-  };
+  refreshSessionEnv(attachment);
   if (attachment.residentSession) {
     attachment.residentSession.restartBeforeNextTurn = {
       reason:
@@ -2035,7 +2188,6 @@ function createForwardInteractiveRequest(
           threadId: args.threadId,
           providerThreadId: args.providerThreadId,
           turnId: null,
-          providerNativeIds: true,
           payload,
         },
       });
@@ -2096,7 +2248,6 @@ function createForwardUserQuestionRequest(
           threadId: args.threadId,
           providerThreadId: args.providerThreadId,
           turnId: null,
-          providerNativeIds: true,
           payload,
         },
       });
@@ -2238,7 +2389,11 @@ function createCanUseTool(threadIdRef: ThreadIdRef): CanUseTool {
       };
     }
 
-    if (threadSession.attachment.permissionMode === "bypassPermissions") {
+    if (
+      threadSession.attachment.permissionMode === "bypassPermissions" &&
+      (!isBypassPermissionsAvailable() ||
+        !threadSession.attachment.liveSettings.fullAccessApprovalsEnabled)
+    ) {
       return {
         behavior: "allow",
         updatedInput: input,
@@ -2290,6 +2445,7 @@ async function handleRequest(request: ClaudeCodeJsonRpcRequest): Promise<void> {
           grammarVersions: [THREAD_DELTA_GRAMMAR_V3, THREAD_DELTA_GRAMMAR_V3],
           steerMode: "inject",
           skills: { configure: true },
+          commands: { list: true },
         },
       };
       sendResult(request.id, result);
@@ -2297,6 +2453,21 @@ async function handleRequest(request: ClaudeCodeJsonRpcRequest): Promise<void> {
     case "model/list":
       try {
         sendResult(request.id, await listModelsMemoized());
+      } catch (error) {
+        if (error instanceof MissingClaudeCliError) {
+          sendError(
+            request.id,
+            BRIDGE_JSON_RPC_ERRORS.MISSING_EXECUTABLE,
+            error.message,
+          );
+          break;
+        }
+        throw error;
+      }
+      break;
+    case "commands/list":
+      try {
+        sendResult(request.id, await listCommandsMemoized(request.params.cwd));
       } catch (error) {
         if (error instanceof MissingClaudeCliError) {
           sendError(
@@ -2331,7 +2502,7 @@ async function handleRequest(request: ClaudeCodeJsonRpcRequest): Promise<void> {
       await handleThreadStart(
         request.id,
         claudeThreadStartParamsSchema.parse(
-          toClaudeSessionParams(request.params),
+          await toClaudeSessionParams(request.params),
         ),
       );
       break;
@@ -2339,7 +2510,7 @@ async function handleRequest(request: ClaudeCodeJsonRpcRequest): Promise<void> {
       await handleThreadResume(
         request.id,
         claudeThreadResumeParamsSchema.parse({
-          ...toClaudeSessionParams(request.params),
+          ...(await toClaudeSessionParams(request.params)),
           providerThreadId: request.params.providerThreadId,
         }),
       );
@@ -2348,7 +2519,7 @@ async function handleRequest(request: ClaudeCodeJsonRpcRequest): Promise<void> {
       await handleThreadFork(
         request.id,
         claudeThreadForkParamsSchema.parse({
-          ...toClaudeSessionParams(request.params),
+          ...(await toClaudeSessionParams(request.params)),
           sourceProviderThreadId: request.params.sourceProviderThreadId,
           ...(request.params.sourceProviderCheckpointId !== undefined
             ? {
@@ -2372,7 +2543,7 @@ async function handleRequest(request: ClaudeCodeJsonRpcRequest): Promise<void> {
       sendResult(request.id, await closeThreadForStop(request.params.threadId));
       break;
     case "skills/configure":
-      configuredSkillRoots = assembleSkillPlugins(request.params.roots);
+      configuredSkillRoots = request.params.roots;
       sendResult(request.id, { ok: true });
       break;
   }
@@ -2517,12 +2688,13 @@ async function handleThreadFork(
 
   let forkedProviderThreadId: string;
   try {
-    const forkResult = await forkSession(params.sourceProviderThreadId, {
-      ...(params.sourceProviderCheckpointId !== undefined
-        ? { upToMessageId: params.sourceProviderCheckpointId }
-        : {}),
+    forkedProviderThreadId = await forkClaudeSession({
+      configDirectory: claudeConfigDirectory(
+        buildSessionEnv(readConfigEnvOverrides(params.config)),
+      ),
+      sourceSessionId: params.sourceProviderThreadId,
+      upToMessageId: params.sourceProviderCheckpointId,
     });
-    forkedProviderThreadId = forkResult.sessionId;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     sendError(id, -32000, message);
@@ -2532,16 +2704,27 @@ async function handleThreadFork(
   attachThreadSession(id, params, forkedProviderThreadId, true);
 }
 
-function toClaudeSessionParams(
+async function toClaudeSessionParams(
   params: z.infer<typeof canonicalThreadStartParamsSchema>,
-): Record<string, unknown> {
+): Promise<Record<string, unknown>> {
+  const roots =
+    configuredSkillRoots === null
+      ? undefined
+      : assembleSkillPlugins(
+          await filterClaudeSkillRoots({
+            roots: configuredSkillRoots,
+            cwd: params.cwd,
+            pluginsRoot: requireSkillPluginsRoot(),
+            claudeDir: claudeSkillsConfigDirectory(),
+          }),
+        );
   return buildClaudeSessionParams({
     threadId: params.threadId,
     cwd: params.cwd,
     options: params.options,
     instructionMode: params.instructionMode,
     dynamicTools: params.dynamicTools,
-    skillRoots: configuredSkillRoots ?? undefined,
+    skillRoots: roots,
   });
 }
 
@@ -2563,7 +2746,9 @@ async function runTurnInput(
       applyTurnEnvironment(attachment, params.config);
     }
     applyChromeSetting(attachment, params.chromeEnabled);
+    applySubagentSetting(attachment, params.providerSubagentsEnabled);
     applyContextWindowSetting(attachment, params.disable1MContext);
+    applyArtifactSetting(attachment, params.artifactsEnabled);
   }
 
   let permissionRestartRequired = false;
@@ -2792,31 +2977,6 @@ function localAttachmentMarker(args: {
   return `[Attached ${args.kind}${namePart}${suffix}. It is on disk at ${args.path} — use the Read tool to view it.]`;
 }
 
-function normalizeClaudeSkillMentions(
-  entry: Extract<z.infer<typeof promptInputItemSchema>, { type: "text" }>,
-): string {
-  const replacements = new Set<number>();
-  for (const mention of entry.mentions) {
-    const resource = mention.resource;
-    if (
-      resource.kind === "command" &&
-      resource.source === "skill" &&
-      resource.trigger === "$" &&
-      typeof resource.name === "string" &&
-      mention.end <= entry.text.length &&
-      entry.text.slice(mention.start, mention.end) === `$${resource.name}`
-    ) {
-      replacements.add(mention.start);
-    }
-  }
-
-  let normalized = entry.text;
-  for (const start of replacements) {
-    normalized = `${normalized.slice(0, start)}/${normalized.slice(start + 1)}`;
-  }
-  return normalized;
-}
-
 function buildPromptText(input: unknown): string | undefined {
   if (typeof input === "string") {
     return input.length > 0 ? input : undefined;
@@ -2824,14 +2984,29 @@ function buildPromptText(input: unknown): string | undefined {
   if (!Array.isArray(input)) return undefined;
 
   const chunks: string[] = [];
+  const skills: {
+    chunkIndex: number;
+    start: number;
+    end: number;
+    name: string;
+  }[] = [];
   for (const item of input) {
     const parsed = promptInputItemSchema.safeParse(item);
     if (!parsed.success) continue;
     const entry = parsed.data;
     switch (entry.type) {
       case "text":
-        if (entry.text.length > 0)
-          chunks.push(normalizeClaudeSkillMentions(entry));
+        if (entry.text.length > 0) {
+          const chunkIndex = chunks.push(entry.text) - 1;
+          for (const mention of selectedSkillMentions(entry)) {
+            skills.push({
+              chunkIndex,
+              start: mention.start,
+              end: mention.end,
+              name: mention.resource.name,
+            });
+          }
+        }
         break;
       case "image":
         chunks.push(`[Attached image: ${entry.url}]`);
@@ -2851,6 +3026,20 @@ function buildPromptText(input: unknown): string | undefined {
         );
         break;
     }
+  }
+
+  const [skill] = skills;
+  if (skills.length === 1 && skill) {
+    const chunk = chunks[skill.chunkIndex]!;
+    chunks[skill.chunkIndex] =
+      `${chunk.slice(0, skill.start)}${chunk.slice(skill.end)}`;
+    const argumentsText = chunks.join("\n");
+    const separator = argumentsText.startsWith(" ") ? "" : " ";
+    return `/${skill.name}${argumentsText ? `${separator}${argumentsText}` : ""}`;
+  }
+  for (const { chunkIndex, start } of skills) {
+    const chunk = chunks[chunkIndex]!;
+    chunks[chunkIndex] = `${chunk.slice(0, start)}/${chunk.slice(start + 1)}`;
   }
 
   return chunks.length > 0 ? chunks.join("\n") : undefined;

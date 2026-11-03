@@ -173,7 +173,10 @@ describe("thread-list plugin", () => {
     const { rpcCalls } = renderList({ organizationMode: "chronological" });
 
     await screen.findByText("Pinned thread");
-    expect(rpcCalls.map((call) => call.method)).toEqual(["listPreferences"]);
+    expect(rpcCalls.map((call) => call.method)).toEqual([
+      "listPreferences",
+      "pullRequests",
+    ]);
     expect(sectionHeaders()).toEqual(["Pinned", "Later", "Review", "Threads"]);
     expect(threadIds()).toEqual([
       "thr_pinned",
@@ -277,12 +280,12 @@ describe("thread-list plugin", () => {
       await screen.findByRole("button", { name: "New thread in Laptop" }),
     );
 
-    expect(inspection.sidebarActionCalls).toContainEqual({
-      method: "openNewThread",
+    expect(inspection.navigateCalls).toContainEqual({
+      method: "toCompose",
       options: {
         projectId: PERSONAL_PROJECT_ID,
         hostId: "host_laptop",
-        experimental_placement: { sectionId: null, pinned: false },
+        placement: { sectionId: null, pinned: false },
         focusPrompt: true,
       },
     });

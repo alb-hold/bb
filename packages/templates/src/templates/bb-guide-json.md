@@ -32,13 +32,14 @@ reading fields.
 Shapes
 
 List commands do not share one wrapper. Most print a bare array; a few wrap it.
-Fields beyond those shown exist; these are the ones scripts use.
+Fields beyond those shown exist; these are the ones scripts use. The `--help` of
+the most-parsed commands ends with the same shape.
 
   bb status --json
     {project: {id, name} | null, thread: {id, status, title, parentThreadId, environment: {hostId, display} | null} | null, childThreads: [{id, status, title}] | null, pendingTodos, pluginsNeedingAttention: [{id, status}], dataDir}
 
   bb thread list --json
-    [{id, projectId, environmentId, providerId, title, status, parentThreadId, sectionId, visibility, archivedAt, pinnedAt, createdAt, updatedAt, activity}]    (bare array; title can be null)
+    [{id, projectId, environmentId, providerId, title, status, parentThreadId, sectionId, visibility, archivedAt, pinnedAt, createdAt, updatedAt, activity}]    (bare array; excludes archived by default unless --thread IDs are given, --archived selects archived only, --all includes both; title can be null)
 
   bb thread show <id> [--usage] --json
     {thread: {id, status, title, projectId, environmentId, parentThreadId, ...}, environment: {id, hostId, path, branchName, ...} | null, pendingTodos, spendSummary, usageTimeline?}    (thread fields are under .thread; --usage includes compaction rows)
@@ -66,7 +67,7 @@ Fields beyond those shown exist; these are the ones scripts use.
     {active: {total, results}, archived: {total, results}}
 
   bb prompt-history list --json
-    {entries: [{id, createdAt, input, projectId, threadId}], nextCursor: string | null}
+    {entries: [{id, createdAt, input, projectId, threadId, scope}], nextCursor: string | null}
 
   bb thread section list --json
     [{id, name, createdAt, updatedAt}]
@@ -97,6 +98,34 @@ Fields beyond those shown exist; these are the ones scripts use.
 
   bb terminal list --thread <id> --json
     {sessions: [{id, title, status, exitCode, closeReason, cols, rows}]}    (wrapped in .sessions)
+
+  bb terminal surfaces --thread <id> --json
+    {threadId, surfaces: [{threadId, terminalId, title, status, kind}]}    (thread-scoped terminal surfaces)
+
+  bb terminal focus <terminalId> [--all] --json
+    {terminalId, deliveredClients, skipReason?: "no_caller_thread" | "no_client_viewing_caller_thread", error?: {code, message} when deliveredClients is 0}
+    deliveredClients counts open app sockets the request was sent to; it does not confirm receipt or application.
+    Without --all the request reaches only app clients viewing the calling thread (BB_THREAD_ID); skipReason and error.code name why none did.
+
+  bb terminal open-link <terminalId> <url> [--all] --json
+    {terminalId, url, deliveredClients, skipReason?: "no_caller_thread" | "no_client_viewing_caller_thread", error?: {code, message} when deliveredClients is 0}
+    deliveredClients counts open app sockets the request was sent to; it does not confirm receipt or application.
+    Without --all the request reaches only app clients viewing the calling thread (BB_THREAD_ID); skipReason and error.code name why none did.
+
+  bb terminal split <terminalId> --side <side> [--all] --json
+    {terminalId, side, deliveredClients, skipReason?: "no_caller_thread" | "no_client_viewing_caller_thread", error?: {code, message} when deliveredClients is 0}
+    deliveredClients counts open app sockets the request was sent to; it does not confirm receipt or application.
+    Without --all the request reaches only app clients viewing the calling thread (BB_THREAD_ID); skipReason and error.code name why none did.
+
+  bb terminal move <terminalId> --to-pane-of <terminalId> [--all] --json
+    {terminalId, targetTerminalId, deliveredClients, skipReason?: "no_caller_thread" | "no_client_viewing_caller_thread", error?: {code, message} when deliveredClients is 0}
+    deliveredClients counts open app sockets the request was sent to; it does not confirm receipt or application.
+    Without --all the request reaches only app clients viewing the calling thread (BB_THREAD_ID); skipReason and error.code name why none did.
+
+  bb thread open [id] [path] [--all] --json
+    {threadId, split, file, deliveredClients, inputPath, skipReason?: "no_caller_thread" | "no_client_viewing_caller_thread", error?: {code, message} when skipReason is set}
+    deliveredClients counts open app sockets the request was sent to; it does not confirm receipt or application.
+    Without --all the request reaches only app clients viewing the calling thread (BB_THREAD_ID); skipReason and error.code name why none did.
 
   bb terminal output <terminalId> --json
     {chunks: [{seq, dataBase64}], nextSeq, truncated, status, exitCode, closeReason}    (chunk data is base64; status is "exited" once the command has finished)

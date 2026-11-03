@@ -1,19 +1,17 @@
 import fs from "node:fs/promises";
-import { afterEach, describe, expect, it } from "vitest";
-import { WorkspaceError, type HostWorkspace } from "@bb/host-workspace";
+import { makeTempDir } from "@bb/test-helpers";
+import { describe, expect, it } from "vitest";
+import type { HostWorkspace } from "@bb/host-workspace";
 import { dispatchCommand } from "../../src/command-dispatch.js";
 import type { EventSinkInput } from "../../src/event-sink.js";
 import {
-  cleanupTempDirs,
   createFakeRuntime,
   createFakeWorkspace,
   createHarness,
   makeDispatchOptions,
-  makeTempDir,
 } from "./dispatch-helpers.js";
 import { RuntimeManager } from "../../src/runtime-manager.js";
-
-afterEach(cleanupTempDirs);
+import { WorkspaceError } from "bb-environment-provider-host/workspace-git";
 
 function streamedEntries(emitted: EventSinkInput[]) {
   return emitted.flatMap((input) =>
@@ -36,6 +34,7 @@ describe("environment command dispatch", () => {
         initiator: null,
         path: sourcePath,
         setupScriptTimeoutMs: null,
+        setupOperation: null,
       },
       harness.dispatchOptions(),
     );
@@ -83,6 +82,7 @@ describe("environment command dispatch", () => {
         },
         path: sourcePath,
         setupScriptTimeoutMs: 10_000,
+        setupOperation: { id: "setup-op", resumeOnly: false },
       },
       makeDispatchOptions({
         runtimeManager: harness.manager,
@@ -123,6 +123,7 @@ describe("environment command dispatch", () => {
           initiator: null,
           path: sourcePath,
           setupScriptTimeoutMs: 10_000,
+          setupOperation: { id: "setup-op", resumeOnly: false },
         },
         harness.dispatchOptions(),
       ),
@@ -178,6 +179,7 @@ describe("environment command dispatch", () => {
         initiator: null,
         path: "/tmp/cancelled",
         setupScriptTimeoutMs: null,
+        setupOperation: null,
       },
       dispatchOptions,
     );
@@ -232,6 +234,7 @@ describe("environment command dispatch", () => {
         initiator: null,
         path: "/tmp/cancelled-no-settle",
         setupScriptTimeoutMs: null,
+        setupOperation: null,
       },
       dispatchOptions,
     ).finally(() => {
@@ -271,6 +274,7 @@ describe("environment command dispatch", () => {
         },
         path: sourcePath,
         setupScriptTimeoutMs: null,
+        setupOperation: null,
       },
       makeDispatchOptions({
         runtimeManager: harness.manager,
@@ -352,6 +356,7 @@ describe("environment command dispatch", () => {
         },
         path: "/tmp/batched-progress",
         setupScriptTimeoutMs: null,
+        setupOperation: null,
       },
       makeDispatchOptions({
         runtimeManager: manager,
@@ -411,6 +416,7 @@ describe("environment command dispatch", () => {
           },
           path: "/tmp/failure",
           setupScriptTimeoutMs: null,
+          setupOperation: null,
         },
         makeDispatchOptions({
           runtimeManager: manager,
@@ -448,6 +454,7 @@ describe("environment command dispatch", () => {
         initiator: null,
         path: sourcePath,
         setupScriptTimeoutMs: null,
+        setupOperation: null,
       },
       harness.dispatchOptions(),
     );
@@ -463,6 +470,7 @@ describe("environment command dispatch", () => {
         },
         path: sourcePath,
         setupScriptTimeoutMs: null,
+        setupOperation: null,
       },
       makeDispatchOptions({
         runtimeManager: harness.manager,
@@ -510,6 +518,7 @@ it("cancels setup with contributions even when another attach is waiting", async
     initiator: null,
     path: sourcePath,
     setupScriptTimeoutMs: 5000,
+    setupOperation: { id: "setup-op", resumeOnly: false },
   };
   const options = harness.dispatchOptions();
   const first = dispatchCommand(command, options);
@@ -539,4 +548,40 @@ it("cancels setup with contributions even when another attach is waiting", async
     await harness.manager.shutdownAll("stop");
     await settled;
   }
+});
+
+it("stops a running setup script when the runtime manager shuts down", async () => {
+  const sourcePath = await makeTempDir("bb-setup-env-shutdown-");
+  const harness = createHarness({ workspacePath: sourcePath });
+  await fs.writeFile(
+    `${sourcePath}/.bb-env-setup.sh`,
+    "echo started > started\nsleep 120\nprintf unsafe > after-shutdown\n",
+  );
+  const attached = dispatchCommand(
+    {
+      type: "environment.attach",
+      contributedEnv: [],
+      environmentId: "env-setup-shutdown",
+      initiator: null,
+      path: sourcePath,
+      setupOperation: null,
+      setupScriptTimeoutMs: 600_000,
+    },
+    harness.dispatchOptions(),
+  );
+  const settled = Promise.allSettled([attached]);
+  await expect
+    .poll(async () => fs.readFile(`${sourcePath}/started`, "utf8"))
+    .toBe("started\n");
+
+  await harness.manager.shutdownAll("stop");
+
+  expect(await settled).toEqual([
+    {
+      status: "rejected",
+      reason: expect.objectContaining({ code: "provision_cancelled" }),
+    },
+  ]);
+  await expect(fs.stat(`${sourcePath}/after-shutdown`)).rejects.toThrow();
+  expect(harness.provisions).toHaveLength(0);
 });

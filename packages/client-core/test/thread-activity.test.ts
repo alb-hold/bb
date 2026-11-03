@@ -1,8 +1,10 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { makeThreadListEntry } from "@bb/test-helpers/domain-fixtures";
 import {
   getCollapsedChildActivity,
+  isNativeActivityUnconfirmed,
   isUnreadDoneThread,
+  nativeActivityEvidenceKind,
   resolveThreadListIndicator,
   threadListIndicatorStateForThread,
   type ThreadListIndicatorState,
@@ -48,6 +50,8 @@ const unreadErrorChild = makeChild({
 
 const idleIndicatorState: ThreadListIndicatorState = {
   hasPendingInteraction: false,
+  isActivityUnreported: false,
+  queuedFailedCount: 0,
   hasUnsubmittedDraft: false,
   hasUnreadError: false,
   hasUnreadSuccess: false,
@@ -62,6 +66,122 @@ const idleIndicatorState: ThreadListIndicatorState = {
 };
 
 describe("thread-activity", () => {
+  it("treats native confirmation as stale after 90 seconds and on future timestamps", () => {
+    const runtime = {
+      displayStatus: "active" as const,
+      nativeActivity: {
+        lastEvidenceAt: 1_000_000,
+        freshForMs: 90_000,
+        confirmation: "confirmed" as const,
+        evidenceKind: "holder-report" as const,
+      },
+    };
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(1_090_000);
+      expect(isNativeActivityUnconfirmed(runtime, 1_090_000)).toBe(false);
+      vi.setSystemTime(1_090_001);
+      expect(isNativeActivityUnconfirmed(runtime, 1_090_001)).toBe(true);
+      vi.setSystemTime(999_999);
+      expect(isNativeActivityUnconfirmed(runtime, 999_999)).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(
+      isNativeActivityUnconfirmed(
+        {
+          ...runtime,
+          nativeActivity: { ...runtime.nativeActivity, lastEvidenceAt: null },
+        },
+        1_000_000,
+      ),
+    ).toBe(true);
+  });
+
+  describe("a receipt ahead of a lagging tick clock", () => {
+    const nativeActivityRuntime = (lastEvidenceAt: number) => ({
+      displayStatus: "active" as const,
+      nativeActivity: {
+        lastEvidenceAt,
+        freshForMs: 90_000,
+        confirmation: "confirmed" as const,
+        evidenceKind: "holder-report" as const,
+      },
+    });
+
+    it("counts a receipt stamped after the tick but before the real clock as confirmed", () => {
+      vi.useFakeTimers();
+      try {
+        vi.setSystemTime(5_000_500);
+        const tickNow = 5_000_000;
+        expect(
+          isNativeActivityUnconfirmed(
+            nativeActivityRuntime(5_000_500),
+            tickNow,
+          ),
+        ).toBe(false);
+        expect(
+          isNativeActivityUnconfirmed(
+            nativeActivityRuntime(5_000_100),
+            tickNow,
+          ),
+        ).toBe(false);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("ages a receipt by the real clock when the tick has stalled", () => {
+      vi.useFakeTimers();
+      try {
+        vi.setSystemTime(300_000);
+        const stalledTick = 100_000;
+        expect(
+          isNativeActivityUnconfirmed(
+            nativeActivityRuntime(150_000),
+            stalledTick,
+          ),
+        ).toBe(true);
+        expect(
+          isNativeActivityUnconfirmed(
+            nativeActivityRuntime(210_000),
+            stalledTick,
+          ),
+        ).toBe(false);
+        expect(
+          isNativeActivityUnconfirmed(
+            nativeActivityRuntime(209_999),
+            stalledTick,
+          ),
+        ).toBe(true);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("still counts a receipt ahead of the real clock as unconfirmed, by one millisecond or by a minute", () => {
+      vi.useFakeTimers();
+      try {
+        vi.setSystemTime(5_000_500);
+        const tickNow = 5_000_000;
+        expect(
+          isNativeActivityUnconfirmed(
+            nativeActivityRuntime(5_000_501),
+            tickNow,
+          ),
+        ).toBe(true);
+        expect(
+          isNativeActivityUnconfirmed(
+            nativeActivityRuntime(5_000_500 + 60_000),
+            tickNow,
+          ),
+        ).toBe(true);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
+
   describe("resolveThreadListIndicator", () => {
     it.each([
       ["needs input", { hasPendingInteraction: true }, "needs-input"],
@@ -187,17 +307,13 @@ describe("thread-activity", () => {
       ).toBe("needs-input");
     });
 
-    it("promotes a failed queued row over a waiting one, but not over work", () => {
-      // Precedence inside the queue fact: a row that failed to go out is the
-      // one the reader has to act on, and a thread can hold both at once.
+    it("promotes a failed queued row over background work, but not over runtime work", () => {
       expect(
         resolveThreadListIndicator({
           ...idleIndicatorState,
           queuedWork: "failed",
         }),
       ).toBe("queued-failed");
-      // Still below every working arm: the failure is about a message that has
-      // not gone, not about the turn currently running.
       expect(
         resolveThreadListIndicator({
           ...idleIndicatorState,
@@ -231,6 +347,30 @@ describe("thread-activity", () => {
         ).toBe(expectedIndicator);
       },
     );
+
+    it.each(["isBackgroundAgentActive", "isBackgroundCommandActive"] as const)(
+      "shows active background work over unread completion for %s",
+      (flag) => {
+        expect(
+          resolveThreadListIndicator({
+            ...idleIndicatorState,
+            hasUnreadSuccess: true,
+            [flag]: true,
+          }),
+        ).toBe("working");
+      },
+    );
+
+    it("shows a running workflow over unread success and a failed queued send", () => {
+      expect(
+        resolveThreadListIndicator({
+          ...idleIndicatorState,
+          isWorkflowActive: true,
+          hasUnreadSuccess: true,
+          queuedWork: "failed",
+        }),
+      ).toBe("working");
+    });
 
     it("keeps Plan and Goal independent and applies Plan precedence", () => {
       expect(
@@ -375,6 +515,8 @@ describe("thread-activity", () => {
 
       expect(threadListIndicatorStateForThread(thread, false)).toEqual({
         hasPendingInteraction: true,
+        isActivityUnreported: false,
+        queuedFailedCount: 0,
         hasUnsubmittedDraft: false,
         hasUnreadError: false,
         hasUnreadSuccess: false,
@@ -390,7 +532,179 @@ describe("thread-activity", () => {
     });
   });
 
+  describe("a live native thread whose activity is not reported", () => {
+    const unconfirmedRuntime = {
+      displayStatus: "active" as const,
+      nativeActivity: {
+        lastEvidenceAt: null,
+        freshForMs: 90_000,
+        confirmation: "unconfirmed" as const,
+        evidenceKind: "unknown" as const,
+      },
+    };
+    const indicatorFor = (
+      overrides: Parameters<typeof makeThreadListEntry>[0],
+    ) =>
+      resolveThreadListIndicator(
+        threadListIndicatorStateForThread(
+          makeThreadListEntry({ status: "active", ...overrides }),
+          false,
+        ),
+      );
+
+    it("reports fresh agent tool-call evidence as its own kind and never as working", () => {
+      const now = 5_000_000;
+      const toolCall = {
+        displayStatus: "active" as const,
+        nativeActivity: {
+          lastEvidenceAt: null,
+          lastToolCallAt: now - 1_000,
+          freshForMs: 90_000,
+          confirmation: "unconfirmed" as const,
+          evidenceKind: "tool-call" as const,
+        },
+      };
+      expect(isNativeActivityUnconfirmed(toolCall, now)).toBe(true);
+      expect(nativeActivityEvidenceKind(toolCall, now)).toBe("tool-call");
+      expect(
+        resolveThreadListIndicator(
+          threadListIndicatorStateForThread(
+            makeThreadListEntry({ status: "active", runtime: toolCall }),
+            false,
+            now,
+          ),
+        ),
+      ).toBe("activity-unreported");
+      expect(nativeActivityEvidenceKind(toolCall, now + 90_001)).toBe(
+        "unknown",
+      );
+      expect(
+        nativeActivityEvidenceKind(
+          {
+            ...toolCall,
+            nativeActivity: {
+              ...toolCall.nativeActivity,
+              lastToolCallAt: now + 1,
+            },
+          },
+          now,
+        ),
+      ).toBe("unknown");
+    });
+
+    it("lets only an explicit confirmed holder report enable working", () => {
+      const now = 5_000_000;
+      const runtimeWith = (confirmation: string, lastEvidenceAt: number) => ({
+        displayStatus: "active" as const,
+        nativeActivity: {
+          lastEvidenceAt,
+          freshForMs: 90_000,
+          confirmation: confirmation as "confirmed",
+          evidenceKind: "holder-report" as const,
+        },
+      });
+      vi.useFakeTimers();
+      try {
+        vi.setSystemTime(now);
+        expect(
+          isNativeActivityUnconfirmed(runtimeWith("confirmed", now), now),
+        ).toBe(false);
+        for (const confirmation of [
+          "unconfirmed",
+          "tool-call",
+          "unknown",
+          "",
+        ]) {
+          expect(
+            isNativeActivityUnconfirmed(runtimeWith(confirmation, now), now),
+          ).toBe(true);
+        }
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("shows a neutral activity-not-reported state, never working", () => {
+      expect(indicatorFor({ runtime: unconfirmedRuntime })).toBe(
+        "activity-unreported",
+      );
+      expect(
+        indicatorFor({
+          runtime: {
+            ...unconfirmedRuntime,
+            nativeActivity: {
+              lastEvidenceAt: Date.now(),
+              freshForMs: 90_000,
+              confirmation: "confirmed",
+              evidenceKind: "holder-report",
+            },
+          },
+        }),
+      ).toBe("working");
+    });
+
+    it("never masks a failed queued message or a message waiting to send", () => {
+      expect(
+        indicatorFor({ runtime: unconfirmedRuntime, queuedWork: "failed" }),
+      ).toBe("queued-failed");
+      expect(
+        indicatorFor({ runtime: unconfirmedRuntime, queuedWork: "waiting" }),
+      ).toBe("queued-waiting");
+    });
+
+    it("yields to a thread that needs input", () => {
+      expect(
+        indicatorFor({
+          runtime: unconfirmedRuntime,
+          hasPendingInteraction: true,
+        }),
+      ).toBe("needs-input");
+    });
+
+    it("is not claimed by a thread without native activity or one that is idle", () => {
+      expect(indicatorFor({ runtime: { displayStatus: "active" } })).toBe(
+        "working",
+      );
+      expect(
+        indicatorFor({
+          status: "idle",
+          runtime: { ...unconfirmedRuntime, displayStatus: "idle" },
+        }),
+      ).toBe("none");
+    });
+  });
+
   describe("getCollapsedChildActivity", () => {
+    it("excludes unconfirmed native runtime while retaining independent child work", () => {
+      const nativeChild = makeChild({
+        status: "active",
+        runtime: {
+          displayStatus: "active",
+          nativeActivity: {
+            lastEvidenceAt: null,
+            freshForMs: 90_000,
+            confirmation: "unconfirmed",
+            evidenceKind: "unknown",
+          },
+        },
+      });
+      expect(getCollapsedChildActivity([nativeChild])).toMatchObject({
+        working: false,
+        runtimeWorking: false,
+      });
+      expect(
+        getCollapsedChildActivity([
+          {
+            ...nativeChild,
+            activity: {
+              ...nativeChild.activity,
+              activeBackgroundAgentCount: 1,
+            },
+          },
+        ]),
+      ).toMatchObject({ working: true, runtimeWorking: false });
+    });
+
     it("preserves descendant draft state independently from work", () => {
       expect(
         getCollapsedChildActivity(
@@ -636,3 +950,24 @@ describe("thread-activity", () => {
     });
   });
 });
+
+it.each([false, true])(
+  "counts clean=%s as a successful unread child, preserving real failures",
+  (clean) => {
+    const thread = makeThreadListEntry({
+      status: "error",
+      lastReadAt: 0,
+      latestAttentionAt: 20,
+      runtime: {
+        displayStatus: "error",
+        ...(clean ? { nativeSessionExit: "clean" as const } : {}),
+      },
+    });
+    const indicator = threadListIndicatorStateForThread(thread, false);
+    expect(indicator.hasUnreadError).toBe(!clean);
+    expect(indicator.hasUnreadSuccess).toBe(clean);
+    const children = getCollapsedChildActivity([thread]);
+    expect(children.unreadError).toBe(!clean);
+    expect(children.unread).toBe(clean);
+  },
+);

@@ -137,7 +137,11 @@ export function Overview() {
         hint="url only, status=completed (default)"
       >
         <TimelineStage>
-          <ThreadTimelineRows {...baseProps} timelineRows={[urlOnlyFetch]} />
+          <ThreadTimelineRows
+            {...baseProps}
+            timelineRows={[urlOnlyFetch]}
+            threadIsActive={false}
+          />
         </TimelineStage>
       </StoryRow>
       <StoryRow
@@ -145,12 +149,20 @@ export function Overview() {
         hint="status=pending, completedAt null"
       >
         <TimelineStage>
-          <ThreadTimelineRows {...baseProps} timelineRows={[runningFetch]} />
+          <ThreadTimelineRows
+            {...baseProps}
+            timelineRows={[runningFetch]}
+            threadIsActive={false}
+          />
         </TimelineStage>
       </StoryRow>
       <StoryRow label="collapsed — error" hint="status=error">
         <TimelineStage>
-          <ThreadTimelineRows {...baseProps} timelineRows={[erroredFetch]} />
+          <ThreadTimelineRows
+            {...baseProps}
+            timelineRows={[erroredFetch]}
+            threadIsActive={false}
+          />
         </TimelineStage>
       </StoryRow>
       <StoryRow
@@ -161,6 +173,7 @@ export function Overview() {
           <ThreadTimelineRows
             {...baseProps}
             timelineRows={[interruptedFetch]}
+            threadIsActive={false}
           />
         </TimelineStage>
       </StoryRow>
@@ -169,7 +182,11 @@ export function Overview() {
         hint="no prompt, no pattern (Codex provider default)"
       >
         <TimelineStage>
-          <ThreadTimelineRows {...baseProps} timelineRows={[tanstackFetch]} />
+          <ThreadTimelineRows
+            {...baseProps}
+            timelineRows={[tanstackFetch]}
+            threadIsActive={false}
+          />
         </TimelineStage>
       </StoryRow>
       <StoryRow
@@ -177,7 +194,11 @@ export function Overview() {
         hint="Anthropic web_fetch with a long natural-language prompt"
       >
         <TimelineStage>
-          <ThreadTimelineRows {...baseProps} timelineRows={[fetchWithPrompt]} />
+          <ThreadTimelineRows
+            {...baseProps}
+            timelineRows={[fetchWithPrompt]}
+            threadIsActive={false}
+          />
         </TimelineStage>
       </StoryRow>
       <StoryRow
@@ -188,6 +209,7 @@ export function Overview() {
           <ThreadTimelineRows
             {...baseProps}
             timelineRows={[fetchWithPattern]}
+            threadIsActive={false}
           />
         </TimelineStage>
       </StoryRow>

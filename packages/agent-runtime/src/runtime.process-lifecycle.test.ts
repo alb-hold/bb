@@ -7,12 +7,21 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  onTestFinished,
+  vi,
+} from "vitest";
 import type { ThreadEvent } from "@bb/domain";
 import { createAgentRuntime } from "./runtime.js";
 import { createProviderForId } from "./provider-registry.js";
 import {
   isProviderProcessExitedError,
+  ProviderWorkspaceMissingError,
   RuntimeProviderProcessManager,
 } from "./runtime-provider-process.js";
 import { RuntimeThreadIdentityRegistry } from "./runtime-thread-identity.js";
@@ -39,6 +48,7 @@ import type {
   AgentRuntimeBridgeLaunch,
   AgentRuntimeBridgeWorkers,
   AgentRuntimeOptions,
+  AgentRuntimeProcessExitInfo,
   AgentRuntimeProcessExitThreadState,
 } from "./types.js";
 
@@ -159,6 +169,7 @@ describe("createAgentRuntime process lifecycle", () => {
         identityRegistry.createProviderState({ providerId }),
       env: args.env,
       getNextRequestId: () => nextRequestId++,
+      handleDeferredEvents: () => {},
       handleStdoutLine: ({ line, providerProcess }) => {
         args.handleStdoutLine?.(line, providerProcess.child.pid);
         const parsed = parseJsonRpcLine(line);
@@ -243,6 +254,33 @@ describe("createAgentRuntime process lifecycle", () => {
       expect.objectContaining({ providerId: "fake", code: 0, expected: false }),
     );
     await runtime.shutdown();
+  });
+
+  it("reports a missing workspace folder instead of spawning the provider into it", async () => {
+    const onProcessExit = vi.fn();
+    const goneWorkspacePath = join(tmpDir, "deleted-workspace");
+    const manager = createProviderProcessManager({
+      onProcessExit,
+      workspacePath: goneWorkspacePath,
+    });
+
+    const failure = await manager
+      .ensureProvider(MANAGER_PROVIDER)
+      .catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(ProviderWorkspaceMissingError);
+    expect(failure).toMatchObject({
+      code: "path_not_found",
+      message: `Unmanaged workspace path does not exist: ${goneWorkspacePath}`,
+      workspacePath: goneWorkspacePath,
+    });
+    expect(onProcessExit).not.toHaveBeenCalled();
+    expect(() =>
+      manager.requireProviderProcess({
+        processKey: "fake",
+        providerId: "fake",
+      }),
+    ).toThrow();
   });
 
   it("retires a threadless bridge process superseded by a new artifact hash", async () => {
@@ -365,6 +403,11 @@ describe("createAgentRuntime process lifecycle", () => {
     });
     expect(starts).toBe(2);
     const replacementProcess = manager.requireProviderProcess(MANAGER_PROVIDER);
+    onTestFinished(async () => {
+      await replacementProcess.stop();
+    });
+    const exited = vi.fn();
+    replacementProcess.child.once("exit", exited);
     const fullShutdown = manager.shutdown();
     const operations = Promise.all([
       retirement,
@@ -386,7 +429,7 @@ describe("createAgentRuntime process lifecycle", () => {
       undefined,
     ]);
     expect(completedPromptly).toBe(true);
-    expect(processIsAlive(replacementProcess.child.pid ?? 0)).toBe(false);
+    expect(exited).toHaveBeenCalledOnce();
     await manager.ensureProvider(MANAGER_PROVIDER);
     expect(manager.listRunningProviders()).toEqual([]);
   });
@@ -804,7 +847,9 @@ describe("createAgentRuntime process lifecycle", () => {
     });
 
     providerProcess?.child.emit("error", new Error("worker pipe failed"));
-    await expect(pendingRequest).rejects.toThrow(/exited unexpectedly/i);
+    await expect(pendingRequest).rejects.toThrow(
+      /stopped unexpectedly; its exit status could not be read/i,
+    );
     expect(isProviderProcessExitedError(rejectedError)).toBe(true);
     expect(exitInfo).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -835,18 +880,20 @@ describe("createAgentRuntime process lifecycle", () => {
     env?: Record<string, string>;
   }) {
     const processLog = createScriptedEchoProcessLog();
+    const processExits: AgentRuntimeProcessExitInfo[] = [];
     const runtime = createScriptedEchoRuntime({
       runtime: {
         workspacePath: tmpDir,
         env: { ...processLog.env, ...args.env },
         onEvent: (event) => args.events.push(event),
+        onProcessExit: (info) => processExits.push(info),
       },
       launch: {
         pluginId: "provider-codex",
         scripted: { ...CODEX_SCRIPT, ...args.scripted },
       },
     });
-    return { processLog, runtime };
+    return { processLog, processExits, runtime };
   }
 
   it("runs every codex thread on one provider process", async () => {
@@ -1074,7 +1121,9 @@ describe("createAgentRuntime process lifecycle", () => {
 
   it("reaps an idle codex session and resumes it on a new process", async () => {
     const events: ThreadEvent[] = [];
-    const { processLog, runtime } = createCodexRuntime({ events });
+    const { processLog, processExits, runtime } = createCodexRuntime({
+      events,
+    });
     try {
       await runtime.startThread({
         environmentId: "env-1",
@@ -1107,7 +1156,7 @@ describe("createAgentRuntime process lifecycle", () => {
       });
       expect(belowThresholdResult.reapedSessions).toEqual([]);
       expect(runtime.hasThread("t1")).toBe(true);
-      expect(stoppedProcessPids(processLog.read())).toHaveLength(0);
+      expect(processExits).toHaveLength(0);
 
       const result = await runtime.reapIdleProviderSessions({
         idleForMs: 30 * 60 * 1000,
@@ -1127,6 +1176,9 @@ describe("createAgentRuntime process lifecycle", () => {
       expect(runtime.hasThread("t1")).toBe(false);
       expect(runtime.getProviderSession("t1")).toBeNull();
       expect(runtime.listRunningProviders()).toEqual([]);
+      expect(processExits).toEqual([
+        expect.objectContaining({ providerId: "codex", expected: true }),
+      ]);
 
       await runtime.resumeThread({
         environmentId: "env-1",
@@ -1153,7 +1205,7 @@ describe("createAgentRuntime process lifecycle", () => {
       expect(logLines.filter((line) => line.startsWith("spawn:"))).toHaveLength(
         2,
       );
-      expect(stoppedProcessPids(logLines)).toHaveLength(1);
+      expect(processExits).toHaveLength(1);
       expect(
         logLines.some(
           (line) =>
@@ -1391,6 +1443,70 @@ describe("createAgentRuntime process lifecycle", () => {
       });
       expect(stderrLines[0]).toBe(
         "missing|missing|missing|external-secret|thr_explicit",
+      );
+      await manager.shutdown();
+      await ensure;
+    } finally {
+      await manager.shutdown();
+    }
+  });
+
+  it("keeps a launching agent session's markers out of spawned provider processes", async () => {
+    vi.stubEnv("CLAUDECODE", "1");
+    vi.stubEnv("CLAUDE_CODE_CHILD_SESSION", "1");
+    vi.stubEnv("CLAUDE_CODE_ENTRYPOINT", "cli");
+    vi.stubEnv("CLAUDE_CODE_EXECPATH", "/tmp/outer/claude");
+    vi.stubEnv("CLAUDE_CODE_MESSAGING_SOCKET", "/tmp/outer.sock");
+    vi.stubEnv("CLAUDE_CODE_MESSAGING_TOKEN", "outer-token");
+    vi.stubEnv("CLAUDE_CODE_SESSION_ATTENDED", "1");
+    vi.stubEnv("CLAUDE_CODE_SESSION_ID", "outer-session");
+    vi.stubEnv("CLAUDE_PID", "4242");
+    vi.stubEnv("CLAUDE_CODE_USE_BEDROCK", "1");
+    vi.stubEnv("ANTHROPIC_API_KEY", "user-key");
+    const envScript = join(tmpDir, "agent-marker-env-provider.cjs");
+    writeFileSync(
+      envScript,
+      `const values = [
+        process.env.CLAUDECODE ?? "missing",
+        process.env.CLAUDE_CODE_CHILD_SESSION ?? "missing",
+        process.env.CLAUDE_CODE_ENTRYPOINT ?? "missing",
+        process.env.CLAUDE_CODE_EXECPATH ?? "missing",
+        process.env.CLAUDE_CODE_MESSAGING_SOCKET ?? "missing",
+        process.env.CLAUDE_CODE_MESSAGING_TOKEN ?? "missing",
+        process.env.CLAUDE_CODE_SESSION_ATTENDED ?? "missing",
+        process.env.CLAUDE_CODE_SESSION_ID ?? "missing",
+        process.env.CLAUDE_PID ?? "missing",
+        process.env.CLAUDE_CODE_USE_BEDROCK ?? "missing",
+        process.env.ANTHROPIC_API_KEY ?? "missing"
+      ];
+      process.stderr.write(values.join("|") + "\\n");
+      setInterval(() => {}, 1000);`,
+    );
+    const stderrLines: string[] = [];
+    const manager = createProviderProcessManager({
+      env: {},
+      onProcessExit: vi.fn(),
+      onStderr: (line) => {
+        stderrLines.push(line);
+      },
+      rawScriptPath: envScript,
+      workspacePath: tmpDir,
+    });
+
+    try {
+      const ensure = manager
+        .ensureProvider({
+          bridgeLaunch: MANAGER_BRIDGE_LAUNCH,
+          processKey: "fake",
+          providerId: "fake",
+        })
+        .catch(() => undefined);
+      await waitForRuntimeState({
+        label: "provider agent marker env stderr",
+        predicate: () => stderrLines.length > 0,
+      });
+      expect(stderrLines[0]).toBe(
+        "missing|missing|missing|missing|missing|missing|missing|missing|missing|1|user-key",
       );
       await manager.shutdown();
       await ensure;

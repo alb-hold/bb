@@ -62,6 +62,7 @@ function requireSourceEnvironment(
 export async function createThreadForkFromRequest(
   deps: ThreadForkDeps,
   request: ForkThreadRequest,
+  options: { deviceHandoffClientToken?: string } = {},
 ) {
   const sourceThread = requireForkSourceThread(deps, request.sourceThreadId);
   requireForkCapableProvider(deps, sourceThread);
@@ -114,6 +115,9 @@ export async function createThreadForkFromRequest(
     },
     {
       forkSourceEnvironmentId: sourceEnvironment.id,
+      ...(options.deviceHandoffClientToken === undefined
+        ? {}
+        : { deviceHandoffClientToken: options.deviceHandoffClientToken }),
       ...(isSeedOnlyIdleFork ? { providerInput: [] } : {}),
     },
   );

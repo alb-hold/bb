@@ -36,14 +36,16 @@ export const providerUsageRpcContract = defineRpcContract({
     input: z.strictObject({
       force: z.boolean(),
       machineIds: z.nullable(z.array(z.string().check(z.minLength(1)))),
-      providerId: z.nullable(z.string()),
+      providerIds: z.array(z.string().check(z.minLength(1))),
       maxAgeMs: z.number().check(z.int(), z.nonnegative()),
     }),
     output: usageSnapshotSchema,
   },
 });
 
-type UsageRequest = z.infer<typeof providerUsageRpcContract.getUsage.input>;
+export type UsageRequest = z.infer<
+  typeof providerUsageRpcContract.getUsage.input
+>;
 function normalizedTint(
   tint: { light: string; dark: string } | undefined,
 ): { light: string; dark: string } | null {
@@ -188,6 +190,7 @@ export default function providerUsagePlugin(bb: BbPluginApi): void {
   const fetchResource = async (
     pluginId: string,
     resourceId: string,
+    providerId: string,
     force: boolean,
   ): Promise<UsageMeasurement> => {
     const key = keyOf(pluginId, resourceId);
@@ -195,7 +198,7 @@ export default function providerUsagePlugin(bb: BbPluginApi): void {
     if (running) {
       if (!force || running.force) return running.promise;
       await running.promise.catch(() => undefined);
-      return fetchResource(pluginId, resourceId, force);
+      return fetchResource(pluginId, resourceId, providerId, force);
     }
     const promise = bb.sdk.plugins
       .callRpc({
@@ -206,7 +209,7 @@ export default function providerUsagePlugin(bb: BbPluginApi): void {
         signal: AbortSignal.timeout(45_000),
       })
       .then((raw) => {
-        const value = normalizeUsageMeasurement(raw);
+        const value = normalizeUsageMeasurement(raw, providerId);
         measurements.set(key, { value, loadedAt: Date.now() });
         failures.delete(key);
         return value;
@@ -286,8 +289,7 @@ export default function providerUsagePlugin(bb: BbPluginApi): void {
               ? `source:${source.pluginId}`
               : resource.scope.hostId;
           return (
-            request.providerId !== null &&
-            resource.providerId === request.providerId &&
+            request.providerIds.includes(resource.providerId) &&
             (request.machineIds === null ||
               request.machineIds.includes(machineId)) &&
             (resource.scope.kind === "shared" ||
@@ -313,7 +315,12 @@ export default function providerUsagePlugin(bb: BbPluginApi): void {
           )
             return;
           try {
-            await fetchResource(source.pluginId, resource.id, request.force);
+            await fetchResource(
+              source.pluginId,
+              resource.id,
+              resource.providerId,
+              request.force,
+            );
           } catch {
             failures.add(key);
           }

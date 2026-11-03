@@ -4,14 +4,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  createConnection,
   archiveThread,
   createThread,
   getThread,
   insertThreadPluginMetadata,
-  migrate,
   type DbConnection,
 } from "@bb/db";
+import { createMigratedConnection } from "@bb/db/testing";
 import { PERSONAL_PROJECT_ID } from "@bb/domain";
 import type { Logger } from "@bb/logger";
 import { createAiServiceRegistry } from "../../../src/services/ai/ai-service-registry.js";
@@ -119,7 +118,24 @@ describe("plugin bb.sdk bind gate", () => {
     ),
     replaceDeclarationsForOwner: vi.fn(),
     clearDeclarationsForOwner: vi.fn(),
+    setNextTunnelConfig: vi.fn(),
+    listNextTunnelStatuses: vi.fn(() => [
+      {
+        hostId: "host-1",
+        hostName: "Sawyer Air",
+        status: {
+          state: "connected" as const,
+          label: "sawyer-air",
+          lastError: null,
+          nextRetryAt: null,
+          since: 1,
+          shares: [],
+        },
+      },
+    ]),
+    onNextTunnelStatusChange: vi.fn((_listener: () => void) => nextUnsubscribe),
   };
+  const nextUnsubscribe = vi.fn();
   const ensureSharedPortTunnel = vi.fn().mockResolvedValue({
     label: "sawyer-air",
     baseDomain: "getbb.app",
@@ -170,13 +186,15 @@ describe("plugin bb.sdk bind gate", () => {
   });
 
   beforeEach(async () => {
-    db = createConnection(":memory:");
-    migrate(db);
+    db = createMigratedConnection();
     workDir = await mkdtemp(join(tmpdir(), "bb-plugin-sdk-test-"));
     sharedPorts.declareSharedPorts.mockClear();
     sharedPorts.validateSharedPortDeclaration.mockClear();
     sharedPorts.replaceDeclarationsForOwner.mockClear();
     sharedPorts.clearDeclarationsForOwner.mockClear();
+    sharedPorts.setNextTunnelConfig.mockClear();
+    sharedPorts.onNextTunnelStatusChange.mockClear();
+    nextUnsubscribe.mockClear();
     ensureSharedPortTunnel.mockClear();
     callPluginHost.mockClear();
     disposePluginHost.mockClear();
@@ -191,6 +209,8 @@ describe("plugin bb.sdk bind gate", () => {
       ensureSharedPortTunnel,
       hub: {
         getDaemonSessionIdForHost: () => null,
+        notifyPluginChanged: () => {},
+        onWatchedTargets: () => () => {},
         notifyPluginSignal: () => 0,
         notifySystem: () => {},
       },
@@ -374,6 +394,47 @@ describe("plugin bb.sdk bind gate", () => {
     expect(sharedPorts.clearDeclarationsForOwner).toHaveBeenCalledWith(
       "shares",
     );
+  });
+
+  it("routes next machine tunnels through the server control plane under the plugin's id", async () => {
+    const rootDir = await writePlugin(workDir, {
+      name: "bb-plugin-next",
+      serverSource: `export default function plugin() {}`,
+    });
+    await service.installPath(rootDir);
+    const api = requireApi(service, "next");
+    const config = {
+      domain: "next.getbb.app",
+      server: {
+        protocol: "wss" as const,
+        host: "tunnel.next.getbb.app",
+        port: 443,
+      },
+    };
+    api.hosts.internal_DO_NOT_USE_setNextTunnels(config);
+    expect(sharedPorts.setNextTunnelConfig).toHaveBeenCalledWith(
+      "next",
+      config,
+    );
+    expect(api.hosts.internal_DO_NOT_USE_nextTunnelStatuses()).toEqual([
+      {
+        hostId: "host-1",
+        hostName: "Sawyer Air",
+        state: "connected",
+        label: "sawyer-air",
+        lastError: null,
+        nextRetryAt: null,
+        since: 1,
+        shares: [],
+      },
+    ]);
+    const listener = vi.fn();
+    api.hosts.internal_DO_NOT_USE_onNextTunnelStatusChange(listener);
+    expect(sharedPorts.onNextTunnelStatusChange).toHaveBeenCalledWith(listener);
+
+    await service.stop();
+    expect(nextUnsubscribe).toHaveBeenCalled();
+    expect(sharedPorts.clearDeclarationsForOwner).toHaveBeenCalledWith("next");
   });
 
   it("binds typed host calls and ignores worker exits from stale generations", async () => {
@@ -657,6 +718,23 @@ describe("plugin bb.sdk against a running server", () => {
       await expect(
         api.sdk.threads.getPluginMetadata({ threadId: thread.id }),
       ).resolves.toEqual({ a: 1, nested: { old: true } });
+      await expect(
+        api.sdk.threads.experimental_listPluginMetadata({
+          threadIds: [thread.id],
+        }),
+      ).resolves.toEqual({
+        threads: [
+          { threadId: thread.id, metadata: { a: 1, nested: { old: true } } },
+        ],
+      });
+      await expect(
+        api.sdk.threads.experimental_listPluginMetadata({
+          threadIds: [thread.id],
+          pluginId: "cross",
+        }),
+      ).resolves.toEqual({
+        threads: [{ threadId: thread.id, metadata: { b: 2 } }],
+      });
       await expect(
         api.sdk.threads.getPluginMetadata({
           threadId: thread.id,

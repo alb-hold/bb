@@ -1,6 +1,9 @@
 import type { ReactNode } from "react";
 import { StoryCard, StoryRow } from "../../../.ladle/story-card";
-import { OverflowFade, type OverflowFadeTone } from "./overflow-fade";
+import {
+  OverflowFade,
+  type OverflowFadeTone,
+} from "@bb/shared-ui/overflow-fade";
 
 export default {
   title: "ui/Overflow fade",
@@ -10,6 +13,7 @@ const TONE_SURFACE_CLASS: Record<OverflowFadeTone, string> = {
   background: "bg-background",
   sidebar: "bg-sidebar",
   "surface-raised": "bg-surface-raised",
+  "surface-recessed": "bg-surface-recessed",
 };
 
 function FadeStage({

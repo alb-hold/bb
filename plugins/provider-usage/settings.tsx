@@ -12,7 +12,11 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
-import type { providerUsageRpcContract } from "./server.js";
+import type { providerUsageRpcContract, UsageRequest } from "./server.js";
+import {
+  combinedUsageMachine,
+  usageTargetsToRefresh,
+} from "./combined-usage.js";
 import {
   emptyUsageMessage,
   hasReportedUsage,
@@ -25,11 +29,12 @@ import {
   type UsageMachine,
   type UsageProvider,
   type ProviderUsage,
+  type UsageSnapshot,
   type UsageWindow,
 } from "./usage-schema.js";
 function SettingsBadge({ children }: { children: ReactNode }) {
   return (
-    <span className="shrink-0 rounded-sm border border-border bg-muted/40 px-1.5 py-0.5 text-2xs leading-none text-subtle-foreground">
+    <span className="shrink-0 whitespace-nowrap rounded-sm border border-border bg-muted/40 px-1.5 py-0.5 text-2xs leading-none text-subtle-foreground">
       {children}
     </span>
   );
@@ -155,140 +160,11 @@ function isSource(machine: UsageMachine): boolean {
   return machine.id.startsWith("source:");
 }
 
-function shouldKeepHostClaude(
-  provider: UsageProvider,
-  pooledClaude: UsageProvider[],
-): boolean {
-  if (pooledClaude.length === 0) return true;
-  if (provider.accountKey == null) return false;
-  if (pooledClaude.some((pooled) => pooled.accountKey == null)) return false;
-  return !pooledClaude.some(
-    (pooled) =>
-      pooled.providerId === provider.providerId &&
-      pooled.accountKey === provider.accountKey,
-  );
-}
-
-interface UsageRefreshTarget {
-  machine: UsageMachine;
-  providerIds: string[];
-}
-
-function combinedUsageSelection(machines: UsageMachine[]): {
-  providers: UsageProvider[];
-  refreshTargets: UsageRefreshTarget[];
-} {
-  const sourceClaude = machines
-    .filter(isSource)
-    .flatMap((machine) =>
-      machine.providers
-        .filter((provider) => provider.providerId === "claude-code")
-        .map((provider) => ({ machine, provider })),
-    );
-  const seenPooled = new Set<string>();
-  const pooledClaude = sourceClaude.filter(({ provider }) => {
-    if (provider.accountKey == null) return true;
-    const identity = JSON.stringify([provider.providerId, provider.accountKey]);
-    if (seenPooled.has(identity)) return false;
-    seenPooled.add(identity);
-    return true;
-  });
-  const host = machines.find((machine) => !isSource(machine));
-  const hasPooledClaude = pooledClaude.length > 0;
-  const hostProviders = host?.providers.filter(
-    (provider) =>
-      provider.providerId !== "claude-code" ||
-      !hasPooledClaude ||
-      shouldKeepHostClaude(
-        provider,
-        pooledClaude.map(({ provider: pooled }) => pooled),
-      ),
-  ) ?? [];
-  const selectedProviders = hasPooledClaude
-    ? [
-        ...pooledClaude.map(({ provider }) => provider),
-        ...hostProviders,
-      ]
-    : hostProviders;
-  const targetsByMachine = new Map<UsageMachine, Set<string>>();
-  const addTarget = (machine: UsageMachine, providerId: string) => {
-    const providerIds = targetsByMachine.get(machine) ?? new Set<string>();
-    providerIds.add(providerId);
-    targetsByMachine.set(machine, providerIds);
-  };
-  if (hasPooledClaude) {
-    for (const { machine } of pooledClaude) addTarget(machine, "claude-code");
-    for (const provider of hostProviders) {
-      if (host !== undefined) addTarget(host, provider.providerId);
-    }
-  } else if (host !== undefined) {
-    for (const provider of hostProviders) addTarget(host, provider.providerId);
-  }
-  return {
-    providers: selectedProviders,
-    refreshTargets: [...targetsByMachine].map(([machine, providerIds]) => ({
-      machine,
-      providerIds: [...providerIds],
-    })),
-  };
-}
-
-function combinedUsageMachine(machines: UsageMachine[]): UsageMachine | null {
-  const { providers } = combinedUsageSelection(machines);
-  const sourceClaude = machines.filter(
-    (machine) =>
-      isSource(machine) &&
-      machine.providers.some(
-        (provider) => provider.providerId === "claude-code",
-      ),
-  );
-  const host = machines.find((machine) => !isSource(machine));
-  const hasPooledClaude = sourceClaude.length > 0;
-  const sourceError = [...sourceClaude, host].some(
-    (machine) => machine !== undefined && machine.error !== null,
-  );
-
-  if (host === undefined && sourceClaude.length === 0) return null;
-  return {
-    id: combinedLocationId,
-    displayName: "Combined",
-    status: hasPooledClaude ? "connected" : (host?.status ?? "connected"),
-    providers,
-    error:
-      sourceError && !hasReportedUsage(providers)
-        ? "Usage could not be refreshed."
-        : null,
-  };
-}
-
-function usageTargetsToRefresh(
-  machines: UsageMachine[],
-  selectedId: string | null,
-): UsageRefreshTarget[] {
-  if (selectedId !== null && selectedId !== combinedLocationId) {
-    const selected = machines.find((machine) => machine.id === selectedId);
-    return selected === undefined
-      ? []
-      : [
-          {
-            machine: selected,
-            providerIds: [
-              ...new Set(
-                selected.providers.map((provider) => provider.providerId),
-              ),
-            ],
-          },
-        ];
-  }
-
-  return combinedUsageSelection(machines).refreshTargets;
-}
-
 function mergeUsageMachines(
   current: UsageMachine[],
   updated: UsageMachine[],
   machineId: string,
-  providerId: string,
+  providerIds: readonly string[],
 ): UsageMachine[] {
   const byId = new Map(current.map((machine) => [machine.id, machine]));
   const fresh = updated.find((machine) => machine.id === machineId);
@@ -298,10 +174,10 @@ function mergeUsageMachines(
       ...fresh,
       providers: [
         ...(previous?.providers.filter(
-          (provider) => provider.providerId !== providerId,
+          (provider) => !providerIds.includes(provider.providerId),
         ) ?? []),
-        ...fresh.providers.filter(
-          (provider) => provider.providerId === providerId,
+        ...fresh.providers.filter((provider) =>
+          providerIds.includes(provider.providerId),
         ),
       ],
     });
@@ -402,7 +278,7 @@ function ProviderUsageBlock({
           <div className="min-w-0 flex-1">
             <h3
               id={headingId}
-              className="text-sm font-semibold text-foreground"
+              className="min-w-0 truncate text-sm font-semibold text-foreground"
             >
               {name}
             </h3>
@@ -455,8 +331,7 @@ function UsageResourceGroup({
       {resources.map((resource) => {
         const usage = resource.usage ?? undefined;
         const pooledClaude =
-          resource.providerId === "claude-code" &&
-          resource.accountPool != null;
+          resource.providerId === "claude-code" && resource.accountPool != null;
         const accountEmail =
           usage?.status === "ok"
             ? (usage.accountEmail ??
@@ -585,7 +460,7 @@ export function UsageSettingsContent({
     <section className="@container/usage-settings space-y-3">
       <div
         className={cn(
-            machines.length > 1
+          machines.length > 1
             ? "flex min-w-0 flex-col gap-3 @min-[36rem]/usage-settings:flex-row @min-[36rem]/usage-settings:justify-between @min-[36rem]/usage-settings:gap-4 @min-[36rem]/usage-settings:items-start"
             : "flex min-w-0 flex-row items-start justify-between gap-4",
         )}
@@ -678,6 +553,80 @@ export function UsageSettingsContent({
   );
 }
 
+interface UsageLoadTarget {
+  disposed: () => boolean;
+  setMachines: (
+    update: UsageMachine[] | ((current: UsageMachine[]) => UsageMachine[]),
+  ) => void;
+  setError: (error: boolean) => void;
+  setSourceErrors: (sourceErrors: boolean) => void;
+}
+
+export async function loadUsage(
+  getUsage: (input: UsageRequest) => Promise<UsageSnapshot>,
+  selectedId: string | null,
+  force: boolean,
+  target: UsageLoadTarget,
+): Promise<void> {
+  target.setError(false);
+  try {
+    const inventory = await getUsage({
+      force: false,
+      machineIds: null,
+      providerIds: [],
+      maxAgeMs: 60_000,
+    });
+    if (target.disposed()) return;
+    target.setMachines(inventory.machines);
+    const targets = usageTargetsToRefresh(inventory.machines, selectedId)
+      .filter(({ machine }) => machine.status === "connected")
+      .map(({ machine, providerIds }) => ({
+        machine,
+        providerIds: providerIds.filter((providerId) =>
+          machine.providers.some(
+            (provider) =>
+              provider.providerId === providerId &&
+              provider.usage?.status !== "not_installed",
+          ),
+        ),
+      }))
+      .filter(({ providerIds }) => providerIds.length > 0);
+    const results = await Promise.allSettled(
+      targets.map(({ machine, providerIds }) =>
+        getUsage({
+          force,
+          machineIds: [machine.id],
+          providerIds,
+          maxAgeMs: 60_000,
+        }),
+      ),
+    );
+    if (target.disposed()) return;
+    target.setSourceErrors(
+      results.some(
+        (result) =>
+          result.status === "rejected" ||
+          result.value.machines.some((machine) => machine.error !== null),
+      ),
+    );
+    for (const [index, result] of results.entries()) {
+      if (result.status === "fulfilled") {
+        const refreshed = targets[index]!;
+        target.setMachines((current) =>
+          mergeUsageMachines(
+            current,
+            result.value.machines,
+            refreshed.machine.id,
+            refreshed.providerIds,
+          ),
+        );
+      }
+    }
+  } catch {
+    if (!target.disposed()) target.setError(true);
+  }
+}
+
 export function UsageSettings() {
   const rpc = useRpc<typeof providerUsageRpcContract>();
   const [machines, setMachines] = useState<UsageMachine[]>([]);
@@ -696,62 +645,13 @@ export function UsageSettings() {
       if (running) return;
       running = true;
       setLoading(true);
-      setError(false);
       try {
-        const inventory = await rpc.call("getUsage", {
-          force: false,
-          machineIds: null,
-          providerId: null,
-          maxAgeMs: 60_000,
-        });
-        if (disposed) return;
-        setMachines(inventory.machines);
-        const targets = usageTargetsToRefresh(inventory.machines, selectedId)
-          .filter(({ machine }) => machine.status === "connected")
-          .flatMap(({ machine, providerIds }) =>
-            providerIds
-              .filter((providerId) =>
-                machine.providers.some(
-                  (provider) =>
-                    provider.providerId === providerId &&
-                    provider.usage?.status !== "not_installed",
-                ),
-              )
-              .map((providerId) => ({ machine, providerId })),
-          );
-        const results = await Promise.allSettled(
-          targets.map(({ machine, providerId }) =>
-            rpc.call("getUsage", {
-              force,
-              machineIds: [machine.id],
-              providerId,
-              maxAgeMs: 60_000,
-            }),
-          ),
+        await loadUsage(
+          (input) => rpc.call("getUsage", input),
+          selectedId,
+          force,
+          { disposed: () => disposed, setMachines, setError, setSourceErrors },
         );
-        if (disposed) return;
-        setSourceErrors(
-          results.some(
-            (result) =>
-              result.status === "rejected" ||
-              result.value.machines.some((machine) => machine.error !== null),
-          ),
-        );
-        for (const [index, result] of results.entries()) {
-          if (result.status === "fulfilled") {
-            const target = targets[index]!;
-            setMachines((current) =>
-              mergeUsageMachines(
-                current,
-                result.value.machines,
-                target.machine.id,
-                target.providerId,
-              ),
-            );
-          }
-        }
-      } catch {
-        if (!disposed) setError(true);
       } finally {
         running = false;
         if (!disposed) setLoading(false);

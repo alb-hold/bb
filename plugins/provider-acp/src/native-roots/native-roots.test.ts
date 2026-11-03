@@ -184,6 +184,7 @@ describe("omp", () => {
 
   it("reads PI_CONFIG_FILES relative to the workspace and expands $VARS", async () => {
     const extraConfig = path.join(tempRoot, "extra", "config.yml");
+    await mkdir(path.join(cwd, ".git"), { recursive: true });
     await writeFileEnsuringDir(
       extraConfig,
       "skills:\n  customDirectories:\n    - $SKILLS_BASE/team\n",

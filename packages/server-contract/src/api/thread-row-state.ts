@@ -1,0 +1,36 @@
+import { z } from "zod";
+import {
+  threadRowProgressSchema,
+  threadRowStatusSchema,
+} from "@bb/domain";
+export { threadRowStateSchema } from "@bb/domain";
+export type { ThreadRowState } from "@bb/domain";
+
+export const updateThreadRowStateRequestSchema = z.discriminatedUnion("action", [
+  z.object({
+    action: z.literal("status-set"),
+    key: z.string().min(1).max(40),
+    status: threadRowStatusSchema,
+  }).strict(),
+  z.object({
+    action: z.literal("status-clear"),
+    key: z.string().min(1).max(40).optional(),
+  }).strict(),
+  z.object({
+    action: z.literal("progress-set"),
+    terminalId: z.string().min(1).max(128).optional(),
+    progress: threadRowProgressSchema,
+    outputSeq: z.number().int().nonnegative().optional(),
+  }).strict(),
+  z.object({
+    action: z.literal("progress-clear"),
+    terminalId: z.string().min(1).max(128).optional(),
+    force: z.boolean().optional(),
+    outputSeq: z.number().int().nonnegative().optional(),
+  }).strict(),
+  z.object({ action: z.literal("clear") }).strict(),
+]);
+
+export type UpdateThreadRowStateRequest = z.infer<
+  typeof updateThreadRowStateRequestSchema
+>;

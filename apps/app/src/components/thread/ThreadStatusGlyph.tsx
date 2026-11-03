@@ -2,18 +2,19 @@ import { Icon, type IconName } from "@bb/shared-ui/icon";
 import { cn } from "@bb/shared-ui/lib/utils";
 import {
   getThreadListIndicatorLabel,
-  resolveThreadListIndicator,
   type ThreadListIndicatorKind,
-  type ThreadListIndicatorState,
 } from "@bb/client-core";
-import type { PluginComposerThreadRowStatus } from "@get-bb/plugin-sdk";
+import type {
+  PluginComposerThreadRowStatus,
+  PluginThreadStatusGlyphProps,
+} from "@get-bb/plugin-sdk";
 import { pluginIconName } from "@/components/plugin/PluginIcon";
 import {
   SIDEBAR_STATUS_ICON_CLASS,
   SIDEBAR_SUCCESS_STATUS_COLOR_CLASS,
   SIDEBAR_SUCCESS_STATUS_DOT_CLASS,
   SIDEBAR_WORKING_STATUS_COLOR_CLASS,
-} from "@/components/sidebar/sidebarRowClasses";
+} from "@bb/shared-ui/sidebar-row-classes";
 
 const WORKING_ACTIVITY_ICONS = {
   workflow: "Workflow",
@@ -30,27 +31,21 @@ const WAITING_ICONS = {
 
 function ThreadDraftIndicator({
   hideIdleLabel = false,
-  isWorking,
   size,
 }: {
   hideIdleLabel?: boolean;
-  isWorking: boolean;
   size: "default" | "compact";
 }) {
-  const label = getThreadListIndicatorLabel(
-    isWorking ? "working-draft" : "draft",
-  );
+  const label = getThreadListIndicatorLabel("draft");
   return (
     <Icon
       name="Edit"
       className={cn(
         "pointer-events-none shrink-0",
         size === "compact" ? "size-3.5" : SIDEBAR_STATUS_ICON_CLASS,
-        isWorking
-          ? ["animate-shine-icon", SIDEBAR_WORKING_STATUS_COLOR_CLASS]
-          : "text-muted-foreground",
+        "text-muted-foreground",
       )}
-      {...(!isWorking && hideIdleLabel
+      {...(hideIdleLabel
         ? { "aria-hidden": true }
         : { "aria-label": label ?? undefined })}
     />
@@ -107,97 +102,75 @@ function PluginThreadRowStatusIndicator({
 interface ThreadStatusResolution {
   accessibleLabel: string | null;
   indicatorKind: ThreadListIndicatorKind | "archived";
-  pluginStatusIsVisible: boolean;
+  rowStatusIsVisible: boolean;
 }
 
 export function resolveThreadStatus(
-  statusProps: ThreadListIndicatorState,
-  pluginStatus: PluginComposerThreadRowStatus | null = null,
+  indicator: ThreadListIndicatorKind,
+  rowStatus: PluginComposerThreadRowStatus | null = null,
   archived = false,
+  queuedFailedCount = 0,
 ): ThreadStatusResolution {
-  const indicatorKind = archived
-    ? "archived"
-    : resolveThreadListIndicator(statusProps);
-  const pluginStatusIsVisible =
+  const indicatorKind = archived ? "archived" : indicator;
+  const rowStatusIsVisible =
     !archived &&
-    pluginStatus !== null &&
+    rowStatus !== null &&
+    indicatorKind !== "working" &&
     indicatorKind !== "runtime" &&
     indicatorKind !== "unread-error" &&
     indicatorKind !== "waiting-for-input" &&
-    indicatorKind !== "needs-input" &&
-    indicatorKind !== "woke" &&
-    indicatorKind !== "done-unread";
+    indicatorKind !== "needs-input";
 
   return {
-    accessibleLabel: pluginStatusIsVisible
-      ? pluginStatus.label
+    accessibleLabel: rowStatusIsVisible
+      ? rowStatus.label
       : indicatorKind === "archived"
         ? "Archived thread"
-        : getThreadListIndicatorLabel(indicatorKind),
+        : getThreadListIndicatorLabel(indicatorKind, queuedFailedCount),
     indicatorKind,
-    pluginStatusIsVisible,
+    rowStatusIsVisible,
   };
 }
 
-export interface ThreadStatusGlyphProps extends ThreadListIndicatorState {
-  archived?: boolean;
-  pluginStatus?: PluginComposerThreadRowStatus | null;
-  hideIdleDraftLabel?: boolean;
-  size?: "default" | "compact";
-}
-
 export function ThreadStatusGlyph({
+  indicator,
   archived = false,
-  pluginStatus = null,
-  hasPendingInteraction,
-  hasUnsubmittedDraft,
-  hasUnreadError,
-  hasUnreadSuccess,
+  rowStatus = null,
   hideIdleDraftLabel = false,
-  isBackgroundAgentActive,
-  isBackgroundCommandActive,
-  isGoalActive,
-  isPlanModeActive,
-  isRuntimeActive,
-  isWorkflowActive,
-  queuedWork,
+  hideAccessibleLabel = false,
+  experimental_queuedFailedCount: queuedFailedCount = 0,
   size = "default",
-}: ThreadStatusGlyphProps) {
+}: PluginThreadStatusGlyphProps) {
   const iconSizeClass =
     size === "compact" ? "size-3.5" : SIDEBAR_STATUS_ICON_CLASS;
-  const { indicatorKind: kind, pluginStatusIsVisible } = resolveThreadStatus(
-    {
-      hasPendingInteraction,
-      hasUnsubmittedDraft,
-      hasUnreadError,
-      hasUnreadSuccess,
-      isBackgroundAgentActive,
-      isBackgroundCommandActive,
-      isGoalActive,
-      isPlanModeActive,
-      isRuntimeActive,
-      isWorkflowActive,
-      isAutomationWoken: false,
-      queuedWork,
-    },
-    pluginStatus,
+  const { indicatorKind: kind, rowStatusIsVisible } = resolveThreadStatus(
+    indicator,
+    rowStatus,
     archived,
+    queuedFailedCount,
   );
 
-  if (pluginStatusIsVisible && pluginStatus) {
-    return <PluginThreadRowStatusIndicator status={pluginStatus} size={size} />;
+  if (rowStatusIsVisible && rowStatus) {
+    return <PluginThreadRowStatusIndicator status={rowStatus} size={size} />;
   }
+
+  const statusLabel = hideAccessibleLabel
+    ? undefined
+    : (getThreadListIndicatorLabel(kind === "archived" ? "none" : kind) ??
+      undefined);
 
   switch (kind) {
     case "needs-input":
       return (
         <Icon
           name="CircleQuestion"
-          className={cn("text-warning", iconSizeClass)}
-          aria-label={getThreadListIndicatorLabel(kind) ?? undefined}
+          className={cn("text-destructive-text", iconSizeClass)}
+          aria-label={statusLabel}
+          aria-hidden={hideAccessibleLabel}
         />
       );
     case "working":
+    case "working-draft":
       return (
         <Icon
           name="Loading"
@@ -206,15 +179,17 @@ export function ThreadStatusGlyph({
             SIDEBAR_WORKING_STATUS_COLOR_CLASS,
             iconSizeClass,
           )}
-          aria-label={getThreadListIndicatorLabel(kind) ?? undefined}
+          aria-label={statusLabel}
+          aria-hidden={hideAccessibleLabel}
         />
       );
     case "woke":
       return (
         <Icon
           name="AlarmClock"
-          className={cn("text-attention", iconSizeClass)}
-          aria-label={getThreadListIndicatorLabel(kind) ?? undefined}
+          className={cn("text-warning", iconSizeClass)}
+          aria-label={statusLabel}
+          aria-hidden={hideAccessibleLabel}
         />
       );
     case "done-unread":
@@ -222,7 +197,8 @@ export function ThreadStatusGlyph({
         <Icon
           name="Check"
           className={cn(SIDEBAR_SUCCESS_STATUS_COLOR_CLASS, iconSizeClass)}
-          aria-label={getThreadListIndicatorLabel(kind) ?? undefined}
+          aria-label={statusLabel}
+          aria-hidden={hideAccessibleLabel}
         />
       );
     case "archived":
@@ -234,12 +210,21 @@ export function ThreadStatusGlyph({
         />
       );
     case "unread-error":
-    case "queued-failed":
       return (
         <Icon
           name="CircleX"
           className={cn("text-destructive", iconSizeClass)}
           aria-label={getThreadListIndicatorLabel(kind) ?? undefined}
+        />
+      );
+    case "queued-failed":
+      return (
+        <Icon
+          name="Mail"
+          className={cn("text-warning", iconSizeClass)}
+          aria-label={
+            getThreadListIndicatorLabel(kind, queuedFailedCount) ?? undefined
+          }
         />
       );
     case "waiting-for-input":
@@ -251,8 +236,14 @@ export function ThreadStatusGlyph({
           aria-label={getThreadListIndicatorLabel(kind) ?? undefined}
         />
       );
-    case "working-draft":
-      return <ThreadDraftIndicator isWorking size={size} />;
+    case "activity-unreported":
+      return (
+        <Icon
+          name="Minus"
+          className={cn("text-muted-foreground/75", iconSizeClass)}
+          aria-label={getThreadListIndicatorLabel(kind) ?? undefined}
+        />
+      );
     case "workflow":
     case "background-agent":
     case "background-command":
@@ -283,11 +274,7 @@ export function ThreadStatusGlyph({
       );
     case "draft":
       return (
-        <ThreadDraftIndicator
-          hideIdleLabel={hideIdleDraftLabel}
-          isWorking={false}
-          size={size}
-        />
+        <ThreadDraftIndicator hideIdleLabel={hideIdleDraftLabel} size={size} />
       );
     case "unread-success":
       return (

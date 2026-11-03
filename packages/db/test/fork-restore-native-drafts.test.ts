@@ -20,7 +20,9 @@ import {
 import {
   dropIdleLifecycleIndexes,
   dropPluginEnabledFollowsDefaultColumn,
+  dropMarketplaceSourceGitSubdirectoryColumn,
   dropQueuedMessageEditHeldUntilColumn,
+  dropThreadParentNotificationsColumn,
   rewindThreadPruningWork,
 } from "./helpers/rewind.js";
 
@@ -73,8 +75,12 @@ it("lets a user edit and send a first-message draft that the original 0132 moved
     rewindThreadPruningWork(db);
     dropPluginEnabledFollowsDefaultColumn(db);
     dropQueuedMessageEditHeldUntilColumn(db);
+    dropMarketplaceSourceGitSubdirectoryColumn(db);
+    dropThreadParentNotificationsColumn(db);
     db.$client
-      .prepare("INSERT INTO __drizzle_migrations (hash, created_at) VALUES (?, ?)")
+      .prepare(
+        "INSERT INTO __drizzle_migrations (hash, created_at) VALUES (?, ?)",
+      )
       .run(
         createHash("sha256").update(originalMigration).digest("hex"),
         THREAD_DRAFTS_MIGRATION_TIMESTAMP,
@@ -87,7 +93,10 @@ it("lets a user edit and send a first-message draft that the original 0132 moved
       "UPDATE threads SET draft = ? WHERE id = ?",
     );
     setDraft.run(JSON.stringify(draftContent), firstMessageDraft.id);
-    setDraft.run(JSON.stringify([text("Orphan draft")]), unknownProviderDraft.id);
+    setDraft.run(
+      JSON.stringify([text("Orphan draft")]),
+      unknownProviderDraft.id,
+    );
 
     migrate(db);
 
@@ -116,6 +125,8 @@ it("lets a user edit and send a first-message draft that the original 0132 moved
       { type: "localFile", path: "/tmp/plan.md", name: "plan.md" },
     ];
     const update = updateQueuedThreadMessage(db, noopNotifier, {
+      execution: null,
+      reschedule: null,
       id: draft.id,
       threadId: firstMessageDraft.id,
       content: edited,
@@ -191,8 +202,12 @@ it("restores a first-message draft from a same-provider thread's turn history wh
     rewindThreadPruningWork(db);
     dropPluginEnabledFollowsDefaultColumn(db);
     dropQueuedMessageEditHeldUntilColumn(db);
+    dropMarketplaceSourceGitSubdirectoryColumn(db);
+    dropThreadParentNotificationsColumn(db);
     db.$client
-      .prepare("INSERT INTO __drizzle_migrations (hash, created_at) VALUES (?, ?)")
+      .prepare(
+        "INSERT INTO __drizzle_migrations (hash, created_at) VALUES (?, ?)",
+      )
       .run(
         createHash("sha256").update(originalMigration).digest("hex"),
         THREAD_DRAFTS_MIGRATION_TIMESTAMP,
@@ -205,7 +220,9 @@ it("restores a first-message draft from a same-provider thread's turn history wh
       .prepare("UPDATE threads SET draft = ? WHERE id = ?")
       .run(JSON.stringify(draftContent), firstMessageDraft.id);
     expect(
-      db.$client.prepare("SELECT count(*) AS n FROM queued_thread_messages").get(),
+      db.$client
+        .prepare("SELECT count(*) AS n FROM queued_thread_messages")
+        .get(),
     ).toEqual({ n: 0 });
 
     migrate(db);
@@ -234,6 +251,8 @@ it("restores a first-message draft from a same-provider thread's turn history wh
     ];
     expect(
       updateQueuedThreadMessage(db, noopNotifier, {
+        execution: null,
+        reschedule: null,
         id: draft.id,
         threadId: firstMessageDraft.id,
         content: edited,
@@ -309,8 +328,12 @@ it("restores a first-message draft with the most recent same-provider turn's exe
     rewindThreadPruningWork(db);
     dropPluginEnabledFollowsDefaultColumn(db);
     dropQueuedMessageEditHeldUntilColumn(db);
+    dropMarketplaceSourceGitSubdirectoryColumn(db);
+    dropThreadParentNotificationsColumn(db);
     db.$client
-      .prepare("INSERT INTO __drizzle_migrations (hash, created_at) VALUES (?, ?)")
+      .prepare(
+        "INSERT INTO __drizzle_migrations (hash, created_at) VALUES (?, ?)",
+      )
       .run(
         createHash("sha256").update(originalMigration).digest("hex"),
         THREAD_DRAFTS_MIGRATION_TIMESTAMP,
@@ -347,6 +370,8 @@ it("restores a first-message draft with the most recent same-provider turn's exe
     ];
     expect(
       updateQueuedThreadMessage(db, noopNotifier, {
+        execution: null,
+        reschedule: null,
         id: draft.id,
         threadId: firstMessageDraft.id,
         content: edited,

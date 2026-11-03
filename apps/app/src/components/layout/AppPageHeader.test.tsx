@@ -1,99 +1,65 @@
 // @vitest-environment jsdom
 
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { createPortal } from "react-dom";
 import { afterEach, describe, expect, it } from "vitest";
-import type { BbDesktopInfo } from "@bb/desktop-contract";
 import { CompactViewportOverrideProvider } from "@bb/shared-ui/hooks/use-compact-viewport";
 import { SidebarProvider } from "@/components/ui/sidebar";
-import {
-  BROWSER_COLLAPSED_HEADER_RESERVE_CLASS,
-  MACOS_COLLAPSED_TOP_LEFT_RESERVE_CLASS,
-} from "@/lib/bb-desktop";
-import { createBbDesktopApi } from "@/test/bb-desktop-test-utils";
+import { PAGE_SCROLL_TO_TOP_EVENT } from "@/lib/page-scroll-to-top";
 import { AppPageHeader } from "./AppPageHeader";
 
-const macosDesktopInfo: BbDesktopInfo = {
-  lastCheckedAt: null,
-  latestVersion: null,
-  pendingVersion: null,
-  platform: "macos",
-  updateAvailable: false,
-  updateDownloaded: false,
-  version: "0.0.0-test",
-};
+afterEach(cleanup);
 
-const RESERVE_CLASSES = [
-  BROWSER_COLLAPSED_HEADER_RESERVE_CLASS,
-  MACOS_COLLAPSED_TOP_LEFT_RESERVE_CLASS,
-];
-
-function renderHeaderReserve({
-  collapsedRailWidth,
-  isCompactViewport = false,
-  open = false,
-}: {
-  collapsedRailWidth?: string;
-  isCompactViewport?: boolean;
-  open?: boolean;
-}): string[] {
+function renderCompactHeaderOverPage() {
+  const scrollToTopRequests: Event[] = [];
   render(
-    <CompactViewportOverrideProvider isCompactViewport={isCompactViewport}>
-      <SidebarProvider open={open} collapsedRailWidth={collapsedRailWidth}>
-        <AppPageHeader />
+    <CompactViewportOverrideProvider isCompactViewport>
+      <SidebarProvider>
+        <div>
+          <AppPageHeader
+            center={
+              <>
+                <span>Thread title</span>
+                {createPortal(
+                  <div data-testid="portaled-backdrop" />,
+                  document.body,
+                )}
+              </>
+            }
+          />
+          <div
+            data-page-scroll-viewport=""
+            ref={(viewport) => {
+              if (viewport === null) return;
+              viewport.getClientRects = () =>
+                [new DOMRect(0, 0, 390, 700)] as unknown as DOMRectList;
+              viewport.addEventListener(PAGE_SCROLL_TO_TOP_EVENT, (event) => {
+                event.preventDefault();
+                scrollToTopRequests.push(event);
+              });
+            }}
+          />
+        </div>
       </SidebarProvider>
     </CompactViewportOverrideProvider>,
   );
-  const classNames = screen
-    .getByTestId("app-page-header-content-row")
-    .className.split(" ");
-  return RESERVE_CLASSES.filter((reserve) =>
-    reserve.split(" ").every((token) => classNames.includes(token)),
-  );
+  return scrollToTopRequests;
 }
 
-afterEach(() => {
-  cleanup();
-  delete window.bbDesktop;
-});
+describe("AppPageHeader compact tap to scroll to top", () => {
+  it("scrolls the page to top when the header itself is tapped", () => {
+    const scrollToTopRequests = renderCompactHeaderOverPage();
 
-describe("AppPageHeader window top-left reserve", () => {
-  it("reserves the browser trigger slot when the sidebar slides fully away", () => {
-    expect(renderHeaderReserve({})).toEqual([
-      BROWSER_COLLAPSED_HEADER_RESERVE_CLASS,
-    ]);
+    fireEvent.click(screen.getByText("Thread title"));
+
+    expect(scrollToTopRequests).toHaveLength(1);
   });
 
-  it("reserves nothing beside a collapsed rail, which keeps the trigger", () => {
-    expect(renderHeaderReserve({ collapsedRailWidth: "52px" })).toEqual([]);
-  });
+  it("ignores clicks that bubble from portaled overlays rendered by header content", () => {
+    const scrollToTopRequests = renderCompactHeaderOverPage();
 
-  it("reserves nothing beside a collapsed rail on macOS, where the title bar hosts the lights", () => {
-    window.bbDesktop = createBbDesktopApi(macosDesktopInfo);
+    fireEvent.click(screen.getByTestId("portaled-backdrop"));
 
-    expect(renderHeaderReserve({ collapsedRailWidth: "52px" })).toEqual([]);
-  });
-
-  it("keeps the full macOS reserve when no rail stays behind", () => {
-    window.bbDesktop = createBbDesktopApi(macosDesktopInfo);
-
-    expect(renderHeaderReserve({})).toEqual([
-      MACOS_COLLAPSED_TOP_LEFT_RESERVE_CLASS,
-    ]);
-  });
-
-  it("still reserves the trigger slot on compact viewports with the rail experiment on", () => {
-    expect(
-      renderHeaderReserve({
-        collapsedRailWidth: "52px",
-        isCompactViewport: true,
-        open: true,
-      }),
-    ).toEqual([BROWSER_COLLAPSED_HEADER_RESERVE_CLASS]);
-  });
-
-  it("reserves nothing while the sidebar is showing", () => {
-    expect(
-      renderHeaderReserve({ collapsedRailWidth: "52px", open: true }),
-    ).toEqual([]);
+    expect(scrollToTopRequests).toHaveLength(0);
   });
 });

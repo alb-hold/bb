@@ -1,10 +1,9 @@
 import { describe, expect, it } from "vitest";
+import { createMigratedConnection } from "@bb/db/testing";
 import {
-  createConnection,
   createEnvironment,
   createProject,
   createThread,
-  migrate,
   noopNotifier,
   recordWorkspaceFileChanges,
   upsertHost,
@@ -12,6 +11,7 @@ import {
 import type { DbConnection } from "@bb/db";
 import {
   clearWorkspaceAwarenessCache,
+  SHARED_WORKSPACE_ISOLATION_INSTRUCTION,
   workspaceAwarenessInput,
 } from "./workspace-awareness.js";
 
@@ -22,8 +22,7 @@ function setup(): {
   currentThread: ReturnType<typeof createThread>;
   neighbourThread: ReturnType<typeof createThread>;
 } {
-  const db = createConnection(":memory:");
-  migrate(db);
+  const db = createMigratedConnection();
   const host = upsertHost(db, noopNotifier, {
     name: "test-host",
     type: "persistent",
@@ -104,13 +103,37 @@ describe("workspace awareness", () => {
         ),
       });
       expect(input).toMatchObject({
-        text: expect.stringContaining(
-          "call update_environment_directory with its absolute path",
-        ),
+        text: expect.stringContaining(SHARED_WORKSPACE_ISOLATION_INSTRUCTION),
       });
-      expect(input).toMatchObject({
-        text: expect.stringContaining("Do not write in this shared workspace"),
-      });
+      expect(SHARED_WORKSPACE_ISOLATION_INSTRUCTION).toBe(
+        "Do not write files inside this shared checkout while another thread is active in it. " +
+          "This restriction applies only to files under the shared checkout path; writes outside it, " +
+          "including /tmp, thread storage, and $HOME configuration, do not require a worktree move. " +
+          "If you plan to change files inside the shared checkout, first create or choose a dedicated " +
+          "worktree outside this path, call update_environment_directory with its absolute path, and " +
+          "end this turn before editing.",
+      );
+    } finally {
+      db.$client.close();
+      clearWorkspaceAwarenessCache();
+    }
+  });
+
+  it("does not inject the isolation instruction without another active thread", () => {
+    const { db, unmanagedEnvironment, currentThread, neighbourThread } =
+      setup();
+    clearWorkspaceAwarenessCache();
+    try {
+      db.$client
+        .prepare("UPDATE threads SET status = 'completed' WHERE id = ?")
+        .run(neighbourThread.id);
+      expect(
+        workspaceAwarenessInput(db, {
+          environment: unmanagedEnvironment,
+          thread: currentThread,
+          now: 1_001,
+        }),
+      ).toEqual([]);
     } finally {
       db.$client.close();
       clearWorkspaceAwarenessCache();

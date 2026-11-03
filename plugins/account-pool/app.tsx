@@ -26,6 +26,7 @@ import { CSS } from "@dnd-kit/utilities";
 import {
   definePluginApp,
   experimental_copyToClipboard,
+  type ExperimentalSignInWindow,
   useBbNavigate,
   useRealtime,
   useRpc,
@@ -63,7 +64,6 @@ import type {
   FamilyQuota,
   LimitWindow,
   LocalLogin,
-  ModelFamily,
   PoolAvailability,
   PoolProvider,
   PoolStatus,
@@ -75,8 +75,8 @@ import type {
 import type { OAuthLoginStart } from "./src/oauth-login.js";
 import type { CodexDeviceLoginStart } from "./src/codex-device-login.js";
 import {
+  CLAUDE_OAUTH_REDIRECT_URI,
   DEFAULT_ACCOUNT_POOL_CONFIG,
-  modelFamilySchema,
   statusSchema,
 } from "./src/contracts.js";
 import { blockingResetAt } from "./src/quota.js";
@@ -124,13 +124,6 @@ const PROVIDERS: Array<{
     description: "Codex threads route through these ChatGPT accounts.",
   },
 ];
-const FAMILY_LABELS: Record<ModelFamily, string> = {
-  fable: "Fable 7 day",
-  sonnet: "Sonnet 7 day",
-  opus: "Opus 7 day",
-  haiku: "Haiku 7 day",
-  other: "Other 7 day",
-};
 
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -247,7 +240,7 @@ function untilLabel(timestamp: number): string {
 function subscriptionState(
   account: AccountSummary,
   threshold: number,
-  nextAccountId: string | null,
+  nextAccountId: string | null | undefined,
 ): SubscriptionState {
   if (account.signInExpired)
     return {
@@ -289,6 +282,13 @@ function subscriptionState(
       tone: "text-subtle-foreground",
     };
   }
+  if (nextAccountId === undefined)
+    return {
+      label: "Checking…",
+      detail: null,
+      icon: null,
+      tone: "text-subtle-foreground",
+    };
   if (account.id === nextAccountId)
     return {
       label: "Next",
@@ -308,7 +308,7 @@ function StateWord({ state }: { state: SubscriptionState }) {
   return (
     <span
       className={cn(
-        "inline-flex min-w-0 items-center gap-1.5 text-xs",
+        "inline-flex min-w-0 max-w-full items-center gap-1.5 text-xs",
         state.tone,
       )}
     >
@@ -325,14 +325,22 @@ function StateWord({ state }: { state: SubscriptionState }) {
   );
 }
 
+import {
+  displayPlanLabel,
+  modelWeeklyRows,
+  type ModelWeekly,
+  type PoolDisplay,
+} from "./src/display.js";
+
 function planBadge(
-  account: Pick<AccountSummary, "kind" | "subscriptionType" | "rateLimitTier">,
+  account: Pick<
+    AccountSummary,
+    "provider" | "kind" | "subscriptionType" | "rateLimitTier"
+  >,
+  displayName: string | null = null,
 ): string | null {
   if (account.kind === "api-key") return "API key";
-  const max = account.rateLimitTier?.match(/max_(\d+)x/u);
-  if (max) return `Max ${max[1]}x`;
-  const plan = account.subscriptionType;
-  return plan ? plan.charAt(0).toUpperCase() + plan.slice(1) : null;
+  return displayPlanLabel(account, displayName);
 }
 
 function secondaryEmail(account: AccountSummary): string | null {
@@ -391,6 +399,7 @@ type SubscriptionAction =
 
 function SubscriptionRow({
   account,
+  displayName,
   state,
   pending,
   refreshing,
@@ -399,6 +408,7 @@ function SubscriptionRow({
   onRename,
 }: {
   account: AccountSummary;
+  displayName: string | null;
   state: SubscriptionState;
   pending: boolean;
   refreshing: boolean;
@@ -408,7 +418,7 @@ function SubscriptionRow({
 }) {
   const [renaming, setRenaming] = useState(false);
   const [draft, setDraft] = useState(account.label);
-  const plan = planBadge(account);
+  const plan = planBadge(account, displayName);
   const email = secondaryEmail(account);
   const signInAgain = account.signInExpired && account.kind === "oauth";
   const {
@@ -435,7 +445,7 @@ function SubscriptionRow({
       style={{ transform: CSS.Translate.toString(transform), transition }}
       className={cn(
         LEDGER_ROW_CLASS,
-        "@container/account-row flex items-center gap-3 text-sm",
+        "@container/account-row",
         isDragging && "relative z-10 rounded-md bg-card opacity-90 shadow-lift",
       )}
     >
@@ -1066,6 +1076,10 @@ function AccountPoolSettings() {
     typeof accountPoolRpcContract & typeof accountPoolBindingReadRpcContract
   >();
   const navigate = useBbNavigate();
+  const [display, setDisplay] = useState<PoolDisplay>({
+    plans: {},
+    weekly: {},
+  });
   const [status, setStatus] = useState<PoolStatus | null>(readCachedStatus);
   const [statusIsCached, setStatusIsCached] = useState(status !== null);
   const [config, setConfig] = useState<AccountPoolConfig | null>(null);
@@ -1104,14 +1118,18 @@ function AccountPoolSettings() {
     null,
   );
   const [loginDone, setLoginDone] = useState<string | null>(null);
+  const [cleanWindow, setCleanWindow] = useState(false);
   const [pastedCode, setPastedCode] = useState("");
   const [accountLabel, setAccountLabel] = useState("");
-  const [nextAccountId, setNextAccountId] = useState<string | null>(null);
+  const [nextAccountId, setNextAccountId] = useState<string | null | undefined>(
+    undefined,
+  );
   const [localLogins, setLocalLogins] = useState<LocalLogin[]>([]);
   const [apiKey, setApiKey] = useState("");
   const [priority, setPriority] = useState("100");
   const [countdown, setCountdown] = useState(0);
   const mounted = useRef(true);
+  const signInWindow = useRef<ExperimentalSignInWindow | null>(null);
   const threshold =
     config?.switchThreshold ?? DEFAULT_ACCOUNT_POOL_CONFIG.switchThreshold;
   const applyConfig = useCallback((next: AccountPoolConfig) => {
@@ -1121,21 +1139,26 @@ function AccountPoolSettings() {
   const refresh = useCallback(async () => {
     try {
       const next = await rpc.call("status.get", null);
-      writeCachedStatus(next);
-      if (!mounted.current) return;
-      setStatus(next);
-      setStatusIsCached(false);
-      const pick =
+      const needsNextBinding =
         next.routing.claude &&
         next.accounts.some(
           (account) => account.provider === "claude" && account.enabled,
-        )
-          ? await rpc.call("routing.binding.next", { provider: "claude" }).then(
-              (result) => result.nextAccountId,
-              () => null,
-            )
-          : null;
-      if (mounted.current) setNextAccountId(pick);
+        );
+      const pick = needsNextBinding
+        ? await rpc.call("routing.binding.next", { provider: "claude" }).then(
+            (result) => result.nextAccountId,
+            () => null,
+          )
+        : null;
+      writeCachedStatus(next);
+      const nextDisplay = await rpc
+        .call("display.get", null)
+        .catch(() => ({ plans: {}, weekly: {} }));
+      if (!mounted.current) return;
+      setDisplay(nextDisplay);
+      setStatus(next);
+      setStatusIsCached(false);
+      setNextAccountId(pick);
     } catch (loadError) {
       if (mounted.current) setError(errorText(loadError));
     }
@@ -1161,6 +1184,8 @@ function AccountPoolSettings() {
     void refreshLocalLogins();
     return () => {
       mounted.current = false;
+      signInWindow.current?.close();
+      signInWindow.current = null;
     };
   }, [refresh, refreshConfig, refreshLocalLogins]);
   useRealtime(ACCOUNT_POOL_ACCOUNTS_CHANGED, () => {
@@ -1192,6 +1217,8 @@ function AccountPoolSettings() {
         });
         if (cancelled) return;
         if (result.status === "complete") {
+          signInWindow.current?.close();
+          signInWindow.current = null;
           setLoginDone(result.account.label);
           setCodexStep(null);
           await refresh();
@@ -1211,9 +1238,11 @@ function AccountPoolSettings() {
   }, [accountLabel, codexStep, loginDone, refresh, rpc]);
   const accounts = status?.accounts ?? [];
   const nextSubscriptionId =
-    nextAccountId === null
-      ? null
-      : (subscriptionRepresentative(accounts, nextAccountId)?.id ?? null);
+    nextAccountId === undefined
+      ? undefined
+      : nextAccountId === null
+        ? null
+        : (subscriptionRepresentative(accounts, nextAccountId)?.id ?? null);
   const enabledTwins = (account: AccountSummary) =>
     subscriptionMembers(accounts, account.id).filter(
       (member) => member.id !== account.id && member.enabled,
@@ -1222,6 +1251,19 @@ function AccountPoolSettings() {
     dialog === null || dialog.kind === "api-key" || dialog.accountId === null
       ? null
       : (accounts.find((account) => account.id === dialog.accountId) ?? null);
+  const latestLogin = useRef({ target: selectedAccount, label: accountLabel });
+  latestLogin.current = { target: selectedAccount, label: accountLabel };
+  function openAuthorizationUrl(url: string): boolean {
+    if (dialog?.kind === "claude-login" && loginStep !== null) {
+      const { sessionId } = loginStep;
+      return openAuthorization({
+        url,
+        redirectUrlPrefix: CLAUDE_OAUTH_REDIRECT_URI,
+        onRedirect: (redirectUrl) => completeClaude(sessionId, redirectUrl),
+      });
+    }
+    return openAuthorization({ url });
+  }
   async function run(key: string, action: () => Promise<void>): Promise<void> {
     if (pending.size > 0) return;
     markPending(key, null);
@@ -1321,6 +1363,12 @@ function AccountPoolSettings() {
       setLoginStep(started);
       setPastedCode("");
       setAccountLabel("");
+      openAuthorization({
+        url: started.authorizeUrl,
+        redirectUrlPrefix: CLAUDE_OAUTH_REDIRECT_URI,
+        onRedirect: (redirectUrl) =>
+          completeClaude(started.sessionId, redirectUrl),
+      });
     });
   }
   async function startCodex(
@@ -1331,12 +1379,59 @@ function AccountPoolSettings() {
     setCodexStep(null);
     await run("codex-login", async () => {
       setAccountLabel("");
-      setCodexStep(
-        await rpc.call(
-          "codexLogin.start",
-          target === null ? null : { accountId: target.id },
-        ),
+      const started = await rpc.call(
+        "codexLogin.start",
+        target === null ? null : { accountId: target.id },
       );
+      setCodexStep(started);
+      openAuthorization({ url: started.verificationUri });
+    });
+  }
+  function closeSignInWindow(): void {
+    const open = signInWindow.current;
+    signInWindow.current = null;
+    open?.close();
+  }
+  function openAuthorization(args: {
+    url: string;
+    redirectUrlPrefix?: string;
+    onRedirect?: (redirectUrl: string) => void;
+  }): boolean {
+    closeSignInWindow();
+    const opened = navigate.experimental_openSignInWindow({
+      url: args.url,
+      ...(args.redirectUrlPrefix === undefined
+        ? {}
+        : { redirectUrlPrefix: args.redirectUrlPrefix }),
+    });
+    setCleanWindow(opened !== null);
+    if (opened === null) return navigate.openUrl(args.url);
+    signInWindow.current = opened;
+    void opened.result.then((result) => {
+      if (signInWindow.current === opened) signInWindow.current = null;
+      if (result.reason === "redirect") args.onRedirect?.(result.redirectUrl);
+    });
+    return true;
+  }
+  function completeClaude(sessionId: string, pasted: string): void {
+    const { target, label } = latestLogin.current;
+    void run("complete-claude", async () => {
+      const added = await rpc
+        .call("login.complete", {
+          sessionId,
+          pasted,
+          ...(target !== null || label.trim() === ""
+            ? {}
+            : { label: label.trim() }),
+        })
+        .catch((completeError: unknown) => {
+          setLoginStep(null);
+          throw completeError;
+        });
+      closeSignInWindow();
+      setPastedCode("");
+      setLoginDone(added.label);
+      setLoginStep(null);
     });
   }
   async function chooseAdd(
@@ -1437,6 +1532,7 @@ function AccountPoolSettings() {
     }
   }
   function closeDialog(): void {
+    closeSignInWindow();
     if (dialog?.kind === "codex-login" && codexStep !== null)
       void rpc.call("codexLogin.cancel", { sessionId: codexStep.sessionId });
     setDialog(null);
@@ -1621,6 +1717,7 @@ function AccountPoolSettings() {
                           <SubscriptionRow
                             key={account.id}
                             account={account}
+                            displayName={display.plans[account.id] ?? null}
                             state={subscriptionState(
                               account,
                               threshold,
@@ -1843,6 +1940,8 @@ function AccountPoolSettings() {
         {dialog?.kind === "account" && selectedAccount !== null ? (
           <AccountDialog
             account={selectedAccount}
+            displayName={display.plans[selectedAccount.id] ?? null}
+            weekly={display.weekly?.[selectedAccount.id]}
             threshold={threshold}
             act={(action) => void accountAction(selectedAccount, action)}
           />
@@ -2023,30 +2122,15 @@ function AccountPoolSettings() {
             countdown={0}
             error={error}
             close={closeDialog}
-            openUrl={navigate.openUrl}
+            openUrl={openAuthorizationUrl}
+            cleanWindow={cleanWindow}
             setPastedCode={setPastedCode}
             accountLabel={accountLabel}
             setAccountLabel={setAccountLabel}
-            complete={() =>
-              void run("complete-claude", async () => {
-                if (loginStep === null) return;
-                const added = await rpc
-                  .call("login.complete", {
-                    sessionId: loginStep.sessionId,
-                    pasted: pastedCode,
-                    ...(selectedAccount !== null || accountLabel.trim() === ""
-                      ? {}
-                      : { label: accountLabel.trim() }),
-                  })
-                  .catch((completeError: unknown) => {
-                    setLoginStep(null);
-                    throw completeError;
-                  });
-                setPastedCode("");
-                setLoginDone(added.label);
-                setLoginStep(null);
-              })
-            }
+            complete={() => {
+              if (loginStep !== null)
+                completeClaude(loginStep.sessionId, pastedCode);
+            }}
             restart={() => void startClaude(selectedAccount)}
           />
         ) : null}
@@ -2062,7 +2146,8 @@ function AccountPoolSettings() {
             countdown={countdown}
             error={error}
             close={closeDialog}
-            openUrl={navigate.openUrl}
+            openUrl={openAuthorizationUrl}
+            cleanWindow={cleanWindow}
             setPastedCode={() => {}}
             accountLabel={accountLabel}
             setAccountLabel={setAccountLabel}
@@ -2077,10 +2162,14 @@ function AccountPoolSettings() {
 
 function AccountDialog({
   account,
+  displayName,
+  weekly,
   threshold,
   act,
 }: {
   account: AccountSummary;
+  displayName: string | null;
+  weekly: ModelWeekly | undefined;
   threshold: number;
   act: (action: "toggle" | "refresh" | "remove") => void;
 }) {
@@ -2099,7 +2188,7 @@ function AccountDialog({
     account.provider === "claude"
       ? account.accountUuid
       : account.codexAccountId;
-  const plan = planBadge(account);
+  const plan = planBadge(account, displayName);
   return (
     <DialogFrame
       title={account.label}
@@ -2164,18 +2253,18 @@ function AccountDialog({
               )}
               threshold={threshold}
             />
-            {modelFamilySchema.options.flatMap((family) =>
-              account.familyWeekly[family] === null
-                ? []
-                : [
-                    <QuotaDetail
-                      key={family}
-                      label={FAMILY_LABELS[family]}
-                      quota={account.familyWeekly[family]}
-                      threshold={threshold}
-                    />,
-                  ],
-            )}
+            {modelWeeklyRows(account, weekly).map(({ name, quota }) => (
+              <QuotaDetail
+                key={name}
+                label={
+                  weekly === undefined
+                    ? `${name.charAt(0).toUpperCase() + name.slice(1)} 7 day`
+                    : `7d · ${name}`
+                }
+                quota={quota}
+                threshold={threshold}
+              />
+            ))}
           </>
         )}
       </div>
@@ -2239,6 +2328,7 @@ function LoginDialog({
   error,
   close,
   openUrl,
+  cleanWindow,
   setPastedCode,
   accountLabel,
   setAccountLabel,
@@ -2256,6 +2346,7 @@ function LoginDialog({
   error: string | null;
   close: () => void;
   openUrl: (url: string) => boolean;
+  cleanWindow: boolean;
   setPastedCode: (value: string) => void;
   accountLabel: string;
   setAccountLabel: (value: string) => void;
@@ -2339,8 +2430,12 @@ function LoginDialog({
           )}
           <p className="text-sm text-muted-foreground">
             {provider === "claude"
-              ? "Sign in at claude.ai, then paste the code from the final page."
-              : "Open the verification page, sign in to ChatGPT, and enter this code."}
+              ? cleanWindow
+                ? "Sign in to the account you want to add in the window that opened. bb finishes the login when you authorize; if it does not, paste the code from the final page."
+                : "Sign in at claude.ai, then paste the code from the final page."
+              : cleanWindow
+                ? "Sign in to ChatGPT in the window that opened and enter this code."
+                : "Open the verification page, sign in to ChatGPT, and enter this code."}
           </p>
           {codexStep === null ? null : (
             <UserCodeBlock userCode={codexStep.userCode} />
@@ -2355,7 +2450,9 @@ function LoginDialog({
                 onChange={(event) => setAccountLabel(event.target.value)}
               />
               <p className="text-xs text-muted-foreground">
-                Use a private window or sign in to the account you want to add.
+                {cleanWindow
+                  ? "The window starts signed out, so your browser's accounts are not used."
+                  : "Use a private window or sign in to the account you want to add."}
               </p>
             </>
           ) : (

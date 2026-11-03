@@ -1,11 +1,22 @@
 import { z } from "zod";
 import {
+  GENERATED_ID_ALPHABET,
+  GENERATED_ID_SUFFIX_LENGTH,
   terminalColsSchema,
   terminalDataBase64Schema,
   terminalRowsSchema,
   terminalSessionCloseReasonSchema,
   terminalSessionStatusSchema,
 } from "@bb/domain";
+
+export const terminalSessionIdSchema = z
+  .string()
+  .regex(
+    new RegExp(
+      `^term_[${GENERATED_ID_ALPHABET}]{${GENERATED_ID_SUFFIX_LENGTH}}$`,
+      "u",
+    ),
+  );
 
 export const terminalSessionSchema = z.object({
   id: z.string().min(1),
@@ -22,13 +33,47 @@ export const terminalSessionSchema = z.object({
   createdAt: z.number().int().nonnegative(),
   updatedAt: z.number().int().nonnegative(),
   lastUserInputAt: z.number().int().nonnegative().nullable(),
+  attention: z
+    .object({
+      at: z.number().int().nonnegative(),
+      body: z.string().max(2048).optional(),
+      kind: z.enum(["bell", "osc-9", "osc-99", "osc-777"]),
+      seq: z.number().int().nonnegative(),
+      title: z.string().max(256).optional(),
+    })
+    .strict()
+    .nullable()
+    .optional(),
 });
 export type TerminalSession = z.infer<typeof terminalSessionSchema>;
+
+const terminalNotificationTextSchema = (maxLength: number) =>
+  z
+    .string()
+    .max(4096)
+    .transform((value) =>
+      value.replace(/[\u0000-\u001f\u007f-\u009f]/gu, "").slice(0, maxLength),
+    );
+
+export const terminalNotifyRequestSchema = z
+  .object({
+    title: terminalNotificationTextSchema(256).optional(),
+    body: terminalNotificationTextSchema(2048).optional(),
+  })
+  .strict();
+export type TerminalNotifyRequest = z.infer<typeof terminalNotifyRequestSchema>;
 
 export const terminalListResponseSchema = z.object({
   sessions: z.array(terminalSessionSchema),
 });
 export type TerminalListResponse = z.infer<typeof terminalListResponseSchema>;
+
+export const terminalAttentionListResponseSchema = z.object({
+  sessions: z.array(terminalSessionSchema),
+});
+export type TerminalAttentionListResponse = z.infer<
+  typeof terminalAttentionListResponseSchema
+>;
 
 export const terminalListQuerySchema = z
   .object({
@@ -86,7 +131,9 @@ export type TerminalCreateTarget = z.infer<typeof terminalCreateTargetSchema>;
 export const createTerminalRequestSchema = z
   .object({
     cols: terminalColsSchema,
+    id: terminalSessionIdSchema.optional(),
     rows: terminalRowsSchema,
+    cwd: z.string().trim().min(1).max(4096).optional(),
     start: z
       .discriminatedUnion("mode", [
         z
@@ -117,7 +164,7 @@ export type CreateTerminalRequest = z.infer<typeof createTerminalRequestSchema>;
 export const closeTerminalRequestSchema = z
   .object({
     mode: z.enum(["force", "if-clean"]),
-    reason: z.literal("user"),
+    reason: z.enum(["user", "client-cleanup"]).default("user"),
   })
   .strict();
 export type CloseTerminalRequest = z.infer<typeof closeTerminalRequestSchema>;
@@ -137,7 +184,7 @@ export type UpdateTerminalRequest = z.infer<typeof updateTerminalRequestSchema>;
 export const terminalOutputChunkSchema = z
   .object({
     seq: z.number().int().nonnegative(),
-    dataBase64: terminalDataBase64Schema,
+    dataBase64: z.union([z.literal(""), terminalDataBase64Schema]),
   })
   .strict();
 export type TerminalOutputChunk = z.infer<typeof terminalOutputChunkSchema>;
@@ -167,9 +214,44 @@ export const terminalOutputQuerySchema = z
       .max(4 * 1024 * 1024)
       .optional(),
     limitChunks: z.coerce.number().int().positive().max(10_000).optional(),
+    lines: z.coerce.number().int().positive().max(10_000).optional(),
   })
   .strict();
 export type TerminalOutputQuery = z.infer<typeof terminalOutputQuerySchema>;
+
+export const terminalScreenQuerySchema = z
+  .object({
+    lines: z.coerce.number().int().positive().max(500).optional(),
+    threadId: z.string().min(1).optional(),
+  })
+  .strict();
+export type TerminalScreenQuery = z.infer<typeof terminalScreenQuerySchema>;
+
+const terminalScreenFrameBase64Schema = z
+  .string()
+  .max(1_500_000)
+  .regex(/^[A-Za-z0-9+/]*={0,2}$/u);
+
+export const terminalScreenResponseSchema = z
+  .object({
+    rows: z.array(z.string()),
+    cursor: z
+      .object({
+        col: z.number().int().nonnegative(),
+        row: z.number().int().nonnegative(),
+      })
+      .strict(),
+    cols: terminalColsSchema,
+    gridRows: terminalRowsSchema,
+    truncated: z.boolean(),
+    complete: z.boolean(),
+    checkpointSeq: z.number().int().nonnegative().optional(),
+    dataBase64: terminalScreenFrameBase64Schema.optional(),
+  })
+  .strict();
+export type TerminalScreenResponse = z.infer<
+  typeof terminalScreenResponseSchema
+>;
 
 export const terminalWebSocketQuerySchema = z
   .object({
@@ -178,8 +260,21 @@ export const terminalWebSocketQuerySchema = z
       .enum(["0", "1"])
       .default("0")
       .transform((value) => value === "1"),
+    resizeAcks: z
+      .enum(["0", "1"])
+      .default("0")
+      .transform((value) => value === "1"),
+    handoffOwnerToken: z
+      .string()
+      .length(22)
+      .regex(/^[A-Za-z0-9_-]+$/u)
+      .optional(),
   })
   .strict();
+
+export const TERMINAL_LEGACY_WEBSOCKET_PROTOCOL = "bb.terminal.v1";
+export const TERMINAL_RESIZE_ECHO_WEBSOCKET_PROTOCOL =
+  "bb.terminal.resize-echo.v1";
 
 export const terminalOutputResponseSchema = z
   .object({
@@ -207,6 +302,8 @@ export const terminalClientMessageSchema = z.discriminatedUnion("type", [
       type: z.literal("resize"),
       cols: terminalColsSchema,
       rows: terminalRowsSchema,
+      claim: z.literal(true).optional(),
+      seq: z.number().int().positive().optional(),
     })
     .strict(),
   z
@@ -248,6 +345,7 @@ export const terminalServerMessageSchema = z.discriminatedUnion("type", [
     .object({
       type: z.literal("session-updated"),
       session: terminalSessionSchema,
+      resizeSeq: z.number().int().positive().optional(),
     })
     .strict(),
   z
@@ -266,6 +364,18 @@ export const terminalServerMessageSchema = z.discriminatedUnion("type", [
   z
     .object({
       type: z.literal("pong"),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("features"),
+      resizeAcks: z.literal(true),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("resize-applied"),
+      seq: z.number().int().positive(),
     })
     .strict(),
 ]);

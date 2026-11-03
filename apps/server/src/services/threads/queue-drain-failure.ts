@@ -146,13 +146,14 @@ export function recordQueuedMessageDrainFailure(
   clearQueuedMessageDispatchRetry(deps.db, args.row.id);
   if (
     updated !== null &&
-    updated.nextAttemptAt === null &&
-    isParentNotifiableChildThread(args.thread)
+    updated.state === "failed_exhausted" &&
+    isParentNotifiableChildThread(args.thread, "failed")
   ) {
     void queueChildThreadTurnNotificationBestEffort(deps, {
       childThread: args.thread,
       parentThreadId: args.thread.parentThreadId,
       turnStatus: "failed",
+      turnId: null,
       failureContext: "could not send a queued message after retrying",
     });
   }

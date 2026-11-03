@@ -1,3 +1,4 @@
+import { createPluginDetailFixedPanelTab } from "@/lib/fixed-panel-tabs-state";
 import {
   useCallback,
   useEffect,
@@ -19,6 +20,7 @@ import {
   createNewTabFixedPanelTab,
   createPluginPanelFixedPanelTab,
   createThreadStorageFilePreviewFixedPanelTab,
+  createAttachmentFilePreviewFixedPanelTab,
   createWorkspaceFilePreviewFixedPanelTab,
   type BrowserFixedPanelTab,
   type FixedPanelTab,
@@ -27,6 +29,7 @@ import {
   type NewTabFixedPanelTab,
   type PluginPanelFixedPanelTab,
   type ThreadStorageFilePreviewFixedPanelTab,
+  type AttachmentFilePreviewFixedPanelTab,
   type WorkspaceFilePreviewFixedPanelTab,
 } from "@/lib/fixed-panel-tabs-state";
 import { usePluginSlots } from "@/lib/plugin-slots";
@@ -76,6 +79,7 @@ import {
   type ClosedPanelTabAvailability,
   type PluginDetailHistoryTarget,
 } from "./recentlyClosedPanelTabs";
+import { usePendingTerminalIds } from "@/components/thread/terminal/pending-terminals";
 import { pruneTerminalTabsInFixedPanelState } from "./terminalPanelTabs";
 
 interface UseThreadFileTabsParams {
@@ -131,6 +135,12 @@ export type OpenSecondaryPanelTabRequest =
       tab: ThreadStorageFileTabState;
       threadId?: string;
     }
+  | {
+      kind: "attachment-file-preview";
+      name: string;
+      path: string;
+      projectId: string;
+    }
   | { kind: "browser"; url: string }
   | { kind: "new-tab" };
 
@@ -145,9 +155,11 @@ type SecondaryPanelTab =
   | WorkspaceFilePreviewFixedPanelTab
   | HostFilePreviewFixedPanelTab
   | ThreadStorageFilePreviewFixedPanelTab
+  | AttachmentFilePreviewFixedPanelTab
   | BrowserFixedPanelTab
   | NewTabFixedPanelTab
-  | PluginPanelFixedPanelTab;
+  | PluginPanelFixedPanelTab
+  | Extract<FixedPanelTab, { kind: "plugin-detail" }>;
 
 interface StorageFileInventory {
   knownPaths: ReadonlySet<string>;
@@ -165,12 +177,15 @@ function isReopenableSecondaryPanelTab(
     case "workspace-file-preview":
     case "host-file-preview":
     case "thread-storage-file-preview":
+    case "attachment-file-preview":
     case "browser":
+    case "plugin-detail":
     case "plugin-panel":
     case "new-tab":
       return true;
     case "thread-info":
     case "git-diff":
+    case "plugin-fixed":
     case "plugin-page-fixed":
     case "terminal":
       return false;
@@ -234,6 +249,12 @@ function createTabForOpenRequest({
         isPinned: false,
         tab: request.tab,
         threadId: storageThreadId,
+      });
+    case "attachment-file-preview":
+      return createAttachmentFilePreviewFixedPanelTab({
+        name: request.name,
+        path: request.path,
+        projectId: request.projectId,
       });
     case "browser":
       return createBrowserFixedPanelTab({
@@ -462,10 +483,12 @@ export function useThreadFileTabs({
     updateFixedPanelTabsState,
   ]);
 
+  const pendingTerminalIds = usePendingTerminalIds();
   useEffect(() => {
     if (!isPanelStateResolved || terminalSessions === undefined) return;
     updateFixedPanelTabsState((state) =>
       pruneTerminalTabsInFixedPanelState({
+        pendingTerminalIds,
         state,
         retainedTerminalIds,
         terminalSessions,
@@ -473,6 +496,7 @@ export function useThreadFileTabs({
     );
   }, [
     isPanelStateResolved,
+    pendingTerminalIds,
     retainedTerminalIds,
     terminalSessions,
     updateFixedPanelTabsState,
@@ -668,7 +692,8 @@ export function useThreadFileTabs({
           return true;
         }
         const entry = unresolvedEntries[0];
-        if (entry === undefined || storageFileExists === undefined) return false;
+        if (entry === undefined || storageFileExists === undefined)
+          return false;
         const storagePath = storagePathForRecentlyClosedPanelTab(
           entry.tab,
           resolvedFileOwnerThreadId,
@@ -725,6 +750,24 @@ export function useThreadFileTabs({
     ],
   );
 
+  const openPluginDetail = useCallback(
+    ({ detailKey, title }: { detailKey: string; title: string }) => {
+      const tab = createPluginDetailFixedPanelTab({ detailKey, title });
+      if (recentlyClosedPanelContextKey !== null) {
+        forgetClosedPanelTab(recentlyClosedPanelContextKey, tab.id);
+      }
+      updateFixedPanelTabsState((state) => {
+        const existing = findSecondaryPanelTab(state.secondary.tabs, tab.id);
+        return replaceNewTabWithSecondaryPanelTabInState({
+          state,
+          tab: existing ?? tab,
+        });
+      });
+      return tab;
+    },
+    [recentlyClosedPanelContextKey, updateFixedPanelTabsState],
+  );
+
   const openPluginPanel = useCallback(
     ({ pluginId, actionId, title, paramsJson }: OpenPluginPanelArgs) => {
       const tab = createPluginPanelFixedPanelTab({
@@ -746,7 +789,10 @@ export function useThreadFileTabs({
                   state,
                   tab: { ...existing, title },
                 });
-          return activateSecondaryPanelTabInState(withTitle, tab.id);
+          return replaceNewTabWithSecondaryPanelTabInState({
+            state: withTitle,
+            tab: existing,
+          });
         }
         return replaceNewTabWithSecondaryPanelTabInState({ state, tab });
       });
@@ -863,6 +909,7 @@ export function useThreadFileTabs({
     clearActiveFileTabs,
     closeTab,
     openPluginPanel,
+    openPluginDetail,
     openTab,
     orderedSecondaryFileTabs,
     reopenClosedTab,

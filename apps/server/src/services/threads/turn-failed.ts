@@ -11,6 +11,7 @@ import {
 import {
   providerErrorInfoSchema,
   providerRateLimitStateSchema,
+  systemErrorEventDataSchema,
   type ClientTurnRequestId,
   type ProviderErrorInfo,
   type ProviderRateLimitState,
@@ -21,6 +22,8 @@ import type { PluginTurnFailedEvent } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import { parseStoredTurnRequestEvent } from "./thread-events.js";
 
+const PROVIDER_PROCESS_EXITED_ERROR_CODE = "provider_process_exited";
+
 /** The message shapes the fallback query can return, by event type. */
 const providerErrorDataSchema = z.object({
   message: z.string(),
@@ -29,6 +32,10 @@ const providerErrorDataSchema = z.object({
 
 const rateLimitsDataSchema = z.object({
   rateLimits: providerRateLimitStateSchema,
+});
+
+const failedCompletionDataSchema = z.object({
+  status: z.literal("failed"),
 });
 
 const rejectedReasonDataSchema = z.object({
@@ -154,6 +161,38 @@ function doorRejectionErrorInfo(
   }
 }
 
+function processExitErrorInfo(
+  db: DbConnection,
+  args: { threadId: string; failed: FailedTurnRecord },
+): ProviderErrorInfo | null {
+  const completion = getLatestStoredThreadEventOfTypes(db, {
+    threadId: args.threadId,
+    types: ["turn/completed"],
+    afterSequence: args.failed.requestSequence,
+  });
+  if (
+    completion === null ||
+    completion.turnId === null ||
+    !failedCompletionDataSchema.safeParse(parseRowData(completion)).success
+  ) {
+    return null;
+  }
+  const row = getLatestStoredThreadEventOfTypes(db, {
+    threadId: args.threadId,
+    types: ["system/error"],
+    afterSequence: args.failed.requestSequence,
+  });
+  if (row === null || row.turnId !== completion.turnId) return null;
+  const code = systemErrorEventDataSchema.safeParse(parseRowData(row)).data
+    ?.code;
+  if (code !== PROVIDER_PROCESS_EXITED_ERROR_CODE) return null;
+  return {
+    category: "internal",
+    providerCode: PROVIDER_PROCESS_EXITED_ERROR_CODE,
+    httpStatusCode: null,
+  };
+}
+
 /**
  * The `turn.failed` payload: ids and failure facts, assembled from the failed
  * turn's own records so a listener never replays the event log itself.
@@ -194,10 +233,13 @@ export function buildTurnFailedEvent(
     requestId: failed.request.requestId,
     turnId: providerError?.turnId ?? null,
     errorInfo:
-      providerErrorInfo ?? doorRejectionErrorInfo(db, { threadId, failed }),
+      providerErrorInfo ??
+      doorRejectionErrorInfo(db, { threadId, failed }) ??
+      processExitErrorInfo(db, { threadId, failed }),
     inputAccepted: wasFailedTurnInputAccepted(db, { threadId, failed }),
     rateLimits: latestRateLimits(db, thread),
     attemptNumber: retryChain(failed.request).attemptNumber,
+    originPluginId: failed.request.originPluginId ?? null,
   };
 }
 

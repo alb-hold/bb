@@ -12,7 +12,6 @@ import {
 import { COARSE_POINTER_HEADER_ICON_BUTTON_CLASS } from "@bb/shared-ui/coarse-pointer-sizing";
 import { useAppCommandShortcut } from "@/components/commands/AppCommandProvider";
 import { useRouteStateHistoryNavigation } from "@/lib/app-route-history";
-import { AppCommandShortcutHint } from "@/components/commands/AppCommandShortcutHint";
 
 interface SidebarHistoryNavigationControlsProps {
   onNavigate?: () => void;
@@ -62,7 +61,9 @@ function SidebarHistoryNavButton({
       </TooltipTrigger>
       <TooltipContent className="px-1.5 py-1">
         {shortcut ? (
-          <kbd className="font-sans leading-4 tabular-nums">{shortcut.label}</kbd>
+          <kbd className="font-sans leading-4 tabular-nums">
+            {shortcut.label}
+          </kbd>
         ) : (
           label
         )}
@@ -82,22 +83,24 @@ export function SidebarHistoryNavigationControls({
     if (!canGoBack) {
       return;
     }
-    goBack();
-    onNavigate?.();
+    goBack(onNavigate);
   }, [canGoBack, goBack, onNavigate]);
 
   const handleForward = useCallback(() => {
     if (!canGoForward) {
       return;
     }
-    goForward();
-    onNavigate?.();
+    goForward(onNavigate);
   }, [canGoForward, goForward, onNavigate]);
 
   return (
     <TooltipProvider delayDuration={300}>
-      <div className={cn("relative flex items-center gap-1", className)}>
-        <SidebarHistoryShortcutHints />
+      <div
+        className={cn(
+          "flex items-center gap-(--bb-chrome-control-gap)",
+          className,
+        )}
+      >
         <SidebarHistoryNavButton
           command="history.back"
           icon="ChevronLeft"
@@ -114,19 +117,5 @@ export function SidebarHistoryNavigationControls({
         />
       </div>
     </TooltipProvider>
-  );
-}
-
-function SidebarHistoryShortcutHints() {
-  const back = useAppCommandShortcut("history.back");
-  const forward = useAppCommandShortcut("history.forward");
-  return (
-    <span
-      data-sidebar-history-shortcut-hints
-      className="pointer-events-none absolute right-full mr-1 flex items-center gap-1"
-    >
-      <AppCommandShortcutHint shortcut={back} />
-      <AppCommandShortcutHint shortcut={forward} />
-    </span>
   );
 }

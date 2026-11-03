@@ -1,4 +1,5 @@
 import type { QueryClient, QueryKey } from "@tanstack/react-query";
+import { withEffectiveDisplayStatus } from "@bb/domain";
 import type {
   EnvironmentChangeKind,
   HostChangeKind,
@@ -6,25 +7,25 @@ import type {
   SystemChangeKind,
   ThreadChangeKind,
   ThreadEventType,
+  ThreadListEntry,
   ThreadStatusChangeMetadata,
   ThreadWithRuntime,
 } from "@bb/domain";
+import type { ThreadSearchResponse } from "@bb/server-contract";
 import {
-  getCachedEnvironmentRefWorkspaceStateInvalidationQueryKeys,
   getCachedGlobalThreadListInvalidationQueryKeys,
   getCachedProjectThreadListInvalidationQueryKeys,
   getCachedSidebarNavigationThreads,
   getCachedThreadListPlaceholder,
   getCachedThreadListQueryKeys,
-  getEnvironmentBranchListInvalidationQueryKeys,
   getEnvironmentRecordInvalidationQueryKeys,
   getEnvironmentWorkspaceStateInvalidationQueryKeys,
   getFetchingThreadListQueryKeys,
   isArchivedThreadListQueryKey,
   updateCachedThreadListPendingInteractionState,
   updateCachedThreadListStatusState,
+  updateCachedThreadStatusState,
 } from "./query-cache";
-import { bumpDiffPatchFreshnessGeneration } from "./environment-diff-patch-cache-owner";
 import { invalidateSystemExecutionOptions } from "./system-cache-effects";
 import { markThreadTimelineUnseenEvents } from "./thread-timeline-unseen-events";
 import {
@@ -50,10 +51,7 @@ import {
   allSystemThemesQueryKeyPrefix,
   allThreadQueryKeyPrefix,
   allTerminalsQueryKeyPrefix,
-  environmentDiffFilesQueryKeyPrefix,
   environmentFilePreviewQueryKeyPrefix,
-  environmentPullRequestQueryKey,
-  environmentWorkStatusQueryKeyPrefix,
   hostsQueryKey,
   serverMoveStatusQueryKey,
   systemAppUpdateQueryKey,
@@ -63,6 +61,7 @@ import {
   systemAiServicesQueryKey,
   systemConfigQueryKey,
   uiPreferencesQueryKey,
+  writingAssistanceQueryKey,
   allSystemProvidersQueryKeyPrefix,
   threadDefaultExecutionOptionsQueryKey,
   threadQueryKey,
@@ -86,7 +85,6 @@ import {
   getProjectSourceDependentInvalidationQueryKeys,
   getThreadConversationOutlineInvalidationQueryKeys,
   getThreadDetailInvalidationQueryKeys,
-  getThreadListInvalidationQueryKeys,
   getThreadPendingInteractionInvalidationQueryKeys,
   getThreadPromptHistoryInvalidationQueryKeys,
   getThreadQueueContentInvalidationQueryKeys,
@@ -94,6 +92,7 @@ import {
   getThreadCompactedHistoryInvalidationQueryKeys,
   getThreadTimelineWindowInvalidationQueryKeys,
 } from "./cache-invalidation-groups";
+import { isCachedThreadTimelinePushEnabled } from "./thread-timeline-push-owner";
 
 interface CollectCachedThreadIdsForEnvironmentArgs {
   environmentId: string;
@@ -138,9 +137,7 @@ interface ThrottledActiveRefetchArgs {
   queryKey: QueryKey;
 }
 
-const WORK_STATUS_REFETCH_MIN_INTERVAL_MS = 1_000;
-
-const THREAD_LIST_STATUS_FALLBACK_REFETCH_MIN_INTERVAL_MS = 1_000;
+const THREAD_LIST_REFETCH_MIN_INTERVAL_MS = 1_000;
 
 const TRAILING_REFETCH_MIN_INTERVAL_MS = 50;
 const TRAILING_REFETCH_MAX_INTERVAL_MS = 1_000;
@@ -283,20 +280,28 @@ function cancelTrailingActiveRefetch({
   }
 }
 
+function invalidateQueryKeyWithoutCancelingActiveFetch({
+  exact,
+  queryClient,
+  queryKey,
+}: ScheduleTrailingActiveRefetchArgs): void {
+  const hadActiveFetch = hasActiveFetchingQueries(queryClient, queryKey, exact);
+  queryClient.invalidateQueries({ exact, queryKey }, { cancelRefetch: false });
+  if (hadActiveFetch) {
+    scheduleTrailingActiveRefetch({ exact, queryClient, queryKey });
+  }
+}
+
 function invalidateQueryKeysWithoutCancelingActiveFetches({
   queryClient,
   queryKeys,
 }: TimelineInvalidationQueryKeysArgs): void {
   for (const queryKey of queryKeys) {
-    const hadActiveFetch = hasActiveFetchingQueries(
+    invalidateQueryKeyWithoutCancelingActiveFetch({
+      exact: false,
       queryClient,
       queryKey,
-      false,
-    );
-    queryClient.invalidateQueries({ queryKey }, { cancelRefetch: false });
-    if (hadActiveFetch) {
-      scheduleTrailingActiveRefetch({ exact: false, queryClient, queryKey });
-    }
+    });
   }
 }
 
@@ -309,6 +314,13 @@ function invalidateTerminalTimelineQueryKeys({
     void queryClient.cancelQueries({ queryKey });
     queryClient.invalidateQueries({ queryKey });
   }
+}
+
+export function invalidateSidebarNavigation(queryClient: QueryClient): void {
+  void queryClient.invalidateQueries(
+    { exact: true, queryKey: sidebarNavigationQueryKey() },
+    { cancelRefetch: false },
+  );
 }
 
 export function disposeTrailingActiveRefetches(queryClient: QueryClient): void {
@@ -356,10 +368,9 @@ export const REALTIME_THREAD_CHANGE_REGISTRY = {
       dirtyThreadListQueriesForBackgroundActivity,
       dirtyThreadDetailQueriesForBackgroundActivity,
       dirtyThreadSearchQueriesForCompletedTurn,
-      dirtyThreadTimelineQueries,
+      dirtyThreadTimelineQueriesForAppendedEvents,
       dirtyThreadCompactionTurnIdsQueriesForCompletedTurn,
       dirtyThreadSpendSummaryQueriesForUsageUpdate,
-      dirtyThreadPullRequestQueryForCompletedTurn,
       dirtyThreadTurnRequestQueries,
     ],
   },
@@ -381,15 +392,16 @@ export const REALTIME_THREAD_CHANGE_REGISTRY = {
   },
   "interactions-changed": {
     flush: "debounced",
+    patch: [patchThreadListPendingInteractionState],
     dirty: [
       dirtyThreadSearchQueries,
       getThreadPendingInteractionInvalidationQueryKeys,
-      patchThreadListPendingInteractionState,
     ],
   },
   "status-changed": {
     flush: "immediate",
-    dirty: [patchThreadListStatusState, dirtyThreadDetailQueries],
+    patch: [patchThreadStatusState, patchThreadSearchStatusState],
+    dirty: [refreshThreadListStatusState, dirtyThreadDetailForStatusChange],
   },
   "title-changed": {
     flush: "debounced",
@@ -429,7 +441,7 @@ export const REALTIME_THREAD_CHANGE_REGISTRY = {
   },
   "read-state-changed": {
     flush: "debounced",
-    dirty: [markThreadDetailQueryStale, markThreadListQueriesStale],
+    dirty: [markThreadDetailQueryStale, dirtyActiveThreadListQueries],
   },
   "tabs-changed": {
     flush: "immediate",
@@ -446,21 +458,18 @@ export const REALTIME_ENVIRONMENT_CHANGE_REGISTRY = {
     dirty: [
       dirtyEnvironmentRecordQueries,
       dirtyEnvironmentWorkspaceStateQueries,
-      dirtyEnvironmentBranchListQueries,
     ],
   },
   "environment-deleted": {
     dirty: [
       dirtyEnvironmentRecordQueries,
       dirtyEnvironmentWorkspaceStateQueries,
-      dirtyEnvironmentBranchListQueries,
     ],
   },
   "metadata-changed": {
     dirty: [
       dirtyEnvironmentRecordQueries,
       dirtyEnvironmentWorkspaceStateQueries,
-      dirtyEnvironmentBranchListQueries,
       dirtyEnvironmentThreadListQueries,
       dirtyThreadSearchQueries,
     ],
@@ -469,20 +478,19 @@ export const REALTIME_ENVIRONMENT_CHANGE_REGISTRY = {
     dirty: [
       dirtyEnvironmentRecordQueries,
       dirtyEnvironmentWorkspaceStateQueries,
-      dirtyEnvironmentBranchListQueries,
     ],
   },
   "work-status-changed": {
     dirty: [dirtyEnvironmentLiveWorkspaceStateQueries],
   },
   "git-refs-changed": {
-    dirty: [
-      dirtyEnvironmentRefDerivedWorkspaceStateQueries,
-      dirtyEnvironmentBranchListQueries,
-    ],
+    dirty: [],
   },
   "thread-storage-changed": {
     dirty: [dirtyThreadStorageQueriesForEnvironment],
+  },
+  "diff-viewed-changed": {
+    dirty: [],
   },
 } satisfies EnvironmentChangeRegistry;
 
@@ -530,6 +538,9 @@ export const REALTIME_HOST_CHANGE_REGISTRY = {
   "provider-model-catalog-changed": {
     dirty: [dirtyHostSystemExecutionOptionQueries],
   },
+  "provider-commands-changed": {
+    dirty: [dirtyProjectCommandCatalogQueries],
+  },
 } satisfies HostChangeRegistry;
 
 export const REALTIME_SYSTEM_CHANGE_REGISTRY = {
@@ -566,7 +577,7 @@ export const REALTIME_SYSTEM_CHANGE_REGISTRY = {
     dirty: [dirtyEnvironmentProviderQueries],
   },
   "ui-preferences-changed": {
-    dirty: [dirtyUiPreferencesQueries],
+    dirty: [() => [uiPreferencesQueryKey()]],
   },
   "server-move-changed": {
     dirty: [dirtyServerMoveStatusQueries],
@@ -588,6 +599,7 @@ interface ThreadRealtimeDirtyContext extends RealtimeDirtyContext {
   timelineSequence: number | undefined;
   flushOnce: (key: string) => boolean;
   hasPendingInteraction: boolean | undefined;
+  nativeActivityReceiptOnly: boolean | undefined;
   projectId: string | undefined;
   statusChange: ThreadStatusChangeMetadata | undefined;
   threadId: string | undefined;
@@ -602,6 +614,62 @@ export function createFlushOncePredicate(): (key: string) => boolean {
     seen.add(key);
     return true;
   };
+}
+
+export function isNativeActivityReceiptOnlyStatusChange(
+  queryClient: QueryClient,
+  threadId: string,
+  statusChange: ThreadStatusChangeMetadata | undefined,
+): boolean {
+  if (statusChange?.runtime.nativeActivity === undefined) return false;
+  const cachedEntries = [
+    ...getCachedThreadLists(queryClient, {
+      queryKey: threadsQueryKey(),
+    }).flatMap(({ data }) => [...iterateThreadListCacheEntries(data)]),
+    ...getCachedSidebarNavigationThreads(queryClient),
+    ...queryClient
+      .getQueriesData<ThreadSearchResponse>({
+        queryKey: threadSearchQueryKeyPrefix(),
+      })
+      .flatMap(([, response]) =>
+        response === undefined
+          ? []
+          : [...response.active.results, ...response.archived.results].map(
+              (result) => result.thread,
+            ),
+      ),
+  ].filter((entry) => entry.id === threadId);
+  if (cachedEntries.length === 0) return false;
+  return cachedEntries.every((entry) =>
+    sameThreadStateExceptNativeReceipt(entry, statusChange),
+  );
+}
+
+function sameThreadStateExceptNativeReceipt(
+  entry: ThreadListEntry,
+  statusChange: ThreadStatusChangeMetadata,
+): boolean {
+  const { nativeActivity: cachedReceipt, ...cachedRuntime } = entry.runtime;
+  const { nativeActivity: nextReceipt, ...nextRuntime } = statusChange.runtime;
+  const activityKeys = [
+    "activeBackgroundAgentCount",
+    "activeBackgroundCommandCount",
+    "activeGoalCount",
+    "activePlanModeCount",
+    "activeWorkflowCount",
+  ] as const;
+  return (
+    cachedReceipt !== undefined &&
+    nextReceipt !== undefined &&
+    cachedReceipt.lastEvidenceAt !== nextReceipt.lastEvidenceAt &&
+    entry.status === statusChange.status &&
+    activityKeys.every(
+      (key) => entry.activity[key] === statusChange.activity[key],
+    ) &&
+    entry.latestAttentionAt === statusChange.latestAttentionAt &&
+    entry.updatedAt === statusChange.updatedAt &&
+    JSON.stringify(cachedRuntime) === JSON.stringify(nextRuntime)
+  );
 }
 
 interface EnvironmentRealtimeDirtyContext extends RealtimeDirtyContext {
@@ -628,7 +696,15 @@ interface ExecuteRealtimeDirtyHandlersArgs<
   handlers: readonly RealtimeDirtyHandler<Context>[];
 }
 
+interface ThreadRealtimePatchContext {
+  hasPendingInteraction: boolean | undefined;
+  queryClient: QueryClient;
+  statusChange: ThreadStatusChangeMetadata | undefined;
+  threadId: string;
+}
+
 interface ThreadChangeRule {
+  patch?: readonly ((context: ThreadRealtimePatchContext) => void)[];
   dirty: readonly RealtimeDirtyHandler<ThreadRealtimeDirtyContext>[];
   flush: ThreadChangeFlushPriority;
 }
@@ -670,8 +746,21 @@ export function executeRealtimeDirtyHandlers<
     if (!queryKeys) {
       continue;
     }
-    for (const queryKey of queryKeys) {
-      context.queryClient.invalidateQueries({ queryKey });
+    invalidateQueryKeysWithoutCancelingActiveFetches({
+      queryClient: context.queryClient,
+      queryKeys,
+    });
+  }
+}
+
+export function applyRealtimeThreadPatches(
+  changes: readonly ThreadChangeKind[],
+  context: ThreadRealtimePatchContext,
+): void {
+  for (const changeKind of changes) {
+    const rule: ThreadChangeRule = REALTIME_THREAD_CHANGE_REGISTRY[changeKind];
+    for (const patch of rule.patch ?? []) {
+      patch(context);
     }
   }
 }
@@ -720,24 +809,20 @@ export function collectCachedThreadIdsForEnvironment({
   return Array.from(threadIds);
 }
 
-function dirtyThreadListQueries({
-  projectId,
-  queryClient,
-}: ThreadRealtimeDirtyContext): QueryKey[] {
-  if (projectId) {
-    for (const queryKey of getCachedGlobalThreadListInvalidationQueryKeys({
-      queryClient,
-    })) {
-      queryClient.invalidateQueries({ exact: true, queryKey });
-    }
-  }
-  return getThreadListInvalidationQueryKeys({ projectId, queryClient });
+function dirtyThreadListQueries(context: ThreadRealtimeDirtyContext): void {
+  invalidateThreadListQueries(context, true);
 }
 
-function dirtyActiveThreadListQueries({
-  projectId,
-  queryClient,
-}: ThreadRealtimeDirtyContext): QueryKey[] {
+function dirtyActiveThreadListQueries(
+  context: ThreadRealtimeDirtyContext,
+): void {
+  invalidateThreadListQueries(context, false);
+}
+
+function invalidateThreadListQueries(
+  { projectId, queryClient }: ThreadRealtimeDirtyContext,
+  includeArchived: boolean,
+): void {
   const listQueryKeys = projectId
     ? [
         ...getCachedProjectThreadListInvalidationQueryKeys({
@@ -748,32 +833,7 @@ function dirtyActiveThreadListQueries({
       ]
     : getCachedThreadListQueryKeys(queryClient);
   for (const queryKey of listQueryKeys) {
-    queryClient.invalidateQueries({
-      exact: true,
-      queryKey,
-      ...(isArchivedThreadListQueryKey(queryKey)
-        ? { refetchType: "none" }
-        : {}),
-    });
-  }
-  return [sidebarNavigationQueryKey(), threadSearchQueryKeyPrefix()];
-}
-
-function dirtyActiveThreadListQueriesWithThrottledRefetch({
-  projectId,
-  queryClient,
-}: ThreadRealtimeDirtyContext): void {
-  const listQueryKeys = projectId
-    ? [
-        ...getCachedProjectThreadListInvalidationQueryKeys({
-          projectId,
-          queryClient,
-        }),
-        ...getCachedGlobalThreadListInvalidationQueryKeys({ queryClient }),
-      ]
-    : getCachedThreadListQueryKeys(queryClient);
-  for (const queryKey of listQueryKeys) {
-    if (isArchivedThreadListQueryKey(queryKey)) {
+    if (!includeArchived && isArchivedThreadListQueryKey(queryKey)) {
       queryClient.invalidateQueries({
         exact: true,
         queryKey,
@@ -783,7 +843,7 @@ function dirtyActiveThreadListQueriesWithThrottledRefetch({
     }
     invalidateQueryKeyWithThrottledActiveRefetch({
       exact: true,
-      minIntervalMs: THREAD_LIST_STATUS_FALLBACK_REFETCH_MIN_INTERVAL_MS,
+      minIntervalMs: THREAD_LIST_REFETCH_MIN_INTERVAL_MS,
       queryClient,
       queryKey,
     });
@@ -794,7 +854,7 @@ function dirtyActiveThreadListQueriesWithThrottledRefetch({
   ]) {
     invalidateQueryKeyWithThrottledActiveRefetch({
       exact: false,
-      minIntervalMs: THREAD_LIST_STATUS_FALLBACK_REFETCH_MIN_INTERVAL_MS,
+      minIntervalMs: THREAD_LIST_REFETCH_MIN_INTERVAL_MS,
       queryClient,
       queryKey,
     });
@@ -803,11 +863,11 @@ function dirtyActiveThreadListQueriesWithThrottledRefetch({
 
 function dirtyThreadListQueriesForBackgroundActivity(
   context: ThreadRealtimeDirtyContext,
-): QueryKey[] {
+): void {
   if (context.backgroundActivityChanged !== true) {
-    return [];
+    return;
   }
-  return dirtyActiveThreadListQueries(context);
+  dirtyActiveThreadListQueries(context);
 }
 
 function dirtyThreadDetailQueriesForBackgroundActivity(
@@ -937,6 +997,37 @@ function dirtyThreadTimelineQueries({
   }
 }
 
+function dirtyThreadTimelineQueriesForAppendedEvents(
+  context: ThreadRealtimeDirtyContext,
+): void {
+  const { eventTypes, queryClient, threadId, timelineSequence } = context;
+  if (
+    threadId === undefined ||
+    !isCachedThreadTimelinePushEnabled(queryClient) ||
+    !hasActiveQueries(queryClient, threadTimelineQueryKeyPrefix(threadId))
+  ) {
+    dirtyThreadTimelineQueries(context);
+    return;
+  }
+  if (timelineSequence !== undefined) {
+    markThreadTimelineUnseenEvents(queryClient, threadId, timelineSequence);
+  }
+  const outlineQueryKeys = getThreadConversationOutlineInvalidationQueryKeys({
+    threadId,
+  });
+  if (eventTypes === undefined) {
+    invalidateQueryKeysWithoutCancelingActiveFetches({
+      queryClient,
+      queryKeys: outlineQueryKeys,
+    });
+  } else if (eventTypes.includes("turn/completed")) {
+    invalidateTerminalTimelineQueryKeys({
+      queryClient,
+      queryKeys: outlineQueryKeys,
+    });
+  }
+}
+
 function dirtyThreadTurnRequestQueries({
   eventTypes,
   queryClient,
@@ -951,22 +1042,20 @@ function dirtyThreadTurnRequestQueries({
   ];
 }
 
-function dirtyThreadPullRequestQueryForCompletedTurn({
-  eventTypes,
+export function getCachedThreadEnvironmentId({
   queryClient,
   threadId,
-}: ThreadRealtimeDirtyContext): QueryKey[] {
-  if (!threadId || !eventTypes?.includes("turn/completed")) {
-    return [];
-  }
+}: {
+  queryClient: QueryClient;
+  threadId: string;
+}): string | null {
   const cachedThread =
     queryClient.getQueryData<ThreadWithRuntime>(threadQueryKey(threadId)) ??
     getCachedThreadListPlaceholder(queryClient, threadId) ??
     getCachedSidebarNavigationThreads(queryClient).find(
       (thread) => thread.id === threadId,
     );
-  const environmentId = cachedThread?.environmentId;
-  return environmentId ? [environmentPullRequestQueryKey(environmentId)] : [];
+  return cachedThread?.environmentId ?? null;
 }
 
 function dirtyThreadTerminalQueries({
@@ -1010,47 +1099,12 @@ function markThreadDetailQueryStale({
   });
 }
 
-function markThreadListQueriesStale({
-  projectId,
-  queryClient,
-}: ThreadRealtimeDirtyContext): void {
-  queryClient.invalidateQueries({
-    queryKey: sidebarNavigationQueryKey(),
-    refetchType: "none",
-  });
-  if (!projectId) {
-    queryClient.invalidateQueries({
-      queryKey: threadsQueryKey(),
-      refetchType: "none",
-    });
-    return;
-  }
-  for (const queryKey of getCachedProjectThreadListInvalidationQueryKeys({
-    projectId,
-    queryClient,
-  })) {
-    queryClient.invalidateQueries({
-      queryKey,
-      refetchType: "none",
-    });
-  }
-  for (const queryKey of getCachedGlobalThreadListInvalidationQueryKeys({
-    queryClient,
-  })) {
-    queryClient.invalidateQueries({
-      exact: true,
-      queryKey,
-      refetchType: "none",
-    });
-  }
-}
-
 function patchThreadListPendingInteractionState({
   hasPendingInteraction,
   queryClient,
   threadId,
-}: ThreadRealtimeDirtyContext): void {
-  if (!threadId || hasPendingInteraction === undefined) {
+}: ThreadRealtimePatchContext): void {
+  if (hasPendingInteraction === undefined) {
     return;
   }
   updateCachedThreadListPendingInteractionState(
@@ -1060,15 +1114,64 @@ function patchThreadListPendingInteractionState({
   );
 }
 
-function patchThreadListStatusState(context: ThreadRealtimeDirtyContext): void {
+function patchThreadStatusState({
+  queryClient,
+  statusChange,
+  threadId,
+}: ThreadRealtimePatchContext): void {
+  if (!statusChange) return;
+  updateCachedThreadListStatusState(queryClient, threadId, statusChange);
+  updateCachedThreadStatusState(queryClient, threadId, statusChange);
+}
+
+function patchThreadSearchStatusState({
+  queryClient,
+  statusChange,
+  threadId,
+}: ThreadRealtimePatchContext): void {
+  if (!statusChange) return;
+  queryClient.setQueriesData<ThreadSearchResponse>(
+    { queryKey: threadSearchQueryKeyPrefix() },
+    (response) => {
+      if (!response) return response;
+      const updateGroup = (group: ThreadSearchResponse["active"]) => ({
+        ...group,
+        results: group.results.map((result) =>
+          result.thread.id === threadId &&
+          statusChange.updatedAt >= result.thread.updatedAt
+            ? {
+                ...result,
+                thread: {
+                  ...result.thread,
+                  ...withEffectiveDisplayStatus(statusChange),
+                },
+              }
+            : result,
+        ),
+      });
+      return {
+        active: updateGroup(response.active),
+        archived: updateGroup(response.archived),
+      };
+    },
+  );
+}
+
+function refreshThreadListStatusState(
+  context: ThreadRealtimeDirtyContext,
+): void {
+  if (context.nativeActivityReceiptOnly === true) return;
   const { flushOnce, queryClient, statusChange, threadId } = context;
   if (!threadId || !statusChange) {
-    dirtyActiveThreadListQueriesWithThrottledRefetch(context);
+    dirtyActiveThreadListQueries(context);
     return;
   }
-  updateCachedThreadListStatusState(queryClient, threadId, statusChange);
   for (const queryKey of getFetchingThreadListQueryKeys(queryClient)) {
-    queryClient.invalidateQueries({ exact: true, queryKey });
+    invalidateQueryKeyWithoutCancelingActiveFetch({
+      exact: true,
+      queryClient,
+      queryKey,
+    });
   }
   if (flushOnce("thread-search:status-changed")) {
     invalidateQueryKeysWithoutCancelingActiveFetches({
@@ -1076,6 +1179,13 @@ function patchThreadListStatusState(context: ThreadRealtimeDirtyContext): void {
       queryKeys: [threadSearchQueryKeyPrefix()],
     });
   }
+}
+
+function dirtyThreadDetailForStatusChange(
+  context: ThreadRealtimeDirtyContext,
+): QueryKey[] | void {
+  if (context.nativeActivityReceiptOnly === true) return;
+  return dirtyThreadDetailQueries(context);
 }
 
 function dirtyEnvironmentRecordQueries(
@@ -1087,7 +1197,6 @@ function dirtyEnvironmentRecordQueries(
 function dirtyEnvironmentWorkspaceStateQueries(
   context: EnvironmentRealtimeDirtyContext,
 ): void {
-  bumpDiffPatchFreshnessGeneration(context.environmentId);
   for (const queryKey of getEnvironmentWorkspaceStateInvalidationQueryKeys(
     context,
   )) {
@@ -1099,38 +1208,9 @@ function dirtyEnvironmentLiveWorkspaceStateQueries({
   environmentId,
   queryClient,
 }: EnvironmentRealtimeDirtyContext): void {
-  bumpDiffPatchFreshnessGeneration(environmentId);
-  invalidateQueryKeyWithThrottledActiveRefetch({
-    exact: false,
-    minIntervalMs: WORK_STATUS_REFETCH_MIN_INTERVAL_MS,
-    queryClient,
-    queryKey: environmentWorkStatusQueryKeyPrefix(environmentId),
-  });
   queryClient.invalidateQueries({
     queryKey: environmentFilePreviewQueryKeyPrefix(environmentId),
   });
-  queryClient.invalidateQueries({
-    queryKey: environmentDiffFilesQueryKeyPrefix(environmentId),
-  });
-}
-
-function dirtyEnvironmentRefDerivedWorkspaceStateQueries({
-  environmentId,
-  queryClient,
-}: EnvironmentRealtimeDirtyContext): void {
-  bumpDiffPatchFreshnessGeneration(environmentId);
-  for (const queryKey of getCachedEnvironmentRefWorkspaceStateInvalidationQueryKeys(
-    queryClient,
-    { environmentId },
-  )) {
-    queryClient.invalidateQueries({ queryKey });
-  }
-}
-
-function dirtyEnvironmentBranchListQueries(
-  context: EnvironmentRealtimeDirtyContext,
-): QueryKey[] {
-  return getEnvironmentBranchListInvalidationQueryKeys(context);
 }
 
 function dirtyEnvironmentThreadListQueries({
@@ -1191,6 +1271,7 @@ function dirtySystemConfigQueries({ queryClient }: RealtimeDirtyContext): void {
     queryKeys: [
       systemConfigQueryKey(),
       systemAiServicesQueryKey(),
+      writingAssistanceQueryKey(),
       allSystemThemesQueryKeyPrefix(),
     ],
   });
@@ -1202,15 +1283,6 @@ function dirtyMachineEnvironmentQueries({
   invalidateQueryKeysWithoutCancelingActiveFetches({
     queryClient,
     queryKeys: [allMachineEnvironmentQueryKeyPrefix()],
-  });
-}
-
-function dirtyUiPreferencesQueries({
-  queryClient,
-}: RealtimeDirtyContext): void {
-  invalidateQueryKeysWithoutCancelingActiveFetches({
-    queryClient,
-    queryKeys: [uiPreferencesQueryKey()],
   });
 }
 

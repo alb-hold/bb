@@ -1,10 +1,7 @@
 import type { ReactNode } from "react";
 import type { SecondaryFileFixedPanelTab } from "@/lib/fixed-panel-tabs-state";
 
-export interface MarketplacePluginDetailPanelTab {
-  id: string;
-  kind: "marketplace-plugin-detail";
-}
+export const PANEL_TAB_DRAG_DISTANCE_PX = 8;
 
 export interface SecondaryPanelTabReorderRequest {
   activeTabId: string;
@@ -21,6 +18,7 @@ export interface SecondaryPanelPaneRenderContext {
 }
 
 export interface SecondaryPanelRenderableTab {
+  attention?: boolean;
   contentFillsRegion?: boolean;
   label: string;
   isHidden?: boolean;
@@ -30,5 +28,5 @@ export interface SecondaryPanelRenderableTab {
   onSelect: () => void;
   renderContent: (pane: SecondaryPanelPaneRenderContext) => ReactNode;
   statusLabel: string | null;
-  tab: SecondaryFileFixedPanelTab | MarketplacePluginDetailPanelTab;
+  tab: SecondaryFileFixedPanelTab;
 }

@@ -138,10 +138,10 @@ describe("child outcomes without provider completion", () => {
         });
         expect(response.status).toBe(200);
         await vi.advanceTimersByTimeAsync(2_000);
-        expect(parentSystemRequests(harness, parent.id)).toHaveLength(
-          expectedNotices,
-        );
         if (expectedNotices === 1) {
+          await vi.waitFor(() =>
+            expect(parentSystemRequests(harness, parent.id)).toHaveLength(1),
+          );
           expect(
             parentSystemRequests(harness, parent.id)[0]?.systemMessageSubject,
           ).toMatchObject({
@@ -153,6 +153,8 @@ describe("child outcomes without provider completion", () => {
               },
             ],
           });
+        } else {
+          expect(parentSystemRequests(harness, parent.id)).toHaveLength(0);
         }
       });
     },
@@ -174,6 +176,7 @@ describe("child outcomes without provider completion", () => {
         childThread: child,
         parentThreadId: parent.id,
         turnStatus: "interrupted",
+        turnId: null,
         interruption: {
           reason: "host-daemon-restarted",
           cause: "host-connection-lost",
@@ -183,15 +186,20 @@ describe("child outcomes without provider completion", () => {
         childThread: child,
         parentThreadId: parent.id,
         turnStatus: "interrupted",
+        turnId: null,
       });
       await queueChildThreadTurnNotificationBestEffort(harness.deps, {
         childThread: sibling,
         parentThreadId: parent.id,
         turnStatus: "interrupted",
+        turnId: null,
         interruption: { reason: "host-daemon-restarted" },
       });
       await vi.advanceTimersByTimeAsync(2_000);
 
+      await vi.waitFor(() =>
+        expect(parentSystemRequests(harness, parent.id)).toHaveLength(1),
+      );
       const [notice] = parentSystemRequests(harness, parent.id);
       expect(notice?.systemMessageKind).toBe("child-outcome-batch");
       expect(notice?.systemMessageSubject).toEqual({
@@ -237,9 +245,11 @@ describe("child outcomes without provider completion", () => {
       });
       await vi.advanceTimersByTimeAsync(2_000);
 
-      expect(parentSystemRequests(harness, parent.id)).toMatchObject([
-        { systemMessageKind: "child-failed" },
-      ]);
+      await vi.waitFor(() =>
+        expect(parentSystemRequests(harness, parent.id)).toMatchObject([
+          { systemMessageKind: "child-failed" },
+        ]),
+      );
       expect(
         JSON.stringify(parentSystemRequests(harness, parent.id)[0]?.input),
       ).toContain("failed during workspace setup before a turn began");
@@ -269,9 +279,11 @@ describe("child outcomes without provider completion", () => {
       });
       await vi.advanceTimersByTimeAsync(2_000);
 
-      expect(parentSystemRequests(harness, parent.id)).toMatchObject([
-        { systemMessageKind: "child-failed" },
-      ]);
+      await vi.waitFor(() =>
+        expect(parentSystemRequests(harness, parent.id)).toMatchObject([
+          { systemMessageKind: "child-failed" },
+        ]),
+      );
     });
   });
 
@@ -296,9 +308,9 @@ describe("child outcomes without provider completion", () => {
           row,
           thread: child,
         });
-        expect(
-          getQueuedMessageDispatchRetry(harness.db, row.id)?.attempt,
-        ).toBe(attempt + 1);
+        expect(getQueuedMessageDispatchRetry(harness.db, row.id)?.attempt).toBe(
+          attempt + 1,
+        );
       }
       expect(parentSystemRequests(harness, parent.id)).toHaveLength(0);
 
@@ -312,13 +324,93 @@ describe("child outcomes without provider completion", () => {
 
       expect(getQueuedMessageDispatchRetry(harness.db, row.id)).toBeNull();
       expect(getQueuedThreadMessage(harness.db, row.id)).not.toBeNull();
-      expect(parentSystemRequests(harness, parent.id)).toMatchObject([
-        { systemMessageKind: "child-failed" },
-      ]);
+      await vi.waitFor(() =>
+        expect(parentSystemRequests(harness, parent.id)).toMatchObject([
+          { systemMessageKind: "child-failed" },
+        ]),
+      );
       expect(
         JSON.stringify(parentSystemRequests(harness, parent.id)[0]?.input),
       ).toContain("could not send a queued message after retrying");
       expect(listQueuedThreadMessages(harness.db, parent.id)).toHaveLength(0);
     });
   });
+});
+
+describe("child parent-notification policy", () => {
+  it.each([
+    { status: "completed", notifiedPolicies: ["auto"] },
+    { status: "failed", notifiedPolicies: ["auto", "stuck"] },
+  ] as const)(
+    "notifies the parent of a $status turn only for $notifiedPolicies children",
+    async ({ status, notifiedPolicies }) => {
+      await withTestHarness(async (harness) => {
+        const {
+          project,
+          environment,
+          session,
+          thread: parent,
+        } = seedThreadFixture(harness);
+        seedThreadRuntimeState(harness.deps, {
+          threadId: parent.id,
+          environmentId: environment.id,
+          providerThreadId: "parent-provider-thread",
+        });
+        const policies = ["auto", "stuck", "off"] as const;
+        const children = policies.map((parentNotifications) => {
+          const child = seedThread(harness.deps, {
+            projectId: project.id,
+            environmentId: environment.id,
+            parentThreadId: parent.id,
+            parentNotifications,
+            status: "active",
+            title: `${parentNotifications} child`,
+          });
+          seedTurnStarted(harness.deps, {
+            environmentId: environment.id,
+            threadId: child.id,
+            turnId: `${parentNotifications}-turn`,
+          });
+          return { child, parentNotifications };
+        });
+
+        vi.useFakeTimers();
+        const response = await harness.app.request("/internal/session/events", {
+          method: "POST",
+          headers: internalAuthHeaders(harness),
+          body: JSON.stringify({
+            sessionId: session.id,
+            eventGroups: groupHostDaemonEvents(
+              children.map(({ child, parentNotifications }) => ({
+                threadId: child.id,
+                event: {
+                  type: "turn/completed",
+                  threadId: child.id,
+                  providerThreadId: `provider-${parentNotifications}`,
+                  scope: turnScope(`${parentNotifications}-turn`),
+                  status,
+                },
+              })),
+            ),
+          }),
+        });
+        expect(response.status).toBe(200);
+        await vi.advanceTimersByTimeAsync(2_000);
+
+        const expectedThreadIds = children
+          .filter(({ parentNotifications }) =>
+            notifiedPolicies.some((policy) => policy === parentNotifications),
+          )
+          .map(({ child }) => child.id);
+        await vi.waitFor(() =>
+          expect(parentSystemRequests(harness, parent.id)).toHaveLength(1),
+        );
+        const outcomes = parentSystemRequests(harness, parent.id)[0]
+          ?.systemMessageSubject;
+        expect(outcomes).toMatchObject({
+          outcomes: expectedThreadIds.map((threadId) => ({ threadId, status })),
+        });
+      });
+    },
+  );
 });

@@ -10,11 +10,11 @@ Renew an expired provider sign-in without you doing anything. When a turn fails 
 
 ## How it works
 
-The provider CLI runs the sign-in, opens your browser, and receives the code on its own localhost callback. bb never sees a code and never reads the sign-in terminal's output. bb only watches whether the provider reports ready.
+On the primary Mac with a desktop session, the provider CLI runs its usual sign-in flow. On another host, Claude Code runs its interactive sign-in so you can open the handed-off URL on your device and paste the displayed code into the terminal. Codex uses device authentication, which displays a URL and code for you to enter on your device. bb never reads sign-in terminal output; it only watches whether the provider reports ready.
 
-A host with no desktop session cannot open a browser, so bb notifies you instead of launching anything there. A sign-in nobody completes within ten minutes is closed, and the notification carries a retry.
+A sign-in on a primary Mac without a desktop session is not launched; bb notifies you instead. Remote-host sign-ins use the callback-free flow above and open provider URLs through the device handoff. A sign-in nobody completes within ten minutes is closed, and the notification carries a retry.
 
-The plugin makes no network call of its own. The only traffic is the provider CLI's own sign-in.
+The plugin does not read or log provider credentials, codes, or terminal output. When a provider opens a URL through `BROWSER`, a terminal-origin handoff reaches only the device with the linked, visible terminal attachment. A thread-only handoff reaches only the device that most recently submitted a message in that thread, while that device has the thread open. If a thread has no submitting device, bb fails closed and the command reports that the target device must open the thread and send a message first. The provider CLI makes the remaining sign-in requests.
 
 ## CLI
 

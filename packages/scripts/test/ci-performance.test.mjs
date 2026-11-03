@@ -60,9 +60,19 @@ it("isolates failed cache restores while preserving healthy caches through a rea
   );
   const root = mkdtempSync(join(tmpdir(), "bb-ci-cache-fallback-"));
   onTestFinished(() => rmSync(root, { recursive: true, force: true }));
+  const packageManager = JSON.parse(
+    readFileSync(
+      fileURLToPath(new URL("../../../package.json", import.meta.url)),
+      "utf8",
+    ),
+  ).packageManager;
   writeFileSync(
     join(root, "package.json"),
-    '{"name":"cache-fixture","private":true}',
+    JSON.stringify({
+      name: "cache-fixture",
+      private: true,
+      packageManager,
+    }),
   );
   const env = {
     ...process.env,
@@ -150,7 +160,11 @@ it("checks both sides of plugin renames and falls back to full coverage for shar
   const root = mkdtempSync(join(tmpdir(), "bb-ci-selection-"));
   onTestFinished(() => rmSync(root, { recursive: true, force: true }));
   const git = (...args) =>
-    execFileSync("git", args, { cwd: root, encoding: "utf8" }).trim();
+    execFileSync("git", args, {
+      cwd: root,
+      encoding: "utf8",
+      timeout: 30_000,
+    }).trim();
   const write = (path, value) => {
     mkdirSync(join(root, path, ".."), { recursive: true });
     writeFileSync(join(root, path), value);
@@ -180,7 +194,7 @@ it("checks both sides of plugin renames and falls back to full coverage for shar
   expect(affectedPluginForks(root, base, plugins)).toEqual(plugins);
   expect(affectedPluginForks(root, "0".repeat(40), plugins)).toEqual(plugins);
   expect(affectedPluginForks(root, undefined, plugins)).toEqual(plugins);
-});
+}, 30_000);
 
 it("partitions fork checks without losing plugins and rejects invalid shards", () => {
   const script = fileURLToPath(

@@ -4,16 +4,11 @@ import {
   act,
   cleanup,
   fireEvent,
-  render,
+  render as renderReact,
   screen,
   waitFor,
 } from "@testing-library/react";
-import { Provider as JotaiProvider, createStore } from "jotai";
-import {
-  sidebarManualSectionOrderAtom,
-  sidebarOrganizationModeAtom,
-} from "@/components/sidebar/sidebarCollapsedAtoms";
-import { useThreadSectionMove } from "@/components/thread/ThreadSectionMoveProvider";
+import { makeThreadListEntry } from "@bb/test-helpers/domain-fixtures";
 import { defaultAppSettings } from "@bb/domain";
 import { Popover, PopoverContent, PopoverTrigger } from "@bb/shared-ui/popover";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@bb/shared-ui/tooltip";
@@ -24,13 +19,23 @@ import {
 } from "@/lib/plugin-slots";
 import { resetAllCrashedPluginSlotsForTest } from "@/components/plugin/PluginSlotMount";
 import { makePluginRegistrationSet } from "@/test/fixtures/plugins";
-import type { MouseEvent as ReactMouseEvent, ReactNode } from "react";
+import {
+  useEffect,
+  type MouseEvent as ReactMouseEvent,
+  type ReactNode,
+} from "react";
 import { Link, MemoryRouter, useLocation } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AppCommandProvider } from "@/components/commands/AppCommandProvider";
 import { AppLayout } from "./AppLayout";
 import { CompactViewportOverrideProvider } from "@bb/shared-ui/hooks/use-compact-viewport";
 import { setCompactSecondaryPanelPresentation } from "@/components/ui/secondary-panel-shelf-visibility";
+
+import { createQueryClientTestHarness } from "@/test/queryClientTestHarness";
+
+function render(ui: ReactNode) {
+  return renderReact(ui, { wrapper: createQueryClientTestHarness().wrapper });
+}
 
 const useThreadDetailBootstrapMock = vi.hoisted(() =>
   vi.fn(
@@ -41,6 +46,11 @@ const useThreadDetailBootstrapMock = vi.hoisted(() =>
     } => ({ isError: false, isSuccess: false }),
   ),
 );
+
+const sidebarThreadsMock = vi.hoisted(() => {
+  const threads: import("@bb/domain").ThreadListEntry[] = [];
+  return { threads };
+});
 
 const SIDEBAR_WIDTH_STORAGE_KEY = "bb.sidebar.width";
 const SIDEBAR_OPEN_STORAGE_KEY = "bb.sidebar.open";
@@ -106,9 +116,7 @@ vi.mock("@/components/project/ProjectActionsProvider", () => ({
   ),
 }));
 
-vi.mock("@/hooks/mutations/thread-state-mutations", () => ({
-  useMoveThreadToSection: () => vi.fn(),
-}));
+vi.mock("@/hooks/mutations/thread-state-mutations", () => ({}));
 
 vi.mock("@/components/thread/ThreadActionsProvider", () => ({
   ThreadActionsProvider: ({ children }: { children: ReactNode }) => (
@@ -131,6 +139,9 @@ vi.mock("@/lib/bb-desktop", () => ({
   DEFAULT_DESKTOP_WINDOW_STATE: { isFullScreen: false },
   MACOS_CHROME_CONTROL_AXIS_CLASS: "",
   MACOS_CHROME_CONTROL_NO_DRAG_CLASS: "",
+  MACOS_TITLE_BAR_CONTROL_AXIS_CLASS: "",
+  MACOS_TITLE_BAR_CONTROL_SIZE_CLASS: "",
+  MACOS_TITLE_BAR_PINNED_TOGGLE_CLASS: "",
   MACOS_TRAFFIC_LIGHT_RESERVE_OFFSET_CLASS: "",
   MACOS_TRAFFIC_LIGHT_RESERVE_PADDING_CLASS: "",
   MACOS_WINDOW_DRAG_CLASS: "",
@@ -167,7 +178,7 @@ vi.mock("@/hooks/queries/sidebar-navigation-query", () => ({
         kind: "personal",
         name: "Personal",
         sources: [],
-        threads: [],
+        threads: sidebarThreadsMock.threads,
         defaultExecutionOptions: null,
         createdAt: 1,
         updatedAt: 1,
@@ -180,11 +191,11 @@ vi.mock("@/hooks/queries/sidebar-navigation-query", () => ({
 }));
 
 vi.mock("@/hooks/queries/thread-queries", () => ({
+  useArchivedThreads: () => ({ data: undefined }),
   didThreadDetailBootstrapRefreshAfterMount: () => true,
   useThread: () => ({ data: undefined }),
   useThreadDetailBootstrap: useThreadDetailBootstrapMock,
   useThreadPendingInteractions: () => ({ data: undefined }),
-  getLatestPendingInteraction: () => null,
 }));
 
 function widthVar(element: Element | null): string {
@@ -216,8 +227,8 @@ function RouteContent() {
   );
 }
 
-function renderLayout(initialPath = "/", children: ReactNode = null) {
-  return render(
+function layoutTree(initialPath: string, children: ReactNode) {
+  return (
     <MemoryRouter initialEntries={[initialPath]}>
       <AppCommandProvider>
         <AppLayout>
@@ -225,11 +236,16 @@ function renderLayout(initialPath = "/", children: ReactNode = null) {
           {children}
         </AppLayout>
       </AppCommandProvider>
-    </MemoryRouter>,
+    </MemoryRouter>
   );
 }
 
+function renderLayout(initialPath = "/", children: ReactNode = null) {
+  return render(layoutTree(initialPath, children));
+}
+
 beforeEach(() => {
+  sidebarThreadsMock.threads = [];
   window.localStorage.clear();
   window.sessionStorage.clear();
   useThreadDetailBootstrapMock.mockReset();
@@ -245,6 +261,7 @@ afterEach(() => {
   resetAllCrashedPluginSlotsForTest();
   setCompactSecondaryPanelPresentation("closed");
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
   window.localStorage.clear();
   window.sessionStorage.clear();
 });
@@ -271,6 +288,31 @@ describe("canonical thread routes", () => {
     await waitFor(() =>
       expect(screen.getByTestId("location").textContent).toBe(expected),
     );
+  });
+
+  it("keeps the layout mounted while redirecting to the thread's project route", async () => {
+    let mounts = 0;
+    function MountCounter() {
+      useEffect(() => {
+        mounts += 1;
+      }, []);
+      return null;
+    }
+    const view = renderLayout("/threads/thr_one", <MountCounter />);
+    useThreadDetailBootstrapMock.mockReturnValue({
+      data: { projectId: "proj_actual" },
+      isError: false,
+      isSuccess: true,
+    });
+
+    view.rerender(layoutTree("/threads/thr_one", <MountCounter />));
+
+    await waitFor(() =>
+      expect(screen.getByTestId("location").textContent).toBe(
+        "/projects/proj_actual/threads/thr_one",
+      ),
+    );
+    expect(mounts).toBe(1);
   });
 
   it("keeps an already canonical thread route", () => {
@@ -632,46 +674,41 @@ describe("AppLayout plugin overlay contexts", () => {
   );
 });
 
-function HeaderSectionDestinations() {
-  const sectionMove = useThreadSectionMove();
-  return (
-    <output data-testid="header-section-destinations">
-      {sectionMove?.destinations
-        .map((destination) => destination.label)
-        .join(",") ?? "unavailable"}
-    </output>
+it("synchronizes desktop attention when sidebar state changes and clears its report on unmount", async () => {
+  const setAttentionThreads = vi.fn();
+  vi.stubGlobal("bbDesktop", { setAttentionThreads });
+  sidebarThreadsMock.threads = [
+    makeThreadListEntry({
+      id: "unread",
+      lastReadAt: 10,
+      latestAttentionAt: 20,
+    }),
+  ];
+  const view = renderLayout();
+  await waitFor(() =>
+    expect(setAttentionThreads).toHaveBeenLastCalledWith({
+      pendingThreadIds: [],
+      unreadThreadIds: ["unread"],
+    }),
   );
-}
-
-describe("thread header section moves", () => {
-  it.each([
-    ["chronological", "Building,Planning,Threads"],
-    ["project", "unavailable"],
-    ["machine", "unavailable"],
-  ] as const)(
-    "supplies destinations to thread content in %s mode",
-    (mode, expected) => {
-      const store = createStore();
-      store.set(sidebarOrganizationModeAtom, mode);
-      store.set(sidebarManualSectionOrderAtom, [
-        "section:sec_building",
-        "section:sec_planning",
-        "threads",
-      ]);
-      render(
-        <JotaiProvider store={store}>
-          <MemoryRouter initialEntries={[APP_ROUTE]}>
-            <AppCommandProvider>
-              <AppLayout>
-                <HeaderSectionDestinations />
-              </AppLayout>
-            </AppCommandProvider>
-          </MemoryRouter>
-        </JotaiProvider>,
-      );
-      expect(
-        screen.getByTestId("header-section-destinations").textContent,
-      ).toBe(expected);
-    },
+  sidebarThreadsMock.threads = [
+    makeThreadListEntry({
+      id: "pending",
+      lastReadAt: 30,
+      latestAttentionAt: 20,
+      hasPendingInteraction: true,
+    }),
+  ];
+  fireEvent.click(screen.getByRole("link", { name: SETTINGS_ROUTE }));
+  await waitFor(() =>
+    expect(setAttentionThreads).toHaveBeenLastCalledWith({
+      pendingThreadIds: ["pending"],
+      unreadThreadIds: [],
+    }),
   );
+  view.unmount();
+  expect(setAttentionThreads).toHaveBeenLastCalledWith({
+    pendingThreadIds: [],
+    unreadThreadIds: [],
+  });
 });

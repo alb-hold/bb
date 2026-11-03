@@ -5,6 +5,22 @@ import {
   TASKS_PAGE_DEFAULT_LIMIT,
   TASKS_PAGE_MAX_LIMIT,
 } from "./pagination.js";
+import {
+  TASK_META_TAG,
+  ALL_TASKS_TAG,
+  ACTIVE_TASKS_TAG,
+  FOLDERS_TAG,
+  PRESETS_TAG,
+  PROJECTS_TAG,
+  attachmentsTag,
+  commentTag,
+  commentsTag,
+  labelsTag,
+  pullRequestsTag,
+  taskListTags,
+  taskReadTags,
+  threadsTag,
+} from "./tags.js";
 
 export const TASK_STATUSES = [
   "backlog",
@@ -42,16 +58,7 @@ export const ISO_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
 export const idSchema = z.string().regex(ULID_PATTERN, "must be a ULID");
 const nonBlankStringSchema = z.string().trim().min(1, "must not be blank");
-export const presetReasoningLevelSchema = z.enum([
-  "none",
-  "low",
-  "medium",
-  "high",
-  "xhigh",
-  "ultracode",
-  "max",
-  "ultra",
-]);
+export const presetReasoningLevelSchema = nonBlankStringSchema;
 export type PresetReasoningLevel = z.infer<typeof presetReasoningLevelSchema>;
 export const presetServiceTierSchema = nonBlankStringSchema;
 export type PresetServiceTier = z.infer<typeof presetServiceTierSchema>;
@@ -399,6 +406,19 @@ const updatePresetInputSchema = z
     }
   });
 
+const taskFilterSchema = z
+  .object({
+    projectId: idSchema.optional(),
+    statuses: z.array(taskStatusSchema).optional(),
+    priorities: z.array(taskPrioritySchema).optional(),
+    labelIds: z.array(idSchema).optional(),
+    activeOnly: z.boolean().default(false),
+    parentTaskId: idSchema.nullable().optional(),
+    search: z.string().optional(),
+    sort: taskSortSchema.default("manual"),
+  })
+  .strict();
+
 export const tasksRpcContract = defineRpcContract({
   createFolder: {
     input: z
@@ -432,6 +452,7 @@ export const tasksRpcContract = defineRpcContract({
       .strict(),
   },
   listFolders: {
+    tags: () => [FOLDERS_TAG],
     input: z.null(),
     output: z.object({ folders: z.array(folderSchema) }).strict(),
   },
@@ -468,6 +489,7 @@ export const tasksRpcContract = defineRpcContract({
     output: projectDeleteResultSchema,
   },
   listProjects: {
+    tags: () => [PROJECTS_TAG],
     input: z.object({ folderId: idSchema.nullable().optional() }).strict(),
     output: z.object({ projects: z.array(projectSchema) }).strict(),
   },
@@ -487,10 +509,12 @@ export const tasksRpcContract = defineRpcContract({
     output: taskMutationResultSchema,
   },
   getTask: {
+    tags: (_input, output) => taskReadTags(output.task),
     input: z.object({ taskId: idSchema }).strict(),
     output: z.object({ task: taskSchema.nullable() }).strict(),
   },
   getTaskByKey: {
+    tags: (_input, output) => taskReadTags(output.task),
     input: z.object({ taskKey: nonBlankStringSchema }).strict(),
     output: z.object({ task: taskSchema.nullable() }).strict(),
   },
@@ -503,16 +527,9 @@ export const tasksRpcContract = defineRpcContract({
     output: z.object({ deleted: z.boolean() }).strict(),
   },
   listTasks: {
-    input: z
-      .object({
-        projectId: idSchema.optional(),
-        statuses: z.array(taskStatusSchema).optional(),
-        priorities: z.array(taskPrioritySchema).optional(),
-        labelIds: z.array(idSchema).optional(),
-        activeOnly: z.boolean().default(false),
-        parentTaskId: idSchema.nullable().optional(),
-        search: z.string().optional(),
-        sort: taskSortSchema.default("manual"),
+    tags: (input) => taskListTags(input),
+    input: taskFilterSchema
+      .extend({
         limit: z
           .number()
           .int()
@@ -528,6 +545,13 @@ export const tasksRpcContract = defineRpcContract({
         nextCursor: z.string().nullable(),
       })
       .strict(),
+  },
+  listAllTasks: {
+    experimental_description:
+      "Every task matching the filters, unpaged, for views that show a whole project or filter.",
+    tags: (input) => taskListTags(input),
+    input: taskFilterSchema,
+    output: z.object({ tasks: z.array(taskSchema) }).strict(),
   },
   boardMove: {
     input: z
@@ -570,8 +594,16 @@ export const tasksRpcContract = defineRpcContract({
     output: z.object({ deleted: z.boolean() }).strict(),
   },
   listLabels: {
+    tags: (input) => [labelsTag(input.projectId)],
     input: z.object({ projectId: idSchema }).strict(),
     output: z.object({ labels: z.array(labelSchema) }).strict(),
+  },
+  labelsByProject: {
+    experimental_description:
+      "Each project's labels, keyed by project id. Unknown projects have no labels.",
+    input: z.object({ keys: z.array(idSchema).min(1).max(500) }).strict(),
+    output: z.record(z.string(), z.array(labelSchema)),
+    keyTags: (key) => [labelsTag(key)],
   },
   createComment: {
     input: z
@@ -589,10 +621,17 @@ export const tasksRpcContract = defineRpcContract({
     output: z.object({ comment: commentSchema }).strict(),
   },
   listComments: {
+    tags: (input) => [commentsTag(input.taskId)],
     input: z.object({ taskId: idSchema }).strict(),
     output: z.object({ comments: z.array(displayCommentSchema) }).strict(),
   },
   listAttachments: {
+    tags: (input) =>
+      "taskId" in input
+        ? [attachmentsTag(input.taskId)]
+        : "commentId" in input
+          ? [commentTag(input.commentId)]
+          : [commentsTag(input.commentsOfTaskId)],
     input: z.union([
       z.object({ taskId: idSchema }).strict(),
       z.object({ commentId: idSchema }).strict(),
@@ -610,10 +649,31 @@ export const tasksRpcContract = defineRpcContract({
     output: attachmentDeleteResultSchema,
   },
   listTaskThreads: {
+    tags: (input) => [threadsTag(input.taskId)],
     input: z.object({ taskId: idSchema }).strict(),
     output: z.object({ taskThreads: z.array(taskThreadSchema) }).strict(),
   },
+  listTaskCardMeta: {
+    experimental_description:
+      "Attachment counts and starting or working agent threads of top-level tasks, in one project or all projects. Tasks with neither are omitted.",
+    tags: () => [TASK_META_TAG],
+    input: z.object({ projectId: idSchema.optional() }).strict(),
+    output: z
+      .object({
+        cards: z.array(
+          z
+            .object({
+              taskId: idSchema,
+              attachmentCount: z.number().int().nonnegative(),
+              activeThreads: z.array(taskThreadSchema),
+            })
+            .strict(),
+        ),
+      })
+      .strict(),
+  },
   listTaskPullRequests: {
+    tags: (input) => [threadsTag(input.taskId), pullRequestsTag(input.taskId)],
     input: z.object({ taskId: idSchema }).strict(),
     output: z
       .object({
@@ -670,6 +730,7 @@ export const tasksRpcContract = defineRpcContract({
     output: z.object({ deleted: z.boolean() }).strict(),
   },
   listPresets: {
+    tags: () => [PRESETS_TAG],
     input: z.null(),
     output: z.object({ presets: z.array(presetSchema) }).strict(),
   },
@@ -717,12 +778,14 @@ export const tasksRpcContract = defineRpcContract({
       .strict(),
   },
   sidebarOpenTaskCount: {
+    tags: () => [ALL_TASKS_TAG],
     input: z.null(),
     output: z
       .object({ openTaskCount: z.number().int().nonnegative() })
       .strict(),
   },
   sidebarSummary: {
+    tags: () => [ALL_TASKS_TAG, ACTIVE_TASKS_TAG, PROJECTS_TAG],
     input: z.null(),
     output: z
       .object({
@@ -759,23 +822,9 @@ export type TaskMutationResult = z.infer<typeof taskMutationResultSchema>;
 export type BbProjectOption = z.infer<
   (typeof tasksRpcContract)["listBbProjects"]["output"]
 >["bbProjects"][number];
+export type TaskCardMeta = z.infer<
+  (typeof tasksRpcContract)["listTaskCardMeta"]["output"]
+>["cards"][number];
 export type SidebarProjectSummary = z.infer<
   (typeof tasksRpcContract)["sidebarSummary"]["output"]
 >["projects"][number];
-
-export interface TasksChangedEvent {
-  taskId: string;
-  projectId: string;
-}
-
-export interface ProjectsChangedEvent {
-  projectId: string | null;
-}
-
-export interface CommentsChangedEvent {
-  taskId: string;
-}
-
-export interface ThreadsChangedEvent {
-  taskId: string;
-}

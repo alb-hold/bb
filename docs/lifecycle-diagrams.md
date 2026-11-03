@@ -33,17 +33,19 @@ flowchart LR
     pending -->|"run.preparing ⟨notArchived, notDeleted⟩"| starting
     idle -->|"run.preparing ⟨notArchived, notDeleted⟩"| starting
     idle -->|"run.started ⟨notArchived, notDeleted⟩"| active
+    idle -->|"session.lost ⟨notArchived, notDeleted⟩"| error
     starting -->|"run.started ⟨notArchived, notDeleted⟩"| active
     starting -->|"run.succeeded"| idle
     starting -->|"run.failed ⟨notDeleted⟩"| error
     starting -->|"stop.requested"| stopping
-    active -->|"run.succeeded"| idle
+    active -->|"run.succeeded<br/>stop.settled"| idle
     active -->|"run.failed ⟨notDeleted⟩"| error
     active -->|"stop.requested"| stopping
     stopping -->|"stop.settled<br/>run.succeeded"| idle
     stopping -->|"run.failed ⟨notDeleted⟩"| error
     error -->|"run.preparing ⟨notArchived, notDeleted⟩"| starting
     error -->|"run.started ⟨notArchived, notDeleted⟩"| active
+    error -->|"session.resumed"| idle
 ```
 
 ## Environment

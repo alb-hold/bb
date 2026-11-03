@@ -1,13 +1,13 @@
 import { useMemo } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { queryOptions, useQuery } from "@tanstack/react-query";
 import { isRawThreadId } from "@bb/domain";
 import type { PromptDraftState } from "@bb/client-core";
-import { THREAD_MENTION_RESOLVE_MAX_IDS } from "@bb/server-contract";
 import {
   resolveSerializedPromptMentions,
   useSidebarThreadTitleMentionResources,
 } from "@/components/thread/ThreadTitleMentions";
 import { sdk } from "@/lib/sdk";
+import { resolveThreadMentionsInBatches } from "@/lib/thread-links";
 import { useSidebarNavigation } from "@/hooks/queries/sidebar-navigation-query";
 
 export async function resolveInitialPromptDraft(
@@ -26,26 +26,19 @@ export async function resolveInitialPromptDraft(
       ),
     ),
   ];
+  if (threadIds.length === 0) return draft;
   const resolvedById = new Map<string, { projectId: string; label: string }>();
   const unavailableIds = new Set<string>();
-  for (
-    let offset = 0;
-    offset < threadIds.length;
-    offset += THREAD_MENTION_RESOLVE_MAX_IDS
-  ) {
-    const batch = threadIds.slice(
-      offset,
-      offset + THREAD_MENTION_RESOLVE_MAX_IDS,
-    );
-    try {
-      const resolutions = await resolveMentions({ threadIds: batch, signal });
-      for (const resolution of resolutions)
-        resolvedById.set(resolution.threadId, resolution);
+  await resolveThreadMentionsInBatches(
+    threadIds,
+    (batch) => resolveMentions({ threadIds: batch, signal }),
+    signal,
+    ({ threadIds: batch, threads }) => {
+      for (const thread of threads) resolvedById.set(thread.threadId, thread);
       for (const id of batch) if (!resolvedById.has(id)) unavailableIds.add(id);
-    } catch {
-      if (signal.aborted) return draft;
-    }
-  }
+    },
+  );
+  if (signal.aborted) return draft;
   return {
     ...draft,
     mentions: draft.mentions.map((mention) => {
@@ -69,6 +62,28 @@ export async function resolveInitialPromptDraft(
   };
 }
 
+interface InitialPromptDraftQueryOptionsArgs {
+  text: string | null;
+  navigationPending: boolean;
+  draft: PromptDraftState;
+  resolveMentions: typeof sdk.threads.resolveMentions;
+}
+
+export function initialPromptDraftQueryOptions({
+  text,
+  navigationPending,
+  draft,
+  resolveMentions,
+}: InitialPromptDraftQueryOptionsArgs) {
+  return queryOptions({
+    queryKey: ["initial-prompt-draft", draft],
+    queryFn: ({ signal }) =>
+      resolveInitialPromptDraft(draft, resolveMentions, signal),
+    enabled: text !== null && !navigationPending,
+    staleTime: Infinity,
+  });
+}
+
 export function useInitialPromptDraft(
   text: string | null,
 ): PromptDraftState | undefined {
@@ -82,15 +97,12 @@ export function useInitialPromptDraft(
     }),
     [resources, text],
   );
-  return useQuery({
-    queryKey: ["initial-prompt-draft", draft],
-    queryFn: ({ signal }) =>
-      resolveInitialPromptDraft(
-        draft,
-        (args) => sdk.threads.resolveMentions(args),
-        signal,
-      ),
-    enabled: text !== null && !navigation.isPending,
-    staleTime: Infinity,
-  }).data;
+  return useQuery(
+    initialPromptDraftQueryOptions({
+      text,
+      navigationPending: navigation.isPending,
+      draft,
+      resolveMentions: (args) => sdk.threads.resolveMentions(args),
+    }),
+  ).data;
 }

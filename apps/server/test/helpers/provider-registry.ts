@@ -154,6 +154,7 @@ export function minimalProviderRegistration(args: {
     nativeSkillRoots: EMPTY_PROVIDER_NATIVE_ROOTS,
     nativeCommandRoots: EMPTY_PROVIDER_NATIVE_ROOTS,
     resolvesNativeRoots: false,
+    nativeTerminal: null,
     deriveProviderOptions: () => ({}),
     iconNames: new Set<string>(),
   };
@@ -285,11 +286,16 @@ export async function buildScriptedEchoProviderArtifact(): Promise<PluginHostArt
   };
 }
 
+let scriptedEchoProviderArtifact:
+  | Promise<PluginHostArtifactSnapshot>
+  | undefined;
+
 export async function registerFakeProviders(
   registry: ProviderRegistryService,
   artifacts: PluginHostArtifactRegistry,
 ): Promise<void> {
-  const artifact = await buildScriptedEchoProviderArtifact();
+  const artifact = await (scriptedEchoProviderArtifact ??=
+    buildScriptedEchoProviderArtifact());
   for (const providerId of FAKE_PROVIDER_IDS) {
     const pluginId = `provider-${providerId}`;
     registry.register({

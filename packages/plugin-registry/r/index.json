@@ -6,6 +6,10 @@
       "type": "registry:ui"
     },
     {
+      "name": "action-menu-items",
+      "type": "registry:ui"
+    },
+    {
       "name": "activity-row-styles",
       "type": "registry:ui"
     },
@@ -78,7 +82,19 @@
       "type": "registry:ui"
     },
     {
+      "name": "compact-long-press-menu",
+      "type": "registry:ui"
+    },
+    {
+      "name": "confirm-delete-dialog",
+      "type": "registry:ui"
+    },
+    {
       "name": "context-menu",
+      "type": "registry:ui"
+    },
+    {
+      "name": "context-selection",
       "type": "registry:ui"
     },
     {
@@ -102,6 +118,10 @@
       "type": "registry:ui"
     },
     {
+      "name": "expandable-text",
+      "type": "registry:ui"
+    },
+    {
       "name": "form",
       "type": "registry:ui"
     },
@@ -115,6 +135,18 @@
     },
     {
       "name": "icon",
+      "type": "registry:ui"
+    },
+    {
+      "name": "inline-rename",
+      "type": "registry:ui"
+    },
+    {
+      "name": "inline-rename-editor",
+      "type": "registry:ui"
+    },
+    {
+      "name": "inline-rename-presentation-cases",
       "type": "registry:ui"
     },
     {
@@ -150,11 +182,23 @@
       "type": "registry:ui"
     },
     {
+      "name": "overflow-fade",
+      "type": "registry:ui"
+    },
+    {
+      "name": "overlay-anchor",
+      "type": "registry:ui"
+    },
+    {
       "name": "overlay-trigger",
       "type": "registry:ui"
     },
     {
       "name": "pagination",
+      "type": "registry:ui"
+    },
+    {
+      "name": "pill",
       "type": "registry:ui"
     },
     {
@@ -198,6 +242,14 @@
       "type": "registry:ui"
     },
     {
+      "name": "rename-dialog",
+      "type": "registry:ui"
+    },
+    {
+      "name": "rename-session-dialog",
+      "type": "registry:ui"
+    },
+    {
       "name": "resizable",
       "type": "registry:ui"
     },
@@ -230,10 +282,6 @@
       "type": "registry:ui"
     },
     {
-      "name": "resource-route-label",
-      "type": "registry:ui"
-    },
-    {
       "name": "resource-row",
       "type": "registry:ui"
     },
@@ -243,6 +291,14 @@
     },
     {
       "name": "responsive-overlay",
+      "type": "registry:ui"
+    },
+    {
+      "name": "schedule-time",
+      "type": "registry:lib"
+    },
+    {
+      "name": "schedule-time-fields",
       "type": "registry:ui"
     },
     {
@@ -262,11 +318,39 @@
       "type": "registry:ui"
     },
     {
+      "name": "shortcut-pill",
+      "type": "registry:ui"
+    },
+    {
+      "name": "sidebar-customize-panel",
+      "type": "registry:ui"
+    },
+    {
+      "name": "sidebar-hover-actions",
+      "type": "registry:ui"
+    },
+    {
+      "name": "sidebar-row-classes",
+      "type": "registry:ui"
+    },
+    {
+      "name": "sidebar-visibility-customize",
+      "type": "registry:ui"
+    },
+    {
       "name": "skeleton",
       "type": "registry:ui"
     },
     {
       "name": "slider",
+      "type": "registry:ui"
+    },
+    {
+      "name": "sortable-motion",
+      "type": "registry:ui"
+    },
+    {
+      "name": "split-pane-mini-map",
       "type": "registry:ui"
     },
     {
@@ -286,6 +370,10 @@
       "type": "registry:ui"
     },
     {
+      "name": "thread-list-empty-state",
+      "type": "registry:ui"
+    },
+    {
       "name": "toggle",
       "type": "registry:ui"
     },
@@ -298,12 +386,24 @@
       "type": "registry:ui"
     },
     {
+      "name": "truncate-start",
+      "type": "registry:ui"
+    },
+    {
       "name": "use-browser-dimming-modal",
       "type": "registry:hook"
     },
     {
       "name": "use-compact-viewport",
       "type": "registry:hook"
+    },
+    {
+      "name": "use-dialog-state",
+      "type": "registry:ui"
+    },
+    {
+      "name": "use-drag-click-suppression",
+      "type": "registry:ui"
     },
     {
       "name": "use-media-query",
@@ -314,8 +414,24 @@
       "type": "registry:hook"
     },
     {
+      "name": "use-reorder-dnd",
+      "type": "registry:ui"
+    },
+    {
+      "name": "use-sidebar-reorder-dnd",
+      "type": "registry:ui"
+    },
+    {
       "name": "utils",
       "type": "registry:lib"
+    },
+    {
+      "name": "video",
+      "type": "registry:ui"
+    },
+    {
+      "name": "video-thumbnail",
+      "type": "registry:ui"
     },
     {
       "name": "voice-input-textarea",

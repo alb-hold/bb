@@ -93,6 +93,7 @@ describe("getProviderStates", () => {
         resolveProviderEnvHealth: async ({ providerId }) =>
           providerId === "claude-code"
             ? {
+                pluginId: "account-pool",
                 label: "Proxied",
                 statusMessage:
                   "Credentials are provided by the Account Pooler hub.",

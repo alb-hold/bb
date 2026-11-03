@@ -54,7 +54,6 @@ import {
   type WorkflowRunRow,
 } from "./data.js";
 import { parseWorkflowSource } from "./parser.js";
-import { WORKFLOW_RUNS_REALTIME_CHANNEL } from "./realtime-channel.js";
 import { executeWorkflowScript } from "./runtime.js";
 import {
   DEFAULT_WORKFLOW_SETTINGS,
@@ -76,16 +75,7 @@ import { prepareWorkflowSource } from "./workflow-input.js";
 
 const executionValuesSchema = z.object({
   model: z.string().min(1),
-  reasoningLevel: z.enum([
-    "none",
-    "low",
-    "medium",
-    "high",
-    "xhigh",
-    "ultracode",
-    "max",
-    "ultra",
-  ]),
+  reasoningLevel: z.string().min(1),
   permissionMode: z.enum(["accept-edits", "auto", "full"]),
 });
 
@@ -440,9 +430,7 @@ export function createWorkflowService(
   }
 
   function publishRunsChanged(originThreadId: string): void {
-    bb.realtime.publish(WORKFLOW_RUNS_REALTIME_CHANNEL, {
-      threadId: originThreadId,
-    });
+    bb.rpc.experimental_invalidate([`runs:${originThreadId}`]);
   }
 
   function publishRunProgress(runId: string): void {

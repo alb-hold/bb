@@ -45,7 +45,7 @@ import {
   type FooterItem,
   type BuiltinFooterId,
 } from "@/components/sidebar/sidebarFooterPreferences";
-import { SIDEBAR_FOOTER_ACTION_CLASS } from "@/components/sidebar/sidebarRowClasses";
+import { SIDEBAR_FOOTER_ACTION_CLASS } from "@bb/shared-ui/sidebar-row-classes";
 
 function footerItemKey(item: PluginSidebarFooterItemSlot): string {
   return `${item.pluginId}/${item.id}/${item.generation}`;
@@ -165,7 +165,7 @@ export function PluginSidebarFooterDisclosure({
       id={footerDisclosureId(item)}
       aria-label={item.label}
       data-testid={`plugin-sidebar-footer-disclosure-${item.pluginId}-${item.id}`}
-      className="min-h-0 overflow-y-auto rounded-lg border border-sidebar-border bg-sidebar-accent/50 transition-[height] duration-200 ease-out motion-reduce:transition-none"
+      className="box-content min-h-0 overflow-y-auto rounded-lg border border-sidebar-border bg-sidebar-accent/50 transition-[height] duration-200 ease-out motion-reduce:transition-none"
       style={{ height: contentHeight ?? undefined }}
     >
       <div ref={contentRef} className="max-h-80 overflow-auto">
@@ -211,6 +211,7 @@ export function PluginSidebarFooterItems({
   const isCompactViewport = useIsCompactViewport();
   const previousHidden = useRef(preferences.hidden);
   const customizeAfterClose = useRef(false);
+  const footerShownAfterClose = useRef<boolean | null>(null);
   const menuRef = useRef<HTMLUListElement>(null);
   const moreRef = useRef<HTMLButtonElement>(null);
   useMeasureSidebarFooterCapacity(menuRef, moreRef);
@@ -240,7 +241,14 @@ export function PluginSidebarFooterItems({
   function customize() {
     customizeAfterClose.current = true;
   }
+  function setFooterShown(shown: boolean) {
+    if (isCompactViewport) preferences.setFooterShown(shown);
+    else footerShownAfterClose.current = shown;
+  }
   function handleCloseAutoFocus(event: Event) {
+    const footerShown = footerShownAfterClose.current;
+    footerShownAfterClose.current = null;
+    if (footerShown !== null) preferences.setFooterShown(footerShown);
     if (!customizeAfterClose.current) return;
     event.preventDefault();
     customizeAfterClose.current = false;
@@ -406,7 +414,7 @@ export function PluginSidebarFooterItems({
                 </DropdownMenuItem>
                 {items.length > 0 && (
                   <DropdownMenuItem
-                    onSelect={() => preferences.setFooterShown(footerHidden)}
+                    onSelect={() => setFooterShown(footerHidden)}
                   >
                     <Icon name={footerHidden ? "Eye" : "EyeOff"} />
                     {footerHidden ? "Show footer" : "Hide footer"}

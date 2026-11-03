@@ -11,7 +11,9 @@ import {
   memo,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
+  useRef,
   useState,
   type ComponentProps,
   type ReactNode,
@@ -21,7 +23,8 @@ import { toast } from "sonner";
 import type { SidebarThread } from "../model/sidebar-thread.js";
 import {
   experimental_useSidebarProjectActions,
-  experimental_useSidebarThreadActions,
+  experimental_useProviders,
+  useBbNavigate,
   useSdk,
 } from "@get-bb/plugin-sdk/app";
 import {
@@ -29,8 +32,9 @@ import {
   useSidebarRename,
   useSidebarRenameState,
 } from "../rows/SidebarInlineRename.js";
-import { AppThreadSectionMoveProvider } from "../rows/ThreadSectionMoveProvider.js";
-import { useDialogState } from "../ui/useDialogState.js";
+import { useDialogState } from "@/components/ui/use-dialog-state";
+import { ThreadRowNavigationProvider } from "../rows/threadRowNavigation.js";
+import { SidebarProvidersContext } from "../rows/ThreadRow.js";
 import {
   buildProjectThreadGroups,
   buildSectionThreadList,
@@ -49,7 +53,7 @@ import { ThreadSectionCreateDialog } from "./ThreadSectionCreateDialog.js";
 import {
   ConfirmDeleteDialog,
   ConfirmDeleteDialogContent,
-} from "../ui/ConfirmDeleteDialog.js";
+} from "@/components/ui/confirm-delete-dialog";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
@@ -123,6 +127,7 @@ import { useSidebarModeSectionOrder } from "./useSidebarModeSectionOrder.js";
 import { useReadStatusGrouping } from "./useReadStatusGrouping.js";
 import { haveSameOrder } from "../model/stored-order.js";
 import {
+  SidebarProjectsContext,
   useSidebarData,
   useSidebarMachineHosts,
   type SidebarProject,
@@ -372,26 +377,15 @@ function ProjectListNavigationLoadingRow({
 
 export function ProjectListShell({ children }: ProjectListShellProps) {
   return (
-    <SidebarContentElementProvider>
-      <div className="w-full min-w-0 overflow-x-clip">
-        <SidebarStickyStack data-sidebar-sticky-density="compact-actions">
-          <SidebarGroupContent>{children}</SidebarGroupContent>
-        </SidebarStickyStack>
-      </div>
-    </SidebarContentElementProvider>
-  );
-}
-
-function ProjectListSectionMoveScope({
-  children,
-  sections,
-}: ProjectListShellProps & {
-  sections: readonly SidebarSectionDefinition[];
-}) {
-  return (
-    <AppThreadSectionMoveProvider sections={sections}>
-      <ProjectListShell>{children}</ProjectListShell>
-    </AppThreadSectionMoveProvider>
+    <ThreadRowNavigationProvider>
+      <SidebarContentElementProvider>
+        <div className="w-full min-w-0 overflow-x-clip">
+          <SidebarStickyStack data-sidebar-sticky-density="compact-actions">
+            <SidebarGroupContent>{children}</SidebarGroupContent>
+          </SidebarStickyStack>
+        </div>
+      </SidebarContentElementProvider>
+    </ThreadRowNavigationProvider>
   );
 }
 
@@ -1349,7 +1343,8 @@ function ProjectListComponent({
   onProjectSelect,
 }: ProjectListProps) {
   const sdk = useSdk();
-  const sidebarActions = experimental_useSidebarThreadActions();
+  const navigate = useBbNavigate();
+  const { providers } = experimental_useProviders();
   const {
     status,
     sections: loadedSections,
@@ -1413,6 +1408,10 @@ function ProjectListComponent({
     },
     [sdk],
   );
+  const latestComposeTarget = useRef({ navigate, onProjectSelect });
+  useLayoutEffect(() => {
+    latestComposeTarget.current = { navigate, onProjectSelect };
+  });
   const openRootComposeForProject = useCallback(
     (
       projectId: string | null,
@@ -1420,15 +1419,16 @@ function ProjectListComponent({
       hostId?: string,
       pinned = false,
     ) => {
-      onProjectSelect?.();
-      sidebarActions.openNewThread({
+      const target = latestComposeTarget.current;
+      target.onProjectSelect?.();
+      target.navigate.toCompose({
         ...(projectId !== null ? { projectId } : {}),
-        experimental_placement: { sectionId: sectionId ?? null, pinned },
+        placement: { sectionId: sectionId ?? null, pinned },
         ...(hostId ? { hostId } : {}),
         focusPrompt: true,
       });
     },
-    [onProjectSelect, sidebarActions],
+    [],
   );
   const handleCreateProjectThread = useCallback(
     (projectId: string) => {
@@ -1635,14 +1635,11 @@ function ProjectListComponent({
   );
   const sortDirection = useAtomValue(sidebarSortDirectionAtom);
   const activeRename = useSidebarRenameState();
+  const sortRename = chronologicalSort === "alpha" ? activeRename : null;
   const baseThreadComparator = useMemo<ThreadComparator>(
     () =>
-      getSidebarThreadComparator(
-        chronologicalSort,
-        sortDirection,
-        activeRename,
-      ),
-    [chronologicalSort, sortDirection, activeRename],
+      getSidebarThreadComparator(chronologicalSort, sortDirection, sortRename),
+    [chronologicalSort, sortDirection, sortRename],
   );
   const {
     comparator: sidebarThreadComparator,
@@ -1837,7 +1834,7 @@ function ProjectListComponent({
     );
   }
 
-  return (
+  const content = (
     <SidebarHeaderActionsProvider
       value={{
         onNewProject: projectActions.isAvailable
@@ -1848,7 +1845,7 @@ function ProjectListComponent({
         isCreatingSection: isCreateThreadSectionPending,
       }}
     >
-      <ProjectListSectionMoveScope sections={sections}>
+      <ProjectListShell>
         <SidebarDraftPresenceSync />
         <ActiveSidebarModeSections
           mode={organizationMode}
@@ -1948,10 +1945,17 @@ function ProjectListComponent({
             )}
           </>
         )}
-      </ProjectListSectionMoveScope>
+      </ProjectListShell>
       {sectionCreateDialog}
       {sectionDeleteDialogContent}
     </SidebarHeaderActionsProvider>
+  );
+  return (
+    <SidebarProjectsContext.Provider value={projects}>
+      <SidebarProvidersContext.Provider value={providers}>
+        {content}
+      </SidebarProvidersContext.Provider>
+    </SidebarProjectsContext.Provider>
   );
 }
 

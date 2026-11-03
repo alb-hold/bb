@@ -87,7 +87,7 @@ function makeResizeEntry(
     devicePixelContentBoxSize: [
       { blockSize: borderBoxBlockSize, inlineSize: 200 },
     ],
-  };
+  } as ResizeObserverEntry;
 }
 
 describe("AutoHeightContainer", () => {

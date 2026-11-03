@@ -139,6 +139,7 @@ describe("an adopted bridge worker keeps its negotiated handshake", () => {
         identityRegistry.createProviderState({ providerId }),
       env: PROVIDER_ENFORCED_APPROVALS,
       getNextRequestId: () => nextRequestId++,
+      handleDeferredEvents: () => undefined,
       handleStdoutLine: ({ line, providerProcess }) => {
         const parsed = parseJsonRpcLine(line);
         if (parsed.kind === "response") {
@@ -194,7 +195,6 @@ describe("an adopted bridge worker keeps its negotiated handshake", () => {
       bridgeLaunch,
       capabilities: persisted.capabilities,
       entry: persisted,
-      processKey: persisted.processKey,
       providerId: persisted.providerId,
       workerDir: bridgeWorkers.dir,
     });
@@ -203,7 +203,7 @@ describe("an adopted bridge worker keeps its negotiated handshake", () => {
     await adopting.shutdown();
   });
 
-  it("forks a thread served by an adopted worker", async () => {
+  it("forks a thread served by an adopted worker onto a fresh worker", async () => {
     const events: ThreadEvent[] = [];
     const runtimeOptions = {
       workspacePath,
@@ -251,9 +251,9 @@ describe("an adopted bridge worker keeps its negotiated handshake", () => {
         options: fullRuntimeOptions,
         fork: { sourceProviderThreadId: providerThreadId },
       });
-      expect(forked.providerThreadId).not.toBe(providerThreadId);
+      expect(forked.providerThreadId).toEqual(expect.any(String));
       expect(readBridgeWorkerEntries(bridgeWorkers.dir).entries).toHaveLength(
-        1,
+        2,
       );
     } finally {
       await after.shutdown();

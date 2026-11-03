@@ -1,6 +1,13 @@
-import type { ThreadListEntry } from "@bb/domain";
+import { withEffectiveDisplayStatus, type ThreadListEntry } from "@bb/domain";
 import type { PluginSidebarThread } from "@get-bb/plugin-sdk";
-import { getThreadListIndicatorLabel, isThreadRead } from "@bb/client-core";
+import {
+  getThreadListIndicatorLabel,
+  isNativeActivityUnconfirmed,
+  isThreadRead,
+  nativeActivityEvidenceKind,
+  resolveThreadListIndicator,
+  threadListIndicatorStateForThread,
+} from "@bb/client-core";
 import {
   EMPTY_TITLE_MENTION_RESOURCES,
   resolveThreadTitleDisplayText,
@@ -13,8 +20,21 @@ export function toPluginSidebarThread(
   entry: ThreadListEntry,
   hostNamesById: ReadonlyMap<string, string> = new Map(),
   titleResources: ThreadTitleMentionResources = EMPTY_TITLE_MENTION_RESOURCES,
+  now = Date.now(),
+  nativeActivityUnconfirmed = isNativeActivityUnconfirmed(entry.runtime, now),
 ): PluginSidebarThread {
-  const indicator = entry.listIndicator;
+  entry = withEffectiveDisplayStatus(entry);
+  const indicatorState = threadListIndicatorStateForThread(
+    entry,
+    false,
+    now,
+    nativeActivityUnconfirmed,
+  );
+  const indicator = resolveThreadListIndicator({
+    ...indicatorState,
+    isAutomationWoken:
+      indicatorState.isAutomationWoken || entry.listIndicator === "woke",
+  });
 
   return {
     id: entry.id,
@@ -26,6 +46,7 @@ export function toPluginSidebarThread(
       titleResources,
     ),
     parentThreadId: entry.parentThreadId,
+    parentNotifications: entry.parentNotifications,
     lifecycleOwnerThreadId: entry.lifecycleOwnerThreadId,
     sourceThreadId: entry.sourceThreadId,
     sectionId: entry.sectionId,
@@ -33,8 +54,25 @@ export function toPluginSidebarThread(
     originPluginId: entry.originPluginId,
     providerId: entry.providerId,
     status: entry.status,
+    experimental_rowState: entry.rowState,
     runtimeStatus: entry.runtime.displayStatus,
+    ...(entry.runtime.nativeActivity === undefined
+      ? {}
+      : {
+          experimental_nativeActivity: {
+            ...entry.runtime.nativeActivity,
+            confirmation: nativeActivityUnconfirmed
+              ? "unconfirmed"
+              : "confirmed",
+            evidenceKind: nativeActivityEvidenceKind(
+              entry.runtime,
+              now,
+              nativeActivityUnconfirmed,
+            ),
+          },
+        }),
     queuedWork: entry.queuedWork,
+    experimental_queuedFailedCount: entry.queuedFailedCount,
     hasPendingInteraction: entry.hasPendingInteraction,
     activity: {
       workflows: entry.activity.activeWorkflowCount,
@@ -44,7 +82,10 @@ export function toPluginSidebarThread(
       goals: entry.activity.activeGoalCount,
     },
     indicator,
-    indicatorLabel: getThreadListIndicatorLabel(indicator),
+    indicatorLabel: getThreadListIndicatorLabel(
+      indicator,
+      entry.queuedFailedCount,
+    ),
     isUnread: !isThreadRead(entry),
     isPinned: entry.pinnedAt !== null,
     pinnedAt: entry.pinnedAt,

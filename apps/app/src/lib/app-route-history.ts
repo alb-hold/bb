@@ -2,12 +2,12 @@ import { useCallback, useEffect, useSyncExternalStore } from "react";
 import { useLocation, useNavigate, useNavigationType } from "react-router-dom";
 import type { Location } from "react-router-dom";
 
-interface AppRouteHistoryEntry {
+export interface AppRouteHistoryEntry {
   key: string;
   url: string;
 }
 
-interface AppRouteHistoryState {
+export interface AppRouteHistoryState {
   entries: AppRouteHistoryEntry[];
   index: number;
 }
@@ -15,17 +15,19 @@ interface AppRouteHistoryState {
 interface AppRouteHistoryNavigation {
   canGoBack: boolean;
   canGoForward: boolean;
-  goBack: () => void;
-  goForward: () => void;
+  goBack: (onTraversed?: () => void) => void;
+  goForward: (onTraversed?: () => void) => void;
 }
 
-type AppRouteNavigationType = "POP" | "PUSH" | "REPLACE";
+export type AppRouteNavigationType = "POP" | "PUSH" | "REPLACE";
 
 function getNormalizedUrl(location: Location): string {
   return `${location.pathname}${location.search}${location.hash}`;
 }
 
-function findBackTargetIndex(state: AppRouteHistoryState): number | null {
+export function findBackTargetIndex(
+  state: AppRouteHistoryState,
+): number | null {
   const currentUrl = state.entries[state.index]?.url;
   if (currentUrl === undefined) {
     return null;
@@ -38,7 +40,9 @@ function findBackTargetIndex(state: AppRouteHistoryState): number | null {
   return null;
 }
 
-function findForwardTargetIndex(state: AppRouteHistoryState): number | null {
+export function findForwardTargetIndex(
+  state: AppRouteHistoryState,
+): number | null {
   const currentUrl = state.entries[state.index]?.url;
   if (currentUrl === undefined) {
     return null;
@@ -55,7 +59,7 @@ function findForwardTargetIndex(state: AppRouteHistoryState): number | null {
   return null;
 }
 
-function reduceHistory(
+export function reduceHistory(
   state: AppRouteHistoryState,
   navigationType: AppRouteNavigationType,
   entry: AppRouteHistoryEntry,
@@ -134,23 +138,35 @@ export function useRouteStateHistoryNavigation(): AppRouteHistoryNavigation {
     () => historyState,
   );
 
-  const goBack = useCallback(() => {
-    const current = historyState;
-    const target = findBackTargetIndex(current);
-    if (target === null) {
-      return;
-    }
-    void navigate(target - current.index);
-  }, [navigate]);
+  const goBack = useCallback(
+    (onTraversed?: () => void) => {
+      const current = historyState;
+      const target = findBackTargetIndex(current);
+      if (target === null) {
+        return;
+      }
+      if (onTraversed !== undefined) {
+        window.addEventListener("popstate", onTraversed, { once: true });
+      }
+      void navigate(target - current.index);
+    },
+    [navigate],
+  );
 
-  const goForward = useCallback(() => {
-    const current = historyState;
-    const target = findForwardTargetIndex(current);
-    if (target === null) {
-      return;
-    }
-    void navigate(target - current.index);
-  }, [navigate]);
+  const goForward = useCallback(
+    (onTraversed?: () => void) => {
+      const current = historyState;
+      const target = findForwardTargetIndex(current);
+      if (target === null) {
+        return;
+      }
+      if (onTraversed !== undefined) {
+        window.addEventListener("popstate", onTraversed, { once: true });
+      }
+      void navigate(target - current.index);
+    },
+    [navigate],
+  );
 
   return {
     canGoBack: findBackTargetIndex(state) !== null,

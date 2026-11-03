@@ -11,8 +11,10 @@ import {
   copyInjectedSkillSource,
   ensureStoredSkillTree,
   hashInstalledSkillDirectory,
+  scheduleSkillStoreGc,
+  type InjectedSkillsLogger,
 } from "../injected-skills.js";
-import type { FetchSkillTree } from "../skill-trees.js";
+import type { SkillTreeTransport } from "../skill-trees.js";
 
 const GLOBAL_SKILL_ROOT_SEGMENTS: readonly (readonly string[])[] = [
   [".agents", "skills"],
@@ -21,8 +23,9 @@ const GLOBAL_SKILL_ROOT_SEGMENTS: readonly (readonly string[])[] = [
 
 interface InstallGlobalSkillsOptions {
   dataDir: string;
-  fetchSkillTree?: FetchSkillTree;
+  skillTreeTransport?: SkillTreeTransport;
   homeDir?: string;
+  logger: InjectedSkillsLogger;
 }
 
 interface GlobalSkillsStatusOptions {
@@ -85,8 +88,8 @@ export async function installGlobalSkills(
   command: CommandOf<"host.install_global_skills">,
   options: InstallGlobalSkillsOptions,
 ): Promise<HostDaemonOnlineRpcResult<"host.install_global_skills">> {
-  const { fetchSkillTree } = options;
-  if (fetchSkillTree === undefined) {
+  const { skillTreeTransport } = options;
+  if (skillTreeTransport === undefined) {
     throw new CommandDispatchError(
       "skill_tree_transport_unavailable",
       "Skill tree fetch transport is unavailable",
@@ -98,7 +101,8 @@ export async function installGlobalSkills(
   for (const skill of command.skills) {
     const sourceRootPath = await ensureStoredSkillTree({
       dataDir: options.dataDir,
-      fetchSkillTree,
+      logger: options.logger,
+      skillTreeTransport,
       treeHash: skill.treeHash,
     });
     const skillFilePath = path.resolve(sourceRootPath, skill.entryPath);
@@ -120,6 +124,9 @@ export async function installGlobalSkills(
       });
       installations.push({ name: skill.name, path: destinationPath });
     }
+  }
+  if (command.skills.length > 0) {
+    scheduleSkillStoreGc(options.dataDir, options.logger);
   }
 
   return { installations };

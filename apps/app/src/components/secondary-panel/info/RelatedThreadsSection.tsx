@@ -1,51 +1,77 @@
 import type { Thread, ThreadListEntry } from "@bb/domain";
-import { threadListIndicatorStateForThread } from "@bb/client-core";
+import {
+  resolveThreadListIndicator,
+  threadListIndicatorStateForThread,
+} from "@bb/client-core";
+import { Icon, type IconName } from "@bb/shared-ui/icon";
 import { ThreadStatusGlyph } from "@/components/thread/ThreadStatusGlyph";
 import { ThreadTitle } from "@/components/thread/ThreadTitleMentions";
-import { useThreads } from "@/hooks/queries/thread-queries";
+import { useChildThreads, useThreads } from "@/hooks/queries/thread-queries";
 import { getThreadRoutePath } from "@/lib/route-paths";
 import { getThreadDisplayTitle } from "@/lib/thread-title";
-import { InfoList, InfoListRow, InfoRowTime, InfoSection } from "./info-list";
-import { useInfoSectionCollapse } from "./useInfoSectionCollapse";
+import { useSecondTick } from "@/hooks/useSecondTick";
+import { InfoListRow, InfoRowTime } from "@bb/shared-ui/info-list-row";
+import { Link } from "react-router-dom";
+import { InfoList, InfoSection } from "./info-list";
 
 interface RelatedThreadsSectionProps {
-  sectionId: string;
   label: string;
   threads: readonly ThreadListEntry[];
+  idleIcon?: IconName;
 }
 
 export function RelatedThreadsSection({
-  sectionId,
   label,
   threads,
+  idleIcon,
 }: RelatedThreadsSectionProps) {
-  const collapse = useInfoSectionCollapse(sectionId);
+  const now = useSecondTick(
+    threads.some((thread) => thread.runtime.nativeActivity !== undefined),
+  );
   if (threads.length === 0) return null;
   return (
-    <InfoSection label={label} count={threads.length} collapse={collapse}>
+    <InfoSection label={label} count={threads.length}>
       <InfoList
         items={threads}
         getKey={(relatedThread) => relatedThread.id}
         renderItem={(relatedThread) => {
           const title = getThreadDisplayTitle(relatedThread);
+          const indicator = resolveThreadListIndicator(
+            threadListIndicatorStateForThread(relatedThread, false, now),
+          );
           return (
             <InfoListRow
               leading={
                 <span className="flex items-center text-subtle-foreground [&_[data-icon-root]]:size-3">
-                  <ThreadStatusGlyph
-                    {...threadListIndicatorStateForThread(relatedThread, false)}
-                    size="compact"
-                  />
+                  {idleIcon !== undefined && indicator === "none" ? (
+                    <Icon name={idleIcon} aria-hidden="true" />
+                  ) : (
+                    <ThreadStatusGlyph
+                      indicator={indicator}
+                      experimental_queuedFailedCount={
+                        relatedThread.queuedFailedCount
+                      }
+                      size="compact"
+                    />
+                  )}
                 </span>
               }
               name={<ThreadTitle title={title} />}
               title={title}
               target={{
-                kind: "link",
-                to: getThreadRoutePath({
-                  projectId: relatedThread.projectId,
-                  threadId: relatedThread.id,
-                }),
+                kind: "custom",
+                render: (primary) => (
+                  <Link
+                    to={getThreadRoutePath({
+                      projectId: relatedThread.projectId,
+                      threadId: relatedThread.id,
+                    })}
+                    title={primary.title}
+                    className={primary.className}
+                  >
+                    {primary.children}
+                  </Link>
+                ),
               }}
               trailing={<InfoRowTime timestamp={relatedThread.updatedAt} />}
             />
@@ -53,6 +79,22 @@ export function RelatedThreadsSection({
         }}
       />
     </InfoSection>
+  );
+}
+
+export function ChildThreadsSection({ thread }: { thread: Thread }) {
+  const childThreadsQuery = useChildThreads({
+    enabled: true,
+    parentThreadId: thread.id,
+  });
+  return (
+    <RelatedThreadsSection
+      label="Child threads"
+      threads={(childThreadsQuery.data ?? []).filter(
+        (childThread) => childThread.originKind === null,
+      )}
+      idleIcon="ChildThread"
+    />
   );
 }
 
@@ -64,10 +106,6 @@ export function ForksSection({ thread }: { thread: Thread }) {
     archived: false,
   });
   return (
-    <RelatedThreadsSection
-      sectionId="forks"
-      label="Forks"
-      threads={forksQuery.data ?? []}
-    />
+    <RelatedThreadsSection label="Forks" threads={forksQuery.data ?? []} />
   );
 }

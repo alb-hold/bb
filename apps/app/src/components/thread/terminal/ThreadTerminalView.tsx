@@ -3,16 +3,11 @@ import {
   useEffect,
   useRef,
   useState,
-  type PointerEvent as ReactPointerEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
   type TouchEvent as ReactTouchEvent,
 } from "react";
 import "@xterm/xterm/css/xterm.css";
-import type {
-  IDisposable,
-  ITerminalAddon,
-  ITheme,
-  Terminal as XTermTerminal,
-} from "@xterm/xterm";
+import type { IMarker, ITheme, Terminal as XTermTerminal } from "@xterm/xterm";
 import type { FitAddon } from "@xterm/addon-fit";
 import {
   ContextMenu,
@@ -22,17 +17,25 @@ import {
   ContextMenuTrigger,
 } from "@bb/shared-ui/context-menu";
 import { TERMINAL_DATA_MAX_BYTES } from "@bb/domain";
-import { useMediaQuery } from "@bb/shared-ui/hooks/use-media-query";
+import { COMPACT_VIEWPORT_QUERY } from "@bb/shared-ui/hooks/use-compact-viewport";
+import {
+  getMediaQuerySnapshot,
+  useMediaQuery,
+} from "@bb/shared-ui/hooks/use-media-query";
 import { appToast } from "@/components/ui/app-toast";
+import { randomUuid } from "@/lib/random-uuid";
 import type {
   TerminalServerMessage,
   TerminalSession,
 } from "@bb/server-contract";
 import { useAppThemeEpoch } from "@/hooks/useAppTheme";
+import { useSystemConfig } from "@/hooks/queries/system-queries";
 import { usePreferredTheme } from "@/hooks/useTheme";
 import type { MarkdownPreviewLinkHandler } from "@/components/ui/markdown-link";
 import { openUrlInExternalBrowser } from "@/lib/url-open-routing";
 import { decodeBase64Bytes } from "@/lib/base64-bytes";
+import { sdk } from "@/lib/sdk";
+import { wsManager } from "@/lib/ws";
 import { useAppNavigationHost } from "@/lib/app-navigation-host";
 import { copyToClipboardWithToast } from "@/lib/clipboard";
 import {
@@ -44,22 +47,140 @@ import {
 } from "@/components/thread/timeline/SelectableMessageProse.js";
 import { TimelineSelectionMenu } from "@/components/thread/timeline/TimelineSelectionMenu.js";
 import { buildTerminalWebSocketUrl } from "./terminal-websocket-url";
+import {
+  importTerminalModules,
+  importTerminalSearchAddon,
+  importTerminalWebLinksAddon,
+  importTerminalWebglAddon,
+} from "./terminal-modules";
 import { TerminalWebSocketTransport } from "@bb/client-core";
+import {
+  useAppCommandHandler,
+  useAppCommandRunner,
+} from "@/components/commands/AppCommandProvider";
+import {
+  createTerminalFileLinkProvider,
+  parseTerminalReportedCwd,
+} from "./terminal-file-links";
+import {
+  hasRunningLayoutAnimation,
+  observeLayoutSignals,
+  watchTerminalLayoutSettled,
+} from "./terminal-layout-settle";
+import {
+  cancelTerminalOutputNextRenders,
+  recordTerminalInputAccepted,
+  recordTerminalInputWebSocketSent,
+  recordTerminalOutputNextRender,
+  recordTerminalOutputParsed,
+  recordTerminalOutputReceived,
+} from "./terminal-latency-diagnostics.js";
 import { TerminalLinkOpenDialog } from "./TerminalLinkOpenDialog";
+import { TerminalAttentionPane } from "./TerminalAttentionPane";
 import { TerminalMobileControls } from "./TerminalMobileControls";
+import { TerminalCommandGutter } from "./TerminalCommandGutter";
+import { TerminalSearch } from "./TerminalSearch";
+import type { TerminalSearchAddonInstance } from "./terminal-search-addon";
+import { loadOptionalTerminalSearchAddon } from "./terminal-search-addon";
+import { TerminalTextSelectSheet } from "./TerminalTextSelectSheet";
+import {
+  terminalTextSnapshot,
+  terminalTextSnapshotLineIndex,
+} from "./terminal-text-snapshot";
+import {
+  createTerminalPinchGesture,
+  startTerminalLongPress,
+  type TerminalGestureTouch,
+} from "./terminal-mobile-gestures";
+import {
+  createTerminalOutputLineAnchorTracker,
+  createTerminalViewportReplaySaveGate,
+  createTerminalViewportPersistence,
+  startTerminalOutputReplay,
+  createTerminalTouchViewportSaveScheduler,
+  findTerminalOutputLineAnchor,
+  readTerminalViewportAnchor,
+  registerTerminalOutputBoundaryHandler,
+  resolveTerminalViewportRestore,
+  terminalViewportStorageKey,
+  terminalViewportStorageForClient,
+} from "./terminal-viewport";
+import type { TerminalOutputLineAnchor } from "./terminal-viewport";
+import {
+  createTerminalOutputBoundaries,
+  type TerminalOutputBoundaries,
+} from "./terminal-output-boundaries";
+import {
+  createTerminalClipboardKeyHandler,
+  pasteTerminalClipboard,
+} from "./terminal-clipboard";
 import {
   applyTerminalControl,
   encodeTerminalArrow,
+  suppressDuplicateTerminalCompositionInput,
 } from "./terminal-mobile-input";
 import {
   createTerminalOsc8LinkHandler,
+  isTerminalLinkActivation,
   requestTerminalLinkOpen,
   type TerminalLinkTarget,
 } from "./terminal-links";
+import {
+  nextSharedTerminalSize,
+  type TerminalGridSize,
+} from "./terminal-shared-size";
+import { listenForTerminalSizeClaims } from "./terminal-size-claims";
+import { handleTerminalFileDrop } from "./terminal-file-drop";
+import {
+  registerTerminalOsc52Handler,
+  terminalPromptLine,
+} from "./terminal-shell-state";
+import {
+  osc52CopiedNotice,
+  shouldAutoCopyOsc52,
+} from "./terminal-osc52-policy";
+import { parseTerminalProgressOsc } from "./terminal-progress";
+import { createTerminalOutputPipeline } from "./terminal-output-pipeline";
+import {
+  completeTerminalReplayPreview,
+  createTerminalExitNoticeHandler,
+  createTerminalReplayPreviewExitHandler,
+  mountTerminalReplayPreview,
+  resetTerminalExitNoticeForSession,
+  routeTerminalExitNotice,
+  updateTerminalReplayPreviewPtyGrid,
+  TERMINAL_REPLAY_PREVIEW_HOLD_TIMEOUT_MS,
+} from "./terminal-replay-preview";
+import {
+  applyTerminalSurfaceScale,
+  attachTerminalScalePointerCoordinates,
+  canRevealTerminalSurface,
+  readTerminalSurfaceScale,
+  terminalSurfaceScale,
+} from "./terminal-grid-presentation";
+import {
+  attachTerminalPromptTracker,
+  type TerminalPromptTrackerState,
+} from "./terminal-prompt-tracker";
+import { dropMouseReportsWithoutPosition } from "./terminal-mouse-reports";
+import { sendTerminalTapClick } from "./terminal-tap-click";
+import { attachTerminalWheelLines } from "./terminal-wheel";
+import { attachTerminalInteractions } from "./terminal-interactions";
+import {
+  loadOptionalTerminalWebglAddon,
+  loadTerminalWebglRenderer,
+  observeTerminalWebglVisibility,
+} from "./terminal-webgl-renderer";
+export {
+  loadOptionalTerminalWebglAddon,
+  loadTerminalWebglRenderer,
+} from "./terminal-webgl-renderer";
 
 export const TERMINAL_FONT_FAMILY =
   '"JetBrainsMono Nerd Font Mono", "MesloLGS NF", "Symbols Nerd Font Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace';
 const TERMINAL_FONT_CSS_VARIABLE = "--font-terminal";
+const CLIPBOARD_BLOCKED_MESSAGE =
+  "This connection can’t read the clipboard. Long-press a message box and choose Paste.";
 const TERMINAL_UNICODE_VERSION = "11";
 export const TERMINAL_ALLOW_PROPOSED_API = true;
 const TERMINAL_TOUCH_FOCUS_MAX_DURATION_MS = 700;
@@ -87,47 +208,6 @@ export function shouldFocusTerminalAfterAsyncMount({
     return false;
   }
   return hasExplicitFocusRequest || !currentFocusIsAvailable;
-}
-
-interface WebglRendererAddon extends ITerminalAddon {
-  onContextLoss: (listener: () => void) => IDisposable;
-}
-
-type TerminalAddonLoader = Pick<XTermTerminal, "loadAddon">;
-interface TerminalWebglAddonModule {
-  WebglAddon: new () => WebglRendererAddon;
-}
-type TerminalWebglAddonImporter = () => Promise<TerminalWebglAddonModule>;
-
-export async function loadOptionalTerminalWebglAddon(
-  importAddon: TerminalWebglAddonImporter,
-): Promise<TerminalWebglAddonModule | null> {
-  try {
-    return await importAddon();
-  } catch {
-    return null;
-  }
-}
-
-export function loadTerminalWebglRenderer(
-  terminal: TerminalAddonLoader,
-  createAddon: () => WebglRendererAddon,
-): boolean {
-  let addon: WebglRendererAddon | null = null;
-  let contextLossDisposable: IDisposable | null = null;
-  try {
-    addon = createAddon();
-    contextLossDisposable = addon.onContextLoss(() => {
-      contextLossDisposable?.dispose();
-      addon?.dispose();
-    });
-    terminal.loadAddon(addon);
-    return true;
-  } catch {
-    contextLossDisposable?.dispose();
-    addon?.dispose();
-    return false;
-  }
 }
 
 interface TerminalTouchPoint extends SelectionAnchorPoint {
@@ -226,14 +306,87 @@ export function focusTerminalFromTouchRelease({
   return true;
 }
 
+export function attachTerminalManualScrollIntentListeners(
+  element: HTMLElement,
+  onManualScrollIntent: (event: Event) => void,
+) {
+  const markManualScrollIntent = (event: Event) => onManualScrollIntent(event);
+  const markManualScrollKeydownIntent = (event: KeyboardEvent) => {
+    if (["PageUp", "PageDown", "Home", "End"].includes(event.key)) {
+      onManualScrollIntent(event);
+    }
+  };
+  const options = { capture: true, passive: true } as const;
+  element.addEventListener("wheel", markManualScrollIntent, options);
+  element.addEventListener("touchmove", markManualScrollIntent, options);
+  element.addEventListener("pointerdown", markManualScrollIntent, options);
+  element.addEventListener("keydown", markManualScrollKeydownIntent, options);
+  return () => {
+    element.removeEventListener("wheel", markManualScrollIntent, true);
+    element.removeEventListener("touchmove", markManualScrollIntent, true);
+    element.removeEventListener("pointerdown", markManualScrollIntent, true);
+    element.removeEventListener("keydown", markManualScrollKeydownIntent, true);
+  };
+}
+
+type TerminalTouchListLike = ArrayLike<
+  Pick<Touch, "clientX" | "clientY" | "identifier">
+>;
+
+interface TerminalTouchEventLike {
+  changedTouches: TerminalTouchListLike;
+  timeStamp: number;
+  touches: TerminalTouchListLike;
+}
+
 function terminalTouchPoints(
-  touches: ReactTouchEvent<HTMLDivElement>["touches"],
+  touches: TerminalTouchListLike,
 ): TerminalTouchPoint[] {
   return Array.from(touches, (touch) => ({
     identifier: touch.identifier,
     x: touch.clientX,
     y: touch.clientY,
   }));
+}
+
+export function createTerminalTouchHandlers(terminalRef: {
+  readonly current: Pick<XTermTerminal, "element" | "focus" | "modes"> | null;
+}) {
+  let gesture: TerminalTouchFocusGesture | null = null;
+  return {
+    cancel(): void {
+      gesture = null;
+    },
+    end(event: TerminalTouchEventLike): void {
+      const completed = gesture;
+      gesture = null;
+      const changedTouches = terminalTouchPoints(event.changedTouches);
+      const tapped = focusTerminalFromTouchRelease({
+        changedTouches,
+        focus: () => terminalRef.current?.focus(),
+        gesture: completed,
+        releasedAt: event.timeStamp,
+        remainingTouchCount: event.touches.length,
+      });
+      const terminal = terminalRef.current;
+      const tap = changedTouches[0];
+      if (tapped && terminal !== null && tap !== undefined) {
+        sendTerminalTapClick(terminal, tap);
+      }
+    },
+    move(event: TerminalTouchEventLike): void {
+      gesture = updateTerminalTouchFocusGesture(
+        gesture,
+        terminalTouchPoints(event.touches),
+      );
+    },
+    start(event: TerminalTouchEventLike): void {
+      gesture = startTerminalTouchFocusGesture(
+        terminalTouchPoints(event.touches),
+        event.timeStamp,
+      );
+    },
+  };
 }
 
 interface HasVisibleTerminalSizeArgs {
@@ -257,6 +410,8 @@ function readResolvedCssColor(
 
 type TerminalCssVariableReader = (name: string) => string | undefined;
 
+export const TERMINAL_THEME_OPTIONS = { minimumContrastRatio: 4.5 };
+
 export function resolveTerminalFontFamily(
   get: TerminalCssVariableReader,
 ): string {
@@ -273,6 +428,7 @@ export function buildTerminalThemeFromCssColors(
     cursor: get("--foreground"),
     cursorAccent: get("--sidebar"),
     selectionBackground: get("--muted"),
+    selectionInactiveBackground: get("--muted"),
     black: get("--ansi-0"),
     red: get("--ansi-1"),
     green: get("--ansi-2"),
@@ -364,6 +520,7 @@ export function observeTerminalFontLoading(
 }
 
 interface ThreadTerminalViewProps {
+  retainNativeOutput?: boolean;
   autoFocus: boolean;
   isPanelOpen: boolean;
   onAutoFocusHandled?: () => void;
@@ -371,6 +528,12 @@ interface ThreadTerminalViewProps {
   onSelectionAddToChat?: (text: string) => void;
   onSessionChange?: (session: TerminalSession) => void;
   onTitleChange?: TerminalTitleChangeHandler;
+  onProgressChange?: (
+    progress: number | null,
+    outputSeq?: number,
+    terminalId?: string,
+  ) => void;
+  onCwdChange?: (cwd: string) => void;
   onUserInput?: () => void;
   session: TerminalSession;
 }
@@ -378,9 +541,16 @@ interface ThreadTerminalViewProps {
 type TerminalTitleChangeHandler = (title: string) => void;
 
 type TerminalConnectionNotice = "reconnecting" | "reconnected";
+type TerminalReplayNotice = "loading" | "unavailable";
 
 const TERMINAL_RECONNECTING_NOTICE_DELAY_MS = 1_000;
 const TERMINAL_RECONNECTED_NOTICE_DURATION_MS = 1_500;
+const EMPTY_TERMINAL_PROMPT_TRACKER: TerminalPromptTrackerState = {
+  commandMarks: [],
+  lineHeight: 16,
+  promptLines: [],
+  viewportLine: 0,
+};
 
 interface WriteTerminalStatusArgs {
   terminal: XTermTerminal;
@@ -395,15 +565,28 @@ interface WriteTerminalSessionStatusNoticeArgs {
 
 interface TerminalOutputWriteArgs {
   data: string | Uint8Array;
+  frameId?: number;
   isReplay: boolean;
+  terminalId?: string;
+  outputSequence?: number;
+  replayCheckpointSequence?: number | null;
+  outputBoundaries?: TerminalOutputBoundaries;
+  onOutputParsed?: () => void;
   onParsed: () => void;
   replayWriteState: TerminalReplayWriteState;
   terminal: XTermTerminal;
+  pipeline?: ReturnType<typeof createTerminalOutputPipeline>;
+  replayPipeline?: Pick<
+    ReturnType<typeof createTerminalOutputPipeline>,
+    "push"
+  >;
 }
 
 interface ForwardTerminalDataArgs {
   data: string;
-  onInput: (dataBase64: string) => void;
+  inputEventAt?: number;
+  isUserInput: boolean;
+  onInput: (dataBase64: string, inputEventAt?: number) => void;
   onUserInput?: () => void;
   replayWriteState: TerminalReplayWriteState;
   sessionStatus: TerminalSession["status"];
@@ -436,11 +619,29 @@ type TerminalSessionStatusNoticeRef = {
 interface HandleTerminalServerMessageArgs {
   acknowledgeOutput: (nextSeq: number) => void;
   message: TerminalServerMessage;
+  terminalId?: string;
+  onOutputFrameParsed?: () => void;
+  onOutputParsed?: (sequence: number) => void;
+  onOutputStart?: (sequence: number) => void;
+  onReplayComplete: () => void;
   onSessionChange?: (session: TerminalSession) => void;
   replayNextSeq: number | null;
   replayWriteState: TerminalReplayWriteState;
-  setReplayNextSeq: (nextSeq: number) => void;
+  outputFrameId?: number;
+  outputBoundaries?: TerminalOutputBoundaries;
+  setReplayNextSeq: (nextSeq: number | null) => void;
+  setReplayStartSequence?: (sequence: number) => void;
   terminal: XTermTerminal;
+  pipeline?: ReturnType<typeof createTerminalOutputPipeline>;
+  replayPipeline?: Pick<
+    ReturnType<typeof createTerminalOutputPipeline>,
+    "push"
+  >;
+  replayCheckpointSequence?: number | null;
+  allowAttachedGrid?: boolean;
+  onReplayStart?: (session: TerminalSession) => void;
+  shouldProcessOutput?: () => boolean;
+  writeExitNotice?: (text: string) => boolean;
 }
 
 function encodeBytesBase64(bytes: Uint8Array): string {
@@ -473,22 +674,69 @@ export function encodeTerminalInputChunks(value: string): string[] {
 
 export function forwardTerminalData({
   data,
+  inputEventAt,
+  isUserInput,
   onInput,
   onUserInput,
   replayWriteState,
   sessionStatus,
 }: ForwardTerminalDataArgs): void {
   if (
-    replayWriteState.suppressedWriteCount > 0 ||
-    sessionStatus !== "running"
+    sessionStatus !== "running" ||
+    (replayWriteState.suppressedWriteCount > 0 && !isUserInput)
   ) {
     return;
   }
+  const input = dropMouseReportsWithoutPosition(data);
+  if (input.length === 0) {
+    return;
+  }
 
-  for (const dataBase64 of encodeTerminalInputChunks(data)) {
-    onInput(dataBase64);
+  for (const dataBase64 of encodeTerminalInputChunks(input)) {
+    onInput(dataBase64, inputEventAt);
   }
   onUserInput?.();
+}
+
+export function subscribeToTerminalUserInput(
+  terminal: XTermTerminal,
+  listener: () => void,
+): { dispose: () => void } | null {
+  const core: unknown = Reflect.get(terminal, "_core");
+  if (typeof core !== "object" || core === null) return null;
+  const coreService: unknown = Reflect.get(core, "coreService");
+  if (typeof coreService !== "object" || coreService === null) return null;
+  const onUserInput: unknown = Reflect.get(coreService, "onUserInput");
+  if (typeof onUserInput !== "function") return null;
+  const disposable: unknown = onUserInput.call(coreService, listener);
+  if (typeof disposable !== "object" || disposable === null) return null;
+  const dispose: unknown = Reflect.get(disposable, "dispose");
+  if (typeof dispose !== "function") return null;
+  return { dispose: () => dispose.call(disposable) };
+}
+
+export function attachTerminalInputForwarding({
+  onData,
+  terminal,
+}: {
+  onData: (data: string, isUserInput: boolean) => void;
+  terminal: XTermTerminal;
+}): { dispose: () => void } {
+  let userInputPending = false;
+  const userInputSubscription = subscribeToTerminalUserInput(terminal, () => {
+    userInputPending = true;
+  });
+  const dataSubscription = terminal.onData((data) => {
+    const isUserInput = userInputPending;
+    userInputPending = false;
+    onData(data, isUserInput);
+  });
+  return {
+    dispose: () => {
+      userInputSubscription?.dispose();
+      dataSubscription.dispose();
+    },
+  };
 }
 
 function hasVisibleTerminalSize({
@@ -563,6 +811,208 @@ function writeTerminalSessionStatusNotice({
   }
 }
 
+export async function writeRetainedTerminalOutput({
+  retainNativeOutput = false,
+  chunks,
+  lastNotice,
+  session,
+  terminal,
+  pipeline,
+  onOutputStart,
+  onOutputParsed,
+}: {
+  retainNativeOutput?: boolean;
+  chunks: readonly { seq: number; data: Uint8Array }[];
+  lastNotice: TerminalSessionStatusNoticeRef;
+  session: TerminalSession;
+  terminal: XTermTerminal;
+  pipeline?: ReturnType<typeof createTerminalOutputPipeline>;
+  onOutputStart?: (sequence: number) => void;
+  onOutputParsed?: (sequence: number) => void;
+}): Promise<void> {
+  const readBuffer = () => {
+    const buffer = terminal.buffer.active;
+    const lines = Array.from(
+      { length: buffer.length },
+      (_, index) => buffer.getLine(index)?.translateToString(true) ?? "",
+    );
+    while (lines.at(-1) === "") lines.pop();
+    return lines.join("\r\n");
+  };
+  let alternateFrame: string | null = null;
+  const alternateExit = retainNativeOutput
+    ? terminal.parser.registerCsiHandler(
+        { prefix: "?", final: "l" },
+        (params) => {
+          if (
+            terminal.buffer.active.type === "alternate" &&
+            params.some((mode) => mode === 47 || mode === 1047 || mode === 1049)
+          )
+            alternateFrame = readBuffer();
+          return false;
+        },
+      )
+    : null;
+  await new Promise<void>((resolve) => {
+    const writeChunk = (index: number) => {
+      const chunk = chunks[index];
+      if (!chunk) {
+        resolve();
+        return;
+      }
+      onOutputStart?.(chunk.seq);
+      const onParsed = () => {
+        onOutputParsed?.(chunk.seq);
+        writeChunk(index + 1);
+      };
+      if (pipeline) pipeline.push(chunk.data, onParsed);
+      else terminal.write(chunk.data, onParsed);
+    };
+    writeChunk(0);
+  });
+  alternateExit?.dispose();
+  if (alternateFrame !== null) {
+    const primaryFrame = readBuffer();
+    terminal.reset();
+    await new Promise<void>((resolve) =>
+      terminal.write(`${alternateFrame}\r\n${primaryFrame}\r\n`, resolve),
+    );
+  }
+  writeTerminalSessionStatusNotice({ lastNotice, session, terminal });
+  await new Promise<void>((resolve) => terminal.write("", resolve));
+}
+
+export function applyTerminalGridBeforeViewportRestore({
+  pipeline,
+  cols,
+  rows,
+  fitGrid,
+  onGridApplied,
+  restoreViewport,
+  afterRestore,
+}: {
+  pipeline: ReturnType<typeof createTerminalOutputPipeline> | null | undefined;
+  cols: number;
+  rows: number;
+  fitGrid?: { cols: number; rows: number };
+  onGridApplied: () => void;
+  restoreViewport: () => void;
+  afterRestore: () => void;
+}): void {
+  const finish = () => {
+    onGridApplied();
+    restoreViewport();
+    afterRestore();
+  };
+  if (!pipeline) {
+    finish();
+    return;
+  }
+  pipeline.setGrid(cols, rows, () => {
+    if (
+      fitGrid !== undefined &&
+      (fitGrid.cols !== cols || fitGrid.rows !== rows)
+    ) {
+      pipeline.setGrid(fitGrid.cols, fitGrid.rows, finish);
+      return;
+    }
+    finish();
+  });
+}
+
+export function applyTerminalGridAndKeepViewport({
+  pipeline,
+  cols,
+  rows,
+  onGridApplied,
+  restoreViewport,
+}: {
+  pipeline: ReturnType<typeof createTerminalOutputPipeline>;
+  cols: number;
+  rows: number;
+  onGridApplied: () => void;
+  restoreViewport: () => void;
+}): void {
+  pipeline.setGrid(cols, rows, () => {
+    onGridApplied();
+    restoreViewport();
+  });
+}
+
+export function restoreTerminalViewportOnResize({
+  terminal,
+  canRestore,
+  restoreViewport,
+  requestFrame = requestAnimationFrame,
+  cancelFrame = cancelAnimationFrame,
+}: {
+  terminal: Pick<XTermTerminal, "onResize">;
+  canRestore: () => boolean;
+  restoreViewport: () => void;
+  requestFrame?: (callback: FrameRequestCallback) => number;
+  cancelFrame?: (frame: number) => void;
+}): { dispose: () => void } {
+  let frame: number | null = null;
+  const subscription = terminal.onResize(() => {
+    if (frame !== null) cancelFrame(frame);
+    frame = requestFrame(() => {
+      frame = null;
+      if (canRestore()) restoreViewport();
+    });
+  });
+  return {
+    dispose: () => {
+      subscription.dispose();
+      if (frame !== null) cancelFrame(frame);
+      frame = null;
+    },
+  };
+}
+
+export function createTerminalViewportLineAnchor(
+  terminal: Pick<XTermTerminal, "buffer" | "registerMarker">,
+): {
+  clear: () => void;
+  dispose: () => void;
+  getLine: () => number | null;
+  setLine: (line: number) => void;
+} {
+  let marker: IMarker | null = null;
+  const clear = () => {
+    if (marker !== null && !marker.isDisposed) marker.dispose();
+    marker = null;
+  };
+  return {
+    clear,
+    dispose: clear,
+    getLine: () =>
+      marker === null || marker.isDisposed || marker.line < 0
+        ? null
+        : marker.line,
+    setLine: (line) => {
+      clear();
+      const buffer = terminal.buffer.active;
+      marker = terminal.registerMarker(line - (buffer.baseY + buffer.cursorY));
+    },
+  };
+}
+
+export function restoreTerminalViewportToRetainedLine({
+  terminal,
+  lineAnchor,
+}: {
+  terminal: Pick<XTermTerminal, "scrollToLine">;
+  lineAnchor: Pick<
+    ReturnType<typeof createTerminalViewportLineAnchor>,
+    "getLine"
+  >;
+}): boolean {
+  const line = lineAnchor.getLine();
+  if (line === null) return false;
+  terminal.scrollToLine(line);
+  return true;
+}
+
 function openTerminalWebLink({
   onOpenLink,
   uri,
@@ -585,50 +1035,170 @@ export function captureTerminalContextMenuState({
 
 export function writeTerminalOutput({
   data,
+  frameId,
   isReplay,
+  terminalId = "",
+  outputSequence,
+  outputBoundaries,
+  onOutputParsed,
   onParsed,
   replayWriteState,
   terminal,
+  pipeline,
+  replayPipeline,
+  replayCheckpointSequence,
 }: TerminalOutputWriteArgs): void {
+  const sourceBytes =
+    typeof data === "string" ? new TextEncoder().encode(data) : data;
+  let bytes = sourceBytes;
+  if (outputSequence !== undefined && outputBoundaries !== undefined) {
+    bytes = outputBoundaries.insert(sourceBytes, outputSequence);
+  }
+  const write = (callback: () => void, applyMarkerGrids: boolean) => {
+    if (pipeline) pipeline.push(bytes, callback, applyMarkerGrids);
+    else terminal.write(bytes, callback);
+  };
   if (!isReplay) {
-    terminal.write(data, onParsed);
+    write(() => {
+      recordTerminalOutputParsed(terminalId, frameId, performance.now());
+      onOutputParsed?.();
+      if (
+        replayCheckpointSequence !== null &&
+        replayCheckpointSequence !== undefined &&
+        outputSequence !== undefined &&
+        outputSequence >= replayCheckpointSequence &&
+        replayPipeline
+      ) {
+        replayPipeline.push(sourceBytes, onParsed);
+      } else {
+        onParsed();
+      }
+    }, true);
     return;
   }
 
   replayWriteState.suppressedWriteCount += 1;
-  terminal.write(data, () => {
-    replayWriteState.suppressedWriteCount -= 1;
-    onParsed();
-  });
+  write(() => {
+    if (!replayPipeline) {
+      replayWriteState.suppressedWriteCount -= 1;
+      recordTerminalOutputParsed(terminalId, frameId, performance.now());
+      onOutputParsed?.();
+      onParsed();
+      return;
+    }
+    if (
+      replayCheckpointSequence !== null &&
+      replayCheckpointSequence !== undefined &&
+      outputSequence !== undefined &&
+      outputSequence < replayCheckpointSequence
+    ) {
+      replayWriteState.suppressedWriteCount -= 1;
+      recordTerminalOutputParsed(terminalId, frameId, performance.now());
+      onOutputParsed?.();
+      onParsed();
+      return;
+    }
+    replayPipeline.push(sourceBytes, () => {
+      replayWriteState.suppressedWriteCount -= 1;
+      recordTerminalOutputParsed(terminalId, frameId, performance.now());
+      onOutputParsed?.();
+      onParsed();
+    });
+  }, false);
 }
 
-function handleTerminalServerMessage({
+export function handleTerminalServerMessage({
   acknowledgeOutput,
   message,
+  terminalId = "",
+  onOutputFrameParsed,
+  onOutputParsed,
+  onOutputStart,
+  onReplayComplete,
   onSessionChange,
   replayNextSeq,
   replayWriteState,
+  outputFrameId,
+  outputBoundaries,
   setReplayNextSeq,
+  setReplayStartSequence,
   terminal,
+  pipeline,
+  replayPipeline,
+  replayCheckpointSequence,
+  allowAttachedGrid = true,
+  onReplayStart,
+  shouldProcessOutput,
+  writeExitNotice,
 }: HandleTerminalServerMessageArgs): void {
+  if (message.type === "output" && shouldProcessOutput?.() === false) {
+    return;
+  }
   switch (message.type) {
     case "attached":
+      if (message.replayStartSeq < message.nextSeq) {
+        onReplayStart?.(message.session);
+      }
+      if (allowAttachedGrid) {
+        if (pipeline)
+          pipeline.setGrid(message.session.cols, message.session.rows);
+        else terminal.resize(message.session.cols, message.session.rows);
+      }
       onSessionChange?.(message.session);
+      if (message.session.status === "exited") {
+        writeExitNotice?.(
+          message.session.exitCode === null
+            ? "Terminal exited"
+            : `Terminal exited with code ${message.session.exitCode}`,
+        );
+      }
       setReplayNextSeq(message.nextSeq);
+      setReplayStartSequence?.(message.replayStartSeq);
+      if (message.replayStartSeq === message.nextSeq) {
+        setReplayNextSeq(null);
+        onReplayComplete();
+      }
       return;
     case "pong":
       return;
     case "session-updated":
       onSessionChange?.(message.session);
+      if (message.session.status === "exited") {
+        writeExitNotice?.(
+          message.session.exitCode === null
+            ? "Terminal exited"
+            : `Terminal exited with code ${message.session.exitCode}`,
+        );
+      }
       return;
     case "output": {
       const nextSeq = message.chunk.seq + 1;
       writeTerminalOutput({
         data: decodeBase64Bytes(message.chunk.dataBase64),
+        frameId: outputFrameId,
         isReplay: replayNextSeq !== null && message.chunk.seq < replayNextSeq,
-        onParsed: () => acknowledgeOutput(nextSeq),
+        terminalId,
+        onOutputParsed: onOutputFrameParsed,
+        onParsed: () => {
+          onOutputParsed?.(message.chunk.seq);
+          if (outputBoundaries === undefined) onOutputStart?.(nextSeq);
+          acknowledgeOutput(nextSeq);
+          if (
+            replayNextSeq !== null &&
+            message.chunk.seq < replayNextSeq &&
+            nextSeq === replayNextSeq
+          ) {
+            setReplayNextSeq(null);
+            onReplayComplete();
+          }
+        },
         replayWriteState,
         terminal,
+        pipeline,
+        replayPipeline,
+        replayCheckpointSequence,
+        outputSequence: message.chunk.seq,
+        outputBoundaries,
       });
       return;
     }
@@ -640,18 +1210,19 @@ function handleTerminalServerMessage({
       return;
     case "exited":
       onSessionChange?.(message.session);
-      writeTerminalStatus({
-        terminal,
-        text:
+      {
+        const text =
           message.session.exitCode === null
             ? "Terminal exited"
-            : `Terminal exited with code ${message.session.exitCode}`,
-      });
+            : `Terminal exited with code ${message.session.exitCode}`;
+        if (!writeExitNotice?.(text)) writeTerminalStatus({ terminal, text });
+      }
       return;
   }
 }
 
 export function ThreadTerminalView({
+  retainNativeOutput = false,
   autoFocus,
   isPanelOpen,
   onAutoFocusHandled,
@@ -659,62 +1230,156 @@ export function ThreadTerminalView({
   onSelectionAddToChat,
   onSessionChange,
   onTitleChange,
+  onProgressChange,
+  onCwdChange,
   onUserInput,
   session,
 }: ThreadTerminalViewProps) {
+  const [handoffOwnerToken, setHandoffOwnerToken] = useState(() =>
+    wsManager.getDeviceHandoffClientToken(),
+  );
+  useEffect(
+    () => wsManager.onDeviceHandoffClientToken(setHandoffOwnerToken),
+    [],
+  );
   const isTouchDevice = useMediaQuery("(pointer: coarse)");
+  const attentionClearRequestRef = useRef<string | null>(null);
   const [controlActive, setControlActive] = useState(false);
   const controlActiveRef = useRef(false);
   const changeControlActive = (active: boolean) => {
     controlActiveRef.current = active;
     setControlActive(active);
   };
+
+  useEffect(() => {
+    if (!isPanelOpen || session.attention == null) return;
+    const requestKey = `${session.id}:${session.attention.seq}`;
+    if (attentionClearRequestRef.current === requestKey) return;
+    attentionClearRequestRef.current = requestKey;
+    void sdk.terminals.experimental_attention
+      .clear({ terminalId: session.id })
+      .then((updatedSession) => onSessionChange?.(updatedSession))
+      .catch(() => {
+        attentionClearRequestRef.current = null;
+        appToast.error("Couldn't clear terminal attention.");
+      });
+  }, [isPanelOpen, onSessionChange, session.attention, session.id]);
   const [terminalReady, setTerminalReady] = useState(false);
+  const [promptTrackerState, setPromptTrackerState] = useState(
+    EMPTY_TERMINAL_PROMPT_TRACKER,
+  );
+  const [terminalSearchAddon, setTerminalSearchAddon] =
+    useState<TerminalSearchAddonInstance | null>(null);
+  const [terminalSearchOpen, setTerminalSearchOpen] = useState(false);
+  const terminalSearchOpenRef = useRef(false);
+  terminalSearchOpenRef.current = terminalSearchOpen;
+  const [textSnapshot, setTextSnapshot] = useState<string | null>(null);
+  const [textSnapshotInitialLine, setTextSnapshotInitialLine] = useState<
+    number | null
+  >(null);
+  const [terminalFontSize, setTerminalFontSize] = useState(12);
+  const terminalFontSizeRef = useRef(12);
+  const longPressGestureRef = useRef<{
+    cancel: () => void;
+    move: (touches: readonly TerminalGestureTouch[]) => void;
+  } | null>(null);
+  const pinchGestureRef = useRef<ReturnType<
+    typeof createTerminalPinchGesture
+  > | null>(null);
   const [activeSelection, setActiveSelection] =
     useState<MessageProseSelection | null>(null);
-  const [hoveredTerminalLink, setHoveredTerminalLink] =
-    useState<TerminalLinkTarget | null>(null);
   const [pendingTerminalLink, setPendingTerminalLink] =
     useState<TerminalLinkTarget | null>(null);
   const [connectionNotice, setConnectionNotice] =
     useState<TerminalConnectionNotice | null>(null);
+  const [replayNotice, setReplayNotice] =
+    useState<TerminalReplayNotice | null>(null);
   const [contextMenuState, setContextMenuState] =
     useState<TerminalContextMenuState>({
       link: null,
       selectionText: "",
     });
+  const viewRef = useRef<HTMLDivElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const webglVisibilityRef = useRef<ReturnType<
+    typeof observeTerminalWebglVisibility
+  > | null>(null);
   const terminalRef = useRef<XTermTerminal | null>(null);
+  const compositionInputGuardRef = useRef<ReturnType<
+    typeof suppressDuplicateTerminalCompositionInput
+  > | null>(null);
+  const promptLinesRef = useRef<number[]>([]);
   const hoveredTerminalLinkRef = useRef<TerminalLinkTarget | null>(null);
-  const pointerIsDownRef = useRef(false);
   const pointerStartPointRef = useRef<SelectionAnchorPoint | null>(null);
+  const pointerIsDownRef = useRef(false);
+  const terminalSelectionGestureRef = useRef(false);
   const touchFocusGestureRef = useRef<TerminalTouchFocusGesture | null>(null);
+  const touchHandlersRef = useRef<ReturnType<
+    typeof createTerminalTouchHandlers
+  > | null>(null);
+  const touchHandlers = useCallback(() => {
+    touchHandlersRef.current ??= createTerminalTouchHandlers(terminalRef);
+    return touchHandlersRef.current;
+  }, []);
   const lastPointerReleaseAnchorRef = useRef<SelectionAnchor | null>(null);
+  const handleFileDropRef = useRef<((files: FileList) => void) | null>(null);
   const onSessionChangeRef = useRef<
     ((session: TerminalSession) => void) | undefined
   >(onSessionChange);
   const onTitleChangeRef = useRef<TerminalTitleChangeHandler | undefined>(
     onTitleChange,
   );
+  const onProgressChangeRef = useRef(onProgressChange);
+  const onCwdChangeRef = useRef(onCwdChange);
   const onUserInputRef = useRef<(() => void) | undefined>(onUserInput);
   const onAutoFocusHandledRef = useRef<(() => void) | undefined>(
     onAutoFocusHandled,
   );
   const autoFocusRef = useRef(autoFocus);
   const isPanelOpenRef = useRef(isPanelOpen);
+  const previousPanelOpenRef = useRef(isPanelOpen);
+  const reportDocumentVisibilityRef = useRef<(() => void) | null>(null);
   const sessionStatusRef = useRef<TerminalSession["status"]>(session.status);
   const sessionRef = useRef(session);
   const lastStatusNoticeRef = useRef<TerminalSessionStatusNotice | null>(null);
+  const lastStatusNoticeSessionRef = useRef(session.id);
+  resetTerminalExitNoticeForSession({
+    lastNotice: lastStatusNoticeRef,
+    lastSessionId: lastStatusNoticeSessionRef,
+    sessionId: session.id,
+  });
   const scheduleFitRef = useRef<TerminalFitScheduler | null>(null);
+  const terminalVisibilityReporterRef = useRef<(() => void) | null>(null);
+  const systemConfig = useSystemConfig();
+  const copyOnSelectRef = useRef(false);
+  const lastUserInputAtRef = useRef<number | null>(null);
+  copyOnSelectRef.current =
+    systemConfig.data?.generalSettings.terminalCopyOnSelect === true;
   const preferredTheme = usePreferredTheme();
   const appThemeEpoch = useAppThemeEpoch();
   const appNavigation = useAppNavigationHost();
+  const appNavigationRef = useRef(appNavigation);
+  useEffect(() => {
+    appNavigationRef.current = appNavigation;
+  }, [appNavigation]);
+  const commandRunner = useAppCommandRunner();
   const handleOpenLinkByPreference = useCallback<MarkdownPreviewLinkHandler>(
     ({ href }) => appNavigation.openUrl({ url: href }),
     [appNavigation],
   );
   const effectiveOnOpenLink = onOpenLink ?? handleOpenLinkByPreference;
   const onOpenLinkRef = useRef<MarkdownPreviewLinkHandler>(effectiveOnOpenLink);
+  promptLinesRef.current = promptTrackerState.promptLines;
+  const jumpToPrompt = useCallback((direction: "previous" | "next") => {
+    const terminal = terminalRef.current;
+    if (!terminal) return;
+    const line = terminalPromptLine(
+      promptLinesRef.current,
+      terminal.buffer.active.viewportY,
+      direction,
+    );
+    if (line !== null) terminal.scrollToLine(line);
+  }, []);
 
   autoFocusRef.current = autoFocus;
   isPanelOpenRef.current = isPanelOpen;
@@ -724,36 +1389,94 @@ export function ThreadTerminalView({
   onOpenLinkRef.current = effectiveOnOpenLink;
   onSessionChangeRef.current = onSessionChange;
   onTitleChangeRef.current = onTitleChange;
+  onProgressChangeRef.current = onProgressChange;
+  onCwdChangeRef.current = onCwdChange;
   onUserInputRef.current = onUserInput;
 
   const reportTerminalSelection = useCallback(
-    (anchor: SelectionAnchor | null) => {
+    (anchor: SelectionAnchor | null, selectionText?: string) => {
       const terminal = terminalRef.current;
       const container = containerRef.current;
       if (!terminal || !container) {
         setActiveSelection(null);
         return;
       }
+      if (pointerIsDownRef.current) {
+        return;
+      }
+      terminalSelectionGestureRef.current = false;
+      const text = selectionText ?? terminal.getSelection();
       setActiveSelection(
         buildTerminalSelection({
           anchor,
           containerElement: container,
-          text: terminal.getSelection(),
+          text,
         }),
       );
     },
     [],
   );
 
+  const copyTerminalSelection = useCallback((text: string) => {
+    void copyToClipboardWithToast(text, {
+      successMessage: null,
+      errorMessage: null,
+    });
+  }, []);
+
+  const copyTerminalSelectionOnSelect = useCallback((text: string) => {
+    void copyToClipboardWithToast(text, {
+      successMessage: "Selection copied",
+      errorMessage: "Failed to copy selection",
+    });
+  }, []);
+
   const clearTerminalSelection = useCallback(() => {
     terminalRef.current?.clearSelection();
     setActiveSelection(null);
   }, []);
 
+  const dismissTerminalSelectionMenu = useCallback(() => {
+    if (terminalSelectionGestureRef.current) {
+      setActiveSelection(null);
+      return;
+    }
+    clearTerminalSelection();
+  }, [clearTerminalSelection]);
+
+  const isTerminalCommandAvailable = ({
+    target,
+  }: {
+    target: EventTarget | null;
+  }) =>
+    terminalRef.current !== null &&
+    (target === null ||
+      (target instanceof Node && viewRef.current?.contains(target) === true));
+  useAppCommandHandler(
+    "terminal.find",
+    () => {
+      setActiveSelection(null);
+      setTerminalSearchOpen(true);
+      return true;
+    },
+    0,
+    isPanelOpen,
+    isTerminalCommandAvailable,
+  );
+  const handleTerminalCommandKeyDown = (event: ReactKeyboardEvent) => {
+    const command = commandRunner.getShortcutCommand(event.nativeEvent, [
+      "terminal.find",
+    ]);
+    if (command === null || !commandRunner.dispatch(command, event.target)) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+  };
+
   const updateHoveredTerminalLink = useCallback(
     (target: TerminalLinkTarget | null) => {
       hoveredTerminalLinkRef.current = target;
-      setHoveredTerminalLink(target);
     },
     [],
   );
@@ -803,6 +1526,22 @@ export function ThreadTerminalView({
     [],
   );
 
+  const pasteFromClipboard = useCallback(() => {
+    const terminal = terminalRef.current;
+    if (terminal === null || sessionStatusRef.current !== "running") {
+      return;
+    }
+    void pasteTerminalClipboard({
+      terminal,
+      readText: () => navigator.clipboard.readText(),
+      isActive: () =>
+        terminalRef.current === terminal &&
+        sessionStatusRef.current === "running",
+    }).catch(() => {
+      appToast.error(CLIPBOARD_BLOCKED_MESSAGE);
+    });
+  }, []);
+
   const handleSelectionAddToChat = useCallback(
     (text: string) => {
       onSelectionAddToChat?.(text);
@@ -812,15 +1551,25 @@ export function ThreadTerminalView({
   );
 
   const handleTerminalPointerDown = useCallback(
-    (event: ReactPointerEvent<HTMLDivElement>) => {
+    (event: Pick<PointerEvent, "button" | "clientX" | "clientY">) => {
+      if (event.button !== 0) {
+        if (event.button === 1) {
+          terminalRef.current?.focus();
+        }
+        return;
+      }
       pointerIsDownRef.current = true;
+      terminalSelectionGestureRef.current = true;
       pointerStartPointRef.current = anchorPointFromMouseEvent(event);
     },
     [],
   );
 
   const handleTerminalPointerRelease = useCallback(
-    (event: ReactPointerEvent<HTMLDivElement>) => {
+    (event: Pick<PointerEvent, "button" | "clientX" | "clientY">) => {
+      if (event.button !== 0) {
+        return;
+      }
       const anchor = selectionAnchorFromPointerRelease(
         pointerStartPointRef.current,
         { clientX: event.clientX, clientY: event.clientY },
@@ -836,12 +1585,31 @@ export function ThreadTerminalView({
   );
 
   const handleTerminalPointerCancel = useCallback(() => {
-    pointerIsDownRef.current = false;
     pointerStartPointRef.current = null;
+    pointerIsDownRef.current = false;
     window.requestAnimationFrame(() => {
       reportTerminalSelection(lastPointerReleaseAnchorRef.current);
     });
   }, [reportTerminalSelection]);
+
+  useEffect(() => {
+    const release = (event: PointerEvent) => {
+      if (pointerIsDownRef.current) {
+        handleTerminalPointerRelease(event);
+      }
+    };
+    const cancel = () => {
+      if (pointerIsDownRef.current) {
+        handleTerminalPointerCancel();
+      }
+    };
+    document.addEventListener("pointerup", release);
+    document.addEventListener("pointercancel", cancel);
+    return () => {
+      document.removeEventListener("pointerup", release);
+      document.removeEventListener("pointercancel", cancel);
+    };
+  }, [handleTerminalPointerRelease, handleTerminalPointerCancel]);
 
   const handleTerminalTouchStart = useCallback(
     (event: ReactTouchEvent<HTMLDivElement>) => {
@@ -884,7 +1652,9 @@ export function ThreadTerminalView({
 
   useEffect(() => {
     touchFocusGestureRef.current = null;
+    touchHandlersRef.current?.cancel();
     setActiveSelection(null);
+    setTextSnapshot(null);
     updateHoveredTerminalLink(null);
     setPendingTerminalLink(null);
     setContextMenuState({ link: null, selectionText: "" });
@@ -897,44 +1667,300 @@ export function ThreadTerminalView({
     }
 
     const activeElementAtMount = document.activeElement;
+    container.style.containerType = "inline-size";
 
     let disposed = false;
     let transport: TerminalWebSocketTransport | null = null;
     let terminal: XTermTerminal | null = null;
+    let webglRenderer: ReturnType<typeof loadTerminalWebglRenderer> | null =
+      null;
     let fitAddon: FitAddon | null = null;
     let replayNextSeq: number | null = null;
+    let replayNextSequence = 0;
     const replayWriteState: TerminalReplayWriteState = {
       suppressedWriteCount: 0,
     };
     let resizeAnimationFrame: number | null = null;
     let connectionNoticeTimeout: ReturnType<typeof setTimeout> | null = null;
-    let selectionAnimationFrame: number | null = null;
+    let retainedReplayTimeout: ReturnType<typeof setTimeout> | null = null;
+    let terminalInteractions: ReturnType<
+      typeof attachTerminalInteractions
+    > | null = null;
     let resizeObserver: ResizeObserver | null = null;
     let selectionChangeDisposable: { dispose: () => void } | null = null;
+    let terminalRenderSubscription: { dispose: () => void } | null = null;
+    let terminalResizeSubscription: { dispose: () => void } | null = null;
+    let viewportLineAnchor: ReturnType<
+      typeof createTerminalViewportLineAnchor
+    > | null = null;
+    let terminalKeyDisposable: { dispose: () => void } | null = null;
+    let terminalInputForwarding: { dispose: () => void } | null = null;
+    let shellOscDisposable: { dispose: () => void } | null = null;
+    let terminalProgressDisposable: { dispose: () => void } | null = null;
+    let osc52Disposable: { dispose: () => void } | null = null;
+    let outputBoundaryDisposable: { dispose: () => void } | null = null;
     let stopObservingFonts: (() => void) | null = null;
+    let detachViewportListeners: (() => void) | null = null;
+    let replayStartSequence = 0;
+    let latestOutputSequence = 0;
+    let anchoredOutputSequence = 0;
+    const outputLineAnchors: TerminalOutputLineAnchor[] = [];
+    const outputLineAnchorTracker = createTerminalOutputLineAnchorTracker({
+      registerMarker: () => terminal?.registerMarker(),
+      getCurrentLine: () => {
+        const buffer = terminal?.buffer.active;
+        return buffer ? buffer.baseY + buffer.cursorY : 0;
+      },
+    });
+    let parsingOutputSequence: number | null = null;
+    const recordOutputStart = (sequence: number) => {
+      parsingOutputSequence = sequence;
+      const outputAnchor = outputLineAnchorTracker.recordOutputStart(sequence);
+      if (!outputAnchor) return;
+      outputLineAnchors.push(outputAnchor);
+      if (outputLineAnchors.length > 4096) {
+        const removed = outputLineAnchors.splice(
+          0,
+          outputLineAnchors.length - 4096,
+        );
+        outputLineAnchorTracker.forget(removed);
+      }
+    };
+    let savedOutputLineAnchor: TerminalOutputLineAnchor | null = null;
+    const updateSavedOutputLineAnchor = (
+      anchor: TerminalOutputLineAnchor | null,
+    ) => {
+      savedOutputLineAnchor = outputLineAnchorTracker.updatePinnedAnchor(
+        savedOutputLineAnchor,
+        anchor,
+        outputLineAnchors,
+      );
+    };
+    const updateViewportLineAnchor = (line: number) => {
+      const activeBuffer = terminal?.buffer.active;
+      if (activeBuffer && line < activeBuffer.baseY) {
+        viewportLineAnchor?.setLine(line);
+      } else {
+        viewportLineAnchor?.clear();
+      }
+    };
+    let hasRestoredViewport = false;
+    let hasManualScrollIntent = false;
+    let manualScrollTimeout: ReturnType<typeof setTimeout> | null = null;
+    const viewportStorageKey = terminalViewportStorageKey(session.id);
+    const viewportStorage = terminalViewportStorageForClient(window);
+    let savedViewportAnchor = readTerminalViewportAnchor(
+      viewportStorage,
+      viewportStorageKey,
+    );
+    const viewportPersistence = createTerminalViewportPersistence({
+      key: viewportStorageKey,
+      storage: viewportStorage,
+    });
+    const viewportReplaySaveGate = createTerminalViewportReplaySaveGate();
+    anchoredOutputSequence = savedViewportAnchor?.outputSequence ?? 0;
+    const noteManualScrollIntent = () => {
+      hasManualScrollIntent = true;
+      viewportLineAnchor?.clear();
+      if (manualScrollTimeout !== null) {
+        clearTimeout(manualScrollTimeout);
+      }
+      manualScrollTimeout = setTimeout(() => {
+        hasManualScrollIntent = false;
+        manualScrollTimeout = null;
+      }, 250);
+    };
+    let stopWatchingLayout: (() => void) | null = null;
+    let sizeClaims: ReturnType<typeof listenForTerminalSizeClaims> | null =
+      null;
+    let sharedSize: TerminalGridSize | null = null;
+    let markerGridActive = false;
+    let replayCompleted = false;
+    let replayStarted = false;
+    const pendingExitNotices: string[] = [];
+    let replayCheckpointSequence: number | null = null;
+    let localFitGrid: TerminalGridSize | null = null;
+    let retainedOutputReplayed = sessionStatusRef.current !== "exited";
+    let retainedOutputGrid: TerminalGridSize | null = null;
+    let latestPtyGrid: TerminalGridSize = {
+      cols: sessionRef.current.cols,
+      rows: sessionRef.current.rows,
+    };
+    let terminalInputClaimed = false;
+    let detachPointerCoordinates: (() => void) | null = null;
+    let detachGridVisibilityListeners: (() => void) | null = null;
+    let replayPreview: {
+      dispose(): void;
+        readonly fallback: boolean;
+      release(): void;
+      hold(options: { countdown: boolean }): void;
+      resize(cols: number, rows: number): Promise<void>;
+      setFitGrid(cols: number, rows: number): void;
+      setLatestPtyGrid(cols: number, rows: number): void;
+      setPtyGrid(cols: number, rows: number): void;
+      processExited(): void;
+      push(bytes: Uint8Array, callback: () => void): void;
+    } | null = null;
+    const flushPendingExitNotices = () => {
+      if (terminal === null || pendingExitNotices.length === 0) return;
+      for (const text of pendingExitNotices.splice(0)) {
+        writeTerminalStatus({ terminal, text });
+      }
+    };
+    const releaseReplayPreview = () => {
+      replayPreview?.release();
+      setReplayNotice(null);
+    };
+    let exitedBeforeReplayCompleted = false;
+    let replayPreviewExitApplied = false;
+    const handleReplayPreviewExit = createTerminalReplayPreviewExitHandler({
+      getReplayState: () => ({
+        hasReplaySurface: replayPreview !== null,
+        replayCompleted,
+      }),
+      isApplied: () => replayPreviewExitApplied,
+      isPending: () => exitedBeforeReplayCompleted,
+      markApplied: () => {
+        replayPreviewExitApplied = true;
+      },
+      markPending: () => {
+        exitedBeforeReplayCompleted = true;
+      },
+      releasePreview: releaseReplayPreview,
+      processExited: () => replayPreview?.processExited(),
+    });
+    const abandonReplayPreview = () => {
+      flushPendingExitNotices();
+      if (replayPreview === null || replayCompleted) {
+        releaseReplayPreview();
+        return;
+      }
+      if (replayPreview.fallback) replayPreview.hold({ countdown: false });
+      setReplayNotice("unavailable");
+    };
+    let outputPipeline: ReturnType<typeof createTerminalOutputPipeline> | null =
+      null;
+    let containerHasSize = hasVisibleTerminalSize({
+      containerElement: container,
+    });
+    let terminalVisible: boolean | null = null;
+    let hasReceivedInitialAttach = false;
+    let lastParsedOutputNextSeq = 0;
     const reportDocumentVisibility = () => {
-      transport?.setVisible(document.visibilityState === "visible");
+      if (
+        document.visibilityState !== "visible" ||
+        !containerHasSize ||
+        !isPanelOpenRef.current
+      ) {
+        cancelTerminalOutputNextRenders(session.id);
+      }
+      const nextVisible =
+        document.visibilityState === "visible" &&
+        containerHasSize &&
+        isPanelOpenRef.current;
+      if (transport === null) return;
+      const wasVisible = terminalVisible;
+      if (wasVisible === nextVisible) return;
+      terminalVisible = nextVisible;
+      transport?.setVisible(nextVisible);
+      if (nextVisible) sizeClaims?.claimIfFocused();
+      if (wasVisible === false && nextVisible && hasReceivedInitialAttach) {
+        transport?.replayOutputFrom(lastParsedOutputNextSeq);
+      }
+    };
+    terminalVisibilityReporterRef.current = reportDocumentVisibility;
+    reportDocumentVisibilityRef.current = reportDocumentVisibility;
+
+    let liveBottomBeforeGridResize = false;
+    let liveBottomResizeClearFrame: number | null = null;
+    const captureLiveViewportBeforeGridResize = () => {
+      const activeBuffer = terminal?.buffer.active;
+      liveBottomBeforeGridResize =
+        activeBuffer !== undefined &&
+        activeBuffer.viewportY === activeBuffer.baseY;
+      if (activeBuffer && !liveBottomBeforeGridResize) {
+        viewportLineAnchor?.setLine(activeBuffer.viewportY);
+      }
+    };
+    const clearLiveViewportBeforeGridResize = () => {
+      if (liveBottomResizeClearFrame !== null) {
+        window.cancelAnimationFrame(liveBottomResizeClearFrame);
+      }
+      liveBottomResizeClearFrame = window.requestAnimationFrame(() => {
+        liveBottomResizeClearFrame = null;
+        liveBottomBeforeGridResize = false;
+      });
     };
 
     async function mountTerminal(
       containerElement: HTMLDivElement,
     ): Promise<void> {
-      const requiredModulesPromise = Promise.all([
-        import("@xterm/xterm"),
-        import("@xterm/addon-fit"),
-        import("@xterm/addon-web-links"),
-        import("@xterm/addon-unicode11"),
-      ]);
-      const webglAddonModulePromise = loadOptionalTerminalWebglAddon(
-        () => import("@xterm/addon-webgl"),
-      );
-      const [
-        { Terminal },
-        { FitAddon: LoadedFitAddon },
-        { WebLinksAddon },
-        { Unicode11Addon },
-      ] = await requiredModulesPromise;
-      const webglAddonModule = await webglAddonModulePromise;
+      containerElement.style.opacity = "0";
+      const updateGridVisibility = () => {
+        if (terminal === null || (replayPreview !== null && !replayCompleted)) {
+          return;
+        }
+        containerElement.dataset.renderGridCols = String(terminal.cols);
+        containerElement.dataset.renderGridRows = String(terminal.rows);
+        const ownsTerminal =
+          terminalInputClaimed &&
+          document.hasFocus() &&
+          terminal.element?.contains(document.activeElement) === true;
+        const displayGrid = retainedOutputGrid ?? latestPtyGrid;
+        const canReveal =
+          localFitGrid !== null &&
+          (!retainNativeOutput ||
+            sessionStatusRef.current !== "exited" ||
+            retainedOutputGrid !== null) &&
+          canRevealTerminalSurface({
+            fitGrid: localFitGrid,
+            isOwner: ownsTerminal && !retainNativeOutput,
+            ptyGrid: displayGrid,
+            rendererGrid: { cols: terminal.cols, rows: terminal.rows },
+          });
+        containerElement.style.opacity = "0";
+        const scrollRetainedOutput =
+          retainedOutputGrid !== null &&
+          getMediaQuerySnapshot(COMPACT_VIEWPORT_QUERY);
+        containerElement.style.overflowX = scrollRetainedOutput ? "auto" : "";
+        containerElement.style.overflowY = scrollRetainedOutput ? "auto" : "";
+        containerElement.style.paddingLeft = scrollRetainedOutput ? "0" : "";
+        containerElement.style.touchAction = scrollRetainedOutput
+          ? "pan-x pan-y"
+          : "";
+        const scale =
+          localFitGrid !== null && !scrollRetainedOutput
+            ? terminalSurfaceScale(displayGrid, localFitGrid)
+            : 1;
+        if (terminal.element) {
+          applyTerminalSurfaceScale(
+            terminal.element,
+            scale,
+            !scrollRetainedOutput,
+          );
+        }
+        const rendererWidth = containerElement.getBoundingClientRect().width;
+        const paintedWidth =
+          terminal.element
+            ?.querySelector<HTMLElement>(".xterm-screen")
+            ?.getBoundingClientRect().width ?? 0;
+        const widthFits =
+          rendererWidth > 0 &&
+          (scrollRetainedOutput || paintedWidth <= rendererWidth + 1);
+        containerElement.dataset.ptyGridCols = String(latestPtyGrid.cols);
+        containerElement.dataset.ptyGridRows = String(latestPtyGrid.rows);
+        if (canReveal && widthFits) {
+          containerElement.style.opacity = "";
+          if (replayCompleted && replayPreview !== null) {
+            replayPreview.dispose();
+            replayPreview = null;
+          }
+          return;
+        }
+      };
+      const requiredModulesPromise = importTerminalModules();
+      const [{ Terminal }, { FitAddon: LoadedFitAddon }, { Unicode11Addon }] =
+        await requiredModulesPromise;
       if (disposed) {
         return;
       }
@@ -949,6 +1975,7 @@ export function ThreadTerminalView({
       });
 
       terminal = new Terminal({
+        ...TERMINAL_THEME_OPTIONS,
         allowProposedApi: TERMINAL_ALLOW_PROPOSED_API,
         convertEol: true,
         cursorBlink: true,
@@ -958,50 +1985,404 @@ export function ThreadTerminalView({
         scrollback: 10_000,
         theme: buildTerminalTheme(),
       });
+      terminalProgressDisposable = terminal.parser.registerOscHandler(
+        9,
+        (payload) => {
+          const progress = parseTerminalProgressOsc(payload);
+          if (progress === undefined) return false;
+          onProgressChangeRef.current?.(
+            progress,
+            parsingOutputSequence ?? undefined,
+            session.id,
+          );
+          return true;
+        },
+      );
+      terminalRenderSubscription = terminal.onRender(() => {
+        if (
+          document.visibilityState === "visible" &&
+          containerHasSize &&
+          isPanelOpenRef.current
+        ) {
+          recordTerminalOutputNextRender(session.id, performance.now());
+        }
+      });
+      setPromptTrackerState(EMPTY_TERMINAL_PROMPT_TRACKER);
+      shellOscDisposable = attachTerminalPromptTracker({
+        onChange: setPromptTrackerState,
+        onCwdChange: (cwd) => onCwdChangeRef.current?.(cwd),
+        terminal,
+      });
+      terminal.attachCustomKeyEventHandler((event) => {
+        if (
+          event.type === "keydown" &&
+          event.altKey &&
+          event.shiftKey &&
+          (event.key === "ArrowUp" || event.key === "ArrowDown")
+        ) {
+          event.preventDefault();
+          jumpToPrompt(event.key === "ArrowUp" ? "previous" : "next");
+          return false;
+        }
+        return createTerminalClipboardKeyHandler({
+          terminal: activeTerminal,
+          copy: (text) => copyTerminalContextValue(text, "Selection copied"),
+          paste: pasteFromClipboard,
+        })(event);
+      });
       terminalRef.current = terminal;
+      osc52Disposable = registerTerminalOsc52Handler(
+        { parser: terminal.parser },
+        (text) => {
+          const offerCopyHandoff = () => {
+            const now = Date.now();
+            window.dispatchEvent(
+              new CustomEvent("bb-device-handoff", {
+                detail: {
+                  type: "device-handoff",
+                  id: `${now}-${Math.random()}`,
+                  createdAt: now,
+                  expiresAt: now + 120_000,
+                  originLabel: session.title,
+                  request: {
+                    kind: "copy-text",
+                    text,
+                    origin: {
+                      ...(sessionRef.current.threadId === null
+                        ? {}
+                        : { threadId: sessionRef.current.threadId }),
+                      terminalSessionId: session.id,
+                    },
+                  },
+                },
+              }),
+            );
+          };
+          if (
+            !shouldAutoCopyOsc52({
+              copyOnSelect: copyOnSelectRef.current,
+              lastUserInputAt: lastUserInputAtRef.current,
+              now: Date.now(),
+              text,
+            })
+          ) {
+            offerCopyHandoff();
+            return;
+          }
+          void copyToClipboardWithToast(text, {
+            successMessage: osc52CopiedNotice(text),
+            errorMessage: null,
+          }).then((copied) => {
+            if (!copied) offerCopyHandoff();
+          });
+        },
+        () => replayWriteState.suppressedWriteCount > 0,
+      );
+      outputPipeline = createTerminalOutputPipeline(
+        terminal,
+        (grid, apply) => {
+          markerGridActive = true;
+          if (apply) {
+            latestPtyGrid = grid;
+          }
+          updateTerminalReplayPreviewPtyGrid(replayPreview, grid, apply);
+          updateGridVisibility();
+        },
+        (cols, rows) => {
+          containerElement.dataset.renderGridCols = String(cols);
+          containerElement.dataset.renderGridRows = String(rows);
+          updateGridVisibility();
+        },
+        {
+          beforeResize: () => captureLiveViewportBeforeGridResize(),
+          afterResize: () => {
+            terminal?.refresh(0, terminal.rows - 1);
+            clearLiveViewportBeforeGridResize();
+          },
+        },
+      );
+      let reportedCwd: string | null = null;
+      terminal.parser.registerOscHandler(7, (data) => {
+        reportedCwd = parseTerminalReportedCwd(data) ?? reportedCwd;
+        return false;
+      });
+      terminal.registerLinkProvider(
+        createTerminalFileLinkProvider({
+          terminal,
+          getCwd: () => reportedCwd ?? sessionRef.current.initialCwd,
+          hostId: sessionRef.current.hostId,
+          openFile: (intent) => {
+            appNavigationRef.current.openFilePreview(intent);
+          },
+        }),
+      );
       fitAddon = new LoadedFitAddon();
       terminal.loadAddon(fitAddon);
       terminal.loadAddon(new Unicode11Addon());
       terminal.unicode.activeVersion = TERMINAL_UNICODE_VERSION;
-      terminal.loadAddon(
-        new WebLinksAddon(
-          (event, uri) => {
-            if (event.button !== 0) {
-              return;
-            }
-            requestOpenTerminalLink({ source: "detected-url", uri });
-          },
-          {
-            hover: (_event, uri) => {
-              updateHoveredTerminalLink({ source: "detected-url", uri });
-            },
-            leave: () => {
-              updateHoveredTerminalLink(null);
-            },
-          },
-        ),
+      terminal.open(containerElement);
+      const viewport = terminal.element?.querySelector<HTMLElement>(".xterm-viewport");
+      if (retainNativeOutput && viewport) {
+        viewport.style.backgroundColor = "inherit";
+      }
+      void loadOptionalTerminalSearchAddon(importTerminalSearchAddon)
+        .then((searchAddonModule) => {
+          if (disposed || searchAddonModule === null || terminal === null) {
+            return;
+          }
+          try {
+            const searchAddon = new searchAddonModule.SearchAddon();
+            terminal.loadAddon(searchAddon);
+            setTerminalSearchAddon(searchAddon);
+          } catch {
+            setTerminalSearchAddon(null);
+          }
+        })
+        .catch(() => undefined);
+      void importTerminalWebLinksAddon()
+        .then(({ WebLinksAddon }) => {
+          if (disposed || terminal === null) return;
+          try {
+            terminal.loadAddon(
+              new WebLinksAddon(
+                (event, uri) => {
+                  if (!isTerminalLinkActivation(event)) return;
+                  requestOpenTerminalLink({ source: "detected-url", uri });
+                },
+                {
+                  hover: (_event, uri) => {
+                    updateHoveredTerminalLink({ source: "detected-url", uri });
+                  },
+                  leave: () => updateHoveredTerminalLink(null),
+                },
+              ),
+            );
+          } catch {
+            return;
+          }
+        })
+        .catch(() => undefined);
+      void loadOptionalTerminalWebglAddon(importTerminalWebglAddon)
+        .then((webglAddonModule) => {
+          if (
+            disposed ||
+            webglAddonModule === null ||
+            terminal === null ||
+            retainNativeOutput
+          ) {
+            return;
+          }
+          webglRenderer = loadTerminalWebglRenderer(
+            terminal,
+            () => new webglAddonModule.WebglAddon(),
+            { root: containerElement, visible: false },
+          );
+          webglVisibilityRef.current = observeTerminalWebglVisibility({
+            root: containerElement,
+            renderer: webglRenderer,
+            isPanelOpen: () => isPanelOpenRef.current,
+          });
+        })
+        .catch(() => undefined);
+      viewportLineAnchor = createTerminalViewportLineAnchor(terminal);
+      outputLineAnchorTracker.reset();
+      const outputBoundaryToken = randomUuid();
+      const outputBoundaries =
+        createTerminalOutputBoundaries(outputBoundaryToken);
+      outputBoundaryDisposable = registerTerminalOutputBoundaryHandler(
+        terminal.parser,
+        outputBoundaryToken,
+        recordOutputStart,
       );
-      if (webglAddonModule !== null) {
-        loadTerminalWebglRenderer(
-          terminal,
-          () => new webglAddonModule.WebglAddon(),
+      const restoreViewport = (afterGridResize = false) => {
+        const activeBuffer = terminal?.buffer.active;
+        if (!terminal || !activeBuffer) {
+          return;
+        }
+        if (
+          (afterGridResize && liveBottomBeforeGridResize) ||
+          savedViewportAnchor?.distanceFromTail === 0
+        ) {
+          terminal.scrollToBottom();
+          viewportLineAnchor?.clear();
+          hasRestoredViewport = true;
+          viewportReplaySaveGate.finishRestore();
+          return;
+        }
+        if (
+          afterGridResize &&
+          viewportLineAnchor !== null &&
+          restoreTerminalViewportToRetainedLine({
+            terminal,
+            lineAnchor: viewportLineAnchor,
+          })
+        ) {
+          console.debug("Terminal viewport restore", {
+            terminalId: session.id,
+            branch: "retained-line-marker",
+            anchor: savedViewportAnchor,
+            line: viewportLineAnchor.getLine(),
+          });
+          hasRestoredViewport = true;
+          viewportReplaySaveGate.finishRestore();
+          return;
+        }
+        const restoreOutputLineAnchors =
+          savedOutputLineAnchor === null
+            ? outputLineAnchors
+            : [...outputLineAnchors, savedOutputLineAnchor];
+        const line = resolveTerminalViewportRestore(
+          {
+            anchor: savedViewportAnchor,
+            baseY: activeBuffer.baseY,
+            outputLineAnchors: restoreOutputLineAnchors,
+            replayNextSequence,
+            replayStartSequence,
+          },
+          (branch) => {
+            console.debug("Terminal viewport restore", {
+              terminalId: session.id,
+              branch,
+              anchor: savedViewportAnchor,
+              replayStartSequence,
+              replayNextSequence,
+            });
+          },
+        );
+        terminal.scrollToLine(line);
+        updateViewportLineAnchor(line);
+        hasRestoredViewport = true;
+        viewportReplaySaveGate.finishRestore();
+      };
+      terminalResizeSubscription = restoreTerminalViewportOnResize({
+        terminal,
+        canRestore: () => hasRestoredViewport && !hasManualScrollIntent,
+        restoreViewport: () => restoreViewport(true),
+      });
+      const flushViewportOnPageHide = () => viewportPersistence.flush();
+      window.addEventListener("pagehide", flushViewportOnPageHide);
+      const saveViewportAnchor = () => {
+        if (
+          !hasRestoredViewport ||
+          !viewportReplaySaveGate.canSave(hasManualScrollIntent) ||
+          terminal === null
+        ) {
+          return;
+        }
+        const activeBuffer = terminal.buffer.active;
+        const distanceFromTail = Math.max(
+          0,
+          activeBuffer.baseY - activeBuffer.viewportY,
+        );
+        let lineOffset = savedViewportAnchor?.lineOffset ?? 0;
+        if (hasManualScrollIntent) {
+          const visibleLine = activeBuffer.viewportY;
+          const mappedOutput = findTerminalOutputLineAnchor(
+            outputLineAnchors,
+            visibleLine,
+          );
+          updateSavedOutputLineAnchor(mappedOutput ?? null);
+          lineOffset = mappedOutput
+            ? Math.max(0, visibleLine - mappedOutput.line)
+            : 0;
+          anchoredOutputSequence =
+            mappedOutput?.sequence ?? latestOutputSequence;
+          updateViewportLineAnchor(visibleLine);
+        }
+        viewportPersistence.schedule({
+          distanceFromTail,
+          lineOffset,
+          outputSequence: anchoredOutputSequence,
+        });
+        savedViewportAnchor = {
+          distanceFromTail,
+          lineOffset,
+          outputSequence: anchoredOutputSequence,
+        };
+      };
+      const touchViewportSaveScheduler =
+        createTerminalTouchViewportSaveScheduler({
+          getViewportY: () => terminal?.buffer.active.viewportY ?? 0,
+          requestFrame: (callback) => window.requestAnimationFrame(callback),
+          cancelFrame: (handle) => window.cancelAnimationFrame(handle),
+          save: saveViewportAnchor,
+        });
+      const detachManualScrollIntentListeners =
+        attachTerminalManualScrollIntentListeners(containerElement, (event) => {
+          noteManualScrollIntent();
+          if (event.type === "touchmove") touchViewportSaveScheduler.schedule();
+        });
+      const viewportScrollDisposable = terminal.onScroll(saveViewportAnchor);
+      detachViewportListeners = () => {
+        viewportScrollDisposable.dispose();
+        touchViewportSaveScheduler.dispose();
+        detachManualScrollIntentListeners();
+        window.removeEventListener("pagehide", flushViewportOnPageHide);
+        viewportPersistence.dispose();
+        if (manualScrollTimeout !== null) {
+          clearTimeout(manualScrollTimeout);
+          manualScrollTimeout = null;
+        }
+      };
+      document.addEventListener("focusin", updateGridVisibility);
+      document.addEventListener("focusout", updateGridVisibility);
+      window.addEventListener("focus", updateGridVisibility);
+      window.addEventListener("blur", updateGridVisibility);
+      window.addEventListener("resize", updateGridVisibility);
+      detachGridVisibilityListeners = () => {
+        document.removeEventListener("focusin", updateGridVisibility);
+        document.removeEventListener("focusout", updateGridVisibility);
+        window.removeEventListener("focus", updateGridVisibility);
+        window.removeEventListener("blur", updateGridVisibility);
+        window.removeEventListener("resize", updateGridVisibility);
+      };
+      if (terminal.element) {
+        detachPointerCoordinates = attachTerminalScalePointerCoordinates(
+          terminal.element,
+          () =>
+            terminal?.element ? readTerminalSurfaceScale(terminal.element) : 1,
         );
       }
-      terminal.open(containerElement);
-      writeTerminalSessionStatusNotice({
-        lastNotice: lastStatusNoticeRef,
-        session: sessionRef.current,
-        terminal,
-      });
+      containerElement.dataset.renderGridCols = String(terminal.cols);
+      containerElement.dataset.renderGridRows = String(terminal.rows);
+      attachTerminalWheelLines(terminal);
+      if (sessionRef.current.status !== "exited") {
+        writeTerminalSessionStatusNotice({
+          lastNotice: lastStatusNoticeRef,
+          session: sessionRef.current,
+          terminal,
+        });
+      }
       const fitTerminal = () => {
+        updateGridVisibility();
         if (!fitAddon || !terminal) {
           return;
         }
         if (!hasVisibleTerminalSize({ containerElement })) {
           return;
         }
-        fitAddon.fit();
-        transport?.sendResize(terminal.cols, terminal.rows);
+        const fitted = fitAddon.proposeDimensions();
+        if (
+          fitted === undefined ||
+          !Number.isFinite(fitted.cols) ||
+          !Number.isFinite(fitted.rows)
+        ) {
+          return;
+        }
+        localFitGrid = { cols: fitted.cols, rows: fitted.rows };
+        containerElement.dataset.fitGridCols = String(fitted.cols);
+        containerElement.dataset.fitGridRows = String(fitted.rows);
+        replayPreview?.setFitGrid(fitted.cols, fitted.rows);
+        if (retainNativeOutput && sessionStatusRef.current === "exited") {
+          if (retainedOutputReplayed) {
+            retainedOutputGrid = latestPtyGrid;
+            terminal.resize(retainedOutputGrid.cols, retainedOutputGrid.rows);
+          }
+          updateGridVisibility();
+          return;
+        }
+        updateGridVisibility();
+        transport?.sendResize(fitted.cols, fitted.rows);
       };
       const scheduleFit: TerminalFitScheduler = () => {
         if (resizeAnimationFrame !== null) {
@@ -1024,6 +2405,19 @@ export function ThreadTerminalView({
         });
       }
       scheduleFitRef.current = scheduleFit;
+      resizeObserver = new ResizeObserver((entries) => {
+        updateGridVisibility();
+        const hasSize = hasVisibleTerminalSize({ containerElement, entries });
+        if (hasSize !== containerHasSize) {
+          containerHasSize = hasSize;
+          reportDocumentVisibility();
+        }
+        if (!hasSize) {
+          return;
+        }
+        scheduleFit();
+      });
+      resizeObserver.observe(containerElement);
       const currentActiveElement = document.activeElement;
       if (
         shouldFocusTerminalAfterAsyncMount({
@@ -1040,21 +2434,130 @@ export function ThreadTerminalView({
         onAutoFocusHandledRef.current?.();
       }
 
-      const activeTerminal = terminal;
+      const activeTerminal = terminal!;
+      const getReplayState = () => ({
+        hasReplaySurface: replayPreview !== null,
+        replayStarted,
+        replayCompleted,
+        needsHistoryRestore: lastParsedOutputNextSeq === 0,
+      });
+      const routeQueuedExitNotice = (text: string) => {
+        const state = getReplayState();
+        routeTerminalExitNotice({
+          hasReplaySurface: () => state.hasReplaySurface,
+          isReplayStarted: () => state.replayStarted,
+          isReplayComplete: () => state.replayCompleted,
+          needsHistoryRestore: () => state.needsHistoryRestore,
+          restoreTerminalHistory,
+          pushReplay: (bytes) => replayPreview?.push(bytes, () => undefined),
+          queueNotice: (notice) => pendingExitNotices.push(notice),
+          text,
+          writeTerminal: (notice) =>
+            writeTerminalStatus({ terminal: activeTerminal, text: notice }),
+        });
+      };
+      const restoreTerminalHistory = async () => {
+        const output = await sdk.terminals.output({
+          terminalId: sessionRef.current.id,
+          tailBytes: 64 * 1024,
+        });
+        for (const chunk of output.chunks) {
+          await new Promise<void>((resolve) => {
+            const bytes = decodeBase64Bytes(chunk.dataBase64);
+            if (outputPipeline) outputPipeline.push(bytes, resolve);
+            else activeTerminal.write(bytes, resolve);
+          });
+          lastParsedOutputNextSeq = Math.max(
+            lastParsedOutputNextSeq,
+            chunk.seq + 1,
+          );
+        }
+      };
+      const routeExitNotice = createTerminalExitNoticeHandler({
+        getLastStatusNotice: () => lastStatusNoticeRef.current,
+        setLastStatusNotice: (status) => {
+          lastStatusNoticeRef.current = status;
+        },
+        getReplayState: () => ({
+          hasReplaySurface: replayPreview !== null,
+          replayStarted,
+          replayCompleted,
+          needsHistoryRestore: lastParsedOutputNextSeq === 0,
+        }),
+        pushReplay: (bytes) => replayPreview?.push(bytes, () => undefined),
+        queueNotice: (notice) => pendingExitNotices.push(notice),
+        restoreTerminalHistory,
+        writeTerminal: (text) =>
+          writeTerminalStatus({ terminal: activeTerminal, text }),
+      });
       let reconnecting = false;
+      let repaintAfterReconnect = false;
       let reconnectingNoticeVisible = false;
+      let outputFrameId: number | null = null;
       const clearConnectionNoticeTimeout = () => {
         if (connectionNoticeTimeout !== null) {
           clearTimeout(connectionNoticeTimeout);
           connectionNoticeTimeout = null;
         }
       };
+      const resetTerminalOutput = () => {
+        outputLineAnchorTracker.reset();
+        outputLineAnchors.length = 0;
+        savedOutputLineAnchor = null;
+        replayCheckpointSequence = null;
+        replayPreview?.dispose();
+        replayPreview = null;
+        activeTerminal.reset();
+        outputBoundaries.reset();
+        parsingOutputSequence = null;
+        outputLineAnchorTracker.reset();
+      };
       const activeTransport = new TerminalWebSocketTransport({
+        terminalId: session.id,
+        now: () => performance.now(),
+        onInputAccepted: recordTerminalInputAccepted,
+        onInputSent: recordTerminalInputWebSocketSent,
+        onOutputFrameReceived: (terminalId, timestamp) => {
+          outputFrameId = recordTerminalOutputReceived(terminalId, timestamp);
+        },
+        onRepaintNudgeSizeReleased: (size) => {
+          const nextSize = nextSharedTerminalSize(sharedSize, size, false);
+          if (nextSize !== null) {
+            sharedSize = nextSize;
+            if (!markerGridActive) {
+              latestPtyGrid = nextSize;
+              if (outputPipeline) {
+                applyTerminalGridAndKeepViewport({
+                  pipeline: outputPipeline,
+                  cols: nextSize.cols,
+                  rows: nextSize.rows,
+                  onGridApplied: updateGridVisibility,
+                  restoreViewport: () => {
+                    if (hasRestoredViewport && !hasManualScrollIntent) {
+                      restoreViewport(true);
+                    }
+                  },
+                });
+              }
+            }
+            scheduleFit();
+          }
+        },
         onConnectionState: (state) => {
           if (disposed) {
             return;
           }
+          if (state === "closed") abandonReplayPreview();
+          if (
+            state === "reconnecting" &&
+            !replayCompleted &&
+            replayPreview?.fallback === true
+          ) {
+            replayPreview.hold({ countdown: false });
+            setReplayNotice(null);
+          }
           if (state === "reconnecting") {
+            repaintAfterReconnect = true;
             if (reconnecting) {
               return;
             }
@@ -1094,21 +2597,197 @@ export function ThreadTerminalView({
           });
         },
         onMessage: (message) => {
+          if (message.type === "error") abandonReplayPreview();
+          if (message.type === "exited") handleReplayPreviewExit();
+          if (message.type === "output") {
+            latestOutputSequence = Math.max(
+              latestOutputSequence,
+              message.chunk.seq,
+            );
+          }
+          const currentOutputFrameId =
+            message.type === "output" ? outputFrameId : null;
+          if (message.type === "output") outputFrameId = null;
+          if (
+            message.type === "attached" ||
+            message.type === "session-updated"
+          ) {
+            if (message.type === "attached") {
+              hasReceivedInitialAttach = true;
+            }
+            const { cols, rows } = message.session;
+            const isOwnNudgeEcho =
+              message.type === "session-updated" &&
+              activeTransport.consumeRepaintNudgeEcho(
+                { cols, rows },
+                message.resizeSeq,
+              );
+            latestPtyGrid = { cols, rows };
+            updateGridVisibility();
+            const nextSize = nextSharedTerminalSize(
+              sharedSize,
+              { cols, rows },
+              isOwnNudgeEcho,
+            );
+            if (nextSize !== null) {
+              sharedSize = nextSize;
+              replayPreview?.resize(nextSize.cols, nextSize.rows);
+              scheduleFit();
+            } else {
+              replayPreview?.resize(cols, rows);
+            }
+            if (message.session.status === "exited") {
+              handleReplayPreviewExit();
+            }
+            if (message.type === "session-updated" && !markerGridActive) {
+              if (outputPipeline) {
+                applyTerminalGridAndKeepViewport({
+                  pipeline: outputPipeline,
+                  cols,
+                  rows,
+                  onGridApplied: updateGridVisibility,
+                  restoreViewport: () => {
+                    if (hasRestoredViewport && !hasManualScrollIntent) {
+                      restoreViewport(true);
+                    }
+                  },
+                });
+              }
+            }
+          }
           handleTerminalServerMessage({
             acknowledgeOutput: (nextSeq) =>
-              activeTransport.acknowledgeOutput(nextSeq),
+              {
+                lastParsedOutputNextSeq = Math.max(
+                  lastParsedOutputNextSeq,
+                  nextSeq,
+                );
+                activeTransport.acknowledgeOutput(nextSeq);
+              },
             message,
+            terminalId: session.id,
+            onOutputFrameParsed: () => {
+              if (
+                document.visibilityState !== "visible" ||
+                !containerHasSize ||
+                !isPanelOpenRef.current
+              ) {
+                cancelTerminalOutputNextRenders(session.id);
+              }
+            },
+            onReplayComplete: () => {
+              replayCompleted = true;
+              for (const text of pendingExitNotices.splice(0)) {
+                routeQueuedExitNotice(text);
+              }
+              completeTerminalReplayPreview({
+                hasPendingExit: exitedBeforeReplayCompleted,
+                markExitApplied: () => {
+                  replayPreviewExitApplied = true;
+                },
+                clearPendingExit: () => {
+                  exitedBeforeReplayCompleted = false;
+                },
+                releasePreview: releaseReplayPreview,
+                processExited: () => replayPreview?.processExited(),
+              });
+              const fitGrid = fitAddon?.proposeDimensions();
+              applyTerminalGridBeforeViewportRestore({
+                pipeline: outputPipeline,
+                cols: latestPtyGrid.cols,
+                rows: latestPtyGrid.rows,
+                ...(fitGrid === undefined || savedViewportAnchor === null
+                  ? {}
+                  : { fitGrid: { cols: fitGrid.cols, rows: fitGrid.rows } }),
+                onGridApplied: updateGridVisibility,
+                restoreViewport,
+                afterRestore: () => {
+                  if (
+                    !disposed &&
+                    sessionStatusRef.current === "running" &&
+                    repaintAfterReconnect
+                  ) {
+                    repaintAfterReconnect = false;
+                    activeTransport.requestRepaint();
+                  }
+                },
+              });
+            },
             onSessionChange: onSessionChangeRef.current,
+            onOutputStart: recordOutputStart,
+            onOutputParsed: (sequence) => {
+              const outputAnchor = outputLineAnchors.find(
+                (candidate) => candidate.sequence === sequence,
+              );
+              if (sequence === savedViewportAnchor?.outputSequence) {
+                updateSavedOutputLineAnchor(outputAnchor ?? null);
+              }
+            },
             replayNextSeq,
             replayWriteState,
+            outputFrameId: currentOutputFrameId ?? undefined,
+            onReplayStart: () => {
+              replayStarted = true;
+              viewportReplaySaveGate.beginReplay();
+              replayCompleted = false;
+              replayPreviewExitApplied = false;
+              setReplayNotice(null);
+              if (replayPreview === null || replayPreview.fallback) {
+                replayPreview?.dispose();
+                replayCheckpointSequence = null;
+                const replayGrid = latestPtyGrid;
+                const previewTerminal = new Terminal({
+                  ...TERMINAL_THEME_OPTIONS,
+                  allowProposedApi: TERMINAL_ALLOW_PROPOSED_API,
+                  cols: replayGrid.cols,
+                  rows: replayGrid.rows,
+                  fontFamily: readTerminalFontFamily(),
+                  fontSize: 12,
+                  theme: buildTerminalTheme(),
+                });
+                previewTerminal.loadAddon(new Unicode11Addon());
+                previewTerminal.unicode.activeVersion =
+                  TERMINAL_UNICODE_VERSION;
+                replayPreview = mountTerminalReplayPreview({
+                  container: containerElement,
+                  holdUntilReleased: true,
+                  onHoldExpired: () => setReplayNotice("loading"),
+                  initialFitGrid: localFitGrid,
+                  isOwner: () =>
+                    terminalInputClaimed &&
+                    document.hasFocus() &&
+                    activeTerminal.element?.contains(document.activeElement) ===
+                      true,
+                  terminal: previewTerminal,
+                });
+              }
+            },
             setReplayNextSeq: (nextSeq) => {
               replayNextSeq = nextSeq;
+              if (nextSeq !== null) replayNextSequence = nextSeq;
+            },
+            setReplayStartSequence: (sequence) => {
+              replayStartSequence = sequence;
+              latestOutputSequence = Math.max(latestOutputSequence, sequence);
+              startTerminalOutputReplay({
+                outputLineAnchors,
+                sequence,
+                tracker: outputLineAnchorTracker,
+              });
             },
             terminal: activeTerminal,
+            pipeline: outputPipeline ?? undefined,
+            replayPipeline: replayPreview ?? undefined,
+            replayCheckpointSequence,
+            writeExitNotice: routeExitNotice,
+            outputBoundaries,
+            allowAttachedGrid: !markerGridActive,
+            shouldProcessOutput: () =>
+              terminalVisible === true && isPanelOpenRef.current,
           });
         },
         onSequenceGap: () => {
-          activeTerminal.reset();
+          resetTerminalOutput();
           writeTerminalStatus({
             terminal: activeTerminal,
             text: "Some terminal output was unavailable after reconnect",
@@ -1116,28 +2795,265 @@ export function ThreadTerminalView({
         },
         shouldReconnect: () =>
           !disposed && sessionStatusRef.current === "running",
-        url: buildTerminalWebSocketUrl({ terminalId: session.id }),
+        url: buildTerminalWebSocketUrl({
+          handoffOwnerToken:
+            wsManager.getDeviceHandoffClientToken() ?? handoffOwnerToken,
+          terminalId: session.id,
+        }),
       });
       transport = activeTransport;
-      activeTransport.sendResize(activeTerminal.cols, activeTerminal.rows);
+      fitTerminal();
       reportDocumentVisibility();
+      sizeClaims = listenForTerminalSizeClaims({
+        claim: () => activeTransport.claimSize(),
+        element: containerElement,
+        textarea: activeTerminal.textarea,
+      });
+      sizeClaims.claimIfFocused();
       document.addEventListener("visibilitychange", reportDocumentVisibility);
-      activeTransport.start();
-      const sendTerminalInput = (dataBase64: string) =>
-        activeTransport.sendInput(dataBase64);
-      activeTerminal.onData((data) => {
-        if (controlActiveRef.current) {
-          data = applyTerminalControl(data);
-          controlActiveRef.current = false;
-          setControlActive(false);
+      if (
+        sessionRef.current.status === "exited" ||
+        pendingExitNotices.length > 0
+      ) {
+        let retainedReplayFailed = false;
+        const revealRetainedFallback = () => {
+          if (disposed || retainedReplayFailed) return;
+          retainedReplayFailed = true;
+          retainedOutputReplayed = true;
+          fitTerminal();
+          writeTerminalStatus({
+            terminal: activeTerminal,
+            text: "Terminal history unavailable",
+          });
+          writeTerminalSessionStatusNotice({
+            lastNotice: lastStatusNoticeRef,
+            session: sessionRef.current,
+            terminal: activeTerminal,
+          });
+        };
+        try {
+          const outputPromise = sdk.terminals.output({
+            terminalId: sessionRef.current.id,
+            tailBytes: 64 * 1024,
+          });
+          retainedReplayTimeout = setTimeout(() => {
+            retainedReplayTimeout = null;
+            revealRetainedFallback();
+          }, TERMINAL_REPLAY_PREVIEW_HOLD_TIMEOUT_MS);
+          const output = await outputPromise;
+          if (!disposed) {
+            if (retainedReplayFailed) {
+              resetTerminalOutput();
+              lastStatusNoticeRef.current = null;
+              pendingExitNotices.length = 0;
+              retainedReplayFailed = false;
+            }
+            await writeRetainedTerminalOutput({
+              chunks: output.chunks.map((chunk) => ({
+                seq: chunk.seq,
+                data: decodeBase64Bytes(chunk.dataBase64),
+              })),
+              retainNativeOutput,
+              lastNotice: lastStatusNoticeRef,
+              session: sessionRef.current,
+              terminal: activeTerminal,
+              pipeline: outputPipeline ?? undefined,
+              onOutputStart: recordOutputStart,
+              onOutputParsed: (sequence) => {
+                const outputAnchor = outputLineAnchors.find(
+                  (candidate) => candidate.sequence === sequence,
+                );
+                if (sequence === savedViewportAnchor?.outputSequence) {
+                  updateSavedOutputLineAnchor(outputAnchor ?? null);
+                }
+              },
+            });
+            if (retainNativeOutput) {
+              retainedOutputReplayed = true;
+              fitTerminal();
+            }
+            flushPendingExitNotices();
+            replayStartSequence = output.chunks[0]?.seq ?? output.nextSeq;
+            latestOutputSequence = output.chunks.at(-1)?.seq ?? output.nextSeq;
+            replayNextSequence = output.nextSeq;
+            restoreViewport();
+          }
+        } catch {
+          revealRetainedFallback();
+        } finally {
+          if (retainedReplayTimeout !== null) {
+            clearTimeout(retainedReplayTimeout);
+            retainedReplayTimeout = null;
+          }
         }
-        forwardTerminalData({
-          data,
-          onInput: sendTerminalInput,
-          onUserInput: onUserInputRef.current,
-          replayWriteState,
-          sessionStatus: sessionStatusRef.current,
+      } else {
+        try {
+          const snapshot = await sdk.terminals.experimental_screen({
+            terminalId: session.id,
+            threadId: session.threadId ?? undefined,
+          });
+          if (
+            !disposed &&
+            snapshot.complete &&
+            !snapshot.truncated &&
+            snapshot.dataBase64 !== undefined &&
+            snapshot.checkpointSeq !== undefined &&
+            snapshot.cols === latestPtyGrid.cols &&
+            snapshot.gridRows === latestPtyGrid.rows
+          ) {
+            const previewTerminal = new Terminal({
+              ...TERMINAL_THEME_OPTIONS,
+              allowProposedApi: TERMINAL_ALLOW_PROPOSED_API,
+              cols: snapshot.cols,
+              rows: snapshot.gridRows,
+              fontFamily: readTerminalFontFamily(),
+              fontSize: 12,
+              theme: buildTerminalTheme(),
+            });
+            previewTerminal.loadAddon(new Unicode11Addon());
+            previewTerminal.unicode.activeVersion = TERMINAL_UNICODE_VERSION;
+            replayPreview = mountTerminalReplayPreview({
+              container: containerElement,
+              initialFitGrid: localFitGrid,
+              isOwner: () =>
+                terminalInputClaimed &&
+                document.hasFocus() &&
+                activeTerminal.element?.contains(document.activeElement) ===
+                  true,
+              terminal: previewTerminal,
+            });
+            replayCheckpointSequence = snapshot.checkpointSeq;
+            const snapshotFrame = decodeBase64Bytes(snapshot.dataBase64);
+            await new Promise<void>((resolve) =>
+              replayPreview?.push(snapshotFrame, resolve),
+            );
+          }
+        } catch {
+          replayCheckpointSequence = null;
+          replayPreview?.dispose();
+          replayPreview = null;
+        }
+        if (disposed) return;
+        activeTransport.start();
+      }
+      stopWatchingLayout = watchTerminalLayoutSettled({
+        cancelFrame: (handle) => window.cancelAnimationFrame(handle),
+        measure: () => {
+          const rect = containerElement.getBoundingClientRect();
+          if (
+            rect.width <= 0 ||
+            rect.height <= 0 ||
+            hasRunningLayoutAnimation(containerElement) ||
+            document.fonts?.status === "loading"
+          ) {
+            return null;
+          }
+          const fitted = fitAddon?.proposeDimensions();
+          if (
+            fitted === undefined ||
+            !Number.isFinite(fitted.cols) ||
+            !Number.isFinite(fitted.rows)
+          ) {
+            return null;
+          }
+          return `${rect.width}x${rect.height}:${fitted?.cols}x${fitted?.rows}`;
+        },
+        onSettled: () => {
+          if (disposed) {
+            return;
+          }
+          captureLiveViewportBeforeGridResize();
+          fitTerminal();
+          activeTransport.markLayoutSettled();
+          if (hasRestoredViewport && !hasManualScrollIntent) {
+            restoreViewport(true);
+          }
+          clearLiveViewportBeforeGridResize();
+        },
+        ready: document.fonts?.ready,
+        subscribe: (onSignal) =>
+          observeLayoutSignals({
+            affectsContainer: (target) =>
+              target instanceof Node && target.contains(containerElement),
+            document,
+            fontSet: document.fonts,
+            onSignal,
+          }),
+        requestFrame: (callback) => window.requestAnimationFrame(callback),
+      });
+      const sendTerminalInput = (dataBase64: string, inputEventAt?: number) =>
+        activeTransport.sendInput(dataBase64, inputEventAt);
+      handleFileDropRef.current = (files) => {
+        const desktop = window.bbDesktop;
+        handleTerminalFileDrop({
+          files: Array.from(files),
+          getPathForFile: desktop?.getPathForFile,
+          isRunning: sessionStatusRef.current === "running",
+          sendInput: (input) =>
+            forwardTerminalData({
+              data: input,
+              isUserInput: true,
+              onInput: sendTerminalInput,
+              onUserInput: onUserInputRef.current,
+              replayWriteState,
+              sessionStatus: sessionStatusRef.current,
+            }),
         });
+      };
+      terminalInteractions = attachTerminalInteractions({
+        element: containerElement.parentElement ?? containerElement,
+        getSelection: () => activeTerminal.getSelection(),
+        onPointerDown: (event) => {
+          if (
+            event.target instanceof Node &&
+            activeTerminal.element?.contains(event.target)
+          ) {
+            terminalInputClaimed = true;
+            lastUserInputAtRef.current = Date.now();
+            updateGridVisibility();
+          }
+          handleTerminalPointerDown(event);
+        },
+        onPointerRelease: (event) => {
+          if (pointerIsDownRef.current) lastUserInputAtRef.current = Date.now();
+          handleTerminalPointerRelease(event);
+        },
+        onPointerCancel: handleTerminalPointerCancel,
+        onSelection: (text) => {
+          if (terminalSearchOpenRef.current) return;
+          reportTerminalSelection(lastPointerReleaseAnchorRef.current, text);
+        },
+        copySelection: (text) => {
+          if (copyOnSelectRef.current && !terminalSearchOpenRef.current) {
+            copyTerminalSelectionOnSelect(text);
+          }
+        },
+        onFilesDrop: (files) => handleFileDropRef.current?.(files),
+      });
+      terminalKeyDisposable = activeTerminal.onKey(() => {
+        terminalInputClaimed = true;
+        updateGridVisibility();
+      });
+      terminalInputForwarding = attachTerminalInputForwarding({
+        onData: (data, isUserInput) => {
+          const inputEventAt = isUserInput ? performance.now() : undefined;
+          if (isUserInput) lastUserInputAtRef.current = Date.now();
+          if (controlActiveRef.current) {
+            data = applyTerminalControl(data);
+            controlActiveRef.current = false;
+            setControlActive(false);
+          }
+          forwardTerminalData({
+            data,
+            inputEventAt,
+            isUserInput,
+            onInput: sendTerminalInput,
+            onUserInput: onUserInputRef.current,
+            replayWriteState,
+            sessionStatus: sessionStatusRef.current,
+          });
+        },
+        terminal: activeTerminal,
       });
       setTerminalReady(true);
       activeTerminal.onTitleChange((title) => {
@@ -1149,26 +3065,9 @@ export function ThreadTerminalView({
         }
         onTitleChangeRef.current?.(title);
       });
-      const scheduleSelectionReport = () => {
-        if (pointerIsDownRef.current || selectionAnimationFrame !== null) {
-          return;
-        }
-        selectionAnimationFrame = window.requestAnimationFrame(() => {
-          selectionAnimationFrame = null;
-          reportTerminalSelection(lastPointerReleaseAnchorRef.current);
-        });
-      };
       selectionChangeDisposable = activeTerminal.onSelectionChange(
-        scheduleSelectionReport,
+        terminalInteractions.onSelectionChange,
       );
-
-      resizeObserver = new ResizeObserver((entries) => {
-        if (!hasVisibleTerminalSize({ containerElement, entries })) {
-          return;
-        }
-        scheduleFit();
-      });
-      resizeObserver.observe(containerElement);
     }
 
     void mountTerminal(container).catch((error) => {
@@ -1180,40 +3079,117 @@ export function ThreadTerminalView({
 
     return () => {
       disposed = true;
+      outputLineAnchorTracker.dispose();
+      viewportLineAnchor?.dispose();
+      viewportLineAnchor = null;
       controlActiveRef.current = false;
       setControlActive(false);
       setTerminalReady(false);
+      setTerminalSearchAddon(null);
+      setTerminalSearchOpen(false);
       stopObservingFonts?.();
+      stopWatchingLayout?.();
+      detachViewportListeners?.();
+      sizeClaims?.dispose();
+      sizeClaims = null;
       if (resizeAnimationFrame !== null) {
         window.cancelAnimationFrame(resizeAnimationFrame);
       }
-      if (selectionAnimationFrame !== null) {
-        window.cancelAnimationFrame(selectionAnimationFrame);
+      if (liveBottomResizeClearFrame !== null) {
+        window.cancelAnimationFrame(liveBottomResizeClearFrame);
       }
       if (connectionNoticeTimeout !== null) {
         clearTimeout(connectionNoticeTimeout);
       }
+      if (retainedReplayTimeout !== null) {
+        clearTimeout(retainedReplayTimeout);
+      }
       setConnectionNotice(null);
       resizeObserver?.disconnect();
+      replayPreview?.dispose();
+      replayPreview = null;
+      detachPointerCoordinates?.();
+      detachPointerCoordinates = null;
+      detachGridVisibilityListeners?.();
+      detachGridVisibilityListeners = null;
       selectionChangeDisposable?.dispose();
+      terminalKeyDisposable?.dispose();
+      terminalKeyDisposable = null;
+      terminalInputForwarding?.dispose();
+      terminalInputForwarding = null;
+      shellOscDisposable?.dispose();
+      terminalProgressDisposable?.dispose();
+      osc52Disposable?.dispose();
+      outputBoundaryDisposable?.dispose();
+      terminalInteractions?.dispose();
+      terminalRenderSubscription?.dispose();
+      terminalRenderSubscription = null;
+      terminalResizeSubscription?.dispose();
+      terminalResizeSubscription = null;
+      cancelTerminalOutputNextRenders(session.id);
+      handleFileDropRef.current = null;
+      if (reportDocumentVisibilityRef.current === reportDocumentVisibility) {
+        reportDocumentVisibilityRef.current = null;
+      }
       document.removeEventListener(
         "visibilitychange",
         reportDocumentVisibility,
       );
       transport?.dispose();
+      webglVisibilityRef.current?.dispose();
+      webglVisibilityRef.current = null;
+      webglRenderer?.dispose();
       terminal?.dispose();
       terminalRef.current = null;
       scheduleFitRef.current = null;
+      if (terminalVisibilityReporterRef.current === reportDocumentVisibility) {
+        terminalVisibilityReporterRef.current = null;
+      }
     };
   }, [
+    copyTerminalContextValue,
+    pasteFromClipboard,
     reportTerminalSelection,
+    copyTerminalSelection,
+    copyTerminalSelectionOnSelect,
+    handleTerminalPointerDown,
+    handleTerminalPointerRelease,
+    handleTerminalPointerCancel,
+    jumpToPrompt,
     requestOpenTerminalLink,
+    retainNativeOutput,
     session.id,
     session.threadId,
+    handoffOwnerToken,
+    session.title,
     updateHoveredTerminalLink,
   ]);
 
   useEffect(() => {
+    const panelWasOpen = previousPanelOpenRef.current;
+    previousPanelOpenRef.current = isPanelOpen;
+    if (panelWasOpen === isPanelOpen) return;
+    reportDocumentVisibilityRef.current?.();
+  }, [isPanelOpen]);
+
+  useEffect(() => {
+    const terminal = terminalRef.current;
+    if (!isTouchDevice || terminal?.element == null) return;
+    const compositionInputGuard = suppressDuplicateTerminalCompositionInput(
+      terminal.element.parentElement ?? terminal.element,
+      (data) => terminal.input(data),
+    );
+    compositionInputGuardRef.current = compositionInputGuard;
+    return () => {
+      compositionInputGuard.dispose();
+      compositionInputGuardRef.current = null;
+    };
+  }, [isTouchDevice, terminalReady]);
+
+  useEffect(() => {
+    if (!isPanelOpen) {
+      cancelTerminalOutputNextRenders(session.id);
+    }
     if (!isPanelOpen || !autoFocus) {
       return;
     }
@@ -1223,11 +3199,15 @@ export function ThreadTerminalView({
       onAutoFocusHandledRef.current?.();
     }
     scheduleFitRef.current?.();
-  }, [autoFocus, isPanelOpen]);
+  }, [autoFocus, isPanelOpen, session.id]);
 
   useEffect(() => {
     const terminal = terminalRef.current;
     if (!terminal) {
+      return;
+    }
+    scheduleFitRef.current?.();
+    if (session.status === "exited") {
       return;
     }
     writeTerminalSessionStatusNotice({
@@ -1255,14 +3235,110 @@ export function ThreadTerminalView({
         ? "Reconnecting…"
         : connectionNotice === "reconnected"
           ? "Reconnected"
-          : null;
+          : replayNotice === "loading"
+            ? "Still loading terminal…"
+            : replayNotice === "unavailable"
+              ? "Terminal output unavailable"
+              : null;
+  useEffect(() => {
+    webglVisibilityRef.current?.sync();
+    terminalVisibilityReporterRef.current?.();
+  }, [isPanelOpen]);
+
+  const gestureTouches = (
+    touches: ArrayLike<{
+      identifier: number;
+      clientX: number;
+      clientY: number;
+    }>,
+  ): TerminalGestureTouch[] =>
+    Array.from(touches, (touch) => ({
+      identifier: touch.identifier,
+      x: touch.clientX,
+      y: touch.clientY,
+    }));
+  const stopRetainedHistoryTouchPropagation = (
+    event: ReactTouchEvent<HTMLDivElement>,
+  ) => {
+    if (
+      retainNativeOutput &&
+      session.status === "exited" &&
+      getMediaQuerySnapshot(COMPACT_VIEWPORT_QUERY)
+    ) {
+      event.stopPropagation();
+    }
+  };
+  const ensurePinchGesture = () => {
+    pinchGestureRef.current ??= createTerminalPinchGesture({
+      getFontSize: () => terminalFontSizeRef.current,
+      setFontSize: (size) => {
+        if (size === terminalFontSizeRef.current) return;
+        terminalFontSizeRef.current = size;
+        setTerminalFontSize(size);
+        const terminal = terminalRef.current;
+        if (terminal !== null) {
+          terminal.options.fontSize = size;
+          terminal.refresh(0, terminal.rows - 1);
+        }
+      },
+      fitAndResize: () => scheduleFitRef.current?.(),
+    });
+    return pinchGestureRef.current;
+  };
+  const beginTerminalLongPress = (
+    touches: ArrayLike<{
+      identifier: number;
+      clientX: number;
+      clientY: number;
+    }>,
+  ) => {
+    longPressGestureRef.current?.cancel();
+    const points = gestureTouches(touches);
+    longPressGestureRef.current = startTerminalLongPress(
+      points,
+      (point) => {
+        const terminal = terminalRef.current;
+        const screen =
+          terminal?.element?.querySelector<HTMLElement>(".xterm-screen");
+        if (
+          terminal === null ||
+          terminal === undefined ||
+          screen === null ||
+          screen === undefined
+        ) {
+          return 0;
+        }
+        const bounds = screen.getBoundingClientRect();
+        const rowHeight = bounds.height / Math.max(1, terminal.rows);
+        const row = Math.floor((point.y - bounds.top) / rowHeight);
+        return (
+          terminal.buffer.active.viewportY +
+          Math.max(0, Math.min(terminal.rows - 1, row))
+        );
+      },
+      (bufferLine) => {
+        const terminal = terminalRef.current;
+        if (terminal === null) return;
+        setTextSnapshotInitialLine(
+          terminalTextSnapshotLineIndex(terminal, bufferLine),
+        );
+        setTextSnapshot(terminalTextSnapshot(terminal));
+      },
+      (callback, delay) => {
+        const id = window.setTimeout(callback, delay);
+        return { cancel: () => window.clearTimeout(id) };
+      },
+    );
+  };
   const contextMenuLink = contextMenuState.link;
   const contextMenuSelectionText = contextMenuState.selectionText;
-  const hasTerminalContextMenuTarget =
-    hoveredTerminalLink !== null || activeSelection !== null;
-
   return (
-    <div className="flex h-full min-h-0 flex-col">
+    <div
+      ref={viewRef}
+      className="flex h-full min-h-0 flex-col"
+      data-app-terminal=""
+      onKeyDownCapture={handleTerminalCommandKeyDown}
+    >
       <ContextMenu
         onOpenChange={(open) => {
           if (!open) {
@@ -1270,21 +3346,60 @@ export function ThreadTerminalView({
           }
         }}
       >
-        <ContextMenuTrigger asChild disabled={!hasTerminalContextMenuTarget}>
-          <div
-            className="relative min-h-0 w-full flex-1 overflow-hidden bg-sidebar p-2"
+        <ContextMenuTrigger asChild>
+          <TerminalAttentionPane
+            attention={session.attention}
+            className={`group/terminal-pane relative min-h-0 w-full flex-1 overflow-hidden bg-sidebar p-2 ${isTouchDevice ? (retainNativeOutput && session.status === "exited" ? "touch-pan-x touch-pan-y" : "touch-pan-y") : ""}`}
             onContextMenuCapture={captureTerminalContextMenu}
-            onPointerDown={handleTerminalPointerDown}
-            onPointerUp={handleTerminalPointerRelease}
-            onPointerCancel={handleTerminalPointerCancel}
-            onTouchStart={handleTerminalTouchStart}
-            onTouchMove={handleTerminalTouchMove}
-            onTouchEnd={handleTerminalTouchEnd}
-            onTouchCancel={handleTerminalTouchCancel}
+            onTouchStart={(event) => {
+              stopRetainedHistoryTouchPropagation(event);
+              beginTerminalLongPress(event.touches);
+              ensurePinchGesture().start(gestureTouches(event.touches));
+              touchHandlers().start(event);
+              handleTerminalTouchStart(event);
+            }}
+            onTouchMove={(event) => {
+              stopRetainedHistoryTouchPropagation(event);
+              const points = gestureTouches(event.touches);
+              longPressGestureRef.current?.move(points);
+              ensurePinchGesture().move(points);
+              touchHandlers().move(event);
+              handleTerminalTouchMove(event);
+            }}
+            onTouchEnd={(event) => {
+              stopRetainedHistoryTouchPropagation(event);
+              longPressGestureRef.current?.cancel();
+              ensurePinchGesture().end();
+              touchHandlers().end(event);
+              handleTerminalTouchEnd(event);
+            }}
+            onTouchCancel={(event) => {
+              stopRetainedHistoryTouchPropagation(event);
+              longPressGestureRef.current?.cancel();
+              ensurePinchGesture().cancel();
+              touchHandlers().cancel();
+              handleTerminalTouchCancel();
+            }}
           >
             <div
               ref={containerRef}
-              className="h-full min-h-0 w-full overflow-hidden"
+              data-terminal-renderer="dom"
+              data-terminal-context-loss-count="0"
+              data-terminal-font-size={terminalFontSize}
+              className="box-border h-full min-h-0 w-full overflow-hidden pl-2"
+            />
+            <TerminalCommandGutter
+              commandMarks={promptTrackerState.commandMarks}
+              lineHeight={promptTrackerState.lineHeight}
+              rows={session.rows}
+              viewportLine={promptTrackerState.viewportLine}
+            />
+            <TerminalSearch
+              addon={terminalSearchAddon}
+              terminal={terminalRef.current}
+              touch={isTouchDevice}
+              open={terminalSearchOpen}
+              onOpenChange={setTerminalSearchOpen}
             />
             {connectionNoticeText !== null ? (
               <div
@@ -1294,15 +3409,26 @@ export function ThreadTerminalView({
                 {connectionNoticeText}
               </div>
             ) : null}
-          </div>
+          </TerminalAttentionPane>
         </ContextMenuTrigger>
-        <ContextMenuContent className="min-w-36">
+        <ContextMenuContent
+          className="min-w-36"
+          onCloseAutoFocus={(event) => {
+            event.preventDefault();
+            terminalRef.current?.focus();
+          }}
+        >
           {contextMenuLink !== null ? (
             <>
               <ContextMenuItem
                 onSelect={() => requestOpenTerminalLink(contextMenuLink)}
               >
                 Open Link
+              </ContextMenuItem>
+              <ContextMenuItem
+                onSelect={() => openUrlInExternalBrowser(contextMenuLink.uri)}
+              >
+                Open Link Externally
               </ContextMenuItem>
               <ContextMenuItem
                 onSelect={() =>
@@ -1328,6 +3454,15 @@ export function ThreadTerminalView({
               Copy
             </ContextMenuItem>
           ) : null}
+          {contextMenuLink !== null || contextMenuSelectionText.length > 0 ? (
+            <ContextMenuSeparator />
+          ) : null}
+          <ContextMenuItem
+            disabled={session.status !== "running"}
+            onSelect={pasteFromClipboard}
+          >
+            Paste
+          </ContextMenuItem>
         </ContextMenuContent>
         <TimelineSelectionMenu
           selection={activeSelection}
@@ -1336,7 +3471,7 @@ export function ThreadTerminalView({
               ? undefined
               : handleSelectionAddToChat
           }
-          onDismiss={clearTerminalSelection}
+          onDismiss={dismissTerminalSelectionMenu}
         />
         <TerminalLinkOpenDialog
           target={pendingTerminalLink}
@@ -1352,14 +3487,18 @@ export function ThreadTerminalView({
         <TerminalMobileControls
           controlActive={controlActive}
           disabled={!terminalReady || session.status !== "running"}
+          readOnlyDisabled={!terminalReady}
           onControlChange={(active) => {
             changeControlActive(active);
             if (active) terminalRef.current?.focus();
           }}
+          onPreviousPrompt={() => jumpToPrompt("previous")}
+          onNextPrompt={() => jumpToPrompt("next")}
           onArrow={(key) => {
             const terminal = terminalRef.current;
             if (!terminal) return;
             changeControlActive(false);
+            compositionInputGuardRef.current?.flushPendingInput();
             terminal.input(
               encodeTerminalArrow(
                 key,
@@ -1369,6 +3508,7 @@ export function ThreadTerminalView({
           }}
           onInput={(data) => {
             changeControlActive(false);
+            compositionInputGuardRef.current?.flushPendingInput();
             terminalRef.current?.input(data);
           }}
           onKeyboardToggle={() => {
@@ -1377,27 +3517,31 @@ export function ThreadTerminalView({
             if (document.activeElement === terminal.textarea) terminal.blur();
             else terminal.focus();
           }}
+          onSearch={() => setTerminalSearchOpen(true)}
+          searchAvailable={terminalSearchAddon !== null}
           onPaste={() => {
+            changeControlActive(false);
+            pasteFromClipboard();
+          }}
+          onSelectText={() => {
             const terminal = terminalRef.current;
             if (!terminal) return;
-            if (!navigator.clipboard?.readText) {
-              appToast.error(
-                "Clipboard unavailable. Use your keyboard’s Paste action.",
-              );
-              return;
+            terminal.blur();
+            setTextSnapshotInitialLine(null);
+            setTextSnapshot(terminalTextSnapshot(terminal));
+          }}
+        />
+      ) : null}
+      {isTouchDevice ? (
+        <TerminalTextSelectSheet
+          open={textSnapshot !== null}
+          text={textSnapshot ?? ""}
+          initialLine={textSnapshotInitialLine}
+          onOpenChange={(open) => {
+            if (!open) {
+              setTextSnapshotInitialLine(null);
+              setTextSnapshot(null);
             }
-            void navigator.clipboard
-              .readText()
-              .then((text) => {
-                if (terminalRef.current !== terminal) return;
-                changeControlActive(false);
-                terminal.paste(text);
-              })
-              .catch(() => {
-                appToast.error(
-                  "Clipboard unavailable. Use your keyboard’s Paste action.",
-                );
-              });
           }}
         />
       ) : null}

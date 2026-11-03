@@ -6,6 +6,7 @@ import {
   usePluginComposerHost,
 } from "@/components/plugin/plugin-composer-host";
 import { SecondaryPanelLayout } from "@/components/secondary-panel/SecondaryPanelLayout";
+import { getThreadSecondaryPanelWidthPercentAtom } from "@/components/secondary-panel/threadSecondaryPanelAtoms";
 import { LazyThreadSecondaryPanel } from "@/components/secondary-panel/lazySecondaryPanelComponents";
 import {
   ThreadMetadataCard,
@@ -15,12 +16,8 @@ import {
 } from "@/components/secondary-panel/ThreadMetadataContent";
 import { DETAIL_GRID_CLASS } from "@/components/ui/detail-card.js";
 import { useThreads } from "@/hooks/queries/thread-queries";
-import { ThreadTimelinePane } from "./ThreadTimelinePane";
+import { useOptionalPaneContext } from "./PaneContext";
 
-type ThreadTimelinePaneProps = Omit<
-  ComponentProps<typeof ThreadTimelinePane>,
-  "footer"
->;
 type ThreadSecondaryPanelProps = Omit<
   ComponentProps<typeof LazyThreadSecondaryPanel>,
   | "metadataContent"
@@ -39,18 +36,20 @@ type ThreadSecondaryPanelProps = Omit<
 };
 
 interface ThreadDetailSecondaryContentProps {
-  footer: ReactNode;
   header: ReactNode;
+  nativeTerminalMain: ReactNode | null;
+  nativeTerminal: boolean | null;
+  nativeTerminalThreadQueryIsPending: boolean;
   isMetadataLoading: boolean;
   isSecondaryPanelOpen: boolean;
   isConversationCollapsed: boolean;
   isBoundedPane: boolean;
+  main: ReactNode;
   onToggleSecondaryPanel: () => void;
   onToggleConversationCollapse: () => void;
   renderHostedPanel: (panel: ReactNode) => ReactNode;
   metadata: ThreadMetadataContentProps;
   secondaryPanel: ThreadSecondaryPanelProps;
-  timeline: ThreadTimelinePaneProps;
 }
 
 export function ThreadDetailSecondaryContent(
@@ -64,21 +63,26 @@ export function ThreadDetailSecondaryContent(
 }
 
 function ThreadDetailSecondaryContentBody({
-  footer,
   header,
+  nativeTerminalMain,
+  nativeTerminal,
+  nativeTerminalThreadQueryIsPending,
   isMetadataLoading,
   isSecondaryPanelOpen,
   isConversationCollapsed,
   isBoundedPane,
+  main,
   onToggleSecondaryPanel,
   onToggleConversationCollapse,
   renderHostedPanel,
   metadata,
   secondaryPanel,
-  timeline,
 }: ThreadDetailSecondaryContentProps) {
+  const paneContext = useOptionalPaneContext();
   const composerHost = usePluginComposerHost();
   const { renderBrowserDeck, ...threadSecondaryPanelProps } = secondaryPanel;
+  const isNativeTerminalLoading =
+    nativeTerminal !== false && nativeTerminalThreadQueryIsPending;
 
   const forksQuery = useThreads(
     {
@@ -116,20 +120,33 @@ function ThreadDetailSecondaryContentBody({
       <SecondaryPanelLayout
         open={isSecondaryPanelOpen}
         onToggle={onToggleSecondaryPanel}
+        onSwipeOpen={onToggleSecondaryPanel}
         onClose={threadSecondaryPanelProps.onClose}
         panelGroupKey="thread-detail"
-        resetKey={timeline.threadId}
-        contentKey={timeline.threadId}
+        resetKey={metadata.thread.id}
+        contentKey={metadata.thread.id}
         drawerLabel="Thread details"
         drawerFallback={<ThreadMetadataLoadingSkeleton />}
         mainPanelId="thread-detail-timeline-panel"
         mainHeader={header}
-        main={<ThreadTimelinePane {...timeline} footer={footer} />}
+        main={
+          nativeTerminalMain ??
+          (isNativeTerminalLoading ? (
+            <div aria-busy="true" role="status">
+              Loading terminals...
+            </div>
+          ) : (
+            main
+          ))
+        }
         collapse={{
           active: isConversationCollapsed,
           onToggle: onToggleConversationCollapse,
         }}
         composerHost={composerHost}
+        widthPercentAtom={getThreadSecondaryPanelWidthPercentAtom(
+          metadata.thread.id,
+        )}
         renderHostedPanel={renderHostedPanel}
         renderPanel={({
           presentation,
@@ -156,6 +173,7 @@ function ThreadDetailSecondaryContentBody({
             }
             onToggleConversationCollapse={onToggleMainCollapse}
             resizablePanelId={resizablePanelId}
+            isAtWindowTop={paneContext?.isTopRow !== false}
             metadataContent={metadataContent}
           />
         )}

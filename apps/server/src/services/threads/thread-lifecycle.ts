@@ -1,4 +1,5 @@
 import { advanceEnvironmentProvisioning } from "../environments/environment-engine.js";
+import { assertNotNativeTerminalThread } from "./native-terminal-guard.js";
 import { revokeThreadDesktopBrowserControl } from "../desktop-browsers.js";
 import {
   providerEnvironmentHasPendingWork,
@@ -24,6 +25,8 @@ import {
   getHost,
   getLatestThreadInterruptedReason,
   getThread,
+  listNativeTerminalThreadIds,
+  hasStoredTerminalClientTurnRequestEvent,
   listThreadIdsStoppedSinceLastTurnStart,
   listThreadIdsWithLatestHostDaemonRestartInterruption,
   listThreadTurnInterruptionEventStates,
@@ -43,9 +46,14 @@ import {
   type ThreadEventType,
   type ThreadLifecycleEvent,
   type ThreadStatus,
+  threadCommandFailureCopyForInterruption,
   threadScope,
   turnScope,
 } from "@bb/domain";
+
+type RuntimeThreadInterruptionReason =
+  | SystemThreadInterruptedReason
+  | "host-connection-lost";
 import type {
   AppDeps,
   LoggedPendingInteractionWorkSessionDeps,
@@ -73,6 +81,7 @@ import {
   getLastProviderThreadId,
   requireDispatchableProviderThreadId,
 } from "./thread-events.js";
+import { describeMissingWorkspace } from "./missing-workspace.js";
 import {
   applyLoggedThreadLifecycleEvent,
   applyLoggedThreadLifecycleEventInTransaction,
@@ -105,6 +114,7 @@ import { isParentNotifiableChildThread } from "./thread-parent.js";
 import {
   clearThreadProvisionSchedule,
   getThreadProvisionContext,
+  readDispatchedThreadStartFork,
 } from "./thread-startup-store.js";
 import { cancelAbandonedProviderCreations } from "./thread-environment-providers.js";
 import { scheduleThreadProvisioningAdvance } from "./thread-provisioning.js";
@@ -378,10 +388,6 @@ interface SettleThreadPlanCancelCommandResultArgs {
   report: ThreadPlanCancelCommandResultReport;
 }
 
-type RuntimeThreadInterruptionReason =
-  | SystemThreadInterruptedReason
-  | "host-connection-lost";
-
 function lifecycleEventForInterruptedThread(
   reason: RuntimeThreadInterruptionReason,
 ): ThreadLifecycleEvent {
@@ -412,42 +418,6 @@ function pendingInteractionStopReason(
       return "Connection to host was lost while awaiting user interaction";
     case "provider-turn-idle":
       return "Thread stopped after the provider stopped sending progress";
-    default:
-      return assertNever(reason);
-  }
-}
-
-function threadCommandFailureMessageForInterruption(
-  reason: RuntimeThreadInterruptionReason,
-): string | null {
-  switch (reason) {
-    case "host-removed":
-    case "manual-stop":
-      return null;
-    case "host-daemon-restarted":
-      return "Thread interrupted because the host daemon disconnected";
-    case "host-connection-lost":
-      return "Thread interrupted because the connection to the host was lost";
-    case "provider-turn-idle":
-      return "Live runtime work failed because the provider stopped sending progress";
-    default:
-      return assertNever(reason);
-  }
-}
-
-function threadCommandFailureDetailForInterruption(
-  reason: RuntimeThreadInterruptionReason,
-): string {
-  switch (reason) {
-    case "host-removed":
-      return "Thread stopped because the machine was removed";
-    case "manual-stop":
-      return "Thread stopped by user request";
-    case "host-daemon-restarted":
-    case "host-connection-lost":
-      return "Please retry the thread to continue.";
-    case "provider-turn-idle":
-      return "Provider stopped sending progress while the thread was running";
     default:
       return assertNever(reason);
   }
@@ -689,31 +659,12 @@ function hasTerminalClientTurnRequestEvent(
   deps: ThreadCommandResultSettlementDeps,
   command: ThreadFailureCommand,
 ): boolean {
-  if (command.type !== "turn.submit") {
-    return false;
-  }
-
   return (
-    deps.db
-      .select({ id: events.id })
-      .from(events)
-      .where(
-        and(
-          eq(events.threadId, command.threadId),
-          or(
-            and(
-              eq(events.type, "turn/input/accepted"),
-              sql`json_extract(${events.data}, '$.clientRequestId') = ${command.requestId}`,
-            ),
-            and(
-              eq(events.type, "client/turn/rejected"),
-              sql`json_extract(${events.data}, '$.requestId') = ${command.requestId}`,
-            ),
-          ),
-        ),
-      )
-      .limit(1)
-      .get() !== undefined
+    command.type === "turn.submit" &&
+    hasStoredTerminalClientTurnRequestEvent(deps.db, {
+      requestId: command.requestId,
+      threadId: command.threadId,
+    })
   );
 }
 
@@ -839,6 +790,11 @@ function settleThreadCommandFailure(
   if (hasTerminalClientTurnRequestEvent(args.deps, args.command)) {
     return emptyCommandResultSideEffects();
   }
+  const missingWorkspaceMessage = describeMissingWorkspace(args.deps.db, {
+    environmentId: thread.environmentId,
+    errorCode: args.report.errorCode,
+    errorMessage: args.report.errorMessage,
+  });
   if (args.command.type === "turn.submit") {
     appendThreadEventInTransaction(args.deps.db, {
       threadId: thread.id,
@@ -848,7 +804,7 @@ function settleThreadCommandFailure(
       data: {
         requestId: args.command.requestId,
         reason: args.report.errorCode,
-        message: args.report.errorMessage,
+        message: missingWorkspaceMessage ?? args.report.errorMessage,
       },
     });
     if (
@@ -865,7 +821,7 @@ function settleThreadCommandFailure(
     threadId: thread.id,
     environmentId: thread.environmentId,
     code: "thread_command_failed",
-    message: `Command ${args.report.type} failed`,
+    message: missingWorkspaceMessage ?? `Command ${args.report.type} failed`,
     detail: args.report.errorMessage,
     scope: getThreadFailureCommandErrorScope(args.command),
   });
@@ -876,7 +832,7 @@ function settleThreadCommandFailure(
   if (outcome.applied) {
     args.deps.hub.notifyThread(thread.id, ["status-changed"]);
   }
-  if (isParentNotifiableChildThread(thread)) {
+  if (isParentNotifiableChildThread(thread, "failed")) {
     const parentThreadId = thread.parentThreadId;
     postCommitActions.push({
       run: (deps) =>
@@ -884,6 +840,7 @@ function settleThreadCommandFailure(
           childThread: thread,
           parentThreadId,
           turnStatus: "failed",
+          turnId: null,
         }),
     });
   }
@@ -994,8 +951,9 @@ export function ensureThreadCanStartRequest(thread: Thread): void {
 
 export async function prepareReadyThreadTurnCommand(
   deps: LoggedWorkSessionDeps,
-  args: ThreadStartCommandArgs,
+  args: Omit<ThreadStartCommandArgs, "fork">,
 ): Promise<PreparedReadyThreadTurnCommand> {
+  assertNotNativeTerminalThread(deps.db, args.thread.id);
   await ensureHostSessionReadyForWork(deps, {
     hostId: args.environment.hostId,
   });
@@ -1026,7 +984,10 @@ export async function prepareReadyThreadTurnCommand(
   }
 
   return {
-    command: await buildThreadStartCommand(deps, args),
+    command: await buildThreadStartCommand(deps, {
+      ...args,
+      fork: readDispatchedThreadStartFork(deps.db, args.thread.id),
+    }),
     mode: "thread.start",
   };
 }
@@ -1289,6 +1250,7 @@ export async function requestThreadStart(
   deps: CommandResultSideEffectsDeps,
   args: ThreadStartCommandArgs,
 ): Promise<void> {
+  assertNotNativeTerminalThread(deps.db, args.thread.id);
   await threadStartRequestDeduper.run(args.thread.id, () =>
     requestThreadStartOnce(deps, args),
   );
@@ -1793,8 +1755,8 @@ function interruptActiveThreads(
         const state = stateByThreadId.get(thread.threadId);
         const activeTurnId = state?.activeTurnId ?? null;
         const providerThreadId = state?.latestProviderThreadId ?? null;
-        const failureMessage =
-          threadCommandFailureMessageForInterruption(effectiveReason);
+        const failureCopy =
+          threadCommandFailureCopyForInterruption(effectiveReason);
 
         if (activeTurnId !== null) {
           eventArgs.push({
@@ -1810,7 +1772,7 @@ function interruptActiveThreads(
           });
         }
 
-        if (failureMessage !== null) {
+        if (failureCopy !== null) {
           eventArgs.push({
             threadId: thread.threadId,
             environmentId: thread.environmentId,
@@ -1820,9 +1782,8 @@ function interruptActiveThreads(
               activeTurnId !== null ? turnScope(activeTurnId) : threadScope(),
             data: buildSystemErrorEventData({
               code: "thread_command_failed",
-              message: failureMessage,
-              detail:
-                threadCommandFailureDetailForInterruption(effectiveReason),
+              message: failureCopy.message,
+              detail: failureCopy.detail,
             }),
           });
         }
@@ -1837,7 +1798,7 @@ function interruptActiveThreads(
           },
         });
         results.push({
-          failureEventAppended: failureMessage !== null,
+          failureEventAppended: failureCopy !== null,
           threadId: thread.threadId,
           interruptedTurnId: activeTurnId,
         });
@@ -1862,6 +1823,12 @@ function interruptActiveThreads(
     },
     { behavior: "immediate" },
   );
+
+  for (const result of results) {
+    if (result.interruptedTurnId !== null) {
+      deps.hub.clearDeviceHandoffTurnSubmitterForThread(result.threadId);
+    }
+  }
 
   deps.pendingInteractions.interruptPendingInteractionsForThreadIds({
     threadIds: results.map((result) => result.threadId),
@@ -1895,12 +1862,13 @@ function interruptActiveThreads(
     if (
       result.interruptedTurnId !== null &&
       thread &&
-      isParentNotifiableChildThread(thread)
+      isParentNotifiableChildThread(thread, "interrupted")
     ) {
       void queueChildThreadTurnNotificationBestEffort(deps, {
         childThread: thread,
         parentThreadId: thread.parentThreadId,
         turnStatus: "interrupted",
+        turnId: result.interruptedTurnId,
         interruption: {
           reason: args.reason,
           ...(args.cause ? { cause: args.cause } : {}),
@@ -1963,6 +1931,13 @@ export function finalizeStoppedThread(
       ),
     { behavior: "immediate" },
   );
+  const finalizedThread = getThread(deps.db, args.threadId);
+  if (
+    finalizedThread !== null &&
+    (finalizedThread.status === "idle" || finalizedThread.status === "error")
+  ) {
+    deps.hub.clearDeviceHandoffTurnSubmitterForThread(args.threadId);
+  }
   notificationBuffer.flushInto(deps.hub);
   requestQueuedMessageDispatch(deps, {
     kind: "thread-ready",
@@ -2175,9 +2150,17 @@ export async function reconcileDaemonReportedThreads(
     )
     .all();
 
+  const survivingNativeThreadIds = args.sameDaemonInstance
+    ? listNativeTerminalThreadIds(
+        deps.db,
+        activeButMissing.map((thread) => thread.id),
+      )
+    : new Set<string>();
+
   interruptActiveThreads(deps, {
     threads: activeButMissing
       .filter((thread) => args.exceptThreadIds?.has(thread.id) !== true)
+      .filter((thread) => !survivingNativeThreadIds.has(thread.id))
       .map((thread) => ({
         environmentId: thread.environmentId,
         threadId: thread.id,

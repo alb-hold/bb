@@ -4,6 +4,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
 import { providerUsageRpcContract } from "./server.js";
 import type { UsageMachine, UsageProvider } from "./usage-schema.js";
+import pluginApp from "./app.js";
 
 afterEach(() => {
   cleanup();
@@ -58,7 +59,7 @@ const machine = (
 });
 
 it("fetches all providers only in the selected source and keeps grouped accounts, icons, labels and reset times", async () => {
-  const app = await loadPluginApp(() => import("./app"));
+  const app = await loadPluginApp(pluginApp);
   const result = {
     machines: [
       machine("host", [account("local")]),
@@ -74,9 +75,7 @@ it("fetches all providers only in the selected source and keeps grouped accounts
     {},
     { rpc: { getUsage: () => result } },
   );
-  await waitFor(() =>
-    expect(slot.getByLabelText("Reload usage data")).toBeTruthy(),
-  );
+  await slot.findByText("local@example.com");
   expect(
     slot.getByRole("button", { name: "Usage source" }).textContent,
   ).toContain("Combined");
@@ -84,9 +83,7 @@ it("fetches all providers only in the selected source and keeps grouped accounts
   expect(slot.getByText("third@example.com")).toBeTruthy();
   expect(slot.queryByText("first@example.com")).toBeNull();
   fireEvent.pointerDown(slot.getByRole("button", { name: "Usage source" }));
-  fireEvent.click(
-    await screen.findByRole("menuitem", { name: /Account Pooler/ }),
-  );
+  fireEvent.click(screen.getByRole("menuitem", { name: /Account Pooler/ }));
   await slot.findByText("first@example.com");
   expect(slot.getAllByRole("heading", { name: "Codex" })).toHaveLength(2);
   expect(slot.getByText("first@example.com")).toBeTruthy();
@@ -96,15 +93,12 @@ it("fetches all providers only in the selected source and keeps grouped accounts
   expect(slot.rpcCalls[0]?.input).toEqual({
     force: false,
     machineIds: null,
-    providerId: null,
+    providerIds: [],
     maxAgeMs: 60_000,
   });
   fireEvent.click(slot.getByLabelText("Reload usage data"));
-  await waitFor(() =>
-    expect(slot.rpcCalls.some((call) => usageInput(call.input).force)).toBe(
-      true,
-    ),
-  );
+  await slot.findByLabelText("Reloading usage data");
+  expect(slot.rpcCalls.some((call) => usageInput(call.input).force)).toBe(true);
   expect(
     slot.rpcCalls.some((call) => {
       const input = usageInput(call.input);
@@ -187,7 +181,7 @@ it("shows pooled Claude accounts and host Codex in the default combined view", a
         const input = usageInput(call.input);
         return (
           input.machineIds?.includes("host") &&
-          input.providerId === "codex" &&
+          input.providerIds.includes("codex") &&
           input.force
         );
       }),
@@ -198,7 +192,7 @@ it("shows pooled Claude accounts and host Codex in the default combined view", a
       const input = usageInput(call.input);
       return (
         input.machineIds?.includes("source:pool") &&
-        input.providerId === "claude-code" &&
+        input.providerIds.includes("claude-code") &&
         input.force
       );
     }),
@@ -309,7 +303,7 @@ it("refreshes a distinct host Claude account and keeps pooled accounts", async (
       return (
         input.force &&
         input.machineIds?.includes("host") &&
-        input.providerId === "claude-code"
+        input.providerIds.includes("claude-code")
       );
     }),
   ).toBe(true);
@@ -365,7 +359,7 @@ it.each([
           return (
             input.force &&
             input.machineIds?.includes("source:pool") &&
-            input.providerId === "claude-code"
+            input.providerIds.includes("claude-code")
           );
         }),
       ).toBe(true),
@@ -376,7 +370,7 @@ it.each([
         return (
           input.force &&
           input.machineIds?.includes("host") &&
-          input.providerId === "claude-code"
+          input.providerIds.includes("claude-code")
         );
       }),
     ).toBe(false);
@@ -488,7 +482,7 @@ it("uses machine usage when the pool is disabled", async () => {
   await waitFor(() => expect(slot.rpcCalls).toHaveLength(2));
   expect(slot.rpcCalls[1]?.input).toMatchObject({
     machineIds: ["host"],
-    providerId: "codex",
+    providerIds: ["codex"],
   });
 });
 
@@ -654,4 +648,34 @@ it("keeps authentication and plans without limits distinct from loading and erro
     slot.getByText("No usage limits reported for this plan."),
   ).toBeTruthy();
   expect(slot.queryByText("0% used")).toBeNull();
+});
+
+it("keeps the Ultra badge whole beside a long pooled account title", async () => {
+  const app = await loadPluginApp(pluginApp);
+  const provider = account("long", "claude-code");
+  provider.accountLabel =
+    "Alexandre with a very long account title that must truncate";
+  provider.accountPool = {
+    active: true,
+    enabled: true,
+    status: "ready",
+    heldUntil: null,
+    error: null,
+    extraUsage: null,
+  };
+  if (provider.usage?.status === "ok") provider.usage.planLabel = "Ultra";
+  const slot = renderSlot(
+    app.settingsSections[0]!,
+    {},
+    { rpc: { getUsage: () => ({ machines: [machine("host", [provider])] }) } },
+  );
+  const badge = await slot.findByText("Ultra");
+  expect(badge.classList.contains("shrink-0")).toBe(true);
+  expect(badge.classList.contains("whitespace-nowrap")).toBe(true);
+  expect(badge.classList.contains("truncate")).toBe(false);
+  expect(
+    slot
+      .getByRole("heading", { name: provider.accountLabel })
+      .classList.contains("truncate"),
+  ).toBe(true);
 });

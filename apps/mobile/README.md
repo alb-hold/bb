@@ -1,18 +1,24 @@
 # @bb/mobile
 
-Native iOS/Android client for bb (Expo SDK 57, React Native 0.86, Expo
+Native iOS/Android client for bb (Expo SDK 58, React Native 0.88, Expo
 Router, NativeWind v5).
 
 Status: a native shell around the web interface (#2515). `app/webview.tsx`
 loads the active server's web app in `react-native-webview` and talks to it
 over `@bb/mobile-bridge` (handshake, haptics, app-icon badge, share, open
-external links, open native screens). Threads, projects, plugins and server
+external links, open native screens, save files on iOS). Threads, projects, plugins and server
 settings run in the page. The native screens cover what the page cannot
 own: first-run pairing (Direct URL and bb connect QR / code enrollment),
 saved servers, This device settings (appearance, haptics, notifications,
 reload the page, clear website data), push registration and notification
 taps, deep links, quick actions, share intents and the connection banner.
-The `Mobile E2E` GitHub workflow drives the shell flows.
+External links use the web app's `shellOpenExternal` helper and the native
+bridge to open through the OS URL handler. Application links use the version-3
+`open-application` request: the shared web UI handles confirmation and saved
+approvals in site-local localStorage; the native client validates the destination,
+launches it, and reports opening errors back to the page. Older web pages keep the existing bridge
+capabilities; no new capability enum value is advertised. The `Mobile E2E` GitHub workflow
+drives the shell flows.
 
 ## Structure
 
@@ -256,7 +262,7 @@ coverage. Test those separately once Firebase/signing are configured.
 
 ### iOS prerequisites
 
-- Xcode 26.2 with an iOS 26 simulator runtime (`xcodebuild -downloadPlatform iOS`).
+- Xcode 27.1 with an iOS 27.1 simulator runtime (`xcodebuild -downloadPlatform iOS`).
 - CocoaPods (`brew install cocoapods`), `export LANG=en_US.UTF-8`.
 - For Maestro e2e: `brew install --cask temurin@17` or `brew install openjdk@17`
   plus `brew install mobile-dev-inc/tap/maestro`; the `e2e:ios` script sets
@@ -265,7 +271,7 @@ coverage. Test those separately once Firebase/signing are configured.
 ## Develop
 
 ```bash
-pnpm install                                   # applies patches/expo-modules-jsi@57.0.4.patch
+pnpm install                                   # applies patches/react-native-webview@14.0.1.patch
 cd apps/mobile
 pnpm ios                                       # prebuild + build the dev-client, opens the simulator
 EXPO_PUBLIC_BB_SERVER_URL=http://127.0.0.1:<port> pnpm dev   # Metro (dev-client)
@@ -291,6 +297,8 @@ cd apps/mobile && pnpm e2e:ios
 The flows drive the WebView shell. Maestro reads the page through the
 WKWebView accessibility tree, so assertions on page content target its text,
 not native test ids.
+The deterministic backend marks web onboarding complete before seeding threads,
+so Android and iOS shell flows start with the thread list available.
 `shell-launch.yaml` pairs a Direct server from first run and lands in the
 shell with the page rendered; the other shell flows assume it works.
 `shell-deep-link.yaml` opens a `bb://` scheme link and a web link for the
@@ -357,21 +365,22 @@ as the first argument drives a dev client through Metro instead.
   (`pnpm exec turbo run build typecheck lint` in `Checks`, the `packages`
   test shard for `vitest`), like every workspace package.
 - `.github/workflows/mobile-e2e.yml` (`Mobile E2E`) runs the flows above on
-  the `blacksmith-6vcpu-macos-15` runner: label a pull request `mobile-e2e`,
+  the `blacksmith-6vcpu-macos-27` runner: label a pull request `mobile-e2e`,
   dispatch it by hand (optional `flows` input), or wait for the nightly run.
-  It selects Xcode 26.2 (`DEVELOPER_DIR`, falling back to the newest 26.x),
-  boots the simulator `pick-simulator.mjs` chooses, installs Maestro 2.8.0
+  It selects Xcode 27.1 (`DEVELOPER_DIR`; the job fails without it), boots
+  the simulator `pick-simulator.mjs` chooses (an iPhone 17 on iOS 27.0),
+  installs Maestro 2.8.0
   (Java 17 from `actions/setup-java` only when the image has no JDK 17+),
   restores `ios/Pods` + `Podfile.lock` and (behind the workflow's
   `CACHE_DERIVED_DATA` knob — DerivedData is ~7 GB raw and the Actions cache
   quota is shared with the Turbo caches) the Xcode DerivedData `Build/`
   directory from `actions/cache` keyed on `pnpm-lock.yaml` + `app.json` +
-  `package.json` + `patches/**`, prebuilds, builds the Release app onto the
-  simulator, starts the harness backend (`turbo run e2e:mobile-backend`,
+  `package.json` + `patches/**` and the Xcode build, prebuilds, builds the
+  Release app onto the simulator, starts the harness backend (`turbo run e2e:mobile-backend`,
   waits for `/health`), runs `ci-run-flows.sh`, and uploads
   `e2e-artifacts/` (per-flow Maestro output, backend log, simulator log).
 
-## bb connect (Phase 5)
+## bb connect
 
 - Pair through Settings → Mobile → Add mobile device or `bb connect machine-code`. No experiment is required.
 - Enrollment (`src/screens/connect`, `src/data/connect`, route `/connect`):
@@ -475,7 +484,7 @@ add-root-cert`). Env: `BB_MOBILE_E2E_GATE_PORT` (42998),
   response because their URL stays the same. Concurrent 410 responses update
   the profile once.
 
-## Push notifications and deep links (Phase 5)
+## Push notifications and deep links
 
 Android disables Firebase Messaging auto-initialization and Analytics collection
 in the generated manifest. The app requests a push token only for a server with
@@ -552,6 +561,31 @@ payload.apns` with `{"aps":{"alert":{…}},"body":{"kind":"turn-finished",
   toast.
 - Outbound: the shell handles the bridge `share` request (`useShellBridge` →
   RN `Share.share`); the web app does not send it yet.
+- File downloads (iOS): `saveFile` and the plugin API
+  `experimental_saveFile` click ordinary download anchors, including object
+  URLs for recordings and other browser-created blobs. The iOS WebView patch
+  turns `shouldPerformDownload` actions and attachment/non-displayable
+  responses into `WKDownload`s. WebKit writes the file in the WebView's
+  request context; bb does not copy cookies, refetch through native HTTP, or
+  transfer bytes through the JavaScript bridge. The patched `onFileDownload`
+  event includes `filePath` for a completed local file or `error` for a
+  failure, alongside the original `downloadUrl`. React Native presents the
+  share sheet and deletes that download's directory after sharing, dismissal,
+  or failure. Partial downloads are cancelled and removed on WebView teardown
+  or page reload. Previous-process cache files are cleared on the first
+  download. There are at most four active WebKit downloads. Files live under
+  `Paths.cache/bb-webkit-downloads/<uuid>/`.
+  The shell queries the installed binary through `nativeDownloadsSupported()`
+  before enabling the new handlers, so an OTA update on an older binary keeps
+  its existing behavior. The handshake advertises `nativeDownloads: true` separately from the strict
+  capabilities enum, so older pages keep recognizing the shell. The page
+  helper resolves `started` or `failed`; completion and share-sheet
+  cancellation are handled by the shell. Older shells keep anchor behavior.
+  `onOpenWindow` converts server API attachments into download anchors,
+  keeps app pages in the shell, and sends other sites out. Subframes can load
+  page-local previews on prefixed profiles. Android retains its existing
+  download behavior. Rebuild the iOS client after changing this patch; Metro
+  updates alone do not install its native download support.
 - Haptics: `src/lib/haptics/` — `haptic(kind)` maps semantic kinds
   (`selection`, `impact-light|medium|heavy`, `success`, `warning`, `error`)
   onto expo-haptics and honors the Settings → This device → Haptics toggle
@@ -560,6 +594,37 @@ payload.apns` with `{"aps":{"alert":{…}},"body":{"kind":"turn-finished",
   segmented appearance picker (selection), destructive ActionSheet rows and
   confirmations (warning), the servers long-press menu (heavy), and the
   auth-required banner (warning). Screens never import expo-haptics directly.
+
+### Native download verification
+
+Build and install the patched iOS client, then start the normal local QA
+backend from [debugging-and-qa.md](../../docs/debugging-and-qa.md). Start the
+fixture proxy with its printed backend URL and an unused local port:
+
+```bash
+node apps/mobile/e2e/scripts/download-fixture.mjs http://127.0.0.1:<backend-port> <proxy-port>
+```
+
+Save both `http://127.0.0.1:<proxy-port>` and the same URL with `/bb` as
+native server profiles. With each active, open `bb://api/v1/download-fixture`.
+The proxy forwards normal app traffic, strips `/bb`, and also forwards root
+paths, matching the web app's current root-relative API URLs.
+
+- Authenticated file requires an HttpOnly cookie installed by the fixture
+  page. The proxy logs `authorized: true` without printing cookies. A plain
+  curl request without that cookie gets 401.
+- Download blob generates the same 1,536,000 bytes in the page. Both files
+  must match the SHA-256 printed by the fixture server and retain their names.
+- Save to Files and share-sheet dismissal must leave the page intact and
+  remove the corresponding `Library/Caches/bb-webkit-downloads/<uuid>/` file.
+- Missing file must show a 404 toast. Redirect download must finish with the
+  same bytes. Open attachment tab must open the share sheet.
+- Start Slow download, then Reload page before it finishes. The proxy must
+  log the interrupted connection, and its partial cache directory must be
+  removed. Also check interruption by switching profiles or reloading from
+  native device settings.
+
+Cold-launch the development client for native verification.
 
 ## Release (EAS)
 
@@ -612,9 +677,9 @@ push key); nobody needs a local Xcode signing setup to ship.
   review, for example for a store release. Repo
   secrets: `EXPO_TOKEN` (a robot token from the `bb-team` Expo org) and
   `ASC_API_KEY_P8` (the `.p8` contents).
-- The `expo-modules-jsi` pnpm patch and the `lightningcss` override ship
-  with the repo and apply on EAS; the default build image provides
-  Xcode 26.x.
+- The `react-native-webview` pnpm patch and the `lightningcss` override ship
+  with the repo and apply on EAS; builds need an EAS image with Xcode 27.x
+  (the iOS 27 SDK) for iPhone Duo.
 - Universal links need the signed app's team id in the AASA the connect gate
   serves (`packages/connect-db/src/app-links.ts`) and a physical-device
   check against `https://<handle>.getbb.app/threads/…`. Android signing

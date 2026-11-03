@@ -60,7 +60,7 @@ async function compressFile(filePath) {
   const [brotli, gzipped] = await Promise.all([
     compressBrotli(body, {
       params: {
-        [zlibConstants.BROTLI_PARAM_QUALITY]: 10,
+        [zlibConstants.BROTLI_PARAM_QUALITY]: 11,
       },
     }),
     compressGzip(body, { level: 9 }),

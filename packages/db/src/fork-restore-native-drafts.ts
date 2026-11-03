@@ -88,9 +88,9 @@ export function restoreNativeThreadDraftsToDraftsQueue(db: DbConnection): void {
   const insertQueued = sqlite.prepare(
     `INSERT INTO queued_thread_messages (
       id, thread_id, content, model, reasoning_level, permission_mode,
-      service_tier, waiting_on, wait_holder, payload_kind, group_with_next,
+      service_tier, waiting_on, wait_holder, state, payload_kind, group_with_next,
       failure_count, sort_key, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'inline', 0, 0, ?, ?, ?)`,
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'waiting', 'inline', 0, 0, ?, ?, ?)`,
   );
   const preserve = sqlite.prepare(
     "INSERT OR REPLACE INTO fork_unrestored_thread_drafts (thread_id, content, preserved_at) VALUES (?, ?, ?)",

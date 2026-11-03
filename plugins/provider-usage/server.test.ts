@@ -31,7 +31,7 @@ it("preserves a restarting host status while usage is temporarily unavailable", 
       host.harness.behavior.callRpc("getUsage", {
         force: false,
         machineIds: null,
-        providerId: null,
+        providerIds: [],
         maxAgeMs: 60_000,
       }),
     ).resolves.toEqual({
@@ -166,7 +166,7 @@ it("lists cheaply, fetches only an explicit source/provider, preserves per-accou
   const request = {
     force: false,
     machineIds: null,
-    providerId: null,
+    providerIds: [],
     maxAgeMs: 60_000,
   };
   try {
@@ -189,11 +189,11 @@ it("lists cheaply, fetches only an explicit source/provider, preserves per-accou
     ).toBe(false);
     await host.harness.behavior.callRpc("getUsage", {
       ...request,
-      providerId: "codex",
+      providerIds: ["codex"],
     });
     await host.harness.behavior.callRpc("getUsage", {
       ...request,
-      providerId: "claude-code",
+      providerIds: ["claude-code"],
     });
     expect(
       rpc.mock.calls
@@ -206,7 +206,7 @@ it("lists cheaply, fetches only an explicit source/provider, preserves per-accou
       ...request,
       force: true,
       machineIds: ["source:pool"],
-      providerId: "codex",
+      providerIds: ["codex"],
     };
     await host.harness.behavior.callRpc("getUsage", target);
     expect(
@@ -232,7 +232,7 @@ it("lists cheaply, fetches only an explicit source/provider, preserves per-accou
     expect(
       await host.harness.behavior.callRpc("getUsage", {
         ...target,
-        providerId: "codex",
+        providerIds: ["codex"],
         force: true,
       }),
     ).toMatchObject({
@@ -254,7 +254,7 @@ it("lists cheaply, fetches only an explicit source/provider, preserves per-accou
     rpc.mockClear();
     const partialRefresh = await host.harness.behavior.callRpc("getUsage", {
       ...target,
-      providerId: "codex",
+      providerIds: ["codex"],
       force: true,
     });
     expect(partialRefresh).toMatchObject({
@@ -283,7 +283,7 @@ it("lists cheaply, fetches only an explicit source/provider, preserves per-accou
     expect(
       await host.harness.behavior.callRpc("getUsage", {
         ...target,
-        providerId: "codex",
+        providerIds: ["codex"],
         force: true,
       }),
     ).toMatchObject({
@@ -298,7 +298,7 @@ it("lists cheaply, fetches only an explicit source/provider, preserves per-accou
     });
     await host.harness.behavior.callRpc("getUsage", {
       ...target,
-      providerId: "claude-code",
+      providerIds: ["claude-code"],
     });
     expect(
       rpc.mock.calls
@@ -361,7 +361,7 @@ it("keeps an unconfigured shared group without hosts or measurement requests", a
       host.harness.behavior.callRpc("getUsage", {
         force: false,
         machineIds: null,
-        providerId: null,
+        providerIds: [],
         maxAgeMs: 0,
       }),
     ).resolves.toEqual({
@@ -381,92 +381,115 @@ it("keeps an unconfigured shared group without hosts or measurement requests", a
   }
 });
 
-it("collapses known account observations per machine, preserves unknown identities, and normalizes display labels", async () => {
-  const { bb, harness } = createFakePluginHost({
-    sdk: {
-      system: { config: async () => ({ primaryHostId: null }) },
-      hosts: {
-        list: async () => [
-          makeHostResponse({ id: "host", status: "connected" }),
-        ],
-      },
-      providers: { list: async () => [] },
-      plugins: {
-        experimental_discoverRpc: async () => [
-          { pluginId: "adapter", displayName: "Adapter" },
-          { pluginId: "custom", displayName: "Custom" },
-        ],
-        callRpc: async ({ pluginId, method }) =>
-          method === usageListMethod
-            ? {
-                resources: [
-                  {
-                    id: "account",
-                    providerId: "codex",
-                    accountKey: null,
-                    label: "same@example.com",
-                    scope: { kind: "host", hostId: "host", hostName: "Host" },
-                  },
-                  {
-                    id: "unknown",
-                    providerId: "other",
-                    accountKey: null,
-                    label: "same@example.com",
-                    scope: { kind: "host", hostId: "host", hostName: "Host" },
-                  },
-                ],
-              }
-            : {
-                accountKey: "issuer:account:1",
-                observedAt: 123,
-                usage: {
-                  status: "ok",
-                  accountEmail: "same@example.com",
-                  planLabel: "max",
-                  plan: { id: "max", multiplier: 20 },
-                  windows: [
-                    {
-                      id: "week",
-                      kind: "weekly",
-                      label: "168 hour window",
-                      model: null,
-                      resetsAt: null,
-                      cost: null,
-                      usedPercent: pluginId === "adapter" ? 42 : 81,
-                    },
-                  ],
-                },
-              },
-      },
-    },
-  });
-  try {
-    plugin(bb);
-    const snapshot = await harness.behavior.callRpc("getUsage", {
-      force: false,
-      machineIds: ["host"],
-      providerId: "codex",
-      maxAgeMs: 0,
-    });
-    expect(snapshot).toMatchObject({
-      machines: [
-        {
-          providers: [
-            {
-              id: "adapter:account",
-              usage: {
-                planLabel: "Max (20x)",
-                windows: [{ label: "Weekly limit", usedPercent: 42 }],
-              },
-            },
-            { id: "adapter:unknown", usage: null },
-            { id: "custom:unknown", usage: null },
+it.each([
+  {
+    providerId: "claude-code",
+    planLabel: "Ultra",
+    multiplier: 20,
+    expected: "Ultra",
+  },
+  {
+    providerId: "claude-code",
+    planLabel: null,
+    multiplier: 20,
+    expected: "Ultra",
+  },
+  { providerId: "codex", planLabel: null, multiplier: 5, expected: "Max (5x)" },
+  {
+    providerId: "codex",
+    planLabel: "Custom Max",
+    multiplier: 5,
+    expected: "Custom Max",
+  },
+])(
+  "collapses known account observations, preserves unknown identities, and normalizes $providerId as $expected",
+  async ({ providerId, planLabel, multiplier, expected }) => {
+    const { bb, harness } = createFakePluginHost({
+      sdk: {
+        system: { config: async () => ({ primaryHostId: null }) },
+        hosts: {
+          list: async () => [
+            makeHostResponse({ id: "host", status: "connected" }),
           ],
         },
-      ],
+        providers: { list: async () => [] },
+        plugins: {
+          experimental_discoverRpc: async () => [
+            { pluginId: "adapter", displayName: "Adapter" },
+            { pluginId: "custom", displayName: "Custom" },
+          ],
+          callRpc: async ({ pluginId, method }) =>
+            method === usageListMethod
+              ? {
+                  resources: [
+                    {
+                      id: "account",
+                      providerId,
+                      accountKey: null,
+                      label: "same@example.com",
+                      scope: { kind: "host", hostId: "host", hostName: "Host" },
+                    },
+                    {
+                      id: "unknown",
+                      providerId: "other",
+                      accountKey: null,
+                      label: "same@example.com",
+                      scope: { kind: "host", hostId: "host", hostName: "Host" },
+                    },
+                  ],
+                }
+              : {
+                  accountKey: "issuer:account:1",
+                  observedAt: 123,
+                  usage: {
+                    status: "ok",
+                    accountEmail: "same@example.com",
+                    planLabel,
+                    plan: { id: "max", multiplier },
+                    windows: [
+                      {
+                        id: "week",
+                        kind: "weekly",
+                        label: "168 hour window",
+                        model: null,
+                        resetsAt: null,
+                        cost: null,
+                        usedPercent: pluginId === "adapter" ? 42 : 81,
+                      },
+                    ],
+                  },
+                },
+        },
+      },
     });
-    expect(JSON.stringify(snapshot)).not.toContain("81");
-  } finally {
-    await harness.lifecycle.dispose();
-  }
-});
+    try {
+      plugin(bb);
+      const snapshot = await harness.behavior.callRpc("getUsage", {
+        force: false,
+        machineIds: ["host"],
+        providerIds: [providerId],
+        maxAgeMs: 0,
+      });
+      expect(snapshot).toMatchObject({
+        machines: [
+          {
+            providers: [
+              {
+                id: "adapter:account",
+                usage: {
+                  planLabel: expected,
+                  windows: [{ label: "Weekly limit", usedPercent: 42 }],
+                },
+              },
+              { id: "adapter:unknown", usage: null },
+              { id: "custom:unknown", usage: null },
+            ],
+          },
+        ],
+      });
+      expect(JSON.stringify(snapshot)).not.toContain("81");
+    } finally {
+      await harness.lifecycle.dispose();
+    }
+  },
+);

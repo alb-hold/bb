@@ -72,7 +72,9 @@ export function registerPaneCommand(
           printThreadContextLabel(target);
           console.log(`Thread: ${target.id}`);
           console.log(`Pane action: ${paneAction}`);
-          console.log(`Delivered: ${result.delivered}`);
+          console.log(
+            `Request sent to ${result.delivered} open bb app client${result.delivered === 1 ? "" : "s"}; receipt and application are not confirmed.`,
+          );
         },
       ),
     );

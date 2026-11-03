@@ -1,7 +1,8 @@
 import { Buffer } from "node:buffer";
 import { Readable } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
-import { TERMINAL_DATA_MAX_BYTES } from "@bb/domain";
+import { createTerminalGridMarker, TERMINAL_DATA_MAX_BYTES } from "@bb/domain";
+import { TERMINAL_ATTENTION_CONTRACT_CASES } from "@bb/test-helpers";
 import {
   collectLogLines,
   collectLogPayloads,
@@ -75,6 +76,460 @@ describe("bb terminal command output", () => {
       "Terminal 1",
     );
   });
+
+  it("lists terminal surfaces for an explicit thread", async () => {
+    stubServerApi({
+      "v1.threads.:id.$get": async () => ({ archivedAt: null }),
+      "v1.terminals.$get": async () => ({ sessions: [makeTerminalSession()] }),
+      "v1.threads.:id.native-terminal.$get": async () => ({ terminal: null }),
+    });
+
+    await runCommand(["terminal", "surfaces", "--thread", "thr-1"], register);
+
+    expect(collectLogLines(vi.mocked(console.log))).toEqual([
+      "term-1\tTerminal 1\trunning\tterminal",
+    ]);
+  });
+
+  it("focuses a terminal through the app thread-open request", async () => {
+    const open = vi.fn(async () => ({ deliveredClients: 1, skipReason: null }));
+    stubServerApi({
+      "v1.terminals.:terminalId.$get": async () => makeTerminalSession(),
+      "v1.threads.:id.open.$post": open,
+    });
+
+    await runCommand(["terminal", "focus", "term-1"], register);
+
+    expect(open).toHaveBeenCalledWith({
+      param: { id: "thr-1" },
+      json: {
+        file: null,
+        terminalAction: { action: "focus", terminalId: "term-1" },
+      },
+    });
+    expect(collectLogLines(vi.mocked(console.log))).toContain(
+      "Request sent to 1 open bb app client; receipt and application are not confirmed.",
+    );
+  });
+
+  it("fails terminal focus when no app client is open to apply the request", async () => {
+    stubServerApi({
+      "v1.terminals.:terminalId.$get": async () => makeTerminalSession(),
+      "v1.threads.:id.open.$post": async () => ({
+        deliveredClients: 0,
+        skipReason: null,
+      }),
+    });
+
+    await expect(
+      runCommand(["terminal", "focus", "term-1"], register),
+    ).rejects.toThrow("process.exit:1");
+    expect(collectLogLines(vi.mocked(console.error))).toContain(
+      "Error: No bb app is open to apply this; open bb and retry",
+    );
+  });
+
+  it.each([
+    ["focus", ["terminal", "focus", "term-1", "--json"]],
+    [
+      "open-link",
+      ["terminal", "open-link", "term-1", "https://example.com", "--json"],
+    ],
+  ] as const)("reports zero delivery in %s JSON", async (_name, args) => {
+    stubServerApi({
+      "v1.terminals.:terminalId.$get": async () => makeTerminalSession(),
+      "v1.threads.:id.open.$post": async () => ({
+        deliveredClients: 0,
+        skipReason: null,
+      }),
+    });
+
+    await expect(runCommand([...args], register)).rejects.toThrow(
+      "process.exit:1",
+    );
+    expect(
+      JSON.parse(collectLogPayloads(vi.mocked(console.log))[0]!),
+    ).toMatchObject({
+      deliveredClients: 0,
+      error: { code: "no_app_clients" },
+    });
+  });
+
+  it.each([
+    [
+      "focus",
+      ["terminal", "focus", "term-1", "--json"],
+      { terminalId: "term-1" },
+    ],
+    [
+      "open-link",
+      ["terminal", "open-link", "term-1", "https://example.com", "--json"],
+      { terminalId: "term-1", url: "https://example.com" },
+    ],
+  ] as const)(
+    "reports one delivery in %s JSON",
+    async (_name, args, payload) => {
+      stubServerApi({
+        "v1.terminals.:terminalId.$get": async () => makeTerminalSession(),
+        "v1.threads.:id.open.$post": async () => ({
+          deliveredClients: 1,
+          skipReason: null,
+        }),
+      });
+
+      await runCommand([...args], register);
+
+      expect(
+        JSON.parse(collectLogPayloads(vi.mocked(console.log))[0]!),
+      ).toEqual({
+        ...payload,
+        deliveredClients: 1,
+      });
+    },
+  );
+
+  it.each([
+    [
+      "focus",
+      ["terminal", "focus", "term-1"],
+      { terminalAction: { action: "focus", terminalId: "term-1" } },
+    ],
+    [
+      "split",
+      ["terminal", "split", "term-1", "--side", "down"],
+      {
+        terminalLayoutAction: {
+          action: "split",
+          terminalId: "term-1",
+          side: "down",
+        },
+      },
+    ],
+    [
+      "open-link",
+      ["terminal", "open-link", "term-1", "http://localhost:3000"],
+      {
+        terminalAction: {
+          action: "openBrowser",
+          terminalId: "term-1",
+          url: "http://localhost:3000",
+        },
+      },
+    ],
+    [
+      "move",
+      ["terminal", "move", "term-1", "--to-pane-of", "term-2"],
+      {
+        terminalLayoutAction: {
+          action: "move",
+          terminalId: "term-1",
+          targetTerminalId: "term-2",
+        },
+      },
+    ],
+  ] as const)(
+    "scopes %s to the caller thread unless --all is passed",
+    async (_name, args, action) => {
+      vi.stubEnv("BB_THREAD_ID", "thr-caller");
+      const open = vi.fn(async () => ({
+        deliveredClients: 1,
+        skipReason: null,
+      }));
+      stubServerApi({
+        "v1.terminals.:terminalId.$get": async ({
+          param,
+        }: {
+          param: { terminalId: string };
+        }) => makeTerminalSession({ id: param.terminalId }),
+        "v1.threads.:id.open.$post": open,
+      });
+
+      await runCommand([...args], register);
+      await runCommand([...args, "--all"], register);
+
+      expect(open).toHaveBeenNthCalledWith(1, {
+        param: { id: "thr-1" },
+        json: { file: null, ...action, callerThreadId: "thr-caller" },
+      });
+      expect(open).toHaveBeenNthCalledWith(2, {
+        param: { id: "thr-1" },
+        json: { file: null, ...action, all: true },
+      });
+    },
+  );
+
+  it.each([
+    [
+      "no_caller_thread",
+      "Not run from a bb thread (BB_THREAD_ID is unset), so no open bb app client belongs to the caller; nothing was sent. Pass --all to send to every open bb app client",
+    ],
+    [
+      "no_client_viewing_caller_thread",
+      "No open bb app client is viewing this thread; nothing was sent. Pass --all to send to every open bb app client",
+    ],
+  ] as const)(
+    "fails with the %s reason and points to --all",
+    async (skipReason, message) => {
+      stubServerApi({
+        "v1.terminals.:terminalId.$get": async () => makeTerminalSession(),
+        "v1.threads.:id.open.$post": async () => ({
+          deliveredClients: 0,
+          skipReason,
+        }),
+      });
+
+      await expect(
+        runCommand(["terminal", "focus", "term-1", "--json"], register),
+      ).rejects.toThrow("process.exit:1");
+
+      expect(
+        JSON.parse(collectLogPayloads(vi.mocked(console.log))[0]!),
+      ).toEqual({
+        terminalId: "term-1",
+        deliveredClients: 0,
+        skipReason,
+        error: { code: skipReason, message },
+      });
+    },
+  );
+
+  it.each([
+    [
+      "open-link",
+      ["terminal", "open-link", "term-1", "http://localhost:3000", "--json"],
+      { terminalId: "term-1", url: "http://localhost:3000" },
+    ],
+    [
+      "move",
+      ["terminal", "move", "term-1", "--to-pane-of", "term-2", "--json"],
+      { terminalId: "term-1", targetTerminalId: "term-2" },
+    ],
+  ] as const)(
+    "fails %s with the skip reason and points to --all",
+    async (_name, args, payload) => {
+      stubServerApi({
+        "v1.terminals.:terminalId.$get": async () => makeTerminalSession(),
+        "v1.threads.:id.open.$post": async () => ({
+          deliveredClients: 0,
+          skipReason: "no_caller_thread",
+        }),
+      });
+
+      await expect(runCommand([...args], register)).rejects.toThrow(
+        "process.exit:1",
+      );
+
+      expect(
+        JSON.parse(collectLogPayloads(vi.mocked(console.log))[0]!),
+      ).toEqual({
+        ...payload,
+        deliveredClients: 0,
+        skipReason: "no_caller_thread",
+        error: {
+          code: "no_caller_thread",
+          message:
+            "Not run from a bb thread (BB_THREAD_ID is unset), so no open bb app client belongs to the caller; nothing was sent. Pass --all to send to every open bb app client",
+        },
+      });
+    },
+  );
+
+  it("opens a URL through the app thread-open browser request", async () => {
+    const open = vi.fn(async () => ({ deliveredClients: 1, skipReason: null }));
+    stubServerApi({
+      "v1.terminals.:terminalId.$get": async () => makeTerminalSession(),
+      "v1.threads.:id.open.$post": open,
+    });
+
+    await runCommand(
+      ["terminal", "open-link", "term-1", "http://localhost:3000"],
+      register,
+    );
+
+    expect(open).toHaveBeenCalledWith({
+      param: { id: "thr-1" },
+      json: {
+        file: null,
+        terminalAction: {
+          action: "openBrowser",
+          terminalId: "term-1",
+          url: "http://localhost:3000",
+        },
+      },
+    });
+  });
+
+  it("splits a terminal to a requested sidebar side", async () => {
+    const open = vi.fn(async () => ({ deliveredClients: 1, skipReason: null }));
+    stubServerApi({
+      "v1.terminals.:terminalId.$get": async () => makeTerminalSession(),
+      "v1.threads.:id.open.$post": open,
+    });
+
+    await runCommand(
+      ["terminal", "split", "term-1", "--side", "down"],
+      register,
+    );
+
+    expect(open).toHaveBeenCalledWith({
+      param: { id: "thr-1" },
+      json: {
+        file: null,
+        terminalLayoutAction: {
+          action: "split",
+          terminalId: "term-1",
+          side: "down",
+        },
+      },
+    });
+  });
+
+  it("moves a terminal into the pane of the requested terminal", async () => {
+    const get = vi
+      .fn()
+      .mockResolvedValueOnce(makeTerminalSession({ id: "term-1" }))
+      .mockResolvedValueOnce(makeTerminalSession({ id: "term-2" }));
+    const open = vi.fn(async () => ({ deliveredClients: 1, skipReason: null }));
+    stubServerApi({
+      "v1.terminals.:terminalId.$get": get,
+      "v1.threads.:id.open.$post": open,
+    });
+
+    await runCommand(
+      ["terminal", "move", "term-1", "--to-pane-of", "term-2"],
+      register,
+    );
+
+    expect(open).toHaveBeenCalledWith({
+      param: { id: "thr-1" },
+      json: {
+        file: null,
+        terminalLayoutAction: {
+          action: "move",
+          terminalId: "term-1",
+          targetTerminalId: "term-2",
+        },
+      },
+    });
+  });
+
+  it.each([
+    ["split", ["terminal", "split", "term-1", "--side", "right", "--json"]],
+    [
+      "move",
+      ["terminal", "move", "term-1", "--to-pane-of", "term-2", "--json"],
+    ],
+  ] as const)("reports %s JSON delivery outcomes", async (_name, args) => {
+    for (const deliveredClients of [0, 1]) {
+      vi.mocked(console.log).mockClear();
+      const get = vi.fn(async ({ param }: { param: { terminalId: string } }) =>
+        makeTerminalSession({ id: param.terminalId }),
+      );
+      stubServerApi({
+        "v1.terminals.:terminalId.$get": get,
+        "v1.threads.:id.open.$post": async () => ({
+          deliveredClients,
+          skipReason: null,
+        }),
+      });
+      const result = runCommand([...args], register);
+      if (deliveredClients === 0) {
+        await expect(result).rejects.toThrow("process.exit:1");
+      } else {
+        await result;
+      }
+      const payload = JSON.parse(
+        collectLogPayloads(vi.mocked(console.log))[0]!,
+      ) as {
+        deliveredClients: number;
+        error?: { code: string; message: string };
+      };
+      expect(payload.deliveredClients).toBe(deliveredClients);
+      if (deliveredClients === 0) {
+        expect(payload.error).toEqual({
+          code: "no_app_clients",
+          message: "No bb app is open to apply this; open bb and retry",
+        });
+      } else {
+        expect(payload.error).toBeUndefined();
+      }
+    }
+  });
+
+  it("raises attention for the terminal identity injected into its shell", async () => {
+    const notify = vi.fn(async () => makeTerminalSession());
+    stubServerApi({ "v1.terminals.:terminalId.notify.$post": notify });
+    const previousId = process.env.BB_TERMINAL_SESSION_ID;
+    process.env.BB_TERMINAL_SESSION_ID = "term-from-env";
+    try {
+      await runCommand(
+        ["terminal", "notify", "--title", "Build", "--body", "Finished"],
+        register,
+      );
+      expect(notify).toHaveBeenCalledWith({
+        param: { terminalId: "term-from-env" },
+        json: { title: "Build", body: "Finished" },
+      });
+    } finally {
+      if (previousId === undefined) delete process.env.BB_TERMINAL_SESSION_ID;
+      else process.env.BB_TERMINAL_SESSION_ID = previousId;
+    }
+  });
+
+  it.each(TERMINAL_ATTENTION_CONTRACT_CASES)(
+    "follows the shared terminal attention contract: $name",
+    async (contract) => {
+      const sessions = contract.sessions.map((entry) =>
+        makeTerminalSession({
+          id: entry.id,
+          title: entry.title,
+          createdAt: entry.attentionAt,
+          attention: {
+            at: entry.attentionAt,
+            kind: "bell",
+            seq: entry.seq,
+          },
+        }),
+      );
+      const listAttention = vi.fn(async () => ({ sessions }));
+      stubServerApi({ "v1.terminals.attention.$get": listAttention });
+      await runCommand(["terminal", "attention", "list", "--json"], register);
+      expect(
+        JSON.parse(
+          collectLogPayloads(vi.mocked(console.log)).at(-1) ?? "{}",
+        ).sessions.map((session: { id: string }) => session.id),
+      ).toEqual(contract.unreadIds);
+
+      stubServerApi({ "v1.terminals.attention.$get": listAttention });
+      await runCommand(["terminal", "attention", "next", "--json"], register);
+      const next = JSON.parse(
+        collectLogPayloads(vi.mocked(console.log)).at(-1) ?? "{}",
+      ).session as { id: string } | null;
+      expect(next?.id ?? null).toBe(contract.nextId);
+      if (contract.nextId === null) {
+        stubServerApi({ "v1.terminals.attention.$get": listAttention });
+        await runCommand(["terminal", "attention", "next"], register);
+        expect(collectLogLines(vi.mocked(console.log)).join("\n")).toContain(
+          "Nothing needs attention.",
+        );
+      }
+      if (contract.clearId !== null) {
+        const clearAttention = vi.fn(async () =>
+          makeTerminalSession({ id: contract.clearId, attention: null }),
+        );
+        stubServerApi({
+          "v1.terminals.:terminalId.attention.clear.$post": clearAttention,
+        });
+        await runCommand(
+          ["terminal", "attention", "clear", contract.clearId, "--json"],
+          register,
+        );
+        expect(clearAttention).toHaveBeenCalledWith({
+          param: { terminalId: contract.clearId },
+        });
+      }
+    },
+  );
 
   it("resolves an explicit machine and cwd without a primary-host fallback", async () => {
     const hosts = vi.fn(async () => [makeHost()]);
@@ -150,6 +605,34 @@ describe("bb terminal command output", () => {
           argv: ["C:\\Program Files\\tool.exe", "hello world", "it's"],
         },
       }),
+    });
+  });
+
+  it("forwards a working directory when creating a terminal", async () => {
+    const create = vi.fn(async () => makeTerminalSession());
+    stubServerApi({ "v1.terminals.$post": create });
+
+    await runCommand(
+      [
+        "terminal",
+        "create",
+        "--thread",
+        "thr-1",
+        "--working-directory",
+        "/tmp/split",
+      ],
+      register,
+    );
+
+    expect(create).toHaveBeenCalledWith({
+      json: {
+        cols: 80,
+        cwd: "/tmp/split",
+        rows: 24,
+        title: undefined,
+        start: { mode: "shell" },
+        target: { kind: "thread", threadId: "thr-1" },
+      },
     });
   });
 
@@ -383,11 +866,20 @@ describe("bb terminal command output", () => {
   });
 
   it("prints terminal output without a thread selector", async () => {
+    const marker = createTerminalGridMarker({ cols: 51, rows: 16 });
     const output = vi.fn(async () => ({
       chunks: [
         {
           seq: 0,
-          dataBase64: Buffer.from("hello\n", "utf8").toString("base64"),
+          dataBase64: Buffer.from(marker.slice(0, 8), "utf8").toString(
+            "base64",
+          ),
+        },
+        {
+          seq: 1,
+          dataBase64: Buffer.from(`${marker.slice(8)}hello\n`, "utf8").toString(
+            "base64",
+          ),
         },
       ],
       nextSeq: 1,
@@ -401,13 +893,114 @@ describe("bb terminal command output", () => {
       .mockImplementation(() => true);
     stubServerApi({ "v1.terminals.:terminalId.output.$get": output });
 
-    await runCommand(["terminal", "output", "term-1"], register);
+    await runCommand(
+      ["terminal", "output", "term-1", "--lines", "1"],
+      register,
+    );
 
     expect(output).toHaveBeenCalledWith({
       param: { terminalId: "term-1" },
-      query: {},
+      query: { lines: 1 },
     });
-    expect(write).toHaveBeenCalledWith(Buffer.from("hello\n", "utf8"));
+    expect(
+      Buffer.concat(
+        write.mock.calls.map(([data]) => Buffer.from(data as Uint8Array)),
+      ).toString("utf8"),
+    ).toBe("hello\n");
+  });
+
+  it.each(["€", "🙂"])(
+    "prints split UTF-8 character %s intact from line-limited output",
+    async (glyph) => {
+      const glyphBytes = Buffer.from(glyph);
+      const writes: Uint8Array[] = [];
+      const output = vi.fn(async () => ({
+        chunks: [
+          {
+            seq: 0,
+            dataBase64: Buffer.concat([
+              Buffer.from("before\n"),
+              glyphBytes.subarray(0, 1),
+            ]).toString("base64"),
+          },
+          {
+            seq: 1,
+            dataBase64: Buffer.concat([
+              glyphBytes.subarray(1),
+              Buffer.from(" after\n"),
+            ]).toString("base64"),
+          },
+        ],
+        nextSeq: 2,
+        truncated: false,
+        status: "exited",
+        exitCode: 0,
+        closeReason: "process-exit",
+      }));
+      vi.spyOn(process.stdout, "write").mockImplementation((chunk) => {
+        if (typeof chunk === "string") writes.push(Buffer.from(chunk));
+        else if (chunk !== undefined) writes.push(Buffer.from(chunk));
+        return true;
+      });
+      stubServerApi({ "v1.terminals.:terminalId.output.$get": output });
+
+      await runCommand(
+        ["terminal", "output", "term-1", "--lines", "2"],
+        register,
+      );
+
+      expect(output).toHaveBeenCalledWith({
+        param: { terminalId: "term-1" },
+        query: { lines: 2 },
+      });
+      expect(Buffer.concat(writes).toString("utf8")).toBe(
+        `before\n${glyph} after\n`,
+      );
+    },
+  );
+
+  it("streams terminal output with terminal pipe --follow", async () => {
+    const output = vi.fn(async () =>
+      outputResponse({ nextSeq: 1, status: "exited", text: "hello\n" }),
+    );
+    const write = vi
+      .spyOn(process.stdout, "write")
+      .mockImplementation(() => true);
+    stubServerApi({ "v1.terminals.:terminalId.output.$get": output });
+
+    await runCommand(["terminal", "pipe", "term-1", "--follow"], register);
+
+    expect(output).toHaveBeenCalledOnce();
+    expect(
+      Buffer.from(write.mock.calls[0]?.[0] as Uint8Array).toString("utf8"),
+    ).toBe("hello\n");
+  });
+
+  it("pipes terminal output into the requested local command", async () => {
+    const output = vi.fn(async () =>
+      outputResponse({ nextSeq: 1, status: "exited", text: "hello\n" }),
+    );
+    const write = vi
+      .spyOn(process.stdout, "write")
+      .mockImplementation(() => true);
+    stubServerApi({ "v1.terminals.:terminalId.output.$get": output });
+
+    await runCommand(
+      [
+        "terminal",
+        "pipe",
+        "term-1",
+        "--follow",
+        "--command",
+        'node -e "process.stdin.pipe(process.stdout)"',
+      ],
+      register,
+    );
+
+    expect(output).toHaveBeenCalledOnce();
+    expect(
+      Buffer.from(write.mock.calls[0]?.[0] as Uint8Array).toString("utf8"),
+    ).toBe("hello\n");
   });
 
   function outputResponse(args: {
@@ -517,6 +1110,131 @@ describe("bb terminal command output", () => {
     });
     expect(output.mock.calls[1]?.[0]).toMatchObject({ query: { sinceSeq: 4 } });
   });
+
+  it("does not match a private grid marker as terminal text", async () => {
+    const marker = "\u001b]7791;bb-grid;51;16\u0007";
+    const output = vi.fn(async () => ({
+      chunks: [
+        {
+          seq: 0,
+          dataBase64: Buffer.from(marker.slice(0, 12)).toString("base64"),
+        },
+        {
+          seq: 1,
+          dataBase64: Buffer.from(`${marker.slice(12)}ready\n`).toString(
+            "base64",
+          ),
+        },
+      ],
+      nextSeq: 2,
+      truncated: false,
+      status: "exited",
+      exitCode: 0,
+      closeReason: "process-exit",
+    }));
+    stubServerApi({ "v1.terminals.:terminalId.output.$get": output });
+
+    await runCommand(
+      [
+        "terminal",
+        "wait",
+        "term-1",
+        "--from-start",
+        "--contains",
+        "ready",
+        "--json",
+      ],
+      register,
+    );
+
+    expect(
+      JSON.parse(collectLogPayloads(vi.mocked(console.log)).at(-1) ?? "{}"),
+    ).toMatchObject({ matched: "ready", nextSeq: 2 });
+  });
+
+  it.each(["€", "🙂"])(
+    "matches UTF-8 character %s split across terminal chunks",
+    async (glyph) => {
+      const bytes = Buffer.from(glyph, "utf8");
+      const first = Buffer.concat([
+        Buffer.from("ready "),
+        bytes.subarray(0, 1),
+      ]);
+      const second = Buffer.concat([bytes.subarray(1), Buffer.from("\n")]);
+      const output = vi.fn(async () => ({
+        chunks: [first, second].map((chunk, index) => ({
+          seq: index,
+          dataBase64: chunk.toString("base64"),
+        })),
+        nextSeq: 2,
+        truncated: false,
+        status: "exited",
+        exitCode: 0,
+        closeReason: "process-exit",
+      }));
+      stubServerApi({ "v1.terminals.:terminalId.output.$get": output });
+
+      await runCommand(
+        [
+          "terminal",
+          "wait",
+          "term-1",
+          "--from-start",
+          "--contains",
+          glyph,
+          "--json",
+        ],
+        register,
+      );
+
+      expect(
+        JSON.parse(collectLogPayloads(vi.mocked(console.log)).at(-1) ?? "{}"),
+      ).toEqual({
+        exitCode: 0,
+        matched: glyph,
+        nextSeq: 2,
+        terminalId: "term-1",
+      });
+    },
+  );
+
+  it.each(["--contains", "--regex"])(
+    "matches styled text with %s across output polls",
+    async (flag) => {
+      const output = vi
+        .fn()
+        .mockResolvedValueOnce(
+          outputResponse({ nextSeq: 1, text: "\u001b[1mLocal\u001b[2" }),
+        )
+        .mockResolvedValue(
+          outputResponse({
+            nextSeq: 2,
+            text: "2m: http://localhost:5173/\r\n",
+          }),
+        );
+      stubServerApi({ "v1.terminals.:terminalId.output.$get": output });
+
+      await runCommand(
+        [
+          "terminal",
+          "wait",
+          "term-1",
+          "--from-start",
+          flag,
+          "Local:",
+          "--poll-interval",
+          "1ms",
+          "--timeout",
+          "100ms",
+        ],
+        register,
+      );
+
+      expect(collectLogLines(vi.mocked(console.log))).toEqual([
+        "Terminal term-1 matched Local:",
+      ]);
+    },
+  );
 
   it("finds a marker that is followed by more output than the retained window", async () => {
     const output = vi.fn().mockResolvedValueOnce(

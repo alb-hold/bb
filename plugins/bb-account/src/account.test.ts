@@ -424,6 +424,35 @@ describe("bb-account.v1.fetch", () => {
     expect(JSON.stringify([gate, api])).not.toContain(credential);
   });
 
+  it("lets only the MCP server plugin call the account's MCP paths", async () => {
+    const host = await loadAccount();
+    await signInWithCode(host);
+    stub.route("GET", "/api/mcp/grants", () => ({
+      status: 200,
+      body: { grants: [] },
+    }));
+    const request = {
+      target: "api",
+      method: "GET",
+      path: "/api/mcp/grants",
+      body: null,
+    };
+
+    await expect(host.harness.callRpc(FETCH_METHOD, request)).rejects.toThrow(
+      "only the MCP server plugin",
+    );
+    await expect(
+      host.harness.callRpc(FETCH_METHOD, request, AS_CONNECT),
+    ).rejects.toThrow("only the MCP server plugin");
+    expect(stub.requestsTo("/api/mcp/grants")).toEqual([]);
+
+    expect(
+      await host.harness.callRpc(FETCH_METHOD, request, {
+        experimental_caller: { kind: "plugin", pluginId: "bb--mcp" },
+      }),
+    ).toEqual({ status: 200, body: { grants: [] } });
+  });
+
   it.each([
     "/api/../admin",
     "/api//evil.test/x",
@@ -717,7 +746,7 @@ describe("sign-out, profile refresh, and adoption", () => {
     expect(stub.revokedCredentials).toEqual([]);
   });
 
-  it("hands the raw server credential to connect and to no one else", async () => {
+  it("hands the raw server credential to the connect plugins and to no one else", async () => {
     const host = await loadAccount();
     await expect(
       host.harness.callRpc(CONNECT_CREDENTIAL_METHOD, {}, AS_CONNECT),
@@ -738,6 +767,17 @@ describe("sign-out, profile refresh, and adoption", () => {
         credential: stored.credential,
       },
     });
+    await expect(
+      host.harness.callRpc(
+        CONNECT_CREDENTIAL_METHOD,
+        {},
+        {
+          experimental_caller: { kind: "plugin", pluginId: "bb--connect-next" },
+        },
+      ),
+    ).resolves.toMatchObject({
+      credential: { credential: stored.credential },
+    });
     for (const caller of [
       undefined,
       {
@@ -746,8 +786,30 @@ describe("sign-out, profile refresh, and adoption", () => {
     ]) {
       await expect(
         host.harness.callRpc(CONNECT_CREDENTIAL_METHOD, {}, caller),
-      ).rejects.toThrow("only the connect plugin");
+      ).rejects.toThrow("only the connect plugins");
     }
+  });
+
+  it("keeps adoption and refusal reports to connect alone", async () => {
+    const host = await loadAccount();
+    await signInWithCode(host);
+    const asNext = {
+      experimental_caller: { kind: "plugin", pluginId: "bb--connect-next" },
+    } as const;
+    await expect(
+      host.harness.callRpc(
+        CONFIRM_REFUSED_CREDENTIAL_METHOD,
+        { credential: "bbcred_x" },
+        asNext,
+      ),
+    ).rejects.toThrow("only the connect plugin");
+    await expect(
+      host.harness.callRpc(
+        ADOPT_CONNECT_CREDENTIAL_METHOD,
+        { credential: "bbcred_x", baseUrl: stub.apexUrl, replaces: null },
+        asNext,
+      ),
+    ).rejects.toThrow("only the connect plugin");
   });
 
   it("signs out when connect reports a refused credential that getbb.app no longer accepts", async () => {

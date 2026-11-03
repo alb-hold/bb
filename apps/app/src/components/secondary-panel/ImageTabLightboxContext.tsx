@@ -6,10 +6,8 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import {
-  ImageLightbox,
-  getWrappedImageIndex,
-} from "@/components/ui/image-lightbox";
+import { ImageLightbox } from "@/components/ui/image-lightbox";
+import { getWrappedImageIndex } from "@bb/shared-ui/lib/image-preview";
 import type { SecondaryPanelRenderableTab } from "./secondaryPanelTab";
 
 interface ImageTabLightboxValue {
@@ -48,7 +46,8 @@ function isImageFileTab(tab: SecondaryPanelRenderableTab): boolean {
   if (
     tab.tab.kind !== "workspace-file-preview" &&
     tab.tab.kind !== "host-file-preview" &&
-    tab.tab.kind !== "thread-storage-file-preview"
+    tab.tab.kind !== "thread-storage-file-preview" &&
+    tab.tab.kind !== "attachment-file-preview"
   ) {
     return false;
   }

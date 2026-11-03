@@ -1,18 +1,32 @@
 import {
   getEnvironment,
+  getNativeTerminalThread,
+  getThreadRowState,
+  listThreadRowStatesByScope,
+  listThreadsWithPendingInteractionState,
   getSessionById,
   listActiveBackgroundTaskCountsByThreadIds,
+  listActiveBackgroundTaskCountsByScope,
   listLatestClosedSessionsForHosts,
+  listNativeTerminalThreadsByIds,
   listLatestThreadStateEventRowsByThreadIds,
+  listLatestThreadStateEventRowsByScope,
   listOpenTurnInputAcceptedRowsByThreadIds,
+  listOpenTurnInputAcceptedRowsByScope,
   listStoredClientTurnRequestRowsByKeys,
   type DbConnection,
   type HostDaemonSessionRow,
+  type NativeTerminalThreadRecord,
   type StoredEventRow,
   type ThreadClientTurnRequestKey,
   type ThreadWithPendingInteractionState,
+  type ThreadListEnrichmentScope,
 } from "@bb/db";
-import { LEGACY_CODEX_GOAL_EXTENSION_KIND } from "@bb/domain";
+import {
+  withEffectiveDisplayStatus,
+  LEGACY_CODEX_GOAL_EXTENSION_KIND,
+  NATIVE_TERMINAL_ACTIVITY_FRESH_FOR_MS,
+} from "@bb/domain";
 import type {
   Thread,
   ThreadActivityState,
@@ -21,6 +35,7 @@ import type {
   ThreadQueuedWork,
   ThreadRuntimeState,
   ThreadStatus,
+  ThreadTimelineGoal,
   ThreadWithRuntime,
 } from "@bb/domain";
 import {
@@ -40,6 +55,7 @@ import type { ProviderRegistryService } from "../providers/provider-registry.js"
 import {
   countUnmanagedWorkspaceThreads,
   listQueuedThreadMessageCountsByThreadIds,
+  listQueuedThreadMessageCountsByScope,
 } from "@bb/db";
 import {
   resolveEnvironmentWorkspaceDisplayKind,
@@ -47,6 +63,10 @@ import {
 } from "../environments/environment-response.js";
 import { canThreadSpawnChild } from "./thread-parent.js";
 import { canRestoreThreadEnvironment } from "./thread-environment-restore.js";
+import {
+  canThreadEditMessages,
+  type ThreadMessageEditPolicyDeps,
+} from "./thread-message-edit-policy.js";
 import { toThreadEventWithMeta } from "./timeline.js";
 import { intendedThreadHostId } from "./dispatch-attempt.js";
 
@@ -60,9 +80,30 @@ interface ThreadRuntimeDisplayDeps {
   hub: ThreadRuntimeDisplayHub;
 }
 
-interface ThreadPromptBannerDeps extends ThreadRuntimeDisplayDeps {
+interface NativeActivityDisplayDeps extends ThreadRuntimeDisplayDeps {
   providerRegistry: ProviderRegistryService;
 }
+
+interface PluginThreadResponseDisplayDeps extends ThreadRuntimeDisplayDeps {
+  providerRegistry?: ProviderRegistryService;
+}
+
+type ThreadResponseDisplayDeps = NativeActivityDisplayDeps &
+  ThreadMessageEditPolicyDeps;
+
+type ThreadPromptBannerDeps = NativeActivityDisplayDeps;
+type NativeActivityThreadRecord = Pick<
+  NativeTerminalThreadRecord,
+  | "providerId"
+  | "terminalSessionId"
+  | "lostIdleTerminalSessionId"
+  | "lastEvidenceAt"
+  | "lastEvidenceKind"
+  | "lastToolCallAt"
+  | "lastToolCallSessionId"
+  | "nativeSessionId"
+  | "updatedAt"
+>;
 
 interface ResolveThreadRuntimeStateArgs {
   environmentHostId: string | null;
@@ -88,16 +129,21 @@ interface ToThreadResponseWithHostArgs extends ToThreadResponseFromThreadArgs {
 }
 
 interface ToThreadListEntryResponsesArgs {
+  scope: ThreadListEnrichmentScope;
   now?: number;
   threads: readonly ThreadWithPendingInteractionState[];
 }
 
 interface ToThreadListEntryResponseFromLatestSessionArgs {
+  deps: NativeActivityDisplayDeps;
   activity: ThreadActivityState;
   hostConnected: boolean;
   latestClosedSession: HostDaemonSessionRow | null;
+  nativeTerminalThread: NativeActivityThreadRecord | null;
   now?: number;
   queuedWork: ThreadQueuedWork;
+  queuedFailedCount: number;
+  rowState: ReturnType<typeof getThreadRowState>;
   thread: ThreadWithPendingInteractionState;
 }
 
@@ -167,6 +213,7 @@ function toPublicThread(thread: Thread): Thread {
     originKind: thread.originKind,
     originPluginId: thread.originPluginId,
     visibility: thread.visibility,
+    parentNotifications: thread.parentNotifications,
     archivedAt: thread.archivedAt,
     pinnedAt: thread.pinnedAt,
     deletedAt: thread.deletedAt,
@@ -246,6 +293,106 @@ function resolveThreadEnvironmentHostId(
   return getEnvironment(deps.db, thread.environmentId)?.hostId ?? null;
 }
 
+function supportsNativeActivity(
+  deps: NativeActivityDisplayDeps,
+  thread: Thread,
+): boolean {
+  return (
+    thread.status === "error" ||
+    (thread.status === "active" &&
+      deps.providerRegistry.get(thread.providerId)?.nativeTerminal?.activity !==
+        undefined)
+  );
+}
+
+function getNativeActivityThread(
+  deps: NativeActivityDisplayDeps,
+  thread: Thread,
+): NativeTerminalThreadRecord | null {
+  return supportsNativeActivity(deps, thread)
+    ? getNativeTerminalThread(deps.db, thread.id)
+    : null;
+}
+
+function getNativeTerminalThreadsById(
+  deps: NativeActivityDisplayDeps,
+  threads: readonly Thread[],
+): Map<string, NativeActivityThreadRecord> {
+  return new Map<string, NativeActivityThreadRecord>(
+    listNativeTerminalThreadsByIds(
+      deps.db,
+      threads.map((thread) => thread.id),
+    ).map((thread) => [thread.threadId, thread]),
+  );
+}
+
+export function nativeThreadExitRuntime(
+  thread: Thread,
+  nativeThread: NativeActivityThreadRecord | null,
+): Pick<ThreadRuntimeState, "nativeSessionExit"> | undefined {
+  if (
+    thread.status === "error" &&
+    nativeThread?.providerId === thread.providerId &&
+    nativeThread.lostIdleTerminalSessionId !== null &&
+    nativeThread.lostIdleTerminalSessionId === nativeThread.terminalSessionId
+  ) {
+    return { nativeSessionExit: "clean" };
+  }
+  return undefined;
+}
+
+function addNativeActivityDiagnostic(
+  thread: Thread,
+  runtime: ThreadRuntimeState,
+  nativeThread: NativeActivityThreadRecord | null,
+  now = Date.now(),
+): ThreadRuntimeState {
+  const exitRuntime = nativeThreadExitRuntime(thread, nativeThread);
+  if (exitRuntime !== undefined) return { ...runtime, ...exitRuntime };
+  if (
+    thread.status !== "active" ||
+    nativeThread?.providerId !== thread.providerId
+  ) {
+    return runtime;
+  }
+  const neverReported =
+    nativeThread.lastEvidenceAt === null &&
+    nativeThread.lastEvidenceKind === null;
+  const confirmedAt = neverReported
+    ? nativeThread.updatedAt
+    : nativeThread.lastEvidenceAt;
+  const isFresh =
+    confirmedAt !== null &&
+    now >= confirmedAt &&
+    now - confirmedAt <= NATIVE_TERMINAL_ACTIVITY_FRESH_FOR_MS;
+  const lastEvidenceAt = isFresh ? confirmedAt : nativeThread.lastEvidenceAt;
+  const lastToolCallAt = nativeThread.lastToolCallAt;
+  const toolCallIsBoundToSession =
+    nativeThread.nativeSessionId !== null &&
+    nativeThread.lastToolCallSessionId === nativeThread.nativeSessionId;
+  const toolCallIsFresh =
+    toolCallIsBoundToSession &&
+    lastToolCallAt !== null &&
+    now >= lastToolCallAt &&
+    now - lastToolCallAt <= NATIVE_TERMINAL_ACTIVITY_FRESH_FOR_MS;
+  return {
+    ...runtime,
+    nativeActivity: {
+      lastEvidenceAt,
+      ...(toolCallIsBoundToSession && lastToolCallAt !== null
+        ? { lastToolCallAt }
+        : {}),
+      freshForMs: NATIVE_TERMINAL_ACTIVITY_FRESH_FOR_MS,
+      confirmation: isFresh ? "confirmed" : "unconfirmed",
+      evidenceKind: isFresh
+        ? (nativeThread.lastEvidenceKind ?? "holder-report")
+        : toolCallIsFresh
+          ? "tool-call"
+          : "unknown",
+    },
+  };
+}
+
 export function buildThreadStatusChangeMetadata(
   deps: ThreadPromptBannerDeps,
   thread: Thread,
@@ -254,10 +401,14 @@ export function buildThreadStatusChangeMetadata(
     activity:
       buildThreadActivityStateByThreadId(deps, [thread]).get(thread.id) ??
       EMPTY_THREAD_ACTIVITY,
-    runtime: resolveThreadRuntimeState(deps, {
-      environmentHostId: resolveThreadEnvironmentHostId(deps, thread),
-      status: thread.status,
-    }),
+    runtime: addNativeActivityDiagnostic(
+      thread,
+      resolveThreadRuntimeState(deps, {
+        environmentHostId: resolveThreadEnvironmentHostId(deps, thread),
+        status: thread.status,
+      }),
+      getNativeActivityThread(deps, thread),
+    ),
     thread,
   });
 }
@@ -281,17 +432,27 @@ export function buildThreadStatusChangeMetadataByThreadId(
     hostConnected,
     hostId: args.environmentHostId,
   });
+  const nativeTerminalThreadsById = getNativeTerminalThreadsById(
+    deps,
+    args.threads,
+  );
   return new Map(
     args.threads.map((thread) => [
       thread.id,
       toThreadStatusChangeMetadata({
         activity: activityByThreadId.get(thread.id) ?? EMPTY_THREAD_ACTIVITY,
-        runtime: resolveThreadRuntimeStateFromLatestSession({
-          environmentHostId: args.environmentHostId,
-          hostConnected,
-          latestClosedSession,
-          status: thread.status,
-        }),
+        runtime: addNativeActivityDiagnostic(
+          thread,
+          resolveThreadRuntimeStateFromLatestSession({
+            environmentHostId: args.environmentHostId,
+            hostConnected,
+            latestClosedSession,
+            status: thread.status,
+          }),
+          supportsNativeActivity(deps, thread)
+            ? (nativeTerminalThreadsById.get(thread.id) ?? null)
+            : null,
+        ),
         thread,
       }),
     ]),
@@ -314,22 +475,51 @@ function toThreadStatusChangeMetadata(
 }
 
 function toThreadResponseWithHost(
-  deps: ThreadRuntimeDisplayDeps,
+  deps: PluginThreadResponseDisplayDeps,
   args: ToThreadResponseWithHostArgs,
 ): ThreadWithRuntime {
   const thread = toPublicThread(args.thread);
+  const runtime = resolveThreadRuntimeState(deps, {
+    environmentHostId: args.environmentHostId,
+    now: args.now,
+    status: thread.status,
+  });
   return {
     ...thread,
-    runtime: resolveThreadRuntimeState(deps, {
-      environmentHostId: args.environmentHostId,
-      now: args.now,
-      status: thread.status,
-    }),
+    runtime: deps.providerRegistry
+      ? addNativeActivityDiagnostic(
+          args.thread,
+          runtime,
+          getNativeActivityThread(
+            {
+              db: deps.db,
+              hub: deps.hub,
+              providerRegistry: deps.providerRegistry,
+            },
+            args.thread,
+          ),
+          args.now,
+        )
+      : runtime,
   };
 }
 
 export function toThreadResponseFromThread(
-  deps: ThreadRuntimeDisplayDeps,
+  deps: ThreadResponseDisplayDeps,
+  args: ToThreadResponseFromThreadArgs,
+): ThreadResponse {
+  return buildThreadResponseFromThread(deps, args);
+}
+
+export function toPluginThreadDtoFromThread(
+  deps: PluginThreadResponseDisplayDeps,
+  args: ToThreadResponseFromThreadArgs,
+): ThreadResponse {
+  return withEffectiveDisplayStatus(buildThreadResponseFromThread(deps, args));
+}
+
+function buildThreadResponseFromThread(
+  deps: PluginThreadResponseDisplayDeps,
   args: ToThreadResponseFromThreadArgs,
 ): ThreadResponse {
   const threadWithRuntime = toThreadResponseWithHost(deps, {
@@ -338,6 +528,12 @@ export function toThreadResponseFromThread(
   });
   return {
     ...threadWithRuntime,
+    hasPendingInteraction:
+      listThreadsWithPendingInteractionState(deps.db, {
+        threadIds: [args.thread.id],
+        includeHidden: true,
+      })[0]?.hasPendingInteraction ?? false,
+    nativeTerminal: getNativeTerminalThread(deps.db, args.thread.id) !== null,
     activeBackgroundAgentCount:
       listActiveBackgroundTaskCountsByThreadIds(deps.db, {
         threadIds: [args.thread.id],
@@ -345,6 +541,12 @@ export function toThreadResponseFromThread(
     canRestoreEnvironment: canRestoreThreadEnvironment(deps, {
       thread: args.thread,
     }),
+    canEditMessages:
+      deps.providerRegistry !== undefined &&
+      canThreadEditMessages(
+        { providerRegistry: deps.providerRegistry },
+        args.thread,
+      ),
     canSpawnChild: canThreadSpawnChild(deps, { thread: args.thread }),
     queuedMessageCount:
       listQueuedThreadMessageCountsByThreadIds(deps.db, {
@@ -424,16 +626,28 @@ function canThreadShowActivePlanMode(
 function listPromptBannerActivityCandidateRows(
   deps: ThreadPromptBannerDeps,
   threads: readonly Thread[],
+  scope?: ThreadListEnrichmentScope,
 ): StoredEventRow[] {
-  const latestGoalRows = listLatestThreadStateEventRowsByThreadIds(deps.db, {
-    threadIds: threads.map((thread) => thread.id),
-    kind: LEGACY_CODEX_GOAL_EXTENSION_KIND,
-  });
-  const openAcceptedRows = listOpenTurnInputAcceptedRowsByThreadIds(deps.db, {
-    threadIds: threads
-      .filter((thread) => canThreadShowActivePlanMode(deps, thread))
-      .map((thread) => thread.id),
-  });
+  const latestGoalRows = scope
+    ? listLatestThreadStateEventRowsByScope(deps.db, {
+        scope,
+        kind: LEGACY_CODEX_GOAL_EXTENSION_KIND,
+      })
+    : listLatestThreadStateEventRowsByThreadIds(deps.db, {
+        threadIds: threads.map((thread) => thread.id),
+        kind: LEGACY_CODEX_GOAL_EXTENSION_KIND,
+      });
+  const eligibleThreadIds = threads
+    .filter((thread) => canThreadShowActivePlanMode(deps, thread))
+    .map((thread) => thread.id);
+  const openAcceptedRows = scope
+    ? listOpenTurnInputAcceptedRowsByScope(deps.db, {
+        kind: "ids",
+        ids: eligibleThreadIds,
+      })
+    : listOpenTurnInputAcceptedRowsByThreadIds(deps.db, {
+        threadIds: eligibleThreadIds,
+      });
   const openAcceptedEvents = openAcceptedRows.map(toThreadEventWithMeta);
   const requestKeys: ThreadClientTurnRequestKey[] = openAcceptedEvents.flatMap(
     ({ event }) =>
@@ -455,8 +669,9 @@ function listPromptBannerActivityCandidateRows(
 function buildThreadPromptBannerActivityByThreadId(
   deps: ThreadPromptBannerDeps,
   threads: readonly Thread[],
+  scope?: ThreadListEnrichmentScope,
 ): Map<string, PromptBannerActivityState> {
-  const rows = listPromptBannerActivityCandidateRows(deps, threads);
+  const rows = listPromptBannerActivityCandidateRows(deps, threads, scope);
   const eventsByThreadId = new Map<string, ThreadEventWithMeta[]>();
   for (const row of rows) {
     const threadEvents = eventsByThreadId.get(row.threadId);
@@ -482,6 +697,18 @@ function buildThreadPromptBannerActivityByThreadId(
   return result;
 }
 
+export function getThreadTimelineGoal(
+  deps: ThreadPromptBannerDeps,
+  thread: Thread,
+): ThreadTimelineGoal | null {
+  return extractThreadTimelineGoal(
+    listLatestThreadStateEventRowsByThreadIds(deps.db, {
+      threadIds: [thread.id],
+      kind: LEGACY_CODEX_GOAL_EXTENSION_KIND,
+    }).map(toThreadEventWithMeta),
+  );
+}
+
 export function getThreadPromptBannerActivity(
   deps: ThreadPromptBannerDeps,
   thread: Thread,
@@ -500,14 +727,18 @@ export function getThreadPromptBannerActivity(
 function buildThreadActivityStateByThreadId(
   deps: ThreadPromptBannerDeps,
   threads: readonly Thread[],
+  scope?: ThreadListEnrichmentScope,
 ): Map<string, ThreadActivityState> {
   const backgroundTaskActivityByThreadId = new Map(
-    listActiveBackgroundTaskCountsByThreadIds(deps.db, {
-      threadIds: threads.map((thread) => thread.id),
-    }).map((activity) => [activity.threadId, activity]),
+    (scope
+      ? listActiveBackgroundTaskCountsByScope(deps.db, scope)
+      : listActiveBackgroundTaskCountsByThreadIds(deps.db, {
+          threadIds: threads.map((thread) => thread.id),
+        })
+    ).map((activity) => [activity.threadId, activity]),
   );
   const promptBannerActivityByThreadId =
-    buildThreadPromptBannerActivityByThreadId(deps, threads);
+    buildThreadPromptBannerActivityByThreadId(deps, threads, scope);
   const result = new Map<string, ThreadActivityState>();
   for (const thread of threads) {
     const backgroundActivity = backgroundTaskActivityByThreadId.get(thread.id);
@@ -536,19 +767,27 @@ function buildThreadActivityStateByThreadId(
   return result;
 }
 
+interface ThreadQueuedWorkSummary {
+  queuedFailedCount: number;
+  queuedWork: ThreadQueuedWork;
+}
+
 function buildThreadQueuedWorkByThreadId(
   deps: ThreadRuntimeDisplayDeps,
   threads: readonly Thread[],
-): Map<string, ThreadQueuedWork> {
-  const result = new Map<string, ThreadQueuedWork>();
-  for (const counts of listQueuedThreadMessageCountsByThreadIds(deps.db, {
-    threadIds: threads.map((thread) => thread.id),
-  })) {
+  scope?: ThreadListEnrichmentScope,
+): Map<string, ThreadQueuedWorkSummary> {
+  const result = new Map<string, ThreadQueuedWorkSummary>();
+  for (const counts of scope
+    ? listQueuedThreadMessageCountsByScope(deps.db, scope)
+    : listQueuedThreadMessageCountsByThreadIds(deps.db, {
+        threadIds: threads.map((thread) => thread.id),
+      })) {
     if (counts.queuedMessageCount === 0) continue;
-    result.set(
-      counts.threadId,
-      counts.failedQueuedMessageCount > 0 ? "failed" : "waiting",
-    );
+    result.set(counts.threadId, {
+      queuedFailedCount: counts.failedQueuedMessageCount,
+      queuedWork: counts.failedQueuedMessageCount > 0 ? "failed" : "waiting",
+    });
   }
   return result;
 }
@@ -557,9 +796,11 @@ export function toThreadListEntryResponses(
   deps: ThreadPromptBannerDeps,
   args: ToThreadListEntryResponsesArgs,
 ): ThreadListEntry[] {
+  const scope = args.scope;
   const activityByThreadId = buildThreadActivityStateByThreadId(
     deps,
     args.threads,
+    scope,
   );
   const activeHostIds = [
     ...new Set(
@@ -583,11 +824,24 @@ export function toThreadListEntryResponses(
   const queuedWorkByThreadId = buildThreadQueuedWorkByThreadId(
     deps,
     args.threads,
+    scope,
+  );
+  const rowStateByThreadId = listThreadRowStatesByScope(
+    deps.db,
+    scope,
+    args.now,
+  );
+  const nativeTerminalThreadsById = getNativeTerminalThreadsById(
+    deps,
+    args.threads,
   );
   return args.threads.map((thread) => {
     const entry = toThreadListEntryResponseFromLatestSession({
+      deps,
       activity: activityByThreadId.get(thread.id) ?? EMPTY_THREAD_ACTIVITY,
-      queuedWork: queuedWorkByThreadId.get(thread.id) ?? "none",
+      queuedWork: queuedWorkByThreadId.get(thread.id)?.queuedWork ?? "none",
+      queuedFailedCount:
+        queuedWorkByThreadId.get(thread.id)?.queuedFailedCount ?? 0,
       hostConnected:
         thread.environmentHostId !== null &&
         connectedActiveHostIds.has(thread.environmentHostId),
@@ -595,7 +849,12 @@ export function toThreadListEntryResponses(
         thread.environmentHostId === null
           ? null
           : (latestClosedSessionByHostId.get(thread.environmentHostId) ?? null),
+      nativeTerminalThread: nativeTerminalThreadsById.get(thread.id) ?? null,
       now: args.now,
+      rowState: rowStateByThreadId.get(thread.id) ?? {
+        statuses: {},
+        progress: null,
+      },
       thread,
     });
     const withEnvironmentHost =
@@ -609,7 +868,7 @@ export function toThreadListEntryResponses(
     return {
       ...withEnvironmentHost,
       listIndicator: resolveThreadListIndicator(
-        threadListIndicatorStateForThread(withEnvironmentHost, false),
+        threadListIndicatorStateForThread(withEnvironmentHost, false, args.now),
       ),
     };
   });
@@ -621,8 +880,10 @@ function toThreadListEntryResponseFromLatestSession(
   const thread = toPublicThread(args.thread);
   return {
     ...thread,
+    nativeTerminal: args.nativeTerminalThread !== null,
     activity: args.activity,
     queuedWork: args.queuedWork,
+    queuedFailedCount: args.queuedFailedCount,
     pinSortKey: args.thread.pinSortKey,
     environmentBranchName: args.thread.environmentBranchName,
     environmentHostId: args.thread.environmentHostId,
@@ -636,12 +897,20 @@ function toThreadListEntryResponseFromLatestSession(
     }),
     hasPendingInteraction: args.thread.hasPendingInteraction,
     listIndicator: "none",
-    runtime: resolveThreadRuntimeStateFromLatestSession({
-      environmentHostId: args.thread.environmentHostId,
-      hostConnected: args.hostConnected,
-      latestClosedSession: args.latestClosedSession,
-      now: args.now,
-      status: thread.status,
-    }),
+    rowState: args.rowState,
+    runtime: addNativeActivityDiagnostic(
+      args.thread,
+      resolveThreadRuntimeStateFromLatestSession({
+        environmentHostId: args.thread.environmentHostId,
+        hostConnected: args.hostConnected,
+        latestClosedSession: args.latestClosedSession,
+        now: args.now,
+        status: thread.status,
+      }),
+      supportsNativeActivity(args.deps, args.thread)
+        ? args.nativeTerminalThread
+        : null,
+      args.now,
+    ),
   };
 }

@@ -2,6 +2,9 @@ import {
   DESKTOP_DOWNLOADS,
   DOWNLOAD_FALLBACK_URL,
   DOWNLOAD_RELEASE_ASSET_BASE_URL,
+  CAMPAIGN_PARAM_NAMES,
+  CLICK_ID_PARAM_NAMES,
+  VISIT_PARAM_NAMES,
 } from "./site";
 import type { CtaPlacement, DesktopPlatform } from "./site";
 
@@ -11,6 +14,9 @@ const MAX_URL_PROPERTY_LENGTH = 2048;
 const RESEND_CONTACTS_URL = "https://api.resend.com/audiences";
 const MAX_EMAIL_LENGTH = 254;
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const POSTHOG_ID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const MAX_PATH_LENGTH = 512;
 
 type DownloadPlacement = CtaPlacement | "direct";
 
@@ -23,7 +29,12 @@ type MarketingEnv = {
 type DownloadEventProperties = {
   $current_url: string;
   $referrer?: string;
+  $session_id?: string;
   download_target: DesktopPlatform;
+  first_page?: string;
+  first_referrer?: string;
+  gbraid?: string;
+  gclid?: string;
   placement: DownloadPlacement;
   tracking_source: typeof TRACKING_SOURCE;
   utm_campaign?: string;
@@ -31,6 +42,7 @@ type DownloadEventProperties = {
   utm_medium?: string;
   utm_source?: string;
   utm_term?: string;
+  wbraid?: string;
 };
 
 type PostHogCapturePayload = {
@@ -55,16 +67,95 @@ export async function handleDownload(
   waitUntil: (promise: Promise<void>) => void,
 ): Promise<Response> {
   const requestUrl = new URL(request.url);
-  waitUntil(
-    trackDownloadClick({
-      platform,
-      postHogKey: env.LANDING_POSTHOG_KEY,
-      request,
-      requestUrl,
-    }),
+  const range = request.headers.get("range");
+  if (isFirstByteRequest(range)) {
+    waitUntil(
+      trackDownloadClick({
+        platform,
+        postHogKey: env.LANDING_POSTHOG_KEY,
+        request,
+        requestUrl,
+      }),
+    );
+  }
+  const asset = await resolveInstallerAsset(platform);
+  if (!asset) {
+    return redirectResponse(DOWNLOAD_FALLBACK_URL);
+  }
+  return streamInstaller(asset, range, request.headers.get("if-range"));
+}
+
+type InstallerAsset = {
+  name: string;
+  url: string;
+};
+
+function isFirstByteRequest(range: string | null): boolean {
+  return range === null || /^bytes=0-/.test(range.trim());
+}
+
+async function fetchInstaller(
+  url: string,
+  range: string | null,
+): Promise<Response | null> {
+  try {
+    return await fetch(
+      url,
+      range === null ? undefined : { headers: { range } },
+    );
+  } catch {
+    return null;
+  }
+}
+
+function matchesValidator(headers: Headers, validator: string): boolean {
+  const trimmed = validator.trim();
+  return (
+    trimmed === headers.get("etag") || trimmed === headers.get("last-modified")
   );
-  const location = await resolveDownloadUrl(platform);
-  return redirectResponse(location);
+}
+
+async function streamInstaller(
+  asset: InstallerAsset,
+  range: string | null,
+  ifRange: string | null,
+): Promise<Response> {
+  let upstream = await fetchInstaller(asset.url, range);
+  if (
+    upstream?.status === 206 &&
+    ifRange !== null &&
+    !matchesValidator(upstream.headers, ifRange)
+  ) {
+    await upstream.body?.cancel();
+    upstream = await fetchInstaller(asset.url, null);
+  }
+  if (
+    !upstream ||
+    (upstream.status !== 200 && upstream.status !== 206) ||
+    !upstream.body
+  ) {
+    return redirectResponse(DOWNLOAD_FALLBACK_URL);
+  }
+
+  const headers = new Headers({
+    "Accept-Ranges": "bytes",
+    "Cache-Control": "no-store",
+    "Content-Disposition": `attachment; filename="${asset.name}"`,
+    "Content-Type": "application/octet-stream",
+    "X-Content-Type-Options": "nosniff",
+  });
+  for (const name of [
+    "content-length",
+    "content-range",
+    "etag",
+    "last-modified",
+  ]) {
+    const value = upstream.headers.get(name);
+    if (value) {
+      headers.set(name, value);
+    }
+  }
+  return new Response(upstream.body, { headers, status: upstream.status });
 }
 
 function jsonResponse(body: object, status: number): Response {
@@ -152,14 +243,16 @@ function redirectResponse(location: string): Response {
   });
 }
 
-async function resolveDownloadUrl(platform: DesktopPlatform): Promise<string> {
+async function resolveInstallerAsset(
+  platform: DesktopPlatform,
+): Promise<InstallerAsset | null> {
   const download = DESKTOP_DOWNLOADS[platform];
   try {
     const response = await fetch(download.versionFeedUrl, {
       headers: { accept: "application/json" },
     });
     if (!response.ok) {
-      return DOWNLOAD_FALLBACK_URL;
+      return null;
     }
 
     const assetName = findInstallerAssetName(
@@ -167,12 +260,15 @@ async function resolveDownloadUrl(platform: DesktopPlatform): Promise<string> {
       download.installerExtension,
     );
     if (!assetName) {
-      return DOWNLOAD_FALLBACK_URL;
+      return null;
     }
 
-    return `${DOWNLOAD_RELEASE_ASSET_BASE_URL}/${encodeURIComponent(assetName)}`;
+    return {
+      name: assetName,
+      url: `${DOWNLOAD_RELEASE_ASSET_BASE_URL}/${encodeURIComponent(assetName)}`,
+    };
   } catch {
-    return DOWNLOAD_FALLBACK_URL;
+    return null;
   }
 }
 
@@ -202,8 +298,7 @@ function isInstallerAssetName(
   return (
     value.length > installerExtension.length &&
     value.endsWith(installerExtension) &&
-    !value.includes("/") &&
-    !value.includes("\\")
+    /^[A-Za-z0-9._-]+$/.test(value)
   );
 }
 
@@ -218,7 +313,9 @@ async function trackDownloadClick(args: TrackDownloadClickArgs): Promise<void> {
 
   const payload: PostHogCapturePayload = {
     api_key: args.postHogKey,
-    distinct_id: crypto.randomUUID(),
+    distinct_id:
+      parsePostHogId(args.requestUrl.searchParams.get("visitor_id")) ??
+      crypto.randomUUID(),
     event: `landing_download_${args.platform}_clicked`,
     properties: buildDownloadEventProperties({
       platform: args.platform,
@@ -244,10 +341,31 @@ type BuildDownloadEventPropertiesArgs = {
 function buildDownloadEventProperties(
   args: BuildDownloadEventPropertiesArgs,
 ): DownloadEventProperties {
-  const referrer = args.request.headers.get("referer");
+  const globalPrivacyControl = args.request.headers.get("Sec-GPC") === "1";
+  const requestUrl = new URL(args.requestUrl);
+  for (const name of VISIT_PARAM_NAMES) {
+    requestUrl.searchParams.delete(name);
+  }
+  let referrer = args.request.headers.get("referer");
+  if (globalPrivacyControl) {
+    for (const name of CLICK_ID_PARAM_NAMES) {
+      requestUrl.searchParams.delete(name);
+    }
+    if (referrer) {
+      try {
+        const referrerUrl = new URL(referrer);
+        for (const name of CLICK_ID_PARAM_NAMES) {
+          referrerUrl.searchParams.delete(name);
+        }
+        referrer = referrerUrl.href;
+      } catch {
+        referrer = null;
+      }
+    }
+  }
   const referrerSearchParams = readReferrerSearchParams(referrer);
   const properties: DownloadEventProperties = {
-    $current_url: truncateProperty(args.requestUrl.href),
+    $current_url: truncateProperty(requestUrl.href),
     download_target: args.platform,
     placement: parseDownloadPlacement(args.requestUrl.searchParams),
     tracking_source: TRACKING_SOURCE,
@@ -257,13 +375,58 @@ function buildDownloadEventProperties(
     properties.$referrer = truncateProperty(referrer);
   }
 
+  const searchParams = args.requestUrl.searchParams;
+  const sessionId = parsePostHogId(searchParams.get("session_id"));
+  if (sessionId) {
+    properties.$session_id = sessionId;
+  }
+  const firstPage = parseFirstPage(searchParams.get("first_page"));
+  if (firstPage) {
+    properties.first_page = firstPage;
+  }
+  const firstReferrer = parseFirstReferrer(searchParams.get("first_referrer"));
+  if (firstReferrer) {
+    properties.first_referrer = firstReferrer;
+  }
+
   addUtmProperties({
     properties,
     referrerSearchParams,
-    requestSearchParams: args.requestUrl.searchParams,
+    requestSearchParams: requestUrl.searchParams,
   });
 
   return properties;
+}
+
+function parsePostHogId(value: string | null): string | null {
+  return value && POSTHOG_ID_PATTERN.test(value) ? value : null;
+}
+
+function parseFirstPage(value: string | null): string | null {
+  if (
+    !value ||
+    value.length > MAX_PATH_LENGTH ||
+    !/^\/(?!\/)[^\s?#\\]*$/.test(value)
+  ) {
+    return null;
+  }
+  return value;
+}
+
+function parseFirstReferrer(value: string | null): string | null {
+  if (!value) {
+    return null;
+  }
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return null;
+  }
+  if (url.protocol !== "https:" && url.protocol !== "http:") {
+    return null;
+  }
+  return url.origin;
 }
 
 function parseDownloadPlacement(
@@ -304,13 +467,7 @@ type AddUtmPropertiesArgs = {
 };
 
 function addUtmProperties(args: AddUtmPropertiesArgs): void {
-  for (const name of [
-    "utm_source",
-    "utm_medium",
-    "utm_campaign",
-    "utm_term",
-    "utm_content",
-  ] as const) {
+  for (const name of CAMPAIGN_PARAM_NAMES) {
     const value = getTrackingParam({
       name,
       referrerSearchParams: args.referrerSearchParams,

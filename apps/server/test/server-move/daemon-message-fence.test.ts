@@ -11,6 +11,7 @@ const SNAPSHOT_FENCE_CLASSIFICATION: Record<
   DaemonMessageType,
   "fenced" | "unfenced"
 > = {
+  "connect-next.status": "unfenced",
   "connect-tunnel.identity": "unfenced",
   "daemon.restarting": "unfenced",
   "desktop-browser.changed": "fenced",
@@ -24,6 +25,7 @@ const SNAPSHOT_FENCE_CLASSIFICATION: Record<
   "plugin-host.worker-exited": "fenced",
   "server_move.progress": "unfenced",
   "terminal.error": "unfenced",
+  "terminal.attention": "unfenced",
   "terminal.exited": "fenced",
   "terminal.opened": "fenced",
   "terminal.output": "unfenced",
@@ -58,6 +60,9 @@ describe("server move snapshot fence", () => {
         .filter(([, fence]) => fence === "fenced")
         .map(([type]) => type)
         .sort(),
+    );
+    expect(SNAPSHOT_FENCE_CLASSIFICATION["terminal.attention"]).toBe(
+      "unfenced",
     );
   });
 });

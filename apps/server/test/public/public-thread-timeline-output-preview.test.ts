@@ -1,6 +1,7 @@
 import { eq } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
 import { threadEventRowSchema, turnScope } from "@bb/domain";
+import { parseSentThreadMessage } from "@bb/thread-view";
 import {
   COMPLETED_EVENT_OUTPUT_RETENTION_MS,
   events,
@@ -17,7 +18,7 @@ import {
   TIMELINE_INLINE_OUTPUT_PREVIEW_HEAD_CHARS,
   TIMELINE_INLINE_OUTPUT_PREVIEW_TAIL_CHARS,
   TIMELINE_INLINE_OUTPUT_PREVIEW_THRESHOLD_CHARS,
-} from "../../src/services/threads/timeline-output-preview.js";
+} from "../../src/services/threads/timeline-output-shortening.js";
 import { runPeriodicSweeps } from "../../src/services/system/periodic-sweeps.js";
 import { readJson } from "../helpers/json.js";
 import { seedEvent, seedThreadFixture } from "../helpers/seed.js";
@@ -394,7 +395,7 @@ describe("GET /threads/:id/timeline inline output preview", () => {
       if (delegation?.kind !== "work" || delegation.workKind !== "delegation") {
         throw new Error("Expected nested delegation row");
       }
-      const preview = findNestedCommandRow(delegation.childRows, command);
+      const preview = findNestedCommandRow(delegation.childRows ?? [], command);
       expect(preview.output).not.toBe(output);
       expect(preview.outputPreview).toEqual({
         experimental_fullOutputAvailability: "available",
@@ -402,7 +403,7 @@ describe("GET /threads/:id/timeline inline output preview", () => {
       });
 
       const response = await harness.app.request(
-        `/api/v1/threads/${thread.id}/timeline/turn-summary-details?turnId=${preview.turnId}&sourceSeqStart=${preview.sourceSeqStart}&sourceSeqEnd=${preview.sourceSeqEnd}`,
+        `/api/v1/threads/${thread.id}/timeline/turn-summary-details?turnId=${preview.turnId}&sourceSeqStart=${preview.sourceSeqStart}&sourceSeqEnd=${preview.sourceSeqEnd}&itemId=${preview.callId}`,
       );
       expect(response.status).toBe(200);
       const details = timelineTurnSummaryDetailsResponseSchema.parse(
@@ -429,7 +430,7 @@ describe("GET /threads/:id/timeline inline output preview", () => {
       });
 
       const response = await harness.app.request(
-        `/api/v1/threads/${threadId}/timeline/turn-summary-details?turnId=${big.turnId}&sourceSeqStart=${big.sourceSeqStart}&sourceSeqEnd=${big.sourceSeqEnd}`,
+        `/api/v1/threads/${threadId}/timeline/turn-summary-details?turnId=${big.turnId}&sourceSeqStart=${big.sourceSeqStart}&sourceSeqEnd=${big.sourceSeqEnd}&itemId=${big.callId}`,
       );
       expect(response.status).toBe(200);
       const details = timelineTurnSummaryDetailsResponseSchema.parse(
@@ -559,7 +560,7 @@ describe("GET /threads/:id/timeline inline output preview (tool rows)", () => {
       );
 
       const response = await harness.app.request(
-        `/api/v1/threads/${thread.id}/timeline/turn-summary-details?turnId=${row.turnId}&sourceSeqStart=${row.sourceSeqStart}&sourceSeqEnd=${row.sourceSeqEnd}`,
+        `/api/v1/threads/${thread.id}/timeline/turn-summary-details?turnId=${row.turnId}&sourceSeqStart=${row.sourceSeqStart}&sourceSeqEnd=${row.sourceSeqEnd}&itemId=${row.callId}`,
       );
       expect(response.status).toBe(200);
       const details = timelineTurnSummaryDetailsResponseSchema.parse(
@@ -805,7 +806,7 @@ describe("GET /threads/:id/timeline retained output details", () => {
       });
 
       const response = await harness.app.request(
-        `/api/v1/threads/${thread.id}/timeline/turn-summary-details?turnId=turn-retained-details&sourceSeqStart=2&sourceSeqEnd=2`,
+        `/api/v1/threads/${thread.id}/timeline/turn-summary-details?turnId=turn-retained-details&sourceSeqStart=2&sourceSeqEnd=2&itemId=retained-details-command`,
       );
       expect(response.status).toBe(200);
       const details = timelineTurnSummaryDetailsResponseSchema.parse(
@@ -858,7 +859,7 @@ describe("GET /threads/:id/timeline retained output details", () => {
       });
 
       const response = await harness.app.request(
-        `/api/v1/threads/${thread.id}/timeline/turn-summary-details?turnId=turn-oversized-retained-details&sourceSeqStart=2&sourceSeqEnd=2`,
+        `/api/v1/threads/${thread.id}/timeline/turn-summary-details?turnId=turn-oversized-retained-details&sourceSeqStart=2&sourceSeqEnd=2&itemId=oversized-retained-details-command`,
       );
       expect(response.status).toBe(200);
       const details = timelineTurnSummaryDetailsResponseSchema.parse(
@@ -942,6 +943,426 @@ describe("GET /threads/:id/timeline retained output details", () => {
         experimental_fullOutputAvailability: "retention-expired",
         totalChars: output.length,
       });
+    });
+  });
+});
+
+describe("GET /threads/:id/timeline delegated rows", () => {
+  it("preserves successful message commands through deferred timeline reads", async () => {
+    await withTestHarness(async (harness) => {
+      const { environment, thread } = seedThreadFixture(harness);
+      const recipient = "thr_abcdefghjk";
+      const message = "A message for the receiving thread. ".repeat(40);
+      const quoted = `bb thread tell ${recipient} '${message}'`;
+      const heredoc = `bb thread tell ${recipient} --message-file - <<'MESSAGE'\n${message}\nMESSAGE`;
+      const cases = [
+        { command: quoted, exitCode: 0, output: "sent", message },
+        { command: heredoc, exitCode: 0, output: "sent", message },
+        {
+          command: `bb thread tell ${recipient} 'short'`,
+          exitCode: 0,
+          output: "acknowledgement".repeat(100),
+          message: "short",
+        },
+        {
+          command: `bb thread tell ${recipient} '${"brief ".repeat(60)}'`,
+          exitCode: 0,
+          output: "sent",
+          message: "brief ".repeat(60),
+        },
+        { command: quoted, exitCode: 1, output: "failed", message: null },
+        {
+          command: `${quoted} && printf done`,
+          exitCode: 0,
+          output: "done",
+          message: null,
+        },
+        {
+          command: `bb thread tell ${recipient} --message-file /tmp/message.txt`,
+          exitCode: 0,
+          output: "acknowledgement".repeat(100),
+          message: null,
+        },
+      ];
+      const turn = {
+        environmentId: environment.id,
+        providerThreadId: "provider-message-deferral",
+        scope: turnScope("turn-message-deferral"),
+        threadId: thread.id,
+      } as const;
+      seedEvent(harness.deps, {
+        ...turn,
+        data: {},
+        sequence: 1,
+        type: "turn/started",
+      });
+      for (const [index, entry] of cases.entries()) {
+        seedEvent(harness.deps, {
+          ...turn,
+          data: {
+            item: {
+              aggregatedOutput: entry.output,
+              approvalStatus: null,
+              command: entry.command,
+              cwd: "/tmp",
+              exitCode: entry.exitCode,
+              id: `message-command-${index}`,
+              status: "completed",
+              type: "commandExecution",
+            },
+          },
+          sequence: index + 2,
+          type: "item/completed",
+        });
+      }
+      seedEvent(harness.deps, {
+        ...turn,
+        data: { status: "completed" },
+        sequence: cases.length + 2,
+        type: "turn/completed",
+      });
+
+      for (const deferContent of [false, true]) {
+        const timeline = await getTimeline(
+          harness,
+          thread.id,
+          `?includeNestedRows=true&deferContent=${deferContent}`,
+        );
+        const rows = timeline.rows.flatMap((row) =>
+          row.kind === "turn" ? (row.children ?? []) : [row],
+        );
+        for (const [index, entry] of cases.entries()) {
+          const row = rows.find(
+            (candidate) =>
+              candidate.kind === "work" &&
+              candidate.workKind === "command" &&
+              candidate.callId === `message-command-${index}`,
+          );
+          if (row?.kind !== "work" || row.workKind !== "command") {
+            throw new Error(`Missing message command ${index}`);
+          }
+          if (entry.message !== null) {
+            expect(timeline.rows).toContain(row);
+            expect.soft(row.command.length).toBe(entry.command.length);
+            expect.soft(parseSentThreadMessage(row)).toEqual({
+              threadId: recipient,
+              message: entry.message,
+            });
+          } else if (deferContent) {
+            expect(row).toMatchObject({
+              command: entry.command.slice(0, 300),
+              contentDeferred: true,
+              output: "",
+            });
+          } else {
+            expect(parseSentThreadMessage(row)).toBeNull();
+          }
+        }
+      }
+    });
+  });
+
+  it("defers settled row content when asked and loads each row by item", async () => {
+    await withTestHarness(async (harness) => {
+      const { environment, thread } = seedThreadFixture(harness, {
+        thread: { status: "active" },
+      });
+      const turn = {
+        environmentId: environment.id,
+        providerThreadId: "provider-deferred",
+        scope: turnScope("turn-deferred"),
+        threadId: thread.id,
+      } as const;
+      const reasoning = `thinking ${"r".repeat(1_500)}`;
+      const output = `output ${"o".repeat(2_000)}`;
+      const diff = `@@ -1 +1 @@\n-old\n+${"d".repeat(1_500)}\n`;
+      let sequence = 0;
+      const seed = (type: "item/started" | "item/completed", item: object) => {
+        sequence += 1;
+        seedEvent(harness.deps, { ...turn, data: { item }, sequence, type });
+      };
+      sequence += 1;
+      seedEvent(harness.deps, {
+        ...turn,
+        data: {},
+        sequence,
+        type: "turn/started",
+      });
+      seed("item/started", {
+        type: "reasoning",
+        id: "reasoning-1",
+        summary: [],
+        content: [],
+      });
+      seed("item/completed", {
+        type: "reasoning",
+        id: "reasoning-1",
+        summary: [],
+        content: [reasoning],
+      });
+      seed("item/completed", {
+        aggregatedOutput: output,
+        approvalStatus: null,
+        command: "cat big",
+        cwd: "/tmp",
+        exitCode: 0,
+        id: "command-1",
+        status: "completed",
+        type: "commandExecution",
+      });
+      const script = `python3 - <<'EOF'\n${"print(1)\n".repeat(150)}EOF`;
+      seed("item/completed", {
+        aggregatedOutput: "ok",
+        approvalStatus: null,
+        command: script,
+        cwd: "/tmp",
+        exitCode: 0,
+        id: "command-2",
+        status: "completed",
+        type: "commandExecution",
+      });
+      seed("item/completed", {
+        approvalStatus: null,
+        changes: [{ path: "src/big.ts", kind: "update", diff }],
+        id: "file-1",
+        status: "completed",
+        type: "fileChange",
+      });
+
+      const findRows = (rows: readonly TimelineRow[]) => {
+        const reasoningRow = rows.find(
+          (row) =>
+            row.kind === "system" &&
+            row.title.length > 0 &&
+            "reasoningId" in row,
+        );
+        const commandRow = rows.find(
+          (row) => row.kind === "work" && row.workKind === "command",
+        );
+        const fileRow = rows.find(
+          (row) => row.kind === "work" && row.workKind === "file-change",
+        );
+        if (
+          reasoningRow?.kind !== "system" ||
+          commandRow?.kind !== "work" ||
+          commandRow.workKind !== "command" ||
+          fileRow?.kind !== "work" ||
+          fileRow.workKind !== "file-change"
+        ) {
+          throw new Error("Expected reasoning, command and file-change rows");
+        }
+        return { commandRow, fileRow, reasoningRow };
+      };
+
+      const inline = findRows((await getTimeline(harness, thread.id)).rows);
+      expect(inline.reasoningRow.detail).toContain(reasoning);
+      expect(inline.commandRow.output).toBe(output);
+      expect(inline.fileRow.change.diff).toBe(diff);
+      expect(inline.commandRow).not.toHaveProperty("contentDeferred");
+
+      const deferred = findRows(
+        (await getTimeline(harness, thread.id, "?deferContent=true")).rows,
+      );
+      expect(deferred.reasoningRow).toMatchObject({
+        contentDeferred: true,
+        detail: null,
+      });
+      expect(deferred.commandRow).toMatchObject({
+        contentDeferred: true,
+        output: "",
+      });
+      expect(deferred.commandRow).not.toHaveProperty("outputPreview");
+      const deferredScript = (
+        await getTimeline(harness, thread.id, "?deferContent=true")
+      ).rows.find(
+        (row) =>
+          row.kind === "work" &&
+          row.workKind === "command" &&
+          row.callId === "command-2",
+      );
+      expect(deferredScript).toMatchObject({
+        command: script.slice(0, 300),
+        contentDeferred: true,
+      });
+      if (deferredScript === undefined) {
+        throw new Error("Expected the long command row");
+      }
+      expect(deferred.fileRow).toMatchObject({
+        change: { diff: null, diffStats: inline.fileRow.change.diffStats },
+        contentDeferred: true,
+      });
+
+      const loadItem = async (row: TimelineRow, itemId: string) => {
+        const response = await harness.app.request(
+          `/api/v1/threads/${thread.id}/timeline/turn-summary-details?turnId=${row.turnId}&sourceSeqStart=${row.sourceSeqStart}&sourceSeqEnd=${row.sourceSeqEnd}&itemId=${itemId}&deferContent=true`,
+        );
+        expect(response.status).toBe(200);
+        return timelineTurnSummaryDetailsResponseSchema.parse(
+          await readJson(response),
+        ).rows;
+      };
+      expect(await loadItem(deferredScript, "command-2")).toEqual([
+        expect.objectContaining({ command: script, output: "ok" }),
+      ]);
+      const [loadedReasoning] = await loadItem(
+        deferred.reasoningRow,
+        "reasoningId" in deferred.reasoningRow
+          ? (deferred.reasoningRow.reasoningId ?? "")
+          : "",
+      );
+      expect(loadedReasoning).toMatchObject({ id: deferred.reasoningRow.id });
+      expect(loadedReasoning).not.toHaveProperty("contentDeferred");
+      expect(
+        loadedReasoning?.kind === "system" ? loadedReasoning.detail : null,
+      ).toContain(reasoning);
+      expect(await loadItem(deferred.commandRow, "command-1")).toEqual([
+        expect.objectContaining({ id: deferred.commandRow.id, output }),
+      ]);
+      expect(await loadItem(deferred.fileRow, "file-1")).toEqual([
+        expect.objectContaining({
+          change: expect.objectContaining({ diff }),
+          id: deferred.fileRow.id,
+        }),
+      ]);
+    });
+  });
+
+  it("previews nested output inline while a delegation runs and loads its children by call once it settles", async () => {
+    await withTestHarness(async (harness) => {
+      const { environment, thread } = seedThreadFixture(harness, {
+        thread: { status: "active" },
+      });
+      const scope = turnScope("turn-delegated");
+      const turn = {
+        environmentId: environment.id,
+        providerThreadId: "provider-delegated",
+        scope,
+        threadId: thread.id,
+      } as const;
+      const delegationCallId = "delegation-call";
+      const commandCallId = "nested-big-command";
+      seedEvent(harness.deps, {
+        ...turn,
+        data: {},
+        sequence: 1,
+        type: "turn/started",
+      });
+      seedEvent(harness.deps, {
+        ...turn,
+        data: {
+          item: {
+            arguments: { prompt: "Inspect nested output." },
+            id: delegationCallId,
+            status: "pending",
+            tool: "Agent",
+            type: "toolCall",
+          },
+        },
+        sequence: 2,
+        type: "item/started",
+      });
+      seedEvent(harness.deps, {
+        ...turn,
+        data: {
+          item: {
+            aggregatedOutput: BIG_OUTPUT,
+            approvalStatus: null,
+            command: "nested big",
+            cwd: "/tmp",
+            exitCode: 0,
+            id: commandCallId,
+            parentToolCallId: delegationCallId,
+            status: "completed",
+            type: "commandExecution",
+          },
+        },
+        sequence: 3,
+        type: "item/completed",
+      });
+
+      const running = await getTimeline(harness, thread.id);
+      const runningCommand = findNestedCommandRow(running.rows, "nested big");
+      expect(runningCommand.output.length).toBeLessThan(
+        TIMELINE_INLINE_OUTPUT_PREVIEW_THRESHOLD_CHARS,
+      );
+      expect(runningCommand.outputPreview).toEqual({
+        experimental_fullOutputAvailability: "available",
+        totalChars: BIG_OUTPUT.length,
+      });
+
+      seedEvent(harness.deps, {
+        ...turn,
+        data: {
+          item: {
+            arguments: { prompt: "Inspect nested output." },
+            id: delegationCallId,
+            result: "Done",
+            status: "completed",
+            tool: "Agent",
+            type: "toolCall",
+          },
+        },
+        sequence: 4,
+        type: "item/completed",
+      });
+
+      const settled = await getTimeline(
+        harness,
+        thread.id,
+        "?deferContent=true",
+      );
+      const inline = await getTimeline(harness, thread.id);
+      expect(
+        findNestedCommandRow(inline.rows, "nested big").outputPreview,
+      ).toBeDefined();
+      expect(maybeFindNestedCommandRow(settled.rows, "nested big")).toBeNull();
+      const delegation = settled.rows.find(
+        (row) => row.kind === "work" && row.workKind === "delegation",
+      );
+      if (delegation?.kind !== "work" || delegation.workKind !== "delegation") {
+        throw new Error("Expected delegation row");
+      }
+      expect(delegation.childRows).toBeNull();
+
+      const detailsUrl = (callId: string, sourceSeqStart = 2) =>
+        `/api/v1/threads/${thread.id}/timeline/turn-summary-details?turnId=${delegation.turnId}&sourceSeqStart=${sourceSeqStart}&sourceSeqEnd=${delegation.sourceSeqEnd}&itemId=${callId}`;
+      const childrenResponse = await harness.app.request(
+        detailsUrl(delegationCallId),
+      );
+      expect(childrenResponse.status).toBe(200);
+      const children = timelineTurnSummaryDetailsResponseSchema.parse(
+        await readJson(childrenResponse),
+      );
+      const previewed = findNestedCommandRow(children.rows, "nested big");
+      const fromLaterStart = await harness.app.request(
+        detailsUrl(delegationCallId, 3),
+      );
+      expect(fromLaterStart.status).toBe(200);
+      expect(
+        timelineTurnSummaryDetailsResponseSchema.parse(
+          await readJson(fromLaterStart),
+        ).rows,
+      ).toEqual(children.rows);
+      expect(previewed.output.length).toBeLessThan(
+        TIMELINE_INLINE_OUTPUT_PREVIEW_THRESHOLD_CHARS,
+      );
+      expect(previewed.outputPreview).toBeDefined();
+
+      const fullResponse = await harness.app.request(detailsUrl(commandCallId));
+      expect(fullResponse.status).toBe(200);
+      const full = timelineTurnSummaryDetailsResponseSchema.parse(
+        await readJson(fullResponse),
+      );
+      expect(full.rows).toEqual([
+        expect.objectContaining({
+          callId: commandCallId,
+          output: BIG_OUTPUT,
+        }),
+      ]);
+      expect(full.rows[0]).not.toHaveProperty("outputPreview");
+
+      const missing = await harness.app.request(detailsUrl("unknown-call"));
+      expect(missing.status).toBe(400);
     });
   });
 });

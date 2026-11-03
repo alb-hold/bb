@@ -1,43 +1,24 @@
 import { defineSplit, SplitLoadFailure } from "@/lib/define-split";
 import {
+  useContext,
   useEffect,
   type ComponentProps,
   type ReactNode,
 } from "react";
 import { useAtomValue } from "jotai";
 import { Panel } from "react-resizable-panels";
-import { Skeleton } from "@bb/shared-ui/skeleton";
 import { cn } from "@bb/shared-ui/lib/utils";
+import { preloadTerminalModules } from "@/components/thread/terminal/terminal-modules";
+import { FilePreviewLoading } from "./FilePreviewChrome";
+import { SecondaryPanelContentSkeleton } from "./SecondaryPanelContentSkeleton";
 import { PANEL_COLLAPSE_TRANSITION_CLASS } from "./panelTransitionTokens";
 import {
   CONVERSATION_COLLAPSED_PANEL_SIZE_PERCENT,
   useSecondaryPanelMinimum,
 } from "./secondaryPanelSizing";
-import { secondaryPanelWidthPercentAtom } from "./threadSecondaryPanelAtoms";
+import { SecondaryPanelWidthPercentAtomContext } from "./threadSecondaryPanelAtoms";
 
 type ThreadSecondaryPanelModule = typeof import("./ThreadSecondaryPanel");
-
-export function SecondaryPanelContentSkeleton() {
-  return (
-    <div
-      className="space-y-2 px-4 py-4"
-      data-testid="secondary-panel-content-skeleton"
-    >
-      <Skeleton className="h-3 w-3/4 rounded-sm" />
-      <Skeleton className="h-3 w-full rounded-sm" />
-      <Skeleton className="h-3 w-5/6 rounded-sm" />
-      <Skeleton className="h-3 w-2/3 rounded-sm" />
-    </div>
-  );
-}
-
-function FilePreviewLoading() {
-  return (
-    <div role="status" aria-label="Loading file preview">
-      <SecondaryPanelContentSkeleton />
-    </div>
-  );
-}
 
 interface ThreadSecondaryPanelInlinePlaceholderProps {
   isOpen: boolean;
@@ -53,7 +34,9 @@ function ThreadSecondaryPanelInlinePlaceholder({
   children,
 }: ThreadSecondaryPanelInlinePlaceholderProps) {
   const minimumSize = useSecondaryPanelMinimum();
-  const persistedWidthPercent = useAtomValue(secondaryPanelWidthPercentAtom);
+  const persistedWidthPercent = useAtomValue(
+    useContext(SecondaryPanelWidthPercentAtomContext),
+  );
   return (
     <Panel
       id={resizablePanelId}
@@ -69,8 +52,9 @@ function ThreadSecondaryPanelInlinePlaceholder({
       minSize={(1 - minimumSize.max) * 100}
       maxSize={isConversationCollapsed ? 100 : (1 - minimumSize.min) * 100}
       order={2}
+      style={{ overflow: "clip" }}
       className={cn(
-        "min-w-0 overflow-clip",
+        "min-w-0",
         `relative transition-[flex-grow,flex-basis] ${PANEL_COLLAPSE_TRANSITION_CLASS}`,
         isOpen && !isConversationCollapsed && "border-l border-border-seam",
       )}
@@ -83,6 +67,24 @@ function ThreadSecondaryPanelInlinePlaceholder({
       ) : null}
     </Panel>
   );
+}
+
+function ThreadSecondaryPanelPlaceholderContent({
+  activeTab,
+  metadataContent,
+}: Pick<LazyThreadSecondaryPanelProps, "activeTab" | "metadataContent">) {
+  switch (activeTab?.kind) {
+    case "thread-info":
+      return (
+        <div className="flex min-h-0 flex-1 flex-col">{metadataContent}</div>
+      );
+    case "workspace-file-preview":
+    case "host-file-preview":
+    case "thread-storage-file-preview":
+      return <FilePreviewLoading path={activeTab.path} copyPath={null} />;
+    default:
+      return <SecondaryPanelContentSkeleton />;
+  }
 }
 
 type LazyThreadSecondaryPanelProps = ComponentProps<
@@ -105,7 +107,12 @@ const ThreadSecondaryPanelSplit = defineSplit<LazyThreadSecondaryPanelProps>({
         isOpen={props.isOpen}
         isConversationCollapsed={props.isConversationCollapsed}
         resizablePanelId={props.resizablePanelId}
-      />
+      >
+        <ThreadSecondaryPanelPlaceholderContent
+          activeTab={props.activeTab}
+          metadataContent={props.metadataContent}
+        />
+      </ThreadSecondaryPanelInlinePlaceholder>
     ),
   error: (props) =>
     props.renderAsDrawer ? (
@@ -152,10 +159,12 @@ export function preloadThreadSecondaryPanel(): void {
 
 export const LazyThreadTerminalPanel = defineSplit({
   id: "thread-terminal-panel",
-  load: () =>
-    import("@/components/thread/terminal/ThreadTerminalPanel").then(
+  load: () => {
+    preloadTerminalModules();
+    return import("@/components/thread/terminal/ThreadTerminalPanel").then(
       (module) => module.ThreadTerminalPanel,
-    ),
+    );
+  },
   loading: () => (
     <div role="status" aria-label="Loading terminal">
       <SecondaryPanelContentSkeleton />
@@ -192,7 +201,13 @@ export const LazyNewTabPage = defineSplit({
 export const LazyFilePreview = defineSplit({
   id: "file-preview",
   load: () => import("./FilePreview").then((module) => module.FilePreview),
-  loading: FilePreviewLoading,
+  loading: ({ path, copyPath, headerMode }) => (
+    <FilePreviewLoading
+      path={path}
+      copyPath={copyPath ?? null}
+      showHeader={(headerMode ?? "file") === "file"}
+    />
+  ),
   tier: "intent",
 });
 
@@ -202,8 +217,10 @@ export const LazyWorkspaceFilePreviewTabContent = defineSplit({
     import("./ThreadSecondaryPanelTabContent").then(
       (module) => module.WorkspaceFilePreviewTabContent,
     ),
-  loading: FilePreviewLoading,
-  tier: "intent",
+  loading: ({ activePath, copyPath }) => (
+    <FilePreviewLoading path={activePath} copyPath={copyPath ?? null} />
+  ),
+  tier: "preload",
 });
 
 export const LazyHostFilePreviewTabContent = defineSplit({
@@ -212,8 +229,10 @@ export const LazyHostFilePreviewTabContent = defineSplit({
     import("./ThreadSecondaryPanelTabContent").then(
       (module) => module.HostFilePreviewTabContent,
     ),
-  loading: FilePreviewLoading,
-  tier: "intent",
+  loading: ({ activePath, copyPath }) => (
+    <FilePreviewLoading path={activePath} copyPath={copyPath ?? null} />
+  ),
+  tier: "preload",
 });
 
 export const LazyHostScopedFilePreviewTabContent = defineSplit({
@@ -222,8 +241,10 @@ export const LazyHostScopedFilePreviewTabContent = defineSplit({
     import("./ThreadSecondaryPanelTabContent").then(
       (module) => module.HostScopedFilePreviewTabContent,
     ),
-  loading: FilePreviewLoading,
-  tier: "intent",
+  loading: ({ activePath }) => (
+    <FilePreviewLoading path={activePath} copyPath={activePath} />
+  ),
+  tier: "preload",
 });
 
 export const LazyProjectFilePreviewTabContent = defineSplit({
@@ -232,8 +253,10 @@ export const LazyProjectFilePreviewTabContent = defineSplit({
     import("./ThreadSecondaryPanelTabContent").then(
       (module) => module.ProjectFilePreviewTabContent,
     ),
-  loading: FilePreviewLoading,
-  tier: "intent",
+  loading: ({ activePath, copyPath }) => (
+    <FilePreviewLoading path={activePath} copyPath={copyPath ?? null} />
+  ),
+  tier: "preload",
 });
 
 export const LazyThreadStorageFilePreviewTabContent = defineSplit({
@@ -242,7 +265,19 @@ export const LazyThreadStorageFilePreviewTabContent = defineSplit({
     import("./ThreadSecondaryPanelTabContent").then(
       (module) => module.ThreadStorageFilePreviewTabContent,
     ),
-  loading: FilePreviewLoading,
+  loading: ({ activePath, copyPath }) => (
+    <FilePreviewLoading path={activePath} copyPath={copyPath ?? null} />
+  ),
+  tier: "preload",
+});
+
+export const LazyAttachmentFilePreviewTabContent = defineSplit({
+  id: "attachment-file-preview-tab",
+  load: () =>
+    import("./ThreadSecondaryPanelTabContent").then(
+      (module) => module.AttachmentFilePreviewTabContent,
+    ),
+  loading: ({ name }) => <FilePreviewLoading path={name} copyPath={null} />,
   tier: "intent",
 });
 
@@ -256,4 +291,5 @@ const panelContentSplits = [
   LazyHostScopedFilePreviewTabContent,
   LazyProjectFilePreviewTabContent,
   LazyThreadStorageFilePreviewTabContent,
+  LazyAttachmentFilePreviewTabContent,
 ];

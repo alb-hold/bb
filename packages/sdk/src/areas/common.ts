@@ -26,10 +26,28 @@ export async function readExecutionOptions(
         query: {
           environmentId: input.environmentId,
           hostId: input.hostId,
+          projectId: input.projectId,
           providerId: input.providerId,
+          selectedModel: input.selectedModel,
         },
       },
       ...signalRequestArgs(input.signal),
     ),
   );
+}
+
+export interface ThreadOpenDeliveryScope {
+  all?: boolean;
+  callerThreadId?: string;
+}
+
+export function threadOpenDeliveryScopeBody(
+  scope: ThreadOpenDeliveryScope,
+): ThreadOpenDeliveryScope {
+  return {
+    ...(scope.callerThreadId === undefined
+      ? {}
+      : { callerThreadId: scope.callerThreadId }),
+    ...(scope.all === undefined ? {} : { all: scope.all }),
+  };
 }

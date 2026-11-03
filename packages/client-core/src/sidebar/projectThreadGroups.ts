@@ -42,6 +42,7 @@ interface BuildThreadNodeArgs {
   depth: number;
   draftThreadIds: ReadonlySet<string>;
   thread: ThreadListEntry;
+  now: number;
   visitedThreadIds: Set<string>;
 }
 
@@ -60,10 +61,11 @@ export function getProjectThreadItemDescendants(
 function buildStatsForHiddenThreads(
   threads: readonly ThreadListEntry[],
   draftThreadIds: ReadonlySet<string>,
+  now: number,
 ): ProjectThreadNodeStats {
   return {
     childCount: threads.length,
-    childActivity: getCollapsedChildActivity(threads, draftThreadIds),
+    childActivity: getCollapsedChildActivity(threads, draftThreadIds, now),
   };
 }
 
@@ -86,6 +88,7 @@ function buildThreadNode({
   depth,
   draftThreadIds,
   thread,
+  now,
   visitedThreadIds,
 }: BuildThreadNodeArgs): ProjectThreadNode {
   visitedThreadIds.add(thread.id);
@@ -105,6 +108,7 @@ function buildThreadNode({
         depth: depth + 1,
         draftThreadIds,
         thread: childThread,
+        now,
         visitedThreadIds,
       }),
     );
@@ -118,6 +122,7 @@ function buildThreadNode({
     stats: buildStatsForHiddenThreads(
       getProjectThreadItemDescendants(children),
       draftThreadIds,
+      now,
     ),
   };
 }
@@ -153,6 +158,7 @@ export function buildChronologicalThreadList(
   allThreads: readonly ThreadListEntry[],
   compareThreads: ThreadComparator,
   draftThreadIds: ReadonlySet<string> = new Set(),
+  now = Date.now(),
 ): ProjectThreadItem[] {
   const projectThreads = allThreads.filter(isSidebarProjectThread);
   const projectThreadIds = new Set(projectThreads.map((thread) => thread.id));
@@ -185,6 +191,7 @@ export function buildChronologicalThreadList(
         depth: 0,
         draftThreadIds,
         thread,
+        now,
         visitedThreadIds,
       }),
     );
@@ -201,6 +208,7 @@ export function buildChronologicalThreadList(
         depth: 0,
         draftThreadIds,
         thread,
+        now,
         visitedThreadIds,
       }),
     );

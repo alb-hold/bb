@@ -1,15 +1,9 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { makeTempDir } from "@bb/test-helpers";
+import { describe, expect, it } from "vitest";
 import { dispatchOnlineRpcCommand } from "../../src/command-dispatch.js";
-import {
-  cleanupTempDirs,
-  createHarness,
-  makeTempDir,
-  runGitCommand,
-} from "./dispatch-helpers.js";
-
-afterEach(cleanupTempDirs);
+import { createHarness, runGitCommand } from "./dispatch-helpers.js";
 
 function gitShellPath(filePath: string): string {
   return filePath.replaceAll("\\", "/");
@@ -112,7 +106,10 @@ async function readUploadPackInvocations(
   sshLogPath: string,
 ): Promise<string[]> {
   const log = await fs.readFile(sshLogPath, "utf8").catch(() => "");
-  return log.split("--\n").filter((entry) => entry.includes("git-upload-pack"));
+  return log
+    .split("--\n")
+    .slice(0, -1)
+    .filter((entry) => entry.includes("git-upload-pack"));
 }
 
 async function waitForUploadPackInvocations(
@@ -179,6 +176,22 @@ async function waitForFile(filePath: string, timeoutMs = 2_000): Promise<void> {
 }
 
 describe("host.inspect_git_source dispatch", () => {
+  it("ignores an unterminated ssh invocation entry", async () => {
+    const sshLogPath = path.join(
+      await makeTempDir("bb-host-branches-ssh-log-"),
+      "ssh-invocations.log",
+    );
+    await fs.writeFile(
+      sshLogPath,
+      "git-upload-pack '/complete.git'\nGIT_TERMINAL_PROMPT=0\n--\ngit-upload-pack '/partial.git'\n",
+      "utf8",
+    );
+
+    await expect(readUploadPackInvocations(sshLogPath)).resolves.toEqual([
+      "git-upload-pack '/complete.git'\nGIT_TERMINAL_PROMPT=0\n",
+    ]);
+  });
+
   it("reports checkout and default-ref metadata without branch pages", async () => {
     const repoPath = await initBranchRepo();
     const harness = createHarness();
@@ -190,6 +203,7 @@ describe("host.inspect_git_source dispatch", () => {
         remoteRefresh: "blocking",
       },
       harness.dispatchOptions(),
+      new AbortController().signal,
     );
 
     expect(result).toMatchObject({
@@ -216,6 +230,7 @@ describe("host.inspect_git_source dispatch", () => {
           remoteRefresh: "background",
         },
         harness.dispatchOptions(),
+        new AbortController().signal,
       );
       await waitForFile(refreshStartedPath, 30_000);
       const result = await expectResolvesWithin(resultPromise, 30_000);
@@ -233,6 +248,7 @@ describe("host.inspect_git_source dispatch", () => {
           remoteRefresh: "blocking",
         },
         harness.dispatchOptions(),
+        new AbortController().signal,
       );
     }
 
@@ -254,6 +270,7 @@ describe("host.inspect_git_source dispatch", () => {
         remoteRefresh: "blocking",
       },
       harness.dispatchOptions(),
+      new AbortController().signal,
     );
     let result: Awaited<typeof resultPromise>;
 
@@ -283,6 +300,7 @@ describe("host.inspect_git_source dispatch", () => {
         remoteRefresh: "background",
       },
       harness.dispatchOptions(),
+      new AbortController().signal,
     );
 
     const invocations = await waitForUploadPackInvocations(sshLogPath, 1);
@@ -301,6 +319,7 @@ describe("host.inspect_git_source dispatch", () => {
         remoteRefresh: "blocking",
       },
       harness.dispatchOptions(),
+      new AbortController().signal,
     );
 
     const invocations = await readUploadPackInvocations(sshLogPath);
@@ -319,6 +338,7 @@ describe("host.inspect_git_source dispatch", () => {
         remoteRefresh: "background",
       },
       harness.dispatchOptions(),
+      new AbortController().signal,
     );
     await waitForUploadPackInvocations(sshLogPath, 1);
     await dispatchOnlineRpcCommand(
@@ -328,6 +348,7 @@ describe("host.inspect_git_source dispatch", () => {
         remoteRefresh: "blocking",
       },
       harness.dispatchOptions(),
+      new AbortController().signal,
     );
 
     const invocations = await readUploadPackInvocations(sshLogPath);
@@ -348,6 +369,7 @@ describe("host.inspect_git_source dispatch", () => {
         remoteRefresh: "blocking",
       },
       harness.dispatchOptions(),
+      new AbortController().signal,
     );
 
     expect(result.hasUncommittedChanges).toBe(true);
@@ -369,6 +391,7 @@ describe("host.inspect_git_source dispatch", () => {
         remoteRefresh: "blocking",
       },
       harness.dispatchOptions(),
+      new AbortController().signal,
     );
 
     expect(result.checkout).toMatchObject({
@@ -391,6 +414,7 @@ describe("host.inspect_git_source dispatch", () => {
         remoteRefresh: "blocking",
       },
       harness.dispatchOptions(),
+      new AbortController().signal,
     );
 
     expect(result).toEqual({
@@ -415,6 +439,7 @@ describe("host.inspect_git_source dispatch", () => {
         remoteRefresh: "blocking",
       },
       harness.dispatchOptions(),
+      new AbortController().signal,
     );
 
     expect(result).toEqual({
@@ -442,6 +467,7 @@ describe("host.list_branch_options dispatch", () => {
         remoteRefresh: "none",
       },
       harness.dispatchOptions(),
+      new AbortController().signal,
     );
 
     expect(result.branches).toEqual(["main", "develop", "release/1.2"]);
@@ -469,6 +495,7 @@ describe("host.list_branch_options dispatch", () => {
         remoteRefresh: "none",
       },
       harness.dispatchOptions(),
+      new AbortController().signal,
     );
 
     expect(result.remoteBranches).toEqual([
@@ -492,6 +519,7 @@ describe("host.list_branch_options dispatch", () => {
         remoteRefresh: "none",
       },
       harness.dispatchOptions(),
+      new AbortController().signal,
     );
 
     expect(result.branches).toEqual(["release/1.2"]);
@@ -521,6 +549,7 @@ describe("host.list_branch_options dispatch", () => {
         remoteRefresh: "none",
       },
       harness.dispatchOptions(),
+      new AbortController().signal,
     );
 
     expect(result.branches).toEqual(["main"]);
@@ -584,6 +613,7 @@ describe("host.list_branch_options dispatch", () => {
         remoteRefresh: "background",
       },
       harness.dispatchOptions(),
+      new AbortController().signal,
     );
 
     try {
@@ -608,6 +638,7 @@ describe("host.list_branch_options dispatch", () => {
           remoteRefresh: "blocking",
         },
         harness.dispatchOptions(),
+        new AbortController().signal,
       );
     }
 
@@ -620,6 +651,7 @@ describe("host.list_branch_options dispatch", () => {
         remoteRefresh: "none",
       },
       harness.dispatchOptions(),
+      new AbortController().signal,
     );
     expect(refreshed.remoteBranches).toContain("origin/feature/remote-only");
   });
@@ -647,6 +679,7 @@ describe("host.list_branch_options dispatch", () => {
         remoteRefresh: "none",
       },
       harness.dispatchOptions(),
+      new AbortController().signal,
     );
 
     expect(result.branches).toEqual(["release/1.2"]);
@@ -672,6 +705,7 @@ describe("host.list_branch_options dispatch", () => {
         remoteRefresh: "none",
       },
       harness.dispatchOptions(),
+      new AbortController().signal,
     );
 
     expect(result.branches).toEqual(
@@ -693,6 +727,7 @@ describe("host.list_branch_options dispatch", () => {
           remoteRefresh: "none",
         },
         harness.dispatchOptions(),
+        new AbortController().signal,
       );
 
       expect(result).toEqual({
@@ -718,6 +753,7 @@ describe("host.list_branch_options dispatch", () => {
         remoteRefresh: "none",
       },
       harness.dispatchOptions(),
+      new AbortController().signal,
     );
 
     expect(result).toEqual({

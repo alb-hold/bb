@@ -1,3 +1,4 @@
+import { useServerChoices } from "@/hooks/useServerChoices";
 import {
   useCallback,
   useEffect,
@@ -86,9 +87,32 @@ export function CommandPaletteBody({
     [navigate, pluginSlots.navPanels],
   );
 
+  const serverChoices = useServerChoices();
+  const serverActions = useMemo<PaletteAction[]>(
+    () =>
+      serverChoices === null
+        ? []
+        : serverChoices.servers
+            .filter((server) => !server.active)
+            .map((server) => ({
+              id: `server:${server.id}`,
+              title: `Switch to ${server.name}`,
+              bucket: "Actions",
+              group: "Servers",
+              shortcut: null,
+              run: () => serverChoices.switchTo(server.id),
+            })),
+    [serverChoices],
+  );
+
   const availableActions = useMemo<readonly PaletteAction[]>(
-    () => [...actions, ...settingsActions, ...pluginPageActions],
-    [actions, pluginPageActions, settingsActions],
+    () => [
+      ...actions,
+      ...settingsActions,
+      ...pluginPageActions,
+      ...serverActions,
+    ],
+    [actions, pluginPageActions, settingsActions, serverActions],
   );
   const commandQuery = query.startsWith(">") ? query.slice(1) : query;
   const ranked = useMemo(

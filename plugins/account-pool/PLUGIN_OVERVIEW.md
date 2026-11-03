@@ -3,7 +3,7 @@ Route Claude Code and Codex conversations across subscriptions with a local pool
 ## What you get
 
 - Choose a subscription in the model menu with per-account usage. **Automatic** enables failover; an explicit choice never silently switches. CLI: `bb pool select <thread-id> <claude|codex> [<account-id>|automatic]`.
-- A pool of Claude and Codex accounts, added by importing the login already on the machine, signing in through the browser, or pasting an Anthropic API key.
+- A pool of Claude and Codex accounts, added by importing the login already on the machine, signing in through a clean in-app window (desktop; other clients open the browser), or pasting an Anthropic API key.
 - Automatic sends new Claude conversations to the subscription with the most headroom and Codex conversations in priority order. A conversation keeps its account until it becomes unavailable.
 - Drag handles, or Space and the arrow keys, set each provider's order; `bb pool account reorder <claude|codex> <id>...` does the same.
 - Subscriptions in settings: switch each on or off, rename it in place, see its plan and state, sign an expired one in again, or remove it after confirming. Records of one login count once. On this Mac lists local logins not yet pooled.
@@ -12,11 +12,11 @@ Route Claude Code and Codex conversations across subscriptions with a local pool
 
 ## How it works
 
-The hub serves Anthropic Messages and OpenAI Responses endpoints. Routed providers report **Proxied** and receive a token scoped to their thread. Accounts in error are skipped. The switch threshold defaults to 98 percent. Claude extra usage and Codex credits are fallbacks: usable subscription accounts take precedence, and conversations return when quota recovers. Exhausted accounts are rechecked before fallback. Codex spending-control and explicit credit-depletion restrictions block routing even below the threshold. The pool does not enable extra usage, purchase credits, or change spending limits. Usage details shows extra usage as available only for reported allowance, never current billing activity. CLI and RPC status expose the same observations. Secrets stay on the server and tokens refresh in the background.
+The hub serves Anthropic Messages and OpenAI Responses endpoints. Routed providers report **Proxied** and receive a token scoped to their thread. Accounts in error are skipped. The switch threshold defaults to 98 percent. Claude extra usage and Codex credits are fallbacks: usable subscription accounts take precedence, and conversations return when quota recovers. Exhausted accounts are rechecked before fallback. Codex spending-control and explicit credit-depletion restrictions block routing even below the threshold. The pool does not enable extra usage, purchase credits, or change spending limits. Usage details shows extra usage as available only for reported allowance, never current billing activity. Secrets stay on the server and tokens refresh in the background.
 
 The pool waits once on the same account for short temporary rate limits. Longer holds return Retry-After for pinned conversations while new conversations can advance. A model-family limit detours requests for that family without moving the session’s main pin or the provider cursor. The pool commits a new account after a successful response; a failed attempt across every account retains the previous binding. The current account and session pins survive hub restarts. Session pins expire after 30 idle minutes, with the 4,096 most recently used pins retained.
 
-The pool uses HTTP/1.1 and honors standard proxy environment variables. Connection failures log error codes without credentials or request contents.
+The pool uses HTTP/1.1 and honors standard proxy environment variables.
 
 ## Nested bb servers
 
@@ -25,7 +25,7 @@ A bb server started inside another bb server's thread detects the parent's poole
 - **proxy** (default): keep a local hub with its own machine tokens and forward pooled traffic to the parent, so the parent's token never reaches this server's agents. Routing is contributed only for providers the parent can serve.
 - **isolate**: neutralise the inherited routing and use this instance's own accounts, or each provider's own credentials.
 
-Proxied traffic carries a token scoped to the launching thread; the parent attributes it to the machine.
+Proxied traffic carries a token scoped to the launching thread.
 
 ## Requirements
 
@@ -35,4 +35,8 @@ Experimental: routing, storage, and CLI may change.
 
 ## For agents
 
-`bb pool account add|list|local|sign-in-again|rename|remove|enable|disable|priority|reorder`, `bb pool status`, `bb pool routing <claude|codex> [--off]`, `bb pool config`, `bb pool config set`, `bb pool parent [proxy|isolate]`, `bb pool token rotate`, `bb pool bypass <thread-id> [--off]`, and `bb pool bypass get <thread-id>` (read-only), and `bb pool route issue|revoke|list`. Commands accept `--json` and `--help`.
+`bb pool account add|list|local|sign-in-again|rename|remove|enable|disable|priority|reorder`, `bb pool status`, `bb pool routing <claude|codex> [--off]`, `bb pool config`, `bb pool config set`, `bb pool parent [proxy|isolate]`, `bb pool token rotate`, `bb pool bypass <thread-id> [--off]`, and `bb pool bypass get <thread-id>` (read-only), and `bb pool route issue|revoke|list`. Commands accept `--json`.
+
+## Automatic retries
+
+Provider Retry uses pool recovery times: see `bb provider-retry status` or `bb provider-retry explain <thread-id>`.

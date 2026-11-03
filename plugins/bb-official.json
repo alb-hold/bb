@@ -30,6 +30,10 @@
     "category": "cloud-and-remote",
     "screenshots": []
   },
+  "connect-next": {
+    "category": "cloud-and-remote",
+    "screenshots": []
+  },
   "custom-instructions": {
     "category": "memory-and-context",
     "screenshots": []
@@ -102,11 +106,15 @@
     "category": "tasks-and-workflows",
     "screenshots": []
   },
+  "navigation": {
+    "category": "thread-management",
+    "screenshots": []
+  },
   "thread-list": {
     "category": "thread-management",
     "screenshots": []
   },
-  "navigation": {
+  "composer": {
     "category": "thread-management",
     "screenshots": []
   },
@@ -123,6 +131,14 @@
     "screenshots": []
   },
   "github": {
+    "category": "code-and-reviews",
+    "screenshots": []
+  },
+  "git": {
+    "category": "code-and-reviews",
+    "screenshots": []
+  },
+  "github-pr-status": {
     "category": "code-and-reviews",
     "screenshots": []
   },
@@ -179,6 +195,10 @@
   },
   "prompt-library": {
     "category": "memory-and-context",
+    "screenshots": []
+  },
+  "mcp": {
+    "category": "cloud-and-remote",
     "screenshots": []
   },
   "storage-retention": {

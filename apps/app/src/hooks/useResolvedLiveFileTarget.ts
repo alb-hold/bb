@@ -1,18 +1,8 @@
-import { useMemo } from "react";
-import type { ExperimentalLiveFileTarget } from "@get-bb/plugin-sdk";
 import type { OpenInTargetContext } from "@bb/host-daemon-contract";
+import type { Environment } from "@bb/domain";
+import type { ThreadStorageLocationResponse } from "@bb/server-contract";
 import { useEnvironment } from "@/hooks/queries/environment-queries";
-import { useThreadStorageLocation } from "@/hooks/queries/thread-queries";
-import { useHostDaemon } from "@/hooks/useHostDaemon";
-
-type ResolvedLiveFileTarget =
-  | { status: "loading" }
-  | { status: "unavailable" }
-  | {
-      status: "available";
-      absolutePath: string;
-      openContext: OpenInTargetContext;
-    };
+import { useThreadStorageLocation } from "@/hooks/queries/thread-panel-queries";
 
 function buildAbsoluteHostPath(rootPath: string, relativePath: string): string {
   const usesWindowsSeparators =
@@ -25,83 +15,123 @@ function buildAbsoluteHostPath(rootPath: string, relativePath: string): string {
   return `${trimmedRootPath}${separator}${normalizedRelativePath}`;
 }
 
-export function useResolvedLiveFileTarget(
-  target: ExperimentalLiveFileTarget | null,
-  options: { enabled: boolean },
-): ResolvedLiveFileTarget {
+interface LiveFileTargetLookups {
+  environmentId: string;
+  environmentEnabled: boolean;
+  storageThreadId: string;
+  storageEnabled: boolean;
+}
+
+export function getLiveFileTargetLookups(
+  target: LiveFileRoot | null,
+  enabled: boolean,
+): LiveFileTargetLookups {
   const storageThreadId =
     target?.kind === "thread-storage" ? target.threadId : "";
   const environmentId =
     target?.kind === "workspace" ? target.environmentId : "";
-  const environmentQuery = useEnvironment(environmentId, {
-    enabled: options.enabled && environmentId.length > 0,
-  });
-  const storageQuery = useThreadStorageLocation(storageThreadId, {
-    enabled: options.enabled && storageThreadId.length > 0,
-  });
-  const { isLocalDaemonHost } = useHostDaemon();
+  return {
+    environmentId,
+    environmentEnabled: enabled && environmentId.length > 0,
+    storageThreadId,
+    storageEnabled: enabled && storageThreadId.length > 0,
+  };
+}
 
-  return useMemo(() => {
-    if (!options.enabled || target === null) return { status: "unavailable" };
-    if (target.kind === "host") {
-      return {
+interface LookupState<TData> {
+  data: TData | undefined;
+  isLoading: boolean;
+}
+
+export type LiveFileRoot =
+  | { kind: "workspace"; environmentId: string }
+  | { kind: "host"; hostId: string }
+  | { kind: "thread-storage"; threadId: string };
+
+type ResolvedLiveFileRoot =
+  | { status: "loading" }
+  | { status: "unavailable" }
+  | { status: "available"; hostId: string; rootPath: string | null };
+
+export function resolveLiveFileRoot({
+  root,
+  environmentQuery,
+  storageQuery,
+}: {
+  root: LiveFileRoot;
+  environmentQuery: LookupState<Environment>;
+  storageQuery: LookupState<ThreadStorageLocationResponse>;
+}): ResolvedLiveFileRoot {
+  if (root.kind === "host") {
+    return { status: "available", hostId: root.hostId, rootPath: null };
+  }
+  const query = root.kind === "workspace" ? environmentQuery : storageQuery;
+  if (query.isLoading) return { status: "loading" };
+  if (root.kind === "thread-storage") {
+    const location = storageQuery.data;
+    return location === undefined
+      ? { status: "unavailable" }
+      : {
+          status: "available",
+          hostId: location.hostId,
+          rootPath: location.storageRootPath,
+        };
+  }
+  const environment = environmentQuery.data;
+  return environment === undefined ||
+    environment.status !== "ready" ||
+    environment.hostLifecycle !== "active" ||
+    environment.path === null
+    ? { status: "unavailable" }
+    : {
         status: "available",
-        absolutePath: target.path,
-        openContext: isLocalDaemonHost(target.hostId)
-          ? { kind: "local" }
-          : {
-              kind: "remote-ssh",
-              hostId: target.hostId,
-              serverOrigin: window.location.origin,
-            },
+        hostId: environment.hostId,
+        rootPath: environment.path,
       };
-    }
+}
 
-    if (target.kind === "thread-storage") {
-      if (storageQuery.isLoading) return { status: "loading" };
-      const location = storageQuery.data;
-      if (location === undefined) {
-        return { status: "unavailable" };
-      }
-      return {
-        status: "available",
-        absolutePath: buildAbsoluteHostPath(
-          location.storageRootPath,
-          target.path,
-        ),
-        openContext: isLocalDaemonHost(location.hostId)
-          ? { kind: "local" }
-          : {
-              kind: "remote-ssh",
-              hostId: location.hostId,
-              serverOrigin: window.location.origin,
-            },
-      };
-    }
+export function getLiveFileOpenContext({
+  hostId,
+  isLocalDaemonHost,
+  serverOrigin,
+}: {
+  hostId: string;
+  isLocalDaemonHost: (hostId: string) => boolean;
+  serverOrigin: string;
+}): OpenInTargetContext {
+  return isLocalDaemonHost(hostId)
+    ? { kind: "local" }
+    : { kind: "remote-ssh", hostId, serverOrigin };
+}
 
-    if (environmentQuery.isLoading) return { status: "loading" };
-    const environment = environmentQuery.data;
-    if (environment === undefined || environment.path === null) {
-      return { status: "unavailable" };
-    }
-    return {
-      status: "available",
-      absolutePath: buildAbsoluteHostPath(environment.path, target.path),
-      openContext: isLocalDaemonHost(environment.hostId)
-        ? { kind: "local" }
-        : {
-            kind: "remote-ssh",
-            hostId: environment.hostId,
-            serverOrigin: window.location.origin,
-          },
-    };
-  }, [
-    environmentQuery.data,
-    environmentQuery.isLoading,
-    isLocalDaemonHost,
-    options.enabled,
-    storageQuery.data,
-    storageQuery.isLoading,
-    target,
-  ]);
+export function resolveLiveFilePath(
+  root: Extract<ResolvedLiveFileRoot, { status: "available" }>,
+  path: string,
+): string {
+  return root.rootPath === null
+    ? path
+    : buildAbsoluteHostPath(root.rootPath, path);
+}
+
+function useLiveFileRootQueries(root: LiveFileRoot | null, enabled: boolean) {
+  const lookups = getLiveFileTargetLookups(root, enabled);
+  const environmentQuery = useEnvironment(lookups.environmentId, {
+    enabled: lookups.environmentEnabled,
+  });
+  const storageQuery = useThreadStorageLocation(lookups.storageThreadId, {
+    enabled: lookups.storageEnabled,
+  });
+  return { environmentQuery, storageQuery };
+}
+
+export function useResolvedLiveFileRoot(
+  root: LiveFileRoot | null,
+): ResolvedLiveFileRoot {
+  const { environmentQuery, storageQuery } = useLiveFileRootQueries(
+    root,
+    root !== null,
+  );
+  return root === null
+    ? { status: "unavailable" }
+    : resolveLiveFileRoot({ root, environmentQuery, storageQuery });
 }

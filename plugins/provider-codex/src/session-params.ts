@@ -1,3 +1,4 @@
+import { experimental_selectedSkillMentions as selectedSkillMentions } from "@get-bb/plugin-sdk/provider-bridge";
 import {
   jsonValueSchema,
   removeCommandMentionsFromPromptInput,
@@ -20,6 +21,7 @@ import type { UserInput as CodexUserInput } from "./generated/codex-app-server/s
 import type { AskForApproval } from "./generated/codex-app-server/schema/v2/AskForApproval.js";
 import type { ApprovalsReviewer } from "./generated/codex-app-server/schema/v2/ApprovalsReviewer.js";
 import { mapBbReasoningLevelToCodex } from "./models.js";
+import { isCodexPoolEnvironmentVariable } from "./pool-launch.js";
 
 export type CodexSessionOptions = {
   model?: string;
@@ -48,6 +50,7 @@ export interface CodexThreadPermissionSettings {
 export type BbThreadStartParams = ThreadStartParams & {
   experimentalRawEvents?: boolean;
   dynamicTools?: DynamicToolSpec[];
+  daybreakEnabled?: boolean;
 };
 
 export type BbThreadForkParams = {
@@ -606,9 +609,23 @@ export function nextCodexCollaborationMode(args: {
   };
 }
 
+interface CodexCatalogSkill {
+  name: string;
+  path: string;
+}
+
+function codexSkillDirectoryName(skill: CodexCatalogSkill): string {
+  const directory = path.basename(path.dirname(skill.path));
+  const separator = skill.name.lastIndexOf(":");
+  return separator === -1
+    ? directory
+    : `${skill.name.slice(0, separator + 1)}${directory}`;
+}
+
 export function toCodexTurnInput(
   input: readonly PromptInput[],
   options: CodexSessionOptions,
+  skills: readonly CodexCatalogSkill[] = [],
 ): CodexUserInput[] {
   return toCodexUserInput(
     options.promptMode === "plan"
@@ -617,11 +634,31 @@ export function toCodexTurnInput(
           name: "plan",
         })
       : [...input],
+    skills,
   );
 }
 
-export function toCodexUserInput(input: PromptInput[]): CodexUserInput[] {
-  return input.map((chunk): CodexUserInput => {
+export function toCodexUserInput(
+  input: readonly PromptInput[],
+  skills: readonly CodexCatalogSkill[] = [],
+): CodexUserInput[] {
+  const selected = new Map<string, CodexUserInput>();
+  for (const chunk of input) {
+    if (chunk.type !== "text") continue;
+    for (const mention of selectedSkillMentions(chunk)) {
+      const name = mention.resource.name;
+      const skill =
+        skills.find((entry) => entry.name === name) ??
+        skills.find((entry) => codexSkillDirectoryName(entry) === name);
+      if (skill === undefined) continue;
+      selected.set(skill.path, {
+        type: "skill",
+        name: skill.name,
+        path: skill.path,
+      });
+    }
+  }
+  const chunks = input.map((chunk): CodexUserInput => {
     switch (chunk.type) {
       case "text":
         return { type: "text", text: chunk.text, text_elements: [] };
@@ -632,11 +669,14 @@ export function toCodexUserInput(input: PromptInput[]): CodexUserInput[] {
       case "localFile":
         return {
           type: "text",
-          text: `[Attached file: ${chunk.path}]`,
+          text: chunk.name
+            ? `[Attached file "${chunk.name}": ${chunk.path}]`
+            : `[Attached file: ${chunk.path}]`,
           text_elements: [],
         };
     }
   });
+  return [...chunks, ...selected.values()];
 }
 
 function buildShellEnvironmentPolicyConfig(
@@ -647,6 +687,7 @@ function buildShellEnvironmentPolicyConfig(
   }
   const config: Record<string, string> = {};
   for (const [key, value] of Object.entries(buildShellEnvOverrides(envVars))) {
+    if (isCodexPoolEnvironmentVariable(key)) continue;
     config[`shell_environment_policy.set.${key}`] = value;
   }
   return Object.keys(config).length > 0 ? config : undefined;

@@ -2,26 +2,27 @@ import type { Thread } from "@bb/domain";
 import {
   ConfirmDeleteDialog,
   ConfirmDeleteDialogContent,
-} from "./ConfirmDeleteDialog";
+} from "@bb/shared-ui/confirm-delete-dialog";
+import { formatChildThreadCount } from "@/lib/child-thread-copy";
 
 export interface ThreadDeleteDialogTarget {
-  thread: Thread;
+  threads: readonly Thread[];
   childThreadCount?: number;
 }
 
-interface ThreadDeleteDialogProps {
-  target: ThreadDeleteDialogTarget | null;
+interface ThreadDeleteDialogProps<Target extends ThreadDeleteDialogTarget> {
+  target: Target | null;
   pending: boolean;
   onOpenChange: (open: boolean) => void;
-  onDelete: (target: ThreadDeleteDialogTarget) => void;
+  onDelete: (target: Target) => void;
 }
 
-export function ThreadDeleteDialog({
+export function ThreadDeleteDialog<Target extends ThreadDeleteDialogTarget>({
   target,
   pending,
   onOpenChange,
   onDelete,
-}: ThreadDeleteDialogProps) {
+}: ThreadDeleteDialogProps<Target>) {
   return (
     <ConfirmDeleteDialog open={target !== null} onOpenChange={onOpenChange}>
       {target ? (
@@ -36,29 +37,43 @@ export function ThreadDeleteDialog({
   );
 }
 
-interface ThreadDeleteDialogContentProps {
-  target: ThreadDeleteDialogTarget;
+interface ThreadDeleteDialogContentProps<
+  Target extends ThreadDeleteDialogTarget,
+> {
+  target: Target;
   pending: boolean;
   onOpenChange: (open: boolean) => void;
-  onDelete: (target: ThreadDeleteDialogTarget) => void;
+  onDelete: (target: Target) => void;
 }
 
-export function ThreadDeleteDialogContent({
+export function ThreadDeleteDialogContent<
+  Target extends ThreadDeleteDialogTarget,
+>({
   target,
   pending,
   onOpenChange,
   onDelete,
-}: ThreadDeleteDialogContentProps) {
-  const label = "thread";
-  const sentences = [
-    target.childThreadCount ? "Child threads will be deleted." : null,
-    "This action cannot be undone.",
-  ].filter((part): part is string => part !== null);
+}: ThreadDeleteDialogContentProps<Target>) {
+  const single = target.threads.length === 1;
+  const label = single ? "thread" : `${target.threads.length} threads`;
 
   return (
     <ConfirmDeleteDialogContent
       title={`Delete ${label}?`}
-      description={sentences.join(" ")}
+      description={
+        <>
+          {target.childThreadCount ? (
+            <>
+              {single ? "Its" : "Their"}{" "}
+              <span className="font-semibold">
+                {formatChildThreadCount(target.childThreadCount)}
+              </span>{" "}
+              will be deleted too.{" "}
+            </>
+          ) : null}
+          This action cannot be undone.
+        </>
+      }
       confirmLabel={`Delete ${label}`}
       pending={pending}
       onConfirm={() => onDelete(target)}

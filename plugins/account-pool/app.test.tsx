@@ -16,7 +16,10 @@ import type {
   AccountSummary,
   PoolStatus,
 } from "./src/contracts.js";
-import { ACCOUNT_POOL_CONFIG_CHANGED } from "./src/realtime.js";
+import {
+  ACCOUNT_POOL_ACCOUNTS_CHANGED,
+  ACCOUNT_POOL_CONFIG_CHANGED,
+} from "./src/realtime.js";
 
 const app = await loadPluginApp(() => import("./app"));
 afterEach(() => {
@@ -619,6 +622,137 @@ it("gives subscription and routing switches a 44px coarse-pointer hit area", asy
 });
 
 describe("Account Pool settings", () => {
+  it("keeps the resolved next account visible during a refresh", async () => {
+    const firstId = "11111111-1111-4111-8111-111111111111";
+    const secondId = "22222222-2222-4222-8222-222222222222";
+    const accounts = [
+      account({
+        id: firstId,
+        label: "First Claude",
+        email: "first@example.com",
+      }),
+      account({
+        id: secondId,
+        label: "Second Claude",
+        email: "second@example.com",
+      }),
+    ];
+    const refreshedBinding = deferred<{
+      nextAccountId: string | null;
+      reason: string;
+    }>();
+    let bindingCalls = 0;
+    const slot = render(accounts, {
+      "routing.binding.next": () => {
+        bindingCalls += 1;
+        return bindingCalls === 1
+          ? { nextAccountId: firstId, reason: "Most headroom." }
+          : refreshedBinding.promise;
+      },
+    });
+
+    const firstRow = (
+      await slot.findByRole("switch", { name: "Use First Claude" })
+    ).closest("div");
+    const secondRow = (
+      await slot.findByRole("switch", { name: "Use Second Claude" })
+    ).closest("div");
+    await waitFor(() => expect(firstRow?.textContent).toContain("Next"));
+
+    await slot.emitRealtime(ACCOUNT_POOL_ACCOUNTS_CHANGED, {});
+    await waitFor(() => expect(bindingCalls).toBe(2));
+    expect(firstRow?.textContent).toContain("Next");
+    expect(firstRow?.textContent).not.toContain("Checking…");
+
+    refreshedBinding.resolve({
+      nextAccountId: secondId,
+      reason: "Most headroom.",
+    });
+    await waitFor(() => expect(secondRow?.textContent).toContain("Next"));
+    expect(firstRow?.textContent).toContain("Ready");
+  });
+
+  it("keeps ready accounts neutral until the next Claude binding resolves", async () => {
+    const next = deferred<{ nextAccountId: string | null; reason: string }>();
+    const live = deferred<PoolStatus>();
+    const accounts = [
+      account({ id: GMAIL_ID, label: "Next Claude" }),
+      account({
+        id: "77777777-7777-4777-8777-777777777777",
+        label: "Used up Claude",
+        email: "used-up@example.com",
+        status: "exhausted",
+        sevenDayUtilization: 1,
+      }),
+      account({
+        id: "88888888-8888-4888-8888-888888888888",
+        label: "Disabled Claude",
+        email: "disabled@example.com",
+        enabled: false,
+        status: "disabled",
+      }),
+    ];
+    window.localStorage.setItem(
+      STATUS_CACHE_KEY,
+      JSON.stringify(status(accounts)),
+    );
+    const slot = render(accounts, {
+      "status.get": () => live.promise,
+      "routing.binding.next": () => next.promise,
+    });
+
+    const nextRow = (
+      await slot.findByRole("switch", { name: "Use Next Claude" })
+    ).closest("div");
+    expect(nextRow?.textContent).toContain("Checking…");
+    expect(nextRow?.textContent).not.toContain("Ready");
+    expect(slot.getByText("Used up")).toBeTruthy();
+    expect(slot.getByText("Off")).toBeTruthy();
+
+    live.resolve(status(accounts));
+    await waitFor(() =>
+      expect(slot.rpcCalls).toContainEqual({
+        method: "routing.binding.next",
+        input: { provider: "claude" },
+      }),
+    );
+    expect(nextRow?.textContent).toContain("Checking…");
+    next.resolve({ nextAccountId: GMAIL_ID, reason: "Most headroom." });
+    await waitFor(() => expect(nextRow?.textContent).toContain("Next"));
+    expect(slot.getByText("· most headroom")).toBeTruthy();
+    expect(nextRow?.classList.contains("flex")).toBe(false);
+    expect(
+      slot
+        .getByText("· most headroom")
+        .parentElement?.classList.contains("max-w-full"),
+    ).toBe(true);
+  });
+
+  it("shows Ready when the next Claude binding lookup fails", async () => {
+    const slot = render([account({ id: GMAIL_ID, label: "Claude account" })], {
+      "routing.binding.next": () => Promise.reject(new Error("offline")),
+    });
+
+    expect(await slot.findByText("Ready")).toBeTruthy();
+    expect(slot.queryByText("Checking…")).toBeNull();
+  });
+
+  it("shows Ready immediately when Claude routing is off", async () => {
+    const live = status([account({ id: GMAIL_ID, label: "Claude account" })]);
+    live.routing.claude = false;
+    const slot = render([account({ id: GMAIL_ID, label: "Claude account" })], {
+      "status.get": () => live,
+      "routing.binding.next": () => {
+        throw new Error("binding lookup should not run");
+      },
+    });
+
+    await waitFor(() => expect(slot.getByText("Ready")).toBeTruthy());
+    expect(
+      slot.rpcCalls.some((call) => call.method === "routing.binding.next"),
+    ).toBe(false);
+  });
+
   it("renders cached accounts as refreshing until live status arrives, then caches it", async () => {
     window.localStorage.setItem(
       STATUS_CACHE_KEY,
@@ -725,8 +859,8 @@ describe("Account Pool settings", () => {
     expect(
       slot.queryByRole("button", { name: /^Sign in again to / }),
     ).toBeNull();
-    expect(slot.getAllByText("Max 20x")).toHaveLength(2);
-    for (const badge of slot.getAllByText("Max 20x")) {
+    expect(slot.getAllByText("Ultra")).toHaveLength(2);
+    for (const badge of slot.getAllByText("Ultra")) {
       expect(badge.className).toContain("whitespace-nowrap");
       expect(badge.parentElement?.className).toContain("shrink-0");
     }
@@ -836,6 +970,91 @@ describe("Account Pool settings", () => {
     ).toBeTruthy();
   });
 
+  it("shows a future model weekly row with its API name and falls back for legacy servers", async () => {
+    const current = account({ label: "Future subscription" });
+    const slot = render([current], {
+      "display.get": () => ({
+        plans: {},
+        weekly: {
+          [current.id]: {
+            "Claude Future 42": {
+              utilization: 0.45,
+              resetAt: Date.now() + 86400000,
+              status: "allowed",
+              observedAt: Date.now(),
+              source: "usage",
+            },
+          },
+        },
+      }),
+    });
+    await slot.findByText(current.label);
+    await openActions(slot, current.label);
+    fireEvent.click(await slot.findByText("Usage details"));
+    expect(await slot.findByText("7d · Claude Future 42")).toBeTruthy();
+    expect(slot.queryByText("7d · Other")).toBeNull();
+  });
+
+  it("shows Ultra for the legacy 20x tier on a cold read without provider metadata", async () => {
+    const current = account({
+      label: "Cold subscription",
+      rateLimitTier: "default_claude_max_20x",
+    });
+    const slot = render([current], { "display.get": () => ({ plans: {} }) });
+    expect(await slot.findByText("Ultra")).toBeTruthy();
+    expect(slot.queryByText("Max (20x)")).toBeNull();
+    await openActions(slot, current.label);
+    fireEvent.click(await slot.findByText("Usage details"));
+    expect(slot.getAllByText("Ultra").length).toBeGreaterThan(1);
+  });
+
+  it("shows Ultra badges and usage details from display metadata over a legacy Max record", async () => {
+    const current = account({
+      label: "Primary subscription",
+      rateLimitTier: "default_claude_max_20x",
+    });
+    const slot = render([current], {
+      "display.get": () => ({ plans: { [current.id]: "Ultra" } }),
+    });
+    expect(await slot.findByText("Ultra")).toBeTruthy();
+    expect(slot.queryByText("Max (20x)")).toBeNull();
+    await openActions(slot, current.label);
+    fireEvent.click(await slot.findByText("Usage details"));
+    expect(slot.getAllByText("Ultra").length).toBeGreaterThan(1);
+  });
+
+  it("keeps reported Max off Claude API-key badges and retains non-Claude Max tiers", async () => {
+    const apiKey = account({
+      label: "Claude API-key fixture",
+      kind: "api-key",
+      subscriptionType: null,
+      rateLimitTier: null,
+      email: null,
+    });
+    const codex = account({
+      id: "22222222-2222-4222-8222-222222222222",
+      provider: "codex",
+      label: "Codex Max fixture",
+      subscriptionType: "max",
+      rateLimitTier: "max_20x",
+    });
+    const slot = render([apiKey, codex], {
+      "display.get": () => ({
+        plans: { [apiKey.id]: "Max", [codex.id]: "Max" },
+      }),
+    });
+    expect(await slot.findByText("Max (20x)")).toBeTruthy();
+    const claude = within(
+      slot.getByRole("group", { name: "Claude subscriptions" }),
+    );
+    expect(claude.getByText("API key")).toBeTruthy();
+    expect(claude.queryByText(/^Max(?: \(.*\))?$/u)).toBeNull();
+    const nonClaude = within(
+      slot.getByRole("group", { name: "Codex subscriptions" }),
+    );
+    expect(nonClaude.getByText("Max (20x)")).toBeTruthy();
+  });
+
   it("shows the plan from the tier and opens usage details for a Codex subscription", async () => {
     const blockingResetAt = Date.now() + 6 * 24 * 60 * 60 * 1_000;
     const slot = render([
@@ -863,7 +1082,7 @@ describe("Account Pool settings", () => {
       account({ label: "Claude Max" }),
     ]);
     expect(await slot.findByText("pro@example.com")).toBeTruthy();
-    expect(slot.getByText("Max 5x")).toBeTruthy();
+    expect(slot.getByText("Claude subscription")).toBeTruthy();
     expect(slot.getByText("· back in 6d 0h")).toBeTruthy();
     await openActions(slot, "pro@example.com");
     fireEvent.click(await slot.findByText("Usage details"));
@@ -1634,6 +1853,63 @@ describe("Account Pool settings", () => {
     ).toContain("ABCD-1234");
   });
 
+  it("signs an existing account in again in place and completes into it", async () => {
+    const slot = render([account({ label: "Reserve", enabled: false })], {
+      "login.start": () => ({
+        sessionId: "22222222-2222-4222-8222-222222222222",
+        authorizeUrl: "https://claude.ai/oauth/authorize?state=state",
+      }),
+      "login.complete": () => account({ label: "Reserve", enabled: false }),
+    });
+    fireEvent.pointerDown(
+      await slot.findByRole("button", { name: "Reserve actions" }),
+    );
+    fireEvent.click(await slot.findByText("Sign in again…"));
+    expect(
+      await slot.findByRole("dialog", { name: "Sign in again" }),
+    ).toBeTruthy();
+    expect(slot.rpcCalls).toContainEqual({
+      method: "login.start",
+      input: { accountId: account().id },
+    });
+    fireEvent.change(slot.getByLabelText("Claude authorization code"), {
+      target: { value: "code#state" },
+    });
+    fireEvent.click(slot.getByRole("button", { name: "Complete" }));
+    expect(await slot.findByText("Signed in again to Reserve")).toBeTruthy();
+    expect(slot.queryByRole("button", { name: "Add another" })).toBeNull();
+  });
+
+  it("shows a refused Claude re-login inside the sign-in dialog", async () => {
+    const refusal =
+      "This login is for spouse@example.com, not person@example.com.";
+    const slot = render([account()], {
+      "login.start": () => ({
+        sessionId: "22222222-2222-4222-8222-222222222222",
+        authorizeUrl: "https://claude.ai/oauth/authorize?state=state",
+      }),
+      "login.complete": () => {
+        throw new Error(refusal);
+      },
+    });
+    fireEvent.pointerDown(
+      await slot.findByRole("button", { name: "person@example.com actions" }),
+    );
+    fireEvent.click(await slot.findByText("Sign in again…"));
+    fireEvent.change(await slot.findByLabelText("Claude authorization code"), {
+      target: { value: "code#state" },
+    });
+    fireEvent.click(slot.getByRole("button", { name: "Complete" }));
+    const dialog = await slot.findByRole("dialog", {
+      name: "Sign in again",
+    });
+    await waitFor(() => expect(dialog.textContent).toContain(refusal));
+    expect(
+      slot.getByRole("button", { name: "Complete" }).hasAttribute("disabled"),
+    ).toBe(true);
+    expect(slot.getByRole("button", { name: "Try again" })).toBeTruthy();
+  });
+
   it("persists provider routing from the section switch", async () => {
     const slot = render([account()], {
       "routing.set": () => ({ provider: "claude", enabled: false }),
@@ -2111,4 +2387,186 @@ describe("Account Pool settings", () => {
       ).toEqual(["Reorder First", "Reorder Second"]);
     },
   );
+});
+
+describe("Account Pool clean sign-in window", () => {
+  const CLAUDE_SESSION = "22222222-2222-4222-8222-222222222222";
+  const CALLBACK =
+    "https://console.anthropic.com/oauth/code/callback?code=one-time&state=s";
+
+  function fakeWindow() {
+    let settle: (result: SignInResult) => void = () => {};
+    const result = new Promise<SignInResult>((resolve) => {
+      settle = resolve;
+    });
+    const close = vi.fn(() => settle({ reason: "closed" }));
+    return { handle: { close, result }, settle, close };
+  }
+
+  type SignInResult =
+    | { reason: "closed" }
+    | { reason: "redirect"; redirectUrl: string };
+
+  function renderClean(
+    rpc: Record<string, () => object | null | Promise<object | null>>,
+    openSignInWindow: (options: {
+      url: string;
+      redirectUrlPrefix?: string;
+    }) => ReturnType<typeof fakeWindow>["handle"] | null,
+    openUrl = vi.fn(() => true),
+  ) {
+    const slot = renderSlot(
+      app.settingsSections[0]!,
+      {},
+      {
+        rpc: {
+          "status.get": () => status([]),
+          "config.get": () => config(),
+          ...rpc,
+        },
+        openUrl,
+        openSignInWindow,
+      },
+    );
+    return { slot, openUrl };
+  }
+
+  async function startClaude(slot: ReturnType<typeof render>) {
+    const add = await slot.findByRole("button", { name: "Add subscription" });
+    fireEvent.pointerDown(add);
+    fireEvent.click(
+      await slot.findByText("Sign in to Claude", { selector: "span.block" }),
+    );
+  }
+
+  it("opens Claude sign-in in the clean window and completes from the redirect", async () => {
+    const win = fakeWindow();
+    const open = vi.fn(() => win.handle);
+    const { slot, openUrl } = renderClean(
+      {
+        "login.start": () => ({
+          sessionId: CLAUDE_SESSION,
+          authorizeUrl: "https://claude.ai/oauth/authorize?state=s",
+        }),
+        "login.complete": () => account({ label: "Second Claude" }),
+      },
+      open,
+    );
+    await startClaude(slot);
+    await waitFor(() => expect(open).toHaveBeenCalledTimes(1));
+    expect(open).toHaveBeenCalledWith({
+      url: "https://claude.ai/oauth/authorize?state=s",
+      redirectUrlPrefix: "https://console.anthropic.com/oauth/code/callback",
+    });
+    expect(openUrl).not.toHaveBeenCalled();
+    expect(slot.getByText(/The window starts signed out/i)).toBeTruthy();
+
+    win.settle({ reason: "redirect", redirectUrl: CALLBACK });
+    await waitFor(() =>
+      expect(slot.rpcCalls).toContainEqual({
+        method: "login.complete",
+        input: { sessionId: CLAUDE_SESSION, pasted: CALLBACK },
+      }),
+    );
+    expect(await slot.findByText("Connected Second Claude")).toBeTruthy();
+  });
+
+  it("keeps manual code paste working when the window is closed without a redirect", async () => {
+    const win = fakeWindow();
+    const { slot } = renderClean(
+      {
+        "login.start": () => ({
+          sessionId: CLAUDE_SESSION,
+          authorizeUrl: "https://claude.ai/oauth/authorize",
+        }),
+        "login.complete": () => account({ label: "Pasted" }),
+      },
+      () => win.handle,
+    );
+    await startClaude(slot);
+    const code = await slot.findByLabelText("Claude authorization code");
+    win.settle({ reason: "closed" });
+    fireEvent.change(code, { target: { value: "code#state" } });
+    fireEvent.click(await slot.findByRole("button", { name: "Complete" }));
+    await waitFor(() =>
+      expect(slot.rpcCalls).toContainEqual({
+        method: "login.complete",
+        input: { sessionId: CLAUDE_SESSION, pasted: "code#state" },
+      }),
+    );
+  });
+
+  it("closes the clean window when the dialog is dismissed", async () => {
+    const win = fakeWindow();
+    const { slot } = renderClean(
+      {
+        "login.start": () => ({
+          sessionId: CLAUDE_SESSION,
+          authorizeUrl: "https://claude.ai/oauth/authorize",
+        }),
+      },
+      () => win.handle,
+    );
+    await startClaude(slot);
+    await slot.findByLabelText("Claude authorization code");
+    fireEvent.click(slot.getByRole("button", { name: "Close" }));
+    expect(win.close).toHaveBeenCalledTimes(1);
+  });
+
+  it("opens the Codex device page in the clean window and closes it when sign-in completes", async () => {
+    const win = fakeWindow();
+    const open = vi.fn(() => win.handle);
+    let polls = 0;
+    const { slot } = renderClean(
+      {
+        "codexLogin.start": () => ({
+          sessionId: "33333333-3333-4333-8333-333333333333",
+          verificationUri: "https://auth.openai.com/codex/device",
+          userCode: "ABCD-1234",
+          expiresAt: Date.now() + 600_000,
+          intervalMs: 20,
+        }),
+        "codexLogin.poll": () => {
+          polls += 1;
+          return polls < 2
+            ? { status: "pending" }
+            : { status: "complete", account: account({ label: "Codex Two" }) };
+        },
+      },
+      open,
+    );
+    const add = await slot.findByRole("button", { name: "Add subscription" });
+    fireEvent.pointerDown(add);
+    fireEvent.click(
+      await slot.findByText("Sign in to Codex", { selector: "span.block" }),
+    );
+    await waitFor(() =>
+      expect(open).toHaveBeenCalledWith({
+        url: "https://auth.openai.com/codex/device",
+      }),
+    );
+    await waitFor(() => expect(win.close).toHaveBeenCalledTimes(1));
+    expect(await slot.findByText("Connected Codex Two")).toBeTruthy();
+  });
+
+  it("falls back to the browser with the private-window hint when no clean window exists", async () => {
+    const { slot, openUrl } = renderClean(
+      {
+        "login.start": () => ({
+          sessionId: CLAUDE_SESSION,
+          authorizeUrl: "https://claude.ai/oauth/authorize?state=s",
+        }),
+      },
+      () => null,
+    );
+    await startClaude(slot);
+    await waitFor(() =>
+      expect(openUrl).toHaveBeenCalledWith(
+        "https://claude.ai/oauth/authorize?state=s",
+      ),
+    );
+    expect(
+      slot.getByText(/private window or sign in to the account you want/i),
+    ).toBeTruthy();
+  });
 });

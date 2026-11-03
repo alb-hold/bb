@@ -1,5 +1,11 @@
 import { renderTemplate } from "@bb/templates";
-import { getThread, updateThread } from "@bb/db";
+import { and, eq, sql } from "drizzle-orm";
+import { events } from "@bb/db";
+import {
+  getThread,
+  listStoredTaskTurnRequestEvents,
+  updateThread,
+} from "@bb/db";
 import {
   removeCommandMentionsFromPromptInput,
   type PromptInput,
@@ -13,7 +19,13 @@ import {
   truncateToWidthAtWordBoundary,
 } from "@bb/text-utils";
 import type { AppDeps, LoggedWorkSessionDeps } from "../../types.js";
-import { runTextAiTask } from "../ai/ai-tasks.js";
+import { runtimeErrorLogFields } from "../lib/error-log-fields.js";
+import { ApiError } from "../../errors.js";
+import { runTextAiTask, type AiTaskFailureReason } from "../ai/ai-tasks.js";
+import type { CommandResultSideEffectsDeps } from "../../internal/command-result-side-effects.js";
+import { parseStoredTurnRequestEvent } from "./thread-events.js";
+import { listLatestTurnFinalAgentReplies } from "./thread-data.js";
+import { syncThreadTitleToProvider } from "./thread-commands.js";
 
 const MIN_TITLE_GENERATION_WORDS = 5;
 const MAX_GENERATED_TITLE_WIDTH = 48;
@@ -21,6 +33,11 @@ const MAX_TITLE_FALLBACK_WIDTH = 80;
 const MAX_TITLE_PROMPT_WIDTH = 4000;
 const ELLIPSIS = "...";
 const MAX_BRANCH_SLUG_LENGTH = 48;
+const MAX_TITLE_TASK_WIDTH = 2000;
+const MAX_TITLE_FOLLOW_UP_WIDTH = 600;
+const TITLE_FOLLOW_UP_LIMIT = 8;
+const MAX_TITLE_AGENT_REPLY_WIDTH = 125;
+const TITLE_AGENT_REPLY_LIMIT = 32;
 
 interface ApplyGeneratedThreadTitleArgs {
   threadId: string;
@@ -37,6 +54,7 @@ interface GeneratedThreadMetadata {
 }
 
 type ThreadMetadataGenerationOutcomeReason =
+  | "already-titled"
   | "empty-input"
   | "failed"
   | "inference-unavailable"
@@ -47,6 +65,26 @@ export interface ThreadMetadataGenerationOutcome {
   durationMs: number;
   metadata: GeneratedThreadMetadata | null;
   reason?: ThreadMetadataGenerationOutcomeReason;
+}
+
+interface AppliedThreadTitleOutcome {
+  outcome: ThreadMetadataGenerationOutcome;
+  titleApplied: boolean;
+}
+
+const titlesInFlight = new Map<string, Promise<AppliedThreadTitleOutcome>>();
+const providerTitleFallbacks = new WeakMap<
+  AppDeps["db"],
+  Map<string, string>
+>();
+
+function providerTitleFallbacksForDb(db: AppDeps["db"]): Map<string, string> {
+  let titles = providerTitleFallbacks.get(db);
+  if (titles === undefined) {
+    titles = new Map();
+    providerTitleFallbacks.set(db, titles);
+  }
+  return titles;
 }
 
 function cleanPromptText(input: PromptInput[]): string {
@@ -171,21 +209,87 @@ export function sanitizeGeneratedBranchSlug(value: string): string | null {
   return slug.length > 0 ? slug : null;
 }
 
-export function buildThreadTitlePrompt(input: PromptInput[]): string | null {
-  const text = cleanPromptText(input);
-  if (!text) {
+function titlePromptText(input: PromptInput[]): string {
+  const commands = collectInvokedPromptCommands(input);
+  const body = promptTextWithoutCommands(input, commands);
+  return body.length > 0 ? body : cleanPromptText(input);
+}
+
+function formatListItems(
+  texts: readonly string[],
+  maxWidth: number,
+): string | null {
+  const lines = texts.flatMap((text) => {
+    const normalized = text.replace(/\s+/gu, " ").trim();
+    return normalized.length > 0
+      ? [`- ${clampToWidth(normalized, maxWidth)}`]
+      : [];
+  });
+  return lines.length > 0 ? lines.join("\n") : null;
+}
+
+interface ThreadTitlePromptContext {
+  agentReplies: string | null;
+  currentTitle: string | null;
+  followUps: string | null;
+}
+
+function renderThreadTitlePrompt(
+  input: PromptInput[],
+  context: ThreadTitlePromptContext,
+): string | null {
+  if (!cleanPromptText(input)) {
     return null;
   }
   const commands = collectInvokedPromptCommands(input);
-  const body = promptTextWithoutCommands(input, commands);
+  const hasLaterMessages =
+    context.followUps !== null || context.agentReplies !== null;
   return renderTemplate("generateThreadMetadata", {
     cleanedPrompt: clampToWidth(
-      body.length > 0 ? body : text,
-      MAX_TITLE_PROMPT_WIDTH,
+      titlePromptText(input),
+      hasLaterMessages ? MAX_TITLE_TASK_WIDTH : MAX_TITLE_PROMPT_WIDTH,
     ),
     ...(commands.length > 0
       ? { invokedCommands: formatInvokedCommands(commands) }
       : {}),
+    ...(context.followUps === null ? {} : { followUps: context.followUps }),
+    ...(context.agentReplies === null
+      ? {}
+      : { agentReplies: context.agentReplies }),
+    ...(context.currentTitle === null
+      ? {}
+      : { currentTitle: context.currentTitle }),
+  });
+}
+
+export function buildThreadTitlePrompt(input: PromptInput[]): string | null {
+  return renderThreadTitlePrompt(input, {
+    agentReplies: null,
+    currentTitle: null,
+    followUps: null,
+  });
+}
+
+interface ThreadTitleRegenerationContext {
+  agentReplies: string[];
+  currentTitle: string | null;
+  followUps: PromptInput[][];
+  task: PromptInput[];
+}
+
+function buildThreadTitleRegenerationPrompt(
+  context: ThreadTitleRegenerationContext,
+): string | null {
+  return renderThreadTitlePrompt(context.task, {
+    agentReplies: formatListItems(
+      context.agentReplies,
+      MAX_TITLE_AGENT_REPLY_WIDTH,
+    ),
+    currentTitle: context.currentTitle,
+    followUps: formatListItems(
+      context.followUps.map(cleanPromptText),
+      MAX_TITLE_FOLLOW_UP_WIDTH,
+    ),
   });
 }
 
@@ -235,19 +339,291 @@ export function applyGeneratedThreadTitle(
   deps: Pick<AppDeps, "db" | "hub">,
   args: ApplyGeneratedThreadTitleArgs,
 ): boolean {
-  const title = args.title.trim();
-  if (title.length === 0) {
+  const title = sanitizeGeneratedTitle(args.title);
+  if (
+    title === null ||
+    title.length <= 3 ||
+    isPrefixOfFirstAssistantReply(deps, args.threadId, title)
+  ) {
     return false;
   }
 
-  const currentThread = getThread(deps.db, args.threadId);
-  if (!currentThread || currentThread.title) {
-    return false;
-  }
+  return writeThreadTitleIfEmpty(deps, args.threadId, title);
+}
 
-  updateThread(deps.db, deps.hub, args.threadId, {
-    title,
-  });
+function writeThreadTitleIfEmpty(
+  deps: Pick<AppDeps, "db" | "hub">,
+  threadId: string,
+  title: string,
+): boolean {
+  const currentThread = getThread(deps.db, threadId);
+  if (!currentThread || currentThread.title) return false;
 
+  updateThread(deps.db, deps.hub, threadId, { title });
   return true;
+}
+
+function isPrefixOfFirstAssistantReply(
+  deps: Pick<AppDeps, "db">,
+  threadId: string,
+  title: string,
+): boolean {
+  const firstAssistantReply = deps.db
+    .select({
+      text: sql<string | null>`json_extract(${events.data}, '$.item.text')`,
+    })
+    .from(events)
+    .where(
+      and(
+        eq(events.threadId, threadId),
+        eq(events.type, "item/completed"),
+        eq(events.itemKind, "agentMessage"),
+        sql`COALESCE(json_extract(${events.data}, '$.item.text'), '') <> ''`,
+      ),
+    )
+    .orderBy(events.sequence)
+    .limit(1)
+    .get()?.text;
+  return firstAssistantReply?.startsWith(title) ?? false;
+}
+
+export function applyFallbackThreadTitle(
+  deps: Pick<AppDeps, "db" | "hub">,
+  args: ApplyGeneratedThreadTitleArgs,
+): boolean {
+  const title = sanitizeGeneratedTitle(args.title);
+  if (title === null) return false;
+
+  return writeThreadTitleIfEmpty(deps, args.threadId, title);
+}
+
+export function applyProviderThreadTitle(
+  deps: Pick<AppDeps, "db" | "hub">,
+  args: ApplyGeneratedThreadTitleArgs,
+): boolean {
+  const title = sanitizeGeneratedTitle(args.title);
+  if (
+    title === null ||
+    title.length <= 3 ||
+    isPrefixOfFirstAssistantReply(deps, args.threadId, title)
+  ) {
+    return false;
+  }
+
+  return writeThreadTitleIfEmpty(deps, args.threadId, title);
+}
+
+export function generateFromProviderThreadName(
+  deps: LoggedWorkSessionDeps,
+  args: ApplyGeneratedThreadTitleArgs,
+): Promise<void> {
+  const thread = getThread(deps.db, args.threadId);
+  const candidate = sanitizeGeneratedTitle(args.title);
+  if (!thread || thread.title || candidate === null) return Promise.resolve();
+
+  providerTitleFallbacksForDb(deps.db).set(args.threadId, candidate);
+  const input = thread.titleFallback
+    ? [{ type: "text" as const, text: thread.titleFallback, mentions: [] }]
+    : [];
+  return generateAndApplyThreadTitle(deps, {
+    input,
+    threadId: args.threadId,
+  })
+    .then(({ outcome }) => {
+      if (outcome.metadata !== null) return;
+      const fallback = providerTitleFallbacksForDb(deps.db).get(args.threadId);
+      if (fallback !== undefined) {
+        applyProviderThreadTitle(deps, {
+          threadId: args.threadId,
+          title: fallback,
+        });
+      }
+    })
+    .catch((error: unknown) => {
+      deps.logger.warn(
+        {
+          threadId: args.threadId,
+          ...runtimeErrorLogFields(deps.config, error),
+        },
+        "Failed to generate thread title",
+      );
+    })
+    .finally(() => {
+      providerTitleFallbacksForDb(deps.db).delete(args.threadId);
+    });
+}
+
+export function generateAndApplyThreadTitle(
+  deps: LoggedWorkSessionDeps,
+  args: ThreadMetadataGenerationArgs,
+): Promise<AppliedThreadTitleOutcome> {
+  const existingThread = getThread(deps.db, args.threadId);
+  if (
+    existingThread?.title != null &&
+    !providerTitleFallbacksForDb(deps.db).has(args.threadId)
+  ) {
+    return Promise.resolve({
+      outcome: { durationMs: 0, metadata: null, reason: "already-titled" },
+      titleApplied: false,
+    });
+  }
+  const pending = titlesInFlight.get(args.threadId);
+  if (pending !== undefined) return pending;
+  const firstAttempt = generateThreadMetadataWithOutcome(deps, args);
+  const retried = firstAttempt.then((outcome) =>
+    outcome.reason === "failed" || outcome.reason === "timeout"
+      ? generateThreadMetadataWithOutcome(deps, args)
+      : outcome,
+  );
+  const generating = retried
+    .then((outcome) => {
+      let titleApplied = false;
+      if (outcome.metadata?.title) {
+        try {
+          titleApplied = applyGeneratedThreadTitle(deps, {
+            threadId: args.threadId,
+            title: outcome.metadata.title,
+          });
+        } catch (error) {
+          deps.logger.warn(
+            {
+              threadId: args.threadId,
+              ...runtimeErrorLogFields(deps.config, error),
+            },
+            "Failed to apply generated thread title",
+          );
+        }
+      }
+      if (!titleApplied) {
+        const providerTitle = providerTitleFallbacksForDb(deps.db).get(
+          args.threadId,
+        );
+        if (providerTitle !== undefined) {
+          titleApplied = applyProviderThreadTitle(deps, {
+            threadId: args.threadId,
+            title: providerTitle,
+          });
+        }
+        if (
+          !titleApplied &&
+          (providerTitle !== undefined ||
+            outcome.metadata !== null ||
+            outcome.reason !== "too-short")
+        ) {
+          const fallback = getThread(deps.db, args.threadId)?.titleFallback;
+          const title = fallback ? sanitizeGeneratedTitle(fallback) : null;
+          if (title !== null) {
+            titleApplied = applyFallbackThreadTitle(deps, {
+              threadId: args.threadId,
+              title,
+            });
+          }
+        }
+      }
+      return { outcome, titleApplied };
+    })
+    .finally(() => {
+      titlesInFlight.delete(args.threadId);
+    });
+  titlesInFlight.set(args.threadId, generating);
+  return generating;
+}
+
+interface RegenerateThreadTitleArgs {
+  thread: Thread;
+}
+
+function visiblePromptInput(input: PromptInput[]): PromptInput[] {
+  return input.filter((part) => part.visibility !== "agent-only");
+}
+
+function loadThreadTitleRegenerationContext(
+  deps: Pick<AppDeps, "db">,
+  thread: Thread,
+): ThreadTitleRegenerationContext | null {
+  const [taskRow] = listStoredTaskTurnRequestEvents(deps.db, {
+    threadId: thread.id,
+    order: "oldest",
+    limit: 1,
+  });
+  if (taskRow === undefined) {
+    return null;
+  }
+  const followUps = listStoredTaskTurnRequestEvents(deps.db, {
+    threadId: thread.id,
+    order: "newest",
+    limit: TITLE_FOLLOW_UP_LIMIT,
+  })
+    .filter((row) => row.sequence !== taskRow.sequence)
+    .reverse()
+    .map((row) => visiblePromptInput(parseStoredTurnRequestEvent(row).input));
+  const agentReplies = listLatestTurnFinalAgentReplies(deps.db, {
+    threadId: thread.id,
+    limit: TITLE_AGENT_REPLY_LIMIT,
+  }).reverse();
+  return {
+    agentReplies,
+    currentTitle: thread.title,
+    followUps,
+    task: visiblePromptInput(parseStoredTurnRequestEvent(taskRow).input),
+  };
+}
+
+function titleRegenerationError(
+  reason: AiTaskFailureReason,
+  message: string,
+): ApiError {
+  const detail = `Could not regenerate the title, so the current title was kept: ${message}`;
+  switch (reason) {
+    case "off":
+    case "unavailable":
+      return new ApiError(501, "not_configured", detail);
+    case "timeout":
+      return new ApiError(504, "title_generation_timeout", detail, true);
+    case "failed":
+      return new ApiError(502, "provider_rpc_error", detail, true);
+    case "cancelled":
+      return new ApiError(400, "cancelled", detail);
+  }
+}
+
+export async function regenerateThreadTitle(
+  deps: CommandResultSideEffectsDeps,
+  args: RegenerateThreadTitleArgs,
+): Promise<Thread> {
+  const context = loadThreadTitleRegenerationContext(deps, args.thread);
+  const prompt =
+    context === null ? null : buildThreadTitleRegenerationPrompt(context);
+  if (prompt === null) {
+    throw new ApiError(
+      409,
+      "invalid_request",
+      "This thread has no task message to generate a title from",
+    );
+  }
+  const outcome = await runTextAiTask(deps, {
+    task: "thread-title",
+    label: "Thread title regeneration",
+    logContext: { threadId: args.thread.id },
+    prompt,
+  });
+  if (!outcome.ok) {
+    throw titleRegenerationError(outcome.reason, outcome.message);
+  }
+  const title = sanitizeGeneratedTitle(outcome.value);
+  if (title === null) {
+    throw titleRegenerationError(
+      "failed",
+      `${outcome.service.displayName} returned an empty title`,
+    );
+  }
+  if (title === args.thread.title) {
+    return args.thread;
+  }
+  const thread = updateThread(deps.db, deps.hub, args.thread.id, { title });
+  if (thread === null) {
+    throw new ApiError(404, "thread_not_found", "Thread not found");
+  }
+  syncThreadTitleToProvider(deps, thread);
+  return thread;
 }

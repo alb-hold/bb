@@ -1,4 +1,12 @@
-import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  access,
+  cp,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 import { tmpdir } from "node:os";
@@ -23,9 +31,23 @@ async function installPackage(
 ): Promise<void> {
   if (installed.has(name)) return;
   installed.add(name);
-  const manifestPath = createRequire(requiredFrom).resolve(
-    `${name}/package.json`,
-  );
+  let manifestPath: string | undefined;
+  for (const directory of createRequire(requiredFrom).resolve.paths(name) ??
+    []) {
+    const candidate = join(directory, name, "package.json");
+    try {
+      await access(candidate);
+      manifestPath = candidate;
+      break;
+    } catch (error) {
+      if (
+        !(error instanceof Error && "code" in error && error.code === "ENOENT")
+      )
+        throw error;
+    }
+  }
+  if (manifestPath === undefined)
+    throw new Error(`Missing fixture dependency: ${name}`);
   await cp(dirname(manifestPath), join(nodeModules, name), {
     recursive: true,
   });

@@ -14,6 +14,7 @@ import {
 import type { AdapterCommand } from "./provider-adapter.js";
 import {
   BRIDGE_JSON_RPC_ERRORS,
+  commandListResultSchema,
   providerHealthResultSchema,
   providerInstallationRunResultSchema,
   providerInstallationStatusSchema,
@@ -74,6 +75,7 @@ import type {
   ReapedIdleProviderSession,
 } from "./types.js";
 import {
+  resolveContributedEnvironment,
   resolveThreadEnvironment,
   type DroppedThreadEnvironmentContribution,
   type ResolvedThreadEnvironmentEntry,
@@ -398,6 +400,16 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
       threadIdentityRegistry.createProviderState({ providerId }),
     env: options.env,
     getNextRequestId: () => nextRequestId++,
+    handleDeferredEvents: (args) => {
+      if (suppressedThreadEventIds.has(args.sourceThreadId)) {
+        return;
+      }
+      emitTranslatedEvents({
+        events: args.events,
+        proc: args.providerProcess,
+        sourceThreadId: args.sourceThreadId,
+      });
+    },
     handleStdoutLine: (args) =>
       handleStdoutLine(args.line, args.providerProcess, args.wseq),
     onProcessExit: options.onProcessExit,
@@ -834,7 +846,6 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
         bridgeLaunch: first.config.bridgeLaunch,
         capabilities: entry.capabilities,
         entry,
-        processKey: entry.processKey,
         providerId: entry.providerId,
         workerDir: args.dir,
       });
@@ -847,7 +858,10 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
         if (thread.providerThreadId !== null) {
           recordProviderThreadIdentity(proc, threadId, thread.providerThreadId);
         }
-        threadRuntimeConfigs.set(threadId, config);
+        threadRuntimeConfigs.set(threadId, {
+          ...config,
+          processKey: proc.processKey,
+        });
         pendingAdoptions.push({
           proc,
           threadId,
@@ -2687,7 +2701,13 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
       });
     },
 
-    async listModels({ providerId, bridgeLaunch, cwd }) {
+    async listModels({
+      providerId,
+      bridgeLaunch,
+      cwd,
+      selectedModel,
+      contributedEnv = [],
+    }) {
       await runtime.ensureProvider({ providerId, bridgeLaunch });
       const proc = providerProcesses.requireProviderProcess({
         processKey: resolveProviderProcessKey({ bridgeLaunch, providerId }),
@@ -2697,7 +2717,12 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
         commandType: "model/list",
         plan: proc.adapter.buildCommandPlan({
           type: "model/list",
+          ...(selectedModel === undefined ? {} : { selectedModel }),
           ...(cwd !== undefined ? { cwd } : {}),
+          envVars: resolveContributedEnvironment(
+            contributedEnv,
+            options.shellEnv,
+          ),
         }),
         providerId,
       });
@@ -2707,6 +2732,26 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
         resultSchema: ignoredJsonRpcResultSchema,
       });
       return proc.adapter.parseModelListResult(result);
+    },
+
+    async listCommands({ providerId, bridgeLaunch, cwd }) {
+      await runtime.ensureProvider({ providerId, bridgeLaunch });
+      const proc = providerProcesses.requireProviderProcess({
+        processKey: resolveProviderProcessKey({ bridgeLaunch, providerId }),
+        providerId,
+      });
+      const plan = proc.adapter.buildCommandPlan({
+        type: "commands/list",
+        cwd,
+      });
+      if (plan.kind === "noop") {
+        return { commands: [] };
+      }
+      return await sendCommand({
+        proc,
+        message: plan,
+        resultSchema: commandListResultSchema,
+      });
     },
 
     async providerHealth({ providerId, bridgeLaunch, cwd }) {

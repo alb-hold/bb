@@ -476,6 +476,7 @@ async function smokeLinuxAppImageLifecycle() {
       BB_DESKTOP_VERSION_CHECK: "0",
       BB_HOST_DAEMON_PORT: String(daemonPort),
       BB_SERVER_PORT: String(serverPort),
+      BB_TELEMETRY: "false",
     };
     delete childEnv.APPIMAGE_EXTRACT_AND_RUN;
     delete childEnv.BB_DESKTOP_APP_URL;
@@ -593,9 +594,6 @@ async function smokeLinuxAppImageLifecycle() {
       throw new Error("Expected both AppImage FUSE mounts to be active");
     }
 
-    // The GUI is an anchored group of its own. The runtime supervisor starts a
-    // separate session, so killing this exact group models an unclean desktop
-    // crash without touching the owned server/daemon/watcher tree.
     process.kill(-child.pid, "SIGKILL");
     await waitForChildExit(child, exitTimeoutMs);
     await killProcessesExecutingFromMount(guiMount);

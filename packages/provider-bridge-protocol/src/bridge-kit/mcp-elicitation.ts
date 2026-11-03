@@ -494,6 +494,7 @@ function questionFor(args: {
     multiSelect: field.kind === "multi",
     ...(options.length > 0 ? { options } : {}),
     allowFreeText: freeText,
+    required: field.required,
   };
 }
 
@@ -520,6 +521,7 @@ function buildPayload(args: {
             { value: CONFIRM_DECLINE_VALUE, label: "Decline" },
           ],
           allowFreeText: false,
+          required: true,
         },
       ],
     };

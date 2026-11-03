@@ -1,4 +1,7 @@
-import type { EnvironmentFilePreviewSource } from "@bb/client-core";
+import {
+  getEnvironmentFilePreviewSourceRef,
+  type EnvironmentFilePreviewSource,
+} from "@bb/client-core";
 import { apiClient, toRelativeUrl } from "./api-server";
 
 function encodePathSegments(path: string): string {
@@ -8,6 +11,28 @@ function encodePathSegments(path: string): string {
 function encodeHostFilePath(absolutePath: string): string {
   return encodePathSegments(
     absolutePath.replace(/\\/gu, "/").replace(/^\/+/u, ""),
+  );
+}
+
+interface PathClassificationArgs {
+  path: string;
+}
+
+const WINDOWS_ABSOLUTE_PATH_PATTERN = /^[a-zA-Z]:[\\/]/u;
+const URL_SCHEME_PATTERN = /^[a-zA-Z][a-zA-Z0-9+.-]*:/u;
+
+export function isAbsoluteLocalPath({ path }: PathClassificationArgs): boolean {
+  return path.startsWith("/") || WINDOWS_ABSOLUTE_PATH_PATTERN.test(path);
+}
+
+export function isProjectAttachmentPath({
+  path,
+}: PathClassificationArgs): boolean {
+  return (
+    path.length > 0 &&
+    !path.startsWith("\\") &&
+    !isAbsoluteLocalPath({ path }) &&
+    !URL_SCHEME_PATTERN.test(path)
   );
 }
 
@@ -53,7 +78,8 @@ export function buildEnvironmentFileContentUrl(
   path: string,
 ): string {
   const filePath = encodePathSegments(path);
-  if (source.kind === "working-tree") {
+  const ref = getEnvironmentFilePreviewSourceRef(source);
+  if (ref === null) {
     return toRelativeUrl(
       apiClient.environments[":id"].files[":filePath{.+}"].$url({
         param: { id: environmentId, filePath },
@@ -62,13 +88,7 @@ export function buildEnvironmentFileContentUrl(
   }
   return toRelativeUrl(
     apiClient.environments[":id"].revisions[":ref"].files[":filePath{.+}"].$url(
-      {
-        param: {
-          id: environmentId,
-          ref: source.kind === "head" ? "HEAD" : source.ref,
-          filePath,
-        },
-      },
+      { param: { id: environmentId, ref, filePath } },
     ),
   );
 }

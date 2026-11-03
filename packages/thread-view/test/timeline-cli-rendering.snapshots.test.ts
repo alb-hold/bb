@@ -1206,10 +1206,10 @@ describe("timeline CLI rendering snapshots", () => {
 
     expect(rootTurn).toBeDefined();
     expect(delegation).toBeDefined();
-    expect(delegation?.childRows.some((row) => row.kind === "turn")).toBe(
+    expect(delegation?.childRows?.some((row) => row.kind === "turn")).toBe(
       false,
     );
-    expect(delegation?.childRows.length ?? 0).toBeGreaterThan(0);
+    expect(delegation?.childRows?.length ?? 0).toBeGreaterThan(0);
     for (const childRow of delegation?.childRows ?? []) {
       expect(childRow.id.startsWith(`${delegation?.id}:child:`)).toBe(true);
     }
@@ -1305,7 +1305,7 @@ describe("timeline CLI rendering snapshots", () => {
     );
     expect(
       delegations.some((delegation) =>
-        delegation.childRows.some((row) => row.kind === "turn"),
+        delegation.childRows?.some((row) => row.kind === "turn"),
       ),
     ).toBe(false);
   });
@@ -1492,7 +1492,7 @@ describe("timeline CLI rendering snapshots", () => {
         }),
       ]),
     );
-    expect(delegation?.childRows.some((row) => row.turnId === "turn-2")).toBe(
+    expect(delegation?.childRows?.some((row) => row.turnId === "turn-2")).toBe(
       false,
     );
     expect(rootFollowUp).toMatchObject({
@@ -1757,7 +1757,7 @@ describe("timeline CLI rendering snapshots", () => {
       ]),
     );
     expect(
-      delegation?.childRows.some((row) => row.turnId === "follow-up-turn"),
+      delegation?.childRows?.some((row) => row.turnId === "follow-up-turn"),
     ).toBe(false);
     expect(rootFollowUp).toMatchObject({
       kind: "conversation",
@@ -1858,7 +1858,7 @@ describe("timeline CLI rendering snapshots", () => {
       ]),
     );
     expect(
-      delegation?.childRows.some((row) => row.turnId === "follow-up-turn"),
+      delegation?.childRows?.some((row) => row.turnId === "follow-up-turn"),
     ).toBe(false);
     expect(rootFollowUp).toMatchObject({
       kind: "conversation",
@@ -2019,7 +2019,7 @@ describe("timeline CLI rendering snapshots", () => {
         }),
       ]),
     );
-    expect(delegation?.childRows.some((row) => row.turnId === "turn-2")).toBe(
+    expect(delegation?.childRows?.some((row) => row.turnId === "turn-2")).toBe(
       false,
     );
     expect(rootFollowUp).toMatchObject({
@@ -2067,10 +2067,10 @@ describe("timeline CLI rendering snapshots", () => {
 
     expect(delegation).toBeDefined();
     expect(delegation?.status).toBe("pending");
-    expect(delegation?.childRows.some((row) => row.kind === "turn")).toBe(
+    expect(delegation?.childRows?.some((row) => row.kind === "turn")).toBe(
       false,
     );
-    expect(delegation?.childRows.length ?? 0).toBeGreaterThanOrEqual(3);
+    expect(delegation?.childRows?.length ?? 0).toBeGreaterThanOrEqual(3);
     expect(timeline.text).not.toContain("Worked for");
     expect(timeline.text).not.toContain("Working for");
   });
@@ -2190,6 +2190,44 @@ describe("timeline CLI rendering snapshots", () => {
 
       ── Assistant ───────────────────────────────────────────────
       Done."
+    `);
+  });
+
+  it("shows a failed file change's error before its proposed diff", () => {
+    const event = createTimelineEventFactory({ threadId: "thread-1" });
+    const timeline = renderIdleTimeline([
+      event.turnStarted(),
+      event.fileChangeCompleted({
+        itemId: "edit-1",
+        status: "failed",
+        error: "Could not find the exact text in src/a.ts.",
+        changes: [
+          {
+            path: "/repo/src/a.ts",
+            kind: "update",
+            diff: "@@ -1 +1 @@\n-missing\n+replacement",
+          },
+        ],
+      }),
+      event.fileChangeCompleted({
+        itemId: "edit-2",
+        status: "failed",
+        error: "No changes made to src/b.ts.",
+        changes: [{ path: "/repo/src/b.ts", kind: "update" }],
+      }),
+      event.turnCompleted(),
+    ]);
+
+    expect(timeline.text).toMatchInlineSnapshot(`
+      "── Worked for (3ms) ────────────────────────────────────────
+        ── Edited 2 files
+          ── Failed to edit /repo/src/a.ts (error)
+            Could not find the exact text in src/a.ts.
+            @@ -1 +1 @@
+            -missing
+            +replacement
+          ── Failed to edit /repo/src/b.ts (error)
+            No changes made to src/b.ts."
     `);
   });
 

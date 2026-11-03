@@ -7,10 +7,12 @@ import {
   serviceTierSchema,
 } from "./shared-types.js";
 import { extensionKindSchema } from "./provider-extension-kind.js";
+import { threadSessionOptionSchema } from "./thread-session-option.js";
 import { threadEventItemPresentationSchema } from "./item-presentation.js";
 
 export const modelReasoningEffortSchema = z.object({
   reasoningEffort: reasoningLevelSchema,
+  label: z.string().min(1).optional(),
   description: z.string(),
 });
 export type ModelReasoningEffort = z.infer<typeof modelReasoningEffortSchema>;
@@ -28,9 +30,11 @@ export const availableModelSchema = z.object({
   displayName: z.string(),
   routeProviderId: z.string().min(1).optional(),
   description: z.string(),
+  reasoningDiscovery: z.enum(["unknown", "known"]).default("known"),
   supportedReasoningEfforts: z.array(modelReasoningEffortSchema),
   defaultReasoningEffort: reasoningLevelSchema,
   supportedServiceTiers: z.array(modelServiceTierSchema).optional(),
+  sessionOptions: z.array(threadSessionOptionSchema).max(64).optional(),
   isDefault: z.boolean(),
 });
 export type AvailableModel = z.infer<typeof availableModelSchema>;
@@ -50,6 +54,7 @@ const providerCapabilitiesSchema = z.object({
   permissionModes: z.array(permissionModeSchema).min(1),
   modelCatalogScope: providerModelCatalogScopeSchema,
   reportsTokenUsage: z.boolean().optional(),
+  supportsNativeTerminal: z.boolean().optional(),
 });
 export type ProviderCapabilities = z.infer<typeof providerCapabilitiesSchema>;
 
@@ -98,6 +103,7 @@ export const providerOptionDescriptorSchema = z.object({
   id: z.string().min(1),
   label: z.string().min(1),
   description: z.string().min(1).optional(),
+  icon: z.string().min(1).optional(),
 });
 export type ProviderOptionDescriptor = z.infer<
   typeof providerOptionDescriptorSchema

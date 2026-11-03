@@ -187,6 +187,7 @@ export function Overview() {
             <ThreadTimelineRows
               {...baseProps}
               timelineRows={[fileEditWaiting]}
+              threadIsActive={false}
             />
           </TimelineStage>
         </StoryRow>
@@ -198,6 +199,7 @@ export function Overview() {
             <ThreadTimelineRows
               {...baseProps}
               timelineRows={[fileEditDenied]}
+              threadIsActive={false}
             />
           </TimelineStage>
         </StoryRow>
@@ -211,6 +213,7 @@ export function Overview() {
             <ThreadTimelineRows
               {...baseProps}
               timelineRows={[permissionGrantPending]}
+              threadIsActive={false}
             />
           </TimelineStage>
         </StoryRow>
@@ -222,6 +225,7 @@ export function Overview() {
             <ThreadTimelineRows
               {...baseProps}
               timelineRows={[permissionGrantResolving]}
+              threadIsActive={false}
             />
           </TimelineStage>
         </StoryRow>
@@ -233,6 +237,7 @@ export function Overview() {
             <ThreadTimelineRows
               {...baseProps}
               timelineRows={[permissionGrantGrantedTurn]}
+              threadIsActive={false}
             />
           </TimelineStage>
         </StoryRow>
@@ -244,6 +249,7 @@ export function Overview() {
             <ThreadTimelineRows
               {...baseProps}
               timelineRows={[permissionGrantGrantedSession]}
+              threadIsActive={false}
             />
           </TimelineStage>
         </StoryRow>
@@ -255,6 +261,7 @@ export function Overview() {
             <ThreadTimelineRows
               {...baseProps}
               timelineRows={[permissionGrantDenied]}
+              threadIsActive={false}
             />
           </TimelineStage>
         </StoryRow>
@@ -266,6 +273,7 @@ export function Overview() {
             <ThreadTimelineRows
               {...baseProps}
               timelineRows={[permissionGrantInterrupted]}
+              threadIsActive={false}
             />
           </TimelineStage>
         </StoryRow>
@@ -277,6 +285,7 @@ export function Overview() {
             <ThreadTimelineRows
               {...baseProps}
               timelineRows={[permissionGrantInterruptedBySession]}
+              threadIsActive={false}
             />
           </TimelineStage>
         </StoryRow>

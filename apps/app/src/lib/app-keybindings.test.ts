@@ -1,5 +1,3 @@
-// @vitest-environment jsdom
-
 import { describe, expect, it } from "vitest";
 import {
   matchesAppShortcut,
@@ -11,7 +9,6 @@ import {
   appShortcutMatchesQuery,
   formatAppShortcut,
   formatAppShortcutAria,
-  isEditableKeyboardTarget,
   matchesAppCommandContext,
 } from "./app-keybindings";
 
@@ -41,6 +38,7 @@ const CONTEXT: AppCommandContext = {
   browserFocus: false,
   modelPickerOpen: false,
   questionOpen: false,
+  questionFocus: false,
   promptAvailable: false,
   splitActive: false,
   webSurface: false,
@@ -222,7 +220,7 @@ describe("app keybindings", () => {
 
   it("requires every positive context and excludes every negative context", () => {
     const binding: AppKeybinding = {
-      command: "diff.toggle",
+      command: "terminal.open",
       desktopOnly: false,
       shortcut: MOD_N,
       when: {
@@ -237,19 +235,6 @@ describe("app keybindings", () => {
     expect(
       matchesAppCommandContext(binding, { ...CONTEXT, mainSurface: false }),
     ).toBe(false);
-  });
-
-  it("recognizes form controls and contenteditable descendants", () => {
-    const input = document.createElement("input");
-    const editor = document.createElement("div");
-    editor.setAttribute("contenteditable", "true");
-    const child = document.createElement("span");
-    editor.append(child);
-    expect(isEditableKeyboardTarget(input)).toBe(true);
-    expect(isEditableKeyboardTarget(child)).toBe(true);
-    expect(isEditableKeyboardTarget(document.createElement("button"))).toBe(
-      false,
-    );
   });
 
   it("formats platform-specific shortcut labels", () => {

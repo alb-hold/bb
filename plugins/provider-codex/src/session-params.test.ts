@@ -541,8 +541,7 @@ describe("buildCodexConfig", () => {
   it("disables provider user-input requests without overriding web search", () => {
     const config = configFor(FULL_OPTIONS);
 
-    expect(config).toMatchObject({
-    });
+    expect(config).toMatchObject({});
     expect(JSON.stringify(config)).not.toContain("tools.web_search");
   });
 
@@ -581,6 +580,30 @@ describe("buildCodexConfig", () => {
     expect(config).not.toMatchObject({
       "shell_environment_policy.set.BAD.KEY": "ignored",
     });
+  });
+
+  it("keeps pool credentials and endpoints out of model shell settings", () => {
+    const config = configFor({
+      ...FULL_OPTIONS,
+      envVars: {
+        CODEX_POOL_AUTH_TOKEN: "private-pool-token",
+        CODEX_OPENAI_BASE_URL: "http://127.0.0.1/pool",
+        BB_ACCOUNT_POOL_PARENT_TOKEN: "private-parent-token",
+        BB_ACCOUNT_POOL_PARENT_URL: "http://127.0.0.1/parent",
+        TEST_VAR: "preserved",
+      },
+    });
+    expect(config).toMatchObject({
+      "shell_environment_policy.set.TEST_VAR": "preserved",
+    });
+    expect(Object.keys(config ?? {}).some((key) => /POOL/iu.test(key))).toBe(
+      false,
+    );
+    expect(JSON.stringify(config)).not.toContain("private-pool-token");
+    expect(JSON.stringify(config)).not.toContain("private-parent-token");
+    expect(JSON.stringify(config)).not.toContain("CODEX_OPENAI_BASE_URL");
+    expect(JSON.stringify(config)).not.toContain("http://127.0.0.1/pool");
+    expect(JSON.stringify(config)).not.toContain("http://127.0.0.1/parent");
   });
 
   it("maps the reasoning level onto model_reasoning_effort", () => {
@@ -685,12 +708,72 @@ describe("toCodexDynamicTools", () => {
 });
 
 describe("toCodexUserInput", () => {
+  it.each(["/", "$"] as const)(
+    "delivers selected %s skills by path without interpreting unselected commands",
+    (trigger) => {
+      const input: PromptInput[] = [
+        {
+          type: "text",
+          text: `${trigger}teach /plan`,
+          mentions: [
+            {
+              start: 0,
+              end: 6,
+              resource: {
+                kind: "command",
+                trigger,
+                name: "teach",
+                source: "skill",
+                origin: "project",
+                label: "teach",
+                argumentHint: null,
+              },
+            },
+          ],
+        },
+      ];
+      expect(
+        toCodexUserInput(input, [
+          { name: "teach", path: "/workspace/.agents/skills/teach/SKILL.md" },
+        ]),
+      ).toEqual([
+        { type: "text", text: `${trigger}teach /plan`, text_elements: [] },
+        {
+          type: "skill",
+          name: "teach",
+          path: "/workspace/.agents/skills/teach/SKILL.md",
+        },
+      ]);
+      expect(
+        toCodexUserInput(input, [
+          {
+            name: "lesson-planner",
+            path: "/workspace/.agents/skills/teach/SKILL.md",
+          },
+        ]),
+      ).toContainEqual({
+        type: "skill",
+        name: "lesson-planner",
+        path: "/workspace/.agents/skills/teach/SKILL.md",
+      });
+      expect(toCodexUserInput(input, [])).toEqual([
+        { type: "text", text: `${trigger}teach /plan`, text_elements: [] },
+      ]);
+      expect(
+        toCodexUserInput([
+          { type: "text", text: "/teach /plan", mentions: [] },
+        ]),
+      ).toEqual([{ type: "text", text: "/teach /plan", text_elements: [] }]);
+    },
+  );
+
   it("maps every prompt input variant, rendering local files as text", () => {
     const input: PromptInput[] = [
       { type: "text", text: "hello", mentions: [] },
       { type: "image", url: "https://example.com/a.png" },
       { type: "localImage", path: "/tmp/shot.png" },
       { type: "localFile", path: "/tmp/notes.md" },
+      { type: "localFile", path: "/tmp/paste.txt", name: "Pasted text 2.txt" },
     ];
 
     expect(toCodexUserInput(input)).toEqual([
@@ -700,6 +783,11 @@ describe("toCodexUserInput", () => {
       {
         type: "text",
         text: "[Attached file: /tmp/notes.md]",
+        text_elements: [],
+      },
+      {
+        type: "text",
+        text: '[Attached file "Pasted text 2.txt": /tmp/paste.txt]',
         text_elements: [],
       },
     ]);

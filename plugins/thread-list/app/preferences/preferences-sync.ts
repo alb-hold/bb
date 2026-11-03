@@ -22,7 +22,7 @@ export interface PreferencesRpc {
   call(method: "listPreferences", input: null): Promise<unknown>;
   call(
     method: "setPreference",
-    input: { key: PreferenceKey; value: unknown },
+    input: { key: PreferenceKey; value: unknown; origin: string },
   ): Promise<unknown>;
 }
 
@@ -31,12 +31,23 @@ interface SyncState {
   readyAtom: PrimitiveAtom<boolean>;
   pendingWrites: Map<
     PreferenceKey,
-    { timer: number | null; inFlight: boolean; value: unknown }
+    {
+      timer: ReturnType<typeof setTimeout> | null;
+      inFlight: boolean;
+      value: unknown;
+    }
   >;
   rpc: PreferencesRpc | null;
   store: PreferencesStore | null;
   pluginId: string | null;
   hydrateGeneration: number;
+  origin: string;
+}
+
+function createOrigin(): string {
+  return Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) =>
+    byte.toString(16).padStart(2, "0"),
+  ).join("");
 }
 
 function createSyncState(): SyncState {
@@ -48,6 +59,7 @@ function createSyncState(): SyncState {
     store: null,
     pluginId: null,
     hydrateGeneration: 0,
+    origin: createOrigin(),
   };
 }
 
@@ -203,7 +215,8 @@ export async function hydratePreferences(rpc: PreferencesRpc): Promise<void> {
 export function applyRemotePreferenceSignal(payload: unknown): void {
   const parsed = preferencesChangedSignalSchema.safeParse(payload);
   if (!parsed.success) return;
-  const { key, value } = parsed.data;
+  const { key, value, origin } = parsed.data;
+  if (origin === state.origin) return;
   const result = parseStoredPreferenceValue(key, value);
   if (!result.success) return;
   applyValues({ [key]: result.value } as Partial<PreferenceValues>);
@@ -214,6 +227,7 @@ function flushWrite(key: PreferenceKey): void {
   const pending = state.pendingWrites.get(key);
   if (pending === undefined) return;
   pending.timer = null;
+  if (pending.inFlight) return;
   const rpc = state.rpc;
   if (rpc === null) {
     state.pendingWrites.delete(key);
@@ -222,7 +236,7 @@ function flushWrite(key: PreferenceKey): void {
   pending.inFlight = true;
   const value = pending.value;
   void rpc
-    .call("setPreference", { key, value })
+    .call("setPreference", { key, value, origin: state.origin })
     .catch((error: unknown) => {
       console.warn(
         `${logPrefix()}saving preference ${key} failed: ${
@@ -233,8 +247,10 @@ function flushWrite(key: PreferenceKey): void {
     .finally(() => {
       const current = state.pendingWrites.get(key);
       if (current !== pending) return;
-      if (current.timer !== null) {
-        current.inFlight = false;
+      current.inFlight = false;
+      if (current.timer !== null) return;
+      if (!Object.is(current.value, value)) {
+        flushWrite(key);
         return;
       }
       state.pendingWrites.delete(key);
@@ -252,14 +268,14 @@ export function schedulePreferenceWrite(
     state.pendingWrites.set(key, pending);
   }
   pending.value = value;
-  if (pending.timer !== null) window.clearTimeout(pending.timer);
-  pending.timer = window.setTimeout(() => flushWrite(key), WRITE_DEBOUNCE_MS);
+  if (pending.timer !== null) clearTimeout(pending.timer);
+  pending.timer = setTimeout(() => flushWrite(key), WRITE_DEBOUNCE_MS);
 }
 
 export async function flushPreferenceWritesForTest(): Promise<void> {
   for (const [key, pending] of [...state.pendingWrites]) {
     if (pending.timer !== null) {
-      window.clearTimeout(pending.timer);
+      clearTimeout(pending.timer);
       flushWrite(key);
     }
   }
@@ -269,7 +285,7 @@ export async function flushPreferenceWritesForTest(): Promise<void> {
 
 export function resetPreferencesSyncForTest(): void {
   for (const pending of state.pendingWrites.values()) {
-    if (pending.timer !== null) window.clearTimeout(pending.timer);
+    if (pending.timer !== null) clearTimeout(pending.timer);
   }
   state.pendingWrites.clear();
   state.rpc = null;

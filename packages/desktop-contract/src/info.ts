@@ -1,3 +1,4 @@
+import type { BbDesktopServerChoice } from "./servers.js";
 import { z } from "zod";
 import type { BbDesktopBrowserApi } from "./browser.js";
 import type { BbDesktopWindowFindRequest } from "./find.js";
@@ -36,6 +37,30 @@ export type BbDesktopWindowState = z.infer<typeof bbDesktopWindowStateSchema>;
 export const bbDesktopThemeSchema = z.enum(["system", "light", "dark"]);
 export type BbDesktopTheme = z.infer<typeof bbDesktopThemeSchema>;
 
+export const bbDesktopSignInWindowRequestSchema = z
+  .object({
+    id: z.string().min(1).max(128),
+    url: z.string().min(1).max(8192),
+    redirectUrlPrefix: z.string().min(1).max(2048).optional(),
+  })
+  .strict();
+export type BbDesktopSignInWindowRequest = z.infer<
+  typeof bbDesktopSignInWindowRequestSchema
+>;
+
+export const bbDesktopSignInWindowResultSchema = z.discriminatedUnion(
+  "reason",
+  [
+    z.object({ reason: z.literal("closed") }).strict(),
+    z
+      .object({ reason: z.literal("redirect"), redirectUrl: z.string().min(1) })
+      .strict(),
+  ],
+);
+export type BbDesktopSignInWindowResult = z.infer<
+  typeof bbDesktopSignInWindowResultSchema
+>;
+
 export const bbDesktopClipboardContentSchema = z
   .object({
     text: z.string(),
@@ -61,13 +86,27 @@ export type BbDesktopOpenNewTabHandler = () => void;
 export type BbDesktopAppCommandHandler = (command: AppCommandId) => void;
 export type BbDesktopCloseWindowRequestHandler = () => boolean;
 
+export interface BbDesktopAttentionThreads {
+  pendingThreadIds: string[];
+  unreadThreadIds: string[];
+}
+
 export interface BbDesktopApi extends BbDesktopInfo {
   browser: BbDesktopBrowserApi;
+  getServerChoices?(): Promise<BbDesktopServerChoice[]>;
+  listServerChoices?(): Promise<BbDesktopServerChoice[]>;
+  onServerChoicesChange?(
+    listener: (choices: BbDesktopServerChoice[]) => void,
+  ): () => void;
+  selectServer?(id: string): void;
   checkForUpdates(): Promise<BbDesktopInfo>;
   getInfo(): Promise<BbDesktopInfo>;
   focusWindow?(): void;
+  setAttentionThreads?(threads: BbDesktopAttentionThreads): void;
   getWindowState?(): Promise<BbDesktopWindowState>;
   installUpdate(): Promise<void>;
+  macosTrafficLightInset?: number;
+  macosTrafficLightTopInset?: number;
   onChange(listener: BbDesktopInfoChangeHandler): BbDesktopInfoUnsubscribe;
   onWindowStateChange?(
     listener: BbDesktopWindowStateChangeHandler,
@@ -82,11 +121,18 @@ export interface BbDesktopApi extends BbDesktopInfo {
   openWindowFind?(request: BbDesktopWindowFindRequest): void;
   openDataDirectory?(): Promise<void>;
   openExternalUrl(url: string): void;
+  openSignInWindow?(
+    request: BbDesktopSignInWindowRequest,
+  ): Promise<BbDesktopSignInWindowResult>;
+  closeSignInWindow?(id: string): void;
+  openApplicationUrl?(url: string): Promise<void>;
   openServerDaemonLogs?(): Promise<void>;
+  reloadWindow?(): void;
   setSplitNavigationEnabled?(
     enabled: boolean,
     directionalCommands?: readonly AppCommandId[],
   ): void;
   setTheme(theme: BbDesktopTheme): void;
   writeClipboard?(content: BbDesktopClipboardContent): Promise<void>;
+  getPathForFile?(file: File): string;
 }

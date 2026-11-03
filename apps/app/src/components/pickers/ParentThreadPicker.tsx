@@ -1,3 +1,5 @@
+import { ListLoadingPlaceholder } from "@bb/shared-ui/list-loading-placeholder";
+import { PICKER_MOBILE_CLASS_NAME } from "@bb/shared-ui/picker-layout";
 import { useCallback, useMemo, useState } from "react";
 import {
   Command,
@@ -17,8 +19,10 @@ import {
   ThreadTitle,
   useResolveThreadTitle,
 } from "@/components/thread/ThreadTitleMentions";
-import { searchPickerOptions } from "./picker-search";
-import { useResetPickerScroll } from "./useResetPickerScroll";
+import { searchPickerOptions } from "@bb/shared-ui/picker-search";
+import {
+  useResetPickerScroll,
+} from "@bb/shared-ui/hooks/use-reset-picker-scroll";
 
 export interface ParentThreadPickerOption {
   label: string;
@@ -97,22 +101,28 @@ export function ParentThreadPicker({
         </button>
       </PopoverTrigger>
       <PopoverContent
+        mobileClassName={PICKER_MOBILE_CLASS_NAME}
         align="start"
-        className="w-72 p-0"
+        className="flex min-h-0 w-72 flex-col p-0 max-md:flex-1"
         mobileTitle="Assign parent thread"
       >
-        <Command label="Search parent threads" shouldFilter={false}>
+        <Command
+          label="Search parent threads"
+          shouldFilter={false}
+          className="min-h-0"
+        >
           <CommandInput
             aria-label="Search parent threads"
             placeholder="Search threads…"
             value={searchQuery}
             onValueChange={setSearchQuery}
           />
-          <CommandList ref={listRef} className="max-h-72">
+          <CommandList
+            ref={listRef}
+            className="min-h-0 max-h-72 max-md:max-h-none max-md:flex-1"
+          >
             {isLoading ? (
-              <div className="px-3 py-2 text-sm text-muted-foreground">
-                Loading threads…
-              </div>
+              <ListLoadingPlaceholder label="Loading threads…" />
             ) : isError ? (
               <CommandGroup>
                 <CommandItem
@@ -133,7 +143,7 @@ export function ParentThreadPicker({
                     No matching threads.
                   </div>
                 ) : (
-                  <CommandGroup heading="Assign parent thread">
+                  <CommandGroup>
                     {filteredOptions.map((option) => (
                       <CommandItem
                         key={option.value}

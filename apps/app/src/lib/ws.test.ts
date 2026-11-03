@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { z } from "zod";
 import { clientMessageSchema, type ClientMessage } from "@bb/domain";
 import type { RealtimeSubscriptionTarget } from "@bb/server-contract";
 
@@ -77,6 +78,40 @@ const PROJECT_TARGET = {
   kind: "project-list",
 } satisfies RealtimeSubscriptionTarget;
 
+const legacyThreadOpenSignalSchema = z.object({
+  type: z.literal("thread-open"),
+  projectId: z.string(),
+  threadId: z.string(),
+  split: z.enum(["right", "down", "left", "top", "replace"]),
+  file: z.unknown().nullable(),
+  terminalAction: z
+    .object({
+      action: z.enum(["focus", "openBrowser"]),
+      terminalId: z.string(),
+      url: z.string().optional(),
+    })
+    .optional(),
+});
+
+describe("thread-open compatibility", () => {
+  it("lets an older app parse the thread-open signal while dropping layout fields", () => {
+    const parsed = legacyThreadOpenSignalSchema.parse({
+      type: "thread-open",
+      projectId: "proj_1",
+      threadId: "thr_1",
+      split: "replace",
+      file: null,
+      terminalLayoutAction: {
+        action: "split",
+        terminalId: "term_1",
+        side: "right",
+      },
+    });
+    expect(parsed.threadId).toBe("thr_1");
+    expect(parsed).not.toHaveProperty("terminalLayoutAction");
+  });
+});
+
 interface ConnectedManager {
   manager: WebSocketManager;
   socket: FakeSocket;
@@ -101,9 +136,9 @@ function installOpenWebSocketConstructor(): void {
 }
 
 function readClientMessages(socket: FakeSocket): readonly ClientMessage[] {
-  return socket.sentMessages.map((message) =>
-    clientMessageSchema.parse(JSON.parse(message)),
-  );
+  return socket.sentMessages
+    .map((message) => clientMessageSchema.parse(JSON.parse(message)))
+    .filter((message) => message.type !== "device-handoff-device");
 }
 
 function getOnlySocket(): FakeSocket {
@@ -123,6 +158,32 @@ function createConnectedManager(): ConnectedManager {
 }
 
 describe("WebSocketManager subscriptions", () => {
+  it("never sends a target the server would reject", () => {
+    const { manager, socket } = createConnectedManager();
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    const oversized = {
+      kind: "plugin-read",
+      pluginId: "usage",
+      method: "getUsage",
+      read: { input: "x".repeat(17_000) },
+    } satisfies RealtimeSubscriptionTarget;
+    try {
+      manager.subscribe(oversized);
+      manager.subscribe(THREAD_TARGET);
+      manager.unsubscribe(oversized);
+      socket.close();
+      socket.open();
+
+      expect(readClientMessages(socket)).toEqual([
+        { type: "subscribe", target: THREAD_TARGET },
+        { type: "subscribe", targets: [THREAD_TARGET] },
+      ]);
+      expect(errors).toHaveBeenCalledTimes(1);
+    } finally {
+      errors.mockRestore();
+    }
+  });
+
   const originalWebSocket = globalThis.WebSocket;
 
   beforeEach(() => {
@@ -131,13 +192,15 @@ describe("WebSocketManager subscriptions", () => {
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
     Object.defineProperty(globalThis, "WebSocket", {
       configurable: true,
       value: originalWebSocket,
     });
   });
 
-  it("ref-counts duplicate subscriptions and unsubscribes only after the final cleanup", () => {
+  it("ref-counts duplicate subscriptions and unsubscribes only after the final cleanup", async () => {
     const { manager, socket } = createConnectedManager();
 
     manager.subscribe(THREAD_TARGET);
@@ -160,6 +223,7 @@ describe("WebSocketManager subscriptions", () => {
     ]);
 
     manager.unsubscribe(THREAD_TARGET);
+    await Promise.resolve();
 
     expect(readClientMessages(socket)).toEqual([
       {
@@ -170,6 +234,23 @@ describe("WebSocketManager subscriptions", () => {
         type: "unsubscribe",
         target: THREAD_TARGET,
       },
+    ]);
+  });
+
+  it("keeps a subscription that a remount releases and retakes in the same task", async () => {
+    const { manager, socket } = createConnectedManager();
+
+    manager.subscribe(THREAD_TARGET);
+    manager.unsubscribe(THREAD_TARGET);
+    manager.subscribe(THREAD_TARGET);
+    await Promise.resolve();
+    manager.unsubscribe(THREAD_TARGET);
+    manager.unsubscribe(THREAD_TARGET);
+    await Promise.resolve();
+
+    expect(readClientMessages(socket)).toEqual([
+      { type: "subscribe", target: THREAD_TARGET },
+      { type: "unsubscribe", target: THREAD_TARGET },
     ]);
   });
 
@@ -186,11 +267,293 @@ describe("WebSocketManager subscriptions", () => {
     expect(readClientMessages(socket)).toEqual([
       {
         type: "subscribe",
-        target: THREAD_TARGET,
+        targets: [THREAD_TARGET, PROJECT_TARGET],
+      },
+    ]);
+  });
+
+  it("resends the active device-handoff view on reconnect, but does not send an empty view", () => {
+    const { manager, socket } = createConnectedManager();
+
+    manager.setDeviceHandoffView("thread-1");
+    expect(readClientMessages(socket)).toEqual([
+      {
+        type: "device-handoff-view",
+        threadId: "thread-1",
+        terminalSessionId: null,
+      },
+    ]);
+    socket.sentMessages.length = 0;
+
+    manager.setDeviceHandoffView(null);
+    expect(readClientMessages(socket)).toEqual([
+      {
+        type: "device-handoff-view",
+        threadId: null,
+        terminalSessionId: null,
+      },
+    ]);
+    socket.sentMessages.length = 0;
+
+    manager.setDeviceHandoffView(null);
+    expect(readClientMessages(socket)).toEqual([]);
+
+    manager.setDeviceHandoffView("thread-1");
+    socket.sentMessages.length = 0;
+    socket.close();
+    socket.open();
+
+    expect(readClientMessages(socket)).toEqual([
+      {
+        type: "device-handoff-view",
+        threadId: "thread-1",
+        terminalSessionId: null,
+      },
+    ]);
+  });
+
+  it("tracks the active standalone terminal handoff view and resends it on reconnect", () => {
+    const { manager, socket } = createConnectedManager();
+
+    manager.setDeviceHandoffView(null, "term-a");
+    expect(readClientMessages(socket)).toEqual([
+      {
+        type: "device-handoff-view",
+        threadId: null,
+        terminalSessionId: "term-a",
+      },
+    ]);
+    socket.sentMessages.length = 0;
+    socket.close();
+    socket.open();
+    expect(readClientMessages(socket)).toEqual([
+      {
+        type: "device-handoff-view",
+        threadId: null,
+        terminalSessionId: "term-a",
+      },
+    ]);
+    socket.sentMessages.length = 0;
+
+    manager.setDeviceHandoffView(null, "term-b");
+    expect(readClientMessages(socket)).toEqual([
+      {
+        type: "device-handoff-view",
+        threadId: null,
+        terminalSessionId: "term-b",
+      },
+    ]);
+  });
+});
+
+describe("WebSocketManager device handoff attachment token", () => {
+  beforeEach(() => {
+    fakeSocketState.instances.length = 0;
+    installOpenWebSocketConstructor();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    Object.defineProperty(globalThis, "WebSocket", {
+      configurable: true,
+      value: originalWebSocket,
+    });
+  });
+
+  const originalWebSocket = globalThis.WebSocket;
+
+  function installBrowserStorage(throwOnAccess = false): void {
+    const values = new Map<string, string>();
+    vi.stubGlobal("window", {
+      localStorage: {
+        getItem: (key: string) => {
+          if (throwOnAccess) throw new Error("storage unavailable");
+          return values.get(key) ?? null;
+        },
+        setItem: (key: string, value: string) => {
+          if (throwOnAccess) throw new Error("storage unavailable");
+          values.set(key, value);
+        },
+        removeItem: (key: string) => values.delete(key),
+      },
+      crypto: globalThis.crypto,
+      btoa: globalThis.btoa,
+      location: { origin: "http://localhost" },
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    });
+  }
+
+  it("creates and stores a browser device id before the first WebSocket connection", async () => {
+    const storageKey = "bb-device-handoff-device-id";
+    installBrowserStorage();
+    window.localStorage.removeItem(storageKey);
+    vi.resetModules();
+    const { WebSocketManager: FreshWebSocketManager } = await import("./ws");
+    const manager = new FreshWebSocketManager();
+    const deviceId = manager.getDeviceHandoffClientToken();
+    expect(deviceId).toMatch(/^[A-Za-z0-9_-]{22}$/u);
+    expect(window.localStorage.getItem(storageKey)).toBe(deviceId);
+    manager.connect();
+    const socket = getOnlySocket();
+    socket.open();
+    expect(JSON.parse(socket.sentMessages[0] ?? "{}")).toEqual({
+      type: "device-handoff-device",
+      token: deviceId,
+    });
+    manager.disconnect();
+    window.localStorage.removeItem(storageKey);
+  });
+
+  it("reuses an in-memory device id when local storage is unavailable", async () => {
+    installBrowserStorage(true);
+    vi.resetModules();
+    const { WebSocketManager: FreshWebSocketManager } = await import("./ws");
+    const manager = new FreshWebSocketManager();
+    const deviceId = manager.getDeviceHandoffClientToken();
+    expect(deviceId).toMatch(/^[A-Za-z0-9_-]{22}$/u);
+    manager.connect();
+    const socket = getOnlySocket();
+    socket.open();
+    expect(JSON.parse(socket.sentMessages[0] ?? "{}")).toEqual({
+      type: "device-handoff-device",
+      token: deviceId,
+    });
+    expect(manager.getDeviceHandoffClientToken()).toBe(deviceId);
+    manager.disconnect();
+  });
+
+  it("stores a token delivered by the server and notifies terminal views", () => {
+    const manager = new WebSocketManager();
+    const callback = vi.fn();
+    manager.onDeviceHandoffClientToken(callback);
+    manager.handleIncomingMessage(
+      JSON.stringify({
+        type: "device-handoff-client-token",
+        token: "0123456789abcdefghij_-",
+      }),
+    );
+    expect(manager.getDeviceHandoffClientToken()).toBe(
+      "0123456789abcdefghij_-",
+    );
+    expect(callback).toHaveBeenCalledWith("0123456789abcdefghij_-");
+  });
+
+  it("replays the current token to a terminal view that subscribes late", () => {
+    const manager = new WebSocketManager();
+    const token = "0123456789abcdefghij_-";
+    manager.handleIncomingMessage(
+      JSON.stringify({ type: "device-handoff-client-token", token }),
+    );
+    const callback = vi.fn();
+
+    manager.onDeviceHandoffClientToken(callback);
+
+    expect(callback).toHaveBeenCalledOnce();
+    expect(callback).toHaveBeenCalledWith(token);
+  });
+});
+
+describe("WebSocketManager thread timeline tags", () => {
+  const timelineTarget = {
+    kind: "thread-timeline",
+    threadId: "thr_1",
+    segmentLimit: null,
+    deferContent: true,
+  } as const;
+  const timelineKey = "thread-timeline:thr_1:default:deferred";
+
+  beforeEach(() => {
+    installOpenWebSocketConstructor();
+    fakeSocketState.instances.length = 0;
+  });
+
+  function timelineSignal(tag: string): string {
+    return JSON.stringify({
+      type: "thread-timeline",
+      target: timelineTarget,
+      afterSequence: null,
+      timeline: {
+        maxSeq: 2,
+        tag,
+        delta: { afterTag: "older", upsertRows: [], fields: {} },
+      },
+    });
+  }
+
+  it("subscribes without a tag, then sends the tag its GET returned", () => {
+    const { manager, socket } = createConnectedManager();
+    manager.subscribe(timelineTarget);
+    manager.syncThreadTimelineTag(timelineTarget, "fetched");
+    manager.syncThreadTimelineTag(timelineTarget, "fetched");
+
+    expect(readClientMessages(socket)).toEqual([
+      {
+        type: "subscribe",
+        target: timelineTarget,
+        timelineTags: { [timelineKey]: null },
       },
       {
         type: "subscribe",
-        target: PROJECT_TARGET,
+        target: timelineTarget,
+        timelineTags: { [timelineKey]: "fetched" },
+      },
+    ]);
+  });
+
+  it("treats a pushed tag as known and resends the held tag on reconnect", () => {
+    const { manager, socket } = createConnectedManager();
+    manager.subscribe(timelineTarget);
+    manager.handleIncomingMessage(timelineSignal("pushed"));
+    manager.syncThreadTimelineTag(timelineTarget, "pushed");
+    socket.sentMessages.length = 0;
+
+    socket.close();
+    socket.open();
+
+    expect(readClientMessages(socket)).toEqual([
+      {
+        type: "subscribe",
+        targets: [timelineTarget],
+        timelineTags: { [timelineKey]: "pushed" },
+      },
+    ]);
+  });
+
+  it("forgets the tag once the last subscriber leaves", async () => {
+    const { manager, socket } = createConnectedManager();
+    manager.subscribe(timelineTarget);
+    manager.syncThreadTimelineTag(timelineTarget, "fetched");
+    manager.unsubscribe(timelineTarget);
+    await Promise.resolve();
+    socket.sentMessages.length = 0;
+
+    manager.subscribe(timelineTarget);
+
+    expect(readClientMessages(socket)).toEqual([
+      {
+        type: "subscribe",
+        target: timelineTarget,
+        timelineTags: { [timelineKey]: null },
+      },
+    ]);
+  });
+
+  it("does not keep the tag of a push that lands after the last subscriber left", async () => {
+    const { manager, socket } = createConnectedManager();
+    manager.subscribe(timelineTarget);
+    manager.unsubscribe(timelineTarget);
+    await Promise.resolve();
+    manager.handleIncomingMessage(timelineSignal("in-flight"));
+    socket.sentMessages.length = 0;
+
+    manager.subscribe(timelineTarget);
+
+    expect(readClientMessages(socket)).toEqual([
+      {
+        type: "subscribe",
+        target: timelineTarget,
+        timelineTags: { [timelineKey]: null },
       },
     ]);
   });
@@ -205,6 +568,7 @@ describe("WebSocketManager thread-open signals", () => {
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
     Object.defineProperty(globalThis, "WebSocket", {
       configurable: true,
       value: originalWebSocket,
@@ -261,6 +625,71 @@ describe("WebSocketManager thread-open signals", () => {
 
     expect(changed).toHaveBeenCalledTimes(1);
     expect(threadOpen).not.toHaveBeenCalled();
+  });
+
+  it("delivers known layout actions and ignores unrelated future fields", () => {
+    const { manager } = createConnectedManager();
+    const threadOpen = vi.fn();
+    manager.onThreadOpen(threadOpen);
+
+    dispatchRaw({
+      type: "thread-open",
+      projectId: "proj_1",
+      threadId: "thr_1",
+      split: "replace",
+      file: null,
+      futureAction: { value: "ignored" },
+      terminalLayoutAction: {
+        action: "split",
+        terminalId: "term_1",
+        side: "right",
+      },
+    });
+
+    expect(threadOpen).toHaveBeenCalledWith({
+      type: "thread-open",
+      projectId: "proj_1",
+      threadId: "thr_1",
+      split: "replace",
+      file: null,
+      terminalLayoutAction: {
+        action: "split",
+        terminalId: "term_1",
+        side: "right",
+      },
+    });
+  });
+
+  it("delivers typed terminal actions on thread-open signals", () => {
+    const { manager } = createConnectedManager();
+    const threadOpen = vi.fn();
+    manager.onThreadOpen(threadOpen);
+
+    dispatchRaw({
+      type: "thread-open",
+      projectId: "proj_1",
+      threadId: "thr_1",
+      split: "replace",
+      file: null,
+      terminalAction: {
+        action: "openBrowser",
+        terminalId: "term_1",
+        url: "http://localhost:3000",
+      },
+    });
+
+    expect(threadOpen).toHaveBeenCalledWith({
+      type: "thread-open",
+      projectId: "proj_1",
+      threadId: "thr_1",
+      split: "replace",
+      file: null,
+      terminalAction: {
+        action: "openBrowser",
+        terminalId: "term_1",
+        url: "http://localhost:3000",
+      },
+    });
   });
 
   it("routes typed thread-pane actions separately", () => {
@@ -550,6 +979,39 @@ describe("WebSocketManager liveness", () => {
     expect(onResumed).not.toHaveBeenCalled();
   });
 
+  it("stops watching after a long hide, across reconnects, until visible again", () => {
+    const { browserEvents, manager, socket } = createLiveManager();
+    const onResumed = vi.fn();
+    manager.onResumed(onResumed);
+    manager.subscribe(THREAD_TARGET);
+    const nonPingMessages = () =>
+      readClientMessages(socket).filter((message) => message.type !== "ping");
+
+    browserEvents.setVisible(false);
+    vi.advanceTimersByTime(REALTIME_RESUME_HIDDEN_THRESHOLD_MS - 1);
+    browserEvents.setVisible(true);
+    browserEvents.setVisible(false);
+    vi.advanceTimersByTime(REALTIME_RESUME_HIDDEN_THRESHOLD_MS);
+    socket.close();
+    socket.open();
+    manager.subscribe(PROJECT_TARGET);
+    browserEvents.setVisible(true);
+
+    expect(nonPingMessages()).toEqual([
+      { type: "subscribe", target: THREAD_TARGET },
+      { type: "visibility", visible: false },
+      { type: "visibility", visible: false },
+      { type: "subscribe", targets: [THREAD_TARGET] },
+      { type: "subscribe", target: PROJECT_TARGET },
+      { type: "visibility", visible: true },
+    ]);
+    expect(onResumed).toHaveBeenCalledTimes(1);
+    expect(onResumed).toHaveBeenCalledWith([THREAD_TARGET, PROJECT_TARGET]);
+
+    browserEvents.goOnline();
+    expect(onResumed).toHaveBeenLastCalledWith([]);
+  });
+
   it("schedules the first automatic reconnect within 500 ms of a close", () => {
     createLiveManager();
     const options = fakeSocketState.instances[0]?.options;
@@ -614,7 +1076,7 @@ describe("WebSocketManager liveness", () => {
     replacement.open();
 
     expect(readClientMessages(replacement)).toEqual([
-      { type: "subscribe", target: THREAD_TARGET },
+      { type: "subscribe", targets: [THREAD_TARGET] },
     ]);
     expect(manager.getConnectionState()).toBe("connected");
   });

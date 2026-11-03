@@ -9,25 +9,26 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@bb/shared-ui/dialog";
+import { formatChildThreadCount } from "@/lib/child-thread-copy";
 
 export interface ThreadArchiveDialogTarget {
-  thread: Thread;
+  threads: readonly Thread[];
   childThreadCount: number;
 }
 
-interface ThreadArchiveDialogProps {
-  target: ThreadArchiveDialogTarget | null;
+interface ThreadArchiveDialogProps<Target extends ThreadArchiveDialogTarget> {
+  target: Target | null;
   pending: boolean;
   onOpenChange: (open: boolean) => void;
-  onArchive: (target: ThreadArchiveDialogTarget) => void;
+  onArchive: (target: Target) => void;
 }
 
-export function ThreadArchiveDialog({
+export function ThreadArchiveDialog<Target extends ThreadArchiveDialogTarget>({
   target,
   pending,
   onOpenChange,
   onArchive,
-}: ThreadArchiveDialogProps) {
+}: ThreadArchiveDialogProps<Target>) {
   const contentRef = useRef<HTMLDivElement>(null);
 
   return (
@@ -54,30 +55,31 @@ export function ThreadArchiveDialog({
   );
 }
 
-interface ThreadArchiveDialogContentProps {
-  target: ThreadArchiveDialogTarget;
+interface ThreadArchiveDialogContentProps<
+  Target extends ThreadArchiveDialogTarget,
+> {
+  target: Target;
   pending: boolean;
   onOpenChange: (open: boolean) => void;
-  onArchive: (target: ThreadArchiveDialogTarget) => void;
+  onArchive: (target: Target) => void;
 }
 
-export function ThreadArchiveDialogContent({
+export function ThreadArchiveDialogContent<
+  Target extends ThreadArchiveDialogTarget,
+>({
   target,
   pending,
   onOpenChange,
   onArchive,
-}: ThreadArchiveDialogContentProps) {
-  const { childThreadCount } = target;
-  const archivedThreadCount = childThreadCount + 1;
-  const active =
-    target.thread.status === "starting" ||
-    target.thread.status === "active" ||
-    target.thread.status === "stopping";
-  const sentences = [
-    active ? "This will stop current work." : null,
-    `${childThreadCount} child ${childThreadCount === 1 ? "thread" : "threads"} will be archived with this thread.`,
-    "Archived threads stay available and can be unarchived.",
-  ].filter((sentence): sentence is string => sentence !== null);
+}: ThreadArchiveDialogContentProps<Target>) {
+  const { childThreadCount, threads } = target;
+  const single = threads.length === 1;
+  const active = threads.some(
+    (thread) =>
+      thread.status === "starting" ||
+      thread.status === "active" ||
+      thread.status === "stopping",
+  );
 
   return (
     <form
@@ -90,8 +92,18 @@ export function ThreadArchiveDialogContent({
       }}
     >
       <DialogHeader>
-        <DialogTitle>Archive {archivedThreadCount} threads?</DialogTitle>
-        <DialogDescription>{sentences.join(" ")}</DialogDescription>
+        <DialogTitle>
+          {single ? "Archive thread?" : `Archive ${threads.length} threads?`}
+        </DialogTitle>
+        <DialogDescription>
+          {active ? "This will stop current work. " : null}
+          {single ? "Its" : "Their"}{" "}
+          <span className="font-semibold">
+            {formatChildThreadCount(childThreadCount)}
+          </span>{" "}
+          will be archived too. Archived threads stay available and can be
+          unarchived.
+        </DialogDescription>
       </DialogHeader>
       <DialogFooter>
         <Button
@@ -103,7 +115,7 @@ export function ThreadArchiveDialogContent({
           Cancel
         </Button>
         <Button type="submit" disabled={pending}>
-          Archive {archivedThreadCount} threads
+          Archive
         </Button>
       </DialogFooter>
     </form>

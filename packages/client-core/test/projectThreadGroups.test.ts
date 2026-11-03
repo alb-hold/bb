@@ -1,6 +1,6 @@
 import type { ThreadListEntry } from "@bb/domain";
 import { makeThreadListEntry } from "@bb/test-helpers/domain-fixtures";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   buildChronologicalThreadList,
   resolveSidebarProjectId,
@@ -68,6 +68,52 @@ function findNode(
 }
 
 describe("buildChronologicalThreadList", () => {
+  it("expires collapsed native child activity at the shared freshness boundary", () => {
+    const parent = createThread({ id: "parent" });
+    const child = createThread({
+      id: "native-child",
+      parentThreadId: parent.id,
+      status: "active",
+      runtime: {
+        displayStatus: "active",
+        nativeActivity: {
+          lastEvidenceAt: 1_000_000,
+          freshForMs: 90_000,
+          confirmation: "confirmed",
+          evidenceKind: "holder-report",
+        },
+      },
+    });
+    vi.useFakeTimers();
+    let atBoundary: ProjectThreadItem[];
+    let afterBoundary: ProjectThreadItem[];
+    try {
+      vi.setSystemTime(1_090_000);
+      atBoundary = buildChronologicalThreadList(
+        [parent, child],
+        compareByAttentionDescending,
+        new Set(),
+        1_090_000,
+      );
+      vi.setSystemTime(1_090_001);
+      afterBoundary = buildChronologicalThreadList(
+        [parent, child],
+        compareByAttentionDescending,
+        new Set(),
+        1_090_001,
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+
+    expect(
+      findNode(atBoundary, parent.id)?.stats.childActivity.runtimeWorking,
+    ).toBe(true);
+    expect(
+      findNode(afterBoundary, parent.id)?.stats.childActivity.runtimeWorking,
+    ).toBe(false);
+  });
+
   it("nests threads recursively from parentThreadId regardless of thread type", () => {
     const rootItems = buildList([
       createThread({

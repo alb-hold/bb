@@ -1,9 +1,13 @@
+import { PICKER_MOBILE_CLASS_NAME } from "@bb/shared-ui/picker-layout";
 import { EnvironmentProviderIcon } from "@/components/plugin/EnvironmentProviderIcon";
 import { useMemo, useRef, useState } from "react";
-import type { Host, ProjectSource } from "@bb/domain";
+import {
+  type Host,
+  type ProjectSource,
+  findLocalPathProjectSourceForHost,
+} from "@bb/domain";
 import type { SystemEnvironmentProvider } from "@bb/server-contract";
 import { Icon, type IconName } from "@bb/shared-ui/icon";
-import { findLocalPathProjectSourceForHost } from "@bb/domain";
 import { pluginIconName } from "@/components/plugin/PluginIcon";
 import { Button } from "@bb/shared-ui/button";
 import { Skeleton } from "@bb/shared-ui/skeleton";
@@ -41,10 +45,12 @@ import {
 import { selectHosts } from "@/hooks/queries/host-queries";
 import { providerInputsControlRequired } from "./environment-provider-inputs";
 import { MACHINE_BADGE_CLASS_NAME, orderLocalHostFirst } from "./MachinePicker";
-import { PickerLoadingRows } from "./PickerLoadingRows";
+import { ListLoadingPlaceholder } from "@bb/shared-ui/list-loading-placeholder";
 import { MachineIcon } from "@/components/machines/MachineLabel";
 import { searchMachineHosts } from "./machine-picker-search";
-import { useResetPickerScroll } from "./useResetPickerScroll";
+import {
+  useResetPickerScroll,
+} from "@bb/shared-ui/hooks/use-reset-picker-scroll";
 
 interface SelectedEnvironment {
   modeLabel: string;
@@ -449,6 +455,7 @@ export function EnvironmentPickerUI({
         </Button>
       </PopoverTrigger>
       <PopoverContent
+        mobileClassName={PICKER_MOBILE_CLASS_NAME}
         align="start"
         aria-label="Environment"
         mobileTitle="Environment"
@@ -458,10 +465,7 @@ export function EnvironmentPickerUI({
         className="flex max-h-[min(var(--radix-popover-content-available-height),calc(100dvh-0.5rem))] w-auto max-w-80 min-w-52 flex-col overflow-hidden p-0 max-md:min-h-0 max-md:w-full max-md:flex-1"
       >
         {isLoading ? (
-          <PickerLoadingRows
-            label="Loading environments"
-            rowDataAttribute="data-environment-loading-row"
-          />
+          <ListLoadingPlaceholder label="Loading environments" />
         ) : (
           <Command
             ref={commandRef}

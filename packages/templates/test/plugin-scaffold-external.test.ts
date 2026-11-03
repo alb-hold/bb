@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { readFileSync } from "node:fs";
 import {
   access,
@@ -194,11 +195,11 @@ async function verifyFullSdk(bb: BbPluginApi) {
   });
   const attachmentPath: string = attachment.path;
 
-  const environment = await bb.sdk.environments.status({
+  const environment = await bb.sdk.environments.get({
     environmentId: "env_fixture",
   });
-  const outcome: "available" | "not_applicable" | "unavailable" =
-    environment.outcome;
+  const outcome: "creating" | "provisioning" | "ready" | "error" | "destroyed" =
+    environment.status;
 
   return { attachmentPath, outcome, projectName, sha256, sourceId, threadId };
 }

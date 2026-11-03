@@ -1,3 +1,5 @@
+import { reportedProviderId } from "../services/system/provider-telemetry.js";
+import { rememberPluginRecommendation } from "../services/plugins/plugin-use-telemetry.js";
 import { createMobileAppReleaseService } from "../services/install/mobile-app-releases.js";
 import {
   setMachineEnvironmentVariable,
@@ -307,21 +309,27 @@ export function registerSystemRoutes(
         : undefined;
     const updatedSettings = appSettingsSchema.parse({
       ...settings,
+      idleProviderSessionTimeoutMinutes:
+        settings.idleProviderSessionTimeoutMinutes === undefined
+          ? current.idleProviderSessionTimeoutMinutes
+          : settings.idleProviderSessionTimeoutMinutes,
       allowFastServiceTier:
         settings.allowFastServiceTier ?? current.allowFastServiceTier,
       telemetryEnabled: settings.telemetryEnabled ?? current.telemetryEnabled,
-      showGitChanges: settings.showGitChanges ?? current.showGitChanges,
+      terminalCopyOnSelect:
+        settings.terminalCopyOnSelect ?? current.terminalCopyOnSelect,
       keepHistoryAfterContextClear:
         settings.keepHistoryAfterContextClear ??
         current.keepHistoryAfterContextClear,
+      summarizeShellCommands:
+        settings.summarizeShellCommands ?? current.summarizeShellCommands,
       confirmThreadArchive:
         settings.confirmThreadArchive ?? current.confirmThreadArchive,
+      earlyAdopter: settings.earlyAdopter ?? current.earlyAdopter,
       onboardingCompletedAt:
         settings.onboardingCompletedAt === undefined
           ? current.onboardingCompletedAt
           : settings.onboardingCompletedAt,
-      setupChecklistVisible:
-        settings.setupChecklistVisible ?? current.setupChecklistVisible,
       showDiagnosticEvents:
         diagnosticValue === undefined ||
         (showUnhandledProviderEvents !== undefined &&
@@ -336,6 +344,33 @@ export function registerSystemRoutes(
     deps.telemetry.setEnabled(updatedSettings.telemetryEnabled);
     deps.hub.notifySystem(["config-changed"]);
     return context.json(compatibleGeneralSettings());
+  });
+
+  post(routes.recordTelemetryEvent, (context, payload) => {
+    if (
+      payload.name === "recommendation" &&
+      payload.properties.action === "selected"
+    ) {
+      rememberPluginRecommendation(
+        deps,
+        payload.properties.resource_id,
+        payload.properties.recommendation_id,
+      );
+    }
+    deps.telemetry.capture(
+      payload.name === "onboarding_operation" &&
+        payload.properties.step === "agent" &&
+        payload.properties.resource_id !== undefined
+        ? {
+            ...payload,
+            properties: {
+              ...payload.properties,
+              resource_id: reportedProviderId(payload.properties.resource_id),
+            },
+          }
+        : payload,
+    );
+    return context.json({ ok: true });
   });
 
   put(routes.keyboardSettings, (context, payload) => {
@@ -716,6 +751,32 @@ export function registerSystemRoutes(
       await deps.appUpdate.acknowledgeResult({ id: body.id }),
     );
   });
+
+  get(routes.cliCommand, async (context) =>
+    context.json(await deps.cliCommand.getStatus()),
+  );
+
+  post(routes.installCliCommand, async (context) => {
+    assertCliCommandChangeAllowed(context);
+    return context.json(await deps.cliCommand.install());
+  });
+
+  post(routes.removeCliCommand, async (context) => {
+    assertCliCommandChangeAllowed(context);
+    return context.json(await deps.cliCommand.remove());
+  });
+}
+
+function assertCliCommandChangeAllowed(
+  context: Parameters<typeof getGateAuthKind>[0],
+): void {
+  if (getGateAuthKind(context) === "machine") {
+    throw new ApiError(
+      403,
+      "forbidden",
+      "Machine credentials cannot change the bb command on the bb server's computer",
+    );
+  }
 }
 
 function assertAppUpdateAllowed(

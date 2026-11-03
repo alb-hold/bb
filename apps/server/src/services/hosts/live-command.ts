@@ -19,11 +19,17 @@ import {
   type LiveHostCommandSuccessResultReportForType,
 } from "../../internal/command-result-side-effects.js";
 import { handleLiveCommandResultSideEffects } from "../../internal/command-results.js";
+import { resolveMissingWorkspaceFailure } from "../threads/missing-workspace.js";
 import { NotificationBuffer } from "../lib/notification-buffer.js";
 import {
   callHostOnlineRpcForWork,
   isHostUnavailableApiError,
 } from "./online-rpc.js";
+import {
+  noteTurnTraceCommandFailed,
+  noteTurnTraceCommandSent,
+  noteTurnTraceCommandSettled,
+} from "../system/turn-trace.js";
 
 export const LIVE_DAEMON_COMMAND_TIMEOUT_MS = 24 * 60 * 60 * 1000;
 
@@ -248,11 +254,13 @@ export async function runLiveHostCommand<
           }
         : {}),
     };
+    noteTurnTraceCommandSent({ command: sourceCommand, hostId: args.hostId });
     const result = await call(deps, {
       command,
       hostId: args.hostId,
       timeoutMs: args.timeoutMs,
     });
+    noteTurnTraceCommandSettled({ command: sourceCommand, result });
     await applyLiveHostCommandReport(deps, {
       command: args.command,
       execution,
@@ -265,14 +273,19 @@ export async function runLiveHostCommand<
     });
     return result;
   } catch (error) {
-    const normalized =
-      error instanceof Error ? error : new Error(String(error));
+    const failure = error instanceof Error ? error : new Error(String(error));
+    noteTurnTraceCommandFailed(args.command);
     if (
       args.preserveOnHostUnavailable === true &&
-      isHostUnavailableApiError(normalized)
+      isHostUnavailableApiError(failure)
     ) {
-      throw normalized;
+      throw failure;
     }
+    const normalized = await resolveMissingWorkspaceFailure(deps, {
+      command: args.command,
+      error: failure,
+      hostId: args.hostId,
+    });
     const failureReport = buildLiveHostCommandFailureReport({
       command: args.command,
       completedAt: Date.now(),

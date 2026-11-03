@@ -420,6 +420,7 @@ function userQuestionPayload(requestId: JsonRpcId): PendingInteractionPayload {
           },
         ],
         allowFreeText: true,
+        required: true,
       },
     ],
   };
@@ -496,6 +497,7 @@ function openBackgroundTask(session: Session, providerTurnId: string): void {
         status: "pending",
         taskStatus: "running",
         skipTranscript: false,
+        foreground: false,
       },
       providerTurnId,
     },
@@ -523,6 +525,7 @@ function settleBackgroundTasks(session: Session): void {
         status: "completed",
         taskStatus: "completed",
         skipTranscript: false,
+        foreground: false,
       },
     })),
   );
@@ -641,7 +644,6 @@ function beginTurn(args: {
           plan.approvalKind,
           `approval-${providerTurnId}`,
         ),
-        providerNativeIds: true,
       },
     );
     pendingReplies.set(requestId, {
@@ -664,7 +666,6 @@ function beginTurn(args: {
         threadId: session.threadId,
         turnId: providerTurnId,
         payload: userQuestionPayload(requestId),
-        providerNativeIds: true,
       },
     });
     pendingReplies.set(requestId, {
@@ -682,7 +683,6 @@ function beginTurn(args: {
       callId: `call-${session.turnCount}`,
       tool: plan.toolName,
       arguments: {},
-      providerNativeIds: true,
     });
     pendingReplies.set(requestId, {
       kind: "tool",
@@ -944,6 +944,7 @@ const MODEL_LIST = {
       model: "fake-model",
       displayName: "Fake Model",
       description: "Fake model for integration and runtime tests",
+      reasoningDiscovery: "known",
       supportedReasoningEfforts: [
         { reasoningEffort: "medium", description: "Medium" },
       ],

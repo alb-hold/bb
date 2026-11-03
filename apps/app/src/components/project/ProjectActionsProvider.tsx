@@ -7,7 +7,6 @@ import {
   useMemo,
   type ReactNode,
 } from "react";
-import { useSetAtom } from "jotai";
 import { useNavigate } from "react-router-dom";
 import type { ProjectResponse } from "@bb/server-contract";
 import { useRouteState } from "@/hooks/useRouteState";
@@ -16,20 +15,14 @@ import {
   useDeleteProject,
   useUpdateProject,
 } from "@/hooks/mutations/project-mutations";
-import { useDialogState } from "@/hooks/useDialogState";
+import { useDialogState } from "@bb/shared-ui/use-dialog-state";
 import {
   useLocalPathPicker,
   type LocalPathSubmitParams,
 } from "@/hooks/useLocalPathPicker";
-import {
-  ProjectDeleteDialog,
-  type ProjectDeleteDialogTarget,
-} from "@/components/dialogs/ProjectDeleteDialog";
-import {
-  ProjectRenameDialog,
-  type ProjectRenameDialogTarget,
-} from "@/components/dialogs/ProjectRenameDialog";
-import { collapsedProjectIdsAtom } from "@/components/sidebar/sidebarCollapsedAtoms";
+import type { ProjectDeleteDialogTarget } from "@/components/dialogs/ProjectDeleteDialog";
+import type { ProjectRenameDialogTarget } from "@/components/dialogs/ProjectRenameDialog";
+import { defineSplit } from "@/lib/define-split";
 import { getRootComposeRoutePath } from "@/lib/route-paths";
 
 const ProjectPathDialog = lazy(() =>
@@ -37,6 +30,38 @@ const ProjectPathDialog = lazy(() =>
     default: module.ProjectPathDialog,
   })),
 );
+
+const ProjectRenameDialog = defineSplit<
+  Parameters<
+    typeof import("@/components/dialogs/ProjectRenameDialog").ProjectRenameDialog
+  >[0]
+>({
+  id: "project-rename-dialog",
+  load: () =>
+    import("@/components/dialogs/ProjectRenameDialog").then(
+      (module) => module.ProjectRenameDialog,
+    ),
+  loading: () => null,
+  tier: "intent",
+  mountWhen: ({ target }) => target !== null,
+  keepMounted: true,
+});
+
+const ProjectDeleteDialog = defineSplit<
+  Parameters<
+    typeof import("@/components/dialogs/ProjectDeleteDialog").ProjectDeleteDialog
+  >[0]
+>({
+  id: "project-delete-dialog",
+  load: () =>
+    import("@/components/dialogs/ProjectDeleteDialog").then(
+      (module) => module.ProjectDeleteDialog,
+    ),
+  loading: () => null,
+  tier: "intent",
+  mountWhen: ({ target }) => target !== null,
+  keepMounted: true,
+});
 
 interface ProjectActionsContextValue {
   requestRename: (project: ProjectResponse) => void;
@@ -67,7 +92,6 @@ export function ProjectActionsProvider({
 }: ProjectActionsProviderProps) {
   const navigate = useNavigate();
   const { projectId: routeProjectId } = useRouteState();
-  const setCollapsedProjectIdList = useSetAtom(collapsedProjectIdsAtom);
   const updateProject = useUpdateProject();
   const deleteProject = useDeleteProject();
   const addLocalSource = useAddLocalProjectSource();
@@ -125,22 +149,13 @@ export function ProjectActionsProvider({
       deleteProjectMutate(projectId, {
         onSuccess: () => {
           closeDeleteDialog();
-          setCollapsedProjectIdList((current) =>
-            current.filter((id) => id !== projectId),
-          );
           if (routeProjectId === projectId) {
             navigate(getRootComposeRoutePath(), { replace: true });
           }
         },
       });
     },
-    [
-      closeDeleteDialog,
-      deleteProjectMutate,
-      navigate,
-      routeProjectId,
-      setCollapsedProjectIdList,
-    ],
+    [closeDeleteDialog, deleteProjectMutate, navigate, routeProjectId],
   );
 
   const requestAddLocalPath = useCallback(

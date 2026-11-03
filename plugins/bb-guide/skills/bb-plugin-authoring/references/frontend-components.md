@@ -148,6 +148,29 @@ className? }` —
   not, so code there renders unhighlighted rather than broken.
   Experimental: see `docs/api_to_audit.md`.
 
+- `experimental_InfoSection`, `experimental_DetailRow`, `experimental_InfoList`,
+  `experimental_InfoListRow` — the thread Info tab's building blocks, the ones
+  bb's own rows and sections use. `experimental_InfoSection` takes
+  `{ label, count?, accessory?, trailing?, children }` and collapses inside an
+  `experimental_threadInfoSection`. `experimental_DetailRow` takes
+  `{ label, icon?, align?, children }`, where `icon` is any name
+  `experimental_Icon` accepts. `experimental_InfoList` takes
+  `{ items, getKey, renderItem, limit? }`. `experimental_InfoListRow` takes
+  `{ leading, leadingLabel?, name, title?, context?, trailing?, onSelect? }`.
+  Usage is in frontend-registration.md. Experimental: see
+  `docs/api_to_audit.md`.
+
+- `experimental_ThreadContextCardRow` — the thread context card's row, the one
+  bb's own rows use: `{ icon?, leading?, label, trailing?, title?, disabled?,
+onClick?, action? }`. `icon` is any name `experimental_Icon` accepts and
+  `leading` draws any node in its place (an app or site icon), `trailing`
+  draws at the row's end (a count or `+4 −1`), `onClick` makes the label a
+  button, and `action` is a second control, such as a `…` that opens a menu,
+  shown in place of `trailing` while the row is hovered or focused (always on
+  touch screens). Usage is in
+  frontend-thread-context-card.md. Experimental: see
+  `docs/api_to_audit.md`.
+
 - `Markdown` — bb's chat-message markdown renderer (same typography,
   spacing, and code styling as timeline messages). Props:
   `{ content, className? }`. Use it wherever plugin UI quotes or previews
@@ -172,24 +195,33 @@ className? }` —
   target, available client apps, and copy actions. Valid targets expose an
   encoded, scheme-safe href; traversal paths, ill-formed Unicode, and other
   malformed runtime targets are inert in both the app and SDK test harness.
+  A workspace target's optional `experimental_ref` (`"HEAD"` or a 4–40
+  character commit SHA; anything else makes the target invalid) previews the
+  file read-only at that Git revision, labelled with the ref; external opens
+  ignore it and open the working copy.
   Optional `location` is a one-based line/column or line range. For buttons and
   effects use
   `useBbNavigate().experimental_openFilePreview({ target, location })` or
   `.experimental_openFileExternally({ target, location })`; the boolean means
-  host acceptance, not completed I/O. Every identity is explicit—never invent
+  host acceptance, not completed I/O.
+  The `experimental_useCanOpenFileExternally(target)` hook is true when the
+  target resolves on its host and this client has an external file target
+  for it; it is false while loading and re-renders the component when it
+  changes. Every identity is explicit—never invent
   an environment id or turn a project id into a workspace target. The testing
   harness records both calls in `navigateCalls` and gates them with the
-  `openFilePreview` / `openFileExternally` behavior options.
-- `experimental_useAppPanel` — returns the generic current-surface fixed-tab
-  controller. `openFixedTab({ surface: { kind: "current" }, tab, target? })`
-  accepts a plugin's own eligible fixed-tab registration, validates any target
-  through that registration's `experimental_target` contract, opens the shared
-  panel, and returns host acceptance. The controller does not interpret target
-  shapes. Targeted fixed tabs use `experimental_useFixedTabTarget(tab)` to read
-  current-session state and call `clear()` when returning to an untargeted
-  state. The frontend harness records accepted calls in
-  `experimental_fixedTabOpenCalls`, gates them with
-  `experimental_openFixedTab`, and seeds state with
+  `openFilePreview` / `openFileExternally` behavior options; its
+  `canOpenFileExternally` option answers the hook.
+- `experimental_PanelTabIcon` — `{ tabKey }`; the icon bb's tab strip draws
+  for an open side panel tab, from `experimental_usePanelTabs()`; see
+  frontend-panel-tabs.md.
+- `experimental_useAppPanel` — returns the current surface's
+  `ExperimentalPanelController`; see
+  [Panel controller](frontend-hooks-and-ui.md#panel-controller). Targeted
+  fixed tabs use `experimental_useFixedTabTarget(tab)` to read current-session
+  state and call `clear()` when returning to an untargeted state. The frontend
+  harness records every call in `experimental_panelCalls`, gates them with the
+  `experimental_panel` option, and seeds state with
   `experimental_fixedTabTarget`.
 - `experimental_NewThreadComposer` — bb's complete compose surface for
   CREATING a thread (the create-side counterpart to `ThreadChat`): prompt
@@ -221,31 +253,20 @@ className?, draftKey? }` — the `default*` props are SEEDS, not controlled
   absent from projectless pickers. Availability is resolved for that
   project and machine: available rows work normally; setup-required rows show
   the plugin's message and submit routes to that plugin's settings; unavailable
-  rows are disabled with the provider's message. A provider whose inputs schema
-  does not accept `{}` is also disabled until its plugin registers an inputs
-  control; an empty-accepting schema needs no slot. Choosing a row chooses that provider and, for a
-  provider, the machine; everything else that provider needs comes
-  from its plugin's own inputs control, rendered beside the picker. The reuse
+  rows are disabled with the provider's message. Choosing a row chooses that
+  provider and its machine; everything else that provider needs comes from
+  its plugin's `experimental_environmentProviderInputs` control, rendered
+  beside the picker (frontend-core-slots.md). The reuse
   picker beside it offers the environments this project's live threads are
   already running in. bb contributes no branch chip of its own: the worktree
   provider's control owns the base branch, and the checkout provider's owns
   the directory and the branch to switch to.
 
-  An environment composition declares `machineProviderId` and
-  `environmentProviderId`; choosing it creates the machine and runs the concrete
-  environment provider. It appears once, outside existing-host groups.
-  Machine-only registrations do not contribute environment-picker entries.
-  When the composition's machine provider declares inputs, its
-  `experimental_machineProviderInputs` compact chip renders before the
-  environment provider's inputs chip. It reports a ready default on mount and
-  opens richer configuration in the shared responsive drawer; a blocked or
-  crashed control disables submit with its short reason.
-  The Machines page renders the machine provider's icon and display name as the
-  kind next to each provider-created machine's name. Manually enrolled machines
-  have no kind.
-  Machine inputs are persisted and readable by every plugin, so never put
-  secrets in them; store credentials in plugin settings and emit only
-  non-secret configuration or references.
+  An environment composition (backend-machines.md) appears once, outside
+  existing-host groups; when its machine provider declares inputs, that
+  provider's `experimental_machineProviderInputs` chip renders before the
+  environment provider's inputs chip.
+
   Store-then-restore: the request's selection fields map to the `default*`
   seed props. The host composer creates `input` and `executionInputSources`
   from its draft and selection provenance. A plugin can re-open a saved
@@ -275,7 +296,9 @@ className?, draftKey? }` — the `default*` props are SEEDS, not controlled
   submit it calls `onSubmit(request)` with a JSON-serializable
   `NewThreadRequest`
   `{ projectId, providerId, model, reasoningLevel, permissionMode,
-serviceTier?, executionInputSources, environment, input }`. Hand it to
+serviceTier?, sessionOptions?, executionInputSources, environment, input }`
+  (`sessionOptions` only when the user changed an agent option the provider
+  declares). Hand it to
   `useSdk().threads.spawn` from the frontend (or forward it verbatim to your
   backend rpc and `bb.sdk.threads.spawn` when the create needs server-side
   work), adding `sectionId` / `parentThreadId` / `title` / `visibility`
@@ -309,6 +332,7 @@ serviceTier?, executionInputSources, environment, input }`. Hand it to
   Experimental: the `experimental_` prefix will drop once the entry in
   `docs/api_to_audit.md` is audited. Give it real width — the control row
   does not fit in a ~420px column.
+
 - `experimental_VoiceInputTextarea` — a controlled textarea with bb's voice
   input (the prompt box's microphone preference, transcription service, and
   errors). Props: `value`, `onValueChange(value)`, optional
@@ -320,7 +344,6 @@ serviceTier?, executionInputSources, environment, input }`. Hand it to
   submission while `onVoiceInputActiveChange` reports `true`. The registry's
   `voice-input-textarea` item re-exports it, and `question-form` uses it for
   free-text answers. Alias it on import like `experimental_NewThreadComposer`.
-
 
 ## Shared app and provider icons
 
@@ -352,10 +375,15 @@ string), and `strings.iconTint` without fetching. An id-only record resolves a
 frontend registration or fallback. For example:
 
 ```tsx
-<ProviderIcon providerKind="agent" provider={provider} fallback="Bot" className="size-4" />
+<ProviderIcon
+  providerKind="agent"
+  provider={provider}
+  fallback="Bot"
+  className="size-4"
+/>
 ```
 
- Resolution is the matching kind/id `app.slots.experimental_providerIcon` override,
+Resolution is the matching kind/id `app.slots.experimental_providerIcon` override,
 then a legacy unscoped override, then
 declared logo mask, then glyph through the shared app registry, then fallback.
 Invalid tints are ignored. Overrides update and remount per plugin generation;

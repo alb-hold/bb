@@ -126,6 +126,20 @@ function modelIds(result: { models: { id: string }[] }): string[] {
 }
 
 describe("pi catalog freshness", () => {
+  it("lists models after an earlier session's tool manifest is deleted", async () => {
+    const paths = setUpFakeCatalog({});
+    const toolsPath = join(paths.workspace, "previous-session-tools.json");
+    writeFileSync(toolsPath, "[]");
+    rmSync(toolsPath);
+    process.env.PI_BB_TOOLS_FILE = toolsPath;
+
+    const catalog = await getPiCatalog(paths.workspace, paths.extensionPath);
+
+    expect(modelIds(await catalog.listModels())).toEqual([
+      "fake-provider/fake-model",
+    ]);
+  }, 60_000);
+
   it("serves models added after the child started without respawning it", async () => {
     const paths = setUpFakeCatalog({});
 
@@ -197,13 +211,25 @@ describe("pi catalog freshness", () => {
         JSON.stringify([FAKE_MODEL, ADDED_MODEL]),
       );
 
-      expect(modelIds(await catalog.listModels())).toEqual([
-        "fake-provider/fake-model",
-        "added-provider/added-model",
-      ]);
-      const spawned = processIds(paths.processLogPath, "spawn");
-      expect(spawned).toHaveLength(2);
-      expect(processIds(paths.processLogPath, "exit")).toEqual([spawned[0]]);
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      try {
+        const listing = catalog.listModels();
+        if (failure === "hang") {
+          await expect
+            .poll(() => readLogLines(paths.refreshLogPath), { timeout: 15_000 })
+            .toHaveLength(1);
+          await vi.advanceTimersByTimeAsync(5_000);
+        }
+        expect(modelIds(await listing)).toEqual([
+          "fake-provider/fake-model",
+          "added-provider/added-model",
+        ]);
+        const spawned = processIds(paths.processLogPath, "spawn");
+        expect(spawned).toHaveLength(2);
+        expect(processIds(paths.processLogPath, "exit")).toEqual([spawned[0]]);
+      } finally {
+        vi.useRealTimers();
+      }
     },
     60_000,
   );

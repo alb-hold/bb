@@ -1,4 +1,4 @@
-import type { Task } from "./shared/contract.js";
+import type { Label, Task } from "./shared/contract.js";
 
 export function makeTask(overrides: Partial<Task> = {}): Task {
   return {
@@ -27,4 +27,54 @@ export function rpcInput(input: unknown): Record<string, unknown> {
     );
   }
   return Object.fromEntries(Object.entries(input));
+}
+
+export function createMemoryStorage(
+  initialEntries: Record<string, string> = {},
+): Storage {
+  const entries = new Map(Object.entries(initialEntries));
+  return {
+    get length() {
+      return entries.size;
+    },
+    clear: () => {
+      entries.clear();
+    },
+    getItem: (key) => entries.get(key) ?? null,
+    key: (index) => [...entries.keys()][index] ?? null,
+    removeItem: (key) => {
+      entries.delete(key);
+    },
+    setItem: (key, value) => {
+      entries.set(key, String(value));
+    },
+  };
+}
+
+export function matchingTasks(tasks: readonly Task[], raw: unknown): Task[] {
+  const input = rpcInput(raw);
+  const statuses = Array.isArray(input.statuses) ? input.statuses : null;
+  return tasks.filter(
+    (task) =>
+      (statuses === null || statuses.includes(task.status)) &&
+      (typeof input.projectId !== "string" ||
+        task.projectId === input.projectId) &&
+      (input.parentTaskId === undefined ||
+        task.parentTaskId === input.parentTaskId),
+  );
+}
+
+export function labelsByProject(
+  labels: readonly Label[],
+): (raw: unknown) => Record<string, Label[]> {
+  return (raw) => {
+    const keys = rpcInput(raw).keys;
+    if (!Array.isArray(keys)) throw new Error("labelsByProject needs keys");
+    return Object.fromEntries(
+      keys.map((projectId) => [
+        String(projectId),
+        labels.filter((label) => label.projectId === projectId),
+      ]),
+    );
+  };
 }

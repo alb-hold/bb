@@ -1,8 +1,4 @@
-import {
-  createEnvironment,
-  getEnvironment,
-  updateHost,
-} from "@bb/db";
+import { createEnvironment, getEnvironment, updateHost } from "@bb/db";
 import { rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { replaceMachineEnvironment } from "../../src/services/machines/environment-settings.js";
@@ -93,6 +89,7 @@ it("preserves provisioning when the host transport disappears", async () => {
       initiator: null,
       path: "/tmp/preserve-disconnected-setup",
       setupScriptTimeoutMs: null,
+      setupOperationId: null,
     });
     vi.spyOn(harness.hub, "requestHostOnlineRpc").mockRejectedValue(
       new ApiError(502, "host_unavailable", "Host is not connected"),
@@ -132,6 +129,7 @@ it("resolves fresh setup values at dispatch without retaining them in the reques
       initiator: null,
       path: "/tmp/setup-values",
       setupScriptTimeoutMs: 1000,
+      setupOperationId: "setup-op",
     });
     const original = JSON.stringify(command);
     const request = vi
@@ -174,7 +172,7 @@ it("resolves fresh setup values at dispatch without retaining them in the reques
       ).not.toContain(value);
     }
     await runLiveHostCommand(harness.deps, {
-      command: { ...command, setupScriptTimeoutMs: null },
+      command: { ...command, setupScriptTimeoutMs: null, setupOperation: null },
       hostId: host.id,
       timeoutMs: 1000,
     });
@@ -223,6 +221,7 @@ it("fails provisioning if saved setup variables cannot be decrypted", async () =
       initiator: null,
       path: "/tmp/setup-values",
       setupScriptTimeoutMs: 1000,
+      setupOperationId: "setup-op",
     });
     await expect(
       runLiveHostCommand(harness.deps, {

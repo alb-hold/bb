@@ -61,9 +61,9 @@ export function openReadOnlyDatabase(path: string): DatabaseSync {
   return new DatabaseSync(path, { readOnly: true });
 }
 
-export async function withCookieDatabaseSnapshot<T>(
+export async function readCookieDatabaseSnapshot<T>(
   cookiePath: string,
-  use: (database: DatabaseSync) => T | Promise<T>,
+  readSnapshot: (database: DatabaseSync) => T | Promise<T>,
 ): Promise<T> {
   const directory = await mkdtemp(join(tmpdir(), "bb-cookie-import-"));
   const snapshotPath = join(directory, basename(cookiePath));
@@ -76,7 +76,7 @@ export async function withCookieDatabaseSnapshot<T>(
     }
     const snapshot = openReadOnlyDatabase(snapshotPath);
     try {
-      return await use(snapshot);
+      return await readSnapshot(snapshot);
     } finally {
       snapshot.close();
     }

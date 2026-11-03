@@ -1,5 +1,7 @@
+import { execHostFile, nodeNetworkArgs } from "@bb/process-utils";
 import { execFileSync, spawn } from "node:child_process";
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
@@ -20,7 +22,23 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { waitForProcessExit } from "@bb/config/child-process-exit";
+import {
+  DAEMON_PROCESS_TERMINATION_TIMEOUT_MS,
+  DAEMON_DETACH_HEAD_START_MARGIN_MS,
+  DESKTOP_OWNED_RUNTIME_SHUTDOWN_GRACE_MS,
+  DESKTOP_SHUTDOWN_OUTER_MARGIN_MS,
+  LAUNCHER_MAX_SHUTDOWN_MS,
+  MEASURED_MAX_DAEMON_STOP_STEP_MS,
+  SERVER_HTTP_CLOSE_WAIT_TIMEOUT_MS,
+  SERVER_HTTP_DRAIN_TIMEOUT_MS,
+  SERVER_PLUGIN_SHUTDOWN_TIMEOUT_MS,
+  SERVER_PROCESS_TERMINATION_TIMEOUT_MS,
+  SERVER_SHUTDOWN_BOUND_MS,
+  SERVER_SHUTDOWN_SAFETY_MARGIN_MS,
+  SERVER_WEBSOCKET_SHUTDOWN_WAIT_TIMEOUT_MS,
+} from "@bb/config/full-stack-shutdown";
 import { resolvePortFromEnv } from "@bb/config/runtime";
+import { spawnLoggedProcess } from "../src/logged-process.js";
 import {
   assertBbAppArtifacts,
   assertBbHostArtifacts,
@@ -43,6 +61,7 @@ import {
   runBundledCliCommand,
   DAEMON_DETACH_HEAD_START_MS,
   superviseFullStackProcesses,
+  terminateProcessIfRunning,
   terminateManagedFullStackProcesses,
   waitForHostDaemonStatus,
 } from "../src/launcher.js";
@@ -878,6 +897,40 @@ describe("bb-app launcher", () => {
     expect(readFileSync(outputPath, "utf8")).toBe(
       join("/tmp/bb-app-test/server/dist", "assets", "install-machine.sh"),
     );
+  });
+
+  it("runs the bundled CLI when a BB_CLI launcher re-enters the bb entry", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "bb-app-cli-reentry-"));
+    const daemonBundleDir = join(dataDir, "host-daemon");
+    mkdirSync(daemonBundleDir);
+    writeFileSync(
+      join(daemonBundleDir, "bb"),
+      "require('node:fs').writeFileSync(process.argv[2], 'bundled')",
+    );
+    const context = { ...createTestStartContext(), dataDir, daemonBundleDir };
+    const launcherEnvPath = join(dataDir, "launcher-env.json");
+
+    expect(
+      await runBundledCliCommand({
+        args: [
+          "-e",
+          "require('node:fs').writeFileSync(process.argv[1], JSON.stringify(process.env))",
+          launcherEnvPath,
+        ],
+        context,
+        env: { BB_CLI: process.execPath },
+      }),
+    ).toBe(0);
+
+    const outputPath = join(dataDir, "reentry.txt");
+    const reentryExitCode = await runBundledCliCommand({
+      args: [outputPath],
+      context,
+      env: JSON.parse(readFileSync(launcherEnvPath, "utf8")),
+    });
+
+    expect(reentryExitCode).toBe(0);
+    expect(readFileSync(outputPath, "utf8")).toBe("bundled");
   });
 
   it("uses a supplied join code without requesting a loopback enroll key", async () => {
@@ -1919,6 +1972,152 @@ describe("bb-app launcher", () => {
     }
   });
 
+  it("keeps the nested full-stack shutdown schedule inside desktop grace", () => {
+    expect(DAEMON_DETACH_HEAD_START_MS).toBeGreaterThanOrEqual(
+      MEASURED_MAX_DAEMON_STOP_STEP_MS + DAEMON_DETACH_HEAD_START_MARGIN_MS,
+    );
+    expect(SERVER_PROCESS_TERMINATION_TIMEOUT_MS).toBeGreaterThanOrEqual(
+      SERVER_SHUTDOWN_BOUND_MS + SERVER_SHUTDOWN_SAFETY_MARGIN_MS * 2,
+    );
+    expect(DAEMON_PROCESS_TERMINATION_TIMEOUT_MS).toBe(
+      DAEMON_DETACH_HEAD_START_MS +
+        SERVER_PROCESS_TERMINATION_TIMEOUT_MS,
+    );
+    expect(LAUNCHER_MAX_SHUTDOWN_MS).toBeLessThan(
+      DESKTOP_OWNED_RUNTIME_SHUTDOWN_GRACE_MS,
+    );
+    expect(DESKTOP_OWNED_RUNTIME_SHUTDOWN_GRACE_MS).toBe(
+      LAUNCHER_MAX_SHUTDOWN_MS + DESKTOP_SHUTDOWN_OUTER_MARGIN_MS,
+    );
+  });
+
+  it("stops the server on its own after the daemon head start", async () => {
+    const phaseDurations = [
+      SERVER_HTTP_DRAIN_TIMEOUT_MS,
+      SERVER_WEBSOCKET_SHUTDOWN_WAIT_TIMEOUT_MS,
+      SERVER_HTTP_CLOSE_WAIT_TIMEOUT_MS,
+      SERVER_HTTP_CLOSE_WAIT_TIMEOUT_MS,
+      SERVER_PLUGIN_SHUTDOWN_TIMEOUT_MS,
+    ];
+    const serverProgram = [
+      `const phases=${JSON.stringify(phaseDurations)};`,
+      "process.on('SIGTERM', async () => {",
+      "for (const duration of phases) await new Promise(resolve => setTimeout(resolve, duration));",
+      "process.exit(0);",
+      "});",
+      "process.send('ready');",
+      "setInterval(() => {}, 1000);",
+    ].join("\n");
+    const daemonDetachDelayMs = DAEMON_DETACH_HEAD_START_MS - 500;
+    const daemonProgram = [
+      `const delay=${daemonDetachDelayMs};`,
+      "process.on('SIGTERM', () => setTimeout(() => { process.send('detach-acked', () => process.exit(0)); }, delay));",
+      "process.send('ready');",
+      "setInterval(() => {}, 1000);",
+    ].join("\n");
+    const spawnReadyChild = (program: string) => {
+      const child = spawn(process.execPath, ["-e", program], {
+        env: {},
+        stdio: ["ignore", "ignore", "ignore", "ipc"],
+      });
+      const ready = new Promise<void>((resolve, reject) => {
+        child.once("message", () => resolve());
+        child.once("error", reject);
+        child.once("exit", (code, signal) => {
+          if (code !== null || signal !== null) {
+            reject(new Error(`child exited before ready: ${String(code)} ${String(signal)}`));
+          }
+        });
+      });
+      return { child, ready };
+    };
+    const server = spawnReadyChild(serverProgram);
+    const daemon = spawnReadyChild(daemonProgram);
+    const processSignals = new Map<ManagedProcessName, NodeJS.Signals[]>();
+    let shutdownStartedAt = 0;
+    let serverSignalAt = 0;
+    const createRun = (
+      name: ManagedProcessName,
+      child: ReturnType<typeof spawn>,
+    ): ManagedProcessRun => {
+      const kill = child.kill.bind(child);
+      child.kill = (signal) => {
+        if (typeof signal === "string") {
+          const signals = processSignals.get(name) ?? [];
+          signals.push(signal);
+          processSignals.set(name, signals);
+        }
+        return kill(signal);
+      };
+      return {
+        exit: waitForProcessExit(child).then((result) => ({
+          processName: name,
+          result,
+        })),
+        terminate: async (signal) => {
+          if (name === "server") serverSignalAt = Date.now();
+          await terminateProcessIfRunning({
+            childProcess: child,
+            processName: name,
+            signal,
+          });
+        },
+      };
+    };
+    const processes = {
+      serverRun: createRun("server", server.child),
+      daemonRun: createRun("daemon", daemon.child),
+    };
+    let detachAcked = false;
+    let daemonExitAt = 0;
+    daemon.child.on("message", (message) => {
+      if (message === "detach-acked") detachAcked = true;
+    });
+    daemon.child.once("exit", () => {
+      daemonExitAt = Date.now();
+    });
+
+    try {
+      await Promise.all([server.ready, daemon.ready]);
+      shutdownStartedAt = Date.now();
+      await terminateManagedFullStackProcesses({
+        processes,
+        signal: "SIGTERM",
+      });
+      const elapsedMs = Date.now() - shutdownStartedAt;
+      const serverExit = await processes.serverRun.exit;
+      const daemonExit = await processes.daemonRun.exit;
+
+      expect(daemonExit.result).toEqual({ code: 0, signal: null });
+      expect(serverExit.result).toEqual({ code: 0, signal: null });
+      expect(detachAcked).toBe(true);
+      expect(serverSignalAt).toBeGreaterThanOrEqual(daemonExitAt);
+      expect(processSignals.get("daemon")).toEqual(["SIGTERM"]);
+      expect(processSignals.get("server")).toEqual(["SIGTERM"]);
+      expect(serverSignalAt - shutdownStartedAt).toBeGreaterThanOrEqual(
+        daemonDetachDelayMs - SERVER_SHUTDOWN_SAFETY_MARGIN_MS,
+      );
+      expect(serverSignalAt - shutdownStartedAt).toBeLessThan(
+        DAEMON_DETACH_HEAD_START_MS + SERVER_SHUTDOWN_SAFETY_MARGIN_MS,
+      );
+      expect(elapsedMs).toBeGreaterThanOrEqual(
+        daemonDetachDelayMs - SERVER_SHUTDOWN_SAFETY_MARGIN_MS,
+      );
+      expect(elapsedMs).toBeLessThan(
+        DAEMON_DETACH_HEAD_START_MS +
+          SERVER_SHUTDOWN_BOUND_MS +
+          SERVER_SHUTDOWN_SAFETY_MARGIN_MS,
+      );
+      expect(elapsedMs).toBeLessThan(DESKTOP_OWNED_RUNTIME_SHUTDOWN_GRACE_MS);
+    } finally {
+      for (const child of [server.child, daemon.child]) {
+        if (child.exitCode === null && child.signalCode === null) {
+          child.kill("SIGKILL");
+        }
+      }
+    }
+  }, 15_000);
+
   it("sets exit code to 0 after clean full-stack shutdown", async () => {
     const previousExitCode = process.exitCode;
     const supervisor = createFakeSupervisor();
@@ -2010,11 +2209,24 @@ describe("bb-app launcher", () => {
     );
   });
 
-  it("runs the extensionless bundled CLI through Node on Windows", () => {
+  it("runs the bundled CLI with the launcher's own Node runtime", () => {
     expect(
       resolveBundledCliLaunch({
         args: ["status"],
-        cliPath: "C:\\bb\\host-daemon\\dist\\bb",
+        bundledCliPath: "/opt/bb/host-daemon/dist/bb",
+        cliOverride: null,
+        nodePath: "/Applications/bb.app/Contents/MacOS/bb",
+        platform: "darwin",
+      }),
+    ).toEqual({
+      command: "/Applications/bb.app/Contents/MacOS/bb",
+      args: ["/opt/bb/host-daemon/dist/bb", "status"],
+    });
+    expect(
+      resolveBundledCliLaunch({
+        args: ["status"],
+        bundledCliPath: "C:\\bb\\host-daemon\\dist\\bb",
+        cliOverride: null,
         nodePath: "C:\\node\\node.exe",
         platform: "win32",
       }),
@@ -2022,10 +2234,26 @@ describe("bb-app launcher", () => {
       command: "C:\\node\\node.exe",
       args: ["C:\\bb\\host-daemon\\dist\\bb", "status"],
     });
+  });
+
+  it("runs a BB_CLI override directly, or through Node when it is extensionless on Windows", () => {
     expect(
       resolveBundledCliLaunch({
         args: ["status"],
-        cliPath: "C:\\tools\\bb.exe",
+        bundledCliPath: "C:\\bb\\host-daemon\\dist\\bb",
+        cliOverride: "C:\\dev\\bb",
+        nodePath: "C:\\node\\node.exe",
+        platform: "win32",
+      }),
+    ).toEqual({
+      command: "C:\\node\\node.exe",
+      args: ["C:\\dev\\bb", "status"],
+    });
+    expect(
+      resolveBundledCliLaunch({
+        args: ["status"],
+        bundledCliPath: "C:\\bb\\host-daemon\\dist\\bb",
+        cliOverride: "C:\\tools\\bb.exe",
         nodePath: "C:\\node\\node.exe",
         platform: "win32",
       }),
@@ -2033,11 +2261,12 @@ describe("bb-app launcher", () => {
     expect(
       resolveBundledCliLaunch({
         args: ["status"],
-        cliPath: "/opt/bb/host-daemon/dist/bb",
+        bundledCliPath: "/opt/bb/host-daemon/dist/bb",
+        cliOverride: "/repo/apps/cli/bin/bb",
         nodePath: "/usr/bin/node",
         platform: "linux",
       }),
-    ).toEqual({ command: "/opt/bb/host-daemon/dist/bb", args: ["status"] });
+    ).toEqual({ command: "/repo/apps/cli/bin/bb", args: ["status"] });
   });
 
   it("limits npm package metadata to documented runtimes", () => {
@@ -2132,16 +2361,19 @@ describe("bb-app launcher", () => {
     const context = createTestStartContext();
 
     const desktopServerEnv = createServerEnv({
+      cliLauncherPath: null,
       context,
       env: { BB_APP_SURFACE: "desktop" },
       install: { kind: "desktop" },
     });
     const webServerEnv = createServerEnv({
+      cliLauncherPath: null,
       context,
       env: {},
       install: { kind: "npm" },
     });
     const invalidSurfaceServerEnv = createServerEnv({
+      cliLauncherPath: null,
       context,
       env: { BB_APP_SURFACE: "bogus" },
       install: { kind: "npm" },
@@ -2154,6 +2386,7 @@ describe("bb-app launcher", () => {
 
   it("replaces inherited install markers so a fork never reports a stale commit", () => {
     const serverEnv = createServerEnv({
+      cliLauncherPath: null,
       context: createTestStartContext(),
       env: {
         BB_APP_INSTALL_KIND: "source",
@@ -2166,6 +2399,105 @@ describe("bb-app launcher", () => {
     expect(serverEnv.BB_APP_INSTALL_KIND).toBe("source");
     expect(serverEnv.BB_APP_SOURCE_ORIGIN).toBe("fork");
     expect(serverEnv).not.toHaveProperty("BB_APP_SOURCE_COMMIT");
+  });
+
+  it.each(["server", "host-daemon"] as const)(
+    "keeps a launching agent session's markers out of the spawned %s",
+    async (logName) => {
+      const markers = [
+        "CLAUDECODE",
+        "CLAUDE_CODE_CHILD_SESSION",
+        "CLAUDE_CODE_ENTRYPOINT",
+        "CLAUDE_CODE_EXECPATH",
+        "CLAUDE_CODE_MESSAGING_SOCKET",
+        "CLAUDE_CODE_MESSAGING_TOKEN",
+        "CLAUDE_CODE_SESSION_ATTENDED",
+        "CLAUDE_CODE_SESSION_ID",
+        "CLAUDE_PID",
+      ];
+      const launcherEnv: NodeJS.ProcessEnv = {
+        ...process.env,
+        ANTHROPIC_API_KEY: "user-key",
+        CLAUDE_CODE_USE_BEDROCK: "1",
+      };
+      for (const marker of markers) {
+        launcherEnv[marker] = "outer-session";
+      }
+      const context = createTestStartContext();
+      const env =
+        logName === "server"
+          ? createServerEnv({
+              cliLauncherPath: null,
+              context,
+              env: launcherEnv,
+              install: { kind: "npm" },
+            })
+          : createDaemonEnv({
+              context,
+              env: launcherEnv,
+              serverUrl: context.serverUrl,
+            });
+      const scratch = mkdtempSync(join(tmpdir(), "bb-app-agent-markers-"));
+      try {
+        const logDir = join(scratch, "logs");
+        const child = spawnLoggedProcess({
+          command: process.execPath,
+          args: [
+            "-e",
+            `const names = ${JSON.stringify([
+              ...markers,
+              "CLAUDE_CODE_USE_BEDROCK",
+              "ANTHROPIC_API_KEY",
+            ])};
+            console.log(names.map((name) => process.env[name] ?? "missing").join("|"));`,
+          ],
+          env,
+          logDir,
+          logName,
+        });
+
+        expect(await waitForProcessExit(child)).toEqual({
+          code: 0,
+          signal: null,
+        });
+        await child.writerExit;
+        await expect
+          .poll(
+            () => {
+              const logPath = join(logDir, `${logName}-stdio.log`);
+              return existsSync(logPath)
+                ? readFileSync(logPath, "utf8").trim()
+                : undefined;
+            },
+            { timeout: 5_000 },
+          )
+          .toBe(
+            "missing|missing|missing|missing|missing|missing|missing|missing|missing|1|user-key",
+          );
+      } finally {
+        rmSync(scratch, { recursive: true, force: true });
+      }
+    },
+  );
+  it("tells the server about the bb command launcher only when this start wrote one", () => {
+    const context = createTestStartContext();
+
+    expect(
+      createServerEnv({
+        cliLauncherPath: "/home/me/.bb/bin/bb",
+        context,
+        env: { BB_CLI_LAUNCHER: "/stale/bin/bb" },
+        install: { kind: "npm" },
+      }).BB_CLI_LAUNCHER,
+    ).toBe("/home/me/.bb/bin/bb");
+    expect(
+      createServerEnv({
+        cliLauncherPath: null,
+        context,
+        env: { BB_CLI_LAUNCHER: "/stale/bin/bb" },
+        install: { kind: "source", origin: "none" },
+      }),
+    ).not.toHaveProperty("BB_CLI_LAUNCHER");
   });
 });
 
@@ -2197,4 +2529,104 @@ it("preserves machine identity and access headers through real config set and un
   } finally {
     rmSync(dataDir, { recursive: true, force: true });
   }
+});
+
+describe("managed process networking", () => {
+  it.each(["server", "daemon"] as const)(
+    "%s uses the environment proxy and keeps loopback direct",
+    async (kind) => {
+      if (!process.allowedNodeEnvironmentFlags.has("--use-env-proxy")) return;
+      const proxy = createServer();
+      proxy.on("connect", (_request, socket) => {
+        socket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
+        socket.once("data", () => {
+          socket.end(
+            "HTTP/1.1 200 OK\r\nContent-Length: 7\r\nConnection: close\r\n\r\nproxied",
+          );
+        });
+      });
+      const direct = createServer((_request, response) =>
+        response.end("direct"),
+      );
+      await Promise.all(
+        [proxy, direct].map(
+          (server) =>
+            new Promise<void>((resolve) =>
+              server.listen(0, "127.0.0.1", resolve),
+            ),
+        ),
+      );
+      const port = (server: ReturnType<typeof createServer>) => {
+        const address = server.address();
+        if (address === null || typeof address === "string")
+          throw new Error("Missing listener");
+        return address.port;
+      };
+      const env = {
+        HTTP_PROXY: `http://127.0.0.1:${port(proxy)}`,
+      };
+      const context = createTestStartContext();
+      const launchEnv =
+        kind === "server"
+          ? createServerEnv({
+              context,
+              env,
+              install: { kind: "npm" },
+              cliLauncherPath: null,
+            })
+          : createDaemonEnv({
+              context,
+              env,
+              serverUrl: "http://127.0.0.1:38886",
+            });
+      try {
+        const result = await execHostFile(
+          process.execPath,
+          [
+            ...nodeNetworkArgs(launchEnv),
+            "--input-type=module",
+            "-e",
+            `for (const url of process.argv.slice(1)) console.log(await (await fetch(url, { signal: AbortSignal.timeout(5000) })).text());`,
+            "http://bb-proxy-test.invalid/",
+            `http://127.0.0.1:${port(direct)}/`,
+          ],
+          { env: launchEnv, timeout: 10000 },
+        );
+        expect(result.stdout.trim().split("\n")).toEqual(["proxied", "direct"]);
+        expect(nodeNetworkArgs(launchEnv)).toEqual([
+          "--use-system-ca",
+          "--use-env-proxy",
+        ]);
+        expect(launchEnv.NODE_USE_ENV_PROXY).toBeUndefined();
+        expect(launchEnv.NODE_USE_SYSTEM_CA).toBeUndefined();
+      } finally {
+        proxy.closeAllConnections();
+        direct.closeAllConnections();
+        await Promise.all(
+          [proxy, direct].map(
+            (server) =>
+              new Promise<void>((resolve) => server.close(() => resolve())),
+          ),
+        );
+      }
+    },
+  );
+
+  it("preserves explicit network opt-outs and extra CA configuration", () => {
+    const env = createDaemonEnv({
+      context: createTestStartContext(),
+      serverUrl: "http://127.0.0.1:38886",
+      env: {
+        NODE_USE_ENV_PROXY: "0",
+        NODE_USE_SYSTEM_CA: "0",
+        NODE_EXTRA_CA_CERTS: "/company.pem",
+      },
+    });
+    expect(env).toMatchObject({
+      NODE_USE_ENV_PROXY: "0",
+      NODE_USE_SYSTEM_CA: "0",
+      NODE_EXTRA_CA_CERTS: "/company.pem",
+    });
+    expect(nodeNetworkArgs(env)).toEqual([]);
+  });
 });

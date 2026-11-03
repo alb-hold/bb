@@ -107,7 +107,7 @@ const conversationRows: TimelineRow[] = [
 ];
 
 const afterCutoffPlacement: ThreadTimelineUnreadDividerPlacement = {
-  kind: "after-cutoff",
+  anchor: "first-unread-row",
   cutoffAt: T0 + 3 * MINUTE + 30_000,
 };
 
@@ -123,6 +123,7 @@ export function Overview() {
             {...baseProps}
             timelineRows={conversationRows}
             unreadDividerPlacement={afterCutoffPlacement}
+            threadIsActive={false}
           />
         </TimelineStage>
       </StoryRow>

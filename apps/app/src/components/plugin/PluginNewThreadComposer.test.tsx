@@ -1,12 +1,13 @@
 // @vitest-environment jsdom
 
-import { useContext, useEffect, useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { Provider } from "jotai";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
   defaultAppSettings,
   PERSONAL_PROJECT_ID,
   type ThreadListEntry,
+  type ThreadSessionOption,
 } from "@bb/domain";
 import {
   act,
@@ -20,7 +21,6 @@ import {
   createMemoryRouter,
   MemoryRouter,
   RouterProvider,
-  useLocation,
 } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
@@ -61,8 +61,8 @@ import {
   serializeFixedPanelTabsState,
 } from "@/lib/fixed-panel-tabs-state";
 import { buildPluginPaletteActions } from "@/lib/command-palette/palette-plugin-actions";
-import { getActiveThreadPanelOpener } from "./plugin-thread-panel-navigation";
-import { PluginDetailPanelContext } from "./plugin-detail-navigation";
+import { getFocusedAppPanelController } from "@/lib/app-fixed-tab-navigation";
+import { useFixedPanelTabsState } from "@/lib/fixed-panel-tabs";
 import { openPluginDetailsInWorkspace } from "./plugin-detail-opener";
 import { PluginNewThreadComposer } from "./PluginNewThreadComposer";
 import {
@@ -72,7 +72,11 @@ import {
 
 function PanedRootComposeView() {
   return (
-    <DefaultPaneContextProvider onRequestClose={null} navigateInPane={() => {}}>
+    <DefaultPaneContextProvider
+      paneId="main"
+      onRequestClose={null}
+      navigateInPane={() => {}}
+    >
       <RootComposeView />
     </DefaultPaneContextProvider>
   );
@@ -90,6 +94,7 @@ function render(element: ReactNode) {
 }
 
 const mocks = vi.hoisted(() => ({
+  unknownReasoning: false,
   promptBoxProps: [] as Array<Record<string, any>>,
   copyAttachments: vi.fn(),
   uploadAttachment: vi.fn(),
@@ -105,6 +110,10 @@ const mocks = vi.hoisted(() => ({
   machineProviders: [] as SystemMachineProvider[],
   modelsLoading: false,
   permissionCeiling: undefined as "accept-edits" | "auto" | "full" | undefined,
+  modelSessionOptions: undefined as ThreadSessionOption[] | undefined,
+  systemProviders: undefined as
+    | Array<{ id: string; capabilities: { supportsNativeTerminal: boolean } }>
+    | undefined,
 }));
 
 vi.mock("@/views/RootComposePanelCommandHandlers", () => ({
@@ -113,10 +122,15 @@ vi.mock("@/views/RootComposePanelCommandHandlers", () => ({
   }: {
     onClose: () => boolean;
   }) => {
-    const details = useContext(PluginDetailPanelContext);
+    const { secondary } = useFixedPanelTabsState("root-compose", null);
+    const active = secondary.tabs.find(
+      (tab) => tab.id === secondary.activeTabId,
+    );
     return (
       <button
-        data-active-detail={details?.activePluginId ?? ""}
+        data-active-detail={
+          active?.kind === "plugin-detail" ? active.detailKey : ""
+        }
         onClick={onClose}
       >
         Close panel command
@@ -169,7 +183,14 @@ vi.mock("@/hooks/queries/plugin-settings-queries", () => ({
 }));
 
 vi.mock("@/lib/sdk", () => ({
-  sdk: { projects: { attachments: { copy: mocks.copyAttachments } } },
+  sdk: {
+    projects: { attachments: { copy: mocks.copyAttachments } },
+    system: {
+      experimental_recordTelemetryEvent: vi
+        .fn()
+        .mockRejectedValue(new Error("Telemetry unavailable")),
+    },
+  },
 }));
 
 const PROJECT = makeProjectWithThreadsResponse({
@@ -248,17 +269,6 @@ vi.mock("@/hooks/queries/sidebar-navigation-query", () => ({
         },
 }));
 
-vi.mock("@/components/onboarding/SetupChecklistHost", () => ({
-  SetupChecklistBanner: () => null,
-  SetupChecklistCard: () => null,
-  hasSetupChecklistBanner: () => false,
-  useSetupChecklist: () => ({
-    items: null,
-    agentMissing: false,
-    open: () => {},
-    dismiss: () => {},
-  }),
-}));
 vi.mock("@/hooks/queries/host-queries", () => ({
   useHosts: () => ({
     data: [
@@ -274,7 +284,7 @@ vi.mock("@/hooks/queries/host-queries", () => ({
 }));
 
 vi.mock("@/hooks/queries/system-queries", () => ({
-  useSystemProviders: () => ({ data: undefined }),
+  useSystemProviders: () => ({ data: mocks.systemProviders }),
   useSystemProviderStates: () => ({ data: undefined, isPending: false }),
   useKnownProviderModelCatalogScope: () => undefined,
   useHostProviderCliStatus: () => ({ data: undefined }),
@@ -338,20 +348,32 @@ vi.mock("@/hooks/queries/system-queries", () => ({
                 model: "gpt-5.6",
                 displayName: "GPT-5.6",
                 isDefault: true,
-                supportedReasoningEfforts: [
-                  { reasoningEffort: "low" },
-                  { reasoningEffort: "medium" },
-                  { reasoningEffort: "high" },
-                ],
+                sessionOptions: mocks.modelSessionOptions,
+                reasoningDiscovery: mocks.unknownReasoning
+                  ? ("unknown" as const)
+                  : ("known" as const),
+                supportedReasoningEfforts: mocks.unknownReasoning
+                  ? []
+                  : [
+                      { reasoningEffort: "low" },
+                      { reasoningEffort: "medium" },
+                      { reasoningEffort: "high" },
+                    ],
               },
               {
                 model: "gpt-5.6-sol",
                 displayName: "GPT-5.6 Sol",
                 isDefault: false,
-                supportedReasoningEfforts: [
-                  { reasoningEffort: "medium" },
-                  { reasoningEffort: "high" },
-                ],
+                sessionOptions: mocks.modelSessionOptions,
+                reasoningDiscovery: mocks.unknownReasoning
+                  ? ("unknown" as const)
+                  : ("known" as const),
+                supportedReasoningEfforts: mocks.unknownReasoning
+                  ? []
+                  : [
+                      { reasoningEffort: "medium" },
+                      { reasoningEffort: "high" },
+                    ],
               },
             ],
             selectedOnlyModels: [],
@@ -363,7 +385,7 @@ vi.mock("@/hooks/queries/system-queries", () => ({
         },
 }));
 
-vi.mock("@/hooks/queries/thread-queries", () => ({
+vi.mock("@/hooks/queries/thread-panel-queries", () => ({
   useThreadStorageFiles: () => ({
     data: undefined,
     error: null,
@@ -418,27 +440,15 @@ vi.mock("@/hooks/mutations/project-mutations", () => ({
   }),
 }));
 
-vi.mock("@/hooks/usePromptMentions", () => ({
-  usePromptMentions: () => ({
-    triggers: [],
-    suggestions: [],
-    isLoading: false,
-    isError: false,
-    setQuery: vi.fn(),
-  }),
-}));
+vi.mock("@/hooks/usePromptMentions", async () =>
+  (await import("@/test/fixtures/composer-search")).fakePromptMentionsModule(),
+);
 
-vi.mock("@/hooks/useCommandSuggestions", () => ({
-  useCommandSuggestions: () => ({
-    triggers: [],
-    suggestions: [],
-    isLoading: false,
-    isError: false,
-    hasMore: false,
-    isLoadingMore: false,
-    loadMore: vi.fn(),
-  }),
-}));
+vi.mock("@/hooks/useCommandSuggestions", async () =>
+  (
+    await import("@/test/fixtures/composer-search")
+  ).fakeCommandSuggestionsModule(),
+);
 
 vi.mock("@/hooks/useQuickCreateProject", () => ({
   useQuickCreateProjectController: () => ({
@@ -463,7 +473,7 @@ vi.mock("@/components/dialogs/ProjectMachineSetupDialog", () => ({
 }));
 
 vi.mock("@/views/RootComposeSecondaryContent", () => ({
-  ROOT_COMPOSE_PINNED_PANEL_TOGGLE_POSITION_CLASS: "",
+  useRootComposePinnedPanelToggleBoxClassName: () => "",
   RootComposeSecondaryContent: ({ children }: { children: ReactNode }) =>
     children,
 }));
@@ -495,10 +505,6 @@ function ForkSeedSurface({ composer }: { composer: NewThreadComposerState }) {
   return composer.renderPromptBox({ mentionMenuPlacement: "bottom" });
 }
 
-function LocationProbe() {
-  return <output data-testid="location-path">{useLocation().pathname}</output>;
-}
-
 function composerElement(
   seed: NewThreadRequest,
   onSubmit: (request: NewThreadRequest) => void,
@@ -506,7 +512,6 @@ function composerElement(
 ) {
   return (
     <MemoryRouter>
-      <LocationProbe />
       <PluginNewThreadComposer
         draftKey={draftKey}
         defaultProjectId={seed.projectId}
@@ -689,9 +694,17 @@ const STORED_REQUEST: NewThreadRequest = {
   input: [{ type: "text", text: "review every PR for slop", mentions: [] }],
 };
 
+const ignoreReportedSubmitError = () => {};
+
+function pressSubmit(): void {
+  void Promise.resolve(latestPromptBoxProps().onSubmit()).catch(
+    ignoreReportedSubmitError,
+  );
+}
+
 async function submit(): Promise<void> {
   await act(async () => {
-    latestPromptBoxProps().onSubmit();
+    pressSubmit();
   });
 }
 
@@ -699,6 +712,8 @@ describe("PluginNewThreadComposer seeding", () => {
   beforeEach(() => {
     resetFixedPanelTabsStateForTest();
     mocks.closeTerminal.mockClear();
+    mocks.modelSessionOptions = undefined;
+    mocks.systemProviders = undefined;
     mocks.promptBoxProps.length = 0;
     mocks.promptHistoryQueryOptions.length = 0;
     mocks.copyAttachments.mockReset();
@@ -730,6 +745,7 @@ describe("PluginNewThreadComposer seeding", () => {
   });
 
   afterEach(() => {
+    mocks.unknownReasoning = false;
     cleanup();
     vi.restoreAllMocks();
   });
@@ -942,6 +958,27 @@ describe("PluginNewThreadComposer seeding", () => {
     );
   });
 
+  it("preserves the seeded reasoning preference when the model's levels are unknown", async () => {
+    mocks.unknownReasoning = true;
+    const submitted: NewThreadRequest[] = [];
+    renderComposer(
+      STORED_REQUEST,
+      (request) => {
+        submitted.push(request);
+      },
+      "unknown-reasoning",
+    );
+    await waitFor(() => {
+      expect(latestPromptBoxProps().disabled).toBe(false);
+    });
+    await submit();
+    expect(submitted).toHaveLength(1);
+    expect(submitted[0]?.reasoningLevel).toBe(STORED_REQUEST.reasoningLevel);
+    expect(submitted[0]?.executionInputSources?.reasoningLevel).toBe(
+      STORED_REQUEST.executionInputSources?.reasoningLevel,
+    );
+  });
+
   it("round-trips a stored request submitted untouched", async () => {
     const submitted: NewThreadRequest[] = [];
     renderComposer(
@@ -1045,6 +1082,161 @@ describe("PluginNewThreadComposer seeding", () => {
     expect(submitted[0]?.executionInputSources.providerId).toBe("explicit");
   });
 
+  it("puts declared agent options in the picker, keeps the mode in the footer and submits what the user chose", async () => {
+    mocks.modelSessionOptions = [
+      { type: "boolean", id: "daybreak", label: "Daybreak", value: false },
+      {
+        type: "select",
+        id: "mode",
+        label: "Mode",
+        category: "mode",
+        value: "agent",
+        values: [
+          { id: "agent", label: "Agent" },
+          { id: "plan", label: "Plan" },
+        ],
+      },
+    ];
+    const submitted: NewThreadRequest[] = [];
+    render(
+      <MemoryRouter>
+        <PluginNewThreadComposer
+          draftKey="agent-options"
+          defaultProjectId="proj_1"
+          initialPrompt="hello"
+          onSubmit={(request) => {
+            submitted.push(request);
+          }}
+        />
+      </MemoryRouter>,
+    );
+    await waitFor(() => {
+      expect(latestPromptBoxProps().disabled).toBe(false);
+    });
+    const pickerSections = () =>
+      latestPromptBoxProps().execution.agentOptions.sections.map(
+        (section: { id: string; selectedLabel: string }) => [
+          section.id,
+          section.selectedLabel,
+        ],
+      );
+    const footerMenu = () =>
+      latestPromptBoxProps().modeConfig.sessionOptionsControl.props;
+    expect(pickerSections()).toEqual([["daybreak", "Off"]]);
+    expect(
+      footerMenu().options.map((option: { id: string }) => option.id),
+    ).toEqual(["mode"]);
+
+    await act(async () => {
+      latestPromptBoxProps().execution.agentOptions.onChange("daybreak", true);
+    });
+    await act(async () => {
+      footerMenu().onChange("mode", "plan");
+    });
+    expect(pickerSections()).toEqual([["daybreak", "On"]]);
+    expect(footerMenu().options[0].value).toBe("plan");
+    await submit();
+
+    expect(submitted[0]?.sessionOptions).toEqual({
+      daybreak: true,
+      mode: "plan",
+    });
+  });
+
+  it("hides agent options for a native terminal thread and submits none", async () => {
+    mocks.modelSessionOptions = [
+      { type: "boolean", id: "daybreak", label: "Daybreak", value: false },
+      {
+        type: "select",
+        id: "mode",
+        label: "Mode",
+        category: "mode",
+        value: "agent",
+        values: [
+          { id: "agent", label: "Agent" },
+          { id: "plan", label: "Plan" },
+        ],
+      },
+    ];
+    mocks.systemProviders = [
+      { id: "codex", capabilities: { supportsNativeTerminal: true } },
+    ];
+    const submitted: NewThreadRequest[] = [];
+    render(
+      <MemoryRouter>
+        <PluginNewThreadComposer
+          draftKey="native-agent-options"
+          defaultProjectId="proj_1"
+          initialPrompt="hello"
+          onSubmit={(request) => {
+            submitted.push(request);
+          }}
+        />
+      </MemoryRouter>,
+    );
+    await waitFor(() => {
+      expect(latestPromptBoxProps().disabled).toBe(false);
+    });
+    await act(async () => {
+      latestPromptBoxProps().execution.agentOptions.onChange("daybreak", true);
+    });
+    await act(async () => {
+      latestPromptBoxProps().execution.nativeTerminal.onChange(true);
+    });
+
+    expect(latestPromptBoxProps().execution.nativeTerminal.enabled).toBe(true);
+    expect(latestPromptBoxProps().execution.agentOptions).toBeUndefined();
+    expect(latestPromptBoxProps().modeConfig.sessionOptionsControl).toBeNull();
+    await submit();
+
+    expect(submitted).toHaveLength(1);
+    expect(submitted[0]).toMatchObject({ nativeTerminal: true });
+    expect(submitted[0]).not.toHaveProperty("sessionOptions");
+    await act(async () => {
+      latestPromptBoxProps().execution.nativeTerminal.onChange(false);
+    });
+  });
+
+  it("opens the next composer with the native terminal choice it was left on", async () => {
+    mocks.systemProviders = [
+      { id: "codex", capabilities: { supportsNativeTerminal: true } },
+    ];
+    const renderNativeComposer = () =>
+      render(
+        <MemoryRouter>
+          <PluginNewThreadComposer
+            draftKey="native-terminal-preference"
+            defaultProjectId="proj_1"
+            onSubmit={() => undefined}
+          />
+        </MemoryRouter>,
+      );
+    const first = renderNativeComposer();
+    await waitFor(() => {
+      expect(latestPromptBoxProps().execution.nativeTerminal.enabled).toBe(
+        false,
+      );
+    });
+    await act(async () => {
+      latestPromptBoxProps().execution.nativeTerminal.onChange(true);
+    });
+    first.unmount();
+
+    const second = renderNativeComposer();
+    await waitFor(() => {
+      expect(latestPromptBoxProps().execution.nativeTerminal.enabled).toBe(
+        true,
+      );
+    });
+    expect(window.localStorage.getItem("bb.composer.nativeTerminal")).toBe(
+      "true",
+    );
+    await act(async () => {
+      latestPromptBoxProps().execution.nativeTerminal.onChange(false);
+    });
+    second.unmount();
+  });
+
   it("submits a draft populated after an empty composer unmounts", async () => {
     const submitted: NewThreadRequest[] = [];
     const view = renderComposer(
@@ -1067,10 +1259,11 @@ describe("PluginNewThreadComposer seeding", () => {
       );
     });
     const host = latestPromptBoxProps().pluginComposerHost;
+    const submitAsEnter = latestPromptBoxProps().onSubmit;
     view.unmount();
     host.setDraft({ ...host.getCurrent(), text: "Background transcript" });
     await act(async () => {
-      await host.submit({ experimental_data: null }, undefined);
+      await submitAsEnter();
     });
     expect(submitted).toEqual([
       {
@@ -1120,10 +1313,7 @@ describe("PluginNewThreadComposer seeding", () => {
       data: { kind: "draft" } as const,
     };
     await act(async () => {
-      await latestPromptBoxProps().pluginComposerHost.submit(
-        { experimental_data: pluginSubmission.data },
-        pluginSubmission,
-      );
+      await latestPromptBoxProps().onSubmit({ pluginSubmission });
     });
 
     expect(submitted).toHaveLength(1);
@@ -1151,10 +1341,7 @@ describe("PluginNewThreadComposer seeding", () => {
       if (mode === "ordinary") await submit();
       else
         await act(async () => {
-          await latestPromptBoxProps().pluginComposerHost.submit(
-            { sendAt: Date.now() },
-            undefined,
-          );
+          await latestPromptBoxProps().onSubmit({ sendAt: Date.now() });
         });
       await waitFor(() => expect(submitted).toHaveLength(1));
       expect(submitted[0]).toMatchObject({
@@ -1554,10 +1741,14 @@ describe("PluginNewThreadComposer seeding", () => {
           defaultShortcut: null,
           id: "inspect",
           title: "Inspect project",
-          run: ({ openPanel }) => {
+          run: ({ experimental_panel }) => {
             accepted.push(
-              openPanel({
-                actionId: "inspect-project",
+              experimental_panel.openTab({
+                tab: {
+                  id: "inspect-project",
+                  context: { kind: "thread" },
+                  availability: "action",
+                },
                 title: "Inspect current project",
                 params: { section: "changes" },
               }),
@@ -1567,7 +1758,7 @@ describe("PluginNewThreadComposer seeding", () => {
       ],
       threadId: null,
       projectId: null,
-      openThreadPanel: getActiveThreadPanelOpener(),
+      panel: getFocusedAppPanelController(),
     });
     await act(async () => {
       command.run();
@@ -1595,7 +1786,7 @@ describe("PluginNewThreadComposer seeding", () => {
     ]);
     expect(panel.secondary.activeTabId).toBe(panel.secondary.tabs[0].id);
     view.unmount();
-    expect(getActiveThreadPanelOpener()).toBeNull();
+    expect(getFocusedAppPanelController()).toBeNull();
   });
 
   it("renders the root composer with a loading project picker before the sidebar bootstrap settles", () => {
@@ -2022,8 +2213,8 @@ describe("PluginNewThreadComposer seeding", () => {
     });
 
     act(() => {
-      latestPromptBoxProps().onSubmit();
-      latestPromptBoxProps().onSubmit();
+      pressSubmit();
+      pressSubmit();
     });
     expect(onSubmit).toHaveBeenCalledTimes(1);
     expect(latestPromptBoxProps().value).toBe("");
@@ -2046,7 +2237,9 @@ describe("PluginNewThreadComposer seeding", () => {
       expect(latestPromptBoxProps().disabled).toBe(false);
     });
 
-    act(() => latestPromptBoxProps().onSubmit());
+    act(() => {
+      pressSubmit();
+    });
     await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
     expect(latestPromptBoxProps().value).toBe("");
     await act(async () => {
@@ -2071,7 +2264,9 @@ describe("PluginNewThreadComposer seeding", () => {
       expect(latestPromptBoxProps().disabled).toBe(false);
     });
 
-    act(() => latestPromptBoxProps().onSubmit());
+    act(() => {
+      pressSubmit();
+    });
     await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
     expect(latestPromptBoxProps().value).toBe("");
     act(() => latestPromptBoxProps().onChange("next thread", []));
@@ -2297,7 +2492,6 @@ describe("NewThreadComposer environment providers", () => {
   ) {
     return render(
       <MemoryRouter>
-        <LocationProbe />
         <PluginNewThreadComposer
           draftKey={draftKey}
           defaultProjectId={projectId}
@@ -2387,7 +2581,6 @@ describe("NewThreadComposer environment providers", () => {
     mocks.extraProjects = [{ ...project, sources: [PROJECT.sources[0]] }];
     rendered.rerender(
       <MemoryRouter>
-        <LocationProbe />
         <PluginNewThreadComposer
           draftKey="checkout-disappears"
           defaultProjectId={project.id}
@@ -2492,7 +2685,6 @@ describe("NewThreadComposer environment providers", () => {
     mocks.serverAccessReady = true;
     rendered.rerender(
       <MemoryRouter>
-        <LocationProbe />
         <PluginNewThreadComposer
           draftKey="live-access"
           defaultProjectId="proj_1"
@@ -2508,7 +2700,6 @@ describe("NewThreadComposer environment providers", () => {
     mocks.serverAccessReady = false;
     rendered.rerender(
       <MemoryRouter>
-        <LocationProbe />
         <PluginNewThreadComposer
           draftKey="live-access"
           defaultProjectId="proj_1"

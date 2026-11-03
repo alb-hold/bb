@@ -11,7 +11,11 @@ import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { InstalledPlugin } from "@bb/server-contract";
 import { createQueryClientTestHarness } from "@/test/queryClientTestHarness";
-import { systemMachineProvidersQueryKey } from "@/hooks/queries/query-keys";
+import { pluginSettingsViewQueryOptions } from "@/hooks/queries/plugin-settings-queries";
+import {
+  pluginSettingsViewQueryKey,
+  systemMachineProvidersQueryKey,
+} from "@/hooks/queries/query-keys";
 import {
   resetPluginSlotStoreForTest,
   setPluginSlotRegistrations,
@@ -27,6 +31,7 @@ import {
   makePluginListItem,
   makePluginRegistrationSet,
 } from "@/test/fixtures/plugins";
+import { createDeferredPromise } from "@bb/test-helpers";
 
 interface RecordedRequest {
   url: string;
@@ -48,14 +53,6 @@ function jsonError(message: string): Response {
   });
 }
 
-function deferred<T>() {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((resolvePromise) => {
-    resolve = resolvePromise;
-  });
-  return { promise, resolve };
-}
-
 const SETTINGS_VIEW = {
   ok: true,
   schema: {
@@ -75,27 +72,28 @@ afterEach(() => {
 
 describe("PluginSettingsForm", () => {
   it("autosaves the latest text value on blur", async () => {
+    const saveResponse = createDeferredPromise<Response>();
     const requests: RecordedRequest[] = [];
     vi.stubGlobal(
       "fetch",
       vi.fn(async (url: string, init?: RequestInit) => {
         requests.push({ url, init });
         if (init?.method === "PUT") {
-          const body = JSON.parse(String(init.body)) as {
-            values: Record<string, unknown>;
-          };
-          return jsonOk({
-            ...SETTINGS_VIEW,
-            values: { ...SETTINGS_VIEW.values, ...body.values },
-          });
+          return saveResponse.promise;
         }
         return jsonOk(SETTINGS_VIEW);
       }),
     );
 
-    const { wrapper } = createQueryClientTestHarness();
+    const { queryClient, wrapper } = createQueryClientTestHarness();
     render(<PluginSettingsForm pluginId="demo" />, { wrapper });
 
+    await act(async () => {
+      await queryClient.fetchQuery(pluginSettingsViewQueryOptions("demo"));
+    });
+    expect(
+      queryClient.getQueryData(pluginSettingsViewQueryKey("demo")),
+    ).toMatchObject({ values: { greeting: "hello" } });
     const greeting = (await screen.findByLabelText(
       "Greeting",
     )) as HTMLInputElement;
@@ -126,6 +124,20 @@ describe("PluginSettingsForm", () => {
     expect(JSON.parse(String(put?.init?.body))).toEqual({
       values: { greeting: "hi there" },
     });
+    saveResponse.resolve(
+      jsonOk({
+        ...SETTINGS_VIEW,
+        values: { ...SETTINGS_VIEW.values, greeting: "hi there" },
+      }),
+    );
+    await vi.waitFor(() => {
+      expect(
+        queryClient.getQueryData(pluginSettingsViewQueryKey("demo")),
+      ).toMatchObject({ values: { greeting: "hi there" } });
+    });
+    expect(
+      queryClient.getQueryData(pluginSettingsViewQueryKey("demo")),
+    ).toMatchObject({ values: { greeting: "hi there" } });
     expect(screen.queryByRole("status")).toBeNull();
     expect((screen.getByLabelText("Greeting") as HTMLInputElement).value).toBe(
       "hi there",
@@ -284,8 +296,8 @@ describe("PluginSettingsForm", () => {
   });
 
   it("preserves text typed while an older save is pending", async () => {
-    const first = deferred<Response>();
-    const second = deferred<Response>();
+    const first = createDeferredPromise<Response>();
+    const second = createDeferredPromise<Response>();
     const requests: RecordedRequest[] = [];
     let saveCount = 0;
     vi.stubGlobal(
@@ -337,8 +349,8 @@ describe("PluginSettingsForm", () => {
   });
 
   it("preserves restored saved text while an older save is pending", async () => {
-    const first = deferred<Response>();
-    const second = deferred<Response>();
+    const first = createDeferredPromise<Response>();
+    const second = createDeferredPromise<Response>();
     const requests: RecordedRequest[] = [];
     let saveCount = 0;
     vi.stubGlobal(
@@ -539,9 +551,9 @@ describe("PluginSettingsForm", () => {
   });
 
   it("serializes immediate autosaves so the latest repeated toggle wins", async () => {
-    const first = deferred<Response>();
-    const second = deferred<Response>();
-    const third = deferred<Response>();
+    const first = createDeferredPromise<Response>();
+    const second = createDeferredPromise<Response>();
+    const third = createDeferredPromise<Response>();
     const requests: RecordedRequest[] = [];
     let saveCount = 0;
     vi.stubGlobal(
@@ -603,8 +615,10 @@ describe("PluginSettingsForm", () => {
       );
       await third.promise;
     });
-    expect(screen.queryByRole("status")).toBeNull();
-    expect(enabled.getAttribute("data-state")).toBe("unchecked");
+    await vi.waitFor(() => {
+      expect(screen.queryByRole("status")).toBeNull();
+      expect(enabled.getAttribute("data-state")).toBe("unchecked");
+    });
   });
 });
 

@@ -14,6 +14,7 @@ export const UNCATEGORIZED_CATEGORY_ID = "uncategorized";
 export type MarketplaceSort = "recently-added" | "most-installed";
 
 export interface MarketplaceIndexState {
+  collection?: string;
   category?: string;
   sort?: MarketplaceSort;
 }
@@ -173,6 +174,23 @@ export function sortMarketplaceEntries(
     const installOrder = (bInstalls ?? 0) - (aInstalls ?? 0);
     return installOrder === 0 ? compareNames(a, b) : installOrder;
   });
+}
+
+export function indexableMarketplaceCategories(
+  manifest: MarketplaceV2Manifest,
+): MarketplaceCategory[] {
+  const listed = new Set(
+    marketplaceCategoryOptions(manifest, manifest.plugins).map(
+      (option) => option.id,
+    ),
+  );
+  return manifest.categories.filter((category) => listed.has(category.id));
+}
+
+export function marketplaceIndexPath(categoryId: string | undefined): string {
+  return categoryId === undefined
+    ? "/marketplace"
+    : `/marketplace?category=${encodeURIComponent(categoryId)}`;
 }
 
 export function parseMarketplaceCategory(input: unknown): string | undefined {

@@ -1,3 +1,4 @@
+import { useIsCompactViewport } from "@bb/shared-ui/hooks/use-compact-viewport";
 import { defineSplit } from "@/lib/define-split";
 import { useCallback, useMemo, useRef, useState } from "react";
 import {
@@ -27,11 +28,12 @@ import {
   buildPluginPaletteActions,
 } from "@/lib/command-palette/palette-plugin-actions";
 import { usePluginSlots } from "@/lib/plugin-slots";
-import { getActiveThreadPanelOpener } from "@/components/plugin/plugin-thread-panel-navigation";
+import { getFocusedAppPanelController } from "@/lib/app-fixed-tab-navigation";
 import { pluginListQueryOptions } from "@/hooks/queries/plugin-settings-queries";
 import type { PluginSettingsCandidate } from "@/components/settings/plugin-settings-entries";
 import { appQueryClient } from "@/lib/app-query-client";
 import { LazyCommandPaletteBody } from "./LazyCommandPaletteBody";
+import { ThreadSearchPalettePlaceholder } from "./ThreadSearchPalettePlaceholder";
 
 const ThreadSearchPaletteMode = defineSplit({
   id: "thread-search-palette-mode",
@@ -39,12 +41,8 @@ const ThreadSearchPaletteMode = defineSplit({
     import("./ThreadSearchPaletteMode").then(
       (module) => module.ThreadSearchPaletteMode,
     ),
-  loading: () => (
-    <p role="status" className="px-3 py-4 text-sm text-muted-foreground">
-      Loading threads
-    </p>
-  ),
-  tier: "intent",
+  loading: (props) => <ThreadSearchPalettePlaceholder {...props} />,
+  tier: "preload",
 });
 
 const THREAD_SEARCH_ACTION_ID = paletteActionIdForCommand("thread.search");
@@ -64,6 +62,7 @@ export interface CommandPaletteProps {
 }
 
 export function CommandPalette({ threadId, projectId }: CommandPaletteProps) {
+  const isCompact = useIsCompactViewport();
   const runner = useAppCommandRunner();
   const shortcuts = useAppCommandShortcuts(PALETTE_COMMAND_IDS);
 
@@ -115,13 +114,14 @@ export function CommandPalette({ threadId, projectId }: CommandPaletteProps) {
       slots: [slot],
       threadId,
       projectId,
-      openThreadPanel: getActiveThreadPanelOpener(),
+      panel: getFocusedAppPanelController(),
     })[0];
     if (!action) return false;
     action.run();
     return true;
   });
   const openTargetRef = useRef<EventTarget | null>(null);
+  const threadSearchFromPaletteRef = useRef(false);
   const pendingRunRef = useRef<(() => void) | null>(null);
 
   const buildActions = useCallback(
@@ -137,7 +137,7 @@ export function CommandPalette({ threadId, projectId }: CommandPaletteProps) {
           slots: appPluginCommands,
           threadId,
           projectId,
-          openThreadPanel: getActiveThreadPanelOpener(),
+          panel: getFocusedAppPanelController(),
         }),
         ...buildPluginComposerCommandActions({
           slots: composerPluginCommands,
@@ -179,6 +179,7 @@ export function CommandPalette({ threadId, projectId }: CommandPaletteProps) {
   useAppCommandHandler("palette.open", (invocation) => {
     const target = invocationTarget(invocation);
     prepareOpen(target);
+    threadSearchFromPaletteRef.current = false;
     setSearchingThreads(false);
     setOpen(true);
     return true;
@@ -188,6 +189,7 @@ export function CommandPalette({ threadId, projectId }: CommandPaletteProps) {
     "thread.search",
     (invocation) => {
       const target = invocationTarget(invocation);
+      threadSearchFromPaletteRef.current = false;
       prepareOpen(target);
       setSearchingThreads(true);
       setOpen(true);
@@ -214,6 +216,7 @@ export function CommandPalette({ threadId, projectId }: CommandPaletteProps) {
     setRecents((current) => recordPaletteRecent(current, action.id));
     if (action.id === THREAD_SEARCH_ACTION_ID) {
       action.run();
+      threadSearchFromPaletteRef.current = true;
       return;
     }
     pendingRunRef.current = action.run;
@@ -238,12 +241,14 @@ export function CommandPalette({ threadId, projectId }: CommandPaletteProps) {
   const handleOpenChange = useCallback((nextOpen: boolean) => {
     setOpen(nextOpen);
     if (!nextOpen) {
+      threadSearchFromPaletteRef.current = false;
       setSearchingThreads(false);
       setQuery("");
     }
   }, []);
 
   const exitMode = () => {
+    threadSearchFromPaletteRef.current = false;
     setSearchingThreads(false);
     setQuery("");
   };
@@ -253,8 +258,23 @@ export function CommandPalette({ threadId, projectId }: CommandPaletteProps) {
       <DialogContent
         hideCloseButton
         aria-describedby={undefined}
-        className="top-[12%] max-w-[640px] translate-y-0 gap-0 p-0 shadow-lg sm:rounded-xl"
+        compactContentClassName="h-[min(32rem,80dvh)]"
+        className={`top-[12%] max-w-[640px] translate-y-0 gap-0 p-0 shadow-lg sm:rounded-xl ${isCompact ? "min-h-0 flex-1 grid-rows-[auto_minmax(0,1fr)]" : ""}`}
+        onOpenAutoFocus={(event) => {
+          if (!searchingThreads) return;
+          event.preventDefault();
+          const content = event.currentTarget;
+          if (!(content instanceof HTMLElement)) return;
+          content
+            .querySelector<HTMLInputElement>('[aria-label="Search threads"]')
+            ?.focus();
+        }}
         onAfterCloseAutoFocus={handleAfterCloseAutoFocus}
+        onEscapeKeyDown={(event) => {
+          if (searchingThreads && threadSearchFromPaletteRef.current) {
+            event.preventDefault();
+          }
+        }}
         onKeyDownCapture={(event) => {
           if (
             !open ||
@@ -277,12 +297,6 @@ export function CommandPalette({ threadId, projectId }: CommandPaletteProps) {
           const action = shortcutActions.get(command);
           if (action) chooseAction(action);
         }}
-        onEscapeKeyDown={(event) => {
-          if (searchingThreads) {
-            event.preventDefault();
-            exitMode();
-          }
-        }}
         data-testid="command-palette"
       >
         <DialogTitle className="sr-only">Quick palette</DialogTitle>
@@ -298,7 +312,16 @@ export function CommandPalette({ threadId, projectId }: CommandPaletteProps) {
           />
         ) : (
           <ThreadSearchPaletteMode
+            query={query}
+            onQueryChange={setQuery}
             onExit={exitMode}
+            onClose={() => {
+              if (threadSearchFromPaletteRef.current) {
+                exitMode();
+                return;
+              }
+              handleOpenChange(false);
+            }}
             runAfterClose={runAfterClose}
           />
         )}

@@ -2,7 +2,7 @@ import { useMemo } from "react";
 import type { WorkspacePathEntry } from "@bb/server-contract";
 import { useEnvironmentPathSuggestions } from "./queries/environment-queries";
 import { useProjectPathSuggestions } from "./queries/project-queries";
-import { useThreadStoragePaths } from "./queries/thread-queries";
+import { useThreadStoragePaths } from "./queries/thread-panel-queries";
 import { isProjectlessProjectId } from "@/lib/route-paths";
 import type { PathListOptions } from "@/lib/path-list-options";
 import { useDebouncedValue } from "./useDebouncedValue";
@@ -39,6 +39,7 @@ interface UsePathSuggestionsArgs {
 interface UsePathSuggestionsResult {
   suggestions: PathSuggestion[];
   isLoading: boolean;
+  isRefreshing: boolean;
   isError: boolean;
   isDebouncing: boolean;
 }
@@ -162,7 +163,9 @@ export function usePathSuggestions(
       ? "project"
       : "none";
   const includeWorkspace = workspaceSource !== "none";
-  const includeThreadStorage = Boolean(args.currentThreadId);
+  const includeThreadStorage = Boolean(
+    args.currentThreadId && args.environmentId,
+  );
   const isWorkspaceQueryEnabled = includeWorkspace && hasDebouncedQuery;
   const isThreadStorageQueryEnabled = includeThreadStorage && hasDebouncedQuery;
 
@@ -234,10 +237,9 @@ export function usePathSuggestions(
   const isPending =
     (isWorkspaceQueryEnabled && workspaceQuery.isPending) ||
     (isThreadStorageQueryEnabled && threadStorageQuery.isPending);
-  const isLoading =
-    hasQuery &&
-    suggestions.length === 0 &&
-    (isDebouncing || isPending || isFetching);
+  const isSearching = isDebouncing || isPending || isFetching;
+  const isLoading = hasQuery && suggestions.length === 0 && isSearching;
+  const isRefreshing = hasQuery && suggestions.length > 0 && isSearching;
   const isError =
     hasQuery &&
     ((isWorkspaceQueryEnabled && workspaceQuery.isError) ||
@@ -246,6 +248,7 @@ export function usePathSuggestions(
   return {
     suggestions,
     isLoading,
+    isRefreshing,
     isError,
     isDebouncing,
   };

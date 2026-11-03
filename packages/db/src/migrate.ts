@@ -4,8 +4,14 @@ import { dirname, join, resolve } from "node:path";
 import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import type { DbConnection } from "./connection.js";
+import { bumpThreadEventOwnershipEpoch } from "./data/event-rewrite-generation.js";
 import { ensureItemCompletionLookupIndex } from "./fork-item-completion-index.js";
 import { ensureThreadSpawnersTable } from "./fork-thread-spawners.js";
+import { ensureNativeParentNoticeTables } from "./fork-native-parent-notices.js";
+import { ensureNativeTerminalThreadsTable } from "./fork-native-terminal-threads.js";
+import { ensureTerminalAttentionTable } from "./fork-terminal-attention.js";
+import { ensureTerminalHolderSessionsTable } from "./fork-terminal-holder-sessions.js";
+import { ensureTerminalPendingDaemonClosesTable } from "./fork-terminal-pending-daemon-closes.js";
 import { restoreNativeThreadDraftsToDraftsQueue } from "./fork-restore-native-drafts.js";
 import {
   compatibleMigrationHashes,
@@ -411,6 +417,19 @@ function tableExists(db: DbConnection, tableName: string): boolean {
   );
 }
 
+function dropEmptyLegacyDeferredMessages(db: DbConnection): void {
+  if (!tableExists(db, "deferred_thread_messages_legacy")) {
+    return;
+  }
+
+  const row = db.$client
+    .prepare("SELECT 1 FROM deferred_thread_messages_legacy LIMIT 1")
+    .get();
+  if (row === undefined) {
+    db.$client.exec("DROP TABLE deferred_thread_messages_legacy");
+  }
+}
+
 function columnExists(
   db: DbConnection,
   tableName: string,
@@ -626,7 +645,10 @@ function hasCompatibleMigrationHash(
       compatibleMigration.when === expectedMigration.createdAt &&
       appliedMigrations.some(
         (appliedMigration) =>
-          appliedMigration.createdAt === expectedMigration.createdAt &&
+          appliedMigration.createdAt ===
+            (("appliedWhen" in compatibleMigration
+              ? compatibleMigration.appliedWhen
+              : undefined) ?? expectedMigration.createdAt) &&
           appliedMigration.hash === compatibleMigration.hash,
       ),
   );
@@ -1174,19 +1196,32 @@ function skipEventLargeValuesRoundTripForInlineEvents(
   markMigrationApplied(db, restoreMigration);
 }
 
-function applyQueuedMessageGroupingSchema(db: DbConnection): void {
+function stageQueuedMessageGroups(
+  db: DbConnection,
+  migrationsFolder: string,
+): void {
+  const sqlite = db.$client;
+  sqlite.exec(
+    "CREATE TEMP TABLE IF NOT EXISTS bb_migration_queued_message_groups (id TEXT PRIMARY KEY, group_with_next INTEGER NOT NULL)",
+  );
+  sqlite.exec("DELETE FROM bb_migration_queued_message_groups");
   if (
+    !tableExists(db, "__drizzle_migrations") ||
     !tableExists(db, "queued_thread_messages") ||
-    columnExists(db, "queued_thread_messages", "group_with_next")
+    !columnExists(db, "queued_thread_messages", "group_with_next")
   ) {
     return;
   }
-
-  db.$client
-    .prepare(
-      "ALTER TABLE queued_thread_messages ADD COLUMN group_with_next integer DEFAULT 0 NOT NULL",
-    )
-    .run();
+  const migration = requireExpectedAppliedMigration(
+    readExpectedAppliedMigrations(migrationsFolder),
+    "0143_queued_message_state",
+  );
+  if (readAppliedMigrationCreatedAts(db).has(migration.createdAt)) {
+    return;
+  }
+  sqlite.exec(
+    "INSERT INTO bb_migration_queued_message_groups (id, group_with_next) SELECT id, group_with_next FROM queued_thread_messages",
+  );
 }
 
 function applyInitialThreadSectionSchema(db: DbConnection): void {
@@ -1261,7 +1296,6 @@ function repairBranchLocalQueuedGroupingBeforeInitialThreadSections(
   applyInitialThreadSectionSchema(db);
   markMigrationApplied(db, initialThreadSectionsMigration);
 }
-
 
 const STAGED_CONNECT_MACHINE_ID_COLUMN = "_bb_connect_machine_id_pending";
 const STAGED_THREAD_STORAGE_DELETED_AT_COLUMN =
@@ -1443,7 +1477,6 @@ function repairBranchLocalThreadTabsBeforePendingInteractionsMigration(
   applyMigrationStatements(db, pendingInteractionsMigration);
 }
 
-
 function warnAboutFutureAppliedMigrations(
   db: DbConnection,
   options: MigrateOptions,
@@ -1598,6 +1631,7 @@ export function migrate(db: DbConnection, options: MigrateOptions = {}): void {
       db,
       migrationsFolder,
     );
+    stageQueuedMessageGroups(db, migrationsFolder);
     const stagedConnectMachineId = stageExistingConnectMachineIdColumn(
       db,
       migrationsFolder,
@@ -1612,10 +1646,11 @@ export function migrate(db: DbConnection, options: MigrateOptions = {}): void {
         restoreStagedThreadStorageDeletedAtColumn(db);
     }
     applyReorderedCleanupMigrations(db, migrationsFolder);
-    applyQueuedMessageGroupingSchema(db);
     seedKeepAwakePluginConfiguration(db);
+    dropEmptyLegacyDeferredMessages(db);
   } finally {
     sqlite.pragma("foreign_keys = ON");
+    bumpThreadEventOwnershipEpoch();
   }
 
   warnAboutFutureAppliedMigrations(db, options);
@@ -1623,4 +1658,9 @@ export function migrate(db: DbConnection, options: MigrateOptions = {}): void {
   validatePendingInteractionsSchema(db);
   ensureItemCompletionLookupIndex(db);
   ensureThreadSpawnersTable(db);
+  ensureNativeTerminalThreadsTable(db);
+  ensureNativeParentNoticeTables(db);
+  ensureTerminalAttentionTable(db);
+  ensureTerminalHolderSessionsTable(db);
+  ensureTerminalPendingDaemonClosesTable(db);
 }

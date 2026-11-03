@@ -24,6 +24,13 @@ export const QUESTION_SELECT_APP_COMMAND_IDS = [
   "question.select.9",
 ] as const;
 
+export const QUESTION_ACTION_APP_COMMAND_IDS = [
+  "question.submit",
+  "question.previous",
+  "question.next",
+  "question.cancel",
+] as const;
+
 export const PANE_DIRECTION_APP_COMMAND_IDS = [
   "pane.focus.left",
   "pane.focus.right",
@@ -48,6 +55,8 @@ export const APP_COMMAND_IDS = [
   "thread.search",
   "thread.rename",
   "thread.archive",
+  "thread.markRead",
+  "thread.pin",
   "thread.previous",
   "thread.next",
   "thread.openBeside",
@@ -62,6 +71,7 @@ export const APP_COMMAND_IDS = [
   "pane.close",
   "window.new",
   "window.find",
+  "window.reload",
   "app.back",
   "settings.open",
   "settings.openServers",
@@ -76,10 +86,12 @@ export const APP_COMMAND_IDS = [
   "panel.toggle",
   "panel.fullScreen.toggle",
   "file.quickOpen",
-  "diff.toggle",
   "terminal.open",
+  "terminal.attention.next",
+  "terminal.find",
   "composer.focus",
   "composer.searchPromptHistory",
+  "composer.dictation.toggle",
   "modelPicker.toggle",
   "modelPicker.cycleModel",
   "modelPicker.cycleModelBackward",
@@ -98,6 +110,7 @@ export const APP_COMMAND_IDS = [
   "plugins.exitSafeMode",
   "plugins.pruneCache",
   ...QUESTION_SELECT_APP_COMMAND_IDS,
+  ...QUESTION_ACTION_APP_COMMAND_IDS,
 ] as const;
 
 export const appCommandIdSchema = z.enum(APP_COMMAND_IDS);
@@ -133,6 +146,7 @@ const APP_COMMAND_CONTEXT_KEYS = [
   "browserFocus",
   "modelPickerOpen",
   "questionOpen",
+  "questionFocus",
   "promptAvailable",
   "splitActive",
   "webSurface",

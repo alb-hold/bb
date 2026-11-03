@@ -1,17 +1,36 @@
-import { getLatestThreadSequence } from "@bb/db";
+import {
+  getNativeTerminalLastAssistantText,
+  recordNativeTerminalActivity,
+} from "../../../src/services/threads/native-terminal-activity.js";
+import {
+  createNativeTerminalThread,
+  createTerminalSession,
+  getLatestThreadSequence,
+  getThread,
+  listPendingInteractionsByThread,
+  setNativeTerminalThreadTerminal,
+  stampNativeTerminalThreadActivity,
+} from "@bb/db";
+import { createMigratedConnection } from "@bb/db/testing";
+import { createAiServiceRegistry } from "../../../src/services/ai/ai-service-registry.js";
+import { createPluginService } from "../../../src/services/plugins/plugin-service.js";
+import { createNoopTelemetryService } from "../../../src/services/system/telemetry.js";
+import { NotificationHub } from "../../../src/ws/hub.js";
 import { emitPluginThreadEvents } from "../../../src/services/plugins/plugin-thread-events.js";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { threadScope, turnScope } from "@bb/domain";
+import { threadScope, turnScope, type Thread } from "@bb/domain";
 import { applyLoggedThreadLifecycleEvent } from "../../../src/services/threads/lifecycle-outcome.js";
 import { beginProjectDeletion } from "../../../src/services/projects/project-deletion.js";
 import { createThreadRecord } from "../../../src/services/threads/thread-create-helpers.js";
+import { archiveThreadAndReleaseChildren } from "../../../src/services/threads/thread-ownership.js";
 import type { ThreadCreateServiceRequest } from "../../../src/services/threads/thread-create-request.js";
 import {
   seedEvent,
   seedThreadFixture,
+  seedThreadRuntimeState,
   seedTurnStarted,
   seedThread,
 } from "../../helpers/seed.js";
@@ -24,9 +43,17 @@ import {
 
 interface RecordedThreadPayload {
   thread: {
+    canEditMessages?: boolean;
     deletedAt?: number | null;
     id: string;
     projectId?: string;
+    runtime?: {
+      nativeActivity?: {
+        confirmation: "confirmed" | "unconfirmed";
+        freshForMs: number;
+        lastEvidenceAt: number | null;
+      };
+    };
     status: string;
     visibility?: "hidden" | "visible";
   };
@@ -79,6 +106,100 @@ async function setUpPluginHarness(serverSource: string): Promise<{
   };
 }
 
+async function setUpPluginRuntime(serverSource: string): Promise<{
+  db: ReturnType<typeof createMigratedConnection>;
+  hub: NotificationHub;
+  service: ReturnType<typeof createPluginService>;
+  cleanup(): Promise<void>;
+}> {
+  const db = createMigratedConnection();
+  const hub = new NotificationHub();
+  const workDir = await mkdtemp(join(tmpdir(), "bb-plugin-runtime-events-"));
+  const service = createPluginService({
+    aiServices: createAiServiceRegistry(),
+    telemetry: createNoopTelemetryService(),
+    db,
+    hub,
+    logger: testLogger,
+    dataDir: join(workDir, "data"),
+    appVersion: "0.9.0",
+    bundledPlugins: [],
+    loadTimeoutMs: 2000,
+  });
+  const rootDir = join(workDir, "bb-plugin-observer");
+  await mkdir(rootDir, { recursive: true });
+  await writeFile(
+    join(rootDir, "package.json"),
+    JSON.stringify({
+      name: "bb-plugin-observer",
+      version: "0.1.0",
+      bb: {
+        name: "Observer fixture",
+        description: "Thread events plugin fixture.",
+        branding: { icon: "Zap" },
+        server: "./server.ts",
+      },
+    }),
+  );
+  await writeFile(join(rootDir, "server.ts"), serverSource);
+  const entry = await service.installPath(rootDir);
+  expect(entry.status).toBe("running");
+  return {
+    db,
+    hub,
+    service,
+    async cleanup() {
+      await service.stop();
+      db.$client.close();
+      await rm(workDir, { recursive: true, force: true });
+    },
+  };
+}
+
+function recordNativeReceipt(
+  db: ReturnType<typeof createMigratedConnection>,
+  args: {
+    environmentId: string;
+    hostId: string;
+    thread: Thread;
+  },
+): number {
+  const { environmentId, hostId, thread } = args;
+  const now = Date.now();
+  createNativeTerminalThread(db, {
+    threadId: thread.id,
+    providerId: thread.providerId,
+    nativeSessionId: `native-session-${thread.id}`,
+    initialPrompt: null,
+    initialImages: [],
+    model: null,
+  });
+  const terminal = createTerminalSession(db, {
+    threadId: thread.id,
+    environmentId,
+    hostId,
+    daemonSessionId: null,
+    title: "Claude Code",
+    initialCwd: "/tmp",
+    cols: 120,
+    rows: 36,
+    status: "running",
+    now,
+  });
+  setNativeTerminalThreadTerminal(db, {
+    threadId: thread.id,
+    terminalSessionId: terminal.id,
+  });
+  expect(
+    stampNativeTerminalThreadActivity(db, {
+      at: now,
+      terminalSessionId: terminal.id,
+      threadId: thread.id,
+    }),
+  ).toMatchObject({ updated: true });
+  return now;
+}
+
 function lifecycleDeps(harness: TestAppHarness) {
   return {
     db: harness.db,
@@ -89,7 +210,96 @@ function lifecycleDeps(harness: TestAppHarness) {
 }
 
 describe("plugin thread lifecycle events", () => {
-  it("delivers thread.active once when run.started enters active", async () => {
+  it("waits for turn.failed listeners to finish when requested internally", async () => {
+    const started: string[] = [];
+    globals.__turnFailedStarted = started;
+    let release!: () => void;
+    globals.__turnFailedGate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const { harness, cleanup } = await setUpPluginHarness(`
+      export default function plugin(bb: any) {
+        bb.events.on("turn.failed", async (event: any) => {
+          (globalThis as any).__turnFailedStarted.push(event.threadId);
+          await (globalThis as any).__turnFailedGate;
+        });
+      }
+    `);
+    try {
+      const { environment, thread } = seedThreadFixture(harness, {
+        thread: { status: "error" },
+      });
+      seedThreadRuntimeState(harness.deps, {
+        environmentId: environment.id,
+        providerThreadId: "provider-failed-wait",
+        threadId: thread.id,
+      });
+
+      const dispatch = harness.pluginService.events.emitTurnFailed(thread.id);
+      if (dispatch === undefined) {
+        throw new Error("expected an awaitable turn.failed event");
+      }
+      let settled = false;
+      void dispatch.then(() => {
+        settled = true;
+      });
+      await vi.waitFor(() => expect(started).toEqual([thread.id]));
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(settled).toBe(false);
+      release();
+      await expect(dispatch).resolves.toBeUndefined();
+      expect(settled).toBe(true);
+    } finally {
+      release();
+      delete globals.__turnFailedStarted;
+      delete globals.__turnFailedGate;
+      await cleanup();
+    }
+  });
+
+  it("delivers a native thread DTO when the runtime has no provider registry", async () => {
+    const recorded: RecordedThreadPayload[] = [];
+    globals.__nativeRegistrylessEvents = recorded;
+    const { db, hub, service, cleanup } = await setUpPluginRuntime(`
+      export default function plugin(bb: any) {
+        bb.events.on("thread.active", (payload: any) => {
+          (globalThis as any).__nativeRegistrylessEvents.push(payload);
+        });
+      }
+    `);
+    try {
+      const { environment, host, thread } = seedThreadFixture(
+        { deps: { db, hub } },
+        { thread: { providerId: "claude-code", status: "active" } },
+      );
+      recordNativeReceipt(db, {
+        environmentId: environment.id,
+        hostId: host.id,
+        thread,
+      });
+
+      service.events.emitThreadActive(thread);
+
+      await vi.waitFor(() => expect(recorded).toHaveLength(1));
+      expect(recorded[0]?.thread).toMatchObject({
+        id: thread.id,
+        status: "active",
+        canEditMessages: false,
+      });
+      expect(recorded[0]?.thread.runtime?.nativeActivity).toBeUndefined();
+      await vi.waitFor(() =>
+        expect(
+          service.list().find((plugin) => plugin.id === "observer")
+            ?.handlerStats,
+        ).toMatchObject({ count: 1, errorCount: 0 }),
+      );
+    } finally {
+      delete globals.__nativeRegistrylessEvents;
+      await cleanup();
+    }
+  });
+
+  it("delivers native thread.active DTO once with freshness and edit policy", async () => {
     const recorded: RecordedThreadPayload[] = [];
     globals.__activeEvents = recorded;
     const { harness, cleanup } = await setUpPluginHarness(`
@@ -100,8 +310,13 @@ describe("plugin thread lifecycle events", () => {
       }
     `);
     try {
-      const { thread } = seedThreadFixture(harness, {
-        thread: { status: "starting" },
+      const { environment, host, thread } = seedThreadFixture(harness, {
+        thread: { providerId: "claude-code", status: "starting" },
+      });
+      const lastEvidenceAt = recordNativeReceipt(harness.db, {
+        environmentId: environment.id,
+        hostId: host.id,
+        thread,
       });
 
       const started = applyLoggedThreadLifecycleEvent(lifecycleDeps(harness), {
@@ -120,10 +335,182 @@ describe("plugin thread lifecycle events", () => {
       expect(duplicate.applied).toBe(false);
 
       await vi.waitFor(() => expect(recorded).toHaveLength(1));
-      expect(recorded[0]?.thread.id).toBe(thread.id);
-      expect(recorded[0]?.thread.status).toBe("active");
+      expect(
+        harness.deps.providerRegistry.supportsSessionRewind("claude-code"),
+      ).toBe(true);
+      expect(recorded[0]?.thread).toMatchObject({
+        id: thread.id,
+        status: "active",
+        canEditMessages: true,
+        runtime: {
+          nativeActivity: {
+            confirmation: "confirmed",
+            evidenceKind: "holder-report",
+            freshForMs: 90_000,
+            lastEvidenceAt,
+          },
+        },
+      });
     } finally {
       delete globals.__activeEvents;
+      await cleanup();
+    }
+  });
+
+  it.each([
+    { state: "working", prestarted: false },
+    { state: "waiting", prestarted: false },
+    { state: "working", prestarted: true },
+    { state: "waiting", prestarted: true },
+    { state: "unreported", prestarted: true },
+  ] as const)("uses the current native turn reply over persisted chat output and clears it for a turn without a reply ($state, prestarted $prestarted)", async ({ state: secondState, prestarted }) => {
+    const recorded: RecordedThreadPayload[] = [];
+    globals.__idleEvents = recorded;
+    const { harness, cleanup } = await setUpPluginHarness(`
+      export default function plugin(bb: any) {
+        bb.events.on("thread.idle", (payload: any) => { (globalThis as any).__idleEvents.push(payload); });
+      }
+    `);
+    try {
+      const { thread, environment, host, session } = seedThreadFixture(harness);
+      seedEvent(harness.deps, {
+        threadId: thread.id,
+        environmentId: environment.id,
+        providerThreadId: "old-chat",
+        scope: turnScope("old-turn"),
+        sequence: 1,
+        type: "item/completed",
+        data: { item: { type: "agentMessage", id: "old-answer", text: "OLD-OUTPUT" } },
+      });
+      createNativeTerminalThread(harness.db, {
+        threadId: thread.id,
+        providerId: thread.providerId,
+        nativeSessionId: "reply-session",
+        initialPrompt: null,
+        initialImages: [],
+        model: null,
+      });
+      const terminal = createTerminalSession(harness.db, {
+        threadId: thread.id,
+        environmentId: environment.id,
+        hostId: host.id,
+        daemonSessionId: session.id,
+        initialCwd: "/tmp",
+        cols: 80,
+        rows: 24,
+        status: "running",
+        title: "Reply test",
+      });
+      setNativeTerminalThreadTerminal(harness.db, {
+        threadId: thread.id,
+        terminalSessionId: terminal.id,
+      });
+      recordNativeTerminalActivity(harness.deps, {
+        threadId: thread.id,
+        confirms: true,
+        state: "working",
+        prompt: "first",
+      });
+      recordNativeTerminalActivity(harness.deps, {
+        threadId: thread.id,
+        confirms: true,
+        state: "idle",
+        lastAssistantText: "NEW-REPLY",
+      });
+      await vi.waitFor(() => expect(recorded).toHaveLength(1));
+      expect(recorded[0]?.lastAssistantText).toBe("NEW-REPLY");
+      if (prestarted)
+        applyLoggedThreadLifecycleEvent(lifecycleDeps(harness), {
+          threadId: thread.id,
+          event: { type: "run.started" },
+        });
+      if (secondState !== "unreported") recordNativeTerminalActivity(harness.deps, {
+        threadId: thread.id,
+        confirms: true,
+        state: secondState,
+        ...(secondState === "waiting"
+          ? { questions: [{ id: "q-second", prompt: "Choose" }] }
+          : prestarted ? {} : { prompt: "second" }),
+      });
+      recordNativeTerminalActivity(harness.deps, {
+        threadId: thread.id,
+        confirms: true,
+        state: "idle",
+      });
+      await vi.waitFor(() => expect(recorded).toHaveLength(2));
+      expect(recorded[1]?.lastAssistantText).toBeNull();
+    } finally {
+      delete globals.__idleEvents;
+      await cleanup();
+    }
+  });
+
+  it.each([
+    { label: "Unicode tail", reply: "x".repeat(1024 * 1024) + "🙂€".repeat(900) + "\nALPHA\nBRAVO\nCHARLIE", suffix: "\nALPHA\nBRAVO\nCHARLIE" },
+    { label: "trailing whitespace", reply: "x".repeat(1024 * 1024) + " \n".repeat(4096), suffix: "x" },
+    { label: "whitespace only", reply: "   ", suffix: null },
+    { label: "empty", reply: "", suffix: null },
+  ])("accepts native reply whitespace over HTTP with state and closes intact ($label)", async ({ reply, suffix }) => {
+    const recorded: RecordedThreadPayload[] = [];
+    globals.__idleEvents = recorded;
+    const { harness, cleanup } = await setUpPluginHarness(`
+      export default function plugin(bb: any) {
+        bb.events.on("thread.idle", (payload: any) => { (globalThis as any).__idleEvents.push(payload); });
+      }
+    `);
+    try {
+      const { thread, environment, host } = seedThreadFixture(harness);
+      recordNativeReceipt(harness.db, {
+        environmentId: environment.id,
+        hostId: host.id,
+        thread,
+      });
+      const report = async (body: Record<string, unknown>) => {
+        const response = await harness.app.request(
+          `/api/v1/threads/${thread.id}/native-terminal/activity`,
+          {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(body),
+          },
+        );
+        expect(response.status).toBe(200);
+      };
+      await report({ state: "waiting", questions: [{ id: "old", prompt: "First?" }] });
+      await report({
+        state: "waiting",
+        questions: [{ id: "next", prompt: "Next?" }],
+        closes: ["old"],
+        ...(suffix === null ? {} : { lastAssistantText: reply }),
+      });
+      expect(getThread(harness.db, thread.id)?.status).toBe("active");
+      const questions = listPendingInteractionsByThread(harness.db, { threadId: thread.id });
+      expect(questions).toEqual(expect.arrayContaining([
+        expect.objectContaining({ providerRequestId: "native:old", status: "interrupted" }),
+        expect.objectContaining({ providerRequestId: "native:next", status: "pending" }),
+      ]));
+      const waitingText = getNativeTerminalLastAssistantText(harness.deps, thread.id);
+      await report({ state: "idle", closes: ["next"], lastAssistantText: reply });
+      expect(getThread(harness.db, thread.id)?.status).toBe("idle");
+      expect(listPendingInteractionsByThread(harness.db, {
+        threadId: thread.id,
+        statuses: ["pending"],
+      })).toHaveLength(0);
+      await vi.waitFor(() => expect(recorded).toHaveLength(1));
+      const stored = getNativeTerminalLastAssistantText(harness.deps, thread.id);
+      expect(stored).toBe(waitingText);
+      expect(recorded[0]?.lastAssistantText).toBe(stored);
+      if (suffix === null) {
+        expect(stored).toBeNull();
+      } else {
+        expect(stored).toContain(suffix);
+        expect(stored).toBe(stored?.trim());
+        expect(reply.trim().endsWith(stored ?? "")).toBe(true);
+      }
+      expect(stored ?? "").not.toContain("\uFFFD");
+      expect(Buffer.byteLength(stored ?? "", "utf8")).toBeLessThanOrEqual(4096);
+    } finally {
+      delete globals.__idleEvents;
       await cleanup();
     }
   });
@@ -399,6 +786,7 @@ describe("plugin thread lifecycle events", () => {
         startedOnBehalfOf: null,
         titleFallback: "Plugin event test thread",
         visibility: "visible",
+        parentNotifications: "auto",
       };
       const thread = createThreadRecord(
         { db: harness.db, hub: harness.hub },
@@ -446,6 +834,7 @@ describe("plugin thread lifecycle events", () => {
               startedOnBehalfOf: null,
               titleFallback: "Hidden plugin worker",
               visibility: "hidden",
+              parentNotifications: "auto",
             },
           },
         );
@@ -623,6 +1012,66 @@ describe("plugin thread lifecycle events", () => {
     } finally {
       delete globals.__cascadeEvents;
       delete globals.__cascadeProjectIds;
+      await cleanup();
+    }
+  });
+
+  it("delivers a parent change for a moved thread and each child released by an archive", async () => {
+    const recorded: Array<{
+      threadId: string;
+      parentThreadId: string | null;
+      previousParentThreadId: string | null;
+    }> = [];
+    globals.__parentChangedEvents = recorded;
+    const { harness, cleanup } = await setUpPluginHarness(`
+      export default function plugin(bb: any) {
+        bb.events.on("experimental_thread.parentChanged", ({ thread, previousParentThreadId }: any) => {
+          (globalThis as any).__parentChangedEvents.push({
+            threadId: thread.id,
+            parentThreadId: thread.parentThreadId,
+            previousParentThreadId,
+          });
+        });
+      }
+    `);
+    try {
+      const { project, thread: parent } = seedThreadFixture(harness, {
+        thread: { status: "idle" },
+      });
+      const child = seedThread(harness.deps, { projectId: project.id });
+      const sibling = seedThread(harness.deps, {
+        projectId: project.id,
+        parentThreadId: parent.id,
+      });
+      const move = (body: unknown) =>
+        harness.app.request(`/api/v1/threads/${child.id}`, {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(body),
+        });
+
+      expect((await move({ parentThreadId: parent.id })).status).toBe(200);
+      expect((await move({ parentThreadId: parent.id })).status).toBe(200);
+      expect((await move({ title: "Renamed" })).status).toBe(200);
+      await vi.waitFor(() => expect(recorded).toHaveLength(1));
+      archiveThreadAndReleaseChildren(harness.deps, { threadId: parent.id });
+      await vi.waitFor(() => expect(recorded).toHaveLength(3));
+      expect(recorded[0]).toEqual({
+        threadId: child.id,
+        parentThreadId: parent.id,
+        previousParentThreadId: null,
+      });
+      expect(recorded.slice(1)).toEqual(
+        expect.arrayContaining(
+          [child.id, sibling.id].map((threadId) => ({
+            threadId,
+            parentThreadId: null,
+            previousParentThreadId: parent.id,
+          })),
+        ),
+      );
+    } finally {
+      delete globals.__parentChangedEvents;
       await cleanup();
     }
   });

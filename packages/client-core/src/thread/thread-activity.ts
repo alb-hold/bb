@@ -1,5 +1,7 @@
+import { effectiveDisplayStatus } from "@bb/domain";
 import { assertNever } from "@bb/core-ui";
 import type {
+  NativeActivityEvidenceKind,
   Thread,
   ThreadListEntry,
   ThreadListIndicator,
@@ -21,8 +23,46 @@ type ThreadStatusShape = Pick<
 type ThreadRuntimeShape = Pick<ThreadWithRuntime, "runtime">;
 type ThreadActivityStateShape = Pick<ThreadListEntry, "activity">;
 
-function isRuntimeBusyThread(thread: ThreadRuntimeShape): boolean {
-  return isRunningThreadRuntimeDisplayStatus(thread.runtime.displayStatus);
+function isRuntimeBusyThread(
+  thread: ThreadRuntimeShape,
+  now = Date.now(),
+  nativeActivityUnconfirmed = isNativeActivityUnconfirmed(thread.runtime, now),
+): boolean {
+  return (
+    !nativeActivityUnconfirmed &&
+    isRunningThreadRuntimeDisplayStatus(thread.runtime.displayStatus)
+  );
+}
+
+export function isNativeActivityUnconfirmed(
+  runtime: ThreadRuntimeShape["runtime"],
+  now = Date.now(),
+): boolean {
+  const activity = runtime.nativeActivity;
+  if (activity === undefined) return false;
+  const current = Math.max(now, Date.now());
+  return (
+    activity.confirmation !== "confirmed" ||
+    activity.lastEvidenceAt === null ||
+    current < activity.lastEvidenceAt ||
+    current - activity.lastEvidenceAt > activity.freshForMs
+  );
+}
+
+export function nativeActivityEvidenceKind(
+  runtime: ThreadRuntimeShape["runtime"],
+  now = Date.now(),
+  unconfirmed = isNativeActivityUnconfirmed(runtime, now),
+): NativeActivityEvidenceKind {
+  const activity = runtime.nativeActivity;
+  if (activity === undefined) return "unknown";
+  if (!unconfirmed) return "holder-report";
+  const lastToolCallAt = activity.lastToolCallAt;
+  return lastToolCallAt !== undefined &&
+    now >= lastToolCallAt &&
+    now - lastToolCallAt <= activity.freshForMs
+    ? "tool-call"
+    : "unknown";
 }
 
 function hasActiveWorkflowActivity(thread: ThreadActivityStateShape): boolean {
@@ -51,9 +91,10 @@ function hasActiveGoalActivity(thread: ThreadActivityStateShape): boolean {
 
 function isBusyThread(
   thread: ThreadRuntimeShape & ThreadActivityStateShape,
+  now = Date.now(),
 ): boolean {
   return (
-    isRuntimeBusyThread(thread) ||
+    isRuntimeBusyThread(thread, now) ||
     hasActiveWorkflowActivity(thread) ||
     hasActiveBackgroundAgentActivity(thread) ||
     hasActiveBackgroundCommandActivity(thread) ||
@@ -64,6 +105,8 @@ function isBusyThread(
 
 export interface ThreadListIndicatorState {
   hasPendingInteraction: boolean;
+  isActivityUnreported: boolean;
+  queuedFailedCount: number;
   hasUnsubmittedDraft: boolean;
   hasUnreadError: boolean;
   hasUnreadSuccess: boolean;
@@ -102,16 +145,28 @@ const THREAD_LIST_INDICATOR_LABELS: Record<
   "plan-mode": "Plan mode active",
   goal: "Goal active",
   runtime: "Thread working",
-  "queued-failed": "Queued message failed to send",
+  "queued-failed": "Queued messages not delivered",
   "queued-waiting": "Thread has a message waiting to send",
+  "activity-unreported": "Activity not reported",
   draft: "Thread has unsubmitted draft",
   "unread-success": "Unread thread succeeded",
 };
 
+export function formatQueuedFailedLabel(queuedFailedCount: number): string {
+  return queuedFailedCount === 1
+    ? "1 queued message not delivered"
+    : `${queuedFailedCount} queued messages not delivered`;
+}
+
 export function getThreadListIndicatorLabel(
   kind: ThreadListIndicatorKind,
+  queuedFailedCount = 0,
 ): string | null {
-  return kind === "none" ? null : THREAD_LIST_INDICATOR_LABELS[kind];
+  if (kind === "none") return null;
+  if (kind === "queued-failed" && queuedFailedCount > 0) {
+    return formatQueuedFailedLabel(queuedFailedCount);
+  }
+  return THREAD_LIST_INDICATOR_LABELS[kind];
 }
 
 function hasThreadListWorkingActivity(
@@ -130,20 +185,36 @@ function hasThreadListWorkingActivity(
 export function threadListIndicatorStateForThread(
   thread: ThreadListEntry,
   hasUnsubmittedDraft: boolean,
+  now = Date.now(),
+  nativeActivityUnconfirmed?: boolean,
 ): ThreadListIndicatorState {
   const unreadDone = isUnreadDoneThread(thread);
+  const activityUnconfirmed =
+    nativeActivityUnconfirmed ??
+    isNativeActivityUnconfirmed(thread.runtime, now);
   return {
     hasPendingInteraction: thread.hasPendingInteraction,
+    isActivityUnreported:
+      thread.runtime.nativeActivity !== undefined &&
+      activityUnconfirmed &&
+      isRunningThreadRuntimeDisplayStatus(thread.runtime.displayStatus),
     hasUnsubmittedDraft,
-    hasUnreadError: unreadDone && thread.status === "error",
-    hasUnreadSuccess: unreadDone && thread.status !== "error",
+    hasUnreadError:
+      unreadDone && effectiveDisplayStatus(thread, thread.runtime) === "error",
+    hasUnreadSuccess:
+      unreadDone && effectiveDisplayStatus(thread, thread.runtime) !== "error",
     isAutomationWoken: false,
     isBackgroundAgentActive: hasActiveBackgroundAgentActivity(thread),
     isBackgroundCommandActive: hasActiveBackgroundCommandActivity(thread),
     isGoalActive: hasActiveGoalActivity(thread),
     queuedWork: thread.queuedWork,
+    queuedFailedCount: thread.queuedFailedCount,
     isPlanModeActive: hasActivePlanModeActivity(thread),
-    isRuntimeActive: isRuntimeBusyThread(thread),
+    isRuntimeActive: isRuntimeBusyThread(
+      thread,
+      now,
+      nativeActivityUnconfirmed,
+    ),
     isWorkflowActive: hasActiveWorkflowActivity(thread),
   };
 }
@@ -158,6 +229,7 @@ export function resolveThreadListIndicator(
   if (state.hasUnreadError || state.hasUnreadSuccess) return "done-unread";
   if (state.queuedWork === "failed") return "queued-failed";
   if (state.queuedWork === "waiting") return "queued-waiting";
+  if (state.isActivityUnreported) return "activity-unreported";
   if (state.hasUnsubmittedDraft) return "draft";
   return "none";
 }
@@ -185,6 +257,7 @@ const EMPTY_DRAFT_THREAD_IDS: ReadonlySet<string> = new Set();
 export function getCollapsedChildActivity(
   threads: readonly ThreadActivityShape[],
   draftThreadIds: ReadonlySet<string> = EMPTY_DRAFT_THREAD_IDS,
+  now = Date.now(),
 ): CollapsedChildActivity {
   let pending = false;
   let working = false;
@@ -202,7 +275,10 @@ export function getCollapsedChildActivity(
       hasUnsubmittedDraft = true;
     }
     const childUnreadDone = isUnreadDoneThread(thread);
-    if (childUnreadDone && thread.status === "error") {
+    if (
+      childUnreadDone &&
+      effectiveDisplayStatus(thread, thread.runtime) === "error"
+    ) {
       unreadError = true;
     } else if (childUnreadDone) {
       unread = true;
@@ -211,8 +287,8 @@ export function getCollapsedChildActivity(
     if (thread.hasPendingInteraction) {
       pending = true;
     }
-    if (isBusyThread(thread)) working = true;
-    if (isRuntimeBusyThread(thread)) runtimeWorking = true;
+    if (isBusyThread(thread, now)) working = true;
+    if (isRuntimeBusyThread(thread, now)) runtimeWorking = true;
     if (hasActiveWorkflowActivity(thread)) workflow = true;
     if (hasActiveBackgroundAgentActivity(thread)) backgroundAgent = true;
     if (hasActiveBackgroundCommandActivity(thread)) backgroundCommand = true;

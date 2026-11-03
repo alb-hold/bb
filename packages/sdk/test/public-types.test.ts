@@ -3,7 +3,6 @@ import type {
   BbRealtime as RootBbRealtime,
   BbSdk as RootBbSdk,
   BbRealtimeConnectionEvent as RootRealtimeConnection,
-  EnvironmentStatusResult as RootEnvironmentStatus,
   FileReadResult as RootFileRead,
   GuideRenderResult as RootGuideRender,
   HostGetResult as RootHostGet,
@@ -32,7 +31,6 @@ import type {
   BbSdk as BrowserBbSdk,
   BrowserBbSdk as BrowserRuntimeBbSdk,
   BbRealtimeConnectionEvent as BrowserRealtimeConnection,
-  EnvironmentStatusResult as BrowserEnvironmentStatus,
   FileReadResult as BrowserFileRead,
   GuideRenderResult as BrowserGuideRender,
   HostGetResult as BrowserHostGet,
@@ -55,11 +53,11 @@ import type {
   ThemeSetInput as BrowserThemeSetInput,
   ThreadSectionListResult as BrowserThreadSectionList,
   ThreadSpawnResult as BrowserThreadSpawn,
+  createBrowserBbSdk,
 } from "@bb/sdk/browser";
 import type {
   BbSdk as CoreBbSdk,
   BbRealtimeConnectionEvent as CoreRealtimeConnection,
-  EnvironmentStatusResult as CoreEnvironmentStatus,
   FileReadResult as CoreFileRead,
   GuideRenderResult as CoreGuideRender,
   HostGetResult as CoreHostGet,
@@ -86,7 +84,6 @@ import type {
 import type {
   BbSdk as NodeBbSdk,
   BbRealtimeConnectionEvent as NodeRealtimeConnection,
-  EnvironmentStatusResult as NodeEnvironmentStatus,
   FileReadResult as NodeFileRead,
   GuideRenderResult as NodeGuideRender,
   HostGetResult as NodeHostGet,
@@ -110,10 +107,8 @@ import type {
   ThreadSectionListResult as NodeThreadSectionList,
   ThreadSpawnResult as NodeThreadSpawn,
 } from "@bb/sdk/node";
-import type { createBrowserBbSdk } from "@bb/sdk/browser";
 
 interface RootSurface {
-  environmentStatus: RootEnvironmentStatus;
   fileRead: RootFileRead;
   guideRender: RootGuideRender;
   hostGet: RootHostGet;
@@ -140,7 +135,6 @@ interface RootSurface {
 }
 
 interface BrowserSurface {
-  environmentStatus: BrowserEnvironmentStatus;
   fileRead: BrowserFileRead;
   guideRender: BrowserGuideRender;
   hostGet: BrowserHostGet;
@@ -167,7 +161,6 @@ interface BrowserSurface {
 }
 
 interface CoreSurface {
-  environmentStatus: CoreEnvironmentStatus;
   fileRead: CoreFileRead;
   guideRender: CoreGuideRender;
   hostGet: CoreHostGet;
@@ -194,7 +187,6 @@ interface CoreSurface {
 }
 
 interface NodeSurface {
-  environmentStatus: NodeEnvironmentStatus;
   fileRead: NodeFileRead;
   guideRender: NodeGuideRender;
   hostGet: NodeHostGet;
@@ -221,6 +213,7 @@ interface NodeSurface {
 }
 
 type ExpectedBbSdkKey =
+  | "device"
   | "experimental_desktopBrowsers"
   | "experimental_promptHistory"
   | "experimental_server"
@@ -228,6 +221,7 @@ type ExpectedBbSdkKey =
   | "files"
   | "guide"
   | "hosts"
+  | "nativeTerminals"
   | "plugins"
   | "projects"
   | "providers"
@@ -239,29 +233,23 @@ type ExpectedBbSdkKey =
   | "terminals"
   | "theme"
   | "threadSections"
-  | "threads";
+  | "threads"
+  | "writingAssistance";
 
 type ExpectedRealtimeKey = "subscribe";
 
 type ExpectedEnvironmentsKey =
   | "experimental_cleanup"
+  | "experimental_clearDiffViewed"
+  | "experimental_diffViewed"
+  | "experimental_markDiffViewed"
   | "archiveThreads"
   | "commit"
   | "delete"
   | "list"
   | "listProviders"
-  | "diff"
-  | "diffBranches"
-  | "diffFile"
-  | "diffFiles"
-  | "diffPatch"
   | "get"
-  | "markPullRequestDraft"
-  | "markPullRequestReady"
-  | "mergePullRequest"
   | "paths"
-  | "pullRequest"
-  | "status"
   | "update";
 
 type ExpectedFilesKey =
@@ -384,6 +372,10 @@ type ExpectedSystemKey =
   | "config"
   | "executionOptions"
   | "installCliSkills"
+  | "experimental_cliCommand"
+  | "experimental_installCliCommand"
+  | "experimental_recordTelemetryEvent"
+  | "experimental_removeCliCommand"
   | "reloadConfig"
   | "setAiServiceSelection"
   | "testAiService"
@@ -403,6 +395,13 @@ type ExpectedThemeKey = "catalog" | "get" | "resolve" | "set";
 type ExpectedThreadSectionsKey = "create" | "delete" | "list" | "update";
 
 type ExpectedThreadsKey =
+  | "experimental_rowState"
+  | "experimental_updateRowState"
+  | "experimental_listAncestors"
+  | "experimental_listDescendants"
+  | "experimental_listCascade"
+  | "experimental_listPluginMetadata"
+  | "experimental_regenerateTitle"
   | "getPluginMetadata"
   | "updatePluginMetadata"
   | "context"
@@ -478,9 +477,17 @@ type ExpectedThreadTabsKey = "get" | "update";
 type ExpectedTerminalsKey =
   | "close"
   | "create"
+  | "experimental_attention"
+  | "experimental_follow"
+  | "experimental_screen"
+  | "experimental_focus"
+  | "experimental_layout"
+  | "experimental_openBrowser"
+  | "experimental_surfaces"
   | "get"
   | "input"
   | "list"
+  | "notify"
   | "output"
   | "rename"
   | "restart"

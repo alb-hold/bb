@@ -1,6 +1,11 @@
 // @vitest-environment jsdom
 
-import { act, cleanup, renderHook } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  renderHook as renderHookBase,
+} from "@testing-library/react";
+import { QueryClient } from "@tanstack/react-query";
 import { getDefaultStore } from "jotai";
 import { PERSONAL_PROJECT_ID, type ThreadListEntry } from "@bb/domain";
 import { getThreadConversationCollapsedAtom } from "@/components/secondary-panel/threadSecondaryPanelAtoms";
@@ -22,6 +27,15 @@ import {
 } from "./plugin-thread-row-status";
 import { useEnvironmentProviders } from "./plugin-sdk-hooks";
 import { SidebarThreadShortcutKeysContext } from "@/components/sidebar/sidebarThreadShortcuts";
+import { SidebarThreadEntriesTestProvider } from "@/test/sidebarThreadEntriesTestProvider";
+import { sidebarNavigationQueryKey } from "@/hooks/queries/query-keys";
+import { createRealtimeCacheEffects } from "@/hooks/realtime-cache-effects";
+
+const renderHook: typeof renderHookBase = (callback, options) =>
+  renderHookBase(callback, {
+    wrapper: SidebarThreadEntriesTestProvider,
+    ...options,
+  });
 
 const actions = vi.hoisted(() => ({
   navigate: vi.fn(),
@@ -158,6 +172,7 @@ function payload(threads: ThreadListEntry[], sections: SidebarSection[] = []) {
 }
 
 afterEach(() => {
+  vi.useRealTimers();
   cleanup();
   vi.clearAllMocks();
   state.data = undefined;
@@ -170,6 +185,130 @@ afterEach(() => {
 });
 
 describe("useSidebarThreads", () => {
+  it("refreshes native activity confirmation through receipts, silence, and recovery", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000_000);
+    const withReceipt = (lastEvidenceAt: number) =>
+      makeThreadListEntry({
+        id: "thr_native_activity",
+        status: "active",
+        runtime: {
+          displayStatus: "active",
+          nativeActivity: {
+            lastEvidenceAt,
+            freshForMs: 90_000,
+            confirmation: "confirmed",
+            evidenceKind: "holder-report",
+          },
+        },
+      });
+    const queryClient = new QueryClient();
+    const queryKey = sidebarNavigationQueryKey();
+    const initial = withReceipt(Date.now());
+    queryClient.setQueryData(queryKey, payload([initial]));
+    state.data = queryClient.getQueryData(queryKey);
+    const effects = createRealtimeCacheEffects({ queryClient });
+    const deliverReceipt = (receipt: ThreadListEntry) => {
+      effects.handleChanged({
+        type: "changed",
+        entity: "thread",
+        id: receipt.id,
+        metadata: {
+          statusChange: {
+            activity: receipt.activity,
+            latestAttentionAt: receipt.latestAttentionAt,
+            runtime: receipt.runtime,
+            status: receipt.status,
+            updatedAt: receipt.updatedAt,
+          },
+        },
+        changes: ["status-changed"],
+      });
+      state.data = queryClient.getQueryData(queryKey);
+    };
+    const { result, rerender } = renderHook(() => useSidebarThreads());
+    const thread = () => result.current.threads[0]!;
+    expect(thread().experimental_nativeActivity?.confirmation).toBe(
+      "confirmed",
+    );
+    expect(thread().indicator).toBe("working");
+    expect(thread().indicatorLabel).toBe("Working");
+
+    for (let heartbeat = 1; heartbeat <= 3; heartbeat += 1) {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(30_000);
+      });
+      const receipt = withReceipt(Date.now());
+      deliverReceipt(receipt);
+      rerender();
+      expect(thread().experimental_nativeActivity?.confirmation).toBe(
+        "confirmed",
+      );
+    }
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(90_000);
+    });
+    expect(thread().experimental_nativeActivity?.confirmation).toBe(
+      "confirmed",
+    );
+    expect(thread().indicator).toBe("working");
+    expect(thread().indicatorLabel).toBe("Working");
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1_000);
+    });
+    expect(thread().experimental_nativeActivity?.confirmation).toBe(
+      "unconfirmed",
+    );
+    expect(thread().indicator).toBe("activity-unreported");
+    expect(thread().indicatorLabel).toBe("Activity not reported");
+    expect(queryClient.getQueryState(queryKey)?.isInvalidated).toBe(false);
+
+    const recovered = withReceipt(Date.now());
+    deliverReceipt(recovered);
+    rerender();
+    expect(thread().experimental_nativeActivity?.confirmation).toBe(
+      "confirmed",
+    );
+    expect(thread().indicator).toBe("working");
+    expect(queryClient.getQueryState(queryKey)?.isInvalidated).toBe(false);
+    effects.dispose();
+    queryClient.clear();
+  });
+
+  it("drops tool-call evidence from the projection when it goes stale, without a new receipt", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000_000);
+    state.data = payload([
+      makeThreadListEntry({
+        id: "thr_tool_call",
+        status: "active",
+        runtime: {
+          displayStatus: "active",
+          nativeActivity: {
+            lastEvidenceAt: null,
+            lastToolCallAt: Date.now(),
+            freshForMs: 90_000,
+            confirmation: "unconfirmed",
+            evidenceKind: "tool-call",
+          },
+        },
+      }),
+    ]);
+    const { result } = renderHook(() => useSidebarThreads());
+    const thread = () => result.current.threads[0]!;
+    expect(thread().experimental_nativeActivity?.evidenceKind).toBe(
+      "tool-call",
+    );
+    expect(thread().indicator).toBe("activity-unreported");
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(91_000);
+    });
+    expect(thread().experimental_nativeActivity?.evidenceKind).toBe("unknown");
+    expect(thread().indicator).toBe("activity-unreported");
+  });
+
   it("keeps DTO identity for entries that did not change across a sidebar update", () => {
     const stable = makeThreadListEntry({ id: "thr_stable", title: "Stable" });
     const changing = makeThreadListEntry({ id: "thr_changing", title: "One" });

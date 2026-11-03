@@ -99,7 +99,7 @@ describe("a send the daemon refuses", () => {
       await reportQueuedCommandSuccess(
         harness,
         await nextSubmit(harness, thread.id),
-        {},
+        { trace: { spans: [] } },
       );
 
       expect(await response).toEqual({ ok: true, delivery: "sent" });

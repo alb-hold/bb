@@ -1,10 +1,10 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import { act } from "react";
 import { afterEach, expect, it, vi } from "vitest";
 import { PluginSourceCode } from "@/components/plugin/PluginSourceCode";
-import { PluginDiff } from "@/components/plugin/PluginDiff";
-import { parseGitDiffFiles } from "@/components/git-diff/git-diff-parsing";
+import { LazyPluginDiff } from "@/components/plugin/lazy-plugin-renderers";
+import { parseGitDiffFiles } from "@bb/shared-ui/git-diff/parsing";
 import { DiffHost } from "./DiffHost";
 import { SourceCodeHost } from "./SourceCodeHost";
 
@@ -27,7 +27,7 @@ vi.mock("./BbSourceCode", async () => {
 
 afterEach(cleanup);
 
-it("keeps caller placeholders and SDK null fallbacks until the renderer imports resolve", async () => {
+it("shows the renderer skeleton until the renderer imports resolve", async () => {
   const patch = [
     "diff --git a/app.ts b/app.ts",
     "--- a/app.ts",
@@ -39,30 +39,24 @@ it("keeps caller placeholders and SDK null fallbacks until the renderer imports 
   ].join("\n");
   const file = parseGitDiffFiles(patch)[0];
   if (!file) throw new Error("fixture patch did not parse");
-  render(
+  const hosts = render(
     <>
-      <DiffHost
-        file={file}
-        fullFileContents={null}
-        fallback={<p>Loading diff</p>}
-      />
-      <SourceCodeHost
-        content="const a = 2;"
-        path="app.ts"
-        fallback={<p>Loading source</p>}
-      />
+      <DiffHost file={file} fullFileContents={null} />
+      <SourceCodeHost content="const a = 2;" path="app.ts" />
     </>,
   );
   const sdk = render(
     <>
-      <PluginDiff patch={patch} path="app.ts" />
+      <LazyPluginDiff patch={patch} path="app.ts" />
       <PluginSourceCode content="const a = 2;" path="app.ts" />
     </>,
   );
 
-  expect(screen.getByText("Loading diff")).toBeDefined();
-  expect(screen.getByText("Loading source")).toBeDefined();
-  expect(sdk.container.childElementCount).toBe(0);
+  for (const view of [hosts, sdk]) {
+    expect(
+      view.container.querySelectorAll(".animate-pulse").length,
+    ).toBeGreaterThan(0);
+  }
   expect(screen.queryByText("Diff ready")).toBeNull();
   expect(screen.queryByText("Source ready")).toBeNull();
 
@@ -71,8 +65,11 @@ it("keeps caller placeholders and SDK null fallbacks until the renderer imports 
     downloads.source.resolve();
   });
 
-  expect(await screen.findAllByText("Diff ready")).toHaveLength(2);
-  expect(await screen.findAllByText("Source ready")).toHaveLength(2);
-  expect(screen.queryByText("Loading diff")).toBeNull();
-  expect(screen.queryByText("Loading source")).toBeNull();
+  await waitFor(() => {
+    expect(screen.getAllByText("Diff ready")).toHaveLength(2);
+    expect(screen.getAllByText("Source ready")).toHaveLength(2);
+  });
+  for (const view of [hosts, sdk]) {
+    expect(view.container.querySelectorAll(".animate-pulse")).toHaveLength(0);
+  }
 });

@@ -1,4 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { EventEmitter } from "node:events";
+import { AppImageUpdater } from "electron-updater";
+import { describe, expect, it, vi } from "vitest";
 import type {
   UpdateCheckResult,
   UpdateDownloadedEvent,
@@ -6,6 +8,7 @@ import type {
 } from "electron-updater";
 import {
   createDesktopAutoUpdateService,
+  createElectronAutoUpdaterAdapter,
   shouldEnableDesktopAutoUpdate,
   type DesktopAutoUpdateAvailableHandler,
   type DesktopAutoUpdateDownloadedHandler,
@@ -109,7 +112,7 @@ class DesktopAutoUpdaterAdapterStub implements DesktopAutoUpdaterAdapter {
     this.updateNotAvailableHandlers.add(handler);
   }
 
-  quitAndInstall(): void {
+  async quitAndInstall(): Promise<void> {
     this.quitAndInstallCalls += 1;
   }
 
@@ -276,7 +279,7 @@ describe("desktop auto-update service", () => {
     );
   });
 
-  it("does not start duplicate background downloads while one is in flight", async () => {
+  it("downloads each version once, during and after its download", async () => {
     const updater = new DesktopAutoUpdaterAdapterStub();
     const download = createDeferredDownload();
     updater.downloadUpdateResult = download.promise;
@@ -302,7 +305,7 @@ describe("desktop auto-update service", () => {
 
     updater.emitUpdateAvailable(createUpdateInfo("0.0.2"));
 
-    expect(updater.downloadUpdateCalls).toBe(2);
+    expect(updater.downloadUpdateCalls).toBe(1);
   });
 
   it("logs updater errors without throwing or clearing current state", () => {
@@ -367,7 +370,7 @@ describe("desktop auto-update service", () => {
     });
   });
 
-  it("holds a downloaded update by skipping re-checks that would tear down its staging", async () => {
+  it("re-checks a downloaded update without restaging the same version", async () => {
     const updater = new DesktopAutoUpdaterAdapterStub();
     updater.updateCheckResult = createUpdateCheckResult("0.0.2");
     let currentTime = Date.parse(checkedAt);
@@ -382,23 +385,93 @@ describe("desktop auto-update service", () => {
     });
 
     await service.checkForUpdates();
-    expect(updater.checkForUpdatesCalls).toBe(1);
-
+    updater.emitUpdateAvailable(createUpdateInfo("0.0.2"));
+    await Promise.resolve();
+    await Promise.resolve();
     updater.emitUpdateDownloaded(createDownloadedEvent("0.0.2"));
-    await service.checkForUpdates();
+
     currentTime += 16 * 60 * 1000;
     await service.checkAfterActive();
+    updater.emitUpdateAvailable(createUpdateInfo("0.0.2"));
 
-    expect(updater.checkForUpdatesCalls).toBe(1);
+    expect(updater.checkForUpdatesCalls).toBe(2);
+    expect(updater.downloadUpdateCalls).toBe(1);
     expect(service.getInfo()).toEqual({
       downloadState: "downloaded",
-      lastCheckedAt: checkedAt,
+      lastCheckedAt: new Date(currentTime).toISOString(),
       latestVersion: "0.0.2",
       pendingVersion: "0.0.2",
       platform: "macos",
       updateAvailable: true,
       updateDownloaded: true,
       version: "0.0.1",
+    });
+  });
+
+  it("replaces a downloaded update when a newer version is published", async () => {
+    const updater = new DesktopAutoUpdaterAdapterStub();
+    const service = createDesktopAutoUpdateService({
+      currentVersion: "0.0.1",
+      enabled: true,
+      forceDevUpdateConfig: false,
+      logger: createLogger(createLoggerMessages()),
+      now: () => Date.parse(checkedAt),
+      platform: "macos",
+      updater,
+    });
+
+    updater.emitUpdateAvailable(createUpdateInfo("0.0.2"));
+    await Promise.resolve();
+    await Promise.resolve();
+    updater.emitUpdateDownloaded(createDownloadedEvent("0.0.2"));
+
+    const replacement = createDeferredDownload();
+    updater.downloadUpdateResult = replacement.promise;
+    updater.updateCheckResult = createUpdateCheckResult("0.0.3");
+    await service.checkForUpdates();
+    updater.emitUpdateAvailable(createUpdateInfo("0.0.3"));
+
+    expect(updater.downloadUpdateCalls).toBe(2);
+    expect(service.getInfo()).toMatchObject({
+      downloadState: "downloading",
+      latestVersion: "0.0.3",
+      pendingVersion: null,
+      updateDownloaded: false,
+    });
+    await service.installUpdate();
+    expect(updater.quitAndInstallCalls).toBe(0);
+
+    replacement.resolve(["/tmp/bb.zip"]);
+    updater.emitUpdateDownloaded(createDownloadedEvent("0.0.3"));
+
+    expect(service.getInfo()).toMatchObject({
+      downloadState: "downloaded",
+      latestVersion: "0.0.3",
+      pendingVersion: "0.0.3",
+      updateDownloaded: true,
+    });
+  });
+
+  it("keeps a downloaded update when a later check reports nothing newer", () => {
+    const updater = new DesktopAutoUpdaterAdapterStub();
+    const service = createDesktopAutoUpdateService({
+      currentVersion: "0.0.1",
+      enabled: true,
+      forceDevUpdateConfig: false,
+      logger: createLogger(createLoggerMessages()),
+      now: () => Date.parse(checkedAt),
+      platform: "macos",
+      updater,
+    });
+
+    updater.emitUpdateAvailable(createUpdateInfo("0.0.2"));
+    updater.emitUpdateDownloaded(createDownloadedEvent("0.0.2"));
+    updater.emitUpdateNotAvailable(createUpdateInfo("0.0.1"));
+
+    expect(service.getInfo()).toMatchObject({
+      downloadState: "downloaded",
+      pendingVersion: "0.0.2",
+      updateDownloaded: true,
     });
   });
 
@@ -444,4 +517,143 @@ describe("desktop auto-update service", () => {
       }),
     ).toBe(false);
   });
+});
+
+describe("native installer acceptance", () => {
+  it.each([false, true])(
+    "reports native errors and retries (AppImage: %s)",
+    async (isAppImage) => {
+      const nativeUpdater = new EventEmitter();
+      const updater = new AppImageUpdater(null, {
+        version: "1.0.0",
+        name: "bb",
+        isPackaged: true,
+        appUpdateConfigPath: "",
+        userDataPath: "",
+        baseCachePath: "",
+        whenReady: async () => undefined,
+        relaunch: () => undefined,
+        quit: () => undefined,
+        onQuit: () => undefined,
+      });
+      updater.logger = null;
+      const errorListeners = updater.listenerCount("error");
+      const relaunch = vi.fn();
+      const adapter = createElectronAutoUpdaterAdapter(
+        updater,
+        nativeUpdater,
+        isAppImage ? { path: "/bb-1.0.0.AppImage", relaunch } : null,
+      );
+      await expect(adapter.quitAndInstall()).rejects.toThrow(
+        "No update filepath provided",
+      );
+      expect(nativeUpdater.listenerCount("before-quit-for-update")).toBe(0);
+
+      const install = vi
+        .spyOn(updater, "quitAndInstall")
+        .mockImplementation(() => undefined);
+      const failed = adapter.quitAndInstall();
+      const rejection = expect(failed).rejects.toThrow(
+        "Native installer failed",
+      );
+      await Promise.resolve();
+      updater.emit("error", new Error("Native installer failed"));
+      await rejection;
+      expect(nativeUpdater.listenerCount("before-quit-for-update")).toBe(0);
+
+      const retry = adapter.quitAndInstall();
+      expect(adapter.quitAndInstall()).toBe(retry);
+      expect(install).toHaveBeenCalledTimes(2);
+      expect(relaunch).not.toHaveBeenCalled();
+      if (isAppImage) {
+        expect(install).toHaveBeenLastCalledWith(true, false);
+        updater.emit("appimage-filename-updated", "/bb-1.1.0.AppImage");
+      } else {
+        expect(install).toHaveBeenLastCalledWith();
+      }
+      nativeUpdater.emit("before-quit-for-update");
+      await retry;
+      if (isAppImage) {
+        expect(relaunch).toHaveBeenCalledWith("/bb-1.1.0.AppImage");
+      } else {
+        expect(relaunch).not.toHaveBeenCalled();
+      }
+      expect(nativeUpdater.listenerCount("before-quit-for-update")).toBe(0);
+      expect(updater.listenerCount("error")).toBe(errorListeners);
+    },
+  );
+});
+
+describe("macOS native preparation", () => {
+  it.runIf(process.platform === "darwin")(
+    "waits for native readiness and prepares again after failure",
+    async () => {
+      const nativeUpdater = new EventEmitter();
+      const updater = new AppImageUpdater(null, {
+        version: "0.0.1",
+        name: "bb",
+        isPackaged: true,
+        appUpdateConfigPath: "",
+        userDataPath: "",
+        baseCachePath: "",
+        whenReady: async () => undefined,
+        relaunch: () => undefined,
+        quit: () => undefined,
+        onQuit: () => undefined,
+      });
+      const check = vi
+        .spyOn(updater, "checkForUpdates")
+        .mockImplementation(async () => {
+          updater.emit("update-available", createUpdateInfo("0.46.0"));
+          return createUpdateCheckResult("0.46.0");
+        });
+      const download = vi
+        .spyOn(updater, "downloadUpdate")
+        .mockImplementation(async () => {
+          updater.emit("update-downloaded", createDownloadedEvent("0.46.0"));
+          return ["/tmp/bb.zip"];
+        });
+      const install = vi
+        .spyOn(updater, "quitAndInstall")
+        .mockImplementation(() => undefined);
+      const service = createDesktopAutoUpdateService({
+        currentVersion: "0.0.1",
+        enabled: true,
+        forceDevUpdateConfig: false,
+        logger: createLogger(createLoggerMessages()),
+        platform: "macos",
+        updater: createElectronAutoUpdaterAdapter(updater, nativeUpdater, null),
+      });
+
+      await service.checkForUpdates();
+      expect(service.getInfo()).toMatchObject({
+        downloadState: "downloading",
+        updateDownloaded: false,
+        pendingVersion: null,
+      });
+      updater.emit("error", new Error("Native preparation failed"));
+      expect(service.getInfo()).toMatchObject({
+        downloadState: "failed",
+        updateDownloaded: false,
+        pendingVersion: null,
+      });
+      await service.installUpdate();
+      expect(install).not.toHaveBeenCalled();
+
+      await service.checkForUpdates();
+      expect(check).toHaveBeenCalledTimes(2);
+      expect(download).toHaveBeenCalledTimes(2);
+      expect(service.getInfo().updateDownloaded).toBe(false);
+      nativeUpdater.emit("update-downloaded");
+      expect(service.getInfo()).toMatchObject({
+        downloadState: "downloaded",
+        updateDownloaded: true,
+        pendingVersion: "0.46.0",
+      });
+      const installing = service.installUpdate();
+      expect(install).toHaveBeenCalledTimes(1);
+      nativeUpdater.emit("before-quit-for-update");
+      await installing;
+    },
+  );
 });

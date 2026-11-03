@@ -27,6 +27,12 @@ const ALL_TAB_KINDS: readonly ThreadTab[] = [
   { id: "thread-info", kind: "thread-info" },
   { id: "git-diff", kind: "git-diff" },
   {
+    id: "plugin-fixed:example:status",
+    kind: "plugin-fixed",
+    pluginId: "example",
+    tabId: "status",
+  },
+  {
     actionId: "inspect",
     id: "plugin-panel",
     kind: "plugin-panel",
@@ -61,6 +67,13 @@ const ALL_TAB_KINDS: readonly ThreadTab[] = [
     lineRange: null,
     path: "notes/result.md",
     threadId: "thr_child",
+  },
+  {
+    id: "attachment-file",
+    kind: "attachment-file-preview",
+    name: "Pasted text.txt",
+    path: "Pasted-text-1791431248908-krajcq.txt",
+    projectId: "prj_1",
   },
   {
     environmentId: "env_1",

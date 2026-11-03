@@ -1,9 +1,11 @@
 // @vitest-environment jsdom
+import { makePanelController } from "../fixtures.js";
 import { useEffect, useState } from "react";
 import { cleanup, fireEvent, render, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import type {
+  PluginAppSlots,
   PluginComposerApi,
   PluginComposerScope,
   PluginMessageDirectiveProps,
@@ -36,10 +38,10 @@ const {
   useRealtimeConnectionState,
   useRpc,
   useSdk,
+  experimental_copyToClipboard,
   experimental_useSidebarNavigation,
   experimental_useSidebarNavigationSplit,
   experimental_SidebarNavigationIcon: SidebarNavigationIcon,
-  experimental_copyToClipboard,
 } = await import("../../app.js");
 
 function SdkProbe() {
@@ -109,6 +111,12 @@ const taskDetailsTab = {
   },
 } satisfies ExperimentalPluginFixedTabReference<TestTaskTarget>;
 
+const taskDetailsTabReference = {
+  id: "details",
+  context: { kind: "nav-panel", panelId: "tasks" },
+  availability: "fixed",
+} as const;
+
 function FixedTabProbe() {
   const panel = experimental_useAppPanel();
   const targetState = experimental_useFixedTabTarget(taskDetailsTab);
@@ -117,9 +125,8 @@ function FixedTabProbe() {
       <button
         type="button"
         onClick={() =>
-          panel.openFixedTab({
-            surface: { kind: "current" },
-            tab: taskDetailsTab,
+          panel.openTab({
+            tab: taskDetailsTabReference,
             target: { kind: "task", taskId: "TASK-42" },
           })
         }
@@ -128,12 +135,7 @@ function FixedTabProbe() {
       </button>
       <button
         type="button"
-        onClick={() =>
-          panel.openFixedTab({
-            surface: { kind: "current" },
-            tab: taskDetailsTab,
-          })
-        }
+        onClick={() => panel.openTab({ tab: taskDetailsTabReference })}
       >
         Select details
       </button>
@@ -489,20 +491,24 @@ function ThreadChatPage({ subPath }: PluginNavPanelProps) {
 
 const app = await loadPluginApp(
   definePluginApp((builder) => {
-    builder.slots.navPanel({
-      id: "panel",
-      title: "Panel",
-      icon: "FileText",
-      path: "panel",
-      component: Panel,
-    });
-    builder.slots.navPanel({
-      id: "chat",
-      title: "Chat",
-      icon: "MessageSquarePlus",
-      path: "chat",
-      component: ThreadChatPage,
-    });
+    (Reflect.get(builder.slots, "navPanel") as (registration: unknown) => void)(
+      {
+        id: "panel",
+        title: "Panel",
+        icon: "FileText",
+        path: "panel",
+        component: Panel,
+      },
+    );
+    (Reflect.get(builder.slots, "navPanel") as (registration: unknown) => void)(
+      {
+        id: "chat",
+        title: "Chat",
+        icon: "MessageSquarePlus",
+        path: "chat",
+        component: ThreadChatPage,
+      },
+    );
     builder.slots.messageAction({
       id: "summarize",
       title: "Summarize",
@@ -527,79 +533,6 @@ const app = await loadPluginApp(
     });
   }),
 );
-
-function NavigationProbe({ id }: { id: string }) {
-  const { activeItemId, actions, items } = experimental_useSidebarNavigation();
-  const split = experimental_useSidebarNavigationSplit(id);
-  const item = items.find((candidate) => candidate.id === id);
-  if (!item) return null;
-  return (
-    <button
-      type="button"
-      aria-current={item.id === activeItemId ? "page" : undefined}
-      {...split.splitProps}
-      onClick={() => {
-        actions.activate(item.id, { openInSplit: true });
-        actions.setVisible(item.id, false);
-        actions.setOrder([item.id]);
-        actions.openCustomize();
-      }}
-    >
-      <SidebarNavigationIcon icon={item.icon} />
-      {item.label}
-    </button>
-  );
-}
-
-describe("sidebar navigation test runtime", () => {
-  it("reports configured items and records every action", () => {
-    const slot = renderSlot(
-      { component: NavigationProbe },
-      { id: "garden/docs" },
-      {
-        sidebarNavigation: {
-          activeItemId: "garden/docs",
-          items: [
-            {
-              id: "garden/docs",
-              label: "Docs",
-              icon: { kind: "plugin", pluginId: "garden", icon: "BookOpen" },
-              action: {
-                kind: "open-plugin-panel",
-                pluginId: "garden",
-                panelId: "docs",
-              },
-              isDisabled: false,
-              isVisible: true,
-              isLoading: false,
-              pluginId: "garden",
-              shortcut: null,
-              experimental_Accessory: null,
-            },
-          ],
-        },
-      },
-    );
-
-    const button = slot.getByRole("button", { name: "Docs" });
-    expect(button.getAttribute("aria-current")).toBe("page");
-    expect(
-      button
-        .querySelector("[data-sidebar-navigation-icon]")
-        ?.getAttribute("data-sidebar-navigation-icon"),
-    ).toBe("garden/BookOpen");
-    fireEvent.pointerDown(button);
-    fireEvent.click(button);
-
-    expect(slot.inspection.sidebarNavigationCalls).toEqual([
-      { method: "beginSplitDrag", itemId: "garden/docs" },
-      { method: "activate", itemId: "garden/docs", openInSplit: true },
-      { method: "setVisible", itemId: "garden/docs", isVisible: false },
-      { method: "setOrder", itemIds: ["garden/docs"] },
-      { method: "openCustomize" },
-    ]);
-  });
-});
 
 describe("loadPluginApp", () => {
   beforeEach(() => {
@@ -636,74 +569,6 @@ describe("loadPluginApp", () => {
         }),
       ),
     ).rejects.toThrow('slots.experimental_appOverlay: duplicate id "office"');
-  });
-
-  it("captures and validates sidebar navigation registrations", async () => {
-    const captured = await loadPluginApp(
-      definePluginApp((builder) => {
-        builder.slots.experimental_sidebarNavigation({
-          id: "compact",
-          title: "Compact navigation",
-          description: "Groups the sidebar destinations.",
-          component: () => null,
-        });
-      }),
-    );
-
-    expect(captured.experimentalSidebarNavigations).toEqual([
-      {
-        id: "compact",
-        title: "Compact navigation",
-        description: "Groups the sidebar destinations.",
-        component: expect.any(Function),
-      },
-    ]);
-    const withHeader = await loadPluginApp(
-      definePluginApp((builder) => {
-        builder.slots.experimental_sidebarHeader({
-          id: "icons",
-          title: "Header icons",
-          component: () => null,
-        });
-      }),
-    );
-    expect(withHeader.experimentalSidebarHeaders).toEqual([
-      { id: "icons", title: "Header icons", component: expect.any(Function) },
-    ]);
-    await expect(
-      loadPluginApp(
-        definePluginApp((builder) => {
-          builder.slots.experimental_sidebarHeader({
-            id: "icons",
-            title: "One",
-            component: () => null,
-          });
-          builder.slots.experimental_sidebarHeader({
-            id: "icons",
-            title: "Two",
-            component: () => null,
-          });
-        }),
-      ),
-    ).rejects.toThrow('slots.experimental_sidebarHeader: duplicate id "icons"');
-    await expect(
-      loadPluginApp(
-        definePluginApp((builder) => {
-          builder.slots.experimental_sidebarNavigation({
-            id: "compact",
-            title: "One",
-            component: () => null,
-          });
-          builder.slots.experimental_sidebarNavigation({
-            id: "compact",
-            title: "Two",
-            component: () => null,
-          });
-        }),
-      ),
-    ).rejects.toThrow(
-      'slots.experimental_sidebarNavigation: duplicate id "compact"',
-    );
   });
 
   it("captures and validates New thread panel action registrations", async () => {
@@ -812,7 +677,11 @@ describe("loadPluginApp", () => {
             });
           },
         });
-        builder.slots.navPanel({
+        (
+          Reflect.get(builder.slots, "navPanel") as (
+            registration: unknown,
+          ) => void
+        )({
           id: "panel",
           title: "Panel",
           icon: "Folder",
@@ -829,9 +698,9 @@ describe("loadPluginApp", () => {
     expect(mounted.inspection.experimental_clipboardWrites).toEqual([
       { text: "plain", html: "<b>rich</b>" },
     ]);
-    await expect(
-      experimental_copyToClipboard({ text: "later" }),
-    ).resolves.toBe(false);
+    await expect(experimental_copyToClipboard({ text: "later" })).resolves.toBe(
+      false,
+    );
 
     const slot = renderSlot(captured.navPanels[0]!, { subPath: "" });
     await expect(
@@ -1062,7 +931,11 @@ describe("loadPluginApp", () => {
     await expect(
       loadPluginApp(
         definePluginApp((builder) => {
-          builder.slots.navPanel({
+          (
+            Reflect.get(builder.slots, "navPanel") as (
+              registration: unknown,
+            ) => void
+          )({
             id: "bad id!",
             title: "x",
             icon: "x",
@@ -1075,44 +948,48 @@ describe("loadPluginApp", () => {
     await expect(
       loadPluginApp(
         definePluginApp((builder) => {
-          builder.slots.navPanel({
+          (
+            Reflect.get(builder.slots, "navPanel") as (
+              registration: unknown,
+            ) => void
+          )({
             id: "panel",
             title: "Panel",
             icon: "FileText",
             path: "panel",
             component: Panel,
-            experimental_sidebarAccessory: "nope" as never,
+            experimental_useBadge: "nope" as never,
           });
         }),
       ),
-    ).rejects.toThrow(
-      '"experimental_sidebarAccessory" must be a React component',
-    );
+    ).rejects.toThrow('"experimental_useBadge" must be a React hook');
     await expect(loadPluginApp({ default: { nope: true } })).rejects.toThrow(
       "not definePluginApp(...)",
     );
   });
 
-  it("captures a nav panel experimental sidebar accessory", async () => {
-    function SidebarAccessory() {
-      return <span>12</span>;
+  it("captures a nav panel experimental badge hook", async () => {
+    function useBadge() {
+      return { count: 12, label: "12 open tasks" };
     }
     const captured = await loadPluginApp(
       definePluginApp((builder) => {
-        builder.slots.navPanel({
+        (
+          Reflect.get(builder.slots, "navPanel") as (
+            registration: unknown,
+          ) => void
+        )({
           id: "tasks",
           title: "Tasks",
           icon: "ListTodo",
           path: "tasks",
           component: Panel,
-          experimental_sidebarAccessory: SidebarAccessory,
+          experimental_useBadge: useBadge,
         });
       }),
     );
 
-    expect(captured.navPanels[0]?.experimental_sidebarAccessory).toBe(
-      SidebarAccessory,
-    );
+    expect(captured.navPanels[0]?.experimental_useBadge).toBe(useBadge);
   });
 
   it("validates and captures nav panel fixed tabs", async () => {
@@ -1134,7 +1011,11 @@ describe("loadPluginApp", () => {
     };
     const captured = await loadPluginApp(
       definePluginApp((builder) => {
-        builder.slots.navPanel({
+        (
+          Reflect.get(builder.slots, "navPanel") as (
+            registration: unknown,
+          ) => void
+        )({
           id: "tasks",
           title: "Tasks",
           icon: "ListTodo",
@@ -1168,11 +1049,22 @@ describe("loadPluginApp", () => {
     ]);
   });
 
-  it("rejects a malformed fixed-tab target contract", async () => {
-    await expect(
-      loadPluginApp(
+  it.each([
+    ["missing owner", {}, 1],
+    ["different owner", { panelId: "other-page" }, 1],
+    ["unknown options", { deprecatedSetting: true }, 1],
+    ["malformed target", { experimental_target: { validate: "bad" } }, 1],
+    ["malformed component", { component: null }, 0],
+  ])(
+    "loads legacy fixed tabs with %s without crashing",
+    async (_label, options, count) => {
+      const captured = await loadPluginApp(
         definePluginApp((builder) => {
-          builder.slots.navPanel({
+          (
+            Reflect.get(builder.slots, "navPanel") as (
+              registration: unknown,
+            ) => void
+          )({
             id: "tasks",
             title: "Tasks",
             icon: "ListTodo",
@@ -1180,108 +1072,24 @@ describe("loadPluginApp", () => {
             component: Panel,
             fixedTabs: [
               {
-                panelId: "tasks",
                 id: "details",
                 title: "Details",
                 icon: "Info",
                 component: Panel,
-                experimental_target: {
-                  // @ts-expect-error Runtime collector coverage for malformed JS.
-                  validate: "not-a-function",
-                },
+                ...options,
               },
             ],
           });
         }),
-      ),
-    ).rejects.toThrow(
-      '"experimental_target.validate" must be a function when set',
-    );
-  });
-
-  it("rejects a fixed-tab reference scoped to a different nav panel", async () => {
-    await expect(
-      loadPluginApp(
-        definePluginApp((builder) => {
-          builder.slots.navPanel({
-            id: "tasks",
-            title: "Tasks",
-            icon: "ListTodo",
-            path: "tasks",
-            component: Panel,
-            fixedTabs: [
-              {
-                panelId: "other-page",
-                id: "navigation",
-                title: "Navigation",
-                icon: "PanelRight",
-                component: Panel,
-              },
-            ],
-          });
-        }),
-      ),
-    ).rejects.toThrow(
-      '"panelId" must match its containing navPanel id "tasks"',
-    );
-  });
-
-  it("rejects a fixed-tab registration without an owner panel", async () => {
-    await expect(
-      loadPluginApp(
-        definePluginApp((builder) => {
-          builder.slots.navPanel({
-            id: "tasks",
-            title: "Tasks",
-            icon: "ListTodo",
-            path: "tasks",
-            component: Panel,
-            fixedTabs: [
-              // @ts-expect-error Runtime collector coverage for malformed JS.
-              {
-                id: "navigation",
-                title: "Navigation",
-                icon: "PanelRight",
-                component: Panel,
-              },
-            ],
-          });
-        }),
-      ),
-    ).rejects.toThrow('"panelId" must be a non-empty string');
-  });
-
-  it("rejects duplicate nav panel fixed tab ids", async () => {
-    await expect(
-      loadPluginApp(
-        definePluginApp((builder) => {
-          builder.slots.navPanel({
-            id: "tasks",
-            title: "Tasks",
-            icon: "ListTodo",
-            path: "tasks",
-            component: Panel,
-            fixedTabs: [
-              {
-                panelId: "tasks",
-                id: "navigation",
-                title: "First",
-                icon: "PanelRight",
-                component: Panel,
-              },
-              {
-                panelId: "tasks",
-                id: "navigation",
-                title: "Second",
-                icon: "PanelRight",
-                component: Panel,
-              },
-            ],
-          });
-        }),
-      ),
-    ).rejects.toThrow('duplicate id "navigation"');
-  });
+      );
+      expect(captured.tabs).toHaveLength(count);
+      if (count === 1)
+        expect(captured.tabs[0]?.context).toEqual({
+          kind: "nav-panel",
+          panelId: "tasks",
+        });
+    },
+  );
 
   it("captures messageDirective registrations", () => {
     expect(app.messageDirectives).toEqual([
@@ -1416,6 +1224,87 @@ describe("loadPluginApp", () => {
     ).rejects.toThrow('slots.messageDirective: duplicate id "inline-vis"');
   });
 
+  it("captures experimental_codeFenceRenderer registrations and validates them like the host", async () => {
+    const FenceRenderer = () => null;
+    const captured = await loadPluginApp(
+      definePluginApp((builder) => {
+        builder.slots.experimental_codeFenceRenderer({
+          id: "generative-ui",
+          languages: ["ui", "app"],
+          component: FenceRenderer,
+        });
+        builder.slots.experimental_codeFenceRenderer({
+          id: "charts",
+          languages: ["c++", "chart.v2"],
+          component: FenceRenderer,
+        });
+      }),
+    );
+    expect(captured.codeFenceRenderers).toEqual([
+      {
+        id: "generative-ui",
+        languages: ["ui", "app"],
+        component: FenceRenderer,
+      },
+      {
+        id: "charts",
+        languages: ["c++", "chart.v2"],
+        component: FenceRenderer,
+      },
+    ]);
+
+    const kind = "slots.experimental_codeFenceRenderer";
+    const rejected: [string, Record<string, unknown>[]][] = [
+      [
+        `${kind}: "languages" must be a non-empty array`,
+        [{ id: "ui", languages: [], component: FenceRenderer }],
+      ],
+      [
+        `${kind}: "languages" must be a non-empty array`,
+        [{ id: "ui", languages: "ui", component: FenceRenderer }],
+      ],
+      [
+        `${kind}: languages must match`,
+        [{ id: "ui", languages: ["UI"], component: FenceRenderer }],
+      ],
+      [
+        `${kind}: languages must match`,
+        [{ id: "ui", languages: ["ui block"], component: FenceRenderer }],
+      ],
+      [
+        `${kind}: duplicate language "ui"`,
+        [
+          { id: "first", languages: ["ui"], component: FenceRenderer },
+          { id: "second", languages: ["app", "ui"], component: FenceRenderer },
+        ],
+      ],
+      [
+        `${kind}: duplicate id "ui"`,
+        [
+          { id: "ui", languages: ["ui"], component: FenceRenderer },
+          { id: "ui", languages: ["app"], component: FenceRenderer },
+        ],
+      ],
+      [
+        `${kind}: "component"`,
+        [{ id: "ui", languages: ["ui"], component: undefined }],
+      ],
+    ];
+    for (const [message, registrations] of rejected) {
+      await expect(
+        loadPluginApp(
+          definePluginApp((builder) => {
+            for (const registration of registrations) {
+              builder.slots.experimental_codeFenceRenderer(
+                registration as never,
+              );
+            }
+          }),
+        ),
+      ).rejects.toThrow(message);
+    }
+  });
+
   it("captures messageAction registrations and validates them like the host", async () => {
     expect(app.messageActions).toHaveLength(1);
     expect(app.messageActions[0]).toMatchObject({
@@ -1451,6 +1340,51 @@ describe("loadPluginApp", () => {
         }),
       ),
     ).rejects.toThrow('slots.messageAction: duplicate id "dup"');
+  });
+
+  it("validates message metadata components and placement", async () => {
+    const component = () => null;
+    const captured = await loadPluginApp(
+      definePluginApp((builder) => {
+        builder.slots.experimental_messageMetadata({
+          id: "timestamp",
+          placement: "above",
+          component,
+        });
+      }),
+    );
+    expect(captured.messageMetadata[0]?.placement).toBe("above");
+
+    await expect(
+      loadPluginApp(
+        definePluginApp((builder) => {
+          builder.slots.experimental_messageMetadata({
+            id: "bad-placement",
+            placement: "outside" as never,
+            component,
+          });
+        }),
+      ),
+    ).rejects.toThrow('"placement" must be "above" or "actionRow"');
+
+    await expect(
+      loadPluginApp(
+        definePluginApp((builder) => {
+          builder.slots.experimental_messageMetadata({
+            id: "bad",
+            component: undefined as never,
+          });
+        }),
+      ),
+    ).rejects.toThrow('"component" must be a React component');
+    await expect(
+      loadPluginApp(
+        definePluginApp((builder) => {
+          builder.slots.experimental_messageMetadata({ id: "dup", component });
+          builder.slots.experimental_messageMetadata({ id: "dup", component });
+        }),
+      ),
+    ).rejects.toThrow('slots.experimental_messageMetadata: duplicate id "dup"');
   });
 
   it("collects separate provider kinds and the legacy all-kinds registration", async () => {
@@ -1544,8 +1478,11 @@ describe("loadPluginApp", () => {
   });
 
   it("invokes a captured messageAction run with a plugin-authored context", () => {
-    const openPanel = (options: { actionId: string }) =>
-      options.actionId === "panel";
+    const experimental_panel = makePanelController({
+      openTab: () => true,
+      toggleTab: () => true,
+      close: () => true,
+    });
     app.messageActions[0]!.run({
       threadId: "thr_main",
       message: {
@@ -1557,7 +1494,7 @@ describe("loadPluginApp", () => {
         experimental_messageSeq: 12,
       },
       selectedText: "answer",
-      openPanel,
+      experimental_panel,
       composer: null,
     });
     expect(messageActionRuns).toHaveLength(1);
@@ -1764,12 +1701,54 @@ describe("renderSlot", () => {
     ]);
   });
 
-  it("records fixed-tab opens and retains target state until the owner clears it", () => {
+  it("records sign-in window intents and returns null when the host has none", () => {
+    function SignInProbe() {
+      const navigate = useBbNavigate();
+      return (
+        <button
+          type="button"
+          onClick={() =>
+            navigate.experimental_openSignInWindow({
+              url: "https://example.com/authorize",
+              redirectUrlPrefix: "https://example.com/callback",
+            })
+          }
+        >
+          Sign in
+        </button>
+      );
+    }
+    const handle = {
+      close: () => {},
+      result: Promise.resolve({ reason: "closed" as const }),
+    };
+    const hosted = renderSlot(
+      { component: SignInProbe },
+      {},
+      { openSignInWindow: () => handle },
+    );
+    fireEvent.click(hosted.getByRole("button", { name: "Sign in" }));
+    expect(hosted.inspection.navigateCalls).toEqual([
+      {
+        method: "experimental_openSignInWindow",
+        options: {
+          url: "https://example.com/authorize",
+          redirectUrlPrefix: "https://example.com/callback",
+        },
+      },
+    ]);
+    hosted.unmount();
+    const unhosted = renderSlot({ component: SignInProbe }, {});
+    fireEvent.click(unhosted.getByRole("button", { name: "Sign in" }));
+    expect(unhosted.inspection.navigateCalls).toHaveLength(1);
+  });
+
+  it("records panel calls and retains target state until the owner clears it", () => {
     const slot = renderSlot(
       { component: FixedTabProbe },
       {},
       {
-        experimental_openFixedTab: () => true,
+        experimental_panel: { openTab: () => true },
         experimental_fixedTabTarget: {
           panelId: "tasks",
           tabId: "details",
@@ -1785,19 +1764,74 @@ describe("renderSlot", () => {
     expect(slot.getByRole("button", { name: "Clear TASK-42" })).toBeTruthy();
     fireEvent.click(slot.getByRole("button", { name: "Select details" }));
     expect(slot.getByRole("button", { name: "Clear TASK-42" })).toBeTruthy();
-    expect(slot.inspection.experimental_fixedTabOpenCalls).toEqual([
+    expect(slot.inspection.experimental_panelCalls).toEqual([
       {
-        surface: { kind: "current" },
-        panelId: "tasks",
-        tabId: "details",
-        target: { kind: "task", taskId: "TASK-42" },
+        method: "openTab",
+        options: {
+          tab: taskDetailsTabReference,
+          target: { kind: "task", taskId: "TASK-42" },
+        },
       },
-      {
-        surface: { kind: "current" },
-        panelId: "tasks",
-        tabId: "details",
-      },
+      { method: "openTab", options: { tab: taskDetailsTabReference } },
     ]);
+  });
+
+  it("keeps retired panel openers and their host options working through the controller", () => {
+    type RetiredPanel = {
+      openFixedTab(options: {
+        surface: { kind: "current" };
+        tab: typeof taskDetailsTab;
+        target?: TestTaskTarget;
+      }): boolean;
+    };
+    type RetiredNavigate = {
+      openThreadPanel(options: { actionId: string; params?: string }): boolean;
+    };
+    const results: boolean[] = [];
+    function RetiredProbe() {
+      const panel = experimental_useAppPanel() as unknown as RetiredPanel;
+      const navigate = useBbNavigate() as unknown as RetiredNavigate;
+      return (
+        <button
+          type="button"
+          onClick={() => {
+            results.push(
+              panel.openFixedTab({
+                surface: { kind: "current" },
+                tab: taskDetailsTab,
+                target: { kind: "task", taskId: "TASK-9" },
+              }),
+              navigate.openThreadPanel({ actionId: "chat", params: "p" }),
+            );
+          }}
+        >
+          Open retired
+        </button>
+      );
+    }
+    const openFixedTab = vi.fn(() => true);
+    const openThreadPanel = vi.fn(() => false);
+    const retiredOptions = {
+      pluginId: "test-plugin",
+      experimental_openFixedTab: openFixedTab,
+      openThreadPanel,
+    };
+    const slot = renderSlot({ component: RetiredProbe }, {}, retiredOptions);
+    fireEvent.click(slot.getByRole("button", { name: "Open retired" }));
+    expect(results).toEqual([true, false]);
+    expect(openFixedTab).toHaveBeenCalledWith({
+      surface: { kind: "current" },
+      panelId: "tasks",
+      tabId: "details",
+      target: { kind: "task", taskId: "TASK-9" },
+    });
+    expect(openThreadPanel).toHaveBeenCalledWith({
+      actionId: "chat",
+      params: "p",
+    });
+    expect(
+      slot.inspection.experimental_panelCalls.map((call) => call.method),
+    ).toEqual(["openTab", "openTab"]);
   });
 
   it("drives the shared realtime connection lifecycle", async () => {
@@ -2190,4 +2224,321 @@ it("reacts to attachment-only updates and atomic replacement through the public 
   expect(slot.getByRole("status").textContent).toBe("prefill:1:false");
   fireEvent.click(slot.getByRole("button", { name: "Replace all" }));
   expect(slot.getByRole("status").textContent).toBe(":0:true");
+});
+
+describe("thread actions menu fake", () => {
+  const thread = {
+    id: "thr_menu",
+    projectId: "proj_menu",
+    parentThreadId: null,
+    parentNotifications: "auto" as const,
+    archivedAt: null,
+    pinnedAt: null,
+    sectionId: null,
+    isUnread: false,
+    status: "idle" as const,
+    environment: null,
+  };
+
+  it("rejects a trigger that drops the props and ref it receives", async () => {
+    const { experimental_ThreadActionsMenu: ThreadActionsMenu } =
+      await import("../../app.js");
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    function Probe() {
+      return (
+        <ThreadActionsMenu
+          thread={thread}
+          trigger={() => <button type="button">Thread actions</button>}
+        />
+      );
+    }
+    expect(() => renderSlot({ component: Probe }, {})).toThrow(
+      /must spread the props and ref/,
+    );
+    error.mockRestore();
+  });
+
+  it("rejects a trigger that replaces the host's className", async () => {
+    const { experimental_ThreadActionsMenu: ThreadActionsMenu } =
+      await import("../../app.js");
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    function Probe() {
+      return (
+        <ThreadActionsMenu
+          thread={thread}
+          trigger={(props) => (
+            <button {...props} type="button" className="mine">
+              Thread actions
+            </button>
+          )}
+        />
+      );
+    }
+    expect(() => renderSlot({ component: Probe }, {})).toThrow(
+      /replaced the host's className/,
+    );
+    error.mockRestore();
+  });
+
+  it("opens from a trigger that spreads its props", async () => {
+    const { experimental_ThreadActionsMenu: ThreadActionsMenu } =
+      await import("../../app.js");
+    const run = vi.fn(async () => {});
+    function Probe() {
+      return (
+        <ThreadActionsMenu
+          thread={thread}
+          trigger={(props) => (
+            <button {...props} type="button">
+              Thread actions
+            </button>
+          )}
+        />
+      );
+    }
+    const slot = renderSlot(
+      { component: Probe },
+      {},
+      {
+        threadActions: () => [
+          {
+            key: "bb--core/pin",
+            pluginId: "bb--core",
+            group: "2_organize",
+            action: { label: "Pin", icon: "Pin", run },
+          },
+        ],
+      },
+    );
+    fireEvent.click(slot.getByRole("button", { name: "Thread actions" }));
+    fireEvent.click(slot.getByRole("menuitem", { name: "Pin" }));
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+});
+
+interface LegacySidebarSlots {
+  experimental_sidebarHeader(registration: {
+    id: string;
+    title: string;
+    component: () => null;
+  }): void;
+}
+
+function legacySlots(slots: PluginAppSlots): LegacySidebarSlots {
+  return slots as unknown as LegacySidebarSlots;
+}
+
+function NavigationProbe({ id }: { id: string }) {
+  const { activeItemId, actions, items } = experimental_useSidebarNavigation();
+  const split = experimental_useSidebarNavigationSplit(id);
+  const item = items.find((candidate) => candidate.id === id);
+  if (!item) return null;
+  return (
+    <button
+      type="button"
+      aria-current={item.id === activeItemId ? "page" : undefined}
+      {...split.splitProps}
+      onClick={() => {
+        actions.activate(item.id, { target: "split" });
+        actions.setVisible(item.id, false);
+        actions.setOrder([item.id]);
+        actions.openCustomize();
+        actions.goHome({ target: "tab" });
+      }}
+    >
+      <SidebarNavigationIcon icon={item.icon} />
+      {item.badge ? `${item.label}, ${item.badge.label}` : item.label}
+    </button>
+  );
+}
+
+describe("sidebar navigation test runtime", () => {
+  it("reports configured items and records every action", () => {
+    const slot = renderSlot(
+      { component: NavigationProbe },
+      { id: "garden/docs" },
+      {
+        sidebarNavigation: {
+          activeItemId: "garden/docs",
+          items: [
+            {
+              id: "garden/docs",
+              label: "Docs",
+              icon: { kind: "plugin", pluginId: "garden", icon: "BookOpen" },
+              action: {
+                kind: "open-plugin-panel",
+                pluginId: "garden",
+                panelId: "docs",
+              },
+              isDisabled: false,
+              isVisible: true,
+              isLoading: false,
+              pluginId: "garden",
+              shortcut: null,
+              badge: { count: 2, label: "2 drafts" },
+            },
+          ],
+        },
+      },
+    );
+
+    const button = slot.getByRole("button", { name: "Docs, 2 drafts" });
+    expect(button.getAttribute("aria-current")).toBe("page");
+    expect(
+      button
+        .querySelector("[data-sidebar-navigation-icon]")
+        ?.getAttribute("data-sidebar-navigation-icon"),
+    ).toBe("garden/BookOpen");
+    fireEvent.pointerDown(button);
+    fireEvent.click(button);
+
+    expect(slot.inspection.sidebarNavigationCalls).toEqual([
+      { method: "beginSplitDrag", itemId: "garden/docs" },
+      { method: "activate", itemId: "garden/docs", target: "split" },
+      { method: "setVisible", itemId: "garden/docs", isVisible: false },
+      { method: "setOrder", itemIds: ["garden/docs"] },
+      { method: "openCustomize" },
+      { method: "goHome", target: "tab" },
+    ]);
+  });
+
+  it("captures sidebar navigation registrations, defaulting to the list placement", async () => {
+    const captured = await loadPluginApp(
+      definePluginApp((builder) => {
+        builder.slots.experimental_sidebarNavigation({
+          id: "compact",
+          title: "Compact navigation",
+          description: "Groups the sidebar destinations.",
+          component: () => null,
+          headerComponent: () => null,
+        });
+        builder.slots.experimental_sidebarNavigation({
+          id: "sections",
+          title: "Sections rail",
+          placement: "rail",
+          component: () => null,
+        });
+      }),
+    );
+
+    expect(captured.experimentalSidebarNavigations).toEqual([
+      {
+        id: "compact",
+        title: "Compact navigation",
+        description: "Groups the sidebar destinations.",
+        placement: "list",
+        component: expect.any(Function),
+        headerComponent: expect.any(Function),
+      },
+      {
+        id: "sections",
+        title: "Sections rail",
+        placement: "rail",
+        component: expect.any(Function),
+      },
+    ]);
+  });
+
+  it("joins a legacy experimental_sidebarHeader to the plugin's navigation", async () => {
+    const LegacyHeader = () => null;
+    const OwnHeader = () => null;
+    const captured = await loadPluginApp(
+      definePluginApp((builder) => {
+        legacySlots(builder.slots).experimental_sidebarHeader({
+          id: "icons",
+          title: "Header icons",
+          component: LegacyHeader,
+        });
+        builder.slots.experimental_sidebarNavigation({
+          id: "compact",
+          title: "Compact navigation",
+          component: () => null,
+        });
+        builder.slots.experimental_sidebarNavigation({
+          id: "sections",
+          title: "Sections",
+          component: () => null,
+          headerComponent: OwnHeader,
+        });
+      }),
+    );
+
+    expect(
+      captured.experimentalSidebarNavigations.map((navigation) => [
+        navigation.id,
+        navigation.headerComponent,
+      ]),
+    ).toEqual([
+      ["compact", LegacyHeader],
+      ["sections", OwnHeader],
+    ]);
+  });
+
+  it("warns when a legacy experimental_sidebarHeader has no list navigation to join", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const captured = await loadPluginApp(
+        definePluginApp((builder) => {
+          legacySlots(builder.slots).experimental_sidebarHeader({
+            id: "icons",
+            title: "Header icons",
+            component: () => null,
+          });
+        }),
+      );
+      expect(captured.experimentalSidebarNavigations).toEqual([]);
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining("slots.experimental_sidebarHeader: ignored"),
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("rejects an unknown placement, a non-component header, and duplicate ids", async () => {
+    await expect(
+      loadPluginApp(
+        definePluginApp((builder) => {
+          builder.slots.experimental_sidebarNavigation({
+            id: "compact",
+            title: "Compact",
+            placement: "top" as "list",
+            component: () => null,
+          });
+        }),
+      ),
+    ).rejects.toThrow(
+      'slots.experimental_sidebarNavigation: "placement" must be "rail" or "list"',
+    );
+    await expect(
+      loadPluginApp(
+        definePluginApp((builder) => {
+          builder.slots.experimental_sidebarNavigation({
+            id: "sections",
+            title: "Sections",
+            component: () => null,
+            headerComponent: "header" as unknown as () => null,
+          });
+        }),
+      ),
+    ).rejects.toThrow(
+      'slots.experimental_sidebarNavigation: "headerComponent" must be a React component function',
+    );
+    await expect(
+      loadPluginApp(
+        definePluginApp((builder) => {
+          legacySlots(builder.slots).experimental_sidebarHeader({
+            id: "icons",
+            title: "One",
+            component: () => null,
+          });
+          legacySlots(builder.slots).experimental_sidebarHeader({
+            id: "icons",
+            title: "Two",
+            component: () => null,
+          });
+        }),
+      ),
+    ).rejects.toThrow('slots.experimental_sidebarHeader: duplicate id "icons"');
+  });
 });

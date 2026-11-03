@@ -1,3 +1,4 @@
+import type { ContractTagDeclarations } from "./rpc-tags.js";
 import { createHash } from "node:crypto";
 import type Database from "better-sqlite3";
 import { z } from "zod";
@@ -22,7 +23,9 @@ import {
   normalizeProviderNativeRoots,
   providerNativeRootsInputSchema,
   providerNativeRootsSchema,
+  providerNativeTerminalSchema,
   type ProviderNativeRoots,
+  type ProviderNativeTerminal,
 } from "@bb/domain";
 import { PLUGIN_CLI_OUTPUT_MAX_BYTES } from "../backend-contract.js";
 import type {
@@ -220,6 +223,9 @@ const settingDescriptorSchema = z.discriminatedUnion("type", [
       type: z.literal("select"),
       ...settingsBaseFields,
       options: z.array(z.string().min(1)).min(1),
+      experimental_optionLabels: z
+        .record(z.string().min(1), z.string().min(1))
+        .optional(),
       experimental_schema: stringSettingSchemaSchema.optional(),
       default: z.string().optional(),
     })
@@ -245,7 +251,10 @@ export function registerSettingDescriptors(
         `invalid setting key "${key}" — use letters, digits, "-" and "_"`,
       );
     }
-    if (key in target) {
+    if (key === "__proto__") {
+      throw new Error(`setting key "${key}" is reserved`);
+    }
+    if (Object.hasOwn(target, key)) {
       throw new Error(`setting "${key}" is already defined`);
     }
     const parsed = settingDescriptorSchema.safeParse(raw);
@@ -265,6 +274,16 @@ export function registerSettingDescriptors(
       throw new Error(
         `default for setting "${key}" must be one of its options`,
       );
+    }
+    if (descriptor.type === "select") {
+      const unknownLabel = Object.keys(
+        descriptor.experimental_optionLabels ?? {},
+      ).find((option) => !descriptor.options.includes(option));
+      if (unknownLabel !== undefined) {
+        throw new Error(
+          `label for setting "${key}" names "${unknownLabel}", which is not one of its options`,
+        );
+      }
     }
     if (descriptor.default !== undefined) {
       const errors = validateSettingsUpdate(
@@ -314,7 +333,12 @@ export function validateSettingsUpdate(
 ): string[] {
   const errors: string[] = [];
   for (const [key, value] of Object.entries(values)) {
-    const descriptor: PluginSettingDescriptor | undefined = descriptors[key];
+    const descriptor: PluginSettingDescriptor | undefined = Object.hasOwn(
+      descriptors,
+      key,
+    )
+      ? descriptors[key]
+      : undefined;
     if (!descriptor) {
       errors.push(`unknown setting "${key}"`);
       continue;
@@ -755,10 +779,28 @@ function validateProviderOptionDescriptors(args: {
               field: `${field}[${index}].description`,
               value: record.description,
             });
+      const icon =
+        record.experimental_icon === undefined
+          ? undefined
+          : requireNonBlankString({
+              providerId,
+              field: `${field}[${index}].experimental_icon`,
+              value: record.experimental_icon,
+            });
+      if (
+        icon !== undefined &&
+        !isNamespacedGlyph(icon) &&
+        /[/\\]/u.test(icon)
+      ) {
+        throw new Error(
+          `provider "${providerId}" ${field}[${index}].experimental_icon must be a host glyph name ("Zap") or a declared icon ("<pluginId>/<name>")`,
+        );
+      }
       return Object.freeze({
         id,
         label,
         ...(description === undefined ? {} : { description }),
+        ...(icon === undefined ? {} : { experimental_icon: icon }),
       });
     },
   );
@@ -860,6 +902,29 @@ function validateProviderEnvPassthrough(
     seen.add(name);
   }
   return Object.freeze([...seen]);
+}
+
+function validateProviderNativeTerminal(
+  providerId: string,
+  value: unknown,
+): ProviderNativeTerminal {
+  const parsed = providerNativeTerminalSchema.safeParse(value);
+  if (!parsed.success) {
+    const issue = parsed.error.issues[0];
+    const where = issue?.path.length ? `.${issue.path.join(".")}` : "";
+    throw new Error(
+      `provider "${providerId}" experimental_nativeTerminal${where} ${issue?.message ?? "is invalid"}`,
+    );
+  }
+  return deepFreeze(parsed.data);
+}
+
+function deepFreeze<T>(value: T): T {
+  if (typeof value === "object" && value !== null) {
+    for (const entry of Object.values(value)) deepFreeze(entry);
+    Object.freeze(value);
+  }
+  return value;
 }
 
 function validateProviderNativeRoots(
@@ -1017,7 +1082,7 @@ function validateProviderFallbackModels(
           `provider "${providerId}" ${field}.supportedReasoningEfforts must be a non-empty array`,
         );
       }
-      const levels = new Set<PluginProviderReasoningLevel>();
+      const levels = new Set<string>();
       const supportedReasoningEfforts = efforts.map(
         (
           effort,
@@ -1032,18 +1097,12 @@ function validateProviderFallbackModels(
               `provider "${providerId}" ${field}.supportedReasoningEfforts[${effortIndex}] must be { reasoningEffort, description }`,
             );
           }
-          const reasoningEffort = Reflect.get(effort, "reasoningEffort");
-          if (
-            typeof reasoningEffort !== "string" ||
-            !(
-              PLUGIN_PROVIDER_REASONING_LEVEL_VALUES as readonly string[]
-            ).includes(reasoningEffort)
-          ) {
-            throw new Error(
-              `provider "${providerId}" ${field}.supportedReasoningEfforts[${effortIndex}].reasoningEffort must be one of ${PLUGIN_PROVIDER_REASONING_LEVEL_VALUES.join(", ")}`,
-            );
-          }
-          const level = reasoningEffort as PluginProviderReasoningLevel;
+          const level = requireNonBlankString({
+            providerId,
+            field: `${field}.supportedReasoningEfforts[${effortIndex}].reasoningEffort`,
+            value: Reflect.get(effort, "reasoningEffort"),
+          });
+          const label: unknown = Reflect.get(effort, "label");
           if (levels.has(level)) {
             throw new Error(
               `provider "${providerId}" ${field}.supportedReasoningEfforts repeats ${JSON.stringify(level)}`,
@@ -1052,6 +1111,15 @@ function validateProviderFallbackModels(
           levels.add(level);
           return Object.freeze({
             reasoningEffort: level,
+            ...(label === undefined
+              ? {}
+              : {
+                  label: requireNonBlankString({
+                    providerId,
+                    field: `${field}.supportedReasoningEfforts[${effortIndex}].label`,
+                    value: label,
+                  }),
+                }),
             description: requireNonBlankString({
               providerId,
               field: `${field}.supportedReasoningEfforts[${effortIndex}].description`,
@@ -1063,7 +1131,7 @@ function validateProviderFallbackModels(
       const defaultReasoningEffort = record.defaultReasoningEffort;
       if (
         typeof defaultReasoningEffort !== "string" ||
-        !levels.has(defaultReasoningEffort as PluginProviderReasoningLevel)
+        !levels.has(defaultReasoningEffort)
       ) {
         throw new Error(
           `provider "${providerId}" ${field}.defaultReasoningEffort must be one of its supportedReasoningEfforts`,
@@ -1080,8 +1148,7 @@ function validateProviderFallbackModels(
         displayName,
         description,
         supportedReasoningEfforts: Object.freeze(supportedReasoningEfforts),
-        defaultReasoningEffort:
-          defaultReasoningEffort as PluginProviderReasoningLevel,
+        defaultReasoningEffort,
         isDefault: record.isDefault,
       });
     },
@@ -1189,10 +1256,12 @@ export type NormalizedPluginProviderDeclaration = Omit<
   | "experimental_nativeSkillRoots"
   | "experimental_nativeCommandRoots"
   | "experimental_resolvesNativeRoots"
+  | "experimental_nativeTerminal"
 > & {
   readonly experimental_nativeSkillRoots?: ProviderNativeRoots;
   readonly experimental_nativeCommandRoots?: ProviderNativeRoots;
   readonly experimental_resolvesNativeRoots: boolean;
+  readonly experimental_nativeTerminal?: ProviderNativeTerminal;
   readonly completedTurnDisplay: PluginProviderCompletedTurnDisplay;
   readonly maintenance: {
     readonly health: boolean;
@@ -1232,6 +1301,7 @@ const READ_EXPERIMENTAL_PROVIDER_DECLARATION_FIELDS: ReadonlySet<string> =
     "experimental_nativeSkillRoots",
     "experimental_nativeCommandRoots",
     "experimental_resolvesNativeRoots",
+    "experimental_nativeTerminal",
   ]);
 
 const RENAMED_PROVIDER_FIELDS_SDK_VERSION = "0.4.16";
@@ -1492,6 +1562,13 @@ export function validatePluginProviderDeclaration(
           "experimental_nativeCommandRoots",
           declaration.experimental_nativeCommandRoots,
         );
+  const nativeTerminal =
+    declaration.experimental_nativeTerminal === undefined
+      ? undefined
+      : validateProviderNativeTerminal(
+          id,
+          declaration.experimental_nativeTerminal,
+        );
   const resolvesNativeRoots = declaration.experimental_resolvesNativeRoots;
   if (
     resolvesNativeRoots !== undefined &&
@@ -1544,6 +1621,9 @@ export function validatePluginProviderDeclaration(
       ? {}
       : { experimental_nativeCommandRoots: nativeCommandRoots }),
     experimental_resolvesNativeRoots: resolvesNativeRoots ?? false,
+    ...(nativeTerminal === undefined
+      ? {}
+      : { experimental_nativeTerminal: nativeTerminal }),
     ...(deriveProviderOptions === undefined
       ? {}
       : { deriveProviderOptions: deriveProviderOptions }),
@@ -1616,9 +1696,21 @@ function readRpcMethodContract(
   const description = rpcDescriptionSchema.parse(
     Reflect.get(value, "experimental_description"),
   );
-  return description === null
-    ? { input, output }
-    : { input, output, experimental_description: description };
+  const declarations: ContractTagDeclarations<unknown, unknown> = {};
+  for (const name of ["tags", "keyTags", "invalidates"] as const) {
+    const declaration = Reflect.get(value, name);
+    if (declaration !== undefined) {
+      if (typeof declaration !== "function")
+        throw new Error(`rpc ${method} ${name} must be a function`);
+      Reflect.set(declarations, name, declaration);
+    }
+  }
+  return {
+    input,
+    output,
+    ...declarations,
+    ...(description === null ? {} : { experimental_description: description }),
+  };
 }
 
 export function readRpcPublicationOptions(value: unknown) {
@@ -2159,6 +2251,34 @@ export function providerIconRefusalMessage(
   return `provider "${providerId}" icon ${problem}`;
 }
 
+export function providerDeclarationIconRefusal(
+  pluginId: string,
+  declaredIconNames: ReadonlySet<string>,
+  declaration: NormalizedPluginProviderDeclaration,
+): string | null {
+  const iconProblem =
+    declaration.icon === undefined
+      ? null
+      : undeclaredIconProblem(pluginId, declaredIconNames, declaration.icon);
+  if (iconProblem !== null) {
+    return providerIconRefusalMessage(declaration.id, iconProblem);
+  }
+  for (const [index, tier] of (declaration.serviceTiers ?? []).entries()) {
+    const tierProblem =
+      tier.experimental_icon === undefined
+        ? null
+        : undeclaredIconProblem(
+            pluginId,
+            declaredIconNames,
+            tier.experimental_icon,
+          );
+    if (tierProblem !== null) {
+      return `provider "${declaration.id}" serviceTiers[${index}].experimental_icon ${tierProblem}`;
+    }
+  }
+  return null;
+}
+
 function agentToolIconRefusalMessage(
   toolName: string,
   problem: string,
@@ -2251,9 +2371,7 @@ export interface NormalizedPluginEnvironmentProvider {
     PluginEnvironmentProviderDeclaration["experimental_existingPath"]
   > | null;
   create: PluginEnvironmentProviderDeclaration["create"];
-  restore: NonNullable<
-    PluginEnvironmentProviderDeclaration["restore"]
-  > | null;
+  restore: NonNullable<PluginEnvironmentProviderDeclaration["restore"]> | null;
   remove: PluginEnvironmentProviderDeclaration["remove"];
   policy: import("../environment-provider.js").PluginEnvironmentProviderPolicy;
 }
@@ -2716,6 +2834,7 @@ export function normalizeWebSocketRouteRegistration(
 }
 
 type RpcRegistrationRecord = {
+  declarations: ContractTagDeclarations<unknown, unknown>;
   publication: ReturnType<typeof publishRpcMethod>;
   inputSchema: StandardSchemaV1;
   outputSchema: StandardSchemaV1;
@@ -2774,6 +2893,7 @@ export function normalizeRpcRegistration(
       name,
       {
         publication: publishRpcMethod(name, methodContract, publicationOptions),
+        declarations: methodContract,
         inputSchema: methodContract.input,
         outputSchema: methodContract.output,
         handler,
@@ -3448,6 +3568,30 @@ function normalizeRpcIssues(
       ...(path !== undefined ? { path } : {}),
     };
   });
+}
+
+const rpcRefusalSchema = z.object({
+  code: z.enum(["forbidden", "not_found", "conflict", "invalid"]),
+  message: z.string(),
+  issues: z
+    .array(
+      z.object({
+        message: z.string(),
+        path: z.array(z.union([z.string(), z.number()])).optional(),
+      }),
+    )
+    .optional(),
+});
+
+export function readPluginRpcRefusal(error: unknown): PluginRpcError | null {
+  if (
+    typeof error !== "object" ||
+    error === null ||
+    Reflect.get(error, Symbol.for("@get-bb/plugin-sdk/rpc-refusal")) !== true
+  )
+    return null;
+  const parsed = rpcRefusalSchema.safeParse(error);
+  return parsed.success ? parsed.data : null;
 }
 
 export async function validateRpcValue(

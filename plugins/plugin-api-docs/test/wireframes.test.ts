@@ -211,7 +211,7 @@ describe("guide fixture boundaries", () => {
     const tabStrip = markup.slice(0, markup.indexOf("data-guide-tab-body="));
 
     expect(tabStrip).toMatch(
-      /data-guide-fixture="right-panel-fixed-tabs"[\s\S]*data-guide-tab="info"[\s\S]*data-guide-tab="code-renderers"/,
+      /data-guide-fixture="right-panel-fixed-tabs"[\s\S]*data-guide-tab="thread-info"[\s\S]*data-guide-tab="code-renderers"/,
     );
     expect(tabStrip).toMatch(
       /data-guide-fixture="right-panel-content-tabs"[\s\S]*data-guide-tab="thread-panel"[\s\S]*data-guide-tab="file-opener"/,
@@ -226,9 +226,6 @@ describe("guide fixture boundaries", () => {
 
     expect(markup).toMatch(
       /data-guide-badge="nav-panel"[\s\S]*?data-guide-badge-placement="start"/,
-    );
-    expect(markup).toMatch(
-      /data-guide-badge="sidebar-navigation"[^>]*data-guide-badge-placement="start"[^>]*data-guide-badge-align="start"/,
     );
     expect(markup).toMatch(
       /data-guide-badge="thread-list"[\s\S]*?data-guide-badge-placement="start"/,
@@ -248,7 +245,7 @@ describe("guide fixture boundaries", () => {
     const markup = renderWireframe(createElement(AppShellWireframe));
 
     expect(markup).toMatch(
-      /data-guide-region="nav-panel"[^>]*class="[^"]*z-\[2\][^"]*flex h-6\.5[^"]*px-2/,
+      /data-guide-region="nav-panel"[^>]*class="[^"]*z-\[2\][^"]*flex size-7/,
     );
     expect(markup).toMatch(
       /data-guide-badge="thread-header"[^>]*data-guide-badge-placement="above"/,
@@ -261,9 +258,7 @@ describe("guide fixture boundaries", () => {
     const reserveStart = markup.indexOf(
       'data-guide-fixture="sidebar-top-reserve"',
     );
-    const reserveEnd = markup.indexOf(
-      'data-guide-fixture="sidebar-navigation-primary-actions"',
-    );
+    const reserveEnd = markup.indexOf('data-guide-region="thread-list"');
 
     expect(markup).toContain('data-guide-fixture="sidebar-trigger-overlay"');
     expect(reserveStart).toBeGreaterThan(-1);
@@ -271,6 +266,31 @@ describe("guide fixture boundaries", () => {
     expect(markup.slice(reserveStart, reserveEnd)).not.toContain(
       'data-guide-fixture="sidebar-trigger-overlay"',
     );
+  });
+
+  it("draws a plugin row and section among bb's own in the Info tab", () => {
+    const markup = renderWireframe(
+      createElement(AppShellRightPanel, {
+        activeTab: "thread-info",
+        onTabSelect: vi.fn(),
+      }),
+    );
+    const contract = anatomy.surfaceFixtures["thread-info"];
+    const body = markup.slice(
+      markup.indexOf('data-guide-fixture="thread-info"'),
+    );
+
+    for (const label of contract.labels.anchor) {
+      expect(body).toContain(label);
+    }
+    for (const classAnchor of contract.fixtureClassAnchors) {
+      expect(body, `missing fixture class ${classAnchor}`).toContain(
+        classAnchor,
+      );
+    }
+    expect(body.indexOf("Branch")).toBeLessThan(body.indexOf("Deploy"));
+    expect(body.indexOf("Automations")).toBeLessThan(body.indexOf("Commits"));
+    expect(body.match(/data-guide-region="thread-info"/g)).toHaveLength(2);
   });
 
   it("shows the app-wide plugin overlay above the host layout", () => {
@@ -295,33 +315,22 @@ describe("guide fixture boundaries", () => {
     expect(markup.match(/data-guide-badge="app-overlay"/g)).toHaveLength(1);
   });
 
-  it("shows the complete sidebar navigation replacement boundary", () => {
+  it("shows plugin panels as icon-only destinations in the navigation rail", () => {
     const markup = renderWireframe(createElement(AppShellWireframe));
-    const contract = anatomy.surfaceFixtures["sidebar-navigation"];
+    const railStart = markup.indexOf('data-guide-fixture="sidebar-rail"');
+    const railEnd = markup.indexOf('data-guide-fixture="sidebar-top-reserve"');
+    const rail = markup.slice(railStart, railEnd);
 
-    expect(contract.requiredStates).toEqual([
-      "owner",
-      "replacement",
-      "fallback",
-    ]);
-    for (const label of contract.labels.owner) {
-      expect(markup).toContain(label);
-    }
-    for (const classAnchor of contract.fixtureClassAnchors) {
-      expect(markup).toContain(classAnchor);
-    }
-    expect(markup).toContain('data-guide-region="sidebar-navigation"');
-    expect(markup).toContain(
-      'data-guide-fixture="sidebar-navigation-primary-actions"',
+    expect(railStart).toBeGreaterThan(-1);
+    expect(railEnd).toBeGreaterThan(railStart);
+    expect(rail).toContain('data-guide-region="nav-panel"');
+    expect(rail).toContain('class="sr-only">Your panel');
+    expect(
+      markup.lastIndexOf('data-guide-region="sidebar-navigation"', railStart),
+    ).toBeGreaterThan(-1);
+    expect(markup).toMatch(
+      /data-guide-badge="sidebar-navigation"[\s\S]*?data-guide-badge-placement="start"/,
     );
-    expect(markup).not.toContain("Custom navigation");
-    const pluginRowStart = markup.indexOf('data-guide-region="nav-panel"');
-    const pluginRowEnd = markup.indexOf("</a>", pluginRowStart);
-    const pluginRow = markup.slice(pluginRowStart, pluginRowEnd);
-    expect(pluginRow).toContain("Your panel");
-    expect(pluginRow).not.toContain("Plugins");
-    expect(pluginRow).not.toContain("Skills");
-    expect(markup).not.toContain('class="sr-only">Search threads');
   });
 
   it("grows the app window within capped viewport-fit bounds while retaining loose timeline spacing", () => {
@@ -334,7 +343,7 @@ describe("guide fixture boundaries", () => {
     expect(markup).not.toContain("min-w-[1180px]");
     expect(markup).not.toContain("100dvh");
     expect(markup).toContain("flex min-h-[650px] items-stretch");
-    expect(markup).toContain("flex w-[300px] shrink-0 flex-col");
+    expect(markup).toContain("flex w-[300px] shrink-0 border-r");
     expect(timeline).toContain("min-h-[510px] flex-1 space-y-7");
     expect(timeline).toContain("px-5 py-6");
   });

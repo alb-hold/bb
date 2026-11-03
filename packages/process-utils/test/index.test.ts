@@ -301,6 +301,29 @@ describe("process utils", () => {
     expect("SKIP_ME" in sanitizedEnv).toBe(false);
   });
 
+  it("drops the session markers of an agent that launched bb", () => {
+    const env: NodeJS.ProcessEnv = {
+      ANTHROPIC_API_KEY: "kept",
+      CLAUDECODE: "1",
+      CLAUDE_CODE_CHILD_SESSION: "1",
+      CLAUDE_CODE_ENTRYPOINT: "cli",
+      CLAUDE_CODE_EXECPATH: "/usr/local/bin/claude",
+      CLAUDE_CODE_MESSAGING_SOCKET: "/tmp/agent.sock",
+      CLAUDE_CODE_MESSAGING_TOKEN: "agent-token",
+      CLAUDE_CODE_SESSION_ATTENDED: "1",
+      CLAUDE_CODE_SESSION_ID: "outer-session",
+      CLAUDE_CODE_USE_BEDROCK: "1",
+      CLAUDE_PID: "4242",
+      PATH: "/bin",
+    };
+
+    expect(sanitizeInheritedChildProcessEnv({ env })).toEqual({
+      ANTHROPIC_API_KEY: "kept",
+      CLAUDE_CODE_USE_BEDROCK: "1",
+      PATH: "/bin",
+    });
+  });
+
   it("keeps provider credentials a nested bb server needs and drops the pool marker", () => {
     const env: NodeJS.ProcessEnv = {
       ANTHROPIC_BASE_URL: "http://127.0.0.1:38886/pool/http",

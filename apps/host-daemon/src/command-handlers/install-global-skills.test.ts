@@ -1,66 +1,44 @@
 import { createHash } from "node:crypto";
-import {
-  mkdtemp,
-  mkdir,
-  readFile,
-  readdir,
-  rm,
-  writeFile,
-} from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
-import type { HostDaemonSkillTree } from "@bb/host-daemon-contract";
+import { makeTempDir } from "@bb/test-helpers";
+import { describe, expect, it, vi } from "vitest";
+import { hashSkillTreeFiles } from "@bb/host-daemon-contract/skill-tree";
+import type { SkillTreeTransport } from "../skill-trees.js";
 import {
   installGlobalSkills,
   readGlobalSkillsStatus,
 } from "./install-global-skills.js";
 
-const tempDirs: string[] = [];
+const logger = { debug: () => undefined, warn: () => undefined };
 
-afterEach(async () => {
-  await Promise.all(
-    tempDirs.splice(0).map((dir) => rm(dir, { force: true, recursive: true })),
-  );
-});
-
-async function makeTempDir(): Promise<string> {
-  const dir = await mkdtemp(path.join(tmpdir(), "bb-install-global-skills-"));
-  tempDirs.push(dir);
-  return dir;
-}
-
-function createTreePayload(name: string, body: string): HostDaemonSkillTree {
-  const entries = [
-    {
-      path: "SKILL.md",
-      mode: 0o644,
-      contentBase64: Buffer.from(
+function createTreePayload(name: string, body: string) {
+  const contents = new Map([
+    [
+      "SKILL.md",
+      Buffer.from(
         `---\nname: ${name}\ndescription: Use ${name} outside bb.\n---\n\n${body}\n`,
-      ).toString("base64"),
-    },
-    {
-      path: "references/usage.md",
-      mode: 0o644,
-      contentBase64: Buffer.from(`# ${name}\n`).toString("base64"),
-    },
-  ].sort((left, right) =>
-    left.path < right.path ? -1 : left.path > right.path ? 1 : 0,
-  );
-  const hash = createHash("sha256");
-  hash.update("bb-skill-tree-v1");
-  for (const entry of entries) {
-    const bytes = Buffer.from(entry.contentBase64, "base64");
-    hash.update("\0file\0");
-    hash.update(entry.path);
-    hash.update("\0");
-    hash.update(entry.mode.toString(8));
-    hash.update("\0");
-    hash.update(String(bytes.length));
-    hash.update("\0");
-    hash.update(bytes);
-  }
-  return { treeHash: hash.digest("hex"), entries };
+      ),
+    ],
+    ["references/usage.md", Buffer.from(`# ${name}\n`)],
+  ]);
+  const files = [...contents].map(([filePath, content]) => ({
+    path: filePath,
+    mode: 0o644,
+    sizeBytes: content.byteLength,
+    sha256: createHash("sha256").update(content).digest("hex"),
+  }));
+  const treeHash = hashSkillTreeFiles(files);
+  const skillTreeTransport: SkillTreeTransport = {
+    fetchManifest: async () => ({ treeHash, files }),
+    fetchContent: async (_treeHash, paths) =>
+      (async function* () {
+        for (const filePath of paths) {
+          yield contents.get(filePath) ?? Buffer.alloc(0);
+        }
+      })(),
+  };
+  return { skillTreeTransport, treeHash };
 }
 
 describe("install global skills", () => {
@@ -76,7 +54,12 @@ describe("install global skills", () => {
           { name: "bb-cli", treeHash: payload.treeHash, entryPath: "SKILL.md" },
         ],
       },
-      { dataDir, fetchSkillTree: async () => payload, homeDir },
+      {
+        dataDir,
+        homeDir,
+        logger,
+        skillTreeTransport: payload.skillTreeTransport,
+      },
     );
 
     expect(result.installations.map((entry) => entry.path)).toEqual([
@@ -114,7 +97,12 @@ describe("install global skills", () => {
           { name: "bb-cli", treeHash: payload.treeHash, entryPath: "SKILL.md" },
         ],
       },
-      { dataDir, fetchSkillTree: async () => payload, homeDir },
+      {
+        dataDir,
+        homeDir,
+        logger,
+        skillTreeTransport: payload.skillTreeTransport,
+      },
     );
 
     await expect(
@@ -134,9 +122,12 @@ describe("install global skills", () => {
     await mkdir(path.join(agentsRoot, "bb-cli"), { recursive: true });
     await writeFile(path.join(agentsRoot, "bb-cli", "SKILL.md"), "previous\n");
     const payload = createTreePayload("bb-cli", "never arrives");
-    const fetchSkillTree = vi.fn(async () => {
-      throw new Error("offline");
-    });
+    const skillTreeTransport: SkillTreeTransport = {
+      ...payload.skillTreeTransport,
+      fetchManifest: vi.fn(async () => {
+        throw new Error("offline");
+      }),
+    };
 
     await expect(
       installGlobalSkills(
@@ -150,7 +141,7 @@ describe("install global skills", () => {
             },
           ],
         },
-        { dataDir, fetchSkillTree, homeDir },
+        { dataDir, homeDir, logger, skillTreeTransport },
       ),
     ).rejects.toThrow("offline");
 
@@ -184,8 +175,9 @@ describe("install global skills", () => {
 
       await installGlobalSkills(command, {
         dataDir,
-        fetchSkillTree: async () => payload,
         homeDir,
+        logger,
+        skillTreeTransport: payload.skillTreeTransport,
       });
 
       const after = await readGlobalSkillsStatus(statusCommand, { homeDir });

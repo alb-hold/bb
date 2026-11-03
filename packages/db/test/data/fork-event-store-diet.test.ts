@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
+import { LOCAL_BASH_TASK_TYPE } from "@bb/domain";
 import type { DbConnection } from "../../src/connection.js";
 import { createEventId } from "../../src/ids.js";
 import { noopNotifier } from "../../src/notifier.js";
@@ -21,11 +22,12 @@ import {
   truncateFileChangeDiff,
   truncateFileChangeDiffs,
 } from "../../src/data/fork-file-change-truncation.js";
+import { listActiveBackgroundTaskCountsByThreadIds } from "../../src/data/events.js";
 import { upsertHost } from "../../src/data/hosts.js";
 import { createProject } from "../../src/data/projects.js";
 import { createThread } from "../../src/data/threads.js";
 import { events } from "../../src/schema.js";
-import { createMigratedConnection } from "../helpers/migrated-connection.js";
+import { createMigratedConnection } from "../../src/testing.js";
 
 function setup() {
   const db = createMigratedConnection();
@@ -252,6 +254,55 @@ describe("fork file-change diff truncation", () => {
       changes: { diff?: string }[];
     };
     expect(item.changes[0]?.diff).toBe(bigDiff);
+  });
+
+  it("leaves remembered background-task counts equal to a fresh read after truncating diffs", () => {
+    const { db, thread } = setup();
+    const now = Date.now();
+    const seedAt = now - 100_000;
+    truncateFileChangeDiffs(db, {
+      createdBefore: seedAt,
+      limit: 50,
+      truncatedAt: seedAt,
+    });
+    seedFileChanges(db, thread.id, now - 10_000);
+    insertItemEvent({
+      db,
+      threadId: thread.id,
+      type: "item/started",
+      itemKind: "backgroundTask",
+      itemId: "task:command",
+      sequence: 3,
+      createdAt: now - 10_000,
+      item: {
+        id: "task:command",
+        type: "backgroundTask",
+        taskType: LOCAL_BASH_TASK_TYPE,
+        description: "fixture background task",
+        status: "pending",
+        taskStatus: "running",
+        skipTranscript: false,
+      },
+    });
+    const threadIds = [thread.id];
+    expect(
+      listActiveBackgroundTaskCountsByThreadIds(db, { threadIds })[0]
+        ?.activeBackgroundCommandCount,
+    ).toBe(1);
+
+    expect(
+      truncateFileChangeDiffs(db, {
+        createdBefore: now - 5_000,
+        limit: 50,
+        truncatedAt: now,
+      }).truncatedRows,
+    ).toBe(2);
+
+    expect(listActiveBackgroundTaskCountsByThreadIds(db, { threadIds })).toEqual(
+      db.transaction((tx) =>
+        listActiveBackgroundTaskCountsByThreadIds(tx, { threadIds }),
+      ),
+    );
   });
 
   it("truncates every oversized diff on both item/started and item/completed, keeps every entry, and leaves the row parseable", () => {

@@ -182,13 +182,33 @@ export function serializePromptDraftStorage(
   });
 }
 
+function sortObjectKeys(_key: string, value: unknown): unknown {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return value;
+  }
+  return Object.fromEntries(
+    Object.entries(value).sort(([left], [right]) =>
+      left < right ? -1 : left > right ? 1 : 0,
+    ),
+  );
+}
+
+function canonicalPromptDraftJson(draft: PromptDraftState): string {
+  return JSON.stringify(
+    {
+      text: draft.text,
+      mentions: draft.mentions,
+      attachments: draft.attachments,
+    },
+    sortObjectKeys,
+  );
+}
+
 export function arePromptDraftStatesEqual(
   left: PromptDraftState,
   right: PromptDraftState,
 ): boolean {
-  return (
-    serializePromptDraftStorage(left) === serializePromptDraftStorage(right)
-  );
+  return canonicalPromptDraftJson(left) === canonicalPromptDraftJson(right);
 }
 
 function getFileNameFromPath(path: string): string {
@@ -223,8 +243,17 @@ export function promptDraftToInput(draft: PromptDraftState): PromptInput[] {
   const trimEndIndex = draft.text.trimEnd().length;
   const text = draft.text.slice(trimStartLength, trimEndIndex);
   if (text.length > 0) {
+    const attachedPaths = new Set(
+      draft.attachments.map((attachment) => attachment.path),
+    );
     const mentions = normalizePromptTextMentions(
       draft.mentions.flatMap((mention) => {
+        if (
+          mention.resource.kind === "attachment" &&
+          !attachedPaths.has(mention.resource.path)
+        ) {
+          return [];
+        }
         const visibleStart = Math.max(mention.start, trimStartLength);
         const visibleEnd = Math.min(mention.end, trimEndIndex);
         return visibleStart < visibleEnd

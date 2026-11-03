@@ -1,12 +1,8 @@
 import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-  createConnection,
-  migrate,
-  getAppSettings,
-  setAppSettings,
-} from "@bb/db";
+import { getAppSettings, setAppSettings } from "@bb/db";
+import { createMigratedConnection } from "@bb/db/testing";
 import { defaultAppSettings } from "@bb/domain";
 import { withTestHarness } from "../helpers/test-app.js";
 import { DEFAULTS } from "@bb/config/defaults";
@@ -14,7 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   appInstallFromServerConfig,
   createTelemetryService,
-  runWithTelemetryAppSurface,
+  runWithTelemetryRequest,
 } from "../../src/services/system/telemetry.js";
 
 function createTestLogger() {
@@ -54,15 +50,18 @@ describe("telemetry service", () => {
     });
 
     telemetry.capture({ name: "app_started" });
-    runWithTelemetryAppSurface("desktop", () => {
-      telemetry.capture({
-        name: "thread_created",
-        properties: {
-          is_child_thread: true,
-          provider: "claude-code",
-        },
-      });
-    });
+    runWithTelemetryRequest(
+      { appSurface: "desktop", accessRoute: "connect" },
+      () => {
+        telemetry.capture({
+          name: "thread_created",
+          properties: {
+            is_child_thread: true,
+            provider: "claude-code",
+          },
+        });
+      },
+    );
     telemetry.capture({
       name: "user_message_sent",
       properties: {
@@ -103,10 +102,12 @@ describe("telemetry service", () => {
       properties: {
         app_version: "1.2.3",
         app_surface: "desktop",
+        access_route: "connect",
         is_child_thread: true,
         provider: "claude-code",
       },
     });
+    expect(calls[2]?.payload.properties).not.toHaveProperty("access_route");
     expect(calls[2]?.payload).toMatchObject({
       event: "user_message_sent",
       properties: {
@@ -235,8 +236,7 @@ describe("telemetry service", () => {
   });
 
   it("honors persisted opt-out at startup and changes without restarting", async () => {
-    const db = createConnection(":memory:");
-    migrate(db);
+    const db = createMigratedConnection();
     try {
       setAppSettings(db, { ...getAppSettings(db), telemetryEnabled: false });
       const args = {

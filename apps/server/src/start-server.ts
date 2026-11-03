@@ -1,16 +1,31 @@
+import { createDesktopAppUpdateService } from "./services/system/desktop-app-update.js";
+import { createDesktopUpdateChannel } from "./services/system/desktop-update-channel.js";
 import { serve } from "@hono/node-server";
 import { existsSync } from "node:fs";
+import { Server as HttpServer } from "node:http";
+import type { Socket } from "node:net";
+import { verifyAuthenticatedDaemon } from "./internal/auth.js";
+import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ServerConfig } from "@bb/config/server";
 import { isLoopbackHostname } from "@bb/config/loopback";
 import { toOptionalString } from "@bb/config/strings";
+import {
+  SERVER_HTTP_CLOSE_WAIT_TIMEOUT_MS,
+  SERVER_HTTP_DRAIN_TIMEOUT_MS,
+  SERVER_PLUGIN_SHUTDOWN_TIMEOUT_MS,
+  SERVER_TERMINAL_OUTPUT_FLUSH_TIMEOUT_MS,
+  SERVER_WEBSOCKET_SHUTDOWN_WAIT_TIMEOUT_MS,
+} from "@bb/config/full-stack-shutdown";
 import { superviseTcpServerSockets } from "@bb/process-utils";
 import { createLogger } from "@bb/logger";
 import {
   getAppSettings,
   getDisabledProviderIds,
   listRunningThreads,
+  setAppSettings,
+  type DbConnection,
 } from "@bb/db";
 import { initDb } from "./db.js";
 import { createApp } from "./server.js";
@@ -20,8 +35,13 @@ import { resolveBuiltinSkillsRootPath } from "./services/skills/builtin-skills-c
 import { SkillTreeRegistry } from "./services/skills/injected-skills.js";
 import { PluginHostArtifactRegistry } from "./services/plugins/plugin-host-artifact-registry.js";
 import { createProviderNativeRootsCache } from "./services/providers/native-roots.js";
+import { createProviderLiveCommandsCache } from "./services/providers/provider-live-commands.js";
 import { createAiServiceRegistry } from "./services/ai/ai-service-registry.js";
 import { createAppUpdateService } from "./services/system/app-update.js";
+import {
+  createCliCommandService,
+  createWindowsUserPath,
+} from "./services/system/cli-command.js";
 import { createAppVersionService } from "./services/system/app-version.js";
 import {
   resetWorkspaceWriteClaims,
@@ -29,6 +49,7 @@ import {
   stopWorkspaceWriteClaimHeartbeat,
 } from "./services/threads/workspace-write-serialization.js";
 import { createLauncherChannel } from "./services/system/launcher-channel.js";
+import { watchLauncherDisconnect } from "./services/system/launcher-disconnect.js";
 import { createBbAppManagedConfigReloader } from "./services/system/bb-app-managed-config.js";
 import { startGatedPerformanceDiagnostics } from "./services/system/performance-diagnostics.js";
 import { startEventLoopStallMonitor } from "./services/system/event-loop-stall-monitor.js";
@@ -46,14 +67,22 @@ import {
   appInstallFromServerConfig,
   createTelemetryService,
 } from "./services/system/telemetry.js";
+import {
+  createTerminalDataPlaneSpawn,
+  startTerminalDataPlane,
+} from "./services/terminals/data-plane/terminal-data-plane.js";
 import { TerminalSessionLifecycle } from "./services/terminals/terminal-session-lifecycle.js";
 import { createLifecycleDedupers } from "./lifecycle-dedupers.js";
 import { TURN_ACCEPTANCE_GRACE_MS } from "./constants.js";
 import type { ServerLogger, ServerRuntimeConfig } from "./types.js";
 import { NotificationHub } from "./ws/hub.js";
+import {
+  onTerminalSocketClose,
+  onTerminalSocketOpen,
+  onTerminalSocketParsedMessage,
+} from "./ws/terminal-protocol.js";
 import { startDaemonLivenessChecks } from "./ws/daemon-protocol.js";
 import { WatchInterestCoordinator } from "./ws/watch-interests.js";
-import { WorkspaceReadCaches } from "./services/environments/workspace-read-cache.js";
 import { HostSharedPortCoordinator } from "./ws/host-shared-ports.js";
 import { disconnectImportedDaemonSessions } from "./internal/session-owner-side-effects.js";
 import {
@@ -73,17 +102,45 @@ import {
   setPluginToolCallRegistry,
 } from "./services/plugins/plugin-tool-calls.js";
 
+const shutdownSockets = new WeakMap<HttpServer, Set<Socket>>();
+
+async function waitAtMost(
+  promise: Promise<unknown>,
+  timeoutMs: number,
+): Promise<boolean> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise.then(
+        () => true,
+        () => false,
+      ),
+      new Promise<boolean>((resolve) => {
+        timer = setTimeout(() => resolve(false), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
 interface StartHttpListenerArgs {
   fetch: Parameters<typeof serve>[0]["fetch"];
   logger: Pick<ServerLogger, "warn">;
   serverConfig: Pick<ServerConfig, "BB_SERVER_BIND_HOST" | "BB_SERVER_PORT">;
 }
 
-export function startHttpListener(args: StartHttpListenerArgs) {
+export function startHttpListener(args: StartHttpListenerArgs): HttpServer {
   const server = serve({
     hostname: args.serverConfig.BB_SERVER_BIND_HOST,
     port: args.serverConfig.BB_SERVER_PORT,
     fetch: args.fetch,
+  }) as HttpServer;
+  const sockets = new Set<Socket>();
+  shutdownSockets.set(server, sockets);
+  server.on("connection", (socket) => {
+    sockets.add(socket);
+    socket.once("close", () => sockets.delete(socket));
   });
   superviseTcpServerSockets(server, (error, _socket, context) => {
     args.logger.warn(
@@ -95,6 +152,161 @@ export function startHttpListener(args: StartHttpListenerArgs) {
     );
   });
   return server;
+}
+
+export async function shutdownHttpBeforePlugins(args: {
+  closeDatabase?: () => void;
+  closeWebSockets: () => Promise<void>;
+  onPluginStopTimeout?: () => void;
+  server: ReturnType<typeof startHttpListener>;
+  stopPeriodicUpdateChecks?: () => Promise<void>;
+  stopPlugins: () => Promise<void>;
+  stopTerminalDataPlane: () => void;
+  flushTerminalOutputBeforeClose?: (signal: AbortSignal) => Promise<void>;
+}): Promise<{ completedWithinBounds: boolean; pluginStopTimedOut: boolean }> {
+  let completedWithinBounds = true;
+  let databaseCanClose = true;
+  let pluginStopTimedOut = false;
+  args.stopTerminalDataPlane();
+  const closed = new Promise<void>((resolve, reject) => {
+    args.server.close((error) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve();
+    });
+  });
+  args.server.closeIdleConnections();
+  const webSocketsClosed = args.closeWebSockets();
+  let drainTimer: ReturnType<typeof setTimeout> | undefined;
+  let drained = false;
+  try {
+    drained = await Promise.race([
+      closed.then(
+        () => true,
+        () => false,
+      ),
+      new Promise<boolean>((resolve) => {
+        drainTimer = setTimeout(
+          () => resolve(false),
+          SERVER_HTTP_DRAIN_TIMEOUT_MS,
+        );
+      }),
+    ]);
+  } finally {
+    if (drainTimer !== undefined) {
+      clearTimeout(drainTimer);
+    }
+  }
+  if (!drained) {
+    args.server.closeAllConnections();
+  }
+  const webSocketsClosedWithinBound = await waitAtMost(
+    webSocketsClosed,
+    SERVER_WEBSOCKET_SHUTDOWN_WAIT_TIMEOUT_MS,
+  );
+  completedWithinBounds = webSocketsClosedWithinBound && completedWithinBounds;
+  databaseCanClose = webSocketsClosedWithinBound;
+  if (args.flushTerminalOutputBeforeClose !== undefined) {
+    const flushController = new AbortController();
+    const flushOutcome = await new Promise<
+      "completed" | "failed" | "timed-out"
+    >((resolve) => {
+      const timer = setTimeout(
+        () => resolve("timed-out"),
+        SERVER_TERMINAL_OUTPUT_FLUSH_TIMEOUT_MS,
+      );
+      void Promise.resolve()
+        .then(() =>
+          args.flushTerminalOutputBeforeClose!(flushController.signal),
+        )
+        .then(
+          () => {
+            clearTimeout(timer);
+            resolve("completed");
+          },
+          () => {
+            clearTimeout(timer);
+            resolve("failed");
+          },
+        );
+    });
+    if (flushOutcome !== "completed") flushController.abort(flushOutcome);
+    completedWithinBounds =
+      flushOutcome === "completed" && completedWithinBounds;
+  }
+  const httpClosed = await waitAtMost(
+    closed,
+    SERVER_HTTP_CLOSE_WAIT_TIMEOUT_MS,
+  );
+  completedWithinBounds = httpClosed && completedWithinBounds;
+  databaseCanClose = databaseCanClose && httpClosed;
+  for (const socket of shutdownSockets.get(args.server) ?? []) socket.destroy();
+  const httpClosedAfterSocketDestroy = await waitAtMost(
+    closed,
+    SERVER_HTTP_CLOSE_WAIT_TIMEOUT_MS,
+  );
+  completedWithinBounds = httpClosedAfterSocketDestroy && completedWithinBounds;
+  databaseCanClose =
+    databaseCanClose && (httpClosed || httpClosedAfterSocketDestroy);
+  let pluginStopTimer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const stopped = await Promise.race([
+      Promise.all([args.stopPeriodicUpdateChecks?.(), args.stopPlugins()]).then(
+        () => true,
+      ),
+      new Promise<false>((resolve) => {
+        pluginStopTimer = setTimeout(
+          () => resolve(false),
+          SERVER_PLUGIN_SHUTDOWN_TIMEOUT_MS,
+        );
+      }),
+    ]);
+    if (!stopped) {
+      pluginStopTimedOut = true;
+      databaseCanClose = false;
+      args.onPluginStopTimeout?.();
+    }
+    completedWithinBounds = stopped && completedWithinBounds;
+  } finally {
+    if (pluginStopTimer !== undefined) clearTimeout(pluginStopTimer);
+  }
+  if (databaseCanClose && !pluginStopTimedOut) args.closeDatabase?.();
+  return { completedWithinBounds, pluginStopTimedOut };
+}
+
+export async function shutdownServerRuntime(args: {
+  closeWebSockets: () => Promise<void>;
+  db: DbConnection;
+  logger: Pick<ServerLogger, "warn">;
+  stopPeriodicUpdateChecks: () => Promise<void>;
+  stopPlugins: () => Promise<void>;
+  server: ReturnType<typeof startHttpListener>;
+  stopTerminalDataPlane: () => void;
+  flushTerminalOutputBeforeClose?: (signal: AbortSignal) => Promise<void>;
+}): Promise<{ completedWithinBounds: boolean; pluginStopTimedOut: boolean }> {
+  const result = await shutdownHttpBeforePlugins({
+    closeDatabase: () => args.db.$client.close(),
+    closeWebSockets: args.closeWebSockets,
+    onPluginStopTimeout: () =>
+      args.logger.warn(
+        `Plugin shutdown did not finish within ${SERVER_PLUGIN_SHUTDOWN_TIMEOUT_MS}ms`,
+      ),
+    server: args.server,
+    stopPeriodicUpdateChecks: args.stopPeriodicUpdateChecks,
+    stopPlugins: args.stopPlugins,
+    stopTerminalDataPlane: args.stopTerminalDataPlane,
+    flushTerminalOutputBeforeClose: args.flushTerminalOutputBeforeClose,
+  });
+  if (result.pluginStopTimedOut) {
+    args.logger.warn("Database close skipped because plugin stop timed out");
+  } else if (!result.completedWithinBounds) {
+    args.logger.warn(
+      "Database close skipped because a shutdown step exceeded its bound",
+    );
+  }
+  return result;
 }
 
 export interface StartServerPluginsArgs {
@@ -125,6 +337,11 @@ export async function runServer(serverConfig: ServerConfig): Promise<void> {
     component: "server",
     dataDir: serverConfig.BB_DATA_DIR,
   });
+  const launcherDisconnect = watchLauncherDisconnect(process, {
+    exit: (code) => process.exit(code),
+    log: (message) => logger.warn(message),
+  });
+  await launcherDisconnect.ready();
   await refuseInterruptedServerImport({
     dataDir: serverConfig.BB_DATA_DIR,
     logger,
@@ -150,6 +367,15 @@ export async function runServer(serverConfig: ServerConfig): Promise<void> {
       logger,
     });
   }
+  if (serverConfig.BB_SKIP_ONBOARDING) {
+    const settings = getAppSettings(db);
+    if (settings.onboardingCompletedAt === null) {
+      setAppSettings(db, {
+        ...settings,
+        onboardingCompletedAt: new Date().toISOString(),
+      });
+    }
+  }
   const serverMoveRun =
     pendingServerMove === null
       ? await reconcileServerMoveRunAtBoot({
@@ -158,10 +384,15 @@ export async function runServer(serverConfig: ServerConfig): Promise<void> {
           now: Date.now(),
         })
       : null;
-  const hub = new NotificationHub();
+  const hub = new NotificationHub((change) => {
+    logger.info({
+      component: "terminal",
+      type: "terminal.resize_owner",
+      ...change,
+    });
+  });
   const watchInterests = new WatchInterestCoordinator({ db, hub });
   const sharedPorts = new HostSharedPortCoordinator({ db, hub });
-  const workspaceReadCaches = new WorkspaceReadCaches({ hub });
   const lifecycleDedupers = createLifecycleDedupers();
   const appUrl = toOptionalString(serverConfig.BB_APP_URL);
 
@@ -175,6 +406,7 @@ export async function runServer(serverConfig: ServerConfig): Promise<void> {
     appVersion: serverConfig.BB_APP_VERSION,
     builtinSkillsRootPath: resolveBuiltinSkillsRootPath(),
     marketplaceUrl: serverConfig.BB_MARKETPLACE_URL,
+    connectGateKeysUrl: serverConfig.BB_CONNECT_GATE_KEYS_URL,
     customModels: [],
     dataDir: serverConfig.BB_DATA_DIR,
     featureFlags: serverConfig.featureFlags,
@@ -241,6 +473,7 @@ export async function runServer(serverConfig: ServerConfig): Promise<void> {
   const skillTreeRegistry = new SkillTreeRegistry();
   const pluginHostArtifacts = new PluginHostArtifactRegistry();
   const providerNativeRoots = createProviderNativeRootsCache();
+  const providerLiveCommands = createProviderLiveCommandsCache();
   const aiServices = createAiServiceRegistry({
     onStatusChange: () => hub.notifySystem(["config-changed"]),
   });
@@ -268,19 +501,41 @@ export async function runServer(serverConfig: ServerConfig): Promise<void> {
     logger,
   });
   const appUpdateMode = serverConfig.BB_APP_UPDATE_MODE ?? null;
-  const appUpdate = createAppUpdateService({
-    currentCommit:
-      serverConfig.BB_APP_INSTALL_KIND === "source"
-        ? (serverConfig.BB_APP_SOURCE_COMMIT ?? null)
-        : null,
-    appSurface: serverConfig.BB_APP_SURFACE,
-    appVersion,
-    config: runtimeConfig,
-    countRunningThreads: () => listRunningThreads(db).length,
-    launcher: appUpdateMode === null ? null : createLauncherChannel(process),
-    logger,
-    mode: appUpdateMode,
-    notifyChanged: () => hub.notifySystem(["app-update-changed"]),
+  const desktopUpdateChannel =
+    serverConfig.BB_APP_SURFACE === "desktop"
+      ? createDesktopUpdateChannel(process)
+      : null;
+  const appUpdate =
+    desktopUpdateChannel === null
+      ? createAppUpdateService({
+          currentCommit:
+            serverConfig.BB_APP_INSTALL_KIND === "source"
+              ? (serverConfig.BB_APP_SOURCE_COMMIT ?? null)
+              : null,
+          appSurface: serverConfig.BB_APP_SURFACE,
+          appVersion,
+          config: runtimeConfig,
+          countRunningThreads: () => listRunningThreads(db).length,
+          launcher:
+            appUpdateMode === null ? null : createLauncherChannel(process),
+          logger,
+          mode: appUpdateMode,
+          notifyChanged: () => hub.notifySystem(["app-update-changed"]),
+        })
+      : createDesktopAppUpdateService({
+          channel: desktopUpdateChannel,
+          currentVersion: runtimeConfig.appVersion,
+          dataDir: serverConfig.BB_DATA_DIR,
+          countRunningThreads: () => listRunningThreads(db).length,
+          notifyChanged: () => hub.notifySystem(["app-update-changed"]),
+          logger,
+        });
+  const cliCommand = createCliCommandService({
+    env: process.env,
+    homeDir: homedir(),
+    launcherPath: serverConfig.BB_CLI_LAUNCHER ?? null,
+    platform: process.platform,
+    windowsUserPath: createWindowsUserPath(process.env),
   });
   const {
     app,
@@ -289,11 +544,13 @@ export async function runServer(serverConfig: ServerConfig): Promise<void> {
     pluginCatalogService,
     pluginService,
     serverMove,
+    tunnelIngress,
   } = createApp(
     {
       appUpdate,
       appVersion,
       bbAppManagedConfig,
+      cliCommand,
       config: runtimeConfig,
       db,
       hub,
@@ -304,13 +561,13 @@ export async function runServer(serverConfig: ServerConfig): Promise<void> {
       providerRegistry,
       pluginHostArtifacts,
       providerNativeRoots,
+      providerLiveCommands,
       aiServices,
       skillTreeRegistry,
       telemetry,
       terminalSessions,
       watchInterests,
       sharedPorts,
-      workspaceReadCaches,
     },
     {
       serverMove: {
@@ -414,6 +671,45 @@ export async function runServer(serverConfig: ServerConfig): Promise<void> {
     serverConfig,
   });
   injectWebSocket(server);
+  const terminalDataPlane =
+    server instanceof HttpServer
+      ? startTerminalDataPlane({
+          daemons: {
+            currentSessionIdForHost: (hostId) =>
+              hub.getDaemonSessionIdForHost(hostId),
+            request: (args) => hub.requestHostOnlineRpc(args),
+            setSessionDirectOutput: (args) =>
+              terminalSessions.setDaemonSessionDirectOutput(args),
+            subscribe: (listener) => hub.subscribeDaemonSessions(listener),
+            verify: (authorizationHeader) =>
+              verifyAuthenticatedDaemon({ machineAuth }, authorizationHeader),
+          },
+          guard: { config: runtimeConfig },
+          lifecycle: {
+            attach: (args) => {
+              terminalSessions.markDirectOutputSocket(args.socket);
+              onTerminalSocketOpen({ terminalSessions }, args);
+            },
+            detach: (args) => onTerminalSocketClose({ terminalSessions }, args),
+            handleMessage: (args) =>
+              onTerminalSocketParsedMessage({ terminalSessions }, args),
+            recordInputActivity: (terminalId) =>
+              terminalSessions.recordDirectTerminalInput(terminalId),
+            stripHolderMarkersFromDataPlaneOutput: (terminalId, chunk) =>
+              terminalSessions.stripHolderMarkersFromDataPlaneOutput(
+                terminalId,
+                chunk,
+              ),
+            recordOutputBatch: (args) =>
+              terminalSessions.recordDirectTerminalOutputBatch(args),
+          },
+          logger,
+          resolveTerminal: (terminalId) =>
+            terminalSessions.resolveRunningTerminalRoute(terminalId),
+          server,
+          spawn: createTerminalDataPlaneSpawn(),
+        })
+      : null;
 
   logger.info(
     {
@@ -423,6 +719,9 @@ export async function runServer(serverConfig: ServerConfig): Promise<void> {
     },
     "Server listening",
   );
+  void terminalSessions.warmTerminalScreenStates().catch((error: unknown) => {
+    logger.warn({ err: error }, "Failed to warm terminal screen states");
+  });
   pluginService.bindSdk({
     baseUrl: `http://127.0.0.1:${serverConfig.BB_SERVER_PORT}`,
   });
@@ -464,6 +763,7 @@ export async function runServer(serverConfig: ServerConfig): Promise<void> {
       return shutdownPromise;
     }
     shutdownPromise = (async () => {
+      hub.stopClientChangeNotifications();
       serverMove.dispose();
       appUpdate.dispose();
       providerModelCatalogPrewarm?.stop();
@@ -475,23 +775,28 @@ export async function runServer(serverConfig: ServerConfig): Promise<void> {
         clearInterval(sweepInterval);
       }
       pluginCatalogService.stopPeriodicRefresh();
-      await pluginService.stopPeriodicUpdateChecks();
-      if (pendingServerMove === null) {
-        await pluginService.stop().catch((error: unknown) => {
-          logger.warn({ err: error }, "Plugin shutdown failed");
-        });
-      }
-      const closeServer = new Promise<void>((resolve, reject) => {
-        server.close((error) => {
-          if (error) {
-            reject(error);
-            return;
-          }
-          resolve();
-        });
+      await shutdownServerRuntime({
+        closeWebSockets,
+        db,
+        logger,
+        stopPlugins: async () => {
+          if (pendingServerMove !== null) return;
+          await pluginService.stop().catch((error: unknown) => {
+            logger.warn({ err: error }, "Plugin shutdown failed");
+          });
+        },
+        stopPeriodicUpdateChecks: () =>
+          pluginService.stopPeriodicUpdateChecks(),
+        server,
+        stopTerminalDataPlane: () => {
+          terminalDataPlane?.stop();
+        },
+        flushTerminalOutputBeforeClose: async (signal) => {
+          await terminalSessions.flushRetainedOutputBeforeClose(signal);
+        },
       });
+      await tunnelIngress.closeAll();
       await closeWebSockets();
-      await closeServer;
     })();
     return shutdownPromise;
   };
@@ -518,5 +823,9 @@ export async function runServer(serverConfig: ServerConfig): Promise<void> {
   });
   process.once("SIGTERM", () => {
     void runShutdown().finally(() => process.exit(0));
+  });
+  launcherDisconnect.setShutdown({
+    shutdown: runShutdown,
+    exit: (code) => process.exit(code),
   });
 }

@@ -1,4 +1,7 @@
+import { nativeThreadExitRuntime } from "../../services/threads/thread-runtime-display.js";
 import { countUnarchivedThreadDescendants } from "../../services/threads/thread-archive.js";
+import { eq } from "drizzle-orm";
+import { listThreadCascades } from "../../services/threads/thread-cascade.js";
 import { cancelAbandonedProviderCreations } from "../../services/threads/thread-environment-providers.js";
 import {
   THREAD_SEARCH_LIMIT_PER_GROUP_DEFAULT,
@@ -10,14 +13,24 @@ import {
   getEnvironment,
   getHost,
   getThread,
+  getThreadExecutionOverride,
+  getThreadSpawner,
+  isNativeTerminalThread,
+  setThreadExecutionOverride,
   getThreadSectionById,
   ensureSpendTables,
   listThreadMentionRowsByIds,
   listNonDeletedChildThreads,
+  listNativeTerminalThreadsByIds,
   listSpendRollupRows,
   listThreadsWithPendingInteractionState,
+  buildThreadListEnrichmentScope,
   markThreadDeleted,
-  listLifecycleThreadTree,
+  listThreadDeletionTree,
+  listPluginThreadMetadata,
+  queuedThreadMessages,
+  listThreadAncestors,
+  listThreadDescendants,
   searchThreadsWithPendingInteractionState,
   transferManagedEnvironmentProject,
   updateThread,
@@ -25,6 +38,7 @@ import {
   type UpdateThreadInput,
 } from "@bb/db";
 import {
+  effectiveDisplayStatus,
   PROMPT_HISTORY_SEARCH_LIMIT_DEFAULT,
   PROMPT_HISTORY_SEARCH_LIMIT_MAX,
   type Environment,
@@ -33,6 +47,7 @@ import {
 } from "@bb/domain";
 import { toEnvironmentResponse } from "../../services/environments/environment-response.js";
 import {
+  DEVICE_HANDOFF_CLIENT_TOKEN_HEADER,
   threadIncludeOptionSchema,
   THREAD_COUNT_ROOT_PARENT,
   publicApiRoutes,
@@ -41,14 +56,24 @@ import {
   type ThreadIncludeOption,
   type ThreadChildSummaryResponse,
   type ThreadCountResponse,
+  type PluginThreadMetadataListResponse,
+  type ThreadAncestorsListResponse,
+  type ThreadDescendantsListResponse,
+  type ThreadCascadeListResponse,
   type ThreadRunningResponse,
   type ThreadSearchResponse,
   type ThreadWithIncludesResponse,
   type PublicApiSchema,
   type ResolveThreadMentionsResponse,
+  parseThreadListThreadIds,
 } from "@bb/server-contract";
 import type { Hono } from "hono";
 import type { AppDeps } from "../../types.js";
+import type { PluginService } from "../../services/plugins/plugin-service.js";
+import {
+  clearCurrentThreadListSlowQueryContext,
+  setCurrentThreadListSlowQueryContext,
+} from "../../services/system/event-loop-work.js";
 import { ApiError } from "../../errors.js";
 import {
   parseBoundedPositiveOptionalInteger,
@@ -58,12 +83,11 @@ import {
 import { searchPromptHistory } from "../../services/prompt-history-search.js";
 import {
   getNonDestroyedHostWithStatus,
-  requireEnvironment,
   requirePublicProject,
   requirePublicThread,
 } from "../../services/lib/entity-lookup.js";
 import { listRunningThreadsWithIntendedHosts } from "../../services/threads/dispatch-attempt.js";
-import { dispatchThreadRenameCommand } from "../../services/threads/thread-commands.js";
+import { syncThreadTitleToProvider } from "../../services/threads/thread-commands.js";
 import { requestThreadStorageDeletion } from "../../services/threads/thread-lifecycle.js";
 import { createThreadFromRequest } from "../../services/threads/thread-create.js";
 import { createThreadForkFromRequest } from "../../services/threads/thread-fork.js";
@@ -74,10 +98,26 @@ import {
 } from "../../services/threads/thread-runtime-display.js";
 import { assertValidParentThread } from "../../services/threads/thread-parent.js";
 import { handleThreadOwnershipChange } from "../../services/threads/thread-ownership.js";
-import { applyThreadExecutionOverride } from "../../services/threads/thread-execution-override.js";
+import {
+  applyThreadExecutionOverride,
+  loadThreadProviderModels,
+  resolveFallbackModel,
+  resolveThreadExecutionOverrideUpdate,
+} from "../../services/threads/thread-execution-override.js";
+import {
+  applyThreadSessionOptionPatch,
+  resolveThreadSessionOptionPatch,
+} from "../../services/threads/thread-session-options.js";
+import {
+  assertRequestedModelAllowed,
+  childThreadModel,
+} from "../../services/threads/child-thread-model.js";
 import { emitPluginThreadDeleted } from "../../services/plugins/plugin-thread-events.js";
 import { NotificationBuffer } from "../../services/lib/notification-buffer.js";
 import { getActiveTurnId } from "../../services/threads/thread-events.js";
+import { reconcileNativeThreadStatus } from "../../services/threads/native-thread-status.js";
+
+const NATIVE_STATUS_LIST_LIMIT = 8;
 
 function parseThreadIncludes(query: ThreadGetQuery): Set<ThreadIncludeOption> {
   const includes = new Set<ThreadIncludeOption>();
@@ -204,6 +244,10 @@ function buildThreadSearchGroupResponse(
 ): ThreadSearchResultGroupResponse {
   const threadEntries = toThreadListEntryResponses(deps, {
     threads: args.group.results.map((result) => result.thread),
+    scope: {
+      kind: "ids",
+      ids: args.group.results.map((result) => result.thread.id),
+    },
   });
   const threadEntriesById = new Map(
     threadEntries.map((thread) => [thread.id, thread]),
@@ -231,7 +275,11 @@ function buildThreadSearchResponse(
   };
 }
 
-export function registerThreadBaseRoutes(app: Hono, deps: AppDeps): void {
+export function registerThreadBaseRoutes(
+  app: Hono,
+  deps: AppDeps,
+  pluginService: Pick<PluginService, "resolveRpcCaller">,
+): void {
   const { get, post, patch, del } = typedRoutes<PublicApiSchema>(app, {
     onValidationError: (msg) => new ApiError(400, "invalid_request", msg),
   });
@@ -270,51 +318,122 @@ export function registerThreadBaseRoutes(app: Hono, deps: AppDeps): void {
     return context.json(response);
   });
 
+  post(routes.ancestors, (context, payload) => {
+    return context.json({
+      threads: listThreadAncestors(deps.db, payload.threadIds),
+    } satisfies ThreadAncestorsListResponse);
+  });
+
+  post(routes.descendants, (context, payload) => {
+    return context.json({
+      threads: listThreadDescendants(deps.db, payload.threadIds, {
+        includeArchived: payload.includeArchived ?? false,
+        includeHidden: payload.includeHidden ?? false,
+      }),
+    } satisfies ThreadDescendantsListResponse);
+  });
+
+  post(routes.cascade, (context, payload) => {
+    return context.json({
+      threads: listThreadCascades(deps.db, payload.threadIds, payload.action),
+    } satisfies ThreadCascadeListResponse);
+  });
+
+  post(routes.pluginMetadata.list, (context, payload) => {
+    const { threads, corruptThreadIds } = listPluginThreadMetadata(
+      deps.db,
+      payload.pluginId,
+      payload.threadIds,
+    );
+    for (const threadId of corruptThreadIds) {
+      deps.logger.warn(
+        `Ignoring corrupt plugin metadata for thread ${threadId}, plugin ${payload.pluginId}`,
+      );
+    }
+    return context.json({ threads } satisfies PluginThreadMetadataListResponse);
+  });
+
   get(routes.running, (context) => {
     return context.json(
       listRunningThreadsWithIntendedHosts(deps) satisfies ThreadRunningResponse,
     );
   });
 
-  get(routes.list, (context, query) => {
+  get(routes.list, async (context, query) => {
     const { limit, offset } = parsePaginationQuery({
       limit: query.limit,
       offset: query.offset,
     });
-    if (query.projectId) {
-      requirePublicProject(deps.db, query.projectId);
-    }
-    if (query.sectionId && query.unsectioned === "true") {
-      throw new ApiError(
-        400,
-        "invalid_request",
-        "sectionId and unsectioned cannot be used together",
-      );
-    }
-    if (query.sectionId) {
-      requireThreadSection(deps, query.sectionId);
-    }
-    const threads = listThreadsWithPendingInteractionState(deps.db, {
-      ...(query.projectId ? { projectId: query.projectId } : {}),
-      ...(query.environmentId ? { environmentId: query.environmentId } : {}),
-      ...(query.hostId ? { hostId: query.hostId } : {}),
-      ...(query.parentThreadId ? { parentThreadId: query.parentThreadId } : {}),
-      ...(query.sourceThreadId ? { sourceThreadId: query.sourceThreadId } : {}),
-      ...(query.sectionId ? { sectionId: query.sectionId } : {}),
-      ...(query.unsectioned === "true" ? { unsectioned: true } : {}),
-      ...(query.originKind ? { originKind: query.originKind } : {}),
-      ...(query.originPluginId ? { originPluginId: query.originPluginId } : {}),
-      includeHidden: query.includeHidden === "true",
-      archived:
-        query.archived === undefined ? undefined : query.archived === "true",
-      hasParent:
-        query.hasParent === undefined ? undefined : query.hasParent === "true",
-      ...(limit !== undefined ? { limit } : {}),
-      ...(offset !== undefined ? { offset } : {}),
-    });
-    return context.json(
-      toThreadListEntryResponses(deps, { threads }) satisfies ThreadListEntry[],
+    setCurrentThreadListSlowQueryContext(
+      context,
+      query,
+      limit,
+      offset,
+      pluginService,
     );
+    try {
+      if (query.projectId) {
+        requirePublicProject(deps.db, query.projectId);
+      }
+      if (query.sectionId && query.unsectioned === "true") {
+        throw new ApiError(
+          400,
+          "invalid_request",
+          "sectionId and unsectioned cannot be used together",
+        );
+      }
+      if (query.sectionId) {
+        requireThreadSection(deps, query.sectionId);
+      }
+      const options = {
+        ...(query.projectId ? { projectId: query.projectId } : {}),
+        ...(query.environmentId ? { environmentId: query.environmentId } : {}),
+        ...(query.hostId ? { hostId: query.hostId } : {}),
+        ...(query.parentThreadId
+          ? { parentThreadId: query.parentThreadId }
+          : {}),
+        ...(query.sourceThreadId
+          ? { sourceThreadId: query.sourceThreadId }
+          : {}),
+        ...(query.sectionId ? { sectionId: query.sectionId } : {}),
+        ...(query.unsectioned === "true" ? { unsectioned: true } : {}),
+        ...(query.originKind ? { originKind: query.originKind } : {}),
+        ...(query.originPluginId
+          ? { originPluginId: query.originPluginId }
+          : {}),
+        ...(query.threadIds === undefined
+          ? {}
+          : { threadIds: parseThreadListThreadIds(query.threadIds) }),
+        includeHidden: query.includeHidden === "true",
+        archived:
+          query.archived === undefined ? undefined : query.archived === "true",
+        hasParent:
+          query.hasParent === undefined
+            ? undefined
+            : query.hasParent === "true",
+        ...(limit !== undefined ? { limit } : {}),
+        ...(offset !== undefined ? { offset } : {}),
+      };
+      const threads = listThreadsWithPendingInteractionState(deps.db, options);
+      void Promise.all(
+        threads
+          .slice(0, NATIVE_STATUS_LIST_LIMIT)
+          .map((thread) => reconcileNativeThreadStatus(deps, thread.id)),
+      ).catch((error) => {
+        deps.logger.debug(
+          { error },
+          "Native status list reconciliation failed",
+        );
+      });
+      return context.json(
+        toThreadListEntryResponses(deps, {
+          threads,
+          scope: buildThreadListEnrichmentScope(deps.db, options),
+        }) satisfies ThreadListEntry[],
+      );
+    } finally {
+      clearCurrentThreadListSlowQueryContext();
+    }
   });
 
   get(routes.searchPromptHistory, (context, query) => {
@@ -384,20 +503,42 @@ export function registerThreadBaseRoutes(app: Hono, deps: AppDeps): void {
     if (payload.sectionId) {
       requireThreadSection(deps, payload.sectionId);
     }
-    const thread = await createThreadFromRequest(deps, {
-      ...payload,
-      origin: payload.origin,
-    });
+    const thread = await createThreadFromRequest(
+      deps,
+      {
+        ...payload,
+        origin: payload.origin,
+      },
+      {
+        ...(context.req.header(DEVICE_HANDOFF_CLIENT_TOKEN_HEADER) === undefined
+          ? {}
+          : {
+              deviceHandoffClientToken: context.req.header(
+                DEVICE_HANDOFF_CLIENT_TOKEN_HEADER,
+              ),
+            }),
+      },
+    );
     return context.json(toThreadResponseFromThread(deps, { thread }), 201);
   });
 
   post(routes.fork, async (context, payload) => {
-    const thread = await createThreadForkFromRequest(deps, payload);
+    const thread = await createThreadForkFromRequest(deps, payload, {
+      ...(context.req.header(DEVICE_HANDOFF_CLIENT_TOKEN_HEADER) === undefined
+        ? {}
+        : {
+            deviceHandoffClientToken: context.req.header(
+              DEVICE_HANDOFF_CLIENT_TOKEN_HEADER,
+            ),
+          }),
+    });
     return context.json(toThreadResponseFromThread(deps, { thread }), 201);
   });
 
-  get(routes.get, (context, query) => {
-    const thread = requirePublicThread(deps.db, context.req.param("id"));
+  get(routes.get, async (context, query) => {
+    const threadId = context.req.param("id");
+    await reconcileNativeThreadStatus(deps, threadId);
+    const thread = requirePublicThread(deps.db, threadId);
     return context.json(
       buildThreadResponse(deps, {
         includes: parseThreadIncludes(query),
@@ -411,8 +552,19 @@ export function registerThreadBaseRoutes(app: Hono, deps: AppDeps): void {
     const children = listNonDeletedChildThreads(deps.db, {
       parentThreadId: thread.id,
     });
+    const nativeThreads = new Map(
+      listNativeTerminalThreadsByIds(
+        deps.db,
+        children.map((child) => child.id),
+      ).map((native) => [native.threadId, native]),
+    );
+    const displayChildren = children.map((child) => {
+      const native = nativeThreads.get(child.id);
+      const runtime = nativeThreadExitRuntime(child, native ?? null);
+      return { ...child, status: effectiveDisplayStatus(child, runtime) };
+    });
     const counts = { failed: 0, idle: 0, waiting: 0, working: 0 };
-    for (const child of children) {
+    for (const child of displayChildren) {
       if (child.status === "error") counts.failed += 1;
       else if (child.status === "idle") counts.idle += 1;
       else if (child.status === "pending") counts.waiting += 1;
@@ -433,7 +585,7 @@ export function registerThreadBaseRoutes(app: Hono, deps: AppDeps): void {
       nonDeletedChildCount,
       ...counts,
       totalTokens,
-      children: children.map(({ id, status, title }) => ({
+      children: displayChildren.map(({ id, status, title }) => ({
         id,
         status,
         title,
@@ -588,27 +740,55 @@ export function registerThreadBaseRoutes(app: Hono, deps: AppDeps): void {
       });
     }
 
-    if ("model" in payload || "reasoningLevel" in payload) {
-      await applyThreadExecutionOverride(deps, {
+    const sectionId = payload.sectionId;
+    if (sectionId !== undefined && sectionId !== null) {
+      requireThreadSection(deps, sectionId);
+    }
+    if (payload.sessionOptions !== undefined) {
+      resolveThreadSessionOptionPatch(deps, {
         thread,
-        patch: {
-          ...("model" in payload ? { model: payload.model } : {}),
-          ...("reasoningLevel" in payload
-            ? { reasoningLevel: payload.reasoningLevel }
-            : {}),
-        },
+        patch: payload.sessionOptions,
+      });
+    }
+    const hasParentChange =
+      "parentThreadId" in payload &&
+      payload.parentThreadId !== thread.parentThreadId;
+    const nativeTerminal = isNativeTerminalThread(deps.db, thread.id);
+    const executionPatch = {
+      ...("model" in payload ? { model: payload.model } : {}),
+      ...("reasoningLevel" in payload
+        ? { reasoningLevel: payload.reasoningLevel }
+        : {}),
+    };
+    if (
+      !nativeTerminal &&
+      (hasParentChange || typeof payload.model === "string")
+    ) {
+      const requestedModel =
+        payload.model === null
+          ? null
+          : typeof payload.model === "string"
+            ? payload.model
+            : getThreadExecutionOverride(deps.db, thread.id)?.modelOverride;
+      const parentThreadId = hasParentChange
+        ? payload.parentThreadId
+        : thread.parentThreadId;
+      const childScope = parentThreadId
+        ? "parent"
+        : getThreadSpawner(deps.db, thread.id) === null
+          ? null
+          : "spawner";
+      await assertRequestedModelAllowed(deps, {
+        childScope,
+        model: requestedModel,
+        providerId: thread.providerId,
+        sources: undefined,
       });
     }
 
     const metadataUpdate: UpdateThreadInput = {};
-    if ("title" in payload) {
-      metadataUpdate.title = payload.title;
-    }
-    const sectionId = payload.sectionId;
+    if ("title" in payload) metadataUpdate.title = payload.title;
     if (sectionId !== undefined) {
-      if (sectionId !== null) {
-        requireThreadSection(deps, sectionId);
-      }
       metadataUpdate.sectionId = sectionId;
     } else if (
       payload.parentThreadId === null &&
@@ -620,34 +800,157 @@ export function registerThreadBaseRoutes(app: Hono, deps: AppDeps): void {
     if ("parentThreadId" in payload) {
       metadataUpdate.parentThreadId = payload.parentThreadId;
     }
-    if ("visibility" in payload) {
-      metadataUpdate.visibility = payload.visibility;
+    if ("visibility" in payload) metadataUpdate.visibility = payload.visibility;
+    if ("parentNotifications" in payload) {
+      metadataUpdate.parentNotifications = payload.parentNotifications;
     }
-    const updated =
-      Object.keys(metadataUpdate).length > 0
-        ? updateThread(deps.db, deps.hub, thread.id, metadataUpdate)
-        : requirePublicThread(deps.db, thread.id);
+
+    let updated: Thread | null;
+    if (hasParentChange && !nativeTerminal) {
+      await deps.providerRegistry.whenRegistrationsSettled();
+      const spawnerThreadId = getThreadSpawner(deps.db, thread.id);
+      const models =
+        "model" in payload || "reasoningLevel" in payload
+          ? await loadThreadProviderModels(
+              deps,
+              thread,
+              typeof payload.model === "string" ? payload.model : null,
+            )
+          : null;
+      const notifications = new NotificationBuffer();
+      updated = deps.db.transaction(
+        (tx) => {
+          const current = getThread(tx, thread.id);
+          if (!current) {
+            throw new ApiError(404, "thread_not_found", "Thread not found");
+          }
+          if (current.parentThreadId !== thread.parentThreadId) {
+            throw new ApiError(
+              409,
+              "thread_scope_changed",
+              "Thread scope changed while this update was being prepared. Retry the update.",
+            );
+          }
+          if (typeof payload.parentThreadId === "string") {
+            assertValidParentThread(
+              { db: tx },
+              {
+                childThreadId: current.id,
+                parentThreadId: payload.parentThreadId,
+              },
+            );
+          }
+          const existing = getThreadExecutionOverride(tx, thread.id) ?? {
+            modelOverride: null,
+            reasoningLevelOverride: null,
+          };
+          const next = models
+            ? resolveThreadExecutionOverrideUpdate(deps.providerRegistry, {
+                existing,
+                patch: executionPatch,
+                models,
+                providerId: current.providerId,
+                fallbackModel: resolveFallbackModel(deps, current),
+              })
+            : existing;
+          const declaredChildModel = deps.providerRegistry.get(
+            current.providerId,
+          )?.childThreadModel;
+          const beforePolicy = childThreadModel({
+            parentThreadId: current.parentThreadId ?? spawnerThreadId,
+            declaredChildModel,
+          });
+          const afterPolicy = childThreadModel({
+            parentThreadId: payload.parentThreadId ?? spawnerThreadId,
+            declaredChildModel,
+          });
+          if (
+            afterPolicy !== null &&
+            next.modelOverride !== null &&
+            next.modelOverride !== afterPolicy
+          ) {
+            throw new ApiError(
+              400,
+              "child_model_conflict",
+              `Child threads for ${current.providerId} must use ${afterPolicy}; clear or choose the compatible model before changing the parent.`,
+              {
+                details: {
+                  providerId: current.providerId,
+                  requestedModel: next.modelOverride,
+                  childThreadModel: afterPolicy,
+                  reason: "parent",
+                },
+              },
+            );
+          }
+          if (afterPolicy !== null && afterPolicy !== beforePolicy) {
+            const conflictingQueuedRows = tx
+              .select({
+                id: queuedThreadMessages.id,
+                model: queuedThreadMessages.model,
+              })
+              .from(queuedThreadMessages)
+              .where(eq(queuedThreadMessages.threadId, current.id))
+              .all()
+              .filter((row) => row.model !== afterPolicy);
+            const conflictingQueuedMessageIds = conflictingQueuedRows.map(
+              (row) => row.id,
+            );
+            if (conflictingQueuedMessageIds.length > 0) {
+              throw new ApiError(
+                400,
+                "child_model_conflict",
+                "Changing the parent would change the model for accepted queued work.",
+                {
+                  details: {
+                    providerId: current.providerId,
+                    requestedModel: conflictingQueuedRows[0]!.model,
+                    childThreadModel: afterPolicy,
+                    reason: "parent",
+                    queuedMessageIds: conflictingQueuedMessageIds,
+                  },
+                },
+              );
+            }
+          }
+          if (models) {
+            setThreadExecutionOverride(tx, {
+              threadId: current.id,
+              modelOverride: next.modelOverride,
+              reasoningLevelOverride: next.reasoningLevelOverride,
+            });
+          }
+          return updateThread(tx, notifications, current.id, metadataUpdate);
+        },
+        { behavior: "immediate" },
+      );
+      notifications.flushInto(deps.hub);
+    } else {
+      if ("model" in payload || "reasoningLevel" in payload) {
+        await applyThreadExecutionOverride(deps, {
+          thread,
+          patch: executionPatch,
+        });
+      }
+      updated =
+        Object.keys(metadataUpdate).length > 0
+          ? updateThread(deps.db, deps.hub, thread.id, metadataUpdate)
+          : requirePublicThread(deps.db, thread.id);
+    }
+
+    if (payload.sessionOptions !== undefined) {
+      applyThreadSessionOptionPatch(deps, {
+        thread,
+        patch: payload.sessionOptions,
+      });
+    }
+
     if (!updated) {
       throw new ApiError(404, "thread_not_found", "Thread not found");
     }
 
-    if (
-      payload.title &&
-      payload.title !== thread.title &&
-      updated.environmentId
-    ) {
-      const environment = requireEnvironment(deps.db, updated.environmentId);
-      if (environment.status === "ready" && environment.path) {
-        dispatchThreadRenameCommand(deps, {
-          environment: {
-            id: environment.id,
-            hostId: environment.hostId,
-          },
-          providerId: updated.providerId,
-          threadId: updated.id,
-          title: payload.title,
-        });
-      }
+    if (payload.title && payload.title !== thread.title) {
+      syncThreadTitleToProvider(deps, updated);
     }
 
     if (
@@ -671,7 +974,7 @@ export function registerThreadBaseRoutes(app: Hono, deps: AppDeps): void {
       deps,
       thread,
     });
-    const dependents = listLifecycleThreadTree(deps.db, thread.id);
+    const dependents = listThreadDeletionTree(deps.db, thread.id);
     markThreadDeleted(deps.db, deps.hub, { threadId: thread.id });
     for (const dependent of dependents) {
       const deleted = getThread(deps.db, dependent.id);

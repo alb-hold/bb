@@ -1,9 +1,7 @@
 import { Suspense, lazy, useEffect, useState, type ReactNode } from "react";
-import { useAtom } from "jotai";
 import { TooltipProvider } from "@bb/shared-ui/tooltip";
 import { useUpdateGeneralSettings } from "@/hooks/mutations/settings-mutations";
 import { useSystemConfig } from "@/hooks/queries/system-queries";
-import { onboardingReopenStepAtom } from "./onboarding-state";
 
 const OnboardingFlow = lazy(() =>
   import("./OnboardingFlow").then((module) => ({
@@ -32,7 +30,6 @@ function rememberOnboardingSeen(): void {
 export function OnboardingGate({ children }: { children: ReactNode }) {
   const configQuery = useSystemConfig();
   const updateSettings = useUpdateGeneralSettings();
-  const [reopenStep, setReopenStep] = useAtom(onboardingReopenStepAtom);
   const [firstRunClosed, setFirstRunClosed] = useState(false);
   const [seenBefore] = useState(readOnboardingSeen);
 
@@ -42,7 +39,11 @@ export function OnboardingGate({ children }: { children: ReactNode }) {
     if (typeof completedAt === "string") rememberOnboardingSeen();
   }, [completedAt]);
 
-  if (firstRunClosed && typeof completedAt === "string") {
+  if (
+    firstRunClosed &&
+    typeof completedAt === "string" &&
+    !updateSettings.isPending
+  ) {
     setFirstRunClosed(false);
   }
 
@@ -53,25 +54,24 @@ export function OnboardingGate({ children }: { children: ReactNode }) {
   }
 
   const firstRun = settings.onboardingCompletedAt === null && !firstRunClosed;
-  if (!firstRun && reopenStep === null) return children;
+  if (!firstRun) return children;
 
   return (
     <TooltipProvider delayDuration={300} disableHoverableContent>
-      <div className="flex h-dvh w-full flex-col bg-background">
+      <div className="flex h-dvh w-full flex-col bg-background pt-[env(safe-area-inset-top)] pr-[env(safe-area-inset-right)] pb-[var(--bb-safe-area-bottom,env(safe-area-inset-bottom))] pl-[env(safe-area-inset-left)]">
         <Suspense fallback={null}>
           <OnboardingFlow
-            key={reopenStep ?? "first-run"}
-            initialStep={reopenStep ?? "agent"}
+            initialStep="agent"
+            entry={seenBefore ? "replay" : "first_run"}
             onClose={() => {
-              if (firstRun) {
-                setFirstRunClosed(true);
-                updateSettings.mutate({
+              setFirstRunClosed(true);
+              updateSettings.mutate(
+                {
                   ...settings,
                   onboardingCompletedAt: new Date().toISOString(),
-                  setupChecklistVisible: true,
-                });
-              }
-              setReopenStep(null);
+                },
+                { onError: () => setFirstRunClosed(false) },
+              );
             }}
           />
         </Suspense>

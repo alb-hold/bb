@@ -6,6 +6,7 @@ import GithubIcon from "@hugeicons/core-free-icons/GithubIcon";
 import PackageIcon from "@hugeicons/core-free-icons/PackageIcon";
 import Search01Icon from "@hugeicons/core-free-icons/Search01Icon";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { splitPluginDisplayName } from "@bb/domain/plugin-display-name";
 import {
   createContext,
   type ReactNode,
@@ -16,6 +17,7 @@ import {
 } from "react";
 
 import { initAnalytics, trackLandingEvent } from "../landing/analytics.js";
+import { classifyArrivalSource } from "../landing/arrival-source.js";
 import { CommandButton } from "../landing/command-button.js";
 import { SiteFooter, SiteNav } from "../landing/site-chrome.js";
 import {
@@ -41,6 +43,7 @@ import {
   marketplaceAuthorPath,
   marketplaceCategoryOptions,
   marketplaceDetailPath,
+  marketplaceIndexPath,
   marketplaceInstallCommand,
   marketplaceRepositoryUrl,
   marketplaceShelves,
@@ -263,6 +266,34 @@ function categoryLabel(
   );
 }
 
+function PluginTitle({
+  displayName,
+  heading = false,
+}: {
+  displayName: string;
+  heading?: boolean;
+}) {
+  const { name, tag } = splitPluginDisplayName(displayName);
+  const badge = tag ? (
+    <span
+      className={`marketplace-plugin-tag marketplace-plugin-tag-${tag.tone}`}
+    >
+      {tag.label}
+    </span>
+  ) : null;
+  return heading ? (
+    <div className="marketplace-plugin-title">
+      <h1>{name}</h1>
+      {badge}
+    </div>
+  ) : (
+    <span className="marketplace-plugin-title">
+      <strong>{name}</strong>
+      {badge}
+    </span>
+  );
+}
+
 function PluginCard({
   manifest,
   entry,
@@ -282,7 +313,7 @@ function PluginCard({
       >
         <span className="marketplace-card-topline">
           <PluginArtwork entry={entry} />
-          <strong>{entry.displayName}</strong>
+          <PluginTitle displayName={entry.displayName} />
         </span>
         <span className="marketplace-card-description">
           {entry.description}
@@ -359,8 +390,8 @@ function Shelf({
   const viewHref = builtIn
     ? `#${shelf.id}`
     : notable
-      ? "/marketplace?sort=recently-added"
-      : `/marketplace?category=${encodeURIComponent(shelf.id)}`;
+      ? `/marketplace?collection=${encodeURIComponent(shelf.id)}`
+      : marketplaceIndexPath(shelf.id);
   return (
     <section
       id={builtIn ? shelf.id : undefined}
@@ -369,22 +400,21 @@ function Shelf({
       <div className="marketplace-section-head">
         <div>
           <h2>
-            {shelf.label}{"\u00a0"}
+            {shelf.label}
+            {"\u00a0"}
             <span>{shelf.entries.length}</span>
           </h2>
           {description === undefined ? null : <p>{description}</p>}
         </div>
-        {expanded ? null : (
+        {expanded ? null : notable ? (
+          <MarketplaceLink href={viewHref}>View all</MarketplaceLink>
+        ) : (
           <a
             href={viewHref}
             onClick={(event) => {
               event.preventDefault();
               if (builtIn) {
                 setExpanded(true);
-                return;
-              }
-              if (notable) {
-                onSelect(undefined, "recently-added");
                 return;
               }
               onSelect(shelf.id);
@@ -396,7 +426,9 @@ function Shelf({
       </div>
       <PluginGrid
         manifest={manifest}
-        entries={expanded ? shelf.entries : shelf.entries.slice(0, 3)}
+        entries={
+          expanded ? shelf.entries : shelf.entries.slice(0, notable ? 6 : 3)
+        }
         stats={stats}
       />
     </section>
@@ -689,25 +721,46 @@ function MarketplaceBrowser({
   hero: boolean;
 }) {
   const [query, setQuery] = useState("");
+  const collection = marketplaceShelves(manifest, entries).find(
+    (shelf) => shelf.kind === "collection" && shelf.id === state.collection,
+  );
   const options = marketplaceCategoryOptions(manifest, entries);
-  const activeCategory = options.some((option) => option.id === state.category)
-    ? state.category
-    : undefined;
+  const activeCategory =
+    collection === undefined &&
+    options.some((option) => option.id === state.category)
+      ? state.category
+      : undefined;
   useMarketplacePageAnalytics(
     { category: activeCategory, sort: state.sort },
     analyticsAuthor,
   );
-  const searched = filterMarketplaceEntries(manifest, entries, query);
+  const searched = filterMarketplaceEntries(
+    manifest,
+    collection?.entries ?? entries,
+    query,
+  );
   const filtered = filterMarketplaceCategory(
     manifest,
     searched,
     activeCategory,
   );
   const displayed =
-    state.sort === undefined
+    collection !== undefined || state.sort === undefined
       ? filtered
       : sortMarketplaceEntries(filtered, state.sort, stats);
+  const activeOption = options.find((option) => option.id === activeCategory);
+  const categoryHeading =
+    collection ??
+    (activeOption === undefined || query.trim().length > 0
+      ? undefined
+      : {
+          label: activeOption.label,
+          description: manifest.categories.find(
+            (category) => category.id === activeOption.id,
+          )?.description,
+        });
   const isFlat =
+    collection !== undefined ||
     query.trim().length > 0 ||
     activeCategory !== undefined ||
     state.sort !== undefined;
@@ -716,11 +769,19 @@ function MarketplaceBrowser({
       <MarketplaceToolbar
         options={options}
         query={query}
-        state={{ category: activeCategory, sort: state.sort }}
+        state={{
+          category: activeCategory,
+          sort: collection === undefined ? state.sort : undefined,
+        }}
         onQueryChange={setQuery}
         onStateChange={onStateChange}
         hero={hero}
       />
+      {collection === undefined ? null : (
+        <p>
+          <MarketplaceLink href="/marketplace">All plugins</MarketplaceLink>
+        </p>
+      )}
       <div className="marketplace-results" aria-live="polite">
         {displayed.length === 0 ? (
           <MarketplaceState
@@ -729,17 +790,36 @@ function MarketplaceBrowser({
           />
         ) : isFlat ? (
           <section className="marketplace-flat-results">
-            <div className="marketplace-section-head">
-              <div>
-                <h2>
-                  {query.trim().length > 0
-                    ? "Search results"
-                    : state.sort === undefined
-                      ? "Filtered plugins"
-                      : SORT_LABELS[state.sort]}
-                </h2>
-                <span>{displayed.length} plugins</span>
-              </div>
+            <div
+              className={
+                categoryHeading === undefined
+                  ? "marketplace-section-head"
+                  : "marketplace-section-head is-category"
+              }
+            >
+              {categoryHeading === undefined ? (
+                <div>
+                  <h2>
+                    {query.trim().length > 0
+                      ? "Search results"
+                      : state.sort === undefined
+                        ? "Filtered plugins"
+                        : SORT_LABELS[state.sort]}
+                  </h2>
+                  <span>{displayed.length} plugins</span>
+                </div>
+              ) : (
+                <div>
+                  <h2>
+                    {categoryHeading.label}
+                    {"\u00a0"}
+                    <span>{displayed.length}</span>
+                  </h2>
+                  {categoryHeading.description === undefined ? null : (
+                    <p>{categoryHeading.description}</p>
+                  )}
+                </div>
+              )}
             </div>
             <PluginGrid
               manifest={manifest}
@@ -831,7 +911,7 @@ function MoreFromAuthor({
           >
             <PluginArtwork entry={candidate} />
             <span>
-              <strong>{candidate.displayName}</strong>
+              <PluginTitle displayName={candidate.displayName} />
               <small>{candidate.description}</small>
             </span>
             <InstallCount entry={candidate} stats={stats} />
@@ -869,9 +949,7 @@ function MoreInCategory({
             <p>{category.description}</p>
           )}
         </div>
-        <MarketplaceLink
-          href={`/marketplace?category=${encodeURIComponent(categoryId)}`}
-        >
+        <MarketplaceLink href={marketplaceIndexPath(categoryId)}>
           View all
         </MarketplaceLink>
       </div>
@@ -882,6 +960,14 @@ function MoreInCategory({
       />
     </section>
   );
+}
+
+let hasTrackedDetailViewInPageLoad = false;
+
+function isInitialDocumentPath(): boolean {
+  const [navigation] = performance.getEntriesByType("navigation");
+  if (navigation === undefined) return true;
+  return new URL(navigation.name).pathname === window.location.pathname;
 }
 
 export function PublicMarketplaceDetailPage({
@@ -897,8 +983,19 @@ export function PublicMarketplaceDetailPage({
     initAnalytics();
     trackLandingEvent({
       name: "marketplace_plugin_detail_viewed",
-      properties: { plugin_id: entry.id },
+      properties: {
+        plugin_id: entry.id,
+        entry_id: entry.id,
+        arrival_source: classifyArrivalSource({
+          searchParams: new URLSearchParams(window.location.search),
+          referrer: document.referrer,
+          siteOrigin: window.location.origin,
+          isFirstViewInPageLoad:
+            !hasTrackedDetailViewInPageLoad && isInitialDocumentPath(),
+        }),
+      },
     });
+    hasTrackedDetailViewInPageLoad = true;
   }, [entry.id]);
   const categoryDefinition = resolveMarketplaceCategory(manifest, entry);
   const category = categoryDefinition?.displayName ?? "More plugins";
@@ -925,18 +1022,16 @@ export function PublicMarketplaceDetailPage({
         <nav className="marketplace-breadcrumbs" aria-label="Breadcrumb">
           <MarketplaceLink href="/marketplace">Marketplace</MarketplaceLink>
           <span aria-hidden>/</span>
-          <MarketplaceLink
-            href={`/marketplace?category=${encodeURIComponent(categoryId)}`}
-          >
+          <MarketplaceLink href={marketplaceIndexPath(categoryId)}>
             {category}
           </MarketplaceLink>
           <span aria-hidden>/</span>
-          <strong>{entry.displayName}</strong>
+          <strong>{splitPluginDisplayName(entry.displayName).name}</strong>
         </nav>
         <header className="marketplace-detail-head">
           <PluginArtwork entry={entry} large />
           <div className="marketplace-detail-identity">
-            <h1>{entry.displayName}</h1>
+            <PluginTitle displayName={entry.displayName} heading />
             <div className="marketplace-detail-attribution">
               {authorPath === undefined ? (
                 <span className="marketplace-detail-author">
@@ -960,7 +1055,7 @@ export function PublicMarketplaceDetailPage({
               )}
               <MarketplaceLink
                 className="marketplace-detail-category"
-                href={`/marketplace?category=${encodeURIComponent(categoryId)}`}
+                href={marketplaceIndexPath(categoryId)}
               >
                 {category}
               </MarketplaceLink>
@@ -979,18 +1074,18 @@ export function PublicMarketplaceDetailPage({
                     if (!copied) return;
                     trackLandingEvent({
                       name: "marketplace_install_command_copied",
-                      properties: { plugin_id: entry.id },
+                      properties: { plugin_id: entry.id, entry_id: entry.id },
                     });
                   }}
                 />
               )}
-              <MarketplaceLink
+              <a
                 className="marketplace-detail-source marketplace-detail-download"
                 href="/download/macos"
               >
                 Get it for macOS
                 <HugeiconsIcon icon={LinkSquare02Icon} aria-hidden />
-              </MarketplaceLink>
+              </a>
             </div>
           </div>
         </header>

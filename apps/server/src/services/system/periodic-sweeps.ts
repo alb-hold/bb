@@ -1,3 +1,4 @@
+import { performance } from "node:perf_hooks";
 import {
   runThreadPruningSweep,
   THREAD_PRUNING_SWEEP_LIMITS,
@@ -11,6 +12,7 @@ import {
 import { sweepProviderLifecycles } from "../environments/environment-engine.js";
 import {
   runThreadStorageOrphanSweep,
+  THREAD_STORAGE_ORPHAN_PASS_LIMITS,
   THREAD_STORAGE_ORPHAN_SWEEP_CADENCE_MS,
 } from "../threads/thread-storage-orphans.js";
 import { and, eq, isNull, isNotNull, inArray } from "drizzle-orm";
@@ -20,7 +22,6 @@ import {
   compactDatabase,
   DATABASE_COMPACTION_MIN_RECLAIMABLE_BYTES,
   DATABASE_COMPACTION_MIN_RECLAIMABLE_RATIO,
-  DATABASE_INCREMENTAL_VACUUM_MAX_PAGES,
   DATABASE_INCREMENTAL_VACUUM_MIN_FREELIST_PAGES,
   DEFAULT_CLOSED_SESSION_PRUNE_BATCH_SIZE,
   deleteExpiredRetainedEventOutputs,
@@ -35,6 +36,7 @@ import {
   listDeferredLegacyTables,
   migrateNextCompletedEventItemOutput,
   migrateNextLegacyImageGenerationOutput,
+  pruneRetainedTerminalOutput,
   environments,
   pruneClosedSessions,
   RETAINED_EVENT_OUTPUT_TARGETS,
@@ -74,6 +76,8 @@ import {
 } from "../threads/queued-message-dispatch.js";
 import { releaseOrphanedQueuedMessageDispatchClaims } from "../threads/queued-messages.js";
 import { deliverLegacyDeferredThreadMessages } from "../threads/legacy-deferred-messages.js";
+import { sweepNativeParentNotices } from "../threads/native-parent-notices.js";
+import { sweepNativeThreadStatus } from "../threads/native-thread-status.js";
 import { runEventLoopWork, runEventLoopWorkSync } from "./event-loop-work.js";
 
 type DatabaseMaintenanceSweepDeps = Pick<AppDeps, "db" | "logger">;
@@ -88,6 +92,10 @@ type PeriodicSweepDeps = LoggedPendingInteractionWorkSessionDeps & {
 };
 
 const DATABASE_MAINTENANCE_CHECK_INTERVAL_MS = 60 * 60_000;
+export const DATABASE_INCREMENTAL_VACUUM_CHUNK_PAGES = 256;
+const DATABASE_INCREMENTAL_VACUUM_LIMITS: IncrementalVacuumLimits = {
+  elapsedBudgetMs: THREAD_STORAGE_ORPHAN_PASS_LIMITS.elapsedBudgetMs,
+};
 const COMPLETED_EVENT_OUTPUT_MIGRATION_MAX_ADVANCES_PER_SWEEP = 64;
 const RETAINED_EVENT_OUTPUT_EXPIRY_MAX_ADVANCES_PER_SWEEP = 256;
 const RETAINED_EVENT_OUTPUT_EXPIRY_BATCH_SIZE = 1;
@@ -176,9 +184,35 @@ export async function runPeriodicSweepJobs(
   }
 }
 
-export function runDatabaseMaintenanceSweep(
+interface IncrementalVacuumLimits {
+  elapsedBudgetMs: number;
+}
+
+export async function runChunkedIncrementalVacuum(
+  db: DatabaseMaintenanceSweepDeps["db"],
+  limits: IncrementalVacuumLimits,
+): Promise<ReturnType<typeof runIncrementalVacuum>> {
+  const startedAt = performance.now();
+  let first: ReturnType<typeof runIncrementalVacuum> | null = null;
+  let last: ReturnType<typeof runIncrementalVacuum> | null = null;
+  do {
+    if (last !== null) {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+    last = runIncrementalVacuum(db, {
+      maxPages: DATABASE_INCREMENTAL_VACUUM_CHUNK_PAGES,
+    });
+    first ??= last;
+  } while (
+    last.after.freelistCount > 0 &&
+    performance.now() - startedAt < limits.elapsedBudgetMs
+  );
+  return { before: first.before, after: last.after };
+}
+
+export async function runDatabaseMaintenanceSweep(
   deps: DatabaseMaintenanceSweepDeps,
-): void {
+): Promise<void> {
   const deferredLegacyTables = listDeferredLegacyTables(deps.db);
   if (deferredLegacyTables.length > 0) {
     const activity = getDatabaseMaintenanceActivity(deps.db);
@@ -222,9 +256,10 @@ export function runDatabaseMaintenanceSweep(
       return;
     }
     try {
-      const result = runIncrementalVacuum(deps.db, {
-        maxPages: DATABASE_INCREMENTAL_VACUUM_MAX_PAGES,
-      });
+      const result = await runChunkedIncrementalVacuum(
+        deps.db,
+        DATABASE_INCREMENTAL_VACUUM_LIMITS,
+      );
       deps.logger.info({ result }, "Incremental database vacuum completed");
     } catch (error) {
       deps.logger.warn({ err: error }, "Incremental database vacuum failed");
@@ -478,6 +513,13 @@ async function runRetainedEventOutputExpirySweep(
   }
 }
 
+function runRetainedTerminalOutputExpirySweep(
+  deps: LoggedPendingInteractionWorkSessionDeps,
+  now: number,
+): void {
+  pruneRetainedTerminalOutput(deps.db, now);
+}
+
 function runFileChangeDiffTruncationSweep(
   deps: LoggedPendingInteractionWorkSessionDeps,
   now: number,
@@ -544,6 +586,12 @@ const PERIODIC_SWEEP_JOBS: PeriodicSweepJob[] = [
   {
     cadenceMs: 0,
     category: "retention",
+    name: "retained-terminal-output-expiry",
+    run: runRetainedTerminalOutputExpirySweep,
+  },
+  {
+    cadenceMs: 0,
+    category: "retention",
     name: "file-change-diff-truncation",
     run: runFileChangeDiffTruncationSweep,
   },
@@ -598,6 +646,18 @@ const PERIODIC_SWEEP_JOBS: PeriodicSweepJob[] = [
         kind: "orphaned-plugin-recovery",
         plugins: deps.plugins,
       }),
+  },
+  {
+    cadenceMs: 0,
+    category: "durable-intent-retry",
+    name: "native-thread-status",
+    run: sweepNativeThreadStatus,
+  },
+  {
+    cadenceMs: 0,
+    category: "durable-intent-retry",
+    name: "native-parent-notices",
+    run: sweepNativeParentNotices,
   },
   {
     cadenceMs: 0,

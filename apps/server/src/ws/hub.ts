@@ -1,5 +1,6 @@
 import { emitPluginThreadEvents } from "../services/plugins/plugin-thread-events.js";
 import { Buffer } from "node:buffer";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import {
   realtimeSubscriptionTargetKey as subscriptionKey,
   type RealtimeSubscriptionTarget,
@@ -11,6 +12,7 @@ import {
   type ThreadChangeKind,
   type ThreadChangeMetadata,
   type ThreadEventType,
+  type ThreadTimelineSubscriptionTarget,
 } from "@bb/domain";
 import type { DbNotifier } from "@bb/db";
 import type {
@@ -26,24 +28,74 @@ import {
   terminalServerMessageSchema,
   threadOpenSignalSchema,
   threadPaneActionSignalSchema,
+  deviceHandoffSignalSchema,
+  deviceHandoffClientTokenSignalSchema,
+  deviceHandoffExpiredSignalSchema,
+  type DeviceHandoffRequest,
+  type DeviceHandoffSignal,
+  type ThreadTimelineSignal,
   type ThreadPaneAction,
   type ThreadOpenFile,
   type ThreadOpenSplit,
+  type ThreadOpenTerminalAction,
+  type ThreadOpenTerminalLayoutAction,
   type TerminalServerMessage,
 } from "@bb/server-contract";
+import { COMPRESSED_SEND } from "./compression.js";
+import {
+  WatchedTargetRegistry,
+  type WatchedTarget,
+  type WatchedTargetChange,
+  type WatchedTargetKind,
+} from "./watched-targets.js";
 
 const TERMINAL_SOCKET_HIGH_WATER_BYTES = 1024 * 1024;
 const TERMINAL_SOCKET_MAX_QUEUE_BYTES = 32 * 1024 * 1024;
 const TERMINAL_SOCKET_DRAIN_POLL_MS = 10;
 const THREAD_LIST_EVENTS_APPENDED_COALESCE_MS = 1_000;
+const DEVICE_HANDOFF_TTL_MS = 10 * 60 * 1000;
+const DEVICE_HANDOFF_PENDING_LIMIT = 100;
 const LIST_RELEVANT_THREAD_EVENT_TYPES: ReadonlySet<ThreadEventType> =
   new Set<ThreadEventType>(["client/turn/requested", "turn/completed"]);
 
 interface HubSocket {
   close(code?: number, reason?: string): void;
   raw?: { bufferedAmount: number };
-  send(data: string): void;
+  send(data: string, options?: { compress: boolean }): void;
 }
+
+type DaemonSessionChange =
+  | { kind: "opened"; hostId: string; sessionId: string }
+  | { kind: "closed"; sessionId: string };
+
+type DaemonSessionListener = (change: DaemonSessionChange) => void;
+type DeviceHandoffAttentionListener = (
+  threadId: string,
+  terminalSessionId: string | null,
+  pending: boolean,
+) => void;
+
+interface TerminalSize {
+  cols: number;
+  rows: number;
+}
+
+interface TerminalResizeOwnerChange {
+  clientId: string;
+  cols: number | null;
+  reason: "claimed" | "resized" | "hidden" | "disconnected" | "stale";
+  rows: number | null;
+  terminalId: string;
+}
+
+interface TerminalClientState {
+  heartbeats: boolean;
+  lastSeenAt: number;
+  size: TerminalSize | null;
+  visible: boolean;
+}
+
+export const TERMINAL_CLIENT_STALE_MS = 45_000;
 
 interface TerminalSocketSendQueue {
   bytes: number;
@@ -56,9 +108,23 @@ export type ServerChangedMessage =
       ChangedMessage,
       { entity: "thread" | "project" | "environment" | "host" }
     > & { id: string })
-  | Extract<ChangedMessage, { entity: "system" }>;
+  | Extract<ChangedMessage, { entity: "system" | "plugin" }>;
 
 type ChangedMessageListener = (message: ServerChangedMessage) => void;
+type ThreadTimelineTagListener = (
+  target: ThreadTimelineSubscriptionTarget,
+  tag: string,
+) => void;
+
+export type ThreadTimelineSubscriberBaseline =
+  | { kind: "legacy" }
+  | { kind: "pending" }
+  | { kind: "tag"; tag: string };
+
+export interface ThreadTimelineSubscriber {
+  baseline: ThreadTimelineSubscriberBaseline;
+  socket: HubSocket;
+}
 
 interface PendingThreadListEventsAppended {
   timelineSequence: number | undefined;
@@ -129,6 +195,8 @@ function subscriptionKeysForMessage(message: ServerChangedMessage): string[] {
         subscriptionKey({ kind: "host-list" }),
         subscriptionKey({ kind: "host-detail", hostId: message.id }),
       ];
+    case "plugin":
+      return [subscriptionKey({ kind: "plugin", pluginId: message.pluginId })];
     case "system":
       return [subscriptionKey({ kind: "system" })];
   }
@@ -168,6 +236,34 @@ function scheduleTimer(
   timers.set(sessionId, timeout);
 }
 
+interface ThreadOpenNotification {
+  split: ThreadOpenSplit;
+  file: ThreadOpenFile | null;
+  terminalAction?: ThreadOpenTerminalAction;
+  terminalLayoutAction?: ThreadOpenTerminalLayoutAction;
+}
+
+function threadOpenPayload(
+  thread: { projectId: string; threadId: string },
+  request: ThreadOpenNotification,
+): string {
+  return JSON.stringify(
+    threadOpenSignalSchema.parse({
+      type: "thread-open",
+      projectId: thread.projectId,
+      threadId: thread.threadId,
+      split: request.split,
+      file: request.file,
+      ...(request.terminalAction
+        ? { terminalAction: request.terminalAction }
+        : {}),
+      ...(request.terminalLayoutAction
+        ? { terminalLayoutAction: request.terminalLayoutAction }
+        : {}),
+    }),
+  );
+}
+
 interface ThreadEventWaiter {
   resolve: (notified: boolean) => void;
   timeout: ReturnType<typeof setTimeout>;
@@ -184,6 +280,7 @@ interface DaemonSessionCloseWaiter {
 }
 
 interface HostOnlineRpcWaiter {
+  detachAbortListener: () => void;
   reject: (reason?: Error) => void;
   resolve: (message: HostDaemonOnlineRpcResponseMessage) => void;
   sessionId: string;
@@ -211,6 +308,22 @@ export class HostOnlineRpcTimeoutError extends Error {
   }
 }
 
+export class HostOnlineRpcCancelledError extends Error {
+  constructor() {
+    super("Host RPC request was cancelled");
+    this.name = "HostOnlineRpcCancelledError";
+  }
+}
+
+export class NoDeviceHandoffSubmitterError extends Error {
+  constructor() {
+    super(
+      "No device has sent a message in this thread yet; open the thread on your phone and send a message, then run the command again.",
+    );
+    this.name = "NoDeviceHandoffSubmitterError";
+  }
+}
+
 export class HostOnlineRpcUnavailableError extends Error {
   constructor() {
     super("Host daemon is not connected");
@@ -219,8 +332,21 @@ export class HostOnlineRpcUnavailableError extends Error {
 }
 
 export class NotificationHub implements DbNotifier {
-  private readonly clientKeysBySocket = new Map<HubSocket, Set<string>>();
+  private nextTerminalClientId = 1;
+  private readonly terminalClientIdBySocket = new WeakMap<HubSocket, string>();
+  private readonly clientKeysBySocket = new Map<
+    HubSocket,
+    Map<string, RealtimeSubscriptionTarget>
+  >();
+  private readonly appClientSockets = new Set<HubSocket>();
   private readonly clientSocketsByKey = new Map<string, Set<HubSocket>>();
+  private readonly hiddenClients = new Set<HubSocket>();
+  private readonly timelineTagsBySocket = new Map<
+    HubSocket,
+    Map<string, string | null>
+  >();
+  private readonly timelineTagListeners = new Set<ThreadTimelineTagListener>();
+  private readonly watchedTargets = new WatchedTargetRegistry();
   private readonly daemonSessions = new Map<
     string,
     {
@@ -260,6 +386,25 @@ export class NotificationHub implements DbNotifier {
     string,
     ReturnType<typeof setTimeout>
   >();
+  private readonly daemonSessionListeners = new Set<DaemonSessionListener>();
+  private readonly deviceHandoffAttentionListeners =
+    new Set<DeviceHandoffAttentionListener>();
+  private readonly pendingDeviceHandoffCountsByThread = new Map<
+    string,
+    number
+  >();
+  private readonly pendingDeviceHandoffCountsByTerminal = new Map<
+    string,
+    number
+  >();
+  private readonly expiredDeviceHandoffs = new Map<
+    string,
+    {
+      id: string;
+      origin: DeviceHandoffRequest["origin"];
+      recipientDeviceHash: string | null;
+    }
+  >();
   private readonly terminalClientSocketsById = new Map<
     string,
     Set<HubSocket>
@@ -272,6 +417,10 @@ export class NotificationHub implements DbNotifier {
     HubSocket,
     Set<string>
   >();
+  private readonly terminalClientStateById = new Map<
+    string,
+    Map<HubSocket, TerminalClientState>
+  >();
   private readonly terminalResizeOwnerById = new Map<string, HubSocket>();
   private readonly threadEventWaiters = new Map<
     string,
@@ -281,21 +430,353 @@ export class NotificationHub implements DbNotifier {
     string,
     PendingThreadListEventsAppended
   >();
+  private readonly pendingDeviceHandoffsByOrigin = new Map<
+    string,
+    Array<{
+      id: string;
+      expiresAt: number;
+      origin: DeviceHandoffRequest["origin"];
+      payload: string;
+      signal: DeviceHandoffSignal;
+      hostLabel: string;
+      deliveryMode: "terminal" | "device";
+      recipientDeviceHash: string | null;
+      attentionThreadId: string | null;
+      sentTo: Set<HubSocket>;
+      ackableBy: Set<HubSocket>;
+      timeout: ReturnType<typeof setTimeout>;
+    }>
+  >();
+  private readonly deviceHandoffSubmitterByThreadRequest = new Map<
+    string,
+    { deviceHash: string | null; expiresAt: number }
+  >();
+  private readonly deviceHandoffSubmitterByThreadTurn = new Map<
+    string,
+    { deviceHash: string | null }
+  >();
+  private readonly latestDeviceHandoffSubmitterByThread = new Map<
+    string,
+    { deviceHash: string; submittedAt: number }
+  >();
+  private readonly activeDeviceHandoffViewByClientSocket = new Map<
+    HubSocket,
+    { threadId: string | null; terminalSessionId: string | null }
+  >();
+  private readonly deviceHandoffDeviceByHash = new Map<
+    string,
+    { label: string }
+  >();
+  private readonly deviceHandoffClientSocketsByHash = new Map<
+    string,
+    Set<HubSocket>
+  >();
+  private readonly deviceHandoffDeviceHashByClientSocket = new Map<
+    HubSocket,
+    string
+  >();
+  private readonly deviceHandoffOwnerByTerminalSocket = new Map<
+    HubSocket,
+    string
+  >();
+  private readonly deviceHandoffTerminalSocketsByDeviceHash = new Map<
+    string,
+    Set<HubSocket>
+  >();
 
-  registerClient(socket: HubSocket): void {
-    if (!this.clientKeysBySocket.has(socket)) {
-      this.clientKeysBySocket.set(socket, new Set());
+  issueDeviceHandoffClientToken(
+    socket: HubSocket,
+    presentedToken?: string | null,
+  ): string {
+    this.registerClient(socket);
+    const previousHash = this.deviceHandoffDeviceHashByClientSocket.get(socket);
+    if (previousHash !== undefined) {
+      const previousSockets =
+        this.deviceHandoffClientSocketsByHash.get(previousHash);
+      previousSockets?.delete(socket);
+      if (previousSockets?.size === 0)
+        this.deviceHandoffClientSocketsByHash.delete(previousHash);
+    }
+    const presentedHash = this.deviceHandoffHashForWellFormedToken(
+      presentedToken ?? undefined,
+    );
+    const token =
+      presentedHash !== null
+        ? presentedToken!
+        : randomBytes(16).toString("base64url");
+    const deviceHash = createHash("sha256").update(token).digest("hex");
+    if (!this.deviceHandoffDeviceByHash.has(deviceHash)) {
+      this.deviceHandoffDeviceByHash.set(deviceHash, { label: "BB device" });
+    }
+    this.deviceHandoffDeviceHashByClientSocket.set(socket, deviceHash);
+    const clientSockets =
+      this.deviceHandoffClientSocketsByHash.get(deviceHash) ??
+      new Set<HubSocket>();
+    clientSockets.add(socket);
+    this.deviceHandoffClientSocketsByHash.set(deviceHash, clientSockets);
+    socket.send(
+      JSON.stringify(
+        deviceHandoffClientTokenSignalSchema.parse({
+          type: "device-handoff-client-token",
+          token,
+        }),
+      ),
+    );
+    return token;
+  }
+
+  recordDeviceHandoffTurnSubmitter(
+    token: string | undefined,
+    threadId: string,
+    turnRequestId: string,
+    turnId?: string,
+    now = Date.now(),
+  ): boolean {
+    this.pruneDeviceHandoffSubmitters(now);
+    const deviceHash = this.deviceHandoffHashForToken(token);
+    const key = this.deviceHandoffSubmitterKey(threadId, turnRequestId);
+    this.deviceHandoffSubmitterByThreadRequest.set(key, {
+      deviceHash,
+      expiresAt: now + DEVICE_HANDOFF_TTL_MS,
+    });
+    if (turnId !== undefined) {
+      this.setDeviceHandoffTurnSubmitter(threadId, turnId, deviceHash);
+    }
+    if (deviceHash !== null) {
+      this.latestDeviceHandoffSubmitterByThread.set(threadId, {
+        deviceHash,
+        submittedAt: now,
+      });
+    }
+    while (
+      this.deviceHandoffSubmitterByThreadRequest.size >
+      DEVICE_HANDOFF_PENDING_LIMIT
+    ) {
+      const oldest = this.deviceHandoffSubmitterByThreadRequest
+        .keys()
+        .next().value;
+      if (oldest === undefined) break;
+      this.deviceHandoffSubmitterByThreadRequest.delete(oldest);
+    }
+    return deviceHash !== null;
+  }
+
+  promoteDeviceHandoffTurnSubmitter(
+    threadId: string,
+    turnRequestId: string,
+    turnId: string,
+    now = Date.now(),
+  ): boolean {
+    this.pruneDeviceHandoffSubmitters(now);
+    const requestKey = this.deviceHandoffSubmitterKey(threadId, turnRequestId);
+    const submission =
+      this.deviceHandoffSubmitterByThreadRequest.get(requestKey);
+    if (submission === undefined) {
+      return false;
+    }
+    this.setDeviceHandoffTurnSubmitter(threadId, turnId, submission.deviceHash);
+    this.deviceHandoffSubmitterByThreadRequest.delete(requestKey);
+    return true;
+  }
+
+  clearDeviceHandoffTurnSubmitterForThread(threadId: string): void {
+    const threadKeyPrefix = `${threadId}\u0000`;
+    for (const key of this.deviceHandoffSubmitterByThreadRequest.keys()) {
+      if (key.startsWith(threadKeyPrefix)) {
+        this.deviceHandoffSubmitterByThreadRequest.delete(key);
+      }
+    }
+    for (const key of this.deviceHandoffSubmitterByThreadTurn.keys()) {
+      if (key.startsWith(threadKeyPrefix)) {
+        this.deviceHandoffSubmitterByThreadTurn.delete(key);
+      }
     }
   }
 
+  private deviceHandoffSubmitterKey(
+    threadId: string,
+    turnRequestId: string,
+  ): string {
+    return `${threadId}\u0000${turnRequestId}`;
+  }
+
+  private setDeviceHandoffTurnSubmitter(
+    threadId: string,
+    turnId: string,
+    deviceHash: string | null,
+  ): void {
+    const turnKey = this.deviceHandoffSubmitterKey(threadId, turnId);
+    const threadKeyPrefix = `${threadId}\u0000`;
+    for (const existingKey of this.deviceHandoffSubmitterByThreadTurn.keys()) {
+      if (existingKey.startsWith(threadKeyPrefix) && existingKey !== turnKey) {
+        this.deviceHandoffSubmitterByThreadTurn.delete(existingKey);
+      }
+    }
+    this.deviceHandoffSubmitterByThreadTurn.set(turnKey, { deviceHash });
+  }
+
+  private deviceHandoffHashForToken(token: string | undefined): string | null {
+    if (token === undefined) return null;
+    const hash = this.deviceHandoffHashForWellFormedToken(token);
+    if (hash === null) return null;
+    if (!this.deviceHandoffDeviceByHash.has(hash)) {
+      this.deviceHandoffDeviceByHash.set(hash, { label: "BB device" });
+    }
+    return hash;
+  }
+
+  private deviceHandoffHashForWellFormedToken(
+    token: string | undefined,
+  ): string | null {
+    if (token === undefined || !/^[A-Za-z0-9_-]{22}$/.test(token)) return null;
+    const bytes = Buffer.from(token, "base64url");
+    if (bytes.length !== 16 || bytes.toString("base64url") !== token)
+      return null;
+    return createHash("sha256").update(token).digest("hex");
+  }
+
+  private pruneDeviceHandoffSubmitters(now: number): void {
+    for (const [key, submission] of this
+      .deviceHandoffSubmitterByThreadRequest) {
+      if (submission.expiresAt <= now) {
+        this.deviceHandoffSubmitterByThreadRequest.delete(key);
+      }
+    }
+  }
+
+  linkDeviceHandoffTerminalAttachment(
+    token: string | undefined,
+    terminalId: string,
+    terminalSocket: HubSocket,
+  ): boolean {
+    if (
+      token === undefined ||
+      !this.terminalIdsByClientSocket.get(terminalSocket)?.has(terminalId)
+    )
+      return false;
+    const owner = this.deviceHandoffHashForToken(token);
+    if (owner === null) return false;
+    this.unlinkDeviceHandoffTerminalAttachment(terminalSocket);
+    this.deviceHandoffOwnerByTerminalSocket.set(terminalSocket, owner);
+    const sockets =
+      this.deviceHandoffTerminalSocketsByDeviceHash.get(owner) ??
+      new Set<HubSocket>();
+    sockets.add(terminalSocket);
+    this.deviceHandoffTerminalSocketsByDeviceHash.set(owner, sockets);
+    return true;
+  }
+
+  constructor(
+    private readonly onTerminalResizeOwnerChange: (
+      change: TerminalResizeOwnerChange,
+    ) => void = () => undefined,
+  ) {}
+
+  private terminalClientId(socket: HubSocket): string {
+    let id = this.terminalClientIdBySocket.get(socket);
+    if (id === undefined) {
+      id = `terminal-client-${this.nextTerminalClientId}`;
+      this.nextTerminalClientId += 1;
+      this.terminalClientIdBySocket.set(socket, id);
+    }
+    return id;
+  }
+
+  private clearTerminalResizeOwner(
+    terminalId: string,
+    socket: HubSocket,
+    reason: TerminalResizeOwnerChange["reason"],
+  ): void {
+    if (this.terminalResizeOwnerById.get(terminalId) !== socket) return;
+    const size = this.terminalClientStateById
+      .get(terminalId)
+      ?.get(socket)?.size;
+    this.terminalResizeOwnerById.delete(terminalId);
+    this.onTerminalResizeOwnerChange({
+      clientId: this.terminalClientId(socket),
+      cols: size?.cols ?? null,
+      rows: size?.rows ?? null,
+      reason,
+      terminalId,
+    });
+  }
+
+  private clientChangeNotificationsStopped = false;
+
+  stopClientChangeNotifications(): void {
+    this.clientChangeNotificationsStopped = true;
+  }
+
+  notifyPluginChanged(pluginId: string, tags: readonly string[] | null): void {
+    this.notifyClients({
+      type: "changed",
+      entity: "plugin",
+      pluginId,
+      tags: tags === null ? null : [...tags],
+    });
+  }
+
+  registerClient(socket: HubSocket, isAppClient = false): void {
+    if (!this.clientKeysBySocket.has(socket)) {
+      this.clientKeysBySocket.set(socket, new Map());
+    }
+    if (isAppClient) this.appClientSockets.add(socket);
+  }
+
+  setClientVisible(socket: HubSocket, visible: boolean): void {
+    this.registerClient(socket);
+    if (visible !== this.hiddenClients.has(socket)) {
+      return;
+    }
+    const targets = this.clientKeysBySocket.get(socket) ?? new Map();
+    if (visible) {
+      this.hiddenClients.delete(socket);
+      this.watchedTargets.update(
+        [...targets].map(([key, target]) => ({ key, target: { ...target } })),
+        [],
+      );
+      return;
+    }
+    this.hiddenClients.add(socket);
+    this.watchedTargets.update(
+      [],
+      [...targets.keys()].filter((key) => !this.isWatched(key)),
+    );
+  }
+
+  private isWatched(key: string): boolean {
+    for (const socket of this.clientSocketsByKey.get(key) ?? []) {
+      if (!this.hiddenClients.has(socket)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   unregisterClient(socket: HubSocket): void {
+    const deviceHash = this.deviceHandoffDeviceHashByClientSocket.get(socket);
+    if (deviceHash !== undefined) {
+      const sockets = this.deviceHandoffClientSocketsByHash.get(deviceHash);
+      sockets?.delete(socket);
+      if (sockets?.size === 0)
+        this.deviceHandoffClientSocketsByHash.delete(deviceHash);
+    }
+    this.deviceHandoffDeviceHashByClientSocket.delete(socket);
     this.unregisterTerminalClientSocket(socket);
+    this.activeDeviceHandoffViewByClientSocket.delete(socket);
+    for (const handoffs of this.pendingDeviceHandoffsByOrigin.values()) {
+      for (const handoff of handoffs) {
+        handoff.sentTo.delete(socket);
+        handoff.ackableBy.delete(socket);
+      }
+    }
     const keys = this.clientKeysBySocket.get(socket);
     if (!keys) {
       return;
     }
 
-    for (const key of keys) {
+    const stoppedKeys: string[] = [];
+    for (const key of keys.keys()) {
       const sockets = this.clientSocketsByKey.get(key);
       if (!sockets) {
         continue;
@@ -304,9 +785,30 @@ export class NotificationHub implements DbNotifier {
       if (sockets.size === 0) {
         this.clientSocketsByKey.delete(key);
       }
+      if (!this.isWatched(key)) {
+        stoppedKeys.push(key);
+      }
     }
 
     this.clientKeysBySocket.delete(socket);
+    this.clientKeysBySocket.delete(socket);
+    this.appClientSockets.delete(socket);
+    this.hiddenClients.delete(socket);
+    this.timelineTagsBySocket.delete(socket);
+    this.watchedTargets.update([], stoppedKeys);
+  }
+
+  onWatchedTargets<Kind extends WatchedTargetKind>(
+    kinds: readonly Kind[],
+    listener: (change: WatchedTargetChange<WatchedTarget<Kind>>) => void,
+  ): () => void {
+    return this.watchedTargets.listen(kinds, listener);
+  }
+
+  listWatchedTargets<Kind extends WatchedTargetKind>(
+    kind: Kind,
+  ): WatchedTarget<Kind>[] {
+    return this.watchedTargets.list(kind);
   }
 
   onChangedMessage(listener: ChangedMessageListener): () => void {
@@ -314,6 +816,13 @@ export class NotificationHub implements DbNotifier {
     return () => {
       this.changedMessageListeners.delete(listener);
     };
+  }
+
+  onDeviceHandoffAttentionChange(
+    listener: DeviceHandoffAttentionListener,
+  ): () => void {
+    this.deviceHandoffAttentionListeners.add(listener);
+    return () => this.deviceHandoffAttentionListeners.delete(listener);
   }
 
   registerTerminalClient(terminalId: string, socket: HubSocket): void {
@@ -328,15 +837,186 @@ export class NotificationHub implements DbNotifier {
     this.terminalIdsByClientSocket.set(socket, terminalIds);
   }
 
-  claimTerminalResizeOwnership(terminalId: string, socket: HubSocket): void {
-    this.terminalResizeOwnerById.set(terminalId, socket);
+  private unlinkDeviceHandoffTerminalAttachment(socket: HubSocket): void {
+    const owner = this.deviceHandoffOwnerByTerminalSocket.get(socket);
+    if (owner === undefined) return;
+    this.deviceHandoffOwnerByTerminalSocket.delete(socket);
+    const sockets = this.deviceHandoffTerminalSocketsByDeviceHash.get(owner);
+    sockets?.delete(socket);
+    if (sockets?.size === 0)
+      this.deviceHandoffTerminalSocketsByDeviceHash.delete(owner);
   }
 
-  isTerminalResizeOwner(terminalId: string, socket: HubSocket): boolean {
-    return this.terminalResizeOwnerById.get(terminalId) === socket;
+  recordTerminalClientSize(
+    terminalId: string,
+    socket: HubSocket,
+    size: TerminalSize,
+    now: number,
+    claim = false,
+  ): void {
+    const state = this.terminalClientState(terminalId, socket, now);
+    const previousSize = state.size;
+    state.size = size;
+    state.lastSeenAt = now;
+    if (state.visible) {
+      const currentOwner = this.terminalResizeOwnerById.get(terminalId);
+      if (claim && currentOwner !== socket) {
+        this.terminalResizeOwnerById.set(terminalId, socket);
+        this.onTerminalResizeOwnerChange({
+          clientId: this.terminalClientId(socket),
+          cols: size.cols,
+          rows: size.rows,
+          reason: "claimed",
+          terminalId,
+        });
+      } else if (
+        currentOwner === socket &&
+        (previousSize?.cols !== size.cols || previousSize?.rows !== size.rows)
+      ) {
+        this.onTerminalResizeOwnerChange({
+          clientId: this.terminalClientId(socket),
+          cols: size.cols,
+          rows: size.rows,
+          reason: "resized",
+          terminalId,
+        });
+      }
+    }
+  }
+
+  recordTerminalClientVisibility(
+    terminalId: string,
+    socket: HubSocket,
+    visible: boolean,
+    now: number,
+  ): void {
+    const state = this.terminalClientState(terminalId, socket, now);
+    state.visible = visible;
+    state.lastSeenAt = now;
+    if (!visible) {
+      this.clearTerminalResizeOwner(terminalId, socket, "hidden");
+    }
+    if (visible) {
+      this.deliverPendingDeviceHandoffs({ terminalSessionId: terminalId }, now);
+      for (const clientSocket of this.deviceHandoffRecipients(
+        { terminalSessionId: terminalId },
+        now,
+      )) {
+        this.deliverExpiredDeviceHandoffNotice(clientSocket, {
+          terminalSessionId: terminalId,
+        });
+      }
+    }
+  }
+
+  hasVisibleTerminalClient(terminalId: string, now: number): boolean {
+    for (const state of this.terminalClientStateById
+      .get(terminalId)
+      ?.values() ?? []) {
+      if (
+        state.visible &&
+        (!state.heartbeats ||
+          now - state.lastSeenAt <= TERMINAL_CLIENT_STALE_MS)
+      ) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  recordTerminalClientSeen(
+    terminalId: string,
+    socket: HubSocket,
+    now: number,
+  ): void {
+    this.terminalClientState(terminalId, socket, now).lastSeenAt = now;
+  }
+
+  recordTerminalClientHeartbeat(
+    terminalId: string,
+    socket: HubSocket,
+    now: number,
+  ): void {
+    const state = this.terminalClientState(terminalId, socket, now);
+    state.heartbeats = true;
+    state.lastSeenAt = now;
+  }
+
+  terminalSharedSize(terminalId: string, now: number): TerminalSize | null {
+    const owner = this.terminalResizeOwnerById.get(terminalId);
+    if (owner !== undefined) {
+      const state = this.terminalClientStateById.get(terminalId)?.get(owner);
+      if (
+        state?.size !== null &&
+        state !== undefined &&
+        state.visible &&
+        (!state.heartbeats || now - state.lastSeenAt <= TERMINAL_CLIENT_STALE_MS)
+      ) {
+        return { ...state.size };
+      }
+      this.clearTerminalResizeOwner(terminalId, owner, "stale");
+    }
+    let shared: TerminalSize | null = null;
+    for (const state of this.terminalClientStateById
+      .get(terminalId)
+      ?.values() ?? []) {
+      if (
+        state.size === null ||
+        !state.visible ||
+        (state.heartbeats && now - state.lastSeenAt > TERMINAL_CLIENT_STALE_MS)
+      ) {
+        continue;
+      }
+      shared =
+        shared === null
+          ? { ...state.size }
+          : {
+              cols: Math.min(shared.cols, state.size.cols),
+              rows: Math.min(shared.rows, state.size.rows),
+            };
+    }
+    return shared;
+  }
+
+  private terminalClientState(
+    terminalId: string,
+    socket: HubSocket,
+    now: number,
+  ): TerminalClientState {
+    const states =
+      this.terminalClientStateById.get(terminalId) ??
+      new Map<HubSocket, TerminalClientState>();
+    this.terminalClientStateById.set(terminalId, states);
+    const existing = states.get(socket);
+    if (existing) {
+      return existing;
+    }
+    const created: TerminalClientState = {
+      heartbeats: false,
+      lastSeenAt: now,
+      size: null,
+      visible: true,
+    };
+    states.set(socket, created);
+    return created;
+  }
+
+  private forgetTerminalClientState(
+    terminalId: string,
+    socket: HubSocket,
+  ): void {
+    const states = this.terminalClientStateById.get(terminalId);
+    if (!states) {
+      return;
+    }
+    states.delete(socket);
+    if (states.size === 0) {
+      this.terminalClientStateById.delete(terminalId);
+    }
   }
 
   unregisterTerminalClient(terminalId: string, socket: HubSocket): void {
+    this.unlinkDeviceHandoffTerminalAttachment(socket);
     const sockets = this.terminalClientSocketsById.get(terminalId);
     if (sockets) {
       sockets.delete(socket);
@@ -344,7 +1024,8 @@ export class NotificationHub implements DbNotifier {
         this.terminalClientSocketsById.delete(terminalId);
       }
     }
-    this.releaseTerminalResizeOwnership(terminalId, socket, sockets);
+    this.clearTerminalResizeOwner(terminalId, socket, "disconnected");
+    this.forgetTerminalClientState(terminalId, socket);
 
     const terminalIds = this.terminalIdsByClientSocket.get(socket);
     if (!terminalIds) {
@@ -358,6 +1039,7 @@ export class NotificationHub implements DbNotifier {
   }
 
   unregisterTerminalClientSocket(socket: HubSocket): void {
+    this.unlinkDeviceHandoffTerminalAttachment(socket);
     const terminalIds = this.terminalIdsByClientSocket.get(socket);
     if (!terminalIds) {
       return;
@@ -372,30 +1054,12 @@ export class NotificationHub implements DbNotifier {
       if (sockets.size === 0) {
         this.terminalClientSocketsById.delete(terminalId);
       }
-      this.releaseTerminalResizeOwnership(terminalId, socket, sockets);
+      this.clearTerminalResizeOwner(terminalId, socket, "disconnected");
+      this.forgetTerminalClientState(terminalId, socket);
     }
 
     this.terminalIdsByClientSocket.delete(socket);
     this.clearTerminalSocketSendQueue(socket);
-  }
-
-  private releaseTerminalResizeOwnership(
-    terminalId: string,
-    socket: HubSocket,
-    sockets: Set<HubSocket> | undefined,
-  ): void {
-    if (this.terminalResizeOwnerById.get(terminalId) !== socket) {
-      return;
-    }
-    let replacement: HubSocket | undefined;
-    for (const candidate of sockets ?? []) {
-      replacement = candidate;
-    }
-    if (replacement === undefined) {
-      this.terminalResizeOwnerById.delete(terminalId);
-    } else {
-      this.terminalResizeOwnerById.set(terminalId, replacement);
-    }
   }
 
   sendTerminalSocketMessage(
@@ -408,6 +1072,30 @@ export class NotificationHub implements DbNotifier {
     );
   }
 
+  closeTerminalClients(
+    terminalId: string,
+    code: number,
+    reason: string,
+  ): HubSocket[] {
+    const sockets = [...(this.terminalClientSocketsById.get(terminalId) ?? [])];
+    for (const socket of sockets) {
+      try {
+        socket.close(code, reason);
+      } catch {}
+    }
+    return sockets;
+  }
+
+  subscribeDaemonSessions(listener: DaemonSessionListener): () => void {
+    this.daemonSessionListeners.add(listener);
+    for (const [sessionId, session] of this.daemonSessions) {
+      listener({ kind: "opened", hostId: session.hostId, sessionId });
+    }
+    return () => {
+      this.daemonSessionListeners.delete(listener);
+    };
+  }
+
   hasTerminalClients(terminalId: string): boolean {
     return (this.terminalClientSocketsById.get(terminalId)?.size ?? 0) > 0;
   }
@@ -415,6 +1103,7 @@ export class NotificationHub implements DbNotifier {
   sendTerminalClientMessage(
     terminalId: string,
     message: TerminalServerMessage,
+    excludedSocket?: HubSocket,
   ): void {
     const sockets = this.terminalClientSocketsById.get(terminalId);
     if (!sockets) {
@@ -423,6 +1112,9 @@ export class NotificationHub implements DbNotifier {
 
     const payload = JSON.stringify(terminalServerMessageSchema.parse(message));
     for (const socket of [...sockets]) {
+      if (socket === excludedSocket) {
+        continue;
+      }
       this.sendOrQueueTerminalPayload(socket, payload);
     }
   }
@@ -520,19 +1212,109 @@ export class NotificationHub implements DbNotifier {
     this.terminalSocketSendQueues.delete(socket);
   }
 
-  subscribe(socket: HubSocket, target: RealtimeSubscriptionTarget): void {
+  subscribe(
+    socket: HubSocket,
+    target: RealtimeSubscriptionTarget,
+    timelineTag?: string | null,
+  ): void {
     this.registerClient(socket);
     const key = subscriptionKey(target);
-    this.clientKeysBySocket.get(socket)?.add(key);
+    this.clientKeysBySocket.get(socket)?.set(key, target);
+    if (target.kind === "thread-timeline" && timelineTag !== undefined) {
+      const tags = this.timelineTagsBySocket.get(socket) ?? new Map();
+      tags.set(key, timelineTag);
+      this.timelineTagsBySocket.set(socket, tags);
+    }
 
     const sockets = this.clientSocketsByKey.get(key) ?? new Set<HubSocket>();
     sockets.add(socket);
     this.clientSocketsByKey.set(key, sockets);
+    if (this.hiddenClients.has(socket)) {
+      return;
+    }
+    this.watchedTargets.update([{ key, target: { ...target } }], []);
+    if (target.kind === "thread-timeline" && typeof timelineTag === "string") {
+      for (const listener of [...this.timelineTagListeners]) {
+        listener(target, timelineTag);
+      }
+    }
+    if (target.kind === "thread-detail") {
+      this.deliverPendingDeviceHandoffs(
+        { threadId: target.threadId },
+        Date.now(),
+      );
+      if (
+        this.activeDeviceHandoffViewByClientSocket.get(socket)?.threadId ===
+        target.threadId
+      ) {
+        this.deliverExpiredDeviceHandoffNotice(socket, {
+          threadId: target.threadId,
+        });
+      }
+    }
+  }
+
+  setDeviceHandoffView(
+    socket: HubSocket,
+    threadId: string | null,
+    terminalSessionId: string | null = null,
+  ): void {
+    this.registerClient(socket);
+    const previous = this.activeDeviceHandoffViewByClientSocket.get(socket);
+    if (
+      previous?.threadId !== threadId ||
+      previous.terminalSessionId !== terminalSessionId
+    ) {
+      for (const handoffs of this.pendingDeviceHandoffsByOrigin.values()) {
+        for (const handoff of handoffs) {
+          handoff.sentTo.delete(socket);
+        }
+      }
+    }
+    this.activeDeviceHandoffViewByClientSocket.set(socket, {
+      threadId,
+      terminalSessionId,
+    });
+    if (threadId !== null) {
+      this.deliverPendingDeviceHandoffs({ threadId }, Date.now());
+      const key = subscriptionKey({ kind: "thread-detail", threadId });
+      if (this.clientSocketsByKey.get(key)?.has(socket)) {
+        this.deliverExpiredDeviceHandoffNotice(socket, { threadId });
+      }
+    }
+    if (terminalSessionId !== null) {
+      const now = Date.now();
+      const origin = { terminalSessionId };
+      this.deliverPendingDeviceHandoffs(origin, now);
+      if (this.deviceHandoffRecipients(origin, now).has(socket)) {
+        this.deliverExpiredDeviceHandoffNotice(socket, origin);
+      }
+    }
+  }
+
+  acknowledgeDeviceHandoff(socket: HubSocket, id: string): void {
+    for (const [originKey, handoffs] of this.pendingDeviceHandoffsByOrigin) {
+      const pending = handoffs.find((handoff) => {
+        return handoff.id === id && handoff.ackableBy.has(socket);
+      });
+      if (!pending) continue;
+      clearTimeout(pending.timeout);
+      this.removePendingDeviceHandoff(originKey, pending.payload, false);
+      const acknowledged = JSON.stringify({
+        type: "device-handoff-acknowledged",
+        id,
+      });
+      for (const recipient of pending.sentTo) {
+        if (recipient !== socket) recipient.send(acknowledged);
+      }
+      return;
+    }
   }
 
   unsubscribe(socket: HubSocket, target: RealtimeSubscriptionTarget): void {
     const key = subscriptionKey(target);
     this.clientKeysBySocket.get(socket)?.delete(key);
+    this.timelineTagsBySocket.get(socket)?.delete(key);
 
     const sockets = this.clientSocketsByKey.get(key);
     if (!sockets) {
@@ -542,6 +1324,69 @@ export class NotificationHub implements DbNotifier {
     if (sockets.size === 0) {
       this.clientSocketsByKey.delete(key);
     }
+    if (!this.isWatched(key)) {
+      this.watchedTargets.update([], [key]);
+    }
+  }
+
+  onThreadTimelineTag(listener: ThreadTimelineTagListener): () => void {
+    this.timelineTagListeners.add(listener);
+    return () => {
+      this.timelineTagListeners.delete(listener);
+    };
+  }
+
+  listThreadTimelineSubscribers(
+    target: ThreadTimelineSubscriptionTarget,
+  ): ThreadTimelineSubscriber[] {
+    const key = subscriptionKey(target);
+    return [...(this.clientSocketsByKey.get(key) ?? [])].map((socket) => {
+      const tags = this.timelineTagsBySocket.get(socket);
+      if (tags === undefined || !tags.has(key)) {
+        return { baseline: { kind: "legacy" }, socket };
+      }
+      const tag = tags.get(key) ?? null;
+      return {
+        baseline: tag === null ? { kind: "pending" } : { kind: "tag", tag },
+        socket,
+      };
+    });
+  }
+
+  listThreadTimelineTags(threadId: string): Set<string> {
+    const held = new Set<string>();
+    for (const [socket, tags] of this.timelineTagsBySocket) {
+      const targets = this.clientKeysBySocket.get(socket);
+      for (const [key, tag] of tags) {
+        const target = targets?.get(key);
+        if (
+          tag !== null &&
+          target?.kind === "thread-timeline" &&
+          target.threadId === threadId
+        ) {
+          held.add(tag);
+        }
+      }
+    }
+    return held;
+  }
+
+  sendThreadTimelineSignal(
+    subscribers: readonly ThreadTimelineSubscriber[],
+    signal: ThreadTimelineSignal,
+  ): number {
+    const key = subscriptionKey(signal.target);
+    const payload = JSON.stringify(signal);
+    for (const { baseline, socket } of subscribers) {
+      if (baseline.kind !== "legacy") {
+        this.timelineTagsBySocket.get(socket)?.set(key, signal.timeline.tag);
+      }
+    }
+    this.notifyClientsByKeySet(
+      subscribers.map(({ socket }) => socket),
+      payload,
+    );
+    return payload.length;
   }
 
   recordDaemonSessionPlatform(sessionId: string, platform: HostPlatform): void {
@@ -574,6 +1419,9 @@ export class NotificationHub implements DbNotifier {
       socket,
     });
     this.daemonSessionIdsByHost.set(hostId, sessionId);
+    for (const listener of this.daemonSessionListeners) {
+      listener({ kind: "opened", hostId, sessionId });
+    }
     this.resolveDaemonRegistrationWaiters(hostId);
     this.notifyHost(hostId, ["host-connected"]);
   }
@@ -589,6 +1437,9 @@ export class NotificationHub implements DbNotifier {
     this.rejectHostOnlineRpcWaitersForSession(sessionId);
     if (this.daemonSessionIdsByHost.get(entry.hostId) === sessionId) {
       this.daemonSessionIdsByHost.delete(entry.hostId);
+    }
+    for (const listener of this.daemonSessionListeners) {
+      listener({ kind: "closed", sessionId });
     }
     const waiters = this.daemonSessionCloseWaiters.get(sessionId);
     if (waiters !== undefined) {
@@ -770,6 +1621,7 @@ export class NotificationHub implements DbNotifier {
   requestHostOnlineRpc(args: {
     hostId: string;
     message: HostDaemonOnlineRpcRequestMessage;
+    signal?: AbortSignal;
     timeoutMs: number;
   }): Promise<HostDaemonOnlineRpcResponseMessage> {
     const sessionId = this.daemonSessionIdsByHost.get(args.hostId);
@@ -780,23 +1632,39 @@ export class NotificationHub implements DbNotifier {
     if (!session) {
       return Promise.reject(new HostOnlineRpcUnavailableError());
     }
+    const signal = args.signal;
+    if (signal?.aborted) {
+      return Promise.reject(new HostOnlineRpcCancelledError());
+    }
+    const requestId = args.message.requestId;
 
     return new Promise<HostDaemonOnlineRpcResponseMessage>(
       (resolve, reject) => {
+        const abandon = (error: Error): void => {
+          this.deleteHostOnlineRpcWaiter(requestId, waiter);
+          this.sendHostOnlineRpcCancel(sessionId, requestId);
+          reject(error);
+        };
+        const onAbort = (): void => {
+          abandon(new HostOnlineRpcCancelledError());
+        };
         const waiter: HostOnlineRpcWaiter = {
+          detachAbortListener: () => {
+            signal?.removeEventListener("abort", onAbort);
+          },
           reject,
           resolve,
           sessionId,
           timeout: setTimeout(() => {
-            this.deleteHostOnlineRpcWaiter(args.message.requestId, waiter);
-            reject(new HostOnlineRpcTimeoutError());
+            abandon(new HostOnlineRpcTimeoutError());
           }, args.timeoutMs),
         };
-        this.hostOnlineRpcWaiters.set(args.message.requestId, waiter);
+        signal?.addEventListener("abort", onAbort, { once: true });
+        this.hostOnlineRpcWaiters.set(requestId, waiter);
         try {
           session.socket.send(JSON.stringify(args.message));
         } catch (error) {
-          this.deleteHostOnlineRpcWaiter(args.message.requestId, waiter);
+          this.deleteHostOnlineRpcWaiter(requestId, waiter);
           reject(error instanceof Error ? error : new Error(String(error)));
         }
       },
@@ -879,19 +1747,25 @@ export class NotificationHub implements DbNotifier {
 
   notifyThreadOpen(
     thread: { projectId: string; threadId: string },
-    request: { split: ThreadOpenSplit; file: ThreadOpenFile | null },
+    request: ThreadOpenNotification,
   ): number {
-    return this.broadcastToAllClients(
-      JSON.stringify(
-        threadOpenSignalSchema.parse({
-          type: "thread-open",
-          projectId: thread.projectId,
-          threadId: thread.threadId,
-          split: request.split,
-          file: request.file,
-        }),
-      ),
-    );
+    return this.broadcastToAppClients(threadOpenPayload(thread, request));
+  }
+
+  notifyThreadOpenToViewers(
+    thread: { projectId: string; threadId: string },
+    request: ThreadOpenNotification,
+    viewerThreadId: string,
+  ): number {
+    const payload = threadOpenPayload(thread, request);
+    let delivered = 0;
+    for (const [socket, view] of this.activeDeviceHandoffViewByClientSocket) {
+      if (!this.appClientSockets.has(socket)) continue;
+      if (view.threadId !== viewerThreadId) continue;
+      socket.send(payload);
+      delivered += 1;
+    }
+    return delivered;
   }
 
   notifyThreadPaneAction(
@@ -927,11 +1801,387 @@ export class NotificationHub implements DbNotifier {
     );
   }
 
+  notifyDeviceHandoff(
+    request: DeviceHandoffRequest,
+    originLabel: string,
+    attentionThreadId?: string | null,
+    turnRequestId?: string,
+    hostLabel = "BB",
+    activeTurnId?: string,
+  ): number {
+    const createdAt = Date.now();
+    const signal = deviceHandoffSignalSchema.parse({
+      type: "device-handoff",
+      id: randomUUID(),
+      createdAt,
+      expiresAt: createdAt + DEVICE_HANDOFF_TTL_MS,
+      request,
+      originLabel,
+    });
+    const payload = JSON.stringify(signal);
+    this.prunePendingDeviceHandoffs(createdAt);
+    const originKey = this.deviceHandoffOriginKey(request.origin);
+    const scopedAttentionThreadId = attentionThreadId ?? null;
+    this.pruneDeviceHandoffSubmitters(createdAt);
+    const threadId = request.origin.threadId;
+    const effectiveTurnId = request.origin.turnId ?? activeTurnId;
+    const turnRequestKey =
+      threadId !== undefined && turnRequestId !== undefined
+        ? this.deviceHandoffSubmitterKey(threadId, turnRequestId)
+        : undefined;
+    const turnKey =
+      threadId !== undefined && effectiveTurnId !== undefined
+        ? this.deviceHandoffSubmitterKey(threadId, effectiveTurnId)
+        : undefined;
+    const hasTurnRequestSubmission =
+      request.origin.terminalSessionId === undefined &&
+      turnRequestKey !== undefined &&
+      this.deviceHandoffSubmitterByThreadRequest.has(turnRequestKey);
+    const hasTurnSubmission =
+      request.origin.terminalSessionId === undefined &&
+      turnKey !== undefined &&
+      this.deviceHandoffSubmitterByThreadTurn.has(turnKey);
+    const submission = hasTurnRequestSubmission
+      ? this.deviceHandoffSubmitterByThreadRequest.get(turnRequestKey!)
+      : hasTurnSubmission
+        ? this.deviceHandoffSubmitterByThreadTurn.get(turnKey!)
+        : undefined;
+    const hasTurnBinding =
+      hasTurnRequestSubmission ||
+      hasTurnSubmission ||
+      request.origin.turnId !== undefined ||
+      turnRequestId !== undefined ||
+      activeTurnId !== undefined;
+    const recipientDeviceHash =
+      request.origin.terminalSessionId !== undefined
+        ? null
+        : (submission?.deviceHash ??
+          (hasTurnBinding || threadId === undefined
+            ? undefined
+            : this.latestDeviceHandoffSubmitterByThread.get(threadId)
+                ?.deviceHash) ??
+          null);
+    if (
+      request.origin.terminalSessionId === undefined &&
+      recipientDeviceHash === null
+    ) {
+      throw new NoDeviceHandoffSubmitterError();
+    }
+    if (scopedAttentionThreadId !== null) {
+      const previousCount =
+        this.pendingDeviceHandoffCountsByThread.get(scopedAttentionThreadId) ??
+        0;
+      this.pendingDeviceHandoffCountsByThread.set(
+        scopedAttentionThreadId,
+        previousCount + 1,
+      );
+      if (previousCount === 0) {
+        this.emitDeviceHandoffAttentionChange(
+          scopedAttentionThreadId,
+          null,
+          true,
+        );
+      }
+    }
+    const terminalId = request.origin.terminalSessionId;
+    if (terminalId !== undefined) {
+      const previousCount =
+        this.pendingDeviceHandoffCountsByTerminal.get(terminalId) ?? 0;
+      this.pendingDeviceHandoffCountsByTerminal.set(
+        terminalId,
+        previousCount + 1,
+      );
+      if (previousCount === 0) {
+        for (const listener of this.deviceHandoffAttentionListeners) {
+          listener(scopedAttentionThreadId ?? "", terminalId, true);
+        }
+      }
+    }
+    const pending = this.pendingDeviceHandoffsByOrigin.get(originKey) ?? [];
+    const handoff = {
+      id: signal.id,
+      expiresAt: signal.expiresAt,
+      origin: request.origin,
+      payload,
+      signal,
+      hostLabel: hostLabel.slice(0, 256),
+      deliveryMode: (request.origin.terminalSessionId === undefined
+        ? "device"
+        : "terminal") as "device" | "terminal",
+      recipientDeviceHash,
+      attentionThreadId: scopedAttentionThreadId,
+      sentTo: new Set<HubSocket>(),
+      ackableBy: new Set<HubSocket>(),
+      timeout: setTimeout(
+        () => this.removePendingDeviceHandoff(originKey, payload),
+        Math.max(0, signal.expiresAt - Date.now()),
+      ),
+    };
+    handoff.timeout.unref?.();
+    pending.push(handoff);
+    this.pendingDeviceHandoffsByOrigin.set(originKey, pending);
+    this.enforcePendingDeviceHandoffLimit();
+    return this.deliverPendingDeviceHandoffs(request.origin, createdAt);
+  }
+
+  private hasThreadView(socket: HubSocket, threadId: string): boolean {
+    const activeView = this.activeDeviceHandoffViewByClientSocket.get(socket);
+    if (activeView?.threadId !== threadId) return false;
+    const key = subscriptionKey({ kind: "thread-detail", threadId });
+    return this.clientSocketsByKey.get(key)?.has(socket) ?? false;
+  }
+
+  private prunePendingDeviceHandoffs(now: number): void {
+    for (const [originKey, handoffs] of this.pendingDeviceHandoffsByOrigin) {
+      const live = handoffs.filter((handoff) => handoff.expiresAt > now);
+      for (const handoff of handoffs) {
+        if (handoff.expiresAt <= now) {
+          clearTimeout(handoff.timeout);
+          this.markDeviceHandoffExpired(
+            handoff.id,
+            handoff.origin,
+            handoff.recipientDeviceHash,
+          );
+          this.decrementDeviceHandoffAttention(
+            handoff.attentionThreadId,
+            handoff.origin.terminalSessionId ?? null,
+          );
+        }
+      }
+      if (live.length === 0) {
+        this.pendingDeviceHandoffsByOrigin.delete(originKey);
+      } else if (live.length !== handoffs.length) {
+        this.pendingDeviceHandoffsByOrigin.set(originKey, live);
+      }
+    }
+  }
+
+  private deviceHandoffOriginKey(
+    origin: DeviceHandoffRequest["origin"],
+  ): string {
+    return `${origin.threadId ?? ""}\u0000${origin.terminalSessionId ?? ""}`;
+  }
+
+  private deviceHandoffRecipients(
+    origin: DeviceHandoffRequest["origin"],
+    now: number,
+    recipientDeviceHash: string | null = null,
+  ): Set<HubSocket> {
+    const recipients = new Set<HubSocket>();
+    if (
+      origin.terminalSessionId === undefined &&
+      origin.threadId !== undefined &&
+      recipientDeviceHash !== null
+    ) {
+      for (const socket of this.deviceHandoffClientSocketsByHash.get(
+        recipientDeviceHash,
+      ) ?? []) {
+        const activeView =
+          this.activeDeviceHandoffViewByClientSocket.get(socket);
+        if (activeView === undefined) continue;
+        if (activeView.threadId !== origin.threadId) continue;
+        const key = subscriptionKey({
+          kind: "thread-detail",
+          threadId: origin.threadId,
+        });
+        if (this.clientSocketsByKey.get(key)?.has(socket)) {
+          recipients.add(socket);
+        }
+      }
+    }
+    if (origin.terminalSessionId !== undefined) {
+      for (const [socket, activeView] of this
+        .activeDeviceHandoffViewByClientSocket) {
+        if (
+          activeView.terminalSessionId === origin.terminalSessionId &&
+          this.hasLinkedVisibleTerminalAttachment(
+            socket,
+            origin.terminalSessionId,
+            now,
+          )
+        ) {
+          recipients.add(socket);
+        }
+      }
+    }
+    return recipients;
+  }
+
+  private hasLinkedVisibleTerminalAttachment(
+    clientSocket: HubSocket,
+    terminalId: string,
+    now: number,
+  ): boolean {
+    const owner = this.deviceHandoffDeviceHashByClientSocket.get(clientSocket);
+    if (owner === undefined) return false;
+    for (const terminalSocket of this.deviceHandoffTerminalSocketsByDeviceHash.get(
+      owner,
+    ) ?? []) {
+      if (this.deviceHandoffOwnerByTerminalSocket.get(terminalSocket) !== owner)
+        continue;
+      if (!this.terminalIdsByClientSocket.get(terminalSocket)?.has(terminalId))
+        continue;
+      const state = this.terminalClientStateById
+        .get(terminalId)
+        ?.get(terminalSocket);
+      if (state === undefined || !state.visible) continue;
+      if (state.heartbeats && now - state.lastSeenAt > TERMINAL_CLIENT_STALE_MS)
+        continue;
+      return true;
+    }
+    return false;
+  }
+
+  private deliverPendingDeviceHandoffs(
+    openedOrigin: DeviceHandoffRequest["origin"],
+    now: number,
+  ): number {
+    this.prunePendingDeviceHandoffs(now);
+    let delivered = 0;
+    const matchingOrigin = (origin: DeviceHandoffRequest["origin"]) =>
+      (openedOrigin.threadId !== undefined &&
+        origin.threadId === openedOrigin.threadId) ||
+      (openedOrigin.terminalSessionId !== undefined &&
+        origin.terminalSessionId === openedOrigin.terminalSessionId);
+    for (const handoffs of this.pendingDeviceHandoffsByOrigin.values()) {
+      const ready = handoffs.filter((handoff) =>
+        matchingOrigin(handoff.origin),
+      );
+      if (ready.length === 0) continue;
+      for (const handoff of ready) {
+        if (
+          handoff.deliveryMode === "device" &&
+          (handoff.origin.threadId === undefined ||
+            !Array.from(
+              this.deviceHandoffClientSocketsByHash.get(
+                handoff.recipientDeviceHash ?? "",
+              ) ?? [],
+            ).some((socket) =>
+              this.hasThreadView(socket, handoff.origin.threadId!),
+            ))
+        ) {
+          continue;
+        }
+        const recipients = this.deviceHandoffRecipients(
+          handoff.origin,
+          now,
+          handoff.recipientDeviceHash,
+        );
+        if (recipients.size === 0) continue;
+        for (const socket of recipients) {
+          if (handoff.sentTo.has(socket)) continue;
+          socket.send(handoff.payload);
+          handoff.sentTo.add(socket);
+          handoff.ackableBy.add(socket);
+          delivered += 1;
+        }
+      }
+    }
+    return delivered;
+  }
+
+  private deliverExpiredDeviceHandoffNotice(
+    socket: HubSocket,
+    openedOrigin: DeviceHandoffRequest["origin"],
+  ): void {
+    for (const [id, expired] of this.expiredDeviceHandoffs) {
+      const { origin } = expired;
+      const matches =
+        (openedOrigin.threadId !== undefined &&
+          origin.threadId === openedOrigin.threadId) ||
+        (openedOrigin.terminalSessionId !== undefined &&
+          origin.terminalSessionId === openedOrigin.terminalSessionId);
+      if (!matches) continue;
+      if (expired.recipientDeviceHash !== null) {
+        if (
+          this.deviceHandoffDeviceHashByClientSocket.get(socket) !==
+            expired.recipientDeviceHash ||
+          (origin.threadId !== undefined &&
+            !this.hasThreadView(socket, origin.threadId))
+        )
+          continue;
+      } else if (
+        !this.deviceHandoffRecipients(origin, Date.now()).has(socket)
+      ) {
+        continue;
+      }
+      this.expiredDeviceHandoffs.delete(id);
+      socket.send(
+        JSON.stringify(
+          deviceHandoffExpiredSignalSchema.parse({
+            type: "device-handoff-expired",
+            id: expired.id,
+            threadId: origin.threadId ?? null,
+            terminalSessionId: origin.terminalSessionId ?? null,
+          }),
+        ),
+      );
+      return;
+    }
+  }
+
+  private enforcePendingDeviceHandoffLimit(): void {
+    const entries: Array<{
+      originKey: string;
+      payload: string;
+      expiresAt: number;
+      attentionThreadId: string | null;
+    }> = [];
+    for (const [originKey, handoffs] of this.pendingDeviceHandoffsByOrigin) {
+      handoffs.forEach((handoff) => {
+        entries.push({
+          originKey,
+          payload: handoff.payload,
+          expiresAt: handoff.expiresAt,
+          attentionThreadId: handoff.attentionThreadId,
+        });
+      });
+    }
+    if (entries.length <= DEVICE_HANDOFF_PENDING_LIMIT) return;
+    entries
+      .sort((left, right) => left.expiresAt - right.expiresAt)
+      .slice(0, entries.length - DEVICE_HANDOFF_PENDING_LIMIT)
+      .forEach(({ originKey, payload }) => {
+        const handoffs = this.pendingDeviceHandoffsByOrigin.get(originKey);
+        if (!handoffs) return;
+        const index = handoffs.findIndex(
+          (handoff) => handoff.payload === payload,
+        );
+        if (index !== -1) {
+          clearTimeout(handoffs[index]?.timeout);
+          if (handoffs[index]) {
+            this.markDeviceHandoffExpired(
+              handoffs[index].id,
+              handoffs[index].origin,
+              handoffs[index].recipientDeviceHash,
+            );
+          }
+          this.decrementDeviceHandoffAttention(
+            handoffs[index]?.attentionThreadId ?? null,
+            handoffs[index]?.origin.terminalSessionId ?? null,
+          );
+          handoffs.splice(index, 1);
+        }
+        if (handoffs.length === 0) {
+          this.pendingDeviceHandoffsByOrigin.delete(originKey);
+        }
+      });
+  }
+
   private broadcastToAllClients(payload: string): number {
     let delivered = 0;
     for (const socket of this.clientKeysBySocket.keys()) {
-      socket.send(payload);
+      socket.send(payload, COMPRESSED_SEND);
       delivered += 1;
+    }
+    return delivered;
+  }
+
+  private broadcastToAppClients(payload: string): number {
+    let delivered = 0;
+    for (const socket of this.clientKeysBySocket.keys()) {
+      socket.send(payload);
+      if (this.appClientSockets.has(socket)) delivered += 1;
     }
     return delivered;
   }
@@ -943,6 +2193,88 @@ export class NotificationHub implements DbNotifier {
       id: projectId,
       changes,
     });
+  }
+
+  private removePendingDeviceHandoff(
+    originKey: string,
+    payload: string,
+    expired = true,
+  ): void {
+    const handoffs = this.pendingDeviceHandoffsByOrigin.get(originKey);
+    if (!handoffs) return;
+    const remaining = handoffs.filter((handoff) => handoff.payload !== payload);
+    if (remaining.length === handoffs.length) return;
+    const removed = handoffs.find((handoff) => handoff.payload === payload);
+    this.decrementDeviceHandoffAttention(
+      removed?.attentionThreadId ?? null,
+      removed?.origin.terminalSessionId ?? null,
+    );
+    if (expired && removed) {
+      this.markDeviceHandoffExpired(
+        removed.id,
+        removed.origin,
+        removed.recipientDeviceHash,
+      );
+    }
+    if (remaining.length === 0) {
+      this.pendingDeviceHandoffsByOrigin.delete(originKey);
+    } else {
+      this.pendingDeviceHandoffsByOrigin.set(originKey, remaining);
+    }
+  }
+
+  private decrementDeviceHandoffAttention(
+    threadId: string | null,
+    terminalId: string | null,
+  ): void {
+    if (terminalId !== null) {
+      const terminalRemaining =
+        (this.pendingDeviceHandoffCountsByTerminal.get(terminalId) ?? 1) - 1;
+      if (terminalRemaining > 0) {
+        this.pendingDeviceHandoffCountsByTerminal.set(
+          terminalId,
+          terminalRemaining,
+        );
+      } else {
+        this.pendingDeviceHandoffCountsByTerminal.delete(terminalId);
+        for (const listener of this.deviceHandoffAttentionListeners) {
+          listener(threadId ?? "", terminalId, false);
+        }
+      }
+    }
+    if (threadId === null) return;
+    const remaining =
+      (this.pendingDeviceHandoffCountsByThread.get(threadId) ?? 1) - 1;
+    if (remaining > 0) {
+      this.pendingDeviceHandoffCountsByThread.set(threadId, remaining);
+      return;
+    }
+    this.pendingDeviceHandoffCountsByThread.delete(threadId);
+    this.emitDeviceHandoffAttentionChange(threadId, null, false);
+  }
+
+  private markDeviceHandoffExpired(
+    id: string,
+    origin: DeviceHandoffRequest["origin"],
+    recipientDeviceHash: string | null = null,
+  ): void {
+    this.expiredDeviceHandoffs.delete(id);
+    this.expiredDeviceHandoffs.set(id, { id, origin, recipientDeviceHash });
+    while (this.expiredDeviceHandoffs.size > DEVICE_HANDOFF_PENDING_LIMIT) {
+      const oldest = this.expiredDeviceHandoffs.keys().next().value;
+      if (oldest === undefined) break;
+      this.expiredDeviceHandoffs.delete(oldest);
+    }
+  }
+
+  private emitDeviceHandoffAttentionChange(
+    threadId: string,
+    terminalId: string | null,
+    pending: boolean,
+  ): void {
+    for (const listener of this.deviceHandoffAttentionListeners) {
+      listener(threadId, terminalId, pending);
+    }
   }
 
   notifyEnvironment(
@@ -1006,8 +2338,20 @@ export class NotificationHub implements DbNotifier {
     waiter: HostOnlineRpcWaiter,
   ): void {
     clearTimeout(waiter.timeout);
+    waiter.detachAbortListener();
     if (this.hostOnlineRpcWaiters.get(requestId) === waiter) {
       this.hostOnlineRpcWaiters.delete(requestId);
+    }
+  }
+
+  private sendHostOnlineRpcCancel(sessionId: string, requestId: string): void {
+    try {
+      this.sendDaemonSessionMessage(sessionId, {
+        type: "host-rpc.cancel",
+        requestId,
+      });
+    } catch {
+      return;
     }
   }
 
@@ -1150,11 +2494,15 @@ export class NotificationHub implements DbNotifier {
       if (this.clientKeysBySocket.get(socket)?.has(detailKey)) {
         continue;
       }
-      socket.send(payload);
+      socket.send(payload, COMPRESSED_SEND);
     }
   }
 
   private notifyClients(message: ServerChangedMessage): void {
+    if (this.clientChangeNotificationsStopped) {
+      this.notifyChangedMessageListeners(message);
+      return;
+    }
     const sockets = new Set<HubSocket>();
     for (const key of subscriptionKeysForMessage(message)) {
       const specificSockets = this.clientSocketsByKey.get(key);
@@ -1179,7 +2527,7 @@ export class NotificationHub implements DbNotifier {
     payload: string,
   ): void {
     for (const socket of sockets) {
-      socket.send(payload);
+      socket.send(payload, COMPRESSED_SEND);
     }
   }
 

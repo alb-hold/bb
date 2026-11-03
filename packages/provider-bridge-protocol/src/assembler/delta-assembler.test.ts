@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { ClientTurnRequestId, ThreadEvent } from "@bb/domain";
 import { threadScope, turnScope } from "@bb/domain";
 import type { DeltaItemShape, ThreadDelta } from "../thread-delta.js";
@@ -120,6 +120,40 @@ describe("delta assembler", () => {
       }),
     ]);
     expect(assembler.getOpenTurnId(THREAD_ID)).toBeUndefined();
+  });
+
+  it("records main-run state only on an open turn", () => {
+    const assembler = createAssembler();
+    expect(
+      assemble(assembler, { kind: "turn.mainRun", state: "idle" }),
+    ).toEqual([]);
+    expect(assembler.getOpenTurnId(THREAD_ID)).toBeUndefined();
+
+    assemble(assembler, { kind: "turn.open" });
+    const turnId = assembler.getOpenTurnId(THREAD_ID) ?? "";
+    expect(
+      assemble(
+        assembler,
+        { kind: "turn.mainRun", state: "idle" },
+        { kind: "turn.mainRun", state: "running" },
+      ),
+    ).toEqual([
+      expect.objectContaining({
+        type: "turn/mainRun/updated",
+        scope: turnScope(turnId),
+        state: "idle",
+      }),
+      expect.objectContaining({
+        type: "turn/mainRun/updated",
+        scope: turnScope(turnId),
+        state: "running",
+      }),
+    ]);
+
+    assemble(assembler, { kind: "turn.boundary", status: "completed" });
+    expect(
+      assemble(assembler, { kind: "turn.mainRun", state: "running" }),
+    ).toEqual([]);
   });
 
   it("mints a fresh turn id for every turn (never reuses across boundaries)", () => {
@@ -424,6 +458,47 @@ describe("delta assembler", () => {
         changes: [expect.objectContaining({ path: "src/app.ts" })],
       },
     });
+  });
+
+  it("keeps result text as the error only on failed file changes", () => {
+    const assembler = createAssembler();
+    assemble(assembler, { kind: "turn.open" });
+    const editShape: DeltaItemShape = {
+      type: "fileChange",
+      changes: [{ path: "src/app.ts", kind: "update" }],
+    };
+    const settle = (
+      providerItemId: string,
+      status: "completed" | "failed",
+      resultText: string,
+    ) => {
+      assemble(assembler, {
+        kind: "item.open",
+        key: { providerItemId },
+        item: editShape,
+      });
+      return itemOf(
+        assemble(assembler, {
+          kind: "item.close",
+          key: { providerItemId },
+          status,
+          resultText,
+          item: editShape,
+        })[0],
+      );
+    };
+
+    expect(
+      settle("tc-failed", "failed", "Could not find the exact text"),
+    ).toMatchObject({
+      type: "fileChange",
+      status: "failed",
+      error: "Could not find the exact text",
+    });
+    expect(
+      settle("tc-ok", "completed", "Successfully replaced text"),
+    ).not.toHaveProperty("error");
+    expect(settle("tc-blank", "failed", "  \n")).not.toHaveProperty("error");
   });
 
   it("maps parentRef through the provider→bb id map for nested items", () => {
@@ -1961,6 +2036,7 @@ describe("delta assembler background tasks and progress policy", () => {
       status: "pending",
       taskStatus: "running",
       skipTranscript: false,
+      foreground: false,
       ...overrides,
     };
   }
@@ -2392,16 +2468,12 @@ describe("delta assembler text-delta batching", () => {
     };
   }
 
-  it("emits the first delta of a fresh stream immediately, then coalesces", () => {
+  it("holds the first delta of a fresh stream in the window, then coalesces", () => {
     const { assembler, advance } = createBatchingAssembler();
     assemble(assembler, { kind: "turn.open" });
 
     const first = assemble(assembler, assistantDelta("Hel"));
-    expect(first.map((event) => event.type)).toEqual([
-      "item/started",
-      "item/agentMessage/delta",
-    ]);
-    expect(first[1]).toMatchObject({ delta: "Hel" });
+    expect(first.map((event) => event.type)).toEqual(["item/started"]);
 
     advance(20);
     expect(assemble(assembler, assistantDelta("lo "))).toEqual([]);
@@ -2413,18 +2485,19 @@ describe("delta assembler text-delta batching", () => {
     expect(flushed).toEqual([
       expect.objectContaining({
         type: "item/agentMessage/delta",
-        delta: "lo wor",
+        delta: "Hello wor",
       }),
     ]);
-    advance(200);
+    advance(20);
+    expect(assemble(assembler, assistantDelta("!"))).toEqual([]);
     expect(
       assemble(assembler, { kind: "turn.boundary", status: "completed" }).map(
         (event) => ("delta" in event ? event.delta : event.type),
       ),
-    ).toEqual(["ld", "turn/completed"]);
+    ).toEqual(["ld!", "turn/completed"]);
   });
 
-  it("a delta arriving after the window with no buffer emits alone at once", () => {
+  it("flushes a window that elapsed while the stream was quiet before the next delta", () => {
     const { assembler, advance } = createBatchingAssembler();
     assemble(assembler, { kind: "turn.open" });
     assemble(assembler, assistantDelta("a"));
@@ -2432,9 +2505,51 @@ describe("delta assembler text-delta batching", () => {
     expect(assemble(assembler, assistantDelta("b"))).toEqual([
       expect.objectContaining({
         type: "item/agentMessage/delta",
-        delta: "b",
+        delta: "a",
       }),
     ]);
+  });
+
+  it("flushes the window on a timer when the stream goes quiet", () => {
+    vi.useFakeTimers();
+    try {
+      const deferred: Array<{ threadId: string; deltas: string[] }> = [];
+      const assembler = createDeltaAssembler({
+        providerId: "pi",
+        entropyPrefix: "as-test",
+        textDeltaFlushMs: 50,
+        onDeferredEvents: (threadId, events) => {
+          deferred.push({
+            threadId,
+            deltas: events.map((event) =>
+              "delta" in event ? event.delta : event.type,
+            ),
+          });
+        },
+      });
+      assemble(assembler, { kind: "turn.open" });
+      assemble(assembler, assistantDelta("Hel"));
+      vi.advanceTimersByTime(30);
+      expect(assemble(assembler, assistantDelta("lo"))).toEqual([]);
+      vi.advanceTimersByTime(19);
+      expect(deferred).toEqual([]);
+      vi.advanceTimersByTime(1);
+      expect(deferred).toEqual([{ threadId: THREAD_ID, deltas: ["Hello"] }]);
+
+      assemble(assembler, assistantDelta(" there"));
+      const closed = assemble(assembler, {
+        kind: "item.textClose",
+        key: { channel: "assistant" },
+        channel: "agentMessage",
+      });
+      expect(
+        closed.map((event) => ("delta" in event ? event.delta : event.type)),
+      ).toEqual([" there", "item/completed"]);
+      vi.advanceTimersByTime(100);
+      expect(deferred).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("flushes an elapsed buffer trailing-edge on the thread's next traffic", () => {
@@ -2456,7 +2571,7 @@ describe("delta assembler text-delta batching", () => {
       "item/agentMessage/delta",
       "thread/contextWindowUsage/updated",
     ]);
-    expect(events[0]).toMatchObject({ delta: "b" });
+    expect(events[0]).toMatchObject({ delta: "ab" });
   });
 
   it("never reorders text across a non-batchable event (ordering barrier)", () => {
@@ -2473,7 +2588,31 @@ describe("delta assembler text-delta batching", () => {
       "item/agentMessage/delta",
       "item/started",
     ]);
-    expect(events[0]).toMatchObject({ delta: " second" });
+    expect(events[0]).toMatchObject({ delta: "first second" });
+  });
+
+  it("a close for a stream that never opened leaves other windows buffered", () => {
+    const { assembler, advance } = createBatchingAssembler();
+    assemble(assembler, { kind: "turn.open" });
+    assemble(assembler, assistantDelta("one"));
+    advance(10);
+    const closeThought: ThreadDelta = {
+      kind: "item.textClose",
+      key: { channel: "reasoning" },
+      channel: "reasoningText",
+    };
+    expect(assemble(assembler, closeThought, assistantDelta(" two"))).toEqual(
+      [],
+    );
+    advance(100);
+    expect(assemble(assembler, closeThought, assistantDelta(" three"))).toEqual(
+      [
+        expect.objectContaining({
+          type: "item/agentMessage/delta",
+          delta: "one two",
+        }),
+      ],
+    );
   });
 
   it("item.textClose flushes the buffer and completes with the full text", () => {
@@ -2492,7 +2631,7 @@ describe("delta assembler text-delta batching", () => {
       "item/agentMessage/delta",
       "item/completed",
     ]);
-    expect(events[0]).toMatchObject({ delta: " world" });
+    expect(events[0]).toMatchObject({ delta: "Hello world" });
     expect(events[1]).toMatchObject({
       item: expect.objectContaining({ text: "Hello world" }),
     });
@@ -2534,7 +2673,7 @@ describe("delta assembler text-delta batching", () => {
     const deltas = events.filter(
       (event) => event.type === "item/agentMessage/delta",
     );
-    expect(deltas.map((event) => event.delta)).toEqual(["A2", "B2"]);
+    expect(deltas.map((event) => event.delta)).toEqual(["B1B2", "A2"]);
     expect(new Set(deltas.map((event) => event.itemId)).size).toBe(2);
   });
 
@@ -2552,11 +2691,9 @@ describe("delta assembler text-delta batching", () => {
       kind: "turn.boundary",
       status: "completed",
     });
-    expect(events.map((event) => event.type)).toEqual([
-      "item/agentMessage/delta",
-      "item/reasoning/textDelta",
-      "turn/completed",
-    ]);
+    expect(
+      events.map((event) => ("delta" in event ? event.delta : event.type)),
+    ).toEqual(["hmmm", " more text", "turn/completed"]);
   });
 
   it("coalesces command output deltas and flushes before the close", () => {
@@ -2568,12 +2705,7 @@ describe("delta assembler text-delta batching", () => {
       channel: "command",
       text: "line 1\n",
     });
-    expect(first).toEqual([
-      expect.objectContaining({
-        type: "item/commandExecution/outputDelta",
-        delta: "line 1\n",
-      }),
-    ]);
+    expect(first).toEqual([]);
     advance(10);
     expect(
       assemble(assembler, {
@@ -2596,7 +2728,7 @@ describe("delta assembler text-delta batching", () => {
       "item/commandExecution/outputDelta",
       "item/completed",
     ]);
-    expect(events[0]).toMatchObject({ delta: "line 2\n" });
+    expect(events[0]).toMatchObject({ delta: "line 1\nline 2\n" });
     expect(events[1]).toMatchObject({
       item: expect.objectContaining({ aggregatedOutput: "line 1\nline 2\n" }),
     });
@@ -2612,9 +2744,7 @@ describe("delta assembler text-delta batching", () => {
       text,
     });
 
-    expect(assemble(assembler, snapshot("a"))).toEqual([
-      expect.objectContaining({ delta: "a" }),
-    ]);
+    expect(assemble(assembler, snapshot("a"))).toEqual([]);
     advance(10);
     expect(assemble(assembler, snapshot("ab"))).toEqual([]);
     advance(10);
@@ -2625,7 +2755,7 @@ describe("delta assembler text-delta batching", () => {
     expect(events).toEqual([
       expect.objectContaining({
         type: "item/commandExecution/outputDelta",
-        delta: "bc",
+        delta: "abc",
       }),
       expect.objectContaining({
         type: "item/commandExecution/outputDelta",
@@ -2646,7 +2776,7 @@ describe("delta assembler text-delta batching", () => {
     expect(events).toEqual([
       expect.objectContaining({
         type: "item/agentMessage/delta",
-        delta: " tail",
+        delta: "kept tail",
       }),
     ]);
   });
@@ -2664,7 +2794,7 @@ describe("delta assembler text-delta batching", () => {
       "item/completed",
       "turn/completed",
     ]);
-    expect(events[0]).toMatchObject({ delta: " answer" });
+    expect(events[0]).toMatchObject({ delta: "partial answer" });
     expect(events[1]).toMatchObject({
       item: { type: "agentMessage", text: "partial answer" },
     });
@@ -2685,10 +2815,7 @@ describe("delta assembler text-delta batching", () => {
     });
 
     const first = assemble(assembler, textDelta("agentMessage", "a1"));
-    expect(first.map((event) => event.type)).toEqual([
-      "item/started",
-      "item/agentMessage/delta",
-    ]);
+    expect(first.map((event) => event.type)).toEqual(["item/started"]);
     assemble(assembler, textDelta("reasoningText", "r1"));
     advance(10);
     expect(assemble(assembler, textDelta("agentMessage", "a2"))).toEqual([]);
@@ -2701,8 +2828,8 @@ describe("delta assembler text-delta batching", () => {
       providerTurnId: "turn-1",
     });
     expect(events.map((event) => event.type)).toEqual([
-      "item/agentMessage/delta",
       "item/reasoning/textDelta",
+      "item/agentMessage/delta",
       "turn/completed",
     ]);
   });
@@ -2738,7 +2865,7 @@ describe("delta assembler text-delta batching", () => {
     expect(flushed).toEqual([
       {
         threadId: THREAD_ID,
-        events: [expect.objectContaining({ delta: "llo" })],
+        events: [expect.objectContaining({ delta: "hello" })],
       },
     ]);
     expect(assembler.hasPendingOutput()).toBe(false);

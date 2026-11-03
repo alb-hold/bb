@@ -114,9 +114,12 @@ describe("project attachment accounting", () => {
       const queued = seedQueuedMessage(h.deps, {
         threadId: thread.id,
         content: input(a.path),
+        waitingOn: { kind: "time" },
         sendAt: Date.now() + 30 * 24 * 3600_000,
       });
       const result = updateQueuedThreadMessage(h.db, h.hub, {
+        execution: null,
+        reschedule: null,
         id: queued.id,
         threadId: thread.id,
         expectedUpdatedAt: queued.updatedAt,
@@ -133,6 +136,8 @@ describe("project attachment accounting", () => {
       );
       expect(
         updateQueuedThreadMessage(h.db, h.hub, {
+          execution: null,
+          reschedule: null,
           id: queued.id,
           threadId: thread.id,
           expectedUpdatedAt: queued.updatedAt,

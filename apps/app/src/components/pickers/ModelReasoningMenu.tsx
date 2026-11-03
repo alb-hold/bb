@@ -1,4 +1,5 @@
 import {
+  Fragment,
   useCallback,
   useEffect,
   useRef,
@@ -24,6 +25,10 @@ import {
   useMenuItemHover,
 } from "@bb/shared-ui/menu-item-hover";
 import { cn } from "@bb/shared-ui/lib/utils";
+import type {
+  SessionOptionChoice,
+  SessionOptionMenuSection,
+} from "./SessionOptionsMenu";
 import { useIsCompactViewport } from "@bb/shared-ui/hooks/use-compact-viewport";
 import {
   stripModelBrandPrefix,
@@ -74,6 +79,8 @@ export interface ModelReasoningMenuProps {
   serviceTierOptions: readonly ProviderOptionDescriptor[];
   serviceTierValue: ServiceTier | undefined;
   onServiceTierChange: (value: ServiceTier) => void;
+  agentSections: readonly SessionOptionMenuSection[];
+  onAgentOptionChange: (optionId: string, value: SessionOptionChoice) => void;
   onStartHandoff: (() => void) | null;
 }
 
@@ -108,6 +115,8 @@ export function ModelReasoningMenu({
   serviceTierOptions,
   serviceTierValue,
   onServiceTierChange,
+  agentSections,
+  onAgentOptionChange,
   onStartHandoff,
 }: ModelReasoningMenuProps) {
   const isCompactViewport = useIsCompactViewport();
@@ -175,7 +184,8 @@ export function ModelReasoningMenu({
                     label={stripModelBrandPrefix(option.label, brandPrefix)}
                     qualifier={option.routeProviderId}
                     selected={!isPreviewing && option.value === modelValue}
-                    disabled={selectionBlocked}
+                    disabled={selectionBlocked || option.disabled === true}
+                    disabledReason={option.disabledReason}
                     onClick={() => onModelSelect(option.value)}
                   />
                 );
@@ -268,7 +278,19 @@ export function ModelReasoningMenu({
                       LIST_HOVER_TRANSITION,
                     )}
                   >
-                    {option.label}
+                    {option.label === "Medium" ||
+                    option.label === "Extra High" ? (
+                      <>
+                        <span className="max-[360px]:hidden">
+                          {option.label}
+                        </span>
+                        <span className="hidden max-[360px]:inline">
+                          {option.label === "Medium" ? "Med" : "XHigh"}
+                        </span>
+                      </>
+                    ) : (
+                      option.label
+                    )}
                   </ToggleGroupItem>
                 ))}
               </ToggleGroup>
@@ -286,7 +308,7 @@ export function ModelReasoningMenu({
               >
                 <span className="flex min-w-0 items-center gap-2">
                   <Icon
-                    name="Zap"
+                    name={singleServiceTier.icon ?? "Zap"}
                     className="size-4 fill-current text-muted-foreground"
                   />
                   <span>{singleServiceTierText}</span>
@@ -323,7 +345,7 @@ export function ModelReasoningMenu({
                     onServiceTierChange(value);
                   }
                 }}
-                className="flex gap-1"
+                className="flex flex-wrap gap-1"
               >
                 {[
                   { id: DEFAULT_SERVICE_TIER, label: "Default" },
@@ -346,6 +368,81 @@ export function ModelReasoningMenu({
             </div>
           </>
         ) : null}
+
+        {agentSections.map((section) => {
+          const note = section.appliesOnNextTurn ? (
+            <span className="ml-1.5 font-normal text-subtle-foreground">
+              from the next turn
+            </span>
+          ) : null;
+          const on = section.items.find((item) => item.value === true);
+          if (on !== undefined) {
+            return (
+              <Fragment key={section.id}>
+                <div className="shrink-0 border-t border-border" />
+                <div className="shrink-0 p-1">
+                  <div
+                    className="flex items-center justify-between gap-3 rounded-sm px-2 py-[0.3125rem] text-xs"
+                    title={section.description ?? undefined}
+                  >
+                    <span className="min-w-0 truncate">
+                      {section.label}
+                      {note}
+                    </span>
+                    <Switch
+                      checked={on.selected}
+                      onCheckedChange={(enabled) =>
+                        onAgentOptionChange(section.id, enabled)
+                      }
+                      aria-label={section.label}
+                      className={cn(LIST_HOVER_TRANSITION, "[&>span]:size-3.5")}
+                    />
+                  </div>
+                </div>
+              </Fragment>
+            );
+          }
+          return (
+            <Fragment key={section.id}>
+              <div className="shrink-0 border-t border-border" />
+              <div className="shrink-0 px-2 py-2.5">
+                <MenuSectionLabel className="mb-2 px-1 py-0">
+                  {section.label}
+                  {note}
+                </MenuSectionLabel>
+                <ToggleGroup
+                  type="single"
+                  aria-label={section.label}
+                  value={section.items.find((item) => item.selected)?.key ?? ""}
+                  onValueChange={(key) => {
+                    const item = section.items.find(
+                      (candidate) => candidate.key === key,
+                    );
+                    if (item !== undefined) {
+                      onAgentOptionChange(section.id, item.value);
+                    }
+                  }}
+                  className="flex flex-wrap gap-1"
+                >
+                  {section.items.map((item) => (
+                    <ToggleGroupItem
+                      key={item.key}
+                      value={item.key}
+                      title={item.description ?? undefined}
+                      className={cn(
+                        "h-6 min-w-0 flex-auto shrink-0 whitespace-nowrap rounded-sm px-1 text-xs font-normal shadow-none hover:bg-state-hover hover:text-foreground data-[state=on]:bg-state-active data-[state=on]:text-foreground data-[state=on]:hover:bg-state-active",
+                        "max-md:pointer-coarse:h-9 max-md:pointer-coarse:text-sm",
+                        LIST_HOVER_TRANSITION,
+                      )}
+                    >
+                      {item.label}
+                    </ToggleGroupItem>
+                  ))}
+                </ToggleGroup>
+              </div>
+            </Fragment>
+          );
+        })}
 
         {onStartHandoff ? (
           <>
@@ -536,6 +633,7 @@ function MenuRowButton({
   qualifier,
   selected,
   disabled = false,
+  disabledReason,
   onClick,
   isActive,
   id,
@@ -545,6 +643,7 @@ function MenuRowButton({
   qualifier?: string;
   selected: boolean;
   disabled?: boolean;
+  disabledReason?: string;
   onClick: () => void;
   isActive?: boolean;
   id?: string;
@@ -572,7 +671,9 @@ function MenuRowButton({
     >
       <span
         className="truncate"
-        title={qualifier ? `${label} · ${qualifier}` : label}
+        title={
+          disabledReason ?? (qualifier ? `${label} · ${qualifier}` : label)
+        }
       >
         {base}
         {tag ? (

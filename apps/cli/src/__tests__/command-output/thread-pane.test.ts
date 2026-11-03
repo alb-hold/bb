@@ -28,7 +28,7 @@ describe("bb thread pane command output", () => {
     expect(collectLogLines(vi.mocked(console.log))).toEqual([
       "Thread: thr_current",
       "Pane action: maximize",
-      "Delivered: 2",
+      "Request sent to 2 open bb app clients; receipt and application are not confirmed.",
     ]);
   });
 

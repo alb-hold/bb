@@ -1,15 +1,41 @@
 import type {
+  CloseTerminalRequest,
   CreateTerminalRequest,
   TerminalInputRequest,
   TerminalListQuery,
   TerminalListResponse,
+  TerminalAttentionListResponse,
   TerminalOutputQuery,
   TerminalOutputResponse,
+  TerminalNotifyRequest,
   TerminalResizeRequest,
   TerminalSession,
+  TerminalScreenQuery,
+  TerminalScreenResponse,
+  ThreadOpenResponse,
   UpdateTerminalRequest,
 } from "@bb/server-contract";
-import { signalRequestArgs, type CreateSdkAreaArgs } from "./common.js";
+import { BbHttpError } from "../response.js";
+import {
+  signalRequestArgs,
+  threadOpenDeliveryScopeBody,
+  type CreateSdkAreaArgs,
+  type ThreadOpenDeliveryScope,
+} from "./common.js";
+
+const TERMINAL_SCREEN_READ_DEADLINE_MS = 30_000;
+
+function isRetryableScreenQueueError(error: unknown): error is BbHttpError {
+  return (
+    error instanceof BbHttpError &&
+    error.status === 503 &&
+    error.code === "terminal_screen_queue_full" &&
+    typeof error.body === "object" &&
+    error.body !== null &&
+    "retryable" in error.body &&
+    error.body.retryable === true
+  );
+}
 
 export interface TerminalThreadScope {
   cwd?: never;
@@ -60,6 +86,8 @@ export interface TerminalListArgs {
 
 export interface TerminalCreateArgs {
   cols: number;
+  cwd?: string;
+  id?: CreateTerminalRequest["id"];
   rows: number;
   scope: TerminalCreateScope;
   start?: CreateTerminalRequest["start"];
@@ -80,6 +108,7 @@ export interface TerminalRenameArgs extends TerminalTargetArgs {
 
 export interface TerminalCloseArgs extends TerminalTargetArgs {
   mode: "force" | "if-clean";
+  reason?: CloseTerminalRequest["reason"];
 }
 
 export interface TerminalInputArgs extends TerminalTargetArgs {
@@ -92,11 +121,21 @@ export interface TerminalResizeArgs extends TerminalTargetArgs {
 }
 
 export interface TerminalOutputArgs extends TerminalTargetArgs {
+  lines?: TerminalOutputQuery["lines"];
   limitChunks?: TerminalOutputQuery["limitChunks"];
   signal?: AbortSignal;
   sinceSeq?: TerminalOutputQuery["sinceSeq"];
   tailBytes?: TerminalOutputQuery["tailBytes"];
 }
+
+export interface TerminalScreenArgs extends TerminalTargetArgs {
+  lines?: TerminalScreenQuery["lines"];
+  threadId?: TerminalScreenQuery["threadId"];
+  signal?: AbortSignal;
+}
+
+export interface TerminalNotifyArgs
+  extends TerminalTargetArgs, TerminalNotifyRequest {}
 
 export type TerminalRestartArgs = TerminalTargetArgs;
 
@@ -108,15 +147,76 @@ export type TerminalCloseResult = TerminalSession;
 export type TerminalInputResult = TerminalSession;
 export type TerminalResizeResult = TerminalSession;
 export type TerminalOutputResult = TerminalOutputResponse;
+export type TerminalScreenResult = TerminalScreenResponse;
 export type TerminalRestartResult = TerminalSession;
 
+export interface ExperimentalTerminalAttentionArea {
+  clear(args: TerminalTargetArgs): Promise<TerminalGetResult>;
+  list(): Promise<TerminalAttentionListResponse["sessions"]>;
+  next(): Promise<TerminalGetResult | null>;
+}
+
+export interface ExperimentalTerminalSurface {
+  kind: "native" | "terminal";
+  status: TerminalSession["status"];
+  terminalId: string;
+  threadId: string;
+  title: string;
+}
+
+export interface ExperimentalTerminalSurfacesArea {
+  list(args: { threadId: string }): Promise<ExperimentalTerminalSurface[]>;
+}
+
+export type ExperimentalTerminalDeliveryScope = ThreadOpenDeliveryScope;
+
+export interface ExperimentalTerminalFocusArgs
+  extends ThreadOpenDeliveryScope {
+  terminalId: string;
+}
+
+export interface ExperimentalTerminalOpenBrowserArgs
+  extends ThreadOpenDeliveryScope {
+  terminalId: string;
+  url: string;
+}
+
+export interface ExperimentalTerminalLayoutArea {
+  move(
+    args: ThreadOpenDeliveryScope & {
+      targetTerminalId: string;
+      terminalId: string;
+    },
+  ): Promise<ThreadOpenResponse>;
+  split(
+    args: ThreadOpenDeliveryScope & {
+      side: "right" | "left" | "up" | "down";
+      terminalId: string;
+    },
+  ): Promise<ThreadOpenResponse>;
+}
+
 export interface TerminalsArea {
+  experimental_attention: ExperimentalTerminalAttentionArea;
+  experimental_surfaces: ExperimentalTerminalSurfacesArea;
+  experimental_focus(
+    args: ExperimentalTerminalFocusArgs,
+  ): Promise<ThreadOpenResponse>;
+  experimental_openBrowser(
+    args: ExperimentalTerminalOpenBrowserArgs,
+  ): Promise<ThreadOpenResponse>;
+  experimental_layout: ExperimentalTerminalLayoutArea;
   close(args: TerminalCloseArgs): Promise<TerminalCloseResult>;
   create(args: TerminalCreateArgs): Promise<TerminalCreateResult>;
   get(args: TerminalGetArgs): Promise<TerminalGetResult>;
   input(args: TerminalInputArgs): Promise<TerminalInputResult>;
   list(args: TerminalListArgs): Promise<TerminalListResult>;
   output(args: TerminalOutputArgs): Promise<TerminalOutputResult>;
+  experimental_screen(args: TerminalScreenArgs): Promise<TerminalScreenResult>;
+  notify(args: TerminalNotifyArgs): Promise<TerminalGetResult>;
+  experimental_follow(
+    args: TerminalOutputArgs & { pollIntervalMs?: number },
+  ): AsyncGenerator<Uint8Array>;
   rename(args: TerminalRenameArgs): Promise<TerminalRenameResult>;
   restart(args: TerminalRestartArgs): Promise<TerminalRestartResult>;
   resize(args: TerminalResizeArgs): Promise<TerminalResizeResult>;
@@ -184,6 +284,7 @@ function terminalCreateTarget(
 
 function terminalOutputQuery(args: TerminalOutputArgs): TerminalOutputQuery {
   return {
+    ...(args.lines === undefined ? {} : { lines: args.lines }),
     ...(args.sinceSeq === undefined ? {} : { sinceSeq: args.sinceSeq }),
     ...(args.tailBytes === undefined ? {} : { tailBytes: args.tailBytes }),
     ...(args.limitChunks === undefined
@@ -205,11 +306,32 @@ export function createTerminalsArea(args: CreateSdkAreaArgs): TerminalsArea {
       ),
     );
 
+  const listAttention = async (): Promise<
+    TerminalAttentionListResponse["sessions"]
+  > => {
+    const response: TerminalAttentionListResponse = await transport.readJson(
+      transport.api.v1.terminals.attention.$get({}),
+    );
+    return response.sessions
+      .filter(
+        (session) =>
+          session.attention !== null && session.attention !== undefined,
+      )
+      .sort(
+        (left, right) =>
+          (left.attention?.at ?? 0) - (right.attention?.at ?? 0) ||
+          left.createdAt - right.createdAt ||
+          left.id.localeCompare(right.id),
+      );
+  };
+
   const create = (input: TerminalCreateArgs): Promise<TerminalCreateResult> =>
     transport.readJson(
       transport.api.v1.terminals.$post({
         json: {
           cols: input.cols,
+          ...(input.cwd === undefined ? {} : { cwd: input.cwd }),
+          id: input.id,
           rows: input.rows,
           start: input.start,
           target: terminalCreateTarget(input.scope),
@@ -219,11 +341,100 @@ export function createTerminalsArea(args: CreateSdkAreaArgs): TerminalsArea {
     );
 
   return {
+    experimental_surfaces: {
+      async list(input) {
+        const [thread, response, nativeThread] = await Promise.all([
+          transport.readJson(
+            transport.api.v1.threads[":id"].$get({
+              param: { id: input.threadId },
+            }),
+          ),
+          transport.readJson(
+            transport.api.v1.terminals.$get({
+              query: { threadId: input.threadId },
+            }),
+          ),
+          transport.readJson(
+            transport.api.v1.threads[":id"]["native-terminal"].$get({
+              param: { id: input.threadId },
+            }),
+          ),
+        ]);
+        if (thread.archivedAt !== null) {
+          throw new Error(`Thread ${input.threadId} is archived`);
+        }
+        return response.sessions.flatMap((session) =>
+          session.threadId === null
+            ? []
+            : [
+                {
+                  kind:
+                    nativeThread?.terminal?.id === session.id
+                      ? ("native" as const)
+                      : ("terminal" as const),
+                  status: session.status,
+                  terminalId: session.id,
+                  threadId: session.threadId,
+                  title: session.title,
+                },
+              ],
+        );
+      },
+    },
+    async experimental_focus(input) {
+      const session = await get({ terminalId: input.terminalId });
+      if (session.threadId === null) {
+        throw new Error("Terminal session is not attached to a thread");
+      }
+      return transport.readJson(
+        transport.api.v1.threads[":id"].open.$post({
+          param: { id: session.threadId },
+          json: {
+            file: null,
+            terminalAction: { action: "focus", terminalId: session.id },
+            ...threadOpenDeliveryScopeBody(input),
+          },
+        }),
+      );
+    },
+    async experimental_openBrowser(input) {
+      const session = await get({ terminalId: input.terminalId });
+      if (session.threadId === null) {
+        throw new Error("Terminal session is not attached to a thread");
+      }
+      return transport.readJson(
+        transport.api.v1.threads[":id"].open.$post({
+          param: { id: session.threadId },
+          json: {
+            file: null,
+            terminalAction: {
+              action: "openBrowser",
+              terminalId: session.id,
+              url: input.url,
+            },
+            ...threadOpenDeliveryScopeBody(input),
+          },
+        }),
+      );
+    },
+    experimental_attention: {
+      async clear(input) {
+        return transport.readJson(
+          transport.api.v1.terminals[":terminalId"].attention.clear.$post({
+            param: { terminalId: input.terminalId },
+          }),
+        );
+      },
+      list: listAttention,
+      async next() {
+        return (await listAttention())[0] ?? null;
+      },
+    },
     async close(input) {
       return transport.readJson(
         transport.api.v1.terminals[":terminalId"].close.$post({
           param: { terminalId: input.terminalId },
-          json: { mode: input.mode, reason: "user" },
+          json: { mode: input.mode, reason: input.reason ?? "user" },
         }),
       );
     },
@@ -258,6 +469,83 @@ export function createTerminalsArea(args: CreateSdkAreaArgs): TerminalsArea {
         ),
       );
     },
+    async experimental_screen(input) {
+      const deadline = Date.now() + TERMINAL_SCREEN_READ_DEADLINE_MS;
+      let backoffMs = 25;
+      while (true) {
+        const timeoutSignal = AbortSignal.timeout(
+          Math.max(1, deadline - Date.now()),
+        );
+        const signal =
+          input.signal === undefined
+            ? timeoutSignal
+            : AbortSignal.any([input.signal, timeoutSignal]);
+        try {
+          return await transport.readJson(
+            transport.api.v1.terminals[":terminalId"].screen.$get(
+              {
+                param: { terminalId: input.terminalId },
+                query: {
+                  ...(input.lines === undefined ? {} : { lines: input.lines }),
+                  ...(input.threadId === undefined
+                    ? {}
+                    : { threadId: input.threadId }),
+                },
+              },
+              ...signalRequestArgs(signal),
+            ),
+          );
+        } catch (error) {
+          if (!isRetryableScreenQueueError(error) || Date.now() >= deadline) {
+            throw error;
+          }
+          await new Promise<void>((resolve) =>
+            setTimeout(resolve, Math.min(backoffMs, deadline - Date.now())),
+          );
+          backoffMs = Math.min(backoffMs * 2, 500);
+        }
+      }
+    },
+    async notify(input) {
+      return transport.readJson(
+        transport.api.v1.terminals[":terminalId"].notify.$post({
+          param: { terminalId: input.terminalId },
+          json: {
+            ...(input.title === undefined ? {} : { title: input.title }),
+            ...(input.body === undefined ? {} : { body: input.body }),
+          },
+        }),
+      );
+    },
+    async *experimental_follow(input) {
+      let sinceSeq = input.sinceSeq ?? 0;
+      let first = true;
+      while (!input.signal?.aborted) {
+        const output = await transport.readJson(
+          transport.api.v1.terminals[":terminalId"].output.$get(
+            {
+              param: { terminalId: input.terminalId },
+              query: terminalOutputQuery({
+                ...input,
+                ...(first ? {} : { lines: undefined, sinceSeq }),
+              }),
+            },
+            ...signalRequestArgs(input.signal),
+          ),
+        );
+        first = false;
+        for (const chunk of output.chunks) {
+          yield Uint8Array.from(atob(chunk.dataBase64), (character) =>
+            character.charCodeAt(0),
+          );
+        }
+        sinceSeq = output.nextSeq;
+        if (output.status === "exited") return;
+        await new Promise((resolve) =>
+          setTimeout(resolve, input.pollIntervalMs ?? 250),
+        );
+      }
+    },
     async rename(input) {
       return transport.readJson(
         transport.api.v1.terminals[":terminalId"].$patch({
@@ -281,6 +569,51 @@ export function createTerminalsArea(args: CreateSdkAreaArgs): TerminalsArea {
           json: { cols: input.cols, rows: input.rows },
         }),
       );
+    },
+    experimental_layout: {
+      async split(input) {
+        const session = await get({ terminalId: input.terminalId });
+        if (session.threadId === null) {
+          throw new Error("Terminal session is not attached to a thread");
+        }
+        return transport.readJson(
+          transport.api.v1.threads[":id"].open.$post({
+            param: { id: session.threadId },
+            json: {
+              file: null,
+              terminalLayoutAction: {
+                action: "split",
+                terminalId: session.id,
+                side: input.side,
+              },
+              ...threadOpenDeliveryScopeBody(input),
+            },
+          }),
+        );
+      },
+      async move(input) {
+        const [session, target] = await Promise.all([
+          get({ terminalId: input.terminalId }),
+          get({ terminalId: input.targetTerminalId }),
+        ]);
+        if (session.threadId === null || target.threadId !== session.threadId) {
+          throw new Error("Terminal sessions must belong to the same thread");
+        }
+        return transport.readJson(
+          transport.api.v1.threads[":id"].open.$post({
+            param: { id: session.threadId },
+            json: {
+              file: null,
+              terminalLayoutAction: {
+                action: "move",
+                terminalId: session.id,
+                targetTerminalId: target.id,
+              },
+              ...threadOpenDeliveryScopeBody(input),
+            },
+          }),
+        );
+      },
     },
   };
 }

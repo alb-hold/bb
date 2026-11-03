@@ -238,14 +238,18 @@ describe("generated thread titles", () => {
         hostId: host.id,
         path: "/tmp/stop-during-metadata-project",
       });
-      const thread = seedThread(harness.deps, {
+      const thread = createThread(harness.db, harness.hub, {
         projectId: project.id,
+        providerId: "codex",
         status: "starting",
         title: null,
         titleFallback: "Stop during metadata inference",
       });
+      expect(thread.title).toBeNull();
       const input = textInput("Stop during metadata inference before setup");
       requestThreadProvision(harness.deps, {
+        originPluginId: null,
+        author: { initiator: "user", senderThreadId: null },
         environmentIntent: {
           type: "provider",
           environmentProviderId: "git-worktree",
@@ -581,6 +585,8 @@ describe("generated thread titles", () => {
       });
 
       requestThreadProvision(harness.deps, {
+        originPluginId: null,
+        author: { initiator: "user", senderThreadId: null },
         environmentIntent: {
           type: "reuse",
           environmentId: environment.id,
@@ -692,6 +698,8 @@ describe("generated thread titles", () => {
       });
 
       requestThreadProvision(harness.deps, {
+        originPluginId: null,
+        author: { initiator: "user", senderThreadId: null },
         environmentIntent: {
           type: "reuse",
           environmentId: environment.id,

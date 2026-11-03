@@ -22,7 +22,7 @@ const MARKDOWN_FILE_EXTENSIONS = [".md", ".markdown"];
 const MARKDOWN_MIME_TYPES = new Set(["text/markdown", "text/x-markdown"]);
 const CSV_FILE_EXTENSIONS = [".csv"];
 const CSV_MIME_TYPES = new Set(["application/csv", "text/csv"]);
-const HTML_FILE_EXTENSION = ".html";
+const HTML_FILE_EXTENSIONS = [".html", ".htm"];
 const NULL_CHARACTER = "\u0000";
 
 export const FILE_PREVIEW_SAMPLE_BYTES = 64 * 1024;
@@ -170,6 +170,26 @@ export function areEnvironmentFilePreviewSourcesEqual(
   }
 }
 
+export function getEnvironmentFilePreviewSourceAtRef(
+  ref: string | undefined,
+): EnvironmentFilePreviewSource {
+  if (ref === undefined) return { kind: "working-tree" };
+  return ref === "HEAD" ? { kind: "head" } : { kind: "merge-base", ref };
+}
+
+export function getEnvironmentFilePreviewSourceRef(
+  source: EnvironmentFilePreviewSource,
+): string | null {
+  switch (source.kind) {
+    case "working-tree":
+      return null;
+    case "head":
+      return "HEAD";
+    case "merge-base":
+      return source.ref;
+  }
+}
+
 interface BuildFilePreviewArgs extends FilePreviewTarget {
   contentBytes: Uint8Array;
   mimeType: string;
@@ -229,7 +249,10 @@ function hasCsvExtension(path: string): boolean {
 }
 
 export function isHtmlFilePreviewPath(path: string): boolean {
-  return path.toLowerCase().endsWith(HTML_FILE_EXTENSION);
+  const normalizedPath = path.toLowerCase();
+  return HTML_FILE_EXTENSIONS.some((extension) =>
+    normalizedPath.endsWith(extension),
+  );
 }
 
 export function normalizeFilePreviewMimeType(value: string | null): string {

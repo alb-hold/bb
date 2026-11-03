@@ -2,12 +2,13 @@ import { z } from "zod";
 import {
   canonicalizeHostPath,
   contextSnapshotSchema,
-  BRANCH_LIST_QUERY_MAX_LENGTH,
   changedMessageLenientSchema,
   changedMessageSchema,
+  threadUsageCostSchema,
+  jsonValueSchema,
+  BRANCH_LIST_QUERY_MAX_LENGTH,
   gitBranchNameSchema,
   gitBranchSelectionSchema,
-  jsonValueSchema,
 } from "@bb/domain";
 
 export {
@@ -35,6 +36,15 @@ export const threadContextWindowUsageSchema = z.object({
   usedTokens: z.number(),
   modelContextWindow: z.number(),
   estimated: z.boolean(),
+  cost: threadUsageCostSchema.optional(),
+  /**
+   * When the composer starts offering to compact before the next send: the
+   * provider's prompt cache for this context expires then, so the next turn
+   * would re-read it uncached. Present only while the `compactExpiredCache`
+   * experiment is on, the provider reported a cache lifetime and supports
+   * manual compaction, and the context holds at least 100k tokens.
+   */
+  compactionOfferAt: z.iso.datetime().optional(),
 });
 export type ThreadContextWindowUsage = z.infer<
   typeof threadContextWindowUsageSchema

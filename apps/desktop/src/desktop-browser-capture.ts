@@ -1,6 +1,11 @@
 import { nativeImage, type NativeImage, type WebContents } from "electron";
+import { jsonObjectSchema } from "@bb/domain";
 import { z } from "zod";
 import type { DesktopBrowserCdpPage } from "./desktop-browser-cdp.js";
+import {
+  getDesktopBrowserThrottling,
+  setDesktopBrowserThrottling,
+} from "./desktop-browser-throttling.js";
 
 const screenshotSchema = z.object({
   data: z
@@ -23,7 +28,7 @@ export async function captureDesktopBrowserCdpScreenshot(
   let frameTimer: ReturnType<typeof setTimeout> | undefined;
   const command = contents.debugger
     .sendCommand("Page.captureScreenshot", params, sessionId)
-    .then((result) => z.record(z.string(), z.json()).parse(result))
+    .then((result) => jsonObjectSchema.parse(result))
     .finally(() => {
       finished = true;
       finish();
@@ -78,7 +83,7 @@ export async function captureDesktopBrowserPage(
   const debuggerApi = contents.debugger;
   const restoreBackgroundThrottling = () => {
     if (previousBackgroundThrottling !== null && !contents.isDestroyed())
-      contents.setBackgroundThrottling(previousBackgroundThrottling);
+      setDesktopBrowserThrottling(contents, previousBackgroundThrottling);
     previousBackgroundThrottling = null;
   };
   const detached = () => {
@@ -103,10 +108,11 @@ export async function captureDesktopBrowserPage(
           if (!debuggerApi.isAttached()) {
             debuggerApi.attach("1.3");
             ownsAttachment = true;
-            previousBackgroundThrottling = contents.getBackgroundThrottling();
-            contents.setBackgroundThrottling(false);
+            previousBackgroundThrottling =
+              getDesktopBrowserThrottling(contents);
+            setDesktopBrowserThrottling(contents, false);
             debuggerApi.on("detach", detached);
-            z.record(z.string(), z.json()).parse(
+            jsonObjectSchema.parse(
               await debuggerApi.sendCommand(
                 "Emulation.setFocusEmulationEnabled",
                 { enabled: true },

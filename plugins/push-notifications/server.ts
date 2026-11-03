@@ -13,12 +13,26 @@ import {
   DEFAULT_EXPO_PUSH_URL,
   DEVICE_LABEL_MAX_LENGTH,
   EXPO_PUSH_TOKEN_MAX_LENGTH,
+  NOTIFICATION_BODY_MAX_LENGTH,
+  NOTIFICATION_TITLE_MAX_LENGTH,
   pushNotificationsRpcContract,
+  sendNotificationInputSchema,
+  sendNotificationRpcContract,
   type ClientNotification,
+  type DeliveryChannel,
   type PushSubscriptionSummary,
 } from "./contract.js";
 import {
+  createNotificationPreferences,
+  describeNotificationSource,
+  NOTIFICATION_LEVEL_LABELS,
+  notificationLevelSchema,
+  ownNotificationLevelSchema,
+  type ThreadNotifications,
+} from "./preferences.js";
+import {
   createPushSender,
+  SendNotificationError,
   type CreatePushSenderArgs,
   type LastSendOutcome,
 } from "./sender.js";
@@ -37,6 +51,8 @@ interface StatusView {
   mobileEnabled: boolean;
   webEnabled: boolean;
   desktopEnabled: boolean;
+  defaultLevel: string;
+  childLevel: string;
   relayUrl: string;
   lastSendOutcome: LastSendOutcome;
 }
@@ -78,10 +94,23 @@ function formatStatus(status: StatusView): string {
     `Mobile: ${status.mobileEnabled}`,
     `Web: ${status.webEnabled}`,
     `Desktop: ${status.desktopEnabled}`,
+    `Default level: ${status.defaultLevel}`,
+    `Child thread level: ${status.childLevel}`,
     `Subscriptions: ${status.subscriptionCount}`,
     `Relay URL: ${status.relayUrl}`,
     `Last send: ${formatLastOutcome(status.lastSendOutcome)}`,
   ].join("\n");
+}
+
+function formatThreadNotifications(
+  threadId: string,
+  row: ThreadNotifications,
+): string {
+  return `Notifications for ${threadId}: ${row.effective} (${describeNotificationSource(row)})`;
+}
+
+function formatSent(channels: readonly DeliveryChannel[]): string {
+  return `Sent to ${channels.join(", ")}`;
 }
 
 function waitForAbort(signal: AbortSignal): Promise<void> {
@@ -119,6 +148,35 @@ export function createPushNotificationsPlugin(
           "Show system notifications while the bb desktop app is running.",
         default: true,
       },
+      defaultLevel: {
+        type: "select",
+        label: "Default notifications",
+        description:
+          "For threads you haven't set. Needs input only skips finished turns.",
+        options: [...notificationLevelSchema.options],
+        experimental_optionLabels: {
+          all: NOTIFICATION_LEVEL_LABELS.all,
+          "input-only": NOTIFICATION_LEVEL_LABELS["input-only"],
+          muted: NOTIFICATION_LEVEL_LABELS.muted,
+        },
+        default: "all",
+        experimental_schema: notificationLevelSchema,
+      },
+      childLevel: {
+        type: "select",
+        label: "Child thread notifications",
+        description:
+          "For child threads you haven't set. A thread's level also limits its child threads.",
+        options: [...ownNotificationLevelSchema.options],
+        experimental_optionLabels: {
+          inherit: NOTIFICATION_LEVEL_LABELS.inherit,
+          all: NOTIFICATION_LEVEL_LABELS.all,
+          "input-only": NOTIFICATION_LEVEL_LABELS["input-only"],
+          muted: NOTIFICATION_LEVEL_LABELS.muted,
+        },
+        default: "input-only",
+        experimental_schema: ownNotificationLevelSchema,
+      },
       expoPushUrl: {
         type: "string",
         label: "Expo push relay URL",
@@ -126,6 +184,18 @@ export function createPushNotificationsPlugin(
         default: DEFAULT_EXPO_PUSH_URL,
         experimental_schema: z.string().url(),
       },
+    });
+    const preferences = createNotificationPreferences({
+      bb,
+      getDefaults: async () => {
+        const { defaultLevel, childLevel } = await settings.get();
+        return {
+          defaultLevel: notificationLevelSchema.parse(defaultLevel),
+          childLevel: ownNotificationLevelSchema.parse(childLevel),
+        };
+      },
+      publish: (threadIds) =>
+        bb.rpc.experimental_invalidate(threadIds.map((id) => `thread:${id}`)),
     });
     const subscriptions = createPushSubscriptionStore(bb, {
       ...(options.now === undefined ? {} : { now: options.now }),
@@ -136,6 +206,7 @@ export function createPushNotificationsPlugin(
       subscriptions,
       getDeliverySettings: () => settings.get(),
       getExpoPushUrl: async () => (await settings.get()).expoPushUrl,
+      getNotificationLevel: (thread) => preferences.effectiveLevel(thread),
       ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
       ...(options.coalesceMs === undefined
         ? {}
@@ -144,14 +215,25 @@ export function createPushNotificationsPlugin(
     });
 
     async function status(): Promise<StatusView> {
-      const [{ expoPushUrl, mobileEnabled, webEnabled, desktopEnabled }, rows] =
-        await Promise.all([settings.get(), subscriptions.list()]);
+      const [
+        {
+          expoPushUrl,
+          mobileEnabled,
+          webEnabled,
+          desktopEnabled,
+          defaultLevel,
+          childLevel,
+        },
+        rows,
+      ] = await Promise.all([settings.get(), subscriptions.list()]);
       return {
         enabled: true,
         subscriptionCount: rows.length,
         mobileEnabled,
         webEnabled,
         desktopEnabled,
+        defaultLevel,
+        childLevel,
         relayUrl: expoPushUrl,
         lastSendOutcome: sender.getLastOutcome(),
       };
@@ -172,6 +254,21 @@ export function createPushNotificationsPlugin(
       return { ok: true as const };
     }
 
+    bb.rpc.register(
+      sendNotificationRpcContract,
+      {
+        "notifications.send": async (input, context) => ({
+          ok: true as const,
+          channels: await sender.send(input, context.experimental_caller),
+        }),
+      },
+      {
+        experimental_discoverable: true,
+        experimental_description:
+          "Notifications on bb's mobile, web and desktop channels.",
+      },
+    );
+
     bb.rpc.register(pushNotificationsRpcContract, {
       "notifications.test": ({ channel }) => sendTest(channel),
       "pushSubscriptions.list": async () => ({
@@ -184,6 +281,20 @@ export function createPushNotificationsPlugin(
         }
         return { ok: true as const };
       },
+      "threadNotifications.keyed": async ({ keys }) => {
+        const rows = await preferences.list(keys);
+        return Object.fromEntries(
+          keys.map((key) => [
+            key,
+            rows[key] ?? { own: "inherit" as const, ancestorCap: null },
+          ]),
+        );
+      },
+      "threadNotifications.list": async ({ threadIds }) => ({
+        threads: await preferences.list(threadIds),
+      }),
+      "threadNotifications.set": ({ threadId, level }) =>
+        preferences.set(threadId, level),
     });
 
     bb.cli.register(
@@ -230,6 +341,78 @@ export function createPushNotificationsPlugin(
                 stdout: input.options.json
                   ? JSON.stringify({ ok: true, channel: channel.data })
                   : `Test sent to connected ${channel.data} clients with notification permission`,
+              };
+            },
+          }),
+          send: cliCommand({
+            summary: "Send a notification to every enabled channel",
+            description: `Uses the same delivery as thread notifications: connected web and desktop clients with permission, and every registered mobile device. The title is cut to ${NOTIFICATION_TITLE_MAX_LENGTH} characters and the body to ${NOTIFICATION_BODY_MAX_LENGTH}. With --thread, a click opens that thread; otherwise it opens bb.`,
+            options: {
+              title: {
+                type: "string",
+                required: true,
+                placeholder: "text",
+                description: "Notification title",
+              },
+              body: {
+                type: "string",
+                placeholder: "text",
+                description: "Notification text under the title",
+              },
+              thread: {
+                type: "string",
+                placeholder: "thread-id",
+                description: "Thread to open when the notification is clicked",
+              },
+              json: JSON_OPTION,
+            },
+            async run(input) {
+              const parsed = sendNotificationInputSchema.safeParse({
+                title: input.options.title,
+                ...(input.options.body === undefined
+                  ? {}
+                  : { body: input.options.body }),
+                ...(input.options.thread === undefined
+                  ? {}
+                  : { threadId: input.options.thread }),
+              });
+              if (!parsed.success) {
+                throw new PluginCliError(
+                  parsed.error.issues
+                    .map((issue) => `${issue.path.join(".")}: ${issue.message}`)
+                    .join("; "),
+                  { code: "invalid_notification" },
+                );
+              }
+              let channels: DeliveryChannel[];
+              try {
+                channels = await sender.send(parsed.data, { kind: "client" });
+              } catch (error) {
+                if (!(error instanceof SendNotificationError)) throw error;
+                throw new PluginCliError(
+                  error.message,
+                  error.code === "thread_not_found"
+                    ? { code: error.code }
+                    : {
+                        code: error.code,
+                        hint: "Check the push-sender service in `bb plugin list`.",
+                      },
+                );
+              }
+              if (channels.length === 0) {
+                throw new PluginCliError(
+                  "No channel received the notification",
+                  {
+                    code: "not_delivered",
+                    hint: "Run `bb push-notifications status` to see which channels are on, how many devices are registered, and the last mobile send.",
+                  },
+                );
+              }
+              return {
+                exitCode: 0,
+                stdout: input.options.json
+                  ? JSON.stringify({ ok: true, channels })
+                  : formatSent(channels),
               };
             },
           }),
@@ -320,6 +503,48 @@ export function createPushNotificationsPlugin(
               };
             },
           }),
+          thread: cliCommand({
+            summary: "Show or set a thread's notification level",
+            description:
+              "Without --level, prints the resolved level and where it comes from. A thread uses its own level, else childLevel if it has a parent, else defaultLevel; every ancestor's own level caps it.",
+            positionals: [
+              {
+                name: "thread",
+                description: "Thread id",
+                required: true,
+              },
+            ],
+            options: {
+              level: {
+                type: "enum",
+                values: ownNotificationLevelSchema.options,
+                description:
+                  "Set the thread's own level; inherit clears it so the parent or default applies",
+              },
+              json: JSON_OPTION,
+            },
+            async run(input) {
+              const threadId = input.positionals.thread;
+              let row: ThreadNotifications;
+              try {
+                if (input.options.level !== undefined) {
+                  await preferences.set(threadId, input.options.level);
+                }
+                row = await preferences.get(threadId);
+              } catch (error) {
+                throw new PluginCliError(
+                  error instanceof Error ? error.message : String(error),
+                  { code: "thread_not_found" },
+                );
+              }
+              return {
+                exitCode: 0,
+                stdout: input.options.json
+                  ? JSON.stringify({ threadId, ...row })
+                  : formatThreadNotifications(threadId, row),
+              };
+            },
+          }),
           status: cliCommand({
             summary: "Show push delivery status",
             options: { json: JSON_OPTION },
@@ -346,6 +571,12 @@ export function createPushNotificationsPlugin(
     bb.events.on("thread.failed", (payload) => {
       sender.onThreadFailed(payload);
     });
+    bb.events.on("experimental_thread.parentChanged", ({ thread }) =>
+      preferences.publishSubtree(thread.id),
+    );
+    bb.events.on("thread.unarchived", ({ thread }) =>
+      preferences.publishSubtree(thread.id),
+    );
     bb.background.service("push-sender", {
       async start(signal) {
         await sender.start();

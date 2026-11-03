@@ -4,10 +4,11 @@ import type { Thread } from "@bb/domain";
 import { isThreadRead, type ThreadReadState } from "@bb/client-core";
 import {
   getDocumentVisibilityRevision,
-  isDocumentVisible,
   useDocumentVisibilityRevision,
+  useDocumentVisible,
 } from "@/lib/document-visibility";
 import { MARK_THREAD_UNREAD_MUTATION_KEY } from "./mutations/thread-state-mutations";
+import { useUserActive } from "@/lib/user-activity";
 
 type ThreadReadTrackingState = ThreadReadState & Pick<Thread, "id">;
 
@@ -25,6 +26,7 @@ interface UseThreadReadTrackingParams {
 }
 
 interface ReadTrackingSnapshot {
+  isActive: boolean;
   isVisible: boolean;
   isFocused: boolean;
   isRead: boolean | null;
@@ -87,7 +89,8 @@ export function useThreadReadTracking({
   const unreadIdAtReadStartRef = useRef<Map<string, number>>(new Map());
   const previousSnapshotRef = useRef<ReadTrackingSnapshot | null>(null);
   const visibilityRevision = useDocumentVisibilityRevision();
-  const isVisible = isDocumentVisible();
+  const isVisible = useDocumentVisible();
+  const isActive = useUserActive();
   const queryClient = useQueryClient();
   const manualUnreadRequests = useMutationState({
     filters: { mutationKey: MARK_THREAD_UNREAD_MUTATION_KEY },
@@ -112,6 +115,7 @@ export function useThreadReadTracking({
     const previousSnapshot = previousSnapshotRef.current;
     const threadIsRead = thread ? isThreadRead(thread) : null;
     const currentSnapshot: ReadTrackingSnapshot = {
+      isActive,
       isVisible,
       isFocused,
       isRead: threadIsRead,
@@ -188,11 +192,18 @@ export function useThreadReadTracking({
       return;
     }
 
+    if (!isActive) {
+      return;
+    }
+    const becameActive =
+      previousSnapshot?.threadId === thread.id &&
+      previousSnapshot.isActive === false;
     if (
       !isOpenedThread &&
       !hasNewAttention &&
       !becameVisible &&
       !becameFocused &&
+      !becameActive &&
       !isRetry
     ) {
       return;
@@ -229,6 +240,7 @@ export function useThreadReadTracking({
         }
       });
   }, [
+    isActive,
     isVisible,
     isFocused,
     latestManualUnreadId,

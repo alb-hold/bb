@@ -37,3 +37,36 @@ export function getDatabaseDataVersion(db: DbConnection): number {
   }
   return version;
 }
+
+const BACKGROUND_TASK_APPEND_GENERATION_LIMIT = 50_000;
+const backgroundTaskAppendGenerationsByThreadId = new Map<string, number>();
+let threadEventOwnershipEpoch = 0;
+
+export function getThreadEventOwnershipEpoch(): number {
+  return threadEventOwnershipEpoch;
+}
+
+export function bumpThreadEventOwnershipEpoch(): void {
+  threadEventOwnershipEpoch += 1;
+  backgroundTaskAppendGenerationsByThreadId.clear();
+}
+
+export function getBackgroundTaskAppendGeneration(threadId: string): number {
+  return backgroundTaskAppendGenerationsByThreadId.get(threadId) ?? 0;
+}
+
+export function bumpBackgroundTaskAppendGeneration(threadId: string): void {
+  const next = getBackgroundTaskAppendGeneration(threadId) + 1;
+  if (
+    !backgroundTaskAppendGenerationsByThreadId.has(threadId) &&
+    backgroundTaskAppendGenerationsByThreadId.size >=
+      BACKGROUND_TASK_APPEND_GENERATION_LIMIT
+  ) {
+    bumpThreadEventOwnershipEpoch();
+  }
+  backgroundTaskAppendGenerationsByThreadId.set(threadId, next);
+}
+
+export function getBackgroundTaskAppendGenerationCount(): number {
+  return backgroundTaskAppendGenerationsByThreadId.size;
+}

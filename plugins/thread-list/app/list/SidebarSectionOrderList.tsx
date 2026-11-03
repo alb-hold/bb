@@ -5,7 +5,7 @@ import {
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable";
 import type { SidebarSectionId } from "../model/sidebar-section-id.js";
-import type { ReorderDndContextProps } from "../ui/useReorderDnd.js";
+import type { ReorderDndContextProps } from "@/components/ui/use-reorder-dnd";
 
 interface SidebarSectionOrderListProps {
   children: (sectionId: SidebarSectionId) => ReactNode;
@@ -22,7 +22,9 @@ export function SidebarSectionOrderList({
 }: SidebarSectionOrderListProps) {
   const content = (
     <SortableContext items={[...order]} strategy={verticalListSortingStrategy}>
-      <div className="space-y-4">{order.map(children)}</div>
+      <div className="space-y-4 max-md:pointer-coarse:space-y-8">
+        {order.map(children)}
+      </div>
     </SortableContext>
   );
 

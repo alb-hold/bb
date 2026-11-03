@@ -10,7 +10,10 @@ import {
 import { useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { POINTER_COARSE_QUERY } from "@bb/shared-ui/hooks/use-pointer-coarse";
-import { CompactViewportOverrideProvider } from "@bb/shared-ui/hooks/use-compact-viewport";
+import {
+  COMPACT_VIEWPORT_QUERY,
+  CompactViewportOverrideProvider,
+} from "@bb/shared-ui/hooks/use-compact-viewport";
 import {
   Dialog,
   DialogContent,
@@ -18,7 +21,12 @@ import {
   DialogTitle,
 } from "@bb/shared-ui/dialog";
 import { Popover, PopoverContent } from "@bb/shared-ui/popover";
-import { DropdownMenu, DropdownMenuContent } from "@bb/shared-ui/dropdown-menu";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+} from "@bb/shared-ui/dropdown-menu";
+import { ActionMenuItem } from "@bb/shared-ui/action-menu-items";
 import {
   Select,
   SelectContent,
@@ -34,6 +42,7 @@ import {
 
 afterEach(() => {
   cleanup();
+  document.body.style.pointerEvents = "";
   vi.restoreAllMocks();
   vi.useRealTimers();
 });
@@ -223,6 +232,44 @@ describe("responsive Popover", () => {
 });
 
 describe("responsive DropdownMenu", () => {
+  it.each([true, false])(
+    "renders an action link as the menu item and closes on selection (compact: %s)",
+    (isCompactViewport) => {
+      vi.useFakeTimers();
+      mockPointerCoarse(isCompactViewport);
+      const onSelect = vi.fn();
+      const onOpenChange = vi.fn();
+      render(
+        <CompactViewportOverrideProvider isCompactViewport={isCompactViewport}>
+          <DropdownMenu defaultOpen onOpenChange={onOpenChange}>
+            <DropdownMenuContent>
+              <ActionMenuItem
+                surface="dropdown"
+                icon="Settings"
+                href="#project-settings"
+                onSelect={onSelect}
+              >
+                Project settings
+              </ActionMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </CompactViewportOverrideProvider>,
+      );
+      act(() => vi.advanceTimersByTime(120));
+
+      const item = screen.getByRole("menuitem", { name: "Project settings" });
+      expect(item.tagName).toBe("A");
+      expect(item.getAttribute("href")).toBe("#project-settings");
+      expect(item.closest("button")).toBeNull();
+      expect(item.querySelector('[data-icon="Settings"]')?.parentElement).toBe(
+        item,
+      );
+      fireEvent.click(item);
+      expect(onSelect).toHaveBeenCalledTimes(1);
+      expect(onOpenChange).toHaveBeenCalledWith(false);
+    },
+  );
+
   it("keeps its compact width reset when the caller passes an inline style", () => {
     vi.useFakeTimers();
     mockPointerCoarse(true);
@@ -246,6 +293,36 @@ describe("responsive DropdownMenu", () => {
     expect(sheet.style.minWidth).toBe("auto");
     expect(sheet.style.maxWidth).toBe("none");
     expect(sheet.style.color).toBe("red");
+  });
+
+  it("draws an item from a separately bundled copy inside its compact sheet", async () => {
+    vi.spyOn(window, "matchMedia").mockImplementation((query) => ({
+      matches:
+        query === COMPACT_VIEWPORT_QUERY || query === POINTER_COARSE_QUERY,
+      media: query,
+      onchange: null,
+      addListener: () => {},
+      removeListener: () => {},
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      dispatchEvent: () => false,
+    }));
+    vi.resetModules();
+    const pluginCopy = await import("@bb/shared-ui/dropdown-menu");
+    expect(pluginCopy.DropdownMenuItem).not.toBe(DropdownMenuItem);
+    vi.useFakeTimers();
+    const onSelect = vi.fn();
+    render(
+      <pluginCopy.DropdownMenu defaultOpen>
+        <pluginCopy.DropdownMenuContent mobileTitle="Send options">
+          <DropdownMenuItem onSelect={onSelect}>Save draft</DropdownMenuItem>
+        </pluginCopy.DropdownMenuContent>
+      </pluginCopy.DropdownMenu>,
+    );
+    act(() => vi.advanceTimersByTime(120));
+
+    fireEvent.click(screen.getByRole("menuitem", { name: "Save draft" }));
+    expect(onSelect).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -452,6 +529,95 @@ describe("responsive Dialog", () => {
 });
 
 describe("PersistentResponsiveDrawerShell", () => {
+  it("routes pointer taps to open drawer controls above a pointer-disabled app tree", () => {
+    mockPointerCoarse(true);
+    const onOpenChange = vi.fn();
+    const onAction = vi.fn();
+    document.body.style.pointerEvents = "none";
+
+    const view = render(
+      <main style={{ pointerEvents: "none" }}>
+        <PersistentResponsiveDrawerShell
+          open={true}
+          onOpenChange={onOpenChange}
+          srLabel="Details"
+        >
+          <button type="button" onClick={onAction}>
+            Apply details
+          </button>
+        </PersistentResponsiveDrawerShell>
+      </main>,
+    );
+
+    const content = document.querySelector<HTMLElement>(
+      "[data-persistent-drawer-content]",
+    );
+    const backdrop = document.querySelector<HTMLElement>(
+      "[data-persistent-drawer-backdrop]",
+    );
+    if (content === null || backdrop === null) {
+      throw new Error("open drawer content and backdrop should be mounted");
+    }
+
+    expect(content.style.pointerEvents).toBe("auto");
+    fireEvent.click(screen.getByRole("button", { name: "Apply details" }));
+    expect(onAction).toHaveBeenCalledOnce();
+    fireEvent.pointerDown(backdrop, { pointerId: 1 });
+    fireEvent.click(backdrop);
+    expect(onOpenChange).toHaveBeenLastCalledWith(false);
+
+    view.rerender(
+      <main style={{ pointerEvents: "none" }}>
+        <PersistentResponsiveDrawerShell
+          open={false}
+          onOpenChange={onOpenChange}
+          srLabel="Details"
+        >
+          <button type="button" onClick={onAction}>
+            Apply details
+          </button>
+        </PersistentResponsiveDrawerShell>
+      </main>,
+    );
+
+    const closedControl = content.querySelector<HTMLButtonElement>("button");
+    if (closedControl === null) {
+      throw new Error("closed drawer control should remain mounted");
+    }
+    expect(content.style.pointerEvents).toBe("none");
+    expect(getComputedStyle(closedControl).pointerEvents).toBe("none");
+    expect(content.hasAttribute("inert")).toBe(true);
+    expect(content.getAttribute("aria-hidden")).toBe("true");
+  });
+
+  it("keeps open drawer content pointer-interactive above its backdrop", () => {
+    mockPointerCoarse(true);
+    render(
+      <PersistentResponsiveDrawerShell
+        open={true}
+        onOpenChange={() => {}}
+        srLabel="Details"
+      >
+        <button type="button">Done</button>
+      </PersistentResponsiveDrawerShell>,
+    );
+
+    const content = document.querySelector<HTMLElement>(
+      "[data-persistent-drawer-content]",
+    );
+    const backdrop = document.querySelector<HTMLElement>(
+      "[data-persistent-drawer-backdrop]",
+    );
+    if (content === null || backdrop === null) {
+      throw new Error("open drawer content and backdrop should be mounted");
+    }
+    expect(content.style.pointerEvents).toBe("auto");
+    expect(
+      backdrop.compareDocumentPosition(content) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
   it("opens without applying modal state to the app tree", () => {
     mockPointerCoarse(true);
     const onContentAnimationEnd = vi.fn();
@@ -532,10 +698,12 @@ describe("PersistentResponsiveDrawerShell", () => {
   it("lets a nested portaled surface handle Escape first", () => {
     mockPointerCoarse(true);
     const onOpenChange = vi.fn();
+    const onEscapeKeyDown = vi.fn();
     render(
       <PersistentResponsiveDrawerShell
         open={true}
         onOpenChange={onOpenChange}
+        onEscapeKeyDown={onEscapeKeyDown}
         srLabel="Details"
       >
         <button type="button">Panel action</button>
@@ -551,6 +719,7 @@ describe("PersistentResponsiveDrawerShell", () => {
 
     try {
       fireEvent.keyDown(nestedAction, { key: "Escape" });
+      expect(onEscapeKeyDown).not.toHaveBeenCalled();
       expect(onOpenChange).not.toHaveBeenCalled();
     } finally {
       nestedAction.remove();

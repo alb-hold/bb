@@ -11,9 +11,19 @@ field with `threads.spawn`, or pass that JSON to `bb thread spawn --plugin-creat
 This persists the pin before Fleet's initial admission check. The same draft
 data works for ordinary Enter/button sends and programmatic composer submissions.
 No entry means Automatic. Choices require a local pool; choose Automatic when
-proxying a parent pool. Conversation credentials carry the current account choice;
-active turns keep their choice. Machine token rotation also revokes derived
-conversation credentials after the existing ten-minute grace period.
+proxying a parent pool. For native terminals, the hub resolves the conversation's
+current account choice at the start of each request. A retained bridge credential
+keeps the account chosen when it was issued; a new bridge turn's credential uses
+the current selection. A request already in flight keeps its choice. Native Codex launches use the same
+environment-backed provider configuration as chat turns; no token is passed in
+command arguments. Native launch credentials live only in the server process. Existing scoped
+credential files are converted to SHA-256 digests at startup; bridge credentials
+remain reusable for authentication across restarts through these digests. Older
+builds discard digest-only records and reissue a token on the next chat turn or
+thread start. Reopen a native terminal after downgrading.
+Reopen the terminal after a server restart to obtain a new credential. Machine
+token rotation also revokes derived conversation credentials after the existing
+ten-minute grace period; reopen the terminal after that grace expires.
 
 The builtin Account Pooler plugin is disabled by default. Enable it, add Claude
 or Codex credentials, and inspect its proxy routes and account quota with:
@@ -58,6 +68,47 @@ flags, and stray arguments are rejected with the nearest suggestion rather than
 ignored, and a failing invocation that carries `--json` also prints
 `{"ok":false,"error":{"code","message","hint"}}` on stdout.
 
+### One-time cleanup after upgrading
+
+1. Delete Codex shell snapshots containing the pool credential variable names. The command prints only the matching file count. Run it for each affected `CODEX_HOME`, replacing the default directory below when needed:
+
+   ```sh
+   python3 - <<'PY'
+   from pathlib import Path
+   snapshots = Path.home() / ".codex" / "shell_snapshots"
+   names = (b"CODEX_POOL_AUTH_TOKEN", b"BB_ACCOUNT_POOL_PARENT_TOKEN")
+   files = [file for file in snapshots.glob("*.sh") if any(name in file.read_bytes() for name in names)]
+   print(len(files))
+   for file in files:
+       file.unlink()
+   PY
+   ```
+
+2. Rotate the existing pool token for every affected host:
+
+   ```sh
+   bb pool token rotate --machine <id-or-name>
+   ```
+
+   Rotation keeps the existing ten-minute grace. Reopen long-lived native terminals after rotation so they receive the new credential. The upgrade does not delete the user's snapshots or rotate host tokens automatically.
+
+Pooled Codex native terminals and chat bridges exclude pool variables from model-run shell environments and their shell snapshots. Codex itself retains the credential in memory to authenticate pool requests.
+
+The host reads `CODEX_HOME/config.toml` (default `~/.codex/config.toml`) without
+changing it. Existing `shell_environment_policy.exclude`, `include_only`, and
+canonical filters keep their restrictions. Invalid or conflicting policy shapes,
+legacy top-level `profile`, or `set` entries that restore pool variables refuse a
+pooled launch. Move a policy from `/etc/codex/config.toml`,
+`/etc/codex/managed_config.toml`, or an ancestor `.codex/config.toml` to the user
+file before using pooled launches. A present macOS managed-preference plist for
+`com.openai.codex` also refuses pooled launches without reading its contents;
+remove the managed source through its administrator. Errors name the file and
+setting. Windows pooled launches are unsupported. Unpooled launches are unchanged.
+
+The desktop app's Sign in buttons open the same URLs in a clean in-app window with an empty,
+non-persistent session, so the browser's own claude.ai or ChatGPT account is never reused, and
+finish the Claude login from the redirect; the CLI has no window, so it prints the URL.
+
 Claude `--login` starts a PKCE session, prints a browser URL and session ID,
 then exits. Pipe the manual callback code to `account login-complete` with that
 session ID within ten minutes. Its command hint uses the absolute path of the
@@ -66,13 +117,17 @@ URL, one-time code, session ID, and an `account login-poll` command that waits
 for authorization. OAuth codes and API keys must be piped through stdin, and either
 browser may be on a different machine from the bb server. New accounts join the
 end of the provider's priority order by default; rename them with
-`bb pool account rename <id> <label>`. Newly added or enabled accounts are
+`bb pool account rename <id> <label>`. The plugin settings page offers the same
+flows through **Add subscription**. Newly added or enabled accounts are
 available without a plugin reload. With an
 enabled account whose secret file remains readable and valid, matching Claude
 Code or Codex sessions receive the pool route and a secret token scoped to
-their thread. The machine token itself is never handed to an agent.
+their thread. The machine token itself is never handed to an agent. Claude Code
+also receives `ENABLE_TOOL_SEARCH=true`, so tool search stays on through the
+pool, and `_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL=1`, so Opus keeps its 1M
+context window instead of the 200k fallback for custom base URLs.
 Codex receives `CODEX_OPENAI_BASE_URL` and the secret
-`CODEX_POOL_AUTH_TOKEN`; bb applies them as in-memory app-server config.
+`CODEX_POOL_AUTH_TOKEN`; bb applies them as in-memory app-server and native CLI config.
 Codex image generation and editing use the same authenticated pool route.
 Tokens are never printed. `status` prunes tokens for unenrolled machines and
 shows token timestamps plus recently routed threads whose machines need a
@@ -93,7 +148,7 @@ An account enters error only when its OAuth refresh token is rejected (HTTP 400
 or 401 from the token endpoint) or an API key is rejected. A rejected refresh
 token sets `signInExpired` in account JSON and `expired` in the `account list`
 Sign-in column, even while the account is disabled. Repair it with
-`bb pool account sign-in-again <id>` (aliases `reauth`, `reauthorize`): it starts
+`bb pool account sign-in-again <id>` (aliases `login`, `relogin`, `reauth`, `reauthorize`): it starts
 the same Claude or Codex login as `add --login`, and the matching
 `login-complete` or `login-poll` replaces that account's credential in place,
 keeping its ID, label, priority, enabled state, and conversation choices. bb
@@ -233,12 +288,56 @@ pooler routing through its environment. The parent contributes
 `BB_ACCOUNT_POOL_PARENT_URL` and `BB_ACCOUNT_POOL_PARENT_TOKEN` alongside the
 provider routing variables, and the nested server enables the pooler on first run
 when it sees them. The token is scoped to the launching thread, is accepted only
-for pooled provider requests and `/availability`, and stops working when that
-thread is archived or deleted, or ten minutes after the machine token is
-rotated. An archive or delete event missed while the plugin is down is not
-replayed, so those tokens end when bb next resolves that archived thread's
-environment, or when you rotate the machine token and wait out those ten
-minutes. A nested server
+for pooled provider requests and `/availability`. It is suspended while that
+thread is archived and works again, unchanged, once the thread is unarchived;
+it ends for good when the thread is deleted, or ten minutes after the machine
+token is rotated. Archiving never deletes a thread's credentials: the plugin
+keeps their digests on disk behind an archive marker, so a crash at any point
+of an archive or unarchive cannot cost a running session its token. If no
+archive marker can be written, the thread's credential files are renamed to
+`suspended-<name>`, keeping their content, and renamed back on unarchive. Only
+deleting the thread removes its credentials; a credential otherwise ends only
+by its own expiry or a machine-token rotation. Deletion is final: the plugin
+records it in a `deleted-thread-<digest>.json` marker and in the thread's
+archive marker and its fallback. If the marker cannot be written atomically,
+it is created in place, and failing that the plugin creates a
+`deleted-thread-<digest>.d` directory, which records the deletion by its
+existence alone. If none of those lands, each credential file is renamed to
+`deleted-pending-<digest>-<name>`; that rename is itself a record. A
+filesystem record counts only once its content write, the file sync and the
+sync of the store directory all succeed; any failure on the way moves on to the
+next path. At start, a deletion marker found on disk counts only if its content
+is complete and syncing it and the directory succeeds; a partial, empty or
+unreadable `deleted-thread-<digest>.json` keeps the thread deleted, blocking
+restore and mint, but removes nothing and the record is written again. Then,
+every time, the plugin also writes a `deleted-thread:<digest>` row to bb's own
+database through plugin kv, the database that already holds the thread's
+committed `deletedAt`. Every filesystem path is tried before the kv write, so
+a refused kv write followed by a crash never leaves a filesystem record
+untried. The plugin never restores or mints credentials for that thread
+again, even if bb later reports it live, in which case it logs a warning.
+Credentials are never removed before a deletion record is durable, and the kv
+row lands before the first credential removal whenever kv accepts it. A
+pending file is removed only once a record of another kind exists. Where the
+rename also fails the file stays untouched. Either way the thread stays
+deleted in the running process, and the record, then the removal, is retried
+on the next delete event, sweep and start. The kv rows are loaded once at
+start; while that load fails, every thread token is rejected and nothing is
+minted, and the load is retried on each sweep. Authentication never reads kv.
+There is no residual: bb commits a thread's deletion before the plugin hears of
+it, so after a committed delete bb answers gone, and every mint, env export and
+authentication asks bb, even when none of the plugin's own records survived.
+bb's thread state is the authority, asked each time a thread's token is
+presented and before every credential is minted or exported (concurrent
+requests for one thread share one lookup): live accepts, archived rejects and
+suspends, deleted rejects and revokes. A mint or export while bb cannot answer
+is refused, like a token. A missed archive or unarchive event therefore
+takes effect on the next request. If bb's lookup fails or times out (one retry
+on failure, none on timeout), the token is rejected with 401 and nothing is
+deleted or suspended; the same token works again once bb answers live. The
+plugin logs a warning naming the thread, at most once a minute per thread. It
+also checks every thread holding
+credentials at startup and every 15 minutes. A nested server
 started before this scoping existed holds the machine token, which the hub no
 longer accepts; relaunch it so it receives a scoped token.
 
@@ -265,6 +364,46 @@ accounts or to each provider's own credentials.
 Proxied traffic authenticates with the nested token of the launching thread and
 is attributed to that thread's machine, so `bb pool status` on the parent
 attributes it to the parent host rather than to the nested instance.
+
+## Claude Artifacts
+
+Claude Code offers `Artifact` only in a claude.ai account session, and it refuses every call while `ANTHROPIC_AUTH_TOKEN` is set. A pooled Claude thread on a pool with at least one subscription account therefore signs in with its pool token as `CLAUDE_CODE_OAUTH_TOKEN` and gets `HTTPS_PROXY`, `NODE_EXTRA_CA_CERTS` and `CLAUDE_CODE_ARTIFACT=1`. It sets no `NO_PROXY`, so a value already in the thread keeps working. Inference keeps using the hub base URL.
+
+Claude Code sends Artifact, policy and feature-flag requests straight to `https://api.anthropic.com` and ignores `ANTHROPIC_BASE_URL` for them, so the plugin's `bb.host` entry runs a proxy on `127.0.0.1` of each thread's host:
+
+- Every `CONNECT` must carry the thread's proxy credential (`Proxy-Authorization`), an HMAC the server derives from the pool token with a per-server secret; it buys tunnel use only and is never accepted by the hub. Anything else gets 407. The server sends each host the complete set of active credentials whenever a thread token is issued, archived, deleted or dropped and once a minute; the host replaces its set and closes the tunnels of any removed credential, so a revoked thread's credential gets 407 on its next `CONNECT`. Each successful send also renews a 3-minute lease on the host: if no send succeeds for 3 minutes, the host answers 407 to every credential and closes its tunnels until the next send restores the active ones. A failed send is retried once after 2 seconds. Other hosts are tunnelled directly from that host.
+- `api.anthropic.com:443` is terminated with a 7-day leaf certificate. Only `/api/frame/*`, the Artifact MCP endpoint `/api/artifacts/mcp` (GET and POST, no query), the policy lookup, feature flags and bootstrap are relayed to the hub route `POST /claude-oauth`; `settings` answers 404 and telemetry 204 locally; everything else is 403. The hub re-checks host, method and path against the same allowlist, swaps the pool token for the selected subscription account's access token (refreshing it, and retrying once on 401), and never forwards the pool token.
+- The certificate authority lives on the server in `secrets/proxy-ca` (key mode 0600) and is limited to `api.anthropic.com` by a critical name constraint. Hosts receive only the CA certificate (written to the plugin data directory) and their own leaf certificate and key, which the host worker keeps in memory only and the server resends when the worker restarts. Minting needs the system `openssl` command; without it, or when the host proxy cannot start, threads keep the plain pool credentials and `Artifact` stays unavailable.
+- Pools with only API keys, nested servers that proxy to a parent pool, and Codex are unchanged. Any thread on the pool can PATCH or DELETE `/api/frame/*` artifacts of the shared account, which is accepted for a single-owner pool. Artifacts belong to the account that published them, so a conversation moved to another account cannot see the earlier ones.
+- The hub logs one info line per relayed request, `Account Pooler relayed <method> <route> -> upstream <status> in <n>ms`, or `-> upstream=error <ErrorClass> in <n>ms` when the upstream fetch threw and no status was received (the client gets a pool-generated 502; the line carries the error class name only, never its message), where `<route>` is the matched allowlist pattern (`/api/frame/*`, `/api/eval/sdk-*` or the exact endpoint), never the requested path: no path segments, query values, headers or bodies. A refused request (403 above) is not relayed and logs no such line.
+
+Known upstream limitation: the `claude-artifacts` MCP server that Claude Code 2.1.311 and 2.1.312 starts for `https://api.anthropic.com/api/artifacts/mcp` fails with `Connection failed (404): Error POSTing to endpoint: not found`, in direct unpooled sessions (`HTTP_PROXY`/`HTTPS_PROXY` unset) as well as pooled ones. The 404 comes from Anthropic, not from the pool: the hub relays the upstream status and body unchanged. Publish Claude documents through the built-in `Artifact` tool, which is unaffected and works through the pool; do not rely on the `claude-artifacts` MCP server.
+
+## Automatic retries
+
+Provider Retry discovers Account Pooler’s `provider-retry.v1.availability` RPC. It accepts `{ threadId, requestId }` and reports `not-routed`, `ready`, `blocked` with `retryAt` in epoch milliseconds, or `unavailable` with a reason. Pool routing must have been recorded when the provider environment was prepared. The request must still be the thread’s latest request; its recorded model determines which quota windows apply. The pool uses the same recovery calculation for its HTTP 429 response and this RPC. Parent pools expose the authenticated `/retry-availability?provider=claude|codex&family=<family>` endpoint.
+
+The retry plugin remains responsible for queueing, maximum waits, and attempt limits. Inspect a skipped decision with `bb provider-retry explain <thread-id>` and pending work with `bb provider-retry status <thread-id>`.
+
+## Plan and model labels
+
+Claude plan badges and the CLI Plan column prefer Anthropic's
+`organization.plan_display_name` (for example Ultra) over legacy Max flags and
+rate-limit tier identifiers. Missing names are backfilled in the background at startup and on display reads.
+Refreshes are single-flight per account, use the profile request timeout, and
+retry after at least five minutes on failure. Account names remain unchanged.
+Without a provider display name, legacy Max records show Claude subscription.
+Max multipliers appear only when the stored provider name says Max.
+The additive `display.get` RPC returns display names in `plans`, keyed by account
+ID. Legacy account records and `status.get` retain their existing shape.
+
+The `weekly` map in `display.get` preserves each API-reported model display name
+and weekly quota, keyed by account ID and model name. Usage details, the usage
+card and CLI show one weekly row per reported name, including future models.
+Servers without this method fall back to the legacy family rows. Model display
+quotas use an additive SQLite table; existing routing-family quotas and stored
+account records remain readable. An empty model map means the latest usage
+response reported no scoped limits; an absent map uses legacy observations.
 
 ## Actor routes for external launchers
 

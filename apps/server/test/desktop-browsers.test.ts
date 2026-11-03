@@ -1,4 +1,9 @@
-import { getStoredThreadTabs, markThreadDeleted } from "@bb/db";
+import { eq } from "drizzle-orm";
+import {
+  getStoredThreadTabs,
+  hostDaemonSessions,
+  markThreadDeleted,
+} from "@bb/db";
 import {
   desktopBrowserLeaseSchema,
   desktopBrowserResultSchemas,
@@ -23,18 +28,11 @@ import {
   seedThreadFixture,
 } from "./helpers/seed.js";
 import { withTestHarness, type TestAppHarness } from "./helpers/test-app.js";
+import { createDeferredPromise } from "@bb/test-helpers";
 
 const leaseSchema = desktopBrowserScopeSchema
   .extend(desktopBrowserLeaseSchema.shape)
   .extend({ tabIds: z.array(z.string()) });
-
-function deferred<T>() {
-  let resolve: (value: T) => void = () => {};
-  const promise = new Promise<T>((done) => {
-    resolve = done;
-  });
-  return { promise, resolve };
-}
 
 function fixture(harness: TestAppHarness) {
   const seeded = seedThreadFixture(harness);
@@ -249,6 +247,7 @@ describe("desktop browser public API", () => {
   it("blocks hostile origins and simple requests before any host RPC", async () => {
     await withBrowserTest(async (test) => {
       for (const action of [
+        "broker-proof",
         "instances",
         "tabs",
         "create",
@@ -741,8 +740,8 @@ describe("desktop browser public API", () => {
         (await test.post("connection", test.leaseRequest(lease.leaseId)))
           .status,
       ).toBe(409);
-      const gate = deferred<HostRpcHandlerResult>();
-      const started = deferred<void>();
+      const gate = createDeferredPromise<HostRpcHandlerResult>();
+      const started = createDeferredPromise<void>();
       test.intercept(({ command }) => {
         if (command.type !== "desktop.browser.acquire_control") return null;
         started.resolve();
@@ -785,8 +784,8 @@ describe("desktop browser public API", () => {
 
   it("a stop during the tab lookup cancels the pending acquisition before any native grant", async () => {
     await withBrowserTest(async (test) => {
-      const gate = deferred<HostRpcHandlerResult>();
-      const started = deferred<void>();
+      const gate = createDeferredPromise<HostRpcHandlerResult>();
+      const started = createDeferredPromise<void>();
       test.intercept(({ command }) => {
         if (command.type !== "desktop.browser.list_tabs") return null;
         started.resolve();
@@ -887,8 +886,8 @@ describe("desktop browser public API", () => {
   });
   it("revokes native control when acquisition completes after its deadline", async () => {
     await withBrowserTest(async (test) => {
-      const gate = deferred<HostRpcHandlerResult>();
-      const started = deferred<void>();
+      const gate = createDeferredPromise<HostRpcHandlerResult>();
+      const started = createDeferredPromise<void>();
       test.intercept(({ command }) => {
         if (command.type !== "desktop.browser.acquire_control") return null;
         started.resolve();
@@ -948,7 +947,7 @@ describe("desktop browser public API", () => {
       await withBrowserTest(async (test) => {
         const tab = test.tab();
         test.change({ instanceId: "closed-window" }, [tab]);
-        const listed = deferred<HostRpcHandlerResult>();
+        const listed = createDeferredPromise<HostRpcHandlerResult>();
         const list = vi.fn(() => listed.promise);
         test.intercept(({ command }) =>
           command.type === "desktop.browser.list_instances" ? list() : null,
@@ -1065,7 +1064,7 @@ describe("desktop browser public API", () => {
     await withBrowserTest(async (test) => {
       const tab = test.tab();
       test.change({ instanceId: "closed-window" }, [tab]);
-      const listed = deferred<HostRpcHandlerResult>();
+      const listed = createDeferredPromise<HostRpcHandlerResult>();
       const list = vi.fn(() => listed.promise);
       const closed = vi.fn();
       test.intercept(({ command }) => {
@@ -1130,5 +1129,55 @@ describe("desktop browser public API", () => {
       test.change({ generation: "reconnected-generation" }, []);
       expect(test.stored()).toEqual([]);
     });
+  });
+});
+
+it("routes broker challenges to the selected host and rejects legacy daemons before RPC", async () => {
+  await withBrowserTest(async (test, harness) => {
+    const challenge = "c".repeat(64);
+    const proof = "a".repeat(64);
+    test.intercept(({ command }) =>
+      command.type === "desktop.broker.prove"
+        ? { ok: true, result: { proof } }
+        : null,
+    );
+    const response = await test.post("broker-proof", {
+      hostId: test.host.id,
+      challenge,
+    });
+    expect(response.status, await response.clone().text()).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(await response.json()).toEqual({ proof });
+    expect(test.responder.requests.at(-1)?.command).toEqual({
+      type: "desktop.broker.prove",
+      challenge,
+    });
+    const count = test.responder.requests.length;
+    expect(
+      (await test.post("broker-proof", { hostId: "missing-host", challenge }))
+        .status,
+    ).toBe(404);
+    expect(
+      (
+        await test.post("broker-proof", {
+          hostId: test.host.id,
+          challenge: "short",
+        })
+      ).status,
+    ).toBe(400);
+    expect(test.responder.requests).toHaveLength(count);
+    for (const protocolVersion of [246, 247]) {
+      harness.db
+        .update(hostDaemonSessions)
+        .set({ protocolVersion })
+        .where(eq(hostDaemonSessions.id, test.session.id))
+        .run();
+      const legacy = await test.post("broker-proof", {
+        hostId: test.host.id,
+        challenge,
+      });
+      expect(legacy.status).toBe(409);
+      expect(test.responder.requests).toHaveLength(count);
+    }
   });
 });

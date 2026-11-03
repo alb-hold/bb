@@ -1,7 +1,5 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import fs from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import type {
@@ -13,21 +11,14 @@ import type {
   ClientTurnRequestId,
   AvailableModel,
   DynamicTool,
-  GitHostPullRequest,
   PromptInput,
 } from "@bb/domain";
 import type { HostDaemonBridgeLaunch } from "@bb/host-daemon-contract";
-import { makeWorkspaceMergeBase, makeWorkspaceStatus } from "@bb/test-helpers";
-import type {
-  HostWorkspace,
-  ProvisionWorkspaceArgs,
-  PullRequestActionOptions,
-} from "@bb/host-workspace";
+import type { HostWorkspace, ProvisionWorkspaceArgs } from "@bb/host-workspace";
 import { RuntimeManager } from "../../src/runtime-manager.js";
 import type { CommandDispatchOptions } from "../../src/command-dispatch-support.js";
 import type { FetchProjectAttachment } from "../../src/project-attachments.js";
 
-const tempDirs: string[] = [];
 const execFileAsync = promisify(execFile);
 export const noopEventSink: CommandDispatchOptions["eventSink"] = {
   emit: () => undefined,
@@ -47,6 +38,7 @@ export const unexpectedProjectAttachmentFetch: FetchProjectAttachment =
 export const unexpectedProviderMaintenance: Pick<
   CommandDispatchOptions,
   | "listModels"
+  | "listCommands"
   | "providerHealth"
   | "providerUsage"
   | "providerInstallationStatus"
@@ -55,6 +47,9 @@ export const unexpectedProviderMaintenance: Pick<
 > = {
   listModels: async () => {
     throw new Error("Unexpected provider.list_models call");
+  },
+  listCommands: async () => {
+    throw new Error("Unexpected provider.list_commands call");
   },
   providerHealth: async () => {
     throw new Error("Unexpected provider.health call");
@@ -77,22 +72,9 @@ interface RunGitCommandOptions {
   cwd: string;
 }
 
-type FakeWorkspaceDiffTarget =
-  | { type: "uncommitted" }
-  | { type: "branch_committed"; mergeBaseBranch: string }
-  | { type: "all"; mergeBaseBranch: string }
-  | { type: "commit"; sha: string };
-
 interface FakeWorkspaceState {
   destroyed: boolean;
   lastCommitMessage: string | undefined;
-  lastDiffTarget: FakeWorkspaceDiffTarget | undefined;
-  lastPullRequestAction: PullRequestActionOptions | undefined;
-  pullRequestActionShellPath: string | undefined;
-  pullRequest: GitHostPullRequest | null;
-  pullRequestLookupError: string | null;
-  pullRequestLookupShellPath: string | undefined;
-  statusReads: number;
 }
 
 interface FakeRuntimeThreadControls {
@@ -142,15 +124,8 @@ type FakeHostWorkspace = {
 
 export function createFakeWorkspace(pathname: string) {
   const state: FakeWorkspaceState = {
-    statusReads: 0,
-    lastDiffTarget: undefined,
     lastCommitMessage: undefined,
     destroyed: false,
-    lastPullRequestAction: undefined,
-    pullRequestActionShellPath: undefined,
-    pullRequest: null,
-    pullRequestLookupError: null,
-    pullRequestLookupShellPath: undefined,
   };
   const workspace: FakeHostWorkspace = {
     path: pathname,
@@ -165,81 +140,14 @@ export function createFakeWorkspace(pathname: string) {
     async getHeadSha() {
       return "commit-1";
     },
-    async getLocalStateFingerprint() {
-      return JSON.stringify({
-        currentBranch: "main",
-        headSha: "commit-1",
-        workingTree: {
-          hasUncommittedChanges: false,
-          state: "clean",
-          insertions: 0,
-          deletions: 0,
-          files: [],
-        },
-      });
+    async getLocalStateSnapshot() {
+      return { fingerprint: "local-1", branchName: "main" };
     },
-    async getSharedGitRefsFingerprint() {
-      return JSON.stringify({
-        refs: ["refs/heads/main\u0000commit-1"],
-        remoteHead: "refs/remotes/origin/main",
-      });
+    async getSharedGitRefsSnapshot() {
+      return { fingerprint: "refs-1", defaultBranch: "main" };
     },
     async getAdditionalWorkspaceWriteRoots() {
       return [];
-    },
-    async getStatus(options?: { mergeBaseBranch?: string }) {
-      state.statusReads += 1;
-      return makeWorkspaceStatus({
-        mergeBase: options?.mergeBaseBranch
-          ? makeWorkspaceMergeBase({
-              mergeBaseBranch: options.mergeBaseBranch,
-              baseRef: options.mergeBaseBranch,
-            })
-          : null,
-      });
-    },
-    async getDiff(options?: {
-      target?:
-        | { type: "uncommitted" }
-        | { type: "branch_committed"; mergeBaseBranch: string }
-        | { type: "all"; mergeBaseBranch: string }
-        | { type: "commit"; sha: string };
-    }) {
-      state.lastDiffTarget = options?.target;
-      return {
-        diff: "",
-        truncated: false,
-        shortstat: "",
-        files: "",
-        mergeBaseRef: null,
-      };
-    },
-    async diffFiles() {
-      return {
-        files: [],
-        shortstat: "",
-        mergeBaseRef: null,
-        truncated: false,
-      };
-    },
-    async diffPatch() {
-      return [];
-    },
-    async getPullRequest(options) {
-      state.pullRequestLookupShellPath = options?.shellPath;
-      if (state.pullRequestLookupError !== null) {
-        return {
-          outcome: "unavailable" as const,
-          message: state.pullRequestLookupError,
-        };
-      }
-      return state.pullRequest === null
-        ? { outcome: "none" as const }
-        : { outcome: "found" as const, pullRequest: state.pullRequest };
-    },
-    async runPullRequestAction(action, options) {
-      state.lastPullRequestAction = action;
-      state.pullRequestActionShellPath = options?.shellPath;
     },
     async commit(options: { message: string; noVerify: boolean }) {
       state.lastCommitMessage = options.message;
@@ -417,6 +325,9 @@ export function createFakeRuntime() {
         selectedOnlyModels: [] satisfies AvailableModel[],
       };
     },
+    async listCommands() {
+      return { commands: [] };
+    },
     async providerHealth() {
       return { supported: false as const };
     },
@@ -521,30 +432,11 @@ export function makeDispatchOptions(
   };
 }
 
-export async function makeTempDir(prefix: string): Promise<string> {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
-  tempDirs.push(dir);
-  return dir;
-}
-
 export async function runGitCommand(
   args: GitCommandArgs,
   options: RunGitCommandOptions,
 ): Promise<void> {
   await execFileAsync("git", args, { cwd: options.cwd });
-}
-
-export async function cleanupTempDirs(): Promise<void> {
-  await Promise.all(
-    tempDirs.splice(0).map((dir) =>
-      fs.rm(dir, {
-        recursive: true,
-        force: true,
-        maxRetries: 20,
-        retryDelay: 100,
-      }),
-    ),
-  );
 }
 
 export const DISPATCH_TEST_ARTIFACT_BYTES = Buffer.from(
@@ -555,8 +447,15 @@ const DISPATCH_TEST_ARTIFACT_DIGEST = createHash("sha256")
   .digest("hex");
 const DISPATCH_TEST_DATA_DIR = "/tmp/bb-test-data";
 
-export const fetchDispatchTestArtifact = async (): Promise<Uint8Array> =>
-  new Uint8Array(DISPATCH_TEST_ARTIFACT_BYTES);
+export async function* artifactBody(
+  bytes: Uint8Array,
+): AsyncGenerator<Uint8Array> {
+  yield bytes;
+}
+
+export const fetchDispatchTestArtifact = async (): Promise<
+  AsyncIterable<Uint8Array>
+> => artifactBody(new Uint8Array(DISPATCH_TEST_ARTIFACT_BYTES));
 
 export const DISPATCH_TEST_BRIDGE_LAUNCH: HostDaemonBridgeLaunch = {
   pluginId: "provider-pi",

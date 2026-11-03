@@ -1,14 +1,38 @@
-import { getThread, listNonDeletedChildThreads } from "@bb/db";
-import type { Thread } from "@bb/domain";
+import {
+  getThread,
+  listNonDeletedChildThreads,
+  type DbQueryConnection,
+} from "@bb/db";
+import type { Thread, ThreadEventTurnStatus } from "@bb/domain";
 import type { AppDeps } from "../../types.js";
 import { throwParentThreadInvalid } from "../lib/lifecycle-api-errors.js";
 
 const MAX_THREAD_HIERARCHY_DEPTH = 4;
 
+export type ParentNotificationOutcome =
+  | ThreadEventTurnStatus
+  | "needs-attention";
+
 export function isParentNotifiableChildThread<
-  T extends Pick<Thread, "parentThreadId" | "originKind">,
->(thread: T): thread is T & { parentThreadId: string } {
-  return thread.parentThreadId !== null && thread.originKind === null;
+  T extends Pick<
+    Thread,
+    "parentThreadId" | "originKind" | "parentNotifications"
+  >,
+>(
+  thread: T,
+  outcome: ParentNotificationOutcome,
+): thread is T & { parentThreadId: string } {
+  if (thread.parentThreadId === null || thread.originKind !== null) {
+    return false;
+  }
+  switch (thread.parentNotifications) {
+    case "auto":
+      return true;
+    case "stuck":
+      return outcome !== "completed";
+    case "off":
+      return false;
+  }
 }
 
 export type ParentThread = Pick<
@@ -50,7 +74,7 @@ export function isLiveParentThread(args: IsLiveParentThreadArgs): boolean {
 }
 
 function resolveParentDepth(
-  deps: Pick<AppDeps, "db">,
+  deps: { db: DbQueryConnection },
   args: ResolveParentDepthArgs,
 ): number {
   let depth = 0;
@@ -80,7 +104,7 @@ function resolveParentDepth(
 }
 
 function resolveThreadSubtreeDepth(
-  deps: Pick<AppDeps, "db">,
+  deps: { db: DbQueryConnection },
   args: ResolveThreadSubtreeDepthArgs,
 ): number {
   if (args.visitedThreadIds.has(args.threadId)) {
@@ -119,7 +143,7 @@ export function canThreadSpawnChild(
 }
 
 export function assertValidParentThread(
-  deps: Pick<AppDeps, "db">,
+  deps: { db: DbQueryConnection },
   args: AssertValidParentThreadArgs,
 ): Thread {
   const parentThread = getThread(deps.db, args.parentThreadId);

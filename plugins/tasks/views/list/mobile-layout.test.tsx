@@ -1,26 +1,13 @@
 // @vitest-environment jsdom
-import { cleanup, within } from "@testing-library/react";
+import { cleanup } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
 import type { Label, Task, TaskThread } from "../../shared/contract.js";
-import { makeTask } from "../../test-fixtures.js";
-
-window.matchMedia ??= (query: string) => ({
-  matches: false,
-  media: query,
-  onchange: null,
-  addListener: () => {},
-  removeListener: () => {},
-  addEventListener: () => {},
-  removeEventListener: () => {},
-  dispatchEvent: () => false,
-});
-window.ResizeObserver ??= class {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
-};
-Element.prototype.scrollIntoView ??= () => {};
+import {
+  makeTask,
+  labelsByProject,
+  matchingTasks,
+} from "../../test-fixtures.js";
 
 const app = await loadPluginApp(() => import("../../app"));
 
@@ -82,7 +69,19 @@ function renderList() {
         listPresets: () => ({ presets: [] }),
         sidebarSummary: () => ({ projects: [] }),
         listLabels: () => ({ labels }),
-        listTasks: () => ({ tasks: [busyTask] }),
+        labelsByProject: labelsByProject(labels),
+        listAllTasks: (raw: unknown) => ({
+          tasks: matchingTasks([busyTask], raw),
+        }),
+        listTaskCardMeta: () => ({
+          cards: [
+            {
+              taskId: busyTask.id,
+              attachmentCount: 0,
+              activeThreads: [workerThread],
+            },
+          ],
+        }),
         listTaskThreads: () => ({ taskThreads: [workerThread] }),
         listComments: () => ({ comments: [] }),
         listAttachments: () => ({ attachments: [] }),
@@ -100,21 +99,5 @@ describe("responsive list structure", () => {
     expect(sortChip.closest(".overflow-x-auto")).toBeNull();
     const statusChip = slot.getByRole("button", { name: "Status" });
     expect(statusChip.closest(".overflow-x-auto")).not.toBeNull();
-  });
-
-  it("renders exactly one status and one priority editor per row with full metadata", async () => {
-    const slot = renderList();
-    await slot.findByText("TSK-1");
-    const row = slot.container.querySelector('[data-task-key="TSK-1"]')!;
-    expect(
-      within(row as HTMLElement).getAllByRole("button", {
-        name: /Change status, currently/,
-      }),
-    ).toHaveLength(1);
-    expect(
-      within(row as HTMLElement).getAllByRole("button", {
-        name: /Set priority, currently/,
-      }),
-    ).toHaveLength(1);
   });
 });

@@ -24,6 +24,8 @@ const timelinePage = vi.hoisted(() => vi.fn());
 
 vi.mock("@/hooks/queries/thread-queries", () => ({
   useThreadSpendSummary,
+}));
+vi.mock("@/hooks/queries/thread-panel-queries", () => ({
   useThreadTimeline,
 }));
 vi.mock("@/lib/sdk", () => ({

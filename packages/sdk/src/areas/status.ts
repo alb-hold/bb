@@ -1,10 +1,17 @@
-import type { ThreadStatus, ThreadTimelinePendingTodos } from "@bb/domain";
-import type {
-  ProjectResponse,
-  ThreadListResponse,
-  ThreadResponse,
-  ThreadTimelineResponse,
-  ThreadWithIncludesResponse,
+import {
+  effectiveDisplayStatus,
+  withEffectiveDisplayStatus,
+  type ThreadParentNotifications,
+  type ThreadStatus,
+  type ThreadTimelinePendingTodos,
+} from "@bb/domain";
+import {
+  isThreadTimelineDelta,
+  type ProjectResponse,
+  type ThreadListResponse,
+  type ThreadResponse,
+  type ThreadTimelineResponse,
+  type ThreadWithIncludesResponse,
 } from "@bb/server-contract";
 import { signalRequestArgs, type CreateSdkAreaArgs } from "./common.js";
 
@@ -17,6 +24,7 @@ export interface StatusGetArgs {
 export interface StatusThreadSummary {
   environmentId: string | null;
   id: string;
+  parentNotifications: ThreadParentNotifications;
   parentThreadId: string | null;
   pinnedAt: number | null;
   projectId: string;
@@ -54,10 +62,11 @@ function summarizeThread(thread: StatusSourceThread): StatusThreadSummary {
   return {
     environmentId: thread.environmentId ?? null,
     id: thread.id,
+    parentNotifications: thread.parentNotifications,
     parentThreadId: thread.parentThreadId ?? null,
     pinnedAt: thread.pinnedAt,
     projectId: thread.projectId,
-    status: thread.status,
+    status: effectiveDisplayStatus(thread, thread.runtime),
     title: thread.title ?? null,
   };
 }
@@ -99,7 +108,7 @@ export function createStatusArea(args: CreateSdkAreaArgs): StatusArea {
         thread === null
           ? null
           : await fetchSilent(async () => {
-              const timeline: StatusTimeline = await transport.readJson(
+              const timeline = await transport.readJson(
                 transport.api.v1.threads[":id"].timeline.$get(
                   {
                     param: { id: thread.id },
@@ -108,6 +117,9 @@ export function createStatusArea(args: CreateSdkAreaArgs): StatusArea {
                   ...signalRequestArgs(signal),
                 ),
               );
+              if (isThreadTimelineDelta(timeline)) {
+                throw new Error("Expected a full thread timeline window.");
+              }
               return timeline.pendingTodos;
             });
       const childThreads =
@@ -125,7 +137,7 @@ export function createStatusArea(args: CreateSdkAreaArgs): StatusArea {
             );
 
       return {
-        childThreads,
+        childThreads: childThreads?.map(withEffectiveDisplayStatus) ?? null,
         pendingTodos,
         project,
         thread: thread === null ? null : summarizeThread(thread),

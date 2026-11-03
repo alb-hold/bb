@@ -1,45 +1,85 @@
 # CLI, Guide, And Skill
 
+Thread terminal actions are available through `bb terminal surfaces --thread
+<id> [--json]`, `bb terminal focus <terminalId> [--all] [--json]`, `bb terminal open-link
+<terminalId> <url> [--all] [--json]`, `bb terminal split <terminalId> --side right|left|up|down
+[--all] [--json]`, and `bb terminal move <terminalId> --to-pane-of <otherTerminalId>
+[--all] [--json]`. The SDK exposes these as
+`terminals.experimental_surfaces.list({ threadId })`,
+`terminals.experimental_focus({ terminalId, callerThreadId?, all? })`, and
+`terminals.experimental_openBrowser({ terminalId, url, callerThreadId?, all? })`,
+`terminals.experimental_layout.split({ terminalId, side, callerThreadId?, all? })`, and
+`terminals.experimental_layout.move({ terminalId, targetTerminalId, callerThreadId?, all? })`. The first lists
+server-known terminal surfaces; `deliveredClients` is the number of open app
+sockets the request was sent to. A zero-client response exits non-zero with a
+message to open bb and retry; a positive count does not confirm receipt or
+application. A client without an in-app browser offers the URL
+through an Open action instead of creating an unavailable browser tab. Pane
+limits and compact layouts are client state, so split and move can still be
+rejected by the app after the request is sent; the CLI cannot confirm whether
+the client received or applied them. `focus`, `open-link`, `split`, and `move` send only to app
+clients whose current view is the calling thread (`BB_THREAD_ID`; the SDK takes
+`callerThreadId`), and fail with `no_caller_thread` or
+`no_client_viewing_caller_thread` when there is none; `--all` (SDK `all: true`)
+sends to every open app client. `bb thread open [id] [path]` follows the same
+rule (SDK `threads.open({ threadId, file, callerThreadId?, all? })`): it reaches
+only app clients viewing the calling thread, including when it opens a different
+thread, and `--all` sends to every open app client.
+
+`bb terminal output <id> --lines <n>` prints the latest lines, including from
+recently exited terminals. The server retains at most 64 KiB per terminal,
+2 MiB and 128 terminals per machine for 30 minutes, evicting oldest output
+first. The retained output is stored in the server database and survives server
+restarts. Use
+`bb terminal pipe <id> --follow [--command <cmd>]` to stream output to stdout or
+a local command until the terminal exits or Ctrl-C.
+
+`bb terminal screen <id> [--lines <n>] [--json]` prints rendered terminal rows,
+cursor position, and grid size. Without `--lines`, it prints the visible grid;
+`--lines` includes up to 500 latest scrollback rows. JSON includes `complete`;
+true when the retained output fully determines the visible screen. When false,
+the retained output does not prove the screen is complete.
+The SDK equivalent is
+`sdk.terminals.experimental_screen({ terminalId, lines? })`.
+
 Keep the discoverable surfaces in sync whenever you add or change a `bb` CLI command, flag, or a user-facing configuration knob (env var, `.bb/` workspace file, settings field):
 
-- Update the in-CLI guide templates under `packages/templates/src/templates/bb-guide-*.md`, turbo regenerates `packages/templates/src/generated/templates.generated.ts` (not committed) before every build, typecheck, and test task.
-- For core commands, update the bb-cli skill at `plugins/bb-guide/skills/bb-cli/SKILL.md` or its relevant reference. For plugin commands and settings, update the owning plugin's `skills/<name>/SKILL.md` or supporting reference, including built-in plugins. Keep plugin-specific behavior out of the core CLI skill. Configuration knobs also belong in `docs/configuration.md`.
+- The in-CLI guide templates under `packages/templates/src/templates/bb-guide-*.md` are the core CLI manual. Document core commands, flags, and settings there; turbo regenerates `packages/templates/src/generated/templates.generated.ts` (not committed) before every build, typecheck, and test task.
+- The bb-cli skill (`plugins/bb-guide/skills/bb-cli/SKILL.md`) only routes agents to guide chapters and states agent habits and safety rules. Do not copy command documentation into it. Add new core command paths to its `references/command-index.md`.
+- For plugin commands and settings, update the owning plugin's `skills/<name>/SKILL.md` or supporting reference, including built-in plugins. Configuration knobs also belong in `docs/configuration.md`.
+- Keep maintainer and repository-development instructions (source startup, release and publishing steps) in `docs/` and app READMEs, not in the guide or shipped skills.
 - Match the existing chapter/section style; keep entries concise and accurate against the implementation.
 
-Environment lifecycle hooks are core policy: bb runs `.bb-env-setup.sh` after
-an environment provider creates an owned path, and `.bb-env-teardown.sh` before
-provider removal. Each has a 15-minute timeout; setup failure fails provisioning,
-while reported teardown script failure does not block removal. Transport failure
-keeps cleanup pending until the daemon confirms hook termination. Hook identity
-and completion persist across server restarts. Attached checkout and
-personal-workspace paths skip both hooks. These semantics apply equally to CLI,
-SDK, and app launches; see [worktrees.md](worktrees.md).
+Device handoff is available as `bb device copy [text]` (or stdin) and
+`bb device open <url>`, with SDK methods under `sdk.device.request()`. A
+thread-only handoff goes to the device that most recently sent a message in the
+thread's current turn, whether it started the turn or steered it. `bb` finds
+that turn itself. If `BB_TURN_ID` is set, it must name that turn, or the request
+fails with: `BB_TURN_ID does not match the thread's current turn`. With no current turn, it goes to the device that most recently sent a
+message in the thread, and fails with the existing message if none has: “No device has sent a message
+in this thread yet; open the thread on your phone and send a message, then run
+the command again.” The app generates and stores its device id in local storage
+so it can receive pending handoffs after reconnect. Handoffs are not sent to
+other viewers. Terminal-bearing handoffs require a linked, visible terminal
+attachment on the target device.
 
-The Machines settings creation drawer prepares an existing-machine command when access is ready, otherwise shows setup guidance. After access is ready, Choose a machine provider reviews provider inputs and launches through `hosts.experimental_create`/`bb machine create`. A machine belongs to no project; projects reach it later through project sources.
+`bb thread row-status set <key> <value> [--icon <icon>] [--color <color>] [--priority <number>]`,
+`bb thread row-status clear [<key>]`, and `bb thread row-status list` manage up
+to eight status chips on the current thread's sidebar row.
+`bb thread progress <0..1> [--label <text>]` sets its progress bar;
+`bb thread progress clear` explicitly removes it even when a terminal owns it.
+These commands use
+`BB_THREAD_ID` and fail outside a thread. `bb thread status <id>` remains an
+alias for `bb thread show <id>`.
 
-`bb machine list` enumerates persistent machines and takes `--all` to include
-disposable provider sandboxes, matching the app's Show all machines reveal.
-`bb updates` and `bb skill install-cli-skills` default to persistent machines
-and still accept a sandbox through an explicit `--machine`.
-
-Machine maintenance state is part of `bb machine list --json`; there is no
-separate machine lifecycle command. Keep the machine guide and bb-cli command
-index aligned with this surface.
-
-Local installed-daemon start, stop, and uninstall operations are flags on
-`install-machine.sh`, not `bb machine` subcommands. `install-machine.sh --adopt` installs the
-service for an already-enrolled data directory and backs
-`bb server install-machine-service`.
-
-Modal connection and machine commands are documented in [modal-sandboxes](../plugins/environment-modal-sandbox/skills/modal-sandboxes/SKILL.md). `bb modal image show [--json]` reads the Dockerfile shown in settings; `bb modal image set --file PATH [--json]` saves a validated plugin-wide override and `bb modal image reset [--json]` restores the bundled default for future machines; `bb modal account inspect --json` checks credentials; `bb machine create --provider modal-sandbox --json` automatically prepares the bundled image and installs the daemon. `bb machine remove MACHINE --yes` explicitly removes compute and private snapshots.
-
-`bb thread spawn --machine-inputs <json>` configures either an explicit
-`--new-machine` or the machine provider owned by a composed
-`--environment-provider`; a composition rejects separate machine selectors.
-
-`bb thread list` adds a **Needs you** column for `Needs input`, `Working`,
-automation `Woke`, and unread `Done` states. Automation labels come from the
-installed Automations plugin; when its read RPC is unavailable, the column
-still reports the thread-list states it can resolve locally.
-
-Modal image debugging uses `bb modal image build`, `bb modal sandbox run`, `bb modal sandbox exec ID [--json] -- COMMAND...`, and `bb modal sandbox stop ID`. Debug compute expires after 30 minutes and skips BB enrollment and project setup. See the plugin skill for output limits and typed RPC equivalents.
+Row state clears when a managed turn settles to idle or error, or when a native
+terminal session closes with process exit or user close. A daemon disconnect
+does not clear native row state because the terminal may reattach. A targeted
+read hides state after 60 minutes without an update as a backstop. The row-state
+PATCH route's `action: "clear"` resets all statuses, progress, and progress
+ownership. An ordinary `action: "progress-clear"` clears only ownerless
+progress when `terminalId` is omitted; `force: true` is the explicit override
+for user-requested progress clearing. SDK callers can pass `force: true` to
+`threads.experimental_updateRowState` when they intend that override. The SDK
+equivalents are `threads.experimental_rowState` and
+`threads.experimental_updateRowState`; see the [thread row-state API](api/thread-row-state.md).

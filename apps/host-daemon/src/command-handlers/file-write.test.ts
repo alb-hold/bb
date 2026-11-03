@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { makeTempDir } from "@bb/test-helpers";
+import { describe, expect, it } from "vitest";
 import {
   CommandDispatchError,
   type CommandOf,
@@ -10,22 +10,6 @@ import {
 } from "../command-dispatch-support.js";
 import { writeHostFile } from "./file-write.js";
 import { readHostFile } from "./host-files.js";
-
-const tempDirs: string[] = [];
-
-async function makeTempDir(prefix: string): Promise<string> {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
-  tempDirs.push(dir);
-  return dir;
-}
-
-afterEach(async () => {
-  await Promise.all(
-    tempDirs
-      .splice(0)
-      .map((dir) => fs.rm(dir, { recursive: true, force: true })),
-  );
-});
 
 function sha256(content: string): string {
   return createHash("sha256").update(content, "utf8").digest("hex");
@@ -304,7 +288,11 @@ describe("writeHostFile", () => {
     const target = path.join(dir, "note.md");
     await fs.writeFile(target, "v1");
 
-    const read = await readHostFile({ type: "host.read_file", path: target });
+    const read = await readHostFile({
+      type: "host.read_file",
+      path: target,
+      followRootSymlink: false,
+    });
     const result = await writeHostFile(
       writeCommand({
         path: target,
@@ -314,7 +302,11 @@ describe("writeHostFile", () => {
     );
 
     expect(result).toMatchObject({ outcome: "written" });
-    const reread = await readHostFile({ type: "host.read_file", path: target });
+    const reread = await readHostFile({
+      type: "host.read_file",
+      path: target,
+      followRootSymlink: false,
+    });
     expect(reread.content).toBe("v2");
     expect(reread.sha256).toBe(sha256("v2"));
   });

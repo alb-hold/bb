@@ -233,14 +233,7 @@ function pluginAppSurfaceItems(
       pluginId,
       slots.experimentalSidebarNavigations,
       "sidebar-navigation",
-      "Can replace the sidebar navigation controls; configured in Appearance.",
-      () => getSettingsRoutePath("appearance"),
-    ),
-    ...namedSlotItems(
-      pluginId,
-      slots.experimentalSidebarHeaders,
-      "sidebar-header",
-      "Can add controls beside the sidebar toggle; configured in Appearance.",
+      "Can draw the sidebar navigation; configured in Appearance.",
       () => getSettingsRoutePath("appearance"),
     ),
     ...namedSlotItems(
@@ -254,6 +247,13 @@ function pluginAppSurfaceItems(
       slots.diffRenderers,
       "diff-renderer",
       "Replaces how diffs are displayed everywhere in the app.",
+    ),
+    ...namedSlotItems(
+      pluginId,
+      slots.composers,
+      "composer",
+      "Can replace the thread composer; configured in Appearance.",
+      () => getSettingsRoutePath("appearance"),
     ),
     ...namedSlotItems(
       pluginId,
@@ -296,6 +296,48 @@ function pluginAppSurfaceItems(
       slots.threadHeaderActions,
       "thread-header",
       "Adds an action to thread headers.",
+    ),
+    ...namedSlotItems(
+      pluginId,
+      slots.threadContextSegments,
+      "thread-context",
+      "Adds context beside a thread's composer.",
+    ),
+    ...namedSlotItems(
+      pluginId,
+      slots.threadRowMetadata,
+      "thread-row-item",
+      "Adds an item to each thread row in the sidebar.",
+    ),
+    ...namedSlotItems(
+      pluginId,
+      slots.threadInfoRows,
+      "thread-info-row",
+      "Adds a row to the thread Info tab.",
+    ),
+    ...namedSlotItems(
+      pluginId,
+      slots.threadInfoSections,
+      "thread-info-section",
+      "Adds a section to the thread Info tab.",
+    ),
+    ...namedSlotItems(
+      pluginId,
+      slots.threadContextCardRows,
+      "thread-context-card-row",
+      "Adds a row to the thread context card.",
+    ),
+    ...namedSlotItems(
+      pluginId,
+      slots.threadContextCardSections,
+      "thread-context-card-section",
+      "Adds a section to the thread context card.",
+    ),
+    ...namedSlotItems(
+      pluginId,
+      slots.threadActions,
+      "thread-action",
+      "Adds an action to thread menus.",
     ),
     ...namedSlotItems(
       pluginId,
@@ -372,6 +414,14 @@ function pluginAppSurfaceItems(
         key: `directive:${slot.id}`,
         label: `::${slot.id}`,
         detail: "Renders plugin-provided content inside thread messages.",
+        mono: true,
+      })),
+    ...slots.codeFenceRenderers
+      .filter((slot) => slot.pluginId === pluginId)
+      .map((slot) => ({
+        key: `code-fence:${slot.id}`,
+        label: slot.languages.map((language) => `\`\`\`${language}`).join(", "),
+        detail: "Renders these fenced code blocks inside assistant messages.",
         mono: true,
       })),
   ];

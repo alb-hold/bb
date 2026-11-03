@@ -8,6 +8,16 @@
     "module": "ESNext",
     "moduleResolution": "bundler",
     "paths": {
+      "@/components/ui/context-menu": [
+        "../../packages/shared-ui/src/components/ui/context-menu.tsx"
+      ],
+      "@/components/ui/dropdown-menu": [
+        "../../packages/shared-ui/src/components/ui/dropdown-menu.tsx"
+      ],
+      "@/components/ui/icon": [
+        "../../packages/plugin-registry/flavors/components/ui/icon.tsx"
+      ],
+      "@/lib/utils": ["../../packages/shared-ui/src/lib/utils.ts"],
       "@/*": ["./src/*"]
     },
     "rootDir": "../..",

@@ -20,11 +20,11 @@ function hasTable(db: ReturnType<typeof createConnection>, name: string): boolea
 }
 
 describe("thread turn spend runtime table", () => {
-  it("returns unavailable before writes and creates its table on the first write", () => {
+  it("keeps the migrated table empty until the first write", () => {
     const readDb = createConnection(":memory:");
     try {
       migrate(readDb);
-      expect(hasTable(readDb, "fork_thread_turn_spend")).toBe(false);
+      expect(hasTable(readDb, "fork_thread_turn_spend")).toBe(true);
       expect(listThreadTurnSpend(readDb, { threadId: "thread-read" })).toEqual(
         [],
       );
@@ -44,7 +44,7 @@ describe("thread turn spend runtime table", () => {
         projectId: project.id,
         providerId: "codex",
       });
-      expect(hasTable(writeDb, "fork_thread_turn_spend")).toBe(false);
+      expect(hasTable(writeDb, "fork_thread_turn_spend")).toBe(true);
       recordThreadTurnSpendContribution(writeDb, {
         at: 10,
         model: "gpt-5-codex",
@@ -91,6 +91,7 @@ describe("thread turn spend runtime table", () => {
         projectId: project.id,
         providerId: "codex",
       });
+      db.$client.exec("DROP TABLE fork_thread_turn_spend");
       db.$client.exec(`
         CREATE TABLE fork_thread_turn_spend (
           thread_id TEXT NOT NULL,

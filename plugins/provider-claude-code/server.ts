@@ -1,4 +1,5 @@
 import { registerUsageSource } from "./src/usage-source.js";
+import { registerClaudeAiService } from "./src/ai-service.js";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { CLAUDE_NATIVE_ROOTS_DECLARATION } from "./src/native-roots.js";
 import {
@@ -9,6 +10,7 @@ import {
 
 export default function plugin(bb: BbPluginApi) {
   registerUsageSource(bb);
+  registerClaudeAiService(bb);
   bb.settings.define({
     memoryEnabled: {
       type: "boolean",
@@ -21,7 +23,7 @@ export default function plugin(bb: BbPluginApi) {
       type: "boolean",
       label: "Disable provider subagents",
       description:
-        "Hide Claude Code's native Task tool so agents use bb for delegation.",
+        "Hide Claude Code's native subagent tools so agents use bb for delegation. Changes restart Claude before the next turn, preserving the conversation.",
       default: false,
     },
     workflowsDisabled: {
@@ -44,12 +46,26 @@ export default function plugin(bb: BbPluginApi) {
         "Start Claude Code with the Claude in Chrome browser tools. Needs the Chrome extension and a claude.ai login on the host.",
       default: false,
     },
+    artifactsEnabled: {
+      type: "boolean",
+      label: "Claude Artifacts",
+      description:
+        "Give Claude Code its Artifact tools to read, publish, and edit claude.ai artifacts. Claude may publish private pages to claude.ai without asking. Needs a claude.ai login on the host. Applies on the next turn.",
+      default: false,
+    },
     sandboxEnabled: {
       type: "boolean",
       label: "Claude Code sandbox",
       description:
         "Run Bash commands in Claude Code's sandbox in Accept Edits and Approve for me modes. Turn off to use Claude Code's own command approvals and sandbox settings instead.",
       default: true,
+    },
+    fullAccessApprovalsEnabled: {
+      type: "boolean",
+      label: "Approvals in Full Access",
+      description:
+        "Show Claude Code's own approval prompts in Full Access: permissions.ask rules, PreToolUse hooks that answer ask, and Claude Code's built-in safety checks. Off approves every request, so unattended threads never wait. Applies on the next turn.",
+      default: false,
     },
   });
 
@@ -67,6 +83,144 @@ export default function plugin(bb: BbPluginApi) {
       iconTint: { light: "#D97757", dark: "#D97757" },
     },
     ...CLAUDE_NATIVE_ROOTS_DECLARATION,
+    experimental_nativeTerminal: {
+      executable: "claude",
+      launchArgs: ["--dangerously-skip-permissions"],
+      modelArgs: ["--model", "{model}"],
+      mcp: [
+        "--mcp-config",
+        '{"mcpServers":{"bb-bridge":{"command":{commandJson},"args":{argsJson}}}}',
+      ],
+      imageArgs: [],
+      pastePlaceholders: ["[Pasted text #", "[Image #"],
+      sessionRoot: { env: "CLAUDE_CONFIG_DIR", home: ".claude" },
+      session: {
+        kind: "assigned",
+        startArgs: ["--session-id", "{sessionId}"],
+        resumeArgs: ["--resume", "{sessionId}"],
+        transcript: "projects/*/{sessionId}.jsonl",
+      },
+      activity: {
+        hooks: {
+          args: ["--settings", "{settings}"],
+          working: ["UserPromptSubmit", "PreToolUse"],
+          idle: [],
+          pending: ["Stop"],
+          promptField: "prompt",
+          sessionIdField: "session_id",
+          permission: {
+            open: ["PermissionRequest"],
+            close: ["PostToolUse", "PostToolUseFailure", "PermissionDenied"],
+            idField: "tool_name",
+            label: "Claude Code needs permission to use",
+            skip: ["AskUserQuestion", "ExitPlanMode"],
+          },
+          turnId: "prompt_id",
+        },
+        transcript: {
+          reply: [
+            {
+              match: {
+                equals: {
+                  type: "assistant",
+                  isSidechain: false,
+                  "message.role": "assistant",
+                },
+              },
+              text: "message.content",
+            },
+          ],
+          identity: {
+            recordId: "uuid",
+            parentId: "parentUuid",
+            turnId: "promptId",
+            timestamp: "timestamp",
+          },
+          questions: {
+            open: [
+              {
+                match: {
+                  equals: {
+                    type: "assistant",
+                    "message.content.0.type": "tool_use",
+                    "message.content.0.name": "AskUserQuestion",
+                  },
+                },
+                id: "message.content.0.id",
+                prompt: "message.content.0.input.questions.0.question",
+                label: "Claude Code is asking a question",
+              },
+              {
+                match: {
+                  equals: {
+                    type: "assistant",
+                    "message.content.0.type": "tool_use",
+                    "message.content.0.name": "ExitPlanMode",
+                  },
+                },
+                id: "message.content.0.id",
+                label: "Claude Code is waiting for you to approve its plan",
+              },
+            ],
+            close: [
+              {
+                match: {
+                  equals: {
+                    type: "user",
+                    "message.content.0.type": "tool_result",
+                  },
+                },
+                id: "message.content.0.tool_use_id",
+              },
+            ],
+          },
+          working: [
+            { equals: { type: "assistant", isSidechain: false } },
+            { equals: { type: "user", "origin.kind": "human" } },
+            {
+              equals: { type: "user", isMeta: true },
+              startsWith: { "message.content": "Stop hook feedback:\n" },
+            },
+          ],
+          idle: [
+            {
+              equals: {
+                type: "system",
+                subtype: "stop_hook_summary",
+                hasOutput: false,
+                isSidechain: false,
+              },
+            },
+            {
+              equals: {
+                type: "system",
+                subtype: "stop_hook_summary",
+                preventedContinuation: true,
+                isSidechain: false,
+              },
+            },
+            {
+              equals: {
+                type: "system",
+                subtype: "turn_duration",
+                isSidechain: false,
+              },
+            },
+            {
+              equals: { type: "user" },
+              startsWith: {
+                "message.content.0.text": "[Request interrupted by user",
+              },
+            },
+          ],
+          prompt: [],
+          continuation: {
+            match: { equals: { type: "continued-in" } },
+            nextSessionId: "continuedInSessionId",
+          },
+        },
+      },
+    },
     maintenance: { health: true, usage: true, installation: true },
     capabilities: {
       supportsServiceTier: true,
@@ -124,7 +278,10 @@ export default function plugin(bb: BbPluginApi) {
         workflowsEnabled: context.settings.workflowsDisabled !== true,
         chromeEnabled: context.settings.chromeEnabled === true,
         disable1MContext: context.settings.disable1MContext === true,
+        artifactsEnabled: context.settings.artifactsEnabled === true,
         sandboxEnabled: context.settings.sandboxEnabled !== false,
+        fullAccessApprovalsEnabled:
+          context.settings.fullAccessApprovalsEnabled === true,
         ...(context.promptMode === "plan"
           ? { claudeCodePermissionMode: "plan" }
           : {}),

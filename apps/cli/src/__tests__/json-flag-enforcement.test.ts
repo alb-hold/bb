@@ -8,7 +8,7 @@ import { registerProviderCommands } from "../commands/provider.js";
 import { registerMachineCommands } from "../commands/machine.js";
 import { registerServerCommands } from "../commands/server.js";
 import { registerThreadCommands } from "../commands/thread/index.js";
-const EXCLUDED_COMMANDS = new Set<string>();
+const EXCLUDED_COMMANDS = new Set<string>(["thread native-mcp"]);
 
 function collectLeafCommands(
   cmd: Command,

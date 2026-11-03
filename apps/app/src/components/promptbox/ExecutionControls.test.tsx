@@ -1,6 +1,12 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  within,
+} from "@testing-library/react";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { createQueryClientTestHarness } from "@/test/queryClientTestHarness";
 import {
@@ -53,6 +59,72 @@ afterEach(() => {
 });
 
 describe("ExecutionControls", () => {
+  it("keeps the model chip bounded beside a terminal control that can wrap", () => {
+    const props = makeExecutionControlsProps();
+    renderExecutionControls({
+      ...props,
+      model: {
+        ...props.model,
+        selected: "claude-opus-4-6",
+        options: [{ value: "claude-opus-4-6", label: "Opus 4.6 (1M)" }],
+      },
+      nativeTerminal: { enabled: false, onChange: vi.fn() },
+    });
+
+    const chip = screen.getByRole("button", {
+      name: "Provider, model and reasoning",
+    });
+    const control = screen.getByRole("radiogroup", {
+      name: "Run this thread in",
+    });
+    const wrappingRow = chip.closest(".flex-wrap");
+    expect(wrappingRow).not.toBeNull();
+    expect(wrappingRow?.contains(control)).toBe(true);
+    expect(wrappingRow?.classList.contains("min-w-0")).toBe(true);
+    expect(wrappingRow?.classList.contains("max-w-full")).toBe(true);
+    expect(chip.classList.contains("overflow-hidden")).toBe(true);
+    expect(chip.textContent).toContain("1M");
+  });
+
+  it("shows whether the thread runs in chat or its terminal and switches between them", () => {
+    const onChange = vi.fn();
+    const { rerender } = renderExecutionControls({
+      ...makeExecutionControlsProps(),
+      nativeTerminal: { enabled: false, onChange },
+    });
+
+    const group = screen.getByRole("radiogroup", { name: "Run this thread in" });
+    const chat = within(group).getByRole("radio", { name: "Chat" });
+    const terminal = within(group).getByRole("radio", { name: "Terminal" });
+    expect(chat.getAttribute("aria-checked")).toBe("true");
+    expect(terminal.getAttribute("aria-checked")).toBe("false");
+    fireEvent.click(chat);
+    expect(onChange).not.toHaveBeenCalled();
+    fireEvent.click(terminal);
+    expect(onChange).toHaveBeenCalledWith(true);
+
+    rerender(
+      <ExecutionControls
+        {...makeExecutionControlsProps()}
+        nativeTerminal={{ enabled: true, onChange }}
+      />,
+    );
+    expect(
+      screen
+        .getByRole("radio", { name: "Terminal" })
+        .getAttribute("aria-checked"),
+    ).toBe("true");
+    fireEvent.click(screen.getByRole("radio", { name: "Terminal" }));
+    expect(onChange).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole("radio", { name: "Chat" }));
+    expect(onChange).toHaveBeenLastCalledWith(false);
+
+    rerender(<ExecutionControls {...makeExecutionControlsProps()} />);
+    expect(
+      screen.queryByRole("radiogroup", { name: "Run this thread in" }),
+    ).toBeNull();
+  });
+
   it("hides provider tabs when the provider is locked", () => {
     renderExecutionControls(makeExecutionControlsProps());
 
@@ -97,27 +169,5 @@ describe("ExecutionControls", () => {
 
     expect(trigger.textContent).toContain("o4-mini");
     expect(trigger.textContent).not.toContain("Failed to load models");
-  });
-
-  it("maps disabled fast mode to the explicit default service tier", () => {
-    const onServiceTierChange = vi.fn();
-    renderExecutionControls({
-      ...makeExecutionControlsProps(),
-      serviceTier: {
-        value: "fast",
-        onChange: onServiceTierChange,
-        supported: true,
-        options: [{ id: "fast", label: "Fast" }],
-      },
-    });
-
-    fireEvent.click(
-      screen.getByRole("button", {
-        name: "Provider, model and reasoning",
-      }),
-    );
-    fireEvent.click(screen.getByRole("switch", { name: "Fast mode" }));
-
-    expect(onServiceTierChange).toHaveBeenCalledWith("default");
   });
 });

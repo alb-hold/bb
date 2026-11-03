@@ -16,6 +16,51 @@ describe("bb settings commands", () => {
   const register: CommandRegistrar = (program) =>
     registerSettingsCommands(program, () => "http://server");
 
+  it.each(["5", "0"])(
+    "sets the idle timeout to %s through general settings",
+    async (value) => {
+      const put = vi.fn(async ({ json }) => json);
+      stubServerApi({
+        "v1.system.config.$get": vi.fn(async () => ({
+          generalSettings: defaultAppSettings,
+        })),
+        "v1.settings.general.$put": put,
+      });
+      await runCommand(
+        ["settings", "general", "idleProviderSessionTimeoutMinutes", value],
+        register,
+      );
+      expect(put).toHaveBeenCalledWith({
+        json: {
+          ...defaultAppSettings,
+          idleProviderSessionTimeoutMinutes: JSON.parse(value),
+        },
+      });
+    },
+  );
+
+  it("rejects an idle timeout outside the allowed values without writing settings", async () => {
+    const put = vi.fn(async ({ json }) => json);
+    stubServerApi({
+      "v1.system.config.$get": vi.fn(async () => ({
+        generalSettings: defaultAppSettings,
+      })),
+      "v1.settings.general.$put": put,
+    });
+    await expect(
+      runCommand(
+        ["settings", "general", "idleProviderSessionTimeoutMinutes", "17"],
+        register,
+      ),
+    ).rejects.toThrow("process.exit:1");
+    expect(console.error).toHaveBeenCalledWith(
+      expect.stringContaining(
+        "Invalid value '17' for 'idleProviderSessionTimeoutMinutes': Invalid option: expected one of 0|5|10|30|60.",
+      ),
+    );
+    expect(put).not.toHaveBeenCalled();
+  });
+
   it("clears the setup guide completion time and keeps every other setting", async () => {
     const put = vi.fn(async ({ json }) => json);
     stubServerApi({
@@ -23,7 +68,6 @@ describe("bb settings commands", () => {
         generalSettings: {
           ...defaultAppSettings,
           onboardingCompletedAt: "2026-10-01T00:00:00.000Z",
-          setupChecklistVisible: true,
           streamerMode: true,
         },
       })),
@@ -36,7 +80,6 @@ describe("bb settings commands", () => {
       json: {
         ...defaultAppSettings,
         onboardingCompletedAt: null,
-        setupChecklistVisible: true,
         streamerMode: true,
       },
     });
@@ -268,6 +311,23 @@ describe("bb settings commands", () => {
     expect(put).not.toHaveBeenCalled();
   });
 
+  it("disables terminal copy-on-select through the general settings CLI", async () => {
+    const put = vi.fn(async ({ json }) => json);
+    stubServerApi({
+      "v1.system.config.$get": vi.fn(async () => ({
+        generalSettings: defaultAppSettings,
+      })),
+      "v1.settings.general.$put": put,
+    });
+    await runCommand(
+      ["settings", "general", "terminalCopyOnSelect", "off"],
+      register,
+    );
+    expect(put).toHaveBeenCalledExactlyOnceWith({
+      json: { ...defaultAppSettings, terminalCopyOnSelect: false },
+    });
+  });
+
   it("updates one general setting while preserving the full contract", async () => {
     const put = vi.fn(async ({ json }) => json);
     stubServerApi({
@@ -361,16 +421,16 @@ describe("bb settings commands", () => {
     });
   });
 
-  it("enables the changelog preview experiment", async () => {
+  it("enables an experiment", async () => {
     const put = vi.fn(async ({ json }) => json);
     stubServerApi({ "v1.settings.experiments.$put": put });
 
     await runCommand(
-      ["settings", "experiment", "changelogPreview", "true"],
+      ["settings", "experiment", "serverMove", "true"],
       register,
     );
 
-    expect(put).toHaveBeenCalledWith({ json: { changelogPreview: true } });
+    expect(put).toHaveBeenCalledWith({ json: { serverMove: true } });
   });
 
   it("reads usage from a selected machine", async () => {
@@ -402,6 +462,43 @@ describe("bb settings commands", () => {
     expect(getUsage).toHaveBeenCalledWith({
       query: { hostId: "host-remote", refresh: "true" },
     });
+  });
+
+  it("shows, installs, and removes the bb CLI for use outside bb", async () => {
+    const install = vi.fn(async () => ({
+      installedPath: "/home/me/.local/bin/bb",
+      onPath: true,
+      shadowedBy: null,
+      supported: true,
+    }));
+    const remove = vi.fn(async () => ({
+      installedPath: null,
+      onPath: false,
+      shadowedBy: null,
+      supported: true,
+    }));
+    stubServerApi({
+      "v1.system.cli-command.$get": vi.fn(async () => ({
+        installedPath: null,
+        onPath: false,
+        shadowedBy: { path: "/usr/local/bin/bb", source: "other" },
+        supported: true,
+      })),
+      "v1.system.cli-command.install.$post": install,
+      "v1.system.cli-command.remove.$post": remove,
+    });
+
+    await runCommand(["settings", "cli-command"], register);
+    await runCommand(["settings", "cli-command", "install"], register);
+    await runCommand(["settings", "cli-command", "remove"], register);
+
+    expect(install).toHaveBeenCalledTimes(1);
+    expect(remove).toHaveBeenCalledTimes(1);
+    expect(collectLogLines(vi.mocked(console.log))).toEqual([
+      "The bb CLI is not installed for use outside bb. Another bb at /usr/local/bin/bb comes first on your PATH.",
+      "The bb CLI is installed at /home/me/.local/bin/bb for use outside bb.",
+      "Removed the bb CLI from your PATH.",
+    ]);
   });
 
   describe("ai-services", () => {

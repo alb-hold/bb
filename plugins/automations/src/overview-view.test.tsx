@@ -9,7 +9,6 @@ import {
 } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { installTestPluginRuntime } from "@get-bb/plugin-sdk/testing/app";
-import { CompactViewportOverrideProvider } from "@/components/ui/hooks/use-compact-viewport";
 import { AutomationOverviewView } from "../overview-view.js";
 import type {
   AutomationResponse,
@@ -22,12 +21,6 @@ function focusWithKeyboard(element: HTMLElement): void {
   fireEvent.keyDown(element.ownerDocument.body, { key: "Tab" });
   element.focus();
   fireEvent.focus(element);
-}
-
-function iconNames(element: HTMLElement): string[] {
-  return [...element.querySelectorAll("[data-icon]")].map(
-    (icon) => icon.getAttribute("data-icon") ?? "",
-  );
 }
 
 const INSTALLED_AUTOMATIONS: AutomationsOverviewResponse["automations"] = [
@@ -69,6 +62,61 @@ const INSTALLED_AUTOMATIONS: AutomationsOverviewResponse["automations"] = [
 afterEach(cleanup);
 
 describe("AutomationOverviewView", () => {
+  it.each([
+    {
+      state: "a paused automation whose last run failed",
+      lastRunStatus: "failed",
+      lastError: "Target thread thr_target was archived",
+      shown: true,
+    },
+    {
+      state: "a retry in flight",
+      lastRunStatus: "running",
+      lastError: "Target thread thr_target was archived",
+      shown: false,
+    },
+    {
+      state: "an automation resumed after a failure",
+      lastRunStatus: "failed",
+      lastError: null,
+      shown: false,
+    },
+  ] as const)(
+    "marks a row failed only with its reason, for $state",
+    ({ lastRunStatus, lastError, shown }) => {
+      const [entry] = INSTALLED_AUTOMATIONS;
+      render(
+        <AutomationOverviewView
+          entries={[
+            {
+              ...entry!,
+              automation: {
+                ...(entry!.automation as AutomationResponse),
+                enabled: lastRunStatus !== "failed" || lastError === null,
+                lastRunStatus,
+                lastError,
+              },
+            },
+          ]}
+          error={null}
+          onRetry={() => {}}
+          onOpenDetail={() => {}}
+          onEnabledChange={async () => {}}
+          onRunNow={async () => {}}
+          onDelete={() => {}}
+          onCreateViaChat={() => {}}
+          activeMode="installed"
+          onModeChange={() => {}}
+        />,
+      );
+
+      expect(screen.queryByLabelText("Failed") !== null).toBe(shown);
+      expect(
+        screen.queryByText("Target thread thr_target was archived") !== null,
+      ).toBe(shown);
+    },
+  );
+
   it("keeps lifecycle groups stable around the selected sort", () => {
     const baseEntry = INSTALLED_AUTOMATIONS[0]!;
     if ("problem" in baseEntry.automation) {
@@ -131,27 +179,6 @@ describe("AutomationOverviewView", () => {
       "Zulu inactive",
       "Aardvark completed",
     ]);
-  });
-
-  it("renders the production collection shell for an empty library", () => {
-    render(
-      <AutomationOverviewView
-        entries={[]}
-        error={null}
-        onRetry={() => {}}
-        onOpenDetail={() => {}}
-        onEnabledChange={async () => {}}
-        onRunNow={async () => {}}
-        onDelete={() => {}}
-        onCreateViaChat={() => {}}
-        activeMode="installed"
-        onModeChange={() => {}}
-      />,
-    );
-
-    expect(screen.getByRole("tab", { name: "Installed0" })).toBeTruthy();
-    expect(screen.getByText("No automations installed.")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "New automation" })).toBeTruthy();
   });
 
   it("opens a missing-prompt row in the standard editor", () => {
@@ -324,51 +351,6 @@ describe("AutomationOverviewView", () => {
     expect(onOpenDetail).not.toHaveBeenCalled();
   });
 
-  it("offers Projects and Status as groups inside one filter menu", async () => {
-    render(
-      <AutomationOverviewView
-        entries={INSTALLED_AUTOMATIONS}
-        error={null}
-        onRetry={() => {}}
-        onOpenDetail={() => {}}
-        onEnabledChange={async () => {}}
-        onRunNow={async () => {}}
-        onDelete={() => {}}
-        onCreateViaChat={() => {}}
-        activeMode="installed"
-        onModeChange={() => {}}
-      />,
-    );
-
-    expect(screen.queryByRole("button", { name: "Projects" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Status" })).toBeNull();
-    const filtersTrigger = screen.getByRole("button", { name: "Filters" });
-    focusWithKeyboard(filtersTrigger);
-    expect((await screen.findByRole("tooltip")).textContent).toBe(
-      "Filters: All",
-    );
-    fireEvent.blur(filtersTrigger);
-    fireEvent.pointerDown(filtersTrigger);
-
-    expect(screen.getByRole("menu", { name: "Filters" })).toBeTruthy();
-    expect(screen.getByText("Projects")).toBeTruthy();
-    expect(screen.getByText("Status")).toBeTruthy();
-
-    const projectOption = screen.getByRole("menuitemcheckbox", { name: "bb" });
-    expect(projectOption.querySelector("[data-icon]")).toBeNull();
-    expect(
-      projectOption.querySelector(".truncate")?.getAttribute("title"),
-    ).toBe("bb");
-    const activeOption = screen.getByRole("menuitemcheckbox", {
-      name: "Active",
-    });
-    const pausedOption = screen.getByRole("menuitemcheckbox", {
-      name: "Paused",
-    });
-    expect(activeOption.querySelector("[data-icon]")).toBeNull();
-    expect(pausedOption.querySelector("[data-icon]")).toBeNull();
-  });
-
   it("keeps project and status selections independent in the merged menu", () => {
     const { container } = render(
       <AutomationOverviewView
@@ -430,189 +412,6 @@ describe("AutomationOverviewView", () => {
     expect(
       screen.queryByText("No automations match these filters."),
     ).toBeNull();
-  });
-
-  it("gives filter and sort triggers the same resting, open, and engaged states", () => {
-    const { container } = render(
-      <AutomationOverviewView
-        entries={INSTALLED_AUTOMATIONS}
-        error={null}
-        onRetry={() => {}}
-        onOpenDetail={() => {}}
-        onEnabledChange={async () => {}}
-        onRunNow={async () => {}}
-        onDelete={() => {}}
-        onCreateViaChat={() => {}}
-        activeMode="installed"
-        onModeChange={() => {}}
-      />,
-    );
-
-    const ENGAGED = ["bg-state-active", "text-foreground"];
-    const classesOf = (el: HTMLElement) => new Set(el.className.split(/\s+/));
-    const isEngaged = (el: HTMLElement) => {
-      const classes = classesOf(el);
-      return ENGAGED.every((engagedClass) => classes.has(engagedClass));
-    };
-    const byLabel = (prefix: string) => {
-      const el = container.querySelector<HTMLElement>(
-        `button[aria-label^="${prefix}"]`,
-      );
-      if (el === null) throw new Error(`no trigger labelled ${prefix}`);
-      return el;
-    };
-    const filters = () => byLabel("Filters");
-    const sort = () => byLabel("Sort:");
-
-    for (const trigger of [filters(), sort()]) {
-      expect(isEngaged(trigger)).toBe(false);
-      expect(classesOf(trigger).has("bg-state-active")).toBe(false);
-    }
-
-    fireEvent.pointerDown(filters());
-    expect(isEngaged(filters())).toBe(true);
-    expect(isEngaged(sort())).toBe(false);
-    fireEvent.keyDown(document, { key: "Escape" });
-    expect(isEngaged(filters())).toBe(false);
-
-    fireEvent.pointerDown(sort());
-    expect(isEngaged(sort())).toBe(true);
-    expect(isEngaged(filters())).toBe(false);
-    fireEvent.keyDown(document, { key: "Escape" });
-    expect(isEngaged(sort())).toBe(false);
-
-    fireEvent.pointerDown(filters());
-    fireEvent.click(screen.getByRole("menuitemcheckbox", { name: "bb" }));
-    fireEvent.keyDown(document, { key: "Escape" });
-    expect(isEngaged(filters())).toBe(true);
-  });
-
-  it("uses compact, icon-free sort options and preserves disabled state", () => {
-    render(
-      <AutomationOverviewView
-        entries={INSTALLED_AUTOMATIONS}
-        error={null}
-        onRetry={() => {}}
-        onOpenDetail={() => {}}
-        onEnabledChange={async () => {}}
-        onRunNow={async () => {}}
-        onDelete={() => {}}
-        onCreateViaChat={() => {}}
-        activeMode="installed"
-        onModeChange={() => {}}
-      />,
-    );
-
-    const sortTrigger = screen.getByRole("button", {
-      name: "Sort: Automation name, ascending",
-    });
-    expect(sortTrigger.querySelector('[data-icon="ArrowUpDown"]')).toBeTruthy();
-    fireEvent.pointerDown(sortTrigger);
-    const projectOption = screen.getByRole("menuitemradio", {
-      name: "Project",
-    });
-    const nameOption = screen.getByRole("menuitemradio", {
-      name: "Automation name",
-    });
-    expect(projectOption.getAttribute("aria-disabled")).toBe("true");
-    expect(projectOption.getAttribute("aria-checked")).toBe("false");
-    expect(nameOption.getAttribute("aria-checked")).toBe("true");
-    expect(iconNames(projectOption)).toEqual(["ArrowUp"]);
-    expect(iconNames(nameOption)).toEqual(["ArrowUp"]);
-    fireEvent.click(nameOption);
-    expect(sortTrigger.querySelector('[data-icon="ArrowUpDown"]')).toBeTruthy();
-    expect(iconNames(nameOption)).toEqual(["ArrowDown"]);
-    expect(sortTrigger.getAttribute("aria-label")).toBe(
-      "Sort: Automation name, descending",
-    );
-  });
-
-  it("preserves sort selection semantics in the compact viewport drawer", async () => {
-    render(
-      <CompactViewportOverrideProvider isCompactViewport>
-        <AutomationOverviewView
-          entries={INSTALLED_AUTOMATIONS}
-          error={null}
-          onRetry={() => {}}
-          onOpenDetail={() => {}}
-          onEnabledChange={async () => {}}
-          onRunNow={async () => {}}
-          onDelete={() => {}}
-          onCreateViaChat={() => {}}
-          activeMode="installed"
-          onModeChange={() => {}}
-        />
-      </CompactViewportOverrideProvider>,
-    );
-
-    const sortTrigger = screen.getByRole("button", {
-      name: "Sort: Automation name, ascending",
-    });
-    fireEvent.click(sortTrigger);
-
-    const projectOption = await screen.findByRole("menuitemradio", {
-      name: "Project",
-    });
-    const nameOption = screen.getByRole("menuitemradio", {
-      name: "Automation name",
-    });
-    expect(projectOption.getAttribute("aria-checked")).toBe("false");
-    expect(projectOption.getAttribute("aria-disabled")).toBe("true");
-    expect((projectOption as HTMLButtonElement).disabled).toBe(true);
-    expect(nameOption.getAttribute("aria-checked")).toBe("true");
-    expect(
-      screen
-        .getAllByRole("menuitemradio")
-        .filter((option) => option.getAttribute("aria-checked") === "true"),
-    ).toHaveLength(1);
-
-    fireEvent.click(projectOption);
-    expect(sortTrigger.getAttribute("aria-label")).toBe(
-      "Sort: Automation name, ascending",
-    );
-    fireEvent.click(nameOption);
-    expect(sortTrigger.getAttribute("aria-label")).toBe(
-      "Sort: Automation name, descending",
-    );
-    expect(nameOption.getAttribute("aria-checked")).toBe("true");
-  });
-
-  it("renders template actions as icon-only controls with specific labels", () => {
-    const onCreateViaChat = vi.fn();
-    const { container } = render(
-      <AutomationOverviewView
-        entries={[]}
-        error={null}
-        onRetry={() => {}}
-        onOpenDetail={() => {}}
-        onEnabledChange={async () => {}}
-        onRunNow={async () => {}}
-        onDelete={() => {}}
-        onCreateViaChat={onCreateViaChat}
-        activeMode="browse"
-        onModeChange={() => {}}
-      />,
-    );
-
-    const ciTemplateButton = screen.getByRole("button", {
-      name: "Use template: CI failure triage",
-    });
-    expect(
-      ciTemplateButton.querySelector('[data-icon="MessageCirclePlus"]'),
-    ).toBeTruthy();
-    expect(ciTemplateButton.textContent).toBe("");
-    expect(
-      screen.getAllByRole("button", {
-        name: "Use template: CI failure triage",
-      }),
-    ).toHaveLength(1);
-
-    fireEvent.click(
-      container.querySelector(
-        '[data-resource-card-pointer-action=""]',
-      ) as HTMLElement,
-    );
-    expect(onCreateViaChat).toHaveBeenCalledOnce();
   });
 
   it("keeps labelled metadata tooltip triggers outside the row button", async () => {

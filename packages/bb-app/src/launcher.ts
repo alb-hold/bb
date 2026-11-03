@@ -1,9 +1,18 @@
 #!/usr/bin/env node
+import {
+  hostToolchain,
+  nodeNetworkArgs,
+  spawnHostProcess as spawn,
+} from "@bb/process-utils";
 import type { ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { spawn } from "node:child_process";
+import { relayDesktopAppUpdates } from "@bb/config/desktop-app-update";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { spawnLoggedProcess } from "./logged-process.js";
+import {
+  spawnLoggedProcess,
+  type LoggedChildProcess,
+  type StdioLogWriterTestBarrier,
+} from "./logged-process.js";
 import {
   formatServerMovedNotice,
   startMovedResponder,
@@ -11,6 +20,12 @@ import {
   type StartMovedResponderArgs,
 } from "./moved-responder.js";
 import { mutateManagedJsonFile } from "@bb/config/managed-json-file";
+import {
+  DAEMON_DETACH_HEAD_START_MS,
+  DAEMON_PROCESS_TERMINATION_TIMEOUT_MS,
+  MANAGED_PROCESS_KILL_WAIT_TIMEOUT_MS,
+  SERVER_PROCESS_TERMINATION_TIMEOUT_MS,
+} from "@bb/config/full-stack-shutdown";
 import { access, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, resolve, win32 } from "node:path";
@@ -77,6 +92,7 @@ import {
   resolveDataDirDatabasePath,
   resolvePortFromEnv,
   resolveProdDataDir,
+  stripInheritedAgentSessionEnv,
   stripThreadContextEnv,
 } from "@bb/config/runtime";
 import {
@@ -99,8 +115,18 @@ import {
   appInstallEnv,
   type AppInstall,
 } from "@bb/config/app-install";
+import {
+  CLI_LAUNCHER_ENV_NAME,
+  CLI_REEXEC_ENV_NAME,
+} from "@bb/config/cli-command";
 import { z } from "zod";
 import { resolveAppInstall } from "./app-install.js";
+import {
+  formatCliLauncherPath,
+  renderCliLauncher,
+  resolveCliLauncherTarget,
+  writeCliLauncher,
+} from "./cli-launcher.js";
 import {
   createLauncherAppUpdateController,
   type LauncherAppUpdateController,
@@ -133,8 +159,6 @@ const HEALTH_CHECK_TIMEOUT_MS = 60_000;
 const SERVER_START_HEALTH_TIMEOUT_MS = 180_000;
 const HEALTH_CHECK_INTERVAL_MS = 100;
 const HEALTH_CHECK_REQUEST_TIMEOUT_MS = 1_000;
-const MANAGED_PROCESS_TERMINATION_TIMEOUT_MS = 5_000;
-const MANAGED_PROCESS_KILL_TIMEOUT_MS = 1_000;
 const MANAGED_PROCESS_RESTART_RETRY_DELAY_MS = 1_000;
 const HOST_DAEMON_RESTART_INITIAL_DELAY_MS = 1_000;
 const HOST_DAEMON_RESTART_MAX_DELAY_MS = 30_000;
@@ -166,6 +190,15 @@ const MANAGED_CONFIG_KEYS = BB_APP_MANAGED_CONFIG_KEYS;
 const MANAGED_CONFIG_KEY_VALUES = new Set<string>(MANAGED_CONFIG_KEYS);
 const STARTUP_ONLY_MANAGED_CONFIG_KEYS = new Set<string>(["BB_LOG_LEVEL"]);
 const STARTUP_ONLY_MANAGED_ENV_KEYS = new Set<string>([
+  "NODE_USE_ENV_PROXY",
+  "NODE_USE_SYSTEM_CA",
+  "NODE_EXTRA_CA_CERTS",
+  "HTTP_PROXY",
+  "HTTPS_PROXY",
+  "NO_PROXY",
+  "http_proxy",
+  "https_proxy",
+  "no_proxy",
   "BB_APP_SURFACE",
   "BB_APP_URL",
   "BB_DATA_DIR",
@@ -406,7 +439,7 @@ export interface ManagedProcessRun {
 }
 
 interface ChildManagedProcessRun extends ManagedProcessRun {
-  childProcess: ChildProcess;
+  childProcess: LoggedChildProcess;
 }
 
 export interface ManagedFullStackProcesses {
@@ -421,6 +454,7 @@ interface SpawnNamedManagedProcessArgs {
   command: string;
   env: NodeJS.ProcessEnv;
   processName: ManagedProcessName;
+  testWriterBarrier?: StdioLogWriterTestBarrier;
 }
 
 interface StartFullStackServerProcessArgs {
@@ -429,6 +463,7 @@ interface StartFullStackServerProcessArgs {
   env: NodeJS.ProcessEnv;
   onSpawned?: (childProcess: ChildProcess) => void;
   processes: ManagedFullStackProcesses;
+  testWriterBarrier?: StdioLogWriterTestBarrier;
 }
 
 interface StartDaemonProcessArgs {
@@ -615,6 +650,7 @@ interface CreateSharedEnvArgs {
 }
 
 interface CreateServerEnvArgs {
+  cliLauncherPath: string | null;
   context: BbAppStartContext;
   env: NodeJS.ProcessEnv;
   install: AppInstall;
@@ -2014,6 +2050,38 @@ async function runEnvCommand(args: RunEnvCommandArgs): Promise<void> {
   await refreshRunningServerConfigAfterWrite(args.serverUrl, "env", key);
 }
 
+async function writeOwnCliLauncher(
+  context: BbAppStartContext,
+): Promise<string | null> {
+  const launcherPath = formatCliLauncherPath({
+    dataDir: context.dataDir,
+    platform: process.platform,
+  });
+  try {
+    const written = await writeCliLauncher({
+      content: renderCliLauncher({
+        dataDir: context.dataDir,
+        platform: process.platform,
+        target: resolveCliLauncherTarget({
+          electron: process.versions.electron !== undefined,
+          env: process.env,
+          execPath: process.execPath,
+          packageRoot: context.packageRoot,
+          platform: process.platform,
+        }),
+      }),
+      launcherPath,
+    });
+    return written === "foreign" ? null : launcherPath;
+  } catch (error) {
+    log(
+      yellow("!"),
+      `Could not write the bb command launcher at ${launcherPath}: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    return null;
+  }
+}
+
 async function runClientCommand(args: RunClientCommandArgs): Promise<void> {
   const commandArgs = args.args;
   if (
@@ -2405,13 +2473,75 @@ function spawnNamedManagedProcess(
       processName: args.processName,
     }),
     async terminate(signal): Promise<void> {
-      await terminateProcessIfRunning({
-        childProcess,
-        processName: args.processName,
-        signal,
-      });
+      try {
+        await terminateProcessIfRunning({
+          childProcess,
+          processName: args.processName,
+          signal,
+        });
+      } finally {
+        await waitForStdioLogWriterExit(childProcess, args.processName);
+      }
     },
   };
+}
+
+const STDIO_LOG_WRITER_EXIT_TIMEOUT_MS = 2_000;
+const STDIO_LOG_WRITER_KILL_WAIT_TIMEOUT_MS = 1_000;
+
+async function waitForStdioLogWriterExit(
+  childProcess: LoggedChildProcess,
+  processName: ManagedProcessName,
+): Promise<void> {
+  let timeout: NodeJS.Timeout | undefined;
+  const result = await Promise.race([
+    childProcess.writerExit.then(() => "exited" as const),
+    new Promise<"timed-out">((resolvePromise) => {
+      timeout = setTimeout(
+        () => resolvePromise("timed-out"),
+        STDIO_LOG_WRITER_EXIT_TIMEOUT_MS,
+      );
+    }),
+  ]);
+  if (timeout !== undefined) clearTimeout(timeout);
+  if (result === "timed-out") {
+    log(
+      yellow("!"),
+      `${processName} stdio log writer did not exit within ${STDIO_LOG_WRITER_EXIT_TIMEOUT_MS}ms`,
+    );
+    try {
+      childProcess.writerProcess.kill("SIGKILL");
+    } catch (error) {
+      if (
+        typeof error !== "object" ||
+        error === null ||
+        !("code" in error) ||
+        error.code !== "ESRCH"
+      ) {
+        log(
+          red("✗"),
+          `${processName} stdio log writer SIGKILL failed: ${String(error)}`,
+        );
+        throw error;
+      }
+    }
+    let killWaitTimeout: NodeJS.Timeout | undefined;
+    const killResult = await Promise.race([
+      childProcess.writerExit.then(() => "exited" as const),
+      new Promise<"timed-out">((resolvePromise) => {
+        killWaitTimeout = setTimeout(
+          () => resolvePromise("timed-out"),
+          STDIO_LOG_WRITER_KILL_WAIT_TIMEOUT_MS,
+        );
+      }),
+    ]);
+    if (killWaitTimeout !== undefined) clearTimeout(killWaitTimeout);
+    if (killResult === "timed-out") {
+      const message = `${processName} stdio log writer ${String(childProcess.writerProcess.pid)} did not exit within ${STDIO_LOG_WRITER_KILL_WAIT_TIMEOUT_MS}ms after SIGKILL`;
+      log(red("✗"), message);
+      throw new Error(message);
+    }
+  }
 }
 
 async function waitForNamedProcessExit(
@@ -2454,16 +2584,20 @@ function delayMilliseconds(args: DelayMillisecondsArgs): Promise<void> {
   });
 }
 
-async function terminateProcessIfRunning(
+export async function terminateProcessIfRunning(
   args: TerminateProcessIfRunningArgs,
 ): Promise<void> {
   if (hasProcessExited(args.childProcess)) {
     return;
   }
+  const terminationTimeoutMs =
+    args.processName === "server"
+      ? SERVER_PROCESS_TERMINATION_TIMEOUT_MS
+      : DAEMON_PROCESS_TERMINATION_TIMEOUT_MS;
   args.childProcess.kill(args.signal);
   const gracefulResult = await waitForProcessExitWithTimeout({
     childProcess: args.childProcess,
-    timeoutMs: MANAGED_PROCESS_TERMINATION_TIMEOUT_MS,
+    timeoutMs: terminationTimeoutMs,
   });
   if (gracefulResult === "exited") {
     return;
@@ -2471,15 +2605,22 @@ async function terminateProcessIfRunning(
 
   log(
     yellow("!"),
-    `${args.processName} did not stop after ${MANAGED_PROCESS_TERMINATION_TIMEOUT_MS}ms - sending SIGKILL`,
+    `${args.processName} did not stop after ${terminationTimeoutMs}ms - sending SIGKILL`,
   );
   if (!hasProcessExited(args.childProcess)) {
     args.childProcess.kill("SIGKILL");
   }
   await waitForProcessExitWithTimeout({
     childProcess: args.childProcess,
-    timeoutMs: MANAGED_PROCESS_KILL_TIMEOUT_MS,
+    timeoutMs: MANAGED_PROCESS_KILL_WAIT_TIMEOUT_MS,
   });
+  if (!hasProcessExited(args.childProcess)) {
+    const message = `${args.processName} did not stop after SIGKILL within ${MANAGED_PROCESS_KILL_WAIT_TIMEOUT_MS}ms`;
+    log(yellow("!"), message);
+    await new Promise<void>((resolve) => {
+      process.stderr.write(message + "\n", "utf8", () => resolve());
+    });
+  }
 }
 
 function createSharedEnv(args: CreateSharedEnvArgs): NodeJS.ProcessEnv {
@@ -2511,13 +2652,19 @@ function resolveOwnAppInstall(args: {
 }
 
 export function createServerEnv(args: CreateServerEnvArgs): NodeJS.ProcessEnv {
-  const inheritedEnv = { ...args.env };
+  const inheritedEnv = hostToolchain.environment(
+    stripInheritedAgentSessionEnv(args.env),
+  );
   delete inheritedEnv[APP_INSTALL_KIND_ENV_NAME];
   delete inheritedEnv[APP_SOURCE_COMMIT_ENV_NAME];
   delete inheritedEnv[APP_SOURCE_ORIGIN_ENV_NAME];
+  delete inheritedEnv[CLI_LAUNCHER_ENV_NAME];
   return {
     ...inheritedEnv,
     ...appInstallEnv(args.install),
+    ...(args.cliLauncherPath === null
+      ? {}
+      : { [CLI_LAUNCHER_ENV_NAME]: args.cliLauncherPath }),
     BB_APP_VERSION: args.context.appVersion,
     [APP_SURFACE_ENV_NAME]: resolveServerAppSurface(args.env),
     BB_CLI: join(args.context.daemonBundleDir, "bb"),
@@ -2531,7 +2678,9 @@ export function createServerEnv(args: CreateServerEnvArgs): NodeJS.ProcessEnv {
 
 export function createDaemonEnv(args: CreateDaemonEnvArgs): NodeJS.ProcessEnv {
   return {
-    ...stripThreadContextEnv(args.env),
+    ...hostToolchain.environment(
+      stripInheritedAgentSessionEnv(stripThreadContextEnv(args.env)),
+    ),
     BB_APP_VERSION: args.context.appVersion,
     BB_BRIDGE_DIR: args.context.daemonBundleDir,
     BB_CLI_DIR: args.context.daemonBundleDir,
@@ -2669,7 +2818,8 @@ export async function createHostDaemonJoinEnv(
 
 interface ResolveBundledCliLaunchArgs {
   args: string[];
-  cliPath: string;
+  bundledCliPath: string;
+  cliOverride: string | null;
   nodePath: string;
   platform: NodeJS.Platform;
 }
@@ -2678,25 +2828,38 @@ export function resolveBundledCliLaunch(args: ResolveBundledCliLaunchArgs): {
   command: string;
   args: string[];
 } {
-  return args.platform === "win32" && win32.extname(args.cliPath) === ""
-    ? { command: args.nodePath, args: [args.cliPath, ...args.args] }
-    : { command: args.cliPath, args: args.args };
+  if (args.cliOverride === null) {
+    return {
+      command: args.nodePath,
+      args: [args.bundledCliPath, ...args.args],
+    };
+  }
+  return args.platform === "win32" && win32.extname(args.cliOverride) === ""
+    ? { command: args.nodePath, args: [args.cliOverride, ...args.args] }
+    : { command: args.cliOverride, args: args.args };
 }
 
 export async function runBundledCliCommand(
   args: RunBundledCliCommandArgs,
 ): Promise<number> {
-  const bbCliOverride = toOptionalString(args.env.BB_CLI);
-  const cliPath = bbCliOverride ?? join(args.context.daemonBundleDir, "bb");
+  const cliOverride =
+    args.env[CLI_REEXEC_ENV_NAME] === "1"
+      ? null
+      : (toOptionalString(args.env.BB_CLI) ?? null);
   const launch = resolveBundledCliLaunch({
     args: args.args,
-    cliPath,
+    bundledCliPath: join(args.context.daemonBundleDir, "bb"),
+    cliOverride,
     nodePath: process.execPath,
     platform: process.platform,
   });
+  const env = createCliEnv({ context: args.context, env: args.env });
+  if (cliOverride !== null) {
+    env[CLI_REEXEC_ENV_NAME] = "1";
+  }
   const childProcess = spawn(launch.command, launch.args, {
     cwd: process.cwd(),
-    env: createCliEnv({ context: args.context, env: args.env }),
+    env,
     stdio: "inherit",
   });
 
@@ -2757,7 +2920,7 @@ export async function runBbServer(
 Usage:
   bb-server [--data-dir <path>] [--server-bind-host <host>] [--server-port <port>]
 
-Service stdout and stderr append to <data-dir>/logs/server-stdio.log.
+Logs rotate in <data-dir>/logs/server.N.log. Startup errors and crashes append to <data-dir>/logs/server-stdio.log.
 Exits with code 3 without starting when the server on this data directory moved to another machine, unless a move back to this computer is in progress.
 `);
     return;
@@ -2787,13 +2950,14 @@ Exits with code 3 without starting when the server on this data directory moved 
   });
   assertBbAppArtifacts(runtime.context);
 
-  log(" ", dim(`logs: ${runtime.context.logDir}/server-stdio.log`));
+  log(" ", dim(`logs: ${runtime.context.logDir}/`));
   const childProcess = spawnLoggedProcess({
     command: process.execPath,
-    args: [runtime.context.serverEntry],
+    args: [...nodeNetworkArgs(runtime.serverEnv), runtime.context.serverEntry],
     logDir: runtime.context.logDir,
     logName: "server",
     env: createServerEnv({
+      cliLauncherPath: null,
       context: runtime.context,
       env: runtime.serverEnv,
       install: await resolveOwnAppInstall({
@@ -2860,15 +3024,12 @@ async function runHostDaemonOnly(args: RunHostDaemonOnlyArgs): Promise<void> {
 
   const startDaemon = (): ChildManagedProcessRun =>
     spawnNamedManagedProcess({
-      args: [args.context.daemonEntry],
+      args: [...nodeNetworkArgs(daemonEnv), args.context.daemonEntry],
       command: process.execPath,
       env: daemonEnv,
       logDir: args.context.logDir,
       processName: "daemon",
     });
-  const firstRun = startDaemon();
-  let currentRun: ManagedProcessRun = firstRun;
-
   let shuttingDown = false;
 
   const shutdown = async (signal: NodeJS.Signals): Promise<void> => {
@@ -2886,6 +3047,9 @@ async function runHostDaemonOnly(args: RunHostDaemonOnlyArgs): Promise<void> {
       void shutdown(signal);
     },
   );
+
+  const firstRun = startDaemon();
+  let currentRun: ManagedProcessRun = firstRun;
 
   const supervise = args.supervise && command.kind === "start";
   const readiness = new AbortController();
@@ -3060,6 +3224,8 @@ Usage:
 
 CLI:
   npx --package bb-app bb <command>
+  Settings → General → bb CLI, or bb settings cli-command install,
+  installs the bb CLI for use outside bb.
 `);
 }
 
@@ -3082,12 +3248,13 @@ export async function startFullStackServerProcess(
 
   const launchId = randomUUID();
   const serverRun = spawnNamedManagedProcess({
-    args: [args.context.serverEntry],
+    args: [...nodeNetworkArgs(args.env), args.context.serverEntry],
     command: process.execPath,
     env: { ...args.env, BB_SERVER_LAUNCH_ID: launchId },
-    ipc: args.onSpawned !== undefined,
+    ipc: true,
     logDir: args.context.logDir,
     processName: "server",
+    testWriterBarrier: args.testWriterBarrier,
   });
   args.processes.serverRun = serverRun;
   args.onSpawned?.(serverRun.childProcess);
@@ -3101,11 +3268,7 @@ export async function startFullStackServerProcess(
     });
     return serverRun;
   } catch (error) {
-    await terminateProcessIfRunning({
-      childProcess: serverRun.childProcess,
-      processName: "server",
-      signal: "SIGTERM",
-    });
+    await serverRun.terminate("SIGTERM");
     if (args.processes.serverRun === serverRun) {
       args.processes.serverRun = null;
     }
@@ -3119,7 +3282,7 @@ async function startDaemonProcess(
   args: StartDaemonProcessArgs,
 ): Promise<ManagedProcessRun> {
   const daemonRun = spawnNamedManagedProcess({
-    args: [args.context.daemonEntry],
+    args: [...nodeNetworkArgs(args.env), args.context.daemonEntry],
     command: process.execPath,
     env: args.env,
     logDir: args.context.logDir,
@@ -3140,11 +3303,7 @@ async function startDaemonProcess(
     });
     return daemonRun;
   } catch {
-    await terminateProcessIfRunning({
-      childProcess: daemonRun.childProcess,
-      processName: "daemon",
-      signal: "SIGTERM",
-    });
+    await daemonRun.terminate("SIGTERM");
     if (args.processes.daemonRun === daemonRun) {
       args.processes.daemonRun = null;
     }
@@ -3185,7 +3344,7 @@ async function restartManagedProcess(
   return null;
 }
 
-export const DAEMON_DETACH_HEAD_START_MS = 3_000;
+export { DAEMON_DETACH_HEAD_START_MS };
 
 export async function terminateManagedFullStackProcesses(
   args: TerminateManagedFullStackProcessesArgs,
@@ -3928,14 +4087,6 @@ export async function runSourceAppUpdateShim(
       log(dim("●"), "Rebuilding bb");
       await args.prepareRuntime();
     },
-    readHead: async () =>
-      (
-        await runCheckedCommand(runCommand, "git rev-parse", {
-          args: ["rev-parse", "HEAD"],
-          command: "git",
-          cwd: args.repoRoot,
-        })
-      ).stdout.trim(),
     repoRoot: args.repoRoot,
     runner: runCommand,
     spawnLauncher: (mode) =>
@@ -3946,9 +4097,16 @@ export async function runSourceAppUpdateShim(
   });
 }
 
-export async function runBbApp(
+export function runBbApp(
   cliArgs: string[] = process.argv.slice(2),
   options: RunBbAppOptions = { worktreePolicy: null },
+): Promise<void> {
+  return runBbAppInternal(cliArgs, options);
+}
+
+async function runBbAppInternal(
+  cliArgs: string[],
+  options: RunBbAppOptions,
 ): Promise<void> {
   const parsedArgs = parseLauncherArgs(cliArgs);
   const underAppUpdateShim = isRunningUnderAppUpdateShim(process.env);
@@ -4139,7 +4297,19 @@ export async function runBbApp(
   });
   if (!runtimeRecordOwned) {
     warnExistingRuntimeRecord(context.dataDir);
+    if (await isHealthyServerAnswering(`${serverListenerUrl}/health`)) {
+      log(
+        red("✗"),
+        `bb already serves ${serverListenerUrl} from this data directory`,
+      );
+      process.exitCode = 1;
+      return;
+    }
   }
+  const cliLauncherPath =
+    options.worktreePolicy === null && !runsFromSourceCheckout(import.meta.url)
+      ? await writeOwnCliLauncher(context)
+      : null;
 
   const processes: ManagedFullStackProcesses = {
     daemonRun: null,
@@ -4210,6 +4380,7 @@ export async function runBbApp(
       prepareFullStack: async (entry) => {
         const fullStackRuntime = await resolveFullStackRuntime(entry);
         const serverEnv = createServerEnv({
+          cliLauncherPath,
           context,
           env:
             appUpdateController === null || appUpdateMode === null
@@ -4240,28 +4411,36 @@ export async function runBbApp(
               serverUrl: context.serverUrl,
             });
             return () =>
-              startDaemonProcess({
-                context,
-                env: daemonEnv,
-                processes,
-                serverUrl: context.serverUrl,
-              });
+              (async () => {
+                const daemonRun = await startDaemonProcess({
+                  context,
+                  env: daemonEnv,
+                  processes,
+                  serverUrl: context.serverUrl,
+                });
+                processes.daemonRun = daemonRun;
+                return daemonRun;
+              })();
           },
-          startServer: () =>
-            startFullStackServerProcess({
+          startServer: async () => {
+            return startFullStackServerProcess({
               ...(options.beforeServerStart === undefined
                 ? {}
                 : { beforeStart: options.beforeServerStart }),
               context,
               env: serverEnv,
-              ...(appUpdateController === null
-                ? {}
-                : {
-                    onSpawned: (childProcess: ChildProcess) =>
-                      appUpdateController.attachServer(childProcess),
-                  }),
+              ...(parseAppSurface(serverEnv[APP_SURFACE_ENV_NAME]) ===
+                APP_SURFACE_DESKTOP && process.send !== undefined
+                ? { onSpawned: relayDesktopAppUpdates }
+                : appUpdateController === null
+                  ? {}
+                  : {
+                      onSpawned: (childProcess: ChildProcess) =>
+                        appUpdateController.attachServer(childProcess),
+                    }),
               processes,
-            }),
+            });
+          },
         };
       },
       processes,

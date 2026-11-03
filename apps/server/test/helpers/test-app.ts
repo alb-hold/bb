@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { serve } from "@hono/node-server";
 import type { AddressInfo } from "node:net";
 import {
-  createConnection,
+  ensurePersonalProject,
   getAppSettings,
   getDisabledProviderIds,
   listRunningThreads,
@@ -16,8 +16,9 @@ import {
   type DbConnection,
 } from "@bb/db";
 import { defaultFeatureFlags } from "@bb/domain";
-import { initDb } from "../../src/db.js";
+import { createMigratedConnection } from "@bb/db/testing";
 import { createApp } from "../../src/server.js";
+import type { ActiveThreadEventPruneRuntimeOptions } from "../../src/services/system/event-pruning.js";
 import { PendingInteractionLifecycle } from "../../src/services/interactions/pending-interactions.js";
 import { createMachineAuthService } from "../../src/services/machine-auth.js";
 import { createProviderRegistryService } from "../../src/services/providers/provider-registry.js";
@@ -28,11 +29,16 @@ import { buildPluginProviderRegistration } from "../../src/services/providers/pl
 import { SkillTreeRegistry } from "../../src/services/skills/injected-skills.js";
 import { PluginHostArtifactRegistry } from "../../src/services/plugins/plugin-host-artifact-registry.js";
 import { createProviderNativeRootsCache } from "../../src/services/providers/native-roots.js";
+import { createProviderLiveCommandsCache } from "../../src/services/providers/provider-live-commands.js";
 import { createAiServiceRegistry } from "../../src/services/ai/ai-service-registry.js";
 import {
   createAppUpdateService,
   type AppUpdateService,
 } from "../../src/services/system/app-update.js";
+import {
+  createCliCommandService,
+  type CliCommandService,
+} from "../../src/services/system/cli-command.js";
 import {
   createAppVersionService,
   type AppVersionService,
@@ -42,11 +48,12 @@ import { createNoopTelemetryService } from "../../src/services/system/telemetry.
 import { TerminalSessionLifecycle } from "../../src/services/terminals/terminal-session-lifecycle.js";
 import { createLifecycleDedupers } from "../../src/lifecycle-dedupers.js";
 import type { ServerAppDeps, ServerRuntimeConfig } from "../../src/types.js";
-import type { NotificationHub } from "../../src/ws/hub.js";
-import { NotificationHub as NotificationHubImpl } from "../../src/ws/hub.js";
+import {
+  type NotificationHub,
+  NotificationHub as NotificationHubImpl,
+} from "../../src/ws/hub.js";
 import { WatchInterestCoordinator } from "../../src/ws/watch-interests.js";
 import { HostSharedPortCoordinator } from "../../src/ws/host-shared-ports.js";
-import { WorkspaceReadCaches } from "../../src/services/environments/workspace-read-cache.js";
 import {
   PluginToolCallRegistry,
   setPluginToolCallRegistry,
@@ -75,7 +82,7 @@ export interface RunningTestServer extends TestAppHarness {
 
 export async function installTestBuiltinPlugin(
   harness: Pick<TestAppHarness, "pluginService">,
-  name: "keep-awake",
+  name: "keep-awake" | "git",
 ): Promise<void> {
   const entry = await harness.pluginService.install(`builtin:${name}`, {
     kind: "root",
@@ -91,11 +98,15 @@ export type TestAppHarnessConfigOverrides = Partial<ServerRuntimeConfig> & {
   appUpdateService?: AppUpdateService;
   appVersionService?: AppVersionService;
   db?: DbConnection;
+  cliCommandService?: CliCommandService;
   terminalAttachTimeoutMs?: number;
   terminalCloseTimeoutMs?: number;
   terminalOpenTimeoutMs?: number;
   nativeRootsClock?: () => number;
+  activeThreadPruneRuntime?: ActiveThreadEventPruneRuntimeOptions;
+  liveCommandsClock?: () => number;
   seedFirstPartyProviders?: boolean;
+  tunnelIngressNow?: () => number;
   extraProviders?: readonly {
     declaration: PluginProviderDeclaration;
     pluginId: string;
@@ -143,13 +154,10 @@ export function createTestDaemonHostKey(
   });
 }
 
-let migratedTemplate: Buffer | null = null;
-
 export function createTestDb(): DbConnection {
-  if (migratedTemplate === null) {
-    migratedTemplate = initDb(":memory:").$client.serialize();
-  }
-  return createConnection(migratedTemplate);
+  const db = createMigratedConnection();
+  ensurePersonalProject(db);
+  return db;
 }
 
 export async function createTestAppHarness(
@@ -159,11 +167,15 @@ export async function createTestAppHarness(
     appUpdateService,
     appVersionService,
     db: providedDb,
+    cliCommandService,
     terminalAttachTimeoutMs = TEST_TERMINAL_RPC_TIMEOUT_MS,
     terminalCloseTimeoutMs,
     terminalOpenTimeoutMs = TEST_TERMINAL_RPC_TIMEOUT_MS,
     nativeRootsClock,
+    activeThreadPruneRuntime,
+    liveCommandsClock,
     seedFirstPartyProviders = true,
+    tunnelIngressNow: _tunnelIngressNow,
     ...configOverrides
   } = overrides;
   const logger = createTestLogger();
@@ -176,7 +188,6 @@ export async function createTestAppHarness(
   const hub = new NotificationHubImpl();
   const watchInterests = new WatchInterestCoordinator({ db, hub });
   const sharedPorts = new HostSharedPortCoordinator({ db, hub });
-  const workspaceReadCaches = new WorkspaceReadCaches({ hub });
   const providerRegistry = createProviderRegistryService({
     readUserProviderPreferences: () => {
       const settings = getAppSettings(db);
@@ -238,6 +249,7 @@ export async function createTestAppHarness(
     performanceDiagnosticsAvailable: false,
     hostDaemonPort: 3001,
     marketplaceUrl: "https://marketplace.invalid/marketplace.json",
+    connectGateKeysUrl: "https://gate-keys.invalid/bb-connect-gate-keys.json",
     inheritedSkillsRootPaths: [],
     isDevelopment: true,
     turnAcceptanceGraceMs: 0,
@@ -306,6 +318,18 @@ export async function createTestAppHarness(
     appUpdate,
     appVersion,
     bbAppManagedConfig,
+    cliCommand:
+      cliCommandService ??
+      createCliCommandService({
+        env: {},
+        homeDir: dataDir,
+        launcherPath: null,
+        platform: process.platform,
+        windowsUserPath: {
+          read: () => Promise.reject(new Error("no Windows PATH in tests")),
+          write: () => Promise.reject(new Error("no Windows PATH in tests")),
+        },
+      }),
     config,
     db,
     hub,
@@ -316,16 +340,22 @@ export async function createTestAppHarness(
     providerRegistry,
     pluginHostArtifacts,
     providerNativeRoots,
+    providerLiveCommands: createProviderLiveCommandsCache(
+      liveCommandsClock === undefined ? {} : { now: liveCommandsClock },
+    ),
     aiServices,
     skillTreeRegistry,
     telemetry,
     terminalSessions,
     watchInterests,
     sharedPorts,
-    workspaceReadCaches,
   };
-  const { app, pluginCatalogService, pluginService, serverMove } =
-    createApp(deps);
+  const { app, pluginCatalogService, pluginService, serverMove } = createApp(
+    deps,
+    activeThreadPruneRuntime === undefined
+      ? undefined
+      : { activeThreadPruneRuntime },
+  );
   installDefaultEnvironmentProviders();
 
   return {
@@ -385,8 +415,27 @@ export async function startTestServer(
 ): Promise<RunningTestServer> {
   const harness = await createTestAppHarness(overrides);
   let addressInfo: AddressInfo | null = null;
-  const { app, closeWebSockets, injectWebSocket, pluginService, serverMove } =
-    createApp(harness.deps);
+  const {
+    app,
+    closeWebSockets,
+    injectWebSocket,
+    pluginService,
+    serverMove,
+    tunnelIngress,
+  } = createApp(
+    harness.deps,
+    overrides.activeThreadPruneRuntime === undefined &&
+      overrides.tunnelIngressNow === undefined
+      ? undefined
+      : {
+          ...(overrides.activeThreadPruneRuntime === undefined
+            ? {}
+            : { activeThreadPruneRuntime: overrides.activeThreadPruneRuntime }),
+          ...(overrides.tunnelIngressNow === undefined
+            ? {}
+            : { tunnelIngressNow: overrides.tunnelIngressNow }),
+        },
+  );
   const server = serve(
     {
       hostname: TEST_SERVER_HOST,
@@ -421,6 +470,7 @@ export async function startTestServer(
           resolve();
         });
       });
+      await tunnelIngress.closeAll();
       await closeWebSockets();
       await closeServer;
       await harness.cleanup();
