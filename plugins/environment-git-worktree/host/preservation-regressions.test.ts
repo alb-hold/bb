@@ -101,7 +101,9 @@ describe("real worktree teardown preservation", () => {
     await expect(
       readFile(path.join(worktree.path, ".env"), "utf8"),
     ).resolves.toBe("raced write\n");
-    expect(await git(worktree.path, "status", "--porcelain")).toContain(".env");
+    expect(
+      await git(worktree.path, "status", "--porcelain", "--ignored=matching"),
+    ).toContain(".env");
   });
 
   it("keeps a worktree used as another live process's cwd without signalling it", async () => {
