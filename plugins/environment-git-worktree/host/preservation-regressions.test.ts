@@ -6,6 +6,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { hostProc, useProcReaderForTests } from "./holders.js";
+import { descendantsOnly } from "./descendants-only.js";
 import { removeWorktree } from "./worktree.js";
 
 const execFile = promisify(execFileCallback);
@@ -96,6 +97,7 @@ describe("real worktree teardown preservation", () => {
 
   it("keeps data written as the worktree is quarantined for forced removal", async () => {
     const worktree = await makeWorktree();
+    useProcReaderForTests(descendantsOnly(hostProc, -1));
     let injected = false;
     const originalRename = fs.rename.bind(fs);
     vi.spyOn(fs, "rename").mockImplementation(async (from, to) => {
