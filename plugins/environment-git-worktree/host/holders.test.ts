@@ -371,7 +371,7 @@ describe("the Linux process-list visibility rule", () => {
     });
     expect(await scanLinux("/work/tree", helper, 4242)).toMatchObject({
       status: "unknown",
-      reason: expect.stringContaining("sshd-session"),
+      reason: expect.stringContaining("process identity could not be established"),
     });
     const stranger = fakeProc({
       processes: { 300: { uid: 1000, denied: true, comm: "node" } },

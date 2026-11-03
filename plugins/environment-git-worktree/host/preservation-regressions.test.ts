@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { hostProc, useProcReaderForTests } from "./holders.js";
 import { removeWorktree } from "./worktree.js";
 
 const execFile = promisify(execFileCallback);
@@ -63,7 +64,10 @@ afterEach(async () => {
       await exited;
     }),
   );
-  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+  await Promise.all(
+    roots.splice(0).map((root) => rm(root, { recursive: true, force: true })),
+  );
+  useProcReaderForTests(null);
 });
 
 describe("real worktree teardown preservation", () => {
@@ -158,14 +162,26 @@ time.sleep(120)`,
       { cwd: root, argv0: "ssh-agent", stdio: ["ignore", "pipe", "ignore"] },
     );
     workers.push(worker);
-    await new Promise<void>((resolve, reject) => {
-      worker.stdout?.once("data", () => resolve());
-      worker.once("error", reject);
+    const output = { value: "" };
+    worker.stdout?.on("data", (chunk) => {
+      output.value += chunk.toString();
     });
+    const waitForOutput = async (expected: string) => {
+      while (!output.value.includes(expected)) {
+        await new Promise<void>((resolve, reject) => {
+          worker.stdout?.once("data", () => resolve());
+          worker.once("error", reject);
+        });
+      }
+    };
+    await waitForOutput("ready\n");
     const worktree = await makeWorktree(root);
-    await new Promise<void>((resolve, reject) => {
-      worker.stdout?.once("data", () => resolve());
-      worker.once("error", reject);
+    await waitForOutput("entered\n");
+    const readdir = hostProc.readdir.bind(hostProc);
+    useProcReaderForTests({
+      ...hostProc,
+      readdir: async (target) =>
+        target === "/proc" ? [String(worker.pid)] : await readdir(target),
     });
     expect((await readFile(`/proc/${worker.pid}/comm`, "utf8")).trim()).toBe(
       "ssh-agent",

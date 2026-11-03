@@ -2144,7 +2144,7 @@ setTimeout(() => {}, 300_000);`,
         expect(result.status).toBe("failed");
         const message = result.status === "failed" ? result.message : "";
         expect(message).toContain(`Kept ${worktree.path}`);
-        expect(message).toContain("Git declined to remove it");
+        expect(message).toContain("could not read its Git status");
         expect(message).toContain("submodules");
         expect(existsSync(join(worktree.path, "README.md"))).toBe(true);
         expect(existsSync(worktree.completionPath)).toBe(true);

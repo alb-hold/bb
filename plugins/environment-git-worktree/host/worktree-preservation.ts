@@ -387,6 +387,9 @@ export async function findPreservationReasons(
       "--untracked-files=all",
       "--ignored=matching",
       "--ignore-submodules=none",
+      "--",
+      ".",
+      ":(exclude,glob)**/node_modules/**",
     ],
     gitOptions,
   );
@@ -549,6 +552,9 @@ export async function findQuarantinedPreservationReasons(
       "--untracked-files=all",
       "--ignored=matching",
       "--ignore-submodules=none",
+      "--",
+      ".",
+      ":(exclude,glob)**/node_modules/**",
     ],
     {
       cwd: identity.path,
