@@ -22,7 +22,7 @@ async function makeWorktree(
   const root =
     existingRoot ??
     (await mkdtemp(path.join(os.tmpdir(), "bb-preserve-worktree-")));
-  roots.push(root);
+  if (!roots.includes(root)) roots.push(root);
   const source = path.join(root, "source");
   const managed = path.join(root, "managed");
   const bare = path.join(root, "remote.git");
@@ -135,6 +135,7 @@ describe("real worktree teardown preservation", () => {
       (typeof process.getuid === "function" && process.getuid() === 0),
   )("keeps a worktree held by a non-dumpable process that predates it and spoofs an agent name", async ({ skip }) => {
     const root = await mkdtemp(path.join(os.tmpdir(), "bb-preserve-worktree-"));
+    roots.push(root);
     const signalMarker = path.join(root, "signalled-agent");
     skip(spawnSync("python3", ["--version"]).status !== 0, "python3 is not available");
     const worker = spawn(
@@ -166,6 +167,9 @@ time.sleep(120)`,
       worker.stdout?.once("data", () => resolve());
       worker.once("error", reject);
     });
+    expect((await readFile(`/proc/${worker.pid}/comm`, "utf8")).trim()).toBe(
+      "ssh-agent",
+    );
     try {
       await readlink(`/proc/${worker.pid}/task/${worker.pid}/cwd`);
       skip(true, "the kernel lets this user read the non-dumpable process");
