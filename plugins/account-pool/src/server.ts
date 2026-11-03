@@ -27,7 +27,11 @@ import {
   type PoolProvider,
   type PoolStatus,
 } from "./contracts.js";
-import { ThreadTokenStore, type ThreadLookup } from "./thread-tokens.js";
+import {
+  THREAD_STATE_LOOKUP_TIMEOUT_MS,
+  ThreadTokenStore,
+  type ThreadLookup,
+} from "./thread-tokens.js";
 import {
   AVAILABILITY_PATH,
   PARENT_TOKEN_ENV,
@@ -222,7 +226,7 @@ export function createAccountPoolPlugin(
       hubTokens,
       now,
       lookupThread,
-      options.threadSweepLookupTimeoutMs ?? THREAD_SWEEP_LOOKUP_TIMEOUT_MS,
+      options.threadSweepLookupTimeoutMs ?? THREAD_STATE_LOOKUP_TIMEOUT_MS,
       (message) => bb.log.warn(message),
       bb.storage.kv,
     );
@@ -751,6 +755,17 @@ export function createAccountPoolPlugin(
             ...(await serving(token, "thread", context)),
             ...markerEntries(nestedToken),
           ];
+        }
+        if (
+          !bypassed &&
+          accountId === null &&
+          proxyingParent() === null &&
+          (await operations.isRoutingEnabled(provider)) &&
+          (await operations.hasEnabledAccount(provider))
+        ) {
+          throw new Error(
+            `Account Pooler has enabled ${provider} accounts but none has a readable credential, so this thread was not started on the local login.`,
+          );
         }
         await bb.storage.kv.delete(`retry-route:${context.threadId}`);
         return unrouted();

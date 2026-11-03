@@ -28,6 +28,7 @@ interface RenameTerminalMutationRequest extends UpdateTerminalRequest {
 
 interface CloseTerminalMutationRequest {
   mode: CloseTerminalRequest["mode"];
+  reason?: CloseTerminalRequest["reason"];
   terminalId: string;
 }
 
@@ -114,8 +115,8 @@ export function useCloseTerminal() {
     meta: {
       errorMessage: "Failed to close terminal.",
     },
-    mutationFn: ({ mode, terminalId }: CloseTerminalMutationRequest) =>
-      sdk.terminals.close({ mode, terminalId }).catch((error: unknown) => {
+    mutationFn: ({ mode, reason, terminalId }: CloseTerminalMutationRequest) =>
+      sdk.terminals.close({ mode, reason, terminalId }).catch((error: unknown) => {
         if (error instanceof BbHttpError && error.status === 404) return null;
         throw error;
       }),

@@ -929,6 +929,7 @@ function reopenNativeTerminals(
                 .closeTerminal({
                   terminalId: reopened.terminal.id,
                   payload: { mode: "force", reason: "user" },
+                  caller: "native-terminal-reattach-deadline",
                 })
                 .catch((error: unknown) => {
                   deps.logger.warn(

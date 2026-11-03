@@ -2594,7 +2594,7 @@ describe("Account Pool plugin", () => {
     await expect(cacheEntry()).resolves.toBeUndefined();
   });
 
-  it("withholds env and proxied health when an enabled account secret is missing", async () => {
+  it("refuses the launch and withholds proxied health when an enabled account secret is missing", async () => {
     const upstream = await startUpstream(async (request, response) => {
       await readRequestBody(request);
       response.writeHead(200, { "content-type": "application/json" });
@@ -2617,7 +2617,7 @@ describe("Account Pool plugin", () => {
         projectId: "project-one",
         hostId: "host-one",
       }),
-    ).resolves.toEqual([]);
+    ).rejects.toThrow("none has a readable credential");
     await expect(
       fixture.host.harness.behavior.resolveProviderEnvHealth("claude-code", {
         hostId: "host-one",
@@ -8480,7 +8480,7 @@ describe("Account Pool plugin", () => {
       void refresh.then(() => {
         completed = true;
       });
-      for (let elapsed = 0; elapsed < 300 && !completed; ) {
+      for (let elapsed = 0; elapsed < 300 && !completed;) {
         await yieldToIo();
         if (pendingIo === 0) {
           await vi.advanceTimersByTimeAsync(1);
@@ -14329,7 +14329,7 @@ describe("Account Pool credential scoping", () => {
         projectId: "project-one",
         hostId: "host-one",
       }),
-    ).resolves.toEqual([]);
+    ).rejects.toThrow("lookup failed");
     expect(
       (await fs.readdir(path.join(fixture.dataDir, ...POOL_SECRETS))).filter(
         (name) => name.includes("thread-lookup"),
@@ -14337,7 +14337,7 @@ describe("Account Pool credential scoping", () => {
     ).toEqual([]);
   });
 
-  it("mints nothing and skips the contribution when the thread lookup fails on a nested server", async () => {
+  it("mints nothing and refuses the contribution when the thread lookup fails on a nested server", async () => {
     const parent = await scopedFixture();
     const { host: child, dataDir } = await startNestedChild(
       parent,
@@ -14352,7 +14352,7 @@ describe("Account Pool credential scoping", () => {
         projectId: "project-one",
         hostId: "host-one",
       }),
-    ).resolves.toEqual([]);
+    ).rejects.toThrow("lookup failed");
     expect(
       (
         await fs.readdir(path.join(dataDir, ...POOL_SECRETS)).catch(() => [])
@@ -14371,21 +14371,114 @@ describe("Account Pool credential scoping", () => {
         archivedAt: lookups === 1 ? null : 1_000,
       });
     });
-    const entries = await host.harness.behavior.resolveProviderEnv(
-      "claude-code",
-      {
+    await expect(
+      host.harness.behavior.resolveProviderEnv("claude-code", {
         threadId: "thread-racing",
         projectId: "project-one",
         hostId: "host-one",
-      },
-    );
+      }),
+    ).rejects.toThrow("Cannot mint a credential for an archived thread.");
     expect(lookups).toBe(2);
-    expect(entries).toEqual([]);
     expect(
       (await fs.readdir(path.join(fixture.dataDir, ...POOL_SECRETS))).filter(
         (name) => name.includes("thread-racing"),
       ),
     ).toEqual([]);
+  });
+
+  it.each([
+    [
+      "a missing secret",
+      Object.assign(new Error("gone"), { code: "ENOENT" }),
+      "none has a readable credential",
+    ],
+    [
+      "a corrupt secret",
+      new SyntaxError("Unexpected end of JSON input"),
+      "none has a readable credential",
+    ],
+    ["an invalid secret", new z.ZodError([]), "none has a readable credential"],
+    [
+      "an unreadable secret",
+      Object.assign(new Error("disk read failed"), { code: "EIO" }),
+      "disk read failed",
+    ],
+  ])(
+    "refuses the launch when every enabled account has %s",
+    async (_label, failure, message) => {
+      const fixture = await scopedFixture();
+      const read = vi
+        .spyOn(AccountStore.prototype, "readSecret")
+        .mockRejectedValue(failure);
+      try {
+        await expect(
+          fixture.host.harness.behavior.resolveProviderEnv("claude-code", {
+            threadId: "thread-secret",
+            projectId: "project-one",
+            hostId: "host-one",
+          }),
+        ).rejects.toThrow(message);
+      } finally {
+        read.mockRestore();
+      }
+      expect(
+        (await fs.readdir(path.join(fixture.dataDir, ...POOL_SECRETS))).filter(
+          (name) => name.includes("thread-secret"),
+        ),
+      ).toEqual([]);
+    },
+  );
+
+  it("routes through a readable account when an earlier enabled account fails to read", async () => {
+    const fixture = await scopedFixture();
+    await fixture.host.harness.behavior.callRpc("account.add", {
+      provider: "claude",
+      source: { kind: "api-key", apiKey: "sk-healthy" },
+      label: "Healthy subscription",
+      priority: 200,
+    });
+    const readSecret = AccountStore.prototype.readSecret;
+    const read = vi
+      .spyOn(AccountStore.prototype, "readSecret")
+      .mockImplementation(async function (this: AccountStore, id) {
+        if (id === fixture.account.id)
+          throw Object.assign(new Error("disk read failed"), { code: "EIO" });
+        return readSecret.call(this, id);
+      });
+    try {
+      const entries = await fixture.host.harness.behavior.resolveProviderEnv(
+        "claude-code",
+        {
+          threadId: "thread-mixed",
+          projectId: "project-one",
+          hostId: "host-one",
+        },
+      );
+      expect(read.mock.calls[0]?.[0]).toBe(fixture.account.id);
+      expect(entries.map((entry) => entry.name)).toContain(PARENT_TOKEN_ENV);
+    } finally {
+      read.mockRestore();
+    }
+  });
+
+  it("leaves a thread unrouted when the pool has no enabled account for its provider", async () => {
+    const { host } = await scopedFixture();
+    const list = vi.spyOn(AccountStore.prototype, "list").mockResolvedValue([]);
+    try {
+      const entries = await host.harness.behavior.resolveProviderEnv(
+        "claude-code",
+        {
+          threadId: "thread-empty-pool",
+          projectId: "project-one",
+          hostId: "host-one",
+        },
+      );
+      expect(entries.map((entry) => entry.name)).not.toContain(
+        PARENT_TOKEN_ENV,
+      );
+    } finally {
+      list.mockRestore();
+    }
   });
 
   it("does not restore an archived thread from a delayed unarchive event", async () => {

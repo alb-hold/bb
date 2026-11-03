@@ -691,12 +691,13 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
         .map(
           (message) =>
             JSON.parse(message) as {
+              claim?: boolean;
               cols?: number;
               rows?: number;
               type?: string;
             },
         )
-        .filter((message) => message.type === "resize");
+        .filter((message) => message.type === "resize" && message.claim !== true);
     expect(resizeMessages()).toEqual([{ type: "resize", cols: 51, rows: 47 }]);
 
     const session = makeTerminalSession({
