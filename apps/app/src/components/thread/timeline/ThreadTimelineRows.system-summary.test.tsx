@@ -33,7 +33,6 @@ function rowTree(row: TimelineRow, queryClient = new QueryClient()) {
           threadIsActive={false}
           timelineRows={[row]}
           threadRuntimeDisplayStatus="idle"
-          workspaceRootPath={undefined}
         />
       </MemoryRouter>
     </QueryClientProvider>
@@ -126,7 +125,6 @@ describe("system summary overflow", () => {
             timelineRows={interruptionRows}
             threadIsActive={false}
             threadRuntimeDisplayStatus="idle"
-            workspaceRootPath={undefined}
           />
         </MemoryRouter>
       </QueryClientProvider>,
@@ -207,7 +205,6 @@ describe("system summary overflow", () => {
             timelineRows={rows}
             threadIsActive={false}
             threadRuntimeDisplayStatus="idle"
-            workspaceRootPath={undefined}
           />
         </MemoryRouter>
       </QueryClientProvider>,
@@ -298,7 +295,6 @@ describe("system summary overflow", () => {
                 }),
               ]}
               threadRuntimeDisplayStatus="idle"
-              workspaceRootPath={undefined}
             />
           </ThreadTitleMentionResourcesProvider>
         </MemoryRouter>

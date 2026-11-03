@@ -48,7 +48,6 @@ function ErrorRowsPreview({ initialExpanded, rows }: ErrorRowsPreviewProps) {
 const baseProps: TimelineRowsStoryBaseProps = {
   threadIsActive: false,
   threadRuntimeDisplayStatus: "idle",
-  workspaceRootPath: undefined,
 };
 
 const providerStreamReconnect: TimelineNonOperationSystemRow = systemRow({

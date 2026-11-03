@@ -373,9 +373,10 @@ export function recordNativeTerminalActivity(
     nativeReplies.set(deps.db, replies);
   }
   if (args.state !== "idle") replies.delete(thread.id);
-  const lastAssistantText = args.lastAssistantText === undefined
-    ? undefined
-    : truncateNativeAssistantText(args.lastAssistantText);
+  const lastAssistantText =
+    args.lastAssistantText === undefined
+      ? undefined
+      : truncateNativeAssistantText(args.lastAssistantText);
   if (lastAssistantText !== undefined) {
     if (replies.size >= 512) {
       const oldest = replies.keys().next().value;
@@ -502,6 +503,7 @@ function closeNamedNativeQuestions(
               prompt: "Closed before it was reported",
               multiSelect: false,
               allowFreeText: true,
+              required: true,
             },
           ],
         }),
@@ -578,6 +580,7 @@ function reconcileNativeQuestions(
               prompt: question.prompt,
               multiSelect: false,
               allowFreeText: true,
+              required: true,
             },
           ],
         },
@@ -636,6 +639,7 @@ export function settleNativeTerminalTurn(
         childThread: thread,
         parentThreadId: thread.parentThreadId,
         turnStatus: "completed",
+        turnId: null,
         ...(nativeReplies.get(deps.db)?.get(threadId) === undefined
           ? {}
           : { lastAssistantText: nativeReplies.get(deps.db)?.get(threadId) }),

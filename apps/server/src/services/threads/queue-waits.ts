@@ -12,6 +12,7 @@ import {
 } from "@bb/db";
 import type {
   PromptInput,
+  QueuedMessageDeliveryMode,
   QueuedMessagePayload,
   QueuedMessageSystemNotice,
   QueuedMessageWaitingOn,
@@ -80,6 +81,7 @@ export interface QueuedDispatchMessage {
   requestedBy: StartedOnBehalfOf | null;
   payload: QueuedMessagePayload;
   systemNotice: QueuedMessageSystemNotice | null;
+  deliveryMode: QueuedMessageDeliveryMode;
   overrideRecovery?: PreparedThreadModelOverrideRecovery | null;
   requestedModel?: string;
   executionInputSources?: SendMessageRequest["executionInputSources"];
@@ -133,6 +135,7 @@ export function recordQueuedMessageWait(
           sendAt: args.sendAt,
           payload: args.message.payload,
           systemNotice: args.message.systemNotice,
+          deliveryMode: args.message.deliveryMode,
         });
       },
       { behavior: "immediate" },

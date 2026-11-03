@@ -703,6 +703,7 @@ function SplitThreadAreaContent({ routeContent }: SplitThreadAreaProps) {
         content={currentContent}
         paneId={layout.focusedPaneId}
         onRequestClose={
+          currentContent.kind === "thread" ||
           currentContent.kind === "new-thread"
             ? null
             : () => closePane(layout.focusedPaneId)
@@ -743,7 +744,10 @@ function SplitThreadAreaContent({ routeContent }: SplitThreadAreaProps) {
           secondaryPanelRegistry={null}
           reservesWindowPanelToggle={false}
           onClosePane={
-            singlePaneContent.kind === "new-thread" ? null : closePane
+            singlePaneContent.kind === "thread" ||
+            singlePaneContent.kind === "new-thread"
+              ? null
+              : closePane
           }
           isMaximized={false}
           onToggleMaximizePane={null}
@@ -772,6 +776,7 @@ function SplitThreadAreaContent({ routeContent }: SplitThreadAreaProps) {
             node={layout.root}
             path={EMPTY_PATH}
             isTopRow
+            isBottomRow
             isLeftEdge
             isRightEdge
             dimsInactiveSplits={dimsInactiveSplits}
@@ -875,6 +880,7 @@ interface SplitTreeProps {
   path: SplitPath;
   dimsInactiveSplits: boolean;
   isTopRow: boolean;
+  isBottomRow: boolean;
   isLeftEdge: boolean;
   isRightEdge: boolean;
   focusedPaneId: string;
@@ -895,8 +901,15 @@ interface SplitTreeProps {
 }
 
 function SplitTree(props: SplitTreeProps) {
-  const { node, path, isTopRow, isLeftEdge, isRightEdge, focusedPaneId } =
-    props;
+  const {
+    node,
+    path,
+    isTopRow,
+    isBottomRow,
+    isLeftEdge,
+    isRightEdge,
+    focusedPaneId,
+  } = props;
   const isSidebarFramed = useIsSidebarFramed();
 
   if (node.type === "pane") {
@@ -912,6 +925,7 @@ function SplitTree(props: SplitTreeProps) {
           "relative flex min-h-0 min-w-0 flex-1 overflow-hidden",
           isHiddenByMaximize && "invisible pointer-events-none",
           isMaximized && "absolute inset-0 z-30",
+          !isMaximized && !isBottomRow && "[--bb-content-bottom-inset:0px]",
         )}
         tabIndex={-1}
         data-split-pane-id={node.paneId}
@@ -992,6 +1006,10 @@ function SplitTree(props: SplitTreeProps) {
               node={child}
               path={[...path, index]}
               isTopRow={isTopRow && (node.dir === "row" || index === 0)}
+              isBottomRow={
+                isBottomRow &&
+                (node.dir === "row" || index === node.children.length - 1)
+              }
               isLeftEdge={isLeftEdge && (node.dir === "col" || index === 0)}
               isRightEdge={
                 isRightEdge &&

@@ -440,7 +440,6 @@ function ActiveRunFooterThread({ provider }: { provider: "claude" | "codex" }) {
             ? new Set(groupedCodexActiveRunRows.map((row) => row.id))
             : undefined
         }
-        workspaceRootPath={undefined}
       />
     </div>
   );

@@ -171,7 +171,8 @@ prints the target because it has no app window. The SDK exposes
 
   When the terminal exits before the text appears, wait stops at once with exit
   code 124, the terminal's exit code, and the last output it printed. `--exit`
-  prints the exit code.
+  prints the exit code. Text and regex matching ignore colors and other
+  terminal escapes, so `--contains "Local:"` matches a bold `Local`.
 
 For a dev server, prefer:
 

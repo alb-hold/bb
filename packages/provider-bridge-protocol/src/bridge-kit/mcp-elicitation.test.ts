@@ -153,6 +153,7 @@ describe("runMcpElicitation", () => {
               { value: "field-1:option-3", label: "blue" },
             ],
             allowFreeText: false,
+            required: true,
           },
         ],
       },
@@ -576,14 +577,15 @@ describe("runMcpElicitation", () => {
     ["a URL elicitation", { ...COLOR, mode: "url" }],
     ["an openai/form elicitation", { ...COLOR, mode: "openai/form" }],
     [
-      "more than four fields",
-      form({
-        a: { type: "boolean" },
-        b: { type: "boolean" },
-        c: { type: "boolean" },
-        d: { type: "boolean" },
-        e: { type: "boolean" },
-      }),
+      "more than ten fields",
+      form(
+        Object.fromEntries(
+          Array.from({ length: 11 }, (_, i) => [
+            `field${i}`,
+            { type: "boolean" },
+          ]),
+        ),
+      ),
     ],
     [
       "more than four choices",

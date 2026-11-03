@@ -20,6 +20,10 @@ import { useSidebarReorderDnd } from "@/components/ui/use-sidebar-reorder-dnd";
 import { SidebarTouchSensor } from "../dnd/sidebarTouchSensor.js";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { SidebarRenameProvider } from "./SidebarInlineRename.js";
+import {
+  RENAME_PRESENTATION_CASES,
+  type RenamePresentationOutcome,
+} from "@/components/ui/inline-rename-presentation-cases";
 import type {
   PluginSidebarProject,
   PluginSidebarSplitLayout,
@@ -188,7 +192,7 @@ function ThreadRowHarness({
                             onDone: onFinishCustomizingRowActions,
                           }
                         : null
-                          }
+                    }
                   >
                     <div
                       onPointerDown={onRowEvent}
@@ -488,9 +492,31 @@ function hostThreadActions({
   };
 }
 
+const pointerState = vi.hoisted(() => ({ coarse: false }));
+vi.mock("@/components/ui/hooks/use-pointer-coarse", () => ({
+  usePointerCoarse: () => pointerState.coarse,
+}));
+
+async function expectRenamePresentation(outcome: RenamePresentationOutcome) {
+  if (outcome === "none") {
+    expect(screen.queryByRole("textbox", { name: "Thread name" })).toBeNull();
+    return;
+  }
+  const input = await screen.findByRole("textbox", { name: "Thread name" });
+  expect(input).toHaveProperty("value", "Thread");
+  expect(input.closest('[role="dialog"]') === null ? "inline" : "dialog").toBe(
+    outcome,
+  );
+  fireEvent.keyDown(input, { key: "Escape" });
+  await waitFor(() =>
+    expect(screen.queryByRole("textbox", { name: "Thread name" })).toBeNull(),
+  );
+}
+
 afterEach(() => {
   cleanup();
   vi.useRealTimers();
+  pointerState.coarse = false;
   vi.restoreAllMocks();
   resetSidebarTitleDoubleClickForTest();
   resetPreferencesSyncForTest();
@@ -1626,6 +1652,24 @@ describe("ThreadRow", () => {
     },
   );
 
+  it.each(RENAME_PRESENTATION_CASES)(
+    "presents rename from the menu, a row action, and double click for compact=$compact coarse=$coarse",
+    async ({ compact, coarse, menu, direct, doubleClick }) => {
+      pointerState.coarse = coarse;
+      getDefaultStore().set(preferenceValueAtom("rowActions"), [
+        "bb--core/rename",
+      ]);
+      renderThreadRow({ isCompactViewport: compact });
+      fireEvent.click(screen.getByRole("button", { name: "Thread actions" }));
+      fireEvent.click(await screen.findByRole("menuitem", { name: "Rename" }));
+      await expectRenamePresentation(menu);
+      fireEvent.click(screen.getByRole("button", { name: "Rename" }));
+      await expectRenamePresentation(direct);
+      fireEvent.doubleClick(screen.getByText("Thread"));
+      await expectRenamePresentation(doubleClick);
+    },
+  );
+
   it("suppresses the context menu while the title is being edited", async () => {
     renderThreadRow();
     fireEvent.doubleClick(screen.getByText("Thread"));
@@ -1769,7 +1813,7 @@ describe("ThreadRow", () => {
         },
         onToggleCollapsed: vi.fn(),
       },
-      thread: createThread(),
+      thread: createThread({ lastReadAt: 1, latestAttentionAt: 1 }),
     },
   ])(
     "preserves the $label status in the split map accessible name",
@@ -2131,7 +2175,9 @@ describe("ThreadRow", () => {
 
   it("draws other plugins' metadata only while Metadata is on", () => {
     const slot = renderThreadRow({ experiments: ["threadRowMetadata"] });
-    expect(slot.container.querySelector("[data-thread-row-metadata]")).toBeNull();
+    expect(
+      slot.container.querySelector("[data-thread-row-metadata]"),
+    ).toBeNull();
 
     act(() => getDefaultStore().set(sidebarShowRowMetadataAtom, true));
     expect(
@@ -2142,7 +2188,9 @@ describe("ThreadRow", () => {
   it("ignores the Metadata preference while its experiment is off", () => {
     getDefaultStore().set(sidebarShowRowMetadataAtom, true);
     const slot = renderThreadRow();
-    expect(slot.container.querySelector("[data-thread-row-metadata]")).toBeNull();
+    expect(
+      slot.container.querySelector("[data-thread-row-metadata]"),
+    ).toBeNull();
   });
 
   it("routes a click on other plugins' metadata like the rest of the row", () => {
@@ -2302,7 +2350,11 @@ describe("ThreadRow", () => {
 
   it("shows the workflow indicator for an idle thread with an active workflow", () => {
     renderThreadRow({
-      thread: createThread({ activity: activity({ workflows: 1 }) }),
+      thread: createThread({
+        activity: activity({ workflows: 1 }),
+        lastReadAt: 1,
+        latestAttentionAt: 1,
+      }),
     });
 
     expect(renderedIndicators()).toEqual(["working"]);
@@ -2317,7 +2369,11 @@ describe("ThreadRow", () => {
     "shows the $indicator indicator for $activityKey activity",
     ({ activityKey, indicator }) => {
       renderThreadRow({
-        thread: createThread({ activity: activity({ [activityKey]: 1 }) }),
+        thread: createThread({
+          activity: activity({ [activityKey]: 1 }),
+          lastReadAt: 1,
+          latestAttentionAt: 1,
+        }),
       });
 
       expect(renderedIndicators()).toEqual([indicator]);
@@ -2332,6 +2388,8 @@ describe("ThreadRow", () => {
           backgroundAgents: 1,
           backgroundCommands: 1,
         }),
+        lastReadAt: 1,
+        latestAttentionAt: 1,
       }),
     });
 
@@ -2342,9 +2400,28 @@ describe("ThreadRow", () => {
     renderThreadRow({
       thread: createThread({
         activity: activity({ backgroundAgents: 1, backgroundCommands: 1 }),
+        lastReadAt: 1,
+        latestAttentionAt: 1,
       }),
     });
 
+    expect(renderedIndicators()).toEqual(["working"]);
+  });
+
+  it("shows fork working precedence over unread background work and workflows", () => {
+    const background = renderThreadRow({
+      thread: createThread({
+        activity: activity({ backgroundAgents: 1, backgroundCommands: 1 }),
+      }),
+    });
+    expect(renderedIndicators()).toEqual(["working"]);
+    background.unmount();
+
+    renderThreadRow({
+      thread: createThread({
+        activity: activity({ workflows: 1, backgroundCommands: 1 }),
+      }),
+    });
     expect(renderedIndicators()).toEqual(["working"]);
   });
 

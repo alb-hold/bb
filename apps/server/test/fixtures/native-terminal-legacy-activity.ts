@@ -287,6 +287,7 @@ function reconcileNativeQuestions(
               prompt: question.prompt,
               multiSelect: false,
               allowFreeText: true,
+              required: true,
             },
           ],
         },

@@ -181,9 +181,7 @@ describe("MessageActionBar", () => {
         .map((item) => item.textContent),
     ).toEqual(["Copy link", "Add to chat", "Fork into new thread"]);
     expect(menu.getAttribute("data-side")).toBe("bottom");
-    fireEvent.click(
-      within(menu).getByRole("menuitem", { name: "Copy link" }),
-    );
+    fireEvent.click(within(menu).getByRole("menuitem", { name: "Copy link" }));
     expect(onCopyLink).toHaveBeenCalledTimes(1);
   });
 
@@ -403,7 +401,7 @@ describe("MessageActionBar", () => {
       />,
     );
     const trigger = screen.getByRole("button", { name: "Message actions" });
-    const row = trigger.parentElement;
+    const row = trigger.closest("[data-message-action-row]");
 
     expect(row?.hasAttribute("data-menu-open")).toBe(false);
     fireEvent.pointerDown(trigger);

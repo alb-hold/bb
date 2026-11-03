@@ -29,8 +29,6 @@ import {
   type ThreadTimelineEditMessageTarget,
   type ThreadTimelineForkMessageHandler,
   type ThreadTimelineInlineMessageEditor,
-  type ThreadTimelineLinkHandler,
-  type ThreadTimelineLocalFileLinkHandler,
   type ThreadTimelineUnreadDividerPlacement,
   type TimelineTitleActionResolver,
   type UseThreadTimelineControllerResult,
@@ -39,6 +37,11 @@ import type { HostConnectionNotice } from "@/components/thread/timeline/ThreadTi
 import { ThreadTimelinePanelLoadingSkeleton } from "@/components/thread/timeline/ThreadChatLoading";
 import { resolveThreadOngoingIndicator } from "@/components/thread/timeline/thread-ongoing-indicator";
 import { ThreadTableOfContents } from "@/components/thread/toc/ThreadTableOfContents";
+import {
+  ThreadContextCard,
+  useThreadContextCardContentInset,
+  WithoutThreadContextCard,
+} from "@/components/plugin/PluginThreadContextCard";
 import { BottomAnchoredScrollBody } from "@/components/ui/bottom-anchored-scroll-body";
 import { PageShell } from "@/components/ui/page-shell.js";
 import { appToast } from "@/components/ui/app-toast";
@@ -46,7 +49,6 @@ import { SelectionAddToChatContext } from "@/components/thread/SelectionAddToCha
 import {
   isThreadDisplayStatusBannerActive,
   type ThreadPromptChildThreadsSection,
-  type ThreadPromptParentThreadSection,
 } from "@/components/promptbox/banner/ThreadPromptContextBanner";
 import type { EnvironmentSummaryChrome } from "@/lib/environment-workspace-display";
 import type { MachineRemovalStatus } from "@/lib/machine-removal-display";
@@ -57,18 +59,17 @@ import {
   subscribeComposerFocusRequests,
 } from "@/lib/composer-focus-requests";
 import { getThreadDisplayTitle } from "@/lib/thread-title";
+import { useParentThreadSection } from "./useParentThreadSection";
 import { getThreadRoutePath } from "@/lib/route-paths";
 import { showMutationErrorToast } from "@/lib/mutation-errors";
 import { getPromptDraftAccessor } from "@/hooks/usePromptDraftStorage";
 import { useNativeActivityUnconfirmed } from "@/hooks/useNativeActivityUnconfirmed";
 import { useSecondTick } from "@/hooks/useSecondTick";
 import { CONTENT_MEASURE_MAX_WIDTH_CLASS } from "@/lib/content-measure";
-import { SIDE_CHAT_PLUGIN_ID } from "@/lib/side-chat-plugin";
 import { useSystemConfig } from "@/hooks/queries/system-queries";
 import {
   isPendingInteractionStateUnknown,
   useChildThreads,
-  useThread,
   useThreadPendingInteractions,
 } from "@/hooks/queries/thread-queries";
 import {
@@ -107,8 +108,6 @@ export interface ThreadScreenTimelineHost {
   includePluginMessageActions: boolean;
   leadingContent?: ReactNode;
   onForkMessage?: ThreadTimelineForkMessageHandler;
-  onOpenLink?: ThreadTimelineLinkHandler;
-  onOpenLocalFileLink?: ThreadTimelineLocalFileLinkHandler;
   onTitleAction?: TimelineTitleActionResolver;
   hasUnseenTimelineEvents: boolean;
   unreadDividerAutoScroll?: boolean;
@@ -134,7 +133,6 @@ interface ThreadScreenProps {
   thread: ThreadResponse;
   timeline: UseThreadTimelineControllerResult;
   timelineHost: ThreadScreenTimelineHost;
-  workspaceRootPath: string | undefined;
 }
 
 interface SentMessageEditSession {
@@ -205,67 +203,6 @@ export function useThreadComposerAddToChat(thread: {
     },
     [isCompactViewport, promptDraft],
   );
-}
-
-function useParentThreadSection(
-  thread: ThreadResponse,
-  enabled: boolean,
-): ThreadPromptParentThreadSection | null {
-  const threadOriginKind = thread.originKind;
-  const threadSourceThreadId =
-    thread.sourceThreadId ?? (threadOriginKind ? thread.parentThreadId : null);
-  const { data: parentThread } = useThread(
-    enabled ? (thread.parentThreadId ?? "") : "",
-  );
-  const { data: sourceThread } = useThread(
-    enabled ? (threadSourceThreadId ?? "") : "",
-  );
-  return useMemo(() => {
-    const relatedThreadId =
-      threadOriginKind !== null ? threadSourceThreadId : thread.parentThreadId;
-    if (!enabled || !relatedThreadId) return null;
-    const relationship =
-      threadOriginKind === "fork"
-        ? thread.originPluginId === SIDE_CHAT_PLUGIN_ID
-          ? "side-chat"
-          : "fork"
-        : "parent";
-    const relatedThread =
-      relationship === "parent" ? parentThread : sourceThread;
-    const href = getThreadRoutePath({
-      projectId: relatedThread?.projectId ?? thread.projectId,
-      threadId: relatedThreadId,
-    });
-    if (relatedThread === undefined) {
-      return {
-        parentThreadTitle: relatedThreadId.slice(0, 8),
-        href,
-        relationship,
-      };
-    }
-    if (
-      relatedThread.archivedAt !== null ||
-      relatedThread.deletedAt !== null ||
-      (relationship !== "parent" &&
-        relatedThread.projectId !== thread.projectId)
-    ) {
-      return null;
-    }
-    return {
-      parentThreadTitle: getThreadDisplayTitle(relatedThread),
-      href,
-      relationship,
-    };
-  }, [
-    enabled,
-    parentThread,
-    sourceThread,
-    thread.originPluginId,
-    thread.parentThreadId,
-    thread.projectId,
-    threadOriginKind,
-    threadSourceThreadId,
-  ]);
 }
 
 function useChildThreadsSection(
@@ -524,9 +461,9 @@ export function ThreadScreen({
   thread,
   timeline,
   timelineHost,
-  workspaceRootPath,
 }: ThreadScreenProps) {
   const systemConfigQuery = useSystemConfig();
+  const contextCardInset = useThreadContextCardContentInset();
   const pendingInteractionsQuery = useThreadPendingInteractions(thread.id);
   const pendingInteractions = pendingInteractionsQuery.data ?? [];
   const hasPendingInteraction = pendingInteractions.length > 0;
@@ -631,11 +568,14 @@ export function ThreadScreen({
         isCatchingUpTimeline={timeline.isCatchingUpTimeline}
         isLoadingOlderTimelineRows={timeline.isLoadingOlderTimelineRows}
         isThreadTimelinePending={
-          isThreadTimelinePending && !(isPanelPresentation && showOngoingIndicator)
+          isThreadTimelinePending &&
+          !(isPanelPresentation && showOngoingIndicator)
         }
         timelineError={Boolean(timeline.timelineError)}
         loadingContent={
-          isPanelPresentation ? <ThreadTimelinePanelLoadingSkeleton /> : undefined
+          isPanelPresentation ? (
+            <ThreadTimelinePanelLoadingSkeleton />
+          ) : undefined
         }
         timelineErrorClassName={
           isPanelPresentation ? "mx-2 mt-4 text-destructive" : undefined
@@ -650,8 +590,6 @@ export function ThreadScreen({
         onMessageAddToChat={selectionAddToChat}
         onSelectionAddToChat={selectionAddToChat}
         onLoadOlderRows={timeline.loadOlderTimelineRows}
-        onOpenLink={timelineHost.onOpenLink}
-        onOpenLocalFileLink={timelineHost.onOpenLocalFileLink}
         onTitleAction={timelineHost.onTitleAction}
         projectId={projectId}
         resolveMentionLink={resolveMentionLink}
@@ -670,7 +608,6 @@ export function ThreadScreen({
           ? {}
           : { unreadDividerAutoScroll: timelineHost.unreadDividerAutoScroll })}
         unreadDividerPlacement={timelineHost.unreadDividerPlacement}
-        workspaceRootPath={workspaceRootPath}
       />
     </SelectionAddToChatContext.Provider>
   );
@@ -753,20 +690,26 @@ export function ThreadScreen({
             scrollAnchorMode={
               timelineHost.hasUnseenTimelineEvents ? "latest" : "restore"
             }
+            scrollContentInsetEndPx={contextCardInset}
             shellClassName="!mx-0 !mt-0 md:!mx-0 md:!mt-0"
             scrollAreaClassName="scroll-pt-4"
             contentClassName="gap-2 pt-4"
             footerClassName="chat-prompt-box"
             footer={promptArea}
             scrollOverlay={
-              <ThreadTableOfContents
-                contextBoundarySeq={timeline.contextBoundarySeq}
-                threadId={thread.id}
-                timelineRows={timelineRows}
-                hasOlderTimelineRows={timeline.hasOlderTimelineRows}
-                loadOlderTimelineRows={timeline.loadOlderTimelineRows}
-                onNavigateToRow={setTimelineNavigationTargetRowId}
-              />
+              <>
+                <ThreadContextCard />
+                <div className="pointer-events-auto my-auto">
+                  <ThreadTableOfContents
+                    contextBoundarySeq={timeline.contextBoundarySeq}
+                    threadId={thread.id}
+                    timelineRows={timelineRows}
+                    hasOlderTimelineRows={timeline.hasOlderTimelineRows}
+                    loadOlderTimelineRows={timeline.loadOlderTimelineRows}
+                    onNavigateToRow={setTimelineNavigationTargetRowId}
+                  />
+                </div>
+              </>
             }
           >
             {surface}
@@ -775,24 +718,29 @@ export function ThreadScreen({
       );
     case "panel":
       return (
-        <ThreadScreenPanelShell
-          presentation={presentation}
-          promptArea={promptArea}
-          surface={surface}
-          threadId={thread.id}
-        />
+        <WithoutThreadContextCard>
+          <ThreadScreenPanelShell
+            presentation={presentation}
+            promptArea={promptArea}
+            surface={surface}
+            threadId={thread.id}
+          />
+        </WithoutThreadContextCard>
       );
     case "transcript":
-      return presentation.layout === "contained" ? (
-        <div className="min-h-0 flex-1 overflow-y-auto bg-background px-2 pb-3 pt-3">
-          {surface}
-        </div>
-      ) : (
-        <div className="bg-background px-2 pb-3 pt-3">{surface}</div>
+      return (
+        <WithoutThreadContextCard>
+          {presentation.layout === "contained" ? (
+            <div className="min-h-0 flex-1 overflow-y-auto bg-background px-2 pb-3 pt-3">
+              {surface}
+            </div>
+          ) : (
+            <div className="bg-background px-2 pb-3 pt-3">{surface}</div>
+          )}
+        </WithoutThreadContextCard>
       );
   }
 }
-
 
 function ThreadScreenPanelShell({
   presentation,

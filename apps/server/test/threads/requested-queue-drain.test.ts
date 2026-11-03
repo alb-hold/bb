@@ -677,6 +677,7 @@ describe("the requested queue drain", () => {
       const queued = queueInputForStartingTurn(harness.deps, {
         claimed: null,
         input: {
+          deliveryMode: "steer",
           execution,
           executionInputSources: undefined,
           input: textInput("turn starting child send"),

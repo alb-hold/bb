@@ -294,6 +294,7 @@ export function beginNativeTerminalThreadProvisioning(
         db: tx,
         threadId: args.thread.id,
         context: createThreadStartup({
+          initiator: "user",
           clientRequestId: createClientTurnRequestId(),
           environmentIntent: args.environmentIntent,
           execution: null,

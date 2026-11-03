@@ -85,7 +85,6 @@ import {
   getProjectSourceDependentInvalidationQueryKeys,
   getThreadConversationOutlineInvalidationQueryKeys,
   getThreadDetailInvalidationQueryKeys,
-  getThreadListInvalidationQueryKeys,
   getThreadPendingInteractionInvalidationQueryKeys,
   getThreadPromptHistoryInvalidationQueryKeys,
   getThreadQueueContentInvalidationQueryKeys,
@@ -138,7 +137,7 @@ interface ThrottledActiveRefetchArgs {
   queryKey: QueryKey;
 }
 
-const THREAD_LIST_STATUS_FALLBACK_REFETCH_MIN_INTERVAL_MS = 1_000;
+const THREAD_LIST_REFETCH_MIN_INTERVAL_MS = 1_000;
 
 const TRAILING_REFETCH_MIN_INTERVAL_MS = 50;
 const TRAILING_REFETCH_MAX_INTERVAL_MS = 1_000;
@@ -315,6 +314,13 @@ function invalidateTerminalTimelineQueryKeys({
     void queryClient.cancelQueries({ queryKey });
     queryClient.invalidateQueries({ queryKey });
   }
+}
+
+export function invalidateSidebarNavigation(queryClient: QueryClient): void {
+  void queryClient.invalidateQueries(
+    { exact: true, queryKey: sidebarNavigationQueryKey() },
+    { cancelRefetch: false },
+  );
 }
 
 export function disposeTrailingActiveRefetches(queryClient: QueryClient): void {
@@ -803,28 +809,20 @@ export function collectCachedThreadIdsForEnvironment({
   return Array.from(threadIds);
 }
 
-function dirtyThreadListQueries({
-  projectId,
-  queryClient,
-}: ThreadRealtimeDirtyContext): QueryKey[] {
-  if (projectId) {
-    for (const queryKey of getCachedGlobalThreadListInvalidationQueryKeys({
-      queryClient,
-    })) {
-      invalidateQueryKeyWithoutCancelingActiveFetch({
-        exact: true,
-        queryClient,
-        queryKey,
-      });
-    }
-  }
-  return getThreadListInvalidationQueryKeys({ projectId, queryClient });
+function dirtyThreadListQueries(context: ThreadRealtimeDirtyContext): void {
+  invalidateThreadListQueries(context, true);
 }
 
-function dirtyActiveThreadListQueries({
-  projectId,
-  queryClient,
-}: ThreadRealtimeDirtyContext): QueryKey[] {
+function dirtyActiveThreadListQueries(
+  context: ThreadRealtimeDirtyContext,
+): void {
+  invalidateThreadListQueries(context, false);
+}
+
+function invalidateThreadListQueries(
+  { projectId, queryClient }: ThreadRealtimeDirtyContext,
+  includeArchived: boolean,
+): void {
   const listQueryKeys = projectId
     ? [
         ...getCachedProjectThreadListInvalidationQueryKeys({
@@ -835,38 +833,7 @@ function dirtyActiveThreadListQueries({
       ]
     : getCachedThreadListQueryKeys(queryClient);
   for (const queryKey of listQueryKeys) {
-    if (isArchivedThreadListQueryKey(queryKey)) {
-      queryClient.invalidateQueries({
-        exact: true,
-        queryKey,
-        refetchType: "none",
-      });
-      continue;
-    }
-    invalidateQueryKeyWithoutCancelingActiveFetch({
-      exact: true,
-      queryClient,
-      queryKey,
-    });
-  }
-  return [sidebarNavigationQueryKey(), threadSearchQueryKeyPrefix()];
-}
-
-function dirtyActiveThreadListQueriesWithThrottledRefetch({
-  projectId,
-  queryClient,
-}: ThreadRealtimeDirtyContext): void {
-  const listQueryKeys = projectId
-    ? [
-        ...getCachedProjectThreadListInvalidationQueryKeys({
-          projectId,
-          queryClient,
-        }),
-        ...getCachedGlobalThreadListInvalidationQueryKeys({ queryClient }),
-      ]
-    : getCachedThreadListQueryKeys(queryClient);
-  for (const queryKey of listQueryKeys) {
-    if (isArchivedThreadListQueryKey(queryKey)) {
+    if (!includeArchived && isArchivedThreadListQueryKey(queryKey)) {
       queryClient.invalidateQueries({
         exact: true,
         queryKey,
@@ -876,7 +843,7 @@ function dirtyActiveThreadListQueriesWithThrottledRefetch({
     }
     invalidateQueryKeyWithThrottledActiveRefetch({
       exact: true,
-      minIntervalMs: THREAD_LIST_STATUS_FALLBACK_REFETCH_MIN_INTERVAL_MS,
+      minIntervalMs: THREAD_LIST_REFETCH_MIN_INTERVAL_MS,
       queryClient,
       queryKey,
     });
@@ -887,7 +854,7 @@ function dirtyActiveThreadListQueriesWithThrottledRefetch({
   ]) {
     invalidateQueryKeyWithThrottledActiveRefetch({
       exact: false,
-      minIntervalMs: THREAD_LIST_STATUS_FALLBACK_REFETCH_MIN_INTERVAL_MS,
+      minIntervalMs: THREAD_LIST_REFETCH_MIN_INTERVAL_MS,
       queryClient,
       queryKey,
     });
@@ -896,11 +863,11 @@ function dirtyActiveThreadListQueriesWithThrottledRefetch({
 
 function dirtyThreadListQueriesForBackgroundActivity(
   context: ThreadRealtimeDirtyContext,
-): QueryKey[] {
+): void {
   if (context.backgroundActivityChanged !== true) {
-    return [];
+    return;
   }
-  return dirtyActiveThreadListQueries(context);
+  dirtyActiveThreadListQueries(context);
 }
 
 function dirtyThreadDetailQueriesForBackgroundActivity(
@@ -1196,7 +1163,7 @@ function refreshThreadListStatusState(
   if (context.nativeActivityReceiptOnly === true) return;
   const { flushOnce, queryClient, statusChange, threadId } = context;
   if (!threadId || !statusChange) {
-    dirtyActiveThreadListQueriesWithThrottledRefetch(context);
+    dirtyActiveThreadListQueries(context);
     return;
   }
   for (const queryKey of getFetchingThreadListQueryKeys(queryClient)) {

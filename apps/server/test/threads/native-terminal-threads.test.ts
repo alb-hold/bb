@@ -2534,6 +2534,7 @@ describe("native terminal threads", () => {
     if (row === null) throw new Error("thread missing");
     await expect(
       sendThreadMessage(fixture.harness.deps, {
+        originPluginId: null,
         environment: fixture.environment,
         payload: { input: textInput("hi"), mode: "auto" },
         thread: row,
@@ -2894,9 +2895,6 @@ describe("native terminal threads", () => {
     const lateProviders = options.deferProviders
       ? createProviderRegistryService({ deferRegistrationsSettled: true })
       : null;
-    if (lateProviders !== null) {
-      fixture.harness.deps.providerRegistry = lateProviders;
-    }
     const opened = await fixture.harness.app.request("/internal/session/open", {
       method: "POST",
       headers: internalAuthHeaders(fixture.harness, {
@@ -2917,6 +2915,9 @@ describe("native terminal threads", () => {
     });
     expect(opened.status).toBe(201);
     const { sessionId } = (await readJson(opened)) as { sessionId: string };
+    if (lateProviders !== null) {
+      fixture.harness.deps.providerRegistry = lateProviders;
+    }
     const socket = createFakeDaemonSocket();
     onDaemonSocketOpen(fixture.harness.deps, {
       hostId: fixture.hostId,
@@ -5009,10 +5010,7 @@ describe("native terminal threads", () => {
         "  Sonnet 5.5 | ctx 64K",
       ];
       const drawn = rows
-        .map(
-          (row, index) =>
-            `\u001b[${index + 1};1H\u001b[2K${row}`,
-        )
+        .map((row, index) => `\u001b[${index + 1};1H\u001b[2K${row}`)
         .join("");
       return `\u001b[?7l\u001b[2J${drawn}\u001b[?7h\u001b[${cursor.row + 1};${cursor.col + 1}H`;
     };

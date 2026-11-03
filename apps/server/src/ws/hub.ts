@@ -701,6 +701,12 @@ export class NotificationHub implements DbNotifier {
     });
   }
 
+  private clientChangeNotificationsStopped = false;
+
+  stopClientChangeNotifications(): void {
+    this.clientChangeNotificationsStopped = true;
+  }
+
   notifyPluginChanged(pluginId: string, tags: readonly string[] | null): void {
     this.notifyClients({
       type: "changed",
@@ -2493,6 +2499,10 @@ export class NotificationHub implements DbNotifier {
   }
 
   private notifyClients(message: ServerChangedMessage): void {
+    if (this.clientChangeNotificationsStopped) {
+      this.notifyChangedMessageListeners(message);
+      return;
+    }
     const sockets = new Set<HubSocket>();
     for (const key of subscriptionKeysForMessage(message)) {
       const specificSockets = this.clientSocketsByKey.get(key);

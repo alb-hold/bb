@@ -17,6 +17,7 @@ import { requestQueuedMessageDispatch } from "./queued-message-dispatch.js";
 export async function clearThreadContext(
   deps: LoggedPendingInteractionWorkSessionDeps,
   args: {
+    beforeCommitInTransaction?: (args: { tx: DbTransaction }) => void;
     environment: Pick<Environment, "hostId" | "id">;
     thread: Thread;
     beforeClearInTransaction?: (tx: DbTransaction) => void;
@@ -74,7 +75,10 @@ export async function clearThreadContext(
           message: THREAD_CONTEXT_CLEARED_DETAIL,
         },
       },
-      args.beforeClearInTransaction ?? (() => {}),
+      (tx) => {
+        args.beforeClearInTransaction?.(tx);
+        args.beforeCommitInTransaction?.({ tx });
+      },
     );
     deps.hub.notifyThread(
       releasedThread.id,

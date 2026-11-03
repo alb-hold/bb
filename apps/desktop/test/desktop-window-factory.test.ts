@@ -118,6 +118,10 @@ class FakeDesktopWindowWebContents implements DesktopWindowWebContents {
     }
   }
 
+  copyImageAt(): void {}
+
+  downloadURL(): void {}
+
   replaceMisspelling(text: string): void {
     this.replacedMisspellings.push(text);
   }
@@ -308,6 +312,7 @@ async function createFactoryHarness(
       return false;
     },
     openExternalUrl() {},
+    onWindowCreated() {},
     preloadPath: "/tmp/preload.cjs",
     userDataPath: tempDir.path,
     ...overrides,
@@ -320,6 +325,59 @@ async function createFactoryHarness(
 }
 
 describe("desktop window factory", () => {
+  it("starts every saved page before any finishes and returns saved order", async () => {
+    const original = await createFactoryHarness();
+    for (const stateKey of ["primary", "window-second", "window-third"]) {
+      const browserWindow = await original.factory.createWindow({
+        initialUrl: null,
+        stateKey,
+      });
+      if (!(browserWindow instanceof FakeDesktopWindow))
+        throw new Error("Expected a fake window");
+      browserWindow.bounds.x = original.createdWindows.length * 100;
+    }
+    await original.factory.persistOpenWindows();
+    const releases: Array<() => void> = [];
+    const loads = Array.from(
+      { length: 3 },
+      () => new Promise<void>((resolve) => releases.push(resolve)),
+    );
+    const started: DesktopBrowserWindow[] = [];
+    const completed: DesktopBrowserWindow[] = [];
+    let releaseAll = false;
+    const restarted = await createFactoryHarness({
+      userDataPath: original.userDataPath,
+      onWindowCreated(browserWindow) {
+        const load = loads[started.length];
+        browserWindow.loadURL = async () => {
+          started.push(browserWindow);
+          if (!releaseAll) await load;
+          completed.push(browserWindow);
+        };
+      },
+    });
+    const restoring = restarted.factory.restoreSavedWindows({
+      initialUrl: "http://127.0.0.1:41234",
+    });
+    try {
+      await vi.waitFor(() => expect(started).toHaveLength(3));
+      expect(completed).toHaveLength(0);
+      releases[2]?.();
+      await vi.waitFor(() => expect(completed).toEqual([started[2]]));
+      releases[1]?.();
+      releases[0]?.();
+      expect(
+        (await restoring).map((window) => window.getNormalBounds()),
+      ).toEqual(
+        original.createdWindows.map((window) => window.getNormalBounds()),
+      );
+    } finally {
+      releaseAll = true;
+      for (const release of releases) release();
+      await restoring;
+    }
+  });
+
   it.each([
     [0.5, 4],
     [1.5, 26],
@@ -336,6 +394,22 @@ describe("desktop window factory", () => {
     expect(window.windowButtonPositions).toEqual([
       { x: MACOS_TRAFFIC_LIGHT_INSET_PX, y },
     ]);
+  });
+
+  it("hands each window over before its first page loads, so the page's IPC is accepted", async () => {
+    const loadedWhenCreated: string[][] = [];
+    const { factory } = await createFactoryHarness({
+      onWindowCreated(browserWindow) {
+        if (!(browserWindow instanceof FakeDesktopWindow))
+          throw new Error("Expected a fake window");
+        loadedWhenCreated.push([...browserWindow.loadedUrls]);
+      },
+    });
+    await factory.createWindow({
+      initialUrl: "http://127.0.0.1:38886",
+      stateKey: null,
+    });
+    expect(loadedWhenCreated).toEqual([[]]);
   });
 
   it("does not register the zoom event for non-Mac windows", async () => {

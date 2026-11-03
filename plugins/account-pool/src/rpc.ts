@@ -227,13 +227,13 @@ export function createRpcHandlers(
     "config.get": () => config.get(),
     "config.set": (input) => config.set(input),
     "login.start": async (input) => {
-      if (input !== null)
+      if (input !== null && "accountId" in input)
         await operations.requireReauthorizable(input.accountId, "claude");
       return login.start(input);
     },
     "login.complete": (input) => login.complete(input),
     "codexLogin.start": async (input) => {
-      if (input !== null)
+      if (input !== null && "accountId" in input)
         await operations.requireReauthorizable(input.accountId, "codex");
       return codexLogin.start(input);
     },
