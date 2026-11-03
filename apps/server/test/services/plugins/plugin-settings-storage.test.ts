@@ -10,10 +10,13 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { existsSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { transformSync } from "esbuild";
+import * as pluginServerCache from "../../../src/services/plugins/plugin-server-cache.js";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Hono } from "hono";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   getPluginSettingsValues,
   setPluginSettingsValues,
@@ -512,6 +515,14 @@ describe("plugin settings + storage", () => {
       }
     `;
 
+    const compiledSqler = transformSync(sqlerSource, {
+      format: "cjs",
+      loader: "ts",
+    });
+    const sqlerDigest = createHash("sha256")
+      .update(compiledSqler.code)
+      .digest("hex");
+
     function sqler(): {
       db: {
         prepare(sql: string): { get(): { count: number } };
@@ -526,28 +537,52 @@ describe("plugin settings + storage", () => {
         name: "bb-plugin-sqler",
         serverSource: sqlerSource,
       });
-      await service.installPath(rootDir);
+      const entryPath = join(workDir, "sqler.cjs");
+      await writeFile(entryPath, compiledSqler.code);
+      const build = pluginServerCache.buildCachedPluginServer;
+      const compiler = vi
+        .spyOn(pluginServerCache, "buildCachedPluginServer")
+        .mockImplementation(async (args) =>
+          args.pluginId === "sqler"
+            ? {
+                path: entryPath,
+                digest: sqlerDigest,
+                warnings: [],
+              }
+            : build(args),
+        );
+      try {
+        await service.installPath(rootDir);
+        expect(compiler).toHaveBeenCalledWith(
+          expect.objectContaining({ pluginId: "sqler" }),
+        );
+        await expect(compiler).toHaveResolvedWith(
+          expect.objectContaining({ path: entryPath }),
+        );
 
-      expect(sqler().journalMode).toBe("wal");
-      const countRow = sqler()
-        .db.prepare("SELECT COUNT(*) AS count FROM items")
-        .get();
-      expect(countRow.count).toBe(1);
-      expect(
-        await stat(join(dataDir, "plugins", "sqler", "data.db")),
-      ).toBeTruthy();
+        expect(sqler().journalMode).toBe("wal");
+        const countRow = sqler()
+          .db.prepare("SELECT COUNT(*) AS count FROM items")
+          .get();
+        expect(countRow.count).toBe(1);
+        expect(
+          await stat(join(dataDir, "plugins", "sqler", "data.db")),
+        ).toBeTruthy();
 
-      const staleDb = sqler().db;
-      await service.reload("sqler");
+        const staleDb = sqler().db;
+        await service.reload("sqler");
 
-      expect(() =>
-        staleDb.prepare("SELECT COUNT(*) AS count FROM items").get(),
-      ).toThrow(/not open/);
+        expect(() =>
+          staleDb.prepare("SELECT COUNT(*) AS count FROM items").get(),
+        ).toThrow(/not open/);
 
-      const rerunRow = sqler()
-        .db.prepare("SELECT COUNT(*) AS count FROM items")
-        .get();
-      expect(rerunRow.count).toBe(1);
+        const rerunRow = sqler()
+          .db.prepare("SELECT COUNT(*) AS count FROM items")
+          .get();
+        expect(rerunRow.count).toBe(1);
+      } finally {
+        compiler.mockRestore();
+      }
     });
 
     it("rejects a changed migration statement at an applied index", async () => {
