@@ -103,8 +103,19 @@ describe("real worktree teardown preservation", () => {
         await writeFile(path.join(String(to), ".env"), "raced write\n");
       }
     });
-    await expect(remove(worktree, true)).rejects.toMatchObject({
+    const removalError = await remove(worktree, true).then(
+      () => null,
+      (error: unknown) => ({
+        code:
+          error instanceof Error && "code" in error
+            ? String(error.code)
+            : null,
+        message: error instanceof Error ? error.message : String(error),
+      }),
+    );
+    expect(removalError).toMatchObject({
       code: "worktree_preserved",
+      message: expect.stringContaining("has uncommitted changes or untracked files"),
     });
     await expect(
       readFile(path.join(worktree.path, ".env"), "utf8"),
