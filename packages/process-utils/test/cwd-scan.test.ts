@@ -72,23 +72,22 @@ describe("scanProcessesWithCwdUnder", () => {
     "gpg-agent",
     "dbus-daemon",
   ])(
-    "is clear, and reports it by name and pid, when the unreadable same-user process is the allow-listed helper %s",
+    "is unknown when an unreadable same-user process uses the helper name %s",
     async (comm) => {
       const base = await dir();
       const scan = await scanProcessesWithCwdUnder(
         { directories: [base] },
         fakeLinux({ 10: denied() }, {}, { 10: comm }),
       );
-      expect(scan).toEqual({
-        status: "clear",
-        excludedOtherUsers: 0,
-        unvouchedHelpers: [{ pid: 10, comm }],
+      expect(scan).toMatchObject({
+        status: "unknown",
+        reason: expect.stringContaining(comm),
       });
     },
   );
 
   it.each(["node", "bash", "ssh-agent-fake", "sshd-sessionx", "SSHD"])(
-    "is unknown when the unreadable same-user process is %s, which is not an allow-listed helper",
+    "is unknown when the unreadable same-user process is named %s",
     async (comm) => {
       const base = await dir();
       const scan = await scanProcessesWithCwdUnder(
@@ -438,18 +437,15 @@ describe("scanProcessesWithCwdUnder", () => {
       expect(scan).toMatchObject({ status: "clear" });
     });
 
-    it("does not look again, and reports the helper, when the only missing process is a known session helper", async () => {
+  it("looks again and stays unknown when an unreadable process uses a session-helper name", async () => {
       const base = await dir();
       const io = fakeMac({
         ps: [psLine(50, 501, "/usr/bin/ssh-agent")],
         lsof: {},
       });
       const scan = await scanProcessesWithCwdUnder({ directories: [base] }, io);
-      expect(scan).toMatchObject({
-        status: "clear",
-        unvouchedHelpers: [{ pid: 50, comm: "ssh-agent" }],
-      });
-      expect(io.delays).toEqual([]);
+      expect(scan.status).toBe("unknown");
+      expect(io.delays).toEqual([200]);
     });
 
     it("still reports a holder lsof lists, and keeps the existing unknown results for lsof and ps failures", async () => {

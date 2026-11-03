@@ -365,12 +365,13 @@ describe("the Linux process-list visibility rule", () => {
     });
   });
 
-  it("is clear when the only unreadable same-user process is a known session helper, and unknown for any other", async () => {
+  it("is unknown when an unreadable same-user process uses a session-helper name", async () => {
     const helper = fakeProc({
       processes: { 300: { uid: 1000, denied: true, comm: "sshd-session" } },
     });
-    expect(await scanLinux("/work/tree", helper, 4242)).toEqual({
-      status: "clear",
+    expect(await scanLinux("/work/tree", helper, 4242)).toMatchObject({
+      status: "unknown",
+      reason: expect.stringContaining("sshd-session"),
     });
     const stranger = fakeProc({
       processes: { 300: { uid: 1000, denied: true, comm: "node" } },

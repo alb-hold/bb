@@ -24,16 +24,6 @@ export interface CwdScanCoverage {
   unvouchedHelpers: CwdUnvouchedHelper[] | null;
 }
 
-export const UNREADABLE_SAME_USER_HELPER_COMMS: ReadonlySet<string> = new Set([
-  "systemd",
-  "(sd-pam)",
-  "ssh-agent",
-  "sshd",
-  "sshd-session",
-  "gpg-agent",
-  "dbus-daemon",
-]);
-
 export type CwdHolderScan =
   | ({ status: "clear" } & CwdScanCoverage)
   | ({ status: "held"; holders: CwdHolder[] } & CwdScanCoverage)
@@ -241,7 +231,6 @@ export async function scanProcessesWithCwdUnder(
     }
     let excluded = 0;
     const skippedOtherUsers: CwdSkippedProcess[] = [];
-    const unvouchedHelpers: CwdUnvouchedHelper[] = [];
     for (const entry of entries) {
       if (!/^\d+$/u.test(entry)) continue;
       const pid = Number(entry);
@@ -279,13 +268,9 @@ export async function scanProcessesWithCwdUnder(
                 reason: `the working directory of process ${pid} could not be read and its name could not be read either`,
               };
             }
-            if (UNREADABLE_SAME_USER_HELPER_COMMS.has(comm)) {
-              unvouchedHelpers.push({ pid, comm });
-              continue;
-            }
             return {
               status: "unknown",
-              reason: `the working directory of process ${pid} (${comm}) could not be read and it is not a known session helper`,
+              reason: `the working directory of process ${pid} (${comm}) could not be read and cannot be verified`,
             };
           }
         }
@@ -312,7 +297,7 @@ export async function scanProcessesWithCwdUnder(
     }
     const coverage = {
       excludedOtherUsers: excluded,
-      unvouchedHelpers,
+      unvouchedHelpers: [],
       ...(skippedOtherUsers.length > 0 ? { skippedOtherUsers } : {}),
     };
     return holders.length > 0
@@ -329,7 +314,7 @@ export async function scanProcessesWithCwdUnder(
     const first = inspection.invisible[0]!;
     return {
       status: "unknown",
-      reason: `process ${first.pid} (${first.comm}) runs as the current user, is not a known session helper and has no working directory in the lsof listing, so whether it works inside the folder cannot be established${inspection.invisible.length > 1 ? ` (${inspection.invisible.length} such processes)` : ""}`,
+      reason: `the working directory of process ${first.pid} (${first.comm}) runs as the current user but could not be established from the lsof listing${inspection.invisible.length > 1 ? ` (${inspection.invisible.length} such processes)` : ""}`,
     };
   }
   const coverage = {
@@ -348,8 +333,7 @@ export async function scanProcessesWithCwdUnder(
 export type CwdProcessClass =
   | "readable"
   | "unreadable-same-uid"
-  | "skipped-other-uid"
-  | "known-helper";
+  | "skipped-other-uid";
 
 export type DarwinInspection =
   | { status: "unknown"; reason: string }
@@ -452,9 +436,6 @@ export async function inspectDarwinProcesses(
       rows.push({ ...row, klass: "skipped-other-uid" });
     } else if (cwds.has(row.pid)) {
       rows.push({ ...row, klass: "readable" });
-    } else if (UNREADABLE_SAME_USER_HELPER_COMMS.has(row.comm)) {
-      helpers.push({ pid: row.pid, comm: row.comm });
-      rows.push({ ...row, klass: "known-helper" });
     } else {
       candidates.push(row);
     }

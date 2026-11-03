@@ -61,14 +61,6 @@ async function readOptional<T>(read: () => Promise<T>): Promise<Read<T>> {
   }
 }
 
-export const UNREADABLE_SAME_USER_HELPER_COMMS: ReadonlySet<string> = new Set([
-  "systemd",
-  "(sd-pam)",
-  "sshd",
-  "sshd-session",
-  "dbus-daemon",
-]);
-
 export const CREDENTIAL_AGENTS: readonly {
   kernelName: string;
   argv0: string;
@@ -174,7 +166,6 @@ type ProcessResult =
   | WorktreeHolder
   | ProcessResultUnknown
   | { otherUser: true }
-  | { helper: string }
   | { cleared: FallbackClearance[] }
   | { agent: AgentClearance }
   | null;
@@ -278,8 +269,6 @@ async function scanLinuxProcess(
   }
   if (result === null || !("unknown" in result) || !result.vouchable)
     return result;
-  if (command !== null && UNREADABLE_SAME_USER_HELPER_COMMS.has(command))
-    return { helper: command };
   const verdict = await credentialAgentVerdict(
     proc,
     pid,
@@ -814,7 +803,7 @@ export async function scanLinux(
         clearances.push(...result.cleared);
         continue;
       }
-      if ("otherUser" in result || "helper" in result) continue;
+      if ("otherUser" in result) continue;
       if ("unknown" in result) unknown.push(result.unknown);
       else holders.push(result);
     }
