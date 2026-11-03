@@ -176,7 +176,17 @@ time.sleep(120)`,
     } catch (error) {
       skip((error as NodeJS.ErrnoException).code !== "EACCES", "the process cwd was not unreadable");
     }
-    await remove(worktree, true).catch(() => undefined);
+    const removalError = await remove(worktree, true).then(
+      () => null,
+      (error: unknown) => error,
+    );
+    expect(removalError).toMatchObject({ code: "worktree_preserved" });
+    expect(removalError).toMatchObject({
+      message: expect.stringContaining("could not check which programs are using it"),
+    });
+    expect(removalError).toMatchObject({
+      message: expect.stringContaining(`process ${worker.pid}`),
+    });
     expect(() => process.kill(worker.pid!, 0)).not.toThrow();
     await expect(access(signalMarker)).rejects.toMatchObject({ code: "ENOENT" });
     await expect(access(worktree.path)).resolves.toBeUndefined();
