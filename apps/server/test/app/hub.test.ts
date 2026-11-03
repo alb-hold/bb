@@ -329,6 +329,8 @@ describe("NotificationHub", () => {
       1_000_001,
     );
     hub.recordTerminalClientSize("term-private-output", phone, { cols: 55, rows: 41 }, 1_000_002);
+    hub.recordTerminalClientSize("term-private-output", phone, { cols: 55, rows: 41 }, 1_000_003, true);
+    hub.recordTerminalClientSize("term-private-output", phone, { cols: 55, rows: 41 }, 1_000_004, true);
 
     expect(changes).toEqual([
       {

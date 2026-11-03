@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { terminalClientMessageSchema } from "@bb/server-contract";
-import { NotificationHub } from "../../../server/src/ws/hub.js";
 
 const { socket } = vi.hoisted(() => {
   const socket = {
@@ -116,46 +115,19 @@ describe("terminal attach", () => {
   });
 
   it.each([false, true])(
-    "reclaims the real shared PTY on CLI input without resizing again for repeat input (queued=%s)",
+    "claims the terminal size immediately before delivering CLI input (queued=%s)",
     async (queued) => {
       if (queued) {
         vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
       }
       prepareInteractiveTerminal(120, 40);
-      const ownerChanged = vi.fn();
-      const hub = new NotificationHub(ownerChanged);
       const terminalId = "term-cli-reclaim";
-      const cli = { close: () => {}, send: () => {} };
-      const phone = { close: () => {}, send: () => {} };
-      const received: Array<{
-        input: string;
-        size: { cols: number; rows: number } | null;
-      }> = [];
-      hub.registerTerminalClient(terminalId, cli);
-      hub.registerTerminalClient(terminalId, phone);
+      const messages: Array<
+        ReturnType<typeof terminalClientMessageSchema.parse>
+      > = [];
+      const claim = { type: "resize", cols: 120, rows: 40, claim: true };
       socket.send.mockImplementation((payload: string) => {
-        const message = terminalClientMessageSchema.parse(JSON.parse(payload));
-        if (message.type === "resize") {
-          hub.recordTerminalClientSize(
-            terminalId,
-            cli,
-            { cols: message.cols, rows: message.rows },
-            Date.now(),
-            message.claim === true,
-          );
-        } else if (message.type === "visibility") {
-          hub.recordTerminalClientVisibility(
-            terminalId,
-            cli,
-            message.visible,
-            Date.now(),
-          );
-        } else if (message.type === "input") {
-          received.push({
-            input: Buffer.from(message.dataBase64, "base64").toString(),
-            size: hub.terminalSharedSize(terminalId, Date.now()),
-          });
-        }
+        messages.push(terminalClientMessageSchema.parse(JSON.parse(payload)));
       });
       const attached = attachTerminal({
         baseUrl: "http://localhost:3001",
@@ -163,69 +135,38 @@ describe("terminal attach", () => {
       });
       try {
         openSocket();
-        expect(hub.terminalSharedSize(terminalId, Date.now())).toEqual({
-          cols: 120,
-          rows: 40,
-        });
-        hub.recordTerminalClientSize(
-          terminalId,
-          phone,
-          { cols: 80, rows: 20 },
-          Date.now(),
-          true,
-        );
-        expect(hub.terminalSharedSize(terminalId, Date.now())).toEqual({
-          cols: 80,
-          rows: 20,
-        });
+        expect(messages).toContainEqual(claim);
+        messages.length = 0;
 
         if (queued) socket.bufferedAmount = 2 * 1024 * 1024;
         process.stdin.emit("data", Buffer.from("a"));
         if (queued) {
-          expect(received).toEqual([]);
-          hub.recordTerminalClientSize(
-            terminalId,
-            phone,
-            { cols: 80, rows: 20 },
-            Date.now(),
-            true,
+          expect(messages.some((message) => message.type === "input")).toBe(
+            false,
           );
-          expect(hub.terminalSharedSize(terminalId, Date.now())).toEqual({
-            cols: 80,
-            rows: 20,
-          });
+          messages.length = 0;
           socket.bufferedAmount = 0;
           await vi.advanceTimersByTimeAsync(10);
         }
-        expect(received).toEqual([
-          { input: "a", size: { cols: 120, rows: 40 } },
+        expect(messages.slice(-2)).toEqual([
+          claim,
+          { type: "input", dataBase64: Buffer.from("a").toString("base64") },
         ]);
-        const ownershipChanges = ownerChanged.mock.calls.length;
         process.stdin.emit("data", Buffer.from("b"));
-        expect(received).toEqual([
-          { input: "a", size: { cols: 120, rows: 40 } },
-          { input: "b", size: { cols: 120, rows: 40 } },
+        expect(messages.slice(-2)).toEqual([
+          claim,
+          { type: "input", dataBase64: Buffer.from("b").toString("base64") },
         ]);
-        expect(ownerChanged).toHaveBeenCalledTimes(ownershipChanges);
-        hub.recordTerminalClientSize(
-          terminalId,
-          phone,
-          { cols: 75, rows: 18 },
-          Date.now(),
-        );
-        expect(hub.terminalSharedSize(terminalId, Date.now())).toEqual({
-          cols: 120,
-          rows: 40,
-        });
         process.stdin.emit("data", Buffer.from([0x02]));
         process.stdin.emit("data", Buffer.from("d"));
         expect(socket.close).toHaveBeenCalledOnce();
-        expect(received).toHaveLength(2);
+        expect(messages.filter((message) => message.type === "input")).toEqual([
+          { type: "input", dataBase64: Buffer.from("a").toString("base64") },
+          { type: "input", dataBase64: Buffer.from("b").toString("base64") },
+        ]);
       } finally {
         socket.onclose?.();
         await attached;
-        hub.unregisterTerminalClient(terminalId, cli);
-        hub.unregisterTerminalClient(terminalId, phone);
       }
     },
   );
