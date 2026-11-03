@@ -32,6 +32,7 @@ vi.mock("@bb/client-core", async (importOriginal) => {
     TerminalWebSocketTransport: class {
       start() {}
       sendResize() {}
+      claimSize() {}
       setVisible() {}
       sendInput() {}
       dispose() {}

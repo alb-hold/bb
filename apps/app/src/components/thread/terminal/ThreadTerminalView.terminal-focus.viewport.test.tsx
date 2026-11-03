@@ -974,12 +974,13 @@ describe("ThreadTerminalView terminal viewport and focus", () => {
         .map(
           (message) =>
             JSON.parse(message) as {
+              claim?: boolean;
               cols?: number;
               rows?: number;
               type?: string;
             },
         )
-        .filter((message) => message.type === "resize");
+        .filter((message) => message.type === "resize" && message.claim !== true);
 
     await waitForReadinessCondition(
       () => expect(resizeMessages()).toHaveLength(1),

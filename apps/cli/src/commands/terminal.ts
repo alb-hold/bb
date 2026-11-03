@@ -1110,6 +1110,7 @@ export async function attachTerminal(args: {
         type: "resize",
         cols: process.stdout.columns || DEFAULT_COLS,
         rows: process.stdout.rows || DEFAULT_ROWS,
+        claim: true,
       }),
     );
   };
