@@ -1086,7 +1086,13 @@ export async function attachTerminal(args: {
       url: terminalWebsocketUrl(args),
       terminalId: args.terminalId,
       createSocket: (url, protocols) => {
-        const socket = new WebSocket(url, protocols);
+        let socket: WebSocket;
+        try {
+          socket = new WebSocket(url, protocols);
+        } catch (error) {
+          reject(error);
+          throw error;
+        }
         socket.addEventListener("open", () => {
           process.stdin.setRawMode(true);
           process.stdin.resume();

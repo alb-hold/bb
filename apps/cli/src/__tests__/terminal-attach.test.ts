@@ -221,4 +221,25 @@ describe("terminal attach", () => {
     expect(process.stdin.setRawMode).toHaveBeenLastCalledWith(false);
     expect(process.stdin.pause).toHaveBeenCalledOnce();
   });
+
+  it("rejects socket construction failures and restores terminal mode", async () => {
+    prepareInteractiveTerminal();
+    const failure = new Error("WebSocket construction failed");
+    vi.stubGlobal(
+      "WebSocket",
+      class {
+        constructor() {
+          throw failure;
+        }
+      },
+    );
+    await expect(
+      attachTerminal({
+        baseUrl: "http://localhost:3001",
+        terminalId: "term-connection-failure",
+      }),
+    ).rejects.toBe(failure);
+    expect(process.stdin.setRawMode).toHaveBeenLastCalledWith(false);
+    expect(process.stdin.pause).toHaveBeenCalledOnce();
+  });
 });
